@@ -1,0 +1,39 @@
+package tui
+
+import (
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+type WelcomeScreen struct{}
+
+func NewWelcomeScreen() *WelcomeScreen { return &WelcomeScreen{} }
+
+func (s *WelcomeScreen) Init() tea.Cmd { return nil }
+
+func (s *WelcomeScreen) Update(msg tea.Msg) (Screen, tea.Cmd) { return s, nil }
+
+func (s *WelcomeScreen) Title() string { return "Welcome" }
+
+func (s *WelcomeScreen) View() string {
+	lines := []string{
+		"Scantty — scanner-driven console for OMS + ForgeKey.",
+		"",
+		StyleMuted.Render("Press a workspace hotkey to begin:"),
+		"",
+		"  [0] Scan         — barcode + badge entry",
+		"  [1] Dashboard    — operations overview",
+		"  [2] Inventory    — items, suppliers, locations",
+		"  [3] Purchasing   — purchase orders + reorders",
+		"  [4] Assets       — equipment register",
+		"  [5] Facilities   — TV, kiosk, electrical",
+		"  [6] Maintenance  — work orders, PM dashboard",
+		"  [7] SIGs         — special interest groups",
+		"  [8] Reports      — analytics + exports",
+		"  [9] ForgeKey     — devices, authorizations",
+		"  [s] Settings",
+		"",
+		StyleMuted.Render("Press `q` on this screen, or Ctrl+C anywhere, to quit."),
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}

@@ -1,0 +1,24 @@
+# Binaries
+/scantty
+/bin/
+
+# Go test/coverage
+*.test
+*.out
+coverage.txt
+
+# Local cache + secrets
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+*.sqlite3
+.env
+.env.local
+config.local.*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
