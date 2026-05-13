@@ -1,0 +1,160 @@
+# scantty
+
+Scanner-driven curses TUI for [OpenMakerSuite](https://github.com/uid0/openmakersuite) and [ForgeKey](https://github.com/uid0/forgekey). Designed for shop-floor terminals where a barcode/HID scanner is the primary input device and bandwidth is unreliable.
+
+## What it does
+
+- **Scan a 6-character OMS code** → look up the item/asset/location/fixture → open its detail screen → start a reorder.
+- **Scan an 8–20 char hex badge** → resolve to a ForgeKey-authorized member (planned; needs an OMS member-by-badge endpoint).
+- **Browse OMS workspaces** that mirror the web UI: Dashboard, Inventory, Purchasing, Assets, Facilities, Maintenance, SIGs, Reports, Settings.
+- **Receive deliveries** into open purchase orders without touching a mouse.
+- **Cache aggressively** to a local SQLite store so the terminal stays useful when the network drops (cache reads on failure are coming — the store is wired but most code paths still go to the network).
+
+## Quick start
+
+Requires Go 1.22+ (built and tested on 1.26).
+
+```sh
+git clone git@github.com:uid0/scantty.git
+cd scantty
+go build .
+
+export SCANTTY_OMS_URL=https://oms.example.org
+export SCANTTY_FORGEKEY_URL=https://forgekey.example.org
+./scantty
+```
+
+The first run will fail fast with a clear message if either URL is missing. The cache database is created on demand under `$XDG_CACHE_HOME/scantty/cache.db` (override with `SCANTTY_CACHE_PATH`).
+
+## Configuration (environment variables)
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `SCANTTY_OMS_URL` | Base URL for the OMS HTTP API | *(required)* |
+| `SCANTTY_OMS_TOKEN` | JWT access token for authenticated requests | unset |
+| `SCANTTY_FORGEKEY_URL` | Base URL for the ForgeKey HTTP API | *(required)* |
+| `SCANTTY_FORGEKEY_TOKEN` | Bearer token for ForgeKey | unset |
+| `SCANTTY_FORGEKEY_CLIENT_CERT` | Path to mTLS client cert (post-trust-refactor) | unset |
+| `SCANTTY_FORGEKEY_CLIENT_KEY` | Path to mTLS client key | unset |
+| `SCANTTY_FORGEKEY_CA_CERT` | Path to ForgeKey CA cert for verification | unset |
+| `SCANTTY_CACHE_PATH` | SQLite cache file location | `$XDG_CACHE_HOME/scantty/cache.db` |
+| `SCANTTY_SCANNER_SOURCE` | `stdin` (keyboard-emulation scanners) or a serial device path | `stdin` |
+
+If `SCANTTY_OMS_TOKEN` is unset, scantty still works for the `AllowAny` endpoints — barcode lookup, scanning items/assets/fixtures, and creating reorder requests in kiosk mode all function unauthenticated. Receiving deliveries (`/api/reorders/receipts/`) and most other writes require a token.
+
+## Keys
+
+| Key | What it does |
+|---|---|
+| `0` | Switch to the Scan workspace |
+| `1`–`9`, `s` | Switch to a workspace (Dashboard, Inventory, Purchasing, Assets, Facilities, Maintenance, SIGs, Reports, ForgeKey, Settings) |
+| `j`/`k` (or `↓`/`↑`) | Move row cursor in list screens |
+| `g`/`G` | Jump to top/bottom of a list |
+| `r` | Refresh the current screen |
+| `Enter` | Open a detail screen, submit a form, or open the most-recent scan result |
+| `o` | On a detail screen, open the action form (reorder for items, receive for POs) |
+| `Tab`/`Shift+Tab` | Move between form fields |
+| `Esc` | Back to the previous screen or welcome |
+| `q` (on Welcome) / `Ctrl+C` | Quit |
+
+## Scanner input
+
+Most barcode scanners present themselves as USB HID keyboards. With `SCANTTY_SCANNER_SOURCE=stdin` (the default) the scan workspace simply reads typed characters until Enter — the scanner appends `\n` after the code by default, so a single trigger pull populates and submits the field.
+
+For non-keyboard scanners (raw HID, serial, etc.), point `SCANTTY_SCANNER_SOURCE` at a character device path. (The raw-HID path isn't wired yet — see Roadmap.)
+
+The classifier in `internal/scanner` distinguishes two scan kinds:
+
+- **OMS 6-char code** — exactly 6 alphanumeric characters. Routes to `GET /api/inventory/lookup-code/`.
+- **ForgeKey badge** — 8–20 hex characters. Routes to member-resolution (still stubbed — see Roadmap).
+
+## Project layout
+
+```
+.
+├── main.go                       # entrypoint: load config, build clients, hand off to bubbletea
+├── internal/
+│   ├── config/                   # env-var loader, validation
+│   ├── scanner/                  # scan-code classifier + stdin reader
+│   ├── cache/                    # pure-Go SQLite (modernc.org/sqlite); resources, lookups, pending actions
+│   ├── omsapi/                   # OMS HTTP client (JWT bearer, refresh on 401, stable error envelope, generic page iterator)
+│   │   ├── client.go             # base + auth
+│   │   ├── errors.go             # APIError + envelope parsing
+│   │   ├── inventory.go          # items, assets, locations, categories, suppliers, item-suppliers, fixtures, lookup-code
+│   │   ├── reorders.go           # reorder requests, purchase orders, receipts
+│   │   ├── membership.go         # profile, SIGs, certifications
+│   │   ├── workorders.go         # internal WOs + third-party (maintenance-orders)
+│   │   ├── donations.go          # donations + tax receipts
+│   │   └── search.go             # /api/search/, dashboard summary
+│   ├── forgekeyapi/              # ForgeKey HTTP client (mTLS-capable transport)
+│   │   ├── client.go             # base + mTLS + bearer
+│   │   ├── devices.go            # devices, command actions (enable/disable/identify/blink/firmware), occupancy
+│   │   └── authorizations.go     # authorizations, lockouts, operational modes, usage sessions
+│   └── tui/                      # bubbletea root, screens, styles
+│       ├── app.go                # root model + workspace router
+│       ├── route.go              # workspace types, screen interface, switch/status messages
+│       ├── styles.go             # lipgloss palette + status rendering
+│       ├── nav.go                # 11-workspace sidebar
+│       ├── status.go             # bottom status bar (OMS/FK conn dots, scanner state, flash messages)
+│       ├── welcome.go            # default landing screen
+│       ├── scan.go               # scan input + recent-scan history + auto-navigate on item match
+│       ├── list.go               # generic paginated list with loaders for items/assets/POs/WOs/SIGs/FK devices
+│       ├── inventory_detail.go   # item detail + supplier list
+│       ├── reorder_form.go       # reorder request form
+│       ├── po_detail.go          # purchase order detail + line items
+│       ├── receive_form.go       # per-line receipt entry
+│       └── settings.go           # env-var inventory display
+└── go.mod
+```
+
+## Architecture notes
+
+**Why pure-Go SQLite (`modernc.org/sqlite`)?** No CGo means a static binary across the shop's mix of x86 laptops and ARM kiosks, with no `libsqlite3` system dependency. Throughput is fine for the cache workload (small, low-frequency writes).
+
+**Why bubbletea over tview/termbox?** Better composition story (every screen is a `Screen` interface implementer), cleaner message-passing for async API calls, and the `bubbles/textinput` widget covers our form needs without a giant widget toolkit. The downside is more boilerplate per screen, but the per-screen code stays readable.
+
+**Why mirror the web UI's 8 workspaces?** Members already have a mental map of where things live in the browser. Scantty's nav uses the same names and groupings so muscle memory transfers. Scanner-priority surfaces (the scan workspace itself) get the `0` hotkey so they're never more than one keypress away.
+
+**Error envelope handling.** OMS returns a stable `{error: {code, message, details}}` shape on failure. `omsapi.APIError` parses this and exposes `IsAuth()`/`IsNotFound()` helpers. The client switches on `code`, not HTTP status, because OMS sometimes returns 400 with informative codes and sometimes 422 — the code is authoritative.
+
+**JWT refresh.** A 401 with a refresh token in scope triggers one transparent retry against `/api/auth/refresh/`. There's no automatic logout — if refresh fails too, the call surfaces a `not_authenticated` error and the next request will fail the same way until the user re-supplies a token.
+
+**ForgeKey trust refactor.** ForgeKey is mid-migration from MAC + JWT-password to device_id + mTLS. `forgekeyapi.New(Options{ClientCert, ClientKey, CACert})` already loads an mTLS keypair when supplied; bearer-token auth still works during the transition. Once the refactor lands, scantty will need to be enrolled as a trusted device and provisioned with a cert at `SCANTTY_FORGEKEY_CLIENT_CERT`/`KEY`.
+
+## Current scope
+
+Landed:
+- Foundation: clients, cache, scanner classifier, config, TUI shell with 11 workspaces.
+- End-to-end scanner flow: scan → lookup → inventory detail → reorder form → submit.
+- Receive deliveries: PO list → PO detail → line-by-line qty entry → submit.
+
+Not yet landed (the long tail):
+- Auth/login screen and persistent token storage. Today, tokens come from `SCANTTY_OMS_TOKEN`.
+- Cache *reads* — the cache layer is wired but every list/detail still hits the network on every refresh. The plan is to read-through on network failure, then refresh asynchronously when connectivity returns.
+- Detail screens for assets, work orders, SIGs, donations.
+- ForgeKey device detail + command actions (enable/disable/identify/blink/firmware).
+- Authorization create/revoke + classroom-mode QR enroll.
+- Lockout flows with hierarchical unlock.
+- ForgeKey occupancy sparkline.
+- Global search palette (Cmd-K equivalent).
+- Badge-scan path — needs an OMS member-by-badge endpoint or a documented convention for resolving badge → user.
+- Raw-HID and serial scanner sources (only stdin/keyboard-emulation today).
+- Tests. The packages have clear seams (interfaces around the clients) so this is straightforward but hasn't been done yet.
+
+## Building and running
+
+```sh
+go build .          # produces ./scantty
+go vet ./...        # static checks
+go run .            # build + run in one step (good for iteration)
+```
+
+There's no test suite yet — `go test ./...` is a no-op.
+
+## Contributing
+
+This is a `uid0`-owned makerspace tool. PRs welcome via GitHub, but coordinate with the maintainer first on the OpenMakerSuite/ForgeKey side if the change implies an API addition (for example, a badge-resolution endpoint).
+
+## License
+
+TBD — talk to uid0.
