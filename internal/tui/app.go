@@ -123,9 +123,17 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 	case WSDashboard:
 		return NewListScreen(deps, "Dashboard", listScreenSpec{kind: "dashboard"})
 	case WSInventory:
-		return NewListScreen(deps, "Inventory", listScreenSpec{kind: "inventory_items", loader: loadInventoryItems})
+		return NewListScreen(deps, "Inventory", listScreenSpec{
+			kind:   "inventory_items",
+			loader: loadInventoryItems,
+			detail: func(id string, d Deps) Screen { return NewInventoryDetailScreen(d, id) },
+		})
 	case WSPurchasing:
-		return NewListScreen(deps, "Purchasing", listScreenSpec{kind: "purchase_orders", loader: loadPurchaseOrders})
+		return NewListScreen(deps, "Purchasing", listScreenSpec{
+			kind:   "purchase_orders",
+			loader: loadPurchaseOrders,
+			detail: func(id string, d Deps) Screen { return NewPurchaseOrderDetailScreen(d, id) },
+		})
 	case WSAssets:
 		return NewListScreen(deps, "Assets", listScreenSpec{kind: "assets", loader: loadAssets})
 	case WSFacilities:

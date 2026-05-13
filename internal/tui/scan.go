@@ -75,18 +75,31 @@ func (s *ScanScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if len(s.history) > 8 {
 			s.history = s.history[:8]
 		}
-		var statusCmd tea.Cmd
 		switch {
 		case m.err != nil:
-			statusCmd = Status(fmt.Sprintf("scan %s: %s", m.code, m.err.Error()), StatusError)
+			return s, Status(fmt.Sprintf("scan %s: %s", m.code, m.err.Error()), StatusError)
 		case m.result == nil:
-			statusCmd = Status(fmt.Sprintf("scan %s: no match", m.code), StatusWarn)
+			return s, Status(fmt.Sprintf("scan %s: no match", m.code), StatusWarn)
 		default:
-			statusCmd = Status(fmt.Sprintf("scan %s → %s #%d", m.code, m.result.Type, m.result.ID), StatusOK)
+			cmd := s.navigateToResult(m.result)
+			if cmd == nil {
+				return s, Status(fmt.Sprintf("scan %s → %s #%d", m.code, m.result.Type, m.result.ID), StatusOK)
+			}
+			return s, tea.Batch(
+				Status(fmt.Sprintf("scan %s → %s #%d", m.code, m.result.Type, m.result.ID), StatusOK),
+				cmd,
+			)
 		}
-		return s, statusCmd
 	}
 	return s, nil
+}
+
+func (s *ScanScreen) navigateToResult(r *omsapi.LookupResult) tea.Cmd {
+	switch r.Type {
+	case "item":
+		return SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, fmt.Sprintf("%d", r.ID)))
+	}
+	return nil
 }
 
 func (s *ScanScreen) lookup(code string) tea.Cmd {

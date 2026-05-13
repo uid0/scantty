@@ -13,6 +13,7 @@ import (
 type listScreenSpec struct {
 	kind   string
 	loader func(ctx context.Context, deps Deps) ([]listRow, error)
+	detail func(id string, deps Deps) Screen
 }
 
 type listRow struct {
@@ -91,9 +92,36 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "r":
 			s.loading = true
 			return s, s.Init()
+		case "enter":
+			if s.spec.detail == nil || s.cursor >= len(s.rows) {
+				return s, nil
+			}
+			next := s.spec.detail(s.rows[s.cursor].ID, s.deps)
+			if next == nil {
+				return s, nil
+			}
+			return s, SwitchTo(workspaceForKind(s.spec.kind), next)
 		}
 	}
 	return s, nil
+}
+
+func workspaceForKind(kind string) Workspace {
+	switch kind {
+	case "inventory_items":
+		return WSInventory
+	case "assets":
+		return WSAssets
+	case "purchase_orders":
+		return WSPurchasing
+	case "work_orders":
+		return WSMaintenance
+	case "sigs":
+		return WSSIGs
+	case "fk_devices":
+		return WSForgeKey
+	}
+	return WSDashboard
 }
 
 func (s *ListScreen) View() string {
@@ -129,7 +157,11 @@ func (s *ListScreen) View() string {
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · g/G top/bottom · r refresh"))
+	hint := "j/k move · g/G top/bottom · r refresh"
+	if s.spec.detail != nil {
+		hint += " · enter open"
+	}
+	b.WriteString(StyleMuted.Render(hint))
 	return b.String()
 }
 
