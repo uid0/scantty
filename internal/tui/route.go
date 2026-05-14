@@ -26,7 +26,10 @@ type WorkspaceMeta struct {
 }
 
 const (
-	WSLogin Workspace = "login"
+	WSLogin         Workspace = "login"
+	WSProfile       Workspace = "profile"
+	WSAuthorizations Workspace = "authorizations"
+	WSLockouts      Workspace = "lockouts"
 )
 
 func Workspaces() []WorkspaceMeta {

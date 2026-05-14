@@ -33,6 +33,11 @@ func (s *WelcomeScreen) View() string {
 		"  [9] ForgeKey     — devices, authorizations",
 		"  [s] Settings",
 		"",
+		"  Ctrl+K or /     — global search palette",
+		"  m               — your member profile",
+		"  a               — ForgeKey authorizations (revoke)",
+		"  l               — ForgeKey lockouts (hierarchical unlock)",
+		"",
 		StyleMuted.Render("Press `q` on this screen, or Ctrl+C anywhere, to quit."),
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)

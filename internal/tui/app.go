@@ -70,6 +70,23 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.screen = NewSearchPalette(r.deps)
 				return r, r.screen.Init()
 			}
+		case "m":
+			if _, ok := r.screen.(*ProfileScreen); !ok {
+				r.screen = NewProfileScreen(r.deps)
+				return r, r.screen.Init()
+			}
+		case "a":
+			if _, ok := r.screen.(*AuthorizationsScreen); !ok {
+				r.screen = NewAuthorizationsScreen(r.deps)
+				r.nav.SetActive(WSForgeKey)
+				return r, r.screen.Init()
+			}
+		case "l":
+			if _, ok := r.screen.(*LockoutsScreen); !ok {
+				r.screen = NewLockoutsScreen(r.deps)
+				r.nav.SetActive(WSForgeKey)
+				return r, r.screen.Init()
+			}
 		case "q":
 			if _, ok := r.screen.(*WelcomeScreen); ok {
 				return r, tea.Quit
