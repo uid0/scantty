@@ -65,6 +65,11 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.String() {
 		case "ctrl+c", "ctrl+q":
 			return r, tea.Quit
+		case "ctrl+k", "/":
+			if _, ok := r.screen.(*SearchPalette); !ok {
+				r.screen = NewSearchPalette(r.deps)
+				return r, r.screen.Init()
+			}
 		case "q":
 			if _, ok := r.screen.(*WelcomeScreen); ok {
 				return r, tea.Quit
@@ -159,7 +164,11 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 	case WSReports:
 		return NewListScreen(deps, "Reports", listScreenSpec{kind: "reports"})
 	case WSForgeKey:
-		return NewListScreen(deps, "ForgeKey Devices", listScreenSpec{kind: "fk_devices", loader: loadForgeKeyDevices})
+		return NewListScreen(deps, "ForgeKey Devices", listScreenSpec{
+			kind:   "fk_devices",
+			loader: loadForgeKeyDevices,
+			detail: func(id string, d Deps) Screen { return NewForgeKeyDeviceDetailScreen(d, id) },
+		})
 	case WSSettings:
 		return NewSettingsScreen(deps)
 	}
