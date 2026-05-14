@@ -63,7 +63,76 @@ func (c *Cache) init() error {
 			attempts    INTEGER NOT NULL DEFAULT 0,
 			last_error  TEXT
 		);
+
+		CREATE TABLE IF NOT EXISTS sessions (
+			base_url      TEXT PRIMARY KEY,
+			username      TEXT NOT NULL,
+			access_token  TEXT NOT NULL,
+			refresh_token TEXT NOT NULL,
+			is_staff      INTEGER NOT NULL DEFAULT 0,
+			is_superuser  INTEGER NOT NULL DEFAULT 0,
+			saved_at      INTEGER NOT NULL
+		);
 	`)
+	return err
+}
+
+type Session struct {
+	BaseURL      string
+	Username     string
+	AccessToken  string
+	RefreshToken string
+	IsStaff      bool
+	IsSuperuser  bool
+	SavedAt      time.Time
+}
+
+func (c *Cache) SaveSession(s Session) error {
+	staff := 0
+	if s.IsStaff {
+		staff = 1
+	}
+	super := 0
+	if s.IsSuperuser {
+		super = 1
+	}
+	_, err := c.db.Exec(
+		`INSERT INTO sessions (base_url, username, access_token, refresh_token, is_staff, is_superuser, saved_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(base_url) DO UPDATE SET
+			 username=excluded.username,
+			 access_token=excluded.access_token,
+			 refresh_token=excluded.refresh_token,
+			 is_staff=excluded.is_staff,
+			 is_superuser=excluded.is_superuser,
+			 saved_at=excluded.saved_at`,
+		s.BaseURL, s.Username, s.AccessToken, s.RefreshToken, staff, super, time.Now().Unix(),
+	)
+	return err
+}
+
+func (c *Cache) LoadSession(baseURL string) (*Session, error) {
+	var s Session
+	var staff, super int
+	var saved int64
+	err := c.db.QueryRow(
+		`SELECT base_url, username, access_token, refresh_token, is_staff, is_superuser, saved_at
+		 FROM sessions WHERE base_url = ?`, baseURL,
+	).Scan(&s.BaseURL, &s.Username, &s.AccessToken, &s.RefreshToken, &staff, &super, &saved)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	s.IsStaff = staff == 1
+	s.IsSuperuser = super == 1
+	s.SavedAt = time.Unix(saved, 0)
+	return &s, nil
+}
+
+func (c *Cache) ClearSession(baseURL string) error {
+	_, err := c.db.Exec(`DELETE FROM sessions WHERE base_url = ?`, baseURL)
 	return err
 }
 

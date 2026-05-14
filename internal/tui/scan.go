@@ -23,15 +23,17 @@ type scanResult struct {
 	Code      string
 	Kind      scanner.Kind
 	Lookup    *omsapi.LookupResult
+	URLTarget *scanner.URLTarget
 	Err       string
 	Timestamp time.Time
 }
 
 type scanLookupMsg struct {
-	code   string
-	result *omsapi.LookupResult
-	kind   scanner.Kind
-	err    error
+	code      string
+	result    *omsapi.LookupResult
+	urlTarget *scanner.URLTarget
+	kind      scanner.Kind
+	err       error
 }
 
 func NewScanScreen(deps Deps) *ScanScreen { return &ScanScreen{deps: deps} }
@@ -66,6 +68,7 @@ func (s *ScanScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			Code:      m.code,
 			Kind:      m.kind,
 			Lookup:    m.result,
+			URLTarget: m.urlTarget,
 			Timestamp: time.Now(),
 		}
 		if m.err != nil {
@@ -78,6 +81,13 @@ func (s *ScanScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		switch {
 		case m.err != nil:
 			return s, Status(fmt.Sprintf("scan %s: %s", m.code, m.err.Error()), StatusError)
+		case m.urlTarget != nil:
+			cmd := s.navigateToURL(m.urlTarget)
+			label := fmt.Sprintf("scan url → %s %s", m.urlTarget.Kind, m.urlTarget.ResourceID)
+			if cmd == nil {
+				return s, Status(label+" (no detail screen yet)", StatusWarn)
+			}
+			return s, tea.Batch(Status(label, StatusOK), cmd)
 		case m.result == nil:
 			return s, Status(fmt.Sprintf("scan %s: no match", m.code), StatusWarn)
 		default:
@@ -98,6 +108,24 @@ func (s *ScanScreen) navigateToResult(r *omsapi.LookupResult) tea.Cmd {
 	switch r.Type {
 	case "item":
 		return SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, fmt.Sprintf("%d", r.ID)))
+	case "asset":
+		return SwitchTo(WSAssets, NewAssetDetailScreen(s.deps, fmt.Sprintf("%d", r.ID)))
+	case "work_order":
+		return SwitchTo(WSMaintenance, NewWorkOrderDetailScreen(s.deps, fmt.Sprintf("%d", r.ID)))
+	}
+	return nil
+}
+
+func (s *ScanScreen) navigateToURL(target *scanner.URLTarget) tea.Cmd {
+	switch target.Kind {
+	case "item", "code":
+		return SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, target.ResourceID))
+	case "asset":
+		return SwitchTo(WSAssets, NewAssetDetailScreen(s.deps, target.ResourceID))
+	case "work_order":
+		return SwitchTo(WSMaintenance, NewWorkOrderDetailScreen(s.deps, target.ResourceID))
+	case "purchase_order":
+		return SwitchTo(WSPurchasing, NewPurchaseOrderDetailScreen(s.deps, target.ResourceID))
 	}
 	return nil
 }
@@ -111,6 +139,13 @@ func (s *ScanScreen) lookup(code string) tea.Cmd {
 		ctx = context.Background()
 	}
 	return func() tea.Msg {
+		if kind == scanner.KindOMSURL {
+			target, err := scanner.ParseOMSURL(code)
+			if err != nil {
+				return scanLookupMsg{code: code, kind: kind, err: err}
+			}
+			return scanLookupMsg{code: code, kind: kind, urlTarget: target}
+		}
 		if kind == scanner.KindForgeKeyBadge {
 			return scanLookupMsg{
 				code: code,

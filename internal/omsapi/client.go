@@ -3,6 +3,7 @@ package omsapi
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,6 +60,56 @@ func (c *Client) SetTokens(access, refresh string) {
 	defer c.mu.Unlock()
 	c.access = access
 	c.refresh = refresh
+}
+
+func (c *Client) RefreshToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.refresh
+}
+
+func (c *Client) BaseURL() string { return c.baseURL }
+
+type JWTClaims struct {
+	Exp         int64  `json:"exp"`
+	UserID      int    `json:"user_id"`
+	Username    string `json:"username,omitempty"`
+	IsStaff     bool   `json:"is_staff,omitempty"`
+	IsSuperuser bool   `json:"is_superuser,omitempty"`
+}
+
+func DecodeJWTClaims(token string) (*JWTClaims, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("oms: jwt: expected 3 parts, got %d", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return nil, fmt.Errorf("oms: jwt: decode payload: %w", err)
+		}
+	}
+	var claims JWTClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("oms: jwt: unmarshal: %w", err)
+	}
+	return &claims, nil
+}
+
+func (c JWTClaims) ExpiresAt() time.Time {
+	if c.Exp == 0 {
+		return time.Time{}
+	}
+	return time.Unix(c.Exp, 0)
+}
+
+func (c JWTClaims) IsExpired(skew time.Duration) bool {
+	exp := c.ExpiresAt()
+	if exp.IsZero() {
+		return false
+	}
+	return time.Now().Add(skew).After(exp)
 }
 
 type LoginResponse struct {

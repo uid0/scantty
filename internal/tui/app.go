@@ -12,10 +12,11 @@ import (
 )
 
 type Deps struct {
-	OMS      *omsapi.Client
-	ForgeKey *forgekeyapi.Client
-	Cache    *cache.Cache
-	Ctx      context.Context
+	OMS          *omsapi.Client
+	ForgeKey     *forgekeyapi.Client
+	Cache        *cache.Cache
+	Ctx          context.Context
+	InitialStaff bool
 }
 
 type Root struct {
@@ -35,7 +36,12 @@ func NewRoot(deps Deps) Root {
 		status:   NewStatusBar(),
 		navWidth: 24,
 	}
-	r.screen = NewWelcomeScreen()
+	if deps.OMS != nil && deps.OMS.AccessToken() != "" {
+		r.nav.SetStaff(deps.InitialStaff)
+		r.screen = NewWelcomeScreen()
+	} else {
+		r.screen = NewLoginScreen(deps)
+	}
 	return r
 }
 
@@ -135,11 +141,19 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 			detail: func(id string, d Deps) Screen { return NewPurchaseOrderDetailScreen(d, id) },
 		})
 	case WSAssets:
-		return NewListScreen(deps, "Assets", listScreenSpec{kind: "assets", loader: loadAssets})
+		return NewListScreen(deps, "Assets", listScreenSpec{
+			kind:   "assets",
+			loader: loadAssets,
+			detail: func(id string, d Deps) Screen { return NewAssetDetailScreen(d, id) },
+		})
 	case WSFacilities:
 		return NewListScreen(deps, "Facilities", listScreenSpec{kind: "facilities"})
 	case WSMaintenance:
-		return NewListScreen(deps, "Maintenance", listScreenSpec{kind: "work_orders", loader: loadWorkOrders})
+		return NewListScreen(deps, "Maintenance", listScreenSpec{
+			kind:   "work_orders",
+			loader: loadWorkOrders,
+			detail: func(id string, d Deps) Screen { return NewWorkOrderDetailScreen(d, id) },
+		})
 	case WSSIGs:
 		return NewListScreen(deps, "SIGs", listScreenSpec{kind: "sigs", loader: loadSIGs})
 	case WSReports:

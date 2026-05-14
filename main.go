@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -43,6 +44,27 @@ func run() error {
 		oms.SetTokens(cfg.OMS.AuthToken, "")
 	}
 
+	initialStaff := false
+	if cfg.OMS.AuthToken == "" {
+		if sess, err := c.LoadSession(cfg.OMS.BaseURL); err == nil && sess != nil {
+			oms.SetTokens(sess.AccessToken, sess.RefreshToken)
+			initialStaff = sess.IsStaff || sess.IsSuperuser
+			if claims, err := omsapi.DecodeJWTClaims(sess.AccessToken); err == nil &&
+				claims.IsExpired(30*time.Second) && sess.RefreshToken != "" {
+				if rerr := oms.Refresh(ctx); rerr != nil {
+					fmt.Fprintf(os.Stderr, "scantty: cached token refresh failed: %v\n", rerr)
+					oms.SetTokens("", "")
+					_ = c.ClearSession(cfg.OMS.BaseURL)
+					initialStaff = false
+				}
+			}
+		}
+	} else {
+		if claims, err := omsapi.DecodeJWTClaims(cfg.OMS.AuthToken); err == nil {
+			initialStaff = claims.IsStaff || claims.IsSuperuser
+		}
+	}
+
 	fk, err := forgekeyapi.New(forgekeyapi.Options{
 		BaseURL:    cfg.ForgeKey.BaseURL,
 		AuthToken:  cfg.ForgeKey.AuthToken,
@@ -56,10 +78,11 @@ func run() error {
 	}
 
 	deps := tui.Deps{
-		OMS:      oms,
-		ForgeKey: fk,
-		Cache:    c,
-		Ctx:      ctx,
+		OMS:          oms,
+		ForgeKey:     fk,
+		Cache:        c,
+		Ctx:          ctx,
+		InitialStaff: initialStaff,
 	}
 
 	p := tea.NewProgram(tui.NewRoot(deps), tea.WithAltScreen(), tea.WithContext(ctx))

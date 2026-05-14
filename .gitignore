@@ -27,3 +27,6 @@ config.local.*
 .beads/*
 !.beads/config.yaml
 !.beads/metadata.json
+
+# Claude Code / agent tooling
+.claude/

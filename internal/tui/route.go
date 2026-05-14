@@ -25,6 +25,10 @@ type WorkspaceMeta struct {
 	StaffOnly bool
 }
 
+const (
+	WSLogin Workspace = "login"
+)
+
 func Workspaces() []WorkspaceMeta {
 	return []WorkspaceMeta{
 		{WSScan, "Scan", '0', false},
