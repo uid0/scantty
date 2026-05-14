@@ -91,6 +91,8 @@ func defaultPackQty(suppliers []omsapi.ItemSupplier) int {
 
 func (s *ReorderFormScreen) Title() string { return "Request Reorder" }
 
+func (s *ReorderFormScreen) WantsRawInput() bool { return true }
+
 func (s *ReorderFormScreen) Init() tea.Cmd { return textinput.Blink }
 
 func (s *ReorderFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {

@@ -55,6 +55,14 @@ type Screen interface {
 	Title() string
 }
 
+// RawInputScreen lets a screen opt into receiving every keypress before the
+// root applies its global hotkeys. Forms, login, and the search palette
+// implement this so single-letter workspace shortcuts (m, a, l, n, o, u, f,
+// Q, D) don't steal characters from textinputs.
+type RawInputScreen interface {
+	WantsRawInput() bool
+}
+
 type SwitchScreenMsg struct {
 	Workspace Workspace
 	Screen    Screen

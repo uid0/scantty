@@ -66,9 +66,18 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return r, nil
 
 	case tea.KeyMsg:
-		switch m.String() {
-		case "ctrl+c", "ctrl+q":
+		// Quit is always available, even inside textinput forms.
+		if s := m.String(); s == "ctrl+c" || s == "ctrl+q" {
 			return r, tea.Quit
+		}
+		// Screens with active textinputs (login, forms, search palette)
+		// bypass global hotkey handling so letters reach the input.
+		if rs, ok := r.screen.(RawInputScreen); ok && rs.WantsRawInput() {
+			next, cmd := r.screen.Update(msg)
+			r.screen = next
+			return r, cmd
+		}
+		switch m.String() {
 		case "ctrl+k", "/":
 			if _, ok := r.screen.(*SearchPalette); !ok {
 				r.screen = NewSearchPalette(r.deps)

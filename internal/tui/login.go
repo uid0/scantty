@@ -50,6 +50,8 @@ func NewLoginScreen(deps Deps) *LoginScreen {
 
 func (s *LoginScreen) Title() string { return "Sign in" }
 
+func (s *LoginScreen) WantsRawInput() bool { return true }
+
 func (s *LoginScreen) Init() tea.Cmd { return textinput.Blink }
 
 func (s *LoginScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -77,6 +79,8 @@ func (s *LoginScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				return s, nil
 			}
 			return s.submit()
+		case tea.KeyEsc:
+			return s, SwitchTo(WSScan, NewWelcomeScreen())
 		}
 	}
 	var cmd tea.Cmd

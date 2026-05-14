@@ -57,6 +57,8 @@ func (s *ReceiveFormScreen) Title() string {
 	return "Receive Items"
 }
 
+func (s *ReceiveFormScreen) WantsRawInput() bool { return true }
+
 func (s *ReceiveFormScreen) Init() tea.Cmd { return textinput.Blink }
 
 func (s *ReceiveFormScreen) totalInputs() int { return len(s.qty) + 1 }

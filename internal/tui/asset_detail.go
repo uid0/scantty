@@ -52,6 +52,8 @@ func (s *AssetDetailScreen) Title() string {
 	return "Asset"
 }
 
+func (s *AssetDetailScreen) WantsRawInput() bool { return s.logging }
+
 func (s *AssetDetailScreen) Init() tea.Cmd { return s.load() }
 
 func (s *AssetDetailScreen) load() tea.Cmd {

@@ -44,6 +44,8 @@ func NewSearchPalette(deps Deps) *SearchPalette {
 
 func (s *SearchPalette) Title() string { return "Search" }
 
+func (s *SearchPalette) WantsRawInput() bool { return true }
+
 func (s *SearchPalette) Init() tea.Cmd { return textinput.Blink }
 
 func (s *SearchPalette) Update(msg tea.Msg) (Screen, tea.Cmd) {
