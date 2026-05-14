@@ -114,6 +114,12 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSForgeKey)
 				return r, r.screen.Init()
 			}
+		case "Q":
+			if _, ok := r.screen.(*ReorderQueueScreen); !ok {
+				r.screen = NewReorderQueueScreen(r.deps)
+				r.nav.SetActive(WSPurchasing)
+				return r, r.screen.Init()
+			}
 		case "q":
 			if _, ok := r.screen.(*WelcomeScreen); ok {
 				return r, tea.Quit
@@ -182,7 +188,7 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 	case WSScan:
 		return NewScanScreen(deps)
 	case WSDashboard:
-		return NewListScreen(deps, "Dashboard", listScreenSpec{kind: "dashboard"})
+		return NewDashboardScreen(deps)
 	case WSInventory:
 		return NewListScreen(deps, "Inventory", listScreenSpec{
 			kind:   "inventory_items",
@@ -210,7 +216,11 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 			detail: func(id string, d Deps) Screen { return NewWorkOrderDetailScreen(d, id) },
 		})
 	case WSSIGs:
-		return NewListScreen(deps, "SIGs", listScreenSpec{kind: "sigs", loader: loadSIGs})
+		return NewListScreen(deps, "SIGs", listScreenSpec{
+			kind:   "sigs",
+			loader: loadSIGs,
+			detail: func(id string, d Deps) Screen { return NewSIGDetailScreen(d, id) },
+		})
 	case WSReports:
 		return NewListScreen(deps, "Reports", listScreenSpec{kind: "reports"})
 	case WSForgeKey:

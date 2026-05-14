@@ -41,6 +41,7 @@ func (s *WelcomeScreen) View() string {
 		"  o               — operational modes (toggle classroom mode)",
 		"  u               — usage sessions (end active)",
 		"  f               — firmware versions + recent updates",
+		"  Q               — pending reorder request queue",
 		"",
 		StyleMuted.Render("Press `q` on this screen, or Ctrl+C anywhere, to quit."),
 	}
