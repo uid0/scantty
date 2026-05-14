@@ -42,6 +42,7 @@ func (s *WelcomeScreen) View() string {
 		"  u               — usage sessions (end active)",
 		"  f               — firmware versions + recent updates",
 		"  Q               — pending reorder request queue",
+		"  D               — donations log",
 		"",
 		StyleMuted.Render("Press `q` on this screen, or Ctrl+C anywhere, to quit."),
 	}

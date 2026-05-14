@@ -120,6 +120,11 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSPurchasing)
 				return r, r.screen.Init()
 			}
+		case "D":
+			if _, ok := r.screen.(*DonationsScreen); !ok {
+				r.screen = NewDonationsScreen(r.deps)
+				return r, r.screen.Init()
+			}
 		case "q":
 			if _, ok := r.screen.(*WelcomeScreen); ok {
 				return r, tea.Quit

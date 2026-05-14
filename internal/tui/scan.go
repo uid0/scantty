@@ -128,6 +128,12 @@ func (s *ScanScreen) navigateToURL(target *scanner.URLTarget) tea.Cmd {
 		return SwitchTo(WSPurchasing, NewPurchaseOrderDetailScreen(s.deps, target.ResourceID))
 	case "forgekey_device":
 		return SwitchTo(WSForgeKey, NewForgeKeyDeviceDetailScreen(s.deps, target.ResourceID))
+	case "location":
+		return SwitchTo(WSInventory, NewLocationDetailScreen(s.deps, target.ResourceID))
+	case "supplier":
+		return SwitchTo(WSInventory, NewSupplierDetailScreen(s.deps, target.ResourceID))
+	case "sig":
+		return SwitchTo(WSSIGs, NewSIGDetailScreen(s.deps, target.ResourceID))
 	}
 	return nil
 }

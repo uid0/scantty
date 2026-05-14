@@ -137,6 +137,12 @@ func (s *SearchPalette) openSelected() (Screen, tea.Cmd) {
 		return s, SwitchTo(WSPurchasing, NewPurchaseOrderDetailScreen(s.deps, id))
 	case "work_order":
 		return s, SwitchTo(WSMaintenance, NewWorkOrderDetailScreen(s.deps, id))
+	case "location":
+		return s, SwitchTo(WSInventory, NewLocationDetailScreen(s.deps, id))
+	case "supplier":
+		return s, SwitchTo(WSInventory, NewSupplierDetailScreen(s.deps, id))
+	case "sig":
+		return s, SwitchTo(WSSIGs, NewSIGDetailScreen(s.deps, id))
 	}
 	return s, Status(fmt.Sprintf("%s #%d (no detail screen yet)", r.Type, r.ID), StatusWarn)
 }
