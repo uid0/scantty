@@ -96,6 +96,24 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.screen = NewNotificationsScreen(r.deps)
 				return r, r.screen.Init()
 			}
+		case "o":
+			if _, ok := r.screen.(*OperationalModesScreen); !ok {
+				r.screen = NewOperationalModesScreen(r.deps)
+				r.nav.SetActive(WSForgeKey)
+				return r, r.screen.Init()
+			}
+		case "u":
+			if _, ok := r.screen.(*UsageScreen); !ok {
+				r.screen = NewUsageScreen(r.deps)
+				r.nav.SetActive(WSForgeKey)
+				return r, r.screen.Init()
+			}
+		case "f":
+			if _, ok := r.screen.(*FirmwareScreen); !ok {
+				r.screen = NewFirmwareScreen(r.deps)
+				r.nav.SetActive(WSForgeKey)
+				return r, r.screen.Init()
+			}
 		case "q":
 			if _, ok := r.screen.(*WelcomeScreen); ok {
 				return r, tea.Quit

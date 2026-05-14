@@ -38,6 +38,9 @@ func (s *WelcomeScreen) View() string {
 		"  n               — notifications (poll runs every 60s)",
 		"  a               — ForgeKey authorizations (revoke)",
 		"  l               — ForgeKey lockouts (hierarchical unlock)",
+		"  o               — operational modes (toggle classroom mode)",
+		"  u               — usage sessions (end active)",
+		"  f               — firmware versions + recent updates",
 		"",
 		StyleMuted.Render("Press `q` on this screen, or Ctrl+C anywhere, to quit."),
 	}
