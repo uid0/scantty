@@ -11,6 +11,7 @@ type StatusBar struct {
 	connOMS   bool
 	connFK    bool
 	scanner   string
+	unread    int
 	message   string
 	msgLevel  StatusLevel
 	msgExpiry time.Time
@@ -24,6 +25,7 @@ func (s *StatusBar) SetWidth(w int)            { s.width = w }
 func (s *StatusBar) SetOMSConn(ok bool)        { s.connOMS = ok }
 func (s *StatusBar) SetForgeKeyConn(ok bool)   { s.connFK = ok }
 func (s *StatusBar) SetScanner(state string)   { s.scanner = state }
+func (s *StatusBar) SetUnread(n int)           { s.unread = n }
 
 func (s *StatusBar) Flash(text string, level StatusLevel, ttl time.Duration) {
 	s.message = text
@@ -42,11 +44,15 @@ func conn(name string, ok bool) string {
 }
 
 func (s StatusBar) View() string {
-	left := strings.Join([]string{
+	parts := []string{
 		conn("OMS", s.connOMS),
 		conn("FK", s.connFK),
 		StyleStatusInfo.Render(fmt.Sprintf("scanner: %s", s.scanner)),
-	}, "  ")
+	}
+	if s.unread > 0 {
+		parts = append(parts, StyleStatusWarn.Render(fmt.Sprintf("📬 %d unread", s.unread)))
+	}
+	left := strings.Join(parts, "  ")
 
 	right := ""
 	if s.message != "" && time.Now().Before(s.msgExpiry) {

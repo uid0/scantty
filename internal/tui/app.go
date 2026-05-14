@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -50,6 +51,9 @@ func (r Root) Init() tea.Cmd {
 		r.screen.Init(),
 		Status("welcome — press / to scan, 1-9 to switch", StatusInfo),
 	}
+	if poll := PollNotifications(r.deps, 60*time.Second); poll != nil {
+		cmds = append(cmds, poll)
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -87,6 +91,11 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSForgeKey)
 				return r, r.screen.Init()
 			}
+		case "n":
+			if _, ok := r.screen.(*NotificationsScreen); !ok {
+				r.screen = NewNotificationsScreen(r.deps)
+				return r, r.screen.Init()
+			}
 		case "q":
 			if _, ok := r.screen.(*WelcomeScreen); ok {
 				return r, tea.Quit
@@ -115,6 +124,12 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StatusMsg:
 		r.status.Flash(m.Text, m.Level, 0)
 		return r, nil
+
+	case NotificationPollMsg:
+		if m.err == nil {
+			r.status.SetUnread(len(m.rows))
+		}
+		return r, PollNotifications(r.deps, 60*time.Second)
 	}
 
 	next, cmd := r.screen.Update(msg)

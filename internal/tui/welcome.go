@@ -35,6 +35,7 @@ func (s *WelcomeScreen) View() string {
 		"",
 		"  Ctrl+K or /     — global search palette",
 		"  m               — your member profile",
+		"  n               — notifications (poll runs every 60s)",
 		"  a               — ForgeKey authorizations (revoke)",
 		"  l               — ForgeKey lockouts (hierarchical unlock)",
 		"",
