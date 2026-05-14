@@ -64,28 +64,31 @@ func (c *Client) ScanItem(ctx context.Context, id int) (*Item, error) {
 }
 
 type Asset struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Location    *int   `json:"location,omitempty"`
-	Status      string `json:"status,omitempty"`
+	ID           any    `json:"id"`
+	Name         string `json:"name"`
+	AssetTag     string `json:"asset_tag,omitempty"`
+	Description  string `json:"description,omitempty"`
+	Location     *int   `json:"location,omitempty"`
+	LocationName string `json:"location_name,omitempty"`
+	Status       string `json:"status,omitempty"`
+	IsCritical   bool   `json:"is_critical,omitempty"`
 }
 
 func (c *Client) ListAssets(ctx context.Context, q url.Values) (*Page[Asset], error) {
 	return GetPage[Asset](ctx, c, "/api/inventory/assets/", q)
 }
 
-func (c *Client) GetAsset(ctx context.Context, id int) (*Asset, error) {
+func (c *Client) GetAsset(ctx context.Context, id string) (*Asset, error) {
 	var out Asset
-	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/assets/%d/", id), nil, &out); err != nil {
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/assets/%s/", id), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (c *Client) ScanAsset(ctx context.Context, id int) (*Asset, error) {
+func (c *Client) ScanAsset(ctx context.Context, id string) (*Asset, error) {
 	var out Asset
-	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/assets/%d/scan/", id), nil, &out); err != nil {
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/assets/%s/scan/", id), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
