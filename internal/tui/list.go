@@ -195,7 +195,7 @@ func loadAssets(ctx context.Context, deps Deps) ([]listRow, error) {
 	rows := make([]listRow, 0, len(page.Results))
 	for _, a := range page.Results {
 		rows = append(rows, listRow{
-			ID:       fmt.Sprintf("%d", a.ID),
+			ID:       fmt.Sprint(a.ID),
 			Title:    a.Name,
 			Subtitle: a.Description,
 			Tag:      a.Status,
@@ -233,7 +233,7 @@ func loadWorkOrders(ctx context.Context, deps Deps) ([]listRow, error) {
 	rows := make([]listRow, 0, len(page.Results))
 	for _, wo := range page.Results {
 		rows = append(rows, listRow{
-			ID:       fmt.Sprintf("%d", wo.ID),
+			ID:       fmt.Sprint(wo.ID),
 			Title:    wo.Title,
 			Subtitle: wo.AssetName,
 			Tag:      wo.Status,

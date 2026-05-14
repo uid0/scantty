@@ -129,7 +129,7 @@ func (s *SearchPalette) openSelected() (Screen, tea.Cmd) {
 		return s, nil
 	}
 	r := s.results[s.cursor]
-	id := fmt.Sprintf("%d", r.ID)
+	id := fmt.Sprint(r.ID)
 	switch r.Type {
 	case "item":
 		return s, SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, id))
@@ -146,7 +146,7 @@ func (s *SearchPalette) openSelected() (Screen, tea.Cmd) {
 	case "sig":
 		return s, SwitchTo(WSSIGs, NewSIGDetailScreen(s.deps, id))
 	}
-	return s, Status(fmt.Sprintf("%s #%d (no detail screen yet)", r.Type, r.ID), StatusWarn)
+	return s, Status(fmt.Sprintf("%s %v (no detail screen yet)", r.Type, r.ID), StatusWarn)
 }
 
 func (s *SearchPalette) View() string {

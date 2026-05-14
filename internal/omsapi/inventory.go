@@ -9,7 +9,7 @@ import (
 
 type LookupResult struct {
 	Type     string `json:"type"`
-	ID       int    `json:"id"`
+	ID       any    `json:"id"`
 	Name     string `json:"name"`
 	SKU      string `json:"sku,omitempty"`
 	Location string `json:"location,omitempty"`

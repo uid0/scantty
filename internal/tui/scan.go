@@ -92,26 +92,25 @@ func (s *ScanScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, Status(fmt.Sprintf("scan %s: no match", m.code), StatusWarn)
 		default:
 			cmd := s.navigateToResult(m.result)
+			label := fmt.Sprintf("scan %s → %s %v", m.code, m.result.Type, m.result.ID)
 			if cmd == nil {
-				return s, Status(fmt.Sprintf("scan %s → %s #%d", m.code, m.result.Type, m.result.ID), StatusOK)
+				return s, Status(label, StatusOK)
 			}
-			return s, tea.Batch(
-				Status(fmt.Sprintf("scan %s → %s #%d", m.code, m.result.Type, m.result.ID), StatusOK),
-				cmd,
-			)
+			return s, tea.Batch(Status(label, StatusOK), cmd)
 		}
 	}
 	return s, nil
 }
 
 func (s *ScanScreen) navigateToResult(r *omsapi.LookupResult) tea.Cmd {
+	id := fmt.Sprint(r.ID)
 	switch r.Type {
 	case "item":
-		return SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, fmt.Sprintf("%d", r.ID)))
+		return SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, id))
 	case "asset":
-		return SwitchTo(WSAssets, NewAssetDetailScreen(s.deps, fmt.Sprintf("%d", r.ID)))
+		return SwitchTo(WSAssets, NewAssetDetailScreen(s.deps, id))
 	case "work_order":
-		return SwitchTo(WSMaintenance, NewWorkOrderDetailScreen(s.deps, fmt.Sprintf("%d", r.ID)))
+		return SwitchTo(WSMaintenance, NewWorkOrderDetailScreen(s.deps, id))
 	}
 	return nil
 }
