@@ -213,10 +213,10 @@ func loadPurchaseOrders(ctx context.Context, deps Deps) ([]listRow, error) {
 	for _, po := range page.Results {
 		title := po.Number
 		if title == "" {
-			title = fmt.Sprintf("PO #%d", po.ID)
+			title = fmt.Sprintf("PO #%v", po.ID)
 		}
 		rows = append(rows, listRow{
-			ID:       fmt.Sprintf("%d", po.ID),
+			ID:       fmt.Sprint(po.ID),
 			Title:    title,
 			Subtitle: fmt.Sprintf("%.2f %s", po.Total, po.Currency),
 			Tag:      po.Status,
@@ -277,7 +277,7 @@ func forgekeyDeviceRows(devices []forgekeyapi.Device) []listRow {
 		rows = append(rows, listRow{
 			ID:       fmt.Sprint(d.ID),
 			Title:    d.Name,
-			Subtitle: fmt.Sprintf("%s · %s · %s", d.DeviceType, d.MACAddress, d.Location),
+			Subtitle: fmt.Sprintf("%v · %s · %s", d.DeviceType, d.MACAddress, d.Location),
 			Tag:      tag,
 		})
 	}

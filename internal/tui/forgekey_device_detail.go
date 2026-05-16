@@ -141,7 +141,7 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 		b.WriteString(StyleStatusError.Render("○ offline"))
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("ID %v · %s · MAC %s", d.ID, d.DeviceType, d.MACAddress)) + "\n\n")
+	b.WriteString(StyleMuted.Render(fmt.Sprintf("ID %v · %v · MAC %s", d.ID, d.DeviceType, d.MACAddress)) + "\n\n")
 
 	if d.Description != "" {
 		b.WriteString(d.Description + "\n\n")

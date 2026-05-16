@@ -10,7 +10,7 @@ import (
 type Device struct {
 	ID              any       `json:"id"`
 	MACAddress      string    `json:"mac_address"`
-	DeviceType      string    `json:"device_type"`
+	DeviceType      any       `json:"device_type"`
 	Name            string    `json:"name"`
 	Description     string    `json:"description,omitempty"`
 	Location        string    `json:"location,omitempty"`

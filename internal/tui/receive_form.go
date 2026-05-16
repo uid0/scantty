@@ -15,7 +15,7 @@ import (
 type ReceiveFormScreen struct {
 	deps    Deps
 	po      *omsapi.PurchaseOrder
-	lines   []omsapi.ItemSupplier
+	lines   []omsapi.PurchaseOrderItem
 	qty     []textinput.Model
 	notes   textinput.Model
 	focused int
@@ -29,7 +29,22 @@ type receiveSubmittedMsg struct {
 	err     error
 }
 
-func NewReceiveFormScreen(deps Deps, po *omsapi.PurchaseOrder, lines []omsapi.ItemSupplier) *ReceiveFormScreen {
+func NewReceiveFormScreen(deps Deps, po *omsapi.PurchaseOrder) *ReceiveFormScreen {
+	// Build the editable line list from the PO's items. Skip voided lines
+	// and fully-received lines (no qty pending) so the form stays focused
+	// on what's actually receivable.
+	var lines []omsapi.PurchaseOrderItem
+	if po != nil {
+		for _, li := range po.Items {
+			if li.IsVoided {
+				continue
+			}
+			if li.IsFullyReceived && li.QuantityPending == 0 {
+				continue
+			}
+			lines = append(lines, li)
+		}
+	}
 	s := &ReceiveFormScreen{deps: deps, po: po, lines: lines}
 	for range lines {
 		ti := textinput.New()
@@ -79,7 +94,7 @@ func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.level = StatusError
 			return s, Status(s.result, StatusError)
 		}
-		s.result = fmt.Sprintf("receipt #%d created", m.receipt.ID)
+		s.result = fmt.Sprintf("receipt %v created", m.receipt.ID)
 		s.level = StatusOK
 		return s, Status(s.result, StatusOK)
 	case tea.KeyMsg:
@@ -94,7 +109,7 @@ func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			}
 			return s.submit()
 		case tea.KeyEsc:
-			return s, SwitchTo(WSPurchasing, NewPurchaseOrderDetailScreen(s.deps, strconv.Itoa(s.po.ID)))
+			return s, SwitchTo(WSPurchasing, NewPurchaseOrderDetailScreen(s.deps, fmt.Sprint(s.po.ID)))
 		}
 	}
 	var cmd tea.Cmd
@@ -135,7 +150,12 @@ func (s *ReceiveFormScreen) submit() (Screen, tea.Cmd) {
 		if qty == 0 {
 			continue
 		}
-		items = append(items, omsapi.ReceiptLine{ItemSupplier: s.lines[i].ID, QtyReceived: qty})
+		line := s.lines[i]
+		items = append(items, omsapi.ReceiptLine{
+			PurchaseOrderItem: line.ID,
+			ItemSupplier:      line.ItemSupplier,
+			QtyReceived:       qty,
+		})
 	}
 	if len(items) == 0 {
 		s.result = "no quantities entered"
@@ -163,11 +183,11 @@ func (s *ReceiveFormScreen) View() string {
 	var b strings.Builder
 	header := s.po.Number
 	if header == "" {
-		header = fmt.Sprintf("PO #%d", s.po.ID)
+		header = fmt.Sprintf("PO #%v", s.po.ID)
 	}
 	b.WriteString(StyleTitle.Render("Receive items into "+header) + "\n\n")
 	if len(s.qty) == 0 {
-		b.WriteString(StyleMuted.Render("No supplier lines visible for this PO. Enter free-text receipt notes only.") + "\n\n")
+		b.WriteString(StyleMuted.Render("No receivable lines on this PO.") + "\n\n")
 	} else {
 		for i, ti := range s.qty {
 			caret := "  "
@@ -175,7 +195,13 @@ func (s *ReceiveFormScreen) View() string {
 				caret = "▸ "
 			}
 			line := s.lines[i]
-			b.WriteString(fmt.Sprintf("%sitem %d · sku %s · pack %d\n", caret, line.Item, line.SupplierSKU, line.PackQuantity))
+			label := line.DisplayLabel()
+			b.WriteString(fmt.Sprintf("%s%s\n", caret, label))
+			meta := fmt.Sprintf("    ordered %d · received %d", line.QuantityOrdered, line.QuantityReceived)
+			if line.QuantityPending > 0 {
+				meta += fmt.Sprintf(" · pending %d", line.QuantityPending)
+			}
+			b.WriteString(StyleMuted.Render(meta) + "\n")
 			b.WriteString("    qty received: " + ti.View() + "\n\n")
 		}
 	}

@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,53 +12,38 @@ import (
 
 type PurchaseOrderDetailScreen struct {
 	deps    Deps
-	poID    int
+	poID    string
 	po      *omsapi.PurchaseOrder
-	lines   []omsapi.ItemSupplier
 	loading bool
 	loadErr string
 }
 
 type poDetailLoadedMsg struct {
-	po    *omsapi.PurchaseOrder
-	lines []omsapi.ItemSupplier
-	err   error
+	po  *omsapi.PurchaseOrder
+	err error
 }
 
 func NewPurchaseOrderDetailScreen(deps Deps, id string) *PurchaseOrderDetailScreen {
-	poID, _ := strconv.Atoi(id)
-	return &PurchaseOrderDetailScreen{deps: deps, poID: poID, loading: true}
+	return &PurchaseOrderDetailScreen{deps: deps, poID: id, loading: true}
 }
 
 func (s *PurchaseOrderDetailScreen) Title() string {
 	if s.po != nil && s.po.Number != "" {
 		return fmt.Sprintf("PO %s", s.po.Number)
 	}
-	return fmt.Sprintf("PO #%d", s.poID)
+	return fmt.Sprintf("PO #%s", s.poID)
 }
 
 func (s *PurchaseOrderDetailScreen) Init() tea.Cmd {
 	deps := s.deps
-	poID := s.poID
+	id := s.poID
 	ctx := deps.Ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	return func() tea.Msg {
-		po, err := deps.OMS.GetPurchaseOrder(ctx, poID)
-		if err != nil {
-			return poDetailLoadedMsg{err: err}
-		}
-		page, _ := deps.OMS.ListItemSuppliers(ctx, nil)
-		var lines []omsapi.ItemSupplier
-		if page != nil {
-			for _, is := range page.Results {
-				if is.Supplier == po.Supplier {
-					lines = append(lines, is)
-				}
-			}
-		}
-		return poDetailLoadedMsg{po: po, lines: lines}
+		po, err := deps.OMS.GetPurchaseOrder(ctx, id)
+		return poDetailLoadedMsg{po: po, err: err}
 	}
 }
 
@@ -71,7 +55,6 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loadErr = m.err.Error()
 		}
 		s.po = m.po
-		s.lines = m.lines
 		return s, nil
 	case tea.KeyMsg:
 		switch m.String() {
@@ -81,7 +64,7 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, s.Init()
 		case "R", "enter":
 			if s.po != nil {
-				return s, SwitchTo(WSPurchasing, NewReceiveFormScreen(s.deps, s.po, s.lines))
+				return s, SwitchTo(WSPurchasing, NewReceiveFormScreen(s.deps, s.po))
 			}
 		}
 	}
@@ -93,39 +76,86 @@ func (s *PurchaseOrderDetailScreen) View() string {
 		return StyleMuted.Render("Loading purchase order…")
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry")
+		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry · esc back")
 	}
 	if s.po == nil {
 		return StyleMuted.Render("Purchase order not found.")
 	}
+	po := s.po
 	var b strings.Builder
-	header := s.po.Number
+	header := po.Number
 	if header == "" {
-		header = fmt.Sprintf("PO #%d", s.po.ID)
+		header = fmt.Sprintf("PO #%v", po.ID)
 	}
 	b.WriteString(StyleTitle.Render(header) + "\n")
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("Supplier %d · Status: %s", s.po.Supplier, s.po.Status)) + "\n")
-	if s.po.Total > 0 {
-		b.WriteString(fmt.Sprintf("Total: %.2f %s\n", s.po.Total, s.po.Currency))
+	supplier := po.SupplierName
+	if supplier == "" {
+		supplier = fmt.Sprintf("supplier %v", po.Supplier)
 	}
-	if !s.po.CreatedAt.IsZero() {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("Created %s", s.po.CreatedAt.Format("2006-01-02"))) + "\n")
+	b.WriteString(StyleMuted.Render(fmt.Sprintf("%s · Status: %s", supplier, po.Status)) + "\n")
+	if po.Total > 0 {
+		curr := po.Currency
+		if curr == "" {
+			curr = "USD"
+		}
+		b.WriteString(fmt.Sprintf("Total: $%.2f %s\n", po.Total, curr))
+	}
+	if !po.OrderDate.IsZero() {
+		b.WriteString(StyleMuted.Render("Ordered: "+po.OrderDate.Format("2006-01-02")) + "\n")
+	}
+	if po.ExpectedDeliveryDate != "" {
+		b.WriteString(StyleMuted.Render("Expected: "+po.ExpectedDeliveryDate) + "\n")
+	}
+	if po.Notes != "" {
+		b.WriteString("\n" + po.Notes + "\n")
 	}
 	b.WriteString("\n")
-	if len(s.lines) > 0 {
-		b.WriteString(StyleTitle.Render("Line items (supplier offerings)") + "\n")
-		for _, l := range s.lines {
-			line := fmt.Sprintf("  · item %d sku %s", l.Item, l.SupplierSKU)
-			if l.PackQuantity > 0 {
-				line += fmt.Sprintf(" pack %d", l.PackQuantity)
-			}
-			if l.UnitCost > 0 {
-				line += fmt.Sprintf(" $%.2f", l.UnitCost)
+
+	if len(po.Items) > 0 {
+		b.WriteString(StyleTitle.Render(fmt.Sprintf("Line items (%d)", len(po.Items))) + "\n")
+		for _, li := range po.Items {
+			label := li.DisplayLabel()
+			line := fmt.Sprintf("  · %s", label)
+			if li.QuantityOrdered > 0 {
+				line += fmt.Sprintf(" — ordered %d", li.QuantityOrdered)
+				if li.QuantityReceived > 0 {
+					line += fmt.Sprintf(", received %d", li.QuantityReceived)
+				}
+				if li.QuantityPending > 0 && li.QuantityPending != li.QuantityOrdered {
+					line += " " + StyleStatusWarn.Render(fmt.Sprintf("(%d pending)", li.QuantityPending))
+				}
+				if li.IsFullyReceived {
+					line += " " + StyleStatusOK.Render("✓")
+				}
 			}
 			b.WriteString(line + "\n")
+			meta := []string{}
+			if li.UnitCostOrdered != "" {
+				meta = append(meta, "@ $"+li.UnitCostOrdered)
+			}
+			if li.ActualCost != "" {
+				meta = append(meta, "actual $"+li.ActualCost)
+			} else if li.EstimatedCost != "" {
+				meta = append(meta, "est $"+li.EstimatedCost)
+			}
+			if li.SupplierDetails != "" && li.SupplierDetails != supplier {
+				meta = append(meta, li.SupplierDetails)
+			}
+			if li.IsVoided {
+				meta = append(meta, "voided")
+			}
+			if len(meta) > 0 {
+				b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
+			}
+			if li.Notes != "" {
+				b.WriteString("    " + StyleMuted.Render(li.Notes) + "\n")
+			}
 		}
 		b.WriteString("\n")
+	} else {
+		b.WriteString(StyleMuted.Render("No line items on this PO.") + "\n\n")
 	}
+
 	b.WriteString(StyleMuted.Render("R/enter receive items · r refresh · esc back"))
 	return b.String()
 }
