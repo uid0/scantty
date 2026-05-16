@@ -275,7 +275,7 @@ func forgekeyDeviceRows(devices []forgekeyapi.Device) []listRow {
 			tag = "online"
 		}
 		rows = append(rows, listRow{
-			ID:       fmt.Sprintf("%d", d.ID),
+			ID:       fmt.Sprint(d.ID),
 			Title:    d.Name,
 			Subtitle: fmt.Sprintf("%s · %s · %s", d.DeviceType, d.MACAddress, d.Location),
 			Tag:      tag,

@@ -7,7 +7,7 @@ import (
 )
 
 type FirmwareVersion struct {
-	ID         int       `json:"id"`
+	ID         any       `json:"id"`
 	Version    string    `json:"version"`
 	DeviceType string    `json:"device_type,omitempty"`
 	IsActive   bool      `json:"is_active"`
@@ -24,10 +24,10 @@ func (c *Client) ListFirmwareVersions(ctx context.Context, q url.Values) ([]Firm
 }
 
 type FirmwareUpdate struct {
-	ID                int       `json:"id"`
-	Device            int       `json:"device"`
+	ID                any       `json:"id"`
+	Device            any       `json:"device"`
 	DeviceName        string    `json:"device_name,omitempty"`
-	FirmwareVersion   int       `json:"firmware_version"`
+	FirmwareVersion   any       `json:"firmware_version"`
 	FirmwareVersionStr string   `json:"firmware_version_str,omitempty"`
 	RequestedBy       string    `json:"requested_by,omitempty"`
 	RequestedAt       time.Time `json:"requested_at,omitempty"`

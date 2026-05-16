@@ -83,16 +83,16 @@ func (s *OperationalModesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			id := row.ID
+			id := fmt.Sprint(row.ID)
 			if row.ClassroomModeEnabled {
 				return s, func() tea.Msg {
 					err := deps.ForgeKey.DisableClassroomMode(ctx, id)
-					return fkActionResultMsg{action: fmt.Sprintf("classroom mode OFF for asset %d", row.Asset), err: err}
+					return fkActionResultMsg{action: fmt.Sprintf("classroom mode OFF for asset %v", row.Asset), err: err}
 				}
 			}
 			return s, func() tea.Msg {
 				err := deps.ForgeKey.EnableClassroomMode(ctx, id)
-				return fkActionResultMsg{action: fmt.Sprintf("classroom mode ON for asset %d", row.Asset), err: err}
+				return fkActionResultMsg{action: fmt.Sprintf("classroom mode ON for asset %v", row.Asset), err: err}
 			}
 		}
 	}
@@ -124,7 +124,7 @@ func (s *OperationalModesScreen) View() string {
 		case "CLASSROOM":
 			mode = StyleStatusWarn.Render(r.Mode)
 		}
-		title := fmt.Sprintf("%sasset %d  [%s]", caret, r.Asset, mode)
+		title := fmt.Sprintf("%sasset %v  [%s]", caret, r.Asset, mode)
 		if r.ClassroomModeEnabled {
 			title += "  " + StyleStatusWarn.Render("📚 classroom")
 		}

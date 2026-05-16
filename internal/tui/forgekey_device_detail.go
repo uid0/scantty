@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,7 +12,7 @@ import (
 
 type ForgeKeyDeviceDetailScreen struct {
 	deps     Deps
-	devID    int
+	devID    string
 	device   *forgekeyapi.Device
 	commands []forgekeyapi.DeviceCommand
 	loading  bool
@@ -33,8 +32,7 @@ type fkCommandResultMsg struct {
 }
 
 func NewForgeKeyDeviceDetailScreen(deps Deps, id string) *ForgeKeyDeviceDetailScreen {
-	devID, _ := strconv.Atoi(id)
-	return &ForgeKeyDeviceDetailScreen{deps: deps, devID: devID, loading: true}
+	return &ForgeKeyDeviceDetailScreen{deps: deps, devID: id, loading: true}
 }
 
 func (s *ForgeKeyDeviceDetailScreen) Title() string {
@@ -92,7 +90,7 @@ func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			ctx = context.Background()
 		}
 		fk := s.deps.ForgeKey
-		id := s.device.ID
+		id := fmt.Sprint(s.device.ID)
 		switch m.String() {
 		case "r":
 			s.loading = true
@@ -143,7 +141,7 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 		b.WriteString(StyleStatusError.Render("○ offline"))
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("ID %d · %s · MAC %s", d.ID, d.DeviceType, d.MACAddress)) + "\n\n")
+	b.WriteString(StyleMuted.Render(fmt.Sprintf("ID %v · %s · MAC %s", d.ID, d.DeviceType, d.MACAddress)) + "\n\n")
 
 	if d.Description != "" {
 		b.WriteString(d.Description + "\n\n")

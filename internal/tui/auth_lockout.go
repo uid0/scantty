@@ -90,10 +90,10 @@ func (s *AuthorizationsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			id := row.ID
+			id := fmt.Sprint(row.ID)
 			return s, func() tea.Msg {
 				err := deps.ForgeKey.RevokeAuthorization(ctx, id)
-				return fkActionResultMsg{action: fmt.Sprintf("revoked #%d", id), err: err}
+				return fkActionResultMsg{action: fmt.Sprintf("revoked %s", id), err: err}
 			}
 		}
 	}
@@ -120,7 +120,7 @@ func (s *AuthorizationsScreen) View() string {
 		if !r.IsActive {
 			state = StyleMuted.Render("revoked")
 		}
-		title := fmt.Sprintf("%suser %d → asset %d  [%s]", caret, r.User, r.Asset, state)
+		title := fmt.Sprintf("%suser %v → asset %v  [%s]", caret, r.User, r.Asset, state)
 		if r.UserName != "" || r.AssetName != "" {
 			title = fmt.Sprintf("%s%s → %s  [%s]", caret, r.UserName, r.AssetName, state)
 		}
@@ -205,10 +205,10 @@ func (s *LockoutsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			id := row.ID
+			id := fmt.Sprint(row.ID)
 			return s, func() tea.Msg {
 				err := deps.ForgeKey.Unlock(ctx, id)
-				return fkActionResultMsg{action: fmt.Sprintf("unlock #%d (level %s)", id, row.LockoutLevel), err: err}
+				return fkActionResultMsg{action: fmt.Sprintf("unlock %s (level %s)", id, row.LockoutLevel), err: err}
 			}
 		}
 	}
@@ -235,7 +235,7 @@ func (s *LockoutsScreen) View() string {
 		if !r.IsActive {
 			state = StyleMuted.Render("unlocked")
 		}
-		title := fmt.Sprintf("%sasset %d  [%s · %s]", caret, r.Asset, r.LockoutLevel, state)
+		title := fmt.Sprintf("%sasset %v  [%s · %s]", caret, r.Asset, r.LockoutLevel, state)
 		if r.AssetName != "" {
 			title = fmt.Sprintf("%s%s  [%s · %s]", caret, r.AssetName, r.LockoutLevel, state)
 		}

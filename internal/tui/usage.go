@@ -86,10 +86,10 @@ func (s *UsageScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			id := row.ID
+			id := fmt.Sprint(row.ID)
 			return s, func() tea.Msg {
 				err := deps.ForgeKey.EndSession(ctx, id)
-				return fkActionResultMsg{action: fmt.Sprintf("ended session %d", id), err: err}
+				return fkActionResultMsg{action: fmt.Sprintf("ended session %s", id), err: err}
 			}
 		}
 	}
@@ -127,11 +127,11 @@ func (s *UsageScreen) View() string {
 		}
 		who := r.UserName
 		if who == "" {
-			who = fmt.Sprintf("user %d", r.User)
+			who = fmt.Sprintf("user %v", r.User)
 		}
 		what := r.AssetName
 		if what == "" {
-			what = fmt.Sprintf("asset %d", r.Asset)
+			what = fmt.Sprintf("asset %v", r.Asset)
 		}
 		title := fmt.Sprintf("%s%s → %s  [%s]", caret, who, what, state)
 		if i == s.cursor {
