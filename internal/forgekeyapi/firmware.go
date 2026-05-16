@@ -16,11 +16,11 @@ type FirmwareVersion struct {
 }
 
 func (c *Client) ListFirmwareVersions(ctx context.Context, q url.Values) ([]FirmwareVersion, error) {
-	var out []FirmwareVersion
+	var out MaybeList[FirmwareVersion]
 	if err := c.Get(ctx, "/api/forgekey/firmware-versions/", q, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Items, nil
 }
 
 type FirmwareUpdate struct {
@@ -36,9 +36,9 @@ type FirmwareUpdate struct {
 }
 
 func (c *Client) ListFirmwareUpdates(ctx context.Context, q url.Values) ([]FirmwareUpdate, error) {
-	var out []FirmwareUpdate
+	var out MaybeList[FirmwareUpdate]
 	if err := c.Get(ctx, "/api/forgekey/firmware-updates/", q, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Items, nil
 }

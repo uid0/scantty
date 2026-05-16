@@ -136,3 +136,33 @@ func (c *Client) Patch(ctx context.Context, path string, body, out any) error {
 func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil, nil)
 }
+
+// MaybeList[T] decodes a ForgeKey list response that may arrive either as a
+// bare JSON array (DRF default with no PageNumberPagination) or as a
+// `{count, next, previous, results: [...]}` envelope (DRF with pagination).
+// Both shapes show up in practice depending on the endpoint and the
+// deployed forgekey version, so list callers must tolerate both.
+type MaybeList[T any] struct {
+	Items []T
+	Count int
+}
+
+func (m *MaybeList[T]) UnmarshalJSON(data []byte) error {
+	// Try bare array first — the more common shape and the cheaper parse.
+	var arr []T
+	if err := json.Unmarshal(data, &arr); err == nil {
+		m.Items = arr
+		m.Count = len(arr)
+		return nil
+	}
+	var env struct {
+		Count   int `json:"count"`
+		Results []T `json:"results"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return err
+	}
+	m.Items = env.Results
+	m.Count = env.Count
+	return nil
+}

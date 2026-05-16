@@ -25,11 +25,11 @@ type Device struct {
 }
 
 func (c *Client) ListDevices(ctx context.Context, q url.Values) ([]Device, error) {
-	var out []Device
+	var out MaybeList[Device]
 	if err := c.Get(ctx, "/api/forgekey/devices/", q, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Items, nil
 }
 
 func (c *Client) GetDevice(ctx context.Context, id int) (*Device, error) {
@@ -106,11 +106,11 @@ func (c *Client) RecentCommands(ctx context.Context, id, limit int) ([]DeviceCom
 	if limit > 0 {
 		q.Set("limit", fmt.Sprintf("%d", limit))
 	}
-	var out []DeviceCommand
+	var out MaybeList[DeviceCommand]
 	if err := c.Get(ctx, fmt.Sprintf("/api/forgekey/devices/%d/recent-commands", id), q, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Items, nil
 }
 
 type OccupancyEvent struct {
@@ -144,9 +144,9 @@ type DeviceType struct {
 }
 
 func (c *Client) ListDeviceTypes(ctx context.Context) ([]DeviceType, error) {
-	var out []DeviceType
+	var out MaybeList[DeviceType]
 	if err := c.Get(ctx, "/api/forgekey/device-types/", nil, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Items, nil
 }

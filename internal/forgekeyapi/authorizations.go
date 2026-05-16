@@ -21,11 +21,11 @@ type Authorization struct {
 }
 
 func (c *Client) ListAuthorizations(ctx context.Context, q url.Values) ([]Authorization, error) {
-	var out []Authorization
+	var out MaybeList[Authorization]
 	if err := c.Get(ctx, "/api/forgekey/authorizations/", q, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Items, nil
 }
 
 func (c *Client) FindAuthorization(ctx context.Context, userID, assetID int) (*Authorization, error) {
@@ -85,11 +85,11 @@ type Lockout struct {
 }
 
 func (c *Client) ListLockouts(ctx context.Context, q url.Values) ([]Lockout, error) {
-	var out []Lockout
+	var out MaybeList[Lockout]
 	if err := c.Get(ctx, "/api/forgekey/lockouts/", q, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Items, nil
 }
 
 func (c *Client) CreateLockout(ctx context.Context, l Lockout) (*Lockout, error) {
@@ -114,11 +114,11 @@ type OperationalMode struct {
 }
 
 func (c *Client) ListOperationalModes(ctx context.Context, q url.Values) ([]OperationalMode, error) {
-	var out []OperationalMode
+	var out MaybeList[OperationalMode]
 	if err := c.Get(ctx, "/api/forgekey/operational-modes/", q, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Items, nil
 }
 
 func (c *Client) EnableClassroomMode(ctx context.Context, id int) error {
@@ -140,11 +140,11 @@ type Usage struct {
 }
 
 func (c *Client) ListUsage(ctx context.Context, q url.Values) ([]Usage, error) {
-	var out []Usage
+	var out MaybeList[Usage]
 	if err := c.Get(ctx, "/api/forgekey/usage/", q, &out); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return out.Items, nil
 }
 
 func (c *Client) EndSession(ctx context.Context, id int) error {
