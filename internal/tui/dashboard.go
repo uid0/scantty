@@ -43,8 +43,8 @@ func (s *DashboardScreen) load() tea.Cmd {
 	return func() tea.Msg {
 		summary, err := deps.OMS.GetInventorySummary(ctx)
 		out := dashboardLoadedMsg{summary: summary, err: err}
-		if rq, rerr := deps.OMS.ListPendingReorders(ctx, nil); rerr == nil && rq != nil {
-			out.reorders = rq.Results
+		if rq, rerr := deps.OMS.ListPendingReorders(ctx, nil); rerr == nil {
+			out.reorders = rq
 		}
 		if pp, perr := deps.OMS.ListAssetProblems(ctx, nil); perr == nil && pp != nil {
 			out.problems = pp.Results
@@ -112,7 +112,7 @@ func (s *DashboardScreen) View() string {
 			limit = 5
 		}
 		for _, r := range s.reorders[:limit] {
-			b.WriteString(fmt.Sprintf("  · item %d × %d", r.Item, r.Quantity))
+			b.WriteString(fmt.Sprintf("  · item %s × %d", r.Item, r.Quantity))
 			if r.RequestedBy != "" {
 				b.WriteString(" " + StyleMuted.Render("by "+r.RequestedBy))
 			}

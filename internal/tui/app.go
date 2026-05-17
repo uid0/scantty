@@ -63,6 +63,13 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		r.width, r.height = m.Width, m.Height
 		r.nav.SetWidth(r.navWidth)
 		r.status.SetWidth(r.width)
+		// Forward the resize to the active screen so scrollers and
+		// lists can re-fit their viewports.
+		if r.screen != nil {
+			next, cmd := r.screen.Update(msg)
+			r.screen = next
+			return r, cmd
+		}
 		return r, nil
 
 	case tea.KeyMsg:

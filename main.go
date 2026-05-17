@@ -65,13 +65,21 @@ func run() error {
 		}
 	}
 
+	// Borrow the OMS JWT at request time when no explicit FK token is set,
+	// so signing in via the login screen unlocks FK endpoints too (both
+	// APIs share an auth realm on the same Django backend).
+	var fkTokenFn func() string
+	if cfg.ForgeKey.AuthToken == "" {
+		fkTokenFn = oms.AccessToken
+	}
 	fk, err := forgekeyapi.New(forgekeyapi.Options{
-		BaseURL:    cfg.ForgeKey.BaseURL,
-		AuthToken:  cfg.ForgeKey.AuthToken,
-		ClientCert: cfg.ForgeKey.ClientCert,
-		ClientKey:  cfg.ForgeKey.ClientKey,
-		CACert:     cfg.ForgeKey.CACert,
-		Timeout:    cfg.ForgeKey.Timeout,
+		BaseURL:       cfg.ForgeKey.BaseURL,
+		AuthToken:     cfg.ForgeKey.AuthToken,
+		AuthTokenFunc: fkTokenFn,
+		ClientCert:    cfg.ForgeKey.ClientCert,
+		ClientKey:     cfg.ForgeKey.ClientKey,
+		CACert:        cfg.ForgeKey.CACert,
+		Timeout:       cfg.ForgeKey.Timeout,
 	})
 	if err != nil {
 		return fmt.Errorf("forgekey: %w", err)

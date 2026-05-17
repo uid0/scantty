@@ -43,10 +43,21 @@ func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
 }
 
 type SIG struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Slug        string `json:"slug,omitempty"`
-	Description string `json:"description,omitempty"`
+	ID             int        `json:"id"`
+	Name           string     `json:"name"`
+	GroupEmail     string     `json:"group_email,omitempty"`
+	MemberCount    int        `json:"member_count,omitempty"`
+	AssetCount     int        `json:"asset_count,omitempty"`
+	InventoryCount int        `json:"inventory_count,omitempty"`
+	IsUserAdmin    bool       `json:"is_user_admin,omitempty"`
+	Admins         []SIGAdmin `json:"admins,omitempty"`
+}
+
+type SIGAdmin struct {
+	ID       int    `json:"id"`
+	Username string `json:"username"`
+	Email    string `json:"email,omitempty"`
+	Handle   string `json:"handle,omitempty"`
 }
 
 func (c *Client) ListSIGs(ctx context.Context, q url.Values) (*Page[SIG], error) {
@@ -54,11 +65,11 @@ func (c *Client) ListSIGs(ctx context.Context, q url.Values) (*Page[SIG], error)
 }
 
 type SIGMember struct {
-	UserID    int    `json:"user_id"`
-	Username  string `json:"username"`
-	Email     string `json:"email,omitempty"`
-	Role      string `json:"role,omitempty"`
-	JoinedAt  time.Time `json:"joined_at,omitempty"`
+	ID         int    `json:"id"`
+	Username   string `json:"username"`
+	Email      string `json:"email,omitempty"`
+	Handle     string `json:"handle,omitempty"`
+	IsSIGAdmin bool   `json:"is_sig_admin,omitempty"`
 }
 
 func (c *Client) ListSIGMembers(ctx context.Context, sigID int, q url.Values) (*Page[SIGMember], error) {

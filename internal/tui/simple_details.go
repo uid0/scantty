@@ -203,15 +203,46 @@ func (s *SupplierDetailScreen) View() string {
 	if s.row == nil {
 		return StyleMuted.Render("Supplier not found.")
 	}
+	row := s.row
 	var b strings.Builder
-	b.WriteString(StyleTitle.Render(s.row.Name) + "\n")
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("ID %d", s.row.ID)) + "\n")
-	if s.row.URL != "" {
-		b.WriteString(StyleMuted.Render("URL: ") + s.row.URL + "\n")
+	b.WriteString(StyleTitle.Render(row.Name) + "\n")
+	headerParts := []string{fmt.Sprintf("ID %d", row.ID)}
+	if row.SupplierType != "" {
+		headerParts = append(headerParts, row.SupplierType)
 	}
-	if s.row.Contact != "" {
-		b.WriteString(StyleMuted.Render("Contact: ") + s.row.Contact + "\n")
+	b.WriteString(StyleMuted.Render(strings.Join(headerParts, " · ")) + "\n\n")
+
+	if row.Website != "" {
+		b.WriteString(StyleMuted.Render("Website: ") + row.Website + "\n")
 	}
+	if row.AccountNumber != "" {
+		b.WriteString(StyleMuted.Render("Account #: ") + row.AccountNumber + "\n")
+	}
+	if row.TaxFreePaperworkFiled {
+		b.WriteString(StyleStatusOK.Render("✓ tax-free paperwork on file") + "\n")
+	}
+	b.WriteString("\n")
+
+	b.WriteString(StyleTitle.Render("Activity") + "\n")
+	b.WriteString(StyleMuted.Render(fmt.Sprintf("Items supplied: %d", row.ItemCount)) + "\n")
+	b.WriteString(StyleMuted.Render(fmt.Sprintf("Purchase orders: %d", row.PurchaseOrderCount)) + "\n")
+	if !row.TotalSpent.Empty() && row.TotalSpent != "0.00" {
+		b.WriteString(StyleMuted.Render("Total spent (received POs): $") + string(row.TotalSpent) + "\n")
+	}
+	b.WriteString("\n")
+
+	if row.Notes != "" {
+		b.WriteString(StyleTitle.Render("Notes") + "\n")
+		b.WriteString(row.Notes + "\n\n")
+	}
+
+	if !row.CreatedAt.IsZero() {
+		b.WriteString(StyleMuted.Render("Created: ") + row.CreatedAt.Format("2006-01-02") + "\n")
+	}
+	if !row.UpdatedAt.IsZero() {
+		b.WriteString(StyleMuted.Render("Updated: ") + row.UpdatedAt.Format("2006-01-02") + "\n")
+	}
+
 	b.WriteString("\n" + StyleMuted.Render("r refresh · esc back"))
 	return b.String()
 }

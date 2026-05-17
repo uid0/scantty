@@ -38,11 +38,11 @@ func (s *ReorderQueueScreen) load() tea.Cmd {
 		ctx = context.Background()
 	}
 	return func() tea.Msg {
-		page, err := deps.OMS.ListPendingReorders(ctx, nil)
+		rows, err := deps.OMS.ListPendingReorders(ctx, nil)
 		if err != nil {
 			return reorderQueueLoadedMsg{err: err}
 		}
-		return reorderQueueLoadedMsg{rows: page.Results}
+		return reorderQueueLoadedMsg{rows: rows}
 	}
 }
 
@@ -76,7 +76,7 @@ func (s *ReorderQueueScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				return s, nil
 			}
 			row := s.rows[s.cursor]
-			return s, SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, fmt.Sprintf("%d", row.Item)))
+			return s, SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, row.Item))
 		}
 	}
 	return s, nil
@@ -99,7 +99,7 @@ func (s *ReorderQueueScreen) View() string {
 		if i == s.cursor {
 			caret = "▸ "
 		}
-		title := fmt.Sprintf("%sitem %d × %d", caret, r.Item, r.Quantity)
+		title := fmt.Sprintf("%sitem %s × %d", caret, r.Item, r.Quantity)
 		if r.Priority != "" && r.Priority != "normal" {
 			title += " " + StyleStatusWarn.Render("("+r.Priority+")")
 		}

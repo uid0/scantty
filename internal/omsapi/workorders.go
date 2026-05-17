@@ -8,18 +8,62 @@ import (
 )
 
 type WorkOrder struct {
+	ID                   any                       `json:"id"`
+	ShortID              string                    `json:"short_id,omitempty"`
+	Title                string                    `json:"title"`
+	Description          string                    `json:"description,omitempty"`
+	Status               string                    `json:"status"`
+	Priority             string                    `json:"priority,omitempty"`
+	Asset                any                       `json:"asset,omitempty"`
+	AssetID              any                       `json:"asset_id,omitempty"`
+	AssetName            string                    `json:"asset_name,omitempty"`
+	AssetTag             string                    `json:"asset_tag,omitempty"`
+	MaintenanceItem      any                       `json:"maintenance_item,omitempty"`
+	MaintenanceItemTitle string                    `json:"maintenance_item_title,omitempty"`
+	AssignedTo           any                       `json:"assigned_to,omitempty"`
+	AssignedToName       string                    `json:"assigned_to_name,omitempty"`
+	CompletedByName      string                    `json:"completed_by_name,omitempty"`
+	DueDate              string                    `json:"due_date,omitempty"`
+	IsOverdue            bool                      `json:"is_overdue,omitempty"`
+	Notes                string                    `json:"notes,omitempty"`
+	CompletedAt          *time.Time                `json:"completed_at,omitempty"`
+	CreatedAt            time.Time                 `json:"created_at,omitempty"`
+	UpdatedAt            time.Time                 `json:"updated_at,omitempty"`
+	ClosedAt             *time.Time                `json:"closed_at,omitempty"`
+	TaskCompletions      []WorkOrderTaskCompletion `json:"task_completions,omitempty"`
+	MaterialUsage        []WorkOrderMaterialUsage  `json:"material_usage,omitempty"`
+	Photos               []WorkOrderPhoto          `json:"photos,omitempty"`
+}
+
+type WorkOrderTaskCompletion struct {
 	ID          any        `json:"id"`
-	Title       string     `json:"title"`
-	Description string     `json:"description,omitempty"`
-	Status      string     `json:"status"`
-	Priority    string     `json:"priority,omitempty"`
-	Asset       any        `json:"asset,omitempty"`
-	AssetName   string     `json:"asset_name,omitempty"`
-	AssignedTo  any        `json:"assigned_to,omitempty"`
+	Task        *string    `json:"task,omitempty"`
+	TaskTitle   string     `json:"task_title,omitempty"`
+	TaskOrder   int        `json:"task_order,omitempty"`
+	IsRequired  bool       `json:"is_required,omitempty"`
+	IsCompleted bool       `json:"is_completed,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	CompletedBy string     `json:"completed_by_name,omitempty"`
+	Notes       string     `json:"notes,omitempty"`
 	CreatedAt   time.Time  `json:"created_at,omitempty"`
-	UpdatedAt   time.Time  `json:"updated_at,omitempty"`
-	ClosedAt    *time.Time `json:"closed_at,omitempty"`
+}
+
+type WorkOrderMaterialUsage struct {
+	ID              any           `json:"id"`
+	Material        any           `json:"material,omitempty"`
+	MaterialName    string        `json:"material_name,omitempty"`
+	QuantityPlanned DecimalString `json:"quantity_planned,omitempty"`
+	Unit            string        `json:"unit,omitempty"`
+	WasUsed         bool          `json:"was_used,omitempty"`
+	CreatedAt       time.Time     `json:"created_at,omitempty"`
+}
+
+type WorkOrderPhoto struct {
+	ID         any       `json:"id"`
+	ImageURL   string    `json:"image_url,omitempty"`
+	Caption    string    `json:"caption,omitempty"`
+	UploadedAt time.Time `json:"uploaded_at,omitempty"`
+	UploadedBy string    `json:"uploaded_by_name,omitempty"`
 }
 
 func (c *Client) ListWorkOrders(ctx context.Context, q url.Values) (*Page[WorkOrder], error) {

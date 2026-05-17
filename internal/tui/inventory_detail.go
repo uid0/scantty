@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,22 +12,25 @@ import (
 
 type InventoryDetailScreen struct {
 	deps     Deps
-	itemID   int
+	itemID   string
 	item     *omsapi.Item
 	loadErr  string
 	loading  bool
-	suppliers []omsapi.ItemSupplier
+	scroller *TextScroller
 }
 
 type inventoryDetailLoadedMsg struct {
-	item      *omsapi.Item
-	suppliers []omsapi.ItemSupplier
-	err       error
+	item *omsapi.Item
+	err  error
 }
 
 func NewInventoryDetailScreen(deps Deps, id string) *InventoryDetailScreen {
-	itemID, _ := strconv.Atoi(id)
-	return &InventoryDetailScreen{deps: deps, itemID: itemID, loading: true}
+	return &InventoryDetailScreen{
+		deps:     deps,
+		itemID:   id,
+		loading:  true,
+		scroller: NewTextScroller(defaultDetailHeight),
+	}
 }
 
 func (s *InventoryDetailScreen) Title() string {
@@ -47,35 +49,27 @@ func (s *InventoryDetailScreen) Init() tea.Cmd {
 	}
 	return func() tea.Msg {
 		item, err := deps.OMS.GetItem(ctx, itemID)
-		if err != nil {
-			return inventoryDetailLoadedMsg{err: err}
-		}
-		var suppliers []omsapi.ItemSupplier
-		if len(item.Suppliers) > 0 {
-			page, serr := deps.OMS.ListItemSuppliers(ctx, nil)
-			if serr == nil {
-				for _, is := range page.Results {
-					if is.Item == item.ID {
-						suppliers = append(suppliers, is)
-					}
-				}
-			}
-		}
-		return inventoryDetailLoadedMsg{item: item, suppliers: suppliers}
+		return inventoryDetailLoadedMsg{item: item, err: err}
 	}
 }
 
 func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.scroller.SetViewHeight(m.Height - detailChromeRows)
+		return s, nil
 	case inventoryDetailLoadedMsg:
 		s.loading = false
 		if m.err != nil {
 			s.loadErr = m.err.Error()
 		}
 		s.item = m.item
-		s.suppliers = m.suppliers
+		s.scroller.Set(s.renderBody())
 		return s, nil
 	case tea.KeyMsg:
+		if s.scroller.Handle(m) {
+			return s, nil
+		}
 		switch m.String() {
 		case "r":
 			s.loading = true
@@ -83,7 +77,7 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, s.Init()
 		case "o", "enter":
 			if s.item != nil {
-				return s, SwitchTo(WSInventory, NewReorderFormScreen(s.deps, s.item, s.suppliers))
+				return s, SwitchTo(WSInventory, NewReorderFormScreen(s.deps, s.item, s.item.Suppliers))
 			}
 		}
 	}
@@ -100,51 +94,151 @@ func (s *InventoryDetailScreen) View() string {
 	if s.item == nil {
 		return StyleMuted.Render("Item not found.")
 	}
+	hint := "j/k scroll · pgup/pgdn page · o/enter request reorder · r refresh · esc back"
+	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+}
 
+func (s *InventoryDetailScreen) renderBody() string {
+	it := s.item
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("%s\n", StyleTitle.Render(s.item.Name)))
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("SKU %s · ID %d", s.item.SKU, s.item.ID)))
-	b.WriteString("\n\n")
-	if s.item.Description != "" {
-		b.WriteString(s.item.Description + "\n\n")
+
+	b.WriteString(StyleTitle.Render(it.Name))
+	if it.NeedsReorder {
+		b.WriteString("  " + StyleStatusWarn.Render("needs reorder"))
 	}
-	b.WriteString(fmt.Sprintf("Stock: %d", s.item.Stock))
-	if s.item.ReorderLevel > 0 {
-		b.WriteString(fmt.Sprintf("  ·  Reorder at: %d", s.item.ReorderLevel))
-	}
-	if s.item.NeedsReorder {
-		b.WriteString("  " + StyleStatusWarn.Render("(needs reorder)"))
+	if it.HasPendingReorder {
+		b.WriteString("  " + StyleMuted.Render("[reorder pending]"))
 	}
 	b.WriteString("\n")
-	if s.item.ReorderStatus != "" {
-		b.WriteString(StyleMuted.Render("Status: ") + s.item.ReorderStatus + "\n")
+	b.WriteString(StyleMuted.Render(fmt.Sprintf("SKU %s · ID %s", it.SKU, it.ID)))
+	if it.CategoryName != "" {
+		b.WriteString(StyleMuted.Render(" · " + it.CategoryName))
+	}
+	if it.Location != "" {
+		b.WriteString(StyleMuted.Render(" · " + it.Location))
+	}
+	b.WriteString("\n\n")
+
+	if it.Description != "" {
+		b.WriteString(it.Description + "\n\n")
+	}
+
+	b.WriteString(StyleTitle.Render("Stock") + "\n")
+	b.WriteString(fmt.Sprintf("Current stock: %d", it.Stock))
+	if it.MinimumStock > 0 {
+		b.WriteString(fmt.Sprintf("  ·  Minimum: %d", it.MinimumStock))
+	}
+	if it.ReorderQuantity > 0 {
+		b.WriteString(fmt.Sprintf("  ·  Reorder qty: %d", it.ReorderQuantity))
+	}
+	b.WriteString("\n")
+	if it.ReorderStatus != "" {
+		b.WriteString(StyleMuted.Render("Reorder status: ") + it.ReorderStatus + "\n")
+	}
+	if it.ExpectedDeliveryDate != "" {
+		b.WriteString(StyleMuted.Render("Expected delivery: ") + it.ExpectedDeliveryDate + "\n")
+	}
+	if it.UseCaseBasedReorder {
+		b.WriteString(StyleMuted.Render("Case-based reorder: Yes") + "\n")
+		if it.CurrentCases != nil {
+			b.WriteString(StyleMuted.Render(fmt.Sprintf("Current cases: %.2f", *it.CurrentCases)) + "\n")
+		}
+		if it.MinimumCases != nil {
+			b.WriteString(StyleMuted.Render(fmt.Sprintf("Minimum cases: %.2f", *it.MinimumCases)) + "\n")
+		}
+		if it.ReorderCases != nil {
+			b.WriteString(StyleMuted.Render(fmt.Sprintf("Reorder cases: %.2f", *it.ReorderCases)) + "\n")
+		}
+		if it.ReorderInstruction != "" {
+			b.WriteString(StyleMuted.Render("Instruction: ") + it.ReorderInstruction + "\n")
+		}
 	}
 	b.WriteString("\n")
 
-	if len(s.suppliers) > 0 {
-		b.WriteString(StyleTitle.Render("Suppliers") + "\n")
-		for _, sup := range s.suppliers {
-			line := fmt.Sprintf("  · supplier %d", sup.Supplier)
-			if sup.SupplierSKU != "" {
-				line += fmt.Sprintf(" · sku %s", sup.SupplierSKU)
+	if !it.UnitCost.Empty() || !it.PackageCost.Empty() || !it.TotalValue.Empty() {
+		b.WriteString(StyleTitle.Render("Costing") + "\n")
+		if !it.UnitCost.Empty() {
+			b.WriteString(StyleMuted.Render("Unit cost: ") + "$" + string(it.UnitCost) + "\n")
+		}
+		if !it.PackageCost.Empty() {
+			line := "Package cost: $" + string(it.PackageCost)
+			if it.QuantityPerPackage > 0 {
+				line += fmt.Sprintf(" (qty %d)", it.QuantityPerPackage)
 			}
-			if sup.PackQuantity > 0 {
-				line += fmt.Sprintf(" · pack %d", sup.PackQuantity)
-			}
-			if sup.UnitCost > 0 {
-				line += fmt.Sprintf(" · $%.2f", sup.UnitCost)
-			}
-			if sup.LeadTimeDays > 0 {
-				line += fmt.Sprintf(" · lead %dd", sup.LeadTimeDays)
-			}
-			if sup.IsPreferred {
-				line += " " + StyleStatusOK.Render("★")
-			}
-			b.WriteString(line + "\n")
+			b.WriteString(StyleMuted.Render(line) + "\n")
+		}
+		if !it.TotalValue.Empty() {
+			b.WriteString(StyleMuted.Render("Total stock value: ") + "$" + string(it.TotalValue) + "\n")
+		}
+		if it.AverageLeadTime > 0 {
+			b.WriteString(StyleMuted.Render(fmt.Sprintf("Avg lead time: %dd", it.AverageLeadTime)) + "\n")
 		}
 		b.WriteString("\n")
 	}
 
-	b.WriteString(StyleMuted.Render("o/enter request reorder · r refresh · esc back"))
+	if it.SupplierName != "" || it.SupplierSKU != "" {
+		b.WriteString(StyleTitle.Render("Primary supplier") + "\n")
+		if it.SupplierName != "" {
+			b.WriteString(StyleMuted.Render("Name: ") + it.SupplierName + "\n")
+		}
+		if it.SupplierSKU != "" {
+			b.WriteString(StyleMuted.Render("SKU: ") + it.SupplierSKU + "\n")
+		}
+		if it.SupplierURL != "" {
+			b.WriteString(StyleMuted.Render("URL: ") + it.SupplierURL + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(it.Suppliers) > 0 {
+		b.WriteString(StyleTitle.Render(fmt.Sprintf("All suppliers (%d)", len(it.Suppliers))) + "\n")
+		for _, sup := range it.Suppliers {
+			name := sup.SupplierName
+			if name == "" {
+				name = fmt.Sprintf("supplier %d", sup.Supplier)
+			}
+			line := "  · " + name
+			if sup.IsPreferred {
+				line += " " + StyleStatusOK.Render("★ preferred")
+			}
+			b.WriteString(line + "\n")
+			meta := []string{}
+			if sup.SupplierSKU != "" {
+				meta = append(meta, "SKU "+sup.SupplierSKU)
+			}
+			if sup.PackQuantity > 0 {
+				meta = append(meta, fmt.Sprintf("pack %d", sup.PackQuantity))
+			}
+			if !sup.UnitCost.Empty() {
+				meta = append(meta, "$"+string(sup.UnitCost))
+			}
+			if sup.LeadTimeDays > 0 {
+				meta = append(meta, fmt.Sprintf("lead %dd", sup.LeadTimeDays))
+			}
+			if len(meta) > 0 {
+				b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
+			}
+			if sup.URL != "" {
+				b.WriteString("    " + StyleMuted.Render(sup.URL) + "\n")
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	if len(it.Tags) > 0 {
+		b.WriteString(StyleMuted.Render("Tags: ") + strings.Join(it.Tags, ", ") + "\n\n")
+	}
+
+	b.WriteString(StyleTitle.Render("Metadata") + "\n")
+	if !it.CreatedAt.IsZero() {
+		b.WriteString(StyleMuted.Render("Created: ") + it.CreatedAt.Format("2006-01-02 15:04") + "\n")
+	}
+	if !it.UpdatedAt.IsZero() {
+		b.WriteString(StyleMuted.Render("Updated: ") + it.UpdatedAt.Format("2006-01-02 15:04") + "\n")
+	}
+	if it.QRCodeURL != "" {
+		b.WriteString(StyleMuted.Render("QR: ") + it.QRCodeURL + "\n")
+	}
+
 	return b.String()
 }

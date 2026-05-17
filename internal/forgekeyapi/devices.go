@@ -11,14 +11,15 @@ type Device struct {
 	ID              any       `json:"id"`
 	MACAddress      string    `json:"mac_address"`
 	DeviceType      any       `json:"device_type"`
+	DeviceTypeName  string    `json:"device_type_name,omitempty"`
 	Name            string    `json:"name"`
 	Description     string    `json:"description,omitempty"`
-	Location        string    `json:"location,omitempty"`
+	Location        *int      `json:"location,omitempty"`
 	FirmwareVersion string    `json:"firmware_version,omitempty"`
 	IsOnline        bool      `json:"is_online"`
 	IsActive        bool      `json:"is_active"`
 	Capabilities    []string  `json:"capabilities,omitempty"`
-	IPAddress       string    `json:"ip_address,omitempty"`
+	IPAddress       string    `json:"ip,omitempty"`
 	BootCount       int       `json:"boot_count,omitempty"`
 	FreeHeap        int       `json:"free_heap,omitempty"`
 	LastSeen        time.Time `json:"last_seen,omitempty"`

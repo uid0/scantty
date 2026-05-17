@@ -105,11 +105,11 @@ func (s *FirmwareScreen) View() string {
 		for _, u := range s.updates[:limit] {
 			name := u.DeviceName
 			if name == "" {
-				name = fmt.Sprintf("device %d", u.Device)
+				name = fmt.Sprintf("device %v", u.Device)
 			}
 			ver := u.FirmwareVersionStr
 			if ver == "" {
-				ver = fmt.Sprintf("v#%d", u.FirmwareVersion)
+				ver = fmt.Sprintf("v#%v", u.FirmwareVersion)
 			}
 			line := fmt.Sprintf("  · %s → %s", name, ver)
 			if u.Status != "" {

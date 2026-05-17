@@ -19,15 +19,23 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	authToken  string
+	// authTokenFunc, when set, takes precedence over authToken. Used to
+	// borrow the OMS JWT at request time so the FK client tracks token
+	// refreshes without manual re-syncing.
+	authTokenFunc func() string
 }
 
 type Options struct {
 	BaseURL    string
 	AuthToken  string
-	ClientCert string
-	ClientKey  string
-	CACert     string
-	Timeout    time.Duration
+	// AuthTokenFunc is invoked on every request to obtain the current
+	// bearer token. Set this when the FK API shares an auth realm with
+	// another client (typically OMS) so refreshes propagate automatically.
+	AuthTokenFunc func() string
+	ClientCert    string
+	ClientKey     string
+	CACert        string
+	Timeout       time.Duration
 }
 
 func New(opts Options) (*Client, error) {
@@ -59,9 +67,14 @@ func New(opts Options) (*Client, error) {
 			Timeout:   opts.Timeout,
 			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 		},
-		authToken: opts.AuthToken,
+		authToken:     opts.AuthToken,
+		authTokenFunc: opts.AuthTokenFunc,
 	}, nil
 }
+
+// SetAuthToken updates the static bearer token used by future requests.
+// Has no effect when AuthTokenFunc is set, since that takes precedence.
+func (c *Client) SetAuthToken(token string) { c.authToken = token }
 
 type APIError struct {
 	Status  int    `json:"-"`
@@ -97,8 +110,14 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	token := c.authToken
+	if c.authTokenFunc != nil {
+		if t := c.authTokenFunc(); t != "" {
+			token = t
+		}
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

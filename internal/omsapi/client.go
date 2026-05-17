@@ -231,6 +231,32 @@ type Page[T any] struct {
 	Results  []T     `json:"results"`
 }
 
+// MaybeList[T] decodes an OMS list response that may arrive either as a
+// bare JSON array (DRF view returning `Response(serializer.data)` without
+// pagination — typically @action endpoints like /pending/) or as a
+// `{count, next, previous, results}` envelope. Both shapes show up so
+// any caller that doesn't know which it'll get must tolerate both.
+type MaybeList[T any] struct {
+	Items []T
+	Count int
+}
+
+func (m *MaybeList[T]) UnmarshalJSON(data []byte) error {
+	var arr []T
+	if err := json.Unmarshal(data, &arr); err == nil {
+		m.Items = arr
+		m.Count = len(arr)
+		return nil
+	}
+	var env Page[T]
+	if err := json.Unmarshal(data, &env); err != nil {
+		return err
+	}
+	m.Items = env.Results
+	m.Count = env.Count
+	return nil
+}
+
 func GetPage[T any](ctx context.Context, c *Client, path string, q url.Values) (*Page[T], error) {
 	var page Page[T]
 	if err := c.Get(ctx, path, q, &page); err != nil {

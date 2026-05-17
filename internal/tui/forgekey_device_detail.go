@@ -147,8 +147,17 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 		b.WriteString(d.Description + "\n\n")
 	}
 
+	typeLabel := d.DeviceTypeName
+	if typeLabel == "" {
+		typeLabel = fmt.Sprintf("%v", d.DeviceType)
+	}
+	location := ""
+	if d.Location != nil {
+		location = fmt.Sprintf("#%d", *d.Location)
+	}
 	rows := [][2]string{
-		{"Location", d.Location},
+		{"Type", typeLabel},
+		{"Location", location},
 		{"Firmware", d.FirmwareVersion},
 		{"IP", d.IPAddress},
 	}

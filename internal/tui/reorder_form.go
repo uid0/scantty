@@ -119,7 +119,7 @@ func (s *ReorderFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			}
 			return s.submit()
 		case tea.KeyEsc:
-			return s, SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, strconv.Itoa(s.item.ID)))
+			return s, SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, s.item.ID))
 		}
 	}
 	var cmd tea.Cmd

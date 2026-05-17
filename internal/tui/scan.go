@@ -40,12 +40,27 @@ func NewScanScreen(deps Deps) *ScanScreen { return &ScanScreen{deps: deps} }
 
 func (s *ScanScreen) Title() string { return "Scan" }
 
+// WantsRawInput keeps every keypress in the scan buffer instead of routing
+// it through the root's global hotkey handler. Scanner-gun input is rapid
+// ASCII, and codes routinely contain characters that match workspace
+// shortcuts (m, a, l, n, o, u, f, Q, D, s, 0-9, /), so without this the
+// scanner navigates away mid-scan.
+func (s *ScanScreen) WantsRawInput() bool { return true }
+
 func (s *ScanScreen) Init() tea.Cmd { return nil }
 
 func (s *ScanScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.KeyMsg:
 		switch m.Type {
+		case tea.KeyEsc:
+			// First esc clears a partial buffer; second drops back to
+			// the welcome screen.
+			if s.input != "" {
+				s.input = ""
+				return s, nil
+			}
+			return s, SwitchTo(WSScan, NewWelcomeScreen())
 		case tea.KeyEnter:
 			if strings.TrimSpace(s.input) == "" {
 				return s, nil
@@ -193,7 +208,7 @@ func (s *ScanScreen) View() string {
 			b.WriteString("    " + StyleStatusError.Render(r.Err) + "\n")
 		case r.Lookup != nil:
 			b.WriteString(StyleStatusOK.Render("✓ "+header) + "\n")
-			b.WriteString(fmt.Sprintf("    %s #%d %s\n", r.Lookup.Type, r.Lookup.ID, r.Lookup.Name))
+			b.WriteString(fmt.Sprintf("    %s #%v %s\n", r.Lookup.Type, r.Lookup.ID, r.Lookup.Name))
 		default:
 			b.WriteString(StyleStatusWarn.Render("· "+header+" (no match)") + "\n")
 		}

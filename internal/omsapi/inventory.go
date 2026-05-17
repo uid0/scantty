@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type LookupResult struct {
@@ -29,49 +30,174 @@ func (c *Client) LookupCode(ctx context.Context, code string) (*LookupResult, er
 }
 
 type Item struct {
-	ID            int      `json:"id"`
-	Name          string   `json:"name"`
-	SKU           string   `json:"sku"`
-	Description   string   `json:"description,omitempty"`
-	Category      *int     `json:"category,omitempty"`
-	Location      *int     `json:"location,omitempty"`
-	Stock         int      `json:"stock"`
-	ReorderLevel  int      `json:"reorder_level,omitempty"`
-	NeedsReorder  bool     `json:"needs_reorder,omitempty"`
-	ReorderStatus string   `json:"reorder_status,omitempty"`
-	Suppliers     []int    `json:"suppliers,omitempty"`
-	Tags          []string `json:"tags,omitempty"`
+	ID                  string         `json:"id"`
+	Name                string         `json:"name"`
+	SKU                 string         `json:"sku"`
+	Description         string         `json:"description,omitempty"`
+	Category            *int           `json:"category,omitempty"`
+	CategoryName        string         `json:"category_name,omitempty"`
+	Location            string         `json:"location,omitempty"`
+	Stock               int            `json:"current_stock"`
+	MinimumStock        int            `json:"minimum_stock,omitempty"`
+	ReorderQuantity     int            `json:"reorder_quantity,omitempty"`
+	NeedsReorder        bool           `json:"needs_reorder,omitempty"`
+	ReorderStatus       string         `json:"reorder_status,omitempty"`
+	HasPendingReorder   bool           `json:"has_pending_reorder,omitempty"`
+	ExpectedDeliveryDate string        `json:"expected_delivery_date,omitempty"`
+	SupplierName        string         `json:"supplier_name,omitempty"`
+	SupplierSKU         string         `json:"supplier_sku,omitempty"`
+	SupplierURL         string         `json:"supplier_url,omitempty"`
+	UnitCost            DecimalString  `json:"unit_cost,omitempty"`
+	PackageCost         DecimalString  `json:"package_cost,omitempty"`
+	QuantityPerPackage  int            `json:"quantity_per_package,omitempty"`
+	AverageLeadTime     int            `json:"average_lead_time,omitempty"`
+	TotalValue          DecimalString  `json:"total_value,omitempty"`
+	ThumbnailURL        string         `json:"thumbnail,omitempty"`
+	QRCodeURL           string         `json:"qr_code_url,omitempty"`
+	UseCaseBasedReorder bool           `json:"use_case_based_reorder,omitempty"`
+	MinimumCases        *float64       `json:"minimum_cases,omitempty"`
+	ReorderCases        *float64       `json:"reorder_cases,omitempty"`
+	CurrentCases        *float64       `json:"current_cases,omitempty"`
+	ReorderInstruction  string         `json:"reorder_instruction,omitempty"`
+	Suppliers           []ItemSupplier `json:"suppliers,omitempty"`
+	Tags                []string       `json:"tags,omitempty"`
+	CreatedAt           time.Time      `json:"created_at,omitempty"`
+	UpdatedAt           time.Time      `json:"updated_at,omitempty"`
 }
+
 
 func (c *Client) ListItems(ctx context.Context, q url.Values) (*Page[Item], error) {
 	return GetPage[Item](ctx, c, "/api/inventory/items/", q)
 }
 
-func (c *Client) GetItem(ctx context.Context, id int) (*Item, error) {
+func (c *Client) GetItem(ctx context.Context, id string) (*Item, error) {
 	var out Item
-	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%d/", id), nil, &out); err != nil {
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/", id), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (c *Client) ScanItem(ctx context.Context, id int) (*Item, error) {
+func (c *Client) ScanItem(ctx context.Context, id string) (*Item, error) {
 	var out Item
-	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%d/scan/", id), nil, &out); err != nil {
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/scan/", id), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 type Asset struct {
-	ID           any    `json:"id"`
-	Name         string `json:"name"`
-	AssetTag     string `json:"asset_tag,omitempty"`
-	Description  string `json:"description,omitempty"`
-	Location     *int   `json:"location,omitempty"`
-	LocationName string `json:"location_name,omitempty"`
-	Status       string `json:"status,omitempty"`
-	IsCritical   bool   `json:"is_critical,omitempty"`
+	ID                  any         `json:"id"`
+	Name                string      `json:"name"`
+	AssetTag            string      `json:"asset_tag,omitempty"`
+	Description         string      `json:"description,omitempty"`
+	SerialNumber        string      `json:"serial_number,omitempty"`
+	InventoryItem       any         `json:"inventory_item,omitempty"`
+	InventoryItemName   string      `json:"inventory_item_name,omitempty"`
+	Manufacturer        *int        `json:"manufacturer,omitempty"`
+	ManufacturerName    string      `json:"manufacturer_name,omitempty"`
+	DisplayManufacturer string      `json:"display_manufacturer,omitempty"`
+	Category            *int        `json:"category,omitempty"`
+	CategoryName        string      `json:"category_name,omitempty"`
+	Location            *int        `json:"location,omitempty"`
+	LocationName        string      `json:"location_name,omitempty"`
+	Status              string      `json:"status,omitempty"`
+	IsCritical          bool        `json:"is_critical,omitempty"`
+
+	// Acquisition / cost
+	DateReceived       string        `json:"date_received,omitempty"`
+	AmountPaid         DecimalString `json:"amount_paid,omitempty"`
+	IsDonation         bool   `json:"is_donation,omitempty"`
+	DonorName          string `json:"donor_name,omitempty"`
+	AcquisitionDisplay string `json:"acquisition_display,omitempty"`
+	AgeInDays          *int   `json:"age_in_days,omitempty"`
+
+	// Documentation / media
+	ProductURL    string `json:"product_url,omitempty"`
+	WikiPageURL   string `json:"wiki_page_url,omitempty"`
+	ImageURL      string `json:"image_url,omitempty"`
+	ThumbnailURL  string `json:"thumbnail_url,omitempty"`
+	ManualPDFURL  string `json:"manual_pdf_url,omitempty"`
+	QRCodeURL     string `json:"qr_code_url,omitempty"`
+	QRCodeScanURL string `json:"qr_code_scan_url,omitempty"`
+
+	// Maintenance
+	MaintenancePlan string      `json:"maintenance_plan,omitempty"`
+	Parts           []AssetPart `json:"parts,omitempty"`
+	ConditionNotes  string      `json:"condition_notes,omitempty"`
+
+	// Operational requirements
+	Circuit            string `json:"circuit,omitempty"`
+	MACAddress         string `json:"mac_address,omitempty"`
+	NeedsCompressedAir bool   `json:"needs_compressed_air,omitempty"`
+	NeedsVentilation   bool   `json:"needs_ventilation,omitempty"`
+	IsChargeable       bool   `json:"is_chargeable,omitempty"`
+
+	// Power / electrical
+	PowerDrawWatts        *int   `json:"power_draw_watts,omitempty"`
+	WiringType            string `json:"wiring_type,omitempty"`
+	Suite                 string `json:"suite,omitempty"`
+	ElectricalBox         string `json:"electrical_box,omitempty"`
+	BreakerLocation       string `json:"breaker_location,omitempty"`
+	HasInterlock          bool   `json:"has_interlock,omitempty"`
+	InterlockType         string `json:"interlock_type,omitempty"`
+	InterlockResponsible  string `json:"interlock_responsible,omitempty"`
+	LockoutType           string `json:"lockout_type,omitempty"`
+	LockoutInstructions   string `json:"lockout_instructions,omitempty"`
+	LockoutResponsible    string `json:"lockout_responsible,omitempty"`
+	HasNetworkDrop        bool   `json:"has_network_drop,omitempty"`
+	NetworkDropLocation   string `json:"network_drop_location,omitempty"`
+	IsForgeKeyManaged     bool   `json:"is_forgekey_managed,omitempty"`
+
+	// Scanning
+	LastScannedAt *time.Time `json:"last_scanned_at,omitempty"`
+
+	// Ownership
+	OwningGroup     *int   `json:"owning_group,omitempty"`
+	OwningGroupName string `json:"owning_group_name,omitempty"`
+	OwningUserName  string `json:"owning_user_name,omitempty"`
+	GroupsCanEnable []int  `json:"groups_can_enable,omitempty"`
+
+	// ForgeKey runtime
+	OperationalMode map[string]any `json:"operational_mode,omitempty"`
+	IsLocked        bool           `json:"is_locked,omitempty"`
+	LockoutInfo     *AssetLockout  `json:"lockout_info,omitempty"`
+	CanEnable       bool           `json:"can_enable,omitempty"`
+	CanUnlock       bool           `json:"can_unlock,omitempty"`
+
+	// Metadata
+	IsActive   bool      `json:"is_active,omitempty"`
+	ReportOnly bool      `json:"report_only,omitempty"`
+	Notes      string    `json:"notes,omitempty"`
+	CreatedAt  time.Time `json:"created_at,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+}
+
+type AssetLockout struct {
+	LockedBy     string `json:"locked_by,omitempty"`
+	LockedAt     string `json:"locked_at,omitempty"`
+	LockoutLevel string `json:"lockout_level,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type AssetPart struct {
+	ID                       any                    `json:"id"`
+	Asset                    string                 `json:"asset"`
+	AssetName                string                 `json:"asset_name,omitempty"`
+	AssetTag                 string                 `json:"asset_tag,omitempty"`
+	Part                     string                 `json:"part"`
+	PartName                 string                 `json:"part_name,omitempty"`
+	PartSKU                  string                 `json:"part_sku,omitempty"`
+	QuantityNeeded           int                    `json:"quantity_needed,omitempty"`
+	IsRequired               bool                   `json:"is_required,omitempty"`
+	MaintenanceIntervalDays  *int                   `json:"maintenance_interval_days,omitempty"`
+	LastReplacedAt           *time.Time             `json:"last_replaced_at,omitempty"`
+	DaysSinceReplacement     *int                   `json:"days_since_replacement,omitempty"`
+	NeedsReplacement         bool                   `json:"needs_replacement,omitempty"`
+	Notes                    string                 `json:"notes,omitempty"`
+	PartDetails              map[string]any         `json:"part_details,omitempty"`
+	CreatedAt                time.Time              `json:"created_at,omitempty"`
+	UpdatedAt                time.Time              `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListAssets(ctx context.Context, q url.Values) (*Page[Asset], error) {
@@ -117,10 +243,18 @@ func (c *Client) ListCategories(ctx context.Context, q url.Values) (*Page[Catego
 }
 
 type Supplier struct {
-	ID      int    `json:"id"`
-	Name    string `json:"name"`
-	URL     string `json:"url,omitempty"`
-	Contact string `json:"contact,omitempty"`
+	ID                   int       `json:"id"`
+	Name                 string    `json:"name"`
+	SupplierType         string    `json:"supplier_type,omitempty"`
+	Website              string    `json:"website,omitempty"`
+	AccountNumber        string    `json:"account_number,omitempty"`
+	TaxFreePaperworkFiled bool          `json:"tax_free_paperwork_filed,omitempty"`
+	Notes                 string        `json:"notes,omitempty"`
+	ItemCount             int           `json:"item_count,omitempty"`
+	PurchaseOrderCount    int           `json:"purchase_order_count,omitempty"`
+	TotalSpent            DecimalString `json:"total_spent,omitempty"`
+	CreatedAt            time.Time `json:"created_at,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListSuppliers(ctx context.Context, q url.Values) (*Page[Supplier], error) {
@@ -128,15 +262,26 @@ func (c *Client) ListSuppliers(ctx context.Context, q url.Values) (*Page[Supplie
 }
 
 type ItemSupplier struct {
-	ID            int     `json:"id"`
-	Item          int     `json:"item"`
-	Supplier      int     `json:"supplier"`
-	SupplierSKU   string  `json:"supplier_sku,omitempty"`
-	PackQuantity  int     `json:"pack_quantity,omitempty"`
-	UnitCost      float64 `json:"unit_cost,omitempty"`
-	LeadTimeDays  int     `json:"lead_time_days,omitempty"`
-	IsPreferred   bool    `json:"is_preferred,omitempty"`
-	URL           string  `json:"url,omitempty"`
+	ID                  int       `json:"id"`
+	Item                string    `json:"item"`
+	ItemName            string    `json:"item_name,omitempty"`
+	Supplier            int       `json:"supplier"`
+	SupplierName        string    `json:"supplier_name,omitempty"`
+	SupplierSKU         string    `json:"supplier_sku,omitempty"`
+	URL                 string    `json:"supplier_url,omitempty"`
+	PackageUPC          string    `json:"package_upc,omitempty"`
+	UnitUPC             string    `json:"unit_upc,omitempty"`
+	PackQuantity        int           `json:"quantity_per_package,omitempty"`
+	UnitCost            DecimalString `json:"unit_cost,omitempty"`
+	PackageCost         DecimalString `json:"package_cost,omitempty"`
+	LeadTimeDays        int           `json:"average_lead_time,omitempty"`
+	IsPreferred         bool      `json:"is_primary,omitempty"`
+	IsActive            bool      `json:"is_active,omitempty"`
+	IsDiscontinued      bool      `json:"is_discontinued,omitempty"`
+	PackageDimensions   string    `json:"package_dimensions_display,omitempty"`
+	Notes               string    `json:"notes,omitempty"`
+	CreatedAt           time.Time `json:"created_at,omitempty"`
+	UpdatedAt           time.Time `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListItemSuppliers(ctx context.Context, q url.Values) (*Page[ItemSupplier], error) {
