@@ -49,26 +49,65 @@ type Checklist struct {
 	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
+// ChecklistStepCompletion mirrors backend ChecklistStepCompletionSerializer
+// — one scanned-step record inside a ChecklistCompletion. The scanned_*
+// FKs match the step's prescribed target shape (asset / location / item;
+// exactly one), with pre-joined display names so the dashboard renders
+// without follow-up fetches.
+type ChecklistStepCompletion struct {
+	ID                  string    `json:"id"`
+	Step                string    `json:"step"`
+	StepName            string    `json:"step_name,omitempty"`
+	StepNumber          int       `json:"step_number,omitempty"`
+	ScannedAt           time.Time `json:"scanned_at"`
+	ScannedAsset        *string   `json:"scanned_asset"`
+	ScannedAssetName    string    `json:"scanned_asset_name,omitempty"`
+	ScannedLocation     *int      `json:"scanned_location"`
+	ScannedLocationName string    `json:"scanned_location_name,omitempty"`
+	ScannedItem         *string   `json:"scanned_item"`
+	ScannedItemName     string    `json:"scanned_item_name,omitempty"`
+	Notes               string    `json:"notes,omitempty"`
+	PhotoURL            *string   `json:"photo_url"`
+	PhotoCaption        string    `json:"photo_caption,omitempty"`
+}
+
 // ChecklistCompletion is one in-progress or finished run of a
-// checklist. Fields mirror ChecklistCompletionSerializer's read shape;
-// nested step_completions omitted from this client for v1 (the scan +
-// finalize flows are queued for v2).
+// checklist. Fields mirror ChecklistCompletionSerializer's read shape.
+// step_completions is populated when the row is fetched per-id via
+// GetChecklistCompletion; the list endpoint also returns it but
+// callers usually don't need the full nested shape there.
 type ChecklistCompletion struct {
-	ID                     string     `json:"id"`
-	Checklist              string     `json:"checklist"`
-	ChecklistName          string     `json:"checklist_name,omitempty"`
-	User                   *int       `json:"user"`
-	UserUsername           string     `json:"user_username,omitempty"`
-	UserName               string     `json:"user_name,omitempty"`
-	StartedAt              *time.Time `json:"started_at"`
-	CompletedAt            *time.Time `json:"completed_at"`
-	Status                 string     `json:"status"`
-	CompletedStepsCount    int        `json:"completed_steps_count"`
-	TotalStepsCount        int        `json:"total_steps_count"`
-	RequiredStepsCompleted int        `json:"required_steps_completed"`
-	RequiredStepsTotal     int        `json:"required_steps_total"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	ID                     string                    `json:"id"`
+	Checklist              string                    `json:"checklist"`
+	ChecklistName          string                    `json:"checklist_name,omitempty"`
+	User                   *int                      `json:"user"`
+	UserUsername           string                    `json:"user_username,omitempty"`
+	UserName               string                    `json:"user_name,omitempty"`
+	StartedAt              *time.Time                `json:"started_at"`
+	CompletedAt            *time.Time                `json:"completed_at"`
+	Status                 string                    `json:"status"`
+	StepCompletions        []ChecklistStepCompletion `json:"step_completions,omitempty"`
+	CompletedStepsCount    int                       `json:"completed_steps_count"`
+	TotalStepsCount        int                       `json:"total_steps_count"`
+	RequiredStepsCompleted int                       `json:"required_steps_completed"`
+	RequiredStepsTotal     int                       `json:"required_steps_total"`
+	CreatedAt              time.Time                 `json:"created_at"`
+	UpdatedAt              time.Time                 `json:"updated_at"`
+}
+
+// ChecklistStepScanRequest is the POST body for the /scan/ action on
+// a completion. Exactly one of AssetID / LocationID / ItemID must be
+// set, matching the prescribed target on the step (the backend rejects
+// mismatches with a 400). Photo upload is intentionally absent here —
+// the TUI can't capture images; steps with `requires_photo=true` need
+// to be completed from the web instead.
+type ChecklistStepScanRequest struct {
+	StepID       string  `json:"step_id"`
+	AssetID      *string `json:"asset_id,omitempty"`
+	LocationID   *int    `json:"location_id,omitempty"`
+	ItemID       *string `json:"item_id,omitempty"`
+	Notes        string  `json:"notes,omitempty"`
+	PhotoCaption string  `json:"photo_caption,omitempty"`
 }
 
 // ListChecklists returns the paginated checklist list. Useful filters:
@@ -109,4 +148,40 @@ func (c *Client) StartChecklist(ctx context.Context, checklistID, userName strin
 // for resumable runs.
 func (c *Client) ListChecklistCompletions(ctx context.Context, q url.Values) (*Page[ChecklistCompletion], error) {
 	return GetPage[ChecklistCompletion](ctx, c, "/api/checklists/completions/", q)
+}
+
+// GetChecklistCompletion fetches one completion with its nested
+// step_completions populated. Used by the stepper to render which
+// steps still need scanning.
+func (c *Client) GetChecklistCompletion(ctx context.Context, id string) (*ChecklistCompletion, error) {
+	var out ChecklistCompletion
+	if err := c.Get(ctx, fmt.Sprintf("/api/checklists/completions/%s/", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ScanChecklistStep records a scan against one step in a completion.
+// The backend cross-checks the prescribed target on the step against
+// the asset_id / location_id / item_id supplied here; mismatches
+// (including missing required photos) return 400 with a `detail`
+// message that surfaces through the standard APIError envelope.
+func (c *Client) ScanChecklistStep(ctx context.Context, completionID string, req ChecklistStepScanRequest) (*ChecklistCompletion, error) {
+	var out ChecklistCompletion
+	if err := c.Post(ctx, fmt.Sprintf("/api/checklists/completions/%s/scan/", completionID), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CompleteChecklist finalizes a checklist run. The backend allows the
+// call once all required steps have been scanned; missing required
+// steps return 400. Returns the updated completion with
+// completed_at + status set.
+func (c *Client) CompleteChecklist(ctx context.Context, completionID string) (*ChecklistCompletion, error) {
+	var out ChecklistCompletion
+	if err := c.Post(ctx, fmt.Sprintf("/api/checklists/completions/%s/complete/", completionID), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
