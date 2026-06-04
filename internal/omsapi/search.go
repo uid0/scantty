@@ -6,8 +6,13 @@ import (
 )
 
 type SearchResult struct {
-	Type     string `json:"type"`
-	ID       int    `json:"id"`
+	Type string `json:"type"`
+	// ID is `any` because backend search returns heterogeneous IDs:
+	// integers for items/locations/SIGs, UUID strings for assets and
+	// work orders. The TUI fmt.Sprints these into detail-screen URLs
+	// so the underlying type doesn't matter — but Go's decoder needs
+	// the breathing room to accept either shape.
+	ID       any    `json:"id"`
 	Title    string `json:"title"`
 	Subtitle string `json:"subtitle,omitempty"`
 	URL      string `json:"url,omitempty"`
