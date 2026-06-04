@@ -161,6 +161,12 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSFacilities)
 				return r, r.screen.Init()
 			}
+		case "K":
+			if _, ok := r.screen.(*ChecklistsScreen); !ok {
+				r.screen = NewChecklistsScreen(r.deps)
+				r.nav.SetActive(WSFacilities)
+				return r, r.screen.Init()
+			}
 		case "Q":
 			if _, ok := r.screen.(*ReorderQueueScreen); !ok {
 				r.screen = NewReorderQueueScreen(r.deps)
