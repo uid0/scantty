@@ -167,6 +167,12 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSFacilities)
 				return r, r.screen.Init()
 			}
+		case "P":
+			if _, ok := r.screen.(*PMBoardScreen); !ok {
+				r.screen = NewPMBoardScreen(r.deps)
+				r.nav.SetActive(WSMaintenance)
+				return r, r.screen.Init()
+			}
 		case "Q":
 			if _, ok := r.screen.(*ReorderQueueScreen); !ok {
 				r.screen = NewReorderQueueScreen(r.deps)
