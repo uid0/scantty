@@ -167,18 +167,20 @@ func (s *ListScreen) scrollIntoView() {
 func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		// Reserve rows for: page title (2), sort header (1), top scroll
-		// indicator (1), per-row subtitle (~1 each, hard to estimate
-		// without measuring — use half the window), and footer hint
-		// (2). With subtitles ~doubling row count, halve the available
-		// rows for the cursor window.
-		avail := m.Height - 6
-		if avail < 6 {
-			avail = 6
+		// Budget against the full terminal height. Chrome eats: status
+		// bar (2: 1 border + 1 content), body padding (2: 1 top + 1
+		// bottom), screen title + blank line (2), sort header (1), both
+		// scroll indicators (2 — assume both visible to avoid clipping
+		// when the list overflows), and a blank + footer hint (2). That
+		// leaves m.Height - 11 rows for the cursor window. Subtitles
+		// roughly double each row so halve the result.
+		avail := m.Height - 11
+		if avail < 4 {
+			avail = 4
 		}
 		s.windowSize = avail / 2
-		if s.windowSize < 4 {
-			s.windowSize = 4
+		if s.windowSize < 2 {
+			s.windowSize = 2
 		}
 		s.scrollIntoView()
 		return s, nil

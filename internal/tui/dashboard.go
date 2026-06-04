@@ -15,6 +15,7 @@ type DashboardScreen struct {
 	summary  *omsapi.InventorySummary
 	reorders []omsapi.ReorderRequest
 	problems []omsapi.AssetProblem
+	pulse    *omsapi.AnalyticsPulse
 	loading  bool
 	loadErr  string
 }
@@ -23,6 +24,7 @@ type dashboardLoadedMsg struct {
 	summary  *omsapi.InventorySummary
 	reorders []omsapi.ReorderRequest
 	problems []omsapi.AssetProblem
+	pulse    *omsapi.AnalyticsPulse
 	err      error
 }
 
@@ -49,6 +51,13 @@ func (s *DashboardScreen) load() tea.Cmd {
 		if pp, perr := deps.OMS.ListAssetProblems(ctx, nil); perr == nil && pp != nil {
 			out.problems = pp.Results
 		}
+		// Analytics pulse is permission-gated (IsAnalyticsViewer); swallow
+		// the error so non-analyst users still see the rest of the
+		// dashboard. Backend caches the response, so the second-fetch
+		// cost is one CPU-cheap cache lookup.
+		if pulse, perr := deps.OMS.GetAnalyticsPulse(ctx, "", "", ""); perr == nil {
+			out.pulse = pulse
+		}
 		return out
 	}
 }
@@ -63,6 +72,7 @@ func (s *DashboardScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.summary = m.summary
 		s.reorders = m.reorders
 		s.problems = m.problems
+		s.pulse = m.pulse
 		return s, nil
 	case tea.KeyMsg:
 		if m.String() == "r" {
@@ -161,6 +171,38 @@ func (s *DashboardScreen) View() string {
 			}
 			b.WriteString("\n")
 		}
+	}
+
+	// Analytics pulse — show only when the user can see it (the dashboard
+	// load swallows the 403 for non-analyst viewers).
+	if s.pulse != nil {
+		b.WriteString(StyleTitle.Render("Pulse · "+s.pulse.Summary.PeriodStart+" → "+s.pulse.Summary.PeriodEnd) + "\n")
+		rows := [][2]string{
+			{"Total value to makerspace", "$" + s.pulse.Summary.TotalValueToMakerspace},
+			{"Internal WOs completed", fmt.Sprintf("%d", s.pulse.Summary.InternalCompletedCount)},
+			{"External WOs closed", fmt.Sprintf("%d", s.pulse.Summary.ExternalClosedCount)},
+		}
+		if s.pulse.MonthlyBudget != "" {
+			rows = append(rows, [2]string{"Monthly budget", "$" + s.pulse.MonthlyBudget})
+		}
+		for _, r := range rows {
+			b.WriteString(fmt.Sprintf("  %s %s\n", StyleMuted.Render(r[0]+":"), r[1]))
+		}
+		if len(s.pulse.TopUsers) > 0 {
+			b.WriteString("  " + StyleMuted.Render("Top users:") + "\n")
+			limit := len(s.pulse.TopUsers)
+			if limit > 3 {
+				limit = 3
+			}
+			for _, u := range s.pulse.TopUsers[:limit] {
+				name := u.FullName
+				if name == "" {
+					name = u.Username
+				}
+				b.WriteString(fmt.Sprintf("    · %s · %d WOs\n", name, u.WOCount))
+			}
+		}
+		b.WriteString("\n")
 	}
 
 	b.WriteString(StyleMuted.Render("r refresh · esc back"))

@@ -19,6 +19,7 @@ type AssetDetailScreen struct {
 	maintenance []omsapi.MaintenanceItem
 	problems    []omsapi.AssetProblem
 	workOrders  []omsapi.WorkOrder
+	powerChain  *omsapi.AssetPowerChain
 	loading     bool
 	loadErr     string
 
@@ -35,6 +36,7 @@ type assetDetailLoadedMsg struct {
 	maintenance []omsapi.MaintenanceItem
 	problems    []omsapi.AssetProblem
 	workOrders  []omsapi.WorkOrder
+	powerChain  *omsapi.AssetPowerChain
 	err         error
 }
 
@@ -86,6 +88,12 @@ func (s *AssetDetailScreen) load() tea.Cmd {
 		if woPage, err := deps.OMS.ListWorkOrders(ctx, q); err == nil && woPage != nil {
 			out.workOrders = woPage.Results
 		}
+		// Power chain is staff-only — non-staff get 403; treat as "no
+		// data" rather than an error so a member viewing the page still
+		// sees everything else.
+		if pc, err := deps.OMS.GetAssetPowerChain(ctx, id); err == nil {
+			out.powerChain = pc
+		}
 		return out
 	}
 }
@@ -104,6 +112,7 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.maintenance = m.maintenance
 		s.problems = m.problems
 		s.workOrders = m.workOrders
+		s.powerChain = m.powerChain
 		s.scroller.Set(s.renderBody())
 		return s, nil
 	case problemLoggedMsg:
@@ -335,6 +344,27 @@ func (s *AssetDetailScreen) renderBody() string {
 			for _, line := range strings.Split(a.LockoutInstructions, "\n") {
 				b.WriteString("  " + line + "\n")
 			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Power chain — the resolved upstream path from this asset back to
+	// its main feed. Answers "which breaker do I throw to kill this
+	// machine" without making someone interpret BreakerLocation free
+	// text. Staff-only on the backend; non-staff render as nil here.
+	if s.powerChain != nil && len(s.powerChain.Chain) > 0 {
+		b.WriteString(StyleTitle.Render("Power chain") + "\n")
+		for i, hop := range s.powerChain.Chain {
+			marker := "  "
+			if i > 0 {
+				marker = "    ↳ "
+			}
+			line := marker + hop.Label
+			meta := strings.TrimSpace(hop.Kind)
+			if meta != "" && meta != hop.Label {
+				line += " " + StyleMuted.Render("["+meta+"]")
+			}
+			b.WriteString(line + "\n")
 		}
 		b.WriteString("\n")
 	}

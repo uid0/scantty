@@ -57,6 +57,19 @@ func (r Root) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// windowResizeCmd returns a cmd that re-emits a tea.WindowSizeMsg with the
+// current terminal dimensions. Used to push the current size into a freshly-
+// swapped screen so its scrollers/lists fit the actual pane rather than the
+// default placeholder size. Returns nil when the size isn't known yet (initial
+// startup); Bubbletea's own first WindowSizeMsg will cover that case.
+func (r Root) windowResizeCmd() tea.Cmd {
+	if r.width <= 0 || r.height <= 0 {
+		return nil
+	}
+	w, h := r.width, r.height
+	return func() tea.Msg { return tea.WindowSizeMsg{Width: w, Height: h} }
+}
+
 func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -88,53 +101,65 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+k", "/":
 			if _, ok := r.screen.(*SearchPalette); !ok {
 				r.screen = NewSearchPalette(r.deps)
-				return r, r.screen.Init()
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
 		case "m":
 			if _, ok := r.screen.(*ProfileScreen); !ok {
 				r.screen = NewProfileScreen(r.deps)
-				return r, r.screen.Init()
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
 		case "a":
 			if _, ok := r.screen.(*AuthorizationsScreen); !ok {
 				r.screen = NewAuthorizationsScreen(r.deps)
 				r.nav.SetActive(WSForgeKey)
-				return r, r.screen.Init()
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
 		case "l":
 			if _, ok := r.screen.(*LockoutsScreen); !ok {
 				r.screen = NewLockoutsScreen(r.deps)
 				r.nav.SetActive(WSForgeKey)
-				return r, r.screen.Init()
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
 		case "n":
 			if _, ok := r.screen.(*NotificationsScreen); !ok {
 				r.screen = NewNotificationsScreen(r.deps)
-				return r, r.screen.Init()
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
 		case "o":
 			if _, ok := r.screen.(*OperationalModesScreen); !ok {
 				r.screen = NewOperationalModesScreen(r.deps)
 				r.nav.SetActive(WSForgeKey)
-				return r, r.screen.Init()
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
 		case "u":
 			if _, ok := r.screen.(*UsageScreen); !ok {
 				r.screen = NewUsageScreen(r.deps)
 				r.nav.SetActive(WSForgeKey)
-				return r, r.screen.Init()
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
 		case "f":
 			if _, ok := r.screen.(*FirmwareScreen); !ok {
 				r.screen = NewFirmwareScreen(r.deps)
 				r.nav.SetActive(WSForgeKey)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
+		case "e":
+			if _, ok := r.screen.(*EPaperPanelsScreen); !ok {
+				r.screen = NewEPaperPanelsScreen(r.deps)
+				r.nav.SetActive(WSForgeKey)
+				return r, r.screen.Init()
+			}
+		case "C":
+			if _, ok := r.screen.(*LocationCheckinsScreen); !ok {
+				r.screen = NewLocationCheckinsScreen(r.deps)
+				r.nav.SetActive(WSFacilities)
 				return r, r.screen.Init()
 			}
 		case "Q":
 			if _, ok := r.screen.(*ReorderQueueScreen); !ok {
 				r.screen = NewReorderQueueScreen(r.deps)
 				r.nav.SetActive(WSPurchasing)
-				return r, r.screen.Init()
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
 		case "V":
 			if _, ok := r.screen.(*VendorsScreen); !ok {
@@ -145,7 +170,7 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "D":
 			if _, ok := r.screen.(*DonationsScreen); !ok {
 				r.screen = NewDonationsScreen(r.deps)
-				return r, r.screen.Init()
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
 		case "q":
 			if _, ok := r.screen.(*WelcomeScreen); ok {
@@ -154,7 +179,7 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			r.screen = NewWelcomeScreen()
 			r.nav.SetActive(WSScan)
-			return r, r.screen.Init()
+			return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 		}
 		if len(m.String()) == 1 {
 			if item, ok := r.nav.ItemForHotkey(rune(m.String()[0])); ok {
@@ -162,7 +187,7 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if next != nil {
 					r.screen = next
 					r.nav.SetActive(item.Key)
-					return r, r.screen.Init()
+					return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 				}
 			}
 		}
@@ -170,7 +195,7 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SwitchScreenMsg:
 		r.screen = m.Screen
 		r.nav.SetActive(m.Workspace)
-		return r, r.screen.Init()
+		return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 
 	case StatusMsg:
 		r.status.Flash(m.Text, m.Level, 0)
