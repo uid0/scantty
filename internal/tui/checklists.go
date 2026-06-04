@@ -21,12 +21,14 @@ import (
 // Hotkey: capital `K` (lowercase `k` is the universal up-arrow).
 // Workspace: WSFacilities (checklists are shop-floor operations).
 type ChecklistsScreen struct {
-	deps        Deps
-	rows        []omsapi.ChecklistSummary
-	completions []omsapi.ChecklistCompletion
-	cursor      int
-	loading     bool
-	loadErr     string
+	deps             Deps
+	rows             []omsapi.ChecklistSummary
+	completions      []omsapi.ChecklistCompletion
+	cursor           int
+	completionCursor int
+	focusCompletions bool
+	loading          bool
+	loadErr          string
 }
 
 type checklistsLoadedMsg struct {
@@ -92,34 +94,62 @@ func (s *ChecklistsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if m.err != nil {
 			return s, Status("start failed: "+m.err.Error(), StatusError)
 		}
-		// Re-pull recent completions so the new run lands in the panel.
+		// Navigate straight into the stepper so the operator can begin
+		// scanning steps. A status flash names the new run; the
+		// in-progress panel will catch up on the next ChecklistsScreen
+		// load.
 		return s, tea.Batch(
 			Status(fmt.Sprintf("started %s · run %s", m.run.ChecklistName, m.run.ID[:8]), StatusOK),
-			s.load(),
+			SwitchTo(WSFacilities, NewChecklistRunScreen(s.deps, m.run.ID)),
 		)
 	case tea.KeyMsg:
 		switch m.String() {
 		case "j", "down":
-			if s.cursor < len(s.rows)-1 {
-				s.cursor++
+			if s.focusCompletions {
+				if s.completionCursor < len(s.completions)-1 {
+					s.completionCursor++
+				}
+			} else {
+				if s.cursor < len(s.rows)-1 {
+					s.cursor++
+				}
 			}
 		case "k", "up":
-			if s.cursor > 0 {
-				s.cursor--
+			if s.focusCompletions {
+				if s.completionCursor > 0 {
+					s.completionCursor--
+				}
+			} else {
+				if s.cursor > 0 {
+					s.cursor--
+				}
+			}
+		case "tab", "shift+tab":
+			// Swap focus between the in-progress panel and the active
+			// checklists list. Only useful when both are non-empty.
+			if len(s.completions) > 0 && len(s.rows) > 0 {
+				s.focusCompletions = !s.focusCompletions
 			}
 		case "r":
 			s.loading = true
 			return s, s.load()
 		case "enter":
-			if s.cursor >= len(s.rows) {
-				return s, nil
-			}
-			row := s.rows[s.cursor]
 			deps := s.deps
 			ctx := deps.Ctx
 			if ctx == nil {
 				ctx = context.Background()
 			}
+			if s.focusCompletions {
+				if s.completionCursor >= len(s.completions) {
+					return s, nil
+				}
+				run := s.completions[s.completionCursor]
+				return s, SwitchTo(WSFacilities, NewChecklistRunScreen(s.deps, run.ID))
+			}
+			if s.cursor >= len(s.rows) {
+				return s, nil
+			}
+			row := s.rows[s.cursor]
 			return s, func() tea.Msg {
 				run, err := deps.OMS.StartChecklist(ctx, row.ID, "")
 				return checklistStartedMsg{run: run, err: err}
@@ -139,8 +169,12 @@ func (s *ChecklistsScreen) View() string {
 
 	var b strings.Builder
 	if len(s.completions) > 0 {
-		b.WriteString(StyleTitle.Render(fmt.Sprintf("In-progress runs (%d)", len(s.completions))) + "\n")
-		for _, c := range s.completions {
+		title := fmt.Sprintf("In-progress runs (%d)", len(s.completions))
+		if s.focusCompletions {
+			title += "  " + StyleMuted.Render("[focused]")
+		}
+		b.WriteString(StyleTitle.Render(title) + "\n")
+		for i, c := range s.completions {
 			label := c.ChecklistName
 			if label == "" {
 				label = "checklist " + c.Checklist[:8]
@@ -161,13 +195,22 @@ func (s *ChecklistsScreen) View() string {
 			if c.StartedAt != nil {
 				ts = " · started " + c.StartedAt.Format("01-02 15:04")
 			}
-			b.WriteString(fmt.Sprintf("  · %s  %s%s  %s%s\n",
+			caret := "  · "
+			if s.focusCompletions && i == s.completionCursor {
+				caret = "  ▸ "
+			}
+			line := fmt.Sprintf("%s%s  %s%s  %s%s",
+				caret,
 				label,
 				StyleMuted.Render(progress),
 				StyleMuted.Render(required),
 				StyleMuted.Render(who),
 				StyleMuted.Render(ts),
-			))
+			)
+			if s.focusCompletions && i == s.completionCursor {
+				line = StyleSidebarItemActive.Render(line)
+			}
+			b.WriteString(line + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -203,6 +246,13 @@ func (s *ChecklistsScreen) View() string {
 			b.WriteString("    " + StyleMuted.Render(desc) + "\n")
 		}
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · enter start a run · r refresh · esc back"))
+	footer := "j/k move · enter start a run"
+	if s.focusCompletions {
+		footer = "j/k move · enter open run · tab focus active"
+	} else if len(s.completions) > 0 {
+		footer = "j/k move · enter start a run · tab focus in-progress"
+	}
+	footer += " · r refresh · esc back"
+	b.WriteString("\n" + StyleMuted.Render(footer))
 	return b.String()
 }
