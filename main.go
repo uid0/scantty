@@ -13,12 +13,20 @@ import (
 	"github.com/uid0/scantty/internal/cache"
 	"github.com/uid0/scantty/internal/config"
 	"github.com/uid0/scantty/internal/forgekeyapi"
+	"github.com/uid0/scantty/internal/observability"
 	"github.com/uid0/scantty/internal/omsapi"
 	"github.com/uid0/scantty/internal/tui"
 )
 
 func main() {
+	// Wire Sentry early so config/cache failures + panics during init
+	// are still reported. No-op when SENTRY_DSN isn't set, so dev runs
+	// stay quiet.
+	defer observability.Init()()
+	defer observability.Recover()
+
 	if err := run(); err != nil {
+		observability.CaptureError(err)
 		fmt.Fprintf(os.Stderr, "scantty: %v\n", err)
 		os.Exit(1)
 	}
