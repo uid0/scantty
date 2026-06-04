@@ -155,6 +155,12 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSFacilities)
 				return r, r.screen.Init()
 			}
+		case "B":
+			if _, ok := r.screen.(*MakerBoxesScreen); !ok {
+				r.screen = NewMakerBoxesScreen(r.deps)
+				r.nav.SetActive(WSFacilities)
+				return r, r.screen.Init()
+			}
 		case "Q":
 			if _, ok := r.screen.(*ReorderQueueScreen); !ok {
 				r.screen = NewReorderQueueScreen(r.deps)
