@@ -11,18 +11,20 @@ import (
 )
 
 type ForgeKeyDeviceDetailScreen struct {
-	deps     Deps
-	devID    string
-	device   *forgekeyapi.Device
-	commands []forgekeyapi.DeviceCommand
-	loading  bool
-	loadErr  string
+	deps      Deps
+	devID     string
+	device    *forgekeyapi.Device
+	commands  []forgekeyapi.DeviceCommand
+	temp      *forgekeyapi.TemperatureResponse
+	loading   bool
+	loadErr   string
 	actionMsg string
 }
 
 type fkDeviceLoadedMsg struct {
 	device   *forgekeyapi.Device
 	commands []forgekeyapi.DeviceCommand
+	temp     *forgekeyapi.TemperatureResponse
 	err      error
 }
 
@@ -57,8 +59,27 @@ func (s *ForgeKeyDeviceDetailScreen) load() tea.Cmd {
 			return fkDeviceLoadedMsg{err: err}
 		}
 		cmds, _ := deps.ForgeKey.RecentCommands(ctx, id, 10)
-		return fkDeviceLoadedMsg{device: dev, commands: cmds}
+		var temp *forgekeyapi.TemperatureResponse
+		if deviceReportsTemperature(dev) {
+			// Only call the temperature action when the device announces the
+			// capability. Otherwise the endpoint returns 200 with an empty
+			// readings array which would still render an empty section.
+			temp, _ = deps.ForgeKey.GetDeviceTemperature(ctx, id, "24h")
+		}
+		return fkDeviceLoadedMsg{device: dev, commands: cmds, temp: temp}
 	}
+}
+
+func deviceReportsTemperature(d *forgekeyapi.Device) bool {
+	if d == nil {
+		return false
+	}
+	for _, cap := range d.Capabilities {
+		if cap == "temperature_sensor" || cap == "temperature" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -70,6 +91,7 @@ func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		s.device = m.device
 		s.commands = m.commands
+		s.temp = m.temp
 		return s, nil
 	case fkCommandResultMsg:
 		if m.err != nil {
@@ -182,6 +204,25 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 	}
 	b.WriteString("\n")
 
+	if s.temp != nil && (s.temp.LatestTemperatureC != nil || len(s.temp.Readings) > 0) {
+		b.WriteString(StyleTitle.Render("Temperature (24h)") + "\n")
+		if s.temp.LatestTemperatureC != nil {
+			line := fmt.Sprintf("  %.1f°C", *s.temp.LatestTemperatureC)
+			if s.temp.LatestHumidityPercent != nil {
+				line += fmt.Sprintf("  %.0f%% RH", *s.temp.LatestHumidityPercent)
+			}
+			b.WriteString(line + "\n")
+		}
+		if spark := temperatureSparkline(s.temp.Readings); spark != "" {
+			lo, hi := temperatureRange(s.temp.Readings)
+			b.WriteString(fmt.Sprintf("  %s  %s\n", spark,
+				StyleMuted.Render(fmt.Sprintf("%.1f–%.1f°C · %d samples", lo, hi, len(s.temp.Readings)))))
+		} else if len(s.temp.Readings) == 0 {
+			b.WriteString(StyleMuted.Render("  No readings in the last 24h.") + "\n")
+		}
+		b.WriteString("\n")
+	}
+
 	if len(s.commands) > 0 {
 		b.WriteString(StyleTitle.Render("Recent commands") + "\n")
 		for _, c := range s.commands {
@@ -201,4 +242,91 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 
 	b.WriteString(StyleMuted.Render("e enable · d disable · s status · i identify · p ping · b blink · R restart · r refresh · esc back"))
 	return b.String()
+}
+
+// temperatureRange returns the min/max temp in a slice; zero/zero when
+// empty so callers don't have to special-case the empty case.
+func temperatureRange(readings []forgekeyapi.TemperatureReading) (float64, float64) {
+	if len(readings) == 0 {
+		return 0, 0
+	}
+	lo, hi := readings[0].TemperatureC, readings[0].TemperatureC
+	for _, r := range readings[1:] {
+		if r.TemperatureC < lo {
+			lo = r.TemperatureC
+		}
+		if r.TemperatureC > hi {
+			hi = r.TemperatureC
+		}
+	}
+	return lo, hi
+}
+
+// temperatureSparkline maps a slice of readings into a one-line Unicode
+// block-character sparkline. The 8 block levels span the min↔max range
+// of the actual data — a degree-flat trend collapses to all level-0
+// characters (▁) rather than rendering as random noise. Width caps at
+// 40 columns to fit even inside the side-by-side nav layout; longer
+// series subsample evenly.
+func temperatureSparkline(readings []forgekeyapi.TemperatureReading) string {
+	if len(readings) == 0 {
+		return ""
+	}
+	const blocks = "▁▂▃▄▅▆▇█"
+	const maxWidth = 40
+
+	lo, hi := temperatureRange(readings)
+	if hi == lo {
+		// All samples equal — render one block at level 0 per column.
+		width := len(readings)
+		if width > maxWidth {
+			width = maxWidth
+		}
+		out := make([]rune, width)
+		for i := range out {
+			out[i] = []rune(blocks)[0]
+		}
+		return string(out)
+	}
+
+	// Subsample to the column budget. Each output column averages the
+	// span of source samples that fall in its bucket.
+	samples := readings
+	if len(samples) > maxWidth {
+		step := float64(len(samples)) / float64(maxWidth)
+		downsampled := make([]forgekeyapi.TemperatureReading, maxWidth)
+		for i := 0; i < maxWidth; i++ {
+			start := int(float64(i) * step)
+			end := int(float64(i+1) * step)
+			if end > len(samples) {
+				end = len(samples)
+			}
+			if start >= end {
+				downsampled[i] = samples[start]
+				continue
+			}
+			var sum float64
+			for j := start; j < end; j++ {
+				sum += samples[j].TemperatureC
+			}
+			downsampled[i] = forgekeyapi.TemperatureReading{
+				TemperatureC: sum / float64(end-start),
+			}
+		}
+		samples = downsampled
+	}
+
+	bs := []rune(blocks)
+	out := make([]rune, len(samples))
+	for i, r := range samples {
+		idx := int(((r.TemperatureC - lo) / (hi - lo)) * float64(len(bs)-1))
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(bs) {
+			idx = len(bs) - 1
+		}
+		out[i] = bs[idx]
+	}
+	return string(out)
 }
