@@ -448,6 +448,23 @@ func (s *AssetDetailScreen) renderBody() string {
 		b.WriteString("\n")
 	}
 
+	// Training / certification gate — surface near the top so a tech
+	// walking up with a scanner sees "this needs the laser cert"
+	// before they start an unlock flow that's going to 403. Matches
+	// the e-paper render: cert names when wired, generic
+	// "TRAINING REQUIRED" when only the boolean is set.
+	if a.TrainingRequired || len(a.RequiredCertificationDetails) > 0 {
+		if len(a.RequiredCertificationDetails) > 0 {
+			names := make([]string, 0, len(a.RequiredCertificationDetails))
+			for _, c := range a.RequiredCertificationDetails {
+				names = append(names, c.Name)
+			}
+			b.WriteString(StyleStatusError.Render("REQ: "+strings.Join(names, " · ")) + "\n\n")
+		} else {
+			b.WriteString(StyleStatusError.Render("TRAINING REQUIRED") + "\n\n")
+		}
+	}
+
 	// Cost / acquisition
 	if !a.AmountPaid.Empty() || a.IsDonation || a.DateReceived != "" || a.AgeInDays != nil || a.AcquisitionDisplay != "" {
 		b.WriteString(StyleTitle.Render("Cost & Acquisition") + "\n")
