@@ -20,6 +20,7 @@ type AssetDetailScreen struct {
 	problems    []omsapi.AssetProblem
 	workOrders  []omsapi.WorkOrder
 	powerChain  *omsapi.AssetPowerChain
+	loto        *omsapi.AssetLOTORequirements
 	loading     bool
 	loadErr     string
 
@@ -37,6 +38,7 @@ type assetDetailLoadedMsg struct {
 	problems    []omsapi.AssetProblem
 	workOrders  []omsapi.WorkOrder
 	powerChain  *omsapi.AssetPowerChain
+	loto        *omsapi.AssetLOTORequirements
 	err         error
 }
 
@@ -94,6 +96,12 @@ func (s *AssetDetailScreen) load() tea.Cmd {
 		if pc, err := deps.OMS.GetAssetPowerChain(ctx, id); err == nil {
 			out.powerChain = pc
 		}
+		// LOTO requirements: 404 is the expected shape for an asset with
+		// no isolation steps registered yet, so swallow errors here and
+		// let the renderer decide whether to draw the section.
+		if loto, err := deps.OMS.GetAssetLOTORequirements(ctx, id); err == nil {
+			out.loto = loto
+		}
 		return out
 	}
 }
@@ -113,6 +121,7 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.problems = m.problems
 		s.workOrders = m.workOrders
 		s.powerChain = m.powerChain
+		s.loto = m.loto
 		s.scroller.Set(s.renderBody())
 		return s, nil
 	case problemLoggedMsg:
@@ -435,6 +444,69 @@ func (s *AssetDetailScreen) renderBody() string {
 			b.WriteString(line + "\n")
 			if !p.CreatedAt.IsZero() {
 				b.WriteString("    " + StyleMuted.Render(p.CreatedAt.Format("2006-01-02 15:04")) + "\n")
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// LOTO requirements — show the rolled-up isolation procedure (legacy
+	// lockout fields + structured energy sources + required devices).
+	// Maintenance techs see this between Operational Requirements and
+	// Scheduled maintenance so the "what do I lock out first" answer
+	// sits right next to "what am I about to do".
+	if s.loto != nil && (s.loto.LockoutInstructions != "" || len(s.loto.EnergySources) > 0 || s.loto.IsRequired) {
+		title := "Lockout / Tagout"
+		if s.loto.IsRequired {
+			title += " " + StyleStatusError.Render("REQUIRED")
+		}
+		b.WriteString(StyleTitle.Render(title) + "\n")
+
+		header := []string{}
+		if s.loto.LockoutTypeDisplay != "" {
+			header = append(header, s.loto.LockoutTypeDisplay)
+		}
+		if s.loto.LockoutResponsible != "" {
+			header = append(header, "responsible: "+s.loto.LockoutResponsible)
+		}
+		if len(header) > 0 {
+			b.WriteString("  " + StyleMuted.Render(strings.Join(header, " · ")) + "\n")
+		}
+
+		if s.loto.LockoutInstructions != "" {
+			for _, line := range strings.Split(s.loto.LockoutInstructions, "\n") {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+
+		for _, src := range s.loto.EnergySources {
+			label := src.SourceTypeDisplay
+			if label == "" {
+				label = src.SourceType
+			}
+			line := "  · " + label
+			if src.Magnitude != "" {
+				line += "  " + StyleMuted.Render(src.Magnitude)
+			}
+			if src.IsStale {
+				line += "  " + StyleStatusWarn.Render("STALE")
+			}
+			b.WriteString(line + "\n")
+			if src.IsolationPoint != "" {
+				b.WriteString("    " + StyleMuted.Render("isolate at: ") + src.IsolationPoint + "\n")
+			}
+			for _, dev := range src.RequiredDevicesDetail {
+				devLabel := dev.Label
+				if devLabel == "" {
+					devLabel = dev.DeviceTypeDisplay
+				}
+				status := ""
+				if dev.Status != "" && dev.Status != "available" {
+					status = "  " + StyleStatusWarn.Render(dev.Status)
+				}
+				b.WriteString("    " + StyleMuted.Render("device: ") + devLabel + status + "\n")
+			}
+			if src.Notes != "" {
+				b.WriteString("    " + StyleMuted.Render(src.Notes) + "\n")
 			}
 		}
 		b.WriteString("\n")
