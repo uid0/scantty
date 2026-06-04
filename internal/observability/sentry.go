@@ -1,16 +1,19 @@
 // Package observability wraps scantty's Sentry integration so the main
 // entry point only needs a single defer to wire crash reporting + flush.
 //
-// Sentry reads the DSN, environment, and release from the standard
-// SENTRY_DSN / SENTRY_ENVIRONMENT / SENTRY_RELEASE env vars by default,
-// so we don't add scantty-prefixed wrappers — operators can pass the
-// project DSN straight from the Sentry UI. The self-hosted project
-// slug is "scantty" on highlighter.openmakersuite.net; the DSN is
-// printed in the project settings.
+// The DSN for the self-hosted `scantty` project on
+// highlighter.openmakersuite.net is baked into the binary so a freshly-
+// installed scantty reports crashes out of the box — same convention
+// the mobile / desktop Sentry SDKs use, where the DSN is a public
+// identifier and embedding it doesn't grant write access beyond
+// "send events to this project". Overrides:
 //
-// When SENTRY_DSN is unset, Init becomes a no-op so local dev runs
-// don't accidentally ship breadcrumbs to prod. The returned flush
-// function is safe to defer regardless.
+//   - SENTRY_DSN=https://… → use a different project (staging mirror,
+//     a personal sandbox, etc.).
+//   - SENTRY_DISABLED=1     → no-op init, no events sent.
+//   - SENTRY_ENVIRONMENT    → environment tag, defaults to "dev".
+//   - SENTRY_RELEASE        → release tag, defaults to
+//     scantty@<vcs.revision[:12]> via debug.ReadBuildInfo.
 package observability
 
 import (
@@ -23,9 +26,16 @@ import (
 	"github.com/getsentry/sentry-go"
 )
 
-// Init configures the Sentry SDK from environment variables. The
-// returned function flushes pending events with a short deadline; it
-// is always safe to call (no-op when Sentry was not initialized).
+// defaultDSN points at the `scantty` project on the self-hosted
+// highlighter.openmakersuite.net instance. Public DSNs are safe to
+// commit — see the package doc. To rotate, regenerate the Client Key
+// in the Sentry UI (Settings → Client Keys) and replace this string.
+const defaultDSN = "https://99755afd9a18364d2c89d96bdac2d0fa@highlighter.openmakersuite.net/4"
+
+// Init configures the Sentry SDK using the baked-in DSN by default;
+// SENTRY_DSN overrides, SENTRY_DISABLED=1 disables. The returned
+// function flushes pending events with a short deadline; it is always
+// safe to call (no-op when Sentry was not initialized).
 //
 // Typical usage from main():
 //
@@ -33,9 +43,13 @@ import (
 //
 // The double-call shape lets a single line wire init + deferred flush.
 func Init() func() {
+	if disabled := os.Getenv("SENTRY_DISABLED"); disabled == "1" || disabled == "true" {
+		return func() {}
+	}
+
 	dsn := os.Getenv("SENTRY_DSN")
 	if dsn == "" {
-		return func() {}
+		dsn = defaultDSN
 	}
 
 	environment := os.Getenv("SENTRY_ENVIRONMENT")

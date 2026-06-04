@@ -39,7 +39,8 @@ The first run will fail fast with a clear message if either URL is missing. The 
 | `SCANTTY_FORGEKEY_CA_CERT` | Path to ForgeKey CA cert for verification | unset |
 | `SCANTTY_CACHE_PATH` | SQLite cache file location | `$XDG_CACHE_HOME/scantty/cache.db` |
 | `SCANTTY_SCANNER_SOURCE` | `stdin` (keyboard-emulation scanners) or a serial device path | `stdin` |
-| `SENTRY_DSN` | Sentry DSN. When set, scantty reports panics + `run()` errors to the `scantty` project on the self-hosted Sentry. Unset = no telemetry. | unset |
+| `SENTRY_DSN` | Override the baked-in Sentry DSN (e.g. point at a personal sandbox). The default reports panics + `run()` errors to the `scantty` project on the self-hosted Sentry — public DSN, safe to commit. | baked-in |
+| `SENTRY_DISABLED` | Set to `1` (or `true`) to disable Sentry entirely. | unset |
 | `SENTRY_ENVIRONMENT` | Sentry environment tag (`dev`, `staging`, `prod`). | `dev` |
 | `SENTRY_RELEASE` | Override the release identifier. Defaults to `scantty@<vcs.revision[:12]>` from the build's debug info when available. | derived |
 
