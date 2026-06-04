@@ -46,6 +46,7 @@ func (s *WelcomeScreen) View() string {
 		"  V               — third-party service vendors",
 		"  B               — maker boxes (per-member bin assignments + scan)",
 		"  K               — checklists (active list + in-progress runs)",
+		"  P               — PM dashboard (urgency-sorted board + log service)",
 		"  Q               — pending reorder request queue",
 		"  D               — donations log",
 		"",
