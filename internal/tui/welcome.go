@@ -41,7 +41,7 @@ func (s *WelcomeScreen) View() string {
 		"  o               — operational modes (toggle classroom mode)",
 		"  u               — usage sessions (end active)",
 		"  f               — firmware versions + recent updates",
-		"  e               — ePaper panels (battery, firmware, retire/reactivate)",
+		"  V               — third-party service vendors",
 		"  Q               — pending reorder request queue",
 		"  D               — donations log",
 		"",

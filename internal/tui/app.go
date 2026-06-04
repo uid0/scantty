@@ -161,6 +161,12 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSPurchasing)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
+		case "V":
+			if _, ok := r.screen.(*VendorsScreen); !ok {
+				r.screen = NewVendorsScreen(r.deps)
+				r.nav.SetActive(WSMaintenance)
+				return r, r.screen.Init()
+			}
 		case "D":
 			if _, ok := r.screen.(*DonationsScreen); !ok {
 				r.screen = NewDonationsScreen(r.deps)
