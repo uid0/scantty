@@ -485,8 +485,8 @@ func (s *AssetDetailScreen) renderBody() string {
 		if a.Circuit != "" {
 			b.WriteString(StyleMuted.Render("Circuit: ") + a.Circuit + "\n")
 		}
-		if a.PowerDrawWatts != nil && *a.PowerDrawWatts > 0 {
-			b.WriteString(StyleMuted.Render(fmt.Sprintf("Power draw: %d W", *a.PowerDrawWatts)) + "\n")
+		if !a.PowerDrawWatts.Empty() {
+			b.WriteString(StyleMuted.Render("Power draw: ") + string(a.PowerDrawWatts) + " W\n")
 		}
 		if a.WiringType != "" {
 			b.WriteString(StyleMuted.Render("Wiring: ") + a.WiringType + "\n")
@@ -846,7 +846,7 @@ func hasOperationalReqs(a *omsapi.Asset) bool {
 	if a.Circuit != "" || a.NeedsCompressedAir || a.NeedsVentilation || a.IsChargeable {
 		return true
 	}
-	if a.PowerDrawWatts != nil && *a.PowerDrawWatts > 0 {
+	if !a.PowerDrawWatts.Empty() {
 		return true
 	}
 	if a.WiringType != "" || a.ElectricalBox != "" || a.BreakerLocation != "" {

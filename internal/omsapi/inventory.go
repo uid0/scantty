@@ -133,20 +133,20 @@ type Asset struct {
 	IsChargeable       bool   `json:"is_chargeable,omitempty"`
 
 	// Power / electrical
-	PowerDrawWatts       *int   `json:"power_draw_watts,omitempty"`
-	WiringType           string `json:"wiring_type,omitempty"`
-	Suite                string `json:"suite,omitempty"`
-	ElectricalBox        string `json:"electrical_box,omitempty"`
-	BreakerLocation      string `json:"breaker_location,omitempty"`
-	HasInterlock         bool   `json:"has_interlock,omitempty"`
-	InterlockType        string `json:"interlock_type,omitempty"`
-	InterlockResponsible string `json:"interlock_responsible,omitempty"`
-	LockoutType          string `json:"lockout_type,omitempty"`
-	LockoutInstructions  string `json:"lockout_instructions,omitempty"`
-	LockoutResponsible   string `json:"lockout_responsible,omitempty"`
-	HasNetworkDrop       bool   `json:"has_network_drop,omitempty"`
-	NetworkDropLocation  string `json:"network_drop_location,omitempty"`
-	IsForgeKeyManaged    bool   `json:"is_forgekey_managed,omitempty"`
+	PowerDrawWatts       DecimalString `json:"power_draw_watts,omitempty"`
+	WiringType           string        `json:"wiring_type,omitempty"`
+	Suite                string        `json:"suite,omitempty"`
+	ElectricalBox        string        `json:"electrical_box,omitempty"`
+	BreakerLocation      string        `json:"breaker_location,omitempty"`
+	HasInterlock         bool          `json:"has_interlock,omitempty"`
+	InterlockType        string        `json:"interlock_type,omitempty"`
+	InterlockResponsible string        `json:"interlock_responsible,omitempty"`
+	LockoutType          string        `json:"lockout_type,omitempty"`
+	LockoutInstructions  string        `json:"lockout_instructions,omitempty"`
+	LockoutResponsible   string        `json:"lockout_responsible,omitempty"`
+	HasNetworkDrop       bool          `json:"has_network_drop,omitempty"`
+	NetworkDropLocation  string        `json:"network_drop_location,omitempty"`
+	IsForgeKeyManaged    bool          `json:"is_forgekey_managed,omitempty"`
 
 	// Scanning
 	LastScannedAt *time.Time `json:"last_scanned_at,omitempty"`
