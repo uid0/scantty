@@ -164,12 +164,28 @@ type Asset struct {
 	CanEnable       bool           `json:"can_enable,omitempty"`
 	CanUnlock       bool           `json:"can_unlock,omitempty"`
 
+	// Training / certification gates
+	TrainingRequired             bool                           `json:"training_required,omitempty"`
+	RequiredCertifications       []int                          `json:"required_certifications,omitempty"`
+	RequiredCertificationDetails []RequiredCertificationSummary `json:"required_certification_details,omitempty"`
+
 	// Metadata
 	IsActive   bool      `json:"is_active,omitempty"`
 	ReportOnly bool      `json:"report_only,omitempty"`
 	Notes      string    `json:"notes,omitempty"`
 	CreatedAt  time.Time `json:"created_at,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+}
+
+// RequiredCertificationSummary mirrors the AssetSerializer's
+// required_certification_details payload: light cert info attached
+// directly to the asset so the TUI doesn't need a second round-trip
+// per cert lookup.
+type RequiredCertificationSummary struct {
+	ID      int    `json:"id"`
+	Name    string `json:"name"`
+	Slug    string `json:"slug,omitempty"`
+	SIGName string `json:"sig_name,omitempty"`
 }
 
 type AssetLockout struct {
