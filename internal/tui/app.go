@@ -21,12 +21,12 @@ type Deps struct {
 }
 
 type Root struct {
-	deps    Deps
-	nav     Nav
-	status  StatusBar
-	screen  Screen
-	width   int
-	height  int
+	deps     Deps
+	nav      Nav
+	status   StatusBar
+	screen   Screen
+	width    int
+	height   int
 	navWidth int
 }
 
@@ -142,6 +142,12 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.screen = NewFirmwareScreen(r.deps)
 				r.nav.SetActive(WSForgeKey)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
+		case "e":
+			if _, ok := r.screen.(*EPaperPanelsScreen); !ok {
+				r.screen = NewEPaperPanelsScreen(r.deps)
+				r.nav.SetActive(WSForgeKey)
+				return r, r.screen.Init()
 			}
 		case "Q":
 			if _, ok := r.screen.(*ReorderQueueScreen); !ok {
@@ -268,4 +274,3 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 	}
 	return nil
 }
-
