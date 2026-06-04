@@ -39,6 +39,9 @@ The first run will fail fast with a clear message if either URL is missing. The 
 | `SCANTTY_FORGEKEY_CA_CERT` | Path to ForgeKey CA cert for verification | unset |
 | `SCANTTY_CACHE_PATH` | SQLite cache file location | `$XDG_CACHE_HOME/scantty/cache.db` |
 | `SCANTTY_SCANNER_SOURCE` | `stdin` (keyboard-emulation scanners) or a serial device path | `stdin` |
+| `SENTRY_DSN` | Sentry DSN. When set, scantty reports panics + `run()` errors to the `scantty` project on the self-hosted Sentry. Unset = no telemetry. | unset |
+| `SENTRY_ENVIRONMENT` | Sentry environment tag (`dev`, `staging`, `prod`). | `dev` |
+| `SENTRY_RELEASE` | Override the release identifier. Defaults to `scantty@<vcs.revision[:12]>` from the build's debug info when available. | derived |
 
 If `SCANTTY_OMS_TOKEN` is unset, scantty still works for the `AllowAny` endpoints — barcode lookup, scanning items/assets/fixtures, and creating reorder requests in kiosk mode all function unauthenticated. Receiving deliveries (`/api/reorders/receipts/`) and most other writes require a token.
 
