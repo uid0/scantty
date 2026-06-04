@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,20 +13,30 @@ import (
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
-type AssetDetailScreen struct {
-	deps        Deps
-	assetID     string
-	asset       *omsapi.Asset
-	maintenance []omsapi.MaintenanceItem
-	problems    []omsapi.AssetProblem
-	workOrders  []omsapi.WorkOrder
-	powerChain  *omsapi.AssetPowerChain
-	loto        *omsapi.AssetLOTORequirements
-	loading     bool
-	loadErr     string
+type assetWriteForm int
 
-	logging      bool
-	logInput     textinput.Model
+const (
+	formNone assetWriteForm = iota
+	formLogProblem
+	formMarkOOS
+)
+
+type AssetDetailScreen struct {
+	deps         Deps
+	assetID      string
+	asset        *omsapi.Asset
+	maintenance  []omsapi.MaintenanceItem
+	problems     []omsapi.AssetProblem
+	workOrders   []omsapi.WorkOrder
+	powerChain   *omsapi.AssetPowerChain
+	loto         *omsapi.AssetLOTORequirements
+	reservations []omsapi.AssetReservation
+	oos          []omsapi.AssetOutOfService
+	loading      bool
+	loadErr      string
+
+	activeForm   assetWriteForm
+	input        textinput.Model
 	logResult    string
 	logResultLvl StatusLevel
 
@@ -33,18 +44,30 @@ type AssetDetailScreen struct {
 }
 
 type assetDetailLoadedMsg struct {
-	asset       *omsapi.Asset
-	maintenance []omsapi.MaintenanceItem
-	problems    []omsapi.AssetProblem
-	workOrders  []omsapi.WorkOrder
-	powerChain  *omsapi.AssetPowerChain
-	loto        *omsapi.AssetLOTORequirements
-	err         error
+	asset        *omsapi.Asset
+	maintenance  []omsapi.MaintenanceItem
+	problems     []omsapi.AssetProblem
+	workOrders   []omsapi.WorkOrder
+	powerChain   *omsapi.AssetPowerChain
+	loto         *omsapi.AssetLOTORequirements
+	reservations []omsapi.AssetReservation
+	oos          []omsapi.AssetOutOfService
+	err          error
 }
 
 type problemLoggedMsg struct {
 	problem *omsapi.AssetProblem
 	err     error
+}
+
+type oosMarkedMsg struct {
+	oos *omsapi.AssetOutOfService
+	err error
+}
+
+type oosRestoredMsg struct {
+	oos *omsapi.AssetOutOfService
+	err error
 }
 
 func NewAssetDetailScreen(deps Deps, id string) *AssetDetailScreen {
@@ -63,7 +86,7 @@ func (s *AssetDetailScreen) Title() string {
 	return "Asset"
 }
 
-func (s *AssetDetailScreen) WantsRawInput() bool { return s.logging }
+func (s *AssetDetailScreen) WantsRawInput() bool { return s.activeForm != formNone }
 
 func (s *AssetDetailScreen) Init() tea.Cmd { return s.load() }
 
@@ -102,6 +125,12 @@ func (s *AssetDetailScreen) load() tea.Cmd {
 		if loto, err := deps.OMS.GetAssetLOTORequirements(ctx, id); err == nil {
 			out.loto = loto
 		}
+		if resvPage, err := deps.OMS.ListAssetReservations(ctx, q); err == nil && resvPage != nil {
+			out.reservations = resvPage.Results
+		}
+		if oosPage, err := deps.OMS.ListAssetOutOfService(ctx, q); err == nil && oosPage != nil {
+			out.oos = oosPage.Results
+		}
 		return out
 	}
 }
@@ -122,10 +151,12 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.workOrders = m.workOrders
 		s.powerChain = m.powerChain
 		s.loto = m.loto
+		s.reservations = m.reservations
+		s.oos = m.oos
 		s.scroller.Set(s.renderBody())
 		return s, nil
 	case problemLoggedMsg:
-		s.logging = false
+		s.activeForm = formNone
 		if m.err != nil {
 			s.logResult = "log failed: " + m.err.Error()
 			s.logResultLvl = StatusError
@@ -133,19 +164,39 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		s.logResult = "problem logged"
 		s.logResultLvl = StatusOK
-		s.logInput.SetValue("")
+		s.input.SetValue("")
+		return s, tea.Batch(Status(s.logResult, StatusOK), s.load())
+	case oosMarkedMsg:
+		s.activeForm = formNone
+		if m.err != nil {
+			s.logResult = "OOS failed: " + m.err.Error()
+			s.logResultLvl = StatusError
+			return s, Status(s.logResult, StatusError)
+		}
+		s.logResult = "marked out of service"
+		s.logResultLvl = StatusOK
+		s.input.SetValue("")
+		return s, tea.Batch(Status(s.logResult, StatusOK), s.load())
+	case oosRestoredMsg:
+		if m.err != nil {
+			s.logResult = "restore failed: " + m.err.Error()
+			s.logResultLvl = StatusError
+			return s, Status(s.logResult, StatusError)
+		}
+		s.logResult = "restored"
+		s.logResultLvl = StatusOK
 		return s, tea.Batch(Status(s.logResult, StatusOK), s.load())
 	case tea.KeyMsg:
-		if s.logging {
+		if s.activeForm != formNone {
 			switch m.Type {
 			case tea.KeyEsc:
-				s.logging = false
+				s.activeForm = formNone
 				return s, nil
 			case tea.KeyEnter:
-				return s.submitProblem()
+				return s.submitForm()
 			}
 			var cmd tea.Cmd
-			s.logInput, cmd = s.logInput.Update(msg)
+			s.input, cmd = s.input.Update(msg)
 			return s, cmd
 		}
 		if s.scroller.Handle(m) {
@@ -157,21 +208,92 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loadErr = ""
 			return s, s.load()
 		case "p":
-			ti := textinput.New()
-			ti.Prompt = ""
-			ti.Placeholder = "describe the problem"
-			ti.CharLimit = 1000
-			ti.Focus()
-			s.logInput = ti
-			s.logging = true
+			s.openForm(formLogProblem, "describe the problem", 1000)
 			return s, textinput.Blink
+		case "o":
+			if s.openOOS() != nil {
+				s.logResult = "already out of service"
+				s.logResultLvl = StatusWarn
+				return s, Status(s.logResult, StatusWarn)
+			}
+			s.openForm(formMarkOOS, "reason (e.g. spindle bearing seized)", 500)
+			return s, textinput.Blink
+		case "R":
+			open := s.openOOS()
+			if open == nil {
+				s.logResult = "no open OOS to restore"
+				s.logResultLvl = StatusWarn
+				return s, Status(s.logResult, StatusWarn)
+			}
+			return s, s.restoreOOS(open.ID)
 		}
 	}
 	return s, nil
 }
 
+func (s *AssetDetailScreen) openForm(kind assetWriteForm, placeholder string, limit int) {
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.Placeholder = placeholder
+	ti.CharLimit = limit
+	ti.Focus()
+	s.input = ti
+	s.activeForm = kind
+	s.logResult = ""
+}
+
+func (s *AssetDetailScreen) openOOS() *omsapi.AssetOutOfService {
+	for i := range s.oos {
+		if s.oos[i].IsOpen {
+			return &s.oos[i]
+		}
+	}
+	return nil
+}
+
+func (s *AssetDetailScreen) submitForm() (Screen, tea.Cmd) {
+	switch s.activeForm {
+	case formLogProblem:
+		return s.submitProblem()
+	case formMarkOOS:
+		return s.submitOOS()
+	}
+	return s, nil
+}
+
+func (s *AssetDetailScreen) submitOOS() (Screen, tea.Cmd) {
+	reason := strings.TrimSpace(s.input.Value())
+	if reason == "" {
+		s.logResult = "reason required"
+		s.logResultLvl = StatusError
+		return s, nil
+	}
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	body := omsapi.OpenAssetOOS{Asset: s.assetID, Reason: reason}
+	return s, func() tea.Msg {
+		out, err := deps.OMS.OpenAssetOutOfService(ctx, body)
+		return oosMarkedMsg{oos: out, err: err}
+	}
+}
+
+func (s *AssetDetailScreen) restoreOOS(id string) tea.Cmd {
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		out, err := deps.OMS.RestoreAssetOutOfService(ctx, id)
+		return oosRestoredMsg{oos: out, err: err}
+	}
+}
+
 func (s *AssetDetailScreen) submitProblem() (Screen, tea.Cmd) {
-	desc := strings.TrimSpace(s.logInput.Value())
+	desc := strings.TrimSpace(s.input.Value())
 	if desc == "" {
 		s.logResult = "description required"
 		s.logResultLvl = StatusError
@@ -201,10 +323,15 @@ func (s *AssetDetailScreen) View() string {
 		return StyleMuted.Render("Asset not found.")
 	}
 
-	if s.logging {
+	if s.activeForm != formNone {
 		var b strings.Builder
-		b.WriteString(StyleTitle.Render("Log a problem") + "\n")
-		b.WriteString(s.logInput.View() + "\n")
+		switch s.activeForm {
+		case formLogProblem:
+			b.WriteString(StyleTitle.Render("Log a problem") + "\n")
+		case formMarkOOS:
+			b.WriteString(StyleTitle.Render("Mark out of service") + "\n")
+		}
+		b.WriteString(s.input.View() + "\n")
 		if s.logResult != "" {
 			b.WriteString(RenderStatus(s.logResult, s.logResultLvl) + "\n")
 		}
@@ -217,7 +344,7 @@ func (s *AssetDetailScreen) View() string {
 	if s.logResult != "" {
 		footer += RenderStatus(s.logResult, s.logResultLvl) + "\n\n"
 	}
-	footer += StyleMuted.Render("j/k scroll · pgup/pgdn page · p log problem · r refresh · esc back")
+	footer += StyleMuted.Render("j/k scroll · pgup/pgdn page · p log problem · o mark OOS · R restore · r refresh · esc back")
 	return body + "\n\n" + footer
 }
 
@@ -269,6 +396,57 @@ func (s *AssetDetailScreen) renderBody() string {
 		b.WriteString("\n" + a.Description + "\n")
 	}
 	b.WriteString("\n")
+
+	// OOS banner — surface before anything else so a tech walking up
+	// with a scanner sees "this is broken" before they read serials.
+	if open := s.openOOS(); open != nil {
+		b.WriteString(StyleStatusError.Render("OUT OF SERVICE") + "\n")
+		meta := []string{}
+		if !open.PlacedOutAt.IsZero() {
+			meta = append(meta, "since "+open.PlacedOutAt.Format("2006-01-02 15:04"))
+		}
+		if open.PlacedByUsername != "" {
+			meta = append(meta, "by "+open.PlacedByUsername)
+		}
+		if open.ExpectedReturnAt != nil {
+			meta = append(meta, "back "+open.ExpectedReturnAt.Format("2006-01-02"))
+		}
+		if len(meta) > 0 {
+			b.WriteString(StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
+		}
+		if open.Reason != "" {
+			b.WriteString(open.Reason + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Reservations — active / upcoming entries above scheduled
+	// maintenance so a tech sees "this is reserved for welding class
+	// in 2h" before booking themselves into an hour-long repair.
+	if active := s.activeReservations(); len(active) > 0 {
+		b.WriteString(StyleTitle.Render(fmt.Sprintf("Reservations (%d)", len(active))) + "\n")
+		for _, r := range active {
+			marker := "  · "
+			if r.IsCurrent {
+				marker = StyleStatusWarn.Render("  ● ")
+			}
+			line := marker + r.Title
+			if r.IsCurrent {
+				line += " " + StyleStatusWarn.Render("NOW")
+			}
+			b.WriteString(line + "\n")
+			window := r.StartsAt.Format("2006-01-02 15:04") + " → " + r.EndsAt.Format("2006-01-02 15:04")
+			meta := []string{window}
+			if r.ReservedByUsername != "" {
+				meta = append(meta, "by "+r.ReservedByUsername)
+			}
+			b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
+			if r.Notes != "" {
+				b.WriteString("    " + StyleMuted.Render(r.Notes) + "\n")
+			}
+		}
+		b.WriteString("\n")
+	}
 
 	// Cost / acquisition
 	if !a.AmountPaid.Empty() || a.IsDonation || a.DateReceived != "" || a.AgeInDays != nil || a.AcquisitionDisplay != "" {
@@ -643,6 +821,25 @@ func (s *AssetDetailScreen) renderBody() string {
 	}
 
 	return b.String()
+}
+
+// activeReservations returns reservations that are not cancelled and
+// have not yet ended, in chronological order. The backend orders by
+// starts_at; we filter here so we don't refetch when the screen state
+// is already in hand.
+func (s *AssetDetailScreen) activeReservations() []omsapi.AssetReservation {
+	now := time.Now()
+	out := []omsapi.AssetReservation{}
+	for _, r := range s.reservations {
+		if r.CancelledAt != nil {
+			continue
+		}
+		if r.EndsAt.Before(now) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 func hasOperationalReqs(a *omsapi.Asset) bool {
