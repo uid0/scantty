@@ -21,12 +21,12 @@ type Deps struct {
 }
 
 type Root struct {
-	deps    Deps
-	nav     Nav
-	status  StatusBar
-	screen  Screen
-	width   int
-	height  int
+	deps     Deps
+	nav      Nav
+	status   StatusBar
+	screen   Screen
+	width    int
+	height   int
 	navWidth int
 }
 
@@ -134,6 +134,12 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if _, ok := r.screen.(*ReorderQueueScreen); !ok {
 				r.screen = NewReorderQueueScreen(r.deps)
 				r.nav.SetActive(WSPurchasing)
+				return r, r.screen.Init()
+			}
+		case "V":
+			if _, ok := r.screen.(*VendorsScreen); !ok {
+				r.screen = NewVendorsScreen(r.deps)
+				r.nav.SetActive(WSMaintenance)
 				return r, r.screen.Init()
 			}
 		case "D":
@@ -255,4 +261,3 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 	}
 	return nil
 }
-
