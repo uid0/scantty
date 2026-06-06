@@ -21,11 +21,11 @@ func NewStatusBar() StatusBar {
 	return StatusBar{scanner: "idle"}
 }
 
-func (s *StatusBar) SetWidth(w int)            { s.width = w }
-func (s *StatusBar) SetOMSConn(ok bool)        { s.connOMS = ok }
-func (s *StatusBar) SetForgeKeyConn(ok bool)   { s.connFK = ok }
-func (s *StatusBar) SetScanner(state string)   { s.scanner = state }
-func (s *StatusBar) SetUnread(n int)           { s.unread = n }
+func (s *StatusBar) SetWidth(w int)          { s.width = w }
+func (s *StatusBar) SetOMSConn(ok bool)      { s.connOMS = ok }
+func (s *StatusBar) SetForgeKeyConn(ok bool) { s.connFK = ok }
+func (s *StatusBar) SetScanner(state string) { s.scanner = state }
+func (s *StatusBar) SetUnread(n int)         { s.unread = n }
 
 func (s *StatusBar) Flash(text string, level StatusLevel, ttl time.Duration) {
 	s.message = text

@@ -11,12 +11,13 @@ import (
 )
 
 type PurchaseOrderDetailScreen struct {
-	deps     Deps
-	poID     string
-	po       *omsapi.PurchaseOrder
-	loading  bool
-	loadErr  string
-	scroller *TextScroller
+	deps           Deps
+	poID           string
+	po             *omsapi.PurchaseOrder
+	loading        bool
+	loadErr        string
+	scroller       *TextScroller
+	terminalHeight int
 }
 
 type poDetailLoadedMsg struct {
@@ -60,7 +61,7 @@ func (s *PurchaseOrderDetailScreen) load() tea.Cmd {
 func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.scroller.SetViewHeight(m.Height - detailChromeRows)
+		s.terminalHeight = m.Height
 		return s, nil
 	case poDetailLoadedMsg:
 		s.loading = false
@@ -98,6 +99,7 @@ func (s *PurchaseOrderDetailScreen) View() string {
 	if s.po == nil {
 		return StyleMuted.Render("Purchase order not found.")
 	}
+	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
 	hint := "j/k scroll · pgup/pgdn page · R receive items · r refresh · esc back"
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }

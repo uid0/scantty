@@ -40,7 +40,8 @@ type AssetDetailScreen struct {
 	logResult    string
 	logResultLvl StatusLevel
 
-	scroller *TextScroller
+	scroller       *TextScroller
+	terminalHeight int
 }
 
 type assetDetailLoadedMsg struct {
@@ -138,7 +139,7 @@ func (s *AssetDetailScreen) load() tea.Cmd {
 func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.scroller.SetViewHeight(m.Height - detailChromeRows)
+		s.terminalHeight = m.Height
 		return s, nil
 	case assetDetailLoadedMsg:
 		s.loading = false
@@ -338,6 +339,16 @@ func (s *AssetDetailScreen) View() string {
 		b.WriteString(StyleMuted.Render("\nenter submit · esc cancel"))
 		return b.String()
 	}
+
+	// Resize the scroller against the current terminal height + footer
+	// shape at render time, not just on WindowSizeMsg. That way the
+	// scroller automatically reflows when the action banner appears or
+	// clears without each state change having to re-budget.
+	footerRows := detailFooterRows
+	if s.logResult != "" {
+		footerRows = detailFooterRowsWithAction
+	}
+	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, footerRows))
 
 	body := s.scroller.View()
 	footer := ""

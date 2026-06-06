@@ -12,13 +12,14 @@ import (
 )
 
 type SIGDetailScreen struct {
-	deps     Deps
-	sigID    int
-	sig      *omsapi.SIG
-	members  []omsapi.SIGMember
-	loading  bool
-	loadErr  string
-	scroller *TextScroller
+	deps           Deps
+	sigID          int
+	sig            *omsapi.SIG
+	members        []omsapi.SIGMember
+	loading        bool
+	loadErr        string
+	scroller       *TextScroller
+	terminalHeight int
 }
 
 type sigDetailLoadedMsg struct {
@@ -75,7 +76,7 @@ func (s *SIGDetailScreen) Init() tea.Cmd {
 func (s *SIGDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.scroller.SetViewHeight(m.Height - detailChromeRows)
+		s.terminalHeight = m.Height
 		return s, nil
 	case sigDetailLoadedMsg:
 		s.loading = false
@@ -106,6 +107,7 @@ func (s *SIGDetailScreen) View() string {
 	if s.loadErr != "" {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
+	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
 	hint := "j/k scroll · pgup/pgdn page · r refresh · esc back"
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }

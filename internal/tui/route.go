@@ -19,17 +19,17 @@ const (
 )
 
 type WorkspaceMeta struct {
-	Key      Workspace
-	Label    string
-	Hotkey   rune
+	Key       Workspace
+	Label     string
+	Hotkey    rune
 	StaffOnly bool
 }
 
 const (
-	WSLogin         Workspace = "login"
-	WSProfile       Workspace = "profile"
+	WSLogin          Workspace = "login"
+	WSProfile        Workspace = "profile"
 	WSAuthorizations Workspace = "authorizations"
-	WSLockouts      Workspace = "lockouts"
+	WSLockouts       Workspace = "lockouts"
 )
 
 func Workspaces() []WorkspaceMeta {

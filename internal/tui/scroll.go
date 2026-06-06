@@ -7,8 +7,11 @@ import (
 )
 
 // TextScroller windows a multi-line string so it fits inside a fixed viewport
-// height. Scrolling is independent of terminal size — callers feed it raw
-// content via Set() and react to scroll keys via Handle().
+// height. The total rows emitted by View() are guaranteed not to exceed
+// viewHeight — when scroll indicators are needed they're rendered IN PLACE of
+// content rows, never additively. This lets callers budget the scroller
+// against the layout once at WindowSizeMsg time without worrying about
+// indicator-driven bottom clipping.
 type TextScroller struct {
 	lines      []string
 	offset     int
@@ -17,10 +20,13 @@ type TextScroller struct {
 
 const defaultDetailHeight = 24
 
-// detailChromeRows is the number of lines a detail screen renders around
-// its scroller (page title, hint footer, scroller indicators, status bar).
-// Used to convert a tea.WindowSizeMsg height into a usable viewport.
-const detailChromeRows = 8
+// indicatorAbove and indicatorBelow are the literal lines we substitute in
+// place of content when the scroller has overflow. Both render at 1 row
+// each.
+var (
+	indicatorAbove = StyleMuted.Render("  ↑ more above")
+	indicatorBelow = StyleMuted.Render("  ↓ more below")
+)
 
 func NewTextScroller(height int) *TextScroller {
 	if height <= 0 {
@@ -35,9 +41,9 @@ func (s *TextScroller) Set(content string) {
 }
 
 // SetViewHeight resizes the scroller's viewport. Callers should forward
-// tea.WindowSizeMsg height (minus surrounding chrome) so the visible
-// portion grows to fill the actual terminal. Falls back to the default
-// when height <= 0.
+// the screen-body height minus surrounding chrome so the visible portion
+// grows to fill the actual terminal. Falls back to the default when
+// height <= 0.
 func (s *TextScroller) SetViewHeight(height int) {
 	if height <= 0 {
 		s.viewHeight = defaultDetailHeight
@@ -48,15 +54,37 @@ func (s *TextScroller) SetViewHeight(height int) {
 }
 
 func (s *TextScroller) clamp() {
+	contentBudget := s.contentBudget()
 	if s.offset < 0 {
 		s.offset = 0
 	}
-	if max := len(s.lines) - s.viewHeight; max > 0 && s.offset > max {
+	if max := len(s.lines) - contentBudget; max > 0 && s.offset > max {
 		s.offset = max
 	}
-	if len(s.lines) <= s.viewHeight {
+	if len(s.lines) <= contentBudget {
 		s.offset = 0
 	}
+}
+
+// contentBudget returns how many content lines the View() call will emit,
+// reserving rows for indicators when overflow is present at either edge.
+// Always >= 1 so a single content row stays visible.
+func (s *TextScroller) contentBudget() int {
+	budget := s.viewHeight
+	if s.offset > 0 {
+		budget--
+	}
+	// Conservative end-of-content check: if total lines exceed the
+	// viewHeight at all, we'll eventually need the bottom indicator. The
+	// per-call adjustment in View() may reclaim a row when the bottom
+	// indicator isn't actually needed at the current offset.
+	if len(s.lines) > s.viewHeight {
+		budget--
+	}
+	if budget < 1 {
+		budget = 1
+	}
+	return budget
 }
 
 func (s *TextScroller) ScrollDown(n int) {
@@ -69,8 +97,11 @@ func (s *TextScroller) ScrollUp(n int) {
 	s.clamp()
 }
 
-func (s *TextScroller) Top()    { s.offset = 0 }
-func (s *TextScroller) Bottom() { s.offset = len(s.lines); s.clamp() }
+func (s *TextScroller) Top() { s.offset = 0; s.clamp() }
+func (s *TextScroller) Bottom() {
+	s.offset = len(s.lines)
+	s.clamp()
+}
 
 // Handle is true when the key was recognized as a scroll command.
 func (s *TextScroller) Handle(msg tea.KeyMsg) bool {
@@ -82,10 +113,10 @@ func (s *TextScroller) Handle(msg tea.KeyMsg) bool {
 		s.ScrollUp(1)
 		return true
 	case "ctrl+d", "pgdown":
-		s.ScrollDown(s.viewHeight)
+		s.ScrollDown(s.pageStep())
 		return true
 	case "ctrl+u", "pgup":
-		s.ScrollUp(s.viewHeight)
+		s.ScrollUp(s.pageStep())
 		return true
 	case "g", "home":
 		s.Top()
@@ -97,21 +128,56 @@ func (s *TextScroller) Handle(msg tea.KeyMsg) bool {
 	return false
 }
 
+// pageStep is one "screen of content" minus 1 line, so paging keeps one
+// row of overlap for the reader's eye. Floors at 1 to avoid infinite loops
+// at tiny viewports.
+func (s *TextScroller) pageStep() int {
+	step := s.viewHeight - 1
+	if step < 1 {
+		step = 1
+	}
+	return step
+}
+
 func (s *TextScroller) View() string {
 	if len(s.lines) == 0 {
 		return ""
 	}
-	end := s.offset + s.viewHeight
+	// Compute the indicators we actually need at this offset.
+	showAbove := s.offset > 0
+
+	// Recompute the precise content slot for this render now that we
+	// know exactly which indicators show.
+	budget := s.viewHeight
+	if showAbove {
+		budget--
+	}
+	end := s.offset + budget
+	showBelow := false
+	if end < len(s.lines) {
+		// Bottom indicator will be needed — take one more content row
+		// back to make room for it.
+		budget--
+		end = s.offset + budget
+		showBelow = true
+	}
+	if budget < 1 {
+		budget = 1
+		end = s.offset + 1
+	}
 	if end > len(s.lines) {
 		end = len(s.lines)
 	}
+
 	var b strings.Builder
-	if s.offset > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+	if showAbove {
+		b.WriteString(indicatorAbove)
+		b.WriteString("\n")
 	}
 	b.WriteString(strings.Join(s.lines[s.offset:end], "\n"))
-	if end < len(s.lines) {
-		b.WriteString("\n" + StyleMuted.Render("  ↓ more below"))
+	if showBelow {
+		b.WriteString("\n")
+		b.WriteString(indicatorBelow)
 	}
 	return b.String()
 }

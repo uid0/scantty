@@ -66,17 +66,71 @@ type listLoadedMsg struct {
 const listWindowSize = 20
 
 type ListScreen struct {
-	deps        Deps
-	title       string
-	spec        listScreenSpec
-	rawRows     []listRow
-	rows        []listRow
-	cursor      int
-	windowStart int
-	windowSize  int
-	sort        listSortMode
-	loading     bool
-	loadErr     string
+	deps           Deps
+	title          string
+	spec           listScreenSpec
+	rawRows        []listRow
+	rows           []listRow
+	cursor         int
+	windowStart    int
+	windowSize     int
+	sort           listSortMode
+	loading        bool
+	loadErr        string
+	terminalHeight int
+}
+
+// computeWindowSize returns how many list ROWS the current terminal can
+// show. The list view renders one row of content per visible item plus a
+// "    subtitle" line under any row that has a subtitle. We size against
+// the real subtitle population so a list of plain-title rows fills the
+// pane instead of getting halved by an old worst-case heuristic.
+//
+// Chrome accounted for here, in addition to the global screen body math
+// in layout.go:
+//
+//	1 row for the "Sort: … · N rows" header
+//	1 row each for ↑/↓ indicators when the list overflows the window
+//	1 blank separator above the hint
+//	1 row for the hint line itself
+func (s *ListScreen) computeWindowSize() int {
+	const listHeaderRows = 1
+	const listFooterRows = 2 // blank + hint
+	// Reserve both indicator slots up front; we'd rather waste one row
+	// when only one indicator shows than clip a row when the list
+	// overflows.
+	const listIndicatorRows = 2
+
+	avail := screenBodyHeight(s.terminalHeight) - listHeaderRows - listFooterRows - listIndicatorRows
+	if avail < 2 {
+		avail = 2
+	}
+	// Each visible row takes 1 line of title, plus 1 more if it carries
+	// a subtitle. Walk the actual rows from the current windowStart
+	// forward, packing as many as fit. Falls back to a per-row estimate
+	// when rows haven't loaded yet.
+	if len(s.rows) == 0 {
+		return avail
+	}
+	used, count, start := 0, 0, s.windowStart
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(s.rows); i++ {
+		cost := 1
+		if s.rows[i].Subtitle != "" {
+			cost = 2
+		}
+		if used+cost > avail {
+			break
+		}
+		used += cost
+		count++
+	}
+	if count < 2 {
+		count = 2
+	}
+	return count
 }
 
 func NewListScreen(deps Deps, title string, spec listScreenSpec) *ListScreen {
@@ -167,21 +221,8 @@ func (s *ListScreen) scrollIntoView() {
 func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		// Budget against the full terminal height. Chrome eats: status
-		// bar (2: 1 border + 1 content), body padding (2: 1 top + 1
-		// bottom), screen title + blank line (2), sort header (1), both
-		// scroll indicators (2 — assume both visible to avoid clipping
-		// when the list overflows), and a blank + footer hint (2). That
-		// leaves m.Height - 11 rows for the cursor window. Subtitles
-		// roughly double each row so halve the result.
-		avail := m.Height - 11
-		if avail < 4 {
-			avail = 4
-		}
-		s.windowSize = avail / 2
-		if s.windowSize < 2 {
-			s.windowSize = 2
-		}
+		s.terminalHeight = m.Height
+		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
 	case listLoadedMsg:
@@ -193,6 +234,11 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loadErr = ""
 		}
 		s.applySort()
+		// Re-compute now that rows are known: computeWindowSize walks
+		// the actual subtitle population, so the first sizing pass
+		// from WindowSizeMsg used a 0-row fallback.
+		s.windowSize = s.computeWindowSize()
+		s.scrollIntoView()
 		return s, nil
 	case tea.KeyMsg:
 		switch m.String() {

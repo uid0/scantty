@@ -16,10 +16,10 @@ func NewNav() Nav {
 	return Nav{items: Workspaces(), active: WSScan}
 }
 
-func (n *Nav) SetWidth(w int)            { n.width = w }
-func (n *Nav) SetActive(ws Workspace)    { n.active = ws }
-func (n *Nav) SetStaff(staff bool)       { n.isStaff = staff }
-func (n *Nav) Active() Workspace         { return n.active }
+func (n *Nav) SetWidth(w int)         { n.width = w }
+func (n *Nav) SetActive(ws Workspace) { n.active = ws }
+func (n *Nav) SetStaff(staff bool)    { n.isStaff = staff }
+func (n *Nav) Active() Workspace      { return n.active }
 
 func (n Nav) ItemForHotkey(r rune) (WorkspaceMeta, bool) {
 	for _, item := range n.items {

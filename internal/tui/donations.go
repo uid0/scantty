@@ -109,7 +109,7 @@ func (s *DonationsScreen) View() string {
 		if !d.ReceivedAt.IsZero() {
 			b.WriteString("    " + StyleMuted.Render(d.ReceivedAt.Format("2006-01-02")))
 			if d.ReceiptID != "" {
-				b.WriteString(StyleMuted.Render(" · receipt "+d.ReceiptID))
+				b.WriteString(StyleMuted.Render(" · receipt " + d.ReceiptID))
 			}
 			b.WriteString("\n")
 		}
