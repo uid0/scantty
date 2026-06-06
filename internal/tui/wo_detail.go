@@ -11,14 +11,15 @@ import (
 )
 
 type WorkOrderDetailScreen struct {
-	deps      Deps
-	woID      string
-	wo        *omsapi.WorkOrder
-	loading   bool
-	loadErr   string
-	actionMsg string
-	actionLvl StatusLevel
-	scroller  *TextScroller
+	deps           Deps
+	woID           string
+	wo             *omsapi.WorkOrder
+	loading        bool
+	loadErr        string
+	actionMsg      string
+	actionLvl      StatusLevel
+	scroller       *TextScroller
+	terminalHeight int
 }
 
 type woDetailLoadedMsg struct {
@@ -79,7 +80,7 @@ func (s *WorkOrderDetailScreen) transition(action string) tea.Cmd {
 func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.scroller.SetViewHeight(m.Height - detailChromeRows)
+		s.terminalHeight = m.Height
 		return s, nil
 	case woDetailLoadedMsg:
 		s.loading = false
@@ -132,6 +133,12 @@ func (s *WorkOrderDetailScreen) View() string {
 	if s.wo == nil {
 		return StyleMuted.Render("Work order not found.")
 	}
+	footerRows := detailFooterRows
+	if s.actionMsg != "" {
+		footerRows = detailFooterRowsWithAction
+	}
+	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, footerRows))
+
 	body := s.scroller.View()
 	footer := ""
 	if s.actionMsg != "" {

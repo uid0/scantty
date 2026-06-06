@@ -11,12 +11,13 @@ import (
 )
 
 type InventoryDetailScreen struct {
-	deps     Deps
-	itemID   string
-	item     *omsapi.Item
-	loadErr  string
-	loading  bool
-	scroller *TextScroller
+	deps           Deps
+	itemID         string
+	item           *omsapi.Item
+	loadErr        string
+	loading        bool
+	scroller       *TextScroller
+	terminalHeight int
 }
 
 type inventoryDetailLoadedMsg struct {
@@ -56,7 +57,7 @@ func (s *InventoryDetailScreen) Init() tea.Cmd {
 func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.scroller.SetViewHeight(m.Height - detailChromeRows)
+		s.terminalHeight = m.Height
 		return s, nil
 	case inventoryDetailLoadedMsg:
 		s.loading = false
@@ -94,6 +95,7 @@ func (s *InventoryDetailScreen) View() string {
 	if s.item == nil {
 		return StyleMuted.Render("Item not found.")
 	}
+	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
 	hint := "j/k scroll · pgup/pgdn page · o/enter request reorder · r refresh · esc back"
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }

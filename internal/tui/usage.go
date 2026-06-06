@@ -141,7 +141,7 @@ func (s *UsageScreen) View() string {
 		if !r.StartedAt.IsZero() {
 			line := "    " + StyleMuted.Render("started "+r.StartedAt.Format("01-02 15:04"))
 			if r.EndedAt != nil {
-				line += StyleMuted.Render(" · ended "+r.EndedAt.Format("01-02 15:04"))
+				line += StyleMuted.Render(" · ended " + r.EndedAt.Format("01-02 15:04"))
 			}
 			b.WriteString(line + "\n")
 		}
