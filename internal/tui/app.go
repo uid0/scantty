@@ -278,7 +278,7 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 			detail: func(id string, d Deps) Screen { return NewAssetDetailScreen(d, id) },
 		})
 	case WSFacilities:
-		return NewListScreen(deps, "Facilities", listScreenSpec{kind: "facilities"})
+		return NewFacilitiesScreen(deps)
 	case WSMaintenance:
 		return NewListScreen(deps, "Maintenance", listScreenSpec{
 			kind:   "work_orders",
