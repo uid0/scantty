@@ -8,23 +8,42 @@ import (
 	"time"
 )
 
+// LookupResult is the unified shape OMS returns from the scanner dispatch
+// endpoint. We map the new `target_*` field names back to Type/ID/Name so
+// the TUI code that read the legacy /api/inventory/lookup-code/ response
+// keeps working without per-call-site changes.
+//
+// Source: backend/scanner/resolvers.py::ResolvedScan.to_dict().
 type LookupResult struct {
-	Type     string `json:"type"`
-	ID       any    `json:"id"`
-	Name     string `json:"name"`
-	SKU      string `json:"sku,omitempty"`
-	Location string `json:"location,omitempty"`
-	Code     string `json:"code,omitempty"`
+	Action     string `json:"action"`
+	Type       string `json:"target_type"`
+	ID         any    `json:"target_id"`
+	Name       string `json:"target_name"`
+	TargetURL  string `json:"target_url,omitempty"`
+	Message    string `json:"message,omitempty"`
+	RawPayload string `json:"raw_payload,omitempty"`
 }
 
 func (c *Client) LookupCode(ctx context.Context, code string) (*LookupResult, error) {
 	if code == "" {
 		return nil, &APIError{Code: "invalid_code", Message: "code is empty"}
 	}
+	// The old /api/inventory/lookup-code/ endpoint was removed when OMS
+	// dropped the access_code feature. The replacement is the scanner
+	// dispatch endpoint which takes a POST body and runs the same
+	// resolver chain (items by SKU, assets by tag, locations by
+	// access_code, etc).
+	body := map[string]string{"payload": strings.ToUpper(code)}
 	var out LookupResult
-	q := url.Values{"code": []string{strings.ToUpper(code)}}
-	if err := c.Get(ctx, "/api/inventory/lookup-code/", q, &out); err != nil {
+	if err := c.Post(ctx, "/api/scanner/dispatch/", body, &out); err != nil {
 		return nil, err
+	}
+	// The dispatcher returns action="unknown" (with no target_*) when
+	// nothing matched. Surface that to the caller as no-match so it
+	// renders alongside the other "(no match)" rows instead of an OK
+	// row with empty fields.
+	if out.Action == "unknown" || out.Type == "" {
+		return nil, nil
 	}
 	return &out, nil
 }
