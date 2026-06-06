@@ -1,0 +1,385 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/uid0/scantty/internal/omsapi"
+)
+
+// ElectricalPanelsScreen lists every PowerPanel via
+// /api/electrical/panels/. Layout mirrors ListScreen but is bespoke
+// because the panel rows carry their own metadata (location, voltage,
+// breaker count, needs-review flag) rather than going through the
+// generic listRow shape.
+type ElectricalPanelsScreen struct {
+	deps           Deps
+	panels         []omsapi.PowerPanel
+	cursor         int
+	windowStart    int
+	loading        bool
+	loadErr        string
+	terminalHeight int
+}
+
+type electricalPanelsLoadedMsg struct {
+	panels []omsapi.PowerPanel
+	err    error
+}
+
+func NewElectricalPanelsScreen(deps Deps) *ElectricalPanelsScreen {
+	return &ElectricalPanelsScreen{deps: deps, loading: true}
+}
+
+func (s *ElectricalPanelsScreen) Title() string { return "Electrical panels" }
+
+func (s *ElectricalPanelsScreen) Init() tea.Cmd { return s.load() }
+
+func (s *ElectricalPanelsScreen) load() tea.Cmd {
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		panels, err := deps.OMS.ListPowerPanels(ctx)
+		return electricalPanelsLoadedMsg{panels: panels, err: err}
+	}
+}
+
+func (s *ElectricalPanelsScreen) windowSize() int {
+	// Each row is 2 lines (header + meta). Footer = 2 (blank + hint).
+	avail := screenBodyHeight(s.terminalHeight) - 2
+	rows := avail / 2
+	if rows < 2 {
+		rows = 2
+	}
+	return rows
+}
+
+func (s *ElectricalPanelsScreen) scrollIntoView() {
+	w := s.windowSize()
+	if s.cursor < s.windowStart {
+		s.windowStart = s.cursor
+	}
+	if s.cursor >= s.windowStart+w {
+		s.windowStart = s.cursor - w + 1
+	}
+	if s.windowStart < 0 {
+		s.windowStart = 0
+	}
+}
+
+func (s *ElectricalPanelsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
+	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalHeight = m.Height
+		s.scrollIntoView()
+		return s, nil
+	case electricalPanelsLoadedMsg:
+		s.loading = false
+		if m.err != nil {
+			s.loadErr = m.err.Error()
+		}
+		s.panels = m.panels
+		if s.cursor >= len(s.panels) {
+			s.cursor = 0
+		}
+		s.scrollIntoView()
+		return s, nil
+	case tea.KeyMsg:
+		switch m.String() {
+		case "j", "down":
+			if s.cursor < len(s.panels)-1 {
+				s.cursor++
+				s.scrollIntoView()
+			}
+		case "k", "up":
+			if s.cursor > 0 {
+				s.cursor--
+				s.scrollIntoView()
+			}
+		case "g", "home":
+			s.cursor = 0
+			s.scrollIntoView()
+		case "G", "end":
+			s.cursor = len(s.panels) - 1
+			if s.cursor < 0 {
+				s.cursor = 0
+			}
+			s.scrollIntoView()
+		case "r":
+			s.loading = true
+			return s, s.load()
+		case "enter":
+			if s.cursor < len(s.panels) {
+				p := s.panels[s.cursor]
+				return s, SwitchTo(WSFacilities, NewElectricalPanelDetailScreen(s.deps, p.ID))
+			}
+		}
+	}
+	return s, nil
+}
+
+func (s *ElectricalPanelsScreen) View() string {
+	if s.loading {
+		return StyleMuted.Render("Loading panels…")
+	}
+	if s.loadErr != "" {
+		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+	}
+	if len(s.panels) == 0 {
+		return StyleMuted.Render("No electrical panels defined yet.") + "\n\n" +
+			StyleMuted.Render("Define panels in the OMS web admin → Electrical → Power panels. They'll show up here on refresh.") + "\n\n" +
+			StyleMuted.Render("r refresh · esc back")
+	}
+
+	var b strings.Builder
+	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d panels", len(s.panels))) + "\n")
+	if s.windowStart > 0 {
+		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+	}
+	end := s.windowStart + s.windowSize()
+	if end > len(s.panels) {
+		end = len(s.panels)
+	}
+	for i := s.windowStart; i < end; i++ {
+		p := s.panels[i]
+		marker := "  "
+		title := p.Name
+		if i == s.cursor {
+			marker = "▸ "
+			title = StyleSidebarItemActive.Render(title)
+		}
+		if p.NeedsReview {
+			title += " " + StyleStatusWarn.Render("needs review")
+		}
+		b.WriteString(marker + title + "\n")
+		meta := []string{}
+		if p.LocationName != "" {
+			meta = append(meta, p.LocationName)
+		}
+		if p.Voltage > 0 {
+			meta = append(meta, fmt.Sprintf("%dV", p.Voltage))
+		}
+		if p.PhaseConfiguration != "" {
+			meta = append(meta, p.PhaseConfiguration)
+		}
+		if p.MainBreakerAmperage > 0 {
+			meta = append(meta, fmt.Sprintf("main %dA", p.MainBreakerAmperage))
+		}
+		meta = append(meta, fmt.Sprintf("%d breakers", p.BreakerCount))
+		b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
+	}
+	if end < len(s.panels) {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.panels)-end)) + "\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(StyleMuted.Render("j/k move · enter open topology · r refresh · esc back"))
+	return b.String()
+}
+
+// ElectricalPanelDetailScreen shows the full panel → breaker → circuit
+// → outlet → asset tree returned by /api/electrical/panels/{id}/topology/.
+type ElectricalPanelDetailScreen struct {
+	deps           Deps
+	panelID        int
+	topology       *omsapi.PowerPanelTopology
+	loading        bool
+	loadErr        string
+	scroller       *TextScroller
+	terminalHeight int
+}
+
+type electricalPanelDetailLoadedMsg struct {
+	topology *omsapi.PowerPanelTopology
+	err      error
+}
+
+func NewElectricalPanelDetailScreen(deps Deps, panelID int) *ElectricalPanelDetailScreen {
+	return &ElectricalPanelDetailScreen{
+		deps:     deps,
+		panelID:  panelID,
+		loading:  true,
+		scroller: NewTextScroller(defaultDetailHeight),
+	}
+}
+
+func (s *ElectricalPanelDetailScreen) Title() string {
+	if s.topology != nil && s.topology.Name != "" {
+		return "Panel: " + s.topology.Name
+	}
+	return fmt.Sprintf("Panel #%d", s.panelID)
+}
+
+func (s *ElectricalPanelDetailScreen) Init() tea.Cmd { return s.load() }
+
+func (s *ElectricalPanelDetailScreen) load() tea.Cmd {
+	deps := s.deps
+	panelID := s.panelID
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		topo, err := deps.OMS.GetPowerPanelTopology(ctx, panelID)
+		return electricalPanelDetailLoadedMsg{topology: topo, err: err}
+	}
+}
+
+func (s *ElectricalPanelDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
+	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalHeight = m.Height
+		return s, nil
+	case electricalPanelDetailLoadedMsg:
+		s.loading = false
+		if m.err != nil {
+			s.loadErr = m.err.Error()
+		}
+		s.topology = m.topology
+		s.scroller.Set(s.renderBody())
+		return s, nil
+	case tea.KeyMsg:
+		if s.scroller.Handle(m) {
+			return s, nil
+		}
+		if m.String() == "r" {
+			s.loading = true
+			return s, s.load()
+		}
+	}
+	return s, nil
+}
+
+func (s *ElectricalPanelDetailScreen) View() string {
+	if s.loading {
+		return StyleMuted.Render("Loading topology…")
+	}
+	if s.loadErr != "" {
+		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+	}
+	if s.topology == nil {
+		return StyleMuted.Render("Panel not found.")
+	}
+	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
+	hint := "j/k scroll · pgup/pgdn page · r refresh · esc back"
+	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+}
+
+func (s *ElectricalPanelDetailScreen) renderBody() string {
+	t := s.topology
+	var b strings.Builder
+
+	b.WriteString(StyleTitle.Render(t.Name) + "\n")
+	meta := []string{}
+	if t.LocationName != "" {
+		meta = append(meta, t.LocationName)
+	}
+	if t.Voltage > 0 {
+		meta = append(meta, fmt.Sprintf("%dV", t.Voltage))
+	}
+	if t.PhaseConfiguration != "" {
+		meta = append(meta, t.PhaseConfiguration)
+	}
+	if t.MainBreakerAmperage > 0 {
+		meta = append(meta, fmt.Sprintf("main %dA", t.MainBreakerAmperage))
+	}
+	if t.BreakerType != "" {
+		meta = append(meta, t.BreakerType)
+	}
+	if len(meta) > 0 {
+		b.WriteString(StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
+	}
+	b.WriteString("\n")
+
+	if t.FedBySummary != nil {
+		fb := t.FedBySummary
+		b.WriteString(StyleTitle.Render("Fed by") + "\n")
+		fedLine := fmt.Sprintf("%s · breaker %s (%dA, %dp)", fb.PanelName, fb.BreakerPosition, fb.BreakerAmperage, fb.BreakerPoleCount)
+		b.WriteString("  " + StyleMuted.Render(fedLine) + "\n")
+		if fb.CircuitLabel != "" {
+			b.WriteString("  " + StyleMuted.Render("via "+fb.CircuitLabel) + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(t.DownstreamPanels) > 0 {
+		b.WriteString(StyleTitle.Render(fmt.Sprintf("Feeds %d sub-panel(s)", len(t.DownstreamPanels))) + "\n")
+		for _, dp := range t.DownstreamPanels {
+			b.WriteString("  · " + dp.Name + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(t.Breakers) == 0 {
+		b.WriteString(StyleMuted.Render("No breakers configured on this panel yet.") + "\n")
+		return b.String()
+	}
+
+	b.WriteString(StyleTitle.Render(fmt.Sprintf("Breakers (%d)", len(t.Breakers))) + "\n")
+	for _, br := range t.Breakers {
+		header := fmt.Sprintf("  [%s] %dA · %s · %dp", br.Position, br.Amperage, br.Phase, br.PoleCount)
+		if br.Label != "" {
+			header += " — " + br.Label
+		}
+		if br.Status != "" && br.Status != "active" {
+			header += " " + StyleStatusWarn.Render(br.Status)
+		}
+		if br.ReviewStatus != "" && br.ReviewStatus != "ok" {
+			header += " " + StyleStatusWarn.Render(br.ReviewStatus)
+		}
+		b.WriteString(header + "\n")
+		if br.ReviewNote != "" {
+			b.WriteString("      " + StyleMuted.Render(br.ReviewNote) + "\n")
+		}
+		for _, ck := range br.Circuits {
+			circLine := "      ↳ circuit"
+			if ck.Label != "" {
+				circLine += " " + ck.Label
+			}
+			circMeta := []string{}
+			if ck.MaxLoadAmps > 0 {
+				circMeta = append(circMeta, fmt.Sprintf("max %dA", ck.MaxLoadAmps))
+			}
+			if ck.ConductorSize != "" {
+				circMeta = append(circMeta, ck.ConductorSize)
+			}
+			if len(circMeta) > 0 {
+				circLine += " " + StyleMuted.Render("("+strings.Join(circMeta, " · ")+")")
+			}
+			b.WriteString(circLine + "\n")
+			for _, out := range ck.Outlets {
+				outLine := "          · outlet"
+				if out.Label != "" {
+					outLine += " " + out.Label
+				}
+				if out.OutletType != "" {
+					outLine += " " + StyleMuted.Render("("+out.OutletType+")")
+				}
+				if out.LocationName != "" {
+					outLine += " " + StyleMuted.Render("@ "+out.LocationName)
+				}
+				if out.Status != "" && out.Status != "active" {
+					outLine += " " + StyleStatusWarn.Render(out.Status)
+				}
+				b.WriteString(outLine + "\n")
+				for _, asset := range out.ConnectedAssets {
+					marker := "              ↳ "
+					line := marker + asset.Name
+					if asset.AssetTag != "" {
+						line += " " + StyleMuted.Render("("+asset.AssetTag+")")
+					}
+					if asset.IsCritical {
+						line += " " + StyleStatusError.Render("critical")
+					}
+					b.WriteString(line + "\n")
+				}
+			}
+		}
+	}
+	return b.String()
+}
