@@ -159,6 +159,34 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values, out any
 	return c.do(ctx, http.MethodGet, path, query, nil, out, true)
 }
 
+// GetBytes fetches a non-JSON response body in full and returns the raw
+// bytes. Used for image/binary endpoints like the project-storage label
+// PNG, where the standard do() path can't help because it always tries to
+// JSON-decode. `urlOrPath` may be an absolute URL (e.g. a backend-supplied
+// label_url) or a baseURL-relative path starting with "/".
+func (c *Client) GetBytes(ctx context.Context, urlOrPath string) ([]byte, error) {
+	u := urlOrPath
+	if strings.HasPrefix(urlOrPath, "/") {
+		u = c.baseURL + urlOrPath
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("oms: build request: %w", err)
+	}
+	if tok := c.AccessToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("oms: GET %s: %w", urlOrPath, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, parseError(resp)
+	}
+	return io.ReadAll(resp.Body)
+}
+
 func (c *Client) Post(ctx context.Context, path string, body, out any) error {
 	return c.do(ctx, http.MethodPost, path, nil, body, out, true)
 }

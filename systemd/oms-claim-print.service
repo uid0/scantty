@@ -1,0 +1,35 @@
+[Unit]
+Description=OMS project-storage claim-tag print daemon (Epson TM via CUPS)
+After=network-online.target cups.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Override these with EnvironmentFile=/etc/oms-claim-print.env on the Pi
+# so secrets and per-site config stay out of the unit file.
+Environment=OMS_API_BASE=https://oms.example.com/api
+Environment=OMS_POLL_INTERVAL_S=10
+# Leave OMS_EPSON_CUPS_QUEUE empty to use the system default CUPS queue.
+# Set it (e.g. TM_T20III) when more than one printer is configured.
+# Environment=OMS_EPSON_CUPS_QUEUE=TM_T20III
+# Bearer token: only needed if the deployment has gated the print-queue
+# endpoint behind auth (default OMS endpoints are AllowAny on the Pi side).
+# Environment=OMS_API_TOKEN=
+
+User=pi
+WorkingDirectory=/opt/oms-claim-print
+ExecStart=/opt/oms-claim-print/oms-claim-print
+
+# Restart on crash but back off so a misconfigured printer can't pin a CPU
+Restart=on-failure
+RestartSec=15s
+
+# Hardening — the daemon only needs network out + CUPS socket + USB printer.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/spool/cups /run/cups
+
+[Install]
+WantedBy=multi-user.target

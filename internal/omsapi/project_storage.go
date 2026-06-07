@@ -56,3 +56,37 @@ type ProjectStorageStint struct {
 func (c *Client) ListProjectStorageStints(ctx context.Context, q url.Values) (*Page[ProjectStorageStint], error) {
 	return GetPage[ProjectStorageStint](ctx, c, "/api/project-storage/stints/", q)
 }
+
+// ProjectStoragePrintQueueEntry is one stint pending a label print on the
+// Pi-side claim-tag daemon. LabelURL is supplied absolute by the backend
+// — callers should honor it verbatim instead of reconstructing the path
+// so a future rename can't break the daemon.
+type ProjectStoragePrintQueueEntry struct {
+	StintID     string `json:"stint_id"`
+	PrintTarget string `json:"print_target"`
+	CreatedAt   string `json:"created_at"`
+	LabelURL    string `json:"label_url"`
+}
+
+// ListProjectStoragePrintQueue returns the stints waiting to print.
+// AllowAny on the backend — the Pi daemon hits this without a JWT.
+func (c *Client) ListProjectStoragePrintQueue(ctx context.Context) ([]ProjectStoragePrintQueueEntry, error) {
+	var out []ProjectStoragePrintQueueEntry
+	if err := c.Get(ctx, "/api/project-storage/stints/print-queue/", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetProjectStorageLabelBytes fetches the rendered label PNG. labelURL
+// is the absolute URL from a print-queue entry; we honor it verbatim.
+func (c *Client) GetProjectStorageLabelBytes(ctx context.Context, labelURL string) ([]byte, error) {
+	return c.GetBytes(ctx, labelURL)
+}
+
+// MarkProjectStorageStintPrinted drains a stint from the print queue
+// after a successful print. note is surfaced in the OMS audit log.
+func (c *Client) MarkProjectStorageStintPrinted(ctx context.Context, stintID, note string) error {
+	path := "/api/project-storage/stints/" + stintID + "/mark-printed/"
+	return c.Post(ctx, path, map[string]string{"note": note}, nil)
+}

@@ -17,7 +17,7 @@ Requires Go 1.22+ (built and tested on 1.26).
 ```sh
 git clone git@github.com:uid0/scantty.git
 cd scantty
-go build .
+go build ./cmd/scantty
 
 export SCANTTY_OMS_URL=https://oms.example.org
 export SCANTTY_FORGEKEY_URL=https://forgekey.example.org
@@ -76,7 +76,11 @@ The classifier in `internal/scanner` distinguishes two scan kinds:
 
 ```
 .
-├── main.go                       # entrypoint: load config, build clients, hand off to bubbletea
+├── cmd/
+│   ├── scantty/main.go           # TUI entrypoint: load config, build clients, hand off to bubbletea
+│   └── oms-claim-print/main.go   # Pi-side claim-tag print daemon (Epson TM via CUPS)
+├── systemd/
+│   └── oms-claim-print.service   # drop-in unit for the Pi daemon
 ├── internal/
 │   ├── config/                   # env-var loader, validation
 │   ├── scanner/                  # scan-code classifier + stdin reader
@@ -148,12 +152,49 @@ Not yet landed (the long tail):
 ## Building and running
 
 ```sh
-go build .          # produces ./scantty
-go vet ./...        # static checks
-go run .            # build + run in one step (good for iteration)
+go build ./cmd/scantty           # produces ./scantty (TUI)
+go build ./cmd/oms-claim-print   # produces ./oms-claim-print (Pi daemon)
+go vet ./...                     # static checks
+go run ./cmd/scantty             # build + run in one step (good for iteration)
 ```
 
 There's no test suite yet — `go test ./...` is a no-op.
+
+## oms-claim-print — Pi-side claim-tag print daemon
+
+A second binary that lives alongside scantty in this repo. It runs on a
+Raspberry Pi attached to an Epson TM receipt printer and drains the OMS
+project-storage print queue.
+
+Configure via env (same names as the legacy Python daemon in OMS so a
+systemd `ExecStart` swap is the only change to migrate a Pi):
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `OMS_API_BASE` | OMS base URL (no `/api` suffix) | *(required)* |
+| `OMS_API_TOKEN` | Bearer if the print-queue endpoint is gated | unset (AllowAny) |
+| `OMS_POLL_INTERVAL_S` | Seconds between queue polls | `10` |
+| `OMS_EPSON_CUPS_QUEUE` | CUPS queue name | system default |
+
+Cross-build for arm64 Pis:
+
+```sh
+GOOS=linux GOARCH=arm64 go build -o oms-claim-print-arm64 ./cmd/oms-claim-print
+```
+
+Install:
+
+```sh
+sudo install -d /opt/oms-claim-print
+sudo install -m 0755 oms-claim-print-arm64 /opt/oms-claim-print/oms-claim-print
+sudo install -m 0644 systemd/oms-claim-print.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now oms-claim-print.service
+journalctl -u oms-claim-print.service -f
+```
+
+OMS endpoints consumed: `GET /api/project-storage/stints/print-queue/`,
+`GET <queue entry's label_url>` verbatim, `POST /api/project-storage/stints/<id>/mark-printed/`.
 
 ## Contributing
 
