@@ -34,9 +34,14 @@ func (c *Certification) Active() bool {
 	return c.RevokedAt == nil
 }
 
+// GetProfile fetches the current user's membership profile.
+//
+// The OMS endpoint is the @action `me` on UserProfileViewSet, mounted at
+// /api/membership/profile/me/ — the bare /api/membership/profile/ URL is
+// the router root for a ViewSet with no list action, so it returns 404.
 func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
 	var out Profile
-	if err := c.Get(ctx, "/api/membership/profile/", nil, &out); err != nil {
+	if err := c.Get(ctx, "/api/membership/profile/me/", nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
