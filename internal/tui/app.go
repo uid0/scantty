@@ -179,6 +179,14 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSPurchasing)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
+		case "N":
+			// Shift+n opens the create-PO form. Lowercase n is taken
+			// by the Notifications shortcut a few branches up.
+			if _, ok := r.screen.(*PurchaseOrderCreateScreen); !ok {
+				r.screen = NewPurchaseOrderCreateScreen(r.deps)
+				r.nav.SetActive(WSPurchasing)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
 		case "V":
 			if _, ok := r.screen.(*VendorsScreen); !ok {
 				r.screen = NewVendorsScreen(r.deps)

@@ -150,6 +150,42 @@ func (c *Client) GetPurchaseOrder(ctx context.Context, id string) (*PurchaseOrde
 	return &out, nil
 }
 
+// PurchaseOrderCreateItem is one line in the PurchaseOrderCreate payload.
+// The OMS create endpoint accepts three line shapes, picked by which fields
+// are set: inventory (ItemSupplierID), asset (AssetID), or freeform
+// (Description). The fields are pointers so omitempty omits them cleanly
+// when nil — sending ``item_supplier_id: 0`` or ``asset_id: ""`` would
+// route to the wrong branch on the backend.
+type PurchaseOrderCreateItem struct {
+	ItemSupplierID       *int     `json:"item_supplier_id,omitempty"`
+	AssetID              *string  `json:"asset_id,omitempty"`
+	Description          string   `json:"description,omitempty"`
+	Quantity             int      `json:"quantity"`
+	UnitCost             *float64 `json:"unit_cost,omitempty"`
+	ExpectedShipmentDate string   `json:"expected_shipment_date,omitempty"`
+}
+
+// PurchaseOrderCreate mirrors backend PurchaseOrderCreateSerializer —
+// supplier + line items, with optional expected_delivery_date and notes.
+// po_number is server-generated, so it's not in this payload.
+type PurchaseOrderCreate struct {
+	Supplier              int                       `json:"supplier"`
+	ExpectedDeliveryDate  string                    `json:"expected_delivery_date,omitempty"`
+	Notes                 string                    `json:"notes,omitempty"`
+	Items                 []PurchaseOrderCreateItem `json:"items"`
+}
+
+// CreatePurchaseOrder posts a new PO. The backend assigns po_number
+// (PO-YYYY-NNNN), creates the line-item rows, and returns the saved PO
+// with the standard PurchaseOrder shape — items + attachments populated.
+func (c *Client) CreatePurchaseOrder(ctx context.Context, req PurchaseOrderCreate) (*PurchaseOrder, error) {
+	var out PurchaseOrder
+	if err := c.Post(ctx, "/api/reorders/purchase-orders/", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 type ReceiptLine struct {
 	ItemSupplier any `json:"item_supplier,omitempty"`
 	PurchaseOrderItem any `json:"purchase_order_item,omitempty"`
