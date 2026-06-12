@@ -161,6 +161,18 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSFacilities)
 				return r, r.screen.Init()
 			}
+		case "s":
+			// Screens that advertise lowercase `s` in their on-screen
+			// prompt (maker-boxes bin+user scan, list-screen sort)
+			// claim the key here so the ItemForHotkey('s') fallthrough
+			// below doesn't whisk the operator off to WSSettings.
+			// Settings is still reachable from every other screen.
+			switch r.screen.(type) {
+			case *MakerBoxesScreen, *ListScreen:
+				next, cmd := r.screen.Update(msg)
+				r.screen = next
+				return r, cmd
+			}
 		case "K":
 			if _, ok := r.screen.(*ChecklistsScreen); !ok {
 				r.screen = NewChecklistsScreen(r.deps)
