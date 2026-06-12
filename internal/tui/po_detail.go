@@ -272,20 +272,20 @@ func renderPOLineItem(b *strings.Builder, li omsapi.PurchaseOrderItem, poSupplie
 	}
 	b.WriteString(line + "\n")
 
+	// Second line: JD-Edwards-style aligned cost row — Part Number,
+	// Unit Cost, Quantity, Total Cost. Fixed-width fields so decimal
+	// points line up between rows when the operator scans the PO.
+	b.WriteString("    " + StyleMuted.Render(jdeCostLine(li)) + "\n")
+
+	// Third line: anything else worth surfacing that isn't already on
+	// the JDE row — item type, expected shipment, supplier override,
+	// voided flag. Skipped entirely when nothing applies.
 	meta := []string{}
 	if li.ItemType != "" {
 		meta = append(meta, "type "+li.ItemType)
 	}
-	if !li.UnitCostOrdered.Empty() {
-		meta = append(meta, "@ $"+string(li.UnitCostOrdered))
-	}
 	if !li.UnitCostActual.Empty() && li.UnitCostActual != li.UnitCostOrdered {
 		meta = append(meta, "actual @ $"+string(li.UnitCostActual))
-	}
-	if !li.ActualCost.Empty() {
-		meta = append(meta, "actual $"+string(li.ActualCost))
-	} else if !li.EstimatedCost.Empty() {
-		meta = append(meta, "est $"+string(li.EstimatedCost))
 	}
 	if li.ExpectedShipmentDate != "" {
 		meta = append(meta, "ship by "+li.ExpectedShipmentDate)
@@ -303,8 +303,6 @@ func renderPOLineItem(b *strings.Builder, li omsapi.PurchaseOrderItem, poSupplie
 	if sku, ok := li.ItemDetails["sku"].(string); ok && sku != "" {
 		if name, ok2 := li.ItemDetails["name"].(string); ok2 && name != "" && name != label {
 			b.WriteString("    " + StyleMuted.Render(fmt.Sprintf("inv item: %s · SKU %s", name, sku)) + "\n")
-		} else {
-			b.WriteString("    " + StyleMuted.Render("SKU "+sku) + "\n")
 		}
 	}
 	if tag, ok := li.AssetDetails["asset_tag"].(string); ok && tag != "" {
@@ -320,4 +318,42 @@ func renderPOLineItem(b *strings.Builder, li omsapi.PurchaseOrderItem, poSupplie
 	if li.Notes != "" {
 		b.WriteString("    " + StyleMuted.Render(li.Notes) + "\n")
 	}
+}
+
+// jdeCostLine renders the per-item cost summary as a JD-Edwards-style
+// columnar row. Decimal points align between items when the columns
+// don't overflow — for inventory items SKUs are usually 8-16 chars,
+// asset tags rarely run past 12, so the 20-char part-number column
+// holds the typical case without truncation. Long part numbers
+// expand the field and the columns to their right shift past the
+// usual alignment; that's a knowing trade-off so we never truncate
+// an identifier the operator needs to read.
+func jdeCostLine(li omsapi.PurchaseOrderItem) string {
+	part := "—"
+	if sku, ok := li.ItemDetails["sku"].(string); ok && sku != "" {
+		part = sku
+	} else if tag, ok := li.AssetDetails["asset_tag"].(string); ok && tag != "" {
+		part = tag
+	}
+
+	unit := "—"
+	if !li.UnitCostOrdered.Empty() {
+		unit = string(li.UnitCostOrdered)
+	}
+
+	total := "—"
+	if !li.ActualCost.Empty() {
+		total = string(li.ActualCost)
+	} else if !li.EstimatedCost.Empty() {
+		total = string(li.EstimatedCost)
+	}
+
+	// %-20s left-aligns the part number in a fixed 20-char column so
+	// the cost / qty / total fields all start at the same offset
+	// across rows. %10s right-aligns the decimal strings so their
+	// decimal points fall in the same column.
+	return fmt.Sprintf(
+		"PART  %-20s   UNIT $%10s   QTY %5d   TOTAL $%10s",
+		part, unit, li.QuantityOrdered, total,
+	)
 }
