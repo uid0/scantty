@@ -128,6 +128,9 @@ func (s *OperationalModesScreen) View() string {
 		if label == "" {
 			label = fmt.Sprintf("asset %v", r.Asset)
 		}
+		if r.AssetLocationName != "" {
+			label = fmt.Sprintf("%s · %s", label, r.AssetLocationName)
+		}
 		title := fmt.Sprintf("%s%s  [%s]", caret, label, mode)
 		if r.ClassroomModeEnabled {
 			title += "  " + StyleStatusWarn.Render("📚 classroom")
