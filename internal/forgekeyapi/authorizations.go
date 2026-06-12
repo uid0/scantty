@@ -105,12 +105,13 @@ func (c *Client) Unlock(ctx context.Context, id string) error {
 }
 
 type OperationalMode struct {
-	ID                      any        `json:"id"`
-	Asset                   any        `json:"asset"`
-	Mode                    string     `json:"mode"`
-	ClassroomModeEnabled    bool       `json:"classroom_mode_enabled"`
-	ClassroomModeEnabledBy  *any       `json:"classroom_mode_enabled_by,omitempty"`
-	ClassroomModeEnabledAt  *time.Time `json:"classroom_mode_enabled_at,omitempty"`
+	ID                     any        `json:"id"`
+	Asset                  any        `json:"asset"`
+	AssetName              string     `json:"asset_name,omitempty"`
+	Mode                   string     `json:"mode"`
+	ClassroomModeEnabled   bool       `json:"classroom_mode_enabled"`
+	ClassroomModeEnabledBy *any       `json:"classroom_mode_enabled_by,omitempty"`
+	ClassroomModeEnabledAt *time.Time `json:"classroom_mode_enabled_at,omitempty"`
 }
 
 func (c *Client) ListOperationalModes(ctx context.Context, q url.Values) ([]OperationalMode, error) {
