@@ -161,6 +161,17 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSFacilities)
 				return r, r.screen.Init()
 			}
+		case "s":
+			// Maker boxes claims lowercase `s` as its bin+user scan
+			// hotkey (matches the on-screen prompt). Without this
+			// short-circuit, ItemForHotkey('s') below routes to
+			// WSSettings and the operator gets the Settings page
+			// instead of the scan form they asked for.
+			if _, ok := r.screen.(*MakerBoxesScreen); ok {
+				next, cmd := r.screen.Update(msg)
+				r.screen = next
+				return r, cmd
+			}
 		case "K":
 			if _, ok := r.screen.(*ChecklistsScreen); !ok {
 				r.screen = NewChecklistsScreen(r.deps)
