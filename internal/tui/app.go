@@ -162,12 +162,13 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return r, r.screen.Init()
 			}
 		case "s":
-			// Maker boxes claims lowercase `s` as its bin+user scan
-			// hotkey (matches the on-screen prompt). Without this
-			// short-circuit, ItemForHotkey('s') below routes to
-			// WSSettings and the operator gets the Settings page
-			// instead of the scan form they asked for.
-			if _, ok := r.screen.(*MakerBoxesScreen); ok {
+			// Screens that advertise lowercase `s` in their on-screen
+			// prompt (maker-boxes bin+user scan, list-screen sort)
+			// claim the key here so the ItemForHotkey('s') fallthrough
+			// below doesn't whisk the operator off to WSSettings.
+			// Settings is still reachable from every other screen.
+			switch r.screen.(type) {
+			case *MakerBoxesScreen, *ListScreen:
 				next, cmd := r.screen.Update(msg)
 				r.screen = next
 				return r, cmd
