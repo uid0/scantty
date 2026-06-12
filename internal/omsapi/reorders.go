@@ -112,6 +112,7 @@ type PurchaseOrderItem struct {
 	Notes                string         `json:"notes,omitempty"`
 	ItemType             string         `json:"item_type,omitempty"`
 	ExpectedShipmentDate string         `json:"expected_shipment_date,omitempty"`
+	ActualShipmentDate   string         `json:"actual_shipment_date,omitempty"`
 	CreatedAt            time.Time      `json:"created_at,omitempty"`
 	UpdatedAt            time.Time      `json:"updated_at,omitempty"`
 	// Nested details (item_details / asset_details) come back as opaque
@@ -209,6 +210,24 @@ type Receipt struct {
 func (c *Client) CreateReceipt(ctx context.Context, req ReceiptCreate) (*Receipt, error) {
 	var out Receipt
 	if err := c.Post(ctx, "/api/reorders/receipts/", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// MarkPurchaseOrderItemShipped flips the actual_shipment_date on a PO
+// line item via the nested PATCH endpoint
+// /api/reorders/purchase-orders/{po_id}/items/{item_id}/. Pass shipDate
+// in YYYY-MM-DD; pass "" to clear (un-mark a typo).
+func (c *Client) MarkPurchaseOrderItemShipped(
+	ctx context.Context, poID, itemID, shipDate string,
+) (*PurchaseOrderItem, error) {
+	body := map[string]string{"actual_shipment_date": shipDate}
+	var out PurchaseOrderItem
+	path := fmt.Sprintf(
+		"/api/reorders/purchase-orders/%s/items/%s/", poID, itemID,
+	)
+	if err := c.Patch(ctx, path, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
