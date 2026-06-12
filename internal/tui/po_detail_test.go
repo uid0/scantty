@@ -104,3 +104,56 @@ func TestJDECostLinePrefersActualOverEstimated(t *testing.T) {
 		t.Errorf("estimated cost (99.99) leaked through when actual was set, got %q", out)
 	}
 }
+
+func TestShipByUrgencyOverdueWithoutActual(t *testing.T) {
+	li := omsapi.PurchaseOrderItem{
+		ExpectedShipmentDate: "2020-01-01",
+	}
+	if got := shipByUrgency(li); got != "overdue" {
+		t.Errorf("expected overdue, got %q", got)
+	}
+}
+
+func TestShipByUrgencyOverdueIgnoredWhenAlreadyShipped(t *testing.T) {
+	// An actual_shipment_date means the work is done — no urgency to
+	// flash, even if the expected ship-by has long since passed.
+	li := omsapi.PurchaseOrderItem{
+		ExpectedShipmentDate: "2020-01-01",
+		ActualShipmentDate:   "2020-02-15",
+	}
+	if got := shipByUrgency(li); got != "shipped" {
+		t.Errorf("expected shipped, got %q", got)
+	}
+}
+
+func TestShipByUrgencyEmptyWhenNoExpected(t *testing.T) {
+	li := omsapi.PurchaseOrderItem{}
+	if got := shipByUrgency(li); got != "" {
+		t.Errorf("expected empty urgency, got %q", got)
+	}
+}
+
+func TestRenderShipDatesIncludesBothWhenSet(t *testing.T) {
+	li := omsapi.PurchaseOrderItem{
+		ExpectedShipmentDate: "2020-01-01",
+		ActualShipmentDate:   "2020-02-15",
+	}
+	out := renderShipDates(li)
+	if !strings.Contains(out, "SHIP BY 2020-01-01") {
+		t.Errorf("missing ship-by label, got %q", out)
+	}
+	if !strings.Contains(out, "SHIPPED 2020-02-15") {
+		t.Errorf("missing shipped label, got %q", out)
+	}
+}
+
+func TestRenderShipDatesShipByOnly(t *testing.T) {
+	li := omsapi.PurchaseOrderItem{ExpectedShipmentDate: "2020-01-01"}
+	out := renderShipDates(li)
+	if !strings.Contains(out, "SHIP BY 2020-01-01") {
+		t.Errorf("expected ship-by, got %q", out)
+	}
+	if strings.Contains(out, "SHIPPED") {
+		t.Errorf("unexpected shipped marker, got %q", out)
+	}
+}

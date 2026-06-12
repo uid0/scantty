@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/uid0/scantty/internal/omsapi"
@@ -18,6 +20,21 @@ type PurchaseOrderDetailScreen struct {
 	loadErr        string
 	scroller       *TextScroller
 	terminalHeight int
+
+	// "Mark shipped" form state. When shipping == true, the screen
+	// renders a two-field prompt over the body: line index + date
+	// (YYYY-MM-DD, default today). Enter submits; esc cancels.
+	shipping    bool
+	shipIdxIn   textinput.Model
+	shipDateIn  textinput.Model
+	shipFocus   int // 0 = index, 1 = date
+	shipErr     string
+	shipPending bool
+}
+
+type poItemShippedMsg struct {
+	item *omsapi.PurchaseOrderItem
+	err  error
 }
 
 type poDetailLoadedMsg struct {
@@ -45,6 +62,11 @@ func (s *PurchaseOrderDetailScreen) Init() tea.Cmd {
 	return s.load()
 }
 
+// WantsRawInput routes every key to the screen while the "Mark shipped"
+// form is open so the textinputs receive characters without the app
+// dispatcher claiming letters like 'r' / 'R' / 'S'.
+func (s *PurchaseOrderDetailScreen) WantsRawInput() bool { return s.shipping }
+
 func (s *PurchaseOrderDetailScreen) load() tea.Cmd {
 	deps := s.deps
 	id := s.poID
@@ -71,7 +93,22 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.po = m.po
 		s.scroller.Set(s.renderBody())
 		return s, nil
+	case poItemShippedMsg:
+		s.shipPending = false
+		if m.err != nil {
+			s.shipErr = m.err.Error()
+			return s, Status("mark shipped failed: "+m.err.Error(), StatusError)
+		}
+		s.shipping = false
+		s.shipErr = ""
+		// Refresh the PO so the dates render with the new value.
+		s.loading = true
+		return s, tea.Batch(Status("marked shipped", StatusOK), s.load())
+
 	case tea.KeyMsg:
+		if s.shipping {
+			return s.handleShipKey(m)
+		}
 		if s.scroller.Handle(m) {
 			return s, nil
 		}
@@ -84,9 +121,101 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.po != nil {
 				return s, SwitchTo(WSPurchasing, NewReceiveFormScreen(s.deps, s.po))
 			}
+		case "S":
+			if s.po == nil || len(s.po.Items) == 0 {
+				return s, Status("no items to mark shipped", StatusWarn)
+			}
+			s.openShipForm()
+			return s, textinput.Blink
 		}
 	}
 	return s, nil
+}
+
+func (s *PurchaseOrderDetailScreen) openShipForm() {
+	idx := textinput.New()
+	idx.Prompt = ""
+	idx.Placeholder = fmt.Sprintf("line # (1-%d)", len(s.po.Items))
+	idx.CharLimit = 4
+	idx.Focus()
+	date := textinput.New()
+	date.Prompt = ""
+	date.Placeholder = "YYYY-MM-DD (blank = today, '-' = clear)"
+	date.CharLimit = 12
+	date.SetValue(time.Now().Format("2006-01-02"))
+	s.shipIdxIn = idx
+	s.shipDateIn = date
+	s.shipFocus = 0
+	s.shipErr = ""
+	s.shipping = true
+}
+
+func (s *PurchaseOrderDetailScreen) handleShipKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.Type {
+	case tea.KeyEsc:
+		s.shipping = false
+		s.shipErr = ""
+		return s, nil
+	case tea.KeyTab, tea.KeyShiftTab:
+		if s.shipFocus == 0 {
+			s.shipIdxIn.Blur()
+			s.shipDateIn.Focus()
+			s.shipFocus = 1
+		} else {
+			s.shipDateIn.Blur()
+			s.shipIdxIn.Focus()
+			s.shipFocus = 0
+		}
+		return s, nil
+	case tea.KeyEnter:
+		if s.shipPending {
+			return s, nil
+		}
+		return s.submitShip()
+	}
+	var cmd tea.Cmd
+	if s.shipFocus == 0 {
+		s.shipIdxIn, cmd = s.shipIdxIn.Update(m)
+	} else {
+		s.shipDateIn, cmd = s.shipDateIn.Update(m)
+	}
+	return s, cmd
+}
+
+func (s *PurchaseOrderDetailScreen) submitShip() (Screen, tea.Cmd) {
+	idxRaw := strings.TrimSpace(s.shipIdxIn.Value())
+	var idx int
+	if _, err := fmt.Sscanf(idxRaw, "%d", &idx); err != nil || idx < 1 || idx > len(s.po.Items) {
+		s.shipErr = fmt.Sprintf("line number must be between 1 and %d", len(s.po.Items))
+		return s, nil
+	}
+	dateRaw := strings.TrimSpace(s.shipDateIn.Value())
+	switch dateRaw {
+	case "":
+		dateRaw = time.Now().Format("2006-01-02")
+	case "-":
+		dateRaw = "" // clear actual_shipment_date
+	default:
+		if _, err := time.Parse("2006-01-02", dateRaw); err != nil {
+			s.shipErr = "date must be YYYY-MM-DD (or '-' to clear, blank for today)"
+			return s, nil
+		}
+	}
+
+	line := s.po.Items[idx-1]
+	itemID := fmt.Sprintf("%v", line.ID)
+	poID := fmt.Sprintf("%v", s.po.ID)
+	s.shipPending = true
+	s.shipErr = ""
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s, func() tea.Msg {
+		item, err := deps.OMS.MarkPurchaseOrderItemShipped(ctx, poID, itemID, dateRaw)
+		return poItemShippedMsg{item: item, err: err}
+	}
 }
 
 func (s *PurchaseOrderDetailScreen) View() string {
@@ -99,8 +228,23 @@ func (s *PurchaseOrderDetailScreen) View() string {
 	if s.po == nil {
 		return StyleMuted.Render("Purchase order not found.")
 	}
+	if s.shipping {
+		var b strings.Builder
+		b.WriteString(StyleTitle.Render("Mark item shipped") + "\n\n")
+		b.WriteString(StyleMuted.Render("Line #:        ") + s.shipIdxIn.View() + "\n")
+		b.WriteString(StyleMuted.Render("Shipment date: ") + s.shipDateIn.View() + "\n")
+		if s.shipErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render("✗ "+s.shipErr) + "\n")
+		}
+		if s.shipPending {
+			b.WriteString("\n" + StyleMuted.Render("Submitting…"))
+		} else {
+			b.WriteString("\n" + StyleMuted.Render("tab next field · enter submit · esc cancel · '-' in date field clears"))
+		}
+		return b.String()
+	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	hint := "j/k scroll · pgup/pgdn page · R receive items · r refresh · esc back"
+	hint := "j/k scroll · pgup/pgdn page · R receive items · S mark item shipped · r refresh · esc back"
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }
 
@@ -216,8 +360,8 @@ func (s *PurchaseOrderDetailScreen) renderBody() string {
 
 	if len(po.Items) > 0 {
 		b.WriteString(StyleTitle.Render(fmt.Sprintf("Line items (%d)", len(po.Items))) + "\n")
-		for _, li := range po.Items {
-			renderPOLineItem(&b, li, supplier)
+		for i, li := range po.Items {
+			renderPOLineItem(&b, i+1, li, supplier)
 		}
 		b.WriteString("\n")
 	} else {
@@ -255,9 +399,9 @@ func (s *PurchaseOrderDetailScreen) renderBody() string {
 	return b.String()
 }
 
-func renderPOLineItem(b *strings.Builder, li omsapi.PurchaseOrderItem, poSupplier string) {
+func renderPOLineItem(b *strings.Builder, lineNum int, li omsapi.PurchaseOrderItem, poSupplier string) {
 	label := li.DisplayLabel()
-	line := fmt.Sprintf("  · %s", label)
+	line := fmt.Sprintf("  %d) %s", lineNum, label)
 	if li.QuantityOrdered > 0 {
 		line += fmt.Sprintf(" — ordered %d", li.QuantityOrdered)
 		if li.QuantityReceived > 0 {
@@ -277,18 +421,24 @@ func renderPOLineItem(b *strings.Builder, li omsapi.PurchaseOrderItem, poSupplie
 	// points line up between rows when the operator scans the PO.
 	b.WriteString("    " + StyleMuted.Render(jdeCostLine(li)) + "\n")
 
-	// Third line: anything else worth surfacing that isn't already on
-	// the JDE row — item type, expected shipment, supplier override,
-	// voided flag. Skipped entirely when nothing applies.
+	// Third line: ship-by + ship-date in different colors. ship-by
+	// gets a urgency hue (red overdue, yellow ≤7d, plain otherwise);
+	// the actual ship date is always green to make it pop. Whole
+	// line is suppressed when neither date is set so a freeform line
+	// without dates doesn't waste a row.
+	if li.ExpectedShipmentDate != "" || li.ActualShipmentDate != "" {
+		b.WriteString("    " + renderShipDates(li) + "\n")
+	}
+
+	// Fourth line: anything else worth surfacing that isn't already
+	// on the JDE / ship-date rows — item type, supplier override,
+	// voided flag, actual-cost-override-when-different.
 	meta := []string{}
 	if li.ItemType != "" {
 		meta = append(meta, "type "+li.ItemType)
 	}
 	if !li.UnitCostActual.Empty() && li.UnitCostActual != li.UnitCostOrdered {
 		meta = append(meta, "actual @ $"+string(li.UnitCostActual))
-	}
-	if li.ExpectedShipmentDate != "" {
-		meta = append(meta, "ship by "+li.ExpectedShipmentDate)
 	}
 	if li.SupplierDetails != "" && li.SupplierDetails != poSupplier {
 		meta = append(meta, li.SupplierDetails)
@@ -356,4 +506,59 @@ func jdeCostLine(li omsapi.PurchaseOrderItem) string {
 		"PART  %-20s   UNIT $%10s   QTY %5d   TOTAL $%10s",
 		part, unit, li.QuantityOrdered, total,
 	)
+}
+
+// renderShipDates draws the ship-by + ship-date row with separate
+// colors so the operator can see urgency vs. fulfillment at a glance.
+//
+//   - expected_shipment_date colored by urgency:
+//       red    overdue (today is past the date and we have no actual ship)
+//       yellow ≤ 7 days out (today is within a week of the date)
+//       plain  further out, OR an actual ship has already been recorded
+//   - actual_shipment_date always green so it stands out as the "done"
+//     signal regardless of where the ship-by sits.
+func renderShipDates(li omsapi.PurchaseOrderItem) string {
+	var parts []string
+	if li.ExpectedShipmentDate != "" {
+		label := "SHIP BY " + li.ExpectedShipmentDate
+		urgency := shipByUrgency(li)
+		switch urgency {
+		case "overdue":
+			parts = append(parts, StyleStatusError.Render(label))
+		case "soon":
+			parts = append(parts, StyleStatusWarn.Render(label))
+		default:
+			parts = append(parts, StyleMuted.Render(label))
+		}
+	}
+	if li.ActualShipmentDate != "" {
+		parts = append(parts, StyleStatusOK.Render("SHIPPED "+li.ActualShipmentDate))
+	}
+	return strings.Join(parts, "   ")
+}
+
+// shipByUrgency classifies the expected_shipment_date for coloring.
+// Returns "shipped" when an actual_shipment_date is already set (no
+// urgency — the work is done), "overdue" when the ship-by has passed
+// without a ship, "soon" when within 7 days, or "" otherwise.
+func shipByUrgency(li omsapi.PurchaseOrderItem) string {
+	if li.ExpectedShipmentDate == "" {
+		return ""
+	}
+	if li.ActualShipmentDate != "" {
+		return "shipped"
+	}
+	expected, err := time.Parse("2006-01-02", li.ExpectedShipmentDate)
+	if err != nil {
+		return ""
+	}
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	expected = expected.UTC().Truncate(24 * time.Hour)
+	if expected.Before(today) {
+		return "overdue"
+	}
+	if expected.Sub(today) <= 7*24*time.Hour {
+		return "soon"
+	}
+	return ""
 }
