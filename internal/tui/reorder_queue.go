@@ -16,11 +16,22 @@ type ReorderQueueScreen struct {
 	cursor  int
 	loading bool
 	loadErr string
+	// busyID names the row currently waiting on an approve/cancel
+	// response. Renders as "(approving…)" / "(cancelling…)" next to
+	// the title and blocks repeat presses on the same row.
+	busyID     string
+	busyAction string
 }
 
 type reorderQueueLoadedMsg struct {
 	rows []omsapi.ReorderRequest
 	err  error
+}
+
+type reorderActionMsg struct {
+	id     string
+	action string
+	err    error
 }
 
 func NewReorderQueueScreen(deps Deps) *ReorderQueueScreen {
@@ -58,6 +69,15 @@ func (s *ReorderQueueScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.cursor = 0
 		}
 		return s, nil
+	case reorderActionMsg:
+		s.busyID = ""
+		s.busyAction = ""
+		if m.err != nil {
+			return s, Status(fmt.Sprintf("%s failed: %s", m.action, m.err.Error()), StatusError)
+		}
+		// Refresh — the row leaves the "pending" filter on success.
+		s.loading = true
+		return s, tea.Batch(Status(m.action, StatusOK), s.load())
 	case tea.KeyMsg:
 		switch m.String() {
 		case "j", "down":
@@ -71,6 +91,10 @@ func (s *ReorderQueueScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "r":
 			s.loading = true
 			return s, s.load()
+		case "a":
+			return s, s.actOnCursor("approve")
+		case "x":
+			return s, s.actOnCursor("cancel")
 		case "enter":
 			if s.cursor >= len(s.rows) {
 				return s, nil
@@ -80,6 +104,44 @@ func (s *ReorderQueueScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 	}
 	return s, nil
+}
+
+// actOnCursor dispatches an approve / cancel call against the row
+// under the cursor. Returns a Cmd or nil when the row is missing,
+// already busy, or the action name is unknown.
+func (s *ReorderQueueScreen) actOnCursor(action string) tea.Cmd {
+	if s.cursor >= len(s.rows) {
+		return nil
+	}
+	row := s.rows[s.cursor]
+	id := fmt.Sprintf("%v", row.ID)
+	if id == "" {
+		return Status("row missing id; cannot "+action, StatusError)
+	}
+	if s.busyID == id {
+		return nil
+	}
+	s.busyID = id
+	s.busyAction = action
+
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	switch action {
+	case "approve":
+		return func() tea.Msg {
+			_, err := deps.OMS.ApproveReorderRequest(ctx, id, "")
+			return reorderActionMsg{id: id, action: "approved", err: err}
+		}
+	case "cancel":
+		return func() tea.Msg {
+			_, err := deps.OMS.CancelReorderRequest(ctx, id, "")
+			return reorderActionMsg{id: id, action: "cancelled", err: err}
+		}
+	}
+	return nil
 }
 
 func (s *ReorderQueueScreen) View() string {
@@ -118,6 +180,9 @@ func (s *ReorderQueueScreen) View() string {
 				title += "  " + StyleStatusWarn.Render(pri)
 			}
 		}
+		if rowID := fmt.Sprintf("%v", r.ID); rowID != "" && rowID == s.busyID {
+			title += "  " + StyleStatusWarn.Render("("+s.busyAction+"ing…)")
+		}
 		if i == s.cursor {
 			title = StyleSidebarItemActive.Render(title)
 		}
@@ -144,7 +209,7 @@ func (s *ReorderQueueScreen) View() string {
 			b.WriteString("    " + StyleMuted.Render(r.RequestNotes) + "\n")
 		}
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · enter open item · r refresh · esc back"))
+	b.WriteString("\n" + StyleMuted.Render("j/k move · a approve · x cancel · enter open item · r refresh · esc back"))
 	return b.String()
 }
 
