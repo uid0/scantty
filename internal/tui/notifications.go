@@ -12,11 +12,12 @@ import (
 )
 
 type NotificationsScreen struct {
-	deps    Deps
-	rows    []omsapi.Notification
-	cursor  int
-	loading bool
-	loadErr string
+	deps           Deps
+	rows           []omsapi.Notification
+	loading        bool
+	loadErr        string
+	scroller       *TextScroller
+	terminalHeight int
 }
 
 type notificationsLoadedMsg struct {
@@ -35,7 +36,7 @@ type NotificationPollMsg struct {
 }
 
 func NewNotificationsScreen(deps Deps) *NotificationsScreen {
-	return &NotificationsScreen{deps: deps, loading: true}
+	return &NotificationsScreen{deps: deps, loading: true, scroller: NewTextScroller(defaultDetailHeight)}
 }
 
 func (s *NotificationsScreen) Title() string { return "Notifications" }
@@ -59,15 +60,21 @@ func (s *NotificationsScreen) load() tea.Cmd {
 
 func (s *NotificationsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalHeight = m.Height
+		return s, nil
 	case notificationsLoadedMsg:
 		s.loading = false
 		if m.err != nil {
 			s.loadErr = m.err.Error()
 		}
 		s.rows = m.rows
-		if s.cursor >= len(s.rows) {
-			s.cursor = 0
-		}
+		s.scroller.Set(s.renderBody())
+		// New rows arrived — pin to the top so the operator sees the
+		// most-recent notifications (rows are already sorted
+		// newest-first by the backend) instead of staying scrolled
+		// into the middle of the previous page.
+		s.scroller.Top()
 		return s, nil
 	case notificationActionMsg:
 		if m.err != nil {
@@ -75,37 +82,18 @@ func (s *NotificationsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, tea.Batch(Status(m.label, StatusOK), s.load())
 	case tea.KeyMsg:
+		// Let the scroller eat j/k/pgup/pgdn/g/G so the operator can
+		// pan the full notification list. Without this the older
+		// notifications sat above the viewport with no way to bring
+		// them back into view (the bug uid0 hit on 2026-06-13).
+		if s.scroller.Handle(m) {
+			return s, nil
+		}
 		switch m.String() {
-		case "j", "down":
-			if s.cursor < len(s.rows)-1 {
-				s.cursor++
-			}
-		case "k", "up":
-			if s.cursor > 0 {
-				s.cursor--
-			}
 		case "r":
 			s.loading = true
 			s.loadErr = ""
 			return s, s.load()
-		case "x", "enter":
-			if s.cursor >= len(s.rows) {
-				return s, nil
-			}
-			row := s.rows[s.cursor]
-			if row.Read {
-				return s, Status("already read", StatusWarn)
-			}
-			deps := s.deps
-			ctx := deps.Ctx
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			id := row.ID
-			return s, func() tea.Msg {
-				err := deps.OMS.MarkNotificationRead(ctx, id)
-				return notificationActionMsg{label: fmt.Sprintf("marked %v read", id), err: err}
-			}
 		case "X":
 			deps := s.deps
 			ctx := deps.Ctx
@@ -131,12 +119,22 @@ func (s *NotificationsScreen) View() string {
 	if len(s.rows) == 0 {
 		return StyleMuted.Render("No notifications.")
 	}
+	// Footer rows: blank-line + hint. detailFooterRows is the count
+	// the scroller subtracts from terminal height to compute the
+	// content viewport.
+	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
+	hint := "j/k scroll · pgup/pgdn page · g/G top/bottom · X mark all read · r refresh · esc back"
+	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+}
+
+// renderBody draws every row into a single string for the scroller.
+// Newest rows come first because the backend orders by -created_at;
+// the scroller starts at the top of the rendered string so the
+// operator sees today's notifications immediately, then scrolls down
+// for the history.
+func (s *NotificationsScreen) renderBody() string {
 	var b strings.Builder
-	for i, n := range s.rows {
-		caret := "  "
-		if i == s.cursor {
-			caret = "▸ "
-		}
+	for _, n := range s.rows {
 		dot := StyleStatusWarn.Render("●")
 		if n.Read {
 			dot = StyleMuted.Render("○")
@@ -145,16 +143,12 @@ func (s *NotificationsScreen) View() string {
 		if !n.CreatedAt.IsZero() {
 			ts = " " + StyleMuted.Render(n.CreatedAt.Format("01-02 15:04"))
 		}
-		title := caret + dot + " " + n.Title + StyleMuted.Render(" ["+n.Type+"]") + ts
-		if i == s.cursor {
-			title = StyleSidebarItemActive.Render(title)
-		}
+		title := "  " + dot + " " + n.Title + StyleMuted.Render(" ["+n.Type+"]") + ts
 		b.WriteString(title + "\n")
 		if n.Message != "" {
 			b.WriteString("    " + StyleMuted.Render(n.Message) + "\n")
 		}
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · x/enter mark read · X mark all · r refresh · esc back"))
 	return b.String()
 }
 
