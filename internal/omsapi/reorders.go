@@ -62,6 +62,39 @@ func (c *Client) ListPendingReorders(ctx context.Context, q url.Values) ([]Reord
 	return out.Items, nil
 }
 
+// ApproveReorderRequest flips status to "approved" on a pending
+// reorder. Backend endpoint: POST /api/reorders/requests/{id}/approve/.
+// adminNotes is appended to admin_notes; pass "" to skip.
+func (c *Client) ApproveReorderRequest(ctx context.Context, id, adminNotes string) (*ReorderRequest, error) {
+	body := map[string]string{}
+	if adminNotes != "" {
+		body["admin_notes"] = adminNotes
+	}
+	var out ReorderRequest
+	path := fmt.Sprintf("/api/reorders/requests/%s/approve/", id)
+	if err := c.Post(ctx, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CancelReorderRequest flips status to "cancelled" on a pending /
+// approved reorder. Backend endpoint:
+// POST /api/reorders/requests/{id}/cancel/. adminNotes carries the
+// reason; pass "" if none.
+func (c *Client) CancelReorderRequest(ctx context.Context, id, adminNotes string) (*ReorderRequest, error) {
+	body := map[string]string{}
+	if adminNotes != "" {
+		body["admin_notes"] = adminNotes
+	}
+	var out ReorderRequest
+	path := fmt.Sprintf("/api/reorders/requests/%s/cancel/", id)
+	if err := c.Post(ctx, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 type PurchaseOrder struct {
 	ID                    any                       `json:"id"`
 	Number                string                    `json:"po_number,omitempty"`
