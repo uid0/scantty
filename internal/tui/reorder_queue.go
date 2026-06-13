@@ -99,21 +99,79 @@ func (s *ReorderQueueScreen) View() string {
 		if i == s.cursor {
 			caret = "▸ "
 		}
-		title := fmt.Sprintf("%sitem %s × %d", caret, r.Item, r.Quantity)
-		if r.Priority != "" && r.Priority != "normal" {
-			title += " " + StyleStatusWarn.Render("("+r.Priority+")")
+
+		// Line 1: caret + item name + quantity (+ urgent priority badge).
+		// Fall back to the raw item UUID only when item_details is missing
+		// so the operator can still match the row against the backend.
+		name := "—"
+		if r.ItemDetails != nil && r.ItemDetails.Name != "" {
+			name = r.ItemDetails.Name
+		} else if r.Item != "" {
+			name = "item " + r.Item
 		}
-		if r.RequestedBy != "" {
-			title += " " + StyleMuted.Render("by "+r.RequestedBy)
+		title := fmt.Sprintf("%s%d) %s  × %d", caret, i+1, name, r.Quantity)
+		if r.Priority != "" && r.Priority != "normal" {
+			pri := "(" + r.Priority + ")"
+			if r.Priority == "urgent" || r.Priority == "high" {
+				title += "  " + StyleStatusError.Render(pri)
+			} else {
+				title += "  " + StyleStatusWarn.Render(pri)
+			}
 		}
 		if i == s.cursor {
 			title = StyleSidebarItemActive.Render(title)
 		}
 		b.WriteString(title + "\n")
+
+		// Line 2: JD-Edwards-style aligned data row — SKU, stock vs min,
+		// estimated cost, days pending. Days-pending colors urgency
+		// (red ≥ 7d, yellow ≥ 3d, plain otherwise) so the operator can
+		// spot stale requests without doing the math.
+		b.WriteString("    " + StyleMuted.Render(reorderQueueLine(r)) + "\n")
+
+		// Optional supplier / requested-by / notes rows.
+		extra := []string{}
+		if r.RequestedBy != "" {
+			extra = append(extra, "requested by "+r.RequestedBy)
+		}
+		if r.ItemDetails != nil && r.ItemDetails.PreferredSupplier != "" {
+			extra = append(extra, "supplier "+r.ItemDetails.PreferredSupplier)
+		}
+		if len(extra) > 0 {
+			b.WriteString("    " + StyleMuted.Render(strings.Join(extra, " · ")) + "\n")
+		}
 		if r.RequestNotes != "" {
 			b.WriteString("    " + StyleMuted.Render(r.RequestNotes) + "\n")
 		}
 	}
 	b.WriteString("\n" + StyleMuted.Render("j/k move · enter open item · r refresh · esc back"))
 	return b.String()
+}
+
+// reorderQueueLine renders the per-row data summary in fixed-width
+// columns so SKU / stock / cost / days-pending align between rows.
+func reorderQueueLine(r omsapi.ReorderRequest) string {
+	sku := "—"
+	stockMin := "—"
+	if r.ItemDetails != nil {
+		if r.ItemDetails.SKU != "" {
+			sku = r.ItemDetails.SKU
+		}
+		stockMin = fmt.Sprintf("%d/%d", r.ItemDetails.CurrentStock, r.ItemDetails.MinimumStock)
+	}
+	est := "—"
+	if !r.EstimatedCost.Empty() {
+		est = string(r.EstimatedCost)
+	}
+	daysLabel := fmt.Sprintf("%dd pending", r.DaysPending)
+	switch {
+	case r.DaysPending >= 7:
+		daysLabel = StyleStatusError.Render(daysLabel)
+	case r.DaysPending >= 3:
+		daysLabel = StyleStatusWarn.Render(daysLabel)
+	}
+	return fmt.Sprintf(
+		"SKU %-16s   STOCK %7s   EST $%10s   %s",
+		sku, stockMin, est, daysLabel,
+	)
 }
