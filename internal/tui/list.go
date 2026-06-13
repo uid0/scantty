@@ -371,10 +371,13 @@ func (s *ListScreen) View() string {
 	// Surface the per-workspace create shortcuts so an operator doesn't
 	// have to memorize them. `N` is the global hotkey for the
 	// PurchaseOrderCreateScreen (app.go:194) but the prompt was never
-	// rendered, so the create form was effectively invisible.
+	// rendered, so the create form was effectively invisible. Same
+	// thing for `Q` (the existing pending-reorders queue), advertised
+	// here from the Purchasing list so an operator looking for
+	// in-flight reorders can find them.
 	switch s.spec.kind {
 	case "purchase_orders":
-		hint += " · N new PO"
+		hint += " · N new PO · Q pending reorders"
 	}
 	b.WriteString(StyleMuted.Render(hint))
 	return b.String()

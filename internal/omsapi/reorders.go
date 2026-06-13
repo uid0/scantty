@@ -7,16 +7,35 @@ import (
 	"time"
 )
 
+// ReorderItemDetails is the slim subset of fields the reorder-queue
+// screen needs from the nested item_details payload (backend
+// ReorderRequestSerializer uses the full InventoryItemSerializer, but
+// we only render a handful of fields).
+type ReorderItemDetails struct {
+	ID                 string        `json:"id,omitempty"`
+	Name               string        `json:"name,omitempty"`
+	SKU                string        `json:"sku,omitempty"`
+	CurrentStock       int           `json:"current_stock,omitempty"`
+	MinimumStock       int           `json:"minimum_stock,omitempty"`
+	ReorderQuantity    int           `json:"reorder_quantity,omitempty"`
+	PreferredSupplier  string        `json:"preferred_supplier_name,omitempty"`
+	UnitCost           DecimalString `json:"unit_cost,omitempty"`
+}
+
 type ReorderRequest struct {
-	ID           any        `json:"id"`
-	Item         string     `json:"item"`
-	Quantity     int        `json:"quantity"`
-	Priority     string     `json:"priority,omitempty"`
-	RequestedBy  string     `json:"requested_by,omitempty"`
-	RequestNotes string     `json:"request_notes,omitempty"`
-	Status       string     `json:"status,omitempty"`
-	CreatedAt    time.Time  `json:"created_at,omitempty"`
-	ApprovedAt   *time.Time `json:"approved_at,omitempty"`
+	ID            any                 `json:"id"`
+	Item          string              `json:"item"`
+	ItemDetails   *ReorderItemDetails `json:"item_details,omitempty"`
+	Quantity      int                 `json:"quantity"`
+	Priority      string              `json:"priority,omitempty"`
+	RequestedBy   string              `json:"requested_by,omitempty"`
+	RequestNotes  string              `json:"request_notes,omitempty"`
+	Status        string              `json:"status,omitempty"`
+	RequestedAt   time.Time           `json:"requested_at,omitempty"`
+	DaysPending   int                 `json:"days_pending,omitempty"`
+	EstimatedCost DecimalString       `json:"estimated_cost,omitempty"`
+	CreatedAt     time.Time           `json:"created_at,omitempty"`
+	ApprovedAt    *time.Time          `json:"approved_at,omitempty"`
 }
 
 type ReorderRequestCreate struct {
