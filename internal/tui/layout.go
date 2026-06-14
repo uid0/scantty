@@ -1,5 +1,11 @@
 package tui
 
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
 // Chrome accounting for the layout in app.go::Root.View():
 //
 //     ┌──────────────────────────────────────┐
@@ -71,3 +77,55 @@ const detailFooterRows = 2
 // detailFooterRowsWithAction reflects the footer when an action result
 // banner is showing: action banner (1 row) + blank (1 row) + hint (1 row).
 const detailFooterRowsWithAction = 3
+
+// clampToBox truncates ``content`` so it fits inside ``height`` rows and
+// ``width`` columns of visible output.
+//
+// Why this exists: screens that don't use TextScroller can render more
+// rows than the content box budget. Without clamping, the resulting
+// string passed to lipgloss extends past the box and bubbletea draws
+// past the terminal bottom, which causes the terminal to scroll the
+// frame's top off-screen — that's why the left-side nav "hides" as
+// you scroll on a long screen. Clamping at the Root.View boundary
+// keeps the frame the size we said it'd be.
+//
+// Lines are split on "\n"; the first ``height`` are kept and the rest
+// are dropped (the screen's own j/k or scroller is responsible for
+// keeping the operator's focus inside the budget). For each kept line
+// we use lipgloss.Width to measure visible width (ANSI-aware) and
+// drop any tail bytes that exceed ``width`` — naive byte slicing
+// would chop an ANSI sequence in half and bleed escape codes into the
+// next column.
+func clampToBox(content string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if lipgloss.Width(line) <= width {
+			out = append(out, line)
+			continue
+		}
+		out = append(out, truncateVisible(line, width))
+	}
+	return strings.Join(out, "\n")
+}
+
+// truncateVisible drops runes from the end until the visible width
+// (ANSI-aware, via lipgloss.Width) fits within ``width``. Naive byte
+// slicing would split an escape sequence and bleed color codes into
+// the next column.
+func truncateVisible(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes)
+}
