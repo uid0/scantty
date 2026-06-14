@@ -267,6 +267,17 @@ func (r Root) View() string {
 	screenView := r.screen.View()
 
 	content := lipgloss.JoinVertical(lipgloss.Left, titleLine, "", screenView)
+	// Clamp the joined content to the body budget BEFORE handing it
+	// to lipgloss.Render. Without this, a screen that returns more
+	// rows than fit (the non-scroller screens — reorder queue, op
+	// modes, maker boxes, …) makes the body extend past the box and
+	// pushes the whole frame down, which causes the terminal to
+	// scroll the nav off the top. StyleContent applies Padding(1,2),
+	// so subtract that here so the visible content area is what
+	// actually fits.
+	innerWidth := contentWidth - 2*2  // horizontal Padding(_, 2)
+	innerHeight := contentHeight - 2  // vertical Padding(1, _)
+	content = clampToBox(content, innerWidth, innerHeight)
 	body := StyleContent.Width(contentWidth).Height(contentHeight).Render(content)
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, navView, body)
