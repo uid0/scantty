@@ -7,10 +7,19 @@
 // backend/project_storage/scripts/pi/print_daemon.py, so a systemd
 // ExecStart swap is the only change to migrate a Pi):
 //
-//	OMS_API_BASE          required, e.g. https://oms.example.com (no /api suffix)
-//	OMS_API_TOKEN         optional bearer; default empty (endpoints AllowAny)
-//	OMS_POLL_INTERVAL_S   optional, default 10
-//	OMS_EPSON_CUPS_QUEUE  optional; empty = system default CUPS queue
+//	OMS_API_BASE              required, e.g. https://oms.example.com (no /api suffix)
+//	OMS_API_TOKEN             optional bearer; default empty (endpoints AllowAny)
+//	OMS_POLL_INTERVAL_S       optional, default 10
+//	OMS_EPSON_CUPS_QUEUE      optional; empty = system default CUPS queue
+//
+// Optional Common-API proxy (opt-in: leave LISTEN empty to disable).
+// The proxy lets OMS resolve badges → identity via the Pi, since the
+// Common API lives on the LAN behind the firewall:
+//
+//	COMMON_API_PROXY_LISTEN   e.g. ":8083"; empty = proxy disabled
+//	COMMON_API_URL            upstream Common API endpoint, e.g.
+//	                          http://192.168.200.32:8080/api/v1/lookupByRfid
+//	COMMON_API_PROXY_TOKEN    optional bearer; if set, OMS must send it
 //
 // Design notes:
 //   - Single goroutine. The whole queue/print/ack cycle is sequential per
@@ -96,8 +105,29 @@ func main() {
 		log.Printf("oms-claim-print: using system default CUPS queue")
 	}
 
+	// Optional Common-API proxy. Disabled when COMMON_API_PROXY_LISTEN
+	// is empty — preserves the daemon's prior (pure poll) behavior so
+	// existing deployments don't open a port without opting in.
+	proxyCfg := proxyConfigFromEnv(os.Getenv)
+	shutdownProxy, err := startProxy(ctx, proxyCfg)
+	if err != nil {
+		log.Fatalf("common-api proxy: %v", err)
+	}
+	if proxyCfg.listen != "" {
+		log.Printf("oms-claim-print: common-api proxy %s", describeProxyConfig(proxyCfg))
+	}
+
 	if err := run(ctx, client, prn, cfg.pollIvl); err != nil {
 		log.Fatalf("loop: %v", err)
+	}
+
+	// Give the proxy a short grace period to drain in-flight requests
+	// before systemd hard-stops us. 5s is well under the default
+	// TimeoutStopSec=90s but long enough to finish a typical lookup.
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelShutdown()
+	if err := shutdownProxy(shutdownCtx); err != nil {
+		log.Printf("common-api proxy shutdown: %v", err)
 	}
 	log.Printf("oms-claim-print: shutdown clean")
 }
