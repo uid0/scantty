@@ -132,3 +132,16 @@ func (c *Client) ListPreConversionQueue(ctx context.Context) ([]MakerBox, error)
 	}
 	return out, nil
 }
+
+// ConvertMakerBox finalizes a pre-conversion row: backend allocates
+// MBX-NNN, stamps conversion_completed_at, promotes status from
+// pre_conversion to valid/expired based on the cached lookup.
+// Returns 404 if the row is missing, 409 if it's already converted.
+func (c *Client) ConvertMakerBox(ctx context.Context, id int) (*MakerBox, error) {
+	body := map[string]int{"id": id}
+	var out MakerBox
+	if err := c.Post(ctx, "/api/maker-boxes/convert/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
