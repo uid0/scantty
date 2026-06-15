@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -320,6 +321,40 @@ type ItemSupplier struct {
 
 func (c *Client) ListItemSuppliers(ctx context.Context, q url.Values) (*Page[ItemSupplier], error) {
 	return GetPage[ItemSupplier](ctx, c, "/api/inventory/item-suppliers/", q)
+}
+
+// ListItemSuppliersForSupplier is a convenience wrapper for the
+// supplier-scoped item picker in the New PO flow. It only loads
+// active rows so the warden doesn't see discontinued lines.
+//
+// ItemSupplierViewSet does not accept ?search= on the backend today,
+// so the picker filters client-side after fetch. Typical supplier
+// catalogs are small enough that one or two pages cover everything.
+func (c *Client) ListItemSuppliersForSupplier(ctx context.Context, supplierID int, page int) (*Page[ItemSupplier], error) {
+	q := url.Values{}
+	q.Set("supplier_id", strconv.Itoa(supplierID))
+	q.Set("active_only", "true")
+	if page > 0 {
+		q.Set("page", strconv.Itoa(page))
+	}
+	return c.ListItemSuppliers(ctx, q)
+}
+
+// ListAssetsForSupplier is the matching wrapper for the assets-from-
+// supplier picker. Backend supports both ?manufacturer= and ?search=
+// (over name / description / serial_number / asset_tag /
+// manufacturer_name), so the picker can issue real server-side
+// searches as the warden types.
+func (c *Client) ListAssetsForSupplier(ctx context.Context, supplierID int, search string, page int) (*Page[Asset], error) {
+	q := url.Values{}
+	q.Set("manufacturer", strconv.Itoa(supplierID))
+	if search != "" {
+		q.Set("search", search)
+	}
+	if page > 0 {
+		q.Set("page", strconv.Itoa(page))
+	}
+	return c.ListAssets(ctx, q)
 }
 
 type Fixture struct {
