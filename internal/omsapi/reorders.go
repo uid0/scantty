@@ -239,6 +239,71 @@ func (c *Client) CreatePurchaseOrder(ctx context.Context, req PurchaseOrderCreat
 	return &out, nil
 }
 
+// ReorderDataItem is one suggestion row from the reorder_data endpoint:
+// an inventory item that's either low-stock or has an active reorder
+// request, with everything the PO-create flow needs to prefill a line
+// (item_supplier_id when available, suggested_quantity, last unit cost).
+type ReorderDataItem struct {
+	ItemID                 string        `json:"item_id"`
+	ItemName               string        `json:"item_name"`
+	SKU                    string        `json:"sku,omitempty"`
+	CurrentStock           int           `json:"current_stock"`
+	MinimumStock           int           `json:"minimum_stock"`
+	SuggestedQuantity      int           `json:"suggested_quantity"`
+	UnitCost               DecimalString `json:"unit_cost,omitempty"`
+	ItemSupplierID         *int          `json:"item_supplier_id,omitempty"`
+	HasActiveReorderReq    bool          `json:"has_active_reorder_request,omitempty"`
+	ReorderRequestStatus   string        `json:"reorder_request_status,omitempty"`
+	ReorderRequestQuantity int           `json:"reorder_request_quantity,omitempty"`
+}
+
+// ReorderDataAsset is the asset-side suggestion row: a capital asset
+// associated with this supplier whose warranty or service window may
+// be coming up, surfaced alongside the items in case the warden wants
+// to bundle a replacement / repair into the same PO.
+type ReorderDataAsset struct {
+	AssetID    string `json:"asset_id"`
+	AssetTag   string `json:"asset_tag,omitempty"`
+	AssetName  string `json:"asset_name"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// ReorderDataSupplier groups items + assets under one supplier in the
+// reorder_data response.
+type ReorderDataSupplier struct {
+	ID            int                `json:"id"`
+	Name          string             `json:"name"`
+	SupplierType  string             `json:"supplier_type,omitempty"`
+	Items         []ReorderDataItem  `json:"items,omitempty"`
+	Assets        []ReorderDataAsset `json:"assets,omitempty"`
+	TotalItems    int                `json:"total_items,omitempty"`
+	EstimatedTotal DecimalString     `json:"estimated_total,omitempty"`
+	AvgLeadTime   int                `json:"avg_lead_time,omitempty"`
+}
+
+// ReorderData is the top-level shape returned by
+// GET /api/reorders/purchase-orders/reorder_data/. Suppliers is sorted
+// server-side by estimated_total descending so the most expensive
+// candidates surface first.
+type ReorderData struct {
+	Suppliers           []ReorderDataSupplier `json:"suppliers"`
+	TotalSuppliers      int                   `json:"total_suppliers,omitempty"`
+	TotalLowStockItems  int                   `json:"total_low_stock_items,omitempty"`
+	ItemsWithRequests   int                   `json:"items_with_requests,omitempty"`
+}
+
+// GetReorderData fetches the suggestion bundle used by the supplier-
+// scoped picker in the New PO flow. AllowAny on the backend so no JWT
+// round-trip is required, but the scantty session is already authed
+// by the time it lands on PO-create.
+func (c *Client) GetReorderData(ctx context.Context) (*ReorderData, error) {
+	var out ReorderData
+	if err := c.Get(ctx, "/api/reorders/purchase-orders/reorder_data/", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 type ReceiptLine struct {
 	ItemSupplier any `json:"item_supplier,omitempty"`
 	PurchaseOrderItem any `json:"purchase_order_item,omitempty"`

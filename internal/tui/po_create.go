@@ -1,12 +1,25 @@
-// PurchaseOrderCreateScreen — minimal create-PO form for scantty.
+// PurchaseOrderCreateScreen — multi-phase create-PO form for scantty.
 //
-// scantty's primary UX is scanner-driven, but the gap "I'm at the workstation
-// and want to open a PO without context-switching to the web UI" came up
-// often enough to warrant a focused form. The MVP captures one freeform
-// line item (description / qty / unit_cost). Supplier is picked from a
-// loaded list — j/k to navigate, enter to commit, tab to next field —
-// instead of asking the operator to memorise numeric IDs from the web
-// UI (uid0 asked for the picker on 2026-06-14).
+// scantty's primary UX is scanner-driven, but the gap "I'm at the
+// workstation and want to open a PO without context-switching to the
+// web UI" came up often enough to warrant a focused form. The flow is
+// now a small state machine:
+//
+//   poPhaseSupplier   — j/k pick a supplier from the loaded list
+//                       (PR #38 picker; enter commits and advances)
+//   poPhaseSource     — choose where the next line comes from:
+//                         r → items the supplier has on the reorder queue
+//                         i → other inventory items associated with the supplier
+//                         a → assets purchased from the supplier
+//                         f → a freeform line (no item/asset reference)
+//   poPhaseReorderPick / ItemPick / AssetPick — list pickers backed by
+//                       the corresponding omsapi endpoints; enter
+//                       prefills the line buffer and jumps to poPhaseLine.
+//   poPhaseLine       — description/qty/cost/notes inputs (pre-filled
+//                       when the line came from a picker), enter
+//                       submits via PurchaseOrderCreate.
+//
+// One line per PO in this iteration; multi-line is a follow-on bead.
 package tui
 
 import (
@@ -21,30 +34,75 @@ import (
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
-// Field indexes. Keeps the focus / submit logic readable.
+// Phase enum. The screen tracks which surface owns input right now
+// so the same .View()/.Update() can render either the supplier
+// picker, the source-chooser menu, one of the three pickers, or the
+// final line-entry form.
+type poPhase int
+
 const (
-	poCreateSupplierID = iota
-	poCreateItemDesc
-	poCreateQuantity
-	poCreateUnitCost
-	poCreateNotes
-	poCreateFieldCount
+	poPhaseSupplier poPhase = iota
+	poPhaseSource
+	poPhaseReorderPick
+	poPhaseItemPick
+	poPhaseAssetPick
+	poPhaseLine
+)
+
+// Field indexes inside the line-entry form (Phase 4).
+const (
+	poLineFieldDesc = iota
+	poLineFieldQty
+	poLineFieldCost
+	poLineFieldNotes
+	poLineFieldCount
 )
 
 type PurchaseOrderCreateScreen struct {
-	deps      Deps
-	inputs    []textinput.Model
-	focused   int
-	pending   bool
-	errMsg    string
-	suppliers []omsapi.Supplier
+	deps    Deps
+	phase   poPhase
+	pending bool
+	errMsg  string
+
+	// Phase 1: supplier picker (unchanged from PR #38).
+	suppliers       []omsapi.Supplier
 	supplierLoading bool
 	supplierLoadErr string
-	// supplierCursor is the highlighted row in the picker; -1 means
-	// nothing selected yet.
-	supplierCursor int
-	// supplierID holds the committed pick. 0 means none.
-	supplierID int
+	supplierCursor  int
+	supplierID      int
+
+	// Phase 3a: reorder-queue items for this supplier.
+	reorderItems   []omsapi.ReorderDataItem
+	reorderLoading bool
+	reorderLoadErr string
+	reorderCursor  int
+
+	// Phase 3b: inventory items for this supplier.
+	itemSuppliers      []omsapi.ItemSupplier
+	itemSuppliersAll   []omsapi.ItemSupplier // unfiltered page so '/' search is client-side
+	itemSuppliersLoad  bool
+	itemSuppliersErr   string
+	itemSuppliersCur   int
+	itemSuppliersSearch textinput.Model
+	itemSuppliersTyping bool
+
+	// Phase 3c: assets-from-supplier picker (server-side search).
+	assets         []omsapi.Asset
+	assetsLoading  bool
+	assetsErr      string
+	assetsCursor   int
+	assetsSearch   textinput.Model
+	assetsTyping   bool
+	assetsPage     int
+	assetsHasNext  bool
+
+	// Phase 4: line-entry form. The pointer fields drive which
+	// PurchaseOrderCreateItem shape we build at submit time —
+	// item_supplier_id / asset_id / freeform description.
+	lineInputs    []textinput.Model
+	lineFocused   int
+	pickedItemSup *int    // set when the line came from Phase 3a/3b
+	pickedAssetID *string // set when the line came from Phase 3c
 }
 
 type poCreatedMsg struct {
@@ -58,36 +116,51 @@ type poCreateSuppliersLoadedMsg struct {
 }
 
 func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
-	s := &PurchaseOrderCreateScreen{deps: deps, supplierLoading: true, supplierCursor: -1}
-	s.inputs = make([]textinput.Model, poCreateFieldCount)
+	s := &PurchaseOrderCreateScreen{
+		deps:            deps,
+		phase:           poPhaseSupplier,
+		supplierLoading: true,
+		supplierCursor:  -1,
+	}
 
-	// Supplier slot is a no-op textinput — we never write to it. The
-	// picker (j/k over loaded suppliers) drives s.supplierID instead.
-	s.inputs[poCreateSupplierID] = textinput.New()
-
+	// Line-entry inputs (Phase 4).
+	s.lineInputs = make([]textinput.Model, poLineFieldCount)
 	desc := textinput.New()
 	desc.Prompt = ""
 	desc.Placeholder = "item description (freeform line)"
 	desc.CharLimit = 200
-	s.inputs[poCreateItemDesc] = desc
+	s.lineInputs[poLineFieldDesc] = desc
 
 	qty := textinput.New()
 	qty.Prompt = ""
 	qty.Placeholder = "quantity"
 	qty.CharLimit = 10
-	s.inputs[poCreateQuantity] = qty
+	s.lineInputs[poLineFieldQty] = qty
 
 	cost := textinput.New()
 	cost.Prompt = ""
 	cost.Placeholder = "unit cost (optional, e.g. 12.50)"
 	cost.CharLimit = 20
-	s.inputs[poCreateUnitCost] = cost
+	s.lineInputs[poLineFieldCost] = cost
 
 	notes := textinput.New()
 	notes.Prompt = ""
 	notes.Placeholder = "notes (optional)"
 	notes.CharLimit = 500
-	s.inputs[poCreateNotes] = notes
+	s.lineInputs[poLineFieldNotes] = notes
+
+	// Picker search inputs (Phase 3b/3c).
+	is := textinput.New()
+	is.Prompt = ""
+	is.Placeholder = "filter by name / SKU"
+	is.CharLimit = 60
+	s.itemSuppliersSearch = is
+
+	as := textinput.New()
+	as.Prompt = ""
+	as.Placeholder = "search (name / tag / serial)"
+	as.CharLimit = 60
+	s.assetsSearch = as
 
 	return s
 }
@@ -144,76 +217,77 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if m.po != nil {
 			poNum = m.po.Number
 		}
-		// Return to Purchasing list so the operator sees the new PO
-		// in context (and can drill in if they want to add more items).
 		return s, tea.Batch(
 			Status(fmt.Sprintf("created %s", poNum), StatusOK),
 			SwitchTo(WSPurchasing, nil),
 		)
 
-	case tea.KeyMsg:
-		// Supplier field gets list-picker behaviour: j/k move the
-		// highlight, enter commits the pick AND advances to the next
-		// field. Tab / shift-tab cycle fields without picking.
-		if s.focused == poCreateSupplierID {
-			switch m.String() {
-			case "esc":
-				return s, SwitchTo(WSPurchasing, nil)
-			case "j", "down":
-				if s.supplierCursor < len(s.suppliers)-1 {
-					s.supplierCursor++
-				}
-				return s, nil
-			case "k", "up":
-				if s.supplierCursor > 0 {
-					s.supplierCursor--
-				}
-				return s, nil
-			case "tab":
-				s.commitSupplier()
-				s.focusNext(+1)
-				return s, nil
-			case "shift+tab":
-				s.commitSupplier()
-				s.focusNext(-1)
-				return s, nil
-			case "enter":
-				if s.pending {
-					return s, nil
-				}
-				// On the supplier field, enter commits the pick and
-				// advances; it doesn't submit the form. The operator
-				// has to tab through and hit enter on the last field
-				// for that.
-				s.commitSupplier()
-				s.focusNext(+1)
-				return s, nil
-			}
-			return s, nil
-		}
+	// Picker messages live in po_create_pickers.go.
+	case poReorderItemsLoadedMsg, poItemSuppliersLoadedMsg, poAssetsLoadedMsg:
+		return s, s.handlePickerLoaded(msg)
 
-		switch m.String() {
-		case "esc":
-			return s, SwitchTo(WSPurchasing, nil)
-		case "tab", "down":
-			s.focusNext(+1)
-			return s, nil
-		case "shift+tab", "up":
-			s.focusNext(-1)
-			return s, nil
-		case "enter":
-			if s.pending {
-				return s, nil
-			}
-			return s, s.submit()
+	case tea.KeyMsg:
+		switch s.phase {
+		case poPhaseSupplier:
+			return s.updateSupplierPhase(m)
+		case poPhaseSource:
+			return s.updateSourcePhase(m)
+		case poPhaseReorderPick:
+			return s.updateReorderPickPhase(m)
+		case poPhaseItemPick:
+			return s.updateItemPickPhase(m)
+		case poPhaseAssetPick:
+			return s.updateAssetPickPhase(m)
+		case poPhaseLine:
+			return s.updateLinePhase(m)
 		}
 	}
 
-	// Forward to the focused input (no-op when focused == supplier
-	// since that slot's textinput is never read).
-	var cmd tea.Cmd
-	s.inputs[s.focused], cmd = s.inputs[s.focused].Update(msg)
-	return s, cmd
+	// Forward unhandled msgs to whichever textinput owns input now.
+	switch s.phase {
+	case poPhaseLine:
+		var cmd tea.Cmd
+		s.lineInputs[s.lineFocused], cmd = s.lineInputs[s.lineFocused].Update(msg)
+		return s, cmd
+	case poPhaseItemPick:
+		if s.itemSuppliersTyping {
+			var cmd tea.Cmd
+			s.itemSuppliersSearch, cmd = s.itemSuppliersSearch.Update(msg)
+			return s, cmd
+		}
+	case poPhaseAssetPick:
+		if s.assetsTyping {
+			var cmd tea.Cmd
+			s.assetsSearch, cmd = s.assetsSearch.Update(msg)
+			return s, cmd
+		}
+	}
+	return s, nil
+}
+
+// ---------------------------------------------------------------------------
+// Phase: Supplier picker
+// ---------------------------------------------------------------------------
+
+func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		return s, SwitchTo(WSPurchasing, nil)
+	case "j", "down":
+		if s.supplierCursor < len(s.suppliers)-1 {
+			s.supplierCursor++
+		}
+	case "k", "up":
+		if s.supplierCursor > 0 {
+			s.supplierCursor--
+		}
+	case "enter", "tab":
+		s.commitSupplier()
+		if s.supplierID > 0 {
+			s.phase = poPhaseSource
+		}
+	}
+	return s, nil
 }
 
 func (s *PurchaseOrderCreateScreen) commitSupplier() {
@@ -223,37 +297,136 @@ func (s *PurchaseOrderCreateScreen) commitSupplier() {
 	s.supplierID = s.suppliers[s.supplierCursor].ID
 }
 
-func (s *PurchaseOrderCreateScreen) focusNext(delta int) {
-	if s.focused != poCreateSupplierID {
-		s.inputs[s.focused].Blur()
+// ---------------------------------------------------------------------------
+// Phase: Source chooser (r/i/a/f)
+// ---------------------------------------------------------------------------
+
+func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc", "b":
+		// Back to supplier picker — operator can change their mind
+		// before committing to any source. Pick stays committed so
+		// they don't have to re-pick if they only want a different
+		// supplier source.
+		s.phase = poPhaseSupplier
+		return s, nil
+	case "r":
+		s.phase = poPhaseReorderPick
+		s.reorderLoading = true
+		s.reorderLoadErr = ""
+		return s, s.loadReorderItemsForSupplier()
+	case "i":
+		s.phase = poPhaseItemPick
+		s.itemSuppliersLoad = true
+		s.itemSuppliersErr = ""
+		s.itemSuppliersSearch.SetValue("")
+		s.itemSuppliersTyping = false
+		return s, s.loadItemSuppliersForSupplier()
+	case "a":
+		s.phase = poPhaseAssetPick
+		s.assetsLoading = true
+		s.assetsErr = ""
+		s.assetsSearch.SetValue("")
+		s.assetsTyping = false
+		s.assetsPage = 1
+		return s, s.loadAssetsForSupplier("")
+	case "f":
+		// Freeform: go straight to the line form with nothing
+		// pre-filled. Existing single-line MVP behavior.
+		s.enterLinePhase(nil, nil, "", 0, 0)
+		return s, textinput.Blink
 	}
-	s.focused = (s.focused + delta + poCreateFieldCount) % poCreateFieldCount
-	if s.focused != poCreateSupplierID {
-		s.inputs[s.focused].Focus()
+	return s, nil
+}
+
+// ---------------------------------------------------------------------------
+// Phase: Line entry + submit
+// ---------------------------------------------------------------------------
+
+// enterLinePhase moves the screen into Phase 4 and pre-fills the inputs.
+// Either both pointers are nil (freeform), or exactly one is set.
+func (s *PurchaseOrderCreateScreen) enterLinePhase(
+	itemSupplierID *int, assetID *string, desc string, qty int, unitCost float64,
+) {
+	s.phase = poPhaseLine
+	s.lineFocused = poLineFieldDesc
+	s.errMsg = ""
+	s.pickedItemSup = itemSupplierID
+	s.pickedAssetID = assetID
+
+	for i := range s.lineInputs {
+		s.lineInputs[i].SetValue("")
+		s.lineInputs[i].Blur()
 	}
+	s.lineInputs[poLineFieldDesc].SetValue(desc)
+	if qty > 0 {
+		s.lineInputs[poLineFieldQty].SetValue(strconv.Itoa(qty))
+	}
+	if unitCost > 0 {
+		s.lineInputs[poLineFieldCost].SetValue(strconv.FormatFloat(unitCost, 'f', -1, 64))
+	}
+	s.lineInputs[s.lineFocused].Focus()
+}
+
+func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		// Esc on the line goes back to the source chooser so the
+		// operator can pick a different line source without losing
+		// the supplier.
+		s.phase = poPhaseSource
+		s.pickedItemSup = nil
+		s.pickedAssetID = nil
+		return s, nil
+	case "tab", "down":
+		s.focusNextLine(+1)
+		return s, nil
+	case "shift+tab", "up":
+		s.focusNextLine(-1)
+		return s, nil
+	case "enter":
+		if s.pending {
+			return s, nil
+		}
+		return s, s.submit()
+	}
+	var cmd tea.Cmd
+	s.lineInputs[s.lineFocused], cmd = s.lineInputs[s.lineFocused].Update(m)
+	return s, cmd
+}
+
+func (s *PurchaseOrderCreateScreen) focusNextLine(delta int) {
+	s.lineInputs[s.lineFocused].Blur()
+	s.lineFocused = (s.lineFocused + delta + poLineFieldCount) % poLineFieldCount
+	s.lineInputs[s.lineFocused].Focus()
 }
 
 func (s *PurchaseOrderCreateScreen) submit() tea.Cmd {
 	if s.supplierID <= 0 {
-		s.errMsg = "supplier is required (pick from the list at the top of the form)"
+		s.errMsg = "supplier is required (return to supplier phase)"
 		return Status(s.errMsg, StatusError)
 	}
-	desc := strings.TrimSpace(s.inputs[poCreateItemDesc].Value())
-	if desc == "" {
+	desc := strings.TrimSpace(s.lineInputs[poLineFieldDesc].Value())
+	// Item/asset-backed lines don't strictly need a description
+	// (backend will fall back to item/asset name), but when the line
+	// came from freeform we require one.
+	if desc == "" && s.pickedItemSup == nil && s.pickedAssetID == nil {
 		s.errMsg = "item description is required"
 		return Status(s.errMsg, StatusError)
 	}
-	qty, err := strconv.Atoi(strings.TrimSpace(s.inputs[poCreateQuantity].Value()))
+	qty, err := strconv.Atoi(strings.TrimSpace(s.lineInputs[poLineFieldQty].Value()))
 	if err != nil || qty <= 0 {
 		s.errMsg = "quantity must be a positive integer"
 		return Status(s.errMsg, StatusError)
 	}
 
 	line := omsapi.PurchaseOrderCreateItem{
-		Description: desc,
-		Quantity:    qty,
+		Description:    desc,
+		Quantity:       qty,
+		ItemSupplierID: s.pickedItemSup,
+		AssetID:        s.pickedAssetID,
 	}
-	costRaw := strings.TrimSpace(s.inputs[poCreateUnitCost].Value())
+	costRaw := strings.TrimSpace(s.lineInputs[poLineFieldCost].Value())
 	if costRaw != "" {
 		cost, err := strconv.ParseFloat(costRaw, 64)
 		if err != nil || cost < 0 {
@@ -265,7 +438,7 @@ func (s *PurchaseOrderCreateScreen) submit() tea.Cmd {
 
 	req := omsapi.PurchaseOrderCreate{
 		Supplier: s.supplierID,
-		Notes:    strings.TrimSpace(s.inputs[poCreateNotes].Value()),
+		Notes:    strings.TrimSpace(s.lineInputs[poLineFieldNotes].Value()),
 		Items:    []omsapi.PurchaseOrderCreateItem{line},
 	}
 
@@ -282,99 +455,34 @@ func (s *PurchaseOrderCreateScreen) submit() tea.Cmd {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// View
+// ---------------------------------------------------------------------------
+
 func (s *PurchaseOrderCreateScreen) View() string {
 	var b strings.Builder
-	b.WriteString(StyleMuted.Render(
-		"Create a purchase order (1 freeform line). j/k to pick a supplier, " +
-			"tab/shift-tab to move between fields, enter to submit, esc to cancel.",
-	))
+	b.WriteString(StyleMuted.Render(s.helpText()))
 	b.WriteString("\n\n")
 
-	// Supplier picker (or its status while loading).
-	supplierLabel := "Supplier"
-	if s.focused == poCreateSupplierID {
-		supplierLabel = "▸ " + supplierLabel
-	} else {
-		supplierLabel = "  " + supplierLabel
-	}
-	b.WriteString(StyleTitle.Render(supplierLabel + ":") + " ")
-	switch {
-	case s.supplierLoading:
-		b.WriteString(StyleMuted.Render("loading suppliers…"))
-	case s.supplierLoadErr != "":
-		b.WriteString(StyleStatusError.Render("✗ " + s.supplierLoadErr))
-	case len(s.suppliers) == 0:
-		b.WriteString(StyleMuted.Render("(no suppliers configured)"))
-	case s.supplierID > 0:
-		// Show the committed pick on a single summary line.
-		name := ""
-		for _, sup := range s.suppliers {
-			if sup.ID == s.supplierID {
-				name = sup.Name
-				break
-			}
-		}
-		b.WriteString(StyleStatusOK.Render(fmt.Sprintf("%s (#%d)", name, s.supplierID)))
-	default:
-		b.WriteString(StyleMuted.Render("(none picked yet)"))
-	}
+	// Always show the committed supplier (if any) as a header so the
+	// operator never loses context on which supplier the line will be
+	// billed to.
+	b.WriteString(s.renderSupplierHeader())
 	b.WriteString("\n")
 
-	// Render the supplier picker list when the supplier field is
-	// focused; otherwise keep the form compact so the operator can see
-	// the committed pick + the rest of the fields in one frame.
-	if s.focused == poCreateSupplierID && !s.supplierLoading && len(s.suppliers) > 0 {
-		// Window the list to ~10 entries around the cursor so the
-		// form doesn't push the rest of the fields off the screen on
-		// a tall supplier directory.
-		const window = 10
-		start := s.supplierCursor - window/2
-		if start < 0 {
-			start = 0
-		}
-		end := start + window
-		if end > len(s.suppliers) {
-			end = len(s.suppliers)
-			start = end - window
-			if start < 0 {
-				start = 0
-			}
-		}
-		if start > 0 {
-			b.WriteString(StyleMuted.Render(fmt.Sprintf("    ↑ %d more above\n", start)))
-		}
-		for i := start; i < end; i++ {
-			sup := s.suppliers[i]
-			caret := "    "
-			if i == s.supplierCursor {
-				caret = "  ▸ "
-			}
-			line := fmt.Sprintf("%s%s  (#%d)", caret, sup.Name, sup.ID)
-			if sup.ID == s.supplierID {
-				line += "  " + StyleStatusOK.Render("✓ picked")
-			}
-			if i == s.supplierCursor {
-				line = StyleSidebarItemActive.Render(line)
-			}
-			b.WriteString(line + "\n")
-		}
-		if end < len(s.suppliers) {
-			b.WriteString(StyleMuted.Render(fmt.Sprintf("    ↓ %d more below\n", len(s.suppliers)-end)))
-		}
-	}
-	b.WriteString("\n")
-
-	// Remaining text fields.
-	labels := []string{"Supplier", "Item description", "Quantity", "Unit cost", "Notes"}
-	for i := poCreateItemDesc; i < poCreateFieldCount; i++ {
-		marker := "  "
-		if i == s.focused {
-			marker = "▸ "
-		}
-		b.WriteString(marker)
-		b.WriteString(StyleTitle.Render(labels[i] + ": "))
-		b.WriteString(s.inputs[i].View())
-		b.WriteString("\n")
+	switch s.phase {
+	case poPhaseSupplier:
+		b.WriteString(s.renderSupplierPhase())
+	case poPhaseSource:
+		b.WriteString(s.renderSourcePhase())
+	case poPhaseReorderPick:
+		b.WriteString(s.renderReorderPick())
+	case poPhaseItemPick:
+		b.WriteString(s.renderItemPick())
+	case poPhaseAssetPick:
+		b.WriteString(s.renderAssetPick())
+	case poPhaseLine:
+		b.WriteString(s.renderLinePhase())
 	}
 
 	b.WriteString("\n")
@@ -382,8 +490,120 @@ func (s *PurchaseOrderCreateScreen) View() string {
 		b.WriteString(StyleMuted.Render("Submitting…"))
 	} else if s.errMsg != "" {
 		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	} else {
-		b.WriteString(StyleMuted.Render("Press enter on a non-supplier field to submit."))
+	}
+	return b.String()
+}
+
+func (s *PurchaseOrderCreateScreen) helpText() string {
+	switch s.phase {
+	case poPhaseSupplier:
+		return "Pick a supplier (j/k move, enter to commit, esc to cancel)."
+	case poPhaseSource:
+		return "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel."
+	case poPhaseReorderPick:
+		return "Reorder-queue suggestions for this supplier (j/k move, enter pick, b back, esc cancel)."
+	case poPhaseItemPick:
+		return "Inventory items for this supplier (j/k move, / filter, enter pick, b back, esc cancel)."
+	case poPhaseAssetPick:
+		return "Assets purchased from this supplier (j/k move, / search, ] next page, [ prev page, enter pick, b back, esc cancel)."
+	case poPhaseLine:
+		return "Line entry (tab/shift-tab cycle fields, enter to submit, esc to pick a different source)."
+	}
+	return ""
+}
+
+func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
+	switch {
+	case s.supplierLoading:
+		return StyleTitle.Render("Supplier:") + " " + StyleMuted.Render("loading suppliers…")
+	case s.supplierLoadErr != "":
+		return StyleTitle.Render("Supplier:") + " " + StyleStatusError.Render("✗ "+s.supplierLoadErr)
+	case s.supplierID > 0:
+		name := ""
+		for _, sup := range s.suppliers {
+			if sup.ID == s.supplierID {
+				name = sup.Name
+				break
+			}
+		}
+		return StyleTitle.Render("Supplier:") + " " + StyleStatusOK.Render(fmt.Sprintf("%s (#%d)", name, s.supplierID))
+	default:
+		return StyleTitle.Render("Supplier:") + " " + StyleMuted.Render("(none picked)")
+	}
+}
+
+func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
+	if s.supplierLoading || s.supplierLoadErr != "" {
+		return ""
+	}
+	if len(s.suppliers) == 0 {
+		return StyleMuted.Render("(no suppliers configured)")
+	}
+	const window = 10
+	start := s.supplierCursor - window/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + window
+	if end > len(s.suppliers) {
+		end = len(s.suppliers)
+		start = end - window
+		if start < 0 {
+			start = 0
+		}
+	}
+	var b strings.Builder
+	if start > 0 {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above\n", start)))
+	}
+	for i := start; i < end; i++ {
+		sup := s.suppliers[i]
+		caret := "    "
+		if i == s.supplierCursor {
+			caret = "  ▸ "
+		}
+		line := fmt.Sprintf("%s%s  (#%d)", caret, sup.Name, sup.ID)
+		if i == s.supplierCursor {
+			line = StyleSidebarItemActive.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	if end < len(s.suppliers) {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below\n", len(s.suppliers)-end)))
+	}
+	return b.String()
+}
+
+func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Where should this line come from?") + "\n\n")
+	b.WriteString("  " + StyleStatusOK.Render("r") + "  Reorder queue (items flagged for reorder)\n")
+	b.WriteString("  " + StyleStatusOK.Render("i") + "  Inventory items associated with this supplier\n")
+	b.WriteString("  " + StyleStatusOK.Render("a") + "  Assets purchased from this supplier\n")
+	b.WriteString("  " + StyleStatusOK.Render("f") + "  Freeform line (no item / asset reference)\n")
+	return b.String()
+}
+
+func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
+	var b strings.Builder
+	source := "freeform"
+	if s.pickedItemSup != nil {
+		source = fmt.Sprintf("item-supplier #%d", *s.pickedItemSup)
+	}
+	if s.pickedAssetID != nil {
+		source = fmt.Sprintf("asset %s", *s.pickedAssetID)
+	}
+	b.WriteString(StyleMuted.Render("Line source: "+source) + "\n\n")
+	labels := []string{"Description", "Quantity", "Unit cost", "Notes"}
+	for i := 0; i < poLineFieldCount; i++ {
+		marker := "  "
+		if i == s.lineFocused {
+			marker = "▸ "
+		}
+		b.WriteString(marker)
+		b.WriteString(StyleTitle.Render(labels[i] + ": "))
+		b.WriteString(s.lineInputs[i].View())
+		b.WriteString("\n")
 	}
 	return b.String()
 }
