@@ -17,7 +17,9 @@ import (
 // directory; `s` opens a two-field scan form for the canonical
 // shop-floor "I have this bin, who owns it / is their slot current"
 // workflow; `p` opens the pre-conversion scan that queues a member
-// (badge or username) for later bin allocation.
+// (badge or username) for later bin allocation; `c` converts the
+// pre_conversion row under the cursor (allocates MBX-NNN, reprint
+// follows via the existing label download flow).
 //
 // Hotkey lives at capital `B`; lowercase `b` is taken by the
 // ForgeKey device detail screen's blink action.
@@ -40,6 +42,13 @@ type MakerBoxesScreen struct {
 	preInput      textinput.Model
 	preResult     *omsapi.MakerBox
 	preErr        string
+
+	// convert (finalize a queued row → allocate MBX-NNN).
+	// confirmConvertID nil = no prompt; non-nil = awaiting y/n.
+	confirmConvertID *int
+	converting       bool
+	convertResult    *omsapi.MakerBox
+	convertErr       string
 }
 
 type makerBoxesLoadedMsg struct {
@@ -53,6 +62,11 @@ type makerBoxScanMsg struct {
 }
 
 type makerBoxPreConvertMsg struct {
+	result *omsapi.MakerBox
+	err    error
+}
+
+type makerBoxConvertMsg struct {
 	result *omsapi.MakerBox
 	err    error
 }
@@ -128,7 +142,37 @@ func (s *MakerBoxesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.load(),
 			Status(fmt.Sprintf("queued: %s for bin allocation", m.result.AssignedUsername), StatusOK),
 		)
+	case makerBoxConvertMsg:
+		s.converting = false
+		s.convertResult = m.result
+		if m.err != nil {
+			s.convertErr = m.err.Error()
+			return s, Status("convert failed: "+s.convertErr, StatusError)
+		}
+		s.convertErr = ""
+		// Reload so the row's bin_id / status flip becomes visible.
+		s.loading = true
+		return s, tea.Batch(
+			s.load(),
+			Status(fmt.Sprintf("converted: %s → %s", m.result.AssignedUsername, m.result.BinID), StatusOK),
+		)
 	case tea.KeyMsg:
+		// Convert confirmation overlay takes precedence — it consumes
+		// y/n/esc and nothing else until resolved.
+		if s.confirmConvertID != nil {
+			switch m.String() {
+			case "y", "Y", "enter":
+				id := *s.confirmConvertID
+				s.confirmConvertID = nil
+				s.converting = true
+				s.convertErr = ""
+				return s, s.runConvert(id)
+			case "n", "N", "esc":
+				s.confirmConvertID = nil
+				return s, nil
+			}
+			return s, nil
+		}
 		if s.preConverting {
 			switch m.Type {
 			case tea.KeyEsc:
@@ -206,9 +250,35 @@ func (s *MakerBoxesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.preErr = ""
 			s.preResult = nil
 			return s, textinput.Blink
+		case "c":
+			// Convert the row under the cursor. Only valid for
+			// pre_conversion rows; we leave already-converted rows
+			// alone (backend would 409 anyway, but this is cheaper).
+			if s.cursor < 0 || s.cursor >= len(s.rows) {
+				return s, nil
+			}
+			row := s.rows[s.cursor]
+			if row.Status != "pre_conversion" {
+				return s, Status("convert: cursor is not on a queued row", StatusWarn)
+			}
+			id := row.ID
+			s.confirmConvertID = &id
+			return s, nil
 		}
 	}
 	return s, nil
+}
+
+func (s *MakerBoxesScreen) runConvert(id int) tea.Cmd {
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		res, err := deps.OMS.ConvertMakerBox(ctx, id)
+		return makerBoxConvertMsg{result: res, err: err}
+	}
 }
 
 func (s *MakerBoxesScreen) runPreConvert() (Screen, tea.Cmd) {
@@ -249,6 +319,23 @@ func (s *MakerBoxesScreen) runScan() (Screen, tea.Cmd) {
 }
 
 func (s *MakerBoxesScreen) View() string {
+	if s.confirmConvertID != nil {
+		var who string
+		for _, r := range s.rows {
+			if r.ID == *s.confirmConvertID {
+				who = r.AssignedUsername
+				if r.DisplayName != "" {
+					who = r.DisplayName + " (" + r.AssignedUsername + ")"
+				}
+				break
+			}
+		}
+		var b strings.Builder
+		b.WriteString(StyleTitle.Render("Convert?") + "\n\n")
+		b.WriteString("Allocate the next MBX-NNN for " + who + " and reprint the label?\n\n")
+		b.WriteString(StyleMuted.Render("y confirm · n / esc cancel"))
+		return b.String()
+	}
 	if s.preConverting {
 		var b strings.Builder
 		b.WriteString(StyleTitle.Render("Pre-conversion: queue a member") + "\n\n")
@@ -274,10 +361,19 @@ func (s *MakerBoxesScreen) View() string {
 		return StyleMuted.Render("Loading maker boxes…")
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · s scan · p pre-convert · esc back")
+		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · s scan · p pre-convert · c convert · esc back")
 	}
 
 	var b strings.Builder
+	if s.convertResult != nil {
+		r := s.convertResult
+		who := r.DisplayName
+		if who == "" {
+			who = r.AssignedUsername
+		}
+		b.WriteString(StyleTitle.Render("Last conversion") + "  " + StyleStatusOK.Render("allocated") + "\n")
+		b.WriteString("  " + StyleMuted.Render("bin: ") + r.BinID + "  " + StyleMuted.Render("· user: ") + who + "\n\n")
+	}
 	if s.preResult != nil {
 		r := s.preResult
 		who := r.DisplayName
@@ -357,6 +453,6 @@ func (s *MakerBoxesScreen) View() string {
 			}
 		}
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · s scan bin+user · p pre-convert · r refresh · esc back"))
+	b.WriteString("\n" + StyleMuted.Render("j/k move · s scan bin+user · p pre-convert · c convert · r refresh · esc back"))
 	return b.String()
 }
