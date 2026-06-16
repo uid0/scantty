@@ -304,29 +304,40 @@ func (c *Client) GetReorderData(ctx context.Context) (*ReorderData, error) {
 	return &out, nil
 }
 
+// ReceiptLine is one line in a PO receive request: which PO line item
+// arrived (purchase_order_item, required) and how many units of it
+// (quantity_received). The backend resolves item_supplier from the PO
+// line itself, so — unlike the old /receipts/ create payload — scantty no
+// longer sends it.
 type ReceiptLine struct {
-	ItemSupplier any `json:"item_supplier,omitempty"`
-	PurchaseOrderItem any `json:"purchase_order_item,omitempty"`
-	QtyReceived  int `json:"qty_received"`
+	PurchaseOrderItem any `json:"purchase_order_item"`
+	QuantityReceived  int `json:"quantity_received"`
 }
 
-type ReceiptCreate struct {
-	PurchaseOrder any           `json:"purchase_order"`
-	Items         []ReceiptLine `json:"items"`
-	Notes         string        `json:"notes,omitempty"`
+// ReceiveRequest is the body for the PO receive endpoint. The PO id
+// travels in the URL, so the body carries only the received lines plus
+// optional delivery metadata. received_by is stamped server-side from the
+// authenticated session and must never be sent by the client.
+type ReceiveRequest struct {
+	Items        []ReceiptLine `json:"items"`
+	DeliveryDate string        `json:"delivery_date,omitempty"`
+	ReceiptNotes string        `json:"receipt_notes,omitempty"`
 }
 
-type Receipt struct {
-	ID            int           `json:"id"`
-	PurchaseOrder int           `json:"purchase_order"`
-	Items         []ReceiptLine `json:"items"`
-	ReceivedAt    time.Time     `json:"received_at,omitempty"`
-	ReceivedBy    string        `json:"received_by,omitempty"`
-}
-
-func (c *Client) CreateReceipt(ctx context.Context, req ReceiptCreate) (*Receipt, error) {
-	var out Receipt
-	if err := c.Post(ctx, "/api/reorders/receipts/", req, &out); err != nil {
+// ReceivePOItems records receipt of one or more PO line items and returns
+// the updated purchase order.
+//
+//	POST /api/reorders/purchase-orders/{poID}/receive/
+//
+// This replaces the old CreateReceipt, which POSTed a receipt-with-nested-
+// items payload to /api/reorders/receipts/ — a contract the backend never
+// implemented. That endpoint's OrderReceiptViewSet validated against
+// OrderDeliverySerializer, which required a client-supplied received_by
+// (always 400) and treated items as read-only (received nothing).
+func (c *Client) ReceivePOItems(ctx context.Context, poID string, req ReceiveRequest) (*PurchaseOrder, error) {
+	var out PurchaseOrder
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/receive/", poID)
+	if err := c.Post(ctx, path, req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

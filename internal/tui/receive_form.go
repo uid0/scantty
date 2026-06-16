@@ -25,8 +25,8 @@ type ReceiveFormScreen struct {
 }
 
 type receiveSubmittedMsg struct {
-	receipt *omsapi.Receipt
-	err     error
+	po  *omsapi.PurchaseOrder
+	err error
 }
 
 func NewReceiveFormScreen(deps Deps, po *omsapi.PurchaseOrder) *ReceiveFormScreen {
@@ -94,7 +94,15 @@ func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.level = StatusError
 			return s, Status(s.result, StatusError)
 		}
-		s.result = fmt.Sprintf("receipt %v created", m.receipt.ID)
+		label := m.po.Number
+		if label == "" {
+			label = fmt.Sprintf("PO #%v", m.po.ID)
+		}
+		if m.po.IsFullyReceived {
+			s.result = fmt.Sprintf("%s fully received", label)
+		} else {
+			s.result = fmt.Sprintf("%s received · %d/%d units", label, m.po.TotalReceivedQuantity, m.po.TotalQuantity)
+		}
 		s.level = StatusOK
 		return s, Status(s.result, StatusOK)
 	case tea.KeyMsg:
@@ -153,8 +161,7 @@ func (s *ReceiveFormScreen) submit() (Screen, tea.Cmd) {
 		line := s.lines[i]
 		items = append(items, omsapi.ReceiptLine{
 			PurchaseOrderItem: line.ID,
-			ItemSupplier:      line.ItemSupplier,
-			QtyReceived:       qty,
+			QuantityReceived:  qty,
 		})
 	}
 	if len(items) == 0 {
@@ -162,11 +169,11 @@ func (s *ReceiveFormScreen) submit() (Screen, tea.Cmd) {
 		s.level = StatusWarn
 		return s, nil
 	}
-	req := omsapi.ReceiptCreate{
-		PurchaseOrder: s.po.ID,
-		Items:         items,
-		Notes:         strings.TrimSpace(s.notes.Value()),
+	req := omsapi.ReceiveRequest{
+		Items:        items,
+		ReceiptNotes: strings.TrimSpace(s.notes.Value()),
 	}
+	poID := fmt.Sprint(s.po.ID)
 	s.pending = true
 	deps := s.deps
 	ctx := deps.Ctx
@@ -174,8 +181,8 @@ func (s *ReceiveFormScreen) submit() (Screen, tea.Cmd) {
 		ctx = context.Background()
 	}
 	return s, func() tea.Msg {
-		out, err := deps.OMS.CreateReceipt(ctx, req)
-		return receiveSubmittedMsg{receipt: out, err: err}
+		out, err := deps.OMS.ReceivePOItems(ctx, poID, req)
+		return receiveSubmittedMsg{po: out, err: err}
 	}
 }
 
