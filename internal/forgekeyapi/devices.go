@@ -53,6 +53,20 @@ func (c *Client) DisableDevice(ctx context.Context, id string, req DisableReques
 	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/disable", id), req, nil)
 }
 
+// RelayChannelRequest is the POST body for per-channel power-relay control
+// (ga-40w): targets one channel of the 2-channel relay.
+type RelayChannelRequest struct {
+	Channel int  `json:"channel"`
+	On      bool `json:"on"`
+}
+
+// SetRelayChannel enables/disables a single power-relay channel. The OMS endpoint
+// emits a signed power_set command — the verb the firmware's power_relay
+// capability handles (channel + action).
+func (c *Client) SetRelayChannel(ctx context.Context, id string, req RelayChannelRequest) error {
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/relay-channel", id), req, nil)
+}
+
 func (c *Client) RequestStatus(ctx context.Context, id string) error {
 	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/status", id), nil, nil)
 }
