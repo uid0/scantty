@@ -132,6 +132,29 @@ func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, runFKCmd("blink", func() error { return fk.BlinkDevice(ctx, id, forgekeyapi.BlinkRequest{DurationS: 10}) })
 		case "R":
 			return s, runFKCmd("restart", func() error { return fk.RestartDevice(ctx, id) })
+		case "1", "2", "!", "@":
+			// Per-channel power-relay control (ga-40w): 1/2 enable ch1/ch2,
+			// !/@ disable ch1/ch2. Gated to devices that announce power_relay.
+			if !deviceHasCapability(s.device, "power_relay") {
+				return s, nil
+			}
+			var req forgekeyapi.RelayChannelRequest
+			switch m.String() {
+			case "1":
+				req = forgekeyapi.RelayChannelRequest{Channel: 1, On: true}
+			case "2":
+				req = forgekeyapi.RelayChannelRequest{Channel: 2, On: true}
+			case "!":
+				req = forgekeyapi.RelayChannelRequest{Channel: 1, On: false}
+			case "@":
+				req = forgekeyapi.RelayChannelRequest{Channel: 2, On: false}
+			}
+			verb := "enable"
+			if !req.On {
+				verb = "disable"
+			}
+			label := fmt.Sprintf("relay ch%d %s", req.Channel, verb)
+			return s, runFKCmd(label, func() error { return fk.SetRelayChannel(ctx, id, req) })
 		}
 	}
 	return s, nil
@@ -142,6 +165,18 @@ func runFKCmd(label string, fn func() error) tea.Cmd {
 		err := fn()
 		return fkCommandResultMsg{action: label, err: err}
 	}
+}
+
+func deviceHasCapability(d *forgekeyapi.Device, capability string) bool {
+	if d == nil {
+		return false
+	}
+	for _, c := range d.Capabilities {
+		if c == capability {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ForgeKeyDeviceDetailScreen) View() string {
@@ -240,7 +275,11 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 		b.WriteString(StyleMuted.Render(s.actionMsg) + "\n\n")
 	}
 
-	b.WriteString(StyleMuted.Render("e enable · d disable · s status · i identify · p ping · b blink · R restart · r refresh · esc back"))
+	help := "e enable · d disable · s status · i identify · p ping · b blink · R restart · r refresh · esc back"
+	if deviceHasCapability(d, "power_relay") {
+		help = "1/2 relay ch on · !/@ ch off · " + help
+	}
+	b.WriteString(StyleMuted.Render(help))
 	return b.String()
 }
 
