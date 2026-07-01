@@ -80,6 +80,12 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.item != nil {
 				return s, SwitchTo(WSInventory, NewReorderFormScreen(s.deps, s.item, s.item.Suppliers))
 			}
+		case "i":
+			// Serialized items expose per-unit instance tracking; jump to
+			// the instances screen. No-op for non-serialized items.
+			if s.item != nil && s.item.IsSerialized {
+				return s, SwitchTo(WSInventory, NewItemInstancesScreen(s.deps, s.item.ID, s.item.Name))
+			}
 		}
 	}
 	return s, nil
@@ -97,6 +103,9 @@ func (s *InventoryDetailScreen) View() string {
 	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
 	hint := "j/k scroll · pgup/pgdn page · o/enter request reorder · r refresh · esc back"
+	if s.item != nil && s.item.IsSerialized {
+		hint = "j/k scroll · o/enter reorder · i instances · r refresh · esc back"
+	}
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }
 
@@ -156,6 +165,17 @@ func (s *InventoryDetailScreen) renderBody() string {
 		}
 	}
 	b.WriteString("\n")
+
+	if it.IsSerialized {
+		b.WriteString(StyleTitle.Render("Serialized tracking") + "\n")
+		mode := it.SerialTrackingMode
+		if mode == "" {
+			mode = "consumable"
+		}
+		b.WriteString(StyleMuted.Render("Mode: ") + mode + "\n")
+		b.WriteString(StyleMuted.Render("Units are tracked individually by serial number. ") +
+			StyleStatusOK.Render("press i") + StyleMuted.Render(" to view instances.") + "\n\n")
+	}
 
 	if !it.UnitCost.Empty() || !it.PackageCost.Empty() || !it.TotalValue.Empty() {
 		b.WriteString(StyleTitle.Render("Costing") + "\n")

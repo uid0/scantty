@@ -275,8 +275,8 @@ func (r Root) View() string {
 	// scroll the nav off the top. StyleContent applies Padding(1,2),
 	// so subtract that here so the visible content area is what
 	// actually fits.
-	innerWidth := contentWidth - 2*2  // horizontal Padding(_, 2)
-	innerHeight := contentHeight - 2  // vertical Padding(1, _)
+	innerWidth := contentWidth - 2*2 // horizontal Padding(_, 2)
+	innerHeight := contentHeight - 2 // vertical Padding(1, _)
 	content = clampToBox(content, innerWidth, innerHeight)
 	body := StyleContent.Width(contentWidth).Height(contentHeight).Render(content)
 
@@ -323,7 +323,11 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 			detail: func(id string, d Deps) Screen { return NewSIGDetailScreen(d, id) },
 		})
 	case WSReports:
-		return NewListScreen(deps, "Reports", listScreenSpec{kind: "reports"})
+		// Reports currently surfaces the serialized-component consumption
+		// forecast (days-until-stockout / reorder point / low-stock). It's
+		// the first populated report; others can join via a report picker
+		// later.
+		return NewSerializedForecastScreen(deps)
 	case WSForgeKey:
 		return NewListScreen(deps, "ForgeKey Devices", listScreenSpec{
 			kind:   "fk_devices",
