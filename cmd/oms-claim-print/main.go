@@ -1,16 +1,21 @@
 // Command oms-claim-print is the Raspberry Pi side of the project-storage
 // claim-tag print pipeline. It polls the OMS backend's print queue, fetches
-// each pending stint's rendered PNG, hands it to CUPS for the Epson TM
-// receipt printer, and posts mark-printed so the queue drains.
+// each pending stint's rendered PNG, encodes it as ESC/POS and writes it
+// straight to the Epson TM receipt printer's USB device, then posts
+// mark-printed so the queue drains.
 //
-// Configuration (env vars — same names as the legacy Python daemon at
-// backend/project_storage/scripts/pi/print_daemon.py, so a systemd
-// ExecStart swap is the only change to migrate a Pi):
+// Configuration (env vars). The OMS_API_* vars match the legacy Python
+// daemon; the printer now speaks ESC/POS directly to the usblp device
+// (no cupsd, no per-host queue), so the OMS_ESCPOS_* vars replace the old
+// OMS_EPSON_CUPS_QUEUE:
 //
 //	OMS_API_BASE              required, e.g. https://oms.example.com (no /api suffix)
 //	OMS_API_TOKEN             optional bearer; default empty (endpoints AllowAny)
 //	OMS_POLL_INTERVAL_S       optional, default 10
-//	OMS_EPSON_CUPS_QUEUE      optional; empty = system default CUPS queue
+//	OMS_ESCPOS_DEVICE         usblp character device; default /dev/usb/lp0
+//	OMS_ESCPOS_WIDTH_DOTS     printhead width in dots; default 576 (80mm; 512 = 58mm)
+//	OMS_ESCPOS_CUT            partial-cut after each label; default true
+//	OMS_EPSON_CUPS_QUEUE      deprecated no-op (CUPS backend removed); ignored with a warning
 //
 // Optional Common-API proxy (opt-in: leave LISTEN empty to disable).
 // The proxy lets OMS resolve badges → identity via the Pi, since the
@@ -47,23 +52,29 @@ import (
 )
 
 const (
-	defaultPollSeconds = 10
-	maxHTTPBackoff     = 60 * time.Second
+	defaultPollSeconds     = 10
+	maxHTTPBackoff         = 60 * time.Second
+	defaultESCPOSDevice    = "/dev/usb/lp0"
+	defaultESCPOSWidthDots = 576 // 80mm TM-T20III; 512 for 58mm paper
 )
 
 type config struct {
-	apiBase  string
-	apiToken string
-	pollIvl  time.Duration
-	queue    string
+	apiBase   string
+	apiToken  string
+	pollIvl   time.Duration
+	device    string
+	widthDots int
+	cut       bool
 }
 
 func loadConfig() (config, error) {
 	cfg := config{
-		apiBase:  os.Getenv("OMS_API_BASE"),
-		apiToken: os.Getenv("OMS_API_TOKEN"),
-		queue:    os.Getenv("OMS_EPSON_CUPS_QUEUE"),
-		pollIvl:  defaultPollSeconds * time.Second,
+		apiBase:   os.Getenv("OMS_API_BASE"),
+		apiToken:  os.Getenv("OMS_API_TOKEN"),
+		pollIvl:   defaultPollSeconds * time.Second,
+		device:    defaultESCPOSDevice,
+		widthDots: defaultESCPOSWidthDots,
+		cut:       true,
 	}
 	if cfg.apiBase == "" {
 		return cfg, errEnvMissing("OMS_API_BASE")
@@ -71,6 +82,19 @@ func loadConfig() (config, error) {
 	if raw := os.Getenv("OMS_POLL_INTERVAL_S"); raw != "" {
 		if v, err := strconv.ParseFloat(raw, 64); err == nil && v > 0 {
 			cfg.pollIvl = time.Duration(v * float64(time.Second))
+		}
+	}
+	if raw := os.Getenv("OMS_ESCPOS_DEVICE"); raw != "" {
+		cfg.device = raw
+	}
+	if raw := os.Getenv("OMS_ESCPOS_WIDTH_DOTS"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			cfg.widthDots = v
+		}
+	}
+	if raw := os.Getenv("OMS_ESCPOS_CUT"); raw != "" {
+		if v, err := strconv.ParseBool(raw); err == nil {
+			cfg.cut = v
 		}
 	}
 	return cfg, nil
@@ -96,13 +120,12 @@ func main() {
 		opts = append(opts, omsapi.WithToken(cfg.apiToken, ""))
 	}
 	client := omsapi.New(cfg.apiBase, opts...)
-	prn := printer.CUPS{Queue: cfg.queue}
+	prn := printer.ESCPOS{Device: cfg.device, WidthDots: cfg.widthDots, Cut: cfg.cut}
 
 	log.Printf("oms-claim-print: polling %s every %s", cfg.apiBase, cfg.pollIvl)
-	if cfg.queue != "" {
-		log.Printf("oms-claim-print: lp queue %q", cfg.queue)
-	} else {
-		log.Printf("oms-claim-print: using system default CUPS queue")
+	log.Printf("oms-claim-print: ESC/POS -> %s (%d dots wide, cut=%t)", cfg.device, cfg.widthDots, cfg.cut)
+	if os.Getenv("OMS_EPSON_CUPS_QUEUE") != "" {
+		log.Printf("oms-claim-print: OMS_EPSON_CUPS_QUEUE is deprecated and ignored — the CUPS backend was removed in favour of ESC/POS-direct (set OMS_ESCPOS_DEVICE)")
 	}
 
 	// Optional Common-API proxy. Disabled when COMMON_API_PROXY_LISTEN
@@ -135,7 +158,7 @@ func main() {
 // run is the main loop. It returns only when ctx is cancelled (clean
 // shutdown via SIGTERM). Errors inside the loop are logged but never
 // abort the daemon — systemd restarts only on crash, not on stuck printer.
-func run(ctx context.Context, client *omsapi.Client, prn printer.CUPS, pollIvl time.Duration) error {
+func run(ctx context.Context, client *omsapi.Client, prn printer.ESCPOS, pollIvl time.Duration) error {
 	backoff := 1 * time.Second
 	for {
 		select {
@@ -173,7 +196,7 @@ func run(ctx context.Context, client *omsapi.Client, prn printer.CUPS, pollIvl t
 	}
 }
 
-func processOne(ctx context.Context, client *omsapi.Client, prn printer.CUPS, e omsapi.ProjectStoragePrintQueueEntry) error {
+func processOne(ctx context.Context, client *omsapi.Client, prn printer.ESCPOS, e omsapi.ProjectStoragePrintQueueEntry) error {
 	log.Printf("stint %s: fetching label", e.StintID)
 	png, err := client.GetProjectStorageLabelBytes(ctx, e.LabelURL)
 	if err != nil {
