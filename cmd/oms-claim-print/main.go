@@ -44,6 +44,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -124,6 +125,14 @@ func main() {
 
 	log.Printf("oms-claim-print: polling %s every %s", cfg.apiBase, cfg.pollIvl)
 	log.Printf("oms-claim-print: ESC/POS -> %s (%d dots wide, cut=%t)", cfg.device, cfg.widthDots, cfg.cut)
+	// A plaintext base almost always 301-upgrades to https on this backend.
+	// The client now preserves the method across that redirect (so POSTs no
+	// longer silently degrade to GET), but the extra hop is avoidable — and
+	// an http:// base was the root cause of the mark-printed reprint loop, so
+	// surface it loudly.
+	if strings.HasPrefix(strings.ToLower(cfg.apiBase), "http://") {
+		log.Printf("oms-claim-print: WARNING OMS_API_BASE is http://; the server likely redirects to https — set OMS_API_BASE to https:// to avoid an extra round-trip on every request")
+	}
 	if os.Getenv("OMS_EPSON_CUPS_QUEUE") != "" {
 		log.Printf("oms-claim-print: OMS_EPSON_CUPS_QUEUE is deprecated and ignored — the CUPS backend was removed in favour of ESC/POS-direct (set OMS_ESCPOS_DEVICE)")
 	}

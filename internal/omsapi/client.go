@@ -46,7 +46,58 @@ func New(baseURL string, opts ...ClientOption) *Client {
 	for _, opt := range opts {
 		opt(c)
 	}
+	// Preserve the HTTP method across redirects unless the caller supplied
+	// a client with its own policy. Without this, net/http downgrades a
+	// redirected POST/PATCH/DELETE to GET (see preserveMethodOnRedirect),
+	// which silently turned mark-printed into a no-op GET whenever
+	// OMS_API_BASE was http:// and the server 301-upgraded to https://.
+	if c.httpClient.CheckRedirect == nil {
+		c.httpClient.CheckRedirect = preserveMethodOnRedirect
+	}
 	return c
+}
+
+// maxRedirects bounds redirect-following, matching net/http's own default.
+const maxRedirects = 10
+
+// preserveMethodOnRedirect keeps the original method and body when following
+// a redirect. net/http's default converts a 301/302/303 on a POST (or other
+// non-idempotent method) into a GET with no body — browser behaviour that is
+// wrong for an API client: a state-changing call arrives at the server as a
+// read and silently does nothing. That is exactly what bit the claim-tag
+// printer — an OMS_API_BASE of "http://…" 301-upgrades to "https://…", so the
+// GET list/label calls worked but the POST mark-printed reached the backend
+// as a GET ("Method GET not allowed"), the stint never drained, and the label
+// reprinted every poll. Re-issuing with the original method + a fresh body
+// makes the upgrade transparent. The Authorization/Content-Type/Accept headers
+// are re-attached only when the redirect stays on the same host, so the bearer
+// token can never leak to a different origin.
+func preserveMethodOnRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("oms: stopped after %d redirects", maxRedirects)
+	}
+	orig := via[0]
+	req.Method = orig.Method
+	if orig.GetBody != nil {
+		body, err := orig.GetBody()
+		if err != nil {
+			return fmt.Errorf("oms: replay body across redirect: %w", err)
+		}
+		req.Body = body
+		req.ContentLength = orig.ContentLength
+		req.GetBody = orig.GetBody
+	}
+	if req.URL.Host == orig.URL.Host {
+		for _, h := range []string{"Authorization", "Content-Type", "Accept"} {
+			if v := orig.Header.Get(h); v != "" {
+				req.Header.Set(h, v)
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Client) AccessToken() string {
