@@ -12,6 +12,27 @@ import (
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
+// receivePhase tracks the two stages of the receive flow: entering per-line
+// quantities, then (only when serialized lines were received) scanning one
+// serial number per received unit, then a final summary.
+type receivePhase int
+
+const (
+	phaseQty receivePhase = iota
+	phaseSerial
+	phaseDone
+)
+
+// serialUnit is one serial-capture slot: a single received unit of a
+// serialized line that still needs its serial number scanned in.
+type serialUnit struct {
+	itemID   string // InventoryItem UUID (from the PO line's item_details)
+	poItemID any    // PurchaseOrderItem id, recorded as provenance
+	label    string // line display label, for the prompt
+	unitNo   int    // 1-based unit index within the line
+	unitTot  int    // total units received on the line
+}
+
 type ReceiveFormScreen struct {
 	deps    Deps
 	po      *omsapi.PurchaseOrder
@@ -22,11 +43,35 @@ type ReceiveFormScreen struct {
 	pending bool
 	result  string
 	level   StatusLevel
+
+	// Serialized-unit capture (phase 2). After the quantity receive posts,
+	// each received unit of a serialized line enrolls one capture slot so
+	// the operator can scan a serial into it. Each captured serial creates a
+	// SerializedComponent (provenance = the PO line) and accessions it into
+	// stock.
+	phase         receivePhase
+	serialUnits   []serialUnit
+	serialCursor  int
+	serialInput   textinput.Model
+	serialPending bool
+	createdCount  int
+	inStockCount  int
+	skippedCount  int
+	failedCount   int
+	serialErr     string
 }
 
 type receiveSubmittedMsg struct {
 	po  *omsapi.PurchaseOrder
 	err error
+}
+
+// serialUnitDoneMsg reports the result of creating + accessioning one
+// serialized unit during phase 2.
+type serialUnitDoneMsg struct {
+	created bool // the SerializedComponent was created
+	inStock bool // the receive lifecycle action also succeeded
+	err     error
 }
 
 func NewReceiveFormScreen(deps Deps, po *omsapi.PurchaseOrder) *ReceiveFormScreen {
@@ -57,6 +102,10 @@ func NewReceiveFormScreen(deps Deps, po *omsapi.PurchaseOrder) *ReceiveFormScree
 	s.notes.Prompt = ""
 	s.notes.CharLimit = 200
 	s.notes.Placeholder = "optional notes"
+	s.serialInput = textinput.New()
+	s.serialInput.Prompt = ""
+	s.serialInput.CharLimit = 200
+	s.serialInput.Placeholder = "scan or type serial number"
 	if len(s.qty) > 0 {
 		s.qty[0].Focus()
 	} else {
@@ -104,8 +153,42 @@ func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.result = fmt.Sprintf("%s received · %d/%d units", label, m.po.TotalReceivedQuantity, m.po.TotalQuantity)
 		}
 		s.level = StatusOK
+		// If any received line was serialized, move into per-unit serial
+		// capture; otherwise the receive is complete.
+		if len(s.serialUnits) > 0 {
+			s.phase = phaseSerial
+			s.serialCursor = 0
+			s.serialInput.SetValue("")
+			s.serialInput.Focus()
+			return s, tea.Batch(Status(s.result, StatusOK), textinput.Blink)
+		}
 		return s, Status(s.result, StatusOK)
+
+	case serialUnitDoneMsg:
+		s.serialPending = false
+		if m.err != nil {
+			s.failedCount++
+			s.serialErr = m.err.Error()
+		} else {
+			s.serialErr = ""
+			if m.created {
+				s.createdCount++
+			}
+			if m.inStock {
+				s.inStockCount++
+			}
+		}
+		s.advanceSerial()
+		return s, nil
+
 	case tea.KeyMsg:
+		switch s.phase {
+		case phaseSerial:
+			return s.updateSerialKey(m)
+		case phaseDone:
+			// Any key returns to the PO detail.
+			return s, SwitchTo(WSPurchasing, NewPurchaseOrderDetailScreen(s.deps, fmt.Sprint(s.po.ID)))
+		}
 		switch m.Type {
 		case tea.KeyTab, tea.KeyDown, tea.KeyShiftTab, tea.KeyUp:
 			s.focusNext(m.Type == tea.KeyShiftTab || m.Type == tea.KeyUp)
@@ -120,13 +203,105 @@ func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, SwitchTo(WSPurchasing, NewPurchaseOrderDetailScreen(s.deps, fmt.Sprint(s.po.ID)))
 		}
 	}
+
 	var cmd tea.Cmd
+	if s.phase == phaseSerial {
+		s.serialInput, cmd = s.serialInput.Update(msg)
+		return s, cmd
+	}
 	if s.focused < len(s.qty) {
 		s.qty[s.focused], cmd = s.qty[s.focused].Update(msg)
 	} else {
 		s.notes, cmd = s.notes.Update(msg)
 	}
 	return s, cmd
+}
+
+// updateSerialKey handles keys during phase-2 serial capture.
+func (s *ReceiveFormScreen) updateSerialKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.Type {
+	case tea.KeyEsc:
+		// Abandon any remaining captures and show the summary.
+		s.phase = phaseDone
+		s.serialInput.Blur()
+		return s, nil
+	case tea.KeyEnter:
+		if s.serialPending {
+			return s, nil
+		}
+		return s.submitSerial()
+	}
+	var cmd tea.Cmd
+	s.serialInput, cmd = s.serialInput.Update(m)
+	return s, cmd
+}
+
+// submitSerial creates a SerializedComponent for the current unit (blank =
+// skip) and, on success, accessions it into stock via the receive action.
+func (s *ReceiveFormScreen) submitSerial() (Screen, tea.Cmd) {
+	if s.serialCursor >= len(s.serialUnits) {
+		s.phase = phaseDone
+		return s, nil
+	}
+	serial := strings.TrimSpace(s.serialInput.Value())
+	if serial == "" {
+		// Blank = skip this unit (serial unknown or captured elsewhere).
+		s.skippedCount++
+		s.advanceSerial()
+		return s, nil
+	}
+	unit := s.serialUnits[s.serialCursor]
+	s.serialPending = true
+	s.serialErr = ""
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s, func() tea.Msg {
+		comp, err := deps.OMS.CreateSerializedComponent(ctx, omsapi.SerializedComponentCreate{
+			Item:                        unit.itemID,
+			SerialNumber:                serial,
+			ProvenancePurchaseOrderItem: unit.poItemID,
+		})
+		if err != nil {
+			return serialUnitDoneMsg{err: err}
+		}
+		// Accession received -> in_stock. A failure here still leaves a
+		// valid (received) unit, so we report it created regardless.
+		_, rerr := deps.OMS.SerializedComponentAction(
+			ctx, comp.ID, omsapi.SerialActionReceive, omsapi.SerializedComponentAction{},
+		)
+		return serialUnitDoneMsg{created: true, inStock: rerr == nil}
+	}
+}
+
+// advanceSerial moves to the next capture slot, finishing into the summary
+// when the queue is exhausted.
+func (s *ReceiveFormScreen) advanceSerial() {
+	s.serialCursor++
+	s.serialInput.SetValue("")
+	if s.serialCursor >= len(s.serialUnits) {
+		s.phase = phaseDone
+		s.serialInput.Blur()
+		return
+	}
+	s.serialInput.Focus()
+}
+
+// poLineSerialized reports whether a PO line's underlying inventory item is
+// serialized, returning the item's UUID (needed to create the units). Freeform
+// / asset lines have no item_details and return ok=false.
+func poLineSerialized(li omsapi.PurchaseOrderItem) (itemID string, ok bool) {
+	serialized, _ := li.ItemDetails["is_serialized"].(bool)
+	if !serialized {
+		return "", false
+	}
+	id, _ := li.ItemDetails["id"].(string)
+	if id == "" {
+		return "", false
+	}
+	return id, true
 }
 
 func (s *ReceiveFormScreen) focusNext(reverse bool) {
@@ -144,6 +319,9 @@ func (s *ReceiveFormScreen) focusNext(reverse bool) {
 
 func (s *ReceiveFormScreen) submit() (Screen, tea.Cmd) {
 	var items []omsapi.ReceiptLine
+	// Rebuild the serial-capture queue from scratch each submit so a
+	// corrected resubmit doesn't double-enroll units.
+	s.serialUnits = nil
 	for i, ti := range s.qty {
 		raw := strings.TrimSpace(ti.Value())
 		if raw == "" {
@@ -163,6 +341,19 @@ func (s *ReceiveFormScreen) submit() (Screen, tea.Cmd) {
 			PurchaseOrderItem: line.ID,
 			QuantityReceived:  qty,
 		})
+		// Enroll one serial-capture slot per received unit of a serialized
+		// line so phase 2 can scan a serial into each.
+		if itemID, ok := poLineSerialized(line); ok {
+			for u := 1; u <= qty; u++ {
+				s.serialUnits = append(s.serialUnits, serialUnit{
+					itemID:   itemID,
+					poItemID: line.ID,
+					label:    line.DisplayLabel(),
+					unitNo:   u,
+					unitTot:  qty,
+				})
+			}
+		}
 	}
 	if len(items) == 0 {
 		s.result = "no quantities entered"
@@ -187,12 +378,22 @@ func (s *ReceiveFormScreen) submit() (Screen, tea.Cmd) {
 }
 
 func (s *ReceiveFormScreen) View() string {
+	switch s.phase {
+	case phaseSerial:
+		return s.viewSerial()
+	case phaseDone:
+		return s.viewDone()
+	}
+
 	var b strings.Builder
 	header := s.po.Number
 	if header == "" {
 		header = fmt.Sprintf("PO #%v", s.po.ID)
 	}
 	b.WriteString(StyleTitle.Render("Receive items into "+header) + "\n\n")
+	if s.hasSerializedLine() {
+		b.WriteString(StyleMuted.Render("Serialized lines will prompt for a serial per unit after submit.") + "\n\n")
+	}
 	if len(s.qty) == 0 {
 		b.WriteString(StyleMuted.Render("No receivable lines on this PO.") + "\n\n")
 	} else {
@@ -224,5 +425,68 @@ func (s *ReceiveFormScreen) View() string {
 		b.WriteString(RenderStatus(s.result, s.level) + "\n")
 	}
 	b.WriteString("\n" + StyleMuted.Render("tab move · enter submit · esc back"))
+	return b.String()
+}
+
+// hasSerializedLine reports whether any receivable line on the form is a
+// serialized item, so phase 1 can warn that serials will be captured.
+func (s *ReceiveFormScreen) hasSerializedLine() bool {
+	for _, line := range s.lines {
+		if _, ok := poLineSerialized(line); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ReceiveFormScreen) viewSerial() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Capture serial numbers") + "\n")
+	total := len(s.serialUnits)
+	shown := s.serialCursor + 1
+	if shown > total {
+		shown = total
+	}
+	b.WriteString(StyleMuted.Render(fmt.Sprintf(
+		"unit %d of %d · created %d · skipped %d", shown, total, s.createdCount, s.skippedCount,
+	)) + "\n\n")
+
+	if s.serialCursor < total {
+		unit := s.serialUnits[s.serialCursor]
+		b.WriteString(unit.label + "\n")
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("unit %d of %d on this line", unit.unitNo, unit.unitTot)) + "\n\n")
+		b.WriteString("serial: " + s.serialInput.View() + "\n")
+	}
+
+	if s.serialPending {
+		b.WriteString("\n" + StyleMuted.Render("Saving…"))
+	} else if s.serialErr != "" {
+		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.serialErr))
+	}
+	b.WriteString("\n\n" + StyleMuted.Render("enter save · blank+enter skip unit · esc finish"))
+	return b.String()
+}
+
+func (s *ReceiveFormScreen) viewDone() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Receive complete") + "\n\n")
+	if s.result != "" {
+		b.WriteString(RenderStatus(s.result, s.level) + "\n\n")
+	}
+	line := fmt.Sprintf("Serialized units: %d created", s.createdCount)
+	if s.inStockCount > 0 {
+		line += fmt.Sprintf(" (%d accessioned into stock)", s.inStockCount)
+	}
+	b.WriteString(line + "\n")
+	if s.skippedCount > 0 {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("Skipped: %d", s.skippedCount)) + "\n")
+	}
+	if s.failedCount > 0 {
+		b.WriteString(StyleStatusError.Render(fmt.Sprintf("Failed: %d", s.failedCount)) + "\n")
+	}
+	if remaining := len(s.serialUnits) - s.serialCursor; remaining > 0 {
+		b.WriteString(StyleStatusWarn.Render(fmt.Sprintf("Uncaptured: %d (finished early)", remaining)) + "\n")
+	}
+	b.WriteString("\n" + StyleMuted.Render("press any key to return to the PO"))
 	return b.String()
 }

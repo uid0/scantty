@@ -135,6 +135,7 @@ Landed:
 - Foundation: clients, cache, scanner classifier, config, TUI shell with 11 workspaces.
 - End-to-end scanner flow: scan → lookup → inventory detail → reorder form → submit.
 - Receive deliveries: PO list → PO detail → line-by-line qty entry → submit.
+- Serialized components: per-unit instance tracking off the item detail (`i`) with inline install/remove/consume/retire/dispose + usage history, an asset's installed-components view, per-unit serial capture during receiving, and the consumption forecast (Reports workspace — days-until-stockout / reorder point / low-stock).
 
 Not yet landed (the long tail):
 - Auth/login screen and persistent token storage. Today, tokens come from `SCANTTY_OMS_TOKEN`.

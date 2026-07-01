@@ -50,39 +50,45 @@ func (c *Client) LookupCode(ctx context.Context, code string) (*LookupResult, er
 }
 
 type Item struct {
-	ID                   string         `json:"id"`
-	Name                 string         `json:"name"`
-	SKU                  string         `json:"sku"`
-	Description          string         `json:"description,omitempty"`
-	Category             *int           `json:"category,omitempty"`
-	CategoryName         string         `json:"category_name,omitempty"`
-	Location             string         `json:"location,omitempty"`
-	Stock                int            `json:"current_stock"`
-	MinimumStock         int            `json:"minimum_stock,omitempty"`
-	ReorderQuantity      int            `json:"reorder_quantity,omitempty"`
-	NeedsReorder         bool           `json:"needs_reorder,omitempty"`
-	ReorderStatus        string         `json:"reorder_status,omitempty"`
-	HasPendingReorder    bool           `json:"has_pending_reorder,omitempty"`
-	ExpectedDeliveryDate string         `json:"expected_delivery_date,omitempty"`
-	SupplierName         string         `json:"supplier_name,omitempty"`
-	SupplierSKU          string         `json:"supplier_sku,omitempty"`
-	SupplierURL          string         `json:"supplier_url,omitempty"`
-	UnitCost             DecimalString  `json:"unit_cost,omitempty"`
-	PackageCost          DecimalString  `json:"package_cost,omitempty"`
-	QuantityPerPackage   int            `json:"quantity_per_package,omitempty"`
-	AverageLeadTime      int            `json:"average_lead_time,omitempty"`
-	TotalValue           DecimalString  `json:"total_value,omitempty"`
-	ThumbnailURL         string         `json:"thumbnail,omitempty"`
-	QRCodeURL            string         `json:"qr_code_url,omitempty"`
-	UseCaseBasedReorder  bool           `json:"use_case_based_reorder,omitempty"`
-	MinimumCases         *float64       `json:"minimum_cases,omitempty"`
-	ReorderCases         *float64       `json:"reorder_cases,omitempty"`
-	CurrentCases         *float64       `json:"current_cases,omitempty"`
-	ReorderInstruction   string         `json:"reorder_instruction,omitempty"`
-	Suppliers            []ItemSupplier `json:"suppliers,omitempty"`
-	Tags                 []string       `json:"tags,omitempty"`
-	CreatedAt            time.Time      `json:"created_at,omitempty"`
-	UpdatedAt            time.Time      `json:"updated_at,omitempty"`
+	ID                   string        `json:"id"`
+	Name                 string        `json:"name"`
+	SKU                  string        `json:"sku"`
+	Description          string        `json:"description,omitempty"`
+	Category             *int          `json:"category,omitempty"`
+	CategoryName         string        `json:"category_name,omitempty"`
+	Location             string        `json:"location,omitempty"`
+	Stock                int           `json:"current_stock"`
+	MinimumStock         int           `json:"minimum_stock,omitempty"`
+	ReorderQuantity      int           `json:"reorder_quantity,omitempty"`
+	NeedsReorder         bool          `json:"needs_reorder,omitempty"`
+	ReorderStatus        string        `json:"reorder_status,omitempty"`
+	HasPendingReorder    bool          `json:"has_pending_reorder,omitempty"`
+	ExpectedDeliveryDate string        `json:"expected_delivery_date,omitempty"`
+	SupplierName         string        `json:"supplier_name,omitempty"`
+	SupplierSKU          string        `json:"supplier_sku,omitempty"`
+	SupplierURL          string        `json:"supplier_url,omitempty"`
+	UnitCost             DecimalString `json:"unit_cost,omitempty"`
+	PackageCost          DecimalString `json:"package_cost,omitempty"`
+	QuantityPerPackage   int           `json:"quantity_per_package,omitempty"`
+	AverageLeadTime      int           `json:"average_lead_time,omitempty"`
+	TotalValue           DecimalString `json:"total_value,omitempty"`
+	ThumbnailURL         string        `json:"thumbnail,omitempty"`
+	QRCodeURL            string        `json:"qr_code_url,omitempty"`
+	UseCaseBasedReorder  bool          `json:"use_case_based_reorder,omitempty"`
+	MinimumCases         *float64      `json:"minimum_cases,omitempty"`
+	ReorderCases         *float64      `json:"reorder_cases,omitempty"`
+	CurrentCases         *float64      `json:"current_cases,omitempty"`
+	ReorderInstruction   string        `json:"reorder_instruction,omitempty"`
+	// IsSerialized marks an item whose stock is tracked as individual
+	// serial-numbered units (SerializedComponent). SerialTrackingMode is
+	// "consumable" or "reusable" and drives which lifecycle transitions are
+	// legal on those units.
+	IsSerialized       bool           `json:"is_serialized,omitempty"`
+	SerialTrackingMode string         `json:"serial_tracking_mode,omitempty"`
+	Suppliers          []ItemSupplier `json:"suppliers,omitempty"`
+	Tags               []string       `json:"tags,omitempty"`
+	CreatedAt          time.Time      `json:"created_at,omitempty"`
+	UpdatedAt          time.Time      `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListItems(ctx context.Context, q url.Values) (*Page[Item], error) {

@@ -32,6 +32,7 @@ type AssetDetailScreen struct {
 	loto         *omsapi.AssetLOTORequirements
 	reservations []omsapi.AssetReservation
 	oos          []omsapi.AssetOutOfService
+	components   []omsapi.SerializedComponent
 	loading      bool
 	loadErr      string
 
@@ -53,6 +54,7 @@ type assetDetailLoadedMsg struct {
 	loto         *omsapi.AssetLOTORequirements
 	reservations []omsapi.AssetReservation
 	oos          []omsapi.AssetOutOfService
+	components   []omsapi.SerializedComponent
 	err          error
 }
 
@@ -132,6 +134,11 @@ func (s *AssetDetailScreen) load() tea.Cmd {
 		if oosPage, err := deps.OMS.ListAssetOutOfService(ctx, q); err == nil && oosPage != nil {
 			out.oos = oosPage.Results
 		}
+		// Serialized components installed in this asset. Read-only summary
+		// here; press `i` for the actionable per-unit screen.
+		if comps, err := deps.OMS.ListSerializedComponents(ctx, url.Values{"installed_in_asset": []string{id}}); err == nil {
+			out.components = comps
+		}
 		return out
 	}
 }
@@ -154,6 +161,7 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loto = m.loto
 		s.reservations = m.reservations
 		s.oos = m.oos
+		s.components = m.components
 		s.scroller.Set(s.renderBody())
 		return s, nil
 	case problemLoggedMsg:
@@ -227,6 +235,13 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				return s, Status(s.logResult, StatusWarn)
 			}
 			return s, s.restoreOOS(open.ID)
+		case "i":
+			// Open the actionable serialized-components screen for this
+			// asset (remove/consume/retire/dispose installed units).
+			if len(s.components) == 0 {
+				return s, Status("no serialized components installed", StatusWarn)
+			}
+			return s, SwitchTo(WSAssets, NewAssetComponentsScreen(s.deps, s.assetID, s.asset.Name))
 		}
 	}
 	return s, nil
@@ -355,7 +370,11 @@ func (s *AssetDetailScreen) View() string {
 	if s.logResult != "" {
 		footer += RenderStatus(s.logResult, s.logResultLvl) + "\n\n"
 	}
-	footer += StyleMuted.Render("j/k scroll · pgup/pgdn page · p log problem · o mark OOS · R restore · r refresh · esc back")
+	hint := "j/k scroll · pgup/pgdn page · p log problem · o mark OOS · R restore · r refresh · esc back"
+	if len(s.components) > 0 {
+		hint = "j/k scroll · p log problem · o mark OOS · R restore · i components · r refresh · esc back"
+	}
+	footer += StyleMuted.Render(hint)
 	return body + "\n\n" + footer
 }
 
@@ -777,6 +796,32 @@ func (s *AssetDetailScreen) renderBody() string {
 			}
 			if p.Notes != "" {
 				b.WriteString("    " + StyleMuted.Render(p.Notes) + "\n")
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Serialized components installed in this asset. A read-only roll-up;
+	// `i` opens the actionable per-unit screen (remove/consume/retire/…).
+	if len(s.components) > 0 {
+		b.WriteString(StyleTitle.Render(fmt.Sprintf("Serialized components (%d)", len(s.components))))
+		b.WriteString("  " + StyleMuted.Render("press i to manage") + "\n")
+		for _, c := range s.components {
+			serial := c.SerialNumber
+			if serial == "" {
+				serial = "(no serial)"
+			}
+			line := "  · " + serial + " " + renderStatusBadge(c.Status, statusLabel(&c))
+			b.WriteString(line + "\n")
+			meta := []string{}
+			if c.ItemName != "" {
+				meta = append(meta, c.ItemName)
+			}
+			if c.Lot != "" {
+				meta = append(meta, "lot "+c.Lot)
+			}
+			if len(meta) > 0 {
+				b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
 			}
 		}
 		b.WriteString("\n")
