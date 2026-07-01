@@ -78,7 +78,7 @@ The classifier in `internal/scanner` distinguishes two scan kinds:
 .
 ├── cmd/
 │   ├── scantty/main.go           # TUI entrypoint: load config, build clients, hand off to bubbletea
-│   └── oms-claim-print/main.go   # Pi-side claim-tag print daemon (Epson TM via CUPS)
+│   └── oms-claim-print/main.go   # Pi-side claim-tag print daemon (Epson TM via ESC/POS to USB)
 ├── systemd/
 │   └── oms-claim-print.service   # drop-in unit for the Pi daemon
 ├── internal/
@@ -164,17 +164,28 @@ There's no test suite yet — `go test ./...` is a no-op.
 
 A second binary that lives alongside scantty in this repo. It runs on a
 Raspberry Pi attached to an Epson TM receipt printer and drains the OMS
-project-storage print queue.
+project-storage print queue. Labels are encoded as ESC/POS raster and
+written straight to the printer's USB character device — no CUPS, no
+cupsd, no per-host print queue.
 
-Configure via env (same names as the legacy Python daemon in OMS so a
-systemd `ExecStart` swap is the only change to migrate a Pi):
+Configure via env (the `OMS_API_*` vars match the legacy Python daemon in
+OMS; the printer target moved from CUPS to the `OMS_ESCPOS_*` vars):
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `OMS_API_BASE` | OMS base URL (no `/api` suffix) | *(required)* |
 | `OMS_API_TOKEN` | Bearer if the print-queue endpoint is gated | unset (AllowAny) |
 | `OMS_POLL_INTERVAL_S` | Seconds between queue polls | `10` |
-| `OMS_EPSON_CUPS_QUEUE` | CUPS queue name | system default |
+| `OMS_ESCPOS_DEVICE` | usblp character device | `/dev/usb/lp0` |
+| `OMS_ESCPOS_WIDTH_DOTS` | Printhead width in dots (80mm=576, 58mm=512) | `576` |
+| `OMS_ESCPOS_CUT` | Partial-cut after each label | `true` |
+
+> `OMS_EPSON_CUPS_QUEUE` is retired — the CUPS backend was removed. If it
+> is still set, the daemon logs a warning and ignores it.
+
+The printer's USB node (`/dev/usb/lp0`) is usually `root:lp` mode `0660`,
+so the daemon's user must be in the `lp` group (the systemd unit sets
+`SupplementaryGroups=lp`) or a udev rule must grant write access.
 
 Cross-build for arm64 Pis:
 

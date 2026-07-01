@@ -1,6 +1,6 @@
 [Unit]
-Description=OMS project-storage claim-tag print daemon (Epson TM via CUPS)
-After=network-online.target cups.service
+Description=OMS project-storage claim-tag print daemon (Epson TM via ESC/POS to USB)
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -9,14 +9,20 @@ Type=simple
 # so secrets and per-site config stay out of the unit file.
 Environment=OMS_API_BASE=https://oms.example.com/api
 Environment=OMS_POLL_INTERVAL_S=10
-# Leave OMS_EPSON_CUPS_QUEUE empty to use the system default CUPS queue.
-# Set it (e.g. TM_T20III) when more than one printer is configured.
-# Environment=OMS_EPSON_CUPS_QUEUE=TM_T20III
+# ESC/POS is written straight to the printer's USB character device.
+# Defaults: /dev/usb/lp0, 576 dots (80mm; use 512 for 58mm), partial-cut on.
+# Environment=OMS_ESCPOS_DEVICE=/dev/usb/lp0
+# Environment=OMS_ESCPOS_WIDTH_DOTS=576
+# Environment=OMS_ESCPOS_CUT=true
 # Bearer token: only needed if the deployment has gated the print-queue
 # endpoint behind auth (default OMS endpoints are AllowAny on the Pi side).
 # Environment=OMS_API_TOKEN=
 
 User=pi
+# usblp nodes are typically root:lp mode 0660, so the service needs the lp
+# group to open /dev/usb/lp0 for writing. Drop this if your udev rule grants
+# access another way (e.g. a uaccess tag).
+SupplementaryGroups=lp
 WorkingDirectory=/opt/oms-claim-print
 ExecStart=/opt/oms-claim-print/oms-claim-print
 
@@ -24,12 +30,13 @@ ExecStart=/opt/oms-claim-print/oms-claim-print
 Restart=on-failure
 RestartSec=15s
 
-# Hardening — the daemon only needs network out + CUPS socket + USB printer.
+# Hardening — the daemon only needs network out + the USB printer device.
+# ProtectSystem=strict leaves /dev alone, so writing the usblp node needs no
+# ReadWritePaths; PrivateDevices stays off so /dev/usb/lp0 remains visible.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/spool/cups /run/cups
 
 [Install]
 WantedBy=multi-user.target
