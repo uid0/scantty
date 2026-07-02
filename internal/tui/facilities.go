@@ -80,6 +80,15 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				},
 				implemented: true,
 			},
+			{
+				hotkey:   'S',
+				label:    "Project storage",
+				subtitle: "active stints → detail + printed-label text preview",
+				build: func(d Deps) (Screen, Workspace) {
+					return NewProjectStorageListScreen(d), WSFacilities
+				},
+				implemented: true,
+			},
 		},
 	}
 }
