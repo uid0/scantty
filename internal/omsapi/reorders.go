@@ -360,3 +360,31 @@ func (c *Client) MarkPurchaseOrderItemShipped(
 	}
 	return &out, nil
 }
+
+// SendToSupplier moves a draft PO to "sent" via the manual send action.
+// The po id rides in the URL and the body is empty; the backend rejects
+// (400) any PO not currently in draft. The endpoint returns the updated
+// PO, but callers reload the detail view afterward so we discard it.
+//
+//	POST /api/reorders/purchase-orders/{poID}/send_to_supplier/
+func (c *Client) SendToSupplier(ctx context.Context, poID string) error {
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/send_to_supplier/", poID)
+	return c.Post(ctx, path, nil, nil)
+}
+
+// ConfirmOrder moves a sent PO to "confirmed". The backend rejects (400)
+// any PO not currently in "sent". expectedDeliveryDate is optional
+// (YYYY-MM-DD): when non-empty it rides in the body as
+// {"expected_delivery_date": ...}; when empty the body is omitted,
+// mirroring the OMS frontend's default confirm (no body). As with
+// SendToSupplier the returned PO is discarded in favor of a reload.
+//
+//	POST /api/reorders/purchase-orders/{poID}/confirm_order/
+func (c *Client) ConfirmOrder(ctx context.Context, poID, expectedDeliveryDate string) error {
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/confirm_order/", poID)
+	var body any
+	if expectedDeliveryDate != "" {
+		body = map[string]string{"expected_delivery_date": expectedDeliveryDate}
+	}
+	return c.Post(ctx, path, body, nil)
+}
