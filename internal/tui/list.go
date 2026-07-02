@@ -307,6 +307,10 @@ func workspaceForKind(kind string) Workspace {
 		return WSSIGs
 	case "fk_devices":
 		return WSForgeKey
+	case "project_storage":
+		// Opened from the Facilities menu; keep the nav highlight there
+		// when drilling into a stint detail.
+		return WSFacilities
 	}
 	return WSDashboard
 }

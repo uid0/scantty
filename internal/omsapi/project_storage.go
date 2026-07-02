@@ -57,6 +57,21 @@ func (c *Client) ListProjectStorageStints(ctx context.Context, q url.Values) (*P
 	return GetPage[ProjectStorageStint](ctx, c, "/api/project-storage/stints/", q)
 }
 
+// GetProjectStorageStint fetches a single stint by its public stint_id
+// (e.g. "PS-AB23CDFG"), mirroring the frontend's .get(stint_id) against
+// GET /api/project-storage/stints/{stint_id}/. Returns the same
+// serializer shape as the list — including the computed status field and
+// the embedded Events audit log — so the detail view can render the full
+// lifecycle. Follows GetItem's *T convention: a 404 comes back as an
+// error, nil stint.
+func (c *Client) GetProjectStorageStint(ctx context.Context, stintID string) (*ProjectStorageStint, error) {
+	var out ProjectStorageStint
+	if err := c.Get(ctx, "/api/project-storage/stints/"+stintID+"/", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ProjectStoragePrintQueueEntry is one stint pending a label print on the
 // Pi-side claim-tag daemon. LabelURL is supplied absolute by the backend
 // — callers should honor it verbatim instead of reconstructing the path
