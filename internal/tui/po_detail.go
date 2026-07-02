@@ -30,11 +30,24 @@ type PurchaseOrderDetailScreen struct {
 	shipFocus   int // 0 = index, 1 = date
 	shipErr     string
 	shipPending bool
+
+	// transitioning gates the async Send-to-Supplier / Confirm actions so
+	// a second keypress can't fire a duplicate request while one is in
+	// flight — the same guard the OMS frontend applies to its Send/Confirm
+	// buttons.
+	transitioning bool
 }
 
 type poItemShippedMsg struct {
 	item *omsapi.PurchaseOrderItem
 	err  error
+}
+
+// poTransitionedMsg reports the result of a Send-to-Supplier or Confirm
+// action. action is "sent" or "confirmed" and drives the toast wording.
+type poTransitionedMsg struct {
+	action string
+	err    error
 }
 
 type poDetailLoadedMsg struct {
@@ -104,6 +117,24 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		// Refresh the PO so the dates render with the new value.
 		s.loading = true
 		return s, tea.Batch(Status("marked shipped", StatusOK), s.load())
+	case poTransitionedMsg:
+		s.transitioning = false
+		if m.err != nil {
+			verb := "send to supplier"
+			if m.action == "confirmed" {
+				verb = "confirm order"
+			}
+			return s, Status(verb+" failed: "+m.err.Error(), StatusError)
+		}
+		// Reload so the new status (and any resulting date/label changes)
+		// render, mirroring the frontend's reload-after-transition.
+		s.loading = true
+		s.loadErr = ""
+		toast := "sent to supplier"
+		if m.action == "confirmed" {
+			toast = "order confirmed"
+		}
+		return s, tea.Batch(Status(toast, StatusOK), s.load())
 
 	case tea.KeyMsg:
 		if s.shipping {
@@ -127,9 +158,52 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			}
 			s.openShipForm()
 			return s, textinput.Blink
+		case "s":
+			// Send to Supplier: draft -> sent. Gated the same way the
+			// frontend gates its Send button (status == draft).
+			if s.po == nil || s.po.Status != "draft" {
+				return s, Status("send to supplier is only available on draft POs", StatusWarn)
+			}
+			if s.transitioning {
+				return s, nil
+			}
+			return s, s.transitionPO("send")
+		case "c":
+			// Confirm: sent -> confirmed. Gated on status == sent.
+			if s.po == nil || s.po.Status != "sent" {
+				return s, Status("confirm is only available on sent POs", StatusWarn)
+			}
+			if s.transitioning {
+				return s, nil
+			}
+			return s, s.transitionPO("confirm")
 		}
 	}
 	return s, nil
+}
+
+// transitionPO fires the async Send-to-Supplier ("send") or Confirm
+// ("confirm") action against the current PO and reports the result as a
+// poTransitionedMsg. The caller has already verified the PO is in the
+// right state; this only marshals the request off the UI goroutine.
+func (s *PurchaseOrderDetailScreen) transitionPO(kind string) tea.Cmd {
+	poID := fmt.Sprintf("%v", s.po.ID)
+	s.transitioning = true
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		if kind == "confirm" {
+			// No expected_delivery_date — mirrors the OMS frontend's
+			// default confirm, which posts no body.
+			err := deps.OMS.ConfirmOrder(ctx, poID, "")
+			return poTransitionedMsg{action: "confirmed", err: err}
+		}
+		err := deps.OMS.SendToSupplier(ctx, poID)
+		return poTransitionedMsg{action: "sent", err: err}
+	}
 }
 
 func (s *PurchaseOrderDetailScreen) openShipForm() {
@@ -244,8 +318,25 @@ func (s *PurchaseOrderDetailScreen) View() string {
 		return b.String()
 	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	hint := "j/k scroll · pgup/pgdn page · R receive items · S mark item shipped · r refresh · esc back"
-	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+	return s.scroller.View() + "\n\n" + StyleMuted.Render(s.footerHint())
+}
+
+// footerHint builds the one-line key legend. The Send (s) and Confirm (c)
+// hints are status-gated so they only appear when the action is actually
+// available — draft POs can be sent, sent POs can be confirmed — matching
+// how the frontend shows those affordances only in the right state.
+func (s *PurchaseOrderDetailScreen) footerHint() string {
+	parts := []string{"j/k scroll", "pgup/pgdn page"}
+	if s.po != nil {
+		switch s.po.Status {
+		case "draft":
+			parts = append(parts, "s send to supplier")
+		case "sent":
+			parts = append(parts, "c confirm")
+		}
+	}
+	parts = append(parts, "R receive items", "S mark item shipped", "r refresh", "esc back")
+	return strings.Join(parts, " · ")
 }
 
 func (s *PurchaseOrderDetailScreen) renderBody() string {

@@ -260,3 +260,123 @@ func TestReceivePOItems_BackendError(t *testing.T) {
 		t.Fatal("expected error on 400, got nil")
 	}
 }
+
+// TestSendToSupplier pins the manual send action to POST
+// /api/reorders/purchase-orders/{id}/send_to_supplier/ with an empty
+// body — the po id must ride in the URL, never the payload.
+func TestSendToSupplier(t *testing.T) {
+	var captured struct {
+		method  string
+		path    string
+		bodyLen int
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		captured.bodyLen = len(raw)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0046","status":"sent"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if err := c.SendToSupplier(context.Background(), "po-1"); err != nil {
+		t.Fatalf("SendToSupplier: %v", err)
+	}
+	if captured.method != "POST" {
+		t.Fatalf("method = %q, want POST", captured.method)
+	}
+	if captured.path != "/api/reorders/purchase-orders/po-1/send_to_supplier/" {
+		t.Fatalf("path = %q", captured.path)
+	}
+	if captured.bodyLen != 0 {
+		t.Errorf("send_to_supplier must post an empty body, got %d bytes", captured.bodyLen)
+	}
+}
+
+// TestSendToSupplier_BackendError surfaces the backend's draft-only 400
+// (e.g. sending an already-sent PO) as an error.
+func TestSendToSupplier_BackendError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"Only draft orders can be sent to suppliers"}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if err := c.SendToSupplier(context.Background(), "po-1"); err == nil {
+		t.Fatal("expected error on 400, got nil")
+	}
+}
+
+// TestConfirmOrder_NoDate confirms with no expected_delivery_date: the
+// action hits confirm_order/ with an empty body, matching the OMS
+// frontend's default confirm.
+func TestConfirmOrder_NoDate(t *testing.T) {
+	var captured struct {
+		method  string
+		path    string
+		bodyLen int
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		captured.bodyLen = len(raw)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0047","status":"confirmed"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if err := c.ConfirmOrder(context.Background(), "po-1", ""); err != nil {
+		t.Fatalf("ConfirmOrder: %v", err)
+	}
+	if captured.method != "POST" {
+		t.Fatalf("method = %q, want POST", captured.method)
+	}
+	if captured.path != "/api/reorders/purchase-orders/po-1/confirm_order/" {
+		t.Fatalf("path = %q", captured.path)
+	}
+	if captured.bodyLen != 0 {
+		t.Errorf("confirm with no date must post an empty body, got %d bytes", captured.bodyLen)
+	}
+}
+
+// TestConfirmOrder_WithDate forwards expected_delivery_date in the body
+// when the caller supplies one.
+func TestConfirmOrder_WithDate(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0048","status":"confirmed"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if err := c.ConfirmOrder(context.Background(), "po-1", "2026-08-01"); err != nil {
+		t.Fatalf("ConfirmOrder: %v", err)
+	}
+	if got := body["expected_delivery_date"]; got != "2026-08-01" {
+		t.Errorf("expected_delivery_date = %v, want 2026-08-01", got)
+	}
+}
+
+// TestConfirmOrder_BackendError surfaces the backend's sent-only 400 as
+// an error.
+func TestConfirmOrder_BackendError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"Only sent orders can be confirmed"}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if err := c.ConfirmOrder(context.Background(), "po-1", ""); err == nil {
+		t.Fatal("expected error on 400, got nil")
+	}
+}
