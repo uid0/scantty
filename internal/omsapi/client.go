@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -248,6 +250,85 @@ func (c *Client) Patch(ctx context.Context, path string, body, out any) error {
 
 func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil, nil, true)
+}
+
+// MultipartFile is one file part in a multipart/form-data upload. Data holds
+// the whole file in memory — fine for the photo/PDF uploads this serves, which
+// an operator picks one at a time from a local path.
+type MultipartFile struct {
+	Field    string // form field name, e.g. "image" or "pdf"
+	Filename string // filename reported to the server
+	Data     []byte // file contents
+}
+
+// PostMultipart sends a multipart/form-data POST: fields are plain text form
+// values, files are file parts. The JSON response is decoded into out (may be
+// nil). It mirrors do()'s Bearer-auth and 401-refresh-retry behaviour so photo
+// and PDF uploads survive an expired access token the same way JSON calls do.
+func (c *Client) PostMultipart(ctx context.Context, path string, fields map[string]string, files []MultipartFile, out any) error {
+	return c.doMultipart(ctx, path, fields, files, out, true)
+}
+
+func (c *Client) doMultipart(ctx context.Context, path string, fields map[string]string, files []MultipartFile, out any, retryAuth bool) error {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	// Deterministic field order so the encoded body is stable across runs
+	// (keeps the multipart round-trip test deterministic).
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if err := mw.WriteField(k, fields[k]); err != nil {
+			return fmt.Errorf("oms: multipart field %s: %w", k, err)
+		}
+	}
+	for _, f := range files {
+		pw, err := mw.CreateFormFile(f.Field, f.Filename)
+		if err != nil {
+			return fmt.Errorf("oms: multipart file %s: %w", f.Field, err)
+		}
+		if _, err := pw.Write(f.Data); err != nil {
+			return fmt.Errorf("oms: multipart write %s: %w", f.Field, err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return fmt.Errorf("oms: multipart close: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		return fmt.Errorf("oms: build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if tok := c.AccessToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("oms: POST %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized && retryAuth && c.refresh != "" {
+		if rerr := c.Refresh(ctx); rerr == nil {
+			return c.doMultipart(ctx, path, fields, files, out, false)
+		}
+	}
+	if resp.StatusCode >= 400 {
+		return parseError(resp)
+	}
+	if out == nil || resp.StatusCode == http.StatusNoContent {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
+		return fmt.Errorf("oms: decode response: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any, retryAuth bool) error {
