@@ -387,6 +387,10 @@ func (s *ListScreen) View() string {
 		// from anywhere; advertise it here where an operator looks for it.
 		// Editing/deleting an item lives on its detail screen (E / x).
 		hint += " · I new item"
+	case "assets":
+		// `A` is the global new-asset hotkey (app.go). Edit/delete of an
+		// existing asset live on its detail screen (E / x).
+		hint += " · A new asset"
 	}
 	b.WriteString(StyleMuted.Render(hint))
 	return b.String()
