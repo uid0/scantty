@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -54,6 +55,7 @@ func TestAssetForm_RenderSmoke(t *testing.T) {
 func TestAssetForm_BuildPayload(t *testing.T) {
 	s := NewAssetFormScreen(Deps{}, "")
 	s.inputs[afName].SetValue("Metal lathe")
+	s.inputs[afAssetTag].SetValue("LATHE-1")
 	s.inputs[afAmountPaid].SetValue("125.50")
 	cat := 3
 	loc := 7
@@ -71,6 +73,9 @@ func TestAssetForm_BuildPayload(t *testing.T) {
 	}
 	if w.Name != "Metal lathe" {
 		t.Errorf("name = %q", w.Name)
+	}
+	if w.AssetTag != "LATHE-1" {
+		t.Errorf("asset_tag = %q", w.AssetTag)
 	}
 	if w.AmountPaid != "125.50" {
 		t.Errorf("amount_paid = %q (want \"125.50\")", w.AmountPaid)
@@ -105,8 +110,8 @@ func TestAssetForm_BuildPayload(t *testing.T) {
 	}
 }
 
-// TestAssetForm_Validation covers name-required, the ownership refinements
-// (group needs a SIG, user is a dead-end), and amount/date parsing.
+// TestAssetForm_Validation covers name-required, the ownership refinements,
+// amount/date parsing, and manual PDF path validation.
 func TestAssetForm_Validation(t *testing.T) {
 	s := NewAssetFormScreen(Deps{}, "")
 
@@ -130,12 +135,20 @@ func TestAssetForm_Validation(t *testing.T) {
 		t.Errorf("owning_group = %v (want 4)", w.OwningGroup)
 	}
 
-	// user ownership is a dead-end (no owning_user picker) → error
+	// user ownership without a user picked → error
 	s.ownershipIdx = assetOwnershipIndex("user")
 	if _, err := s.buildPayload(); err == nil {
-		t.Errorf("expected error: user ownership can't be set from the TUI")
+		t.Errorf("expected error: user ownership requires an owning user")
+	}
+	u := 9
+	s.owningUserID = &u
+	if w, err := s.buildPayload(); err != nil {
+		t.Errorf("user ownership with user should validate: %v", err)
+	} else if w.OwningUser == nil || *w.OwningUser != 9 {
+		t.Errorf("owning_user = %v (want 9)", w.OwningUser)
 	}
 	s.ownershipIdx = assetOwnershipIndex("space")
+	s.owningUserID = nil
 
 	// amount must parse and be non-negative
 	s.inputs[afAmountPaid].SetValue("abc")
@@ -159,11 +172,30 @@ func TestAssetForm_Validation(t *testing.T) {
 	} else if w.DateReceived == nil || *w.DateReceived != "2026-07-03" {
 		t.Errorf("date_received = %v", w.DateReceived)
 	}
+
+	s.inputs[afManualPDFPath].SetValue("manual.pdf")
+	if _, err := s.buildPayload(); err == nil {
+		t.Errorf("expected error for relative manual PDF path")
+	}
+	s.inputs[afManualPDFPath].SetValue(t.TempDir() + "/missing.pdf")
+	if _, err := s.buildPayload(); err == nil {
+		t.Errorf("expected error for missing manual PDF path")
+	}
+	manual := t.TempDir() + "/manual.pdf"
+	if err := os.WriteFile(manual, []byte("pdf"), 0o600); err != nil {
+		t.Fatalf("write manual fixture: %v", err)
+	}
+	s.inputs[afManualPDFPath].SetValue(manual)
+	if w, err := s.buildPayload(); err != nil {
+		t.Errorf("existing manual PDF path should pass: %v", err)
+	} else if w.ManualPDFPath != manual {
+		t.Errorf("manual_pdf path = %q", w.ManualPDFPath)
+	}
 }
 
 // TestAssetForm_ConditionalFields confirms is_donation adds the donor field and
-// group ownership adds the owning-SIG picker, keeping the cursor anchored on
-// the control that was toggled.
+// group/user ownership adds the matching owner picker, keeping the cursor
+// anchored on the control that was toggled.
 func TestAssetForm_ConditionalFields(t *testing.T) {
 	s := NewAssetFormScreen(Deps{}, "")
 
@@ -186,6 +218,17 @@ func TestAssetForm_ConditionalFields(t *testing.T) {
 	s.cycleSelect(afOwnership, +1) // space → group
 	if !fieldsContain(s.fields, afOwningGroup) {
 		t.Errorf("owning-SIG picker should appear when ownership is group")
+	}
+	if id, ok := s.currentFieldID(); !ok || id != afOwnership {
+		t.Errorf("cursor should stay on the ownership select, got id=%d ok=%v", id, ok)
+	}
+
+	s.cycleSelect(afOwnership, +1) // group → user
+	if fieldsContain(s.fields, afOwningGroup) {
+		t.Errorf("owning-SIG picker should be hidden when ownership is user")
+	}
+	if !fieldsContain(s.fields, afOwningUser) {
+		t.Errorf("owning-user picker should appear when ownership is user")
 	}
 	if id, ok := s.currentFieldID(); !ok || id != afOwnership {
 		t.Errorf("cursor should stay on the ownership select, got id=%d ok=%v", id, ok)
@@ -236,5 +279,24 @@ func TestAssetForm_HydrateInfersOwnership(t *testing.T) {
 	// certs hydrate sorted
 	if len(s.certIDs) != 2 || s.certIDs[0] != 1 || s.certIDs[1] != 2 {
 		t.Errorf("certIDs = %v (want sorted [1 2])", s.certIDs)
+	}
+
+	user := 9
+	s = NewAssetFormScreen(Deps{}, "asset-10")
+	s.asset = &omsapi.Asset{
+		Name:       "User Laptop",
+		AssetTag:   "LAP-9",
+		OwningUser: &user,
+		IsActive:   true,
+	}
+	s.hydrate()
+	if got := s.inputs[afAssetTag].Value(); got != "LAP-9" {
+		t.Errorf("asset_tag = %q", got)
+	}
+	if assetOwnershipOptions[s.ownershipIdx].value != "user" {
+		t.Errorf("ownership should be inferred as user, got %q", assetOwnershipOptions[s.ownershipIdx].value)
+	}
+	if s.owningUserID == nil || *s.owningUserID != 9 {
+		t.Errorf("owningUserID = %v", s.owningUserID)
 	}
 }

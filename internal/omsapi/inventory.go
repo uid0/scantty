@@ -280,6 +280,7 @@ type Asset struct {
 
 	// Ownership
 	OwningGroup     *int   `json:"owning_group,omitempty"`
+	OwningUser      *int   `json:"owning_user,omitempty"`
 	OwningGroupName string `json:"owning_group_name,omitempty"`
 	OwningUserName  string `json:"owning_user_name,omitempty"`
 	GroupsCanEnable []int  `json:"groups_can_enable,omitempty"`
@@ -400,11 +401,9 @@ func (a *Asset) InventoryItemID() (string, bool) {
 //   - required_certifications is an M2M written as a JSON array of cert pks;
 //     omitted when empty so a PATCH doesn't clear existing certs (the web
 //     appends nothing for an empty list).
-//
-// File uploads the web form also exposes (image / manual_pdf) are out of scope
-// for the TUI, and the asset schema carries no URL-based alternative for them.
 type AssetWrite struct {
 	Name          string  `json:"name"`
+	AssetTag      string  `json:"asset_tag,omitempty"`
 	Description   *string `json:"description,omitempty"`
 	SerialNumber  *string `json:"serial_number,omitempty"`
 	InventoryItem *string `json:"inventory_item,omitempty"` // InventoryItem pk is a UUID
@@ -422,6 +421,7 @@ type AssetWrite struct {
 	Status        string `json:"status"`
 	OwnershipType string `json:"ownership_type"`
 	OwningGroup   *int   `json:"owning_group,omitempty"`
+	OwningUser    *int   `json:"owning_user,omitempty"`
 	IsActive      bool   `json:"is_active"`
 
 	NeedsCompressedAir     bool  `json:"needs_compressed_air"`
@@ -433,13 +433,20 @@ type AssetWrite struct {
 
 	Notes          *string `json:"notes,omitempty"`
 	ConditionNotes *string `json:"condition_notes,omitempty"`
+	ManualPDFPath  string  `json:"-"`
 }
 
 // CreateAsset POSTs a new asset. The response echoes the created asset
 // (the viewset re-serializes it, so *_name display fields come back populated).
 func (c *Client) CreateAsset(ctx context.Context, body AssetWrite) (*Asset, error) {
 	var out Asset
-	if err := c.Post(ctx, "/api/inventory/assets/", body, &out); err != nil {
+	var err error
+	if body.needsMultipart() {
+		err = c.PostMultipart(ctx, "/api/inventory/assets/", body.multipartFields(), "manual_pdf", body.ManualPDFPath, &out)
+	} else {
+		err = c.Post(ctx, "/api/inventory/assets/", body, &out)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -450,10 +457,70 @@ func (c *Client) CreateAsset(ctx context.Context, body AssetWrite) (*Asset, erro
 // their server-side value.
 func (c *Client) UpdateAsset(ctx context.Context, id string, body AssetWrite) (*Asset, error) {
 	var out Asset
-	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/assets/%s/", id), body, &out); err != nil {
+	path := fmt.Sprintf("/api/inventory/assets/%s/", id)
+	var err error
+	if body.needsMultipart() {
+		err = c.PatchMultipart(ctx, path, body.multipartFields(), "manual_pdf", body.ManualPDFPath, &out)
+	} else {
+		err = c.Patch(ctx, path, body, &out)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+func (w AssetWrite) needsMultipart() bool {
+	return strings.TrimSpace(w.ManualPDFPath) != ""
+}
+
+func (w AssetWrite) multipartFields() map[string][]string {
+	fields := map[string][]string{}
+	add := func(k, v string) {
+		fields[k] = append(fields[k], v)
+	}
+	addPtr := func(k string, v *string) {
+		if v != nil {
+			add(k, *v)
+		}
+	}
+	addIntPtr := func(k string, v *int) {
+		if v != nil {
+			add(k, strconv.Itoa(*v))
+		}
+	}
+
+	add("name", w.Name)
+	if strings.TrimSpace(w.AssetTag) != "" {
+		add("asset_tag", w.AssetTag)
+	}
+	addPtr("description", w.Description)
+	addPtr("serial_number", w.SerialNumber)
+	addPtr("inventory_item", w.InventoryItem)
+	addIntPtr("category", w.Category)
+	addIntPtr("location", w.Location)
+	addPtr("date_received", w.DateReceived)
+	add("amount_paid", w.AmountPaid)
+	add("is_donation", strconv.FormatBool(w.IsDonation))
+	addPtr("donor_name", w.DonorName)
+	addPtr("wiki_page_url", w.WikiPageURL)
+	addPtr("product_url", w.ProductURL)
+	add("status", w.Status)
+	add("ownership_type", w.OwnershipType)
+	addIntPtr("owning_group", w.OwningGroup)
+	addIntPtr("owning_user", w.OwningUser)
+	add("is_active", strconv.FormatBool(w.IsActive))
+	add("needs_compressed_air", strconv.FormatBool(w.NeedsCompressedAir))
+	add("needs_ventilation", strconv.FormatBool(w.NeedsVentilation))
+	add("is_chargeable", strconv.FormatBool(w.IsChargeable))
+	add("training_required", strconv.FormatBool(w.TrainingRequired))
+	for _, id := range w.RequiredCertifications {
+		add("required_certifications", strconv.Itoa(id))
+	}
+	add("report_only", strconv.FormatBool(w.ReportOnly))
+	addPtr("notes", w.Notes)
+	addPtr("condition_notes", w.ConditionNotes)
+	return fields
 }
 
 // DeleteAsset removes an asset (DELETE /api/inventory/assets/{id}/). The

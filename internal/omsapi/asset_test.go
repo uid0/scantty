@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +40,7 @@ func TestCreateAsset(t *testing.T) {
 	cat := 3
 	a, err := c.CreateAsset(context.Background(), AssetWrite{
 		Name:                   "Metal lathe",
+		AssetTag:               "DMS-ABCD1234",
 		Description:            &desc,
 		InventoryItem:          &item,
 		Category:               &cat,
@@ -66,6 +69,9 @@ func TestCreateAsset(t *testing.T) {
 	}
 	if captured.body["description"] != "10x22 bench lathe" {
 		t.Fatalf("description = %v", captured.body["description"])
+	}
+	if captured.body["asset_tag"] != "DMS-ABCD1234" {
+		t.Fatalf("asset_tag = %v", captured.body["asset_tag"])
 	}
 	// inventory_item is a UUID string, NOT a number.
 	if captured.body["inventory_item"] != "item-uuid-1" {
@@ -103,6 +109,84 @@ func TestCreateAsset(t *testing.T) {
 	}
 	if _, ok := captured.body["owning_group"]; ok {
 		t.Fatalf("owning_group should be omitted when nil, got %v", captured.body["owning_group"])
+	}
+}
+
+// TestCreateAssetWithManualPDFUsesMultipart asserts that supplying a local
+// manual path switches the asset create call to multipart/form-data, preserving
+// scalar fields and uploading the file as manual_pdf.
+func TestCreateAssetWithManualPDFUsesMultipart(t *testing.T) {
+	manual := t.TempDir() + "/manual.pdf"
+	if err := os.WriteFile(manual, []byte("%PDF manual"), 0o600); err != nil {
+		t.Fatalf("write manual fixture: %v", err)
+	}
+
+	var captured struct {
+		method      string
+		path        string
+		contentType string
+		fields      map[string][]string
+		fileName    string
+		fileBody    string
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		captured.contentType = r.Header.Get("Content-Type")
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		captured.fields = r.MultipartForm.Value
+		file, header, err := r.FormFile("manual_pdf")
+		if err != nil {
+			t.Fatalf("manual_pdf file: %v", err)
+		}
+		defer file.Close()
+		raw, _ := io.ReadAll(file)
+		captured.fileName = header.Filename
+		captured.fileBody = string(raw)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"asset-uuid","name":"Manual asset"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	user := 42
+	a, err := c.CreateAsset(context.Background(), AssetWrite{
+		Name:          "Manual asset",
+		AssetTag:      "MAN-1",
+		AmountPaid:    "0",
+		Status:        "active",
+		OwnershipType: "user",
+		OwningUser:    &user,
+		IsActive:      true,
+		ManualPDFPath: manual,
+	})
+	if err != nil {
+		t.Fatalf("CreateAsset multipart: %v", err)
+	}
+	if a == nil || a.Name != "Manual asset" {
+		t.Fatalf("unexpected asset returned: %+v", a)
+	}
+	if captured.method != http.MethodPost || captured.path != "/api/inventory/assets/" {
+		t.Fatalf("method/path = %q %q", captured.method, captured.path)
+	}
+	if !strings.HasPrefix(captured.contentType, "multipart/form-data;") {
+		t.Fatalf("Content-Type = %q", captured.contentType)
+	}
+	if captured.fields["asset_tag"][0] != "MAN-1" {
+		t.Fatalf("asset_tag = %v", captured.fields["asset_tag"])
+	}
+	if captured.fields["owning_user"][0] != "42" {
+		t.Fatalf("owning_user = %v", captured.fields["owning_user"])
+	}
+	if captured.fields["is_donation"][0] != "false" {
+		t.Fatalf("is_donation = %v", captured.fields["is_donation"])
+	}
+	if captured.fileName != "manual.pdf" || captured.fileBody != "%PDF manual" {
+		t.Fatalf("manual file = %q %q", captured.fileName, captured.fileBody)
 	}
 }
 

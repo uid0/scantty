@@ -17,21 +17,21 @@
 //	                report_only flags). Flipping is_donation shows/hides the
 //	                donor-name field.
 //	select        — a fixed option list; space or ←/→ cycles (status,
-//	                ownership_type). Cycling ownership to "group" reveals the
-//	                owning-SIG picker.
+//	                ownership_type). Cycling ownership to "group" or "user"
+//	                reveals the matching owner picker.
 //	picker        — a single foreign key chosen from a searchable list in a
 //	                sub-phase; space opens it (inventory item, category,
-//	                location, owning group)
+//	                location, owning group, owning user)
 //	multi-picker  — required_certifications: same sub-phase but space toggles
 //	                membership and enter closes; multiple certs can be selected
 //
 // Two families of AssetFormPage controls are intentionally NOT reproduced here,
 // each for a concrete reason rather than to "simplify":
 //
-//   - The image + manual_pdf file uploads: binary uploads have no meaningful
-//     TTY affordance and the asset schema carries no URL-based alternative
-//     (unlike the item form's image_url). The inventory item form set the same
-//     precedent by dropping its File inputs.
+//   - The image upload: unlike manual_pdf (entered as an absolute local path
+//     and sent as multipart), the image input has no TTY-native affordance and
+//     no URL-based alternative in the asset schema. The inventory item form set
+//     the same precedent by dropping its File inputs.
 //   - The Supplies (AssetPart) and Maintenance (MaintenanceItem) inline
 //     sub-editors: those write *separate* API resources chained after the asset
 //     save, not Asset fields, and warrant their own parity beads. The mirror
@@ -47,6 +47,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,6 +66,7 @@ import (
 const (
 	afName = iota
 	afDescription
+	afAssetTag
 	afSerialNumber
 	afInventoryItem // picker (UUID pk)
 	afCategory      // picker
@@ -75,9 +78,11 @@ const (
 	afStatus      // select
 	afOwnership   // select
 	afOwningGroup // picker, conditional on ownership == group
+	afOwningUser  // picker, conditional on ownership == user
 	afIsActive    // toggle
 	afWikiPageURL
 	afProductURL
+	afManualPDFPath
 	afNeedsCompressedAir // toggle
 	afNeedsVentilation   // toggle
 	afIsChargeable       // toggle
@@ -119,10 +124,7 @@ var assetStatusOptions = []selectOption{
 	{"donated_out", "Donated out"},
 }
 
-// assetOwnershipOptions mirrors the web form's Ownership select. Only
-// owning_group actually persists (see AssetWrite); "user" is a dead-end in the
-// web form too (it has no owning_user picker), so the TUI rejects it on submit
-// with a clear message rather than silently no-op'ing.
+// assetOwnershipOptions mirrors the web form's Ownership select.
 var assetOwnershipOptions = []selectOption{
 	{"space", "Space (Makerspace)"},
 	{"group", "Group (SIG)"},
@@ -132,6 +134,7 @@ var assetOwnershipOptions = []selectOption{
 var assetFieldLabel = map[int]string{
 	afName:               "Name",
 	afDescription:        "Description",
+	afAssetTag:           "Asset tag",
 	afSerialNumber:       "Serial number",
 	afInventoryItem:      "Inventory item type",
 	afCategory:           "Category",
@@ -143,9 +146,11 @@ var assetFieldLabel = map[int]string{
 	afStatus:             "Status",
 	afOwnership:          "Ownership",
 	afOwningGroup:        "Owning SIG",
+	afOwningUser:         "Owning user",
 	afIsActive:           "Active",
 	afWikiPageURL:        "Wiki page",
 	afProductURL:         "Product page",
+	afManualPDFPath:      "Manual PDF path",
 	afNeedsCompressedAir: "Needs compressed air",
 	afNeedsVentilation:   "Needs ventilation",
 	afIsChargeable:       "Chargeable use",
@@ -158,8 +163,8 @@ var assetFieldLabel = map[int]string{
 
 func assetFieldKindOf(id int) assetFieldKind {
 	switch id {
-	case afName, afDescription, afSerialNumber, afDateReceived, afDonorName,
-		afWikiPageURL, afProductURL, afConditionNotes, afNotes:
+	case afName, afDescription, afAssetTag, afSerialNumber, afDateReceived, afDonorName,
+		afWikiPageURL, afProductURL, afManualPDFPath, afConditionNotes, afNotes:
 		return akText
 	case afAmountPaid:
 		return akNumber
@@ -168,7 +173,7 @@ func assetFieldKindOf(id int) assetFieldKind {
 		return akToggle
 	case afStatus, afOwnership:
 		return akSelect
-	case afInventoryItem, afCategory, afLocation, afOwningGroup:
+	case afInventoryItem, afCategory, afLocation, afOwningGroup, afOwningUser:
 		return akPicker
 	case afRequiredCerts:
 		return akMultiPicker
@@ -205,6 +210,7 @@ type AssetFormScreen struct {
 	locations    []omsapi.Location
 	items        []omsapi.Item
 	sigs         []omsapi.SIG
+	users        []omsapi.User
 	certs        []omsapi.CertificationOption
 	asset        *omsapi.Asset
 	refArrived   bool
@@ -233,6 +239,7 @@ type AssetFormScreen struct {
 	categoryID      *int
 	locationID      *int
 	owningGroupID   *int
+	owningUserID    *int
 	certIDs         []int // sorted set of required-certification pks
 
 	// Visible-field navigation.
@@ -253,6 +260,7 @@ type assetFormRefLoadedMsg struct {
 	locations  []omsapi.Location
 	items      []omsapi.Item
 	sigs       []omsapi.SIG
+	users      []omsapi.User
 	certs      []omsapi.CertificationOption
 	err        error
 }
@@ -311,11 +319,11 @@ func assetCharLimitFor(id int) int {
 	switch id {
 	case afName, afDonorName:
 		return 200
-	case afSerialNumber:
+	case afAssetTag, afSerialNumber:
 		return 100
 	case afDescription, afConditionNotes, afNotes:
 		return 1000
-	case afWikiPageURL, afProductURL:
+	case afWikiPageURL, afProductURL, afManualPDFPath:
 		return 500
 	case afDateReceived:
 		return 10
@@ -330,6 +338,8 @@ func assetPlaceholderFor(id int) string {
 	switch id {
 	case afName:
 		return "asset name or model"
+	case afAssetTag:
+		return "DMS-ABCD1234"
 	case afSerialNumber:
 		return "serial number or unique identifier"
 	case afDateReceived:
@@ -340,6 +350,8 @@ func assetPlaceholderFor(id int) string {
 		return "https://wiki.example.com/asset"
 	case afProductURL:
 		return "https://manufacturer.example.com/product"
+	case afManualPDFPath:
+		return "/absolute/path/to/manual.pdf"
 	case afDonorName:
 		return "name of donor"
 	case afDescription, afConditionNotes, afNotes:
@@ -426,6 +438,9 @@ func (s *AssetFormScreen) loadRefData() tea.Cmd {
 		if sigs, err := deps.OMS.ListSIGs(ctx, nil); err == nil {
 			msg.sigs = sigs.Results
 		}
+		if users, err := deps.OMS.ListUsers(ctx, nil); err == nil {
+			msg.users = users.Results
+		}
 		if certs, err := deps.OMS.ListAvailableCertifications(ctx); err == nil {
 			msg.certs = certs
 		}
@@ -458,6 +473,7 @@ func (s *AssetFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.locations = m.locations
 			s.items = m.items
 			s.sigs = m.sigs
+			s.users = m.users
 			s.certs = m.certs
 		}
 		return s, s.maybeFinalizeLoad()
@@ -545,6 +561,7 @@ func (s *AssetFormScreen) hydrate() {
 
 	set(afName, a.Name)
 	set(afDescription, a.Description)
+	set(afAssetTag, a.AssetTag)
 	set(afSerialNumber, a.SerialNumber)
 	if id, ok := a.InventoryItemID(); ok {
 		v := id
@@ -565,9 +582,11 @@ func (s *AssetFormScreen) hydrate() {
 
 	s.statusIdx = assetStatusIndex(a.Status)
 	// ownership_type is not part of the AssetSerializer payload, so infer it
-	// from owning_group: a group-owned asset carries an owning_group, anything
-	// else reads back as space-owned.
-	if a.OwningGroup != nil {
+	// from the persisted owner fields returned by the detail serializer.
+	if a.OwningUser != nil {
+		s.ownershipIdx = assetOwnershipIndex("user")
+		s.owningUserID = copyIntPtr(a.OwningUser)
+	} else if a.OwningGroup != nil {
 		s.ownershipIdx = assetOwnershipIndex("group")
 		s.owningGroupID = copyIntPtr(a.OwningGroup)
 	} else {
@@ -605,16 +624,19 @@ func (s *AssetFormScreen) rebuildFields() {
 		focused = id
 	}
 
-	f := []int{afName, afDescription, afSerialNumber, afInventoryItem, afCategory,
+	f := []int{afName, afDescription, afAssetTag, afSerialNumber, afInventoryItem, afCategory,
 		afLocation, afDateReceived, afAmountPaid, afIsDonation}
 	if s.isDonation {
 		f = append(f, afDonorName)
 	}
 	f = append(f, afStatus, afOwnership)
-	if assetOwnershipOptions[s.ownershipIdx].value == "group" {
+	switch assetOwnershipOptions[s.ownershipIdx].value {
+	case "group":
 		f = append(f, afOwningGroup)
+	case "user":
+		f = append(f, afOwningUser)
 	}
-	f = append(f, afIsActive, afWikiPageURL, afProductURL, afNeedsCompressedAir,
+	f = append(f, afIsActive, afWikiPageURL, afProductURL, afManualPDFPath, afNeedsCompressedAir,
 		afNeedsVentilation, afIsChargeable, afTrainingRequired, afRequiredCerts,
 		afReportOnly, afConditionNotes, afNotes)
 	s.fields = f
@@ -767,7 +789,15 @@ func (s *AssetFormScreen) cycleSelect(id, delta int) {
 	case afOwnership:
 		n := len(assetOwnershipOptions)
 		s.ownershipIdx = (s.ownershipIdx + delta + n) % n
-		// ownership → group reveals (or hides) the owning-SIG picker.
+		switch assetOwnershipOptions[s.ownershipIdx].value {
+		case "group":
+			s.owningUserID = nil
+		case "user":
+			s.owningGroupID = nil
+		default:
+			s.owningGroupID = nil
+			s.owningUserID = nil
+		}
 		s.rebuildFields()
 		s.syncFocus()
 	}
@@ -775,7 +805,7 @@ func (s *AssetFormScreen) cycleSelect(id, delta int) {
 
 // ---------------------------------------------------------------------------
 // Picker sub-phase (inventory item / category / location / owning group /
-// required certifications)
+// owning user / required certifications)
 // ---------------------------------------------------------------------------
 
 func (s *AssetFormScreen) openPicker(id int) {
@@ -806,6 +836,10 @@ func (s *AssetFormScreen) openPicker(id int) {
 	case afOwningGroup:
 		if s.owningGroupID != nil {
 			selKey = strconv.Itoa(*s.owningGroupID)
+		}
+	case afOwningUser:
+		if s.owningUserID != nil {
+			selKey = strconv.Itoa(*s.owningUserID)
 		}
 	}
 	if selKey != "" {
@@ -849,6 +883,10 @@ func (s *AssetFormScreen) applyPickFilter() {
 	case afOwningGroup:
 		for _, g := range s.sigs {
 			add(strconv.Itoa(g.ID), g.Name)
+		}
+	case afOwningUser:
+		for _, u := range s.users {
+			add(strconv.Itoa(u.ID), assetUserLabel(u))
 		}
 	case afRequiredCerts:
 		for _, c := range s.certs {
@@ -932,6 +970,8 @@ func (s *AssetFormScreen) commitPick() {
 			s.locationID = pickInt(opt)
 		case afOwningGroup:
 			s.owningGroupID = pickInt(opt)
+		case afOwningUser:
+			s.owningUserID = pickInt(opt)
 		}
 	}
 	s.phase = assetPhaseForm
@@ -1031,6 +1071,7 @@ func (s *AssetFormScreen) buildPayload() (omsapi.AssetWrite, error) {
 
 	ownership := assetOwnershipOptions[s.ownershipIdx].value
 	var owningGroup *int
+	var owningUser *int
 	switch ownership {
 	case "group":
 		if s.owningGroupID == nil {
@@ -1038,10 +1079,10 @@ func (s *AssetFormScreen) buildPayload() (omsapi.AssetWrite, error) {
 		}
 		owningGroup = s.owningGroupID
 	case "user":
-		// The web form has no owning_user picker either, so a user-owned asset
-		// can't be completed here — say so instead of silently saving with no
-		// owner set.
-		return w, errors.New("user-owned assets can't be set from the TUI — use the web app")
+		if s.owningUserID == nil {
+			return w, errors.New("owning user is required when ownership is User")
+		}
+		owningUser = s.owningUserID
 	}
 
 	var donor *string
@@ -1049,8 +1090,23 @@ func (s *AssetFormScreen) buildPayload() (omsapi.AssetWrite, error) {
 		donor = strPtrTrim(s.inputs[afDonorName].Value())
 	}
 
+	manualPath := strings.TrimSpace(s.inputs[afManualPDFPath].Value())
+	if manualPath != "" {
+		if !filepath.IsAbs(manualPath) {
+			return w, errors.New("manual PDF path must be absolute")
+		}
+		info, err := os.Stat(manualPath)
+		if err != nil {
+			return w, fmt.Errorf("manual PDF path: %w", err)
+		}
+		if info.IsDir() {
+			return w, errors.New("manual PDF path must be a file")
+		}
+	}
+
 	w = omsapi.AssetWrite{
 		Name:                   name,
+		AssetTag:               strings.TrimSpace(s.inputs[afAssetTag].Value()),
 		Description:            strPtrTrim(s.inputs[afDescription].Value()),
 		SerialNumber:           strPtrTrim(s.inputs[afSerialNumber].Value()),
 		InventoryItem:          s.inventoryItemID,
@@ -1065,6 +1121,7 @@ func (s *AssetFormScreen) buildPayload() (omsapi.AssetWrite, error) {
 		Status:                 assetStatusOptions[s.statusIdx].value,
 		OwnershipType:          ownership,
 		OwningGroup:            owningGroup,
+		OwningUser:             owningUser,
 		IsActive:               s.isActive,
 		NeedsCompressedAir:     s.needsCompressedAir,
 		NeedsVentilation:       s.needsVentilation,
@@ -1074,6 +1131,7 @@ func (s *AssetFormScreen) buildPayload() (omsapi.AssetWrite, error) {
 		ReportOnly:             s.reportOnly,
 		Notes:                  strPtrTrim(s.inputs[afNotes].Value()),
 		ConditionNotes:         strPtrTrim(s.inputs[afConditionNotes].Value()),
+		ManualPDFPath:          manualPath,
 	}
 	return w, nil
 }
@@ -1237,8 +1295,41 @@ func (s *AssetFormScreen) pickerLabel(id int) string {
 			}
 		}
 		return fmt.Sprintf("#%d", *s.owningGroupID)
+	case afOwningUser:
+		if s.owningUserID == nil {
+			return StyleMuted.Render("(none)")
+		}
+		for _, u := range s.users {
+			if u.ID == *s.owningUserID {
+				return assetUserLabel(u)
+			}
+		}
+		if s.asset != nil && s.asset.OwningUserName != "" {
+			return s.asset.OwningUserName
+		}
+		return fmt.Sprintf("#%d", *s.owningUserID)
 	}
 	return ""
+}
+
+func assetUserLabel(u omsapi.User) string {
+	if strings.TrimSpace(u.DisplayName) != "" {
+		if u.Username != "" {
+			return fmt.Sprintf("%s (%s)", u.DisplayName, u.Username)
+		}
+		return u.DisplayName
+	}
+	name := strings.TrimSpace(strings.Join([]string{u.FirstName, u.LastName}, " "))
+	if name != "" {
+		if u.Username != "" {
+			return fmt.Sprintf("%s (%s)", name, u.Username)
+		}
+		return name
+	}
+	if u.Username != "" {
+		return u.Username
+	}
+	return fmt.Sprintf("#%d", u.ID)
 }
 
 func (s *AssetFormScreen) certsLabel() string {
@@ -1350,6 +1441,8 @@ func (s *AssetFormScreen) pickWhatLabel() string {
 		return "location"
 	case afOwningGroup:
 		return "owning SIG"
+	case afOwningUser:
+		return "owning user"
 	case afRequiredCerts:
 		return "required certifications"
 	}
