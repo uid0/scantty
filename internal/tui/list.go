@@ -382,6 +382,11 @@ func (s *ListScreen) View() string {
 	switch s.spec.kind {
 	case "purchase_orders":
 		hint += " · N new PO · Q pending reorders"
+	case "inventory_items":
+		// `I` is a global hotkey (app.go) that opens the create-item form
+		// from anywhere; advertise it here where an operator looks for it.
+		// Editing/deleting an item lives on its detail screen (E / x).
+		hint += " · I new item"
 	}
 	b.WriteString(StyleMuted.Render(hint))
 	return b.String()

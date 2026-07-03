@@ -11,18 +11,24 @@ import (
 )
 
 type InventoryDetailScreen struct {
-	deps           Deps
-	itemID         string
-	item           *omsapi.Item
-	loadErr        string
-	loading        bool
-	scroller       *TextScroller
-	terminalHeight int
+	deps             Deps
+	itemID           string
+	item             *omsapi.Item
+	loadErr          string
+	loading          bool
+	scroller         *TextScroller
+	terminalHeight   int
+	confirmingDelete bool
+	deleting         bool
 }
 
 type inventoryDetailLoadedMsg struct {
 	item *omsapi.Item
 	err  error
+}
+
+type inventoryDeletedMsg struct {
+	err error
 }
 
 func NewInventoryDetailScreen(deps Deps, id string) *InventoryDetailScreen {
@@ -40,6 +46,12 @@ func (s *InventoryDetailScreen) Title() string {
 	}
 	return "Item"
 }
+
+// WantsRawInput claims every keypress only while the delete confirmation is up,
+// so y/n/esc land here instead of the root's global hotkeys. In the normal view
+// the screen stays non-raw so workspace switching and the global shortcuts keep
+// working.
+func (s *InventoryDetailScreen) WantsRawInput() bool { return s.confirmingDelete }
 
 func (s *InventoryDetailScreen) Init() tea.Cmd {
 	deps := s.deps
@@ -67,7 +79,20 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.item = m.item
 		s.scroller.Set(s.renderBody())
 		return s, nil
+	case inventoryDeletedMsg:
+		s.deleting = false
+		s.confirmingDelete = false
+		if m.err != nil {
+			return s, Status("delete failed: "+m.err.Error(), StatusError)
+		}
+		return s, tea.Batch(
+			Status("item deleted", StatusOK),
+			SwitchTo(WSInventory, newScreenFor(WSInventory, s.deps)),
+		)
 	case tea.KeyMsg:
+		if s.confirmingDelete {
+			return s.updateConfirmDelete(m)
+		}
 		if s.scroller.Handle(m) {
 			return s, nil
 		}
@@ -86,7 +111,49 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.item != nil && s.item.IsSerialized {
 				return s, SwitchTo(WSInventory, NewItemInstancesScreen(s.deps, s.item.ID, s.item.Name))
 			}
+		case "E":
+			// Edit opens the create/edit form in edit mode. Uppercase E
+			// because lowercase e is a global ForgeKey hotkey.
+			if s.item != nil {
+				return s, SwitchTo(WSInventory, NewInventoryItemFormScreen(s.deps, s.item.ID))
+			}
+		case "x":
+			// Delete (with confirm). The web supports item delete; guard it
+			// behind a y/n prompt since it's destructive.
+			if s.item != nil {
+				s.confirmingDelete = true
+				return s, nil
+			}
 		}
+	}
+	return s, nil
+}
+
+// updateConfirmDelete handles the y/n prompt shown before deleting an item.
+// The screen is in raw-input mode here (WantsRawInput), so esc/n reach us
+// instead of the root's global handlers.
+func (s *InventoryDetailScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.deleting {
+		return s, nil
+	}
+	switch m.String() {
+	case "y", "Y":
+		if s.item == nil {
+			s.confirmingDelete = false
+			return s, nil
+		}
+		s.deleting = true
+		deps := s.deps
+		ctx := deps.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		id := s.item.ID
+		return s, func() tea.Msg {
+			return inventoryDeletedMsg{err: deps.OMS.DeleteInventoryItem(ctx, id)}
+		}
+	case "n", "N", "esc":
+		s.confirmingDelete = false
 	}
 	return s, nil
 }
@@ -102,9 +169,22 @@ func (s *InventoryDetailScreen) View() string {
 		return StyleMuted.Render("Item not found.")
 	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	hint := "j/k scroll · pgup/pgdn page · o/enter request reorder · r refresh · esc back"
+	if s.confirmingDelete {
+		var prompt string
+		if s.deleting {
+			prompt = StyleMuted.Render("Deleting…")
+		} else {
+			name := ""
+			if s.item != nil {
+				name = s.item.Name
+			}
+			prompt = StyleStatusWarn.Render(fmt.Sprintf("Delete %q? This can't be undone.  y delete · n/esc cancel", name))
+		}
+		return s.scroller.View() + "\n\n" + prompt
+	}
+	hint := "j/k scroll · pgup/pgdn page · o/enter reorder · E edit · x delete · r refresh · esc back"
 	if s.item != nil && s.item.IsSerialized {
-		hint = "j/k scroll · o/enter reorder · i instances · r refresh · esc back"
+		hint = "j/k scroll · o/enter reorder · i instances · E edit · x delete · r refresh · esc back"
 	}
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }
