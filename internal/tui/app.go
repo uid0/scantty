@@ -217,6 +217,16 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSMaintenance)
 				return r, r.screen.Init()
 			}
+		case "M":
+			// Shift+m opens the preventive-maintenance ITEM list (create/edit
+			// PM items + per-item actions). Lowercase m is the Profile
+			// shortcut a few branches up, so PM items take the shifted key —
+			// same convention as N (new PO) / I (new item).
+			if _, ok := r.screen.(*MaintenanceItemsScreen); !ok {
+				r.screen = NewMaintenanceItemsScreen(r.deps)
+				r.nav.SetActive(WSMaintenance)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
 		case "D":
 			if _, ok := r.screen.(*DonationsScreen); !ok {
 				r.screen = NewDonationsScreen(r.deps)

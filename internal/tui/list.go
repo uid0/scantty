@@ -387,6 +387,11 @@ func (s *ListScreen) View() string {
 		// from anywhere; advertise it here where an operator looks for it.
 		// Editing/deleting an item lives on its detail screen (E / x).
 		hint += " · I new item"
+	case "work_orders":
+		// The Maintenance landing lists work orders; `M` (global) opens the
+		// PM-item list, where PM items are created/edited and their actions
+		// (complete / clone / generate-WO) live.
+		hint += " · M PM items"
 	}
 	b.WriteString(StyleMuted.Render(hint))
 	return b.String()
