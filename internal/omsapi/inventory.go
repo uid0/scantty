@@ -83,12 +83,32 @@ type Item struct {
 	// serial-numbered units (SerializedComponent). SerialTrackingMode is
 	// "consumable" or "reusable" and drives which lifecycle transitions are
 	// legal on those units.
-	IsSerialized       bool           `json:"is_serialized,omitempty"`
-	SerialTrackingMode string         `json:"serial_tracking_mode,omitempty"`
-	Suppliers          []ItemSupplier `json:"suppliers,omitempty"`
-	Tags               []string       `json:"tags,omitempty"`
-	CreatedAt          time.Time      `json:"created_at,omitempty"`
-	UpdatedAt          time.Time      `json:"updated_at,omitempty"`
+	IsSerialized       bool   `json:"is_serialized,omitempty"`
+	SerialTrackingMode string `json:"serial_tracking_mode,omitempty"`
+
+	// Hazmat block. Mirrors the web item form's "Hazardous Materials"
+	// section so the edit screen can hydrate every hazmat field. The NFPA
+	// ratings are pointers because 0 is a meaningful rating distinct from
+	// "unset" — the backend serializes them as null when never assigned.
+	IsHazardous           bool   `json:"is_hazardous,omitempty"`
+	MSDSURL               string `json:"msds_url,omitempty"`
+	NFPAHealthHazard      *int   `json:"nfpa_health_hazard,omitempty"`
+	NFPAFireHazard        *int   `json:"nfpa_fire_hazard,omitempty"`
+	NFPAInstabilityHazard *int   `json:"nfpa_instability_hazard,omitempty"`
+	NFPASpecialHazards    string `json:"nfpa_special_hazards,omitempty"`
+
+	// Ownership + lifecycle fields the item form round-trips.
+	OwnershipType string `json:"ownership_type,omitempty"`
+	OwningUser    *int   `json:"owning_user,omitempty"`
+	OwningGroup   *int   `json:"owning_group,omitempty"`
+	IsActive      bool   `json:"is_active,omitempty"`
+	Notes         string `json:"notes,omitempty"`
+	Image         string `json:"image,omitempty"`
+
+	Suppliers []ItemSupplier `json:"suppliers,omitempty"`
+	Tags      []string       `json:"tags,omitempty"`
+	CreatedAt time.Time      `json:"created_at,omitempty"`
+	UpdatedAt time.Time      `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListItems(ctx context.Context, q url.Values) (*Page[Item], error) {
@@ -109,6 +129,87 @@ func (c *Client) ScanItem(ctx context.Context, id string) (*Item, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ItemWrite is the create/edit payload for an inventory item. It mirrors the
+// writable fields of the web item form (frontend InventoryItemFormPage.tsx +
+// inventoryItemSchema). A few wire-contract details are load-bearing and match
+// the web form's FormData behaviour deliberately:
+//
+//   - Booleans carry NO omitempty so a PATCH that turns a flag off
+//     (is_active / is_hazardous / is_serialized → false) actually reaches the
+//     backend instead of being silently dropped.
+//   - Optional scalars are pointers: nil means "omit the key" (the web skips
+//     empty/null values on submit). A pointer to a zero value still serializes,
+//     so NFPAHealthHazard=0 is sent as 0 — a real NFPA rating, not "unset".
+//   - Location is a string. The item viewset's serializer field for location is
+//     read-only (it returns the location name); the viewset resolves this raw
+//     request value as a Location pk (a numeric string) or get_or_creates one
+//     by name. Send the picked location's id as a string.
+//   - Category rides the serializer as an ordinary FK primary key (int).
+//   - SerialTrackingMode has a NOT-NULL "consumable" default on the model, so
+//     it must be OMITTED (never null) when the item isn't serialized — leave it
+//     nil unless IsSerialized is true, exactly as the web form does.
+//
+// File uploads the web form also exposes (image / msds_file) are intentionally
+// out of scope for the TUI; ImageURL covers the download-by-URL path.
+type ItemWrite struct {
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+	SKU         *string `json:"sku,omitempty"`
+	ImageURL    *string `json:"image_url,omitempty"`
+
+	CurrentStock    int `json:"current_stock"`
+	MinimumStock    int `json:"minimum_stock"`
+	ReorderQuantity int `json:"reorder_quantity"`
+
+	UseCaseBasedReorder bool `json:"use_case_based_reorder"`
+	MinimumCases        *int `json:"minimum_cases,omitempty"`
+	ReorderCases        *int `json:"reorder_cases,omitempty"`
+
+	Category      *int    `json:"category,omitempty"`
+	Location      *string `json:"location,omitempty"`
+	ShelfPosition *string `json:"shelf_position,omitempty"`
+
+	IsHazardous           bool    `json:"is_hazardous"`
+	MSDSURL               *string `json:"msds_url,omitempty"`
+	NFPAHealthHazard      *int    `json:"nfpa_health_hazard,omitempty"`
+	NFPAFireHazard        *int    `json:"nfpa_fire_hazard,omitempty"`
+	NFPAInstabilityHazard *int    `json:"nfpa_instability_hazard,omitempty"`
+	NFPASpecialHazards    *string `json:"nfpa_special_hazards,omitempty"`
+
+	IsSerialized       bool    `json:"is_serialized"`
+	SerialTrackingMode *string `json:"serial_tracking_mode,omitempty"`
+
+	IsActive bool    `json:"is_active"`
+	Notes    *string `json:"notes,omitempty"`
+}
+
+// CreateInventoryItem POSTs a new inventory item. The response echoes the
+// created item (the viewset re-serializes it, so location/category names come
+// back populated).
+func (c *Client) CreateInventoryItem(ctx context.Context, body ItemWrite) (*Item, error) {
+	var out Item
+	if err := c.Post(ctx, "/api/inventory/items/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateInventoryItem PATCHes an existing item. PATCH (not PUT) mirrors the web
+// form, so omitted keys are left untouched server-side.
+func (c *Client) UpdateInventoryItem(ctx context.Context, id string, body ItemWrite) (*Item, error) {
+	var out Item
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/items/%s/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteInventoryItem removes an item (DELETE /api/inventory/items/{id}/). The
+// backend enforces manage-inventory permission and returns 204 on success.
+func (c *Client) DeleteInventoryItem(ctx context.Context, id string) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/inventory/items/%s/", id))
 }
 
 type Asset struct {

@@ -200,6 +200,17 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSPurchasing)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
+		case "I":
+			// Shift+i opens the create-inventory-item form. Lowercase i is
+			// used on the item detail screen (serialized instances), so the
+			// new-item global takes the shifted key — same convention as N
+			// (new PO). Editing an existing item is reached with E from its
+			// detail screen.
+			if _, ok := r.screen.(*InventoryItemFormScreen); !ok {
+				r.screen = NewInventoryItemFormScreen(r.deps, "")
+				r.nav.SetActive(WSInventory)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
 		case "V":
 			if _, ok := r.screen.(*VendorsScreen); !ok {
 				r.screen = NewVendorsScreen(r.deps)
