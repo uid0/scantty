@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -378,5 +379,479 @@ func TestConfirmOrder_BackendError(t *testing.T) {
 	c := New(srv.URL)
 	if err := c.ConfirmOrder(context.Background(), "po-1", ""); err == nil {
 		t.Fatal("expected error on 400, got nil")
+	}
+}
+
+func fptr(f float64) *float64 { return &f }
+
+// TestUpdatePurchaseOrder_Contract pins the PO-metadata PATCH to
+// PATCH /api/reorders/purchase-orders/{id}/ and asserts the four editable
+// fields ride in the body with the web contract's field names. The empty
+// expected_delivery_date must marshal to JSON null (clear), never "".
+func TestUpdatePurchaseOrder_Contract(t *testing.T) {
+	var captured struct {
+		method string
+		path   string
+		raw    []byte
+		body   map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		captured.raw, _ = io.ReadAll(r.Body)
+		_ = json.Unmarshal(captured.raw, &captured.body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0050","status":"draft"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	po, err := c.UpdatePurchaseOrder(context.Background(), "po-1", PurchaseOrderUpdate{
+		SupplierOrderNumber:  strptr("SUP-123"),
+		SalesOrderNumber:     strptr("SO-9"),
+		ExpectedDeliveryDate: strptr(""), // clear
+		Notes:                strptr("rush"),
+	})
+	if err != nil {
+		t.Fatalf("UpdatePurchaseOrder: %v", err)
+	}
+	if po == nil || po.Number != "PO-2026-0050" {
+		t.Fatalf("unexpected po: %+v", po)
+	}
+	if captured.method != "PATCH" {
+		t.Fatalf("method = %q, want PATCH", captured.method)
+	}
+	if captured.path != "/api/reorders/purchase-orders/po-1/" {
+		t.Fatalf("path = %q", captured.path)
+	}
+	if captured.body["supplier_order_number"] != "SUP-123" {
+		t.Errorf("supplier_order_number = %v", captured.body["supplier_order_number"])
+	}
+	if captured.body["sales_order_number"] != "SO-9" {
+		t.Errorf("sales_order_number = %v", captured.body["sales_order_number"])
+	}
+	if captured.body["notes"] != "rush" {
+		t.Errorf("notes = %v", captured.body["notes"])
+	}
+	// expected_delivery_date must be present AND null (json.Unmarshal decodes
+	// JSON null to a nil interface, so the key exists with a nil value).
+	v, present := captured.body["expected_delivery_date"]
+	if !present || v != nil {
+		t.Errorf("expected_delivery_date should be JSON null; present=%v value=%v", present, v)
+	}
+	if !strings.Contains(string(captured.raw), `"expected_delivery_date":null`) {
+		t.Errorf("raw body should carry expected_delivery_date:null, got %s", captured.raw)
+	}
+}
+
+// TestUpdatePurchaseOrder_OmitsNil confirms nil fields drop off the wire so a
+// PATCH touches only what the caller set, and a non-empty date is sent as-is.
+func TestUpdatePurchaseOrder_OmitsNil(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0051"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	_, err := c.UpdatePurchaseOrder(context.Background(), "po-1", PurchaseOrderUpdate{
+		ExpectedDeliveryDate: strptr("2026-09-01"),
+	})
+	if err != nil {
+		t.Fatalf("UpdatePurchaseOrder: %v", err)
+	}
+	if got := body["expected_delivery_date"]; got != "2026-09-01" {
+		t.Errorf("expected_delivery_date = %v, want 2026-09-01", got)
+	}
+	for _, k := range []string{"supplier_order_number", "sales_order_number", "notes"} {
+		if _, present := body[k]; present {
+			t.Errorf("%s should be omitted when nil, got %v", k, body[k])
+		}
+	}
+}
+
+// TestUpdatePurchaseOrderLineItem_Contract pins the per-line PATCH to
+// /items/{itemID}/ with line_cost (a JSON number) and expected_shipment_date.
+func TestUpdatePurchaseOrderLineItem_Contract(t *testing.T) {
+	var captured struct {
+		method string
+		path   string
+		body   map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &captured.body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":5,"quantity_ordered":10}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	item, err := c.UpdatePurchaseOrderLineItem(context.Background(), "po-1", "5", LineItemUpdate{
+		LineCost:             fptr(125.50),
+		ExpectedShipmentDate: strptr("2026-07-20"),
+		Notes:                strptr("backordered"),
+	})
+	if err != nil {
+		t.Fatalf("UpdatePurchaseOrderLineItem: %v", err)
+	}
+	if item == nil {
+		t.Fatal("nil item returned")
+	}
+	if captured.method != "PATCH" {
+		t.Fatalf("method = %q, want PATCH", captured.method)
+	}
+	if captured.path != "/api/reorders/purchase-orders/po-1/items/5/" {
+		t.Fatalf("path = %q", captured.path)
+	}
+	if captured.body["line_cost"].(float64) != 125.50 {
+		t.Errorf("line_cost = %v, want 125.5", captured.body["line_cost"])
+	}
+	if captured.body["expected_shipment_date"] != "2026-07-20" {
+		t.Errorf("expected_shipment_date = %v", captured.body["expected_shipment_date"])
+	}
+	if captured.body["notes"] != "backordered" {
+		t.Errorf("notes = %v", captured.body["notes"])
+	}
+	// unit_cost_actual not set -> must be omitted (backend prefers line_cost).
+	if _, present := captured.body["unit_cost_actual"]; present {
+		t.Errorf("unit_cost_actual should be omitted, got %v", captured.body["unit_cost_actual"])
+	}
+}
+
+// TestUpdatePurchaseOrderLineItem_ClearShipDate sends an empty shipment date,
+// which the backend maps to NULL. An empty string (not omitted) is the wire
+// signal to clear, so it must be present.
+func TestUpdatePurchaseOrderLineItem_ClearShipDate(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":5}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	_, err := c.UpdatePurchaseOrderLineItem(context.Background(), "po-1", "5", LineItemUpdate{
+		ExpectedShipmentDate: strptr(""),
+	})
+	if err != nil {
+		t.Fatalf("UpdatePurchaseOrderLineItem: %v", err)
+	}
+	v, present := body["expected_shipment_date"]
+	if !present || v != "" {
+		t.Errorf("expected_shipment_date should be present and empty; present=%v value=%v", present, v)
+	}
+}
+
+// TestVoidPurchaseOrderLineItem pins the void-line action to
+// POST /items/{itemID}/void/ with the reason in the body.
+func TestVoidPurchaseOrderLineItem(t *testing.T) {
+	var captured struct {
+		method string
+		path   string
+		body   map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &captured.body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":5,"is_voided":true,"void_reason":"discontinued"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	item, err := c.VoidPurchaseOrderLineItem(context.Background(), "po-1", "5", "discontinued")
+	if err != nil {
+		t.Fatalf("VoidPurchaseOrderLineItem: %v", err)
+	}
+	if item == nil || !item.IsVoided {
+		t.Fatalf("unexpected item: %+v", item)
+	}
+	if captured.method != "POST" {
+		t.Fatalf("method = %q, want POST", captured.method)
+	}
+	if captured.path != "/api/reorders/purchase-orders/po-1/items/5/void/" {
+		t.Fatalf("path = %q", captured.path)
+	}
+	if captured.body["reason"] != "discontinued" {
+		t.Errorf("reason = %v, want discontinued", captured.body["reason"])
+	}
+}
+
+// TestVoidPurchaseOrder pins the void-order action to POST /{id}/void/ with the
+// reason in the body, and returns the voided PO.
+func TestVoidPurchaseOrder(t *testing.T) {
+	var captured struct {
+		method string
+		path   string
+		body   map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &captured.body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0052","status":"voided"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	po, err := c.VoidPurchaseOrder(context.Background(), "po-1", "supplier rejected")
+	if err != nil {
+		t.Fatalf("VoidPurchaseOrder: %v", err)
+	}
+	if po == nil || po.Status != "voided" {
+		t.Fatalf("unexpected po: %+v", po)
+	}
+	if captured.method != "POST" {
+		t.Fatalf("method = %q, want POST", captured.method)
+	}
+	if captured.path != "/api/reorders/purchase-orders/po-1/void/" {
+		t.Fatalf("path = %q", captured.path)
+	}
+	if captured.body["reason"] != "supplier rejected" {
+		t.Errorf("reason = %v", captured.body["reason"])
+	}
+}
+
+// TestVoidPurchaseOrder_BackendError surfaces the backend's 403 (non-staff) as
+// an error.
+func TestVoidPurchaseOrder_BackendError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"detail":"Only staff or COO group members may void purchase orders."}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if _, err := c.VoidPurchaseOrder(context.Background(), "po-1", "x"); err == nil {
+		t.Fatal("expected error on 403, got nil")
+	}
+}
+
+// TestMarkPurchaseOrderDelivered_Contract pins mark-delivered to
+// POST /{id}/mark-delivered/ with delivery_date required and tracking/carrier
+// carried through.
+func TestMarkPurchaseOrderDelivered_Contract(t *testing.T) {
+	var captured struct {
+		method string
+		path   string
+		body   map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &captured.body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0053","status":"received","is_fully_received":true}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	po, err := c.MarkPurchaseOrderDelivered(context.Background(), "po-1", MarkDeliveredRequest{
+		DeliveryDate:   "2026-07-03",
+		TrackingNumber: "1Z999",
+		Carrier:        "UPS",
+		ReceiptNotes:   "left at dock",
+	})
+	if err != nil {
+		t.Fatalf("MarkPurchaseOrderDelivered: %v", err)
+	}
+	if po == nil || !po.IsFullyReceived {
+		t.Fatalf("unexpected po: %+v", po)
+	}
+	if captured.method != "POST" {
+		t.Fatalf("method = %q, want POST", captured.method)
+	}
+	if captured.path != "/api/reorders/purchase-orders/po-1/mark-delivered/" {
+		t.Fatalf("path = %q", captured.path)
+	}
+	if captured.body["delivery_date"] != "2026-07-03" {
+		t.Errorf("delivery_date = %v", captured.body["delivery_date"])
+	}
+	if captured.body["tracking_number"] != "1Z999" {
+		t.Errorf("tracking_number = %v", captured.body["tracking_number"])
+	}
+	if captured.body["carrier"] != "UPS" {
+		t.Errorf("carrier = %v", captured.body["carrier"])
+	}
+	if captured.body["receipt_notes"] != "left at dock" {
+		t.Errorf("receipt_notes = %v", captured.body["receipt_notes"])
+	}
+}
+
+// TestMarkPurchaseOrderDelivered_OmitsOptional confirms the optional
+// tracking/carrier/receipt_notes drop off the wire when blank, so a bare
+// delivery keeps the body to just delivery_date.
+func TestMarkPurchaseOrderDelivered_OmitsOptional(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0054"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	_, err := c.MarkPurchaseOrderDelivered(context.Background(), "po-1", MarkDeliveredRequest{
+		DeliveryDate: "2026-07-03",
+	})
+	if err != nil {
+		t.Fatalf("MarkPurchaseOrderDelivered: %v", err)
+	}
+	if body["delivery_date"] != "2026-07-03" {
+		t.Errorf("delivery_date = %v", body["delivery_date"])
+	}
+	for _, k := range []string{"tracking_number", "carrier", "receipt_notes"} {
+		if _, present := body[k]; present {
+			t.Errorf("%s should be omitted when blank, got %v", k, body[k])
+		}
+	}
+}
+
+// TestUploadPurchaseOrderAttachment_Multipart parses the multipart body
+// server-side and asserts the file part is named "file" (with the given
+// filename + contents) and description rides as a text field, matching the web
+// uploadAttachment contract.
+func TestUploadPurchaseOrderAttachment_Multipart(t *testing.T) {
+	var captured struct {
+		method      string
+		path        string
+		fileName    string
+		fileBody    string
+		description string
+		ctype       string
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		captured.ctype = r.Header.Get("Content-Type")
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		captured.description = r.FormValue("description")
+		f, hdr, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "no file part", http.StatusBadRequest)
+			return
+		}
+		defer f.Close()
+		captured.fileName = hdr.Filename
+		b, _ := io.ReadAll(f)
+		captured.fileBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":11,"file_name":"po.pdf","description":"sales order"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	att, err := c.UploadPurchaseOrderAttachment(
+		context.Background(), "po-1", "po.pdf", strings.NewReader("%PDF-1.4 fake"), "sales order",
+	)
+	if err != nil {
+		t.Fatalf("UploadPurchaseOrderAttachment: %v", err)
+	}
+	if att == nil || att.ID != 11 {
+		t.Fatalf("unexpected attachment: %+v", att)
+	}
+	if captured.method != "POST" {
+		t.Fatalf("method = %q, want POST", captured.method)
+	}
+	if captured.path != "/api/reorders/purchase-orders/po-1/upload-attachment/" {
+		t.Fatalf("path = %q", captured.path)
+	}
+	if !strings.HasPrefix(captured.ctype, "multipart/form-data") {
+		t.Errorf("Content-Type = %q, want multipart/form-data", captured.ctype)
+	}
+	if captured.fileName != "po.pdf" {
+		t.Errorf("file name = %q, want po.pdf", captured.fileName)
+	}
+	if captured.fileBody != "%PDF-1.4 fake" {
+		t.Errorf("file body = %q", captured.fileBody)
+	}
+	if captured.description != "sales order" {
+		t.Errorf("description = %q, want \"sales order\"", captured.description)
+	}
+}
+
+// TestUploadPurchaseOrderAttachment_OmitsBlankDescription confirms a blank
+// description is not sent as a field (matching the web, which only appends
+// description when present).
+func TestUploadPurchaseOrderAttachment_OmitsBlankDescription(t *testing.T) {
+	sawDescription := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(1 << 20)
+		if r.MultipartForm != nil {
+			_, sawDescription = r.MultipartForm.Value["description"]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":12}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	_, err := c.UploadPurchaseOrderAttachment(
+		context.Background(), "po-1", "x.pdf", strings.NewReader("data"), "",
+	)
+	if err != nil {
+		t.Fatalf("UploadPurchaseOrderAttachment: %v", err)
+	}
+	if sawDescription {
+		t.Error("blank description should not be sent as a multipart field")
+	}
+}
+
+// TestDeletePurchaseOrderAttachment pins deletion to DELETE
+// /{id}/attachments/{attachmentID}/ (204).
+func TestDeletePurchaseOrderAttachment(t *testing.T) {
+	var captured struct {
+		method string
+		path   string
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if err := c.DeletePurchaseOrderAttachment(context.Background(), "po-1", 11); err != nil {
+		t.Fatalf("DeletePurchaseOrderAttachment: %v", err)
+	}
+	if captured.method != "DELETE" {
+		t.Fatalf("method = %q, want DELETE", captured.method)
+	}
+	if captured.path != "/api/reorders/purchase-orders/po-1/attachments/11/" {
+		t.Fatalf("path = %q", captured.path)
+	}
+}
+
+// TestDeletePurchaseOrderAttachment_Forbidden surfaces the backend's staff-only
+// 403 as an error.
+func TestDeletePurchaseOrderAttachment_Forbidden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"detail":"Only staff may delete purchase order attachments."}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if err := c.DeletePurchaseOrderAttachment(context.Background(), "po-1", 11); err == nil {
+		t.Fatal("expected error on 403, got nil")
 	}
 }

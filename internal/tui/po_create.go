@@ -5,21 +5,27 @@
 // web UI" came up often enough to warrant a focused form. The flow is
 // now a small state machine:
 //
-//   poPhaseSupplier   — j/k pick a supplier from the loaded list
-//                       (PR #38 picker; enter commits and advances)
-//   poPhaseSource     — choose where the next line comes from:
-//                         r → items the supplier has on the reorder queue
-//                         i → other inventory items associated with the supplier
-//                         a → assets purchased from the supplier
-//                         f → a freeform line (no item/asset reference)
-//   poPhaseReorderPick / ItemPick / AssetPick — list pickers backed by
-//                       the corresponding omsapi endpoints; enter
-//                       prefills the line buffer and jumps to poPhaseLine.
-//   poPhaseLine       — description/qty/cost/notes inputs (pre-filled
-//                       when the line came from a picker), enter
-//                       submits via PurchaseOrderCreate.
+//	poPhaseSupplier   — j/k pick a supplier from the loaded list
+//	                    (PR #38 picker; enter commits and advances)
+//	poPhaseSource     — choose where the next line comes from:
+//	                      r → items the supplier has on the reorder queue
+//	                      i → other inventory items associated with the supplier
+//	                      a → assets purchased from the supplier
+//	                      f → a freeform line (no item/asset reference)
+//	poPhaseReorderPick / ItemPick / AssetPick — list pickers backed by
+//	                    the corresponding omsapi endpoints; enter
+//	                    prefills the line buffer and jumps to poPhaseLine.
+//	poPhaseLine       — description/qty/cost/ship-by inputs (pre-filled
+//	                    when the line came from a picker); enter ADDS the
+//	                    line to the cart and returns to poPhaseSource so
+//	                    more lines can be added (the web create form is
+//	                    multi-line — [[ship-complete-features]]).
+//	poPhaseReview     — the accumulated line cart + a PO-level notes
+//	                    input; enter submits every line at once via
+//	                    PurchaseOrderCreate.
 //
-// One line per PO in this iteration; multi-line is a follow-on bead.
+// A PO can hold as many lines as the operator adds: each line is staged in
+// s.lines and the whole cart is POSTed once from the review phase.
 package tui
 
 import (
@@ -27,6 +33,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -47,16 +54,26 @@ const (
 	poPhaseItemPick
 	poPhaseAssetPick
 	poPhaseLine
+	poPhaseReview
 )
 
-// Field indexes inside the line-entry form (Phase 4).
+// Field indexes inside the line-entry form (Phase 4). The fourth field is the
+// optional expected-shipment date (YYYY-MM-DD), which populates the create
+// line's expected_shipment_date; PO-level notes live in the review phase.
 const (
 	poLineFieldDesc = iota
 	poLineFieldQty
 	poLineFieldCost
-	poLineFieldNotes
+	poLineFieldShipDate
 	poLineFieldCount
 )
+
+// poCartLine is one staged line in the multi-line create cart: the wire payload
+// plus a human label rendered in the source/review lists.
+type poCartLine struct {
+	item  omsapi.PurchaseOrderCreateItem
+	label string
+}
 
 type PurchaseOrderCreateScreen struct {
 	deps    Deps
@@ -78,31 +95,38 @@ type PurchaseOrderCreateScreen struct {
 	reorderCursor  int
 
 	// Phase 3b: inventory items for this supplier.
-	itemSuppliers      []omsapi.ItemSupplier
-	itemSuppliersAll   []omsapi.ItemSupplier // unfiltered page so '/' search is client-side
-	itemSuppliersLoad  bool
-	itemSuppliersErr   string
-	itemSuppliersCur   int
+	itemSuppliers       []omsapi.ItemSupplier
+	itemSuppliersAll    []omsapi.ItemSupplier // unfiltered page so '/' search is client-side
+	itemSuppliersLoad   bool
+	itemSuppliersErr    string
+	itemSuppliersCur    int
 	itemSuppliersSearch textinput.Model
 	itemSuppliersTyping bool
 
 	// Phase 3c: assets-from-supplier picker (server-side search).
-	assets         []omsapi.Asset
-	assetsLoading  bool
-	assetsErr      string
-	assetsCursor   int
-	assetsSearch   textinput.Model
-	assetsTyping   bool
-	assetsPage     int
-	assetsHasNext  bool
+	assets        []omsapi.Asset
+	assetsLoading bool
+	assetsErr     string
+	assetsCursor  int
+	assetsSearch  textinput.Model
+	assetsTyping  bool
+	assetsPage    int
+	assetsHasNext bool
 
 	// Phase 4: line-entry form. The pointer fields drive which
-	// PurchaseOrderCreateItem shape we build at submit time —
+	// PurchaseOrderCreateItem shape we build at add time —
 	// item_supplier_id / asset_id / freeform description.
 	lineInputs    []textinput.Model
 	lineFocused   int
 	pickedItemSup *int    // set when the line came from Phase 3a/3b
 	pickedAssetID *string // set when the line came from Phase 3c
+
+	// Multi-line cart. Each entered line is staged here; the whole cart is
+	// POSTed once from the review phase. reviewCursor highlights a line so
+	// it can be removed with 'x'; poNotes is the PO-level notes field.
+	lines        []poCartLine
+	reviewCursor int
+	poNotes      textinput.Model
 }
 
 type poCreatedMsg struct {
@@ -143,11 +167,18 @@ func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
 	cost.CharLimit = 20
 	s.lineInputs[poLineFieldCost] = cost
 
-	notes := textinput.New()
-	notes.Prompt = ""
-	notes.Placeholder = "notes (optional)"
-	notes.CharLimit = 500
-	s.lineInputs[poLineFieldNotes] = notes
+	shipDate := textinput.New()
+	shipDate.Prompt = ""
+	shipDate.Placeholder = "expected ship date YYYY-MM-DD (optional)"
+	shipDate.CharLimit = 10
+	s.lineInputs[poLineFieldShipDate] = shipDate
+
+	// PO-level notes, captured once in the review phase.
+	poNotes := textinput.New()
+	poNotes.Prompt = ""
+	poNotes.Placeholder = "notes for the whole PO (optional)"
+	poNotes.CharLimit = 500
+	s.poNotes = poNotes
 
 	// Picker search inputs (Phase 3b/3c).
 	is := textinput.New()
@@ -240,6 +271,8 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s.updateAssetPickPhase(m)
 		case poPhaseLine:
 			return s.updateLinePhase(m)
+		case poPhaseReview:
+			return s.updateReviewPhase(m)
 		}
 	}
 
@@ -248,6 +281,10 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case poPhaseLine:
 		var cmd tea.Cmd
 		s.lineInputs[s.lineFocused], cmd = s.lineInputs[s.lineFocused].Update(msg)
+		return s, cmd
+	case poPhaseReview:
+		var cmd tea.Cmd
+		s.poNotes, cmd = s.poNotes.Update(msg)
 		return s, cmd
 	case poPhaseItemPick:
 		if s.itemSuppliersTyping {
@@ -332,9 +369,28 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		return s, s.loadAssetsForSupplier("")
 	case "f":
 		// Freeform: go straight to the line form with nothing
-		// pre-filled. Existing single-line MVP behavior.
+		// pre-filled.
 		s.enterLinePhase(nil, nil, "", 0, 0)
 		return s, textinput.Blink
+	case "d":
+		// Done adding lines → review + submit. Only meaningful once the
+		// cart has at least one line (the backend rejects an empty PO).
+		if len(s.lines) == 0 {
+			s.errMsg = "add at least one line before submitting"
+			return s, Status(s.errMsg, StatusError)
+		}
+		s.phase = poPhaseReview
+		s.reviewCursor = len(s.lines) - 1
+		s.poNotes.Focus()
+		return s, textinput.Blink
+	case "x":
+		// Remove the most recently added line — a quick undo for a
+		// mis-added line without leaving the source chooser.
+		if len(s.lines) > 0 {
+			s.lines = s.lines[:len(s.lines)-1]
+			s.errMsg = ""
+		}
+		return s, nil
 	}
 	return s, nil
 }
@@ -385,10 +441,7 @@ func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.C
 		s.focusNextLine(-1)
 		return s, nil
 	case "enter":
-		if s.pending {
-			return s, nil
-		}
-		return s, s.submit()
+		return s, s.addLine()
 	}
 	var cmd tea.Cmd
 	s.lineInputs[s.lineFocused], cmd = s.lineInputs[s.lineFocused].Update(m)
@@ -401,11 +454,10 @@ func (s *PurchaseOrderCreateScreen) focusNextLine(delta int) {
 	s.lineInputs[s.lineFocused].Focus()
 }
 
-func (s *PurchaseOrderCreateScreen) submit() tea.Cmd {
-	if s.supplierID <= 0 {
-		s.errMsg = "supplier is required (return to supplier phase)"
-		return Status(s.errMsg, StatusError)
-	}
+// addLine validates the line-entry inputs, stages the line in the cart, and
+// returns to the source chooser so another line can be added. It does NOT POST
+// — the whole cart is submitted from the review phase via finalize.
+func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 	desc := strings.TrimSpace(s.lineInputs[poLineFieldDesc].Value())
 	// Item/asset-backed lines don't strictly need a description
 	// (backend will fall back to item/asset name), but when the line
@@ -435,11 +487,59 @@ func (s *PurchaseOrderCreateScreen) submit() tea.Cmd {
 		}
 		line.UnitCost = &cost
 	}
+	shipRaw := strings.TrimSpace(s.lineInputs[poLineFieldShipDate].Value())
+	if shipRaw != "" {
+		if _, err := time.Parse("2006-01-02", shipRaw); err != nil {
+			s.errMsg = "expected ship date must be YYYY-MM-DD"
+			return Status(s.errMsg, StatusError)
+		}
+		line.ExpectedShipmentDate = shipRaw
+	}
 
+	s.lines = append(s.lines, poCartLine{item: line, label: s.lineLabel(desc)})
+	s.errMsg = ""
+	// Back to the source chooser to add another line (or press d to submit).
+	s.phase = poPhaseSource
+	s.pickedItemSup = nil
+	s.pickedAssetID = nil
+	return Status(fmt.Sprintf("line added (%d in cart)", len(s.lines)), StatusOK)
+}
+
+// lineLabel builds the cart display label from the entered description and the
+// line source, so a freeform line and a picked item read sensibly in the list.
+func (s *PurchaseOrderCreateScreen) lineLabel(desc string) string {
+	switch {
+	case desc != "":
+		return desc
+	case s.pickedItemSup != nil:
+		return fmt.Sprintf("item-supplier #%d", *s.pickedItemSup)
+	case s.pickedAssetID != nil:
+		return fmt.Sprintf("asset %s", *s.pickedAssetID)
+	default:
+		return "line"
+	}
+}
+
+// finalize POSTs the whole cart as one PurchaseOrderCreate. Called from the
+// review phase; the PO-level notes come from the review notes input.
+func (s *PurchaseOrderCreateScreen) finalize() tea.Cmd {
+	if s.supplierID <= 0 {
+		s.errMsg = "supplier is required (return to supplier phase)"
+		return Status(s.errMsg, StatusError)
+	}
+	if len(s.lines) == 0 {
+		s.errMsg = "add at least one line before submitting"
+		return Status(s.errMsg, StatusError)
+	}
+
+	items := make([]omsapi.PurchaseOrderCreateItem, len(s.lines))
+	for i, l := range s.lines {
+		items[i] = l.item
+	}
 	req := omsapi.PurchaseOrderCreate{
 		Supplier: s.supplierID,
-		Notes:    strings.TrimSpace(s.lineInputs[poLineFieldNotes].Value()),
-		Items:    []omsapi.PurchaseOrderCreateItem{line},
+		Notes:    strings.TrimSpace(s.poNotes.Value()),
+		Items:    items,
 	}
 
 	s.pending = true
@@ -453,6 +553,55 @@ func (s *PurchaseOrderCreateScreen) submit() tea.Cmd {
 		po, err := deps.OMS.CreatePurchaseOrder(ctx, req)
 		return poCreatedMsg{po: po, err: err}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase: Review cart + submit
+// ---------------------------------------------------------------------------
+
+func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		// Back to the source chooser to add or remove lines. Keep the cart
+		// and any notes already typed. Only esc (not a letter) goes back so
+		// every character still reaches the focused notes field.
+		s.phase = poPhaseSource
+		s.poNotes.Blur()
+		return s, nil
+	case "enter":
+		if s.pending {
+			return s, nil
+		}
+		return s, s.finalize()
+	case "up", "ctrl+p":
+		if s.reviewCursor > 0 {
+			s.reviewCursor--
+		}
+		return s, nil
+	case "down", "ctrl+n":
+		if s.reviewCursor < len(s.lines)-1 {
+			s.reviewCursor++
+		}
+		return s, nil
+	case "ctrl+x":
+		// Remove the highlighted line. ctrl+x (not plain x) so the key
+		// doesn't collide with typing 'x' into the notes field.
+		if len(s.lines) > 0 {
+			s.lines = append(s.lines[:s.reviewCursor], s.lines[s.reviewCursor+1:]...)
+			if s.reviewCursor >= len(s.lines) && s.reviewCursor > 0 {
+				s.reviewCursor--
+			}
+			if len(s.lines) == 0 {
+				// Nothing left to review; back to source to add lines.
+				s.phase = poPhaseSource
+				s.poNotes.Blur()
+			}
+		}
+		return s, nil
+	}
+	var cmd tea.Cmd
+	s.poNotes, cmd = s.poNotes.Update(m)
+	return s, cmd
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +632,8 @@ func (s *PurchaseOrderCreateScreen) View() string {
 		b.WriteString(s.renderAssetPick())
 	case poPhaseLine:
 		b.WriteString(s.renderLinePhase())
+	case poPhaseReview:
+		b.WriteString(s.renderReviewPhase())
 	}
 
 	b.WriteString("\n")
@@ -499,7 +650,14 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 	case poPhaseSupplier:
 		return "Pick a supplier (j/k move, enter to commit, esc to cancel)."
 	case poPhaseSource:
-		return "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel."
+		base := "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel."
+		if len(s.lines) > 0 {
+			base = fmt.Sprintf(
+				"Add a line (r/i/a/f) · d done → review %d line(s) · x remove last · b back · esc cancel.",
+				len(s.lines),
+			)
+		}
+		return base
 	case poPhaseReorderPick:
 		return "Reorder-queue suggestions for this supplier (j/k move, enter pick, b back, esc cancel)."
 	case poPhaseItemPick:
@@ -507,7 +665,9 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 	case poPhaseAssetPick:
 		return "Assets purchased from this supplier (j/k move, / search, ] next page, [ prev page, enter pick, b back, esc cancel)."
 	case poPhaseLine:
-		return "Line entry (tab/shift-tab cycle fields, enter to submit, esc to pick a different source)."
+		return "Line entry (tab/shift-tab cycle fields, enter to add to cart, esc to pick a different source)."
+	case poPhaseReview:
+		return "Review cart — type PO notes · ↑↓ highlight a line · ctrl+x remove it · enter submit · esc back."
 	}
 	return ""
 }
@@ -581,6 +741,45 @@ func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
 	b.WriteString("  " + StyleStatusOK.Render("i") + "  Inventory items associated with this supplier\n")
 	b.WriteString("  " + StyleStatusOK.Render("a") + "  Assets purchased from this supplier\n")
 	b.WriteString("  " + StyleStatusOK.Render("f") + "  Freeform line (no item / asset reference)\n")
+	if len(s.lines) > 0 {
+		b.WriteString("\n")
+		b.WriteString(s.renderCart(-1))
+		b.WriteString("\n  " + StyleStatusOK.Render("d") + "  Done — review & submit    " +
+			StyleMuted.Render("(x removes the last line)") + "\n")
+	}
+	return b.String()
+}
+
+// renderCart lists the staged lines. When highlight >= 0 the matching row is
+// marked (used by the review phase); pass -1 for a plain list.
+func (s *PurchaseOrderCreateScreen) renderCart(highlight int) string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render(fmt.Sprintf("Cart (%d line(s))", len(s.lines))) + "\n")
+	for i, l := range s.lines {
+		caret := "    "
+		if i == highlight {
+			caret = "  ▸ "
+		}
+		row := fmt.Sprintf("%s%d) %s  ×%d", caret, i+1, l.label, l.item.Quantity)
+		if l.item.UnitCost != nil {
+			row += fmt.Sprintf(" @ $%s", strconv.FormatFloat(*l.item.UnitCost, 'f', -1, 64))
+		}
+		if l.item.ExpectedShipmentDate != "" {
+			row += "  ship " + l.item.ExpectedShipmentDate
+		}
+		if i == highlight {
+			row = StyleSidebarItemActive.Render(row)
+		}
+		b.WriteString(row + "\n")
+	}
+	return b.String()
+}
+
+func (s *PurchaseOrderCreateScreen) renderReviewPhase() string {
+	var b strings.Builder
+	b.WriteString(s.renderCart(s.reviewCursor))
+	b.WriteString("\n")
+	b.WriteString("▸ " + StyleTitle.Render("PO notes: ") + s.poNotes.View() + "\n")
 	return b.String()
 }
 
@@ -594,7 +793,7 @@ func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
 		source = fmt.Sprintf("asset %s", *s.pickedAssetID)
 	}
 	b.WriteString(StyleMuted.Render("Line source: "+source) + "\n\n")
-	labels := []string{"Description", "Quantity", "Unit cost", "Notes"}
+	labels := []string{"Description", "Quantity", "Unit cost", "Ship by (YYYY-MM-DD)"}
 	for i := 0; i < poLineFieldCount; i++ {
 		marker := "  "
 		if i == s.lineFocused {

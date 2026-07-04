@@ -3,6 +3,7 @@ package omsapi
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"time"
 )
@@ -12,14 +13,14 @@ import (
 // ReorderRequestSerializer uses the full InventoryItemSerializer, but
 // we only render a handful of fields).
 type ReorderItemDetails struct {
-	ID                 string        `json:"id,omitempty"`
-	Name               string        `json:"name,omitempty"`
-	SKU                string        `json:"sku,omitempty"`
-	CurrentStock       int           `json:"current_stock,omitempty"`
-	MinimumStock       int           `json:"minimum_stock,omitempty"`
-	ReorderQuantity    int           `json:"reorder_quantity,omitempty"`
-	PreferredSupplier  string        `json:"preferred_supplier_name,omitempty"`
-	UnitCost           DecimalString `json:"unit_cost,omitempty"`
+	ID                string        `json:"id,omitempty"`
+	Name              string        `json:"name,omitempty"`
+	SKU               string        `json:"sku,omitempty"`
+	CurrentStock      int           `json:"current_stock,omitempty"`
+	MinimumStock      int           `json:"minimum_stock,omitempty"`
+	ReorderQuantity   int           `json:"reorder_quantity,omitempty"`
+	PreferredSupplier string        `json:"preferred_supplier_name,omitempty"`
+	UnitCost          DecimalString `json:"unit_cost,omitempty"`
 }
 
 type ReorderRequest struct {
@@ -133,40 +134,40 @@ type PurchaseOrder struct {
 }
 
 type PurchaseOrderAttachment struct {
-	ID             int        `json:"id"`
-	File           string     `json:"file,omitempty"`
-	FileURL        string     `json:"file_url,omitempty"`
-	FileName       string     `json:"file_name,omitempty"`
-	Description    string     `json:"description,omitempty"`
-	UploadedBy     *int       `json:"uploaded_by,omitempty"`
-	UploadedByName string     `json:"uploaded_by_name,omitempty"`
-	UploadedAt     time.Time  `json:"uploaded_at,omitempty"`
+	ID             int       `json:"id"`
+	File           string    `json:"file,omitempty"`
+	FileURL        string    `json:"file_url,omitempty"`
+	FileName       string    `json:"file_name,omitempty"`
+	Description    string    `json:"description,omitempty"`
+	UploadedBy     *int      `json:"uploaded_by,omitempty"`
+	UploadedByName string    `json:"uploaded_by_name,omitempty"`
+	UploadedAt     time.Time `json:"uploaded_at,omitempty"`
 }
 
 type PurchaseOrderItem struct {
-	ID                   any            `json:"id"`
-	PurchaseOrder        any            `json:"purchase_order,omitempty"`
-	ItemSupplier         any            `json:"item_supplier,omitempty"`
-	Asset                any            `json:"asset,omitempty"`
-	Description          string         `json:"description,omitempty"`
-	SupplierDetails      string         `json:"supplier_details,omitempty"`
-	QuantityOrdered      int            `json:"quantity_ordered,omitempty"`
-	QuantityReceived     int            `json:"quantity_received,omitempty"`
-	QuantityPending      int            `json:"quantity_pending,omitempty"`
-	UnitCostOrdered      DecimalString  `json:"unit_cost_ordered,omitempty"`
-	UnitCostActual       DecimalString  `json:"unit_cost_actual,omitempty"`
-	EstimatedCost        DecimalString  `json:"estimated_cost,omitempty"`
-	ActualCost           DecimalString  `json:"actual_cost,omitempty"`
-	IsFullyReceived      bool           `json:"is_fully_received,omitempty"`
-	IsVoided             bool           `json:"is_voided,omitempty"`
-	VoidedAt             *time.Time     `json:"voided_at,omitempty"`
-	VoidReason           string         `json:"void_reason,omitempty"`
-	Notes                string         `json:"notes,omitempty"`
-	ItemType             string         `json:"item_type,omitempty"`
-	ExpectedShipmentDate string         `json:"expected_shipment_date,omitempty"`
-	ActualShipmentDate   string         `json:"actual_shipment_date,omitempty"`
-	CreatedAt            time.Time      `json:"created_at,omitempty"`
-	UpdatedAt            time.Time      `json:"updated_at,omitempty"`
+	ID                   any           `json:"id"`
+	PurchaseOrder        any           `json:"purchase_order,omitempty"`
+	ItemSupplier         any           `json:"item_supplier,omitempty"`
+	Asset                any           `json:"asset,omitempty"`
+	Description          string        `json:"description,omitempty"`
+	SupplierDetails      string        `json:"supplier_details,omitempty"`
+	QuantityOrdered      int           `json:"quantity_ordered,omitempty"`
+	QuantityReceived     int           `json:"quantity_received,omitempty"`
+	QuantityPending      int           `json:"quantity_pending,omitempty"`
+	UnitCostOrdered      DecimalString `json:"unit_cost_ordered,omitempty"`
+	UnitCostActual       DecimalString `json:"unit_cost_actual,omitempty"`
+	EstimatedCost        DecimalString `json:"estimated_cost,omitempty"`
+	ActualCost           DecimalString `json:"actual_cost,omitempty"`
+	IsFullyReceived      bool          `json:"is_fully_received,omitempty"`
+	IsVoided             bool          `json:"is_voided,omitempty"`
+	VoidedAt             *time.Time    `json:"voided_at,omitempty"`
+	VoidReason           string        `json:"void_reason,omitempty"`
+	Notes                string        `json:"notes,omitempty"`
+	ItemType             string        `json:"item_type,omitempty"`
+	ExpectedShipmentDate string        `json:"expected_shipment_date,omitempty"`
+	ActualShipmentDate   string        `json:"actual_shipment_date,omitempty"`
+	CreatedAt            time.Time     `json:"created_at,omitempty"`
+	UpdatedAt            time.Time     `json:"updated_at,omitempty"`
 	// Nested details (item_details / asset_details) come back as opaque
 	// objects we don't need to introspect for the receive flow.
 	ItemDetails  map[string]any `json:"item_details,omitempty"`
@@ -207,7 +208,7 @@ func (c *Client) GetPurchaseOrder(ctx context.Context, id string) (*PurchaseOrde
 // The OMS create endpoint accepts three line shapes, picked by which fields
 // are set: inventory (ItemSupplierID), asset (AssetID), or freeform
 // (Description). The fields are pointers so omitempty omits them cleanly
-// when nil — sending ``item_supplier_id: 0`` or ``asset_id: ""`` would
+// when nil — sending “item_supplier_id: 0“ or “asset_id: ""“ would
 // route to the wrong branch on the backend.
 type PurchaseOrderCreateItem struct {
 	ItemSupplierID       *int     `json:"item_supplier_id,omitempty"`
@@ -222,10 +223,10 @@ type PurchaseOrderCreateItem struct {
 // supplier + line items, with optional expected_delivery_date and notes.
 // po_number is server-generated, so it's not in this payload.
 type PurchaseOrderCreate struct {
-	Supplier              int                       `json:"supplier"`
-	ExpectedDeliveryDate  string                    `json:"expected_delivery_date,omitempty"`
-	Notes                 string                    `json:"notes,omitempty"`
-	Items                 []PurchaseOrderCreateItem `json:"items"`
+	Supplier             int                       `json:"supplier"`
+	ExpectedDeliveryDate string                    `json:"expected_delivery_date,omitempty"`
+	Notes                string                    `json:"notes,omitempty"`
+	Items                []PurchaseOrderCreateItem `json:"items"`
 }
 
 // CreatePurchaseOrder posts a new PO. The backend assigns po_number
@@ -262,23 +263,23 @@ type ReorderDataItem struct {
 // be coming up, surfaced alongside the items in case the warden wants
 // to bundle a replacement / repair into the same PO.
 type ReorderDataAsset struct {
-	AssetID    string `json:"asset_id"`
-	AssetTag   string `json:"asset_tag,omitempty"`
-	AssetName  string `json:"asset_name"`
-	Reason     string `json:"reason,omitempty"`
+	AssetID   string `json:"asset_id"`
+	AssetTag  string `json:"asset_tag,omitempty"`
+	AssetName string `json:"asset_name"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // ReorderDataSupplier groups items + assets under one supplier in the
 // reorder_data response.
 type ReorderDataSupplier struct {
-	ID            int                `json:"id"`
-	Name          string             `json:"name"`
-	SupplierType  string             `json:"supplier_type,omitempty"`
-	Items         []ReorderDataItem  `json:"items,omitempty"`
-	Assets        []ReorderDataAsset `json:"assets,omitempty"`
-	TotalItems    int                `json:"total_items,omitempty"`
-	EstimatedTotal DecimalString     `json:"estimated_total,omitempty"`
-	AvgLeadTime   int                `json:"avg_lead_time,omitempty"`
+	ID             int                `json:"id"`
+	Name           string             `json:"name"`
+	SupplierType   string             `json:"supplier_type,omitempty"`
+	Items          []ReorderDataItem  `json:"items,omitempty"`
+	Assets         []ReorderDataAsset `json:"assets,omitempty"`
+	TotalItems     int                `json:"total_items,omitempty"`
+	EstimatedTotal DecimalString      `json:"estimated_total,omitempty"`
+	AvgLeadTime    int                `json:"avg_lead_time,omitempty"`
 }
 
 // ReorderData is the top-level shape returned by
@@ -286,10 +287,10 @@ type ReorderDataSupplier struct {
 // server-side by estimated_total descending so the most expensive
 // candidates surface first.
 type ReorderData struct {
-	Suppliers           []ReorderDataSupplier `json:"suppliers"`
-	TotalSuppliers      int                   `json:"total_suppliers,omitempty"`
-	TotalLowStockItems  int                   `json:"total_low_stock_items,omitempty"`
-	ItemsWithRequests   int                   `json:"items_with_requests,omitempty"`
+	Suppliers          []ReorderDataSupplier `json:"suppliers"`
+	TotalSuppliers     int                   `json:"total_suppliers,omitempty"`
+	TotalLowStockItems int                   `json:"total_low_stock_items,omitempty"`
+	ItemsWithRequests  int                   `json:"items_with_requests,omitempty"`
 }
 
 // GetReorderData fetches the suggestion bundle used by the supplier-
@@ -387,4 +388,184 @@ func (c *Client) ConfirmOrder(ctx context.Context, poID, expectedDeliveryDate st
 		body = map[string]string{"expected_delivery_date": expectedDeliveryDate}
 	}
 	return c.Post(ctx, path, body, nil)
+}
+
+// PurchaseOrderUpdate carries the editable PO-metadata fields for the update
+// (PATCH) endpoint. Every field is a pointer so a nil leaves that column
+// untouched — the PATCH only sends what the caller actually set, matching the
+// web edit form (purchaseOrderAPI.updateOrder), which patches
+// supplier_order_number / sales_order_number / expected_delivery_date / notes.
+//
+// ExpectedDeliveryDate has clear-vs-untouched semantics: nil omits the field,
+// a pointer to "" sends JSON null (clears the date — the backend DateField is
+// null=True), and a pointer to "YYYY-MM-DD" sets it. The plain-string fields
+// send their value as-is (an empty string is a legal blank).
+type PurchaseOrderUpdate struct {
+	SupplierOrderNumber  *string
+	SalesOrderNumber     *string
+	ExpectedDeliveryDate *string
+	Notes                *string
+}
+
+// UpdatePurchaseOrder patches PO metadata via PATCH
+// /api/reorders/purchase-orders/{poID}/ and returns the updated PO. The backend
+// uses PurchaseOrderSerializer for updates (po_number/order_date/updated_at are
+// read-only). Note the OMS side effect: setting sales_order_number from empty
+// to non-empty auto-transitions a DRAFT PO to SENT.
+func (c *Client) UpdatePurchaseOrder(ctx context.Context, poID string, req PurchaseOrderUpdate) (*PurchaseOrder, error) {
+	body := map[string]any{}
+	if req.SupplierOrderNumber != nil {
+		body["supplier_order_number"] = *req.SupplierOrderNumber
+	}
+	if req.SalesOrderNumber != nil {
+		body["sales_order_number"] = *req.SalesOrderNumber
+	}
+	if req.Notes != nil {
+		body["notes"] = *req.Notes
+	}
+	if req.ExpectedDeliveryDate != nil {
+		if *req.ExpectedDeliveryDate == "" {
+			body["expected_delivery_date"] = nil // clear (JSON null)
+		} else {
+			body["expected_delivery_date"] = *req.ExpectedDeliveryDate
+		}
+	}
+	var out PurchaseOrder
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/", poID)
+	if err := c.Patch(ctx, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// LineItemUpdate carries the editable per-line fields for the update-item
+// endpoint. Pointer fields are omitted when nil so an edit touches only the
+// fields the operator changed. LineCost is the TOTAL cost for the line: the
+// backend divides it by quantity_ordered to derive unit_cost_actual (mirroring
+// the web edit-cost control). UnitCostActual sets the per-unit actual cost
+// directly; send at most one of the two.
+type LineItemUpdate struct {
+	ExpectedShipmentDate *string
+	Notes                *string
+	LineCost             *float64
+	UnitCostActual       *float64
+}
+
+// UpdatePurchaseOrderLineItem patches one PO line via PATCH
+// /api/reorders/purchase-orders/{poID}/items/{itemID}/ and returns the updated
+// line. expected_shipment_date accepts "" to clear (the backend maps empty to
+// NULL). This is the general line-edit path; MarkPurchaseOrderItemShipped is
+// the focused actual_shipment_date sibling on the same endpoint.
+func (c *Client) UpdatePurchaseOrderLineItem(
+	ctx context.Context, poID, itemID string, req LineItemUpdate,
+) (*PurchaseOrderItem, error) {
+	body := map[string]any{}
+	if req.ExpectedShipmentDate != nil {
+		body["expected_shipment_date"] = *req.ExpectedShipmentDate
+	}
+	if req.Notes != nil {
+		body["notes"] = *req.Notes
+	}
+	if req.LineCost != nil {
+		body["line_cost"] = *req.LineCost
+	}
+	if req.UnitCostActual != nil {
+		body["unit_cost_actual"] = *req.UnitCostActual
+	}
+	var out PurchaseOrderItem
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/items/%s/", poID, itemID)
+	if err := c.Patch(ctx, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// VoidPurchaseOrderLineItem voids a single PO line via POST
+// /api/reorders/purchase-orders/{poID}/items/{itemID}/void/ and returns the
+// voided line. reason rides in the body ({"reason": …}); the backend defaults
+// it to "Item discontinued by supplier" when blank, and rejects (400) a line
+// that is already voided or has any received quantity. Voiding an
+// item_supplier-backed line also marks that supplier link discontinued.
+func (c *Client) VoidPurchaseOrderLineItem(
+	ctx context.Context, poID, itemID, reason string,
+) (*PurchaseOrderItem, error) {
+	var out PurchaseOrderItem
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/items/%s/void/", poID, itemID)
+	if err := c.Post(ctx, path, map[string]string{"reason": reason}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// VoidPurchaseOrder voids an entire PO via POST
+// /api/reorders/purchase-orders/{poID}/void/ and returns the voided PO. The
+// void cascades to every non-voided line. reason rides in the body. The backend
+// restricts this to staff/superuser/COO and rejects (400) a PO already voided
+// or already received (create a return instead).
+func (c *Client) VoidPurchaseOrder(ctx context.Context, poID, reason string) (*PurchaseOrder, error) {
+	var out PurchaseOrder
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/void/", poID)
+	if err := c.Post(ctx, path, map[string]string{"reason": reason}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// MarkDeliveredRequest is the body for the mark-delivered action. delivery_date
+// is required (YYYY-MM-DD); tracking_number, carrier, and receipt_notes are
+// optional and omitted when blank. This is where PO-level tracking/carrier are
+// recorded — the OMS backend has no separate PO update-tracking endpoint, so
+// mark-delivered is the tracking-entry path for a purchase order.
+type MarkDeliveredRequest struct {
+	DeliveryDate   string `json:"delivery_date"`
+	TrackingNumber string `json:"tracking_number,omitempty"`
+	Carrier        string `json:"carrier,omitempty"`
+	ReceiptNotes   string `json:"receipt_notes,omitempty"`
+}
+
+// MarkPurchaseOrderDelivered receives every pending quantity on the PO in one
+// shot via POST /api/reorders/purchase-orders/{poID}/mark-delivered/ and returns
+// the updated PO. Where ReceivePOItems records an explicit per-line partial
+// receipt, this marks the whole order delivered on delivery_date. The backend
+// rejects (400) a PO not in sent / confirmed / partially_received, or one whose
+// lines are all already received.
+func (c *Client) MarkPurchaseOrderDelivered(
+	ctx context.Context, poID string, req MarkDeliveredRequest,
+) (*PurchaseOrder, error) {
+	var out PurchaseOrder
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/mark-delivered/", poID)
+	if err := c.Post(ctx, path, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UploadPurchaseOrderAttachment attaches a file to a PO via multipart POST
+// /api/reorders/purchase-orders/{poID}/upload-attachment/ and returns the saved
+// attachment. The file part is named "file" and description (optional) rides as
+// a text field — the exact contract the web uploadAttachment sends. fileName is
+// the name stored server-side; file streams the bytes. Any authenticated user
+// may upload (deletion is staff-only).
+func (c *Client) UploadPurchaseOrderAttachment(
+	ctx context.Context, poID, fileName string, file io.Reader, description string,
+) (*PurchaseOrderAttachment, error) {
+	fields := map[string]string{}
+	if description != "" {
+		fields["description"] = description
+	}
+	var out PurchaseOrderAttachment
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/upload-attachment/", poID)
+	if err := c.PostMultipart(ctx, path, fields, "file", fileName, file, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeletePurchaseOrderAttachment removes an attachment via DELETE
+// /api/reorders/purchase-orders/{poID}/attachments/{attachmentID}/. The backend
+// restricts deletion to staff/superuser and returns 204 on success. attachmentID
+// is the numeric attachment PK.
+func (c *Client) DeletePurchaseOrderAttachment(ctx context.Context, poID string, attachmentID any) error {
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/attachments/%v/", poID, attachmentID)
+	return c.Delete(ctx, path)
 }
