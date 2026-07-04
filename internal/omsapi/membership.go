@@ -2,6 +2,7 @@ package omsapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"time"
@@ -21,13 +22,13 @@ type Profile struct {
 }
 
 type Certification struct {
-	ID          int        `json:"id"`
-	Name        string     `json:"name"`
-	GrantedAt   time.Time  `json:"granted_at,omitempty"`
-	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
-	GrantedBy   string     `json:"granted_by,omitempty"`
-	Asset       *int       `json:"asset,omitempty"`
-	AssetName   string     `json:"asset_name,omitempty"`
+	ID        int        `json:"id"`
+	Name      string     `json:"name"`
+	GrantedAt time.Time  `json:"granted_at,omitempty"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	GrantedBy string     `json:"granted_by,omitempty"`
+	Asset     *int       `json:"asset,omitempty"`
+	AssetName string     `json:"asset_name,omitempty"`
 }
 
 func (c *Certification) Active() bool {
@@ -45,6 +46,39 @@ func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+type User struct {
+	ID          int    `json:"id"`
+	Username    string `json:"username"`
+	Email       string `json:"email,omitempty"`
+	FirstName   string `json:"first_name,omitempty"`
+	LastName    string `json:"last_name,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	IsActive    bool   `json:"is_active,omitempty"`
+}
+
+func (c *Client) ListUsers(ctx context.Context, q url.Values) (*Page[User], error) {
+	page, err := c.listUsersAt(ctx, "/api/membership/users/", q)
+	if err == nil {
+		return page, nil
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.IsNotFound() {
+		return c.listUsersAt(ctx, "/api/users/", q)
+	}
+	return nil, err
+}
+
+func (c *Client) listUsersAt(ctx context.Context, path string, q url.Values) (*Page[User], error) {
+	var out MaybeList[User]
+	if err := c.Get(ctx, path, q, &out); err != nil {
+		return nil, err
+	}
+	return &Page[User]{
+		Count:   out.Count,
+		Results: out.Items,
+	}, nil
 }
 
 type SIG struct {
