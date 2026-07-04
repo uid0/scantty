@@ -33,6 +33,7 @@ type WorkOrder struct {
 	TaskCompletions      []WorkOrderTaskCompletion `json:"task_completions,omitempty"`
 	MaterialUsage        []WorkOrderMaterialUsage  `json:"material_usage,omitempty"`
 	Photos               []WorkOrderPhoto          `json:"photos,omitempty"`
+	Validation           *WorkOrderValidation      `json:"validation,omitempty"`
 }
 
 type WorkOrderTaskCompletion struct {
@@ -89,6 +90,114 @@ func (c *Client) CreateWorkOrder(ctx context.Context, wo WorkOrder) (*WorkOrder,
 func (c *Client) UpdateWorkOrder(ctx context.Context, id string, patch map[string]any) (*WorkOrder, error) {
 	var out WorkOrder
 	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/", id), patch, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CompleteWorkOrderTask toggles completion of a single task step within a
+// work order (PATCH .../tasks/{taskID}/complete/). isCompleted is required by
+// the backend; notes is optional and only sent when non-empty. Mirrors the
+// web workOrderAPI.completeTask.
+func (c *Client) CompleteWorkOrderTask(ctx context.Context, woID, taskID string, isCompleted bool, notes string) (*WorkOrderTaskCompletion, error) {
+	body := map[string]any{"is_completed": isCompleted}
+	if notes != "" {
+		body["notes"] = notes
+	}
+	var out WorkOrderTaskCompletion
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/tasks/%s/complete/", woID, taskID), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ToggleWorkOrderMaterial sets whether a planned material was actually used
+// (PATCH .../materials/{materialID}/toggle/). Mirrors workOrderAPI.toggleMaterial.
+func (c *Client) ToggleWorkOrderMaterial(ctx context.Context, woID, materialID string, wasUsed bool) (*WorkOrderMaterialUsage, error) {
+	var out WorkOrderMaterialUsage
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/materials/%s/toggle/", woID, materialID), map[string]any{"was_used": wasUsed}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// AddWorkOrderPhoto uploads a photo to a work order as multipart/form-data
+// (POST .../add_photo/). The web posts the file under "image" plus the work
+// order id under "work_order"; caption is an optional serializer field.
+func (c *Client) AddWorkOrderPhoto(ctx context.Context, woID, filename string, data []byte, caption string) (*WorkOrderPhoto, error) {
+	fields := map[string]string{"work_order": woID}
+	if caption != "" {
+		fields["caption"] = caption
+	}
+	files := []MultipartFile{{Field: "image", Filename: filename, Data: data}}
+	var out WorkOrderPhoto
+	if err := c.PostMultipart(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/add_photo/", woID), fields, files, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// WorkOrderUploadCompletedItem is one task auto-marked complete by parsing an
+// uploaded work-order PDF.
+type WorkOrderUploadCompletedItem struct {
+	ID        string `json:"id"`
+	TaskTitle string `json:"task_title"`
+}
+
+// WorkOrderUploadResult is the ingest result returned by upload-pdf.
+type WorkOrderUploadResult struct {
+	SubmissionID          string                         `json:"submission_id"`
+	Kind                  string                         `json:"kind,omitempty"`
+	Status                string                         `json:"status"`
+	WorkOrderID           *string                        `json:"work_order_id"`
+	ThirdPartyWorkOrderID *string                        `json:"third_party_work_order_id,omitempty"`
+	CompletedItems        []WorkOrderUploadCompletedItem `json:"completed_items,omitempty"`
+	Errors                []string                       `json:"errors,omitempty"`
+}
+
+// UploadWorkOrderPdf uploads a scanned/completed work-order PDF for ingest
+// (POST work-orders/upload-pdf/, staff only). The file is sent under "pdf".
+// Mirrors workOrderAPI.uploadPdf; the endpoint is not scoped to one WO — the
+// backend detects which work order the scan belongs to.
+func (c *Client) UploadWorkOrderPdf(ctx context.Context, filename string, data []byte) (*WorkOrderUploadResult, error) {
+	files := []MultipartFile{{Field: "pdf", Filename: filename, Data: data}}
+	var out WorkOrderUploadResult
+	if err := c.PostMultipart(ctx, "/api/inventory/work-orders/upload-pdf/", nil, files, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// WorkOrderValidation is a pre-finalization acknowledgement record. A WO can
+// only transition to completed (and generate its PDF) once IsComplete is true
+// — all three acknowledgements were recorded together.
+type WorkOrderValidation struct {
+	ID                         any    `json:"id"`
+	WorkOrder                  any    `json:"work_order,omitempty"`
+	ValidatedBy                *int   `json:"validated_by,omitempty"`
+	ValidatedByName            string `json:"validated_by_name,omitempty"`
+	ValidatedAt                string `json:"validated_at,omitempty"`
+	ElectricalAcknowledged     bool   `json:"electrical_acknowledged"`
+	LotoAcknowledged           bool   `json:"loto_acknowledged"`
+	RequiredFieldsAcknowledged bool   `json:"required_fields_acknowledged"`
+	IsComplete                 bool   `json:"is_complete"`
+	Notes                      string `json:"notes,omitempty"`
+}
+
+// ValidateWorkOrderChecklist records the pre-finalization checklist
+// acknowledgement (POST .../validate/). The backend rejects the record with
+// 400 unless all three flags are true. Mirrors workOrderAPI.validateChecklist.
+func (c *Client) ValidateWorkOrderChecklist(ctx context.Context, id string, electrical, loto, requiredFields bool, notes string) (*WorkOrderValidation, error) {
+	body := map[string]any{
+		"electrical_acknowledged":      electrical,
+		"loto_acknowledged":            loto,
+		"required_fields_acknowledged": requiredFields,
+	}
+	if notes != "" {
+		body["notes"] = notes
+	}
+	var out WorkOrderValidation
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/validate/", id), body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
