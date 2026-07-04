@@ -386,7 +386,7 @@ func (s *ListScreen) View() string {
 		// `I` is a global hotkey (app.go) that opens the create-item form
 		// from anywhere; advertise it here where an operator looks for it.
 		// Editing/deleting an item lives on its detail screen (E / x).
-		hint += " · I new item"
+		hint += " · I new item · G categories · L locations · U suppliers"
 	case "work_orders":
 		// The Maintenance landing lists work orders; `M` (global) opens the
 		// PM-item list, where PM items are created/edited and their actions

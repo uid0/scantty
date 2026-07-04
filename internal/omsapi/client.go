@@ -11,8 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -263,80 +261,18 @@ type MultipartFile struct {
 	Data     []byte // file contents
 }
 
-// PostMultipart sends a multipart/form-data POST: fields are plain text form
-// values, files are file parts. The JSON response is decoded into out (may be
-// nil). It mirrors do()'s Bearer-auth and 401-refresh-retry behaviour so photo
-// and PDF uploads survive an expired access token the same way JSON calls do.
-func (c *Client) PostMultipart(ctx context.Context, path string, fields map[string]string, files []MultipartFile, out any) error {
-	return c.doMultipart(ctx, path, fields, files, out, true)
+// PostMultipart / PatchMultipart send a multipart/form-data request. fields are
+// text form values keyed by field name; a key may carry multiple values (an M2M
+// list serializes as a repeated field). files are in-memory file parts. The
+// JSON response is decoded into out (may be nil). Both mirror do()'s Bearer-auth
+// and 401-refresh-retry so photo / PDF / attachment uploads survive an expired
+// access token the same way JSON calls do.
+func (c *Client) PostMultipart(ctx context.Context, path string, fields map[string][]string, files []MultipartFile, out any) error {
+	return c.doMultipart(ctx, http.MethodPost, path, fields, files, out, true)
 }
 
-func (c *Client) doMultipart(ctx context.Context, path string, fields map[string]string, files []MultipartFile, out any, retryAuth bool) error {
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	// Deterministic field order so the encoded body is stable across runs
-	// (keeps the multipart round-trip test deterministic).
-	keys := make([]string, 0, len(fields))
-	for k := range fields {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		if err := mw.WriteField(k, fields[k]); err != nil {
-			return fmt.Errorf("oms: multipart field %s: %w", k, err)
-		}
-	}
-	for _, f := range files {
-		pw, err := mw.CreateFormFile(f.Field, f.Filename)
-		if err != nil {
-			return fmt.Errorf("oms: multipart file %s: %w", f.Field, err)
-		}
-		if _, err := pw.Write(f.Data); err != nil {
-			return fmt.Errorf("oms: multipart write %s: %w", f.Field, err)
-		}
-	}
-	if err := mw.Close(); err != nil {
-		return fmt.Errorf("oms: multipart close: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		return fmt.Errorf("oms: build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	if tok := c.AccessToken(); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("oms: POST %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized && retryAuth && c.refresh != "" {
-		if rerr := c.Refresh(ctx); rerr == nil {
-			return c.doMultipart(ctx, path, fields, files, out, false)
-		}
-	}
-	if resp.StatusCode >= 400 {
-		return parseError(resp)
-	}
-	if out == nil || resp.StatusCode == http.StatusNoContent {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
-	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
-		return fmt.Errorf("oms: decode response: %w", err)
-	}
-	return nil
-func (c *Client) PostMultipart(ctx context.Context, path string, fields map[string][]string, fileField, filePath string, out any) error {
-	return c.doMultipart(ctx, http.MethodPost, path, fields, fileField, filePath, out, true)
-}
-
-func (c *Client) PatchMultipart(ctx context.Context, path string, fields map[string][]string, fileField, filePath string, out any) error {
-	return c.doMultipart(ctx, http.MethodPatch, path, fields, fileField, filePath, out, true)
+func (c *Client) PatchMultipart(ctx context.Context, path string, fields map[string][]string, files []MultipartFile, out any) error {
+	return c.doMultipart(ctx, http.MethodPatch, path, fields, files, out, true)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any, retryAuth bool) error {
@@ -392,41 +328,37 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	return nil
 }
 
-func (c *Client) doMultipart(ctx context.Context, method, path string, fields map[string][]string, fileField, filePath string, out any, retryAuth bool) error {
-	u := c.baseURL + path
-
+func (c *Client) doMultipart(ctx context.Context, method, path string, fields map[string][]string, files []MultipartFile, out any, retryAuth bool) error {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	for k, vals := range fields {
-		for _, v := range vals {
+	// Deterministic field order so the encoded body is stable across runs
+	// (keeps the multipart round-trip tests deterministic).
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range fields[k] {
 			if err := mw.WriteField(k, v); err != nil {
 				return fmt.Errorf("oms: multipart field %s: %w", k, err)
 			}
 		}
 	}
-	if strings.TrimSpace(filePath) != "" {
-		f, err := os.Open(filePath)
+	for _, f := range files {
+		part, err := mw.CreateFormFile(f.Field, f.Filename)
 		if err != nil {
-			return fmt.Errorf("oms: open %s: %w", filePath, err)
+			return fmt.Errorf("oms: multipart file %s: %w", f.Field, err)
 		}
-		part, err := mw.CreateFormFile(fileField, filepath.Base(filePath))
-		if err != nil {
-			_ = f.Close()
-			return fmt.Errorf("oms: multipart file %s: %w", fileField, err)
-		}
-		if _, err := io.Copy(part, f); err != nil {
-			_ = f.Close()
-			return fmt.Errorf("oms: read %s: %w", filePath, err)
-		}
-		if err := f.Close(); err != nil {
-			return fmt.Errorf("oms: close %s: %w", filePath, err)
+		if _, err := part.Write(f.Data); err != nil {
+			return fmt.Errorf("oms: multipart write %s: %w", f.Field, err)
 		}
 	}
 	if err := mw.Close(); err != nil {
 		return fmt.Errorf("oms: close multipart: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(buf.Bytes()))
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		return fmt.Errorf("oms: build request: %w", err)
 	}
@@ -444,7 +376,7 @@ func (c *Client) doMultipart(ctx context.Context, method, path string, fields ma
 
 	if resp.StatusCode == http.StatusUnauthorized && retryAuth && c.refresh != "" {
 		if rerr := c.Refresh(ctx); rerr == nil {
-			return c.doMultipart(ctx, method, path, fields, fileField, filePath, out, false)
+			return c.doMultipart(ctx, method, path, fields, files, out, false)
 		}
 	}
 

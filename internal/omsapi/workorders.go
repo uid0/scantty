@@ -125,9 +125,9 @@ func (c *Client) ToggleWorkOrderMaterial(ctx context.Context, woID, materialID s
 // (POST .../add_photo/). The web posts the file under "image" plus the work
 // order id under "work_order"; caption is an optional serializer field.
 func (c *Client) AddWorkOrderPhoto(ctx context.Context, woID, filename string, data []byte, caption string) (*WorkOrderPhoto, error) {
-	fields := map[string]string{"work_order": woID}
+	fields := map[string][]string{"work_order": {woID}}
 	if caption != "" {
-		fields["caption"] = caption
+		fields["caption"] = []string{caption}
 	}
 	files := []MultipartFile{{Field: "image", Filename: filename, Data: data}}
 	var out WorkOrderPhoto

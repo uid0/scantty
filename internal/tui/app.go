@@ -243,6 +243,32 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.screen = NewDonationsScreen(r.deps)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
+		case "G":
+			// Shift+g opens the inventory Category management list (create /
+			// edit / delete). Uppercase because the taxonomy lists ride the
+			// same "uppercase letter = open a surface" convention as V / M / Q,
+			// and lowercase g is used for top-of-list nav inside screens.
+			if _, ok := r.screen.(*CategoryListScreen); !ok {
+				r.screen = NewCategoryListScreen(r.deps)
+				r.nav.SetActive(WSInventory)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
+		case "L":
+			// Shift+l opens the Location management list. Lowercase l is the
+			// ForgeKey lockouts global, so locations take the shifted key.
+			if _, ok := r.screen.(*LocationListScreen); !ok {
+				r.screen = NewLocationListScreen(r.deps)
+				r.nav.SetActive(WSInventory)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
+		case "U":
+			// Shift+u opens the Supplier management list. Lowercase u is the
+			// usage-sessions global, so suppliers take the shifted key.
+			if _, ok := r.screen.(*SupplierListScreen); !ok {
+				r.screen = NewSupplierListScreen(r.deps)
+				r.nav.SetActive(WSInventory)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
 		case "q":
 			if _, ok := r.screen.(*WelcomeScreen); ok {
 				return r, tea.Quit

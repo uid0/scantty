@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -457,7 +459,11 @@ func (c *Client) CreateAsset(ctx context.Context, body AssetWrite) (*Asset, erro
 	var out Asset
 	var err error
 	if body.needsMultipart() {
-		err = c.PostMultipart(ctx, "/api/inventory/assets/", body.multipartFields(), "manual_pdf", body.ManualPDFPath, &out)
+		files, ferr := body.multipartFiles()
+		if ferr != nil {
+			return nil, ferr
+		}
+		err = c.PostMultipart(ctx, "/api/inventory/assets/", body.multipartFields(), files, &out)
 	} else {
 		err = c.Post(ctx, "/api/inventory/assets/", body, &out)
 	}
@@ -475,7 +481,11 @@ func (c *Client) UpdateAsset(ctx context.Context, id string, body AssetWrite) (*
 	path := fmt.Sprintf("/api/inventory/assets/%s/", id)
 	var err error
 	if body.needsMultipart() {
-		err = c.PatchMultipart(ctx, path, body.multipartFields(), "manual_pdf", body.ManualPDFPath, &out)
+		files, ferr := body.multipartFiles()
+		if ferr != nil {
+			return nil, ferr
+		}
+		err = c.PatchMultipart(ctx, path, body.multipartFields(), files, &out)
 	} else {
 		err = c.Patch(ctx, path, body, &out)
 	}
@@ -487,6 +497,20 @@ func (c *Client) UpdateAsset(ctx context.Context, id string, body AssetWrite) (*
 
 func (w AssetWrite) needsMultipart() bool {
 	return strings.TrimSpace(w.ManualPDFPath) != ""
+}
+
+// multipartFiles reads the picked manual PDF off disk into an in-memory file
+// part for PostMultipart/PatchMultipart. Returns nil when no PDF is attached.
+func (w AssetWrite) multipartFiles() ([]MultipartFile, error) {
+	p := strings.TrimSpace(w.ManualPDFPath)
+	if p == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("oms: read %s: %w", p, err)
+	}
+	return []MultipartFile{{Field: "manual_pdf", Filename: filepath.Base(p), Data: data}}, nil
 }
 
 func (w AssetWrite) multipartFields() map[string][]string {
@@ -567,45 +591,220 @@ func (c *Client) ListAvailableCertifications(ctx context.Context) ([]Certificati
 	return out, nil
 }
 
+// Location mirrors the writable + read-only fields of the web Location form and
+// detail pages (frontend LocationFormPage.tsx / LocationDetailPage.tsx). The
+// serializer is fields="__all__", so it returns name/description/is_active plus
+// the read-only parent_name, fixture_count, access_code and qr_code_url.
+//
+// Code/Capacity have no backing model column today (the Location model exposes
+// name, description, is_active, parent, access_code, qr_code); they are retained
+// only so the existing location-picker labels in the item/asset forms keep
+// compiling, and stay zero-valued in practice.
 type Location struct {
-	ID       int    `json:"id"`
-	Name     string `json:"name"`
-	Parent   *int   `json:"parent,omitempty"`
-	Code     string `json:"code,omitempty"`
-	Capacity int    `json:"capacity,omitempty"`
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	IsActive     bool   `json:"is_active,omitempty"`
+	Parent       *int   `json:"parent,omitempty"`
+	ParentName   string `json:"parent_name,omitempty"`
+	AccessCode   string `json:"access_code,omitempty"`
+	QRCodeURL    string `json:"qr_code_url,omitempty"`
+	FixtureCount int    `json:"fixture_count,omitempty"`
+	Code         string `json:"code,omitempty"`
+	Capacity     int    `json:"capacity,omitempty"`
 }
 
 func (c *Client) ListLocations(ctx context.Context, q url.Values) (*Page[Location], error) {
 	return GetPage[Location](ctx, c, "/api/inventory/locations/", q)
 }
 
+func (c *Client) GetLocation(ctx context.Context, id string) (*Location, error) {
+	var out Location
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/locations/%s/", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// LocationWrite is the create/edit payload for a storage location. It mirrors
+// the web LocationFormPage's writable fields (name, description, parent,
+// is_active). Parent carries NO omitempty so a nil pointer serializes as null
+// and can clear the parent on a PATCH (the picker's "(none)" row); is_active
+// likewise carries no omitempty so it can be toggled off. access_code and the
+// QR image are server-managed (read-only) and never sent.
+//
+// NOTE: the backend LocationViewSet gates create/update/destroy behind
+// IsAdminUser — a non-staff caller gets 403 on save/delete even though reads
+// are public.
+type LocationWrite struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Parent      *int   `json:"parent"`
+	IsActive    bool   `json:"is_active"`
+}
+
+func (c *Client) CreateLocation(ctx context.Context, body LocationWrite) (*Location, error) {
+	var out Location
+	if err := c.Post(ctx, "/api/inventory/locations/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateLocation(ctx context.Context, id string, body LocationWrite) (*Location, error) {
+	var out Location
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/locations/%s/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteLocation(ctx context.Context, id string) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/inventory/locations/%s/", id))
+}
+
+// LocationQRResult is the generate_qr action's JSON body
+// ({"message": ..., "qr_code_url": ...}); the action does not re-serialize the
+// location, so callers that want the fresh qr_code_url read it here.
+type LocationQRResult struct {
+	Message   string `json:"message"`
+	QRCodeURL string `json:"qr_code_url"`
+	Error     string `json:"error,omitempty"`
+}
+
+// GenerateLocationQR POSTs to the generate_qr action (AllowAny on the backend)
+// to create or regenerate the location's check-in QR code.
+func (c *Client) GenerateLocationQR(ctx context.Context, id string) (*LocationQRResult, error) {
+	var out LocationQRResult
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/locations/%s/generate_qr/", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Category mirrors the CategorySerializer (fields="__all__"). Writable columns
+// are name, description, color and parent; slug is auto-generated from the name
+// and read-only server-side, and parent_name/children/item_count are read-only
+// display helpers.
 type Category struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Parent *int   `json:"parent,omitempty"`
+	ID          int        `json:"id"`
+	Name        string     `json:"name"`
+	Slug        string     `json:"slug,omitempty"`
+	Description string     `json:"description,omitempty"`
+	Color       string     `json:"color,omitempty"`
+	Parent      *int       `json:"parent,omitempty"`
+	ParentName  string     `json:"parent_name,omitempty"`
+	ItemCount   int        `json:"item_count,omitempty"`
+	Children    []Category `json:"children,omitempty"`
 }
 
 func (c *Client) ListCategories(ctx context.Context, q url.Values) (*Page[Category], error) {
 	return GetPage[Category](ctx, c, "/api/inventory/categories/", q)
 }
 
+func (c *Client) GetCategory(ctx context.Context, id string) (*Category, error) {
+	var out Category
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/categories/%s/", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CategoryWrite is the create/edit payload for an inventory category, mirroring
+// the web CategoryFormPage (name, description, color, parent). slug is omitted
+// because it is auto-generated + read-only on the backend. description and color
+// are always sent (matching the web form, which submits trimmed/empty strings)
+// so a PATCH can clear them; parent carries no omitempty so nil clears it.
+type CategoryWrite struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Color       string `json:"color"`
+	Parent      *int   `json:"parent"`
+}
+
+func (c *Client) CreateCategory(ctx context.Context, body CategoryWrite) (*Category, error) {
+	var out Category
+	if err := c.Post(ctx, "/api/inventory/categories/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateCategory(ctx context.Context, id string, body CategoryWrite) (*Category, error) {
+	var out Category
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/categories/%s/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteCategory(ctx context.Context, id string) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/inventory/categories/%s/", id))
+}
+
+// Supplier mirrors the SupplierSerializer (list) and, on retrieve, the
+// SupplierDetailSerializer — which additionally embeds the supplier's item
+// catalogue under "items". Items stays empty for list responses.
 type Supplier struct {
-	ID                    int           `json:"id"`
-	Name                  string        `json:"name"`
-	SupplierType          string        `json:"supplier_type,omitempty"`
-	Website               string        `json:"website,omitempty"`
-	AccountNumber         string        `json:"account_number,omitempty"`
-	TaxFreePaperworkFiled bool          `json:"tax_free_paperwork_filed,omitempty"`
-	Notes                 string        `json:"notes,omitempty"`
-	ItemCount             int           `json:"item_count,omitempty"`
-	PurchaseOrderCount    int           `json:"purchase_order_count,omitempty"`
-	TotalSpent            DecimalString `json:"total_spent,omitempty"`
-	CreatedAt             time.Time     `json:"created_at,omitempty"`
-	UpdatedAt             time.Time     `json:"updated_at,omitempty"`
+	ID                    int            `json:"id"`
+	Name                  string         `json:"name"`
+	SupplierType          string         `json:"supplier_type,omitempty"`
+	Website               string         `json:"website,omitempty"`
+	AccountNumber         string         `json:"account_number,omitempty"`
+	TaxFreePaperworkFiled bool           `json:"tax_free_paperwork_filed,omitempty"`
+	Notes                 string         `json:"notes,omitempty"`
+	ItemCount             int            `json:"item_count,omitempty"`
+	PurchaseOrderCount    int            `json:"purchase_order_count,omitempty"`
+	TotalSpent            DecimalString  `json:"total_spent,omitempty"`
+	Items                 []ItemSupplier `json:"items,omitempty"`
+	CreatedAt             time.Time      `json:"created_at,omitempty"`
+	UpdatedAt             time.Time      `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListSuppliers(ctx context.Context, q url.Values) (*Page[Supplier], error) {
 	return GetPage[Supplier](ctx, c, "/api/inventory/suppliers/", q)
+}
+
+func (c *Client) GetSupplier(ctx context.Context, id string) (*Supplier, error) {
+	var out Supplier
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/suppliers/%s/", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SupplierWrite is the create/edit payload for a supplier, mirroring the web
+// SupplierFormPage / supplierSchema (name, supplier_type, website,
+// account_number, tax_free_paperwork_filed, notes). All string fields are sent
+// as-is (empty allowed) so a PATCH can clear them, matching the web form which
+// submits every field on save. supplier_type is one of local/online/national.
+type SupplierWrite struct {
+	Name                  string `json:"name"`
+	SupplierType          string `json:"supplier_type"`
+	Website               string `json:"website"`
+	AccountNumber         string `json:"account_number"`
+	TaxFreePaperworkFiled bool   `json:"tax_free_paperwork_filed"`
+	Notes                 string `json:"notes"`
+}
+
+func (c *Client) CreateSupplier(ctx context.Context, body SupplierWrite) (*Supplier, error) {
+	var out Supplier
+	if err := c.Post(ctx, "/api/inventory/suppliers/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateSupplier(ctx context.Context, id string, body SupplierWrite) (*Supplier, error) {
+	var out Supplier
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/suppliers/%s/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteSupplier(ctx context.Context, id string) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/inventory/suppliers/%s/", id))
 }
 
 type ItemSupplier struct {
