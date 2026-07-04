@@ -36,7 +36,33 @@ type PurchaseOrderDetailScreen struct {
 	// flight — the same guard the OMS frontend applies to its Send/Confirm
 	// buttons.
 	transitioning bool
+
+	// "Void PO" modal. voiding == true renders a reason prompt over the body;
+	// enter voids, esc cancels. The PO id travels to VoidPurchaseOrder.
+	voiding      bool
+	voidReasonIn textinput.Model
+	voidErr      string
+	voidPending  bool
+
+	// "Mark delivered" modal. Four fields — delivery date (default today),
+	// tracking #, carrier, receipt notes — mirroring the web mark-delivered
+	// modal. This is also the PO's tracking-entry path (OMS has no separate
+	// PO update-tracking endpoint; tracking/carrier ride on mark-delivered).
+	delivering     bool
+	deliverInputs  []textinput.Model
+	deliverFocus   int
+	deliverErr     string
+	deliverPending bool
 }
+
+// Mark-delivered field indexes.
+const (
+	poDeliverDate = iota
+	poDeliverTracking
+	poDeliverCarrier
+	poDeliverNotes
+	poDeliverFieldCount
+)
 
 type poItemShippedMsg struct {
 	item *omsapi.PurchaseOrderItem
@@ -52,6 +78,16 @@ type poTransitionedMsg struct {
 
 type poDetailLoadedMsg struct {
 	po  *omsapi.PurchaseOrder
+	err error
+}
+
+// poVoidedMsg reports the result of voiding the whole PO.
+type poVoidedMsg struct {
+	err error
+}
+
+// poDeliveredMsg reports the result of mark-delivered.
+type poDeliveredMsg struct {
 	err error
 }
 
@@ -75,10 +111,12 @@ func (s *PurchaseOrderDetailScreen) Init() tea.Cmd {
 	return s.load()
 }
 
-// WantsRawInput routes every key to the screen while the "Mark shipped"
-// form is open so the textinputs receive characters without the app
-// dispatcher claiming letters like 'r' / 'R' / 'S'.
-func (s *PurchaseOrderDetailScreen) WantsRawInput() bool { return s.shipping }
+// WantsRawInput routes every key to the screen while any modal (mark-shipped,
+// void, mark-delivered) is open so the textinputs receive characters without
+// the app dispatcher claiming letters like 'r' / 'R' / 'S' / 'v' / 'd'.
+func (s *PurchaseOrderDetailScreen) WantsRawInput() bool {
+	return s.shipping || s.voiding || s.delivering
+}
 
 func (s *PurchaseOrderDetailScreen) load() tea.Cmd {
 	deps := s.deps
@@ -136,9 +174,39 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, tea.Batch(Status(toast, StatusOK), s.load())
 
+	case poVoidedMsg:
+		s.voidPending = false
+		if m.err != nil {
+			s.voidErr = m.err.Error()
+			return s, Status("void failed: "+m.err.Error(), StatusError)
+		}
+		s.voiding = false
+		s.voidErr = ""
+		s.loading = true
+		s.loadErr = ""
+		return s, tea.Batch(Status("purchase order voided", StatusOK), s.load())
+
+	case poDeliveredMsg:
+		s.deliverPending = false
+		if m.err != nil {
+			s.deliverErr = m.err.Error()
+			return s, Status("mark delivered failed: "+m.err.Error(), StatusError)
+		}
+		s.delivering = false
+		s.deliverErr = ""
+		s.loading = true
+		s.loadErr = ""
+		return s, tea.Batch(Status("marked delivered", StatusOK), s.load())
+
 	case tea.KeyMsg:
 		if s.shipping {
 			return s.handleShipKey(m)
+		}
+		if s.voiding {
+			return s.handleVoidKey(m)
+		}
+		if s.delivering {
+			return s.handleDeliverKey(m)
 		}
 		if s.scroller.Handle(m) {
 			return s, nil
@@ -177,9 +245,54 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				return s, nil
 			}
 			return s, s.transitionPO("confirm")
+		case "E":
+			// Edit metadata + line items. Uppercase E because lowercase e is
+			// a global ForgeKey hotkey (matches inventory-detail's E edit).
+			if s.po != nil {
+				return s, SwitchTo(WSPurchasing, NewPurchaseOrderEditScreen(s.deps, s.po))
+			}
+		case "A":
+			// Attachments. Uppercase A because lowercase a is the global
+			// Authorizations hotkey.
+			if s.po != nil {
+				return s, SwitchTo(WSPurchasing, NewPurchaseOrderAttachmentsScreen(s.deps, s.po))
+			}
+		case "d":
+			// Mark delivered. Gated on the backend-receivable states; the
+			// server also enforces this and 400s otherwise.
+			if s.po == nil || !poCanMarkDelivered(s.po.Status) {
+				return s, Status("mark delivered needs a sent / confirmed / partially-received PO", StatusWarn)
+			}
+			s.openDeliverForm()
+			return s, textinput.Blink
+		case "v":
+			// Void the whole PO. Gated locally on status (backend also
+			// restricts to staff/COO and rejects voided/received POs).
+			if s.po == nil {
+				return s, nil
+			}
+			if s.po.Status == "voided" {
+				return s, Status("purchase order is already voided", StatusWarn)
+			}
+			if s.po.Status == "received" || s.po.IsFullyReceived {
+				return s, Status("cannot void a received PO; create a return instead", StatusWarn)
+			}
+			s.openVoidForm()
+			return s, textinput.Blink
 		}
 	}
 	return s, nil
+}
+
+// poCanMarkDelivered reports whether a PO in the given status can be
+// mark-delivered, matching the backend's sent/confirmed/partially_received
+// precondition.
+func poCanMarkDelivered(status string) bool {
+	switch status {
+	case "sent", "confirmed", "partially_received":
+		return true
+	}
+	return false
 }
 
 // transitionPO fires the async Send-to-Supplier ("send") or Confirm
@@ -292,6 +405,140 @@ func (s *PurchaseOrderDetailScreen) submitShip() (Screen, tea.Cmd) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Void-PO modal
+// ---------------------------------------------------------------------------
+
+func (s *PurchaseOrderDetailScreen) openVoidForm() {
+	in := textinput.New()
+	in.Prompt = ""
+	in.Placeholder = "reason (e.g. supplier rejected all line items)"
+	in.CharLimit = 300
+	in.Focus()
+	s.voidReasonIn = in
+	s.voidErr = ""
+	s.voiding = true
+}
+
+func (s *PurchaseOrderDetailScreen) handleVoidKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.Type {
+	case tea.KeyEsc:
+		s.voiding = false
+		s.voidErr = ""
+		return s, nil
+	case tea.KeyEnter:
+		if s.voidPending {
+			return s, nil
+		}
+		reason := strings.TrimSpace(s.voidReasonIn.Value())
+		poID := fmt.Sprintf("%v", s.po.ID)
+		s.voidPending = true
+		s.voidErr = ""
+		deps := s.deps
+		ctx := deps.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return s, func() tea.Msg {
+			_, err := deps.OMS.VoidPurchaseOrder(ctx, poID, reason)
+			return poVoidedMsg{err: err}
+		}
+	}
+	var cmd tea.Cmd
+	s.voidReasonIn, cmd = s.voidReasonIn.Update(m)
+	return s, cmd
+}
+
+// ---------------------------------------------------------------------------
+// Mark-delivered modal
+// ---------------------------------------------------------------------------
+
+func (s *PurchaseOrderDetailScreen) openDeliverForm() {
+	s.deliverInputs = make([]textinput.Model, poDeliverFieldCount)
+	date := textinput.New()
+	date.Prompt = ""
+	date.Placeholder = "YYYY-MM-DD"
+	date.CharLimit = 10
+	date.SetValue(time.Now().Format("2006-01-02"))
+	date.Focus()
+	s.deliverInputs[poDeliverDate] = date
+
+	tracking := textinput.New()
+	tracking.Prompt = ""
+	tracking.Placeholder = "tracking # (optional)"
+	tracking.CharLimit = 100
+	s.deliverInputs[poDeliverTracking] = tracking
+
+	carrier := textinput.New()
+	carrier.Prompt = ""
+	carrier.Placeholder = "carrier (optional)"
+	carrier.CharLimit = 100
+	s.deliverInputs[poDeliverCarrier] = carrier
+
+	notes := textinput.New()
+	notes.Prompt = ""
+	notes.Placeholder = "receipt notes (optional)"
+	notes.CharLimit = 500
+	s.deliverInputs[poDeliverNotes] = notes
+
+	s.deliverFocus = poDeliverDate
+	s.deliverErr = ""
+	s.delivering = true
+}
+
+func (s *PurchaseOrderDetailScreen) handleDeliverKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.Type {
+	case tea.KeyEsc:
+		s.delivering = false
+		s.deliverErr = ""
+		return s, nil
+	case tea.KeyTab:
+		s.deliverInputs[s.deliverFocus].Blur()
+		s.deliverFocus = (s.deliverFocus + 1) % poDeliverFieldCount
+		s.deliverInputs[s.deliverFocus].Focus()
+		return s, textinput.Blink
+	case tea.KeyShiftTab:
+		s.deliverInputs[s.deliverFocus].Blur()
+		s.deliverFocus = (s.deliverFocus - 1 + poDeliverFieldCount) % poDeliverFieldCount
+		s.deliverInputs[s.deliverFocus].Focus()
+		return s, textinput.Blink
+	case tea.KeyEnter:
+		if s.deliverPending {
+			return s, nil
+		}
+		return s.submitDeliver()
+	}
+	var cmd tea.Cmd
+	s.deliverInputs[s.deliverFocus], cmd = s.deliverInputs[s.deliverFocus].Update(m)
+	return s, cmd
+}
+
+func (s *PurchaseOrderDetailScreen) submitDeliver() (Screen, tea.Cmd) {
+	date := strings.TrimSpace(s.deliverInputs[poDeliverDate].Value())
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		s.deliverErr = "delivery date is required (YYYY-MM-DD)"
+		return s, nil
+	}
+	req := omsapi.MarkDeliveredRequest{
+		DeliveryDate:   date,
+		TrackingNumber: strings.TrimSpace(s.deliverInputs[poDeliverTracking].Value()),
+		Carrier:        strings.TrimSpace(s.deliverInputs[poDeliverCarrier].Value()),
+		ReceiptNotes:   strings.TrimSpace(s.deliverInputs[poDeliverNotes].Value()),
+	}
+	poID := fmt.Sprintf("%v", s.po.ID)
+	s.deliverPending = true
+	s.deliverErr = ""
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s, func() tea.Msg {
+		_, err := deps.OMS.MarkPurchaseOrderDelivered(ctx, poID, req)
+		return poDeliveredMsg{err: err}
+	}
+}
+
 func (s *PurchaseOrderDetailScreen) View() string {
 	if s.loading {
 		return StyleMuted.Render("Loading purchase order…")
@@ -317,6 +564,43 @@ func (s *PurchaseOrderDetailScreen) View() string {
 		}
 		return b.String()
 	}
+	if s.voiding {
+		var b strings.Builder
+		b.WriteString(StyleStatusWarn.Render("Void purchase order") + "\n\n")
+		b.WriteString(StyleMuted.Render("Voids the PO and cascades to all non-voided line items. This cannot be undone.") + "\n\n")
+		b.WriteString(StyleTitle.Render("Reason: ") + s.voidReasonIn.View() + "\n")
+		if s.voidErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render("✗ "+s.voidErr) + "\n")
+		}
+		if s.voidPending {
+			b.WriteString("\n" + StyleMuted.Render("Voiding…"))
+		} else {
+			b.WriteString("\n" + StyleMuted.Render("enter void · esc cancel"))
+		}
+		return b.String()
+	}
+	if s.delivering {
+		var b strings.Builder
+		b.WriteString(StyleTitle.Render("Mark delivered") + "\n\n")
+		b.WriteString(StyleMuted.Render("Receives every pending quantity on this PO as of the delivery date.") + "\n\n")
+		labels := []string{"Delivery date: ", "Tracking #:    ", "Carrier:       ", "Receipt notes: "}
+		for i := 0; i < poDeliverFieldCount; i++ {
+			caret := "  "
+			if i == s.deliverFocus {
+				caret = "▸ "
+			}
+			b.WriteString(caret + StyleMuted.Render(labels[i]) + s.deliverInputs[i].View() + "\n")
+		}
+		if s.deliverErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render("✗ "+s.deliverErr) + "\n")
+		}
+		if s.deliverPending {
+			b.WriteString("\n" + StyleMuted.Render("Submitting…"))
+		} else {
+			b.WriteString("\n" + StyleMuted.Render("tab next field · enter submit · esc cancel"))
+		}
+		return b.String()
+	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(s.footerHint())
 }
@@ -334,8 +618,17 @@ func (s *PurchaseOrderDetailScreen) footerHint() string {
 		case "sent":
 			parts = append(parts, "c confirm")
 		}
+		if poCanMarkDelivered(s.po.Status) {
+			parts = append(parts, "d mark delivered")
+		}
 	}
-	parts = append(parts, "R receive items", "S mark item shipped", "r refresh", "esc back")
+	parts = append(parts, "R receive items", "S mark item shipped", "E edit", "A attachments")
+	// Void is offered whenever the PO isn't already voided/received (the
+	// backend still enforces the staff/COO permission).
+	if s.po != nil && s.po.Status != "voided" && s.po.Status != "received" && !s.po.IsFullyReceived {
+		parts = append(parts, "v void")
+	}
+	parts = append(parts, "r refresh", "esc back")
 	return strings.Join(parts, " · ")
 }
 
@@ -603,9 +896,9 @@ func jdeCostLine(li omsapi.PurchaseOrderItem) string {
 // colors so the operator can see urgency vs. fulfillment at a glance.
 //
 //   - expected_shipment_date colored by urgency:
-//       red    overdue (today is past the date and we have no actual ship)
-//       yellow ≤ 7 days out (today is within a week of the date)
-//       plain  further out, OR an actual ship has already been recorded
+//     red    overdue (today is past the date and we have no actual ship)
+//     yellow ≤ 7 days out (today is within a week of the date)
+//     plain  further out, OR an actual ship has already been recorded
 //   - actual_shipment_date always green so it stands out as the "done"
 //     signal regardless of where the ship-by sits.
 func renderShipDates(li omsapi.PurchaseOrderItem) string {

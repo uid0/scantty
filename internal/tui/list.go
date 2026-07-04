@@ -392,6 +392,10 @@ func (s *ListScreen) View() string {
 		// PM-item list, where PM items are created/edited and their actions
 		// (complete / clone / generate-WO) live.
 		hint += " · M PM items"
+	case "assets":
+		// `A` is the global new-asset hotkey (app.go). Edit/delete of an
+		// existing asset live on its detail screen (E / x).
+		hint += " · A new asset"
 	}
 	b.WriteString(StyleMuted.Render(hint))
 	return b.String()
