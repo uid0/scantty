@@ -280,6 +280,7 @@ type Asset struct {
 
 	// Ownership
 	OwningGroup     *int   `json:"owning_group,omitempty"`
+	OwningUser      *int   `json:"owning_user,omitempty"`
 	OwningGroupName string `json:"owning_group_name,omitempty"`
 	OwningUserName  string `json:"owning_user_name,omitempty"`
 	GroupsCanEnable []int  `json:"groups_can_enable,omitempty"`
@@ -360,6 +361,195 @@ func (c *Client) ScanAsset(ctx context.Context, id string) (*Asset, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// InventoryItemID coerces the polymorphic InventoryItem field to the linked
+// item's pk string for edit-mode form hydration. InventoryItem's primary key
+// is a UUID (models.UUIDField), so the value comes over as a string; the
+// float64 branch is defensive for any numeric-pk serializer shape. ok is false
+// when the asset has no linked inventory-item type.
+func (a *Asset) InventoryItemID() (string, bool) {
+	switch v := a.InventoryItem.(type) {
+	case string:
+		if s := strings.TrimSpace(v); s != "" {
+			return s, true
+		}
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	}
+	return "", false
+}
+
+// AssetWrite is the create/edit payload for a hard asset. It mirrors the
+// writable fields of the web asset form (frontend AssetFormPage.tsx +
+// assetFormSchema). Wire-contract details that match the web form's FormData
+// behaviour deliberately:
+//
+//   - Booleans carry NO omitempty so a PATCH that turns a flag off
+//     (is_active / is_donation / needs_* / report_only → false) actually
+//     reaches the backend instead of being silently dropped.
+//   - Optional scalars / FKs are pointers: nil means "omit the key". The web
+//     skips empty/null values on submit, so e.g. changing ownership away from a
+//     group leaves the old owning_group untouched — this mirrors that exactly.
+//   - Location rides the AssetSerializer as an ordinary FK primary key (int),
+//     unlike the inventory item form (whose viewset resolves a pk-or-name
+//     string). Send the picked location's id.
+//   - ownership_type is NOT a serializer write field (the model column can't be
+//     changed through this endpoint), but the viewset's create() reads it from
+//     the raw request to gate SIG-ownership permission, so it is sent to mirror
+//     the web. owning_group is the field that actually persists.
+//   - required_certifications is an M2M written as a JSON array of cert pks;
+//     omitted when empty so a PATCH doesn't clear existing certs (the web
+//     appends nothing for an empty list).
+type AssetWrite struct {
+	Name          string  `json:"name"`
+	AssetTag      string  `json:"asset_tag,omitempty"`
+	Description   *string `json:"description,omitempty"`
+	SerialNumber  *string `json:"serial_number,omitempty"`
+	InventoryItem *string `json:"inventory_item,omitempty"` // InventoryItem pk is a UUID
+	Category      *int    `json:"category,omitempty"`
+	Location      *int    `json:"location,omitempty"`
+
+	DateReceived *string `json:"date_received,omitempty"`
+	AmountPaid   string  `json:"amount_paid"`
+	IsDonation   bool    `json:"is_donation"`
+	DonorName    *string `json:"donor_name,omitempty"`
+
+	WikiPageURL *string `json:"wiki_page_url,omitempty"`
+	ProductURL  *string `json:"product_url,omitempty"`
+
+	Status        string `json:"status"`
+	OwnershipType string `json:"ownership_type"`
+	OwningGroup   *int   `json:"owning_group,omitempty"`
+	OwningUser    *int   `json:"owning_user,omitempty"`
+	IsActive      bool   `json:"is_active"`
+
+	NeedsCompressedAir     bool  `json:"needs_compressed_air"`
+	NeedsVentilation       bool  `json:"needs_ventilation"`
+	IsChargeable           bool  `json:"is_chargeable"`
+	TrainingRequired       bool  `json:"training_required"`
+	RequiredCertifications []int `json:"required_certifications,omitempty"`
+	ReportOnly             bool  `json:"report_only"`
+
+	Notes          *string `json:"notes,omitempty"`
+	ConditionNotes *string `json:"condition_notes,omitempty"`
+	ManualPDFPath  string  `json:"-"`
+}
+
+// CreateAsset POSTs a new asset. The response echoes the created asset
+// (the viewset re-serializes it, so *_name display fields come back populated).
+func (c *Client) CreateAsset(ctx context.Context, body AssetWrite) (*Asset, error) {
+	var out Asset
+	var err error
+	if body.needsMultipart() {
+		err = c.PostMultipart(ctx, "/api/inventory/assets/", body.multipartFields(), "manual_pdf", body.ManualPDFPath, &out)
+	} else {
+		err = c.Post(ctx, "/api/inventory/assets/", body, &out)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateAsset PATCHes an existing asset. PATCH (not PUT) mirrors the web form:
+// only the keys present in the payload change, so omitted optional fields keep
+// their server-side value.
+func (c *Client) UpdateAsset(ctx context.Context, id string, body AssetWrite) (*Asset, error) {
+	var out Asset
+	path := fmt.Sprintf("/api/inventory/assets/%s/", id)
+	var err error
+	if body.needsMultipart() {
+		err = c.PatchMultipart(ctx, path, body.multipartFields(), "manual_pdf", body.ManualPDFPath, &out)
+	} else {
+		err = c.Patch(ctx, path, body, &out)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (w AssetWrite) needsMultipart() bool {
+	return strings.TrimSpace(w.ManualPDFPath) != ""
+}
+
+func (w AssetWrite) multipartFields() map[string][]string {
+	fields := map[string][]string{}
+	add := func(k, v string) {
+		fields[k] = append(fields[k], v)
+	}
+	addPtr := func(k string, v *string) {
+		if v != nil {
+			add(k, *v)
+		}
+	}
+	addIntPtr := func(k string, v *int) {
+		if v != nil {
+			add(k, strconv.Itoa(*v))
+		}
+	}
+
+	add("name", w.Name)
+	if strings.TrimSpace(w.AssetTag) != "" {
+		add("asset_tag", w.AssetTag)
+	}
+	addPtr("description", w.Description)
+	addPtr("serial_number", w.SerialNumber)
+	addPtr("inventory_item", w.InventoryItem)
+	addIntPtr("category", w.Category)
+	addIntPtr("location", w.Location)
+	addPtr("date_received", w.DateReceived)
+	add("amount_paid", w.AmountPaid)
+	add("is_donation", strconv.FormatBool(w.IsDonation))
+	addPtr("donor_name", w.DonorName)
+	addPtr("wiki_page_url", w.WikiPageURL)
+	addPtr("product_url", w.ProductURL)
+	add("status", w.Status)
+	add("ownership_type", w.OwnershipType)
+	addIntPtr("owning_group", w.OwningGroup)
+	addIntPtr("owning_user", w.OwningUser)
+	add("is_active", strconv.FormatBool(w.IsActive))
+	add("needs_compressed_air", strconv.FormatBool(w.NeedsCompressedAir))
+	add("needs_ventilation", strconv.FormatBool(w.NeedsVentilation))
+	add("is_chargeable", strconv.FormatBool(w.IsChargeable))
+	add("training_required", strconv.FormatBool(w.TrainingRequired))
+	for _, id := range w.RequiredCertifications {
+		add("required_certifications", strconv.Itoa(id))
+	}
+	add("report_only", strconv.FormatBool(w.ReportOnly))
+	addPtr("notes", w.Notes)
+	addPtr("condition_notes", w.ConditionNotes)
+	return fields
+}
+
+// DeleteAsset removes an asset (DELETE /api/inventory/assets/{id}/). The
+// backend enforces manage-asset permission and returns 204 on success.
+func (c *Client) DeleteAsset(ctx context.Context, id string) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/inventory/assets/%s/", id))
+}
+
+// CertificationOption is one row of the asset form's required-certifications
+// picker. GET /api/lockers/available-certifications/ returns a bare JSON array
+// of these (not a paginated envelope). Named to avoid colliding with
+// membership.Certification, which is a user's *granted* cert (a different
+// shape).
+type CertificationOption struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// ListAvailableCertifications returns the active certification catalogue used
+// by the asset form's required-certifications picker. Staff-only on the
+// backend; a non-staff caller gets 403, which the form treats as "no certs to
+// pick" rather than a fatal error — matching the web form, which wraps this
+// load in a catch that falls back to an empty list.
+func (c *Client) ListAvailableCertifications(ctx context.Context) ([]CertificationOption, error) {
+	var out []CertificationOption
+	if err := c.Get(ctx, "/api/lockers/available-certifications/", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 type Location struct {

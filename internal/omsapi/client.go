@@ -10,6 +10,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -251,81 +253,12 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil, nil, true)
 }
 
-// PostMultipart posts a multipart/form-data body — zero or more text fields
-// plus at most one file part — to path and decodes the JSON response into out.
-// It exists for the endpoints that only accept multipart (the PO
-// upload-attachment action, whose backend view sets parser_classes to
-// MultiPartParser/FormParser), where the JSON-only do() path can't help. Like
-// do() it retries once after a token refresh on 401. The body is buffered so
-// the redirect-preserving policy can replay it when an http:// base
-// 301-upgrades to https:// (see preserveMethodOnRedirect).
-func (c *Client) PostMultipart(
-	ctx context.Context, path string, fields map[string]string,
-	fileField, fileName string, file io.Reader, out any,
-) error {
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	for k, v := range fields {
-		if err := mw.WriteField(k, v); err != nil {
-			return fmt.Errorf("oms: multipart field %s: %w", k, err)
-		}
-	}
-	if file != nil {
-		fw, err := mw.CreateFormFile(fileField, fileName)
-		if err != nil {
-			return fmt.Errorf("oms: multipart file part: %w", err)
-		}
-		if _, err := io.Copy(fw, file); err != nil {
-			return fmt.Errorf("oms: multipart copy: %w", err)
-		}
-	}
-	if err := mw.Close(); err != nil {
-		return fmt.Errorf("oms: multipart close: %w", err)
-	}
-	return c.doMultipart(ctx, path, buf.Bytes(), mw.FormDataContentType(), out, true)
+func (c *Client) PostMultipart(ctx context.Context, path string, fields map[string][]string, fileField, filePath string, out any) error {
+	return c.doMultipart(ctx, http.MethodPost, path, fields, fileField, filePath, out, true)
 }
 
-// doMultipart is the multipart sibling of do(): it POSTs an already-marshalled
-// body with a caller-supplied Content-Type (which carries the multipart
-// boundary), refreshes+retries once on 401, and decodes the JSON response.
-// GetBody + ContentLength are set so the redirect policy can re-send the body.
-func (c *Client) doMultipart(ctx context.Context, path string, body []byte, contentType string, out any, retryAuth bool) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("oms: build request: %w", err)
-	}
-	req.ContentLength = int64(len(body))
-	req.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", contentType)
-	if tok := c.AccessToken(); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("oms: POST %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized && retryAuth && c.refresh != "" {
-		if rerr := c.Refresh(ctx); rerr == nil {
-			return c.doMultipart(ctx, path, body, contentType, out, false)
-		}
-	}
-	if resp.StatusCode >= 400 {
-		return parseError(resp)
-	}
-	if out == nil || resp.StatusCode == http.StatusNoContent {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
-	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
-		return fmt.Errorf("oms: decode response: %w", err)
-	}
-	return nil
+func (c *Client) PatchMultipart(ctx context.Context, path string, fields map[string][]string, fileField, filePath string, out any) error {
+	return c.doMultipart(ctx, http.MethodPatch, path, fields, fileField, filePath, out, true)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any, retryAuth bool) error {
@@ -364,6 +297,76 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if resp.StatusCode == http.StatusUnauthorized && retryAuth && c.refresh != "" {
 		if rerr := c.Refresh(ctx); rerr == nil {
 			return c.do(ctx, method, path, query, body, out, false)
+		}
+	}
+
+	if resp.StatusCode >= 400 {
+		return parseError(resp)
+	}
+
+	if out == nil || resp.StatusCode == http.StatusNoContent {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
+		return fmt.Errorf("oms: decode response: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) doMultipart(ctx context.Context, method, path string, fields map[string][]string, fileField, filePath string, out any, retryAuth bool) error {
+	u := c.baseURL + path
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for k, vals := range fields {
+		for _, v := range vals {
+			if err := mw.WriteField(k, v); err != nil {
+				return fmt.Errorf("oms: multipart field %s: %w", k, err)
+			}
+		}
+	}
+	if strings.TrimSpace(filePath) != "" {
+		f, err := os.Open(filePath)
+		if err != nil {
+			return fmt.Errorf("oms: open %s: %w", filePath, err)
+		}
+		part, err := mw.CreateFormFile(fileField, filepath.Base(filePath))
+		if err != nil {
+			_ = f.Close()
+			return fmt.Errorf("oms: multipart file %s: %w", fileField, err)
+		}
+		if _, err := io.Copy(part, f); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("oms: read %s: %w", filePath, err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("oms: close %s: %w", filePath, err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return fmt.Errorf("oms: close multipart: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		return fmt.Errorf("oms: build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if tok := c.AccessToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("oms: %s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized && retryAuth && c.refresh != "" {
+		if rerr := c.Refresh(ctx); rerr == nil {
+			return c.doMultipart(ctx, method, path, fields, fileField, filePath, out, false)
 		}
 	}
 

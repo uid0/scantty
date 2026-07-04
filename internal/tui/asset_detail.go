@@ -41,6 +41,9 @@ type AssetDetailScreen struct {
 	logResult    string
 	logResultLvl StatusLevel
 
+	confirmingDelete bool
+	deleting         bool
+
 	scroller       *TextScroller
 	terminalHeight int
 }
@@ -73,6 +76,10 @@ type oosRestoredMsg struct {
 	err error
 }
 
+type assetDeletedMsg struct {
+	err error
+}
+
 func NewAssetDetailScreen(deps Deps, id string) *AssetDetailScreen {
 	return &AssetDetailScreen{
 		deps:     deps,
@@ -89,7 +96,13 @@ func (s *AssetDetailScreen) Title() string {
 	return "Asset"
 }
 
-func (s *AssetDetailScreen) WantsRawInput() bool { return s.activeForm != formNone }
+// WantsRawInput claims every keypress while an inline form is open OR the
+// delete confirmation is up, so esc/y/n land here instead of the root's global
+// hotkeys. In the normal view the screen stays non-raw so workspace switching
+// and the global shortcuts keep working.
+func (s *AssetDetailScreen) WantsRawInput() bool {
+	return s.activeForm != formNone || s.confirmingDelete
+}
 
 func (s *AssetDetailScreen) Init() tea.Cmd { return s.load() }
 
@@ -195,6 +208,16 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.logResult = "restored"
 		s.logResultLvl = StatusOK
 		return s, tea.Batch(Status(s.logResult, StatusOK), s.load())
+	case assetDeletedMsg:
+		s.deleting = false
+		s.confirmingDelete = false
+		if m.err != nil {
+			return s, Status("delete failed: "+m.err.Error(), StatusError)
+		}
+		return s, tea.Batch(
+			Status("asset deleted", StatusOK),
+			SwitchTo(WSAssets, newScreenFor(WSAssets, s.deps)),
+		)
 	case tea.KeyMsg:
 		if s.activeForm != formNone {
 			switch m.Type {
@@ -208,6 +231,9 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.input, cmd = s.input.Update(msg)
 			return s, cmd
 		}
+		if s.confirmingDelete {
+			return s.updateConfirmDelete(m)
+		}
 		if s.scroller.Handle(m) {
 			return s, nil
 		}
@@ -216,6 +242,19 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loading = true
 			s.loadErr = ""
 			return s, s.load()
+		case "E":
+			// Edit opens the create/edit form in edit mode. Uppercase E
+			// because lowercase e is the global e-paper hotkey.
+			if s.asset != nil {
+				return s, SwitchTo(WSAssets, NewAssetFormScreen(s.deps, s.assetID))
+			}
+		case "x":
+			// Delete (with confirm). The web supports asset delete; guard it
+			// behind a y/n prompt since it's destructive.
+			if s.asset != nil {
+				s.confirmingDelete = true
+				return s, nil
+			}
 		case "p":
 			s.openForm(formLogProblem, "describe the problem", 1000)
 			return s, textinput.Blink
@@ -256,6 +295,35 @@ func (s *AssetDetailScreen) openForm(kind assetWriteForm, placeholder string, li
 	s.input = ti
 	s.activeForm = kind
 	s.logResult = ""
+}
+
+// updateConfirmDelete handles the y/n prompt shown before deleting an asset.
+// The screen is in raw-input mode here (WantsRawInput), so esc/n reach us
+// instead of the root's global handlers.
+func (s *AssetDetailScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.deleting {
+		return s, nil
+	}
+	switch m.String() {
+	case "y", "Y":
+		if s.asset == nil {
+			s.confirmingDelete = false
+			return s, nil
+		}
+		s.deleting = true
+		deps := s.deps
+		ctx := deps.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		id := s.assetID
+		return s, func() tea.Msg {
+			return assetDeletedMsg{err: deps.OMS.DeleteAsset(ctx, id)}
+		}
+	case "n", "N", "esc":
+		s.confirmingDelete = false
+	}
+	return s, nil
 }
 
 func (s *AssetDetailScreen) openOOS() *omsapi.AssetOutOfService {
@@ -365,14 +433,24 @@ func (s *AssetDetailScreen) View() string {
 	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, footerRows))
 
+	if s.confirmingDelete {
+		var prompt string
+		if s.deleting {
+			prompt = StyleMuted.Render("Deleting…")
+		} else {
+			prompt = StyleStatusWarn.Render(fmt.Sprintf("Delete %q? This can't be undone.  y delete · n/esc cancel", s.asset.Name))
+		}
+		return s.scroller.View() + "\n\n" + prompt
+	}
+
 	body := s.scroller.View()
 	footer := ""
 	if s.logResult != "" {
 		footer += RenderStatus(s.logResult, s.logResultLvl) + "\n\n"
 	}
-	hint := "j/k scroll · pgup/pgdn page · p log problem · o mark OOS · R restore · r refresh · esc back"
+	hint := "j/k scroll · pgup/pgdn page · p log problem · o mark OOS · R restore · E edit · x delete · r refresh · esc back"
 	if len(s.components) > 0 {
-		hint = "j/k scroll · p log problem · o mark OOS · R restore · i components · r refresh · esc back"
+		hint = "j/k scroll · p log problem · o mark OOS · R restore · i components · E edit · x delete · r refresh · esc back"
 	}
 	footer += StyleMuted.Render(hint)
 	return body + "\n\n" + footer
