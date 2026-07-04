@@ -549,13 +549,18 @@ func (c *Client) MarkPurchaseOrderDelivered(
 func (c *Client) UploadPurchaseOrderAttachment(
 	ctx context.Context, poID, fileName string, file io.Reader, description string,
 ) (*PurchaseOrderAttachment, error) {
-	fields := map[string]string{}
+	fields := map[string][]string{}
 	if description != "" {
-		fields["description"] = description
+		fields["description"] = []string{description}
 	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("oms: read attachment %s: %w", fileName, err)
+	}
+	files := []MultipartFile{{Field: "file", Filename: fileName, Data: data}}
 	var out PurchaseOrderAttachment
 	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/upload-attachment/", poID)
-	if err := c.PostMultipart(ctx, path, fields, "file", fileName, file, &out); err != nil {
+	if err := c.PostMultipart(ctx, path, fields, files, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
