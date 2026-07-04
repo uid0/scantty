@@ -347,6 +347,21 @@ func (c *Client) ListAssets(ctx context.Context, q url.Values) (*Page[Asset], er
 	return GetPage[Asset](ctx, c, "/api/inventory/assets/", q)
 }
 
+// ListAllAssets pages through every asset. The maintenance-item asset picker
+// and the clone-target picker need the full set — truncating to page 1 (as the
+// plain assets list does) could hide the asset the operator is looking for.
+// Asset counts are bounded per install, so the extra pages are cheap.
+func (c *Client) ListAllAssets(ctx context.Context) ([]Asset, error) {
+	var all []Asset
+	if err := IterPages[Asset](ctx, c, "/api/inventory/assets/", nil, func(batch []Asset) error {
+		all = append(all, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
 func (c *Client) GetAsset(ctx context.Context, id string) (*Asset, error) {
 	var out Asset
 	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/assets/%s/", id), nil, &out); err != nil {
