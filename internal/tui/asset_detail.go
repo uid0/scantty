@@ -19,6 +19,7 @@ const (
 	formNone assetWriteForm = iota
 	formLogProblem
 	formMarkOOS
+	formProblemParts // phase 2 of the problem flow: pick affected components
 )
 
 type AssetDetailScreen struct {
@@ -40,6 +41,14 @@ type AssetDetailScreen struct {
 	input        textinput.Model
 	logResult    string
 	logResultLvl StatusLevel
+
+	// report-problem "which components need attention?" checklist (phase 2).
+	// problemDesc holds the description captured in phase 1; partSelected is
+	// keyed by the stringified AssetPart id.
+	problemDesc  string
+	problemParts []omsapi.AssetPart
+	partCursor   int
+	partSelected map[string]bool
 
 	confirmingDelete bool
 	deleting         bool
@@ -219,6 +228,9 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			SwitchTo(WSAssets, newScreenFor(WSAssets, s.deps)),
 		)
 	case tea.KeyMsg:
+		if s.activeForm == formProblemParts {
+			return s.updateProblemParts(m)
+		}
 		if s.activeForm != formNone {
 			switch m.Type {
 			case tea.KeyEsc:
@@ -384,16 +396,126 @@ func (s *AssetDetailScreen) submitProblem() (Screen, tea.Cmd) {
 		return s, nil
 	}
 	s.logResult = ""
+	// When the asset carries parts, offer the optional "which components need
+	// attention?" checklist before sending. Otherwise report description-only.
+	if parts := s.reportableParts(); len(parts) > 0 {
+		s.problemDesc = desc
+		s.problemParts = parts
+		s.partCursor = 0
+		s.partSelected = make(map[string]bool, len(parts))
+		s.activeForm = formProblemParts
+		return s, nil
+	}
+	return s, s.sendProblem(desc, nil)
+}
+
+// reportableParts returns the asset's parts, already loaded nested on the Asset
+// payload, so the report-problem checklist can list selectable components
+// without a second round-trip.
+func (s *AssetDetailScreen) reportableParts() []omsapi.AssetPart {
+	if s.asset == nil {
+		return nil
+	}
+	return s.asset.Parts
+}
+
+// updateProblemParts drives the optional "which components need attention?"
+// checklist shown after the problem description. space toggles the highlighted
+// part, enter submits (with or without a selection), esc cancels the report.
+func (s *AssetDetailScreen) updateProblemParts(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		s.activeForm = formNone
+		return s, nil
+	case "up", "k":
+		if s.partCursor > 0 {
+			s.partCursor--
+		}
+		return s, nil
+	case "down", "j":
+		if s.partCursor < len(s.problemParts)-1 {
+			s.partCursor++
+		}
+		return s, nil
+	case " ":
+		if s.partCursor >= 0 && s.partCursor < len(s.problemParts) {
+			key := assetPartKey(s.problemParts[s.partCursor])
+			s.partSelected[key] = !s.partSelected[key]
+		}
+		return s, nil
+	case "enter":
+		ids := make([]string, 0, len(s.partSelected))
+		for _, p := range s.problemParts {
+			if key := assetPartKey(p); s.partSelected[key] {
+				ids = append(ids, key)
+			}
+		}
+		return s, s.sendProblem(s.problemDesc, ids)
+	}
+	return s, nil
+}
+
+// sendProblem fires the report_problem request with the captured description
+// and any flagged part ids. The form stays visible until problemLoggedMsg
+// lands (mirroring the description-only path).
+func (s *AssetDetailScreen) sendProblem(desc string, partIDs []string) tea.Cmd {
 	deps := s.deps
 	ctx := deps.Ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	req := omsapi.AssetProblemCreate{Asset: s.assetID, Description: desc}
-	return s, func() tea.Msg {
+	req := omsapi.AssetProblemCreate{Asset: s.assetID, Description: desc, PartIds: partIDs}
+	return func() tea.Msg {
 		out, err := deps.OMS.CreateAssetProblem(ctx, req)
 		return problemLoggedMsg{problem: out, err: err}
 	}
+}
+
+// assetPartKey stringifies an AssetPart's polymorphic id (an integer pk arrives
+// as a JSON number → float64) for use as a selection-map key and as the
+// part_ids value the backend coerces back to an int. Mirrors the wo_detail
+// task/material toggle idiom.
+func assetPartKey(p omsapi.AssetPart) string {
+	return fmt.Sprintf("%v", p.ID)
+}
+
+// viewProblemParts renders the optional affected-components checklist. Mirrors
+// the Tier-1 form multi-picker idiom: a ▸ caret on the highlighted row, an
+// [x]/[ ] box per part, part name (falling back to the raw part id) plus SKU
+// and a NEEDS REPLACEMENT flag.
+func (s *AssetDetailScreen) viewProblemParts() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Which components need attention?") + "\n")
+	b.WriteString(StyleMuted.Render("optional · j/k move · space toggle · enter submit · esc cancel") + "\n\n")
+	for i, p := range s.problemParts {
+		caret := "    "
+		if i == s.partCursor {
+			caret = "  ▸ "
+		}
+		box := "[ ] "
+		if s.partSelected[assetPartKey(p)] {
+			box = "[x] "
+		}
+		name := p.PartName
+		if name == "" {
+			name = p.Part
+		}
+		row := caret + box + name
+		if i == s.partCursor {
+			row = StyleSidebarItemActive.Render(row)
+		}
+		if p.PartSKU != "" {
+			row += " " + StyleMuted.Render("("+p.PartSKU+")")
+		}
+		if p.NeedsReplacement {
+			row += " " + StyleStatusWarn.Render("NEEDS REPLACEMENT")
+		}
+		b.WriteString(row + "\n")
+	}
+	if s.logResult != "" {
+		b.WriteString("\n" + RenderStatus(s.logResult, s.logResultLvl))
+	}
+	return b.String()
 }
 
 func (s *AssetDetailScreen) View() string {
@@ -407,6 +529,9 @@ func (s *AssetDetailScreen) View() string {
 		return StyleMuted.Render("Asset not found.")
 	}
 
+	if s.activeForm == formProblemParts {
+		return s.viewProblemParts()
+	}
 	if s.activeForm != formNone {
 		var b strings.Builder
 		switch s.activeForm {
@@ -745,6 +870,17 @@ func (s *AssetDetailScreen) renderBody() string {
 				line += " " + StyleMuted.Render("("+p.ReportedBy+")")
 			}
 			b.WriteString(line + "\n")
+			if len(p.AffectedParts) > 0 {
+				names := make([]string, 0, len(p.AffectedParts))
+				for _, ap := range p.AffectedParts {
+					n := ap.PartName
+					if n == "" {
+						n = fmt.Sprintf("%v", ap.ID)
+					}
+					names = append(names, n)
+				}
+				b.WriteString("    " + StyleMuted.Render("affected: ") + strings.Join(names, ", ") + "\n")
+			}
 			if !p.CreatedAt.IsZero() {
 				b.WriteString("    " + StyleMuted.Render(p.CreatedAt.Format("2006-01-02 15:04")) + "\n")
 			}

@@ -437,3 +437,94 @@ func TestListMaintenance_QueryParam(t *testing.T) {
 		t.Errorf("materials path/query = %q %q", cap.path, cap.query)
 	}
 }
+
+// TestCreateAssetProblem_Contract pins the report-a-problem write path: it goes
+// through the asset's report_problem action (the asset-problems collection is a
+// read-only viewset), carries description + the selected part_ids in the body,
+// takes the asset from the URL rather than the body, and parses the
+// affected_parts the action echoes back.
+func TestCreateAssetProblem_Contract(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusCreated,
+		`{"id":"prob-1","asset":"asset-9","description":"belt frayed","status":"reported","affected_parts":[{"id":12,"part_name":"Drive belt","part_sku":"BELT-1"}]}`,
+		&cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	prob, err := c.CreateAssetProblem(context.Background(), AssetProblemCreate{
+		Asset:       "asset-9",
+		Description: "belt frayed",
+		PartIds:     []string{"12", "15"},
+	})
+	if err != nil {
+		t.Fatalf("CreateAssetProblem: %v", err)
+	}
+	if prob == nil || prob.ID != "prob-1" {
+		t.Fatalf("unexpected problem: %+v", prob)
+	}
+	// Write must hit the report_problem action, not the read-only collection.
+	if cap.method != http.MethodPost || cap.path != "/api/inventory/assets/asset-9/report_problem/" {
+		t.Fatalf("method/path = %q %q", cap.method, cap.path)
+	}
+	// asset rides in the URL, never the body.
+	if _, present := cap.body["asset"]; present {
+		t.Errorf("asset should not be in the body, got %v", cap.body["asset"])
+	}
+	if cap.body["description"] != "belt frayed" {
+		t.Errorf("description = %v", cap.body["description"])
+	}
+	ids, ok := cap.body["part_ids"].([]any)
+	if !ok || len(ids) != 2 || ids[0] != "12" || ids[1] != "15" {
+		t.Errorf("part_ids = %v (%T), want [\"12\",\"15\"]", cap.body["part_ids"], cap.body["part_ids"])
+	}
+	// affected_parts echoed by the action are parsed back onto the problem.
+	if len(prob.AffectedParts) != 1 || prob.AffectedParts[0].PartName != "Drive belt" {
+		t.Errorf("affected_parts = %+v", prob.AffectedParts)
+	}
+}
+
+// TestCreateAssetProblem_DescriptionOnly confirms a report with no flagged
+// parts omits part_ids entirely, so a bare description report still works.
+func TestCreateAssetProblem_DescriptionOnly(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusCreated,
+		`{"id":"prob-2","asset":"asset-9","description":"won't power on","status":"reported"}`,
+		&cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if _, err := c.CreateAssetProblem(context.Background(), AssetProblemCreate{
+		Asset:       "asset-9",
+		Description: "won't power on",
+	}); err != nil {
+		t.Fatalf("CreateAssetProblem: %v", err)
+	}
+	if cap.path != "/api/inventory/assets/asset-9/report_problem/" {
+		t.Errorf("path = %q", cap.path)
+	}
+	if _, present := cap.body["part_ids"]; present {
+		t.Errorf("part_ids should be omitted, got %v", cap.body["part_ids"])
+	}
+}
+
+// TestListAssetParts_Contract confirms the parts lister scopes by asset and
+// parses the InventoryItem name/SKU each part carries.
+func TestListAssetParts_Contract(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK,
+		`{"count":1,"results":[{"id":12,"asset":"asset-9","part":"p-1","part_name":"Drive belt","part_sku":"BELT-1"}]}`,
+		&cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	page, err := c.ListAssetParts(context.Background(), "asset-9")
+	if err != nil {
+		t.Fatalf("ListAssetParts: %v", err)
+	}
+	if cap.method != http.MethodGet || cap.path != "/api/inventory/asset-parts/" || cap.query != "asset=asset-9" {
+		t.Fatalf("method/path/query = %q %q %q", cap.method, cap.path, cap.query)
+	}
+	if page == nil || len(page.Results) != 1 || page.Results[0].PartName != "Drive belt" {
+		t.Fatalf("unexpected page: %+v", page)
+	}
+}

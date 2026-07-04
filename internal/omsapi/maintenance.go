@@ -312,31 +312,67 @@ func (c *Client) DeleteMaintenanceMaterial(ctx context.Context, id string) error
 // ---------------------------------------------------------------------------
 
 type AssetProblem struct {
-	ID          string    `json:"id"`
-	Asset       string    `json:"asset"`
-	AssetName   string    `json:"asset_name,omitempty"`
-	AssetTag    string    `json:"asset_tag,omitempty"`
-	ReportedBy  string    `json:"reported_by,omitempty"`
-	Description string    `json:"description"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+	ID            string              `json:"id"`
+	Asset         string              `json:"asset"`
+	AssetName     string              `json:"asset_name,omitempty"`
+	AssetTag      string              `json:"asset_tag,omitempty"`
+	ReportedBy    string              `json:"reported_by,omitempty"`
+	Description   string              `json:"description"`
+	Status        string              `json:"status"`
+	AffectedParts []AffectedAssetPart `json:"affected_parts,omitempty"`
+	CreatedAt     time.Time           `json:"created_at,omitempty"`
+	UpdatedAt     time.Time           `json:"updated_at,omitempty"`
 }
 
+// AffectedAssetPart is the compact read-only projection of an AssetPart the
+// reporter flagged as needing replace/fix, mirroring the backend's
+// AffectedAssetPartSerializer. ID is `any` because an AssetPart uses an integer
+// primary key (arriving as a JSON number) — the same shape AssetPart.ID carries.
+type AffectedAssetPart struct {
+	ID             any    `json:"id"`
+	PartName       string `json:"part_name,omitempty"`
+	PartSKU        string `json:"part_sku,omitempty"`
+	QuantityNeeded int    `json:"quantity_needed,omitempty"`
+	IsRequired     bool   `json:"is_required,omitempty"`
+}
+
+// AssetProblemCreate is the report-a-problem payload. Description is required;
+// PartIds optionally flags which of the asset's AssetParts need attention
+// (stringified AssetPart ids — the backend coerces them to ints and validates
+// each belongs to the asset). Asset rides in the URL, not the body, and the
+// backend stamps reported_by from the authenticated user, so neither is sent.
 type AssetProblemCreate struct {
-	Asset       string `json:"asset"`
-	Description string `json:"description"`
-	ReportedBy  string `json:"reported_by,omitempty"`
+	Asset       string   `json:"-"`
+	Description string   `json:"description"`
+	PartIds     []string `json:"part_ids,omitempty"`
 }
 
 func (c *Client) ListAssetProblems(ctx context.Context, q url.Values) (*Page[AssetProblem], error) {
 	return GetPage[AssetProblem](ctx, c, "/api/inventory/asset-problems/", q)
 }
 
+// CreateAssetProblem reports a problem against an asset through the asset's
+// report_problem action (POST /assets/{id}/report_problem/). The asset-problems
+// collection is a read-only viewset; report_problem is the write path the web
+// uses too, and the only one that accepts the optional affected part_ids. The
+// action takes the asset from the URL and stamps reported_by from the
+// authenticated user, so the body is just description + part_ids.
 func (c *Client) CreateAssetProblem(ctx context.Context, req AssetProblemCreate) (*AssetProblem, error) {
 	var out AssetProblem
-	if err := c.Post(ctx, "/api/inventory/asset-problems/", req, &out); err != nil {
+	path := "/api/inventory/assets/" + req.Asset + "/report_problem/"
+	if err := c.Post(ctx, path, req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ListAssetParts returns the AssetParts linked to one asset — its consumable /
+// replaceable components, each carrying its part's InventoryItem name + SKU.
+// Mirrors the web's assetPartsAPI.getByAsset (GET /asset-parts/?asset=<id>).
+// The asset-detail report-problem checklist reuses the parts already nested on
+// the Asset payload; this stand-alone lister serves callers holding only an id.
+func (c *Client) ListAssetParts(ctx context.Context, assetID string) (*Page[AssetPart], error) {
+	q := url.Values{}
+	q.Set("asset", assetID)
+	return GetPage[AssetPart](ctx, c, "/api/inventory/asset-parts/", q)
 }
