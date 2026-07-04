@@ -211,11 +211,32 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSInventory)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
+		case "A":
+			// Shift+a opens the create-asset form. Lowercase a is the global
+			// Authorizations shortcut, so the new-asset global takes the
+			// shifted key — same convention as N (new PO) and I (new item).
+			// Editing an existing asset is reached with E from its detail
+			// screen.
+			if _, ok := r.screen.(*AssetFormScreen); !ok {
+				r.screen = NewAssetFormScreen(r.deps, "")
+				r.nav.SetActive(WSAssets)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
 		case "V":
 			if _, ok := r.screen.(*VendorsScreen); !ok {
 				r.screen = NewVendorsScreen(r.deps)
 				r.nav.SetActive(WSMaintenance)
 				return r, r.screen.Init()
+			}
+		case "M":
+			// Shift+m opens the preventive-maintenance ITEM list (create/edit
+			// PM items + per-item actions). Lowercase m is the Profile
+			// shortcut a few branches up, so PM items take the shifted key —
+			// same convention as N (new PO) / I (new item).
+			if _, ok := r.screen.(*MaintenanceItemsScreen); !ok {
+				r.screen = NewMaintenanceItemsScreen(r.deps)
+				r.nav.SetActive(WSMaintenance)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
 		case "D":
 			if _, ok := r.screen.(*DonationsScreen); !ok {
