@@ -614,8 +614,22 @@ type Location struct {
 	Capacity     int    `json:"capacity,omitempty"`
 }
 
+// ListLocations fetches storage locations for the item/asset/location pickers.
+//
+// The backend LocationViewSet overrides list() to return Response(serializer.data)
+// — a BARE JSON ARRAY, not the {count,next,previous,results} envelope the default
+// PageNumberPagination emits (categories/suppliers/items all keep the envelope, so
+// only this endpoint diverges). Decoding straight into Page[Location] therefore
+// died with "cannot unmarshal array into omsapi.Page[Location]" the moment an
+// operator opened the item/asset create/edit form or the location list. Decode
+// through MaybeList so either shape parses, then repackage into *Page[Location]
+// so every caller keeps reading .Results unchanged. Mirrors listUsersAt.
 func (c *Client) ListLocations(ctx context.Context, q url.Values) (*Page[Location], error) {
-	return GetPage[Location](ctx, c, "/api/inventory/locations/", q)
+	var out MaybeList[Location]
+	if err := c.Get(ctx, "/api/inventory/locations/", q, &out); err != nil {
+		return nil, err
+	}
+	return &Page[Location]{Count: out.Count, Results: out.Items}, nil
 }
 
 func (c *Client) GetLocation(ctx context.Context, id string) (*Location, error) {
