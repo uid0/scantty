@@ -17,19 +17,32 @@ import (
 // TEXT block ("LABEL PREVIEW") carrying the same field set the physical tag
 // does.
 type ProjectStorageDetailScreen struct {
-	deps           Deps
-	stintID        string
-	stint          *omsapi.ProjectStorageStint
-	loadErr        string
-	loading        bool
-	scroller       *TextScroller
-	terminalHeight int
+	deps              Deps
+	stintID           string
+	stint             *omsapi.ProjectStorageStint
+	loadErr           string
+	loading           bool
+	scroller          *TextScroller
+	terminalHeight    int
+	confirmingReprint bool
+	reprinting        bool
 }
 
 type projectStorageDetailLoadedMsg struct {
 	stint *omsapi.ProjectStorageStint
 	err   error
 }
+
+type projectStorageReprintedMsg struct {
+	err error
+}
+
+// WantsRawInput claims every keypress only while the re-print confirmation
+// is up, so y/n/esc land here instead of the root's global hotkeys. In the
+// normal view the screen stays non-raw so workspace switching and the
+// global shortcuts keep working. Mirrors InventoryDetailScreen's delete
+// confirm.
+func (s *ProjectStorageDetailScreen) WantsRawInput() bool { return s.confirmingReprint }
 
 func NewProjectStorageDetailScreen(deps Deps, stintID string) *ProjectStorageDetailScreen {
 	return &ProjectStorageDetailScreen{
@@ -73,7 +86,21 @@ func (s *ProjectStorageDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.stint = m.stint
 		s.scroller.Set(s.renderBody())
 		return s, nil
+	case projectStorageReprintedMsg:
+		s.reprinting = false
+		s.confirmingReprint = false
+		if m.err != nil {
+			return s, Status("reprint failed: "+m.err.Error(), StatusError)
+		}
+		// Re-fetch so the new reprint audit event shows in the timeline and
+		// the operator gets a fresh confirmation the queue re-surfaced it.
+		s.loading = true
+		s.loadErr = ""
+		return s, tea.Batch(Status("queued for reprint", StatusOK), s.Init())
 	case tea.KeyMsg:
+		if s.confirmingReprint {
+			return s.updateConfirmReprint(m)
+		}
 		if s.scroller.Handle(m) {
 			return s, nil
 		}
@@ -82,7 +109,44 @@ func (s *ProjectStorageDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loading = true
 			s.loadErr = ""
 			return s, s.Init()
+		case "p":
+			// Re-print the claim ticket by re-surfacing the stint in the
+			// Pi-daemon print queue. Guarded by a y/n confirm since it
+			// spends label stock on the shop printer.
+			if s.stint != nil {
+				s.confirmingReprint = true
+				return s, nil
+			}
 		}
+	}
+	return s, nil
+}
+
+// updateConfirmReprint handles the y/n prompt shown before re-queuing a
+// stint's claim ticket. The screen is in raw-input mode here
+// (WantsRawInput), so esc/n reach us instead of the root's global handlers.
+func (s *ProjectStorageDetailScreen) updateConfirmReprint(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.reprinting {
+		return s, nil
+	}
+	switch m.String() {
+	case "y", "Y":
+		if s.stint == nil {
+			s.confirmingReprint = false
+			return s, nil
+		}
+		s.reprinting = true
+		deps := s.deps
+		ctx := deps.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		stintID := s.stintID
+		return s, func() tea.Msg {
+			return projectStorageReprintedMsg{err: deps.OMS.ReprintProjectStorageStint(ctx, stintID, "reprint requested via ScanTTY")}
+		}
+	case "n", "N", "esc":
+		s.confirmingReprint = false
 	}
 	return s, nil
 }
@@ -98,7 +162,16 @@ func (s *ProjectStorageDetailScreen) View() string {
 		return StyleMuted.Render("Stint not found.")
 	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	hint := "j/k scroll · pgup/pgdn page · r refresh · esc back"
+	if s.confirmingReprint {
+		var prompt string
+		if s.reprinting {
+			prompt = StyleMuted.Render("Queuing reprint…")
+		} else {
+			prompt = StyleStatusWarn.Render("Re-print claim ticket for " + s.stintID + "?  y print · n/esc cancel")
+		}
+		return s.scroller.View() + "\n\n" + prompt
+	}
+	hint := "j/k scroll · pgup/pgdn page · p re-print ticket · r refresh · esc back"
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }
 

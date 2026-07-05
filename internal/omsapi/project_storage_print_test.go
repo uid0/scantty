@@ -2,6 +2,7 @@ package omsapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -89,6 +90,50 @@ func TestMarkProjectStorageStintPrinted(t *testing.T) {
 	c := New(srv.URL)
 	if err := c.MarkProjectStorageStintPrinted(context.Background(), "PS-XYZ12345", "ok"); err != nil {
 		t.Fatalf("MarkProjectStorageStintPrinted: %v", err)
+	}
+}
+
+func TestReprintProjectStorageStint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/PS-XYZ12345/reprint/") {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("wrong content type: %q", r.Header.Get("Content-Type"))
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["note"] != "reprint please" {
+			t.Fatalf("note not forwarded: %+v", body)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if err := c.ReprintProjectStorageStint(context.Background(), "PS-XYZ12345", "reprint please"); err != nil {
+		t.Fatalf("ReprintProjectStorageStint: %v", err)
+	}
+}
+
+func TestReprintProjectStorageStintPropagatesError(t *testing.T) {
+	// The backend reprint endpoint is not implemented yet (the stint
+	// viewset is read-only), so exercising it today yields a 404. The
+	// client must surface that as an error rather than swallowing it, so
+	// the TUI can show "reprint failed" instead of a false success.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if err := c.ReprintProjectStorageStint(context.Background(), "PS-XYZ12345", ""); err == nil {
+		t.Fatal("expected error on 404, got nil")
 	}
 }
 
