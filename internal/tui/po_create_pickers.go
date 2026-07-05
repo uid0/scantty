@@ -318,7 +318,7 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 			}
 			lead := ""
 			if it.LeadTimeDays > 0 {
-				lead = "  " + StyleMuted.Render(fmt.Sprintf("lead %dd", it.LeadTimeDays))
+				lead = "  " + StyleMuted.Render(fmt.Sprintf("lead %gd", it.LeadTimeDays))
 			}
 			return fmt.Sprintf("%s  %s%s%s", it.ItemName, sku, cost, lead)
 		},

@@ -273,7 +273,7 @@ func (s *InventoryDetailScreen) renderBody() string {
 			b.WriteString(StyleMuted.Render("Total stock value: ") + "$" + string(it.TotalValue) + "\n")
 		}
 		if it.AverageLeadTime > 0 {
-			b.WriteString(StyleMuted.Render(fmt.Sprintf("Avg lead time: %dd", it.AverageLeadTime)) + "\n")
+			b.WriteString(StyleMuted.Render(fmt.Sprintf("Avg lead time: %gd", it.AverageLeadTime)) + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -315,7 +315,7 @@ func (s *InventoryDetailScreen) renderBody() string {
 				meta = append(meta, "$"+string(sup.UnitCost))
 			}
 			if sup.LeadTimeDays > 0 {
-				meta = append(meta, fmt.Sprintf("lead %dd", sup.LeadTimeDays))
+				meta = append(meta, fmt.Sprintf("lead %gd", sup.LeadTimeDays))
 			}
 			if len(meta) > 0 {
 				b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
