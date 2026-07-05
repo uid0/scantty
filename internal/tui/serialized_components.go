@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -23,6 +24,7 @@ type SerializedComponentsScreen struct {
 	deps   Deps
 	title  string
 	scope  string // "item" or "asset" — drives the empty-state copy + hint
+	itemID string // owning item (item scope only) — the create-form's `item`
 	filter url.Values
 	backTo Workspace
 
@@ -40,6 +42,10 @@ type SerializedComponentsScreen struct {
 	result  string
 	level   StatusLevel
 
+	// Inline add-unit form (item scope): serial_number + lot.
+	createInputs []textinput.Model
+	createFocus  int
+
 	// History overlay for the highlighted unit.
 	showHistory     bool
 	historyFor      string
@@ -54,6 +60,15 @@ const (
 	serialFormNone serialFormKind = iota
 	serialFormInstall
 	serialFormDispose
+	serialFormCreate
+)
+
+// Create-form field indices (item scope only): serial_number is required, lot
+// is optional — the full writable field set of the web "Add unit" form.
+const (
+	scfSerial = iota
+	scfLot
+	scfCount
 )
 
 type serialComponentsLoadedMsg struct {
@@ -73,6 +88,11 @@ type serialHistoryLoadedMsg struct {
 	err    error
 }
 
+type serialCreateDoneMsg struct {
+	unit *omsapi.SerializedComponent
+	err  error
+}
+
 // NewItemInstancesScreen lists every serial-numbered unit of one inventory
 // item (all statuses) so an operator can install / consume / retire / dispose
 // individual units and read their provenance + history.
@@ -85,6 +105,7 @@ func NewItemInstancesScreen(deps Deps, itemID, itemName string) *SerializedCompo
 		deps:    deps,
 		title:   title,
 		scope:   "item",
+		itemID:  itemID,
 		filter:  url.Values{"item": []string{itemID}},
 		backTo:  WSInventory,
 		loading: true,
@@ -116,6 +137,15 @@ func (s *SerializedComponentsScreen) Title() string { return s.title }
 // (rather than the global esc bouncing to Welcome).
 func (s *SerializedComponentsScreen) WantsRawInput() bool {
 	return s.form != serialFormNone || s.showHistory
+}
+
+// HandlesKey claims 'a' (add unit) in the item-instances scope so the global
+// 'a' (authorizations) doesn't shadow it — the sc-k7p LocalKeyScreen pattern.
+// It's only consulted in the list view (a form/history open flips WantsRawInput
+// true, which routes every key here first); the asset scope has no create form,
+// so 'a' falls through to the global nav there.
+func (s *SerializedComponentsScreen) HandlesKey(key string) bool {
+	return key == "a" && s.scope == "item"
 }
 
 func (s *SerializedComponentsScreen) Init() tea.Cmd { return s.load() }
@@ -176,6 +206,25 @@ func (s *SerializedComponentsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loading = len(s.rows) == 0
 		return s, tea.Batch(Status(s.result, StatusOK), s.load())
 
+	case serialCreateDoneMsg:
+		s.pending = false
+		if m.err != nil {
+			// Keep the form open so the operator can fix + resubmit.
+			s.result = "add failed: " + m.err.Error()
+			s.level = StatusError
+			return s, Status(s.result, StatusError)
+		}
+		s.form = serialFormNone
+		serial := ""
+		if m.unit != nil {
+			serial = m.unit.SerialNumber
+		}
+		s.result = strings.TrimSpace("added " + serial)
+		s.level = StatusOK
+		// Reload so the new (received) unit appears with its available_actions.
+		s.loading = len(s.rows) == 0
+		return s, tea.Batch(Status(s.result, StatusOK), s.load())
+
 	case serialHistoryLoadedMsg:
 		if m.forID != s.historyFor {
 			return s, nil // stale — operator moved on
@@ -212,6 +261,11 @@ func (s *SerializedComponentsScreen) handleKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 			return s, s.openHistory()
 		}
 		return s, nil
+	}
+
+	// Two-field add-unit form (serial + lot) — its own field navigation.
+	if s.form == serialFormCreate {
+		return s.handleCreateKey(m)
 	}
 
 	// Text-input form (install asset / dispose reason).
@@ -261,6 +315,15 @@ func (s *SerializedComponentsScreen) handleKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 		if len(s.rows) > 0 {
 			return s, s.openHistory()
 		}
+	case "a":
+		// Add a new serial-numbered unit — item scope only (an asset view has
+		// no single-item context to create against, matching the web, where the
+		// Add-unit form lives on the item panel, not the asset section).
+		if s.scope != "item" {
+			return s, nil
+		}
+		s.openCreateForm()
+		return s, textinput.Blink
 	case "v":
 		return s.triggerAction(omsapi.SerialActionReceive)
 	case "i":
@@ -356,6 +419,106 @@ func (s *SerializedComponentsScreen) fireAction(action string, req omsapi.Serial
 	}
 }
 
+// openCreateForm builds the two-field add-unit form (serial_number + lot),
+// mirroring the web SerializedComponentsPanel Add-unit form. `item` is the
+// screen's owning item; status starts "received" server-side, so the created
+// unit surfaces a `receive` action the operator can then fire.
+func (s *SerializedComponentsScreen) openCreateForm() {
+	s.createInputs = make([]textinput.Model, scfCount)
+
+	serial := textinput.New()
+	serial.Prompt = ""
+	serial.Placeholder = "SN-000123"
+	serial.CharLimit = 100
+	serial.Focus()
+	s.createInputs[scfSerial] = serial
+
+	lot := textinput.New()
+	lot.Prompt = ""
+	lot.Placeholder = "batch / lot (optional)"
+	lot.CharLimit = 100
+	s.createInputs[scfLot] = lot
+
+	s.createFocus = scfSerial
+	s.form = serialFormCreate
+	s.result = ""
+}
+
+func (s *SerializedComponentsScreen) syncCreateFocus() {
+	for i := range s.createInputs {
+		if i == s.createFocus {
+			s.createInputs[i].Focus()
+		} else {
+			s.createInputs[i].Blur()
+		}
+	}
+}
+
+func (s *SerializedComponentsScreen) handleCreateKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		s.form = serialFormNone
+		s.result = ""
+		return s, nil
+	case "tab", "down":
+		s.createFocus = (s.createFocus + 1) % len(s.createInputs)
+		s.syncCreateFocus()
+		return s, textinput.Blink
+	case "shift+tab", "up":
+		s.createFocus = (s.createFocus - 1 + len(s.createInputs)) % len(s.createInputs)
+		s.syncCreateFocus()
+		return s, textinput.Blink
+	case "enter":
+		if s.pending {
+			return s, nil
+		}
+		return s.submitCreate()
+	}
+	var cmd tea.Cmd
+	s.createInputs[s.createFocus], cmd = s.createInputs[s.createFocus].Update(m)
+	return s, cmd
+}
+
+// buildCreatePayload validates + assembles the create body. Only serial_number
+// is operator-entered-required; item comes from the screen context and lot is
+// optional (omitempty on the wire).
+func (s *SerializedComponentsScreen) buildCreatePayload() (omsapi.SerializedComponentCreate, error) {
+	var w omsapi.SerializedComponentCreate
+	if s.itemID == "" {
+		return w, errors.New("no item context to add a unit to")
+	}
+	serial := strings.TrimSpace(s.createInputs[scfSerial].Value())
+	if serial == "" {
+		return w, errors.New("serial number is required")
+	}
+	w = omsapi.SerializedComponentCreate{
+		Item:         s.itemID,
+		SerialNumber: serial,
+		Lot:          strings.TrimSpace(s.createInputs[scfLot].Value()),
+	}
+	return w, nil
+}
+
+func (s *SerializedComponentsScreen) submitCreate() (Screen, tea.Cmd) {
+	payload, err := s.buildCreatePayload()
+	if err != nil {
+		s.result = err.Error()
+		s.level = StatusError
+		return s, nil
+	}
+	s.pending = true
+	s.result = ""
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s, func() tea.Msg {
+		unit, err := deps.OMS.CreateSerializedComponent(ctx, payload)
+		return serialCreateDoneMsg{unit: unit, err: err}
+	}
+}
+
 func (s *SerializedComponentsScreen) openHistory() tea.Cmd {
 	unit := s.current()
 	if unit == nil {
@@ -436,10 +599,11 @@ func (s *SerializedComponentsScreen) View() string {
 	if len(s.rows) == 0 {
 		if s.scope == "asset" {
 			b.WriteString(StyleMuted.Render("No serialized components installed in this asset.") + "\n")
+			b.WriteString("\n" + StyleMuted.Render("r refresh · esc back"))
 		} else {
 			b.WriteString(StyleMuted.Render("No serial-numbered units for this item yet.") + "\n")
+			b.WriteString("\n" + StyleMuted.Render("a add · r refresh · esc back"))
 		}
-		b.WriteString("\n" + StyleMuted.Render("r refresh · esc back"))
 		return b.String()
 	}
 
@@ -510,6 +674,9 @@ func (s *SerializedComponentsScreen) renderRow(b *strings.Builder, i int) {
 
 func (s *SerializedComponentsScreen) hint() string {
 	base := "j/k move · g/G top/bottom · h history · r refresh · esc back"
+	if s.scope == "item" {
+		base = "a add · " + base
+	}
 	unit := s.current()
 	if unit == nil || len(unit.AvailableActions) == 0 {
 		return base + "\n(no actions available for this unit)"
@@ -537,6 +704,9 @@ func (s *SerializedComponentsScreen) hint() string {
 }
 
 func (s *SerializedComponentsScreen) viewForm() string {
+	if s.form == serialFormCreate {
+		return s.viewCreateForm()
+	}
 	unit := s.current()
 	serial := ""
 	if unit != nil {
@@ -562,6 +732,32 @@ func (s *SerializedComponentsScreen) viewForm() string {
 		b.WriteString("\n" + StyleMuted.Render("enter submit · esc cancel"))
 	}
 	return b.String()
+}
+
+func (s *SerializedComponentsScreen) viewCreateForm() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Add serialized unit") + "\n")
+	b.WriteString(StyleMuted.Render("Record a new serial-numbered unit for this item.") + "\n\n")
+	b.WriteString(s.renderCreateField(scfSerial, "Serial number") + "\n")
+	b.WriteString(s.renderCreateField(scfLot, "Lot (optional)") + "\n")
+	b.WriteString("\n")
+	if s.pending {
+		b.WriteString(StyleMuted.Render("Submitting…"))
+	} else {
+		if s.result != "" {
+			b.WriteString(RenderStatus(s.result, s.level) + "\n")
+		}
+		b.WriteString(StyleMuted.Render("tab/↑↓ move · enter add · esc cancel"))
+	}
+	return b.String()
+}
+
+func (s *SerializedComponentsScreen) renderCreateField(idx int, label string) string {
+	caret := "  "
+	if idx == s.createFocus {
+		caret = "▸ "
+	}
+	return caret + StyleTitle.Render(label+": ") + s.createInputs[idx].View()
 }
 
 func (s *SerializedComponentsScreen) viewHistory() string {
