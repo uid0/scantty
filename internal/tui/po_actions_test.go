@@ -40,7 +40,7 @@ func TestPOCreate_MultiLineCart(t *testing.T) {
 	s.supplierID = 7
 	s.phase = poPhaseSource
 
-	// Add a freeform line.
+	// Add a freeform line — freeform keeps the (optional) unit-cost input.
 	s.lineInputs[poLineFieldDesc].SetValue("Custom bracket")
 	s.lineInputs[poLineFieldQty].SetValue("3")
 	s.lineInputs[poLineFieldCost].SetValue("4.25")
@@ -58,17 +58,23 @@ func TestPOCreate_MultiLineCart(t *testing.T) {
 		t.Errorf("line 0 unit cost = %v", s.lines[0].item.UnitCost)
 	}
 
-	// Add a second line with an expected ship date.
-	s.lineInputs[poLineFieldDesc].SetValue("Panel")
-	s.lineInputs[poLineFieldQty].SetValue("1")
-	s.lineInputs[poLineFieldCost].SetValue("")
-	s.lineInputs[poLineFieldShipDate].SetValue("2026-09-01")
+	// Add a second line sourced from a picker (item-supplier backed, as the
+	// reorder/inventory pickers do). Even with a prefilled cost, the line must
+	// NOT carry a unit_cost — the backend derives it from the item-supplier.
+	itemSup := 42
+	s.enterLinePhase(&itemSup, nil, "Reorder widget", 5, 9.99)
 	s.addLine()
 	if len(s.lines) != 2 {
 		t.Fatalf("after second addLine, cart len = %d, want 2", len(s.lines))
 	}
-	if s.lines[1].item.ExpectedShipmentDate != "2026-09-01" {
-		t.Errorf("line 1 ship date = %q", s.lines[1].item.ExpectedShipmentDate)
+	if s.lines[1].item.ItemSupplierID == nil || *s.lines[1].item.ItemSupplierID != 42 {
+		t.Errorf("line 1 item-supplier id = %v", s.lines[1].item.ItemSupplierID)
+	}
+	if s.lines[1].item.UnitCost != nil {
+		t.Errorf("item-supplier line must omit unit cost, got %v", *s.lines[1].item.UnitCost)
+	}
+	if s.lines[1].item.ExpectedShipmentDate != "" {
+		t.Errorf("no line should carry a ship date, got %q", s.lines[1].item.ExpectedShipmentDate)
 	}
 
 	// 'd' from the source chooser enters review.
@@ -86,7 +92,7 @@ func TestPOCreate_MultiLineCart(t *testing.T) {
 	if len(s.lines) != 1 {
 		t.Errorf("after ctrl+x remove, cart len = %d, want 1", len(s.lines))
 	}
-	if s.lines[0].label != "Panel" {
+	if s.lines[0].label != "Reorder widget" {
 		t.Errorf("wrong line removed; remaining = %q", s.lines[0].label)
 	}
 }
@@ -112,12 +118,47 @@ func TestPOCreate_AddLineValidation(t *testing.T) {
 		t.Errorf("zero quantity should be rejected, lines=%d", len(s.lines))
 	}
 
-	// Bad ship date is rejected.
+	// A negative unit cost is rejected (freeform keeps the cost input).
 	s.lineInputs[poLineFieldQty].SetValue("2")
-	s.lineInputs[poLineFieldShipDate].SetValue("07/20/2026")
+	s.lineInputs[poLineFieldCost].SetValue("-3")
 	s.addLine()
-	if len(s.lines) != 0 || !strings.Contains(s.errMsg, "ship date") {
-		t.Errorf("bad ship date should be rejected; lines=%d err=%q", len(s.lines), s.errMsg)
+	if len(s.lines) != 0 || !strings.Contains(s.errMsg, "unit cost") {
+		t.Errorf("negative unit cost should be rejected; lines=%d err=%q", len(s.lines), s.errMsg)
+	}
+}
+
+// TestPOCreate_ItemSupplierLineOmitsCost verifies the reorder/inventory
+// (item-supplier-backed) line flow drops the unit-cost field and never sends a
+// unit_cost, while freeform lines still collect it (sc-5yr).
+func TestPOCreate_ItemSupplierLineOmitsCost(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.supplierID = 7
+
+	// Item-supplier line: only description + quantity are active fields, and a
+	// prefilled cost is not rendered or sent.
+	itemSup := 11
+	s.enterLinePhase(&itemSup, nil, "Bolt", 4, 2.50)
+	if got := s.lineFields(); len(got) != 2 {
+		t.Fatalf("item-supplier line fields = %v, want [desc qty]", got)
+	}
+	if out := s.renderLinePhase(); strings.Contains(out, "Unit cost:") {
+		t.Errorf("item-supplier line should not render a unit-cost input:\n%s", out)
+	}
+	s.addLine()
+	if len(s.lines) != 1 {
+		t.Fatalf("cart len = %d, want 1", len(s.lines))
+	}
+	if s.lines[0].item.UnitCost != nil {
+		t.Errorf("item-supplier line must omit unit_cost, got %v", *s.lines[0].item.UnitCost)
+	}
+
+	// Freeform line: the cost field is active again.
+	s.enterLinePhase(nil, nil, "", 0, 0)
+	if got := s.lineFields(); len(got) != 3 {
+		t.Errorf("freeform line fields = %v, want [desc qty cost]", got)
+	}
+	if out := s.renderLinePhase(); !strings.Contains(out, "Unit cost:") {
+		t.Errorf("freeform line should render a unit-cost input:\n%s", out)
 	}
 }
 
