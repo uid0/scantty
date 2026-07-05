@@ -118,6 +118,11 @@ func (s *PurchaseOrderDetailScreen) WantsRawInput() bool {
 	return s.shipping || s.voiding || s.delivering
 }
 
+// HandlesKey claims lowercase 's' (send-to-supplier) so it beats the global
+// s=settings nav; the handler itself gates the action to draft POs. Any modal
+// open already routes every key here via WantsRawInput.
+func (s *PurchaseOrderDetailScreen) HandlesKey(key string) bool { return key == "s" }
+
 func (s *PurchaseOrderDetailScreen) load() tea.Cmd {
 	deps := s.deps
 	id := s.poID

@@ -79,6 +79,11 @@ func (s *MakerBoxesScreen) Title() string { return "Maker boxes" }
 
 func (s *MakerBoxesScreen) WantsRawInput() bool { return s.scanning || s.preConverting }
 
+// HandlesKey claims lowercase 's' (start a bin+user scan) so it beats the
+// global s=settings nav. Once the scan form is open WantsRawInput routes every
+// key here anyway; this claim covers the pre-scan list view.
+func (s *MakerBoxesScreen) HandlesKey(key string) bool { return key == "s" }
+
 func (s *MakerBoxesScreen) Init() tea.Cmd { return s.load() }
 
 func (s *MakerBoxesScreen) load() tea.Cmd {

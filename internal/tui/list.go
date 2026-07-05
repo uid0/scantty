@@ -146,6 +146,12 @@ func NewListScreen(deps Deps, title string, spec listScreenSpec) *ListScreen {
 
 func (s *ListScreen) Title() string { return s.title }
 
+// HandlesKey claims lowercase 's' (cycle sort) so it beats the global
+// s=settings nav; settings stays reachable from every screen that doesn't
+// own a local 's'. Other list keys don't collide with globals, so they reach
+// this screen through the normal fallthrough.
+func (s *ListScreen) HandlesKey(key string) bool { return key == "s" }
+
 func (s *ListScreen) Init() tea.Cmd {
 	if s.spec.loader == nil {
 		s.loading = false
