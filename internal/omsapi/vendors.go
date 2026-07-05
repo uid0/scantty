@@ -17,26 +17,26 @@ import (
 // dashboard can flag an electrician whose license is days from
 // expiring before they get re-assigned to a circuit job.
 type Vendor struct {
-	ID                   string     `json:"id"`
-	Name                 string     `json:"name"`
-	VendorKind           string     `json:"vendor_kind"`
-	VendorKindDisplay    string     `json:"vendor_kind_display,omitempty"`
-	ContactName          string     `json:"contact_name,omitempty"`
-	Phone                string     `json:"phone,omitempty"`
-	Email                string     `json:"email,omitempty"`
-	Website              string     `json:"website,omitempty"`
-	Address              string     `json:"address,omitempty"`
-	TDLRLicenseNumber    string     `json:"tdlr_license_number,omitempty"`
-	TDLRLicenseExpiresAt *time.Time `json:"tdlr_license_expires_at"`
-	TDLRIsExpired        bool       `json:"tdlr_is_expired"`
-	COIProvider          string     `json:"coi_provider,omitempty"`
-	COIPolicyNumber      string     `json:"coi_policy_number,omitempty"`
-	COIExpiresAt         *time.Time `json:"coi_expires_at"`
-	COIIsExpired         bool       `json:"coi_is_expired"`
-	Notes                string     `json:"notes,omitempty"`
-	IsActive             bool       `json:"is_active"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
+	ID                   string    `json:"id"`
+	Name                 string    `json:"name"`
+	VendorKind           string    `json:"vendor_kind"`
+	VendorKindDisplay    string    `json:"vendor_kind_display,omitempty"`
+	ContactName          string    `json:"contact_name,omitempty"`
+	Phone                string    `json:"phone,omitempty"`
+	Email                string    `json:"email,omitempty"`
+	Website              string    `json:"website,omitempty"`
+	Address              string    `json:"address,omitempty"`
+	TDLRLicenseNumber    string    `json:"tdlr_license_number,omitempty"`
+	TDLRLicenseExpiresAt DateOnly  `json:"tdlr_license_expires_at"`
+	TDLRIsExpired        bool      `json:"tdlr_is_expired"`
+	COIProvider          string    `json:"coi_provider,omitempty"`
+	COIPolicyNumber      string    `json:"coi_policy_number,omitempty"`
+	COIExpiresAt         DateOnly  `json:"coi_expires_at"`
+	COIIsExpired         bool      `json:"coi_is_expired"`
+	Notes                string    `json:"notes,omitempty"`
+	IsActive             bool      `json:"is_active"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // ListVendors returns the paginated vendor list. Useful filters:

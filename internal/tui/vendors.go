@@ -137,7 +137,7 @@ func (s *VendorsScreen) View() string {
 			label := "TDLR " + v.TDLRLicenseNumber
 			if v.TDLRIsExpired {
 				label = StyleStatusError.Render(label + " EXPIRED")
-			} else if v.TDLRLicenseExpiresAt != nil {
+			} else if !v.TDLRLicenseExpiresAt.IsZero() {
 				label += " (exp " + v.TDLRLicenseExpiresAt.Format("2006-01-02") + ")"
 			}
 			compliance = append(compliance, label)
@@ -149,7 +149,7 @@ func (s *VendorsScreen) View() string {
 			}
 			if v.COIIsExpired {
 				label = StyleStatusError.Render(label + " EXPIRED")
-			} else if v.COIExpiresAt != nil {
+			} else if !v.COIExpiresAt.IsZero() {
 				label += " (exp " + v.COIExpiresAt.Format("2006-01-02") + ")"
 			}
 			compliance = append(compliance, label)

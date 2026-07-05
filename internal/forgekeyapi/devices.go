@@ -106,14 +106,22 @@ func (c *Client) UpdateDeviceFirmware(ctx context.Context, id string, req Firmwa
 	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/firmware-update", id), req, nil)
 }
 
+// DeviceCommand mirrors DeviceCommandSerializer (the device-detail
+// recent-commands table). The serializer's field names are sent_by /
+// sent_at / ack_status / ack_at / ack_payload — the old issued_*/status/
+// response tags matched none of them, so every row rendered blank. sent_by is
+// an integer user FK, so it is `any` and the display username comes from the
+// separate sent_by_username field.
 type DeviceCommand struct {
-	ID         any       `json:"id"`
-	Command    string    `json:"command"`
-	Status     string    `json:"status"`
-	IssuedBy   string    `json:"issued_by,omitempty"`
-	IssuedAt   time.Time `json:"issued_at,omitempty"`
-	AckedAt    *time.Time `json:"acked_at,omitempty"`
-	Response   string    `json:"response,omitempty"`
+	ID                 any        `json:"id"`
+	Command            string     `json:"command"`
+	SentBy             any        `json:"sent_by,omitempty"`
+	SentByUsername     string     `json:"sent_by_username,omitempty"`
+	SentAt             time.Time  `json:"sent_at,omitempty"`
+	AckStatus          string     `json:"ack_status,omitempty"`
+	EffectiveAckStatus string     `json:"effective_ack_status,omitempty"`
+	AckAt              *time.Time `json:"ack_at,omitempty"`
+	AckPayload         any        `json:"ack_payload,omitempty"`
 }
 
 func (c *Client) RecentCommands(ctx context.Context, id string, limit int) ([]DeviceCommand, error) {
@@ -128,11 +136,14 @@ func (c *Client) RecentCommands(ctx context.Context, id string, limit int) ([]De
 	return out.Items, nil
 }
 
+// OccupancyEvent mirrors OccupancyEventSerializer: the timestamp key is
+// event_timestamp_utc, the signed change is occupancy_delta, and the source is
+// sensor_kind (there is no `total` field). The old tags never matched.
 type OccupancyEvent struct {
-	Timestamp time.Time `json:"timestamp"`
-	Delta     int       `json:"delta"`
+	Timestamp time.Time `json:"event_timestamp_utc"`
+	Delta     int       `json:"occupancy_delta"`
 	Total     int       `json:"total"`
-	Source    string    `json:"source,omitempty"`
+	Source    string    `json:"sensor_kind,omitempty"`
 }
 
 type OccupancyResponse struct {

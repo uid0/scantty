@@ -261,10 +261,14 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 	if len(s.commands) > 0 {
 		b.WriteString(StyleTitle.Render("Recent commands") + "\n")
 		for _, c := range s.commands {
-			ts := c.IssuedAt.Format("15:04:05")
-			line := fmt.Sprintf("  %s · %s · %s", ts, c.Command, c.Status)
-			if c.IssuedBy != "" {
-				line += " " + StyleMuted.Render("("+c.IssuedBy+")")
+			ts := c.SentAt.Format("15:04:05")
+			status := c.EffectiveAckStatus
+			if status == "" {
+				status = c.AckStatus
+			}
+			line := fmt.Sprintf("  %s · %s · %s", ts, c.Command, status)
+			if c.SentByUsername != "" {
+				line += " " + StyleMuted.Render("("+c.SentByUsername+")")
 			}
 			b.WriteString(line + "\n")
 		}

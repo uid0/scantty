@@ -2,13 +2,25 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
+
+// donationAmount picks the best dollar figure to show for a donation row:
+// the computed net value when present, otherwise the estimated value. Both are
+// DRF DecimalFields (JSON strings), so this returns the raw "12.34" string.
+func donationAmount(d omsapi.Donation) string {
+	if !d.NetValue.Empty() {
+		return d.NetValue.String()
+	}
+	if !d.EstimatedValue.Empty() {
+		return d.EstimatedValue.String()
+	}
+	return ""
+}
 
 type DonationsScreen struct {
 	deps    Deps
@@ -96,22 +108,28 @@ func (s *DonationsScreen) View() string {
 		if d.DonorName == "" {
 			title = caret + StyleMuted.Render("(anonymous)")
 		}
-		if d.Value > 0 {
-			title += fmt.Sprintf("  $%.2f", d.Value)
+		if amount := donationAmount(d); amount != "" {
+			title += "  $" + amount
 		}
 		if i == s.cursor {
 			title = StyleSidebarItemActive.Render(title)
 		}
 		b.WriteString(title + "\n")
-		if d.Description != "" {
-			b.WriteString("    " + StyleMuted.Render(d.Description) + "\n")
+		var meta []string
+		if d.DonationNumber != "" {
+			meta = append(meta, d.DonationNumber)
 		}
-		if !d.ReceivedAt.IsZero() {
-			b.WriteString("    " + StyleMuted.Render(d.ReceivedAt.Format("2006-01-02")))
-			if d.ReceiptID != "" {
-				b.WriteString(StyleMuted.Render(" · receipt " + d.ReceiptID))
-			}
-			b.WriteString("\n")
+		if d.Status != "" {
+			meta = append(meta, d.Status)
+		}
+		if !d.DateReceived.IsZero() {
+			meta = append(meta, d.DateReceived.Format("2006-01-02"))
+		}
+		if d.TaxReceiptNumber != "" {
+			meta = append(meta, "receipt "+d.TaxReceiptNumber)
+		}
+		if len(meta) > 0 {
+			b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
 		}
 	}
 	b.WriteString("\n" + StyleMuted.Render("j/k move · r refresh · esc back"))

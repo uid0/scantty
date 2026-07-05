@@ -9,11 +9,13 @@ import (
 
 // LOTODevice mirrors backend LOTODeviceSerializer — a physical lockout
 // device (padlock, scissor block, valve lock). Per
-// [[scantty-api-field-drift]] device PKs in the loto app are UUID
-// (string); location keeps Django int autoid. assigned_to is a
-// nullable user FK (int).
+// [[scantty-api-field-drift]]: contrary to an earlier assumption, the loto
+// models have NO id override, so with DEFAULT_AUTO_FIELD=BigAutoField the PK
+// is an INTEGER — the old `string` id crashed every row on decode. It is
+// `any` here to tolerate the id shape. location keeps the Django int autoid;
+// assigned_to is a nullable user FK (int).
 type LOTODevice struct {
-	ID                 string    `json:"id"`
+	ID                 any       `json:"id"`
 	DeviceType         string    `json:"device_type"`
 	DeviceTypeDisplay  string    `json:"device_type_display,omitempty"`
 	Label              string    `json:"label"`
@@ -33,26 +35,30 @@ type LOTODevice struct {
 // "this padlock is checked out and unavailable" without making the
 // caller round-trip for the full device.
 type LOTODeviceSummary struct {
-	ID                string `json:"id"`
+	ID                any    `json:"id"`
 	DeviceType        string `json:"device_type"`
 	DeviceTypeDisplay string `json:"device_type_display,omitempty"`
 	Label             string `json:"label"`
 	Status            string `json:"status"`
 }
 
-// AssetEnergySource is one energy hazard that has to be isolated
-// before servicing the asset. Asset FK is UUID.
+// AssetEnergySource is one energy hazard that has to be isolated before
+// servicing the asset. The Asset FK is a UUID (string), but the source's own
+// PK is an integer BigAutoField, required_devices is an M2M of integer
+// LOTODevice PKs (an array of numbers, not strings), and derived_from is a
+// nullable integer FK to a PowerBreaker — the earlier string typings all
+// crashed the decode.
 type AssetEnergySource struct {
-	ID                    string              `json:"id"`
+	ID                    any                 `json:"id"`
 	Asset                 string              `json:"asset"`
 	AssetName             string              `json:"asset_name,omitempty"`
 	SourceType            string              `json:"source_type"`
 	SourceTypeDisplay     string              `json:"source_type_display,omitempty"`
 	Magnitude             string              `json:"magnitude,omitempty"`
 	IsolationPoint        string              `json:"isolation_point,omitempty"`
-	RequiredDevices       []string            `json:"required_devices"`
+	RequiredDevices       []any               `json:"required_devices"`
 	RequiredDevicesDetail []LOTODeviceSummary `json:"required_devices_detail"`
-	DerivedFrom           *string             `json:"derived_from"`
+	DerivedFrom           *int                `json:"derived_from"`
 	IsStale               bool                `json:"is_stale"`
 	Notes                 string              `json:"notes,omitempty"`
 	CreatedAt             time.Time           `json:"created_at"`

@@ -868,16 +868,20 @@ func (c *Client) ListAssetsForSupplier(ctx context.Context, supplierID int, sear
 	return c.ListAssets(ctx, q)
 }
 
+// Fixture and the fixtures/{id}/scan/ response both key on a UUID (the Fixture
+// PK and the FixtureRefillRequest the scan action returns are both UUIDField),
+// so ID is `any`/string — the old `int` typing crashed the decode, and the
+// old `id int` + `%d` path could never address a UUID-keyed fixture.
 type Fixture struct {
-	ID       int    `json:"id"`
+	ID       any    `json:"id"`
 	Name     string `json:"name"`
 	Location *int   `json:"location,omitempty"`
 	Status   string `json:"status,omitempty"`
 }
 
-func (c *Client) ScanFixture(ctx context.Context, id int) (*Fixture, error) {
+func (c *Client) ScanFixture(ctx context.Context, id string) (*Fixture, error) {
 	var out Fixture
-	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/fixtures/%d/scan/", id), nil, &out); err != nil {
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/fixtures/%s/scan/", id), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
