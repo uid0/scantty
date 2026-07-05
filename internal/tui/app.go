@@ -97,6 +97,18 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r.screen = next
 			return r, cmd
 		}
+		// Give the ACTIVE SCREEN first crack at the key. If it claims this
+		// key as a screen-local binding (e.g. location check-in 'n',
+		// checklist finalize 'f'), route the KeyMsg to it and stop before
+		// the global nav switch below — global nav keys are the fallback,
+		// not an override. Screens that don't implement LocalKeyScreen (or
+		// don't claim this key) fall through to the global dispatch exactly
+		// as before.
+		if lk, ok := r.screen.(LocalKeyScreen); ok && lk.HandlesKey(m.String()) {
+			next, cmd := r.screen.Update(msg)
+			r.screen = next
+			return r, cmd
+		}
 		switch m.String() {
 		case "ctrl+k", "/":
 			if _, ok := r.screen.(*SearchPalette); !ok {
@@ -160,19 +172,6 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.screen = NewMakerBoxesScreen(r.deps)
 				r.nav.SetActive(WSFacilities)
 				return r, r.screen.Init()
-			}
-		case "s":
-			// Screens that advertise lowercase `s` in their on-screen
-			// prompt (maker-boxes bin+user scan, list-screen sort,
-			// PO-detail send-to-supplier) claim the key here so the
-			// ItemForHotkey('s') fallthrough below doesn't whisk the
-			// operator off to WSSettings. Settings is still reachable
-			// from every other screen.
-			switch r.screen.(type) {
-			case *MakerBoxesScreen, *ListScreen, *PurchaseOrderDetailScreen:
-				next, cmd := r.screen.Update(msg)
-				r.screen = next
-				return r, cmd
 			}
 		case "K":
 			if _, ok := r.screen.(*ChecklistsScreen); !ok {

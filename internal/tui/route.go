@@ -63,6 +63,20 @@ type RawInputScreen interface {
 	WantsRawInput() bool
 }
 
+// LocalKeyScreen lets the active screen claim specific single-key shortcuts
+// before the root applies its global navigation hotkeys. When the active
+// screen reports that it handles a key, the root routes the KeyMsg straight to
+// the screen's Update and stops — so a screen-local binding (location check-in
+// 'n', checklist finalize 'f', list-screen sort 's') wins over the colliding
+// global nav key. Screens that don't implement this keep the global keys, so
+// global nav stays the fallback everywhere the active screen hasn't claimed a
+// key. Unlike RawInputScreen (which swallows *every* key for a textinput), this
+// is per-key: the screen names only the keys it owns and all other keys still
+// reach the global nav dispatch.
+type LocalKeyScreen interface {
+	HandlesKey(key string) bool
+}
+
 type SwitchScreenMsg struct {
 	Workspace Workspace
 	Screen    Screen

@@ -69,6 +69,31 @@ func (s *ChecklistRunScreen) Title() string {
 
 func (s *ChecklistRunScreen) WantsRawInput() bool { return s.addingNotes }
 
+// canFinalize reports whether the run is ready to be finalized: every required
+// step scanned and not already completed. Gates both the 'f finalize' footer
+// hint and the HandlesKey('f') claim so 'f' only overrides the global
+// f=firmware nav when finalizing is actually on offer.
+func (s *ChecklistRunScreen) canFinalize() bool {
+	return s.completion != nil &&
+		s.completion.RequiredStepsCompleted >= s.completion.RequiredStepsTotal &&
+		s.completion.Status != "completed"
+}
+
+// HandlesKey claims the stepper shortcuts so they beat the colliding global
+// nav keys — 'n' (add notes) over n=notifications, and 'f' (finalize) over
+// f=firmware when the run is finalizable. When 'f' is not on offer it falls
+// through to the global firmware nav. While the notes input is open
+// WantsRawInput already routes every key here.
+func (s *ChecklistRunScreen) HandlesKey(key string) bool {
+	switch key {
+	case "n", "r", "j", "k":
+		return true
+	case "f":
+		return s.canFinalize()
+	}
+	return false
+}
+
 func (s *ChecklistRunScreen) Init() tea.Cmd { return s.load() }
 
 func (s *ChecklistRunScreen) load() tea.Cmd {
@@ -334,10 +359,8 @@ func (s *ChecklistRunScreen) View() string {
 		return b.String()
 	}
 
-	canFinalize := s.completion.RequiredStepsCompleted >= s.completion.RequiredStepsTotal &&
-		s.completion.Status != "completed"
 	footer := "j/k move · enter scan step · n notes then scan"
-	if canFinalize {
+	if s.canFinalize() {
 		footer += " · f finalize"
 	}
 	footer += " · r refresh · esc back"

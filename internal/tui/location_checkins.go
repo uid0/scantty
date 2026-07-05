@@ -55,6 +55,18 @@ func (s *LocationCheckinsScreen) Title() string { return "Location check-ins" }
 
 func (s *LocationCheckinsScreen) WantsRawInput() bool { return s.logging }
 
+// HandlesKey claims the list-view shortcuts so they beat the colliding global
+// nav keys — most importantly 'n' (start a new check-in) over the global
+// n=notifications. While the log form is open WantsRawInput already routes
+// every key here, so the claim only matters in the list view.
+func (s *LocationCheckinsScreen) HandlesKey(key string) bool {
+	switch key {
+	case "n", "r", "j", "k":
+		return true
+	}
+	return false
+}
+
 func (s *LocationCheckinsScreen) Init() tea.Cmd { return s.load() }
 
 func (s *LocationCheckinsScreen) load() tea.Cmd {
