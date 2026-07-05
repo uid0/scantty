@@ -232,6 +232,55 @@ func TestGetLocation_HydratesRichFields(t *testing.T) {
 	}
 }
 
+// TestListLocationsAcceptsBareArray is the regression for sc-8r5: the backend
+// LocationViewSet.list() returns a BARE JSON ARRAY (Response(serializer.data)),
+// not the paginated envelope. Decoding that straight into Page[Location] failed
+// with "cannot unmarshal array into omsapi.Page[Location]", which broke the
+// item/asset create-edit forms and the location list. ListLocations must parse
+// the bare array and surface it through the usual *Page[Location].Results.
+func TestListLocationsAcceptsBareArray(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/inventory/locations/" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":4,"name":"Shelf 3B"},{"id":5,"name":"Old room"}]`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	page, err := c.ListLocations(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListLocations bare array: %v", err)
+	}
+	if page.Count != 2 || len(page.Results) != 2 {
+		t.Fatalf("count/len = %d/%d, want 2/2", page.Count, len(page.Results))
+	}
+	if page.Results[0].ID != 4 || page.Results[0].Name != "Shelf 3B" || page.Results[1].ID != 5 {
+		t.Fatalf("unexpected locations: %+v", page.Results)
+	}
+}
+
+// TestListLocationsAcceptsEnvelope confirms the same call still parses the
+// {count,next,previous,results} envelope, so the MaybeList tolerance does not
+// regress any deployment that leaves LocationViewSet paginated.
+func TestListLocationsAcceptsEnvelope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":1,"next":null,"previous":null,"results":[{"id":9,"name":"Cage"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	page, err := c.ListLocations(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListLocations envelope: %v", err)
+	}
+	if page.Count != 1 || len(page.Results) != 1 || page.Results[0].Name != "Cage" {
+		t.Fatalf("unexpected locations: %+v count=%d", page.Results, page.Count)
+	}
+}
+
 // TestGenerateLocationQR_Contract confirms the POST hits the generate_qr action
 // and the qr_code_url is read back off the JSON body.
 func TestGenerateLocationQR_Contract(t *testing.T) {
