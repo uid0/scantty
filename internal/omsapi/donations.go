@@ -6,14 +6,34 @@ import (
 	"time"
 )
 
+// Donation mirrors backend DonationSerializer / DonationListSerializer
+// (backend/donations/). ListDonations uses the lighter list serializer; this
+// struct is the superset so it decodes either shape. Per
+// [[scantty-api-field-drift]] the earlier struct crashed the screen: the PK is
+// a UUID string (`donations/models.py` `id = UUIDField`) not an int,
+// `date_received` is a date-only DateField, and the money fields are DRF
+// DecimalFields that arrive as JSON strings.
 type Donation struct {
-	ID          int       `json:"id"`
-	DonorName   string    `json:"donor_name,omitempty"`
-	DonorEmail  string    `json:"donor_email,omitempty"`
-	Description string    `json:"description,omitempty"`
-	Value       float64   `json:"value,omitempty"`
-	ReceivedAt  time.Time `json:"received_at,omitempty"`
-	ReceiptID   string    `json:"receipt_id,omitempty"`
+	ID                     string        `json:"id"`
+	DonationNumber         string        `json:"donation_number,omitempty"`
+	DonorName              string        `json:"donor_name,omitempty"`
+	DonorEmail             string        `json:"donor_email,omitempty"`
+	DonorPhone             string        `json:"donor_phone,omitempty"`
+	DonorAddress           string        `json:"donor_address,omitempty"`
+	DateReceived           DateOnly      `json:"date_received"`
+	Status                 string        `json:"status,omitempty"`
+	ReceivedNotes          string        `json:"received_notes,omitempty"`
+	ReviewNotes            string        `json:"review_notes,omitempty"`
+	EstimatedNumberOfItems int           `json:"estimated_number_of_items,omitempty"`
+	EstimatedValue         DecimalString `json:"estimated_value,omitempty"`
+	AssociatedCosts        DecimalString `json:"associated_costs,omitempty"`
+	NetValue               DecimalString `json:"net_value,omitempty"`
+	TaxReceiptIssued       bool          `json:"tax_receipt_issued,omitempty"`
+	TaxReceiptNumber       string        `json:"tax_receipt_number,omitempty"`
+	TotalItems             int           `json:"total_items,omitempty"`
+	TotalQuantity          int           `json:"total_quantity,omitempty"`
+	CreatedAt              time.Time     `json:"created_at,omitempty"`
+	UpdatedAt              time.Time     `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListDonations(ctx context.Context, q url.Values) (*Page[Donation], error) {
@@ -37,12 +57,24 @@ func (c *Client) LookupDonationCode(ctx context.Context, code string) (*Donation
 	return &out, nil
 }
 
+// TaxReceipt mirrors backend TaxReceiptSerializer (backend/donations/). Both id
+// and serial_number are UUIDs, `donation` is the FK to a UUID-PK Donation (a
+// string, not an int), and issued_date is a date-only DateField — the earlier
+// int/int/datetime typing here was the same drift class as Donation.
 type TaxReceipt struct {
-	ID         int       `json:"id"`
-	Donation   int       `json:"donation"`
-	Number     string    `json:"number,omitempty"`
-	IssuedAt   time.Time `json:"issued_at,omitempty"`
-	URL        string    `json:"url,omitempty"`
+	ID               string    `json:"id"`
+	SerialNumber     string    `json:"serial_number,omitempty"`
+	Donation         string    `json:"donation,omitempty"`
+	DonationNumber   string    `json:"donation_number,omitempty"`
+	DonorName        string    `json:"donor_name,omitempty"`
+	DonorEmail       string    `json:"donor_email,omitempty"`
+	IssuedDate       DateOnly  `json:"issued_date"`
+	IssuedBy         int       `json:"issued_by,omitempty"`
+	IssuedByUsername string    `json:"issued_by_username,omitempty"`
+	PDFFile          string    `json:"pdf_file,omitempty"`
+	IsCopy           bool      `json:"is_copy,omitempty"`
+	CreatedAt        time.Time `json:"created_at,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListTaxReceipts(ctx context.Context, q url.Values) (*Page[TaxReceipt], error) {

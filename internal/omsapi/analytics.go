@@ -23,20 +23,24 @@ type AnalyticsValueSummary struct {
 	TotalValueToMakerspace        string `json:"total_value_to_makerspace"`
 }
 
-// AnalyticsTopUser is one row in the top_users projection.
+// AnalyticsTopUser is one row in the top_users projection. The aggregation
+// (analytics/services/aggregation.py) emits `display_name` and
+// `completed_wo_count`; the earlier `full_name`/`wo_count` tags never matched,
+// so the dashboard's top-user rows rendered blank names and zero counts.
 type AnalyticsTopUser struct {
 	UserID      int    `json:"user_id"`
 	Username    string `json:"username"`
-	FullName    string `json:"full_name,omitempty"`
-	WOCount     int    `json:"wo_count"`
+	FullName    string `json:"display_name,omitempty"`
+	WOCount     int    `json:"completed_wo_count"`
 	HoursLogged string `json:"hours_logged,omitempty"`
 }
 
-// AnalyticsBucket is one entry in the wo_volume time-series.
+// AnalyticsBucket is one entry in the wo_volume time-series. The aggregation
+// emits `period` + `count`, not `bucket_start`/`wo_count`.
 type AnalyticsBucket struct {
-	BucketStart string `json:"bucket_start"`
+	BucketStart string `json:"period"`
 	BucketEnd   string `json:"bucket_end"`
-	WOCount     int    `json:"wo_count"`
+	WOCount     int    `json:"count"`
 }
 
 // AnalyticsPulse is the full /pulse/ envelope. Most slice fields are

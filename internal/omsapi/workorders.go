@@ -216,12 +216,17 @@ func (c *Client) TransitionWorkOrder(ctx context.Context, id, action, notes stri
 	return c.UpdateWorkOrder(ctx, id, patch)
 }
 
+// MaintenanceOrder mirrors backend ThirdPartyWorkOrderSerializer. The order
+// PK is a UUID, and both `vendor` (vendors.Vendor) and `asset`
+// (inventory.Asset) are FKs to UUID-PK models — the old int/*int typings
+// crashed the list on every row. (`cost`/`scheduled_at` are not emitted by the
+// serializer; they stay zero and are kept only for callers that set them.)
 type MaintenanceOrder struct {
-	ID          int        `json:"id"`
+	ID          any        `json:"id"`
 	Title       string     `json:"title"`
-	Vendor      *int       `json:"vendor,omitempty"`
+	Vendor      *string    `json:"vendor,omitempty"`
 	VendorName  string     `json:"vendor_name,omitempty"`
-	Asset       *int       `json:"asset,omitempty"`
+	Asset       *string    `json:"asset,omitempty"`
 	Status      string     `json:"status"`
 	Cost        float64    `json:"cost,omitempty"`
 	CreatedAt   time.Time  `json:"created_at,omitempty"`

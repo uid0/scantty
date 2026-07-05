@@ -49,12 +49,14 @@ func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
 }
 
 type User struct {
-	ID          int    `json:"id"`
-	Username    string `json:"username"`
-	Email       string `json:"email,omitempty"`
-	FirstName   string `json:"first_name,omitempty"`
-	LastName    string `json:"last_name,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
+	ID        int    `json:"id"`
+	Username  string `json:"username"`
+	Email     string `json:"email,omitempty"`
+	FirstName string `json:"first_name,omitempty"`
+	LastName  string `json:"last_name,omitempty"`
+	// UserDirectorySerializer emits full_name (a SerializerMethodField), not
+	// display_name — the old tag left the user picker showing only usernames.
+	DisplayName string `json:"full_name,omitempty"`
 	IsActive    bool   `json:"is_active,omitempty"`
 }
 
@@ -111,6 +113,15 @@ type SIGMember struct {
 	IsSIGAdmin bool   `json:"is_sig_admin,omitempty"`
 }
 
+// ListSIGMembers lists a SIG's members. SIGMemberViewSet is a plain
+// viewsets.ViewSet whose list() returns Response(serializer.data) — a BARE
+// JSON array with no pagination — so GetPage's envelope-only decode crashed
+// the members screen ("cannot unmarshal array into ... Page"). MaybeList
+// tolerates both shapes, mirroring listUsersAt.
 func (c *Client) ListSIGMembers(ctx context.Context, sigID int, q url.Values) (*Page[SIGMember], error) {
-	return GetPage[SIGMember](ctx, c, fmt.Sprintf("/api/membership/sigs/%d/members/", sigID), q)
+	var out MaybeList[SIGMember]
+	if err := c.Get(ctx, fmt.Sprintf("/api/membership/sigs/%d/members/", sigID), q, &out); err != nil {
+		return nil, err
+	}
+	return &Page[SIGMember]{Count: out.Count, Results: out.Items}, nil
 }

@@ -46,6 +46,32 @@ func TestListUsersAcceptsBareArray(t *testing.T) {
 	}
 }
 
+// TestListSIGMembersAcceptsBareArray guards the shape drift: SIGMemberViewSet
+// is a plain ViewSet whose list() returns Response(serializer.data) — a BARE
+// array with no pagination — so the old GetPage envelope decode crashed with
+// `cannot unmarshal array into ... Page`. MaybeList must tolerate it.
+func TestListSIGMembersAcceptsBareArray(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":7,"username":"grace","is_sig_admin":true},{"id":8,"username":"ada"}]`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	page, err := c.ListSIGMembers(context.Background(), 5, nil)
+	if err != nil {
+		t.Fatalf("ListSIGMembers: %v", err)
+	}
+	if path != "/api/membership/sigs/5/members/" {
+		t.Fatalf("path = %q", path)
+	}
+	if page.Count != 2 || len(page.Results) != 2 || !page.Results[0].IsSIGAdmin {
+		t.Fatalf("unexpected members: %+v count=%d", page.Results, page.Count)
+	}
+}
+
 func TestListUsersFallsBackToAPIRoot(t *testing.T) {
 	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

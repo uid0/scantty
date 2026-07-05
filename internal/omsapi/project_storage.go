@@ -9,14 +9,14 @@ import (
 // ProjectStorageEvent mirrors backend ProjectStorageEventSerializer —
 // one audit-log row inside a stint's lifecycle (notice sent, moved to
 // purgatory, marked removed).
+// ProjectStorageEvent mirrors ProjectStorageEventSerializer, which emits
+// event_type / note / created_at (there is no `action`, `notes`, or
+// `occurred_at` key) — the old tags left the event log blank.
 type ProjectStorageEvent struct {
 	ID            int       `json:"id"`
-	Stint         int       `json:"stint"`
-	Action        string    `json:"action"`
-	Actor         *int      `json:"actor"`
+	Action        string    `json:"event_type"`
 	ActorUsername string    `json:"actor_username,omitempty"`
-	Notes         string    `json:"notes,omitempty"`
-	OccurredAt    time.Time `json:"occurred_at"`
+	Notes         string    `json:"note,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 

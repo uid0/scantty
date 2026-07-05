@@ -8,16 +8,18 @@ import (
 )
 
 type Authorization struct {
-	ID            any        `json:"id"`
-	Asset         any        `json:"asset"`
-	AssetName     string     `json:"asset_name,omitempty"`
-	User          any        `json:"user"`
-	UserName      string     `json:"user_name,omitempty"`
-	AuthorizedBy  any        `json:"authorized_by,omitempty"`
-	IsActive      bool       `json:"is_active"`
-	Notes         string     `json:"notes,omitempty"`
-	AuthorizedAt  time.Time  `json:"authorized_at,omitempty"`
-	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
+	ID        any    `json:"id"`
+	Asset     any    `json:"asset"`
+	AssetName string `json:"asset_name,omitempty"`
+	User      any    `json:"user"`
+	// AssetAuthorizationSerializer emits `username` (source user.username),
+	// not user_name — the old tag left the auth screen without a user label.
+	UserName     string     `json:"username,omitempty"`
+	AuthorizedBy any        `json:"authorized_by,omitempty"`
+	IsActive     bool       `json:"is_active"`
+	Notes        string     `json:"notes,omitempty"`
+	AuthorizedAt time.Time  `json:"authorized_at,omitempty"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
 }
 
 func (c *Client) ListAuthorizations(ctx context.Context, q url.Values) ([]Authorization, error) {
@@ -73,15 +75,16 @@ func (c *Client) ClassroomEnroll(ctx context.Context, assetID int) (*Authorizati
 }
 
 type Lockout struct {
-	ID           any       `json:"id"`
-	Asset        any       `json:"asset"`
-	AssetName    string    `json:"asset_name,omitempty"`
-	LockedBy     any       `json:"locked_by"`
-	LockoutLevel string    `json:"lockout_level"`
-	Reason       string    `json:"reason,omitempty"`
-	IsActive     bool      `json:"is_active"`
-	CreatedAt    time.Time `json:"created_at,omitempty"`
-	UnlockedAt   *time.Time `json:"unlocked_at,omitempty"`
+	ID           any    `json:"id"`
+	Asset        any    `json:"asset"`
+	AssetName    string `json:"asset_name,omitempty"`
+	LockedBy     any    `json:"locked_by"`
+	LockoutLevel string `json:"lockout_level"`
+	Reason       string `json:"reason,omitempty"`
+	IsActive     bool   `json:"is_active"`
+	// The model timestamp is locked_at (auto-set); there is no created_at.
+	LockedAt   time.Time  `json:"locked_at,omitempty"`
+	UnlockedAt *time.Time `json:"unlocked_at,omitempty"`
 }
 
 func (c *Client) ListLockouts(ctx context.Context, q url.Values) ([]Lockout, error) {
@@ -132,11 +135,12 @@ func (c *Client) DisableClassroomMode(ctx context.Context, id string) error {
 }
 
 type Usage struct {
-	ID        any        `json:"id"`
-	Asset     any        `json:"asset"`
-	AssetName string     `json:"asset_name,omitempty"`
-	User      any        `json:"user"`
-	UserName  string     `json:"user_name,omitempty"`
+	ID        any    `json:"id"`
+	Asset     any    `json:"asset"`
+	AssetName string `json:"asset_name,omitempty"`
+	User      any    `json:"user"`
+	// DeviceUsageSerializer emits `username`, not user_name.
+	UserName  string     `json:"username,omitempty"`
 	StartedAt time.Time  `json:"started_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 }

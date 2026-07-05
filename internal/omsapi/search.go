@@ -44,9 +44,25 @@ type InventorySummary struct {
 }
 
 func (c *Client) GetInventorySummary(ctx context.Context) (*InventorySummary, error) {
-	var out InventorySummary
-	if err := c.Get(ctx, "/api/dashboard/inventory-summary/", nil, &out); err != nil {
+	// /api/dashboard/inventory-summary/ nests the counts under "inventory"
+	// (not at the top level) and names the reorder count
+	// items_with_pending_reorders — the flat top-level decode read all zeros.
+	// out_of_stock_count is not emitted by the backend, so it stays 0.
+	var raw struct {
+		Inventory struct {
+			TotalItems               int `json:"total_items"`
+			LowStockCount            int `json:"low_stock_count"`
+			OutOfStockCount          int `json:"out_of_stock_count"`
+			ItemsWithPendingReorders int `json:"items_with_pending_reorders"`
+		} `json:"inventory"`
+	}
+	if err := c.Get(ctx, "/api/dashboard/inventory-summary/", nil, &raw); err != nil {
 		return nil, err
 	}
-	return &out, nil
+	return &InventorySummary{
+		TotalItems:      raw.Inventory.TotalItems,
+		LowStockCount:   raw.Inventory.LowStockCount,
+		OutOfStockCount: raw.Inventory.OutOfStockCount,
+		PendingReorders: raw.Inventory.ItemsWithPendingReorders,
+	}, nil
 }

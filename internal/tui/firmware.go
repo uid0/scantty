@@ -68,6 +68,17 @@ func (s *FirmwareScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	return s, nil
 }
 
+// firmwareDeviceTypeLabel renders the human device-type for a firmware row.
+// The raw device_type field is an integer FK id; the readable name/code arrive
+// as separate serializer fields, so prefer those and show nothing when absent
+// rather than a meaningless number.
+func firmwareDeviceTypeLabel(v forgekeyapi.FirmwareVersion) string {
+	if v.DeviceTypeName != "" {
+		return v.DeviceTypeName
+	}
+	return v.DeviceTypeCode
+}
+
 func (s *FirmwareScreen) View() string {
 	if s.loading {
 		return StyleMuted.Render("Loading firmware…")
@@ -80,14 +91,14 @@ func (s *FirmwareScreen) View() string {
 		b.WriteString(StyleTitle.Render("Versions") + "\n")
 		for _, v := range s.versions {
 			line := "  · " + v.Version
-			if v.DeviceType != "" {
-				line += " " + StyleMuted.Render("("+v.DeviceType+")")
+			if label := firmwareDeviceTypeLabel(v); label != "" {
+				line += " " + StyleMuted.Render("("+label+")")
 			}
 			if v.IsActive {
 				line += " " + StyleStatusOK.Render("active")
 			}
-			if v.CreatedBy != "" {
-				line += " " + StyleMuted.Render("by "+v.CreatedBy)
+			if v.CreatedByUsername != "" {
+				line += " " + StyleMuted.Render("by "+v.CreatedByUsername)
 			}
 			b.WriteString(line + "\n")
 		}
@@ -103,7 +114,7 @@ func (s *FirmwareScreen) View() string {
 			limit = 20
 		}
 		for _, u := range s.updates[:limit] {
-			name := u.DeviceName
+			name := u.DeviceMACAddress
 			if name == "" {
 				name = fmt.Sprintf("device %v", u.Device)
 			}

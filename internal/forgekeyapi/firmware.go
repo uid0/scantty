@@ -6,13 +6,23 @@ import (
 	"time"
 )
 
+// FirmwareVersion mirrors forgekey FirmwareVersionSerializer. `device_type`
+// and `created_by` are both integer foreign keys — the backend sends them as
+// NUMBERS, so the old `string` typing crashed the firmware screen on decode
+// ("cannot unmarshal number into ... device_type of type string"). They are
+// `any` here (matching Device.DeviceType) so a raw id or a future nested object
+// both decode; the human labels come from the serializer's separate
+// device_type_name / device_type_code / created_by_username fields.
 type FirmwareVersion struct {
-	ID         any       `json:"id"`
-	Version    string    `json:"version"`
-	DeviceType string    `json:"device_type,omitempty"`
-	IsActive   bool      `json:"is_active"`
-	CreatedBy  string    `json:"created_by,omitempty"`
-	CreatedAt  time.Time `json:"created_at,omitempty"`
+	ID                any       `json:"id"`
+	Version           string    `json:"version"`
+	DeviceType        any       `json:"device_type,omitempty"`
+	DeviceTypeName    string    `json:"device_type_name,omitempty"`
+	DeviceTypeCode    string    `json:"device_type_code,omitempty"`
+	IsActive          bool      `json:"is_active"`
+	CreatedBy         any       `json:"created_by,omitempty"`
+	CreatedByUsername string    `json:"created_by_username,omitempty"`
+	CreatedAt         time.Time `json:"created_at,omitempty"`
 }
 
 func (c *Client) ListFirmwareVersions(ctx context.Context, q url.Values) ([]FirmwareVersion, error) {
@@ -24,15 +34,18 @@ func (c *Client) ListFirmwareVersions(ctx context.Context, q url.Values) ([]Firm
 }
 
 type FirmwareUpdate struct {
-	ID                any       `json:"id"`
-	Device            any       `json:"device"`
-	DeviceName        string    `json:"device_name,omitempty"`
-	FirmwareVersion   any       `json:"firmware_version"`
-	FirmwareVersionStr string   `json:"firmware_version_str,omitempty"`
-	RequestedBy       string    `json:"requested_by,omitempty"`
-	RequestedAt       time.Time `json:"requested_at,omitempty"`
-	UpdatedAt         time.Time `json:"updated_at,omitempty"`
-	Status            string    `json:"status,omitempty"`
+	ID                 any    `json:"id"`
+	Device             any    `json:"device"`
+	DeviceMACAddress   string `json:"device_mac_address,omitempty"`
+	FirmwareVersion    any    `json:"firmware_version"`
+	FirmwareVersionStr string `json:"firmware_version_string,omitempty"`
+	// requested_by is an integer user FK (nullable) — `string` crashed the
+	// decode whenever an update had a requester; the username is the separate
+	// requested_by_username field.
+	RequestedBy         any       `json:"requested_by,omitempty"`
+	RequestedByUsername string    `json:"requested_by_username,omitempty"`
+	RequestedAt         time.Time `json:"requested_at,omitempty"`
+	Status              string    `json:"status,omitempty"`
 }
 
 func (c *Client) ListFirmwareUpdates(ctx context.Context, q url.Values) ([]FirmwareUpdate, error) {

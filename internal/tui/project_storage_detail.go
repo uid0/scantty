@@ -165,8 +165,8 @@ func (s *ProjectStorageDetailScreen) renderBody() string {
 		b.WriteString(StyleTitle.Render(fmt.Sprintf("Events (%d)", len(st.Events))) + "\n")
 		for _, ev := range st.Events {
 			line := "  · "
-			if !ev.OccurredAt.IsZero() {
-				line += ev.OccurredAt.Format("2006-01-02") + " "
+			if !ev.CreatedAt.IsZero() {
+				line += ev.CreatedAt.Format("2006-01-02") + " "
 			}
 			line += ev.Action
 			b.WriteString(line + "\n")

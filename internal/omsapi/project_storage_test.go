@@ -23,7 +23,7 @@ func TestGetProjectStorageStint(t *testing.T) {
 		"storage_location_name": "Rack B3",
 		"purgatory_location_name": "Purgatory Shelf 2",
 		"events": [
-			{"id": 1, "stint": 42, "action": "notice_sent", "actor_username": "sysbot", "occurred_at": "2026-06-01T00:00:00Z"}
+			{"id": 1, "event_type": "notice_sent", "actor_username": "sysbot", "note": "sent to jdoe", "created_at": "2026-06-01T00:00:00Z"}
 		]
 	}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +57,11 @@ func TestGetProjectStorageStint(t *testing.T) {
 	}
 	if len(st.Events) != 1 || st.Events[0].Action != "notice_sent" {
 		t.Fatalf("unexpected events: %+v", st.Events)
+	}
+	// The event's real backend shape uses note / created_at — assert they
+	// decode (the old action/occurred_at tags silently left these empty).
+	if st.Events[0].Notes != "sent to jdoe" || st.Events[0].CreatedAt.IsZero() {
+		t.Fatalf("event note/created_at did not decode: %+v", st.Events[0])
 	}
 }
 
