@@ -436,7 +436,7 @@ func (s *SupplierDetailScreen) renderBody() string {
 				meta = append(meta, "$"+string(it.UnitCost))
 			}
 			if it.LeadTimeDays > 0 {
-				meta = append(meta, fmt.Sprintf("lead %dd", it.LeadTimeDays))
+				meta = append(meta, fmt.Sprintf("lead %gd", it.LeadTimeDays))
 			}
 			if len(meta) > 0 {
 				b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")

@@ -72,7 +72,7 @@ type Item struct {
 	UnitCost             DecimalString `json:"unit_cost,omitempty"`
 	PackageCost          DecimalString `json:"package_cost,omitempty"`
 	QuantityPerPackage   int           `json:"quantity_per_package,omitempty"`
-	AverageLeadTime      int           `json:"average_lead_time,omitempty"`
+	AverageLeadTime      float64       `json:"average_lead_time,omitempty"`
 	TotalValue           DecimalString `json:"total_value,omitempty"`
 	ThumbnailURL         string        `json:"thumbnail,omitempty"`
 	QRCodeURL            string        `json:"qr_code_url,omitempty"`
@@ -834,7 +834,7 @@ type ItemSupplier struct {
 	PackQuantity      int           `json:"quantity_per_package,omitempty"`
 	UnitCost          DecimalString `json:"unit_cost,omitempty"`
 	PackageCost       DecimalString `json:"package_cost,omitempty"`
-	LeadTimeDays      int           `json:"average_lead_time,omitempty"`
+	LeadTimeDays      float64       `json:"average_lead_time,omitempty"`
 	IsPreferred       bool          `json:"is_primary,omitempty"`
 	IsActive          bool          `json:"is_active,omitempty"`
 	IsDiscontinued    bool          `json:"is_discontinued,omitempty"`

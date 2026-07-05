@@ -279,7 +279,7 @@ type ReorderDataSupplier struct {
 	Assets         []ReorderDataAsset `json:"assets,omitempty"`
 	TotalItems     int                `json:"total_items,omitempty"`
 	EstimatedTotal DecimalString      `json:"estimated_total,omitempty"`
-	AvgLeadTime    int                `json:"avg_lead_time,omitempty"`
+	AvgLeadTime    float64            `json:"avg_lead_time,omitempty"`
 }
 
 // ReorderData is the top-level shape returned by
