@@ -42,6 +42,26 @@ func press(t *testing.T, r Root, key string) Root {
 	return rootAfter
 }
 
+// A SwitchScreenMsg with a nil Screen — SwitchTo(ws, nil), used by the PO-create
+// flow (po_create.go / po_create_pickers.go) to return to the workspace default
+// — must resolve to that workspace's default screen instead of nil-deref'ing
+// r.screen.Init() and panicking the whole program. Regression for the
+// "submit a purchase order" crash at app.go SwitchScreenMsg.
+func TestSwitchScreenMsgNilResolvesToWorkspaceDefault(t *testing.T) {
+	r := newTestRoot(NewWelcomeScreen())
+	next, _ := r.Update(SwitchScreenMsg{Workspace: WSPurchasing, Screen: nil})
+	after, ok := next.(Root)
+	if !ok {
+		t.Fatalf("Root.Update returned %T, want Root", next)
+	}
+	if after.screen == nil {
+		t.Fatal("nil-target SwitchScreenMsg left a nil screen (would panic on the next Init/Update)")
+	}
+	if _, ok := after.screen.(*ListScreen); !ok {
+		t.Errorf("nil-target SwitchScreenMsg to WSPurchasing gave %T, want the Purchasing *ListScreen default", after.screen)
+	}
+}
+
 // A screen that claims a local key must win over the colliding global nav key.
 
 func TestLocationCheckinsNStartsCheckinNotNotifications(t *testing.T) {

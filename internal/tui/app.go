@@ -289,7 +289,18 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case SwitchScreenMsg:
-		r.screen = m.Screen
+		next := m.Screen
+		if next == nil {
+			// A nil target means "the workspace's default screen" — several
+			// create-flows (e.g. PO create, po_create_pickers) use
+			// SwitchTo(ws, nil) to leave the form. Resolve it so a nil Screen
+			// never nil-derefs Init() and panics the whole program.
+			next = newScreenFor(m.Workspace, r.deps)
+		}
+		if next == nil {
+			return r, nil // no default screen for this workspace — stay put, don't crash
+		}
+		r.screen = next
 		r.nav.SetActive(m.Workspace)
 		return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 
