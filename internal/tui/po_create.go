@@ -15,11 +15,16 @@
 //	poPhaseReorderPick / ItemPick / AssetPick — list pickers backed by
 //	                    the corresponding omsapi endpoints; enter
 //	                    prefills the line buffer and jumps to poPhaseLine.
-//	poPhaseLine       — description/qty/cost/ship-by inputs (pre-filled
-//	                    when the line came from a picker); enter ADDS the
-//	                    line to the cart and returns to poPhaseSource so
-//	                    more lines can be added (the web create form is
-//	                    multi-line — [[ship-complete-features]]).
+//	poPhaseLine       — description/qty (+ unit cost for asset/freeform
+//	                    lines) inputs, pre-filled when the line came from a
+//	                    picker; enter ADDS the line to the cart and returns
+//	                    to poPhaseSource so more lines can be added (the web
+//	                    create form is multi-line — [[ship-complete-features]]).
+//	                    Item-supplier-backed lines (reorder queue / inventory
+//	                    picker) omit the cost prompt — the backend derives the
+//	                    line cost from the item-supplier's stored unit_cost —
+//	                    and no line prompts for a ship date (that belongs to
+//	                    the PO lifecycle at send/receive).
 //	poPhaseReview     — the accumulated line cart + a PO-level notes
 //	                    input; enter submits every line at once via
 //	                    PurchaseOrderCreate.
@@ -33,7 +38,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,14 +61,16 @@ const (
 	poPhaseReview
 )
 
-// Field indexes inside the line-entry form (Phase 4). The fourth field is the
-// optional expected-shipment date (YYYY-MM-DD), which populates the create
-// line's expected_shipment_date; PO-level notes live in the review phase.
+// Field indexes inside the line-entry form (Phase 4). Unit cost is only
+// collected for asset and freeform lines; item-supplier-backed lines omit it
+// (the backend derives the line cost from the item-supplier's stored
+// unit_cost — see lineFields). Expected ship dates are no longer prompted
+// here: they belong to the PO lifecycle at send/receive. PO-level notes live
+// in the review phase.
 const (
 	poLineFieldDesc = iota
 	poLineFieldQty
 	poLineFieldCost
-	poLineFieldShipDate
 	poLineFieldCount
 )
 
@@ -163,15 +169,9 @@ func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
 
 	cost := textinput.New()
 	cost.Prompt = ""
-	cost.Placeholder = "unit cost (optional, e.g. 12.50)"
+	cost.Placeholder = "unit cost (e.g. 12.50)"
 	cost.CharLimit = 20
 	s.lineInputs[poLineFieldCost] = cost
-
-	shipDate := textinput.New()
-	shipDate.Prompt = ""
-	shipDate.Placeholder = "expected ship date YYYY-MM-DD (optional)"
-	shipDate.CharLimit = 10
-	s.lineInputs[poLineFieldShipDate] = shipDate
 
 	// PO-level notes, captured once in the review phase.
 	poNotes := textinput.New()
@@ -448,9 +448,44 @@ func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.C
 	return s, cmd
 }
 
+// lineFields returns the active field indexes for the current line source, in
+// tab order. Item-supplier-backed lines (reorder queue / inventory picker)
+// drop the unit-cost field: the backend derives the line cost from the
+// item-supplier's stored unit_cost, so prompting for it is redundant (sc-5yr).
+// Asset and freeform lines keep it — the backend requires unit_cost for both.
+func (s *PurchaseOrderCreateScreen) lineFields() []int {
+	if s.pickedItemSup != nil {
+		return []int{poLineFieldDesc, poLineFieldQty}
+	}
+	return []int{poLineFieldDesc, poLineFieldQty, poLineFieldCost}
+}
+
+// poLineFieldLabel maps a field index to its form label.
+func poLineFieldLabel(i int) string {
+	switch i {
+	case poLineFieldDesc:
+		return "Description"
+	case poLineFieldQty:
+		return "Quantity"
+	case poLineFieldCost:
+		return "Unit cost"
+	default:
+		return ""
+	}
+}
+
 func (s *PurchaseOrderCreateScreen) focusNextLine(delta int) {
+	fields := s.lineFields()
+	cur := 0
+	for i, f := range fields {
+		if f == s.lineFocused {
+			cur = i
+			break
+		}
+	}
 	s.lineInputs[s.lineFocused].Blur()
-	s.lineFocused = (s.lineFocused + delta + poLineFieldCount) % poLineFieldCount
+	next := (cur + delta + len(fields)) % len(fields)
+	s.lineFocused = fields[next]
 	s.lineInputs[s.lineFocused].Focus()
 }
 
@@ -478,22 +513,19 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 		ItemSupplierID: s.pickedItemSup,
 		AssetID:        s.pickedAssetID,
 	}
-	costRaw := strings.TrimSpace(s.lineInputs[poLineFieldCost].Value())
-	if costRaw != "" {
-		cost, err := strconv.ParseFloat(costRaw, 64)
-		if err != nil || cost < 0 {
-			s.errMsg = "unit cost must be a non-negative number"
-			return Status(s.errMsg, StatusError)
+	// Unit cost is only prompted for asset and freeform lines. Item-supplier-
+	// backed lines (reorder queue / inventory picker) omit it: the backend
+	// derives the line cost from the item-supplier's stored unit_cost (sc-5yr).
+	if s.pickedItemSup == nil {
+		costRaw := strings.TrimSpace(s.lineInputs[poLineFieldCost].Value())
+		if costRaw != "" {
+			cost, err := strconv.ParseFloat(costRaw, 64)
+			if err != nil || cost < 0 {
+				s.errMsg = "unit cost must be a non-negative number"
+				return Status(s.errMsg, StatusError)
+			}
+			line.UnitCost = &cost
 		}
-		line.UnitCost = &cost
-	}
-	shipRaw := strings.TrimSpace(s.lineInputs[poLineFieldShipDate].Value())
-	if shipRaw != "" {
-		if _, err := time.Parse("2006-01-02", shipRaw); err != nil {
-			s.errMsg = "expected ship date must be YYYY-MM-DD"
-			return Status(s.errMsg, StatusError)
-		}
-		line.ExpectedShipmentDate = shipRaw
 	}
 
 	s.lines = append(s.lines, poCartLine{item: line, label: s.lineLabel(desc)})
@@ -764,9 +796,6 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight int) string {
 		if l.item.UnitCost != nil {
 			row += fmt.Sprintf(" @ $%s", strconv.FormatFloat(*l.item.UnitCost, 'f', -1, 64))
 		}
-		if l.item.ExpectedShipmentDate != "" {
-			row += "  ship " + l.item.ExpectedShipmentDate
-		}
 		if i == highlight {
 			row = StyleSidebarItemActive.Render(row)
 		}
@@ -793,16 +822,18 @@ func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
 		source = fmt.Sprintf("asset %s", *s.pickedAssetID)
 	}
 	b.WriteString(StyleMuted.Render("Line source: "+source) + "\n\n")
-	labels := []string{"Description", "Quantity", "Unit cost", "Ship by (YYYY-MM-DD)"}
-	for i := 0; i < poLineFieldCount; i++ {
+	for _, i := range s.lineFields() {
 		marker := "  "
 		if i == s.lineFocused {
 			marker = "▸ "
 		}
 		b.WriteString(marker)
-		b.WriteString(StyleTitle.Render(labels[i] + ": "))
+		b.WriteString(StyleTitle.Render(poLineFieldLabel(i) + ": "))
 		b.WriteString(s.lineInputs[i].View())
 		b.WriteString("\n")
+	}
+	if s.pickedItemSup != nil {
+		b.WriteString(StyleMuted.Render("  Cost is taken from the supplier catalog; ship dates are set at send/receive.") + "\n")
 	}
 	return b.String()
 }
