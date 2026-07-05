@@ -3,10 +3,12 @@ package tui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/uid0/scantty/internal/forgekeyapi"
@@ -16,7 +18,13 @@ import (
 type listScreenSpec struct {
 	kind   string
 	loader func(ctx context.Context, deps Deps) ([]listRow, error)
-	detail func(id string, deps Deps) Screen
+	// searchLoader, when non-nil, gives the list a server-side search input
+	// (opened with '/'). The typed query is forwarded to the backend loader —
+	// e.g. as ?search= on the OMS list endpoint — and the returned rows replace
+	// the list. When nil the list is load-once with local sort only, and '/'
+	// falls through to the global search palette.
+	searchLoader func(ctx context.Context, deps Deps, query string) ([]listRow, error)
+	detail       func(id string, deps Deps) Screen
 }
 
 type listRow struct {
@@ -63,6 +71,14 @@ type listLoadedMsg struct {
 	err  error
 }
 
+// listSearchedMsg carries the result of a server-side search. seq lets the
+// screen drop a stale response whose query the operator has already typed past.
+type listSearchedMsg struct {
+	seq  int
+	rows []listRow
+	err  error
+}
+
 const listWindowSize = 20
 
 type ListScreen struct {
@@ -78,6 +94,17 @@ type ListScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+
+	// Server-side search (only when spec.searchLoader != nil). searching flips
+	// the screen into raw-input mode so the query textinput gets every key;
+	// searchQuery is the query currently reflected in rawRows; searchSeq guards
+	// against stale async responses; searchPending shows a subtle indicator
+	// while a reload is in flight (the prior rows stay visible meanwhile).
+	searching     bool
+	searchInput   textinput.Model
+	searchQuery   string
+	searchSeq     int
+	searchPending bool
 }
 
 // computeWindowSize returns how many list ROWS the current terminal can
@@ -102,6 +129,11 @@ func (s *ListScreen) computeWindowSize() int {
 	const listIndicatorRows = 2
 
 	avail := screenBodyHeight(s.terminalHeight) - listHeaderRows - listFooterRows - listIndicatorRows
+	// The search overlay adds an input line + its hint + a blank separator
+	// above the list body; reserve those rows so results don't overflow.
+	if s.searching {
+		avail -= 3
+	}
 	if avail < 2 {
 		avail = 2
 	}
@@ -150,7 +182,20 @@ func (s *ListScreen) Title() string { return s.title }
 // s=settings nav; settings stays reachable from every screen that doesn't
 // own a local 's'. Other list keys don't collide with globals, so they reach
 // this screen through the normal fallthrough.
-func (s *ListScreen) HandlesKey(key string) bool { return key == "s" }
+//
+// When the list supports server-side search it also claims '/', overriding the
+// global search-palette hotkey so '/' filters THIS list against the backend;
+// ctrl+k still opens the universal palette from here.
+func (s *ListScreen) HandlesKey(key string) bool {
+	if key == "s" {
+		return true
+	}
+	return key == "/" && s.spec.searchLoader != nil
+}
+
+// WantsRawInput routes every keypress to the screen while the search input is
+// open, so the global hotkey layer stops eating letters the operator is typing.
+func (s *ListScreen) WantsRawInput() bool { return s.searching }
 
 func (s *ListScreen) Init() tea.Cmd {
 	if s.spec.loader == nil {
@@ -246,7 +291,27 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
+	case listSearchedMsg:
+		if m.seq != s.searchSeq {
+			return s, nil // a fresher query has been typed; drop this response
+		}
+		s.searchPending = false
+		s.rawRows = m.rows
+		if m.err != nil {
+			s.loadErr = m.err.Error()
+		} else {
+			s.loadErr = ""
+		}
+		s.cursor = 0
+		s.windowStart = 0
+		s.applySort()
+		s.windowSize = s.computeWindowSize()
+		s.scrollIntoView()
+		return s, nil
 	case tea.KeyMsg:
+		if s.searching {
+			return s.updateSearch(m)
+		}
 		switch m.String() {
 		case "j", "down":
 			if s.cursor < len(s.rows)-1 {
@@ -285,18 +350,113 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "r":
 			s.loading = true
 			return s, s.Init()
+		case "/":
+			if s.spec.searchLoader == nil {
+				return s, nil
+			}
+			return s.enterSearch()
 		case "enter":
-			if s.spec.detail == nil || s.cursor >= len(s.rows) {
-				return s, nil
-			}
-			next := s.spec.detail(s.rows[s.cursor].ID, s.deps)
-			if next == nil {
-				return s, nil
-			}
-			return s, SwitchTo(workspaceForKind(s.spec.kind), next)
+			return s.openSelected()
 		}
 	}
 	return s, nil
+}
+
+// enterSearch opens the server-side search input over the current list. The
+// already-loaded rows stay visible until the operator types a query.
+func (s *ListScreen) enterSearch() (Screen, tea.Cmd) {
+	s.searching = true
+	in := textinput.New()
+	in.Prompt = "search ▸ "
+	in.Placeholder = "name / tag / serial…"
+	in.CharLimit = 120
+	in.SetValue(s.searchQuery)
+	in.CursorEnd()
+	in.Focus()
+	s.searchInput = in
+	s.windowSize = s.computeWindowSize()
+	s.scrollIntoView()
+	return s, textinput.Blink
+}
+
+// updateSearch owns key handling while the search input is open. Arrow keys
+// move the result cursor and enter opens the highlighted row (mirroring the
+// search palette); esc closes search and restores the unfiltered list; every
+// other key edits the query and, on change, fires a fresh backend search.
+func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.Type {
+	case tea.KeyEsc:
+		s.searching = false
+		s.searchInput.Blur()
+		s.windowSize = s.computeWindowSize()
+		s.scrollIntoView()
+		if s.searchQuery != "" {
+			// Restore the full list the plain loader produces.
+			s.searchQuery = ""
+			s.searchPending = false
+			s.loading = true
+			return s, s.Init()
+		}
+		return s, nil
+	case tea.KeyUp, tea.KeyCtrlP:
+		if s.cursor > 0 {
+			s.cursor--
+			s.scrollIntoView()
+		}
+		return s, nil
+	case tea.KeyDown, tea.KeyCtrlN:
+		if s.cursor < len(s.rows)-1 {
+			s.cursor++
+			s.scrollIntoView()
+		}
+		return s, nil
+	case tea.KeyEnter:
+		return s.openSelected()
+	}
+	prev := s.searchInput.Value()
+	var cmd tea.Cmd
+	s.searchInput, cmd = s.searchInput.Update(m)
+	if s.searchInput.Value() != prev {
+		s.searchQuery = strings.TrimSpace(s.searchInput.Value())
+		s.searchPending = true
+		return s, tea.Batch(cmd, s.runSearch())
+	}
+	return s, cmd
+}
+
+// runSearch forwards the current query to the backend via spec.searchLoader.
+// The bumped seq is stamped on the response so a slow reply for a query the
+// operator has already typed past is dropped on arrival.
+func (s *ListScreen) runSearch() tea.Cmd {
+	if s.spec.searchLoader == nil {
+		return nil
+	}
+	s.searchSeq++
+	seq := s.searchSeq
+	query := s.searchQuery
+	loader := s.spec.searchLoader
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		rows, err := loader(ctx, deps, query)
+		return listSearchedMsg{seq: seq, rows: rows, err: err}
+	}
+}
+
+// openSelected opens the detail screen for the row under the cursor, if the
+// list has a detail builder. Shared by the plain list and the search overlay.
+func (s *ListScreen) openSelected() (Screen, tea.Cmd) {
+	if s.spec.detail == nil || s.cursor < 0 || s.cursor >= len(s.rows) {
+		return s, nil
+	}
+	next := s.spec.detail(s.rows[s.cursor].ID, s.deps)
+	if next == nil {
+		return s, nil
+	}
+	return s, SwitchTo(workspaceForKind(s.spec.kind), next)
 }
 
 func workspaceForKind(kind string) Workspace {
@@ -322,6 +482,25 @@ func workspaceForKind(kind string) Workspace {
 }
 
 func (s *ListScreen) View() string {
+	// The search overlay renders above whatever body state follows, so the
+	// operator can keep editing the query even when a search returns nothing.
+	if s.searching {
+		var head strings.Builder
+		head.WriteString(s.searchInput.View())
+		switch {
+		case s.searchPending:
+			head.WriteString("  " + StyleMuted.Render("searching…"))
+		case s.searchQuery != "" && s.loadErr == "":
+			head.WriteString("  " + StyleMuted.Render(fmt.Sprintf("%d match(es)", len(s.rows))))
+		}
+		head.WriteString("\n")
+		head.WriteString(StyleMuted.Render("↑/↓ move · enter open · esc cancel") + "\n\n")
+		return head.String() + s.bodyView()
+	}
+	return s.bodyView()
+}
+
+func (s *ListScreen) bodyView() string {
 	if s.loading {
 		return StyleMuted.Render("Loading…")
 	}
@@ -329,6 +508,9 @@ func (s *ListScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry")
 	}
 	if len(s.rows) == 0 {
+		if s.searching {
+			return StyleMuted.Render("No matches.")
+		}
 		return StyleMuted.Render("No rows.")
 	}
 
@@ -377,6 +559,9 @@ func (s *ListScreen) View() string {
 	hint := "j/k move · pgup/pgdn page · g/G top/bottom · s sort · r refresh"
 	if s.spec.detail != nil {
 		hint += " · enter open"
+	}
+	if s.spec.searchLoader != nil {
+		hint += " · / search"
 	}
 	// Surface the per-workspace create shortcuts so an operator doesn't
 	// have to memorize them. `N` is the global hotkey for the
@@ -432,7 +617,24 @@ func loadInventoryItems(ctx context.Context, deps Deps) ([]listRow, error) {
 }
 
 func loadAssets(ctx context.Context, deps Deps) ([]listRow, error) {
-	page, err := deps.OMS.ListAssets(ctx, nil)
+	return assetRows(ctx, deps, nil)
+}
+
+// searchAssets forwards the operator's query to the OMS asset endpoint as
+// ?search=, which AssetViewSet.get_queryset matches (icontains) against name /
+// description / serial_number / asset_tag / manufacturer_name. This is what
+// makes an asset findable from the list by its DMS-YYANNNSS asset_tag — the
+// plain page-1 loader (loadAssets) can't surface a tag past the first page.
+func searchAssets(ctx context.Context, deps Deps, query string) ([]listRow, error) {
+	var q url.Values
+	if term := strings.TrimSpace(query); term != "" {
+		q = url.Values{"search": []string{term}}
+	}
+	return assetRows(ctx, deps, q)
+}
+
+func assetRows(ctx context.Context, deps Deps, q url.Values) ([]listRow, error) {
+	page, err := deps.OMS.ListAssets(ctx, q)
 	if err != nil {
 		return nil, err
 	}

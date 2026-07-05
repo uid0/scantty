@@ -373,9 +373,10 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 		})
 	case WSAssets:
 		return NewListScreen(deps, "Assets", listScreenSpec{
-			kind:   "assets",
-			loader: loadAssets,
-			detail: func(id string, d Deps) Screen { return NewAssetDetailScreen(d, id) },
+			kind:         "assets",
+			loader:       loadAssets,
+			searchLoader: searchAssets,
+			detail:       func(id string, d Deps) Screen { return NewAssetDetailScreen(d, id) },
 		})
 	case WSFacilities:
 		return NewFacilitiesScreen(deps)
