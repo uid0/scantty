@@ -127,6 +127,41 @@ func (c *Client) UpdateDeviceFirmware(ctx context.Context, id string, req Firmwa
 	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/firmware-update", id), req, nil)
 }
 
+// IndicatorTestRequest is the body for POST devices/{id}/indicator/test/ — an
+// explicit color/brightness/pattern preview pushed straight to an indicator
+// device (bypasses status derivation, for a live hardware check). The backend
+// requires at least one of color/brightness/pattern; it validates color as a
+// name/hex/[r,g,b], brightness as "low"/"high" or 0-255, pattern against a
+// fixed set, and period_ms/duration_s as bounded ints. Every field carries
+// omitempty so the client sends exactly what the web card sends (color is
+// dropped for an "off" pattern; period_ms only rides along for blink patterns).
+type IndicatorTestRequest struct {
+	Color      string `json:"color,omitempty"`
+	Brightness string `json:"brightness,omitempty"`
+	Pattern    string `json:"pattern,omitempty"`
+	PeriodMS   int    `json:"period_ms,omitempty"`
+	DurationS  int    `json:"duration_s,omitempty"`
+}
+
+// IndicatorTestResponse mirrors the endpoint's JSON: the sent presentation
+// payload plus the created command id.
+type IndicatorTestResponse struct {
+	Status    string         `json:"status"`
+	Device    string         `json:"device"`
+	CommandID string         `json:"command_id"`
+	Payload   map[string]any `json:"payload"`
+}
+
+// IndicatorTest sends an explicit indicator preview to a device. Staff-gated
+// (IsAdminUser) server-side — a non-staff caller gets a 403.
+func (c *Client) IndicatorTest(ctx context.Context, id string, req IndicatorTestRequest) (*IndicatorTestResponse, error) {
+	var out IndicatorTestResponse
+	if err := c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/indicator/test/", id), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // DeviceCommand mirrors DeviceCommandSerializer (the device-detail
 // recent-commands table). The serializer's field names are sent_by /
 // sent_at / ack_status / ack_at / ack_payload — the old issued_*/status/
