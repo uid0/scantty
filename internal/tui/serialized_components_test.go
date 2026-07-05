@@ -3,8 +3,84 @@ package tui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/uid0/scantty/internal/omsapi"
 )
+
+// TestSerializedCreateForm_HandlesKeyScope pins the sc-k7p claim: the item
+// scope grabs 'a' (add) off the global nav, the asset scope leaves it alone
+// (no create surface there — mirrors the web, where Add-unit lives on the item
+// panel only).
+func TestSerializedCreateForm_HandlesKeyScope(t *testing.T) {
+	item := NewItemInstancesScreen(Deps{}, "item-uuid", "Filament")
+	if !item.HandlesKey("a") {
+		t.Error("item scope should claim 'a' for add")
+	}
+	if item.HandlesKey("z") {
+		t.Error("item scope should only claim 'a', not other keys")
+	}
+	asset := NewAssetComponentsScreen(Deps{}, "asset-uuid", "Printer")
+	if asset.HandlesKey("a") {
+		t.Error("asset scope must not claim 'a' (no create form there)")
+	}
+}
+
+// TestSerializedCreateForm_PayloadAndValidation walks the add form: opening it,
+// the serial-required rule, and that item (from screen context) + serial + lot
+// map onto the create body.
+func TestSerializedCreateForm_PayloadAndValidation(t *testing.T) {
+	s := NewItemInstancesScreen(Deps{}, "item-uuid", "Filament")
+	s.openCreateForm()
+	if s.form != serialFormCreate {
+		t.Fatalf("form = %v, want serialFormCreate", s.form)
+	}
+	// Serial is required.
+	if _, err := s.buildCreatePayload(); err == nil {
+		t.Error("expected error for empty serial number")
+	}
+	s.createInputs[scfSerial].SetValue("SN-42")
+	s.createInputs[scfLot].SetValue("batch-7")
+	w, err := s.buildCreatePayload()
+	if err != nil {
+		t.Fatalf("buildCreatePayload: %v", err)
+	}
+	if w.Item != "item-uuid" {
+		t.Errorf("item = %q, want item-uuid", w.Item)
+	}
+	if w.SerialNumber != "SN-42" {
+		t.Errorf("serial_number = %q, want SN-42", w.SerialNumber)
+	}
+	if w.Lot != "batch-7" {
+		t.Errorf("lot = %q, want batch-7", w.Lot)
+	}
+
+	// Lot is optional — a blank lot still builds a valid payload.
+	s.createInputs[scfLot].SetValue("")
+	if w, err := s.buildCreatePayload(); err != nil || w.Lot != "" {
+		t.Errorf("blank lot should be valid: w=%+v err=%v", w, err)
+	}
+}
+
+// TestSerializedCreateForm_FieldNavigation drives the two-field form: tab moves
+// serial→lot and wraps, esc closes it.
+func TestSerializedCreateForm_FieldNavigation(t *testing.T) {
+	s := NewItemInstancesScreen(Deps{}, "item-uuid", "Filament")
+	s.openCreateForm()
+	if s.createFocus != scfSerial {
+		t.Fatalf("initial focus = %d, want serial", s.createFocus)
+	}
+	if _, _ = s.Update(tea.KeyMsg{Type: tea.KeyTab}); s.createFocus != scfLot {
+		t.Errorf("after tab focus = %d, want lot", s.createFocus)
+	}
+	// Two fields → tab wraps back to serial.
+	if _, _ = s.Update(tea.KeyMsg{Type: tea.KeyTab}); s.createFocus != scfSerial {
+		t.Errorf("after 2nd tab focus = %d, want serial (wrap)", s.createFocus)
+	}
+	if _, _ = s.Update(tea.KeyMsg{Type: tea.KeyEsc}); s.form != serialFormNone {
+		t.Errorf("esc should close the form, form = %v", s.form)
+	}
+}
 
 func TestContainsStr(t *testing.T) {
 	acts := []string{"install", "retire"}

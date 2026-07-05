@@ -165,6 +165,87 @@ func TestSerializedComponentAction_InstallContract(t *testing.T) {
 	}
 }
 
+// TestSerializedComponentAction_LifecycleVerbs pins the four no-argument /
+// reason-only lifecycle actions the TUI drives (receive / consume / retire /
+// dispose): each hits /{id}/{action}/, receive/consume/retire carry only the
+// optional notes (never asset or disposal_reason), and dispose carries the
+// required disposal_reason. Every response decodes the updated status + event.
+func TestSerializedComponentAction_LifecycleVerbs(t *testing.T) {
+	cases := []struct {
+		action     string
+		req        SerializedComponentAction
+		wantStatus string
+		wantBody   map[string]string // fields that must be present + equal
+		absent     []string          // fields that must be omitted
+	}{
+		{
+			action: SerialActionReceive, req: SerializedComponentAction{Notes: "off the truck"},
+			wantStatus: SerialStatusInStock,
+			wantBody:   map[string]string{"notes": "off the truck"},
+			absent:     []string{"asset", "disposal_reason"},
+		},
+		{
+			action: SerialActionConsume, req: SerializedComponentAction{},
+			wantStatus: SerialStatusConsumed,
+			wantBody:   map[string]string{},
+			absent:     []string{"asset", "disposal_reason", "notes"},
+		},
+		{
+			action: SerialActionRetire, req: SerializedComponentAction{Notes: "worn out"},
+			wantStatus: SerialStatusRetired,
+			wantBody:   map[string]string{"notes": "worn out"},
+			absent:     []string{"asset", "disposal_reason"},
+		},
+		{
+			action: SerialActionDispose, req: SerializedComponentAction{DisposalReason: "cracked housing"},
+			wantStatus: SerialStatusDisposed,
+			wantBody:   map[string]string{"disposal_reason": "cracked housing"},
+			absent:     []string{"asset"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.action, func(t *testing.T) {
+			var gotPath string
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				raw, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(raw, &gotBody)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"c1","status":"` + tc.wantStatus + `",
+					"event":{"id":"e1","action":"` + tc.action + `","action_display":"X"}}`))
+			}))
+			defer srv.Close()
+
+			c := New(srv.URL)
+			res, err := c.SerializedComponentAction(context.Background(), "c1", tc.action, tc.req)
+			if err != nil {
+				t.Fatalf("SerializedComponentAction(%s): %v", tc.action, err)
+			}
+			wantPath := "/api/inventory/serialized-components/c1/" + tc.action + "/"
+			if gotPath != wantPath {
+				t.Fatalf("path = %q, want %q", gotPath, wantPath)
+			}
+			for k, want := range tc.wantBody {
+				if got, _ := gotBody[k].(string); got != want {
+					t.Errorf("body[%q] = %v, want %q", k, gotBody[k], want)
+				}
+			}
+			for _, k := range tc.absent {
+				if _, present := gotBody[k]; present {
+					t.Errorf("body[%q] should be omitted for %s, got %v", k, tc.action, gotBody[k])
+				}
+			}
+			if res.Status != tc.wantStatus {
+				t.Errorf("res.Status = %q, want %q", res.Status, tc.wantStatus)
+			}
+			if res.Event == nil || res.Event.Action != tc.action {
+				t.Errorf("event not decoded for %s: %+v", tc.action, res.Event)
+			}
+		})
+	}
+}
+
 // TestSerializedForecast_NullFields confirms the forecast decodes a bare
 // array and that null days_until_stockout / lead_time_days land as nil
 // pointers (rather than a decode error).
