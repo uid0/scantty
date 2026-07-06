@@ -42,6 +42,72 @@ func TestSetRelayChannel_PostsChannelAndAction(t *testing.T) {
 	}
 }
 
+// TestGetDeviceDecodesLiveSubState feeds the op-2cr live sub-state the __all__
+// serializer now exposes on device detail: relay_channels (list of
+// {channel,on}) and indicator_state ({color,pattern}). Confirms both decode.
+func TestGetDeviceDecodesLiveSubState(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"dev-1","name":"Relay A","mac_address":"AA:BB:CC:DD:EE:01",
+			"capabilities":["power_relay","status_led"],
+			"relay_channels":[{"channel":1,"on":true},{"channel":2,"on":false}],
+			"indicator_state":{"color":"green","pattern":"solid"}
+		}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	dev, err := c.GetDevice(context.Background(), "dev-1")
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	if len(dev.RelayChannels) != 2 {
+		t.Fatalf("relay channels = %d, want 2", len(dev.RelayChannels))
+	}
+	if dev.RelayChannels[0].Channel != 1 || !dev.RelayChannels[0].On {
+		t.Errorf("ch1 = %+v, want {Channel:1 On:true}", dev.RelayChannels[0])
+	}
+	if dev.RelayChannels[1].Channel != 2 || dev.RelayChannels[1].On {
+		t.Errorf("ch2 = %+v, want {Channel:2 On:false}", dev.RelayChannels[1])
+	}
+	if dev.IndicatorState.Color != "green" || dev.IndicatorState.Pattern != "solid" {
+		t.Errorf("indicator = %+v, want {Color:green Pattern:solid}", dev.IndicatorState)
+	}
+}
+
+// TestGetDeviceHandlesEmptyLiveSubState: before a device reports, relay_channels
+// is an empty list and indicator_state's color/pattern arrive as JSON null. Both
+// must decode gracefully (no error, empty values) so the detail can render "—".
+func TestGetDeviceHandlesEmptyLiveSubState(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"dev-2","name":"Relay B","mac_address":"AA:BB:CC:DD:EE:02",
+			"relay_channels":[],"indicator_state":{"color":null,"pattern":null}
+		}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	dev, err := c.GetDevice(context.Background(), "dev-2")
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	if len(dev.RelayChannels) != 0 {
+		t.Errorf("relay channels = %d, want 0", len(dev.RelayChannels))
+	}
+	if dev.IndicatorState.Color != "" || dev.IndicatorState.Pattern != "" {
+		t.Errorf("indicator = %+v, want empty", dev.IndicatorState)
+	}
+}
+
 // TestRecentCommandsDecodesSentByShape feeds the REAL DeviceCommandSerializer
 // shape: the fields are sent_by (integer user FK) / sent_by_username / sent_at
 // / ack_status / ack_at — the old issued_by(string)/issued_at/status tags

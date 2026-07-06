@@ -23,6 +23,27 @@ type Device struct {
 	BootCount       int       `json:"boot_count,omitempty"`
 	FreeHeap        int       `json:"free_heap,omitempty"`
 	LastSeen        time.Time `json:"last_seen,omitempty"`
+
+	// Live device sub-state cached from the firmware status message (op-2cr),
+	// exposed by the __all__ serializer. Both are empty until a device reports.
+	RelayChannels  []RelayChannelState `json:"relay_channels,omitempty"`
+	IndicatorState IndicatorState      `json:"indicator_state,omitempty"`
+}
+
+// RelayChannelState is the last-reported on/off state of one power-relay channel
+// (op-2cr live sub-state, parsed from power_relay.channels). The list is empty
+// until the firmware reports it.
+type RelayChannelState struct {
+	Channel int  `json:"channel"`
+	On      bool `json:"on"`
+}
+
+// IndicatorState is the last-reported indicator/status-LED sub-state (op-2cr),
+// normalized to {color, pattern}. Both are empty until the firmware reports a
+// state; color/pattern may arrive as JSON null, which decodes to "".
+type IndicatorState struct {
+	Color   string `json:"color,omitempty"`
+	Pattern string `json:"pattern,omitempty"`
 }
 
 func (c *Client) ListDevices(ctx context.Context, q url.Values) ([]Device, error) {

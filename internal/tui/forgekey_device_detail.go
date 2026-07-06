@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/forgekeyapi"
 )
@@ -179,6 +180,74 @@ func deviceHasCapability(d *forgekeyapi.Device, capability string) bool {
 	return false
 }
 
+// relayChannelNumbers is the fixed 2-channel set the power relay exposes,
+// matching the web PowerRelayWidget's RELAY_CHANNELS (op-2cr / ga-40w).
+var relayChannelNumbers = []int{1, 2}
+
+// renderRelayChannelState renders a channel's current on/off from the device's
+// cached live sub-state (op-2cr): green ●on / red ○off, or a muted — until the
+// firmware reports that channel.
+func renderRelayChannelState(d *forgekeyapi.Device, channel int) string {
+	for _, ch := range d.RelayChannels {
+		if ch.Channel == channel {
+			if ch.On {
+				return StyleStatusOK.Render("● on")
+			}
+			return StyleStatusError.Render("○ off")
+		}
+	}
+	return StyleMuted.Render("—")
+}
+
+// renderIndicatorState mirrors the web IndicatorStateInline (op-2cr): a colour
+// swatch + colour name, plus a non-solid pattern; falls back to "State: —" until
+// the firmware reports a state.
+func renderIndicatorState(st forgekeyapi.IndicatorState) string {
+	if st.Color == "" && st.Pattern == "" {
+		return StyleMuted.Render("State: —")
+	}
+	label := st.Color
+	if label == "" {
+		label = st.Pattern
+	}
+	line := StyleMuted.Render("State: ") + indicatorSwatch(st.Color) + label
+	if st.Color != "" && st.Pattern != "" && st.Pattern != "solid" {
+		line += StyleMuted.Render(" · " + st.Pattern)
+	}
+	return line
+}
+
+// indicatorSwatchHex maps the firmware's indicator colour vocabulary to the same
+// hex palette the web IndicatorSwatch uses (op-2cr); lipgloss degrades hex to the
+// terminal's colour profile.
+var indicatorSwatchHex = map[string]string{
+	"green":  "#2f9e44",
+	"red":    "#e03131",
+	"purple": "#9c36b5",
+	"blue":   "#1971c2",
+	"yellow": "#f08c00",
+	"orange": "#e8590c",
+	"white":  "#f1f3f5",
+	"off":    "#212529",
+}
+
+// indicatorSwatch renders a ● dot in the reported colour. Known colour names use
+// the shared hex palette; an explicit #hex passes through; anything else renders
+// an uncoloured dot so an unfamiliar name still shows a swatch.
+func indicatorSwatch(color string) string {
+	if color == "" {
+		return ""
+	}
+	hex, ok := indicatorSwatchHex[strings.ToLower(color)]
+	if !ok {
+		if !strings.HasPrefix(color, "#") {
+			return "● "
+		}
+		hex = color
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("●") + " "
+}
+
 func (s *ForgeKeyDeviceDetailScreen) View() string {
 	if s.loading {
 		return StyleMuted.Render("Loading device…")
@@ -238,6 +307,29 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 		b.WriteString(StyleMuted.Render("Capabilities: ") + strings.Join(d.Capabilities, ", ") + "\n")
 	}
 	b.WriteString("\n")
+
+	// Live power-relay channel states (op-2cr), mirroring the web
+	// PowerRelayWidget: green ●on / red ○off per channel from the cached
+	// sub-state, with a note while nothing has been reported yet.
+	if deviceHasCapability(d, "power_relay") {
+		b.WriteString(StyleTitle.Render("Power relay") + "\n")
+		for _, ch := range relayChannelNumbers {
+			b.WriteString(fmt.Sprintf("  %s %s\n",
+				StyleMuted.Render(fmt.Sprintf("Channel %d:", ch)),
+				renderRelayChannelState(d, ch)))
+		}
+		if len(d.RelayChannels) == 0 {
+			b.WriteString(StyleMuted.Render("  Live on/off state not reported yet.") + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Live indicator/status-LED colour (op-2cr), mirroring the web
+	// IndicatorStateInline: a colour swatch + name, plus a non-solid pattern.
+	if deviceHasCapability(d, "status_led") {
+		b.WriteString(StyleTitle.Render("Status LED") + "\n")
+		b.WriteString("  " + renderIndicatorState(d.IndicatorState) + "\n\n")
+	}
 
 	if s.temp != nil && (s.temp.LatestTemperatureC != nil || len(s.temp.Readings) > 0) {
 		b.WriteString(StyleTitle.Render("Temperature (24h)") + "\n")
