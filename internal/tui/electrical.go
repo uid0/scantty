@@ -23,6 +23,9 @@ type ElectricalPanelsScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+
+	confirmingDelete bool
+	deleting         bool
 }
 
 type electricalPanelsLoadedMsg struct {
@@ -30,11 +33,24 @@ type electricalPanelsLoadedMsg struct {
 	err    error
 }
 
+type electricalPanelDeletedMsg struct {
+	err error
+}
+
 func NewElectricalPanelsScreen(deps Deps) *ElectricalPanelsScreen {
 	return &ElectricalPanelsScreen{deps: deps, loading: true}
 }
 
 func (s *ElectricalPanelsScreen) Title() string { return "Electrical panels" }
+
+// WantsRawInput claims every key only while the delete confirm is up (y/n/esc).
+func (s *ElectricalPanelsScreen) WantsRawInput() bool { return s.confirmingDelete }
+
+// HandlesKey claims the action keys that collide with global hotkeys (n new,
+// G bottom) so they reach this screen instead of the global nav switch.
+func (s *ElectricalPanelsScreen) HandlesKey(key string) bool {
+	return key == "n" || key == "G"
+}
 
 func (s *ElectricalPanelsScreen) Init() tea.Cmd { return s.load() }
 
@@ -90,7 +106,18 @@ func (s *ElectricalPanelsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		s.scrollIntoView()
 		return s, nil
+	case electricalPanelDeletedMsg:
+		s.deleting = false
+		s.confirmingDelete = false
+		if m.err != nil {
+			return s, Status("delete failed: "+m.err.Error(), StatusError)
+		}
+		s.loading = true
+		return s, tea.Batch(Status("panel deleted", StatusOK), s.load())
 	case tea.KeyMsg:
+		if s.confirmingDelete {
+			return s.updateConfirmDelete(m)
+		}
 		switch m.String() {
 		case "j", "down":
 			if s.cursor < len(s.panels)-1 {
@@ -114,12 +141,59 @@ func (s *ElectricalPanelsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "r":
 			s.loading = true
 			return s, s.load()
+		case "n":
+			return s, SwitchTo(WSFacilities, NewPowerPanelFormScreen(s.deps, 0))
+		case "E":
+			if p, ok := s.selectedPanel(); ok {
+				return s, SwitchTo(WSFacilities, NewPowerPanelFormScreen(s.deps, p.ID))
+			}
+		case "x":
+			if _, ok := s.selectedPanel(); ok {
+				s.confirmingDelete = true
+			}
 		case "enter":
-			if s.cursor < len(s.panels) {
-				p := s.panels[s.cursor]
+			if p, ok := s.selectedPanel(); ok {
 				return s, SwitchTo(WSFacilities, NewElectricalPanelDetailScreen(s.deps, p.ID))
 			}
 		}
+	}
+	return s, nil
+}
+
+func (s *ElectricalPanelsScreen) selectedPanel() (omsapi.PowerPanel, bool) {
+	if s.cursor < 0 || s.cursor >= len(s.panels) {
+		return omsapi.PowerPanel{}, false
+	}
+	return s.panels[s.cursor], true
+}
+
+func (s *ElectricalPanelsScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.deleting {
+		return s, nil
+	}
+	switch m.String() {
+	case "y", "Y":
+		p, ok := s.selectedPanel()
+		if !ok {
+			s.confirmingDelete = false
+			return s, nil
+		}
+		if msg := electricalDeleteBlock("panel", p.BreakerCount, "breaker"); msg != "" {
+			s.confirmingDelete = false
+			return s, Status(msg, StatusError)
+		}
+		s.deleting = true
+		deps := s.deps
+		ctx := deps.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		id := p.ID
+		return s, func() tea.Msg {
+			return electricalPanelDeletedMsg{err: deps.OMS.DeletePowerPanel(ctx, id)}
+		}
+	case "n", "N", "esc":
+		s.confirmingDelete = false
 	}
 	return s, nil
 }
@@ -129,12 +203,15 @@ func (s *ElectricalPanelsScreen) View() string {
 		return StyleMuted.Render("Loading panels…")
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · n new · esc back")
+	}
+	if s.confirmingDelete {
+		return s.viewConfirm()
 	}
 	if len(s.panels) == 0 {
 		return StyleMuted.Render("No electrical panels defined yet.") + "\n\n" +
-			StyleMuted.Render("Define panels in the OMS web admin → Electrical → Power panels. They'll show up here on refresh.") + "\n\n" +
-			StyleMuted.Render("r refresh · esc back")
+			StyleMuted.Render("Create one with n, or in the OMS web admin → Electrical → Power panels.") + "\n\n" +
+			StyleMuted.Render("n new panel · r refresh · esc back")
 	}
 
 	var b strings.Builder
@@ -178,8 +255,23 @@ func (s *ElectricalPanelsScreen) View() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.panels)-end)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · enter open topology · r refresh · esc back"))
+	b.WriteString(StyleMuted.Render("j/k move · enter topology · n new · E edit · x delete · r refresh · esc back"))
 	return b.String()
+}
+
+func (s *ElectricalPanelsScreen) viewConfirm() string {
+	p, ok := s.selectedPanel()
+	if !ok {
+		return ""
+	}
+	if s.deleting {
+		return StyleMuted.Render("Deleting…")
+	}
+	warn := ""
+	if p.BreakerCount > 0 {
+		warn = StyleStatusWarn.Render(fmt.Sprintf("  (has %d breaker(s) — delete will be blocked)", p.BreakerCount))
+	}
+	return StyleStatusWarn.Render(fmt.Sprintf("Delete panel %q? This can't be undone.  y delete · n/esc cancel", p.Name)) + warn
 }
 
 // ElectricalPanelDetailScreen shows the full panel → breaker → circuit
@@ -192,11 +284,18 @@ type ElectricalPanelDetailScreen struct {
 	loadErr        string
 	scroller       *TextScroller
 	terminalHeight int
+
+	confirmingDelete bool
+	deleting         bool
 }
 
 type electricalPanelDetailLoadedMsg struct {
 	topology *omsapi.PowerPanelTopology
 	err      error
+}
+
+type electricalPanelDetailDeletedMsg struct {
+	err error
 }
 
 func NewElectricalPanelDetailScreen(deps Deps, panelID int) *ElectricalPanelDetailScreen {
@@ -214,6 +313,13 @@ func (s *ElectricalPanelDetailScreen) Title() string {
 	}
 	return fmt.Sprintf("Panel #%d", s.panelID)
 }
+
+// WantsRawInput claims every key only while the delete confirm is up (y/n/esc).
+func (s *ElectricalPanelDetailScreen) WantsRawInput() bool { return s.confirmingDelete }
+
+// HandlesKey claims G (scroll-to-bottom) so it isn't shadowed by the global
+// category-list hotkey; the other action keys (b/E/x) don't collide.
+func (s *ElectricalPanelDetailScreen) HandlesKey(key string) bool { return key == "G" }
 
 func (s *ElectricalPanelDetailScreen) Init() tea.Cmd { return s.load() }
 
@@ -243,14 +349,73 @@ func (s *ElectricalPanelDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.topology = m.topology
 		s.scroller.Set(s.renderBody())
 		return s, nil
+	case electricalPanelDetailDeletedMsg:
+		s.deleting = false
+		s.confirmingDelete = false
+		if m.err != nil {
+			return s, Status("delete failed: "+m.err.Error(), StatusError)
+		}
+		return s, tea.Batch(
+			Status("panel deleted", StatusOK),
+			SwitchTo(WSFacilities, NewElectricalPanelsScreen(s.deps)),
+		)
 	case tea.KeyMsg:
+		if s.confirmingDelete {
+			return s.updateConfirmDelete(m)
+		}
 		if s.scroller.Handle(m) {
 			return s, nil
 		}
-		if m.String() == "r" {
+		switch m.String() {
+		case "r":
 			s.loading = true
 			return s, s.load()
+		case "b":
+			// Manage this panel's breakers (create/edit/delete + drill to
+			// circuits). The topology tree is read-only, so row-level actions
+			// live on the dedicated breaker list.
+			name := ""
+			if s.topology != nil {
+				name = s.topology.Name
+			}
+			return s, SwitchTo(WSFacilities, NewPanelBreakersScreen(s.deps, s.panelID, name))
+		case "E":
+			return s, SwitchTo(WSFacilities, NewPowerPanelFormScreen(s.deps, s.panelID))
+		case "x":
+			if s.topology != nil {
+				s.confirmingDelete = true
+			}
 		}
+	}
+	return s, nil
+}
+
+func (s *ElectricalPanelDetailScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.deleting {
+		return s, nil
+	}
+	switch m.String() {
+	case "y", "Y":
+		if s.topology == nil {
+			s.confirmingDelete = false
+			return s, nil
+		}
+		if msg := electricalDeleteBlock("panel", len(s.topology.Breakers), "breaker"); msg != "" {
+			s.confirmingDelete = false
+			return s, Status(msg, StatusError)
+		}
+		s.deleting = true
+		deps := s.deps
+		ctx := deps.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		id := s.panelID
+		return s, func() tea.Msg {
+			return electricalPanelDetailDeletedMsg{err: deps.OMS.DeletePowerPanel(ctx, id)}
+		}
+	case "n", "N", "esc":
+		s.confirmingDelete = false
 	}
 	return s, nil
 }
@@ -265,8 +430,15 @@ func (s *ElectricalPanelDetailScreen) View() string {
 	if s.topology == nil {
 		return StyleMuted.Render("Panel not found.")
 	}
+	if s.confirmingDelete {
+		warn := ""
+		if n := len(s.topology.Breakers); n > 0 {
+			warn = StyleStatusWarn.Render(fmt.Sprintf("  (has %d breaker(s) — delete will be blocked)", n))
+		}
+		return StyleStatusWarn.Render(fmt.Sprintf("Delete panel %q? This can't be undone.  y delete · n/esc cancel", s.topology.Name)) + warn
+	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	hint := "j/k scroll · pgup/pgdn page · r refresh · esc back"
+	hint := "j/k scroll · b breakers · E edit · x delete · r refresh · esc back"
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }
 
