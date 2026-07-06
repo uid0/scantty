@@ -25,6 +25,13 @@ type listScreenSpec struct {
 	// falls through to the global search palette.
 	searchLoader func(ctx context.Context, deps Deps, query string) ([]listRow, error)
 	detail       func(id string, deps Deps) Screen
+	// newScreen, when non-nil, gives the list an `n` (new) action that opens a
+	// create form for this resource. The list claims 'n' via HandlesKey (it
+	// collides with the global notifications hotkey) and advertises it in the
+	// footer. Editing/deleting an existing row still lives on the detail screen
+	// (or, for resources with no edit endpoint, nowhere) — this hook is create
+	// only, so a list without a create form simply leaves it nil.
+	newScreen func(deps Deps) Screen
 }
 
 type listRow struct {
@@ -190,6 +197,9 @@ func (s *ListScreen) HandlesKey(key string) bool {
 	if key == "s" {
 		return true
 	}
+	if key == "n" && s.spec.newScreen != nil {
+		return true
+	}
 	return key == "/" && s.spec.searchLoader != nil
 }
 
@@ -350,6 +360,15 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "r":
 			s.loading = true
 			return s, s.Init()
+		case "n":
+			// Open the create form for this resource, when it has one. `n`
+			// reaches us only because HandlesKey claims it (it's a global
+			// hotkey otherwise); a list with no create form leaves newScreen
+			// nil and never claims the key.
+			if s.spec.newScreen == nil {
+				return s, nil
+			}
+			return s, SwitchTo(workspaceForKind(s.spec.kind), s.spec.newScreen(s.deps))
 		case "/":
 			if s.spec.searchLoader == nil {
 				return s, nil
@@ -562,6 +581,9 @@ func (s *ListScreen) bodyView() string {
 	}
 	if s.spec.searchLoader != nil {
 		hint += " · / search"
+	}
+	if s.spec.newScreen != nil {
+		hint += " · n new"
 	}
 	// Surface the per-workspace create shortcuts so an operator doesn't
 	// have to memorize them. `N` is the global hotkey for the

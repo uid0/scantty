@@ -293,6 +293,14 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				return s, Status("no serialized components installed", StatusWarn)
 			}
 			return s, SwitchTo(WSAssets, NewAssetComponentsScreen(s.deps, s.assetID, s.asset.Name))
+		case "S":
+			// Open the parts management list (create/edit/delete + mark
+			// replaced). Uppercase S (for the web's "supplies" section) since
+			// lowercase p is log-problem and P is the global PM board. Always
+			// available so an asset with no parts yet can add its first one.
+			if s.asset != nil {
+				return s, SwitchTo(WSAssets, NewAssetPartsScreen(s.deps, s.assetID, s.asset.Name))
+			}
 		}
 	}
 	return s, nil
@@ -573,9 +581,9 @@ func (s *AssetDetailScreen) View() string {
 	if s.logResult != "" {
 		footer += RenderStatus(s.logResult, s.logResultLvl) + "\n\n"
 	}
-	hint := "j/k scroll · pgup/pgdn page · p log problem · o mark OOS · R restore · E edit · x delete · r refresh · esc back"
+	hint := "j/k scroll · p problem · o OOS · R restore · S parts · E edit · x delete · r refresh · esc back"
 	if len(s.components) > 0 {
-		hint = "j/k scroll · p log problem · o mark OOS · R restore · i components · E edit · x delete · r refresh · esc back"
+		hint = "j/k scroll · p problem · o OOS · R restore · i components · S parts · E edit · x delete · r refresh · esc back"
 	}
 	footer += StyleMuted.Render(hint)
 	return body + "\n\n" + footer
@@ -978,7 +986,8 @@ func (s *AssetDetailScreen) renderBody() string {
 
 	// Parts
 	if len(a.Parts) > 0 {
-		b.WriteString(StyleTitle.Render(fmt.Sprintf("Parts (%d)", len(a.Parts))) + "\n")
+		b.WriteString(StyleTitle.Render(fmt.Sprintf("Parts (%d)", len(a.Parts))))
+		b.WriteString("  " + StyleMuted.Render("press S to manage") + "\n")
 		for _, p := range a.Parts {
 			name := p.PartName
 			if name == "" {

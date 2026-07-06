@@ -278,6 +278,15 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSSettings)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
+		case "T":
+			// Shift+t opens the climate Thermostat management list (create /
+			// edit / delete). Uppercase like the other management surfaces; both
+			// T and lowercase t were free in the global set.
+			if _, ok := r.screen.(*ThermostatListScreen); !ok {
+				r.screen = NewThermostatListScreen(r.deps)
+				r.nav.SetActive(WSFacilities)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
 		case "q":
 			if _, ok := r.screen.(*WelcomeScreen); ok {
 				return r, tea.Quit
@@ -397,11 +406,11 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 			detail: func(id string, d Deps) Screen { return NewWorkOrderDetailScreen(d, id) },
 		})
 	case WSSIGs:
-		return NewListScreen(deps, "SIGs", listScreenSpec{
-			kind:   "sigs",
-			loader: loadSIGs,
-			detail: func(id string, d Deps) Screen { return NewSIGDetailScreen(d, id) },
-		})
+		// The SIGs nav workspace ('7') is now the create/edit/delete surface
+		// (SIGListScreen): n new, E edit, x delete, enter drills into member
+		// management, v opens the read-only detail. The generic browse list it
+		// replaced only supported enter→detail.
+		return NewSIGListScreen(deps)
 	case WSReports:
 		// Reports currently surfaces the serialized-component consumption
 		// forecast (days-until-stockout / reorder point / low-stock). It's

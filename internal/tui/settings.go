@@ -15,11 +15,24 @@ type SettingsScreen struct {
 	site      *omsapi.SiteSettings
 	siteErr   string
 	siteReady bool
+
+	// Superuser gates the edit affordance: site-settings writes are
+	// superuser-only on the backend, so a non-superuser only ever sees the
+	// read view (mirrors the web, which redirects non-superusers away from the
+	// edit page). profileReady stays false — and the edit hint stays hidden —
+	// until the profile fetch resolves, so we never flash an affordance the
+	// operator can't use.
+	superuser    bool
+	profileReady bool
 }
 
 type siteSettingsLoadedMsg struct {
 	site *omsapi.SiteSettings
 	err  error
+}
+
+type settingsProfileLoadedMsg struct {
+	superuser bool
 }
 
 func NewSettingsScreen(deps Deps) *SettingsScreen { return &SettingsScreen{deps: deps} }
@@ -30,10 +43,16 @@ func (s *SettingsScreen) Init() tea.Cmd {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return func() tea.Msg {
+	loadSite := func() tea.Msg {
 		site, err := deps.OMS.GetSiteSettings(ctx)
 		return siteSettingsLoadedMsg{site: site, err: err}
 	}
+	loadProfile := func() tea.Msg {
+		// A failed profile fetch (e.g. pre-login) just leaves edit hidden.
+		p, err := deps.OMS.GetProfile(ctx)
+		return settingsProfileLoadedMsg{superuser: err == nil && p != nil && p.IsSuperuser}
+	}
+	return tea.Batch(loadSite, loadProfile)
 }
 
 func (s *SettingsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -45,6 +64,22 @@ func (s *SettingsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.siteErr = m.err.Error()
 		}
 		return s, nil
+	case settingsProfileLoadedMsg:
+		s.profileReady = true
+		s.superuser = m.superuser
+		return s, nil
+	case tea.KeyMsg:
+		if m.String() == "E" {
+			switch {
+			case s.superuser:
+				return s, SwitchTo(WSSettings, NewSiteSettingsFormScreen(s.deps))
+			case !s.profileReady:
+				// Profile fetch still in flight — don't wrongly deny a superuser.
+				return s, Status("checking permissions… try again", StatusInfo)
+			default:
+				return s, Status("site settings are superuser-only", StatusWarn)
+			}
+		}
 	}
 	return s, nil
 }
@@ -69,6 +104,9 @@ func (s *SettingsScreen) View() string {
 				continue
 			}
 			b.WriteString(fmt.Sprintf("  %s %s\n", StyleMuted.Render(r[0]+":"), r[1]))
+		}
+		if s.profileReady && s.superuser {
+			b.WriteString("\n  " + StyleMuted.Render("E edit site settings") + "\n")
 		}
 		b.WriteString("\n")
 	} else if s.siteReady && s.siteErr != "" {

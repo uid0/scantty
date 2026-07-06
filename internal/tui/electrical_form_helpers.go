@@ -60,6 +60,8 @@ func elecFieldHelp(kindOf func(int) assetFieldKind, current func() (int, bool)) 
 			kindHelp = "space/←→ change"
 		case akPicker:
 			kindHelp = "space to pick"
+		case akMultiPicker:
+			kindHelp = "space to choose"
 		}
 	}
 	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
@@ -95,6 +97,47 @@ func elecPickView(what string, search *textinput.Model, typing bool, opts []item
 			b.WriteString(caret + StyleMuted.Render(opt.label) + "\n")
 		default:
 			b.WriteString(caret + opt.label + "\n")
+		}
+	}
+	if end < len(opts) {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(opts)-end)) + "\n")
+	}
+	return b.String()
+}
+
+// elecMultiPickView renders the multi-select picker sub-phase (the Disconnect
+// form's required_loto_devices field). Space toggles a row in/out of the
+// selection without closing; enter closes. Mirrors elecPickView but prefixes
+// each row with a [x]/[ ] checkbox driven by the selected predicate.
+func elecMultiPickView(what string, search *textinput.Model, typing bool, opts []itemPickOption, cursor int, selected func(id int) bool) string {
+	var b strings.Builder
+	b.WriteString(StyleMuted.Render("Choose "+what+" — j/k move · space toggle · / filter · enter done · esc back") + "\n\n")
+	if typing || search.Value() != "" {
+		b.WriteString(StyleMuted.Render("filter: ") + search.View() + "\n\n")
+	}
+	if len(opts) == 0 {
+		b.WriteString(StyleMuted.Render("(no devices — add them in the OMS web LOTO inventory)"))
+		return b.String()
+	}
+	const window = 12
+	start, end := fieldWindow(cursor, len(opts), window)
+	if start > 0 {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
+	}
+	for i := start; i < end; i++ {
+		opt := opts[i]
+		caret := "    "
+		if i == cursor {
+			caret = "  ▸ "
+		}
+		box := "[ ] "
+		if selected(opt.id) {
+			box = "[x] "
+		}
+		if i == cursor {
+			b.WriteString(StyleSidebarItemActive.Render(caret+box+opt.label) + "\n")
+		} else {
+			b.WriteString(caret + box + opt.label + "\n")
 		}
 	}
 	if end < len(opts) {

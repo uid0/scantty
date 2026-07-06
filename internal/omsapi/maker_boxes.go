@@ -145,3 +145,64 @@ func (c *Client) ConvertMakerBox(ctx context.Context, id int) (*MakerBox, error)
 	}
 	return &out, nil
 }
+
+// MakerBoxWrite is the create/edit payload for a maker box, mirroring the
+// writable fields of MakerBoxSerializer. The React web app has NO row-CRUD form
+// — a bin's lifecycle there is scan → pre-convert → convert — so this mirrors
+// the Django admin (the only human CRUD surface) and covers the FULL writable
+// serializer set so an operator can create or correct any field
+// ([[scantty-makerbox-backend]]). MakerBoxViewSet is a ModelViewSet, so
+// create/update/delete all exist; every verb is staff-gated (Logistics), a
+// non-staff user 4xxs on save/delete.
+//
+// Every field is sent on every request (no omitempty) so a PATCH can clear a
+// value — matching the CategoryWrite / LocationWrite convention. Field notes:
+//   - BinID is a *string: nil → JSON null. The bin_id partial-unique index is
+//     `WHERE bin_id IS NOT NULL`, so a blank bin MUST serialize as null, never
+//     "" (two blank ""s would violate the constraint); an unallocated /
+//     pre-conversion row carries null.
+//   - Status is required (CharField with choices, NOT nullable); the model
+//     default is "unassigned".
+//   - IdentitySource is blank-allowed ("" clears it — model blank=True
+//     default="").
+//   - The four *string datetimes are ISO-8601 / RFC3339 (DRF DateTimeField
+//     rejects date-only); nil → JSON null clears the field.
+type MakerBoxWrite struct {
+	BinID                 *string `json:"bin_id"`
+	AssignedUsername      string  `json:"assigned_username"`
+	FirstName             string  `json:"first_name"`
+	LastName              string  `json:"last_name"`
+	Email                 string  `json:"email"`
+	Status                string  `json:"status"`
+	IdentitySource        string  `json:"identity_source"`
+	AssignedAt            *string `json:"assigned_at"`
+	ExpiresAt             *string `json:"expires_at"`
+	ConversionCompletedAt *string `json:"conversion_completed_at"`
+	PaidAt                *string `json:"paid_at"`
+	Notes                 string  `json:"notes"`
+}
+
+// CreateMakerBox POSTs a new bin row to the maker-boxes collection.
+func (c *Client) CreateMakerBox(ctx context.Context, body MakerBoxWrite) (*MakerBox, error) {
+	var out MakerBox
+	if err := c.Post(ctx, "/api/maker-boxes/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateMakerBox PATCHes an existing bin row by its integer id.
+func (c *Client) UpdateMakerBox(ctx context.Context, id int, body MakerBoxWrite) (*MakerBox, error) {
+	var out MakerBox
+	if err := c.Patch(ctx, fmt.Sprintf("/api/maker-boxes/%d/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteMakerBox removes a bin row. The backend releases the row's WHERE
+// fiducial (AprilTag) before deleting; no client concern. Returns 204 on
+// success, 4xx if the caller lacks Logistics/staff access.
+func (c *Client) DeleteMakerBox(ctx context.Context, id int) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/maker-boxes/%d/", id))
+}
