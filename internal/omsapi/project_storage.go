@@ -105,3 +105,25 @@ func (c *Client) MarkProjectStorageStintPrinted(ctx context.Context, stintID, no
 	path := "/api/project-storage/stints/" + stintID + "/mark-printed/"
 	return c.Post(ctx, path, map[string]string{"note": note}, nil)
 }
+
+// ReprintProjectStorageStint re-surfaces a stint in the Pi-daemon print
+// queue so a warden can re-print its claim ticket. The daemon only prints
+// stints whose printed_at is NULL, and mark-printed sets it; reprint is
+// the symmetric inverse — it clears printed_at so the next daemon poll
+// picks the stint back up and re-prints the label. note is surfaced in the
+// OMS audit log.
+//
+// This posts to the mirror of mark-printed:
+//
+//	POST /api/project-storage/stints/{stintID}/reprint/
+//
+// NOTE: that backend @action does not exist yet. The stint viewset is a
+// ReadOnlyModelViewSet, printed_at is not an exposed serializer field, and
+// the only current reprint path is a warden clearing printed_at by hand in
+// the Django admin (see the Pi print-daemon README). Landing this endpoint
+// is tracked as an OMS follow-up; until then the call returns the server's
+// 404/405, which the caller surfaces as a "reprint failed" status.
+func (c *Client) ReprintProjectStorageStint(ctx context.Context, stintID, note string) error {
+	path := "/api/project-storage/stints/" + stintID + "/reprint/"
+	return c.Post(ctx, path, map[string]string{"note": note}, nil)
+}
