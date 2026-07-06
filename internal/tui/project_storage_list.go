@@ -11,9 +11,10 @@ import (
 // label preview. Mirrors the OMS web "items overview" surface.
 func NewProjectStorageListScreen(deps Deps) *ListScreen {
 	return NewListScreen(deps, "Project Storage", listScreenSpec{
-		kind:   "project_storage",
-		loader: loadProjectStorageStints,
-		detail: func(id string, d Deps) Screen { return NewProjectStorageDetailScreen(d, id) },
+		kind:      "project_storage",
+		loader:    loadProjectStorageStints,
+		detail:    func(id string, d Deps) Screen { return NewProjectStorageDetailScreen(d, id) },
+		newScreen: func(d Deps) Screen { return NewProjectStorageFormScreen(d) },
 	})
 }
 

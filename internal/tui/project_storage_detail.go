@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -26,6 +27,14 @@ type ProjectStorageDetailScreen struct {
 	terminalHeight    int
 	confirmingReprint bool
 	reprinting        bool
+
+	// mark-removed action state. Because the backend has no per-item model, the
+	// "remove" is the whole-stint mark-removed transition (mirrors the web's
+	// markRemoved). removeNote captures the optional audit note; the screen goes
+	// raw-input while it's up so the typed note + enter/esc land here.
+	confirmingRemove bool
+	removing         bool
+	removeNote       textinput.Model
 }
 
 type projectStorageDetailLoadedMsg struct {
@@ -37,19 +46,30 @@ type projectStorageReprintedMsg struct {
 	err error
 }
 
-// WantsRawInput claims every keypress only while the re-print confirmation
-// is up, so y/n/esc land here instead of the root's global hotkeys. In the
-// normal view the screen stays non-raw so workspace switching and the
-// global shortcuts keep working. Mirrors InventoryDetailScreen's delete
-// confirm.
-func (s *ProjectStorageDetailScreen) WantsRawInput() bool { return s.confirmingReprint }
+type projectStorageRemovedMsg struct {
+	err error
+}
+
+// WantsRawInput claims every keypress while a confirmation is up (re-print's
+// y/n or the mark-removed note prompt), so those keys land here instead of the
+// root's global hotkeys. In the normal view the screen stays non-raw so
+// workspace switching and the global shortcuts keep working. Mirrors
+// InventoryDetailScreen's delete confirm.
+func (s *ProjectStorageDetailScreen) WantsRawInput() bool {
+	return s.confirmingReprint || s.confirmingRemove
+}
 
 func NewProjectStorageDetailScreen(deps Deps, stintID string) *ProjectStorageDetailScreen {
+	note := textinput.New()
+	note.Prompt = ""
+	note.Placeholder = "optional note"
+	note.CharLimit = 200
 	return &ProjectStorageDetailScreen{
-		deps:     deps,
-		stintID:  stintID,
-		loading:  true,
-		scroller: NewTextScroller(defaultDetailHeight),
+		deps:       deps,
+		stintID:    stintID,
+		loading:    true,
+		scroller:   NewTextScroller(defaultDetailHeight),
+		removeNote: note,
 	}
 }
 
@@ -97,9 +117,26 @@ func (s *ProjectStorageDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loading = true
 		s.loadErr = ""
 		return s, tea.Batch(Status("queued for reprint", StatusOK), s.Init())
+	case projectStorageRemovedMsg:
+		s.removing = false
+		s.confirmingRemove = false
+		s.removeNote.Blur()
+		if m.err != nil {
+			return s, Status("remove failed: "+m.err.Error(), StatusError)
+		}
+		// Re-fetch so the new "removed" event + status show in the timeline.
+		s.loading = true
+		s.loadErr = ""
+		return s, tea.Batch(Status("stint marked removed", StatusOK), s.Init())
 	case tea.KeyMsg:
 		if s.confirmingReprint {
 			return s.updateConfirmReprint(m)
+		}
+		// The remove-note prompt is a raw-input sub-phase; route keys to it
+		// BEFORE the scroller so note characters (j/k/g/G) are typed, not
+		// swallowed as scroll commands.
+		if s.confirmingRemove {
+			return s.updateConfirmRemove(m)
 		}
 		if s.scroller.Handle(m) {
 			return s, nil
@@ -109,6 +146,20 @@ func (s *ProjectStorageDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loading = true
 			s.loadErr = ""
 			return s, s.Init()
+		case "x":
+			// Mark the WHOLE stint removed — the only "remove" OMS has (no item
+			// model). Guard an already-removed stint with a clear message rather
+			// than firing a request the backend would 409.
+			if s.stint == nil {
+				return s, nil
+			}
+			if projectStorageIsRemoved(s.stint) {
+				return s, Status("stint already removed", StatusWarn)
+			}
+			s.confirmingRemove = true
+			s.removeNote.SetValue("")
+			s.removeNote.Focus()
+			return s, textinput.Blink
 		case "p":
 			// Re-print the claim ticket by re-surfacing the stint in the
 			// Pi-daemon print queue. Guarded by a y/n confirm since it
@@ -151,6 +202,42 @@ func (s *ProjectStorageDetailScreen) updateConfirmReprint(m tea.KeyMsg) (Screen,
 	return s, nil
 }
 
+// updateConfirmRemove handles the mark-removed note prompt. The screen is raw
+// (WantsRawInput) here, so every key reaches us: esc cancels, enter confirms the
+// removal with whatever optional note has been typed, and everything else edits
+// the note. Mirrors the web markRemoved's note prompt — the note is surfaced in
+// the OMS audit log.
+func (s *ProjectStorageDetailScreen) updateConfirmRemove(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.removing {
+		return s, nil
+	}
+	switch m.String() {
+	case "esc":
+		s.confirmingRemove = false
+		s.removeNote.Blur()
+		return s, nil
+	case "enter":
+		if s.stint == nil {
+			s.confirmingRemove = false
+			return s, nil
+		}
+		s.removing = true
+		deps := s.deps
+		ctx := deps.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		stintID := s.stintID
+		note := strings.TrimSpace(s.removeNote.Value())
+		return s, func() tea.Msg {
+			return projectStorageRemovedMsg{err: deps.OMS.MarkProjectStorageStintRemoved(ctx, stintID, note)}
+		}
+	}
+	var cmd tea.Cmd
+	s.removeNote, cmd = s.removeNote.Update(m)
+	return s, cmd
+}
+
 func (s *ProjectStorageDetailScreen) View() string {
 	if s.loading {
 		return StyleMuted.Render("Loading stint…")
@@ -171,7 +258,18 @@ func (s *ProjectStorageDetailScreen) View() string {
 		}
 		return s.scroller.View() + "\n\n" + prompt
 	}
-	hint := "j/k scroll · pgup/pgdn page · p re-print ticket · r refresh · esc back"
+	if s.confirmingRemove {
+		var prompt string
+		if s.removing {
+			prompt = StyleMuted.Render("Marking removed…")
+		} else {
+			prompt = StyleStatusWarn.Render("Mark stint "+s.stintID+" REMOVED — frees its tag, can't be undone.") + "\n" +
+				StyleMuted.Render("note: ") + s.removeNote.View() + "\n" +
+				StyleMuted.Render("enter confirm · esc cancel")
+		}
+		return s.scroller.View() + "\n\n" + prompt
+	}
+	hint := "j/k scroll · p re-print · x remove · r refresh · esc back"
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }
 
@@ -289,6 +387,20 @@ func (s *ProjectStorageDetailScreen) renderLabelPreview() string {
 	b.WriteString(StyleMuted.Render("text of what the printed label carries — not the image itself") + "\n")
 	b.WriteString(boxText(lines))
 	return b.String()
+}
+
+// projectStorageIsRemoved reports whether a stint has already been marked
+// removed — either the computed status says so or removed_at is stamped. Used to
+// pre-guard the mark-removed action so an operator gets a clear "already
+// removed" message instead of the backend's 409.
+func projectStorageIsRemoved(st *omsapi.ProjectStorageStint) bool {
+	if st == nil {
+		return false
+	}
+	if st.Status == "removed" {
+		return true
+	}
+	return st.RemovedAt != nil && !st.RemovedAt.IsZero()
 }
 
 // projectStorageOwner is the human name for a stint, preferring the
