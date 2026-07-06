@@ -268,6 +268,15 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSInventory)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
+		case "T":
+			// Shift+t opens the climate Thermostat management list (create /
+			// edit / delete). Uppercase like the other management surfaces; both
+			// T and lowercase t were free in the global set.
+			if _, ok := r.screen.(*ThermostatListScreen); !ok {
+				r.screen = NewThermostatListScreen(r.deps)
+				r.nav.SetActive(WSFacilities)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
 		case "q":
 			if _, ok := r.screen.(*WelcomeScreen); ok {
 				return r, tea.Quit
