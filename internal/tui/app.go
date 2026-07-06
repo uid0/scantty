@@ -387,11 +387,11 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 			detail: func(id string, d Deps) Screen { return NewWorkOrderDetailScreen(d, id) },
 		})
 	case WSSIGs:
-		return NewListScreen(deps, "SIGs", listScreenSpec{
-			kind:   "sigs",
-			loader: loadSIGs,
-			detail: func(id string, d Deps) Screen { return NewSIGDetailScreen(d, id) },
-		})
+		// The SIGs nav workspace ('7') is now the create/edit/delete surface
+		// (SIGListScreen): n new, E edit, x delete, enter drills into member
+		// management, v opens the read-only detail. The generic browse list it
+		// replaced only supported enter→detail.
+		return NewSIGListScreen(deps)
 	case WSReports:
 		// Reports currently surfaces the serialized-component consumption
 		// forecast (days-until-stockout / reorder point / low-stock). It's
