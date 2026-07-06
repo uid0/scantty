@@ -509,3 +509,236 @@ func (c *Client) UpdatePowerCircuit(ctx context.Context, id int, body PowerCircu
 func (c *Client) DeletePowerCircuit(ctx context.Context, id int) error {
 	return c.Delete(ctx, fmt.Sprintf("/api/electrical/circuits-crud/%d/", id))
 }
+
+// ===========================================================================
+// PowerOutlet / Disconnect CRUD (Bead B) — the leaf tier of the power topology.
+// PowerOutlet writes go to /api/electrical/outlets-crud/ (the power_router,
+// IsStaffUser); Disconnect writes go to /api/electrical-circuits/disconnects/
+// (the legacy router, also IsStaffUser). Both mirror the *Detail read / *Write
+// contract style established for panel/breaker/circuit above.
+//
+// DECODE-DRIFT NOTES:
+//   - PowerOutlet's location fk is required (int) and disconnect is a NULLABLE fk
+//     (*int); the matching disconnect_label / *_name strings are separate
+//     read-only fields.
+//   - Disconnect carries denormalized panel_name / breaker_position /
+//     circuit_label read-only context, a nullable location (*int) + amperage
+//     (*int), and the M2M required_loto_devices (read: []LOTODevice objects;
+//     write: the separate required_loto_device_ids []int list). The write-only
+//     photo ImageField is intentionally unmodeled (no TTY file picker) — extra
+//     read fields just decode-drop.
+// ===========================================================================
+
+// PowerOutletDetail is the full CRUD representation of an outlet returned by
+// GET/POST/PATCH /api/electrical/outlets-crud/[{id}/] (and the ?circuit= list).
+type PowerOutletDetail struct {
+	ID                  int       `json:"id"`
+	Circuit             int       `json:"circuit"`
+	CircuitLabel        string    `json:"circuit_label"`
+	Location            int       `json:"location"`
+	LocationName        string    `json:"location_name"`
+	Disconnect          *int      `json:"disconnect"`
+	DisconnectLabel     string    `json:"disconnect_label"`
+	OutletType          string    `json:"outlet_type"`
+	Label               string    `json:"label"`
+	LocationDescription string    `json:"location_description"`
+	Status              string    `json:"status"`
+	Notes               string    `json:"notes"`
+	NeedsReview         bool      `json:"needs_review"`
+	CreatedAt           time.Time `json:"created_at,omitempty"`
+	UpdatedAt           time.Time `json:"updated_at,omitempty"`
+}
+
+// DisconnectDetail is the full CRUD representation of a disconnect returned by
+// GET/POST/PATCH /api/electrical-circuits/disconnects/[{id}/] (and the ?circuit=
+// list). location + amperage are nullable; required_loto_devices carries the
+// full device payloads on read (writes use DisconnectWrite.RequiredLOTODeviceIDs).
+type DisconnectDetail struct {
+	ID                  int          `json:"id"`
+	Circuit             int          `json:"circuit"`
+	CircuitLabel        string       `json:"circuit_label"`
+	PanelName           string       `json:"panel_name"`
+	BreakerPosition     string       `json:"breaker_position"`
+	Location            *int         `json:"location"`
+	LocationName        string       `json:"location_name"`
+	Label               string       `json:"label"`
+	DisconnectType      string       `json:"disconnect_type"`
+	Amperage            *int         `json:"amperage"`
+	FuseSize            string       `json:"fuse_size"`
+	IsLockable          bool         `json:"is_lockable"`
+	Notes               string       `json:"notes"`
+	RequiredLOTODevices []LOTODevice `json:"required_loto_devices"`
+	NeedsReview         bool         `json:"needs_review"`
+	CreatedAt           time.Time    `json:"created_at,omitempty"`
+	UpdatedAt           time.Time    `json:"updated_at,omitempty"`
+}
+
+// PowerOutletWrite is the create/edit payload for an outlet. circuit + location
+// are required int fks. disconnect is a NULLABLE fk (pointer, no omitempty → a
+// nil marshals to JSON null, accepted on create and clearing on edit). The
+// remaining string/choice/bool fields always serialize so an edit can clear a
+// text field or flip needs_review off. outlet_type is a NEMA code; status is
+// active|inactive|capped. Constraint: unique(location, label) when label is
+// non-empty — the caller surfaces the 400 as a clear "label already used at this
+// location" message.
+type PowerOutletWrite struct {
+	Circuit             int    `json:"circuit"`
+	Location            int    `json:"location"`
+	Disconnect          *int   `json:"disconnect"`
+	OutletType          string `json:"outlet_type"`
+	Label               string `json:"label"`
+	LocationDescription string `json:"location_description"`
+	Status              string `json:"status"`
+	Notes               string `json:"notes"`
+	NeedsReview         bool   `json:"needs_review"`
+}
+
+// DisconnectWrite is the create/edit payload for a disconnect. circuit is a
+// required int fk; location + amperage are nullable (pointers, no omitempty →
+// nil marshals to null, clearing on edit). label + disconnect_type are required.
+// required_loto_device_ids is the write-only M2M id list (the read shape returns
+// required_loto_devices objects); it ALWAYS serializes as a JSON array (never
+// null — DRF's PrimaryKeyRelatedField(many=True) rejects null) so an edit can
+// clear the set to []. photo is intentionally absent (web-only ImageField). The
+// backend clean() auto-flags needs_review for inconsistent combinations — the
+// form just sends the entered value.
+type DisconnectWrite struct {
+	Circuit               int    `json:"circuit"`
+	Location              *int   `json:"location"`
+	Label                 string `json:"label"`
+	DisconnectType        string `json:"disconnect_type"`
+	Amperage              *int   `json:"amperage"`
+	FuseSize              string `json:"fuse_size"`
+	IsLockable            bool   `json:"is_lockable"`
+	Notes                 string `json:"notes"`
+	RequiredLOTODeviceIDs []int  `json:"required_loto_device_ids"`
+	NeedsReview           bool   `json:"needs_review"`
+}
+
+// --- PowerOutlet CRUD ---
+
+// ListPowerOutlets returns outlets, scoped to one circuit when circuitID != 0
+// (GET /outlets-crud/?circuit=<id>), unwrapping the DRF page envelope.
+func (c *Client) ListPowerOutlets(ctx context.Context, circuitID int) ([]PowerOutletDetail, error) {
+	var q url.Values
+	if circuitID != 0 {
+		q = url.Values{}
+		q.Set("circuit", strconv.Itoa(circuitID))
+	}
+	var all []PowerOutletDetail
+	if err := IterPages[PowerOutletDetail](ctx, c, "/api/electrical/outlets-crud/", q, func(batch []PowerOutletDetail) error {
+		all = append(all, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
+func (c *Client) GetPowerOutlet(ctx context.Context, id int) (*PowerOutletDetail, error) {
+	var out PowerOutletDetail
+	if err := c.Get(ctx, fmt.Sprintf("/api/electrical/outlets-crud/%d/", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) CreatePowerOutlet(ctx context.Context, body PowerOutletWrite) (*PowerOutletDetail, error) {
+	var out PowerOutletDetail
+	if err := c.Post(ctx, "/api/electrical/outlets-crud/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdatePowerOutlet(ctx context.Context, id int, body PowerOutletWrite) (*PowerOutletDetail, error) {
+	var out PowerOutletDetail
+	if err := c.Patch(ctx, fmt.Sprintf("/api/electrical/outlets-crud/%d/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeletePowerOutlet removes an outlet. An outlet is a leaf (nothing FK-references
+// it under PROTECT), so the delete always succeeds barring auth/network errors.
+func (c *Client) DeletePowerOutlet(ctx context.Context, id int) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/electrical/outlets-crud/%d/", id))
+}
+
+// --- Disconnect CRUD ---
+
+// ListDisconnects returns disconnects, scoped to one circuit when circuitID != 0
+// (GET /disconnects/?circuit=<id>), unwrapping the DRF page envelope.
+func (c *Client) ListDisconnects(ctx context.Context, circuitID int) ([]DisconnectDetail, error) {
+	var q url.Values
+	if circuitID != 0 {
+		q = url.Values{}
+		q.Set("circuit", strconv.Itoa(circuitID))
+	}
+	var all []DisconnectDetail
+	if err := IterPages[DisconnectDetail](ctx, c, "/api/electrical-circuits/disconnects/", q, func(batch []DisconnectDetail) error {
+		all = append(all, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
+func (c *Client) GetDisconnect(ctx context.Context, id int) (*DisconnectDetail, error) {
+	var out DisconnectDetail
+	if err := c.Get(ctx, fmt.Sprintf("/api/electrical-circuits/disconnects/%d/", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// normalizeDisconnectWrite guards the M2M id list against a nil slice, which
+// would marshal to JSON null and be rejected by the many=True serializer field.
+func normalizeDisconnectWrite(body DisconnectWrite) DisconnectWrite {
+	if body.RequiredLOTODeviceIDs == nil {
+		body.RequiredLOTODeviceIDs = []int{}
+	}
+	return body
+}
+
+func (c *Client) CreateDisconnect(ctx context.Context, body DisconnectWrite) (*DisconnectDetail, error) {
+	var out DisconnectDetail
+	if err := c.Post(ctx, "/api/electrical-circuits/disconnects/", normalizeDisconnectWrite(body), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateDisconnect(ctx context.Context, id int, body DisconnectWrite) (*DisconnectDetail, error) {
+	var out DisconnectDetail
+	if err := c.Patch(ctx, fmt.Sprintf("/api/electrical-circuits/disconnects/%d/", id), normalizeDisconnectWrite(body), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteDisconnect removes a disconnect. Both reverse FKs that point at a
+// Disconnect (PowerOutlet.disconnect and Asset.disconnect) are on_delete=SET_NULL,
+// so the delete is NOT FK-protected — it nulls those references rather than
+// blocking. Any 4xx is still surfaced to the caller defensively.
+func (c *Client) DeleteDisconnect(ctx context.Context, id int) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/electrical-circuits/disconnects/%d/", id))
+}
+
+// --- LOTO device reader (for the disconnect required_loto_devices multi-picker) ---
+
+// ListAllLOTODevices pages through the entire LOTO device inventory to populate
+// the disconnect form's required_loto_devices multi-picker. The device inventory
+// is small + bounded, so paging the full set is cheap (mirrors
+// ListAllPowerCircuits). Reuses the LOTODevice read struct from loto.go.
+func (c *Client) ListAllLOTODevices(ctx context.Context) ([]LOTODevice, error) {
+	var all []LOTODevice
+	if err := IterPages[LOTODevice](ctx, c, "/api/loto/devices/", nil, func(batch []LOTODevice) error {
+		all = append(all, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
