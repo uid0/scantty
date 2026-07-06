@@ -58,7 +58,7 @@ func (c *Client) CreateAuthorization(ctx context.Context, a Authorization) (*Aut
 }
 
 func (c *Client) RevokeAuthorization(ctx context.Context, id string) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/authorizations/%s/revoke", id), nil, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/authorizations/%s/revoke/", id), nil, nil)
 }
 
 type ClassroomEnrollRequest struct {
@@ -104,7 +104,7 @@ func (c *Client) CreateLockout(ctx context.Context, l Lockout) (*Lockout, error)
 }
 
 func (c *Client) Unlock(ctx context.Context, id string) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/lockouts/%s/unlock", id), nil, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/lockouts/%s/unlock/", id), nil, nil)
 }
 
 type OperationalMode struct {
@@ -127,11 +127,11 @@ func (c *Client) ListOperationalModes(ctx context.Context, q url.Values) ([]Oper
 }
 
 func (c *Client) EnableClassroomMode(ctx context.Context, id string) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/operational-modes/%s/enable_classroom_mode", id), nil, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/operational-modes/%s/enable_classroom_mode/", id), nil, nil)
 }
 
 func (c *Client) DisableClassroomMode(ctx context.Context, id string) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/operational-modes/%s/disable_classroom_mode", id), nil, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/operational-modes/%s/disable_classroom_mode/", id), nil, nil)
 }
 
 type Usage struct {
@@ -154,5 +154,5 @@ func (c *Client) ListUsage(ctx context.Context, q url.Values) ([]Usage, error) {
 }
 
 func (c *Client) EndSession(ctx context.Context, id string) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/usage/%s/end_session", id), nil, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/usage/%s/end_session/", id), nil, nil)
 }

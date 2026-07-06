@@ -63,7 +63,7 @@ func (c *Client) GetDevice(ctx context.Context, id string) (*Device, error) {
 }
 
 func (c *Client) EnableDevice(ctx context.Context, id string) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/enable", id), nil, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/enable/", id), nil, nil)
 }
 
 type DisableRequest struct {
@@ -71,7 +71,7 @@ type DisableRequest struct {
 }
 
 func (c *Client) DisableDevice(ctx context.Context, id string, req DisableRequest) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/disable", id), req, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/disable/", id), req, nil)
 }
 
 // RelayChannelRequest is the POST body for per-channel power-relay control
@@ -85,11 +85,11 @@ type RelayChannelRequest struct {
 // emits a signed power_set command — the verb the firmware's power_relay
 // capability handles (channel + action).
 func (c *Client) SetRelayChannel(ctx context.Context, id string, req RelayChannelRequest) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/relay-channel", id), req, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/relay-channel/", id), req, nil)
 }
 
 func (c *Client) RequestStatus(ctx context.Context, id string) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/status", id), nil, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/status/", id), nil, nil)
 }
 
 type IdentifyRequest struct {
@@ -97,15 +97,15 @@ type IdentifyRequest struct {
 }
 
 func (c *Client) IdentifyDevice(ctx context.Context, id string, req IdentifyRequest) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/identify", id), req, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/identify/", id), req, nil)
 }
 
 func (c *Client) RestartDevice(ctx context.Context, id string) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/restart", id), nil, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/restart/", id), nil, nil)
 }
 
 func (c *Client) PingDevice(ctx context.Context, id string) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/ping", id), nil, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/ping/", id), nil, nil)
 }
 
 type BlinkRequest struct {
@@ -114,7 +114,7 @@ type BlinkRequest struct {
 }
 
 func (c *Client) BlinkDevice(ctx context.Context, id string, req BlinkRequest) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/blink", id), req, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/blink/", id), req, nil)
 }
 
 type FirmwareUpdateRequest struct {
@@ -124,7 +124,7 @@ type FirmwareUpdateRequest struct {
 }
 
 func (c *Client) UpdateDeviceFirmware(ctx context.Context, id string, req FirmwareUpdateRequest) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/firmware-update", id), req, nil)
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/command/firmware-update/", id), req, nil)
 }
 
 // IndicatorTestRequest is the body for POST devices/{id}/indicator/test/ — an
@@ -186,7 +186,7 @@ func (c *Client) RecentCommands(ctx context.Context, id string, limit int) ([]De
 		q.Set("limit", fmt.Sprintf("%d", limit))
 	}
 	var out MaybeList[DeviceCommand]
-	if err := c.Get(ctx, fmt.Sprintf("/api/forgekey/devices/%s/recent-commands", id), q, &out); err != nil {
+	if err := c.Get(ctx, fmt.Sprintf("/api/forgekey/devices/%s/recent-commands/", id), q, &out); err != nil {
 		return nil, err
 	}
 	return out.Items, nil
@@ -213,7 +213,7 @@ func (c *Client) DeviceOccupancy(ctx context.Context, id string, since string) (
 		q.Set("since", since)
 	}
 	var out OccupancyResponse
-	if err := c.Get(ctx, fmt.Sprintf("/api/forgekey/devices/%s/occupancy", id), q, &out); err != nil {
+	if err := c.Get(ctx, fmt.Sprintf("/api/forgekey/devices/%s/occupancy/", id), q, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
