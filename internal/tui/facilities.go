@@ -98,6 +98,15 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				},
 				implemented: true,
 			},
+			{
+				hotkey:   'r',
+				label:    "Certificates (PKI)",
+				subtitle: "internal CA + issued device certs (read-only) · rotate root CA",
+				build: func(d Deps) (Screen, Workspace) {
+					return NewForgeKeyCertificatesScreen(d), WSForgeKey
+				},
+				implemented: true,
+			},
 		},
 	}
 }
