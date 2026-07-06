@@ -242,6 +242,18 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.screen = NewDonationsScreen(r.deps)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
+		case "F":
+			// Shift+f opens the ForgeKey device-type management list (create /
+			// edit / delete). Uppercase because it rides the "uppercase letter =
+			// open a management surface" convention (G / L / U / V); it sits in
+			// the ForgeKey workspace alongside firmware (lowercase f) and e-paper
+			// (e), reusing the same upper/lower-of-a-letter pairing as N/n, I/i,
+			// A/a — here F = device types, f = firmware, both ForgeKey.
+			if _, ok := r.screen.(*DeviceTypeListScreen); !ok {
+				r.screen = NewDeviceTypeListScreen(r.deps)
+				r.nav.SetActive(WSForgeKey)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
 		case "G":
 			// Shift+g opens the inventory Category management list (create /
 			// edit / delete). Uppercase because the taxonomy lists ride the
