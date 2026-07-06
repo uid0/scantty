@@ -117,6 +117,23 @@ func (c *Client) ListItems(ctx context.Context, q url.Values) (*Page[Item], erro
 	return GetPage[Item](ctx, c, "/api/inventory/items/", q)
 }
 
+// ListAllItems pages through every inventory item. Pickers that must be able to
+// reach any item — the asset-part form's "part" FK, which is required — need the
+// full set: truncating to page 1 (as the plain items list does) would make an
+// item beyond the first page unselectable, and on edit would drop a linked part
+// that lives on a later page. Mirrors ListAllAssets; item counts are bounded per
+// install, so the extra pages are cheap.
+func (c *Client) ListAllItems(ctx context.Context) ([]Item, error) {
+	var all []Item
+	if err := IterPages[Item](ctx, c, "/api/inventory/items/", nil, func(batch []Item) error {
+		all = append(all, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
 func (c *Client) GetItem(ctx context.Context, id string) (*Item, error) {
 	var out Item
 	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/", id), nil, &out); err != nil {
