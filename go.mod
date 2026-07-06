@@ -1,13 +1,13 @@
 module github.com/uid0/scantty
 
-go 1.26.1
+go 1.26.4
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/getsentry/sentry-go v0.46.2
-	modernc.org/sqlite v1.50.1
+	github.com/getsentry/sentry-go v0.47.0
+	modernc.org/sqlite v1.53.0
 )
 
 require (
@@ -34,9 +34,9 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
-	modernc.org/libc v1.72.3 // indirect
+	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
+	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
