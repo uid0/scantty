@@ -89,6 +89,15 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				},
 				implemented: true,
 			},
+			{
+				hotkey:   't',
+				label:    "Thermostats",
+				subtitle: "climate registry → create / edit / delete, kill-breaker source",
+				build: func(d Deps) (Screen, Workspace) {
+					return NewThermostatListScreen(d), WSFacilities
+				},
+				implemented: true,
+			},
 		},
 	}
 }
@@ -161,6 +170,6 @@ func (s *FacilitiesScreen) View() string {
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("More facilities surfaces (LOTO, temperature, vendors) ship as separate hotkeys; see the welcome screen for the full list."))
+	b.WriteString(StyleMuted.Render("More facilities surfaces (LOTO, vendors) ship as separate hotkeys; see the welcome screen for the full list."))
 	return b.String()
 }
