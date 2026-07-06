@@ -3,35 +3,84 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/forgekeyapi"
 )
 
+// fkDetailMode selects the device-detail overlay. fkDetailView is the normal
+// read-only body; fkDetailIndicatorTest is the send-a-preview form, which
+// captures every key via WantsRawInput so the global hotkey layer can't steal
+// the period textinput's characters or the cycle keys.
+type fkDetailMode int
+
+const (
+	fkDetailView fkDetailMode = iota
+	fkDetailIndicatorTest
+)
+
+// Indicator-test option sets — mirror the web IndicatorManagementCard
+// (TEST_COLORS / TEST_BRIGHTNESS / TEST_PATTERNS). indicatorBlinkPatterns is
+// the web isBlinkPattern() set: the patterns that carry a period_ms.
+var (
+	indicatorColors     = []string{"green", "red", "purple", "blue", "yellow", "white"}
+	indicatorBrightness = []string{"low", "high"}
+	indicatorPatterns   = []string{"solid", "blink", "slow_blink", "breathe", "off"}
+)
+
+func indicatorIsBlinkPattern(pattern string) bool {
+	switch pattern {
+	case "blink", "slow_blink", "breathe":
+		return true
+	}
+	return false
+}
+
 type ForgeKeyDeviceDetailScreen struct {
-	deps      Deps
-	devID     string
-	device    *forgekeyapi.Device
-	commands  []forgekeyapi.DeviceCommand
-	temp      *forgekeyapi.TemperatureResponse
-	loading   bool
-	loadErr   string
-	actionMsg string
+	deps        Deps
+	devID       string
+	device      *forgekeyapi.Device
+	commands    []forgekeyapi.DeviceCommand
+	temp        *forgekeyapi.TemperatureResponse
+	isIndicator bool
+	loading     bool
+	loadErr     string
+	actionMsg   string
+
+	mode fkDetailMode
+
+	// Indicator-test form. Defaults mirror the web card: green / high / solid,
+	// period 1500ms (only sent for blink patterns).
+	itColorIdx      int
+	itBrightnessIdx int
+	itPatternIdx    int
+	itPeriodIn      textinput.Model
+	itFocus         int // 0=color, 1=brightness, 2=pattern, 3=period
+	itErr           string
+	itPending       bool
 }
 
 type fkDeviceLoadedMsg struct {
-	device   *forgekeyapi.Device
-	commands []forgekeyapi.DeviceCommand
-	temp     *forgekeyapi.TemperatureResponse
-	err      error
+	device      *forgekeyapi.Device
+	commands    []forgekeyapi.DeviceCommand
+	temp        *forgekeyapi.TemperatureResponse
+	isIndicator bool
+	err         error
 }
 
 type fkCommandResultMsg struct {
 	action string
 	err    error
+}
+
+type fkIndicatorTestMsg struct {
+	resp *forgekeyapi.IndicatorTestResponse
+	err  error
 }
 
 func NewForgeKeyDeviceDetailScreen(deps Deps, id string) *ForgeKeyDeviceDetailScreen {
@@ -46,6 +95,11 @@ func (s *ForgeKeyDeviceDetailScreen) Title() string {
 }
 
 func (s *ForgeKeyDeviceDetailScreen) Init() tea.Cmd { return s.load() }
+
+// WantsRawInput routes every key to the screen while the indicator-test form is
+// open so the cycle keys and the period textinput receive characters the global
+// dispatcher would otherwise claim.
+func (s *ForgeKeyDeviceDetailScreen) WantsRawInput() bool { return s.mode != fkDetailView }
 
 func (s *ForgeKeyDeviceDetailScreen) load() tea.Cmd {
 	deps := s.deps
@@ -67,8 +121,30 @@ func (s *ForgeKeyDeviceDetailScreen) load() tea.Cmd {
 			// readings array which would still render an empty section.
 			temp, _ = deps.ForgeKey.GetDeviceTemperature(ctx, id, "24h")
 		}
-		return fkDeviceLoadedMsg{device: dev, commands: cmds, temp: temp}
+		// Resolve whether this is an indicator device so the indicator-test
+		// control is offered only where it applies — same rule as the web card
+		// (device_type.code == "indicator", falling back to the type name).
+		types, _ := deps.ForgeKey.ListDeviceTypes(ctx)
+		return fkDeviceLoadedMsg{device: dev, commands: cmds, temp: temp, isIndicator: deviceIsIndicator(dev, types)}
 	}
+}
+
+// deviceIsIndicator mirrors IndicatorManagementCard's detection: match the
+// device's type against the "indicator" device-type code, falling back to the
+// stable human name when the code lookup can't resolve.
+func deviceIsIndicator(d *forgekeyapi.Device, types []forgekeyapi.DeviceType) bool {
+	if d == nil {
+		return false
+	}
+	if d.DeviceTypeName == "Indicator/Status Light" {
+		return true
+	}
+	for _, t := range types {
+		if t.Code == "indicator" && fmt.Sprint(t.ID) == fmt.Sprint(d.DeviceType) {
+			return true
+		}
+	}
+	return false
 }
 
 func deviceReportsTemperature(d *forgekeyapi.Device) bool {
@@ -93,6 +169,7 @@ func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.device = m.device
 		s.commands = m.commands
 		s.temp = m.temp
+		s.isIndicator = m.isIndicator
 		return s, nil
 	case fkCommandResultMsg:
 		if m.err != nil {
@@ -104,9 +181,24 @@ func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			Status(s.actionMsg, StatusOK),
 			s.load(),
 		)
+	case fkIndicatorTestMsg:
+		s.itPending = false
+		if m.err != nil {
+			s.itErr = m.err.Error()
+			return s, Status("indicator test failed: "+m.err.Error(), StatusError)
+		}
+		s.mode = fkDetailView
+		s.actionMsg = "indicator test sent"
+		if m.resp != nil && m.resp.CommandID != "" {
+			s.actionMsg = "indicator test sent · command " + m.resp.CommandID
+		}
+		return s, Status("indicator test sent", StatusOK)
 	case tea.KeyMsg:
 		if s.device == nil {
 			return s, nil
+		}
+		if s.mode == fkDetailIndicatorTest {
+			return s.handleIndicatorTestKey(m)
 		}
 		ctx := s.deps.Ctx
 		if ctx == nil {
@@ -119,6 +211,13 @@ func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loading = true
 			s.loadErr = ""
 			return s, s.load()
+		case "t":
+			// Indicator preview — only where it applies (mirrors the web card
+			// gating). A non-indicator device just flashes a hint.
+			if !s.isIndicator {
+				return s, Status("indicator test applies to indicator devices only", StatusWarn)
+			}
+			return s.openIndicatorTest()
 		case "e":
 			return s, runFKCmd("enable", func() error { return fk.EnableDevice(ctx, id) })
 		case "d":
@@ -248,6 +347,176 @@ func indicatorSwatch(color string) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("●") + " "
 }
 
+// --- Indicator-test form ---------------------------------------------------
+
+func (s *ForgeKeyDeviceDetailScreen) openIndicatorTest() (Screen, tea.Cmd) {
+	s.itColorIdx = 0      // green
+	s.itBrightnessIdx = 1 // high
+	s.itPatternIdx = 0    // solid
+	period := textinput.New()
+	period.Prompt = ""
+	period.CharLimit = 5
+	period.SetValue("1500")
+	s.itPeriodIn = period
+	s.itFocus = 0
+	s.itErr = ""
+	s.itPending = false
+	s.mode = fkDetailIndicatorTest
+	return s, nil
+}
+
+// itFieldCount is 4 (color/brightness/pattern/period) for a blink pattern and 3
+// otherwise — the period only exists for blink patterns, mirroring the web
+// card that shows the period input only when isBlinkPattern().
+func (s *ForgeKeyDeviceDetailScreen) itFieldCount() int {
+	if indicatorIsBlinkPattern(indicatorPatterns[s.itPatternIdx]) {
+		return 4
+	}
+	return 3
+}
+
+func (s *ForgeKeyDeviceDetailScreen) handleIndicatorTestKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	n := s.itFieldCount()
+	switch m.Type {
+	case tea.KeyEsc:
+		s.mode = fkDetailView
+		return s, nil
+	case tea.KeyTab, tea.KeyDown:
+		s.setIndicatorFocus((s.itFocus + 1) % n)
+		return s, nil
+	case tea.KeyShiftTab, tea.KeyUp:
+		s.setIndicatorFocus((s.itFocus + n - 1) % n)
+		return s, nil
+	case tea.KeyEnter:
+		if s.itPending {
+			return s, nil
+		}
+		return s.submitIndicatorTest()
+	case tea.KeyLeft:
+		s.cycleIndicatorField(-1)
+		return s, nil
+	case tea.KeyRight:
+		s.cycleIndicatorField(1)
+		return s, nil
+	}
+	// The period field is a textinput; forward keystrokes to it.
+	if s.itFocus == 3 {
+		var cmd tea.Cmd
+		s.itPeriodIn, cmd = s.itPeriodIn.Update(m)
+		return s, cmd
+	}
+	// On a select field, space cycles the value forward.
+	if m.String() == " " {
+		s.cycleIndicatorField(1)
+	}
+	return s, nil
+}
+
+// setIndicatorFocus moves focus and keeps the period textinput's cursor in sync
+// (focused only when it is the active field).
+func (s *ForgeKeyDeviceDetailScreen) setIndicatorFocus(f int) {
+	s.itFocus = f
+	if f == 3 {
+		s.itPeriodIn.Focus()
+	} else {
+		s.itPeriodIn.Blur()
+	}
+}
+
+func (s *ForgeKeyDeviceDetailScreen) cycleIndicatorField(dir int) {
+	switch s.itFocus {
+	case 0:
+		s.itColorIdx = wrapIdx(s.itColorIdx+dir, len(indicatorColors))
+	case 1:
+		s.itBrightnessIdx = wrapIdx(s.itBrightnessIdx+dir, len(indicatorBrightness))
+	case 2:
+		s.itPatternIdx = wrapIdx(s.itPatternIdx+dir, len(indicatorPatterns))
+	}
+}
+
+func wrapIdx(i, n int) int {
+	if n == 0 {
+		return 0
+	}
+	return ((i % n) + n) % n
+}
+
+// submitIndicatorTest builds the same body the web card sends: brightness +
+// pattern always, color unless the pattern is "off", and period_ms only for a
+// blink pattern.
+func (s *ForgeKeyDeviceDetailScreen) submitIndicatorTest() (Screen, tea.Cmd) {
+	pattern := indicatorPatterns[s.itPatternIdx]
+	req := forgekeyapi.IndicatorTestRequest{
+		Brightness: indicatorBrightness[s.itBrightnessIdx],
+		Pattern:    pattern,
+	}
+	if pattern != "off" {
+		req.Color = indicatorColors[s.itColorIdx]
+	}
+	if indicatorIsBlinkPattern(pattern) {
+		period, err := strconv.Atoi(strings.TrimSpace(s.itPeriodIn.Value()))
+		if err != nil || period < 1 || period > 60000 {
+			s.itErr = "period must be an integer 1–60000 ms"
+			return s, nil
+		}
+		req.PeriodMS = period
+	}
+	id := fmt.Sprint(s.device.ID)
+	fk := s.deps.ForgeKey
+	ctx := s.deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.itPending = true
+	s.itErr = ""
+	return s, func() tea.Msg {
+		resp, err := fk.IndicatorTest(ctx, id, req)
+		return fkIndicatorTestMsg{resp: resp, err: err}
+	}
+}
+
+func (s *ForgeKeyDeviceDetailScreen) renderIndicatorTest() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Indicator test") + "\n")
+	b.WriteString(StyleMuted.Render("Send an explicit color/brightness/pattern preview to this light.") + "\n\n")
+
+	pattern := indicatorPatterns[s.itPatternIdx]
+	rows := []struct {
+		label string
+		value string
+	}{
+		{"Color", indicatorColors[s.itColorIdx]},
+		{"Brightness", indicatorBrightness[s.itBrightnessIdx]},
+		{"Pattern", pattern},
+		{"Period (ms)", s.itPeriodIn.View()},
+	}
+	if pattern == "off" {
+		rows[0].value += " " + StyleMuted.Render("(omitted while off)")
+	}
+	for i := 0; i < s.itFieldCount(); i++ {
+		cursor := "  "
+		if s.itFocus == i {
+			cursor = "▸ "
+		}
+		label := fmt.Sprintf("%-13s", rows[i].label+":")
+		line := cursor + StyleMuted.Render(label) + " " + rows[i].value
+		if s.itFocus == i {
+			line = StyleTitle.Render(cursor+label) + " " + rows[i].value
+		}
+		b.WriteString(line + "\n")
+	}
+
+	if s.itErr != "" {
+		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.itErr) + "\n")
+	}
+	if s.itPending {
+		b.WriteString("\n" + StyleMuted.Render("Sending…"))
+	} else {
+		b.WriteString("\n" + StyleMuted.Render("tab/↑↓ move · ←/→/space cycle · enter send · esc cancel"))
+	}
+	return b.String()
+}
+
 func (s *ForgeKeyDeviceDetailScreen) View() string {
 	if s.loading {
 		return StyleMuted.Render("Loading device…")
@@ -257,6 +526,9 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 	}
 	if s.device == nil {
 		return StyleMuted.Render("Device not found.")
+	}
+	if s.mode == fkDetailIndicatorTest {
+		return s.renderIndicatorTest()
 	}
 	d := s.device
 	var b strings.Builder
@@ -372,6 +644,9 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 	}
 
 	help := "e enable · d disable · s status · i identify · p ping · b blink · R restart · r refresh · esc back"
+	if s.isIndicator {
+		help = "t indicator-test · " + help
+	}
 	if deviceHasCapability(d, "power_relay") {
 		help = "1/2 relay ch on · !/@ ch off · " + help
 	}

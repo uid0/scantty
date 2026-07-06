@@ -108,6 +108,73 @@ func TestGetDeviceHandlesEmptyLiveSubState(t *testing.T) {
 	}
 }
 
+// TestIndicatorTest_PostsBodyAndPath verifies the indicator preview POSTs to
+// the trailing-slash device action path and that omitempty drops the fields the
+// caller left blank (color for an "off" pattern, period_ms for a steady one).
+func TestIndicatorTest_PostsBodyAndPath(t *testing.T) {
+	t.Run("blink sends color+period", func(t *testing.T) {
+		var gotPath, gotMethod string
+		var gotBody map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath, gotMethod = r.URL.Path, r.Method
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"indicator_test command sent","device":"AA:BB","command_id":"cmd-9","payload":{"pattern":"blink"}}`))
+		}))
+		defer srv.Close()
+		c, err := New(Options{BaseURL: srv.URL})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		resp, err := c.IndicatorTest(context.Background(), "dev-1", IndicatorTestRequest{
+			Color: "green", Brightness: "high", Pattern: "blink", PeriodMS: 1500,
+		})
+		if err != nil {
+			t.Fatalf("IndicatorTest: %v", err)
+		}
+		if gotMethod != http.MethodPost || gotPath != "/api/forgekey/devices/dev-1/indicator/test/" {
+			t.Fatalf("%s %s, want POST /api/forgekey/devices/dev-1/indicator/test/", gotMethod, gotPath)
+		}
+		if gotBody["color"] != "green" || gotBody["brightness"] != "high" || gotBody["pattern"] != "blink" {
+			t.Errorf("body = %v", gotBody)
+		}
+		if gotBody["period_ms"] != float64(1500) {
+			t.Errorf("period_ms = %v, want 1500", gotBody["period_ms"])
+		}
+		if resp.CommandID != "cmd-9" {
+			t.Errorf("command_id = %q", resp.CommandID)
+		}
+	})
+
+	t.Run("off omits color and period", func(t *testing.T) {
+		var gotBody map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"command_id":"cmd-10","payload":{}}`))
+		}))
+		defer srv.Close()
+		c, err := New(Options{BaseURL: srv.URL})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, err := c.IndicatorTest(context.Background(), "dev-1", IndicatorTestRequest{
+			Brightness: "low", Pattern: "off",
+		}); err != nil {
+			t.Fatalf("IndicatorTest: %v", err)
+		}
+		if _, present := gotBody["color"]; present {
+			t.Errorf("color must be omitted for an off pattern, got %v", gotBody["color"])
+		}
+		if _, present := gotBody["period_ms"]; present {
+			t.Errorf("period_ms must be omitted for a steady pattern, got %v", gotBody["period_ms"])
+		}
+		if gotBody["brightness"] != "low" || gotBody["pattern"] != "off" {
+			t.Errorf("body = %v", gotBody)
+		}
+	})
+}
+
 // TestRecentCommandsDecodesSentByShape feeds the REAL DeviceCommandSerializer
 // shape: the fields are sent_by (integer user FK) / sent_by_username / sent_at
 // / ack_status / ack_at — the old issued_by(string)/issued_at/status tags
