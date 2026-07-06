@@ -268,6 +268,16 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.nav.SetActive(WSInventory)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
+		case "W":
+			// Shift+w opens the Webhook management list (create / edit / delete
+			// + test-delivery). Webhooks live under Settings in the web app, so
+			// the surface sets the Settings workspace active. Uppercase rides the
+			// same "uppercase letter = open a surface" convention as G / V / B.
+			if _, ok := r.screen.(*WebhookListScreen); !ok {
+				r.screen = NewWebhookListScreen(r.deps)
+				r.nav.SetActive(WSSettings)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
 		case "T":
 			// Shift+t opens the climate Thermostat management list (create /
 			// edit / delete). Uppercase like the other management surfaces; both
