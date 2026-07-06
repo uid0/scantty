@@ -9,9 +9,9 @@
 // sub-phase idiom; the pickers reuse itemPickOption (all electrical FKs are int
 // pks) and the field kinds reuse asset_form.go's ak* constants.
 //
-// Outlet + Disconnect CRUD and the LOTO required_loto_devices multi-picker are
-// intentionally out of scope here (the follow-up sc-elec-B bead); the breaker
-// serializer doesn't even expose required_loto_devices.
+// The leaf tier — PowerOutlet + Disconnect CRUD and the LOTO
+// required_loto_devices multi-picker — lives in electrical_leaf_forms.go (Bead
+// B); the breaker serializer here doesn't expose required_loto_devices.
 package tui
 
 import (

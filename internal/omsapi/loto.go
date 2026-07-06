@@ -2,8 +2,10 @@ package omsapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -28,6 +30,35 @@ type LOTODevice struct {
 	Notes              string    `json:"notes,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// IntID coerces the device's `any`-typed PK to an int. JSON decodes an integer
+// PK into a float64 through an `any`, so callers that need the numeric id (the
+// disconnect required_loto_device_ids multi-picker sends []int) go through here
+// rather than type-asserting at each call site. Returns ok=false for a nil /
+// non-numeric id.
+func (d LOTODevice) IntID() (int, bool) { return anyToInt(d.ID) }
+
+// anyToInt coerces a JSON-decoded scalar (float64 / int / int64 / json.Number /
+// numeric string) to an int.
+func anyToInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i), true
+		}
+	case string:
+		if i, err := strconv.Atoi(n); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // LOTODeviceSummary is the compact representation embedded inside
