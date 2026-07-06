@@ -49,6 +49,10 @@ type MakerBoxesScreen struct {
 	converting       bool
 	convertResult    *omsapi.MakerBox
 	convertErr       string
+
+	// delete (destroy the row under the cursor, y/n confirm).
+	confirmingDelete bool
+	deleting         bool
 }
 
 type makerBoxesLoadedMsg struct {
@@ -71,18 +75,28 @@ type makerBoxConvertMsg struct {
 	err    error
 }
 
+type makerBoxDeletedMsg struct {
+	err error
+}
+
 func NewMakerBoxesScreen(deps Deps) *MakerBoxesScreen {
 	return &MakerBoxesScreen{deps: deps, loading: true}
 }
 
 func (s *MakerBoxesScreen) Title() string { return "Maker boxes" }
 
-func (s *MakerBoxesScreen) WantsRawInput() bool { return s.scanning || s.preConverting }
+// WantsRawInput routes every key here while a textinput form (scan / pre-convert)
+// OR a y/n confirm (delete / convert) is up, so the modal owns keys like n and
+// esc instead of leaking them to the global nav (n=notifications, esc=welcome).
+func (s *MakerBoxesScreen) WantsRawInput() bool {
+	return s.scanning || s.preConverting || s.confirmingDelete || s.confirmConvertID != nil
+}
 
-// HandlesKey claims lowercase 's' (start a bin+user scan) so it beats the
-// global s=settings nav. Once the scan form is open WantsRawInput routes every
-// key here anyway; this claim covers the pre-scan list view.
-func (s *MakerBoxesScreen) HandlesKey(key string) bool { return key == "s" }
+// HandlesKey claims lowercase 's' (start a bin+user scan) and 'n' (new maker
+// box) so they beat the global s=settings nav and n=notifications. Once a form
+// or confirm is open WantsRawInput routes every key here anyway; this claim
+// covers the plain list view.
+func (s *MakerBoxesScreen) HandlesKey(key string) bool { return key == "s" || key == "n" }
 
 func (s *MakerBoxesScreen) Init() tea.Cmd { return s.load() }
 
@@ -161,6 +175,14 @@ func (s *MakerBoxesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.load(),
 			Status(fmt.Sprintf("converted: %s → %s", m.result.AssignedUsername, m.result.BinID), StatusOK),
 		)
+	case makerBoxDeletedMsg:
+		s.deleting = false
+		s.confirmingDelete = false
+		if m.err != nil {
+			return s, Status("delete failed: "+m.err.Error(), StatusError)
+		}
+		s.loading = true
+		return s, tea.Batch(Status("maker box deleted", StatusOK), s.load())
 	case tea.KeyMsg:
 		// Convert confirmation overlay takes precedence — it consumes
 		// y/n/esc and nothing else until resolved.
@@ -175,6 +197,26 @@ func (s *MakerBoxesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			case "n", "N", "esc":
 				s.confirmConvertID = nil
 				return s, nil
+			}
+			return s, nil
+		}
+		// Delete confirmation overlay — destructive, so it takes only an
+		// explicit y (no enter) and cancels on n/esc.
+		if s.confirmingDelete {
+			if s.deleting {
+				return s, nil
+			}
+			switch m.String() {
+			case "y", "Y":
+				row, ok := s.selectedRow()
+				if !ok {
+					s.confirmingDelete = false
+					return s, nil
+				}
+				s.deleting = true
+				return s, s.runDelete(row.ID)
+			case "n", "N", "esc":
+				s.confirmingDelete = false
 			}
 			return s, nil
 		}
@@ -269,9 +311,39 @@ func (s *MakerBoxesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			id := row.ID
 			s.confirmConvertID = &id
 			return s, nil
+		case "n":
+			// New maker box. 'n' is claimed via HandlesKey (else global
+			// notifications would eat it).
+			return s, SwitchTo(WSFacilities, NewMakerBoxFormScreen(s.deps, 0))
+		case "E":
+			if row, ok := s.selectedRow(); ok {
+				return s, SwitchTo(WSFacilities, NewMakerBoxFormScreen(s.deps, row.ID))
+			}
+		case "x":
+			if _, ok := s.selectedRow(); ok {
+				s.confirmingDelete = true
+			}
 		}
 	}
 	return s, nil
+}
+
+func (s *MakerBoxesScreen) selectedRow() (omsapi.MakerBox, bool) {
+	if s.cursor < 0 || s.cursor >= len(s.rows) {
+		return omsapi.MakerBox{}, false
+	}
+	return s.rows[s.cursor], true
+}
+
+func (s *MakerBoxesScreen) runDelete(id int) tea.Cmd {
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		return makerBoxDeletedMsg{err: deps.OMS.DeleteMakerBox(ctx, id)}
+	}
 }
 
 func (s *MakerBoxesScreen) runConvert(id int) tea.Cmd {
@@ -341,6 +413,32 @@ func (s *MakerBoxesScreen) View() string {
 		b.WriteString(StyleMuted.Render("y confirm · n / esc cancel"))
 		return b.String()
 	}
+	if s.confirmingDelete {
+		var b strings.Builder
+		b.WriteString(StyleTitle.Render("Delete maker box?") + "\n\n")
+		if s.deleting {
+			b.WriteString(StyleMuted.Render("Deleting…"))
+			return b.String()
+		}
+		binDisplay := "(unallocated)"
+		who := ""
+		if row, ok := s.selectedRow(); ok {
+			if row.BinID != "" {
+				binDisplay = row.BinID
+			}
+			who = row.DisplayName
+			if who == "" {
+				who = row.AssignedUsername
+			}
+		}
+		line := binDisplay
+		if who != "" {
+			line += " (" + who + ")"
+		}
+		b.WriteString("Delete " + line + "? This can't be undone.\n\n")
+		b.WriteString(StyleStatusWarn.Render("y delete · n / esc cancel"))
+		return b.String()
+	}
 	if s.preConverting {
 		var b strings.Builder
 		b.WriteString(StyleTitle.Render("Pre-conversion: queue a member") + "\n\n")
@@ -366,7 +464,7 @@ func (s *MakerBoxesScreen) View() string {
 		return StyleMuted.Render("Loading maker boxes…")
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · s scan · p pre-convert · c convert · esc back")
+		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · n new · E edit · x delete · esc back")
 	}
 
 	var b strings.Builder
@@ -458,6 +556,8 @@ func (s *MakerBoxesScreen) View() string {
 			}
 		}
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · s scan bin+user · p pre-convert · c convert · r refresh · esc back"))
+	// Two footer lines keep each within a narrow content pane (no width overflow).
+	b.WriteString("\n" + StyleMuted.Render("j/k move · n new · E edit · x delete · r refresh"))
+	b.WriteString("\n" + StyleMuted.Render("s scan · p pre-convert · c convert (queued) · esc back"))
 	return b.String()
 }
