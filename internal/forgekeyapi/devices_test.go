@@ -175,6 +175,115 @@ func TestIndicatorTest_PostsBodyAndPath(t *testing.T) {
 	})
 }
 
+// TestUpdateDevice_PatchesLocation verifies the record-edit PATCH hits the
+// device-detail endpoint with the {location} body the web inline editor sends,
+// and decodes the refreshed device back.
+func TestUpdateDevice_PatchesLocation(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dev-1","name":"Relay A","mac_address":"AA:BB:CC:DD:EE:01","location":7}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	loc := 7
+	dev, err := c.UpdateDevice(context.Background(), "dev-1", DeviceWrite{Location: &loc})
+	if err != nil {
+		t.Fatalf("UpdateDevice: %v", err)
+	}
+	if gotMethod != http.MethodPatch {
+		t.Errorf("method = %q, want PATCH", gotMethod)
+	}
+	if want := "/api/forgekey/devices/dev-1/"; gotPath != want {
+		t.Errorf("path = %q, want %q", gotPath, want)
+	}
+	if gotBody["location"] != float64(7) {
+		t.Errorf("location = %v, want 7", gotBody["location"])
+	}
+	if dev == nil || dev.Location == nil || *dev.Location != 7 {
+		t.Errorf("decoded device location = %+v, want 7", dev)
+	}
+}
+
+// TestUpdateDevice_ClearsLocationWithExplicitNull pins the no-omitempty contract:
+// clearing the location must serialize {location: null} (key present) so the
+// backend actually unassigns the FK. With omitempty the key would drop and
+// "unassign" would silently no-op.
+func TestUpdateDevice_ClearsLocationWithExplicitNull(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dev-1","name":"Relay A","mac_address":"AA:BB:CC:DD:EE:01"}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := c.UpdateDevice(context.Background(), "dev-1", DeviceWrite{Location: nil}); err != nil {
+		t.Fatalf("UpdateDevice: %v", err)
+	}
+	if _, present := gotBody["location"]; !present {
+		t.Errorf("location key must be present as explicit null, body = %v", gotBody)
+	}
+	if gotBody["location"] != nil {
+		t.Errorf("location = %v, want null", gotBody["location"])
+	}
+}
+
+// TestDeleteDevice_DeletesPath verifies delete hits DELETE on the device-detail
+// endpoint and tolerates the 204 No Content the viewset returns.
+func TestDeleteDevice_DeletesPath(t *testing.T) {
+	var gotPath, gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := c.DeleteDevice(context.Background(), "dev-1"); err != nil {
+		t.Fatalf("DeleteDevice: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Errorf("method = %q, want DELETE", gotMethod)
+	}
+	if want := "/api/forgekey/devices/dev-1/"; gotPath != want {
+		t.Errorf("path = %q, want %q", gotPath, want)
+	}
+}
+
+// TestUpdateDevice_SurfacesBackendError confirms a 4xx becomes a Go error the
+// TUI can show instead of crashing.
+func TestUpdateDevice_SurfacesBackendError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"location":["Invalid pk \"999\" - object does not exist."]}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	loc := 999
+	if _, err := c.UpdateDevice(context.Background(), "dev-1", DeviceWrite{Location: &loc}); err == nil {
+		t.Fatalf("expected an error for a 400 response")
+	}
+}
+
 // TestRecentCommandsDecodesSentByShape feeds the REAL DeviceCommandSerializer
 // shape: the fields are sent_by (integer user FK) / sent_by_username / sent_at
 // / ack_status / ack_at — the old issued_by(string)/issued_at/status tags

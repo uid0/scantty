@@ -242,6 +242,18 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.screen = NewDonationsScreen(r.deps)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
+		case "F":
+			// Shift+f opens the ForgeKey device-type management list (create /
+			// edit / delete). Uppercase because it rides the "uppercase letter =
+			// open a management surface" convention (G / L / U / V); it sits in
+			// the ForgeKey workspace alongside firmware (lowercase f) and e-paper
+			// (e), reusing the same upper/lower-of-a-letter pairing as N/n, I/i,
+			// A/a — here F = device types, f = firmware, both ForgeKey.
+			if _, ok := r.screen.(*DeviceTypeListScreen); !ok {
+				r.screen = NewDeviceTypeListScreen(r.deps)
+				r.nav.SetActive(WSForgeKey)
+				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+			}
 		case "G":
 			// Shift+g opens the inventory Category management list (create /
 			// edit / delete). Uppercase because the taxonomy lists ride the
@@ -412,11 +424,11 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 		// replaced only supported enter→detail.
 		return NewSIGListScreen(deps)
 	case WSReports:
-		// Reports currently surfaces the serialized-component consumption
-		// forecast (days-until-stockout / reorder point / low-stock). It's
-		// the first populated report; others can join via a report picker
-		// later.
-		return NewSerializedForecastScreen(deps)
+		// Reports is a hub menu mirroring the web /reports section: the
+		// staff-gated Analytics Pulse, the three report pages (Inventory,
+		// Purchasing, Asset) as tabbed tables, and the serialized-component
+		// consumption forecast. Each entry opens a scrollable table view.
+		return NewReportsScreen(deps)
 	case WSForgeKey:
 		return NewListScreen(deps, "ForgeKey Devices", listScreenSpec{
 			kind:   "fk_devices",

@@ -23,7 +23,7 @@ func TestActionPathsEndWithSlash(t *testing.T) {
 		call func(ctx context.Context, c *Client) error
 	}{
 		{"RevokeAuthorization", "/api/forgekey/authorizations/a1/revoke/", func(ctx context.Context, c *Client) error {
-			return c.RevokeAuthorization(ctx, "a1")
+			return c.RevokeAuthorization(ctx, "a1", "")
 		}},
 		{"Unlock", "/api/forgekey/lockouts/l1/unlock/", func(ctx context.Context, c *Client) error {
 			return c.Unlock(ctx, "l1")

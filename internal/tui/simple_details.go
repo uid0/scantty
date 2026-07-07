@@ -128,6 +128,10 @@ func (s *LocationDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.loc != nil {
 				return s, SwitchTo(WSInventory, NewLocationFormScreen(s.deps, strconv.Itoa(s.loc.ID)))
 			}
+		case "p":
+			if s.loc != nil {
+				return s, SwitchTo(WSInventory, NewLocationProblemsScreen(s.deps, s.loc.ID, s.loc.Name))
+			}
 		case "g":
 			if s.loc != nil && !s.generating {
 				s.generating = true
@@ -225,7 +229,7 @@ func (s *LocationDetailScreen) View() string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(StyleMuted.Render("g gen-QR · E edit · x delete · r refresh · esc back"))
+	b.WriteString(StyleMuted.Render("p problems · g gen-QR · E edit · x delete · r refresh · esc back"))
 	return b.String()
 }
 

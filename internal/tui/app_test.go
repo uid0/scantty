@@ -134,6 +134,17 @@ func TestGlobalFOpensFirmwareFromWelcome(t *testing.T) {
 	}
 }
 
+// Uppercase F is the sibling global that opens the ForgeKey device-type
+// management list (distinct from lowercase f = firmware). Guards the app.go
+// wiring so it can't silently regress.
+func TestGlobalShiftFOpensDeviceTypesFromWelcome(t *testing.T) {
+	r := newTestRoot(NewWelcomeScreen())
+	after := press(t, r, "F")
+	if _, ok := after.screen.(*DeviceTypeListScreen); !ok {
+		t.Fatalf("after 'F' on welcome active screen is %T, want *DeviceTypeListScreen", after.screen)
+	}
+}
+
 func TestChecklistRunFFallsThroughToFirmwareWhenNotReady(t *testing.T) {
 	s := NewChecklistRunScreen(Deps{}, "cmpl-1")
 	s.loading = false

@@ -98,6 +98,19 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				},
 				implemented: true,
 			},
+			{
+				// E (Enrollment): 'b'/'e' collide with the Maker-boxes / e-Paper
+				// items; E is free here and reaches this screen via the app.go
+				// fallthrough (no global E case), so it doesn't shadow detail-screen
+				// E=edit elsewhere.
+				hotkey:   'E',
+				label:    "Badge enrollment",
+				subtitle: "assign / clear member access badges — arm a reader or enter a UID (staff)",
+				build: func(d Deps) (Screen, Workspace) {
+					return NewBadgeEnrollmentScreen(d), WSForgeKey
+				},
+				implemented: true,
+			},
 		},
 	}
 }

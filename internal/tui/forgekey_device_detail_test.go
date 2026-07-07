@@ -265,3 +265,88 @@ func TestIndicatorTestOffOmitsColor(t *testing.T) {
 		t.Errorf("body = %v", gotBody)
 	}
 }
+
+// TestForgeKeyDeviceDetail_EditOpensForm: E opens the record edit form for the
+// loaded device, carrying its current location into the form.
+func TestForgeKeyDeviceDetail_EditOpensForm(t *testing.T) {
+	loc := 4
+	s := loadFKDevice(t, Deps{Ctx: context.Background()},
+		&forgekeyapi.Device{ID: "dev-1", Name: "Relay A", Location: &loc}, false)
+
+	_, cmd := s.Update(woRuneKey("E"))
+	if cmd == nil {
+		t.Fatalf("E should return a navigation cmd")
+	}
+	sw, ok := cmd().(SwitchScreenMsg)
+	if !ok {
+		t.Fatalf("E should emit a SwitchScreenMsg")
+	}
+	form, ok := sw.Screen.(*ForgeKeyDeviceFormScreen)
+	if !ok {
+		t.Fatalf("E should open the device edit form, got %T", sw.Screen)
+	}
+	if form.locationID == nil || *form.locationID != 4 {
+		t.Errorf("edit form should carry the device's current location, got %v", form.locationID)
+	}
+}
+
+// TestForgeKeyDeviceDetail_DeleteConfirmFlow: x arms the y/n confirm (flipping
+// raw input so the modal owns keystrokes), n cancels, and y fires the DELETE and
+// then resets state + navigates away on success.
+func TestForgeKeyDeviceDetail_DeleteConfirmFlow(t *testing.T) {
+	var gotPath, gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	deps := Deps{ForgeKey: fkTestClient(t, srv.URL), Ctx: context.Background()}
+	s := loadFKDevice(t, deps, &forgekeyapi.Device{ID: "dev-1", Name: "Relay A"}, false)
+
+	if s.WantsRawInput() {
+		t.Fatalf("detail should not want raw input before arming delete")
+	}
+	// x arms the confirm and flips raw input.
+	next, _ := s.Update(woRuneKey("x"))
+	s = next.(*ForgeKeyDeviceDetailScreen)
+	if !s.confirmingDelete || !s.WantsRawInput() {
+		t.Fatalf("x should arm the confirm and flip raw input")
+	}
+	if out := s.View(); !strings.Contains(out, "Delete device?") {
+		t.Errorf("confirm view missing prompt: %q", out)
+	}
+	// n cancels.
+	next, _ = s.Update(woRuneKey("n"))
+	s = next.(*ForgeKeyDeviceDetailScreen)
+	if s.confirmingDelete {
+		t.Fatalf("n should cancel the confirm")
+	}
+	// Re-arm and confirm with y → DELETE fires.
+	next, _ = s.Update(woRuneKey("x"))
+	s = next.(*ForgeKeyDeviceDetailScreen)
+	next, cmd := s.Update(woRuneKey("y"))
+	s = next.(*ForgeKeyDeviceDetailScreen)
+	if !s.deleting {
+		t.Errorf("y should mark the delete in-flight")
+	}
+	if cmd == nil {
+		t.Fatalf("y should return a delete cmd")
+	}
+	dm, ok := cmd().(fkDeviceDeletedMsg)
+	if !ok || dm.err != nil {
+		t.Fatalf("delete cmd should produce a successful fkDeviceDeletedMsg, got %#v", dm)
+	}
+	if gotMethod != http.MethodDelete || gotPath != "/api/forgekey/devices/dev-1/" {
+		t.Fatalf("%s %s, want DELETE /api/forgekey/devices/dev-1/", gotMethod, gotPath)
+	}
+	// The success msg resets flags and returns a nav/status cmd.
+	next, navCmd := s.Update(fkDeviceDeletedMsg{})
+	s = next.(*ForgeKeyDeviceDetailScreen)
+	if s.confirmingDelete || s.deleting {
+		t.Errorf("delete completion should clear the confirm/deleting flags")
+	}
+	if navCmd == nil {
+		t.Errorf("delete completion should return a nav/status cmd")
+	}
+}
