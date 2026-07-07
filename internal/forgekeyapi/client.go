@@ -26,8 +26,8 @@ type Client struct {
 }
 
 type Options struct {
-	BaseURL    string
-	AuthToken  string
+	BaseURL   string
+	AuthToken string
 	// AuthTokenFunc is invoked on every request to obtain the current
 	// bearer token. Set this when the FK API shares an auth realm with
 	// another client (typically OMS) so refreshes propagate automatically.
@@ -66,10 +66,56 @@ func New(opts Options) (*Client, error) {
 		httpClient: &http.Client{
 			Timeout:   opts.Timeout,
 			Transport: &http.Transport{TLSClientConfig: tlsCfg},
+			// Preserve the method + body across redirects. Without this,
+			// net/http downgrades a redirected POST/PATCH/DELETE to a GET and
+			// drops the body — so a missing trailing slash (DRF 301s the
+			// un-slashed path to the slashed route) turns a state-changing
+			// action into a silent no-op read. Mirrors omsapi's fix (PR #46)
+			// as a belt-and-suspenders net beneath the slashed paths below.
+			CheckRedirect: preserveMethodOnRedirect,
 		},
 		authToken:     opts.AuthToken,
 		authTokenFunc: opts.AuthTokenFunc,
 	}, nil
+}
+
+// maxRedirects bounds redirect-following, matching net/http's own default.
+const maxRedirects = 10
+
+// preserveMethodOnRedirect keeps the original method and body when following a
+// redirect. net/http's default converts a 301/302/303 on a POST (or other
+// non-idempotent method) into a GET with no body — browser behaviour that is
+// wrong for an API client: a state-changing call arrives at the server as a
+// read and silently does nothing. Re-issuing with the original method + a fresh
+// body makes a DRF APPEND_SLASH upgrade transparent. The Authorization/
+// Content-Type/Accept headers are re-attached only when the redirect stays on
+// the same host, so the bearer token can never leak to a different origin.
+func preserveMethodOnRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("forgekey: stopped after %d redirects", maxRedirects)
+	}
+	orig := via[0]
+	req.Method = orig.Method
+	if orig.GetBody != nil {
+		body, err := orig.GetBody()
+		if err != nil {
+			return fmt.Errorf("forgekey: replay body across redirect: %w", err)
+		}
+		req.Body = body
+		req.ContentLength = orig.ContentLength
+		req.GetBody = orig.GetBody
+	}
+	if req.URL.Host == orig.URL.Host {
+		for _, h := range []string{"Authorization", "Content-Type", "Accept"} {
+			if v := orig.Header.Get(h); v != "" {
+				req.Header.Set(h, v)
+			}
+		}
+	}
+	return nil
 }
 
 // SetAuthToken updates the static bearer token used by future requests.

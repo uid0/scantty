@@ -34,7 +34,7 @@ func TestSetRelayChannel_PostsChannelAndAction(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
 	}
-	if want := "/api/forgekey/devices/dev-1/relay-channel"; gotPath != want {
+	if want := "/api/forgekey/devices/dev-1/relay-channel/"; gotPath != want {
 		t.Errorf("path = %q, want %q", gotPath, want)
 	}
 	if gotBody.Channel != 2 || gotBody.On {
