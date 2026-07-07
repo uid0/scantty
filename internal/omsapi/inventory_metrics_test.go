@@ -17,8 +17,8 @@ func TestGetItemMetrics_Contract(t *testing.T) {
 		path = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
-			"current_stock":5,"quantity_on_order":0,"quantity_available":5,
-			"quantity_committed":0,"quantity_in_transit":0,"reorder_point":3,
+			"current_stock":5,"quantity_on_order":0,"quantity_available":5.0,
+			"quantity_committed":0.0,"quantity_in_transit":0,"reorder_point":3,
 			"lead_time_days":7,"unit_cost":"11.22","cost_trend":"up",
 			"last_po_unit_cost":"10.00","is_case_based":false,"case_size":null}`))
 	}))
@@ -34,6 +34,14 @@ func TestGetItemMetrics_Contract(t *testing.T) {
 	}
 	if m.CurrentStock == nil || *m.CurrentStock != 5 {
 		t.Errorf("current_stock = %v", m.CurrentStock)
+	}
+	// QA/QC are DRF FloatField on the backend → JSON 5.0/0.0. These MUST decode
+	// into *float64 (a *int would fail the whole response decode).
+	if m.QuantityAvailable == nil || *m.QuantityAvailable != 5 {
+		t.Errorf("quantity_available = %v (float 5.0 must decode)", m.QuantityAvailable)
+	}
+	if m.QuantityCommitted == nil || *m.QuantityCommitted != 0 {
+		t.Errorf("quantity_committed = %v", m.QuantityCommitted)
 	}
 	if m.ReorderPoint == nil || *m.ReorderPoint != 3 {
 		t.Errorf("reorder_point = %v", m.ReorderPoint)

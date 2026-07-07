@@ -19,11 +19,32 @@ func ccPtr[T any](v T) *T { return &v }
 func ccEnterKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyEnter} }
 func ccEscKey() tea.KeyMsg   { return tea.KeyMsg{Type: tea.KeyEsc} }
 
+// ccDrainCmd executes a (possibly batched) command and returns every leaf
+// message it produces, so a test can feed async follow-ups (e.g. the full-item
+// re-fetch a cycle count triggers) back into the model.
+func ccDrainCmd(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	switch m := cmd().(type) {
+	case tea.BatchMsg:
+		var out []tea.Msg
+		for _, c := range m {
+			out = append(out, ccDrainCmd(c)...)
+		}
+		return out
+	case nil:
+		return nil
+	default:
+		return []tea.Msg{m}
+	}
+}
+
 // TestFormatItemMetricsRow_Alignment renders the same layout with small and
 // large magnitudes and asserts the columns stay put: every label lands at the
 // same offset and the Cost decimal points line up (fixed-width, right-aligned).
 func TestFormatItemMetricsRow_Alignment(t *testing.T) {
-	mk := func(stock, oo, av, com, transit, rp int, lead float64, cost, trend string) *omsapi.ItemMetrics {
+	mk := func(stock, oo int, av, com float64, transit, rp int, lead float64, cost, trend string) *omsapi.ItemMetrics {
 		return &omsapi.ItemMetrics{
 			CurrentStock:      ccPtr(stock),
 			QuantityOnOrder:   ccPtr(oo),
@@ -231,12 +252,21 @@ func TestCycleCountModal_Submits(t *testing.T) {
 		t.Errorf("notes = %v, want ok", body["notes"])
 	}
 
-	// Feeding the success message back closes the modal and updates the item.
-	s.Update(done)
+	// Feeding the success message back closes the modal and triggers a re-fetch
+	// of the full item + metrics — the count response is a PARTIAL item, so the
+	// screen re-loads rather than adopting it (which would blank name/SKU/etc.).
+	// The stub answers the reload with current_stock:8.
+	_, reload := s.Update(done)
 	if s.ccStep != ccStepNone {
 		t.Errorf("success should close the modal, step = %d", s.ccStep)
 	}
-	if s.item.Stock != 8 {
-		t.Errorf("item stock should refresh to 8, got %d", s.item.Stock)
+	if reload == nil {
+		t.Fatal("success should trigger a reload command")
+	}
+	for _, mm := range ccDrainCmd(reload) {
+		s.Update(mm)
+	}
+	if s.item == nil || s.item.Stock != 8 {
+		t.Errorf("item stock should refresh to 8 after re-fetch, got %v", s.item)
 	}
 }

@@ -162,12 +162,12 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, Status(s.ccErr, StatusError)
 		}
 		s.closeCycleCount()
-		if m.item != nil {
-			s.item = m.item
-		}
+		// The cycle-count response is a PARTIAL item (id/current_stock/
+		// last_counted_at/days_since_last_count only) — assigning it to s.item
+		// would blank name/SKU/suppliers/costs. Re-fetch the full item AND the
+		// metrics instead; both changed with the new stock level.
 		s.scroller.Set(s.renderBody())
-		// Stock changed, so the metrics (QOH/QA/…) are stale — reload them.
-		return s, tea.Batch(Status("count recorded", StatusOK), s.loadMetricsCmd())
+		return s, tea.Batch(Status("count recorded", StatusOK), s.loadItemCmd(), s.loadMetricsCmd())
 	case inventoryDeletedMsg:
 		s.deleting = false
 		s.confirmingDelete = false
@@ -492,8 +492,8 @@ func formatItemMetricsRow(m *omsapi.ItemMetrics, sku string) string {
 		cell("SKU", metricSKUString(sku), wMetricSKU, alignLeft),
 		cell("QOH", metricIntString(m.CurrentStock), wMetricQty, alignRight),
 		cell("QOO", metricIntString(m.QuantityOnOrder), wMetricQty, alignRight),
-		cell("QA", metricIntString(m.QuantityAvailable), wMetricQty, alignRight),
-		cell("QC", metricIntString(m.QuantityCommitted), wMetricQty, alignRight),
+		cell("QA", metricFloatQtyString(m.QuantityAvailable), wMetricQty, alignRight),
+		cell("QC", metricFloatQtyString(m.QuantityCommitted), wMetricQty, alignRight),
 		cell("QIT", metricIntString(m.QuantityInTransit), wMetricQty, alignRight),
 		cell("RP", metricIntString(m.ReorderPoint), wMetricQty, alignRight),
 		cell("Lead", metricLeadString(m.LeadTimeDays), wMetricLead, alignRight),
@@ -507,6 +507,16 @@ func metricIntString(p *int) string {
 		return "-"
 	}
 	return strconv.Itoa(*p)
+}
+
+// metricFloatQtyString renders a float quantity (backend FloatField — QA/QC)
+// compactly: whole values drop the trailing ".0", genuine fractions are kept,
+// and nil → "-". Right-aligned in the metrics row like the int quantities.
+func metricFloatQtyString(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return strconv.FormatFloat(*p, 'f', -1, 64)
 }
 
 func metricLeadString(p *float64) string {

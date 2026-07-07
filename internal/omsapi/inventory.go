@@ -174,8 +174,8 @@ func (c *Client) ScanItem(ctx context.Context, id string) (*Item, error) {
 type ItemMetrics struct {
 	CurrentStock      *int          `json:"current_stock"`       // QOH — quantity on hand
 	QuantityOnOrder   *int          `json:"quantity_on_order"`   // QOO — on open POs
-	QuantityAvailable *int          `json:"quantity_available"`  // QA  — on hand minus committed
-	QuantityCommitted *int          `json:"quantity_committed"`  // QC  — reserved
+	QuantityAvailable *float64      `json:"quantity_available"`  // QA  — on hand minus committed (backend FloatField)
+	QuantityCommitted *float64      `json:"quantity_committed"`  // QC  — reserved (backend FloatField)
 	QuantityInTransit *int          `json:"quantity_in_transit"` // QIT — shipped, not received
 	ReorderPoint      *int          `json:"reorder_point"`       // RP
 	LeadTimeDays      *float64      `json:"lead_time_days"`      // Lead — days (may be fractional avg)
