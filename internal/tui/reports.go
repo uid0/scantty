@@ -63,6 +63,12 @@ func NewReportsScreen(deps Deps) *ReportsScreen {
 				build:    func(d Deps) Screen { return NewAssetReportScreen(d) },
 			},
 			{
+				hotkey:   'd',
+				label:    "ForgeKey fleet",
+				subtitle: "device health · online/offline · by type/capability/firmware · attention · recent activity",
+				build:    func(d Deps) Screen { return NewForgeKeyFleetReportScreen(d) },
+			},
+			{
 				hotkey:   'f',
 				label:    "Serialized forecast",
 				subtitle: "consumption forecast · days-to-stockout · reorder point",
