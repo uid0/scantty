@@ -278,38 +278,50 @@ func (s *InventoryDetailScreen) View() string {
 	if s.item == nil {
 		return StyleMuted.Render("Item not found.")
 	}
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
+
+	// Frozen header: the name / full SKU+ID / metrics row stay pinned above the
+	// scrolling body (Ian UX). Size the scroller so the header, the blank
+	// separator beneath it, and the footer all fit without the body clipping the
+	// bottom. The header height is dynamic (two lines until the metrics row
+	// arrives), so measure it every render.
+	header := s.renderHeader()
+	headerRows := strings.Count(header, "\n") + 1
+	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows+headerRows+1))
+	body := s.scroller.View()
+
 	if s.confirmingDelete {
 		var prompt string
 		if s.deleting {
 			prompt = StyleMuted.Render("Deleting…")
 		} else {
-			name := ""
-			if s.item != nil {
-				name = s.item.Name
-			}
-			prompt = StyleStatusWarn.Render(fmt.Sprintf("Delete %q? This can't be undone.  y delete · n/esc cancel", name))
+			prompt = StyleStatusWarn.Render(fmt.Sprintf("Delete %q? This can't be undone.  y delete · n/esc cancel", s.item.Name))
 		}
-		return s.scroller.View() + "\n\n" + prompt
+		return header + "\n\n" + body + "\n\n" + prompt
 	}
 	if s.ccStep != ccStepNone {
-		return s.scroller.View() + "\n\n" + s.cycleCountPrompt()
+		return header + "\n\n" + body + "\n\n" + s.cycleCountPrompt()
 	}
 	hint := "j/k scroll · o/enter reorder · c count · s suppliers · E edit · x delete · r refresh · esc back"
-	if s.item != nil && s.item.IsSerialized {
+	if s.item.IsSerialized {
 		hint = "j/k scroll · o/enter reorder · c count · s suppliers · i instances · E edit · x delete · r refresh · esc back"
 	}
-	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+	return header + "\n\n" + body + "\n\n" + StyleMuted.Render(hint)
 }
 
-func (s *InventoryDetailScreen) renderBody() string {
+// renderHeader builds the frozen top-of-detail region that stays pinned while
+// the body scrolls beneath it (Ian UX): three lines — the item name, the full
+// SKU/ID identity line, and the aligned Q's & Costs metrics row. Returned with
+// no trailing newline; View() counts its lines to size the scroller. The metrics
+// line is omitted until the metrics endpoint responds (an older backend without
+// it simply shows a two-line header).
+func (s *InventoryDetailScreen) renderHeader() string {
 	it := s.item
 	if it == nil {
-		// Metrics can arrive before the item; never dereference a nil item.
 		return ""
 	}
 	var b strings.Builder
 
+	// Line 1: item name (+ reorder flags).
 	b.WriteString(StyleTitle.Render(it.Name))
 	if it.NeedsReorder {
 		b.WriteString("  " + StyleStatusWarn.Render("needs reorder"))
@@ -317,6 +329,9 @@ func (s *InventoryDetailScreen) renderBody() string {
 	if it.HasPendingReorder {
 		b.WriteString("  " + StyleMuted.Render("[reorder pending]"))
 	}
+
+	// Line 2: full SKU + ID (+ category/location). The full SKU lives here, so
+	// the metrics row below drops its redundant shortened-SKU cell.
 	b.WriteString("\n")
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("SKU %s · ID %s", it.SKU, it.ID)))
 	if it.CategoryName != "" {
@@ -325,15 +340,28 @@ func (s *InventoryDetailScreen) renderBody() string {
 	if it.Location != "" {
 		b.WriteString(StyleMuted.Render(" · " + it.Location))
 	}
-	b.WriteString("\n")
 
-	// Aligned metrics row (issue-5): live stock/cost stats in fixed-width,
-	// right-aligned columns. Only shown once the metrics endpoint responds; a
-	// fetch failure (e.g. an older backend without the endpoint) omits it.
+	// Line 3: aligned metrics row (issue-5) — no SKU cell (de-dup with line 2),
+	// bold labels. Only once the metrics endpoint responds; a fetch failure
+	// (e.g. an older backend without the endpoint) omits the whole line.
 	if s.metrics != nil {
-		b.WriteString(formatItemMetricsRow(s.metrics, it.SKU) + "\n")
+		b.WriteString("\n")
+		b.WriteString(formatItemMetricsRow(s.metrics, it.SKU, metricsRowOpts{boldLabels: true}))
 	}
-	b.WriteString("\n")
+
+	return b.String()
+}
+
+// renderBody builds the scrolling detail below the frozen header (see
+// renderHeader). It starts at the description/stock sections — the name, SKU/ID
+// and metrics row are rendered by the pinned header instead.
+func (s *InventoryDetailScreen) renderBody() string {
+	it := s.item
+	if it == nil {
+		// Metrics can arrive before the item; never dereference a nil item.
+		return ""
+	}
+	var b strings.Builder
 
 	if it.Description != "" {
 		b.WriteString(it.Description + "\n\n")
@@ -485,23 +513,47 @@ const (
 	wMetricCost   = 8 // "$9999.99"
 )
 
-// formatItemMetricsRow renders the aligned second-row metrics line (issue-5):
+// metricsRowOpts configures the shared metrics-row renderer.
+//
+//   - withSKU prepends the "SKU: …tail" cell. The LIST wants it (the row needs
+//     the SKU to identify which item the numbers belong to); the DETAIL drops it
+//     because its line-2 identity row already shows the full SKU (de-dup — Ian).
+//   - boldLabels renders each metric LABEL bold so the line draws the eye. Bold
+//     adds no display width, so the fixed-width value columns still align.
+type metricsRowOpts struct {
+	withSKU    bool
+	boldLabels bool
+}
+
+// formatItemMetricsRow renders the aligned metrics line (issue-5), e.g. with
+// withSKU set:
 //
 //	SKU: WIDGET   QOH:    5   QOO:    0   QA:    5   QC:    0   QIT:    0   RP:    3   Lead:   7d   Cost:  $11.22↑
 //
 // Each cell is a "LABEL: value" pair with the value padded to a fixed width, so
 // the columns don't shift when a single-digit count becomes multi-digit and the
-// Cost decimal point stays in a fixed column. Nulls render as "-". Returns plain
-// (unstyled) text so alignment is testable by character offset.
-func formatItemMetricsRow(m *omsapi.ItemMetrics, sku string) string {
+// Cost decimal point stays in a fixed column. Nulls render as "-". With
+// boldLabels unset the output is plain (unstyled) text so alignment is testable
+// by character offset; boldLabels only wraps the label runs (zero display width),
+// leaving the value columns byte-for-byte where they were.
+func formatItemMetricsRow(m *omsapi.ItemMetrics, sku string, opts metricsRowOpts) string {
 	if m == nil {
 		return ""
 	}
-	cell := func(label, value string, w int, align colAlign) string {
-		return label + ": " + padCell(value, w, align)
+	label := func(s string) string {
+		if opts.boldLabels {
+			return StyleMetricLabel.Render(s)
+		}
+		return s
 	}
-	cells := []string{
-		cell("SKU", metricSKUString(sku), wMetricSKU, alignLeft),
+	cell := func(lbl, value string, w int, align colAlign) string {
+		return label(lbl) + ": " + padCell(value, w, align)
+	}
+	cells := make([]string, 0, 9)
+	if opts.withSKU {
+		cells = append(cells, cell("SKU", metricSKUString(sku), wMetricSKU, alignLeft))
+	}
+	cells = append(cells,
 		cell("QOH", metricIntString(m.CurrentStock), wMetricQty, alignRight),
 		cell("QOO", metricIntString(m.QuantityOnOrder), wMetricQty, alignRight),
 		cell("QA", metricFloatQtyString(m.QuantityAvailable), wMetricQty, alignRight),
@@ -509,8 +561,8 @@ func formatItemMetricsRow(m *omsapi.ItemMetrics, sku string) string {
 		cell("QIT", metricIntString(m.QuantityInTransit), wMetricQty, alignRight),
 		cell("RP", metricIntString(m.ReorderPoint), wMetricQty, alignRight),
 		cell("Lead", metricLeadString(m.LeadTimeDays), wMetricLead, alignRight),
-		cell("Cost", metricCostString(m.UnitCost), wMetricCost, alignRight) + costTrendArrow(m.CostTrend),
-	}
+		cell("Cost", metricCostString(m.UnitCost), wMetricCost, alignRight)+costTrendArrow(m.CostTrend),
+	)
 	return strings.Join(cells, "   ")
 }
 

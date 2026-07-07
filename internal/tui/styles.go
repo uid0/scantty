@@ -14,6 +14,12 @@ var (
 	StyleTitle = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	StyleMuted = lipgloss.NewStyle().Foreground(colorMuted)
 
+	// StyleMetricLabel bolds a metrics-row label (QOH:/QOO:/…/Cost:) so the
+	// Q's & Costs line draws the eye (Ian UX). Bold adds no display width, so
+	// the fixed-width, right-aligned value columns still line up — a wider glyph
+	// would have shifted them.
+	StyleMetricLabel = lipgloss.NewStyle().Bold(true)
+
 	StyleSidebar = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder(), false, true, false, false).
 			BorderForeground(colorBorder).
