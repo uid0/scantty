@@ -52,20 +52,46 @@ func (s StatusBar) View() string {
 	if s.unread > 0 {
 		parts = append(parts, StyleStatusWarn.Render(fmt.Sprintf("📬 %d unread", s.unread)))
 	}
-	left := strings.Join(parts, "  ")
+	context := strings.Join(parts, "  ")
 
-	right := ""
-	if s.message != "" && time.Now().Before(s.msgExpiry) {
-		right = RenderStatus(s.message, s.msgLevel)
-	} else {
-		right = StyleMuted.Render("q quit · tab nav · / search")
+	// avail is the usable width for a single content line inside
+	// StyleStatusBar's Padding(0, 1); content wider than this wraps (and its
+	// tail scrolls off the bottom of the frame), so everything below is kept
+	// within avail.
+	avail := s.width - 2
+	if avail < 1 {
+		avail = 1
 	}
 
-	gap := s.width - lenVis(left) - lenVis(right)
+	// Active status/error message. Ian's rule: errors show on the BOTTOM
+	// line, LEFT-justified, and COMPLETE — never clipped. So the message owns
+	// the line; the connection/scanner context only rides along on the right
+	// when the whole message still leaves room for it.
+	if s.message != "" && time.Now().Before(s.msgExpiry) {
+		msg := RenderStatus(s.message, s.msgLevel)
+		msgLen := lenVis(msg)
+		if gap := avail - msgLen - lenVis(context); gap >= 2 {
+			body := msg + strings.Repeat(" ", gap) + context
+			return StyleStatusBar.Width(s.width).Render(body)
+		}
+		if msgLen > avail {
+			// Genuinely wider than the terminal (rare): clip at the true edge
+			// so the bar stays a single line instead of wrapping the tail out
+			// of view. Width() would word-wrap and hide the remainder.
+			return StyleStatusBar.MaxWidth(s.width).Render(msg)
+		}
+		// Message fits on its own; Width() left-justifies and pads it out.
+		return StyleStatusBar.Width(s.width).Render(msg)
+	}
+
+	// No active message: connection/scanner context on the left, key hints on
+	// the right.
+	right := StyleMuted.Render("q quit · tab nav · / search")
+	gap := avail - lenVis(context) - lenVis(right)
 	if gap < 1 {
 		gap = 1
 	}
-	body := left + strings.Repeat(" ", gap) + right
+	body := context + strings.Repeat(" ", gap) + right
 	return StyleStatusBar.Width(s.width).Render(body)
 }
 
