@@ -53,6 +53,17 @@ type PurchaseOrderDetailScreen struct {
 	deliverFocus   int
 	deliverErr     string
 	deliverPending bool
+
+	// "Order pad" overlay (parity with web #855). When orderPad == true the
+	// screen renders the vendor-agnostic part#/qty pad over the body in a
+	// scroller; esc/q closes. On load the pad text is also pushed to the
+	// terminal clipboard via OSC 52 so an operator on SSH can paste it into a
+	// vendor site on their own machine. orderPadScroller is lazily built.
+	orderPad         bool
+	orderPadLoading  bool
+	orderPadExport   *omsapi.OrderPadExport
+	orderPadErr      string
+	orderPadScroller *TextScroller
 }
 
 // Mark-delivered field indexes.
@@ -91,6 +102,12 @@ type poDeliveredMsg struct {
 	err error
 }
 
+// poOrderPadMsg reports the result of building the order pad (parity #855).
+type poOrderPadMsg struct {
+	export *omsapi.OrderPadExport
+	err    error
+}
+
 func NewPurchaseOrderDetailScreen(deps Deps, id string) *PurchaseOrderDetailScreen {
 	return &PurchaseOrderDetailScreen{
 		deps:     deps,
@@ -112,10 +129,11 @@ func (s *PurchaseOrderDetailScreen) Init() tea.Cmd {
 }
 
 // WantsRawInput routes every key to the screen while any modal (mark-shipped,
-// void, mark-delivered) is open so the textinputs receive characters without
-// the app dispatcher claiming letters like 'r' / 'R' / 'S' / 'v' / 'd'.
+// void, mark-delivered) or the order-pad overlay is open so the textinputs
+// receive characters — and the overlay's scroll/close keys stay local —
+// without the app dispatcher claiming letters like 'r' / 'R' / 'S' / 'v' / 'd'.
 func (s *PurchaseOrderDetailScreen) WantsRawInput() bool {
-	return s.shipping || s.voiding || s.delivering
+	return s.shipping || s.voiding || s.delivering || s.orderPad
 }
 
 // HandlesKey claims lowercase 's' (send-to-supplier) so it beats the global
@@ -203,6 +221,26 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loadErr = ""
 		return s, tea.Batch(Status("marked delivered", StatusOK), s.load())
 
+	case poOrderPadMsg:
+		// Ignore a result the operator already walked away from (esc during
+		// load) — don't fire a surprise clipboard write + toast for a pad they
+		// abandoned.
+		if !s.orderPad {
+			return s, nil
+		}
+		s.orderPadLoading = false
+		if m.err != nil {
+			s.orderPadErr = m.err.Error()
+			return s, Status("order pad failed: "+m.err.Error(), StatusError)
+		}
+		s.orderPadExport = m.export
+		s.orderPadErr = ""
+		s.orderPadScroller.Set(s.renderOrderPadBody())
+		s.orderPadScroller.Top()
+		// Push the paste-ready pad to the terminal clipboard (best-effort) and
+		// summarize the result — including any lines missing a part number.
+		return s, tea.Batch(copyToClipboardCmd(m.export.Text), Status(s.orderPadToast(), s.orderPadToastLevel()))
+
 	case tea.KeyMsg:
 		if s.shipping {
 			return s.handleShipKey(m)
@@ -212,6 +250,9 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		if s.delivering {
 			return s.handleDeliverKey(m)
+		}
+		if s.orderPad {
+			return s.handleOrderPadKey(m)
 		}
 		if s.scroller.Handle(m) {
 			return s, nil
@@ -262,6 +303,16 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.po != nil {
 				return s, SwitchTo(WSPurchasing, NewPurchaseOrderAttachmentsScreen(s.deps, s.po))
 			}
+		case "x":
+			// Export the vendor-agnostic order pad (part#/qty) — parity with
+			// web #855. Lowercase x is free in the global keymap (not a nav
+			// hotkey, not in the global switch), so it reaches the screen here
+			// without needing HandlesKey. 'o' would collide with the global
+			// Operational-Modes hotkey, so x = export.
+			if s.po == nil {
+				return s, nil
+			}
+			return s, s.openOrderPad()
 		case "d":
 			// Mark delivered. Gated on the backend-receivable states; the
 			// server also enforces this and 400s otherwise.
@@ -544,6 +595,117 @@ func (s *PurchaseOrderDetailScreen) submitDeliver() (Screen, tea.Cmd) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Order-pad overlay (parity with web #855)
+// ---------------------------------------------------------------------------
+
+// openOrderPad opens the order-pad overlay and kicks off the async fetch. The
+// scroller is rebuilt each open so a stale pad from a previous view can't flash
+// before the new one loads.
+func (s *PurchaseOrderDetailScreen) openOrderPad() tea.Cmd {
+	s.orderPad = true
+	s.orderPadLoading = true
+	s.orderPadErr = ""
+	s.orderPadExport = nil
+	s.orderPadScroller = NewTextScroller(defaultDetailHeight)
+	return s.fetchOrderPad()
+}
+
+func (s *PurchaseOrderDetailScreen) fetchOrderPad() tea.Cmd {
+	poID := fmt.Sprintf("%v", s.po.ID)
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		export, err := deps.OMS.ExportOrderPad(ctx, poID)
+		return poOrderPadMsg{export: export, err: err}
+	}
+}
+
+// handleOrderPadKey drives the order-pad overlay: scroll the pad, re-copy it to
+// the terminal clipboard, or close. WantsRawInput routes every key here while
+// the overlay is open, so keys the overlay doesn't recognize are swallowed
+// rather than leaking to the global nav behind it.
+func (s *PurchaseOrderDetailScreen) handleOrderPadKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc", "q":
+		s.orderPad = false
+		s.orderPadErr = ""
+		return s, nil
+	case "c":
+		// Re-copy on demand (mirrors the web "Copy order pad" button) in case
+		// the auto-copy on open didn't land in the operator's terminal.
+		if s.orderPadExport != nil && s.orderPadExport.Text != "" {
+			return s, tea.Batch(
+				copyToClipboardCmd(s.orderPadExport.Text),
+				Status("order pad copied to clipboard", StatusOK),
+			)
+		}
+		return s, nil
+	}
+	if s.orderPadScroller != nil {
+		s.orderPadScroller.Handle(m)
+	}
+	return s, nil
+}
+
+// renderOrderPadBody formats the pad's part#/qty lines for on-screen display.
+// The raw payload is tab-separated; here it's shown in aligned columns so the
+// operator can scan it, while the clipboard copy always carries the exact
+// tab-separated text (a paste lands correctly in a spreadsheet or vendor order
+// pad). Returns an empty-state note when no line carries a supplier part number.
+func (s *PurchaseOrderDetailScreen) renderOrderPadBody() string {
+	if s.orderPadExport == nil || strings.TrimSpace(s.orderPadExport.Text) == "" {
+		return StyleMuted.Render("No lines have a supplier part number — nothing to order.")
+	}
+	var b strings.Builder
+	for i, line := range strings.Split(s.orderPadExport.Text, "\n") {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		part, qty, found := strings.Cut(line, "\t")
+		if !found {
+			b.WriteString(line)
+			continue
+		}
+		b.WriteString(fmt.Sprintf("%-28s  %s", part, qty))
+	}
+	return b.String()
+}
+
+// orderPadToast summarizes the load for the status bar: how many usable lines
+// were copied and how many were omitted for a missing supplier part number.
+func (s *PurchaseOrderDetailScreen) orderPadToast() string {
+	if s.orderPadExport == nil {
+		return "order pad built"
+	}
+	n := s.orderPadExport.LineCount
+	var msg string
+	if n == 0 || s.orderPadExport.Text == "" {
+		msg = "order pad: no lines have a supplier part number"
+	} else {
+		msg = fmt.Sprintf("order pad copied to clipboard (%d %s)", n, plural("line", n))
+	}
+	if miss := len(s.orderPadExport.MissingSku); miss > 0 {
+		msg += fmt.Sprintf(" · %d %s missing part #", miss, plural("line", miss))
+	}
+	return msg
+}
+
+// orderPadToastLevel picks the status level: OK for a clean copy, Warn when
+// nothing was orderable or some lines were dropped for a missing part number.
+func (s *PurchaseOrderDetailScreen) orderPadToastLevel() StatusLevel {
+	if s.orderPadExport == nil {
+		return StatusInfo
+	}
+	if s.orderPadExport.LineCount == 0 || s.orderPadExport.Text == "" || len(s.orderPadExport.MissingSku) > 0 {
+		return StatusWarn
+	}
+	return StatusOK
+}
+
 func (s *PurchaseOrderDetailScreen) View() string {
 	if s.loading {
 		return StyleMuted.Render("Loading purchase order…")
@@ -606,8 +768,61 @@ func (s *PurchaseOrderDetailScreen) View() string {
 		}
 		return b.String()
 	}
+	if s.orderPad {
+		return s.viewOrderPad()
+	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(s.footerHint())
+}
+
+// viewOrderPad renders the order-pad overlay: a title + supplier/count/filename
+// meta line, a missing-part-number warning when any line was omitted, the
+// scrollable part#/qty pad, and the overlay's own key legend. The pad text is
+// already on the terminal clipboard (copied when it loaded); the on-screen copy
+// is the always-available fallback.
+func (s *PurchaseOrderDetailScreen) viewOrderPad() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Order pad") + "\n")
+	if s.orderPadLoading {
+		b.WriteString("\n" + StyleMuted.Render("Building order pad…"))
+		return b.String()
+	}
+	if s.orderPadErr != "" {
+		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.orderPadErr) + "\n")
+		b.WriteString("\n" + StyleMuted.Render("esc close"))
+		return b.String()
+	}
+
+	// Fixed chrome rows around the scroller: title + meta + blank above, plus
+	// the missing-SKU warning when present, plus blank + hint below. Budget the
+	// scroller against them so the pad never clips the terminal bottom.
+	footerRows := 5
+	if s.orderPadExport != nil {
+		meta := []string{}
+		if s.orderPadExport.Supplier != "" {
+			meta = append(meta, s.orderPadExport.Supplier)
+		}
+		meta = append(meta, fmt.Sprintf("%d %s", s.orderPadExport.LineCount, plural("line", s.orderPadExport.LineCount)))
+		if s.orderPadExport.Filename != "" {
+			meta = append(meta, s.orderPadExport.Filename)
+		}
+		b.WriteString(StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
+		if miss := len(s.orderPadExport.MissingSku); miss > 0 {
+			footerRows++
+			b.WriteString(StyleStatusWarn.Render(fmt.Sprintf(
+				"⚠ %d %s no supplier part # (omitted): %s",
+				miss, plural("line", miss), strings.Join(s.orderPadExport.MissingSku, ", "),
+			)) + "\n")
+		}
+	}
+	b.WriteString("\n")
+
+	if s.orderPadScroller != nil {
+		s.orderPadScroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, footerRows))
+		b.WriteString(s.orderPadScroller.View())
+	}
+	b.WriteString("\n\n" + StyleMuted.Render("j/k scroll · c copy · esc close"))
+	return b.String()
 }
 
 // footerHint builds the one-line key legend. The Send (s) and Confirm (c)
@@ -627,7 +842,7 @@ func (s *PurchaseOrderDetailScreen) footerHint() string {
 			parts = append(parts, "d mark delivered")
 		}
 	}
-	parts = append(parts, "R receive items", "S mark item shipped", "E edit", "A attachments")
+	parts = append(parts, "R receive items", "S mark item shipped", "E edit", "A attachments", "x order pad")
 	// Void is offered whenever the PO isn't already voided/received (the
 	// backend still enforces the staff/COO permission).
 	if s.po != nil && s.po.Status != "voided" && s.po.Status != "received" && !s.po.IsFullyReceived {

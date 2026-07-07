@@ -204,6 +204,36 @@ func (c *Client) GetPurchaseOrder(ctx context.Context, id string) (*PurchaseOrde
 	return &out, nil
 }
 
+// OrderPadExport is the vendor-agnostic order pad the backend builds from a
+// PO's non-voided lines (parity with OMS web #855). Csv carries a part#,qty
+// CSV with a header row; Text is the tab-separated part#\tqty copy-paste block
+// (no header) suitable for pasting straight into any distributor's bulk order
+// pad. MissingSku names the lines whose supplier part number is blank — those
+// rows are omitted from Csv/Text rather than silently dropped, so the operator
+// knows exactly which lines to fix. LineCount is the number of usable rows.
+type OrderPadExport struct {
+	Csv        string   `json:"csv"`
+	Text       string   `json:"text"`
+	Filename   string   `json:"filename"`
+	Supplier   string   `json:"supplier"`
+	LineCount  int      `json:"line_count"`
+	MissingSku []string `json:"missing_sku"`
+}
+
+// ExportOrderPad fetches the vendor-agnostic order pad for a PO via
+// GET /api/reorders/purchase-orders/{poID}/export-order/ (trailing slash — a
+// DRF @action). The backend read-gates it to authenticated users, matching
+// send_to_supplier. The Client's method-preserving redirect policy (see
+// preserveMethodOnRedirect) keeps the GET intact across an http->https upgrade.
+func (c *Client) ExportOrderPad(ctx context.Context, poID string) (*OrderPadExport, error) {
+	var out OrderPadExport
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/export-order/", poID)
+	if err := c.Get(ctx, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // PurchaseOrderCreateItem is one line in the PurchaseOrderCreate payload.
 // The OMS create endpoint accepts three line shapes, picked by which fields
 // are set: inventory (ItemSupplierID), asset (AssetID), or freeform
