@@ -63,6 +63,12 @@ type ForgeKeyDeviceDetailScreen struct {
 	itFocus         int // 0=color, 1=brightness, 2=pattern, 3=period
 	itErr           string
 	itPending       bool
+
+	// Delete-with-confirm (x): a y/n guard before the destructive DELETE.
+	// While confirming, WantsRawInput routes every key here so y/n/esc land
+	// locally instead of hitting the root's global hotkeys.
+	confirmingDelete bool
+	deleting         bool
 }
 
 type fkDeviceLoadedMsg struct {
@@ -83,6 +89,10 @@ type fkIndicatorTestMsg struct {
 	err  error
 }
 
+type fkDeviceDeletedMsg struct {
+	err error
+}
+
 func NewForgeKeyDeviceDetailScreen(deps Deps, id string) *ForgeKeyDeviceDetailScreen {
 	return &ForgeKeyDeviceDetailScreen{deps: deps, devID: id, loading: true}
 }
@@ -97,9 +107,12 @@ func (s *ForgeKeyDeviceDetailScreen) Title() string {
 func (s *ForgeKeyDeviceDetailScreen) Init() tea.Cmd { return s.load() }
 
 // WantsRawInput routes every key to the screen while the indicator-test form is
-// open so the cycle keys and the period textinput receive characters the global
-// dispatcher would otherwise claim.
-func (s *ForgeKeyDeviceDetailScreen) WantsRawInput() bool { return s.mode != fkDetailView }
+// open (so the cycle keys and the period textinput receive characters the global
+// dispatcher would otherwise claim) or while the delete confirmation is up (so
+// y/n/esc land here rather than triggering global hotkeys).
+func (s *ForgeKeyDeviceDetailScreen) WantsRawInput() bool {
+	return s.mode != fkDetailView || s.confirmingDelete
+}
 
 func (s *ForgeKeyDeviceDetailScreen) load() tea.Cmd {
 	deps := s.deps
@@ -193,9 +206,22 @@ func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.actionMsg = "indicator test sent · command " + m.resp.CommandID
 		}
 		return s, Status("indicator test sent", StatusOK)
+	case fkDeviceDeletedMsg:
+		s.deleting = false
+		s.confirmingDelete = false
+		if m.err != nil {
+			return s, Status("delete failed: "+m.err.Error(), StatusError)
+		}
+		return s, tea.Batch(
+			Status("device deleted", StatusOK),
+			SwitchTo(WSForgeKey, newScreenFor(WSForgeKey, s.deps)),
+		)
 	case tea.KeyMsg:
 		if s.device == nil {
 			return s, nil
+		}
+		if s.confirmingDelete {
+			return s.updateConfirmDelete(m)
 		}
 		if s.mode == fkDetailIndicatorTest {
 			return s.handleIndicatorTestKey(m)
@@ -211,6 +237,17 @@ func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loading = true
 			s.loadErr = ""
 			return s, s.load()
+		case "E":
+			// Edit the device record's web-editable metadata (the default
+			// location). Uppercase E — lowercase e is the enable command, and E
+			// is the shared "edit this record" convention (inventory/asset/SIG
+			// detail screens).
+			return s, SwitchTo(WSForgeKey, NewForgeKeyDeviceFormScreen(s.deps, s.device))
+		case "x":
+			// Delete (deregister) the device — destructive, so guard it behind a
+			// y/n confirm. Mirrors the web DeviceLifecycleCard's Delete action.
+			s.confirmingDelete = true
+			return s, nil
 		case "t":
 			// Indicator preview — only where it applies (mirrors the web card
 			// gating). A non-indicator device just flashes a hint.
@@ -265,6 +302,31 @@ func runFKCmd(label string, fn func() error) tea.Cmd {
 		err := fn()
 		return fkCommandResultMsg{action: label, err: err}
 	}
+}
+
+// updateConfirmDelete handles the y/n prompt shown before deleting a device.
+// The screen is in raw-input mode here (WantsRawInput), so n/esc reach us
+// instead of the root's global handlers.
+func (s *ForgeKeyDeviceDetailScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.deleting {
+		return s, nil
+	}
+	switch m.String() {
+	case "y", "Y":
+		s.deleting = true
+		deps := s.deps
+		ctx := deps.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		id := fmt.Sprint(s.device.ID)
+		return s, func() tea.Msg {
+			return fkDeviceDeletedMsg{err: deps.ForgeKey.DeleteDevice(ctx, id)}
+		}
+	case "n", "N", "esc":
+		s.confirmingDelete = false
+	}
+	return s, nil
 }
 
 func deviceHasCapability(d *forgekeyapi.Device, capability string) bool {
@@ -517,6 +579,28 @@ func (s *ForgeKeyDeviceDetailScreen) renderIndicatorTest() string {
 	return b.String()
 }
 
+// renderConfirmDelete mirrors the web DeviceLifecycleCard delete modal's copy —
+// a permanent-delete warning naming the device and its command history. The
+// web's "use Retire instead" suggestion is dropped: ScanTTY has no retire action
+// yet (is_active lifecycle is a separate concern), so pointing at it would
+// dangle.
+func (s *ForgeKeyDeviceDetailScreen) renderConfirmDelete() string {
+	label := s.device.Name
+	if label == "" {
+		label = s.device.MACAddress
+	}
+	var b strings.Builder
+	b.WriteString(StyleStatusError.Render("Delete device?") + "\n\n")
+	b.WriteString("Permanently delete " + StyleTitle.Render(label) + " and its command history?\n")
+	b.WriteString(StyleMuted.Render("This can’t be undone.") + "\n\n")
+	if s.deleting {
+		b.WriteString(StyleMuted.Render("Deleting…"))
+	} else {
+		b.WriteString(StyleMuted.Render("y delete · n/esc cancel"))
+	}
+	return b.String()
+}
+
 func (s *ForgeKeyDeviceDetailScreen) View() string {
 	if s.loading {
 		return StyleMuted.Render("Loading device…")
@@ -526,6 +610,9 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 	}
 	if s.device == nil {
 		return StyleMuted.Render("Device not found.")
+	}
+	if s.confirmingDelete {
+		return s.renderConfirmDelete()
 	}
 	if s.mode == fkDetailIndicatorTest {
 		return s.renderIndicatorTest()
@@ -643,7 +730,7 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 		b.WriteString(StyleMuted.Render(s.actionMsg) + "\n\n")
 	}
 
-	help := "e enable · d disable · s status · i identify · p ping · b blink · R restart · r refresh · esc back"
+	help := "E edit · x delete · e enable · d disable · s status · i identify · p ping · b blink · R restart · r refresh · esc back"
 	if s.isIndicator {
 		help = "t indicator-test · " + help
 	}
