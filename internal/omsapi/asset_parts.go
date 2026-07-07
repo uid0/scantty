@@ -110,14 +110,26 @@ func (c *Client) DeleteAssetPart(ctx context.Context, id string) error {
 	return c.Delete(ctx, assetPartsPath+id+"/")
 }
 
-// MarkAssetPartReplaced fires the mark_replaced action (POST, no body). The
-// backend stamps last_replaced_at = now and returns the refreshed part
+// MarkAssetPartReplaced fires the mark_replaced action (POST). The backend
+// stamps last_replaced_at = now and returns the refreshed part
 // (days_since_replacement → 0, needs_replacement → false). NOTE the URL segment
 // is an underscore — mark_replaced — the DRF default url_path for the action
 // method; a kebab-case mark-replaced would 404.
-func (c *Client) MarkAssetPartReplaced(ctx context.Context, id string) (*AssetPart, error) {
+//
+// replacementSerial captures the replacement unit's serial for a SERIALIZED
+// part (op-8nxe contract): when non-empty it rides as the optional body
+// {"replacement_serial_number": <serial>}; when empty the call sends NO body,
+// preserving the original no-body behavior (back-compat for non-serialized
+// parts and for a serialized part the operator submits blank). Passing a typed
+// nil map here would marshal to `null` with a Content-Type, so the empty case
+// keeps body as an untyped nil interface.
+func (c *Client) MarkAssetPartReplaced(ctx context.Context, id, replacementSerial string) (*AssetPart, error) {
+	var body any // nil interface → do() sends no request body
+	if replacementSerial != "" {
+		body = map[string]string{"replacement_serial_number": replacementSerial}
+	}
 	var out AssetPart
-	if err := c.Post(ctx, assetPartsPath+id+"/mark_replaced/", nil, &out); err != nil {
+	if err := c.Post(ctx, assetPartsPath+id+"/mark_replaced/", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

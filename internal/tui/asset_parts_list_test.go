@@ -1,6 +1,11 @@
 package tui
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -39,6 +44,182 @@ func TestAssetPartsScreen_WantsRawInput(t *testing.T) {
 	s.confirm = partsConfirmReplace
 	if !s.WantsRawInput() {
 		t.Error("should want raw input while a mark-replaced confirm is up")
+	}
+	s.confirm = partsConfirmReplaceSerial
+	if !s.WantsRawInput() {
+		t.Error("should want raw input while the serial prompt is up")
+	}
+}
+
+// TestAssetPartsScreen_SerializedOpensSerialPrompt gates the prompt on
+// part_details.is_serialized: confirming replace on a serialized part opens the
+// serial-entry step instead of firing immediately.
+func TestAssetPartsScreen_SerializedOpensSerialPrompt(t *testing.T) {
+	s := NewAssetPartsScreen(Deps{Ctx: context.Background()}, "asset-9", "Lathe")
+	s.loading = false
+	s.rows = []omsapi.AssetPart{{
+		ID: float64(1), Part: "item-1", PartName: "Magenta ink",
+		PartDetails: omsapi.AssetPartDetails{IsSerialized: true},
+	}}
+
+	s.Update(partsRuneKey("R"))
+	if s.confirm != partsConfirmReplace {
+		t.Fatalf("R should arm replace confirm, got %v", s.confirm)
+	}
+	_, cmd := s.Update(partsRuneKey("y"))
+	if s.confirm != partsConfirmReplaceSerial {
+		t.Fatalf("y on a serialized part should open the serial prompt, got %v", s.confirm)
+	}
+	if s.working {
+		t.Errorf("must not fire the request before the serial is entered")
+	}
+	if cmd == nil {
+		t.Errorf("opening the prompt should return the textinput.Blink cmd")
+	}
+	if !s.serialInput.Focused() {
+		t.Errorf("serial input should be focused")
+	}
+	if !strings.Contains(s.View(), "Replacement serial number") {
+		t.Errorf("prompt view missing the serial field label: %q", s.View())
+	}
+}
+
+// TestAssetPartsScreen_NonSerializedNoPrompt keeps the one-click behavior for a
+// non-serialized part: confirming replace fires immediately, no serial prompt.
+func TestAssetPartsScreen_NonSerializedNoPrompt(t *testing.T) {
+	s := NewAssetPartsScreen(Deps{Ctx: context.Background()}, "asset-9", "Lathe")
+	s.loading = false
+	s.rows = []omsapi.AssetPart{{ID: float64(1), Part: "item-1", PartName: "Belt"}}
+
+	s.Update(partsRuneKey("R"))
+	_, cmd := s.Update(partsRuneKey("y"))
+	if s.confirm == partsConfirmReplaceSerial {
+		t.Fatalf("non-serialized part must not open the serial prompt")
+	}
+	if !s.working {
+		t.Errorf("non-serialized replace should fire immediately (working=true)")
+	}
+	if cmd == nil {
+		t.Errorf("non-serialized replace should return the request cmd")
+	}
+}
+
+// TestAssetPartsScreen_SerialPromptSubmit drives the full serialized flow against
+// a fake server and asserts the typed serial reaches the mark_replaced body.
+func TestAssetPartsScreen_SerialPromptSubmit(t *testing.T) {
+	var gotBody map[string]any
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		if len(raw) > 0 {
+			_ = json.Unmarshal(raw, &gotBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":1,"asset":"asset-9","part":"item-1","replacement_serial_number":"MG-1"}`))
+	}))
+	defer srv.Close()
+
+	s := NewAssetPartsScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "asset-9", "Lathe")
+	s.loading = false
+	s.rows = []omsapi.AssetPart{{
+		ID: float64(1), Part: "item-1", PartName: "Magenta ink",
+		PartDetails: omsapi.AssetPartDetails{IsSerialized: true},
+	}}
+
+	s.Update(partsRuneKey("R"))
+	s.Update(partsRuneKey("y"))
+	s.Update(partsRuneKey("MG-1")) // keystrokes route to the focused input
+	if got := s.serialInput.Value(); got != "MG-1" {
+		t.Fatalf("serial input value = %q, want MG-1", got)
+	}
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !s.working || cmd == nil {
+		t.Fatalf("enter should submit (working=true, cmd non-nil)")
+	}
+	msg := cmd() // execute the request
+	rm, ok := msg.(assetPartReplacedMsg)
+	if !ok || rm.err != nil {
+		t.Fatalf("expected a successful assetPartReplacedMsg, got %#v", msg)
+	}
+	if gotPath != "/api/inventory/asset-parts/1/mark_replaced/" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if gotBody == nil || gotBody["replacement_serial_number"] != "MG-1" {
+		t.Errorf("mark_replaced body = %v, want replacement_serial_number=MG-1", gotBody)
+	}
+}
+
+// TestAssetPartsScreen_SerialPromptBlankSubmitNoBody confirms a blank serial
+// submit is allowed and sends NO body (the operator isn't blocked; back-compat).
+func TestAssetPartsScreen_SerialPromptBlankSubmitNoBody(t *testing.T) {
+	sawBody := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		sawBody = len(raw) > 0
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":1,"asset":"asset-9","part":"item-1"}`))
+	}))
+	defer srv.Close()
+
+	s := NewAssetPartsScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "asset-9", "Lathe")
+	s.loading = false
+	s.rows = []omsapi.AssetPart{{
+		ID: float64(1), Part: "item-1", PartName: "Magenta ink",
+		PartDetails: omsapi.AssetPartDetails{IsSerialized: true},
+	}}
+
+	s.Update(partsRuneKey("R"))
+	s.Update(partsRuneKey("y"))
+	// submit with the field left blank
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("blank enter should still submit")
+	}
+	cmd()
+	if sawBody {
+		t.Errorf("blank serial must send no request body")
+	}
+}
+
+// TestAssetPartsScreen_SerialPromptEscCancels backs the serial prompt all the
+// way out without firing a request.
+func TestAssetPartsScreen_SerialPromptEscCancels(t *testing.T) {
+	s := NewAssetPartsScreen(Deps{Ctx: context.Background()}, "asset-9", "Lathe")
+	s.loading = false
+	s.rows = []omsapi.AssetPart{{
+		ID: float64(1), Part: "item-1", PartName: "Magenta ink",
+		PartDetails: omsapi.AssetPartDetails{IsSerialized: true},
+	}}
+
+	s.Update(partsRuneKey("R"))
+	s.Update(partsRuneKey("y"))
+	if s.confirm != partsConfirmReplaceSerial {
+		t.Fatalf("precondition: serial prompt should be open")
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if s.confirm != partsConfirmNone {
+		t.Errorf("esc should clear the serial prompt, got %v", s.confirm)
+	}
+	if s.working {
+		t.Errorf("esc must not fire a request")
+	}
+	if s.serialInput.Focused() {
+		t.Errorf("serial input should be blurred after cancel")
+	}
+}
+
+// TestAssetPartsScreen_RenderRowShowsSerial surfaces a recorded replacement
+// serial in the row meta.
+func TestAssetPartsScreen_RenderRowShowsSerial(t *testing.T) {
+	s := NewAssetPartsScreen(Deps{}, "asset-9", "Lathe")
+	s.loading = false
+	s.rows = []omsapi.AssetPart{{
+		ID: float64(1), Part: "item-1", PartName: "Magenta ink",
+		ReplacementSerialNumber: "MG-2024-XYZ",
+	}}
+	if out := s.renderRow(0); !strings.Contains(out, "s/n MG-2024-XYZ") {
+		t.Errorf("row should surface the recorded serial: %q", out)
 	}
 }
 

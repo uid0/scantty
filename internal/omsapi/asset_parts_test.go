@@ -166,7 +166,8 @@ func TestDeleteAssetPart_Contract(t *testing.T) {
 }
 
 // TestMarkAssetPartReplaced_Contract confirms the action is a POST to the
-// underscore url_path with NO request body, and that the refreshed part decodes
+// underscore url_path and — for a non-serialized part (empty serial) — sends NO
+// request body (back-compat), and that the refreshed part decodes
 // (days_since_replacement → 0, needs_replacement → false, last_replaced_at set).
 func TestMarkAssetPartReplaced_Contract(t *testing.T) {
 	var cap capture
@@ -176,7 +177,7 @@ func TestMarkAssetPartReplaced_Contract(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	part, err := c.MarkAssetPartReplaced(context.Background(), "12")
+	part, err := c.MarkAssetPartReplaced(context.Background(), "12", "")
 	if err != nil {
 		t.Fatalf("MarkAssetPartReplaced: %v", err)
 	}
@@ -184,7 +185,7 @@ func TestMarkAssetPartReplaced_Contract(t *testing.T) {
 		t.Fatalf("method/path = %q %q", cap.method, cap.path)
 	}
 	if cap.body != nil {
-		t.Errorf("mark_replaced must send no body, got %v", cap.body)
+		t.Errorf("mark_replaced with empty serial must send no body, got %v", cap.body)
 	}
 	if part == nil || part.LastReplacedAt == nil {
 		t.Fatalf("expected last_replaced_at set: %+v", part)
@@ -194,6 +195,69 @@ func TestMarkAssetPartReplaced_Contract(t *testing.T) {
 	}
 	if part.DaysSinceReplacement == nil || *part.DaysSinceReplacement != 0 {
 		t.Errorf("days_since_replacement = %v, want 0", part.DaysSinceReplacement)
+	}
+}
+
+// TestMarkAssetPartReplaced_WithSerial confirms a non-empty replacement serial
+// rides as the optional body {"replacement_serial_number": <serial>} (op-8nxe
+// contract), and the returned part surfaces the recorded serial.
+func TestMarkAssetPartReplaced_WithSerial(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK,
+		`{"id":12,"asset":"asset-9","part":"item-1","last_replaced_at":"2026-07-06T11:00:00Z","days_since_replacement":0,"needs_replacement":false,"replacement_serial_number":"MG-2024-XYZ"}`,
+		&cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	part, err := c.MarkAssetPartReplaced(context.Background(), "12", "MG-2024-XYZ")
+	if err != nil {
+		t.Fatalf("MarkAssetPartReplaced: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/inventory/asset-parts/12/mark_replaced/" {
+		t.Fatalf("method/path = %q %q", cap.method, cap.path)
+	}
+	if cap.body == nil {
+		t.Fatalf("mark_replaced with a serial must send a body")
+	}
+	if got := cap.body["replacement_serial_number"]; got != "MG-2024-XYZ" {
+		t.Errorf("replacement_serial_number = %v, want MG-2024-XYZ", got)
+	}
+	if part == nil || part.ReplacementSerialNumber != "MG-2024-XYZ" {
+		t.Fatalf("expected recorded serial on part: %+v", part)
+	}
+}
+
+// TestAssetPart_PartDetailsSerialized covers decoding the nested part_details
+// projection the TUI gates on: is_serialized:true lands on the typed field, and
+// absent/false part_details decodes to the zero value (no prompt).
+func TestAssetPart_PartDetailsSerialized(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK,
+		`{"id":7,"asset":"asset-9","part":"item-1","part_name":"Magenta ink","part_details":{"is_serialized":true}}`,
+		&cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	part, err := c.GetAssetPart(context.Background(), "7")
+	if err != nil {
+		t.Fatalf("GetAssetPart: %v", err)
+	}
+	if !part.PartDetails.IsSerialized {
+		t.Errorf("part_details.is_serialized should decode true: %+v", part.PartDetails)
+	}
+
+	// absent part_details → zero value → not serialized (no prompt).
+	var cap2 capture
+	srv2 := captureServer(t, http.StatusOK,
+		`{"id":8,"asset":"asset-9","part":"item-2","part_name":"Belt"}`, &cap2)
+	defer srv2.Close()
+	c2 := New(srv2.URL)
+	part2, err := c2.GetAssetPart(context.Background(), "8")
+	if err != nil {
+		t.Fatalf("GetAssetPart: %v", err)
+	}
+	if part2.PartDetails.IsSerialized {
+		t.Errorf("absent part_details must decode is_serialized=false: %+v", part2.PartDetails)
 	}
 }
 
