@@ -382,6 +382,80 @@ func TestConfirmOrder_BackendError(t *testing.T) {
 	}
 }
 
+// TestExportOrderPad_Contract pins the order-pad export to
+// GET /api/reorders/purchase-orders/{id}/export-order/ (trailing slash — a DRF
+// @action) and decodes every field of the pinned #855 payload. The trailing
+// slash matters: without it DRF 301-redirects to the slashed URL, and only the
+// method-preserving redirect client keeps that a GET.
+func TestExportOrderPad_Contract(t *testing.T) {
+	var captured struct {
+		method string
+		path   string
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.method = r.Method
+		captured.path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"csv": "part#,qty\nABC-123,5\nDEF-456,2\n",
+			"text": "ABC-123\t5\nDEF-456\t2",
+			"filename": "PO-2026-0060-order.csv",
+			"supplier": "Grainger",
+			"line_count": 2,
+			"missing_sku": ["Widget with no part number"]
+		}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	pad, err := c.ExportOrderPad(context.Background(), "po-9")
+	if err != nil {
+		t.Fatalf("ExportOrderPad: %v", err)
+	}
+	if captured.method != "GET" {
+		t.Fatalf("method = %q, want GET", captured.method)
+	}
+	if captured.path != "/api/reorders/purchase-orders/po-9/export-order/" {
+		t.Fatalf("path = %q, want .../po-9/export-order/ (trailing slash)", captured.path)
+	}
+	if pad == nil {
+		t.Fatal("nil pad returned")
+	}
+	if pad.Text != "ABC-123\t5\nDEF-456\t2" {
+		t.Errorf("text = %q", pad.Text)
+	}
+	if pad.Csv != "part#,qty\nABC-123,5\nDEF-456,2\n" {
+		t.Errorf("csv = %q", pad.Csv)
+	}
+	if pad.Filename != "PO-2026-0060-order.csv" {
+		t.Errorf("filename = %q", pad.Filename)
+	}
+	if pad.Supplier != "Grainger" {
+		t.Errorf("supplier = %q", pad.Supplier)
+	}
+	if pad.LineCount != 2 {
+		t.Errorf("line_count = %d, want 2", pad.LineCount)
+	}
+	if len(pad.MissingSku) != 1 || pad.MissingSku[0] != "Widget with no part number" {
+		t.Errorf("missing_sku = %v", pad.MissingSku)
+	}
+}
+
+// TestExportOrderPad_BackendError surfaces a backend failure (e.g. a 404 before
+// #855 deploys) as an error rather than a zero-value pad.
+func TestExportOrderPad_BackendError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"detail":"Not found."}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if _, err := c.ExportOrderPad(context.Background(), "po-9"); err == nil {
+		t.Fatal("expected error on 404, got nil")
+	}
+}
+
 func fptr(f float64) *float64 { return &f }
 
 // TestUpdatePurchaseOrder_Contract pins the PO-metadata PATCH to
