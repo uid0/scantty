@@ -131,7 +131,10 @@ func (s *SearchPalette) openSelected() (Screen, tea.Cmd) {
 	r := s.results[s.cursor]
 	id := fmt.Sprint(r.ID)
 	switch r.Type {
-	case "item":
+	case "item", "inventory":
+		// The OMS backend search (search/views.py) tags InventoryItems as
+		// "inventory"; "item" is kept as a defensive alias in case the
+		// backend ever emits it. Both open the inventory item detail.
 		return s, SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, id))
 	case "asset":
 		return s, SwitchTo(WSAssets, NewAssetDetailScreen(s.deps, id))
