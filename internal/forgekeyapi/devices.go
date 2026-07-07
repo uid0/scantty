@@ -219,16 +219,4 @@ func (c *Client) DeviceOccupancy(ctx context.Context, id string, since string) (
 	return &out, nil
 }
 
-type DeviceType struct {
-	ID   any    `json:"id"`
-	Name string `json:"name"`
-	Code string `json:"code,omitempty"`
-}
-
-func (c *Client) ListDeviceTypes(ctx context.Context) ([]DeviceType, error) {
-	var out MaybeList[DeviceType]
-	if err := c.Get(ctx, "/api/forgekey/device-types/", nil, &out); err != nil {
-		return nil, err
-	}
-	return out.Items, nil
-}
+// DeviceType read/write CRUD lives in device_types.go.
