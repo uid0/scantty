@@ -95,6 +95,12 @@ func (s *InventoryDetailScreen) WantsRawInput() bool {
 	return s.confirmingDelete || s.ccStep != ccStepNone
 }
 
+// HandlesKey claims lowercase 's' (manage suppliers) so it beats the global
+// Settings nav hotkey — the sc-k7p LocalKeyScreen pattern. Only consulted in the
+// normal view (the delete confirm flips WantsRawInput true, routing every key
+// here first).
+func (s *InventoryDetailScreen) HandlesKey(key string) bool { return key == "s" }
+
 func (s *InventoryDetailScreen) ctx() context.Context {
 	if s.deps.Ctx != nil {
 		return s.deps.Ctx
@@ -215,6 +221,12 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.item != nil {
 				return s, SwitchTo(WSInventory, NewInventoryItemFormScreen(s.deps, s.item.ID))
 			}
+		case "s":
+			// Manage the item's supplier links (add/edit/remove/set-primary).
+			// 's' is claimed via HandlesKey so it beats the global Settings nav.
+			if s.item != nil {
+				return s, SwitchTo(WSInventory, NewItemSuppliersScreen(s.deps, s.item.ID, s.item.Name))
+			}
 		case "x":
 			// Delete (with confirm). The web supports item delete; guard it
 			// behind a y/n prompt since it's destructive.
@@ -283,9 +295,9 @@ func (s *InventoryDetailScreen) View() string {
 	if s.ccStep != ccStepNone {
 		return s.scroller.View() + "\n\n" + s.cycleCountPrompt()
 	}
-	hint := "j/k scroll · o/enter reorder · c count · E edit · x delete · r refresh · esc back"
+	hint := "j/k scroll · o/enter reorder · c count · s suppliers · E edit · x delete · r refresh · esc back"
 	if s.item != nil && s.item.IsSerialized {
-		hint = "j/k scroll · o/enter reorder · c count · i instances · E edit · x delete · r refresh · esc back"
+		hint = "j/k scroll · o/enter reorder · c count · s suppliers · i instances · E edit · x delete · r refresh · esc back"
 	}
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }

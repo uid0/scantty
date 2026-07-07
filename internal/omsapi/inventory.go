@@ -889,6 +889,22 @@ func (c *Client) ListSuppliers(ctx context.Context, q url.Values) (*Page[Supplie
 	return GetPage[Supplier](ctx, c, "/api/inventory/suppliers/", q)
 }
 
+// ListAllSuppliers pages through every supplier. The item↔supplier edit form's
+// supplier picker must be able to reach ANY supplier, so — like ListAllItems —
+// it can't truncate to page 1: a supplier on a later page would be unpickable.
+// Supplier counts are small and bounded per install, so the extra pages are
+// cheap.
+func (c *Client) ListAllSuppliers(ctx context.Context) ([]Supplier, error) {
+	var all []Supplier
+	if err := IterPages[Supplier](ctx, c, "/api/inventory/suppliers/", nil, func(batch []Supplier) error {
+		all = append(all, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
 func (c *Client) GetSupplier(ctx context.Context, id string) (*Supplier, error) {
 	var out Supplier
 	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/suppliers/%s/", id), nil, &out); err != nil {
@@ -973,6 +989,96 @@ func (c *Client) ListItemSuppliersForSupplier(ctx context.Context, supplierID in
 		q.Set("page", strconv.Itoa(page))
 	}
 	return c.ListItemSuppliers(ctx, q)
+}
+
+// ListItemSuppliersForItem loads every supplier link for one inventory item,
+// primary-first (the viewset orders by -is_primary, unit_cost). It pages through
+// the full set so the item-suppliers management view never drops a link that
+// happens to sort onto a later page. `item_id` is the viewset's item filter.
+func (c *Client) ListItemSuppliersForItem(ctx context.Context, itemID string) ([]ItemSupplier, error) {
+	var all []ItemSupplier
+	q := url.Values{}
+	q.Set("item_id", itemID)
+	if err := IterPages[ItemSupplier](ctx, c, "/api/inventory/item-suppliers/", q, func(batch []ItemSupplier) error {
+		all = append(all, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
+// ItemSupplierWrite is the create/edit payload for one item↔supplier link. It
+// mirrors the web SupplierRelationshipForm's field set (supplier, supplier_sku,
+// supplier_url, unit_cost, package_cost, quantity_per_package, average_lead_time,
+// is_primary) plus the owning item. A few wire-contract details match the
+// ItemSupplierViewSet / ItemSupplier model deliberately:
+//
+//   - Item is the owning item's UUID and Supplier the supplier pk. Both are sent
+//     on every create/edit; the serializer's unique_together (item, supplier)
+//     validator needs the pair, and re-sending the same item on a PATCH is a
+//     no-op. (unique_together means the same supplier can't be linked twice — the
+//     backend 400s, which the form surfaces.)
+//   - SupplierSKU has no blank=True on the model, so it is required and non-blank;
+//     the form validates it before submit.
+//   - UnitCost / PackageCost are nullable decimals sent as strings and carry NO
+//     omitempty, so clearing one on edit sends an explicit null (mirroring the
+//     web's `value || null`). The model auto-derives one from the other on save:
+//     if package_cost is set it wins (unit_cost = package_cost / qty); else if
+//     only unit_cost is set, package_cost = unit_cost * qty.
+//   - QuantityPerPackage / AverageLeadTime are plain ints carrying the model
+//     defaults (1 and 7); always sent.
+//   - IsPrimary carries no omitempty so turning it off actually reaches the
+//     backend instead of being dropped; the model's save() keeps a single primary
+//     per item (setting one unsets the others).
+type ItemSupplierWrite struct {
+	Item               string  `json:"item"`
+	Supplier           int     `json:"supplier"`
+	SupplierSKU        string  `json:"supplier_sku"`
+	SupplierURL        string  `json:"supplier_url"`
+	UnitCost           *string `json:"unit_cost"`
+	PackageCost        *string `json:"package_cost"`
+	QuantityPerPackage int     `json:"quantity_per_package"`
+	AverageLeadTime    int     `json:"average_lead_time"`
+	IsPrimary          bool    `json:"is_primary"`
+}
+
+// CreateItemSupplier POSTs a new item↔supplier link. The response echoes the
+// created row (with supplier_name and the derived cost populated).
+func (c *Client) CreateItemSupplier(ctx context.Context, body ItemSupplierWrite) (*ItemSupplier, error) {
+	var out ItemSupplier
+	if err := c.Post(ctx, "/api/inventory/item-suppliers/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateItemSupplier PATCHes an existing link. PATCH (not PUT) matches the web;
+// the full field set is sent so an edit round-trips every value.
+func (c *Client) UpdateItemSupplier(ctx context.Context, id int, body ItemSupplierWrite) (*ItemSupplier, error) {
+	var out ItemSupplier
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/item-suppliers/%d/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetItemSupplierPrimary flips one link to primary via a targeted partial PATCH
+// (only is_primary). The model's save() unsets the previous primary for the item.
+// A partial PATCH is safe: on an update DRF fills the unique_together fields from
+// the instance, so item/supplier need not be re-sent.
+func (c *Client) SetItemSupplierPrimary(ctx context.Context, id int) (*ItemSupplier, error) {
+	var out ItemSupplier
+	body := map[string]bool{"is_primary": true}
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/item-suppliers/%d/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteItemSupplier removes an item↔supplier link (DELETE …/item-suppliers/{id}/).
+func (c *Client) DeleteItemSupplier(ctx context.Context, id int) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/inventory/item-suppliers/%d/", id))
 }
 
 // ListAssetsForSupplier is the matching wrapper for the assets-from-
