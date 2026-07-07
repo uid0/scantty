@@ -27,6 +27,9 @@ type AuthorizationsScreen struct {
 	cursor  int
 	loading bool
 	loadErr string
+
+	confirmingRevoke bool
+	revoking         bool
 }
 
 func NewAuthorizationsScreen(deps Deps) *AuthorizationsScreen {
@@ -34,6 +37,14 @@ func NewAuthorizationsScreen(deps Deps) *AuthorizationsScreen {
 }
 
 func (s *AuthorizationsScreen) Title() string { return "Authorizations" }
+
+// WantsRawInput claims every key while the revoke confirm is up so y/n/esc land
+// here instead of the root's global hotkeys.
+func (s *AuthorizationsScreen) WantsRawInput() bool { return s.confirmingRevoke }
+
+// HandlesKey claims `n` (new grant), which otherwise opens the global
+// notifications screen. Revoke keys (x/R) and j/k/r are globally free.
+func (s *AuthorizationsScreen) HandlesKey(key string) bool { return key == "n" }
 
 func (s *AuthorizationsScreen) Init() tea.Cmd {
 	deps := s.deps
@@ -60,11 +71,16 @@ func (s *AuthorizationsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, nil
 	case fkActionResultMsg:
+		s.revoking = false
+		s.confirmingRevoke = false
 		if m.err != nil {
 			return s, Status(fmt.Sprintf("%s failed: %s", m.action, m.err.Error()), StatusError)
 		}
 		return s, tea.Batch(Status(m.action, StatusOK), s.Init())
 	case tea.KeyMsg:
+		if s.confirmingRevoke {
+			return s.updateRevokeConfirm(m)
+		}
 		switch m.String() {
 		case "j", "down":
 			if s.cursor < len(s.rows)-1 {
@@ -77,25 +93,52 @@ func (s *AuthorizationsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "r":
 			s.loading = true
 			return s, s.Init()
-		case "x":
+		case "n":
+			// Grant mirrors the web asset-access card's staff-gated "Grant access"
+			// button (isStaff). The backend accepts any authed user, but ScanTTY
+			// mirrors the web's staff-only affordance.
+			if !s.deps.InitialStaff {
+				return s, Status("granting access requires staff", StatusWarn)
+			}
+			return s, SwitchTo(WSAuthorizations, NewAuthorizationGrantScreen(s.deps))
+		case "x", "R":
 			if s.cursor >= len(s.rows) {
 				return s, nil
 			}
-			row := s.rows[s.cursor]
-			if !row.IsActive {
+			if !s.rows[s.cursor].IsActive {
 				return s, Status("already revoked", StatusWarn)
 			}
-			deps := s.deps
-			ctx := deps.Ctx
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			id := fmt.Sprint(row.ID)
-			return s, func() tea.Msg {
-				err := deps.ForgeKey.RevokeAuthorization(ctx, id)
-				return fkActionResultMsg{action: fmt.Sprintf("revoked %s", id), err: err}
-			}
+			s.confirmingRevoke = true
 		}
+	}
+	return s, nil
+}
+
+func (s *AuthorizationsScreen) updateRevokeConfirm(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.revoking {
+		return s, nil
+	}
+	switch m.String() {
+	case "y", "Y":
+		if s.cursor >= len(s.rows) {
+			s.confirmingRevoke = false
+			return s, nil
+		}
+		row := s.rows[s.cursor]
+		s.revoking = true
+		deps := s.deps
+		ctx := deps.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		id := fmt.Sprint(row.ID)
+		return s, func() tea.Msg {
+			// No notes: the web card's Revoke button posts none either.
+			err := deps.ForgeKey.RevokeAuthorization(ctx, id, "")
+			return fkActionResultMsg{action: fmt.Sprintf("revoked %s", id), err: err}
+		}
+	case "n", "N", "esc":
+		s.confirmingRevoke = false
 	}
 	return s, nil
 }
@@ -107,8 +150,11 @@ func (s *AuthorizationsScreen) View() string {
 	if s.loadErr != "" {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
+	if s.confirmingRevoke {
+		return s.viewRevokeConfirm()
+	}
 	if len(s.rows) == 0 {
-		return StyleMuted.Render("No authorizations.")
+		return StyleMuted.Render("No authorizations.") + "\n\n" + StyleMuted.Render("n grant access · esc back")
 	}
 	var b strings.Builder
 	for i, r := range s.rows {
@@ -132,8 +178,29 @@ func (s *AuthorizationsScreen) View() string {
 			b.WriteString("    " + StyleMuted.Render(r.Notes) + "\n")
 		}
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · x revoke · r refresh · esc back"))
+	b.WriteString("\n" + StyleMuted.Render("j/k move · n grant · x/R revoke · r refresh · esc back"))
 	return b.String()
+}
+
+func (s *AuthorizationsScreen) viewRevokeConfirm() string {
+	if s.revoking {
+		return StyleMuted.Render("Revoking…")
+	}
+	who := ""
+	if s.cursor < len(s.rows) {
+		r := s.rows[s.cursor]
+		who = fmt.Sprintf("%v", r.User)
+		if r.UserName != "" {
+			who = r.UserName
+		}
+		asset := fmt.Sprintf("%v", r.Asset)
+		if r.AssetName != "" {
+			asset = r.AssetName
+		}
+		who = fmt.Sprintf("%s's access to %s", who, asset)
+	}
+	return StyleStatusWarn.Render(fmt.Sprintf(
+		"Revoke %s?  y revoke · n/esc cancel", who))
 }
 
 type LockoutsScreen struct {
