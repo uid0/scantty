@@ -81,6 +81,15 @@ type Item struct {
 	ReorderCases         *float64      `json:"reorder_cases,omitempty"`
 	CurrentCases         *float64      `json:"current_cases,omitempty"`
 	ReorderInstruction   string        `json:"reorder_instruction,omitempty"`
+
+	// Cycle-count / physical-count tracking (issue-7). The item serializer
+	// exposes the last reconciliation timestamp and a precomputed age in days.
+	// Both are pointers: null until the item has ever been counted, and absent
+	// on a backend that predates the fields — so the detail degrades to
+	// "Counted: never" instead of showing a misleading zero.
+	LastCountedAt      *time.Time `json:"last_counted_at,omitempty"`
+	DaysSinceLastCount *int       `json:"days_since_last_count,omitempty"`
+
 	// IsSerialized marks an item whose stock is tracked as individual
 	// serial-numbered units (SerializedComponent). SerialTrackingMode is
 	// "consumable" or "reusable" and drives which lifecycle transitions are
@@ -145,6 +154,80 @@ func (c *Client) GetItem(ctx context.Context, id string) (*Item, error) {
 func (c *Client) ScanItem(ctx context.Context, id string) (*Item, error) {
 	var out Item
 	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/scan/", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ItemMetrics is the aggregate stock/costing snapshot the item-detail metrics
+// row renders (issue-5). It comes from a dedicated endpoint
+// (GET /api/inventory/items/{id}/metrics/) rather than the item serializer, so
+// the detail can surface live on-order / in-transit / committed figures
+// without bloating every item-list payload with them.
+//
+// The count fields are pointers on purpose: a null from the backend renders as
+// "-" instead of a misleading 0, and a field the endpoint omits (or an older
+// backend that lacks the endpoint entirely) decodes to nil rather than
+// failing the whole row. Money rides DecimalString (accepts the string- or
+// number-shaped serializer output, null → empty). CostTrend is one of
+// "up" | "down" | "flat" | "no_history" and drives the ↑/↓ arrow beside Cost.
+type ItemMetrics struct {
+	CurrentStock      *int          `json:"current_stock"`       // QOH — quantity on hand
+	QuantityOnOrder   *int          `json:"quantity_on_order"`   // QOO — on open POs
+	QuantityAvailable *int          `json:"quantity_available"`  // QA  — on hand minus committed
+	QuantityCommitted *int          `json:"quantity_committed"`  // QC  — reserved
+	QuantityInTransit *int          `json:"quantity_in_transit"` // QIT — shipped, not received
+	ReorderPoint      *int          `json:"reorder_point"`       // RP
+	LeadTimeDays      *float64      `json:"lead_time_days"`      // Lead — days (may be fractional avg)
+	UnitCost          DecimalString `json:"unit_cost"`           // Cost — item or case cost
+	CostTrend         string        `json:"cost_trend"`          // up | down | flat | no_history
+	LastPOUnitCost    DecimalString `json:"last_po_unit_cost"`
+	IsCaseBased       bool          `json:"is_case_based"`
+	CaseSize          *int          `json:"case_size"`
+}
+
+// GetItemMetrics fetches the item-detail metrics snapshot (issue-5). The
+// trailing slash is the canonical DRF path; the item detail treats a failure
+// here as non-fatal (an older backend without the endpoint simply hides the
+// metrics row) — see the TUI caller.
+func (c *Client) GetItemMetrics(ctx context.Context, id string) (*ItemMetrics, error) {
+	var out ItemMetrics
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/metrics/", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// cycleCountBody is the POST payload for the cycle-count action. counted_qty is
+// the freshly counted physical quantity; the backend computes the signed delta
+// against current_stock itself. reason must be one of the item's REASON_CHOICES
+// (lost / damaged / miscounted / used_without_scan / found / vision_supply_check
+// / other — kept in sync with the TUI pick-list). skip_reorder suppresses the
+// auto-reorder a negative delta would otherwise trigger. notes is optional.
+type cycleCountBody struct {
+	CountedQty  int    `json:"counted_qty"`
+	Reason      string `json:"reason"`
+	SkipReorder bool   `json:"skip_reorder"`
+	Notes       string `json:"notes,omitempty"`
+}
+
+// CycleCountItem records a manual physical count (issue-7):
+// POST /api/inventory/items/{id}/cycle-count/. The trailing slash is
+// load-bearing — a POST to the unslashed path 301-redirects and net/http's
+// default would downgrade the replay to GET; the method-preserving redirect
+// client (set in New) covers that, and the canonical slashed URL avoids the
+// extra hop entirely (the #81/#46 lesson). The response re-serializes the item
+// with the updated current_stock, last_counted_at and days_since_last_count so
+// the caller can refresh the detail in place.
+func (c *Client) CycleCountItem(ctx context.Context, id string, countedQty int, reason string, skipReorder bool, notes string) (*Item, error) {
+	body := cycleCountBody{
+		CountedQty:  countedQty,
+		Reason:      reason,
+		SkipReorder: skipReorder,
+		Notes:       notes,
+	}
+	var out Item
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/cycle-count/", id), body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
