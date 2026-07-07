@@ -25,9 +25,82 @@ type Root struct {
 	nav      Nav
 	status   StatusBar
 	screen   Screen
+	history  []navEntry
+	backNav  bool // set for the turn in which `esc` navigated back; see Update
 	width    int
 	height   int
 	navWidth int
+}
+
+// navEntry is one frame of the back-stack: the screen that was active and the
+// nav workspace highlighted at the moment it was pushed. `esc` pops the top
+// frame to restore both.
+type navEntry struct {
+	screen Screen
+	ws     Workspace
+}
+
+// Update wraps the real key/message dispatch (see dispatch) with the back-stack
+// bookkeeping: whenever a turn navigates FORWARD — swapping in a genuinely
+// different screen instance — the outgoing screen is recorded so a later `esc`
+// can return to it (a "back button"). Because every Screen uses a pointer
+// receiver, its identity is stable across an in-place Update, so `screen`
+// changing to a different value is exactly the "a real navigation happened"
+// signal; ordinary key handling that leaves the same screen active records
+// nothing. A turn that was itself an `esc` (backNav) records nothing either —
+// a back step must not re-push the screen it just left.
+func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	prev := r.screen
+	prevWS := r.nav.Active()
+	r.backNav = false
+	model, cmd := r.dispatch(msg)
+	next, ok := model.(Root)
+	if !ok {
+		return model, cmd
+	}
+	if !next.backNav && next.screen != prev {
+		next.recordHistory(prev, prevWS)
+	}
+	return next, cmd
+}
+
+// recordHistory pushes an outgoing screen onto the back-stack. Transient
+// screens that own their own esc handling are deliberately NOT recorded — `esc`
+// must never navigate the user back INTO a view they already dismissed:
+//   - forms, pickers and confirm prompts (a RawInputScreen that currently
+//     WantsRawInput), which cancel themselves via their own esc; and
+//   - any screen that claims esc via HandlesKey (the Reports tables/pulse,
+//     which return to the Reports hub on their own).
+//
+// Those screens are also intercepted before the global esc handler ever runs,
+// so their local esc-cancel keeps working unchanged.
+func (r *Root) recordHistory(screen Screen, ws Workspace) {
+	if screen == nil {
+		return
+	}
+	if rs, ok := screen.(RawInputScreen); ok && rs.WantsRawInput() {
+		return
+	}
+	if lk, ok := screen.(LocalKeyScreen); ok && lk.HandlesKey("esc") {
+		return
+	}
+	r.history = append(r.history, navEntry{screen: screen, ws: ws})
+}
+
+// popHistory restores the previous screen and its workspace from the
+// back-stack, returning false when the stack is empty. The restored screen is
+// re-Init'd so its data refreshes (mirroring the fresh-screen reload the
+// existing SwitchTo back-navigations already perform) while its retained
+// context — a detail's record id, a sub-list's parent id — is preserved.
+func (r *Root) popHistory() (tea.Cmd, bool) {
+	if len(r.history) == 0 {
+		return nil, false
+	}
+	entry := r.history[len(r.history)-1]
+	r.history = r.history[:len(r.history)-1]
+	r.screen = entry.screen
+	r.nav.SetActive(entry.ws)
+	return tea.Batch(r.screen.Init(), r.windowResizeCmd()), true
 }
 
 func NewRoot(deps Deps) Root {
@@ -70,7 +143,7 @@ func (r Root) windowResizeCmd() tea.Cmd {
 	return func() tea.Msg { return tea.WindowSizeMsg{Width: w, Height: h} }
 }
 
-func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (r Root) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		r.width, r.height = m.Width, m.Height
@@ -304,6 +377,24 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return r, tea.Quit
 			}
 		case "esc":
+			// Global fallback (a "back button"): pop the back-stack one level,
+			// restoring the previous screen and workspace, instead of jumping
+			// all the way home. Screens that own esc — forms/pickers via
+			// RawInput, or any HandlesKey("esc") — are intercepted above and
+			// never reach here, so their local esc-cancel is preserved.
+			//
+			// backNav tells Update this turn was a back step, so it does not
+			// record the screen we are leaving (that would trap esc in a loop).
+			r.backNav = true
+			if cmd, ok := r.popHistory(); ok {
+				return r, cmd
+			}
+			// Bottom of the stack: from the home screen esc is a no-op (don't
+			// trap the user or needlessly rebuild); from any other top-level
+			// screen with an empty stack, fall back home.
+			if _, ok := r.screen.(*WelcomeScreen); ok {
+				return r, nil
+			}
 			r.screen = NewWelcomeScreen()
 			r.nav.SetActive(WSScan)
 			return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
