@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -59,8 +60,8 @@ func TestFormatItemMetricsRow_Alignment(t *testing.T) {
 	}
 	// Same SKU so the leading cell is byte-identical; only the numbers differ.
 	const sku = "WIDGET-0001"
-	small := formatItemMetricsRow(mk(5, 0, 5, 0, 0, 3, 7, "11.22", "up"), sku)
-	big := formatItemMetricsRow(mk(1234, 56, 1178, 12, 9, 800, 14, "9876.54", "down"), sku)
+	small := formatItemMetricsRow(mk(5, 0, 5, 0, 0, 3, 7, "11.22", "up"), sku, metricsRowOpts{withSKU: true})
+	big := formatItemMetricsRow(mk(1234, 56, 1178, 12, 9, 800, 14, "9876.54", "down"), sku, metricsRowOpts{withSKU: true})
 
 	for _, label := range []string{"QOH:", "QOO:", "QA:", "QC:", "QIT:", "RP:", "Lead:", "Cost:"} {
 		if i, j := strings.Index(small, label), strings.Index(big, label); i != j {
@@ -88,7 +89,7 @@ func TestFormatItemMetricsRow_Alignment(t *testing.T) {
 // TestFormatItemMetricsRow_Nulls confirms nil metrics render as "-" with no
 // dollar amount and no trend arrow (graceful degradation).
 func TestFormatItemMetricsRow_Nulls(t *testing.T) {
-	row := formatItemMetricsRow(&omsapi.ItemMetrics{CostTrend: "no_history"}, "")
+	row := formatItemMetricsRow(&omsapi.ItemMetrics{CostTrend: "no_history"}, "", metricsRowOpts{withSKU: true})
 	if strings.Contains(row, "$") {
 		t.Errorf("nil unit_cost should render '-', not a dollar amount: %q", row)
 	}
@@ -107,13 +108,83 @@ func TestFormatItemMetricsRow_Nulls(t *testing.T) {
 // TestFormatItemMetricsRow_SKUTail shows the trailing SKU chars, ellipsised when
 // longer than the tail width.
 func TestFormatItemMetricsRow_SKUTail(t *testing.T) {
-	long := formatItemMetricsRow(&omsapi.ItemMetrics{}, "SUPER-LONG-SKU-123456")
+	long := formatItemMetricsRow(&omsapi.ItemMetrics{}, "SUPER-LONG-SKU-123456", metricsRowOpts{withSKU: true})
 	if !strings.HasPrefix(long, "SKU: …123456") {
 		t.Errorf("long SKU should show ellipsised tail: %q", long)
 	}
-	short := formatItemMetricsRow(&omsapi.ItemMetrics{}, "AB12")
+	short := formatItemMetricsRow(&omsapi.ItemMetrics{}, "AB12", metricsRowOpts{withSKU: true})
 	if !strings.HasPrefix(short, "SKU: AB12") {
 		t.Errorf("short SKU should show verbatim: %q", short)
+	}
+}
+
+// TestFormatItemMetricsRow_DetailNoSKU covers the DETAIL variant: no SKU cell
+// (the detail's line-2 identity row already shows the full SKU), bold labels,
+// and — crucially — bold must not shift the value columns. The visible width is
+// compared against the plain no-SKU row: bold adds zero display width, so the
+// two must match to the cell.
+func TestFormatItemMetricsRow_DetailNoSKU(t *testing.T) {
+	m := &omsapi.ItemMetrics{
+		CurrentStock:      ccPtr(5),
+		QuantityOnOrder:   ccPtr(0),
+		QuantityAvailable: ccPtr(5.0),
+		QuantityCommitted: ccPtr(0.0),
+		QuantityInTransit: ccPtr(0),
+		ReorderPoint:      ccPtr(3),
+		LeadTimeDays:      ccPtr(7.0),
+		UnitCost:          omsapi.DecimalString("11.22"),
+		CostTrend:         "up",
+	}
+	row := formatItemMetricsRow(m, "WIDGET-0001", metricsRowOpts{boldLabels: true})
+
+	// The detail row must NOT carry a SKU cell (de-dup with the identity line).
+	if strings.Contains(row, "SKU") {
+		t.Errorf("detail metrics row should have no SKU cell: %q", row)
+	}
+	// Bold labels: the bold-rendered "QOH"/"Cost" runs must be present.
+	if !strings.Contains(row, StyleMetricLabel.Render("QOH")) {
+		t.Errorf("expected a bold QOH label: %q", row)
+	}
+	if !strings.Contains(row, StyleMetricLabel.Render("Cost")) {
+		t.Errorf("expected a bold Cost label: %q", row)
+	}
+	// The row starts at the first metric, not a SKU cell.
+	if !strings.HasPrefix(row, StyleMetricLabel.Render("QOH")+": ") {
+		t.Errorf("detail row should start with the bold QOH cell: %q", row)
+	}
+	// Bold adds no display width: the visible width equals the plain no-SKU row.
+	plain := formatItemMetricsRow(m, "WIDGET-0001", metricsRowOpts{})
+	if got, want := lipgloss.Width(row), lipgloss.Width(plain); got != want {
+		t.Errorf("bold shifted the columns: bold width=%d plain width=%d\nbold =%q\nplain=%q", got, want, row, plain)
+	}
+}
+
+// TestFormatItemMetricsRow_ListWithSKUBold covers the LIST variant: the SKU cell
+// is kept (it identifies the item) and the labels are bold. Visible width must
+// match the plain with-SKU row so bold hasn't disturbed the columns.
+func TestFormatItemMetricsRow_ListWithSKUBold(t *testing.T) {
+	m := &omsapi.ItemMetrics{
+		CurrentStock: ccPtr(12),
+		ReorderPoint: ccPtr(3),
+		UnitCost:     omsapi.DecimalString("4.50"),
+		CostTrend:    "flat",
+	}
+	// A short SKU (≤ the 6-char tail) renders verbatim, so it's checkable inline.
+	row := formatItemMetricsRow(m, "BOLT", metricsRowOpts{withSKU: true, boldLabels: true})
+
+	// The list keeps the SKU cell, bold.
+	if !strings.HasPrefix(row, StyleMetricLabel.Render("SKU")+": ") {
+		t.Errorf("list row should start with the bold SKU cell: %q", row)
+	}
+	if !strings.Contains(row, "BOLT") {
+		t.Errorf("list row should show the SKU value: %q", row)
+	}
+	if !strings.Contains(row, StyleMetricLabel.Render("QOH")) {
+		t.Errorf("expected a bold QOH label: %q", row)
+	}
+	plain := formatItemMetricsRow(m, "BOLT", metricsRowOpts{withSKU: true})
+	if got, want := lipgloss.Width(row), lipgloss.Width(plain); got != want {
+		t.Errorf("bold shifted the columns: bold width=%d plain width=%d", got, want)
 	}
 }
 

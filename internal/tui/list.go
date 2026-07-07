@@ -43,6 +43,13 @@ type listRow struct {
 	// Optional secondary timestamp shown in the date column when CreatedAt is
 	// zero (e.g. for resources that only expose updated_at or last_seen).
 	FallbackDate time.Time
+	// MetricsLine, when non-empty, is a pre-styled line rendered verbatim beneath
+	// the row title — the inventory list uses it for the per-item Q's & Costs
+	// metrics row (bold labels). It is emitted as-is and NOT re-wrapped in a muted
+	// style: it already carries its own bold/plain styling, and double-wrapping
+	// would let the inner reset codes clobber the outer style. A row can carry
+	// both a Subtitle and a MetricsLine, but the inventory loader sets only one.
+	MetricsLine string
 }
 
 func (r listRow) sortDate() time.Time {
@@ -158,7 +165,10 @@ func (s *ListScreen) computeWindowSize() int {
 	for i := start; i < len(s.rows); i++ {
 		cost := 1
 		if s.rows[i].Subtitle != "" {
-			cost = 2
+			cost++
+		}
+		if s.rows[i].MetricsLine != "" {
+			cost++
 		}
 		if used+cost > avail {
 			break
@@ -568,6 +578,13 @@ func (s *ListScreen) bodyView() string {
 			b.WriteString(StyleMuted.Render(row.Subtitle))
 			b.WriteString("\n")
 		}
+		// MetricsLine is already styled (bold labels); emit it verbatim rather
+		// than muting it, so its inner reset codes don't clobber an outer style.
+		if row.MetricsLine != "" {
+			b.WriteString("    ")
+			b.WriteString(row.MetricsLine)
+			b.WriteString("\n")
+		}
 	}
 
 	if end < len(s.rows) {
@@ -615,25 +632,35 @@ func (s *ListScreen) bodyView() string {
 }
 
 func loadInventoryItems(ctx context.Context, deps Deps) ([]listRow, error) {
-	page, err := deps.OMS.ListItems(ctx, nil)
+	// Ask for the embedded metrics so each row can show the Q's & Costs line at a
+	// glance (Ian UX). On a backend that predates ?with_metrics the items carry
+	// no metrics and each row falls back to the plain SKU/stock subtitle.
+	page, err := deps.OMS.ListItemsWithMetrics(ctx)
 	if err != nil {
 		return nil, err
 	}
 	rows := make([]listRow, 0, len(page.Results))
 	for _, it := range page.Results {
-		subtitle := fmt.Sprintf("SKU %s · stock %d", it.SKU, it.Stock)
 		tag := ""
 		if it.NeedsReorder {
 			tag = "needs-reorder"
 		}
-		rows = append(rows, listRow{
+		row := listRow{
 			ID:           it.ID,
 			Title:        it.Name,
-			Subtitle:     subtitle,
 			Tag:          tag,
 			CreatedAt:    it.CreatedAt,
 			FallbackDate: it.UpdatedAt,
-		})
+		}
+		// The list keeps the SKU cell (it identifies which item the numbers
+		// belong to) and bolds the headers. Without metrics, degrade to the
+		// former SKU/stock subtitle so the row still says something.
+		if it.Metrics != nil {
+			row.MetricsLine = formatItemMetricsRow(it.Metrics, it.SKU, metricsRowOpts{withSKU: true, boldLabels: true})
+		} else {
+			row.Subtitle = fmt.Sprintf("SKU %s · stock %d", it.SKU, it.Stock)
+		}
+		rows = append(rows, row)
 	}
 	return rows, nil
 }

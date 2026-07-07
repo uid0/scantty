@@ -118,12 +118,29 @@ type Item struct {
 
 	Suppliers []ItemSupplier `json:"suppliers,omitempty"`
 	Tags      []string       `json:"tags,omitempty"`
-	CreatedAt time.Time      `json:"created_at,omitempty"`
-	UpdatedAt time.Time      `json:"updated_at,omitempty"`
+
+	// Metrics is the per-item stock/cost snapshot, embedded ONLY when the list is
+	// fetched with ?with_metrics=1 (ListItemsWithMetrics) — the inventory list
+	// renders it as the Q's & Costs row. Nil on the plain item serializer and on
+	// a backend that predates the param, so the list degrades to a SKU/stock
+	// subtitle. Same shape as the standalone GetItemMetrics endpoint.
+	Metrics *ItemMetrics `json:"metrics,omitempty"`
+
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListItems(ctx context.Context, q url.Values) (*Page[Item], error) {
 	return GetPage[Item](ctx, c, "/api/inventory/items/", q)
+}
+
+// ListItemsWithMetrics fetches the item list with each item's metrics snapshot
+// embedded (?with_metrics=1), so the inventory list can render the per-item
+// Q's & Costs row without an N+1 fan-out of GetItemMetrics calls. A backend that
+// predates the param simply ignores it and every Item.Metrics decodes to nil —
+// the list then falls back to the plain SKU/stock subtitle.
+func (c *Client) ListItemsWithMetrics(ctx context.Context) (*Page[Item], error) {
+	return c.ListItems(ctx, url.Values{"with_metrics": []string{"1"}})
 }
 
 // ListAllItems pages through every inventory item. Pickers that must be able to
