@@ -3,26 +3,65 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/uid0/scantty/internal/omsapi"
+)
+
+// cycleCountStep tracks where the operator is in the in-screen cycle-count
+// prompt (issue-7). ccStepNone is the zero value: no modal open.
+type cycleCountStep int
+
+const (
+	ccStepNone cycleCountStep = iota
+	ccStepQty
+	ccStepReason
+	ccStepNotes
 )
 
 type InventoryDetailScreen struct {
 	deps             Deps
 	itemID           string
 	item             *omsapi.Item
+	metrics          *omsapi.ItemMetrics
 	loadErr          string
 	loading          bool
 	scroller         *TextScroller
 	terminalHeight   int
 	confirmingDelete bool
 	deleting         bool
+
+	// Cycle-count modal (issue-7). Active while ccStep != ccStepNone, during
+	// which WantsRawInput routes every key here. The two textinputs are
+	// (re)initialised each time the modal opens.
+	ccStep     cycleCountStep
+	ccQty      textinput.Model
+	ccNotes    textinput.Model
+	ccReasonIx int
+	ccErr      string
+	ccPending  bool
 }
 
 type inventoryDetailLoadedMsg struct {
+	item *omsapi.Item
+	err  error
+}
+
+// inventoryMetricsLoadedMsg carries the metrics-row snapshot, which loads from a
+// separate endpoint in parallel with the item (issue-5). A non-nil err is
+// non-fatal — the row is simply omitted.
+type inventoryMetricsLoadedMsg struct {
+	metrics *omsapi.ItemMetrics
+	err     error
+}
+
+// cycleCountDoneMsg is the result of a cycle-count submission (issue-7). On
+// success item is the re-serialized item with the updated stock + count fields.
+type cycleCountDoneMsg struct {
 	item *omsapi.Item
 	err  error
 }
@@ -47,23 +86,44 @@ func (s *InventoryDetailScreen) Title() string {
 	return "Item"
 }
 
-// WantsRawInput claims every keypress only while the delete confirmation is up,
-// so y/n/esc land here instead of the root's global hotkeys. In the normal view
-// the screen stays non-raw so workspace switching and the global shortcuts keep
-// working.
-func (s *InventoryDetailScreen) WantsRawInput() bool { return s.confirmingDelete }
+// WantsRawInput claims every keypress while a modal is up — the delete
+// confirmation (y/n/esc) or the cycle-count prompt (digits, j/k, notes, esc) —
+// so those keys land here instead of the root's global hotkeys. In the normal
+// view the screen stays non-raw so workspace switching and the global shortcuts
+// keep working.
+func (s *InventoryDetailScreen) WantsRawInput() bool {
+	return s.confirmingDelete || s.ccStep != ccStepNone
+}
 
-func (s *InventoryDetailScreen) Init() tea.Cmd {
-	deps := s.deps
-	itemID := s.itemID
-	ctx := deps.Ctx
-	if ctx == nil {
-		ctx = context.Background()
+func (s *InventoryDetailScreen) ctx() context.Context {
+	if s.deps.Ctx != nil {
+		return s.deps.Ctx
 	}
+	return context.Background()
+}
+
+// loadItemCmd and loadMetricsCmd fetch the two halves of the detail
+// independently: the item serializer and the metrics snapshot come from
+// different endpoints, so they load in parallel and each re-renders the body as
+// it arrives (see Update). A metrics failure is non-fatal.
+func (s *InventoryDetailScreen) loadItemCmd() tea.Cmd {
+	deps, id, ctx := s.deps, s.itemID, s.ctx()
 	return func() tea.Msg {
-		item, err := deps.OMS.GetItem(ctx, itemID)
+		item, err := deps.OMS.GetItem(ctx, id)
 		return inventoryDetailLoadedMsg{item: item, err: err}
 	}
+}
+
+func (s *InventoryDetailScreen) loadMetricsCmd() tea.Cmd {
+	deps, id, ctx := s.deps, s.itemID, s.ctx()
+	return func() tea.Msg {
+		mtr, err := deps.OMS.GetItemMetrics(ctx, id)
+		return inventoryMetricsLoadedMsg{metrics: mtr, err: err}
+	}
+}
+
+func (s *InventoryDetailScreen) Init() tea.Cmd {
+	return tea.Batch(s.loadItemCmd(), s.loadMetricsCmd())
 }
 
 func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -77,8 +137,37 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loadErr = m.err.Error()
 		}
 		s.item = m.item
-		s.scroller.Set(s.renderBody())
+		if s.item != nil {
+			s.scroller.Set(s.renderBody())
+		}
 		return s, nil
+	case inventoryMetricsLoadedMsg:
+		// Best-effort: keep the last good metrics on error so a transient
+		// failure doesn't blank an already-shown row. Re-render only once the
+		// item is present (metrics can arrive first).
+		if m.err == nil {
+			s.metrics = m.metrics
+		}
+		if s.item != nil {
+			s.scroller.Set(s.renderBody())
+		}
+		return s, nil
+	case cycleCountDoneMsg:
+		s.ccPending = false
+		if m.err != nil {
+			// Keep the modal open on the notes step so the operator can retry
+			// or esc out; surface the reason inline and in the status bar.
+			s.ccStep = ccStepNotes
+			s.ccErr = "cycle count failed: " + m.err.Error()
+			return s, Status(s.ccErr, StatusError)
+		}
+		s.closeCycleCount()
+		// The cycle-count response is a PARTIAL item (id/current_stock/
+		// last_counted_at/days_since_last_count only) — assigning it to s.item
+		// would blank name/SKU/suppliers/costs. Re-fetch the full item AND the
+		// metrics instead; both changed with the new stock level.
+		s.scroller.Set(s.renderBody())
+		return s, tea.Batch(Status("count recorded", StatusOK), s.loadItemCmd(), s.loadMetricsCmd())
 	case inventoryDeletedMsg:
 		s.deleting = false
 		s.confirmingDelete = false
@@ -93,6 +182,9 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if s.confirmingDelete {
 			return s.updateConfirmDelete(m)
 		}
+		if s.ccStep != ccStepNone {
+			return s.updateCycleCount(m)
+		}
 		if s.scroller.Handle(m) {
 			return s, nil
 		}
@@ -104,6 +196,12 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "o", "enter":
 			if s.item != nil {
 				return s, SwitchTo(WSInventory, NewReorderFormScreen(s.deps, s.item, s.item.Suppliers))
+			}
+		case "c":
+			// Cycle count (issue-7): record a physical count. Lowercase c is
+			// free in the global hotkey map, so it falls through to the screen.
+			if s.item != nil {
+				return s.openCycleCount()
 			}
 		case "i":
 			// Serialized items expose per-unit instance tracking; jump to
@@ -182,15 +280,22 @@ func (s *InventoryDetailScreen) View() string {
 		}
 		return s.scroller.View() + "\n\n" + prompt
 	}
-	hint := "j/k scroll · pgup/pgdn page · o/enter reorder · E edit · x delete · r refresh · esc back"
+	if s.ccStep != ccStepNone {
+		return s.scroller.View() + "\n\n" + s.cycleCountPrompt()
+	}
+	hint := "j/k scroll · o/enter reorder · c count · E edit · x delete · r refresh · esc back"
 	if s.item != nil && s.item.IsSerialized {
-		hint = "j/k scroll · o/enter reorder · i instances · E edit · x delete · r refresh · esc back"
+		hint = "j/k scroll · o/enter reorder · c count · i instances · E edit · x delete · r refresh · esc back"
 	}
 	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
 }
 
 func (s *InventoryDetailScreen) renderBody() string {
 	it := s.item
+	if it == nil {
+		// Metrics can arrive before the item; never dereference a nil item.
+		return ""
+	}
 	var b strings.Builder
 
 	b.WriteString(StyleTitle.Render(it.Name))
@@ -208,7 +313,15 @@ func (s *InventoryDetailScreen) renderBody() string {
 	if it.Location != "" {
 		b.WriteString(StyleMuted.Render(" · " + it.Location))
 	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	// Aligned metrics row (issue-5): live stock/cost stats in fixed-width,
+	// right-aligned columns. Only shown once the metrics endpoint responds; a
+	// fetch failure (e.g. an older backend without the endpoint) omits it.
+	if s.metrics != nil {
+		b.WriteString(formatItemMetricsRow(s.metrics, it.SKU) + "\n")
+	}
+	b.WriteString("\n")
 
 	if it.Description != "" {
 		b.WriteString(it.Description + "\n\n")
@@ -223,6 +336,8 @@ func (s *InventoryDetailScreen) renderBody() string {
 		b.WriteString(fmt.Sprintf("  ·  Reorder qty: %d", it.ReorderQuantity))
 	}
 	b.WriteString("\n")
+	// Days-since-last-count (issue-7): "Counted: 12d ago" / "Counted: never".
+	b.WriteString(StyleMuted.Render(metricsCountedLine(it)) + "\n")
 	if it.ReorderStatus != "" {
 		b.WriteString(StyleMuted.Render("Reorder status: ") + it.ReorderStatus + "\n")
 	}
@@ -342,5 +457,318 @@ func (s *InventoryDetailScreen) renderBody() string {
 		b.WriteString(StyleMuted.Render("QR: ") + it.QRCodeURL + "\n")
 	}
 
+	return b.String()
+}
+
+// --- Metrics row (issue-5) ---------------------------------------------------
+
+// Fixed cell widths for the metrics row. Each numeric value is right-aligned
+// within its width so the columns stay put as magnitudes change and the Cost
+// decimal point lines up; the SKU tail is left-aligned text.
+const (
+	metricSKUTail = 6 // trailing SKU chars shown in the row
+	wMetricSKU    = 7 // "…" + up to metricSKUTail chars
+	wMetricQty    = 4 // QOH/QOO/QA/QC/QIT/RP — up to 9999
+	wMetricLead   = 5 // "365d" / "12.5d"
+	wMetricCost   = 8 // "$9999.99"
+)
+
+// formatItemMetricsRow renders the aligned second-row metrics line (issue-5):
+//
+//	SKU: WIDGET   QOH:    5   QOO:    0   QA:    5   QC:    0   QIT:    0   RP:    3   Lead:   7d   Cost:  $11.22↑
+//
+// Each cell is a "LABEL: value" pair with the value padded to a fixed width, so
+// the columns don't shift when a single-digit count becomes multi-digit and the
+// Cost decimal point stays in a fixed column. Nulls render as "-". Returns plain
+// (unstyled) text so alignment is testable by character offset.
+func formatItemMetricsRow(m *omsapi.ItemMetrics, sku string) string {
+	if m == nil {
+		return ""
+	}
+	cell := func(label, value string, w int, align colAlign) string {
+		return label + ": " + padCell(value, w, align)
+	}
+	cells := []string{
+		cell("SKU", metricSKUString(sku), wMetricSKU, alignLeft),
+		cell("QOH", metricIntString(m.CurrentStock), wMetricQty, alignRight),
+		cell("QOO", metricIntString(m.QuantityOnOrder), wMetricQty, alignRight),
+		cell("QA", metricFloatQtyString(m.QuantityAvailable), wMetricQty, alignRight),
+		cell("QC", metricFloatQtyString(m.QuantityCommitted), wMetricQty, alignRight),
+		cell("QIT", metricIntString(m.QuantityInTransit), wMetricQty, alignRight),
+		cell("RP", metricIntString(m.ReorderPoint), wMetricQty, alignRight),
+		cell("Lead", metricLeadString(m.LeadTimeDays), wMetricLead, alignRight),
+		cell("Cost", metricCostString(m.UnitCost), wMetricCost, alignRight) + costTrendArrow(m.CostTrend),
+	}
+	return strings.Join(cells, "   ")
+}
+
+func metricIntString(p *int) string {
+	if p == nil {
+		return "-"
+	}
+	return strconv.Itoa(*p)
+}
+
+// metricFloatQtyString renders a float quantity (backend FloatField — QA/QC)
+// compactly: whole values drop the trailing ".0", genuine fractions are kept,
+// and nil → "-". Right-aligned in the metrics row like the int quantities.
+func metricFloatQtyString(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return strconv.FormatFloat(*p, 'f', -1, 64)
+}
+
+func metricLeadString(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%gd", *p)
+}
+
+// metricCostString renders the unit cost as "$%.2f" so the decimal point lands
+// in a fixed column when right-aligned; null/unparseable → "-".
+func metricCostString(d omsapi.DecimalString) string {
+	if d.Empty() {
+		return "-"
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(string(d)), 64)
+	if err != nil {
+		return "-"
+	}
+	return fmt.Sprintf("$%.2f", f)
+}
+
+// costTrendArrow returns the ↑/↓ marker for an up/down price trend, or "" for
+// flat / no_history / unknown.
+func costTrendArrow(trend string) string {
+	switch trend {
+	case "up":
+		return "↑"
+	case "down":
+		return "↓"
+	}
+	return ""
+}
+
+// metricSKUString shows the trailing chars of the SKU (the full SKU is on the
+// identity line above); an over-long SKU is prefixed with "…".
+func metricSKUString(sku string) string {
+	sku = strings.TrimSpace(sku)
+	if sku == "" {
+		return "-"
+	}
+	r := []rune(sku)
+	if len(r) > metricSKUTail {
+		return "…" + string(r[len(r)-metricSKUTail:])
+	}
+	return sku
+}
+
+// metricsCountedLine renders the days-since-last-count summary (issue-7):
+// "Counted: never" / "Counted: today" / "Counted: Nd ago".
+func metricsCountedLine(it *omsapi.Item) string {
+	if it == nil || it.DaysSinceLastCount == nil {
+		return "Counted: never"
+	}
+	switch d := *it.DaysSinceLastCount; {
+	case d <= 0:
+		return "Counted: today"
+	case d == 1:
+		return "Counted: 1d ago"
+	default:
+		return fmt.Sprintf("Counted: %dd ago", d)
+	}
+}
+
+// --- Cycle count (issue-7) ---------------------------------------------------
+
+// cycleCountReasons is the reason pick-list, mirroring the backend
+// StockReconciliation.REASON_CHOICES (value → display label). Value is what
+// CycleCountItem posts; Label is shown in the prompt. Keep in sync with
+// backend/inventory/models.py::StockReconciliation.REASON_CHOICES.
+var cycleCountReasons = []struct {
+	Value string
+	Label string
+}{
+	{"lost", "Lost"},
+	{"damaged", "Damaged"},
+	{"miscounted", "Miscounted"},
+	{"used_without_scan", "Used without scanning"},
+	{"found", "Found (positive delta)"},
+	{"vision_supply_check", "Vision supply check"},
+	{"other", "Other"},
+}
+
+// defaultCycleCountReasonIx is the index of the pre-selected reason
+// ("miscounted"), the common case for a routine recount.
+func defaultCycleCountReasonIx() int {
+	for i, r := range cycleCountReasons {
+		if r.Value == "miscounted" {
+			return i
+		}
+	}
+	return 0
+}
+
+// openCycleCount enters the cycle-count prompt at the quantity step.
+func (s *InventoryDetailScreen) openCycleCount() (Screen, tea.Cmd) {
+	qty := textinput.New()
+	qty.Prompt = ""
+	qty.Placeholder = "counted qty"
+	qty.CharLimit = 9
+	qty.Focus()
+	s.ccQty = qty
+
+	notes := textinput.New()
+	notes.Prompt = ""
+	notes.Placeholder = "optional"
+	notes.CharLimit = 200
+	s.ccNotes = notes
+
+	s.ccReasonIx = defaultCycleCountReasonIx()
+	s.ccErr = ""
+	s.ccPending = false
+	s.ccStep = ccStepQty
+	return s, textinput.Blink
+}
+
+// closeCycleCount tears the modal down and returns to the normal detail view.
+func (s *InventoryDetailScreen) closeCycleCount() {
+	s.ccStep = ccStepNone
+	s.ccErr = ""
+	s.ccPending = false
+	s.ccQty.Blur()
+	s.ccNotes.Blur()
+}
+
+// updateCycleCount drives the three-step prompt: quantity → reason → notes. esc
+// cancels at any step (screen-local); the screen is in raw-input mode throughout
+// (WantsRawInput), so these keys reach us before the global hotkeys.
+func (s *InventoryDetailScreen) updateCycleCount(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.ccPending {
+		return s, nil // submission in flight
+	}
+	if m.String() == "esc" {
+		s.closeCycleCount()
+		return s, nil
+	}
+	switch s.ccStep {
+	case ccStepQty:
+		if m.Type == tea.KeyEnter {
+			if _, err := strconv.Atoi(strings.TrimSpace(s.ccQty.Value())); err != nil {
+				s.ccErr = "counted qty must be a whole number"
+				return s, nil
+			}
+			s.ccErr = ""
+			s.ccStep = ccStepReason
+			return s, nil
+		}
+		// Gate to digits so the field only ever holds a valid integer; editing
+		// keys (backspace/arrows) are not KeyRunes, so they pass through.
+		if m.Type == tea.KeyRunes {
+			for _, r := range m.Runes {
+				if r < '0' || r > '9' {
+					return s, nil
+				}
+			}
+		}
+		var cmd tea.Cmd
+		s.ccQty, cmd = s.ccQty.Update(m)
+		return s, cmd
+	case ccStepReason:
+		switch m.String() {
+		case "up", "k":
+			if s.ccReasonIx > 0 {
+				s.ccReasonIx--
+			}
+		case "down", "j":
+			if s.ccReasonIx < len(cycleCountReasons)-1 {
+				s.ccReasonIx++
+			}
+		case "enter":
+			s.ccStep = ccStepNotes
+			s.ccNotes.Focus()
+			return s, textinput.Blink
+		}
+		return s, nil
+	case ccStepNotes:
+		if m.Type == tea.KeyEnter {
+			return s.submitCycleCount()
+		}
+		var cmd tea.Cmd
+		s.ccNotes, cmd = s.ccNotes.Update(m)
+		return s, cmd
+	}
+	return s, nil
+}
+
+// submitCycleCount validates and fires the cycle-count request.
+func (s *InventoryDetailScreen) submitCycleCount() (Screen, tea.Cmd) {
+	if s.item == nil {
+		s.closeCycleCount()
+		return s, nil
+	}
+	qty, err := strconv.Atoi(strings.TrimSpace(s.ccQty.Value()))
+	if err != nil {
+		s.ccStep = ccStepQty
+		s.ccErr = "counted qty must be a whole number"
+		return s, nil
+	}
+	reason := cycleCountReasons[s.ccReasonIx].Value
+	notes := strings.TrimSpace(s.ccNotes.Value())
+	s.ccPending = true
+	s.ccErr = ""
+	deps, ctx, id := s.deps, s.ctx(), s.item.ID
+	return s, func() tea.Msg {
+		// skip_reorder stays false: a count that drops stock below the reorder
+		// point should still queue a reorder, matching the web default.
+		item, err := deps.OMS.CycleCountItem(ctx, id, qty, reason, false, notes)
+		return cycleCountDoneMsg{item: item, err: err}
+	}
+}
+
+// cycleCountPrompt renders the modal for the active step.
+func (s *InventoryDetailScreen) cycleCountPrompt() string {
+	var b strings.Builder
+	name := ""
+	if s.item != nil {
+		name = s.item.Name
+	}
+	b.WriteString(StyleStatusWarn.Render("Cycle count") + "  " + StyleMuted.Render(name) + "\n\n")
+
+	if s.ccPending {
+		b.WriteString(StyleMuted.Render("Recording count…"))
+		return b.String()
+	}
+
+	qty := strings.TrimSpace(s.ccQty.Value())
+	switch s.ccStep {
+	case ccStepQty:
+		b.WriteString("Counted quantity:\n  " + s.ccQty.View() + "\n")
+		if s.ccErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render(s.ccErr) + "\n")
+		}
+		b.WriteString("\n" + StyleMuted.Render("enter next · esc cancel"))
+	case ccStepReason:
+		b.WriteString(StyleMuted.Render("Counted quantity: "+qty) + "\n\n")
+		b.WriteString("Reason:\n")
+		for i, r := range cycleCountReasons {
+			if i == s.ccReasonIx {
+				b.WriteString("  " + StyleStatusOK.Render("▸ "+r.Label) + "\n")
+			} else {
+				b.WriteString("    " + StyleMuted.Render(r.Label) + "\n")
+			}
+		}
+		b.WriteString("\n" + StyleMuted.Render("j/k move · enter next · esc cancel"))
+	case ccStepNotes:
+		b.WriteString(StyleMuted.Render("Counted quantity: "+qty) + "\n")
+		b.WriteString(StyleMuted.Render("Reason: "+cycleCountReasons[s.ccReasonIx].Label) + "\n\n")
+		b.WriteString("Note (optional):\n  " + s.ccNotes.View() + "\n")
+		if s.ccErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render(s.ccErr) + "\n")
+		}
+		b.WriteString("\n" + StyleMuted.Render("enter submit · esc cancel"))
+	}
 	return b.String()
 }
