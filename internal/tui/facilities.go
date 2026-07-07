@@ -99,6 +99,15 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				implemented: true,
 			},
 			{
+				hotkey:   'r',
+				label:    "Certificates (PKI)",
+				subtitle: "internal CA + issued device certs (read-only) · rotate root CA",
+				build: func(d Deps) (Screen, Workspace) {
+					return NewForgeKeyCertificatesScreen(d), WSForgeKey
+				},
+				implemented: true,
+			},
+			{
 				// E (Enrollment): 'b'/'e' collide with the Maker-boxes / e-Paper
 				// items; E is free here and reaches this screen via the app.go
 				// fallthrough (no global E case), so it doesn't shadow detail-screen
