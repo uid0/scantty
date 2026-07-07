@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +82,70 @@ func TestGetItemMetrics_NullCounts(t *testing.T) {
 	if !m.UnitCost.Empty() {
 		t.Errorf("null unit_cost should be empty, got %q", m.UnitCost)
 	}
+}
+
+// TestListItemsWithMetrics_Contract pins that the list request carries
+// ?with_metrics=1 and that an embedded per-item "metrics" object decodes into
+// Item.Metrics (same shape as GetItemMetrics), while an item with no metrics key
+// decodes to a nil Item.Metrics (graceful degradation on an older backend).
+func TestListItemsWithMetrics_Contract(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":2,"next":null,"previous":null,"results":[
+			{"id":"a1","name":"Widget","sku":"W-1","current_stock":5,
+			 "metrics":{"current_stock":5,"quantity_on_order":2,"quantity_available":3.0,
+			   "quantity_committed":0.0,"quantity_in_transit":1,"reorder_point":3,
+			   "lead_time_days":7,"unit_cost":"11.22","cost_trend":"up"}},
+			{"id":"a2","name":"Gadget","sku":"G-9","current_stock":0}
+		]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	page, err := c.ListItemsWithMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("ListItemsWithMetrics: %v", err)
+	}
+	if got := getQueryParam(query, "with_metrics"); got != "1" {
+		t.Fatalf("with_metrics param = %q, want 1 (raw query %q)", got, query)
+	}
+	if len(page.Results) != 2 {
+		t.Fatalf("results = %d, want 2", len(page.Results))
+	}
+	m := page.Results[0].Metrics
+	if m == nil {
+		t.Fatalf("first item should carry embedded metrics")
+	}
+	if m.CurrentStock == nil || *m.CurrentStock != 5 {
+		t.Errorf("metrics.current_stock = %v", m.CurrentStock)
+	}
+	if m.QuantityOnOrder == nil || *m.QuantityOnOrder != 2 {
+		t.Errorf("metrics.quantity_on_order = %v", m.QuantityOnOrder)
+	}
+	if m.QuantityAvailable == nil || *m.QuantityAvailable != 3 {
+		t.Errorf("metrics.quantity_available = %v (float must decode)", m.QuantityAvailable)
+	}
+	if m.UnitCost != "11.22" || m.CostTrend != "up" {
+		t.Errorf("metrics cost/trend = %q/%q", m.UnitCost, m.CostTrend)
+	}
+	// The second item has no metrics key → nil, so the list can degrade to the
+	// plain SKU/stock subtitle instead of crashing.
+	if page.Results[1].Metrics != nil {
+		t.Errorf("item without a metrics key should decode to nil Metrics")
+	}
+}
+
+// getQueryParam pulls a single param out of a raw query string without pulling
+// in net/url at the call site.
+func getQueryParam(rawQuery, key string) string {
+	for _, kv := range strings.Split(rawQuery, "&") {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == key {
+			return v
+		}
+	}
+	return ""
 }
 
 // TestCycleCountItem_Contract pins the POST path (trailing slash — avoids the
