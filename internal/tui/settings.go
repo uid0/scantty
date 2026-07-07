@@ -69,7 +69,8 @@ func (s *SettingsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.superuser = m.superuser
 		return s, nil
 	case tea.KeyMsg:
-		if m.String() == "E" {
+		switch m.String() {
+		case "E":
 			switch {
 			case s.superuser:
 				return s, SwitchTo(WSSettings, NewSiteSettingsFormScreen(s.deps))
@@ -79,6 +80,11 @@ func (s *SettingsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			default:
 				return s, Status("site settings are superuser-only", StatusWarn)
 			}
+		case "t":
+			// Tax receipt lookup is listed under Settings in the web sidebar; it
+			// backs onto a public endpoint, so it's open to any operator (no
+			// superuser gate, unlike site-settings edit).
+			return s, SwitchTo(WSSettings, NewTaxReceiptLookupScreen(s.deps))
 		}
 	}
 	return s, nil
@@ -112,6 +118,8 @@ func (s *SettingsScreen) View() string {
 	} else if s.siteReady && s.siteErr != "" {
 		b.WriteString(StyleMuted.Render("Site: ") + StyleStatusError.Render(s.siteErr) + "\n\n")
 	}
+
+	b.WriteString("  " + StyleMuted.Render("t tax receipt lookup") + "\n\n")
 
 	b.WriteString(StyleMuted.Render("Runtime configuration (env vars)") + "\n\n")
 	if s.deps.OMS != nil {
