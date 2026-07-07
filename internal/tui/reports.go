@@ -51,6 +51,12 @@ func NewReportsScreen(deps Deps) *ReportsScreen {
 				build:    func(d Deps) Screen { return NewPurchasingReportScreen(d) },
 			},
 			{
+				hotkey:   'r',
+				label:    "Reorders analytics",
+				subtitle: "supplier performance · lead-time trends · public transparency · logistics",
+				build:    func(d Deps) Screen { return NewReorderAnalyticsReportScreen(d) },
+			},
+			{
 				hotkey:   'a',
 				label:    "Asset report",
 				subtitle: "by status · maintenance due · utilization · total cost of ownership",

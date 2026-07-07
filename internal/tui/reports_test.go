@@ -7,13 +7,13 @@ import (
 
 func TestReportsHub_RendersEntries(t *testing.T) {
 	s := NewReportsScreen(Deps{})
-	if len(s.items) != 5 {
-		t.Fatalf("hub should list 5 reports, got %d", len(s.items))
+	if len(s.items) != 6 {
+		t.Fatalf("hub should list 6 reports, got %d", len(s.items))
 	}
 	out := s.View()
 	for _, want := range []string{
-		"Analytics Pulse", "Inventory report", "Purchasing report",
-		"Asset report", "Serialized forecast", "[p]", "[i]", "[c]", "[a]", "[f]",
+		"Analytics Pulse", "Inventory report", "Purchasing report", "Reorders analytics",
+		"Asset report", "Serialized forecast", "[p]", "[i]", "[c]", "[r]", "[a]", "[f]",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("hub view missing %q:\n%s", want, out)
@@ -54,7 +54,7 @@ func TestReportsHub_HotkeyOpensInventoryReport(t *testing.T) {
 
 func TestReportsHub_HandlesKey(t *testing.T) {
 	s := NewReportsScreen(Deps{})
-	for _, k := range []string{"p", "i", "c", "a", "f"} {
+	for _, k := range []string{"p", "i", "c", "r", "a", "f"} {
 		if !s.HandlesKey(k) {
 			t.Errorf("hub should claim entry hotkey %q", k)
 		}
