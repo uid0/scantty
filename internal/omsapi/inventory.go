@@ -342,24 +342,34 @@ type AssetLockout struct {
 	Reason       string `json:"reason,omitempty"`
 }
 
+// AssetPartDetails is the read-only nested projection of the linked
+// InventoryItem the AssetPartSerializer embeds under part_details. Only the
+// fields the TUI consumes are decoded — extra keys are ignored. IsSerialized
+// gates the replacement-serial prompt on mark-replaced (op-8nxe contract);
+// absent/false → no prompt, so this stays harmless before the backend deploys.
+type AssetPartDetails struct {
+	IsSerialized bool `json:"is_serialized"`
+}
+
 type AssetPart struct {
-	ID                      any            `json:"id"`
-	Asset                   string         `json:"asset"`
-	AssetName               string         `json:"asset_name,omitempty"`
-	AssetTag                string         `json:"asset_tag,omitempty"`
-	Part                    string         `json:"part"`
-	PartName                string         `json:"part_name,omitempty"`
-	PartSKU                 string         `json:"part_sku,omitempty"`
-	QuantityNeeded          int            `json:"quantity_needed,omitempty"`
-	IsRequired              bool           `json:"is_required,omitempty"`
-	MaintenanceIntervalDays *int           `json:"maintenance_interval_days,omitempty"`
-	LastReplacedAt          *time.Time     `json:"last_replaced_at,omitempty"`
-	DaysSinceReplacement    *int           `json:"days_since_replacement,omitempty"`
-	NeedsReplacement        bool           `json:"needs_replacement,omitempty"`
-	Notes                   string         `json:"notes,omitempty"`
-	PartDetails             map[string]any `json:"part_details,omitempty"`
-	CreatedAt               time.Time      `json:"created_at,omitempty"`
-	UpdatedAt               time.Time      `json:"updated_at,omitempty"`
+	ID                      any              `json:"id"`
+	Asset                   string           `json:"asset"`
+	AssetName               string           `json:"asset_name,omitempty"`
+	AssetTag                string           `json:"asset_tag,omitempty"`
+	Part                    string           `json:"part"`
+	PartName                string           `json:"part_name,omitempty"`
+	PartSKU                 string           `json:"part_sku,omitempty"`
+	QuantityNeeded          int              `json:"quantity_needed,omitempty"`
+	IsRequired              bool             `json:"is_required,omitempty"`
+	MaintenanceIntervalDays *int             `json:"maintenance_interval_days,omitempty"`
+	LastReplacedAt          *time.Time       `json:"last_replaced_at,omitempty"`
+	DaysSinceReplacement    *int             `json:"days_since_replacement,omitempty"`
+	NeedsReplacement        bool             `json:"needs_replacement,omitempty"`
+	Notes                   string           `json:"notes,omitempty"`
+	ReplacementSerialNumber string           `json:"replacement_serial_number,omitempty"`
+	PartDetails             AssetPartDetails `json:"part_details,omitempty"`
+	CreatedAt               time.Time        `json:"created_at,omitempty"`
+	UpdatedAt               time.Time        `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListAssets(ctx context.Context, q url.Values) (*Page[Asset], error) {

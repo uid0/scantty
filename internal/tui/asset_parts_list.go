@@ -6,9 +6,12 @@
 // Keybindings follow the electrical_manage convention: n new, E/enter edit, x
 // delete (y/n confirm), R mark-replaced (y/n confirm — a distinct lifecycle
 // action that stamps last_replaced_at=now server-side), j/k/g/G nav, r refresh.
-// n and G collide with global hotkeys (Notifications / Categories), so the
-// screen implements LocalKeyScreen to claim them; WantsRawInput is asserted only
-// while a confirm is up so y/n land here. Delete needs no child-count pre-check —
+// When the marked part is SERIALIZED (part_details.is_serialized), the y/n
+// confirm is followed by a single-field prompt for the replacement unit's serial
+// (op-8nxe parity); a blank submit records none. n and G collide with global
+// hotkeys (Notifications / Categories), so the screen implements LocalKeyScreen
+// to claim them; WantsRawInput is asserted while any confirm/prompt is up so
+// y/n and the serial keystrokes land here. Delete needs no child-count pre-check —
 // the backend SET_NULLs / unlinks the only referencing rows, so it never
 // FK-409s (unlike the electrical tiers).
 package tui
@@ -18,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/uid0/scantty/internal/omsapi"
@@ -29,6 +33,10 @@ const (
 	partsConfirmNone partsConfirm = iota
 	partsConfirmDelete
 	partsConfirmReplace
+	// partsConfirmReplaceSerial is the second step of mark-replaced for a
+	// SERIALIZED part: after the y/n confirm, a single-field prompt captures the
+	// replacement unit's serial (op-8nxe). Non-serialized parts skip it.
+	partsConfirmReplaceSerial
 )
 
 type AssetPartsScreen struct {
@@ -46,6 +54,11 @@ type AssetPartsScreen struct {
 
 	confirm partsConfirm
 	working bool // a delete/mark-replaced request is in flight
+
+	// serial-entry prompt (mark-replaced of a serialized part)
+	serialInput       textinput.Model
+	replaceTargetID   string // part id captured when the prompt opens (stale guard)
+	replaceTargetName string
 }
 
 type assetPartsLoadedMsg struct {
@@ -63,7 +76,11 @@ type assetPartReplacedMsg struct {
 }
 
 func NewAssetPartsScreen(deps Deps, assetID, assetName string) *AssetPartsScreen {
-	return &AssetPartsScreen{deps: deps, assetID: assetID, assetName: assetName, loading: true, windowSize: 18}
+	serial := textinput.New()
+	serial.Prompt = ""
+	serial.CharLimit = 100
+	serial.Placeholder = "replacement unit serial (blank to skip)"
+	return &AssetPartsScreen{deps: deps, assetID: assetID, assetName: assetName, loading: true, windowSize: 18, serialInput: serial}
 }
 
 func (s *AssetPartsScreen) Title() string {
@@ -213,6 +230,9 @@ func (s *AssetPartsScreen) updateConfirm(m tea.KeyMsg) (Screen, tea.Cmd) {
 	if s.working {
 		return s, nil
 	}
+	if s.confirm == partsConfirmReplaceSerial {
+		return s.updateReplaceSerial(m)
+	}
 	switch m.String() {
 	case "y", "Y":
 		row, ok := s.selected()
@@ -230,9 +250,16 @@ func (s *AssetPartsScreen) updateConfirm(m tea.KeyMsg) (Screen, tea.Cmd) {
 				return assetPartDeletedMsg{err: deps.OMS.DeleteAssetPart(ctx, id)}
 			}
 		case partsConfirmReplace:
+			// A serialized part captures the replacement unit's serial first
+			// (op-8nxe); a non-serialized part fires immediately with "" so its
+			// one-click behavior is unchanged.
+			if row.PartDetails.IsSerialized {
+				s.openReplaceSerial(row)
+				return s, textinput.Blink
+			}
 			s.working = true
 			return s, func() tea.Msg {
-				p, err := deps.OMS.MarkAssetPartReplaced(ctx, id)
+				p, err := deps.OMS.MarkAssetPartReplaced(ctx, id, "")
 				return assetPartReplacedMsg{part: p, err: err}
 			}
 		}
@@ -240,6 +267,50 @@ func (s *AssetPartsScreen) updateConfirm(m tea.KeyMsg) (Screen, tea.Cmd) {
 		s.confirm = partsConfirmNone
 	}
 	return s, nil
+}
+
+// openReplaceSerial switches the replace confirm into the single-field
+// serial-entry prompt, capturing the target part's id so the async result maps
+// to the right row even if the list reloads underneath.
+func (s *AssetPartsScreen) openReplaceSerial(row omsapi.AssetPart) {
+	s.confirm = partsConfirmReplaceSerial
+	s.replaceTargetID = row.IDString()
+	name := row.PartName
+	if name == "" {
+		name = row.Part
+	}
+	if name == "" {
+		name = "part #" + row.IDString()
+	}
+	s.replaceTargetName = name
+	s.serialInput.SetValue("")
+	s.serialInput.Focus()
+}
+
+// updateReplaceSerial drives the replacement-serial prompt. enter submits (a
+// blank value is allowed → records no serial, mirroring the web so an operator
+// without the serial isn't blocked); esc cancels the whole mark-replaced.
+func (s *AssetPartsScreen) updateReplaceSerial(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		s.serialInput.Blur()
+		s.confirm = partsConfirmNone
+		return s, nil
+	case "enter":
+		serial := strings.TrimSpace(s.serialInput.Value())
+		deps := s.deps
+		ctx := s.ctx()
+		id := s.replaceTargetID
+		s.working = true
+		s.serialInput.Blur()
+		return s, func() tea.Msg {
+			p, err := deps.OMS.MarkAssetPartReplaced(ctx, id, serial)
+			return assetPartReplacedMsg{part: p, err: err}
+		}
+	}
+	var cmd tea.Cmd
+	s.serialInput, cmd = s.serialInput.Update(m)
+	return s, cmd
 }
 
 func (s *AssetPartsScreen) selected() (omsapi.AssetPart, bool) {
@@ -325,6 +396,16 @@ func (s *AssetPartsScreen) viewConfirm() string {
 			return StyleMuted.Render("Marking replaced…")
 		}
 		return StyleStatusWarn.Render(fmt.Sprintf("Mark %s replaced now (resets its replacement clock)?  y confirm · n/esc cancel", name))
+	case partsConfirmReplaceSerial:
+		if s.working {
+			return StyleMuted.Render("Marking replaced…")
+		}
+		var b strings.Builder
+		b.WriteString(StyleTitle.Render("Mark "+s.replaceTargetName+" replaced") + "\n")
+		b.WriteString(StyleMuted.Render("This part is serialized — record the replacement unit's serial.") + "\n\n")
+		b.WriteString(StyleTitle.Render("Replacement serial number: ") + s.serialInput.View() + "\n\n")
+		b.WriteString(StyleMuted.Render("enter submit (blank = record none) · esc cancel"))
+		return b.String()
 	}
 	return ""
 }
@@ -371,6 +452,9 @@ func (s *AssetPartsScreen) renderRow(i int) string {
 		meta = append(meta, entry)
 	} else {
 		meta = append(meta, "never replaced")
+	}
+	if p.ReplacementSerialNumber != "" {
+		meta = append(meta, "s/n "+p.ReplacementSerialNumber)
 	}
 	out := line
 	if len(meta) > 0 {
