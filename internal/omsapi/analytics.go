@@ -43,19 +43,63 @@ type AnalyticsBucket struct {
 	WOCount     int    `json:"count"`
 }
 
-// AnalyticsPulse is the full /pulse/ envelope. Most slice fields are
-// untyped any/map for v1 — the rich aggregations (utilization,
-// category_spend, maintenance_forecast) are charting-heavy and only
-// useful when a UI exists to render them. As features land, swap the
-// `any` slices for typed structs.
+// AnalyticsUtilizationRow is one row of the pulse `utilization` projection
+// (aggregation.py utilization()) — equipment "touched" in the window, sorted
+// most-active first. hours_used is an INT on the wire (not a float). category
+// and status are plain strings; a null category decodes to "".
+type AnalyticsUtilizationRow struct {
+	AssetID          string `json:"asset_id"`
+	AssetName        string `json:"asset_name"`
+	Category         string `json:"category,omitempty"`
+	HoursUsed        int    `json:"hours_used"`
+	CompletedWOCount int    `json:"completed_wo_count"`
+	Status           string `json:"status,omitempty"`
+}
+
+// AnalyticsCategorySpend is one row of the pulse `category_spend` projection
+// (aggregation.py category_spend()), sorted by external_actual desc. The three
+// money fields are Decimal-as-string ("0.00"); category_id is null for the
+// uncategorized bucket so it's a pointer.
+type AnalyticsCategorySpend struct {
+	CategoryID        *int   `json:"category_id"`
+	CategoryName      string `json:"category_name,omitempty"`
+	InternalEstimated string `json:"internal_estimated"`
+	ExternalEstimated string `json:"external_estimated"`
+	ExternalActual    string `json:"external_actual"`
+	InternalWOCount   int    `json:"internal_wo_count"`
+	ExternalWOCount   int    `json:"external_wo_count"`
+}
+
+// AnalyticsMaintenanceForecast is one row of the pulse `maintenance_forecast`
+// projection (services/forecast.py). hours_used is an INT; the interval /
+// days-since fields are null when the schedule is undefined (so pointers);
+// last_completed_wo_at is an RFC3339 datetime string ("" when null). due_reason
+// is one of "hours" | "days" | "both".
+type AnalyticsMaintenanceForecast struct {
+	AssetID           string `json:"asset_id"`
+	AssetName         string `json:"asset_name"`
+	Category          string `json:"category,omitempty"`
+	Status            string `json:"status,omitempty"`
+	HoursUsed         int    `json:"hours_used"`
+	LastCompletedWOAt string `json:"last_completed_wo_at,omitempty"`
+	IntervalHours     *int   `json:"interval_hours"`
+	IntervalDays      *int   `json:"interval_days"`
+	DaysSinceLastWO   *int   `json:"days_since_last_wo"`
+	DueReason         string `json:"due_reason"`
+}
+
+// AnalyticsPulse is the full /pulse/ envelope. Every aggregation is now typed
+// against the real aggregation.py / forecast.py response shapes so the Reports
+// screen can render each as a table. monthly_budget is Decimal-as-string
+// (str(Decimal)) or JSON null → "".
 type AnalyticsPulse struct {
-	Summary             AnalyticsValueSummary `json:"summary"`
-	WOVolumeTrend       []AnalyticsBucket     `json:"wo_volume_trend"`
-	TopUsers            []AnalyticsTopUser    `json:"top_users"`
-	Utilization         []map[string]any      `json:"utilization"`
-	CategorySpend       []map[string]any      `json:"category_spend"`
-	MaintenanceForecast []map[string]any      `json:"maintenance_forecast"`
-	MonthlyBudget       string                `json:"monthly_budget"`
+	Summary             AnalyticsValueSummary          `json:"summary"`
+	WOVolumeTrend       []AnalyticsBucket              `json:"wo_volume_trend"`
+	TopUsers            []AnalyticsTopUser             `json:"top_users"`
+	Utilization         []AnalyticsUtilizationRow      `json:"utilization"`
+	CategorySpend       []AnalyticsCategorySpend       `json:"category_spend"`
+	MaintenanceForecast []AnalyticsMaintenanceForecast `json:"maintenance_forecast"`
+	MonthlyBudget       string                         `json:"monthly_budget"`
 }
 
 // GetAnalyticsPulse fetches the pulse aggregate. Optional `start` +

@@ -424,11 +424,11 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 		// replaced only supported enter→detail.
 		return NewSIGListScreen(deps)
 	case WSReports:
-		// Reports currently surfaces the serialized-component consumption
-		// forecast (days-until-stockout / reorder point / low-stock). It's
-		// the first populated report; others can join via a report picker
-		// later.
-		return NewSerializedForecastScreen(deps)
+		// Reports is a hub menu mirroring the web /reports section: the
+		// staff-gated Analytics Pulse, the three report pages (Inventory,
+		// Purchasing, Asset) as tabbed tables, and the serialized-component
+		// consumption forecast. Each entry opens a scrollable table view.
+		return NewReportsScreen(deps)
 	case WSForgeKey:
 		return NewListScreen(deps, "ForgeKey Devices", listScreenSpec{
 			kind:   "fk_devices",
