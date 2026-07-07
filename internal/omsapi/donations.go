@@ -80,3 +80,18 @@ type TaxReceipt struct {
 func (c *Client) ListTaxReceipts(ctx context.Context, q url.Values) (*Page[TaxReceipt], error) {
 	return GetPage[TaxReceipt](ctx, c, "/api/donations/tax-receipts/", q)
 }
+
+// LookupTaxReceipt mirrors the web donationsAPI.lookupTaxReceipt — the public
+// (AllowAny) lookup that the Tax Receipt Lookup page is built on. It GETs
+// `/api/donations/tax-receipts/lookup/?serial_number=<serial>`, which returns a
+// single TaxReceipt object (not a page) or a 404 when the serial doesn't match.
+// A 404 surfaces as an *APIError whose IsNotFound() reports true, so callers can
+// distinguish "no such receipt" from a transport/auth failure.
+func (c *Client) LookupTaxReceipt(ctx context.Context, serialNumber string) (*TaxReceipt, error) {
+	var out TaxReceipt
+	q := url.Values{"serial_number": []string{serialNumber}}
+	if err := c.Get(ctx, "/api/donations/tax-receipts/lookup/", q, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

@@ -29,7 +29,7 @@ func (s *WelcomeScreen) View() string {
 		"  [5] Facilities   — TV, kiosk, electrical",
 		"  [6] Maintenance  — work orders, PM dashboard",
 		"  [7] SIGs         — special interest groups",
-		"  [8] Reports      — analytics + exports",
+		"  [8] Reports      — analytics pulse + report tables",
 		"  [9] ForgeKey     — devices, authorizations",
 		"  [s] Settings",
 		"",

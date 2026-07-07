@@ -62,6 +62,43 @@ func (c *Client) GetDevice(ctx context.Context, id string) (*Device, error) {
 	return &out, nil
 }
 
+// DeviceWrite is the PATCH body for editing a device RECORD's metadata. It holds
+// the ONLY field the OMS web device-management UI edits through the device-update
+// endpoint: the default `location` assignment (ForgeKeyDevicesPage PATCHes
+// {location} from its inline per-device dropdown). Everything else the __all__
+// serializer exposes is device-reported status, live sub-state, or
+// enrollment/identity material the web treats as read-only — and is_active is
+// toggled through the separate staff-only retire/reactivate actions, not this
+// form. Mirroring the web edit surface exactly keeps the write contract honest
+// (no name/description/device_type — the web edits none of them anywhere).
+//
+// Location deliberately carries NO omitempty: the web clears a device's location
+// by sending {location: null} (an empty dropdown selection), so a nil pointer
+// must serialize to an explicit JSON null rather than being dropped — otherwise
+// "unassign location" would silently no-op instead of clearing the FK.
+type DeviceWrite struct {
+	Location *int `json:"location"`
+}
+
+// UpdateDevice PATCHes a device record's editable metadata and returns the
+// refreshed device. Open to any authenticated caller server-side
+// (IsAuthenticatedOrReadOnly), matching the web inline location editor.
+func (c *Client) UpdateDevice(ctx context.Context, id string, w DeviceWrite) (*Device, error) {
+	var out Device
+	if err := c.Patch(ctx, fmt.Sprintf("/api/forgekey/devices/%s/", id), w, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteDevice removes (deregisters) a device and its command history. Staff-only
+// server-side — the viewset gates the destroy action to IsAdminUser, so a
+// non-staff caller gets a 403. Mirrors the web DeviceLifecycleCard's permanent
+// "Delete" action (distinct from the reversible retire/take-out-of-service).
+func (c *Client) DeleteDevice(ctx context.Context, id string) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/forgekey/devices/%s/", id))
+}
+
 func (c *Client) EnableDevice(ctx context.Context, id string) error {
 	return c.Post(ctx, fmt.Sprintf("/api/forgekey/devices/%s/enable", id), nil, nil)
 }
@@ -219,16 +256,4 @@ func (c *Client) DeviceOccupancy(ctx context.Context, id string, since string) (
 	return &out, nil
 }
 
-type DeviceType struct {
-	ID   any    `json:"id"`
-	Name string `json:"name"`
-	Code string `json:"code,omitempty"`
-}
-
-func (c *Client) ListDeviceTypes(ctx context.Context) ([]DeviceType, error) {
-	var out MaybeList[DeviceType]
-	if err := c.Get(ctx, "/api/forgekey/device-types/", nil, &out); err != nil {
-		return nil, err
-	}
-	return out.Items, nil
-}
+// DeviceType read/write CRUD lives in device_types.go.

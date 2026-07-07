@@ -49,7 +49,21 @@ func (c *Client) FindAuthorization(ctx context.Context, userID, assetID int) (*A
 	return nil, nil
 }
 
-func (c *Client) CreateAuthorization(ctx context.Context, a Authorization) (*Authorization, error) {
+// AuthorizationWrite is the exact grant payload the web asset-access card sends:
+// {asset, user, notes?}. authorized_by is set server-side to the caller and
+// authorized_at is auto-set, so neither is written. The web card exposes no other
+// grant inputs (the serializer's expires_at is accepted by the API but the web UI
+// never sets it), so — this being an access-control surface — ScanTTY mirrors the
+// card's field set exactly and sends no more.
+type AuthorizationWrite struct {
+	Asset string `json:"asset"`
+	User  int    `json:"user"`
+	Notes string `json:"notes,omitempty"`
+}
+
+// GrantAuthorization grants a user access to an asset, mirroring the web
+// grantAuthorization POST /forgekey/authorizations/.
+func (c *Client) GrantAuthorization(ctx context.Context, a AuthorizationWrite) (*Authorization, error) {
 	var out Authorization
 	if err := c.Post(ctx, "/api/forgekey/authorizations/", a, &out); err != nil {
 		return nil, err
@@ -57,8 +71,19 @@ func (c *Client) CreateAuthorization(ctx context.Context, a Authorization) (*Aut
 	return &out, nil
 }
 
-func (c *Client) RevokeAuthorization(ctx context.Context, id string) error {
-	return c.Post(ctx, fmt.Sprintf("/api/forgekey/authorizations/%s/revoke", id), nil, nil)
+type authorizationRevokeRequest struct {
+	Notes string `json:"notes,omitempty"`
+}
+
+// RevokeAuthorization flips an authorization inactive and records the revocation
+// in the audit log (preferred over DELETE, which would drop the audit trail).
+//
+// The path carries a TRAILING SLASH: revoke is a DRF DefaultRouter @action, so it
+// is registered as .../{id}/revoke/ and that is exactly what the web api.ts posts.
+// (The un-slashed form APPEND_SLASH-redirects a POST into a GET and silently
+// fails.) An optional note is recorded on the audit event when non-empty.
+func (c *Client) RevokeAuthorization(ctx context.Context, id, notes string) error {
+	return c.Post(ctx, fmt.Sprintf("/api/forgekey/authorizations/%s/revoke/", id), authorizationRevokeRequest{Notes: notes}, nil)
 }
 
 type ClassroomEnrollRequest struct {

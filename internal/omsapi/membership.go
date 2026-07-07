@@ -58,6 +58,12 @@ type User struct {
 	// display_name — the old tag left the user picker showing only usernames.
 	DisplayName string `json:"full_name,omitempty"`
 	IsActive    bool   `json:"is_active,omitempty"`
+	// BadgeNumber is the member's access-badge UID (nil = no badge), emitted by
+	// the staff-only UserDirectorySerializer. It backs the ForgeKey badge-
+	// enrollment screen; other user-picker screens ignore it. It is credential
+	// material — display it only where the web does (the enrollment admin) and
+	// never log it.
+	BadgeNumber *string `json:"badge_number,omitempty"`
 }
 
 func (c *Client) ListUsers(ctx context.Context, q url.Values) (*Page[User], error) {

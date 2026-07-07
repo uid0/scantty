@@ -29,6 +29,12 @@ func (e *APIError) IsNotFound() bool {
 	return e.Code == "not_found" || e.Status == http.StatusNotFound
 }
 
+// IsForbidden reports a 403 — the caller is authenticated but lacks permission
+// (e.g. the analytics pulse requires IsAnalyticsViewer: staff / SIG-admin).
+func (e *APIError) IsForbidden() bool {
+	return e.Code == "permission_denied" || e.Status == http.StatusForbidden
+}
+
 func parseError(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
 	var envelope struct {
