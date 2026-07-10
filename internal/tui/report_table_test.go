@@ -218,10 +218,10 @@ func TestAssetReportScreen_TCOFormatsDecimalString(t *testing.T) {
 		"preventive_maintenance_cost":"100.00","vendor_maintenance_cost":"0.00",
 		"total_maintenance_cost_90d":"175.00"}]`)
 	s := NewAssetReportScreen(Deps{OMS: c})
-	if len(s.tabs) != 4 {
-		t.Fatalf("asset report should have 4 tabs, got %d", len(s.tabs))
+	if len(s.tabs) != 5 {
+		t.Fatalf("asset report should have 5 tabs, got %d", len(s.tabs))
 	}
-	// TCO is the last tab.
+	// TCO is tab index 3 (Supplies used is the 5th tab, index 4).
 	rows, err := s.tabs[3].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("tco loader: %v", err)
@@ -235,6 +235,49 @@ func TestAssetReportScreen_TCOFormatsDecimalString(t *testing.T) {
 	last := rows[0][len(rows[0])-1]
 	if last != "$175.00" {
 		t.Errorf("tco total cell = %q, want $175.00", last)
+	}
+}
+
+// TestAssetSuppliesUsed_FoldsSourceShapes verifies the Supplies-used tab folds
+// the two backend row shapes into one column set: a serialized row shows its
+// serial number + action verb (no cost), while a consumable row shows qty+unit
+// in the same Serial/Qty column and its Decimal-string cost with a "$".
+func TestAssetSuppliesUsed_FoldsSourceShapes(t *testing.T) {
+	c, path := fixedBodyClient(t, `[
+		{"asset_id":"a-1","asset_name":"Mill","source":"serialized","item_name":"Spindle bearing",
+		 "serial_number":"SN-INST","action":"install","action_display":"Install","actor":"welder",
+		 "used_at":"2026-07-01T09:30:00+00:00"},
+		{"asset_id":"a-2","asset_name":"HVAC","source":"consumable","item_name":"Motor oil",
+		 "quantity":"3.00","unit":"qt","work_order_id":"wo-9","estimated_cost":"7.50",
+		 "used_at":"2026-07-03T12:00:00+00:00"}]`)
+	s := NewAssetReportScreen(Deps{OMS: c})
+	// Supplies used is the 5th tab (index 4).
+	rows, err := s.tabs[4].loader(context.Background(), Deps{OMS: c})
+	if err != nil {
+		t.Fatalf("supplies_used loader: %v", err)
+	}
+	if *path != "/api/inventory/reports/assets/supplies_used/" {
+		t.Fatalf("path = %q", *path)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("supplies_used rows = %d", len(rows))
+	}
+	// Columns: Asset · Source · Item · Serial/Qty · Action · Used at · Cost.
+	serialized := strings.Join(rows[0], "|")
+	for _, want := range []string{"Mill", "serialized", "Spindle bearing", "SN-INST", "Install", "2026-07-01"} {
+		if !strings.Contains(serialized, want) {
+			t.Errorf("serialized row missing %q: %q", want, serialized)
+		}
+	}
+	if rows[0][6] != "—" {
+		t.Errorf("serialized cost cell = %q, want — (no cost)", rows[0][6])
+	}
+	consumable := rows[1]
+	if consumable[3] != "3.00 qt" {
+		t.Errorf("consumable Serial/Qty cell = %q, want \"3.00 qt\"", consumable[3])
+	}
+	if consumable[6] != "$7.50" {
+		t.Errorf("consumable cost cell = %q, want $7.50", consumable[6])
 	}
 }
 
