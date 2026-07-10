@@ -645,6 +645,11 @@ func loadInventoryItems(ctx context.Context, deps Deps) ([]listRow, error) {
 		if it.NeedsReorder {
 			tag = "needs-reorder"
 		}
+		// A retired item is never flagged for reorder server-side (op-jv7r), so
+		// the two are mutually exclusive; surface the phase-out with its own tag.
+		if it.IsRetired {
+			tag = "retired"
+		}
 		row := listRow{
 			ID:           it.ID,
 			Title:        it.Name,

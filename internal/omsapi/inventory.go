@@ -120,8 +120,13 @@ type Item struct {
 	OwningUser    *int   `json:"owning_user,omitempty"`
 	OwningGroup   *int   `json:"owning_group,omitempty"`
 	IsActive      bool   `json:"is_active,omitempty"`
-	Notes         string `json:"notes,omitempty"`
-	Image         string `json:"image,omitempty"`
+	// IsRetired marks a phased-out item (op-jv7r): never flagged for reorder
+	// and auto-hidden from the default list once its stock hits 0 (retired
+	// items with stock remaining stay listed so the stock is drawn down).
+	// Include retired-and-empty items in a list with ?include_retired=true.
+	IsRetired bool   `json:"is_retired,omitempty"`
+	Notes     string `json:"notes,omitempty"`
+	Image     string `json:"image,omitempty"`
 
 	Suppliers []ItemSupplier `json:"suppliers,omitempty"`
 	Tags      []string       `json:"tags,omitempty"`
@@ -158,8 +163,16 @@ func (c *Client) ListItems(ctx context.Context, q url.Values) (*Page[Item], erro
 // Q's & Costs row without an N+1 fan-out of GetItemMetrics calls. A backend that
 // predates the param simply ignores it and every Item.Metrics decodes to nil —
 // the list then falls back to the plain SKU/stock subtitle.
+//
+// It also passes ?include_retired=true (op-jv7r) so the warden's management list
+// keeps retired items visible — including retired-and-empty ones the default
+// list would hide — each rendered with a (retired) tag. The backend matches the
+// literal string "true" (case-insensitive); an older backend ignores it.
 func (c *Client) ListItemsWithMetrics(ctx context.Context) (*Page[Item], error) {
-	return c.ListItems(ctx, url.Values{"with_metrics": []string{"1"}})
+	return c.ListItems(ctx, url.Values{
+		"with_metrics":    []string{"1"},
+		"include_retired": []string{"true"},
+	})
 }
 
 // ListAllItems pages through every inventory item. Pickers that must be able to
@@ -319,8 +332,13 @@ type ItemWrite struct {
 	IsSerialized       bool    `json:"is_serialized"`
 	SerialTrackingMode *string `json:"serial_tracking_mode,omitempty"`
 
-	IsActive bool    `json:"is_active"`
-	Notes    *string `json:"notes,omitempty"`
+	IsActive bool `json:"is_active"`
+	// IsRetired is writable (op-jv7r): the item form toggles phase-out
+	// directly via the serializer field. The read-only retired_at audit stamp
+	// is set by the dedicated retire/unretire actions (SetItemRetired), not by
+	// this PATCH.
+	IsRetired bool    `json:"is_retired"`
+	Notes     *string `json:"notes,omitempty"`
 }
 
 // CreateInventoryItem POSTs a new inventory item. The response echoes the
@@ -348,6 +366,22 @@ func (c *Client) UpdateInventoryItem(ctx context.Context, id string, body ItemWr
 // backend enforces manage-inventory permission and returns 204 on success.
 func (c *Client) DeleteInventoryItem(ctx context.Context, id string) error {
 	return c.Delete(ctx, fmt.Sprintf("/api/inventory/items/%s/", id))
+}
+
+// SetItemRetired retires or un-retires an item via the backend's dedicated POST
+// actions (op-jv7r): …/items/{id}/retire/ or …/items/{id}/unretire/. Unlike a
+// plain is_retired PATCH, these also stamp (or clear) the read-only retired_at
+// audit field. Both are idempotent server-side and echo the updated item.
+func (c *Client) SetItemRetired(ctx context.Context, id string, retired bool) (*Item, error) {
+	action := "unretire"
+	if retired {
+		action = "retire"
+	}
+	var out Item
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/%s/", id, action), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 type Asset struct {

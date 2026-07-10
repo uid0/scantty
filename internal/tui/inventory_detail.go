@@ -70,6 +70,14 @@ type inventoryDeletedMsg struct {
 	err error
 }
 
+// inventoryRetireDoneMsg is the result of the T retire/un-retire action
+// (op-jv7r). retired records the direction requested so the status line and any
+// error message read correctly regardless of the item's prior state.
+type inventoryRetireDoneMsg struct {
+	retired bool
+	err     error
+}
+
 func NewInventoryDetailScreen(deps Deps, id string) *InventoryDetailScreen {
 	return &InventoryDetailScreen{
 		deps:     deps,
@@ -96,10 +104,11 @@ func (s *InventoryDetailScreen) WantsRawInput() bool {
 }
 
 // HandlesKey claims lowercase 's' (manage suppliers) so it beats the global
-// Settings nav hotkey — the sc-k7p LocalKeyScreen pattern. Only consulted in the
-// normal view (the delete confirm flips WantsRawInput true, routing every key
-// here first).
-func (s *InventoryDetailScreen) HandlesKey(key string) bool { return key == "s" }
+// Settings nav hotkey, and uppercase 'T' (retire/un-retire) so it beats the
+// global Thermostat-list hotkey — the sc-k7p LocalKeyScreen pattern. Only
+// consulted in the normal view (the delete confirm flips WantsRawInput true,
+// routing every key here first).
+func (s *InventoryDetailScreen) HandlesKey(key string) bool { return key == "s" || key == "T" }
 
 func (s *InventoryDetailScreen) ctx() context.Context {
 	if s.deps.Ctx != nil {
@@ -184,6 +193,23 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			Status("item deleted", StatusOK),
 			SwitchTo(WSInventory, newScreenFor(WSInventory, s.deps)),
 		)
+	case inventoryRetireDoneMsg:
+		if m.err != nil {
+			verb := "retire"
+			if !m.retired {
+				verb = "un-retire"
+			}
+			return s, Status(verb+" failed: "+m.err.Error(), StatusError)
+		}
+		status := "item retired"
+		if !m.retired {
+			status = "item un-retired"
+		}
+		// Re-fetch the full item so the header's [retired] marker and the
+		// reorder flags re-render; the action's own response serializer shape
+		// isn't guaranteed to match the detail. Stock is unchanged by a
+		// retire, so the metrics row need not reload.
+		return s, tea.Batch(Status(status, StatusOK), s.loadItemCmd())
 	case tea.KeyMsg:
 		if s.confirmingDelete {
 			return s.updateConfirmDelete(m)
@@ -227,6 +253,25 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// because lowercase e is a global ForgeKey hotkey.
 			if s.item != nil {
 				return s, SwitchTo(WSInventory, NewInventoryItemFormScreen(s.deps, s.item.ID))
+			}
+		case "T":
+			// Retire / un-retire (op-jv7r): a retired item is suppressed from
+			// reorder and auto-hidden from the default list once its stock hits
+			// 0. Reversible, so no confirm prompt (unlike x delete). Uppercase T
+			// (claimed via HandlesKey) because lowercase t is the serialized-unit
+			// retire elsewhere and bare T is the global Thermostat-list hotkey.
+			if s.item != nil {
+				deps := s.deps
+				ctx := deps.Ctx
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				id := s.item.ID
+				retire := !s.item.IsRetired
+				return s, func() tea.Msg {
+					_, err := deps.OMS.SetItemRetired(ctx, id, retire)
+					return inventoryRetireDoneMsg{retired: retire, err: err}
+				}
 			}
 		case "s":
 			// Manage the item's supplier links (add/edit/remove/set-primary).
@@ -308,9 +353,15 @@ func (s *InventoryDetailScreen) View() string {
 	if s.ccStep != ccStepNone {
 		return header + "\n\n" + body + "\n\n" + s.cycleCountPrompt()
 	}
-	hint := "j/k scroll · o/enter reorder · c count · s suppliers · E edit · x delete · r refresh · esc back"
+	// The retire hint flips to "un-retire" once the item is retired, so the key
+	// reads correctly whichever direction T will toggle.
+	retireHint := "T retire"
+	if s.item.IsRetired {
+		retireHint = "T un-retire"
+	}
+	hint := "j/k scroll · o/enter reorder · c count · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	if s.item.IsSerialized {
-		hint = "j/k scroll · o/enter reorder · c count · s suppliers · i instances · b batch-scan · E edit · x delete · r refresh · esc back"
+		hint = "j/k scroll · o/enter reorder · c count · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	}
 	return header + "\n\n" + body + "\n\n" + StyleMuted.Render(hint)
 }
@@ -328,8 +379,11 @@ func (s *InventoryDetailScreen) renderHeader() string {
 	}
 	var b strings.Builder
 
-	// Line 1: item name (+ reorder flags).
+	// Line 1: item name (+ reorder / retired flags).
 	b.WriteString(StyleTitle.Render(it.Name))
+	if it.IsRetired {
+		b.WriteString("  " + StyleMuted.Render("[retired]"))
+	}
 	if it.NeedsReorder {
 		b.WriteString("  " + StyleStatusWarn.Render("needs reorder"))
 	}
