@@ -20,12 +20,16 @@ import (
 // status + tracking mode, so the TUI can offer exactly the legal actions
 // without duplicating the transition table.
 type SerializedComponent struct {
-	ID               string   `json:"id"`
-	Item             string   `json:"item"`
-	ItemName         string   `json:"item_name,omitempty"`
-	ItemSKU          string   `json:"item_sku,omitempty"`
-	SerialNumber     string   `json:"serial_number"`
-	Lot              string   `json:"lot,omitempty"`
+	ID           string `json:"id"`
+	Item         string `json:"item"`
+	ItemName     string `json:"item_name,omitempty"`
+	ItemSKU      string `json:"item_sku,omitempty"`
+	SerialNumber string `json:"serial_number"`
+	Lot          string `json:"lot,omitempty"`
+	// ExpirationDate is the unit's shelf-life / use-by date (backend DateField,
+	// read + write). DateOnly decodes the bare "2006-01-02" form and treats
+	// null / "" as the zero date, so an item without an expiry never errors.
+	ExpirationDate   DateOnly `json:"expiration_date"`
 	Status           string   `json:"status,omitempty"`
 	StatusDisplay    string   `json:"status_display,omitempty"`
 	TrackingMode     string   `json:"tracking_mode,omitempty"`
@@ -89,11 +93,12 @@ type ComponentUsageEvent struct {
 // created unit starts in status "received"; the receive lifecycle action then
 // accessions it into stock.
 type SerializedComponentCreate struct {
-	Item                        string `json:"item"`
-	SerialNumber                string `json:"serial_number"`
-	Lot                         string `json:"lot,omitempty"`
-	ProvenanceDeliveryItem      any    `json:"provenance_delivery_item,omitempty"`
-	ProvenancePurchaseOrderItem any    `json:"provenance_purchase_order_item,omitempty"`
+	Item                        string   `json:"item"`
+	SerialNumber                string   `json:"serial_number"`
+	Lot                         string   `json:"lot,omitempty"`
+	ExpirationDate              DateOnly `json:"expiration_date"`
+	ProvenanceDeliveryItem      any      `json:"provenance_delivery_item,omitempty"`
+	ProvenancePurchaseOrderItem any      `json:"provenance_purchase_order_item,omitempty"`
 }
 
 // SerializedComponentAction is the body for a lifecycle action POST. Asset is
@@ -120,12 +125,19 @@ type SerializedComponentActionResult struct {
 // time known), so they're pointers. ProjectedStockoutDate is a bare
 // YYYY-MM-DD string ("" when null).
 type ComponentForecastRow struct {
-	ItemID                string   `json:"item_id"`
-	ItemName              string   `json:"item_name"`
-	SKU                   string   `json:"sku,omitempty"`
-	CategoryName          string   `json:"category_name,omitempty"`
-	SerialTrackingMode    string   `json:"serial_tracking_mode,omitempty"`
-	AvailableStock        int      `json:"available_stock"`
+	ItemID             string `json:"item_id"`
+	ItemName           string `json:"item_name"`
+	SKU                string `json:"sku,omitempty"`
+	CategoryName       string `json:"category_name,omitempty"`
+	SerialTrackingMode string `json:"serial_tracking_mode,omitempty"`
+	AvailableStock     int    `json:"available_stock"`
+	// Available / OnHand / Installed are the serialized stock split (op-0cd2):
+	// OnHand is every physically-present unit, Installed the subset currently in
+	// an asset, and Available = OnHand − Installed (what drives reorder).
+	// available_stock == on_hand, kept for back-compat.
+	Available             int      `json:"available"`
+	OnHand                int      `json:"on_hand"`
+	Installed             int      `json:"installed"`
 	CurrentStock          int      `json:"current_stock"`
 	WindowDays            int      `json:"window_days"`
 	UnitsDepletedInWindow int      `json:"units_depleted_in_window"`
@@ -173,6 +185,50 @@ func (c *Client) CreateSerializedComponent(ctx context.Context, req SerializedCo
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ScanReceiveRequest is the body for the batch-scan receive endpoint
+// (POST serialized-components/scan_receive/). Only item + serial_number are
+// required; lot and expiration_date are optional batch attributes. The endpoint
+// is idempotent on (item, serial_number): a re-scan returns the existing unit.
+type ScanReceiveRequest struct {
+	Item           string   `json:"item"`
+	SerialNumber   string   `json:"serial_number"`
+	Lot            string   `json:"lot,omitempty"`
+	ExpirationDate DateOnly `json:"expiration_date"`
+}
+
+// ScanReceiveResult is the scan_receive response: the created-or-existing unit
+// plus Created — true (HTTP 201) when this scan first accessioned the unit into
+// stock, false (HTTP 200) when it was a re-scan of a serial already received.
+type ScanReceiveResult struct {
+	SerializedComponent
+	Created bool `json:"created"`
+}
+
+// ScanReceive idempotently creates-and-receives a scanned serialized unit
+// (scan = received → in_stock), no purchase order required. Powers the
+// batch-scan-serials screen: each scanned serial is one call. A re-scan of the
+// same (item, serial_number) is a no-op that returns the existing unit with
+// Created=false rather than a 400 unique-constraint error, so double-scans
+// within a batch are tolerated. The owning item must be serialized (the backend
+// 400s otherwise).
+func (c *Client) ScanReceive(ctx context.Context, req ScanReceiveRequest) (*ScanReceiveResult, error) {
+	var out ScanReceiveResult
+	if err := c.Post(ctx, serializedComponentsPath+"scan_receive/", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteSerializedComponent removes a serial-numbered unit entirely
+// (DELETE serialized-components/{id}/). Used as the batch-scan undo: a
+// just-scanned unit is in_stock, from which no lifecycle action reaches a
+// terminal state in one hop (dispose is only legal from consumed/retired), so
+// the true "undo this mis-scan" is to delete the accidental record. The backend
+// cascades the unit's usage events; staff/SIG-admin gated, 204 on success.
+func (c *Client) DeleteSerializedComponent(ctx context.Context, id string) error {
+	return c.Delete(ctx, serializedComponentsPath+id+"/")
 }
 
 // SerializedComponentAction applies one lifecycle transition (receive,

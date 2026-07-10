@@ -213,7 +213,14 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// Serialized items expose per-unit instance tracking; jump to
 			// the instances screen. No-op for non-serialized items.
 			if s.item != nil && s.item.IsSerialized {
-				return s, SwitchTo(WSInventory, NewItemInstancesScreen(s.deps, s.item.ID, s.item.Name))
+				return s, SwitchTo(WSInventory, NewItemInstancesScreen(s.deps, s.item.ID, s.item.Name, s.item.SerializedStock))
+			}
+		case "b":
+			// Batch-scan serials: rapid-fire scanner-gun capture that
+			// creates-and-receives each unit. Serialized items only; lowercase
+			// b is free in the global hotkey map, so it falls through here.
+			if s.item != nil && s.item.IsSerialized {
+				return s, SwitchTo(WSInventory, NewBatchScanSerialsScreen(s.deps, s.item.ID, s.item.Name))
 			}
 		case "E":
 			// Edit opens the create/edit form in edit mode. Uppercase E
@@ -303,7 +310,7 @@ func (s *InventoryDetailScreen) View() string {
 	}
 	hint := "j/k scroll · o/enter reorder · c count · s suppliers · E edit · x delete · r refresh · esc back"
 	if s.item.IsSerialized {
-		hint = "j/k scroll · o/enter reorder · c count · s suppliers · i instances · E edit · x delete · r refresh · esc back"
+		hint = "j/k scroll · o/enter reorder · c count · s suppliers · i instances · b batch-scan · E edit · x delete · r refresh · esc back"
 	}
 	return header + "\n\n" + body + "\n\n" + StyleMuted.Render(hint)
 }
@@ -409,7 +416,8 @@ func (s *InventoryDetailScreen) renderBody() string {
 		}
 		b.WriteString(StyleMuted.Render("Mode: ") + mode + "\n")
 		b.WriteString(StyleMuted.Render("Units are tracked individually by serial number. ") +
-			StyleStatusOK.Render("press i") + StyleMuted.Render(" to view instances.") + "\n\n")
+			StyleStatusOK.Render("press i") + StyleMuted.Render(" to view instances, ") +
+			StyleStatusOK.Render("b") + StyleMuted.Render(" to batch-scan.") + "\n\n")
 	}
 
 	if !it.UnitCost.Empty() || !it.PackageCost.Empty() || !it.TotalValue.Empty() {

@@ -385,10 +385,14 @@ func (s *SerializedForecastScreen) renderRow(i int, selected bool) string {
 	}
 	b.WriteString(title + "\n")
 
-	meta := []string{
-		fmt.Sprintf("stock %d", r.AvailableStock),
-		fmt.Sprintf("~%s/day", trimFloat(r.AvgDailyUse)),
+	meta := []string{fmt.Sprintf("on-hand %d", r.AvailableStock)}
+	// When some units are installed in assets, show the on-shelf vs installed
+	// split (op-0cd2). on_hand == available_stock, so on-shelf = on_hand −
+	// installed stays correct even on an older backend (installed decodes 0).
+	if r.Installed > 0 {
+		meta = append(meta, fmt.Sprintf("%d on shelf · %d installed", r.AvailableStock-r.Installed, r.Installed))
 	}
+	meta = append(meta, fmt.Sprintf("~%s/day", trimFloat(r.AvgDailyUse)))
 	if r.DaysUntilStockout != nil {
 		meta = append(meta, trimFloat(*r.DaysUntilStockout)+"d to stockout")
 	} else {
@@ -458,7 +462,12 @@ func (s *SerializedForecastScreen) renderDetail() string {
 	b.WriteString("\n")
 
 	b.WriteString(StyleTitle.Render("Stock") + "\n")
-	b.WriteString(fcField("Available (on-hand)", fmt.Sprintf("%d", r.AvailableStock)))
+	b.WriteString(fcField("On-hand", fmt.Sprintf("%d", r.AvailableStock)))
+	// Available (on shelf) = on_hand − installed. Computed from available_stock
+	// (== on_hand) so it's correct even before op-0cd2 added the split fields
+	// (installed decodes 0 → on-shelf == on-hand).
+	b.WriteString(fcField("Available (on shelf)", fmt.Sprintf("%d", r.AvailableStock-r.Installed)))
+	b.WriteString(fcField("Installed", fmt.Sprintf("%d", r.Installed)))
 	b.WriteString(fcField("Current stock", fmt.Sprintf("%d", r.CurrentStock)))
 	b.WriteString(fcField("Safety stock", fmt.Sprintf("%d", r.SafetyStock)))
 	b.WriteString(fcField("Reorder point", fmt.Sprintf("%d", r.ReorderPoint)))

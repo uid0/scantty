@@ -97,6 +97,13 @@ type Item struct {
 	IsSerialized       bool   `json:"is_serialized,omitempty"`
 	SerialTrackingMode string `json:"serial_tracking_mode,omitempty"`
 
+	// SerializedStock is the display-only unit split for a serialized item
+	// (op-0cd2): available / on-hand / installed. Present only on the item
+	// DETAIL serializer (GetItem) and only for serialized items — nil for
+	// non-serialized items and on a backend that predates the field, so the
+	// item-instances header simply omits it.
+	SerializedStock *SerializedStock `json:"serialized_stock,omitempty"`
+
 	// Hazmat block. Mirrors the web item form's "Hazardous Materials"
 	// section so the edit screen can hydrate every hazmat field. The NFPA
 	// ratings are pointers because 0 is a meaningful rating distinct from
@@ -128,6 +135,18 @@ type Item struct {
 
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// SerializedStock is the per-item serialized unit split (op-0cd2), surfaced on
+// the item DETAIL serializer under "serialized_stock" for serialized items.
+// OnHand is every physically-present (not-yet-depleted) unit; Installed is the
+// subset currently installed in an asset; Available = OnHand − Installed (the
+// count actually on the shelf). Display-only — it does not touch the aggregate
+// current_stock / generic reorder path.
+type SerializedStock struct {
+	Available int `json:"available"`
+	OnHand    int `json:"on_hand"`
+	Installed int `json:"installed"`
 }
 
 func (c *Client) ListItems(ctx context.Context, q url.Values) (*Page[Item], error) {

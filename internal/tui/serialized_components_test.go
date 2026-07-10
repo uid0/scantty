@@ -13,7 +13,7 @@ import (
 // (no create surface there — mirrors the web, where Add-unit lives on the item
 // panel only).
 func TestSerializedCreateForm_HandlesKeyScope(t *testing.T) {
-	item := NewItemInstancesScreen(Deps{}, "item-uuid", "Filament")
+	item := NewItemInstancesScreen(Deps{}, "item-uuid", "Filament", nil)
 	if !item.HandlesKey("a") {
 		t.Error("item scope should claim 'a' for add")
 	}
@@ -30,7 +30,7 @@ func TestSerializedCreateForm_HandlesKeyScope(t *testing.T) {
 // the serial-required rule, and that item (from screen context) + serial + lot
 // map onto the create body.
 func TestSerializedCreateForm_PayloadAndValidation(t *testing.T) {
-	s := NewItemInstancesScreen(Deps{}, "item-uuid", "Filament")
+	s := NewItemInstancesScreen(Deps{}, "item-uuid", "Filament", nil)
 	s.openCreateForm()
 	if s.form != serialFormCreate {
 		t.Fatalf("form = %v, want serialFormCreate", s.form)
@@ -55,17 +55,30 @@ func TestSerializedCreateForm_PayloadAndValidation(t *testing.T) {
 		t.Errorf("lot = %q, want batch-7", w.Lot)
 	}
 
-	// Lot is optional — a blank lot still builds a valid payload.
+	// Expiration is optional; a valid YYYY-MM-DD round-trips onto the payload.
+	s.createInputs[scfExpiration].SetValue("2026-12-31")
+	if w, err := s.buildCreatePayload(); err != nil || w.ExpirationDate.String() != "2026-12-31" {
+		t.Errorf("expiration should map: w.ExpirationDate=%q err=%v", w.ExpirationDate.String(), err)
+	}
+	// A malformed expiration is rejected before submit.
+	s.createInputs[scfExpiration].SetValue("not-a-date")
+	if _, err := s.buildCreatePayload(); err == nil {
+		t.Error("expected error for malformed expiration date")
+	}
+
+	// Lot + expiration are optional — blank both still builds a valid payload
+	// with a zero (null-serializing) expiration.
 	s.createInputs[scfLot].SetValue("")
-	if w, err := s.buildCreatePayload(); err != nil || w.Lot != "" {
-		t.Errorf("blank lot should be valid: w=%+v err=%v", w, err)
+	s.createInputs[scfExpiration].SetValue("")
+	if w, err := s.buildCreatePayload(); err != nil || w.Lot != "" || !w.ExpirationDate.IsZero() {
+		t.Errorf("blank lot+expiration should be valid: w=%+v err=%v", w, err)
 	}
 }
 
-// TestSerializedCreateForm_FieldNavigation drives the two-field form: tab moves
-// serial→lot and wraps, esc closes it.
+// TestSerializedCreateForm_FieldNavigation drives the three-field form: tab
+// moves serial→lot→expiration and wraps, esc closes it.
 func TestSerializedCreateForm_FieldNavigation(t *testing.T) {
-	s := NewItemInstancesScreen(Deps{}, "item-uuid", "Filament")
+	s := NewItemInstancesScreen(Deps{}, "item-uuid", "Filament", nil)
 	s.openCreateForm()
 	if s.createFocus != scfSerial {
 		t.Fatalf("initial focus = %d, want serial", s.createFocus)
@@ -73,9 +86,12 @@ func TestSerializedCreateForm_FieldNavigation(t *testing.T) {
 	if _, _ = s.Update(tea.KeyMsg{Type: tea.KeyTab}); s.createFocus != scfLot {
 		t.Errorf("after tab focus = %d, want lot", s.createFocus)
 	}
-	// Two fields → tab wraps back to serial.
+	if _, _ = s.Update(tea.KeyMsg{Type: tea.KeyTab}); s.createFocus != scfExpiration {
+		t.Errorf("after 2nd tab focus = %d, want expiration", s.createFocus)
+	}
+	// Three fields → tab wraps back to serial.
 	if _, _ = s.Update(tea.KeyMsg{Type: tea.KeyTab}); s.createFocus != scfSerial {
-		t.Errorf("after 2nd tab focus = %d, want serial (wrap)", s.createFocus)
+		t.Errorf("after 3rd tab focus = %d, want serial (wrap)", s.createFocus)
 	}
 	if _, _ = s.Update(tea.KeyMsg{Type: tea.KeyEsc}); s.form != serialFormNone {
 		t.Errorf("esc should close the form, form = %v", s.form)
