@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 )
 
 // TestListSerializedComponents_EnvelopeAndFilters pins the list path and the
@@ -292,6 +293,176 @@ func TestSerializedForecast_NullFields(t *testing.T) {
 	if rows[1].LeadTimeDays != nil {
 		t.Errorf("row1 lead_time_days should be nil")
 	}
+}
+
+// TestSerializedComponent_ExpirationRoundTrip pins the expiration_date field:
+// it decodes the bare date form on read and marshals back to the same date on
+// the create body (null when unset).
+func TestSerializedComponent_ExpirationRoundTrip(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"c1","serial_number":"SN-1","status":"received",
+			"expiration_date":"2027-03-15"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	comp, err := c.CreateSerializedComponent(context.Background(), SerializedComponentCreate{
+		Item:           "item-uuid",
+		SerialNumber:   "SN-1",
+		ExpirationDate: DateOnly{Time: mustDate(t, "2027-03-15")},
+	})
+	if err != nil {
+		t.Fatalf("CreateSerializedComponent: %v", err)
+	}
+	if body["expiration_date"] != "2027-03-15" {
+		t.Errorf("request expiration_date = %v, want 2027-03-15", body["expiration_date"])
+	}
+	if comp.ExpirationDate.String() != "2027-03-15" {
+		t.Errorf("decoded expiration_date = %q, want 2027-03-15", comp.ExpirationDate.String())
+	}
+}
+
+// TestSerializedComponentCreate_NullExpiration confirms an unset expiration
+// marshals to explicit null (the backend DateField accepts it), and a null on
+// the wire decodes to the zero date rather than erroring.
+func TestSerializedComponentCreate_NullExpiration(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"c1","serial_number":"SN-1","expiration_date":null}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	comp, err := c.CreateSerializedComponent(context.Background(), SerializedComponentCreate{
+		Item: "item-uuid", SerialNumber: "SN-1",
+	})
+	if err != nil {
+		t.Fatalf("CreateSerializedComponent: %v", err)
+	}
+	if v, ok := body["expiration_date"]; !ok || v != nil {
+		t.Errorf("expiration_date should serialize as null, got %v (present=%v)", v, ok)
+	}
+	if !comp.ExpirationDate.IsZero() {
+		t.Errorf("null expiration_date should decode to zero, got %q", comp.ExpirationDate.String())
+	}
+}
+
+// TestScanReceive_CreatedAndReScan pins the scan_receive endpoint: the path, the
+// {item, serial_number, lot, expiration_date} body, and that Created reflects
+// the 201-new vs 200-rescan distinction.
+func TestScanReceive_CreatedAndReScan(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		createdJSON string
+		wantCreated bool
+	}{
+		{"first scan", http.StatusCreated, "true", true},
+		{"re-scan", http.StatusOK, "false", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath, gotMethod string
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath, gotMethod = r.URL.Path, r.Method
+				raw, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(raw, &body)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"id":"c1","serial_number":"SN-9","status":"in_stock",
+					"lot":"L7","expiration_date":"2027-01-01","created":` + tc.createdJSON + `}`))
+			}))
+			defer srv.Close()
+
+			c := New(srv.URL)
+			res, err := c.ScanReceive(context.Background(), ScanReceiveRequest{
+				Item:           "item-uuid",
+				SerialNumber:   "SN-9",
+				Lot:            "L7",
+				ExpirationDate: DateOnly{Time: mustDate(t, "2027-01-01")},
+			})
+			if err != nil {
+				t.Fatalf("ScanReceive: %v", err)
+			}
+			if gotMethod != "POST" || gotPath != "/api/inventory/serialized-components/scan_receive/" {
+				t.Fatalf("method/path = %q %q", gotMethod, gotPath)
+			}
+			if body["item"] != "item-uuid" || body["serial_number"] != "SN-9" || body["lot"] != "L7" {
+				t.Errorf("body = %v", body)
+			}
+			if body["expiration_date"] != "2027-01-01" {
+				t.Errorf("body expiration_date = %v", body["expiration_date"])
+			}
+			if res.Created != tc.wantCreated {
+				t.Errorf("Created = %v, want %v", res.Created, tc.wantCreated)
+			}
+			if res.SerialNumber != "SN-9" || res.Status != "in_stock" {
+				t.Errorf("unit not decoded: %+v", res.SerializedComponent)
+			}
+		})
+	}
+}
+
+// TestDeleteSerializedComponent_Contract pins the undo path + DELETE verb.
+func TestDeleteSerializedComponent_Contract(t *testing.T) {
+	var gotPath, gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if err := c.DeleteSerializedComponent(context.Background(), "c1"); err != nil {
+		t.Fatalf("DeleteSerializedComponent: %v", err)
+	}
+	if gotMethod != "DELETE" || gotPath != "/api/inventory/serialized-components/c1/" {
+		t.Fatalf("method/path = %q %q", gotMethod, gotPath)
+	}
+}
+
+// TestSerializedForecast_StockSplit confirms the new available/on_hand/installed
+// split fields decode alongside the back-compat available_stock.
+func TestSerializedForecast_StockSplit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"item_id":"i1","item_name":"Cylinder","available_stock":6,
+			"available":4,"on_hand":6,"installed":2,"reorder_point":5,"needs_reorder":false}]`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	rows, err := c.SerializedForecast(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("SerializedForecast: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d", len(rows))
+	}
+	r := rows[0]
+	if r.OnHand != 6 || r.Available != 4 || r.Installed != 2 || r.AvailableStock != 6 {
+		t.Errorf("split decoded wrong: on_hand=%d available=%d installed=%d available_stock=%d",
+			r.OnHand, r.Available, r.Installed, r.AvailableStock)
+	}
+}
+
+func mustDate(t *testing.T, s string) time.Time {
+	t.Helper()
+	d, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		t.Fatalf("bad test date %q: %v", s, err)
+	}
+	return d
 }
 
 // TestListComponentUsageEvents_Filter pins the events path + component filter.

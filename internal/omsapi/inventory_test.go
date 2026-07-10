@@ -294,3 +294,43 @@ func TestGetItem_HydratesWriteFields(t *testing.T) {
 		t.Errorf("notes = %q", it.Notes)
 	}
 }
+
+// TestGetItem_SerializedStock confirms the item-detail serialized_stock split
+// (op-0cd2) decodes for a serialized item, and stays nil for a non-serialized
+// one (backend sends null / omits it).
+func TestGetItem_SerializedStock(t *testing.T) {
+	t.Run("serialized", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"i1","name":"Cylinder","is_serialized":true,
+				"serialized_stock":{"available":3,"on_hand":5,"installed":2}}`))
+		}))
+		defer srv.Close()
+
+		it, err := New(srv.URL).GetItem(context.Background(), "i1")
+		if err != nil {
+			t.Fatalf("GetItem: %v", err)
+		}
+		if it.SerializedStock == nil {
+			t.Fatal("serialized_stock should decode non-nil for a serialized item")
+		}
+		if it.SerializedStock.Available != 3 || it.SerializedStock.OnHand != 5 || it.SerializedStock.Installed != 2 {
+			t.Errorf("split = %+v", *it.SerializedStock)
+		}
+	})
+	t.Run("non-serialized", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"i2","name":"Bolt","is_serialized":false,"serialized_stock":null}`))
+		}))
+		defer srv.Close()
+
+		it, err := New(srv.URL).GetItem(context.Background(), "i2")
+		if err != nil {
+			t.Fatalf("GetItem: %v", err)
+		}
+		if it.SerializedStock != nil {
+			t.Errorf("serialized_stock should be nil for a non-serialized item, got %+v", *it.SerializedStock)
+		}
+	})
+}

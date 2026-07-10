@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,6 +26,10 @@ type SerializedComponentsScreen struct {
 	title  string
 	scope  string // "item" or "asset" — drives the empty-state copy + hint
 	itemID string // owning item (item scope only) — the create-form's `item`
+	// stock is the item's serialized unit split (available / on-hand / installed)
+	// shown in the header; nil in the asset scope, on an older backend, or when
+	// the launcher didn't have it, in which case the header line is omitted.
+	stock  *omsapi.SerializedStock
 	filter url.Values
 	backTo Workspace
 
@@ -64,10 +69,12 @@ const (
 )
 
 // Create-form field indices (item scope only): serial_number is required, lot
-// is optional — the full writable field set of the web "Add unit" form.
+// and expiration date are optional — the full writable field set of the web
+// "Add unit" form.
 const (
 	scfSerial = iota
 	scfLot
+	scfExpiration
 	scfCount
 )
 
@@ -95,8 +102,10 @@ type serialCreateDoneMsg struct {
 
 // NewItemInstancesScreen lists every serial-numbered unit of one inventory
 // item (all statuses) so an operator can install / consume / retire / dispose
-// individual units and read their provenance + history.
-func NewItemInstancesScreen(deps Deps, itemID, itemName string) *SerializedComponentsScreen {
+// individual units and read their provenance + history. stock is the item's
+// available/on-hand/installed split for the header (op-0cd2); pass nil when the
+// launcher doesn't have it (the header line is then omitted).
+func NewItemInstancesScreen(deps Deps, itemID, itemName string, stock *omsapi.SerializedStock) *SerializedComponentsScreen {
 	title := "Instances"
 	if itemName != "" {
 		title = "Instances: " + itemName
@@ -106,6 +115,7 @@ func NewItemInstancesScreen(deps Deps, itemID, itemName string) *SerializedCompo
 		title:   title,
 		scope:   "item",
 		itemID:  itemID,
+		stock:   stock,
 		filter:  url.Values{"item": []string{itemID}},
 		backTo:  WSInventory,
 		loading: true,
@@ -439,6 +449,12 @@ func (s *SerializedComponentsScreen) openCreateForm() {
 	lot.CharLimit = 100
 	s.createInputs[scfLot] = lot
 
+	exp := textinput.New()
+	exp.Prompt = ""
+	exp.Placeholder = "YYYY-MM-DD (optional)"
+	exp.CharLimit = 10
+	s.createInputs[scfExpiration] = exp
+
 	s.createFocus = scfSerial
 	s.form = serialFormCreate
 	s.result = ""
@@ -491,12 +507,33 @@ func (s *SerializedComponentsScreen) buildCreatePayload() (omsapi.SerializedComp
 	if serial == "" {
 		return w, errors.New("serial number is required")
 	}
+	exp, err := parseOptionalDateOnly(s.createInputs[scfExpiration].Value())
+	if err != nil {
+		return w, err
+	}
 	w = omsapi.SerializedComponentCreate{
-		Item:         s.itemID,
-		SerialNumber: serial,
-		Lot:          strings.TrimSpace(s.createInputs[scfLot].Value()),
+		Item:           s.itemID,
+		SerialNumber:   serial,
+		Lot:            strings.TrimSpace(s.createInputs[scfLot].Value()),
+		ExpirationDate: exp,
 	}
 	return w, nil
+}
+
+// parseOptionalDateOnly parses a YYYY-MM-DD field that may be blank. A blank
+// value yields the zero DateOnly (serializes to null → no expiry); a malformed
+// one is an error the form surfaces. Shared by the add-unit form and the
+// batch-scan screen so both accept dates identically to po_detail's ship date.
+func parseOptionalDateOnly(raw string) (omsapi.DateOnly, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return omsapi.DateOnly{}, nil
+	}
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return omsapi.DateOnly{}, errors.New("expiration date must be YYYY-MM-DD")
+	}
+	return omsapi.DateOnly{Time: t}, nil
 }
 
 func (s *SerializedComponentsScreen) submitCreate() (Screen, tea.Cmd) {
@@ -549,8 +586,29 @@ func (s *SerializedComponentsScreen) current() *omsapi.SerializedComponent {
 	return &s.rows[s.cursor]
 }
 
+// stockSplitLine renders the serialized unit split header (available / on-hand /
+// installed) from the item-detail serializer's serialized_stock (op-0cd2), or ""
+// when it wasn't supplied (asset scope, older backend). Installed is shown only
+// when non-zero so a never-installed item stays uncluttered.
+func (s *SerializedComponentsScreen) stockSplitLine() string {
+	if s.stock == nil {
+		return ""
+	}
+	parts := []string{
+		fmt.Sprintf("available %d", s.stock.Available),
+		fmt.Sprintf("on-hand %d", s.stock.OnHand),
+	}
+	if s.stock.Installed > 0 {
+		parts = append(parts, fmt.Sprintf("installed %d", s.stock.Installed))
+	}
+	return StyleMuted.Render(strings.Join(parts, " · "))
+}
+
 func (s *SerializedComponentsScreen) visibleCount() int {
-	const header = 1
+	header := 1
+	if s.stockSplitLine() != "" {
+		header++ // the available/on-hand line sits under the "N unit(s)" line
+	}
 	const footer = 2
 	const indicators = 2
 	avail := screenBodyHeight(s.terminalHeight) - header - footer - indicators
@@ -608,6 +666,9 @@ func (s *SerializedComponentsScreen) View() string {
 	}
 
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d unit(s)", len(s.rows))) + "\n")
+	if line := s.stockSplitLine(); line != "" {
+		b.WriteString(line + "\n")
+	}
 
 	win := s.visibleCount()
 	if s.windowStart > 0 {
@@ -653,6 +714,9 @@ func (s *SerializedComponentsScreen) renderRow(b *strings.Builder, i int) {
 	meta := []string{}
 	if u.Lot != "" {
 		meta = append(meta, "lot "+u.Lot)
+	}
+	if !u.ExpirationDate.IsZero() {
+		meta = append(meta, "exp "+u.ExpirationDate.String())
 	}
 	if u.TrackingMode != "" {
 		meta = append(meta, u.TrackingMode)
@@ -740,6 +804,7 @@ func (s *SerializedComponentsScreen) viewCreateForm() string {
 	b.WriteString(StyleMuted.Render("Record a new serial-numbered unit for this item.") + "\n\n")
 	b.WriteString(s.renderCreateField(scfSerial, "Serial number") + "\n")
 	b.WriteString(s.renderCreateField(scfLot, "Lot (optional)") + "\n")
+	b.WriteString(s.renderCreateField(scfExpiration, "Expiration (optional)") + "\n")
 	b.WriteString("\n")
 	if s.pending {
 		b.WriteString(StyleMuted.Render("Submitting…"))

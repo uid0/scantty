@@ -19,6 +19,9 @@ func sampleForecastRow() omsapi.ComponentForecastRow {
 		CategoryName:          "Gases",
 		SerialTrackingMode:    "consumable",
 		AvailableStock:        4,
+		Available:             3,
+		OnHand:                4,
+		Installed:             1,
 		CurrentStock:          6,
 		WindowDays:            90,
 		UnitsDepletedInWindow: 8,
@@ -42,7 +45,9 @@ func TestSerializedForecast_DetailRendersFields(t *testing.T) {
 	for _, want := range []string{
 		"Nitrogen cylinder", "N2-CYL", "it-1", "Gases", "consumable",
 		"needs reorder",
-		"Available (on-hand)", "4",
+		"On-hand", "4",
+		"Available (on shelf)", "3", // on_hand (4) − installed (1)
+		"Installed", "1",
 		"Current stock", "6",
 		"Safety stock", "Reorder point", "5",
 		"Needs reorder", "yes",
