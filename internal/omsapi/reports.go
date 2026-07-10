@@ -1,6 +1,9 @@
 package omsapi
 
-import "context"
+import (
+	"context"
+	"net/url"
+)
 
 // This file mirrors the OMS web "Reports" section — the three report pages
 // (Inventory, Purchasing, Asset), each a set of tabular @action endpoints on a
@@ -252,6 +255,49 @@ func (c *Client) AssetUtilization(ctx context.Context) ([]AssetUtilizationRow, e
 func (c *Client) AssetTCO(ctx context.Context) ([]AssetTCO, error) {
 	var out MaybeList[AssetTCO]
 	if err := c.Get(ctx, assetReportBase+"tco/", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
+// AssetSuppliesUsedRow is one row of the supplies_used report — a flat,
+// per-asset-labeled log that merges two sources over a date window (server
+// default: trailing 30 days). Every row carries asset_id/asset_name/source/
+// item_name/used_at; the rest are source-specific and ABSENT (→ "") on the
+// other source:
+//   - source == "serialized": a serial-numbered unit installed on / consumed
+//     by the asset (ComponentUsageEvent). Carries serial_number, action,
+//     action_display, actor.
+//   - source == "consumable": a bulk material used closing a PM work order
+//     (WorkOrderMaterialUsage). Carries quantity, unit, work_order_id,
+//     estimated_cost.
+//
+// quantity and estimated_cost are DRF Decimal-as-string; estimated_cost is
+// null when the material was deleted after the work order (decodes to "").
+// actor is null for a system/unattributed serialized event (decodes to "").
+// used_at is an ISO-8601 datetime.
+type AssetSuppliesUsedRow struct {
+	AssetID       string `json:"asset_id"`
+	AssetName     string `json:"asset_name"`
+	Source        string `json:"source"`
+	ItemName      string `json:"item_name"`
+	SerialNumber  string `json:"serial_number"`
+	Action        string `json:"action"`
+	ActionDisplay string `json:"action_display"`
+	Actor         string `json:"actor"`
+	Quantity      string `json:"quantity"`
+	Unit          string `json:"unit"`
+	WorkOrderID   string `json:"work_order_id"`
+	EstimatedCost string `json:"estimated_cost"`
+	UsedAt        string `json:"used_at"`
+}
+
+// AssetSuppliesUsed fetches the supplies_used report. q may carry start_date /
+// end_date (YYYY-MM-DD); pass nil to take the server default window (trailing
+// 30 days) — the same param-free default the other windowed report tabs use.
+func (c *Client) AssetSuppliesUsed(ctx context.Context, q url.Values) ([]AssetSuppliesUsedRow, error) {
+	var out MaybeList[AssetSuppliesUsedRow]
+	if err := c.Get(ctx, assetReportBase+"supplies_used/", q, &out); err != nil {
 		return nil, err
 	}
 	return out.Items, nil

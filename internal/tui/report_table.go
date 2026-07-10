@@ -597,7 +597,7 @@ func NewPurchasingReportScreen(deps Deps) *ReportTableScreen {
 	})
 }
 
-// NewAssetReportScreen mirrors the web /reports/assets page: 4 tabs.
+// NewAssetReportScreen mirrors the web /reports/assets page: 5 tabs.
 func NewAssetReportScreen(deps Deps) *ReportTableScreen {
 	return NewReportTableScreen(deps, "Asset report", []reportTab{
 		{
@@ -666,6 +666,34 @@ func NewAssetReportScreen(deps Deps) *ReportTableScreen {
 				out := make([][]string, len(rows))
 				for i, r := range rows {
 					out[i] = []string{orDash(r.AssetName), orDash(r.AssetTag), itoa(r.MaintenanceDaysLast90), fmtMoneyStr(r.ScheduledMaintenanceCost), fmtMoneyStr(r.UnscheduledMaintenanceCost), fmtMoneyStr(r.PreventiveMaintenanceCost), fmtMoneyStr(r.VendorMaintenanceCost), fmtMoneyStr(r.TotalMaintenanceCost90d)}
+				}
+				return out, nil
+			},
+		},
+		{
+			label:   "Supplies used",
+			columns: []reportColumn{{"Asset", alignLeft}, {"Source", alignLeft}, {"Item", alignLeft}, {"Serial/Qty", alignLeft}, {"Action", alignLeft}, {"Used at", alignLeft}, {"Cost", alignRight}},
+			note:    "Serialized installs/consumes + PM-work-order consumables. Default window: trailing 30 days.",
+			loader: func(ctx context.Context, deps Deps) ([][]string, error) {
+				// nil query → server default window (trailing 30 days), matching
+				// how the other windowed tabs mirror the web's default view.
+				rows, err := deps.OMS.AssetSuppliesUsed(ctx, nil)
+				if err != nil {
+					return nil, err
+				}
+				out := make([][]string, len(rows))
+				for i, r := range rows {
+					// Serial/Qty column folds the two source shapes: a serial
+					// number for serialized rows, quantity+unit for consumables.
+					serialQty := r.SerialNumber
+					if r.Source == "consumable" {
+						serialQty = strings.TrimSpace(r.Quantity + " " + r.Unit)
+					}
+					action := r.ActionDisplay
+					if action == "" {
+						action = r.Action // consumable rows have no action verb → "—"
+					}
+					out[i] = []string{orDash(r.AssetName), orDash(r.Source), orDash(r.ItemName), orDash(serialQty), orDash(action), orDash(dateOnly(r.UsedAt)), fmtMoneyStr(r.EstimatedCost)}
 				}
 				return out, nil
 			},

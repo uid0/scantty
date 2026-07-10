@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -205,6 +207,89 @@ func TestAssetReports_Decode(t *testing.T) {
 	}
 	if tco[0].MaintenanceDaysLast90 != 6 {
 		t.Errorf("tco maintenance_days_last_90 = %d", tco[0].MaintenanceDaysLast90)
+	}
+}
+
+// TestAssetSuppliesUsed_Decode round-trips the merged serialized+consumable
+// supplies_used payload: it asserts the start_date/end_date query params are
+// forwarded, and that each source shape decodes with the right fields present
+// (the other source's fields absent → "") including null actor / estimated_cost.
+func TestAssetSuppliesUsed_Decode(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		// A serialized install (actor set), a serialized consume (actor null),
+		// a consumable with a cost, and a consumable whose material was deleted
+		// (estimated_cost null).
+		_, _ = w.Write([]byte(`[
+			{"asset_id":"a-1","asset_name":"Mill","source":"serialized","item_name":"Spindle bearing",
+			 "serial_number":"SN-INST","action":"install","action_display":"Install","actor":"welder",
+			 "used_at":"2026-07-01T09:30:00+00:00"},
+			{"asset_id":"a-1","asset_name":"Mill","source":"serialized","item_name":"Ball bearing",
+			 "serial_number":"SN-CONS","action":"consume","action_display":"Consume","actor":null,
+			 "used_at":"2026-07-02T10:00:00+00:00"},
+			{"asset_id":"a-2","asset_name":"HVAC","source":"consumable","item_name":"Motor oil",
+			 "quantity":"3.00","unit":"qt","work_order_id":"wo-9","estimated_cost":"7.50",
+			 "used_at":"2026-07-03T12:00:00+00:00"},
+			{"asset_id":"a-2","asset_name":"HVAC","source":"consumable","item_name":"Deleted filter",
+			 "quantity":"2.00","unit":"ea","work_order_id":"wo-9","estimated_cost":null,
+			 "used_at":"2026-07-03T12:05:00+00:00"}
+		]`))
+	}))
+	t.Cleanup(srv.Close)
+
+	q := url.Values{}
+	q.Set("start_date", "2026-06-01")
+	q.Set("end_date", "2026-07-04")
+	rows, err := New(srv.URL).AssetSuppliesUsed(context.Background(), q)
+	if err != nil {
+		t.Fatalf("AssetSuppliesUsed: %v", err)
+	}
+	if gotPath != "/api/inventory/reports/assets/supplies_used/" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if !strings.Contains(gotQuery, "start_date=2026-06-01") || !strings.Contains(gotQuery, "end_date=2026-07-04") {
+		t.Fatalf("query params not forwarded: %q", gotQuery)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("len = %d", len(rows))
+	}
+
+	// Table-driven per-row field expectations. Each source shape carries its own
+	// keys and OMITS (→ "") the other's; null actor / estimated_cost also → "".
+	cases := []struct {
+		name string
+		want AssetSuppliesUsedRow
+	}{
+		{"serialized install (actor set, no consumable fields)", AssetSuppliesUsedRow{
+			AssetID: "a-1", AssetName: "Mill", Source: "serialized", ItemName: "Spindle bearing",
+			SerialNumber: "SN-INST", Action: "install", ActionDisplay: "Install", Actor: "welder",
+			UsedAt: "2026-07-01T09:30:00+00:00",
+		}},
+		{"serialized consume (null actor → empty)", AssetSuppliesUsedRow{
+			AssetID: "a-1", AssetName: "Mill", Source: "serialized", ItemName: "Ball bearing",
+			SerialNumber: "SN-CONS", Action: "consume", ActionDisplay: "Consume", Actor: "",
+			UsedAt: "2026-07-02T10:00:00+00:00",
+		}},
+		{"consumable with cost (no serialized fields)", AssetSuppliesUsedRow{
+			AssetID: "a-2", AssetName: "HVAC", Source: "consumable", ItemName: "Motor oil",
+			Quantity: "3.00", Unit: "qt", WorkOrderID: "wo-9", EstimatedCost: "7.50",
+			UsedAt: "2026-07-03T12:00:00+00:00",
+		}},
+		{"consumable, deleted material (null estimated_cost → empty)", AssetSuppliesUsedRow{
+			AssetID: "a-2", AssetName: "HVAC", Source: "consumable", ItemName: "Deleted filter",
+			Quantity: "2.00", Unit: "ea", WorkOrderID: "wo-9", EstimatedCost: "",
+			UsedAt: "2026-07-03T12:05:00+00:00",
+		}},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if rows[i] != tc.want {
+				t.Errorf("row %d decode wrong:\n got  %+v\n want %+v", i, rows[i], tc.want)
+			}
+		})
 	}
 }
 
