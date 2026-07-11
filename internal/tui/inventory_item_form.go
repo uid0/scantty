@@ -67,6 +67,7 @@ const (
 	fSerialTrackingMode
 	fNotes
 	fIsActive
+	fIsRetired
 	fFieldMax
 )
 
@@ -129,6 +130,7 @@ var itemFieldLabel = map[int]string{
 	fSerialTrackingMode:  "Tracking mode",
 	fNotes:               "Notes",
 	fIsActive:            "Active",
+	fIsRetired:           "Retired",
 }
 
 func fieldKind(id int) itemFieldKind {
@@ -138,7 +140,7 @@ func fieldKind(id int) itemFieldKind {
 	case fCurrentStock, fMinimumStock, fReorderQuantity, fMinimumCases, fReorderCases,
 		fNFPAHealth, fNFPAFire, fNFPAInstability:
 		return kindNumber
-	case fUseCaseBasedReorder, fIsHazardous, fIsSerialized, fIsActive:
+	case fUseCaseBasedReorder, fIsHazardous, fIsSerialized, fIsActive, fIsRetired:
 		return kindToggle
 	case fShelfPosition, fSerialTrackingMode:
 		return kindSelect
@@ -189,6 +191,7 @@ type InventoryItemFormScreen struct {
 	isHazardous  bool
 	isSerialized bool
 	isActive     bool
+	isRetired    bool
 	shelfPos     int
 	serialMode   int
 
@@ -230,11 +233,12 @@ type itemFormSavedMsg struct {
 func NewInventoryItemFormScreen(deps Deps, itemID string) *InventoryItemFormScreen {
 	edit := strings.TrimSpace(itemID) != ""
 	s := &InventoryItemFormScreen{
-		deps:     deps,
-		edit:     edit,
-		itemID:   strings.TrimSpace(itemID),
-		loading:  true,
-		isActive: true, // web default
+		deps:      deps,
+		edit:      edit,
+		itemID:    strings.TrimSpace(itemID),
+		loading:   true,
+		isActive:  true,  // web default
+		isRetired: false, // web default (a new item starts un-retired)
 	}
 
 	s.inputs = make([]textinput.Model, fFieldMax)
@@ -519,6 +523,8 @@ func (s *InventoryItemFormScreen) hydrate() {
 	set(fNotes, it.Notes)
 	// is_active defaults true on the model; honour the fetched value.
 	s.isActive = it.IsActive
+	// is_retired defaults false; honour the fetched phase-out state.
+	s.isRetired = it.IsRetired
 }
 
 func serialModeIndex(mode string) int {
@@ -550,7 +556,7 @@ func (s *InventoryItemFormScreen) rebuildFields() {
 	if s.isSerialized {
 		f = append(f, fSerialTrackingMode)
 	}
-	f = append(f, fNotes, fIsActive)
+	f = append(f, fNotes, fIsActive, fIsRetired)
 	s.fields = f
 
 	if focused >= 0 {
@@ -662,6 +668,8 @@ func (s *InventoryItemFormScreen) flipToggle(id int) {
 		s.isSerialized = !s.isSerialized
 	case fIsActive:
 		s.isActive = !s.isActive
+	case fIsRetired:
+		s.isRetired = !s.isRetired
 	}
 	s.rebuildFields()
 	s.syncFocus()
@@ -688,6 +696,8 @@ func (s *InventoryItemFormScreen) toggleState(id int) bool {
 		return s.isSerialized
 	case fIsActive:
 		return s.isActive
+	case fIsRetired:
+		return s.isRetired
 	}
 	return false
 }
@@ -882,6 +892,7 @@ func (s *InventoryItemFormScreen) buildPayload() (omsapi.ItemWrite, error) {
 		IsHazardous:         s.isHazardous,
 		IsSerialized:        s.isSerialized,
 		IsActive:            s.isActive,
+		IsRetired:           s.isRetired,
 		Notes:               strPtrTrim(s.inputs[fNotes].Value()),
 	}
 
