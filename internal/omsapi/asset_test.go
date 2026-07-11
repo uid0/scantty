@@ -289,6 +289,140 @@ func TestListAvailableCertifications(t *testing.T) {
 	}
 }
 
+// TestGetAssetDecodesSiteRequirements asserts the four flattened
+// site-requirement fields (generates_heat_or_flame, needs_chilling,
+// special_requirements, work_safety_notes) decode off the asset detail
+// payload — the read side of the #880 parity add. work_safety_notes carries a
+// newline to confirm multiline free text survives the round-trip.
+func TestGetAssetDecodesSiteRequirements(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"asset-1","name":"Kiln",
+			"generates_heat_or_flame":true,
+			"needs_chilling":false,
+			"special_requirements":"Bolt to floor; 3-phase only",
+			"work_safety_notes":"Wear heat gloves.\nNo loose sleeves."
+		}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	a, err := c.GetAsset(context.Background(), "asset-1")
+	if err != nil {
+		t.Fatalf("GetAsset: %v", err)
+	}
+	if !a.GeneratesHeatOrFlame {
+		t.Errorf("GeneratesHeatOrFlame = false, want true")
+	}
+	if a.NeedsChilling {
+		t.Errorf("NeedsChilling = true, want false")
+	}
+	if a.SpecialRequirements != "Bolt to floor; 3-phase only" {
+		t.Errorf("SpecialRequirements = %q", a.SpecialRequirements)
+	}
+	if a.WorkSafetyNotes != "Wear heat gloves.\nNo loose sleeves." {
+		t.Errorf("WorkSafetyNotes = %q", a.WorkSafetyNotes)
+	}
+}
+
+// TestCreateAssetSendsSiteRequirements asserts the four new site-requirement
+// fields ride the JSON create body: the booleans are always present (false is
+// not dropped), and the free-text fields serialize when set but are omitted
+// when nil (mirroring notes/condition_notes).
+func TestCreateAssetSendsSiteRequirements(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"asset-uuid","name":"Kiln"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	special := "Bolt to floor"
+	if _, err := c.CreateAsset(context.Background(), AssetWrite{
+		Name:                 "Kiln",
+		AmountPaid:           "0",
+		Status:               "active",
+		OwnershipType:        "space",
+		IsActive:             true,
+		GeneratesHeatOrFlame: true,
+		NeedsChilling:        false,
+		SpecialRequirements:  &special,
+		// WorkSafetyNotes left nil → must be omitted.
+	}); err != nil {
+		t.Fatalf("CreateAsset: %v", err)
+	}
+
+	if body["generates_heat_or_flame"] != true {
+		t.Errorf("generates_heat_or_flame = %v, want true", body["generates_heat_or_flame"])
+	}
+	// A false boolean must still be present on the wire (no omitempty).
+	if v, ok := body["needs_chilling"]; !ok || v != false {
+		t.Errorf("needs_chilling = %v (present=%v), want false present", v, ok)
+	}
+	if body["special_requirements"] != "Bolt to floor" {
+		t.Errorf("special_requirements = %v", body["special_requirements"])
+	}
+	// Nil free-text is omitted (mirrors notes/condition_notes).
+	if _, ok := body["work_safety_notes"]; ok {
+		t.Errorf("work_safety_notes should be omitted when nil, got %v", body["work_safety_notes"])
+	}
+}
+
+// TestCreateAssetMultipartSendsSiteRequirements asserts the site-requirement
+// fields also ride the multipart path (taken when a manual PDF is attached):
+// booleans always present, free-text only when set.
+func TestCreateAssetMultipartSendsSiteRequirements(t *testing.T) {
+	manual := t.TempDir() + "/m.pdf"
+	if err := os.WriteFile(manual, []byte("%PDF"), 0o600); err != nil {
+		t.Fatalf("write manual: %v", err)
+	}
+	var fields map[string][]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		fields = r.MultipartForm.Value
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"a","name":"Kiln"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	notes := "No loose sleeves"
+	if _, err := c.CreateAsset(context.Background(), AssetWrite{
+		Name:                 "Kiln",
+		AmountPaid:           "0",
+		Status:               "active",
+		OwnershipType:        "space",
+		IsActive:             true,
+		GeneratesHeatOrFlame: true,
+		WorkSafetyNotes:      &notes,
+		ManualPDFPath:        manual,
+	}); err != nil {
+		t.Fatalf("CreateAsset multipart: %v", err)
+	}
+
+	if got := fields["generates_heat_or_flame"]; len(got) != 1 || got[0] != "true" {
+		t.Errorf("generates_heat_or_flame = %v, want [true]", got)
+	}
+	if got := fields["needs_chilling"]; len(got) != 1 || got[0] != "false" {
+		t.Errorf("needs_chilling = %v, want [false]", got)
+	}
+	if got := fields["work_safety_notes"]; len(got) != 1 || got[0] != "No loose sleeves" {
+		t.Errorf("work_safety_notes = %v", got)
+	}
+	// special_requirements left nil → omitted from multipart too.
+	if _, ok := fields["special_requirements"]; ok {
+		t.Errorf("special_requirements should be omitted when nil, got %v", fields["special_requirements"])
+	}
+}
+
 // TestAssetInventoryItemID confirms the polymorphic InventoryItem read field
 // coerces a UUID string (and a defensive numeric shape) back to a pk string
 // for edit-mode hydration.

@@ -425,11 +425,15 @@ type Asset struct {
 	ConditionNotes  string      `json:"condition_notes,omitempty"`
 
 	// Operational requirements
-	Circuit            string `json:"circuit,omitempty"`
-	MACAddress         string `json:"mac_address,omitempty"`
-	NeedsCompressedAir bool   `json:"needs_compressed_air,omitempty"`
-	NeedsVentilation   bool   `json:"needs_ventilation,omitempty"`
-	IsChargeable       bool   `json:"is_chargeable,omitempty"`
+	Circuit              string `json:"circuit,omitempty"`
+	MACAddress           string `json:"mac_address,omitempty"`
+	NeedsCompressedAir   bool   `json:"needs_compressed_air,omitempty"`
+	NeedsVentilation     bool   `json:"needs_ventilation,omitempty"`
+	GeneratesHeatOrFlame bool   `json:"generates_heat_or_flame,omitempty"`
+	NeedsChilling        bool   `json:"needs_chilling,omitempty"`
+	SpecialRequirements  string `json:"special_requirements,omitempty"`
+	WorkSafetyNotes      string `json:"work_safety_notes,omitempty"`
+	IsChargeable         bool   `json:"is_chargeable,omitempty"`
 
 	// Power / electrical
 	PowerDrawWatts       DecimalString `json:"power_draw_watts,omitempty"`
@@ -621,12 +625,16 @@ type AssetWrite struct {
 	OwningUser    *int   `json:"owning_user,omitempty"`
 	IsActive      bool   `json:"is_active"`
 
-	NeedsCompressedAir     bool  `json:"needs_compressed_air"`
-	NeedsVentilation       bool  `json:"needs_ventilation"`
-	IsChargeable           bool  `json:"is_chargeable"`
-	TrainingRequired       bool  `json:"training_required"`
-	RequiredCertifications []int `json:"required_certifications,omitempty"`
-	ReportOnly             bool  `json:"report_only"`
+	NeedsCompressedAir     bool    `json:"needs_compressed_air"`
+	NeedsVentilation       bool    `json:"needs_ventilation"`
+	GeneratesHeatOrFlame   bool    `json:"generates_heat_or_flame"`
+	NeedsChilling          bool    `json:"needs_chilling"`
+	SpecialRequirements    *string `json:"special_requirements,omitempty"`
+	WorkSafetyNotes        *string `json:"work_safety_notes,omitempty"`
+	IsChargeable           bool    `json:"is_chargeable"`
+	TrainingRequired       bool    `json:"training_required"`
+	RequiredCertifications []int   `json:"required_certifications,omitempty"`
+	ReportOnly             bool    `json:"report_only"`
 
 	Notes          *string `json:"notes,omitempty"`
 	ConditionNotes *string `json:"condition_notes,omitempty"`
@@ -731,6 +739,10 @@ func (w AssetWrite) multipartFields() map[string][]string {
 	add("is_active", strconv.FormatBool(w.IsActive))
 	add("needs_compressed_air", strconv.FormatBool(w.NeedsCompressedAir))
 	add("needs_ventilation", strconv.FormatBool(w.NeedsVentilation))
+	add("generates_heat_or_flame", strconv.FormatBool(w.GeneratesHeatOrFlame))
+	add("needs_chilling", strconv.FormatBool(w.NeedsChilling))
+	addPtr("special_requirements", w.SpecialRequirements)
+	addPtr("work_safety_notes", w.WorkSafetyNotes)
 	add("is_chargeable", strconv.FormatBool(w.IsChargeable))
 	add("training_required", strconv.FormatBool(w.TrainingRequired))
 	for _, id := range w.RequiredCertifications {
