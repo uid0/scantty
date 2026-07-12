@@ -761,6 +761,12 @@ func (s *AssetDetailScreen) renderBody() string {
 		if a.NeedsVentilation {
 			b.WriteString(StyleMuted.Render("Needs ventilation: Yes") + "\n")
 		}
+		if a.GeneratesHeatOrFlame {
+			b.WriteString(StyleMuted.Render("Generates heat or flame: Yes") + "\n")
+		}
+		if a.NeedsChilling {
+			b.WriteString(StyleMuted.Render("Needs chilling: Yes") + "\n")
+		}
 		if a.IsChargeable {
 			b.WriteString(StyleMuted.Render("Chargeable: Yes") + "\n")
 		}
@@ -787,6 +793,18 @@ func (s *AssetDetailScreen) renderBody() string {
 		if a.LockoutInstructions != "" {
 			b.WriteString(StyleMuted.Render("Lockout instructions:") + "\n")
 			for _, line := range strings.Split(a.LockoutInstructions, "\n") {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+		if a.SpecialRequirements != "" {
+			b.WriteString(StyleMuted.Render("Special requirements:") + "\n")
+			for _, line := range strings.Split(a.SpecialRequirements, "\n") {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+		if a.WorkSafetyNotes != "" {
+			b.WriteString(StyleMuted.Render("Work safety notes:") + "\n")
+			for _, line := range strings.Split(a.WorkSafetyNotes, "\n") {
 				b.WriteString("  " + line + "\n")
 			}
 		}
@@ -1140,6 +1158,9 @@ func (s *AssetDetailScreen) activeReservations() []omsapi.AssetReservation {
 
 func hasOperationalReqs(a *omsapi.Asset) bool {
 	if a.Circuit != "" || a.NeedsCompressedAir || a.NeedsVentilation || a.IsChargeable {
+		return true
+	}
+	if a.GeneratesHeatOrFlame || a.NeedsChilling || a.SpecialRequirements != "" || a.WorkSafetyNotes != "" {
 		return true
 	}
 	if !a.PowerDrawWatts.Empty() {

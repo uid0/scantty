@@ -83,12 +83,16 @@ const (
 	afWikiPageURL
 	afProductURL
 	afManualPDFPath
-	afNeedsCompressedAir // toggle
-	afNeedsVentilation   // toggle
-	afIsChargeable       // toggle
-	afTrainingRequired   // toggle
-	afRequiredCerts      // multi-picker
-	afReportOnly         // toggle
+	afNeedsCompressedAir   // toggle
+	afNeedsVentilation     // toggle
+	afGeneratesHeatOrFlame // toggle
+	afNeedsChilling        // toggle
+	afIsChargeable         // toggle
+	afTrainingRequired     // toggle
+	afRequiredCerts        // multi-picker
+	afReportOnly           // toggle
+	afSpecialRequirements
+	afWorkSafetyNotes
 	afConditionNotes
 	afNotes
 	afFieldMax
@@ -132,44 +136,49 @@ var assetOwnershipOptions = []selectOption{
 }
 
 var assetFieldLabel = map[int]string{
-	afName:               "Name",
-	afDescription:        "Description",
-	afAssetTag:           "Asset tag",
-	afSerialNumber:       "Serial number",
-	afInventoryItem:      "Inventory item type",
-	afCategory:           "Category",
-	afLocation:           "Location",
-	afDateReceived:       "Date received",
-	afAmountPaid:         "Amount paid",
-	afIsDonation:         "Donation",
-	afDonorName:          "Donor name",
-	afStatus:             "Status",
-	afOwnership:          "Ownership",
-	afOwningGroup:        "Owning SIG",
-	afOwningUser:         "Owning user",
-	afIsActive:           "Active",
-	afWikiPageURL:        "Wiki page",
-	afProductURL:         "Product page",
-	afManualPDFPath:      "Manual PDF path",
-	afNeedsCompressedAir: "Needs compressed air",
-	afNeedsVentilation:   "Needs ventilation",
-	afIsChargeable:       "Chargeable use",
-	afTrainingRequired:   "Training required",
-	afRequiredCerts:      "Required certifications",
-	afReportOnly:         "Report-only",
-	afConditionNotes:     "Condition notes",
-	afNotes:              "Notes",
+	afName:                 "Name",
+	afDescription:          "Description",
+	afAssetTag:             "Asset tag",
+	afSerialNumber:         "Serial number",
+	afInventoryItem:        "Inventory item type",
+	afCategory:             "Category",
+	afLocation:             "Location",
+	afDateReceived:         "Date received",
+	afAmountPaid:           "Amount paid",
+	afIsDonation:           "Donation",
+	afDonorName:            "Donor name",
+	afStatus:               "Status",
+	afOwnership:            "Ownership",
+	afOwningGroup:          "Owning SIG",
+	afOwningUser:           "Owning user",
+	afIsActive:             "Active",
+	afWikiPageURL:          "Wiki page",
+	afProductURL:           "Product page",
+	afManualPDFPath:        "Manual PDF path",
+	afNeedsCompressedAir:   "Needs compressed air",
+	afNeedsVentilation:     "Needs ventilation",
+	afGeneratesHeatOrFlame: "Generates heat or flame",
+	afNeedsChilling:        "Needs chilling",
+	afIsChargeable:         "Chargeable use",
+	afTrainingRequired:     "Training required",
+	afRequiredCerts:        "Required certifications",
+	afReportOnly:           "Report-only",
+	afSpecialRequirements:  "Special requirements",
+	afWorkSafetyNotes:      "Work safety notes",
+	afConditionNotes:       "Condition notes",
+	afNotes:                "Notes",
 }
 
 func assetFieldKindOf(id int) assetFieldKind {
 	switch id {
 	case afName, afDescription, afAssetTag, afSerialNumber, afDateReceived, afDonorName,
-		afWikiPageURL, afProductURL, afManualPDFPath, afConditionNotes, afNotes:
+		afWikiPageURL, afProductURL, afManualPDFPath, afSpecialRequirements, afWorkSafetyNotes,
+		afConditionNotes, afNotes:
 		return akText
 	case afAmountPaid:
 		return akNumber
 	case afIsDonation, afIsActive, afNeedsCompressedAir, afNeedsVentilation,
-		afIsChargeable, afTrainingRequired, afReportOnly:
+		afGeneratesHeatOrFlame, afNeedsChilling, afIsChargeable, afTrainingRequired, afReportOnly:
 		return akToggle
 	case afStatus, afOwnership:
 		return akSelect
@@ -223,15 +232,17 @@ type AssetFormScreen struct {
 	inputs []textinput.Model
 
 	// Toggle + select state.
-	isDonation         bool
-	isActive           bool
-	needsCompressedAir bool
-	needsVentilation   bool
-	isChargeable       bool
-	trainingRequired   bool
-	reportOnly         bool
-	statusIdx          int
-	ownershipIdx       int
+	isDonation           bool
+	isActive             bool
+	needsCompressedAir   bool
+	needsVentilation     bool
+	generatesHeatOrFlame bool
+	needsChilling        bool
+	isChargeable         bool
+	trainingRequired     bool
+	reportOnly           bool
+	statusIdx            int
+	ownershipIdx         int
 
 	// Picker selections (nil == unset). inventory_item's pk is a UUID string;
 	// the rest are int pks.
@@ -321,7 +332,7 @@ func assetCharLimitFor(id int) int {
 		return 200
 	case afAssetTag, afSerialNumber:
 		return 100
-	case afDescription, afConditionNotes, afNotes:
+	case afDescription, afSpecialRequirements, afWorkSafetyNotes, afConditionNotes, afNotes:
 		return 1000
 	case afWikiPageURL, afProductURL, afManualPDFPath:
 		return 500
@@ -354,7 +365,7 @@ func assetPlaceholderFor(id int) string {
 		return "/absolute/path/to/manual.pdf"
 	case afDonorName:
 		return "name of donor"
-	case afDescription, afConditionNotes, afNotes:
+	case afDescription, afSpecialRequirements, afWorkSafetyNotes, afConditionNotes, afNotes:
 		return "optional"
 	default:
 		return ""
@@ -596,6 +607,8 @@ func (s *AssetFormScreen) hydrate() {
 
 	s.needsCompressedAir = a.NeedsCompressedAir
 	s.needsVentilation = a.NeedsVentilation
+	s.generatesHeatOrFlame = a.GeneratesHeatOrFlame
+	s.needsChilling = a.NeedsChilling
 	s.isChargeable = a.IsChargeable
 	s.trainingRequired = a.TrainingRequired
 	s.reportOnly = a.ReportOnly
@@ -604,6 +617,8 @@ func (s *AssetFormScreen) hydrate() {
 		sort.Ints(s.certIDs)
 	}
 
+	set(afSpecialRequirements, a.SpecialRequirements)
+	set(afWorkSafetyNotes, a.WorkSafetyNotes)
 	set(afConditionNotes, a.ConditionNotes)
 	set(afNotes, a.Notes)
 }
@@ -637,8 +652,9 @@ func (s *AssetFormScreen) rebuildFields() {
 		f = append(f, afOwningUser)
 	}
 	f = append(f, afIsActive, afWikiPageURL, afProductURL, afManualPDFPath, afNeedsCompressedAir,
-		afNeedsVentilation, afIsChargeable, afTrainingRequired, afRequiredCerts,
-		afReportOnly, afConditionNotes, afNotes)
+		afNeedsVentilation, afGeneratesHeatOrFlame, afNeedsChilling, afIsChargeable,
+		afTrainingRequired, afRequiredCerts, afReportOnly, afSpecialRequirements,
+		afWorkSafetyNotes, afConditionNotes, afNotes)
 	s.fields = f
 
 	if focused >= 0 {
@@ -750,6 +766,10 @@ func (s *AssetFormScreen) flipToggle(id int) {
 		s.needsCompressedAir = !s.needsCompressedAir
 	case afNeedsVentilation:
 		s.needsVentilation = !s.needsVentilation
+	case afGeneratesHeatOrFlame:
+		s.generatesHeatOrFlame = !s.generatesHeatOrFlame
+	case afNeedsChilling:
+		s.needsChilling = !s.needsChilling
 	case afIsChargeable:
 		s.isChargeable = !s.isChargeable
 	case afTrainingRequired:
@@ -771,6 +791,10 @@ func (s *AssetFormScreen) toggleState(id int) bool {
 		return s.needsCompressedAir
 	case afNeedsVentilation:
 		return s.needsVentilation
+	case afGeneratesHeatOrFlame:
+		return s.generatesHeatOrFlame
+	case afNeedsChilling:
+		return s.needsChilling
 	case afIsChargeable:
 		return s.isChargeable
 	case afTrainingRequired:
@@ -1125,6 +1149,10 @@ func (s *AssetFormScreen) buildPayload() (omsapi.AssetWrite, error) {
 		IsActive:               s.isActive,
 		NeedsCompressedAir:     s.needsCompressedAir,
 		NeedsVentilation:       s.needsVentilation,
+		GeneratesHeatOrFlame:   s.generatesHeatOrFlame,
+		NeedsChilling:          s.needsChilling,
+		SpecialRequirements:    strPtrTrim(s.inputs[afSpecialRequirements].Value()),
+		WorkSafetyNotes:        strPtrTrim(s.inputs[afWorkSafetyNotes].Value()),
 		IsChargeable:           s.isChargeable,
 		TrainingRequired:       s.trainingRequired,
 		RequiredCertifications: s.certIDs,
