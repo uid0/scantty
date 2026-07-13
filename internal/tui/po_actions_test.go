@@ -62,7 +62,7 @@ func TestPOCreate_MultiLineCart(t *testing.T) {
 	// reorder/inventory pickers do). Even with a prefilled cost, the line must
 	// NOT carry a unit_cost — the backend derives it from the item-supplier.
 	itemSup := 42
-	s.enterLinePhase(&itemSup, nil, "Reorder widget", 5, 9.99)
+	s.enterLinePhase(&itemSup, nil, "Reorder widget", 5, 9.99, 0, 0)
 	s.addLine()
 	if len(s.lines) != 2 {
 		t.Fatalf("after second addLine, cart len = %d, want 2", len(s.lines))
@@ -137,7 +137,7 @@ func TestPOCreate_ItemSupplierLineOmitsCost(t *testing.T) {
 	// Item-supplier line: only description + quantity are active fields, and a
 	// prefilled cost is not rendered or sent.
 	itemSup := 11
-	s.enterLinePhase(&itemSup, nil, "Bolt", 4, 2.50)
+	s.enterLinePhase(&itemSup, nil, "Bolt", 4, 2.50, 0, 0)
 	if got := s.lineFields(); len(got) != 2 {
 		t.Fatalf("item-supplier line fields = %v, want [desc qty]", got)
 	}
@@ -153,7 +153,7 @@ func TestPOCreate_ItemSupplierLineOmitsCost(t *testing.T) {
 	}
 
 	// Freeform line: the cost field is active again.
-	s.enterLinePhase(nil, nil, "", 0, 0)
+	s.enterLinePhase(nil, nil, "", 0, 0, 0, 0)
 	if got := s.lineFields(); len(got) != 3 {
 		t.Errorf("freeform line fields = %v, want [desc qty cost]", got)
 	}

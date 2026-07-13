@@ -15,16 +15,20 @@
 //	poPhaseReorderPick / ItemPick / AssetPick — list pickers backed by
 //	                    the corresponding omsapi endpoints; enter
 //	                    prefills the line buffer and jumps to poPhaseLine.
-//	poPhaseLine       — description/qty (+ unit cost for asset/freeform
-//	                    lines) inputs, pre-filled when the line came from a
-//	                    picker; enter ADDS the line to the cart and returns
-//	                    to poPhaseSource so more lines can be added (the web
-//	                    create form is multi-line — [[ship-complete-features]]).
-//	                    Item-supplier-backed lines (reorder queue / inventory
-//	                    picker) omit the cost prompt — the backend derives the
-//	                    line cost from the item-supplier's stored unit_cost —
-//	                    and no line prompts for a ship date (that belongs to
-//	                    the PO lifecycle at send/receive).
+//	poPhaseLine       — description/qty (+ a cost field for asset/freeform
+//	                    lines and case-packed inventory lines) inputs,
+//	                    pre-filled when the line came from a picker; enter
+//	                    ADDS the line to the cart and returns to poPhaseSource
+//	                    so more lines can be added (the web create form is
+//	                    multi-line — [[ship-complete-features]]).
+//	                    Single-pack item-supplier-backed lines (reorder queue /
+//	                    inventory picker, qpp ≤ 1) omit the cost prompt — the
+//	                    backend derives the line cost from the item-supplier's
+//	                    stored unit_cost. Case-packed inventory lines (qpp > 1)
+//	                    add a per-case/per-unit cost field (ctrl+t toggles the
+//	                    basis, deriving unit_cost = case_cost / qpp — op-7j8v).
+//	                    No line prompts for a ship date (that belongs to the PO
+//	                    lifecycle at send/receive).
 //	poPhaseReview     — the accumulated line cart + a PO-level notes
 //	                    input; enter submits every line at once via
 //	                    PurchaseOrderCreate.
@@ -35,6 +39,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -126,6 +131,15 @@ type PurchaseOrderCreateScreen struct {
 	lineFocused   int
 	pickedItemSup *int    // set when the line came from Phase 3a/3b
 	pickedAssetID *string // set when the line came from Phase 3c
+
+	// Case-cost basis for the Phase-4 cost field. When a picked inventory line
+	// is case-packed (pickedQPP > 1) the cost field can hold either a per-unit
+	// or a per-case cost; costBasisCase selects which, and the payload always
+	// carries the derived per-item unit_cost (unit = case / qpp). pickedQPP is
+	// 0/1 for non-case lines (asset, freeform, reorder, single-pack inventory),
+	// which keeps their single unit-cost entry unchanged. (op-7j8v parity.)
+	pickedQPP     int
+	costBasisCase bool
 
 	// Multi-line cart. Each entered line is staged here; the whole cart is
 	// POSTed once from the review phase. reviewCursor highlights a line so
@@ -370,7 +384,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 	case "f":
 		// Freeform: go straight to the line form with nothing
 		// pre-filled.
-		s.enterLinePhase(nil, nil, "", 0, 0)
+		s.enterLinePhase(nil, nil, "", 0, 0, 0, 0)
 		return s, textinput.Blink
 	case "d":
 		// Done adding lines → review + submit. Only meaningful once the
@@ -400,15 +414,20 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 // ---------------------------------------------------------------------------
 
 // enterLinePhase moves the screen into Phase 4 and pre-fills the inputs.
-// Either both pointers are nil (freeform), or exactly one is set.
+// Either both pointers are nil (freeform), or exactly one is set. unitCost and
+// packageCost prefill the cost field (0 = leave blank); qpp is the picked
+// inventory line's quantity_per_package (>1 ⇒ case-packed, enabling the
+// unit/case cost-basis toggle).
 func (s *PurchaseOrderCreateScreen) enterLinePhase(
-	itemSupplierID *int, assetID *string, desc string, qty int, unitCost float64,
+	itemSupplierID *int, assetID *string, desc string, qty int, unitCost, packageCost float64, qpp int,
 ) {
 	s.phase = poPhaseLine
 	s.lineFocused = poLineFieldDesc
 	s.errMsg = ""
 	s.pickedItemSup = itemSupplierID
 	s.pickedAssetID = assetID
+	s.pickedQPP = qpp
+	s.costBasisCase = false
 
 	for i := range s.lineInputs {
 		s.lineInputs[i].SetValue("")
@@ -418,9 +437,29 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 	if qty > 0 {
 		s.lineInputs[poLineFieldQty].SetValue(strconv.Itoa(qty))
 	}
-	if unitCost > 0 {
-		s.lineInputs[poLineFieldCost].SetValue(strconv.FormatFloat(unitCost, 'f', -1, 64))
+
+	switch {
+	case itemSupplierID != nil && qpp > 1:
+		// Case-packed inventory line: default to per-case entry (the op-7j8v
+		// headline) and prefill the case cost — the saved package_cost, or
+		// unit_cost × qpp when package_cost is blank. Left blank when the
+		// catalog carries neither, in which case no unit_cost is submitted and
+		// the backend derives the line cost from the stored unit_cost (sc-5yr).
+		s.costBasisCase = true
+		caseCost := packageCost
+		if caseCost <= 0 && unitCost > 0 {
+			caseCost = unitCost * float64(qpp)
+		}
+		if caseCost > 0 {
+			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(caseCost))
+		}
+	case itemSupplierID == nil:
+		// Asset / freeform line: per-unit cost prefill (unchanged behavior).
+		if unitCost > 0 {
+			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(unitCost))
+		}
 	}
+	s.applyCostPlaceholder()
 	s.lineInputs[s.lineFocused].Focus()
 }
 
@@ -433,12 +472,20 @@ func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.C
 		s.phase = poPhaseSource
 		s.pickedItemSup = nil
 		s.pickedAssetID = nil
+		s.pickedQPP = 0
+		s.costBasisCase = false
 		return s, nil
 	case "tab", "down":
 		s.focusNextLine(+1)
 		return s, nil
 	case "shift+tab", "up":
 		s.focusNextLine(-1)
+		return s, nil
+	case "ctrl+t":
+		// Toggle the cost field between per-unit and per-case entry for a
+		// case-packed inventory line (a no-op otherwise). ctrl+t (not a bare
+		// letter) so the key never collides with typing into the field.
+		s.toggleCostBasis()
 		return s, nil
 	case "enter":
 		return s, s.addLine()
@@ -449,18 +496,21 @@ func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.C
 }
 
 // lineFields returns the active field indexes for the current line source, in
-// tab order. Item-supplier-backed lines (reorder queue / inventory picker)
-// drop the unit-cost field: the backend derives the line cost from the
-// item-supplier's stored unit_cost, so prompting for it is redundant (sc-5yr).
-// Asset and freeform lines keep it — the backend requires unit_cost for both.
+// tab order. Single-pack item-supplier-backed lines (reorder queue / inventory
+// picker with qpp ≤ 1) drop the unit-cost field: the backend derives the line
+// cost from the item-supplier's stored unit_cost, so prompting for it is
+// redundant (sc-5yr). Case-packed inventory lines (qpp > 1) keep the cost field
+// so the operator can enter a case (or unit) cost (op-7j8v). Asset and freeform
+// lines always keep it — the backend requires unit_cost for both.
 func (s *PurchaseOrderCreateScreen) lineFields() []int {
-	if s.pickedItemSup != nil {
+	if s.pickedItemSup != nil && s.pickedQPP <= 1 {
 		return []int{poLineFieldDesc, poLineFieldQty}
 	}
 	return []int{poLineFieldDesc, poLineFieldQty, poLineFieldCost}
 }
 
-// poLineFieldLabel maps a field index to its form label.
+// poLineFieldLabel maps a field index to its static form label. The cost row
+// uses the basis-aware s.costFieldLabel instead (unit vs case).
 func poLineFieldLabel(i int) string {
 	switch i {
 	case poLineFieldDesc:
@@ -472,6 +522,16 @@ func poLineFieldLabel(i int) string {
 	default:
 		return ""
 	}
+}
+
+// costFieldLabel is the label for the Phase-4 cost row, reflecting the active
+// cost basis: "Case cost" when entering a per-case cost for a case-packed
+// inventory line, "Unit cost" otherwise.
+func (s *PurchaseOrderCreateScreen) costFieldLabel() string {
+	if s.costBasisCase {
+		return "Case cost"
+	}
+	return "Unit cost"
 }
 
 func (s *PurchaseOrderCreateScreen) focusNextLine(delta int) {
@@ -513,18 +573,27 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 		ItemSupplierID: s.pickedItemSup,
 		AssetID:        s.pickedAssetID,
 	}
-	// Unit cost is only prompted for asset and freeform lines. Item-supplier-
-	// backed lines (reorder queue / inventory picker) omit it: the backend
-	// derives the line cost from the item-supplier's stored unit_cost (sc-5yr).
-	if s.pickedItemSup == nil {
-		costRaw := strings.TrimSpace(s.lineInputs[poLineFieldCost].Value())
-		if costRaw != "" {
-			cost, err := strconv.ParseFloat(costRaw, 64)
-			if err != nil || cost < 0 {
-				s.errMsg = "unit cost must be a non-negative number"
-				return Status(s.errMsg, StatusError)
+	// Cost entry. The cost field is active for asset / freeform lines (backend
+	// requires a per-unit cost) and for case-packed inventory lines (qpp > 1),
+	// where it holds a per-case OR per-unit cost per the ctrl+t basis toggle.
+	// poDeriveUnitCost divides a case cost by qpp at full precision (no cent
+	// rounding, so odd case sizes don't drift). Single-pack inventory lines have
+	// no cost field and omit unit_cost, letting the backend derive it from the
+	// stored catalog cost (sc-5yr); a blank field omits it the same way.
+	if s.pickedItemSup == nil || s.pickedQPP > 1 {
+		unit, provided, err := poDeriveUnitCost(
+			s.lineInputs[poLineFieldCost].Value(), s.costBasisCase, s.pickedQPP,
+		)
+		if err != nil {
+			label := "unit cost"
+			if s.costBasisCase {
+				label = "case cost"
 			}
-			line.UnitCost = &cost
+			s.errMsg = label + " must be a non-negative number"
+			return Status(s.errMsg, StatusError)
+		}
+		if provided {
+			line.UnitCost = &unit
 		}
 	}
 
@@ -534,6 +603,8 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 	s.phase = poPhaseSource
 	s.pickedItemSup = nil
 	s.pickedAssetID = nil
+	s.pickedQPP = 0
+	s.costBasisCase = false
 	return Status(fmt.Sprintf("line added (%d in cart)", len(s.lines)), StatusOK)
 }
 
@@ -550,6 +621,117 @@ func (s *PurchaseOrderCreateScreen) lineLabel(desc string) string {
 	default:
 		return "line"
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 cost helpers (per-unit / per-case entry — op-7j8v parity)
+// ---------------------------------------------------------------------------
+
+// errInvalidCost is returned by poDeriveUnitCost for a non-numeric or negative
+// cost entry.
+var errInvalidCost = errors.New("cost must be a non-negative number")
+
+// poDeriveUnitCost converts a raw cost-field entry into the per-item unit_cost
+// carried by the payload. When basisCase is true the raw value is a per-CASE
+// cost and is divided by qpp (full precision — no cent rounding, so odd case
+// sizes such as $10 / 3 don't drift); otherwise it is already a per-unit cost.
+// provided is false (with a nil error) when the field is blank, signalling the
+// caller to omit unit_cost so the backend derives it from the stored catalog
+// cost. A non-numeric or negative entry returns errInvalidCost.
+func poDeriveUnitCost(raw string, basisCase bool, qpp int) (unit float64, provided bool, err error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false, nil
+	}
+	v, perr := strconv.ParseFloat(raw, 64)
+	if perr != nil || v < 0 {
+		return 0, false, errInvalidCost
+	}
+	if basisCase {
+		if qpp < 1 {
+			qpp = 1
+		}
+		return v / float64(qpp), true, nil
+	}
+	return v, true, nil
+}
+
+// poFormatCost renders a cost at full precision with no trailing-zero noise
+// (e.g. 12.5, 3, 4.285714285714286) — the value round-trips into the payload
+// unrounded. Matches the -1 precision idiom used for cart display.
+func poFormatCost(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// poDisplayMoney formats a cost for human-facing hints only (2–4 decimals,
+// trailing zeros trimmed but at least two kept): 3.00, 1.25, 4.2857. Display
+// rounding never touches the full-precision value submitted to the backend.
+func poDisplayMoney(v float64) string {
+	str := strconv.FormatFloat(v, 'f', 4, 64)
+	if strings.Contains(str, ".") {
+		str = strings.TrimRight(str, "0")
+		dot := strings.IndexByte(str, '.')
+		for len(str)-dot-1 < 2 {
+			str += "0"
+		}
+	}
+	return str
+}
+
+// toggleCostBasis flips the Phase-4 cost field between per-unit and per-case
+// entry for a case-packed inventory line (a no-op for any other line). The
+// current value is converted so the economics are preserved (case = unit ×
+// qpp) at full precision, and the placeholder is refreshed to match.
+func (s *PurchaseOrderCreateScreen) toggleCostBasis() {
+	if s.pickedItemSup == nil || s.pickedQPP <= 1 {
+		return
+	}
+	raw := strings.TrimSpace(s.lineInputs[poLineFieldCost].Value())
+	if v, err := strconv.ParseFloat(raw, 64); err == nil && raw != "" {
+		if s.costBasisCase {
+			v /= float64(s.pickedQPP) // case → unit
+		} else {
+			v *= float64(s.pickedQPP) // unit → case
+		}
+		s.lineInputs[poLineFieldCost].SetValue(poFormatCost(v))
+	}
+	s.costBasisCase = !s.costBasisCase
+	s.applyCostPlaceholder()
+}
+
+// applyCostPlaceholder keeps the cost input's placeholder in step with the
+// active basis (case vs unit).
+func (s *PurchaseOrderCreateScreen) applyCostPlaceholder() {
+	if s.costBasisCase {
+		s.lineInputs[poLineFieldCost].Placeholder = "case cost (e.g. 30.00)"
+	} else {
+		s.lineInputs[poLineFieldCost].Placeholder = "unit cost (e.g. 12.50)"
+	}
+}
+
+// costDerivationHint is the muted line shown under a case-packed inventory
+// line's cost field: it echoes the entered cost in both bases (case ÷ qpp =
+// unit) so the operator always sees the derived counterpart, plus the toggle
+// key. Returns "" for any non-case line.
+func (s *PurchaseOrderCreateScreen) costDerivationHint() string {
+	if s.pickedItemSup == nil || s.pickedQPP <= 1 {
+		return ""
+	}
+	qpp := s.pickedQPP
+	raw := strings.TrimSpace(s.lineInputs[poLineFieldCost].Value())
+	v, err := strconv.ParseFloat(raw, 64)
+	if raw == "" || err != nil {
+		if s.costBasisCase {
+			return fmt.Sprintf("Enter the CASE cost — divided by %d units/case for the unit cost. ctrl+t: switch to unit-cost entry.", qpp)
+		}
+		return fmt.Sprintf("Enter the UNIT cost — multiplied by %d for the case cost. ctrl+t: switch to case-cost entry.", qpp)
+	}
+	unit, cas := v, v*float64(qpp)
+	if s.costBasisCase {
+		unit, cas = v/float64(qpp), v
+	}
+	return fmt.Sprintf("$%s/case ÷ %d = $%s/unit  ·  ctrl+t: toggle unit/case basis",
+		poDisplayMoney(cas), qpp, poDisplayMoney(unit))
 }
 
 // finalize POSTs the whole cart as one PurchaseOrderCreate. Called from the
@@ -697,6 +879,9 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 	case poPhaseAssetPick:
 		return "Assets purchased from this supplier (j/k move, / search, ] next page, [ prev page, enter pick, b back, esc cancel)."
 	case poPhaseLine:
+		if s.pickedItemSup != nil && s.pickedQPP > 1 {
+			return "Line entry (tab/shift-tab cycle fields · ctrl+t unit/case cost basis · enter add · esc different source)."
+		}
 		return "Line entry (tab/shift-tab cycle fields, enter to add to cart, esc to pick a different source)."
 	case poPhaseReview:
 		return "Review cart — type PO notes · ↑↓ highlight a line · ctrl+x remove it · enter submit · esc back."
@@ -827,12 +1012,25 @@ func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
 		if i == s.lineFocused {
 			marker = "▸ "
 		}
+		label := poLineFieldLabel(i)
+		if i == poLineFieldCost {
+			label = s.costFieldLabel()
+		}
 		b.WriteString(marker)
-		b.WriteString(StyleTitle.Render(poLineFieldLabel(i) + ": "))
+		b.WriteString(StyleTitle.Render(label + ": "))
 		b.WriteString(s.lineInputs[i].View())
 		b.WriteString("\n")
+		// Case-packed inventory line: echo the derived counterpart (case ÷ qpp
+		// = unit) and the basis-toggle key directly under the cost row.
+		if i == poLineFieldCost {
+			if hint := s.costDerivationHint(); hint != "" {
+				b.WriteString(StyleMuted.Render("    "+hint) + "\n")
+			}
+		}
 	}
-	if s.pickedItemSup != nil {
+	// Single-pack inventory lines carry no cost field; note that the backend
+	// uses the catalog cost. (Case-packed lines show the derivation hint above.)
+	if s.pickedItemSup != nil && s.pickedQPP <= 1 {
 		b.WriteString(StyleMuted.Render("  Cost is taken from the supplier catalog; ship dates are set at send/receive.") + "\n")
 	}
 	return b.String()
