@@ -189,7 +189,10 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 		if desc == "" {
 			desc = it.SKU
 		}
-		s.enterLinePhase(it.ItemSupplierID, nil, desc, qty, unitCost)
+		// The reorder_data row carries no quantity_per_package, so a reorder
+		// line stays single-basis (qpp 0) — the case-cost toggle is offered
+		// from the inventory-items picker, which does expose qpp. (op-7j8v)
+		s.enterLinePhase(it.ItemSupplierID, nil, desc, qty, unitCost, 0, 0)
 		return s, textinput.Blink
 	}
 	return s, nil
@@ -277,11 +280,18 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 		if v, err := strconv.ParseFloat(string(row.UnitCost), 64); err == nil {
 			unitCost = v
 		}
+		pkgCost := 0.0
+		if v, err := strconv.ParseFloat(string(row.PackageCost), 64); err == nil {
+			pkgCost = v
+		}
 		desc := row.ItemName
 		if desc == "" {
 			desc = row.SupplierSKU
 		}
-		s.enterLinePhase(&id, nil, desc, 1, unitCost)
+		// PackQuantity (quantity_per_package) drives the case-cost toggle: when
+		// > 1 the line form offers per-case entry prefilled from package_cost
+		// (deriving unit_cost = case_cost / qpp — op-7j8v).
+		s.enterLinePhase(&id, nil, desc, 1, unitCost, pkgCost, row.PackQuantity)
 		return s, textinput.Blink
 	}
 	return s, nil
@@ -316,11 +326,17 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 			if it.UnitCost != "" {
 				cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s", it.UnitCost))
 			}
+			// Flag case-packed items so the operator knows a case-cost entry
+			// will be offered on the line form (op-7j8v).
+			pack := ""
+			if it.PackQuantity > 1 {
+				pack = "  " + StyleStatusOK.Render(fmt.Sprintf("case ×%d", it.PackQuantity))
+			}
 			lead := ""
 			if it.LeadTimeDays > 0 {
 				lead = "  " + StyleMuted.Render(fmt.Sprintf("lead %gd", it.LeadTimeDays))
 			}
-			return fmt.Sprintf("%s  %s%s%s", it.ItemName, sku, cost, lead)
+			return fmt.Sprintf("%s  %s%s%s%s", it.ItemName, sku, cost, pack, lead)
 		},
 	))
 	return b.String()
@@ -390,7 +406,8 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		if a.AssetTag != "" {
 			desc = fmt.Sprintf("%s (%s)", a.Name, a.AssetTag)
 		}
-		s.enterLinePhase(nil, &idStr, desc, 1, 0)
+		// Assets are not case-packed (qpp 0): single per-unit cost, unchanged.
+		s.enterLinePhase(nil, &idStr, desc, 1, 0, 0, 0)
 		return s, textinput.Blink
 	}
 	return s, nil

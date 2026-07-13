@@ -114,6 +114,54 @@ func TestCreatePurchaseOrder_InventoryLine(t *testing.T) {
 	}
 }
 
+// TestCreatePurchaseOrder_InventoryLineCaseDerivedCost documents the op-7j8v
+// wire contract: when the scantty PO-create flow lets the operator enter a
+// per-case cost for a case-packed item, it derives the per-item unit_cost
+// (unit = case / qpp) and sends it through the SAME unit_cost field — the
+// payload shape is unchanged. Here a $30 case at qpp 12 → unit_cost 2.5.
+func TestCreatePurchaseOrder_InventoryLineCaseDerivedCost(t *testing.T) {
+	var bodyJSON map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &bodyJSON)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"po-uuid","po_number":"PO-2026-0044"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	itemSup := 42
+	unitCost := 30.0 / 12.0 // per-case $30 ÷ qpp 12, full precision
+	_, err := c.CreatePurchaseOrder(context.Background(), PurchaseOrderCreate{
+		Supplier: 7,
+		Items: []PurchaseOrderCreateItem{{
+			ItemSupplierID: &itemSup,
+			Quantity:       24,
+			UnitCost:       &unitCost,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreatePurchaseOrder: %v", err)
+	}
+
+	line := bodyJSON["items"].([]any)[0].(map[string]any)
+	if line["item_supplier_id"].(float64) != 42 {
+		t.Fatalf("item_supplier_id = %v", line["item_supplier_id"])
+	}
+	// unit_cost rides the existing field as a JSON number, full precision.
+	got := line["unit_cost"].(float64)
+	if want := 30.0 / 12.0; got != want {
+		t.Fatalf("unit_cost = %v, want %v", got, want)
+	}
+	// No new payload keys: the case feature is derive-then-send, not a new field.
+	for _, k := range []string{"order_in_packages", "cases", "package_cost", "case_cost", "quantity_per_package"} {
+		if _, present := line[k]; present {
+			t.Errorf("payload must not carry %q (backend contract unchanged), got %v", k, line[k])
+		}
+	}
+}
+
 func TestCreatePurchaseOrder_BackendError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"detail":"supplier is required"}`, http.StatusBadRequest)
