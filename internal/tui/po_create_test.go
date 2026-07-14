@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
@@ -387,6 +389,251 @@ func TestPORenderLinePhase_CasePacked(t *testing.T) {
 	s.toggleCostBasis()
 	if out := s.renderLinePhase(); !strings.Contains(out, "Unit cost:") {
 		t.Errorf("after toggle, line should render 'Unit cost:' label:\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Editing a staged cart line in place (ctrl+e from review — sc-fo1s).
+// ---------------------------------------------------------------------------
+
+// enterReviewAt stages nothing; it drops an already-built cart into the review
+// phase with the given line highlighted, mirroring the 'd' done→review path.
+func enterReviewAt(s *PurchaseOrderCreateScreen, cursor int) {
+	s.phase = poPhaseReview
+	s.reviewCursor = cursor
+	s.poNotes.Focus()
+}
+
+// TestPOEditLine_UpdatesInPlace: ctrl+e opens the highlighted line pre-filled;
+// editing desc/qty/cost writes back to s.lines[i] with the cart length UNCHANGED,
+// the label re-derived, review re-entered with the same line highlighted, and a
+// sibling line left untouched.
+func TestPOEditLine_UpdatesInPlace(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.enterLinePhase(nil, nil, "Rags", 2, 0, 0, 0)
+	s.lineInputs[poLineFieldCost].SetValue("1.50")
+	s.addLine()
+	s.enterLinePhase(nil, nil, "Gloves", 5, 0, 0, 0)
+	s.lineInputs[poLineFieldCost].SetValue("3.00")
+	s.addLine()
+	if len(s.lines) != 2 {
+		t.Fatalf("setup: len(lines) = %d, want 2", len(s.lines))
+	}
+
+	enterReviewAt(s, 0)
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poPhaseLine {
+		t.Fatalf("ctrl+e should open the line form; phase = %v", s.phase)
+	}
+	if s.editIndex != 0 {
+		t.Fatalf("editIndex = %d, want 0", s.editIndex)
+	}
+	// Pre-filled from line 0.
+	if got := s.lineInputs[poLineFieldDesc].Value(); got != "Rags" {
+		t.Errorf("desc prefill = %q, want %q", got, "Rags")
+	}
+	if got := s.lineInputs[poLineFieldQty].Value(); got != "2" {
+		t.Errorf("qty prefill = %q, want %q", got, "2")
+	}
+	if got := s.lineInputs[poLineFieldCost].Value(); got != "1.5" {
+		t.Errorf("cost prefill = %q, want %q", got, "1.5")
+	}
+
+	// Change every field and save.
+	s.lineInputs[poLineFieldDesc].SetValue("Shop rags")
+	s.lineInputs[poLineFieldQty].SetValue("9")
+	s.lineInputs[poLineFieldCost].SetValue("2.25")
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(s.lines) != 2 {
+		t.Fatalf("edit must not change cart length; len = %d, want 2", len(s.lines))
+	}
+	if s.editIndex != -1 {
+		t.Errorf("editIndex = %d, want -1 after save", s.editIndex)
+	}
+	if s.phase != poPhaseReview {
+		t.Errorf("phase = %v, want review after save", s.phase)
+	}
+	if s.reviewCursor != 0 {
+		t.Errorf("reviewCursor = %d, want 0 (edited line stays highlighted)", s.reviewCursor)
+	}
+	got := s.lines[0]
+	if got.item.Description != "Shop rags" || got.item.Quantity != 9 {
+		t.Errorf("line 0 = %+v, want desc 'Shop rags' qty 9", got.item)
+	}
+	if got.item.UnitCost == nil || math.Abs(*got.item.UnitCost-2.25) > 1e-12 {
+		t.Errorf("line 0 unit_cost = %v, want 2.25", got.item.UnitCost)
+	}
+	if got.label != "Shop rags" {
+		t.Errorf("label = %q, want re-derived 'Shop rags'", got.label)
+	}
+	if s.lines[1].item.Description != "Gloves" || s.lines[1].item.Quantity != 5 {
+		t.Errorf("sibling line 1 changed: %+v", s.lines[1].item)
+	}
+}
+
+// TestPOEditLine_EscCancelsUnchanged: esc from an edit returns to review with
+// the line untouched, and editIndex is cleared so it can never leak into a later
+// add (the next fresh add appends rather than replacing the edited slot).
+func TestPOEditLine_EscCancelsUnchanged(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.enterLinePhase(nil, nil, "Rags", 2, 0, 0, 0)
+	s.lineInputs[poLineFieldCost].SetValue("1.50")
+	s.addLine()
+
+	enterReviewAt(s, 0)
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	// Mutate the inputs, then cancel.
+	s.lineInputs[poLineFieldDesc].SetValue("WRONG")
+	s.lineInputs[poLineFieldQty].SetValue("999")
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if s.phase != poPhaseReview {
+		t.Fatalf("esc from an edit should return to review; phase = %v", s.phase)
+	}
+	if s.editIndex != -1 {
+		t.Errorf("editIndex = %d, want -1 after esc-cancel", s.editIndex)
+	}
+	if len(s.lines) != 1 {
+		t.Fatalf("esc must not change cart length; len = %d, want 1", len(s.lines))
+	}
+	if s.lines[0].item.Description != "Rags" || s.lines[0].item.Quantity != 2 {
+		t.Errorf("line should be unchanged; got %+v", s.lines[0].item)
+	}
+
+	// No leak: a fresh add after the cancelled edit appends a new line.
+	s.enterLinePhase(nil, nil, "New line", 1, 0, 0, 0)
+	if s.editIndex != -1 {
+		t.Errorf("enterLinePhase must reset editIndex to -1 for an add; got %d", s.editIndex)
+	}
+	s.lineInputs[poLineFieldCost].SetValue("2.00")
+	s.addLine()
+	if len(s.lines) != 2 {
+		t.Errorf("fresh add after cancel should append; len = %d, want 2", len(s.lines))
+	}
+	if s.lines[0].item.Description != "Rags" {
+		t.Errorf("original line 0 overwritten by leaked editIndex: %+v", s.lines[0].item)
+	}
+}
+
+// TestPOEditLine_CasePackedRoundTrips: editing a case-packed line defaults back
+// to case basis with the case cost pre-filled (unit × qpp), and toggling to unit
+// basis still derives the identical unit_cost on save.
+func TestPOEditLine_CasePackedRoundTrips(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	id := 42
+	s.enterLinePhase(&id, nil, "Widget", 5, 0, 0, 12)
+	s.lineInputs[poLineFieldCost].SetValue("30") // $30/case ÷ 12 = 2.5/unit
+	s.addLine()
+	if s.lines[0].qpp != 12 {
+		t.Fatalf("staged qpp = %d, want 12 (needed to round-trip case basis)", s.lines[0].qpp)
+	}
+	if s.lines[0].item.UnitCost == nil {
+		t.Fatalf("setup: staged line should carry a unit_cost")
+	}
+	unit0 := *s.lines[0].item.UnitCost
+
+	enterReviewAt(s, 0)
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if !s.costBasisCase {
+		t.Errorf("case-packed edit should default to case basis")
+	}
+	if got := s.lineInputs[poLineFieldCost].Value(); got != "30" {
+		t.Errorf("case cost prefill = %q, want %q (unit × qpp)", got, "30")
+	}
+	// ctrl+t → unit basis shows the derived unit cost; save still derives the same.
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyCtrlT})
+	if s.costBasisCase {
+		t.Errorf("ctrl+t should switch to unit basis")
+	}
+	if got := s.lineInputs[poLineFieldCost].Value(); got != "2.5" {
+		t.Errorf("unit prefill after toggle = %q, want %q", got, "2.5")
+	}
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}) // save
+
+	if len(s.lines) != 1 {
+		t.Fatalf("edit changed cart length: %d", len(s.lines))
+	}
+	if s.lines[0].item.UnitCost == nil || math.Abs(*s.lines[0].item.UnitCost-unit0) > 1e-12 {
+		t.Errorf("unit_cost after round-trip = %v, want %v", s.lines[0].item.UnitCost, unit0)
+	}
+	if math.Abs(unit0-2.5) > 1e-12 {
+		t.Errorf("sanity: unit0 = %v, want 2.5", unit0)
+	}
+}
+
+// TestPOEditLine_RestoresSourceFields: editing restores each line source so the
+// right fields render — single-pack inventory hides the cost field, case-packed
+// shows it in case basis, and an asset line shows the per-unit cost field.
+func TestPOEditLine_RestoresSourceFields(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	id := 7
+	s.enterLinePhase(&id, nil, "Bolt", 3, 0, 0, 1) // single-pack inventory
+	s.addLine()
+	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12) // case-packed inventory
+	s.lineInputs[poLineFieldCost].SetValue("24")
+	s.addLine()
+	assetID := "asset-uuid"
+	s.enterLinePhase(nil, &assetID, "Drill", 1, 0, 0, 0) // asset
+	s.lineInputs[poLineFieldCost].SetValue("99")
+	s.addLine()
+
+	s.poNotes.Focus()
+
+	// Single-pack line: no cost field, item-supplier source restored.
+	enterReviewAt(s, 0)
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if hasField(s.lineFields(), poLineFieldCost) {
+		t.Errorf("editing a single-pack inventory line should hide the cost field")
+	}
+	if s.pickedItemSup == nil || *s.pickedItemSup != 7 {
+		t.Errorf("edit should restore the item-supplier source; got %v", s.pickedItemSup)
+	}
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// Case-packed line: cost field shown, case basis.
+	enterReviewAt(s, 1)
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if !hasField(s.lineFields(), poLineFieldCost) {
+		t.Errorf("editing a case-packed line should show the cost field")
+	}
+	if !s.costBasisCase {
+		t.Errorf("editing a case-packed line should default to case basis")
+	}
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// Asset line: cost field shown, asset source restored.
+	enterReviewAt(s, 2)
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if !hasField(s.lineFields(), poLineFieldCost) {
+		t.Errorf("editing an asset line should show the cost field")
+	}
+	if s.pickedAssetID == nil || *s.pickedAssetID != "asset-uuid" {
+		t.Errorf("edit should restore the asset source; got %v", s.pickedAssetID)
+	}
+}
+
+// TestPOEditLine_HelpAndTitleReadAsEditing: the review footer advertises ctrl+e,
+// and while editing the line-phase help + title read as EDITING, not adding.
+func TestPOEditLine_HelpAndTitleReadAsEditing(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.enterLinePhase(nil, nil, "Rags", 2, 0, 0, 0)
+	s.lineInputs[poLineFieldCost].SetValue("1.50")
+	s.addLine()
+
+	s.phase = poPhaseReview
+	if help := s.helpText(); !strings.Contains(help, "ctrl+e") {
+		t.Errorf("review help should advertise ctrl+e edit; got %q", help)
+	}
+
+	enterReviewAt(s, 0)
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	help := s.helpText()
+	if !strings.Contains(strings.ToLower(help), "edit") || strings.Contains(help, "add to cart") {
+		t.Errorf("line help while editing should read as editing; got %q", help)
+	}
+	if out := s.renderLinePhase(); !strings.Contains(out, "Editing line 1 of 1") {
+		t.Errorf("render should show 'Editing line 1 of 1':\n%s", out)
 	}
 }
 

@@ -80,10 +80,14 @@ const (
 )
 
 // poCartLine is one staged line in the multi-line create cart: the wire payload
-// plus a human label rendered in the source/review lists.
+// plus a human label rendered in the source/review lists, and the picked line's
+// quantity_per_package so an in-place edit (ctrl+e) can restore a case-packed
+// line's unit/case cost basis. qpp is 0/1 for non-case lines (asset, freeform,
+// single-pack inventory).
 type poCartLine struct {
 	item  omsapi.PurchaseOrderCreateItem
 	label string
+	qpp   int
 }
 
 type PurchaseOrderCreateScreen struct {
@@ -147,6 +151,13 @@ type PurchaseOrderCreateScreen struct {
 	lines        []poCartLine
 	reviewCursor int
 	poNotes      textinput.Model
+
+	// editIndex is the s.lines index being edited in place from the review cart
+	// (ctrl+e re-opens the Phase-4 form pre-filled), or -1 when the line form is
+	// adding a new line. enterLinePhase resets it to -1 on every entry and the
+	// edit path re-sets it afterward, so a stale index can never turn a later add
+	// into an in-place replace.
+	editIndex int
 }
 
 type poCreatedMsg struct {
@@ -165,6 +176,7 @@ func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
 		phase:           poPhaseSupplier,
 		supplierLoading: true,
 		supplierCursor:  -1,
+		editIndex:       -1,
 	}
 
 	// Line-entry inputs (Phase 4).
@@ -417,11 +429,15 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 // Either both pointers are nil (freeform), or exactly one is set. unitCost and
 // packageCost prefill the cost field (0 = leave blank); qpp is the picked
 // inventory line's quantity_per_package (>1 ⇒ case-packed, enabling the
-// unit/case cost-basis toggle).
+// unit/case cost-basis toggle). It resets editIndex to -1 (add mode) on every
+// entry — the single choke point every add path funnels through — so a stale
+// edit target can never redirect a later add into an in-place replace; the
+// review-cart edit path re-sets editIndex to the target line after calling this.
 func (s *PurchaseOrderCreateScreen) enterLinePhase(
 	itemSupplierID *int, assetID *string, desc string, qty int, unitCost, packageCost float64, qpp int,
 ) {
 	s.phase = poPhaseLine
+	s.editIndex = -1
 	s.lineFocused = poLineFieldDesc
 	s.errMsg = ""
 	s.pickedItemSup = itemSupplierID
@@ -466,14 +482,22 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
 	case "esc":
-		// Esc on the line goes back to the source chooser so the
-		// operator can pick a different line source without losing
-		// the supplier.
-		s.phase = poPhaseSource
+		// Esc cancels the line form. During an in-place edit (opened from the
+		// review cart) it returns to review with the line unchanged; on a fresh
+		// add it goes back to the source chooser so the operator can pick a
+		// different line source without losing the supplier.
+		editing := s.editIndex >= 0
 		s.pickedItemSup = nil
 		s.pickedAssetID = nil
 		s.pickedQPP = 0
 		s.costBasisCase = false
+		s.editIndex = -1
+		if editing {
+			s.phase = poPhaseReview
+			s.poNotes.Focus()
+			return s, textinput.Blink
+		}
+		s.phase = poPhaseSource
 		return s, nil
 	case "tab", "down":
 		s.focusNextLine(+1)
@@ -597,14 +621,33 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 		}
 	}
 
-	s.lines = append(s.lines, poCartLine{item: line, label: s.lineLabel(desc)})
+	cartLine := poCartLine{item: line, label: s.lineLabel(desc), qpp: s.pickedQPP}
 	s.errMsg = ""
+
+	if s.editIndex >= 0 && s.editIndex < len(s.lines) {
+		// In-place edit opened from the review cart: overwrite the line (not
+		// append) and return to review with the same line still highlighted.
+		idx := s.editIndex
+		s.lines[idx] = cartLine
+		s.reviewCursor = idx
+		s.phase = poPhaseReview
+		s.poNotes.Focus()
+		s.pickedItemSup = nil
+		s.pickedAssetID = nil
+		s.pickedQPP = 0
+		s.costBasisCase = false
+		s.editIndex = -1
+		return tea.Batch(Status("line updated", StatusOK), textinput.Blink)
+	}
+
+	s.lines = append(s.lines, cartLine)
 	// Back to the source chooser to add another line (or press d to submit).
 	s.phase = poPhaseSource
 	s.pickedItemSup = nil
 	s.pickedAssetID = nil
 	s.pickedQPP = 0
 	s.costBasisCase = false
+	s.editIndex = -1
 	return Status(fmt.Sprintf("line added (%d in cart)", len(s.lines)), StatusOK)
 }
 
@@ -812,6 +855,29 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 			}
 		}
 		return s, nil
+	case "ctrl+e":
+		// Edit the highlighted line in place. ctrl+e (not a bare letter, which
+		// types into the focused notes field, nor enter, which submits) so the
+		// chord never collides. Re-open the Phase-4 form pre-filled from the line
+		// via enterLinePhase, then flag editIndex so addLine writes the change
+		// back to s.lines[reviewCursor] instead of appending.
+		if len(s.lines) == 0 {
+			return s, nil
+		}
+		line := s.lines[s.reviewCursor]
+		item := line.item
+		var unitCost float64
+		if item.UnitCost != nil {
+			unitCost = *item.UnitCost
+		}
+		s.poNotes.Blur()
+		// packageCost = 0 with qpp > 1 makes enterLinePhase default to case basis
+		// and prefill case cost = unit_cost × qpp, which round-trips exactly back
+		// through poDeriveUnitCost on save. The line's source (item-supplier /
+		// asset / freeform) is preserved — editing never re-targets a line.
+		s.enterLinePhase(item.ItemSupplierID, item.AssetID, item.Description, item.Quantity, unitCost, 0, line.qpp)
+		s.editIndex = s.reviewCursor
+		return s, textinput.Blink
 	}
 	var cmd tea.Cmd
 	s.poNotes, cmd = s.poNotes.Update(m)
@@ -879,12 +945,19 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 	case poPhaseAssetPick:
 		return "Assets purchased from this supplier (j/k move, / search, ] next page, [ prev page, enter pick, b back, esc cancel)."
 	case poPhaseLine:
+		if s.editIndex >= 0 {
+			// Editing an existing cart line (opened with ctrl+e from review).
+			if s.pickedItemSup != nil && s.pickedQPP > 1 {
+				return "Editing line (tab/shift-tab cycle fields · ctrl+t unit/case cost basis · enter save changes · esc cancel edit)."
+			}
+			return "Editing line (tab/shift-tab cycle fields, enter to save changes, esc to cancel edit)."
+		}
 		if s.pickedItemSup != nil && s.pickedQPP > 1 {
 			return "Line entry (tab/shift-tab cycle fields · ctrl+t unit/case cost basis · enter add · esc different source)."
 		}
 		return "Line entry (tab/shift-tab cycle fields, enter to add to cart, esc to pick a different source)."
 	case poPhaseReview:
-		return "Review cart — type PO notes · ↑↓ highlight a line · ctrl+x remove it · enter submit · esc back."
+		return "Review cart — type PO notes · ↑↓ highlight a line · ctrl+e edit it · ctrl+x remove it · enter submit · esc back."
 	}
 	return ""
 }
@@ -1005,6 +1078,11 @@ func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
 	}
 	if s.pickedAssetID != nil {
 		source = fmt.Sprintf("asset %s", *s.pickedAssetID)
+	}
+	if s.editIndex >= 0 {
+		// Editing an existing cart line — make it unmistakable this modifies the
+		// highlighted line rather than adding a new one.
+		b.WriteString(StyleTitle.Render(fmt.Sprintf("Editing line %d of %d", s.editIndex+1, len(s.lines))) + "\n")
 	}
 	b.WriteString(StyleMuted.Render("Line source: "+source) + "\n\n")
 	for _, i := range s.lineFields() {
