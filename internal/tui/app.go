@@ -13,11 +13,12 @@ import (
 )
 
 type Deps struct {
-	OMS          *omsapi.Client
-	ForgeKey     *forgekeyapi.Client
-	Cache        *cache.Cache
-	Ctx          context.Context
-	InitialStaff bool
+	OMS                 *omsapi.Client
+	ForgeKey            *forgekeyapi.Client
+	Cache               *cache.Cache
+	Ctx                 context.Context
+	InitialStaff        bool
+	SaveThemePreference func(name string) error
 }
 
 type Root struct {

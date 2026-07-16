@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/uid0/scantty/internal/omsapi"
+	"github.com/uid0/scantty/internal/theme"
 )
 
 type SettingsScreen struct {
@@ -36,6 +37,8 @@ type settingsProfileLoadedMsg struct {
 }
 
 func NewSettingsScreen(deps Deps) *SettingsScreen { return &SettingsScreen{deps: deps} }
+
+func (s *SettingsScreen) HandlesKey(key string) bool { return key == "c" }
 
 func (s *SettingsScreen) Init() tea.Cmd {
 	deps := s.deps
@@ -85,6 +88,14 @@ func (s *SettingsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// backs onto a public endpoint, so it's open to any operator (no
 			// superuser gate, unlike site-settings edit).
 			return s, SwitchTo(WSSettings, NewTaxReceiptLookupScreen(s.deps))
+		case "c":
+			next := ApplyTheme(theme.Next(CurrentTheme()))
+			if s.deps.SaveThemePreference != nil {
+				if err := s.deps.SaveThemePreference(next); err != nil {
+					return s, Status("theme changed; preference save failed: "+err.Error(), StatusWarn)
+				}
+			}
+			return s, Status("theme: "+theme.Label(next), StatusOK)
 		}
 	}
 	return s, nil
@@ -121,6 +132,10 @@ func (s *SettingsScreen) View() string {
 
 	b.WriteString("  " + StyleMuted.Render("t tax receipt lookup") + "\n\n")
 
+	b.WriteString(StyleMuted.Render("Appearance") + "\n\n")
+	b.WriteString(fmt.Sprintf("  Theme: %s\n", theme.Label(CurrentTheme())))
+	b.WriteString("  " + StyleMuted.Render("c change theme") + "\n\n")
+
 	b.WriteString(StyleMuted.Render("Runtime configuration (env vars)") + "\n\n")
 	if s.deps.OMS != nil {
 		token := s.deps.OMS.AccessToken()
@@ -142,6 +157,7 @@ func (s *SettingsScreen) View() string {
 		"SCANTTY_FORGEKEY_CA_CERT",
 		"SCANTTY_CACHE_PATH",
 		"SCANTTY_SCANNER_SOURCE",
+		"SCANTTY_THEME",
 		"SENTRY_DSN",
 		"SENTRY_DISABLED",
 		"SENTRY_ENVIRONMENT",

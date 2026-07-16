@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/uid0/scantty/internal/theme"
 )
 
 type Config struct {
@@ -14,11 +16,12 @@ type Config struct {
 	ForgeKey ServiceConfig
 	Cache    CacheConfig
 	Scanner  ScannerConfig
+	Theme    string
 }
 
 type ServiceConfig struct {
-	BaseURL   string
-	AuthToken string
+	BaseURL    string
+	AuthToken  string
 	ClientCert string
 	ClientKey  string
 	CACert     string
@@ -36,19 +39,24 @@ type ScannerConfig struct {
 }
 
 const (
-	envOMSURL          = "SCANTTY_OMS_URL"
-	envOMSToken        = "SCANTTY_OMS_TOKEN"
-	envForgeKeyURL     = "SCANTTY_FORGEKEY_URL"
-	envForgeKeyToken   = "SCANTTY_FORGEKEY_TOKEN"
-	envForgeKeyCert    = "SCANTTY_FORGEKEY_CLIENT_CERT"
-	envForgeKeyKey     = "SCANTTY_FORGEKEY_CLIENT_KEY"
-	envForgeKeyCA      = "SCANTTY_FORGEKEY_CA_CERT"
-	envCachePath       = "SCANTTY_CACHE_PATH"
-	envScannerSource   = "SCANTTY_SCANNER_SOURCE"
+	envOMSURL        = "SCANTTY_OMS_URL"
+	envOMSToken      = "SCANTTY_OMS_TOKEN"
+	envForgeKeyURL   = "SCANTTY_FORGEKEY_URL"
+	envForgeKeyToken = "SCANTTY_FORGEKEY_TOKEN"
+	envForgeKeyCert  = "SCANTTY_FORGEKEY_CLIENT_CERT"
+	envForgeKeyKey   = "SCANTTY_FORGEKEY_CLIENT_KEY"
+	envForgeKeyCA    = "SCANTTY_FORGEKEY_CA_CERT"
+	envCachePath     = "SCANTTY_CACHE_PATH"
+	envScannerSource = "SCANTTY_SCANNER_SOURCE"
+	envTheme         = "SCANTTY_THEME"
 )
 
 func Load() (Config, error) {
 	cache, err := defaultCachePath()
+	if err != nil {
+		return Config{}, err
+	}
+	prefs, err := LoadPrefs()
 	if err != nil {
 		return Config{}, err
 	}
@@ -74,6 +82,7 @@ func Load() (Config, error) {
 			Source:       getEnvOr(envScannerSource, "stdin"),
 			IdleFlushGap: 50 * time.Millisecond,
 		},
+		Theme: theme.Resolve(os.Getenv(envTheme), prefs.Theme),
 	}
 	if err := cfg.validate(); err != nil {
 		return cfg, err

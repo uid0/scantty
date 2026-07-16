@@ -37,6 +37,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	tui.ApplyTheme(cfg.Theme)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -99,6 +100,9 @@ func run() error {
 		Cache:        c,
 		Ctx:          ctx,
 		InitialStaff: initialStaff,
+		SaveThemePreference: func(name string) error {
+			return config.SavePrefs(config.Prefs{Theme: name})
+		},
 	}
 
 	p := tea.NewProgram(tui.NewRoot(deps), tea.WithAltScreen(), tea.WithContext(ctx))
