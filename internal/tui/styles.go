@@ -1,9 +1,14 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/uid0/scantty/internal/theme"
+)
 
 var (
-	colorAccent   = lipgloss.Color("213")
+	currentTheme  = theme.DefaultName
+	colorAccent   = lipgloss.Color(theme.Default().Accent)
 	colorMuted    = lipgloss.Color("245")
 	colorBorder   = lipgloss.Color("240")
 	colorOK       = lipgloss.Color("42")
@@ -53,4 +58,20 @@ func RenderStatus(text string, level StatusLevel) string {
 	default:
 		return StyleStatusInfo.Render(text)
 	}
+}
+
+func ApplyTheme(name string) string {
+	def, ok := theme.Lookup(name)
+	if !ok {
+		def = theme.Default()
+	}
+	currentTheme = def.Name
+	colorAccent = lipgloss.Color(def.Accent)
+	StyleTitle = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	StyleSidebarItemActive = StyleSidebarItem.Foreground(colorAccent).Bold(true).Background(colorSelected)
+	return currentTheme
+}
+
+func CurrentTheme() string {
+	return currentTheme
 }
