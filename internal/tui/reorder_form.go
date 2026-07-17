@@ -104,7 +104,10 @@ func (s *ReorderFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.resultLvl = StatusError
 			return s, Status(s.resultMsg, StatusError)
 		}
-		s.resultMsg = fmt.Sprintf("reorder #%d created", m.result.ID)
+		// ID is `any` (JSON number → float64); %d would print
+		// "%!d(float64=80)". %v renders it cleanly and stays correct if the
+		// API ever returns the id as a string.
+		s.resultMsg = fmt.Sprintf("reorder #%v created", m.result.ID)
 		s.resultLvl = StatusOK
 		return s, Status(s.resultMsg, StatusOK)
 	case tea.KeyMsg:
