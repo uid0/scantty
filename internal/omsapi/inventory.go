@@ -282,6 +282,55 @@ func (c *Client) CycleCountItem(ctx context.Context, id string, countedQty int, 
 	return &out, nil
 }
 
+// LogUsageBody is the POST payload for the consume / log-usage action
+// (accounting Phase 2, backend #920). Quantity is the number of units consumed;
+// the backend decrements current_stock by it. Notes is optional free text.
+// ChargedGroup is an optional committee (SIG) id — when set, the backend posts a
+// ledger charge for the consumed value to that committee; nil (the "— none —"
+// pick-list row) records the usage but charges no one, so it carries omitempty
+// to be omitted rather than sent as null.
+type LogUsageBody struct {
+	Quantity     int    `json:"quantity"`
+	Notes        string `json:"notes,omitempty"`
+	ChargedGroup *int   `json:"charged_group,omitempty"`
+}
+
+// LogUsageResult is the log_usage action's response: the recorded UsageLog plus
+// the costing/charge outcome. ChargedGroup echoes the SIG the charge posted to
+// (nil when none was requested). UnitCost / TotalCost are the item's unit cost
+// and unit_cost × quantity as decimal strings (DecimalString tolerates the
+// string- or number-shaped serializer output, null → empty). LedgerTransaction
+// is the id of the posted committee-charge transaction, or nil when nothing was
+// posted. Warning is set — and LedgerTransaction stays nil — when the item has
+// no unit cost: the usage is still recorded, but no charge could be computed.
+type LogUsageResult struct {
+	ID                *int          `json:"id,omitempty"`
+	Item              string        `json:"item,omitempty"`
+	Quantity          int           `json:"quantity,omitempty"`
+	Notes             string        `json:"notes,omitempty"`
+	ChargedGroup      *int          `json:"charged_group"`
+	UnitCost          DecimalString `json:"unit_cost"`
+	TotalCost         DecimalString `json:"total_cost"`
+	LedgerTransaction *int          `json:"ledger_transaction"`
+	Warning           string        `json:"warning,omitempty"`
+}
+
+// LogUsage records consumption of an inventory item (accounting Phase 2):
+// POST /api/inventory/items/{id}/log_usage/. The trailing slash is load-bearing
+// — a POST to the unslashed path 301-redirects and net/http's default would
+// downgrade the replay to GET (the method-preserving redirect client set in New
+// covers that, and the canonical slashed URL avoids the extra hop — same reason
+// as CycleCountItem). body.ChargedGroup optionally charges the consumed value to
+// a committee. The response carries the UsageLog plus the costing/charge
+// outcome; refresh the item afterwards for the new stock level.
+func (c *Client) LogUsage(ctx context.Context, id string, body LogUsageBody) (*LogUsageResult, error) {
+	var out LogUsageResult
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/log_usage/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ItemWrite is the create/edit payload for an inventory item. It mirrors the
 // writable fields of the web item form (frontend InventoryItemFormPage.tsx +
 // inventoryItemSchema). A few wire-contract details are load-bearing and match
