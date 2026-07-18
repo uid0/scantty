@@ -23,6 +23,17 @@ const (
 	ccStepNotes
 )
 
+// consumeStep tracks where the operator is in the in-screen use/consume prompt
+// (accounting Phase 2). consumeStepNone is the zero value: no modal open.
+type consumeStep int
+
+const (
+	consumeStepNone consumeStep = iota
+	consumeStepQty
+	consumeStepSIG
+	consumeStepNotes
+)
+
 type InventoryDetailScreen struct {
 	deps             Deps
 	itemID           string
@@ -44,6 +55,20 @@ type InventoryDetailScreen struct {
 	ccReasonIx int
 	ccErr      string
 	ccPending  bool
+
+	// Use / consume modal (accounting Phase 2). Active while cnStep !=
+	// consumeStepNone, during which WantsRawInput routes every key here. The
+	// committee (SIG) pick-list loads async when the modal opens: index 0 is the
+	// "— none (no charge) —" row, indices 1..len(cnSIGs) map to cnSIGs[ix-1].
+	cnStep        consumeStep
+	cnQty         textinput.Model
+	cnNotes       textinput.Model
+	cnSIGs        []omsapi.SIG
+	cnSIGIx       int
+	cnLoadingSIGs bool
+	cnSIGErr      string
+	cnErr         string
+	cnPending     bool
 }
 
 type inventoryDetailLoadedMsg struct {
@@ -64,6 +89,25 @@ type inventoryMetricsLoadedMsg struct {
 type cycleCountDoneMsg struct {
 	item *omsapi.Item
 	err  error
+}
+
+// consumeSIGsLoadedMsg carries the committee pick-list for the consume modal,
+// fetched async when the modal opens (accounting Phase 2). A non-nil err is
+// non-fatal — the operator can still record usage with no charge ("— none —").
+type consumeSIGsLoadedMsg struct {
+	sigs []omsapi.SIG
+	err  error
+}
+
+// consumeDoneMsg is the result of a log-usage submission (accounting Phase 2).
+// qty / itemName / chargedName are captured at submit time so the status line
+// reads correctly regardless of what the (possibly partial) response echoes.
+type consumeDoneMsg struct {
+	res         *omsapi.LogUsageResult
+	qty         int
+	itemName    string
+	chargedName string
+	err         error
 }
 
 type inventoryDeletedMsg struct {
@@ -100,15 +144,18 @@ func (s *InventoryDetailScreen) Title() string {
 // view the screen stays non-raw so workspace switching and the global shortcuts
 // keep working.
 func (s *InventoryDetailScreen) WantsRawInput() bool {
-	return s.confirmingDelete || s.ccStep != ccStepNone
+	return s.confirmingDelete || s.ccStep != ccStepNone || s.cnStep != consumeStepNone
 }
 
 // HandlesKey claims lowercase 's' (manage suppliers) so it beats the global
-// Settings nav hotkey, and uppercase 'T' (retire/un-retire) so it beats the
-// global Thermostat-list hotkey — the sc-k7p LocalKeyScreen pattern. Only
-// consulted in the normal view (the delete confirm flips WantsRawInput true,
-// routing every key here first).
-func (s *InventoryDetailScreen) HandlesKey(key string) bool { return key == "s" || key == "T" }
+// Settings nav hotkey, uppercase 'T' (retire/un-retire) so it beats the global
+// Thermostat-list hotkey, and lowercase 'u' (use/consume) so it beats the global
+// ForgeKey-Usage hotkey — the sc-k7p LocalKeyScreen pattern. Only consulted in
+// the normal view (any open modal flips WantsRawInput true, routing every key
+// here first).
+func (s *InventoryDetailScreen) HandlesKey(key string) bool {
+	return key == "s" || key == "T" || key == "u"
+}
 
 func (s *InventoryDetailScreen) ctx() context.Context {
 	if s.deps.Ctx != nil {
@@ -183,6 +230,35 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		// metrics instead; both changed with the new stock level.
 		s.scroller.Set(s.renderBody())
 		return s, tea.Batch(Status("count recorded", StatusOK), s.loadItemCmd(), s.loadMetricsCmd())
+	case consumeSIGsLoadedMsg:
+		// Late arrival after an esc-cancel is harmless: the modal is closed, so
+		// nothing reads cnSIGs until it reopens (which reloads). Only apply while
+		// a consume modal is up.
+		if s.cnStep != consumeStepNone {
+			s.cnLoadingSIGs = false
+			if m.err != nil {
+				s.cnSIGErr = m.err.Error()
+			} else {
+				s.cnSIGErr = ""
+				s.cnSIGs = m.sigs
+			}
+		}
+		return s, nil
+	case consumeDoneMsg:
+		s.cnPending = false
+		if m.err != nil {
+			// Keep the modal open on the notes step so the operator can retry or
+			// esc out; surface the reason inline and in the status bar.
+			s.cnStep = consumeStepNotes
+			s.cnErr = "log usage failed: " + m.err.Error()
+			return s, Status(s.cnErr, StatusError)
+		}
+		s.closeConsume()
+		// The log_usage response is the UsageLog, not the item — re-fetch the full
+		// item AND metrics for the drawn-down stock level.
+		s.scroller.Set(s.renderBody())
+		text, level := consumeStatusLine(m)
+		return s, tea.Batch(Status(text, level), s.loadItemCmd(), s.loadMetricsCmd())
 	case inventoryDeletedMsg:
 		s.deleting = false
 		s.confirmingDelete = false
@@ -217,6 +293,9 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if s.ccStep != ccStepNone {
 			return s.updateCycleCount(m)
 		}
+		if s.cnStep != consumeStepNone {
+			return s.updateConsume(m)
+		}
 		if s.scroller.Handle(m) {
 			return s, nil
 		}
@@ -234,6 +313,14 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// free in the global hotkey map, so it falls through to the screen.
 			if s.item != nil {
 				return s.openCycleCount()
+			}
+		case "u":
+			// Use / consume (accounting Phase 2): record consumption of N units,
+			// optionally charging the value to a committee (SIG). Lowercase u is
+			// the global ForgeKey-Usage hotkey, so it's claimed via HandlesKey to
+			// reach the screen here instead.
+			if s.item != nil {
+				return s.openConsume()
 			}
 		case "i":
 			// Serialized items expose per-unit instance tracking; jump to
@@ -353,15 +440,18 @@ func (s *InventoryDetailScreen) View() string {
 	if s.ccStep != ccStepNone {
 		return header + "\n\n" + body + "\n\n" + s.cycleCountPrompt()
 	}
+	if s.cnStep != consumeStepNone {
+		return header + "\n\n" + body + "\n\n" + s.consumePrompt()
+	}
 	// The retire hint flips to "un-retire" once the item is retired, so the key
 	// reads correctly whichever direction T will toggle.
 	retireHint := "T retire"
 	if s.item.IsRetired {
 		retireHint = "T un-retire"
 	}
-	hint := "j/k scroll · o/enter reorder · c count · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
+	hint := "j/k scroll · o/enter reorder · c count · u use · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	if s.item.IsSerialized {
-		hint = "j/k scroll · o/enter reorder · c count · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
+		hint = "j/k scroll · o/enter reorder · c count · u use · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	}
 	return header + "\n\n" + body + "\n\n" + StyleMuted.Render(hint)
 }
@@ -897,4 +987,290 @@ func (s *InventoryDetailScreen) cycleCountPrompt() string {
 		b.WriteString("\n" + StyleMuted.Render("enter submit · esc cancel"))
 	}
 	return b.String()
+}
+
+// --- Use / consume (accounting Phase 2) --------------------------------------
+
+// openConsume enters the use/consume prompt at the quantity step and kicks off
+// the committee (SIG) pick-list load in the background, so the list is ready by
+// the time the operator reaches the committee step (the qty step covers the
+// round-trip). Modeled on openCycleCount.
+func (s *InventoryDetailScreen) openConsume() (Screen, tea.Cmd) {
+	qty := textinput.New()
+	qty.Prompt = ""
+	qty.Placeholder = "quantity used"
+	qty.CharLimit = 9
+	qty.Focus()
+	s.cnQty = qty
+
+	notes := textinput.New()
+	notes.Prompt = ""
+	notes.Placeholder = "optional"
+	notes.CharLimit = 200
+	s.cnNotes = notes
+
+	s.cnSIGs = nil
+	s.cnSIGIx = 0
+	s.cnLoadingSIGs = true
+	s.cnSIGErr = ""
+	s.cnErr = ""
+	s.cnPending = false
+	s.cnStep = consumeStepQty
+	return s, tea.Batch(textinput.Blink, s.loadSIGsCmd())
+}
+
+// loadSIGsCmd fetches the committee pick-list for the charge step.
+func (s *InventoryDetailScreen) loadSIGsCmd() tea.Cmd {
+	deps, ctx := s.deps, s.ctx()
+	return func() tea.Msg {
+		page, err := deps.OMS.ListSIGs(ctx, nil)
+		if err != nil {
+			return consumeSIGsLoadedMsg{err: err}
+		}
+		return consumeSIGsLoadedMsg{sigs: page.Results}
+	}
+}
+
+// closeConsume tears the modal down and returns to the normal detail view.
+func (s *InventoryDetailScreen) closeConsume() {
+	s.cnStep = consumeStepNone
+	s.cnErr = ""
+	s.cnSIGErr = ""
+	s.cnLoadingSIGs = false
+	s.cnPending = false
+	s.cnSIGs = nil
+	s.cnSIGIx = 0
+	s.cnQty.Blur()
+	s.cnNotes.Blur()
+}
+
+// updateConsume drives the three-step prompt: quantity → committee → notes. esc
+// cancels at any step (screen-local); the screen is in raw-input mode throughout
+// (WantsRawInput), so these keys reach us before the global hotkeys.
+func (s *InventoryDetailScreen) updateConsume(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.cnPending {
+		return s, nil // submission in flight
+	}
+	if m.String() == "esc" {
+		s.closeConsume()
+		return s, nil
+	}
+	switch s.cnStep {
+	case consumeStepQty:
+		if m.Type == tea.KeyEnter {
+			if n, err := strconv.Atoi(strings.TrimSpace(s.cnQty.Value())); err != nil || n <= 0 {
+				s.cnErr = "quantity used must be a positive whole number"
+				return s, nil
+			}
+			s.cnErr = ""
+			s.cnStep = consumeStepSIG
+			return s, nil
+		}
+		// Gate to digits so the field only ever holds a valid integer; editing
+		// keys (backspace/arrows) are not KeyRunes, so they pass through.
+		if m.Type == tea.KeyRunes {
+			for _, r := range m.Runes {
+				if r < '0' || r > '9' {
+					return s, nil
+				}
+			}
+		}
+		var cmd tea.Cmd
+		s.cnQty, cmd = s.cnQty.Update(m)
+		return s, cmd
+	case consumeStepSIG:
+		switch m.String() {
+		case "up", "k":
+			if s.cnSIGIx > 0 {
+				s.cnSIGIx--
+			}
+		case "down", "j":
+			// Index 0 is the "— none —" row; 1..len(cnSIGs) are the committees.
+			if s.cnSIGIx < len(s.cnSIGs) {
+				s.cnSIGIx++
+			}
+		case "enter":
+			s.cnStep = consumeStepNotes
+			s.cnNotes.Focus()
+			return s, textinput.Blink
+		}
+		return s, nil
+	case consumeStepNotes:
+		if m.Type == tea.KeyEnter {
+			return s.submitConsume()
+		}
+		var cmd tea.Cmd
+		s.cnNotes, cmd = s.cnNotes.Update(m)
+		return s, cmd
+	}
+	return s, nil
+}
+
+// selectedConsumeSIG returns the picked committee and true, or nil/false for the
+// "— none (no charge) —" row (index 0, or a stale index past the loaded list).
+func (s *InventoryDetailScreen) selectedConsumeSIG() (*omsapi.SIG, bool) {
+	if s.cnSIGIx <= 0 || s.cnSIGIx > len(s.cnSIGs) {
+		return nil, false
+	}
+	return &s.cnSIGs[s.cnSIGIx-1], true
+}
+
+// projectedCharge is the item's unit cost × qty as "$X.XX", or "" when the item
+// has no unit cost (then the backend records the usage but posts no charge). The
+// unit cost is the same value the "Costing" section renders.
+func (s *InventoryDetailScreen) projectedCharge(qty int) string {
+	if s.item == nil || s.item.UnitCost.Empty() || qty <= 0 {
+		return ""
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(string(s.item.UnitCost)), 64)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("$%.2f", f*float64(qty))
+}
+
+// submitConsume validates and fires the log-usage request.
+func (s *InventoryDetailScreen) submitConsume() (Screen, tea.Cmd) {
+	if s.item == nil {
+		s.closeConsume()
+		return s, nil
+	}
+	qty, err := strconv.Atoi(strings.TrimSpace(s.cnQty.Value()))
+	if err != nil || qty <= 0 {
+		s.cnStep = consumeStepQty
+		s.cnErr = "quantity used must be a positive whole number"
+		return s, nil
+	}
+	body := omsapi.LogUsageBody{Quantity: qty, Notes: strings.TrimSpace(s.cnNotes.Value())}
+	chargedName := ""
+	if sig, ok := s.selectedConsumeSIG(); ok {
+		id := sig.ID
+		body.ChargedGroup = &id
+		chargedName = sig.Name
+	}
+	itemName := s.item.Name
+	s.cnPending = true
+	s.cnErr = ""
+	deps, ctx, id := s.deps, s.ctx(), s.item.ID
+	return s, func() tea.Msg {
+		res, err := deps.OMS.LogUsage(ctx, id, body)
+		return consumeDoneMsg{res: res, qty: qty, itemName: itemName, chargedName: chargedName, err: err}
+	}
+}
+
+// consumeStatusLine builds the status-bar line + severity for a completed
+// log-usage. A backend warning (no unit cost → nothing posted) still recorded
+// the usage, so it reads as a warning rather than an error.
+func consumeStatusLine(m consumeDoneMsg) (string, StatusLevel) {
+	base := fmt.Sprintf("used %d × %s", m.qty, m.itemName)
+	if m.res != nil && m.res.Warning != "" {
+		return base + " — " + m.res.Warning, StatusWarn
+	}
+	if m.chargedName == "" {
+		return base + " — no charge", StatusOK
+	}
+	if amt := formatMoney(consumeTotalCost(m.res)); amt != "" {
+		return fmt.Sprintf("%s — charged %s to %s", base, amt, m.chargedName), StatusOK
+	}
+	return fmt.Sprintf("%s — charged to %s", base, m.chargedName), StatusOK
+}
+
+// consumeTotalCost pulls the posted total off the response, tolerating a nil
+// response (a partial/absent body still leaves the captured status readable).
+func consumeTotalCost(res *omsapi.LogUsageResult) omsapi.DecimalString {
+	if res == nil {
+		return ""
+	}
+	return res.TotalCost
+}
+
+// formatMoney renders a decimal money string as "$X.XX", or "" when empty or
+// unparseable (unlike metricCostString, which yields the "-" table sentinel).
+func formatMoney(d omsapi.DecimalString) string {
+	if d.Empty() {
+		return ""
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(string(d)), 64)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("$%.2f", f)
+}
+
+// consumePrompt renders the use/consume modal for the active step (the
+// cycleCountPrompt sibling for the accounting log-usage flow).
+func (s *InventoryDetailScreen) consumePrompt() string {
+	var b strings.Builder
+	name := ""
+	if s.item != nil {
+		name = s.item.Name
+	}
+	b.WriteString(StyleStatusWarn.Render("Use / consume") + "  " + StyleMuted.Render(name) + "\n\n")
+
+	if s.cnPending {
+		b.WriteString(StyleMuted.Render("Recording usage…"))
+		return b.String()
+	}
+
+	qty := strings.TrimSpace(s.cnQty.Value())
+	qtyN, _ := strconv.Atoi(qty)
+	switch s.cnStep {
+	case consumeStepQty:
+		b.WriteString("Quantity used:\n  " + s.cnQty.View() + "\n")
+		if s.cnErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render(s.cnErr) + "\n")
+		}
+		b.WriteString("\n" + StyleMuted.Render("enter next · esc cancel"))
+	case consumeStepSIG:
+		b.WriteString(StyleMuted.Render("Quantity used: "+qty) + "\n")
+		if amt := s.projectedCharge(qtyN); amt != "" {
+			b.WriteString(StyleMuted.Render("Value if charged: "+amt) + "\n")
+		} else {
+			b.WriteString(StyleMuted.Render("No unit cost — nothing will be charged") + "\n")
+		}
+		b.WriteString("\nCharge to committee:\n")
+		none := "— none (no charge) —"
+		if s.cnSIGIx == 0 {
+			b.WriteString("  " + StyleStatusOK.Render("▸ "+none) + "\n")
+		} else {
+			b.WriteString("    " + StyleMuted.Render(none) + "\n")
+		}
+		for i, sig := range s.cnSIGs {
+			if s.cnSIGIx == i+1 {
+				b.WriteString("  " + StyleStatusOK.Render("▸ "+sig.Name) + "\n")
+			} else {
+				b.WriteString("    " + StyleMuted.Render(sig.Name) + "\n")
+			}
+		}
+		if s.cnLoadingSIGs {
+			b.WriteString("    " + StyleMuted.Render("loading committees…") + "\n")
+		}
+		if s.cnSIGErr != "" {
+			b.WriteString("\n" + StyleStatusWarn.Render("committees unavailable: "+s.cnSIGErr) + "\n")
+		}
+		b.WriteString("\n" + StyleMuted.Render("j/k move · enter next · esc cancel"))
+	case consumeStepNotes:
+		b.WriteString(StyleMuted.Render("Quantity used: "+qty) + "\n")
+		b.WriteString(StyleMuted.Render("Charge: "+s.consumeChargeSummary(qtyN)) + "\n\n")
+		b.WriteString("Note (optional):\n  " + s.cnNotes.View() + "\n")
+		if s.cnErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render(s.cnErr) + "\n")
+		}
+		b.WriteString("\n" + StyleMuted.Render("enter submit · esc cancel"))
+	}
+	return b.String()
+}
+
+// consumeChargeSummary describes the pending charge for the notes-step review:
+// the committee it will post to and the projected amount, or "none (no charge)".
+func (s *InventoryDetailScreen) consumeChargeSummary(qty int) string {
+	sig, ok := s.selectedConsumeSIG()
+	if !ok {
+		return "none (no charge)"
+	}
+	amt := s.projectedCharge(qty)
+	if amt == "" {
+		return sig.Name + " (no unit cost — nothing will post)"
+	}
+	return amt + " to " + sig.Name
 }
