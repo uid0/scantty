@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/uid0/scantty/internal/omsapi"
 )
 
 // TestInventoryItemForm_RenderSmoke exercises the render paths (form + picker)
@@ -163,5 +165,62 @@ func TestInventoryItemForm_ConditionalFields(t *testing.T) {
 		if !fieldsContain(s.fields, id) {
 			t.Errorf("hazmat field %d should appear after enabling hazardous", id)
 		}
+	}
+}
+
+// TestInventoryItemForm_ReorderAlertsToggle covers the ML reorder-alert opt-in
+// (op-1) end to end: it's always visible (not conditional), starts OFF on a new
+// item, space flips it, and it rides the payload in BOTH directions — an
+// unconditional bool so switching the watch off actually reaches the backend.
+func TestInventoryItemForm_ReorderAlertsToggle(t *testing.T) {
+	s := NewInventoryItemFormScreen(Deps{}, "")
+	s.loading = false
+	s.terminalHeight = 30
+	s.inputs[fName].SetValue("Filament")
+
+	if !fieldsContain(s.fields, fReorderAlertsEnabled) {
+		t.Fatalf("ML reorder alerts should always be visible")
+	}
+	if s.reorderAlerts {
+		t.Errorf("a new item should default to alerts OFF (model default)")
+	}
+	w, err := s.buildPayload()
+	if err != nil {
+		t.Fatalf("buildPayload: %v", err)
+	}
+	if w.ReorderAlertsEnabled {
+		t.Errorf("payload should carry reorder_alerts_enabled=false when off")
+	}
+
+	s.setCursorToField(fReorderAlertsEnabled)
+	s.flipToggle(fReorderAlertsEnabled)
+	if !s.reorderAlerts || !s.toggleState(fReorderAlertsEnabled) {
+		t.Fatalf("space should switch the watch on")
+	}
+	if w, err = s.buildPayload(); err != nil {
+		t.Fatalf("buildPayload: %v", err)
+	}
+	if !w.ReorderAlertsEnabled {
+		t.Errorf("payload should carry reorder_alerts_enabled=true once watched")
+	}
+	if out := s.View(); !strings.Contains(out, "ML reorder alerts") {
+		t.Errorf("form view missing the alerts toggle:\n%s", out)
+	}
+}
+
+// TestInventoryItemForm_HydratesReorderAlerts: edit mode reflects the fetched
+// item's opt-in state rather than the create-mode default.
+func TestInventoryItemForm_HydratesReorderAlerts(t *testing.T) {
+	s := NewInventoryItemFormScreen(Deps{}, "itm-1")
+	s.item = &omsapi.Item{ID: "itm-1", Name: "Filament", ReorderAlertsEnabled: true}
+	s.hydrate()
+
+	if !s.reorderAlerts {
+		t.Errorf("hydrate should honour reorder_alerts_enabled=true")
+	}
+	s.item.ReorderAlertsEnabled = false
+	s.hydrate()
+	if s.reorderAlerts {
+		t.Errorf("hydrate should honour reorder_alerts_enabled=false")
 	}
 }

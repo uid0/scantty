@@ -10,9 +10,10 @@
 // Field kinds and how each is edited:
 //
 //	text / number — a bubbles textinput; type to edit, validated on submit
-//	toggle        — a bool; space flips it (case-based / hazardous / serialized
-//	                / active). Flipping a toggle shows or hides its dependent
-//	                fields (minimum_cases, the NFPA block, serial_tracking_mode).
+//	toggle        — a bool; space flips it (case-based / ML reorder alerts /
+//	                hazardous / serialized / active). Flipping a toggle shows or
+//	                hides its dependent fields (minimum_cases, the NFPA block,
+//	                serial_tracking_mode).
 //	select        — a fixed option list; space or ←/→ cycles (shelf_position,
 //	                serial_tracking_mode)
 //	picker        — a foreign key chosen from a searchable list in a sub-phase;
@@ -54,6 +55,7 @@ const (
 	fUseCaseBasedReorder
 	fMinimumCases
 	fReorderCases
+	fReorderAlertsEnabled
 	fCategory
 	fLocation
 	fShelfPosition
@@ -107,30 +109,31 @@ var serialModeOptions = []selectOption{
 }
 
 var itemFieldLabel = map[int]string{
-	fName:                "Name",
-	fDescription:         "Description",
-	fSKU:                 "SKU",
-	fImageURL:            "Image URL",
-	fCurrentStock:        "Current stock",
-	fMinimumStock:        "Minimum stock",
-	fReorderQuantity:     "Reorder quantity",
-	fUseCaseBasedReorder: "Case-based reordering",
-	fMinimumCases:        "Minimum cases",
-	fReorderCases:        "Reorder cases",
-	fCategory:            "Category",
-	fLocation:            "Location",
-	fShelfPosition:       "Shelf position",
-	fIsHazardous:         "Hazardous material",
-	fMSDSURL:             "MSDS/SDS URL",
-	fNFPAHealth:          "NFPA health (0-4)",
-	fNFPAFire:            "NFPA fire (0-4)",
-	fNFPAInstability:     "NFPA instability (0-4)",
-	fNFPASpecial:         "NFPA special hazards",
-	fIsSerialized:        "Track serial numbers",
-	fSerialTrackingMode:  "Tracking mode",
-	fNotes:               "Notes",
-	fIsActive:            "Active",
-	fIsRetired:           "Retired",
+	fName:                 "Name",
+	fDescription:          "Description",
+	fSKU:                  "SKU",
+	fImageURL:             "Image URL",
+	fCurrentStock:         "Current stock",
+	fMinimumStock:         "Minimum stock",
+	fReorderQuantity:      "Reorder quantity",
+	fUseCaseBasedReorder:  "Case-based reordering",
+	fMinimumCases:         "Minimum cases",
+	fReorderCases:         "Reorder cases",
+	fReorderAlertsEnabled: "ML reorder alerts",
+	fCategory:             "Category",
+	fLocation:             "Location",
+	fShelfPosition:        "Shelf position",
+	fIsHazardous:          "Hazardous material",
+	fMSDSURL:              "MSDS/SDS URL",
+	fNFPAHealth:           "NFPA health (0-4)",
+	fNFPAFire:             "NFPA fire (0-4)",
+	fNFPAInstability:      "NFPA instability (0-4)",
+	fNFPASpecial:          "NFPA special hazards",
+	fIsSerialized:         "Track serial numbers",
+	fSerialTrackingMode:   "Tracking mode",
+	fNotes:                "Notes",
+	fIsActive:             "Active",
+	fIsRetired:            "Retired",
 }
 
 func fieldKind(id int) itemFieldKind {
@@ -140,7 +143,7 @@ func fieldKind(id int) itemFieldKind {
 	case fCurrentStock, fMinimumStock, fReorderQuantity, fMinimumCases, fReorderCases,
 		fNFPAHealth, fNFPAFire, fNFPAInstability:
 		return kindNumber
-	case fUseCaseBasedReorder, fIsHazardous, fIsSerialized, fIsActive, fIsRetired:
+	case fUseCaseBasedReorder, fReorderAlertsEnabled, fIsHazardous, fIsSerialized, fIsActive, fIsRetired:
 		return kindToggle
 	case fShelfPosition, fSerialTrackingMode:
 		return kindSelect
@@ -187,13 +190,14 @@ type InventoryItemFormScreen struct {
 	inputs []textinput.Model
 
 	// Toggle + select state.
-	useCaseBased bool
-	isHazardous  bool
-	isSerialized bool
-	isActive     bool
-	isRetired    bool
-	shelfPos     int
-	serialMode   int
+	useCaseBased  bool
+	reorderAlerts bool
+	isHazardous   bool
+	isSerialized  bool
+	isActive      bool
+	isRetired     bool
+	shelfPos      int
+	serialMode    int
 
 	// Picker selections (nil == unset).
 	categoryID *int
@@ -489,6 +493,8 @@ func (s *InventoryItemFormScreen) hydrate() {
 	if it.ReorderCases != nil {
 		set(fReorderCases, strconv.Itoa(int(*it.ReorderCases)))
 	}
+	// ML reorder-alert opt-in (op-1); defaults false on the model.
+	s.reorderAlerts = it.ReorderAlertsEnabled
 
 	s.categoryID = it.Category
 	// The serializer returns location as a name string, so resolve it back to
@@ -548,7 +554,7 @@ func (s *InventoryItemFormScreen) rebuildFields() {
 	if s.useCaseBased {
 		f = append(f, fMinimumCases, fReorderCases)
 	}
-	f = append(f, fCategory, fLocation, fShelfPosition, fIsHazardous)
+	f = append(f, fReorderAlertsEnabled, fCategory, fLocation, fShelfPosition, fIsHazardous)
 	if s.isHazardous {
 		f = append(f, fMSDSURL, fNFPAHealth, fNFPAFire, fNFPAInstability, fNFPASpecial)
 	}
@@ -662,6 +668,8 @@ func (s *InventoryItemFormScreen) flipToggle(id int) {
 	switch id {
 	case fUseCaseBasedReorder:
 		s.useCaseBased = !s.useCaseBased
+	case fReorderAlertsEnabled:
+		s.reorderAlerts = !s.reorderAlerts
 	case fIsHazardous:
 		s.isHazardous = !s.isHazardous
 	case fIsSerialized:
@@ -690,6 +698,8 @@ func (s *InventoryItemFormScreen) toggleState(id int) bool {
 	switch id {
 	case fUseCaseBasedReorder:
 		return s.useCaseBased
+	case fReorderAlertsEnabled:
+		return s.reorderAlerts
 	case fIsHazardous:
 		return s.isHazardous
 	case fIsSerialized:
@@ -886,14 +896,16 @@ func (s *InventoryItemFormScreen) buildPayload() (omsapi.ItemWrite, error) {
 		MinimumStock:        minStock,
 		ReorderQuantity:     roq,
 		UseCaseBasedReorder: s.useCaseBased,
-		Category:            s.categoryID,
-		Location:            intPtrToStr(s.locationID),
-		ShelfPosition:       selectValuePtr(shelfPositionOptions, s.shelfPos),
-		IsHazardous:         s.isHazardous,
-		IsSerialized:        s.isSerialized,
-		IsActive:            s.isActive,
-		IsRetired:           s.isRetired,
-		Notes:               strPtrTrim(s.inputs[fNotes].Value()),
+		// Sent unconditionally so switching the watch OFF reaches the backend.
+		ReorderAlertsEnabled: s.reorderAlerts,
+		Category:             s.categoryID,
+		Location:             intPtrToStr(s.locationID),
+		ShelfPosition:        selectValuePtr(shelfPositionOptions, s.shelfPos),
+		IsHazardous:          s.isHazardous,
+		IsSerialized:         s.isSerialized,
+		IsActive:             s.isActive,
+		IsRetired:            s.isRetired,
+		Notes:                strPtrTrim(s.inputs[fNotes].Value()),
 	}
 
 	if s.useCaseBased {

@@ -74,6 +74,18 @@ func NewReportsScreen(deps Deps) *ReportsScreen {
 				subtitle: "consumption forecast · days-to-stockout · reorder point",
 				build:    func(d Deps) Screen { return NewSerializedForecastScreen(d) },
 			},
+			{
+				hotkey:   'm',
+				label:    "Demand forecast",
+				subtitle: "ML predicted demand · days-to-stockout · predictive reorder point",
+				build:    func(d Deps) Screen { return NewDemandForecastScreen(d) },
+			},
+			{
+				hotkey:   'n',
+				label:    "Reorder alerts",
+				subtitle: "the notify set — opted-in items the forecast says are due to reorder",
+				build:    func(d Deps) Screen { return NewReorderAlertsScreen(d) },
+			},
 		},
 	}
 }
@@ -83,8 +95,9 @@ func (s *ReportsScreen) Title() string { return "Reports" }
 func (s *ReportsScreen) Init() tea.Cmd { return nil }
 
 // HandlesKey claims the entry hotkeys so an accelerator that collides with a
-// global nav key (a = authorizations, f = firmware) still opens the report
-// while this menu is active, rather than firing the global.
+// global nav key (a = authorizations, f = firmware, m = profile,
+// n = notifications) still opens the report while this menu is active, rather
+// than firing the global.
 func (s *ReportsScreen) HandlesKey(key string) bool {
 	if len(key) != 1 {
 		return false

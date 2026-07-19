@@ -7,14 +7,15 @@ import (
 
 func TestReportsHub_RendersEntries(t *testing.T) {
 	s := NewReportsScreen(Deps{})
-	if len(s.items) != 7 {
-		t.Fatalf("hub should list 7 reports, got %d", len(s.items))
+	if len(s.items) != 9 {
+		t.Fatalf("hub should list 9 reports, got %d", len(s.items))
 	}
 	out := s.View()
 	for _, want := range []string{
 		"Analytics Pulse", "Inventory report", "Purchasing report", "Reorders analytics",
-		"Asset report", "ForgeKey fleet", "Serialized forecast",
-		"[p]", "[i]", "[c]", "[r]", "[a]", "[d]", "[f]",
+		"Asset report", "ForgeKey fleet", "Serialized forecast", "Demand forecast",
+		"Reorder alerts",
+		"[p]", "[i]", "[c]", "[r]", "[a]", "[d]", "[f]", "[m]", "[n]",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("hub view missing %q:\n%s", want, out)
@@ -55,7 +56,7 @@ func TestReportsHub_HotkeyOpensInventoryReport(t *testing.T) {
 
 func TestReportsHub_HandlesKey(t *testing.T) {
 	s := NewReportsScreen(Deps{})
-	for _, k := range []string{"p", "i", "c", "r", "a", "d", "f"} {
+	for _, k := range []string{"p", "i", "c", "r", "a", "d", "f", "m", "n"} {
 		if !s.HandlesKey(k) {
 			t.Errorf("hub should claim entry hotkey %q", k)
 		}
@@ -89,6 +90,42 @@ func TestReportsHub_AKeyOpensAssetReportNotAuthorizations(t *testing.T) {
 	rt, ok := sm.Screen.(*ReportTableScreen)
 	if !ok || rt.Title() != "Asset report" {
 		t.Errorf("'a' should open the Asset report, got %T", sm.Screen)
+	}
+}
+
+// TestReportsHub_ForecastHotkeys: the two demand-forecast entries also sit on
+// keys the root uses globally (m = profile, n = notifications). While the hub is
+// active its HandlesKey claim must win, opening the forecast screens instead.
+func TestReportsHub_ForecastHotkeys(t *testing.T) {
+	cases := []struct {
+		key       string
+		wantTitle string
+		wantAlert bool
+	}{
+		{"m", "Demand forecast", false},
+		{"n", "Reorder alerts", true},
+	}
+	for _, tc := range cases {
+		r := newTestRoot(NewReportsScreen(Deps{}))
+		next, cmd := r.Update(mtKey(tc.key))
+		if _, ok := next.(Root).screen.(*ReportsScreen); !ok {
+			t.Fatalf("%q on the hub should not fire the global; screen = %T", tc.key, next.(Root).screen)
+		}
+		if cmd == nil {
+			t.Fatalf("%q should fire a switch cmd", tc.key)
+		}
+		sm, ok := cmd().(SwitchScreenMsg)
+		if !ok {
+			t.Fatalf("msg = %T, want SwitchScreenMsg", cmd())
+		}
+		df, ok := sm.Screen.(*DemandForecastScreen)
+		if !ok {
+			t.Fatalf("%q should open the demand-forecast screen, got %T", tc.key, sm.Screen)
+		}
+		if df.alerts != tc.wantAlert || df.Title() != tc.wantTitle {
+			t.Errorf("%q opened alerts=%v title=%q, want %v/%q",
+				tc.key, df.alerts, df.Title(), tc.wantAlert, tc.wantTitle)
+		}
 	}
 }
 

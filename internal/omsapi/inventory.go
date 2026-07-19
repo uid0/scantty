@@ -82,6 +82,12 @@ type Item struct {
 	CurrentCases         *float64      `json:"current_cases,omitempty"`
 	ReorderInstruction   string        `json:"reorder_instruction,omitempty"`
 
+	// ReorderAlertsEnabled is the per-item opt-in for ML reorder alerts (op-1):
+	// the "watch this item" toggle that puts it into the reorder_alerts notify
+	// set (see DemandForecastRow). Defaults false on the model; read+write on
+	// the item serializer.
+	ReorderAlertsEnabled bool `json:"reorder_alerts_enabled,omitempty"`
+
 	// Cycle-count / physical-count tracking (issue-7). The item serializer
 	// exposes the last reconciliation timestamp and a precomputed age in days.
 	// Both are pointers: null until the item has ever been counted, and absent
@@ -317,6 +323,11 @@ type ItemWrite struct {
 	UseCaseBasedReorder bool `json:"use_case_based_reorder"`
 	MinimumCases        *int `json:"minimum_cases,omitempty"`
 	ReorderCases        *int `json:"reorder_cases,omitempty"`
+
+	// ReorderAlertsEnabled opts the item in or out of the ML reorder-alert
+	// notify set (op-1). No omitempty — turning the watch OFF has to reach the
+	// backend, same rule as the other booleans above.
+	ReorderAlertsEnabled bool `json:"reorder_alerts_enabled"`
 
 	Category      *int    `json:"category,omitempty"`
 	Location      *string `json:"location,omitempty"`
