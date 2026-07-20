@@ -51,12 +51,19 @@ type WorkOrderDetailScreen struct {
 	materialCursor int
 	actionPending  bool
 
-	// Add-photo form.
+	// Add-photo form. photoTaskID pins the upload to one step (evidence) and is
+	// empty for a work-order-level photo; photoTaskTitle labels the form.
+	// photoReturn is the mode to fall back to on cancel or success, so filing
+	// evidence from the task picker lands the operator back on the step list
+	// rather than dumping them out to the body.
 	photoPathIn    textinput.Model
 	photoCaptionIn textinput.Model
 	photoFocus     int // 0 = path, 1 = caption
 	photoErr       string
 	photoPending   bool
+	photoTaskID    string
+	photoTaskTitle string
+	photoReturn    woMode
 
 	// Upload-PDF form.
 	pdfPathIn  textinput.Model
@@ -213,9 +220,13 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.photoErr = m.err.Error()
 			return s, Status("add photo failed: "+m.err.Error(), StatusError)
 		}
-		s.mode = woModeView
-		s.setAction("photo added", StatusOK)
-		return s, tea.Batch(Status("photo added", StatusOK), s.load())
+		note := "photo added"
+		if s.photoTaskID != "" {
+			note = "evidence photo added to step"
+		}
+		s.mode = s.photoReturn
+		s.setAction(note, StatusOK)
+		return s, tea.Batch(Status(note, StatusOK), s.load())
 	case woPdfUploadedMsg:
 		s.pdfPending = false
 		if m.err != nil {
@@ -315,7 +326,7 @@ func (s *WorkOrderDetailScreen) handleViewKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 		s.materialCursor = 0
 		return s, nil
 	case "p":
-		s.openPhotoForm()
+		s.openPhotoForm("", "")
 		return s, textinput.Blink
 	case "U":
 		s.openPdfForm()
@@ -353,6 +364,15 @@ func (s *WorkOrderDetailScreen) handleTasksKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 			return s, nil
 		}
 		return s, s.toggleTask()
+	case "p":
+		// Evidence — "here is what I did" — filed under the highlighted step
+		// rather than the work order as a whole.
+		if n == 0 {
+			return s, nil
+		}
+		t := s.wo.TaskCompletions[s.taskCursor]
+		s.openPhotoForm(fmt.Sprintf("%v", t.ID), t.TaskTitle)
+		return s, textinput.Blink
 	}
 	return s, nil
 }
@@ -420,7 +440,10 @@ func (s *WorkOrderDetailScreen) toggleMaterial() tea.Cmd {
 
 // --- Add-photo form --------------------------------------------------------
 
-func (s *WorkOrderDetailScreen) openPhotoForm() {
+// openPhotoForm opens the upload form. An empty taskCompletion files the photo
+// at the work-order level (the classic behaviour); a step's completion id files
+// it as evidence against that one step.
+func (s *WorkOrderDetailScreen) openPhotoForm(taskCompletion, taskTitle string) {
 	path := textinput.New()
 	path.Prompt = ""
 	path.Placeholder = "/path/to/photo.jpg (~ expands to home)"
@@ -434,13 +457,16 @@ func (s *WorkOrderDetailScreen) openPhotoForm() {
 	s.photoCaptionIn = caption
 	s.photoFocus = 0
 	s.photoErr = ""
+	s.photoTaskID = taskCompletion
+	s.photoTaskTitle = taskTitle
+	s.photoReturn = s.mode
 	s.mode = woModePhoto
 }
 
 func (s *WorkOrderDetailScreen) handlePhotoKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.Type {
 	case tea.KeyEsc:
-		s.mode = woModeView
+		s.mode = s.photoReturn
 		return s, nil
 	case tea.KeyTab, tea.KeyShiftTab:
 		s.photoFocus ^= 1
@@ -475,6 +501,7 @@ func (s *WorkOrderDetailScreen) submitPhoto() (Screen, tea.Cmd) {
 	}
 	caption := strings.TrimSpace(s.photoCaptionIn.Value())
 	woID := s.woID
+	taskID := s.photoTaskID
 	s.photoPending = true
 	s.photoErr = ""
 	deps := s.deps
@@ -487,7 +514,7 @@ func (s *WorkOrderDetailScreen) submitPhoto() (Screen, tea.Cmd) {
 		if err != nil {
 			return woPhotoAddedMsg{err: fmt.Errorf("read %s: %w", path, err)}
 		}
-		_, err = deps.OMS.AddWorkOrderPhoto(ctx, woID, filepath.Base(path), data, caption)
+		_, err = deps.OMS.AddWorkOrderPhoto(ctx, woID, filepath.Base(path), data, caption, taskID)
 		return woPhotoAddedMsg{err: err}
 	}
 }
@@ -873,14 +900,57 @@ func (s *WorkOrderDetailScreen) renderTaskPicker() string {
 			line = StyleTitle.Render(line)
 		}
 		b.WriteString(line + "\n")
+		// Both photo halves, indented under their step: the template's
+		// reference shot and whatever evidence has been filed against it.
+		if t.TaskReferenceImageURL != "" {
+			b.WriteString("      " + StyleMuted.Render("ref: ") + t.TaskReferenceImageURL + "\n")
+		}
+		for _, p := range t.EvidencePhotos {
+			b.WriteString("      " + StyleMuted.Render("evidence: "+evidencePhotoLabel(p)) + "\n")
+		}
 	}
 	b.WriteString("\n")
 	if s.actionPending {
 		b.WriteString(StyleMuted.Render("Updating…"))
 	} else {
-		b.WriteString(StyleMuted.Render("j/k move · space/enter toggle · esc back"))
+		b.WriteString(StyleMuted.Render("j/k move · space/enter toggle · p evidence photo · esc back"))
 	}
 	return b.String()
+}
+
+// isPinnedToStep reports whether a work-order photo is a step's evidence.
+// task_completion is null on every work-order-level photo (and on the trimmed
+// projection nested under a step, where the parent already says which step it
+// is), so a non-empty value is the only signal.
+func isPinnedToStep(p omsapi.WorkOrderPhoto) bool {
+	if p.TaskCompletion == nil {
+		return false
+	}
+	s, ok := p.TaskCompletion.(string)
+	return !ok || s != ""
+}
+
+// evidencePhotoLabel names one evidence photo in a single line: its caption if
+// it has one, else the image URL, plus who/when when the server sent it.
+func evidencePhotoLabel(p omsapi.WorkOrderPhoto) string {
+	label := p.Caption
+	if label == "" {
+		label = p.ImageURL
+	}
+	if label == "" {
+		label = "(photo)"
+	}
+	meta := []string{}
+	if !p.UploadedAt.IsZero() {
+		meta = append(meta, p.UploadedAt.Format("2006-01-02"))
+	}
+	if p.UploadedBy != "" {
+		meta = append(meta, "by "+p.UploadedBy)
+	}
+	if len(meta) > 0 {
+		label += " (" + strings.Join(meta, " · ") + ")"
+	}
+	return label
 }
 
 func (s *WorkOrderDetailScreen) renderMaterialPicker() string {
@@ -925,7 +995,16 @@ func (s *WorkOrderDetailScreen) renderMaterialPicker() string {
 
 func (s *WorkOrderDetailScreen) renderPhotoForm() string {
 	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Add photo") + "\n\n")
+	if s.photoTaskID != "" {
+		b.WriteString(StyleTitle.Render("Add evidence photo") + "\n")
+		label := s.photoTaskTitle
+		if label == "" {
+			label = fmt.Sprintf("step %v", s.photoTaskID)
+		}
+		b.WriteString(StyleMuted.Render("Filed under: ") + label + "\n\n")
+	} else {
+		b.WriteString(StyleTitle.Render("Add photo") + "\n\n")
+	}
 	b.WriteString(StyleMuted.Render("File path: ") + s.photoPathIn.View() + "\n")
 	b.WriteString(StyleMuted.Render("Caption:   ") + s.photoCaptionIn.View() + "\n")
 	if s.photoErr != "" {
@@ -1166,6 +1245,18 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 			if t.Notes != "" {
 				b.WriteString("    " + StyleMuted.Render(t.Notes) + "\n")
 			}
+			// Reference = what the step should look like (set on the PM
+			// template); evidence = what the tech shot while doing it. Neither
+			// renders inline — the URL is the artifact you can open elsewhere.
+			if t.TaskReferenceImageURL != "" {
+				b.WriteString("    " + StyleMuted.Render("Reference photo: ") + t.TaskReferenceImageURL + "\n")
+			}
+			if len(t.EvidencePhotos) > 0 {
+				b.WriteString("    " + StyleMuted.Render(fmt.Sprintf("Evidence (%d):", len(t.EvidencePhotos))) + "\n")
+				for _, p := range t.EvidencePhotos {
+					b.WriteString("      · " + evidencePhotoLabel(p) + "\n")
+				}
+			}
 		}
 		b.WriteString("\n")
 	}
@@ -1196,6 +1287,12 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 				line += p.Caption
 			} else {
 				line += p.ImageURL
+			}
+			// The WO's photo list carries every photo, pinned or not, so flag
+			// the ones that are really a step's evidence — they also appear
+			// under their step above.
+			if isPinnedToStep(p) {
+				line += " " + StyleMuted.Render("· step evidence")
 			}
 			b.WriteString(line + "\n")
 			meta := []string{}

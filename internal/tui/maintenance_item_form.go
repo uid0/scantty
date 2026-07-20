@@ -71,6 +71,10 @@ const (
 	mFormPhaseToolEdit
 )
 
+// taskEditFieldCount is the number of rows in the task-step editor:
+// title, description, required toggle, reference-photo path.
+const taskEditFieldCount = 4
+
 var mfLabel = map[int]string{
 	mfAsset:        "Asset",
 	mfTitle:        "Title",
@@ -110,13 +114,22 @@ func mfIsTextKind(id int) bool {
 // hasn't been saved yet; loadedOrder is the order the row had when fetched (so
 // save can tell whether the position changed). dirty marks an existing row the
 // operator edited.
+//
+// The step's reference photo splits in two: refImageURL is what the server
+// already holds (read-only, shown as text — the TUI renders no images), while
+// refImagePath is a local file the operator picked THIS session and that save
+// uploads. Nothing ever hydrates refImagePath, so a non-empty one is by
+// definition a new pick — it doubles as the "re-upload this" flag, and a row
+// left alone never re-sends its photo.
 type taskRow struct {
-	id          string
-	title       string
-	description string
-	isRequired  bool
-	loadedOrder int
-	dirty       bool
+	id           string
+	title        string
+	description  string
+	isRequired   bool
+	refImageURL  string
+	refImagePath string
+	loadedOrder  int
+	dirty        bool
 }
 
 // materialRow is one in-memory MaintenanceMaterial. Quantity + cost are kept as
@@ -204,10 +217,11 @@ type MaintenanceItemFormScreen struct {
 	editIndex  int
 	editCursor int
 	editErr    string
-	// Task editor inputs.
+	// Task editor inputs (cursor 2 is the is_required toggle, not an input).
 	teTitle    textinput.Model
 	teDesc     textinput.Model
 	teRequired bool
+	teRefImage textinput.Model
 	// Material editor inputs.
 	meName  textinput.Model
 	meQty   textinput.Model
@@ -273,6 +287,12 @@ func NewMaintenanceItemFormScreen(deps Deps, itemID string) *MaintenanceItemForm
 		ti.Prompt = ""
 		ti.CharLimit = 200
 	}
+	// The reference-photo field holds a filesystem path, so it needs the longer
+	// limit (and the hint) the asset form's manual-PDF path input uses.
+	s.teRefImage = textinput.New()
+	s.teRefImage.Prompt = ""
+	s.teRefImage.CharLimit = 512
+	s.teRefImage.Placeholder = "/absolute/path/to/photo.jpg (~ expands to home)"
 
 	s.rebuildFields()
 	s.syncFocus()
@@ -499,6 +519,7 @@ func (s *MaintenanceItemFormScreen) hydrate() {
 			title:       t.Title,
 			description: t.Description,
 			isRequired:  t.IsRequired,
+			refImageURL: t.ReferenceImageURL,
 			loadedOrder: t.Order,
 		})
 		s.origTaskIDs = append(s.origTaskIDs, t.ID)
@@ -804,13 +825,19 @@ func (s *MaintenanceItemFormScreen) openTaskEditor(index int) {
 		s.teTitle.SetValue(t.title)
 		s.teDesc.SetValue(t.description)
 		s.teRequired = t.isRequired
+		// The path, not the URL: re-showing the picked file lets the operator
+		// correct a typo, while an already-uploaded photo stays a display-only
+		// URL under the field (clearing it is a web/admin job, not a TUI one).
+		s.teRefImage.SetValue(t.refImagePath)
 	} else {
 		s.teTitle.SetValue("")
 		s.teDesc.SetValue("")
 		s.teRequired = true // model default
+		s.teRefImage.SetValue("")
 	}
 	s.teTitle.Focus()
 	s.teDesc.Blur()
+	s.teRefImage.Blur()
 }
 
 func (s *MaintenanceItemFormScreen) updateTaskEdit(m tea.KeyMsg) (Screen, tea.Cmd) {
@@ -819,11 +846,11 @@ func (s *MaintenanceItemFormScreen) updateTaskEdit(m tea.KeyMsg) (Screen, tea.Cm
 		s.phase = mFormPhaseTaskList
 		return s, nil
 	case "tab", "down":
-		s.editCursor = (s.editCursor + 1) % 3
+		s.editCursor = (s.editCursor + 1) % taskEditFieldCount
 		s.syncTaskEditFocus()
 		return s, textinput.Blink
 	case "shift+tab", "up":
-		s.editCursor = (s.editCursor + 2) % 3
+		s.editCursor = (s.editCursor + taskEditFieldCount - 1) % taskEditFieldCount
 		s.syncTaskEditFocus()
 		return s, textinput.Blink
 	case "enter":
@@ -837,10 +864,13 @@ func (s *MaintenanceItemFormScreen) updateTaskEdit(m tea.KeyMsg) (Screen, tea.Cm
 		return s, nil
 	}
 	var cmd tea.Cmd
-	if s.editCursor == 0 {
+	switch s.editCursor {
+	case 0:
 		s.teTitle, cmd = s.teTitle.Update(m)
-	} else {
+	case 1:
 		s.teDesc, cmd = s.teDesc.Update(m)
+	case 3:
+		s.teRefImage, cmd = s.teRefImage.Update(m)
 	}
 	return s, cmd
 }
@@ -848,11 +878,14 @@ func (s *MaintenanceItemFormScreen) updateTaskEdit(m tea.KeyMsg) (Screen, tea.Cm
 func (s *MaintenanceItemFormScreen) syncTaskEditFocus() {
 	s.teTitle.Blur()
 	s.teDesc.Blur()
+	s.teRefImage.Blur()
 	switch s.editCursor {
 	case 0:
 		s.teTitle.Focus()
 	case 1:
 		s.teDesc.Focus()
+	case 3:
+		s.teRefImage.Focus()
 	}
 }
 
@@ -862,14 +895,25 @@ func (s *MaintenanceItemFormScreen) commitTaskEditor() tea.Cmd {
 		s.editErr = "task title is required"
 		return nil
 	}
+	// Fail fast on a bad path here rather than at save time, when the item
+	// write has already gone out and only the step reconcile would fail.
+	refPath, err := validateImagePath(expandUser(strings.TrimSpace(s.teRefImage.Value())), "reference photo")
+	if err != nil {
+		s.editErr = err.Error()
+		return nil
+	}
 	row := taskRow{
-		title:       title,
-		description: strings.TrimSpace(s.teDesc.Value()),
-		isRequired:  s.teRequired,
+		title:        title,
+		description:  strings.TrimSpace(s.teDesc.Value()),
+		isRequired:   s.teRequired,
+		refImagePath: refPath,
 	}
 	if s.editIndex >= 0 && s.editIndex < len(s.tasks) {
 		row.id = s.tasks[s.editIndex].id
 		row.loadedOrder = s.tasks[s.editIndex].loadedOrder
+		// Carry the already-uploaded photo's URL across the edit — it is a
+		// server-side read field the editor never touches.
+		row.refImageURL = s.tasks[s.editIndex].refImageURL
 		row.dirty = true
 		s.tasks[s.editIndex] = row
 	} else {
@@ -1262,6 +1306,11 @@ func (s *MaintenanceItemFormScreen) submit() (Screen, tea.Cmd) {
 // reconcileTasks deletes removed task rows, patches edited/moved ones, and
 // creates new ones — assigning each surviving row an order equal to its
 // position so the generated work order runs them in list order.
+//
+// A row carrying a picked reference photo sends its path through to the write,
+// which turns that one call into a multipart upload. Rows the operator did not
+// touch have an empty path and so stay JSON, leaving any photo already on the
+// step alone (a PATCH without the key can't clear it).
 func reconcileTasks(ctx context.Context, oms *omsapi.Client, itemID string, rows []taskRow, origIDs []string) error {
 	keep := map[string]bool{}
 	for _, r := range rows {
@@ -1278,11 +1327,12 @@ func reconcileTasks(ctx context.Context, oms *omsapi.Client, itemID string, rows
 	}
 	for i, r := range rows {
 		body := omsapi.MaintenanceTaskWrite{
-			MaintenanceItem: itemID,
-			Order:           i,
-			Title:           r.title,
-			Description:     r.description,
-			IsRequired:      r.isRequired,
+			MaintenanceItem:    itemID,
+			Order:              i,
+			Title:              r.title,
+			Description:        r.description,
+			IsRequired:         r.isRequired,
+			ReferenceImagePath: r.refImagePath,
 		}
 		if r.id == "" {
 			if _, err := oms.CreateMaintenanceTask(ctx, body); err != nil {
@@ -1611,8 +1661,24 @@ func (s *MaintenanceItemFormScreen) viewTaskList() string {
 		if t.description != "" {
 			b.WriteString("     " + StyleMuted.Render(t.description) + "\n")
 		}
+		if p := taskRefPhotoLine(t); p != "" {
+			b.WriteString("     " + p + "\n")
+		}
 	}
 	return b.String()
+}
+
+// taskRefPhotoLine describes a step's reference photo in one line, or "" when
+// it has none. A path the operator just picked wins over the stored URL — it is
+// what the next save will upload.
+func taskRefPhotoLine(t taskRow) string {
+	if t.refImagePath != "" {
+		return StyleStatusWarn.Render("photo: "+t.refImagePath) + StyleMuted.Render(" (uploads on save)")
+	}
+	if t.refImageURL != "" {
+		return StyleMuted.Render("photo: ") + t.refImageURL
+	}
+	return ""
 }
 
 func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
@@ -1630,6 +1696,7 @@ func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
 		{"Title", s.teTitle.View()},
 		{"Description", s.teDesc.View()},
 		{"Required", boolBadge(s.teRequired)},
+		{"Reference photo", s.teRefImage.View()},
 	}
 	for i, r := range rows {
 		caret := "  "
@@ -1638,8 +1705,18 @@ func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
 		}
 		b.WriteString(caret + StyleTitle.Render(r.label+": ") + r.value + "\n")
 	}
+	// The photo already on the step: read-only, and left in place unless a new
+	// path above replaces it.
+	if s.editIndex >= 0 && s.editIndex < len(s.tasks) {
+		if u := s.tasks[s.editIndex].refImageURL; u != "" {
+			b.WriteString("    " + StyleMuted.Render("current: ") + u + "\n")
+		}
+	}
 	if s.editCursor == 2 {
 		b.WriteString("\n" + StyleMuted.Render("space toggles required") + "\n")
+	}
+	if s.editCursor == 3 {
+		b.WriteString("\n" + StyleMuted.Render("instructional photo shown against this step on every work order · blank keeps the current one") + "\n")
 	}
 	if s.editErr != "" {
 		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.editErr))

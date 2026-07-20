@@ -37,17 +37,32 @@ type WorkOrder struct {
 	Validation           *WorkOrderValidation      `json:"validation,omitempty"`
 }
 
+// WorkOrderTaskCompletion is one step of a work order, and carries both halves
+// of the per-step photo pair (both read-only):
+//
+//   - TaskReferenceImageURL — the TEMPLATE step's instructional photo, "what
+//     this should look like". Null when the step has no photo, and also when
+//     the template step was deleted after the WO was cut (task is nullable), so
+//     never treat an empty string as an error.
+//   - EvidencePhotos — the shots a tech pinned to THIS step while doing the
+//     work, "here is what I did". Arrives as a trimmed projection carrying
+//     exactly the five WorkOrderPhoto keys below, so the type is shared. Empty
+//     is the normal case, not a failure.
+//
+// ScanTTY renders no images: both surface as URL / caption text.
 type WorkOrderTaskCompletion struct {
-	ID          any        `json:"id"`
-	Task        *string    `json:"task,omitempty"`
-	TaskTitle   string     `json:"task_title,omitempty"`
-	TaskOrder   int        `json:"task_order,omitempty"`
-	IsRequired  bool       `json:"is_required,omitempty"`
-	IsCompleted bool       `json:"is_completed,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
-	CompletedBy string     `json:"completed_by_name,omitempty"`
-	Notes       string     `json:"notes,omitempty"`
-	CreatedAt   time.Time  `json:"created_at,omitempty"`
+	ID                    any              `json:"id"`
+	Task                  *string          `json:"task,omitempty"`
+	TaskTitle             string           `json:"task_title,omitempty"`
+	TaskOrder             int              `json:"task_order,omitempty"`
+	IsRequired            bool             `json:"is_required,omitempty"`
+	IsCompleted           bool             `json:"is_completed,omitempty"`
+	CompletedAt           *time.Time       `json:"completed_at,omitempty"`
+	CompletedBy           string           `json:"completed_by_name,omitempty"`
+	Notes                 string           `json:"notes,omitempty"`
+	TaskReferenceImageURL string           `json:"task_reference_image_url,omitempty"`
+	EvidencePhotos        []WorkOrderPhoto `json:"evidence_photos,omitempty"`
+	CreatedAt             time.Time        `json:"created_at,omitempty"`
 }
 
 type WorkOrderMaterialUsage struct {
@@ -75,12 +90,23 @@ type WorkOrderTool struct {
 	Notes        string `json:"notes,omitempty"`
 }
 
+// WorkOrderPhoto is a photo on a work order. TaskCompletion pins it to a single
+// step (the evidence half of the per-step photo pair) and is null for the
+// work-order-level photos every pre-existing upload produced. It is `any` for
+// the same reason ID is — the backend's ids are UUID strings today but the
+// field is echoed straight back from the serializer.
+//
+// The trimmed shape nested under a step's evidence_photos carries exactly the
+// id / image_url / caption / uploaded_at / uploaded_by_name subset (no
+// task_completion — the parent step already is it), which decodes into this
+// same struct with TaskCompletion left nil.
 type WorkOrderPhoto struct {
-	ID         any       `json:"id"`
-	ImageURL   string    `json:"image_url,omitempty"`
-	Caption    string    `json:"caption,omitempty"`
-	UploadedAt time.Time `json:"uploaded_at,omitempty"`
-	UploadedBy string    `json:"uploaded_by_name,omitempty"`
+	ID             any       `json:"id"`
+	TaskCompletion any       `json:"task_completion,omitempty"`
+	ImageURL       string    `json:"image_url,omitempty"`
+	Caption        string    `json:"caption,omitempty"`
+	UploadedAt     time.Time `json:"uploaded_at,omitempty"`
+	UploadedBy     string    `json:"uploaded_by_name,omitempty"`
 }
 
 func (c *Client) ListWorkOrders(ctx context.Context, q url.Values) (*Page[WorkOrder], error) {
@@ -139,11 +165,22 @@ func (c *Client) ToggleWorkOrderMaterial(ctx context.Context, woID, materialID s
 
 // AddWorkOrderPhoto uploads a photo to a work order as multipart/form-data
 // (POST .../add_photo/). The web posts the file under "image" plus the work
-// order id under "work_order"; caption is an optional serializer field.
-func (c *Client) AddWorkOrderPhoto(ctx context.Context, woID, filename string, data []byte, caption string) (*WorkOrderPhoto, error) {
+// order id under "work_order" — the serializer requires work_order even though
+// the id is already in the URL, so it must keep riding; caption is an optional
+// serializer field.
+//
+// taskCompletion optionally pins the photo to ONE step of this work order (that
+// step's completion id) as evidence. It is sent only when non-empty: the action
+// treats an absent or blank field as work-order-level, which is exactly what
+// every caller got before per-step evidence existed. A step id belonging to
+// another work order is rejected with 400.
+func (c *Client) AddWorkOrderPhoto(ctx context.Context, woID, filename string, data []byte, caption, taskCompletion string) (*WorkOrderPhoto, error) {
 	fields := map[string][]string{"work_order": {woID}}
 	if caption != "" {
 		fields["caption"] = []string{caption}
+	}
+	if taskCompletion != "" {
+		fields["task_completion"] = []string{taskCompletion}
 	}
 	files := []MultipartFile{{Field: "image", Filename: filename, Data: data}}
 	var out WorkOrderPhoto
