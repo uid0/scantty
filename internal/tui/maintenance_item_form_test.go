@@ -156,6 +156,61 @@ func TestMaintenanceItemForm_MaterialEditor(t *testing.T) {
 	}
 }
 
+// TestMaintenanceItemForm_ToolEditor mirrors the material-editor test for the
+// tools sublist: name required, model defaults applied on add (quantity 1,
+// is_required true), and the cursor-3 space toggle flipping is_required.
+func TestMaintenanceItemForm_ToolEditor(t *testing.T) {
+	s := NewMaintenanceItemFormScreen(Deps{}, "")
+
+	// Name required.
+	s.openToolEditor(-1)
+	s.toName.SetValue("")
+	s.commitToolEditor()
+	if len(s.tools) != 0 || s.editErr == "" {
+		t.Fatalf("nameless tool should not commit")
+	}
+
+	// Add with default quantity ("1") + is_required true.
+	s.openToolEditor(-1)
+	s.toName.SetValue("Torque wrench")
+	s.toLoc.SetValue("Tool crib, drawer 3")
+	s.commitToolEditor()
+	if len(s.tools) != 1 {
+		t.Fatalf("tool not added")
+	}
+	if got := s.tools[0]; got.name != "Torque wrench" || got.quantity != 1 ||
+		!got.isRequired || got.locationHint != "Tool crib, drawer 3" {
+		t.Fatalf("tool defaults wrong: %+v", got)
+	}
+
+	// A non-numeric quantity is rejected rather than silently coerced.
+	s.openToolEditor(-1)
+	s.toName.SetValue("Bad")
+	s.toQty.SetValue("two")
+	s.commitToolEditor()
+	if len(s.tools) != 1 || s.editErr == "" {
+		t.Fatalf("non-numeric quantity should not commit: %+v", s.tools)
+	}
+
+	// Editing row 0: space on cursor 3 clears is_required, and the row keeps
+	// its id while being marked dirty so reconcile PATCHes instead of creating.
+	s.tools[0].id = "tl-1"
+	s.openToolEditor(0)
+	s.editCursor = 3
+	s.updateToolEdit(mtKey(" "))
+	if s.toRequired {
+		t.Fatalf("space at cursor 3 should toggle is_required off")
+	}
+	s.toQty.SetValue("3")
+	s.commitToolEditor()
+	if got := s.tools[0]; got.id != "tl-1" || !got.dirty || got.isRequired || got.quantity != 3 {
+		t.Fatalf("edited tool = %+v", got)
+	}
+	if s.phase != mFormPhaseToolList {
+		t.Errorf("commit should return to the tool list, phase = %v", s.phase)
+	}
+}
+
 // TestMaintenanceItemForm_Hydrate confirms edit-mode hydration fills the main
 // fields and sorts task rows by their saved order.
 func TestMaintenanceItemForm_Hydrate(t *testing.T) {
@@ -171,6 +226,9 @@ func TestMaintenanceItemForm_Hydrate(t *testing.T) {
 		},
 		Materials: []omsapi.MaintenanceMaterial{
 			{ID: "m1", Name: "Oil", Quantity: "2", Unit: "qt", EstimatedCostPerUnit: "4"},
+		},
+		Tools: []omsapi.MaintenanceTool{
+			{ID: "tl1", Name: "Torque wrench", Quantity: 2, LocationHint: "Crib 3", IsRequired: true},
 		},
 	}
 	s.hydrate()
@@ -192,6 +250,12 @@ func TestMaintenanceItemForm_Hydrate(t *testing.T) {
 	}
 	if len(s.materials) != 1 || s.materials[0].quantity != "2" {
 		t.Errorf("materials hydrate wrong: %+v", s.materials)
+	}
+	if len(s.tools) != 1 || len(s.origToolIDs) != 1 || s.origToolIDs[0] != "tl1" {
+		t.Errorf("tools hydrate wrong: %+v / %v", s.tools, s.origToolIDs)
+	}
+	if got := s.tools[0]; got.quantity != 2 || got.locationHint != "Crib 3" || !got.isRequired {
+		t.Errorf("tool row = %+v", got)
 	}
 }
 
@@ -306,6 +370,34 @@ func TestReconcileMaterials_DeleteEditCreate(t *testing.T) {
 	}
 }
 
+// TestReconcileTools_DeleteEditCreate: removed → DELETE, dirty existing →
+// PATCH, new → POST, unchanged existing → skipped — the material reconcile
+// contract, against the tools sub-resource.
+func TestReconcileTools_DeleteEditCreate(t *testing.T) {
+	rec, c := newRecorder(t)
+	rows := []toolRow{
+		{id: "tl-clean", name: "Clean", quantity: 1},              // unchanged → skip
+		{id: "tl-dirty", name: "Dirty", quantity: 2, dirty: true}, // edited → PATCH
+		{id: "", name: "New", quantity: 1},                        // new → POST
+	}
+	origIDs := []string{"tl-clean", "tl-dirty", "tl-gone"}
+	if err := reconcileTools(context.Background(), c, "mi-1", rows, origIDs); err != nil {
+		t.Fatalf("reconcileTools: %v", err)
+	}
+	if !rec.hasPath(http.MethodDelete, "/api/inventory/maintenance-tools/tl-gone/") {
+		t.Errorf("expected DELETE of tl-gone")
+	}
+	if !rec.hasPath(http.MethodPatch, "/api/inventory/maintenance-tools/tl-dirty/") {
+		t.Errorf("expected PATCH of tl-dirty")
+	}
+	if rec.count(http.MethodPatch) != 1 {
+		t.Errorf("expected 1 PATCH (dirty), got %d", rec.count(http.MethodPatch))
+	}
+	if rec.count(http.MethodPost) != 1 {
+		t.Errorf("expected 1 POST (new), got %d", rec.count(http.MethodPost))
+	}
+}
+
 // TestParseHelpers pins the small nullable-int + optional-decimal parsers.
 func TestParseHelpers(t *testing.T) {
 	if v, err := mfOptPositiveInt("", "x"); err != nil || v != nil {
@@ -369,5 +461,19 @@ func TestMaintenanceItemForm_RenderSmoke(t *testing.T) {
 	s.phase = mFormPhaseMaterialList
 	if out := s.View(); out == "" {
 		t.Errorf("material list view empty")
+	}
+
+	s.openToolEditor(-1)
+	if out := s.View(); !strings.Contains(out, "tool") {
+		t.Errorf("tool editor view wrong: %q", out)
+	}
+	s.phase = mFormPhaseToolList
+	if out := s.View(); !strings.Contains(out, "no tools yet") {
+		t.Errorf("empty tool list view wrong: %q", out)
+	}
+	// Populated list — exercises the row renderer (qty/hint/[REQ]/notes).
+	s.tools = []toolRow{{name: "Torque wrench", quantity: 2, locationHint: "Crib 3", isRequired: true, notes: "calibrated"}}
+	if out := s.View(); !strings.Contains(out, "Torque wrench ×2") || !strings.Contains(out, "REQ") {
+		t.Errorf("tool list row wrong: %q", out)
 	}
 }
