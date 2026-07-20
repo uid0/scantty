@@ -415,6 +415,145 @@ func TestMaintenanceMaterial_CRUDContract(t *testing.T) {
 	}
 }
 
+// TestMaintenanceTool_CRUDContract pins the tools sub-resource against the
+// backend (MaintenanceToolSerializer / MaintenanceToolViewSet): it lives at
+// maintenance-tools/ next to maintenance-materials/, and — the field that
+// actually differs from its material sibling — quantity rides as a JSON NUMBER,
+// because the model field is a PositiveIntegerField, not a DecimalField. A
+// stringified quantity here would be silent drift.
+func TestMaintenanceTool_CRUDContract(t *testing.T) {
+	// create
+	var cap capture
+	srv := captureServer(t, http.StatusCreated, `{"id":"tool-1","name":"Torque wrench"}`, &cap)
+	c := New(srv.URL)
+	tool, err := c.CreateMaintenanceTool(context.Background(), MaintenanceToolWrite{
+		MaintenanceItem: "mi-1", Name: "Torque wrench", Quantity: 2,
+		LocationHint: "Tool crib, drawer 3", IsRequired: true, Notes: "n",
+	})
+	if err != nil {
+		t.Fatalf("CreateMaintenanceTool: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/inventory/maintenance-tools/" {
+		t.Fatalf("create method/path = %q %q", cap.method, cap.path)
+	}
+	// encoding/json decodes every JSON number into float64 — the point is that
+	// it is NOT a string the way a material quantity is.
+	if v, ok := cap.body["quantity"].(float64); !ok || v != 2 {
+		t.Errorf("quantity should be a JSON number, got %v (%T)", cap.body["quantity"], cap.body["quantity"])
+	}
+	if cap.body["location_hint"] != "Tool crib, drawer 3" {
+		t.Errorf("location_hint = %v", cap.body["location_hint"])
+	}
+	if cap.body["is_required"] != true {
+		t.Errorf("is_required = %v", cap.body["is_required"])
+	}
+	if cap.body["maintenance_item"] != "mi-1" {
+		t.Errorf("maintenance_item = %v", cap.body["maintenance_item"])
+	}
+	if tool.ID != "tool-1" {
+		t.Errorf("tool = %+v", tool)
+	}
+	srv.Close()
+
+	// update — a fresh server means a fresh client (baseURL is fixed at New).
+	cap = capture{}
+	srv = captureServer(t, http.StatusOK, `{"id":"tool-1","name":"Torque wrench 1/2in"}`, &cap)
+	c = New(srv.URL)
+	if _, err := c.UpdateMaintenanceTool(context.Background(), "tool-1", MaintenanceToolWrite{
+		MaintenanceItem: "mi-1", Name: "Torque wrench 1/2in", Quantity: 1,
+	}); err != nil {
+		t.Fatalf("UpdateMaintenanceTool: %v", err)
+	}
+	if cap.method != http.MethodPatch || cap.path != "/api/inventory/maintenance-tools/tool-1/" {
+		t.Fatalf("update method/path = %q %q", cap.method, cap.path)
+	}
+	// is_required has no omitempty: a false must still reach the wire, or
+	// un-requiring a tool would silently no-op on a PATCH.
+	if v, ok := cap.body["is_required"]; !ok || v != false {
+		t.Errorf("is_required=false must be sent explicitly, got %v (present=%v)", v, ok)
+	}
+	srv.Close()
+
+	// delete
+	cap = capture{}
+	srv = captureServer(t, http.StatusNoContent, ``, &cap)
+	c = New(srv.URL)
+	defer srv.Close()
+	if err := c.DeleteMaintenanceTool(context.Background(), "tool-1"); err != nil {
+		t.Fatalf("DeleteMaintenanceTool: %v", err)
+	}
+	if cap.method != http.MethodDelete || cap.path != "/api/inventory/maintenance-tools/tool-1/" {
+		t.Fatalf("delete method/path = %q %q", cap.method, cap.path)
+	}
+}
+
+// TestGetMaintenanceItem_ParsesTools pins the nested read shape: a PM item
+// hydrates its tools in one GET, each carrying the integer quantity,
+// location_hint, is_required flag and the optional inventory_item_detail
+// projection (whose five keys the material detail type already models).
+func TestGetMaintenanceItem_ParsesTools(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK, `{
+		"id":"mi-1","asset":"a1","title":"PM",
+		"tools":[
+			{"id":"tl-1","maintenance_item":"mi-1","inventory_item":null,"inventory_item_detail":null,
+			 "name":"Torque wrench","quantity":2,"location_hint":"Tool crib, drawer 3",
+			 "is_required":true,"notes":"calibrated","created_at":"2026-07-01T10:00:00Z"},
+			{"id":"tl-2","maintenance_item":"mi-1","inventory_item":"inv-9",
+			 "inventory_item_detail":{"id":"inv-9","name":"Feeler gauge","current_stock":4,"minimum_stock":1,"reorder_quantity":2},
+			 "name":"Feeler gauge","quantity":1,"location_hint":"","is_required":false,"notes":""}
+		]
+	}`, &cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	item, err := c.GetMaintenanceItem(context.Background(), "mi-1")
+	if err != nil {
+		t.Fatalf("GetMaintenanceItem: %v", err)
+	}
+	if len(item.Tools) != 2 {
+		t.Fatalf("tools = %+v", item.Tools)
+	}
+	first := item.Tools[0]
+	if first.ID != "tl-1" || first.Name != "Torque wrench" || first.Quantity != 2 {
+		t.Errorf("tool[0] scalar fields = %+v", first)
+	}
+	if first.LocationHint != "Tool crib, drawer 3" || !first.IsRequired || first.Notes != "calibrated" {
+		t.Errorf("tool[0] hint/required/notes = %+v", first)
+	}
+	if first.InventoryItem != nil || first.InventoryItemDetail != nil {
+		t.Errorf("tool[0] should have a null inventory link: %+v", first)
+	}
+	second := item.Tools[1]
+	if second.IsRequired {
+		t.Errorf("tool[1] is_required should decode false: %+v", second)
+	}
+	if second.InventoryItem == nil || *second.InventoryItem != "inv-9" {
+		t.Errorf("tool[1] inventory_item = %v", second.InventoryItem)
+	}
+	if second.InventoryItemDetail == nil || second.InventoryItemDetail.Name != "Feeler gauge" ||
+		second.InventoryItemDetail.CurrentStock != 4 {
+		t.Errorf("tool[1] inventory_item_detail = %+v", second.InventoryItemDetail)
+	}
+}
+
+// TestGetMaintenanceItem_ToolsEmpty: a PM item with no tools is the common
+// case, and an absent/empty tools key must decode to a nil slice rather than
+// erroring — the form renders "0 tools" from it.
+func TestGetMaintenanceItem_ToolsEmpty(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK, `{"id":"mi-1","asset":"a1","title":"PM","tools":[]}`, &cap)
+	defer srv.Close()
+
+	item, err := New(srv.URL).GetMaintenanceItem(context.Background(), "mi-1")
+	if err != nil {
+		t.Fatalf("GetMaintenanceItem: %v", err)
+	}
+	if len(item.Tools) != 0 {
+		t.Errorf("tools = %+v", item.Tools)
+	}
+}
+
 // TestListMaintenance_QueryParam confirms the list helpers scope by
 // maintenance_item.
 func TestListMaintenance_QueryParam(t *testing.T) {
@@ -435,6 +574,13 @@ func TestListMaintenance_QueryParam(t *testing.T) {
 	}
 	if cap.path != "/api/inventory/maintenance-materials/" || cap.query != "maintenance_item=mi-1" {
 		t.Errorf("materials path/query = %q %q", cap.path, cap.query)
+	}
+
+	if _, err := c.ListMaintenanceTools(context.Background(), "mi-1"); err != nil {
+		t.Fatalf("ListMaintenanceTools: %v", err)
+	}
+	if cap.path != "/api/inventory/maintenance-tools/" || cap.query != "maintenance_item=mi-1" {
+		t.Errorf("tools path/query = %q %q", cap.path, cap.query)
 	}
 }
 

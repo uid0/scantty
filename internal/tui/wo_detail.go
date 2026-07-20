@@ -1070,6 +1070,33 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 	}
 	b.WriteString("\n")
 
+	// Tools Required sits at the top of the body — this is gear to gather
+	// BEFORE starting, so it has to be read before the task list, not after it.
+	// Display-only: the backend builds the list from the source PM template
+	// (required first, then by name) and there is nothing to check off.
+	b.WriteString(StyleTitle.Render("Tools Required") + "\n")
+	if len(wo.Tools) == 0 {
+		b.WriteString(StyleMuted.Render("  No tools specified.") + "\n")
+	} else {
+		for _, t := range wo.Tools {
+			line := "  · " + t.Name
+			if t.Quantity > 0 {
+				line += fmt.Sprintf(" ×%d", t.Quantity)
+			}
+			if t.LocationHint != "" {
+				line += StyleMuted.Render(" · " + t.LocationHint)
+			}
+			if t.IsRequired {
+				line += " " + StyleStatusWarn.Render("[REQ]")
+			}
+			b.WriteString(line + "\n")
+			if t.Notes != "" {
+				b.WriteString("    " + StyleMuted.Render(t.Notes) + "\n")
+			}
+		}
+	}
+	b.WriteString("\n")
+
 	b.WriteString(StyleTitle.Render("Dates") + "\n")
 	if wo.DueDate != "" {
 		b.WriteString(StyleMuted.Render("Due: ") + wo.DueDate + "\n")

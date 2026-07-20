@@ -44,6 +44,7 @@ const (
 	mfIsActive
 	mfTasks
 	mfMaterials
+	mfTools
 	mfFieldMax
 )
 
@@ -66,6 +67,8 @@ const (
 	mFormPhaseTaskEdit
 	mFormPhaseMaterialList
 	mFormPhaseMaterialEdit
+	mFormPhaseToolList
+	mFormPhaseToolEdit
 )
 
 var mfLabel = map[int]string{
@@ -79,6 +82,7 @@ var mfLabel = map[int]string{
 	mfIsActive:     "Active",
 	mfTasks:        "Task steps",
 	mfMaterials:    "Materials",
+	mfTools:        "Tools required",
 }
 
 func mfKind(id int) mFieldKind {
@@ -91,7 +95,7 @@ func mfKind(id int) mFieldKind {
 		return mkToggle
 	case mfAsset:
 		return mkPicker
-	case mfTasks, mfMaterials:
+	case mfTasks, mfMaterials, mfTools:
 		return mkSublist
 	}
 	return mkText
@@ -127,6 +131,19 @@ type materialRow struct {
 	dirty    bool
 }
 
+// toolRow is one in-memory MaintenanceTool. Quantity is an int (the backend
+// field is a PositiveIntegerField, not the DecimalField a material uses), and
+// locationHint stands in for a material's unit + cost.
+type toolRow struct {
+	id           string
+	name         string
+	quantity     int
+	locationHint string
+	isRequired   bool
+	notes        string
+	dirty        bool
+}
+
 type assetPickOption struct {
 	id    string
 	label string
@@ -159,11 +176,14 @@ type MaintenanceItemFormScreen struct {
 	assetID   string
 	assetName string
 
-	// Task + material rows, plus the ids present at load (for delete-reconcile).
+	// Task, material + tool rows, plus the ids present at load (for
+	// delete-reconcile).
 	tasks           []taskRow
 	materials       []materialRow
+	tools           []toolRow
 	origTaskIDs     []string
 	origMaterialIDs []string
+	origToolIDs     []string
 
 	// Visible main-field navigation.
 	fields []int
@@ -194,6 +214,12 @@ type MaintenanceItemFormScreen struct {
 	meUnit  textinput.Model
 	meCost  textinput.Model
 	meNotes textinput.Model
+	// Tool editor inputs (cursor 3 is the is_required toggle, not an input).
+	toName     textinput.Model
+	toQty      textinput.Model
+	toLoc      textinput.Model
+	toNotes    textinput.Model
+	toRequired bool
 }
 
 type mFormRefLoadedMsg struct {
@@ -242,7 +268,7 @@ func NewMaintenanceItemFormScreen(deps Deps, itemID string) *MaintenanceItemForm
 	s.pickSearch.Placeholder = "filter"
 	s.pickSearch.CharLimit = 60
 
-	for _, ti := range []*textinput.Model{&s.teTitle, &s.teDesc, &s.meName, &s.meQty, &s.meUnit, &s.meCost, &s.meNotes} {
+	for _, ti := range []*textinput.Model{&s.teTitle, &s.teDesc, &s.meName, &s.meQty, &s.meUnit, &s.meCost, &s.meNotes, &s.toName, &s.toQty, &s.toLoc, &s.toNotes} {
 		*ti = textinput.New()
 		ti.Prompt = ""
 		ti.CharLimit = 200
@@ -385,6 +411,10 @@ func (s *MaintenanceItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s.updateMaterialList(m)
 		case mFormPhaseMaterialEdit:
 			return s.updateMaterialEdit(m)
+		case mFormPhaseToolList:
+			return s.updateToolList(m)
+		case mFormPhaseToolEdit:
+			return s.updateToolEdit(m)
 		default:
 			return s.updateFormPhase(m)
 		}
@@ -410,6 +440,10 @@ func (s *MaintenanceItemFormScreen) forwardBlink(msg tea.Msg) tea.Cmd {
 		}
 	case mFormPhaseMaterialEdit:
 		if in := s.materialEditInput(s.editCursor); in != nil {
+			*in, cmd = in.Update(msg)
+		}
+	case mFormPhaseToolEdit:
+		if in := s.toolEditInput(s.editCursor); in != nil {
 			*in, cmd = in.Update(msg)
 		}
 	case mFormPhaseForm:
@@ -483,6 +517,18 @@ func (s *MaintenanceItemFormScreen) hydrate() {
 		})
 		s.origMaterialIDs = append(s.origMaterialIDs, m.ID)
 	}
+
+	for _, t := range it.Tools {
+		s.tools = append(s.tools, toolRow{
+			id:           t.ID,
+			name:         t.Name,
+			quantity:     t.Quantity,
+			locationHint: t.LocationHint,
+			isRequired:   t.IsRequired,
+			notes:        t.Notes,
+		})
+		s.origToolIDs = append(s.origToolIDs, t.ID)
+	}
 }
 
 func (s *MaintenanceItemFormScreen) rebuildFields() {
@@ -491,7 +537,7 @@ func (s *MaintenanceItemFormScreen) rebuildFields() {
 		focused = id
 	}
 	// No conditional sections in this form — every main field is always shown.
-	s.fields = []int{mfAsset, mfTitle, mfDescription, mfInstructions, mfIntervalDays, mfEstTimeMin, mfEstCost, mfIsActive, mfTasks, mfMaterials}
+	s.fields = []int{mfAsset, mfTitle, mfDescription, mfInstructions, mfIntervalDays, mfEstTimeMin, mfEstCost, mfIsActive, mfTasks, mfMaterials, mfTools}
 	if focused >= 0 {
 		s.setCursorToField(focused)
 	}
@@ -596,16 +642,13 @@ func (s *MaintenanceItemFormScreen) moveCursor(delta int) {
 }
 
 func (s *MaintenanceItemFormScreen) openSublist(id int) {
-	if id == mfTasks {
-		s.phase = mFormPhaseTaskList
-		if s.rowCursor >= len(s.tasks) {
-			s.rowCursor = 0
-		}
-	} else {
+	switch id {
+	case mfMaterials:
 		s.phase = mFormPhaseMaterialList
-		if s.rowCursor >= len(s.materials) {
-			s.rowCursor = 0
-		}
+	case mfTools:
+		s.phase = mFormPhaseToolList
+	default:
+		s.phase = mFormPhaseTaskList
 	}
 	s.rowCursor = 0
 	s.syncBlurAll()
@@ -985,6 +1028,153 @@ func (s *MaintenanceItemFormScreen) commitMaterialEditor() tea.Cmd {
 }
 
 // ---------------------------------------------------------------------------
+// Tool list + editor sub-phases
+// ---------------------------------------------------------------------------
+
+func (s *MaintenanceItemFormScreen) updateToolList(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		s.phase = mFormPhaseForm
+		s.syncFocus()
+	case "j", "down":
+		if s.rowCursor < len(s.tools)-1 {
+			s.rowCursor++
+		}
+	case "k", "up":
+		if s.rowCursor > 0 {
+			s.rowCursor--
+		}
+	case "a":
+		s.openToolEditor(-1)
+		return s, textinput.Blink
+	case "enter", "e":
+		if s.rowCursor >= 0 && s.rowCursor < len(s.tools) {
+			s.openToolEditor(s.rowCursor)
+			return s, textinput.Blink
+		}
+	case "d", "x":
+		if s.rowCursor >= 0 && s.rowCursor < len(s.tools) {
+			s.tools = append(s.tools[:s.rowCursor], s.tools[s.rowCursor+1:]...)
+			if s.rowCursor >= len(s.tools) && s.rowCursor > 0 {
+				s.rowCursor--
+			}
+		}
+	}
+	return s, nil
+}
+
+// toolEditInput maps the row-editor cursor to its input. Cursor 3 is the
+// is_required toggle, which owns no input, so it returns nil there.
+func (s *MaintenanceItemFormScreen) toolEditInput(cursor int) *textinput.Model {
+	switch cursor {
+	case 0:
+		return &s.toName
+	case 1:
+		return &s.toQty
+	case 2:
+		return &s.toLoc
+	case 4:
+		return &s.toNotes
+	}
+	return nil
+}
+
+func (s *MaintenanceItemFormScreen) openToolEditor(index int) {
+	s.phase = mFormPhaseToolEdit
+	s.editIndex = index
+	s.editCursor = 0
+	s.editErr = ""
+	if index >= 0 && index < len(s.tools) {
+		t := s.tools[index]
+		s.toName.SetValue(t.name)
+		s.toQty.SetValue(strconv.Itoa(t.quantity))
+		s.toLoc.SetValue(t.locationHint)
+		s.toNotes.SetValue(t.notes)
+		s.toRequired = t.isRequired
+	} else {
+		s.toName.SetValue("")
+		s.toQty.SetValue("1") // model default
+		s.toLoc.SetValue("")
+		s.toNotes.SetValue("")
+		s.toRequired = true // model default
+	}
+	s.syncToolEditFocus()
+}
+
+func (s *MaintenanceItemFormScreen) updateToolEdit(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		s.phase = mFormPhaseToolList
+		return s, nil
+	case "tab", "down":
+		s.editCursor = (s.editCursor + 1) % 5
+		s.syncToolEditFocus()
+		return s, textinput.Blink
+	case "shift+tab", "up":
+		s.editCursor = (s.editCursor + 4) % 5
+		s.syncToolEditFocus()
+		return s, textinput.Blink
+	case "enter":
+		return s, s.commitToolEditor()
+	}
+	// Field 3 is the is_required toggle; space flips it.
+	if s.editCursor == 3 {
+		if m.String() == " " {
+			s.toRequired = !s.toRequired
+		}
+		return s, nil
+	}
+	if in := s.toolEditInput(s.editCursor); in != nil {
+		var cmd tea.Cmd
+		*in, cmd = in.Update(m)
+		return s, cmd
+	}
+	return s, nil
+}
+
+func (s *MaintenanceItemFormScreen) syncToolEditFocus() {
+	for _, in := range []*textinput.Model{&s.toName, &s.toQty, &s.toLoc, &s.toNotes} {
+		in.Blur()
+	}
+	if in := s.toolEditInput(s.editCursor); in != nil {
+		in.Focus()
+	}
+}
+
+func (s *MaintenanceItemFormScreen) commitToolEditor() tea.Cmd {
+	name := strings.TrimSpace(s.toName.Value())
+	if name == "" {
+		s.editErr = "tool name is required"
+		return nil
+	}
+	// Blank quantity falls back to the model default of 1.
+	qty := 1
+	if n, err := mfOptPositiveInt(s.toQty.Value(), "quantity"); err != nil {
+		s.editErr = err.Error()
+		return nil
+	} else if n != nil {
+		qty = *n
+	}
+	row := toolRow{
+		name:         name,
+		quantity:     qty,
+		locationHint: strings.TrimSpace(s.toLoc.Value()),
+		isRequired:   s.toRequired,
+		notes:        strings.TrimSpace(s.toNotes.Value()),
+	}
+	if s.editIndex >= 0 && s.editIndex < len(s.tools) {
+		row.id = s.tools[s.editIndex].id
+		row.dirty = true
+		s.tools[s.editIndex] = row
+	} else {
+		s.tools = append(s.tools, row)
+		s.rowCursor = len(s.tools) - 1
+	}
+	s.phase = mFormPhaseToolList
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Submit + reconcile
 // ---------------------------------------------------------------------------
 
@@ -1037,8 +1227,10 @@ func (s *MaintenanceItemFormScreen) submit() (Screen, tea.Cmd) {
 	itemID := s.itemID
 	tasks := append([]taskRow(nil), s.tasks...)
 	materials := append([]materialRow(nil), s.materials...)
+	tools := append([]toolRow(nil), s.tools...)
 	origTaskIDs := append([]string(nil), s.origTaskIDs...)
 	origMaterialIDs := append([]string(nil), s.origMaterialIDs...)
+	origToolIDs := append([]string(nil), s.origToolIDs...)
 
 	return s, func() tea.Msg {
 		var id string
@@ -1058,6 +1250,9 @@ func (s *MaintenanceItemFormScreen) submit() (Screen, tea.Cmd) {
 			return mFormSavedMsg{itemID: id, err: e}
 		}
 		if e := reconcileMaterials(ctx, deps.OMS, id, materials, origMaterialIDs); e != nil {
+			return mFormSavedMsg{itemID: id, err: e}
+		}
+		if e := reconcileTools(ctx, deps.OMS, id, tools, origToolIDs); e != nil {
 			return mFormSavedMsg{itemID: id, err: e}
 		}
 		return mFormSavedMsg{itemID: id}
@@ -1144,6 +1339,46 @@ func reconcileMaterials(ctx context.Context, oms *omsapi.Client, itemID string, 
 	return nil
 }
 
+// reconcileTools deletes removed tool rows, patches edited ones, and creates
+// new ones — the material reconcile, for the tools sub-resource.
+func reconcileTools(ctx context.Context, oms *omsapi.Client, itemID string, rows []toolRow, origIDs []string) error {
+	keep := map[string]bool{}
+	for _, r := range rows {
+		if r.id != "" {
+			keep[r.id] = true
+		}
+	}
+	for _, id := range origIDs {
+		if !keep[id] {
+			if err := oms.DeleteMaintenanceTool(ctx, id); err != nil {
+				return err
+			}
+		}
+	}
+	for _, r := range rows {
+		body := omsapi.MaintenanceToolWrite{
+			MaintenanceItem: itemID,
+			Name:            r.name,
+			Quantity:        r.quantity,
+			LocationHint:    r.locationHint,
+			IsRequired:      r.isRequired,
+			Notes:           r.notes,
+		}
+		if r.id == "" {
+			if _, err := oms.CreateMaintenanceTool(ctx, body); err != nil {
+				return err
+			}
+			continue
+		}
+		if r.dirty {
+			if _, err := oms.UpdateMaintenanceTool(ctx, r.id, body); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (s *MaintenanceItemFormScreen) cancelCmd() tea.Cmd {
 	if s.edit && s.itemID != "" {
 		return SwitchTo(WSMaintenance, NewMaintenanceItemDetailScreen(s.deps, s.itemID))
@@ -1212,6 +1447,10 @@ func (s *MaintenanceItemFormScreen) View() string {
 		return s.viewMaterialList()
 	case mFormPhaseMaterialEdit:
 		return s.viewMaterialEdit()
+	case mFormPhaseToolList:
+		return s.viewToolList()
+	case mFormPhaseToolEdit:
+		return s.viewToolEdit()
 	}
 	return s.viewForm()
 }
@@ -1270,9 +1509,11 @@ func (s *MaintenanceItemFormScreen) renderField(i int) string {
 	case mkSublist:
 		n := len(s.tasks)
 		noun := "step"
-		if id == mfMaterials {
-			n = len(s.materials)
-			noun = "material"
+		switch id {
+		case mfMaterials:
+			n, noun = len(s.materials), "material"
+		case mfTools:
+			n, noun = len(s.tools), "tool"
 		}
 		value = fmt.Sprintf("%d %s", n, plural(noun, n)) + " " + StyleMuted.Render("(space to manage)")
 	}
@@ -1457,6 +1698,69 @@ func (s *MaintenanceItemFormScreen) viewMaterialEdit() string {
 			caret = "▸ "
 		}
 		b.WriteString(caret + StyleTitle.Render(r.label+": ") + r.value + "\n")
+	}
+	if s.editErr != "" {
+		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.editErr))
+	}
+	return b.String()
+}
+
+func (s *MaintenanceItemFormScreen) viewToolList() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Tools required") + "  " + StyleMuted.Render("a add · e/enter edit · d remove · j/k move · esc back") + "\n\n")
+	if len(s.tools) == 0 {
+		b.WriteString(StyleMuted.Render("(no tools yet — press a to add)") + "\n")
+		return b.String()
+	}
+	for i, t := range s.tools {
+		caret := "  "
+		if i == s.rowCursor {
+			caret = "▸ "
+		}
+		line := fmt.Sprintf("%s%s ×%d", caret, t.name, t.quantity)
+		if t.locationHint != "" {
+			line += " · " + t.locationHint
+		}
+		if t.isRequired {
+			line += " " + StyleStatusWarn.Render("[REQ]")
+		}
+		if i == s.rowCursor {
+			line = StyleSidebarItemActive.Render(line)
+		}
+		b.WriteString(line + "\n")
+		if t.notes != "" {
+			b.WriteString("     " + StyleMuted.Render(t.notes) + "\n")
+		}
+	}
+	return b.String()
+}
+
+func (s *MaintenanceItemFormScreen) viewToolEdit() string {
+	var b strings.Builder
+	verb := "Add"
+	if s.editIndex >= 0 {
+		verb = "Edit"
+	}
+	b.WriteString(StyleTitle.Render(verb+" tool") + "  " + StyleMuted.Render("tab/↑↓ move · enter save · esc back") + "\n\n")
+	rows := []struct {
+		label string
+		value string
+	}{
+		{"Name", s.toName.View()},
+		{"Quantity", s.toQty.View()},
+		{"Where to find it", s.toLoc.View()},
+		{"Required", boolBadge(s.toRequired)},
+		{"Notes", s.toNotes.View()},
+	}
+	for i, r := range rows {
+		caret := "  "
+		if i == s.editCursor {
+			caret = "▸ "
+		}
+		b.WriteString(caret + StyleTitle.Render(r.label+": ") + r.value + "\n")
+	}
+	if s.editCursor == 3 {
+		b.WriteString("\n" + StyleMuted.Render("space toggles required") + "\n")
 	}
 	if s.editErr != "" {
 		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.editErr))

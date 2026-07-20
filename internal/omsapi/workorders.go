@@ -32,6 +32,7 @@ type WorkOrder struct {
 	ClosedAt             *time.Time                `json:"closed_at,omitempty"`
 	TaskCompletions      []WorkOrderTaskCompletion `json:"task_completions,omitempty"`
 	MaterialUsage        []WorkOrderMaterialUsage  `json:"material_usage,omitempty"`
+	Tools                []WorkOrderTool           `json:"tools,omitempty"`
 	Photos               []WorkOrderPhoto          `json:"photos,omitempty"`
 	Validation           *WorkOrderValidation      `json:"validation,omitempty"`
 }
@@ -57,6 +58,21 @@ type WorkOrderMaterialUsage struct {
 	Unit            string        `json:"unit,omitempty"`
 	WasUsed         bool          `json:"was_used,omitempty"`
 	CreatedAt       time.Time     `json:"created_at,omitempty"`
+}
+
+// WorkOrderTool is the lean, display-only projection of the source PM
+// template's MaintenanceTool rows that rides on every work order — "what to
+// grab before starting". Unlike task_completions / material_usage there is no
+// completion state to toggle: it is a flat reference list, so the TUI renders
+// it and offers no action. The backend sorts it required-first then by name,
+// so render it in the order received. May arrive empty.
+type WorkOrderTool struct {
+	ID           any    `json:"id"`
+	Name         string `json:"name"`
+	Quantity     int    `json:"quantity"`
+	LocationHint string `json:"location_hint,omitempty"`
+	IsRequired   bool   `json:"is_required"`
+	Notes        string `json:"notes,omitempty"`
 }
 
 type WorkOrderPhoto struct {

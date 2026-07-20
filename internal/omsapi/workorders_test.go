@@ -3,12 +3,71 @@ package omsapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// TestGetWorkOrder_ParsesTools pins the LEAN tools projection the work order
+// carries (WorkOrderSerializer.get_tools → build_tools_context): six keys only,
+// no completion state, integer quantity, and required-first ordering preserved
+// as received. This is a different shape from the full MaintenanceTool the PM
+// template edits, so it decodes into its own struct.
+func TestGetWorkOrder_ParsesTools(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK, `{
+		"id":7,"title":"Quarterly PM","status":"open",
+		"tools":[
+			{"id":"tl-1","name":"Torque wrench","quantity":2,"location_hint":"Tool crib, drawer 3","is_required":true,"notes":"calibrated"},
+			{"id":"tl-2","name":"Feeler gauge","quantity":1,"location_hint":"","is_required":false,"notes":""}
+		]
+	}`, &cap)
+	defer srv.Close()
+
+	wo, err := New(srv.URL).GetWorkOrder(context.Background(), "7")
+	if err != nil {
+		t.Fatalf("GetWorkOrder: %v", err)
+	}
+	if cap.path != "/api/inventory/work-orders/7/" {
+		t.Fatalf("path = %q", cap.path)
+	}
+	if len(wo.Tools) != 2 {
+		t.Fatalf("tools = %+v", wo.Tools)
+	}
+	first := wo.Tools[0]
+	if first.Name != "Torque wrench" || first.Quantity != 2 || !first.IsRequired {
+		t.Errorf("tool[0] = %+v", first)
+	}
+	if first.LocationHint != "Tool crib, drawer 3" || first.Notes != "calibrated" {
+		t.Errorf("tool[0] hint/notes = %+v", first)
+	}
+	if fmt.Sprint(first.ID) != "tl-1" {
+		t.Errorf("tool[0] id = %v", first.ID)
+	}
+	if wo.Tools[1].IsRequired || wo.Tools[1].Quantity != 1 {
+		t.Errorf("tool[1] = %+v", wo.Tools[1])
+	}
+}
+
+// TestGetWorkOrder_ToolsEmpty: an empty tools list is contract, not an error —
+// a work order with no PM template (or a template with no tools) returns [],
+// and the detail screen renders "No tools specified." from it.
+func TestGetWorkOrder_ToolsEmpty(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK, `{"id":7,"title":"Ad-hoc","status":"open","tools":[]}`, &cap)
+	defer srv.Close()
+
+	wo, err := New(srv.URL).GetWorkOrder(context.Background(), "7")
+	if err != nil {
+		t.Fatalf("GetWorkOrder: %v", err)
+	}
+	if len(wo.Tools) != 0 {
+		t.Errorf("tools = %+v", wo.Tools)
+	}
+}
 
 func TestCompleteWorkOrderTask_Contract(t *testing.T) {
 	var captured struct {

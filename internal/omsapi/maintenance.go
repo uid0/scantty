@@ -29,6 +29,7 @@ type MaintenanceItem struct {
 	NextDueAt        *time.Time            `json:"next_due_at,omitempty"`
 	LastCompletedAt  *time.Time            `json:"last_completed_at,omitempty"`
 	Materials        []MaintenanceMaterial `json:"materials,omitempty"`
+	Tools            []MaintenanceTool     `json:"tools,omitempty"`
 	Tasks            []MaintenanceTask     `json:"tasks,omitempty"`
 	CreatedAt        time.Time             `json:"created_at,omitempty"`
 	UpdatedAt        time.Time             `json:"updated_at,omitempty"`
@@ -86,6 +87,41 @@ type MaintenanceMaterialWrite struct {
 	Unit                 string `json:"unit"`
 	EstimatedCostPerUnit string `json:"estimated_cost_per_unit"`
 	Notes                string `json:"notes"`
+}
+
+// MaintenanceTool mirrors MaintenanceToolSerializer — one tool needed to
+// perform a MaintenanceItem. It is the direct analog of MaintenanceMaterial,
+// but for gear that gets gathered, used, and returned rather than consumed: so
+// a tool carries a location_hint ("Tool crib, drawer 3") for where to find it
+// instead of a material's unit + per-unit cost.
+//
+// Quantity is a plain int — the backend field is a PositiveIntegerField, NOT
+// the DecimalField a material quantity uses, so it arrives as a JSON number
+// and must not be decoded as a DecimalString.
+type MaintenanceTool struct {
+	ID              string  `json:"id,omitempty"`
+	MaintenanceItem string  `json:"maintenance_item,omitempty"`
+	InventoryItem   *string `json:"inventory_item,omitempty"`
+	// Same five keys the material serializer projects, so the type is shared.
+	InventoryItemDetail *MaintenanceMaterialInventoryDetail `json:"inventory_item_detail,omitempty"`
+	Name                string                              `json:"name"`
+	Quantity            int                                 `json:"quantity,omitempty"`
+	LocationHint        string                              `json:"location_hint,omitempty"`
+	IsRequired          bool                                `json:"is_required"`
+	Notes               string                              `json:"notes,omitempty"`
+	CreatedAt           time.Time                           `json:"created_at,omitempty"`
+}
+
+// MaintenanceToolWrite is the create/update payload for a tool. Unlike
+// MaintenanceMaterialWrite — whose decimal fields ride as strings — quantity is
+// a JSON number here, matching the model's PositiveIntegerField.
+type MaintenanceToolWrite struct {
+	MaintenanceItem string `json:"maintenance_item"`
+	Name            string `json:"name"`
+	Quantity        int    `json:"quantity"`
+	LocationHint    string `json:"location_hint"`
+	IsRequired      bool   `json:"is_required"`
+	Notes           string `json:"notes"`
 }
 
 // MaintenanceTask mirrors MaintenanceTaskSerializer — one ordered sub-step
@@ -305,6 +341,41 @@ func (c *Client) UpdateMaintenanceMaterial(ctx context.Context, id string, body 
 // DeleteMaintenanceMaterial removes a material.
 func (c *Client) DeleteMaintenanceMaterial(ctx context.Context, id string) error {
 	return c.Delete(ctx, maintenanceMaterialsPath+id+"/")
+}
+
+const maintenanceToolsPath = "/api/inventory/maintenance-tools/"
+
+// ListMaintenanceTools returns the tools for one PM item. The viewset is
+// registered next to maintenance-materials and takes the same
+// ?maintenance_item= filter.
+func (c *Client) ListMaintenanceTools(ctx context.Context, maintenanceItemID string) (*Page[MaintenanceTool], error) {
+	q := url.Values{}
+	q.Set("maintenance_item", maintenanceItemID)
+	return GetPage[MaintenanceTool](ctx, c, maintenanceToolsPath, q)
+}
+
+// CreateMaintenanceTool adds a required tool to a PM item.
+func (c *Client) CreateMaintenanceTool(ctx context.Context, body MaintenanceToolWrite) (*MaintenanceTool, error) {
+	var out MaintenanceTool
+	if err := c.Post(ctx, maintenanceToolsPath, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateMaintenanceTool PATCHes a tool in place, so editing a row keeps its id
+// instead of churning a delete+create (same reasoning as the material path).
+func (c *Client) UpdateMaintenanceTool(ctx context.Context, id string, body MaintenanceToolWrite) (*MaintenanceTool, error) {
+	var out MaintenanceTool
+	if err := c.Patch(ctx, maintenanceToolsPath+id+"/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteMaintenanceTool removes a tool.
+func (c *Client) DeleteMaintenanceTool(ctx context.Context, id string) error {
+	return c.Delete(ctx, maintenanceToolsPath+id+"/")
 }
 
 // ---------------------------------------------------------------------------

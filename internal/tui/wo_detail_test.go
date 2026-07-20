@@ -27,6 +27,49 @@ func loadWO(t *testing.T, deps Deps, wo *omsapi.WorkOrder) *WorkOrderDetailScree
 	return next.(*WorkOrderDetailScreen)
 }
 
+// TestWODetailRendersToolsRequired: the tool list renders name ×qty ·
+// location_hint with a [REQ] marker, and — the point of the section — it sits
+// at the TOP of the body, above Dates, because it is gear to gather before
+// starting rather than a record of work done.
+func TestWODetailRendersToolsRequired(t *testing.T) {
+	s := loadWO(t, Deps{}, &omsapi.WorkOrder{
+		ID: "wo1", Title: "Quarterly PM", Description: "spindle service",
+		Tools: []omsapi.WorkOrderTool{
+			{ID: "tl-1", Name: "Torque wrench", Quantity: 2, LocationHint: "Tool crib, drawer 3", IsRequired: true, Notes: "calibrated"},
+			{ID: "tl-2", Name: "Feeler gauge", Quantity: 1},
+		},
+	})
+	out := s.renderBody()
+
+	if !strings.Contains(out, "Tools Required") {
+		t.Fatalf("missing Tools Required section: %q", out)
+	}
+	if !strings.Contains(out, "Torque wrench ×2") || !strings.Contains(out, "Tool crib, drawer 3") {
+		t.Errorf("tool line missing qty/hint: %q", out)
+	}
+	if !strings.Contains(out, "REQ") || !strings.Contains(out, "calibrated") {
+		t.Errorf("tool line missing [REQ]/notes: %q", out)
+	}
+	if !strings.Contains(out, "Feeler gauge ×1") {
+		t.Errorf("second tool missing: %q", out)
+	}
+	tools, dates := strings.Index(out, "Tools Required"), strings.Index(out, "Dates")
+	if dates < 0 || tools > dates {
+		t.Errorf("Tools Required must render above Dates (tools=%d dates=%d)", tools, dates)
+	}
+}
+
+// TestWODetailToolsEmptyState: an empty tools list is contract (a WO with no PM
+// template returns []), so the section still renders with a muted placeholder
+// rather than vanishing.
+func TestWODetailToolsEmptyState(t *testing.T) {
+	s := loadWO(t, Deps{}, &omsapi.WorkOrder{ID: "wo1", Title: "Ad-hoc fix"})
+	out := s.renderBody()
+	if !strings.Contains(out, "Tools Required") || !strings.Contains(out, "No tools specified.") {
+		t.Errorf("empty tools state wrong: %q", out)
+	}
+}
+
 func TestWODetailTaskPickerTogglesCompletion(t *testing.T) {
 	var captured struct {
 		method, path string
