@@ -77,7 +77,7 @@ func NewReportsScreen(deps Deps) *ReportsScreen {
 			{
 				hotkey:   'm',
 				label:    "Demand forecast",
-				subtitle: "ML predicted demand · days-to-stockout · predictive reorder point",
+				subtitle: "restock cadence · next due · days-until-due",
 				build:    func(d Deps) Screen { return NewDemandForecastScreen(d) },
 			},
 			{

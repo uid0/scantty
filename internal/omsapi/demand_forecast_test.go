@@ -11,8 +11,9 @@ import (
 )
 
 // demandForecastJSON is a bare array (Response(serializer.data), no pagination
-// envelope) carrying one fully-populated row and one with every nullable field
-// null — the shape the report actions actually emit.
+// envelope) carrying one fully-populated restock-interval row and one
+// insufficient-history row with every nullable field null — the shape the v2
+// report actions actually emit, retired v1 quantity columns and all.
 const demandForecastJSON = `[
   {
     "id": 42,
@@ -21,19 +22,24 @@ const demandForecastJSON = `[
     "sku": "PLA-175",
     "category_name": "Printing",
     "generated_at": "2026-07-18T03:00:00Z",
-    "horizon_days": 21,
-    "predicted_daily_demand": 1.2857,
-    "horizon_demand": 27.0,
-    "horizon_demand_upper": 34.5,
+    "avg_interval_days": 47.5,
+    "interval_samples": 5,
+    "last_restock_date": "2026-06-25",
+    "predicted_next_reorder_date": "2026-08-12",
+    "days_until_due": -3.0,
+    "horizon_days": 0,
+    "predicted_daily_demand": 0.0,
+    "horizon_demand": 0.0,
+    "horizon_demand_upper": 0.0,
+    "days_until_stockout": null,
+    "projected_stockout_date": null,
+    "predictive_reorder_point": 0,
+    "safety_stock": 0,
     "available_at_generation": 4,
-    "days_until_stockout": 3.25,
-    "projected_stockout_date": "2026-07-22",
-    "predictive_reorder_point": 12,
     "needs_reorder": true,
     "lead_time_days": 7,
-    "safety_stock": 6,
-    "method": "holtwinters",
-    "model_version": "hw-1"
+    "method": "restock_interval",
+    "model_version": "interval-1"
   },
   {
     "id": 43,
@@ -42,25 +48,31 @@ const demandForecastJSON = `[
     "sku": "TAPE-B",
     "category_name": null,
     "generated_at": "2026-07-18T03:00:00Z",
-    "horizon_days": 14,
+    "avg_interval_days": null,
+    "interval_samples": 0,
+    "last_restock_date": null,
+    "predicted_next_reorder_date": null,
+    "days_until_due": null,
+    "horizon_days": 0,
     "predicted_daily_demand": 0.0,
     "horizon_demand": 0.0,
     "horizon_demand_upper": 0.0,
-    "available_at_generation": 30,
     "days_until_stockout": null,
     "projected_stockout_date": null,
-    "predictive_reorder_point": 2,
+    "predictive_reorder_point": 0,
+    "safety_stock": 0,
+    "available_at_generation": 30,
     "needs_reorder": false,
     "lead_time_days": null,
-    "safety_stock": 0,
-    "method": "fallback",
+    "method": "insufficient_history",
     "model_version": ""
   }
 ]`
 
 // TestDemandForecast_Contract pins the endpoint path, the low_stock_only query
-// key, and the decode of both a fully-populated row and an all-nulls one:
-// nullable numbers stay nil (not 0) and a null date/category decodes to "".
+// key, and the decode of both a fully-populated interval row and an
+// insufficient-history one: nullable numbers stay nil rather than collapsing to
+// 0, and a null date/category decodes to nil/"".
 func TestDemandForecast_Contract(t *testing.T) {
 	var gotPath, gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -92,38 +104,135 @@ func TestDemandForecast_Contract(t *testing.T) {
 	if full.ItemName != "PLA filament" || full.SKU != "PLA-175" || full.CategoryName != "Printing" {
 		t.Errorf("item fields = %+v", full)
 	}
-	if full.HorizonDays != 21 || full.PredictedDailyDemand != 1.2857 ||
-		full.HorizonDemand != 27 || full.HorizonDemandUpper != 34.5 {
-		t.Errorf("projection fields = %+v", full)
+	// The interval signal: cadence, the history behind it, and the due date.
+	if full.AvgIntervalDays == nil || *full.AvgIntervalDays != 47.5 {
+		t.Errorf("avg_interval_days = %v", full.AvgIntervalDays)
 	}
-	if full.DaysUntilStockout == nil || *full.DaysUntilStockout != 3.25 {
-		t.Errorf("days_until_stockout = %v", full.DaysUntilStockout)
+	if full.IntervalSamples != 5 {
+		t.Errorf("interval_samples = %d, want 5", full.IntervalSamples)
+	}
+	if full.LastRestockDate == nil || *full.LastRestockDate != "2026-06-25" {
+		t.Errorf("last_restock_date = %v", full.LastRestockDate)
+	}
+	if full.PredictedNextReorderDate == nil || *full.PredictedNextReorderDate != "2026-08-12" {
+		t.Errorf("predicted_next_reorder_date = %v", full.PredictedNextReorderDate)
+	}
+	if full.DaysUntilDue == nil || *full.DaysUntilDue != -3 {
+		t.Errorf("days_until_due = %v, want -3 (overdue stays negative)", full.DaysUntilDue)
 	}
 	if full.LeadTimeDays == nil || *full.LeadTimeDays != 7 {
 		t.Errorf("lead_time_days = %v", full.LeadTimeDays)
 	}
-	if full.ProjectedStockoutDate != "2026-07-22" || full.AvailableAtGeneration != 4 ||
-		full.PredictiveReorderPoint != 12 || full.SafetyStock != 6 || !full.NeedsReorder {
+	if full.AvailableAtGeneration != 4 || !full.NeedsReorder {
 		t.Errorf("reorder fields = %+v", full)
 	}
-	if full.Method != ForecastMethodHoltWinters || full.ModelVersion != "hw-1" {
+	if full.Method != ForecastMethodRestockInterval || full.ModelVersion != "interval-1" {
 		t.Errorf("model fields = %q / %q", full.Method, full.ModelVersion)
 	}
 	if full.GeneratedAt.IsZero() || full.GeneratedAt.UTC().Format("2006-01-02 15:04") != "2026-07-18 03:00" {
 		t.Errorf("generated_at = %v", full.GeneratedAt)
 	}
 
-	// Nulls must stay distinguishable from zero.
+	// Retired v1 columns: a zero the backend really sent must stay a zero, and
+	// a null must stay nil — a v2 row sends both, so the pointer types are what
+	// keeps "0/day" from being invented out of a null.
+	if full.PredictedDailyDemand == nil || *full.PredictedDailyDemand != 0 {
+		t.Errorf("a sent 0 predicted_daily_demand must decode to a non-nil 0, got %v",
+			full.PredictedDailyDemand)
+	}
+	if full.HorizonDays == nil || *full.HorizonDays != 0 {
+		t.Errorf("a sent 0 horizon_days must decode to a non-nil 0, got %v", full.HorizonDays)
+	}
+	if full.DaysUntilStockout != nil {
+		t.Errorf("null days_until_stockout should decode to nil, got %v", *full.DaysUntilStockout)
+	}
+	if full.ProjectedStockoutDate != nil {
+		t.Errorf("null projected_stockout_date should decode to nil, got %q", *full.ProjectedStockoutDate)
+	}
+
+	// The insufficient-history row: every interval nullable is null and must
+	// stay distinguishable from zero, or the screen would print a cadence of 0
+	// days and a due date of today.
 	nulls := rows[1]
-	if nulls.DaysUntilStockout != nil {
-		t.Errorf("null days_until_stockout should decode to nil, got %v", *nulls.DaysUntilStockout)
+	if nulls.Method != ForecastMethodInsufficientHistory {
+		t.Errorf("method = %q, want %q", nulls.Method, ForecastMethodInsufficientHistory)
+	}
+	if nulls.AvgIntervalDays != nil {
+		t.Errorf("null avg_interval_days should decode to nil, got %v", *nulls.AvgIntervalDays)
+	}
+	if nulls.DaysUntilDue != nil {
+		t.Errorf("null days_until_due should decode to nil, got %v", *nulls.DaysUntilDue)
+	}
+	if nulls.LastRestockDate != nil || nulls.PredictedNextReorderDate != nil {
+		t.Errorf("null dates should decode to nil, got %v / %v",
+			nulls.LastRestockDate, nulls.PredictedNextReorderDate)
+	}
+	if nulls.IntervalSamples != 0 {
+		t.Errorf("interval_samples = %d, want 0", nulls.IntervalSamples)
 	}
 	if nulls.LeadTimeDays != nil {
 		t.Errorf("null lead_time_days should decode to nil, got %v", *nulls.LeadTimeDays)
 	}
-	if nulls.ProjectedStockoutDate != "" || nulls.CategoryName != "" {
-		t.Errorf("null date/category should decode to empty, got %q / %q",
-			nulls.ProjectedStockoutDate, nulls.CategoryName)
+	if nulls.CategoryName != "" {
+		t.Errorf("null category should decode to empty, got %q", nulls.CategoryName)
+	}
+}
+
+// TestDemandForecast_LegacyRowDecodes: a row written by the retired v1 engine
+// is still readable — its quantity projection carries real numbers where a v2
+// row carries 0/null, which is what the detail view keys off to show it.
+func TestDemandForecast_LegacyRowDecodes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{
+			"id": 7, "item": "itm-1", "item_name": "Blue tape",
+			"avg_interval_days": null, "interval_samples": 0,
+			"last_restock_date": null, "predicted_next_reorder_date": null,
+			"days_until_due": null,
+			"horizon_days": 21, "predicted_daily_demand": 1.2857,
+			"horizon_demand": 27.0, "horizon_demand_upper": 34.5,
+			"days_until_stockout": 3.25, "projected_stockout_date": "2026-07-22",
+			"predictive_reorder_point": 12, "safety_stock": 6,
+			"available_at_generation": 4, "needs_reorder": true, "lead_time_days": 7,
+			"method": "holtwinters", "model_version": "hw-1"
+		}]`))
+	}))
+	defer srv.Close()
+
+	rows, err := New(srv.URL).DemandForecast(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("DemandForecast: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.Method != ForecastMethodHoltWinters {
+		t.Errorf("method = %q", r.Method)
+	}
+	if r.HorizonDays == nil || *r.HorizonDays != 21 {
+		t.Errorf("horizon_days = %v", r.HorizonDays)
+	}
+	if r.PredictedDailyDemand == nil || *r.PredictedDailyDemand != 1.2857 {
+		t.Errorf("predicted_daily_demand = %v", r.PredictedDailyDemand)
+	}
+	if r.HorizonDemand == nil || *r.HorizonDemand != 27 ||
+		r.HorizonDemandUpper == nil || *r.HorizonDemandUpper != 34.5 {
+		t.Errorf("horizon demand = %v / %v", r.HorizonDemand, r.HorizonDemandUpper)
+	}
+	if r.DaysUntilStockout == nil || *r.DaysUntilStockout != 3.25 {
+		t.Errorf("days_until_stockout = %v", r.DaysUntilStockout)
+	}
+	if r.ProjectedStockoutDate == nil || *r.ProjectedStockoutDate != "2026-07-22" {
+		t.Errorf("projected_stockout_date = %v", r.ProjectedStockoutDate)
+	}
+	if r.PredictiveReorderPoint == nil || *r.PredictiveReorderPoint != 12 ||
+		r.SafetyStock == nil || *r.SafetyStock != 6 {
+		t.Errorf("reorder point / safety stock = %v / %v", r.PredictiveReorderPoint, r.SafetyStock)
+	}
+	// A v1 row has no interval signal at all.
+	if r.AvgIntervalDays != nil || r.DaysUntilDue != nil || r.LastRestockDate != nil {
+		t.Errorf("a v1 row must carry no interval signal, got %+v", r)
 	}
 }
 
