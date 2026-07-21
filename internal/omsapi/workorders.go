@@ -35,6 +35,56 @@ type WorkOrder struct {
 	Tools                []WorkOrderTool           `json:"tools,omitempty"`
 	Photos               []WorkOrderPhoto          `json:"photos,omitempty"`
 	Validation           *WorkOrderValidation      `json:"validation,omitempty"`
+	ReferenceDocuments   *ReferenceDocuments       `json:"reference_documents,omitempty"`
+}
+
+// ReferenceDocuments is the manual / revision history / reference links bundle
+// the work order carries at sign-off. It is a read-only projection of the
+// ASSET's document library — the work order stores no links of its own, so
+// there is nothing to edit from the WO screen, and documents are managed on the
+// asset. Detail-only: the list serializer omits it, and a backend older than
+// op-pzae omits it everywhere, so a nil pointer means "empty", never an error.
+type ReferenceDocuments struct {
+	Documents []WorkOrderRefDoc  `json:"documents"`
+	Links     []WorkOrderRefLink `json:"links"`
+}
+
+// WorkOrderRefDoc is one CURRENT document in the asset's library. Version is a
+// plain integer (AssetDocument.version, bumped on each upload) — unlike the
+// decimal quantities elsewhere on the work order. Revisions is the older
+// versions behind it, newest-first, and is empty for a document nobody has
+// replaced yet. FileURL is null when the row outlived its file, which decodes
+// to "" — a document worth naming even though there is nothing to open.
+type WorkOrderRefDoc struct {
+	ID              any                       `json:"id"`
+	Category        string                    `json:"category,omitempty"`
+	CategoryDisplay string                    `json:"category_display,omitempty"`
+	Title           string                    `json:"title"`
+	Version         int                       `json:"version,omitempty"`
+	FileURL         string                    `json:"file_url,omitempty"`
+	UploadedAt      string                    `json:"uploaded_at,omitempty"`
+	Revisions       []WorkOrderRefDocRevision `json:"revisions,omitempty"`
+}
+
+// WorkOrderRefDocRevision is a superseded version of a document.
+//
+// UploadedAt is a string, not a time.Time: the backend hand-builds these with
+// isoformat() rather than letting DRF render a DateTimeField, and it emits null
+// for a missing timestamp. Keeping it as text means an unexpected format
+// degrades to an unformatted date instead of failing the whole work-order
+// decode over a document footnote.
+type WorkOrderRefDocRevision struct {
+	ID         any    `json:"id"`
+	Version    int    `json:"version,omitempty"`
+	FileURL    string `json:"file_url,omitempty"`
+	UploadedAt string `json:"uploaded_at,omitempty"`
+}
+
+// WorkOrderRefLink is one of the asset's quick links (manual PDF, product page,
+// wiki). Only links that are actually set arrive, so every entry is renderable.
+type WorkOrderRefLink struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
 }
 
 // WorkOrderTaskCompletion is one step of a work order, and carries both halves

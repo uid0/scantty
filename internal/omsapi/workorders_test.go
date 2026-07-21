@@ -69,6 +69,128 @@ func TestGetWorkOrder_ToolsEmpty(t *testing.T) {
 	}
 }
 
+// TestGetWorkOrder_ParsesReferenceDocuments pins the reference bundle the WO
+// detail carries (WorkOrderSerializer.get_reference_documents →
+// build_reference_documents_context): the eight document keys, an integer
+// version, a newest-first supersedes chain under revisions, and the asset's
+// quick links. Only current documents head the list — the older versions are
+// the chain, never top-level rows.
+func TestGetWorkOrder_ParsesReferenceDocuments(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK, `{
+		"id":7,"title":"Quarterly PM","status":"open",
+		"reference_documents":{
+			"documents":[
+				{"id":"doc-3","category":"manual","category_display":"Manual / Documentation",
+				 "title":"Bandsaw manual","version":3,
+				 "file_url":"http://oms.example.org/media/assets/documents/2026/07/manual.pdf",
+				 "uploaded_at":"2026-07-01T12:00:00+00:00",
+				 "revisions":[
+					{"id":"doc-2","version":2,"file_url":"http://oms.example.org/media/v2.pdf","uploaded_at":"2026-05-04T09:30:00+00:00"},
+					{"id":"doc-1","version":1,"file_url":null,"uploaded_at":null}
+				 ]},
+				{"id":"doc-9","category":"wiring_diagram","category_display":"Wiring Diagram",
+				 "title":"Zeta wiring","version":1,"file_url":null,
+				 "uploaded_at":"2026-02-11T08:00:00+00:00","revisions":[]}
+			],
+			"links":[
+				{"label":"Manual (PDF)","url":"http://oms.example.org/media/assets/manual.pdf"},
+				{"label":"Wiki","url":"https://wiki.example.com/bandsaw"}
+			]
+		}
+	}`, &cap)
+	defer srv.Close()
+
+	wo, err := New(srv.URL).GetWorkOrder(context.Background(), "7")
+	if err != nil {
+		t.Fatalf("GetWorkOrder: %v", err)
+	}
+	if cap.path != "/api/inventory/work-orders/7/" {
+		t.Fatalf("path = %q", cap.path)
+	}
+	if wo.ReferenceDocuments == nil {
+		t.Fatalf("reference_documents did not decode")
+	}
+	docs, links := wo.ReferenceDocuments.Documents, wo.ReferenceDocuments.Links
+	if len(docs) != 2 || len(links) != 2 {
+		t.Fatalf("documents/links = %d/%d, want 2/2", len(docs), len(links))
+	}
+
+	manual := docs[0]
+	if fmt.Sprint(manual.ID) != "doc-3" || manual.Title != "Bandsaw manual" {
+		t.Errorf("documents[0] id/title = %v / %q", manual.ID, manual.Title)
+	}
+	// version is a plain JSON number here, unlike the decimal-string quantities
+	// elsewhere on the work order.
+	if manual.Version != 3 {
+		t.Errorf("documents[0] version = %d, want 3", manual.Version)
+	}
+	if manual.Category != "manual" || manual.CategoryDisplay != "Manual / Documentation" {
+		t.Errorf("documents[0] category = %q / %q", manual.Category, manual.CategoryDisplay)
+	}
+	if !strings.HasSuffix(manual.FileURL, "manual.pdf") {
+		t.Errorf("documents[0] file_url = %q", manual.FileURL)
+	}
+	if manual.UploadedAt != "2026-07-01T12:00:00+00:00" {
+		t.Errorf("documents[0] uploaded_at = %q", manual.UploadedAt)
+	}
+	if len(manual.Revisions) != 2 {
+		t.Fatalf("revisions = %+v", manual.Revisions)
+	}
+	if manual.Revisions[0].Version != 2 || manual.Revisions[1].Version != 1 {
+		t.Errorf("revisions must stay newest-first: %+v", manual.Revisions)
+	}
+	if fmt.Sprint(manual.Revisions[0].ID) != "doc-2" {
+		t.Errorf("revisions[0] id = %v", manual.Revisions[0].ID)
+	}
+	// A row can outlive its file: file_url/uploaded_at come back null and must
+	// decode to empty rather than failing the whole work order.
+	if manual.Revisions[1].FileURL != "" || manual.Revisions[1].UploadedAt != "" {
+		t.Errorf("null file_url/uploaded_at should decode empty: %+v", manual.Revisions[1])
+	}
+
+	if docs[1].Title != "Zeta wiring" || len(docs[1].Revisions) != 0 || docs[1].FileURL != "" {
+		t.Errorf("documents[1] = %+v", docs[1])
+	}
+	if links[0].Label != "Manual (PDF)" || links[1].URL != "https://wiki.example.com/bandsaw" {
+		t.Errorf("links = %+v", links)
+	}
+}
+
+// TestGetWorkOrder_ReferenceDocumentsAbsentOrEmpty: both an empty bundle (an
+// asset with no documents and no quick links) and a wholly absent one (a
+// backend older than op-pzae, or the list serializer) are contract. Neither is
+// an error, and both leave the detail screen showing "No linked documents."
+func TestGetWorkOrder_ReferenceDocumentsAbsentOrEmpty(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK,
+		`{"id":7,"title":"Ad-hoc","status":"open","reference_documents":{"documents":[],"links":[]}}`, &cap)
+	defer srv.Close()
+
+	wo, err := New(srv.URL).GetWorkOrder(context.Background(), "7")
+	if err != nil {
+		t.Fatalf("GetWorkOrder: %v", err)
+	}
+	if wo.ReferenceDocuments == nil {
+		t.Fatalf("an empty bundle should still decode into a non-nil struct")
+	}
+	if len(wo.ReferenceDocuments.Documents) != 0 || len(wo.ReferenceDocuments.Links) != 0 {
+		t.Errorf("bundle = %+v, want empty", wo.ReferenceDocuments)
+	}
+
+	var cap2 capture
+	srv2 := captureServer(t, http.StatusOK, `{"id":7,"title":"Ad-hoc","status":"open"}`, &cap2)
+	defer srv2.Close()
+
+	wo2, err := New(srv2.URL).GetWorkOrder(context.Background(), "7")
+	if err != nil {
+		t.Fatalf("GetWorkOrder (absent bundle): %v", err)
+	}
+	if wo2.ReferenceDocuments != nil {
+		t.Errorf("absent reference_documents should stay nil, got %+v", wo2.ReferenceDocuments)
+	}
+}
+
 func TestCompleteWorkOrderTask_Contract(t *testing.T) {
 	var captured struct {
 		method string
