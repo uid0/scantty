@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -94,6 +95,22 @@ type WorkOrderDetailScreen struct {
 	notesIn      textinput.Model
 	notesErr     string
 	notesPending bool
+
+	// Elapsed timer (op-m3so). The server owns every total: timerPending gates a
+	// second toggle while one is in flight, and tickOffset is the seconds counted
+	// locally since the last fetch so a running clock visibly advances between
+	// refreshes.
+	//
+	// ticking + tickGen keep exactly one 1s chain alive. The generation is what
+	// makes that safe across navigation: this screen instance is restored from
+	// the back stack, so a tick from the chain we abandoned on the way out can
+	// still land after Init has armed a fresh one. Two live chains would count
+	// seconds twice as fast, so a tick from a stale generation is dropped
+	// instead of re-arming.
+	timerPending bool
+	ticking      bool
+	tickGen      int
+	tickOffset   int
 }
 
 type woDetailLoadedMsg struct {
@@ -120,6 +137,20 @@ type woNotesSavedMsg struct {
 	err error
 }
 
+// woTimerToggledMsg reports a start/pause. label names what was clocked ("timer"
+// or the step title) so the status line says which clock moved — starting a step
+// can pause a different one, and the operator should see which action landed.
+type woTimerToggledMsg struct {
+	action string
+	label  string
+	err    error
+}
+
+// woTickMsg advances the locally-displayed seconds by one while a clock runs.
+// gen identifies the chain that emitted it, so ticks from an abandoned chain can
+// be told apart from the live one.
+type woTickMsg struct{ gen int }
+
 func NewWorkOrderDetailScreen(deps Deps, id string) *WorkOrderDetailScreen {
 	return &WorkOrderDetailScreen{
 		deps:     deps,
@@ -136,7 +167,15 @@ func (s *WorkOrderDetailScreen) Title() string {
 	return fmt.Sprintf("WO #%s", s.woID)
 }
 
-func (s *WorkOrderDetailScreen) Init() tea.Cmd { return s.load() }
+// Init (re)loads the work order. It also drops any tick chain this screen had
+// running: the back stack hands the same instance back on a return visit, and
+// the chain we left behind fired its last tick into whatever screen replaced us.
+// Clearing the flag lets the reload arm a fresh one; the generation bump keeps
+// the abandoned tick from arming a second.
+func (s *WorkOrderDetailScreen) Init() tea.Cmd {
+	s.stopTicking()
+	return s.load()
+}
 
 // WantsRawInput routes every key to the screen while any modal is open so the
 // textinputs and picker cursors receive characters the global dispatcher
@@ -181,8 +220,12 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		s.wo = m.wo
 		s.clampCursors()
+		// Re-anchor the stopwatch on the server's fresh totals before rendering:
+		// the value that just arrived already includes the running segment, so
+		// the local offset starts over from zero.
+		cmd := s.syncTicking()
 		s.refreshBody()
-		return s, nil
+		return s, cmd
 	case woTransitionedMsg:
 		s.transitioning = false
 		if m.err != nil {
@@ -200,8 +243,11 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.setAction(fmt.Sprintf("%s OK", m.action), StatusOK)
 		s.wo = m.wo
 		s.clampCursors()
+		// Completing a work order finalizes its clocks server-side, so the tick
+		// chain has to re-read is_timing here rather than keep counting.
+		cmd := s.syncTicking()
 		s.refreshBody()
-		return s, Status(s.actionMsg, StatusOK)
+		return s, tea.Batch(Status(s.actionMsg, StatusOK), cmd)
 	case woTaskToggledMsg:
 		s.actionPending = false
 		if m.err != nil {
@@ -261,9 +307,34 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.mode = woModeView
 		s.wo = m.wo
 		s.clampCursors()
+		cmd := s.syncTicking()
 		s.refreshBody()
 		s.setAction("notes saved", StatusOK)
-		return s, Status("notes saved", StatusOK)
+		return s, tea.Batch(Status("notes saved", StatusOK), cmd)
+	case woTimerToggledMsg:
+		s.timerPending = false
+		if m.err != nil {
+			return s, Status(fmt.Sprintf("%s %s failed: %s", m.label, m.action, m.err.Error()), StatusError)
+		}
+		// Re-fetch rather than trust the echoed row: starting a step pauses
+		// whichever other step was running and can flip an open WO to
+		// in_progress, and neither shows up in the single object returned.
+		note := fmt.Sprintf("%s %s", m.label, timerPastTense(m.action))
+		return s, tea.Batch(Status(note, StatusOK), s.load())
+	case woTickMsg:
+		// A stale tick — from a chain that was stopped, superseded on the way
+		// back through the nav stack, or whose clock the server has since paused
+		// — dies here rather than re-arming.
+		if !s.ticking || m.gen != s.tickGen {
+			return s, nil
+		}
+		if !s.anyTiming() {
+			s.stopTicking()
+			return s, nil
+		}
+		s.tickOffset++
+		s.refreshBody()
+		return s, s.tickCmd()
 
 	case tea.KeyMsg:
 		switch s.mode {
@@ -311,6 +382,10 @@ func (s *WorkOrderDetailScreen) handleViewKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 		// Destructive — confirm before cancelling.
 		s.openConfirm("cancelled", "CANCEL this work order?")
 		return s, nil
+	case "s":
+		// Stopwatch for the whole job. Lowercase s is free in the global hotkey
+		// set, so no LocalKeyScreen claim is needed to reach this.
+		return s.toggleWOTimer()
 	case "t":
 		if s.wo == nil || len(s.wo.TaskCompletions) == 0 {
 			return s, Status("no tasks to complete", StatusWarn)
@@ -373,6 +448,14 @@ func (s *WorkOrderDetailScreen) handleTasksKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 		t := s.wo.TaskCompletions[s.taskCursor]
 		s.openPhotoForm(fmt.Sprintf("%v", t.ID), t.TaskTitle)
 		return s, textinput.Blink
+	case "s":
+		// Same key as the whole-job stopwatch on the body: here it clocks the
+		// highlighted step instead. The picker takes raw input, so nothing
+		// upstream can claim it.
+		if n == 0 {
+			return s, nil
+		}
+		return s.toggleStepTimer()
 	}
 	return s, nil
 }
@@ -392,6 +475,175 @@ func (s *WorkOrderDetailScreen) toggleTask() tea.Cmd {
 		_, err := deps.OMS.CompleteWorkOrderTask(ctx, woID, taskID, next, "")
 		return woTaskToggledMsg{err: err}
 	}
+}
+
+// --- Elapsed timer ---------------------------------------------------------
+
+// woTimerAllowed reports whether the stopwatch can still be driven in this
+// work-order state. Completing a WO finalizes its clocks on the backend and
+// stamps the total onto the maintenance log, so restarting one afterwards would
+// misreport the job — the web disables the button for the same reason.
+func woTimerAllowed(status string) bool {
+	switch status {
+	case "open", "in_progress", "blocked":
+		return true
+	}
+	return false
+}
+
+// toggleWOTimer starts or pauses the whole-job clock. The action is derived from
+// the last-fetched is_timing, and the endpoint is idempotent, so a stale view
+// (someone paused it on the web) costs a no-op round trip, never a bad total.
+func (s *WorkOrderDetailScreen) toggleWOTimer() (Screen, tea.Cmd) {
+	if s.wo == nil || s.timerPending {
+		return s, nil
+	}
+	if !woTimerAllowed(s.wo.Status) {
+		return s, Status("timer closed with the work order", StatusWarn)
+	}
+	action := omsapi.TimerStart
+	if s.wo.IsTiming {
+		action = omsapi.TimerPause
+	}
+	s.timerPending = true
+	woID := s.woID
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s, func() tea.Msg {
+		_, err := deps.OMS.TimerWorkOrder(ctx, woID, action)
+		return woTimerToggledMsg{action: action, label: "timer", err: err}
+	}
+}
+
+// toggleStepTimer starts or pauses the highlighted step's clock. Only one step
+// per work order runs at a time — the backend pauses the others — so this fires
+// and re-fetches rather than predicting which clocks moved.
+func (s *WorkOrderDetailScreen) toggleStepTimer() (Screen, tea.Cmd) {
+	if s.wo == nil || s.timerPending || len(s.wo.TaskCompletions) == 0 {
+		return s, nil
+	}
+	if !woTimerAllowed(s.wo.Status) {
+		return s, Status("timer closed with the work order", StatusWarn)
+	}
+	task := s.wo.TaskCompletions[s.taskCursor]
+	action := omsapi.TimerStart
+	if task.IsTiming {
+		action = omsapi.TimerPause
+	}
+	label := task.TaskTitle
+	if label == "" {
+		label = "step"
+	}
+	taskID := fmt.Sprintf("%v", task.ID)
+	woID := s.woID
+	s.timerPending = true
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s, func() tea.Msg {
+		_, err := deps.OMS.TimerWorkOrderTask(ctx, woID, taskID, action)
+		return woTimerToggledMsg{action: action, label: label, err: err}
+	}
+}
+
+// timerPastTense turns a wire action into what the status line says happened.
+func timerPastTense(action string) string {
+	if action == omsapi.TimerPause {
+		return "paused"
+	}
+	return "started"
+}
+
+// anyTiming reports whether any clock on this work order is running, and so
+// whether a local tick has anything to advance.
+func (s *WorkOrderDetailScreen) anyTiming() bool {
+	if s.wo == nil {
+		return false
+	}
+	if s.wo.IsTiming {
+		return true
+	}
+	for _, t := range s.wo.TaskCompletions {
+		if t.IsTiming {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *WorkOrderDetailScreen) tickCmd() tea.Cmd {
+	gen := s.tickGen
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return woTickMsg{gen: gen} })
+}
+
+// syncTicking re-anchors the display on a freshly fetched work order: the local
+// offset restarts at zero (the server value already includes the running
+// segment) and the 1s chain runs only while something is timing. An already-live
+// chain is left alone rather than joined by a second one.
+func (s *WorkOrderDetailScreen) syncTicking() tea.Cmd {
+	s.tickOffset = 0
+	if !s.anyTiming() {
+		s.stopTicking()
+		return nil
+	}
+	if s.ticking {
+		return nil
+	}
+	s.ticking = true
+	s.tickGen++
+	return s.tickCmd()
+}
+
+// stopTicking abandons the current chain: bumping the generation means any tick
+// already in flight is ignored when it lands instead of restarting the clock.
+func (s *WorkOrderDetailScreen) stopTicking() {
+	s.ticking = false
+	s.tickGen++
+}
+
+// liveSeconds is what to display for one clock: the server's total, plus the
+// seconds ticked locally since it was fetched if that clock is running. The
+// server value is authoritative — this only fills the gap between refreshes,
+// and every fetch resets it.
+func (s *WorkOrderDetailScreen) liveSeconds(elapsed int, timing bool) int {
+	if !timing {
+		return elapsed
+	}
+	return elapsed + s.tickOffset
+}
+
+// formatElapsed renders a stopwatch total as MM:SS, or H:MM:SS once a job passes
+// the hour — the same clock the web widget shows.
+func formatElapsed(totalSeconds int) string {
+	if totalSeconds < 0 {
+		totalSeconds = 0
+	}
+	h := totalSeconds / 3600
+	m := (totalSeconds % 3600) / 60
+	sec := totalSeconds % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, sec)
+	}
+	return fmt.Sprintf("%02d:%02d", m, sec)
+}
+
+// elapsedSummary is the comparison the stopwatch exists to produce —
+// "18m / est 30m" — falling back to "18m on job" when the source PM template
+// carries no estimate (or there is no template at all).
+func elapsedSummary(totalSeconds int, estimateMinutes *int) string {
+	if totalSeconds < 0 {
+		totalSeconds = 0
+	}
+	minutes := (totalSeconds + 30) / 60
+	if estimateMinutes != nil && *estimateMinutes > 0 {
+		return fmt.Sprintf("%dm / est %dm", minutes, *estimateMinutes)
+	}
+	return fmt.Sprintf("%dm on job", minutes)
 }
 
 // --- Material picker -------------------------------------------------------
@@ -863,6 +1115,17 @@ func (s *WorkOrderDetailScreen) footerHint() string {
 	case "open", "in_progress", "blocked":
 		parts = append(parts, "i in-progress", "b block", "c complete", "x cancel")
 	}
+	// Only offered while the clock can still move: completing a WO finalizes it
+	// server-side. Gating it also keeps two words off an already-long footer on
+	// the screens that don't need them — it names the action the key performs
+	// rather than adding a second entry for pause.
+	if woTimerAllowed(s.wo.Status) {
+		if s.wo.IsTiming {
+			parts = append(parts, "s pause")
+		} else {
+			parts = append(parts, "s start")
+		}
+	}
 	if len(s.wo.TaskCompletions) > 0 {
 		parts = append(parts, "t tasks")
 	}
@@ -900,6 +1163,15 @@ func (s *WorkOrderDetailScreen) renderTaskPicker() string {
 			line = StyleTitle.Render(line)
 		}
 		b.WriteString(line + "\n")
+		// The step's clock, so 's' has something to aim at. Shown only once the
+		// step has been timed — the running one is the row worth spotting.
+		if secs := s.liveSeconds(t.ElapsedSeconds, t.IsTiming); secs > 0 || t.IsTiming {
+			clock := "      " + StyleMuted.Render("time: "+formatElapsed(secs))
+			if t.IsTiming {
+				clock += " " + StyleStatusOK.Render("● running")
+			}
+			b.WriteString(clock + "\n")
+		}
 		// Both photo halves, indented under their step: the template's
 		// reference shot and whatever evidence has been filed against it.
 		if t.TaskReferenceImageURL != "" {
@@ -910,10 +1182,13 @@ func (s *WorkOrderDetailScreen) renderTaskPicker() string {
 		}
 	}
 	b.WriteString("\n")
-	if s.actionPending {
+	switch {
+	case s.actionPending:
 		b.WriteString(StyleMuted.Render("Updating…"))
-	} else {
-		b.WriteString(StyleMuted.Render("j/k move · space/enter toggle · p evidence photo · esc back"))
+	case s.timerPending:
+		b.WriteString(StyleMuted.Render("Timer…"))
+	default:
+		b.WriteString(StyleMuted.Render("j/k move · space/enter toggle · s timer · p evidence photo · esc back"))
 	}
 	return b.String()
 }
@@ -1154,6 +1429,28 @@ func (s *WorkOrderDetailScreen) renderConfirm() string {
 	return b.String()
 }
 
+// renderTimerLine is the whole-job stopwatch: clock, a marker while it runs, and
+// the actual-vs-estimate summary. Returns a whole line, newline included.
+//
+// It renders unconditionally, like the Tools and Documentation sections: a
+// never-started clock reading 00:00 is what tells an operator the key exists,
+// and an absent elapsed_seconds (a backend older than op-m3so) decodes to the
+// same zero as a clock nobody started, so there is nothing to distinguish them
+// by. Against such a backend the key 404s, which is honest.
+func (s *WorkOrderDetailScreen) renderTimerLine() string {
+	wo := s.wo
+	if wo == nil {
+		return ""
+	}
+	secs := s.liveSeconds(wo.ElapsedSeconds, wo.IsTiming)
+	line := StyleMuted.Render("Elapsed: ") + formatElapsed(secs)
+	if wo.IsTiming {
+		line += " " + StyleStatusOK.Render("● running")
+	}
+	line += StyleMuted.Render(" · " + elapsedSummary(secs, wo.EstimatedTimeMin))
+	return line + "\n"
+}
+
 func (s *WorkOrderDetailScreen) renderBody() string {
 	wo := s.wo
 	var b strings.Builder
@@ -1193,6 +1490,12 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 	if wo.CompletedByName != "" {
 		b.WriteString(StyleMuted.Render("Completed by: ") + wo.CompletedByName + "\n")
 	}
+
+	// The stopwatch rides in the header block rather than down in Dates: a
+	// running clock is the one number on this screen that changes while you look
+	// at it, so it must be readable without scrolling. Actual-vs-estimate is the
+	// whole point of recording it, so the estimate travels on the same line.
+	b.WriteString(s.renderTimerLine())
 
 	if wo.Description != "" {
 		b.WriteString("\n" + wo.Description + "\n")
@@ -1235,6 +1538,11 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 	}
 	if !wo.UpdatedAt.IsZero() {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("Updated: %s", wo.UpdatedAt.Format("2006-01-02 15:04"))) + "\n")
+	}
+	// When work FIRST started (first timer start). A later resume never moves it,
+	// so it is a date, not part of the running clock above.
+	if wo.StartedAt != nil {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("Started: %s", wo.StartedAt.Format("2006-01-02 15:04"))) + "\n")
 	}
 	if wo.CompletedAt != nil {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("Completed: %s", wo.CompletedAt.Format("2006-01-02 15:04"))) + "\n")
@@ -1321,6 +1629,16 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 			}
 			b.WriteString(marker + title + "\n")
 			meta := []string{}
+			// The step's own clock leads its meta line: on a job being worked
+			// right now it is the line's only changing value. Steps nobody timed
+			// stay silent rather than printing a column of 00:00.
+			if secs := s.liveSeconds(t.ElapsedSeconds, t.IsTiming); secs > 0 || t.IsTiming {
+				entry := formatElapsed(secs)
+				if t.IsTiming {
+					entry += " ● running"
+				}
+				meta = append(meta, entry)
+			}
 			if t.CompletedAt != nil {
 				meta = append(meta, t.CompletedAt.Format("2006-01-02 15:04"))
 			}
