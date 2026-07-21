@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+// WorkOrder carries the whole-job stopwatch (op-m3so) alongside its steps:
+//
+//   - StartedAt — when work FIRST started. A later resume never moves it.
+//   - ElapsedSeconds — the server's LIVE total: the segment currently running is
+//     already folded in, so a client displays it (and may tick a local copy
+//     forward) but never accumulates into it and never sends it back.
+//   - IsTiming — whether the clock is running right now.
+//   - EstimatedTimeMin — the source PM template's guess, carried here so the
+//     actual-vs-estimate comparison needs no second fetch. Nullable: a template
+//     with no estimate, or an ad-hoc WO with no template at all.
+//
+// WO elapsed is wall-time-on-job — setup, LOTO and cleanup included — so it is
+// expected to exceed the sum of the per-step clocks rather than equal it.
 type WorkOrder struct {
 	ID                   any                       `json:"id"`
 	ShortID              string                    `json:"short_id,omitempty"`
@@ -26,6 +39,10 @@ type WorkOrder struct {
 	DueDate              string                    `json:"due_date,omitempty"`
 	IsOverdue            bool                      `json:"is_overdue,omitempty"`
 	Notes                string                    `json:"notes,omitempty"`
+	StartedAt            *time.Time                `json:"started_at,omitempty"`
+	ElapsedSeconds       int                       `json:"elapsed_seconds,omitempty"`
+	IsTiming             bool                      `json:"is_timing,omitempty"`
+	EstimatedTimeMin     *int                      `json:"estimated_time_minutes,omitempty"`
 	CompletedAt          *time.Time                `json:"completed_at,omitempty"`
 	CreatedAt            time.Time                 `json:"created_at,omitempty"`
 	UpdatedAt            time.Time                 `json:"updated_at,omitempty"`
@@ -100,6 +117,12 @@ type WorkOrderRefLink struct {
 //     is the normal case, not a failure.
 //
 // ScanTTY renders no images: both surface as URL / caption text.
+//
+// It also carries the step's own stopwatch (op-m3so). ElapsedSeconds is live
+// exactly as on the work order, and only ONE step per work order can be timing
+// at a time — the backend pauses whichever other step was running when a new one
+// starts, so the per-step totals partition the work instead of overlapping.
+// Ticking a step complete also stops its clock.
 type WorkOrderTaskCompletion struct {
 	ID                    any              `json:"id"`
 	Task                  *string          `json:"task,omitempty"`
@@ -112,6 +135,8 @@ type WorkOrderTaskCompletion struct {
 	Notes                 string           `json:"notes,omitempty"`
 	TaskReferenceImageURL string           `json:"task_reference_image_url,omitempty"`
 	EvidencePhotos        []WorkOrderPhoto `json:"evidence_photos,omitempty"`
+	ElapsedSeconds        int              `json:"elapsed_seconds,omitempty"`
+	IsTiming              bool             `json:"is_timing,omitempty"`
 	CreatedAt             time.Time        `json:"created_at,omitempty"`
 }
 
@@ -198,6 +223,41 @@ func (c *Client) CompleteWorkOrderTask(ctx context.Context, woID, taskID string,
 	}
 	var out WorkOrderTaskCompletion
 	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/tasks/%s/complete/", woID, taskID), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Timer actions accepted by both stopwatch endpoints. Anything else is a 400
+// from the backend rather than a silent no-op, so callers pass these constants.
+const (
+	TimerStart = "start"
+	TimerPause = "pause"
+)
+
+// TimerWorkOrder starts or pauses the WHOLE work order's stopwatch
+// (POST .../timer/ with {"action": "start"|"pause"}). Mirrors workOrderAPI.timer.
+//
+// Idempotent by contract: starting a running clock (or pausing a stopped one)
+// returns 200 and changes nothing, so a double-press cannot corrupt the total.
+// The response is the work order as it now stands, with a live elapsed_seconds.
+func (c *Client) TimerWorkOrder(ctx context.Context, woID, action string) (*WorkOrder, error) {
+	var out WorkOrder
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/timer/", woID), map[string]any{"action": action}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// TimerWorkOrderTask starts or pauses ONE step's stopwatch
+// (POST .../tasks/{taskID}/timer/). Mirrors workOrderAPI.taskTimer.
+//
+// Starting a step pauses whichever other step was running and can flip an OPEN
+// work order to in_progress, so the caller re-fetches the work order afterwards
+// rather than trusting the single step echoed back here.
+func (c *Client) TimerWorkOrderTask(ctx context.Context, woID, taskID, action string) (*WorkOrderTaskCompletion, error) {
+	var out WorkOrderTaskCompletion
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/tasks/%s/timer/", woID, taskID), map[string]any{"action": action}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
