@@ -70,6 +70,112 @@ func TestWODetailToolsEmptyState(t *testing.T) {
 	}
 }
 
+// TestWODetailRendersReferenceDocuments: the documentation block renders each
+// current document as title — category (rev N) with its URL beneath, compacts
+// the supersedes chain into one revisions line, lists the asset's quick links,
+// and sits by the sign-off gate (below Dates) rather than up with the tools.
+func TestWODetailRendersReferenceDocuments(t *testing.T) {
+	s := loadWO(t, Deps{}, &omsapi.WorkOrder{
+		ID: "wo1", Title: "Quarterly PM",
+		ReferenceDocuments: &omsapi.ReferenceDocuments{
+			Documents: []omsapi.WorkOrderRefDoc{{
+				ID: "doc-3", Category: "manual", CategoryDisplay: "Manual / Documentation",
+				Title: "Bandsaw manual", Version: 3,
+				FileURL:    "http://oms.example.org/media/manual.pdf",
+				UploadedAt: "2026-07-01T12:00:00+00:00",
+				Revisions: []omsapi.WorkOrderRefDocRevision{
+					{ID: "doc-2", Version: 2, FileURL: "http://oms.example.org/media/v2.pdf", UploadedAt: "2026-05-04T09:30:00+00:00"},
+					{ID: "doc-1", Version: 1},
+				},
+			}},
+			Links: []omsapi.WorkOrderRefLink{
+				{Label: "Wiki", URL: "https://wiki.example.com/bandsaw"},
+			},
+		},
+	})
+	out := s.renderBody()
+
+	if !strings.Contains(out, "Documentation & References") {
+		t.Fatalf("missing Documentation & References section: %q", out)
+	}
+	for _, want := range []string{
+		"Bandsaw manual",
+		"Manual / Documentation",
+		"(rev 3)",
+		"http://oms.example.org/media/manual.pdf",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("document line missing %q: %q", want, out)
+		}
+	}
+	// The chain is one compact sub-line, newest-first, with the isoformat
+	// timestamp trimmed to its calendar date.
+	if !strings.Contains(out, "revisions: rev 2 (2026-05-04), rev 1") {
+		t.Errorf("revision summary wrong: %q", out)
+	}
+	if !strings.Contains(out, "Wiki: ") || !strings.Contains(out, "https://wiki.example.com/bandsaw") {
+		t.Errorf("reference link missing: %q", out)
+	}
+	docs, dates := strings.Index(out, "Documentation & References"), strings.Index(out, "Dates")
+	if docs < 0 || docs < dates {
+		t.Errorf("Documentation must render by the sign-off area, below Dates (docs=%d dates=%d)", docs, dates)
+	}
+}
+
+// TestWODetailReferenceDocumentsEmptyState: an asset with no documents (and a
+// backend older than op-pzae, which omits the field entirely) both land on the
+// same muted placeholder rather than dropping the section.
+func TestWODetailReferenceDocumentsEmptyState(t *testing.T) {
+	for name, wo := range map[string]*omsapi.WorkOrder{
+		"absent": {ID: "wo1", Title: "Ad-hoc fix"},
+		"empty":  {ID: "wo1", Title: "Ad-hoc fix", ReferenceDocuments: &omsapi.ReferenceDocuments{}},
+	} {
+		out := loadWO(t, Deps{}, wo).renderBody()
+		if !strings.Contains(out, "Documentation & References") || !strings.Contains(out, "No linked documents.") {
+			t.Errorf("%s: empty documentation state wrong: %q", name, out)
+		}
+	}
+}
+
+// TestRefRevisionSummary covers the compaction rules the render depends on: no
+// chain means no sub-line, a missing timestamp drops just the date, and a long
+// history is truncated to a count instead of burying the current document.
+func TestRefRevisionSummary(t *testing.T) {
+	if got := refRevisionSummary(nil); got != "" {
+		t.Errorf("empty chain = %q, want \"\"", got)
+	}
+	got := refRevisionSummary([]omsapi.WorkOrderRefDocRevision{{Version: 2}})
+	if got != "rev 2" {
+		t.Errorf("undated revision = %q, want %q", got, "rev 2")
+	}
+
+	long := make([]omsapi.WorkOrderRefDocRevision, 0, maxShownRevisions+3)
+	for i := maxShownRevisions + 3; i > 0; i-- {
+		long = append(long, omsapi.WorkOrderRefDocRevision{Version: i})
+	}
+	got = refRevisionSummary(long)
+	if !strings.HasSuffix(got, "+3 more") {
+		t.Errorf("long chain = %q, want a +3 more tail", got)
+	}
+	if strings.Count(got, "rev ") != maxShownRevisions {
+		t.Errorf("long chain shows %d revisions, want %d: %q", strings.Count(got, "rev "), maxShownRevisions, got)
+	}
+}
+
+func TestRefDocDate(t *testing.T) {
+	if got := refDocDate("2026-05-04T09:30:00+00:00"); got != "2026-05-04" {
+		t.Errorf("refDocDate = %q, want 2026-05-04", got)
+	}
+	// Null timestamps decode to "", and anything unexpected renders as-is
+	// rather than being dropped.
+	if got := refDocDate(""); got != "" {
+		t.Errorf("empty timestamp = %q", got)
+	}
+	if got := refDocDate("May 2026"); got != "May 2026" {
+		t.Errorf("unparseable timestamp should pass through, got %q", got)
+	}
+}
+
 func TestWODetailTaskPickerTogglesCompletion(t *testing.T) {
 	var captured struct {
 		method, path string

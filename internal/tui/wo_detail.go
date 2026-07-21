@@ -953,6 +953,56 @@ func evidencePhotoLabel(p omsapi.WorkOrderPhoto) string {
 	return label
 }
 
+// maxShownRevisions caps the revision chain rendered inline. The backend walks
+// at most 20 supersedes links; showing all of them would bury the current
+// document under its own history, so the tail is summarised as a count.
+const maxShownRevisions = 4
+
+// woReferenceParts splits the reference bundle into its two lists. The whole
+// object is absent on a work order fetched from a backend older than op-pzae
+// (and from any list payload), which is an empty section rather than an error.
+func woReferenceParts(wo *omsapi.WorkOrder) ([]omsapi.WorkOrderRefDoc, []omsapi.WorkOrderRefLink) {
+	if wo == nil || wo.ReferenceDocuments == nil {
+		return nil, nil
+	}
+	return wo.ReferenceDocuments.Documents, wo.ReferenceDocuments.Links
+}
+
+// refRevisionSummary compacts a document's supersedes chain (newest-first, as
+// received) into one line: "rev 2 (2026-05-04), rev 1, +3 more". Returns "" for
+// a document nobody has replaced, so the caller can skip the sub-line entirely.
+func refRevisionSummary(revs []omsapi.WorkOrderRefDocRevision) string {
+	if len(revs) == 0 {
+		return ""
+	}
+	shown := revs
+	if len(shown) > maxShownRevisions {
+		shown = shown[:maxShownRevisions]
+	}
+	parts := make([]string, 0, len(shown)+1)
+	for _, r := range shown {
+		part := fmt.Sprintf("rev %d", r.Version)
+		if d := refDocDate(r.UploadedAt); d != "" {
+			part += " (" + d + ")"
+		}
+		parts = append(parts, part)
+	}
+	if rest := len(revs) - len(shown); rest > 0 {
+		parts = append(parts, fmt.Sprintf("+%d more", rest))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// refDocDate reduces an upload timestamp to its calendar date. These arrive as
+// hand-built isoformat() text rather than a DRF datetime, so they are trimmed
+// rather than parsed: anything unexpected renders as-is instead of vanishing.
+func refDocDate(iso string) string {
+	if i := strings.IndexByte(iso, 'T'); i > 0 {
+		return iso[:i]
+	}
+	return iso
+}
+
 func (s *WorkOrderDetailScreen) renderMaterialPicker() string {
 	var b strings.Builder
 	used := 0
@@ -1213,6 +1263,44 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 		}
 		b.WriteString("\n\n")
 	}
+
+	// Documentation & References sits beside the validation/sign-off gate for
+	// the reason the web page and the printed form both put it there: whoever
+	// performs and signs the job should be able to reach the manual — and see
+	// which revision is current — without hunting for it.
+	//
+	// Display-only. It is a projection of the ASSET's document library (the work
+	// order stores no links of its own), so documents are managed on the asset
+	// and there is no hotkey here. ScanTTY renders no files: the URL is the
+	// artifact you open elsewhere, exactly as with the step photos above.
+	b.WriteString(StyleTitle.Render("Documentation & References") + "\n")
+	refDocs, refLinks := woReferenceParts(wo)
+	if len(refDocs) == 0 && len(refLinks) == 0 {
+		b.WriteString(StyleMuted.Render("  No linked documents.") + "\n")
+	} else {
+		for _, d := range refDocs {
+			line := "  · " + d.Title
+			if d.CategoryDisplay != "" {
+				line += StyleMuted.Render(" — " + d.CategoryDisplay)
+			}
+			if d.Version > 0 {
+				line += StyleMuted.Render(fmt.Sprintf(" (rev %d)", d.Version))
+			}
+			b.WriteString(line + "\n")
+			// The URL gets its own line — they are long enough to wrap a narrow
+			// terminal if they trail the title.
+			if d.FileURL != "" {
+				b.WriteString("    " + d.FileURL + "\n")
+			}
+			if summary := refRevisionSummary(d.Revisions); summary != "" {
+				b.WriteString("    " + StyleMuted.Render("revisions: "+summary) + "\n")
+			}
+		}
+		for _, l := range refLinks {
+			b.WriteString("  · " + StyleMuted.Render(l.Label+": ") + l.URL + "\n")
+		}
+	}
+	b.WriteString("\n")
 
 	if len(wo.TaskCompletions) > 0 {
 		done, total := 0, len(wo.TaskCompletions)
