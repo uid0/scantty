@@ -2,7 +2,12 @@ package omsapi
 
 import (
 	"context"
+	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -126,23 +131,71 @@ type MaintenanceToolWrite struct {
 
 // MaintenanceTask mirrors MaintenanceTaskSerializer — one ordered sub-step
 // within a MaintenanceItem (checked off on the generated work order).
+//
+// ReferenceImageURL is the step's instructional photo — "here is what this
+// should look like" — set once on the template and shown against the step on
+// every work order generated from it. The serializer is file-in / URL-out: the
+// raw reference_image field is write-only, so the ONLY read key is this
+// absolute URL, and it is null when the step has no photo. ScanTTY renders no
+// images, so it surfaces as URL text.
 type MaintenanceTask struct {
-	ID              string    `json:"id,omitempty"`
-	MaintenanceItem string    `json:"maintenance_item,omitempty"`
-	Order           int       `json:"order"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description,omitempty"`
-	IsRequired      bool      `json:"is_required"`
-	CreatedAt       time.Time `json:"created_at,omitempty"`
+	ID                string    `json:"id,omitempty"`
+	MaintenanceItem   string    `json:"maintenance_item,omitempty"`
+	Order             int       `json:"order"`
+	Title             string    `json:"title"`
+	Description       string    `json:"description,omitempty"`
+	IsRequired        bool      `json:"is_required"`
+	ReferenceImageURL string    `json:"reference_image_url,omitempty"`
+	CreatedAt         time.Time `json:"created_at,omitempty"`
 }
 
 // MaintenanceTaskWrite is the create/update payload for a task step.
+//
+// ReferenceImagePath is a LOCAL file path and never rides as JSON (`-`): when
+// it is set the write switches to multipart/form-data and uploads the file
+// under reference_image, the same path→PostMultipart/PatchMultipart shape
+// AssetWrite.ManualPDFPath uses. Left blank, the write stays JSON and a PATCH
+// leaves any photo already on the step untouched.
 type MaintenanceTaskWrite struct {
-	MaintenanceItem string `json:"maintenance_item"`
-	Order           int    `json:"order"`
-	Title           string `json:"title"`
-	Description     string `json:"description"`
-	IsRequired      bool   `json:"is_required"`
+	MaintenanceItem    string `json:"maintenance_item"`
+	Order              int    `json:"order"`
+	Title              string `json:"title"`
+	Description        string `json:"description"`
+	IsRequired         bool   `json:"is_required"`
+	ReferenceImagePath string `json:"-"`
+}
+
+// needsMultipart reports whether this write attaches a reference photo, and so
+// must go out as multipart/form-data instead of JSON.
+func (w MaintenanceTaskWrite) needsMultipart() bool {
+	return strings.TrimSpace(w.ReferenceImagePath) != ""
+}
+
+// multipartFiles reads the picked reference photo off disk into an in-memory
+// file part. Returns nil when no photo is attached.
+func (w MaintenanceTaskWrite) multipartFiles() ([]MultipartFile, error) {
+	p := strings.TrimSpace(w.ReferenceImagePath)
+	if p == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("oms: read %s: %w", p, err)
+	}
+	return []MultipartFile{{Field: "reference_image", Filename: filepath.Base(p), Data: data}}, nil
+}
+
+// multipartFields renders the scalar fields as form values for the multipart
+// path. Booleans go as "true"/"false" and the order as a decimal string, which
+// is what DRF's BooleanField/IntegerField parse out of form data.
+func (w MaintenanceTaskWrite) multipartFields() map[string][]string {
+	return map[string][]string{
+		"maintenance_item": {w.MaintenanceItem},
+		"order":            {strconv.Itoa(w.Order)},
+		"title":            {w.Title},
+		"description":      {w.Description},
+		"is_required":      {strconv.FormatBool(w.IsRequired)},
+	}
 }
 
 // MaintenanceLog mirrors MaintenanceLogSerializer — the completion record the
@@ -285,19 +338,44 @@ func (c *Client) ListMaintenanceTasks(ctx context.Context, maintenanceItemID str
 	return GetPage[MaintenanceTask](ctx, c, maintenanceTasksPath, q)
 }
 
-// CreateMaintenanceTask adds a task step to a PM item.
+// CreateMaintenanceTask adds a task step to a PM item. Attaching a reference
+// photo (ReferenceImagePath) switches the call to multipart/form-data — the
+// viewset accepts both parsers.
 func (c *Client) CreateMaintenanceTask(ctx context.Context, body MaintenanceTaskWrite) (*MaintenanceTask, error) {
 	var out MaintenanceTask
-	if err := c.Post(ctx, maintenanceTasksPath, body, &out); err != nil {
+	var err error
+	if body.needsMultipart() {
+		files, ferr := body.multipartFiles()
+		if ferr != nil {
+			return nil, ferr
+		}
+		err = c.PostMultipart(ctx, maintenanceTasksPath, body.multipartFields(), files, &out)
+	} else {
+		err = c.Post(ctx, maintenanceTasksPath, body, &out)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// UpdateMaintenanceTask PATCHes a task step.
+// UpdateMaintenanceTask PATCHes a task step. Only a write that carries a new
+// ReferenceImagePath re-uploads the photo; a plain JSON PATCH omits the
+// reference_image key entirely and so keeps whatever the step already has.
 func (c *Client) UpdateMaintenanceTask(ctx context.Context, id string, body MaintenanceTaskWrite) (*MaintenanceTask, error) {
 	var out MaintenanceTask
-	if err := c.Patch(ctx, maintenanceTasksPath+id+"/", body, &out); err != nil {
+	path := maintenanceTasksPath + id + "/"
+	var err error
+	if body.needsMultipart() {
+		files, ferr := body.multipartFiles()
+		if ferr != nil {
+			return nil, ferr
+		}
+		err = c.PatchMultipart(ctx, path, body.multipartFields(), files, &out)
+	} else {
+		err = c.Patch(ctx, path, body, &out)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &out, nil

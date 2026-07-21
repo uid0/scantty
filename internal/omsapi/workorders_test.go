@@ -196,7 +196,7 @@ func TestAddWorkOrderPhoto_Multipart(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	ph, err := c.AddWorkOrderPhoto(context.Background(), "wo1", "before.jpg", []byte("JPEGBYTES"), "before")
+	ph, err := c.AddWorkOrderPhoto(context.Background(), "wo1", "before.jpg", []byte("JPEGBYTES"), "before", "")
 	if err != nil {
 		t.Fatalf("AddWorkOrderPhoto: %v", err)
 	}
@@ -226,22 +226,84 @@ func TestAddWorkOrderPhoto_Multipart(t *testing.T) {
 	}
 }
 
-func TestAddWorkOrderPhoto_OmitsEmptyCaption(t *testing.T) {
-	var hasCaption bool
+// TestAddWorkOrderPhoto_OmitsEmptyOptionalFields pins BOTH optional form
+// fields off the wire when unset. task_completion matters most: the backend
+// treats absent-or-blank as "work-order-level", but a stray empty part would
+// still be parsed by DRF, and every pre-existing caller passes "" for it.
+func TestAddWorkOrderPhoto_OmitsEmptyOptionalFields(t *testing.T) {
+	var hasCaption, hasTaskCompletion bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseMultipartForm(1 << 20)
 		_, hasCaption = r.MultipartForm.Value["caption"]
+		_, hasTaskCompletion = r.MultipartForm.Value["task_completion"]
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"id":"ph1"}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if _, err := c.AddWorkOrderPhoto(context.Background(), "wo1", "p.jpg", []byte("x"), ""); err != nil {
+	if _, err := c.AddWorkOrderPhoto(context.Background(), "wo1", "p.jpg", []byte("x"), "", ""); err != nil {
 		t.Fatalf("AddWorkOrderPhoto: %v", err)
 	}
 	if hasCaption {
 		t.Errorf("caption field should be omitted when empty")
+	}
+	if hasTaskCompletion {
+		t.Errorf("task_completion field should be omitted when empty")
+	}
+}
+
+// TestAddWorkOrderPhoto_PinsEvidenceToStep is the per-step evidence contract
+// (op-syov): the photo is filed under one step via task_completion, and
+// work_order STILL rides in the body — the serializer requires it, so dropping
+// it in favour of the step id would 400 every evidence upload.
+func TestAddWorkOrderPhoto_PinsEvidenceToStep(t *testing.T) {
+	var captured struct {
+		path           string
+		workOrder      string
+		taskCompletion string
+		caption        string
+		filename       string
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.path = r.URL.Path
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+		}
+		captured.workOrder = r.FormValue("work_order")
+		captured.taskCompletion = r.FormValue("task_completion")
+		captured.caption = r.FormValue("caption")
+		if _, hdr, err := r.FormFile("image"); err == nil {
+			captured.filename = hdr.Filename
+		} else {
+			t.Errorf("FormFile(image): %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"ph9","task_completion":"tc-7","caption":"after"}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	ph, err := c.AddWorkOrderPhoto(context.Background(), "wo1", "after.jpg", []byte("JPEG"), "after", "tc-7")
+	if err != nil {
+		t.Fatalf("AddWorkOrderPhoto: %v", err)
+	}
+	if captured.path != "/api/inventory/work-orders/wo1/add_photo/" {
+		t.Fatalf("path = %q", captured.path)
+	}
+	if captured.taskCompletion != "tc-7" {
+		t.Errorf("task_completion field = %q, want tc-7", captured.taskCompletion)
+	}
+	if captured.workOrder != "wo1" {
+		t.Errorf("work_order must still be sent alongside task_completion, got %q", captured.workOrder)
+	}
+	if captured.caption != "after" || captured.filename != "after.jpg" {
+		t.Errorf("caption/filename = %q %q", captured.caption, captured.filename)
+	}
+	// The response echoes the full photo serializer, task_completion included.
+	if ph == nil || ph.TaskCompletion != "tc-7" {
+		t.Errorf("decoded photo = %+v, want TaskCompletion tc-7", ph)
 	}
 }
 
@@ -389,7 +451,7 @@ func TestPostMultipart_RefreshesOn401(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, WithToken("oldtok", "refresh"))
-	if _, err := c.AddWorkOrderPhoto(context.Background(), "wo1", "p.jpg", []byte("x"), ""); err != nil {
+	if _, err := c.AddWorkOrderPhoto(context.Background(), "wo1", "p.jpg", []byte("x"), "", ""); err != nil {
 		t.Fatalf("AddWorkOrderPhoto: %v", err)
 	}
 	if refreshes != 1 {
