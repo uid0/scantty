@@ -113,6 +113,12 @@ func (s *AssetDetailScreen) WantsRawInput() bool {
 	return s.activeForm != formNone || s.confirmingDelete
 }
 
+// HandlesKey claims P (open this asset's problems list), which would otherwise
+// be swallowed by the global PM-board hotkey. Only P is claimed: the screen's
+// other letters either have no global twin or predate the LocalKeyScreen
+// mechanism, and widening the claim would change keys this bead did not touch.
+func (s *AssetDetailScreen) HandlesKey(key string) bool { return key == "P" }
+
 func (s *AssetDetailScreen) Init() tea.Cmd { return s.load() }
 
 func (s *AssetDetailScreen) load() tea.Cmd {
@@ -270,6 +276,15 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "p":
 			s.openForm(formLogProblem, "describe the problem", 1000)
 			return s, textinput.Blink
+		case "P":
+			// Open the actionable problems list (resolve / promote to a work
+			// order / send to a vendor). Uppercase P pairs with lowercase p =
+			// report a problem, the same upper/lower pairing N/n and I/i use;
+			// it shadows the global PM board on this screen only (see
+			// HandlesKey). Always available so the empty state is reachable.
+			if s.asset != nil {
+				return s, SwitchTo(WSAssets, NewAssetProblemsScreen(s.deps, s.assetID, s.asset.Name))
+			}
 		case "o":
 			if s.openOOS() != nil {
 				s.logResult = "already out of service"
@@ -581,9 +596,9 @@ func (s *AssetDetailScreen) View() string {
 	if s.logResult != "" {
 		footer += RenderStatus(s.logResult, s.logResultLvl) + "\n\n"
 	}
-	hint := "j/k scroll · p problem · o OOS · R restore · S parts · E edit · x delete · r refresh · esc back"
+	hint := "j/k scroll · p report · P problems · o OOS · R restore · S parts · E edit · x delete · r refresh · esc back"
 	if len(s.components) > 0 {
-		hint = "j/k scroll · p problem · o OOS · R restore · i components · S parts · E edit · x delete · r refresh · esc back"
+		hint = "j/k scroll · p report · P problems · o OOS · R restore · i components · S parts · E edit · x delete · r refresh · esc back"
 	}
 	footer += StyleMuted.Render(hint)
 	return body + "\n\n" + footer
@@ -874,26 +889,31 @@ func (s *AssetDetailScreen) renderBody() string {
 	if len(s.problems) > 0 {
 		open := 0
 		for _, p := range s.problems {
-			if p.Status == "reported" || p.Status == "in_progress" {
+			if !p.IsResolved() {
 				open++
 			}
 		}
 		if open > 0 {
 			b.WriteString(StyleStatusWarn.Render(fmt.Sprintf("⚠ %d open problem(s)", open)) + "\n")
 		}
-		b.WriteString(StyleTitle.Render(fmt.Sprintf("Problems (%d)", len(s.problems))) + "\n")
+		b.WriteString(StyleTitle.Render(fmt.Sprintf("Problems (%d)", len(s.problems))))
+		b.WriteString("  " + StyleMuted.Render("press P to resolve / promote") + "\n")
 		for _, p := range s.problems {
 			marker := "  · "
-			if p.Status == "reported" {
+			switch p.Status {
+			case omsapi.AssetProblemReported:
 				marker = StyleStatusWarn.Render("  ● ")
-			} else if p.Status == "in_progress" {
+			case omsapi.AssetProblemInProgress:
 				marker = StyleMuted.Render("  ○ ")
-			} else if p.Status == "resolved" || p.Status == "closed" {
+			case omsapi.AssetProblemResolved, omsapi.AssetProblemClosed:
 				marker = StyleStatusOK.Render("  ✓ ")
 			}
 			line := marker + p.Description
 			if p.ReportedBy != "" {
 				line += " " + StyleMuted.Render("("+p.ReportedBy+")")
+			}
+			if short := apPromotedShortID(p); short != "" {
+				line += " " + StyleMuted.Render("→ "+short)
 			}
 			b.WriteString(line + "\n")
 			if len(p.AffectedParts) > 0 {

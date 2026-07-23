@@ -460,17 +460,76 @@ func (c *Client) DeleteMaintenanceTool(ctx context.Context, id string) error {
 // Asset problems (reported issues, distinct from scheduled PM items)
 // ---------------------------------------------------------------------------
 
+// AssetProblem mirrors AssetProblemSerializer — a problem reported against an
+// Asset (as opposed to a LocationProblem, reported against a room).
+//
+// DECODE-DRIFT NOTE ([[scantty-api-field-drift]]): unlike its LocationProblem
+// sibling this serializer emits NO `status_display` — the human label comes from
+// StatusLabel() below, which mirrors the model's Status.choices. `work_order` /
+// `third_party_work_order` are nullable UUID FKs (both target UUID-pk models),
+// set by the promote actions; their human short ids ride on the
+// `*_short_id` SerializerMethodFields and are null until promoted.
+// `resolved_at` is a nullable DateTimeField (*time.Time).
 type AssetProblem struct {
-	ID            string              `json:"id"`
-	Asset         string              `json:"asset"`
-	AssetName     string              `json:"asset_name,omitempty"`
-	AssetTag      string              `json:"asset_tag,omitempty"`
-	ReportedBy    string              `json:"reported_by,omitempty"`
-	Description   string              `json:"description"`
-	Status        string              `json:"status"`
-	AffectedParts []AffectedAssetPart `json:"affected_parts,omitempty"`
-	CreatedAt     time.Time           `json:"created_at,omitempty"`
-	UpdatedAt     time.Time           `json:"updated_at,omitempty"`
+	ID                         string              `json:"id"`
+	Asset                      string              `json:"asset"`
+	AssetName                  string              `json:"asset_name,omitempty"`
+	AssetTag                   string              `json:"asset_tag,omitempty"`
+	ReportedBy                 string              `json:"reported_by,omitempty"`
+	Description                string              `json:"description"`
+	Status                     string              `json:"status"`
+	WorkOrder                  *string             `json:"work_order"`
+	WorkOrderShortID           string              `json:"work_order_short_id"`
+	ThirdPartyWorkOrder        *string             `json:"third_party_work_order"`
+	ThirdPartyWorkOrderShortID string              `json:"third_party_work_order_short_id"`
+	ResolutionNotes            string              `json:"resolution_notes,omitempty"`
+	ResolvedAt                 *time.Time          `json:"resolved_at,omitempty"`
+	ResolvedBy                 string              `json:"resolved_by,omitempty"`
+	AffectedParts              []AffectedAssetPart `json:"affected_parts,omitempty"`
+	CreatedAt                  time.Time           `json:"created_at,omitempty"`
+	UpdatedAt                  time.Time           `json:"updated_at,omitempty"`
+}
+
+// Asset-problem status codes (backend AssetProblem.Status). A report starts at
+// "reported"; a promote moves it to "in_progress"; the resolve @action only
+// accepts "resolved" or "closed" as terminal statuses.
+const (
+	AssetProblemReported   = "reported"
+	AssetProblemInProgress = "in_progress"
+	AssetProblemResolved   = "resolved"
+	AssetProblemClosed     = "closed"
+)
+
+// StatusLabel is the human label for the status code. The AssetProblem
+// serializer does NOT ship a status_display (its LocationProblem sibling does),
+// so the labels from the model's Status.choices live here; an unrecognised code
+// falls through as-is rather than rendering blank.
+func (p AssetProblem) StatusLabel() string {
+	switch p.Status {
+	case AssetProblemReported:
+		return "Reported"
+	case AssetProblemInProgress:
+		return "In Progress"
+	case AssetProblemResolved:
+		return "Resolved"
+	case AssetProblemClosed:
+		return "Closed"
+	}
+	return p.Status
+}
+
+// IsResolved reports whether the problem reached a terminal state (resolved or
+// closed) — both count as "no longer open", and either gates the resolve action
+// off, matching the LocationProblem sibling.
+func (p AssetProblem) IsResolved() bool {
+	return p.Status == AssetProblemResolved || p.Status == AssetProblemClosed
+}
+
+// IsPromoted reports whether the problem was already promoted to an in-house or
+// a third-party work order (either FK set).
+func (p AssetProblem) IsPromoted() bool {
+	return (p.WorkOrder != nil && *p.WorkOrder != "") ||
+		(p.ThirdPartyWorkOrder != nil && *p.ThirdPartyWorkOrder != "")
 }
 
 // AffectedAssetPart is the compact read-only projection of an AssetPart the
@@ -496,8 +555,10 @@ type AssetProblemCreate struct {
 	PartIds     []string `json:"part_ids,omitempty"`
 }
 
+// ListAssetProblems returns the paginated asset-problem list. The viewset
+// honors ?asset=<uuid>, ?status=<code> and ?part=<id>.
 func (c *Client) ListAssetProblems(ctx context.Context, q url.Values) (*Page[AssetProblem], error) {
-	return GetPage[AssetProblem](ctx, c, "/api/inventory/asset-problems/", q)
+	return GetPage[AssetProblem](ctx, c, assetProblemsPath, q)
 }
 
 // CreateAssetProblem reports a problem against an asset through the asset's
@@ -510,6 +571,86 @@ func (c *Client) CreateAssetProblem(ctx context.Context, req AssetProblemCreate)
 	var out AssetProblem
 	path := "/api/inventory/assets/" + req.Asset + "/report_problem/"
 	if err := c.Post(ctx, path, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+const assetProblemsPath = "/api/inventory/asset-problems/"
+
+// assetProblemResolve is the resolve @action JSON body. ResolutionNotes is
+// omitempty so a blank submit is dropped and the stored notes survive — the
+// backend defaults the field to its existing value when the key is absent.
+type assetProblemResolve struct {
+	Status          string `json:"status"`
+	ResolutionNotes string `json:"resolution_notes,omitempty"`
+}
+
+// ResolveAssetProblem marks an asset problem resolved or closed
+// (POST /api/inventory/asset-problems/{id}/resolve/, trailing slash). status
+// must be AssetProblemResolved or AssetProblemClosed — the backend rejects
+// anything else. The backend stamps resolved_at / resolved_by on first resolve.
+// Requires an authenticated user (IsAuthenticated on the @action).
+//
+// This is the problem-scoped twin of the older assets/{id}/resolve_problem/
+// action the web uses; it needs only the report in hand, not its asset.
+func (c *Client) ResolveAssetProblem(ctx context.Context, problemID, status, notes string) (*AssetProblem, error) {
+	body := assetProblemResolve{
+		Status:          status,
+		ResolutionNotes: strings.TrimSpace(notes),
+	}
+	var out AssetProblem
+	if err := c.Post(ctx, assetProblemsPath+problemID+"/resolve/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PromoteAssetProblemStandard promotes the report to an in-house corrective
+// WorkOrder (POST .../promote-standard/, HTTP 201). Unlike the LocationProblem
+// sibling this takes NO MaintenanceItem: a corrective WO for an asset problem
+// anchors straight to the problem's asset with maintenance_item=null, so there
+// is nothing for the operator to pick. The backend copies the description into
+// the work order's notes, materializes its LOTO rows, moves the problem to
+// in_progress, and 400s if it was already promoted.
+//
+// The response is the UPDATED PROBLEM (not the work order), so the new work
+// order's id is read back off WorkOrder / WorkOrderShortID.
+func (c *Client) PromoteAssetProblemStandard(ctx context.Context, problemID string) (*AssetProblem, error) {
+	var out AssetProblem
+	// Explicit empty JSON object: the action reads nothing from the body, but a
+	// bodyless POST would go out with no Content-Type at all.
+	if err := c.Post(ctx, assetProblemsPath+problemID+"/promote-standard/", map[string]any{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// assetProblemPromoteThirdParty is the promote-third-party @action body. vendor
+// and title are both required server-side (a vendor WO is a purchase, so it
+// needs a human-written scope line rather than the raw report text); work_type
+// is omitempty and defaults to "standard" on the backend.
+type assetProblemPromoteThirdParty struct {
+	Vendor   string `json:"vendor"`
+	Title    string `json:"title"`
+	WorkType string `json:"work_type,omitempty"`
+}
+
+// PromoteAssetProblemThirdParty promotes the report to a vendor
+// ThirdPartyWorkOrder (POST .../promote-third-party/, HTTP 201). vendorID is a
+// Vendor UUID (see ListVendors); workType is one of ThirdPartyWorkOrderWorkTypes
+// and may be blank to take the backend's "standard" default. The backend
+// pre-fills the asset + its location, copies the description into notes and the
+// reporter photos into attachments, moves the problem to in_progress, and 400s
+// if it was already promoted to a third-party order.
+func (c *Client) PromoteAssetProblemThirdParty(ctx context.Context, problemID, vendorID, title, workType string) (*AssetProblem, error) {
+	body := assetProblemPromoteThirdParty{
+		Vendor:   strings.TrimSpace(vendorID),
+		Title:    strings.TrimSpace(title),
+		WorkType: strings.TrimSpace(workType),
+	}
+	var out AssetProblem
+	if err := c.Post(ctx, assetProblemsPath+problemID+"/promote-third-party/", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
