@@ -10,8 +10,11 @@
 // The backend LocationProblemViewSet is read-only (no create/update/delete); the
 // only writes are the report_problem create @action and this resolve @action, so
 // there is deliberately NO edit or delete key here. Promote-to-work-order (the
-// web detail page's staff action) needs MaintenanceItem / Vendor pickers and is
-// a separate concern — deferred to its own bead.
+// web detail page's staff action) is still deferred HERE: unlike the asset
+// twin — see asset_problems.go, where the corrective work order anchors to the
+// problem's asset and needs no picker — location promote-standard requires a
+// MaintenanceItem uuid in the body, so it needs a picker this screen does not
+// have. The vendor half is already built there and can be lifted across.
 //
 // n and f collide with global hotkeys (notifications / op-modes) and G with the
 // categories surface, so the screen implements LocalKeyScreen to claim them; it

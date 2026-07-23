@@ -396,6 +396,24 @@ type MaintenanceOrder struct {
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
 }
 
+// Third-party work-order work types (backend ThirdPartyWorkOrder.WORK_TYPE_*).
+// A vendor order defaults to "standard" when the caller sends nothing.
+const (
+	ThirdPartyWorkTypeStandard          = "standard"
+	ThirdPartyWorkTypeMajorRepair       = "major_repair"
+	ThirdPartyWorkTypeBuildout          = "buildout"
+	ThirdPartyWorkTypeBuildingEmergency = "building_emergency"
+)
+
+// ThirdPartyWorkOrderWorkTypes is the ordered code list a work-type picker
+// cycles through, in the backend's WORK_TYPE_CHOICES order (default first).
+var ThirdPartyWorkOrderWorkTypes = []string{
+	ThirdPartyWorkTypeStandard,
+	ThirdPartyWorkTypeMajorRepair,
+	ThirdPartyWorkTypeBuildout,
+	ThirdPartyWorkTypeBuildingEmergency,
+}
+
 func (c *Client) ListMaintenanceOrders(ctx context.Context, q url.Values) (*Page[MaintenanceOrder], error) {
 	return GetPage[MaintenanceOrder](ctx, c, "/api/maintenance-orders/work-orders/", q)
 }

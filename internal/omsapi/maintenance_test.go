@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -650,6 +651,169 @@ func TestCreateAssetProblem_DescriptionOnly(t *testing.T) {
 	}
 	if _, present := cap.body["part_ids"]; present {
 		t.Errorf("part_ids should be omitted, got %v", cap.body["part_ids"])
+	}
+}
+
+// TestResolveAssetProblem_Contract pins the resolve contract: a JSON POST to
+// the trailing-slash resolve/ @action on the problem itself (NOT the older
+// assets/{id}/resolve_problem/ the web uses), carrying status + resolution
+// notes, and decoding the resolved_at / resolved_by stamp back.
+func TestResolveAssetProblem_Contract(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK,
+		`{"id":"prob-1","asset":"asset-9","description":"belt frayed","status":"resolved","resolution_notes":"new belt","resolved_by":"bob","resolved_at":"2026-05-02T09:00:00Z","work_order":null,"work_order_short_id":null}`,
+		&cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	got, err := c.ResolveAssetProblem(context.Background(), "prob-1", AssetProblemResolved, "  new belt  ")
+	if err != nil {
+		t.Fatalf("ResolveAssetProblem: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/inventory/asset-problems/prob-1/resolve/" {
+		t.Fatalf("method/path = %q %q", cap.method, cap.path)
+	}
+	if cap.body["status"] != "resolved" {
+		t.Errorf("status = %v", cap.body["status"])
+	}
+	if cap.body["resolution_notes"] != "new belt" {
+		t.Errorf("resolution_notes should be trimmed, got %v", cap.body["resolution_notes"])
+	}
+	if got == nil || !got.IsResolved() || got.ResolvedAt == nil || got.ResolvedBy != "bob" {
+		t.Fatalf("resolve response decode wrong: %+v", got)
+	}
+	if got.StatusLabel() != "Resolved" {
+		t.Errorf("StatusLabel = %q, want Resolved", got.StatusLabel())
+	}
+	if got.IsPromoted() {
+		t.Errorf("a null work_order must not read as promoted")
+	}
+}
+
+// TestResolveAssetProblem_OmitsBlankNotes confirms blank notes are dropped from
+// the body (omitempty) so the backend keeps whatever it already stored — the
+// same contract the LocationProblem resolve honors.
+func TestResolveAssetProblem_OmitsBlankNotes(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK, `{"id":"prob-1","status":"closed"}`, &cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	got, err := c.ResolveAssetProblem(context.Background(), "prob-1", AssetProblemClosed, "   ")
+	if err != nil {
+		t.Fatalf("ResolveAssetProblem: %v", err)
+	}
+	if _, present := cap.body["resolution_notes"]; present {
+		t.Errorf("blank resolution_notes should be omitted, body = %v", cap.body)
+	}
+	if cap.body["status"] != "closed" {
+		t.Errorf("status = %v", cap.body["status"])
+	}
+	if got == nil || !got.IsResolved() || got.StatusLabel() != "Closed" {
+		t.Errorf("closed decode wrong: %+v", got)
+	}
+}
+
+// TestPromoteAssetProblemStandard_Contract pins the in-house promote: a POST to
+// promote-standard/ with NO maintenance_item (the corrective WO anchors to the
+// asset), returning the UPDATED PROBLEM carrying the new work order's id.
+func TestPromoteAssetProblemStandard_Contract(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusCreated,
+		`{"id":"prob-1","asset":"asset-9","status":"in_progress","work_order":"wo-77","work_order_short_id":"WO-0042","third_party_work_order":null,"third_party_work_order_short_id":null}`,
+		&cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	got, err := c.PromoteAssetProblemStandard(context.Background(), "prob-1")
+	if err != nil {
+		t.Fatalf("PromoteAssetProblemStandard: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/inventory/asset-problems/prob-1/promote-standard/" {
+		t.Fatalf("method/path = %q %q", cap.method, cap.path)
+	}
+	// No MaintenanceItem picker on this path — the body must stay empty.
+	if _, present := cap.body["maintenance_item"]; present {
+		t.Errorf("promote-standard must not send maintenance_item, body = %v", cap.body)
+	}
+	if got == nil || got.WorkOrder == nil || *got.WorkOrder != "wo-77" {
+		t.Fatalf("work order id not decoded: %+v", got)
+	}
+	if got.WorkOrderShortID != "WO-0042" || !got.IsPromoted() {
+		t.Errorf("short id / promoted flag wrong: %+v", got)
+	}
+	if got.StatusLabel() != "In Progress" {
+		t.Errorf("StatusLabel = %q, want In Progress", got.StatusLabel())
+	}
+}
+
+// TestPromoteAssetProblemThirdParty_Contract pins the vendor promote: vendor +
+// title (both required server-side) and the optional work_type.
+func TestPromoteAssetProblemThirdParty_Contract(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusCreated,
+		`{"id":"prob-1","asset":"asset-9","status":"in_progress","third_party_work_order":"tp-3","third_party_work_order_short_id":"TP-0009"}`,
+		&cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	got, err := c.PromoteAssetProblemThirdParty(context.Background(), "prob-1",
+		" vendor-5 ", "  Replace spindle bearing  ", ThirdPartyWorkTypeMajorRepair)
+	if err != nil {
+		t.Fatalf("PromoteAssetProblemThirdParty: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/inventory/asset-problems/prob-1/promote-third-party/" {
+		t.Fatalf("method/path = %q %q", cap.method, cap.path)
+	}
+	if cap.body["vendor"] != "vendor-5" || cap.body["title"] != "Replace spindle bearing" {
+		t.Errorf("vendor/title not trimmed: %v", cap.body)
+	}
+	if cap.body["work_type"] != "major_repair" {
+		t.Errorf("work_type = %v", cap.body["work_type"])
+	}
+	if got == nil || got.ThirdPartyWorkOrderShortID != "TP-0009" || !got.IsPromoted() {
+		t.Fatalf("third-party promote decode wrong: %+v", got)
+	}
+}
+
+// TestPromoteAssetProblemThirdParty_OmitsBlankWorkType lets the backend apply
+// its "standard" default when the operator never changed the work type.
+func TestPromoteAssetProblemThirdParty_OmitsBlankWorkType(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusCreated, `{"id":"prob-1","status":"in_progress"}`, &cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	if _, err := c.PromoteAssetProblemThirdParty(context.Background(), "prob-1", "vendor-5", "Fix it", ""); err != nil {
+		t.Fatalf("PromoteAssetProblemThirdParty: %v", err)
+	}
+	if _, present := cap.body["work_type"]; present {
+		t.Errorf("blank work_type should be omitted, body = %v", cap.body)
+	}
+}
+
+// TestListAssetProblems_QueryParam confirms the list scopes by asset through
+// the read-only collection the promote/resolve actions hang off.
+func TestListAssetProblems_QueryParam(t *testing.T) {
+	var cap capture
+	srv := captureServer(t, http.StatusOK,
+		`{"count":1,"results":[{"id":"prob-1","asset":"asset-9","status":"reported","description":"belt frayed"}]}`,
+		&cap)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	page, err := c.ListAssetProblems(context.Background(), url.Values{"asset": []string{"asset-9"}})
+	if err != nil {
+		t.Fatalf("ListAssetProblems: %v", err)
+	}
+	if cap.path != "/api/inventory/asset-problems/" || cap.query != "asset=asset-9" {
+		t.Fatalf("path/query = %q %q", cap.path, cap.query)
+	}
+	if page == nil || len(page.Results) != 1 || page.Results[0].IsResolved() {
+		t.Fatalf("unexpected page: %+v", page)
+	}
+	if page.Results[0].StatusLabel() != "Reported" {
+		t.Errorf("StatusLabel = %q", page.Results[0].StatusLabel())
 	}
 }
 
