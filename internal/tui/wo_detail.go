@@ -278,13 +278,19 @@ func (s *WorkOrderDetailScreen) Init() tea.Cmd {
 // would otherwise claim (m, /, esc, uppercase shortcuts, …).
 func (s *WorkOrderDetailScreen) WantsRawInput() bool { return s.mode != woModeView }
 
-// HandlesKey claims uppercase 'M' (the material list) so it beats the global
-// PM-items hotkey — the sc-k7p LocalKeyScreen pattern. Without the claim the key
-// the footer advertises navigates away from the work order instead, which since
-// op-768w means the ONLY way a corrective work order can record what it consumed
-// is unreachable. Only consulted in the normal view: any open modal flips
-// WantsRawInput true, which routes every key here first.
-func (s *WorkOrderDetailScreen) HandlesKey(key string) bool { return key == "M" }
+// HandlesKey claims the uppercase shortcuts whose global twins would otherwise
+// win — the sc-k7p LocalKeyScreen pattern. Without the claim the key the footer
+// advertises navigates away from the work order instead:
+//
+//   - 'M' (materials) would hit the global PM-items hotkey, which since op-768w
+//     leaves a corrective work order with no way to record what it consumed.
+//   - 'A' (attachments) would hit the global new-asset shortcut (app.go), which
+//     teleported the operator to the create-asset form instead of opening this
+//     work order's attachments — the bug this claim fixes.
+//
+// Only consulted in the normal view: any open modal flips WantsRawInput true,
+// which routes every key here first.
+func (s *WorkOrderDetailScreen) HandlesKey(key string) bool { return key == "M" || key == "A" }
 
 func (s *WorkOrderDetailScreen) load() tea.Cmd {
 	deps := s.deps
@@ -561,6 +567,11 @@ func (s *WorkOrderDetailScreen) handleViewKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 		s.mode = woModeMaterials
 		s.materialCursor = 0
 		return s, nil
+	case "A":
+		// Attachments list (op-7pjj). Uppercase A because lowercase a is the
+		// global Authorizations hotkey; the HandlesKey claim above is what keeps
+		// this from leaking to the global new-asset shortcut.
+		return s, SwitchTo(WSMaintenance, NewWorkOrderAttachmentsScreen(s.deps, s.woID))
 	case "p":
 		s.openPhotoForm("", "")
 		return s, textinput.Blink
@@ -1788,7 +1799,7 @@ func (s *WorkOrderDetailScreen) footerHint() string {
 	// Always offered: an empty list is the corrective case, where adding the
 	// first line is exactly what the operator came here to do.
 	parts = append(parts, "M materials")
-	parts = append(parts, "p photo", "U upload-pdf", "v validate", "E notes", "r refresh", "esc back")
+	parts = append(parts, "A attachments", "p photo", "U upload-pdf", "v validate", "E notes", "r refresh", "esc back")
 	return strings.Join(parts, " · ")
 }
 

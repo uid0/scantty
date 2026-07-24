@@ -3,6 +3,7 @@ package omsapi
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"time"
 )
@@ -525,6 +526,90 @@ func (c *Client) TransitionWorkOrder(ctx context.Context, id, action, notes stri
 		patch["notes"] = notes
 	}
 	return c.UpdateWorkOrder(ctx, id, patch)
+}
+
+// workOrderAttachmentsPath is the top-level attachments collection (op-7pjj /
+// OMS #956). Unlike PO attachments — which are nested under the PO and ride the
+// PO payload — a work order's attachments live at their own inventory-app
+// endpoint and are filtered to one work order with ?work_order=.
+const workOrderAttachmentsPath = "/api/inventory/work-order-attachments/"
+
+// Attachment kinds the backend accepts (WorkOrderAttachment.KIND_CHOICES). The
+// upload form defaults to "document"; anything outside this set is a 400.
+const (
+	WorkOrderAttachmentPhoto    = "photo"
+	WorkOrderAttachmentDocument = "document"
+	WorkOrderAttachmentOther    = "other"
+)
+
+// WorkOrderAttachment mirrors the backend WorkOrderAttachmentSerializer. The PK
+// and work_order id are `any` for the same reason the rest of the inventory app
+// is: they are UUID strings on today's installs but the serializer owns the
+// shape. AttachmentURL is the read-only absolute URL the backend builds from the
+// stored File (the WO analogue of PurchaseOrderAttachment.FileURL). Kind is one
+// of photo/document/other. UploadedBy is the read-only uploader id; there is no
+// uploaded_by_name on this serializer, so the list shows the date and kind.
+type WorkOrderAttachment struct {
+	ID            any       `json:"id"`
+	WorkOrder     any       `json:"work_order,omitempty"`
+	File          string    `json:"file,omitempty"`
+	AttachmentURL string    `json:"attachment_url,omitempty"`
+	Description   string    `json:"description,omitempty"`
+	Kind          string    `json:"kind,omitempty"`
+	UploadedBy    *int      `json:"uploaded_by,omitempty"`
+	UploadedAt    time.Time `json:"uploaded_at,omitempty"`
+}
+
+// ListWorkOrderAttachments returns the attachments filed against one work order
+// (GET .../work-order-attachments/?work_order={woID}). Any authenticated user
+// may read, so volunteer makers can view the list even though only staff /
+// Logistics / SIG-admins can write. Tolerates both the paginated envelope and a
+// bare array.
+func (c *Client) ListWorkOrderAttachments(ctx context.Context, woID string) ([]WorkOrderAttachment, error) {
+	q := url.Values{"work_order": {woID}}
+	var out MaybeList[WorkOrderAttachment]
+	if err := c.Get(ctx, workOrderAttachmentsPath, q, &out); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
+// UploadWorkOrderAttachment attaches a file to a work order via multipart POST
+// to the top-level collection. The work order id rides as the "work_order" form
+// field (the URL has no id — the collection is flat), the bytes as "file", and
+// description/kind as text fields; a blank description is omitted, mirroring the
+// PO uploader. kind must be one of photo/document/other. Create is staff /
+// Logistics / SIG-admin only, so a volunteer maker gets a 403 the screen
+// surfaces. fileName is the name stored server-side; file streams the bytes.
+func (c *Client) UploadWorkOrderAttachment(
+	ctx context.Context, woID, fileName string, file io.Reader, description, kind string,
+) (*WorkOrderAttachment, error) {
+	fields := map[string][]string{"work_order": {woID}}
+	if description != "" {
+		fields["description"] = []string{description}
+	}
+	if kind != "" {
+		fields["kind"] = []string{kind}
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("oms: read attachment %s: %w", fileName, err)
+	}
+	files := []MultipartFile{{Field: "file", Filename: fileName, Data: data}}
+	var out WorkOrderAttachment
+	if err := c.PostMultipart(ctx, workOrderAttachmentsPath, fields, files, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteWorkOrderAttachment removes an attachment by its own id via DELETE
+// .../work-order-attachments/{attachmentID}/ (204 on success). The endpoint is
+// flat, so no work-order id is needed. Deletion is staff / Logistics /
+// SIG-admin only and answers 403 otherwise; attachmentID is whatever the
+// serializer echoed for the row (UUID today, so `any`).
+func (c *Client) DeleteWorkOrderAttachment(ctx context.Context, attachmentID any) error {
+	return c.Delete(ctx, fmt.Sprintf("%s%v/", workOrderAttachmentsPath, attachmentID))
 }
 
 // MaintenanceOrder mirrors backend ThirdPartyWorkOrderSerializer. The order
