@@ -266,7 +266,7 @@ func TestToggleWorkOrderMaterial_Contract(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	mu, err := c.ToggleWorkOrderMaterial(context.Background(), "wo1", "mu1", true)
+	mu, err := c.ToggleWorkOrderMaterial(context.Background(), "wo1", "mu1", true, WorkOrderMaterialEdit{})
 	if err != nil {
 		t.Fatalf("ToggleWorkOrderMaterial: %v", err)
 	}

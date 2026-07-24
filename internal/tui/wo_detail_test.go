@@ -615,6 +615,10 @@ func TestWODetailEditNotesPatches(t *testing.T) {
 	}
 }
 
+// An empty TASK list still has nothing to open — steps only ever come from the
+// template. Materials are the opposite case since op-768w and are covered by
+// TestWODetailMaterialsOpenWhenEmpty: an empty list is the corrective work
+// order, and opening it is how the first line gets added.
 func TestWODetailNoTasksKeepsViewMode(t *testing.T) {
 	deps := Deps{OMS: omsapi.New("http://unused"), Ctx: context.Background()}
 	s := loadWO(t, deps, &omsapi.WorkOrder{ID: "wo1"}) // no tasks, no materials
@@ -623,11 +627,6 @@ func TestWODetailNoTasksKeepsViewMode(t *testing.T) {
 	s = next.(*WorkOrderDetailScreen)
 	if s.mode != woModeView {
 		t.Fatalf("mode = %v, want view (no tasks to pick)", s.mode)
-	}
-	next, _ = s.Update(woRuneKey("M"))
-	s = next.(*WorkOrderDetailScreen)
-	if s.mode != woModeView {
-		t.Fatalf("mode = %v, want view (no materials to pick)", s.mode)
 	}
 }
 

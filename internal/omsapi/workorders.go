@@ -20,6 +20,12 @@ import (
 //
 // WO elapsed is wall-time-on-job — setup, LOTO and cleanup included — so it is
 // expected to exceed the sum of the per-step clocks rather than equal it.
+//
+// ActualMaterialCost (op-768w) is the money half of the same idea: the server's
+// sum of ActualCost over the lines actually marked used. Server-owned like the
+// clock — display it, never accumulate into it. Planned-but-unused material
+// costs nothing, and an unpriced used line contributes zero rather than voiding
+// the total, so a partially-priced job still reports what is known.
 type WorkOrder struct {
 	ID                   any                       `json:"id"`
 	ShortID              string                    `json:"short_id,omitempty"`
@@ -49,6 +55,7 @@ type WorkOrder struct {
 	ClosedAt             *time.Time                `json:"closed_at,omitempty"`
 	TaskCompletions      []WorkOrderTaskCompletion `json:"task_completions,omitempty"`
 	MaterialUsage        []WorkOrderMaterialUsage  `json:"material_usage,omitempty"`
+	ActualMaterialCost   DecimalString             `json:"actual_material_cost,omitempty"`
 	Tools                []WorkOrderTool           `json:"tools,omitempty"`
 	Photos               []WorkOrderPhoto          `json:"photos,omitempty"`
 	Validation           *WorkOrderValidation      `json:"validation,omitempty"`
@@ -140,14 +147,42 @@ type WorkOrderTaskCompletion struct {
 	CreatedAt             time.Time        `json:"created_at,omitempty"`
 }
 
+// WorkOrderMaterialUsage is one material line on a work order. It is either the
+// frozen copy of a PM template material made when the WO was cut, or — since
+// op-768w — an AD-HOC line added during the job. The ad-hoc line is the only way
+// a CORRECTIVE work order records a material at all (it has no template, so it
+// starts with zero rows), and the way any work order records an out-of-pocket
+// buy nobody planned for.
+//
+// Money: UnitCost is the real price paid per unit and is writable through the
+// toggle; ActualCost is the server's QuantityUsed × UnitCost, empty when nobody
+// priced the line. Cost is optional throughout — plenty of lines are shop stock
+// nobody prices at the point of use — so an empty ActualCost means "unpriced",
+// never "free".
+//
+// Stock: an ad-hoc line carries its own InventoryItem link where a template line
+// inherits its spec's, and InventoryItemName resolves whichever applies — a line
+// with one decrements that item when marked used, a line without simply records
+// the spend. AppliedQuantity / StockApplied expose the live decrement, and a
+// line holding one is frozen: neither its quantity nor its price can be edited
+// and it cannot be removed until it is un-toggled, which restores the stock.
 type WorkOrderMaterialUsage struct {
-	ID              any           `json:"id"`
-	Material        any           `json:"material,omitempty"`
-	MaterialName    string        `json:"material_name,omitempty"`
-	QuantityPlanned DecimalString `json:"quantity_planned,omitempty"`
-	Unit            string        `json:"unit,omitempty"`
-	WasUsed         bool          `json:"was_used,omitempty"`
-	CreatedAt       time.Time     `json:"created_at,omitempty"`
+	ID                any           `json:"id"`
+	Material          any           `json:"material,omitempty"`
+	MaterialName      string        `json:"material_name,omitempty"`
+	IsAdHoc           bool          `json:"is_ad_hoc,omitempty"`
+	InventoryItem     *string       `json:"inventory_item,omitempty"`
+	InventoryItemName string        `json:"inventory_item_name,omitempty"`
+	QuantityPlanned   DecimalString `json:"quantity_planned,omitempty"`
+	QuantityUsed      DecimalString `json:"quantity_used,omitempty"`
+	Unit              string        `json:"unit,omitempty"`
+	UnitCost          DecimalString `json:"unit_cost,omitempty"`
+	ActualCost        DecimalString `json:"actual_cost,omitempty"`
+	WasUsed           bool          `json:"was_used,omitempty"`
+	AppliedQuantity   *int          `json:"applied_quantity,omitempty"`
+	StockApplied      bool          `json:"stock_applied,omitempty"`
+	ReceiptURL        string        `json:"receipt_url,omitempty"`
+	CreatedAt         time.Time     `json:"created_at,omitempty"`
 }
 
 // WorkOrderTool is the lean, display-only projection of the source PM
@@ -263,14 +298,127 @@ func (c *Client) TimerWorkOrderTask(ctx context.Context, woID, taskID, action st
 	return &out, nil
 }
 
-// ToggleWorkOrderMaterial sets whether a planned material was actually used
-// (PATCH .../materials/{materialID}/toggle/). Mirrors workOrderAPI.toggleMaterial.
-func (c *Client) ToggleWorkOrderMaterial(ctx context.Context, woID, materialID string, wasUsed bool) (*WorkOrderMaterialUsage, error) {
+// WorkOrderMaterialEdit carries the two per-line amounts that ride a toggle
+// (op-768w). A nil field is left alone; the toggle is the ONLY write endpoint
+// for either, so an already-marked line — an out-of-pocket buy is marked used
+// and moves no stock — is re-priced by toggling it to the value it already has.
+//
+// A non-nil UnitCost pointing at "" clears the price: "nobody knows what this
+// cost" is a real answer, and the backend reads it as an explicit null. Both
+// values freeze once a stock decrement is applied so the recorded spend cannot
+// drift from the movement it backs — the backend then keeps the stored value
+// silently rather than erroring, so un-toggle first to re-price.
+type WorkOrderMaterialEdit struct {
+	QuantityUsed *string
+	UnitCost     *string
+}
+
+// ToggleWorkOrderMaterial sets whether a material was actually used
+// (PATCH .../materials/{materialID}/toggle/), optionally writing the used
+// quantity and the real price paid alongside. Mirrors workOrderAPI.toggleMaterial.
+//
+// Marking a line used is what decrements stock, for template and ad-hoc lines
+// alike — AddWorkOrderMaterial deliberately creates the line un-used so every
+// decrement goes through this one seam.
+func (c *Client) ToggleWorkOrderMaterial(ctx context.Context, woID, materialID string, wasUsed bool, edit WorkOrderMaterialEdit) (*WorkOrderMaterialUsage, error) {
+	body := map[string]any{"was_used": wasUsed}
+	if edit.QuantityUsed != nil {
+		body["quantity_used"] = *edit.QuantityUsed
+	}
+	if edit.UnitCost != nil {
+		if *edit.UnitCost == "" {
+			body["unit_cost"] = nil
+		} else {
+			body["unit_cost"] = *edit.UnitCost
+		}
+	}
 	var out WorkOrderMaterialUsage
-	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/materials/%s/toggle/", woID, materialID), map[string]any{"was_used": wasUsed}, &out); err != nil {
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/materials/%s/toggle/", woID, materialID), body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// WorkOrderAdHocMaterial is the input for AddWorkOrderMaterial. Only
+// MaterialName is required; every other field is an empty-means-omitted string
+// so the backend's own defaults apply.
+//
+// InventoryItem links the line to tracked stock, which is what lets marking it
+// used decrement that item. Leave it empty for an out-of-pocket buy: the line
+// then records the spend and moves nothing. Adding a material NEVER creates an
+// inventory item.
+//
+// UnitCost left empty defaults from the linked item's current unit cost when an
+// item is given — a default, not a lock. Receipt is the optional
+// proof-of-purchase photo; when it is set the request goes out as
+// multipart/form-data, exactly as AddWorkOrderPhoto does.
+type WorkOrderAdHocMaterial struct {
+	MaterialName    string
+	QuantityUsed    string
+	Unit            string
+	UnitCost        string
+	InventoryItem   string
+	ReceiptFilename string
+	Receipt         []byte
+}
+
+// fields renders the input as form values, skipping the empty ones so the
+// backend's defaults survive. Shared by both halves of AddWorkOrderMaterial so
+// the JSON and multipart requests can never disagree about what was sent.
+func (in WorkOrderAdHocMaterial) fields() map[string]string {
+	out := map[string]string{"material_name": in.MaterialName}
+	for k, v := range map[string]string{
+		"quantity_used":  in.QuantityUsed,
+		"unit":           in.Unit,
+		"unit_cost":      in.UnitCost,
+		"inventory_item": in.InventoryItem,
+	} {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// AddWorkOrderMaterial adds an ad-hoc material line to a work order
+// (POST .../materials/). Mirrors workOrderAPI.addMaterial.
+//
+// The line is created UN-used: the stock decrement is ToggleWorkOrderMaterial's
+// job, so there is exactly one path in and out of inventory.
+func (c *Client) AddWorkOrderMaterial(ctx context.Context, woID string, in WorkOrderAdHocMaterial) (*WorkOrderMaterialUsage, error) {
+	path := fmt.Sprintf("/api/inventory/work-orders/%s/materials/", woID)
+	var out WorkOrderMaterialUsage
+	if len(in.Receipt) == 0 {
+		body := make(map[string]any, 5)
+		for k, v := range in.fields() {
+			body[k] = v
+		}
+		if err := c.Post(ctx, path, body, &out); err != nil {
+			return nil, err
+		}
+		return &out, nil
+	}
+	fields := map[string][]string{}
+	for k, v := range in.fields() {
+		fields[k] = []string{v}
+	}
+	files := []MultipartFile{{Field: "receipt_image", Filename: in.ReceiptFilename, Data: in.Receipt}}
+	if err := c.PostMultipart(ctx, path, fields, files, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveWorkOrderMaterial deletes an ad-hoc material line
+// (DELETE .../materials/{materialID}/). Mirrors workOrderAPI.removeMaterial.
+//
+// Two backend guards both answer 400: a TEMPLATE-derived line is never
+// deletable — it is the frozen copy of what the job was supposed to be and it
+// prints on the sign-off sheet — and neither is a line still holding a stock
+// decrement, which would strand the units taken out of inventory. Un-toggle
+// that one first to restore the stock, then remove it.
+func (c *Client) RemoveWorkOrderMaterial(ctx context.Context, woID, materialID string) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/materials/%s/", woID, materialID))
 }
 
 // AddWorkOrderPhoto uploads a photo to a work order as multipart/form-data

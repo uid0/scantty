@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,15 +23,46 @@ import (
 type woMode int
 
 const (
-	woModeView      woMode = iota
-	woModeTasks            // task-completion picker (space toggles the highlighted task)
-	woModeMaterials        // material-usage picker (space toggles was-used)
-	woModePhoto            // add-photo form (file path + optional caption)
-	woModePdf              // upload scanned-PDF form (file path)
-	woModeChecklist        // pre-finalization validation checklist (3 acks + notes)
-	woModeConfirm          // y/n confirm for a finalizing/destructive status transition
-	woModeNotes            // edit work-order notes (updateWorkOrder)
+	woModeView         woMode = iota
+	woModeTasks               // task-completion picker (space toggles the highlighted task)
+	woModeMaterials           // material-usage picker (space toggles was-used)
+	woModeAddMaterial         // add an ad-hoc material line (name/qty/unit/cost/stock/receipt)
+	woModeMaterialCost        // re-price one material line (unit cost only)
+	woModePhoto               // add-photo form (file path + optional caption)
+	woModePdf                 // upload scanned-PDF form (file path)
+	woModeChecklist           // pre-finalization validation checklist (3 acks + notes)
+	woModeConfirm             // y/n confirm for a finalizing/destructive status transition
+	woModeNotes               // edit work-order notes (updateWorkOrder)
 )
+
+// Add-material form fields, in render order. The stock-item slot is a picker
+// rather than a textinput, so its entry in the inputs slice goes unused —
+// the same layout asset_part_form uses for its part FK.
+const (
+	woMatName = iota
+	woMatQuantity
+	woMatUnit
+	woMatUnitCost
+	woMatItem
+	woMatReceipt
+	woMatFieldMax
+)
+
+var woMaterialFieldLabel = map[int]string{
+	woMatName:     "Material",
+	woMatQuantity: "Quantity used",
+	woMatUnit:     "Unit",
+	woMatUnitCost: "Unit cost ($)",
+	woMatItem:     "Stock item",
+	woMatReceipt:  "Receipt image",
+}
+
+// woItemPickRow is one row of the add-material stock picker: the "(none)" clear
+// row at the top, then one row per inventory item.
+type woItemPickRow struct {
+	id    string // "" on the clear row
+	label string
+}
 
 type WorkOrderDetailScreen struct {
 	deps           Deps
@@ -65,6 +97,39 @@ type WorkOrderDetailScreen struct {
 	photoTaskID    string
 	photoTaskTitle string
 	photoReturn    woMode
+
+	// Add-material form (op-768w) — the ad-hoc line. Field cursor + picker
+	// sub-phase follow asset_part_form's idiom: tab/arrows move, space opens the
+	// picker on the stock-item field, enter submits. amItemID is the linked
+	// InventoryItem ("" = an out-of-pocket buy, which moves no stock), and the
+	// item list is fetched only while the form is open so the work-order screen
+	// never pays for a picker nobody opened.
+	amInputs     []textinput.Model
+	amCursor     int
+	amItemID     string
+	amItemLabel  string
+	amItems      []omsapi.Item
+	amItemsErr   string
+	amPicking    bool
+	amPickCursor int
+	amPickSearch textinput.Model
+	amPickTyping bool
+	amPickRows   []woItemPickRow
+	amErr        string
+	amPending    bool
+
+	// Re-price one material line. The toggle is the only write endpoint for a
+	// line's cost, so saving sends the line's CURRENT was_used unchanged.
+	costIn      textinput.Model
+	costErr     string
+	costPending bool
+
+	// PM-template per-unit prices keyed by MaintenanceMaterial id — the only
+	// thing "actual vs estimated" can be measured against, and they do not ride
+	// the work-order payload. estimatesFor is the template already fetched, so
+	// the extra call happens once rather than on every reload.
+	estimates    map[string]omsapi.DecimalString
+	estimatesFor string
 
 	// Upload-PDF form.
 	pdfPathIn  textinput.Model
@@ -126,6 +191,37 @@ type woTransitionedMsg struct {
 
 type woTaskToggledMsg struct{ err error }
 type woMaterialToggledMsg struct{ err error }
+
+// woMaterialAddedMsg / woMaterialRemovedMsg / woMaterialCostSavedMsg report the
+// three ad-hoc-material writes (op-768w). name travels on the removal so the
+// status line can say what left the job after the row is already gone.
+type woMaterialAddedMsg struct {
+	name string
+	err  error
+}
+type woMaterialRemovedMsg struct {
+	name string
+	err  error
+}
+type woMaterialCostSavedMsg struct{ err error }
+
+// woItemsLoadedMsg carries the stock picker's options for the add-material form.
+// A failure is not fatal: linking stock is optional, so the form says the list
+// is unavailable and the line can still be added as an out-of-pocket buy.
+type woItemsLoadedMsg struct {
+	items []omsapi.Item
+	err   error
+}
+
+// woEstimatesLoadedMsg carries the PM template's per-unit prices, keyed by
+// MaintenanceMaterial id. key is the template it was fetched for. An error
+// simply drops the estimate half of the totals line — the actual spend stands
+// on its own — so it carries no message for the operator.
+type woEstimatesLoadedMsg struct {
+	key   string
+	costs map[string]omsapi.DecimalString
+	err   error
+}
 type woPhotoAddedMsg struct{ err error }
 type woPdfUploadedMsg struct {
 	result *omsapi.WorkOrderUploadResult
@@ -182,6 +278,14 @@ func (s *WorkOrderDetailScreen) Init() tea.Cmd {
 // would otherwise claim (m, /, esc, uppercase shortcuts, …).
 func (s *WorkOrderDetailScreen) WantsRawInput() bool { return s.mode != woModeView }
 
+// HandlesKey claims uppercase 'M' (the material list) so it beats the global
+// PM-items hotkey — the sc-k7p LocalKeyScreen pattern. Without the claim the key
+// the footer advertises navigates away from the work order instead, which since
+// op-768w means the ONLY way a corrective work order can record what it consumed
+// is unreachable. Only consulted in the normal view: any open modal flips
+// WantsRawInput true, which routes every key here first.
+func (s *WorkOrderDetailScreen) HandlesKey(key string) bool { return key == "M" }
+
 func (s *WorkOrderDetailScreen) load() tea.Cmd {
 	deps := s.deps
 	id := s.woID
@@ -225,7 +329,7 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		// the local offset starts over from zero.
 		cmd := s.syncTicking()
 		s.refreshBody()
-		return s, cmd
+		return s, tea.Batch(cmd, s.loadEstimates())
 	case woTransitionedMsg:
 		s.transitioning = false
 		if m.err != nil {
@@ -260,6 +364,56 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, Status("material update failed: "+m.err.Error(), StatusError)
 		}
 		return s, tea.Batch(Status("material updated", StatusOK), s.load())
+	case woMaterialAddedMsg:
+		s.amPending = false
+		if m.err != nil {
+			s.amErr = m.err.Error()
+			return s, Status("add material failed: "+m.err.Error(), StatusError)
+		}
+		// Back to the list, which is where the new line has to be marked used —
+		// adding it records the plan, toggling it is what moves the stock.
+		s.mode = woModeMaterials
+		note := m.name + " added — press space to mark it used"
+		s.setAction(note, StatusOK)
+		return s, tea.Batch(Status(note, StatusOK), s.load())
+	case woMaterialRemovedMsg:
+		s.actionPending = false
+		if m.err != nil {
+			return s, Status("remove material failed: "+m.err.Error(), StatusError)
+		}
+		note := m.name + " removed"
+		s.setAction(note, StatusOK)
+		return s, tea.Batch(Status(note, StatusOK), s.load())
+	case woMaterialCostSavedMsg:
+		s.costPending = false
+		if m.err != nil {
+			s.costErr = m.err.Error()
+			return s, Status("save cost failed: "+m.err.Error(), StatusError)
+		}
+		s.mode = woModeMaterials
+		s.setAction("cost saved", StatusOK)
+		return s, tea.Batch(Status("cost saved", StatusOK), s.load())
+	case woItemsLoadedMsg:
+		if m.err != nil {
+			s.amItemsErr = m.err.Error()
+			return s, nil
+		}
+		s.amItemsErr = ""
+		s.amItems = m.items
+		s.applyItemFilter()
+		return s, nil
+	case woEstimatesLoadedMsg:
+		if m.err != nil {
+			// Let the next explicit reload try again rather than sitting on a
+			// transient failure for the life of the screen.
+			if s.estimatesFor == m.key {
+				s.estimatesFor = ""
+			}
+			return s, nil
+		}
+		s.estimates = m.costs
+		s.refreshBody()
+		return s, nil
 	case woPhotoAddedMsg:
 		s.photoPending = false
 		if m.err != nil {
@@ -342,6 +496,10 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s.handleTasksKey(m)
 		case woModeMaterials:
 			return s.handleMaterialsKey(m)
+		case woModeAddMaterial:
+			return s.handleAddMaterialKey(m)
+		case woModeMaterialCost:
+			return s.handleMaterialCostKey(m)
 		case woModePhoto:
 			return s.handlePhotoKey(m)
 		case woModePdf:
@@ -394,8 +552,11 @@ func (s *WorkOrderDetailScreen) handleViewKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 		s.taskCursor = 0
 		return s, nil
 	case "M":
-		if s.wo == nil || len(s.wo.MaterialUsage) == 0 {
-			return s, Status("no materials to toggle", StatusWarn)
+		// Opens even with nothing in the list: a CORRECTIVE work order has no PM
+		// template, so it arrives with zero material rows and adding one from
+		// here is the only way it records a material at all (op-768w).
+		if s.wo == nil {
+			return s, nil
 		}
 		s.mode = woModeMaterials
 		s.materialCursor = 0
@@ -665,10 +826,25 @@ func (s *WorkOrderDetailScreen) handleMaterialsKey(m tea.KeyMsg) (Screen, tea.Cm
 		}
 		return s, nil
 	case " ", "enter":
-		if s.actionPending {
+		if s.actionPending || n == 0 {
 			return s, nil
 		}
 		return s, s.toggleMaterial()
+	case "a":
+		// The point of the whole feature: a corrective work order reaches this
+		// list EMPTY, and this is where it gets its first line.
+		s.openAddMaterial()
+		return s, tea.Batch(textinput.Blink, s.loadPickItems())
+	case "c":
+		if n == 0 {
+			return s, nil
+		}
+		return s.openMaterialCost()
+	case "d":
+		if s.actionPending || n == 0 {
+			return s, nil
+		}
+		return s.removeMaterial()
 	}
 	return s, nil
 }
@@ -685,9 +861,485 @@ func (s *WorkOrderDetailScreen) toggleMaterial() tea.Cmd {
 		ctx = context.Background()
 	}
 	return func() tea.Msg {
-		_, err := deps.OMS.ToggleWorkOrderMaterial(ctx, woID, matID, next)
+		_, err := deps.OMS.ToggleWorkOrderMaterial(ctx, woID, matID, next, omsapi.WorkOrderMaterialEdit{})
 		return woMaterialToggledMsg{err: err}
 	}
+}
+
+// removeMaterial deletes the highlighted ad-hoc line. Both of the backend's 400
+// guards are stated here rather than sent and bounced: the operator gets the
+// reason — and, for the stock case, the fix — without a round trip.
+func (s *WorkOrderDetailScreen) removeMaterial() (Screen, tea.Cmd) {
+	mat, ok := s.currentMaterial()
+	if !ok {
+		return s, nil
+	}
+	if !mat.IsAdHoc {
+		return s, Status("only added materials can be removed — this one is the PM template's", StatusWarn)
+	}
+	if mat.StockApplied {
+		return s, Status("un-mark it as used first to restore the stock, then remove it", StatusWarn)
+	}
+	matID := fmt.Sprintf("%v", mat.ID)
+	name := mat.MaterialName
+	woID := s.woID
+	s.actionPending = true
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s, func() tea.Msg {
+		return woMaterialRemovedMsg{name: name, err: deps.OMS.RemoveWorkOrderMaterial(ctx, woID, matID)}
+	}
+}
+
+// --- Re-price one line -----------------------------------------------------
+
+// currentMaterial is the highlighted line, or false when there is none. A
+// reload can empty the list under an open modal — somebody else removing the row
+// this screen was pricing — so every path that reaches for it asks first.
+func (s *WorkOrderDetailScreen) currentMaterial() (omsapi.WorkOrderMaterialUsage, bool) {
+	if s.wo == nil || s.materialCursor < 0 || s.materialCursor >= len(s.wo.MaterialUsage) {
+		return omsapi.WorkOrderMaterialUsage{}, false
+	}
+	return s.wo.MaterialUsage[s.materialCursor], true
+}
+
+// openMaterialCost opens the unit-cost editor for the highlighted line. The
+// price freezes once stock has moved so the recorded spend can't drift from the
+// decrement it backs, so a line in that state is turned away with the fix.
+func (s *WorkOrderDetailScreen) openMaterialCost() (Screen, tea.Cmd) {
+	mat, ok := s.currentMaterial()
+	if !ok {
+		return s, nil
+	}
+	if mat.StockApplied {
+		return s, Status("price is frozen while stock is applied — un-mark it as used first", StatusWarn)
+	}
+	in := textinput.New()
+	in.Prompt = ""
+	in.Placeholder = "12.50 (blank clears the price)"
+	in.CharLimit = 16
+	in.SetValue(string(mat.UnitCost))
+	in.CursorEnd()
+	in.Focus()
+	s.costIn = in
+	s.costErr = ""
+	s.mode = woModeMaterialCost
+	return s, textinput.Blink
+}
+
+func (s *WorkOrderDetailScreen) handleMaterialCostKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.Type {
+	case tea.KeyEsc:
+		s.mode = woModeMaterials
+		return s, nil
+	case tea.KeyEnter:
+		if s.costPending {
+			return s, nil
+		}
+		return s.submitMaterialCost()
+	}
+	var cmd tea.Cmd
+	s.costIn, cmd = s.costIn.Update(m)
+	return s, cmd
+}
+
+// submitMaterialCost writes the price through the toggle — the only endpoint
+// that carries it — sending the line's CURRENT was_used so an already-marked
+// out-of-pocket buy can still be priced without flipping it.
+func (s *WorkOrderDetailScreen) submitMaterialCost() (Screen, tea.Cmd) {
+	mat, ok := s.currentMaterial()
+	if !ok {
+		s.mode = woModeMaterials
+		return s, Status("that material is no longer on this work order", StatusWarn)
+	}
+	cost := strings.TrimSpace(s.costIn.Value())
+	if cost != "" {
+		if _, err := strconv.ParseFloat(cost, 64); err != nil {
+			s.costErr = "unit cost must be a number (or blank to clear it)"
+			return s, nil
+		}
+	}
+	matID := fmt.Sprintf("%v", mat.ID)
+	wasUsed := mat.WasUsed
+	woID := s.woID
+	s.costPending = true
+	s.costErr = ""
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s, func() tea.Msg {
+		edit := omsapi.WorkOrderMaterialEdit{UnitCost: &cost}
+		_, err := deps.OMS.ToggleWorkOrderMaterial(ctx, woID, matID, wasUsed, edit)
+		return woMaterialCostSavedMsg{err: err}
+	}
+}
+
+// --- Add-material form -----------------------------------------------------
+
+func (s *WorkOrderDetailScreen) openAddMaterial() {
+	s.amInputs = make([]textinput.Model, woMatFieldMax)
+	for _, f := range []struct {
+		id          int
+		placeholder string
+		limit       int
+	}{
+		{woMatName, "what you used or bought", 200},
+		{woMatQuantity, "1", 16},
+		{woMatUnit, "each, ft, L…", 50},
+		{woMatUnitCost, "price actually paid per unit", 16},
+		{woMatReceipt, "/path/to/receipt.jpg (~ expands to home)", 512},
+	} {
+		in := textinput.New()
+		in.Prompt = ""
+		in.Placeholder = f.placeholder
+		in.CharLimit = f.limit
+		s.amInputs[f.id] = in
+	}
+	s.amInputs[woMatQuantity].SetValue("1")
+	s.amCursor = 0
+	s.amItemID, s.amItemLabel = "", ""
+	s.amPicking, s.amPickTyping, s.amPickCursor = false, false, 0
+	search := textinput.New()
+	search.Prompt = ""
+	search.Placeholder = "filter by name or SKU"
+	search.CharLimit = 64
+	s.amPickSearch = search
+	s.amErr = ""
+	s.amPending = false
+	s.mode = woModeAddMaterial
+	s.syncAddMaterialFocus()
+}
+
+// loadPickItems fetches the stock list the picker offers, once per open form.
+// Linking stock is optional, so a failure is recorded on the form rather than
+// raised — an out-of-pocket line needs no item at all.
+func (s *WorkOrderDetailScreen) loadPickItems() tea.Cmd {
+	if len(s.amItems) > 0 {
+		return nil
+	}
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		items, err := deps.OMS.ListAllItems(ctx)
+		return woItemsLoadedMsg{items: items, err: err}
+	}
+}
+
+func (s *WorkOrderDetailScreen) syncAddMaterialFocus() {
+	for i := range s.amInputs {
+		if i == s.amCursor && woMaterialIsTextField(i) {
+			s.amInputs[i].Focus()
+		} else {
+			s.amInputs[i].Blur()
+		}
+	}
+}
+
+// woMaterialIsTextField reports whether a field is typed into. Only the stock
+// item is not — it is a picker, opened with space.
+func woMaterialIsTextField(id int) bool { return id != woMatItem }
+
+func (s *WorkOrderDetailScreen) handleAddMaterialKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.amPicking {
+		return s.handleItemPickKey(m)
+	}
+	switch m.String() {
+	case "esc":
+		s.mode = woModeMaterials
+		return s, nil
+	case "tab", "down":
+		s.moveAddMaterialCursor(+1)
+		return s, textinput.Blink
+	case "shift+tab", "up":
+		s.moveAddMaterialCursor(-1)
+		return s, textinput.Blink
+	case "enter":
+		if s.amPending {
+			return s, nil
+		}
+		return s.submitAddMaterial()
+	}
+	if s.amCursor == woMatItem {
+		if m.String() == " " {
+			s.openItemPicker()
+			return s, nil
+		}
+		return s, nil
+	}
+	var cmd tea.Cmd
+	s.amInputs[s.amCursor], cmd = s.amInputs[s.amCursor].Update(m)
+	return s, cmd
+}
+
+func (s *WorkOrderDetailScreen) moveAddMaterialCursor(delta int) {
+	s.amCursor = (s.amCursor + delta + woMatFieldMax) % woMatFieldMax
+	s.syncAddMaterialFocus()
+}
+
+func (s *WorkOrderDetailScreen) openItemPicker() {
+	s.amPicking = true
+	s.amPickTyping = false
+	s.amPickSearch.SetValue("")
+	s.amPickSearch.Blur()
+	s.applyItemFilter()
+	s.amPickCursor = 0
+	for i, row := range s.amPickRows {
+		if row.id != "" && row.id == s.amItemID {
+			s.amPickCursor = i
+			break
+		}
+	}
+}
+
+// applyItemFilter rebuilds the picker rows against the search box. Row 0 always
+// clears the link, which is how a line goes back to being an out-of-pocket buy.
+func (s *WorkOrderDetailScreen) applyItemFilter() {
+	q := strings.ToLower(strings.TrimSpace(s.amPickSearch.Value()))
+	rows := []woItemPickRow{{label: "(none — out-of-pocket, moves no stock)"}}
+	for _, it := range s.amItems {
+		label := it.Name
+		if it.SKU != "" {
+			label += " (" + it.SKU + ")"
+		}
+		if cost := formatMoney(it.UnitCost); cost != "" {
+			label += " · " + cost + "/unit"
+		}
+		if q == "" || strings.Contains(strings.ToLower(label), q) {
+			rows = append(rows, woItemPickRow{id: it.ID, label: label})
+		}
+	}
+	s.amPickRows = rows
+	if s.amPickCursor >= len(s.amPickRows) {
+		s.amPickCursor = 0
+	}
+}
+
+func (s *WorkOrderDetailScreen) handleItemPickKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.amPickTyping {
+		switch m.Type {
+		case tea.KeyEsc, tea.KeyEnter:
+			s.amPickTyping = false
+			s.amPickSearch.Blur()
+			s.amPickCursor = 0
+			return s, nil
+		}
+		var cmd tea.Cmd
+		s.amPickSearch, cmd = s.amPickSearch.Update(m)
+		s.applyItemFilter()
+		return s, cmd
+	}
+	switch m.String() {
+	case "esc":
+		s.amPicking = false
+		s.syncAddMaterialFocus()
+	case "j", "down":
+		if s.amPickCursor < len(s.amPickRows)-1 {
+			s.amPickCursor++
+		}
+	case "k", "up":
+		if s.amPickCursor > 0 {
+			s.amPickCursor--
+		}
+	case "/":
+		s.amPickTyping = true
+		s.amPickSearch.Focus()
+		return s, textinput.Blink
+	case "enter":
+		s.commitItemPick()
+	}
+	return s, nil
+}
+
+// commitItemPick links (or unlinks) the stock row. Picking an item seeds the
+// cost field with what that item currently costs when no price has been typed —
+// the same default the backend would apply, shown so it can be overridden when
+// the real price differs. Seeding the NAME too saves retyping what the picker
+// already named.
+func (s *WorkOrderDetailScreen) commitItemPick() {
+	if s.amPickCursor >= 0 && s.amPickCursor < len(s.amPickRows) {
+		row := s.amPickRows[s.amPickCursor]
+		s.amItemID, s.amItemLabel = row.id, row.label
+		if row.id != "" {
+			for _, it := range s.amItems {
+				if it.ID != row.id {
+					continue
+				}
+				if strings.TrimSpace(s.amInputs[woMatName].Value()) == "" {
+					s.amInputs[woMatName].SetValue(it.Name)
+				}
+				if strings.TrimSpace(s.amInputs[woMatUnitCost].Value()) == "" && !it.UnitCost.Empty() {
+					s.amInputs[woMatUnitCost].SetValue(string(it.UnitCost))
+				}
+				break
+			}
+		}
+	}
+	s.amPicking = false
+	s.amPickTyping = false
+	s.amPickSearch.SetValue("")
+	s.amPickSearch.Blur()
+	s.syncAddMaterialFocus()
+}
+
+func (s *WorkOrderDetailScreen) submitAddMaterial() (Screen, tea.Cmd) {
+	name := strings.TrimSpace(s.amInputs[woMatName].Value())
+	if name == "" {
+		s.amCursor = woMatName
+		s.syncAddMaterialFocus()
+		s.amErr = "material name is required"
+		return s, nil
+	}
+	qty := strings.TrimSpace(s.amInputs[woMatQuantity].Value())
+	if qty != "" {
+		if v, err := strconv.ParseFloat(qty, 64); err != nil || v < 0 {
+			s.amCursor = woMatQuantity
+			s.syncAddMaterialFocus()
+			s.amErr = "quantity must be a number"
+			return s, nil
+		}
+	}
+	cost := strings.TrimSpace(s.amInputs[woMatUnitCost].Value())
+	if cost != "" {
+		if v, err := strconv.ParseFloat(cost, 64); err != nil || v < 0 {
+			s.amCursor = woMatUnitCost
+			s.syncAddMaterialFocus()
+			s.amErr = "unit cost must be a number"
+			return s, nil
+		}
+	}
+	in := omsapi.WorkOrderAdHocMaterial{
+		MaterialName:  name,
+		QuantityUsed:  qty,
+		Unit:          strings.TrimSpace(s.amInputs[woMatUnit].Value()),
+		UnitCost:      cost,
+		InventoryItem: s.amItemID,
+	}
+	receipt := expandUser(strings.TrimSpace(s.amInputs[woMatReceipt].Value()))
+	woID := s.woID
+	s.amPending = true
+	s.amErr = ""
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s, func() tea.Msg {
+		// Read the receipt only when one was actually picked: the request then
+		// goes out as multipart, and stays plain JSON otherwise.
+		if receipt != "" {
+			data, err := os.ReadFile(receipt)
+			if err != nil {
+				return woMaterialAddedMsg{name: name, err: fmt.Errorf("read %s: %w", receipt, err)}
+			}
+			in.Receipt = data
+			in.ReceiptFilename = filepath.Base(receipt)
+		}
+		_, err := deps.OMS.AddWorkOrderMaterial(ctx, woID, in)
+		return woMaterialAddedMsg{name: name, err: err}
+	}
+}
+
+// --- Material cost totals --------------------------------------------------
+
+// loadEstimates pulls the PM template's per-unit prices so the materials total
+// can read actual AGAINST estimate. The estimate lives on MaintenanceMaterial
+// and does not ride the work-order payload, so it costs one extra fetch — done
+// once per template, and skipped entirely for corrective work, which has no
+// template and therefore nothing to compare against (exactly as the stopwatch
+// has no estimated time).
+func (s *WorkOrderDetailScreen) loadEstimates() tea.Cmd {
+	if s.wo == nil {
+		return nil
+	}
+	id := anyID(s.wo.MaintenanceItem)
+	if id == "" || s.estimatesFor == id {
+		return nil
+	}
+	s.estimatesFor = id
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		item, err := deps.OMS.GetMaintenanceItem(ctx, id)
+		if err != nil {
+			return woEstimatesLoadedMsg{key: id, err: err}
+		}
+		costs := make(map[string]omsapi.DecimalString, len(item.Materials))
+		for _, mat := range item.Materials {
+			costs[mat.ID] = mat.EstimatedCostPerUnit
+		}
+		return woEstimatesLoadedMsg{key: id, costs: costs}
+	}
+}
+
+// materialCostSummary is the actual-vs-estimated pair the materials view exists
+// to produce.
+//
+// The actual is the server's total; it is only summed here when a backend older
+// than op-768w omits the field. The estimate applies the TEMPLATE's per-unit
+// price to the quantities THIS work order planned, so editing the template later
+// does not rewrite what this job estimated — and an ad-hoc line, which has no
+// template row, is in the actual but never in the estimate.
+func (s *WorkOrderDetailScreen) materialCostSummary() (actual, estimated float64, hasEstimate bool) {
+	if s.wo == nil {
+		return 0, 0, false
+	}
+	if !s.wo.ActualMaterialCost.Empty() {
+		actual = decimalFloat(s.wo.ActualMaterialCost)
+	} else {
+		for _, mu := range s.wo.MaterialUsage {
+			if mu.WasUsed {
+				actual += decimalFloat(mu.ActualCost)
+			}
+		}
+	}
+	for _, mu := range s.wo.MaterialUsage {
+		perUnit, ok := s.estimates[anyID(mu.Material)]
+		if !ok {
+			continue
+		}
+		hasEstimate = true
+		estimated += decimalFloat(mu.QuantityPlanned) * decimalFloat(perUnit)
+	}
+	return actual, estimated, hasEstimate
+}
+
+// decimalFloat reads a decimal-string field as a number, treating empty and
+// unparseable alike as zero — an unpriced line contributes nothing to a total
+// rather than voiding it.
+func decimalFloat(d omsapi.DecimalString) float64 {
+	if d.Empty() {
+		return 0
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(string(d)), 64)
+	if err != nil {
+		return 0
+	}
+	return f
+}
+
+// anyID stringifies one of the API's `any`-typed ids (they are UUID strings on
+// today's installs, but the field is whatever the serializer echoed back).
+// Absent reads as "" rather than the "<nil>" fmt would otherwise produce.
+func anyID(v any) string {
+	if v == nil {
+		return ""
+	}
+	id := strings.TrimSpace(fmt.Sprintf("%v", v))
+	if id == "<nil>" {
+		return ""
+	}
+	return id
 }
 
 // --- Add-photo form --------------------------------------------------------
@@ -1081,6 +1733,10 @@ func (s *WorkOrderDetailScreen) View() string {
 		return s.renderTaskPicker()
 	case woModeMaterials:
 		return s.renderMaterialPicker()
+	case woModeAddMaterial:
+		return s.renderAddMaterialForm()
+	case woModeMaterialCost:
+		return s.renderMaterialCostForm()
 	case woModePhoto:
 		return s.renderPhotoForm()
 	case woModePdf:
@@ -1129,9 +1785,9 @@ func (s *WorkOrderDetailScreen) footerHint() string {
 	if len(s.wo.TaskCompletions) > 0 {
 		parts = append(parts, "t tasks")
 	}
-	if len(s.wo.MaterialUsage) > 0 {
-		parts = append(parts, "M materials")
-	}
+	// Always offered: an empty list is the corrective case, where adding the
+	// first line is exactly what the operator came here to do.
+	parts = append(parts, "M materials")
 	parts = append(parts, "p photo", "U upload-pdf", "v validate", "E notes", "r refresh", "esc back")
 	return strings.Join(parts, " · ")
 }
@@ -1286,7 +1942,12 @@ func (s *WorkOrderDetailScreen) renderMaterialPicker() string {
 			used++
 		}
 	}
-	b.WriteString(StyleTitle.Render(fmt.Sprintf("Toggle materials used (%d/%d used)", used, len(s.wo.MaterialUsage))) + "\n\n")
+	b.WriteString(StyleTitle.Render(fmt.Sprintf("Materials used (%d/%d used)", used, len(s.wo.MaterialUsage))) + "\n\n")
+	if len(s.wo.MaterialUsage) == 0 {
+		// The corrective case: no PM template, so nothing was copied in. Say
+		// what to do about it rather than just reporting the hole.
+		b.WriteString(StyleMuted.Render("Nothing recorded yet. Press a to add what you used or bought on this job.") + "\n")
+	}
 	for i, mu := range s.wo.MaterialUsage {
 		cursor := "  "
 		if i == s.materialCursor {
@@ -1297,23 +1958,197 @@ func (s *WorkOrderDetailScreen) renderMaterialPicker() string {
 			box = StyleStatusOK.Render("[x]")
 		}
 		label := mu.MaterialName
-		if !mu.QuantityPlanned.Empty() {
-			label += " — " + string(mu.QuantityPlanned)
-			if mu.Unit != "" {
-				label += " " + mu.Unit
-			}
+		if mu.IsAdHoc {
+			label += " " + StyleMuted.Render("(added)")
 		}
 		line := cursor + box + " " + label
 		if i == s.materialCursor {
 			line = StyleTitle.Render(line)
 		}
 		b.WriteString(line + "\n")
+		if meta := materialMeta(mu); meta != "" {
+			b.WriteString("      " + StyleMuted.Render(meta) + "\n")
+		}
+		b.WriteString("      " + StyleMuted.Render(materialCostLine(mu)) + "\n")
+	}
+	// Nothing recorded is not "$0.00 spent" — with no lines there is no total to
+	// report, so the empty state stands alone.
+	if len(s.wo.MaterialUsage) > 0 {
+		b.WriteString("\n" + s.renderMaterialTotals() + "\n")
 	}
 	b.WriteString("\n")
-	if s.actionPending {
+	switch {
+	case s.actionPending:
 		b.WriteString(StyleMuted.Render("Updating…"))
+	case len(s.wo.MaterialUsage) == 0:
+		// Don't advertise keys that act on a highlighted row when there is none.
+		b.WriteString(StyleMuted.Render("a add · esc back"))
+	default:
+		b.WriteString(StyleMuted.Render("j/k move · space/enter toggle · a add · c cost · d remove · esc back"))
+	}
+	return b.String()
+}
+
+// materialMeta is the quantities-and-stock line under a material row: what was
+// planned, what was used, which stock row it draws from, and whether a decrement
+// is currently applied (which freezes the line until it is un-marked).
+func materialMeta(mu omsapi.WorkOrderMaterialUsage) string {
+	parts := []string{}
+	if !mu.QuantityPlanned.Empty() {
+		parts = append(parts, "planned "+quantityWithUnit(mu.QuantityPlanned, mu.Unit))
+	}
+	if !mu.QuantityUsed.Empty() {
+		parts = append(parts, "used "+quantityWithUnit(mu.QuantityUsed, mu.Unit))
+	}
+	if mu.InventoryItemName != "" {
+		parts = append(parts, "stock: "+mu.InventoryItemName)
+	}
+	if mu.StockApplied && mu.AppliedQuantity != nil {
+		parts = append(parts, fmt.Sprintf("−%d from stock", *mu.AppliedQuantity))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// materialCostLine is the money line under a material row. An unpriced line says
+// so outright: cost is optional — plenty of lines are shop stock nobody prices
+// at the point of use — and a blank there must not read as free.
+func materialCostLine(mu omsapi.WorkOrderMaterialUsage) string {
+	parts := []string{}
+	if amt := formatMoney(mu.ActualCost); amt != "" {
+		if per := formatMoney(mu.UnitCost); per != "" {
+			parts = append(parts, fmt.Sprintf("cost %s (%s/unit)", amt, per))
+		} else {
+			parts = append(parts, "cost "+amt)
+		}
 	} else {
-		b.WriteString(StyleMuted.Render("j/k move · space/enter toggle · esc back"))
+		parts = append(parts, "no cost recorded")
+	}
+	if mu.ReceiptURL != "" {
+		parts = append(parts, "receipt "+mu.ReceiptURL)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func quantityWithUnit(q omsapi.DecimalString, unit string) string {
+	if unit == "" {
+		return string(q)
+	}
+	return string(q) + " " + unit
+}
+
+// renderMaterialTotals is the actual-vs-estimated line. A corrective work order
+// has an actual and nothing to measure it against, and says so — the same shape
+// the stopwatch takes when its template carries no estimated time.
+func (s *WorkOrderDetailScreen) renderMaterialTotals() string {
+	actual, estimated, hasEstimate := s.materialCostSummary()
+	line := StyleMuted.Render("Actual material cost: ") + fmt.Sprintf("$%.2f", actual)
+	if !hasEstimate {
+		return line + StyleMuted.Render(" · no estimate for this job")
+	}
+	line += StyleMuted.Render(fmt.Sprintf(" · estimated $%.2f · ", estimated))
+	if actual > estimated {
+		return line + StyleStatusError.Render(fmt.Sprintf("$%.2f over", actual-estimated))
+	}
+	return line + StyleStatusOK.Render(fmt.Sprintf("$%.2f under", estimated-actual))
+}
+
+func (s *WorkOrderDetailScreen) renderMaterialCostForm() string {
+	var b strings.Builder
+	mat, ok := s.currentMaterial()
+	if !ok {
+		return StyleMuted.Render("That material is no longer on this work order. esc back")
+	}
+	b.WriteString(StyleTitle.Render("Unit cost") + "  " + StyleMuted.Render(mat.MaterialName) + "\n")
+	b.WriteString(StyleMuted.Render("The real price paid per unit. "+materialCostLine(mat)) + "\n\n")
+	if s.costPending {
+		b.WriteString(StyleMuted.Render("Saving…"))
+		return b.String()
+	}
+	b.WriteString("Unit cost ($):\n  " + s.costIn.View() + "\n")
+	if s.costErr != "" {
+		b.WriteString("\n" + StyleStatusError.Render(s.costErr) + "\n")
+	}
+	b.WriteString("\n" + StyleMuted.Render("enter save · esc cancel"))
+	return b.String()
+}
+
+func (s *WorkOrderDetailScreen) renderAddMaterialForm() string {
+	if s.amPicking {
+		return s.renderItemPicker()
+	}
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Add material") + "\n")
+	b.WriteString(StyleMuted.Render("Link a stock item to draw it from inventory; leave it unset for an out-of-pocket buy.") + "\n\n")
+	if s.amPending {
+		b.WriteString(StyleMuted.Render("Adding…"))
+		return b.String()
+	}
+	for i := 0; i < woMatFieldMax; i++ {
+		cursor := "  "
+		label := woMaterialFieldLabel[i]
+		if i == s.amCursor {
+			cursor = "> "
+			label = StyleTitle.Render(label)
+		}
+		b.WriteString(cursor + label + "\n")
+		if i == woMatItem {
+			b.WriteString("    " + s.itemFieldValue() + "\n")
+			continue
+		}
+		b.WriteString("    " + s.amInputs[i].View() + "\n")
+	}
+	b.WriteString("\n")
+	if s.amErr != "" {
+		b.WriteString(StyleStatusError.Render(s.amErr) + "\n\n")
+	}
+	hint := "tab/arrows move · enter add · esc back"
+	if s.amCursor == woMatItem {
+		hint = "space pick stock item · " + hint
+	}
+	b.WriteString(StyleMuted.Render(hint))
+	return b.String()
+}
+
+// itemFieldValue renders the stock-item slot: the picked row, or what the line
+// means without one. A picker that never loaded says so here rather than
+// pretending the shop has no stock.
+func (s *WorkOrderDetailScreen) itemFieldValue() string {
+	if s.amItemID != "" {
+		return s.amItemLabel
+	}
+	if s.amItemsErr != "" {
+		return StyleMuted.Render("(none — stock list unavailable: " + s.amItemsErr + ")")
+	}
+	return StyleMuted.Render("(none — out-of-pocket, moves no stock)")
+}
+
+func (s *WorkOrderDetailScreen) renderItemPicker() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Link a stock item") + "\n")
+	b.WriteString(StyleMuted.Render("Marking the line used will decrement whichever item is linked.") + "\n\n")
+	if s.amPickTyping {
+		b.WriteString("Filter: " + s.amPickSearch.View() + "\n\n")
+	} else if q := strings.TrimSpace(s.amPickSearch.Value()); q != "" {
+		b.WriteString(StyleMuted.Render("Filter: "+q) + "\n\n")
+	}
+	if len(s.amItems) == 0 && s.amItemsErr == "" {
+		b.WriteString(StyleMuted.Render("Loading items…") + "\n")
+	}
+	if s.amItemsErr != "" {
+		b.WriteString(StyleStatusWarn.Render("Stock list unavailable: "+s.amItemsErr) + "\n")
+	}
+	for i, row := range s.amPickRows {
+		line := "  " + row.label
+		if i == s.amPickCursor {
+			line = StyleTitle.Render("> " + row.label)
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\n")
+	if s.amPickTyping {
+		b.WriteString(StyleMuted.Render("enter/esc stop filtering"))
+	} else {
+		b.WriteString(StyleMuted.Render("j/k move · / filter · enter select · esc back"))
 	}
 	return b.String()
 }
@@ -1667,23 +2502,30 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 		b.WriteString("\n")
 	}
 
-	if len(wo.MaterialUsage) > 0 {
-		b.WriteString(StyleTitle.Render(fmt.Sprintf("Materials (%d)", len(wo.MaterialUsage))) + "\n")
-		for _, m := range wo.MaterialUsage {
-			line := "  · " + m.MaterialName
-			if !m.QuantityPlanned.Empty() {
-				line += " — " + string(m.QuantityPlanned)
-				if m.Unit != "" {
-					line += " " + m.Unit
-				}
-			}
-			if m.WasUsed {
-				line += " " + StyleStatusOK.Render("✓ used")
-			}
-			b.WriteString(line + "\n")
-		}
-		b.WriteString("\n")
+	// Materials always renders, even empty: on a corrective work order the empty
+	// state is the prompt to record what the job actually consumed (op-768w).
+	b.WriteString(StyleTitle.Render(fmt.Sprintf("Materials (%d)", len(wo.MaterialUsage))) + "\n")
+	if len(wo.MaterialUsage) == 0 {
+		b.WriteString(StyleMuted.Render("  No materials recorded. Press M to add what you used or bought.") + "\n")
 	}
+	for _, m := range wo.MaterialUsage {
+		line := "  · " + m.MaterialName
+		if m.IsAdHoc {
+			line += " " + StyleMuted.Render("(added)")
+		}
+		if m.WasUsed {
+			line += " " + StyleStatusOK.Render("✓ used")
+		}
+		b.WriteString(line + "\n")
+		if meta := materialMeta(m); meta != "" {
+			b.WriteString("    " + StyleMuted.Render(meta) + "\n")
+		}
+		b.WriteString("    " + StyleMuted.Render(materialCostLine(m)) + "\n")
+	}
+	if len(wo.MaterialUsage) > 0 {
+		b.WriteString(s.renderMaterialTotals() + "\n")
+	}
+	b.WriteString("\n")
 
 	if len(wo.Photos) > 0 {
 		b.WriteString(StyleTitle.Render(fmt.Sprintf("Photos (%d)", len(wo.Photos))) + "\n")
