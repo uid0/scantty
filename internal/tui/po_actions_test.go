@@ -134,12 +134,13 @@ func TestPOCreate_ItemSupplierLineOmitsCost(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	s.supplierID = 7
 
-	// Item-supplier line: only description + quantity are active fields, and a
-	// prefilled cost is not rendered or sent.
+	// Item-supplier line: the cost field is dropped (description, quantity and
+	// the optional expected date remain), and a prefilled cost is not rendered
+	// or sent.
 	itemSup := 11
 	s.enterLinePhase(&itemSup, nil, "Bolt", 4, 2.50, 0, 0)
-	if got := s.lineFields(); len(got) != 2 {
-		t.Fatalf("item-supplier line fields = %v, want [desc qty]", got)
+	if got := s.lineFields(); hasField(got, poLineFieldCost) {
+		t.Fatalf("item-supplier line fields = %v, want no cost field", got)
 	}
 	if out := s.renderLinePhase(); strings.Contains(out, "Unit cost:") {
 		t.Errorf("item-supplier line should not render a unit-cost input:\n%s", out)
@@ -152,9 +153,10 @@ func TestPOCreate_ItemSupplierLineOmitsCost(t *testing.T) {
 		t.Errorf("item-supplier line must omit unit_cost, got %v", *s.lines[0].item.UnitCost)
 	}
 
-	// Freeform line: the cost field is active again.
+	// Freeform line: the cost field is active again (and carries no date field —
+	// the backend's freeform branch ignores expected_shipment_date).
 	s.enterLinePhase(nil, nil, "", 0, 0, 0, 0)
-	if got := s.lineFields(); len(got) != 3 {
+	if got := s.lineFields(); !hasField(got, poLineFieldCost) || hasField(got, poLineFieldDate) {
 		t.Errorf("freeform line fields = %v, want [desc qty cost]", got)
 	}
 	if out := s.renderLinePhase(); !strings.Contains(out, "Unit cost:") {

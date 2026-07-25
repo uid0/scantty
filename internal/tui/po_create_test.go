@@ -1,7 +1,12 @@
 package tui
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -634,6 +639,539 @@ func TestPOEditLine_HelpAndTitleReadAsEditing(t *testing.T) {
 	}
 	if out := s.renderLinePhase(); !strings.Contains(out, "Editing line 1 of 1") {
 		t.Errorf("render should show 'Editing line 1 of 1':\n%s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bulk-adding a supplier's reorder queue (sc-ytr5 gap 2 — the ~30-keystroke fix)
+// ---------------------------------------------------------------------------
+
+// reorderItem builds one reorder_data suggestion row. supID <= 0 means the row
+// carries no item_supplier_id, which forces the freeform line shape.
+func reorderItem(name string, supID, qty int, cost string) omsapi.ReorderDataItem {
+	it := omsapi.ReorderDataItem{
+		ItemName:          name,
+		SuggestedQuantity: qty,
+		UnitCost:          omsapi.DecimalString(cost),
+	}
+	if supID > 0 {
+		id := supID
+		it.ItemSupplierID = &id
+	}
+	return it
+}
+
+// reorderScreen drops a screen straight into the reorder picker with a loaded
+// list, mirroring the state after loadReorderItemsForSupplier resolves.
+func reorderScreen(items ...omsapi.ReorderDataItem) *PurchaseOrderCreateScreen {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.supplierID = 7
+	s.phase = poPhaseReorderPick
+	s.reorderItems = items
+	s.reorderCursor = 0
+	return s
+}
+
+// TestPOReorderAddAll_SeedsEveryItem: one 'a' turns a 15-item reorder queue into
+// 15 cart lines seeded with each row's suggested_quantity, landing in the review
+// cart so individual lines can be adjusted.
+func TestPOReorderAddAll_SeedsEveryItem(t *testing.T) {
+	items := make([]omsapi.ReorderDataItem, 15)
+	for i := range items {
+		items[i] = reorderItem(fmt.Sprintf("Item %d", i), 100+i, i+2, "1.25")
+	}
+	s := reorderScreen(items...)
+
+	s.updateReorderPickPhase(runeKey('a'))
+
+	if len(s.lines) != 15 {
+		t.Fatalf("add-all staged %d line(s), want 15", len(s.lines))
+	}
+	if s.phase != poPhaseReview {
+		t.Errorf("phase = %v, want review after a bulk add", s.phase)
+	}
+	for i, l := range s.lines {
+		if want := i + 2; l.item.Quantity != want {
+			t.Errorf("line %d quantity = %d, want %d (suggested_quantity)", i, l.item.Quantity, want)
+		}
+		if l.item.ItemSupplierID == nil || *l.item.ItemSupplierID != 100+i {
+			t.Errorf("line %d item_supplier_id = %v, want %d", i, l.item.ItemSupplierID, 100+i)
+		}
+		if want := fmt.Sprintf("Item %d", i); l.label != want || l.item.Description != want {
+			t.Errorf("line %d label/desc = %q/%q, want %q", i, l.label, l.item.Description, want)
+		}
+	}
+	// Cursor parks on the first line of the batch so review opens at its top.
+	if s.reviewCursor != 0 {
+		t.Errorf("reviewCursor = %d, want 0 (top of the added batch)", s.reviewCursor)
+	}
+}
+
+// TestPOReorderAddAll_QuantityFloor: a row with no suggested quantity still
+// stages a orderable line (qty 1), matching the single-row prefill.
+func TestPOReorderAddAll_QuantityFloor(t *testing.T) {
+	s := reorderScreen(reorderItem("Zero", 11, 0, "1.00"))
+	s.updateReorderPickPhase(runeKey('a'))
+	if len(s.lines) != 1 || s.lines[0].item.Quantity != 1 {
+		t.Fatalf("lines = %+v, want one line with quantity 1", s.lines)
+	}
+}
+
+// TestPOReorderAddAll_CostPolicyMatchesTheLineForm: item-supplier-backed lines
+// omit unit_cost (backend prices them from the catalog — sc-5yr), so a bulk add
+// produces exactly what accepting the single-row form prefill produces. A row
+// with no item_supplier_id can only be freeform, whose backend branch REQUIRES a
+// cost, so that one carries the row's unit_cost explicitly.
+func TestPOReorderAddAll_CostPolicyMatchesTheLineForm(t *testing.T) {
+	s := reorderScreen(
+		reorderItem("Catalog bolt", 11, 4, "2.50"),
+		reorderItem("Orphan widget", 0, 3, "7.75"),
+	)
+	s.updateReorderPickPhase(runeKey('a'))
+	if len(s.lines) != 2 {
+		t.Fatalf("staged %d line(s), want 2", len(s.lines))
+	}
+	if s.lines[0].item.UnitCost != nil {
+		t.Errorf("item-supplier line must omit unit_cost, got %v", *s.lines[0].item.UnitCost)
+	}
+	if s.lines[1].item.ItemSupplierID != nil {
+		t.Errorf("row without item_supplier_id must stage as freeform, got %v", s.lines[1].item.ItemSupplierID)
+	}
+	if s.lines[1].item.UnitCost == nil || math.Abs(*s.lines[1].item.UnitCost-7.75) > 1e-12 {
+		t.Errorf("freeform line unit_cost = %v, want 7.75 (its branch requires one)", s.lines[1].item.UnitCost)
+	}
+}
+
+// TestPOReorderMultiSelect_AddsOnlyMarkedRows: space marks rows, enter stages
+// exactly those in list order, and the marks are cleared afterward.
+func TestPOReorderMultiSelect_AddsOnlyMarkedRows(t *testing.T) {
+	s := reorderScreen(
+		reorderItem("A", 11, 1, "1.00"),
+		reorderItem("B", 12, 2, "2.00"),
+		reorderItem("C", 13, 3, "3.00"),
+	)
+	// Mark C (bottom-up, so the add must re-sort into list order), then A.
+	s.updateReorderPickPhase(runeKey('j'))
+	s.updateReorderPickPhase(runeKey('j'))
+	s.updateReorderPickPhase(runeKey(' '))
+	s.updateReorderPickPhase(runeKey('k'))
+	s.updateReorderPickPhase(runeKey('k'))
+	s.updateReorderPickPhase(runeKey(' '))
+	if len(s.reorderSelected) != 2 {
+		t.Fatalf("marked %d row(s), want 2", len(s.reorderSelected))
+	}
+	// Marks render as checkboxes so they survive the highlight moving away.
+	if out := s.renderReorderPick(); !strings.Contains(out, "[x] A") || !strings.Contains(out, "[ ] B") {
+		t.Errorf("marked rows should render checked:\n%s", out)
+	}
+
+	s.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(s.lines) != 2 {
+		t.Fatalf("staged %d line(s), want 2 (only the marked rows)", len(s.lines))
+	}
+	if s.lines[0].label != "A" || s.lines[1].label != "C" {
+		t.Errorf("staged %q,%q — want A,C in list order", s.lines[0].label, s.lines[1].label)
+	}
+	if len(s.reorderSelected) != 0 {
+		t.Errorf("marks should clear after the add; %d left", len(s.reorderSelected))
+	}
+	if s.phase != poPhaseReview {
+		t.Errorf("phase = %v, want review after a bulk add", s.phase)
+	}
+}
+
+// TestPOReorderSpaceToggle_Unmarks: space is a toggle, not a one-way set.
+func TestPOReorderSpaceToggle_Unmarks(t *testing.T) {
+	s := reorderScreen(reorderItem("A", 11, 1, "1.00"))
+	s.updateReorderPickPhase(runeKey(' '))
+	s.updateReorderPickPhase(runeKey(' '))
+	if len(s.reorderSelected) != 0 {
+		t.Fatalf("second space should unmark the row; %d still marked", len(s.reorderSelected))
+	}
+	// With nothing marked, enter falls back to the single-row line form.
+	s.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.phase != poPhaseLine {
+		t.Errorf("unmarked enter should open the line form; phase = %v", s.phase)
+	}
+	if len(s.lines) != 0 {
+		t.Errorf("the single-row path stages nothing until the form is accepted; %d line(s)", len(s.lines))
+	}
+}
+
+// TestPOReorderAddAll_EmptyListIsRefused: 'a' on an empty queue reports rather
+// than silently jumping to an empty review cart.
+func TestPOReorderAddAll_EmptyListIsRefused(t *testing.T) {
+	s := reorderScreen()
+	s.updateReorderPickPhase(runeKey('a'))
+	if len(s.lines) != 0 {
+		t.Fatalf("empty add-all staged %d line(s), want 0", len(s.lines))
+	}
+	if s.phase != poPhaseReorderPick {
+		t.Errorf("phase = %v, want to stay on the picker", s.phase)
+	}
+	if !strings.Contains(s.errMsg, "nothing to add") {
+		t.Errorf("errMsg = %q, want it to explain there is nothing to add", s.errMsg)
+	}
+}
+
+// TestPOReorderMarksClearOnReload: marks index into the list they were made
+// against, so a reload must drop them rather than re-point them at new rows.
+func TestPOReorderMarksClearOnReload(t *testing.T) {
+	s := reorderScreen(reorderItem("A", 11, 1, "1.00"), reorderItem("B", 12, 1, "1.00"))
+	s.updateReorderPickPhase(runeKey(' '))
+	if len(s.reorderSelected) != 1 {
+		t.Fatalf("setup: expected 1 mark, got %d", len(s.reorderSelected))
+	}
+	s.handlePickerLoaded(poReorderItemsLoadedMsg{items: []omsapi.ReorderDataItem{reorderItem("C", 13, 1, "1.00")}})
+	if len(s.reorderSelected) != 0 {
+		t.Errorf("reload should clear marks; %d left", len(s.reorderSelected))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Editing / removing ANY staged line while still building (sc-ytr5 gap 1)
+// ---------------------------------------------------------------------------
+
+// buildThreeLineCart stages three freeform lines and leaves the screen in the
+// source chooser, exactly where addLine returns after each add.
+func buildThreeLineCart(t *testing.T) *PurchaseOrderCreateScreen {
+	t.Helper()
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.supplierID = 7
+	for _, name := range []string{"First", "Second", "Third"} {
+		s.enterLinePhase(nil, nil, name, 1, 0, 0, 0)
+		s.lineInputs[poLineFieldCost].SetValue("1.00")
+		s.addLine()
+	}
+	if len(s.lines) != 3 || s.phase != poPhaseSource {
+		t.Fatalf("setup: lines=%d phase=%v, want 3 lines in the source chooser", len(s.lines), s.phase)
+	}
+	return s
+}
+
+// TestPOSourcePhase_RemovesAnyLineNotJustTheLast is Ian's headline complaint:
+// while building, x must be able to drop a line in the MIDDLE of the cart.
+func TestPOSourcePhase_RemovesAnyLineNotJustTheLast(t *testing.T) {
+	s := buildThreeLineCart(t)
+	// The cursor parks on the newest line, so k aims it at the middle one.
+	if s.reviewCursor != 2 {
+		t.Fatalf("cursor should follow the last add; got %d", s.reviewCursor)
+	}
+	s.updateSourcePhase(runeKey('k'))
+	if s.reviewCursor != 1 {
+		t.Fatalf("k should move the cart highlight; cursor = %d", s.reviewCursor)
+	}
+	s.updateSourcePhase(runeKey('x'))
+
+	if len(s.lines) != 2 {
+		t.Fatalf("x should remove exactly one line; len = %d", len(s.lines))
+	}
+	if s.lines[0].label != "First" || s.lines[1].label != "Third" {
+		t.Errorf("cart = %q,%q — want the MIDDLE line removed (First,Third)", s.lines[0].label, s.lines[1].label)
+	}
+	if s.phase != poPhaseSource {
+		t.Errorf("phase = %v, want to stay in the source chooser", s.phase)
+	}
+	// Removing the last line leaves the cursor in range.
+	s.updateSourcePhase(runeKey('j'))
+	s.updateSourcePhase(runeKey('x'))
+	if len(s.lines) != 1 || s.reviewCursor != 0 {
+		t.Errorf("lines=%d cursor=%d, want 1 line with the cursor clamped to 0", len(s.lines), s.reviewCursor)
+	}
+	// The highlighted line is the one the cart marks.
+	if out := s.renderSourcePhase(); !strings.Contains(out, "▸ 1) First") {
+		t.Errorf("source cart should mark the highlighted line:\n%s", out)
+	}
+}
+
+// TestPOSourcePhase_EditsAnyLineAndComesBack: ctrl+e while building edits an
+// arbitrary line through the same form the review cart uses, and saving returns
+// to the SOURCE chooser (where the edit started) rather than to review.
+func TestPOSourcePhase_EditsAnyLineAndComesBack(t *testing.T) {
+	s := buildThreeLineCart(t)
+	s.updateSourcePhase(runeKey('k'))
+	s.updateSourcePhase(runeKey('k')) // highlight line 0
+	if s.reviewCursor != 0 {
+		t.Fatalf("cursor = %d, want 0", s.reviewCursor)
+	}
+
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poPhaseLine || s.editIndex != 0 {
+		t.Fatalf("ctrl+e should edit line 0; phase=%v editIndex=%d", s.phase, s.editIndex)
+	}
+	if got := s.lineInputs[poLineFieldDesc].Value(); got != "First" {
+		t.Errorf("desc prefill = %q, want %q", got, "First")
+	}
+	s.lineInputs[poLineFieldDesc].SetValue("First (edited)")
+	s.lineInputs[poLineFieldQty].SetValue("12")
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.phase != poPhaseSource {
+		t.Errorf("phase = %v, want back in the source chooser where the edit started", s.phase)
+	}
+	if len(s.lines) != 3 {
+		t.Fatalf("edit must not change cart length; len = %d", len(s.lines))
+	}
+	if s.lines[0].item.Description != "First (edited)" || s.lines[0].item.Quantity != 12 {
+		t.Errorf("line 0 = %+v, want the edited desc/qty", s.lines[0].item)
+	}
+	if s.lines[2].item.Description != "Third" {
+		t.Errorf("sibling line changed: %+v", s.lines[2].item)
+	}
+	// Adding another line after the edit still appends (no editIndex leak).
+	s.enterLinePhase(nil, nil, "Fourth", 1, 0, 0, 0)
+	s.lineInputs[poLineFieldCost].SetValue("1.00")
+	s.addLine()
+	if len(s.lines) != 4 || s.lines[0].item.Description != "First (edited)" {
+		t.Errorf("post-edit add should append; len=%d line0=%+v", len(s.lines), s.lines[0].item)
+	}
+}
+
+// TestPOSourcePhase_EditEscReturnsToSource: cancelling an edit started while
+// building also comes back to the source chooser, unchanged.
+func TestPOSourcePhase_EditEscReturnsToSource(t *testing.T) {
+	s := buildThreeLineCart(t)
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.lineInputs[poLineFieldDesc].SetValue("WRONG")
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if s.phase != poPhaseSource {
+		t.Errorf("phase = %v, want the source chooser", s.phase)
+	}
+	if s.editIndex != -1 {
+		t.Errorf("editIndex = %d, want -1 after cancel", s.editIndex)
+	}
+	if s.lines[2].item.Description != "Third" {
+		t.Errorf("cancelled edit changed the line: %+v", s.lines[2].item)
+	}
+}
+
+// TestPOReviewPhase_EditStillReturnsToReview guards the pre-existing route: an
+// edit launched from the review cart comes back to review, not to source.
+func TestPOReviewPhase_EditStillReturnsToReview(t *testing.T) {
+	s := buildThreeLineCart(t)
+	enterReviewAt(s, 1)
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.lineInputs[poLineFieldQty].SetValue("4")
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.phase != poPhaseReview {
+		t.Errorf("phase = %v, want review", s.phase)
+	}
+	if s.lines[1].item.Quantity != 4 {
+		t.Errorf("line 1 qty = %d, want 4", s.lines[1].item.Quantity)
+	}
+}
+
+// TestPOSourcePhase_EmptyCartKeysAreNoOps: with nothing staged, the cart keys
+// must not panic or wander out of the source chooser.
+func TestPOSourcePhase_EmptyCartKeysAreNoOps(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.supplierID = 7
+	s.phase = poPhaseSource
+	for _, k := range []tea.KeyMsg{runeKey('j'), runeKey('k'), runeKey('x'), {Type: tea.KeyCtrlE}} {
+		s.updateSourcePhase(k)
+		if s.phase != poPhaseSource {
+			t.Fatalf("key %q left the source chooser (phase %v) on an empty cart", k.String(), s.phase)
+		}
+	}
+	if len(s.lines) != 0 {
+		t.Errorf("empty-cart keys staged lines: %d", len(s.lines))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-line expected shipment date (sc-ytr5 gap 3)
+// ---------------------------------------------------------------------------
+
+// TestPOLineDate_OfferedOnInventoryLinesOnly: the backend's create path reads
+// expected_shipment_date on the item_supplier branch alone, so the field is
+// offered there (single-pack AND case-packed) and withheld from asset/freeform
+// lines rather than collecting a value the PO would drop.
+func TestPOLineDate_OfferedOnInventoryLinesOnly(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	id := 11
+
+	s.enterLinePhase(&id, nil, "Bolt", 1, 0, 0, 1) // single-pack inventory
+	if !hasField(s.lineFields(), poLineFieldDate) {
+		t.Errorf("single-pack inventory line should offer the expected-date field")
+	}
+	if out := s.renderLinePhase(); !strings.Contains(out, "Expected date:") {
+		t.Errorf("inventory line should render the date input:\n%s", out)
+	}
+
+	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12) // case-packed inventory
+	if !hasField(s.lineFields(), poLineFieldDate) {
+		t.Errorf("case-packed inventory line should offer the expected-date field")
+	}
+
+	assetID := "asset-uuid"
+	s.enterLinePhase(nil, &assetID, "Drill", 1, 0, 0, 0)
+	if hasField(s.lineFields(), poLineFieldDate) {
+		t.Errorf("asset line should not offer a date the backend ignores")
+	}
+	if out := s.renderLinePhase(); !strings.Contains(out, "inventory lines only") {
+		t.Errorf("asset line should explain the missing date field:\n%s", out)
+	}
+
+	s.enterLinePhase(nil, nil, "Rags", 1, 0, 0, 0)
+	if hasField(s.lineFields(), poLineFieldDate) {
+		t.Errorf("freeform line should not offer a date the backend ignores")
+	}
+}
+
+// TestPOLineDate_StagedBlankAndInvalid: a valid date reaches the payload, blank
+// is allowed (omitted), and a malformed date is refused client-side.
+func TestPOLineDate_StagedBlankAndInvalid(t *testing.T) {
+	id := 11
+
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.enterLinePhase(&id, nil, "Bolt", 4, 0, 0, 1)
+	s.lineInputs[poLineFieldDate].SetValue("2026-08-14")
+	s.addLine()
+	if got := lastLine(t, s).ExpectedShipmentDate; got != "2026-08-14" {
+		t.Errorf("expected_shipment_date = %q, want %q", got, "2026-08-14")
+	}
+
+	s2 := NewPurchaseOrderCreateScreen(Deps{})
+	s2.enterLinePhase(&id, nil, "Bolt", 4, 0, 0, 1)
+	s2.addLine() // date left blank — optional
+	if got := lastLine(t, s2).ExpectedShipmentDate; got != "" {
+		t.Errorf("blank date = %q, want it omitted", got)
+	}
+
+	s3 := NewPurchaseOrderCreateScreen(Deps{})
+	s3.enterLinePhase(&id, nil, "Bolt", 4, 0, 0, 1)
+	s3.lineInputs[poLineFieldDate].SetValue("08/14/2026")
+	s3.addLine()
+	if len(s3.lines) != 0 {
+		t.Fatalf("a malformed date should not stage a line")
+	}
+	if !strings.Contains(s3.errMsg, "YYYY-MM-DD") {
+		t.Errorf("errMsg = %q, want it to state the date format", s3.errMsg)
+	}
+}
+
+// TestPOLineDate_NeverLeaksOntoALineThatIgnoresIt: a date typed on an inventory
+// line must not ride along when the operator switches to a freeform line, whose
+// backend branch would discard it.
+func TestPOLineDate_NeverLeaksOntoALineThatIgnoresIt(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	id := 11
+	s.enterLinePhase(&id, nil, "Bolt", 1, 0, 0, 1)
+	s.lineInputs[poLineFieldDate].SetValue("2026-08-14")
+
+	s.enterLinePhase(nil, nil, "Rags", 2, 0, 0, 0) // switch to freeform
+	s.lineInputs[poLineFieldCost].SetValue("1.50")
+	// Even a value forced back into the (inactive) input must not be sent.
+	s.lineInputs[poLineFieldDate].SetValue("2026-08-14")
+	s.addLine()
+	if got := lastLine(t, s).ExpectedShipmentDate; got != "" {
+		t.Errorf("freeform line carried expected_shipment_date %q, want none", got)
+	}
+}
+
+// TestPOLineDate_RoundTripsThroughSubmit drives the whole path: a date entered
+// in the line form is staged, survives the review cart, and lands in the POSTed
+// create payload as expected_shipment_date.
+func TestPOLineDate_RoundTripsThroughSubmit(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0009"}`))
+	}))
+	defer srv.Close()
+
+	s := NewPurchaseOrderCreateScreen(Deps{OMS: omsapi.New(srv.URL)})
+	s.supplierID = 7
+	id := 11
+	s.enterLinePhase(&id, nil, "Bolt", 4, 0, 0, 1)
+	s.lineInputs[poLineFieldDate].SetValue("2026-08-14")
+	s.addLine()
+	// A second line without a date proves the field is per-LINE, not per-PO.
+	s.enterLinePhase(&id, nil, "Nut", 9, 0, 0, 1)
+	s.addLine()
+
+	msg := s.finalize()()
+	created, ok := msg.(poCreatedMsg)
+	if !ok {
+		t.Fatalf("expected poCreatedMsg, got %T", msg)
+	}
+	if created.err != nil {
+		t.Fatalf("create failed: %v", created.err)
+	}
+
+	items, _ := body["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("posted %d item(s), want 2 (body: %v)", len(items), body)
+	}
+	first, _ := items[0].(map[string]any)
+	if got := first["expected_shipment_date"]; got != "2026-08-14" {
+		t.Errorf("line 1 expected_shipment_date = %v, want 2026-08-14", got)
+	}
+	second, _ := items[1].(map[string]any)
+	if _, present := second["expected_shipment_date"]; present {
+		t.Errorf("line 2 sent expected_shipment_date %v, want it omitted", second["expected_shipment_date"])
+	}
+}
+
+// TestPOEditLine_EditsQtyAndDateOnABulkAddedLine ties the three gaps together:
+// a line staged by the bulk add is editable exactly like a hand-entered one —
+// ctrl+e changes both its quantity and its expected date.
+func TestPOEditLine_EditsQtyAndDateOnABulkAddedLine(t *testing.T) {
+	s := reorderScreen(
+		reorderItem("Bolt", 11, 4, "2.50"),
+		reorderItem("Nut", 12, 6, "0.75"),
+	)
+	s.updateReorderPickPhase(runeKey('a'))
+	if len(s.lines) != 2 || s.phase != poPhaseReview {
+		t.Fatalf("setup: lines=%d phase=%v", len(s.lines), s.phase)
+	}
+
+	s.reviewCursor = 1
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poPhaseLine {
+		t.Fatalf("ctrl+e should open the line form on a bulk-added line; phase = %v", s.phase)
+	}
+	// A bulk-added reorder line is item-supplier-backed: no cost field, date offered.
+	if hasField(s.lineFields(), poLineFieldCost) {
+		t.Errorf("bulk-added inventory line should hide the cost field")
+	}
+	if !hasField(s.lineFields(), poLineFieldDate) {
+		t.Errorf("bulk-added inventory line should offer the expected-date field")
+	}
+	if got := s.lineInputs[poLineFieldQty].Value(); got != "6" {
+		t.Errorf("qty prefill = %q, want %q (the suggested quantity)", got, "6")
+	}
+	s.lineInputs[poLineFieldQty].SetValue("10")
+	s.lineInputs[poLineFieldDate].SetValue("2026-09-01")
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(s.lines) != 2 {
+		t.Fatalf("edit changed cart length: %d", len(s.lines))
+	}
+	edited := s.lines[1].item
+	if edited.Quantity != 10 {
+		t.Errorf("quantity = %d, want 10", edited.Quantity)
+	}
+	if edited.ExpectedShipmentDate != "2026-09-01" {
+		t.Errorf("expected_shipment_date = %q, want 2026-09-01", edited.ExpectedShipmentDate)
+	}
+	if edited.ItemSupplierID == nil || *edited.ItemSupplierID != 12 {
+		t.Errorf("edit must preserve the item-supplier source; got %v", edited.ItemSupplierID)
+	}
+	if s.lines[0].item.Quantity != 4 {
+		t.Errorf("sibling line changed: %+v", s.lines[0].item)
+	}
+	// The staged date is visible in the cart, and re-opening the edit restores it.
+	if out := s.renderCart(1); !strings.Contains(out, "exp 2026-09-01") {
+		t.Errorf("cart should show the per-line expected date:\n%s", out)
+	}
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if got := s.lineInputs[poLineFieldDate].Value(); got != "2026-09-01" {
+		t.Errorf("re-opened edit date prefill = %q, want 2026-09-01", got)
 	}
 }
 
