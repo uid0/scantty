@@ -111,6 +111,9 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 		}
 		s.reorderItems = m.items
 		s.reorderCursor = 0
+		// Selections index into the list we just replaced — drop them so a
+		// stale index can never mark (and bulk-add) the wrong row.
+		s.reorderSelected = map[int]bool{}
 	case poItemSuppliersLoadedMsg:
 		s.itemSuppliersLoad = false
 		if m.err != nil {
@@ -172,7 +175,40 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 		if s.reorderCursor > 0 {
 			s.reorderCursor--
 		}
+	case " ":
+		// Mark/unmark this row for a bulk add. Marking several rows and
+		// pressing enter is the middle ground between adding one item at a
+		// time and taking the supplier's whole queue with 'a' (sc-ytr5).
+		if s.reorderCursor >= 0 && s.reorderCursor < len(s.reorderItems) {
+			if s.reorderSelected == nil {
+				s.reorderSelected = map[int]bool{}
+			}
+			if s.reorderSelected[s.reorderCursor] {
+				delete(s.reorderSelected, s.reorderCursor)
+			} else {
+				s.reorderSelected[s.reorderCursor] = true
+			}
+		}
+		return s, nil
+	case "a":
+		// Add ALL of this supplier's reorder items in one press — the fix for
+		// "a supplier with 15 items is ~30 keystrokes". Every row is staged
+		// with its suggested_quantity; the review cart is where individual
+		// lines get adjusted (ctrl+e), so land there.
+		return s, s.addReorderLines(s.reorderItems)
 	case "enter":
+		// With rows marked, enter stages exactly those (in list order).
+		// Otherwise it keeps the original one-row behavior: open the line
+		// form pre-filled so quantity/date/cost can be set before staging.
+		if len(s.reorderSelected) > 0 {
+			picked := make([]omsapi.ReorderDataItem, 0, len(s.reorderSelected))
+			for i, it := range s.reorderItems {
+				if s.reorderSelected[i] {
+					picked = append(picked, it)
+				}
+			}
+			return s, s.addReorderLines(picked)
+		}
 		if s.reorderCursor < 0 || s.reorderCursor >= len(s.reorderItems) {
 			return s, nil
 		}
@@ -198,6 +234,71 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 	return s, nil
 }
 
+// reorderCartLine stages one reorder-queue row as a cart line without going
+// through the Phase-4 form, producing exactly what the single-row enter path
+// produces once the operator accepts the prefill: suggested_quantity (floored
+// at 1) and the item's name (SKU when unnamed) as the label.
+//
+// Cost follows the same rule the form does. An item-supplier-backed row is a
+// single-pack line (reorder_data carries no quantity_per_package), so unit_cost
+// is omitted and the backend prices it from the item-supplier's stored cost —
+// sc-5yr. Sending the reorder row's cost instead would be a line the operator
+// couldn't reproduce by editing, since ctrl+e on such a line shows no cost
+// field. A row without an item_supplier_id can only be created as a freeform
+// line, and that branch REQUIRES a cost, so the row's unit_cost is sent
+// explicitly (0 when the row carries none — visible as "@ $0" in the cart, and
+// fixable with ctrl+e before submit).
+func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
+	qty := it.SuggestedQuantity
+	if qty <= 0 {
+		qty = 1
+	}
+	desc := it.ItemName
+	if desc == "" {
+		desc = it.SKU
+	}
+	line := omsapi.PurchaseOrderCreateItem{
+		Description:    desc,
+		Quantity:       qty,
+		ItemSupplierID: it.ItemSupplierID,
+	}
+	if it.ItemSupplierID == nil {
+		unitCost := 0.0
+		if v, err := strconv.ParseFloat(string(it.UnitCost), 64); err == nil {
+			unitCost = v
+		}
+		line.UnitCost = &unitCost
+	}
+	label := desc
+	if label == "" {
+		label = "line"
+	}
+	return poCartLine{item: line, label: label}
+}
+
+// addReorderLines stages every supplied reorder row and drops the operator in
+// the review cart, where any individual line can be adjusted with ctrl+e or
+// dropped with ctrl+x. Clears the marks so the picker is clean if it is
+// re-entered for a second batch.
+func (s *PurchaseOrderCreateScreen) addReorderLines(items []omsapi.ReorderDataItem) tea.Cmd {
+	if len(items) == 0 {
+		s.errMsg = "nothing to add — this supplier has no reorder items"
+		return Status(s.errMsg, StatusError)
+	}
+	for _, it := range items {
+		s.lines = append(s.lines, reorderCartLine(it))
+	}
+	s.reorderSelected = map[int]bool{}
+	s.errMsg = ""
+	s.phase = poPhaseReview
+	s.reviewCursor = len(s.lines) - len(items) // first line of this batch
+	s.poNotes.Focus()
+	return tea.Batch(
+		Status(fmt.Sprintf("added %d line(s) (%d in cart)", len(items), len(s.lines)), StatusOK),
+		textinput.Blink,
+	)
+}
+
 func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 	if s.reorderLoading {
 		return StyleMuted.Render("Loading reorder-queue suggestions…")
@@ -208,10 +309,17 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 	if len(s.reorderItems) == 0 {
 		return StyleMuted.Render("Nothing flagged for reorder under this supplier.")
 	}
-	return s.renderWindowedList(
+	var b strings.Builder
+	b.WriteString(s.renderWindowedList(
 		len(s.reorderItems), s.reorderCursor,
 		func(i int) string {
 			it := s.reorderItems[i]
+			// Checkbox for the bulk-add marks, so a marked row still reads as
+			// marked once the highlight moves off it.
+			mark := "[ ] "
+			if s.reorderSelected[i] {
+				mark = "[x] "
+			}
 			tag := ""
 			if it.HasActiveReorderReq {
 				tag = " " + StyleStatusOK.Render(fmt.Sprintf("[reorder %s]", it.ReorderRequestStatus))
@@ -221,11 +329,17 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 				cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s", it.UnitCost))
 			}
 			return fmt.Sprintf(
-				"%s  qty %d (current %d / min %d)%s%s",
-				it.ItemName, it.SuggestedQuantity, it.CurrentStock, it.MinimumStock, cost, tag,
+				"%s%s  qty %d (current %d / min %d)%s%s",
+				mark, it.ItemName, it.SuggestedQuantity, it.CurrentStock, it.MinimumStock, cost, tag,
 			)
 		},
-	)
+	))
+	summary := fmt.Sprintf("space marks a row · a adds all %d item(s) at their suggested quantities", len(s.reorderItems))
+	if n := len(s.reorderSelected); n > 0 {
+		summary = fmt.Sprintf("%d marked — enter adds them · a adds all %d", n, len(s.reorderItems))
+	}
+	b.WriteString("\n" + StyleMuted.Render(summary))
+	return b.String()
 }
 
 // ---------------------------------------------------------------------------

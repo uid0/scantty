@@ -12,11 +12,20 @@
 //	                      i → other inventory items associated with the supplier
 //	                      a → assets purchased from the supplier
 //	                      f → a freeform line (no item/asset reference)
+//	                    The staged cart is listed here too, and j/k highlight a
+//	                    line so ctrl+e edits it / x removes it without first
+//	                    going to review — the operator is never limited to
+//	                    popping the last line (sc-ytr5).
 //	poPhaseReorderPick / ItemPick / AssetPick — list pickers backed by
 //	                    the corresponding omsapi endpoints; enter
 //	                    prefills the line buffer and jumps to poPhaseLine.
+//	                    The reorder picker also does bulk adds: space marks
+//	                    rows and a adds the supplier's WHOLE reorder queue,
+//	                    each seeded from its suggested_quantity, landing
+//	                    straight in the review cart (sc-ytr5).
 //	poPhaseLine       — description/qty (+ a cost field for asset/freeform
-//	                    lines and case-packed inventory lines) inputs,
+//	                    lines and case-packed inventory lines, + an optional
+//	                    expected-date field for inventory lines) inputs,
 //	                    pre-filled when the line came from a picker; enter
 //	                    ADDS the line to the cart and returns to poPhaseSource
 //	                    so more lines can be added (the web create form is
@@ -27,8 +36,10 @@
 //	                    stored unit_cost. Case-packed inventory lines (qpp > 1)
 //	                    add a per-case/per-unit cost field (ctrl+t toggles the
 //	                    basis, deriving unit_cost = case_cost / qpp — op-7j8v).
-//	                    No line prompts for a ship date (that belongs to the PO
-//	                    lifecycle at send/receive).
+//	                    Only item-supplier-backed lines prompt for a per-line
+//	                    expected shipment date: the backend's create path reads
+//	                    expected_shipment_date on the item_supplier branch only
+//	                    and drops it for asset/freeform lines (sc-ytr5).
 //	poPhaseReview     — the accumulated line cart + a PO-level notes
 //	                    input; enter submits every line at once via
 //	                    PurchaseOrderCreate.
@@ -43,6 +54,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -69,13 +81,15 @@ const (
 // Field indexes inside the line-entry form (Phase 4). Unit cost is only
 // collected for asset and freeform lines; item-supplier-backed lines omit it
 // (the backend derives the line cost from the item-supplier's stored
-// unit_cost — see lineFields). Expected ship dates are no longer prompted
-// here: they belong to the PO lifecycle at send/receive. PO-level notes live
-// in the review phase.
+// unit_cost — see lineFields). The expected shipment date is the mirror image:
+// only item-supplier-backed lines collect it, because create_purchase_order
+// reads expected_shipment_date on the item_supplier branch alone. PO-level
+// notes live in the review phase.
 const (
 	poLineFieldDesc = iota
 	poLineFieldQty
 	poLineFieldCost
+	poLineFieldDate
 	poLineFieldCount
 )
 
@@ -103,11 +117,15 @@ type PurchaseOrderCreateScreen struct {
 	supplierCursor  int
 	supplierID      int
 
-	// Phase 3a: reorder-queue items for this supplier.
-	reorderItems   []omsapi.ReorderDataItem
-	reorderLoading bool
-	reorderLoadErr string
-	reorderCursor  int
+	// Phase 3a: reorder-queue items for this supplier. reorderSelected marks
+	// rows toggled with space for a bulk add (keyed by index into
+	// reorderItems); it is cleared whenever the list reloads so a stale index
+	// can never select the wrong row.
+	reorderItems    []omsapi.ReorderDataItem
+	reorderLoading  bool
+	reorderLoadErr  string
+	reorderCursor   int
+	reorderSelected map[int]bool
 
 	// Phase 3b: inventory items for this supplier.
 	itemSuppliers       []omsapi.ItemSupplier
@@ -146,18 +164,23 @@ type PurchaseOrderCreateScreen struct {
 	costBasisCase bool
 
 	// Multi-line cart. Each entered line is staged here; the whole cart is
-	// POSTed once from the review phase. reviewCursor highlights a line so
-	// it can be removed with 'x'; poNotes is the PO-level notes field.
+	// POSTed once from the review phase. reviewCursor highlights a line for
+	// edit/remove and is shared by the review cart AND the source chooser's
+	// cart list, so a line highlighted in one is still highlighted in the
+	// other; poNotes is the PO-level notes field.
 	lines        []poCartLine
 	reviewCursor int
 	poNotes      textinput.Model
 
-	// editIndex is the s.lines index being edited in place from the review cart
-	// (ctrl+e re-opens the Phase-4 form pre-filled), or -1 when the line form is
-	// adding a new line. enterLinePhase resets it to -1 on every entry and the
-	// edit path re-sets it afterward, so a stale index can never turn a later add
-	// into an in-place replace.
-	editIndex int
+	// editIndex is the s.lines index being edited in place (ctrl+e re-opens the
+	// Phase-4 form pre-filled), or -1 when the line form is adding a new line.
+	// enterLinePhase resets it to -1 on every entry and the edit path re-sets it
+	// afterward, so a stale index can never turn a later add into an in-place
+	// replace. editReturn is the phase the edit was launched from (review cart or
+	// source chooser) — saving or cancelling goes back there rather than always
+	// dumping the operator in review.
+	editIndex  int
+	editReturn poPhase
 }
 
 type poCreatedMsg struct {
@@ -177,6 +200,8 @@ func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
 		supplierLoading: true,
 		supplierCursor:  -1,
 		editIndex:       -1,
+		editReturn:      poPhaseReview,
+		reorderSelected: map[int]bool{},
 	}
 
 	// Line-entry inputs (Phase 4).
@@ -198,6 +223,12 @@ func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
 	cost.Placeholder = "unit cost (e.g. 12.50)"
 	cost.CharLimit = 20
 	s.lineInputs[poLineFieldCost] = cost
+
+	date := textinput.New()
+	date.Prompt = ""
+	date.Placeholder = "YYYY-MM-DD (optional)"
+	date.CharLimit = 12
+	s.lineInputs[poLineFieldDate] = date
 
 	// PO-level notes, captured once in the review phase.
 	poNotes := textinput.New()
@@ -406,19 +437,104 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 			return s, Status(s.errMsg, StatusError)
 		}
 		s.phase = poPhaseReview
-		s.reviewCursor = len(s.lines) - 1
+		s.clampReviewCursor()
 		s.poNotes.Focus()
 		return s, textinput.Blink
-	case "x":
-		// Remove the most recently added line — a quick undo for a
-		// mis-added line without leaving the source chooser.
-		if len(s.lines) > 0 {
-			s.lines = s.lines[:len(s.lines)-1]
-			s.errMsg = ""
+	case "j", "down":
+		// Move the cart highlight — the same cursor the review phase uses, so
+		// x / ctrl+e below act on ANY line, not just the last one added.
+		if s.reviewCursor < len(s.lines)-1 {
+			s.reviewCursor++
 		}
 		return s, nil
+	case "k", "up":
+		if s.reviewCursor > 0 {
+			s.reviewCursor--
+		}
+		return s, nil
+	case "x":
+		// Remove the highlighted line. The cursor follows each add (addLine
+		// parks it on the new line), so with an untouched highlight this is
+		// still the "undo the line I just added" it always was — but j/k can
+		// now aim it at any line in the cart.
+		s.removeLineAt(s.reviewCursor)
+		return s, nil
+	case "ctrl+e":
+		// Edit the highlighted line in place without a detour through review.
+		// Same handler the review cart uses; saving/cancelling comes back here
+		// (editReturn) so the operator keeps adding lines where they left off.
+		// ctrl+e (not a bare letter) matches the review-cart chord.
+		return s, s.openLineEditor(s.reviewCursor, poPhaseSource)
 	}
 	return s, nil
+}
+
+// clampReviewCursor keeps the shared cart cursor inside the cart after lines
+// are added or removed.
+func (s *PurchaseOrderCreateScreen) clampReviewCursor() {
+	if s.reviewCursor >= len(s.lines) {
+		s.reviewCursor = len(s.lines) - 1
+	}
+	if s.reviewCursor < 0 {
+		s.reviewCursor = 0
+	}
+}
+
+// removeLineAt drops one staged cart line and keeps the shared cursor in range.
+// Shared by the source chooser (x) and the review cart (ctrl+x) so per-line
+// removal behaves identically from both. Emptying the cart from review returns
+// to the source chooser — there is nothing left to review.
+func (s *PurchaseOrderCreateScreen) removeLineAt(idx int) {
+	if idx < 0 || idx >= len(s.lines) {
+		return
+	}
+	s.lines = append(s.lines[:idx], s.lines[idx+1:]...)
+	s.clampReviewCursor()
+	s.errMsg = ""
+	if len(s.lines) == 0 && s.phase == poPhaseReview {
+		s.phase = poPhaseSource
+		s.poNotes.Blur()
+	}
+}
+
+// openLineEditor re-opens the Phase-4 form pre-filled from cart line idx for an
+// in-place edit, remembering the phase to return to on save or cancel. Shared by
+// the review cart (ctrl+e) and the source chooser (ctrl+e) so editing any line
+// works the same wherever it was launched from.
+func (s *PurchaseOrderCreateScreen) openLineEditor(idx int, back poPhase) tea.Cmd {
+	if idx < 0 || idx >= len(s.lines) {
+		return nil
+	}
+	line := s.lines[idx]
+	item := line.item
+	var unitCost float64
+	if item.UnitCost != nil {
+		unitCost = *item.UnitCost
+	}
+	s.poNotes.Blur()
+	// packageCost = 0 with qpp > 1 makes enterLinePhase default to case basis
+	// and prefill case cost = unit_cost × qpp, which round-trips exactly back
+	// through poDeriveUnitCost on save. The line's source (item-supplier /
+	// asset / freeform) is preserved — editing never re-targets a line.
+	s.enterLinePhase(item.ItemSupplierID, item.AssetID, item.Description, item.Quantity, unitCost, 0, line.qpp)
+	// enterLinePhase blanks every input for a fresh add, so the staged date is
+	// restored afterward — same idiom as the editIndex assignment below.
+	s.lineInputs[poLineFieldDate].SetValue(item.ExpectedShipmentDate)
+	s.editIndex = idx
+	s.editReturn = back
+	return textinput.Blink
+}
+
+// returnFromLineForm leaves the line form for the phase the edit was opened
+// from, focusing the notes input only when that phase is the review cart.
+func (s *PurchaseOrderCreateScreen) returnFromLineForm() tea.Cmd {
+	s.phase = s.editReturn
+	if s.phase == poPhaseReview {
+		s.poNotes.Focus()
+		return textinput.Blink
+	}
+	s.poNotes.Blur()
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +554,7 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 ) {
 	s.phase = poPhaseLine
 	s.editIndex = -1
+	s.editReturn = poPhaseReview
 	s.lineFocused = poLineFieldDesc
 	s.errMsg = ""
 	s.pickedItemSup = itemSupplierID
@@ -482,10 +599,11 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
 	case "esc":
-		// Esc cancels the line form. During an in-place edit (opened from the
-		// review cart) it returns to review with the line unchanged; on a fresh
-		// add it goes back to the source chooser so the operator can pick a
-		// different line source without losing the supplier.
+		// Esc cancels the line form. During an in-place edit it returns to
+		// whichever phase opened the edit (review cart or source chooser) with
+		// the line unchanged; on a fresh add it goes back to the source chooser
+		// so the operator can pick a different line source without losing the
+		// supplier.
 		editing := s.editIndex >= 0
 		s.pickedItemSup = nil
 		s.pickedAssetID = nil
@@ -493,9 +611,7 @@ func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.C
 		s.costBasisCase = false
 		s.editIndex = -1
 		if editing {
-			s.phase = poPhaseReview
-			s.poNotes.Focus()
-			return s, textinput.Blink
+			return s, s.returnFromLineForm()
 		}
 		s.phase = poPhaseSource
 		return s, nil
@@ -525,12 +641,28 @@ func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.C
 // cost from the item-supplier's stored unit_cost, so prompting for it is
 // redundant (sc-5yr). Case-packed inventory lines (qpp > 1) keep the cost field
 // so the operator can enter a case (or unit) cost (op-7j8v). Asset and freeform
-// lines always keep it — the backend requires unit_cost for both.
+// lines always keep it — the backend requires unit_cost for both. The expected
+// date field is the mirror: inventory lines only (see lineTakesDate).
 func (s *PurchaseOrderCreateScreen) lineFields() []int {
-	if s.pickedItemSup != nil && s.pickedQPP <= 1 {
-		return []int{poLineFieldDesc, poLineFieldQty}
+	fields := []int{poLineFieldDesc, poLineFieldQty}
+	if s.pickedItemSup == nil || s.pickedQPP > 1 {
+		fields = append(fields, poLineFieldCost)
 	}
-	return []int{poLineFieldDesc, poLineFieldQty, poLineFieldCost}
+	if s.lineTakesDate() {
+		fields = append(fields, poLineFieldDate)
+	}
+	return fields
+}
+
+// lineTakesDate reports whether the current line source accepts a per-line
+// expected shipment date. Only item-supplier-backed lines do: the backend's
+// create_purchase_order reads expected_shipment_date on the item_supplier
+// branch and never looks at it on the asset or freeform branches, so offering
+// the field there would collect a value the PO silently drops. The one
+// predicate feeds both lineFields (what renders) and addLine (what is sent), so
+// the form and the payload can't drift.
+func (s *PurchaseOrderCreateScreen) lineTakesDate() bool {
+	return s.pickedItemSup != nil
 }
 
 // poLineFieldLabel maps a field index to its static form label. The cost row
@@ -543,6 +675,8 @@ func poLineFieldLabel(i int) string {
 		return "Quantity"
 	case poLineFieldCost:
 		return "Unit cost"
+	case poLineFieldDate:
+		return "Expected date"
 	default:
 		return ""
 	}
@@ -620,27 +754,42 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 			line.UnitCost = &unit
 		}
 	}
+	// Per-line expected shipment date. Blank is allowed (omitempty drops it) —
+	// the date is optional on the backend. Only read when the field is active,
+	// so a value typed on an inventory line can't leak onto an asset/freeform
+	// line whose create branch would ignore it anyway.
+	if s.lineTakesDate() {
+		raw := strings.TrimSpace(s.lineInputs[poLineFieldDate].Value())
+		if raw != "" {
+			if _, err := time.Parse("2006-01-02", raw); err != nil {
+				s.errMsg = "expected date must be YYYY-MM-DD (or blank)"
+				return Status(s.errMsg, StatusError)
+			}
+			line.ExpectedShipmentDate = raw
+		}
+	}
 
 	cartLine := poCartLine{item: line, label: s.lineLabel(desc), qpp: s.pickedQPP}
 	s.errMsg = ""
 
 	if s.editIndex >= 0 && s.editIndex < len(s.lines) {
-		// In-place edit opened from the review cart: overwrite the line (not
-		// append) and return to review with the same line still highlighted.
+		// In-place edit: overwrite the line (not append) and return to whichever
+		// phase opened the edit, with the same line still highlighted.
 		idx := s.editIndex
 		s.lines[idx] = cartLine
 		s.reviewCursor = idx
-		s.phase = poPhaseReview
-		s.poNotes.Focus()
 		s.pickedItemSup = nil
 		s.pickedAssetID = nil
 		s.pickedQPP = 0
 		s.costBasisCase = false
 		s.editIndex = -1
-		return tea.Batch(Status("line updated", StatusOK), textinput.Blink)
+		return tea.Batch(Status("line updated", StatusOK), s.returnFromLineForm())
 	}
 
 	s.lines = append(s.lines, cartLine)
+	// Park the shared cart cursor on the line just added, so the source
+	// chooser's x still removes it and d opens review on it.
+	s.reviewCursor = len(s.lines) - 1
 	// Back to the source chooser to add another line (or press d to submit).
 	s.phase = poPhaseSource
 	s.pickedItemSup = nil
@@ -843,41 +992,15 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 	case "ctrl+x":
 		// Remove the highlighted line. ctrl+x (not plain x) so the key
 		// doesn't collide with typing 'x' into the notes field.
-		if len(s.lines) > 0 {
-			s.lines = append(s.lines[:s.reviewCursor], s.lines[s.reviewCursor+1:]...)
-			if s.reviewCursor >= len(s.lines) && s.reviewCursor > 0 {
-				s.reviewCursor--
-			}
-			if len(s.lines) == 0 {
-				// Nothing left to review; back to source to add lines.
-				s.phase = poPhaseSource
-				s.poNotes.Blur()
-			}
-		}
+		s.removeLineAt(s.reviewCursor)
 		return s, nil
 	case "ctrl+e":
 		// Edit the highlighted line in place. ctrl+e (not a bare letter, which
 		// types into the focused notes field, nor enter, which submits) so the
-		// chord never collides. Re-open the Phase-4 form pre-filled from the line
-		// via enterLinePhase, then flag editIndex so addLine writes the change
-		// back to s.lines[reviewCursor] instead of appending.
-		if len(s.lines) == 0 {
-			return s, nil
-		}
-		line := s.lines[s.reviewCursor]
-		item := line.item
-		var unitCost float64
-		if item.UnitCost != nil {
-			unitCost = *item.UnitCost
-		}
-		s.poNotes.Blur()
-		// packageCost = 0 with qpp > 1 makes enterLinePhase default to case basis
-		// and prefill case cost = unit_cost × qpp, which round-trips exactly back
-		// through poDeriveUnitCost on save. The line's source (item-supplier /
-		// asset / freeform) is preserved — editing never re-targets a line.
-		s.enterLinePhase(item.ItemSupplierID, item.AssetID, item.Description, item.Quantity, unitCost, 0, line.qpp)
-		s.editIndex = s.reviewCursor
-		return s, textinput.Blink
+		// chord never collides. openLineEditor re-opens the Phase-4 form
+		// pre-filled and flags editIndex so addLine writes the change back to
+		// s.lines[reviewCursor] instead of appending.
+		return s, s.openLineEditor(s.reviewCursor, poPhaseReview)
 	}
 	var cmd tea.Cmd
 	s.poNotes, cmd = s.poNotes.Update(m)
@@ -933,13 +1056,13 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 		base := "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel."
 		if len(s.lines) > 0 {
 			base = fmt.Sprintf(
-				"Add a line (r/i/a/f) · d done → review %d line(s) · x remove last · b back · esc cancel.",
+				"Add a line (r/i/a/f) · j/k highlight · ctrl+e edit · x remove · d done → review %d line(s) · b back · esc cancel.",
 				len(s.lines),
 			)
 		}
 		return base
 	case poPhaseReorderPick:
-		return "Reorder-queue suggestions for this supplier (j/k move, enter pick, b back, esc cancel)."
+		return "Reorder-queue suggestions (j/k move · space mark · a add ALL · enter add marked/highlighted · b back · esc cancel)."
 	case poPhaseItemPick:
 		return "Inventory items for this supplier (j/k move, / filter, enter pick, b back, esc cancel)."
 	case poPhaseAssetPick:
@@ -1033,15 +1156,18 @@ func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
 	b.WriteString("  " + StyleStatusOK.Render("f") + "  Freeform line (no item / asset reference)\n")
 	if len(s.lines) > 0 {
 		b.WriteString("\n")
-		b.WriteString(s.renderCart(-1))
+		// Highlight the same line the review cart would: j/k aim it, and
+		// ctrl+e / x act on it.
+		b.WriteString(s.renderCart(s.reviewCursor))
 		b.WriteString("\n  " + StyleStatusOK.Render("d") + "  Done — review & submit    " +
-			StyleMuted.Render("(x removes the last line)") + "\n")
+			StyleMuted.Render("(j/k highlight a line · ctrl+e edit it · x remove it)") + "\n")
 	}
 	return b.String()
 }
 
 // renderCart lists the staged lines. When highlight >= 0 the matching row is
-// marked (used by the review phase); pass -1 for a plain list.
+// marked (used by the review phase and the source chooser's cart list); pass -1
+// for a plain list.
 func (s *PurchaseOrderCreateScreen) renderCart(highlight int) string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render(fmt.Sprintf("Cart (%d line(s))", len(s.lines))) + "\n")
@@ -1053,6 +1179,9 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight int) string {
 		row := fmt.Sprintf("%s%d) %s  ×%d", caret, i+1, l.label, l.item.Quantity)
 		if l.item.UnitCost != nil {
 			row += fmt.Sprintf(" @ $%s", strconv.FormatFloat(*l.item.UnitCost, 'f', -1, 64))
+		}
+		if l.item.ExpectedShipmentDate != "" {
+			row += "  exp " + l.item.ExpectedShipmentDate
 		}
 		if i == highlight {
 			row = StyleSidebarItemActive.Render(row)
@@ -1109,7 +1238,12 @@ func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
 	// Single-pack inventory lines carry no cost field; note that the backend
 	// uses the catalog cost. (Case-packed lines show the derivation hint above.)
 	if s.pickedItemSup != nil && s.pickedQPP <= 1 {
-		b.WriteString(StyleMuted.Render("  Cost is taken from the supplier catalog; ship dates are set at send/receive.") + "\n")
+		b.WriteString(StyleMuted.Render("  Cost is taken from the supplier catalog.") + "\n")
+	}
+	// Asset / freeform lines carry no date field — say why, so its absence
+	// doesn't read as an oversight.
+	if !s.lineTakesDate() {
+		b.WriteString(StyleMuted.Render("  Expected dates are stored on inventory lines only; set this line's dates at send/receive.") + "\n")
 	}
 	return b.String()
 }
