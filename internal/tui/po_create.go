@@ -23,19 +23,21 @@
 //	                    rows and a adds the supplier's WHOLE reorder queue,
 //	                    each seeded from its suggested_quantity, landing
 //	                    straight in the review cart (sc-ytr5).
-//	poPhaseLine       — description/qty (+ a cost field for asset/freeform
-//	                    lines and case-packed inventory lines, + an optional
-//	                    expected-date field for inventory lines) inputs,
-//	                    pre-filled when the line came from a picker; enter
-//	                    ADDS the line to the cart and returns to poPhaseSource
-//	                    so more lines can be added (the web create form is
-//	                    multi-line — [[ship-complete-features]]).
-//	                    Single-pack item-supplier-backed lines (reorder queue /
-//	                    inventory picker, qpp ≤ 1) omit the cost prompt — the
-//	                    backend derives the line cost from the item-supplier's
-//	                    stored unit_cost. Case-packed inventory lines (qpp > 1)
-//	                    add a per-case/per-unit cost field (ctrl+t toggles the
-//	                    basis, deriving unit_cost = case_cost / qpp — op-7j8v).
+//	poPhaseLine       — description/qty/cost (+ an optional expected-date
+//	                    field for inventory lines) inputs, pre-filled when the
+//	                    line came from a picker; enter ADDS the line to the
+//	                    cart and returns to poPhaseSource so more lines can be
+//	                    added (the web create form is multi-line —
+//	                    [[ship-complete-features]]).
+//	                    Cost is REQUIRED on asset/freeform lines and an
+//	                    optional OVERRIDE on item-supplier-backed (catalog)
+//	                    lines: it is prefilled from the catalog price and a
+//	                    blank field omits unit_cost so the backend prices the
+//	                    line from the item-supplier's stored unit_cost, which
+//	                    is what the web create form does too (sc-gnzw).
+//	                    Case-packed inventory lines (qpp > 1) enter that cost
+//	                    per case or per unit (ctrl+t toggles the basis,
+//	                    deriving unit_cost = case_cost / qpp — op-7j8v).
 //	                    Only item-supplier-backed lines prompt for a per-line
 //	                    expected shipment date: the backend's create path reads
 //	                    expected_shipment_date on the item_supplier branch only
@@ -78,13 +80,13 @@ const (
 	poPhaseReview
 )
 
-// Field indexes inside the line-entry form (Phase 4). Unit cost is only
-// collected for asset and freeform lines; item-supplier-backed lines omit it
-// (the backend derives the line cost from the item-supplier's stored
-// unit_cost — see lineFields). The expected shipment date is the mirror image:
-// only item-supplier-backed lines collect it, because create_purchase_order
-// reads expected_shipment_date on the item_supplier branch alone. PO-level
-// notes live in the review phase.
+// Field indexes inside the line-entry form (Phase 4). Every line collects a
+// unit cost: required on asset and freeform lines, an optional override on
+// item-supplier-backed lines where a blank field means "price it from the
+// catalog" (see lineFields). The expected shipment date is not symmetric: only
+// item-supplier-backed lines collect it, because create_purchase_order reads
+// expected_shipment_date on the item_supplier branch alone. PO-level notes live
+// in the review phase.
 const (
 	poLineFieldDesc = iota
 	poLineFieldQty
@@ -586,8 +588,13 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 		if caseCost > 0 {
 			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(caseCost))
 		}
-	case itemSupplierID == nil:
-		// Asset / freeform line: per-unit cost prefill (unchanged behavior).
+	default:
+		// Per-unit cost prefill. Asset / freeform lines start blank (nothing
+		// knows their cost); a single-pack catalog line is seeded with the price
+		// the picker showed — the item-supplier's unit_cost, or the override
+		// already staged on the line when re-opened with ctrl+e — so the
+		// operator can keep it, change it, or clear it back to catalog pricing
+		// (sc-gnzw).
 		if unitCost > 0 {
 			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(unitCost))
 		}
@@ -636,18 +643,19 @@ func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.C
 }
 
 // lineFields returns the active field indexes for the current line source, in
-// tab order. Single-pack item-supplier-backed lines (reorder queue / inventory
-// picker with qpp ≤ 1) drop the unit-cost field: the backend derives the line
-// cost from the item-supplier's stored unit_cost, so prompting for it is
-// redundant (sc-5yr). Case-packed inventory lines (qpp > 1) keep the cost field
-// so the operator can enter a case (or unit) cost (op-7j8v). Asset and freeform
-// lines always keep it — the backend requires unit_cost for both. The expected
-// date field is the mirror: inventory lines only (see lineTakesDate).
+// tab order. Every line carries a cost field, but it means different things:
+// asset and freeform lines REQUIRE a unit cost (the backend rejects those
+// branches without one), while item-supplier-backed lines take an OPTIONAL
+// per-unit override — blank leaves unit_cost out of the payload and the backend
+// prices the line from the item-supplier's stored cost (sc-5yr's default, kept
+// as the default here). sc-5yr hid the field entirely on single-pack catalog
+// lines, which left an operator staring at a $0 line they could not correct
+// when the catalog cost was unset; the web create form has always allowed the
+// override, so offering it is parity, not a new power (sc-gnzw). Case-packed
+// inventory lines (qpp > 1) enter that cost per case or per unit (op-7j8v). The
+// expected date field is not symmetric: inventory lines only (lineTakesDate).
 func (s *PurchaseOrderCreateScreen) lineFields() []int {
-	fields := []int{poLineFieldDesc, poLineFieldQty}
-	if s.pickedItemSup == nil || s.pickedQPP > 1 {
-		fields = append(fields, poLineFieldCost)
-	}
+	fields := []int{poLineFieldDesc, poLineFieldQty, poLineFieldCost}
 	if s.lineTakesDate() {
 		fields = append(fields, poLineFieldDate)
 	}
@@ -731,28 +739,26 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 		ItemSupplierID: s.pickedItemSup,
 		AssetID:        s.pickedAssetID,
 	}
-	// Cost entry. The cost field is active for asset / freeform lines (backend
-	// requires a per-unit cost) and for case-packed inventory lines (qpp > 1),
-	// where it holds a per-case OR per-unit cost per the ctrl+t basis toggle.
+	// Cost entry, read on every line kind. On a case-packed inventory line the
+	// field holds a per-case OR per-unit cost per the ctrl+t basis toggle, and
 	// poDeriveUnitCost divides a case cost by qpp at full precision (no cent
-	// rounding, so odd case sizes don't drift). Single-pack inventory lines have
-	// no cost field and omit unit_cost, letting the backend derive it from the
-	// stored catalog cost (sc-5yr); a blank field omits it the same way.
-	if s.pickedItemSup == nil || s.pickedQPP > 1 {
-		unit, provided, err := poDeriveUnitCost(
-			s.lineInputs[poLineFieldCost].Value(), s.costBasisCase, s.pickedQPP,
-		)
-		if err != nil {
-			label := "unit cost"
-			if s.costBasisCase {
-				label = "case cost"
-			}
-			s.errMsg = label + " must be a non-negative number"
-			return Status(s.errMsg, StatusError)
+	// rounding, so odd case sizes don't drift). A blank field omits unit_cost
+	// altogether: for a catalog line that hands pricing back to the stored
+	// item-supplier cost (sc-5yr's default), and for an asset / freeform line
+	// the backend rejects the missing cost, which is the pre-existing contract.
+	unit, provided, err := poDeriveUnitCost(
+		s.lineInputs[poLineFieldCost].Value(), s.costBasisCase, s.pickedQPP,
+	)
+	if err != nil {
+		label := "unit cost"
+		if s.costBasisCase {
+			label = "case cost"
 		}
-		if provided {
-			line.UnitCost = &unit
-		}
+		s.errMsg = label + " must be a non-negative number"
+		return Status(s.errMsg, StatusError)
+	}
+	if provided {
+		line.UnitCost = &unit
 	}
 	// Per-line expected shipment date. Blank is allowed (omitempty drops it) —
 	// the date is optional on the backend. Only read when the field is active,
@@ -892,13 +898,20 @@ func (s *PurchaseOrderCreateScreen) toggleCostBasis() {
 }
 
 // applyCostPlaceholder keeps the cost input's placeholder in step with the
-// active basis (case vs unit).
+// active basis (case vs unit) and with what the field means for this line kind:
+// a catalog line's cost is an override the operator may leave empty, so the
+// empty field reads "(optional)" instead of prompting for a value it doesn't
+// need. What blank actually does is spelled out by the note renderLinePhase
+// prints under the form.
 func (s *PurchaseOrderCreateScreen) applyCostPlaceholder() {
+	basis, hint := "unit cost", "(e.g. 12.50)"
 	if s.costBasisCase {
-		s.lineInputs[poLineFieldCost].Placeholder = "case cost (e.g. 30.00)"
-	} else {
-		s.lineInputs[poLineFieldCost].Placeholder = "unit cost (e.g. 12.50)"
+		basis, hint = "case cost", "(e.g. 30.00)"
 	}
+	if s.pickedItemSup != nil {
+		hint = "(optional)"
+	}
+	s.lineInputs[poLineFieldCost].Placeholder = basis + " " + hint
 }
 
 // costDerivationHint is the muted line shown under a case-packed inventory
@@ -1235,10 +1248,10 @@ func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
 			}
 		}
 	}
-	// Single-pack inventory lines carry no cost field; note that the backend
-	// uses the catalog cost. (Case-packed lines show the derivation hint above.)
-	if s.pickedItemSup != nil && s.pickedQPP <= 1 {
-		b.WriteString(StyleMuted.Render("  Cost is taken from the supplier catalog.") + "\n")
+	// Catalog lines: the cost is an optional override, so say what a blank field
+	// does. (Case-packed lines also show the unit/case derivation hint above.)
+	if s.pickedItemSup != nil {
+		b.WriteString(StyleMuted.Render("  Cost is optional — blank uses the supplier catalog price.") + "\n")
 	}
 	// Asset / freeform lines carry no date field — say why, so its absence
 	// doesn't read as an oversight.

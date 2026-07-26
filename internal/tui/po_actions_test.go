@@ -59,8 +59,8 @@ func TestPOCreate_MultiLineCart(t *testing.T) {
 	}
 
 	// Add a second line sourced from a picker (item-supplier backed, as the
-	// reorder/inventory pickers do). Even with a prefilled cost, the line must
-	// NOT carry a unit_cost — the backend derives it from the item-supplier.
+	// reorder/inventory pickers do). The catalog price is prefilled into the
+	// cost field, so accepting the form carries it as the line's unit_cost.
 	itemSup := 42
 	s.enterLinePhase(&itemSup, nil, "Reorder widget", 5, 9.99, 0, 0)
 	s.addLine()
@@ -70,8 +70,8 @@ func TestPOCreate_MultiLineCart(t *testing.T) {
 	if s.lines[1].item.ItemSupplierID == nil || *s.lines[1].item.ItemSupplierID != 42 {
 		t.Errorf("line 1 item-supplier id = %v", s.lines[1].item.ItemSupplierID)
 	}
-	if s.lines[1].item.UnitCost != nil {
-		t.Errorf("item-supplier line must omit unit cost, got %v", *s.lines[1].item.UnitCost)
+	if s.lines[1].item.UnitCost == nil || *s.lines[1].item.UnitCost != 9.99 {
+		t.Errorf("line 1 unit cost = %v, want the prefilled catalog price 9.99", s.lines[1].item.UnitCost)
 	}
 	if s.lines[1].item.ExpectedShipmentDate != "" {
 		t.Errorf("no line should carry a ship date, got %q", s.lines[1].item.ExpectedShipmentDate)
@@ -127,30 +127,35 @@ func TestPOCreate_AddLineValidation(t *testing.T) {
 	}
 }
 
-// TestPOCreate_ItemSupplierLineOmitsCost verifies the reorder/inventory
-// (item-supplier-backed) line flow drops the unit-cost field and never sends a
-// unit_cost, while freeform lines still collect it (sc-5yr).
-func TestPOCreate_ItemSupplierLineOmitsCost(t *testing.T) {
+// TestPOCreate_ItemSupplierLineCostIsOptional verifies the reorder/inventory
+// (item-supplier-backed) line flow offers an EDITABLE cost seeded from the
+// catalog price, and that clearing it hands pricing back to the backend
+// (sc-5yr's default, kept as the default — sc-gnzw).
+func TestPOCreate_ItemSupplierLineCostIsOptional(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	s.supplierID = 7
 
-	// Item-supplier line: the cost field is dropped (description, quantity and
-	// the optional expected date remain), and a prefilled cost is not rendered
-	// or sent.
+	// Item-supplier line: the cost field is offered and prefilled from the
+	// catalog price, alongside description, quantity and the expected date.
 	itemSup := 11
 	s.enterLinePhase(&itemSup, nil, "Bolt", 4, 2.50, 0, 0)
-	if got := s.lineFields(); hasField(got, poLineFieldCost) {
-		t.Fatalf("item-supplier line fields = %v, want no cost field", got)
+	if got := s.lineFields(); !hasField(got, poLineFieldCost) {
+		t.Fatalf("item-supplier line fields = %v, want a cost field", got)
 	}
-	if out := s.renderLinePhase(); strings.Contains(out, "Unit cost:") {
-		t.Errorf("item-supplier line should not render a unit-cost input:\n%s", out)
+	if got := s.lineInputs[poLineFieldCost].Value(); got != "2.5" {
+		t.Errorf("cost prefill = %q, want the catalog price %q", got, "2.5")
 	}
+	if out := s.renderLinePhase(); !strings.Contains(out, "Unit cost:") {
+		t.Errorf("item-supplier line should render a unit-cost input:\n%s", out)
+	}
+	// Cleared → no unit_cost, so the backend prices it from the catalog.
+	s.lineInputs[poLineFieldCost].SetValue("")
 	s.addLine()
 	if len(s.lines) != 1 {
 		t.Fatalf("cart len = %d, want 1", len(s.lines))
 	}
 	if s.lines[0].item.UnitCost != nil {
-		t.Errorf("item-supplier line must omit unit_cost, got %v", *s.lines[0].item.UnitCost)
+		t.Errorf("a cleared cost must omit unit_cost, got %v", *s.lines[0].item.UnitCost)
 	}
 
 	// Freeform line: the cost field is active again (and carries no date field —
