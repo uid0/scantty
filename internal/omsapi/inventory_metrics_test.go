@@ -84,6 +84,66 @@ func TestGetItemMetrics_NullCounts(t *testing.T) {
 	}
 }
 
+// TestGetItemMetrics_CommittedBreakdown pins the QC attribution (op-l4i0): the
+// entries decode with their work-order / asset identity, an asset-less work
+// order's nulls become empty strings rather than failing the decode, and a
+// backend that predates the field leaves the slice nil (so the detail just shows
+// the QC number with no list).
+func TestGetItemMetrics_CommittedBreakdown(t *testing.T) {
+	payload := `{"current_stock":5,"quantity_committed":3.5,"committed_breakdown":[
+		{"work_order_id":"11111111-1111-1111-1111-111111111111","work_order_short_id":"WO-1A2B3C4D",
+		 "asset_id":"22222222-2222-2222-2222-222222222222","asset_name":"Laser Cutter","quantity":2},
+		{"work_order_id":"33333333-3333-3333-3333-333333333333","work_order_short_id":"WO-5E6F7A8B",
+		 "asset_id":null,"asset_name":null,"quantity":1.5}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	m, err := New(srv.URL).GetItemMetrics(context.Background(), "abc")
+	if err != nil {
+		t.Fatalf("GetItemMetrics: %v", err)
+	}
+	if len(m.CommittedBreakdown) != 2 {
+		t.Fatalf("committed_breakdown = %d entries, want 2", len(m.CommittedBreakdown))
+	}
+	first := m.CommittedBreakdown[0]
+	if first.WorkOrderShortID != "WO-1A2B3C4D" || first.AssetName != "Laser Cutter" || first.Quantity != 2 {
+		t.Errorf("first entry = %+v", first)
+	}
+	if first.WorkOrderID != "11111111-1111-1111-1111-111111111111" {
+		t.Errorf("work_order_id = %q", first.WorkOrderID)
+	}
+	// An asset-less work order is legitimate; both asset fields arrive null.
+	second := m.CommittedBreakdown[1]
+	if second.AssetID != "" || second.AssetName != "" {
+		t.Errorf("asset-less entry should decode to empty asset fields: %+v", second)
+	}
+	// Quantity is a FloatField — a fractional share must survive.
+	if second.Quantity != 1.5 {
+		t.Errorf("quantity = %v, want 1.5", second.Quantity)
+	}
+	// The entries sum to the QC metric they explain.
+	if m.QuantityCommitted == nil || *m.QuantityCommitted != 3.5 {
+		t.Errorf("quantity_committed = %v", m.QuantityCommitted)
+	}
+
+	// Older backend: no committed_breakdown key at all.
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"current_stock":5,"quantity_committed":3.5}`))
+	}))
+	defer old.Close()
+	m2, err := New(old.URL).GetItemMetrics(context.Background(), "abc")
+	if err != nil {
+		t.Fatalf("GetItemMetrics (old backend): %v", err)
+	}
+	if m2.CommittedBreakdown != nil {
+		t.Errorf("missing committed_breakdown should decode to nil, got %+v", m2.CommittedBreakdown)
+	}
+}
+
 // TestListItemsWithMetrics_Contract pins that the list request carries
 // ?with_metrics=1 and that an embedded per-item "metrics" object decodes into
 // Item.Metrics (same shape as GetItemMetrics), while an item with no metrics key

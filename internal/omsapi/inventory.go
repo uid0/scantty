@@ -214,6 +214,21 @@ func (c *Client) ScanItem(ctx context.Context, id string) (*Item, error) {
 	return &out, nil
 }
 
+// CommittedBreakdownEntry is one work order holding part of an item's committed
+// quantity (op-l4i0) — the attribution behind ItemMetrics.QuantityCommitted:
+// which job, and so which machine, the reserved stock is going to. Entries sum
+// to QuantityCommitted and arrive oldest work order first.
+//
+// AssetID/AssetName are empty on an asset-less work order (the backend sends
+// null for both). Quantity is a backend FloatField, so it can be fractional.
+type CommittedBreakdownEntry struct {
+	WorkOrderID      string  `json:"work_order_id"`
+	WorkOrderShortID string  `json:"work_order_short_id"` // e.g. "WO-1A2B3C4D"
+	AssetID          string  `json:"asset_id"`
+	AssetName        string  `json:"asset_name"`
+	Quantity         float64 `json:"quantity"`
+}
+
 // ItemMetrics is the aggregate stock/costing snapshot the item-detail metrics
 // row renders (issue-5). It comes from a dedicated endpoint
 // (GET /api/inventory/items/{id}/metrics/) rather than the item serializer, so
@@ -239,6 +254,11 @@ type ItemMetrics struct {
 	LastPOUnitCost    DecimalString `json:"last_po_unit_cost"`
 	IsCaseBased       bool          `json:"is_case_based"`
 	CaseSize          *int          `json:"case_size"`
+
+	// CommittedBreakdown attributes QC to the work orders holding it (op-l4i0),
+	// summing to QuantityCommitted. Nil on a backend that predates the field, so
+	// the detail simply shows the QC number with no "Committed to" list.
+	CommittedBreakdown []CommittedBreakdownEntry `json:"committed_breakdown"`
 }
 
 // GetItemMetrics fetches the item-detail metrics snapshot (issue-5). The
@@ -248,6 +268,61 @@ type ItemMetrics struct {
 func (c *Client) GetItemMetrics(ctx context.Context, id string) (*ItemMetrics, error) {
 	var out ItemMetrics
 	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/metrics/", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ItemOrderCost is one purchase-order line for an item (op-96uo): what a single
+// order was placed at, per unit. Together the rows are the full history behind
+// the metrics row's LastPOUnitCost, which keeps only the newest one. They arrive
+// oldest order first and include voided lines (matching the metrics filter).
+//
+// PONumber is nullable on the backend (a PO whose number isn't assigned yet)
+// and decodes to "", which is why PurchaseOrder — the PO pk, always present —
+// is the key to group rows by order. Money rides DecimalString; UnitCostActual
+// stays empty until the delivery is priced.
+type ItemOrderCost struct {
+	PurchaseOrder   int           `json:"purchase_order"`
+	PONumber        string        `json:"po_number"`
+	OrderDate       time.Time     `json:"order_date"`
+	Status          string        `json:"status"`
+	QuantityOrdered int           `json:"quantity_ordered"`
+	UnitCostOrdered DecimalString `json:"unit_cost_ordered"`
+	UnitCostActual  DecimalString `json:"unit_cost_actual"`
+}
+
+// ItemDelivery is one receipt of an item (op-96uo): one row per DeliveryItem, so
+// a partially-shipped order yields several rows for the same PO — each with its
+// own tracking number, which is what "one order, many tracking numbers" means.
+// Oldest delivery first. Same PONumber caveat as ItemOrderCost.
+type ItemDelivery struct {
+	PurchaseOrder    int       `json:"purchase_order"`
+	PONumber         string    `json:"po_number"`
+	DeliveryDate     time.Time `json:"delivery_date"`
+	TrackingNumber   string    `json:"tracking_number"`
+	Carrier          string    `json:"carrier"`
+	QuantityReceived int       `json:"quantity_received"`
+	ReceiptNotes     string    `json:"receipt_notes"`
+	IsComplete       bool      `json:"is_complete"`
+}
+
+// ItemPurchaseHistory is the order + receipt provenance behind an item's current
+// stock (op-96uo): what each order paid per unit, and what actually shipped when.
+type ItemPurchaseHistory struct {
+	OrderCosts []ItemOrderCost `json:"order_costs"`
+	Deliveries []ItemDelivery  `json:"deliveries"`
+}
+
+// GetPurchaseHistory fetches an item's order + receipt provenance
+// (GET /api/inventory/items/{id}/purchase_history/, op-96uo — underscored, as
+// DRF derives the action path from the method name). Unlike the public
+// metrics/retrieve reads this one is auth-required, since it surfaces supplier
+// pricing, so an unauthenticated session fails here even though the rest of the
+// detail loads; the caller treats a failure as non-fatal (see the TUI section).
+func (c *Client) GetPurchaseHistory(ctx context.Context, id string) (*ItemPurchaseHistory, error) {
+	var out ItemPurchaseHistory
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/purchase_history/", id), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
