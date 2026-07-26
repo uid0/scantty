@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -46,6 +47,14 @@ type InventoryDetailScreen struct {
 	confirmingDelete bool
 	deleting         bool
 
+	// "Assets that use this item" (op-qdfr): the assets that list this item as
+	// a part/consumable via the AssetPart through-model. Loaded from its own
+	// filtered asset query alongside the item, so usedByLoading distinguishes
+	// "still fetching" from a genuinely empty result.
+	usedBy        []omsapi.Asset
+	usedByErr     string
+	usedByLoading bool
+
 	// Cycle-count modal (issue-7). Active while ccStep != ccStepNone, during
 	// which WantsRawInput routes every key here. The two textinputs are
 	// (re)initialised each time the modal opens.
@@ -82,6 +91,14 @@ type inventoryDetailLoadedMsg struct {
 type inventoryMetricsLoadedMsg struct {
 	metrics *omsapi.ItemMetrics
 	err     error
+}
+
+// inventoryUsedByLoadedMsg carries the assets that consume this item as a part
+// (op-qdfr), fetched in parallel with the item. A non-nil err is non-fatal —
+// the section shows the reason instead of the list.
+type inventoryUsedByLoadedMsg struct {
+	assets []omsapi.Asset
+	err    error
 }
 
 // cycleCountDoneMsg is the result of a cycle-count submission (issue-7). On
@@ -124,10 +141,11 @@ type inventoryRetireDoneMsg struct {
 
 func NewInventoryDetailScreen(deps Deps, id string) *InventoryDetailScreen {
 	return &InventoryDetailScreen{
-		deps:     deps,
-		itemID:   id,
-		loading:  true,
-		scroller: NewTextScroller(defaultDetailHeight),
+		deps:          deps,
+		itemID:        id,
+		loading:       true,
+		usedByLoading: true,
+		scroller:      NewTextScroller(defaultDetailHeight),
 	}
 }
 
@@ -184,8 +202,25 @@ func (s *InventoryDetailScreen) loadMetricsCmd() tea.Cmd {
 	}
 }
 
+// loadUsedByCmd fetches the assets that use this item as a part/consumable
+// (op-qdfr) — the AssetPart through-model, which is what people mean by "what
+// uses this?". The backend exposes it as an asset-list filter rather than an
+// item sub-resource, so this is a plain filtered ListAssets. Loads in parallel
+// with the item; a failure only blanks the section (see Update).
+func (s *InventoryDetailScreen) loadUsedByCmd() tea.Cmd {
+	deps, id, ctx := s.deps, s.itemID, s.ctx()
+	return func() tea.Msg {
+		page, err := deps.OMS.ListAssets(ctx, url.Values{"consumable_for_item": {id}})
+		if err != nil {
+			return inventoryUsedByLoadedMsg{err: err}
+		}
+		return inventoryUsedByLoadedMsg{assets: page.Results}
+	}
+}
+
 func (s *InventoryDetailScreen) Init() tea.Cmd {
-	return tea.Batch(s.loadItemCmd(), s.loadMetricsCmd())
+	s.usedByLoading = true
+	return tea.Batch(s.loadItemCmd(), s.loadMetricsCmd(), s.loadUsedByCmd())
 }
 
 func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -209,6 +244,20 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		// item is present (metrics can arrive first).
 		if m.err == nil {
 			s.metrics = m.metrics
+		}
+		if s.item != nil {
+			s.scroller.Set(s.renderBody())
+		}
+		return s, nil
+	case inventoryUsedByLoadedMsg:
+		// Non-fatal like metrics: on error keep the section header and show the
+		// reason rather than silently claiming nothing uses the item.
+		s.usedByLoading = false
+		if m.err != nil {
+			s.usedByErr = m.err.Error()
+		} else {
+			s.usedByErr = ""
+			s.usedBy = m.assets
 		}
 		if s.item != nil {
 			s.scroller.Set(s.renderBody())
@@ -634,6 +683,8 @@ func (s *InventoryDetailScreen) renderBody() string {
 		b.WriteString("\n")
 	}
 
+	b.WriteString(s.renderUsedBySection())
+
 	if len(it.Tags) > 0 {
 		b.WriteString(StyleMuted.Render("Tags: ") + strings.Join(it.Tags, ", ") + "\n\n")
 	}
@@ -650,6 +701,83 @@ func (s *InventoryDetailScreen) renderBody() string {
 	}
 
 	return b.String()
+}
+
+// --- Assets that use this item (op-qdfr) -------------------------------------
+
+// renderUsedBySection renders the assets that list this item as a part or
+// consumable (the AssetPart through-model — NOT assets that ARE an instance of
+// this item type, which is Asset.inventory_item; the web keeps the two apart
+// too). The header is drawn unconditionally so the section doesn't pop into
+// existence mid-body and shift the scroll once the query lands; the body below
+// it reads loading / error / empty / rows. Returns text with a trailing blank
+// line, matching its sibling sections.
+func (s *InventoryDetailScreen) renderUsedBySection() string {
+	var b strings.Builder
+	title := "Assets that use this item"
+	if !s.usedByLoading && s.usedByErr == "" && len(s.usedBy) > 0 {
+		title = fmt.Sprintf("%s (%d)", title, len(s.usedBy))
+	}
+	b.WriteString(StyleTitle.Render(title) + "\n")
+
+	switch {
+	case s.usedByLoading:
+		b.WriteString(StyleMuted.Render("loading…") + "\n\n")
+		return b.String()
+	case s.usedByErr != "":
+		b.WriteString(StyleStatusWarn.Render("unavailable: "+s.usedByErr) + "\n\n")
+		return b.String()
+	case len(s.usedBy) == 0:
+		b.WriteString(StyleMuted.Render("No assets use this item as a part.") + "\n\n")
+		return b.String()
+	}
+
+	for _, a := range s.usedBy {
+		id := fmt.Sprint(a.ID)
+		name := a.Name
+		if name == "" {
+			name = "asset " + id
+		}
+		b.WriteString("  · " + name + "\n")
+		if meta := usedByMetaLine(a, s.itemID); meta != "" {
+			b.WriteString("    " + StyleMuted.Render(meta) + "\n")
+		}
+		b.WriteString("    " + StyleMuted.Render("ID "+id) + "\n")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// usedByMetaLine summarises one consuming asset: its tag, the through-model
+// detail for THIS item (quantity needed + required/optional), status and
+// location. The asset payload already nests its AssetPart rows, so the
+// through-model fields cost no extra round-trip — but an asset whose parts
+// aren't serialized in the list response simply omits those cells rather than
+// showing a wrong quantity.
+func usedByMetaLine(a omsapi.Asset, itemID string) string {
+	meta := []string{}
+	if a.AssetTag != "" {
+		meta = append(meta, "tag "+a.AssetTag)
+	}
+	for _, p := range a.Parts {
+		if p.Part != itemID {
+			continue
+		}
+		meta = append(meta, fmt.Sprintf("qty %d", p.QuantityNeeded))
+		if p.IsRequired {
+			meta = append(meta, "required")
+		} else {
+			meta = append(meta, "optional")
+		}
+		break
+	}
+	if a.Status != "" {
+		meta = append(meta, a.Status)
+	}
+	if a.LocationName != "" {
+		meta = append(meta, a.LocationName)
+	}
+	return strings.Join(meta, " · ")
 }
 
 // --- Metrics row (issue-5) ---------------------------------------------------
