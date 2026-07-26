@@ -163,16 +163,53 @@ func TestPOLineFields_CaseVsSinglePackVsAsset(t *testing.T) {
 		t.Errorf("case-packed inventory line should include the cost field")
 	}
 
-	// Single-pack inventory: no cost field (unchanged, sc-5yr).
+	// Single-pack inventory: cost field present too, as an optional override —
+	// the gap that left an operator unable to correct a $0 catalog line (sc-gnzw).
 	s.enterLinePhase(&id, nil, "Bolt", 1, 0, 0, 1)
-	if hasField(s.lineFields(), poLineFieldCost) {
-		t.Errorf("single-pack inventory line should omit the cost field")
+	if !hasField(s.lineFields(), poLineFieldCost) {
+		t.Errorf("single-pack inventory line should include the cost field")
 	}
 
 	// Freeform: cost field present (unchanged).
 	s.enterLinePhase(nil, nil, "", 0, 0, 0, 0)
 	if !hasField(s.lineFields(), poLineFieldCost) {
 		t.Errorf("freeform line should include the cost field")
+	}
+}
+
+// TestPOCatalogCost_PlaceholderAndNoteSayBlankMeansCatalog: the cost field on a
+// catalog line has to READ as optional, or an operator who wants catalog pricing
+// won't know clearing it is the way to ask for it.
+func TestPOCatalogCost_PlaceholderAndNoteSayBlankMeansCatalog(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	id := 1
+
+	s.enterLinePhase(&id, nil, "Bolt", 1, 0, 0, 1)
+	if got := s.lineInputs[poLineFieldCost].Placeholder; !strings.Contains(got, "optional") {
+		t.Errorf("catalog-line placeholder = %q, want it to read as optional", got)
+	}
+	if out := s.renderLinePhase(); !strings.Contains(out, "supplier catalog price") {
+		t.Errorf("catalog line should explain the optional cost:\n%s", out)
+	}
+
+	// Case-packed catalog line: same promise, in the case basis.
+	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
+	if got := s.lineInputs[poLineFieldCost].Placeholder; !strings.HasPrefix(got, "case cost") ||
+		!strings.Contains(got, "optional") {
+		t.Errorf("case-packed catalog placeholder = %q, want an optional case-cost hint", got)
+	}
+	if out := s.renderLinePhase(); !strings.Contains(out, "supplier catalog price") {
+		t.Errorf("case-packed catalog line should explain the optional cost:\n%s", out)
+	}
+
+	// Asset / freeform lines REQUIRE a cost, so they keep the example hint and
+	// must not promise catalog pricing that branch never applies.
+	s.enterLinePhase(nil, nil, "Rags", 1, 0, 0, 0)
+	if got := s.lineInputs[poLineFieldCost].Placeholder; !strings.Contains(got, "e.g.") {
+		t.Errorf("freeform placeholder = %q, want the example hint for a required cost", got)
+	}
+	if out := s.renderLinePhase(); strings.Contains(out, "supplier catalog price") {
+		t.Errorf("freeform line should not offer catalog pricing:\n%s", out)
 	}
 }
 
@@ -249,20 +286,60 @@ func TestPOAddLine_BlankCaseCostOmitsUnitCost(t *testing.T) {
 	}
 }
 
-func TestPOAddLine_SinglePackInventoryOmitsCost(t *testing.T) {
+// TestPOAddLine_SinglePackCatalogCostOverride is the headline of sc-gnzw: a
+// typed cost on a single-pack catalog line reaches the payload as the per-unit
+// override, and clearing the field hands pricing back to the catalog.
+func TestPOAddLine_SinglePackCatalogCostOverride(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
+	// The catalog price seeds the field; the operator types over it.
 	s.enterLinePhase(&id, nil, "Bolt", 100, 0.10, 0, 1)
-	// Even if a stale cost value were present, a single-pack line ignores it.
+	if got := s.lineInputs[poLineFieldCost].Value(); got != "0.1" {
+		t.Errorf("cost prefill = %q, want the catalog price %q", got, "0.1")
+	}
 	s.lineInputs[poLineFieldCost].SetValue("9.99")
 	s.addLine()
 
 	line := lastLine(t, s)
-	if line.UnitCost != nil {
-		t.Errorf("unit_cost = %v, want nil for a single-pack inventory line", *line.UnitCost)
+	if line.UnitCost == nil || math.Abs(*line.UnitCost-9.99) > 1e-12 {
+		t.Errorf("unit_cost = %v, want the 9.99 override", line.UnitCost)
 	}
 	if line.ItemSupplierID == nil || *line.ItemSupplierID != 42 {
 		t.Errorf("item_supplier_id = %v, want 42", line.ItemSupplierID)
+	}
+
+	// Cleared → omitted, so the backend prices the line from the catalog.
+	s2 := NewPurchaseOrderCreateScreen(Deps{})
+	s2.enterLinePhase(&id, nil, "Bolt", 100, 0.10, 0, 1)
+	s2.lineInputs[poLineFieldCost].SetValue("")
+	s2.addLine()
+	if got := lastLine(t, s2).UnitCost; got != nil {
+		t.Errorf("cleared cost = %v, want nil (catalog price)", *got)
+	}
+
+	// A negative override is refused, same as on any other line.
+	s3 := NewPurchaseOrderCreateScreen(Deps{})
+	s3.enterLinePhase(&id, nil, "Bolt", 100, 0, 0, 1)
+	s3.lineInputs[poLineFieldCost].SetValue("-1")
+	s3.addLine()
+	if len(s3.lines) != 0 || !strings.Contains(s3.errMsg, "unit cost") {
+		t.Errorf("negative override should be rejected; lines=%d err=%q", len(s3.lines), s3.errMsg)
+	}
+}
+
+// TestPOAddLine_CatalogCostZeroIsAnExplicitOverride: 0 is a real value the
+// backend honours (it checks unit_cost is not None), so a typed 0 must survive
+// as an explicit $0 rather than being treated as "blank".
+func TestPOAddLine_CatalogCostZeroIsAnExplicitOverride(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	id := 42
+	s.enterLinePhase(&id, nil, "Freebie", 1, 5.00, 0, 1)
+	s.lineInputs[poLineFieldCost].SetValue("0")
+	s.addLine()
+
+	line := lastLine(t, s)
+	if line.UnitCost == nil || *line.UnitCost != 0 {
+		t.Errorf("unit_cost = %v, want an explicit 0", line.UnitCost)
 	}
 }
 
@@ -386,9 +463,10 @@ func TestPORenderLinePhase_CasePacked(t *testing.T) {
 	if !strings.Contains(out, "/case") || !strings.Contains(out, "/unit") {
 		t.Errorf("case-packed line should render the derivation hint:\n%s", out)
 	}
-	// The single-pack catalog-cost note must NOT appear on a case-packed line.
-	if strings.Contains(out, "taken from the supplier catalog") {
-		t.Errorf("case-packed line should not show the catalog-cost note:\n%s", out)
+	// A case-packed line is still a catalog line: clearing the cost falls back
+	// to catalog pricing there too, so the note belongs on it.
+	if !strings.Contains(out, "supplier catalog price") {
+		t.Errorf("case-packed catalog line should show the optional-cost note:\n%s", out)
 	}
 
 	s.toggleCostBasis()
@@ -568,8 +646,8 @@ func TestPOEditLine_CasePackedRoundTrips(t *testing.T) {
 }
 
 // TestPOEditLine_RestoresSourceFields: editing restores each line source so the
-// right fields render — single-pack inventory hides the cost field, case-packed
-// shows it in case basis, and an asset line shows the per-unit cost field.
+// right fields render — single-pack inventory shows the per-unit cost field,
+// case-packed shows it in case basis, and an asset line shows the per-unit one.
 func TestPOEditLine_RestoresSourceFields(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 7
@@ -585,11 +663,14 @@ func TestPOEditLine_RestoresSourceFields(t *testing.T) {
 
 	s.poNotes.Focus()
 
-	// Single-pack line: no cost field, item-supplier source restored.
+	// Single-pack line: per-unit cost field, item-supplier source restored.
 	enterReviewAt(s, 0)
 	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
-	if hasField(s.lineFields(), poLineFieldCost) {
-		t.Errorf("editing a single-pack inventory line should hide the cost field")
+	if !hasField(s.lineFields(), poLineFieldCost) {
+		t.Errorf("editing a single-pack inventory line should show the cost field")
+	}
+	if s.costBasisCase {
+		t.Errorf("a single-pack line has no case basis to enter")
 	}
 	if s.pickedItemSup == nil || *s.pickedItemSup != 7 {
 		t.Errorf("edit should restore the item-supplier source; got %v", s.pickedItemSup)
@@ -717,28 +798,46 @@ func TestPOReorderAddAll_QuantityFloor(t *testing.T) {
 	}
 }
 
-// TestPOReorderAddAll_CostPolicyMatchesTheLineForm: item-supplier-backed lines
-// omit unit_cost (backend prices them from the catalog — sc-5yr), so a bulk add
-// produces exactly what accepting the single-row form prefill produces. A row
-// with no item_supplier_id can only be freeform, whose backend branch REQUIRES a
-// cost, so that one carries the row's unit_cost explicitly.
+// TestPOReorderAddAll_CostPolicyMatchesTheLineForm: a bulk add must produce
+// exactly what accepting the single-row form's prefill produces. The form seeds
+// a catalog line's cost field from the row's unit_cost, so the bulk line carries
+// it too; a row whose catalog cost is unset stays blank rather than pinning $0,
+// which leaves the backend pricing it. A row with no item_supplier_id can only
+// be freeform, whose backend branch REQUIRES a cost, so it always carries one.
 func TestPOReorderAddAll_CostPolicyMatchesTheLineForm(t *testing.T) {
 	s := reorderScreen(
 		reorderItem("Catalog bolt", 11, 4, "2.50"),
 		reorderItem("Orphan widget", 0, 3, "7.75"),
+		reorderItem("Unpriced nut", 12, 2, "0.00"),
 	)
 	s.updateReorderPickPhase(runeKey('a'))
-	if len(s.lines) != 2 {
-		t.Fatalf("staged %d line(s), want 2", len(s.lines))
+	if len(s.lines) != 3 {
+		t.Fatalf("staged %d line(s), want 3", len(s.lines))
 	}
-	if s.lines[0].item.UnitCost != nil {
-		t.Errorf("item-supplier line must omit unit_cost, got %v", *s.lines[0].item.UnitCost)
+	if s.lines[0].item.UnitCost == nil || math.Abs(*s.lines[0].item.UnitCost-2.50) > 1e-12 {
+		t.Errorf("catalog line unit_cost = %v, want the row's 2.50", s.lines[0].item.UnitCost)
 	}
 	if s.lines[1].item.ItemSupplierID != nil {
 		t.Errorf("row without item_supplier_id must stage as freeform, got %v", s.lines[1].item.ItemSupplierID)
 	}
 	if s.lines[1].item.UnitCost == nil || math.Abs(*s.lines[1].item.UnitCost-7.75) > 1e-12 {
 		t.Errorf("freeform line unit_cost = %v, want 7.75 (its branch requires one)", s.lines[1].item.UnitCost)
+	}
+	if s.lines[2].item.UnitCost != nil {
+		t.Errorf("unpriced catalog line unit_cost = %v, want nil (backend prices it)", *s.lines[2].item.UnitCost)
+	}
+
+	// Same rows through the single-row form: staging line 0 by hand lands on the
+	// same payload the bulk add produced.
+	s2 := reorderScreen(reorderItem("Catalog bolt", 11, 4, "2.50"))
+	s2.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s2.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	if len(s2.lines) != 1 {
+		t.Fatalf("single-row path staged %d line(s), want 1 (err %q)", len(s2.lines), s2.errMsg)
+	}
+	if got, want := s2.lines[0].item.UnitCost, s.lines[0].item.UnitCost; got == nil || want == nil ||
+		math.Abs(*got-*want) > 1e-12 {
+		t.Errorf("single-row unit_cost = %v, want the bulk add's %v", got, want)
 	}
 }
 
@@ -1135,9 +1234,13 @@ func TestPOEditLine_EditsQtyAndDateOnABulkAddedLine(t *testing.T) {
 	if s.phase != poPhaseLine {
 		t.Fatalf("ctrl+e should open the line form on a bulk-added line; phase = %v", s.phase)
 	}
-	// A bulk-added reorder line is item-supplier-backed: no cost field, date offered.
-	if hasField(s.lineFields(), poLineFieldCost) {
-		t.Errorf("bulk-added inventory line should hide the cost field")
+	// A bulk-added reorder line is item-supplier-backed: editable cost seeded
+	// from the reorder row, and the expected-date field offered.
+	if !hasField(s.lineFields(), poLineFieldCost) {
+		t.Errorf("bulk-added inventory line should offer the cost field")
+	}
+	if got := s.lineInputs[poLineFieldCost].Value(); got != "0.75" {
+		t.Errorf("cost prefill = %q, want the reorder row's 0.75", got)
 	}
 	if !hasField(s.lineFields(), poLineFieldDate) {
 		t.Errorf("bulk-added inventory line should offer the expected-date field")
@@ -1172,6 +1275,158 @@ func TestPOEditLine_EditsQtyAndDateOnABulkAddedLine(t *testing.T) {
 	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
 	if got := s.lineInputs[poLineFieldDate].Value(); got != "2026-09-01" {
 		t.Errorf("re-opened edit date prefill = %q, want 2026-09-01", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Editable (optional) cost on catalog lines (sc-gnzw)
+// ---------------------------------------------------------------------------
+
+// capturePOBody serves the create endpoint and records the POSTed JSON body.
+func capturePOBody(t *testing.T) (*httptest.Server, *map[string]any) {
+	t.Helper()
+	body := map[string]any{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0009"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &body
+}
+
+// submitAndReadItems finalizes the cart against the capture server and returns
+// the POSTed line items.
+func submitAndReadItems(t *testing.T, s *PurchaseOrderCreateScreen, body *map[string]any) []any {
+	t.Helper()
+	msg := s.finalize()()
+	created, ok := msg.(poCreatedMsg)
+	if !ok {
+		t.Fatalf("expected poCreatedMsg, got %T", msg)
+	}
+	if created.err != nil {
+		t.Fatalf("create failed: %v", created.err)
+	}
+	items, _ := (*body)["items"].([]any)
+	return items
+}
+
+// TestPOCatalogCost_RoundTripsThroughSubmit drives the whole path: a cost typed
+// on a catalog line lands in the POST as unit_cost (the backend's documented
+// override), while a cleared one omits the key so the backend keeps pricing the
+// line from item_supplier.unit_cost.
+func TestPOCatalogCost_RoundTripsThroughSubmit(t *testing.T) {
+	srv, body := capturePOBody(t)
+
+	s := NewPurchaseOrderCreateScreen(Deps{OMS: omsapi.New(srv.URL)})
+	s.supplierID = 7
+	id := 11
+	s.enterLinePhase(&id, nil, "Bolt", 4, 0.10, 0, 1)
+	s.lineInputs[poLineFieldCost].SetValue("3.25") // override the catalog price
+	s.addLine()
+	s.enterLinePhase(&id, nil, "Nut", 9, 0.10, 0, 1)
+	s.lineInputs[poLineFieldCost].SetValue("") // cleared → catalog price
+	s.addLine()
+
+	items := submitAndReadItems(t, s, body)
+	if len(items) != 2 {
+		t.Fatalf("posted %d item(s), want 2 (body: %v)", len(items), *body)
+	}
+	first, _ := items[0].(map[string]any)
+	if got, ok := first["unit_cost"].(float64); !ok || math.Abs(got-3.25) > 1e-12 {
+		t.Errorf("line 1 unit_cost = %v, want 3.25", first["unit_cost"])
+	}
+	second, _ := items[1].(map[string]any)
+	if _, present := second["unit_cost"]; present {
+		t.Errorf("line 2 sent unit_cost %v, want it omitted so the catalog prices it", second["unit_cost"])
+	}
+}
+
+// TestPOEditLine_CatalogCostOverrideRoundTrips: ctrl+e re-opens a catalog line
+// showing the override already staged on it — not the catalog price — so saving
+// an untouched edit can't silently drop it, and clearing the field gives
+// catalog pricing back.
+func TestPOEditLine_CatalogCostOverrideRoundTrips(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	id := 11
+	s.enterLinePhase(&id, nil, "Bolt", 4, 0.10, 0, 1)
+	s.lineInputs[poLineFieldCost].SetValue("3.25")
+	s.addLine()
+
+	// Re-open: the field shows the override, and saving keeps it.
+	enterReviewAt(s, 0)
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if got := s.lineInputs[poLineFieldCost].Value(); got != "3.25" {
+		t.Errorf("cost prefill = %q, want the staged override %q", got, "3.25")
+	}
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := s.lines[0].item.UnitCost; got == nil || math.Abs(*got-3.25) > 1e-12 {
+		t.Fatalf("unit_cost after an untouched edit = %v, want 3.25", got)
+	}
+	if out := s.renderCart(0); !strings.Contains(out, "@ $3.25") {
+		t.Errorf("cart should show the overridden cost:\n%s", out)
+	}
+
+	// Re-open and clear it: back to catalog pricing.
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.lineInputs[poLineFieldCost].SetValue("")
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := s.lines[0].item.UnitCost; got != nil {
+		t.Errorf("unit_cost after clearing = %v, want nil", *got)
+	}
+	if len(s.lines) != 1 {
+		t.Errorf("edits changed the cart length: %d", len(s.lines))
+	}
+}
+
+// TestPOBulkAddedCatalogLine_CostEditsThroughToTheSubmit is Ian's report end to
+// end: bulk-add a supplier's reorder queue whose catalog cost is unset (the "15
+// items all show $0" case), then correct one line's cost with ctrl+e and see it
+// reach the POST.
+func TestPOBulkAddedCatalogLine_CostEditsThroughToTheSubmit(t *testing.T) {
+	srv, body := capturePOBody(t)
+
+	s := reorderScreen(
+		reorderItem("Bolt", 11, 4, "0.00"),
+		reorderItem("Nut", 12, 6, "0.00"),
+	)
+	s.deps = Deps{OMS: omsapi.New(srv.URL)}
+	s.updateReorderPickPhase(runeKey('a'))
+	if len(s.lines) != 2 || s.phase != poPhaseReview {
+		t.Fatalf("setup: lines=%d phase=%v", len(s.lines), s.phase)
+	}
+	// An unpriced catalog row stages no cost, so nothing is pinned before the
+	// operator says otherwise.
+	if s.lines[0].item.UnitCost != nil {
+		t.Errorf("unpriced row staged unit_cost %v, want none", *s.lines[0].item.UnitCost)
+	}
+
+	s.reviewCursor = 0
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if !hasField(s.lineFields(), poLineFieldCost) {
+		t.Fatalf("a bulk-added catalog line must expose a cost field to correct")
+	}
+	if got := s.lineInputs[poLineFieldCost].Value(); got != "" {
+		t.Errorf("cost prefill = %q, want blank when the catalog has no price", got)
+	}
+	s.lineInputs[poLineFieldCost].SetValue("12.50")
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+
+	items := submitAndReadItems(t, s, body)
+	if len(items) != 2 {
+		t.Fatalf("posted %d item(s), want 2 (body: %v)", len(items), *body)
+	}
+	fixed, _ := items[0].(map[string]any)
+	if got, ok := fixed["unit_cost"].(float64); !ok || math.Abs(got-12.50) > 1e-12 {
+		t.Errorf("edited line unit_cost = %v, want 12.50", fixed["unit_cost"])
+	}
+	if got, ok := fixed["item_supplier_id"].(float64); !ok || got != 11 {
+		t.Errorf("edited line item_supplier_id = %v, want 11", fixed["item_supplier_id"])
+	}
+	untouched, _ := items[1].(map[string]any)
+	if _, present := untouched["unit_cost"]; present {
+		t.Errorf("untouched line sent unit_cost %v, want it left to the catalog", untouched["unit_cost"])
 	}
 }
 

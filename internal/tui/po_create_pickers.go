@@ -239,15 +239,16 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 // produces once the operator accepts the prefill: suggested_quantity (floored
 // at 1) and the item's name (SKU when unnamed) as the label.
 //
-// Cost follows the same rule the form does. An item-supplier-backed row is a
-// single-pack line (reorder_data carries no quantity_per_package), so unit_cost
-// is omitted and the backend prices it from the item-supplier's stored cost —
-// sc-5yr. Sending the reorder row's cost instead would be a line the operator
-// couldn't reproduce by editing, since ctrl+e on such a line shows no cost
-// field. A row without an item_supplier_id can only be created as a freeform
-// line, and that branch REQUIRES a cost, so the row's unit_cost is sent
-// explicitly (0 when the row carries none — visible as "@ $0" in the cart, and
-// fixable with ctrl+e before submit).
+// Cost follows the same rule the form does. The row's unit_cost is the
+// item-supplier's stored cost (reorder_data reads item_supplier.unit_cost), and
+// the line form now seeds its cost field with it on a catalog line, so a bulk
+// add carries it too — the operator sees the same price whether the line was
+// added one at a time or fifteen at once, and ctrl+e can change or clear it
+// (sc-gnzw). A row whose catalog cost is unset stays blank rather than pinning
+// an explicit $0, which leaves the backend pricing the line (sc-5yr). A row
+// without an item_supplier_id can only be created as a freeform line, and that
+// branch REQUIRES a cost, so its unit_cost is always sent (0 when the row
+// carries none — visible as "@ $0" in the cart, and fixable with ctrl+e).
 func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
 	qty := it.SuggestedQuantity
 	if qty <= 0 {
@@ -262,11 +263,11 @@ func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
 		Quantity:       qty,
 		ItemSupplierID: it.ItemSupplierID,
 	}
-	if it.ItemSupplierID == nil {
-		unitCost := 0.0
-		if v, err := strconv.ParseFloat(string(it.UnitCost), 64); err == nil {
-			unitCost = v
-		}
+	unitCost := 0.0
+	if v, err := strconv.ParseFloat(string(it.UnitCost), 64); err == nil {
+		unitCost = v
+	}
+	if it.ItemSupplierID == nil || unitCost > 0 {
 		line.UnitCost = &unitCost
 	}
 	label := desc
