@@ -1003,6 +1003,28 @@ func (s *PurchaseOrderDetailScreen) renderBody() string {
 	return b.String()
 }
 
+// poLineTypeLabel renders a PO line's wire item_type token as a human label, so
+// a line's target type is readable without knowing the backend's vocabulary.
+// item_supplier is a catalog line (older payloads spell it inventory_item),
+// asset is an asset purchase, freeform is a line with no reference; an empty or
+// unrecognized token has nothing to say, hence "—".
+//
+// Reorder-queue picks are deliberately not a fourth case: the backend keeps no
+// reorder_request FK on the line and a reorder pick resolves to an
+// item_supplier, so such a line is genuinely an inventory line on the wire and
+// labels as one.
+func poLineTypeLabel(itemType string) string {
+	switch itemType {
+	case "item_supplier", "inventory_item":
+		return "Inventory item"
+	case "asset":
+		return "Asset"
+	case "freeform":
+		return "Freeform"
+	}
+	return "—"
+}
+
 func renderPOLineItem(b *strings.Builder, lineNum int, li omsapi.PurchaseOrderItem, poSupplier string) {
 	label := li.DisplayLabel()
 	line := fmt.Sprintf("  %d) %s", lineNum, label)
@@ -1039,7 +1061,7 @@ func renderPOLineItem(b *strings.Builder, lineNum int, li omsapi.PurchaseOrderIt
 	// voided flag, actual-cost-override-when-different.
 	meta := []string{}
 	if li.ItemType != "" {
-		meta = append(meta, "type "+li.ItemType)
+		meta = append(meta, "type "+poLineTypeLabel(li.ItemType))
 	}
 	if !li.UnitCostActual.Empty() && li.UnitCostActual != li.UnitCostOrdered {
 		meta = append(meta, "actual @ $"+string(li.UnitCostActual))

@@ -301,3 +301,50 @@ func TestPODetail_FooterHintIncludesOrderPad(t *testing.T) {
 		t.Errorf("footer hint missing order-pad affordance: %q", s.footerHint())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Line target-type label (sc-be24)
+// ---------------------------------------------------------------------------
+
+func TestPOLineTypeLabel(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"item_supplier", "Inventory item"},
+		{"inventory_item", "Inventory item"},
+		{"asset", "Asset"},
+		{"freeform", "Freeform"},
+		{"", "—"},
+		{"something_new", "—"},
+	}
+	for _, c := range cases {
+		if got := poLineTypeLabel(c.in); got != c.want {
+			t.Errorf("poLineTypeLabel(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestPODetail_LineShowsFriendlyType checks the meta row carries the readable
+// label rather than the raw wire token.
+func TestPODetail_LineShowsFriendlyType(t *testing.T) {
+	var b strings.Builder
+	renderPOLineItem(&b, 1, omsapi.PurchaseOrderItem{
+		Description: "Bolt",
+		ItemType:    "item_supplier",
+	}, "Acme")
+	out := b.String()
+	if !strings.Contains(out, "type Inventory item") {
+		t.Errorf("expected friendly type label, got:\n%s", out)
+	}
+	if strings.Contains(out, "item_supplier") {
+		t.Errorf("raw wire token leaked into the meta row:\n%s", out)
+	}
+}
+
+// TestPODetail_LineOmitsTypeWhenAbsent keeps the pre-existing behaviour: an
+// empty item_type renders no type chunk at all, rather than a bare "type —".
+func TestPODetail_LineOmitsTypeWhenAbsent(t *testing.T) {
+	var b strings.Builder
+	renderPOLineItem(&b, 1, omsapi.PurchaseOrderItem{Description: "Bolt"}, "Acme")
+	if out := b.String(); strings.Contains(out, "type ") {
+		t.Errorf("empty item_type should render no type chunk, got:\n%s", out)
+	}
+}
