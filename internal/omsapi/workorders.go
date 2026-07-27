@@ -28,9 +28,14 @@ import (
 // costs nothing, and an unpriced used line contributes zero rather than voiding
 // the total, so a partially-priced job still reports what is known.
 type WorkOrder struct {
-	ID                   any                       `json:"id"`
-	ShortID              string                    `json:"short_id,omitempty"`
-	Title                string                    `json:"title"`
+	ID      any    `json:"id"`
+	ShortID string `json:"short_id,omitempty"`
+	Title   string `json:"title"`
+	// DisplayTitle is what the backend calls this job: the PM template's title,
+	// else the reported problem, else the asset. Always set on the wire (both
+	// the list and detail serializers expose it), and the only human name a
+	// corrective work order has — it has no template to take a title from.
+	DisplayTitle         string                    `json:"display_title,omitempty"`
 	Description          string                    `json:"description,omitempty"`
 	Status               string                    `json:"status"`
 	Priority             string                    `json:"priority,omitempty"`
@@ -222,6 +227,33 @@ type WorkOrderPhoto struct {
 
 func (c *Client) ListWorkOrders(ctx context.Context, q url.Values) (*Page[WorkOrder], error) {
 	return GetPage[WorkOrder](ctx, c, "/api/inventory/work-orders/", q)
+}
+
+// ListActiveWorkOrders returns the UNFINISHED work orders — open first, then
+// in-progress — for the "which job is this for?" pickers (op-shb9). A finished
+// job is never offered: you don't raise a purchase order against work that is
+// already done.
+//
+// Two requests because the viewset's ?status= is an exact match on one value,
+// so there is no way to ask for both at once; the web association pickers make
+// the same pair of calls. Neither failure is fatal on its own — the caller
+// gets whatever came back plus the first error, because half a list of jobs is
+// still worth offering, and an order must never be blocked by a picker for a
+// field it may well leave empty.
+func (c *Client) ListActiveWorkOrders(ctx context.Context) ([]WorkOrder, error) {
+	var out []WorkOrder
+	var firstErr error
+	for _, status := range []string{"open", "in_progress"} {
+		page, err := c.ListWorkOrders(ctx, url.Values{"status": {status}})
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		out = append(out, page.Results...)
+	}
+	return out, firstErr
 }
 
 func (c *Client) GetWorkOrder(ctx context.Context, id string) (*WorkOrder, error) {

@@ -14,6 +14,17 @@
 //	                    never forced on the many orders that cite none, matching
 //	                    the web form, which renders its select only when the
 //	                    supplier has agreements on file.
+//	poPhaseWorkOrder  — optional: which work order this order is being bought
+//	poPhaseCommittee    for, and which committee (SIG) it is placed on behalf of
+//	                    (op-shb9). Same shape as the agreement picker and for the
+//	                    same reason — both are attribution only, so neither may
+//	                    cost the common path a phase to dismiss. The options load
+//	                    in the background when the screen opens (they are not
+//	                    supplier-scoped) and the source chooser grows a w / c row
+//	                    once there is something to pick. Per-LINE associations are
+//	                    set from the PO detail screen once the order exists, which
+//	                    is where the web puts them too — which job a part turned
+//	                    out to be for is usually settled after it arrives.
 //	poPhaseSource     — choose where the next line comes from:
 //	                      r → items the supplier has on the reorder queue
 //	                      i → other inventory items associated with the supplier
@@ -80,6 +91,8 @@ type poPhase int
 const (
 	poPhaseSupplier poPhase = iota
 	poPhaseAgreement
+	poPhaseWorkOrder
+	poPhaseCommittee
 	poPhaseSource
 	poPhaseReorderPick
 	poPhaseItemPick
@@ -140,6 +153,18 @@ type PurchaseOrderCreateScreen struct {
 	agreementLoadErr string
 	agreementCursor  int
 	agreementID      *int
+
+	// Phase 1c: the order-level work-order / committee associations (op-shb9).
+	// Neither list is supplier-scoped, so they load once when the screen opens
+	// rather than on every supplier change, and neither is ever required — the
+	// two ids below stay empty on the many orders that are simply stock.
+	// workOrderID is a WorkOrder UUID; committeeID is an auth.Group pk as text,
+	// so both pickers share one implementation (see po_associations.go).
+	assoc           poAssocOptions
+	workOrderCursor int
+	workOrderID     string
+	committeeCursor int
+	committeeID     string
 
 	// Phase 3a: reorder-queue items for this supplier. reorderSelected marks
 	// rows toggled with space for a bulk add (keyed by index into
@@ -292,7 +317,9 @@ func (s *PurchaseOrderCreateScreen) Title() string { return "New purchase order"
 func (s *PurchaseOrderCreateScreen) WantsRawInput() bool { return true }
 
 func (s *PurchaseOrderCreateScreen) Init() tea.Cmd {
-	return tea.Batch(s.loadSuppliers(), textinput.Blink)
+	// The association options ride along with the supplier load: they belong to
+	// no supplier, so there is nothing to wait for and nothing to refetch later.
+	return tea.Batch(s.loadSuppliers(), s.assoc.load(s.deps), textinput.Blink)
 }
 
 func (s *PurchaseOrderCreateScreen) loadSuppliers() tea.Cmd {
@@ -385,12 +412,23 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case poReorderItemsLoadedMsg, poItemSuppliersLoadedMsg, poAssetsLoadedMsg:
 		return s, s.handlePickerLoaded(msg)
 
+	case poWorkOrdersLoadedMsg, poCommitteesLoadedMsg:
+		// Association options (op-shb9). Nothing to do beyond storing them —
+		// the affordances appear on the source chooser once there is something
+		// to pick, and a failure only annotates the row.
+		s.assoc.handle(msg)
+		return s, nil
+
 	case tea.KeyMsg:
 		switch s.phase {
 		case poPhaseSupplier:
 			return s.updateSupplierPhase(m)
 		case poPhaseAgreement:
 			return s.updateAgreementPhase(m)
+		case poPhaseWorkOrder:
+			return s.updateWorkOrderPhase(m)
+		case poPhaseCommittee:
+			return s.updateCommitteePhase(m)
 		case poPhaseSource:
 			return s.updateSourcePhase(m)
 		case poPhaseReorderPick:
@@ -583,6 +621,106 @@ func (s *PurchaseOrderCreateScreen) enterAgreementPhase() tea.Cmd {
 }
 
 // ---------------------------------------------------------------------------
+// Phase: Order-level work order / committee (optional, op-shb9)
+// ---------------------------------------------------------------------------
+
+// workOrderRows / committeeRows are the two pickers' row sets, built fresh each
+// time so the current pick is always represented. Nothing is grafted here: a
+// brand-new order starts with no association, so the only values reachable are
+// the ones the pickers just offered (the graft guard is for the detail screen,
+// which edits orders that may cite a job since finished).
+func (s *PurchaseOrderCreateScreen) workOrderRows() []poAssocOption {
+	return s.assoc.workOrderRows(s.workOrderID, "")
+}
+
+func (s *PurchaseOrderCreateScreen) committeeRows() []poAssocOption {
+	return s.assoc.committeeRows(s.committeeID, "")
+}
+
+// pickedWorkOrderLabel / pickedCommitteeLabel name the committed association, or
+// "" when none is picked (or a pick somehow outlived its list).
+func (s *PurchaseOrderCreateScreen) pickedWorkOrderLabel() string {
+	return poAssocLabelFor(s.workOrderRows(), s.workOrderID)
+}
+
+func (s *PurchaseOrderCreateScreen) pickedCommitteeLabel() string {
+	return poAssocLabelFor(s.committeeRows(), s.committeeID)
+}
+
+// enterWorkOrderPhase / enterCommitteePhase open a picker with the cursor on the
+// current pick, so enter is a no-op confirm. A failed load is retried here
+// instead — w / c is the only affordance either way, so it shouldn't matter to
+// the operator whether the list is empty because it failed or because they
+// haven't looked yet (same contract as the agreement picker's g).
+func (s *PurchaseOrderCreateScreen) enterWorkOrderPhase() tea.Cmd {
+	if s.assoc.workOrderErr != "" && !s.assoc.workOrderLoad {
+		s.assoc.workOrderErr = ""
+		s.assoc.workOrderLoad = true
+		return loadWorkOrderOptionsCmd(s.deps)
+	}
+	s.workOrderCursor = poAssocCursorFor(s.workOrderRows(), s.workOrderID)
+	s.phase = poPhaseWorkOrder
+	return nil
+}
+
+func (s *PurchaseOrderCreateScreen) enterCommitteePhase() tea.Cmd {
+	if s.assoc.committeeErr != "" && !s.assoc.committeeLoad {
+		s.assoc.committeeErr = ""
+		s.assoc.committeeLoad = true
+		return loadCommitteeOptionsCmd(s.deps)
+	}
+	s.committeeCursor = poAssocCursorFor(s.committeeRows(), s.committeeID)
+	s.phase = poPhaseCommittee
+	return nil
+}
+
+func (s *PurchaseOrderCreateScreen) updateWorkOrderPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	rows := s.workOrderRows()
+	switch m.String() {
+	case "esc", "b":
+		// Leave the pick as it was — esc is "I'm done looking", not "clear it".
+		// Row 0 is the explicit way to detach.
+		s.phase = poPhaseSource
+	case "j", "down":
+		if s.workOrderCursor < len(rows)-1 {
+			s.workOrderCursor++
+		}
+	case "k", "up":
+		if s.workOrderCursor > 0 {
+			s.workOrderCursor--
+		}
+	case "enter":
+		if s.workOrderCursor >= 0 && s.workOrderCursor < len(rows) {
+			s.workOrderID = rows[s.workOrderCursor].value
+		}
+		s.phase = poPhaseSource
+	}
+	return s, nil
+}
+
+func (s *PurchaseOrderCreateScreen) updateCommitteePhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	rows := s.committeeRows()
+	switch m.String() {
+	case "esc", "b":
+		s.phase = poPhaseSource
+	case "j", "down":
+		if s.committeeCursor < len(rows)-1 {
+			s.committeeCursor++
+		}
+	case "k", "up":
+		if s.committeeCursor > 0 {
+			s.committeeCursor--
+		}
+	case "enter":
+		if s.committeeCursor >= 0 && s.committeeCursor < len(rows) {
+			s.committeeID = rows[s.committeeCursor].value
+		}
+		s.phase = poPhaseSource
+	}
+	return s, nil
+}
+
+// ---------------------------------------------------------------------------
 // Phase: Source chooser (r/i/a/f)
 // ---------------------------------------------------------------------------
 
@@ -629,6 +767,20 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 			return s, nil
 		}
 		return s, s.enterAgreementPhase()
+	case "w":
+		// Optional work-order association (op-shb9). Silent when there are no
+		// unfinished jobs, for the same reason g is silent without agreements.
+		if !s.assoc.workOrdersOffered() {
+			return s, nil
+		}
+		return s, s.enterWorkOrderPhase()
+	case "c":
+		// Optional committee association. 'c' is free here — the source chooser
+		// spends r/i/a/f on line sources and g/d/x on the rest.
+		if !s.assoc.committeesOffered() {
+			return s, nil
+		}
+		return s, s.enterCommitteePhase()
 	case "d":
 		// Done adding lines → review + submit. Only meaningful once the
 		// cart has at least one line (the backend rejects an empty PO).
@@ -1164,6 +1316,12 @@ func (s *PurchaseOrderCreateScreen) finalize() tea.Cmd {
 		id := *s.agreementID
 		req.SupplierAgreementID = &id
 	}
+	// The order-level associations follow the same omit-when-unset rule
+	// (op-shb9): each resolves to a row the backend rejects when it can't find
+	// it, so an unpicked association has to be an ABSENT key. Both are set from
+	// the picker values, whose zero value is exactly "not picked".
+	req.WorkOrder = s.workOrderID
+	req.OwningGroup = poCommitteeID(s.committeeID)
 
 	s.pending = true
 	s.errMsg = ""
@@ -1244,6 +1402,10 @@ func (s *PurchaseOrderCreateScreen) View() string {
 		b.WriteString(s.renderSupplierPhase())
 	case poPhaseAgreement:
 		b.WriteString(s.renderAgreementPhase())
+	case poPhaseWorkOrder:
+		b.WriteString(s.renderAssocPickPhase("Work order (optional)", s.workOrderRows(), s.workOrderCursor))
+	case poPhaseCommittee:
+		b.WriteString(s.renderAssocPickPhase("Committee (optional)", s.committeeRows(), s.committeeCursor))
 	case poPhaseSource:
 		b.WriteString(s.renderSourcePhase())
 	case poPhaseReorderPick:
@@ -1273,6 +1435,10 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 		return "Pick a supplier (j/k move, enter to commit, esc to cancel)."
 	case poPhaseAgreement:
 		return "Pick the purchase / pricing agreement this order is placed under (j/k move · enter commit · esc keep current · row 1 = none)."
+	case poPhaseWorkOrder:
+		return "Pick the work order this purchase is for (j/k move · enter commit · esc keep current · row 1 = none)."
+	case poPhaseCommittee:
+		return "Pick the committee this purchase is on behalf of (j/k move · enter commit · esc keep current · row 1 = none)."
 	case poPhaseSource:
 		base := "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel."
 		if len(s.lines) > 0 {
@@ -1281,10 +1447,16 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 				len(s.lines),
 			)
 		}
-		// g only appears once this supplier is known to have agreements —
+		// g / w / c only appear once there is something behind them —
 		// advertising a key that does nothing is worse than not offering it.
 		if s.agreementOffered() {
 			base += " g agreement."
+		}
+		if s.assoc.workOrdersOffered() {
+			base += " w work order."
+		}
+		if s.assoc.committeesOffered() {
+			base += " c committee."
 		}
 		return base
 	case poPhaseReorderPick:
@@ -1345,7 +1517,7 @@ func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
 func (s *PurchaseOrderCreateScreen) renderAgreementPhase() string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Purchase / pricing agreement (optional)") + "\n")
-	b.WriteString(s.renderWindowedList(
+	b.WriteString(renderWindowedList(
 		s.agreementRows(), s.agreementCursor,
 		func(i int) string {
 			if i == 0 {
@@ -1387,6 +1559,42 @@ func (s *PurchaseOrderCreateScreen) renderAgreementRow(withKey bool) string {
 		return label + ": " + StyleStatusOK.Render(name) + "\n"
 	}
 	return label + ": " + StyleMuted.Render("(none)") + "\n"
+}
+
+// renderAssocPickPhase draws a work-order / committee picker: row 0 is the
+// explicit "none", the rest are whatever loaded. One renderer for both, so the
+// two associations can never diverge in how they're picked.
+func (s *PurchaseOrderCreateScreen) renderAssocPickPhase(title string, rows []poAssocOption, cursor int) string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render(title) + "\n")
+	b.WriteString(renderWindowedList(len(rows), cursor, func(i int) string { return rows[i].label }))
+	b.WriteString("\n" + StyleMuted.Render(
+		"  Records who this order is for. It does not change stock, pricing, or what a committee is billed.") + "\n")
+	return b.String()
+}
+
+// renderAssocRows is the source chooser's / review phase's summary of the two
+// order-level associations (op-shb9). withKey renders them as affordances in a
+// menu of them; without, as lines on the confirm-before-submit surface. Returns
+// "" when neither is offered, so a shop that runs no work orders and no
+// committees sees nothing about either.
+func (s *PurchaseOrderCreateScreen) renderAssocRows(withKey bool) string {
+	var b strings.Builder
+	if s.assoc.workOrdersOffered() {
+		label := "  " + StyleTitle.Render("Work order")
+		if withKey {
+			label = "  " + StyleStatusOK.Render("w") + "  " + StyleTitle.Render("Work order (optional)")
+		}
+		b.WriteString(renderAssocValue(label, s.pickedWorkOrderLabel(), s.assoc.workOrderErr) + "\n")
+	}
+	if s.assoc.committeesOffered() {
+		label := "  " + StyleTitle.Render("Committee")
+		if withKey {
+			label = "  " + StyleStatusOK.Render("c") + "  " + StyleTitle.Render("Committee (optional)")
+		}
+		b.WriteString(renderAssocValue(label, s.pickedCommitteeLabel(), s.assoc.committeeErr) + "\n")
+	}
+	return b.String()
 }
 
 func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
@@ -1438,10 +1646,11 @@ func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
 	b.WriteString("  " + StyleStatusOK.Render("i") + "  Inventory items associated with this supplier\n")
 	b.WriteString("  " + StyleStatusOK.Render("a") + "  Assets purchased from this supplier\n")
 	b.WriteString("  " + StyleStatusOK.Render("f") + "  Freeform line (no item / asset reference)\n")
-	// Header-level, not a line source — so it sits below the r/i/a/f block with
-	// a blank line between, and only when this supplier has agreements on file.
-	if row := s.renderAgreementRow(true); row != "" {
-		b.WriteString("\n" + row)
+	// Header-level, not line sources — so they sit below the r/i/a/f block with
+	// a blank line between, and only when there is something behind each key.
+	header := s.renderAgreementRow(true) + s.renderAssocRows(true)
+	if header != "" {
+		b.WriteString("\n" + header)
 	}
 	if len(s.lines) > 0 {
 		b.WriteString("\n")
@@ -1549,6 +1758,10 @@ func (s *PurchaseOrderCreateScreen) renderReviewPhase() string {
 	if row := s.renderAgreementRow(false); row != "" {
 		b.WriteString(row)
 	}
+	// Same reasoning for the order-level associations: who the purchase is for
+	// is worth confirming next to the cart, and "(none)" is as much a choice
+	// here as a name is.
+	b.WriteString(s.renderAssocRows(false))
 	b.WriteString("\n")
 	b.WriteString("▸ " + StyleTitle.Render("PO notes: ") + s.poNotes.View() + "\n")
 	return b.String()

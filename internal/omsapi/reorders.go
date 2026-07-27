@@ -105,6 +105,42 @@ type SupplierAgreementRef struct {
 	Name string `json:"name"`
 }
 
+// WorkOrderRef is the minimal work-order identity the PO serializers nest next
+// to a work_order association (op-shb9) — the same four fields at order level
+// and line level, so both render a job without fetching it. ID is a string
+// because the backend stringifies the WorkOrder UUID (str(work_order.id)).
+type WorkOrderRef struct {
+	ID           string `json:"id"`
+	ShortID      string `json:"short_id,omitempty"`
+	DisplayTitle string `json:"display_title,omitempty"`
+	Status       string `json:"status,omitempty"`
+}
+
+// Label names an attached work order for display: "WO-1234 — Replace belt".
+// Falls back to the short id alone when the backend sent no display title.
+func (r *WorkOrderRef) Label() string {
+	if r == nil {
+		return ""
+	}
+	switch {
+	case r.ShortID != "" && r.DisplayTitle != "":
+		return r.ShortID + " — " + r.DisplayTitle
+	case r.ShortID != "":
+		return r.ShortID
+	case r.DisplayTitle != "":
+		return r.DisplayTitle
+	}
+	return r.ID
+}
+
+// OwningGroupRef is the minimal committee (SIG) identity nested next to an
+// owning_group association (op-shb9). The committee is an auth.Group, and its
+// name is the whole label — nothing else is needed to render the association.
+type OwningGroupRef struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 type PurchaseOrder struct {
 	ID                    any                       `json:"id"`
 	Number                string                    `json:"po_number,omitempty"`
@@ -115,6 +151,10 @@ type PurchaseOrder struct {
 	SupplierDetails       string                    `json:"supplier_details,omitempty"`
 	SupplierAgreement     *int                      `json:"supplier_agreement,omitempty"`
 	SupplierAgreementRef  *SupplierAgreementRef     `json:"supplier_agreement_details,omitempty"`
+	WorkOrder             string                    `json:"work_order,omitempty"`
+	WorkOrderRef          *WorkOrderRef             `json:"work_order_details,omitempty"`
+	OwningGroup           *int                      `json:"owning_group,omitempty"`
+	OwningGroupRef        *OwningGroupRef           `json:"owning_group_details,omitempty"`
 	SupplierOrderNumber   string                    `json:"supplier_order_number,omitempty"`
 	SalesOrderNumber      string                    `json:"sales_order_number,omitempty"`
 	Total                 float64                   `json:"total_amount,omitempty"`
@@ -179,6 +219,15 @@ type PurchaseOrderItem struct {
 	ActualShipmentDate   string        `json:"actual_shipment_date,omitempty"`
 	CreatedAt            time.Time     `json:"created_at,omitempty"`
 	UpdatedAt            time.Time     `json:"updated_at,omitempty"`
+	// Who this line was bought for: the job it completes (op-bu80) and the
+	// committee it was ordered on behalf of (op-shb9). Both are attribution
+	// only — receiving still books stock and money the way it always did — and
+	// both are settable after the fact through update_item, which is usually
+	// when the answer is known.
+	WorkOrder      string          `json:"work_order,omitempty"`
+	WorkOrderRef   *WorkOrderRef   `json:"work_order_details,omitempty"`
+	OwningGroup    *int            `json:"owning_group,omitempty"`
+	OwningGroupRef *OwningGroupRef `json:"owning_group_details,omitempty"`
 	// Nested details (item_details / asset_details) come back as opaque
 	// objects we don't need to introspect for the receive flow.
 	ItemDetails  map[string]any `json:"item_details,omitempty"`
@@ -270,9 +319,20 @@ type PurchaseOrderCreateItem struct {
 // present against the order's supplier, so a stray 0 (or null) would be a
 // caller-invented value to validate rather than the "no agreement" the
 // operator meant.
+//
+// WorkOrder and OwningGroup are the order-level associations (op-shb9): the job
+// this order was placed for and the committee it was placed on behalf of. Both
+// optional, both attribution only — neither moves stock nor posts to the
+// ledger. Same omit-when-unset rule as the agreement, and for the same reason:
+// each is resolved to a row the backend 400s on if it can't find it, so "none"
+// has to be an ABSENT key rather than a null or a zero. A UUID string is never
+// legitimately empty and no auth.Group has pk 0, so omitempty says exactly that
+// on both.
 type PurchaseOrderCreate struct {
 	Supplier             int                       `json:"supplier"`
 	SupplierAgreementID  *int                      `json:"supplier_agreement,omitempty"`
+	WorkOrder            string                    `json:"work_order,omitempty"`
+	OwningGroup          *int                      `json:"owning_group,omitempty"`
 	ExpectedDeliveryDate string                    `json:"expected_delivery_date,omitempty"`
 	Notes                string                    `json:"notes,omitempty"`
 	Items                []PurchaseOrderCreateItem `json:"items"`
@@ -449,11 +509,20 @@ func (c *Client) ConfirmOrder(ctx context.Context, poID, expectedDeliveryDate st
 // a pointer to "" sends JSON null (clears the date — the backend DateField is
 // null=True), and a pointer to "YYYY-MM-DD" sets it. The plain-string fields
 // send their value as-is (an empty string is a legal blank).
+//
+// WorkOrder and OwningGroup (op-shb9) follow the same clear-vs-untouched rule:
+// nil leaves the association alone, a pointer to the empty string / to 0 sends
+// JSON null to detach it, and any other value attaches that job or committee.
+// The zero values are safe detach sentinels rather than values in their own
+// right — a WorkOrder id is a UUID string and no auth.Group has pk 0 — and
+// sending null is what the backend's serializers accept to clear an FK.
 type PurchaseOrderUpdate struct {
 	SupplierOrderNumber  *string
 	SalesOrderNumber     *string
 	ExpectedDeliveryDate *string
 	Notes                *string
+	WorkOrder            *string
+	OwningGroup          *int
 }
 
 // UpdatePurchaseOrder patches PO metadata via PATCH
@@ -479,6 +548,7 @@ func (c *Client) UpdatePurchaseOrder(ctx context.Context, poID string, req Purch
 			body["expected_delivery_date"] = *req.ExpectedDeliveryDate
 		}
 	}
+	putAssociations(body, req.WorkOrder, req.OwningGroup)
 	var out PurchaseOrder
 	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/", poID)
 	if err := c.Patch(ctx, path, body, &out); err != nil {
@@ -493,11 +563,42 @@ func (c *Client) UpdatePurchaseOrder(ctx context.Context, poID string, req Purch
 // backend divides it by quantity_ordered to derive unit_cost_actual (mirroring
 // the web edit-cost control). UnitCostActual sets the per-unit actual cost
 // directly; send at most one of the two.
+//
+// WorkOrder (op-bu80) and OwningGroup (op-shb9) are the line's "ordered for"
+// associations, and update_item is the only way to write them — the create
+// payload can tag a line, but which job the parts turned out to be for is
+// usually settled once they arrive. They share the clear-vs-untouched rule
+// PurchaseOrderUpdate documents: nil leaves the association alone, a pointer to
+// "" / 0 detaches it, anything else attaches that job or committee.
 type LineItemUpdate struct {
 	ExpectedShipmentDate *string
 	Notes                *string
 	LineCost             *float64
 	UnitCostActual       *float64
+	WorkOrder            *string
+	OwningGroup          *int
+}
+
+// putAssociations writes the work-order / committee association keys into a
+// PATCH body under the shared clear-vs-untouched rule (see PurchaseOrderUpdate).
+// One helper for both endpoints so the order-level and line-level edits can't
+// drift on what "detach" means — the backend reads null and "" identically at
+// both levels, and this always sends null.
+func putAssociations(body map[string]any, workOrder *string, owningGroup *int) {
+	if workOrder != nil {
+		if *workOrder == "" {
+			body["work_order"] = nil // detach (JSON null)
+		} else {
+			body["work_order"] = *workOrder
+		}
+	}
+	if owningGroup != nil {
+		if *owningGroup == 0 {
+			body["owning_group"] = nil // detach (JSON null)
+		} else {
+			body["owning_group"] = *owningGroup
+		}
+	}
 }
 
 // UpdatePurchaseOrderLineItem patches one PO line via PATCH
@@ -521,6 +622,7 @@ func (c *Client) UpdatePurchaseOrderLineItem(
 	if req.UnitCostActual != nil {
 		body["unit_cost_actual"] = *req.UnitCostActual
 	}
+	putAssociations(body, req.WorkOrder, req.OwningGroup)
 	var out PurchaseOrderItem
 	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/items/%s/", poID, itemID)
 	if err := c.Patch(ctx, path, body, &out); err != nil {

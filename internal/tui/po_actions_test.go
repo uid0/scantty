@@ -200,8 +200,10 @@ func TestPOEdit_Hydrate(t *testing.T) {
 	if got := s.meta[poMetaNotes].Value(); got != "handle with care" {
 		t.Errorf("notes = %q", got)
 	}
-	if s.rowCount() != poEditMetaCount+2 {
-		t.Errorf("rowCount = %d, want %d", s.rowCount(), poEditMetaCount+2)
+	// Three bands of navigable rows: the metadata fields, the two order-level
+	// association rows (op-shb9), then one row per line — samplePO has two.
+	if want := poEditMetaCount + poEditAssocCount + 2; s.rowCount() != want {
+		t.Errorf("rowCount = %d, want %d", s.rowCount(), want)
 	}
 }
 
@@ -217,8 +219,9 @@ func TestPOEdit_MetadataDateValidation(t *testing.T) {
 func TestPOEdit_LineEditorPrefillAndNav(t *testing.T) {
 	s := NewPurchaseOrderEditScreen(Deps{}, samplePO())
 
-	// Move the cursor onto the first line row and open the editor.
-	s.cursor = poEditMetaCount // first line
+	// Move the cursor onto the first line row and open the editor. Line rows
+	// start after the metadata fields AND the association rows.
+	s.cursor = poEditLineBase
 	if _, ok := s.onLineRow(); !ok {
 		t.Fatalf("cursor %d should be a line row", s.cursor)
 	}
