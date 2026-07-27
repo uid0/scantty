@@ -1178,9 +1178,47 @@ func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
 	return b.String()
 }
 
-// renderCart lists the staged lines. When highlight >= 0 the matching row is
-// marked (used by the review phase and the source chooser's cart list); pass -1
-// for a plain list.
+// poCartLineType derives the wire item_type token a staged line will carry once
+// the backend saves it. The create payload names its target with a field rather
+// than a type token, so this mirrors the same field dispatch
+// create_purchase_order uses server-side — and feeds poLineTypeLabel, so the
+// cart and the saved PO's detail screen label a line identically.
+func poCartLineType(l poCartLine) string {
+	switch {
+	case l.item.ItemSupplierID != nil:
+		return "item_supplier"
+	case l.item.AssetID != nil:
+		return "asset"
+	}
+	return "freeform"
+}
+
+// poCartTotal sums the staged cart's extended cost — quantity × unit_cost per
+// line. Quantity is always in UNITS and unit_cost is always per-unit (a
+// case-packed line's case cost is divided down at add time), so the case
+// quantity-per-package never enters the sum.
+//
+// A line with no cost contributes 0 rather than dropping the whole total: a
+// blank cost on a catalog line means "price it from item_supplier.unit_cost at
+// save time", so the sum is a floor, not the PO's final value. noCost counts
+// those lines so the caller can say the total is incomplete instead of letting
+// them read as free. A cost that is explicitly 0 is an explicit $0 — same
+// nil-versus-typed-zero distinction the backend makes — and is not counted.
+func poCartTotal(lines []poCartLine) (total float64, noCost int) {
+	for _, l := range lines {
+		if l.item.UnitCost == nil {
+			noCost++
+			continue
+		}
+		total += float64(l.item.Quantity) * *l.item.UnitCost
+	}
+	return total, noCost
+}
+
+// renderCart lists the staged lines and the running total. When highlight >= 0
+// the matching row is marked (used by the review phase and the source chooser's
+// cart list); pass -1 for a plain list. The total lives here rather than in
+// renderReviewPhase so both surfaces that show the cart also show what it costs.
 func (s *PurchaseOrderCreateScreen) renderCart(highlight int) string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render(fmt.Sprintf("Cart (%d line(s))", len(s.lines))) + "\n")
@@ -1196,10 +1234,30 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight int) string {
 		if l.item.ExpectedShipmentDate != "" {
 			row += "  exp " + l.item.ExpectedShipmentDate
 		}
+		// Target type as a trailing badge: plain text inside the row so the
+		// whole-row highlight style still applies cleanly.
+		row += "  [" + poLineTypeLabel(poCartLineType(l)) + "]"
 		if i == highlight {
 			row = StyleSidebarItemActive.Render(row)
 		}
 		b.WriteString(row + "\n")
+	}
+	if len(s.lines) > 0 {
+		total, noCost := poCartTotal(s.lines)
+		noun := "line items"
+		if len(s.lines) == 1 {
+			noun = "line item"
+		}
+		b.WriteString(StyleTitle.Render("  Total: "+fmtMoney(total)) +
+			StyleMuted.Render(fmt.Sprintf("  (%d %s)", len(s.lines), noun)) + "\n")
+		if noCost > 0 {
+			subject := fmt.Sprintf("%d lines are", noCost)
+			if noCost == 1 {
+				subject = "1 line is"
+			}
+			b.WriteString(StyleMuted.Render(
+				"    "+subject+" priced from the supplier catalog — not included above") + "\n")
+		}
 	}
 	return b.String()
 }

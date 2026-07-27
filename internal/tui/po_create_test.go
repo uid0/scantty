@@ -1450,3 +1450,146 @@ func lastLine(t *testing.T, s *PurchaseOrderCreateScreen) omsapi.PurchaseOrderCr
 	}
 	return s.lines[len(s.lines)-1].item
 }
+
+// ---------------------------------------------------------------------------
+// Running total + line target-type badge in the cart (sc-be24)
+// ---------------------------------------------------------------------------
+
+// poCartLineFor stages a cart line with the given target field set.
+func poCartLineFor(item omsapi.PurchaseOrderCreateItem, label string) poCartLine {
+	return poCartLine{item: item, label: label}
+}
+
+func TestPOCartTotal(t *testing.T) {
+	cost := func(v float64) *float64 { return &v }
+	sup := 7
+	asset := "asset-1"
+
+	lines := []poCartLine{
+		poCartLineFor(omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 3, UnitCost: cost(12.50)}, "Widget"),
+		poCartLineFor(omsapi.PurchaseOrderCreateItem{AssetID: &asset, Quantity: 1, UnitCost: cost(1000)}, "Press"),
+		poCartLineFor(omsapi.PurchaseOrderCreateItem{Description: "Freight", Quantity: 2, UnitCost: cost(0)}, "Freight"),
+	}
+	total, noCost := poCartTotal(lines)
+	if total != 1037.50 {
+		t.Errorf("total = %v, want 1037.50", total)
+	}
+	// An explicitly-typed 0 is a real $0, not a missing price.
+	if noCost != 0 {
+		t.Errorf("noCost = %d, want 0 (a typed zero cost is explicit)", noCost)
+	}
+
+	// A nil cost is "price it from the supplier catalog": it contributes 0 but
+	// must be counted so the total can be flagged as a floor.
+	lines = append(lines, poCartLineFor(
+		omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 9}, "Catalog-priced"))
+	total, noCost = poCartTotal(lines)
+	if total != 1037.50 {
+		t.Errorf("total with an unpriced line = %v, want the other lines' 1037.50", total)
+	}
+	if noCost != 1 {
+		t.Errorf("noCost = %d, want 1", noCost)
+	}
+
+	if total, noCost := poCartTotal(nil); total != 0 || noCost != 0 {
+		t.Errorf("empty cart = (%v, %d), want (0, 0)", total, noCost)
+	}
+}
+
+// TestPOCartTotal_QuantityIsAlreadyInUnits pins the case-pack invariant: qpp
+// never enters the sum, because a case-packed line stores a per-UNIT cost and a
+// unit quantity.
+func TestPOCartTotal_QuantityIsAlreadyInUnits(t *testing.T) {
+	unit := 1.25
+	sup := 3
+	lines := []poCartLine{{
+		item: omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 24, UnitCost: &unit},
+		qpp:  12, // two cases of 12 — the extension is still qty × unit cost
+	}}
+	if total, _ := poCartTotal(lines); total != 30 {
+		t.Errorf("total = %v, want 30 (24 × 1.25), qpp must not double-count", total)
+	}
+}
+
+func TestPOCartLineType(t *testing.T) {
+	sup := 5
+	asset := "a-1"
+	cases := []struct {
+		item omsapi.PurchaseOrderCreateItem
+		want string
+	}{
+		{omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup}, "item_supplier"},
+		{omsapi.PurchaseOrderCreateItem{AssetID: &asset}, "asset"},
+		{omsapi.PurchaseOrderCreateItem{Description: "Freight"}, "freeform"},
+	}
+	for _, c := range cases {
+		if got := poCartLineType(poCartLineFor(c.item, "x")); got != c.want {
+			t.Errorf("poCartLineType(%+v) = %q, want %q", c.item, got, c.want)
+		}
+	}
+}
+
+// TestPORenderCart_TotalAndTypeBadges drives the rendered cart: every staged
+// line is badged with its target type and the summed total closes the list.
+func TestPORenderCart_TotalAndTypeBadges(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	cost := func(v float64) *float64 { return &v }
+	sup := 7
+	asset := "asset-1"
+	s.lines = []poCartLine{
+		poCartLineFor(omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 100, UnitCost: cost(12.50)}, "Widget"),
+		poCartLineFor(omsapi.PurchaseOrderCreateItem{AssetID: &asset, Quantity: 1, UnitCost: cost(1.00)}, "Press"),
+		poCartLineFor(omsapi.PurchaseOrderCreateItem{Description: "Freight", Quantity: 1, UnitCost: cost(0.50)}, "Freight"),
+	}
+
+	out := s.renderCart(-1)
+	for _, want := range []string{"[Inventory item]", "[Asset]", "[Freeform]"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("cart missing type badge %s:\n%s", want, out)
+		}
+	}
+	// Thousands separator + 3 line items, and no catalog-pricing caveat since
+	// every line carries a cost.
+	if !strings.Contains(out, "Total: $1,251.50") {
+		t.Errorf("cart missing running total:\n%s", out)
+	}
+	if !strings.Contains(out, "(3 line items)") {
+		t.Errorf("cart missing line count:\n%s", out)
+	}
+	if strings.Contains(out, "supplier catalog") {
+		t.Errorf("fully-priced cart should not warn about catalog pricing:\n%s", out)
+	}
+
+	// The review phase shows the cart, so it inherits the same total.
+	if rev := s.renderReviewPhase(); !strings.Contains(rev, "Total: $1,251.50") {
+		t.Errorf("review phase missing running total:\n%s", rev)
+	}
+}
+
+// TestPORenderCart_FlagsCatalogPricedLines makes sure a blank-cost line reads as
+// "not yet priced" rather than silently landing as free in the total.
+func TestPORenderCart_FlagsCatalogPricedLines(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	unit := 2.00
+	sup := 7
+	s.lines = []poCartLine{
+		poCartLineFor(omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 5, UnitCost: &unit}, "Priced"),
+		poCartLineFor(omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 5}, "Unpriced"),
+	}
+	out := s.renderCart(0)
+	if !strings.Contains(out, "Total: $10.00") {
+		t.Errorf("total should sum only the priced line:\n%s", out)
+	}
+	if !strings.Contains(out, "1 line is priced from the supplier catalog") {
+		t.Errorf("cart should flag the unpriced line:\n%s", out)
+	}
+}
+
+// TestPORenderCart_EmptyDrawsNoTotal keeps a zero-line cart from advertising a
+// $0.00 order.
+func TestPORenderCart_EmptyDrawsNoTotal(t *testing.T) {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	if out := s.renderCart(-1); strings.Contains(out, "Total:") {
+		t.Errorf("empty cart should draw no total:\n%s", out)
+	}
+}
