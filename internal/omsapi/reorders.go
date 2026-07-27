@@ -96,6 +96,15 @@ func (c *Client) CancelReorderRequest(ctx context.Context, id, adminNotes string
 	return &out, nil
 }
 
+// SupplierAgreementRef is the minimal {id, name} the PO serializer nests as
+// supplier_agreement_details (op-yoos) so a detail screen can name the
+// agreement an order was placed under without a second request. Nil when the
+// order cites no agreement.
+type SupplierAgreementRef struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 type PurchaseOrder struct {
 	ID                    any                       `json:"id"`
 	Number                string                    `json:"po_number,omitempty"`
@@ -104,6 +113,8 @@ type PurchaseOrder struct {
 	Supplier              any                       `json:"supplier,omitempty"`
 	SupplierName          string                    `json:"supplier_name,omitempty"`
 	SupplierDetails       string                    `json:"supplier_details,omitempty"`
+	SupplierAgreement     *int                      `json:"supplier_agreement,omitempty"`
+	SupplierAgreementRef  *SupplierAgreementRef     `json:"supplier_agreement_details,omitempty"`
 	SupplierOrderNumber   string                    `json:"supplier_order_number,omitempty"`
 	SalesOrderNumber      string                    `json:"sales_order_number,omitempty"`
 	Total                 float64                   `json:"total_amount,omitempty"`
@@ -252,8 +263,16 @@ type PurchaseOrderCreateItem struct {
 // PurchaseOrderCreate mirrors backend PurchaseOrderCreateSerializer —
 // supplier + line items, with optional expected_delivery_date and notes.
 // po_number is server-generated, so it's not in this payload.
+//
+// SupplierAgreementID is the optional purchase/pricing agreement the order is
+// placed under (op-yoos). It's a pointer with omitempty because the field must
+// vanish from the payload when unset — the backend validates any agreement
+// present against the order's supplier, so a stray 0 (or null) would be a
+// caller-invented value to validate rather than the "no agreement" the
+// operator meant.
 type PurchaseOrderCreate struct {
 	Supplier             int                       `json:"supplier"`
+	SupplierAgreementID  *int                      `json:"supplier_agreement,omitempty"`
 	ExpectedDeliveryDate string                    `json:"expected_delivery_date,omitempty"`
 	Notes                string                    `json:"notes,omitempty"`
 	Items                []PurchaseOrderCreateItem `json:"items"`

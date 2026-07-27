@@ -7,6 +7,13 @@
 //
 //	poPhaseSupplier   — j/k pick a supplier from the loaded list
 //	                    (PR #38 picker; enter commits and advances)
+//	poPhaseAgreement  — optional: which purchase/pricing agreement the order is
+//	                    placed under (op-yoos). Committing a supplier loads its
+//	                    ACTIVE agreements in the background and the source
+//	                    chooser grows a g row when there are any — the picker is
+//	                    never forced on the many orders that cite none, matching
+//	                    the web form, which renders its select only when the
+//	                    supplier has agreements on file.
 //	poPhaseSource     — choose where the next line comes from:
 //	                      r → items the supplier has on the reorder queue
 //	                      i → other inventory items associated with the supplier
@@ -72,6 +79,7 @@ type poPhase int
 
 const (
 	poPhaseSupplier poPhase = iota
+	poPhaseAgreement
 	poPhaseSource
 	poPhaseReorderPick
 	poPhaseItemPick
@@ -118,6 +126,20 @@ type PurchaseOrderCreateScreen struct {
 	supplierLoadErr string
 	supplierCursor  int
 	supplierID      int
+
+	// Phase 1b: the supplier's ACTIVE purchase/pricing agreements (op-yoos).
+	// Loaded in the background the moment a supplier is committed, so the
+	// source chooser is reachable without waiting on a request that most
+	// orders don't need. agreementID is the operator's optional pick — nil
+	// means "no agreement", which is what the vast majority of POs cite.
+	// A failed load never blocks the order: agreementLoadErr is surfaced as a
+	// muted note (so a missing list can't be misread as "this supplier has
+	// none") and g retries it.
+	agreements       []omsapi.SupplierAgreement
+	agreementLoading bool
+	agreementLoadErr string
+	agreementCursor  int
+	agreementID      *int
 
 	// Phase 3a: reorder-queue items for this supplier. reorderSelected marks
 	// rows toggled with space for a bulk add (keyed by index into
@@ -193,6 +215,16 @@ type poCreatedMsg struct {
 type poCreateSuppliersLoadedMsg struct {
 	suppliers []omsapi.Supplier
 	err       error
+}
+
+// poAgreementsLoadedMsg carries one supplier's active purchase/pricing
+// agreements. supplierID is echoed back so a slow response for a supplier the
+// operator has since moved off of is dropped instead of offering agreements the
+// backend would reject against the current supplier.
+type poAgreementsLoadedMsg struct {
+	supplierID int
+	agreements []omsapi.SupplierAgreement
+	err        error
 }
 
 func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
@@ -282,6 +314,23 @@ func (s *PurchaseOrderCreateScreen) loadSuppliers() tea.Cmd {
 	}
 }
 
+// loadAgreements fetches the committed supplier's ACTIVE agreements. Only the
+// active set is offered: retired paperwork stays on file but must not be
+// citable on a new order (the backend's is_active flag exists for exactly
+// that), matching the web create form.
+func (s *PurchaseOrderCreateScreen) loadAgreements() tea.Cmd {
+	deps := s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	supplierID := s.supplierID
+	return func() tea.Msg {
+		rows, err := deps.OMS.ListSupplierAgreements(ctx, supplierID)
+		return poAgreementsLoadedMsg{supplierID: supplierID, agreements: rows, err: err}
+	}
+}
+
 func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case poCreateSuppliersLoadedMsg:
@@ -312,6 +361,26 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			SwitchTo(WSPurchasing, nil),
 		)
 
+	case poAgreementsLoadedMsg:
+		if m.supplierID != s.supplierID {
+			// The operator moved to another supplier while this was in
+			// flight — its agreements belong to a supplier that is no longer
+			// the order's, and the backend would reject any of them.
+			return s, nil
+		}
+		s.agreementLoading = false
+		if m.err != nil {
+			// Never blocks the order (same call the web form makes
+			// non-fatal): the note is muted and g retries.
+			s.agreementLoadErr = m.err.Error()
+			s.agreements = nil
+			return s, nil
+		}
+		s.agreementLoadErr = ""
+		s.agreements = m.agreements
+		s.agreementCursor = 0
+		return s, nil
+
 	// Picker messages live in po_create_pickers.go.
 	case poReorderItemsLoadedMsg, poItemSuppliersLoadedMsg, poAssetsLoadedMsg:
 		return s, s.handlePickerLoaded(msg)
@@ -320,6 +389,8 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		switch s.phase {
 		case poPhaseSupplier:
 			return s.updateSupplierPhase(m)
+		case poPhaseAgreement:
+			return s.updateAgreementPhase(m)
 		case poPhaseSource:
 			return s.updateSourcePhase(m)
 		case poPhaseReorderPick:
@@ -378,19 +449,137 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 			s.supplierCursor--
 		}
 	case "enter", "tab":
-		s.commitSupplier()
+		cmd := s.commitSupplier()
 		if s.supplierID > 0 {
 			s.phase = poPhaseSource
 		}
+		return s, cmd
 	}
 	return s, nil
 }
 
-func (s *PurchaseOrderCreateScreen) commitSupplier() {
+// commitSupplier locks in the highlighted supplier and, when that changed the
+// order's supplier, refreshes the agreement list behind it. Any previously
+// picked agreement is dropped in the same breath: an agreement belongs to
+// exactly one supplier, so carrying it across would build a payload the
+// backend answers with a 400. Re-committing the SAME supplier keeps the pick
+// (and skips the refetch) — the operator only stepped back to look.
+//
+// The load runs in the background rather than gating a phase of its own:
+// most suppliers have no agreements, and making every PO wait on a request
+// that usually returns nothing would tax the common path to serve the rare one.
+func (s *PurchaseOrderCreateScreen) commitSupplier() tea.Cmd {
 	if s.supplierCursor < 0 || s.supplierCursor >= len(s.suppliers) {
+		return nil
+	}
+	picked := s.suppliers[s.supplierCursor].ID
+	if picked == s.supplierID {
+		return nil
+	}
+	s.supplierID = picked
+	s.agreements = nil
+	s.agreementID = nil
+	s.agreementCursor = 0
+	s.agreementLoadErr = ""
+	s.agreementLoading = true
+	return s.loadAgreements()
+}
+
+// ---------------------------------------------------------------------------
+// Phase: Purchase / pricing agreement picker (optional, op-yoos)
+// ---------------------------------------------------------------------------
+
+// agreementRows is the picker's row count: the supplier's agreements plus a
+// leading "no agreement" row. Skipping is a first-class choice here, not just
+// an esc — most orders cite nothing, and an operator clearing a pick they made
+// by mistake needs a way to say so.
+func (s *PurchaseOrderCreateScreen) agreementRows() int { return len(s.agreements) + 1 }
+
+// agreementOffered reports whether the source chooser shows the agreement row
+// and honours g. A supplier with none on file gets neither — nothing to pick,
+// so the affordance would only be a dead end, and the row appearing on every
+// order would be noise on the many that cite no agreement.
+//
+// A FAILED load still counts: silence there would read as "this supplier has
+// no agreements", which may be false. The row says so plainly and g retries.
+// A load in flight offers nothing yet — the source chooser is fully usable
+// while it lands, and the row appears when there is something to say.
+func (s *PurchaseOrderCreateScreen) agreementOffered() bool {
+	return len(s.agreements) > 0 || s.agreementLoadErr != ""
+}
+
+// pickedAgreementName is the committed agreement's display name, or "" when
+// none is picked (or the pick somehow outlived its list).
+func (s *PurchaseOrderCreateScreen) pickedAgreementName() string {
+	if s.agreementID == nil {
+		return ""
+	}
+	for _, a := range s.agreements {
+		if a.ID == *s.agreementID {
+			return a.Name
+		}
+	}
+	return ""
+}
+
+func (s *PurchaseOrderCreateScreen) updateAgreementPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc", "b":
+		// Leave the pick as it was — esc is "I'm done looking", not "clear it".
+		// Row 0 is the explicit way to clear.
+		s.phase = poPhaseSource
+		return s, nil
+	case "j", "down":
+		if s.agreementCursor < s.agreementRows()-1 {
+			s.agreementCursor++
+		}
+	case "k", "up":
+		if s.agreementCursor > 0 {
+			s.agreementCursor--
+		}
+	case "enter":
+		s.commitAgreement()
+		s.phase = poPhaseSource
+		return s, nil
+	}
+	return s, nil
+}
+
+func (s *PurchaseOrderCreateScreen) commitAgreement() {
+	if s.agreementCursor <= 0 {
+		s.agreementID = nil
 		return
 	}
-	s.supplierID = s.suppliers[s.supplierCursor].ID
+	idx := s.agreementCursor - 1 // row 0 is "no agreement"
+	if idx >= len(s.agreements) {
+		return
+	}
+	id := s.agreements[idx].ID
+	s.agreementID = &id
+}
+
+// enterAgreementPhase opens the picker with the cursor on the current pick, so
+// enter is a no-op confirm and the operator can see what the order carries
+// today. Retrying a failed load happens here too — the source chooser's g is
+// the only affordance either way, so it shouldn't matter to the operator
+// whether the list is empty because it failed or because they haven't looked.
+func (s *PurchaseOrderCreateScreen) enterAgreementPhase() tea.Cmd {
+	if s.agreementLoadErr != "" && !s.agreementLoading {
+		s.agreementLoadErr = ""
+		s.agreementLoading = true
+		return s.loadAgreements()
+	}
+	s.agreementCursor = 0
+	if s.agreementID != nil {
+		for i, a := range s.agreements {
+			if a.ID == *s.agreementID {
+				s.agreementCursor = i + 1
+				break
+			}
+		}
+	}
+	s.phase = poPhaseAgreement
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -431,6 +620,15 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		// pre-filled.
 		s.enterLinePhase(nil, nil, "", 0, 0, 0, 0)
 		return s, textinput.Blink
+	case "g":
+		// Optional purchase/pricing agreement. Silent when this supplier has
+		// none on file — the key is only advertised alongside a rendered row,
+		// and opening an empty picker would be a dead end (the web form
+		// likewise renders the select only when agreements exist).
+		if !s.agreementOffered() {
+			return s, nil
+		}
+		return s, s.enterAgreementPhase()
 	case "d":
 		// Done adding lines → review + submit. Only meaningful once the
 		// cart has at least one line (the backend rejects an empty PO).
@@ -960,6 +1158,12 @@ func (s *PurchaseOrderCreateScreen) finalize() tea.Cmd {
 		Notes:    strings.TrimSpace(s.poNotes.Value()),
 		Items:    items,
 	}
+	// Only a committed agreement rides along; leaving the field off is how the
+	// payload says "none", which is what nearly every order means (op-yoos).
+	if s.agreementID != nil {
+		id := *s.agreementID
+		req.SupplierAgreementID = &id
+	}
 
 	s.pending = true
 	s.errMsg = ""
@@ -1038,6 +1242,8 @@ func (s *PurchaseOrderCreateScreen) View() string {
 	switch s.phase {
 	case poPhaseSupplier:
 		b.WriteString(s.renderSupplierPhase())
+	case poPhaseAgreement:
+		b.WriteString(s.renderAgreementPhase())
 	case poPhaseSource:
 		b.WriteString(s.renderSourcePhase())
 	case poPhaseReorderPick:
@@ -1065,6 +1271,8 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 	switch s.phase {
 	case poPhaseSupplier:
 		return "Pick a supplier (j/k move, enter to commit, esc to cancel)."
+	case poPhaseAgreement:
+		return "Pick the purchase / pricing agreement this order is placed under (j/k move · enter commit · esc keep current · row 1 = none)."
 	case poPhaseSource:
 		base := "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel."
 		if len(s.lines) > 0 {
@@ -1072,6 +1280,11 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 				"Add a line (r/i/a/f) · j/k highlight · ctrl+e edit · x remove · d done → review %d line(s) · b back · esc cancel.",
 				len(s.lines),
 			)
+		}
+		// g only appears once this supplier is known to have agreements —
+		// advertising a key that does nothing is worse than not offering it.
+		if s.agreementOffered() {
+			base += " g agreement."
 		}
 		return base
 	case poPhaseReorderPick:
@@ -1112,10 +1325,68 @@ func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
 				break
 			}
 		}
-		return StyleTitle.Render("Supplier:") + " " + StyleStatusOK.Render(fmt.Sprintf("%s (#%d)", name, s.supplierID))
+		line := StyleTitle.Render("Supplier:") + " " + StyleStatusOK.Render(fmt.Sprintf("%s (#%d)", name, s.supplierID))
+		// A committed agreement is header-level context, not a line item, so it
+		// rides with the supplier and stays on screen through every phase —
+		// including review, where it's the last thing seen before submit.
+		if agreement := s.pickedAgreementName(); agreement != "" {
+			line += "  " + StyleMuted.Render("· agreement:") + " " + agreement
+		}
+		return line
 	default:
 		return StyleTitle.Render("Supplier:") + " " + StyleMuted.Render("(none picked)")
 	}
+}
+
+// renderAgreementPhase draws the optional agreement picker: a leading
+// "no agreement" row followed by the supplier's active agreements. The picked
+// agreement's notes render underneath (the terms are the reason to cite one),
+// mirroring the web form's notes paragraph under its select.
+func (s *PurchaseOrderCreateScreen) renderAgreementPhase() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Purchase / pricing agreement (optional)") + "\n")
+	b.WriteString(s.renderWindowedList(
+		s.agreementRows(), s.agreementCursor,
+		func(i int) string {
+			if i == 0 {
+				return "— no agreement —"
+			}
+			return s.agreements[i-1].Name
+		},
+	))
+	if s.agreementCursor > 0 && s.agreementCursor-1 < len(s.agreements) {
+		if notes := strings.TrimSpace(s.agreements[s.agreementCursor-1].Notes); notes != "" {
+			b.WriteString("\n" + StyleMuted.Render("  "+notes) + "\n")
+		}
+	}
+	return b.String()
+}
+
+// renderAgreementRow is the source chooser's / review phase's one-line summary
+// of the agreement state. Returns "" when this supplier offers none, so the
+// surfaces that call it render nothing at all.
+func (s *PurchaseOrderCreateScreen) renderAgreementRow(withKey bool) string {
+	if !s.agreementOffered() {
+		return ""
+	}
+	// With the key it's an affordance in a menu of them, so it names the field
+	// and says the field is optional; without, it's a line on a confirmation
+	// screen, where the short label the PO detail screen uses reads better.
+	label := "  " + StyleTitle.Render("Agreement")
+	if withKey {
+		label = "  " + StyleStatusOK.Render("g") + "  " +
+			StyleTitle.Render("Purchase / pricing agreement (optional)")
+	}
+	if s.agreementLoadErr != "" {
+		// Say the list is MISSING rather than absent — "no agreements" and
+		// "couldn't ask" are different facts, and only one of them is safe to
+		// let the operator assume.
+		return label + ": " + StyleStatusWarn.Render("unavailable — "+s.agreementLoadErr) + "\n"
+	}
+	if name := s.pickedAgreementName(); name != "" {
+		return label + ": " + StyleStatusOK.Render(name) + "\n"
+	}
+	return label + ": " + StyleMuted.Render("(none)") + "\n"
 }
 
 func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
@@ -1167,6 +1438,11 @@ func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
 	b.WriteString("  " + StyleStatusOK.Render("i") + "  Inventory items associated with this supplier\n")
 	b.WriteString("  " + StyleStatusOK.Render("a") + "  Assets purchased from this supplier\n")
 	b.WriteString("  " + StyleStatusOK.Render("f") + "  Freeform line (no item / asset reference)\n")
+	// Header-level, not a line source — so it sits below the r/i/a/f block with
+	// a blank line between, and only when this supplier has agreements on file.
+	if row := s.renderAgreementRow(true); row != "" {
+		b.WriteString("\n" + row)
+	}
 	if len(s.lines) > 0 {
 		b.WriteString("\n")
 		// Highlight the same line the review cart would: j/k aim it, and
@@ -1265,6 +1541,14 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight int) string {
 func (s *PurchaseOrderCreateScreen) renderReviewPhase() string {
 	var b strings.Builder
 	b.WriteString(s.renderCart(s.reviewCursor))
+	// Repeat the agreement here, next to the cart it prices: review is the
+	// confirm-before-submit surface, and a long cart can push the header line
+	// well off the top of the terminal. Skipped is a choice worth seeing too,
+	// so this shows "(none)" as readily as a name — but still only when the
+	// supplier has agreements, since there is nothing to have chosen otherwise.
+	if row := s.renderAgreementRow(false); row != "" {
+		b.WriteString(row)
+	}
 	b.WriteString("\n")
 	b.WriteString("▸ " + StyleTitle.Render("PO notes: ") + s.poNotes.View() + "\n")
 	return b.String()

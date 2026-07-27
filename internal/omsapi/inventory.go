@@ -1164,6 +1164,39 @@ func (c *Client) DeleteSupplier(ctx context.Context, id string) error {
 	return c.Delete(ctx, fmt.Sprintf("/api/inventory/suppliers/%s/", id))
 }
 
+// SupplierAgreement is a purchase/pricing agreement held with a supplier
+// (op-yoos): contract pricing, a standing quote, a nonprofit discount. A
+// purchase order can cite the agreement it was placed under, and the backend
+// rejects an agreement belonging to a different supplier than the order's.
+//
+// Retired paperwork stays on file with is_active=false; the PO-create picker
+// asks for the active set only. document / created_at / updated_at are on the
+// wire too but nothing in scantty renders them yet, so they're left out.
+type SupplierAgreement struct {
+	ID           int    `json:"id"`
+	Supplier     int    `json:"supplier"`
+	SupplierName string `json:"supplier_name,omitempty"`
+	Name         string `json:"name"`
+	Notes        string `json:"notes,omitempty"`
+	IsActive     bool   `json:"is_active"`
+}
+
+// ListSupplierAgreements returns one supplier's ACTIVE agreements — the exact
+// question the PO-create flow asks (mirroring the web form's
+// supplierAgreementAPI.listBySupplier). Agreement counts per supplier are tiny,
+// so page 1 is the whole list in practice and this returns results directly
+// rather than a Page.
+func (c *Client) ListSupplierAgreements(ctx context.Context, supplierID int) ([]SupplierAgreement, error) {
+	q := url.Values{}
+	q.Set("supplier", strconv.Itoa(supplierID))
+	q.Set("is_active", "true")
+	page, err := GetPage[SupplierAgreement](ctx, c, "/api/inventory/supplier-agreements/", q)
+	if err != nil {
+		return nil, err
+	}
+	return page.Results, nil
+}
+
 type ItemSupplier struct {
 	ID                int           `json:"id"`
 	Item              string        `json:"item"`

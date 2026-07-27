@@ -881,6 +881,13 @@ func (s *PurchaseOrderDetailScreen) renderBody() string {
 	}
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("%s · %s", supplier, status)) + "\n")
 
+	// The purchase/pricing agreement this order was placed under (op-yoos).
+	// Only when one is attached: most orders cite none, and a row saying so on
+	// every PO would crowd out the ones that do.
+	if po.SupplierAgreementRef != nil && po.SupplierAgreementRef.Name != "" {
+		b.WriteString(StyleMuted.Render("Agreement: ") + po.SupplierAgreementRef.Name + "\n")
+	}
+
 	if po.CreatedByUsername != "" {
 		b.WriteString(StyleMuted.Render("Created by: ") + po.CreatedByUsername + "\n")
 	}
