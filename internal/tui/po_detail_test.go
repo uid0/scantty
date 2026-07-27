@@ -348,3 +348,38 @@ func TestPODetail_LineOmitsTypeWhenAbsent(t *testing.T) {
 		t.Errorf("empty item_type should render no type chunk, got:\n%s", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Supplier purchase/pricing agreement (op-yoos)
+// ---------------------------------------------------------------------------
+
+// TestPODetail_ShowsSupplierAgreement: an order placed under contract pricing
+// says so, using the {id, name} the serializer nests so no second request is
+// needed.
+func TestPODetail_ShowsSupplierAgreement(t *testing.T) {
+	id := 4
+	s := &PurchaseOrderDetailScreen{po: &omsapi.PurchaseOrder{
+		Number:               "PO-2026-0042",
+		Status:               "draft",
+		SupplierDetails:      "Acme Supply",
+		SupplierAgreement:    &id,
+		SupplierAgreementRef: &omsapi.SupplierAgreementRef{ID: 4, Name: "2026 nonprofit pricing"},
+	}}
+	if out := s.renderBody(); !strings.Contains(out, "Agreement: ") ||
+		!strings.Contains(out, "2026 nonprofit pricing") {
+		t.Errorf("detail should name the agreement the order was placed under:\n%s", out)
+	}
+}
+
+// TestPODetail_OmitsAgreementWhenAbsent: most orders cite none, and a row
+// saying so on every PO would crowd out the ones that do.
+func TestPODetail_OmitsAgreementWhenAbsent(t *testing.T) {
+	s := &PurchaseOrderDetailScreen{po: &omsapi.PurchaseOrder{
+		Number:          "PO-2026-0043",
+		Status:          "draft",
+		SupplierDetails: "Acme Supply",
+	}}
+	if out := s.renderBody(); strings.Contains(out, "Agreement:") {
+		t.Errorf("an order with no agreement should render no agreement row:\n%s", out)
+	}
+}
