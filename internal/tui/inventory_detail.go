@@ -55,6 +55,14 @@ type InventoryDetailScreen struct {
 	usedByErr     string
 	usedByLoading bool
 
+	// Purchase / receipt provenance (op-96uo): what each order was placed at per
+	// unit, and what actually shipped when. Its own (auth-required) endpoint,
+	// loaded alongside the item, so purchasesLoading tells "still fetching" apart
+	// from a genuinely never-ordered item.
+	purchases        *omsapi.ItemPurchaseHistory
+	purchasesErr     string
+	purchasesLoading bool
+
 	// Cycle-count modal (issue-7). Active while ccStep != ccStepNone, during
 	// which WantsRawInput routes every key here. The two textinputs are
 	// (re)initialised each time the modal opens.
@@ -101,6 +109,14 @@ type inventoryUsedByLoadedMsg struct {
 	err    error
 }
 
+// inventoryPurchaseHistoryLoadedMsg carries the item's order + receipt
+// provenance (op-96uo), fetched in parallel with the item. A non-nil err is
+// non-fatal — the section shows the reason instead of the lists.
+type inventoryPurchaseHistoryLoadedMsg struct {
+	history *omsapi.ItemPurchaseHistory
+	err     error
+}
+
 // cycleCountDoneMsg is the result of a cycle-count submission (issue-7). On
 // success item is the re-serialized item with the updated stock + count fields.
 type cycleCountDoneMsg struct {
@@ -141,11 +157,12 @@ type inventoryRetireDoneMsg struct {
 
 func NewInventoryDetailScreen(deps Deps, id string) *InventoryDetailScreen {
 	return &InventoryDetailScreen{
-		deps:          deps,
-		itemID:        id,
-		loading:       true,
-		usedByLoading: true,
-		scroller:      NewTextScroller(defaultDetailHeight),
+		deps:             deps,
+		itemID:           id,
+		loading:          true,
+		usedByLoading:    true,
+		purchasesLoading: true,
+		scroller:         NewTextScroller(defaultDetailHeight),
 	}
 }
 
@@ -218,9 +235,22 @@ func (s *InventoryDetailScreen) loadUsedByCmd() tea.Cmd {
 	}
 }
 
+// loadPurchaseHistoryCmd fetches the item's order + receipt provenance
+// (op-96uo) — the per-order unit costs and the deliveries behind the current
+// stock. Batched with the item like the other detail loads; a failure only
+// marks the section unavailable (see Update).
+func (s *InventoryDetailScreen) loadPurchaseHistoryCmd() tea.Cmd {
+	deps, id, ctx := s.deps, s.itemID, s.ctx()
+	return func() tea.Msg {
+		history, err := deps.OMS.GetPurchaseHistory(ctx, id)
+		return inventoryPurchaseHistoryLoadedMsg{history: history, err: err}
+	}
+}
+
 func (s *InventoryDetailScreen) Init() tea.Cmd {
 	s.usedByLoading = true
-	return tea.Batch(s.loadItemCmd(), s.loadMetricsCmd(), s.loadUsedByCmd())
+	s.purchasesLoading = true
+	return tea.Batch(s.loadItemCmd(), s.loadMetricsCmd(), s.loadUsedByCmd(), s.loadPurchaseHistoryCmd())
 }
 
 func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -258,6 +288,21 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		} else {
 			s.usedByErr = ""
 			s.usedBy = m.assets
+		}
+		if s.item != nil {
+			s.scroller.Set(s.renderBody())
+		}
+		return s, nil
+	case inventoryPurchaseHistoryLoadedMsg:
+		// Non-fatal like metrics and used-by: an item that was genuinely never
+		// ordered has empty lists, so a failed fetch must say so rather than
+		// render as "never ordered".
+		s.purchasesLoading = false
+		if m.err != nil {
+			s.purchasesErr = m.err.Error()
+		} else {
+			s.purchasesErr = ""
+			s.purchases = m.history
 		}
 		if s.item != nil {
 			s.scroller.Set(s.renderBody())
@@ -563,6 +608,10 @@ func (s *InventoryDetailScreen) renderBody() string {
 	}
 	var b strings.Builder
 
+	// First in the body, so it sits directly beneath the pinned metrics row whose
+	// QC cell it explains (nothing at all when there's nothing committed).
+	b.WriteString(s.renderCommittedBreakdown())
+
 	if it.Description != "" {
 		b.WriteString(it.Description + "\n\n")
 	}
@@ -683,6 +732,8 @@ func (s *InventoryDetailScreen) renderBody() string {
 		b.WriteString("\n")
 	}
 
+	b.WriteString(s.renderPurchaseSection())
+
 	b.WriteString(s.renderUsedBySection())
 
 	if len(it.Tags) > 0 {
@@ -780,6 +831,209 @@ func usedByMetaLine(a omsapi.Asset, itemID string) string {
 	return strings.Join(meta, " · ")
 }
 
+// --- Committed-to breakdown (op-l4i0) ----------------------------------------
+
+// renderCommittedBreakdown attributes the QC metric to the work orders holding
+// it — which job, and so which machine, the reserved stock is going to. It opens
+// the body, directly beneath the pinned metrics row whose QC cell it explains.
+//
+// Unlike its sibling sections this one draws nothing when there is nothing to
+// attribute, because it has no load of its own: the entries ride the metrics
+// payload, so "still loading" and "fetch failed" are already spoken for by the
+// metrics row itself being absent. An empty breakdown means QC is 0 (or a
+// backend that predates the field) — neither is worth a header.
+func (s *InventoryDetailScreen) renderCommittedBreakdown() string {
+	if s.metrics == nil || len(s.metrics.CommittedBreakdown) == 0 {
+		return ""
+	}
+	title := "Committed to"
+	if s.metrics.QuantityCommitted != nil {
+		title += fmt.Sprintf(" (QC %s)", metricFloatQtyString(s.metrics.QuantityCommitted))
+	}
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render(title) + "\n")
+	for _, e := range s.metrics.CommittedBreakdown {
+		b.WriteString("  · " + committedWorkOrderLabel(e) + "  " + StyleMuted.Render(committedEntryMeta(e)) + "\n")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// committedWorkOrderLabel names the work order holding the stock: its short id
+// ("WO-1A2B3C4D"), falling back to the raw id on a payload without one.
+func committedWorkOrderLabel(e omsapi.CommittedBreakdownEntry) string {
+	if e.WorkOrderShortID != "" {
+		return e.WorkOrderShortID
+	}
+	return "work order " + e.WorkOrderID
+}
+
+// committedEntryMeta is the rest of one entry: the asset the job is on and the
+// quantity it holds. A work order with no asset says so rather than leaving a
+// blank cell — an asset-less work order is legitimate, not missing data.
+func committedEntryMeta(e omsapi.CommittedBreakdownEntry) string {
+	asset := e.AssetName
+	if asset == "" {
+		asset = "no asset"
+	}
+	return asset + " · qty " + formatQty(e.Quantity)
+}
+
+// --- Purchase / receipts (op-96uo) -------------------------------------------
+
+// renderPurchaseSection renders the item's order + receipt provenance: the unit
+// cost each order was placed at (the full history behind the metrics row's
+// single last-PO cost), then the deliveries grouped by order so every tracking
+// number of a partially-shipped order is visible under it.
+//
+// Header drawn unconditionally, body branching loading / unavailable / empty /
+// rows — the section must not materialise mid-scroll, and a failed fetch must
+// not read as "never ordered", which is real and different information.
+func (s *InventoryDetailScreen) renderPurchaseSection() string {
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Purchase / Receipts") + "\n")
+
+	switch {
+	case s.purchasesLoading:
+		b.WriteString(StyleMuted.Render("loading…") + "\n\n")
+		return b.String()
+	case s.purchasesErr != "":
+		b.WriteString(StyleStatusWarn.Render("unavailable: "+s.purchasesErr) + "\n\n")
+		return b.String()
+	case s.purchases == nil || (len(s.purchases.OrderCosts) == 0 && len(s.purchases.Deliveries) == 0):
+		b.WriteString(StyleMuted.Render("Never ordered — no purchase-order lines or deliveries for this item.") + "\n\n")
+		return b.String()
+	}
+
+	if orders := s.purchases.OrderCosts; len(orders) > 0 {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("Orders (%d)", len(orders))) + "\n")
+		for _, o := range orders {
+			b.WriteString("  · " + poDisplayLabel(o.PONumber, o.PurchaseOrder) + "  " + StyleMuted.Render(orderCostMeta(o)) + "\n")
+		}
+	} else {
+		b.WriteString(StyleMuted.Render("Orders: none") + "\n")
+	}
+
+	if len(s.purchases.Deliveries) == 0 {
+		// Ordered but nothing received: the open order above is the whole story.
+		b.WriteString("\n" + StyleMuted.Render("Deliveries: none received yet") + "\n\n")
+		return b.String()
+	}
+	b.WriteString("\n" + StyleMuted.Render(fmt.Sprintf("Deliveries (%d)", len(s.purchases.Deliveries))) + "\n")
+	for _, g := range groupDeliveriesByPO(s.purchases.Deliveries) {
+		b.WriteString("  " + g.label + "\n")
+		for _, d := range g.rows {
+			b.WriteString("    · " + StyleMuted.Render(deliveryLine(d)) + "\n")
+			if note := strings.Join(strings.Fields(d.ReceiptNotes), " "); note != "" {
+				b.WriteString("      " + StyleMuted.Render("note: "+note) + "\n")
+			}
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// poDisplayLabel names an order: its PO number, or the pk when no number has
+// been assigned yet (po_number is nullable — the reason the payload carries the
+// pk at all).
+func poDisplayLabel(number string, pk int) string {
+	if n := strings.TrimSpace(number); n != "" {
+		return n
+	}
+	return fmt.Sprintf("order %d (no PO number)", pk)
+}
+
+// orderCostMeta summarises one purchase-order line: when it was placed, the
+// order's status, how many units, and what it cost per unit.
+func orderCostMeta(o omsapi.ItemOrderCost) string {
+	meta := []string{}
+	if !o.OrderDate.IsZero() {
+		meta = append(meta, o.OrderDate.Format("2006-01-02"))
+	}
+	if o.Status != "" {
+		meta = append(meta, o.Status)
+	}
+	meta = append(meta, fmt.Sprintf("qty %d", o.QuantityOrdered))
+	meta = append(meta, orderUnitCost(o))
+	return strings.Join(meta, " · ")
+}
+
+// orderUnitCost renders what the order paid per unit: the price it was PLACED
+// at, plus the actual once a receipt has priced it. Both are shown when they
+// differ — a supplier re-pricing between order and delivery is exactly what
+// keeping the two columns is for.
+func orderUnitCost(o omsapi.ItemOrderCost) string {
+	ordered, actual := formatMoney(o.UnitCostOrdered), formatMoney(o.UnitCostActual)
+	switch {
+	case ordered == "" && actual == "":
+		return "no unit cost"
+	case actual == "" || actual == ordered:
+		return ordered + "/unit"
+	case ordered == "":
+		return actual + "/unit actual"
+	default:
+		return ordered + "/unit → " + actual + " actual"
+	}
+}
+
+// poDeliveryGroup is one order's deliveries, oldest first.
+type poDeliveryGroup struct {
+	label string
+	rows  []omsapi.ItemDelivery
+}
+
+// groupDeliveriesByPO buckets the flat delivery list by ORDER, keyed on the PO
+// pk and not po_number: the number is nullable, so two numberless orders would
+// collapse into one group. Groups appear in first-seen (oldest-delivery) order,
+// as do the rows inside them.
+func groupDeliveriesByPO(rows []omsapi.ItemDelivery) []poDeliveryGroup {
+	var groups []poDeliveryGroup
+	at := map[int]int{}
+	for _, d := range rows {
+		ix, seen := at[d.PurchaseOrder]
+		if !seen {
+			ix = len(groups)
+			at[d.PurchaseOrder] = ix
+			groups = append(groups, poDeliveryGroup{label: poDisplayLabel(d.PONumber, d.PurchaseOrder)})
+		}
+		groups[ix].rows = append(groups[ix].rows, d)
+	}
+	return groups
+}
+
+// deliveryLine summarises one receipt: when it landed, how many units, its
+// shipment identity, and whether the receiving side has processed it.
+func deliveryLine(d omsapi.ItemDelivery) string {
+	meta := []string{}
+	if !d.DeliveryDate.IsZero() {
+		meta = append(meta, d.DeliveryDate.Format("2006-01-02"))
+	}
+	meta = append(meta, fmt.Sprintf("qty %d", d.QuantityReceived))
+	meta = append(meta, deliveryTracking(d))
+	if d.IsComplete {
+		meta = append(meta, "processed")
+	} else {
+		meta = append(meta, "not yet processed")
+	}
+	return strings.Join(meta, " · ")
+}
+
+// deliveryTracking is the shipment identity — "UPS 1Z999…", either half on its
+// own, or a stated absence: a receipt logged with no tracking number is normal
+// (someone carried it in) and shouldn't read as a dropped field.
+func deliveryTracking(d omsapi.ItemDelivery) string {
+	carrier, tracking := strings.TrimSpace(d.Carrier), strings.TrimSpace(d.TrackingNumber)
+	switch {
+	case carrier != "" && tracking != "":
+		return carrier + " " + tracking
+	case tracking != "":
+		return tracking
+	case carrier != "":
+		return carrier
+	}
+	return "no tracking number"
+}
+
 // --- Metrics row (issue-5) ---------------------------------------------------
 
 // Fixed cell widths for the metrics row. Each numeric value is right-aligned
@@ -854,13 +1108,19 @@ func metricIntString(p *int) string {
 }
 
 // metricFloatQtyString renders a float quantity (backend FloatField — QA/QC)
-// compactly: whole values drop the trailing ".0", genuine fractions are kept,
-// and nil → "-". Right-aligned in the metrics row like the int quantities.
+// compactly, with nil → "-". Right-aligned in the metrics row like the int
+// quantities.
 func metricFloatQtyString(p *float64) string {
 	if p == nil {
 		return "-"
 	}
-	return strconv.FormatFloat(*p, 'f', -1, 64)
+	return formatQty(*p)
+}
+
+// formatQty renders a float quantity for display: whole values drop the trailing
+// ".0" and genuine fractions are kept ("2", "1.5").
+func formatQty(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 func metricLeadString(p *float64) string {
