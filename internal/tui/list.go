@@ -32,6 +32,27 @@ type listScreenSpec struct {
 	// (or, for resources with no edit endpoint, nowhere) — this hook is create
 	// only, so a list without a create form simply leaves it nil.
 	newScreen func(deps Deps) Screen
+	// filters, when non-empty (with filterLoader), gives the list an `f` key
+	// that cycles server-side filtered views — e.g. purchase orders by status.
+	// filters[0] is the view the list opens on, so make it the unfiltered one
+	// and the landing list stays what it was. The list claims 'f' via
+	// HandlesKey (it collides with the global firmware hotkey).
+	//
+	// Cycling re-fetches rather than filtering the rows already in hand: a
+	// status that isn't on the loaded page would otherwise be unreachable.
+	filters []listFilter
+	// filterLoader fetches rows for the active filter's query. When set
+	// alongside filters it REPLACES loader — a filter-driven list leaves
+	// loader nil and expresses its unfiltered view as filters[0].
+	filterLoader func(ctx context.Context, deps Deps, q url.Values) ([]listRow, error)
+}
+
+// listFilter is one view in a list's filter cycle: a label for the header and
+// the query params handed to the filtered loader. A nil query is the
+// unfiltered view.
+type listFilter struct {
+	label string
+	query url.Values
 }
 
 type listRow struct {
@@ -108,6 +129,10 @@ type ListScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+
+	// filter indexes spec.filters — which server-side view the list is
+	// showing. Cycled with 'f'; 0 (the unfiltered view) on entry.
+	filter int
 
 	// Server-side search (only when spec.searchLoader != nil). searching flips
 	// the screen into raw-input mode so the query textinput gets every key;
@@ -203,6 +228,10 @@ func (s *ListScreen) Title() string { return s.title }
 // When the list supports server-side search it also claims '/', overriding the
 // global search-palette hotkey so '/' filters THIS list against the backend;
 // ctrl+k still opens the universal palette from here.
+//
+// A list with a filter cycle likewise claims 'f' over the global firmware
+// hotkey. Both claims are conditional, so a list without the feature leaves
+// the key to the global layer.
 func (s *ListScreen) HandlesKey(key string) bool {
 	if key == "s" {
 		return true
@@ -210,24 +239,58 @@ func (s *ListScreen) HandlesKey(key string) bool {
 	if key == "n" && s.spec.newScreen != nil {
 		return true
 	}
+	if key == "f" && s.hasFilters() {
+		return true
+	}
 	return key == "/" && s.spec.searchLoader != nil
+}
+
+// hasFilters reports whether this list has a working filter cycle (both halves
+// of the spec are needed: the views and the loader that fetches them).
+func (s *ListScreen) hasFilters() bool {
+	return s.spec.filterLoader != nil && len(s.spec.filters) > 0
+}
+
+// activeFilter is the view the list is currently showing. The zero listFilter
+// (no label, nil query) stands in for a list with no filter cycle, so callers
+// can test f.query == nil without first checking hasFilters.
+func (s *ListScreen) activeFilter() listFilter {
+	if !s.hasFilters() {
+		return listFilter{}
+	}
+	if s.filter < 0 || s.filter >= len(s.spec.filters) {
+		return s.spec.filters[0]
+	}
+	return s.spec.filters[s.filter]
 }
 
 // WantsRawInput routes every keypress to the screen while the search input is
 // open, so the global hotkey layer stops eating letters the operator is typing.
 func (s *ListScreen) WantsRawInput() bool { return s.searching }
 
+// Init loads the CURRENT view: the filtered loader bound to the active
+// filter's query when the list has a filter cycle, else the plain loader. It
+// is also the reload path for 'r' (refresh) and for the filter cycle itself,
+// so both stay on whichever view is selected.
 func (s *ListScreen) Init() tea.Cmd {
-	if s.spec.loader == nil {
-		s.loading = false
-		return nil
-	}
-	loader := s.spec.loader
 	ctx := s.deps.Ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	deps := s.deps
+	if s.hasFilters() {
+		loader := s.spec.filterLoader
+		q := s.activeFilter().query
+		return func() tea.Msg {
+			rows, err := loader(ctx, deps, q)
+			return listLoadedMsg{rows: rows, err: err}
+		}
+	}
+	if s.spec.loader == nil {
+		s.loading = false
+		return nil
+	}
+	loader := s.spec.loader
 	return func() tea.Msg {
 		rows, err := loader(ctx, deps)
 		return listLoadedMsg{rows: rows, err: err}
@@ -367,6 +430,20 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "s":
 			s.sort = (s.sort + 1) % 4
 			s.applySort()
+		case "f":
+			// Cycle the server-side view (e.g. PO status). `f` reaches us only
+			// because HandlesKey claims it over the global firmware hotkey,
+			// and only when the list actually has a filter cycle. The whole
+			// row set is replaced, so the cursor goes back to the top rather
+			// than pointing at whatever now occupies its old index.
+			if !s.hasFilters() {
+				return s, nil
+			}
+			s.filter = (s.filter + 1) % len(s.spec.filters)
+			s.cursor = 0
+			s.windowStart = 0
+			s.loading = true
+			return s, s.Init()
 		case "r":
 			s.loading = true
 			return s, s.Init()
@@ -540,11 +617,23 @@ func (s *ListScreen) bodyView() string {
 		if s.searching {
 			return StyleMuted.Render("No matches.")
 		}
+		// An empty FILTERED view is real information ("there are no drafts"),
+		// not an empty resource — name the view so it can't be misread, and
+		// point at the key that gets back out of it.
+		if f := s.activeFilter(); f.query != nil {
+			return StyleMuted.Render(fmt.Sprintf("No rows in the %q view.", f.label)) +
+				"\n\n" + StyleMuted.Render("press f to cycle the filter")
+		}
 		return StyleMuted.Render("No rows.")
 	}
 
 	var b strings.Builder
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("Sort: %s · %d rows", s.sort.label(), len(s.rows))) + "\n")
+	header := fmt.Sprintf("Sort: %s · %d rows", s.sort.label(), len(s.rows))
+	if s.hasFilters() {
+		header = fmt.Sprintf("Sort: %s · Filter: %s · %d rows",
+			s.sort.label(), s.activeFilter().label, len(s.rows))
+	}
+	b.WriteString(StyleMuted.Render(header) + "\n")
 	if s.windowStart > 0 {
 		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
 	}
@@ -592,7 +681,11 @@ func (s *ListScreen) bodyView() string {
 	}
 
 	b.WriteString("\n")
-	hint := "j/k move · pgup/pgdn page · g/G top/bottom · s sort · r refresh"
+	hint := "j/k move · pgup/pgdn page · g/G top/bottom · s sort"
+	if s.hasFilters() {
+		hint += " · f filter"
+	}
+	hint += " · r refresh"
 	if s.spec.detail != nil {
 		hint += " · enter open"
 	}
@@ -718,8 +811,38 @@ func assetRows(ctx context.Context, deps Deps, q url.Values) ([]listRow, error) 
 	return rows, nil
 }
 
-func loadPurchaseOrders(ctx context.Context, deps Deps) ([]listRow, error) {
-	page, err := deps.OMS.ListPurchaseOrders(ctx, nil)
+// purchaseOrderFilters is the PO list's status-filter cycle, mirroring the
+// "Filter by Status" options on the web PO list page (op-nr6h). filters[0] is
+// unfiltered, so the Purchasing landing list is unchanged; "draft" comes next
+// because a saved-but-unsent order is the one an operator has to come BACK to
+// — creating a PO leaves it in draft, and po_detail's `s` (send to supplier)
+// is what resumes it — and until this cycle existed a draft was only findable
+// by scrolling the mixed list.
+//
+// cancelled/voided are deliberately absent, matching the web's option set (a
+// voided PO with no live lines is dropped from the list endpoint anyway).
+//
+// The backend shows drafts to AUTHENTICATED users only: PurchaseOrderViewSet
+// restricts an anonymous list to sent/confirmed/partially_received/received
+// before applying ?status=, so a logged-out session gets an empty draft view
+// rather than an error.
+var purchaseOrderFilters = []listFilter{
+	{label: "all"},
+	{label: "draft", query: url.Values{"status": []string{"draft"}}},
+	{label: "sent", query: url.Values{"status": []string{"sent"}}},
+	{label: "confirmed", query: url.Values{"status": []string{"confirmed"}}},
+	{label: "partially received", query: url.Values{"status": []string{"partially_received"}}},
+	{label: "received", query: url.Values{"status": []string{"received"}}},
+}
+
+// purchaseOrderRows loads the PO list under the given query params — the
+// active filter's ?status=, or nil for everything. The status filter is
+// applied server-side (PurchaseOrderViewSet.get_queryset), which is what makes
+// a draft findable at all: a local filter could only ever narrow the first
+// page. Each row keeps its status as the row Tag, so a draft still reads
+// "(draft)" in the mixed view.
+func purchaseOrderRows(ctx context.Context, deps Deps, q url.Values) ([]listRow, error) {
+	page, err := deps.OMS.ListPurchaseOrders(ctx, q)
 	if err != nil {
 		return nil, err
 	}

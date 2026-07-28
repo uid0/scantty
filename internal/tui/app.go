@@ -490,9 +490,14 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 		})
 	case WSPurchasing:
 		return NewListScreen(deps, "Purchasing", listScreenSpec{
-			kind:   "purchase_orders",
-			loader: loadPurchaseOrders,
-			detail: func(id string, d Deps) Screen { return NewPurchaseOrderDetailScreen(d, id) },
+			kind: "purchase_orders",
+			// Filter-driven (f cycles all/draft/sent/…) so a saved DRAFT order
+			// is findable and resumable — filters[0] is unfiltered, so the
+			// landing list is what it always was. No plain loader: a
+			// filter-driven list expresses its unfiltered view as filters[0].
+			filters:      purchaseOrderFilters,
+			filterLoader: purchaseOrderRows,
+			detail:       func(id string, d Deps) Screen { return NewPurchaseOrderDetailScreen(d, id) },
 		})
 	case WSAssets:
 		return NewListScreen(deps, "Assets", listScreenSpec{
