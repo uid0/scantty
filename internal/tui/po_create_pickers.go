@@ -311,7 +311,7 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 		return StyleMuted.Render("Nothing flagged for reorder under this supplier.")
 	}
 	var b strings.Builder
-	b.WriteString(s.renderWindowedList(
+	b.WriteString(renderWindowedList(
 		len(s.reorderItems), s.reorderCursor,
 		func(i int) string {
 			it := s.reorderItems[i]
@@ -429,7 +429,7 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 		b.WriteString(StyleMuted.Render("No inventory items match."))
 		return b.String()
 	}
-	b.WriteString(s.renderWindowedList(
+	b.WriteString(renderWindowedList(
 		len(s.itemSuppliers), s.itemSuppliersCur,
 		func(i int) string {
 			it := s.itemSuppliers[i]
@@ -545,7 +545,7 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 		b.WriteString(StyleMuted.Render("No assets match."))
 		return b.String()
 	}
-	b.WriteString(s.renderWindowedList(
+	b.WriteString(renderWindowedList(
 		len(s.assets), s.assetsCursor,
 		func(i int) string {
 			a := s.assets[i]
@@ -577,8 +577,10 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 
 // renderWindowedList draws `total` items via the supplied formatter,
 // keeping `cursor` on screen with ~10 lines of context. Same pattern
-// as the supplier picker so all four pickers look consistent.
-func (s *PurchaseOrderCreateScreen) renderWindowedList(total, cursor int, formatRow func(int) string) string {
+// as the supplier picker so all four pickers look consistent — and a
+// free function rather than a method on the create screen, because the
+// PO edit screen's association pickers draw their lists the same way.
+func renderWindowedList(total, cursor int, formatRow func(int) string) string {
 	const window = 10
 	start := cursor - window/2
 	if start < 0 {

@@ -888,6 +888,18 @@ func (s *PurchaseOrderDetailScreen) renderBody() string {
 		b.WriteString(StyleMuted.Render("Agreement: ") + po.SupplierAgreementRef.Name + "\n")
 	}
 
+	// Who this order was placed for (op-shb9). Same only-when-attached rule as
+	// the agreement above: the associations are optional on every order, and a
+	// pair of empty rows on the many that carry neither would crowd out the
+	// ones that do. They ride the PO payload, so there is no separate load to
+	// distinguish from "none". E opens the editor that sets them.
+	if label := po.WorkOrderRef.Label(); label != "" {
+		b.WriteString(StyleMuted.Render("Work order: ") + label + "\n")
+	}
+	if name := poCommitteeRefLabel(po.OwningGroupRef); name != "" {
+		b.WriteString(StyleMuted.Render("Committee: ") + name + "\n")
+	}
+
 	if po.CreatedByUsername != "" {
 		b.WriteString(StyleMuted.Render("Created by: ") + po.CreatedByUsername + "\n")
 	}
@@ -1032,6 +1044,20 @@ func poLineTypeLabel(itemType string) string {
 	return "—"
 }
 
+// poLineOrderedFor renders a line's work-order / committee associations as one
+// "job · committee" string, or "" when the line carries neither. Shared by the
+// detail body and the edit screen's line rows so a line reads the same in both.
+func poLineOrderedFor(li omsapi.PurchaseOrderItem) string {
+	parts := []string{}
+	if label := li.WorkOrderRef.Label(); label != "" {
+		parts = append(parts, label)
+	}
+	if name := poCommitteeRefLabel(li.OwningGroupRef); name != "" {
+		parts = append(parts, name)
+	}
+	return strings.Join(parts, " · ")
+}
+
 func renderPOLineItem(b *strings.Builder, lineNum int, li omsapi.PurchaseOrderItem, poSupplier string) {
 	label := li.DisplayLabel()
 	line := fmt.Sprintf("  %d) %s", lineNum, label)
@@ -1081,6 +1107,14 @@ func renderPOLineItem(b *strings.Builder, lineNum int, li omsapi.PurchaseOrderIt
 	}
 	if len(meta) > 0 {
 		b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
+	}
+
+	// "Ordered for" — the job and/or committee THIS line was bought for
+	// (op-bu80 / op-shb9). A line's own association overrides nothing at the
+	// order level; a mixed order is exactly why lines carry their own. Drawn
+	// only when the line has one, so a plain restock line stays a plain row.
+	if row := poLineOrderedFor(li); row != "" {
+		b.WriteString("    " + StyleMuted.Render("ordered for: ") + row + "\n")
 	}
 
 	if sku, ok := li.ItemDetails["sku"].(string); ok && sku != "" {

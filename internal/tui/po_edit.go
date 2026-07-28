@@ -12,8 +12,13 @@
 //	metadata fields  — Supplier order #, Sales order #, Expected delivery,
 //	                   Notes. Text inputs; type to edit; enter saves the PO
 //	                   metadata via UpdatePurchaseOrder (PATCH).
+//	association rows — Work order, Committee (op-shb9): who the whole order was
+//	                   placed for. Pickers rather than text, so enter opens a
+//	                   list; they sit between the metadata and the lines because
+//	                   that is what they are — order-level fields.
 //	line rows        — one row per PO line. Not text inputs, so command keys
-//	                   land here: enter opens the line editor, v voids the line
+//	                   land here: enter opens the line editor, w / c re-tag the
+//	                   line's own work order / committee, v voids the line
 //	                   (reason prompt + confirm).
 //
 // Sub-phases:
@@ -22,6 +27,9 @@
 //	                       enter saves via UpdatePurchaseOrderLineItem (PATCH).
 //	poEditPhaseVoidLine  — reason input + confirm; enter voids the line via
 //	                       VoidPurchaseOrderLineItem.
+//	poEditPhaseAssoc     — one work-order / committee picker, serving BOTH the
+//	                       order-level rows and the per-line keys; enter writes
+//	                       just that association (the PO PATCH or update_item).
 //
 // After any line action the PO is reloaded so the rows reflect the new state.
 package tui
@@ -45,10 +53,11 @@ const (
 	poEditPhaseForm poEditPhase = iota
 	poEditPhaseLine
 	poEditPhaseVoidLine
+	poEditPhaseAssoc
 )
 
-// Metadata field indexes. Line rows occupy cursor positions
-// poEditMetaCount .. poEditMetaCount+len(lines)-1.
+// Metadata field indexes. The two association rows follow them, then the line
+// rows: cursor positions poEditMetaCount+poEditAssocCount .. +len(lines)-1.
 const (
 	poMetaSupplierOrder = iota
 	poMetaSalesOrder
@@ -56,6 +65,31 @@ const (
 	poMetaNotes
 	poEditMetaCount
 )
+
+// Association row offsets, relative to poEditMetaCount. Both rows are ALWAYS
+// drawn, even before their option lists land or when a load fails: they are
+// order-level fields like the ones above, and a row that appeared or vanished
+// with an async response would shift every line beneath it under the operator's
+// cursor. What the row can't do yet is said in the row itself.
+const (
+	poAssocRowWorkOrder = iota
+	poAssocRowCommittee
+	poEditAssocCount
+)
+
+// poAssocField names which association a picker is editing. The two are picked
+// the same way and written through the same endpoints, so one phase serves
+// both — at order level and at line level alike.
+type poAssocField int
+
+const (
+	poAssocFieldWorkOrder poAssocField = iota
+	poAssocFieldCommittee
+)
+
+// poAssocLineOrder is the "line index" that means the order itself rather than
+// one of its lines.
+const poAssocLineOrder = -1
 
 // Line-editor field indexes.
 const (
@@ -82,8 +116,10 @@ type PurchaseOrderEditScreen struct {
 	errMsg         string
 	terminalHeight int
 
-	phase  poEditPhase
-	cursor int // 0..poEditMetaCount-1 = metadata field; >= that = line row
+	phase poEditPhase
+	// cursor walks three bands: metadata fields, then the two association rows,
+	// then one row per line (see poEditLineBase).
+	cursor int
 
 	// Metadata inputs, indexed by poMeta* .
 	meta []textinput.Model
@@ -95,6 +131,16 @@ type PurchaseOrderEditScreen struct {
 
 	// Void-line reason (poEditPhaseVoidLine).
 	voidReason textinput.Model
+
+	// Association pickers (op-shb9). The option lists load once when the screen
+	// opens; assocField / assocLineIdx / assocRows / assocCursor describe the
+	// picker currently open, whether it was opened from an order-level row or
+	// from a line's w / c.
+	assoc        poAssocOptions
+	assocField   poAssocField
+	assocLineIdx int
+	assocRows    []poAssocOption
+	assocCursor  int
 }
 
 type poEditLoadedMsg struct {
@@ -108,11 +154,14 @@ type poEditSavedMsg struct {
 	err error
 }
 
-// poLineActionMsg reports a per-line edit or void; success reloads the PO in
-// place so the row list refreshes.
+// poLineActionMsg reports an action that edits the PO in place — a line edit or
+// void, or an association re-tag at either level; success reloads the PO so the
+// rows refresh. action is the whole subject-and-verb ("line edited", "order
+// association updated") rather than a bare verb, because these actions no
+// longer all act on a line.
 type poLineActionMsg struct {
 	err    error
-	action string // "edited" | "voided"
+	action string
 }
 
 // NewPurchaseOrderEditScreen builds the edit form. The passed PO seeds instant
@@ -171,7 +220,11 @@ func (s *PurchaseOrderEditScreen) Title() string {
 
 func (s *PurchaseOrderEditScreen) WantsRawInput() bool { return true }
 
-func (s *PurchaseOrderEditScreen) Init() tea.Cmd { return textinput.Blink }
+func (s *PurchaseOrderEditScreen) Init() tea.Cmd {
+	// The association option lists load in the background: they belong to no
+	// supplier and to no line, and nothing on this screen waits on them.
+	return tea.Batch(textinput.Blink, s.assoc.load(s.deps))
+}
 
 func (s *PurchaseOrderEditScreen) ctx() context.Context {
 	if s.deps.Ctx != nil {
@@ -195,11 +248,25 @@ func (s *PurchaseOrderEditScreen) lineCount() int {
 	return len(s.po.Items)
 }
 
-// rowCount is the total navigable rows (metadata fields + line rows).
-func (s *PurchaseOrderEditScreen) rowCount() int { return poEditMetaCount + s.lineCount() }
+// rowCount is the total navigable rows (metadata fields + association rows +
+// line rows).
+func (s *PurchaseOrderEditScreen) rowCount() int {
+	return poEditMetaCount + poEditAssocCount + s.lineCount()
+}
+
+// poEditLineBase is the cursor position of the first line row.
+const poEditLineBase = poEditMetaCount + poEditAssocCount
 
 func (s *PurchaseOrderEditScreen) onLineRow() (int, bool) {
-	if s.cursor >= poEditMetaCount && s.cursor < s.rowCount() {
+	if s.cursor >= poEditLineBase && s.cursor < s.rowCount() {
+		return s.cursor - poEditLineBase, true
+	}
+	return 0, false
+}
+
+// onAssocRow reports which order-level association row the cursor is on.
+func (s *PurchaseOrderEditScreen) onAssocRow() (int, bool) {
+	if s.cursor >= poEditMetaCount && s.cursor < poEditLineBase {
 		return s.cursor - poEditMetaCount, true
 	}
 	return 0, false
@@ -249,12 +316,12 @@ func (s *PurchaseOrderEditScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.saving = false
 		if m.err != nil {
 			s.errMsg = m.err.Error()
-			return s, Status("line "+m.action+" failed: "+m.err.Error(), StatusError)
+			return s, Status(m.action+" failed: "+m.err.Error(), StatusError)
 		}
 		s.errMsg = ""
 		s.phase = poEditPhaseForm
 		s.loading = true
-		return s, tea.Batch(Status("line "+m.action, StatusOK), s.load())
+		return s, tea.Batch(Status(m.action, StatusOK), s.load())
 
 	case tea.KeyMsg:
 		switch s.phase {
@@ -262,9 +329,15 @@ func (s *PurchaseOrderEditScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s.updateLineEdit(m)
 		case poEditPhaseVoidLine:
 			return s.updateVoidLine(m)
+		case poEditPhaseAssoc:
+			return s.updateAssocPick(m)
 		default:
 			return s.updateForm(m)
 		}
+	}
+
+	if s.assoc.handle(msg) {
+		return s, nil
 	}
 
 	// Cursor blink → the focused input.
@@ -303,12 +376,32 @@ func (s *PurchaseOrderEditScreen) updateForm(m tea.KeyMsg) (Screen, tea.Cmd) {
 		return s, textinput.Blink
 	}
 
+	if row, ok := s.onAssocRow(); ok {
+		// Order-level association rows: enter opens that field's picker. There
+		// is nothing to type here, so no other key does anything.
+		if m.String() == "enter" {
+			field := poAssocFieldWorkOrder
+			if row == poAssocRowCommittee {
+				field = poAssocFieldCommittee
+			}
+			return s, s.openAssocPick(field, poAssocLineOrder)
+		}
+		return s, nil
+	}
+
 	if idx, ok := s.onLineRow(); ok {
 		// Command keys on a line row (rows aren't text inputs).
 		switch m.String() {
 		case "enter":
 			s.openLineEditor(idx)
 			return s, textinput.Blink
+		case "w":
+			// Re-tag which job THIS line was bought for. Per-line because a
+			// single order routinely covers several — the order-level tag says
+			// nothing about a line that carries its own.
+			return s, s.openAssocPick(poAssocFieldWorkOrder, idx)
+		case "c":
+			return s, s.openAssocPick(poAssocFieldCommittee, idx)
 		case "v":
 			if s.po.Items[idx].IsVoided {
 				return s, Status("line is already voided", StatusWarn)
@@ -467,8 +560,180 @@ func (s *PurchaseOrderEditScreen) saveLine() tea.Cmd {
 	id := s.poID
 	return func() tea.Msg {
 		_, err := deps.OMS.UpdatePurchaseOrderLineItem(ctx, id, itemID, req)
-		return poLineActionMsg{err: err, action: "edited"}
+		return poLineActionMsg{err: err, action: "line edited"}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Association pickers (work order / committee — op-shb9)
+// ---------------------------------------------------------------------------
+
+// assocCurrent returns the value and label of what is attached today, at the
+// order level (lineIdx == poAssocLineOrder) or on one line.
+func (s *PurchaseOrderEditScreen) assocCurrent(field poAssocField, lineIdx int) (value, label string) {
+	if s.po == nil {
+		// The association rows are navigable before the PO lands (they are
+		// fixed rows, not a section that materialises), so this is reachable.
+		return "", ""
+	}
+	var (
+		workOrder    string
+		workOrderRef *omsapi.WorkOrderRef
+		committee    *int
+		committeeRef *omsapi.OwningGroupRef
+	)
+	if lineIdx == poAssocLineOrder {
+		workOrder, workOrderRef = s.po.WorkOrder, s.po.WorkOrderRef
+		committee, committeeRef = s.po.OwningGroup, s.po.OwningGroupRef
+	} else if lineIdx >= 0 && lineIdx < s.lineCount() {
+		li := s.po.Items[lineIdx]
+		workOrder, workOrderRef = li.WorkOrder, li.WorkOrderRef
+		committee, committeeRef = li.OwningGroup, li.OwningGroupRef
+	}
+	if field == poAssocFieldWorkOrder {
+		return workOrder, workOrderRef.Label()
+	}
+	return poCommitteeValue(committee), poCommitteeRefLabel(committeeRef)
+}
+
+// openAssocPick opens the picker for one association. The attached target is
+// grafted into the row list when the fetched options don't contain it — the
+// pickers offer only unfinished jobs and the viewer's own committees, so an
+// order tagged with a since-completed job would otherwise be silently detached
+// by an edit that meant to change the other field.
+func (s *PurchaseOrderEditScreen) openAssocPick(field poAssocField, lineIdx int) tea.Cmd {
+	if s.po == nil {
+		return Status("purchase order is still loading", StatusWarn)
+	}
+	value, label := s.assocCurrent(field, lineIdx)
+	rows := s.assoc.workOrderRows(value, label)
+	noun, loadErr := "work orders", s.assoc.workOrderErr
+	if field == poAssocFieldCommittee {
+		rows = s.assoc.committeeRows(value, label)
+		noun, loadErr = "committees", s.assoc.committeeErr
+	}
+	// Only the "none" row: there is nothing to attach and nothing attached to
+	// detach, so say why rather than opening an empty list. A failed load says
+	// so plainly — "couldn't ask" is a different fact from "there are none".
+	if len(rows) <= 1 {
+		if loadErr != "" {
+			return Status("could not load "+noun+": "+loadErr, StatusError)
+		}
+		return Status("no "+noun+" available to pick", StatusWarn)
+	}
+	s.assocField = field
+	s.assocLineIdx = lineIdx
+	s.assocRows = rows
+	s.assocCursor = poAssocCursorFor(rows, value)
+	s.errMsg = ""
+	s.phase = poEditPhaseAssoc
+	return nil
+}
+
+func (s *PurchaseOrderEditScreen) updateAssocPick(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		// Nothing is written until enter, so leaving changes nothing.
+		s.phase = poEditPhaseForm
+		s.syncFocus()
+		return s, nil
+	case "tab", "down", "j":
+		if s.assocCursor < len(s.assocRows)-1 {
+			s.assocCursor++
+		}
+		return s, nil
+	case "shift+tab", "up", "k":
+		if s.assocCursor > 0 {
+			s.assocCursor--
+		}
+		return s, nil
+	case "enter":
+		if s.saving {
+			return s, nil
+		}
+		return s, s.saveAssoc()
+	}
+	return s, nil
+}
+
+// saveAssoc writes the highlighted row through the endpoint that owns it: the
+// PO PATCH for an order-level association, update_item for a line's. Only the
+// one field is sent — the rest of the order (and of the line) is left alone, so
+// re-tagging can't disturb a cost or a date someone else just set. Row 0 sends
+// the field as null, which is how the backend detaches an association.
+func (s *PurchaseOrderEditScreen) saveAssoc() tea.Cmd {
+	if s.assocCursor < 0 || s.assocCursor >= len(s.assocRows) {
+		return nil
+	}
+	value := s.assocRows[s.assocCursor].value
+	lineIdx := s.assocLineIdx
+
+	var (
+		workOrder *string
+		committee *int
+	)
+	if s.assocField == poAssocFieldWorkOrder {
+		workOrder = &value
+	} else {
+		// "" and the "none" row both mean detach, which putAssociations spells
+		// as a 0 pk; poCommitteeID returns nil for the none row, so the zero is
+		// supplied here rather than lost.
+		id := 0
+		if picked := poCommitteeID(value); picked != nil {
+			id = *picked
+		}
+		committee = &id
+	}
+
+	s.saving = true
+	s.errMsg = ""
+	deps := s.deps
+	ctx := s.ctx()
+	id := s.poID
+	if lineIdx == poAssocLineOrder {
+		req := omsapi.PurchaseOrderUpdate{WorkOrder: workOrder, OwningGroup: committee}
+		return func() tea.Msg {
+			_, err := deps.OMS.UpdatePurchaseOrder(ctx, id, req)
+			return poLineActionMsg{err: err, action: "association updated"}
+		}
+	}
+	itemID := fmt.Sprintf("%v", s.po.Items[lineIdx].ID)
+	req := omsapi.LineItemUpdate{WorkOrder: workOrder, OwningGroup: committee}
+	return func() tea.Msg {
+		_, err := deps.OMS.UpdatePurchaseOrderLineItem(ctx, id, itemID, req)
+		return poLineActionMsg{err: err, action: "association updated"}
+	}
+}
+
+// assocRowLabel / assocRowValue render one order-level association row in the
+// form. The value branches on load state so an empty picker can never be
+// mistaken for an order with nothing attached.
+func (s *PurchaseOrderEditScreen) assocRowLabel(row int) string {
+	if row == poAssocRowCommittee {
+		return "Committee"
+	}
+	return "Work order"
+}
+
+func (s *PurchaseOrderEditScreen) assocRowValue(row int) string {
+	field := poAssocFieldWorkOrder
+	loadErr, loading := s.assoc.workOrderErr, s.assoc.workOrderLoad
+	if row == poAssocRowCommittee {
+		field = poAssocFieldCommittee
+		loadErr, loading = s.assoc.committeeErr, s.assoc.committeeLoad
+	}
+	_, label := s.assocCurrent(field, poAssocLineOrder)
+	switch {
+	case label != "":
+		// What is attached is known from the PO itself, so it renders even
+		// while the pickable options are still on their way.
+		return StyleStatusOK.Render(label)
+	case loadErr != "":
+		return StyleStatusWarn.Render("(none) · options unavailable — " + loadErr)
+	case loading:
+		return StyleMuted.Render("(none) · loading options…")
+	}
+	return StyleMuted.Render("(none)")
 }
 
 // ---------------------------------------------------------------------------
@@ -508,7 +773,7 @@ func (s *PurchaseOrderEditScreen) updateVoidLine(m tea.KeyMsg) (Screen, tea.Cmd)
 		id := s.poID
 		return s, func() tea.Msg {
 			_, err := deps.OMS.VoidPurchaseOrderLineItem(ctx, id, itemID, reason)
-			return poLineActionMsg{err: err, action: "voided"}
+			return poLineActionMsg{err: err, action: "line voided"}
 		}
 	}
 	var cmd tea.Cmd
@@ -532,6 +797,8 @@ func (s *PurchaseOrderEditScreen) View() string {
 		return s.viewLineEdit()
 	case poEditPhaseVoidLine:
 		return s.viewVoidLine()
+	case poEditPhaseAssoc:
+		return s.viewAssocPick()
 	default:
 		return s.viewForm()
 	}
@@ -548,6 +815,21 @@ func (s *PurchaseOrderEditScreen) viewForm() string {
 			caret = "▸ "
 		}
 		b.WriteString(caret + StyleTitle.Render(poMetaLabels[i]+": ") + s.meta[i].View() + "\n")
+	}
+
+	// Order-level associations (op-shb9) — who the whole order was placed for.
+	// Pickers, not text, so enter opens a list rather than saving the form.
+	b.WriteString("\n" + StyleTitle.Render("Ordered for") + "  " +
+		StyleMuted.Render("(optional — records who the order is for; changes no cost and bills nobody)") + "\n")
+	for i := 0; i < poEditAssocCount; i++ {
+		caret := "  "
+		if row, ok := s.onAssocRow(); ok && row == i {
+			caret = "▸ "
+		}
+		b.WriteString(caret + StyleTitle.Render(s.assocRowLabel(i)+": ") + s.assocRowValue(i) + "\n")
+	}
+	if _, ok := s.onAssocRow(); ok {
+		b.WriteString(StyleMuted.Render("  enter: pick — saves this association on its own") + "\n")
 	}
 
 	b.WriteString("\n" + StyleTitle.Render(fmt.Sprintf("Line items (%d)", s.lineCount())) + "\n")
@@ -580,9 +862,15 @@ func (s *PurchaseOrderEditScreen) viewForm() string {
 			line = StyleSidebarItemActive.Render(line)
 		}
 		b.WriteString(line + "\n")
+		// The line's own "ordered for", indented under it — a mixed order is
+		// the whole reason lines carry associations of their own.
+		if orderedFor := poLineOrderedFor(li); orderedFor != "" {
+			b.WriteString("    " + StyleMuted.Render("ordered for: "+orderedFor) + "\n")
+		}
 	}
 	if s.lineCount() > 0 {
-		b.WriteString("\n" + StyleMuted.Render("on a line: enter edit cost/ship/notes · v void line") + "\n")
+		b.WriteString("\n" + StyleMuted.Render(
+			"on a line: enter edit cost/ship/notes · w work order · c committee · v void line") + "\n")
 	}
 
 	b.WriteString("\n")
@@ -609,6 +897,32 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 		b.WriteString(caret + StyleTitle.Render(labels[i]+": ") + s.lineInputs[i].View() + "\n")
 	}
 	b.WriteString("\n" + StyleMuted.Render("tab/↑↓ move · enter save · esc cancel") + "\n")
+	if s.saving {
+		b.WriteString("\n" + StyleMuted.Render("Saving…"))
+	} else if s.errMsg != "" {
+		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.errMsg))
+	}
+	return b.String()
+}
+
+// viewAssocPick draws the open association picker, naming what it is tagging
+// (the order, or one line) so an operator who pressed w on a line can't mistake
+// it for the order-level field two rows up.
+func (s *PurchaseOrderEditScreen) viewAssocPick() string {
+	var b strings.Builder
+	field := "Work order"
+	if s.assocField == poAssocFieldCommittee {
+		field = "Committee"
+	}
+	target := "this purchase order"
+	if s.assocLineIdx >= 0 && s.assocLineIdx < s.lineCount() {
+		target = fmt.Sprintf("line %d: %s", s.assocLineIdx+1, s.po.Items[s.assocLineIdx].DisplayLabel())
+	}
+	b.WriteString(StyleTitle.Render(field+" for ") + target + "\n")
+	b.WriteString(StyleMuted.Render("Attribution only — it moves no stock and bills no committee.") + "\n\n")
+	b.WriteString(renderWindowedList(len(s.assocRows), s.assocCursor,
+		func(i int) string { return s.assocRows[i].label }))
+	b.WriteString("\n" + StyleMuted.Render("↑↓/j/k move · enter save · esc cancel · row 1 = none") + "\n")
 	if s.saving {
 		b.WriteString("\n" + StyleMuted.Render("Saving…"))
 	} else if s.errMsg != "" {
