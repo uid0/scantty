@@ -20,6 +20,10 @@ type cycleCountStep int
 const (
 	ccStepNone cycleCountStep = iota
 	ccStepQty
+	// ccStepOpenCount collects the open-container tally, and exists only for an
+	// open_closed item (OMS #981) — the sealed count and the open one are
+	// reconciled together. Skipped entirely for every other item.
+	ccStepOpenCount
 	ccStepReason
 	ccStepNotes
 )
@@ -34,6 +38,28 @@ const (
 	consumeStepSIG
 	consumeStepNotes
 )
+
+// packStep tracks the open/finish-pack prompt (OMS #981). packStepNone is the
+// zero value: no modal open. The prompt has a single step — pick which of the
+// two container moves to make — so the enum exists only to mirror its siblings
+// and to keep WantsRawInput readable.
+type packStep int
+
+const (
+	packStepNone packStep = iota
+	packStepChoose
+)
+
+// packOption is one of the two container moves an open_closed item makes, with
+// whether it is currently possible. Both are always listed — an unavailable one
+// muted with its reason — mirroring the web's disabled buttons, so the operator
+// learns why rather than finding the affordance missing.
+type packOption struct {
+	transition string
+	label      string
+	enabled    bool
+	why        string
+}
 
 type InventoryDetailScreen struct {
 	deps             Deps
@@ -86,6 +112,19 @@ type InventoryDetailScreen struct {
 	cnSIGErr      string
 	cnErr         string
 	cnPending     bool
+
+	// Open / finish pack modal (OMS #981), open_closed items only. Active while
+	// pkStep != packStepNone, during which WantsRawInput routes every key here.
+	pkStep    packStep
+	pkOptions []packOption
+	pkCursor  int
+	pkErr     string
+	pkPending bool
+
+	// ccOpenCount is the open-container tally the cycle-count prompt collects for
+	// an open_closed item — the sealed/open pair counted in one reconciliation.
+	// Only initialised (and only shown) for that mode.
+	ccOpenCount textinput.Model
 }
 
 type inventoryDetailLoadedMsg struct {
@@ -179,7 +218,8 @@ func (s *InventoryDetailScreen) Title() string {
 // view the screen stays non-raw so workspace switching and the global shortcuts
 // keep working.
 func (s *InventoryDetailScreen) WantsRawInput() bool {
-	return s.confirmingDelete || s.ccStep != ccStepNone || s.cnStep != consumeStepNone
+	return s.confirmingDelete || s.ccStep != ccStepNone || s.cnStep != consumeStepNone ||
+		s.pkStep != packStepNone
 }
 
 // HandlesKey claims lowercase 's' (manage suppliers) so it beats the global
@@ -353,6 +393,20 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.scroller.Set(s.renderBody())
 		text, level := consumeStatusLine(m)
 		return s, tea.Batch(Status(text, level), s.loadItemCmd(), s.loadMetricsCmd())
+	case packContainerDoneMsg:
+		s.pkPending = false
+		if m.err != nil {
+			// Keep the modal open so the operator can pick the other move or esc
+			// out; the backend owns the reason (no sealed pack left, wrong mode).
+			s.pkErr = m.err.Error()
+			return s, Status("pack action failed: "+m.err.Error(), StatusError)
+		}
+		s.closePack()
+		// Opening moves stock and writes a usage log, so re-fetch the item AND
+		// the metrics; finishing only moves the open tally, but the item still
+		// has to reload for the new sealed/open split.
+		s.scroller.Set(s.renderBody())
+		return s, tea.Batch(Status(packStatusLine(m), StatusOK), s.loadItemCmd(), s.loadMetricsCmd())
 	case inventoryDeletedMsg:
 		s.deleting = false
 		s.confirmingDelete = false
@@ -390,6 +444,9 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if s.cnStep != consumeStepNone {
 			return s.updateConsume(m)
 		}
+		if s.pkStep != packStepNone {
+			return s.updatePack(m)
+		}
 		if s.scroller.Handle(m) {
 			return s, nil
 		}
@@ -415,6 +472,15 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// reach the screen here instead.
 			if s.item != nil {
 				return s.openConsume()
+			}
+		case "p":
+			// Open a sealed pack / finish the open one (OMS #981). Only an
+			// open_closed item makes these moves — no other stock path expresses
+			// them — so for anything else p is a silent no-op, the same shape as
+			// i/b for a non-serialized item. Lowercase p is free in the global
+			// hotkey map, so it falls through to the screen.
+			if s.item != nil && s.item.CountMode == omsapi.CountModeOpenClosed {
+				return s.openPack()
 			}
 		case "i":
 			// Serialized items expose per-unit instance tracking; jump to
@@ -537,6 +603,9 @@ func (s *InventoryDetailScreen) View() string {
 	if s.cnStep != consumeStepNone {
 		return header + "\n\n" + body + "\n\n" + s.consumePrompt()
 	}
+	if s.pkStep != packStepNone {
+		return header + "\n\n" + body + "\n\n" + s.packPrompt()
+	}
 	// The retire hint flips to "un-retire" once the item is retired, so the key
 	// reads correctly whichever direction T will toggle.
 	retireHint := "T retire"
@@ -546,6 +615,11 @@ func (s *InventoryDetailScreen) View() string {
 	hint := "j/k scroll · o/enter reorder · c count · u use · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	if s.item.IsSerialized {
 		hint = "j/k scroll · o/enter reorder · c count · u use · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
+	}
+	// The pack keys only exist for a sealed+open item, so they are only hinted
+	// there — an each-mode item's footer is untouched.
+	if s.item.CountMode == omsapi.CountModeOpenClosed {
+		hint = strings.Replace(hint, "c count · ", "c count · p packs · ", 1)
 	}
 	return header + "\n\n" + body + "\n\n" + StyleMuted.Render(hint)
 }
@@ -597,6 +671,17 @@ func (s *InventoryDetailScreen) renderHeader() string {
 	return b.String()
 }
 
+// stockQtyLabel renders a threshold or quantity in the unit the item is COUNTED
+// in — phase 2a (OMS #980) reinterpreted minimum_stock / reorder_quantity as
+// count-level quantities for the pack-counting modes. An each-mode item keeps the
+// bare number this screen has always shown.
+func stockQtyLabel(it *omsapi.Item, qty int) string {
+	if !countsInPacks(it) {
+		return strconv.Itoa(qty)
+	}
+	return fmt.Sprintf("%d %s", qty, pluralizeUnit(countUnitOf(it), qty))
+}
+
 // renderBody builds the scrolling detail below the frozen header (see
 // renderHeader). It starts at the description/stock sections — the name, SKU/ID
 // and metrics row are rendered by the pinned header instead.
@@ -616,15 +701,37 @@ func (s *InventoryDetailScreen) renderBody() string {
 		b.WriteString(it.Description + "\n\n")
 	}
 
+	// On-hand is shown at the granularity the item is COUNTED in (OMS #979):
+	// "4 case(s)" / "3 sealed + 1 open" for a pack-counting item, and the bare
+	// base-unit number an each-mode item has always shown. minimum_stock and
+	// reorder_quantity are read in the count unit for the pack modes, so they are
+	// labelled with it (the phase-2a contract shift).
+	packCounted := countsInPacks(it)
 	b.WriteString(StyleTitle.Render("Stock") + "\n")
-	b.WriteString(fmt.Sprintf("Current stock: %d", it.Stock))
+	b.WriteString("Current stock: " + onHandLabel(it))
 	if it.MinimumStock > 0 {
-		b.WriteString(fmt.Sprintf("  ·  Minimum: %d", it.MinimumStock))
+		b.WriteString("  ·  Minimum: " + stockQtyLabel(it, it.MinimumStock))
 	}
 	if it.ReorderQuantity > 0 {
-		b.WriteString(fmt.Sprintf("  ·  Reorder qty: %d", it.ReorderQuantity))
+		b.WriteString("  ·  Reorder qty: " + stockQtyLabel(it, it.ReorderQuantity))
 	}
 	b.WriteString("\n")
+	if packCounted {
+		// Also show the canonical base-unit count, because that is the number
+		// every PO, usage log and reorder quantity is stored in.
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("Base units: %d %s",
+			it.Stock, pluralizeUnit(baseUnitOf(it), it.Stock))) + "\n")
+	}
+	if lines := describePackChain(it.PackagingLevels); len(lines) > 0 {
+		b.WriteString(StyleMuted.Render("Packaging: ") + strings.Join(lines, "  ·  ") + "\n")
+	}
+	if packCounted {
+		countedIn := "Counted in " + pluralizeUnit(countUnitOf(it), 2)
+		if it.CountMode == omsapi.CountModeOpenClosed {
+			countedIn += " (sealed + open)"
+		}
+		b.WriteString(StyleMuted.Render(countedIn) + "\n")
+	}
 	// Days-since-last-count (issue-7): "Counted: 12d ago" / "Counted: never".
 	b.WriteString(StyleMuted.Render(metricsCountedLine(it)) + "\n")
 	if it.ReorderStatus != "" {
@@ -1230,11 +1337,44 @@ func (s *InventoryDetailScreen) openCycleCount() (Screen, tea.Cmd) {
 	notes.CharLimit = 200
 	s.ccNotes = notes
 
+	// Open containers are seeded with the current tally: unlike the counted
+	// quantity (which must be typed, so an accidental enter can never record a
+	// count nobody made), leaving this blank would read as "zero open" and clear
+	// a tally the operator never looked at.
+	open := textinput.New()
+	open.Prompt = ""
+	open.Placeholder = "0"
+	open.CharLimit = 9
+	open.SetValue(strconv.Itoa(openContainerCount(s.item)))
+	s.ccOpenCount = open
+
 	s.ccReasonIx = defaultCycleCountReasonIx()
 	s.ccErr = ""
 	s.ccPending = false
 	s.ccStep = ccStepQty
 	return s, textinput.Blink
+}
+
+// ccPackCounted reports whether this count is entered in whole packs — the one
+// predicate the prompt and the payload both branch on. False for an each-mode or
+// half-configured item, which keeps the whole flow in base units exactly as
+// before the packaging matrix existed.
+func (s *InventoryDetailScreen) ccPackCounted() bool {
+	return countsInPacks(s.item)
+}
+
+// ccOpenClosed reports whether the count also reconciles an open-container tally.
+func (s *InventoryDetailScreen) ccOpenClosed() bool {
+	return s.ccPackCounted() && s.item.CountMode == omsapi.CountModeOpenClosed
+}
+
+// ccStepAfterQty is the reason step for most items, and the open-container step
+// for an open_closed one.
+func (s *InventoryDetailScreen) ccStepAfterQty() cycleCountStep {
+	if s.ccOpenClosed() {
+		return ccStepOpenCount
+	}
+	return ccStepReason
 }
 
 // closeCycleCount tears the modal down and returns to the normal detail view.
@@ -1244,6 +1384,7 @@ func (s *InventoryDetailScreen) closeCycleCount() {
 	s.ccPending = false
 	s.ccQty.Blur()
 	s.ccNotes.Blur()
+	s.ccOpenCount.Blur()
 }
 
 // updateCycleCount drives the three-step prompt: quantity → reason → notes. esc
@@ -1265,7 +1406,12 @@ func (s *InventoryDetailScreen) updateCycleCount(m tea.KeyMsg) (Screen, tea.Cmd)
 				return s, nil
 			}
 			s.ccErr = ""
-			s.ccStep = ccStepReason
+			s.ccStep = s.ccStepAfterQty()
+			if s.ccStep == ccStepOpenCount {
+				s.ccQty.Blur()
+				s.ccOpenCount.Focus()
+				return s, textinput.Blink
+			}
 			return s, nil
 		}
 		// Gate to digits so the field only ever holds a valid integer; editing
@@ -1279,6 +1425,27 @@ func (s *InventoryDetailScreen) updateCycleCount(m tea.KeyMsg) (Screen, tea.Cmd)
 		}
 		var cmd tea.Cmd
 		s.ccQty, cmd = s.ccQty.Update(m)
+		return s, cmd
+	case ccStepOpenCount:
+		if m.Type == tea.KeyEnter {
+			if _, err := strconv.Atoi(strings.TrimSpace(s.ccOpenCount.Value())); err != nil {
+				s.ccErr = "open containers must be a whole number"
+				return s, nil
+			}
+			s.ccErr = ""
+			s.ccOpenCount.Blur()
+			s.ccStep = ccStepReason
+			return s, nil
+		}
+		if m.Type == tea.KeyRunes {
+			for _, r := range m.Runes {
+				if r < '0' || r > '9' {
+					return s, nil
+				}
+			}
+		}
+		var cmd tea.Cmd
+		s.ccOpenCount, cmd = s.ccOpenCount.Update(m)
 		return s, cmd
 	case ccStepReason:
 		switch m.String() {
@@ -1319,15 +1486,33 @@ func (s *InventoryDetailScreen) submitCycleCount() (Screen, tea.Cmd) {
 		s.ccErr = "counted qty must be a whole number"
 		return s, nil
 	}
-	reason := cycleCountReasons[s.ccReasonIx].Value
-	notes := strings.TrimSpace(s.ccNotes.Value())
+	body := omsapi.CycleCountBody{
+		CountedQty: qty,
+		Reason:     cycleCountReasons[s.ccReasonIx].Value,
+		// skip_reorder stays false: a count that drops stock below the reorder
+		// point should still queue a reorder, matching the web default.
+		SkipReorder: false,
+		Notes:       strings.TrimSpace(s.ccNotes.Value()),
+		// Opt-in only: an each-mode item sends no at_level and is read in base
+		// units, exactly as before the packaging matrix existed.
+		AtLevel: s.ccPackCounted(),
+	}
+	if s.ccOpenClosed() {
+		open, err := strconv.Atoi(strings.TrimSpace(s.ccOpenCount.Value()))
+		if err != nil || open < 0 {
+			s.ccStep = ccStepOpenCount
+			s.ccNotes.Blur()
+			s.ccOpenCount.Focus()
+			s.ccErr = "open containers must be a whole number"
+			return s, textinput.Blink
+		}
+		body.OpenCount = &open
+	}
 	s.ccPending = true
 	s.ccErr = ""
 	deps, ctx, id := s.deps, s.ctx(), s.item.ID
 	return s, func() tea.Msg {
-		// skip_reorder stays false: a count that drops stock below the reorder
-		// point should still queue a reorder, matching the web default.
-		item, err := deps.OMS.CycleCountItem(ctx, id, qty, reason, false, notes)
+		item, err := deps.OMS.CycleCountItem(ctx, id, body)
 		return cycleCountDoneMsg{item: item, err: err}
 	}
 }
@@ -1347,16 +1532,49 @@ func (s *InventoryDetailScreen) cycleCountPrompt() string {
 	}
 
 	qty := strings.TrimSpace(s.ccQty.Value())
+	// A pack-counted item is counted — and posted — in whole packs, so the prompt
+	// names the unit the server will read the number in.
+	qtyLabel := "Counted quantity"
+	if s.ccPackCounted() {
+		unit := pluralizeUnit(countUnitOf(s.item), 2)
+		qtyLabel = fmt.Sprintf("Counted quantity (%s)", unit)
+	}
+	qtyEcho := StyleMuted.Render(qtyLabel + ": " + qty)
+
 	switch s.ccStep {
 	case ccStepQty:
-		b.WriteString("Counted quantity:\n  " + s.ccQty.View() + "\n")
+		b.WriteString(qtyLabel + ":\n  " + s.ccQty.View() + "\n")
+		if s.ccPackCounted() {
+			hint := fmt.Sprintf("whole %s on the shelf", pluralizeUnit(countUnitOf(s.item), 2))
+			if s.ccOpenClosed() {
+				hint += " — sealed only"
+			}
+			b.WriteString(StyleMuted.Render("  "+hint) + "\n")
+		}
+		// What the system thinks it has, in the same unit — the number being
+		// reconciled against.
+		if s.item != nil {
+			b.WriteString(StyleMuted.Render("  system on hand: "+onHandLabel(s.item)) + "\n")
+		}
+		if s.ccErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render(s.ccErr) + "\n")
+		}
+		b.WriteString("\n" + StyleMuted.Render("enter next · esc cancel"))
+	case ccStepOpenCount:
+		unit := pluralizeUnit(countUnitOf(s.item), 2)
+		b.WriteString(qtyEcho + "\n\n")
+		b.WriteString("Open containers:\n  " + s.ccOpenCount.View() + "\n")
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  opened %s in use — not counted as stock", unit)) + "\n")
 		if s.ccErr != "" {
 			b.WriteString("\n" + StyleStatusError.Render(s.ccErr) + "\n")
 		}
 		b.WriteString("\n" + StyleMuted.Render("enter next · esc cancel"))
 	case ccStepReason:
-		b.WriteString(StyleMuted.Render("Counted quantity: "+qty) + "\n\n")
-		b.WriteString("Reason:\n")
+		b.WriteString(qtyEcho + "\n")
+		if s.ccOpenClosed() {
+			b.WriteString(StyleMuted.Render("Open containers: "+strings.TrimSpace(s.ccOpenCount.Value())) + "\n")
+		}
+		b.WriteString("\nReason:\n")
 		for i, r := range cycleCountReasons {
 			if i == s.ccReasonIx {
 				b.WriteString("  " + StyleStatusOK.Render("▸ "+r.Label) + "\n")
@@ -1366,7 +1584,10 @@ func (s *InventoryDetailScreen) cycleCountPrompt() string {
 		}
 		b.WriteString("\n" + StyleMuted.Render("j/k move · enter next · esc cancel"))
 	case ccStepNotes:
-		b.WriteString(StyleMuted.Render("Counted quantity: "+qty) + "\n")
+		b.WriteString(qtyEcho + "\n")
+		if s.ccOpenClosed() {
+			b.WriteString(StyleMuted.Render("Open containers: "+strings.TrimSpace(s.ccOpenCount.Value())) + "\n")
+		}
 		b.WriteString(StyleMuted.Render("Reason: "+cycleCountReasons[s.ccReasonIx].Label) + "\n\n")
 		b.WriteString("Note (optional):\n  " + s.ccNotes.View() + "\n")
 		if s.ccErr != "" {
@@ -1506,6 +1727,10 @@ func (s *InventoryDetailScreen) selectedConsumeSIG() (*omsapi.SIG, bool) {
 // projectedCharge is the item's unit cost × qty as "$X.XX", or "" when the item
 // has no unit cost (then the backend records the usage but posts no charge). The
 // unit cost is the same value the "Costing" section renders.
+//
+// unit_cost is per BASE unit, so a quantity entered in packs is priced through
+// the pack's size — the same conversion the server does when it converts the
+// at_level quantity before snapshotting the cost.
 func (s *InventoryDetailScreen) projectedCharge(qty int) string {
 	if s.item == nil || s.item.UnitCost.Empty() || qty <= 0 {
 		return ""
@@ -1514,7 +1739,7 @@ func (s *InventoryDetailScreen) projectedCharge(qty int) string {
 	if err != nil {
 		return ""
 	}
-	return fmt.Sprintf("$%.2f", f*float64(qty))
+	return fmt.Sprintf("$%.2f", f*float64(qty)*float64(countLevelBaseUnits(s.item)))
 }
 
 // submitConsume validates and fires the log-usage request.
@@ -1529,7 +1754,13 @@ func (s *InventoryDetailScreen) submitConsume() (Screen, tea.Cmd) {
 		s.cnErr = "quantity used must be a positive whole number"
 		return s, nil
 	}
-	body := omsapi.LogUsageBody{Quantity: qty, Notes: strings.TrimSpace(s.cnNotes.Value())}
+	body := omsapi.LogUsageBody{
+		Quantity: qty,
+		Notes:    strings.TrimSpace(s.cnNotes.Value()),
+		// Opt-in only: without this the quantity is base units, which is what
+		// every each-mode item must keep meaning.
+		AtLevel: countsInPacks(s.item),
+	}
 	chargedName := ""
 	if sig, ok := s.selectedConsumeSIG(); ok {
 		id := sig.ID
@@ -1602,15 +1833,26 @@ func (s *InventoryDetailScreen) consumePrompt() string {
 
 	qty := strings.TrimSpace(s.cnQty.Value())
 	qtyN, _ := strconv.Atoi(qty)
+	// A pack-counted item consumes whole packs, so the prompt names the unit the
+	// server will read the number in (and the projected charge is priced through
+	// the pack — see projectedCharge).
+	qtyLabel := "Quantity used"
+	if countsInPacks(s.item) {
+		qtyLabel = fmt.Sprintf("Quantity used (%s)", pluralizeUnit(countUnitOf(s.item), 2))
+	}
 	switch s.cnStep {
 	case consumeStepQty:
-		b.WriteString("Quantity used:\n  " + s.cnQty.View() + "\n")
+		b.WriteString(qtyLabel + ":\n  " + s.cnQty.View() + "\n")
+		if countsInPacks(s.item) {
+			b.WriteString(StyleMuted.Render(fmt.Sprintf("  whole %s consumed from stock",
+				pluralizeUnit(countUnitOf(s.item), 2))) + "\n")
+		}
 		if s.cnErr != "" {
 			b.WriteString("\n" + StyleStatusError.Render(s.cnErr) + "\n")
 		}
 		b.WriteString("\n" + StyleMuted.Render("enter next · esc cancel"))
 	case consumeStepSIG:
-		b.WriteString(StyleMuted.Render("Quantity used: "+qty) + "\n")
+		b.WriteString(StyleMuted.Render(qtyLabel+": "+qty) + "\n")
 		if amt := s.projectedCharge(qtyN); amt != "" {
 			b.WriteString(StyleMuted.Render("Value if charged: "+amt) + "\n")
 		} else {
@@ -1638,7 +1880,7 @@ func (s *InventoryDetailScreen) consumePrompt() string {
 		}
 		b.WriteString("\n" + StyleMuted.Render("j/k move · enter next · esc cancel"))
 	case consumeStepNotes:
-		b.WriteString(StyleMuted.Render("Quantity used: "+qty) + "\n")
+		b.WriteString(StyleMuted.Render(qtyLabel+": "+qty) + "\n")
 		b.WriteString(StyleMuted.Render("Charge: "+s.consumeChargeSummary(qtyN)) + "\n\n")
 		b.WriteString("Note (optional):\n  " + s.cnNotes.View() + "\n")
 		if s.cnErr != "" {
@@ -1646,6 +1888,173 @@ func (s *InventoryDetailScreen) consumePrompt() string {
 		}
 		b.WriteString("\n" + StyleMuted.Render("enter submit · esc cancel"))
 	}
+	return b.String()
+}
+
+// --- Open / finish a pack (OMS #981) ----------------------------------------
+
+// packContainerDoneMsg is the result of a pack-container submission. transition
+// is captured at submit time so the status line reads correctly regardless of
+// what the response echoes.
+type packContainerDoneMsg struct {
+	res        *omsapi.PackContainerResult
+	transition string
+	err        error
+}
+
+// openPack enters the open/finish-pack prompt. The caller has already checked the
+// count mode; the remaining guard is the half-configured item — open/closed with
+// no usable counting level — which gets a one-line explanation rather than a modal
+// that could only fail, because that IS a configuration problem worth naming.
+func (s *InventoryDetailScreen) openPack() (Screen, tea.Cmd) {
+	it := s.item
+	if !countsInPacks(it) {
+		return s, Status("this item has no counting level set — pick one on the item form (E)", StatusWarn)
+	}
+
+	unit := countUnitOf(it)
+	sealed, open := countAtLevel(it), openContainerCount(it)
+	s.pkOptions = []packOption{
+		{
+			transition: omsapi.PackTransitionOpen,
+			label:      "Open a " + unit,
+			enabled:    sealed > 0,
+			why:        fmt.Sprintf("no sealed %s left to open", unit),
+		},
+		{
+			transition: omsapi.PackTransitionFinish,
+			label:      "Finish the open " + unit,
+			enabled:    open > 0,
+			why:        fmt.Sprintf("no open %s to finish", unit),
+		},
+	}
+	// Start on the first move that is actually possible, so the common case is
+	// one keypress.
+	s.pkCursor = 0
+	for i, opt := range s.pkOptions {
+		if opt.enabled {
+			s.pkCursor = i
+			break
+		}
+	}
+	s.pkErr = ""
+	s.pkPending = false
+	s.pkStep = packStepChoose
+	return s, nil
+}
+
+func (s *InventoryDetailScreen) closePack() {
+	s.pkStep = packStepNone
+	s.pkOptions = nil
+	s.pkCursor = 0
+	s.pkErr = ""
+	s.pkPending = false
+}
+
+// updatePack drives the transition picker. The cursor moves over BOTH rows even
+// when one is unavailable — pressing enter on it names the reason, which is more
+// use than a row that cannot be reached.
+func (s *InventoryDetailScreen) updatePack(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.pkPending {
+		return s, nil // submission in flight
+	}
+	switch m.String() {
+	case "esc":
+		s.closePack()
+		return s, nil
+	case "up", "k":
+		if s.pkCursor > 0 {
+			s.pkCursor--
+			s.pkErr = ""
+		}
+	case "down", "j":
+		if s.pkCursor < len(s.pkOptions)-1 {
+			s.pkCursor++
+			s.pkErr = ""
+		}
+	case "enter":
+		return s.submitPack()
+	}
+	return s, nil
+}
+
+// submitPack fires the picked transition.
+func (s *InventoryDetailScreen) submitPack() (Screen, tea.Cmd) {
+	if s.item == nil || s.pkCursor < 0 || s.pkCursor >= len(s.pkOptions) {
+		s.closePack()
+		return s, nil
+	}
+	opt := s.pkOptions[s.pkCursor]
+	if !opt.enabled {
+		s.pkErr = opt.why
+		return s, nil
+	}
+	s.pkPending = true
+	s.pkErr = ""
+	deps, ctx, id := s.deps, s.ctx(), s.item.ID
+	transition := opt.transition
+	return s, func() tea.Msg {
+		res, err := deps.OMS.PackContainer(ctx, id, transition, "")
+		return packContainerDoneMsg{res: res, transition: transition, err: err}
+	}
+}
+
+// packStatusLine describes a completed transition, quoting the server's
+// refreshed on-hand text when it sent one.
+func packStatusLine(m packContainerDoneMsg) string {
+	base := "pack opened"
+	if m.transition == omsapi.PackTransitionFinish {
+		base = "open pack finished"
+	}
+	if m.res != nil && m.res.OnHandDisplay != nil && m.res.OnHandDisplay.Text != "" {
+		return base + " — on hand: " + m.res.OnHandDisplay.Text
+	}
+	return base
+}
+
+// packPrompt renders the transition picker.
+func (s *InventoryDetailScreen) packPrompt() string {
+	var b strings.Builder
+	name := ""
+	unit := "pack"
+	if s.item != nil {
+		name = s.item.Name
+		unit = countUnitOf(s.item)
+	}
+	b.WriteString(StyleStatusWarn.Render("Packs") + "  " + StyleMuted.Render(name) + "\n\n")
+
+	if s.pkPending {
+		b.WriteString(StyleMuted.Render("Recording…"))
+		return b.String()
+	}
+
+	if s.item != nil {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("On hand: %s", onHandLabel(s.item))) + "\n\n")
+	}
+	// Opening IS consumption under this mode: the pack's base units leave stock
+	// the moment it is broken open, because an open pack's contents stop being
+	// countable. Say so, since the operator is choosing between the two.
+	b.WriteString(StyleMuted.Render(fmt.Sprintf(
+		"Opening a %s draws its contents out of stock; finishing only clears the open tally.", unit)) + "\n\n")
+
+	for i, opt := range s.pkOptions {
+		label := opt.label
+		if !opt.enabled {
+			label += "  (" + opt.why + ")"
+		}
+		switch {
+		case i == s.pkCursor && opt.enabled:
+			b.WriteString("  " + StyleStatusOK.Render("▸ "+label) + "\n")
+		case i == s.pkCursor:
+			b.WriteString("  " + StyleStatusWarn.Render("▸ "+label) + "\n")
+		default:
+			b.WriteString("    " + StyleMuted.Render(label) + "\n")
+		}
+	}
+	if s.pkErr != "" {
+		b.WriteString("\n" + StyleStatusError.Render(s.pkErr) + "\n")
+	}
+	b.WriteString("\n" + StyleMuted.Render("j/k move · enter confirm · esc cancel"))
 	return b.String()
 }
 

@@ -229,7 +229,11 @@ func TestCycleCountItem_Contract(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	item, err := c.CycleCountItem(context.Background(), "abc", 8, "miscounted", false, "recount after audit")
+	item, err := c.CycleCountItem(context.Background(), "abc", CycleCountBody{
+		CountedQty: 8,
+		Reason:     "miscounted",
+		Notes:      "recount after audit",
+	})
 	if err != nil {
 		t.Fatalf("CycleCountItem: %v", err)
 	}
@@ -272,7 +276,11 @@ func TestCycleCountItem_OmitsEmptyNotes(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if _, err := c.CycleCountItem(context.Background(), "abc", 0, "lost", true, ""); err != nil {
+	if _, err := c.CycleCountItem(context.Background(), "abc", CycleCountBody{
+		CountedQty:  0,
+		Reason:      "lost",
+		SkipReorder: true,
+	}); err != nil {
 		t.Fatalf("CycleCountItem: %v", err)
 	}
 	if _, present := body["notes"]; present {
