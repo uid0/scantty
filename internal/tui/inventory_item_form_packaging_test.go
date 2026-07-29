@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -332,7 +336,7 @@ func TestItemForm_PayloadOmitsUntouchedPackaging(t *testing.T) {
 		t.Errorf("a legacy item's write must carry no packaging keys, got base=%v chain=%v",
 			w.BaseUnit, w.PackagingLevels)
 	}
-	if plan := legacy.packagingPlan(); plan.detach || plan.attach {
+	if plan := legacy.packagingPlan(); plan.detachBefore || plan.detachAfter || plan.attach {
 		t.Errorf("a legacy item's save must make no packaging request, got %+v", plan)
 	}
 
@@ -397,7 +401,7 @@ func TestItemForm_PackagingPlan(t *testing.T) {
 	// An each-mode create that never touched packaging needs no packaging write.
 	s := newPackagingForm(t)
 	plan := s.packagingPlan()
-	if plan.detach || plan.attach {
+	if plan.detachBefore || plan.detachAfter || plan.attach {
 		t.Errorf("an opted-out save must write no packaging, got %+v", plan)
 	}
 
@@ -410,7 +414,7 @@ func TestItemForm_PackagingPlan(t *testing.T) {
 	s.countModeIx = countModeIndex(omsapi.CountModeByLevel)
 	s.countLevelKey = 1
 	plan = s.packagingPlan()
-	if plan.detach {
+	if plan.detachBefore || plan.detachAfter {
 		t.Error("a create has no stored mode to detach")
 	}
 	if !plan.attach || plan.mode != omsapi.CountModeByLevel || plan.levelIndex != 0 {
@@ -423,7 +427,7 @@ func TestItemForm_PackagingPlan(t *testing.T) {
 	e.item = paperItem()
 	e.hydrate()
 	plan = e.packagingPlan()
-	if plan.detach || plan.attach {
+	if plan.detachBefore || plan.detachAfter || plan.attach {
 		t.Errorf("an unchanged pack item must write no packaging, got %+v", plan)
 	}
 
@@ -435,8 +439,14 @@ func TestItemForm_PackagingPlan(t *testing.T) {
 	e2.countModeIx = countModeIndex(omsapi.CountModeEach)
 	e2.countLevelKey = 0
 	plan = e2.packagingPlan()
-	if !plan.detach {
-		t.Error("switching to each must detach the stored level")
+	// The item write would have been accepted with the stored pair intact, so the
+	// clear waits until AFTER it — a failed item write must not strand the item in
+	// "each".
+	if plan.detachBefore {
+		t.Error("switching to each must not clear the mode before a write that would succeed")
+	}
+	if !plan.detachAfter {
+		t.Error("switching to each must clear the stored level after the item write")
 	}
 	if plan.attach {
 		t.Error("each mode has nothing to attach")
@@ -452,7 +462,7 @@ func TestItemForm_PackagingPlan(t *testing.T) {
 	e3.hydrate()
 	e3.packRows[1].baseUnits = 250 // resize the counted rung, same position
 	plan = e3.packagingPlan()
-	if plan.detach {
+	if plan.detachBefore || plan.detachAfter {
 		t.Error("a chain edit that keeps the level's position must not detach")
 	}
 	if !plan.attach || plan.levelIndex != 1 {
@@ -468,7 +478,7 @@ func TestItemForm_PackagingPlan(t *testing.T) {
 	e4.packRows[0].baseUnits = 1
 	e4.countLevelKey = e4.packRows[0].key
 	plan = e4.packagingPlan()
-	if !plan.detach {
+	if !plan.detachBefore {
 		t.Error("a chain edit that drops the stored level's position must detach first")
 	}
 	if !plan.attach || plan.levelIndex != 0 {
@@ -486,7 +496,7 @@ func TestItemForm_PackagingPlan(t *testing.T) {
 	e5.countModeIx = countModeIndex(omsapi.CountModeByLevel)
 	e5.countLevelKey = e5.packRows[1].key
 	plan = e5.packagingPlan()
-	if !plan.detach {
+	if !plan.detachBefore {
 		t.Error("a pack item with no stored level must detach to become writable")
 	}
 	if !plan.attach {
@@ -579,7 +589,7 @@ func TestItemForm_PackErrorAdoptsSavedItem(t *testing.T) {
 		t.Errorf("the saved chain should be adopted as the new baseline")
 	}
 	plan := s.packagingPlan()
-	if plan.detach {
+	if plan.detachBefore || plan.detachAfter {
 		t.Error("a retry must not detach: the adopted item is already each-mode")
 	}
 	if !plan.attach {
@@ -631,5 +641,54 @@ func TestItemForm_PackagingRenderSmoke(t *testing.T) {
 	s.inputs[fBaseUnit].SetValue("g")
 	if out := s.View(); out == "" {
 		t.Error("row view empty with a one-character base unit")
+	}
+}
+
+// TestItemForm_SwitchToEachClearsModeAfterTheItemWrite pins the ORDER, not just
+// the plan: the counting mode is cleared only once the item is safely saved, so an
+// item-write failure cannot strand a pack-counted item in "each".
+func TestItemForm_SwitchToEachClearsModeAfterTheItemWrite(t *testing.T) {
+	var seq []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		// The mode write is the one that carries count_mode; the item write is the
+		// one that carries name.
+		if _, isMode := body["count_mode"]; isMode {
+			seq = append(seq, "mode")
+		} else {
+			seq = append(seq, "item")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"abc","name":"Copy paper","current_stock":2500,
+			"minimum_stock":2,"reorder_quantity":4,"count_mode":"each"}`))
+	}))
+	defer srv.Close()
+
+	s := NewInventoryItemFormScreen(Deps{OMS: omsapi.New(srv.URL)}, "abc")
+	s.item = paperItem()
+	s.hydrate()
+	s.loading = false
+	// Switch the by_level item to each, touching nothing else.
+	s.countModeIx = countModeIndex(omsapi.CountModeEach)
+	s.countLevelKey = 0
+
+	_, cmd := s.submit()
+	if cmd == nil {
+		t.Fatal("submit returned no command")
+	}
+	msg, ok := cmd().(itemFormSavedMsg)
+	if !ok {
+		t.Fatalf("msg = %T", cmd())
+	}
+	if msg.err != nil || msg.packErr != nil {
+		t.Fatalf("save failed: err=%v packErr=%v", msg.err, msg.packErr)
+	}
+	if len(seq) != 2 || seq[0] != "item" || seq[1] != "mode" {
+		t.Errorf("request order = %v, want the item write BEFORE the mode clear", seq)
+	}
+	if !msg.detached {
+		t.Error("a completed clear must be reported as detached")
 	}
 }

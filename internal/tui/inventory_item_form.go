@@ -1117,10 +1117,11 @@ func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
 	id := s.itemID
 	plan := s.packagingPlan()
 	return s, func() tea.Msg {
-		// Detach first when the stored counting level is about to be invalidated:
-		// the backend refuses to save a chain that no longer holds the rung
-		// count_level points at, and refuses "each" while a level is still set.
-		if plan.detach {
+		// Clear the counting mode BEFORE the item write only when the item write
+		// would otherwise be rejected — the backend refuses to save a chain that
+		// no longer holds the rung count_level points at, and refuses any write at
+		// all while a pack mode has no level.
+		if plan.detachBefore {
 			if _, e := deps.OMS.SetItemCountMode(ctx, id, omsapi.CountModeEach, nil); e != nil {
 				// Nothing has been written yet, so this is a plain save failure —
 				// NOT a packErr, which means "the item saved but its packaging
@@ -1137,28 +1138,40 @@ func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
 			item, e = deps.OMS.CreateInventoryItem(ctx, body)
 		}
 		if e != nil {
-			return itemFormSavedMsg{err: e, detached: plan.detach}
+			return itemFormSavedMsg{err: e, detached: plan.detachBefore}
 		}
 
-		// Attach the counting mode last: a pack level is a pk, so it is only
-		// knowable from the chain the write just saved. Positions are the
-		// identity — the rung at the picked row's index is the picked rung.
-		if plan.attach {
+		// Everything below runs AFTER the item is safely saved, so a failure here
+		// is a packErr — the item landed, its counting granularity did not.
+		switch {
+		case plan.detachAfter:
+			// Switching to "each" when the item write did not need it done first:
+			// waiting means a failed item write leaves the stored pack mode intact
+			// instead of stranding the item in "each".
+			updated, ce := deps.OMS.SetItemCountMode(ctx, item.ID, omsapi.CountModeEach, nil)
+			if ce != nil {
+				return itemFormSavedMsg{item: item, detached: plan.detachBefore, packErr: ce}
+			}
+			item = updated
+		case plan.attach:
+			// A pack level is a pk, so it is only knowable from the chain the write
+			// just saved. Positions are the identity — the rung at the picked row's
+			// index is the picked rung.
 			level, ok := savedCountLevelID(item, plan.levelIndex)
 			if !ok {
 				return itemFormSavedMsg{
 					item:     item,
-					detached: plan.detach,
+					detached: plan.detachBefore,
 					packErr:  errors.New("the saved packaging chain did not come back with the counting level"),
 				}
 			}
 			updated, ce := deps.OMS.SetItemCountMode(ctx, item.ID, plan.mode, &level)
 			if ce != nil {
-				return itemFormSavedMsg{item: item, detached: plan.detach, packErr: ce}
+				return itemFormSavedMsg{item: item, detached: plan.detachBefore, packErr: ce}
 			}
 			item = updated
 		}
-		return itemFormSavedMsg{item: item, detached: plan.detach}
+		return itemFormSavedMsg{item: item, detached: plan.detachBefore || plan.detachAfter}
 	}
 }
 
@@ -1169,11 +1182,16 @@ func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
 // as a separate request, because a pack level is a pk that does not exist until
 // the chain has been saved. So a save is up to three steps — detach, item, attach
 // — of which an each-mode item with an unchanged chain needs exactly none.
+// detachBefore vs detachAfter is the whole subtlety: clearing the pair is only
+// done ahead of the item write when the item write would otherwise be REJECTED.
+// When clearing is merely the target state, it waits until the item is saved, so
+// an unrelated item-write failure cannot strand a pack-counted item in "each".
 type itemPackagingPlan struct {
-	detach     bool
-	attach     bool
-	mode       string
-	levelIndex int
+	detachBefore bool
+	detachAfter  bool
+	attach       bool
+	mode         string
+	levelIndex   int
 }
 
 func (s *InventoryItemFormScreen) packagingPlan() itemPackagingPlan {
@@ -1182,38 +1200,33 @@ func (s *InventoryItemFormScreen) packagingPlan() itemPackagingPlan {
 	storedPack := s.savedCountMode != "" && s.savedCountMode != omsapi.CountModeEach
 	plan := itemPackagingPlan{mode: mode, levelIndex: packagingRowIndex(s.packRows, s.countLevelKey)}
 
-	// Detaching is a real server write, so it is narrowed to the cases where the
-	// item write would otherwise be REJECTED — a transient "each" that a
-	// subsequent failure could strand is worth avoiding. Only an item already
-	// opted into a pack mode is ever a candidate, so an each-mode item's save is
-	// untouched by any of this.
+	// The item write carries no count_mode/count_level, so the backend validates
+	// the STORED pair against it. It rejects the write in exactly two cases, both
+	// mirrored here — and only for an item already opted into a pack mode, so an
+	// each-mode item's save is untouched by any of this:
 	//
-	// The three cases, each mirroring a backend rule:
-	//   - target "each": the backend refuses that while a level is still set, and
-	//     ItemWrite deliberately cannot express the pair, so it must be cleared
-	//     first.
-	//   - no usable stored level (a pack mode whose count_level went null — the
-	//     count_level FK is SET_NULL, so another writer's chain edit can produce
-	//     it): EVERY write is rejected until the mode is cleared, so the detach
-	//     is the repair.
+	//   - no usable stored level (a pack mode whose count_level went null — the FK
+	//     is SET_NULL, so another writer's chain edit can produce it): EVERY write
+	//     is rejected until the mode is cleared, so clearing it is the repair.
 	//   - a chain write that drops the stored level's POSITION: the backend checks
-	//     exactly that the stored sort_order is among the ones being saved. A
-	//     chain edit that KEEPS the position validates fine, so it needs no
-	//     detach — which is the common case (renaming or resizing a rung).
+	//     exactly that the stored sort_order is among the ones being saved. A chain
+	//     edit that KEEPS the position validates fine — the common case (renaming
+	//     or resizing a rung) — and so needs nothing done first.
 	storedLevelOK := s.savedCountLevel != nil && s.savedCountLevelSort >= 0
-	plan.detach = s.edit && storedPack &&
-		(mode == omsapi.CountModeEach || !storedLevelOK ||
-			(chainDirty && s.savedCountLevelSort >= len(s.packRows)))
+	plan.detachBefore = s.edit && storedPack &&
+		(!storedLevelOK || (chainDirty && s.savedCountLevelSort >= len(s.packRows)))
 
 	if mode == omsapi.CountModeEach {
-		// The detach above is the whole of "switch to each"; an item that was
-		// already each needs no packaging write at all.
+		// Clearing the pair IS "switch to each" — the backend refuses "each" while
+		// a level is set, and ItemWrite deliberately cannot express the pair. It
+		// happens after the item write unless the write needed it done first.
+		plan.detachAfter = s.edit && storedPack && !plan.detachBefore
 		return plan
 	}
 	// Skip the follow-up only when the stored pair is already exactly what it
 	// would write: same mode, chain untouched, and the picked row still the rung
 	// whose pk the item points at.
-	if !plan.detach && !chainDirty && s.savedCountMode == mode && s.savedCountLevel != nil &&
+	if !plan.detachBefore && !chainDirty && s.savedCountMode == mode && s.savedCountLevel != nil &&
 		plan.levelIndex >= 0 && s.packRows[plan.levelIndex].id == *s.savedCountLevel {
 		return plan
 	}
