@@ -309,8 +309,41 @@ func TestItemForm_PayloadOmitsUntouchedPackaging(t *testing.T) {
 	if w.PackagingLevels != nil {
 		t.Errorf("re-saving an unchanged chain must send nothing, got %v", *w.PackagingLevels)
 	}
-	if w.BaseUnit == nil || *w.BaseUnit != "sheet" {
-		t.Errorf("hydrated base unit = %v", w.BaseUnit)
+	// An unchanged base unit is not re-sent either — the backend's own default is
+	// "unit", so round-tripping it would mean every legacy item's edit PATCHed a
+	// base_unit it never had before.
+	if w.BaseUnit != nil {
+		t.Errorf("an unchanged base unit must be omitted, got %q", *w.BaseUnit)
+	}
+
+	// The strict form of the invariant: a legacy each-mode item carrying the
+	// backend default must produce a payload with NO packaging keys at all.
+	legacy := NewInventoryItemFormScreen(Deps{}, "abc")
+	legacy.item = &omsapi.Item{
+		ID: "abc", Name: "Widget", Stock: 12, MinimumStock: 1, ReorderQuantity: 1,
+		BaseUnit: "unit", CountMode: omsapi.CountModeEach,
+	}
+	legacy.hydrate()
+	w, err = legacy.buildPayload()
+	if err != nil {
+		t.Fatalf("buildPayload(legacy): %v", err)
+	}
+	if w.BaseUnit != nil || w.PackagingLevels != nil {
+		t.Errorf("a legacy item's write must carry no packaging keys, got base=%v chain=%v",
+			w.BaseUnit, w.PackagingLevels)
+	}
+	if plan := legacy.packagingPlan(); plan.detach || plan.attach {
+		t.Errorf("a legacy item's save must make no packaging request, got %+v", plan)
+	}
+
+	// Changing the base unit does send it.
+	legacy.inputs[fBaseUnit].SetValue("glove")
+	w, err = legacy.buildPayload()
+	if err != nil {
+		t.Fatalf("buildPayload(renamed unit): %v", err)
+	}
+	if w.BaseUnit == nil || *w.BaseUnit != "glove" {
+		t.Errorf("a changed base unit must be sent, got %v", w.BaseUnit)
 	}
 }
 
@@ -409,20 +442,55 @@ func TestItemForm_PackagingPlan(t *testing.T) {
 		t.Error("each mode has nothing to attach")
 	}
 
-	// Editing the chain of a pack item detaches FIRST — the backend refuses to
-	// save a chain that no longer holds the rung count_level points at — then
-	// re-attaches by position.
+	// A chain edit that KEEPS the counting level's position needs no detach: the
+	// backend only refuses a chain write that drops the stored sort_order, so the
+	// item and its chain go in one request and the mode is re-attached after.
+	// Avoiding the detach matters — it is a real write, and a later failure would
+	// strand the item in "each".
 	e3 := NewInventoryItemFormScreen(Deps{}, "abc")
 	e3.item = paperItem()
 	e3.hydrate()
-	e3.packRows = e3.packRows[:2] // drop the innermost rung
-	e3.packRows[1].baseUnits = 1
+	e3.packRows[1].baseUnits = 250 // resize the counted rung, same position
 	plan = e3.packagingPlan()
-	if !plan.detach || !plan.attach {
-		t.Errorf("a chain edit on a pack item must detach then attach, got %+v", plan)
+	if plan.detach {
+		t.Error("a chain edit that keeps the level's position must not detach")
 	}
-	if plan.levelIndex != 1 {
-		t.Errorf("level index = %d, want the picked row's position", plan.levelIndex)
+	if !plan.attach || plan.levelIndex != 1 {
+		t.Errorf("plan = %+v, want attach at the picked row's position", plan)
+	}
+
+	// A chain edit that drops the counting level's position DOES detach first —
+	// otherwise the backend rejects the chain write.
+	e4 := NewInventoryItemFormScreen(Deps{}, "abc")
+	e4.item = paperItem()
+	e4.hydrate()
+	e4.packRows = e4.packRows[:1] // only the outermost rung survives
+	e4.packRows[0].baseUnits = 1
+	e4.countLevelKey = e4.packRows[0].key
+	plan = e4.packagingPlan()
+	if !plan.detach {
+		t.Error("a chain edit that drops the stored level's position must detach first")
+	}
+	if !plan.attach || plan.levelIndex != 0 {
+		t.Errorf("plan = %+v, want attach at index 0", plan)
+	}
+
+	// A pack item whose count_level went null (the FK is SET_NULL, so another
+	// writer's chain edit can produce it) cannot be written at all until the mode
+	// is cleared — so the detach is the repair, chain dirty or not.
+	e5 := NewInventoryItemFormScreen(Deps{}, "abc")
+	broken := paperItem()
+	broken.CountLevel = nil
+	e5.item = broken
+	e5.hydrate()
+	e5.countModeIx = countModeIndex(omsapi.CountModeByLevel)
+	e5.countLevelKey = e5.packRows[1].key
+	plan = e5.packagingPlan()
+	if !plan.detach {
+		t.Error("a pack item with no stored level must detach to become writable")
+	}
+	if !plan.attach {
+		t.Error("and must then attach the mode it should have")
 	}
 }
 

@@ -248,16 +248,21 @@ type InventoryItemFormScreen struct {
 	// What the server already has, so a save that touches none of it sends no
 	// packaging request at all — which is the common case, and what keeps an
 	// each-mode item's write byte-identical to before this section existed.
-	savedChainSig   string
-	savedCountMode  string
-	savedCountLevel *int
-	packErr         string
-	chainCursor     int
-	chainRowEditing int // index being edited, or -1 while adding a new row
-	chainRowName    textinput.Model
-	chainRowUnits   textinput.Model
-	chainRowOnUnits bool
-	chainRowErr     string
+	savedChainSig  string
+	savedBaseUnit  string
+	savedCountMode string
+	// savedCountLevel is the stored rung pk; savedCountLevelSort is that rung's
+	// POSITION in the stored chain, which is what decides whether a chain write
+	// can keep it (see packagingPlan). -1 when there is no stored level.
+	savedCountLevel     *int
+	savedCountLevelSort int
+	packErr             string
+	chainCursor         int
+	chainRowEditing     int // index being edited, or -1 while adding a new row
+	chainRowName        textinput.Model
+	chainRowUnits       textinput.Model
+	chainRowOnUnits     bool
+	chainRowErr         string
 }
 
 type itemFormRefLoadedMsg struct {
@@ -326,6 +331,7 @@ func NewInventoryItemFormScreen(deps Deps, itemID string) *InventoryItemFormScre
 	// create that never opens the chain editor sends no packaging_levels key.
 	s.savedChainSig = chainSignature(nil)
 	s.savedCountMode = omsapi.CountModeEach
+	s.savedCountLevelSort = -1
 	s.chainRowEditing = -1
 	s.chainRowName = textinput.New()
 	s.chainRowName.Prompt = ""
@@ -482,6 +488,7 @@ func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// another detach and its own error message would be wrong.
 			s.savedCountMode = omsapi.CountModeEach
 			s.savedCountLevel = nil
+			s.savedCountLevelSort = -1
 		}
 		if m.err != nil {
 			s.errMsg = m.err.Error()
@@ -643,15 +650,18 @@ func (s *InventoryItemFormScreen) hydrate() {
 	s.packRows, s.packNextKey = toPackagingRows(it.PackagingLevels, s.packNextKey)
 	s.countModeIx = countModeIndex(it.CountMode)
 	s.countLevelKey = 0
+	s.savedCountLevelSort = -1
 	if it.CountLevel != nil {
-		for _, row := range s.packRows {
+		for i, row := range s.packRows {
 			if row.id == *it.CountLevel {
 				s.countLevelKey = row.key
+				s.savedCountLevelSort = i
 				break
 			}
 		}
 	}
 	s.savedChainSig = chainSignature(s.packRows)
+	s.savedBaseUnit = strings.TrimSpace(it.BaseUnit)
 	s.savedCountMode = countModeOptions[s.countModeIx].value
 	s.savedCountLevel = it.CountLevel
 
@@ -1172,9 +1182,28 @@ func (s *InventoryItemFormScreen) packagingPlan() itemPackagingPlan {
 	storedPack := s.savedCountMode != "" && s.savedCountMode != omsapi.CountModeEach
 	plan := itemPackagingPlan{mode: mode, levelIndex: packagingRowIndex(s.packRows, s.countLevelKey)}
 
-	// Only an item already opted into a pack mode ever pays for a detach, so an
-	// each-mode item's save is untouched by any of this.
-	plan.detach = s.edit && storedPack && (chainDirty || mode == omsapi.CountModeEach)
+	// Detaching is a real server write, so it is narrowed to the cases where the
+	// item write would otherwise be REJECTED — a transient "each" that a
+	// subsequent failure could strand is worth avoiding. Only an item already
+	// opted into a pack mode is ever a candidate, so an each-mode item's save is
+	// untouched by any of this.
+	//
+	// The three cases, each mirroring a backend rule:
+	//   - target "each": the backend refuses that while a level is still set, and
+	//     ItemWrite deliberately cannot express the pair, so it must be cleared
+	//     first.
+	//   - no usable stored level (a pack mode whose count_level went null — the
+	//     count_level FK is SET_NULL, so another writer's chain edit can produce
+	//     it): EVERY write is rejected until the mode is cleared, so the detach
+	//     is the repair.
+	//   - a chain write that drops the stored level's POSITION: the backend checks
+	//     exactly that the stored sort_order is among the ones being saved. A
+	//     chain edit that KEEPS the position validates fine, so it needs no
+	//     detach — which is the common case (renaming or resizing a rung).
+	storedLevelOK := s.savedCountLevel != nil && s.savedCountLevelSort >= 0
+	plan.detach = s.edit && storedPack &&
+		(mode == omsapi.CountModeEach || !storedLevelOK ||
+			(chainDirty && s.savedCountLevelSort >= len(s.packRows)))
 
 	if mode == omsapi.CountModeEach {
 		// The detach above is the whole of "switch to each"; an item that was
@@ -1220,11 +1249,21 @@ func (s *InventoryItemFormScreen) adoptSavedPackaging(it *omsapi.Item) {
 		s.countLevelKey = rows[idx].key
 	}
 	s.savedChainSig = chainSignature(rows)
+	s.savedBaseUnit = strings.TrimSpace(it.BaseUnit)
 	s.savedCountMode = it.CountMode
 	if s.savedCountMode == "" {
 		s.savedCountMode = omsapi.CountModeEach
 	}
 	s.savedCountLevel = it.CountLevel
+	s.savedCountLevelSort = -1
+	if it.CountLevel != nil {
+		for i, row := range rows {
+			if row.id == *it.CountLevel {
+				s.savedCountLevelSort = i
+				break
+			}
+		}
+	}
 	s.rebuildFields()
 }
 
@@ -1311,8 +1350,15 @@ func (s *InventoryItemFormScreen) buildPayload() (omsapi.ItemWrite, error) {
 		w.SerialTrackingMode = &mode
 	}
 
-	// Base unit: blank omits the key so the model's own "unit" default stands.
-	w.BaseUnit = strPtrTrim(s.inputs[fBaseUnit].Value())
+	// Base unit is sent only when it CHANGED, for the same reason the chain is:
+	// the backend's own default is "unit", so an each-mode item that has never
+	// opted in would otherwise PATCH base_unit:"unit" back at it — a no-op that
+	// still breaks "an un-opted-in item's write is what it always was". Blank
+	// means "leave it alone" (the column is not nullable and rejects ""), so it
+	// is never sent as an empty string.
+	if bu := strings.TrimSpace(s.inputs[fBaseUnit].Value()); bu != "" && bu != s.savedBaseUnit {
+		w.BaseUnit = &bu
+	}
 
 	// The chain is sent ONLY when it actually changed. Sending it unconditionally
 	// would mean a form that failed to hydrate (an older backend, a partial
