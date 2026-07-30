@@ -55,6 +55,10 @@ const (
 	fUseCaseBasedReorder
 	fMinimumCases
 	fReorderCases
+	fBaseUnit
+	fPackChain
+	fCountMode
+	fCountLevel
 	fReorderAlertsEnabled
 	fCategory
 	fLocation
@@ -81,6 +85,10 @@ const (
 	kindToggle
 	kindSelect
 	kindPicker
+	// kindChain is the packaging-chain editor: a summary row that opens its own
+	// list sub-phase, since a rung has two values and a chain has any number of
+	// rungs (the sc-ue4 nested sub-list idiom).
+	kindChain
 )
 
 type itemFormPhase int
@@ -89,6 +97,11 @@ const (
 	itemFormPhaseForm itemFormPhase = iota
 	itemFormPhaseCategoryPick
 	itemFormPhaseLocationPick
+	// itemFormPhaseChain lists the packaging rungs, largest first;
+	// itemFormPhaseChainRow edits one rung's name + size. Both are purely
+	// client-side — the chain is saved nested with the item, not per row.
+	itemFormPhaseChain
+	itemFormPhaseChainRow
 )
 
 type selectOption struct{ value, label string }
@@ -119,6 +132,10 @@ var itemFieldLabel = map[int]string{
 	fUseCaseBasedReorder:  "Case-based reordering",
 	fMinimumCases:         "Minimum cases",
 	fReorderCases:         "Reorder cases",
+	fBaseUnit:             "Base unit",
+	fPackChain:            "Packaging chain",
+	fCountMode:            "Count mode",
+	fCountLevel:           "Counted in",
 	fReorderAlertsEnabled: "ML reorder alerts",
 	fCategory:             "Category",
 	fLocation:             "Location",
@@ -138,17 +155,19 @@ var itemFieldLabel = map[int]string{
 
 func fieldKind(id int) itemFieldKind {
 	switch id {
-	case fName, fDescription, fSKU, fImageURL, fMSDSURL, fNFPASpecial, fNotes:
+	case fName, fDescription, fSKU, fImageURL, fMSDSURL, fNFPASpecial, fNotes, fBaseUnit:
 		return kindText
 	case fCurrentStock, fMinimumStock, fReorderQuantity, fMinimumCases, fReorderCases,
 		fNFPAHealth, fNFPAFire, fNFPAInstability:
 		return kindNumber
 	case fUseCaseBasedReorder, fReorderAlertsEnabled, fIsHazardous, fIsSerialized, fIsActive, fIsRetired:
 		return kindToggle
-	case fShelfPosition, fSerialTrackingMode:
+	case fShelfPosition, fSerialTrackingMode, fCountMode, fCountLevel:
 		return kindSelect
 	case fCategory, fLocation:
 		return kindPicker
+	case fPackChain:
+		return kindChain
 	}
 	return kindText
 }
@@ -213,6 +232,37 @@ type InventoryItemFormScreen struct {
 	pickSearch  textinput.Model
 	pickTyping  bool
 	pickOptions []itemPickOption
+
+	// Packaging matrix (OMS #979/#981, web #983). packRows is the editable pack
+	// chain, largest rung first; packNextKey mints the client-only row keys that
+	// let countLevelKey survive a reorder, insert or delete (a rung's pk is
+	// positional server-side, so it cannot be that identity).
+	//
+	// countModeIx indexes countModeOptions; countLevelKey names a ROW, and its pk
+	// is resolved out of the SAVED chain at submit time.
+	packRows      []packagingRow
+	packNextKey   int
+	countModeIx   int
+	countLevelKey int
+
+	// What the server already has, so a save that touches none of it sends no
+	// packaging request at all — which is the common case, and what keeps an
+	// each-mode item's write byte-identical to before this section existed.
+	savedChainSig  string
+	savedBaseUnit  string
+	savedCountMode string
+	// savedCountLevel is the stored rung pk; savedCountLevelSort is that rung's
+	// POSITION in the stored chain, which is what decides whether a chain write
+	// can keep it (see packagingPlan). -1 when there is no stored level.
+	savedCountLevel     *int
+	savedCountLevelSort int
+	packErr             string
+	chainCursor         int
+	chainRowEditing     int // index being edited, or -1 while adding a new row
+	chainRowName        textinput.Model
+	chainRowUnits       textinput.Model
+	chainRowOnUnits     bool
+	chainRowErr         string
 }
 
 type itemFormRefLoadedMsg struct {
@@ -226,9 +276,16 @@ type itemFormItemLoadedMsg struct {
 	err  error
 }
 
+// itemFormSavedMsg is the result of a save. packErr is the packaging half
+// failing on its own — the item itself DID save by then, so the operator has to
+// be told which half went wrong rather than seeing one blanket error. detached
+// records that the counting mode was cleared before the item write (see
+// packagingPlan), so a failure can say so and a retry can plan correctly.
 type itemFormSavedMsg struct {
-	item *omsapi.Item
-	err  error
+	item     *omsapi.Item
+	err      error
+	packErr  error
+	detached bool
 }
 
 // NewInventoryItemFormScreen builds the create/edit form. An empty itemID opens
@@ -269,6 +326,22 @@ func NewInventoryItemFormScreen(deps Deps, itemID string) *InventoryItemFormScre
 	s.pickSearch.Placeholder = "filter"
 	s.pickSearch.CharLimit = 60
 
+	// Packaging: a new item starts each-mode with no chain, which is exactly the
+	// state every existing item is in. savedChainSig therefore matches, so a
+	// create that never opens the chain editor sends no packaging_levels key.
+	s.savedChainSig = chainSignature(nil)
+	s.savedCountMode = omsapi.CountModeEach
+	s.savedCountLevelSort = -1
+	s.chainRowEditing = -1
+	s.chainRowName = textinput.New()
+	s.chainRowName.Prompt = ""
+	s.chainRowName.Placeholder = "case"
+	s.chainRowName.CharLimit = 50
+	s.chainRowUnits = textinput.New()
+	s.chainRowUnits.Prompt = ""
+	s.chainRowUnits.Placeholder = "1000"
+	s.chainRowUnits.CharLimit = 9
+
 	s.rebuildFields()
 	s.syncFocus()
 	return s
@@ -288,6 +361,8 @@ func itemCharLimitFor(id int) int {
 		return 20
 	case fNotes:
 		return 1000
+	case fBaseUnit:
+		return 50
 	case fNFPAHealth, fNFPAFire, fNFPAInstability:
 		return 1
 	default:
@@ -315,6 +390,9 @@ func itemPlaceholderFor(id int) string {
 		return "1"
 	case fNFPAHealth, fNFPAFire, fNFPAInstability:
 		return "0-4"
+	case fBaseUnit:
+		// The smallest thing you count — stock is always stored in these.
+		return "unit"
 	default:
 		return ""
 	}
@@ -404,9 +482,34 @@ func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 	case itemFormSavedMsg:
 		s.saving = false
+		if m.detached {
+			// The counting mode really was cleared server-side before the item
+			// write, so the snapshot has to say so — otherwise a retry would plan
+			// another detach and its own error message would be wrong.
+			s.savedCountMode = omsapi.CountModeEach
+			s.savedCountLevel = nil
+			s.savedCountLevelSort = -1
+		}
 		if m.err != nil {
 			s.errMsg = m.err.Error()
-			return s, Status("save failed: "+m.err.Error(), StatusError)
+			if m.detached {
+				s.errMsg += " (the item's counting mode was cleared first and is still 'each')"
+			}
+			return s, Status("save failed: "+s.errMsg, StatusError)
+		}
+		if m.packErr != nil {
+			// The item saved; only the counting-mode follow-up failed. Adopt the
+			// saved id so a retry PATCHes THIS item rather than creating a second
+			// one, and re-snapshot from the response (the chain write landed with
+			// the item, so only the mode/level pair is still outstanding).
+			if m.item != nil {
+				s.edit = true
+				s.itemID = m.item.ID
+				s.item = m.item
+				s.adoptSavedPackaging(m.item)
+			}
+			s.errMsg = "item saved, but the packaging setup failed: " + m.packErr.Error()
+			return s, Status(s.errMsg, StatusError)
 		}
 		id := s.itemID
 		name := ""
@@ -433,6 +536,10 @@ func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		switch s.phase {
 		case itemFormPhaseCategoryPick, itemFormPhaseLocationPick:
 			return s.updatePickPhase(m)
+		case itemFormPhaseChain:
+			return s.updateChainPhase(m)
+		case itemFormPhaseChainRow:
+			return s.updateChainRowPhase(m)
 		default:
 			return s.updateFormPhase(m)
 		}
@@ -442,6 +549,15 @@ func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	if s.phase == itemFormPhaseCategoryPick || s.phase == itemFormPhaseLocationPick {
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(msg)
+		return s, cmd
+	}
+	if s.phase == itemFormPhaseChainRow {
+		var cmd tea.Cmd
+		if s.chainRowOnUnits {
+			s.chainRowUnits, cmd = s.chainRowUnits.Update(msg)
+		} else {
+			s.chainRowName, cmd = s.chainRowName.Update(msg)
+		}
 		return s, cmd
 	}
 	if id, ok := s.currentFieldID(); ok && isTextKind(id) {
@@ -526,6 +642,29 @@ func (s *InventoryItemFormScreen) hydrate() {
 	s.isSerialized = it.IsSerialized
 	s.serialMode = serialModeIndex(it.SerialTrackingMode)
 
+	// Packaging matrix: hydrate the chain + counting granularity, and snapshot
+	// what the server already has so a save that touches none of it sends no
+	// packaging request. A backend predating the matrix returns no fields at all,
+	// which hydrates as "each mode, no chain" — the same as an opted-out item.
+	set(fBaseUnit, it.BaseUnit)
+	s.packRows, s.packNextKey = toPackagingRows(it.PackagingLevels, s.packNextKey)
+	s.countModeIx = countModeIndex(it.CountMode)
+	s.countLevelKey = 0
+	s.savedCountLevelSort = -1
+	if it.CountLevel != nil {
+		for i, row := range s.packRows {
+			if row.id == *it.CountLevel {
+				s.countLevelKey = row.key
+				s.savedCountLevelSort = i
+				break
+			}
+		}
+	}
+	s.savedChainSig = chainSignature(s.packRows)
+	s.savedBaseUnit = strings.TrimSpace(it.BaseUnit)
+	s.savedCountMode = countModeOptions[s.countModeIx].value
+	s.savedCountLevel = it.CountLevel
+
 	set(fNotes, it.Notes)
 	// is_active defaults true on the model; honour the fetched value.
 	s.isActive = it.IsActive
@@ -553,6 +692,14 @@ func (s *InventoryItemFormScreen) rebuildFields() {
 	f := []int{fName, fDescription, fSKU, fImageURL, fCurrentStock, fMinimumStock, fReorderQuantity, fUseCaseBasedReorder}
 	if s.useCaseBased {
 		f = append(f, fMinimumCases, fReorderCases)
+	}
+	// Units & packaging (web #983's own section). Base unit, the chain and the
+	// count mode are always offered — that IS the opt-in — while the counting
+	// level only exists for the two pack-counting modes, exactly as the web
+	// renders its select conditionally.
+	f = append(f, fBaseUnit, fPackChain, fCountMode)
+	if countModeOptions[s.countModeIx].value != omsapi.CountModeEach {
+		f = append(f, fCountLevel)
 	}
 	f = append(f, fReorderAlertsEnabled, fCategory, fLocation, fShelfPosition, fIsHazardous)
 	if s.isHazardous {
@@ -648,6 +795,11 @@ func (s *InventoryItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 			return s, textinput.Blink
 		}
 		return s, nil
+	case kindChain:
+		if m.String() == " " {
+			s.openChain()
+		}
+		return s, nil
 	default:
 		var cmd tea.Cmd
 		s.inputs[id], cmd = s.inputs[id].Update(m)
@@ -691,7 +843,104 @@ func (s *InventoryItemFormScreen) cycleSelect(id, delta int) {
 	case fSerialTrackingMode:
 		n := len(serialModeOptions)
 		s.serialMode = (s.serialMode + delta + n) % n
+	case fCountMode:
+		n := len(countModeOptions)
+		s.countModeIx = (s.countModeIx + delta + n) % n
+		if countModeOptions[s.countModeIx].value == omsapi.CountModeEach {
+			// The backend refuses "each" while a level is set, so dropping to it
+			// clears the pick rather than leaving a value that can only 400.
+			s.countLevelKey = 0
+		}
+		// The counting-level row appears and disappears with the mode.
+		s.rebuildFields()
+		s.syncFocus()
+	case fCountLevel:
+		s.cycleCountLevel(delta)
 	}
+}
+
+// cycleCountLevel walks the pick across the NAMED chain rows (an unnamed row has
+// nothing to show and cannot be a legal count level anyway), starting from
+// whatever is picked now. A chain with no named rows leaves the pick empty, and
+// the field renders the same "add a packaging level first" hint the web's
+// placeholder does.
+func (s *InventoryItemFormScreen) cycleCountLevel(delta int) {
+	named := make([]int, 0, len(s.packRows))
+	for _, row := range s.packRows {
+		if strings.TrimSpace(row.name) != "" {
+			named = append(named, row.key)
+		}
+	}
+	if len(named) == 0 {
+		s.countLevelKey = 0
+		return
+	}
+	at := -1
+	for i, key := range named {
+		if key == s.countLevelKey {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		// Nothing picked yet: step onto the first (or last) named row rather than
+		// skipping one, so a single keypress always lands somewhere.
+		if delta >= 0 {
+			s.countLevelKey = named[0]
+		} else {
+			s.countLevelKey = named[len(named)-1]
+		}
+		return
+	}
+	s.countLevelKey = named[(at+delta+len(named))%len(named)]
+}
+
+// countMode is the wire value of the picked counting mode.
+func (s *InventoryItemFormScreen) countMode() string {
+	return countModeOptions[s.countModeIx].value
+}
+
+// baseUnitValue is the base unit as typed, falling back to the backend default
+// so labels never read "1 " with a hole in them.
+func (s *InventoryItemFormScreen) baseUnitValue() string {
+	if u := strings.TrimSpace(s.inputs[fBaseUnit].Value()); u != "" {
+		return u
+	}
+	return defaultBaseUnit
+}
+
+// thresholdUnit is the unit minimum_stock / reorder_quantity are read in, or ""
+// when the item is counted in base units. Phase 2a reinterpreted that pair as
+// COUNT-level quantities for the pack-counting modes, so the labels have to say
+// which unit they mean (the same shift the web's thresholdUnit expresses).
+func (s *InventoryItemFormScreen) thresholdUnit() string {
+	if s.countMode() == omsapi.CountModeEach {
+		return ""
+	}
+	idx := packagingRowIndex(s.packRows, s.countLevelKey)
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(s.packRows[idx].name)
+}
+
+// fieldLabel is itemFieldLabel plus the labels that depend on the counting mode.
+func (s *InventoryItemFormScreen) fieldLabel(id int) string {
+	unit := s.thresholdUnit()
+	if unit == "" {
+		return itemFieldLabel[id]
+	}
+	switch id {
+	case fCurrentStock:
+		// Stock stays canonical in BASE units even for a pack-counted item; the
+		// at-level entry lives on the item detail's count flow.
+		return fmt.Sprintf("Current stock (%s)", pluralizeUnit(s.baseUnitValue(), 2))
+	case fMinimumStock:
+		return fmt.Sprintf("Minimum stock (%s)", pluralizeUnit(unit, 2))
+	case fReorderQuantity:
+		return fmt.Sprintf("Reorder quantity (%s)", pluralizeUnit(unit, 2))
+	}
+	return itemFieldLabel[id]
 }
 
 func (s *InventoryItemFormScreen) toggleState(id int) bool {
@@ -844,6 +1093,17 @@ func (s *InventoryItemFormScreen) commitPick() {
 // ---------------------------------------------------------------------------
 
 func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
+	// Refuse an impossible chain here rather than sending it: the backend rejects
+	// the same combinations, but by then the item write would already have landed.
+	if errs := validatePackagingChain(s.packRows); len(errs) > 0 {
+		s.errMsg = strings.Join(errs, " ")
+		return s, Status(s.errMsg, StatusError)
+	}
+	if msg := resolveCountLevelError(s.countMode(), s.countLevelKey, s.packRows); msg != "" {
+		s.errMsg = msg
+		return s, Status(msg, StatusError)
+	}
+
 	body, err := s.buildPayload()
 	if err != nil {
 		s.errMsg = err.Error()
@@ -855,7 +1115,21 @@ func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
 	ctx := s.ctx()
 	edit := s.edit
 	id := s.itemID
+	plan := s.packagingPlan()
 	return s, func() tea.Msg {
+		// Clear the counting mode BEFORE the item write only when the item write
+		// would otherwise be rejected — the backend refuses to save a chain that
+		// no longer holds the rung count_level points at, and refuses any write at
+		// all while a pack mode has no level.
+		if plan.detachBefore {
+			if _, e := deps.OMS.SetItemCountMode(ctx, id, omsapi.CountModeEach, nil); e != nil {
+				// Nothing has been written yet, so this is a plain save failure —
+				// NOT a packErr, which means "the item saved but its packaging
+				// did not".
+				return itemFormSavedMsg{err: fmt.Errorf("could not clear the counting mode first: %w", e)}
+			}
+		}
+
 		var item *omsapi.Item
 		var e error
 		if edit {
@@ -863,8 +1137,147 @@ func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
 		} else {
 			item, e = deps.OMS.CreateInventoryItem(ctx, body)
 		}
-		return itemFormSavedMsg{item: item, err: e}
+		if e != nil {
+			return itemFormSavedMsg{err: e, detached: plan.detachBefore}
+		}
+
+		// Everything below runs AFTER the item is safely saved, so a failure here
+		// is a packErr — the item landed, its counting granularity did not.
+		switch {
+		case plan.detachAfter:
+			// Switching to "each" when the item write did not need it done first:
+			// waiting means a failed item write leaves the stored pack mode intact
+			// instead of stranding the item in "each".
+			updated, ce := deps.OMS.SetItemCountMode(ctx, item.ID, omsapi.CountModeEach, nil)
+			if ce != nil {
+				return itemFormSavedMsg{item: item, detached: plan.detachBefore, packErr: ce}
+			}
+			item = updated
+		case plan.attach:
+			// A pack level is a pk, so it is only knowable from the chain the write
+			// just saved. Positions are the identity — the rung at the picked row's
+			// index is the picked rung.
+			level, ok := savedCountLevelID(item, plan.levelIndex)
+			if !ok {
+				return itemFormSavedMsg{
+					item:     item,
+					detached: plan.detachBefore,
+					packErr:  errors.New("the saved packaging chain did not come back with the counting level"),
+				}
+			}
+			updated, ce := deps.OMS.SetItemCountMode(ctx, item.ID, plan.mode, &level)
+			if ce != nil {
+				return itemFormSavedMsg{item: item, detached: plan.detachBefore, packErr: ce}
+			}
+			item = updated
+		}
+		return itemFormSavedMsg{item: item, detached: plan.detachBefore || plan.detachAfter}
 	}
+}
+
+// packagingPlan is what the counting-mode writes have to do around the item
+// write, given what the server already has.
+//
+// The pair (count_mode, count_level) can only be written together and only ever
+// as a separate request, because a pack level is a pk that does not exist until
+// the chain has been saved. So a save is up to three steps — detach, item, attach
+// — of which an each-mode item with an unchanged chain needs exactly none.
+// detachBefore vs detachAfter is the whole subtlety: clearing the pair is only
+// done ahead of the item write when the item write would otherwise be REJECTED.
+// When clearing is merely the target state, it waits until the item is saved, so
+// an unrelated item-write failure cannot strand a pack-counted item in "each".
+type itemPackagingPlan struct {
+	detachBefore bool
+	detachAfter  bool
+	attach       bool
+	mode         string
+	levelIndex   int
+}
+
+func (s *InventoryItemFormScreen) packagingPlan() itemPackagingPlan {
+	mode := s.countMode()
+	chainDirty := chainSignature(s.packRows) != s.savedChainSig
+	storedPack := s.savedCountMode != "" && s.savedCountMode != omsapi.CountModeEach
+	plan := itemPackagingPlan{mode: mode, levelIndex: packagingRowIndex(s.packRows, s.countLevelKey)}
+
+	// The item write carries no count_mode/count_level, so the backend validates
+	// the STORED pair against it. It rejects the write in exactly two cases, both
+	// mirrored here — and only for an item already opted into a pack mode, so an
+	// each-mode item's save is untouched by any of this:
+	//
+	//   - no usable stored level (a pack mode whose count_level went null — the FK
+	//     is SET_NULL, so another writer's chain edit can produce it): EVERY write
+	//     is rejected until the mode is cleared, so clearing it is the repair.
+	//   - a chain write that drops the stored level's POSITION: the backend checks
+	//     exactly that the stored sort_order is among the ones being saved. A chain
+	//     edit that KEEPS the position validates fine — the common case (renaming
+	//     or resizing a rung) — and so needs nothing done first.
+	storedLevelOK := s.savedCountLevel != nil && s.savedCountLevelSort >= 0
+	plan.detachBefore = s.edit && storedPack &&
+		(!storedLevelOK || (chainDirty && s.savedCountLevelSort >= len(s.packRows)))
+
+	if mode == omsapi.CountModeEach {
+		// Clearing the pair IS "switch to each" — the backend refuses "each" while
+		// a level is set, and ItemWrite deliberately cannot express the pair. It
+		// happens after the item write unless the write needed it done first.
+		plan.detachAfter = s.edit && storedPack && !plan.detachBefore
+		return plan
+	}
+	// Skip the follow-up only when the stored pair is already exactly what it
+	// would write: same mode, chain untouched, and the picked row still the rung
+	// whose pk the item points at.
+	if !plan.detachBefore && !chainDirty && s.savedCountMode == mode && s.savedCountLevel != nil &&
+		plan.levelIndex >= 0 && s.packRows[plan.levelIndex].id == *s.savedCountLevel {
+		return plan
+	}
+	plan.attach = true
+	return plan
+}
+
+// savedCountLevelID is the pk of the rung at sortOrder in a just-saved item's
+// chain — the position IS the rung's identity on the wire, so the row the
+// operator picked comes back as the rung with that sort_order.
+func savedCountLevelID(item *omsapi.Item, sortOrder int) (int, bool) {
+	if item == nil || sortOrder < 0 {
+		return 0, false
+	}
+	for _, level := range item.PackagingLevels {
+		if level.SortOrder == sortOrder {
+			return level.ID, true
+		}
+	}
+	return 0, false
+}
+
+// adoptSavedPackaging re-snapshots the chain from a saved item, keeping the
+// counting-level pick on the same rung by POSITION (the chain came back in the
+// order it was sent). Used when the item saved but its counting mode did not, so
+// a retry writes only what is still outstanding.
+func (s *InventoryItemFormScreen) adoptSavedPackaging(it *omsapi.Item) {
+	idx := packagingRowIndex(s.packRows, s.countLevelKey)
+	rows, next := toPackagingRows(it.PackagingLevels, s.packNextKey)
+	s.packRows, s.packNextKey = rows, next
+	s.countLevelKey = 0
+	if idx >= 0 && idx < len(rows) {
+		s.countLevelKey = rows[idx].key
+	}
+	s.savedChainSig = chainSignature(rows)
+	s.savedBaseUnit = strings.TrimSpace(it.BaseUnit)
+	s.savedCountMode = it.CountMode
+	if s.savedCountMode == "" {
+		s.savedCountMode = omsapi.CountModeEach
+	}
+	s.savedCountLevel = it.CountLevel
+	s.savedCountLevelSort = -1
+	if it.CountLevel != nil {
+		for i, row := range rows {
+			if row.id == *it.CountLevel {
+				s.savedCountLevelSort = i
+				break
+			}
+		}
+	}
+	s.rebuildFields()
 }
 
 func (s *InventoryItemFormScreen) buildPayload() (omsapi.ItemWrite, error) {
@@ -948,6 +1361,25 @@ func (s *InventoryItemFormScreen) buildPayload() (omsapi.ItemWrite, error) {
 	if s.isSerialized {
 		mode := serialModeOptions[s.serialMode].value
 		w.SerialTrackingMode = &mode
+	}
+
+	// Base unit is sent only when it CHANGED, for the same reason the chain is:
+	// the backend's own default is "unit", so an each-mode item that has never
+	// opted in would otherwise PATCH base_unit:"unit" back at it — a no-op that
+	// still breaks "an un-opted-in item's write is what it always was". Blank
+	// means "leave it alone" (the column is not nullable and rejects ""), so it
+	// is never sent as an empty string.
+	if bu := strings.TrimSpace(s.inputs[fBaseUnit].Value()); bu != "" && bu != s.savedBaseUnit {
+		w.BaseUnit = &bu
+	}
+
+	// The chain is sent ONLY when it actually changed. Sending it unconditionally
+	// would mean a form that failed to hydrate (an older backend, a partial
+	// response) silently wiped a stored chain — and an each-mode item with no
+	// packaging keeps writing exactly the request it always did.
+	if chainSignature(s.packRows) != s.savedChainSig {
+		levels := toPackagingPayload(s.packRows)
+		w.PackagingLevels = &levels
 	}
 
 	return w, nil
@@ -1040,6 +1472,10 @@ func (s *InventoryItemFormScreen) View() string {
 	switch s.phase {
 	case itemFormPhaseCategoryPick, itemFormPhaseLocationPick:
 		return s.viewPick()
+	case itemFormPhaseChain:
+		return s.viewChain()
+	case itemFormPhaseChainRow:
+		return s.viewChainRow()
 	}
 	return s.viewForm()
 }
@@ -1075,7 +1511,7 @@ func (s *InventoryItemFormScreen) renderField(i int) string {
 	if i == s.cursor {
 		caret = "▸ "
 	}
-	label := itemFieldLabel[id]
+	label := s.fieldLabel(id)
 
 	var value string
 	switch fieldKind(id) {
@@ -1091,6 +1527,8 @@ func (s *InventoryItemFormScreen) renderField(i int) string {
 		value = s.selectLabel(id)
 	case kindPicker:
 		value = s.pickerLabel(id)
+	case kindChain:
+		value = s.chainSummary()
 	}
 	return caret + StyleTitle.Render(label+": ") + value
 }
@@ -1105,6 +1543,12 @@ func (s *InventoryItemFormScreen) selectLabel(id int) string {
 		if s.serialMode >= 0 && s.serialMode < len(serialModeOptions) {
 			return "‹ " + serialModeOptions[s.serialMode].label + " ›"
 		}
+	case fCountMode:
+		if s.countModeIx >= 0 && s.countModeIx < len(countModeOptions) {
+			return "‹ " + countModeOptions[s.countModeIx].label + " ›"
+		}
+	case fCountLevel:
+		return s.countLevelSummary()
 	}
 	return ""
 }
@@ -1143,6 +1587,8 @@ func (s *InventoryItemFormScreen) helpText() string {
 			kindHelp = "space/←→ change"
 		case kindPicker:
 			kindHelp = "space to pick"
+		case kindChain:
+			kindHelp = "space to edit levels"
 		}
 	}
 	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"

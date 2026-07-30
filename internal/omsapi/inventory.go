@@ -96,6 +96,36 @@ type Item struct {
 	LastCountedAt      *time.Time `json:"last_counted_at,omitempty"`
 	DaysSinceLastCount *int       `json:"days_since_last_count,omitempty"`
 
+	// Unit of measure / packaging matrix (OMS #979/#980/#981). Every field here
+	// is additive and opt-in: an item with no PackagingLevels and CountMode
+	// "each" — which is every item until someone opts it in — counts individual
+	// base units exactly as it always has.
+	//
+	// CurrentStock (Stock, above) stays the canonical BASE-unit quantity that
+	// every reorder / purchase / usage flow reads; these fields only say what a
+	// base unit is called and at what granularity the item is counted.
+	//
+	// CountLevel is the pk of the PackagingLevel the item is counted in —
+	// required for the two pack-counting modes, and necessarily null for "each"
+	// (the backend rejects the other combinations). OpenContainerCount is the
+	// number of currently-OPEN packs, meaningful only in CountModeOpenClosed.
+	BaseUnit           string `json:"base_unit,omitempty"`
+	CountMode          string `json:"count_mode,omitempty"`
+	CountLevel         *int   `json:"count_level,omitempty"`
+	OpenContainerCount int    `json:"open_container_count,omitempty"`
+
+	// PackagingLevels is the item's pack chain, outermost rung first
+	// (sort_order 0 = largest). Nested-writable on the item serializer, so the
+	// item form saves the whole chain in one request — see
+	// ItemWrite.PackagingLevels.
+	PackagingLevels []PackagingLevel `json:"packaging_levels,omitempty"`
+
+	// OnHandDisplay renders Stock at the item's counting granularity ("4
+	// cases" / "3 sealed + 1 open") without changing it. Server-computed and
+	// read-only; nil on a backend that predates the packaging matrix, in which
+	// case the caller falls back to the bare base-unit number.
+	OnHandDisplay *OnHandDisplay `json:"on_hand_display,omitempty"`
+
 	// IsSerialized marks an item whose stock is tracked as individual
 	// serial-numbered units (SerializedComponent). SerialTrackingMode is
 	// "consumable" or "reusable" and drives which lifecycle transitions are
@@ -146,6 +176,70 @@ type Item struct {
 
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// Item count modes — how much of an item's packaging a physical count bothers
+// with (OMS #979). Mirrors InventoryItem.CountMode on the backend.
+const (
+	// CountModeEach counts individual base units: today's behaviour, and the
+	// default every existing item carries.
+	CountModeEach = "each"
+	// CountModeByLevel counts whole packs of the item's CountLevel — "4 cases",
+	// "5 reams" — and never audits below that rung.
+	CountModeByLevel = "by_level"
+	// CountModeOpenClosed counts SEALED packs plus a tally of how many are
+	// open; an open pack's remaining contents are deliberately not counted.
+	CountModeOpenClosed = "open_closed"
+)
+
+// PackagingLevel is one rung of an item's packaging chain (OMS #979): how many
+// BASE units one of this rung holds. SortOrder 0 is the outermost/largest rung
+// and increases toward the base rung, which holds exactly 1. Expressing every
+// rung in base units (rather than "per parent") is what makes all conversions
+// unambiguous; PerParent is the derived "1 case = 10 reams" ratio the server
+// computes by dividing adjacent rungs.
+//
+// PerParent is nil for the base rung, which has nothing below it, and is a
+// float because a chain is only required to SHRINK, not to divide evenly.
+type PackagingLevel struct {
+	ID        int      `json:"id"`
+	Name      string   `json:"name"`
+	SortOrder int      `json:"sort_order"`
+	BaseUnits int      `json:"base_units"`
+	PerParent *float64 `json:"per_parent,omitempty"`
+}
+
+// OnHandDisplay is the server's rendering of an item's on-hand quantity at the
+// granularity it is counted in (OMS #979). Mode selects which of the other
+// fields are populated, so read it first:
+//
+//   - CountModeEach → Unit + BaseUnits ("12 sheets")
+//   - CountModeByLevel → Level + LevelCount + RemainderBase ("4 case(s)"); the
+//     leftover base units are reported but deliberately NOT presented as
+//     countable, which is the whole point of the mode.
+//   - CountModeOpenClosed → Level + Sealed + Open ("3 sealed + 1 open")
+//
+// Text is the ready-to-render string for all three. A pack-counting item with
+// no usable CountLevel falls back to the "each" shape server-side rather than
+// erroring, so a half-configured item still renders.
+type OnHandDisplay struct {
+	Mode string `json:"mode"`
+	Text string `json:"text"`
+
+	// each
+	Unit      string `json:"unit,omitempty"`
+	BaseUnits int    `json:"base_units,omitempty"`
+
+	// by_level / open_closed
+	Level string `json:"level,omitempty"`
+
+	// by_level
+	LevelCount    int `json:"level_count,omitempty"`
+	RemainderBase int `json:"remainder_base,omitempty"`
+
+	// open_closed
+	Sealed int `json:"sealed,omitempty"`
+	Open   int `json:"open,omitempty"`
 }
 
 // SerializedStock is the per-item serialized unit split (op-0cd2), surfaced on
@@ -328,17 +422,31 @@ func (c *Client) GetPurchaseHistory(ctx context.Context, id string) (*ItemPurcha
 	return &out, nil
 }
 
-// cycleCountBody is the POST payload for the cycle-count action. counted_qty is
+// CycleCountBody is the POST payload for the cycle-count action. CountedQty is
 // the freshly counted physical quantity; the backend computes the signed delta
-// against current_stock itself. reason must be one of the item's REASON_CHOICES
+// against current_stock itself. Reason must be one of the item's REASON_CHOICES
 // (lost / damaged / miscounted / used_without_scan / found / vision_supply_check
-// / other — kept in sync with the TUI pick-list). skip_reorder suppresses the
-// auto-reorder a negative delta would otherwise trigger. notes is optional.
-type cycleCountBody struct {
+// / other — kept in sync with the TUI pick-list). SkipReorder suppresses the
+// auto-reorder a negative delta would otherwise trigger. Notes is optional.
+type CycleCountBody struct {
 	CountedQty  int    `json:"counted_qty"`
 	Reason      string `json:"reason"`
 	SkipReorder bool   `json:"skip_reorder"`
 	Notes       string `json:"notes,omitempty"`
+
+	// AtLevel reads CountedQty as a count of whole CountLevel packs ("I counted
+	// 3 cases") instead of base units (OMS #981). Strictly OPT-IN and carries
+	// omitempty: a quantity means base units unless a caller says otherwise, so
+	// every each-mode count keeps sending no flag and keeps its old meaning.
+	// Sending it for an item that is not counted in packs is a 400, never a
+	// silent base-unit reading.
+	AtLevel bool `json:"at_level,omitempty"`
+
+	// OpenCount sets an open_closed item's open-container tally in the same
+	// reconciliation — the sealed/open pair counted together. nil omits the key
+	// and leaves the stored tally alone; the backend rejects it outright for an
+	// item that is not counted open/closed.
+	OpenCount *int `json:"open_count,omitempty"`
 }
 
 // CycleCountItem records a manual physical count (issue-7):
@@ -349,13 +457,7 @@ type cycleCountBody struct {
 // extra hop entirely (the #81/#46 lesson). The response re-serializes the item
 // with the updated current_stock, last_counted_at and days_since_last_count so
 // the caller can refresh the detail in place.
-func (c *Client) CycleCountItem(ctx context.Context, id string, countedQty int, reason string, skipReorder bool, notes string) (*Item, error) {
-	body := cycleCountBody{
-		CountedQty:  countedQty,
-		Reason:      reason,
-		SkipReorder: skipReorder,
-		Notes:       notes,
-	}
+func (c *Client) CycleCountItem(ctx context.Context, id string, body CycleCountBody) (*Item, error) {
 	var out Item
 	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/cycle-count/", id), body, &out); err != nil {
 		return nil, err
@@ -374,6 +476,14 @@ type LogUsageBody struct {
 	Quantity     int    `json:"quantity"`
 	Notes        string `json:"notes,omitempty"`
 	ChargedGroup *int   `json:"charged_group,omitempty"`
+
+	// AtLevel reads Quantity as a count of whole CountLevel packs ("used 2
+	// cases") instead of base units (OMS #981). Opt-in and omitempty for the
+	// same reason as CycleCountBody.AtLevel — a usage quantity is often derived
+	// from a base-unit-canonical source, so the flag never defaults on. The
+	// stored UsageLog quantity is still base units either way; the response
+	// echoes which unit was read.
+	AtLevel bool `json:"at_level,omitempty"`
 }
 
 // LogUsageResult is the log_usage action's response: the recorded UsageLog plus
@@ -467,6 +577,25 @@ type ItemWrite struct {
 	IsSerialized       bool    `json:"is_serialized"`
 	SerialTrackingMode *string `json:"serial_tracking_mode,omitempty"`
 
+	// BaseUnit names the smallest countable thing ("sheet"/"glove"/"bolt").
+	// Blank omits the key so the model's own "unit" default stands.
+	BaseUnit *string `json:"base_unit,omitempty"`
+
+	// PackagingLevels REPLACES the item's pack chain. nil omits the key and
+	// leaves the stored chain alone; a pointer to an EMPTY slice sends `[]` and
+	// clears it — so callers must only send this when the chain actually
+	// changed, or a form that failed to hydrate would wipe it.
+	//
+	// The rung pk is deliberately absent from the payload: the serializer
+	// upserts on (item, sort_order), so a rung that keeps its position keeps its
+	// pk — and therefore any CountLevel FK pointing at it survives the save.
+	PackagingLevels *[]PackagingLevelWrite `json:"packaging_levels,omitempty"`
+
+	// The counting granularity (count_mode + count_level) is deliberately NOT
+	// here: the pair has to be written together — the backend rejects a pack
+	// mode with no level and an "each" mode with one — and a pack level is a pk
+	// that only exists once the chain has been saved. SetItemCountMode owns it.
+
 	IsActive bool `json:"is_active"`
 	// IsRetired is writable (op-jv7r): the item form toggles phase-out
 	// directly via the serializer field. The read-only retired_at audit stamp
@@ -474,6 +603,94 @@ type ItemWrite struct {
 	// this PATCH.
 	IsRetired bool    `json:"is_retired"`
 	Notes     *string `json:"notes,omitempty"`
+}
+
+// PackagingLevelWrite is one rung of the nested packaging_levels payload.
+// SortOrder is the rung's POSITION in the chain (0 = outermost/largest), which
+// is the identity the serializer upserts on — so no pk is sent, and a rung that
+// keeps its position keeps its pk. BaseUnits is how many base units one of this
+// rung holds; the innermost rung holds exactly 1.
+type PackagingLevelWrite struct {
+	Name      string `json:"name"`
+	SortOrder int    `json:"sort_order"`
+	BaseUnits int    `json:"base_units"`
+}
+
+// itemCountModeBody is the count_mode + count_level pair, written on its own.
+// CountLevel carries NO omitempty: switching an item back to "each" has to send
+// an explicit null, and the backend rejects "each" while a level is still set.
+type itemCountModeBody struct {
+	CountMode  string `json:"count_mode"`
+	CountLevel *int   `json:"count_level"`
+}
+
+// SetItemCountMode writes an item's counting granularity — the count_mode +
+// count_level pair — as its own PATCH.
+//
+// It is separate from UpdateInventoryItem because the two values are only ever
+// legal together, and because a pack mode's level is a PackagingLevel pk that
+// does not exist until the chain has been saved. So the caller's order is:
+// detach (CountModeEach, nil) if the stored level is about to be invalidated →
+// write the item and its chain → attach the mode with the level pk resolved out
+// of the saved chain by sort_order.
+//
+// level must be nil for CountModeEach and non-nil for the pack modes; the
+// backend rejects the other two combinations rather than guessing.
+func (c *Client) SetItemCountMode(ctx context.Context, id, mode string, level *int) (*Item, error) {
+	body := itemCountModeBody{CountMode: mode, CountLevel: level}
+	var out Item
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/items/%s/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Pack-container transitions for an open_closed item (OMS #981).
+const (
+	// PackTransitionOpen breaks a sealed pack open. Under open_closed this IS
+	// consumption: stock drops by the pack's base units, the open tally rises,
+	// and the backend writes a usage log — because an open pack's remaining
+	// contents stop being countable the moment it is opened.
+	PackTransitionOpen = "open"
+	// PackTransitionFinish records that the open pack is empty. Only the open
+	// tally moves; stock already did, when the pack was opened.
+	PackTransitionFinish = "finish"
+)
+
+// packContainerBody is the pack-container POST payload. Notes is optional and
+// rides onto the usage log the "open" half writes.
+type packContainerBody struct {
+	Transition string `json:"transition"`
+	Notes      string `json:"notes,omitempty"`
+}
+
+// PackContainerResult is the pack-container action's response. OnHandDisplay is
+// the refreshed sealed/open split, which is what the caller shows; the usage_log
+// the backend also returns is not decoded, since the caller re-fetches the item
+// anyway.
+type PackContainerResult struct {
+	Transition         string         `json:"transition"`
+	ID                 string         `json:"id"`
+	CurrentStock       int            `json:"current_stock"`
+	OpenContainerCount int            `json:"open_container_count"`
+	OnHandDisplay      *OnHandDisplay `json:"on_hand_display,omitempty"`
+}
+
+// PackContainer opens a sealed pack or finishes the open one for an open_closed
+// item: POST /api/inventory/items/{id}/pack-container/ (HYPHEN, and the
+// trailing slash is load-bearing — same DRF-router contract the web posts to,
+// and the canonical slashed URL avoids the redirect hop).
+//
+// 400s for an item that is not counted open/closed, for opening with no sealed
+// pack left, and for finishing with no open pack — the caller surfaces the
+// backend's reason rather than pre-judging it.
+func (c *Client) PackContainer(ctx context.Context, id, transition, notes string) (*PackContainerResult, error) {
+	body := packContainerBody{Transition: transition, Notes: notes}
+	var out PackContainerResult
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/pack-container/", id), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // CreateInventoryItem POSTs a new inventory item. The response echoes the
