@@ -90,6 +90,18 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				implemented: true,
 			},
 			{
+				// 's' is a nav hotkey (scan) and 'S' is taken by the stint
+				// list above; 'l' is free in this menu and reads as the
+				// racking's "slots/locations" surface.
+				hotkey:   'l',
+				label:    "Storage slots",
+				subtitle: "project-storage racking — browse by rack, generate, print cards",
+				build: func(d Deps) (Screen, Workspace) {
+					return NewStorageSlotsScreen(d), WSFacilities
+				},
+				implemented: true,
+			},
+			{
 				hotkey:   't',
 				label:    "Thermostats",
 				subtitle: "climate registry → create / edit / delete, kill-breaker source",

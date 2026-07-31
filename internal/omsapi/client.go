@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -242,6 +244,82 @@ func (c *Client) GetBytes(ctx context.Context, urlOrPath string) ([]byte, error)
 
 func (c *Client) Post(ctx context.Context, path string, body, out any) error {
 	return c.do(ctx, http.MethodPost, path, nil, body, out, true)
+}
+
+// PostBytes POSTs a JSON body and returns a NON-JSON response body in full,
+// plus the filename the server suggested in Content-Disposition (empty when it
+// sent none). The mirror of GetBytes for endpoints that take a request document
+// and answer with a file — the storage-slot card sheets return the PDF itself
+// rather than a stored URL, so do() (which always JSON-decodes) can't serve
+// them. Unlike GetBytes this repeats do()'s 401-refresh-retry, because it is a
+// write-shaped call an operator triggers by hand and a silent auth failure
+// mid-session would look like a broken printer.
+func (c *Client) PostBytes(ctx context.Context, path string, body any) ([]byte, string, error) {
+	return c.postBytes(ctx, path, body, true)
+}
+
+func (c *Client) postBytes(ctx context.Context, path string, body any, retryAuth bool) ([]byte, string, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return nil, "", fmt.Errorf("oms: marshal body: %w", err)
+		}
+		bodyReader = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bodyReader)
+	if err != nil {
+		return nil, "", fmt.Errorf("oms: build request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if tok := c.AccessToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("oms: POST %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized && retryAuth && c.RefreshToken() != "" {
+		if rerr := c.Refresh(ctx); rerr == nil {
+			return c.postBytes(ctx, path, body, false)
+		}
+	}
+	if resp.StatusCode >= 400 {
+		return nil, "", parseError(resp)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("oms: read response: %w", err)
+	}
+	return data, filenameFromContentDisposition(resp.Header.Get("Content-Disposition")), nil
+}
+
+// filenameFromContentDisposition pulls the filename out of an
+// `attachment; filename="x.pdf"` header. Returns "" when the header is absent
+// or carries no filename, so callers fall back to a name of their own; any
+// directory part is dropped so a hostile header can't steer a local write.
+func filenameFromContentDisposition(header string) string {
+	if header == "" {
+		return ""
+	}
+	_, params, err := mime.ParseMediaType(header)
+	if err != nil {
+		return ""
+	}
+	name := strings.TrimSpace(params["filename"])
+	if name == "" {
+		return ""
+	}
+	// filepath.Base(".") and Base("/") are "." and "/" — neither is a usable
+	// filename, so fold them back to "empty" rather than writing to them.
+	if base := filepath.Base(name); base != "." && base != string(filepath.Separator) {
+		return base
+	}
+	return ""
 }
 
 func (c *Client) Patch(ctx context.Context, path string, body, out any) error {
