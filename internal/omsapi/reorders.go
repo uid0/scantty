@@ -141,28 +141,56 @@ type OwningGroupRef struct {
 	Name string `json:"name"`
 }
 
+// POPaymentSchedule is the single payment a purchase order's payment_terms
+// imply (op-bwo9): net terms count forward from the order date, prepaid falls
+// on it, and the delivery-anchored terms (due on receipt / COD) fall on the
+// expected delivery date. The backend derives the whole thing on every read —
+// there is no stored column and no client-side math here, so the TUI, the web
+// detail page and the Django admin can never disagree about what is owed when.
+//
+// DueDate is "" where the rule has nothing to anchor to (no terms agreed yet,
+// or delivery-anchored terms on an order with no expected delivery date); the
+// wire sends null there and Basis says which case it is. Amount is the order's
+// live estimated total, so voiding a line moves the payment down with it.
+type POPaymentSchedule struct {
+	DueDate string        `json:"due_date,omitempty"`
+	Amount  DecimalString `json:"amount,omitempty"`
+	Basis   string        `json:"basis,omitempty"`
+}
+
 type PurchaseOrder struct {
-	ID                    any                       `json:"id"`
-	Number                string                    `json:"po_number,omitempty"`
-	Status                string                    `json:"status"`
-	StatusLabel           string                    `json:"status_label,omitempty"`
-	Supplier              any                       `json:"supplier,omitempty"`
-	SupplierName          string                    `json:"supplier_name,omitempty"`
-	SupplierDetails       string                    `json:"supplier_details,omitempty"`
-	SupplierAgreement     *int                      `json:"supplier_agreement,omitempty"`
-	SupplierAgreementRef  *SupplierAgreementRef     `json:"supplier_agreement_details,omitempty"`
-	WorkOrder             string                    `json:"work_order,omitempty"`
-	WorkOrderRef          *WorkOrderRef             `json:"work_order_details,omitempty"`
-	OwningGroup           *int                      `json:"owning_group,omitempty"`
-	OwningGroupRef        *OwningGroupRef           `json:"owning_group_details,omitempty"`
-	SupplierOrderNumber   string                    `json:"supplier_order_number,omitempty"`
-	SalesOrderNumber      string                    `json:"sales_order_number,omitempty"`
-	Total                 float64                   `json:"total_amount,omitempty"`
-	EstimatedTotal        DecimalString             `json:"estimated_total,omitempty"`
-	ActualTotal           DecimalString             `json:"actual_total,omitempty"`
-	Currency              string                    `json:"currency,omitempty"`
-	OrderDate             time.Time                 `json:"order_date,omitempty"`
-	ExpectedDeliveryDate  string                    `json:"expected_delivery_date,omitempty"`
+	ID                   any                   `json:"id"`
+	Number               string                `json:"po_number,omitempty"`
+	Status               string                `json:"status"`
+	StatusLabel          string                `json:"status_label,omitempty"`
+	Supplier             any                   `json:"supplier,omitempty"`
+	SupplierName         string                `json:"supplier_name,omitempty"`
+	SupplierDetails      string                `json:"supplier_details,omitempty"`
+	SupplierAgreement    *int                  `json:"supplier_agreement,omitempty"`
+	SupplierAgreementRef *SupplierAgreementRef `json:"supplier_agreement_details,omitempty"`
+	WorkOrder            string                `json:"work_order,omitempty"`
+	WorkOrderRef         *WorkOrderRef         `json:"work_order_details,omitempty"`
+	OwningGroup          *int                  `json:"owning_group,omitempty"`
+	OwningGroupRef       *OwningGroupRef       `json:"owning_group_details,omitempty"`
+	SupplierOrderNumber  string                `json:"supplier_order_number,omitempty"`
+	SalesOrderNumber     string                `json:"sales_order_number,omitempty"`
+	Total                float64               `json:"total_amount,omitempty"`
+	EstimatedTotal       DecimalString         `json:"estimated_total,omitempty"`
+	ActualTotal          DecimalString         `json:"actual_total,omitempty"`
+	Currency             string                `json:"currency,omitempty"`
+	// Header terms (op-bwo9), all editable. Priority always carries a value —
+	// the model defaults it to "normal" — while payment_terms / freight_terms
+	// stay blank until they are agreed with the supplier. All three are plain
+	// descriptive metadata: nothing here moves stock or posts to the ledger.
+	Priority             string    `json:"priority,omitempty"`
+	PaymentTerms         string    `json:"payment_terms,omitempty"`
+	FreightTerms         string    `json:"freight_terms,omitempty"`
+	OrderDate            time.Time `json:"order_date,omitempty"`
+	ExpectedDeliveryDate string    `json:"expected_delivery_date,omitempty"`
+	// PaymentSchedule is the single payment the terms imply (op-bwo9). Derived
+	// server-side from the order's own fields on every read — never stored, and
+	// never recomputed here, so every reader gets the identical answer.
+	PaymentSchedule       *POPaymentSchedule        `json:"payment_schedule,omitempty"`
 	CreatedAt             time.Time                 `json:"created_at,omitempty"`
 	CreatedBy             any                       `json:"created_by,omitempty"`
 	CreatedByUsername     string                    `json:"created_by_username,omitempty"`
@@ -516,6 +544,18 @@ func (c *Client) ConfirmOrder(ctx context.Context, poID, expectedDeliveryDate st
 // The zero values are safe detach sentinels rather than values in their own
 // right — a WorkOrder id is a UUID string and no auth.Group has pk 0 — and
 // sending null is what the backend's serializers accept to clear an FK.
+// The header terms (op-bwo9) each spell "leave it alone" as nil, and each
+// spells the rest differently because the columns differ:
+//
+//   - OrderDate is NOT nullable (the model defaults it to now), so it is only
+//     ever set, never cleared: nil omits it, and any other value is sent as-is.
+//     Send an RFC3339 timestamp — DRF's DateTimeField owns the parse, and the
+//     backend rejects a date more than a year out as a typo.
+//   - Priority is not blankable either (it defaults to "normal"), so only one of
+//     the four levels is ever sent.
+//   - PaymentTerms and FreightTerms ARE blankable — blank is the real state
+//     "not agreed with the supplier yet" — so a pointer to "" is a legitimate
+//     value that clears them, not a detach sentinel like the associations above.
 type PurchaseOrderUpdate struct {
 	SupplierOrderNumber  *string
 	SalesOrderNumber     *string
@@ -523,13 +563,19 @@ type PurchaseOrderUpdate struct {
 	Notes                *string
 	WorkOrder            *string
 	OwningGroup          *int
+	OrderDate            *string
+	Priority             *string
+	PaymentTerms         *string
+	FreightTerms         *string
 }
 
 // UpdatePurchaseOrder patches PO metadata via PATCH
 // /api/reorders/purchase-orders/{poID}/ and returns the updated PO. The backend
-// uses PurchaseOrderSerializer for updates (po_number/order_date/updated_at are
-// read-only). Note the OMS side effect: setting sales_order_number from empty
-// to non-empty auto-transitions a DRAFT PO to SENT.
+// uses PurchaseOrderSerializer for updates, where only po_number and updated_at
+// are read-only — order_date became writable in op-bwo9 so an order typed up
+// after the phone call that placed it can be backdated. Note the OMS side
+// effect: setting sales_order_number from empty to non-empty auto-transitions a
+// DRAFT PO to SENT.
 func (c *Client) UpdatePurchaseOrder(ctx context.Context, poID string, req PurchaseOrderUpdate) (*PurchaseOrder, error) {
 	body := map[string]any{}
 	if req.SupplierOrderNumber != nil {
@@ -547,6 +593,21 @@ func (c *Client) UpdatePurchaseOrder(ctx context.Context, poID string, req Purch
 		} else {
 			body["expected_delivery_date"] = *req.ExpectedDeliveryDate
 		}
+	}
+	// Header terms (op-bwo9). Each is sent verbatim when set: the two blankable
+	// ones carry "" to record that nothing has been agreed, which is a value the
+	// backend stores rather than a null it would reject.
+	if req.OrderDate != nil {
+		body["order_date"] = *req.OrderDate
+	}
+	if req.Priority != nil {
+		body["priority"] = *req.Priority
+	}
+	if req.PaymentTerms != nil {
+		body["payment_terms"] = *req.PaymentTerms
+	}
+	if req.FreightTerms != nil {
+		body["freight_terms"] = *req.FreightTerms
 	}
 	putAssociations(body, req.WorkOrder, req.OwningGroup)
 	var out PurchaseOrder

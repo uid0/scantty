@@ -879,7 +879,16 @@ func (s *PurchaseOrderDetailScreen) renderBody() string {
 	if status == "" {
 		status = po.Status
 	}
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("%s · %s", supplier, status)) + "\n")
+	b.WriteString(StyleMuted.Render(fmt.Sprintf("%s · %s", supplier, status)))
+	// Priority rides the status line, but only when it is not the default every
+	// order starts at (op-bwo9): "normal" on every PO would be noise, while an
+	// urgent one is the whole reason the field exists. The Terms section below
+	// always names it, so nothing is hidden — this is just where a rush order
+	// says so without being scrolled to.
+	if po.Priority != "" && po.Priority != poDefaultPriority {
+		b.WriteString(StyleStatusWarn.Render(" · " + poTermsLabel(poPriorityOptions, po.Priority) + " priority"))
+	}
+	b.WriteString("\n")
 
 	// The purchase/pricing agreement this order was placed under (op-yoos).
 	// Only when one is attached: most orders cite none, and a row saying so on
@@ -975,6 +984,8 @@ func (s *PurchaseOrderDetailScreen) renderBody() string {
 		b.WriteString(StyleMuted.Render(line) + "\n")
 	}
 	b.WriteString("\n")
+
+	renderPOTerms(&b, po)
 
 	if po.Notes != "" {
 		b.WriteString(StyleTitle.Render("Notes") + "\n")
