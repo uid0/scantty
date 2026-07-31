@@ -90,10 +90,15 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				implemented: true,
 			},
 			{
-				// 's' is a nav hotkey (scan) and 'S' is taken by the stint
-				// list above; 'l' is free in this menu and reads as the
-				// racking's "slots/locations" surface.
-				hotkey:   'l',
+				// R (Racking). This menu is NOT a LocalKeyScreen, so its item
+				// letters reach it only through app.go's fall-through — a
+				// letter that is also a GLOBAL hotkey would open the global
+				// surface instead and leave the item unreachable. That rules
+				// out 's' (nav scan), 'l' (global lockouts) and 'e' (global
+				// e-paper), and 'S' is already the stint list above; uppercase
+				// R is free in the global keymap and rides the same
+				// "uppercase = a management surface" convention as E/S here.
+				hotkey:   'R',
 				label:    "Storage slots",
 				subtitle: "project-storage racking — browse by rack, generate, print cards",
 				build: func(d Deps) (Screen, Workspace) {
