@@ -9,9 +9,12 @@
 //
 // Layout (one cursor over two sections):
 //
-//	metadata fields  — Supplier order #, Sales order #, Expected delivery,
-//	                   Notes. Text inputs; type to edit; enter saves the PO
-//	                   metadata via UpdatePurchaseOrder (PATCH).
+//	header fields    — Supplier order #, Sales order #, Date ordered, Expected
+//	                   delivery, Priority, Payment terms, Freight terms, Notes.
+//	                   Text inputs except the three terms (op-bwo9), which are
+//	                   choice rows cycled with space/←→. Enter on ANY of them
+//	                   saves the whole header in one UpdatePurchaseOrder (PATCH),
+//	                   the way the web modal saves it.
 //	association rows — Work order, Committee (op-shb9): who the whole order was
 //	                   placed for. Pickers rather than text, so enter opens a
 //	                   list; they sit between the metadata and the lines because
@@ -36,6 +39,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -58,10 +62,20 @@ const (
 
 // Metadata field indexes. The two association rows follow them, then the line
 // rows: cursor positions poEditMetaCount+poEditAssocCount .. +len(lines)-1.
+//
+// The header terms (op-bwo9) sit here rather than in a band of their own: they
+// are order-level details the same PATCH carries, so one enter saves the header
+// as it is shown. Ordinals are positional only — nothing persists them — so
+// inserting the four new rows in reading order (identifiers, dates, terms,
+// notes) costs nothing.
 const (
 	poMetaSupplierOrder = iota
 	poMetaSalesOrder
+	poMetaOrderDate
 	poMetaExpectedDelivery
+	poMetaPriority
+	poMetaPaymentTerms
+	poMetaFreightTerms
 	poMetaNotes
 	poEditMetaCount
 )
@@ -102,8 +116,50 @@ const (
 var poMetaLabels = map[int]string{
 	poMetaSupplierOrder:    "Supplier order #",
 	poMetaSalesOrder:       "Sales order #",
+	poMetaOrderDate:        "Date ordered (YYYY-MM-DD)",
 	poMetaExpectedDelivery: "Expected delivery (YYYY-MM-DD)",
+	poMetaPriority:         "Priority",
+	poMetaPaymentTerms:     "Payment terms",
+	poMetaFreightTerms:     "Freight terms",
 	poMetaNotes:            "Notes",
+}
+
+// poHeaderSelect is one header-terms choice row (op-bwo9): the choice set it is
+// built from, the options it actually offers (that set plus any unrecognized
+// stored token), where the cursor sits in them, and the token the order arrived
+// with — which is what tells a real change from a no-op when the header is saved.
+type poHeaderSelect struct {
+	base     []selectOption
+	opts     []selectOption
+	idx      int
+	original string
+}
+
+// set points the row at a stored token and records it as what the order arrived
+// with. The token is grafted into the offered options when it is not one this
+// build knows, so a row can never display — or save — a value nobody chose.
+func (h *poHeaderSelect) set(value string) {
+	h.opts = poTermsOptions(h.base, value)
+	h.idx = selectIndexOf(h.opts, value)
+	h.original = value
+}
+
+// picked returns the token the row currently shows.
+func (h *poHeaderSelect) picked() string {
+	if h.idx < 0 || h.idx >= len(h.opts) {
+		return h.original
+	}
+	return h.opts[h.idx].value
+}
+
+// cycle moves the row by delta, wrapping. The choice sets are short and fixed,
+// so they cycle in place (the electrical/webhook select idiom) instead of
+// opening a sub-phase the way the unbounded association lists have to.
+func (h *poHeaderSelect) cycle(delta int) {
+	if len(h.opts) == 0 {
+		return
+	}
+	h.idx = (h.idx + delta + len(h.opts)) % len(h.opts)
 }
 
 type PurchaseOrderEditScreen struct {
@@ -121,8 +177,20 @@ type PurchaseOrderEditScreen struct {
 	// then one row per line (see poEditLineBase).
 	cursor int
 
-	// Metadata inputs, indexed by poMeta* .
+	// Metadata inputs, indexed by poMeta* . The choice rows keep an entry here
+	// too — unused, but it keeps every row index meaning the same thing in one
+	// slice rather than splitting the band across two parallel arrays.
 	meta []textinput.Model
+
+	// Header-terms choice rows (op-bwo9), keyed by their poMeta* row. Presence
+	// in this map is what makes a row a select: it has no text to type into, so
+	// space/←→ cycle it and the focus never lands on an input.
+	selects map[int]*poHeaderSelect
+
+	// What the Date-ordered field was hydrated with. The field shows the day
+	// alone while the column stores a timestamp, so an untouched field must not
+	// be sent back — see saveMetadata.
+	origOrderDate string
 
 	// Line editor inputs (poEditPhaseLine), indexed by poLineEdit* .
 	lineInputs  []textinput.Model
@@ -187,6 +255,21 @@ func NewPurchaseOrderEditScreen(deps Deps, po *omsapi.PurchaseOrder) *PurchaseOr
 		}
 		s.meta[i] = ti
 	}
+	s.meta[poMetaOrderDate].Placeholder = "when the order was actually placed"
+
+	// The choice rows exist before the PO does, like the association rows below
+	// them: they are fixed rows of the header, and a row that materialised with
+	// a load would renumber everything under the operator's cursor. They start
+	// on the model's own defaults — normal priority, no terms agreed — and
+	// hydrate moves each to the token the order actually carries.
+	s.selects = map[int]*poHeaderSelect{
+		poMetaPriority:     {base: poPriorityOptions},
+		poMetaPaymentTerms: {base: poPaymentTermsOptions},
+		poMetaFreightTerms: {base: poFreightTermsOptions},
+	}
+	s.selects[poMetaPriority].set(poDefaultPriority)
+	s.selects[poMetaPaymentTerms].set("")
+	s.selects[poMetaFreightTerms].set("")
 
 	s.lineInputs = make([]textinput.Model, poLineEditCount)
 	for i := range s.lineInputs {
@@ -233,12 +316,29 @@ func (s *PurchaseOrderEditScreen) ctx() context.Context {
 	return context.Background()
 }
 
-// hydrate fills the metadata inputs from the loaded PO.
+// hydrate fills the metadata inputs and the choice rows from the loaded PO.
 func (s *PurchaseOrderEditScreen) hydrate() {
 	s.meta[poMetaSupplierOrder].SetValue(s.po.SupplierOrderNumber)
 	s.meta[poMetaSalesOrder].SetValue(s.po.SalesOrderNumber)
 	s.meta[poMetaExpectedDelivery].SetValue(s.po.ExpectedDeliveryDate)
 	s.meta[poMetaNotes].SetValue(s.po.Notes)
+
+	// Header terms (op-bwo9). The date field shows the DAY the order was placed
+	// — that is what the field is for, and what the detail screen shows — while
+	// the column underneath stores a timestamp; origOrderDate is what keeps that
+	// difference from being written back on an unrelated save.
+	s.meta[poMetaOrderDate].SetValue(poFormatOrderDate(s.po.OrderDate))
+	s.origOrderDate = s.meta[poMetaOrderDate].Value()
+	s.selects[poMetaPriority].set(firstNonEmpty(s.po.Priority, poDefaultPriority))
+	s.selects[poMetaPaymentTerms].set(s.po.PaymentTerms)
+	s.selects[poMetaFreightTerms].set(s.po.FreightTerms)
+}
+
+// isSelectRow reports whether a metadata row is a choice row rather than a text
+// input — the one thing every key path in this band has to branch on.
+func (s *PurchaseOrderEditScreen) isSelectRow(row int) bool {
+	_, ok := s.selects[row]
+	return ok
 }
 
 func (s *PurchaseOrderEditScreen) lineCount() int {
@@ -351,7 +451,7 @@ func (s *PurchaseOrderEditScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.voidReason, cmd = s.voidReason.Update(msg)
 		return s, cmd
 	default:
-		if s.cursor < poEditMetaCount {
+		if s.cursor < poEditMetaCount && !s.isSelectRow(s.cursor) {
 			var cmd tea.Cmd
 			s.meta[s.cursor], cmd = s.meta[s.cursor].Update(msg)
 			return s, cmd
@@ -420,6 +520,20 @@ func (s *PurchaseOrderEditScreen) updateForm(m tea.KeyMsg) (Screen, tea.Cmd) {
 		}
 		return s, s.saveMetadata()
 	}
+	if sel, ok := s.selects[s.cursor]; ok {
+		// A choice row: there is nothing to type into it, so the letter keys are
+		// free and space/←→ cycle the value. It stages like the text fields do —
+		// enter anywhere in this band saves the header as one PATCH, which is
+		// the whole point of keeping the terms in the band rather than giving
+		// them the save-alone treatment the associations get.
+		switch m.String() {
+		case " ", "right":
+			sel.cycle(+1)
+		case "left":
+			sel.cycle(-1)
+		}
+		return s, nil
+	}
 	var cmd tea.Cmd
 	s.meta[s.cursor], cmd = s.meta[s.cursor].Update(m)
 	return s, cmd
@@ -438,7 +552,7 @@ func (s *PurchaseOrderEditScreen) syncFocus() {
 	for i := range s.meta {
 		s.meta[i].Blur()
 	}
-	if s.cursor < poEditMetaCount {
+	if s.cursor < poEditMetaCount && !s.isSelectRow(s.cursor) {
 		s.meta[s.cursor].Focus()
 	}
 }
@@ -459,6 +573,24 @@ func (s *PurchaseOrderEditScreen) saveMetadata() tea.Cmd {
 		ExpectedDeliveryDate: stringPtr(exp),
 		Notes:                stringPtr(strings.TrimSpace(s.meta[poMetaNotes].Value())),
 	}
+
+	// The header terms (op-bwo9) go out only when they actually moved. The four
+	// fields above round-trip losslessly — what was read is what is shown — but
+	// these three do not: the date field shows a day where the column holds a
+	// timestamp, and a choice row can only show a token this build knows. Sending
+	// an untouched one back would rewrite a field nobody edited.
+	if orderRaw := strings.TrimSpace(s.meta[poMetaOrderDate].Value()); orderRaw != s.origOrderDate {
+		ts, err := poParseOrderDate(orderRaw)
+		if err != nil {
+			s.errMsg = err.Error()
+			return Status(s.errMsg, StatusError)
+		}
+		req.OrderDate = &ts
+	}
+	req.Priority = s.changedSelect(poMetaPriority)
+	req.PaymentTerms = s.changedSelect(poMetaPaymentTerms)
+	req.FreightTerms = s.changedSelect(poMetaFreightTerms)
+
 	s.saving = true
 	s.errMsg = ""
 	deps := s.deps
@@ -468,6 +600,52 @@ func (s *PurchaseOrderEditScreen) saveMetadata() tea.Cmd {
 		po, err := deps.OMS.UpdatePurchaseOrder(ctx, id, req)
 		return poEditSavedMsg{po: po, err: err}
 	}
+}
+
+// changedSelect returns the token a header-terms row now shows, or nil when the
+// operator left it where the order had it. See saveMetadata for why unchanged
+// has to mean "absent from the request" rather than "sent back unchanged".
+func (s *PurchaseOrderEditScreen) changedSelect(row int) *string {
+	sel, ok := s.selects[row]
+	if !ok {
+		return nil
+	}
+	value := sel.picked()
+	if value == sel.original {
+		return nil
+	}
+	return &value
+}
+
+// poFormatOrderDate hydrates the Date-ordered field with the day the order was
+// placed. UTC because the backend runs on it, so this is the same day the
+// schedule counts from and the same one the detail screen prints.
+func poFormatOrderDate(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02")
+}
+
+// poParseOrderDate turns the Date-ordered field into what the API wants: an
+// RFC3339 timestamp for a DRF DateTimeField, which does not accept a bare date.
+// A day becomes midnight UTC — the backend stores UTC, so the day typed is the
+// day payment_schedule counts from — and a full timestamp is passed through for
+// an operator recording the hour an order actually went out (the maker-box
+// datetime-write idiom). Blank is an error rather than a clear: order_date is
+// not nullable, so "no order date" is not a state to ask for.
+func poParseOrderDate(raw string) (string, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "", errors.New("date ordered is required — it cannot be cleared")
+	}
+	if _, err := time.Parse(time.RFC3339, v); err == nil {
+		return v, nil
+	}
+	if _, err := time.Parse("2006-01-02", v); err == nil {
+		return v + "T00:00:00Z", nil
+	}
+	return "", errors.New("date ordered must be YYYY-MM-DD (or an RFC3339 timestamp)")
 }
 
 // ---------------------------------------------------------------------------
@@ -806,7 +984,8 @@ func (s *PurchaseOrderEditScreen) View() string {
 
 func (s *PurchaseOrderEditScreen) viewForm() string {
 	var b strings.Builder
-	b.WriteString(StyleMuted.Render("tab/↑↓ move · type to edit a field · enter on a field saves details · esc back") + "\n\n")
+	b.WriteString(StyleMuted.Render(
+		"tab/↑↓ move · type to edit · space/←→ change a choice · enter saves the details · esc back") + "\n\n")
 
 	b.WriteString(StyleTitle.Render("Order details") + "\n")
 	for i := 0; i < poEditMetaCount; i++ {
@@ -814,7 +993,18 @@ func (s *PurchaseOrderEditScreen) viewForm() string {
 		if s.cursor == i {
 			caret = "▸ "
 		}
-		b.WriteString(caret + StyleTitle.Render(poMetaLabels[i]+": ") + s.meta[i].View() + "\n")
+		sel, isSelect := s.selects[i]
+		if !isSelect {
+			b.WriteString(caret + StyleTitle.Render(poMetaLabels[i]+": ") + s.meta[i].View() + "\n")
+			continue
+		}
+		b.WriteString(caret + StyleTitle.Render(poMetaLabels[i]+": ") + elecSelectLabel(sel.opts, sel.idx) + "\n")
+		if s.cursor == i {
+			// The whole set under the focused row: these are short fixed lists,
+			// so showing every label beats cycling blind through six terms to
+			// find out what is even on offer.
+			b.WriteString("    " + StyleMuted.Render(poSelectStrip(sel)) + "\n")
+		}
 	}
 
 	// Order-level associations (op-shb9) — who the whole order was placed for.
