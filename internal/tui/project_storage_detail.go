@@ -317,11 +317,19 @@ func (s *ProjectStorageDetailScreen) renderBody() string {
 	b.WriteString("\n")
 
 	b.WriteString(StyleTitle.Render("Location") + "\n")
-	storage := st.StorageLocationName
-	if storage == "" {
-		storage = "—"
+	// The slot is authoritative when the stint claimed one — a surveyed
+	// physical place with a printed code beats a free-text description — so it
+	// leads, and the ad-hoc name is only shown when it says something the slot
+	// doesn't. location_display is the backend's own spelling of that
+	// precedence; the rows below expand it rather than restate it.
+	if st.SlotCode != "" {
+		b.WriteString(StyleMuted.Render("Slot: ") + st.SlotCode + "\n")
 	}
-	b.WriteString(StyleMuted.Render("Storage: ") + storage + "\n")
+	if st.StorageLocationName != "" {
+		b.WriteString(StyleMuted.Render("Storage: ") + st.StorageLocationName + "\n")
+	} else if st.SlotCode == "" {
+		b.WriteString(StyleMuted.Render("Storage: ") + "—\n")
+	}
 	if st.PurgatoryLocationName != "" {
 		b.WriteString(StyleMuted.Render("Purgatory: ") + st.PurgatoryLocationName + "\n")
 	}
@@ -366,17 +374,24 @@ func (s *ProjectStorageDetailScreen) renderBody() string {
 // a terminal.
 func (s *ProjectStorageDetailScreen) renderLabelPreview() string {
 	st := s.stint
-	lines := []string{
-		"STINT    " + st.StintID,
-		"OWNER    " + projectStorageOwner(st),
-		"PROJECT  " + projectTitleOrPersonal(st),
-		"EXPIRY   " + expiryWeekDay(st),
+	lines := []string{"STINT    " + st.StintID}
+	// The printed ticket puts "Slot <code>" immediately under the stint id and
+	// omits the line entirely for ad-hoc storage (backend label_service.
+	// ticket_lines), so the preview places it the same way — a tag on a shelf
+	// today still describes exactly what the renderer produces.
+	if st.SlotCode != "" {
+		lines = append(lines, "SLOT     "+st.SlotCode)
 	}
-	storage := st.StorageLocationName
-	if storage == "" {
-		storage = "—"
+	lines = append(lines,
+		"OWNER    "+projectStorageOwner(st),
+		"PROJECT  "+projectTitleOrPersonal(st),
+		"EXPIRY   "+expiryWeekDay(st),
+	)
+	if storage := st.StorageLocationName; storage != "" {
+		lines = append(lines, "STORAGE  "+storage)
+	} else if st.SlotCode == "" {
+		lines = append(lines, "STORAGE  —")
 	}
-	lines = append(lines, "STORAGE  "+storage)
 	if st.PurgatoryLocationName != "" {
 		lines = append(lines, "PURGTRY  "+st.PurgatoryLocationName)
 	}

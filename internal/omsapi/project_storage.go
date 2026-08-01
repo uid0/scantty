@@ -25,29 +25,39 @@ type ProjectStorageEvent struct {
 // purgatory, and removal. status is a computed field: "active" /
 // "warning" / "expired" / "purgatory" / "removed".
 type ProjectStorageStint struct {
-	ID                    int                   `json:"id"`
-	StintID               string                `json:"stint_id"`
-	Username              string                `json:"username"`
-	FirstName             string                `json:"first_name,omitempty"`
-	LastName              string                `json:"last_name,omitempty"`
-	Email                 string                `json:"email,omitempty"`
-	DisplayName           string                `json:"display_name,omitempty"`
-	ProjectTitle          string                `json:"project_title"`
-	StartedAt             time.Time             `json:"started_at"`
-	ExpiresAt             *time.Time            `json:"expires_at"`
-	RemovedAt             *time.Time            `json:"removed_at"`
-	NoticeSentAt          *time.Time            `json:"notice_sent_at"`
-	MovedToPurgatoryAt    *time.Time            `json:"moved_to_purgatory_at"`
-	StorageLocationName   string                `json:"storage_location_name,omitempty"`
-	PurgatoryLocationName string                `json:"purgatory_location_name,omitempty"`
-	Notes                 string                `json:"notes,omitempty"`
-	Status                string                `json:"status"`
-	PurgatoryAt           *time.Time            `json:"purgatory_at"`
-	ExpiryWeek            int                   `json:"expiry_week"`
-	ExpiryDayOfYear       int                   `json:"expiry_day_of_year"`
-	Events                []ProjectStorageEvent `json:"events"`
-	CreatedAt             time.Time             `json:"created_at"`
-	UpdatedAt             time.Time             `json:"updated_at"`
+	ID                    int        `json:"id"`
+	StintID               string     `json:"stint_id"`
+	Username              string     `json:"username"`
+	FirstName             string     `json:"first_name,omitempty"`
+	LastName              string     `json:"last_name,omitempty"`
+	Email                 string     `json:"email,omitempty"`
+	DisplayName           string     `json:"display_name,omitempty"`
+	ProjectTitle          string     `json:"project_title"`
+	StartedAt             time.Time  `json:"started_at"`
+	ExpiresAt             *time.Time `json:"expires_at"`
+	RemovedAt             *time.Time `json:"removed_at"`
+	NoticeSentAt          *time.Time `json:"notice_sent_at"`
+	MovedToPurgatoryAt    *time.Time `json:"moved_to_purgatory_at"`
+	StorageLocationName   string     `json:"storage_location_name,omitempty"`
+	PurgatoryLocationName string     `json:"purgatory_location_name,omitempty"`
+	// Slot is the racking slot this stint occupies (StorageSlot pk), null for
+	// ad-hoc non-rack storage. All three are READ-ONLY on the stint serializer:
+	// a stint's slot is chosen at claim time (start) and afterwards only the
+	// lifecycle actions move it. SlotCode is the printed code ("1A1") and
+	// LocationDisplay is the backend's own precedence — the slot wins when set,
+	// falling back to the free-text StorageLocationName — so prefer it over
+	// re-deriving that rule client-side.
+	Slot            *int                  `json:"slot"`
+	SlotCode        string                `json:"slot_code,omitempty"`
+	LocationDisplay string                `json:"location_display,omitempty"`
+	Notes           string                `json:"notes,omitempty"`
+	Status          string                `json:"status"`
+	PurgatoryAt     *time.Time            `json:"purgatory_at"`
+	ExpiryWeek      int                   `json:"expiry_week"`
+	ExpiryDayOfYear int                   `json:"expiry_day_of_year"`
+	Events          []ProjectStorageEvent `json:"events"`
+	CreatedAt       time.Time             `json:"created_at"`
+	UpdatedAt       time.Time             `json:"updated_at"`
 }
 
 // ListProjectStorageStints returns the paginated stint list. Useful
@@ -87,6 +97,14 @@ func (c *Client) GetProjectStorageStint(ctx context.Context, stintID string) (*P
 // so a blank one is dropped rather than sent as empty noise. started_at,
 // expires_at (= started_at + 30d), stint_id, the QR image, and the AprilTag are
 // all server-generated and must NOT be sent.
+//
+// A stint may also CLAIM a racking slot (op-hfw5). The serializer takes the
+// slot two ways — `slot` (pk OR code, disambiguated by whether the value
+// contains a letter) and `slot_code` (the code, explicitly) — and 400s when
+// both are sent naming different slots. ScanTTY always has the CODE (it is what
+// is printed on the rack card and what a scanner reads), so it sends exactly one
+// spelling, `slot_code`, and never the ambiguous `slot`. Blank means ad-hoc
+// storage: a stint still starts with just StorageLocationName, or with nothing.
 type ProjectStorageStintStart struct {
 	Username            string `json:"username"`
 	FirstName           string `json:"first_name,omitempty"`
@@ -94,6 +112,7 @@ type ProjectStorageStintStart struct {
 	Email               string `json:"email,omitempty"`
 	ProjectTitle        string `json:"project_title,omitempty"`
 	StorageLocationName string `json:"storage_location_name,omitempty"`
+	SlotCode            string `json:"slot_code,omitempty"`
 }
 
 // StartProjectStorageStint intakes (creates) a new stint via the kiosk
@@ -103,8 +122,10 @@ type ProjectStorageStintStart struct {
 // returns the existing stint (200) instead — either way the caller gets a stint
 // back to navigate to. Backend business-rule 409s (active_stint_exists when the
 // member already holds a live stint, cooldown_active during the 3-day re-entry
-// cooldown) come back as APIErrors the caller surfaces as a clear message rather
-// than crashing.
+// cooldown, slot_occupied when someone else's project is already in the claimed
+// slot) come back as APIErrors the caller surfaces as a clear message rather
+// than crashing — see StorageSlotErrorDetail for the slot one, whose body is
+// hand-rolled rather than exception-wrapped.
 func (c *Client) StartProjectStorageStint(ctx context.Context, body ProjectStorageStintStart) (*ProjectStorageStint, error) {
 	var out ProjectStorageStint
 	if err := c.Post(ctx, "/api/project-storage/stints/start/", body, &out); err != nil {
