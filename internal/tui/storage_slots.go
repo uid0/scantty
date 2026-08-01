@@ -644,6 +644,11 @@ func (s *StorageSlotsScreen) renderRow(i int) string {
 // slotOccupancyText is the one-line answer to "can I put something here?" —
 // who is in it, or free. Retired is called out because a free retired slot is
 // NOT on offer, which "free" alone would imply.
+//
+// Occupancy has two halves: a member's project stint (P) and a staff-assigned
+// committee/logistics/class holding (C/L/E). BOTH make the slot unavailable, so
+// both are named — reading occupancy off `current_stint` alone would report the
+// welding SIG's shelf as free and hand it out twice.
 func slotOccupancyText(slot omsapi.StorageSlot) string {
 	if slot.CurrentStint != nil {
 		who := strings.TrimSpace(slot.CurrentStint.DisplayName)
@@ -658,13 +663,18 @@ func slotOccupancyText(slot omsapi.StorageSlot) string {
 		// long project title can't push the marker column out of alignment.
 		return truncateOneLine(text, 41)
 	}
+	if a := slot.CurrentAssignment; a != nil {
+		text := firstNonEmpty(a.OccupantDisplay, storageTypeName(a.TypeLetter)) +
+			" · " + storageTypeName(a.TypeLetter) + " storage"
+		return truncateOneLine(text, 41)
+	}
 	if !slot.IsActive {
 		return "retired — not offered"
 	}
 	if slot.IsOccupied {
-		// is_occupied without a current_stint shouldn't happen (both derive
-		// from the same lookup), but say "occupied" rather than "free" if it
-		// ever does — a wrong "free" hands the same shelf to two members.
+		// is_occupied true with neither half filled shouldn't happen (they
+		// derive from the same lookup), but say "occupied" rather than "free"
+		// if it ever does — a wrong "free" hands the same shelf out twice.
 		return "occupied"
 	}
 	return "free"
@@ -704,6 +714,10 @@ func (s *StorageSlotsScreen) deleteConfirmText() string {
 	body := StyleStatusWarn.Render(warn) + "\n"
 	if row.CurrentStint != nil {
 		body += StyleMuted.Render("A live stint ("+row.CurrentStint.StintID+") is in this slot — the backend will refuse.") + "\n"
+	}
+	if a := row.CurrentAssignment; a != nil {
+		body += StyleMuted.Render(storageTypeName(a.TypeLetter)+" storage ("+
+			firstNonEmpty(a.OccupantDisplay, "unnamed")+") holds this slot — the backend will refuse.") + "\n"
 	}
 	body += StyleMuted.Render("Retiring it instead (E → Active off) keeps the tag and the history.") + "\n"
 	body += StyleMuted.Render("y delete · n/esc cancel")
