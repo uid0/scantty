@@ -109,7 +109,7 @@ func NewRoot(deps Deps) Root {
 		deps:     deps,
 		nav:      NewNav(),
 		status:   NewStatusBar(),
-		navWidth: 24,
+		navWidth: navColumnWidth,
 	}
 	if deps.OMS != nil && deps.OMS.AccessToken() != "" {
 		r.nav.SetStaff(deps.InitialStaff)

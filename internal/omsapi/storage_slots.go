@@ -63,6 +63,18 @@ type StorageSlotOccupant struct {
 	Status       string     `json:"status"`
 }
 
+// StorageSlotAssignmentSummary mirrors SlotAssignmentSummarySerializer — the
+// live C/L/E holding of a slot, trimmed for a rack listing exactly as
+// StorageSlotOccupant trims a stint. The full record (notes, who assigned it,
+// the release history) lives in StorageAssignment; see storage_assignments.go.
+type StorageSlotAssignmentSummary struct {
+	ID              int       `json:"id"`
+	StorageType     string    `json:"storage_type"`
+	TypeLetter      string    `json:"type_letter"`
+	OccupantDisplay string    `json:"occupant_display"`
+	AssignedAt      time.Time `json:"assigned_at"`
+}
+
 // StorageSlot mirrors StorageSlotSerializer.
 //
 // AprilTagID is the slot's PERMANENT fiducial marker: it is allocated once (on
@@ -70,22 +82,34 @@ type StorageSlotOccupant struct {
 // — a code has to keep meaning the same physical place. It is null only when
 // the tag family ran dry mid-generate, so the slot is usable by code but has
 // nothing to scan yet. OwningGroup is an optional auth.Group (SIG) pk.
+//
+// Occupancy has TWO halves, because there are two kinds of occupant:
+// CurrentStint is a member's project (P) and CurrentAssignment is a
+// committee/logistics/class holding (C/L/E, op-wgc8 #994). IsOccupied covers
+// BOTH — a slot the welding SIG holds is not free to hand out either — so read
+// occupancy through IsOccupied / OccupancyType rather than through CurrentStint
+// alone, which would report a committee's slot as free.
+//
+// OccupancyType is the letter of whichever half is live, or "" for a free slot
+// (it is `allow_null` server-side and a JSON null leaves the zero value).
 type StorageSlot struct {
-	ID                 int                  `json:"id"`
-	Code               string               `json:"code"`
-	Rack               int                  `json:"rack"`
-	Level              string               `json:"level"`
-	Position           int                  `json:"position"`
-	RequiresPalletJack bool                 `json:"requires_pallet_jack"`
-	IsActive           bool                 `json:"is_active"`
-	OwningGroup        *int                 `json:"owning_group"`
-	OwningGroupName    string               `json:"owning_group_name"`
-	Notes              string               `json:"notes"`
-	AprilTagID         *int                 `json:"april_tag_id"`
-	CurrentStint       *StorageSlotOccupant `json:"current_stint"`
-	IsOccupied         bool                 `json:"is_occupied"`
-	CreatedAt          time.Time            `json:"created_at"`
-	UpdatedAt          time.Time            `json:"updated_at"`
+	ID                 int                           `json:"id"`
+	Code               string                        `json:"code"`
+	Rack               int                           `json:"rack"`
+	Level              string                        `json:"level"`
+	Position           int                           `json:"position"`
+	RequiresPalletJack bool                          `json:"requires_pallet_jack"`
+	IsActive           bool                          `json:"is_active"`
+	OwningGroup        *int                          `json:"owning_group"`
+	OwningGroupName    string                        `json:"owning_group_name"`
+	Notes              string                        `json:"notes"`
+	AprilTagID         *int                          `json:"april_tag_id"`
+	CurrentStint       *StorageSlotOccupant          `json:"current_stint"`
+	CurrentAssignment  *StorageSlotAssignmentSummary `json:"current_assignment"`
+	OccupancyType      string                        `json:"occupancy_type"`
+	IsOccupied         bool                          `json:"is_occupied"`
+	CreatedAt          time.Time                     `json:"created_at"`
+	UpdatedAt          time.Time                     `json:"updated_at"`
 }
 
 // StorageSlotWrite is the writable field set of StorageSlotSerializer, exactly.

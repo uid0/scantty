@@ -37,7 +37,30 @@ const (
 	// screenHeaderRows: every screen renders a title line + a blank
 	// separator above its body. Root.View injects both via JoinVertical.
 	screenHeaderRows = 2
+
+	// navColumnWidth: the left nav column Root reserves (Root.navWidth is
+	// initialised from this), plus the 1-column border Root.View subtracts
+	// beside it.
+	navColumnWidth  = 24
+	navBorderColumn = 1
+
+	// contentHorizontalPadding: StyleContent has Padding(1, 2) — two columns
+	// eaten at each side of every screen.
+	contentHorizontalPadding = 4
 )
+
+// screenBodyWidth returns the columns a screen's View() can render inside the
+// content pane without being truncated by clampToBox. The mirror of
+// screenBodyHeight: callers pass the raw terminal width and this peels off the
+// nav column, its border and the content padding. Falls back to a floor so a
+// screen that sizes a grid off it never computes a zero or negative width.
+func screenBodyWidth(terminalWidth int) int {
+	w := terminalWidth - navColumnWidth - navBorderColumn - contentHorizontalPadding
+	if w < 20 {
+		return 20
+	}
+	return w
+}
 
 // screenBodyHeight returns the number of rows a screen's View() can render
 // inside the content pane without clipping at the bottom. Callers pass the
@@ -78,8 +101,8 @@ const detailFooterRows = 2
 // banner is showing: action banner (1 row) + blank (1 row) + hint (1 row).
 const detailFooterRowsWithAction = 3
 
-// clampToBox truncates ``content`` so it fits inside ``height`` rows and
-// ``width`` columns of visible output.
+// clampToBox truncates “content“ so it fits inside “height“ rows and
+// “width“ columns of visible output.
 //
 // Why this exists: screens that don't use TextScroller can render more
 // rows than the content box budget. Without clamping, the resulting
@@ -89,11 +112,11 @@ const detailFooterRowsWithAction = 3
 // you scroll on a long screen. Clamping at the Root.View boundary
 // keeps the frame the size we said it'd be.
 //
-// Lines are split on "\n"; the first ``height`` are kept and the rest
+// Lines are split on "\n"; the first “height“ are kept and the rest
 // are dropped (the screen's own j/k or scroller is responsible for
 // keeping the operator's focus inside the budget). For each kept line
 // we use lipgloss.Width to measure visible width (ANSI-aware) and
-// drop any tail bytes that exceed ``width`` — naive byte slicing
+// drop any tail bytes that exceed “width“ — naive byte slicing
 // would chop an ANSI sequence in half and bleed escape codes into the
 // next column.
 func clampToBox(content string, width, height int) string {
@@ -116,7 +139,7 @@ func clampToBox(content string, width, height int) string {
 }
 
 // truncateVisible drops runes from the end until the visible width
-// (ANSI-aware, via lipgloss.Width) fits within ``width``. Naive byte
+// (ANSI-aware, via lipgloss.Width) fits within “width“. Naive byte
 // slicing would split an escape sequence and bleed color codes into
 // the next column.
 func truncateVisible(s string, width int) string {

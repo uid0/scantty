@@ -84,8 +84,9 @@ func TestFacilities_HotkeysReachTheMenu(t *testing.T) {
 		if gotType != wantType {
 			t.Logf("facilities item %q (hotkey %q) is unreachable by its hotkey: opened %v, want %v",
 				it.label, string(it.hotkey), gotType, wantType)
-			if it.label == "Storage slots" {
-				t.Errorf("the storage-slots hotkey %q never reaches the menu", string(it.hotkey))
+			switch it.label {
+			case "Storage slots", "Storage overview":
+				t.Errorf("the %s hotkey %q never reaches the menu", it.label, string(it.hotkey))
 			}
 		}
 	}
@@ -95,9 +96,19 @@ func TestFacilities_HotkeysReachTheMenu(t *testing.T) {
 // menu is the only way in.
 func TestFacilities_StorageSlotsListedInView(t *testing.T) {
 	out := NewFacilitiesScreen(Deps{}).View()
-	for _, want := range []string{"Storage slots", "[R]"} {
+	for _, want := range []string{"Storage slots", "[R]", "Storage overview", "[O]"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("the facilities menu should list the storage-slots entry (%q):\n%s", want, out)
+			t.Errorf("the facilities menu should list the storage entries (%q):\n%s", want, out)
 		}
+	}
+}
+
+// TestFacilities_OpensStorageOverview: `o` is the global op-modes hotkey, so the
+// overview claims uppercase O — and the only way to prove it lands is through
+// the root, because the menu is not a LocalKeyScreen.
+func TestFacilities_OpensStorageOverview(t *testing.T) {
+	screen := pressFacilitiesHotkey(t, 'O')
+	if _, ok := screen.(*StorageOverviewScreen); !ok {
+		t.Fatalf("O from the facilities menu opened %T, want *StorageOverviewScreen", screen)
 	}
 }

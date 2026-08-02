@@ -4,8 +4,10 @@
 // viewset's lookup_field is `code`: the code is what is printed on the rack and
 // what a scanner reads, so it is the identifier every caller already has.
 //
-// Keys: E edit · x delete · p print this slot's card · v what the card encodes ·
-// enter open the occupying stint · r refresh · esc back.
+// Keys: E edit · x delete · a assign to a committee/crew/class · R release that
+// assignment · p print this slot's card · v what the card encodes · enter open
+// the occupying stint · r refresh · esc back. `a` collides with the global
+// authorizations hotkey and is claimed via HandlesKey.
 package tui
 
 import (
@@ -30,6 +32,12 @@ type StorageSlotDetailScreen struct {
 
 	confirmingDelete bool
 	deleting         bool
+
+	// The C/L/E half of occupancy: `a` hands the slot to a committee / crew /
+	// class and `R` takes it back. A project stint is NOT ended here — that is
+	// the member's own lifecycle, reached with enter.
+	confirmingRelease bool
+	releasing         bool
 
 	card slotCardPrompt
 
@@ -56,6 +64,11 @@ type storageSlotPreviewMsg struct {
 	err     error
 }
 
+type storageSlotReleasedMsg struct {
+	occupant string
+	err      error
+}
+
 func NewStorageSlotDetailScreen(deps Deps, code string) *StorageSlotDetailScreen {
 	return &StorageSlotDetailScreen{
 		deps:     deps,
@@ -73,19 +86,22 @@ func (s *StorageSlotDetailScreen) Title() string {
 	return "Storage Slot"
 }
 
-// HandlesKey claims `G` (global categories) for bottom-of-scroll. The other
-// keys are free in the global keymap and reach us via the root fall-through.
+// HandlesKey claims `G` (global categories) for bottom-of-scroll and `a`
+// (global authorizations) for assign. The other keys are free in the global
+// keymap and reach us via the root fall-through.
 func (s *StorageSlotDetailScreen) HandlesKey(key string) bool {
 	if s.WantsRawInput() {
 		return false
 	}
-	return key == "G"
+	return key == "G" || key == "a"
 }
 
-// WantsRawInput claims every key while the delete confirm, the print prompt or
-// the card panel is up, so y/n, typed paths and esc land here.
+// WantsRawInput claims every key while the delete confirm, the release confirm,
+// the print prompt or the card panel is up, so y/n, typed paths and esc land
+// here rather than leaking to the globals (`n` = no would otherwise open
+// notifications).
 func (s *StorageSlotDetailScreen) WantsRawInput() bool {
-	return s.confirmingDelete || s.card.active || s.previewing
+	return s.confirmingDelete || s.confirmingRelease || s.card.active || s.previewing
 }
 
 func (s *StorageSlotDetailScreen) ctx() context.Context {
@@ -158,10 +174,23 @@ func (s *StorageSlotDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, Status(slotCardSavedSummary(path, len(m.pdf.Data), replaced), StatusOK)
 
+	case storageSlotReleasedMsg:
+		s.releasing = false
+		s.confirmingRelease = false
+		if m.err != nil {
+			// Includes the 409 `already_released` — someone else got there
+			// first, which is a real answer and not a crash.
+			return s, Status("release failed: "+slotCardErrorText(m.err), StatusError)
+		}
+		s.loading = true
+		return s, tea.Batch(Status(storageReleasedText(s.code, m.occupant), StatusOK), s.Init())
+
 	case tea.KeyMsg:
 		switch {
 		case s.confirmingDelete:
 			return s.updateConfirmDelete(m)
+		case s.confirmingRelease:
+			return s.updateConfirmRelease(m)
 		case s.card.active:
 			return s.updateCardPrompt(m)
 		case s.previewing:
@@ -192,6 +221,10 @@ func (s *StorageSlotDetailScreen) updateActions(m tea.KeyMsg) (Screen, tea.Cmd) 
 		if s.slot != nil {
 			s.confirmingDelete = true
 		}
+	case "a":
+		return s.openAssign()
+	case "R":
+		return s.startRelease()
 	case "enter":
 		// The occupant is the only thing on this screen with somewhere else to
 		// be; opening their stint is how a warden gets from "who is in 1A1?" to
@@ -222,6 +255,84 @@ func (s *StorageSlotDetailScreen) updateActions(m tea.KeyMsg) (Screen, tea.Cmd) 
 		}
 	}
 	return s, nil
+}
+
+// openAssign refuses up front what the backend would refuse anyway, naming the
+// remedy each time: a live stint is the member's to end, another holding has to
+// be released first, and a retired slot is not on offer at all.
+func (s *StorageSlotDetailScreen) openAssign() (Screen, tea.Cmd) {
+	slot := s.slot
+	if slot == nil {
+		return s, nil
+	}
+	switch {
+	case slot.CurrentStint != nil:
+		return s, Status(slot.Code+" holds a live project stint — enter opens it, resolve it there first", StatusWarn)
+	case slot.CurrentAssignment != nil:
+		return s, Status(slot.Code+" is already assigned to "+
+			firstNonEmpty(slot.CurrentAssignment.OccupantDisplay, "a committee/crew/class")+
+			" — press R to release it first", StatusWarn)
+	case slot.IsOccupied:
+		return s, Status(slot.Code+" is occupied — it can't be assigned until it is free", StatusWarn)
+	case !slot.IsActive:
+		return s, Status(slot.Code+" is out of service — press E and turn Active back on before assigning it", StatusWarn)
+	}
+	code := slot.Code
+	back := func(d Deps) Screen { return NewStorageSlotDetailScreen(d, code) }
+	return s, SwitchTo(WSFacilities, NewStorageAssignFormScreen(s.deps, code, back))
+}
+
+func (s *StorageSlotDetailScreen) startRelease() (Screen, tea.Cmd) {
+	if s.slot == nil {
+		return s, nil
+	}
+	if s.slot.CurrentAssignment == nil {
+		return s, Status(s.slot.Code+" is not assigned to a committee, crew or class", StatusWarn)
+	}
+	s.confirmingRelease = true
+	return s, nil
+}
+
+func (s *StorageSlotDetailScreen) updateConfirmRelease(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if s.releasing {
+		return s, nil
+	}
+	switch m.String() {
+	case "y", "Y":
+		if s.slot == nil || s.slot.CurrentAssignment == nil {
+			s.confirmingRelease = false
+			return s, nil
+		}
+		s.releasing = true
+		deps := s.deps
+		ctx := s.ctx()
+		// The slot's own payload carries the assignment id, so unlike the
+		// overview grid this needs no lookup round trip.
+		a := *s.slot.CurrentAssignment
+		return s, func() tea.Msg {
+			_, err := deps.OMS.ReleaseStorageAssignment(ctx, a.ID)
+			return storageSlotReleasedMsg{occupant: a.OccupantDisplay, err: err}
+		}
+	case "n", "N", "esc":
+		s.confirmingRelease = false
+	}
+	return s, nil
+}
+
+func (s *StorageSlotDetailScreen) releaseConfirmText() string {
+	if s.releasing {
+		return StyleMuted.Render("Releasing…")
+	}
+	a := s.slot.CurrentAssignment
+	if a == nil {
+		return ""
+	}
+	body := StyleStatusWarn.Render("Release "+s.slot.Code+" from "+
+		firstNonEmpty(a.OccupantDisplay, storageTypeName(a.TypeLetter))+
+		" ("+storageTypeName(a.TypeLetter)+")?") + "\n"
+	body += StyleMuted.Render("The holding is kept as history — the slot just becomes assignable again.") + "\n"
+	body += StyleMuted.Render("y release · n/esc cancel")
+	return body
 }
 
 func (s *StorageSlotDetailScreen) updateCardPrompt(m tea.KeyMsg) (Screen, tea.Cmd) {
@@ -283,6 +394,8 @@ func (s *StorageSlotDetailScreen) View() string {
 	switch {
 	case s.confirmingDelete:
 		return s.scroller.View() + "\n\n" + s.deleteConfirmText()
+	case s.confirmingRelease:
+		return s.scroller.View() + "\n\n" + s.releaseConfirmText()
 	case s.card.active:
 		return s.scroller.View() + "\n\n" + s.card.view()
 	case s.previewing:
@@ -290,6 +403,14 @@ func (s *StorageSlotDetailScreen) View() string {
 	}
 
 	hint := "j/k scroll · E edit · x delete · p print card · v card contents · r refresh · esc back"
+	// Only ONE of assign / release is ever possible, so only that one is
+	// offered — a hint listing both would invite the key that can't work.
+	switch {
+	case s.slot.CurrentAssignment != nil:
+		hint = "R release · " + hint
+	case !s.slot.IsOccupied && s.slot.IsActive:
+		hint = "a assign C/L/E · " + hint
+	}
 	if s.slot.CurrentStint != nil {
 		hint = "enter open stint · " + hint
 	}
@@ -303,6 +424,12 @@ func (s *StorageSlotDetailScreen) deleteConfirmText() string {
 	body := StyleStatusWarn.Render("Delete slot "+s.slot.Code+"? This RELEASES its AprilTag permanently.") + "\n"
 	if s.slot.CurrentStint != nil {
 		body += StyleMuted.Render("A live stint ("+s.slot.CurrentStint.StintID+") is in this slot — the backend will refuse.") + "\n"
+	}
+	if a := s.slot.CurrentAssignment; a != nil {
+		// StorageAssignment.slot is CASCADE, so a delete would take the record
+		// of the holding with it — which is why the backend refuses outright.
+		body += StyleMuted.Render(storageTypeName(a.TypeLetter)+" storage ("+
+			firstNonEmpty(a.OccupantDisplay, "unnamed")+") holds this slot — the backend will refuse; release it with R first.") + "\n"
 	}
 	body += StyleMuted.Render("Retiring it instead (E → Active off) keeps the tag and the history.") + "\n"
 	body += StyleMuted.Render("y delete · n/esc cancel")
@@ -341,7 +468,10 @@ func (s *StorageSlotDetailScreen) renderBody() string {
 	var b strings.Builder
 
 	b.WriteString(StyleTitle.Render(slot.Code))
-	if slot.CurrentStint != nil {
+	// IsOccupied, not CurrentStint: a committee holding makes the slot just as
+	// unavailable as a member's project, and a "[free]" badge over one would
+	// get the shelf handed out twice.
+	if slot.IsOccupied {
 		b.WriteString("  " + StyleStatusWarn.Render("[occupied]"))
 	} else if slot.IsActive {
 		b.WriteString("  " + StyleStatusOK.Render("[free]"))
@@ -374,7 +504,18 @@ func (s *StorageSlotDetailScreen) renderBody() string {
 	b.WriteString("\n")
 
 	b.WriteString(StyleTitle.Render("Occupancy") + "\n")
-	if st := slot.CurrentStint; st != nil {
+	if a := slot.CurrentAssignment; a != nil && slot.CurrentStint == nil {
+		// The C/L/E half: staff gave this slot to a committee, the logistics
+		// crew or a class, and it stays theirs until staff takes it back —
+		// no expiry, no purgatory, so there are no dates to watch here.
+		b.WriteString(firstNonEmpty(a.OccupantDisplay, storageTypeName(a.TypeLetter)) + "\n")
+		b.WriteString(StyleMuted.Render("Type:     ") + storageTypeName(a.TypeLetter) +
+			StyleMuted.Render(" storage ("+a.TypeLetter+" in the overview grid)") + "\n")
+		if !a.AssignedAt.IsZero() {
+			b.WriteString(StyleMuted.Render("Since:    ") + a.AssignedAt.Format("2006-01-02") + "\n")
+		}
+		b.WriteString(StyleMuted.Render("Held until staff releases it — press R.") + "\n")
+	} else if st := slot.CurrentStint; st != nil {
 		who := strings.TrimSpace(st.DisplayName)
 		if who == "" {
 			who = st.Username
@@ -399,6 +540,10 @@ func (s *StorageSlotDetailScreen) renderBody() string {
 		if st.Status != "" {
 			b.WriteString(StyleMuted.Render("Status:   ") + st.Status + "\n")
 		}
+	} else if slot.IsOccupied {
+		// Neither half decoded but the server says occupied — say so rather
+		// than inviting the warden to hand out a shelf that has something on it.
+		b.WriteString("Occupied.\n")
 	} else if slot.IsActive {
 		b.WriteString("Free — available to reserve.\n")
 	} else {

@@ -107,6 +107,21 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				implemented: true,
 			},
 			{
+				// O (Overview). Same rule as R above: this menu is NOT a
+				// LocalKeyScreen, so an item letter that is also a GLOBAL
+				// hotkey opens the global surface and leaves the item
+				// unreachable. Lowercase 'o' is the global op-modes key, but
+				// uppercase O is free — and it rides the same "uppercase = a
+				// management surface" convention as E/S/R here.
+				hotkey:   'O',
+				label:    "Storage overview",
+				subtitle: "ASCII rack grid — who is in every slot, what is expiring · assign C/L/E",
+				build: func(d Deps) (Screen, Workspace) {
+					return NewStorageOverviewScreen(d), WSFacilities
+				},
+				implemented: true,
+			},
+			{
 				hotkey:   't',
 				label:    "Thermostats",
 				subtitle: "climate registry → create / edit / delete, kill-breaker source",
