@@ -72,7 +72,16 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				implemented: true,
 			},
 			{
-				hotkey:   'k',
+				// K (uppercase). Lowercase k is this menu's own cursor-up key —
+				// matched in the switch below, long before the item loop — so a
+				// 'k' item could never be opened by its own letter; it is also
+				// the universal up-arrow app-wide (see checklists.go). Uppercase
+				// K is the checklists global in app.go, which builds exactly the
+				// screen this item builds, in exactly this workspace, so the
+				// menu now advertises the same accelerator the welcome screen
+				// does rather than inventing a third binding for one screen —
+				// the same benign overlap the e-Paper item above rides on 'e'.
+				hotkey:   'K',
 				label:    "Checklists",
 				subtitle: "active list + in-progress runs",
 				build: func(d Deps) (Screen, Workspace) {

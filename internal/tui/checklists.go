@@ -18,7 +18,10 @@ import (
 // for v2 — this v1 is the list/start surface that the rest will plug
 // into.
 //
-// Hotkey: capital `K` (lowercase `k` is the universal up-arrow).
+// Hotkey: capital `K` (lowercase `k` is the universal up-arrow). The
+// Facilities menu entry rides the same capital K for that reason — its
+// lowercase k is the menu's own cursor-up key, so an entry sitting there
+// is unreachable by its own letter (sc-5dqy).
 // Workspace: WSFacilities (checklists are shop-floor operations).
 type ChecklistsScreen struct {
 	deps             Deps
