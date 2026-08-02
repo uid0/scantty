@@ -1,26 +1,16 @@
 package tui
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TestFacilities_HotkeysAreUnique guards the whole menu: two items sharing a
-// letter would make the second unreachable, and the first item to match wins
-// silently.
-func TestFacilities_HotkeysAreUnique(t *testing.T) {
-	s := NewFacilitiesScreen(Deps{})
-	seen := map[rune]string{}
-	for _, it := range s.items {
-		if prev, dup := seen[it.hotkey]; dup {
-			t.Errorf("hotkey %q is claimed by both %q and %q", string(it.hotkey), prev, it.label)
-		}
-		seen[it.hotkey] = it.label
-	}
-}
+// The menu-wide invariants — unique letters, letters that dodge the cursor keys,
+// and every letter actually opening its item through the root — live in
+// menu_hotkeys_test.go, which holds the Reports hub to the same contract. What
+// stays here is per-item: the letters whose choice took an argument.
 
 // TestFacilities_OpensStorageSlots drives the hotkey through the ROOT, not the
 // screen, because that is where the real hazard lives: FacilitiesScreen is not
@@ -36,59 +26,40 @@ func TestFacilities_OpensStorageSlots(t *testing.T) {
 	}
 }
 
-// pressFacilitiesHotkey sends one key through the ROOT with the facilities menu
-// active and returns whatever screen ends up showing. A menu item answers with
-// a SwitchScreenMsg command rather than swapping the screen inline, so the
-// command has to be run and fed back — a global hotkey, by contrast, replaces
-// r.screen immediately, which is exactly the difference this asserts.
+// pressFacilitiesHotkey sends one key through the ROOT with a fresh facilities
+// menu active and returns whatever screen ends up showing.
 func pressFacilitiesHotkey(t *testing.T, key rune) Screen {
 	t.Helper()
-	menu := NewFacilitiesScreen(Deps{})
-	r := newTestRoot(menu)
-	next, cmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
-	r = next.(Root)
-	if r.screen != Screen(menu) {
-		// A GLOBAL hotkey swapped the screen inline — the menu never saw the
-		// key. Return what it opened; its Init command is deliberately NOT run
-		// (these screens fetch on Init and the test client is nil).
-		return r.screen
-	}
-	if cmd == nil {
-		return r.screen
-	}
-	// The menu answered with a SwitchScreenMsg command (a pure closure), so
-	// feed it back to find out what it actually opens.
-	msg := cmd()
-	if msg == nil {
-		return r.screen
-	}
-	next, _ = r.Update(msg)
-	return next.(Root).screen
+	return pressMenuHotkey(t, NewFacilitiesScreen(Deps{}), key)
 }
 
-// TestFacilities_HotkeysReachTheMenu generalizes that hazard across the whole
-// menu: every item's hotkey must actually open THAT item through the root. Two
-// ways to lose one — a GLOBAL hotkey of the same letter, or one of the menu's
-// own navigation keys (j/k/g/G), which are matched before the item loop.
-// Pre-existing casualties are logged rather than failed (fixing them is not
-// this bead's business); a NEW item must not join them.
-func TestFacilities_HotkeysReachTheMenu(t *testing.T) {
+// TestFacilities_ChecklistsHotkey is the sc-5dqy regression. The item sat on
+// lowercase 'k', which this menu — like every cursor list in scantty — spends on
+// cursor-up, so it was matched long before the item loop and the entry could
+// only ever be opened with enter. It now rides uppercase K, the app-wide
+// checklists global (app.go, advertised on the welcome screen), which opens the
+// same screen in the same workspace. The second half of the test is the other
+// half of the fix: lowercase k must still move the cursor, because promoting
+// item hotkeys over cursor movement would have bought this one entry at the cost
+// of the up-arrow every other menu keeps.
+func TestFacilities_ChecklistsHotkey(t *testing.T) {
+	screen := pressFacilitiesHotkey(t, 'K')
+	if _, ok := screen.(*ChecklistsScreen); !ok {
+		t.Fatalf("K from the facilities menu opened %T, want *ChecklistsScreen", screen)
+	}
+
 	menu := NewFacilitiesScreen(Deps{})
-	for _, it := range menu.items {
-		if it.build == nil {
-			continue
-		}
-		want, _ := it.build(Deps{})
-		gotType := reflect.TypeOf(pressFacilitiesHotkey(t, it.hotkey))
-		wantType := reflect.TypeOf(want)
-		if gotType != wantType {
-			t.Logf("facilities item %q (hotkey %q) is unreachable by its hotkey: opened %v, want %v",
-				it.label, string(it.hotkey), gotType, wantType)
-			switch it.label {
-			case "Storage slots", "Storage overview":
-				t.Errorf("the %s hotkey %q never reaches the menu", it.label, string(it.hotkey))
-			}
-		}
+	menu.cursor = 1
+	next, cmd := menu.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if cmd != nil {
+		t.Errorf("lowercase k should move the cursor, not open a screen")
+	}
+	if got := next.(*FacilitiesScreen).cursor; got != 0 {
+		t.Errorf("lowercase k left the cursor at %d, want 0 (cursor-up)", got)
+	}
+
+	if out := menu.View(); !strings.Contains(out, "[K]  Checklists") {
+		t.Errorf("the menu should advertise the checklists hotkey:\n%s", out)
 	}
 }
 
