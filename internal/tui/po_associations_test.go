@@ -440,7 +440,8 @@ func TestPOEditAssoc_OrderLevelRowsAreAlwaysNavigable(t *testing.T) {
 		t.Error("an association row must not also read as a line row")
 	}
 	out := s.viewForm()
-	if !strings.Contains(out, "Work order: ") || !strings.Contains(out, "Committee: ") {
+	// Columnar rows (sc-h412): a right-aligned label, then the dotted leader.
+	if !strings.Contains(out, "Work order"+jdeLeader) || !strings.Contains(out, "Committee"+jdeLeader) {
 		t.Errorf("form should render both association rows:\n%s", out)
 	}
 	// Even with no pickable options, what IS attached comes from the PO itself
@@ -463,16 +464,18 @@ func TestPOEditAssoc_OrderLevelPickWritesOnlyThatField(t *testing.T) {
 	srv, body := poAssocSrv(t, poActiveWOs, poSIGs)
 	s := poAssocEditScreen(t, srv)
 
+	// Ctrl-E opens what the highlighted row IS (sc-h412): enter is the SAVE key
+	// on every row of this form, so a picker cannot also ride it.
 	s.cursor = poEditMetaCount + poAssocRowCommittee
-	s.updateForm(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateForm(tea.KeyMsg{Type: tea.KeyCtrlE})
 	if s.phase != poEditPhaseAssoc {
-		t.Fatalf("enter on the committee row should open its picker; phase = %v", s.phase)
+		t.Fatalf("ctrl+e on the committee row should open its picker; phase = %v", s.phase)
 	}
 	// Parked on the attached committee (Woodshop, id 3 — first in the list).
 	if s.assocRows[s.assocCursor].value != "3" {
 		t.Errorf("picker should open on the attached committee, got %+v", s.assocRows[s.assocCursor])
 	}
-	s.updateAssocPick(runeKey('j')) // Metal Shop
+	s.updateAssocPick(tea.KeyMsg{Type: tea.KeyDown}) // Metal Shop
 	msg := s.saveAssoc()()
 	if action, ok := msg.(poLineActionMsg); !ok || action.err != nil {
 		t.Fatalf("saving the association failed: %#v", msg)
@@ -488,9 +491,11 @@ func TestPOEditAssoc_OrderLevelPickWritesOnlyThatField(t *testing.T) {
 	}
 }
 
-// TestPOEditAssoc_LineLevelPickWritesThroughUpdateItem: w / c on a line row
-// re-tag that line alone, through update_item — which is where the answer
-// usually lands, since which job a part was for is often settled once it lands.
+// TestPOEditAssoc_LineLevelPickWritesThroughUpdateItem: a line's own work
+// order / committee re-tag that line alone, through update_item — which is
+// where the answer usually lands, since which job a part was for is often
+// settled once it lands. Since sc-h412 the route there is Ctrl-E into the line
+// editor, then Ctrl-E on the row itself, instead of the bare w / c keys.
 func TestPOEditAssoc_LineLevelPickWritesThroughUpdateItem(t *testing.T) {
 	var patched string
 	body := map[string]any{}
@@ -516,9 +521,14 @@ func TestPOEditAssoc_LineLevelPickWritesThroughUpdateItem(t *testing.T) {
 
 	s := poAssocEditScreen(t, srv)
 	s.cursor = poEditLineBase // line 1
-	s.updateForm(runeKey('w'))
+	s.updateForm(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poEditPhaseLine || s.editLineIdx != 0 {
+		t.Fatalf("ctrl+e on a line row should open THAT line's editor; phase=%v line=%d", s.phase, s.editLineIdx)
+	}
+	s.lineFocus = poLineRowWorkOrder
+	s.updateLineEdit(tea.KeyMsg{Type: tea.KeyCtrlE})
 	if s.phase != poEditPhaseAssoc || s.assocLineIdx != 0 {
-		t.Fatalf("w on a line row should open that LINE's picker; phase=%v line=%d", s.phase, s.assocLineIdx)
+		t.Fatalf("ctrl+e on the line's work-order row should open its picker; phase=%v line=%d", s.phase, s.assocLineIdx)
 	}
 	// The line's own job (WO-9Z8Y) isn't in the offered set — it is grafted in
 	// so this edit can't drop it, and the picker opens on it.
@@ -545,20 +555,44 @@ func TestPOEditAssoc_LineLevelPickWritesThroughUpdateItem(t *testing.T) {
 	}
 }
 
-// TestPOEditAssoc_LineRowsAdvertiseTheKeys: the per-line association keys are
-// only discoverable from the line hint, so it has to name them.
-func TestPOEditAssoc_LineRowsAdvertiseTheKeys(t *testing.T) {
+// TestPOEditAssoc_LineAffordancesAreDiscoverable: with the w / c accelerators
+// gone (sc-h412), a line's associations are reachable only through the action
+// bar and the line editor's own rows — so both have to name them. This is the
+// test that fails if the redesign hid an affordance instead of moving it.
+func TestPOEditAssoc_LineAffordancesAreDiscoverable(t *testing.T) {
 	srv, _ := poAssocSrv(t, poActiveWOs, poSIGs)
 	s := poAssocEditScreen(t, srv)
 
+	s.cursor = poEditLineBase
 	out := s.viewForm()
-	if !strings.Contains(out, "w work order") || !strings.Contains(out, "c committee") {
-		t.Errorf("line hint should advertise both keys:\n%s", out)
+	if !strings.Contains(out, "Ctrl-E=Edit line") {
+		t.Errorf("the bar should offer the line editor on a line row:\n%s", out)
 	}
 	// A line's own associations read on its row, so the operator can see which
 	// lines are already accounted for without opening anything.
 	if !strings.Contains(out, "ordered for: WO-9Z8Y — Lathe PM · Metal Shop") {
 		t.Errorf("line row should show what it was ordered for:\n%s", out)
+	}
+
+	// Inside the line editor both associations are rows of their own, showing
+	// what is attached today, and the bar names the key that opens each.
+	s.openLineEditor(0)
+	out = s.viewLineEdit()
+	if !strings.Contains(out, "Work order"+jdeLeader) || !strings.Contains(out, "Committee"+jdeLeader) {
+		t.Errorf("the line editor should carry both association rows:\n%s", out)
+	}
+	if !strings.Contains(out, "WO-9Z8Y — Lathe PM") || !strings.Contains(out, "Metal Shop") {
+		t.Errorf("the rows should show what the line is tagged with:\n%s", out)
+	}
+	for _, focus := range []int{poLineRowWorkOrder, poLineRowCommittee} {
+		s.lineFocus = focus
+		if out := s.viewLineEdit(); !strings.Contains(out, "Ctrl-E=Pick") {
+			t.Errorf("row %d should advertise the picker:\n%s", focus, out)
+		}
+	}
+	s.lineFocus = poLineRowStatus
+	if out := s.viewLineEdit(); !strings.Contains(out, "Ctrl-E=Void line") {
+		t.Errorf("the status row should advertise the void prompt:\n%s", out)
 	}
 }
 
@@ -572,7 +606,7 @@ func TestPOEditAssoc_NothingToPickIsRefusedNotOpened(t *testing.T) {
 	s.Update(loadCommitteeOptionsCmd(s.deps)())
 
 	s.cursor = poEditMetaCount + poAssocRowWorkOrder
-	_, cmd := s.updateForm(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := s.updateForm(tea.KeyMsg{Type: tea.KeyCtrlE})
 	if s.phase != poEditPhaseForm {
 		t.Errorf("an empty picker should not open; phase = %v", s.phase)
 	}

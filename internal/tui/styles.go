@@ -45,6 +45,26 @@ var (
 	StyleStatusOK    = lipgloss.NewStyle().Foreground(colorOK)
 	StyleStatusWarn  = lipgloss.NewStyle().Foreground(colorWarn)
 	StyleStatusError = lipgloss.NewStyle().Foreground(colorError)
+
+	// Columnar green-screen form styles (jde_form.go). The label column, the
+	// dotted leader and the underscored input area are all quiet; the FOCUSED
+	// row is the only loud thing on the sheet, which is what a form navigated
+	// by arrow keys alone needs. Everything that carries the highlight follows
+	// the accent, so a theme change moves it — see ApplyTheme.
+	StyleJDELabel        = lipgloss.NewStyle()
+	StyleJDELabelFocused = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	StyleJDELeader       = lipgloss.NewStyle().Foreground(colorBorder)
+	StyleJDEInput        = lipgloss.NewStyle().Foreground(colorBorder)
+	StyleJDEFieldFocused = lipgloss.NewStyle().Reverse(true).Foreground(colorAccent)
+	StyleJDEBracket      = lipgloss.NewStyle().Foreground(colorMuted)
+	StyleJDEHint         = lipgloss.NewStyle().Foreground(colorMuted)
+	StyleJDEHeading      = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+
+	// The persistent action bar: a quiet rule, the keys in the accent, what
+	// they do beside them.
+	StyleActionBar     = lipgloss.NewStyle().Foreground(colorMuted)
+	StyleActionBarKey  = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	StyleActionBarRule = lipgloss.NewStyle().Foreground(colorBorder)
 )
 
 func RenderStatus(text string, level StatusLevel) string {
@@ -69,6 +89,13 @@ func ApplyTheme(name string) string {
 	colorAccent = lipgloss.Color(def.Accent)
 	StyleTitle = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	StyleSidebarItemActive = StyleSidebarItem.Foreground(colorAccent).Bold(true).Background(colorSelected)
+	// The columnar-form highlight and the action-bar keys are accent-coloured,
+	// so they have to be rebuilt here too — a style built once at package init
+	// would keep the theme the app started with.
+	StyleJDELabelFocused = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	StyleJDEFieldFocused = lipgloss.NewStyle().Reverse(true).Foreground(colorAccent)
+	StyleJDEHeading = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+	StyleActionBarKey = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	return currentTheme
 }
 
