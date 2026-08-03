@@ -90,9 +90,11 @@ func TestPOEditTerms_HydratesTheHeader(t *testing.T) {
 		}
 	}
 
+	// Columnar rows since sc-h412: a right-aligned label, the dotted leader,
+	// then the value — the choices between angle brackets.
 	out := s.viewForm()
-	for _, want := range []string{"Date ordered", "2026-07-15", "Priority: ", "Urgent",
-		"Payment terms: ", "Net 30", "Freight terms: ", "FOB Destination"} {
+	for _, want := range []string{"Date ordered", "2026-07-15", "Priority" + jdeLeader, "< Urgent >",
+		"Payment terms" + jdeLeader, "< Net 30 >", "Freight terms" + jdeLeader, "< FOB Destination >"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("edit form missing %q:\n%s", want, out)
 		}

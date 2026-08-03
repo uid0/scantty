@@ -93,6 +93,25 @@ func scrollerViewHeight(terminalHeight, footerRows int) int {
 	return h
 }
 
+// actionBarRows is the height of the persistent action bar the columnar
+// (JD Edwards) screens pin to the bottom of the content pane: a rule plus the
+// key line — see renderActionBar. A screen that draws one has this many fewer
+// rows for its own body, and has to PAD its body out to that budget, or the
+// bar walks up and down the pane as the content changes length.
+const actionBarRows = 2
+
+// screenBodyHeightWithActionBar is screenBodyHeight less the persistent action
+// bar and the one row above it a screen keeps for its "saving…" / error line.
+// Split out rather than folded into screenBodyHeight because only the columnar
+// screens draw a bar; every other screen's budget must not move.
+func screenBodyHeightWithActionBar(terminalHeight int) int {
+	h := screenBodyHeight(terminalHeight) - actionBarRows - 1
+	if h < 3 {
+		return 3
+	}
+	return h
+}
+
 // detailFooterRows is the standard footer height for a detail screen with
 // no action message displayed: one blank line + one hint line.
 const detailFooterRows = 2
