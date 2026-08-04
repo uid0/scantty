@@ -16,6 +16,15 @@
 // rows) that opens a small row editor. On save the item is written first, then
 // tasks + materials are reconciled against what was loaded (new rows created,
 // edited rows patched, removed rows deleted).
+//
+// Everything here renders through the columnar "JD Edwards" layer (jde_form.go,
+// sc-h412/sc-dnhx): one right-aligned label column and a persistent action bar
+// naming exactly the keys that apply. The sub-lists took sweep A's chain-editor
+// fold, which is what retired their a/e/d/x/j/k — adding is a trailing
+// "(add a …)" ROW you navigate to and open with Ctrl-E, and REMOVING is a row of
+// the item's own editor, which is the only place the thing being dropped is on
+// screen. Enter and Esc both leave a sub-list: its rows live in memory until the
+// ITEM is saved, so neither writes anything and there is nothing to cancel.
 package tui
 
 import (
@@ -71,9 +80,41 @@ const (
 	mFormPhaseToolEdit
 )
 
-// taskEditFieldCount is the number of rows in the task-step editor:
-// title, description, required toggle, reference-photo path.
-const taskEditFieldCount = 4
+// Rows of the task-step editor. The first four are what enter saves; the fifth
+// is where "remove this step" lives now that the list has no letter for it — it
+// sits with the step it removes, which is the only place the operator can see
+// what they are about to drop. A step being ADDED has nothing to remove yet, so
+// it does not get that row (see taskEditRows).
+const (
+	taskEditTitle = iota
+	taskEditDesc
+	taskEditRequired
+	taskEditPhoto
+	taskEditRemove
+	taskEditFieldCount
+)
+
+// Rows of the material editor — same shape, with the remove row last.
+const (
+	materialEditName = iota
+	materialEditQty
+	materialEditUnit
+	materialEditCost
+	materialEditNotes
+	materialEditRemove
+	materialEditFieldCount
+)
+
+// Rows of the tool editor. Row 3 is the is_required toggle, which owns no input.
+const (
+	toolEditName = iota
+	toolEditQty
+	toolEditLoc
+	toolEditRequired
+	toolEditNotes
+	toolEditRemove
+	toolEditFieldCount
+)
 
 var mfLabel = map[int]string{
 	mfAsset:        "Asset",
@@ -87,6 +128,56 @@ var mfLabel = map[int]string{
 	mfTasks:        "Task steps",
 	mfMaterials:    "Materials",
 	mfTools:        "Tools required",
+}
+
+// mfHint carries what the placeholders used to say. A placeholder long enough
+// to fill the input area leaves no underscores, so an empty green-screen row
+// stops reading as empty; the note rides after the input instead. A columnar
+// form marks what is REQUIRED rather than tagging everything else "(optional)".
+var mfHint = map[int]string{
+	mfAsset:        "required",
+	mfTitle:        "required",
+	mfIntervalDays: "blank = one-time / as-needed",
+}
+
+// mfWidth sizes the input areas that are not the default.
+func mfWidth(id int) int {
+	switch id {
+	case mfTitle:
+		return 40
+	case mfDescription, mfInstructions:
+		return 44
+	case mfIntervalDays, mfEstTimeMin, mfEstCost:
+		return 10
+	}
+	return 0
+}
+
+// mfBand groups the sheet into the sections a printed PM record would have.
+// They must stay CONTIGUOUS in the rebuildFields order — a heading is drawn
+// where its band starts.
+type mfBand int
+
+const (
+	mfBandItem mfBand = iota
+	mfBandSchedule
+	mfBandChecklist
+)
+
+var mfBandLabel = map[mfBand]string{
+	mfBandItem:      "PM item",
+	mfBandSchedule:  "Schedule & estimates",
+	mfBandChecklist: "Checklist",
+}
+
+func mfBandOf(id int) mfBand {
+	switch id {
+	case mfIntervalDays, mfEstTimeMin, mfEstCost, mfIsActive:
+		return mfBandSchedule
+	case mfTasks, mfMaterials, mfTools:
+		return mfBandChecklist
+	}
+	return mfBandItem
 }
 
 func mfKind(id int) mFieldKind {
@@ -178,7 +269,7 @@ type MaintenanceItemFormScreen struct {
 	assetsArrived bool
 	itemArrived   bool
 
-	terminalHeight int
+	jdeScreen
 
 	// Main text/number inputs, indexed by field id.
 	inputs []textinput.Model
@@ -207,7 +298,6 @@ type MaintenanceItemFormScreen struct {
 	// Asset picker sub-phase.
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []assetPickOption
 
 	// Task/material list sub-phase cursor.
@@ -288,11 +378,11 @@ func NewMaintenanceItemFormScreen(deps Deps, itemID string) *MaintenanceItemForm
 		ti.CharLimit = 200
 	}
 	// The reference-photo field holds a filesystem path, so it needs the longer
-	// limit (and the hint) the asset form's manual-PDF path input uses.
+	// limit the asset form's manual-PDF path input uses. What its placeholder
+	// said now rides after the input area as a hint (see viewTaskEdit).
 	s.teRefImage = textinput.New()
 	s.teRefImage.Prompt = ""
 	s.teRefImage.CharLimit = 512
-	s.teRefImage.Placeholder = "/absolute/path/to/photo.jpg (~ expands to home)"
 
 	s.rebuildFields()
 	s.syncFocus()
@@ -310,19 +400,11 @@ func mfCharLimit(id int) int {
 	}
 }
 
+// mfPlaceholder keeps only the placeholders that show a DEFAULT — the rest
+// moved to mfHint, because a placeholder filling the input area hides the
+// underscores that say the field is empty.
 func mfPlaceholder(id int) string {
-	switch id {
-	case mfTitle:
-		return "e.g. Replace air filter"
-	case mfDescription:
-		return "why this maintenance is needed"
-	case mfInstructions:
-		return "step-by-step instructions"
-	case mfIntervalDays:
-		return "blank = one-time / as-needed"
-	case mfEstTimeMin:
-		return "optional"
-	case mfEstCost:
+	if id == mfEstCost {
 		return "0"
 	}
 	return ""
@@ -377,7 +459,7 @@ func (s *MaintenanceItemFormScreen) loadItem() tea.Cmd {
 func (s *MaintenanceItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 
 	case mFormRefLoadedMsg:
@@ -453,10 +535,12 @@ func (s *MaintenanceItemFormScreen) forwardBlink(msg tea.Msg) tea.Cmd {
 		s.pickSearch, cmd = s.pickSearch.Update(msg)
 	case mFormPhaseTaskEdit:
 		switch s.editCursor {
-		case 0:
+		case taskEditTitle:
 			s.teTitle, cmd = s.teTitle.Update(msg)
-		case 1:
+		case taskEditDesc:
 			s.teDesc, cmd = s.teDesc.Update(msg)
+		case taskEditPhoto:
+			s.teRefImage, cmd = s.teRefImage.Update(msg)
 		}
 	case mFormPhaseMaterialEdit:
 		if in := s.materialEditInput(s.editCursor); in != nil {
@@ -602,6 +686,8 @@ func (s *MaintenanceItemFormScreen) syncFocus() {
 // ---------------------------------------------------------------------------
 
 func (s *MaintenanceItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -611,17 +697,33 @@ func (s *MaintenanceItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.C
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
-		// Enter on a sub-list field opens it rather than submitting, so the
-		// operator doesn't accidentally save while managing rows.
-		if id, ok := s.currentFieldID(); ok && mfKind(id) == mkSublist {
-			s.openSublist(id)
-			return s, textinput.Blink
-		}
+		// Enter SAVES from every row of the sheet now — Ctrl-E is what opens
+		// the sub-lists, so there is no row left where enter means something
+		// else (sc-dnhx did the same to the item↔supplier link's picker row).
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS.
+		if id, ok := s.currentFieldID(); ok {
+			switch mfKind(id) {
+			case mkPicker:
+				s.openAssetPick()
+				return s, textinput.Blink
+			case mkSublist:
+				s.openSublist(id)
+				return s, textinput.Blink
+			}
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -630,21 +732,15 @@ func (s *MaintenanceItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.C
 	}
 	switch mfKind(id) {
 	case mkToggle:
-		if m.String() == " " {
+		// A toggle is a two-value choice row, so it flips on the same ←/→ every
+		// other bounded set takes (space stays as the pilot's synonym).
+		switch m.String() {
+		case " ", "left", "right":
 			s.isActive = !s.isActive
 		}
 		return s, nil
-	case mkPicker:
-		if m.String() == " " {
-			s.openAssetPick()
-			return s, textinput.Blink
-		}
-		return s, nil
-	case mkSublist:
-		if m.String() == " " {
-			s.openSublist(id)
-			return s, textinput.Blink
-		}
+	case mkPicker, mkSublist:
+		// These rows have nothing to type into and no accelerators left.
 		return s, nil
 	default:
 		var cmd tea.Cmd
@@ -659,6 +755,16 @@ func (s *MaintenanceItemFormScreen) moveCursor(delta int) {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *MaintenanceItemFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -689,10 +795,11 @@ func (s *MaintenanceItemFormScreen) syncBlurAll() {
 
 func (s *MaintenanceItemFormScreen) openAssetPick() {
 	s.phase = mFormPhaseAssetPick
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
 	s.syncBlurAll()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyAssetFilter()
 	s.pickCursor = 0
 	for i, o := range s.pickOptions {
@@ -730,89 +837,127 @@ func (s *MaintenanceItemFormScreen) applyAssetFilter() {
 }
 
 func (s *MaintenanceItemFormScreen) updateAssetPick(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyAssetFilter()
-			s.pickCursor = 0
-			return s, nil
-		}
-		var cmd tea.Cmd
-		s.pickSearch, cmd = s.pickSearch.Update(m)
-		s.applyAssetFilter()
-		return s, cmd
-	}
-
-	switch m.String() {
-	case "esc":
-		s.phase = mFormPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case "enter":
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		s.closeAssetPick()
+	case jdePickCommit:
 		if s.pickCursor >= 0 && s.pickCursor < len(s.pickOptions) {
 			opt := s.pickOptions[s.pickCursor]
 			s.assetID = opt.id
 			s.assetName = opt.label
 		}
-		s.phase = mFormPhaseForm
-		s.pickSearch.SetValue("")
-		s.pickSearch.Blur()
-		s.syncFocus()
+		s.closeAssetPick()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
+		var cmd tea.Cmd
+		s.pickSearch, cmd = s.pickSearch.Update(m)
+		s.applyAssetFilter()
+		return s, cmd
 	}
 	return s, nil
+}
+
+// movePick walks the option cursor, clamping at both ends — a picker list is a
+// set of choices, not a ring.
+func (s *MaintenanceItemFormScreen) movePick(delta int) {
+	next := s.pickCursor + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > len(s.pickOptions)-1 {
+		next = len(s.pickOptions) - 1
+	}
+	if next < 0 {
+		next = 0
+	}
+	s.pickCursor = next
+}
+
+func (s *MaintenanceItemFormScreen) closeAssetPick() {
+	s.phase = mFormPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 // ---------------------------------------------------------------------------
 // Task list + editor sub-phases
 // ---------------------------------------------------------------------------
 
-func (s *MaintenanceItemFormScreen) updateTaskList(m tea.KeyMsg) (Screen, tea.Cmd) {
+// updateSublist drives every sub-list on the reduced key scheme: Up/Down move
+// (the last row is always the "(add …)" one), Ctrl-E opens whatever the row IS,
+// and Enter or Esc are both done — the rows live in memory until the ITEM is
+// saved, so leaving writes nothing either way and there is nothing to cancel.
+//
+// Removing moved into the row's OWN editor, next to the row it drops; a list of
+// one-line summaries is the worst place to confirm a delete from.
+func (s *MaintenanceItemFormScreen) updateSublist(m tea.KeyMsg, count int, open func(index int)) (Screen, tea.Cmd) {
 	switch m.String() {
-	case "esc":
-		s.phase = mFormPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.rowCursor < len(s.tasks)-1 {
+	case "esc", "enter":
+		s.closeSublist()
+	case "down", "tab":
+		if s.rowCursor < count {
 			s.rowCursor++
 		}
-	case "k", "up":
+	case "up", "shift+tab":
 		if s.rowCursor > 0 {
 			s.rowCursor--
 		}
-	case "a":
-		s.openTaskEditor(-1)
+	case "pgdown":
+		s.pageSublist(count, +1)
+	case "pgup":
+		s.pageSublist(count, -1)
+	case "ctrl+e":
+		if s.rowCursor >= count {
+			open(-1) // the trailing add row
+		} else {
+			open(s.rowCursor)
+		}
 		return s, textinput.Blink
-	case "enter", "e":
-		if s.rowCursor >= 0 && s.rowCursor < len(s.tasks) {
-			s.openTaskEditor(s.rowCursor)
-			return s, textinput.Blink
-		}
-	case "d", "x":
-		if s.rowCursor >= 0 && s.rowCursor < len(s.tasks) {
-			s.tasks = append(s.tasks[:s.rowCursor], s.tasks[s.rowCursor+1:]...)
-			if s.rowCursor >= len(s.tasks) && s.rowCursor > 0 {
-				s.rowCursor--
-			}
-		}
 	}
 	return s, nil
+}
+
+// pageSublist moves a pane's worth of rows, clamping. count excludes the add
+// row, which is always reachable as the row after the last one.
+func (s *MaintenanceItemFormScreen) pageSublist(count, dir int) {
+	body := s.sublistBody()
+	s.rowCursor = jdePageCursor(s.rowCursor, count+1, s.windowRows(body, s.rowCursor, 0), dir)
+}
+
+func (s *MaintenanceItemFormScreen) closeSublist() {
+	s.phase = mFormPhaseForm
+	s.syncFocus()
+}
+
+func (s *MaintenanceItemFormScreen) updateTaskList(m tea.KeyMsg) (Screen, tea.Cmd) {
+	return s.updateSublist(m, len(s.tasks), s.openTaskEditor)
+}
+
+// removeTask drops a step. Removing is immediate, as it always was: nothing is
+// written until the item is saved, so there is nothing for a confirm to protect.
+func (s *MaintenanceItemFormScreen) removeTask(index int) {
+	if index < 0 || index >= len(s.tasks) {
+		return
+	}
+	s.tasks = append(s.tasks[:index:index], s.tasks[index+1:]...)
+	s.clampRowCursor(len(s.tasks))
+}
+
+// clampRowCursor keeps the list cursor inside the rows plus the add row.
+func (s *MaintenanceItemFormScreen) clampRowCursor(count int) {
+	if s.rowCursor > count {
+		s.rowCursor = count
+	}
+	if s.rowCursor < 0 {
+		s.rowCursor = 0
+	}
 }
 
 func (s *MaintenanceItemFormScreen) openTaskEditor(index int) {
@@ -835,56 +980,78 @@ func (s *MaintenanceItemFormScreen) openTaskEditor(index int) {
 		s.teRequired = true // model default
 		s.teRefImage.SetValue("")
 	}
-	s.teTitle.Focus()
-	s.teDesc.Blur()
-	s.teRefImage.Blur()
+	s.syncTaskEditFocus()
+}
+
+// taskEditRows is how many rows the editor offers: a step being ADDED has
+// nothing to remove yet, so it has no remove row.
+func (s *MaintenanceItemFormScreen) taskEditRows() int {
+	if s.editIndex < 0 || s.editIndex >= len(s.tasks) {
+		return taskEditFieldCount - 1
+	}
+	return taskEditFieldCount
 }
 
 func (s *MaintenanceItemFormScreen) updateTaskEdit(m tea.KeyMsg) (Screen, tea.Cmd) {
+	n := s.taskEditRows()
 	switch m.String() {
 	case "esc":
 		s.phase = mFormPhaseTaskList
 		return s, nil
 	case "tab", "down":
-		s.editCursor = (s.editCursor + 1) % taskEditFieldCount
+		s.editCursor = (s.editCursor + 1) % n
 		s.syncTaskEditFocus()
 		return s, textinput.Blink
 	case "shift+tab", "up":
-		s.editCursor = (s.editCursor + taskEditFieldCount - 1) % taskEditFieldCount
+		s.editCursor = (s.editCursor + n - 1) % n
 		s.syncTaskEditFocus()
 		return s, textinput.Blink
 	case "enter":
 		return s, s.commitTaskEditor()
+	case "ctrl+e":
+		if s.editCursor == taskEditRemove && s.editIndex >= 0 {
+			index := s.editIndex
+			s.phase = mFormPhaseTaskList
+			s.blurTaskEdit()
+			s.removeTask(index)
+		}
+		return s, nil
 	}
-	// Field 2 is the is_required toggle; space flips it.
-	if s.editCursor == 2 {
-		if m.String() == " " {
+	// The required row is a two-value choice: ←/→ flips it (space stays as the
+	// pilot's synonym).
+	if s.editCursor == taskEditRequired {
+		switch m.String() {
+		case " ", "left", "right":
 			s.teRequired = !s.teRequired
 		}
 		return s, nil
 	}
 	var cmd tea.Cmd
 	switch s.editCursor {
-	case 0:
+	case taskEditTitle:
 		s.teTitle, cmd = s.teTitle.Update(m)
-	case 1:
+	case taskEditDesc:
 		s.teDesc, cmd = s.teDesc.Update(m)
-	case 3:
+	case taskEditPhoto:
 		s.teRefImage, cmd = s.teRefImage.Update(m)
 	}
 	return s, cmd
 }
 
-func (s *MaintenanceItemFormScreen) syncTaskEditFocus() {
+func (s *MaintenanceItemFormScreen) blurTaskEdit() {
 	s.teTitle.Blur()
 	s.teDesc.Blur()
 	s.teRefImage.Blur()
+}
+
+func (s *MaintenanceItemFormScreen) syncTaskEditFocus() {
+	s.blurTaskEdit()
 	switch s.editCursor {
-	case 0:
+	case taskEditTitle:
 		s.teTitle.Focus()
-	case 1:
+	case taskEditDesc:
 		s.teDesc.Focus()
-	case 3:
+	case taskEditPhoto:
 		s.teRefImage.Focus()
 	}
 }
@@ -929,52 +1096,42 @@ func (s *MaintenanceItemFormScreen) commitTaskEditor() tea.Cmd {
 // ---------------------------------------------------------------------------
 
 func (s *MaintenanceItemFormScreen) updateMaterialList(m tea.KeyMsg) (Screen, tea.Cmd) {
-	switch m.String() {
-	case "esc":
-		s.phase = mFormPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.rowCursor < len(s.materials)-1 {
-			s.rowCursor++
-		}
-	case "k", "up":
-		if s.rowCursor > 0 {
-			s.rowCursor--
-		}
-	case "a":
-		s.openMaterialEditor(-1)
-		return s, textinput.Blink
-	case "enter", "e":
-		if s.rowCursor >= 0 && s.rowCursor < len(s.materials) {
-			s.openMaterialEditor(s.rowCursor)
-			return s, textinput.Blink
-		}
-	case "d", "x":
-		if s.rowCursor >= 0 && s.rowCursor < len(s.materials) {
-			s.materials = append(s.materials[:s.rowCursor], s.materials[s.rowCursor+1:]...)
-			if s.rowCursor >= len(s.materials) && s.rowCursor > 0 {
-				s.rowCursor--
-			}
-		}
+	return s.updateSublist(m, len(s.materials), s.openMaterialEditor)
+}
+
+// removeMaterial drops a material row (see removeTask).
+func (s *MaintenanceItemFormScreen) removeMaterial(index int) {
+	if index < 0 || index >= len(s.materials) {
+		return
 	}
-	return s, nil
+	s.materials = append(s.materials[:index:index], s.materials[index+1:]...)
+	s.clampRowCursor(len(s.materials))
 }
 
 // materialEditInput maps the row-editor cursor to its input (nil for none).
 func (s *MaintenanceItemFormScreen) materialEditInput(cursor int) *textinput.Model {
 	switch cursor {
-	case 0:
+	case materialEditName:
 		return &s.meName
-	case 1:
+	case materialEditQty:
 		return &s.meQty
-	case 2:
+	case materialEditUnit:
 		return &s.meUnit
-	case 3:
+	case materialEditCost:
 		return &s.meCost
-	case 4:
+	case materialEditNotes:
 		return &s.meNotes
 	}
 	return nil
+}
+
+// materialEditRows is how many rows the editor offers: a material being ADDED
+// has nothing to remove yet.
+func (s *MaintenanceItemFormScreen) materialEditRows() int {
+	if s.editIndex < 0 || s.editIndex >= len(s.materials) {
+		return materialEditFieldCount - 1
+	}
+	return materialEditFieldCount
 }
 
 func (s *MaintenanceItemFormScreen) openMaterialEditor(index int) {
@@ -996,27 +1153,33 @@ func (s *MaintenanceItemFormScreen) openMaterialEditor(index int) {
 		s.meCost.SetValue("0")
 		s.meNotes.SetValue("")
 	}
-	for _, in := range []*textinput.Model{&s.meName, &s.meQty, &s.meUnit, &s.meCost, &s.meNotes} {
-		in.Blur()
-	}
-	s.meName.Focus()
+	s.syncMaterialEditFocus()
 }
 
 func (s *MaintenanceItemFormScreen) updateMaterialEdit(m tea.KeyMsg) (Screen, tea.Cmd) {
+	n := s.materialEditRows()
 	switch m.String() {
 	case "esc":
 		s.phase = mFormPhaseMaterialList
 		return s, nil
 	case "tab", "down":
-		s.editCursor = (s.editCursor + 1) % 5
+		s.editCursor = (s.editCursor + 1) % n
 		s.syncMaterialEditFocus()
 		return s, textinput.Blink
 	case "shift+tab", "up":
-		s.editCursor = (s.editCursor + 4) % 5
+		s.editCursor = (s.editCursor + n - 1) % n
 		s.syncMaterialEditFocus()
 		return s, textinput.Blink
 	case "enter":
 		return s, s.commitMaterialEditor()
+	case "ctrl+e":
+		if s.editCursor == materialEditRemove && s.editIndex >= 0 {
+			index := s.editIndex
+			s.phase = mFormPhaseMaterialList
+			s.blurMaterialEdit()
+			s.removeMaterial(index)
+		}
+		return s, nil
 	}
 	if in := s.materialEditInput(s.editCursor); in != nil {
 		var cmd tea.Cmd
@@ -1026,13 +1189,16 @@ func (s *MaintenanceItemFormScreen) updateMaterialEdit(m tea.KeyMsg) (Screen, te
 	return s, nil
 }
 
+func (s *MaintenanceItemFormScreen) blurMaterialEdit() {
+	for _, in := range []*textinput.Model{&s.meName, &s.meQty, &s.meUnit, &s.meCost, &s.meNotes} {
+		in.Blur()
+	}
+}
+
 func (s *MaintenanceItemFormScreen) syncMaterialEditFocus() {
-	for i, in := range []*textinput.Model{&s.meName, &s.meQty, &s.meUnit, &s.meCost, &s.meNotes} {
-		if i == s.editCursor {
-			in.Focus()
-		} else {
-			in.Blur()
-		}
+	s.blurMaterialEdit()
+	if in := s.materialEditInput(s.editCursor); in != nil {
+		in.Focus()
 	}
 }
 
@@ -1076,51 +1242,41 @@ func (s *MaintenanceItemFormScreen) commitMaterialEditor() tea.Cmd {
 // ---------------------------------------------------------------------------
 
 func (s *MaintenanceItemFormScreen) updateToolList(m tea.KeyMsg) (Screen, tea.Cmd) {
-	switch m.String() {
-	case "esc":
-		s.phase = mFormPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.rowCursor < len(s.tools)-1 {
-			s.rowCursor++
-		}
-	case "k", "up":
-		if s.rowCursor > 0 {
-			s.rowCursor--
-		}
-	case "a":
-		s.openToolEditor(-1)
-		return s, textinput.Blink
-	case "enter", "e":
-		if s.rowCursor >= 0 && s.rowCursor < len(s.tools) {
-			s.openToolEditor(s.rowCursor)
-			return s, textinput.Blink
-		}
-	case "d", "x":
-		if s.rowCursor >= 0 && s.rowCursor < len(s.tools) {
-			s.tools = append(s.tools[:s.rowCursor], s.tools[s.rowCursor+1:]...)
-			if s.rowCursor >= len(s.tools) && s.rowCursor > 0 {
-				s.rowCursor--
-			}
-		}
-	}
-	return s, nil
+	return s.updateSublist(m, len(s.tools), s.openToolEditor)
 }
 
-// toolEditInput maps the row-editor cursor to its input. Cursor 3 is the
-// is_required toggle, which owns no input, so it returns nil there.
+// removeTool drops a tool row (see removeTask).
+func (s *MaintenanceItemFormScreen) removeTool(index int) {
+	if index < 0 || index >= len(s.tools) {
+		return
+	}
+	s.tools = append(s.tools[:index:index], s.tools[index+1:]...)
+	s.clampRowCursor(len(s.tools))
+}
+
+// toolEditInput maps the row-editor cursor to its input. toolEditRequired is
+// the is_required toggle, which owns no input, so it returns nil there.
 func (s *MaintenanceItemFormScreen) toolEditInput(cursor int) *textinput.Model {
 	switch cursor {
-	case 0:
+	case toolEditName:
 		return &s.toName
-	case 1:
+	case toolEditQty:
 		return &s.toQty
-	case 2:
+	case toolEditLoc:
 		return &s.toLoc
-	case 4:
+	case toolEditNotes:
 		return &s.toNotes
 	}
 	return nil
+}
+
+// toolEditRows is how many rows the editor offers: a tool being ADDED has
+// nothing to remove yet.
+func (s *MaintenanceItemFormScreen) toolEditRows() int {
+	if s.editIndex < 0 || s.editIndex >= len(s.tools) {
+		return toolEditFieldCount - 1
+	}
+	return toolEditFieldCount
 }
 
 func (s *MaintenanceItemFormScreen) openToolEditor(index int) {
@@ -1146,24 +1302,35 @@ func (s *MaintenanceItemFormScreen) openToolEditor(index int) {
 }
 
 func (s *MaintenanceItemFormScreen) updateToolEdit(m tea.KeyMsg) (Screen, tea.Cmd) {
+	n := s.toolEditRows()
 	switch m.String() {
 	case "esc":
 		s.phase = mFormPhaseToolList
 		return s, nil
 	case "tab", "down":
-		s.editCursor = (s.editCursor + 1) % 5
+		s.editCursor = (s.editCursor + 1) % n
 		s.syncToolEditFocus()
 		return s, textinput.Blink
 	case "shift+tab", "up":
-		s.editCursor = (s.editCursor + 4) % 5
+		s.editCursor = (s.editCursor + n - 1) % n
 		s.syncToolEditFocus()
 		return s, textinput.Blink
 	case "enter":
 		return s, s.commitToolEditor()
+	case "ctrl+e":
+		if s.editCursor == toolEditRemove && s.editIndex >= 0 {
+			index := s.editIndex
+			s.phase = mFormPhaseToolList
+			s.blurToolEdit()
+			s.removeTool(index)
+		}
+		return s, nil
 	}
-	// Field 3 is the is_required toggle; space flips it.
-	if s.editCursor == 3 {
-		if m.String() == " " {
+	// The required row is a two-value choice: ←/→ flips it (space stays as the
+	// pilot's synonym).
+	if s.editCursor == toolEditRequired {
+		switch m.String() {
+		case " ", "left", "right":
 			s.toRequired = !s.toRequired
 		}
 		return s, nil
@@ -1176,10 +1343,14 @@ func (s *MaintenanceItemFormScreen) updateToolEdit(m tea.KeyMsg) (Screen, tea.Cm
 	return s, nil
 }
 
-func (s *MaintenanceItemFormScreen) syncToolEditFocus() {
+func (s *MaintenanceItemFormScreen) blurToolEdit() {
 	for _, in := range []*textinput.Model{&s.toName, &s.toQty, &s.toLoc, &s.toNotes} {
 		in.Blur()
 	}
+}
+
+func (s *MaintenanceItemFormScreen) syncToolEditFocus() {
+	s.blurToolEdit()
 	if in := s.toolEditInput(s.editCursor); in != nil {
 		in.Focus()
 	}
@@ -1506,68 +1677,110 @@ func (s *MaintenanceItemFormScreen) View() string {
 }
 
 func (s *MaintenanceItemFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-
-	visible := s.visibleRows()
-	start, end := fieldWindow(s.cursor, len(s.fields), visible)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	if end < len(s.fields) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.fields)-end)) + "\n")
-	}
-
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *MaintenanceItemFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// formFields describes the visible fields as columnar rows: the active flag is a
+// bounded set, the asset row and the three sub-lists show what they hold today
+// and are opened with Ctrl-E.
+func (s *MaintenanceItemFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   mfLabel[id],
+			Width:   mfWidth(id),
+			Hint:    mfHint[id],
+			Focused: i == s.cursor,
+		}
+		switch mfKind(id) {
+		case mkToggle:
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.isActive)
+		case mkPicker:
+			value, dim := s.assetValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		case mkSublist:
+			value, dim := s.sublistValue(id)
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E manages"
+			}
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	label := mfLabel[id]
+	return out
+}
 
-	var value string
-	switch mfKind(id) {
-	case mkText, mkNumber:
-		value = s.inputs[id].View()
-	case mkToggle:
-		if s.isActive {
-			value = StyleStatusOK.Render("[x] yes")
-		} else {
-			value = StyleMuted.Render("[ ] no")
+func (s *MaintenanceItemFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	labelWidth := jdeLabelWidth(fields)
+
+	l := &jdeLines{}
+	band := mfBand(-1)
+	for i, id := range s.fields {
+		if b := mfBandOf(id); b != band {
+			if band != mfBand(-1) {
+				l.Add("")
+			}
+			l.Add(StyleJDEHeading.Render(mfBandLabel[b]))
+			band = b
 		}
-	case mkPicker:
-		if s.assetName != "" {
-			value = s.assetName
-		} else if s.assetID != "" {
-			value = s.assetID
-		} else {
-			value = StyleMuted.Render("(press space to pick — required)")
-		}
-	case mkSublist:
-		n := len(s.tasks)
-		noun := "step"
-		switch id {
-		case mfMaterials:
-			n, noun = len(s.materials), "material"
-		case mfTools:
-			n, noun = len(s.tools), "tool"
-		}
-		value = fmt.Sprintf("%d %s", n, plural(noun, n)) + " " + StyleMuted.Render("(space to manage)")
+		l.AddRow(i, renderJDEField(fields[i], labelWidth))
 	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *MaintenanceItemFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok {
+		switch mfKind(id) {
+		case mkToggle:
+			items = append(items, actionBarItem{"←→", "Change"})
+		case mkPicker:
+			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+		case mkSublist:
+			items = append(items, actionBarItem{"Ctrl-E", "Manage"})
+		}
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// assetValue is the asset row's text, and whether it is an empty state rather
+// than a value. PLAIN text plus a flag, so a focused row can reverse-video the
+// whole field without an inner reset sequence cutting the highlight short.
+func (s *MaintenanceItemFormScreen) assetValue() (string, bool) {
+	switch {
+	case s.assetName != "":
+		return s.assetName, false
+	case s.assetID != "":
+		return s.assetID, false
+	}
+	return "(not set)", true
+}
+
+// sublistValue is a sub-list row's summary: how many rows it holds.
+func (s *MaintenanceItemFormScreen) sublistValue(id int) (string, bool) {
+	n, noun := len(s.tasks), "step"
+	switch id {
+	case mfMaterials:
+		n, noun = len(s.materials), "material"
+	case mfTools:
+		n, noun = len(s.tools), "tool"
+	}
+	if n == 0 {
+		return "(none)", true
+	}
+	return fmt.Sprintf("%d %s", n, plural(noun, n)), false
 }
 
 func plural(noun string, n int) string {
@@ -1577,95 +1790,124 @@ func plural(noun string, n int) string {
 	return noun + "s"
 }
 
-func (s *MaintenanceItemFormScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok {
-		switch mfKind(id) {
-		case mkToggle:
-			kindHelp = "space toggle"
-		case mkPicker:
-			kindHelp = "space to pick"
-		case mkSublist:
-			kindHelp = "space/enter to manage"
-		}
+// pickView builds the asset picker's pinned header and its option list.
+func (s *MaintenanceItemFormScreen) pickView() ([]string, *jdeLines) {
+	empty := "(no matches)"
+	if len(s.assets) == 0 {
+		empty = "(no assets loaded)"
 	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
-}
-
-func (s *MaintenanceItemFormScreen) visibleRows() int {
-	const chrome = 6
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
-	}
-	return avail
+	return jdePickList{
+		Title:  "Asset",
+		For:    strings.TrimSpace(s.inputs[mfTitle].Value()),
+		Note:   "The asset this preventive-maintenance item is scheduled against.",
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  func(i int) string { return s.pickOptions[i].label },
+		Cursor: s.pickCursor,
+		Empty:  empty,
+	}.render()
 }
 
 func (s *MaintenanceItemFormScreen) viewAssetPick() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render("Pick asset — j/k move · / filter · enter select · esc back") + "\n\n")
-	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	if len(s.assets) == 0 {
-		b.WriteString(StyleMuted.Render("(no assets loaded)"))
-		return b.String()
-	}
-	if len(s.pickOptions) == 0 {
-		b.WriteString(StyleMuted.Render("(no matches)"))
-		return b.String()
-	}
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		caret := "    "
-		if i == s.pickCursor {
-			caret = "  ▸ "
-		}
-		line := caret + s.pickOptions[i].label
-		if i == s.pickCursor {
-			line = StyleSidebarItemActive.Render(caret + s.pickOptions[i].label)
-		}
-		b.WriteString(line + "\n")
-	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }
 
-func (s *MaintenanceItemFormScreen) viewTaskList() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Task steps") + "  " + StyleMuted.Render("a add · e/enter edit · d remove · j/k move · esc back") + "\n\n")
-	if len(s.tasks) == 0 {
-		b.WriteString(StyleMuted.Render("(no task steps yet — press a to add)") + "\n")
-		return b.String()
+// ---------------------------------------------------------------------------
+// The sub-lists
+// ---------------------------------------------------------------------------
+
+// mfSublistRow is one row of a sub-list as the renderer needs it: the summary
+// line, plus any detail lines that belong to the SAME navigable row (so the
+// window keeps a row's whole block on screen rather than its first line).
+type mfSublistRow struct {
+	line   string
+	detail []string
+}
+
+// sublistLines lays a sub-list out: a heading, its rows, and the trailing
+// "(add …)" row that replaced the `a` key.
+func (s *MaintenanceItemFormScreen) sublistLines(heading, empty, addLabel string, rows []mfSublistRow) *jdeLines {
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render(heading))
+	l.Add("")
+	if len(rows) == 0 {
+		l.Add(jdeIndent + StyleMuted.Render(empty))
 	}
-	for i, t := range s.tasks {
-		caret := "  "
+	for i, r := range rows {
 		if i == s.rowCursor {
-			caret = "▸ "
+			l.AddRow(i, StyleSidebarItemActive.Render("  ▸ "+r.line))
+		} else {
+			l.AddRow(i, "    "+r.line)
 		}
+		for _, d := range r.detail {
+			l.AddRow(i, "      "+d)
+		}
+	}
+	// The add row is the last navigable row, always present: adding is
+	// something you move to, not a letter you have to have memorised.
+	if s.rowCursor >= len(rows) {
+		l.AddRow(len(rows), StyleSidebarItemActive.Render("  ▸ "+addLabel))
+	} else {
+		l.AddRow(len(rows), "    "+StyleMuted.Render(addLabel))
+	}
+	return l
+}
+
+// sublistBar names the keys that apply. Enter and Esc are both done: the rows
+// are written with the ITEM, so leaving the list writes nothing either way.
+func (s *MaintenanceItemFormScreen) sublistBar(body *jdeLines, count int, noun, addVerb string) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}, {"UP/DN", noun}}
+	if s.rowCursor >= count {
+		items = append(items, actionBarItem{"Ctrl-E", addVerb})
+	} else {
+		items = append(items, actionBarItem{"Ctrl-E", "Edit"})
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// sublistBody is the lines of whichever sub-list is open — what paging measures
+// a page against.
+func (s *MaintenanceItemFormScreen) sublistBody() *jdeLines {
+	switch s.phase {
+	case mFormPhaseMaterialList:
+		return s.materialListLines()
+	case mFormPhaseToolList:
+		return s.toolListLines()
+	}
+	return s.taskListLines()
+}
+
+func (s *MaintenanceItemFormScreen) taskListLines() *jdeLines {
+	rows := make([]mfSublistRow, 0, len(s.tasks))
+	for i, t := range s.tasks {
 		req := StyleMuted.Render("(optional)")
 		if t.isRequired {
 			req = StyleStatusOK.Render("(required)")
 		}
-		line := fmt.Sprintf("%s%d. %s %s", caret, i+1, t.title, req)
-		if i == s.rowCursor {
-			line = StyleSidebarItemActive.Render(line)
-		}
-		b.WriteString(line + "\n")
+		r := mfSublistRow{line: fmt.Sprintf("%d. %s %s", i+1, t.title, req)}
 		if t.description != "" {
-			b.WriteString("     " + StyleMuted.Render(t.description) + "\n")
+			r.detail = append(r.detail, StyleMuted.Render(t.description))
 		}
 		if p := taskRefPhotoLine(t); p != "" {
-			b.WriteString("     " + p + "\n")
+			r.detail = append(r.detail, p)
 		}
+		rows = append(rows, r)
 	}
-	return b.String()
+	return s.sublistLines("Task steps", "(no task steps yet)", "(add a task step)", rows)
+}
+
+func (s *MaintenanceItemFormScreen) viewTaskList() string {
+	body := s.taskListLines()
+	return s.frame(body, s.rowCursor, "", s.sublistBar(body, len(s.tasks), "Steps", "Add a step"))
 }
 
 // taskRefPhotoLine describes a step's reference photo in one line, or "" when
@@ -1681,173 +1923,233 @@ func taskRefPhotoLine(t taskRow) string {
 	return ""
 }
 
-func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
-	var b strings.Builder
-	verb := "Add"
-	if s.editIndex >= 0 {
-		verb = "Edit"
+// mfRemoveField is the "remove this row" row every sub-editor ends with, once
+// the row it removes actually exists. It is a jdeValue, not an input: Ctrl-E on
+// it is what drops the row, and the bar says so.
+func mfRemoveField(label, what string, focused bool) jdeField {
+	return jdeField{
+		Label:   label,
+		Kind:    jdeValue,
+		Value:   "drops it from the " + what,
+		Dim:     true,
+		Focused: focused,
 	}
-	b.WriteString(StyleTitle.Render(verb+" task step") + "  " + StyleMuted.Render("tab/↑↓ move · enter save · esc back") + "\n\n")
+}
 
-	rows := []struct {
-		label string
-		value string
-	}{
-		{"Title", s.teTitle.View()},
-		{"Description", s.teDesc.View()},
-		{"Required", boolBadge(s.teRequired)},
-		{"Reference photo", s.teRefImage.View()},
+// editorTitle is "Add …" or "Edit …" for a sub-editor.
+func (s *MaintenanceItemFormScreen) editorTitle(noun string) string {
+	if s.editIndex >= 0 {
+		return "Edit " + noun
 	}
-	for i, r := range rows {
-		caret := "  "
-		if i == s.editCursor {
-			caret = "▸ "
-		}
-		b.WriteString(caret + StyleTitle.Render(r.label+": ") + r.value + "\n")
+	return "Add " + noun
+}
+
+// editorBar is the bar every sub-editor draws: enter saves the row back into
+// the list in memory, esc abandons the edit, and Ctrl-E appears only on the
+// remove row.
+func (s *MaintenanceItemFormScreen) editorBar(noun string, onRemove bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save " + noun}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if onRemove {
+		items = append(items, actionBarItem{"Ctrl-E", "Remove"})
 	}
+	return items
+}
+
+func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
+	fields := []jdeField{
+		{
+			Label:   "Title",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.teTitle, s.editCursor == taskEditTitle),
+			Width:   40,
+			Hint:    "required",
+			Focused: s.editCursor == taskEditTitle,
+		},
+		{
+			Label:   "Description",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.teDesc, s.editCursor == taskEditDesc),
+			Width:   44,
+			Focused: s.editCursor == taskEditDesc,
+		},
+		{
+			Label:   "Required",
+			Kind:    jdeChoice,
+			Value:   jdeYesNo(s.teRequired),
+			Focused: s.editCursor == taskEditRequired,
+		},
+		{
+			Label:   "Reference photo",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.teRefImage, s.editCursor == taskEditPhoto),
+			Width:   40,
+			Hint:    "absolute path · blank keeps current",
+			Focused: s.editCursor == taskEditPhoto,
+		},
+	}
+	if s.taskEditRows() > taskEditRemove {
+		fields = append(fields, mfRemoveField("Remove this step", "checklist", s.editCursor == taskEditRemove))
+	}
+	labelWidth := jdeLabelWidth(fields)
+
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render(s.editorTitle("task step")))
+	l.Add(jdeIndent + StyleMuted.Render("Shown against this step on every work order the item generates."))
+	l.Add("")
+	l.AddFields(fields, labelWidth, 0)
 	// The photo already on the step: read-only, and left in place unless a new
 	// path above replaces it.
 	if s.editIndex >= 0 && s.editIndex < len(s.tasks) {
 		if u := s.tasks[s.editIndex].refImageURL; u != "" {
-			b.WriteString("    " + StyleMuted.Render("current: ") + u + "\n")
+			l.AddRow(taskEditPhoto, jdeStripIndent(labelWidth)+StyleMuted.Render("current: ")+u)
 		}
 	}
-	if s.editCursor == 2 {
-		b.WriteString("\n" + StyleMuted.Render("space toggles required") + "\n")
-	}
-	if s.editCursor == 3 {
-		b.WriteString("\n" + StyleMuted.Render("instructional photo shown against this step on every work order · blank keeps the current one") + "\n")
-	}
-	if s.editErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.editErr))
-	}
-	return b.String()
+	return s.frame(l, s.editCursor, jdeStatusLine(false, "", s.editErr),
+		s.editorBar("step", s.editCursor == taskEditRemove && s.editIndex >= 0))
 }
 
-func (s *MaintenanceItemFormScreen) viewMaterialList() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Materials") + "  " + StyleMuted.Render("a add · e/enter edit · d remove · j/k move · esc back") + "\n\n")
-	if len(s.materials) == 0 {
-		b.WriteString(StyleMuted.Render("(no materials yet — press a to add)") + "\n")
-		return b.String()
-	}
-	for i, mrow := range s.materials {
-		caret := "  "
-		if i == s.rowCursor {
-			caret = "▸ "
-		}
+func (s *MaintenanceItemFormScreen) materialListLines() *jdeLines {
+	rows := make([]mfSublistRow, 0, len(s.materials))
+	for _, mrow := range s.materials {
 		qty := mrow.quantity
 		if mrow.unit != "" {
 			qty += " " + mrow.unit
 		}
-		line := fmt.Sprintf("%s%s — %s @ $%s", caret, mrow.name, qty, mrow.cost)
-		if i == s.rowCursor {
-			line = StyleSidebarItemActive.Render(line)
-		}
-		b.WriteString(line + "\n")
+		r := mfSublistRow{line: fmt.Sprintf("%s — %s @ $%s", mrow.name, qty, mrow.cost)}
 		if mrow.notes != "" {
-			b.WriteString("     " + StyleMuted.Render(mrow.notes) + "\n")
+			r.detail = append(r.detail, StyleMuted.Render(mrow.notes))
 		}
+		rows = append(rows, r)
 	}
-	return b.String()
+	return s.sublistLines("Materials", "(no materials yet)", "(add a material)", rows)
+}
+
+func (s *MaintenanceItemFormScreen) viewMaterialList() string {
+	body := s.materialListLines()
+	return s.frame(body, s.rowCursor, "", s.sublistBar(body, len(s.materials), "Materials", "Add a material"))
 }
 
 func (s *MaintenanceItemFormScreen) viewMaterialEdit() string {
-	var b strings.Builder
-	verb := "Add"
-	if s.editIndex >= 0 {
-		verb = "Edit"
+	fields := []jdeField{
+		{
+			Label:   "Name",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.meName, s.editCursor == materialEditName),
+			Width:   36,
+			Hint:    "required",
+			Focused: s.editCursor == materialEditName,
+		},
+		{
+			Label:   "Quantity",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.meQty, s.editCursor == materialEditQty),
+			Width:   10,
+			Focused: s.editCursor == materialEditQty,
+		},
+		{
+			Label:   "Unit",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.meUnit, s.editCursor == materialEditUnit),
+			Width:   12,
+			Focused: s.editCursor == materialEditUnit,
+		},
+		{
+			Label:   "Cost per unit ($)",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.meCost, s.editCursor == materialEditCost),
+			Width:   10,
+			Focused: s.editCursor == materialEditCost,
+		},
+		{
+			Label:   "Notes",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.meNotes, s.editCursor == materialEditNotes),
+			Width:   44,
+			Focused: s.editCursor == materialEditNotes,
+		},
 	}
-	b.WriteString(StyleTitle.Render(verb+" material") + "  " + StyleMuted.Render("tab/↑↓ move · enter save · esc back") + "\n\n")
-	rows := []struct {
-		label string
-		value string
-	}{
-		{"Name", s.meName.View()},
-		{"Quantity", s.meQty.View()},
-		{"Unit", s.meUnit.View()},
-		{"Cost per unit ($)", s.meCost.View()},
-		{"Notes", s.meNotes.View()},
+	if s.materialEditRows() > materialEditRemove {
+		fields = append(fields, mfRemoveField("Remove this material", "list", s.editCursor == materialEditRemove))
 	}
-	for i, r := range rows {
-		caret := "  "
-		if i == s.editCursor {
-			caret = "▸ "
-		}
-		b.WriteString(caret + StyleTitle.Render(r.label+": ") + r.value + "\n")
-	}
-	if s.editErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.editErr))
-	}
-	return b.String()
+
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render(s.editorTitle("material")))
+	l.Add("")
+	l.AddFields(fields, jdeLabelWidth(fields), 0)
+	return s.frame(l, s.editCursor, jdeStatusLine(false, "", s.editErr),
+		s.editorBar("material", s.editCursor == materialEditRemove && s.editIndex >= 0))
 }
 
-func (s *MaintenanceItemFormScreen) viewToolList() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Tools required") + "  " + StyleMuted.Render("a add · e/enter edit · d remove · j/k move · esc back") + "\n\n")
-	if len(s.tools) == 0 {
-		b.WriteString(StyleMuted.Render("(no tools yet — press a to add)") + "\n")
-		return b.String()
-	}
-	for i, t := range s.tools {
-		caret := "  "
-		if i == s.rowCursor {
-			caret = "▸ "
-		}
-		line := fmt.Sprintf("%s%s ×%d", caret, t.name, t.quantity)
+func (s *MaintenanceItemFormScreen) toolListLines() *jdeLines {
+	rows := make([]mfSublistRow, 0, len(s.tools))
+	for _, t := range s.tools {
+		line := fmt.Sprintf("%s ×%d", t.name, t.quantity)
 		if t.locationHint != "" {
 			line += " · " + t.locationHint
 		}
 		if t.isRequired {
 			line += " " + StyleStatusWarn.Render("[REQ]")
 		}
-		if i == s.rowCursor {
-			line = StyleSidebarItemActive.Render(line)
-		}
-		b.WriteString(line + "\n")
+		r := mfSublistRow{line: line}
 		if t.notes != "" {
-			b.WriteString("     " + StyleMuted.Render(t.notes) + "\n")
+			r.detail = append(r.detail, StyleMuted.Render(t.notes))
 		}
+		rows = append(rows, r)
 	}
-	return b.String()
+	return s.sublistLines("Tools required", "(no tools yet)", "(add a tool)", rows)
+}
+
+func (s *MaintenanceItemFormScreen) viewToolList() string {
+	body := s.toolListLines()
+	return s.frame(body, s.rowCursor, "", s.sublistBar(body, len(s.tools), "Tools", "Add a tool"))
 }
 
 func (s *MaintenanceItemFormScreen) viewToolEdit() string {
-	var b strings.Builder
-	verb := "Add"
-	if s.editIndex >= 0 {
-		verb = "Edit"
+	fields := []jdeField{
+		{
+			Label:   "Name",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.toName, s.editCursor == toolEditName),
+			Width:   36,
+			Hint:    "required",
+			Focused: s.editCursor == toolEditName,
+		},
+		{
+			Label:   "Quantity",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.toQty, s.editCursor == toolEditQty),
+			Width:   10,
+			Focused: s.editCursor == toolEditQty,
+		},
+		{
+			Label:   "Where to find it",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.toLoc, s.editCursor == toolEditLoc),
+			Width:   36,
+			Focused: s.editCursor == toolEditLoc,
+		},
+		{
+			Label:   "Required",
+			Kind:    jdeChoice,
+			Value:   jdeYesNo(s.toRequired),
+			Focused: s.editCursor == toolEditRequired,
+		},
+		{
+			Label:   "Notes",
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.toNotes, s.editCursor == toolEditNotes),
+			Width:   44,
+			Focused: s.editCursor == toolEditNotes,
+		},
 	}
-	b.WriteString(StyleTitle.Render(verb+" tool") + "  " + StyleMuted.Render("tab/↑↓ move · enter save · esc back") + "\n\n")
-	rows := []struct {
-		label string
-		value string
-	}{
-		{"Name", s.toName.View()},
-		{"Quantity", s.toQty.View()},
-		{"Where to find it", s.toLoc.View()},
-		{"Required", boolBadge(s.toRequired)},
-		{"Notes", s.toNotes.View()},
+	if s.toolEditRows() > toolEditRemove {
+		fields = append(fields, mfRemoveField("Remove this tool", "list", s.editCursor == toolEditRemove))
 	}
-	for i, r := range rows {
-		caret := "  "
-		if i == s.editCursor {
-			caret = "▸ "
-		}
-		b.WriteString(caret + StyleTitle.Render(r.label+": ") + r.value + "\n")
-	}
-	if s.editCursor == 3 {
-		b.WriteString("\n" + StyleMuted.Render("space toggles required") + "\n")
-	}
-	if s.editErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.editErr))
-	}
-	return b.String()
-}
 
-func boolBadge(v bool) string {
-	if v {
-		return StyleStatusOK.Render("[x] yes")
-	}
-	return StyleMuted.Render("[ ] no")
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render(s.editorTitle("tool")))
+	l.Add("")
+	l.AddFields(fields, jdeLabelWidth(fields), 0)
+	return s.frame(l, s.editCursor, jdeStatusLine(false, "", s.editErr),
+		s.editorBar("tool", s.editCursor == toolEditRemove && s.editIndex >= 0))
 }

@@ -12,6 +12,11 @@
 // Reached from the location detail screen (p → problems list → n) and, on
 // success, returns to that problems list. The form is always raw-input so every
 // keystroke edits the focused field.
+//
+// The form renders through the columnar "JD Edwards" layer (jde_form.go,
+// sc-h412/sc-dnhx): one right-aligned label column, severity as a "< value >"
+// choice row with its whole scale spelled out underneath, and a persistent
+// action bar. Enter reports, Esc cancels, Up/Down move, ←/→ change the severity.
 package tui
 
 import (
@@ -48,6 +53,26 @@ var locationProblemFieldLabel = map[int]string{
 	lpfPhoto:       "Photo path",
 }
 
+// locationProblemFieldHint carries what the placeholders used to say. A
+// placeholder long enough to fill the input area leaves no underscores, so an
+// empty green-screen row stops reading as empty; the note rides after the input
+// instead, where it costs the shared label column nothing.
+var locationProblemFieldHint = map[int]string{
+	lpfDescription: "required",
+	lpfPhoto:       "optional · /path/to/photo.jpg",
+}
+
+// locationProblemFieldWidth sizes the input areas that are not the default.
+func locationProblemFieldWidth(id int) int {
+	switch id {
+	case lpfDescription:
+		return 44
+	case lpfPhoto:
+		return 36
+	}
+	return 0
+}
+
 type LocationProblemFormScreen struct {
 	deps    Deps
 	locID   int
@@ -55,6 +80,8 @@ type LocationProblemFormScreen struct {
 
 	saving bool
 	errMsg string
+
+	jdeScreen
 
 	inputs      []textinput.Model
 	severityIdx int
@@ -80,13 +107,11 @@ func NewLocationProblemFormScreen(deps Deps, locID int, locName string) *Locatio
 	desc := textinput.New()
 	desc.Prompt = ""
 	desc.CharLimit = 1000
-	desc.Placeholder = "describe the problem (leak, broken light, broken door)…"
 	s.inputs[lpfDescription] = desc
 
 	photo := textinput.New()
 	photo.Prompt = ""
 	photo.CharLimit = 500
-	photo.Placeholder = "optional /absolute/path/to/photo.jpg"
 	s.inputs[lpfPhoto] = photo
 
 	s.fields = []int{lpfDescription, lpfSeverity, lpfPhoto}
@@ -114,6 +139,9 @@ func (s *LocationProblemFormScreen) ctx() context.Context {
 
 func (s *LocationProblemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.setSize(m)
+		return s, nil
 	case locationProblemReportedMsg:
 		s.saving = false
 		if m.err != nil {
@@ -136,6 +164,8 @@ func (s *LocationProblemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 }
 
 func (s *LocationProblemFormScreen) updateForm(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -144,6 +174,12 @@ func (s *LocationProblemFormScreen) updateForm(m tea.KeyMsg) (Screen, tea.Cmd) {
 		return s, textinput.Blink
 	case "shift+tab", "up":
 		s.moveCursor(-1)
+		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
 		return s, textinput.Blink
 	case "enter":
 		if s.saving {
@@ -185,6 +221,16 @@ func (s *LocationProblemFormScreen) moveCursor(delta int) {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *LocationProblemFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -239,41 +285,67 @@ func (s *LocationProblemFormScreen) cancelCmd() tea.Cmd {
 }
 
 func (s *LocationProblemFormScreen) View() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Reporting…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Reporting…", s.errMsg), s.formBar(body))
 }
 
-func (s *LocationProblemFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// formFields describes the report as columnar rows: severity is the one bounded
+// set, the rest are typed into.
+func (s *LocationProblemFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   locationProblemFieldLabel[id],
+			Width:   locationProblemFieldWidth(id),
+			Hint:    locationProblemFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		if id == lpfSeverity {
+			// The bare label: renderJDEField draws the "< … >" brackets itself,
+			// and elecSelectLabel's own "‹ … ›" would nest a second pair inside
+			// them.
+			f.Kind, f.Value = jdeChoice, locationProblemSeverityOptions[s.severityIdx].label
+		} else {
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	label := locationProblemFieldLabel[id]
-	var value string
-	switch id {
-	case lpfSeverity:
-		value = elecSelectLabel(locationProblemSeverityOptions, s.severityIdx)
-	default:
-		value = s.inputs[id].View()
-	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return out
 }
 
-func (s *LocationProblemFormScreen) helpText() string {
-	kindHelp := "type to edit"
+func (s *LocationProblemFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	labelWidth := jdeLabelWidth(fields)
+
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Problem report"))
+	for i, f := range fields {
+		l.AddRow(i, renderJDEField(f, labelWidth))
+		// The whole scale under the FOCUSED severity row: four values is more
+		// than "< Medium >" can imply, and cycling blind through a severity is
+		// how an urgent report ends up filed as low.
+		if i == s.cursor && s.fields[i] == lpfSeverity {
+			labels := make([]string, len(locationProblemSeverityOptions))
+			for j, o := range locationProblemSeverityOptions {
+				labels[j] = o.label
+			}
+			if strip := jdeOptionStrip(labels, s.severityIdx, jdeStripWidth(s.bodyWidth(), labelWidth)); strip != "" {
+				l.AddRow(i, jdeStripIndent(labelWidth)+StyleMuted.Render(strip))
+			}
+		}
+	}
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *LocationProblemFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Report"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok && id == lpfSeverity {
-		kindHelp = "space/←→ change"
+		items = append(items, actionBarItem{"←→", "Change"})
 	}
-	return kindHelp + " · tab/↑↓ move · enter submit · esc cancel"
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
 }

@@ -37,6 +37,13 @@
 // screen so workspace switching keeps working; it claims only `n` (new) and `G`
 // (which collide with global hotkeys) via HandlesKey, and flips to raw input
 // only while the delete confirmation is up so y/n land here.
+//
+// The FORM renders through the columnar "JD Edwards" layer (jde_form.go,
+// sc-h412/sc-dnhx): one right-aligned label column, the code as a "< value >"
+// choice row with its neighbours in the set spelled out underneath, and a
+// persistent action bar. Enter saves, Esc cancels, Up/Down move, ←/→ change.
+// In edit mode the fixed code keeps its place in the sheet as a dimmed row that
+// is drawn but not navigable — the web's disabled input, in columnar form.
 package tui
 
 import (
@@ -112,6 +119,23 @@ var deviceTypeFieldLabel = map[int]string{
 	dtActive:      "Active",
 }
 
+// deviceTypeFieldHint carries what the placeholders used to say. A placeholder
+// long enough to fill the input area leaves no underscores, so an empty
+// green-screen row stops reading as empty; and a columnar form marks what is
+// REQUIRED rather than tagging everything else "(optional)".
+var deviceTypeFieldHint = map[int]string{
+	dtName: "required · unique",
+}
+
+// deviceTypeFieldWidth sizes the input areas that are not the default.
+func deviceTypeFieldWidth(id int) int {
+	switch id {
+	case dtDescription:
+		return 40
+	}
+	return 0
+}
+
 func deviceTypeFieldKind(id int) assetFieldKind {
 	switch id {
 	case dtName, dtDescription:
@@ -138,7 +162,7 @@ type DeviceTypeFormScreen struct {
 
 	dt *forgekeyapi.DeviceType
 
-	terminalHeight int
+	jdeScreen
 
 	inputs   []textinput.Model
 	codeIdx  int
@@ -195,15 +219,8 @@ func deviceTypeCharLimit(id int) int {
 	return 100
 }
 
-func deviceTypePlaceholder(id int) string {
-	switch id {
-	case dtName:
-		return "device type name (unique)"
-	case dtDescription:
-		return "optional"
-	}
-	return ""
-}
+// deviceTypePlaceholder is empty for every field now — see deviceTypeFieldHint.
+func deviceTypePlaceholder(id int) string { return "" }
 
 // rebuildFields sets the visible/navigable field list. Code is create-only: in
 // edit mode it is shown as a fixed header line (see viewForm) rather than an
@@ -262,7 +279,7 @@ func (s *DeviceTypeFormScreen) loadRecord() tea.Cmd {
 func (s *DeviceTypeFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case deviceTypeLoadedMsg:
 		s.loading = false
@@ -340,6 +357,8 @@ func (s *DeviceTypeFormScreen) syncFocus() {
 }
 
 func (s *DeviceTypeFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -348,6 +367,12 @@ func (s *DeviceTypeFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 		return s, textinput.Blink
 	case "shift+tab", "up":
 		s.moveCursor(-1)
+		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
 		return s, textinput.Blink
 	case "enter":
 		if s.saving {
@@ -362,7 +387,10 @@ func (s *DeviceTypeFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	}
 	switch deviceTypeFieldKind(id) {
 	case akToggle:
-		if m.String() == " " {
+		// A toggle is a two-value choice row, so it flips on the same ←/→ every
+		// other bounded set takes (space stays as the pilot's synonym).
+		switch m.String() {
+		case " ", "left", "right":
 			s.isActive = !s.isActive
 		}
 		return s, nil
@@ -387,6 +415,16 @@ func (s *DeviceTypeFormScreen) moveCursor(delta int) {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *DeviceTypeFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -459,61 +497,112 @@ func (s *DeviceTypeFormScreen) View() string {
 }
 
 func (s *DeviceTypeFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n")
-	// In edit mode the code is fixed after creation, shown as a read-only line
-	// (mirrors the web's disabled code input) rather than an editable select.
-	if s.edit {
-		code := ""
-		if s.dt != nil {
-			code = s.dt.Code
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+}
+
+// formFields describes the form as columnar rows: the code and the active flag
+// are bounded sets, the rest are typed into.
+func (s *DeviceTypeFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   deviceTypeFieldLabel[id],
+			Width:   deviceTypeFieldWidth(id),
+			Hint:    deviceTypeFieldHint[id],
+			Focused: i == s.cursor,
 		}
-		b.WriteString(StyleMuted.Render("code: "+deviceTypeCodeLabel(code)+" (fixed after creation)") + "\n")
-	}
-	b.WriteString("\n")
-
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
-}
-
-func (s *DeviceTypeFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
-	}
-	label := deviceTypeFieldLabel[id]
-	var value string
-	switch deviceTypeFieldKind(id) {
-	case akText:
-		value = s.inputs[id].View()
-	case akToggle:
-		value = elecToggleLabel(s.isActive)
-	case akSelect:
-		value = elecSelectLabel(deviceTypeCodeOptions, s.codeIdx)
-	}
-	return caret + StyleTitle.Render(label+": ") + value
-}
-
-func (s *DeviceTypeFormScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok {
 		switch deviceTypeFieldKind(id) {
 		case akToggle:
-			kindHelp = "space toggle"
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.isActive)
 		case akSelect:
-			kindHelp = "space/←→ change"
+			f.Kind, f.Value = jdeChoice, deviceTypeCodeLabel(s.codeValue())
+			// The wire value, not the label: this code is what device enrollment
+			// and firmware targeting match on, and "AC Relay" is stored as
+			// power_relay. A form whose value is a contract should show it.
+			f.Hint = s.codeValue()
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
+	}
+	return out
+}
+
+// codeValue is the wire code the cursor is sitting on, or the saved one in edit
+// mode (where the select is not on the sheet).
+func (s *DeviceTypeFormScreen) codeValue() string {
+	if s.edit {
+		if s.dt != nil {
+			return s.dt.Code
+		}
+		return ""
+	}
+	if s.codeIdx >= 0 && s.codeIdx < len(deviceTypeCodeOptions) {
+		return deviceTypeCodeOptions[s.codeIdx].value
+	}
+	return ""
+}
+
+// fixedCodeField is the edit-mode code row: drawn in the sheet, in the place the
+// select would have, but dimmed and NOT navigable — the columnar form of the
+// web's disabled code input. A code other rows key off (enrollment, firmware)
+// must not be silently rewritten.
+func (s *DeviceTypeFormScreen) fixedCodeField() jdeField {
+	return jdeField{
+		Label: deviceTypeFieldLabel[dtCode],
+		Kind:  jdeValue,
+		Value: deviceTypeCodeLabel(s.codeValue()),
+		Hint:  "fixed after creation",
+		Dim:   true,
+	}
+}
+
+func (s *DeviceTypeFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	fixed := []jdeField{}
+	if s.edit {
+		fixed = append(fixed, s.fixedCodeField())
+	}
+	// ONE column across both bands, or the fixed row would hang off its own.
+	labelWidth := jdeLabelWidth(fields, fixed)
+
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Device type"))
+	for i, f := range fields {
+		l.AddRow(i, renderJDEField(f, labelWidth))
+		if s.fields[i] == dtName && len(fixed) > 0 {
+			// Code sits where it would if it were editable, so the sheet reads
+			// the same either way; it is a line, not a row, because there is
+			// nothing to navigate to.
+			l.Add(renderJDEField(fixed[0], labelWidth))
+		}
+		// The set around the FOCUSED code row, so nineteen choices are never
+		// cycled blind (jdeOptionStrip returns nothing for a yes/no).
+		if i == s.cursor && s.fields[i] == dtCode {
+			labels := make([]string, len(deviceTypeCodeOptions))
+			for j, o := range deviceTypeCodeOptions {
+				labels[j] = o.label
+			}
+			if strip := jdeOptionStrip(labels, s.codeIdx, jdeStripWidth(s.bodyWidth(), labelWidth)); strip != "" {
+				l.AddRow(i, jdeStripIndent(labelWidth)+StyleMuted.Render(strip))
+			}
 		}
 	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *DeviceTypeFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok && !deviceTypeIsTextKind(id) {
+		items = append(items, actionBarItem{"←→", "Change"})
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
 }
 
 // ===========================================================================
