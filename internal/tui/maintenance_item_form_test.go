@@ -120,12 +120,21 @@ func TestMaintenanceItemForm_TaskEditor(t *testing.T) {
 		t.Fatalf("edit should mark dirty: %+v", s.tasks[0])
 	}
 
-	// Delete via the list handler.
+	// Delete: removing lives on the step's OWN editor now (sc-0zvi), where the
+	// row being dropped is on screen — the list's `d` key is gone.
 	s.phase = mFormPhaseTaskList
 	s.rowCursor = 0
-	s.updateTaskList(mtKey("d"))
+	s.updateTaskList(mtKey("ctrl+e"))
+	if s.phase != mFormPhaseTaskEdit {
+		t.Fatalf("ctrl+e on a row should open its editor, phase = %v", s.phase)
+	}
+	s.editCursor = taskEditRemove
+	s.updateTaskEdit(mtKey("ctrl+e"))
 	if len(s.tasks) != 0 {
 		t.Fatalf("task not deleted: %+v", s.tasks)
+	}
+	if s.phase != mFormPhaseTaskList {
+		t.Errorf("removing should return to the list, phase = %v", s.phase)
 	}
 }
 
@@ -439,7 +448,9 @@ func TestMaintenanceItemForm_RenderSmoke(t *testing.T) {
 	}
 
 	s.openAssetPick()
-	if out := s.View(); !strings.Contains(out, "Pick asset") {
+	// The picker is a columnar sub-phase now: an always-live filter box pinned
+	// above the list, rather than a "Pick asset — / filter" help line.
+	if out := s.View(); !strings.Contains(out, "Filter") || !strings.Contains(out, "Lathe (LT-1)") {
 		t.Errorf("asset pick view wrong: %q", out)
 	}
 

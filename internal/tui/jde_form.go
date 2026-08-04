@@ -236,10 +236,9 @@ func jdeStripWidth(bodyWidth, labelWidth int) int {
 // says what the other value is, and the empty string is the caller's signal to
 // draw no line at all.
 //
-// width (0 for none) is what the strip has left on the row. A set of long labels
-// can be wider than the pane, and Root's clampToBox would cut it off mid-word
-// with nothing to say it had; an ellipsis at least admits there is more, and the
-// row's "< value >" is still the authority on what is picked.
+// width (0 for none) is what the strip has left on the row. A set that does not
+// fit is WINDOWED around the current entry rather than clipped at the tail — see
+// jdeStripWindow.
 func jdeOptionStrip(labels []string, idx, width int) string {
 	if len(labels) < 3 {
 		return ""
@@ -252,11 +251,64 @@ func jdeOptionStrip(labels []string, idx, width int) string {
 		}
 		parts = append(parts, l)
 	}
-	strip := strings.Join(parts, " · ")
-	if width > 0 && lipgloss.Width(strip) > width {
-		strip = truncateVisible(strip, width-1) + "…"
+	strip := strings.Join(parts, jdeStripSep)
+	if width <= 0 || lipgloss.Width(strip) <= width {
+		return strip
 	}
-	return strip
+	return jdeStripWindow(parts, idx, width)
+}
+
+// jdeStripSep separates the entries of an option strip.
+const jdeStripSep = " · "
+
+// jdeStripWindow is the strip for a set too wide for the row: it grows outward
+// from the SELECTED entry and marks each dropped end with an ellipsis.
+//
+// Clipping the tail instead — which is what this did first — cuts the bracketed
+// entry off entirely once the cursor is past the first few options, and a strip
+// that cannot show you where you are is worse than no strip at all (a device
+// type cycles nineteen codes; sweep B is what found this).
+func jdeStripWindow(parts []string, idx, width int) string {
+	if idx < 0 || idx >= len(parts) {
+		idx = 0
+	}
+	render := func(lo, hi int) string {
+		s := strings.Join(parts[lo:hi+1], jdeStripSep)
+		if lo > 0 {
+			s = "… " + s
+		}
+		if hi < len(parts)-1 {
+			s += " …"
+		}
+		return s
+	}
+	lo, hi := idx, idx
+	out := render(lo, hi)
+	if lipgloss.Width(out) > width {
+		// The selected entry alone overflows: all that fits is the admission
+		// that it does.
+		if width < 2 {
+			return ""
+		}
+		return truncateVisible(out, width-1) + "…"
+	}
+	for lo > 0 || hi < len(parts)-1 {
+		grew := false
+		if hi < len(parts)-1 {
+			if next := render(lo, hi+1); lipgloss.Width(next) <= width {
+				hi, out, grew = hi+1, next, true
+			}
+		}
+		if lo > 0 {
+			if next := render(lo-1, hi); lipgloss.Width(next) <= width {
+				lo, out, grew = lo-1, next, true
+			}
+		}
+		if !grew {
+			break
+		}
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -644,7 +696,16 @@ func (p jdePickList) render() ([]string, *jdeLines) {
 // jdePickBar is the bar every picker draws: the same four keys, plus paging when
 // the list is longer than the pane.
 func jdePickBar(verb string, paging bool) []actionBarItem {
-	items := []actionBarItem{{"Enter", verb}, {"Esc", "Cancel"}, {"UP/DN", "Move"}}
+	return jdePickBarWith(verb, "Cancel", paging)
+}
+
+// jdePickBarWith is jdePickBar for a picker whose Esc does not mean "cancel".
+// A MULTI picker applies each toggle as it is made, so there is nothing left to
+// undo and leaving IS the commit — the bar has to say "Done" or it is lying
+// about what the key does. (Enter toggles there, because the always-live filter
+// owns space; sweep B's required-certifications row is the first of these.)
+func jdePickBarWith(commit, cancel string, paging bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", commit}, {"Esc", cancel}, {"UP/DN", "Move"}}
 	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}

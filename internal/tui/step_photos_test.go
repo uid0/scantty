@@ -79,7 +79,13 @@ func TestTaskEditorSetsReferencePhoto(t *testing.T) {
 	if s.teRefImage.Value() != photo {
 		t.Fatalf("typing at cursor 3 should reach the photo field, got %q", s.teRefImage.Value())
 	}
-	// One more tab wraps back to the title — the editor is 4 fields now, not 3.
+	// One more tab reaches the remove row an EXISTING step carries (sc-0zvi
+	// folded the list's `d` key into the row's own editor), and the one after
+	// that wraps back to the title.
+	s.updateTaskEdit(mtKey("tab"))
+	if s.editCursor != taskEditRemove {
+		t.Fatalf("tab past the photo should reach the remove row, got %d", s.editCursor)
+	}
 	s.updateTaskEdit(mtKey("tab"))
 	if s.editCursor != 0 {
 		t.Fatalf("tab past the last field should wrap to 0, got %d", s.editCursor)

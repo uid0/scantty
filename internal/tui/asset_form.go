@@ -12,18 +12,19 @@
 // Field kinds and how each is edited:
 //
 //	text / number — a bubbles textinput; type to edit, validated on submit
-//	toggle        — a bool; space flips it (is_donation, is_active, the
-//	                advanced needs_* / is_chargeable / training_required /
-//	                report_only flags). Flipping is_donation shows/hides the
-//	                donor-name field.
-//	select        — a fixed option list; space or ←/→ cycles (status,
+//	toggle        — a bool drawn "< Yes >"; ←/→ flips it (is_donation,
+//	                is_active, the advanced needs_* / is_chargeable /
+//	                training_required / report_only flags). Flipping
+//	                is_donation shows/hides the donor-name field.
+//	select        — a fixed option list, also "< value >"; ←/→ cycles (status,
 //	                ownership_type). Cycling ownership to "group" or "user"
 //	                reveals the matching owner picker.
-//	picker        — a single foreign key chosen from a searchable list in a
-//	                sub-phase; space opens it (inventory item, category,
+//	picker        — a single foreign key chosen from a filtered list in a
+//	                sub-phase; Ctrl-E opens it (inventory item, category,
 //	                location, owning group, owning user)
-//	multi-picker  — required_certifications: same sub-phase but space toggles
-//	                membership and enter closes; multiple certs can be selected
+//	multi-picker  — required_certifications: the same sub-phase, but enter
+//	                toggles membership and esc is done; multiple certs can be
+//	                selected
 //
 // Two families of AssetFormPage controls are intentionally NOT reproduced here,
 // each for a concrete reason rather than to "simplify":
@@ -41,6 +42,12 @@
 // Navigation: tab / ↑↓ move between visible fields, enter saves, esc cancels.
 // The form is longer than the pane, so it scrolls to keep the focused field on
 // screen.
+//
+// It renders through the columnar "JD Edwards" layer (jde_form.go,
+// sc-h412/sc-dnhx): one right-aligned label column, a persistent action bar
+// naming exactly the keys that apply where the cursor is standing, and — because
+// thirty-one fields in one undivided run is a wall — the sheet broken into the
+// bands a printed asset record would have (see assetFieldBandOf).
 package tui
 
 import (
@@ -169,6 +176,86 @@ var assetFieldLabel = map[int]string{
 	afNotes:                "Notes",
 }
 
+// assetFieldBand groups the sheet into the sections a printed asset record
+// would have. Thirty-one fields in one run is a wall (the item form learned this
+// in sweep A), and the bands must stay CONTIGUOUS in the rebuildFields order —
+// a heading is drawn where its band starts, not wherever the field happens to
+// be.
+type assetFieldBand int
+
+const (
+	assetBandIdentity assetFieldBand = iota
+	assetBandClassification
+	assetBandAcquisition
+	assetBandOwnership
+	assetBandDocumentation
+	assetBandFacility
+	assetBandAccess
+	assetBandNotes
+)
+
+var assetBandLabel = map[assetFieldBand]string{
+	assetBandIdentity:       "Asset",
+	assetBandClassification: "Classification & placement",
+	assetBandAcquisition:    "Acquisition",
+	assetBandOwnership:      "Status & ownership",
+	assetBandDocumentation:  "Documentation",
+	assetBandFacility:       "Facility requirements",
+	assetBandAccess:         "Access & training",
+	assetBandNotes:          "Notes",
+}
+
+func assetFieldBandOf(id int) assetFieldBand {
+	switch id {
+	case afInventoryItem, afCategory, afLocation:
+		return assetBandClassification
+	case afDateReceived, afAmountPaid, afIsDonation, afDonorName:
+		return assetBandAcquisition
+	case afStatus, afOwnership, afOwningGroup, afOwningUser, afIsActive:
+		return assetBandOwnership
+	case afWikiPageURL, afProductURL, afManualPDFPath:
+		return assetBandDocumentation
+	case afNeedsCompressedAir, afNeedsVentilation, afGeneratesHeatOrFlame, afNeedsChilling:
+		return assetBandFacility
+	case afIsChargeable, afTrainingRequired, afRequiredCerts, afReportOnly:
+		return assetBandAccess
+	case afSpecialRequirements, afWorkSafetyNotes, afConditionNotes, afNotes:
+		return assetBandNotes
+	}
+	return assetBandIdentity
+}
+
+// assetFieldHint carries the format notes that used to live in the
+// placeholders. A placeholder long enough to fill the input area leaves no
+// underscores, so an empty green-screen row stops reading as empty; the note
+// rides after the input instead. A columnar form marks what is REQUIRED rather
+// than tagging everything else "(optional)".
+var assetFieldHint = map[int]string{
+	afName:          "required",
+	afAssetTag:      "DMS-ABCD1234",
+	afDateReceived:  "YYYY-MM-DD",
+	afWikiPageURL:   "https://…",
+	afProductURL:    "https://…",
+	afManualPDFPath: "absolute path to a local file",
+}
+
+// assetFieldWidth sizes the input areas that are not the default.
+func assetFieldWidth(id int) int {
+	switch id {
+	case afDescription, afSpecialRequirements, afWorkSafetyNotes, afConditionNotes, afNotes:
+		return 44
+	case afWikiPageURL, afProductURL, afManualPDFPath:
+		return 40
+	case afName:
+		return 34
+	case afDateReceived:
+		return 12
+	case afAmountPaid:
+		return 10
+	}
+	return 0
+}
+
 func assetFieldKindOf(id int) assetFieldKind {
 	switch id {
 	case afName, afDescription, afAssetTag, afSerialNumber, afDateReceived, afDonorName,
@@ -225,7 +312,7 @@ type AssetFormScreen struct {
 	refArrived   bool
 	assetArrived bool
 
-	terminalHeight int
+	jdeScreen
 
 	// Text/number field storage, indexed by field id. Non-text slots are left
 	// as zero-value models and never rendered/updated.
@@ -262,7 +349,6 @@ type AssetFormScreen struct {
 	pickField   int
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []assetPickRow
 }
 
@@ -345,32 +431,10 @@ func assetCharLimitFor(id int) int {
 	}
 }
 
-func assetPlaceholderFor(id int) string {
-	switch id {
-	case afName:
-		return "asset name or model"
-	case afAssetTag:
-		return "DMS-ABCD1234"
-	case afSerialNumber:
-		return "serial number or unique identifier"
-	case afDateReceived:
-		return "YYYY-MM-DD"
-	case afAmountPaid:
-		return "0.00"
-	case afWikiPageURL:
-		return "https://wiki.example.com/asset"
-	case afProductURL:
-		return "https://manufacturer.example.com/product"
-	case afManualPDFPath:
-		return "/absolute/path/to/manual.pdf"
-	case afDonorName:
-		return "name of donor"
-	case afDescription, afSpecialRequirements, afWorkSafetyNotes, afConditionNotes, afNotes:
-		return "optional"
-	default:
-		return ""
-	}
-}
+// assetPlaceholderFor is empty for every field now — the formats and examples
+// moved to assetFieldHint, which rides after the input area instead of filling
+// it (see jde_form.go).
+func assetPlaceholderFor(id int) string { return "" }
 
 func assetStatusIndex(v string) int {
 	for i, o := range assetStatusOptions {
@@ -472,7 +536,7 @@ func (s *AssetFormScreen) loadAsset() tea.Cmd {
 func (s *AssetFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 
 	case assetFormRefLoadedMsg:
@@ -700,6 +764,8 @@ func (s *AssetFormScreen) syncFocus() {
 // ---------------------------------------------------------------------------
 
 func (s *AssetFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -709,11 +775,28 @@ func (s *AssetFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS. Only the pickers open
+		// anything, which is why the bar drops the key on the others.
+		if id, ok := s.currentFieldID(); ok {
+			switch assetFieldKindOf(id) {
+			case akPicker, akMultiPicker:
+				s.openPicker(id)
+				return s, textinput.Blink
+			}
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -722,7 +805,10 @@ func (s *AssetFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	}
 	switch assetFieldKindOf(id) {
 	case akToggle:
-		if m.String() == " " {
+		// A toggle is a two-value choice row, so it flips on the same ←/→ every
+		// other bounded set takes (space stays as the pilot's synonym).
+		switch m.String() {
+		case " ", "left", "right":
 			s.flipToggle(id)
 		}
 		return s, nil
@@ -735,10 +821,7 @@ func (s *AssetFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 		}
 		return s, nil
 	case akPicker, akMultiPicker:
-		if m.String() == " " {
-			s.openPicker(id)
-			return s, textinput.Blink
-		}
+		// A picker row has nothing to type into and no accelerators left.
 		return s, nil
 	default:
 		var cmd tea.Cmd
@@ -753,6 +836,17 @@ func (s *AssetFormScreen) moveCursor(delta int) {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — on a sheet this long a page that jumped from the last row back to the
+// first would lose the operator's place rather than save them keystrokes.
+func (s *AssetFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -835,9 +929,10 @@ func (s *AssetFormScreen) cycleSelect(id, delta int) {
 func (s *AssetFormScreen) openPicker(id int) {
 	s.phase = assetPhasePick
 	s.pickField = id
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyPickFilter()
 
 	// Start the cursor on the currently-selected option (single-value pickers)
@@ -924,57 +1019,58 @@ func (s *AssetFormScreen) applyPickFilter() {
 }
 
 func (s *AssetFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyPickFilter()
-			s.pickCursor = 0
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		// In the MULTI picker esc is "done", not "cancel": every toggle was
+		// applied as it was made, so there is nothing to roll back. The bar says
+		// so rather than pretending one of the two exits is special.
+		s.closePicker()
+	case jdePickCommit:
+		if s.pickField == afRequiredCerts {
+			// Enter toggles membership here — the always-live filter owns space,
+			// and a multi picker's "select" IS the toggle.
+			s.toggleCurrentCert()
 			return s, nil
 		}
+		s.commitPick()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
 		s.applyPickFilter()
 		return s, cmd
 	}
-
-	multi := s.pickField == afRequiredCerts
-	switch m.String() {
-	case "esc":
-		s.phase = assetPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case " ":
-		// In the multi picker, space toggles membership without closing.
-		if multi {
-			s.toggleCurrentCert()
-		}
-	case "enter":
-		if multi {
-			// The multi picker applies toggles live; enter just closes.
-			s.phase = assetPhaseForm
-			s.syncFocus()
-		} else {
-			s.commitPick()
-		}
-	}
 	return s, nil
+}
+
+// movePick walks the option cursor, clamping at both ends — a picker list is a
+// set of choices, not a ring, so running off the bottom must not reappear at the
+// "(none)" row that clears the field.
+func (s *AssetFormScreen) movePick(delta int) {
+	next := s.pickCursor + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > len(s.pickOptions)-1 {
+		next = len(s.pickOptions) - 1
+	}
+	if next < 0 {
+		next = 0
+	}
+	s.pickCursor = next
+}
+
+func (s *AssetFormScreen) closePicker() {
+	s.phase = assetPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func (s *AssetFormScreen) commitPick() {
@@ -998,11 +1094,7 @@ func (s *AssetFormScreen) commitPick() {
 			s.owningUserID = pickInt(opt)
 		}
 	}
-	s.phase = assetPhaseForm
-	s.pickTyping = false
-	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
-	s.syncFocus()
+	s.closePicker()
 }
 
 // pickInt maps a picker row to an int pk pointer, or nil for the "(none)" row /
@@ -1212,132 +1304,193 @@ func (s *AssetFormScreen) View() string {
 }
 
 func (s *AssetFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-
-	visible := s.visibleRows()
-	start, end := fieldWindow(s.cursor, len(s.fields), visible)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	if end < len(s.fields) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.fields)-end)) + "\n")
-	}
-
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *AssetFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
-	}
-	label := assetFieldLabel[id]
-
-	var value string
-	switch assetFieldKindOf(id) {
-	case akText, akNumber:
-		value = s.inputs[id].View()
-	case akToggle:
-		if s.toggleState(id) {
-			value = StyleStatusOK.Render("[x] yes")
-		} else {
-			value = StyleMuted.Render("[ ] no")
+// formFields describes the visible fields as columnar rows. Toggles and selects
+// are both bounded sets, so both draw "< value >"; the five foreign keys and the
+// certifications set show what is chosen today and are opened with Ctrl-E.
+func (s *AssetFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   assetFieldLabel[id],
+			Width:   assetFieldWidth(id),
+			Hint:    assetFieldHint[id],
+			Focused: i == s.cursor,
 		}
-	case akSelect:
-		value = s.selectLabel(id)
-	case akPicker:
-		value = s.pickerLabel(id)
-	case akMultiPicker:
-		value = s.certsLabel()
+		switch assetFieldKindOf(id) {
+		case akToggle:
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.toggleState(id))
+		case akSelect:
+			f.Kind, f.Value = jdeChoice, s.selectValue(id)
+		case akPicker:
+			value, dim := s.pickerValue(id)
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		case akMultiPicker:
+			value, dim := s.certsValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E chooses"
+			}
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return out
 }
 
-func (s *AssetFormScreen) selectLabel(id int) string {
+// formLines builds the body, breaking the fields into the bands a printed asset
+// record would have and drawing the focused select's whole option set under it.
+func (s *AssetFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	labelWidth := jdeLabelWidth(fields)
+
+	l := &jdeLines{}
+	band := assetFieldBand(-1)
+	for i, id := range s.fields {
+		if b := assetFieldBandOf(id); b != band {
+			if band != assetFieldBand(-1) {
+				l.Add("")
+			}
+			l.Add(StyleJDEHeading.Render(assetBandLabel[b]))
+			band = b
+		}
+		l.AddRow(i, renderJDEField(fields[i], labelWidth))
+		if i == s.cursor {
+			if strip := s.selectStrip(id, jdeStripWidth(s.bodyWidth(), labelWidth)); strip != "" {
+				l.AddRow(i, jdeStripIndent(labelWidth)+StyleMuted.Render(strip))
+			}
+		}
+	}
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *AssetFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok {
+		switch assetFieldKindOf(id) {
+		case akToggle, akSelect:
+			items = append(items, actionBarItem{"←→", "Change"})
+		case akPicker:
+			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+		case akMultiPicker:
+			items = append(items, actionBarItem{"Ctrl-E", "Choose"})
+		}
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// selectValue is what goes between a select row's angle brackets.
+func (s *AssetFormScreen) selectValue(id int) string {
 	switch id {
 	case afStatus:
 		if s.statusIdx >= 0 && s.statusIdx < len(assetStatusOptions) {
-			return "‹ " + assetStatusOptions[s.statusIdx].label + " ›"
+			return assetStatusOptions[s.statusIdx].label
 		}
 	case afOwnership:
 		if s.ownershipIdx >= 0 && s.ownershipIdx < len(assetOwnershipOptions) {
-			return "‹ " + assetOwnershipOptions[s.ownershipIdx].label + " ›"
+			return assetOwnershipOptions[s.ownershipIdx].label
 		}
 	}
 	return ""
 }
 
-func (s *AssetFormScreen) pickerLabel(id int) string {
+// selectStrip is the whole option set drawn under the FOCUSED select row, so a
+// fixed list is never cycled blind. Toggles get nothing — "< Yes >" already says
+// what the other value is.
+func (s *AssetFormScreen) selectStrip(id, width int) string {
+	var opts []selectOption
+	var idx int
+	switch id {
+	case afStatus:
+		opts, idx = assetStatusOptions, s.statusIdx
+	case afOwnership:
+		opts, idx = assetOwnershipOptions, s.ownershipIdx
+	default:
+		return ""
+	}
+	labels := make([]string, len(opts))
+	for i, o := range opts {
+		labels[i] = o.label
+	}
+	return jdeOptionStrip(labels, idx, width)
+}
+
+// pickerValue is an FK row's text, and whether it is an empty state rather than
+// a value. It returns PLAIN text with a flag instead of pre-styled muted text,
+// because a focused row has to be able to reverse-video the whole field — an
+// inner reset sequence would end the highlight partway through it.
+func (s *AssetFormScreen) pickerValue(id int) (string, bool) {
 	switch id {
 	case afInventoryItem:
 		if s.inventoryItemID == nil {
-			return StyleMuted.Render("(none)")
+			return "(none)", true
 		}
 		for _, it := range s.items {
 			if it.ID == *s.inventoryItemID {
-				return it.Name
+				return it.Name, false
 			}
 		}
 		if s.asset != nil && s.asset.InventoryItemName != "" {
-			return s.asset.InventoryItemName
+			return s.asset.InventoryItemName, false
 		}
-		return "#" + *s.inventoryItemID
+		return "#" + *s.inventoryItemID, false
 	case afCategory:
 		if s.categoryID == nil {
-			return StyleMuted.Render("(none)")
+			return "(none)", true
 		}
 		for _, c := range s.categories {
 			if c.ID == *s.categoryID {
-				return c.Name
+				return c.Name, false
 			}
 		}
-		return fmt.Sprintf("#%d", *s.categoryID)
+		return fmt.Sprintf("#%d", *s.categoryID), false
 	case afLocation:
 		if s.locationID == nil {
-			return StyleMuted.Render("(none)")
+			return "(none)", true
 		}
 		for _, l := range s.locations {
 			if l.ID == *s.locationID {
-				return l.Name
+				return l.Name, false
 			}
 		}
-		return fmt.Sprintf("#%d", *s.locationID)
+		return fmt.Sprintf("#%d", *s.locationID), false
 	case afOwningGroup:
 		if s.owningGroupID == nil {
-			return StyleMuted.Render("(none)")
+			return "(none)", true
 		}
 		for _, g := range s.sigs {
 			if g.ID == *s.owningGroupID {
-				return g.Name
+				return g.Name, false
 			}
 		}
-		return fmt.Sprintf("#%d", *s.owningGroupID)
+		return fmt.Sprintf("#%d", *s.owningGroupID), false
 	case afOwningUser:
 		if s.owningUserID == nil {
-			return StyleMuted.Render("(none)")
+			return "(none)", true
 		}
 		for _, u := range s.users {
 			if u.ID == *s.owningUserID {
-				return assetUserLabel(u)
+				return assetUserLabel(u), false
 			}
 		}
 		if s.asset != nil && s.asset.OwningUserName != "" {
-			return s.asset.OwningUserName
+			return s.asset.OwningUserName, false
 		}
-		return fmt.Sprintf("#%d", *s.owningUserID)
+		return fmt.Sprintf("#%d", *s.owningUserID), false
 	}
-	return ""
+	return "", false
 }
 
 func assetUserLabel(u omsapi.User) string {
@@ -1360,9 +1513,10 @@ func assetUserLabel(u omsapi.User) string {
 	return fmt.Sprintf("#%d", u.ID)
 }
 
-func (s *AssetFormScreen) certsLabel() string {
+// certsValue is the multi-picker row's text, and whether it is an empty state.
+func (s *AssetFormScreen) certsValue() (string, bool) {
 	if len(s.certIDs) == 0 {
-		return StyleMuted.Render("(none)")
+		return "(none)", true
 	}
 	names := make([]string, 0, len(s.certIDs))
 	for _, id := range s.certIDs {
@@ -1375,104 +1529,65 @@ func (s *AssetFormScreen) certsLabel() string {
 		}
 		names = append(names, name)
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(names, ", "), false
 }
 
-func (s *AssetFormScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok {
-		switch assetFieldKindOf(id) {
-		case akToggle:
-			kindHelp = "space toggle"
-		case akSelect:
-			kindHelp = "space/←→ change"
-		case akPicker:
-			kindHelp = "space to pick"
-		case akMultiPicker:
-			kindHelp = "space to choose certs"
-		}
+// pickView builds the open picker's pinned header and its option list. The
+// certifications picker marks membership with a checkbox in the label itself —
+// the layer never learns what is being picked, so the caller draws the mark.
+func (s *AssetFormScreen) pickView() ([]string, *jdeLines) {
+	multi := s.pickField == afRequiredCerts
+	note := "Row 1 is none — it clears the field."
+	if multi {
+		note = "Enter toggles a certification on and off; esc is done."
 	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
+	return jdePickList{
+		Title:  s.pickWhatLabel(),
+		For:    strings.TrimSpace(s.inputs[afName].Value()),
+		Note:   note,
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  s.pickRowLabel,
+		Dim:    func(i int) bool { return s.pickOptions[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  "(no matches)",
+	}.render()
 }
 
-// visibleRows returns how many field rows fit given the current terminal
-// height, reserving space for the help line, indicators, spacing, and the
-// status line.
-func (s *AssetFormScreen) visibleRows() int {
-	const chrome = 6 // help + blank + blank + status + 2 scroll indicators
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+func (s *AssetFormScreen) pickRowLabel(i int) string {
+	opt := s.pickOptions[i]
+	if s.pickField != afRequiredCerts || opt.clear {
+		return opt.label
 	}
-	return avail
+	mark := "[ ] "
+	if id, err := strconv.Atoi(opt.key); err == nil && s.certSelected(id) {
+		mark = "[x] "
+	}
+	return mark + opt.label
 }
 
 func (s *AssetFormScreen) viewPick() string {
-	var b strings.Builder
-	multi := s.pickField == afRequiredCerts
-	what := s.pickWhatLabel()
-	if multi {
-		b.WriteString(StyleMuted.Render("Choose "+what+" — j/k move · space toggle · / filter · enter done · esc back") + "\n\n")
-	} else {
-		b.WriteString(StyleMuted.Render("Pick "+what+" — j/k move · / filter · enter select · esc back") + "\n\n")
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
+	// The multi picker's esc is "done", not "cancel" — its toggles were applied
+	// as they were made.
+	if s.pickField == afRequiredCerts {
+		return s.frameWithHeader(header, body, s.pickCursor,
+			jdeStatusLine(false, "", ""), jdePickBarWith("Toggle", "Done", paging))
 	}
-	if len(s.pickOptions) == 0 {
-		b.WriteString(StyleMuted.Render("(no matches)"))
-		return b.String()
-	}
-
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		opt := s.pickOptions[i]
-		caret := "    "
-		if i == s.pickCursor {
-			caret = "  ▸ "
-		}
-		prefix := ""
-		if multi && !opt.clear {
-			if id, err := strconv.Atoi(opt.key); err == nil && s.certSelected(id) {
-				prefix = "[x] "
-			} else {
-				prefix = "[ ] "
-			}
-		}
-		label := opt.label
-		if opt.clear {
-			label = StyleMuted.Render(opt.label)
-		}
-		line := caret + prefix + label
-		if i == s.pickCursor {
-			line = StyleSidebarItemActive.Render(caret + prefix + opt.label)
-		}
-		b.WriteString(line + "\n")
-	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }
 
+// pickWhatLabel names what the open picker is picking. It is the picker's
+// HEADING now rather than the tail of a "Pick …" sentence, so it reads as the
+// field's own label does.
 func (s *AssetFormScreen) pickWhatLabel() string {
-	switch s.pickField {
-	case afInventoryItem:
-		return "inventory item type"
-	case afCategory:
-		return "category"
-	case afLocation:
-		return "location"
-	case afOwningGroup:
-		return "owning SIG"
-	case afOwningUser:
-		return "owning user"
-	case afRequiredCerts:
-		return "required certifications"
+	if label, ok := assetFieldLabel[s.pickField]; ok {
+		return label
 	}
 	return ""
 }

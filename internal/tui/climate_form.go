@@ -21,6 +21,13 @@
 // GetAssetPowerChain and shows the panel/breaker badges. That is a read-only
 // sanity-check, not part of the write contract; the same power chain is already
 // browsable from the electrical screens.
+//
+// The FORM renders through the columnar "JD Edwards" layer (jde_form.go,
+// sc-h412/sc-dnhx): one right-aligned label column, the three FK rows showing
+// their current selection, and a persistent action bar. Enter saves, Esc
+// cancels, Up/Down move, and Ctrl-E opens the picker on the row it is standing
+// on — whose filter is always live, so typing narrows the list and the `/`, `j`
+// and `k` it used to carry are gone.
 package tui
 
 import (
@@ -72,6 +79,27 @@ var thermostatFieldLabel = map[int]string{
 // pickers.
 var thermostatTextFields = []int{tfLabel, tfManufacturer, tfModel, tfNotes}
 
+// thermostatFieldHint carries what the placeholders used to say. A placeholder
+// long enough to fill the input area leaves no underscores, so an empty
+// green-screen row stops reading as empty; the note rides after the input
+// instead. A columnar form marks what is REQUIRED rather than tagging
+// everything else "(optional)".
+var thermostatFieldHint = map[int]string{
+	tfLabel:        "required",
+	tfLocation:     "required",
+	tfManufacturer: "e.g. Honeywell",
+	tfModel:        "e.g. T6 Pro",
+}
+
+// thermostatFieldWidth sizes the input areas that are not the default.
+func thermostatFieldWidth(id int) int {
+	switch id {
+	case tfLabel, tfNotes:
+		return 40
+	}
+	return 0
+}
+
 type ThermostatFormScreen struct {
 	deps    Deps
 	edit    bool
@@ -88,7 +116,7 @@ type ThermostatFormScreen struct {
 	refArrived bool
 	thArrived  bool
 
-	terminalHeight int
+	jdeScreen
 
 	inputs             []textinput.Model
 	locationID         *int
@@ -102,7 +130,6 @@ type ThermostatFormScreen struct {
 	pickField   int
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []assetPickRow
 }
 
@@ -138,19 +165,16 @@ func NewThermostatFormScreen(deps Deps, thermID string) *ThermostatFormScreen {
 	for _, fid := range thermostatTextFields {
 		ti := textinput.New()
 		ti.Prompt = ""
+		// No placeholders: the examples and the "optional" moved to
+		// thermostatFieldHint, where they ride after the input area instead of
+		// filling it (see jde_form.go).
 		switch fid {
 		case tfLabel:
 			ti.CharLimit = 120
-			ti.Placeholder = "Wood shop north"
-		case tfManufacturer:
+		case tfManufacturer, tfModel:
 			ti.CharLimit = 100
-			ti.Placeholder = "Honeywell"
-		case tfModel:
-			ti.CharLimit = 100
-			ti.Placeholder = "T6 Pro"
 		case tfNotes:
 			ti.CharLimit = 1000
-			ti.Placeholder = "optional"
 		}
 		s.inputs[fid] = ti
 	}
@@ -223,7 +247,7 @@ func (s *ThermostatFormScreen) loadThermostat() tea.Cmd {
 func (s *ThermostatFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case thermostatRefLoadedMsg:
 		s.refArrived = true
@@ -347,6 +371,8 @@ func (s *ThermostatFormScreen) syncFocus() {
 }
 
 func (s *ThermostatFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -356,29 +382,48 @@ func (s *ThermostatFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS. Only the three FK rows
+		// open anything, which is why the bar drops the key on the others.
+		if id, ok := s.currentFieldID(); ok && s.isPickerField(id) {
+			s.openPicker(id)
+			return s, textinput.Blink
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
 	if !ok {
 		return s, nil
 	}
+	if s.isPickerField(id) {
+		// A picker row has nothing to type into and no accelerators left.
+		return s, nil
+	}
+	var cmd tea.Cmd
+	s.inputs[id], cmd = s.inputs[id].Update(m)
+	return s, cmd
+}
+
+// isPickerField reports whether a field is one of the three FK rows Ctrl-E
+// opens.
+func (s *ThermostatFormScreen) isPickerField(id int) bool {
 	switch id {
 	case tfLocation, tfControlsLocation, tfControlledAsset:
-		if m.String() == " " {
-			s.openPicker(id)
-			return s, textinput.Blink
-		}
-		return s, nil
-	default:
-		var cmd tea.Cmd
-		s.inputs[id], cmd = s.inputs[id].Update(m)
-		return s, cmd
+		return true
 	}
+	return false
 }
 
 func (s *ThermostatFormScreen) moveCursor(delta int) {
@@ -390,12 +435,23 @@ func (s *ThermostatFormScreen) moveCursor(delta int) {
 	s.syncFocus()
 }
 
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *ThermostatFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.syncFocus()
+}
+
 func (s *ThermostatFormScreen) openPicker(field int) {
 	s.phase = thermostatPhasePick
 	s.pickField = field
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyPickFilter()
 	s.pickCursor = 0
 	// Rest the cursor on the current selection so re-picking is a no-op.
@@ -460,45 +516,49 @@ func (s *ThermostatFormScreen) applyPickFilter() {
 }
 
 func (s *ThermostatFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyPickFilter()
-			s.pickCursor = 0
-			return s, nil
-		}
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		s.closePicker()
+	case jdePickCommit:
+		s.commitPick()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
 		s.applyPickFilter()
 		return s, cmd
 	}
-
-	switch m.String() {
-	case "esc":
-		s.phase = thermostatPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case "enter":
-		s.commitPick()
-	}
 	return s, nil
+}
+
+// movePick walks the option cursor, clamping at both ends — a picker list is a
+// set of choices, not a ring, so running off the bottom must not reappear at the
+// "(none)" row that clears the field.
+func (s *ThermostatFormScreen) movePick(delta int) {
+	next := s.pickCursor + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > len(s.pickOptions)-1 {
+		next = len(s.pickOptions) - 1
+	}
+	if next < 0 {
+		next = 0
+	}
+	s.pickCursor = next
+}
+
+func (s *ThermostatFormScreen) closePicker() {
+	s.phase = thermostatPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func (s *ThermostatFormScreen) commitPick() {
@@ -521,11 +581,7 @@ func (s *ThermostatFormScreen) commitPick() {
 			}
 		}
 	}
-	s.phase = thermostatPhaseForm
-	s.pickTyping = false
-	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
-	s.syncFocus()
+	s.closePicker()
 }
 
 func (s *ThermostatFormScreen) submit() (Screen, tea.Cmd) {
@@ -591,80 +647,113 @@ func (s *ThermostatFormScreen) View() string {
 }
 
 func (s *ThermostatFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *ThermostatFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// formFields describes the form as columnar rows: three FK rows Ctrl-E opens,
+// and four fields typed into.
+func (s *ThermostatFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   thermostatFieldLabel[id],
+			Width:   thermostatFieldWidth(id),
+			Hint:    thermostatFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		if s.isPickerField(id) {
+			value, dim := s.pickerValue(id)
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		} else {
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	label := thermostatFieldLabel[id]
-	var value string
+	return out
+}
+
+func (s *ThermostatFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	labelWidth := jdeLabelWidth(fields)
+
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Thermostat"))
+	l.AddFields(fields, labelWidth, 0)
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *ThermostatFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok && s.isPickerField(id) {
+		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// pickerValue is an FK row's text, and whether it is an empty state rather than
+// a value. It returns PLAIN text with a flag instead of pre-styled muted text,
+// because a focused row has to be able to reverse-video the whole field — an
+// inner reset sequence would end the highlight partway through it.
+func (s *ThermostatFormScreen) pickerValue(id int) (string, bool) {
 	switch id {
 	case tfLocation:
-		value = s.locationLabel()
+		return s.locationValue()
 	case tfControlsLocation:
-		value = s.controlsLocationLabel()
+		return s.controlsLocationValue()
 	case tfControlledAsset:
-		value = s.controlledAssetLabel()
-	default:
-		value = s.inputs[id].View()
+		return s.controlledAssetValue()
 	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return "", false
 }
 
-func (s *ThermostatFormScreen) locationLabel() string {
+func (s *ThermostatFormScreen) locationValue() (string, bool) {
 	if s.locationID == nil {
-		return StyleMuted.Render("(required — space to pick)")
+		return "(not set)", true
 	}
 	if name := s.locationName(*s.locationID); name != "" {
-		return name
+		return name, false
 	}
 	if s.therm != nil && s.therm.LocationName != "" {
-		return s.therm.LocationName
+		return s.therm.LocationName, false
 	}
-	return fmt.Sprintf("#%d", *s.locationID)
+	return fmt.Sprintf("#%d", *s.locationID), false
 }
 
-func (s *ThermostatFormScreen) controlsLocationLabel() string {
+func (s *ThermostatFormScreen) controlsLocationValue() (string, bool) {
 	if s.controlsLocationID == nil {
-		return StyleMuted.Render("(defaults to mounted location)")
+		return "(defaults to mounted location)", true
 	}
 	if name := s.locationName(*s.controlsLocationID); name != "" {
-		return name
+		return name, false
 	}
 	if s.therm != nil && s.therm.ControlsLocationName != nil && *s.therm.ControlsLocationName != "" {
-		return *s.therm.ControlsLocationName
+		return *s.therm.ControlsLocationName, false
 	}
-	return fmt.Sprintf("#%d", *s.controlsLocationID)
+	return fmt.Sprintf("#%d", *s.controlsLocationID), false
 }
 
-func (s *ThermostatFormScreen) controlledAssetLabel() string {
+func (s *ThermostatFormScreen) controlledAssetValue() (string, bool) {
 	if s.controlledAssetID == nil {
-		return StyleMuted.Render("(none)")
+		return "(none)", true
 	}
 	for _, a := range s.assets {
 		if thermostatAssetKey(a) == *s.controlledAssetID {
-			return thermostatAssetLabel(a)
+			return thermostatAssetLabel(a), false
 		}
 	}
 	if s.therm != nil && s.therm.ControlledAssetName != nil && *s.therm.ControlledAssetName != "" {
-		return *s.therm.ControlledAssetName
+		return *s.therm.ControlledAssetName, false
 	}
-	return *s.controlledAssetID
+	return *s.controlledAssetID, false
 }
 
 func (s *ThermostatFormScreen) locationName(id int) string {
@@ -679,61 +768,40 @@ func (s *ThermostatFormScreen) locationName(id int) string {
 	return ""
 }
 
-func (s *ThermostatFormScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok {
-		switch id {
-		case tfLocation:
-			kindHelp = "space to pick location"
-		case tfControlsLocation:
-			kindHelp = "space to pick room"
-		case tfControlledAsset:
-			kindHelp = "space to pick asset"
-		}
+// pickView builds the open picker's pinned header and its option list. The
+// title names what is being picked; the note explains what the clear row does,
+// which is the one thing about these three lists that is not self-evident.
+func (s *ThermostatFormScreen) pickView() ([]string, *jdeLines) {
+	title, note, empty := "Mounted location", "", "(no matching locations)"
+	switch s.pickField {
+	case tfControlsLocation:
+		title = "Conditioned room"
+		note = "Row 1 is none — the thermostat then conditions the room it is mounted in."
+	case tfControlledAsset:
+		title, empty = "Controlled asset", "(no matching assets)"
+		note = "Row 1 is none — the safety-sign kill-breaker chain needs an asset."
 	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
+	return jdePickList{
+		Title:  title,
+		For:    strings.TrimSpace(s.inputs[tfLabel].Value()),
+		Note:   note,
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  func(i int) string { return s.pickOptions[i].label },
+		Dim:    func(i int) bool { return s.pickOptions[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  empty,
+	}.render()
 }
 
 func (s *ThermostatFormScreen) viewPick() string {
-	var b strings.Builder
-	title := "Pick location"
-	switch s.pickField {
-	case tfControlsLocation:
-		title = "Pick conditioned room"
-	case tfControlledAsset:
-		title = "Pick controlled asset"
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	b.WriteString(StyleMuted.Render(title+" — j/k move · / filter · enter select · esc back") + "\n\n")
-	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
-	}
-	if len(s.pickOptions) == 0 {
-		b.WriteString(StyleMuted.Render("(no matches)"))
-		return b.String()
-	}
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		caret := "    "
-		if i == s.pickCursor {
-			caret = "  ▸ "
-		}
-		opt := s.pickOptions[i]
-		if i == s.pickCursor {
-			b.WriteString(StyleSidebarItemActive.Render(caret+opt.label) + "\n")
-		} else if opt.clear {
-			b.WriteString(caret + StyleMuted.Render(opt.label) + "\n")
-		} else {
-			b.WriteString(caret + opt.label + "\n")
-		}
-	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }
 
 // thermostatAssetKey renders an asset's UUID pk (Asset.ID is `any`) to the
