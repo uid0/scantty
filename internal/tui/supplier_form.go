@@ -10,6 +10,12 @@
 // lists it flips to raw input only during the delete confirm. (Supplier
 // analytics — lead-time / price trends — is a separate web page and stays a
 // follow-up, not part of this screen.)
+//
+// The FORM renders through the columnar "JD Edwards" layer (jde_form.go,
+// sc-dnhx): labels right-aligned into one column, the type and the tax-free flag
+// as "< value >" choice rows, and a persistent action bar naming the keys that
+// apply — Enter saves, Esc cancels, Up/Down move, ←/→ change a choice. The list
+// screen keeps its own keys; only the form was in the sweep.
 package tui
 
 import (
@@ -73,6 +79,26 @@ func supplierFieldIsText(id int) bool {
 	return false
 }
 
+// supplierFieldWidth sizes the input areas that are not the default: a website
+// and a note are the two places an operator writes something long.
+func supplierFieldWidth(id int) int {
+	switch id {
+	case sfWebsite, sfNotes:
+		return 40
+	}
+	return 0
+}
+
+// supplierFieldHint is the muted note drawn AFTER the input area. A columnar
+// form marks what is required rather than tagging everything else "(optional)",
+// and the notes that used to sit in the placeholders live here — a placeholder
+// long enough to fill the field leaves no underscores, which is what makes an
+// empty green-screen row read as empty.
+var supplierFieldHint = map[int]string{
+	sfName:    "required",
+	sfWebsite: "https://…",
+}
+
 type SupplierFormScreen struct {
 	deps  Deps
 	edit  bool
@@ -85,7 +111,7 @@ type SupplierFormScreen struct {
 
 	sup *omsapi.Supplier
 
-	terminalHeight int
+	jdeScreen
 
 	inputs  []textinput.Model
 	typeIdx int
@@ -145,19 +171,11 @@ func supplierCharLimit(id int) int {
 	return 200
 }
 
-func supplierPlaceholder(id int) string {
-	switch id {
-	case sfName:
-		return "supplier name"
-	case sfWebsite:
-		return "https://example.com (optional)"
-	case sfAccountNumber:
-		return "account # with this supplier (optional)"
-	case sfNotes:
-		return "optional"
-	}
-	return ""
-}
+// supplierPlaceholder is empty for every field now: what these said — the
+// field's own name, "(optional)", a URL shape — is either the label above it or
+// the hint beside it, and a placeholder that fills the input area hides the
+// underscores that say the field is empty. See supplierFieldHint.
+func supplierPlaceholder(id int) string { return "" }
 
 func (s *SupplierFormScreen) Title() string {
 	if s.edit {
@@ -198,7 +216,7 @@ func (s *SupplierFormScreen) loadSupplier() tea.Cmd {
 func (s *SupplierFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case supplierFormLoadedMsg:
 		s.loading = false
@@ -279,6 +297,8 @@ func (s *SupplierFormScreen) syncFocus() {
 }
 
 func (s *SupplierFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -287,6 +307,12 @@ func (s *SupplierFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 		return s, textinput.Blink
 	case "shift+tab", "up":
 		s.moveCursor(-1)
+		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
 		return s, textinput.Blink
 	case "enter":
 		if s.saving {
@@ -299,24 +325,31 @@ func (s *SupplierFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	if !ok {
 		return s, nil
 	}
-	switch id {
-	case sfType:
+	if !supplierFieldIsText(id) {
+		// A choice row: nothing to type into it, so ←/→ (and space, the pilot's
+		// synonym) cycle the value in place.
 		switch m.String() {
 		case " ", "right":
-			s.typeIdx = (s.typeIdx + 1) % len(supplierTypeOptions)
+			s.cycleChoice(id, +1)
 		case "left":
-			s.typeIdx = (s.typeIdx - 1 + len(supplierTypeOptions)) % len(supplierTypeOptions)
+			s.cycleChoice(id, -1)
 		}
 		return s, nil
+	}
+	var cmd tea.Cmd
+	s.inputs[id], cmd = s.inputs[id].Update(m)
+	return s, cmd
+}
+
+// cycleChoice advances a choice row. A two-value set (the tax-free flag) flips
+// whichever way it is cycled, which is what a bool means.
+func (s *SupplierFormScreen) cycleChoice(id, delta int) {
+	switch id {
+	case sfType:
+		n := len(supplierTypeOptions)
+		s.typeIdx = (s.typeIdx + delta + n) % n
 	case sfTaxFree:
-		if m.String() == " " {
-			s.taxFree = !s.taxFree
-		}
-		return s, nil
-	default:
-		var cmd tea.Cmd
-		s.inputs[id], cmd = s.inputs[id].Update(m)
-		return s, cmd
+		s.taxFree = !s.taxFree
 	}
 }
 
@@ -326,6 +359,14 @@ func (s *SupplierFormScreen) moveCursor(delta int) {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+func (s *SupplierFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -387,54 +428,78 @@ func (s *SupplierFormScreen) View() string {
 	if s.loadErr != "" {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("esc to go back")
 	}
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *SupplierFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// formFields describes the form as columnar rows: the type and the tax-free flag
+// are bounded sets, everything else is typed into.
+func (s *SupplierFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   supplierFieldLabel[id],
+			Width:   supplierFieldWidth(id),
+			Hint:    supplierFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		if supplierFieldIsText(id) {
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		} else {
+			f.Kind, f.Value = jdeChoice, s.choiceLabel(id)
+		}
+		out[i] = f
 	}
-	label := supplierFieldLabel[id]
-	var value string
+	return out
+}
+
+// choiceLabel is what goes between a choice row's angle brackets.
+func (s *SupplierFormScreen) choiceLabel(id int) string {
 	switch id {
 	case sfType:
-		value = "‹ " + supplierTypeOptions[s.typeIdx].label + " ›"
-	case sfTaxFree:
-		if s.taxFree {
-			value = StyleStatusOK.Render("[x] yes")
-		} else {
-			value = StyleMuted.Render("[ ] no")
+		if s.typeIdx >= 0 && s.typeIdx < len(supplierTypeOptions) {
+			return supplierTypeOptions[s.typeIdx].label
 		}
-	default:
-		value = s.inputs[id].View()
+	case sfTaxFree:
+		return jdeYesNo(s.taxFree)
 	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return ""
 }
 
-func (s *SupplierFormScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok {
-		switch id {
-		case sfType:
-			kindHelp = "space/←→ change"
-		case sfTaxFree:
-			kindHelp = "space toggle"
+func (s *SupplierFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	labelWidth := jdeLabelWidth(fields)
+
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Supplier details"))
+	for i, f := range fields {
+		l.AddRow(i, renderJDEField(f, labelWidth))
+		// The whole set under the FOCUSED choice row, so a short fixed list is
+		// never cycled blind (jdeOptionStrip returns nothing for a yes/no).
+		if i == s.cursor && s.fields[i] == sfType {
+			labels := make([]string, len(supplierTypeOptions))
+			for j, o := range supplierTypeOptions {
+				labels[j] = o.label
+			}
+			if strip := jdeOptionStrip(labels, s.typeIdx, jdeStripWidth(s.bodyWidth(), labelWidth)); strip != "" {
+				l.AddRow(i, jdeStripIndent(labelWidth)+StyleMuted.Render(strip))
+			}
 		}
 	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *SupplierFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok && !supplierFieldIsText(id) {
+		items = append(items, actionBarItem{"←→", "Change"})
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
 }
 
 // ===========================================================================

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -291,21 +292,22 @@ func TestItemSupplierForm_PickerCommit(t *testing.T) {
 	s.loading = false
 	s.suppliers = []omsapi.Supplier{{ID: 4, Name: "Acme"}, {ID: 5, Name: "Beta"}}
 
-	// Cursor on the supplier field; space opens the picker.
+	// Cursor on the supplier field; Ctrl-E opens the picker (sc-dnhx: the
+	// columnar layer's "open whatever this row is").
 	s.cursor = 0
 	if id, _ := s.currentFieldID(); id != isSupplier {
 		t.Fatalf("cursor not on supplier field")
 	}
-	s.updateFormPhase(tea.KeyMsg{Type: tea.KeySpace})
+	s.updateFormPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
 	if s.phase != isPhaseSupplierPick {
-		t.Fatalf("space should open the supplier picker")
+		t.Fatalf("ctrl+e should open the supplier picker")
 	}
 	if len(s.pickOptions) != 2 {
 		t.Fatalf("picker should list both suppliers, got %d", len(s.pickOptions))
 	}
 
 	// Move to Beta and select.
-	s.updatePickPhase(rune1("j"))
+	s.updatePickPhase(tea.KeyMsg{Type: tea.KeyDown})
 	s.updatePickPhase(tea.KeyMsg{Type: tea.KeyEnter})
 	if s.phase != isPhaseForm {
 		t.Errorf("enter should return to the form")
@@ -316,6 +318,9 @@ func TestItemSupplierForm_PickerCommit(t *testing.T) {
 }
 
 // TestItemSupplierForm_PickerFilter confirms typing narrows the picker options.
+// The filter is always live since sc-dnhx — there is no "/" mode to enter, which
+// is one fewer thing for the operator to know and one fewer key the persistent
+// action bar has nowhere to advertise.
 func TestItemSupplierForm_PickerFilter(t *testing.T) {
 	s := NewItemSupplierFormScreen(Deps{}, "itm-1", "Widget", nil)
 	s.loading = false
@@ -324,13 +329,14 @@ func TestItemSupplierForm_PickerFilter(t *testing.T) {
 	if len(s.pickOptions) != 2 {
 		t.Fatalf("picker should start with both, got %d", len(s.pickOptions))
 	}
-	// Enter typing mode and filter to "bet".
-	s.updatePickPhase(rune1("/"))
-	if !s.pickTyping {
-		t.Fatalf("/ should enter filter typing mode")
-	}
 	s.updatePickPhase(rune1("bet"))
 	if len(s.pickOptions) != 1 || s.pickOptions[0].id != 5 {
 		t.Fatalf("filter should narrow to Beta, got %+v", s.pickOptions)
+	}
+	// And the filter box is on screen, pinned above the list, so what was typed
+	// cannot scroll away underneath it.
+	s.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if out := s.View(); !strings.Contains(out, "Filter") || !strings.Contains(out, "bet") {
+		t.Errorf("the picker should show what it was filtered by:\n%s", out)
 	}
 }

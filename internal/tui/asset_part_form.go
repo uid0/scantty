@@ -19,6 +19,12 @@
 // field; it is driven by the mark-replaced action on the parts list, so it is
 // intentionally absent here. Structure follows asset_form.go's field-id-iota +
 // field-kind + form/pick sub-phase idiom and reuses its ak* kind constants.
+//
+// It renders through the columnar "JD Edwards" layer (jde_form.go, sc-dnhx):
+// one right-aligned label column, the Required flag as a "< Yes >" choice row,
+// and a persistent action bar. Enter saves, Esc cancels, Up/Down move, ←/→
+// change the flag, and Ctrl-E opens the part picker — whose filter is always
+// live, so typing narrows it and the j/k it used to carry are gone.
 package tui
 
 import (
@@ -64,11 +70,32 @@ func assetPartIsTextKind(id int) bool {
 }
 
 var assetPartFieldLabel = map[int]string{
-	apfPart:     "Part (inventory item)",
+	apfPart:     "Part",
 	apfQuantity: "Quantity needed",
 	apfRequired: "Required",
-	apfInterval: "Replace every (days)",
+	apfInterval: "Replace every",
 	apfNotes:    "Notes",
+}
+
+// assetPartFieldHint is the muted note drawn AFTER the input area — the unit a
+// number is in, what a blank means, which field the backend insists on. It
+// carries what used to sit in the labels (a parenthetical there widens the
+// shared label column and shoves every input right) and in the placeholders.
+var assetPartFieldHint = map[int]string{
+	apfQuantity: "per asset",
+	apfInterval: "days · blank = on demand",
+}
+
+// assetPartFieldWidth sizes the two number fields, which would otherwise read as
+// text fields at the default width.
+func assetPartFieldWidth(id int) int {
+	switch id {
+	case apfQuantity, apfInterval:
+		return 8
+	case apfNotes:
+		return 40
+	}
+	return 0
 }
 
 type AssetPartFormScreen struct {
@@ -88,7 +115,7 @@ type AssetPartFormScreen struct {
 	refArrived  bool
 	partArrived bool
 
-	terminalHeight int
+	jdeScreen
 
 	inputs     []textinput.Model // text/number slots, indexed by field id
 	isRequired bool
@@ -101,7 +128,6 @@ type AssetPartFormScreen struct {
 	phase       assetFormPhase
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []assetPickRow
 }
 
@@ -171,17 +197,14 @@ func assetPartCharLimitFor(id int) int {
 	}
 }
 
+// assetPartPlaceholderFor keeps only the DEFAULT quantity — worth seeing sitting
+// in the field, since a blank one saves as 1. What the others said is now a hint
+// beside the input (see assetPartFieldHint).
 func assetPartPlaceholderFor(id int) string {
-	switch id {
-	case apfQuantity:
+	if id == apfQuantity {
 		return "1"
-	case apfInterval:
-		return "blank = on demand"
-	case apfNotes:
-		return "optional"
-	default:
-		return ""
 	}
+	return ""
 }
 
 func (s *AssetPartFormScreen) Title() string {
@@ -242,7 +265,7 @@ func (s *AssetPartFormScreen) loadPart() tea.Cmd {
 func (s *AssetPartFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 
 	case assetPartRefLoadedMsg:
@@ -363,6 +386,8 @@ func (s *AssetPartFormScreen) syncFocus() {
 // ---------------------------------------------------------------------------
 
 func (s *AssetPartFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -372,11 +397,23 @@ func (s *AssetPartFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		if id, ok := s.currentFieldID(); ok && assetPartFieldKindOf(id) == akPicker {
+			s.openPicker()
+			return s, textinput.Blink
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -385,15 +422,14 @@ func (s *AssetPartFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	}
 	switch assetPartFieldKindOf(id) {
 	case akToggle:
-		if m.String() == " " {
+		// A two-value choice row: it flips whichever way it is cycled.
+		switch m.String() {
+		case " ", "right", "left":
 			s.isRequired = !s.isRequired
 		}
 		return s, nil
 	case akPicker:
-		if m.String() == " " {
-			s.openPicker()
-			return s, textinput.Blink
-		}
+		// A picker row has nothing to type into and no accelerators left.
 		return s, nil
 	default:
 		var cmd tea.Cmd
@@ -411,15 +447,24 @@ func (s *AssetPartFormScreen) moveCursor(delta int) {
 	s.syncFocus()
 }
 
+func (s *AssetPartFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.syncFocus()
+}
+
 // ---------------------------------------------------------------------------
 // Picker sub-phase (the part / InventoryItem)
 // ---------------------------------------------------------------------------
 
 func (s *AssetPartFormScreen) openPicker() {
 	s.phase = assetPhasePick
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyPickFilter()
 
 	s.pickCursor = 0
@@ -480,45 +525,48 @@ func (s *AssetPartFormScreen) selectedPartLabel() string {
 }
 
 func (s *AssetPartFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyPickFilter()
-			s.pickCursor = 0
-			return s, nil
-		}
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		s.closePicker()
+	case jdePickCommit:
+		s.commitPick()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
 		s.applyPickFilter()
 		return s, cmd
 	}
-
-	switch m.String() {
-	case "esc":
-		s.phase = assetPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case "enter":
-		s.commitPick()
-	}
 	return s, nil
+}
+
+// movePick walks the option cursor, clamping at both ends — running off the
+// bottom must not reappear on the "(none)" row, which clears a required FK.
+func (s *AssetPartFormScreen) movePick(delta int) {
+	next := s.pickCursor + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > len(s.pickOptions)-1 {
+		next = len(s.pickOptions) - 1
+	}
+	if next < 0 {
+		next = 0
+	}
+	s.pickCursor = next
+}
+
+func (s *AssetPartFormScreen) closePicker() {
+	s.phase = assetPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func (s *AssetPartFormScreen) commitPick() {
@@ -531,11 +579,7 @@ func (s *AssetPartFormScreen) commitPick() {
 			s.partItemID = &v
 		}
 	}
-	s.phase = assetPhaseForm
-	s.pickTyping = false
-	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
-	s.syncFocus()
+	s.closePicker()
 }
 
 // ---------------------------------------------------------------------------
@@ -643,113 +687,109 @@ func (s *AssetPartFormScreen) View() string {
 }
 
 func (s *AssetPartFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n")
-	if s.assetName != "" {
-		b.WriteString(StyleMuted.Render("Asset: ") + s.assetName + "\n")
-	}
-	b.WriteString("\n")
-
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *AssetPartFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
-	}
-	label := assetPartFieldLabel[id]
-
-	var value string
-	switch assetPartFieldKindOf(id) {
-	case akText, akNumber:
-		value = s.inputs[id].View()
-	case akToggle:
-		if s.isRequired {
-			value = StyleStatusOK.Render("[x] yes")
-		} else {
-			value = StyleMuted.Render("[ ] no")
+// formFields describes the part as columnar rows: the part itself is a picker,
+// Required a two-value choice, the rest typed into.
+func (s *AssetPartFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   assetPartFieldLabel[id],
+			Width:   assetPartFieldWidth(id),
+			Hint:    assetPartFieldHint[id],
+			Focused: i == s.cursor,
 		}
-	case akPicker:
-		value = s.partLabel()
+		switch assetPartFieldKindOf(id) {
+		case akToggle:
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.isRequired)
+		case akPicker:
+			value, dim := s.partValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			f.Hint = "required"
+			if f.Focused {
+				f.Hint = "Ctrl-E picks · required"
+			}
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return out
 }
 
-func (s *AssetPartFormScreen) partLabel() string {
+func (s *AssetPartFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	heading := StyleJDEHeading.Render("Part")
+	if s.assetName != "" {
+		// The owning asset is fixed context, not a field: it names what the
+		// sheet is about, the way a JD Edwards form header does.
+		heading += "  " + StyleMuted.Render("of ") + s.assetName
+	}
+	l.Add(heading)
+	l.AddFields(fields, jdeLabelWidth(fields), 0)
+	return l
+}
+
+func (s *AssetPartFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok {
+		switch assetPartFieldKindOf(id) {
+		case akPicker:
+			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+		case akToggle:
+			items = append(items, actionBarItem{"←→", "Change"})
+		}
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// partValue is the part row's text and whether it is an empty state. Plain text
+// plus a flag, not pre-styled muted text: a focused row reverse-videos the whole
+// field, and an inner reset would end the highlight partway through it.
+func (s *AssetPartFormScreen) partValue() (string, bool) {
 	if s.partItemID == nil {
-		return StyleMuted.Render("(none — required)")
+		return "(none chosen yet)", true
 	}
 	for _, it := range s.items {
 		if it.ID == *s.partItemID {
 			if it.SKU != "" {
-				return fmt.Sprintf("%s (%s)", it.Name, it.SKU)
+				return fmt.Sprintf("%s (%s)", it.Name, it.SKU), false
 			}
-			return it.Name
+			return it.Name, false
 		}
 	}
 	// Fallback when the linked item isn't in the loaded set (deactivated/deleted).
-	return s.selectedPartLabel()
+	return s.selectedPartLabel(), false
 }
 
-func (s *AssetPartFormScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok {
-		switch assetPartFieldKindOf(id) {
-		case akToggle:
-			kindHelp = "space toggle"
-		case akPicker:
-			kindHelp = "space to pick"
-		}
-	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
+// pickView builds the part picker's pinned header and its option list.
+func (s *AssetPartFormScreen) pickView() ([]string, *jdeLines) {
+	return jdePickList{
+		Title:  "Part",
+		For:    s.assetName,
+		Note:   "Row 1 is none — but a part is required to save.",
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  func(i int) string { return s.pickOptions[i].label },
+		Dim:    func(i int) bool { return s.pickOptions[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  "(no matching inventory items)",
+	}.render()
 }
 
 func (s *AssetPartFormScreen) viewPick() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render("Pick inventory item — j/k move · / filter · enter select · esc back") + "\n\n")
-	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	if len(s.pickOptions) == 0 {
-		b.WriteString(StyleMuted.Render("(no matches)"))
-		return b.String()
-	}
-
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		opt := s.pickOptions[i]
-		caret := "    "
-		if i == s.pickCursor {
-			caret = "  ▸ "
-		}
-		label := opt.label
-		if opt.clear {
-			label = StyleMuted.Render(opt.label)
-		}
-		line := caret + label
-		if i == s.pickCursor {
-			line = StyleSidebarItemActive.Render(caret + opt.label)
-		}
-		b.WriteString(line + "\n")
-	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }

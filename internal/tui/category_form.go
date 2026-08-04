@@ -16,6 +16,12 @@
 // plain (non-raw) screen so workspace switching keeps working; c/E/x/enter are
 // not global hotkeys so they reach us via the root's fall-through. It flips to
 // raw input only while the delete confirmation is up so y/n land here.
+//
+// The FORM renders through the columnar "JD Edwards" layer (jde_form.go,
+// sc-dnhx): one right-aligned label column, the derived slug shown under the
+// name it comes from, and a persistent action bar. Enter saves, Esc cancels,
+// Up/Down move, and Ctrl-E opens the parent picker — whose filter is now always
+// live, so typing narrows the list and the j/k it used to carry are gone.
 package tui
 
 import (
@@ -77,8 +83,31 @@ const (
 var categoryFieldLabel = map[int]string{
 	cfName:        "Name",
 	cfDescription: "Description",
-	cfColor:       "Color (hex)",
+	cfColor:       "Color",
 	cfParent:      "Parent category",
+}
+
+// categoryFieldHint carries the format notes that used to live inside the labels
+// and the placeholders. In a columnar form the label column is shared by every
+// field, so a parenthetical on one label pushes every input area right; and a
+// placeholder long enough to fill the input hides the underscores that say the
+// field is empty. Both ride after the input instead, where they cost nobody
+// else anything. A columnar form marks what is REQUIRED rather than tagging
+// everything else "(optional)".
+var categoryFieldHint = map[int]string{
+	cfName:  "required",
+	cfColor: "#RRGGBB",
+}
+
+// categoryFieldWidth sizes the input areas that are not the default.
+func categoryFieldWidth(id int) int {
+	switch id {
+	case cfDescription:
+		return 40
+	case cfColor:
+		return 8
+	}
+	return 0
 }
 
 type CategoryFormScreen struct {
@@ -96,7 +125,7 @@ type CategoryFormScreen struct {
 	refArrived bool
 	catArrived bool
 
-	terminalHeight int
+	jdeScreen
 
 	inputs   []textinput.Model
 	parentID *int
@@ -107,7 +136,6 @@ type CategoryFormScreen struct {
 	phase       categoryFormPhase
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []itemPickOption
 }
 
@@ -169,17 +197,8 @@ func categoryCharLimit(id int) int {
 	return 100
 }
 
-func categoryPlaceholder(id int) string {
-	switch id {
-	case cfName:
-		return "category name"
-	case cfDescription:
-		return "optional"
-	case cfColor:
-		return "#RRGGBB (optional)"
-	}
-	return ""
-}
+// categoryPlaceholder is empty for every field now — see categoryFieldHint.
+func categoryPlaceholder(id int) string { return "" }
 
 func (s *CategoryFormScreen) Title() string {
 	if s.edit {
@@ -233,7 +252,7 @@ func (s *CategoryFormScreen) loadCategory() tea.Cmd {
 func (s *CategoryFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case categoryRefLoadedMsg:
 		s.refArrived = true
@@ -337,6 +356,8 @@ func (s *CategoryFormScreen) syncFocus() {
 }
 
 func (s *CategoryFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -346,11 +367,25 @@ func (s *CategoryFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS. Only the parent row opens
+		// anything, which is why the bar drops the key on the others.
+		if id, ok := s.currentFieldID(); ok && id == cfParent {
+			s.openParentPicker()
+			return s, textinput.Blink
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -358,10 +393,7 @@ func (s *CategoryFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 		return s, nil
 	}
 	if id == cfParent {
-		if m.String() == " " {
-			s.openParentPicker()
-			return s, textinput.Blink
-		}
+		// A picker row has nothing to type into and no accelerators left.
 		return s, nil
 	}
 	var cmd tea.Cmd
@@ -378,11 +410,20 @@ func (s *CategoryFormScreen) moveCursor(delta int) {
 	s.syncFocus()
 }
 
+func (s *CategoryFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.syncFocus()
+}
+
 func (s *CategoryFormScreen) openParentPicker() {
 	s.phase = categoryPhaseParentPick
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyParentFilter()
 	s.pickCursor = 0
 	if s.parentID != nil {
@@ -425,45 +466,49 @@ func (s *CategoryFormScreen) applyParentFilter() {
 }
 
 func (s *CategoryFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyParentFilter()
-			s.pickCursor = 0
-			return s, nil
-		}
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		s.closePicker()
+	case jdePickCommit:
+		s.commitParent()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
 		s.applyParentFilter()
 		return s, cmd
 	}
-
-	switch m.String() {
-	case "esc":
-		s.phase = categoryPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case "enter":
-		s.commitParent()
-	}
 	return s, nil
+}
+
+// movePick walks the option cursor, clamping at both ends — a picker list is a
+// set of choices, not a ring, so running off the bottom must not reappear at the
+// "(none)" row that clears the field.
+func (s *CategoryFormScreen) movePick(delta int) {
+	next := s.pickCursor + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > len(s.pickOptions)-1 {
+		next = len(s.pickOptions) - 1
+	}
+	if next < 0 {
+		next = 0
+	}
+	s.pickCursor = next
+}
+
+func (s *CategoryFormScreen) closePicker() {
+	s.phase = categoryPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func (s *CategoryFormScreen) commitParent() {
@@ -476,11 +521,7 @@ func (s *CategoryFormScreen) commitParent() {
 			s.parentID = &id
 		}
 	}
-	s.phase = categoryPhaseForm
-	s.pickTyping = false
-	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
-	s.syncFocus()
+	s.closePicker()
 }
 
 func (s *CategoryFormScreen) submit() (Screen, tea.Cmd) {
@@ -562,101 +603,116 @@ func (s *CategoryFormScreen) View() string {
 }
 
 func (s *CategoryFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n")
-	// Read-only slug preview (server auto-generates the real slug on save).
-	slug := ""
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+}
+
+// formFields describes the form as columnar rows. Only the parent is a picker;
+// the rest are typed into.
+func (s *CategoryFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   categoryFieldLabel[id],
+			Width:   categoryFieldWidth(id),
+			Hint:    categoryFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		if id == cfParent {
+			value, dim := s.parentValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		} else {
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
+	}
+	return out
+}
+
+func (s *CategoryFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	labelWidth := jdeLabelWidth(fields)
+
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Category details"))
+	for i, f := range fields {
+		l.AddRow(i, renderJDEField(f, labelWidth))
+		if s.fields[i] == cfName {
+			// The slug is DERIVED from the name and generated server-side, so it
+			// belongs under the field it comes from rather than in a band of its
+			// own — and it is a line, not a row, because there is nothing to
+			// navigate to (device_type_form's create-only-code idiom).
+			l.AddRow(i, jdeStripIndent(labelWidth)+StyleMuted.Render("slug: "+s.slugPreview()))
+		}
+	}
+	return l
+}
+
+// slugPreview is the read-only slug: what the server already generated while the
+// name is untouched, otherwise what this build's slugify would make of what has
+// been typed. The real slug is always the server's.
+func (s *CategoryFormScreen) slugPreview() string {
 	if s.edit && s.cat != nil && s.cat.Slug != "" && strings.TrimSpace(s.inputs[cfName].Value()) == s.cat.Name {
-		slug = s.cat.Slug
-	} else {
-		slug = slugify(s.inputs[cfName].Value())
+		return s.cat.Slug
 	}
-	if slug == "" {
-		slug = "(from name)"
+	if slug := slugify(s.inputs[cfName].Value()); slug != "" {
+		return slug
 	}
-	b.WriteString(StyleMuted.Render("slug: "+slug) + "\n\n")
-
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	return "(from name)"
 }
 
-func (s *CategoryFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+func (s *CategoryFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok && id == cfParent {
+		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 	}
-	label := categoryFieldLabel[id]
-	var value string
-	if id == cfParent {
-		value = s.parentLabel()
-	} else {
-		value = s.inputs[id].View()
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return items
 }
 
-func (s *CategoryFormScreen) parentLabel() string {
+// parentValue is the parent row's text, and whether it is an empty state rather
+// than a value. It returns PLAIN text with a flag instead of pre-styled muted
+// text, because a focused row has to be able to reverse-video the whole field —
+// an inner reset sequence would end the highlight partway through it.
+func (s *CategoryFormScreen) parentValue() (string, bool) {
 	if s.parentID == nil {
-		return StyleMuted.Render("(none — top level)")
+		return "(none — top level)", true
 	}
 	for _, c := range s.categories {
 		if c.ID == *s.parentID {
-			return c.Name
+			return c.Name, false
 		}
 	}
-	return fmt.Sprintf("#%d", *s.parentID)
+	return fmt.Sprintf("#%d", *s.parentID), false
 }
 
-func (s *CategoryFormScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok && id == cfParent {
-		kindHelp = "space to pick parent"
-	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
+// pickView builds the parent picker's pinned header and its option list.
+func (s *CategoryFormScreen) pickView() ([]string, *jdeLines) {
+	return jdePickList{
+		Title:  "Parent category",
+		Note:   "Row 1 is none — it makes this a top-level category.",
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  func(i int) string { return s.pickOptions[i].label },
+		Dim:    func(i int) bool { return s.pickOptions[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  "(no matching categories)",
+	}.render()
 }
 
 func (s *CategoryFormScreen) viewPick() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render("Pick parent category — j/k move · / filter · enter select · esc back") + "\n\n")
-	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	if len(s.pickOptions) == 0 {
-		b.WriteString(StyleMuted.Render("(no matches)"))
-		return b.String()
-	}
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		caret := "    "
-		if i == s.pickCursor {
-			caret = "  ▸ "
-		}
-		opt := s.pickOptions[i]
-		if i == s.pickCursor {
-			b.WriteString(StyleSidebarItemActive.Render(caret+opt.label) + "\n")
-		} else if opt.clear {
-			b.WriteString(caret + StyleMuted.Render(opt.label) + "\n")
-		} else {
-			b.WriteString(caret + opt.label + "\n")
-		}
-	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }
 
 // ===========================================================================

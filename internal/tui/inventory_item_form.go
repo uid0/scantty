@@ -7,25 +7,29 @@
 // ([[ship-complete-features]]). The structure follows po_create.go's
 // field-by-field entry with sub-phase pickers for the foreign keys.
 //
-// Field kinds and how each is edited:
+// It renders through the columnar "JD Edwards" layer (jde_form.go, sc-dnhx):
+// labels right-aligned into one column, band headings over the sections a paper
+// form would print, and a persistent action bar naming the keys that apply where
+// the cursor is standing. Field kinds and how each is edited:
 //
 //	text / number — a bubbles textinput; type to edit, validated on submit
-//	toggle        — a bool; space flips it (case-based / ML reorder alerts /
-//	                hazardous / serialized / active). Flipping a toggle shows or
-//	                hides its dependent fields (minimum_cases, the NFPA block,
-//	                serial_tracking_mode).
-//	select        — a fixed option list; space or ←/→ cycles (shelf_position,
-//	                serial_tracking_mode)
-//	picker        — a foreign key chosen from a searchable list in a sub-phase;
-//	                space opens it (category, location)
+//	toggle        — a bool, drawn "< Yes >"; ←/→ (or space) flips it (case-based
+//	                / ML reorder alerts / hazardous / serialized / active).
+//	                Flipping one shows or hides its dependent fields
+//	                (minimum_cases, the NFPA block, serial_tracking_mode).
+//	select        — a fixed option list, drawn "< value >"; ←/→ cycles
+//	                (shelf_position, serial_tracking_mode, count mode/level)
+//	picker        — a foreign key chosen from a filtered list in a sub-phase;
+//	                Ctrl-E opens it (category, location)
+//	chain         — the packaging chain; Ctrl-E opens its own list sub-phase
 //
-// Navigation: tab / ↑↓ move between the visible fields, enter saves, esc
-// cancels. The form is longer than the pane, so it scrolls to keep the focused
-// field on screen.
+// Navigation: tab / ↑↓ move between the visible fields, PgUp/PgDn page, enter
+// saves, esc cancels. The form is far longer than the pane, so the body windows
+// around the focused field while the bar stays pinned to the bottom.
 //
-// This is bead #1 of the ScanTTY parity program; the pattern here is meant to
-// be reused by the follow-on create/edit forms (assets, category/location/
-// supplier CRUD, …).
+// This was bead #1 of the ScanTTY parity program; the pattern here was reused by
+// the follow-on create/edit forms (assets, category/location/supplier CRUD, …),
+// and all of them now share jde_form.go rather than each rolling their own row.
 package tui
 
 import (
@@ -142,15 +146,91 @@ var itemFieldLabel = map[int]string{
 	fShelfPosition:        "Shelf position",
 	fIsHazardous:          "Hazardous material",
 	fMSDSURL:              "MSDS/SDS URL",
-	fNFPAHealth:           "NFPA health (0-4)",
-	fNFPAFire:             "NFPA fire (0-4)",
-	fNFPAInstability:      "NFPA instability (0-4)",
+	fNFPAHealth:           "NFPA health",
+	fNFPAFire:             "NFPA fire",
+	fNFPAInstability:      "NFPA instability",
 	fNFPASpecial:          "NFPA special hazards",
 	fIsSerialized:         "Track serial numbers",
 	fSerialTrackingMode:   "Tracking mode",
 	fNotes:                "Notes",
 	fIsActive:             "Active",
 	fIsRetired:            "Retired",
+}
+
+// itemFieldHint is the muted note drawn AFTER the input area: a scale, a format,
+// what a blank means. It carries what used to sit inside the labels (a
+// parenthetical there widens the shared label column and shoves every input area
+// right) and inside the long placeholders (which filled the input and hid the
+// underscores that say a field is empty). The unit notes are dynamic — see
+// fieldHint.
+var itemFieldHint = map[int]string{
+	fName:            "required",
+	fSKU:             "auto-generated if blank",
+	fImageURL:        "https://…",
+	fMSDSURL:         "https://… safety data sheet",
+	fNFPAHealth:      "0-4",
+	fNFPAFire:        "0-4",
+	fNFPAInstability: "0-4",
+	fNFPASpecial:     "W · OX · COR · ACID",
+}
+
+// itemFieldWidth sizes the input areas that are not the default: the four one-
+// digit NFPA ratings and the counts are narrow, the descriptive fields long.
+func itemFieldWidth(id int) int {
+	switch id {
+	case fNFPAHealth, fNFPAFire, fNFPAInstability:
+		return 3
+	case fNFPASpecial:
+		return 12
+	case fCurrentStock, fMinimumStock, fReorderQuantity, fMinimumCases, fReorderCases:
+		return 8
+	case fDescription, fNotes, fImageURL, fMSDSURL:
+		return 40
+	}
+	return 0
+}
+
+// itemFieldBand groups the form into the sections a printed sheet would have.
+// Bands must be CONTIGUOUS in the render order rebuildFields produces, because
+// the heading is emitted where the band changes.
+type itemFieldBand int
+
+const (
+	itemBandDetails itemFieldBand = iota
+	itemBandStock
+	itemBandPackaging
+	itemBandPlacement
+	itemBandHazard
+	itemBandSerial
+	itemBandStatus
+)
+
+var itemBandLabel = map[itemFieldBand]string{
+	itemBandDetails:   "Item",
+	itemBandStock:     "Stock & reordering",
+	itemBandPackaging: "Units & packaging",
+	itemBandPlacement: "Alerts & placement",
+	itemBandHazard:    "Hazardous material",
+	itemBandSerial:    "Serial tracking",
+	itemBandStatus:    "Notes & status",
+}
+
+func itemFieldBandOf(id int) itemFieldBand {
+	switch id {
+	case fCurrentStock, fMinimumStock, fReorderQuantity, fUseCaseBasedReorder, fMinimumCases, fReorderCases:
+		return itemBandStock
+	case fBaseUnit, fPackChain, fCountMode, fCountLevel:
+		return itemBandPackaging
+	case fReorderAlertsEnabled, fCategory, fLocation, fShelfPosition:
+		return itemBandPlacement
+	case fIsHazardous, fMSDSURL, fNFPAHealth, fNFPAFire, fNFPAInstability, fNFPASpecial:
+		return itemBandHazard
+	case fIsSerialized, fSerialTrackingMode:
+		return itemBandSerial
+	case fNotes, fIsActive, fIsRetired:
+		return itemBandStatus
+	}
+	return itemBandDetails
 }
 
 func fieldKind(id int) itemFieldKind {
@@ -202,7 +282,7 @@ type InventoryItemFormScreen struct {
 	refArrived  bool
 	itemArrived bool
 
-	terminalHeight int
+	jdeScreen
 
 	// Text/number field storage, indexed by field id. Non-text slots are left
 	// as zero-value models and never rendered/updated.
@@ -230,7 +310,6 @@ type InventoryItemFormScreen struct {
 	phase       itemFormPhase
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []itemPickOption
 
 	// Packaging matrix (OMS #979/#981, web #983). packRows is the editable pack
@@ -261,7 +340,7 @@ type InventoryItemFormScreen struct {
 	chainRowEditing     int // index being edited, or -1 while adding a new row
 	chainRowName        textinput.Model
 	chainRowUnits       textinput.Model
-	chainRowOnUnits     bool
+	chainRowFocus       int // chainRowField* — which row of the rung editor
 	chainRowErr         string
 }
 
@@ -370,26 +449,16 @@ func itemCharLimitFor(id int) int {
 	}
 }
 
+// itemPlaceholderFor keeps only the DEFAULTS — the value a blank field saves as,
+// which is worth seeing sitting in the input. Everything the others said (a
+// format, a scale, "optional") is now a hint beside the field instead, where it
+// cannot fill the input area and hide the underscores. See itemFieldHint.
 func itemPlaceholderFor(id int) string {
 	switch id {
-	case fName:
-		return "item name"
-	case fSKU:
-		return "auto-generated if blank"
-	case fImageURL:
-		return "https://… (optional)"
-	case fMSDSURL:
-		return "https://… safety data sheet"
-	case fNFPASpecial:
-		return "W, OX, COR, ACID…"
-	case fDescription, fNotes:
-		return "optional"
 	case fCurrentStock, fMinimumStock:
 		return "0"
 	case fReorderQuantity, fMinimumCases, fReorderCases:
 		return "1"
-	case fNFPAHealth, fNFPAFire, fNFPAInstability:
-		return "0-4"
 	case fBaseUnit:
 		// The smallest thing you count — stock is always stored in these.
 		return "unit"
@@ -458,7 +527,7 @@ func (s *InventoryItemFormScreen) loadItem() tea.Cmd {
 func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 
 	case itemFormRefLoadedMsg:
@@ -553,9 +622,10 @@ func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	}
 	if s.phase == itemFormPhaseChainRow {
 		var cmd tea.Cmd
-		if s.chainRowOnUnits {
+		switch s.chainRowFocus {
+		case chainRowFieldUnits:
 			s.chainRowUnits, cmd = s.chainRowUnits.Update(msg)
-		} else {
+		case chainRowFieldName:
 			s.chainRowName, cmd = s.chainRowName.Update(msg)
 		}
 		return s, cmd
@@ -755,6 +825,8 @@ func (s *InventoryItemFormScreen) syncFocus() {
 // ---------------------------------------------------------------------------
 
 func (s *InventoryItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -764,11 +836,22 @@ func (s *InventoryItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS: a foreign-key picker, or
+		// the packaging chain's own list. A row you simply type into opens
+		// nothing, which is why the bar drops the key there.
+		return s, s.openFocusedRow()
 	}
 
 	id, ok := s.currentFieldID()
@@ -777,7 +860,9 @@ func (s *InventoryItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 	}
 	switch fieldKind(id) {
 	case kindToggle:
-		if m.String() == " " {
+		// A two-value choice row: it flips whichever way it is cycled.
+		switch m.String() {
+		case " ", "right", "left":
 			s.flipToggle(id)
 		}
 		return s, nil
@@ -789,16 +874,8 @@ func (s *InventoryItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 			s.cycleSelect(id, -1)
 		}
 		return s, nil
-	case kindPicker:
-		if m.String() == " " {
-			s.openPicker(id)
-			return s, textinput.Blink
-		}
-		return s, nil
-	case kindChain:
-		if m.String() == " " {
-			s.openChain()
-		}
+	case kindPicker, kindChain:
+		// Nothing to type on these, and no accelerators left to press.
 		return s, nil
 	default:
 		var cmd tea.Cmd
@@ -807,12 +884,37 @@ func (s *InventoryItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 	}
 }
 
+// openFocusedRow is what Ctrl-E does: it opens whatever the highlighted row IS.
+func (s *InventoryItemFormScreen) openFocusedRow() tea.Cmd {
+	id, ok := s.currentFieldID()
+	if !ok {
+		return nil
+	}
+	switch fieldKind(id) {
+	case kindPicker:
+		s.openPicker(id)
+		return textinput.Blink
+	case kindChain:
+		s.openChain()
+		return nil
+	}
+	return nil
+}
+
 func (s *InventoryItemFormScreen) moveCursor(delta int) {
 	n := len(s.fields)
 	if n == 0 {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+func (s *InventoryItemFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -924,23 +1026,36 @@ func (s *InventoryItemFormScreen) thresholdUnit() string {
 	return strings.TrimSpace(s.packRows[idx].name)
 }
 
-// fieldLabel is itemFieldLabel plus the labels that depend on the counting mode.
-func (s *InventoryItemFormScreen) fieldLabel(id int) string {
+// fieldUnit is the unit a quantity field is read in, or "" when there is none to
+// name. Phase 2a reinterpreted minimum_stock / reorder_quantity as COUNT-level
+// quantities for the pack-counting modes, so the form has to say which unit it
+// means — but it says it in the HINT beside the input rather than in the label,
+// because the label column is shared by every field on the sheet and a unit that
+// appeared and vanished with the counting mode would shove every input area
+// sideways under the operator's eye.
+func (s *InventoryItemFormScreen) fieldUnit(id int) string {
 	unit := s.thresholdUnit()
 	if unit == "" {
-		return itemFieldLabel[id]
+		return ""
 	}
 	switch id {
 	case fCurrentStock:
 		// Stock stays canonical in BASE units even for a pack-counted item; the
 		// at-level entry lives on the item detail's count flow.
-		return fmt.Sprintf("Current stock (%s)", pluralizeUnit(s.baseUnitValue(), 2))
-	case fMinimumStock:
-		return fmt.Sprintf("Minimum stock (%s)", pluralizeUnit(unit, 2))
-	case fReorderQuantity:
-		return fmt.Sprintf("Reorder quantity (%s)", pluralizeUnit(unit, 2))
+		return pluralizeUnit(s.baseUnitValue(), 2)
+	case fMinimumStock, fReorderQuantity:
+		return pluralizeUnit(unit, 2)
 	}
-	return itemFieldLabel[id]
+	return ""
+}
+
+// fieldHint is itemFieldHint plus the unit notes that depend on the counting
+// mode.
+func (s *InventoryItemFormScreen) fieldHint(id int) string {
+	if unit := s.fieldUnit(id); unit != "" {
+		return unit
+	}
+	return itemFieldHint[id]
 }
 
 func (s *InventoryItemFormScreen) toggleState(id int) bool {
@@ -971,9 +1086,10 @@ func (s *InventoryItemFormScreen) openPicker(id int) {
 	} else {
 		s.phase = itemFormPhaseLocationPick
 	}
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyPickFilter()
 
 	// Start the cursor on the currently-selected option so re-picking is a
@@ -1020,45 +1136,49 @@ func (s *InventoryItemFormScreen) applyPickFilter() {
 }
 
 func (s *InventoryItemFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyPickFilter()
-			s.pickCursor = 0
-			return s, nil
-		}
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		s.closePicker()
+	case jdePickCommit:
+		s.commitPick()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
 		s.applyPickFilter()
 		return s, cmd
 	}
-
-	switch m.String() {
-	case "esc":
-		s.phase = itemFormPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case "enter":
-		s.commitPick()
-	}
 	return s, nil
+}
+
+// movePick walks the option cursor, clamping at both ends — a picker list is a
+// set of choices, not a ring, so running off the bottom must not reappear at the
+// "(none)" row that clears the field.
+func (s *InventoryItemFormScreen) movePick(delta int) {
+	next := s.pickCursor + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > len(s.pickOptions)-1 {
+		next = len(s.pickOptions) - 1
+	}
+	if next < 0 {
+		next = 0
+	}
+	s.pickCursor = next
+}
+
+func (s *InventoryItemFormScreen) closePicker() {
+	s.phase = itemFormPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func (s *InventoryItemFormScreen) commitPick() {
@@ -1081,11 +1201,7 @@ func (s *InventoryItemFormScreen) commitPick() {
 			}
 		}
 	}
-	s.phase = itemFormPhaseForm
-	s.pickTyping = false
-	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
-	s.syncFocus()
+	s.closePicker()
 }
 
 // ---------------------------------------------------------------------------
@@ -1481,129 +1597,176 @@ func (s *InventoryItemFormScreen) View() string {
 }
 
 func (s *InventoryItemFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-
-	visible := s.visibleRows()
-	start, end := fieldWindow(s.cursor, len(s.fields), visible)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	if end < len(s.fields) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.fields)-end)) + "\n")
-	}
-
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *InventoryItemFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
-	}
-	label := s.fieldLabel(id)
-
-	var value string
-	switch fieldKind(id) {
-	case kindText, kindNumber:
-		value = s.inputs[id].View()
-	case kindToggle:
-		if s.toggleState(id) {
-			value = StyleStatusOK.Render("[x] yes")
-		} else {
-			value = StyleMuted.Render("[ ] no")
+// formFields describes the visible fields as columnar rows. Toggles and selects
+// are both bounded sets, so both draw "< value >"; the two foreign keys and the
+// packaging chain show what is set today and are opened with Ctrl-E.
+func (s *InventoryItemFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   itemFieldLabel[id],
+			Width:   itemFieldWidth(id),
+			Hint:    s.fieldHint(id),
+			Focused: i == s.cursor,
 		}
-	case kindSelect:
-		value = s.selectLabel(id)
-	case kindPicker:
-		value = s.pickerLabel(id)
-	case kindChain:
-		value = s.chainSummary()
+		switch fieldKind(id) {
+		case kindToggle:
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.toggleState(id))
+		case kindSelect:
+			value, ok := s.selectValue(id)
+			if !ok {
+				// Nothing to cycle through yet (a counting level with no named
+				// packaging rungs): it is a state, not a choice, so it must not
+				// draw the angle brackets that promise ←/→ does something.
+				f.Kind, f.Value, f.Dim = jdeValue, value, true
+				break
+			}
+			f.Kind, f.Value = jdeChoice, value
+		case kindPicker:
+			value, dim := s.pickerValue(id)
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		case kindChain:
+			value, dim := s.chainValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E edits the levels"
+			}
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return out
 }
 
-func (s *InventoryItemFormScreen) selectLabel(id int) string {
-	switch id {
-	case fShelfPosition:
-		if s.shelfPos >= 0 && s.shelfPos < len(shelfPositionOptions) {
-			return "‹ " + shelfPositionOptions[s.shelfPos].label + " ›"
-		}
-	case fSerialTrackingMode:
-		if s.serialMode >= 0 && s.serialMode < len(serialModeOptions) {
-			return "‹ " + serialModeOptions[s.serialMode].label + " ›"
-		}
-	case fCountMode:
-		if s.countModeIx >= 0 && s.countModeIx < len(countModeOptions) {
-			return "‹ " + countModeOptions[s.countModeIx].label + " ›"
-		}
-	case fCountLevel:
-		return s.countLevelSummary()
-	}
-	return ""
-}
+// formLines builds the body, breaking the fields into the bands a printed sheet
+// would have and drawing the focused choice row's whole option set under it.
+func (s *InventoryItemFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	labelWidth := jdeLabelWidth(fields)
 
-func (s *InventoryItemFormScreen) pickerLabel(id int) string {
-	if id == fCategory {
-		if s.categoryID == nil {
-			return StyleMuted.Render("(none)")
+	l := &jdeLines{}
+	band := itemFieldBand(-1)
+	for i, id := range s.fields {
+		if b := itemFieldBandOf(id); b != band {
+			if band != itemFieldBand(-1) {
+				l.Add("")
+			}
+			l.Add(StyleJDEHeading.Render(itemBandLabel[b]))
+			band = b
 		}
-		for _, c := range s.categories {
-			if c.ID == *s.categoryID {
-				return c.Name
+		l.AddRow(i, renderJDEField(fields[i], labelWidth))
+		if i == s.cursor {
+			if strip := s.selectStrip(id, jdeStripWidth(s.bodyWidth(), labelWidth)); strip != "" {
+				l.AddRow(i, jdeStripIndent(labelWidth)+StyleMuted.Render(strip))
 			}
 		}
-		return fmt.Sprintf("#%d", *s.categoryID)
 	}
-	// location
-	if s.locationID == nil {
-		return StyleMuted.Render("(none)")
-	}
-	for _, l := range s.locations {
-		if l.ID == *s.locationID {
-			return l.Name
-		}
-	}
-	return fmt.Sprintf("#%d", *s.locationID)
+	return l
 }
 
-func (s *InventoryItemFormScreen) helpText() string {
-	kindHelp := "type to edit"
+func (s *InventoryItemFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok {
 		switch fieldKind(id) {
 		case kindToggle:
-			kindHelp = "space toggle"
+			items = append(items, actionBarItem{"←→", "Change"})
 		case kindSelect:
-			kindHelp = "space/←→ change"
+			// A select with nothing to cycle through offers no ←/→ — the bar must
+			// not teach a key that does nothing where the cursor is standing.
+			if _, ok := s.selectValue(id); ok {
+				items = append(items, actionBarItem{"←→", "Change"})
+			}
 		case kindPicker:
-			kindHelp = "space to pick"
+			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		case kindChain:
-			kindHelp = "space to edit levels"
+			items = append(items, actionBarItem{"Ctrl-E", "Edit levels"})
 		}
 	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
 }
 
-// visibleRows returns how many field rows fit given the current terminal
-// height, reserving space for the help line, indicators, spacing, and the
-// status line.
-func (s *InventoryItemFormScreen) visibleRows() int {
-	const chrome = 6 // help + blank + blank + status + 2 scroll indicators
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+// selectValue is what goes between a select row's angle brackets, and whether
+// the row has anything to cycle through at all.
+func (s *InventoryItemFormScreen) selectValue(id int) (string, bool) {
+	switch id {
+	case fShelfPosition:
+		if s.shelfPos >= 0 && s.shelfPos < len(shelfPositionOptions) {
+			return shelfPositionOptions[s.shelfPos].label, true
+		}
+	case fSerialTrackingMode:
+		if s.serialMode >= 0 && s.serialMode < len(serialModeOptions) {
+			return serialModeOptions[s.serialMode].label, true
+		}
+	case fCountMode:
+		if s.countModeIx >= 0 && s.countModeIx < len(countModeOptions) {
+			return countModeOptions[s.countModeIx].label, true
+		}
+	case fCountLevel:
+		return s.countLevelValue()
 	}
-	return avail
+	return "", false
+}
+
+// selectStrip is the focused select row's whole option set, bracketed on the
+// current one — nothing for a two-value set, and nothing for the counting level,
+// whose options are the packaging chain drawn two rows above.
+func (s *InventoryItemFormScreen) selectStrip(id, width int) string {
+	var opts []selectOption
+	var idx int
+	switch id {
+	case fShelfPosition:
+		opts, idx = shelfPositionOptions, s.shelfPos
+	case fSerialTrackingMode:
+		opts, idx = serialModeOptions, s.serialMode
+	case fCountMode:
+		opts, idx = countModeOptions, s.countModeIx
+	default:
+		return ""
+	}
+	labels := make([]string, len(opts))
+	for i, o := range opts {
+		labels[i] = o.label
+	}
+	return jdeOptionStrip(labels, idx, width)
+}
+
+// pickerValue is a foreign-key row's text and whether it is an empty state
+// rather than a value. Plain text plus a flag, not pre-styled muted text: a
+// focused row reverse-videos the whole field, and an inner reset sequence would
+// end the highlight partway through it.
+func (s *InventoryItemFormScreen) pickerValue(id int) (string, bool) {
+	if id == fCategory {
+		if s.categoryID == nil {
+			return "(none)", true
+		}
+		for _, c := range s.categories {
+			if c.ID == *s.categoryID {
+				return c.Name, false
+			}
+		}
+		return fmt.Sprintf("#%d", *s.categoryID), false
+	}
+	// location
+	if s.locationID == nil {
+		return "(none)", true
+	}
+	for _, l := range s.locations {
+		if l.ID == *s.locationID {
+			return l.Name, false
+		}
+	}
+	return fmt.Sprintf("#%d", *s.locationID), false
 }
 
 // fieldWindow returns [start,end) so cursor stays roughly centred within a
@@ -1627,44 +1790,30 @@ func fieldWindow(cursor, total, visible int) (int, int) {
 	return start, end
 }
 
-func (s *InventoryItemFormScreen) viewPick() string {
-	var b strings.Builder
-	what := "category"
+// pickView builds the open picker's pinned header and its option list.
+func (s *InventoryItemFormScreen) pickView() ([]string, *jdeLines) {
+	title, empty := "Category", "(no matching categories)"
 	if s.phase == itemFormPhaseLocationPick {
-		what = "location"
+		title, empty = "Location", "(no matching locations)"
 	}
-	b.WriteString(StyleMuted.Render("Pick "+what+" — j/k move · / filter · enter select · esc back") + "\n\n")
-	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
-	}
-	if len(s.pickOptions) == 0 {
-		b.WriteString(StyleMuted.Render("(no matches)"))
-		return b.String()
-	}
+	return jdePickList{
+		Title:  title,
+		Note:   "Row 1 is none — it leaves the field unset.",
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  func(i int) string { return s.pickOptions[i].label },
+		Dim:    func(i int) bool { return s.pickOptions[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  empty,
+	}.render()
+}
 
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
+func (s *InventoryItemFormScreen) viewPick() string {
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	for i := start; i < end; i++ {
-		caret := "    "
-		if i == s.pickCursor {
-			caret = "  ▸ "
-		}
-		opt := s.pickOptions[i]
-		label := opt.label
-		if opt.clear {
-			label = StyleMuted.Render(opt.label)
-		}
-		line := caret + label
-		if i == s.pickCursor {
-			line = StyleSidebarItemActive.Render(caret + opt.label)
-		}
-		b.WriteString(line + "\n")
-	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }

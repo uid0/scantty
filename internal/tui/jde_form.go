@@ -18,7 +18,7 @@
 //	------------------------------------------------------
 //	 Enter=Save   Esc=Exit   UP/DN=Fields   Ctrl-E=Edit
 //
-// Three pieces live here and are meant to be used together:
+// Five pieces live here and are meant to be used together:
 //
 //	jdeField / renderJDEField  — one columnar row.
 //	jdeLines                   — the body an operator scrolls, built line by
@@ -29,6 +29,10 @@
 //	                             persistent rather than "wherever the content
 //	                             happened to end").
 //	renderActionBar            — the bar itself.
+//	jdeScreen                  — the pane geometry and the framing that puts a
+//	                             body, a status line and the bar together.
+//	jdePickList                — the "filter and choose one" sub-phase every
+//	                             foreign-key row opens.
 package tui
 
 import (
@@ -36,6 +40,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -197,6 +202,63 @@ func renderJDEFields(fields []jdeField) []string {
 	return out
 }
 
+// jdeYesNo is how a bool reads on a choice row. A toggle IS a two-value choice
+// set, so it draws "< Yes >" like every other bounded set rather than keeping a
+// checkbox glyph the reduced key scheme would then have to explain separately.
+func jdeYesNo(v bool) string {
+	if v {
+		return "Yes"
+	}
+	return "No"
+}
+
+// jdeStripIndent is the left pad that lines a line drawn UNDER a field up with
+// the input area above it — an option strip, a derived preview.
+func jdeStripIndent(labelWidth int) string {
+	return strings.Repeat(" ", len(jdeIndent)+labelWidth+len(jdeLeader))
+}
+
+// jdeStripWidth is how much room such a line has, given the pane's body width
+// (0 when the width is not known yet, which means "do not truncate").
+func jdeStripWidth(bodyWidth, labelWidth int) int {
+	if bodyWidth <= 0 {
+		return 0
+	}
+	if w := bodyWidth - len(jdeStripIndent(labelWidth)); w > 0 {
+		return w
+	}
+	return 0
+}
+
+// jdeOptionStrip lists a choice row's whole option set with the current one
+// bracketed: the line a form draws under the FOCUSED choice row so a short fixed
+// list is never cycled blind. A two-value set gets nothing — "< Yes >" already
+// says what the other value is, and the empty string is the caller's signal to
+// draw no line at all.
+//
+// width (0 for none) is what the strip has left on the row. A set of long labels
+// can be wider than the pane, and Root's clampToBox would cut it off mid-word
+// with nothing to say it had; an ellipsis at least admits there is more, and the
+// row's "< value >" is still the authority on what is picked.
+func jdeOptionStrip(labels []string, idx, width int) string {
+	if len(labels) < 3 {
+		return ""
+	}
+	parts := make([]string, 0, len(labels))
+	for i, l := range labels {
+		if i == idx {
+			parts = append(parts, "["+l+"]")
+			continue
+		}
+		parts = append(parts, l)
+	}
+	strip := strings.Join(parts, " · ")
+	if width > 0 && lipgloss.Width(strip) > width {
+		strip = truncateVisible(strip, width-1) + "…"
+	}
+	return strip
+}
+
 // ---------------------------------------------------------------------------
 // The scrollable body
 // ---------------------------------------------------------------------------
@@ -221,6 +283,16 @@ func (l *jdeLines) Add(text string) { l.AddRow(jdeNoRow, text) }
 func (l *jdeLines) AddRow(row int, text string) {
 	l.text = append(l.text, text)
 	l.row = append(l.row, row)
+}
+
+// AddFields appends one navigable row per field, numbered from rowBase — the
+// shape of every columnar form whose rows are simply its fields. A form that has
+// to interleave something (an option strip under the focused row, a derived
+// preview under the one it is derived from) adds those lines itself.
+func (l *jdeLines) AddFields(fields []jdeField, labelWidth, rowBase int) {
+	for i, f := range fields {
+		l.AddRow(rowBase+i, renderJDEField(f, labelWidth))
+	}
 }
 
 func (l *jdeLines) Len() int { return len(l.text) }
@@ -325,6 +397,258 @@ func (l *jdeLines) Window(cursorRow, avail int) ([]string, int) {
 		out = append(out, "")
 	}
 	return out, l.rowsIn(start, end)
+}
+
+// ---------------------------------------------------------------------------
+// The pane a columnar screen renders into
+// ---------------------------------------------------------------------------
+
+// jdeScreen is the pane geometry every columnar screen shares: how tall the
+// scrollable body may be, how wide the bar's rule is drawn, and the framing that
+// puts a body, a status line and the bar together so the bar lands on the SAME
+// two rows on every frame. Screens embed it, so `s.terminalHeight` and
+// `s.frame(…)` read exactly as they did when the pilot carried its own copy —
+// sc-h412 wrote one for PO edit, sc-dnhx made it the shared one rather than the
+// sixth copy of the same fifteen lines.
+type jdeScreen struct {
+	terminalHeight int
+	terminalWidth  int
+}
+
+// setSize records a WindowSizeMsg; every columnar screen calls this from Update.
+func (g *jdeScreen) setSize(m tea.WindowSizeMsg) {
+	g.terminalHeight, g.terminalWidth = m.Height, m.Width
+}
+
+// bodyRows is the height the scrollable body gets. Zero means "not known yet":
+// before the first WindowSizeMsg there is no budget to window against, so the
+// body renders whole and Root's clampToBox decides what fits — the same thing
+// every unsized screen in the app does.
+func (g jdeScreen) bodyRows() int {
+	if g.terminalHeight <= 0 {
+		return 0
+	}
+	return screenBodyHeightWithActionBar(g.terminalHeight)
+}
+
+// bodyWidth is the columns the body has, or 0 when the width is not known yet —
+// which callers read as "do not truncate", the same way bodyRows()==0 means "do
+// not window".
+func (g jdeScreen) bodyWidth() int {
+	if g.terminalWidth <= 0 {
+		return 0
+	}
+	return screenBodyWidth(g.terminalWidth)
+}
+
+// barWidth is how wide the action bar's rule is drawn. The fallback matches an
+// ordinary 100-column terminal, which is what an unsized screen is most likely
+// about to become.
+func (g jdeScreen) barWidth() int {
+	if g.terminalWidth <= 0 {
+		return 72
+	}
+	return screenBodyWidth(g.terminalWidth)
+}
+
+// windowRows is how many navigable rows the pane is currently showing —
+// computed from the same lines View draws, so a page moves by exactly what the
+// operator can see rather than by a guessed constant. headerRows is what a
+// pinned header costs the body (0 when there is none). Never less than one.
+func (g jdeScreen) windowRows(body *jdeLines, cursorRow, headerRows int) int {
+	_, rows := body.Window(cursorRow, g.bodyRows()-headerRows)
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
+// jdePageCursor moves a cursor one page in `dir`. It CLAMPS where field nav
+// wraps: paging is a way of covering ground in a body taller than the pane, and
+// a page that jumped from the last row back to the first would lose the
+// operator's place rather than save them keystrokes.
+func jdePageCursor(cursor, count, step, dir int) int {
+	if count <= 0 {
+		return 0
+	}
+	next := cursor + dir*step
+	if next < 0 {
+		next = 0
+	}
+	if next > count-1 {
+		next = count - 1
+	}
+	return next
+}
+
+// jdeStatusLine is the one row above the bar: what is in flight, or what went
+// wrong. A screen renders it on every frame, blank included, so the bar
+// underneath never moves between frames.
+func jdeStatusLine(saving bool, verb, errMsg string) string {
+	switch {
+	case saving:
+		return StyleMuted.Render(verb)
+	case errMsg != "":
+		return StyleStatusError.Render("✗ " + errMsg)
+	}
+	return ""
+}
+
+// frame assembles a phase: the windowed body, padded out to the pane's budget,
+// then the status line, then the persistent action bar at the bottom.
+func (g jdeScreen) frame(body *jdeLines, cursorRow int, status string, items []actionBarItem) string {
+	return g.frameWithHeader(nil, body, cursorRow, status, items)
+}
+
+// frameWithHeader is frame with lines PINNED above the scrollable body — a
+// picker's filter box, the record a sub-form is amending. They cost the body its
+// height and are drawn on every frame, so what the operator typed into the
+// filter cannot scroll away under a long list.
+func (g jdeScreen) frameWithHeader(header []string, body *jdeLines, cursorRow int, status string, items []actionBarItem) string {
+	out := append([]string{}, header...)
+	if budget := g.bodyRows(); budget > 0 {
+		avail := budget - len(header)
+		if avail < 1 {
+			// A header taller than the whole pane still has to leave the cursor's
+			// row somewhere to be drawn; the clamp below trims what is left over.
+			avail = 1
+		}
+		lines, _ := body.Window(cursorRow, avail)
+		out = append(out, lines...)
+		for len(out) < budget {
+			out = append(out, "")
+		}
+		if len(out) > budget {
+			out = out[:budget]
+		}
+	} else {
+		out = append(out, body.text...)
+	}
+	out = append(out, status)
+	return strings.Join(out, "\n") + "\n" + renderActionBar(g.barWidth(), items)
+}
+
+// ---------------------------------------------------------------------------
+// The "filter and choose one" sub-phase
+// ---------------------------------------------------------------------------
+
+// jdePickAction is what a key means inside a picker.
+type jdePickAction int
+
+const (
+	// jdePickType is everything else: it goes into the filter box.
+	jdePickType jdePickAction = iota
+	jdePickCancel
+	jdePickCommit
+	jdePickMove
+	jdePickPage
+)
+
+// jdePickKey classifies a key inside a picker, and says how far to move.
+//
+// The filter is ALWAYS live — there is no "press / to search" mode, because a
+// mode is one more thing the operator has to know and the bar has nowhere to say
+// it. Typing filters, the arrows move, enter takes what is highlighted, esc
+// leaves without choosing. That also retires the j/k the pickers used to carry,
+// which were letter accelerators wearing a vim hat.
+func jdePickKey(m tea.KeyMsg) (jdePickAction, int) {
+	switch m.String() {
+	case "esc":
+		return jdePickCancel, 0
+	case "enter":
+		return jdePickCommit, 0
+	case "down", "tab":
+		return jdePickMove, +1
+	case "up", "shift+tab":
+		return jdePickMove, -1
+	case "pgdown":
+		return jdePickPage, +1
+	case "pgup":
+		return jdePickPage, -1
+	}
+	return jdePickType, 0
+}
+
+// jdePickList is one picker, described without this file having to know what is
+// being picked. Count/Label/Dim stand in for the caller's own option slice, the
+// way ReportTableScreen's loaders stand in for its rows.
+type jdePickList struct {
+	// Title names what is being picked; For (optional) names what for.
+	Title, For string
+	// Note is a muted line under the title: what the "(none)" row does, why a
+	// list is short.
+	Note string
+	// Filter is the always-live filter box. It carries the caret, so it renders
+	// focused whatever the cursor is doing in the list below it.
+	Filter textinput.Model
+	Count  int
+	Label  func(i int) string
+	// Dim marks a row that is an empty state rather than a value — the synthetic
+	// "(none)" row. nil means none of them are.
+	Dim    func(i int) bool
+	Cursor int
+	// Empty is the line drawn instead of the list when nothing matches.
+	Empty string
+}
+
+// render returns the pinned header and the scrollable body, ready for
+// frameWithHeader. Each option line is tagged with its own index, so the frame
+// windows the list around the selection with no second windowing pass.
+func (p jdePickList) render() ([]string, *jdeLines) {
+	head := StyleJDEHeading.Render(p.Title)
+	if p.For != "" {
+		head += "  " + StyleMuted.Render("for ") + p.For
+	}
+	// The box's own placeholder is dropped: the label says "Filter" and the hint
+	// says what typing does, and a placeholder filling the input area would hide
+	// the underscores that say it is empty. textinput.Model is a value type, so
+	// this copy leaves the caller's box alone.
+	box := p.Filter
+	box.Placeholder = ""
+	filter := jdeField{
+		Label:   "Filter",
+		Kind:    jdeText,
+		Value:   jdeInputValue(box, true),
+		Width:   30,
+		Hint:    "type to narrow the list",
+		Focused: true,
+	}
+	header := []string{head, renderJDEFields([]jdeField{filter})[0], ""}
+	if p.Note != "" {
+		header = append(header, jdeIndent+StyleMuted.Render(p.Note), "")
+	}
+
+	body := &jdeLines{}
+	if p.Count == 0 {
+		empty := p.Empty
+		if empty == "" {
+			empty = "(no matches)"
+		}
+		body.Add(jdeIndent + StyleMuted.Render(empty))
+		return header, body
+	}
+	for i := 0; i < p.Count; i++ {
+		label := p.Label(i)
+		if i == p.Cursor {
+			body.AddRow(i, StyleSidebarItemActive.Render("  ▸ "+label))
+			continue
+		}
+		if p.Dim != nil && p.Dim(i) {
+			label = StyleMuted.Render(label)
+		}
+		body.AddRow(i, "    "+label)
+	}
+	return header, body
+}
+
+// jdePickBar is the bar every picker draws: the same four keys, plus paging when
+// the list is longer than the pane.
+func jdePickBar(verb string, paging bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", verb}, {"Esc", "Cancel"}, {"UP/DN", "Move"}}
+	if paging {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
 }
 
 // ---------------------------------------------------------------------------
