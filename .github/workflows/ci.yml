@@ -1,0 +1,84 @@
+name: CI
+
+# ScanTTY's first CI.
+#   * Every pull request and every push to main: build / vet / test.
+#   * On merges to main it ALSO publishes prebuilt binaries as a GitHub Release
+#     so any host can pull a fresh build instead of compiling from source
+#     (this is what keeps the running binary from going stale — see
+#     deploy/README.md for the host side that consumes it).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege by default; the release job opts into write below.
+permissions:
+  contents: read
+
+# go.mod pins the Go version (currently 1.26.4). setup-go installs it from
+# go-version-file; GOTOOLCHAIN=auto is a safety net so the `go` command can
+# fetch the exact go.mod-pinned toolchain if the runner baseline is older.
+env:
+  GOTOOLCHAIN: auto
+
+jobs:
+  build-vet-test:
+    name: build / vet / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go build
+        run: go build ./...
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  release:
+    name: release prebuilt binaries
+    needs: build-vet-test
+    # Only publish on a real merge to main, never on pull_request runs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release + upload assets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build release binaries (static, linux/amd64)
+        env:
+          # modernc.org/sqlite is pure Go, so CGO can stay off -> a portable
+          # static binary that runs on any linux/amd64 host.
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p dist
+          go build -trimpath -o dist/scantty ./cmd/scantty
+          go build -trimpath -o dist/oms-claim-print ./cmd/oms-claim-print
+      - name: Publish GitHub Release
+        # GITHUB_SHA / GITHUB_REPOSITORY are provided automatically by Actions.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="build-$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
+          TITLE="ScanTTY build $(date -u +%Y-%m-%d) (${GITHUB_SHA::7})"
+          NOTES="Automated linux/amd64 build from main @ ${GITHUB_SHA} (static, CGO disabled). Assets: scantty (TUI) and oms-claim-print (Pi print daemon). Pull with: gh release download --repo ${GITHUB_REPOSITORY} --pattern scantty --clobber"
+          # Idempotent: a re-run on the same commit replaces the release cleanly
+          # instead of failing on an existing tag.
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "$TITLE" \
+            --notes "$NOTES" \
+            --latest \
+            dist/scantty dist/oms-claim-print

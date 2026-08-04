@@ -1,0 +1,19 @@
+[Unit]
+Description=ScanTTY auto-build — refresh the local binary from origin/main
+Documentation=file:%h/gascity/scantty/deploy/README.md
+# Best-effort ordering after the network in the user manager.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Adjust this path if your checkout is not at ~/gascity/scantty. %h is the
+# user's home directory. The script derives the repo root from its own
+# location, so only this ExecStart path needs to match your clone.
+ExecStart=%h/gascity/scantty/deploy/scantty-autobuild.sh
+WorkingDirectory=%h/gascity/scantty
+# Don't hang forever on a wedged fetch or build.
+TimeoutStartSec=600
+# Be a background citizen; building shouldn't steal cycles from the TUI.
+Nice=10
+IOSchedulingClass=idle

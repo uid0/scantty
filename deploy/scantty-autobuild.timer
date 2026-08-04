@@ -1,0 +1,15 @@
+[Unit]
+Description=ScanTTY auto-build timer — check origin/main every 5 minutes
+
+[Timer]
+# First check shortly after the user manager starts, then every 5 minutes of
+# active time.
+OnStartupSec=1min
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Run a missed check on resume if the machine was asleep/off at the mark.
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
