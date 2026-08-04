@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/uid0/scantty/internal/omsapi"
 )
 
 type StatusBar struct {
@@ -12,6 +14,7 @@ type StatusBar struct {
 	connFK    bool
 	scanner   string
 	unread    int
+	degraded  []omsapi.ServiceStatus
 	message   string
 	msgLevel  StatusLevel
 	msgExpiry time.Time
@@ -26,6 +29,12 @@ func (s *StatusBar) SetOMSConn(ok bool)      { s.connOMS = ok }
 func (s *StatusBar) SetForgeKeyConn(ok bool) { s.connFK = ok }
 func (s *StatusBar) SetScanner(state string) { s.scanner = state }
 func (s *StatusBar) SetUnread(n int)         { s.unread = n }
+
+// SetDegradedServices records which external capabilities the backend reports
+// as down, for the chip in View. An empty slice removes it — including the case
+// where the status endpoint itself became unreachable, which is UNKNOWN and must
+// not keep flying a warning nobody can act on.
+func (s *StatusBar) SetDegradedServices(rows []omsapi.ServiceStatus) { s.degraded = rows }
 
 func (s *StatusBar) Flash(text string, level StatusLevel, ttl time.Duration) {
 	s.message = text
@@ -43,7 +52,10 @@ func conn(name string, ok bool) string {
 	return StyleStatusError.Render(fmt.Sprintf("○ %s", name))
 }
 
-func (s StatusBar) View() string {
+// contextLine is the left-hand run: connection state, scanner, unread, and the
+// degraded-services chip. `short` swaps the chip for its label-less form, which
+// is what a narrow terminal gets rather than a wrapped bar.
+func (s StatusBar) contextLine(short bool) string {
 	parts := []string{
 		conn("OMS", s.connOMS),
 		conn("FK", s.connFK),
@@ -52,7 +64,21 @@ func (s StatusBar) View() string {
 	if s.unread > 0 {
 		parts = append(parts, StyleStatusWarn.Render(fmt.Sprintf("📬 %d unread", s.unread)))
 	}
-	context := strings.Join(parts, "  ")
+	// The degraded chip goes LAST in the run, next to the hints — a warning
+	// that displaces the connection indicators would make the operator hunt for
+	// the one piece of state that is on this bar every second of every day.
+	chip := serviceStatusSummary(s.degraded)
+	if short {
+		chip = serviceStatusSummaryShort(s.degraded)
+	}
+	if chip != "" {
+		parts = append(parts, StyleStatusWarn.Render(chip))
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (s StatusBar) View() string {
+	context := s.contextLine(false)
 
 	// avail is the usable width for a single content line inside
 	// StyleStatusBar's Padding(0, 1); content wider than this wraps (and its
@@ -87,6 +113,13 @@ func (s StatusBar) View() string {
 	// No active message: connection/scanner context on the left, key hints on
 	// the right.
 	right := StyleMuted.Render("q quit · tab nav · / search")
+	// The chip is the one part of the context that can be long, and a body
+	// wider than the bar does not clip — lipgloss WRAPS it, which grows the
+	// frame by a row and scrolls the nav off the top. Drop to the short chip
+	// before that happens; the fact survives, only the label goes.
+	if lenVis(context)+lenVis(right)+1 > avail {
+		context = s.contextLine(true)
+	}
 	gap := avail - lenVis(context) - lenVis(right)
 	if gap < 1 {
 		gap = 1

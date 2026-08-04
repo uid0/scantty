@@ -271,6 +271,14 @@ func (s *MakerBoxesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loading = true
 			return s, s.load()
 		case "s":
+			// A scan IS a WHMCS membership lookup — with billing down it can
+			// only fail, so the form does not open (the web disables its Scan
+			// button on the same key). Common API being down does not stop a
+			// scan: this form takes a typed username, which resolves without
+			// the badge directory, so that one warns instead (see View).
+			if s.billingDown() {
+				return s, Status(makerBoxLookupUnavailable, StatusWarn)
+			}
 			bin := textinput.New()
 			bin.Prompt = ""
 			bin.Placeholder = "bin id"
@@ -287,6 +295,13 @@ func (s *MakerBoxesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.scanErr = ""
 			return s, textinput.Blink
 		case "p":
+			// Pre-conversion runs the identity cascade, which consults WHMCS on
+			// BOTH paths (badge → Common API → WHMCS, or username → WHMCS), so
+			// a degraded WHMCS breaks every lookup and the form stays shut.
+			// Mirrors MakerBoxPreConversionPage's billingDown gate.
+			if s.billingDown() {
+				return s, Status(makerBoxLookupUnavailable, StatusWarn)
+			}
 			pre := textinput.New()
 			pre.Prompt = ""
 			pre.Placeholder = "badge or username"
@@ -358,10 +373,21 @@ func (s *MakerBoxesScreen) runConvert(id int) tea.Cmd {
 	}
 }
 
+// billingDown reports whether the WHMCS breaker is open — i.e. whether a
+// membership lookup can resolve at all. Nothing is gated on an unknown status.
+func (s *MakerBoxesScreen) billingDown() bool {
+	return s.deps.Health.IsDegraded(omsapi.ServiceKeyWHMCS)
+}
+
 func (s *MakerBoxesScreen) runPreConvert() (Screen, tea.Cmd) {
 	query := strings.TrimSpace(s.preInput.Value())
 	if query == "" {
 		s.preErr = "badge or username required"
+		return s, nil
+	}
+	// Re-check at submit: the breaker can trip while the form is open.
+	if s.billingDown() {
+		s.preErr = makerBoxLookupUnavailable
 		return s, nil
 	}
 	deps := s.deps
@@ -381,6 +407,11 @@ func (s *MakerBoxesScreen) runScan() (Screen, tea.Cmd) {
 	user := strings.TrimSpace(s.userInput.Value())
 	if bin == "" || user == "" {
 		s.scanErr = "bin id and username required"
+		return s, nil
+	}
+	// Re-check at submit: the breaker can trip while the form is open.
+	if s.billingDown() {
+		s.scanErr = makerBoxLookupUnavailable
 		return s, nil
 	}
 	deps := s.deps
@@ -446,6 +477,15 @@ func (s *MakerBoxesScreen) View() string {
 		if s.preErr != "" {
 			b.WriteString("\n" + StyleStatusError.Render(s.preErr) + "\n")
 		}
+		// A degraded member directory only breaks BADGE resolution — a typed
+		// username still resolves — so this warns without closing the form,
+		// exactly as the web's common_api notice does.
+		if notice := serviceUnavailableNotice(s.deps.Health, omsapi.ServiceKeyCommonAPI, badgeLookupUnavailable); notice != "" {
+			b.WriteString("\n" + notice + "\n")
+		}
+		if notice := serviceUnavailableNotice(s.deps.Health, omsapi.ServiceKeyWHMCS, makerBoxLookupUnavailable); notice != "" {
+			b.WriteString("\n" + notice + "\n")
+		}
 		b.WriteString("\n" + StyleMuted.Render("enter queue · esc cancel"))
 		return b.String()
 	}
@@ -456,6 +496,9 @@ func (s *MakerBoxesScreen) View() string {
 		b.WriteString(StyleMuted.Render("Username: ") + s.userInput.View() + "\n")
 		if s.scanErr != "" {
 			b.WriteString("\n" + StyleStatusError.Render(s.scanErr) + "\n")
+		}
+		if notice := serviceUnavailableNotice(s.deps.Health, omsapi.ServiceKeyWHMCS, makerBoxLookupUnavailable); notice != "" {
+			b.WriteString("\n" + notice + "\n")
 		}
 		b.WriteString("\n" + StyleMuted.Render("tab next field · enter scan · esc cancel"))
 		return b.String()
@@ -556,8 +599,24 @@ func (s *MakerBoxesScreen) View() string {
 			}
 		}
 	}
+	// Inline gate, right above the keys it takes away. Convert is NOT gated:
+	// it allocates the bin from the expiry the pre-conversion already stored
+	// and calls no lookup, so it works through a billing outage.
+	if notice := serviceUnavailableLine(s.deps.Health, omsapi.ServiceKeyWHMCS, makerBoxLookupUnavailable); notice != "" {
+		b.WriteString("\n" + notice)
+	}
+	if notice := serviceUnavailableLine(s.deps.Health, omsapi.ServiceKeyCommonAPI, badgeLookupUnavailable); notice != "" {
+		b.WriteString(notice)
+	}
 	// Two footer lines keep each within a narrow content pane (no width overflow).
 	b.WriteString("\n" + StyleMuted.Render("j/k move · n new · E edit · x delete · r refresh"))
-	b.WriteString("\n" + StyleMuted.Render("s scan · p pre-convert · c convert (queued) · esc back"))
+	if s.billingDown() {
+		// The scan and pre-convert keys come off the hint line while they
+		// cannot resolve anybody — the same move the web makes by disabling
+		// those two buttons.
+		b.WriteString("\n" + StyleMuted.Render("c convert (queued) · esc back"))
+	} else {
+		b.WriteString("\n" + StyleMuted.Render("s scan · p pre-convert · c convert (queued) · esc back"))
+	}
 	return b.String()
 }

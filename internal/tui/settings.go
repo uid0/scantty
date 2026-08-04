@@ -88,6 +88,18 @@ func (s *SettingsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// backs onto a public endpoint, so it's open to any operator (no
 			// superuser gate, unlike site-settings edit).
 			return s, SwitchTo(WSSettings, NewTaxReceiptLookupScreen(s.deps))
+		case "S":
+			// Service status — which external dependencies are working right
+			// now. It mounts HERE, on a screen the sidebar already reaches,
+			// rather than taking a new global letter: the JDE redesign is
+			// retiring those, and the status bar's degraded chip is the thing
+			// that sends an operator looking in the first place. Open to any
+			// operator, like the IsAuthenticated endpoint behind it.
+			//
+			// Uppercase S: lowercase s is the Settings nav hotkey itself, and
+			// S is free in app.go's global switch, so it reaches this screen
+			// through the root's fall-through with no HandlesKey claim.
+			return s, SwitchTo(WSSettings, NewServiceStatusScreen(s.deps))
 		case "c":
 			next := ApplyTheme(theme.Next(CurrentTheme()))
 			if s.deps.SaveThemePreference != nil {
@@ -130,7 +142,15 @@ func (s *SettingsScreen) View() string {
 		b.WriteString(StyleMuted.Render("Site: ") + StyleStatusError.Render(s.siteErr) + "\n\n")
 	}
 
-	b.WriteString("  " + StyleMuted.Render("t tax receipt lookup") + "\n\n")
+	b.WriteString("  " + StyleMuted.Render("t tax receipt lookup") + "\n")
+	b.WriteString("  " + serviceStatusHint() + "\n")
+	// Name what is wrong right here too. An operator who saw the chip on the
+	// status bar and came looking should not have to open another screen to
+	// find out whether it is still true.
+	if degraded := s.deps.Health.Degraded(); len(degraded) > 0 {
+		b.WriteString("  " + StyleStatusWarn.Render("⚠ "+serviceStatusSummary(degraded)) + "\n")
+	}
+	b.WriteString("\n")
 
 	b.WriteString(StyleMuted.Render("Appearance") + "\n\n")
 	b.WriteString(fmt.Sprintf("  Theme: %s\n", theme.Label(CurrentTheme())))
