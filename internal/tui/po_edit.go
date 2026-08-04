@@ -223,15 +223,17 @@ func (h *poHeaderSelect) cycle(delta int) {
 }
 
 type PurchaseOrderEditScreen struct {
-	deps           Deps
-	poID           string
-	po             *omsapi.PurchaseOrder
-	loading        bool
-	loadErr        string
-	saving         bool
-	errMsg         string
-	terminalHeight int
-	terminalWidth  int
+	deps    Deps
+	poID    string
+	po      *omsapi.PurchaseOrder
+	loading bool
+	loadErr string
+	saving  bool
+	errMsg  string
+	// jdeScreen carries the pane geometry and the frame (jde_form.go). Embedded
+	// rather than copied, so terminalHeight/terminalWidth and frame() read here
+	// exactly as they did when this screen owned them.
+	jdeScreen
 
 	phase poEditPhase
 	// subReturn is the phase esc goes back to from a picker or the void
@@ -449,7 +451,7 @@ func (s *PurchaseOrderEditScreen) load() tea.Cmd {
 func (s *PurchaseOrderEditScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight, s.terminalWidth = m.Height, m.Width
+		s.setSize(m)
 		return s, nil
 
 	case poEditLoadedMsg:
@@ -631,31 +633,18 @@ func (s *PurchaseOrderEditScreen) moveCursor(delta int) {
 // page that jumped from the last line back to the first would lose the
 // operator's place rather than save them keystrokes.
 func (s *PurchaseOrderEditScreen) pageCursor(dir int) {
-	n := s.rowCount()
-	if n == 0 {
+	if s.rowCount() == 0 {
 		return
 	}
-	step := s.pageStep()
-	next := s.cursor + dir*step
-	if next < 0 {
-		next = 0
-	}
-	if next > n-1 {
-		next = n - 1
-	}
-	s.cursor = next
+	s.cursor = jdePageCursor(s.cursor, s.rowCount(), s.pageStep(), dir)
 	s.syncFocus()
 }
 
 // pageStep is how many navigable rows the pane is currently showing — computed
 // from the same lines View draws, so a page moves by exactly what the operator
-// can see rather than by a guessed constant. Never less than one.
+// can see rather than by a guessed constant.
 func (s *PurchaseOrderEditScreen) pageStep() int {
-	_, rows := s.formLines().Window(s.cursor, s.bodyRows())
-	if rows < 1 {
-		return 1
-	}
-	return rows
+	return s.windowRows(s.formLines(), s.cursor, 0)
 }
 
 func (s *PurchaseOrderEditScreen) syncFocus() {
@@ -1161,54 +1150,11 @@ func (s *PurchaseOrderEditScreen) View() string {
 // The frame every phase renders into
 // ---------------------------------------------------------------------------
 
-// bodyRows is the height the scrollable body gets. Zero means "not known yet":
-// before the first WindowSizeMsg there is no budget to window against, so the
-// body renders whole and Root's clampToBox decides what fits — the same thing
-// every unsized screen in the app does.
-func (s *PurchaseOrderEditScreen) bodyRows() int {
-	if s.terminalHeight <= 0 {
-		return 0
-	}
-	return screenBodyHeightWithActionBar(s.terminalHeight)
-}
-
-// barWidth is how wide the action bar's rule is drawn. The fallback matches an
-// ordinary 100-column terminal, which is what an unsized screen is most likely
-// about to become.
-func (s *PurchaseOrderEditScreen) barWidth() int {
-	if s.terminalWidth <= 0 {
-		return 72
-	}
-	return screenBodyWidth(s.terminalWidth)
-}
-
-// statusLine is the one row above the bar: what is in flight, or what went
-// wrong. It is always rendered, blank included, so the bar underneath never
-// moves between frames.
-func (s *PurchaseOrderEditScreen) statusLine(verb string) string {
-	switch {
-	case s.saving:
-		return StyleMuted.Render(verb)
-	case s.errMsg != "":
-		return StyleStatusError.Render("✗ " + s.errMsg)
-	}
-	return ""
-}
-
-// frame assembles a phase: the windowed body, padded out to the pane's budget,
-// then the status line, then the persistent action bar at the bottom.
+// frame is jdeScreen.frame with this screen's in-flight verb and error folded
+// into the status line — the pane geometry itself lives in jde_form.go, shared
+// with every other columnar screen.
 func (s *PurchaseOrderEditScreen) frame(body *jdeLines, cursorRow int, verb string, items []actionBarItem) string {
-	avail := s.bodyRows()
-	lines := body.text
-	if avail > 0 {
-		lines, _ = body.Window(cursorRow, avail)
-		for len(lines) < avail {
-			lines = append(lines, "")
-		}
-	}
-	out := append([]string{}, lines...)
-	out = append(out, s.statusLine(verb))
-	return strings.Join(out, "\n") + "\n" + renderActionBar(s.barWidth(), items)
+	return s.jdeScreen.frame(body, cursorRow, jdeStatusLine(s.saving, verb, s.errMsg), items)
 }
 
 // ---------------------------------------------------------------------------

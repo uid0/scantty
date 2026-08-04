@@ -357,7 +357,7 @@ func (s *ItemSuppliersScreen) renderRow(i int) string {
 		line += " " + StyleMuted.Render("[inactive]")
 	}
 	if i == s.cursor {
-		line = StyleSidebarItemActive.Render(marker+name)
+		line = StyleSidebarItemActive.Render(marker + name)
 		if sup.IsPreferred {
 			line += " " + StyleStatusOK.Render("★ primary")
 		}
@@ -426,8 +426,24 @@ var itemSupplierFieldLabel = map[int]string{
 	isUnitCost:      "Unit cost",
 	isPackageCost:   "Package cost",
 	isQtyPerPackage: "Quantity per package",
-	isLeadTime:      "Average lead time (days)",
+	isLeadTime:      "Average lead time",
 	isPrimary:       "Primary supplier",
+}
+
+// itemSupplierFieldHint is the muted note drawn AFTER the input area: the unit a
+// number is in, the shape of a URL, and which two fields the backend insists on.
+// It carries what used to sit in the labels (a parenthetical there would widen
+// the shared label column and shove every input right) and in the long
+// placeholders (which filled the input area and hid the underscores that say a
+// field is empty).
+var itemSupplierFieldHint = map[int]string{
+	isSupplier:      "required",
+	isSKU:           "required",
+	isURL:           "https://…",
+	isUnitCost:      "per unit",
+	isPackageCost:   "per package",
+	isLeadTime:      "days",
+	isQtyPerPackage: "units",
 }
 
 func itemSupplierFieldIsText(id int) bool {
@@ -436,6 +452,21 @@ func itemSupplierFieldIsText(id int) bool {
 		return true
 	}
 	return false
+}
+
+// itemSupplierFieldWidth sizes the input areas that are not the default: a URL
+// is the one long field, and the four numbers are narrow enough that a
+// full-width box would read as a text field.
+func itemSupplierFieldWidth(id int) int {
+	switch id {
+	case isURL:
+		return 40
+	case isUnitCost, isPackageCost:
+		return 12
+	case isQtyPerPackage, isLeadTime:
+		return 8
+	}
+	return 0
 }
 
 type itemSupplierFormPhase int
@@ -466,7 +497,7 @@ type ItemSupplierFormScreen struct {
 
 	suppliers []omsapi.Supplier
 
-	terminalHeight int
+	jdeScreen
 
 	inputs     []textinput.Model
 	supplierID *int
@@ -479,7 +510,6 @@ type ItemSupplierFormScreen struct {
 	phase       itemSupplierFormPhase
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []itemSupplierPickOption
 }
 
@@ -550,16 +580,12 @@ func itemSupplierCharLimit(id int) int {
 	return 100
 }
 
+// itemSupplierPlaceholder keeps only the two DEFAULTS — a blank quantity means
+// one per package and a blank lead time means a week, which is worth seeing
+// sitting in the field. Everything the others said is now a hint beside the
+// input (see itemSupplierFieldHint).
 func itemSupplierPlaceholder(id int) string {
 	switch id {
-	case isSKU:
-		return "supplier's product SKU"
-	case isURL:
-		return "https://… (optional)"
-	case isUnitCost:
-		return "e.g. 1.50 (optional)"
-	case isPackageCost:
-		return "e.g. 12.00 (optional)"
 	case isQtyPerPackage:
 		return "1"
 	case isLeadTime:
@@ -603,7 +629,7 @@ func (s *ItemSupplierFormScreen) loadSuppliers() tea.Cmd {
 func (s *ItemSupplierFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case itemSupplierFormSuppliersMsg:
 		s.loading = false
@@ -705,6 +731,8 @@ func (s *ItemSupplierFormScreen) syncFocus() {
 }
 
 func (s *ItemSupplierFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -714,11 +742,26 @@ func (s *ItemSupplierFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
+		// SUBMIT saves the link from any row. The supplier row used to swallow
+		// enter to open its picker; that is Ctrl-E now, so enter means the same
+		// thing here as it does everywhere else on the form.
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		if id, ok := s.currentFieldID(); ok && id == isSupplier {
+			s.openPicker()
+			return s, textinput.Blink
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -727,12 +770,12 @@ func (s *ItemSupplierFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 	}
 	switch id {
 	case isSupplier:
-		if m.String() == " " || m.String() == "enter" {
-			s.openPicker()
-		}
+		// A picker row has nothing to type into and no accelerators left.
 		return s, nil
 	case isPrimary:
-		if m.String() == " " {
+		// A two-value choice row: it flips whichever way it is cycled.
+		switch m.String() {
+		case " ", "right", "left":
 			s.isPrimary = !s.isPrimary
 		}
 		return s, nil
@@ -752,15 +795,24 @@ func (s *ItemSupplierFormScreen) moveCursor(delta int) {
 	s.syncFocus()
 }
 
+func (s *ItemSupplierFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.syncFocus()
+}
+
 // ---------------------------------------------------------------------------
 // Supplier sub-picker
 // ---------------------------------------------------------------------------
 
 func (s *ItemSupplierFormScreen) openPicker() {
 	s.phase = isPhaseSupplierPick
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyPickFilter()
 
 	// Start the cursor on the currently-selected supplier so re-picking is a
@@ -795,45 +847,47 @@ func (s *ItemSupplierFormScreen) applyPickFilter() {
 }
 
 func (s *ItemSupplierFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyPickFilter()
-			s.pickCursor = 0
-			return s, nil
-		}
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		s.closePicker()
+	case jdePickCommit:
+		s.commitPick()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
 		s.applyPickFilter()
 		return s, cmd
 	}
-
-	switch m.String() {
-	case "esc":
-		s.phase = isPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case "enter":
-		s.commitPick()
-	}
 	return s, nil
+}
+
+// movePick walks the option cursor, clamping at both ends.
+func (s *ItemSupplierFormScreen) movePick(delta int) {
+	next := s.pickCursor + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > len(s.pickOptions)-1 {
+		next = len(s.pickOptions) - 1
+	}
+	if next < 0 {
+		next = 0
+	}
+	s.pickCursor = next
+}
+
+func (s *ItemSupplierFormScreen) closePicker() {
+	s.phase = isPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func (s *ItemSupplierFormScreen) commitPick() {
@@ -841,11 +895,7 @@ func (s *ItemSupplierFormScreen) commitPick() {
 		id := s.pickOptions[s.pickCursor].id
 		s.supplierID = &id
 	}
-	s.phase = isPhaseForm
-	s.pickTyping = false
-	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
-	s.syncFocus()
+	s.closePicker()
 }
 
 // ---------------------------------------------------------------------------
@@ -968,101 +1018,103 @@ func (s *ItemSupplierFormScreen) View() string {
 }
 
 func (s *ItemSupplierFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *ItemSupplierFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
-	}
-	label := itemSupplierFieldLabel[id]
-	var value string
-	switch id {
-	case isSupplier:
-		value = s.supplierLabel()
-	case isPrimary:
-		if s.isPrimary {
-			value = StyleStatusOK.Render("[x] yes")
-		} else {
-			value = StyleMuted.Render("[ ] no")
+// formFields describes the link as columnar rows: the supplier is a picker, the
+// primary flag a two-value choice, everything else typed into.
+func (s *ItemSupplierFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   itemSupplierFieldLabel[id],
+			Width:   itemSupplierFieldWidth(id),
+			Hint:    itemSupplierFieldHint[id],
+			Focused: i == s.cursor,
 		}
-	default:
-		value = s.inputs[id].View()
-	}
-	return caret + StyleTitle.Render(label+": ") + value
-}
-
-func (s *ItemSupplierFormScreen) supplierLabel() string {
-	if s.supplierID == nil {
-		return StyleMuted.Render("(press space to pick)")
-	}
-	for _, sup := range s.suppliers {
-		if sup.ID == *s.supplierID {
-			return sup.Name
+		switch id {
+		case isSupplier:
+			value, dim := s.supplierValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks · required"
+			}
+		case isPrimary:
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.isPrimary)
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
 		}
+		out[i] = f
 	}
-	if s.existing != nil && s.existing.SupplierName != "" {
-		return s.existing.SupplierName
-	}
-	return fmt.Sprintf("#%d", *s.supplierID)
+	return out
 }
 
-func (s *ItemSupplierFormScreen) helpText() string {
-	kindHelp := "type to edit"
+func (s *ItemSupplierFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	heading := StyleJDEHeading.Render("Supplier link")
+	if s.itemName != "" {
+		heading += "  " + StyleMuted.Render("for ") + s.itemName
+	}
+	l.Add(heading)
+	l.AddFields(fields, jdeLabelWidth(fields), 0)
+	return l
+}
+
+func (s *ItemSupplierFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok {
 		switch id {
 		case isSupplier:
-			kindHelp = "space to pick"
+			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		case isPrimary:
-			kindHelp = "space toggle"
+			items = append(items, actionBarItem{"←→", "Change"})
 		}
 	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// supplierValue is the supplier row's text and whether it is an empty state.
+// Plain text plus a flag, not pre-styled muted text: a focused row reverse-
+// videos the whole field, and an inner reset would end the highlight partway.
+func (s *ItemSupplierFormScreen) supplierValue() (string, bool) {
+	if s.supplierID == nil {
+		return "(none chosen yet)", true
+	}
+	for _, sup := range s.suppliers {
+		if sup.ID == *s.supplierID {
+			return sup.Name, false
+		}
+	}
+	if s.existing != nil && s.existing.SupplierName != "" {
+		return s.existing.SupplierName, false
+	}
+	return fmt.Sprintf("#%d", *s.supplierID), false
+}
+
+// pickView builds the supplier picker's pinned header and its option list.
+func (s *ItemSupplierFormScreen) pickView() ([]string, *jdeLines) {
+	return jdePickList{
+		Title:  "Supplier",
+		For:    s.itemName,
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  func(i int) string { return s.pickOptions[i].label },
+		Cursor: s.pickCursor,
+		Empty:  "(no matching suppliers — create one first with the U hotkey)",
+	}.render()
 }
 
 func (s *ItemSupplierFormScreen) viewPick() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render("Pick supplier — j/k move · / filter · enter select · esc back") + "\n\n")
-	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	if len(s.pickOptions) == 0 {
-		b.WriteString(StyleMuted.Render("(no matching suppliers — create one first with the U hotkey)"))
-		return b.String()
-	}
-
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		caret := "    "
-		if i == s.pickCursor {
-			caret = "  ▸ "
-		}
-		label := s.pickOptions[i].label
-		line := caret + label
-		if i == s.pickCursor {
-			line = StyleSidebarItemActive.Render(caret + label)
-		}
-		b.WriteString(line + "\n")
-	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }

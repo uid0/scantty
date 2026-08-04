@@ -20,6 +20,9 @@ func ccPtr[T any](v T) *T { return &v }
 func ccEnterKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyEnter} }
 func ccEscKey() tea.KeyMsg   { return tea.KeyMsg{Type: tea.KeyEsc} }
 
+// ccCtrlEKey is the columnar layer's "open whatever this row is" (sc-h412).
+func ccCtrlEKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyCtrlE} }
+
 // ccDrainCmd executes a (possibly batched) command and returns every leaf
 // message it produces, so a test can feed async follow-ups (e.g. the full-item
 // re-fetch a cycle count triggers) back into the model.

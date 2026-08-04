@@ -191,8 +191,8 @@ func TestAssetPartForm_EditPickerKeepsAbsentPart(t *testing.T) {
 
 	// And the picker label still shows the linked part's name from the fetched
 	// AssetPart even though the item is absent from the loaded list.
-	if got := s.partLabel(); got != "Legacy belt (OLD-1)" {
-		t.Errorf("partLabel = %q, want the denormalized name", got)
+	if got, _ := s.partValue(); got != "Legacy belt (OLD-1)" {
+		t.Errorf("part row value = %q, want the denormalized name", got)
 	}
 }
 

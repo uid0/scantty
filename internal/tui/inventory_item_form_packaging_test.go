@@ -33,10 +33,13 @@ func typeInto(s *InventoryItemFormScreen, text string) {
 	}
 }
 
-// addChainRow drives the real key path: the chain list's "a", the row editor's
-// two fields, and enter to commit.
+// addChainRow drives the real key path: down to the chain list's "(add a level)"
+// row, Ctrl-E to open the editor, its two fields, and enter to commit.
 func addChainRow(s *InventoryItemFormScreen, name, units string) {
-	s.Update(runeKey('a'))
+	for s.chainCursor < s.chainAddRow() {
+		s.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	s.Update(ccCtrlEKey())
 	typeInto(s, name)
 	s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	typeInto(s, units)
@@ -90,11 +93,11 @@ func TestItemForm_ChainEditorAddsRows(t *testing.T) {
 	s := newPackagingForm(t)
 	s.setCursorToField(fPackChain)
 
-	// space opens the chain list; the empty state says the item is counted in
+	// Ctrl-E opens the chain list; the empty state says the item is counted in
 	// base units rather than showing a bare empty table.
-	s.Update(runeKey(' '))
+	s.Update(ccCtrlEKey())
 	if s.phase != itemFormPhaseChain {
-		t.Fatalf("space on the chain row should open the editor, got phase %d", s.phase)
+		t.Fatalf("ctrl+e on the chain row should open the editor, got phase %d", s.phase)
 	}
 	if out := s.View(); !strings.Contains(out, "No packaging levels") {
 		t.Errorf("empty chain view = %q", out)
@@ -123,7 +126,10 @@ func TestItemForm_ChainEditorAddsRows(t *testing.T) {
 	}
 
 	// A rung with no size is refused by the row editor, not silently accepted.
-	s.Update(runeKey('a'))
+	for s.chainCursor < s.chainAddRow() {
+		s.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	s.Update(ccCtrlEKey())
 	typeInto(s, "pallet")
 	s.Update(ccEnterKey())
 	if s.phase != itemFormPhaseChainRow {
@@ -142,8 +148,8 @@ func TestItemForm_ChainEditorAddsRows(t *testing.T) {
 	if s.phase != itemFormPhaseForm {
 		t.Errorf("esc should return to the form, got phase %d", s.phase)
 	}
-	if !strings.Contains(s.chainSummary(), "case › ream › sheet") {
-		t.Errorf("chain summary = %q", s.chainSummary())
+	if got, _ := s.chainValue(); !strings.Contains(got, "case › ream › sheet") {
+		t.Errorf("chain summary = %q", got)
 	}
 }
 
@@ -153,30 +159,31 @@ func TestItemForm_ChainEditorAddsRows(t *testing.T) {
 func TestItemForm_ChainEditKeepsCountLevelPick(t *testing.T) {
 	s := newPackagingForm(t)
 	s.setCursorToField(fPackChain)
-	s.Update(runeKey(' '))
+	s.Update(ccCtrlEKey())
 	addChainRow(s, "case", "100")
 	addChainRow(s, "bag", "1")
 
 	caseKey := s.packRows[0].key
 	s.countLevelKey = caseKey
 
-	// Move the picked rung down: the pick rides the ROW, not the position.
+	// Move the picked rung inward: the pick rides the ROW, not the position.
+	// The chain reads left to right ("case › bag"), so → moves a level along it.
 	s.chainCursor = 0
-	s.Update(runeKey('J'))
+	s.Update(tea.KeyMsg{Type: tea.KeyRight})
 	if s.packRows[1].key != caseKey {
-		t.Fatalf("J should have moved the case rung down, rows = %+v", s.packRows)
+		t.Fatalf("→ should have moved the case rung inward, rows = %+v", s.packRows)
 	}
 	if s.countLevelKey != caseKey {
 		t.Errorf("the pick must follow the row through a reorder, got %d", s.countLevelKey)
 	}
 	// Move it back so the chain validates again.
-	s.Update(runeKey('K'))
+	s.Update(tea.KeyMsg{Type: tea.KeyLeft})
 
 	// Editing the picked rung in place keeps the pick.
 	s.chainCursor = 0
-	s.Update(ccEnterKey())
+	s.Update(ccCtrlEKey())
 	if s.phase != itemFormPhaseChainRow {
-		t.Fatalf("enter should open the row editor, got phase %d", s.phase)
+		t.Fatalf("ctrl+e should open the row editor, got phase %d", s.phase)
 	}
 	s.chainRowName.SetValue("carton")
 	s.Update(ccEnterKey())
@@ -187,9 +194,16 @@ func TestItemForm_ChainEditKeepsCountLevelPick(t *testing.T) {
 		t.Errorf("an in-place edit must keep the pick, got %d", s.countLevelKey)
 	}
 
-	// Removing the picked rung clears the pick.
+	// Removing the picked rung clears the pick. Remove is a ROW of that rung's
+	// own editor now, so it is reached the same way every other action is.
 	s.chainCursor = 0
-	s.Update(runeKey('x'))
+	s.Update(ccCtrlEKey())
+	s.chainRowFocus = chainRowFieldRemove
+	s.syncChainRowFocus()
+	s.Update(ccCtrlEKey())
+	if s.phase != itemFormPhaseChain {
+		t.Fatalf("removing a level should return to the list, got phase %d", s.phase)
+	}
 	if len(s.packRows) != 1 {
 		t.Fatalf("rows = %d, want 1 after removal", len(s.packRows))
 	}
@@ -227,34 +241,47 @@ func TestItemForm_CountLevelCycleWalksNamedRows(t *testing.T) {
 		t.Errorf("backwards cycle = %d", s.countLevelKey)
 	}
 
-	// An unnamed rung is not offerable — it cannot be a legal counting level.
+	// An unnamed rung is not offerable — it cannot be a legal counting level. The
+	// row says which thing is missing (a NAME, not a level), and — the sc-dnhx
+	// half — reports that it has nothing to cycle, so the action bar drops ←/→
+	// rather than teaching a key that would do nothing here.
 	s.packRows = []packagingRow{{key: 5, name: "  ", baseUnits: 1}}
 	s.countLevelKey = 0
 	s.cycleSelect(fCountLevel, +1)
 	if s.countLevelKey != 0 {
 		t.Errorf("an unnamed rung must not be pickable, got %d", s.countLevelKey)
 	}
-	if !strings.Contains(s.countLevelSummary(), "none selected") {
-		t.Errorf("count level summary = %q", s.countLevelSummary())
+	if _, cycles := s.selectValue(fCountLevel); cycles {
+		t.Error("a chain with no named rung has nothing for ←/→ to land on")
+	}
+	if got, _ := s.countLevelValue(); !strings.Contains(got, "name a packaging level first") {
+		t.Errorf("count level summary = %q", got)
 	}
 	// With no chain at all the field says to add one first, like the web's
 	// placeholder.
 	s.packRows = nil
-	if !strings.Contains(s.countLevelSummary(), "add a packaging level first") {
-		t.Errorf("empty-chain summary = %q", s.countLevelSummary())
+	if got, _ := s.countLevelValue(); !strings.Contains(got, "add a packaging level first") {
+		t.Errorf("empty-chain summary = %q", got)
+	}
+	if _, cycles := s.selectValue(fCountLevel); cycles {
+		t.Error("an empty chain has nothing for ←/→ to land on either")
 	}
 }
 
 // TestItemForm_ThresholdLabelsFollowCountUnit pins the phase-2a contract shift:
 // minimum_stock / reorder_quantity are read in the COUNT unit for the pack modes,
-// so the labels have to say so — and must NOT for an each-mode item.
+// so the ROW has to say so — and must NOT for an each-mode item. Since sc-dnhx
+// the unit is said in the hint beside the input rather than inside the label,
+// because the label column is shared by every field on the columnar sheet and a
+// unit that came and went with the counting mode would shove every input area
+// sideways. The contract is unchanged: the operator is told which unit it is.
 func TestItemForm_ThresholdLabelsFollowCountUnit(t *testing.T) {
 	s := newPackagingForm(t)
-	if got := s.fieldLabel(fMinimumStock); got != "Minimum stock" {
-		t.Errorf("each-mode minimum label = %q, want the plain one", got)
+	if got := s.fieldHint(fMinimumStock); got != "" {
+		t.Errorf("each-mode minimum hint = %q, want no unit", got)
 	}
-	if got := s.fieldLabel(fCurrentStock); got != "Current stock" {
-		t.Errorf("each-mode stock label = %q, want the plain one", got)
+	if got := s.fieldHint(fCurrentStock); got != "" {
+		t.Errorf("each-mode stock hint = %q, want no unit", got)
 	}
 
 	s.inputs[fBaseUnit].SetValue("sheet")
@@ -267,21 +294,32 @@ func TestItemForm_ThresholdLabelsFollowCountUnit(t *testing.T) {
 	s.countLevelKey = 2 // counted in reams
 	s.rebuildFields()
 
-	if got := s.fieldLabel(fMinimumStock); got != "Minimum stock (reams)" {
-		t.Errorf("minimum label = %q", got)
+	if got := s.fieldHint(fMinimumStock); got != "reams" {
+		t.Errorf("minimum unit = %q", got)
 	}
-	if got := s.fieldLabel(fReorderQuantity); got != "Reorder quantity (reams)" {
-		t.Errorf("reorder label = %q", got)
+	if got := s.fieldHint(fReorderQuantity); got != "reams" {
+		t.Errorf("reorder unit = %q", got)
 	}
 	// Stock itself stays canonical in BASE units, so it names those instead.
-	if got := s.fieldLabel(fCurrentStock); got != "Current stock (sheets)" {
-		t.Errorf("stock label = %q", got)
+	if got := s.fieldHint(fCurrentStock); got != "sheets" {
+		t.Errorf("stock unit = %q", got)
+	}
+	// And the labels themselves stay put, so the shared column cannot move.
+	for _, id := range []int{fMinimumStock, fReorderQuantity, fCurrentStock} {
+		if strings.Contains(itemFieldLabel[id], "(") {
+			t.Errorf("label %q must not carry the unit — it would widen the shared column", itemFieldLabel[id])
+		}
+	}
+	// The row still says it, wherever it says it.
+	s.setCursorToField(fMinimumStock)
+	if out := s.viewForm(); !strings.Contains(out, "reams") {
+		t.Errorf("the minimum-stock row should name its unit:\n%s", out)
 	}
 
 	// A pack mode with nothing picked has no unit to name yet.
 	s.countLevelKey = 0
-	if got := s.fieldLabel(fMinimumStock); got != "Minimum stock" {
-		t.Errorf("unpicked minimum label = %q, want the plain one", got)
+	if got := s.fieldHint(fMinimumStock); got != "" {
+		t.Errorf("unpicked minimum unit = %q, want none", got)
 	}
 }
 
