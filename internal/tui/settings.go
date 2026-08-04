@@ -148,7 +148,10 @@ func (s *SettingsScreen) View() string {
 	// status bar and came looking should not have to open another screen to
 	// find out whether it is still true.
 	if degraded := s.deps.Health.Degraded(); len(degraded) > 0 {
-		b.WriteString("  " + StyleStatusWarn.Render("⚠ "+serviceStatusSummary(degraded)) + "\n")
+		// The bar's "!" marker is dropped here: this line already carries the
+		// ⚠, and "⚠ ! Email delivery unavailable" reads as a stutter.
+		summary := strings.TrimPrefix(serviceStatusSummary(degraded), "! ")
+		b.WriteString("  " + StyleStatusWarn.Render("⚠ "+summary) + "\n")
 	}
 	b.WriteString("\n")
 

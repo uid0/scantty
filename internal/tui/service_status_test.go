@@ -289,6 +289,35 @@ func TestStatusBar_DegradedChipNeverWrapsTheBar(t *testing.T) {
 	}
 }
 
+// The short chip is NOT always shorter: with two or more services the two forms
+// are the same string, so the label-dropping fallback saves nothing and the bar
+// has to give up the static hints instead. A hand-run at 56 columns is what
+// caught this — the single-service case above passes either way.
+func TestStatusBar_StaysOneLineWhenTheChipCannotShrink(t *testing.T) {
+	two := ssSnapshot(map[string]string{
+		omsapi.ServiceKeyEmail:         omsapi.ServiceStateOpen,
+		omsapi.ServiceKeyDeviceControl: omsapi.ServiceStateOpen,
+	}).DegradedServices()
+
+	for _, width := range []int{80, 64, 56, 40, 24} {
+		bar := NewStatusBar()
+		bar.SetWidth(width)
+		bar.SetUnread(3)
+		bar.SetDegradedServices(two)
+		out := bar.View()
+		for _, line := range strings.Split(out, "\n") {
+			if lenVis(line) > width {
+				t.Errorf("at %d cols a bar line is %d wide — the frame grows a row:\n%q",
+					width, lenVis(line), line)
+			}
+		}
+		// Whatever else goes, the operator must still be told.
+		if width >= 40 && !strings.Contains(out, "2 services degraded") {
+			t.Errorf("at %d cols the degradation was dropped entirely:\n%s", width, out)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The status screen
 // ---------------------------------------------------------------------------
