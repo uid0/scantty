@@ -13,10 +13,17 @@ import (
 )
 
 type Deps struct {
-	OMS                 *omsapi.Client
-	ForgeKey            *forgekeyapi.Client
-	Cache               *cache.Cache
-	Ctx                 context.Context
+	OMS      *omsapi.Client
+	ForgeKey *forgekeyapi.Client
+	Cache    *cache.Cache
+	Ctx      context.Context
+	// Health is the shared service-status snapshot: which external
+	// dependencies the backend's circuit breakers say are working right now.
+	// Root polls it and is the only writer; screens read it to gate a control
+	// on the capability it actually needs. NewRoot installs one, so main does
+	// not have to. A NIL Health is legal everywhere and reports everything
+	// healthy — a screen built with a bare Deps{} gates nothing.
+	Health              *ServiceHealth
 	InitialStaff        bool
 	SaveThemePreference func(name string) error
 }
@@ -105,6 +112,12 @@ func (r *Root) popHistory() (tea.Cmd, bool) {
 }
 
 func NewRoot(deps Deps) Root {
+	// One shared holder for the whole run: every screen Root builds gets this
+	// same pointer through its copy of Deps, so the poll below is the only
+	// request any of them costs.
+	if deps.Health == nil {
+		deps.Health = NewServiceHealth()
+	}
 	r := Root{
 		deps:     deps,
 		nav:      NewNav(),
@@ -127,6 +140,13 @@ func (r Root) Init() tea.Cmd {
 	}
 	if poll := PollNotifications(r.deps, 60*time.Second); poll != nil {
 		cmds = append(cmds, poll)
+	}
+	// Ask for the service status straight away rather than waiting out the
+	// first interval: a console brought up during an outage should say so on
+	// its first frame. The reply re-arms the recurring poll (see dispatch), so
+	// this is the loop's only ignition point.
+	if fetch := FetchServiceStatus(r.deps); fetch != nil {
+		cmds = append(cmds, fetch)
 	}
 	return tea.Batch(cmds...)
 }
@@ -436,6 +456,24 @@ func (r Root) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r.status.SetUnread(len(m.rows))
 		}
 		return r, PollNotifications(r.deps, 60*time.Second)
+
+	case ServiceStatusMsg:
+		// A failed fetch is NEVER surfaced and never gates: it stores UNKNOWN,
+		// which shows nothing and takes no control away. A skipped fetch (no
+		// token yet) leaves whatever we had alone rather than clearing it.
+		// Either way the loop re-arms — the poll surviving matters more than
+		// any single request.
+		if !m.Skipped {
+			r.deps.Health.Set(m.Status)
+			r.status.SetDegradedServices(r.deps.Health.Degraded())
+		}
+		if m.Manual {
+			// The operator's own refresh. It feeds the snapshot but must not
+			// re-arm — the recurring poll is one loop, and forking a second
+			// one per press would quietly multiply the request rate.
+			return r, nil
+		}
+		return r, PollServiceStatus(r.deps, serviceStatusPollInterval)
 	}
 
 	next, cmd := r.screen.Update(msg)

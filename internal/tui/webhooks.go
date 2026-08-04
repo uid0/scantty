@@ -863,6 +863,15 @@ func (s *WebhookListScreen) View() string {
 	}
 
 	var b strings.Builder
+	// Warn, but deliberately do NOT disable the test. The status endpoint
+	// aggregates the whole webhook family — it cannot say whether THIS
+	// endpoint's breaker is the open one — and re-testing an endpoint is
+	// exactly what a staffer does during a delivery outage. Same call the web
+	// makes on WebhookDetailPage; the two device/billing gates above it
+	// disable, this one only tells you what to expect.
+	if notice := serviceUnavailableLine(s.deps.Health, omsapi.ServiceKeyWebhooks, webhookDeliveryDegraded); notice != "" {
+		b.WriteString(notice)
+	}
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d webhooks", len(s.rows))) + "\n")
 	if s.windowStart > 0 {
 		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
@@ -901,7 +910,14 @@ func (s *WebhookListScreen) viewConfirmTest() string {
 	if s.testing {
 		return StyleMuted.Render("Sending test delivery…")
 	}
-	return StyleStatusWarn.Render(fmt.Sprintf("Send a test delivery to %q now?  y send · n/esc cancel", name))
+	prompt := StyleStatusWarn.Render(fmt.Sprintf("Send a test delivery to %q now?  y send · n/esc cancel", name))
+	// The confirm is the last thing between the operator and the request, so
+	// the "this may fail or be retried" caveat belongs here too — still a
+	// warning, still not a block.
+	if notice := serviceUnavailableNotice(s.deps.Health, omsapi.ServiceKeyWebhooks, webhookDeliveryDegraded); notice != "" {
+		return notice + "\n\n" + prompt
+	}
+	return prompt
 }
 
 func (s *WebhookListScreen) viewTestResult() string {

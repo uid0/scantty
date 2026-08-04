@@ -11,7 +11,26 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/forgekeyapi"
+	"github.com/uid0/scantty/internal/omsapi"
 )
+
+// deviceCommandKeys are the keys on this screen that end in an MQTT publish.
+// forgekey's device_commands service routes every one of them through the
+// backend's "mqtt" circuit breaker, so one open breaker takes the whole set out
+// — a press could only buy a broker timeout. Mirrors the web
+// ForgeKeyDeviceDetailPage / DeviceControlsCard, which grey out exactly these.
+//
+// E (edit) and x (delete) are database writes and are deliberately NOT here:
+// they keep working through an outage, the same call the web makes for Unbind.
+func isDeviceCommandKey(key string) bool {
+	switch key {
+	case "e", "d", "s", "i", "p", "b", "R", // enable/disable/status/identify/ping/blink/restart
+		"1", "2", "!", "@", // per-channel power relay
+		"t": // indicator test — the submit publishes, so the form is gated shut
+		return true
+	}
+	return false
+}
 
 // fkDetailMode selects the device-detail overlay. fkDetailView is the normal
 // read-only body; fkDetailIndicatorTest is the send-a-preview form, which
@@ -232,6 +251,12 @@ func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		fk := s.deps.ForgeKey
 		id := fmt.Sprint(s.device.ID)
+		// Gate every command on the capability it needs. Nothing is taken away
+		// on an unknown status — IsDegraded is false unless the backend
+		// positively reports the breaker open/half-open.
+		if isDeviceCommandKey(m.String()) && s.deviceControlDown() {
+			return s, Status(deviceControlUnavailable+" — command not sent", StatusWarn)
+		}
 		switch m.String() {
 		case "r":
 			s.loading = true
@@ -295,6 +320,12 @@ func (s *ForgeKeyDeviceDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 	}
 	return s, nil
+}
+
+// deviceControlDown reports whether the MQTT breaker is open — i.e. whether a
+// command sent from this screen could reach the hardware at all.
+func (s *ForgeKeyDeviceDetailScreen) deviceControlDown() bool {
+	return s.deps.Health.IsDegraded(omsapi.ServiceKeyDeviceControl)
 }
 
 func runFKCmd(label string, fn func() error) tea.Cmd {
@@ -507,6 +538,12 @@ func wrapIdx(i, n int) int {
 // pattern always, color unless the pattern is "off", and period_ms only for a
 // blink pattern.
 func (s *ForgeKeyDeviceDetailScreen) submitIndicatorTest() (Screen, tea.Cmd) {
+	// Re-check at submit, not just at open: the breaker can trip while the form
+	// is up, and a test push is a device command like any other.
+	if s.deviceControlDown() {
+		s.itErr = deviceControlUnavailable
+		return s, nil
+	}
 	pattern := indicatorPatterns[s.itPatternIdx]
 	req := forgekeyapi.IndicatorTestRequest{
 		Brightness: indicatorBrightness[s.itBrightnessIdx],
@@ -570,6 +607,12 @@ func (s *ForgeKeyDeviceDetailScreen) renderIndicatorTest() string {
 
 	if s.itErr != "" {
 		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.itErr) + "\n")
+	}
+	// The form is gated shut at 't', so this only shows when the breaker tripped
+	// while it was already open — which is exactly when the operator needs to be
+	// told before pressing enter into a timeout.
+	if notice := serviceUnavailableNotice(s.deps.Health, omsapi.ServiceKeyDeviceControl, deviceControlUnavailable); notice != "" {
+		b.WriteString("\n" + notice + "\n")
 	}
 	if s.itPending {
 		b.WriteString("\n" + StyleMuted.Render("Sending…"))
@@ -728,6 +771,17 @@ func (s *ForgeKeyDeviceDetailScreen) View() string {
 
 	if s.actionMsg != "" {
 		b.WriteString(StyleMuted.Render(s.actionMsg) + "\n\n")
+	}
+
+	// Inline gate. The notice sits where the keypress would have been, not only
+	// in the status bar, and the command keys come OFF the hint line while they
+	// cannot work — a terminal's equivalent of the web greying the buttons out.
+	// The record actions (E edit, x delete) are database writes and stay.
+	if s.deviceControlDown() {
+		b.WriteString(serviceUnavailableNotice(s.deps.Health, omsapi.ServiceKeyDeviceControl, deviceControlUnavailable) + "\n")
+		b.WriteString(StyleMuted.Render("Device commands are unavailable until the broker is reachable; we keep retrying.") + "\n\n")
+		b.WriteString(StyleMuted.Render("E edit · x delete · r refresh · esc back"))
+		return b.String()
 	}
 
 	help := "E edit · x delete · e enable · d disable · s status · i identify · p ping · b blink · R restart · r refresh · esc back"
