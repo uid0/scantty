@@ -788,13 +788,12 @@ func TestJDESweepD_SlotCodeIsARowOfTheSheet(t *testing.T) {
 	if !strings.Contains(out, "save allocates an AprilTag") {
 		t.Errorf("a create should say the save allocates a marker:\n%s", out)
 	}
-	// It is not navigable: every cursor position is one of the real fields.
+	// It is not navigable: the body has exactly as many navigable rows as the
+	// sheet has fields, so the cursor can never land on the Code row.
 	body := s.formLines()
-	for row := 0; row < len(s.fields); row++ {
-		first, _ := body.block(row)
-		if first == 0 {
-			t.Errorf("row %d resolved to the top of the body — is the Code row navigable?", row)
-		}
+	if got := body.rowsIn(0, body.Len()); got != len(s.fields) {
+		t.Errorf("the body has %d navigable rows but the sheet has %d fields — "+
+			"the derived Code row must not be one of them", got, len(s.fields))
 	}
 	// An EDIT says what changing a component costs instead.
 	e := NewStorageSlotFormScreen(Deps{}, "1A1")
