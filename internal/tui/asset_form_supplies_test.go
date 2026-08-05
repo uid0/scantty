@@ -294,6 +294,58 @@ func TestAssetSupplies_RowsFitTheBody(t *testing.T) {
 	}
 }
 
+// TestAssetSupplies_TheGridColumnsLineUp is what makes it a grid rather than
+// three ragged lines: an item cell that overflowed its width would shove the
+// quantity and role right on that row alone, which is the defect a printed
+// parts list never has.
+func TestAssetSupplies_TheGridColumnsLineUp(t *testing.T) {
+	s := assetSheetWithParts(t, assetTestParts())
+	s.cursor = len(s.fields)
+	s.syncFocus()
+
+	header, rows := "", []string(nil)
+	for _, line := range strings.Split(s.View(), "\n") {
+		if header == "" {
+			// Only lines BELOW the column header are grid rows — "required" is
+			// also the Name field's hint, higher up the same sheet.
+			if strings.Contains(line, "Qty") && strings.Contains(line, "Role") {
+				header = line
+			}
+			continue
+		}
+		if strings.Contains(line, "required") || strings.Contains(line, "optional") {
+			rows = append(rows, line)
+		}
+	}
+	if header == "" || len(rows) != 3 {
+		t.Fatalf("expected a column header and 3 grid rows, got header=%q and %d rows:\n%s",
+			header, len(rows), s.View())
+	}
+
+	// In DISPLAY columns, not bytes: an ellipsised name carries a 3-byte "…"
+	// that occupies one column, so byte offsets would report a ragged grid that
+	// is in fact perfectly aligned (the same trap sc-k5kc hit measuring bold).
+	column := func(line, sub string) int {
+		at := strings.Index(line, sub)
+		if at < 0 {
+			return -1
+		}
+		return lipgloss.Width(line[:at])
+	}
+
+	want := column(header, "Role")
+	for _, line := range rows {
+		at := column(line, "required")
+		if at < 0 {
+			at = column(line, "optional")
+		}
+		if at != want {
+			t.Errorf("the Role column is at %d here but %d in the header — the grid is ragged: %q",
+				at, want, line)
+		}
+	}
+}
+
 // TestAssetSupplies_TheLeaderColumnIsTheFieldsAlone. The band is a detail grid,
 // not more fields: it hangs off no leader, and a part name — which can be far
 // longer than any label — must not shove every input area on the sheet right.
