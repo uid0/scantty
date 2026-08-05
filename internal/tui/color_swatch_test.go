@@ -46,6 +46,11 @@ var swatchColorCases = []struct {
 	{"#Ff5733", true, "mixed case is the same colour"},
 	{"#FF57333", false, "one digit too many"},
 	{"FF5733", false, "no hash — not a hex code"},
+	// A no-hash string of a LEGAL length is the case the length check cannot
+	// catch on its own; without the prefix test it would reach lipgloss, which
+	// cannot parse it and would hand back a colourless dot.
+	{"FF57333", false, "seven characters, still no hash"},
+	{"FF57", false, "four characters, still no hash"},
 	{"#GG5733", false, "not hex digits"},
 	{"#12 456", false, "a space is not a hex digit"},
 	{"red", false, "a colour NAME is not what this field stores"},
@@ -152,8 +157,9 @@ func TestIndicatorSwatch_KeepsItsOwnContract(t *testing.T) {
 	if !strings.Contains(green, "47;158;68") {
 		t.Errorf("a palette name should carry its hex, got %q", green)
 	}
-	if !strings.HasSuffix(green, swatchGlyph+" ") && !strings.HasSuffix(green, " ") {
-		t.Errorf("the indicator swatch must keep its trailing separator, got %q", green)
+	if want := hexSwatch(indicatorSwatchHex["green"]) + " "; green != want {
+		t.Errorf("a palette name should be the shared helper plus its trailing separator:\n got %q\n"+
+			"want %q", green, want)
 	}
 	for _, in := range []string{"chartreuse", "#zzzzzz", "#12"} {
 		if got := indicatorSwatch(in); got != swatchGlyph+" " {
@@ -209,8 +215,8 @@ func TestJDEField_SwatchIsAppendedOutsideEverythingElse(t *testing.T) {
 		t.Errorf("the hint span is broken: %q", row)
 	}
 	if strings.Index(row, withSwatch.Swatch) < strings.Index(row, StyleJDEHint.Render(bare.Hint)) {
-		t.Errorf("the swatch is drawn before the hint — it must trail, so a row that loses its "+
-			"swatch mid-type does not slide its hint: %q", row)
+		t.Errorf("the swatch is drawn before the hint — it has to come after the hint's closing "+
+			"reset, which is the only place on the row outside every styled span: %q", row)
 	}
 }
 
