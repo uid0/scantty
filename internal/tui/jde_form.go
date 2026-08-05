@@ -38,6 +38,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -203,6 +204,21 @@ func jdeInputValue(ti textinput.Model, focused bool) string {
 	if focused || (ti.Value() == "" && ti.Placeholder != "") {
 		return ti.View()
 	}
+	return jdeEchoValue(ti)
+}
+
+// jdeEchoValue is a blurred box's value as it is allowed to be SEEN. View()
+// applies the box's echo mode itself, so only this path has to: a masked field
+// that gave up its mask the moment the cursor moved off it would print the
+// secret on screen — the webhook sheet's HMAC secret is the first of these
+// (sc-lmsi).
+func jdeEchoValue(ti textinput.Model) string {
+	switch ti.EchoMode {
+	case textinput.EchoPassword:
+		return strings.Repeat(string(ti.EchoCharacter), utf8.RuneCountInString(ti.Value()))
+	case textinput.EchoNone:
+		return ""
+	}
 	return ti.Value()
 }
 
@@ -242,6 +258,67 @@ func jdeStripWidth(bodyWidth, labelWidth int) int {
 		return w
 	}
 	return 0
+}
+
+// jdeNoteLines is a standing note as the dimmed lines drawn UNDER the field row
+// it is about, indented to line up with the input area above them.
+//
+// It is the fold for a note too long to ride as a Hint. The two alternatives
+// both lose: clampToBox TRUNCATES an over-wide row rather than wrapping it, so
+// an oversized hint is silently cut (sc-ye0i), and a footer under the whole
+// sheet is a note nobody ties to a field (sc-6qsk). bodyWidth of 0 means the
+// pane's width is not known yet, which — as everywhere else in this file —
+// means "do not truncate", so the note stays on one line.
+func jdeNoteLines(note string, labelWidth, bodyWidth int) []string {
+	wrapped := jdeWrapNote(note, jdeStripWidth(bodyWidth, labelWidth))
+	out := make([]string, 0, len(wrapped))
+	for _, line := range wrapped {
+		out = append(out, jdeStripIndent(labelWidth)+StyleMuted.Render(line))
+	}
+	return out
+}
+
+// jdeWrapNote greedily wraps on spaces. A single word too long for the width —
+// a media URL, a JSON snippet — is ELLIPSISED rather than left to run on:
+// clampToBox would cut it at the pane edge with nothing to say it had, and a
+// value the operator cannot tell is truncated is worse than one they can.
+func jdeWrapNote(note string, width int) []string {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return nil
+	}
+	if width <= 0 {
+		return []string{note}
+	}
+	var out []string
+	line := ""
+	flush := func() {
+		if line != "" {
+			out = append(out, line)
+			line = ""
+		}
+	}
+	for _, word := range strings.Fields(note) {
+		if lipgloss.Width(word) > width {
+			flush()
+			if width < 2 {
+				continue
+			}
+			out = append(out, truncateVisible(word, width-1)+"…")
+			continue
+		}
+		switch {
+		case line == "":
+			line = word
+		case lipgloss.Width(line)+1+lipgloss.Width(word) <= width:
+			line += " " + word
+		default:
+			flush()
+			line = word
+		}
+	}
+	flush()
+	return out
 }
 
 // jdeOptionStrip lists a choice row's whole option set with the current one

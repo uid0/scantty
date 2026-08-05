@@ -18,6 +18,12 @@
 // The write path is superuser-only on the backend. SettingsScreen only offers
 // the `E` edit affordance to superusers, but the form still surfaces a clean 403
 // if permissions changed between load and save.
+//
+// The sheet renders through the columnar "JD Edwards" layer (jde_form.go) as of
+// sc-lmsi, sweep E of the sc-h412 redesign: right-aligned labels in one column,
+// band headings over sixteen fields, what is currently stored for each image as
+// a note under the row that replaces it, and a persistent action bar naming
+// exactly the keys that apply.
 package tui
 
 import (
@@ -71,7 +77,59 @@ var ssFieldLabel = map[int]string{
 	ssDashboardTitle:    "Dashboard title",
 	ssDashboardSubtitle: "Dashboard subtitle",
 	ssShowLogo:          "Show logo on dashboard",
-	ssPmAutoBundle:      "PM auto-bundle window (days)",
+	// "(days)" is the unit, not the name: at 28 columns the old label was past
+	// jdeLabelMaxWidth and would have been TRUNCATED into the shared column
+	// (sc-ye0i's parenthetical rule, with teeth).
+	ssPmAutoBundle: "PM auto-bundle window",
+}
+
+// ssLabelWidth is this sheet's own label column. Site settings is a singleton
+// opened from Settings and returns there — it is never on screen beside another
+// converted sheet, so there is no family to share a column with (the storage
+// batch's rule, sc-6qsk).
+var ssLabelWidth = jdeLabelWidth(jdeLabelFields(ssFieldLabel))
+
+// ssFieldHint carries the units, the formats and what is REQUIRED — everything
+// the placeholders used to say from inside the input area, where they left no
+// underscores and so made an empty row stop reading as empty (sc-dnhx). The two
+// hex defaults are kept as placeholders instead: they show a DEFAULT, which is
+// the one thing a placeholder is still good for.
+var ssFieldHint = map[int]string{
+	ssName:           "required",
+	ssLogoPath:       "absolute path",
+	ssFaviconPath:    "absolute path",
+	ssRemoveLogo:     "deletes the stored logo",
+	ssPrimaryColor:   "#RRGGBB",
+	ssSecondaryColor: "#RRGGBB",
+	ssWebsiteURL:     "https://…",
+	ssPmAutoBundle:   "days · 0 disables",
+}
+
+// ssBandHeading starts a band at the field that leads it. Sixteen fields in one
+// undivided run is a wall (sc-dnhx); the bands have to be CONTIGUOUS in
+// buildFields order, which they are — the sheet already ran identity, then
+// branding, then contact, then the dashboard.
+var ssBandHeading = map[int]string{
+	ssName:           "Site",
+	ssLogoAlt:        "Branding",
+	ssFooterText:     "Footer & contact",
+	ssDashboardTitle: "Dashboard",
+	ssPmAutoBundle:   "Maintenance",
+}
+
+// ssFieldWidth sizes the input areas that are not the default.
+func ssFieldWidth(id int) int {
+	switch id {
+	case ssPrimaryColor, ssSecondaryColor:
+		return 9
+	case ssPmAutoBundle:
+		return 6
+	case ssLogoPath, ssFaviconPath:
+		return 28
+	case ssTagline, ssFooterText, ssDashboardSubtitle:
+		return 40
+	}
+	return 30
 }
 
 // ssKind reuses the shared asset field-kind enum: the two booleans are toggles,
@@ -106,7 +164,7 @@ type SiteSettingsFormScreen struct {
 	fields []int
 	cursor int
 
-	terminalHeight int
+	jdeScreen
 }
 
 type siteSettingsFormLoadedMsg struct {
@@ -162,21 +220,15 @@ func ssCharLimit(id int) int {
 	return 200
 }
 
+// ssPlaceholder is down to the two colors: a placeholder earns its place only
+// when it shows a DEFAULT the operator would otherwise have to know (sc-dnhx).
+// Everything else moved to ssFieldHint, after the input area.
 func ssPlaceholder(id int) string {
 	switch id {
-	case ssName:
-		return "Makerspace name"
-	case ssTagline, ssLogoAlt, ssFooterText, ssContactEmail, ssContactPhone,
-		ssWebsiteURL, ssDashboardTitle, ssDashboardSubtitle:
-		return "optional"
 	case ssPrimaryColor:
 		return "#007cba"
 	case ssSecondaryColor:
 		return "#417690"
-	case ssLogoPath, ssFaviconPath:
-		return "absolute path (blank = keep current)"
-	case ssPmAutoBundle:
-		return "0 disables"
 	}
 	return ""
 }
@@ -207,7 +259,7 @@ func (s *SiteSettingsFormScreen) loadSettings() tea.Cmd {
 func (s *SiteSettingsFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case siteSettingsFormLoadedMsg:
 		s.loading = false
@@ -315,6 +367,8 @@ func (s *SiteSettingsFormScreen) syncFocus() {
 }
 
 func (s *SiteSettingsFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -323,6 +377,12 @@ func (s *SiteSettingsFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 		return s, textinput.Blink
 	case "shift+tab", "up":
 		s.moveCursor(-1)
+		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
 		return s, textinput.Blink
 	case "enter":
 		if s.saving {
@@ -336,7 +396,10 @@ func (s *SiteSettingsFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 		return s, nil
 	}
 	if ssKind(id) == akToggle {
-		if m.String() == " " {
+		// A toggle is a two-value choice row, so it flips on the same ←/→ every
+		// other bounded set takes (space stays as the pilot's synonym).
+		switch m.String() {
+		case " ", "left", "right":
 			switch id {
 			case ssRemoveLogo:
 				s.removeLogo = !s.removeLogo
@@ -357,6 +420,17 @@ func (s *SiteSettingsFormScreen) moveCursor(delta int) {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place. This is the
+// longest sheet in the batch, so it is the one that needs it.
+func (s *SiteSettingsFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -488,29 +562,95 @@ func (s *SiteSettingsFormScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("esc to go back")
 	}
 
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n")
-	b.WriteString(StyleMuted.Render("current logo: "+s.currentImageLabel(true)+"  ·  favicon: "+s.currentImageLabel(false)) + "\n\n")
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+}
 
-	visible := s.visibleRows()
-	start, end := fieldWindow(s.cursor, len(s.fields), visible)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
+// formFields describes the sheet as columnar rows: two toggles as bounded sets,
+// and the rest — including the two image PATHS and the two hex colors — typed
+// into.
+func (s *SiteSettingsFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   ssFieldLabel[id],
+			Width:   ssFieldWidth(id),
+			Hint:    ssFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		if ssKind(id) == akToggle {
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.toggleState(id))
+		} else {
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	for i := start; i < end; i++ {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	if end < len(s.fields) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.fields)-end)) + "\n")
-	}
+	return out
+}
 
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
+// toggleState is a bool row's current value.
+func (s *SiteSettingsFormScreen) toggleState(id int) bool {
+	if id == ssRemoveLogo {
+		return s.removeLogo
 	}
-	return b.String()
+	return s.showLogo
+}
+
+func (s *SiteSettingsFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	for i, id := range s.fields {
+		if heading, ok := ssBandHeading[id]; ok {
+			if i > 0 {
+				l.Add("")
+			}
+			l.Add(StyleJDEHeading.Render(heading))
+		}
+		l.AddRow(i, renderJDEField(fields[i], ssLabelWidth))
+		// What is on file for an image belongs UNDER the row that replaces it —
+		// it was a header line above the whole sheet, which is the one place an
+		// operator deciding whether to remove the logo would not look (sc-6qsk).
+		if note := s.imageNote(id); note != "" {
+			for _, line := range jdeNoteLines(note, ssLabelWidth, s.bodyWidth()) {
+				l.AddRow(i, line)
+			}
+		}
+	}
+	return l
+}
+
+// imageNote is what is currently stored for an image row, or "" for every other
+// row. It leads with what a BLANK path does, because that is the question an
+// operator looking at an empty upload field is actually asking — and it is the
+// half a long URL's wrap can never push off the end.
+func (s *SiteSettingsFormScreen) imageNote(id int) string {
+	switch id {
+	case ssLogoPath:
+		if !s.hasLogo() {
+			return "no logo set yet"
+		}
+		return "blank keeps the current logo: " + s.currentImageLabel(true)
+	case ssFaviconPath:
+		if s.settings == nil || s.settings.FaviconURL == nil || strings.TrimSpace(*s.settings.FaviconURL) == "" {
+			return "no favicon set yet"
+		}
+		return "blank keeps the current favicon: " + s.currentImageLabel(false)
+	}
+	return ""
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here. Nothing on this
+// sheet OPENS, so Ctrl-E is never offered.
+func (s *SiteSettingsFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok && ssKind(id) == akToggle {
+		items = append(items, actionBarItem{"←→", "Change"})
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
 }
 
 func (s *SiteSettingsFormScreen) currentImageLabel(logo bool) string {
@@ -525,42 +665,4 @@ func (s *SiteSettingsFormScreen) currentImageLabel(logo bool) string {
 		return "(none)"
 	}
 	return *url
-}
-
-func (s *SiteSettingsFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
-	}
-	label := ssFieldLabel[id]
-	var value string
-	switch ssKind(id) {
-	case akToggle:
-		on := s.showLogo
-		if id == ssRemoveLogo {
-			on = s.removeLogo
-		}
-		value = elecToggleLabel(on)
-	default:
-		value = s.inputs[id].View()
-	}
-	return caret + StyleTitle.Render(label+": ") + value
-}
-
-func (s *SiteSettingsFormScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok && ssKind(id) == akToggle {
-		kindHelp = "space toggle"
-	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
-}
-
-func (s *SiteSettingsFormScreen) visibleRows() int {
-	const chrome = 7
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
-	}
-	return avail
 }
