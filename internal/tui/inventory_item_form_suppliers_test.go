@@ -106,6 +106,23 @@ func TestItemSuppliers_TheSheetListsWhoSellsTheItem(t *testing.T) {
 			t.Errorf("the suppliers band should show %q:\n%s", want, out)
 		}
 	}
+
+	// The mark is on the PREFERRED link and only there — "somewhere on the sheet"
+	// is not the claim. Read per row, since a star on the wrong row still puts
+	// the string in the view.
+	sups := itemTestSuppliers()
+	if !strings.Contains(itemSupplierCell(sups[0], 40), "★ Acme") {
+		t.Errorf("the preferred link should be starred in the grid: %q", itemSupplierCell(sups[0], 40))
+	}
+	if strings.Contains(itemSupplierCell(sups[1], 40), "★") {
+		t.Errorf("a link that is not primary must not be starred: %q", itemSupplierCell(sups[1], 40))
+	}
+	if got := strings.Join(s.supplierMetaLines(sups[0]), " "); !strings.Contains(got, "★ primary") {
+		t.Errorf("link 1's readings should say it is primary: %q", got)
+	}
+	if got := strings.Join(s.supplierMetaLines(sups[1]), " "); strings.Contains(got, "primary") {
+		t.Errorf("link 2 is not primary: %q", got)
+	}
 }
 
 // TestItemSuppliers_FractionalCentsSurvive. Rounded to cents the three suppliers
@@ -176,6 +193,15 @@ func TestItemSuppliers_AMissingCostIsNotSubstituted(t *testing.T) {
 	joined := strings.Join(s.supplierMetaLines(sup), "\n")
 	if !strings.Contains(joined, "$0.0395/unit") {
 		t.Errorf("the cost it DOES carry should still be shown:\n%s", joined)
+	}
+
+	// Same rule for a lead time nobody recorded: an absent average_lead_time is
+	// zero on the wire, and "0d" would read as a same-day promise.
+	if got := itemSupplierLeadCell(omsapi.ItemSupplier{}); got != "—" {
+		t.Errorf("an unrecorded lead time should read as absent, got %q", got)
+	}
+	if got := itemSupplierLeadCell(omsapi.ItemSupplier{LeadTimeDays: 14.5}); got != "14.5d" {
+		t.Errorf("a recorded lead time reads in days, got %q", got)
 	}
 }
 
