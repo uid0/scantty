@@ -13,6 +13,11 @@
 // anything about electricity — sweep D needed both for the storage family, so
 // they moved into the layer as jdeLabelFields / jdeClampPick rather than being
 // copied a second time (sc-6qsk).
+//
+// elecVisibleRows and elecFieldHelp are gone as of sc-lmsi (sweep E): both sized
+// and captioned the PRE-redesign body, and the last screens still calling them —
+// the webhook and site-settings sheets — are on the layer now. A columnar screen
+// gets its height from jdeScreen and its captions from the action bar.
 package tui
 
 // elecLabelWidth is the ONE label column shared by all five electrical forms,
@@ -33,17 +38,6 @@ var elecLabelWidth = jdeLabelWidth(
 	jdeLabelFields(outletFieldLabel),
 	jdeLabelFields(disconnectFieldLabel),
 )
-
-// elecVisibleRows returns how many field rows fit the current terminal height,
-// reserving chrome for the help line, scroll indicators, spacing and status.
-func elecVisibleRows(terminalHeight int) int {
-	const chrome = 6
-	avail := screenBodyHeight(terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
-	}
-	return avail
-}
 
 // indexOfField returns the slice index of field id in a visible-field list, or
 // -1. Used by the breaker form's rebuildFields to keep the cursor anchored on
@@ -69,23 +63,4 @@ func elecSelectLabel(opts []selectOption, idx int) string {
 		return "‹ " + opts[idx].label + " ›"
 	}
 	return ""
-}
-
-// elecFieldHelp builds the top help line, tailoring the leading verb to the
-// focused field's kind.
-func elecFieldHelp(kindOf func(int) assetFieldKind, current func() (int, bool)) string {
-	kindHelp := "type to edit"
-	if id, ok := current(); ok {
-		switch kindOf(id) {
-		case akToggle:
-			kindHelp = "space toggle"
-		case akSelect:
-			kindHelp = "space/←→ change"
-		case akPicker:
-			kindHelp = "space to pick"
-		case akMultiPicker:
-			kindHelp = "space to choose"
-		}
-	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
 }

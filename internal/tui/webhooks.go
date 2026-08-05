@@ -16,6 +16,12 @@
 // current secret"), matching the web. There is NO regenerate-secret action on the
 // backend — rotation is a plain secret write.
 //
+// WebhookFormScreen renders through the columnar "JD Edwards" layer
+// (jde_form.go) as of sc-lmsi, sweep E of the sc-h412 redesign: right-aligned
+// labels in one column, the event type as a "< value >" set with its options
+// strip, and a persistent action bar naming exactly the keys that apply. The
+// list below is a browse surface, not a form, and is untouched by that sweep.
+//
 // WebhookListScreen is reached with the global `W` hotkey (app.go), riding the
 // same "uppercase letter = open a surface" convention as G (categories) / V
 // (vendors) / B (maker boxes). n new, E/enter edit, x delete, t test-delivery,
@@ -78,8 +84,47 @@ var webhookFieldLabel = map[int]string{
 	whURL:         "Webhook URL",
 	whEventType:   "Event type",
 	whIsActive:    "Active",
-	whSecret:      "Secret (HMAC)",
-	whHeaders:     "Custom headers",
+	// "(HMAC)" is not part of the label: a parenthetical widens the column every
+	// row is aligned to and shoves every input area right (sc-ye0i). It says what
+	// the secret is FOR, which is a hint.
+	whSecret:  "Secret",
+	whHeaders: "Custom headers",
+}
+
+// webhookLabelWidth is this sheet's own label column. The webhook form is
+// opened from the webhook list and returns to it — it is never on screen beside
+// another converted sheet, so there is no family to share a column with (the
+// storage batch's rule, sc-6qsk).
+var webhookLabelWidth = jdeLabelWidth(jdeLabelFields(webhookFieldLabel))
+
+// webhookFieldHint carries what the placeholders and the label parenthetical
+// used to say. A placeholder long enough to fill the input area leaves no
+// underscores, so an empty green-screen row stops reading as empty (sc-dnhx) —
+// and "optional" on a description is noise in a form that marks what is
+// REQUIRED instead.
+var webhookFieldHint = map[int]string{
+	whName:   "required",
+	whURL:    "required",
+	whSecret: "HMAC · blank keeps current",
+}
+
+// webhookHeadersNote is the headers example, which is far too long to ride as a
+// Hint on the row (the pane would clip it), so it sits as a note under it. It is
+// worded exactly like parseWebhookHeaders' rejection message, so the sheet and
+// the error the operator gets for guessing wrong say the same thing.
+const webhookHeadersNote = `JSON object of string values, e.g. {"X-Key": "value"}`
+
+// webhookFieldWidth sizes the input areas that are not the default.
+func webhookFieldWidth(id int) int {
+	switch id {
+	case whURL, whHeaders:
+		return 40
+	case whName, whDescription:
+		return 34
+	case whSecret:
+		return 24
+	}
+	return 0
 }
 
 func webhookFieldKind(id int) assetFieldKind {
@@ -106,7 +151,7 @@ type WebhookFormScreen struct {
 
 	webhook *omsapi.Webhook
 
-	terminalHeight int
+	jdeScreen
 
 	inputs       []textinput.Model
 	eventTypeIdx int
@@ -143,7 +188,6 @@ func NewWebhookFormScreen(deps Deps, webhookID int) *WebhookFormScreen {
 		ti := textinput.New()
 		ti.Prompt = ""
 		ti.CharLimit = webhookCharLimit(id)
-		ti.Placeholder = webhookPlaceholder(id)
 		if id == whSecret {
 			// Never echo the secret back on screen (matches the web password input).
 			ti.EchoMode = textinput.EchoPassword
@@ -170,22 +214,6 @@ func webhookCharLimit(id int) int {
 		return 2000
 	}
 	return 200
-}
-
-func webhookPlaceholder(id int) string {
-	switch id {
-	case whName:
-		return "descriptive name"
-	case whURL:
-		return "https://example.com/webhook"
-	case whDescription:
-		return "optional"
-	case whSecret:
-		return "optional — blank keeps current secret"
-	case whHeaders:
-		return `optional JSON, e.g. {"Authorization": "Bearer …"}`
-	}
-	return ""
 }
 
 func (s *WebhookFormScreen) Title() string {
@@ -228,7 +256,7 @@ func (s *WebhookFormScreen) loadRecord() tea.Cmd {
 func (s *WebhookFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case webhookRecordLoadedMsg:
 		s.loading = false
@@ -311,6 +339,8 @@ func (s *WebhookFormScreen) syncFocus() {
 }
 
 func (s *WebhookFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -319,6 +349,12 @@ func (s *WebhookFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 		return s, textinput.Blink
 	case "shift+tab", "up":
 		s.moveCursor(-1)
+		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
 		return s, textinput.Blink
 	case "enter":
 		if s.saving {
@@ -333,7 +369,10 @@ func (s *WebhookFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	}
 	switch webhookFieldKind(id) {
 	case akToggle:
-		if m.String() == " " {
+		// A toggle is a two-value choice row, so it flips on the same ←/→ every
+		// other bounded set takes (space stays as the pilot's synonym).
+		switch m.String() {
+		case " ", "left", "right":
 			s.isActive = !s.isActive
 		}
 		return s, nil
@@ -358,6 +397,16 @@ func (s *WebhookFormScreen) moveCursor(delta int) {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *WebhookFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -472,45 +521,89 @@ func (s *WebhookFormScreen) View() string {
 }
 
 func (s *WebhookFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(elecFieldHelp(webhookFieldKind, s.currentFieldID)) + "\n\n")
-	visible := elecVisibleRows(s.terminalHeight)
-	start, end := fieldWindow(s.cursor, len(s.fields), visible)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	if end < len(s.fields) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.fields)-end)) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *WebhookFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// formFields describes the sheet as columnar rows: one bounded set of event
+// types, one toggle, and the rest typed into.
+func (s *WebhookFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   webhookFieldLabel[id],
+			Width:   webhookFieldWidth(id),
+			Hint:    webhookFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		switch webhookFieldKind(id) {
+		case akToggle:
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.isActive)
+		case akSelect:
+			f.Kind, f.Value = jdeChoice, s.eventTypeValue()
+		default:
+			// The secret is masked whether or not the cursor is on it —
+			// jdeInputValue applies the box's echo mode to a blurred row too.
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	label := webhookFieldLabel[id]
-	var value string
-	switch webhookFieldKind(id) {
-	case akToggle:
-		value = elecToggleLabel(s.isActive)
-	case akSelect:
-		value = elecSelectLabel(webhookEventTypeOptions, s.eventTypeIdx)
-	default:
-		value = s.inputs[id].View()
+	return out
+}
+
+// eventTypeValue is the BARE label between the row's angle brackets — the
+// renderer owns the brackets (sc-0zvi: elecSelectLabel's own "‹ ›" nested a
+// second pair inside them).
+func (s *WebhookFormScreen) eventTypeValue() string {
+	if s.eventTypeIdx >= 0 && s.eventTypeIdx < len(webhookEventTypeOptions) {
+		return webhookEventTypeOptions[s.eventTypeIdx].label
 	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return ""
+}
+
+func (s *WebhookFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Webhook"))
+	for i, id := range s.fields {
+		l.AddRow(i, renderJDEField(fields[i], webhookLabelWidth))
+		switch {
+		case i == s.cursor && id == whEventType:
+			// Twelve event types is more than a "< value >" row can say on its
+			// own, so the focused row lists the set — windowed around the current
+			// entry, which is what keeps the bracketed one on screen.
+			labels := make([]string, len(webhookEventTypeOptions))
+			for j, o := range webhookEventTypeOptions {
+				labels[j] = o.label
+			}
+			strip := jdeOptionStrip(labels, s.eventTypeIdx, jdeStripWidth(s.bodyWidth(), webhookLabelWidth))
+			if strip != "" {
+				l.AddRow(i, jdeStripIndent(webhookLabelWidth)+StyleMuted.Render(strip))
+			}
+		case id == whHeaders:
+			for _, line := range jdeNoteLines(webhookHeadersNote, webhookLabelWidth, s.bodyWidth()) {
+				l.AddRow(i, line)
+			}
+		}
+	}
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here. Nothing on this
+// sheet OPENS, so Ctrl-E is never offered.
+func (s *WebhookFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok {
+		switch webhookFieldKind(id) {
+		case akToggle, akSelect:
+			items = append(items, actionBarItem{"←→", "Change"})
+		}
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
 }
 
 // ===========================================================================

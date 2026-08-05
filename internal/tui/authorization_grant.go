@@ -11,7 +11,12 @@
 // UI never sets it, so — this being access control — it is deliberately omitted).
 //
 // Staff-gated: the caller (AuthorizationsScreen) only opens this for staff, matching
-// the card's isStaff gate. The picker sub-phase mirrors the thermostat form.
+// the card's isStaff gate.
+//
+// The sheet renders through the columnar "JD Edwards" layer (jde_form.go) as of
+// sc-lmsi, sweep E of the sc-h412 redesign: right-aligned labels in one column,
+// a persistent action bar naming exactly the keys that apply, and the shared
+// jdePickList — whose filter is always live — for the two foreign keys.
 package tui
 
 import (
@@ -48,6 +53,30 @@ var authGrantFieldLabel = map[int]string{
 	agNotes: "Notes",
 }
 
+// authGrantLabelWidth is this sheet's own label column. The grant form is
+// opened from the Authorizations list and returns to it; it is never on screen
+// beside another converted sheet, so there is no family to share a column with
+// (the storage batch's rule, sc-6qsk).
+var authGrantLabelWidth = jdeLabelWidth(jdeLabelFields(authGrantFieldLabel))
+
+// authGrantFieldHint marks what is required. Both foreign keys are — the
+// serializer rejects a grant without either — and a columnar sheet says that
+// rather than tagging everything else "(optional)" (sc-dnhx).
+var authGrantFieldHint = map[int]string{
+	agAsset: "required",
+	agUser:  "required",
+}
+
+// authGrantFieldKind classifies the three rows for the bar and the key
+// handling: two foreign keys Ctrl-E opens, and one free-text note.
+func authGrantFieldKind(id int) assetFieldKind {
+	switch id {
+	case agAsset, agUser:
+		return akPicker
+	}
+	return akText
+}
+
 type AuthorizationGrantScreen struct {
 	deps Deps
 
@@ -63,15 +92,15 @@ type AuthorizationGrantScreen struct {
 	assetID    *string
 	userID     *int
 
-	fields         []int
-	cursor         int
-	terminalHeight int
+	fields []int
+	cursor int
+
+	jdeScreen
 
 	phase       authGrantPhase
 	pickField   int
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []assetPickRow
 }
 
@@ -90,7 +119,6 @@ func NewAuthorizationGrantScreen(deps Deps) *AuthorizationGrantScreen {
 	s := &AuthorizationGrantScreen{deps: deps, loading: true}
 	s.notesInput = textinput.New()
 	s.notesInput.Prompt = ""
-	s.notesInput.Placeholder = "optional"
 	s.notesInput.CharLimit = 500
 	s.pickSearch = textinput.New()
 	s.pickSearch.Prompt = ""
@@ -135,7 +163,7 @@ func (s *AuthorizationGrantScreen) loadRefData() tea.Cmd {
 func (s *AuthorizationGrantScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case authGrantRefLoadedMsg:
 		s.loading = false
@@ -198,6 +226,8 @@ func (s *AuthorizationGrantScreen) syncFocus() {
 }
 
 func (s *AuthorizationGrantScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -207,23 +237,34 @@ func (s *AuthorizationGrantScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cm
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS — here, either foreign key.
+		if id, ok := s.currentFieldID(); ok && authGrantFieldKind(id) == akPicker {
+			s.openPicker(id)
+			return s, textinput.Blink
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
 	if !ok {
 		return s, nil
 	}
-	switch id {
-	case agAsset, agUser:
-		if m.String() == " " {
-			s.openPicker(id)
-			return s, textinput.Blink
-		}
+	switch authGrantFieldKind(id) {
+	case akPicker:
+		// A picker row has nothing to type into and no accelerators left: space
+		// used to open it and is now filter text inside the picker itself.
 		return s, nil
 	default:
 		var cmd tea.Cmd
@@ -241,12 +282,23 @@ func (s *AuthorizationGrantScreen) moveCursor(delta int) {
 	s.syncFocus()
 }
 
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *AuthorizationGrantScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.syncFocus()
+}
+
 func (s *AuthorizationGrantScreen) openPicker(field int) {
 	s.phase = authGrantPhasePick
 	s.pickField = field
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyPickFilter()
 	s.pickCursor = 0
 	// Rest the cursor on the current selection so re-opening is a no-op.
@@ -297,45 +349,36 @@ func (s *AuthorizationGrantScreen) applyPickFilter() {
 }
 
 func (s *AuthorizationGrantScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyPickFilter()
-			s.pickCursor = 0
-			return s, nil
-		}
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		s.closePicker()
+	case jdePickCommit:
+		s.commitPick()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
 		s.applyPickFilter()
 		return s, cmd
 	}
-
-	switch m.String() {
-	case "esc":
-		s.phase = authGrantPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case "enter":
-		s.commitPick()
-	}
 	return s, nil
+}
+
+func (s *AuthorizationGrantScreen) movePick(delta int) {
+	s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickOptions))
+}
+
+func (s *AuthorizationGrantScreen) closePicker() {
+	s.phase = authGrantPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func (s *AuthorizationGrantScreen) commitPick() {
@@ -351,11 +394,7 @@ func (s *AuthorizationGrantScreen) commitPick() {
 			}
 		}
 	}
-	s.phase = authGrantPhaseForm
-	s.pickTyping = false
-	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
-	s.syncFocus()
+	s.closePicker()
 }
 
 func (s *AuthorizationGrantScreen) submit() (Screen, tea.Cmd) {
@@ -408,109 +447,118 @@ func (s *AuthorizationGrantScreen) View() string {
 }
 
 func (s *AuthorizationGrantScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Granting…", s.errMsg), s.formBar(body))
 }
 
-func (s *AuthorizationGrantScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok {
-		switch id {
-		case agAsset:
-			kindHelp = "space to pick asset"
-		case agUser:
-			kindHelp = "space to pick member"
+// formFields describes the sheet as columnar rows: the two foreign keys Ctrl-E
+// opens, and the note typed into.
+func (s *AuthorizationGrantScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   authGrantFieldLabel[id],
+			Width:   authGrantFieldWidth(id),
+			Hint:    authGrantFieldHint[id],
+			Focused: i == s.cursor,
 		}
+		switch authGrantFieldKind(id) {
+		case akPicker:
+			value, dim := s.pickerValue(id)
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.notesInput, f.Focused)
+		}
+		out[i] = f
 	}
-	return kindHelp + " · tab/↑↓ move · enter grant · esc cancel"
+	return out
 }
 
-func (s *AuthorizationGrantScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// authGrantFieldWidth sizes the one input area that is not the default.
+func authGrantFieldWidth(id int) int {
+	if id == agNotes {
+		return 40
 	}
-	label := authGrantFieldLabel[id]
-	var value string
+	return 0
+}
+
+func (s *AuthorizationGrantScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Grant access"))
+	l.AddFields(fields, authGrantLabelWidth, 0)
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *AuthorizationGrantScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Grant"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok && authGrantFieldKind(id) == akPicker {
+		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// pickerValue is a foreign-key row's text, and whether it is an empty state
+// rather than a value. It returns PLAIN text with a flag instead of pre-styled
+// muted text, because a focused row has to be able to reverse-video the whole
+// field (sc-h412).
+func (s *AuthorizationGrantScreen) pickerValue(id int) (string, bool) {
 	switch id {
 	case agAsset:
-		value = s.assetLabel()
+		if s.assetID == nil {
+			return "(not set)", true
+		}
+		for _, a := range s.assets {
+			if thermostatAssetKey(a) == *s.assetID {
+				return thermostatAssetLabel(a), false
+			}
+		}
+		return *s.assetID, false
 	case agUser:
-		value = s.userLabel()
-	default:
-		value = s.notesInput.View()
+		if s.userID == nil {
+			return "(not set)", true
+		}
+		for _, u := range s.users {
+			if u.ID == *s.userID {
+				return assetUserLabel(u), false
+			}
+		}
+		return fmt.Sprintf("#%d", *s.userID), false
 	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return "", false
 }
 
-func (s *AuthorizationGrantScreen) assetLabel() string {
-	if s.assetID == nil {
-		return StyleMuted.Render("(required — space to pick)")
+// pickView builds the open picker's pinned header and its option list.
+func (s *AuthorizationGrantScreen) pickView() ([]string, *jdeLines) {
+	title, empty := "Asset", "(no matching assets)"
+	if s.pickField == agUser {
+		title, empty = "Member", "(no matching members)"
 	}
-	for _, a := range s.assets {
-		if thermostatAssetKey(a) == *s.assetID {
-			return thermostatAssetLabel(a)
-		}
-	}
-	return *s.assetID
-}
-
-func (s *AuthorizationGrantScreen) userLabel() string {
-	if s.userID == nil {
-		return StyleMuted.Render("(required — space to pick)")
-	}
-	for _, u := range s.users {
-		if u.ID == *s.userID {
-			return assetUserLabel(u)
-		}
-	}
-	return fmt.Sprintf("#%d", *s.userID)
+	return jdePickList{
+		Title:  title,
+		Note:   "Both are required, so neither list offers a row that clears it.",
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  func(i int) string { return s.pickOptions[i].label },
+		Cursor: s.pickCursor,
+		Empty:  empty,
+	}.render()
 }
 
 func (s *AuthorizationGrantScreen) viewPick() string {
-	var b strings.Builder
-	title := "Pick asset"
-	if s.pickField == agUser {
-		title = "Pick member"
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	b.WriteString(StyleMuted.Render(title+" — j/k move · / filter · enter select · esc back") + "\n\n")
-	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
-	}
-	if len(s.pickOptions) == 0 {
-		b.WriteString(StyleMuted.Render("(no matches)"))
-		return b.String()
-	}
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		caret := "    "
-		if i == s.pickCursor {
-			caret = "  ▸ "
-		}
-		opt := s.pickOptions[i]
-		if i == s.pickCursor {
-			b.WriteString(StyleSidebarItemActive.Render(caret+opt.label) + "\n")
-		} else {
-			b.WriteString(caret + opt.label + "\n")
-		}
-	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }

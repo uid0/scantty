@@ -1,5 +1,11 @@
 // SIG (Special Interest Group) CRUD — list + create/edit form + member drill-in.
 //
+// SIGFormScreen renders through the columnar "JD Edwards" layer (jde_form.go)
+// as of sc-lmsi, sweep E of the sc-h412 redesign: right-aligned labels in one
+// column, a persistent action bar naming exactly the keys that apply, and no
+// letter accelerators. The list below is a browse surface, not a form, and is
+// untouched by that sweep.
+//
 // TUI counterpart to the web SIGDashboard create modal (+ the SIG list). A SIG
 // *is* a Django auth Group; the backend SIGCreateSerializer exposes exactly two
 // writable fields — name (required, unique) and group_email (optional, stored on
@@ -45,6 +51,33 @@ var sigFieldLabel = map[int]string{
 	sigfGroupEmail: "Group email",
 }
 
+// sigLabelWidth is this sheet's own label column. The SIG form is opened from
+// the SIG list and returns to it — it is never on screen beside another
+// converted sheet, so there is no family here to share a column with (the
+// storage batch's rule, sc-6qsk).
+var sigLabelWidth = jdeLabelWidth(jdeLabelFields(sigFieldLabel))
+
+// sigFieldHint is what the placeholders used to say. "SIG name" was a
+// placeholder that showed no DEFAULT, so it only filled the input area and hid
+// the underscores that say a field is empty (sc-dnhx); what is worth keeping is
+// which field is required and the shape of the other.
+var sigFieldHint = map[int]string{
+	sigfName:       "required",
+	sigfGroupEmail: "e.g. sig@example.org",
+}
+
+// sigGroupEmailNote is what the old footer under the sheet said. It is about
+// ONE field, so it belongs under that field rather than under the form
+// (sc-ye0i) — and it is far too long to ride as a Hint, so it wraps as a note.
+const sigGroupEmailNote = "New reorder requests for this SIG are emailed here; blank notifies admins individually."
+
+func sigFieldWidth(id int) int {
+	if id == sigfGroupEmail {
+		return 34
+	}
+	return 30
+}
+
 type SIGFormScreen struct {
 	deps  Deps
 	edit  bool
@@ -57,7 +90,7 @@ type SIGFormScreen struct {
 
 	sig *omsapi.SIG
 
-	terminalHeight int
+	jdeScreen
 
 	inputs []textinput.Model
 	fields []int
@@ -91,7 +124,6 @@ func NewSIGFormScreen(deps Deps, sigID string) *SIGFormScreen {
 		ti := textinput.New()
 		ti.Prompt = ""
 		ti.CharLimit = sigCharLimit(id)
-		ti.Placeholder = sigPlaceholder(id)
 		s.inputs[id] = ti
 	}
 	s.fields = []int{sigfName, sigfGroupEmail}
@@ -107,16 +139,6 @@ func sigCharLimit(id int) int {
 		return 254 // EmailField default max_length
 	}
 	return 150
-}
-
-func sigPlaceholder(id int) string {
-	switch id {
-	case sigfName:
-		return "SIG name"
-	case sigfGroupEmail:
-		return "sig-contact@example.org (optional)"
-	}
-	return ""
 }
 
 func (s *SIGFormScreen) Title() string {
@@ -159,7 +181,7 @@ func (s *SIGFormScreen) loadSIG() tea.Cmd {
 func (s *SIGFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case sigFormLoadedMsg:
 		s.loading = false
@@ -232,6 +254,8 @@ func (s *SIGFormScreen) syncFocus() {
 }
 
 func (s *SIGFormScreen) updateForm(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -240,6 +264,12 @@ func (s *SIGFormScreen) updateForm(m tea.KeyMsg) (Screen, tea.Cmd) {
 		return s, textinput.Blink
 	case "shift+tab", "up":
 		s.moveCursor(-1)
+		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
 		return s, textinput.Blink
 	case "enter":
 		if s.saving {
@@ -262,6 +292,16 @@ func (s *SIGFormScreen) moveCursor(delta int) {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *SIGFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -331,29 +371,54 @@ func (s *SIGFormScreen) View() string {
 	if s.loadErr != "" {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("esc to go back")
 	}
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render("type to edit · tab/↑↓ move · enter save · esc cancel") + "\n\n")
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	} else {
-		b.WriteString(StyleMuted.Render("group email: new reorder requests for this SIG are emailed here; blank notifies admins individually"))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *SIGFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// formFields describes the sheet as columnar rows. A SIG has exactly two
+// writable fields, so every row here is typed into.
+func (s *SIGFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		focused := i == s.cursor
+		out[i] = jdeField{
+			Label:   sigFieldLabel[id],
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.inputs[id], focused),
+			Width:   sigFieldWidth(id),
+			Hint:    sigFieldHint[id],
+			Focused: focused,
+		}
 	}
-	return caret + StyleTitle.Render(sigFieldLabel[id]+": ") + s.inputs[id].View()
+	return out
+}
+
+func (s *SIGFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("SIG"))
+	for i, id := range s.fields {
+		l.AddRow(i, renderJDEField(fields[i], sigLabelWidth))
+		if id == sigfGroupEmail {
+			// Tagged with the row it is about, so the window keeps the note and
+			// the field it explains on screen together.
+			for _, line := range jdeNoteLines(sigGroupEmailNote, sigLabelWidth, s.bodyWidth()) {
+				l.AddRow(i, line)
+			}
+		}
+	}
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here. Every row of
+// this sheet is text, so there is never anything for ←→ or Ctrl-E to do.
+func (s *SIGFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
 }
 
 // ===========================================================================
