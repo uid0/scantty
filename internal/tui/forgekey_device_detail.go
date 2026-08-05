@@ -8,7 +8,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/forgekeyapi"
 	"github.com/uid0/scantty/internal/omsapi"
@@ -423,21 +422,28 @@ var indicatorSwatchHex = map[string]string{
 	"off":    "#212529",
 }
 
-// indicatorSwatch renders a ● dot in the reported colour. Known colour names use
-// the shared hex palette; an explicit #hex passes through; anything else renders
-// an uncoloured dot so an unfamiliar name still shows a swatch.
+// indicatorSwatch renders a ● dot in the reported colour, with the trailing space
+// that separates it from the label beside it. Known colour names use the shared
+// hex palette; an explicit #hex passes through; anything else — an unfamiliar
+// name, a malformed hex the firmware sent — renders an UNCOLOURED dot, because
+// here the dot is also saying "this device reported a colour at all".
+//
+// That is the one place a swatch differs from hexSwatch's contract, which draws
+// nothing rather than a colourless dot: a form field's value is being typed and
+// a half-finished one must not look chosen, whereas a device state has already
+// been reported and only its vocabulary is in doubt.
 func indicatorSwatch(color string) string {
 	if color == "" {
 		return ""
 	}
 	hex, ok := indicatorSwatchHex[strings.ToLower(color)]
 	if !ok {
-		if !strings.HasPrefix(color, "#") {
-			return "● "
-		}
 		hex = color
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("●") + " "
+	if sw := hexSwatch(hex); sw != "" {
+		return sw + " "
+	}
+	return swatchGlyph + " "
 }
 
 // --- Indicator-test form ---------------------------------------------------

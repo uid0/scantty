@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/theme"
@@ -74,6 +76,64 @@ var (
 	StyleActionBarKey  = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	StyleActionBarRule = lipgloss.NewStyle().Foreground(colorBorder)
 )
+
+// swatchGlyph is the filled dot every colour swatch in the app draws. One glyph
+// wide in every terminal, so a row that gains or loses a swatch keeps its
+// columns.
+const swatchGlyph = "●"
+
+// hexSwatch renders swatchGlyph in the colour a hex code names, and "" for
+// anything that is not a colour yet — empty, half-typed ("#FF5"), or not a hex
+// code at all. Nothing is the right answer for those: a blank or black dot
+// beside a half-typed value reads as a colour the operator picked, which is the
+// one thing the swatch exists to tell them apart from.
+//
+// What it renders is what validateHexColor ACCEPTS — both go through
+// normalizeHexColor — so the sample beside a field is showing exactly the value
+// a save would store.
+//
+// On a 256-colour terminal lipgloss quantises the hex, and with no colour at all
+// it drops the sequence and leaves the bare glyph; both are expected, and
+// neither moves a column.
+func hexSwatch(v string) string {
+	hex, ok := normalizeHexColor(v)
+	if !ok {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render(swatchGlyph)
+}
+
+// normalizeHexColor folds a #RGB or #RRGGBB colour — the two forms the backend's
+// max_length=7 colour column holds — to its 6-digit form, reporting whether the
+// string was a colour at all. Case is preserved as typed; the hex digits
+// themselves are case-insensitive to every consumer.
+//
+// Shorthand is EXPANDED rather than handed over as-is. go-colorful parses #RGB
+// today, but expanding here means the swatch cannot start dropping colours
+// because a vendored library changed, and #abc → #aabbcc is the same colour by
+// construction (10/15 and 170/255 are one value).
+func normalizeHexColor(v string) (string, bool) {
+	v = strings.TrimSpace(v)
+	if !strings.HasPrefix(v, "#") || (len(v) != 4 && len(v) != 7) {
+		return "", false
+	}
+	for _, r := range v[1:] {
+		isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+		if !isHex {
+			return "", false
+		}
+	}
+	if len(v) == 7 {
+		return v, true
+	}
+	var b strings.Builder
+	b.WriteByte('#')
+	for i := 1; i < 4; i++ {
+		b.WriteByte(v[i])
+		b.WriteByte(v[i])
+	}
+	return b.String(), true
+}
 
 func RenderStatus(text string, level StatusLevel) string {
 	switch level {

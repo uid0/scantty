@@ -569,19 +569,15 @@ func (s *CategoryFormScreen) buildPayload() (omsapi.CategoryWrite, error) {
 }
 
 // validateHexColor accepts an empty string (no color) or a #RGB / #RRGGBB hex
-// code, matching the model's max_length=7 color column.
+// code, matching the model's max_length=7 color column. It shares
+// normalizeHexColor with hexSwatch so that what a field will SAVE and what it
+// draws a sample of can never come apart.
 func validateHexColor(v string) error {
 	if v == "" {
 		return nil
 	}
-	if !strings.HasPrefix(v, "#") || (len(v) != 4 && len(v) != 7) {
+	if _, ok := normalizeHexColor(v); !ok {
 		return errors.New("color must be a hex code like #FF5733")
-	}
-	for _, r := range v[1:] {
-		isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
-		if !isHex {
-			return errors.New("color must be a hex code like #FF5733")
-		}
 	}
 	return nil
 }
@@ -627,6 +623,11 @@ func (s *CategoryFormScreen) formFields() []jdeField {
 			}
 		} else {
 			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			if id == cfColor {
+				// Live off the input, not off the loaded record: the sample has
+				// to track what is being TYPED, which is the whole point of it.
+				f = jdeColorRow(f, s.inputs[id].Value())
+			}
 		}
 		out[i] = f
 	}
@@ -982,6 +983,14 @@ func (s *CategoryListScreen) renderRow(i int) string {
 	}
 	if i == s.cursor {
 		line = StyleSidebarItemActive.Render(line)
+	}
+	// The sample hangs off the END of the row, after both the muted meta run and
+	// the cursor row's highlight, for the reason the form field's does: it
+	// carries its own colour sequence, and a sequence carries its own reset —
+	// inside either of those spans it would strip the styling off everything
+	// drawn after it (the same trap parentValue documents).
+	if sw := hexSwatch(c.Color); sw != "" {
+		line += " " + sw
 	}
 	return line
 }
