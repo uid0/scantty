@@ -56,7 +56,6 @@ const (
 	assetSupplyNumW  = 2
 	assetSupplyQtyW  = 3
 	assetSupplyRoleW = 8
-	assetSupplySep   = " · "
 )
 
 // assetSupplyContIndent puts a continuation line under the item column, so it
@@ -167,23 +166,6 @@ func assetSupplyGridRow(num, item, qty, role string, itemW int) string {
 	return jdeIndent + strings.TrimRight(strings.Join(cells, "  "), " ")
 }
 
-// fitCell trims a cell to `w` INCLUDING the ellipsis, so an over-long value
-// cannot push the columns to its right out of alignment. truncateOneLine returns
-// n+1 characters for a width of n, which is what makes it wrong here; and it
-// counts runes, where a grid has to count display columns.
-func fitCell(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	if lipgloss.Width(s) <= w {
-		return s
-	}
-	if w == 1 {
-		return "…"
-	}
-	return truncateVisible(s, w-1) + "…"
-}
-
 // supplyItemCell identifies the inventory item in the width the pane allows:
 // "name (sku)", with the NAME giving way when the two do not both fit. That is
 // the right sacrifice — a shortened name still reads, and the SKU is what the
@@ -233,73 +215,23 @@ func supplyRoleCell(p omsapi.AssetPart) string {
 	return "optional"
 }
 
-// supplyToken is one reading of the replacement clock. warn marks the one that
-// is not reference material but a call to act on.
-type supplyToken struct {
-	text string
-	warn bool
-}
-
-func (t supplyToken) render() string {
-	if t.warn {
-		return StyleStatusWarn.Render(t.text)
-	}
-	return StyleMuted.Render(t.text)
-}
-
 // supplyMetaLines is the replacement clock under a supply row, WRAPPED rather
 // than trimmed: the readings run to about 75 columns with a serial recorded, the
 // pane is 51 at an 80-column terminal, and the piece an ellipsis would eat is
-// the last one — which is exactly where "NEEDS REPLACEMENT" sits. Wrapping at
-// the token boundary also keeps the styling honest: each token is rendered whole
-// after the width accounting is done on its plain text, so no line can ever be
-// cut through the middle of an escape sequence.
+// the last one — which is exactly where "NEEDS REPLACEMENT" sits. jdeWrapTokens
+// is the shared layer's fold for that (sc-7wag lifted it out of here when the
+// item sheet's supplier band needed the same thing).
 func (s *AssetFormScreen) supplyMetaLines(p omsapi.AssetPart) []string {
-	tokens := supplyMetaTokens(p)
-	if len(tokens) == 0 {
-		return nil
-	}
-	avail := 0
-	if budget := s.bodyWidth(); budget > 0 {
-		if avail = budget - len(assetSupplyContIndent); avail < 1 {
-			avail = 1
-		}
-	}
-	sepW := lipgloss.Width(assetSupplySep)
-
-	var lines []string
-	line, lineW := "", 0
-	for _, tok := range tokens {
-		if avail > 0 {
-			// Only a single reading longer than the whole line is trimmed, and
-			// then visibly.
-			tok.text = fitCell(tok.text, avail)
-		}
-		w := lipgloss.Width(tok.text)
-		switch {
-		case line == "":
-			line, lineW = tok.render(), w
-		case avail > 0 && lineW+sepW+w > avail:
-			lines = append(lines, assetSupplyContIndent+line)
-			line, lineW = tok.render(), w
-		default:
-			line += StyleMuted.Render(assetSupplySep) + tok.render()
-			lineW += sepW + w
-		}
-	}
-	if line != "" {
-		lines = append(lines, assetSupplyContIndent+line)
-	}
-	return lines
+	return jdeWrapTokens(supplyMetaTokens(p), assetSupplyContIndent, s.bodyWidth())
 }
 
 // supplyMetaTokens is the clock in words. A part with no interval is not on a
 // schedule at all, so it says nothing about never having been replaced — that
 // reading is only meaningful once a clock exists to have not started.
-func supplyMetaTokens(p omsapi.AssetPart) []supplyToken {
-	var meta []supplyToken
+func supplyMetaTokens(p omsapi.AssetPart) []jdeToken {
+	var meta []jdeToken
 	if p.MaintenanceIntervalDays != nil {
-		meta = append(meta, supplyToken{text: fmt.Sprintf("replace every %dd", *p.MaintenanceIntervalDays)})
+		meta = append(meta, jdeToken{text: fmt.Sprintf("replace every %dd", *p.MaintenanceIntervalDays), style: StyleMuted})
 	}
 	switch {
 	case p.LastReplacedAt != nil:
@@ -307,15 +239,16 @@ func supplyMetaTokens(p omsapi.AssetPart) []supplyToken {
 		if p.DaysSinceReplacement != nil {
 			entry += fmt.Sprintf(" (%dd ago)", *p.DaysSinceReplacement)
 		}
-		meta = append(meta, supplyToken{text: entry})
+		meta = append(meta, jdeToken{text: entry, style: StyleMuted})
 	case p.MaintenanceIntervalDays != nil:
-		meta = append(meta, supplyToken{text: "never replaced"})
+		meta = append(meta, jdeToken{text: "never replaced", style: StyleMuted})
 	}
 	if p.ReplacementSerialNumber != "" {
-		meta = append(meta, supplyToken{text: "s/n " + p.ReplacementSerialNumber})
+		meta = append(meta, jdeToken{text: "s/n " + p.ReplacementSerialNumber, style: StyleMuted})
 	}
 	if p.NeedsReplacement {
-		meta = append(meta, supplyToken{text: "NEEDS REPLACEMENT", warn: true})
+		// The one reading that is not reference material but a call to act on.
+		meta = append(meta, jdeToken{text: "NEEDS REPLACEMENT", style: StyleStatusWarn})
 	}
 	return meta
 }
