@@ -144,6 +144,15 @@ func TestItemSuppliers_FractionalCentsSurvive(t *testing.T) {
 	if got := itemSupplierMoney("1234.5000"); got != "$1234.50" {
 		t.Errorf("past ten dollars the fourth decimal carries nothing: %q", got)
 	}
+	// The trim stops at two decimals — "$0.5" is not how money reads, and the
+	// fixture's costs happen to have nothing to trim, so only this says so.
+	for raw, want := range map[omsapi.DecimalString]string{
+		"0.5000": "$0.50", "9.0000": "$9.00", "0.0480": "$0.048", "": "",
+	} {
+		if got := itemSupplierMoney(raw); got != want {
+			t.Errorf("itemSupplierMoney(%q) = %q, want %q", raw, got, want)
+		}
+	}
 }
 
 // TestItemSuppliers_TheCostColumnFollowsTheCountingMode is the bead's "cost
@@ -294,6 +303,15 @@ func TestItemSuppliers_RowsExtendTheCursorPastTheFields(t *testing.T) {
 	if want := s.rowCount() - 1; s.cursor != want {
 		t.Errorf("a rebuild moved the cursor off the last link: %d, want %d", s.cursor, want)
 	}
+
+	// The upper bound is defensive — every path that moves the cursor clamps it
+	// to rowCount() — but a band row is read out of the cursor by SUBTRACTION, so
+	// without it a cursor that ever got past the end would report a row the band
+	// does not have, and the bar would offer a door onto nothing.
+	s.cursor = s.rowCount()
+	if idx, ok := s.onSupplierRow(); ok {
+		t.Errorf("a cursor past the end of the sheet claimed supplier row %d", idx)
+	}
 }
 
 // TestItemSuppliers_TheLastLinkIsReachable is the reason the rows are navigable
@@ -436,9 +454,14 @@ func TestItemSuppliers_TheDoorAsksBeforeDiscardingEdits(t *testing.T) {
 	s.cursor = len(s.fields)
 	s.syncFocus()
 
-	// Clean sheet: nothing to lose, so the door simply opens.
+	// Clean sheet: nothing to lose, so the door simply opens — and until the
+	// question is asked it is nowhere on the sheet. (Asserting only that the
+	// warning APPEARS would pass just as well for a warning that never left.)
 	if s.dirty() {
 		t.Fatalf("a freshly loaded sheet is not dirty")
+	}
+	if strings.Contains(s.View(), "Unsaved edits") {
+		t.Errorf("the sheet warns about discarding nothing:\n%s", s.View())
 	}
 	_, cmd := s.Update(namedKey("ctrl+e"))
 	if resolveSwitch(t, cmd).Screen == nil {
