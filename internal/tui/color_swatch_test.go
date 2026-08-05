@@ -33,7 +33,12 @@ var swatchColorCases = []struct {
 	{"", false, "an empty field has no colour to show"},
 	{"#", false, "the operator has typed the hash and nothing else"},
 	{"#F", false, "half-typed"},
-	{"#FF5", true, "shorthand is a whole colour"},
+	// The bead names "#FF5" as a half-typed value that must not flash — but it
+	// is ALSO the shorthand the same bead requires to swatch, and nothing can
+	// tell a finished #FF5 from the start of #FF5733. The invariant that
+	// survives both readings is the one below: the sample shows exactly what a
+	// save would store, and a save would store #FF5.
+	{"#FF5", true, "shorthand is a whole colour, not a prefix"},
 	{"#FF57", false, "past shorthand, not yet full — the wrong colour if drawn"},
 	{"#FF573", false, "still one digit short"},
 	{"#FF5733", true, "the full form"},
@@ -74,6 +79,23 @@ func TestHexSwatch_DrawsExactlyWhatTheFormWouldSave(t *testing.T) {
 func TestHexSwatch_ShorthandIsTheSameColourAsItsLongForm(t *testing.T) {
 	withColorProfile(t, termenv.TrueColor)
 
+	// The expansion itself, pinned at the contract rather than only through the
+	// swatch: go-colorful happens to parse #RGB today, so the sequences would
+	// match either way — and a defence that only holds while the library keeps
+	// its current behaviour is one nothing is checking.
+	for in, want := range map[string]string{
+		"#abc":     "#aabbcc",
+		"#ABC":     "#AABBCC",
+		"#0aF":     "#00aaFF",
+		"#aabbcc":  "#aabbcc",
+		" #abc   ": "#aabbcc",
+	} {
+		got, ok := normalizeHexColor(in)
+		if !ok || got != want {
+			t.Errorf("normalizeHexColor(%q) = %q, %v; want %q, true", in, got, ok, want)
+		}
+	}
+
 	long := hexSwatch("#aabbcc")
 	for _, in := range []string{"#abc", "#ABC", "#AABBCC", "#aaBBcc"} {
 		if got := hexSwatch(in); got != long {
@@ -88,28 +110,30 @@ func TestHexSwatch_ShorthandIsTheSameColourAsItsLongForm(t *testing.T) {
 	}
 }
 
-// TestHexSwatch_KeepsOneColumnWithoutColour: on a terminal with no colour
-// lipgloss drops the sequence and leaves the bare glyph. That is the expected
-// degradation — but the row around it must not move, so the swatch has to stay
-// exactly one column wide with the escapes and without them.
-func TestHexSwatch_KeepsOneColumnWithoutColour(t *testing.T) {
+// TestHexSwatch_KeepsOneColumnOnEveryProfile: a 256-colour terminal quantises
+// the hex and NO_COLOR drops the sequence entirely, leaving the bare glyph.
+// Both are the expected degradation — but the row around it must not move, so
+// the swatch stays exactly one column wide with the escapes and without them.
+func TestHexSwatch_KeepsOneColumnOnEveryProfile(t *testing.T) {
 	withColorProfile(t, termenv.Ascii)
 	plain := hexSwatch("#FF5733")
 	if plain != swatchGlyph {
 		t.Errorf("with no colour profile the swatch = %q, want the bare glyph %q", plain, swatchGlyph)
 	}
 
-	withColorProfile(t, termenv.TrueColor)
-	coloured := hexSwatch("#FF5733")
-	if coloured == plain {
-		t.Fatalf("the coloured swatch carries no sequence: %q", coloured)
-	}
-	if lipgloss.Width(coloured) != lipgloss.Width(plain) {
-		t.Errorf("swatch width = %d coloured, %d plain — a row would shift between terminals",
-			lipgloss.Width(coloured), lipgloss.Width(plain))
+	for _, p := range []termenv.Profile{termenv.ANSI, termenv.ANSI256, termenv.TrueColor} {
+		withColorProfile(t, p)
+		coloured := hexSwatch("#FF5733")
+		if coloured == plain {
+			t.Errorf("profile %v: the swatch carries no sequence at all: %q", p, coloured)
+		}
+		if w := lipgloss.Width(coloured); w != 1 {
+			t.Errorf("profile %v: swatch is %d columns wide, want 1 — the row would shift "+
+				"between terminals", p, w)
+		}
 	}
 	if w := lipgloss.Width(plain); w != 1 {
-		t.Errorf("swatch is %d columns wide, want 1", w)
+		t.Errorf("swatch is %d columns wide with no colour, want 1", w)
 	}
 }
 
@@ -298,6 +322,52 @@ func TestCategoryForm_ColorRowTradesItsHintForTheSample(t *testing.T) {
 	}
 	if categoryFieldHint[cfColor] == "" {
 		t.Errorf("the Color row has no format hint left to trade away")
+	}
+}
+
+// TestCategoryForm_ColorSwatchFollowsRealKeystrokes drives the sheet the way the
+// app does — real tea.KeyMsgs through Update, into the focused textinput — so
+// what is proved is that the sample tracks TYPING, not that a helper reads a
+// value some test handed it (sc-lvp7).
+func TestCategoryForm_ColorSwatchFollowsRealKeystrokes(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+	s := categorySheetAt(t, jdeSweepEWidth)
+	s.cursor = elecRowOf(t, s.fields, cfColor)
+	s.syncFocus()
+
+	// Typed one keystroke at a time: nothing until "#FF5" is a whole shorthand
+	// colour, nothing again while the next digits make it partial, and the full
+	// colour at the end.
+	for _, step := range []struct {
+		key    rune
+		typed  string
+		swatch bool
+	}{
+		{'#', "#", false},
+		{'F', "#F", false},
+		{'F', "#FF", false},
+		{'5', "#FF5", true},
+		{'7', "#FF57", false},
+		{'3', "#FF573", false},
+		{'3', "#FF5733", true},
+	} {
+		s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{step.key}})
+		if held := s.inputs[cfColor].Value(); held != step.typed {
+			t.Fatalf("after typing %q the field holds %q, want %q — the keystroke did not reach "+
+				"the colour input", step.key, held, step.typed)
+		}
+		if got := categoryColorField(t, s).Swatch != ""; got != step.swatch {
+			t.Errorf("typed %q: swatch drawn = %v, want %v", step.typed, got, step.swatch)
+		}
+	}
+	if sw := categoryColorField(t, s).Swatch; !strings.Contains(sw, "255;87;51") {
+		t.Errorf("the finished value does not carry #FF5733: %q", sw)
+	}
+
+	// And backspacing out of a colour takes the sample away again.
+	s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := categoryColorField(t, s).Swatch; got != "" {
+		t.Errorf("backspacing to %q left a swatch: %q", s.inputs[cfColor].Value(), got)
 	}
 }
 
