@@ -174,6 +174,17 @@ func TestAssetSupplies_PartRowsExtendTheCursorPastTheFields(t *testing.T) {
 	if s.cursor != 0 {
 		t.Errorf("cursor = %d after wrapping off the last part, want 0", s.cursor)
 	}
+
+	// A rebuild — what a conditional field appearing or disappearing triggers —
+	// must not knock the cursor off the band; its clamp measures the whole
+	// sheet, not just the fields. No gesture reaches rebuildFields from a part
+	// row today, which is precisely why the invariant is pinned here rather
+	// than assumed.
+	s.cursor = s.rowCount() - 1
+	s.rebuildFields()
+	if want := s.rowCount() - 1; s.cursor != want {
+		t.Errorf("a rebuild moved the cursor off the last part: %d, want %d", s.cursor, want)
+	}
 }
 
 // TestAssetSupplies_TheLastPartIsReachable is the reason the rows are navigable
