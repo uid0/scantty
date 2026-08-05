@@ -436,8 +436,28 @@ func TestCircuitForm_RenderSmoke(t *testing.T) {
 	if out := s.View(); !strings.Contains(out, "Conductor size") {
 		t.Errorf("circuit form view missing Conductor size: %q", out)
 	}
-	if out := s.View(); !strings.Contains(out, "max load auto-set") {
-		t.Errorf("circuit form should note the max-load auto default: %q", out)
+	// The max-load default is still surfaced — it moved from a footer sentence
+	// into a dimmed, non-navigable row IN the sheet (sc-ye0i), which is where a
+	// value the record carries but the operator does not set belongs.
+	out := s.View()
+	if !strings.Contains(out, "Max load") || !strings.Contains(out, "80% of breaker amperage") {
+		t.Errorf("circuit form should surface the max-load auto default: %q", out)
+	}
+	// It is a LINE, not a row: there is nothing to navigate to, because the
+	// backend owns the value.
+	body := s.formLines()
+	found := false
+	for i, line := range body.text {
+		if !strings.Contains(line, "Max load") {
+			continue
+		}
+		found = true
+		if body.row[i] != jdeNoRow {
+			t.Errorf("the max-load line must belong to no navigable row, got row %d", body.row[i])
+		}
+	}
+	if !found {
+		t.Errorf("the max-load line is not in the body")
 	}
 }
 

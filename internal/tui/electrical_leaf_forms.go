@@ -101,15 +101,43 @@ const (
 )
 
 var outletFieldLabel = map[int]string{
-	poCircuit:      "Circuit",
-	poLocation:     "Location",
-	poDisconnect:   "Disconnect (optional)",
-	poOutletType:   "Outlet type (NEMA)",
+	poCircuit:  "Circuit",
+	poLocation: "Location",
+	// The parentheticals moved to outletFieldHint: a note in the LABEL widens
+	// the column all five electrical forms share, so it shoves the input areas
+	// right on every one of them (jde_form.go).
+	poDisconnect:   "Disconnect",
+	poOutletType:   "Outlet type",
 	poStatus:       "Status",
 	poLabel:        "Label",
 	poLocationDesc: "Location description",
 	poNotes:        "Notes",
 	poNeedsReview:  "Needs review",
+}
+
+// outletFieldHint carries what the placeholders and the label parentheticals
+// used to say. A placeholder long enough to fill the input area leaves no
+// underscores, so an empty green-screen row stops reading as empty; and a
+// columnar form marks what is REQUIRED rather than tagging everything else
+// "(optional)".
+// A hint is CLIPPED, not wrapped, when the row runs past the pane
+// (layout.go's clampToBox), so a wide input area and a long hint cannot both
+// fit — location description keeps the room to type and loses its example,
+// which its label already implies. See TestJDESweepC_RowsFitTheBody.
+var outletFieldHint = map[int]string{
+	poCircuit:    "required",
+	poLocation:   "required",
+	poOutletType: "NEMA / IEC",
+	poLabel:      "e.g. NW-bench-1",
+}
+
+// outletFieldWidth sizes the input areas that are not the default.
+func outletFieldWidth(id int) int {
+	switch id {
+	case poLocationDesc, poNotes:
+		return 40
+	}
+	return 0
 }
 
 func outletFieldKind(id int) assetFieldKind {
@@ -152,7 +180,7 @@ type PowerOutletFormScreen struct {
 	refArrived  bool
 	recArrived  bool
 
-	terminalHeight int
+	jdeScreen
 
 	inputs []textinput.Model
 
@@ -171,7 +199,6 @@ type PowerOutletFormScreen struct {
 	pickField   int
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []itemPickOption
 }
 
@@ -240,17 +267,8 @@ func outletCharLimit(id int) int {
 	return 200
 }
 
-func outletPlaceholder(id int) string {
-	switch id {
-	case poLabel:
-		return "e.g. NW-bench-1 (optional)"
-	case poLocationDesc:
-		return "e.g. east wall, 3 ft from corner (optional)"
-	case poNotes:
-		return "optional"
-	}
-	return ""
-}
+// outletPlaceholder is empty for every field now — see outletFieldHint.
+func outletPlaceholder(id int) string { return "" }
 
 func (s *PowerOutletFormScreen) Title() string {
 	if s.edit {
@@ -310,7 +328,7 @@ func (s *PowerOutletFormScreen) loadRecord() tea.Cmd {
 func (s *PowerOutletFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case outletRefLoadedMsg:
 		s.refArrived = true
@@ -420,6 +438,8 @@ func (s *PowerOutletFormScreen) syncFocus() {
 }
 
 func (s *PowerOutletFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.exitCmd()
@@ -429,11 +449,25 @@ func (s *PowerOutletFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) 
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS. Only the three FK rows
+		// open anything, which is why the bar drops the key on the others.
+		if id, ok := s.currentFieldID(); ok && outletFieldKind(id) == akPicker {
+			s.openPicker(id)
+			return s, textinput.Blink
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -442,7 +476,10 @@ func (s *PowerOutletFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) 
 	}
 	switch outletFieldKind(id) {
 	case akToggle:
-		if m.String() == " " {
+		// A toggle is a two-value choice row, so it flips on the same ←/→ every
+		// other bounded set takes (space stays as the pilot's synonym).
+		switch m.String() {
+		case " ", "left", "right":
 			s.needsReview = !s.needsReview
 		}
 		return s, nil
@@ -455,10 +492,7 @@ func (s *PowerOutletFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) 
 		}
 		return s, nil
 	case akPicker:
-		if m.String() == " " {
-			s.openPicker(id)
-			return s, textinput.Blink
-		}
+		// A picker row has nothing to type into and no accelerators left.
 		return s, nil
 	default:
 		var cmd tea.Cmd
@@ -476,6 +510,16 @@ func (s *PowerOutletFormScreen) moveCursor(delta int) {
 	s.syncFocus()
 }
 
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *PowerOutletFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.syncFocus()
+}
+
 func (s *PowerOutletFormScreen) cycleSelect(id, delta int) {
 	switch id {
 	case poOutletType:
@@ -490,9 +534,10 @@ func (s *PowerOutletFormScreen) cycleSelect(id, delta int) {
 func (s *PowerOutletFormScreen) openPicker(id int) {
 	s.phase = elecPhasePick
 	s.pickField = id
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyPickFilter()
 	s.pickCursor = 0
 	var sel *int
@@ -548,44 +593,36 @@ func (s *PowerOutletFormScreen) applyPickFilter() {
 }
 
 func (s *PowerOutletFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyPickFilter()
-			s.pickCursor = 0
-			return s, nil
-		}
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		s.closePicker()
+	case jdePickCommit:
+		s.commitPick()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
 		s.applyPickFilter()
 		return s, cmd
 	}
-	switch m.String() {
-	case "esc":
-		s.phase = elecPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case "enter":
-		s.commitPick()
-	}
 	return s, nil
+}
+
+func (s *PowerOutletFormScreen) movePick(delta int) {
+	s.pickCursor = elecClampPick(s.pickCursor+delta, len(s.pickOptions))
+}
+
+func (s *PowerOutletFormScreen) closePicker() {
+	s.phase = elecPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func (s *PowerOutletFormScreen) commitPick() {
@@ -609,11 +646,7 @@ func (s *PowerOutletFormScreen) commitPick() {
 			}
 		}
 	}
-	s.phase = elecPhaseForm
-	s.pickTyping = false
-	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
-	s.syncFocus()
+	s.closePicker()
 }
 
 func (s *PowerOutletFormScreen) submit() (Screen, tea.Cmd) {
@@ -708,118 +741,208 @@ func (s *PowerOutletFormScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("esc to go back")
 	}
 	if s.phase == elecPhasePick {
-		return elecPickView(s.pickWhat(), &s.pickSearch, s.pickTyping, s.pickOptions, s.pickCursor)
+		return s.viewPick()
 	}
 	return s.viewForm()
 }
 
-func (s *PowerOutletFormScreen) pickWhat() string {
-	switch s.pickField {
-	case poCircuit:
-		return "circuit"
-	case poDisconnect:
-		return "disconnect"
-	}
-	return "location"
-}
-
 func (s *PowerOutletFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(elecFieldHelp(outletFieldKind, s.currentFieldID)) + "\n\n")
-	visible := elecVisibleRows(s.terminalHeight)
-	start, end := fieldWindow(s.cursor, len(s.fields), visible)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	if end < len(s.fields) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.fields)-end)) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *PowerOutletFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// formFields describes the form as columnar rows: three FK rows Ctrl-E opens,
+// two bounded sets, and the rest typed into.
+func (s *PowerOutletFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   outletFieldLabel[id],
+			Width:   outletFieldWidth(id),
+			Hint:    outletFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		switch outletFieldKind(id) {
+		case akToggle:
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.needsReview)
+		case akSelect:
+			f.Kind, f.Value = jdeChoice, s.selectValue(id)
+			if id == poOutletType {
+				// The wire value, not the label: a NEMA code is what the record
+				// stores and what a wrong pick 400s on.
+				f.Hint = s.outletTypeCode()
+			}
+		case akPicker:
+			value, dim := s.pickerValue(id)
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	label := outletFieldLabel[id]
-	var value string
-	switch outletFieldKind(id) {
-	case akText, akNumber:
-		value = s.inputs[id].View()
-	case akToggle:
-		value = elecToggleLabel(s.needsReview)
-	case akSelect:
-		value = s.selectLabel(id)
-	case akPicker:
-		value = s.pickerLabel(id)
-	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return out
 }
 
-func (s *PowerOutletFormScreen) selectLabel(id int) string {
-	switch id {
-	case poOutletType:
-		return elecSelectLabel(nemaOutletTypeOptions, s.outletTypeIdx)
-	case poStatus:
-		return elecSelectLabel(outletStatusOptions, s.statusIdx)
+func (s *PowerOutletFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Outlet"))
+	for i, id := range s.fields {
+		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth))
+		// The set around the FOCUSED choice row, so seventeen receptacle types
+		// are never cycled blind (jdeOptionStrip returns nothing for a yes/no).
+		if i == s.cursor {
+			if strip := s.selectStrip(id); strip != "" {
+				l.AddRow(i, jdeStripIndent(elecLabelWidth)+StyleMuted.Render(strip))
+			}
+		}
+	}
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *PowerOutletFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok {
+		switch outletFieldKind(id) {
+		case akToggle, akSelect:
+			items = append(items, actionBarItem{"←→", "Change"})
+		case akPicker:
+			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+		}
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// selectValue is the BARE label between a choice row's angle brackets — the
+// renderer owns the brackets.
+func (s *PowerOutletFormScreen) selectValue(id int) string {
+	opts, idx := s.selectOptions(id)
+	if idx >= 0 && idx < len(opts) {
+		return opts[idx].label
 	}
 	return ""
 }
 
-func (s *PowerOutletFormScreen) pickerLabel(id int) string {
+func (s *PowerOutletFormScreen) selectOptions(id int) ([]selectOption, int) {
+	switch id {
+	case poOutletType:
+		return nemaOutletTypeOptions, s.outletTypeIdx
+	case poStatus:
+		return outletStatusOptions, s.statusIdx
+	}
+	return nil, -1
+}
+
+func (s *PowerOutletFormScreen) selectStrip(id int) string {
+	opts, idx := s.selectOptions(id)
+	if len(opts) == 0 {
+		return ""
+	}
+	labels := make([]string, len(opts))
+	for i, o := range opts {
+		labels[i] = o.label
+	}
+	return jdeOptionStrip(labels, idx, jdeStripWidth(s.bodyWidth(), elecLabelWidth))
+}
+
+// outletTypeCode is the wire code the outlet-type cursor is sitting on.
+func (s *PowerOutletFormScreen) outletTypeCode() string {
+	if s.outletTypeIdx >= 0 && s.outletTypeIdx < len(nemaOutletTypeOptions) {
+		return nemaOutletTypeOptions[s.outletTypeIdx].value
+	}
+	return ""
+}
+
+// pickerValue is an FK row's text, and whether it is an empty state rather than
+// a value. It returns PLAIN text with a flag instead of pre-styled muted text,
+// because a focused row has to be able to reverse-video the whole field — an
+// inner reset sequence would end the highlight partway through it.
+func (s *PowerOutletFormScreen) pickerValue(id int) (string, bool) {
 	switch id {
 	case poCircuit:
 		if s.circuitID == nil {
-			return StyleMuted.Render("(required — space to pick)")
+			return "(not set)", true
 		}
 		for _, c := range s.circuits {
 			if c.ID == *s.circuitID {
-				return circuitPickLabel(c)
+				return circuitPickLabel(c), false
 			}
 		}
 		if s.outlet != nil && s.outlet.CircuitLabel != "" {
-			return s.outlet.CircuitLabel
+			return s.outlet.CircuitLabel, false
 		}
-		return fmt.Sprintf("circuit #%d", *s.circuitID)
+		return fmt.Sprintf("circuit #%d", *s.circuitID), false
 	case poLocation:
 		if s.locationID == nil {
-			return StyleMuted.Render("(required — space to pick)")
+			return "(not set)", true
 		}
 		for _, l := range s.locations {
 			if l.ID == *s.locationID {
-				return l.Name
+				return l.Name, false
 			}
 		}
 		if s.outlet != nil && s.outlet.LocationName != "" {
-			return s.outlet.LocationName
+			return s.outlet.LocationName, false
 		}
-		return fmt.Sprintf("#%d", *s.locationID)
+		return fmt.Sprintf("#%d", *s.locationID), false
 	case poDisconnect:
 		if s.disconnectID == nil {
-			return StyleMuted.Render("(none)")
+			return "(none — breaker serves)", true
 		}
 		for _, d := range s.disconnects {
 			if d.ID == *s.disconnectID {
-				return disconnectPickLabel(d)
+				return disconnectPickLabel(d), false
 			}
 		}
 		if s.outlet != nil && s.outlet.DisconnectLabel != "" {
-			return s.outlet.DisconnectLabel
+			return s.outlet.DisconnectLabel, false
 		}
-		return fmt.Sprintf("disconnect #%d", *s.disconnectID)
+		return fmt.Sprintf("disconnect #%d", *s.disconnectID), false
 	}
-	return ""
+	return "", false
+}
+
+// pickView builds the open picker's pinned header and its option list. The note
+// explains what the clear row does, which is the one thing about these lists
+// that is not self-evident.
+func (s *PowerOutletFormScreen) pickView() ([]string, *jdeLines) {
+	title, note, empty := "Location", "", "(no matching locations)"
+	switch s.pickField {
+	case poCircuit:
+		title, empty = "Circuit", "(no matching circuits)"
+	case poDisconnect:
+		title, empty = "Disconnect", "(no matching disconnects)"
+		note = "Row 1 is none — the outlet is then killed by its breaker alone."
+	}
+	return jdePickList{
+		Title:  title,
+		For:    strings.TrimSpace(s.inputs[poLabel].Value()),
+		Note:   note,
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  func(i int) string { return s.pickOptions[i].label },
+		Dim:    func(i int) bool { return s.pickOptions[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  empty,
+	}.render()
+}
+
+func (s *PowerOutletFormScreen) viewPick() string {
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
+	}
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }
 
 // ===========================================================================
@@ -841,16 +964,45 @@ const (
 )
 
 var disconnectFieldLabel = map[int]string{
-	dcCircuit:        "Circuit",
-	dcLocation:       "Location (optional)",
+	dcCircuit: "Circuit",
+	// "(optional)" is not a label. A columnar form marks what is REQUIRED and
+	// lets the rest read as optional — and a parenthetical here would widen the
+	// column all five electrical forms share.
+	dcLocation:       "Location",
 	dcLabel:          "Label",
 	dcDisconnectType: "Disconnect type",
-	dcAmperage:       "Amperage (optional)",
+	dcAmperage:       "Amperage",
 	dcFuseSize:       "Fuse size",
 	dcIsLockable:     "Lockable",
 	dcLOTODevices:    "Required LOTO devices",
 	dcNotes:          "Notes",
 	dcNeedsReview:    "Needs review",
+}
+
+// disconnectFieldHint carries what the placeholders and the label
+// parentheticals used to say (see outletFieldHint). needs_review's hint is what
+// the old footer note said: the backend's clean() also raises the flag for
+// inconsistent fuse/lock combinations, so an operator is not surprised by a
+// review flag they did not set — and it belongs ON the row it is about.
+var disconnectFieldHint = map[int]string{
+	dcCircuit:     "required",
+	dcLabel:       "required",
+	dcAmperage:    "switch rating, amps",
+	dcFuseSize:    "fused only · e.g. 30A class J",
+	dcNeedsReview: "may be auto-set for odd fuse/lock combos",
+}
+
+// disconnectFieldWidth sizes the input areas that are not the default.
+func disconnectFieldWidth(id int) int {
+	switch id {
+	case dcAmperage:
+		return 10
+	case dcFuseSize:
+		return 18
+	case dcLabel, dcNotes:
+		return 40
+	}
+	return 0
 }
 
 func disconnectFieldKind(id int) assetFieldKind {
@@ -897,7 +1049,7 @@ type DisconnectFormScreen struct {
 	refArrived  bool
 	recArrived  bool
 
-	terminalHeight int
+	jdeScreen
 
 	inputs []textinput.Model
 
@@ -918,7 +1070,6 @@ type DisconnectFormScreen struct {
 	pickField   int
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []itemPickOption
 }
 
@@ -992,19 +1143,9 @@ func disconnectCharLimit(id int) int {
 	return 120
 }
 
-func disconnectPlaceholder(id int) string {
-	switch id {
-	case dcLabel:
-		return "e.g. Dust collector disconnect — east wall"
-	case dcFuseSize:
-		return "e.g. 30A class J (fused only)"
-	case dcAmperage:
-		return "switch rating in amps (optional)"
-	case dcNotes:
-		return "optional"
-	}
-	return ""
-}
+// disconnectPlaceholder is empty for every field now — see
+// disconnectFieldHint.
+func disconnectPlaceholder(id int) string { return "" }
 
 func (s *DisconnectFormScreen) Title() string {
 	if s.edit {
@@ -1064,7 +1205,7 @@ func (s *DisconnectFormScreen) loadRecord() tea.Cmd {
 func (s *DisconnectFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case disconnectRefLoadedMsg:
 		s.refArrived = true
@@ -1179,6 +1320,8 @@ func (s *DisconnectFormScreen) syncFocus() {
 }
 
 func (s *DisconnectFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.exitCmd()
@@ -1188,11 +1331,28 @@ func (s *DisconnectFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS: the two FK pickers and the
+		// LOTO multi picker.
+		if id, ok := s.currentFieldID(); ok {
+			switch disconnectFieldKind(id) {
+			case akPicker, akMultiPicker:
+				s.openPicker(id)
+				return s, textinput.Blink
+			}
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -1201,7 +1361,10 @@ func (s *DisconnectFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	}
 	switch disconnectFieldKind(id) {
 	case akToggle:
-		if m.String() == " " {
+		// A toggle is a two-value choice row, so it flips on the same ←/→ every
+		// other bounded set takes (space stays as the pilot's synonym).
+		switch m.String() {
+		case " ", "left", "right":
 			s.flipToggle(id)
 		}
 		return s, nil
@@ -1214,10 +1377,7 @@ func (s *DisconnectFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 		}
 		return s, nil
 	case akPicker, akMultiPicker:
-		if m.String() == " " {
-			s.openPicker(id)
-			return s, textinput.Blink
-		}
+		// A picker row has nothing to type into and no accelerators left.
 		return s, nil
 	default:
 		var cmd tea.Cmd
@@ -1232,6 +1392,16 @@ func (s *DisconnectFormScreen) moveCursor(delta int) {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *DisconnectFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -1252,9 +1422,10 @@ func (s *DisconnectFormScreen) cycleSelect(delta int) {
 func (s *DisconnectFormScreen) openPicker(id int) {
 	s.phase = elecPhasePick
 	s.pickField = id
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyPickFilter()
 	s.pickCursor = 0
 	var sel *int
@@ -1311,57 +1482,45 @@ func (s *DisconnectFormScreen) applyPickFilter() {
 }
 
 func (s *DisconnectFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyPickFilter()
-			s.pickCursor = 0
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		// In the MULTI picker esc is "done", not "cancel": every toggle was
+		// applied as it was made, so there is nothing to roll back. The bar says
+		// so rather than pretending one of the two exits is special.
+		s.closePicker()
+	case jdePickCommit:
+		if s.pickField == dcLOTODevices {
+			// Enter toggles membership here — the always-live filter owns space,
+			// and a multi picker's "select" IS the toggle (sc-0zvi).
+			s.toggleCurrentLOTO()
 			return s, nil
 		}
+		s.commitPick()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
 		s.applyPickFilter()
 		return s, cmd
 	}
-
-	multi := s.pickField == dcLOTODevices
-	switch m.String() {
-	case "esc":
-		s.phase = elecPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case " ":
-		// In the multi picker, space toggles membership without closing.
-		if multi {
-			s.toggleCurrentLOTO()
-		}
-	case "enter":
-		if multi {
-			// The multi picker applies toggles live; enter just closes.
-			s.phase = elecPhaseForm
-			s.syncFocus()
-		} else {
-			s.commitPick()
-		}
-	}
 	return s, nil
+}
+
+func (s *DisconnectFormScreen) movePick(delta int) {
+	s.pickCursor = elecClampPick(s.pickCursor+delta, len(s.pickOptions))
+}
+
+func (s *DisconnectFormScreen) closePicker() {
+	s.phase = elecPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func (s *DisconnectFormScreen) commitPick() {
@@ -1383,11 +1542,7 @@ func (s *DisconnectFormScreen) commitPick() {
 			}
 		}
 	}
-	s.phase = elecPhaseForm
-	s.pickTyping = false
-	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
-	s.syncFocus()
+	s.closePicker()
 }
 
 func (s *DisconnectFormScreen) toggleCurrentLOTO() {
@@ -1512,116 +1667,151 @@ func (s *DisconnectFormScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("esc to go back")
 	}
 	if s.phase == elecPhasePick {
-		if s.pickField == dcLOTODevices {
-			return elecMultiPickView("LOTO devices", &s.pickSearch, s.pickTyping, s.pickOptions, s.pickCursor, s.lotoSelected)
-		}
-		return elecPickView(s.pickWhat(), &s.pickSearch, s.pickTyping, s.pickOptions, s.pickCursor)
+		return s.viewPick()
 	}
 	return s.viewForm()
 }
 
-func (s *DisconnectFormScreen) pickWhat() string {
-	if s.pickField == dcLocation {
-		return "location"
-	}
-	return "circuit"
-}
-
 func (s *DisconnectFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(elecFieldHelp(disconnectFieldKind, s.currentFieldID)) + "\n\n")
-	visible := elecVisibleRows(s.terminalHeight)
-	start, end := fieldWindow(s.cursor, len(s.fields), visible)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	if end < len(s.fields) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.fields)-end)) + "\n")
-	}
-	b.WriteString("\n")
-	// needs_review is also auto-flagged by the backend clean() for inconsistent
-	// combinations (fused w/o fuse size, lockable integral/none) — note it so the
-	// operator isn't surprised by a review flag they didn't set.
-	b.WriteString(StyleMuted.Render("needs-review may be auto-set on save for inconsistent fuse/lock combos") + "\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *DisconnectFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// formFields describes the form as columnar rows: two FK rows and one MULTI
+// picker Ctrl-E opens, three bounded sets, and the rest typed into.
+func (s *DisconnectFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   disconnectFieldLabel[id],
+			Width:   disconnectFieldWidth(id),
+			Hint:    disconnectFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		switch disconnectFieldKind(id) {
+		case akToggle:
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.toggleState(id))
+		case akSelect:
+			f.Kind, f.Value = jdeChoice, s.selectValue()
+		case akPicker:
+			value, dim := s.pickerValue(id)
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		case akMultiPicker:
+			value, dim := s.lotoValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E chooses"
+			}
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	label := disconnectFieldLabel[id]
-	var value string
-	switch disconnectFieldKind(id) {
-	case akText, akNumber:
-		value = s.inputs[id].View()
-	case akToggle:
-		value = s.toggleLabel(id)
-	case akSelect:
-		value = elecSelectLabel(disconnectTypeOptions, s.disconnectTypIdx)
-	case akPicker:
-		value = s.pickerLabel(id)
-	case akMultiPicker:
-		value = s.lotoSummary()
-	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return out
 }
 
-func (s *DisconnectFormScreen) toggleLabel(id int) string {
-	switch id {
-	case dcIsLockable:
-		return elecToggleLabel(s.isLockable)
-	case dcNeedsReview:
-		return elecToggleLabel(s.needsReview)
+// toggleState is a bool row's current value.
+func (s *DisconnectFormScreen) toggleState(id int) bool {
+	if id == dcIsLockable {
+		return s.isLockable
+	}
+	return s.needsReview
+}
+
+func (s *DisconnectFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Disconnect"))
+	for i, id := range s.fields {
+		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth))
+		if i == s.cursor && id == dcDisconnectType {
+			labels := make([]string, len(disconnectTypeOptions))
+			for j, o := range disconnectTypeOptions {
+				labels[j] = o.label
+			}
+			strip := jdeOptionStrip(labels, s.disconnectTypIdx, jdeStripWidth(s.bodyWidth(), elecLabelWidth))
+			if strip != "" {
+				l.AddRow(i, jdeStripIndent(elecLabelWidth)+StyleMuted.Render(strip))
+			}
+		}
+	}
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *DisconnectFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok {
+		switch disconnectFieldKind(id) {
+		case akToggle, akSelect:
+			items = append(items, actionBarItem{"←→", "Change"})
+		case akPicker:
+			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+		case akMultiPicker:
+			items = append(items, actionBarItem{"Ctrl-E", "Choose"})
+		}
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// selectValue is the BARE label between the type row's angle brackets — the
+// renderer owns the brackets.
+func (s *DisconnectFormScreen) selectValue() string {
+	if s.disconnectTypIdx >= 0 && s.disconnectTypIdx < len(disconnectTypeOptions) {
+		return disconnectTypeOptions[s.disconnectTypIdx].label
 	}
 	return ""
 }
 
-func (s *DisconnectFormScreen) pickerLabel(id int) string {
+// pickerValue is an FK row's text, and whether it is an empty state rather than
+// a value. It returns PLAIN text with a flag instead of pre-styled muted text,
+// because a focused row has to be able to reverse-video the whole field.
+func (s *DisconnectFormScreen) pickerValue(id int) (string, bool) {
 	switch id {
 	case dcCircuit:
 		if s.circuitID == nil {
-			return StyleMuted.Render("(required — space to pick)")
+			return "(not set)", true
 		}
 		for _, c := range s.circuits {
 			if c.ID == *s.circuitID {
-				return circuitPickLabel(c)
+				return circuitPickLabel(c), false
 			}
 		}
 		if s.disconnect != nil && s.disconnect.CircuitLabel != "" {
-			return s.disconnect.CircuitLabel
+			return s.disconnect.CircuitLabel, false
 		}
-		return fmt.Sprintf("circuit #%d", *s.circuitID)
+		return fmt.Sprintf("circuit #%d", *s.circuitID), false
 	case dcLocation:
 		if s.locationID == nil {
-			return StyleMuted.Render("(none)")
+			// Terse on purpose: with the focused row's "Ctrl-E picks" hint after
+			// it, the picker's fuller wording would run past the pane and be
+			// clipped (TestJDESweepC_RowsFitTheBody).
+			return "(none — no separate switch)", true
 		}
 		for _, l := range s.locations {
 			if l.ID == *s.locationID {
-				return l.Name
+				return l.Name, false
 			}
 		}
 		if s.disconnect != nil && s.disconnect.LocationName != "" {
-			return s.disconnect.LocationName
+			return s.disconnect.LocationName, false
 		}
-		return fmt.Sprintf("#%d", *s.locationID)
+		return fmt.Sprintf("#%d", *s.locationID), false
 	}
-	return ""
+	return "", false
 }
 
-func (s *DisconnectFormScreen) lotoSummary() string {
+// lotoValue is the multi-picker row's text, and whether it is an empty state.
+func (s *DisconnectFormScreen) lotoValue() (string, bool) {
 	if len(s.lotoDeviceIDs) == 0 {
-		return StyleMuted.Render("(none — space to choose)")
+		return "(none)", true
 	}
 	names := make([]string, 0, len(s.lotoDeviceIDs))
 	for _, id := range s.lotoDeviceIDs {
@@ -1634,7 +1824,61 @@ func (s *DisconnectFormScreen) lotoSummary() string {
 		}
 		names = append(names, name)
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(names, ", "), false
+}
+
+// pickView builds the open picker's pinned header and its option list. The LOTO
+// picker marks membership with a checkbox in the label itself — the layer never
+// learns what is being picked, so the caller draws the mark.
+func (s *DisconnectFormScreen) pickView() ([]string, *jdeLines) {
+	title, note, empty := "Circuit", "", "(no matching circuits)"
+	switch s.pickField {
+	case dcLocation:
+		title, empty = "Location", "(no matching locations)"
+		note = "Row 1 is none — an integral switch has no location of its own."
+	case dcLOTODevices:
+		title, empty = "Required LOTO devices", "(no devices — add them in the OMS web LOTO inventory)"
+		note = "Enter toggles a device on and off; esc is done."
+	}
+	return jdePickList{
+		Title:  title,
+		For:    strings.TrimSpace(s.inputs[dcLabel].Value()),
+		Note:   note,
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  s.pickRowLabel,
+		Dim:    func(i int) bool { return s.pickOptions[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  empty,
+	}.render()
+}
+
+func (s *DisconnectFormScreen) pickRowLabel(i int) string {
+	opt := s.pickOptions[i]
+	if s.pickField != dcLOTODevices || opt.clear {
+		return opt.label
+	}
+	mark := "[ ] "
+	if s.lotoSelected(opt.id) {
+		mark = "[x] "
+	}
+	return mark + opt.label
+}
+
+func (s *DisconnectFormScreen) viewPick() string {
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
+	}
+	// The multi picker's esc is "done", not "cancel" — its toggles were applied
+	// as they were made, so there is nothing left to undo.
+	if s.pickField == dcLOTODevices {
+		return s.frameWithHeader(header, body, s.pickCursor,
+			jdeStatusLine(false, "", ""), jdePickBarWith("Toggle", "Done", paging))
+	}
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }
 
 // ---------------------------------------------------------------------------
