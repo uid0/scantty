@@ -34,10 +34,12 @@
 //     no URL-based alternative in the asset schema. The inventory item form set
 //     the same precedent by dropping its File inputs.
 //   - The Supplies (AssetPart) and Maintenance (MaintenanceItem) inline
-//     sub-editors: those write *separate* API resources chained after the asset
+//     sub-EDITORS: those write *separate* API resources chained after the asset
 //     save, not Asset fields, and warrant their own parity beads. The mirror
 //     reference (inventory_item_form.go) likewise carries no child-resource
-//     editor.
+//     editor. The supplies are nonetheless LISTED on the sheet as of sc-hf1z —
+//     see asset_form_supplies.go, which draws the parts nested on the fetched
+//     asset as a read-only detail grid below the fields.
 //
 // Navigation: tab / ↑↓ move between visible fields, enter saves, esc cancels.
 // The form is longer than the pane, so it scrolls to keep the focused field on
@@ -236,16 +238,27 @@ var assetFieldHint = map[int]string{
 	afDateReceived:  "YYYY-MM-DD",
 	afWikiPageURL:   "https://…",
 	afProductURL:    "https://…",
-	afManualPDFPath: "absolute path to a local file",
+	afManualPDFPath: "absolute local path",
 }
 
 // assetFieldWidth sizes the input areas that are not the default.
+//
+// An input area and its hint have to SHARE what is left of the pane after the
+// label column: clampToBox truncates an over-wide row with no ellipsis, so a
+// hint pushed past the edge is a hint the operator silently loses (sc-ye0i).
+// With this sheet's 23-column labels there are 49 columns for value + hint, and
+// the three fields that carry both a wide box and a note are sized against that
+// — hence 36 rather than 40 for the URLs, and 26 for the path, whose note is the
+// longest on the sheet. A textinput scrolls horizontally, so a long value still
+// fits in a short box; a clipped hint has nowhere to go.
 func assetFieldWidth(id int) int {
 	switch id {
 	case afDescription, afSpecialRequirements, afWorkSafetyNotes, afConditionNotes, afNotes:
 		return 44
-	case afWikiPageURL, afProductURL, afManualPDFPath:
-		return 40
+	case afWikiPageURL, afProductURL:
+		return 36
+	case afManualPDFPath:
+		return 26
 	case afName:
 		return 34
 	case afDateReceived:
@@ -724,8 +737,11 @@ func (s *AssetFormScreen) rebuildFields() {
 	if focused >= 0 {
 		s.setCursorToField(focused)
 	}
-	if s.cursor >= len(s.fields) {
-		s.cursor = len(s.fields) - 1
+	// Clamped against the whole sheet, not just the fields: the supplies band
+	// below them is navigable too, and a cursor parked there must survive a
+	// rebuild (which a conditional field appearing or disappearing triggers).
+	if s.cursor >= s.rowCount() {
+		s.cursor = s.rowCount() - 1
 	}
 	if s.cursor < 0 {
 		s.cursor = 0
@@ -831,7 +847,7 @@ func (s *AssetFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 }
 
 func (s *AssetFormScreen) moveCursor(delta int) {
-	n := len(s.fields)
+	n := s.rowCount()
 	if n == 0 {
 		return
 	}
@@ -843,10 +859,10 @@ func (s *AssetFormScreen) moveCursor(delta int) {
 // wraps — on a sheet this long a page that jumped from the last row back to the
 // first would lose the operator's place rather than save them keystrokes.
 func (s *AssetFormScreen) pageCursor(dir int) {
-	if len(s.fields) == 0 {
+	if s.rowCount() == 0 {
 		return
 	}
-	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.cursor = jdePageCursor(s.cursor, s.rowCount(), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -1368,6 +1384,11 @@ func (s *AssetFormScreen) formLines() *jdeLines {
 			}
 		}
 	}
+	// The inventory items this asset consumes, below the fields it owns: a
+	// detail grid whose rows continue the cursor past the sheet, not fields of
+	// the asset (asset_form_supplies.go). The label column above is computed
+	// over the FIELDS alone, so a long part name can never move it.
+	s.supplyBand(l)
 	return l
 }
 
