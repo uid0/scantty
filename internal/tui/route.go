@@ -21,8 +21,75 @@ const (
 type WorkspaceMeta struct {
 	Key       Workspace
 	Label     string
-	Hotkey    rune
 	StaffOnly bool
+}
+
+// navSurface is one openable entry BENEATH a workspace in the sidebar menu
+// tree. Phase 3 of the JD Edwards redesign retired the global letter
+// accelerators that used to be the only door to these screens (m/a/l/n/o/u/f/e
+// and C/B/K/P/Q/N/I/A/V/M/D/F/G/L/U/W/T); this tree is where they live now, so
+// each is still one arrow-and-enter away with nothing memorised.
+//
+// A workspace's own row opens its default screen (see newScreenFor), so the
+// surfaces listed here are the EXTRAS only — "Inventory" is still the item
+// list, and "New item" is a child beside it.
+type navSurface struct {
+	label string
+	build func(Deps) Screen
+}
+
+// workspaceSurfaces returns the child entries the sidebar shows under a
+// workspace. A workspace whose landing screen is already a cursor menu of its
+// own surfaces (Facilities, Reports) returns none — duplicating that menu in
+// the sidebar would give every one of those screens two doors and two places to
+// keep correct.
+func workspaceSurfaces(ws Workspace) []navSurface {
+	switch ws {
+	case WSInventory:
+		return []navSurface{
+			{"New item", func(d Deps) Screen { return NewInventoryItemFormScreen(d, "") }},
+			{"Categories", func(d Deps) Screen { return NewCategoryListScreen(d) }},
+			{"Locations", func(d Deps) Screen { return NewLocationListScreen(d) }},
+			{"Suppliers", func(d Deps) Screen { return NewSupplierListScreen(d) }},
+		}
+	case WSPurchasing:
+		return []navSurface{
+			{"New order", func(d Deps) Screen { return NewPurchaseOrderCreateScreen(d) }},
+			{"Reorder queue", func(d Deps) Screen { return NewReorderQueueScreen(d) }},
+		}
+	case WSAssets:
+		return []navSurface{
+			{"New asset", func(d Deps) Screen { return NewAssetFormScreen(d, "") }},
+		}
+	case WSMaintenance:
+		return []navSurface{
+			{"PM board", func(d Deps) Screen { return NewPMBoardScreen(d) }},
+			{"PM items", func(d Deps) Screen { return NewMaintenanceItemsScreen(d) }},
+			{"Vendors", func(d Deps) Screen { return NewVendorsScreen(d) }},
+		}
+	case WSForgeKey:
+		return []navSurface{
+			{"Device types", func(d Deps) Screen { return NewDeviceTypeListScreen(d) }},
+			{"Firmware", func(d Deps) Screen { return NewFirmwareScreen(d) }},
+			{"e-Paper panels", func(d Deps) Screen { return NewEPaperPanelsScreen(d) }},
+			{"Authorizations", func(d Deps) Screen { return NewAuthorizationsScreen(d) }},
+			{"Lockouts", func(d Deps) Screen { return NewLockoutsScreen(d) }},
+			{"Operational modes", func(d Deps) Screen { return NewOperationalModesScreen(d) }},
+			{"Usage sessions", func(d Deps) Screen { return NewUsageScreen(d) }},
+		}
+	case WSSettings:
+		// Donations rides here rather than under a workspace of its own: the
+		// global D set no workspace at all, and the tax-receipt lookup already
+		// on the Settings screen is the same backend app (donations/), so the
+		// pair stays together.
+		return []navSurface{
+			{"Profile", func(d Deps) Screen { return NewProfileScreen(d) }},
+			{"Notifications", func(d Deps) Screen { return NewNotificationsScreen(d) }},
+			{"Donations", func(d Deps) Screen { return NewDonationsScreen(d) }},
+			{"Webhooks", func(d Deps) Screen { return NewWebhookListScreen(d) }},
+		}
+	}
+	return nil
 }
 
 const (
@@ -32,19 +99,24 @@ const (
 	WSLockouts       Workspace = "lockouts"
 )
 
+// Workspaces is the sidebar's top level, in display order. The Hotkey field
+// these entries used to carry ('0'-'9' and 's') is gone: phase 3 of the JD
+// Edwards redesign reserves system keys for scroll / exit / submit / edit, and
+// a digit that jumps workspaces is outside that set exactly as a letter is.
+// Arrow-navigating the sidebar (see Nav) replaces them.
 func Workspaces() []WorkspaceMeta {
 	return []WorkspaceMeta{
-		{WSScan, "Scan", '0', false},
-		{WSDashboard, "Dashboard", '1', false},
-		{WSInventory, "Inventory", '2', false},
-		{WSPurchasing, "Purchasing", '3', false},
-		{WSAssets, "Assets", '4', false},
-		{WSFacilities, "Facilities", '5', true},
-		{WSMaintenance, "Maintenance", '6', false},
-		{WSSIGs, "SIGs", '7', false},
-		{WSReports, "Reports", '8', false},
-		{WSForgeKey, "ForgeKey", '9', true},
-		{WSSettings, "Settings", 's', false},
+		{WSScan, "Scan", false},
+		{WSDashboard, "Dashboard", false},
+		{WSInventory, "Inventory", false},
+		{WSPurchasing, "Purchasing", false},
+		{WSAssets, "Assets", false},
+		{WSFacilities, "Facilities", true},
+		{WSMaintenance, "Maintenance", false},
+		{WSSIGs, "SIGs", false},
+		{WSReports, "Reports", false},
+		{WSForgeKey, "ForgeKey", true},
+		{WSSettings, "Settings", false},
 	}
 }
 
@@ -56,9 +128,11 @@ type Screen interface {
 }
 
 // RawInputScreen lets a screen opt into receiving every keypress before the
-// root applies its global hotkeys. Forms, login, and the search palette
-// implement this so single-letter workspace shortcuts (m, a, l, n, o, u, f,
-// Q, D) don't steal characters from textinputs.
+// root applies its global keys. Forms, login, and the search palette implement
+// this so nothing the root owns — `tab` into the sidebar, `esc` back, `ctrl+k`
+// search — is taken away from a screen that is mid-entry. Since phase 3 the
+// root holds no letter at all, so this is no longer about protecting a
+// textinput from workspace shortcuts; it is about a modal owning its own exit.
 type RawInputScreen interface {
 	WantsRawInput() bool
 }
@@ -73,6 +147,12 @@ type RawInputScreen interface {
 // key. Unlike RawInputScreen (which swallows *every* key for a textinput), this
 // is per-key: the screen names only the keys it owns and all other keys still
 // reach the global nav dispatch.
+//
+// Since phase 3 stripped the root's letter accelerators, a claim is no longer
+// needed to WIN a letter — no letter collides any more. Existing claims are
+// kept because they cost nothing and a screen that names a key it handles is
+// documenting itself; what a claim still genuinely decides is `esc` (a screen
+// that claims it owns its own back step) and the two keys the root still holds.
 type LocalKeyScreen interface {
 	HandlesKey(key string) bool
 }

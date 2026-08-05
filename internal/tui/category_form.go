@@ -12,7 +12,8 @@
 // picker reuses the item form's searchable sub-phase idiom and excludes the
 // category itself in edit mode (a category can't be its own parent).
 //
-// CategoryListScreen is reached with the global `G` hotkey (app.go). It is a
+// CategoryListScreen is reached from the sidebar menu (Inventory > Categories).
+// It is a
 // plain (non-raw) screen so workspace switching keeps working; c/E/x/enter are
 // not global hotkeys so they reach us via the root's fall-through. It flips to
 // raw input only while the delete confirmation is up so y/n land here.

@@ -1105,7 +1105,7 @@ func (s *ItemSupplierFormScreen) pickView() ([]string, *jdeLines) {
 		Count:  len(s.pickOptions),
 		Label:  func(i int) string { return s.pickOptions[i].label },
 		Cursor: s.pickCursor,
-		Empty:  "(no matching suppliers — create one first with the U hotkey)",
+		Empty:  "(no matching suppliers — create one first from the menu: Inventory › Suppliers)",
 	}.render()
 }
 

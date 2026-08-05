@@ -147,7 +147,7 @@ func TestStatusBar_NoMessageUnchanged(t *testing.T) {
 	view := sb.View()
 	visible := stripStatusANSI(view)
 
-	for _, want := range []string{"OMS", "FK", "scanner:", "quit"} {
+	for _, want := range []string{"OMS", "FK", "scanner:", "tab menu"} {
 		if !strings.Contains(visible, want) {
 			t.Fatalf("no-message status bar missing %q; got %q", want, visible)
 		}
@@ -172,7 +172,7 @@ func TestStatusBar_ExpiredMessageFallsBackToHints(t *testing.T) {
 	if strings.Contains(visible, "transient note") {
 		t.Fatalf("expired message should not render; got %q", visible)
 	}
-	if !strings.Contains(visible, "quit") {
+	if !strings.Contains(visible, "tab menu") {
 		t.Fatalf("expected default hints after expiry; got %q", visible)
 	}
 }

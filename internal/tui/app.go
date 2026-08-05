@@ -136,7 +136,7 @@ func NewRoot(deps Deps) Root {
 func (r Root) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		r.screen.Init(),
-		Status("welcome — press / to scan, 1-9 to switch", StatusInfo),
+		Status("welcome — tab opens the menu · ctrl+k searches · esc goes back", StatusInfo),
 	}
 	if poll := PollNotifications(r.deps, 60*time.Second); poll != nil {
 		cmds = append(cmds, poll)
@@ -164,6 +164,66 @@ func (r Root) windowResizeCmd() tea.Cmd {
 	return func() tea.Msg { return tea.WindowSizeMsg{Width: w, Height: h} }
 }
 
+// updateNav is the whole key model of the sidebar menu while it holds focus:
+// up/down through the tree, left/right between workspaces (the coarse axis —
+// ForgeKey alone is seven surfaces deep), home/end to the edges, enter to open,
+// tab or esc to hand the keyboard back. The only letters here are j/k/g/G,
+// which are not accelerators: they are the app-wide SCROLL vocabulary the
+// redesign keeps (scroll.go, list.go), and a menu you move through with arrows
+// is a thing you scroll. Nothing here addresses a destination by letter, which
+// is the point — the tree is read, not memorised.
+func (r Root) updateNav(m tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.String() {
+	case "up", "k":
+		r.nav.Move(-1)
+	case "down", "j":
+		r.nav.Move(+1)
+	case "left":
+		r.nav.MoveWorkspace(-1)
+	case "right":
+		r.nav.MoveWorkspace(+1)
+	case "home", "g":
+		r.nav.MoveToEdge(-1)
+	case "end", "G":
+		r.nav.MoveToEdge(+1)
+	case "enter":
+		return r.openNavSelection()
+	case "ctrl+k":
+		// Search stays reachable from the menu too, rather than making the
+		// operator tab out first to press the one key that goes anywhere.
+		r.nav.Blur()
+		if _, ok := r.screen.(*SearchPalette); !ok {
+			r.screen = NewSearchPalette(r.deps)
+			return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+		}
+	case "esc", "tab":
+		r.nav.Blur()
+	}
+	return r, nil
+}
+
+// openNavSelection opens whatever the sidebar cursor is on — a workspace's
+// default screen, or one of the surfaces listed beneath it — and hands the
+// keyboard back to that screen. A workspace with no default screen (none today,
+// but newScreenFor may return nil) leaves the menu where it is rather than
+// blanking the pane.
+func (r Root) openNavSelection() (tea.Model, tea.Cmd) {
+	ws, build := r.nav.Selected()
+	var next Screen
+	if build != nil {
+		next = build(r.deps)
+	} else {
+		next = newScreenFor(ws, r.deps)
+	}
+	if next == nil {
+		return r, nil
+	}
+	r.nav.Blur()
+	r.screen = next
+	r.nav.SetActive(ws)
+	return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
+}
+
 func (r Root) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -184,219 +244,51 @@ func (r Root) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s := m.String(); s == "ctrl+c" || s == "ctrl+q" {
 			return r, tea.Quit
 		}
-		// Screens with active textinputs (login, forms, search palette)
-		// bypass global hotkey handling so letters reach the input.
+		// The sidebar menu owns the keyboard while it holds focus — it is a
+		// menu, not a decoration, and the screen behind it is not being typed
+		// into. Ahead of the raw-input check because focus can only have got
+		// here from a screen that was NOT raw (see the `tab` arm below), and
+		// opening a form from the menu blurs the sidebar on the way in.
+		if r.nav.Focused() {
+			return r.updateNav(m)
+		}
+		// Screens with active textinputs (login, forms, search palette) take
+		// every key, so a modal owns its own esc/tab rather than having the
+		// root steal them mid-entry.
 		if rs, ok := r.screen.(RawInputScreen); ok && rs.WantsRawInput() {
 			next, cmd := r.screen.Update(msg)
 			r.screen = next
 			return r, cmd
 		}
-		// Give the ACTIVE SCREEN first crack at the key. If it claims this
-		// key as a screen-local binding (e.g. location check-in 'n',
-		// checklist finalize 'f'), route the KeyMsg to it and stop before
-		// the global nav switch below — global nav keys are the fallback,
-		// not an override. Screens that don't implement LocalKeyScreen (or
-		// don't claim this key) fall through to the global dispatch exactly
-		// as before.
+		// Give the ACTIVE SCREEN first crack at the key. Since phase 3 the
+		// root holds no letter, so a claim no longer rescues a screen-local
+		// letter from a colliding global — what it still decides is `esc`
+		// (a screen that owns its own back step) and the two keys below.
+		// Screens that don't implement LocalKeyScreen, or don't claim this
+		// key, fall through to the root's own arms exactly as before.
 		if lk, ok := r.screen.(LocalKeyScreen); ok && lk.HandlesKey(m.String()) {
 			next, cmd := r.screen.Update(msg)
 			r.screen = next
 			return r, cmd
 		}
 		switch m.String() {
-		case "ctrl+k", "/":
+		case "ctrl+k":
+			// The universal search palette, and the last non-navigational key the
+			// root owns. Bare `/` used to open it too; that arm is gone with the
+			// letters, because `/` is a character a screen may want and ctrl+k is
+			// the modifier-based binding the retained key model is built from.
 			if _, ok := r.screen.(*SearchPalette); !ok {
 				r.screen = NewSearchPalette(r.deps)
 				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
 			}
-		case "m":
-			if _, ok := r.screen.(*ProfileScreen); !ok {
-				r.screen = NewProfileScreen(r.deps)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "a":
-			if _, ok := r.screen.(*AuthorizationsScreen); !ok {
-				r.screen = NewAuthorizationsScreen(r.deps)
-				r.nav.SetActive(WSForgeKey)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "l":
-			if _, ok := r.screen.(*LockoutsScreen); !ok {
-				r.screen = NewLockoutsScreen(r.deps)
-				r.nav.SetActive(WSForgeKey)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "n":
-			if _, ok := r.screen.(*NotificationsScreen); !ok {
-				r.screen = NewNotificationsScreen(r.deps)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "o":
-			if _, ok := r.screen.(*OperationalModesScreen); !ok {
-				r.screen = NewOperationalModesScreen(r.deps)
-				r.nav.SetActive(WSForgeKey)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "u":
-			if _, ok := r.screen.(*UsageScreen); !ok {
-				r.screen = NewUsageScreen(r.deps)
-				r.nav.SetActive(WSForgeKey)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "f":
-			if _, ok := r.screen.(*FirmwareScreen); !ok {
-				r.screen = NewFirmwareScreen(r.deps)
-				r.nav.SetActive(WSForgeKey)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "e":
-			if _, ok := r.screen.(*EPaperPanelsScreen); !ok {
-				r.screen = NewEPaperPanelsScreen(r.deps)
-				r.nav.SetActive(WSForgeKey)
-				return r, r.screen.Init()
-			}
-		case "C":
-			if _, ok := r.screen.(*LocationCheckinsScreen); !ok {
-				r.screen = NewLocationCheckinsScreen(r.deps)
-				r.nav.SetActive(WSFacilities)
-				return r, r.screen.Init()
-			}
-		case "B":
-			if _, ok := r.screen.(*MakerBoxesScreen); !ok {
-				r.screen = NewMakerBoxesScreen(r.deps)
-				r.nav.SetActive(WSFacilities)
-				return r, r.screen.Init()
-			}
-		case "K":
-			if _, ok := r.screen.(*ChecklistsScreen); !ok {
-				r.screen = NewChecklistsScreen(r.deps)
-				r.nav.SetActive(WSFacilities)
-				return r, r.screen.Init()
-			}
-		case "P":
-			if _, ok := r.screen.(*PMBoardScreen); !ok {
-				r.screen = NewPMBoardScreen(r.deps)
-				r.nav.SetActive(WSMaintenance)
-				return r, r.screen.Init()
-			}
-		case "Q":
-			if _, ok := r.screen.(*ReorderQueueScreen); !ok {
-				r.screen = NewReorderQueueScreen(r.deps)
-				r.nav.SetActive(WSPurchasing)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "N":
-			// Shift+n opens the create-PO form. Lowercase n is taken
-			// by the Notifications shortcut a few branches up.
-			if _, ok := r.screen.(*PurchaseOrderCreateScreen); !ok {
-				r.screen = NewPurchaseOrderCreateScreen(r.deps)
-				r.nav.SetActive(WSPurchasing)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "I":
-			// Shift+i opens the create-inventory-item form. Lowercase i is
-			// used on the item detail screen (serialized instances), so the
-			// new-item global takes the shifted key — same convention as N
-			// (new PO). Editing an existing item is reached with E from its
-			// detail screen.
-			if _, ok := r.screen.(*InventoryItemFormScreen); !ok {
-				r.screen = NewInventoryItemFormScreen(r.deps, "")
-				r.nav.SetActive(WSInventory)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "A":
-			// Shift+a opens the create-asset form. Lowercase a is the global
-			// Authorizations shortcut, so the new-asset global takes the
-			// shifted key — same convention as N (new PO) and I (new item).
-			// Editing an existing asset is reached with E from its detail
-			// screen.
-			if _, ok := r.screen.(*AssetFormScreen); !ok {
-				r.screen = NewAssetFormScreen(r.deps, "")
-				r.nav.SetActive(WSAssets)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "V":
-			if _, ok := r.screen.(*VendorsScreen); !ok {
-				r.screen = NewVendorsScreen(r.deps)
-				r.nav.SetActive(WSMaintenance)
-				return r, r.screen.Init()
-			}
-		case "M":
-			// Shift+m opens the preventive-maintenance ITEM list (create/edit
-			// PM items + per-item actions). Lowercase m is the Profile
-			// shortcut a few branches up, so PM items take the shifted key —
-			// same convention as N (new PO) / I (new item).
-			if _, ok := r.screen.(*MaintenanceItemsScreen); !ok {
-				r.screen = NewMaintenanceItemsScreen(r.deps)
-				r.nav.SetActive(WSMaintenance)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "D":
-			if _, ok := r.screen.(*DonationsScreen); !ok {
-				r.screen = NewDonationsScreen(r.deps)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "F":
-			// Shift+f opens the ForgeKey device-type management list (create /
-			// edit / delete). Uppercase because it rides the "uppercase letter =
-			// open a management surface" convention (G / L / U / V); it sits in
-			// the ForgeKey workspace alongside firmware (lowercase f) and e-paper
-			// (e), reusing the same upper/lower-of-a-letter pairing as N/n, I/i,
-			// A/a — here F = device types, f = firmware, both ForgeKey.
-			if _, ok := r.screen.(*DeviceTypeListScreen); !ok {
-				r.screen = NewDeviceTypeListScreen(r.deps)
-				r.nav.SetActive(WSForgeKey)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "G":
-			// Shift+g opens the inventory Category management list (create /
-			// edit / delete). Uppercase because the taxonomy lists ride the
-			// same "uppercase letter = open a surface" convention as V / M / Q,
-			// and lowercase g is used for top-of-list nav inside screens.
-			if _, ok := r.screen.(*CategoryListScreen); !ok {
-				r.screen = NewCategoryListScreen(r.deps)
-				r.nav.SetActive(WSInventory)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "L":
-			// Shift+l opens the Location management list. Lowercase l is the
-			// ForgeKey lockouts global, so locations take the shifted key.
-			if _, ok := r.screen.(*LocationListScreen); !ok {
-				r.screen = NewLocationListScreen(r.deps)
-				r.nav.SetActive(WSInventory)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "U":
-			// Shift+u opens the Supplier management list. Lowercase u is the
-			// usage-sessions global, so suppliers take the shifted key.
-			if _, ok := r.screen.(*SupplierListScreen); !ok {
-				r.screen = NewSupplierListScreen(r.deps)
-				r.nav.SetActive(WSInventory)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "W":
-			// Shift+w opens the Webhook management list (create / edit / delete
-			// + test-delivery). Webhooks live under Settings in the web app, so
-			// the surface sets the Settings workspace active. Uppercase rides the
-			// same "uppercase letter = open a surface" convention as G / V / B.
-			if _, ok := r.screen.(*WebhookListScreen); !ok {
-				r.screen = NewWebhookListScreen(r.deps)
-				r.nav.SetActive(WSSettings)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "T":
-			// Shift+t opens the climate Thermostat management list (create /
-			// edit / delete). Uppercase like the other management surfaces; both
-			// T and lowercase t were free in the global set.
-			if _, ok := r.screen.(*ThermostatListScreen); !ok {
-				r.screen = NewThermostatListScreen(r.deps)
-				r.nav.SetActive(WSFacilities)
-				return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-			}
-		case "q":
-			if _, ok := r.screen.(*WelcomeScreen); ok {
-				return r, tea.Quit
-			}
+		case "tab":
+			// Move the keyboard into the sidebar menu. This is the ONE key that
+			// replaced the ~25 global letter accelerators and the 0-9/s workspace
+			// digits: every surface they opened is a row of the tree. The hint
+			// rides along because the 24-column pane has no room for a help line
+			// and a key nothing on screen names is a key nobody finds.
+			r.nav.Focus()
+			return r, Status(navFocusHint, StatusInfo)
 		case "esc":
 			// Global fallback (a "back button"): pop the back-stack one level,
 			// restoring the previous screen and workspace, instead of jumping
@@ -419,16 +311,6 @@ func (r Root) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r.screen = NewWelcomeScreen()
 			r.nav.SetActive(WSScan)
 			return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-		}
-		if len(m.String()) == 1 {
-			if item, ok := r.nav.ItemForHotkey(rune(m.String()[0])); ok {
-				next := newScreenFor(item.Key, r.deps)
-				if next != nil {
-					r.screen = next
-					r.nav.SetActive(item.Key)
-					return r, tea.Batch(r.screen.Init(), r.windowResizeCmd())
-				}
-			}
 		}
 
 	case SwitchScreenMsg:

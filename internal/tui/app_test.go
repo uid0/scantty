@@ -31,6 +31,20 @@ func press(t *testing.T, r Root, key string) Root {
 		msg = tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":
 		msg = tea.KeyMsg{Type: tea.KeyEsc}
+	case "tab":
+		msg = tea.KeyMsg{Type: tea.KeyTab}
+	case "up":
+		msg = tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		msg = tea.KeyMsg{Type: tea.KeyDown}
+	case "left":
+		msg = tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		msg = tea.KeyMsg{Type: tea.KeyRight}
+	case "home":
+		msg = tea.KeyMsg{Type: tea.KeyHome}
+	case "end":
+		msg = tea.KeyMsg{Type: tea.KeyEnd}
 	default:
 		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 	}
@@ -116,40 +130,90 @@ func TestChecklistRunFFinalizesNotFirmwareWhenReady(t *testing.T) {
 	}
 }
 
-// Global nav keys must still work on screens that don't claim them locally.
+// The surfaces those globals used to open are reached from the sidebar menu
+// now. These are the same three screens the retired n / f / F opened.
 
-func TestGlobalNOpensNotificationsFromWelcome(t *testing.T) {
-	r := newTestRoot(NewWelcomeScreen())
-	after := press(t, r, "n")
-	if _, ok := after.screen.(*NotificationsScreen); !ok {
-		t.Fatalf("after 'n' on welcome active screen is %T, want *NotificationsScreen (global nav regressed)", after.screen)
+// openFromMenu drives the sidebar exactly as an operator does since phase 3
+// retired the global accelerators: tab moves the keyboard into the menu, the
+// arrows walk to the row, enter opens it. A blank surface opens the workspace's
+// own row (its default screen); a named one opens the surface indented under it.
+//
+// It walks with real key presses rather than setting the cursor directly, so a
+// break in Root's routing or in Nav's movement fails here too — the point is
+// that the SURFACE IS REACHABLE, and a helper that reached in and set the
+// cursor would prove nothing about that.
+func openFromMenu(t *testing.T, r Root, ws Workspace, surface string) Root {
+	t.Helper()
+	r = press(t, r, "tab")
+	if !r.nav.Focused() {
+		t.Fatalf("tab did not move the keyboard into the sidebar menu")
+	}
+	r = press(t, r, "home")
+	for i := 0; i <= len(Workspaces()); i++ {
+		if r.nav.cursorWS == ws && r.nav.cursorSurface < 0 {
+			break
+		}
+		before := r.nav.cursorWS
+		r = press(t, r, "right")
+		if r.nav.cursorWS == before {
+			t.Fatalf("walked the sidebar to its end without reaching workspace %q", ws)
+		}
+	}
+	if r.nav.cursorWS != ws || r.nav.cursorSurface >= 0 {
+		t.Fatalf("sidebar cursor is on %q/%d, want the %q workspace row", r.nav.cursorWS, r.nav.cursorSurface, ws)
+	}
+	if surface != "" {
+		idx := -1
+		for i, sf := range workspaceSurfaces(ws) {
+			if sf.label == surface {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			t.Fatalf("workspace %q lists no surface %q", ws, surface)
+		}
+		for j := 0; j <= idx; j++ {
+			r = press(t, r, "down")
+		}
+		if r.nav.cursorSurface != idx {
+			t.Fatalf("walking down landed on surface %d, want %d (%q)", r.nav.cursorSurface, idx, surface)
+		}
+	}
+	r = press(t, r, "enter")
+	if r.nav.Focused() {
+		t.Errorf("opening a menu row left the keyboard in the sidebar; it must go back to the screen")
+	}
+	return r
+}
+
+func TestMenuOpensNotifications(t *testing.T) {
+	r := openFromMenu(t, newTestRoot(NewWelcomeScreen()), WSSettings, "Notifications")
+	if _, ok := r.screen.(*NotificationsScreen); !ok {
+		t.Fatalf("Settings > Notifications opened %T, want *NotificationsScreen", r.screen)
 	}
 }
 
-func TestGlobalFOpensFirmwareFromWelcome(t *testing.T) {
-	r := newTestRoot(NewWelcomeScreen())
-	after := press(t, r, "f")
-	if _, ok := after.screen.(*FirmwareScreen); !ok {
-		t.Fatalf("after 'f' on welcome active screen is %T, want *FirmwareScreen (global nav regressed)", after.screen)
+func TestMenuOpensFirmware(t *testing.T) {
+	r := openFromMenu(t, newTestRoot(NewWelcomeScreen()), WSForgeKey, "Firmware")
+	if _, ok := r.screen.(*FirmwareScreen); !ok {
+		t.Fatalf("ForgeKey > Firmware opened %T, want *FirmwareScreen", r.screen)
 	}
 }
 
-// Uppercase F is the sibling global that opens the ForgeKey device-type
-// management list (distinct from lowercase f = firmware). Guards the app.go
-// wiring so it can't silently regress.
-func TestGlobalShiftFOpensDeviceTypesFromWelcome(t *testing.T) {
-	r := newTestRoot(NewWelcomeScreen())
-	after := press(t, r, "F")
-	if _, ok := after.screen.(*DeviceTypeListScreen); !ok {
-		t.Fatalf("after 'F' on welcome active screen is %T, want *DeviceTypeListScreen", after.screen)
+func TestMenuOpensDeviceTypes(t *testing.T) {
+	r := openFromMenu(t, newTestRoot(NewWelcomeScreen()), WSForgeKey, "Device types")
+	if _, ok := r.screen.(*DeviceTypeListScreen); !ok {
+		t.Fatalf("ForgeKey > Device types opened %T, want *DeviceTypeListScreen", r.screen)
 	}
 }
 
-func TestChecklistRunFFallsThroughToFirmwareWhenNotReady(t *testing.T) {
+// A screen-local letter that its screen does NOT currently claim now does
+// NOTHING, where it used to fall through to a global (here f = firmware). That
+// is the whole point of the strip: a letter never navigates.
+func TestChecklistRunFDoesNothingWhenFinalizeUnavailable(t *testing.T) {
 	s := NewChecklistRunScreen(Deps{}, "cmpl-1")
 	s.loading = false
-	// Required steps NOT done => canFinalize() is false, so 'f' is not claimed
-	// locally and should fall through to the global firmware nav.
 	s.completion = &omsapi.ChecklistCompletion{
 		RequiredStepsCompleted: 0,
 		RequiredStepsTotal:     1,
@@ -158,8 +222,8 @@ func TestChecklistRunFFallsThroughToFirmwareWhenNotReady(t *testing.T) {
 	r := newTestRoot(s)
 
 	after := press(t, r, "f")
-	if _, ok := after.screen.(*FirmwareScreen); !ok {
-		t.Fatalf("after 'f' with finalize unavailable active screen is %T, want *FirmwareScreen (global fallback)", after.screen)
+	if after.screen != Screen(s) {
+		t.Fatalf("after 'f' with finalize unavailable active screen is %T, want the checklist run screen untouched", after.screen)
 	}
 }
 
@@ -181,11 +245,10 @@ func TestListScreenSCyclesSortNotSettings(t *testing.T) {
 	}
 }
 
-func TestGlobalSOpensSettingsFromWelcome(t *testing.T) {
-	r := newTestRoot(NewWelcomeScreen())
-	after := press(t, r, "s")
-	if _, ok := after.screen.(*SettingsScreen); !ok {
-		t.Fatalf("after 's' on welcome active screen is %T, want *SettingsScreen (global nav regressed)", after.screen)
+func TestMenuOpensSettings(t *testing.T) {
+	r := openFromMenu(t, newTestRoot(NewWelcomeScreen()), WSSettings, "")
+	if _, ok := r.screen.(*SettingsScreen); !ok {
+		t.Fatalf("the Settings workspace row opened %T, want *SettingsScreen", r.screen)
 	}
 }
 
@@ -212,8 +275,8 @@ func (f *fakeScreen) HandlesKey(key string) bool       { return f.ownsEsc && key
 // jumping all the way home the way it used to.
 func TestEscPopsOneLevelNotHome(t *testing.T) {
 	r := newTestRoot(NewWelcomeScreen())
-	r = press(t, r, "2") // Inventory list
-	r = press(t, r, "4") // Assets list
+	r = openFromMenu(t, r, WSInventory, "") // Inventory list
+	r = openFromMenu(t, r, WSAssets, "")    // Assets list
 
 	r = press(t, r, "esc")
 	ls, ok := r.screen.(*ListScreen)
@@ -232,8 +295,8 @@ func TestEscPopsOneLevelNotHome(t *testing.T) {
 // then becomes a harmless no-op — never trapping the user or panicking.
 func TestEscUnwindsToHomeThenNoops(t *testing.T) {
 	r := newTestRoot(NewWelcomeScreen())
-	r = press(t, r, "2") // Inventory
-	r = press(t, r, "3") // Purchasing
+	r = openFromMenu(t, r, WSInventory, "")  // Inventory
+	r = openFromMenu(t, r, WSPurchasing, "") // Purchasing
 
 	r = press(t, r, "esc") // -> Inventory
 	if ls, ok := r.screen.(*ListScreen); !ok || ls.Title() != "Inventory" {
@@ -278,7 +341,7 @@ func TestEscFromTopLevelWithEmptyStackFallsHome(t *testing.T) {
 // from the detail returns to it.
 func TestDrillDownThenEscReturnsToList(t *testing.T) {
 	r := newTestRoot(NewWelcomeScreen())
-	r = press(t, r, "4") // Assets list
+	r = openFromMenu(t, r, WSAssets, "") // Assets list
 
 	next, _ := r.Update(SwitchScreenMsg{Workspace: WSAssets, Screen: NewAssetDetailScreen(Deps{}, "123")})
 	r = next.(Root)
@@ -301,9 +364,9 @@ func TestDrillDownThenEscReturnsToList(t *testing.T) {
 // does not re-open the form the user just dismissed.
 func TestFormNotRecordedAsBackTarget(t *testing.T) {
 	r := newTestRoot(NewWelcomeScreen())
-	r = press(t, r, "N") // create-PO form (RawInput)
+	r = openFromMenu(t, r, WSPurchasing, "New order") // create-PO form (RawInput)
 	if _, ok := r.screen.(*PurchaseOrderCreateScreen); !ok {
-		t.Fatalf("after 'N' active screen is %T, want *PurchaseOrderCreateScreen", r.screen)
+		t.Fatalf("Purchasing > New order opened %T, want *PurchaseOrderCreateScreen", r.screen)
 	}
 
 	// The form's cancel/save leaves via SwitchTo(WSPurchasing, ...).

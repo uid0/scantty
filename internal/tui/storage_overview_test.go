@@ -215,8 +215,8 @@ func TestStorageOverview_PositionRulers(t *testing.T) {
 }
 
 // TestStorageOverview_CursorAndPaging covers moving around the grid and paging
-// racks — h/l along a level, j/k between levels (down the printed picture), tab
-// between racks.
+// racks — h/l along a level, j/k between levels (down the printed picture),
+// pgup/pgdn between racks (tab belongs to the sidebar menu since phase 3).
 func TestStorageOverview_CursorAndPaging(t *testing.T) {
 	s := loadedOverview(t)
 	if s.level != "C" || s.position != 1 {
@@ -261,17 +261,17 @@ func TestStorageOverview_CursorAndPaging(t *testing.T) {
 
 	// Paging racks lands top-left of the new rack: a level letter carried over
 	// from another rack means nothing there.
-	s = overviewKey(t, s, "tab")
+	s = overviewKey(t, s, "pgdown")
 	if s.rackNumber != 2 || s.level != "A" || s.position != 1 {
-		t.Errorf("tab landed at rack %d %s%d, want rack 2 A1", s.rackNumber, s.level, s.position)
+		t.Errorf("pgdown landed at rack %d %s%d, want rack 2 A1", s.rackNumber, s.level, s.position)
 	}
-	s = overviewKey(t, s, "tab")
+	s = overviewKey(t, s, "pgdown")
 	if s.rackNumber != 1 {
-		t.Errorf("tab should wrap back to rack 1, got %d", s.rackNumber)
+		t.Errorf("pgdown should wrap back to rack 1, got %d", s.rackNumber)
 	}
-	s = overviewKey(t, s, "shift+tab")
+	s = overviewKey(t, s, "pgup")
 	if s.rackNumber != 2 {
-		t.Errorf("shift+tab should page backwards, got rack %d", s.rackNumber)
+		t.Errorf("pgup should page backwards, got rack %d", s.rackNumber)
 	}
 }
 
@@ -483,19 +483,24 @@ func TestStorageOverview_EnterOpensTheSlot(t *testing.T) {
 	}
 }
 
-// TestStorageOverview_HandlesKey is the wiring guard: `a` and `l` are global
-// hotkeys, so without a claim the grid would never see them.
+// TestStorageOverview_HandlesKey pins the claim. `a` and `l` were claimed
+// because they collided with globals; those globals are gone, but the claim
+// stays as the screen naming the keys it owns — and `tab` must NOT be claimed,
+// or the sidebar menu would be unreachable from this screen.
 func TestStorageOverview_HandlesKey(t *testing.T) {
 	s := loadedOverview(t)
 	for _, k := range []string{"a", "l"} {
 		if !s.HandlesKey(k) {
-			t.Errorf("HandlesKey(%q) = false, want true (it collides with a global)", k)
+			t.Errorf("HandlesKey(%q) = false, want true (the screen owns this key)", k)
 		}
 	}
-	for _, k := range []string{"h", "j", "k", "x", "r", "enter", "tab"} {
+	for _, k := range []string{"h", "j", "k", "x", "r", "enter"} {
 		if s.HandlesKey(k) {
 			t.Errorf("HandlesKey(%q) = true — it is globally free and should reach us by fall-through", k)
 		}
+	}
+	if s.HandlesKey("tab") {
+		t.Error("HandlesKey(\"tab\") = true — tab opens the sidebar menu and no screen may take it")
 	}
 	// While the confirm is up, raw input already routes every key here.
 	s.confirmingRelease = true

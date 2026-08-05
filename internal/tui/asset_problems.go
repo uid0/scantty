@@ -913,7 +913,7 @@ func (s *AssetProblemsScreen) viewVendor() string {
 		case s.vendorsErr != "":
 			b.WriteString(StyleStatusError.Render("  "+s.vendorsErr) + "\n")
 		case len(s.vendors) == 0:
-			b.WriteString(StyleMuted.Render("  (no active vendors — add one from the V vendors screen)") + "\n")
+			b.WriteString(StyleMuted.Render("  (no active vendors — add one from the menu: Maintenance › Vendors)") + "\n")
 		default:
 			for i, v := range s.vendors {
 				caret := "    "

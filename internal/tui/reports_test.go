@@ -129,11 +129,11 @@ func TestReportsHub_ForecastHotkeys(t *testing.T) {
 	}
 }
 
-// TestRoot_Digit8OpensReportsHub locks the nav wiring: pressing 8 opens the hub.
-func TestRoot_Digit8OpensReportsHub(t *testing.T) {
-	r := newTestRoot(NewWelcomeScreen())
-	r = press(t, r, "8")
+// TestRoot_MenuOpensReportsHub locks the nav wiring. The digit 8 that used to
+// open this hub went with the letters in phase 3; the sidebar row is the door.
+func TestRoot_MenuOpensReportsHub(t *testing.T) {
+	r := openFromMenu(t, newTestRoot(NewWelcomeScreen()), WSReports, "")
 	if _, ok := r.screen.(*ReportsScreen); !ok {
-		t.Fatalf("digit 8 should open the Reports hub, got %T", r.screen)
+		t.Fatalf("the Reports workspace row opened %T, want the Reports hub", r.screen)
 	}
 }

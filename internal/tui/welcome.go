@@ -15,45 +15,40 @@ func (s *WelcomeScreen) Update(msg tea.Msg) (Screen, tea.Cmd) { return s, nil }
 
 func (s *WelcomeScreen) Title() string { return "Welcome" }
 
+// View is the app's standing statement of the key model. It used to be a table
+// of ~25 global letters, which is exactly what phase 3 of the JD Edwards
+// redesign retired: system keys are now scroll / exit / submit / edit and
+// nothing else, and every surface those letters opened is a row of the sidebar
+// menu. So this screen names the keys that exist and points at the menu, rather
+// than listing destinations by letter.
+//
+// It is written to fit an 80x24 terminal WHOLE — every line inside
+// screenBodyWidth(80) and no more lines than screenBodyHeight(24). This screen
+// does not scroll, and Root.View clamps with clampToBox, which TRUNCATES in
+// both directions rather than wrapping or paging: an over-wide line loses its
+// end and an over-long list loses its tail, with nothing on screen to say so.
+// The old version ran 35 lines, so on a standard terminal the bottom third —
+// which is where "ctrl+c quits" lived — was never visible at all.
 func (s *WelcomeScreen) View() string {
 	lines := []string{
-		"Scantty — scanner-driven console for OMS + ForgeKey.",
+		"Scantty — console for OMS + ForgeKey.",
 		"",
-		StyleMuted.Render("Press a workspace hotkey to begin:"),
+		StyleMuted.Render("Every screen is a row of the menu: press tab,"),
+		StyleMuted.Render("walk with the arrows, open with enter."),
 		"",
-		"  [0] Scan         — barcode + badge entry",
-		"  [1] Dashboard    — operations overview",
-		"  [2] Inventory    — items, suppliers, locations",
-		"  [3] Purchasing   — purchase orders + reorders",
-		"  [4] Assets       — equipment register",
-		"  [5] Facilities   — TV, kiosk, electrical",
-		"  [6] Maintenance  — work orders, PM dashboard",
-		"  [7] SIGs         — special interest groups",
-		"  [8] Reports      — analytics pulse + report tables",
-		"  [9] ForgeKey     — devices, authorizations",
-		"  [s] Settings",
+		StyleTitle.Render("The whole key model"),
 		"",
-		"  Ctrl+K or /     — global search palette",
-		"  m               — your member profile",
-		"  n               — notifications (poll runs every 60s)",
-		"  a               — ForgeKey authorizations (revoke)",
-		"  l               — ForgeKey lockouts (hierarchical unlock)",
-		"  o               — operational modes (toggle classroom mode)",
-		"  u               — usage sessions (end active)",
-		"  f               — firmware versions + recent updates",
-		"  e               — ePaper panels (battery, firmware, retire/reactivate)",
-		"  C               — location check-ins (recent + log new)",
-		"  V               — third-party service vendors",
-		"  G               — inventory categories (create / edit / delete)",
-		"  L               — inventory locations (create / edit / delete / QR)",
-		"  U               — inventory suppliers (create / edit / delete)",
-		"  B               — maker boxes (per-member bin assignments + scan)",
-		"  K               — checklists (active list + in-progress runs)",
-		"  P               — PM dashboard (urgency-sorted board + log service)",
-		"  Q               — pending reorder request queue",
-		"  D               — donations log",
+		"  tab       into the menu, and back out",
+		"  ↑ ↓ j k   move · ← → jump a workspace",
+		"  enter     open what is selected · submit",
+		"  esc       back one step · cancel",
+		"  ctrl+e    edit / open the highlighted row",
+		"  ctrl+k    search — items, assets, orders",
+		"  ctrl+c    quit, from anywhere (ctrl+q too)",
 		"",
-		StyleMuted.Render("Press `q` on this screen, or Ctrl+C anywhere, to quit."),
+		StyleMuted.Render("Scrolling reads the same on every screen —"),
+		StyleMuted.Render("PgUp/PgDn, g / G for top and bottom — and each"),
+		StyleMuted.Render("screen names its own keys along the foot."),
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }

@@ -34,6 +34,14 @@ var (
 	StyleSidebarItemActive   = StyleSidebarItem.Foreground(colorAccent).Bold(true).Background(colorSelected)
 	StyleSidebarItemDisabled = StyleSidebarItem.Foreground(colorMuted)
 
+	// StyleSidebarCursor marks the sidebar row the keyboard is on, and only
+	// while the sidebar HOLDS the keyboard. It is deliberately the same
+	// reverse-video treatment a focused field gets on a columnar sheet
+	// (StyleJDEFieldFocused) rather than the active-workspace highlight, so the
+	// two readings stay distinct: bold-on-selected says "the screen you are
+	// looking at", reverse says "where the next keypress goes".
+	StyleSidebarCursor = StyleSidebarItem.Reverse(true).Foreground(colorAccent)
+
 	StyleContent = lipgloss.NewStyle().Padding(1, 2)
 
 	StyleStatusBar = lipgloss.NewStyle().
@@ -89,6 +97,7 @@ func ApplyTheme(name string) string {
 	colorAccent = lipgloss.Color(def.Accent)
 	StyleTitle = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	StyleSidebarItemActive = StyleSidebarItem.Foreground(colorAccent).Bold(true).Background(colorSelected)
+	StyleSidebarCursor = StyleSidebarItem.Reverse(true).Foreground(colorAccent)
 	// The columnar-form highlight and the action-bar keys are accent-coloured,
 	// so they have to be rebuilt here too — a style built once at package init
 	// would keep the theme the app started with.
