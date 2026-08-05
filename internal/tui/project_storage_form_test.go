@@ -23,8 +23,14 @@ func TestProjectStorageForm_RenderSmoke(t *testing.T) {
 	if !strings.Contains(out, "Username") {
 		t.Errorf("form view missing Username field: %q", out)
 	}
-	if !strings.Contains(out, "*") {
-		t.Errorf("form view should mark username required with '*': %q", out)
+	// The "*" became a HINT after the input area: a columnar form marks what is
+	// required rather than hanging a marker off the shared label column, which
+	// would widen it for every row (sc-6qsk).
+	if !strings.Contains(out, "Username ..... ") {
+		t.Errorf("form view should render Username as a columnar row: %q", out)
+	}
+	if !strings.Contains(out, "required") {
+		t.Errorf("form view should still mark username required: %q", out)
 	}
 	if !strings.Contains(out, "Storage location") {
 		t.Errorf("form view missing Storage location field: %q", out)

@@ -54,6 +54,30 @@ var locationFieldLabel = map[int]string{
 	lfIsActive:    "Active",
 }
 
+// locationFieldHint carries what the placeholders used to say. A placeholder
+// long enough to fill the input area leaves no underscores, so an empty
+// green-screen row stops reading as empty; and a columnar form marks what is
+// REQUIRED rather than tagging everything else "(optional)".
+var locationFieldHint = map[int]string{
+	lfName: "required",
+}
+
+func locationFieldWidth(id int) int {
+	switch id {
+	case lfName:
+		return 40
+	case lfDescription:
+		return 44
+	}
+	return 0
+}
+
+// locationLabelWidth is this sheet's label column. The location form is NOT in
+// the storage family's shared column (storage_form_helpers.go): it hangs off
+// inventory, not the racking, so the two are never seen side by side and
+// sharing would only widen one of them.
+var locationLabelWidth = jdeLabelWidth(jdeLabelFields(locationFieldLabel))
+
 type LocationFormScreen struct {
 	deps  Deps
 	edit  bool
@@ -69,7 +93,7 @@ type LocationFormScreen struct {
 	refArrived bool
 	locArrived bool
 
-	terminalHeight int
+	jdeScreen
 
 	inputs   []textinput.Model
 	parentID *int
@@ -81,7 +105,6 @@ type LocationFormScreen struct {
 	phase       locationFormPhase
 	pickCursor  int
 	pickSearch  textinput.Model
-	pickTyping  bool
 	pickOptions []itemPickOption
 }
 
@@ -113,18 +136,16 @@ func NewLocationFormScreen(deps Deps, locID string) *LocationFormScreen {
 	for _, id := range []int{lfName, lfDescription} {
 		ti := textinput.New()
 		ti.Prompt = ""
+		// Placeholders moved to locationFieldHint — see there.
 		if id == lfName {
 			ti.CharLimit = 100
-			ti.Placeholder = "location name"
 		} else {
 			ti.CharLimit = 500
-			ti.Placeholder = "optional"
 		}
 		s.inputs[id] = ti
 	}
 	s.pickSearch = textinput.New()
 	s.pickSearch.Prompt = ""
-	s.pickSearch.Placeholder = "filter"
 	s.pickSearch.CharLimit = 60
 
 	s.fields = []int{lfName, lfDescription, lfParent, lfIsActive}
@@ -184,7 +205,7 @@ func (s *LocationFormScreen) loadLocation() tea.Cmd {
 func (s *LocationFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case locationRefLoadedMsg:
 		s.refArrived = true
@@ -288,6 +309,8 @@ func (s *LocationFormScreen) syncFocus() {
 }
 
 func (s *LocationFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -297,11 +320,25 @@ func (s *LocationFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS — only the parent row opens
+		// anything, which is why the bar drops the key on the others.
+		if id, ok := s.currentFieldID(); ok && id == lfParent {
+			s.openParentPicker()
+			return s, textinput.Blink
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -310,13 +347,13 @@ func (s *LocationFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	}
 	switch id {
 	case lfParent:
-		if m.String() == " " {
-			s.openParentPicker()
-			return s, textinput.Blink
-		}
+		// A picker row has nothing to type into and no accelerators left.
 		return s, nil
 	case lfIsActive:
-		if m.String() == " " {
+		// A toggle is a two-value choice row, so it flips on the same ←/→ every
+		// other bounded set takes (space stays as the pilot's synonym).
+		switch m.String() {
+		case " ", "left", "right":
 			s.isActive = !s.isActive
 		}
 		return s, nil
@@ -336,11 +373,22 @@ func (s *LocationFormScreen) moveCursor(delta int) {
 	s.syncFocus()
 }
 
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *LocationFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.syncFocus()
+}
+
 func (s *LocationFormScreen) openParentPicker() {
 	s.phase = locationPhaseParentPick
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
 	s.applyParentFilter()
 	s.pickCursor = 0
 	if s.parentID != nil {
@@ -381,43 +429,23 @@ func (s *LocationFormScreen) applyParentFilter() {
 }
 
 func (s *LocationFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applyParentFilter()
-			s.pickCursor = 0
-			return s, nil
-		}
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		s.closePicker()
+	case jdePickCommit:
+		s.commitParent()
+	case jdePickMove:
+		s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickOptions))
+	case jdePickPage:
+		header, body := s.pickView()
+		s.pickCursor = jdeClampPick(s.pickCursor+delta*s.windowRows(body, s.pickCursor, len(header)), len(s.pickOptions))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
 		s.applyParentFilter()
 		return s, cmd
-	}
-
-	switch m.String() {
-	case "esc":
-		s.phase = locationPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickOptions)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case "enter":
-		s.commitParent()
 	}
 	return s, nil
 }
@@ -432,8 +460,11 @@ func (s *LocationFormScreen) commitParent() {
 			s.parentID = &id
 		}
 	}
+	s.closePicker()
+}
+
+func (s *LocationFormScreen) closePicker() {
 	s.phase = locationPhaseForm
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
 	s.pickSearch.Blur()
 	s.syncFocus()
@@ -499,101 +530,102 @@ func (s *LocationFormScreen) View() string {
 }
 
 func (s *LocationFormScreen) viewForm() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *LocationFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
-	}
-	label := locationFieldLabel[id]
-	var value string
-	switch id {
-	case lfParent:
-		value = s.parentLabel()
-	case lfIsActive:
-		if s.isActive {
-			value = StyleStatusOK.Render("[x] yes")
-		} else {
-			value = StyleMuted.Render("[ ] no")
+// formFields describes the sheet as columnar rows: one FK row Ctrl-E opens, one
+// bounded set, and two typed into. The QR image and access code are
+// server-managed and read-only, so they live on the detail screen, not here.
+func (s *LocationFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   locationFieldLabel[id],
+			Width:   locationFieldWidth(id),
+			Hint:    locationFieldHint[id],
+			Focused: i == s.cursor,
 		}
-	default:
-		value = s.inputs[id].View()
+		switch id {
+		case lfParent:
+			value, dim := s.parentValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		case lfIsActive:
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.isActive)
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return out
 }
 
-func (s *LocationFormScreen) parentLabel() string {
+func (s *LocationFormScreen) formLines() *jdeLines {
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Location"))
+	l.Add("")
+	l.AddFields(s.formFields(), locationLabelWidth, 0)
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *LocationFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok {
+		switch id {
+		case lfIsActive:
+			items = append(items, actionBarItem{"←→", "Change"})
+		case lfParent:
+			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+		}
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// parentValue is the parent row's text, and whether it is an empty state rather
+// than a value. PLAIN text plus a flag, not pre-styled muted text: a focused row
+// has to be able to reverse-video the whole field.
+func (s *LocationFormScreen) parentValue() (string, bool) {
 	if s.parentID == nil {
-		return StyleMuted.Render("(none — top level)")
+		return "(none — top level)", true
 	}
 	for _, l := range s.locations {
 		if l.ID == *s.parentID {
-			return l.Name
+			return l.Name, false
 		}
 	}
-	return fmt.Sprintf("#%d", *s.parentID)
+	return fmt.Sprintf("#%d", *s.parentID), false
 }
 
-func (s *LocationFormScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok {
-		switch id {
-		case lfParent:
-			kindHelp = "space to pick parent"
-		case lfIsActive:
-			kindHelp = "space toggle"
-		}
-	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
+func (s *LocationFormScreen) pickView() ([]string, *jdeLines) {
+	return jdePickList{
+		Title:  "Parent location",
+		For:    strings.TrimSpace(s.inputs[lfName].Value()),
+		Note:   "Row 1 is none — the location then sits at the top level.",
+		Filter: s.pickSearch,
+		Count:  len(s.pickOptions),
+		Label:  func(i int) string { return s.pickOptions[i].label },
+		Dim:    func(i int) bool { return s.pickOptions[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  "(no matching locations)",
+	}.render()
 }
 
 func (s *LocationFormScreen) viewPick() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render("Pick parent location — j/k move · / filter · enter select · esc back") + "\n\n")
-	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	if len(s.pickOptions) == 0 {
-		b.WriteString(StyleMuted.Render("(no matches)"))
-		return b.String()
-	}
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		caret := "    "
-		if i == s.pickCursor {
-			caret = "  ▸ "
-		}
-		opt := s.pickOptions[i]
-		if i == s.pickCursor {
-			b.WriteString(StyleSidebarItemActive.Render(caret+opt.label) + "\n")
-		} else if opt.clear {
-			b.WriteString(caret + StyleMuted.Render(opt.label) + "\n")
-		} else {
-			b.WriteString(caret + opt.label + "\n")
-		}
-	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }
 
 // ===========================================================================

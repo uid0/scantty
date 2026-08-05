@@ -66,6 +66,29 @@ var projectStorageFieldLabel = map[int]string{
 	psfStorageLocation: "Storage location",
 }
 
+// projectStorageFieldHint carries what the placeholders and the "*" used to
+// say. A placeholder long enough to fill the input area leaves no underscores,
+// so an empty green-screen row stops reading as empty; and a columnar form
+// marks what is REQUIRED rather than tagging everything else "(optional)".
+// A hint is CLIPPED, not wrapped, when the row runs past the pane, so the
+// widths below are what leaves room for these (TestJDESweepD_RowsFitTheBody).
+var projectStorageFieldHint = map[int]string{
+	psfUsername:        "required",
+	psfEmail:           "member@example.com",
+	psfProjectTitle:    "blank = personal storage",
+	psfStorageLocation: "non-rack, e.g. by the CNC",
+}
+
+func projectStorageFieldWidth(id int) int {
+	switch id {
+	case psfEmail:
+		return 30
+	case psfSlot:
+		return 0
+	}
+	return 24
+}
+
 // psfSlot is the only non-text row: it holds a slot CODE chosen from the free
 // slots (or typed), not a free-text string, so it gets the picker treatment.
 func projectStorageFieldKind(id int) assetFieldKind {
@@ -95,24 +118,9 @@ func projectStorageCharLimitFor(id int) int {
 	}
 }
 
-func projectStoragePlaceholderFor(id int) string {
-	switch id {
-	case psfUsername:
-		return "member username (required)"
-	case psfFirstName:
-		return "optional"
-	case psfLastName:
-		return "optional"
-	case psfEmail:
-		return "member@example.com (optional)"
-	case psfProjectTitle:
-		return "blank = personal storage"
-	case psfStorageLocation:
-		return "non-rack storage, e.g. floor by the CNC (optional)"
-	default:
-		return ""
-	}
-}
+// projectStoragePlaceholderFor is empty for every field now — see
+// projectStorageFieldHint.
+func projectStoragePlaceholderFor(id int) string { return "" }
 
 type ProjectStorageFormScreen struct {
 	deps Deps
@@ -143,10 +151,9 @@ type ProjectStorageFormScreen struct {
 	phase      projectStorageFormPhase
 	pickCursor int
 	pickRows   []assetPickRow
-	pickTyping bool
 	pickSearch textinput.Model
 
-	terminalHeight int
+	jdeScreen
 }
 
 type projectStorageFormSavedMsg struct {
@@ -174,7 +181,6 @@ func NewProjectStorageFormScreen(deps Deps) *ProjectStorageFormScreen {
 	search := textinput.New()
 	search.Prompt = ""
 	search.CharLimit = 16
-	search.Placeholder = "code or rack, e.g. 1A1"
 	s.pickSearch = search
 	s.fields = []int{psfUsername, psfFirstName, psfLastName, psfEmail, psfProjectTitle, psfSlot, psfStorageLocation}
 	s.syncFocus()
@@ -215,7 +221,7 @@ func (s *ProjectStorageFormScreen) ctx() context.Context {
 func (s *ProjectStorageFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 
 	case projectStorageFormSavedMsg:
@@ -254,12 +260,9 @@ func (s *ProjectStorageFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 	// Non-key messages (cursor blink) go to the focused input.
 	if s.phase == psFormPhaseSlotPick {
-		if s.pickTyping {
-			var cmd tea.Cmd
-			s.pickSearch, cmd = s.pickSearch.Update(msg)
-			return s, cmd
-		}
-		return s, nil
+		var cmd tea.Cmd
+		s.pickSearch, cmd = s.pickSearch.Update(msg)
+		return s, cmd
 	}
 	if id, ok := s.currentFieldID(); ok && projectStorageFieldKind(id) == akText {
 		var cmd tea.Cmd
@@ -270,6 +273,8 @@ func (s *ProjectStorageFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 }
 
 func (s *ProjectStorageFormScreen) updateForm(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -279,11 +284,25 @@ func (s *ProjectStorageFormScreen) updateForm(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS. Only the slot row opens
+		// anything, which is why the bar drops the key on the others.
+		if id, ok := s.currentFieldID(); ok && projectStorageFieldKind(id) == akPicker {
+			s.openSlotPick()
+			return s, textinput.Blink
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -291,16 +310,22 @@ func (s *ProjectStorageFormScreen) updateForm(m tea.KeyMsg) (Screen, tea.Cmd) {
 		return s, nil
 	}
 	if projectStorageFieldKind(id) == akPicker {
-		// space opens the picker; the row holds no textinput to type into, so
-		// every other key is a no-op rather than silent input loss.
-		if m.String() == " " {
-			s.openSlotPick()
-		}
+		// A picker row has nothing to type into and no accelerators left.
 		return s, nil
 	}
 	var cmd tea.Cmd
 	s.inputs[id], cmd = s.inputs[id].Update(m)
 	return s, cmd
+}
+
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *ProjectStorageFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.syncFocus()
 }
 
 // ---------------------------------------------------------------------------
@@ -309,9 +334,11 @@ func (s *ProjectStorageFormScreen) updateForm(m tea.KeyMsg) (Screen, tea.Cmd) {
 
 func (s *ProjectStorageFormScreen) openSlotPick() {
 	s.phase = psFormPhaseSlotPick
-	s.pickTyping = false
 	s.pickSearch.SetValue("")
-	s.pickSearch.Blur()
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open — which is also what makes the typed-code
+	// escape hatch below a plain consequence of typing rather than a mode.
+	s.pickSearch.Focus()
 	s.applySlotFilter()
 	// Park the cursor on the current claim so re-opening and pressing enter is
 	// a no-op confirm rather than a silent reset to "no slot".
@@ -373,50 +400,22 @@ func projectStorageSlotOption(slot omsapi.StorageSlot) string {
 }
 
 func (s *ProjectStorageFormScreen) updateSlotPick(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.pickTyping {
-		switch m.Type {
-		case tea.KeyEsc:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			return s, nil
-		case tea.KeyEnter:
-			s.pickTyping = false
-			s.pickSearch.Blur()
-			s.applySlotFilter()
-			s.pickCursor = 0
-			return s, nil
-		}
-		var cmd tea.Cmd
-		s.pickSearch, cmd = s.pickSearch.Update(m)
-		s.applySlotFilter()
-		return s, cmd
-	}
-
-	switch m.String() {
-	case "esc":
-		// esc means "done looking" and KEEPS the current claim.
-		s.phase = psFormPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickRows)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "/":
-		s.pickTyping = true
-		s.pickSearch.Focus()
-		return s, textinput.Blink
-	case "g":
+	// Ctrl-R retries a FAILED load in place, rather than leaving the operator
+	// with an empty list they can't tell from a full rack. It is a control key,
+	// not a letter, because the always-live filter owns every letter — and the
+	// bar only offers it when there is something to retry.
+	if m.String() == "ctrl+r" {
 		if s.slotsErr != "" {
-			// A failed load is retried in place rather than leaving the
-			// operator with an empty list they can't tell from a full rack.
 			s.slotsErr = ""
 			return s, s.loadSlots()
 		}
-	case "enter":
+		return s, nil
+	}
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		// esc means "done looking" and KEEPS the current claim.
+		s.closeSlotPick()
+	case jdePickCommit:
 		if s.pickCursor >= 0 && s.pickCursor < len(s.pickRows) {
 			row := s.pickRows[s.pickCursor]
 			if row.clear {
@@ -425,13 +424,29 @@ func (s *ProjectStorageFormScreen) updateSlotPick(m tea.KeyMsg) (Screen, tea.Cmd
 				s.slotCode, s.slotLabel = row.key, row.label
 			}
 		}
-		s.phase = psFormPhaseForm
-		s.pickTyping = false
-		s.pickSearch.SetValue("")
-		s.pickSearch.Blur()
-		s.syncFocus()
+		s.closeSlotPick()
+	case jdePickMove:
+		s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickRows))
+	case jdePickPage:
+		header, body := s.pickView()
+		s.pickCursor = jdeClampPick(s.pickCursor+delta*s.windowRows(body, s.pickCursor, len(header)), len(s.pickRows))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember. Typing a code the free list does
+		// not carry is what offers the synthetic "use <CODE>" row.
+		var cmd tea.Cmd
+		s.pickSearch, cmd = s.pickSearch.Update(m)
+		s.applySlotFilter()
+		return s, cmd
 	}
 	return s, nil
+}
+
+func (s *ProjectStorageFormScreen) closeSlotPick() {
+	s.phase = psFormPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func (s *ProjectStorageFormScreen) currentFieldID() (int, bool) {
@@ -531,112 +546,116 @@ func (s *ProjectStorageFormScreen) View() string {
 	if s.phase == psFormPhaseSlotPick {
 		return s.viewSlotPick()
 	}
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-
-	visible := s.visibleRows()
-	start, end := fieldWindow(s.cursor, len(s.fields), visible)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	if end < len(s.fields) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.fields)-end)) + "\n")
-	}
-
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	} else {
-		b.WriteString(StyleMuted.Render("* required · intake self-issues a 30-day stint"))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, s.statusLine(), s.formBar(body))
 }
 
-func (s *ProjectStorageFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
-	}
-	label := projectStorageFieldLabel[id]
-	if id == psfUsername {
-		label += " *"
-	}
-	if projectStorageFieldKind(id) == akPicker {
-		return caret + StyleTitle.Render(label+": ") + s.slotRowValue()
-	}
-	return caret + StyleTitle.Render(label+": ") + s.inputs[id].View()
+func (s *ProjectStorageFormScreen) statusLine() string {
+	return storageSlotStatusLine(s.saving, "Saving…", s.errMsg, "",
+		"intake self-issues a 30-day stint")
 }
 
-// slotRowValue shows the claim, or why there is nothing to pick from. The
-// three states are kept distinct: nothing claimed, a claim, and a slot list
-// that FAILED (as opposed to a rack with no free slots) — silence on a failure
-// would read as "the racking is full".
-func (s *ProjectStorageFormScreen) slotRowValue() string {
+// formFields describes the sheet as columnar rows: one FK row Ctrl-E opens, and
+// the rest typed into. The member and the ad-hoc location are denormalized
+// strings on the model, not foreign keys, so they stay free text.
+func (s *ProjectStorageFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   projectStorageFieldLabel[id],
+			Width:   projectStorageFieldWidth(id),
+			Hint:    projectStorageFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		if projectStorageFieldKind(id) == akPicker {
+			value, dim := s.slotRowValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		} else {
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
+	}
+	return out
+}
+
+func (s *ProjectStorageFormScreen) formLines() *jdeLines {
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Project storage intake"))
+	l.Add("")
+	l.AddFields(s.formFields(), storageLabelWidth, 0)
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *ProjectStorageFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok && projectStorageFieldKind(id) == akPicker {
+		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// slotRowValue shows the claim, or why there is nothing to pick from, and
+// whether that is an empty state rather than a value. The four states are kept
+// distinct: a claim, a list still loading, a list that FAILED, and a rack with
+// no free slots — silence on a failure would read as "the racking is full".
+//
+// PLAIN text plus a flag, not pre-styled muted text: a focused row has to be
+// able to reverse-video the whole field.
+func (s *ProjectStorageFormScreen) slotRowValue() (string, bool) {
 	if s.slotCode != "" {
-		return s.slotCode + StyleMuted.Render("  (space to change)")
+		return s.slotCode, false
 	}
 	switch {
 	case s.slotsErr != "":
-		return StyleMuted.Render("— none · slot list unavailable, space to type a code")
+		return "— none · slot list unavailable", true
 	case !s.slotsReady:
-		return StyleMuted.Render("— none · loading free slots…")
+		return "— none · loading free slots…", true
 	case len(s.slots) == 0:
-		return StyleMuted.Render("— none · no free slots in the racking")
+		return "— none · no free slots in the racking", true
 	default:
-		return StyleMuted.Render(fmt.Sprintf("— none · space to pick from %d free", len(s.slots)))
+		return fmt.Sprintf("— none · %d free to choose from", len(s.slots)), true
 	}
 }
 
-func (s *ProjectStorageFormScreen) helpText() string {
-	if id, ok := s.currentFieldID(); ok && projectStorageFieldKind(id) == akPicker {
-		return "space opens the slot list · tab/↑↓ move · enter save · esc cancel"
+// pickView builds the open picker's pinned header and its option list. The note
+// covers the two things about this list that are not self-evident: what the
+// clear row does, and — when the load failed — that a code can still be typed
+// straight in (the backend re-checks it either way).
+func (s *ProjectStorageFormScreen) pickView() ([]string, *jdeLines) {
+	note := "Row 1 is no slot — ad-hoc storage. A claimed slot wins over the location below."
+	if s.slotsErr != "" {
+		note = "Slot list unavailable — type the code off the card, or Ctrl-R to retry."
 	}
-	return "type to edit · tab/↑↓ move · enter save · esc cancel"
+	return jdePickList{
+		Title:  "Claim a rack slot",
+		For:    strings.TrimSpace(s.inputs[psfUsername].Value()),
+		Note:   note,
+		Filter: s.pickSearch,
+		Count:  len(s.pickRows),
+		Label:  func(i int) string { return s.pickRows[i].label },
+		Dim:    func(i int) bool { return s.pickRows[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  "(no matching free slots)",
+	}.render()
 }
 
 func (s *ProjectStorageFormScreen) viewSlotPick() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Claim a rack slot") + "\n")
-	b.WriteString(StyleMuted.Render("Free, in-service slots. The slot wins over the free-text location.") + "\n")
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
+	}
+	items := jdePickBar("Claim", paging)
 	if s.slotsErr != "" {
-		b.WriteString(StyleStatusWarn.Render("slot list unavailable — "+s.slotsErr) + "\n")
-		b.WriteString(StyleMuted.Render("press g to retry, or / and type the code printed on the slot's card") + "\n")
+		items = append(items, actionBarItem{"Ctrl-R", "Retry list"})
 	}
-	b.WriteString("\n")
-	if s.pickTyping {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n")
-	} else if v := strings.TrimSpace(s.pickSearch.Value()); v != "" {
-		b.WriteString(StyleMuted.Render("filter: "+v) + "\n")
-	}
-	if len(s.pickRows) == 0 {
-		b.WriteString(StyleMuted.Render("No slots to choose from.") + "\n")
-	} else {
-		b.WriteString(renderWindowedList(len(s.pickRows), s.pickCursor, func(i int) string {
-			return s.pickRows[i].label
-		}))
-	}
-	b.WriteString("\n")
-	if s.pickTyping {
-		b.WriteString(StyleMuted.Render("type to filter · enter apply · esc stop typing"))
-	} else {
-		b.WriteString(StyleMuted.Render("j/k move · / filter or type a code · enter pick · esc keep current"))
-	}
-	return b.String()
-}
-
-// visibleRows returns how many field rows fit given the current terminal height,
-// reserving space for the help line, spacing, status line, and scroll indicators.
-func (s *ProjectStorageFormScreen) visibleRows() int {
-	const chrome = 6 // help + blank + blank + status + 2 scroll indicators
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
-	}
-	return avail
+	return s.frameWithHeader(header, body, s.pickCursor, jdeStatusLine(false, "", ""), items)
 }

@@ -615,7 +615,7 @@ func (s *PowerOutletFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) 
 }
 
 func (s *PowerOutletFormScreen) movePick(delta int) {
-	s.pickCursor = elecClampPick(s.pickCursor+delta, len(s.pickOptions))
+	s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickOptions))
 }
 
 func (s *PowerOutletFormScreen) closePicker() {
@@ -1513,7 +1513,7 @@ func (s *DisconnectFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 }
 
 func (s *DisconnectFormScreen) movePick(delta int) {
-	s.pickCursor = elecClampPick(s.pickCursor+delta, len(s.pickOptions))
+	s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickOptions))
 }
 
 func (s *DisconnectFormScreen) closePicker() {

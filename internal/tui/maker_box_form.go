@@ -125,6 +125,48 @@ var makerBoxFieldLabel = map[int]string{
 	mbfNotes:                 "Notes",
 }
 
+// makerBoxFieldHint carries what the placeholders used to say. A placeholder
+// long enough to fill the input area leaves no underscores, so an empty
+// green-screen row stops reading as empty; and a columnar form marks what is
+// REQUIRED rather than tagging everything else "(optional)".
+//
+// This sheet's label column is the widest in the batch ("Conversion completed
+// at"), which leaves the least room to the right of the leader — a hint is
+// CLIPPED, not wrapped (TestJDESweepD_RowsFitTheBody), so the widths below are
+// what makes these fit.
+var makerBoxFieldHint = map[int]string{
+	mbfBinID:            "PSB-007 · blank = unallocated",
+	mbfAssignedUsername: "WHMCS",
+	mbfEmail:            "member@example.com",
+}
+
+// makerBoxDateTimeHint is what every datetime row says. It is on all four
+// rather than in a footer, because the operator standing on "Paid at" is the
+// one who needs it and the bar has nowhere to put it.
+const makerBoxDateTimeHint = "YYYY-MM-DD or RFC3339"
+
+func makerBoxFieldWidth(id int) int {
+	switch id {
+	case mbfBinID:
+		return 14
+	case mbfEmail:
+		return 28
+	case mbfNotes:
+		return 40
+	}
+	if makerBoxFieldIsDateTime(id) {
+		return 24
+	}
+	return 24
+}
+
+// makerBoxLabelWidth is this sheet's label column. The maker-box form is NOT in
+// the storage family's shared column (storage_form_helpers.go): a bin is
+// reached from the maker-box list, never from the racking, and folding its
+// 23-column "Conversion completed at" into that column would shove every
+// storage row six columns right to line up with a sheet nobody sees beside it.
+var makerBoxLabelWidth = jdeLabelWidth(jdeLabelFields(makerBoxFieldLabel))
+
 func makerBoxFieldIsText(id int) bool {
 	switch id {
 	case mbfStatus, mbfIdentitySource:
@@ -153,7 +195,7 @@ type MakerBoxFormScreen struct {
 
 	box *omsapi.MakerBox
 
-	terminalHeight int
+	jdeScreen
 
 	inputs      []textinput.Model
 	statusIdx   int
@@ -222,24 +264,8 @@ func makerBoxCharLimit(id int) int {
 	return 64
 }
 
-func makerBoxPlaceholder(id int) string {
-	switch id {
-	case mbfBinID:
-		return "PSB-007 / MBX-001 (blank = unallocated)"
-	case mbfAssignedUsername:
-		return "WHMCS username (optional)"
-	case mbfFirstName, mbfLastName:
-		return "optional"
-	case mbfEmail:
-		return "member@example.com (optional)"
-	case mbfNotes:
-		return "optional"
-	}
-	if makerBoxFieldIsDateTime(id) {
-		return "YYYY-MM-DD (optional)"
-	}
-	return ""
-}
+// makerBoxPlaceholder is empty for every field now — see makerBoxFieldHint.
+func makerBoxPlaceholder(id int) string { return "" }
 
 func (s *MakerBoxFormScreen) Title() string {
 	if s.edit {
@@ -280,7 +306,7 @@ func (s *MakerBoxFormScreen) loadBox() tea.Cmd {
 func (s *MakerBoxFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 	case makerBoxFormLoadedMsg:
 		s.loading = false
@@ -369,6 +395,8 @@ func (s *MakerBoxFormScreen) syncFocus() {
 }
 
 func (s *MakerBoxFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -377,6 +405,12 @@ func (s *MakerBoxFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 		return s, textinput.Blink
 	case "shift+tab", "up":
 		s.moveCursor(-1)
+		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
 		return s, textinput.Blink
 	case "enter":
 		if s.saving {
@@ -419,6 +453,17 @@ func (s *MakerBoxFormScreen) moveCursor(delta int) {
 		return
 	}
 	s.cursor = (s.cursor + delta + n) % n
+	s.syncFocus()
+}
+
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place. Twelve
+// fields is more than a short terminal shows at once, so this sheet needs it.
+func (s *MakerBoxFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -513,65 +558,84 @@ func (s *MakerBoxFormScreen) View() string {
 	if s.loadErr != "" {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("esc to go back")
 	}
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
-
-	visible := s.visibleRows()
-	start, end := fieldWindow(s.cursor, len(s.fields), visible)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	if end < len(s.fields) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.fields)-end)) + "\n")
-	}
-
-	b.WriteString("\n")
-	if s.saving {
-		b.WriteString(StyleMuted.Render("Saving…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
-func (s *MakerBoxFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// formFields describes the sheet as columnar rows: two bounded sets and ten
+// typed into (four of them datetimes). There are no foreign keys on a bin, so
+// nothing here opens a picker.
+func (s *MakerBoxFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   makerBoxFieldLabel[id],
+			Width:   makerBoxFieldWidth(id),
+			Hint:    makerBoxFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		if makerBoxFieldIsDateTime(id) {
+			f.Hint = makerBoxDateTimeHint
+		}
+		switch id {
+		case mbfStatus, mbfIdentitySource:
+			// The BARE label between the brackets — the renderer owns them.
+			opts, idx := s.selectOptions(id)
+			f.Kind, f.Value = jdeChoice, opts[idx].label
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
 	}
-	label := makerBoxFieldLabel[id]
-	var value string
-	switch id {
-	case mbfStatus:
-		value = "‹ " + makerBoxStatusOptions[s.statusIdx].label + " ›"
-	case mbfIdentitySource:
-		value = "‹ " + makerBoxIdentityOptions[s.identityIdx].label + " ›"
-	default:
-		value = s.inputs[id].View()
-	}
-	return caret + StyleTitle.Render(label+": ") + value
+	return out
 }
 
-func (s *MakerBoxFormScreen) helpText() string {
-	kindHelp := "type to edit"
+// selectOptions is a choice row's option set and where its cursor is, clamped —
+// a hydrate that met an unknown code rests at index 0 rather than panicking.
+func (s *MakerBoxFormScreen) selectOptions(id int) ([]selectOption, int) {
+	if id == mbfIdentitySource {
+		return makerBoxIdentityOptions, jdeClampPick(s.identityIdx, len(makerBoxIdentityOptions))
+	}
+	return makerBoxStatusOptions, jdeClampPick(s.statusIdx, len(makerBoxStatusOptions))
+}
+
+func (s *MakerBoxFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Maker box"))
+	l.Add("")
+	for i, id := range s.fields {
+		l.AddRow(i, renderJDEField(fields[i], makerBoxLabelWidth))
+		// The set around the FOCUSED choice row, so six statuses are never
+		// cycled blind (jdeOptionStrip draws nothing for a two-value set).
+		if i != s.cursor || (id != mbfStatus && id != mbfIdentitySource) {
+			continue
+		}
+		opts, idx := s.selectOptions(id)
+		labels := make([]string, len(opts))
+		for j, o := range opts {
+			labels[j] = o.label
+		}
+		strip := jdeOptionStrip(labels, idx, jdeStripWidth(s.bodyWidth(), makerBoxLabelWidth))
+		if strip != "" {
+			l.AddRow(i, jdeStripIndent(makerBoxLabelWidth)+StyleMuted.Render(strip))
+		}
+	}
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *MakerBoxFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok {
 		switch id {
 		case mbfStatus, mbfIdentitySource:
-			kindHelp = "space/←→ change"
+			items = append(items, actionBarItem{"←→", "Change"})
 		}
 	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
-}
-
-func (s *MakerBoxFormScreen) visibleRows() int {
-	const chrome = 6
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
-	return avail
+	return items
 }

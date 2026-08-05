@@ -39,9 +39,9 @@ func freeSlots() []omsapi.StorageSlot {
 func TestProjectStorageForm_SlotPickerClaimsCode(t *testing.T) {
 	s := psFormWithSlots(freeSlots())
 	s.cursor = indexOfField(s.fields, psfSlot)
-	s = psFormKey(t, s, " ")
+	s = psFormKey(t, s, "ctrl+e")
 	if s.phase != psFormPhaseSlotPick {
-		t.Fatalf("space on the slot row should open the picker")
+		t.Fatalf("ctrl+e on the slot row should open the picker")
 	}
 	if !s.pickRows[0].clear {
 		t.Errorf("row 0 must be the explicit no-slot row — ad-hoc storage is first-class")
@@ -187,30 +187,30 @@ func TestProjectStorageForm_MalformedSlotRejectedLocally(t *testing.T) {
 // Silence on a failure would read as "the racking is full".
 func TestProjectStorageForm_SlotRowStates(t *testing.T) {
 	loading := NewProjectStorageFormScreen(Deps{})
-	if got := loading.slotRowValue(); !strings.Contains(got, "loading") {
+	if got, _ := loading.slotRowValue(); !strings.Contains(got, "loading") {
 		t.Errorf("pre-load should say so, got %q", got)
 	}
 
 	failed := psFormWithSlots(nil)
 	failed.slotsReady = false
 	failed.slotsErr = "403"
-	if got := failed.slotRowValue(); !strings.Contains(got, "unavailable") {
+	if got, _ := failed.slotRowValue(); !strings.Contains(got, "unavailable") {
 		t.Errorf("a failed load must say unavailable, got %q", got)
 	}
 
 	empty := psFormWithSlots(nil)
-	if got := empty.slotRowValue(); !strings.Contains(got, "no free slots") {
+	if got, _ := empty.slotRowValue(); !strings.Contains(got, "no free slots") {
 		t.Errorf("an empty rack should say so, got %q", got)
 	}
 
 	full := psFormWithSlots(freeSlots())
-	if got := full.slotRowValue(); !strings.Contains(got, "3 free") {
+	if got, _ := full.slotRowValue(); !strings.Contains(got, "3 free") {
 		t.Errorf("a loaded list should offer its size, got %q", got)
 	}
 
 	claimed := psFormWithSlots(freeSlots())
 	claimed.slotCode = "1A1"
-	if got := claimed.slotRowValue(); !strings.Contains(got, "1A1") {
+	if got, _ := claimed.slotRowValue(); !strings.Contains(got, "1A1") {
 		t.Errorf("a claim should show the code, got %q", got)
 	}
 }

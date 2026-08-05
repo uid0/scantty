@@ -70,17 +70,24 @@ func TestStorageAssignForm_TypeDrivesTheFields(t *testing.T) {
 	}
 
 	// Every option carries its grid letter, so the operator can see what the
-	// rack will read afterwards.
+	// rack will read afterwards — and the option STRIP under the focused row
+	// puts all three on screen at once, so the set is never cycled blind.
+	for s.fields[s.cursor] != safType {
+		s = assignKey(t, s, "tab")
+	}
 	view := s.View()
 	for _, want := range []string{"(C)", "(L)", "(E)"} {
-		if !strings.Contains(elecSelectLabel(storageAssignTypeOptions, 0)+
-			elecSelectLabel(storageAssignTypeOptions, 1)+
-			elecSelectLabel(storageAssignTypeOptions, 2), want) {
-			t.Errorf("the type options should show the grid letter %q", want)
+		if !strings.Contains(view, want) {
+			t.Errorf("the type options should show the grid letter %q:\n%s", want, view)
 		}
 	}
 	if !strings.Contains(view, "Storage type") {
 		t.Errorf("view is missing the type row:\n%s", view)
+	}
+	// The value between the brackets is the LABEL alone — elecSelectLabel wraps
+	// its value in "‹ ›", which inside a jdeChoice would render "< ‹ … › >".
+	if !strings.Contains(view, "< Class (E) >") {
+		t.Errorf("the choice row should carry the bare label between its brackets:\n%s", view)
 	}
 }
 
@@ -154,23 +161,25 @@ func TestStorageAssignForm_NonCommitteeDropsTheGroup(t *testing.T) {
 	}
 }
 
-// TestStorageAssignForm_Picker covers the SIG sub-phase: space opens it, enter
-// picks, esc keeps what was there.
+// TestStorageAssignForm_Picker covers the SIG sub-phase: Ctrl-E opens it, the
+// arrows move, enter picks, and the clear row puts it back to none. The old
+// space/j/k are gone with the rest of the accelerators (sc-6qsk) — the filter
+// is always live, so a letter is filter text now.
 func TestStorageAssignForm_Picker(t *testing.T) {
 	s := loadedAssignForm(t)
 	for s.fields[s.cursor] != safGroup {
 		s = assignKey(t, s, "tab")
 	}
-	s = assignKey(t, s, " ")
+	s = assignKey(t, s, "ctrl+e")
 	if s.phase != assignPhasePick {
-		t.Fatal("space on the SIG row should open the picker")
+		t.Fatal("ctrl+e on the SIG row should open the picker")
 	}
 	// Row 0 is the clear row — a create has nothing to graft, so every other
 	// row is a SIG.
 	if len(s.pickRows) != 3 || !s.pickRows[0].clear {
 		t.Fatalf("picker rows = %+v", s.pickRows)
 	}
-	s = assignKey(t, s, "j")
+	s = assignKey(t, s, "down")
 	s = assignKey(t, s, "enter")
 	if s.phase != assignPhaseForm {
 		t.Error("enter should close the picker")
@@ -180,8 +189,8 @@ func TestStorageAssignForm_Picker(t *testing.T) {
 	}
 
 	// The clear row puts it back to none.
-	s = assignKey(t, s, " ")
-	s = assignKey(t, s, "k")
+	s = assignKey(t, s, "ctrl+e")
+	s = assignKey(t, s, "up")
 	s = assignKey(t, s, "enter")
 	if s.owningGroupID != nil {
 		t.Errorf("the clear row should unset the group, got %v", *s.owningGroupID)

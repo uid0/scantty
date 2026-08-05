@@ -40,10 +40,41 @@ const (
 )
 
 var storageAssignFieldLabel = map[int]string{
-	safType:  "Storage type",
-	safGroup: "Committee (SIG)",
+	safType: "Storage type",
+	// "(SIG)" moved to the hint — see storageSlotFieldLabel.
+	safGroup: "Committee",
 	safLabel: "Occupant",
 	safNotes: "Notes",
+}
+
+// storageAssignFieldWidth sizes the input areas that are not the default.
+// Occupant is narrower than Notes because it carries a hint and the two cannot
+// both have the room (TestJDESweepD_RowsFitTheBody).
+func storageAssignFieldWidth(id int) int {
+	switch id {
+	case safLabel:
+		return 24
+	case safNotes:
+		return 40
+	}
+	return 0
+}
+
+// fieldHint is computed rather than looked up, because what Occupant is FOR
+// depends on the storage type: a committee records who holds the slot as a SIG
+// and only needs the free text when the SIG is not in the list, while logistics
+// and class have no group to point at and the text is the only record there is.
+func (s *StorageAssignFormScreen) fieldHint(id int) string {
+	switch id {
+	case safGroup:
+		return "SIG"
+	case safLabel:
+		if s.isCommittee() {
+			return "when the SIG isn't listed"
+		}
+		return "a crew, a cohort, a class"
+	}
+	return ""
 }
 
 // storageAssignTypeOptions is the model's STORAGE_TYPE_CHOICES with its grid
@@ -83,12 +114,15 @@ type StorageAssignFormScreen struct {
 	sigsErr   string
 	sigsReady bool
 
+	jdeScreen
+
 	fields []int
 	cursor int
 
 	phase      storageAssignPhase
 	pickCursor int
 	pickRows   []assetPickRow
+	pickSearch textinput.Model
 
 	saving bool
 	errMsg string
@@ -120,6 +154,9 @@ func NewStorageAssignFormScreen(deps Deps, code string, back func(Deps) Screen) 
 		ti.Placeholder = storageAssignPlaceholder(id)
 		s.inputs[id] = ti
 	}
+	s.pickSearch = textinput.New()
+	s.pickSearch.Prompt = ""
+	s.pickSearch.CharLimit = 60
 	s.rebuildFields()
 	return s
 }
@@ -131,15 +168,10 @@ func storageAssignCharLimit(id int) int {
 	return 1000
 }
 
-func storageAssignPlaceholder(id int) string {
-	switch id {
-	case safLabel:
-		return "a crew, a cohort, a class — free text"
-	case safNotes:
-		return "optional"
-	}
-	return ""
-}
+// storageAssignPlaceholder is empty for every field now — what it said moved
+// into fieldHint, because a placeholder long enough to fill the input area
+// leaves no underscores and an empty green-screen row stops reading as empty.
+func storageAssignPlaceholder(id int) string { return "" }
 
 func (s *StorageAssignFormScreen) Title() string { return "Assign slot " + s.code }
 
@@ -172,6 +204,10 @@ func (s *StorageAssignFormScreen) Init() tea.Cmd {
 
 func (s *StorageAssignFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.setSize(m)
+		return s, nil
+
 	case storageAssignSIGsLoadedMsg:
 		s.sigs = m.sigs
 		s.sigsReady = m.err == nil
@@ -198,12 +234,15 @@ func (s *StorageAssignFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s.updateFormPhase(m)
 	}
 
-	if s.phase == assignPhaseForm {
-		if id, ok := s.currentFieldID(); ok && storageAssignIsTextKind(id) {
-			var cmd tea.Cmd
-			s.inputs[id], cmd = s.inputs[id].Update(msg)
-			return s, cmd
-		}
+	if s.phase == assignPhasePick {
+		var cmd tea.Cmd
+		s.pickSearch, cmd = s.pickSearch.Update(msg)
+		return s, cmd
+	}
+	if id, ok := s.currentFieldID(); ok && storageAssignIsTextKind(id) {
+		var cmd tea.Cmd
+		s.inputs[id], cmd = s.inputs[id].Update(msg)
+		return s, cmd
 	}
 	return s, nil
 }
@@ -309,6 +348,8 @@ func (s *StorageAssignFormScreen) syncFocus() {
 }
 
 func (s *StorageAssignFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, SwitchTo(WSFacilities, s.backScreen())
@@ -318,11 +359,25 @@ func (s *StorageAssignFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS — only the committee row
+		// opens anything, and only a committee assignment has one.
+		if id, ok := s.currentFieldID(); ok && storageAssignFieldKind(id) == akPicker {
+			s.openPicker()
+			return s, textinput.Blink
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -341,9 +396,7 @@ func (s *StorageAssignFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 		}
 		return s, nil
 	case akPicker:
-		if m.String() == " " {
-			s.openPicker()
-		}
+		// A picker row has nothing to type into and no accelerators left.
 		return s, nil
 	default:
 		var cmd tea.Cmd
@@ -352,13 +405,27 @@ func (s *StorageAssignFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 	}
 }
 
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *StorageAssignFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.syncFocus()
+}
+
 // ---------------------------------------------------------------------------
 // Committee picker
 // ---------------------------------------------------------------------------
 
 func (s *StorageAssignFormScreen) openPicker() {
 	s.phase = assignPhasePick
-	s.pickRows = storageAssignGroupRows(s.sigs)
+	s.pickSearch.SetValue("")
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
+	s.applyPickFilter()
 	s.pickCursor = 0
 	if s.owningGroupID != nil {
 		want := strconv.Itoa(*s.owningGroupID)
@@ -368,6 +435,22 @@ func (s *StorageAssignFormScreen) openPicker() {
 				break
 			}
 		}
+	}
+}
+
+// applyPickFilter narrows the option list to what has been typed, keeping the
+// CLEAR row whatever the query is — see StorageSlotFormScreen.applyPickFilter.
+func (s *StorageAssignFormScreen) applyPickFilter() {
+	q := strings.ToLower(strings.TrimSpace(s.pickSearch.Value()))
+	rows := make([]assetPickRow, 0, len(s.sigs)+1)
+	for _, r := range storageAssignGroupRows(s.sigs) {
+		if r.clear || q == "" || strings.Contains(strings.ToLower(r.label), q) {
+			rows = append(rows, r)
+		}
+	}
+	s.pickRows = rows
+	if s.pickCursor >= len(s.pickRows) {
+		s.pickCursor = 0
 	}
 }
 
@@ -383,28 +466,37 @@ func storageAssignGroupRows(sigs []omsapi.SIG) []assetPickRow {
 }
 
 func (s *StorageAssignFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	switch m.String() {
-	case "esc":
-		s.phase = assignPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickRows)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "enter":
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
+		s.closePicker()
+	case jdePickCommit:
 		if s.pickCursor >= 0 && s.pickCursor < len(s.pickRows) {
 			picked := pickInt(s.pickRows[s.pickCursor])
 			s.owningGroupID = picked
 			s.owningGroupNm = storageAssignGroupName(s.sigs, picked)
 		}
-		s.phase = assignPhaseForm
-		s.syncFocus()
+		s.closePicker()
+	case jdePickMove:
+		s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickRows))
+	case jdePickPage:
+		header, body := s.pickView()
+		s.pickCursor = jdeClampPick(s.pickCursor+delta*s.windowRows(body, s.pickCursor, len(header)), len(s.pickRows))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
+		var cmd tea.Cmd
+		s.pickSearch, cmd = s.pickSearch.Update(m)
+		s.applyPickFilter()
+		return s, cmd
 	}
 	return s, nil
+}
+
+func (s *StorageAssignFormScreen) closePicker() {
+	s.phase = assignPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 func storageAssignGroupName(sigs []omsapi.SIG, picked *int) string {
@@ -467,78 +559,143 @@ func (s *StorageAssignFormScreen) View() string {
 	if s.phase == assignPhasePick {
 		return s.viewPicker()
 	}
-
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(elecFieldHelp(storageAssignFieldKind, s.currentFieldID)) + "\n\n")
-	b.WriteString(StyleMuted.Render("slot: ") + StyleTitle.Render(s.code) +
-		StyleMuted.Render("  (staff storage — no expiry, no purgatory; it stays theirs until released)") + "\n\n")
-
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
-	}
-	b.WriteString("\n")
-	switch {
-	case s.saving:
-		b.WriteString(StyleMuted.Render("Assigning…"))
-	case s.errMsg != "":
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	case s.isCommittee() && s.sigsErr != "":
-		b.WriteString(StyleMuted.Render("SIG list unavailable — " + s.sigsErr + " · describe the committee in Occupant instead"))
-	default:
-		b.WriteString(StyleMuted.Render("the slot must be free and in service · assigning is staff / Storage Admin only"))
-	}
-	return b.String()
+	body := s.formLines()
+	return s.frame(body, s.cursor, s.statusLine(), s.formBar(body))
 }
 
-func (s *StorageAssignFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
+// statusLine is the row above the bar. A failed SIG list only matters to a
+// COMMITTEE assignment, and even then it is a warning with a way round it (the
+// free-text Occupant), not an error.
+func (s *StorageAssignFormScreen) statusLine() string {
+	warn := ""
+	if s.isCommittee() && s.sigsErr != "" {
+		warn = "SIG list unavailable — describe the committee in Occupant instead"
 	}
-	label := storageAssignFieldLabel[id]
-	var value string
-	switch storageAssignFieldKind(id) {
-	case akSelect:
-		value = elecSelectLabel(storageAssignTypeOptions, s.typeIdx)
-	case akPicker:
-		value = s.groupLabel()
-	default:
-		value = s.inputs[id].View()
-	}
-	line := caret + StyleTitle.Render(label+": ") + value
-	if id == safLabel && s.isCommittee() {
-		line += StyleMuted.Render("  (only needed when the SIG isn't in the list)")
-	}
-	return line
+	return storageSlotStatusLine(s.saving, "Assigning…", s.errMsg, warn,
+		"the slot must be free and in service · staff / Storage Admin only")
 }
 
-func (s *StorageAssignFormScreen) groupLabel() string {
+// formFields describes the sheet as columnar rows: one bounded set, one FK row
+// Ctrl-E opens (committee assignments only), and two typed into.
+func (s *StorageAssignFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   storageAssignFieldLabel[id],
+			Width:   storageAssignFieldWidth(id),
+			Hint:    s.fieldHint(id),
+			Focused: i == s.cursor,
+		}
+		switch storageAssignFieldKind(id) {
+		case akSelect:
+			// The BARE label between the brackets — the renderer owns them.
+			f.Kind, f.Value = jdeChoice, storageAssignTypeOptions[s.typeIdx].label
+		case akPicker:
+			value, dim := s.groupValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
+	}
+	return out
+}
+
+func (s *StorageAssignFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Assign slot"))
+	l.Add("")
+	// The slot is fixed context, not a field — there is no update action, so
+	// re-pointing an assignment means releasing and assigning again. It is a
+	// dimmed, non-navigable row of this sheet (l.Add, not AddRow) rather than a
+	// header the operator would not tie to the form.
+	l.Add(renderJDEField(jdeField{
+		Label: "Slot",
+		Kind:  jdeValue,
+		Value: s.code,
+		Hint:  "no expiry — theirs until released",
+	}, storageLabelWidth))
+	for i, id := range s.fields {
+		l.AddRow(i, renderJDEField(fields[i], storageLabelWidth))
+		// The set around the FOCUSED type row: each option carries the letter
+		// the grid will paint, which is what the warden reads off the rack
+		// afterwards, so it must never be cycled blind.
+		if i == s.cursor && id == safType {
+			labels := make([]string, len(storageAssignTypeOptions))
+			for j, o := range storageAssignTypeOptions {
+				labels[j] = o.label
+			}
+			strip := jdeOptionStrip(labels, s.typeIdx, jdeStripWidth(s.bodyWidth(), storageLabelWidth))
+			if strip != "" {
+				l.AddRow(i, jdeStripIndent(storageLabelWidth)+StyleMuted.Render(strip))
+			}
+		}
+	}
+	return l
+}
+
+// formBar names the keys that apply where the cursor is standing. Enter is
+// ASSIGN here, not Save — it is what the key does.
+func (s *StorageAssignFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Assign"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok {
+		switch storageAssignFieldKind(id) {
+		case akSelect:
+			items = append(items, actionBarItem{"←→", "Change"})
+		case akPicker:
+			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+		}
+	}
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// groupValue is the committee row's text, and whether it is an empty state
+// rather than a value. PLAIN text plus a flag, not pre-styled muted text: a
+// focused row has to be able to reverse-video the whole field.
+func (s *StorageAssignFormScreen) groupValue() (string, bool) {
 	if s.owningGroupID == nil {
-		return StyleMuted.Render("— none —")
+		return "— none —", true
 	}
 	if s.owningGroupNm != "" {
-		return s.owningGroupNm
+		return s.owningGroupNm, false
 	}
-	return fmt.Sprintf("SIG #%d", *s.owningGroupID)
+	return fmt.Sprintf("SIG #%d", *s.owningGroupID), false
+}
+
+func (s *StorageAssignFormScreen) pickView() ([]string, *jdeLines) {
+	note := "Row 1 is none — describe the committee in Occupant instead."
+	switch {
+	case s.sigsErr != "":
+		note = "SIG list unavailable — " + s.sigsErr
+	case !s.sigsReady:
+		note = "Loading SIGs…"
+	}
+	return jdePickList{
+		Title:  "Committee",
+		For:    s.code,
+		Note:   note,
+		Filter: s.pickSearch,
+		Count:  len(s.pickRows),
+		Label:  func(i int) string { return s.pickRows[i].label },
+		Dim:    func(i int) bool { return s.pickRows[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  "(no matching SIGs)",
+	}.render()
 }
 
 func (s *StorageAssignFormScreen) viewPicker() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Which committee holds "+s.code+"?") + "\n")
-	switch {
-	case s.sigsErr != "":
-		b.WriteString(StyleStatusWarn.Render("SIG list unavailable — "+s.sigsErr) + "\n\n")
-	case !s.sigsReady:
-		b.WriteString(StyleMuted.Render("Loading SIGs…") + "\n\n")
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	if len(s.pickRows) == 0 {
-		b.WriteString(StyleMuted.Render("No SIGs to choose from.") + "\n")
-	} else {
-		b.WriteString(renderWindowedList(len(s.pickRows), s.pickCursor, func(i int) string {
-			return s.pickRows[i].label
-		}))
-	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · enter pick · esc keep current"))
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }
