@@ -40,11 +40,13 @@ func NewScanScreen(deps Deps) *ScanScreen { return &ScanScreen{deps: deps} }
 
 func (s *ScanScreen) Title() string { return "Scan" }
 
-// WantsRawInput keeps every keypress in the scan buffer instead of routing
-// it through the root's global hotkey handler. Scanner-gun input is rapid
-// ASCII, and codes routinely contain characters that match workspace
-// shortcuts (m, a, l, n, o, u, f, Q, D, s, 0-9, /), so without this the
-// scanner navigates away mid-scan.
+// WantsRawInput keeps every keypress in the scan buffer instead of routing it
+// through the root. Phase 3 removed the letter and digit accelerators a code's
+// own characters used to trip, but the claim still earns its keep: a scanner
+// gun can be configured to emit TAB as a field separator, and tab is the root's
+// key for the sidebar menu — so a scan would jump the operator into the menu
+// mid-code. `esc` is the way out of here (once to clear a partial buffer, again
+// to leave), exactly as it is on a form.
 func (s *ScanScreen) WantsRawInput() bool { return true }
 
 func (s *ScanScreen) Init() tea.Cmd { return nil }

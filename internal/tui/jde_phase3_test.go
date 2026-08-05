@@ -306,6 +306,43 @@ func TestNav_ArrowsWalkTheTree(t *testing.T) {
 	}
 }
 
+// TestNav_FocusStartsOnTheActiveWorkspace: tab must put the cursor where the
+// SCREEN is, not wherever the cursor was last left. Browsing the menu and
+// backing out with esc must not strand the next tab five workspaces away from
+// what is actually on the pane.
+//
+// Written after a mutation gutting Nav.Focus() to a bare `focused = true`
+// SURVIVED: every other menu test starts on a fresh Root whose active workspace
+// and cursor are both the first row, so dropping the reset changed nothing they
+// could see. The cursor has to be driven AWAY and the sidebar blurred for the
+// reset to be observable at all.
+func TestNav_FocusStartsOnTheActiveWorkspace(t *testing.T) {
+	r := openFromMenu(t, newTestRoot(NewWelcomeScreen()), WSInventory, "")
+	if r.nav.Active() != WSInventory {
+		t.Fatalf("active workspace is %q, want inventory", r.nav.Active())
+	}
+
+	// Browse away — down into Inventory's surfaces, then on to another
+	// workspace entirely — and leave without opening anything.
+	r = press(t, r, "tab")
+	r = press(t, r, "down")
+	r = press(t, r, "right")
+	r = press(t, r, "right")
+	if r.nav.cursorWS == WSInventory {
+		t.Fatal("the cursor never left Inventory; the rest of this test proves nothing")
+	}
+	r = press(t, r, "esc")
+	if r.nav.Focused() {
+		t.Fatal("esc did not blur the sidebar")
+	}
+
+	r = press(t, r, "tab")
+	if r.nav.cursorWS != WSInventory || r.nav.cursorSurface != -1 {
+		t.Errorf("tab resumed at %q/%d, want the ACTIVE workspace's own row (inventory/-1)",
+			r.nav.cursorWS, r.nav.cursorSurface)
+	}
+}
+
 // TestNav_SurfacesShowOnlyUnderTheOneWorkspaceInPlay: the tree shows one
 // workspace's surfaces at a time — the cursor's while the sidebar has focus, the
 // ACTIVE one when it does not, so a blurred sidebar still says where you are.
