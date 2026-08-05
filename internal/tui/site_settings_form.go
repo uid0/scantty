@@ -582,6 +582,12 @@ func (s *SiteSettingsFormScreen) formFields() []jdeField {
 			f.Kind, f.Value = jdeChoice, jdeYesNo(s.toggleState(id))
 		} else {
 			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			if id == ssPrimaryColor || id == ssSecondaryColor {
+				// Same treatment as the category sheet's Color: one shared
+				// helper, live off the input. A blank row shows no sample —
+				// its placeholder is naming a default it has not taken yet.
+				f = jdeColorRow(f, s.inputs[id].Value())
+			}
 		}
 		out[i] = f
 	}

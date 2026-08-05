@@ -77,6 +77,15 @@ type jdeField struct {
 	// unit, "optional". It lives here rather than in Label so a long note
 	// cannot widen the label column and push every field right.
 	Hint string
+	// Swatch is a pre-styled sample of what the row's value MEANS — the one
+	// today is a hex colour's ● in that colour (sc-ns53). It is a slot of its
+	// own because it is the only thing on the row that carries its own colour
+	// sequence, and a sequence carries its own reset: inside the input area it
+	// would end the focused row's reverse-video run partway across, and inside
+	// the Hint it would be eaten by StyleJDEHint.Render. So it is drawn LAST,
+	// outside every styled span — the same reason category_form's parentValue
+	// hands back plain text and a flag.
+	Swatch string
 	// Dim renders the value muted: an empty state ("(none)"), not a value.
 	Dim     bool
 	Focused bool
@@ -147,6 +156,9 @@ func renderJDEField(f jdeField, labelWidth int) string {
 	if f.Hint != "" {
 		row += "  " + StyleJDEHint.Render(f.Hint)
 	}
+	if f.Swatch != "" {
+		row += "  " + f.Swatch
+	}
 	return row
 }
 
@@ -185,6 +197,23 @@ func jdeFieldArea(f jdeField) string {
 		}
 		return f.Value + StyleJDEInput.Render(strings.Repeat("_", fill))
 	}
+}
+
+// jdeColorRow finishes a hex-colour text row: the sample of what the value is,
+// and the format note that says what to type. They answer one question at two
+// different moments — "what shape does this take?" until the value is a colour,
+// "which colour is it?" once it is — so the row carries whichever one is still
+// useful and never both.
+//
+// That is a content decision before it is a width one, but it is also what keeps
+// these rows inside an 80-column pane: a colour row costs three columns for the
+// sample and gives back nine for the note, where clampToBox would otherwise have
+// truncated the sample straight off the end (sc-ye0i, sc-xxpa).
+func jdeColorRow(f jdeField, value string) jdeField {
+	if f.Swatch = hexSwatch(value); f.Swatch != "" {
+		f.Hint = ""
+	}
+	return f
 }
 
 func jdeValueText(f jdeField) string {
