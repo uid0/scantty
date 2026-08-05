@@ -5,7 +5,8 @@
 // supplier_type (local/online/national), website, account_number,
 // tax_free_paperwork_filed and notes.
 //
-// SupplierListScreen is reached with the global `U` hotkey (app.go). enter opens
+// SupplierListScreen is reached from the sidebar menu (Inventory > Suppliers).
+// enter opens
 // the supplier detail screen; c/E/x create/edit/delete. Like the other taxonomy
 // lists it flips to raw input only during the delete confirm. (Supplier
 // analytics — lead-time / price trends — is a separate web page and stays a

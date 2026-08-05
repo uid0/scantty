@@ -176,7 +176,7 @@ func dateOnly(s string) string {
 // ReportTableScreen — a generic, tabbed, scrollable set of report tables.
 //
 // Each tab lazy-loads its rows on first view (loaders return pre-formatted
-// string cells so this screen is type-agnostic). ←/→ or tab/shift+tab switch
+// string cells so this screen is type-agnostic). ←/→ or [/] switch
 // tabs; j/k/pgup/pgdn/g/G scroll rows; r refreshes the active tab; esc returns
 // to the Reports hub. Read-only — mirrors the web report DATA, not its chart
 // widgets (there are none on these pages).
@@ -297,9 +297,13 @@ func (s *ReportTableScreen) updateKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
 	case "esc", "backspace":
 		return s, SwitchTo(WSReports, NewReportsScreen(s.deps))
-	case "right", "tab", "]":
+	case "right", "]":
+		// tab / shift+tab used to be synonyms here. They are the root's keys
+		// for the sidebar menu now, and a key that means two things depending
+		// on the screen is what phase 3 is retiring; ←/→ and [/] already do
+		// this, so nothing was lost with them.
 		return s.switchTab((s.active + 1) % len(s.tabs))
-	case "left", "shift+tab", "[":
+	case "left", "[":
 		return s.switchTab((s.active - 1 + len(s.tabs)) % len(s.tabs))
 	case "j", "down":
 		if st.cursor < len(st.rows)-1 {

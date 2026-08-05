@@ -11,8 +11,9 @@ import (
 // tab used to instantiate a stub ListScreen with no loader, so it just
 // rendered "No rows." now it's a menu of the facilities-related
 // sub-screens scantty supports — electrical panels, e-paper, location
-// check-ins, maker boxes, checklists — with single-key hotkeys that
-// mirror the global hotkey set defined in app.go.
+// check-ins, maker boxes, checklists. It is one of the two on-screen cursor
+// menus (with reports.go) that the JD Edwards redesign kept as the model for
+// how a workspace offers its surfaces.
 //
 // Items render with a cursor. j/k or arrow keys move; enter or the
 // item's hotkey opens it. The selection lives on the screen rather
@@ -75,12 +76,7 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				// K (uppercase). Lowercase k is this menu's own cursor-up key —
 				// matched in the switch below, long before the item loop — so a
 				// 'k' item could never be opened by its own letter; it is also
-				// the universal up-arrow app-wide (see checklists.go). Uppercase
-				// K is the checklists global in app.go, which builds exactly the
-				// screen this item builds, in exactly this workspace, so the
-				// menu now advertises the same accelerator the welcome screen
-				// does rather than inventing a third binding for one screen —
-				// the same benign overlap the e-Paper item above rides on 'e'.
+				// the universal up-arrow app-wide (see checklists.go).
 				hotkey:   'K',
 				label:    "Checklists",
 				subtitle: "active list + in-progress runs",
@@ -99,14 +95,12 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				implemented: true,
 			},
 			{
-				// R (Racking). This menu is NOT a LocalKeyScreen, so its item
-				// letters reach it only through app.go's fall-through — a
-				// letter that is also a GLOBAL hotkey would open the global
-				// surface instead and leave the item unreachable. That rules
-				// out 's' (nav scan), 'l' (global lockouts) and 'e' (global
-				// e-paper), and 'S' is already the stint list above; uppercase
-				// R is free in the global keymap and rides the same
-				// "uppercase = a management surface" convention as E/S here.
+				// R (Racking). 'S' above is already the stint list and 'r' below
+				// is the certificate store, so racking took R. The letters on
+				// this menu are not accelerators in the retired sense — they
+				// address a row that is ON SCREEN with its label beside it, and
+				// arrows + enter reach every one of them without knowing any
+				// letter at all.
 				hotkey:   'R',
 				label:    "Storage slots",
 				subtitle: "project-storage racking — browse by rack, generate, print cards",
@@ -116,12 +110,8 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				implemented: true,
 			},
 			{
-				// O (Overview). Same rule as R above: this menu is NOT a
-				// LocalKeyScreen, so an item letter that is also a GLOBAL
-				// hotkey opens the global surface and leaves the item
-				// unreachable. Lowercase 'o' is the global op-modes key, but
-				// uppercase O is free — and it rides the same "uppercase = a
-				// management surface" convention as E/S/R here.
+				// O (Overview), beside R (Racking) — the two halves of the
+				// storage picture take the same case as each other.
 				hotkey:   'O',
 				label:    "Storage overview",
 				subtitle: "ASCII rack grid — who is in every slot, what is expiring · assign C/L/E",
@@ -149,10 +139,8 @@ func NewFacilitiesScreen(deps Deps) *FacilitiesScreen {
 				implemented: true,
 			},
 			{
-				// E (Enrollment): 'b'/'e' collide with the Maker-boxes / e-Paper
-				// items; E is free here and reaches this screen via the app.go
-				// fallthrough (no global E case), so it doesn't shadow detail-screen
-				// E=edit elsewhere.
+				// E (Enrollment): 'b'/'e' are already the Maker-boxes / e-Paper
+				// items on this menu, so enrollment took the shifted key.
 				hotkey:   'E',
 				label:    "Badge enrollment",
 				subtitle: "assign / clear member access badges — arm a reader or enter a UID (staff)",
@@ -233,6 +221,6 @@ func (s *FacilitiesScreen) View() string {
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("More facilities surfaces (LOTO, vendors) ship as separate hotkeys; see the welcome screen for the full list."))
+	b.WriteString(StyleMuted.Render("Surfaces that are not facilities — vendors, firmware, the device fleet — are rows of the sidebar menu (tab)."))
 	return b.String()
 }

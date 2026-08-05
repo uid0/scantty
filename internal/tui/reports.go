@@ -13,8 +13,8 @@ import (
 // scantty already shipped. Each entry opens a scrollable table view.
 //
 // j/k or arrows move; enter or the entry's hotkey opens it. Selection lives on
-// the screen so leaving the workspace resets it. Reachable again any time via
-// the global "8".
+// the screen so leaving the workspace resets it. Reachable again any time from
+// the sidebar menu (tab, then arrow to Reports).
 type ReportsScreen struct {
 	deps   Deps
 	cursor int
@@ -94,10 +94,11 @@ func (s *ReportsScreen) Title() string { return "Reports" }
 
 func (s *ReportsScreen) Init() tea.Cmd { return nil }
 
-// HandlesKey claims the entry hotkeys so an accelerator that collides with a
-// global nav key (a = authorizations, f = firmware, m = profile,
-// n = notifications) still opens the report while this menu is active, rather
-// than firing the global.
+// HandlesKey claims the entry hotkeys. The globals they used to collide with
+// (a = authorizations, f = firmware, m = profile, n = notifications) are gone
+// since phase 3, so the claim no longer rescues them from anything — it is kept
+// as the screen naming the keys it owns, and it still keeps `esc` off the
+// root's back-stack for a menu that is itself the back destination.
 func (s *ReportsScreen) HandlesKey(key string) bool {
 	if len(key) != 1 {
 		return false

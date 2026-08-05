@@ -30,8 +30,7 @@
 // target; see internal/omsapi/storage_overview.go for the verified contract.
 //
 // Keys: h/j/k/l or arrows move · enter open the slot · a assign · x release ·
-// tab / shift+tab page racks · r refresh. `a` and `l` collide with global
-// hotkeys and are claimed via HandlesKey.
+// pgup/pgdn page racks · r refresh.
 package tui
 
 import (
@@ -188,10 +187,10 @@ func (s *StorageOverviewScreen) Title() string {
 	return "Storage Overview"
 }
 
-// HandlesKey claims the two movement/action letters that are global hotkeys:
-// `a` (global authorizations) for assign and `l` (global lockouts) for the
-// right-hand vim move. h/j/k/x/r/enter/tab are free and reach us through the
-// root's fall-through.
+// HandlesKey still claims `a` (assign) and `l` (the right-hand vim move). The
+// globals they collided with are gone since phase 3, so the claim no longer
+// rescues them from anything — it is kept as the screen naming the keys it owns
+// and costs nothing. Everything else reaches us through the root's fall-through.
 func (s *StorageOverviewScreen) HandlesKey(key string) bool {
 	if s.WantsRawInput() {
 		return false
@@ -287,9 +286,14 @@ func (s *StorageOverviewScreen) updateGrid(m tea.KeyMsg) (Screen, tea.Cmd) {
 			s.position = r.MaxPosition
 			s.scrollIntoView()
 		}
-	case "tab":
+	case "pgdown":
+		// Rack-to-rack used to be tab / shift+tab. `tab` is the root's key for
+		// moving the keyboard into the sidebar menu now, and a key that means
+		// two things depending on which screen is up is exactly what phase 3
+		// is retiring — so the rack axis took the page keys instead. A rack IS
+		// the page of this grid, so they read as themselves.
 		s.moveRack(+1)
-	case "shift+tab":
+	case "pgup":
 		s.moveRack(-1)
 	case "r":
 		s.loading = true
@@ -627,7 +631,7 @@ func (s *StorageOverviewScreen) View() string {
 		return b.String()
 	}
 	b.WriteString(StyleMuted.Render(
-		"h/j/k/l move · enter open slot · a assign C/L/E · x release · tab rack · r refresh"))
+		"h/j/k/l move · enter open slot · a assign C/L/E · x release · pgup/pgdn rack · r refresh"))
 	return b.String()
 }
 
@@ -638,7 +642,7 @@ func (s *StorageOverviewScreen) headerLine(r *omsapi.StorageOverviewRack) string
 		if idx < 0 {
 			idx = 0
 		}
-		parts[0] += fmt.Sprintf(" (%d of %d — tab)", idx+1, n)
+		parts[0] += fmt.Sprintf(" (%d of %d — pgup/pgdn)", idx+1, n)
 	}
 
 	var slots, free, held, retired, attention int

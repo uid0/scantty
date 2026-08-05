@@ -48,18 +48,27 @@ If `SCANTTY_OMS_TOKEN` is unset, scantty still works for the `AllowAny` endpoint
 
 ## Keys
 
+Scantty reserves system keys for **scroll / exit / submit / edit** and nothing
+else. There are no letter accelerators and no workspace digits: navigation
+happens through the sidebar menu and each screen's own on-screen menu, and every
+screen names the keys that apply to it along its foot.
+
 | Key | What it does |
 |---|---|
-| `0` | Switch to the Scan workspace |
-| `1`–`9`, `s` | Switch to a workspace (Dashboard, Inventory, Purchasing, Assets, Facilities, Maintenance, SIGs, Reports, ForgeKey, Settings) |
-| `j`/`k` (or `↓`/`↑`) | Move row cursor in list screens |
-| `g`/`G` | Jump to top/bottom of a list |
-| `r` | Refresh the current screen |
-| `Enter` | Open a detail screen, submit a form, or open the most-recent scan result |
-| `o` | On a detail screen, open the action form (reorder for items, receive for POs) |
-| `Tab`/`Shift+Tab` | Move between form fields |
-| `Esc` | Back to the previous screen or welcome |
-| `q` (on Welcome) / `Ctrl+C` | Quit |
+| `Tab` | Move the keyboard into the sidebar menu, and back out to the screen |
+| `↑`/`↓` (or `j`/`k`) | Move — a menu row, a list row, a form field |
+| `←`/`→` | In the menu, jump a whole workspace; on a choice field, change the value |
+| `g`/`G`, `PgUp`/`PgDn` | Jump to top/bottom, page a long body |
+| `Enter` | Open what is selected · submit the form you are on |
+| `Esc` | Back one step · cancel the form you are on |
+| `Ctrl+E` | Edit / open the highlighted row |
+| `Ctrl+K` | Search palette (items, assets, orders, people) — works from anywhere |
+| `Ctrl+C` / `Ctrl+Q` | Quit, from anywhere |
+
+The sidebar lists the eleven workspaces; the workspace you are in also shows its
+own surfaces indented beneath it (Inventory › New item / Categories / Locations
+/ Suppliers, ForgeKey › Firmware / Lockouts / …). Facilities and Reports open a
+cursor menu of their surfaces instead.
 
 ## Scanner input
 
@@ -102,7 +111,7 @@ The classifier in `internal/scanner` distinguishes two scan kinds:
 │       ├── app.go                # root model + workspace router
 │       ├── route.go              # workspace types, screen interface, switch/status messages
 │       ├── styles.go             # lipgloss palette + status rendering
-│       ├── nav.go                # 11-workspace sidebar
+│       ├── nav.go                # sidebar menu tree — workspaces + their surfaces
 │       ├── status.go             # bottom status bar (OMS/FK conn dots, scanner state, flash messages)
 │       ├── welcome.go            # default landing screen
 │       ├── scan.go               # scan input + recent-scan history + auto-navigate on item match
@@ -121,7 +130,7 @@ The classifier in `internal/scanner` distinguishes two scan kinds:
 
 **Why bubbletea over tview/termbox?** Better composition story (every screen is a `Screen` interface implementer), cleaner message-passing for async API calls, and the `bubbles/textinput` widget covers our form needs without a giant widget toolkit. The downside is more boilerplate per screen, but the per-screen code stays readable.
 
-**Why mirror the web UI's 8 workspaces?** Members already have a mental map of where things live in the browser. Scantty's nav uses the same names and groupings so muscle memory transfers. Scanner-priority surfaces (the scan workspace itself) get the `0` hotkey so they're never more than one keypress away.
+**Why mirror the web UI's 8 workspaces?** Members already have a mental map of where things live in the browser. Scantty's nav uses the same names and groupings so muscle memory transfers. Scanner-priority surfaces (the scan workspace itself) sit at the top of the sidebar menu so they're never more than a keypress away.
 
 **Error envelope handling.** OMS returns a stable `{error: {code, message, details}}` shape on failure. `omsapi.APIError` parses this and exposes `IsAuth()`/`IsNotFound()` helpers. The client switches on `code`, not HTTP status, because OMS sometimes returns 400 with informative codes and sometimes 422 — the code is authoritative.
 

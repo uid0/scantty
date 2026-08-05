@@ -138,7 +138,11 @@ func (s StatusBar) View() string {
 	// ladder until something fits. The hints go first (static help, also on the
 	// welcome screen), then the chip's label, then the scanner/unread run. The
 	// degraded chip itself is what everything else is sacrificed for.
-	hints := StyleMuted.Render("q quit · tab nav · / search")
+	// The standing three: the menu, search, and back. `q quit` is gone with the
+	// rest of the letters — ctrl+c still quits from anywhere and is on the
+	// welcome screen; a bar this narrow spends its room on the keys an operator
+	// presses every minute, not the one they press once.
+	hints := StyleMuted.Render("tab menu · ctrl+k search · esc back")
 	ladder := s.contextLadder()
 	context, right := ladder[0], hints
 	fits := func(left, r string) bool { return lenVis(left)+lenVis(r)+1 <= avail }
