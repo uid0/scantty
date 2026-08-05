@@ -248,6 +248,33 @@ func TestAssetSupplies_NoKeyIsBoundOnAPartRow(t *testing.T) {
 	}
 }
 
+// TestAssetSupplies_APartRowRoutesToNoField is the assertion _NoKeyIsBoundOnA
+// PartRow cannot make. A BLURRED bubbles textinput swallows a keystroke all by
+// itself (sc-ye0i), so a screen that looks unchanged proves only that nothing
+// was visible — not that the key went nowhere. Focusing a field by hand takes
+// the blur out of the picture and leaves the routing decision on its own: the
+// zero value of a field id is afName, so a dropped guard does not fail loudly,
+// it quietly types into the first field on the sheet.
+func TestAssetSupplies_APartRowRoutesToNoField(t *testing.T) {
+	s := assetSheetWithParts(t, assetTestParts())
+	s.cursor = len(s.fields)
+	s.syncFocus()
+
+	for id := range s.inputs {
+		if assetIsTextKind(id) && s.inputs[id].Focused() {
+			t.Errorf("%q keeps focus while the cursor is on a part row", assetFieldLabel[id])
+		}
+	}
+
+	s.inputs[afName].Focus()
+	before := s.inputs[afName].Value()
+	s.Update(runeKey('z'))
+	if got := s.inputs[afName].Value(); got != before {
+		t.Errorf("a keystroke on a part row reached the %q field: %q → %q",
+			assetFieldLabel[afName], before, got)
+	}
+}
+
 // TestAssetSupplies_RowsFitTheBody is sweep C's test, which the asset sheet
 // never had: clampToBox TRUNCATES an over-wide line — no ellipsis, no wrap — so
 // anything past the pane is silently lost. It sweeps every cursor row because a
