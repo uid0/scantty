@@ -353,9 +353,17 @@ type AssetFormScreen struct {
 	owningUserID    *int
 	certIDs         []int // sorted set of required-certification pks
 
-	// Visible-field navigation.
+	// Visible-field navigation. The cursor runs past the fields and into the
+	// supplies band, which is what rowCount() counts and every cursor bound
+	// below measures against (asset_form_supplies.go).
 	fields []int
 	cursor int
+
+	// supplyWarn is the supplies band's Ctrl-E door asking before it leaves a
+	// sheet with unsaved edits; baseline is the sheet as it loaded, which is how
+	// dirty() knows there are any (sc-lvp7).
+	supplyWarn bool
+	baseline   string
 
 	// Picker sub-phase state.
 	phase       assetFormPhase
@@ -639,6 +647,7 @@ func (s *AssetFormScreen) maybeFinalizeLoad() tea.Cmd {
 	}
 	s.rebuildFields()
 	s.syncFocus()
+	s.snapshotBaseline()
 	return nil
 }
 
@@ -780,6 +789,12 @@ func (s *AssetFormScreen) syncFocus() {
 // ---------------------------------------------------------------------------
 
 func (s *AssetFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The supplies band's confirm is modal while it is up — including over the
+	// system keys, since the two it overrides (enter saves, esc discards) are
+	// exactly the two outcomes it exists to ask about.
+	if s.supplyWarn {
+		return s.updateSupplyWarn(m)
+	}
 	// The system keys, first and everywhere: they mean the same thing on every
 	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
@@ -803,14 +818,20 @@ func (s *AssetFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 		}
 		return s.submit()
 	case "ctrl+e":
-		// EDIT opens whatever the highlighted row IS. Only the pickers open
-		// anything, which is why the bar drops the key on the others.
+		// EDIT opens whatever the highlighted row IS: a picker, or — on the
+		// supplies band — the parts screen that manages the rows this one only
+		// lists. A row you simply type into opens nothing, which is why the bar
+		// drops the key there.
 		if id, ok := s.currentFieldID(); ok {
 			switch assetFieldKindOf(id) {
 			case akPicker, akMultiPicker:
 				s.openPicker(id)
 				return s, textinput.Blink
 			}
+			return s, nil
+		}
+		if _, onSupply := s.onSupplyRow(); onSupply {
+			return s, s.openSupplyRow()
 		}
 		return s, nil
 	}
@@ -1395,7 +1416,15 @@ func (s *AssetFormScreen) formLines() *jdeLines {
 // formBar names the keys that apply where the cursor is standing — and only
 // those, so the bar never teaches a key that does nothing here.
 func (s *AssetFormScreen) formBar(body *jdeLines) []actionBarItem {
+	if s.supplyWarn {
+		// The confirm owns the bar while it is up: these two keys are the only
+		// ones that do anything, and the bar is the only place that says so.
+		return []actionBarItem{{"Ctrl-E", "Discard & open"}, {"Esc", "Stay here"}}
+	}
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if _, onSupply := s.onSupplyRow(); onSupply {
+		items = append(items, actionBarItem{"Ctrl-E", "Parts"})
+	}
 	if id, ok := s.currentFieldID(); ok {
 		switch assetFieldKindOf(id) {
 		case akToggle, akSelect:
