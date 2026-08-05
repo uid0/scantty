@@ -563,6 +563,12 @@ func TestAssetSupplies_TheShortIDOutlivesTheSKU(t *testing.T) {
 		if !strings.Contains(cell, "8d3f") {
 			t.Fatalf("width %d: the short id was lost: %q", w, cell)
 		}
+		// The name is what the row is READ by, so it is never spent down to a
+		// bare ellipsis to keep an optional tail whole: past its floor the SKU
+		// goes instead. A cell leading with "…" is that trade made backwards.
+		if strings.HasPrefix(cell, "…") {
+			t.Errorf("width %d: the name was thrown away to keep the tail: %q", w, cell)
+		}
 		switch {
 		case strings.Contains(cell, "INK-MAG-01-LONG-CODE"):
 			sawFullTail = true
@@ -669,6 +675,12 @@ func TestAssetSupplies_TheDoorAsksBeforeDiscardingEdits(t *testing.T) {
 	out := s.View()
 	if !strings.Contains(out, "Unsaved edits") {
 		t.Errorf("the warning should say what is at stake:\n%s", out)
+	}
+	// Once, under the row the question was asked from — not once per part. It is
+	// a question about the SHEET, and a band that repeated it down every row
+	// would read as a defect in the list rather than as a prompt.
+	if n := strings.Count(out, "Unsaved edits"); n != 1 {
+		t.Errorf("the confirm should be asked once, appears %d times:\n%s", n, out)
 	}
 	bar := jdeBarLine(out)
 	for _, want := range []string{"Ctrl-E=Discard & open", "Esc=Stay here"} {
