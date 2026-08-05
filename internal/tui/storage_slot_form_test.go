@@ -295,9 +295,9 @@ func TestStorageSlotForm_RenderSmoke(t *testing.T) {
 		}
 	}
 	s.cursor = len(s.fields) - 2 // the picker row
-	s = slotFormKey(t, s, " ")
+	s = slotFormKey(t, s, "ctrl+e")
 	if s.phase != slotPhasePick {
-		t.Fatalf("space on the picker row should open the SIG list")
+		t.Fatalf("ctrl+e on the picker row should open the SIG list")
 	}
 	if out := s.View(); !strings.Contains(out, "Woodshop") {
 		t.Errorf("picker view missing the SIG list:\n%s", out)

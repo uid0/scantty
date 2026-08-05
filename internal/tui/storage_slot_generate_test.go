@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
@@ -181,26 +183,43 @@ func TestStorageSlotGenerate_CodeListNamesWhatItDropped(t *testing.T) {
 	for i := range codes {
 		codes[i] = "1A1"
 	}
-	out := storageGenCodeList(codes)
+	out := strings.Join(storageGenCodeList(codes, screenBodyWidth(110)), "\n")
 	if !strings.Contains(out, "and 16 more") {
 		t.Errorf("a truncated code list must say how many it left off, got %q", out)
 	}
-	if got := storageGenCodeList(nil); !strings.Contains(got, "—") {
+	if got := strings.Join(storageGenCodeList(nil, screenBodyWidth(110)), "\n"); !strings.Contains(got, "—") {
 		t.Errorf("an empty list should render a dash, got %q", got)
+	}
+
+	// And every line FITS: clampToBox truncates an over-wide row, so a single
+	// joined line would drop codes with nothing on screen to say so.
+	budget := screenBodyWidth(110)
+	for _, line := range storageGenCodeList(codes, budget) {
+		if w := lipgloss.Width(line); w > budget {
+			t.Errorf("a code line is %d wide but the pane is %d: %q", w, budget, line)
+		}
 	}
 }
 
-// TestStorageSlotGenerate_LevelListEditing walks the sub-phase keys.
+// TestStorageSlotGenerate_LevelListEditing walks the sub-phase on the reduced
+// key scheme (sc-6qsk): the list opens with Ctrl-E, adding is the trailing
+// "(add a level)" ROW rather than the `a` key, editing is Ctrl-E on a row, and
+// REMOVING lives in that level's own editor — the only place the thing being
+// dropped is on screen.
 func TestStorageSlotGenerate_LevelListEditing(t *testing.T) {
 	s := readyGenScreen(1)
 	s.cursor = 1 // the Levels row
-	s = genKey(t, s, " ")
+	s = genKey(t, s, "ctrl+e")
 	if s.phase != genPhaseLevels {
-		t.Fatalf("space on the Levels row should open the list")
+		t.Fatalf("ctrl+e on the Levels row should open the list")
 	}
-	s = genKey(t, s, "a")
-	if s.phase != genPhaseLevelRow {
-		t.Fatalf("a should open the row editor")
+	// With no levels the cursor is already on the add row; Ctrl-E opens it.
+	s = genKey(t, s, "ctrl+e")
+	if s.phase != genPhaseLevelRow || s.rowIndex != -1 {
+		t.Fatalf("ctrl+e on the add row should open an ADD, phase=%v index=%d", s.phase, s.rowIndex)
+	}
+	if s.levelEditRows() != genRowFieldCount-1 {
+		t.Errorf("a level being added has nothing to remove yet, got %d rows", s.levelEditRows())
 	}
 	s.rowLevel.SetValue("A")
 	s.rowPositions.SetValue("4")
@@ -211,15 +230,30 @@ func TestStorageSlotGenerate_LevelListEditing(t *testing.T) {
 	if !strings.Contains(s.View(), "A — 4 position") {
 		t.Errorf("the list should show the row:\n%s", s.View())
 	}
-	s = genKey(t, s, "x")
-	if len(s.levels) != 0 {
-		t.Errorf("x should remove the row, got %v", s.levels)
+
+	// Removing: open the level's OWN editor, walk to its remove row, Ctrl-E.
+	s.levelCursor = 0
+	s = genKey(t, s, "ctrl+e")
+	if s.phase != genPhaseLevelRow || s.rowIndex != 0 {
+		t.Fatalf("ctrl+e on a level row should EDIT it, phase=%v index=%d", s.phase, s.rowIndex)
 	}
+	if s.levelEditRows() != genRowFieldCount {
+		t.Fatalf("an existing level's editor should offer the remove row")
+	}
+	s.rowCursor = genRowRemove
+	s = genKey(t, s, "ctrl+e")
+	if len(s.levels) != 0 {
+		t.Errorf("the remove row should drop the level, got %v", s.levels)
+	}
+	if s.phase != genPhaseLevels {
+		t.Errorf("removing should return to the list, phase=%v", s.phase)
+	}
+
 	s = genKey(t, s, "esc")
 	if s.phase != genPhaseForm {
 		t.Errorf("esc should return to the form")
 	}
-	if !strings.Contains(s.View(), "none — space to add") {
+	if !strings.Contains(s.View(), "(none yet)") {
 		t.Errorf("the Levels row should say it is empty:\n%s", s.View())
 	}
 }

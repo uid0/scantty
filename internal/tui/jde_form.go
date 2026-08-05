@@ -114,6 +114,20 @@ func jdeLabelWidth(groups ...[]jdeField) int {
 	return w
 }
 
+// jdeLabelFields turns a form's label map into the field list jdeLabelWidth
+// measures. Only the Label matters to the width, so nothing else is filled in.
+// A family of screens reached from one another computes its shared column from
+// these rather than pinning it to a number, so renaming a field can never
+// silently break the alignment (electrical_form_helpers.go's elecLabelWidth and
+// storage_form_helpers.go's storageLabelWidth are both built this way).
+func jdeLabelFields(labels map[int]string) []jdeField {
+	out := make([]jdeField, 0, len(labels))
+	for _, l := range labels {
+		out = append(out, jdeField{Label: l})
+	}
+	return out
+}
+
 // renderJDEField draws one row: the right-aligned label, the leader, the input
 // area, and any hint.
 func renderJDEField(f jdeField, labelWidth int) string {
@@ -529,6 +543,21 @@ func jdePageCursor(cursor, count, step, dir int) int {
 	}
 	if next > count-1 {
 		next = count - 1
+	}
+	return next
+}
+
+// jdeClampPick clamps an option cursor into [0,count). A picker list is a set
+// of choices, not a ring: running off the bottom must not reappear at the
+// "(none)" row that CLEARS the field, which is what a wrap would do. count==0
+// (nothing matched the filter) rests at 0, which is where a cursor with nothing
+// to point at belongs.
+func jdeClampPick(next, count int) int {
+	if next < 0 || count <= 0 {
+		return 0
+	}
+	if next > count-1 {
+		return count - 1
 	}
 	return next
 }

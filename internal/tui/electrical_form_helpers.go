@@ -8,17 +8,12 @@
 // deliberately does not know about — the electrical family's own vocabulary.
 // The old elecPickView / elecMultiPickView drew the pre-redesign picker
 // sub-phase and went with it: jdePickList is the picker now (sc-ye0i).
+//
+// elecLabelFields and elecClampPick used to live here too. Neither knew
+// anything about electricity — sweep D needed both for the storage family, so
+// they moved into the layer as jdeLabelFields / jdeClampPick rather than being
+// copied a second time (sc-6qsk).
 package tui
-
-// elecLabelFields turns a form's label map into the field list jdeLabelWidth
-// measures. Only the Label matters to the width, so nothing else is filled in.
-func elecLabelFields(labels map[int]string) []jdeField {
-	out := make([]jdeField, 0, len(labels))
-	for _, l := range labels {
-		out = append(out, jdeField{Label: l})
-	}
-	return out
-}
 
 // elecLabelWidth is the ONE label column shared by all five electrical forms,
 // so walking panel → breaker → circuit → outlet → disconnect never shifts the
@@ -32,27 +27,12 @@ func elecLabelFields(labels map[int]string) []jdeField {
 // — and jdeLabelWidth's own cap still applies, so one verbose label cannot
 // shove every input area off a narrow terminal.
 var elecLabelWidth = jdeLabelWidth(
-	elecLabelFields(panelFieldLabel),
-	elecLabelFields(breakerFieldLabel),
-	elecLabelFields(circuitFieldLabel),
-	elecLabelFields(outletFieldLabel),
-	elecLabelFields(disconnectFieldLabel),
+	jdeLabelFields(panelFieldLabel),
+	jdeLabelFields(breakerFieldLabel),
+	jdeLabelFields(circuitFieldLabel),
+	jdeLabelFields(outletFieldLabel),
+	jdeLabelFields(disconnectFieldLabel),
 )
-
-// elecClampPick clamps an option cursor into [0,count). A picker list is a set
-// of choices, not a ring: running off the bottom must not reappear at the
-// "(none)" row that CLEARS the field, which is what a wrap would do. count==0
-// (nothing matched the filter) rests at 0, which is where a cursor with nothing
-// to point at belongs.
-func elecClampPick(next, count int) int {
-	if next < 0 || count <= 0 {
-		return 0
-	}
-	if next > count-1 {
-		return count - 1
-	}
-	return next
-}
 
 // elecVisibleRows returns how many field rows fit the current terminal height,
 // reserving chrome for the help line, scroll indicators, spacing and status.

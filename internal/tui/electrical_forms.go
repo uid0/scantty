@@ -780,7 +780,7 @@ func (s *PowerPanelFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 // set of choices, not a ring, so running off the bottom must not reappear at the
 // "(none)" row that clears the field.
 func (s *PowerPanelFormScreen) movePick(delta int) {
-	s.pickCursor = elecClampPick(s.pickCursor+delta, len(s.pickOptions))
+	s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickOptions))
 }
 
 func (s *PowerPanelFormScreen) closePicker() {
@@ -1691,7 +1691,7 @@ func (s *PowerBreakerFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 }
 
 func (s *PowerBreakerFormScreen) movePick(delta int) {
-	s.pickCursor = elecClampPick(s.pickCursor+delta, len(s.pickOptions))
+	s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickOptions))
 }
 
 func (s *PowerBreakerFormScreen) closePicker() {
@@ -2450,7 +2450,7 @@ func (s *PowerCircuitFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 }
 
 func (s *PowerCircuitFormScreen) movePick(delta int) {
-	s.pickCursor = elecClampPick(s.pickCursor+delta, len(s.pickOptions))
+	s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickOptions))
 }
 
 func (s *PowerCircuitFormScreen) closePicker() {

@@ -40,13 +40,49 @@ const (
 )
 
 var storageSlotFieldLabel = map[int]string{
-	ssfRack:        "Rack",
-	ssfLevel:       "Level",
-	ssfPosition:    "Position",
-	ssfPalletJack:  "Needs pallet jack",
-	ssfActive:      "Active",
-	ssfOwningGroup: "Reserved for (SIG)",
+	ssfRack:       "Rack",
+	ssfLevel:      "Level",
+	ssfPosition:   "Position",
+	ssfPalletJack: "Needs pallet jack",
+	ssfActive:     "Active",
+	// "(SIG)" moved to the hint: a parenthetical in a LABEL widens the column
+	// all four storage forms share, so it shoves the input areas right on every
+	// one of them (jde_form.go).
+	ssfOwningGroup: "Reserved for",
 	ssfNotes:       "Notes",
+}
+
+// storageSlotFieldHint carries what the placeholders and the label
+// parenthetical used to say. A placeholder long enough to fill the input area
+// leaves no underscores, so an empty green-screen row stops reading as empty;
+// and a columnar form marks what is REQUIRED rather than tagging everything
+// else "(optional)".
+//
+// A hint is CLIPPED, not wrapped, when the row runs past the pane (layout.go's
+// clampToBox), so a wide input area and a long hint cannot both fit — which is
+// why the three components keep narrow fields and their notes, while Notes
+// keeps the room to type and has none. See TestJDESweepD_RowsFitTheBody.
+var storageSlotFieldHint = map[int]string{
+	ssfRack:        "required · pallet rack number",
+	ssfLevel:       "required · A-Z, early = low",
+	ssfPosition:    "required · counted from South/East",
+	ssfOwningGroup: "SIG",
+}
+
+// storageSlotFieldWidth sizes the input areas that are not the default. The
+// three components are short by contract (a rack is a small integer, a level is
+// ONE letter), and a field wider than its value reads as room the operator does
+// not have.
+func storageSlotFieldWidth(id int) int {
+	switch id {
+	case ssfRack, ssfPosition:
+		return 6
+	case ssfLevel:
+		return 4
+	case ssfNotes:
+		return 40
+	}
+	return 0
 }
 
 func storageSlotFieldKind(id int) assetFieldKind {
@@ -97,14 +133,15 @@ type StorageSlotFormScreen struct {
 	sigsErr   string
 	sigsReady bool
 
+	jdeScreen
+
 	fields []int
 	cursor int
 
 	phase      storageSlotFormPhase
 	pickCursor int
 	pickRows   []assetPickRow
-
-	terminalHeight int
+	pickSearch textinput.Model
 }
 
 type storageSlotFormLoadedMsg struct {
@@ -145,6 +182,9 @@ func NewStorageSlotFormScreen(deps Deps, code string) *StorageSlotFormScreen {
 		ti.Placeholder = storageSlotPlaceholder(id)
 		s.inputs[id] = ti
 	}
+	s.pickSearch = textinput.New()
+	s.pickSearch.Prompt = ""
+	s.pickSearch.CharLimit = 60
 	s.fields = []int{ssfRack, ssfLevel, ssfPosition, ssfPalletJack, ssfActive, ssfOwningGroup, ssfNotes}
 	s.syncFocus()
 	return s
@@ -160,19 +200,9 @@ func storageSlotCharLimit(id int) int {
 	return 1000
 }
 
-func storageSlotPlaceholder(id int) string {
-	switch id {
-	case ssfRack:
-		return "pallet rack number, e.g. 1"
-	case ssfLevel:
-		return "single letter — early = low, late = high"
-	case ssfPosition:
-		return "position along the rack, from South/East"
-	case ssfNotes:
-		return "optional"
-	}
-	return ""
-}
+// storageSlotPlaceholder is empty for every field now — see
+// storageSlotFieldHint.
+func storageSlotPlaceholder(id int) string { return "" }
 
 func (s *StorageSlotFormScreen) Title() string {
 	if s.edit {
@@ -218,7 +248,7 @@ func (s *StorageSlotFormScreen) Init() tea.Cmd {
 func (s *StorageSlotFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 
 	case storageSlotFormLoadedMsg:
@@ -256,12 +286,15 @@ func (s *StorageSlotFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s.updateFormPhase(m)
 	}
 
-	if s.phase == slotPhaseForm {
-		if id, ok := s.currentFieldID(); ok && storageSlotIsTextKind(id) {
-			var cmd tea.Cmd
-			s.inputs[id], cmd = s.inputs[id].Update(msg)
-			return s, cmd
-		}
+	if s.phase == slotPhasePick {
+		var cmd tea.Cmd
+		s.pickSearch, cmd = s.pickSearch.Update(msg)
+		return s, cmd
+	}
+	if id, ok := s.currentFieldID(); ok && storageSlotIsTextKind(id) {
+		var cmd tea.Cmd
+		s.inputs[id], cmd = s.inputs[id].Update(msg)
+		return s, cmd
 	}
 	return s, nil
 }
@@ -309,6 +342,8 @@ func (s *StorageSlotFormScreen) hydrate() {
 }
 
 func (s *StorageSlotFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The system keys, first and everywhere: they mean the same thing on every
+	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
 	case "esc":
 		return s, s.cancelCmd()
@@ -318,11 +353,25 @@ func (s *StorageSlotFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) 
 	case "shift+tab", "up":
 		s.moveCursor(-1)
 		return s, textinput.Blink
+	case "pgdown":
+		s.pageCursor(+1)
+		return s, textinput.Blink
+	case "pgup":
+		s.pageCursor(-1)
+		return s, textinput.Blink
 	case "enter":
 		if s.saving || s.loading {
 			return s, nil
 		}
 		return s.submit()
+	case "ctrl+e":
+		// EDIT opens whatever the highlighted row IS. Only the owner row opens
+		// anything, which is why the bar drops the key on the others.
+		if id, ok := s.currentFieldID(); ok && storageSlotFieldKind(id) == akPicker {
+			s.openPicker()
+			return s, textinput.Blink
+		}
+		return s, nil
 	}
 
 	id, ok := s.currentFieldID()
@@ -331,7 +380,10 @@ func (s *StorageSlotFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) 
 	}
 	switch storageSlotFieldKind(id) {
 	case akToggle:
-		if m.String() == " " {
+		// A toggle is a two-value choice row, so it flips on the same ←/→ every
+		// other bounded set takes (space stays as the pilot's synonym).
+		switch m.String() {
+		case " ", "left", "right":
 			switch id {
 			case ssfPalletJack:
 				s.palletJack = !s.palletJack
@@ -341,10 +393,7 @@ func (s *StorageSlotFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) 
 		}
 		return s, nil
 	case akPicker:
-		if m.String() == " " {
-			s.openPicker()
-			return s, nil
-		}
+		// A picker row has nothing to type into and no accelerators left.
 		return s, nil
 	default:
 		var cmd tea.Cmd
@@ -369,6 +418,16 @@ func (s *StorageSlotFormScreen) moveCursor(delta int) {
 	s.syncFocus()
 }
 
+// pageCursor moves a whole pane's worth of rows, clamping where moveCursor
+// wraps — a page is for covering ground, not for losing your place.
+func (s *StorageSlotFormScreen) pageCursor(dir int) {
+	if len(s.fields) == 0 {
+		return
+	}
+	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.syncFocus()
+}
+
 func (s *StorageSlotFormScreen) syncFocus() {
 	for id := 0; id < len(s.inputs); id++ {
 		if storageSlotIsTextKind(id) {
@@ -386,7 +445,11 @@ func (s *StorageSlotFormScreen) syncFocus() {
 
 func (s *StorageSlotFormScreen) openPicker() {
 	s.phase = slotPhasePick
-	s.pickRows = storageSlotGroupRows(s.sigs, s.owningGroupID, s.owningGroupName)
+	s.pickSearch.SetValue("")
+	// The filter is always live in a columnar picker, so it holds the caret for
+	// as long as the picker is open.
+	s.pickSearch.Focus()
+	s.applyPickFilter()
 	s.pickCursor = 0
 	if s.owningGroupID != nil {
 		want := strconv.Itoa(*s.owningGroupID)
@@ -396,6 +459,24 @@ func (s *StorageSlotFormScreen) openPicker() {
 				break
 			}
 		}
+	}
+}
+
+// applyPickFilter narrows the option list to what has been typed. The CLEAR row
+// is never filtered out: detaching the owner is an action, not one of the
+// values being searched, and a query that hid it would strand the operator on a
+// SIG they can no longer remove.
+func (s *StorageSlotFormScreen) applyPickFilter() {
+	q := strings.ToLower(strings.TrimSpace(s.pickSearch.Value()))
+	rows := make([]assetPickRow, 0, len(s.sigs)+2)
+	for _, r := range storageSlotGroupRows(s.sigs, s.owningGroupID, s.owningGroupName) {
+		if r.clear || q == "" || strings.Contains(strings.ToLower(r.label), q) {
+			rows = append(rows, r)
+		}
+	}
+	s.pickRows = rows
+	if s.pickCursor >= len(s.pickRows) {
+		s.pickCursor = 0
 	}
 }
 
@@ -444,29 +525,42 @@ func storageSlotGroupName(sigs []omsapi.SIG, picked *int, graftedID *int, grafte
 }
 
 func (s *StorageSlotFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	switch m.String() {
-	case "esc":
+	switch act, delta := jdePickKey(m); act {
+	case jdePickCancel:
 		// esc means "done looking" and KEEPS the current pick.
-		s.phase = slotPhaseForm
-		s.syncFocus()
-	case "j", "down":
-		if s.pickCursor < len(s.pickRows)-1 {
-			s.pickCursor++
-		}
-	case "k", "up":
-		if s.pickCursor > 0 {
-			s.pickCursor--
-		}
-	case "enter":
+		s.closePicker()
+	case jdePickCommit:
 		if s.pickCursor >= 0 && s.pickCursor < len(s.pickRows) {
 			picked := pickInt(s.pickRows[s.pickCursor])
 			s.owningGroupName = storageSlotGroupName(s.sigs, picked, s.owningGroupID, s.owningGroupName)
 			s.owningGroupID = picked
 		}
-		s.phase = slotPhaseForm
-		s.syncFocus()
+		s.closePicker()
+	case jdePickMove:
+		s.movePick(delta)
+	case jdePickPage:
+		header, body := s.pickView()
+		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+	default:
+		// Anything else is filter text: the box is always live, so there is no
+		// mode to enter and no "/" to remember.
+		var cmd tea.Cmd
+		s.pickSearch, cmd = s.pickSearch.Update(m)
+		s.applyPickFilter()
+		return s, cmd
 	}
 	return s, nil
+}
+
+func (s *StorageSlotFormScreen) movePick(delta int) {
+	s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickRows))
+}
+
+func (s *StorageSlotFormScreen) closePicker() {
+	s.phase = slotPhaseForm
+	s.pickSearch.SetValue("")
+	s.pickSearch.Blur()
+	s.syncFocus()
 }
 
 // ---------------------------------------------------------------------------
@@ -562,32 +656,105 @@ func (s *StorageSlotFormScreen) View() string {
 	if s.phase == slotPhasePick {
 		return s.viewPicker()
 	}
+	body := s.formLines()
+	return s.frame(body, s.cursor, s.statusLine(), s.formBar(body))
+}
 
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()) + "\n\n")
+// statusLine is the row above the bar. A SIG list that failed is a WARNING
+// beside the form rather than an error on it — the slot saves fine without an
+// owner, which is why the load never gated the form in the first place.
+func (s *StorageSlotFormScreen) statusLine() string {
+	warn := ""
+	if s.sigsErr != "" {
+		warn = "SIG list unavailable — " + s.sigsErr
+	}
+	return storageSlotStatusLine(s.saving, "Saving…", s.errMsg, warn,
+		"rack + level + position must be unique · staff / Storage Admin only")
+}
+
+// formFields describes the sheet as columnar rows: two bounded sets, one FK row
+// Ctrl-E opens, and the rest typed into.
+func (s *StorageSlotFormScreen) formFields() []jdeField {
+	out := make([]jdeField, len(s.fields))
+	for i, id := range s.fields {
+		f := jdeField{
+			Label:   storageSlotFieldLabel[id],
+			Width:   storageSlotFieldWidth(id),
+			Hint:    storageSlotFieldHint[id],
+			Focused: i == s.cursor,
+		}
+		switch storageSlotFieldKind(id) {
+		case akToggle:
+			f.Kind, f.Value = jdeChoice, jdeYesNo(s.toggleState(id))
+		case akPicker:
+			value, dim := s.owningGroupValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E picks"
+			}
+		default:
+			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+		}
+		out[i] = f
+	}
+	return out
+}
+
+// toggleState is a bool row's current value.
+func (s *StorageSlotFormScreen) toggleState(id int) bool {
+	if id == ssfPalletJack {
+		return s.palletJack
+	}
+	return s.isActive
+}
+
+func (s *StorageSlotFormScreen) formLines() *jdeLines {
+	fields := s.formFields()
+	l := &jdeLines{}
+	l.Add(StyleJDEHeading.Render("Storage slot"))
 	if s.edit {
-		b.WriteString(StyleMuted.Render("code: ") + s.currentCodePreview() + "\n")
-		b.WriteString(StyleMuted.Render("the code is computed from rack + level + position — changing one renames the slot, and its printed card then reads wrong until reprinted") + "\n\n")
-	} else {
-		b.WriteString(StyleMuted.Render("code: ") + s.currentCodePreview() +
-			StyleMuted.Render("  (computed — an AprilTag is allocated on save)") + "\n\n")
+		l.Add(jdeIndent + StyleMuted.Render("Changing a component renames the slot — its card then needs reprinting."))
 	}
+	l.Add("")
+	// The code is derived from the three rows below it, so it sits above them as
+	// a dimmed, non-navigable row of the same sheet (l.Add, not AddRow) rather
+	// than as a header the operator would not tie to any field.
+	l.Add(renderJDEField(jdeField{
+		Label: "Code",
+		Kind:  jdeValue,
+		Value: s.currentCodePreview(),
+		Dim:   true,
+		Hint:  s.codeHint(),
+	}, storageLabelWidth))
+	l.AddFields(fields, storageLabelWidth, 0)
+	return l
+}
 
-	for i := range s.fields {
-		b.WriteString(s.renderField(i) + "\n")
+// codeHint says where the code comes from, and — on a create — what saving it
+// also allocates.
+func (s *StorageSlotFormScreen) codeHint() string {
+	if s.edit {
+		return "computed from rack + level + position"
 	}
-	b.WriteString("\n")
-	switch {
-	case s.saving:
-		b.WriteString(StyleMuted.Render("Saving…"))
-	case s.errMsg != "":
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	case s.sigsErr != "":
-		b.WriteString(StyleMuted.Render("SIG list unavailable — " + s.sigsErr))
-	default:
-		b.WriteString(StyleMuted.Render("rack + level + position must be unique · writes are staff / Storage Admin only"))
+	return "computed · save allocates an AprilTag"
+}
+
+// formBar names the keys that apply where the cursor is standing — and only
+// those, so the bar never teaches a key that does nothing here.
+func (s *StorageSlotFormScreen) formBar(body *jdeLines) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if id, ok := s.currentFieldID(); ok {
+		switch storageSlotFieldKind(id) {
+		case akToggle:
+			items = append(items, actionBarItem{"←→", "Change"})
+		case akPicker:
+			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
+		}
 	}
-	return b.String()
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
 }
 
 // currentCodePreview shows what the components spell right now, so the operator
@@ -608,70 +775,57 @@ func (s *StorageSlotFormScreen) currentCodePreview() string {
 	return "—"
 }
 
-func (s *StorageSlotFormScreen) renderField(i int) string {
-	id := s.fields[i]
-	caret := "  "
-	if i == s.cursor {
-		caret = "▸ "
-	}
-	label := storageSlotFieldLabel[id]
-	var value string
-	switch storageSlotFieldKind(id) {
-	case akToggle:
-		switch id {
-		case ssfPalletJack:
-			value = elecToggleLabel(s.palletJack)
-		case ssfActive:
-			value = elecToggleLabel(s.isActive)
-		}
-	case akPicker:
-		value = s.owningGroupLabel()
-	default:
-		value = s.inputs[id].View()
-	}
-	return caret + StyleTitle.Render(label+": ") + value
-}
-
-func (s *StorageSlotFormScreen) owningGroupLabel() string {
+// owningGroupValue is the owner row's text, and whether it is an empty state
+// rather than a value. It returns PLAIN text with a flag instead of pre-styled
+// muted text, because a focused row has to be able to reverse-video the whole
+// field — an inner reset sequence would end the highlight partway through it.
+func (s *StorageSlotFormScreen) owningGroupValue() (string, bool) {
 	if s.owningGroupID == nil {
-		return StyleMuted.Render("— not reserved —")
+		return "— not reserved —", true
 	}
 	if s.owningGroupName != "" {
-		return s.owningGroupName
+		return s.owningGroupName, false
 	}
-	return fmt.Sprintf("SIG #%d", *s.owningGroupID)
+	return fmt.Sprintf("SIG #%d", *s.owningGroupID), false
 }
 
-func (s *StorageSlotFormScreen) helpText() string {
-	kindHelp := "type to edit"
-	if id, ok := s.currentFieldID(); ok {
-		switch storageSlotFieldKind(id) {
-		case akToggle:
-			kindHelp = "space toggle"
-		case akPicker:
-			kindHelp = "space opens the SIG list"
-		}
+// pickView builds the open picker's pinned header and its option list. The note
+// explains what the clear row does — the one thing about the list that is not
+// self-evident — or why the list is short.
+func (s *StorageSlotFormScreen) pickView() ([]string, *jdeLines) {
+	note := "Row 1 releases the reservation — the slot goes back to general use."
+	switch {
+	case s.sigsErr != "":
+		note = "SIG list unavailable — " + s.sigsErr
+	case !s.sigsReady:
+		note = "Loading SIGs…"
 	}
-	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
+	// The title names WHAT is being picked and For names what for — "Reserve
+	// this slot for" would render as "… for  for 1A1", because jdePickList
+	// supplies the "for" itself.
+	forCode := s.currentCodePreview()
+	if forCode == "—" {
+		forCode = ""
+	}
+	return jdePickList{
+		Title:  "Owning SIG",
+		For:    forCode,
+		Note:   note,
+		Filter: s.pickSearch,
+		Count:  len(s.pickRows),
+		Label:  func(i int) string { return s.pickRows[i].label },
+		Dim:    func(i int) bool { return s.pickRows[i].clear },
+		Cursor: s.pickCursor,
+		Empty:  "(no matching SIGs)",
+	}.render()
 }
 
 func (s *StorageSlotFormScreen) viewPicker() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Reserve this slot for") + "\n")
-	switch {
-	case s.sigsErr != "":
-		b.WriteString(StyleStatusWarn.Render("SIG list unavailable — "+s.sigsErr) + "\n")
-		b.WriteString(StyleMuted.Render("esc keeps the current setting") + "\n\n")
-	case !s.sigsReady:
-		b.WriteString(StyleMuted.Render("Loading SIGs…") + "\n\n")
+	header, body := s.pickView()
+	paging := false
+	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+		paging = true
 	}
-	if len(s.pickRows) == 0 {
-		b.WriteString(StyleMuted.Render("No SIGs to choose from.") + "\n")
-	} else {
-		b.WriteString(renderWindowedList(len(s.pickRows), s.pickCursor, func(i int) string {
-			return s.pickRows[i].label
-		}))
-	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · enter pick · esc keep current"))
-	return b.String()
+	return s.frameWithHeader(header, body, s.pickCursor,
+		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
 }
