@@ -723,6 +723,46 @@ func TestAssetSupplies_TheDoorAsksBeforeDiscardingEdits(t *testing.T) {
 	}
 }
 
+// TestAssetSupplies_TheRealLoadPathRecordsTheBaseline drives the messages the
+// app actually delivers rather than calling the load steps by hand, because
+// assetSheetWithParts takes the baseline ITSELF — so every other test here would
+// pass just as well if the screen never recorded one, and the door would then
+// ask about discarding edits nobody had made. (A mutation deleting the
+// production snapshot survived the whole suite until this existed: the fixture
+// was reproducing what the code under test was supposed to do — sc-rdrk's
+// "does the fixture ever differ from what the reset produces".)
+func TestAssetSupplies_TheRealLoadPathRecordsTheBaseline(t *testing.T) {
+	s := NewAssetFormScreen(Deps{}, "a-1")
+	s.Update(tea.WindowSizeMsg{Width: assetSupplyWidth, Height: jdeSweepHeight})
+	s.Update(assetFormRefLoadedMsg{
+		categories: []omsapi.Category{{ID: 1, Name: "Machines"}},
+		locations:  []omsapi.Location{{ID: 2, Name: "Wood shop"}},
+	})
+	if !s.loading {
+		t.Fatalf("the sheet should still be loading until the asset arrives too")
+	}
+	s.Update(assetFormLoadedMsg{asset: &omsapi.Asset{
+		ID: "a-1", Name: "Ultimaker S5 3D printer", AssetTag: "3DP-002", Parts: assetTestParts(),
+	}})
+	if s.loading {
+		t.Fatalf("both fetches reported, the sheet should have finished loading")
+	}
+
+	if s.dirty() {
+		t.Errorf("a sheet that just finished loading has no unsaved edits to warn about")
+	}
+	// …and the door goes straight through rather than stopping to ask.
+	s.cursor = len(s.fields)
+	s.syncFocus()
+	_, cmd := s.Update(namedKey("ctrl+e"))
+	if s.supplyWarn {
+		t.Errorf("the door asked about discarding a freshly loaded sheet")
+	}
+	if _, ok := resolveSwitch(t, cmd).Screen.(*AssetPartsScreen); !ok {
+		t.Errorf("Ctrl-E on a freshly loaded sheet should open the parts screen")
+	}
+}
+
 // TestAssetSupplies_EveryEditableThingCountsAsDirty. The failure that matters is
 // a change the fingerprint MISSES — that is what would let the door discard it
 // without asking — so every piece of state the operator can reach is exercised
