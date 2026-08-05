@@ -321,6 +321,96 @@ func jdeWrapNote(note string, width int) []string {
 	return out
 }
 
+// ---------------------------------------------------------------------------
+// Detail grids
+// ---------------------------------------------------------------------------
+//
+// A detail grid is the OTHER thing a columnar sheet holds: not fields hanging
+// off the leader column, but a dense read-only listing of the records that ride
+// with the one being edited — a purchase order's lines (po_edit.go), an asset's
+// parts (asset_form_supplies.go, sc-hf1z), an item's suppliers
+// (inventory_item_form_suppliers.go, sc-7wag). Each is a numbered row plus a
+// continuation line or two of readings indented under it.
+
+// fitCell trims a cell to `w` INCLUDING the ellipsis, so an over-long value
+// cannot push the columns to its right out of alignment. truncateOneLine returns
+// n+1 characters for a width of n, which is what makes it wrong here; and it
+// counts runes, where a grid has to count display columns.
+func fitCell(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	if w == 1 {
+		return "…"
+	}
+	return truncateVisible(s, w-1) + "…"
+}
+
+// jdeToken is one reading on a detail row's continuation line. It carries its
+// own style rather than pre-rendered text because jdeWrapTokens does its width
+// accounting on the PLAIN text and renders each token whole afterwards — which
+// is what keeps a line from ever being cut through an escape sequence. Holding
+// the style as a value also lets a test assert the styling contract on the
+// STRUCT, which is the only place it survives (lipgloss renders flat in a test
+// binary — sc-lmsi).
+type jdeToken struct {
+	text  string
+	style lipgloss.Style
+}
+
+func (t jdeToken) render() string { return t.style.Render(t.text) }
+
+// jdeTokenSep separates the readings on a continuation line.
+const jdeTokenSep = " · "
+
+// jdeWrapTokens lays a row's readings out under it, WRAPPING rather than
+// trimming: the readings run well past a narrow pane, and the piece an ellipsis
+// would eat is the LAST one — which is exactly where the thing worth acting on
+// sits (an asset part's NEEDS REPLACEMENT, a supplier link's [discontinued]).
+// Only a single reading longer than the whole line is trimmed, and then visibly.
+//
+// width is the pane's body width; 0 means it is not known yet, which — as
+// everywhere else in this file — means "do not truncate". Every returned line
+// carries `indent`, so the block reads as part of the row above it.
+func jdeWrapTokens(tokens []jdeToken, indent string, width int) []string {
+	if len(tokens) == 0 {
+		return nil
+	}
+	avail := 0
+	if width > 0 {
+		if avail = width - lipgloss.Width(indent); avail < 1 {
+			avail = 1
+		}
+	}
+	sepW := lipgloss.Width(jdeTokenSep)
+
+	var lines []string
+	line, lineW := "", 0
+	for _, tok := range tokens {
+		if avail > 0 {
+			tok.text = fitCell(tok.text, avail)
+		}
+		w := lipgloss.Width(tok.text)
+		switch {
+		case line == "":
+			line, lineW = tok.render(), w
+		case avail > 0 && lineW+sepW+w > avail:
+			lines = append(lines, indent+line)
+			line, lineW = tok.render(), w
+		default:
+			line += StyleMuted.Render(jdeTokenSep) + tok.render()
+			lineW += sepW + w
+		}
+	}
+	if line != "" {
+		lines = append(lines, indent+line)
+	}
+	return lines
+}
+
 // jdeOptionStrip lists a choice row's whole option set with the current one
 // bracketed: the line a form draws under the FOCUSED choice row so a short fixed
 // list is never cycled blind. A two-value set gets nothing — "< Yes >" already

@@ -302,9 +302,17 @@ type InventoryItemFormScreen struct {
 	categoryID *int
 	locationID *int
 
-	// Visible-field navigation.
+	// Visible-field navigation. The cursor runs past the fields into the
+	// read-only suppliers band (inventory_item_form_suppliers.go), which is what
+	// rowCount() counts and every cursor bound below measures against.
 	fields []int
 	cursor int
+
+	// supplierWarn is the band's Ctrl-E door asking before it leaves a sheet with
+	// unsaved edits; baseline is the sheet as it loaded, which is how dirty()
+	// knows there are any.
+	supplierWarn bool
+	baseline     string
 
 	// Category/location sub-picker state.
 	phase       itemFormPhase
@@ -654,6 +662,7 @@ func (s *InventoryItemFormScreen) maybeFinalizeLoad() tea.Cmd {
 	}
 	s.rebuildFields()
 	s.syncFocus()
+	s.snapshotBaseline()
 	return nil
 }
 
@@ -785,8 +794,11 @@ func (s *InventoryItemFormScreen) rebuildFields() {
 	if focused >= 0 {
 		s.setCursorToField(focused)
 	}
-	if s.cursor >= len(s.fields) {
-		s.cursor = len(s.fields) - 1
+	// The clamp measures the whole SHEET, not just the fields: a conditional
+	// field appearing or disappearing must not knock the cursor off the
+	// suppliers band below them.
+	if s.cursor >= s.rowCount() {
+		s.cursor = s.rowCount() - 1
 	}
 	if s.cursor < 0 {
 		s.cursor = 0
@@ -825,6 +837,12 @@ func (s *InventoryItemFormScreen) syncFocus() {
 // ---------------------------------------------------------------------------
 
 func (s *InventoryItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The suppliers band's confirm is modal while it is up — including over the
+	// system keys, since the two it overrides (enter saves, esc discards) are
+	// exactly the two outcomes it exists to ask about.
+	if s.supplierWarn {
+		return s.updateSupplierWarn(m)
+	}
 	// The system keys, first and everywhere: they mean the same thing on every
 	// row, which is the whole point of the reduced scheme (sc-h412).
 	switch m.String() {
@@ -888,6 +906,11 @@ func (s *InventoryItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 func (s *InventoryItemFormScreen) openFocusedRow() tea.Cmd {
 	id, ok := s.currentFieldID()
 	if !ok {
+		// Not a field — the suppliers band, whose door is the screen that
+		// manages the links this one only lists.
+		if _, onBand := s.onSupplierRow(); onBand {
+			return s.openSupplierRow()
+		}
 		return nil
 	}
 	switch fieldKind(id) {
@@ -902,7 +925,7 @@ func (s *InventoryItemFormScreen) openFocusedRow() tea.Cmd {
 }
 
 func (s *InventoryItemFormScreen) moveCursor(delta int) {
-	n := len(s.fields)
+	n := s.rowCount()
 	if n == 0 {
 		return
 	}
@@ -911,10 +934,10 @@ func (s *InventoryItemFormScreen) moveCursor(delta int) {
 }
 
 func (s *InventoryItemFormScreen) pageCursor(dir int) {
-	if len(s.fields) == 0 {
+	if s.rowCount() == 0 {
 		return
 	}
-	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.cursor = jdePageCursor(s.cursor, s.rowCount(), s.windowRows(s.formLines(), s.cursor, 0), dir)
 	s.syncFocus()
 }
 
@@ -1669,11 +1692,24 @@ func (s *InventoryItemFormScreen) formLines() *jdeLines {
 			}
 		}
 	}
+	// The suppliers band comes last, after every field: it is a detail grid, not
+	// more fields, so it hangs off no leader column and its rows continue the
+	// sheet's cursor space past the fields.
+	s.supplierBand(l)
 	return l
 }
 
 func (s *InventoryItemFormScreen) formBar(body *jdeLines) []actionBarItem {
+	if s.supplierWarn {
+		// The confirm owns the bar while it is up, because it owns the keyboard:
+		// naming Enter=Save beside a question about discarding the sheet would
+		// name a key that no longer does that.
+		return []actionBarItem{{"Ctrl-E", "Discard & open"}, {"Esc", "Stay here"}}
+	}
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+	if _, onBand := s.onSupplierRow(); onBand {
+		items = append(items, actionBarItem{"Ctrl-E", "Suppliers"})
+	}
 	if id, ok := s.currentFieldID(); ok {
 		switch fieldKind(id) {
 		case kindToggle:
