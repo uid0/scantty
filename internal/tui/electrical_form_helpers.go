@@ -1,15 +1,58 @@
-// Shared render/help helpers for the three electrical CRUD forms
-// (electrical_forms.go). Factored here so PowerPanel / PowerBreaker /
-// PowerCircuit forms render selects, toggles, the picker sub-phase and the
-// field-help line identically without three copies of the same code.
+// Shared render/help helpers for the electrical CRUD forms
+// (electrical_forms.go, electrical_leaf_forms.go). Factored here so the five
+// power-topology forms render selects, toggles and their shared label column
+// identically without five copies of the same code.
+//
+// The five forms now render through the columnar "JD Edwards" layer
+// (jde_form.go, sc-h412/sc-dnhx/sc-0zvi); what is left here is what the layer
+// deliberately does not know about — the electrical family's own vocabulary.
+// The old elecPickView / elecMultiPickView drew the pre-redesign picker
+// sub-phase and went with it: jdePickList is the picker now (sc-ye0i).
 package tui
 
-import (
-	"fmt"
-	"strings"
+// elecLabelFields turns a form's label map into the field list jdeLabelWidth
+// measures. Only the Label matters to the width, so nothing else is filled in.
+func elecLabelFields(labels map[int]string) []jdeField {
+	out := make([]jdeField, 0, len(labels))
+	for _, l := range labels {
+		out = append(out, jdeField{Label: l})
+	}
+	return out
+}
 
-	"github.com/charmbracelet/bubbles/textinput"
+// elecLabelWidth is the ONE label column shared by all five electrical forms,
+// so walking panel → breaker → circuit → outlet → disconnect never shifts the
+// sheet sideways under the operator. These five screens are reached from one
+// another (a panel drills to its breakers, a breaker to its circuits, a circuit
+// to its outlets and disconnects), which is exactly when a column that moved
+// between sheets would read as the form jumping.
+//
+// It is computed from the label maps themselves rather than pinned to a
+// number, so adding or renaming a field can never silently break the alignment
+// — and jdeLabelWidth's own cap still applies, so one verbose label cannot
+// shove every input area off a narrow terminal.
+var elecLabelWidth = jdeLabelWidth(
+	elecLabelFields(panelFieldLabel),
+	elecLabelFields(breakerFieldLabel),
+	elecLabelFields(circuitFieldLabel),
+	elecLabelFields(outletFieldLabel),
+	elecLabelFields(disconnectFieldLabel),
 )
+
+// elecClampPick clamps an option cursor into [0,count). A picker list is a set
+// of choices, not a ring: running off the bottom must not reappear at the
+// "(none)" row that CLEARS the field, which is what a wrap would do. count==0
+// (nothing matched the filter) rests at 0, which is where a cursor with nothing
+// to point at belongs.
+func elecClampPick(next, count int) int {
+	if next < 0 || count <= 0 {
+		return 0
+	}
+	if next > count-1 {
+		return count - 1
+	}
+	return next
+}
 
 // elecVisibleRows returns how many field rows fit the current terminal height,
 // reserving chrome for the help line, scroll indicators, spacing and status.
@@ -65,83 +108,4 @@ func elecFieldHelp(kindOf func(int) assetFieldKind, current func() (int, bool)) 
 		}
 	}
 	return kindHelp + " · tab/↑↓ move · enter save · esc cancel"
-}
-
-// elecPickView renders the single-value picker sub-phase shared by all three
-// forms (all electrical FKs are int pks → itemPickOption rows).
-func elecPickView(what string, search *textinput.Model, typing bool, opts []itemPickOption, cursor int) string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render("Pick "+what+" — j/k move · / filter · enter select · esc back") + "\n\n")
-	if typing || search.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + search.View() + "\n\n")
-	}
-	if len(opts) == 0 {
-		b.WriteString(StyleMuted.Render("(no matches)"))
-		return b.String()
-	}
-	const window = 12
-	start, end := fieldWindow(cursor, len(opts), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		caret := "    "
-		if i == cursor {
-			caret = "  ▸ "
-		}
-		opt := opts[i]
-		switch {
-		case i == cursor:
-			b.WriteString(StyleSidebarItemActive.Render(caret+opt.label) + "\n")
-		case opt.clear:
-			b.WriteString(caret + StyleMuted.Render(opt.label) + "\n")
-		default:
-			b.WriteString(caret + opt.label + "\n")
-		}
-	}
-	if end < len(opts) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(opts)-end)) + "\n")
-	}
-	return b.String()
-}
-
-// elecMultiPickView renders the multi-select picker sub-phase (the Disconnect
-// form's required_loto_devices field). Space toggles a row in/out of the
-// selection without closing; enter closes. Mirrors elecPickView but prefixes
-// each row with a [x]/[ ] checkbox driven by the selected predicate.
-func elecMultiPickView(what string, search *textinput.Model, typing bool, opts []itemPickOption, cursor int, selected func(id int) bool) string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render("Choose "+what+" — j/k move · space toggle · / filter · enter done · esc back") + "\n\n")
-	if typing || search.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + search.View() + "\n\n")
-	}
-	if len(opts) == 0 {
-		b.WriteString(StyleMuted.Render("(no devices — add them in the OMS web LOTO inventory)"))
-		return b.String()
-	}
-	const window = 12
-	start, end := fieldWindow(cursor, len(opts), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		opt := opts[i]
-		caret := "    "
-		if i == cursor {
-			caret = "  ▸ "
-		}
-		box := "[ ] "
-		if selected(opt.id) {
-			box = "[x] "
-		}
-		if i == cursor {
-			b.WriteString(StyleSidebarItemActive.Render(caret+box+opt.label) + "\n")
-		} else {
-			b.WriteString(caret + box + opt.label + "\n")
-		}
-	}
-	if end < len(opts) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(opts)-end)) + "\n")
-	}
-	return b.String()
 }
