@@ -108,6 +108,7 @@ func (s *AssetFormScreen) supplyBand(l *jdeLines) {
 
 	itemW := s.supplyItemWidth()
 	l.Add(StyleMuted.Render(assetSupplyGridRow("#", "Item", "Qty", "Role", itemW)))
+	focused, onSupply := s.onSupplyRow()
 	for i, p := range rows {
 		row := assetSupplyGridRow(
 			strconv.Itoa(i+1),
@@ -116,7 +117,9 @@ func (s *AssetFormScreen) supplyBand(l *jdeLines) {
 			supplyRoleCell(p),
 			itemW,
 		)
-		if s.cursor == len(s.fields)+i {
+		if onSupply && focused == i {
+			// Picked out end to end, as a focused field row is — the whole row
+			// IS the value here, so there is no input area to reverse on its own.
 			row = StyleJDEFieldFocused.Render(row)
 		}
 		// Every line of a part shares its row, so the window can never separate
