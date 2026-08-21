@@ -24,17 +24,38 @@
 // when the operator changed it. A form that shows a price so the operator can
 // see it must not thereby re-submit it — the same invariant the per-line
 // association rows already state ("a re-tag must not carry along a cost the
-// operator never touched").
+// operator never touched"). "Changed" means a different AMOUNT and not
+// different characters (poSameAmount): an operator who retypes the 50.00 in
+// front of them has changed nothing, and a guard comparing raw text would have
+// saved "50" while silently dropping "50.00" — the same intent decided by
+// trailing zeros, which is worse than either answer on its own.
+//
+// That leaves one thing the operator can then no longer say by typing: "write
+// the price this row is SHOWING, exactly as it stands". They need to be able to
+// say it, because a line pinned at $0.00 shows the estimate the prefill
+// recovered for it and there is no keystroke that differs from what is already
+// there. Ctrl-E on the cost row is that affordance — the screen's existing "act
+// on this row" key, which the same row uses to take the historical offer when
+// the line has no price of its own to show. One key, one row, two states, and
+// the action bar names whichever one is live (po_edit.go's lineBar).
 //
 // When the line carries no price at all — an asset or freeform line entered
 // without one, or a line whose price was already lost — the form OFFERS the
-// last price the shop actually paid for that item, read from the same
-// purchase-history endpoint the inventory detail's Purchase / Receipts section
-// uses (omsapi.GetPurchaseHistory, inventory_detail.go). It is offered, never
+// last price RECORDED for that item, read from the same purchase-history
+// endpoint the inventory detail's Purchase / Receipts section uses
+// (omsapi.GetPurchaseHistory, inventory_detail.go). It is offered, never
 // applied: Ctrl-E on the cost row pulls it into the field, and until the
-// operator does that the save carries no price. The figure is labelled as
-// historical wherever it is shown, because it is what a DIFFERENT order paid,
-// not what this one was quoted.
+// operator does that the save carries no price.
+//
+// What that figure is NOT is money anybody paid, and it is not labelled as if
+// it were. The purchase_history action joins on item_supplier__item_id alone —
+// it filters out no voided line and restricts no order status — so the newest
+// usable row can belong to a draft, to a cancelled order, or to a line that
+// this very screen priced and that was then voided without a single unit
+// arriving. is_voided is not on the wire and cannot be, without an endpoint
+// this task must not add; the order's STATUS is, so it rides the offer beside
+// the PO number and the order date, and the wording states what the row
+// establishes (a price recorded on that order) rather than what it does not.
 package tui
 
 import (
@@ -67,6 +88,24 @@ func decimalAmount(d omsapi.DecimalString) (float64, bool) {
 // poMoney renders a total the way the cost field takes it: bare digits, two
 // places, no currency sign — what the operator would have typed.
 func poMoney(v float64) string { return strconv.FormatFloat(v, 'f', 2, 64) }
+
+// poSameAmount reports whether two cost entries name the same AMOUNT rather
+// than the same characters. It is what decides "the operator did not touch the
+// price" in saveLine, and the distinction is not academic: the field is
+// prefilled from poLineCarriedCost, which always renders two decimal places, so
+// an operator retyping the 50.00 in front of them types the shown text while an
+// operator typing 50 does not. Comparing raw text made those two keystroke
+// sequences mean opposite things — one dropped, one saved — for one intent.
+//
+// Either side being blank or unparseable answers false, which is the safe way
+// round here: "not the same" sends the price, and a blank shown value means
+// there was no price to be the same as. saveLine rejects an unparseable entry
+// before it ever asks.
+func poSameAmount(a, b string) bool {
+	av, aok := decimalAmount(omsapi.DecimalString(a))
+	bv, bok := decimalAmount(omsapi.DecimalString(b))
+	return aok && bok && av == bv
+}
 
 // poUnitMoney renders a PER-UNIT price. The column carries four decimal places
 // and cheap parts use them, so this shows two — enough to read as money — and
@@ -114,14 +153,23 @@ func poLineItemID(li omsapi.PurchaseOrderItem) string {
 }
 
 // poLastPaid is the newest purchase-order line for an item that carries a
-// usable per-unit price: what the shop last actually paid, and which order says
-// so. Confirmed marks a price that was settled after delivery
-// (unit_cost_actual) rather than the price the order was placed at.
+// usable per-unit price: the last price recorded for that item, and which order
+// records it.
+//
+// priced marks a figure read from unit_cost_actual — the price written to the
+// line after the order was placed — rather than from unit_cost_ordered, the
+// price it was placed at. It deliberately does NOT mean the money was paid:
+// unit_cost_actual is written by the same PATCH this screen makes, on a line
+// that may have received nothing and may afterwards be voided, on an order that
+// may still be a draft. status carries the order's own state for exactly that
+// reason — it is the one thing on the wire that lets the operator tell those
+// rows apart, since the payload has no is_voided.
 type poLastPaid struct {
-	unit      float64
-	order     string
-	date      string
-	confirmed bool
+	unit   float64
+	order  string
+	date   string
+	status string
+	priced bool
 }
 
 // poLastPaidFrom picks that row out of an item's purchase history. Rows arrive
@@ -134,9 +182,11 @@ type poLastPaid struct {
 // The history is scoped to the ITEM, not to the item+supplier link the line was
 // bought through — the backend's purchase_history action joins on
 // item_supplier__item_id and returns no supplier per row, so a strictly
-// supplier-scoped answer is not available from it. The order it came from is
-// carried on the offer and shown to the operator, which is what lets them judge
-// whether the price belongs to the supplier in front of them.
+// supplier-scoped answer is not available from it. Nor does it filter voided
+// lines or order status. The order the row came from, when it was placed and
+// what state it is in are therefore all carried on the offer and shown, which
+// is what lets the operator judge whether the price belongs to the supplier in
+// front of them and to an order anybody honoured.
 func poLastPaidFrom(h *omsapi.ItemPurchaseHistory, excludePO string) *poLastPaid {
 	if h == nil {
 		return nil
@@ -146,12 +196,15 @@ func poLastPaidFrom(h *omsapi.ItemPurchaseHistory, excludePO string) *poLastPaid
 		if excludePO != "" && strconv.Itoa(o.PurchaseOrder) == excludePO {
 			continue
 		}
-		row := &poLastPaid{order: poDisplayLabel(o.PONumber, o.PurchaseOrder)}
+		row := &poLastPaid{
+			order:  poDisplayLabel(o.PONumber, o.PurchaseOrder),
+			status: strings.TrimSpace(o.Status),
+		}
 		if !o.OrderDate.IsZero() {
 			row.date = o.OrderDate.Format("2006-01-02")
 		}
 		if unit, ok := decimalAmount(o.UnitCostActual); ok && unit > 0 {
-			row.unit, row.confirmed = unit, true
+			row.unit, row.priced = unit, true
 			return row
 		}
 		if unit, ok := decimalAmount(o.UnitCostOrdered); ok && unit > 0 {
@@ -172,21 +225,46 @@ func (p *poLastPaid) total(quantityOrdered int) string {
 }
 
 // describe names the offer the way it has to read on a green screen: the price,
-// per unit, on which order, and — always — that it is history rather than a
-// figure anybody has agreed to for THIS order.
+// per unit, on which order, in what state that order is, and — always — that it
+// is history rather than a figure anybody has agreed to for THIS order.
+//
+// It says "priced at" and never "paid". The row it comes from proves only that
+// a price was recorded against a line; the history endpoint returns voided
+// lines and every order status alike, so a figure nobody ever paid — a priced
+// line on a cancelled order, or one this screen priced and that was then voided
+// — can perfectly well be the newest usable row. Calling that "last paid" would
+// be the screen asserting something the wire does not support, on the one field
+// this whole file exists to stop from lying.
 func (p *poLastPaid) describe() string {
 	if p == nil {
 		return ""
 	}
 	basis := "ordered at"
-	if p.confirmed {
-		basis = "paid"
+	if p.priced {
+		basis = "priced at"
 	}
 	out := fmt.Sprintf("Last %s $%s/unit on %s", basis, poUnitMoney(p.unit), p.order)
-	if p.date != "" {
-		out += " (" + p.date + ")"
+	if meta := p.meta(); meta != "" {
+		out += " (" + meta + ")"
 	}
 	return out + " — historical, not confirmed for this order."
+}
+
+// meta is the offer's provenance in the shape the inventory detail's order rows
+// already use (orderCostMeta, inventory_detail.go): when the order was placed,
+// then what state it is in. Same order, same separator, so an operator who has
+// read one screen can read the other. Either half can be missing — order_date
+// is nullable and status is free text on the wire — and a missing half drops
+// out rather than rendering an empty slot.
+func (p *poLastPaid) meta() string {
+	parts := make([]string, 0, 2)
+	if p.date != "" {
+		parts = append(parts, p.date)
+	}
+	if p.status != "" {
+		parts = append(parts, p.status)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // ---------------------------------------------------------------------------
@@ -273,7 +351,13 @@ func (c *poLastPaidCache) offer(itemID string) (row *poLastPaid, note string) {
 	case c.errs[itemID] != "":
 		return nil, "Last price unavailable: " + c.errs[itemID]
 	case c.rows[itemID] == nil:
-		return nil, "Never ordered before — type the price."
+		// NOT "never ordered before": a nil row also covers an item whose every
+		// prior line was entered at 0.0000 (unit_cost_ordered is non-null with
+		// no minimum, so that is a real shape), and one whose only history is
+		// THIS order, which the lookup excludes on purpose. Say what was
+		// actually established rather than a stronger claim the data cannot
+		// carry.
+		return nil, "No usable price in this item's history — type the price."
 	}
 	return c.rows[itemID], ""
 }

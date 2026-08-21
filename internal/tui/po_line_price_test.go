@@ -277,6 +277,8 @@ func (f *fakePOServer) lineCostPatches() []map[string]any {
 //	partial — ordered 10, received 4, priced. actual_cost = 4 × $5 = $20.00
 //	open    — ordered  6, received 0.        actual_cost null, cost = estimate
 //	closed  — ordered  4, received 4, priced. actual_cost = 4 × $9 = $36.00
+//
+// …plus two lines that carry no price at all, for the two ways that happens.
 func poPriceOrder() *fakePOServer {
 	rat := func(s string) *big.Rat {
 		v, _ := new(big.Rat).SetString(s)
@@ -308,6 +310,17 @@ func poPriceOrder() *fakePOServer {
 				id: "line-unpriced", description: "Sprocket", itemID: "item-sprocket",
 				quantityOrdered: 8, quantityReceived: 0,
 				unitCostOrdered: rat("0"),
+			},
+			// A line the old code already drove to zero, before the guard
+			// existed: unit_cost_actual pinned at 0.0000 over 10 ordered with 4
+			// received, so the grid's Cost column reads $0.00 while the estimate
+			// behind it still says the line was placed at $50.00. This is the
+			// shape that has to be RECOVERABLE from the keyboard — the prefill
+			// hands the estimate back, so there is nothing different to type.
+			{
+				id: "line-zeroed", description: "Idler pulley", itemID: "item-idler",
+				quantityOrdered: 10, quantityReceived: 4,
+				unitCostOrdered: rat("5"), unitCostActual: rat("0"),
 			},
 		},
 		history: map[string]omsapi.ItemPurchaseHistory{
@@ -544,7 +557,10 @@ func TestPOLineEdit_UnpricedLineOffersTheLastPricePaid(t *testing.T) {
 
 	out := s.View()
 	for _, want := range []string{
-		"Last paid $3.75/unit on PO-2026-0007 (2026-06-02)",
+		// "priced at", not "paid": the history endpoint filters neither voided
+		// lines nor order status, so the order's own status rides the offer and
+		// the wording claims only what the row establishes.
+		"Last priced at $3.75/unit on PO-2026-0007 (2026-06-02 · received)",
 		"historical, not confirmed for this order",
 		"Ctrl-E offers $30.00 for the 8 ordered",
 		"Ctrl-E=Use last price",
@@ -611,10 +627,170 @@ func TestPOLineEdit_NoHistorySaysSo(t *testing.T) {
 	if strings.Contains(out, "Ctrl-E=Use last price") {
 		t.Errorf("the bar must not offer a key with nothing behind it:\n%s", out)
 	}
-	// Ctrl-E with no offer explains itself rather than doing nothing.
+	// Ctrl-E opens nothing here, silently — the bar named no key, and a key the
+	// bar does not name does nothing. The reason is already on screen in the
+	// body above; it is not something the operator has to press a key to be
+	// told, and pressing one must not put a figure in the field.
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
 	if got := s.lineInputs[poLineEditCost].Value(); got != "" {
 		t.Errorf("cost field = %q, want it left empty", got)
+	}
+}
+
+// TestPOLastPaidDescribeClaimsOnlyWhatTheRowShows: the offer is one line of
+// green screen and the operator decides on it, so what it asserts matters. A
+// price read from unit_cost_actual is a price RECORDED against a line — it is
+// written by the same PATCH this screen makes, on a line that may have received
+// nothing and may later be voided, on an order that may be cancelled — and the
+// purchase_history endpoint hands those rows back like any other. So the offer
+// says "priced at", never "paid", and carries the order's status so the row can
+// be judged rather than trusted.
+func TestPOLastPaidDescribeClaimsOnlyWhatTheRowShows(t *testing.T) {
+	voided := &omsapi.ItemPurchaseHistory{OrderCosts: []omsapi.ItemOrderCost{{
+		PurchaseOrder: 7, PONumber: "PO-2026-0007",
+		OrderDate: time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC),
+		Status:    "cancelled", UnitCostOrdered: "3.5000", UnitCostActual: "3.7500",
+	}}}
+	row := poLastPaidFrom(voided, "")
+	if row == nil {
+		t.Fatal("a priced row should still be offered — the operator judges it")
+	}
+	got := row.describe()
+	if strings.Contains(got, "paid $") {
+		t.Errorf("a price nobody paid must not be called paid: %q", got)
+	}
+	for _, want := range []string{
+		"Last priced at $3.75/unit on PO-2026-0007",
+		"2026-06-02 · cancelled",
+		"historical, not confirmed for this order",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("offer %q missing %q", got, want)
+		}
+	}
+
+	// Either half of the provenance can be missing on the wire (order_date is
+	// nullable, status is free text) — a missing half drops out rather than
+	// leaving an empty slot behind a separator.
+	bare := &poLastPaid{unit: 2, order: "PO-9"}
+	if got := bare.describe(); strings.Contains(got, "(") {
+		t.Errorf("no date and no status should render no parenthetical: %q", got)
+	}
+}
+
+// TestPOLineEdit_RetypingTheShownPriceIsNotAChange: the untouched-cost guard
+// compares AMOUNTS. Retyping the "50.00" the field is showing and typing "50"
+// are one intent expressed two ways, and a guard on raw text made them opposite
+// outcomes — "50" saved, "50.00" silently dropped — which is not a rule anybody
+// could be taught. Neither is sent now: both mean the price is unchanged.
+func TestPOLineEdit_RetypingTheShownPriceIsNotAChange(t *testing.T) {
+	for _, typed := range []string{"50.00", "50"} {
+		t.Run("types "+typed, func(t *testing.T) {
+			fake := poPriceOrder()
+			r, _ := poPriceRoot(t, fake)
+			// The grid reads $0.00 — 4 received × a unit cost pinned at zero —
+			// while the estimate behind it still says $50.00.
+			if got := fake.costOf(t, "line-zeroed"); got != "0.00" {
+				t.Fatalf("fixture: the zeroed line should read 0.00, got %s", got)
+			}
+
+			r, s := poOpenLineEditor(t, r, 4)
+			if got := s.lineInputs[poLineEditCost].Value(); got != "50.00" {
+				t.Fatalf("the prefill should recover the estimate, field = %q", got)
+			}
+			for range s.lineInputs[poLineEditCost].Value() {
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+			}
+			r = poTypeRunes(t, r, typed)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+			if sent := fake.lineCostPatches(); len(sent) != 0 {
+				t.Errorf("typing the shown amount is not a change; sent %v", sent)
+			}
+			if got := fake.line("line-zeroed").unitCostActual.FloatString(4); got != "0.0000" {
+				t.Errorf("unit_cost_actual = %s, want it untouched at 0.0000", got)
+			}
+		})
+	}
+}
+
+// TestPOLineEdit_ZeroedLineRecoversItsPriceWithCtrlE is the way back out of
+// $0.00 from the keyboard. The guard above means a line whose prefill already
+// shows the right figure has nothing the operator could type that would count
+// as a change — so the cost row's Ctrl-E, the same key that takes the historical
+// offer on a line with no price, commits the price the row is showing. The bar
+// names it, because it does something.
+func TestPOLineEdit_ZeroedLineRecoversItsPriceWithCtrlE(t *testing.T) {
+	fake := poPriceOrder()
+	r, _ := poPriceRoot(t, fake)
+
+	r, s := poOpenLineEditor(t, r, 4)
+	if !strings.Contains(s.View(), "Ctrl-E=Confirm price") {
+		t.Fatalf("the cost row of a priced line should name Ctrl-E:\n%s", s.View())
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if got := s.lineInputs[poLineEditCost].Value(); got != "50.00" {
+		t.Errorf("confirming must not change the figure, field = %q", got)
+	}
+	if !strings.Contains(s.View(), "Price confirmed") {
+		t.Errorf("the armed state should be on screen, not only in a status line:\n%s", s.View())
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	sent := fake.lineCostPatches()
+	if len(sent) != 1 {
+		t.Fatalf("the confirmed price should be sent exactly once; sent %v", sent)
+	}
+	if got, _ := ratFromJSON(sent[0]["line_cost"]); got == nil || got.Cmp(big.NewRat(50, 1)) != 0 {
+		t.Errorf("line_cost = %v, want 50", sent[0]["line_cost"])
+	}
+	// $50.00 over the 10 ordered is $5.00/unit again, so the 4 received are
+	// worth $20.00 — the line is off zero and the grid says so.
+	if got := fake.line("line-zeroed").unitCostActual.FloatString(4); got != "5.0000" {
+		t.Errorf("unit_cost_actual = %s, want 5.0000", got)
+	}
+	if got := fake.costOf(t, "line-zeroed"); got != "20.00" {
+		t.Errorf("line cost after the recovery = %s, want 20.00", got)
+	}
+}
+
+// TestPOLineEdit_ConfirmingIsPerLine: the confirm is armed for the line it was
+// pressed on and nothing else. It is a one-line escape hatch out of $0.00, so an
+// arm that leaked into the next line opened would re-send a price on a line
+// nobody touched — the exact failure the guard exists to prevent.
+func TestPOLineEdit_ConfirmingIsPerLine(t *testing.T) {
+	fake := poPriceOrder()
+	r, _ := poPriceRoot(t, fake)
+
+	r, s := poOpenLineEditor(t, r, 4)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	// The save drops back to the form with the cursor still on that line, so
+	// the operator walks up to the partially received one and opens it — the
+	// keys they would actually press, with no fresh screen in between.
+	for i := 0; i < 4; i++ {
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyUp})
+	}
+	if got, ok := s.onLineRow(); !ok || got != 0 {
+		t.Fatalf("cursor %d is not the first line row (got %d, onLine=%v)", s.cursor, got, ok)
+	}
+	before := fake.costOf(t, "line-partial")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poEditPhaseLine {
+		t.Fatalf("Ctrl-E on a line row should open its editor, phase = %v", s.phase)
+	}
+	if s.lineCostConfirmed {
+		t.Fatal("opening a line must not inherit the previous line's confirm")
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	r = poTypeRunes(t, r, "2026-09-14")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if got := fake.costOf(t, "line-partial"); got != before {
+		t.Errorf("price drifted %s -> %s", before, got)
+	}
+	if sent := fake.lineCostPatches(); len(sent) != 1 {
+		t.Errorf("only the confirmed line should have sent a price; sent %v", sent)
 	}
 }
 
@@ -679,16 +855,21 @@ func TestPOLineCarriedCost(t *testing.T) {
 func TestPOLastPaidFrom(t *testing.T) {
 	day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
 	history := &omsapi.ItemPurchaseHistory{OrderCosts: []omsapi.ItemOrderCost{
-		{PurchaseOrder: 1, PONumber: "PO-1", OrderDate: day(1), UnitCostOrdered: "1.0000", UnitCostActual: "1.1000"},
-		{PurchaseOrder: 2, PONumber: "PO-2", OrderDate: day(2), UnitCostOrdered: "2.0000"},
-		{PurchaseOrder: 3, PONumber: "", OrderDate: day(3), UnitCostOrdered: "0.0000"},
-		{PurchaseOrder: 4, PONumber: "PO-4", OrderDate: day(4), UnitCostOrdered: "4.0000"},
+		{PurchaseOrder: 1, PONumber: "PO-1", OrderDate: day(1), Status: "received", UnitCostOrdered: "1.0000", UnitCostActual: "1.1000"},
+		{PurchaseOrder: 2, PONumber: "PO-2", OrderDate: day(2), Status: "confirmed", UnitCostOrdered: "2.0000"},
+		{PurchaseOrder: 3, PONumber: "", OrderDate: day(3), Status: "draft", UnitCostOrdered: "0.0000"},
+		{PurchaseOrder: 4, PONumber: "PO-4", OrderDate: day(4), Status: "cancelled", UnitCostOrdered: "4.0000"},
 	}}
 
 	// The newest priced row wins, and an unnumbered / unpriced row is skipped.
+	// The order's status comes with it — the endpoint filters no status and no
+	// voided line, so it is the only thing that lets the operator judge the row.
 	got := poLastPaidFrom(history, "")
-	if got == nil || got.unit != 4 || got.order != "PO-4" || got.confirmed {
+	if got == nil || got.unit != 4 || got.order != "PO-4" || got.priced {
 		t.Fatalf("offer = %+v, want PO-4 at 4.0000 ordered-at", got)
+	}
+	if got.status != "cancelled" {
+		t.Errorf("offer status = %q, want the order's own status", got.status)
 	}
 	// The order being edited is not evidence about itself.
 	got = poLastPaidFrom(history, "4")
@@ -697,7 +878,7 @@ func TestPOLastPaidFrom(t *testing.T) {
 	}
 	// A settled price beats the price the same row was ordered at.
 	got = poLastPaidFrom(&omsapi.ItemPurchaseHistory{OrderCosts: history.OrderCosts[:1]}, "")
-	if got == nil || got.unit != 1.1 || !got.confirmed {
+	if got == nil || got.unit != 1.1 || !got.priced {
 		t.Fatalf("offer = %+v, want the settled 1.1000", got)
 	}
 	if got := poLastPaidFrom(nil, ""); got != nil {

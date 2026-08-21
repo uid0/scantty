@@ -431,15 +431,34 @@ func TestPOEditJDE_CostRowNamesItsBasis(t *testing.T) {
 	}
 }
 
-// TestPOEditJDE_CostRowOffersNoKeyWithNothingBehindIt: the bar is the only place
-// the operator learns a key, so Ctrl-E is named on the cost row only when there
-// is a price to offer. A line that already carries one has nothing to offer.
-func TestPOEditJDE_CostRowOffersNoKeyWithNothingBehindIt(t *testing.T) {
+// TestPOEditJDE_CostRowNamesOnlyTheKeyThatWorks: the bar is the only place the
+// operator learns a key, so the cost row names Ctrl-E for whichever of its two
+// jobs is live — confirm the price the row is showing, or take the historical
+// offer a line with no price of its own gets — and names nothing when neither
+// is. The rule is two-way, so the key is pressed here as well as read: naming
+// nothing and then doing something would be the same lie in reverse.
+func TestPOEditJDE_CostRowNamesOnlyTheKeyThatWorks(t *testing.T) {
 	s := poJDEScreen(t, 40)
 	s.openLineEditor(0) // Widget carries a $50.00 estimate
-	if bar := poJDEBarLine(s.viewLineEdit()); strings.Contains(bar, "Ctrl-E") {
-		t.Errorf("a priced line has nothing for Ctrl-E on the cost row: %q", bar)
+	if bar := poJDEBarLine(s.viewLineEdit()); !strings.Contains(bar, "Ctrl-E=Confirm price") {
+		t.Errorf("a line showing a price can confirm it: %q", bar)
 	}
+	if s.openLineRow(); !s.lineCostConfirmed {
+		t.Error("Ctrl-E on the cost row of a priced line should arm the save")
+	}
+
+	// A line with no price to show and no history to offer — an asset or
+	// freeform line, which carries no inventory item — has nothing for the key.
+	s.po.Items[0].EstimatedCost = ""
+	s.po.Items[0].UnitCostActual = ""
+	s.openLineEditor(0)
+	if bar := poJDEBarLine(s.viewLineEdit()); strings.Contains(bar, "Ctrl-E") {
+		t.Errorf("nothing to confirm and nothing to offer must name no key: %q", bar)
+	}
+	if cmd := s.openLineRow(); cmd != nil || s.lineCostConfirmed {
+		t.Error("a key the bar does not name must do nothing on the cost row")
+	}
+
 	// The three rows below the inputs still carry theirs.
 	s.lineFocus = poLineRowWorkOrder
 	if bar := poJDEBarLine(s.viewLineEdit()); !strings.Contains(bar, "Ctrl-E=Pick") {
