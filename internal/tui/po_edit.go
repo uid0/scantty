@@ -919,7 +919,7 @@ func (s *PurchaseOrderEditScreen) lineOffer() (row *poLastPaid, total, note stri
 // costRowAction is Ctrl-E on the cost row. The row has two states and the key
 // serves whichever one it is in: a line with NO price of its own takes the
 // historical offer, and a line that already shows a price commits that price as
-// it stands. They cannot both apply — lineLastPaid only answers for a line
+// it stands. They cannot both apply — lineOffer only answers for a line
 // whose cost field opened empty — so the key never has to choose, and the
 // action bar names exactly the one that is live (lineBar).
 //
@@ -958,8 +958,18 @@ func (s *PurchaseOrderEditScreen) confirmShownCost() tea.Cmd {
 	}
 	s.lineCostConfirmed = true
 	li := s.po.Items[s.editLineIdx]
+	// Arming is unconditional — the operator has said "write what this row
+	// shows", and they may well fix the figure afterwards — but what the arm
+	// SAYS is not. The field takes any characters at all (no validator, only a
+	// CharLimit), and saveLine refuses anything that is not a non-negative
+	// number, so an arm on "-5" that answered "enter will write $-5" promised a
+	// write enter was going to reject. Say the rejection instead.
+	cur := strings.TrimSpace(s.lineInputs[poLineEditCost].Value())
+	if poCostRejected(cur) {
+		return Status(fmt.Sprintf("enter will reject %q: %s", cur, poCostRejectedReason), StatusError)
+	}
 	return Status(fmt.Sprintf("enter will write $%s as the total for the %d ordered",
-		strings.TrimSpace(s.lineInputs[poLineEditCost].Value()), li.QuantityOrdered), StatusWarn)
+		cur, li.QuantityOrdered), StatusWarn)
 }
 
 // takeLastPaid is Ctrl-E on the cost row of a line with no price of its own: it
@@ -1008,7 +1018,7 @@ func (s *PurchaseOrderEditScreen) saveLine() tea.Cmd {
 	if costRaw != "" {
 		cost, err := strconv.ParseFloat(costRaw, 64)
 		if err != nil || cost < 0 {
-			s.errMsg = "line cost must be a non-negative number"
+			s.errMsg = poCostRejectedReason
 			return Status(s.errMsg, StatusError)
 		}
 		if s.lineCostConfirmed || !poSameAmount(costRaw, s.lineCostShown) {
@@ -1618,10 +1628,20 @@ func (s *PurchaseOrderEditScreen) lineBar() []actionBarItem {
 		// Whichever of the row's two states is live, and nothing when neither
 		// is: a key the bar names has to do something, and one it does not name
 		// has to do nothing. costRowAction is the other side of this.
+		//
+		// One word each, because the bar is clipped and not wrapped. At 80
+		// columns — the width this interface is modelled on — the pane leaves
+		// this bar 49 columns and the three standing entries spend 38 of them,
+		// so a label longer than four characters loses its tail. "Use last
+		// price" came out as "Ctrl-E=Use" and "Confirm price" as "Ctrl-E=Conf":
+		// the first is worse than the second, because it still reads as a whole
+		// instruction while no longer saying WHICH price. A short label that is
+		// true at every width beats a long one that is true at 140. What the key
+		// does in full is on the body line above it, which has room for it.
 		if row, _, _ := s.lineOffer(); row != nil {
-			items = append(items, actionBarItem{"Ctrl-E", "Use last price"})
+			items = append(items, actionBarItem{"Ctrl-E", "Take"})
 		} else if s.lineCostShown != "" {
-			items = append(items, actionBarItem{"Ctrl-E", "Confirm price"})
+			items = append(items, actionBarItem{"Ctrl-E", "Send"})
 		}
 	case poLineRowWorkOrder, poLineRowCommittee:
 		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
@@ -1670,9 +1690,10 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 	if note, pending := s.costPendingNote(li.QuantityOrdered); note != "" && s.lineFocus == poLineEditCost {
 		style := StyleMuted
 		if pending {
-			// A write is armed and about to happen on the next enter, which is
-			// not a hint about a key: it is the same class of thing as the
-			// historical offer above, and reads in the same colour.
+			// The next enter's outcome is already decided — a write armed, or
+			// an entry that will be refused — which is not a hint about a key:
+			// it is the same class of thing as the historical offer above, and
+			// reads in the same colour.
 			style = StyleStatusWarn
 		}
 		body.Add(jdeIndent + style.Render(note))
@@ -1681,9 +1702,10 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 }
 
 // costPendingNote is the line under the form that says what enter will do with
-// the COST as the field stands right now, and the bool is whether that is a
-// write already armed (drawn as a pending action) rather than a key still on
-// offer (drawn as a hint).
+// the COST as the field stands right now, and the bool is whether that is
+// something already decided about the next enter — a write armed, or an entry
+// enter will refuse — rather than a key still on offer. The first two are drawn
+// as pending action, the last as a hint.
 //
 // It is one function and not two branches inline because the drawn state and
 // saveLine have to agree in EVERY field state, not just the common one, and
@@ -1716,6 +1738,22 @@ func (s *PurchaseOrderEditScreen) costPendingNote(quantityOrdered int) (string, 
 		return fmt.Sprintf(
 			"Ctrl-E puts the $%s back and writes it; a blank field leaves the price alone.",
 			s.lineCostShown), false
+	case poCostRejected(cur):
+		// Nothing about a price, armed or offered, until the field holds one
+		// saveLine would accept. The textinput takes any characters at all —
+		// "-5", "50,00", "$50" — and both branches below read "the field is not
+		// empty" as "the field holds a figure", so they announced "enter writes
+		// $-5 as the total for the 10 ordered" over an entry enter was about to
+		// refuse outright. The refusal is drawn in saveLine's own words.
+		//
+		// The REASON leads and the entry follows, for the same reason the
+		// offer's caveat leads (poLastPaid.describe): the pane clips this line
+		// at 80 columns, the entry is still legible in the field two rows above,
+		// and the rule it broke is not recoverable from anywhere else on the
+		// screen. Capitalised only because it opens a sentence here while
+		// saveLine's status line puts it mid-line.
+		reason := strings.ToUpper(poCostRejectedReason[:1]) + poCostRejectedReason[1:]
+		return fmt.Sprintf("%s, so enter will not save %q.", reason, cur), true
 	case s.lineCostConfirmed:
 		return fmt.Sprintf("Price confirmed: enter writes $%s as the total for the %d ordered.",
 			cur, quantityOrdered), true

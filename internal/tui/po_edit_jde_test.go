@@ -440,7 +440,7 @@ func TestPOEditJDE_CostRowNamesItsBasis(t *testing.T) {
 func TestPOEditJDE_CostRowNamesOnlyTheKeyThatWorks(t *testing.T) {
 	s := poJDEScreen(t, 40)
 	s.openLineEditor(0) // Widget carries a $50.00 estimate
-	if bar := poJDEBarLine(s.viewLineEdit()); !strings.Contains(bar, "Ctrl-E=Confirm price") {
+	if bar := poJDEBarLine(s.viewLineEdit()); !strings.Contains(bar, "Ctrl-E=Send") {
 		t.Errorf("a line showing a price can confirm it: %q", bar)
 	}
 	if s.openLineRow(); !s.lineCostConfirmed {

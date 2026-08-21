@@ -424,6 +424,20 @@ func poOpenLineEditor(t *testing.T, r Root, lineIdx int) (Root, *PurchaseOrderEd
 	return r, s
 }
 
+// poResize puts the terminal at a given width, which is the only way to see
+// what the operator sees: Root.View clips every content line to the pane's
+// inner width and never wraps, so a screen's own View() — what every other test
+// here reads — shows text that never reaches the glass.
+func poResize(t *testing.T, r Root, width int) Root {
+	t.Helper()
+	next, cmd := r.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+	after, ok := next.(Root)
+	if !ok {
+		t.Fatalf("Root.Update returned %T, want Root", next)
+	}
+	return pump(t, after, cmd, 0)
+}
+
 // poTypeRunes types a string one key at a time, the way a keyboard — or a
 // scanner's burst — delivers it.
 func poTypeRunes(t *testing.T, r Root, text string) Root {
@@ -592,10 +606,10 @@ func TestPOLineEdit_UnpricedLineOffersTheLastPricePaid(t *testing.T) {
 		// "priced at", not "paid": the history endpoint filters neither voided
 		// lines nor order status, so the order's own status rides the offer and
 		// the wording claims only what the row establishes.
-		"Last priced at $3.75/unit on PO-2026-0007 (2026-06-02 · received)",
-		"historical, not confirmed for this order",
+		"last priced at $3.75/unit on PO-2026-0007 (2026-06-02 · received)",
+		"Historical price, not confirmed for this order",
 		"Ctrl-E offers $30.00 for the 8 ordered",
-		"Ctrl-E=Use last price",
+		"Ctrl-E=Take",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("line editor missing %q:\n%s", want, out)
@@ -656,7 +670,7 @@ func TestPOLineEdit_NoHistorySaysSo(t *testing.T) {
 	if !strings.Contains(out, "Last price unavailable") {
 		t.Errorf("a failed history lookup should say so:\n%s", out)
 	}
-	if strings.Contains(out, "Ctrl-E=Use last price") {
+	if strings.Contains(out, "Ctrl-E=Take") {
 		t.Errorf("the bar must not offer a key with nothing behind it:\n%s", out)
 	}
 	// Ctrl-E opens nothing here, silently — the bar named no key, and a key the
@@ -692,9 +706,9 @@ func TestPOLastPaidDescribeClaimsOnlyWhatTheRowShows(t *testing.T) {
 		t.Errorf("a price nobody paid must not be called paid: %q", got)
 	}
 	for _, want := range []string{
-		"Last priced at $3.75/unit on PO-2026-0007",
+		"last priced at $3.75/unit on PO-2026-0007",
 		"2026-06-02 · cancelled",
-		"historical, not confirmed for this order",
+		"Historical price, not confirmed for this order",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("offer %q missing %q", got, want)
@@ -757,7 +771,7 @@ func TestPOLineEdit_ZeroedLineRecoversItsPriceWithCtrlE(t *testing.T) {
 	r, _ := poPriceRoot(t, fake)
 
 	r, s := poOpenLineEditor(t, r, 4)
-	if !strings.Contains(s.View(), "Ctrl-E=Confirm price") {
+	if !strings.Contains(s.View(), "Ctrl-E=Send") {
 		t.Fatalf("the cost row of a priced line should name Ctrl-E:\n%s", s.View())
 	}
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
@@ -941,7 +955,7 @@ func TestPOLineEdit_NothingOrderedOffersNoKeyAndNoEmptyAmount(t *testing.T) {
 	if strings.Contains(out, "Ctrl-E offers $ ") || strings.Contains(out, "for the 0 ordered") {
 		t.Errorf("an offer with no total must not be drawn:\n%s", out)
 	}
-	if strings.Contains(out, "Ctrl-E=Use last price") {
+	if strings.Contains(out, "Ctrl-E=Take") {
 		t.Errorf("the bar must not name a key with no offer behind it:\n%s", out)
 	}
 	if !strings.Contains(out, "Nothing is ordered on this line") {
@@ -1157,5 +1171,160 @@ func TestPOLastPaidFrom(t *testing.T) {
 	}
 	if got := poLastPaidFrom(&omsapi.ItemPurchaseHistory{}, ""); got != nil {
 		t.Errorf("an empty history should offer nothing, got %+v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// What actually reaches the glass
+// ---------------------------------------------------------------------------
+
+// TestPOLineEdit_CostRowSurvivesTheTerminalWidth is the lesson of this round,
+// and it is a lesson about the tests rather than about the screen.
+//
+// Every other assertion here reads the SCREEN's View() — the text the screen
+// composes, before Root has done anything with it. Root.View clips each content
+// line to the pane's inner width and never wraps, so a line the screen composes
+// is not a line the operator reads. The offer's caveat was written at the END of
+// its line, so it was the first thing clipped: at 80 columns the row rendered as
+// "Last priced at $3.75/unit on PO-2026-0007 (2026-0" — a bare dollar figure
+// with nothing left to say it was historical, which is the exact reading the
+// offer exists to prevent — and the bar's "Ctrl-E=Use last price" came out as
+// "Ctrl-E=Use", a truncation still grammatical enough to be believed. Both were
+// invisible to a test that never clipped.
+//
+// 80 columns is the canonical width of the terminal this interface is modelled
+// on, so it is the case that must hold rather than the edge case; 100 and 120
+// are here because the caveat was clipped at those too.
+func TestPOLineEdit_CostRowSurvivesTheTerminalWidth(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		idx  int
+		want []string
+	}{
+		{
+			// A line with no price of its own: the historical offer, and the
+			// key that takes it.
+			name: "a line with a historical offer",
+			idx:  3,
+			want: []string{"Historical price, not confirmed for this order", "Ctrl-E=Take"},
+		},
+		{
+			// A line already showing a price: the key that re-sends it.
+			name: "a line that can re-send its price",
+			idx:  4,
+			want: []string{"Ctrl-E=Send"},
+		},
+	} {
+		for _, width := range []int{80, 100, 120} {
+			t.Run(fmt.Sprintf("%s at %d columns", tc.name, width), func(t *testing.T) {
+				fake := poPriceOrder()
+				r, _ := poPriceRoot(t, fake)
+				r = poResize(t, r, width)
+				r, _ = poOpenLineEditor(t, r, tc.idx)
+
+				// Root.View, not the screen's: this is the frame the terminal
+				// draws, clipping and all.
+				out := stripANSI(r.View())
+				for _, want := range tc.want {
+					if !strings.Contains(out, want) {
+						t.Errorf("%q does not survive to the glass at %d columns:\n%s", want, width, out)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestPOLineEdit_ClippingCostsTheProvenanceAndNotTheCaveat pins WHY the offer
+// reads in the order it does. Both halves matter — the caveat is the safeguard,
+// the PO number and date are what let the operator judge whose price it is — but
+// only one of them fits at 80 columns, so the order decides which. It is the
+// caveat, because the provenance can be recovered by opening the item and the
+// warning cannot be recovered from anywhere.
+func TestPOLineEdit_ClippingCostsTheProvenanceAndNotTheCaveat(t *testing.T) {
+	fake := poPriceOrder()
+	r, _ := poPriceRoot(t, fake)
+	r = poResize(t, r, 80)
+	r, s := poOpenLineEditor(t, r, 3)
+
+	// The screen composes both halves…
+	if full := s.View(); !strings.Contains(full, "last priced at $3.75/unit on PO-2026-0007 (2026-06-02 · received)") {
+		t.Fatalf("the offer should still carry its provenance:\n%s", full)
+	}
+	// …and at 80 columns it is the provenance that falls off the end, which is
+	// the trade this ordering makes on purpose.
+	out := stripANSI(r.View())
+	if !strings.Contains(out, "Historical price, not confirmed for this order") {
+		t.Errorf("the caveat must survive 80 columns:\n%s", out)
+	}
+	if strings.Contains(out, "PO-2026-0007 (2026-06-02 · received)") {
+		t.Errorf("80 columns cannot hold both halves; if it now does, this test is stale:\n%s", out)
+	}
+}
+
+// TestPOLineEdit_RejectedCostIsNeverAnnouncedAsAWrite: the drawn state and
+// saveLine have to agree in EVERY field state. The cost input has no validator
+// — only a character limit — so "-5", "50,00" and "$50" all reach the field,
+// and every note about the cost was built from "the field is not empty". Ctrl-E
+// on "-5" therefore armed the save and said "enter writes $-5 as the total for
+// the 10 ordered", while enter refused it outright: a money write promised in
+// two places and made in none.
+func TestPOLineEdit_RejectedCostIsNeverAnnouncedAsAWrite(t *testing.T) {
+	for _, typed := range []string{"-5", "50,00"} {
+		t.Run("types "+typed, func(t *testing.T) {
+			fake := poPriceOrder()
+			r, _ := poPriceRoot(t, fake)
+			// At the width the caveat above had to survive, because the reason
+			// enter refuses is the same kind of thing: the one part of the line
+			// that cannot be reconstructed from what is already on screen.
+			r = poResize(t, r, 80)
+
+			r, s := poOpenLineEditor(t, r, 4)
+			for range s.lineInputs[poLineEditCost].Value() {
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+			}
+			r = poTypeRunes(t, r, typed)
+
+			// The hint before any key is pressed: no offer of a write.
+			out := s.View()
+			if strings.Contains(out, "$"+typed) {
+				t.Errorf("an entry enter will refuse must not be quoted as money:\n%s", out)
+			}
+			if !strings.Contains(out, "enter will not save") ||
+				!strings.Contains(out, "ine cost must be a non-negative number") {
+				t.Errorf("the screen should name the refusal enter is going to make:\n%s", out)
+			}
+			// And it reaches the glass at 80 columns rather than being clipped
+			// down to a sentence with the rule missing.
+			if seen := stripANSI(r.View()); !strings.Contains(seen, "Line cost must be a non-negative number") {
+				t.Errorf("the refusal is clipped off the pane at 80 columns:\n%s", seen)
+			}
+
+			// And after Ctrl-E, which arms the save: the arm is real (the
+			// operator may still fix the figure) but it must not claim a write.
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+			out = s.View()
+			if strings.Contains(out, "Price confirmed") || strings.Contains(out, "enter writes $"+typed) {
+				t.Errorf("the armed note promises a write saveLine will reject:\n%s", out)
+			}
+			if !strings.Contains(out, "enter will not save") {
+				t.Errorf("the armed state should still name the refusal:\n%s", out)
+			}
+			if status := stripANSI(r.View()); !strings.Contains(status, "enter will reject") {
+				t.Errorf("the Ctrl-E status line should say what enter will really do:\n%s", status)
+			}
+
+			// The refusal the notes named is the refusal that happens.
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			if sent := fake.lineCostPatches(); len(sent) != 0 {
+				t.Errorf("a rejected cost must reach no endpoint; sent %v", sent)
+			}
+			if s.errMsg != "line cost must be a non-negative number" {
+				t.Errorf("saveLine error = %q, want the refusal the notes predicted", s.errMsg)
+			}
+			if got := fake.line("line-zeroed").unitCostActual.FloatString(4); got != "0.0000" {
+				t.Errorf("unit_cost_actual = %s, want it untouched", got)
+			}
+		})
 	}
 }

@@ -169,6 +169,29 @@ func poSameAmount(a, b string) bool {
 	return aok && bok && av == bv
 }
 
+// poCostRejectedReason is the refusal saveLine makes, in saveLine's own words.
+// The note that PREDICTS the failure and the error that REPORTS it are the same
+// string on purpose: an operator who is told one thing before pressing enter
+// and another thing after has been told the screen does not know.
+const poCostRejectedReason = "line cost must be a non-negative number"
+
+// poCostRejected reports whether saveLine will REFUSE the cost entry as it
+// stands — saveLine's own test, ParseFloat then non-negative, asked through the
+// same decimalAmount every other figure in this file is parsed with, so the two
+// cannot come out differently on the same characters.
+//
+// The screen has to ask it before it says anything about what enter will do.
+// The textinput has no validator (only a CharLimit), so "-5", "50,00" and "$50"
+// all reach the field, and a note built from "the field is not empty" announced
+// "enter writes $-5 as the total for the 10 ordered" for every one of them —
+// promising a money write that saveLine then rejected outright. Blank answers
+// rejected too, which no caller sees: the blank field is a settled state with a
+// note of its own ("leave the price alone") and is tested before this.
+func poCostRejected(cur string) bool {
+	v, ok := decimalAmount(omsapi.DecimalString(cur))
+	return !ok || v < 0
+}
+
 // poUnitMoney renders a PER-UNIT price. The column carries four decimal places
 // and cheap parts use them, so this shows two — enough to read as money — and
 // more only when rounding to cents would say something untrue. Printing a real
@@ -286,9 +309,21 @@ func (p *poLastPaid) total(quantityOrdered int) string {
 	return poMoney(p.unit*float64(quantityOrdered), quantityOrdered)
 }
 
-// describe names the offer the way it has to read on a green screen: the price,
-// per unit, on which order, in what state that order is, and — always — that it
-// is history rather than a figure anybody has agreed to for THIS order.
+// describe names the offer the way it has to read on a green screen: that it is
+// history rather than a figure anybody has agreed to for THIS order, and then
+// the price, per unit, on which order, in what state that order is.
+//
+// The caveat LEADS, and that order is the whole point. A screen row is one
+// line — every other row here is, and this one stays that way — and the content
+// pane clips whatever runs past it. At 80 columns, the canonical width of the
+// terminal this interface is modelled on, the pane gives a body line 49
+// columns; the provenance alone spends more than that. With the caveat trailing
+// it was the caveat that fell off the end, leaving "Last priced at $3.75/unit
+// on PO-2026-0007 (2026-0" — a bare dollar figure that reads as this order's
+// price, which is the exact reading the offer exists to prevent. Clipping now
+// costs the PO number and the date, which the operator can still get by opening
+// the item; the warning is the part that cannot be reconstructed from anywhere
+// else on the screen, so it is the part that survives.
 //
 // It says "priced at" and never "paid". The row it comes from proves only that
 // a price was recorded against a line; the history endpoint returns voided
@@ -305,11 +340,12 @@ func (p *poLastPaid) describe() string {
 	if p.priced {
 		basis = "priced at"
 	}
-	out := fmt.Sprintf("Last %s $%s/unit on %s", basis, poUnitMoney(p.unit), p.order)
+	out := fmt.Sprintf("Historical price, not confirmed for this order — last %s $%s/unit on %s",
+		basis, poUnitMoney(p.unit), p.order)
 	if meta := p.meta(); meta != "" {
 		out += " (" + meta + ")"
 	}
-	return out + " — historical, not confirmed for this order."
+	return out + "."
 }
 
 // meta is the offer's provenance in the shape the inventory detail's order rows
