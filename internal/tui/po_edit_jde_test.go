@@ -404,3 +404,45 @@ func TestPOEditJDE_ChoiceRowsCycleInPlace(t *testing.T) {
 		t.Errorf("the focused choice row should show its option strip:\n%s", out)
 	}
 }
+
+// TestPOEditJDE_CostRowNamesItsBasis: the cost field is a total for the quantity
+// ORDERED — that is what update_item divides by — while the grid's Cost column
+// counts what has arrived. On a partly delivered line the two are different
+// numbers, so the row says which one it is and the sub-heading names the other.
+// A columnar form has no room to explain itself twice, so both live where the
+// convention already puts that kind of note: the hint after the input area, and
+// the muted line under the title.
+func TestPOEditJDE_CostRowNamesItsBasis(t *testing.T) {
+	s := poJDEScreen(t, 40)
+	s.openLineEditor(1) // Gadget: ordered 2, received 2, $20.00 spent
+	out := s.viewLineEdit()
+
+	if !strings.Contains(out, "Total line cost"+jdeLeader) {
+		t.Errorf("the cost row should hang off the shared leader column:\n%s", out)
+	}
+	for _, want := range []string{
+		"$ total for all 2 ordered",
+		"ordered 2 · received 2 · $20.00 spent so far",
+		"A cost you do not change is not re-sent",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("line editor missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestPOEditJDE_CostRowOffersNoKeyWithNothingBehindIt: the bar is the only place
+// the operator learns a key, so Ctrl-E is named on the cost row only when there
+// is a price to offer. A line that already carries one has nothing to offer.
+func TestPOEditJDE_CostRowOffersNoKeyWithNothingBehindIt(t *testing.T) {
+	s := poJDEScreen(t, 40)
+	s.openLineEditor(0) // Widget carries a $50.00 estimate
+	if bar := poJDEBarLine(s.viewLineEdit()); strings.Contains(bar, "Ctrl-E") {
+		t.Errorf("a priced line has nothing for Ctrl-E on the cost row: %q", bar)
+	}
+	// The three rows below the inputs still carry theirs.
+	s.lineFocus = poLineRowWorkOrder
+	if bar := poJDEBarLine(s.viewLineEdit()); !strings.Contains(bar, "Ctrl-E=Pick") {
+		t.Errorf("the work-order row should still name Ctrl-E: %q", bar)
+	}
+}

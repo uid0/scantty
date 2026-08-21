@@ -1806,11 +1806,8 @@ func consumeTotalCost(res *omsapi.LogUsageResult) omsapi.DecimalString {
 // formatMoney renders a decimal money string as "$X.XX", or "" when empty or
 // unparseable (unlike metricCostString, which yields the "-" table sentinel).
 func formatMoney(d omsapi.DecimalString) string {
-	if d.Empty() {
-		return ""
-	}
-	f, err := strconv.ParseFloat(strings.TrimSpace(string(d)), 64)
-	if err != nil {
+	f, ok := decimalAmount(d)
+	if !ok {
 		return ""
 	}
 	return fmt.Sprintf("$%.2f", f)

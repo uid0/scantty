@@ -24,9 +24,26 @@ func samplePO() *omsapi.PurchaseOrder {
 		SalesOrderNumber:     "SO-1",
 		ExpectedDeliveryDate: "2026-08-01",
 		Notes:                "handle with care",
+		// Wire-faithful lines: the backend DERIVES estimated_cost and
+		// actual_cost from the stored columns (quantity_ordered ×
+		// unit_cost_ordered, quantity_received × unit_cost_actual), so a
+		// fixture that carries a total without the columns behind it is a shape
+		// the API cannot produce.
 		Items: []omsapi.PurchaseOrderItem{
-			{ID: "line-1", Description: "Widget", QuantityOrdered: 5, EstimatedCost: omsapi.DecimalString("50.00")},
-			{ID: "line-2", Description: "Gadget", QuantityOrdered: 2, ActualCost: omsapi.DecimalString("20.00"), ExpectedShipmentDate: "2026-07-10", IsVoided: true},
+			{
+				ID: "line-1", Description: "Widget",
+				QuantityOrdered: 5, UnitCostOrdered: omsapi.DecimalString("10.0000"),
+				EstimatedCost: omsapi.DecimalString("50.00"),
+			},
+			{
+				ID: "line-2", Description: "Gadget",
+				QuantityOrdered: 2, QuantityReceived: 2,
+				UnitCostOrdered:      omsapi.DecimalString("10.0000"),
+				UnitCostActual:       omsapi.DecimalString("10.0000"),
+				EstimatedCost:        omsapi.DecimalString("20.00"),
+				ActualCost:           omsapi.DecimalString("20.00"),
+				ExpectedShipmentDate: "2026-07-10", IsVoided: true,
+			},
 		},
 	}
 }
@@ -234,7 +251,9 @@ func TestPOEdit_LineEditorPrefillAndNav(t *testing.T) {
 		t.Errorf("cost prefill = %q, want 50.00", got)
 	}
 
-	// Line 1 prefers actual cost + carries a ship date.
+	// Line 1 prefers the actual price + carries a ship date. The prefill is
+	// unit_cost_actual × quantity_ORDERED — the basis update_item reads a
+	// line_cost on — not actual_cost's received-so-far subtotal.
 	s.openLineEditor(1)
 	if got := s.lineInputs[poLineEditCost].Value(); got != "20.00" {
 		t.Errorf("line 1 cost prefill = %q, want 20.00", got)
