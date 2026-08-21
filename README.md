@@ -157,7 +157,6 @@ Not yet landed (the long tail):
 - Global search palette (Cmd-K equivalent).
 - Badge-scan path — needs an OMS member-by-badge endpoint or a documented convention for resolving badge → user.
 - Raw-HID and serial scanner sources (only stdin/keyboard-emulation today).
-- Tests. The packages have clear seams (interfaces around the clients) so this is straightforward but hasn't been done yet.
 
 ## Building and running
 
@@ -168,7 +167,10 @@ go vet ./...                     # static checks
 go run ./cmd/scantty             # build + run in one step (good for iteration)
 ```
 
-There's no test suite yet — `go test ./...` is a no-op.
+`go test ./...` runs the suite; CI (`.github/workflows/ci.yml`) runs build,
+vet and test on every pull request. No live OMS is reachable from a checkout,
+so screen behaviour is verified by driving the real screens against an
+`httptest` fake — see `AGENTS.md`.
 
 ## oms-claim-print — Pi-side claim-tag print daemon
 

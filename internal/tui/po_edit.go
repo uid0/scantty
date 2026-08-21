@@ -16,7 +16,7 @@
 //	PgUp/PgDn                page, when the body is taller than the pane
 //	Enter                    SAVE the record this phase is editing
 //	Ctrl-E                   OPEN what the highlighted row is (a picker, the
-//	                         line editor, the void prompt)
+//	                         line editor, the void prompt, the last price on file)
 //	←/→ or space             change a "< value >" choice row
 //	Esc                      back / cancel  (Ctrl-C always quits, app-wide)
 //
@@ -43,10 +43,13 @@
 //
 //	poEditPhaseLine      — the selected line's own columnar form: cost / ship-by
 //	                       / notes inputs, then its work order, its committee
-//	                       and its status. Enter saves cost/ship/notes via
+//	                       and its status. Enter saves ship/notes — and the cost
+//	                       ONLY if the operator changed it — via
 //	                       UpdatePurchaseOrderLineItem (PATCH); Ctrl-E on one of
 //	                       the last three rows opens the picker or the void
-//	                       prompt that owns it.
+//	                       prompt that owns it, and on the cost row takes the
+//	                       last price on file for a line that carries none. What a
+//	                       cost field may and may not send is po_line_price.go.
 //	poEditPhaseVoidLine  — reason input; enter voids the line via
 //	                       VoidPurchaseOrderLineItem.
 //	poEditPhaseAssoc     — one work-order / committee picker, serving BOTH the
@@ -263,6 +266,26 @@ type PurchaseOrderEditScreen struct {
 	lineInputs  []textinput.Model
 	lineFocus   int
 	editLineIdx int // index into po.Items being edited / voided
+
+	// What openLineEditor put in the cost field. The field is prefilled so the
+	// operator can SEE the line's price, and a shown price must not thereby be
+	// re-submitted: saveLine compares against this and sends line_cost only
+	// when the two differ as AMOUNTS (see po_line_price.go for why that
+	// matters, and why comparing the text was not enough).
+	lineCostShown string
+
+	// Set by Ctrl-E on the cost row: the operator asked for the price the row
+	// is showing to be written as it stands. Without it there is no keystroke
+	// that means "save this figure" for a line whose field already holds the
+	// figure — which is precisely the line pinned at $0.00, whose prefill
+	// recovered its estimate and which therefore has nothing different to type.
+	// Cleared by openLineEditor, so arming one line never arms the next.
+	lineCostConfirmed bool
+
+	// Last recorded prices for lines that carry none, from the item purchase
+	// history (po_line_price.go). Keyed by inventory item, so an order with the
+	// same item on two lines asks once.
+	lastPaid poLastPaidCache
 
 	// Void-line reason (poEditPhaseVoidLine).
 	voidReason textinput.Model
@@ -512,6 +535,9 @@ func (s *PurchaseOrderEditScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	if s.assoc.handle(msg) {
 		return s, nil
 	}
+	if s.lastPaid.handle(msg) {
+		return s, nil
+	}
 
 	// Cursor blink → the focused input.
 	switch s.phase {
@@ -613,8 +639,7 @@ func (s *PurchaseOrderEditScreen) openFocusedRow() tea.Cmd {
 		return s.openAssocPick(field, poAssocLineOrder)
 	}
 	if idx, ok := s.onLineRow(); ok {
-		s.openLineEditor(idx)
-		return textinput.Blink
+		return tea.Batch(s.openLineEditor(idx), textinput.Blink)
 	}
 	return nil
 }
@@ -751,7 +776,10 @@ func poParseOrderDate(raw string) (string, error) {
 // Line editor sub-phase
 // ---------------------------------------------------------------------------
 
-func (s *PurchaseOrderEditScreen) openLineEditor(idx int) {
+// openLineEditor opens one line's form. It returns the command that looks up
+// the last price recorded for the item, which only runs for a line that has no
+// price of its own to show.
+func (s *PurchaseOrderEditScreen) openLineEditor(idx int) tea.Cmd {
 	s.phase = poEditPhaseLine
 	s.editLineIdx = idx
 	s.lineFocus = poLineEditCost
@@ -762,15 +790,21 @@ func (s *PurchaseOrderEditScreen) openLineEditor(idx int) {
 		s.lineInputs[i].SetValue("")
 		s.lineInputs[i].Blur()
 	}
-	// Prefill line cost from the best available total: actual, else estimated.
-	if !li.ActualCost.Empty() {
-		s.lineInputs[poLineEditCost].SetValue(string(li.ActualCost))
-	} else if !li.EstimatedCost.Empty() {
-		s.lineInputs[poLineEditCost].SetValue(string(li.EstimatedCost))
-	}
+	// Prefill the cost with the price the line already carries, on the basis
+	// update_item reads it back on — the total for the quantity ORDERED, never
+	// actual_cost's received-so-far subtotal (po_line_price.go). Remember it, so
+	// the save can tell a price the operator typed from one it merely showed.
+	s.lineCostShown = poLineCarriedCost(li)
+	s.lineCostConfirmed = false
+	s.lineInputs[poLineEditCost].SetValue(s.lineCostShown)
 	s.lineInputs[poLineEditShipDate].SetValue(li.ExpectedShipmentDate)
 	s.lineInputs[poLineEditNotes].SetValue(li.Notes)
 	s.syncLineFocus()
+
+	if s.lineCostShown != "" {
+		return nil
+	}
+	return s.lastPaid.load(s.deps, poLineItemID(li), s.poID)
 }
 
 // lineInputRow reports whether the line editor's cursor is on one of the three
@@ -834,6 +868,8 @@ func (s *PurchaseOrderEditScreen) openLineRow() tea.Cmd {
 		return nil
 	}
 	switch s.lineFocus {
+	case poLineEditCost:
+		return s.costRowAction()
 	case poLineRowWorkOrder:
 		return s.openAssocPick(poAssocFieldWorkOrder, s.editLineIdx)
 	case poLineRowCommittee:
@@ -848,20 +884,146 @@ func (s *PurchaseOrderEditScreen) openLineRow() tea.Cmd {
 	return nil
 }
 
+// lineOffer is the historical offer standing for the line being edited: the
+// last price recorded for its item, the total that comes to in the cost field's
+// own terms, and — when there is no offer — the note that says why. Only a line
+// with NO price of its own has one: a line that carries a price shows that, and
+// the history behind it is not this screen's business.
+//
+// It resolves the total HERE, once, and reports no offer when the total cannot
+// be expressed, because three callers used to decide separately and could
+// disagree. A line with quantity_ordered 0 was the state where they did: the
+// row existed, so the action bar named Ctrl-E and the body announced "Ctrl-E
+// offers $ for the 0 ordered" — an empty amount after a dollar sign — while
+// takeLastPaid quietly returned nil because a per-unit price over no quantity
+// is not a total. A key the bar names has to do something; one boundary
+// deciding is what keeps that true no matter which of them is read.
+func (s *PurchaseOrderEditScreen) lineOffer() (row *poLastPaid, total, note string) {
+	if s.po == nil || s.editLineIdx < 0 || s.editLineIdx >= s.lineCount() {
+		return nil, "", ""
+	}
+	if s.lineCostShown != "" {
+		return nil, "", ""
+	}
+	li := s.po.Items[s.editLineIdx]
+	row, note = s.lastPaid.offer(poLineItemID(li))
+	if row == nil {
+		return nil, "", note
+	}
+	if total = row.total(li.QuantityOrdered); total == "" {
+		return nil, "", "Nothing is ordered on this line, so a per-unit price is no total to offer — type the price."
+	}
+	return row, total, ""
+}
+
+// costRowAction is Ctrl-E on the cost row. The row has two states and the key
+// serves whichever one it is in: a line with NO price of its own takes the
+// historical offer, and a line that already shows a price commits that price as
+// it stands. They cannot both apply — lineOffer only answers for a line
+// whose cost field opened empty — so the key never has to choose, and the
+// action bar names exactly the one that is live (lineBar).
+//
+// Both halves return nil when there is nothing behind them, which keeps the
+// screen's rule: a key the bar does not name does nothing.
+func (s *PurchaseOrderEditScreen) costRowAction() tea.Cmd {
+	if row, _, _ := s.lineOffer(); row != nil {
+		return s.takeLastPaid()
+	}
+	return s.confirmShownCost()
+}
+
+// confirmShownCost is Ctrl-E on the cost row of a line that already carries a
+// price: it arms the save to write that price back exactly as shown.
+//
+// Nothing else on the form can say this. saveLine sends a cost only when the
+// operator changed it, and "changed" is an amount comparison, so a line pinned
+// at $0.00 — showing the estimate the prefill recovered — has no figure the
+// operator could type that would differ from the one in front of them. Before
+// this, whether such a line recovered depended on typing "50" rather than the
+// "50.00" it was showing, which is not a rule anybody could be taught. Arming
+// is deliberately a separate keystroke from Enter: the operator says "write
+// this price" and then says "save the line", the same two-step the offer
+// already uses.
+func (s *PurchaseOrderEditScreen) confirmShownCost() tea.Cmd {
+	if s.lineCostShown == "" {
+		return nil
+	}
+	// A cleared field gets the shown price put back: "commit what this row is
+	// showing" has to mean something when the row is showing nothing because
+	// the operator emptied it, and restoring is the only reading that does not
+	// invent a figure.
+	if strings.TrimSpace(s.lineInputs[poLineEditCost].Value()) == "" {
+		s.lineInputs[poLineEditCost].SetValue(s.lineCostShown)
+		s.lineInputs[poLineEditCost].CursorEnd()
+	}
+	s.lineCostConfirmed = true
+	li := s.po.Items[s.editLineIdx]
+	// Arming is unconditional — the operator has said "write what this row
+	// shows", and they may well fix the figure afterwards — but what the arm
+	// SAYS is not. The field takes any characters at all (no validator, only a
+	// CharLimit), and saveLine refuses anything that is not a non-negative
+	// number, so an arm on "-5" that answered "enter will write $-5" promised a
+	// write enter was going to reject. Say the rejection instead.
+	cur := strings.TrimSpace(s.lineInputs[poLineEditCost].Value())
+	if poCostRejected(cur) {
+		return Status(fmt.Sprintf("enter will reject %q: %s", cur, poCostRejectedReason), StatusError)
+	}
+	return Status(fmt.Sprintf("enter will write $%s as the total for the %d ordered",
+		cur, li.QuantityOrdered), StatusWarn)
+}
+
+// takeLastPaid is Ctrl-E on the cost row of a line with no price of its own: it
+// puts the offered historical price into the field, where it becomes an
+// ordinary typed value the operator can correct and the save will carry.
+// Nothing accepts it on the operator's behalf — an offer that applied itself
+// would be the very thing this screen is being fixed for.
+func (s *PurchaseOrderEditScreen) takeLastPaid() tea.Cmd {
+	// Nothing to offer opens nothing, the same way a plain text row does — the
+	// bar has already dropped the Ctrl-E entry, and why there is no offer is
+	// said in the body rather than in a message the operator has to provoke.
+	// lineOffer has already resolved the total, so an offer that reaches here
+	// is one that can be expressed.
+	row, total, _ := s.lineOffer()
+	if row == nil {
+		return nil
+	}
+	s.lineInputs[poLineEditCost].SetValue(total)
+	s.lineInputs[poLineEditCost].CursorEnd()
+	return Status(fmt.Sprintf("offered $%s — a historical price; enter saves it", total), StatusWarn)
+}
+
 func (s *PurchaseOrderEditScreen) saveLine() tea.Cmd {
 	li := s.po.Items[s.editLineIdx]
 	itemID := fmt.Sprintf("%v", li.ID)
 
 	req := omsapi.LineItemUpdate{}
 
+	// The cost rides the save ONLY when the operator changed it. The field is
+	// prefilled so the price is visible, and one enter on this form saves the
+	// ship date and the notes with it — so a cost that went out untouched would
+	// rewrite unit_cost_actual on every ship-date edit anybody ever makes. It
+	// did, and that is what walked partially received lines down to $0.00; see
+	// po_line_price.go for the arithmetic.
+	//
+	// "Changed" is an AMOUNT comparison, not a text one: the field is prefilled
+	// with two decimal places, so retyping the 50.00 on screen and typing 50
+	// are the same intent and a text guard made them opposite outcomes. Blank
+	// still means "leave the price alone" — update_item has no defined
+	// semantics for clearing a line_cost — and an unparseable or negative entry
+	// is still rejected rather than being waved through as unchanged, which is
+	// why the parse happens before the comparison rather than inside it.
+	// Ctrl-E on the cost row (confirmShownCost) is how the operator says "write
+	// the shown price back anyway"; see po_line_price.go.
 	costRaw := strings.TrimSpace(s.lineInputs[poLineEditCost].Value())
 	if costRaw != "" {
 		cost, err := strconv.ParseFloat(costRaw, 64)
 		if err != nil || cost < 0 {
-			s.errMsg = "line cost must be a non-negative number"
+			s.errMsg = poCostRejectedReason
 			return Status(s.errMsg, StatusError)
 		}
-		req.LineCost = &cost
+		if s.lineCostConfirmed || !poSameAmount(costRaw, s.lineCostShown) {
+			req.LineCost = &cost
+		}
 	}
 
 	// Ship date: blank or '-' clears (backend maps "" -> NULL); else validate.
@@ -1380,8 +1542,18 @@ var poLineEditLabels = map[int]string{
 }
 
 var poLineEditHints = map[int]string{
-	poLineEditCost:     "$ total for the line, e.g. 125.00",
 	poLineEditShipDate: "YYYY-MM-DD · '-' or blank clears",
+}
+
+// poLineCostHint says which quantity the cost field is a total FOR. The endpoint
+// divides it by the ORDERED quantity, and on a partly delivered line that is not
+// the quantity the grid's Cost column is counting — so the row names it rather
+// than leaving the operator to infer it.
+func poLineCostHint(li omsapi.PurchaseOrderItem) string {
+	if li.QuantityOrdered <= 0 {
+		return "$ total for the line, e.g. 125.00"
+	}
+	return fmt.Sprintf("$ total for all %d ordered, e.g. 125.00", li.QuantityOrdered)
 }
 
 // lineFields describes the line editor: three typed rows, then the three the
@@ -1394,12 +1566,16 @@ func (s *PurchaseOrderEditScreen) lineFields() []jdeField {
 		if i == poLineEditNotes {
 			width = 40
 		}
+		hint := poLineEditHints[i]
+		if i == poLineEditCost {
+			hint = poLineCostHint(li)
+		}
 		focused := s.lineFocus == i
 		out = append(out, jdeField{
 			Label:   poLineEditLabels[i],
 			Kind:    jdeText,
 			Value:   jdeInputValue(s.lineInputs[i], focused),
-			Hint:    poLineEditHints[i],
+			Hint:    hint,
 			Width:   width,
 			Focused: focused,
 		})
@@ -1422,6 +1598,19 @@ func (s *PurchaseOrderEditScreen) lineFields() []jdeField {
 	return out
 }
 
+// poLineEditSubtitle says what the line is, in the terms its two money figures
+// are in. The grid's Cost column shows actual_cost — the money SPENT so far,
+// counted over what has arrived — while the field below takes a total for the
+// whole ordered quantity, so on a partly delivered line the two differ by
+// design. Naming both here is what keeps that from reading as a discrepancy.
+func poLineEditSubtitle(li omsapi.PurchaseOrderItem) string {
+	out := fmt.Sprintf("ordered %d · received %d", li.QuantityOrdered, li.QuantityReceived)
+	if spent := formatMoney(li.ActualCost); spent != "" {
+		out += " · " + spent + " spent so far"
+	}
+	return out
+}
+
 // poAssocCell renders an association's label for a columnar row: what is
 // attached, or a muted "(none)" so an empty row reads as an absence rather than
 // as a blank someone has to guess at.
@@ -1435,6 +1624,25 @@ func poAssocCell(label string) (string, bool) {
 func (s *PurchaseOrderEditScreen) lineBar() []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save line"}, {"Esc", "Back"}, {"UP/DN", "Fields"}}
 	switch s.lineFocus {
+	case poLineEditCost:
+		// Whichever of the row's two states is live, and nothing when neither
+		// is: a key the bar names has to do something, and one it does not name
+		// has to do nothing. costRowAction is the other side of this.
+		//
+		// One word each, because the bar is clipped and not wrapped. At 80
+		// columns — the width this interface is modelled on — the pane leaves
+		// this bar 49 columns and the three standing entries spend 38 of them,
+		// so a label longer than four characters loses its tail. "Use last
+		// price" came out as "Ctrl-E=Use" and "Confirm price" as "Ctrl-E=Conf":
+		// the first is worse than the second, because it still reads as a whole
+		// instruction while no longer saying WHICH price. A short label that is
+		// true at every width beats a long one that is true at 140. What the key
+		// does in full is on the body line above it, which has room for it.
+		if row, _, _ := s.lineOffer(); row != nil {
+			items = append(items, actionBarItem{"Ctrl-E", "Take"})
+		} else if s.lineCostShown != "" {
+			items = append(items, actionBarItem{"Ctrl-E", "Send"})
+		}
 	case poLineRowWorkOrder, poLineRowCommittee:
 		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 	case poLineRowStatus:
@@ -1450,7 +1658,7 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 
 	body := &jdeLines{}
 	body.Add(StyleJDEHeading.Render("Edit line: ") + li.DisplayLabel())
-	body.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf("ordered %d · received %d", li.QuantityOrdered, li.QuantityReceived)))
+	body.Add(jdeIndent + StyleMuted.Render(poLineEditSubtitle(li)))
 	body.Add("")
 	// One block, so it finds its own label column — unlike the header form,
 	// whose two bands share one.
@@ -1458,8 +1666,101 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 		body.AddRow(i, line)
 	}
 	body.Add("")
+	// Everything about the cost row's Ctrl-E is drawn only while the cursor is
+	// ON the cost row, the same test lineBar makes. The operator learns the keys
+	// from a bar naming exactly what works where they are standing; a body that
+	// went on naming Ctrl-E from the notes row — where the bar has dropped it
+	// and the key does nothing — teaches the opposite of that rule.
+	if s.lineFocus == poLineEditCost {
+		if row, total, note := s.lineOffer(); row != nil {
+			body.Add(jdeIndent + StyleStatusWarn.Render(row.describe()))
+			body.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf(
+				"Ctrl-E offers $%s for the %d ordered; leave the field blank to save no price.",
+				total, li.QuantityOrdered)))
+		} else if note != "" {
+			body.Add(jdeIndent + StyleMuted.Render(note))
+		}
+	}
 	body.Add(jdeIndent + StyleMuted.Render("Enter saves cost, ship date and notes together; the three rows under them write on their own."))
+	body.Add(jdeIndent + StyleMuted.Render("A cost you do not change is not re-sent — the price stays as it is."))
+	// …which is why the row needs a way to say "send it anyway", and why what
+	// that key will do is drawn rather than left to a status line the operator
+	// may already have scrolled past. A line reading $0.00 in the grid is
+	// recovered from right here.
+	if note, pending := s.costPendingNote(li.QuantityOrdered); note != "" && s.lineFocus == poLineEditCost {
+		style := StyleMuted
+		if pending {
+			// The next enter's outcome is already decided — a write armed, or
+			// an entry that will be refused — which is not a hint about a key:
+			// it is the same class of thing as the historical offer above, and
+			// reads in the same colour.
+			style = StyleStatusWarn
+		}
+		body.Add(jdeIndent + style.Render(note))
+	}
 	return s.frame(body, s.lineFocus, "Saving…", s.lineBar())
+}
+
+// costPendingNote is the line under the form that says what enter will do with
+// the COST as the field stands right now, and the bool is whether that is
+// something already decided about the next enter — a write armed, or an entry
+// enter will refuse — rather than a key still on offer. The first two are drawn
+// as pending action, the last as a hint.
+//
+// It is one function and not two branches inline because the drawn state and
+// saveLine have to agree in EVERY field state, not just the common one, and
+// they did not. saveLine sends nothing at all when the field is blank — blank
+// means "leave the price alone", deliberately, since update_item has no defined
+// semantics for clearing a line_cost — and it reads lineCostConfirmed only
+// after that test. So an armed line whose field the operator then emptied
+// writes no price, while a note rendered from the arm alone announced "enter
+// writes $ as the total for the 10 ordered": an empty amount, promising a money
+// write that never happened, with no error to contradict it.
+//
+// Every reading is built from the trimmed FIELD and never from lineCostShown,
+// for the matching reason: Ctrl-E arms whatever the field holds and only puts
+// lineCostShown back when the field is empty, so a note quoting the price the
+// row opened with went stale the moment the operator typed over it — naming
+// $50.00 "unchanged" while the save was about to write $62.50.
+func (s *PurchaseOrderEditScreen) costPendingNote(quantityOrdered int) (string, bool) {
+	cur := strings.TrimSpace(s.lineInputs[poLineEditCost].Value())
+	switch {
+	case s.lineCostShown == "":
+		// A line with no price of its own: the offer block above already speaks
+		// for this row, and its Ctrl-E takes that offer rather than confirming
+		// anything. Two notes about one key would be one too many.
+		return "", false
+	case cur == "" && s.lineCostConfirmed:
+		return fmt.Sprintf(
+			"The cost field is empty, so enter writes no price and the line keeps the one it has — Ctrl-E puts the $%s back.",
+			s.lineCostShown), true
+	case cur == "":
+		return fmt.Sprintf(
+			"Ctrl-E puts the $%s back and writes it; a blank field leaves the price alone.",
+			s.lineCostShown), false
+	case poCostRejected(cur):
+		// Nothing about a price, armed or offered, until the field holds one
+		// saveLine would accept. The textinput takes any characters at all —
+		// "-5", "50,00", "$50" — and both branches below read "the field is not
+		// empty" as "the field holds a figure", so they announced "enter writes
+		// $-5 as the total for the 10 ordered" over an entry enter was about to
+		// refuse outright. The refusal is drawn in saveLine's own words.
+		//
+		// The REASON leads and the entry follows, for the same reason the
+		// offer's caveat leads (poLastPaid.describe): the pane clips this line
+		// at 80 columns, the entry is still legible in the field two rows above,
+		// and the rule it broke is not recoverable from anywhere else on the
+		// screen. Capitalised only because it opens a sentence here while
+		// saveLine's status line puts it mid-line.
+		reason := strings.ToUpper(poCostRejectedReason[:1]) + poCostRejectedReason[1:]
+		return fmt.Sprintf("%s, so enter will not save %q.", reason, cur), true
+	case s.lineCostConfirmed:
+		return fmt.Sprintf("Price confirmed: enter writes $%s as the total for the %d ordered.",
+			cur, quantityOrdered), true
+	default:
+		return fmt.Sprintf("Ctrl-E writes $%s as the total for the %d ordered, even where it matches the price the line already carries.",
+			cur, quantityOrdered), false
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -404,3 +404,64 @@ func TestPOEditJDE_ChoiceRowsCycleInPlace(t *testing.T) {
 		t.Errorf("the focused choice row should show its option strip:\n%s", out)
 	}
 }
+
+// TestPOEditJDE_CostRowNamesItsBasis: the cost field is a total for the quantity
+// ORDERED — that is what update_item divides by — while the grid's Cost column
+// counts what has arrived. On a partly delivered line the two are different
+// numbers, so the row says which one it is and the sub-heading names the other.
+// A columnar form has no room to explain itself twice, so both live where the
+// convention already puts that kind of note: the hint after the input area, and
+// the muted line under the title.
+func TestPOEditJDE_CostRowNamesItsBasis(t *testing.T) {
+	s := poJDEScreen(t, 40)
+	s.openLineEditor(1) // Gadget: ordered 2, received 2, $20.00 spent
+	out := s.viewLineEdit()
+
+	if !strings.Contains(out, "Total line cost"+jdeLeader) {
+		t.Errorf("the cost row should hang off the shared leader column:\n%s", out)
+	}
+	for _, want := range []string{
+		"$ total for all 2 ordered",
+		"ordered 2 · received 2 · $20.00 spent so far",
+		"A cost you do not change is not re-sent",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("line editor missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestPOEditJDE_CostRowNamesOnlyTheKeyThatWorks: the bar is the only place the
+// operator learns a key, so the cost row names Ctrl-E for whichever of its two
+// jobs is live — confirm the price the row is showing, or take the historical
+// offer a line with no price of its own gets — and names nothing when neither
+// is. The rule is two-way, so the key is pressed here as well as read: naming
+// nothing and then doing something would be the same lie in reverse.
+func TestPOEditJDE_CostRowNamesOnlyTheKeyThatWorks(t *testing.T) {
+	s := poJDEScreen(t, 40)
+	s.openLineEditor(0) // Widget carries a $50.00 estimate
+	if bar := poJDEBarLine(s.viewLineEdit()); !strings.Contains(bar, "Ctrl-E=Send") {
+		t.Errorf("a line showing a price can confirm it: %q", bar)
+	}
+	if s.openLineRow(); !s.lineCostConfirmed {
+		t.Error("Ctrl-E on the cost row of a priced line should arm the save")
+	}
+
+	// A line with no price to show and no history to offer — an asset or
+	// freeform line, which carries no inventory item — has nothing for the key.
+	s.po.Items[0].EstimatedCost = ""
+	s.po.Items[0].UnitCostActual = ""
+	s.openLineEditor(0)
+	if bar := poJDEBarLine(s.viewLineEdit()); strings.Contains(bar, "Ctrl-E") {
+		t.Errorf("nothing to confirm and nothing to offer must name no key: %q", bar)
+	}
+	if cmd := s.openLineRow(); cmd != nil || s.lineCostConfirmed {
+		t.Error("a key the bar does not name must do nothing on the cost row")
+	}
+
+	// The three rows below the inputs still carry theirs.
+	s.lineFocus = poLineRowWorkOrder
+	if bar := poJDEBarLine(s.viewLineEdit()); !strings.Contains(bar, "Ctrl-E=Pick") {
+		t.Errorf("the work-order row should still name Ctrl-E: %q", bar)
+	}
+}
