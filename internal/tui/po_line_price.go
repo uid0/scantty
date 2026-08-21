@@ -61,6 +61,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -85,17 +86,30 @@ func decimalAmount(d omsapi.DecimalString) (float64, bool) {
 	return v, true
 }
 
-// poMoney renders a total the way the cost field takes it: bare digits, no
-// currency sign — what the operator would have typed.
+// poMoney renders a line's total the way the cost field takes it: bare digits,
+// no currency sign — what the operator would have typed. quantityOrdered is the
+// denominator update_item will divide the figure by, and it is what decides how
+// many places the figure needs.
 //
-// Two places normally, because that is what money reads as. More ONLY when two
-// would round a real price down to "0.00", which is the one reading this file
-// exists to stop and which the prefill was the last way back in: a line priced
-// at 0.0001 per unit over 10 ordered is a total of 0.001, and rendering that as
-// "0.00" hands the operator a figure that is not the line's price, tells
-// lineLastPaid the line CARRIES a price (the string is non-empty) so the
-// purchase-history offer never appears, and leaves the cost row's Ctrl-E
-// offering to write a genuine zero over the real one.
+// Two places normally, because that is what money reads as. More only when two
+// would not SURVIVE the round trip: the figure on screen is the figure Ctrl-E
+// writes back, so a rendering the endpoint would turn into a different
+// unit_cost_actual is a rendering that quietly re-prices the line. The test is
+// therefore the endpoint's own arithmetic and not a general "does 2dp lose
+// digits", because the two disagree in both directions:
+//
+//	0.0005/unit × 10 = 0.005 -> "0.01" -> 0.01/10 = 0.0010, DOUBLE the price.
+//	                                       widen to "0.0050".
+//	33.3333/unit × 3 = 99.9999 -> "100.00" -> 100/3 = 33.3333, already stored.
+//	                                       leave it, because "99.9999" forever
+//	                                       on a line entered as 100.00 is a
+//	                                       readability loss and nothing else.
+//
+// The degenerate case of that rule is the one this file exists for: 0.001 over
+// 10 renders "0.00", which is not merely imprecise but reads as a line with no
+// price — a non-empty string, so lineOffer says the line CARRIES a price and
+// the purchase-history offer never appears, while the cost row's Ctrl-E stands
+// ready to write a genuine zero over the real one.
 //
 // The widening stops at the four places unit_cost_actual itself keeps, since no
 // smaller figure can reach us. It is deliberately NOT strconv's shortest
@@ -103,12 +117,38 @@ func decimalAmount(d omsapi.DecimalString) (float64, bool) {
 // straight off the wire: this value is a PRODUCT, and the shortest form of
 // 6.251 × 10 is "62.510000000000005" — a number no operator should be shown and
 // none would have typed.
-func poMoney(v float64) string {
+func poMoney(v float64, quantityOrdered int) string {
 	out := strconv.FormatFloat(v, 'f', 2, 64)
-	if v > 0 && out == "0.00" {
-		return strconv.FormatFloat(v, 'f', 4, 64)
+	if v <= 0 || poCostSurvives(out, v, quantityOrdered) {
+		return out
 	}
-	return out
+	return strconv.FormatFloat(v, 'f', 4, 64)
+}
+
+// poCostSurvives reports whether sending `shown` back as this line's line_cost
+// would leave unit_cost_actual exactly where v already puts it — the one
+// question that decides whether a rendering is honest, since the rendering IS
+// what the cost row's Ctrl-E writes.
+//
+// With no quantity to divide by there is no round trip to check, and the only
+// claim left worth defending is the weaker one: a real price must not read as
+// nothing.
+func poCostSurvives(shown string, v float64, quantityOrdered int) bool {
+	amount, ok := decimalAmount(omsapi.DecimalString(shown))
+	if !ok {
+		return false
+	}
+	if quantityOrdered <= 0 {
+		return amount > 0
+	}
+	return poUnitCostFor(amount, quantityOrdered) == poUnitCostFor(v, quantityOrdered)
+}
+
+// poUnitCostFor is update_item's own line: unit_cost_actual = line_cost /
+// quantity_ordered, quantized to the column's four places, half away from zero
+// as Python's Decimal quantizes.
+func poUnitCostFor(total float64, quantityOrdered int) float64 {
+	return math.Round(total/float64(quantityOrdered)*1e4) / 1e4
 }
 
 // poSameAmount reports whether two cost entries name the same AMOUNT rather
@@ -159,10 +199,10 @@ func poUnitMoney(v float64) string {
 // "" means the line has no price to carry forward.
 func poLineCarriedCost(li omsapi.PurchaseOrderItem) string {
 	if unit, ok := decimalAmount(li.UnitCostActual); ok && unit > 0 && li.QuantityOrdered > 0 {
-		return poMoney(unit * float64(li.QuantityOrdered))
+		return poMoney(unit*float64(li.QuantityOrdered), li.QuantityOrdered)
 	}
 	if est, ok := decimalAmount(li.EstimatedCost); ok && est > 0 {
-		return poMoney(est)
+		return poMoney(est, li.QuantityOrdered)
 	}
 	return ""
 }
@@ -243,7 +283,7 @@ func (p *poLastPaid) total(quantityOrdered int) string {
 	if p == nil || quantityOrdered <= 0 {
 		return ""
 	}
-	return poMoney(p.unit * float64(quantityOrdered))
+	return poMoney(p.unit*float64(quantityOrdered), quantityOrdered)
 }
 
 // describe names the offer the way it has to read on a green screen: the price,
@@ -369,7 +409,11 @@ func (c *poLastPaidCache) offer(itemID string) (row *poLastPaid, note string) {
 		// look in. Say that rather than leaving the row silent.
 		return nil, "No purchase history for this line — type the price."
 	case c.loading[itemID]:
-		return nil, "Looking up the last price paid…"
+		// "recorded", not "paid", while the fetch is in flight: the row this
+		// will land on proves a price was written against a prior line and
+		// nothing more (see describe). The operator must not be shown the
+		// stronger claim first and the true one a moment later.
+		return nil, "Looking up the last price recorded for this item…"
 	case c.errs[itemID] != "":
 		return nil, "Last price unavailable: " + c.errs[itemID]
 	case c.rows[itemID] == nil:

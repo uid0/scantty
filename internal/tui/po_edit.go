@@ -16,7 +16,7 @@
 //	PgUp/PgDn                page, when the body is taller than the pane
 //	Enter                    SAVE the record this phase is editing
 //	Ctrl-E                   OPEN what the highlighted row is (a picker, the
-//	                         line editor, the void prompt, the last price paid)
+//	                         line editor, the void prompt, the last price on file)
 //	←/→ or space             change a "< value >" choice row
 //	Esc                      back / cancel  (Ctrl-C always quits, app-wide)
 //
@@ -48,7 +48,7 @@
 //	                       UpdatePurchaseOrderLineItem (PATCH); Ctrl-E on one of
 //	                       the last three rows opens the picker or the void
 //	                       prompt that owns it, and on the cost row takes the
-//	                       last price paid for a line that carries none. What a
+//	                       last price on file for a line that carries none. What a
 //	                       cost field may and may not send is po_line_price.go.
 //	poEditPhaseVoidLine  — reason input; enter voids the line via
 //	                       VoidPurchaseOrderLineItem.
@@ -282,7 +282,7 @@ type PurchaseOrderEditScreen struct {
 	// Cleared by openLineEditor, so arming one line never arms the next.
 	lineCostConfirmed bool
 
-	// Last-paid prices for lines that carry none, from the item purchase
+	// Last recorded prices for lines that carry none, from the item purchase
 	// history (po_line_price.go). Keyed by inventory item, so an order with the
 	// same item on two lines asks once.
 	lastPaid poLastPaidCache
@@ -777,7 +777,7 @@ func poParseOrderDate(raw string) (string, error) {
 // ---------------------------------------------------------------------------
 
 // openLineEditor opens one line's form. It returns the command that looks up
-// what the shop last paid for the item, which only runs for a line that has no
+// the last price recorded for the item, which only runs for a line that has no
 // price of its own to show.
 func (s *PurchaseOrderEditScreen) openLineEditor(idx int) tea.Cmd {
 	s.phase = poEditPhaseLine
@@ -884,18 +884,36 @@ func (s *PurchaseOrderEditScreen) openLineRow() tea.Cmd {
 	return nil
 }
 
-// lineLastPaid is the offer standing for the line being edited: the last price
-// the shop paid for its item, or the note that says why there is none. Only a
-// line with NO price of its own has one — a line that carries a price shows
-// that, and the history behind it is not this screen's business.
-func (s *PurchaseOrderEditScreen) lineLastPaid() (*poLastPaid, string) {
+// lineOffer is the historical offer standing for the line being edited: the
+// last price recorded for its item, the total that comes to in the cost field's
+// own terms, and — when there is no offer — the note that says why. Only a line
+// with NO price of its own has one: a line that carries a price shows that, and
+// the history behind it is not this screen's business.
+//
+// It resolves the total HERE, once, and reports no offer when the total cannot
+// be expressed, because three callers used to decide separately and could
+// disagree. A line with quantity_ordered 0 was the state where they did: the
+// row existed, so the action bar named Ctrl-E and the body announced "Ctrl-E
+// offers $ for the 0 ordered" — an empty amount after a dollar sign — while
+// takeLastPaid quietly returned nil because a per-unit price over no quantity
+// is not a total. A key the bar names has to do something; one boundary
+// deciding is what keeps that true no matter which of them is read.
+func (s *PurchaseOrderEditScreen) lineOffer() (row *poLastPaid, total, note string) {
 	if s.po == nil || s.editLineIdx < 0 || s.editLineIdx >= s.lineCount() {
-		return nil, ""
+		return nil, "", ""
 	}
 	if s.lineCostShown != "" {
-		return nil, ""
+		return nil, "", ""
 	}
-	return s.lastPaid.offer(poLineItemID(s.po.Items[s.editLineIdx]))
+	li := s.po.Items[s.editLineIdx]
+	row, note = s.lastPaid.offer(poLineItemID(li))
+	if row == nil {
+		return nil, "", note
+	}
+	if total = row.total(li.QuantityOrdered); total == "" {
+		return nil, "", "Nothing is ordered on this line, so a per-unit price is no total to offer — type the price."
+	}
+	return row, total, ""
 }
 
 // costRowAction is Ctrl-E on the cost row. The row has two states and the key
@@ -908,7 +926,7 @@ func (s *PurchaseOrderEditScreen) lineLastPaid() (*poLastPaid, string) {
 // Both halves return nil when there is nothing behind them, which keeps the
 // screen's rule: a key the bar does not name does nothing.
 func (s *PurchaseOrderEditScreen) costRowAction() tea.Cmd {
-	if row, _ := s.lineLastPaid(); row != nil {
+	if row, _, _ := s.lineOffer(); row != nil {
 		return s.takeLastPaid()
 	}
 	return s.confirmShownCost()
@@ -953,13 +971,10 @@ func (s *PurchaseOrderEditScreen) takeLastPaid() tea.Cmd {
 	// Nothing to offer opens nothing, the same way a plain text row does — the
 	// bar has already dropped the Ctrl-E entry, and why there is no offer is
 	// said in the body rather than in a message the operator has to provoke.
-	row, _ := s.lineLastPaid()
+	// lineOffer has already resolved the total, so an offer that reaches here
+	// is one that can be expressed.
+	row, total, _ := s.lineOffer()
 	if row == nil {
-		return nil
-	}
-	qty := s.po.Items[s.editLineIdx].QuantityOrdered
-	total := row.total(qty)
-	if total == "" {
 		return nil
 	}
 	s.lineInputs[poLineEditCost].SetValue(total)
@@ -1603,7 +1618,7 @@ func (s *PurchaseOrderEditScreen) lineBar() []actionBarItem {
 		// Whichever of the row's two states is live, and nothing when neither
 		// is: a key the bar names has to do something, and one it does not name
 		// has to do nothing. costRowAction is the other side of this.
-		if row, _ := s.lineLastPaid(); row != nil {
+		if row, _, _ := s.lineOffer(); row != nil {
 			items = append(items, actionBarItem{"Ctrl-E", "Use last price"})
 		} else if s.lineCostShown != "" {
 			items = append(items, actionBarItem{"Ctrl-E", "Confirm price"})
@@ -1631,13 +1646,20 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 		body.AddRow(i, line)
 	}
 	body.Add("")
-	if row, note := s.lineLastPaid(); row != nil {
-		body.Add(jdeIndent + StyleStatusWarn.Render(row.describe()))
-		body.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf(
-			"Ctrl-E offers $%s for the %d ordered; leave the field blank to save no price.",
-			row.total(li.QuantityOrdered), li.QuantityOrdered)))
-	} else if note != "" {
-		body.Add(jdeIndent + StyleMuted.Render(note))
+	// Everything about the cost row's Ctrl-E is drawn only while the cursor is
+	// ON the cost row, the same test lineBar makes. The operator learns the keys
+	// from a bar naming exactly what works where they are standing; a body that
+	// went on naming Ctrl-E from the notes row — where the bar has dropped it
+	// and the key does nothing — teaches the opposite of that rule.
+	if s.lineFocus == poLineEditCost {
+		if row, total, note := s.lineOffer(); row != nil {
+			body.Add(jdeIndent + StyleStatusWarn.Render(row.describe()))
+			body.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf(
+				"Ctrl-E offers $%s for the %d ordered; leave the field blank to save no price.",
+				total, li.QuantityOrdered)))
+		} else if note != "" {
+			body.Add(jdeIndent + StyleMuted.Render(note))
+		}
 	}
 	body.Add(jdeIndent + StyleMuted.Render("Enter saves cost, ship date and notes together; the three rows under them write on their own."))
 	body.Add(jdeIndent + StyleMuted.Render("A cost you do not change is not re-sent — the price stays as it is."))
@@ -1645,7 +1667,7 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 	// that key will do is drawn rather than left to a status line the operator
 	// may already have scrolled past. A line reading $0.00 in the grid is
 	// recovered from right here.
-	if note, pending := s.costPendingNote(li.QuantityOrdered); note != "" {
+	if note, pending := s.costPendingNote(li.QuantityOrdered); note != "" && s.lineFocus == poLineEditCost {
 		style := StyleMuted
 		if pending {
 			// A write is armed and about to happen on the next enter, which is

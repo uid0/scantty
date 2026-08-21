@@ -334,6 +334,26 @@ func poPriceOrder() *fakePOServer {
 				quantityOrdered: 10, quantityReceived: 4,
 				unitCostOrdered: rat("1/10000"), unitCostActual: rat("1/10000"),
 			},
+			// Half a mil per unit: $0.005 over the 10 ordered, which two decimal
+			// places round UP to "0.01" rather than down to nothing. Sending
+			// that back would store 0.0010 — double the real price — so the
+			// figure on screen has to carry the places that survive the trip.
+			{
+				id: "line-halfmil", description: "Bronze shim", itemID: "item-bronze",
+				quantityOrdered: 10, quantityReceived: 4,
+				unitCostOrdered: rat("1/2000"), unitCostActual: rat("1/2000"),
+			},
+			// Nothing ordered at all — quantity_ordered is omitempty on the
+			// wire, so an absent field decodes to 0 — on a line that buys an
+			// item WITH purchase history. The history is real and the item is
+			// real; what does not exist is a total, because a per-unit price
+			// over no quantity is not one. The bar must not name a key for it.
+			{
+				id: "line-nothing-ordered", description: "Sprocket (unbudgeted)",
+				itemID:          "item-sprocket",
+				quantityOrdered: 0, quantityReceived: 0,
+				unitCostOrdered: rat("5"),
+			},
 		},
 		history: map[string]omsapi.ItemPurchaseHistory{
 			// Oldest order first, as the endpoint returns them. The newest row
@@ -905,6 +925,119 @@ func TestPOLineEdit_SubCentPriceIsNotShownAsZero(t *testing.T) {
 	}
 }
 
+// TestPOLineEdit_NothingOrderedOffersNoKeyAndNoEmptyAmount: the offer's figure
+// is a per-unit price spread across the quantity ORDERED, so a line that orders
+// nothing has no total to be offered — even though the item's history is there
+// and the row was found. Three callers used to decide that separately: the bar
+// named Ctrl-E, the body printed "Ctrl-E offers $ for the 0 ordered" with the
+// amount missing, and the key itself did nothing. One boundary decides now, and
+// this drives all three.
+func TestPOLineEdit_NothingOrderedOffersNoKeyAndNoEmptyAmount(t *testing.T) {
+	fake := poPriceOrder()
+	r, _ := poPriceRoot(t, fake)
+
+	r, s := poOpenLineEditor(t, r, 7)
+	out := s.View()
+	if strings.Contains(out, "Ctrl-E offers $ ") || strings.Contains(out, "for the 0 ordered") {
+		t.Errorf("an offer with no total must not be drawn:\n%s", out)
+	}
+	if strings.Contains(out, "Ctrl-E=Use last price") {
+		t.Errorf("the bar must not name a key with no offer behind it:\n%s", out)
+	}
+	if !strings.Contains(out, "Nothing is ordered on this line") {
+		t.Errorf("the body should say why there is no offer:\n%s", out)
+	}
+	// And the key the bar declined to name does nothing.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if got := s.lineInputs[poLineEditCost].Value(); got != "" {
+		t.Errorf("cost field = %q, want it left empty", got)
+	}
+}
+
+// TestPOLineEdit_HalfMilPriceSurvivesTheRoundTrip: $0.005 over 10 ordered
+// rounds UP to "0.01" at two places, and sending that back would store
+// 0.0010 against a real 0.0005 — the price doubled by the rendering alone.
+// What is drawn is what Ctrl-E writes, so what is drawn has to survive.
+func TestPOLineEdit_HalfMilPriceSurvivesTheRoundTrip(t *testing.T) {
+	fake := poPriceOrder()
+	r, _ := poPriceRoot(t, fake)
+
+	r, s := poOpenLineEditor(t, r, 6)
+	if got := s.lineInputs[poLineEditCost].Value(); got != "0.0050" {
+		t.Fatalf("the carried total is 10 × $0.0005 = $0.005, field = %q", got)
+	}
+	// Confirm exactly what is on screen, which is the path that would have
+	// written the doubled price.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if sent := fake.lineCostPatches(); len(sent) != 1 {
+		t.Fatalf("the confirmed price should be sent once; sent %v", sent)
+	}
+	if got := fake.line("line-halfmil").unitCostActual.FloatString(4); got != "0.0005" {
+		t.Errorf("unit_cost_actual = %s, want the price unchanged at 0.0005", got)
+	}
+}
+
+// TestPOLineEdit_CostRowNotesStayOnTheCostRow: the screen's rule is that the
+// operator learns a key from the bar naming exactly what works where the cursor
+// is standing. lineBar already drops Ctrl-E off the cost row; the body kept
+// naming it from the notes row, where pressing it does nothing.
+func TestPOLineEdit_CostRowNotesStayOnTheCostRow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		idx  int
+		gone string
+	}{
+		{"a line that can confirm its price", 4, "Ctrl-E writes $"},
+		{"a line with a historical offer", 3, "Ctrl-E offers $"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := poPriceOrder()
+			r, _ := poPriceRoot(t, fake)
+
+			r, s := poOpenLineEditor(t, r, tc.idx)
+			if !strings.Contains(s.View(), tc.gone) {
+				t.Fatalf("the cost row should carry %q:\n%s", tc.gone, s.View())
+			}
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
+			if s.lineFocus != poLineEditNotes {
+				t.Fatalf("cursor is on row %d, want the notes row", s.lineFocus)
+			}
+			out := s.View()
+			if strings.Contains(out, tc.gone) {
+				t.Errorf("the body names Ctrl-E where the bar does not and the key does nothing:\n%s", out)
+			}
+			if strings.Contains(poJDEBarLine(out), "Ctrl-E") {
+				t.Errorf("the notes row should name no Ctrl-E: %q", poJDEBarLine(out))
+			}
+		})
+	}
+}
+
+// TestPOLastPaidNotesClaimOnlyWhatIsBeingLooked: the in-flight note is the FIRST
+// thing the operator reads on that row, and it used to promise "the last price
+// paid" before the answer arrived and said "priced at" instead. One row must not
+// make the stronger claim and then walk it back — the history endpoint proves a
+// price was recorded on some order, never that money changed hands.
+func TestPOLastPaidNotesClaimOnlyWhatIsBeingLooked(t *testing.T) {
+	c := &poLastPaidCache{}
+	c.init()
+	c.loading["item-x"] = true
+
+	row, note := c.offer("item-x")
+	if row != nil {
+		t.Fatalf("a lookup in flight has no row yet, got %+v", row)
+	}
+	if strings.Contains(note, "paid") {
+		t.Errorf("the in-flight note claims money was paid: %q", note)
+	}
+	if !strings.Contains(note, "recorded") {
+		t.Errorf("the in-flight note should name what is being looked up: %q", note)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The pricing rules on their own
 // ---------------------------------------------------------------------------
@@ -949,6 +1082,24 @@ func TestPOLineCarriedCost(t *testing.T) {
 				EstimatedCost: "0.00", ActualCost: "0.00",
 			},
 			want: "0.0010",
+		},
+		{
+			name: "a total that rounds UP at two places still keeps its own price",
+			line: omsapi.PurchaseOrderItem{
+				QuantityOrdered: 10, QuantityReceived: 4,
+				UnitCostOrdered: "0.0005", UnitCostActual: "0.0005",
+				EstimatedCost: "0.01", ActualCost: "0.00",
+			},
+			want: "0.0050",
+		},
+		{
+			name: "an ordinary total that survives two places stays legible at two",
+			line: omsapi.PurchaseOrderItem{
+				QuantityOrdered: 3, QuantityReceived: 3,
+				UnitCostOrdered: "33.3333", UnitCostActual: "33.3333",
+				EstimatedCost: "100.00", ActualCost: "100.00",
+			},
+			want: "100.00",
 		},
 		{
 			name: "no price at all — a zero estimate is an absence, not a price",
