@@ -322,6 +322,18 @@ func poPriceOrder() *fakePOServer {
 				quantityOrdered: 10, quantityReceived: 4,
 				unitCostOrdered: rat("5"), unitCostActual: rat("0"),
 			},
+			// Priced below a cent per unit — unit_cost_actual keeps four
+			// places, and a shim or a washer really does cost this. The total
+			// for the 10 ordered is $0.001, which is a REAL price that two
+			// decimal places would render as the same "0.00" the line above is
+			// genuinely pinned at. The two must not read alike: this one has a
+			// price and must not be offered a historical one, and its Ctrl-E
+			// must not write a zero over it.
+			{
+				id: "line-subcent", description: "Shim washer", itemID: "item-shim",
+				quantityOrdered: 10, quantityReceived: 4,
+				unitCostOrdered: rat("1/10000"), unitCostActual: rat("1/10000"),
+			},
 		},
 		history: map[string]omsapi.ItemPurchaseHistory{
 			// Oldest order first, as the endpoint returns them. The newest row
@@ -794,6 +806,105 @@ func TestPOLineEdit_ConfirmingIsPerLine(t *testing.T) {
 	}
 }
 
+// TestPOLineEdit_ArmedThenEmptiedSaysWhatEnterActuallyDoes: the drawn state and
+// saveLine have to agree in every field state. saveLine writes nothing when the
+// cost field is blank — that is the deliberate "blank leaves the price alone"
+// rule — and it never reaches the confirm flag, so an armed line whose field the
+// operator then cleared announced a money write ("enter writes $ as the total
+// for the 10 ordered", with no amount) that could not happen.
+func TestPOLineEdit_ArmedThenEmptiedSaysWhatEnterActuallyDoes(t *testing.T) {
+	fake := poPriceOrder()
+	r, _ := poPriceRoot(t, fake)
+
+	r, s := poOpenLineEditor(t, r, 4)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	for range s.lineInputs[poLineEditCost].Value() {
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+
+	out := s.View()
+	if strings.Contains(out, "writes $ ") || strings.Contains(out, "enter writes $ as") {
+		t.Errorf("an empty field must not be announced as a price write:\n%s", out)
+	}
+	if !strings.Contains(out, "enter writes no price and the line keeps the one it has") {
+		t.Errorf("the screen should say what enter will really do:\n%s", out)
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if sent := fake.lineCostPatches(); len(sent) != 0 {
+		t.Errorf("a blank cost field must send no price; sent %v", sent)
+	}
+	if got := fake.line("line-zeroed").unitCostActual.FloatString(4); got != "0.0000" {
+		t.Errorf("unit_cost_actual = %s, want it left alone", got)
+	}
+}
+
+// TestPOLineEdit_ConfirmNoteFollowsTheFieldNotThePrefill: Ctrl-E arms whatever
+// the field holds, so the note about it has to name that — it named the price
+// the row OPENED with, and called it "unchanged", while the save was about to
+// write the figure the operator had typed over it.
+func TestPOLineEdit_ConfirmNoteFollowsTheFieldNotThePrefill(t *testing.T) {
+	fake := poPriceOrder()
+	r, _ := poPriceRoot(t, fake)
+
+	r, s := poOpenLineEditor(t, r, 4)
+	for range s.lineInputs[poLineEditCost].Value() {
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	r = poTypeRunes(t, r, "62.50")
+
+	out := s.View()
+	if !strings.Contains(out, "Ctrl-E writes $62.50 as the total for the 10 ordered") {
+		t.Errorf("the hint should name the figure Ctrl-E would write:\n%s", out)
+	}
+	if strings.Contains(out, "$50.00") {
+		t.Errorf("the hint still names the prefill the operator typed over:\n%s", out)
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if out := s.View(); !strings.Contains(out, "Price confirmed: enter writes $62.50") {
+		t.Errorf("the armed note should name the field's figure:\n%s", out)
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	sent := fake.lineCostPatches()
+	if len(sent) != 1 {
+		t.Fatalf("the typed price should be sent once; sent %v", sent)
+	}
+	if got, _ := ratFromJSON(sent[0]["line_cost"]); got == nil || got.Cmp(big.NewRat(125, 2)) != 0 {
+		t.Errorf("line_cost = %v, want 62.50", sent[0]["line_cost"])
+	}
+}
+
+// TestPOLineEdit_SubCentPriceIsNotShownAsZero: a total of $0.001 is a price, and
+// two decimal places would print it as the same $0.00 a pinned line shows. That
+// collapse is what this screen exists to stop: the operator would see a zero,
+// the offer would stay hidden (the field is non-empty, so the line "carries a
+// price"), and confirming what was on screen would PATCH a real zero over a real
+// price. The figure survives to the field, and an untouched save still sends
+// nothing.
+func TestPOLineEdit_SubCentPriceIsNotShownAsZero(t *testing.T) {
+	fake := poPriceOrder()
+	r, _ := poPriceRoot(t, fake)
+
+	r, s := poOpenLineEditor(t, r, 5)
+	if got := s.lineInputs[poLineEditCost].Value(); got != "0.0010" {
+		t.Errorf("the carried total is 10 × $0.0001 = $0.001, field = %q", got)
+	}
+	// Ship date only: the price rides nothing, and the round trip is a fixed
+	// point at four places just as it is at two.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	r = poTypeRunes(t, r, "2026-09-14")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if sent := fake.lineCostPatches(); len(sent) != 0 {
+		t.Errorf("an untouched sub-cent price must not be re-sent; sent %v", sent)
+	}
+	if got := fake.line("line-subcent").unitCostActual.FloatString(4); got != "0.0001" {
+		t.Errorf("unit_cost_actual = %s, want 0.0001", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The pricing rules on their own
 // ---------------------------------------------------------------------------
@@ -829,6 +940,15 @@ func TestPOLineCarriedCost(t *testing.T) {
 				EstimatedCost: "50.00", ActualCost: "0.00",
 			},
 			want: "50.00",
+		},
+		{
+			name: "a sub-cent total keeps the digits that make it a price",
+			line: omsapi.PurchaseOrderItem{
+				QuantityOrdered: 10, QuantityReceived: 4,
+				UnitCostOrdered: "0.0001", UnitCostActual: "0.0001",
+				EstimatedCost: "0.00", ActualCost: "0.00",
+			},
+			want: "0.0010",
 		},
 		{
 			name: "no price at all — a zero estimate is an absence, not a price",

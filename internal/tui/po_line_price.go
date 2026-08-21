@@ -85,16 +85,38 @@ func decimalAmount(d omsapi.DecimalString) (float64, bool) {
 	return v, true
 }
 
-// poMoney renders a total the way the cost field takes it: bare digits, two
-// places, no currency sign — what the operator would have typed.
-func poMoney(v float64) string { return strconv.FormatFloat(v, 'f', 2, 64) }
+// poMoney renders a total the way the cost field takes it: bare digits, no
+// currency sign — what the operator would have typed.
+//
+// Two places normally, because that is what money reads as. More ONLY when two
+// would round a real price down to "0.00", which is the one reading this file
+// exists to stop and which the prefill was the last way back in: a line priced
+// at 0.0001 per unit over 10 ordered is a total of 0.001, and rendering that as
+// "0.00" hands the operator a figure that is not the line's price, tells
+// lineLastPaid the line CARRIES a price (the string is non-empty) so the
+// purchase-history offer never appears, and leaves the cost row's Ctrl-E
+// offering to write a genuine zero over the real one.
+//
+// The widening stops at the four places unit_cost_actual itself keeps, since no
+// smaller figure can reach us. It is deliberately NOT strconv's shortest
+// round-trip form, which poUnitMoney can afford because it renders a decimal
+// straight off the wire: this value is a PRODUCT, and the shortest form of
+// 6.251 × 10 is "62.510000000000005" — a number no operator should be shown and
+// none would have typed.
+func poMoney(v float64) string {
+	out := strconv.FormatFloat(v, 'f', 2, 64)
+	if v > 0 && out == "0.00" {
+		return strconv.FormatFloat(v, 'f', 4, 64)
+	}
+	return out
+}
 
 // poSameAmount reports whether two cost entries name the same AMOUNT rather
 // than the same characters. It is what decides "the operator did not touch the
 // price" in saveLine, and the distinction is not academic: the field is
-// prefilled from poLineCarriedCost, which always renders two decimal places, so
-// an operator retyping the 50.00 in front of them types the shown text while an
-// operator typing 50 does not. Comparing raw text made those two keystroke
+// prefilled from poLineCarriedCost, which renders a trailing-zero shape the
+// operator has no reason to reproduce, so retyping the 50.00 in front of them
+// types the shown text while typing 50 does not. Comparing raw text made those two keystroke
 // sequences mean opposite things — one dropped, one saved — for one intent.
 //
 // Either side being blank or unparseable answers false, which is the safe way

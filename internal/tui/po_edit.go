@@ -1641,20 +1641,66 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 	}
 	body.Add(jdeIndent + StyleMuted.Render("Enter saves cost, ship date and notes together; the three rows under them write on their own."))
 	body.Add(jdeIndent + StyleMuted.Render("A cost you do not change is not re-sent — the price stays as it is."))
-	// …which is why the row needs a way to say "send it anyway", and why the
-	// armed state is drawn rather than left to a status line the operator may
-	// already have scrolled past. A line reading $0.00 in the grid is recovered
-	// from right here.
-	switch {
-	case s.lineCostConfirmed:
-		body.Add(jdeIndent + StyleStatusWarn.Render(fmt.Sprintf(
-			"Price confirmed: enter writes $%s as the total for the %d ordered.",
-			strings.TrimSpace(s.lineInputs[poLineEditCost].Value()), li.QuantityOrdered)))
-	case s.lineCostShown != "":
-		body.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf(
-			"Ctrl-E writes the $%s shown back as it stands, unchanged.", s.lineCostShown)))
+	// …which is why the row needs a way to say "send it anyway", and why what
+	// that key will do is drawn rather than left to a status line the operator
+	// may already have scrolled past. A line reading $0.00 in the grid is
+	// recovered from right here.
+	if note, pending := s.costPendingNote(li.QuantityOrdered); note != "" {
+		style := StyleMuted
+		if pending {
+			// A write is armed and about to happen on the next enter, which is
+			// not a hint about a key: it is the same class of thing as the
+			// historical offer above, and reads in the same colour.
+			style = StyleStatusWarn
+		}
+		body.Add(jdeIndent + style.Render(note))
 	}
 	return s.frame(body, s.lineFocus, "Saving…", s.lineBar())
+}
+
+// costPendingNote is the line under the form that says what enter will do with
+// the COST as the field stands right now, and the bool is whether that is a
+// write already armed (drawn as a pending action) rather than a key still on
+// offer (drawn as a hint).
+//
+// It is one function and not two branches inline because the drawn state and
+// saveLine have to agree in EVERY field state, not just the common one, and
+// they did not. saveLine sends nothing at all when the field is blank — blank
+// means "leave the price alone", deliberately, since update_item has no defined
+// semantics for clearing a line_cost — and it reads lineCostConfirmed only
+// after that test. So an armed line whose field the operator then emptied
+// writes no price, while a note rendered from the arm alone announced "enter
+// writes $ as the total for the 10 ordered": an empty amount, promising a money
+// write that never happened, with no error to contradict it.
+//
+// Every reading is built from the trimmed FIELD and never from lineCostShown,
+// for the matching reason: Ctrl-E arms whatever the field holds and only puts
+// lineCostShown back when the field is empty, so a note quoting the price the
+// row opened with went stale the moment the operator typed over it — naming
+// $50.00 "unchanged" while the save was about to write $62.50.
+func (s *PurchaseOrderEditScreen) costPendingNote(quantityOrdered int) (string, bool) {
+	cur := strings.TrimSpace(s.lineInputs[poLineEditCost].Value())
+	switch {
+	case s.lineCostShown == "":
+		// A line with no price of its own: the offer block above already speaks
+		// for this row, and its Ctrl-E takes that offer rather than confirming
+		// anything. Two notes about one key would be one too many.
+		return "", false
+	case cur == "" && s.lineCostConfirmed:
+		return fmt.Sprintf(
+			"The cost field is empty, so enter writes no price and the line keeps the one it has — Ctrl-E puts the $%s back.",
+			s.lineCostShown), true
+	case cur == "":
+		return fmt.Sprintf(
+			"Ctrl-E puts the $%s back and writes it; a blank field leaves the price alone.",
+			s.lineCostShown), false
+	case s.lineCostConfirmed:
+		return fmt.Sprintf("Price confirmed: enter writes $%s as the total for the %d ordered.",
+			cur, quantityOrdered), true
+	default:
+		return fmt.Sprintf("Ctrl-E writes $%s as the total for the %d ordered, even where it matches the price the line already carries.",
+			cur, quantityOrdered), false
+	}
 }
 
 // ---------------------------------------------------------------------------
