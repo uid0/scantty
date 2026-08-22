@@ -45,15 +45,15 @@ type ReceiveFormScreen struct {
 	result  string
 	level   StatusLevel
 
+	// terminalWidth is what the kit breakdown wraps against (op-8n0). 0 until the
+	// first WindowSizeMsg, which the JDE layer reads as "do not truncate".
+	terminalWidth int
+
 	// Serialized-unit capture (phase 2). After the quantity receive posts,
 	// each received unit of a serialized line enrolls one capture slot so
 	// the operator can scan a serial into it. Each captured serial creates a
 	// SerializedComponent (provenance = the PO line) and accessions it into
 	// stock.
-	// terminalWidth is what the kit breakdown wraps against (op-8n0). 0 until the
-	// first WindowSizeMsg, which the JDE layer reads as "do not truncate".
-	terminalWidth int
-
 	phase         receivePhase
 	serialUnits   []serialUnit
 	serialCursor  int
