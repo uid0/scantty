@@ -75,10 +75,10 @@ func kitTestSupplyingKits() []omsapi.KitSummary {
 			SupplierSKU: "ACM-88421", UnitCost: "34.99", ComponentCount: 5,
 		},
 		{ID: "kit-2", Name: "Discontinued ink bundle", SKU: "DIB-1", QuantityInKit: intp(1)},
-		// A four-figure price, which is the widest thing the cost column ever
-		// carries: "$1299.50" is 8 columns against a 7-column cell. A fixture
-		// that only ever priced things at "34.99" is why a silently-clipped
-		// price could ship.
+		// A four-figure price. A kit is a bundle of parts bought as one SKU, so
+		// this is the ordinary case rather than the exotic one — and a fixture
+		// that only ever priced things at "34.99" is why the cost column shipped
+		// too narrow to hold a real kit's price.
 		{
 			ID: "kit-3", Name: "Whole-printer overhaul bundle", SKU: "WPO-9",
 			IsActive: true, QuantityInKit: intp(4), UnitCost: "1299.50", ComponentCount: 12,
@@ -476,29 +476,35 @@ func TestInventoryDetailKit_TheHeaderKeepsEveryTagAtTheFloor(t *testing.T) {
 	}
 }
 
-// TestInventoryDetailKit_AnOverWidePriceIsElidedNotSilentlyCut. padCell pads and
-// never truncates, so a value wider than its column used to push the whole row
-// past the pane, where clampToBox cut it with nothing to show it had: "$1299.50"
-// rendered as "$1299.5", which is a plausible price and the wrong one.
-func TestInventoryDetailKit_AnOverWidePriceIsElidedNotSilentlyCut(t *testing.T) {
-	s := kitDetail(t, nil, kitTestSupplyingKits(), 80)
-	budget := screenBodyWidth(80)
-	body := s.renderBody()
+// TestInventoryDetailKit_AFourFigurePriceIsLegibleAtEveryWidth. Two defects in
+// one row, in order: padCell pads and never truncates, so an over-wide price
+// used to push the row past the pane where clampToBox cut it silently
+// ("$1299.50" read as "$1299.5", a plausible price and the wrong one); fitting
+// the cell fixed the silence but left the price ELIDED at every terminal width,
+// because the column was sized for "On hand" rather than for money. A kit is
+// bought as one SKU, so four figures is the ordinary case — the column has to
+// hold it, not merely admit it cannot.
+func TestInventoryDetailKit_AFourFigurePriceIsLegibleAtEveryWidth(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitDetail(t, nil, kitTestSupplyingKits(), width)
+		budget := screenBodyWidth(width)
+		body := s.renderBody()
 
-	row := kitFindLine(body, "WPO-9")
-	if row == "" {
-		t.Fatalf("no row for the four-figure kit:\n%s", body)
-	}
-	if w := lipgloss.Width(row); w > budget {
-		t.Fatalf("the row is %d wide against a %d pane — clampToBox would cut it: %q", w, budget, row)
-	}
-	// The price does not fit its column, so it must SAY it was shortened rather
-	// than read as a whole number that happens to be wrong.
-	if !strings.Contains(row, "…") {
-		t.Errorf("a price too wide for its column was cut with no sign of it: %q", row)
-	}
-	if strings.Contains(row, "$1299.5\u0020") || strings.HasSuffix(row, "$1299.5") {
-		t.Errorf("the price was silently truncated to a plausible wrong value: %q", row)
+		row := kitFindLine(body, "WPO-9")
+		if row == "" {
+			t.Fatalf("no row for the four-figure kit at %d columns:\n%s", width, body)
+		}
+		// The row still fits, which is what stops clampToBox eating the price.
+		if w := lipgloss.Width(row); w > budget {
+			t.Fatalf("at %d columns the row is %d wide against a %d pane: %q", width, w, budget, row)
+		}
+		if !strings.Contains(row, "$1299.50") {
+			t.Errorf("at %d columns the price is not readable in full: %q", width, row)
+		}
+		// And the cheap kit beside it is unchanged.
+		if cheap := kitFindLine(body, "EIK-4"); !strings.Contains(cheap, "$34.99") {
+			t.Errorf("at %d columns an ordinary price stopped rendering: %q", width, cheap)
+		}
 	}
 }
 

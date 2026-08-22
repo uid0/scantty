@@ -286,6 +286,19 @@ func TestItemDetailRoutesAskForKitsToBeIncluded(t *testing.T) {
 			_, err := c.SetItemCountMode(context.Background(), "kit-1", CountModeEach, nil)
 			return err
 		}},
+		// The SUB-RESOURCES are detail actions too, so the same filter reaches
+		// them. Both are non-fatal in the TUI, which is exactly how a 404 here
+		// would have hidden: a kit's screen would quietly drop its metrics row and
+		// report "Purchase / Receipts — unavailable: not found" for the one fact a
+		// kit exists for, since a kit IS bought as a single SKU.
+		{"metrics", "/api/inventory/items/kit-1/metrics/", func(c *Client) error {
+			_, err := c.GetItemMetrics(context.Background(), "kit-1")
+			return err
+		}},
+		{"purchase history", "/api/inventory/items/kit-1/purchase_history/", func(c *Client) error {
+			_, err := c.GetPurchaseHistory(context.Background(), "kit-1")
+			return err
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -308,6 +321,27 @@ func TestItemDetailRoutesAskForKitsToBeIncluded(t *testing.T) {
 				t.Errorf("include_kits = %q, want \"true\" — a kit id would 404 without it", gotQuery)
 			}
 		})
+	}
+}
+
+// TestListItemKitsStaysKitUnreachable is the deliberate exception in the other
+// direction. "Which kits contain this item?" has no answer for a kit — kits
+// cannot contain kits — so the 404 there is the right outcome rather than a gap,
+// and lifting the filter would only turn one non-answer into another.
+func TestListItemKitsStaysKitUnreachable(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("include_kits")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	if _, err := New(srv.URL).ListItemKits(context.Background(), "kit-1"); err != nil {
+		t.Fatalf("ListItemKits: %v", err)
+	}
+	if gotQuery != "" {
+		t.Errorf("include_kits = %q — a kit is never a component, so this route stays as it is", gotQuery)
 	}
 }
 

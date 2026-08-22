@@ -20,6 +20,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -688,5 +689,278 @@ func TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout(t *testing.T) {
 	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // reopen
 	if strings.Contains(s.View(), "cannot be a kit component") {
 		t.Errorf("a stale refusal was still on screen over a freshly opened picker:\n%s", s.View())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A kit's Current stock row
+// ---------------------------------------------------------------------------
+
+// kitFormStockedKit is a kit that already carries stock. It should not exist —
+// the model forbids it — but InventoryItem.save() never runs full_clean(), so a
+// stray figure can be sitting there, and that is precisely the case the save is
+// about to overwrite.
+func kitFormStockedKit(stock int) *omsapi.Kit {
+	kit := kitFormFixture()
+	kit.Stock = stock
+	return kit
+}
+
+// TestItemFormKit_ANonZeroKitStockSaysWhatSavingDoesToIt. Sending current_stock:
+// 0 writes over a number that is really there in shared data. Zeroing a value a
+// kit was never allowed to hold is defensible; doing it invisibly as a side
+// effect of renaming the kit is a silent overwrite, so the sheet shows both the
+// figure and its fate before anything is pressed.
+func TestItemFormKit_ANonZeroKitStockSaysWhatSavingDoesToIt(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormStockedKit(7), width)
+		body := strings.Join(s.formLines().text, "\n")
+		// The note WRAPS at a narrow pane, so the sentence is read off the
+		// collapsed text rather than off one line — wrapping is the point.
+		flat := strings.Join(strings.Fields(body), " ")
+		// Both halves: what is recorded now, and what saving does to it.
+		if !strings.Contains(flat, "Recorded as 7 on hand") {
+			t.Errorf("at %d columns the sheet hides the recorded figure:\n%s", width, body)
+		}
+		for _, want := range []string{"holds no stock of its own", "saving this sheet clears that to 0"} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("at %d columns the sheet does not say %q:\n%s", width, want, body)
+			}
+		}
+		// Shown WITHOUT the cursor ever going near the row — an operator renaming
+		// a kit has no reason to visit a row they cannot type into.
+		if id, ok := s.currentFieldID(); ok && id == fCurrentStock {
+			t.Fatal("the fixture starts on the stock row, which defeats the point of the check")
+		}
+		// And it WRAPS rather than clipping: this is the sentence a 51-column
+		// pane would otherwise cut in half.
+		budget := screenBodyWidth(width)
+		for _, line := range s.formLines().text {
+			if !strings.Contains(line, "!") && !strings.Contains(line, "Recorded as") &&
+				!strings.Contains(line, "stock of its own, so") {
+				continue
+			}
+			if w := lipgloss.Width(line); w > budget {
+				t.Errorf("at %d columns the warning is %d wide against a %d pane: %q", width, w, budget, line)
+			}
+		}
+	}
+}
+
+// TestItemFormKit_AZeroStockKitGetsNoNotice. The normal case must stay quiet:
+// there is nothing to overwrite, so there is nothing to warn about.
+func TestItemFormKit_AZeroStockKitGetsNoNotice(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	if body := strings.Join(s.formLines().text, "\n"); strings.Contains(body, "Recorded as") {
+		t.Errorf("a kit with no stock was warned about losing it:\n%s", body)
+	}
+	// Nor does an ordinary item that DOES carry stock.
+	plain := kitFormSheet(t, nil, 120)
+	plain.inputs[fCurrentStock].SetValue("12")
+	if body := strings.Join(plain.formLines().text, "\n"); strings.Contains(body, "Recorded as") {
+		t.Errorf("an ordinary item was warned about losing its stock:\n%s", body)
+	}
+}
+
+// TestItemFormKit_TheStockRowIsReadOnlyForAKit. A row that renders read-only has
+// to BE read-only: accepting the keystroke anyway would edit a value the save
+// overwrites regardless, and would make the sheet dirty() for a change that can
+// never land — which is what the suppliers door then asks the operator about.
+func TestItemFormKit_TheStockRowIsReadOnlyForAKit(t *testing.T) {
+	s := kitFormSheet(t, kitFormStockedKit(7), 120)
+	kitFormCursorTo(t, s, fCurrentStock)
+	before := s.inputs[fCurrentStock].Value()
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("9")})
+	if got := s.inputs[fCurrentStock].Value(); got != before {
+		t.Errorf("a kit's Current stock accepted typing: %q -> %q", before, got)
+	}
+	if s.dirty() {
+		t.Error("typing into a read-only row made the sheet dirty")
+	}
+	// The bar must not name a key that does nothing where the cursor stands. A
+	// number row never offered one, so the invariant is that none appeared.
+	for _, item := range s.formBar(s.formLines()) {
+		if item.Key == "Ctrl-E" || item.Key == "←→" {
+			t.Errorf("the bar offers %q on a read-only row: %+v", item.Key, item)
+		}
+	}
+}
+
+// TestItemFormKit_AnOrdinaryItemsStockRowStillEdits is acceptance criterion 4 on
+// this row: only a kit's is frozen.
+func TestItemFormKit_AnOrdinaryItemsStockRowStillEdits(t *testing.T) {
+	fake := &kitFormServer{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	s := kitFormSheet(t, nil, 120)
+	s.deps = Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+	kitFormCursorTo(t, s, fCurrentStock)
+	s.inputs[fCurrentStock].SetValue("")
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("9")})
+	if got := s.inputs[fCurrentStock].Value(); got != "9" {
+		t.Fatalf("an ordinary item's Current stock stopped accepting typing: %q", got)
+	}
+	if !s.dirty() {
+		t.Error("editing an ordinary item's stock did not make the sheet dirty")
+	}
+
+	_, cmd := s.submit()
+	if cmd == nil {
+		t.Fatal("submit produced no command")
+	}
+	cmd()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.bodies) != 1 {
+		t.Fatalf("writes = %v", fake.writes)
+	}
+	if got := fake.bodies[0]["current_stock"]; got != float64(9) {
+		t.Errorf("current_stock = %v, want the typed 9", got)
+	}
+}
+
+// TestItemFormKit_TheKitSaveAssertsZeroStock. current_stock has no omitempty so
+// it rides every save; omitting it cannot help, because KitSerializer validates
+// an absent key against the STORED value and a kit with stray stock would then
+// be unsaveable from ScanTTY for good. So the sheet asserts the only value a kit
+// may hold.
+func TestItemFormKit_TheKitSaveAssertsZeroStock(t *testing.T) {
+	fake := &kitFormServer{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	s := kitFormSheet(t, kitFormStockedKit(7), 120)
+	s.deps = Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+	_, cmd := s.submit()
+	if cmd == nil {
+		t.Fatal("submit produced no command")
+	}
+	if msg, ok := cmd().(itemFormSavedMsg); !ok || msg.err != nil {
+		t.Fatalf("save failed: %+v", msg)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.bodies) != 1 || fake.writes[0] != "PATCH /api/inventory/kits/kit-1/" {
+		t.Fatalf("writes = %v", fake.writes)
+	}
+	got, present := fake.bodies[0]["current_stock"]
+	if !present {
+		t.Fatalf("current_stock was omitted, which leaves a stocked kit unsaveable: %v", fake.bodies[0])
+	}
+	if got != float64(0) {
+		t.Errorf("current_stock = %v, want 0 — a kit may hold no other value", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// An unanswered "is this a kit?"
+// ---------------------------------------------------------------------------
+
+// kitFormUnanswered is a loaded sheet whose /kits/ question failed with
+// something that is NOT the 404 meaning "ordinary item".
+func kitFormUnanswered(t *testing.T, width int) *InventoryItemFormScreen {
+	t.Helper()
+	s := NewInventoryItemFormScreen(Deps{}, "kit-1")
+	s.Update(tea.WindowSizeMsg{Width: width, Height: jdeSweepHeight})
+	s.Update(itemFormRefLoadedMsg{})
+	s.Update(itemFormItemLoadedMsg{item: &omsapi.Item{
+		ID: "kit-1", Name: "Eufy Ink Kit", SKU: "EIK-4", IsActive: true, ReorderQuantity: 1,
+	}})
+	s.Update(itemFormKitLoadedMsg{err: errors.New("server error (500)")})
+	if s.loading {
+		t.Fatal("the sheet never finished loading")
+	}
+	return s
+}
+
+// TestItemFormKit_AnUnansweredQuestionIsSaidAndBlocksTheSave. The item loads
+// fine, so the sheet looks exactly like an ordinary item's — and its save then
+// PATCHes /items/, which is a flat 404 for a kit id, with the reason never
+// named. The detail screen already refuses to swallow this; the form must answer
+// the same question the same way.
+func TestItemFormKit_AnUnansweredQuestionIsSaidAndBlocksTheSave(t *testing.T) {
+	fake := &kitFormServer{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	s := kitFormUnanswered(t, 120)
+	s.deps = Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+
+	if body := strings.Join(s.formLines().text, "\n"); !strings.Contains(body, "Kit status unavailable") {
+		t.Errorf("the failed kit question was swallowed:\n%s", body)
+	}
+	// It must not have guessed either way about the affordance.
+	if kitFormHasField(s, fKitComponents) {
+		t.Error("an unanswered question grew a components row it cannot save")
+	}
+
+	_, cmd := s.submit()
+	if cmd != nil {
+		if msg, ok := cmd().(itemFormSavedMsg); ok {
+			t.Fatalf("the save went out anyway: %+v", msg)
+		}
+	}
+	fake.mu.Lock()
+	writes := append([]string(nil), fake.writes...)
+	fake.mu.Unlock()
+	if len(writes) != 0 {
+		t.Fatalf("a save reached the API while the kit question was open: %v", writes)
+	}
+	// Refused with a reason, not silently: Enter is still the save key and the
+	// bar still names it, so pressing it has to say why nothing happened.
+	if !strings.Contains(s.errMsg, "kit status unavailable") {
+		t.Errorf("the refusal gave no reason: %q", s.errMsg)
+	}
+}
+
+// TestItemFormKit_TheUnavailableLineFitsTheFloor. It is the longest thing the
+// sheet grows for this state, and the body is CLIPPED, not wrapped.
+func TestItemFormKit_TheUnavailableLineFitsTheFloor(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormUnanswered(t, width)
+		budget := screenBodyWidth(width)
+		for _, line := range s.formLines().text {
+			if !strings.Contains(line, "Kit status") && !strings.Contains(line, "cannot be saved") {
+				continue
+			}
+			if w := lipgloss.Width(line); w > budget {
+				t.Errorf("at %d columns the unavailable line is %d wide against a %d pane: %q",
+					width, w, budget, line)
+			}
+		}
+	}
+}
+
+// TestItemFormKit_A404LeavesTheSheetOrdinary. A 404 is the ANSWER "not a kit",
+// not a failure, so nothing about the sheet may change and the save must still
+// go to /items/.
+func TestItemFormKit_A404LeavesTheSheetOrdinary(t *testing.T) {
+	fake := &kitFormServer{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	s := NewInventoryItemFormScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "itm-1")
+	s.Update(tea.WindowSizeMsg{Width: 120, Height: jdeSweepHeight})
+	s.Update(itemFormRefLoadedMsg{})
+	s.Update(itemFormItemLoadedMsg{item: &omsapi.Item{
+		ID: "itm-1", Name: "Cyan ink", SKU: "CI-100", IsActive: true, ReorderQuantity: 1,
+	}})
+	s.Update(itemFormKitLoadedMsg{}) // what loadKit sends for omsapi.IsNotKit
+
+	if body := strings.Join(s.formLines().text, "\n"); strings.Contains(body, "Kit status unavailable") {
+		t.Errorf("a 404 was reported as a failure — it is the ANSWER:\n%s", body)
+	}
+	_, cmd := s.submit()
+	if cmd == nil {
+		t.Fatal("the save was blocked for an ordinary item")
+	}
+	cmd()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.writes) != 1 || fake.writes[0] != "PATCH /api/inventory/items/itm-1/" {
+		t.Fatalf("writes = %v, want a single PATCH to /items/", fake.writes)
 	}
 }

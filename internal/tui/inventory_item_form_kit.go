@@ -77,6 +77,90 @@ const (
 // and neither may grow a components row.
 func (s *InventoryItemFormScreen) isKit() bool { return s.kit != nil }
 
+// fieldReadOnly reports whether a row is SHOWN but not the operator's to change.
+//
+// Only one row is, and only for a kit: Current stock. A kit holds no stock of
+// its own — receiving one credits its component items and leaves the kit at zero
+// forever — so a number typed here is not a value the operator can set, it is a
+// value the save is obliged to clear. Showing it as an ordinary input would
+// promise an edit that cannot land, and would make the sheet dirty() for it.
+//
+// It is a screen-level question rather than part of fieldKind, which is a pure
+// function of the field id: the same row is perfectly editable on an ordinary
+// item's sheet, and criterion 4 of this whole change is that an ordinary item is
+// untouched.
+func (s *InventoryItemFormScreen) fieldReadOnly(id int) bool {
+	return id == fCurrentStock && s.isKit()
+}
+
+// kitStockWarnLines is the note under a kit's Current stock row when that stock
+// is NOT already zero, and it exists because the save WRITES OVER a number that
+// is really there in shared data.
+//
+// Zeroing a figure a kit was never allowed to carry is defensible. Doing it
+// invisibly, as a side effect of an operator renaming the kit, is a silent
+// overwrite — OpenMakerSuite is a shared frontend, and the figure came from
+// somewhere. So the sheet shows both halves before anything is pressed: what is
+// recorded now, and what saving does to it.
+//
+// Drawn under the row rather than as a Hint because a Hint is CLIPPED: at 80
+// columns the pane is 51 and the Current stock row already spends most of it, so
+// clampToBox would cut the sentence mid-word (sc-ye0i). These lines WRAP, and
+// they line up under the input area the way jdeNoteLines does, with the warning
+// lead supplierWarnLines uses.
+func (s *InventoryItemFormScreen) kitStockWarnLines(id, labelWidth int) []string {
+	// Read off s.item, which is what hydrate put IN the row: the note quotes the
+	// figure the operator can see on the line above it, not a second reading of
+	// the same record from the other endpoint.
+	if !s.fieldReadOnly(id) || s.item == nil || s.item.Stock == 0 {
+		return nil
+	}
+	note := fmt.Sprintf(
+		"Recorded as %d on hand. A kit holds no stock of its own, so saving this sheet clears that to 0.",
+		s.item.Stock,
+	)
+	width := jdeStripWidth(s.bodyWidth(), labelWidth)
+	if width > 2 {
+		width -= 2 // the "! " lead
+	}
+	wrapped := jdeWrapNote(note, width)
+	out := make([]string, 0, len(wrapped))
+	for i, line := range wrapped {
+		lead := "! "
+		if i > 0 {
+			lead = "  "
+		}
+		out = append(out, jdeStripIndent(labelWidth)+StyleStatusWarn.Render(lead+line))
+	}
+	return out
+}
+
+// kitErrLines is what the sheet says when "is this a kit?" could not be
+// answered — a 500, a timeout, an auth failure, anything that is NOT the 404
+// meaning "ordinary item".
+//
+// Same wording and same trigger as the item detail's renderKitErrLine, on
+// purpose: two screens answering the same question differently is its own
+// defect. It leads the body rather than riding a field, because it is about the
+// whole sheet — every field below it is readable, and none of it is saveable
+// (see submit).
+func (s *InventoryItemFormScreen) kitErrLines() []string {
+	if s.kitErr == "" {
+		return nil
+	}
+	note := "Kit status unavailable: " + s.kitErr + " — this sheet cannot be saved until it is known."
+	wrapped := jdeWrapNote(note, kitNoteWidth(s.bodyWidth()))
+	out := make([]string, 0, len(wrapped)+1)
+	for i, line := range wrapped {
+		lead := "! "
+		if i > 0 {
+			lead = "  "
+		}
+		out = append(out, StyleStatusWarn.Render(lead+line))
+	}
+	return append(out, "")
+}
+
 // hydrateKit fills the editor from the fetched kit and snapshots what the server
 // already has, so a save that never opened the editor sends no `components` key
 // at all — which matters more here than it does for the packaging chain: sending
@@ -315,16 +399,17 @@ func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 	if len(s.kitRows) == 0 {
 		l.Add(jdeIndent + StyleMuted.Render("No components yet."))
 	} else {
-		nameW := kitNameWidth(width)
-		l.Add(StyleMuted.Render(kitGridRow("#", "Component", "Per kit", "", nameW)))
+		nameW := kitNameWidth(width, kitStockW)
+		l.Add(StyleMuted.Render(kitGridRow("#", "Component", "Per kit", "", nameW, kitStockW)))
 	}
 	for i, row := range s.kitRows {
+		nameW := kitNameWidth(width, kitStockW)
 		line := kitGridRow(
 			strconv.Itoa(i+1),
-			kitNameCell(row.name, row.sku, kitNameWidth(width)),
+			kitNameCell(row.name, row.sku, nameW),
 			strconv.Itoa(row.quantity),
 			"",
-			kitNameWidth(width),
+			nameW, kitStockW,
 		)
 		if i == s.kitCursor {
 			l.AddRow(i, StyleJDEFieldFocused.Render(line))

@@ -52,9 +52,17 @@ import (
 // columns and ruinous at 80, while a cell that carries "name (sku)" simply gets
 // shorter.
 const (
-	kitNumW    = 2
-	kitQtyW    = 7 // fits the "Per kit" header
-	kitStockW  = 7 // fits the "On hand" header
+	kitNumW   = 2
+	kitQtyW   = 7 // fits the "Per kit" header
+	kitStockW = 7 // fits the "On hand" header
+	// kitCostW is the LAST column of the supplied-by grid, and it is wider than
+	// its sibling because it holds a different thing: formatMoney renders
+	// "$1299.50" at 8 columns and a five-figure kit at 9, and a kit is a bundle
+	// of parts bought as one SKU, so four figures is ordinary rather than
+	// exotic. Reusing the 7-column stock width meant every such price rendered
+	// elided ("$1299.…") at EVERY terminal width, since the name column caps at
+	// kitMaxName and the spare pane went to nobody.
+	kitCostW   = 9
 	kitMinName = 12
 	kitMaxName = 44
 )
@@ -67,11 +75,16 @@ var kitContIndent = strings.Repeat(" ", len(jdeIndent)+kitNumW+2)
 // shortens the name rather than collapsing the column, and a ceiling so a wide
 // one doesn't strand the quantities out at the far right of an otherwise empty
 // row. The fallback is what a 100-column terminal has.
-func kitNameWidth(bodyWidth int) int {
+//
+// lastW is the trailing column's width, which differs by grid — the two grids
+// end in different things ("On hand" for a bill of materials, "Cost" for the
+// kits that supply an item) — so the name column absorbs the difference and
+// both grids still end flush with the pane.
+func kitNameWidth(bodyWidth, lastW int) int {
 	if bodyWidth <= 0 {
 		bodyWidth = 71
 	}
-	fixed := len(jdeIndent) + kitNumW + 2 + 2 + kitQtyW + 2 + kitStockW
+	fixed := len(jdeIndent) + kitNumW + 2 + 2 + kitQtyW + 2 + lastW
 	switch w := bodyWidth - fixed; {
 	case w < kitMinName:
 		return kitMinName
@@ -88,15 +101,16 @@ func kitNameWidth(bodyWidth int) int {
 // Every cell is FITTED to its column before it is padded, because padCell pads
 // and never truncates: a value wider than its column would otherwise push the
 // row past the pane and be eaten whole by clampToBox, which cuts with nothing
-// to show it did (sc-ye0i). A four-figure price is the case that bites — "$1000.00"
-// is 8 columns against a 7-column cell, and a silently halved price reads as a
-// plausible one. Elided, it reads as cut.
-func kitGridRow(num, name, qty, stock string, nameW int) string {
+// to show it did (sc-ye0i). A price is what first exposed that — a silently
+// halved "$1000.0" reads as a plausible figure and is the wrong one — and the
+// columns are sized so a realistic value fits, but the fit here is the backstop
+// that keeps ANY unexpectedly wide cell visibly elided instead of silently cut.
+func kitGridRow(num, name, qty, last string, nameW, lastW int) string {
 	cells := []string{
 		padCell(fitCell(num, kitNumW), kitNumW, alignRight),
 		padCell(fitCell(name, nameW), nameW, alignLeft),
 		padCell(fitCell(qty, kitQtyW), kitQtyW, alignRight),
-		padCell(fitCell(stock, kitStockW), kitStockW, alignRight),
+		padCell(fitCell(last, lastW), lastW, alignRight),
 	}
 	return jdeIndent + strings.TrimRight(strings.Join(cells, "  "), " ")
 }
@@ -201,15 +215,15 @@ func (s *InventoryDetailScreen) renderKitSection() string {
 		return b.String()
 	}
 
-	nameW := kitNameWidth(width)
-	b.WriteString(StyleMuted.Render(kitGridRow("#", "Component", "Per kit", "On hand", nameW)) + "\n")
+	nameW := kitNameWidth(width, kitStockW)
+	b.WriteString(StyleMuted.Render(kitGridRow("#", "Component", "Per kit", "On hand", nameW, kitStockW)) + "\n")
 	for i, comp := range rows {
 		b.WriteString(kitGridRow(
 			strconv.Itoa(i+1),
 			kitNameCell(comp.ComponentName, comp.ComponentSKU, nameW),
 			strconv.Itoa(comp.Quantity),
 			kitStockCell(comp),
-			nameW,
+			nameW, kitStockW,
 		) + "\n")
 		for _, line := range jdeWrapTokens(kitComponentTokens(comp), kitContIndent, width) {
 			b.WriteString(line + "\n")
@@ -286,15 +300,15 @@ func (s *InventoryDetailScreen) renderSuppliedByKitsSection() string {
 		width,
 	) + "\n")
 
-	nameW := kitNameWidth(width)
-	b.WriteString(StyleMuted.Render(kitGridRow("#", "Kit", "Per kit", "Cost", nameW)) + "\n")
+	nameW := kitNameWidth(width, kitCostW)
+	b.WriteString(StyleMuted.Render(kitGridRow("#", "Kit", "Per kit", "Cost", nameW, kitCostW)) + "\n")
 	for i, kit := range rows {
 		b.WriteString(kitGridRow(
 			strconv.Itoa(i+1),
 			kitNameCell(kit.Name, kit.SKU, nameW),
 			kitPerKitCell(kit),
 			kitCostCell(kit),
-			nameW,
+			nameW, kitCostW,
 		) + "\n")
 		for _, line := range jdeWrapTokens(kitSummaryTokens(kit), kitContIndent, width) {
 			b.WriteString(line + "\n")

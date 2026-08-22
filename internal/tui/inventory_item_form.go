@@ -335,6 +335,14 @@ type InventoryItemFormScreen struct {
 	kitNextKey  int
 	savedKitSig string
 
+	// kitErr is "the /kits/ question went UNANSWERED" — anything that is not the
+	// 404 meaning "ordinary item". It is held, not dropped, for the same reason
+	// the item detail holds it (inventory_detail_kit.go's renderKitErrLine): a
+	// sheet built on a failed question looks exactly like an ordinary item's, and
+	// its save then goes down the wrong route. Two screens must not answer the
+	// same question differently.
+	kitErr string
+
 	kitCursor     int
 	kitRowEditing int
 	kitRowQty     textinput.Model
@@ -637,12 +645,18 @@ func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 	case itemFormKitLoadedMsg:
 		s.kitArrived = true
-		// A failure here is deliberately NOT a loadErr: the item itself is
-		// perfectly editable, and blocking the whole sheet because one extra
-		// question went unanswered would be worse than the ordinary-item sheet
-		// this falls back to. What it must not do is offer a kit affordance —
-		// which it cannot, since only a non-nil kit does that.
-		if m.err == nil {
+		// A failure here is deliberately NOT a loadErr: the sheet still LOADS, so
+		// the operator can read every field on it. What it must not do is (a)
+		// offer a kit affordance — which it cannot, since only a non-nil kit does
+		// that — or (b) SAVE, which is where the harm is. An unanswered question
+		// leaves the sheet unable to tell a kit from an ordinary item, and the two
+		// save down different routes: a kit PATCHed to /items/ is a flat 404 for a
+		// record the operator is looking at, with the reason never named. So the
+		// error is kept, said on screen, and blocks the save until it is known.
+		s.kitErr = ""
+		if m.err != nil {
+			s.kitErr = m.err.Error()
+		} else {
 			s.kit = m.kit
 		}
 		return s, s.maybeFinalizeLoad()
@@ -1029,6 +1043,12 @@ func (s *InventoryItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 		// Nothing to type on these, and no accelerators left to press.
 		return s, nil
 	default:
+		if s.fieldReadOnly(id) {
+			// A row that renders read-only must BE read-only: letting the
+			// keystroke through would edit a value the save overwrites anyway,
+			// and would make the sheet dirty() for a change that can never land.
+			return s, nil
+		}
 		var cmd tea.Cmd
 		s.inputs[id], cmd = s.inputs[id].Update(m)
 		return s, cmd
@@ -1211,10 +1231,13 @@ func (s *InventoryItemFormScreen) fieldUnit(id int) string {
 // fieldHint is itemFieldHint plus the unit notes that depend on the counting
 // mode.
 func (s *InventoryItemFormScreen) fieldHint(id int) string {
-	// A kit's stock is zero by construction — the serializer refuses to save a
-	// kit carrying any — so the row says so where the operator is standing rather
-	// than letting them type a number the save will reject (op-8n0).
-	if id == fCurrentStock && s.isKit() {
+	// A kit's stock is zero by construction — receiving one credits its component
+	// items, never itself — so the row is read-only and says why. The warning
+	// about what SAVING does to a non-zero figure is a separate, unconditional
+	// note under the row (kitStockWarnLines): a hint only shows where the cursor
+	// is standing, and this one has to be seen by an operator who never goes near
+	// the row (op-8n0).
+	if s.fieldReadOnly(id) {
 		return "a kit carries no stock of its own"
 	}
 	if unit := s.fieldUnit(id); unit != "" {
@@ -1374,6 +1397,16 @@ func (s *InventoryItemFormScreen) commitPick() {
 // ---------------------------------------------------------------------------
 
 func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
+	// Refuse the save outright while "is this a kit?" is unanswered. The sheet
+	// cannot know which endpoint to write to — /kits/ for a kit, /items/ for
+	// anything else — and guessing wrong is a 404 on a record that is visibly on
+	// screen. Enter is still the save key and the bar still names it: this is the
+	// same shape as every other refusal here (a missing name, an impossible pack
+	// chain), where pressing it reports why rather than doing nothing.
+	if s.kitErr != "" {
+		s.errMsg = "kit status unavailable: " + s.kitErr + " — cannot save until it is known"
+		return s, Status(s.errMsg, StatusError)
+	}
 	// Refuse an impossible chain here rather than sending it: the backend rejects
 	// the same combinations, but by then the item write would already have landed.
 	if errs := validatePackagingChain(s.packRows); len(errs) > 0 {
@@ -1585,6 +1618,16 @@ func (s *InventoryItemFormScreen) buildPayload() (omsapi.ItemWrite, error) {
 	cur, err := parseCount(s.inputs[fCurrentStock].Value(), "current stock", 0)
 	if err != nil {
 		return w, err
+	}
+	if s.isKit() {
+		// current_stock has no omitempty, so it rides EVERY save, and KitSerializer
+		// validates it against the stored value when the key is absent — omitting
+		// it therefore cannot rescue a kit that already carries stray stock, it
+		// would just make that kit unsaveable from ScanTTY for good. So the sheet
+		// asserts the only value a kit may hold. That this OVERWRITES a real
+		// number in shared data is exactly why the row is read-only and why a
+		// non-zero figure gets an unmissable note before the save (op-8n0).
+		cur = 0
 	}
 	minStock, err := parseCount(s.inputs[fMinimumStock].Value(), "minimum stock", 0)
 	if err != nil {
@@ -1833,6 +1876,14 @@ func (s *InventoryItemFormScreen) formFields() []jdeField {
 			// the summary (and, when it must, the hint) is fitted to the pane.
 			f = s.kitRowField(f)
 		default:
+			if s.fieldReadOnly(id) {
+				// Shown, not typed into: the figure is worth SEEING (it is what
+				// the save is about to clear) but it is not the operator's to
+				// change, so it draws as a dimmed value rather than an input the
+				// caret sits in and promises something of.
+				f.Kind, f.Value, f.Dim = jdeValue, s.inputs[id].Value(), true
+				break
+			}
 			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
 		}
 		out[i] = f
@@ -1847,6 +1898,9 @@ func (s *InventoryItemFormScreen) formLines() *jdeLines {
 	labelWidth := jdeLabelWidth(fields)
 
 	l := &jdeLines{}
+	for _, line := range s.kitErrLines() {
+		l.Add(line)
+	}
 	band := itemFieldBand(-1)
 	for i, id := range s.fields {
 		if b := itemFieldBandOf(id); b != band {
@@ -1857,6 +1911,12 @@ func (s *InventoryItemFormScreen) formLines() *jdeLines {
 			band = b
 		}
 		l.AddRow(i, renderJDEField(fields[i], labelWidth))
+		// UNCONDITIONALLY, not only when focused: the operator has no reason to
+		// move the cursor onto a read-only row, and this note is the one thing
+		// that stops the save silently clearing a figure they can see.
+		for _, line := range s.kitStockWarnLines(id, labelWidth) {
+			l.AddRow(i, line)
+		}
 		if i == s.cursor {
 			if strip := s.selectStrip(id, jdeStripWidth(s.bodyWidth(), labelWidth)); strip != "" {
 				l.AddRow(i, jdeStripIndent(labelWidth)+StyleMuted.Render(strip))

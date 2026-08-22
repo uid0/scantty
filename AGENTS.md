@@ -49,16 +49,21 @@ note, and is the authority):
   (`omsapi.IsNotKit`). Anything else left the question unanswered and must say so.
 - `/api/inventory/items/` **excludes kits by default**, and the filter lives in
   `get_queryset`, so it applies to the DETAIL route too: GET or PATCH of a kit's
-  id under `/items/` is a flat 404 without `?include_kits=true`. Every detail
-  route a kit can legitimately reach sends it (`omsapi.includeKitsQuery`:
-  `GetItem`, `SetItemRetired`, `DeleteInventoryItem`, `SetItemCountMode` — which
-  the kit save fires AFTER the `/kits/` PATCH). Cycle-count and log-usage
-  deliberately do NOT: a kit carries no stock, and the backend writes stock
+  id under `/items/` is a flat 404 without `?include_kits=true`, and that
+  includes every ACTION and SUB-RESOURCE on the viewset. Every detail route a
+  kit can legitimately reach sends it (`omsapi.includeKitsQuery` /
+  `includeKitsValues`: `GetItem`, `GetItemMetrics`, `GetPurchaseHistory`,
+  `SetItemRetired`, `DeleteInventoryItem`, `SetItemCountMode` — which the kit
+  save fires AFTER the `/kits/` PATCH). Two deliberate exceptions: cycle-count
+  and log-usage, because a kit carries no stock and the backend writes stock
   without `full_clean()`, so a count against one would persist as a number
-  nothing can draw down. The item detail hides those two keys for a kit instead.
-  A kit is saved through `PATCH /api/inventory/kits/{id}/` — that is also the
-  only write path its `components` have (nested-writable; there is no
-  `/kit-components/` endpoint).
+  nothing can draw down (the item detail hides both keys for a kit instead);
+  and `ListItemKits`, because a kit is never a component, so its 404 there is
+  the right answer. A kit is saved through `PATCH /api/inventory/kits/{id}/` —
+  that is also the only write path its `components` have (nested-writable;
+  there is no `/kit-components/` endpoint) — and the item form sends
+  `current_stock: 0` on that PATCH, with the Current stock row read-only and a
+  warning under it whenever the stored figure is not already zero.
 - Receiving is where a kit stops being a catalogue curiosity: a kit line is
   ordered as one SKU and **credits its component items on receipt, never its
   own stock**. ScanTTY's receive flow (`POST …/purchase-orders/{id}/receive/`)
