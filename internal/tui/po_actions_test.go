@@ -332,14 +332,14 @@ func TestPOAttachments_RenderSmoke(t *testing.T) {
 		{ID: 1, FileName: "sales-order.pdf", Description: "SO confirmation"},
 	}
 	s := NewPurchaseOrderAttachmentsScreen(Deps{}, po)
-	out := s.viewList()
+	out := s.View()
 	if !strings.Contains(out, "sales-order.pdf") || !strings.Contains(out, "SO confirmation") {
 		t.Errorf("attachment list view = %q", out)
 	}
 
-	// Delete-confirm prompt renders.
+	// Delete-confirm prompt renders, naming the file it is about.
 	s.confirmingDelete = true
-	if out := s.viewList(); !strings.Contains(out, "Delete") {
+	if out := s.View(); !strings.Contains(out, "Delete attachment") || !strings.Contains(out, "sales-order.pdf") {
 		t.Errorf("delete-confirm view missing prompt: %q", out)
 	}
 
@@ -371,24 +371,27 @@ func TestPODetail_MarkDeliveredGating(t *testing.T) {
 	}
 }
 
-func TestPODetail_FooterHintStatusGating(t *testing.T) {
+// TestPODetail_BarStatusGating: the action bar offers a state transition only
+// where the backend would accept it — the bar is the operator's only source of
+// what works here, so a key it names must do something.
+func TestPODetail_BarStatusGating(t *testing.T) {
 	s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
 	s.po = &omsapi.PurchaseOrder{ID: "po-1", Status: "confirmed"}
-	hint := s.footerHint()
-	for _, want := range []string{"E edit", "A attachments", "d mark delivered", "v void"} {
-		if !strings.Contains(hint, want) {
-			t.Errorf("confirmed-PO footer missing %q: %s", want, hint)
+	bar := s.sheetBar()
+	for _, want := range [][2]string{{"E", "Edit"}, {"A", "Files"}, {"d", "Delivered"}, {"v", "Void"}} {
+		if !barHas(bar, want[0], want[1]) {
+			t.Errorf("confirmed-PO bar missing %q=%q: %+v", want[0], want[1], bar)
 		}
 	}
 
 	// A received PO can't be voided or delivered.
 	s.po = &omsapi.PurchaseOrder{ID: "po-1", Status: "received", IsFullyReceived: true}
-	hint = s.footerHint()
-	if strings.Contains(hint, "v void") {
-		t.Errorf("received PO should not offer void: %s", hint)
+	bar = s.sheetBar()
+	if barHas(bar, "v", "Void") {
+		t.Errorf("received PO should not offer void: %+v", bar)
 	}
-	if strings.Contains(hint, "d mark delivered") {
-		t.Errorf("received PO should not offer mark-delivered: %s", hint)
+	if barHas(bar, "d", "Delivered") {
+		t.Errorf("received PO should not offer mark-delivered: %+v", bar)
 	}
 }
 

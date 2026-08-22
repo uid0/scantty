@@ -47,6 +47,22 @@ never sets it. `internal/tui/po_line_price.go` carries the full note.
   pinned. Extend that layer — do not hand-roll a second style beside it.
 - **A key the bar does not name must do nothing**, and a key it names must do
   something. Tests assert both.
+- **80 columns leaves the pane 51.** `screenBodyWidth(80)` is
+  `80 - navColumnWidth(24) - 1 - padding(4)` = **51**, and the action bar gets 49
+  of them. That is the number every columnar layout has to be checked against,
+  and it is small enough that a hint, a six-column grid or a long value will not
+  fit without help — `jdeFitRow`, `poFitLineGrid` and `jdeCaveatLines` in
+  `jde_form.go` / `po_detail.go` are the three folds that exist for it.
+- **Check the CLIPPED render.** `clampToBox` truncates in `Root.View()`, not in
+  the screen, so a test that reads `screen.View()` passes while the terminal
+  shows a cut line. Assert against `Root.View()` at 80/100/120 —
+  `internal/tui/po_view_jde_test.go` is the pattern (and `poSeenWhileScrolling`
+  for a body taller than the pane).
+- **Viewing screens** use the read-only half of the columnar layer:
+  `jdeScreen.frameScrolled` (scroll offset, not a cursor) and
+  `renderActionBarWrapped` (a bar of a dozen order-level keys folds onto several
+  rows rather than losing its tail). `internal/tui/po_detail.go` is the pilot for
+  those, as `po_edit.go` is for forms.
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
 

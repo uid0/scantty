@@ -304,15 +304,17 @@ func TestPODetailTerms_RendersTermsAndSchedule(t *testing.T) {
 	s := &PurchaseOrderDetailScreen{po: poTermsPO()}
 	out := s.renderBody()
 
-	for _, want := range []string{
-		"Terms",
-		"Priority: ", "Urgent",
-		"Payment terms: ", "Net 30",
-		"Freight terms: ", "FOB Destination",
-		"Payment: ", "$1234.56 due 2026-08-14 · Net 30 from order date",
+	if !strings.Contains(out, "Terms") {
+		t.Errorf("PO detail missing the Terms band:\n%s", out)
+	}
+	for _, want := range [][2]string{
+		{"Priority", "Urgent"},
+		{"Payment terms", "Net 30"},
+		{"Freight terms", "FOB Destination"},
+		{"Payment", "$1234.56 due 2026-08-14 · Net 30 from order date"},
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("PO detail missing %q:\n%s", want, out)
+		if row := poDetailRow(t, out, want[0]); !strings.Contains(row, want[1]) {
+			t.Errorf("the %s row should read %q, got %q", want[0], want[1], row)
 		}
 	}
 	// A rush order says so at the top, where the status is, rather than only
@@ -337,11 +339,11 @@ func TestPODetailTerms_UnagreedTermsSaySo(t *testing.T) {
 	}
 	out := (&PurchaseOrderDetailScreen{po: po}).renderBody()
 
-	if !strings.Contains(out, "Payment terms: ") || !strings.Contains(out, "— not agreed —") {
-		t.Errorf("unset terms should say so:\n%s", out)
+	if row := poDetailRow(t, out, "Payment terms"); !strings.Contains(row, "— not agreed —") {
+		t.Errorf("unset terms should say so, got %q", row)
 	}
-	if !strings.Contains(out, "$1234.56 · No payment terms set") {
-		t.Errorf("a schedule with no due date should still show amount + reason:\n%s", out)
+	if row := poDetailRow(t, out, "Payment"); !strings.Contains(row, "$1234.56 · No payment terms set") {
+		t.Errorf("a schedule with no due date should still show amount + reason, got %q", row)
 	}
 	if strings.Contains(out, "due ") {
 		t.Errorf("there is no due date to print:\n%s", out)
@@ -352,8 +354,8 @@ func TestPODetailTerms_UnagreedTermsSaySo(t *testing.T) {
 	if strings.Contains(head, "priority") {
 		t.Errorf("the default priority should not be badged, got %q", head)
 	}
-	if !strings.Contains(out, "Priority: ") || !strings.Contains(out, "Normal") {
-		t.Errorf("the Terms section should still name it:\n%s", out)
+	if row := poDetailRow(t, out, "Priority"); !strings.Contains(row, "Normal") {
+		t.Errorf("the Terms band should still name it, got %q", row)
 	}
 }
 
@@ -365,7 +367,7 @@ func TestPODetailTerms_OrderWithoutTermsShowsNoSection(t *testing.T) {
 	po.Priority, po.PaymentTerms, po.FreightTerms, po.PaymentSchedule = "", "", "", nil
 	out := (&PurchaseOrderDetailScreen{po: po}).renderBody()
 
-	for _, absent := range []string{"Terms", "Priority: ", "Payment terms: ", "Payment: "} {
+	for _, absent := range []string{"Terms", "Priority" + jdeLeader, "Payment terms" + jdeLeader, "Payment" + jdeLeader} {
 		if strings.Contains(out, absent) {
 			t.Errorf("an order with no terms should not render %q:\n%s", absent, out)
 		}

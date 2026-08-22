@@ -383,14 +383,16 @@ func TestPODetail_RendersBothLevelsOfAssociation(t *testing.T) {
 	s.loading = false
 	out := s.renderBody()
 
-	for _, want := range []string{
-		"Work order: WO-1A2B — Replace drive belt",
-		"Committee: Woodshop",
-		"ordered for: WO-9Z8Y — Lathe PM · Metal Shop",
+	for _, want := range [][2]string{
+		{"Work order", "WO-1A2B — Replace drive belt"},
+		{"Committee", "Woodshop"},
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("detail body missing %q:\n%s", want, out)
+		if row := poDetailRow(t, out, want[0]); !strings.Contains(row, want[1]) {
+			t.Errorf("the %s row should name %q, got %q", want[0], want[1], row)
 		}
+	}
+	if !strings.Contains(out, "ordered for: WO-9Z8Y — Lathe PM · Metal Shop") {
+		t.Errorf("detail body missing the line's own association:\n%s", out)
 	}
 
 	// Line 2 carries neither, and must not grow an empty row for them.
@@ -407,7 +409,7 @@ func TestPODetail_UnassociatedOrderShowsNoAssociationRows(t *testing.T) {
 	s.po = samplePO()
 	s.loading = false
 	out := s.renderBody()
-	for _, unwanted := range []string{"Work order:", "Committee:", "ordered for:"} {
+	for _, unwanted := range []string{"Work order" + jdeLeader, "Committee" + jdeLeader, "ordered for:"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("an untagged order should not render %q:\n%s", unwanted, out)
 		}
@@ -612,5 +614,42 @@ func TestPOEditAssoc_NothingToPickIsRefusedNotOpened(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("the operator should be told why nothing opened")
+	}
+}
+
+// TestPOAssocValueField_ThreeStates: the columnar row the detail sheet draws
+// keeps the three states renderAssocValue has always had. The middle one is the
+// point — a picker that could not be loaded must never render as an order with
+// nothing attached, because "we couldn't ask" and "there is none" lead an
+// operator to opposite conclusions.
+func TestPOAssocValueField_ThreeStates(t *testing.T) {
+	attached := poAssocValueField("Work order", "WO-1A2B — Replace drive belt", "")
+	if attached.Value != "WO-1A2B — Replace drive belt" || attached.Dim {
+		t.Errorf("an attached job should read as a value, got %+v", attached)
+	}
+
+	failed := poAssocValueField("Work order", "", "connection refused")
+	if !strings.Contains(failed.Value, "unavailable") || !strings.Contains(failed.Value, "connection refused") {
+		t.Errorf("a failed load should say so and why, got %+v", failed)
+	}
+	if !failed.Dim {
+		t.Errorf("a failed load is not a value; it should render dimmed: %+v", failed)
+	}
+
+	none := poAssocValueField("Committee", "", "")
+	if none.Value != "(none)" || !none.Dim {
+		t.Errorf("nothing attached should read as a dimmed absence, got %+v", none)
+	}
+
+	// The value is handed over PLAIN: the columnar renderer owns the styling, and
+	// a value carrying its own colour sequence would end a focused row's
+	// highlight partway across the field.
+	for _, f := range []jdeField{attached, failed, none} {
+		if strings.Contains(f.Value, "\x1b") {
+			t.Errorf("value should be plain text, got %q", f.Value)
+		}
+		if f.Kind != jdeValue {
+			t.Errorf("an association row is a value row, got kind %v", f.Kind)
+		}
 	}
 }

@@ -65,6 +65,14 @@ screen names the keys that apply to it along its foot.
 | `Ctrl+K` | Search palette (items, assets, orders, people) — works from anywhere |
 | `Ctrl+C` / `Ctrl+Q` | Quit, from anywhere |
 
+The purchasing **viewing** screens — a purchase order's detail sheet and its
+attachments, associations and terms — are drawn in the fixed columnar JD Edwards
+World style and follow its reduced key scheme instead: no `j`/`k` or `g`/`G`
+aliases (arrows, `PgUp`/`PgDn` and `Home`/`End` only), and `Enter` fires the
+screen's own action rather than opening a row. Each of those screens carries a
+persistent action bar naming every key that works there, and a key the bar does
+not name does nothing. The rest of the app is being converted screen by screen.
+
 The sidebar lists the eleven workspaces; the workspace you are in also shows its
 own surfaces indented beneath it (Inventory › New item / Categories / Locations
 / Suppliers, ForgeKey › Firmware / Lockouts / …). Facilities and Reports open a

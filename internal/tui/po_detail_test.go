@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -14,101 +15,119 @@ import (
 
 func poRuneKey(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 
-func TestJDECostLineDecimalsAlign(t *testing.T) {
-	// Two rows with different magnitudes — decimal points should
-	// land in the same screen column on both rows so an operator
-	// scanning a PO can compare unit costs at a glance.
+// poDetailRow returns the body line that carries `label` as its columnar
+// prompt — "  Supplier ..... Acme Supply". The leader is what makes the match
+// unambiguous: it appears on field rows and nowhere else, so a value that
+// merely happens to contain the word cannot be mistaken for the row.
+func poDetailRow(t *testing.T, body, label string) string {
+	t.Helper()
+	want := label + jdeLeader
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, want) {
+			return line
+		}
+	}
+	t.Fatalf("no %q row in body:\n%s", label, body)
+	return ""
+}
+
+// poLineRows renders one line item's whole block — the grid row plus the
+// readings wrapped under it — as the detail sheet draws it.
+func poLineRows(li omsapi.PurchaseOrderItem, supplier string) string {
+	fit := poFitLineGrid(76, []omsapi.PurchaseOrderItem{li})
+	return strings.Join(poLineBlock(1, li, supplier, fit, 76), "\n")
+}
+
+func TestPOLineGridCostColumnAligns(t *testing.T) {
+	// Two rows with different magnitudes — the Cost column is right-aligned to
+	// a fixed width, so the decimal points land in the same screen column on
+	// both rows and an operator scanning a PO can compare them at a glance.
 	a := omsapi.PurchaseOrderItem{
+		Description:     "Bolt",
 		ItemDetails:     map[string]any{"sku": "M3-HEX-BOLT"},
 		UnitCostOrdered: omsapi.DecimalString("0.05"),
 		QuantityOrdered: 100,
 		ActualCost:      omsapi.DecimalString("5.00"),
 	}
 	b := omsapi.PurchaseOrderItem{
+		Description:     "Widget",
 		ItemDetails:     map[string]any{"sku": "WIDGET-XL-2024"},
 		UnitCostOrdered: omsapi.DecimalString("12.50"),
 		QuantityOrdered: 3,
 		ActualCost:      omsapi.DecimalString("37.50"),
 	}
 
-	la := jdeCostLine(a)
-	lb := jdeCostLine(b)
-
-	// Decimal point in the UNIT field.
-	uA := strings.Index(la, "UNIT")
-	uB := strings.Index(lb, "UNIT")
-	if uA != uB {
-		t.Fatalf("UNIT label moved between rows: %d vs %d", uA, uB)
+	// One fit across both lines, as the sheet builds it: the columns are
+	// budgeted from every line on the order, so both rows share them.
+	fit := poFitLineGrid(76, []omsapi.PurchaseOrderItem{a, b})
+	rowA := poLineBlock(1, a, "", fit, 76)[0]
+	rowB := poLineBlock(2, b, "", fit, 76)[0]
+	dotA := strings.Index(rowA, ".")
+	dotB := strings.Index(rowB, ".")
+	if dotA < 0 || dotA != dotB {
+		t.Errorf("cost decimal points didn't align: %d vs %d\n  a=%q\n  b=%q", dotA, dotB, rowA, rowB)
 	}
-	dotA := strings.Index(la[uA:], ".")
-	dotB := strings.Index(lb[uB:], ".")
-	if dotA != dotB {
-		t.Errorf("unit-cost decimal points didn't align: %d vs %d\n  a=%q\n  b=%q", dotA, dotB, la, lb)
-	}
-
-	// Decimal point in the TOTAL field.
-	tA := strings.Index(la, "TOTAL")
-	tB := strings.Index(lb, "TOTAL")
-	if tA != tB {
-		t.Fatalf("TOTAL label moved between rows: %d vs %d", tA, tB)
-	}
-	tdotA := strings.Index(la[tA:], ".")
-	tdotB := strings.Index(lb[tB:], ".")
-	if tdotA != tdotB {
-		t.Errorf("total-cost decimal points didn't align: %d vs %d\n  a=%q\n  b=%q", tdotA, tdotB, la, lb)
+	// And both totals are actually on the row.
+	if !strings.Contains(rowA, "5.00") || !strings.Contains(rowB, "37.50") {
+		t.Errorf("a cost went missing:\n  a=%q\n  b=%q", rowA, rowB)
 	}
 }
 
-func TestJDECostLinePrefersSKUOverAssetTag(t *testing.T) {
+func TestPOLinePartNumberPrefersSKUOverAssetTag(t *testing.T) {
 	li := omsapi.PurchaseOrderItem{
 		ItemDetails:  map[string]any{"sku": "SKU-123"},
 		AssetDetails: map[string]any{"asset_tag": "ASSET-9"},
 	}
-	out := jdeCostLine(li)
-	if !strings.Contains(out, "SKU-123") {
-		t.Errorf("expected SKU in row, got %q", out)
+	if got := poLinePartNumber(li); got != "SKU-123" {
+		t.Errorf("part number = %q, want the SKU", got)
 	}
-	if strings.Contains(out, "ASSET-9") {
-		t.Errorf("asset tag should be suppressed when a SKU exists, got %q", out)
+	// And the readings under the row quote it rather than the asset tag.
+	out := poLineRows(li, "")
+	if !strings.Contains(out, "PART SKU-123") {
+		t.Errorf("expected the SKU on the line's readings, got:\n%s", out)
+	}
+	if strings.Contains(out, "PART ASSET-9") {
+		t.Errorf("asset tag should be suppressed when a SKU exists, got:\n%s", out)
 	}
 }
 
-func TestJDECostLineFallsBackToAssetTag(t *testing.T) {
+func TestPOLinePartNumberFallsBackToAssetTag(t *testing.T) {
 	// Asset POs have no SKU but do have asset_tag — surface the tag.
-	li := omsapi.PurchaseOrderItem{
-		AssetDetails: map[string]any{"asset_tag": "TAG-42"},
+	li := omsapi.PurchaseOrderItem{AssetDetails: map[string]any{"asset_tag": "TAG-42"}}
+	if got := poLinePartNumber(li); got != "TAG-42" {
+		t.Errorf("part number = %q, want the asset tag", got)
 	}
-	out := jdeCostLine(li)
-	if !strings.Contains(out, "TAG-42") {
-		t.Errorf("expected asset tag in row, got %q", out)
+	if out := poLineRows(li, ""); !strings.Contains(out, "PART TAG-42") {
+		t.Errorf("expected the asset tag on the line's readings, got:\n%s", out)
 	}
 }
 
-func TestJDECostLineHandlesMissingCosts(t *testing.T) {
-	// No cost data: the row should render with the em-dash placeholder
-	// rather than crashing or showing literal $0.00 (which would imply
-	// "free" instead of "unknown").
+func TestPOLineCostCellHandlesMissingCosts(t *testing.T) {
+	// No cost data: the cell renders the em-dash placeholder rather than a
+	// literal $0.00, which would imply "free" instead of "unknown".
 	li := omsapi.PurchaseOrderItem{QuantityOrdered: 0}
-	out := jdeCostLine(li)
-	if !strings.Contains(out, "—") {
-		t.Errorf("expected em-dash for missing fields, got %q", out)
+	if got := poLineCostCell(li); got != "—" {
+		t.Errorf("cost cell = %q, want the em-dash placeholder", got)
+	}
+	if out := poLineRows(li, ""); !strings.Contains(out, "—") {
+		t.Errorf("expected em-dash for missing fields, got:\n%s", out)
 	}
 }
 
-func TestJDECostLinePrefersActualOverEstimated(t *testing.T) {
-	// When both totals exist, actual is the source of truth (matches
-	// the existing meta-line semantics in renderPOLineItem).
+func TestPOLineCostCellPrefersActualOverEstimated(t *testing.T) {
+	// When both totals exist, actual is the source of truth (matches the
+	// meta-line semantics the detail body has always had).
 	li := omsapi.PurchaseOrderItem{
 		ItemDetails:   map[string]any{"sku": "X"},
 		ActualCost:    omsapi.DecimalString("100.00"),
 		EstimatedCost: omsapi.DecimalString("99.99"),
 	}
-	out := jdeCostLine(li)
+	out := poLineRows(li, "")
 	if !strings.Contains(out, "100.00") {
-		t.Errorf("expected actual cost (100.00) in row, got %q", out)
+		t.Errorf("expected actual cost (100.00) on the row, got:\n%s", out)
 	}
 	if strings.Contains(out, "99.99") {
-		t.Errorf("estimated cost (99.99) leaked through when actual was set, got %q", out)
+		t.Errorf("estimated cost (99.99) leaked through when actual was set:\n%s", out)
 	}
 }
 
@@ -140,28 +159,51 @@ func TestShipByUrgencyEmptyWhenNoExpected(t *testing.T) {
 	}
 }
 
-func TestRenderShipDatesIncludesBothWhenSet(t *testing.T) {
+// TestPOLineShowsBothShipDates: a line that was due on one date and shipped on
+// another surfaces BOTH — the ship-by in the grid's own column, the actual as a
+// reading under it, since the grid has no column for a second date.
+func TestPOLineShowsBothShipDates(t *testing.T) {
 	li := omsapi.PurchaseOrderItem{
+		Description:          "Widget",
 		ExpectedShipmentDate: "2020-01-01",
 		ActualShipmentDate:   "2020-02-15",
 	}
-	out := renderShipDates(li)
-	if !strings.Contains(out, "SHIP BY 2020-01-01") {
-		t.Errorf("missing ship-by label, got %q", out)
+	out := poLineRows(li, "")
+	if !strings.Contains(out, "2020-01-01") {
+		t.Errorf("missing the ship-by date, got:\n%s", out)
 	}
 	if !strings.Contains(out, "SHIPPED 2020-02-15") {
-		t.Errorf("missing shipped label, got %q", out)
+		t.Errorf("missing the shipped marker, got:\n%s", out)
 	}
 }
 
-func TestRenderShipDatesShipByOnly(t *testing.T) {
-	li := omsapi.PurchaseOrderItem{ExpectedShipmentDate: "2020-01-01"}
-	out := renderShipDates(li)
+// TestPOLineShipByOnly: nothing has shipped, so no SHIPPED marker — and a
+// ship-by long past is called out in its own token, because the grid column
+// carries the date but not the alarm.
+func TestPOLineShipByOnly(t *testing.T) {
+	li := omsapi.PurchaseOrderItem{Description: "Widget", ExpectedShipmentDate: "2020-01-01"}
+	out := poLineRows(li, "")
 	if !strings.Contains(out, "SHIP BY 2020-01-01") {
-		t.Errorf("expected ship-by, got %q", out)
+		t.Errorf("an overdue line should say so, got:\n%s", out)
 	}
 	if strings.Contains(out, "SHIPPED") {
-		t.Errorf("unexpected shipped marker, got %q", out)
+		t.Errorf("unexpected shipped marker, got:\n%s", out)
+	}
+}
+
+// TestPOShipTokensQuietWhenNotUrgent: a ship-by comfortably in the future is
+// already legible in the grid's Ship date column, and a second plain copy of it
+// under the row would be noise.
+func TestPOShipTokensQuietWhenNotUrgent(t *testing.T) {
+	li := omsapi.PurchaseOrderItem{
+		Description:          "Widget",
+		ExpectedShipmentDate: time.Now().UTC().AddDate(0, 2, 0).Format("2006-01-02"),
+	}
+	if got := poShipTokens(li, poFitLineGrid(76, []omsapi.PurchaseOrderItem{li})); len(got) != 0 {
+		t.Errorf("a distant ship-by should add no reading, got %+v", got)
+	}
+	if out := poLineRows(li, ""); !strings.Contains(out, li.ExpectedShipmentDate) {
+		t.Errorf("the grid column should still carry the date:\n%s", out)
 	}
 }
 
@@ -208,7 +250,7 @@ func TestPODetail_OrderPadKeyOpensAndFetches(t *testing.T) {
 	if cmd2 == nil {
 		t.Error("a successful load should emit the copy+status batch cmd")
 	}
-	if body := s.renderOrderPadBody(); !strings.Contains(body, "ABC-1") || !strings.Contains(body, "DEF-2") {
+	if body := strings.Join(s.orderPadLines().text, "\n"); !strings.Contains(body, "ABC-1") || !strings.Contains(body, "DEF-2") {
 		t.Errorf("order-pad body missing part numbers: %q", body)
 	}
 
@@ -258,7 +300,7 @@ func TestPODetail_OrderPadBodyEmptyState(t *testing.T) {
 	s := &PurchaseOrderDetailScreen{
 		orderPadExport: &omsapi.OrderPadExport{Text: "", LineCount: 0, MissingSku: []string{"Widget"}},
 	}
-	if body := s.renderOrderPadBody(); !strings.Contains(body, "No lines") {
+	if body := strings.Join(s.orderPadLines().text, "\n"); !strings.Contains(body, "No lines") {
 		t.Errorf("empty-state body = %q", body)
 	}
 }
@@ -293,12 +335,13 @@ func TestPODetail_OrderPadToastAndLevel(t *testing.T) {
 	}
 }
 
-// TestPODetail_FooterHintIncludesOrderPad confirms the export affordance is
-// advertised in the key legend.
-func TestPODetail_FooterHintIncludesOrderPad(t *testing.T) {
+// TestPODetail_BarNamesOrderPad confirms the export affordance is advertised on
+// the persistent action bar, which since the columnar conversion is the only
+// place an operator can learn the key.
+func TestPODetail_BarNamesOrderPad(t *testing.T) {
 	s := &PurchaseOrderDetailScreen{po: &omsapi.PurchaseOrder{Status: "sent"}}
-	if !strings.Contains(s.footerHint(), "x order pad") {
-		t.Errorf("footer hint missing order-pad affordance: %q", s.footerHint())
+	if !barHas(s.sheetBar(), "x", "Order pad") {
+		t.Errorf("action bar missing order-pad affordance: %+v", s.sheetBar())
 	}
 }
 
@@ -322,29 +365,25 @@ func TestPOLineTypeLabel(t *testing.T) {
 	}
 }
 
-// TestPODetail_LineShowsFriendlyType checks the meta row carries the readable
-// label rather than the raw wire token.
+// TestPODetail_LineShowsFriendlyType checks the readings under the row carry
+// the readable label rather than the raw wire token.
 func TestPODetail_LineShowsFriendlyType(t *testing.T) {
-	var b strings.Builder
-	renderPOLineItem(&b, 1, omsapi.PurchaseOrderItem{
+	out := poLineRows(omsapi.PurchaseOrderItem{
 		Description: "Bolt",
 		ItemType:    "item_supplier",
 	}, "Acme")
-	out := b.String()
 	if !strings.Contains(out, "type Inventory item") {
 		t.Errorf("expected friendly type label, got:\n%s", out)
 	}
 	if strings.Contains(out, "item_supplier") {
-		t.Errorf("raw wire token leaked into the meta row:\n%s", out)
+		t.Errorf("raw wire token leaked into the readings:\n%s", out)
 	}
 }
 
 // TestPODetail_LineOmitsTypeWhenAbsent keeps the pre-existing behaviour: an
 // empty item_type renders no type chunk at all, rather than a bare "type —".
 func TestPODetail_LineOmitsTypeWhenAbsent(t *testing.T) {
-	var b strings.Builder
-	renderPOLineItem(&b, 1, omsapi.PurchaseOrderItem{Description: "Bolt"}, "Acme")
-	if out := b.String(); strings.Contains(out, "type ") {
+	if out := poLineRows(omsapi.PurchaseOrderItem{Description: "Bolt"}, "Acme"); strings.Contains(out, "type ") {
 		t.Errorf("empty item_type should render no type chunk, got:\n%s", out)
 	}
 }
@@ -365,9 +404,9 @@ func TestPODetail_ShowsSupplierAgreement(t *testing.T) {
 		SupplierAgreement:    &id,
 		SupplierAgreementRef: &omsapi.SupplierAgreementRef{ID: 4, Name: "2026 nonprofit pricing"},
 	}}
-	if out := s.renderBody(); !strings.Contains(out, "Agreement: ") ||
-		!strings.Contains(out, "2026 nonprofit pricing") {
-		t.Errorf("detail should name the agreement the order was placed under:\n%s", out)
+	out := s.renderBody()
+	if row := poDetailRow(t, out, "Agreement"); !strings.Contains(row, "2026 nonprofit pricing") {
+		t.Errorf("the Agreement row should name the agreement, got %q", row)
 	}
 }
 
@@ -379,7 +418,7 @@ func TestPODetail_OmitsAgreementWhenAbsent(t *testing.T) {
 		Status:          "draft",
 		SupplierDetails: "Acme Supply",
 	}}
-	if out := s.renderBody(); strings.Contains(out, "Agreement:") {
+	if out := s.renderBody(); strings.Contains(out, "Agreement"+jdeLeader) {
 		t.Errorf("an order with no agreement should render no agreement row:\n%s", out)
 	}
 }
