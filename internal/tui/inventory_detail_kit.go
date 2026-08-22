@@ -181,39 +181,68 @@ func (s *InventoryDetailScreen) bodyWidth() int {
 // never answered, and neither may put a kit affordance on the screen.
 func (s *InventoryDetailScreen) isKit() bool { return s.kit != nil }
 
-// kitStockActionsOffered reports whether the three STOCK actions — c count,
-// u use and p packs — may be offered on this screen at all. It answers for both
-// halves at once, the footer and the key dispatch, because they must never
-// disagree: a key the bar does not name has to do nothing, and a key it names
-// has to do something.
+// kitRuledOut reports that the "is this item a kit?" question has been ASKED,
+// ANSWERED, and answered "no". It is the one predicate every affordance on this
+// screen whose correctness depends on kit-ness must be routed through — the
+// footer entry and the key dispatch alike, because the two must never disagree:
+// a key the bar does not name has to do nothing, and a key it names has to do
+// something.
 //
-// It is true ONLY for an item the /kits/ endpoint has already answered "no"
-// about. The three states it says no to, and why:
+// ONE predicate rather than a condition per key, because the enumerated form is
+// what kept failing. c and u were stripped for a kit by name; p had to be
+// guarded again when SetItemCountMode became kit-routable; i and b were left on
+// a two-state test for a whole round after c/u/p moved off it. Anything added
+// here later inherits the rule by asking this question instead of inventing its
+// own.
 //
-//	a kit               — all three are stock operations and a kit holds none.
-//	                      Worse than meaningless for the count: the backend
-//	                      writes stock through save(update_fields=…) without
+// What currently depends on it: c count, u use, p packs, i instances,
+// b batch-scan and the Serialized tracking section. Deliberately NOT: o/enter
+// reorder (the reorder-request serializer accepts a kit, a softer and separate
+// concern), T retire and x delete (include_kits was added to those routes, so
+// they work on a kit), s suppliers (a collection viewset, not a kit-filtered
+// detail action), E edit, r refresh, scrolling and esc.
+//
+// The four states, and why each answers as it does:
+//
+//	a kit               — every stock action is meaningless on one, and worse
+//	                      than meaningless for the count: the backend writes
+//	                      stock through save(update_fields=…) without
 //	                      full_clean(), so the model's own "a kit cannot carry
 //	                      stock" check never runs and the figure would PERSIST
 //	                      as one nothing can ever draw down.
-//	the question failed — the screen cannot rule a kit out, and the three
-//	                      endpoints deliberately do NOT send include_kits, so a
-//	                      kit id gets a flat 404: a bare "not found" against a
-//	                      record the operator is looking at. renderKitErrLine
-//	                      says why the keys are gone; silent permanent absence
+//	the question failed — the screen cannot rule a kit OUT, and the failure this
+//	                      guards is not cosmetic. A kit carrying a stray
+//	                      is_serialized=true (reachable through the same hole:
+//	                      InventoryItem.save() never runs full_clean(), so
+//	                      _clean_kit never fires on a direct write) plus a failed
+//	                      GetKit leaves kitErr set and kit nil. On a two-state
+//	                      !isKit() test the footer then names i and b, both keys
+//	                      fire, and batch-scan CREATES-AND-RECEIVES each unit —
+//	                      accessioning serialized units into a kit's stock number
+//	                      that nothing can ever draw down. That is inventory
+//	                      corruption. c / u / p are the milder version of the
+//	                      same doubt: those three endpoints deliberately do not
+//	                      send include_kits, so a kit id gets a flat 404 against
+//	                      a record the operator is looking at. renderKitErrLine
+//	                      says why everything is gone; silent permanent absence
 //	                      would be its own small lie.
-//	the question is     — the same unknown, a moment earlier. The cost is that
-//	in flight             an ordinary item's three keys appear a beat after the
-//	                      screen does, which was weighed against the alternative
-//	                      and accepted: a rule with a race in it is the shape of
-//	                      the defect this closes.
+//	the question is     — the same unknown, a moment earlier, and no explanation:
+//	in flight             briefly absent affordances need none. The cost is that
+//	                      an ordinary item's keys appear a beat after the screen
+//	                      does, which was weighed against the alternative and
+//	                      accepted: a rule with a race in it is the shape of the
+//	                      defect this closes.
+//	answered "no"       — an ordinary item, which is the ONLY state that may be
+//	                      offered anything here, and which behaves exactly as it
+//	                      did before kits existed.
 //
 // The trap this exists to avoid, for whoever reads it next: `kit == nil` alone
 // cannot tell "answered: ordinary item" from "no answer yet" — a 404 leaves
 // EXACTLY the state a fetch in flight does — so the guard reads kitLoading,
 // which Init sets and any inventoryKitLoadedMsg clears. Written against
-// kit/kitErr alone it would hide these keys from every ordinary item forever.
-func (s *InventoryDetailScreen) kitStockActionsOffered() bool {
+// kit/kitErr alone it would hide these affordances from every ordinary item
+// forever, which is quieter and worse than the fault it closes.
+func (s *InventoryDetailScreen) kitRuledOut() bool {
 	return !s.kitLoading && s.kitErr == "" && !s.isKit()
 }
 
@@ -517,9 +546,9 @@ func (s *InventoryDetailScreen) headerTagsWidth() int {
 // structural.
 //
 // It also has to CARRY the missing keys, because this state is the one place
-// they vanish permanently: kitStockActionsOffered withholds c / u / p while the
-// question is open, and keys that are simply gone with no reason given teach an
-// operator that the screen is unreliable. The lead phrase is the item form's
+// they vanish permanently: kitRuledOut withholds every kit-dependent affordance
+// while the question is open, and keys that are simply gone with no reason given
+// teach an operator that the screen is unreliable. The lead phrase is the item form's
 // word for word — two screens answering the same question differently is its own
 // defect — and only the consequence clause differs, because that screen refuses
 // a SAVE and this one has none to refuse.

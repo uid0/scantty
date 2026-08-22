@@ -81,14 +81,14 @@ type InventoryDetailScreen struct {
 	// errors that left the question UNANSWERED; a not-found is not one of them.
 	//
 	// kitLoading says a /kits/ fetch is OUTSTANDING, and it is read by
-	// kitStockActionsOffered — which is the whole reason it exists, so do not
-	// prune it again as dead state.
+	// kitRuledOut — which is the whole reason it exists, so do not prune it
+	// again as dead state.
 	//
 	// It has to exist because `kit == nil && kitErr == ""` says two completely
 	// different things that this screen otherwise cannot tell apart: "answered:
 	// ordinary item" (the 404 IS the answer) and "the fetch has not come back
-	// yet". A guard written against those two fields alone would hide c/u/p from
-	// every ordinary item FOREVER — far worse than the race it set out to close
+	// yet". A guard written against those two fields alone would hide every
+	// kit-dependent affordance from every ordinary item FOREVER — far worse than the race it set out to close
 	// — so the third state is tracked explicitly rather than inferred, the same
 	// way usedByLoading and purchasesLoading do below.
 	//
@@ -584,8 +584,8 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// A KIT holds no stock to reconcile, so this is a silent no-op there
 			// — the same shape as i/b for a non-serialized item, and matching a
 			// footer that does not name the key. Withheld for an UNANSWERED kit
-			// question too; see kitStockActionsOffered.
-			if s.item != nil && s.kitStockActionsOffered() {
+			// question too; see kitRuledOut.
+			if s.item != nil && s.kitRuledOut() {
 				return s.openCycleCount()
 			}
 		case "u":
@@ -595,7 +595,7 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// reach the screen here instead. A kit has no stock to consume, so it
 			// is a no-op there for the same reason c is, and withheld while the
 			// kit question is open for the same reason c is.
-			if s.item != nil && s.kitStockActionsOffered() {
+			if s.item != nil && s.kitRuledOut() {
 				return s.openConsume()
 			}
 		case "p":
@@ -610,31 +610,33 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// does not name the key and pressing it must therefore do nothing.
 			// Same for a kit question still open — pack-container is a detail
 			// action on the kit-excluding item viewset, so it 404s for a kit id.
-			if s.item != nil && s.item.CountMode == omsapi.CountModeOpenClosed && s.kitStockActionsOffered() {
+			if s.item != nil && s.item.CountMode == omsapi.CountModeOpenClosed && s.kitRuledOut() {
 				return s.openPack()
 			}
 		case "i":
 			// Serialized items expose per-unit instance tracking; jump to
 			// the instances screen. No-op for non-serialized items.
 			//
-			// And no-op for a KIT however its stored flag reads. A kit's
-			// COMPONENTS are the units that carry serials — the kit is bought as
-			// one SKU and decomposes on receipt — and the server refuses to make
-			// one serialized at all, so a kit whose flag says otherwise is stray
+			// And no-op unless a kit has been RULED OUT. A kit's COMPONENTS are
+			// the units that carry serials — the kit is bought as one SKU and
+			// decomposes on receipt — and the server refuses to make one
+			// serialized at all, so a kit whose flag says otherwise is stray
 			// data (InventoryItem.save() never runs full_clean()), not a state
 			// this screen should act on. Accessioning instances against the kit
 			// id would put units into the same stock figure nothing can draw
-			// down that c / u / p are hidden for.
-			if s.item != nil && s.item.IsSerialized && !s.isKit() {
+			// down that c / u / p are hidden for — which is why the doubt counts
+			// as much as the answer here; see kitRuledOut.
+			if s.item != nil && s.item.IsSerialized && s.kitRuledOut() {
 				return s, SwitchTo(WSInventory, NewItemInstancesScreen(s.deps, s.item.ID, s.item.Name, s.item.SerializedStock))
 			}
 		case "b":
 			// Batch-scan serials: rapid-fire scanner-gun capture that
 			// creates-and-receives each unit. Serialized items only; lowercase
 			// b is free in the global hotkey map, so it falls through here. Never
-			// for a kit, for the reason i is not — and batch-scan RECEIVES each
-			// unit it creates, so it is a stock write besides.
-			if s.item != nil && s.item.IsSerialized && !s.isKit() {
+			// until a kit is ruled out, for the reason i is not — and batch-scan
+			// RECEIVES each unit it creates, so it is a stock write besides,
+			// which is the corruption kitRuledOut's comment records.
+			if s.item != nil && s.item.IsSerialized && s.kitRuledOut() {
 				return s, SwitchTo(WSInventory, NewBatchScanSerialsScreen(s.deps, s.item.ID, s.item.Name))
 			}
 		case "E":
@@ -757,10 +759,10 @@ func (s *InventoryDetailScreen) View() string {
 	hint := "j/k scroll · o/enter reorder · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	// The serial keys are guarded on the INSERT, not stripped again below, for
 	// the reason the stock keys are: an insert-then-remove shape is what let a
-	// key slip through the kit stripping once already. A kit never names them
-	// however its stored flag reads, because a kit cannot legitimately be
-	// serialized at all and the keys are no-ops there.
-	if s.item.IsSerialized && !s.isKit() {
+	// key slip through the kit stripping once already. Named only once a kit is
+	// RULED OUT — a kit cannot legitimately be serialized at all, and an
+	// unanswered question cannot tell one from an ordinary item.
+	if s.item.IsSerialized && s.kitRuledOut() {
 		hint = "j/k scroll · o/enter reorder · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	}
 	// The three STOCK keys are ADDED where they mean something rather than
@@ -769,11 +771,11 @@ func (s *InventoryDetailScreen) View() string {
 	// separately when SetItemCountMode became kit-routable and put a kit within
 	// reach of pack-container. An insert reads its own condition once.
 	//
-	// kitStockActionsOffered owns that condition — a kit holds no stock, and an
+	// kitRuledOut owns that condition — a kit holds no stock, and an
 	// unanswered kit question cannot rule one out. The pack keys additionally
 	// only exist for a sealed+open item, so an each-mode item's footer is
 	// untouched.
-	if s.kitStockActionsOffered() {
+	if s.kitRuledOut() {
 		hint = strings.Replace(hint, "s suppliers · ", "c count · u use · s suppliers · ", 1)
 		if s.item.CountMode == omsapi.CountModeOpenClosed {
 			hint = strings.Replace(hint, "c count · ", "c count · p packs · ", 1)
@@ -930,13 +932,14 @@ func (s *InventoryDetailScreen) renderBody() string {
 	b.WriteString(s.renderKitSection())
 	b.WriteString(s.renderKitErrLine())
 
-	// Never for a KIT: the section's whole content is an instruction to press i
-	// and b, which do nothing there, and a "units are tracked individually"
-	// heading under a bill of materials says the opposite of what a kit is — its
-	// COMPONENTS are the units. A kit reaching here with the flag set is stray
-	// data the server would refuse (see kit save), so the screen declines to act
-	// on it rather than dressing it up as a feature.
-	if it.IsSerialized && !s.isKit() {
+	// Only once a kit is RULED OUT: the section's whole content is an
+	// instruction to press i and b, which do nothing until then, and a "units
+	// are tracked individually" heading under a bill of materials says the
+	// opposite of what a kit is — its COMPONENTS are the units. An item reaching
+	// here with the flag set while the kit question is open or failed is stating
+	// as settled fact something that depends on the unanswered question, and the
+	// operator reads a rendered panel as settled. See kitRuledOut.
+	if it.IsSerialized && s.kitRuledOut() {
 		b.WriteString(StyleTitle.Render("Serialized tracking") + "\n")
 		mode := it.SerialTrackingMode
 		if mode == "" {

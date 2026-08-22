@@ -946,3 +946,125 @@ func TestItemFormKit_TheComponentGridSpendsThePaneOnTheName(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The serial affordances and the UNANSWERED kit question
+// ---------------------------------------------------------------------------
+
+// kitSerialAffordances are the three things on this screen whose meaning depends
+// on the item NOT being a kit and that are driven by is_serialized: the two keys
+// and the section that names them.
+var kitSerialAffordances = []string{"Serialized tracking", "i instances", "b batch-scan"}
+
+// kitDetailDrivenSerialized is kitDetailDriven with the loaded record carrying
+// is_serialized. On a KIT that is stray data the server would refuse — it is
+// reachable only because InventoryItem.save() never runs full_clean() — and it
+// is exactly the record that makes an unanswered kit question dangerous: batch
+// scan creates-and-receives each unit, so accessioning against a kit id writes
+// stock nothing can ever draw down.
+func kitDetailDrivenSerialized(t *testing.T, kitStatus, width int, deliverKitAnswer bool) *InventoryDetailScreen {
+	t.Helper()
+	s := kitDetailDriven(t, kitStatus, width, deliverKitAnswer)
+	s.item.IsSerialized = true
+	s.item.SerialTrackingMode = "asset"
+	s.item.SerializedStock = &omsapi.SerializedStock{Available: 2, OnHand: 2}
+	s.scroller.Set(s.renderBody())
+	return s
+}
+
+// TestInventoryDetailKit_TheSerialAffordancesFollowTheKitQuestion walks all four
+// states of that question against a serialized record. Three of them withhold —
+// and the one that does not is the regression that matters most, since a guard
+// that cannot tell "answered: ordinary" from "no answer yet" would hide these
+// from every ordinary serialized item forever.
+func TestInventoryDetailKit_TheSerialAffordancesFollowTheKitQuestion(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		screen  func(*testing.T) *InventoryDetailScreen
+		offered bool
+		saysWhy bool
+	}{
+		{
+			name: "in flight",
+			screen: func(t *testing.T) *InventoryDetailScreen {
+				return kitDetailDrivenSerialized(t, http.StatusNotFound, 120, false)
+			},
+		},
+		{
+			// The stray-serialized kit whose kit question FAILED: the record
+			// that turns a named key into inventory corruption.
+			name: "the question failed",
+			screen: func(t *testing.T) *InventoryDetailScreen {
+				return kitDetailDrivenSerialized(t, http.StatusInternalServerError, 120, true)
+			},
+			saysWhy: true,
+		},
+		{
+			name: "answered: a kit",
+			screen: func(t *testing.T) *InventoryDetailScreen {
+				return kitDetailDrivenSerialized(t, http.StatusOK, 120, true)
+			},
+		},
+		{
+			name: "answered: an ordinary item",
+			screen: func(t *testing.T) *InventoryDetailScreen {
+				return kitDetailDrivenSerialized(t, http.StatusNotFound, 120, true)
+			},
+			offered: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.screen(t)
+			view := s.View()
+			for _, aff := range kitSerialAffordances {
+				if got := strings.Contains(view, aff); got != tc.offered {
+					t.Errorf("%q present = %v, want %v:\n%s", aff, got, tc.offered, view)
+				}
+			}
+			// Both halves of the bar's honesty, in whichever direction this
+			// state calls for.
+			for _, key := range []rune{'i', 'b'} {
+				_, cmd := s.Update(runeKey(key))
+				switch {
+				case tc.offered && cmd == nil:
+					t.Errorf("%c does nothing on an ordinary serialized item", key)
+				case tc.offered:
+					if _, ok := cmd().(SwitchScreenMsg); !ok {
+						t.Errorf("%c did not open a screen on an ordinary serialized item", key)
+					}
+				case cmd != nil:
+					if msg, ok := cmd().(SwitchScreenMsg); ok {
+						t.Errorf("%c navigated to %T from a state that does not name it", key, msg.Screen)
+					}
+				}
+			}
+			// An explanation is owed only where the absence is permanent: an
+			// in-flight banner would flash on every item open.
+			if got := strings.Contains(view, "Kit status unavailable"); got != tc.saysWhy {
+				t.Errorf("%q present = %v, want %v:\n%s", "Kit status unavailable", got, tc.saysWhy, view)
+			}
+			// The rest of the screen is untouched in every one of these states.
+			for _, kept := range []string{"o/enter reorder", "s suppliers", "E edit", "x delete", "r refresh"} {
+				if !strings.Contains(view, kept) {
+					t.Errorf("this state cost the footer %q:\n%s", kept, view)
+				}
+			}
+		})
+	}
+}
+
+// TestInventoryDetailKit_TheWithheldSerialStatesStillFitTheFloor. Withholding a
+// section changes what the body contains at every width, so the floor is
+// re-measured on the states that do it.
+func TestInventoryDetailKit_TheWithheldSerialStatesStillFitTheFloor(t *testing.T) {
+	for _, width := range kitTestWidths {
+		for name, status := range map[string]int{"failed": http.StatusInternalServerError, "a kit": http.StatusOK} {
+			s := kitDetailDrivenSerialized(t, status, width, true)
+			body := s.renderBody()
+			budget := screenBodyWidth(width)
+			if clipped := clampToBox(body, budget, len(strings.Split(body, "\n"))); clipped != body {
+				t.Errorf("at %d columns the %s state is clipped:\n%s", width, name, body)
+			}
+		}
+	}
+}
