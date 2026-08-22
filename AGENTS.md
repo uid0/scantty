@@ -52,12 +52,12 @@ never sets it. `internal/tui/po_line_price.go` carries the full note.
 
 ## Gotchas
 
-- `go test ./internal/config/` fails on macOS after its first run:
-  `defaultPrefsPath()` uses `os.UserConfigDir()`, which ignores
-  `XDG_CONFIG_HOME` on darwin, so `prefs_test.go` reads and WRITES the
-  developer's real `~/Library/Application Support/scantty/prefs.json` and then
-  trips over what it left there. Green on Linux CI. Unrelated to whatever you
-  are changing.
+- **`XDG_CONFIG_HOME` does not isolate anything on macOS.** `defaultPrefsPath()`
+  and `defaultCachePath()` use `os.UserConfigDir()`/`os.UserCacheDir()`, which on
+  darwin resolve under `$HOME/Library` and ignore the XDG variables entirely. A
+  test that only sets `XDG_CONFIG_HOME` therefore writes the developer's real
+  prefs file and fails on its second run; set `HOME` as well. `internal/config/prefs_test.go`'s
+  `setRequiredConfigEnv` does this and is what any new config test should call.
 - `gofmt -l` flags a few pre-existing files (doc-comment backtick rewrites).
   Format only what you touch.
 
