@@ -1157,6 +1157,44 @@ func TestPOView_OrderPadEnterCopies(t *testing.T) {
 	}
 }
 
+// TestPOView_OrderPadWithNothingToCopyDoesNotOfferCopy: the bar-honesty rule in
+// the direction that advertises a dead key. ExportOrderPad returns a real export
+// with empty Text for a PO whose lines carry no supplier part number, and the
+// overlay drew "Enter=Copy" over "No lines have a supplier part number" while
+// handleOrderPadKey's Enter did nothing at all.
+func TestPOView_OrderPadWithNothingToCopyDoesNotOfferCopy(t *testing.T) {
+	for _, width := range poViewWidths {
+		t.Run(widthName(width), func(t *testing.T) {
+			empty, r := poDetailAt(t, width)
+			empty.orderPad = true
+			empty.orderPadExport = &omsapi.OrderPadExport{
+				Supplier: "Acme Fasteners & Industrial Supply Co.", LineCount: 0,
+			}
+			// Enter genuinely does nothing here — no clipboard write, no toast.
+			if _, cmd := empty.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+				t.Fatal("Enter on an empty pad should have nothing to copy")
+			}
+			if out := r.View(); strings.Contains(out, "Enter=Copy") {
+				t.Errorf("the %d-column empty pad names a key that does nothing:\n%s", width, out)
+			}
+			// Esc is still named, and still the way out.
+			if out := r.View(); !strings.Contains(out, "Esc=Close") {
+				t.Errorf("the %d-column empty pad must still name its way out:\n%s", width, out)
+			}
+
+			// And a pad that HAS lines still offers it.
+			full, rf := poDetailAt(t, width)
+			full.orderPad = true
+			full.orderPadExport = &omsapi.OrderPadExport{
+				Text: "M3-HEX-BOLT-SS\t5", Filename: "PO-2026-0042-order.csv", LineCount: 1,
+			}
+			if out := rf.View(); !strings.Contains(out, "Enter=Copy") {
+				t.Errorf("a pad with lines must name Enter=Copy at %d columns:\n%s", width, out)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The sheet is columnar
 // ---------------------------------------------------------------------------

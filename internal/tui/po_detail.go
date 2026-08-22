@@ -717,7 +717,7 @@ func (s *PurchaseOrderDetailScreen) handleOrderPadKey(m tea.KeyMsg) (Screen, tea
 	case "enter":
 		// Re-copy on demand (mirrors the web "Copy order pad" button) in case
 		// the auto-copy on open didn't land in the operator's terminal.
-		if s.orderPadExport != nil && s.orderPadExport.Text != "" {
+		if s.padHasText() {
 			return s, tea.Batch(
 				copyToClipboardCmd(s.orderPadExport.Text),
 				Status("order pad copied to clipboard", StatusOK),
@@ -1056,15 +1056,6 @@ func (s *PurchaseOrderDetailScreen) addBand(l *jdeLines, labelWidth int, heading
 	l.Add("")
 }
 
-// addValueRow draws one columnar reading, FOLDING a value too wide for the pane
-// onto continuation lines indented under the input area rather than letting it
-// run off the edge.
-//
-// clampToBox truncates an over-wide row with nothing to say it had (sc-ye0i),
-// and at 80 columns this pane is 51 wide: a work-order label, a supplier name
-// or the payment schedule's "$1234.56 due 2026-08-14 · Net 30 from order date"
-// all overrun it. A folded value is legible at every width; a cut one is
-// legible at none.
 // poErrPrefixW is the width of the "Error: " a load failure is drawn behind on
 // the two screens that render one as a body line rather than on the status row.
 // Those lines are single Add()s, so like the status row they cannot fold and
@@ -1082,9 +1073,30 @@ const poErrPrefixW = 7
 // takes StyleStatusError's closing SGR reset with them, leaving the terminal red
 // for everything drawn afterwards.
 //
-// Trimming the row loses nothing: every path that sets one of these errors also
-// raises the same text as a Status() toast, which is where the full message
-// lives. fitCell rather than a bare cut, so the row says it was shortened.
+// What the row loses by being trimmed depends on where the message came from,
+// and only some of them have a toast behind them:
+//
+//   - The ASYNC failures — poItemShippedMsg, poVoidedMsg, poDeliveredMsg,
+//     poOrderPadMsg, poAttachUploadedMsg — carry an OMS error of any length, and
+//     every one of them ALSO returns Status() with the same text. Those lose
+//     nothing: the full message is on the toast.
+//   - The three LOCAL validation refusals set the field and return no command,
+//     so there is NO toast behind them. Two are comfortably inside the bound at
+//     every width (submitShip's "line number must be between 1 and N" is 35-39
+//     columns, submitDeliver's "delivery date is required (YYYY-MM-DD)" is 38,
+//     against a budget of 49 at 80 columns). The third is NOT: submitShip's
+//     "date must be YYYY-MM-DD (or '-' to clear, blank for today)" is 58, so at
+//     80 columns it is shortened and its tail is not readable anywhere.
+//
+// That last one is knowingly accepted rather than overlooked. It is not a
+// regression — before this bound existed clampToBox cut the same row at the same
+// column AND dropped the closing SGR reset — and what it loses is the tail of a
+// fixed sentence whose first 49 columns still name the format. Adding a longer
+// validation message on one of those three paths, or letting one interpolate
+// variable text, is what would make this genuinely lossy; a toast on that path
+// (a behaviour change, deliberately not made here) is what would fix it.
+//
+// fitCell rather than a bare cut, so the row says it was shortened.
 //
 // jdeStatusLine belongs to the shared layer, which is frozen while the
 // concurrent conversion is in review, so the bound goes on what the screen hands
@@ -1121,6 +1133,15 @@ func poMarginWidth(bodyWidth int) int {
 	return 1
 }
 
+// addValueRow draws one columnar reading, FOLDING a value too wide for the pane
+// onto continuation lines indented under the input area rather than letting it
+// run off the edge.
+//
+// clampToBox truncates an over-wide row with nothing to say it had (sc-ye0i),
+// and at 80 columns this pane is 51 wide: a work-order label, a supplier name
+// or the payment schedule's "$1234.56 due 2026-08-14 · Net 30 from order date"
+// all overrun it. A folded value is legible at every width; a cut one is
+// legible at none.
 func (s *PurchaseOrderDetailScreen) addValueRow(l *jdeLines, f jdeField, labelWidth int) {
 	avail := jdeStripWidth(s.bodyWidth(), labelWidth)
 	if avail <= 0 || lipgloss.Width(f.Value) <= avail {
@@ -1965,14 +1986,28 @@ func (s *PurchaseOrderDetailScreen) viewDeliver() string {
 // ---------------------------------------------------------------------------
 
 func (s *PurchaseOrderDetailScreen) orderPadBar() []actionBarItem {
-	items := []actionBarItem{{"Enter", "Copy"}, {"Esc", "Close"}}
-	if s.orderPadExport != nil && s.orderPadExport.Text != "" {
-		items = append(items,
-			actionBarItem{"UP/DN", "Scroll"},
-			actionBarItem{"PgUp/PgDn", "Page"},
-			actionBarItem{"Home/End", "Top/End"})
+	// Esc is the only key that works on a pad with nothing on it. Enter=Copy was
+	// named unconditionally while the handler only copies when there is text, so
+	// the bar under "No lines have a supplier part number" advertised a key that
+	// did literally nothing — the bar-honesty rule broken in the direction
+	// opposite to the attachments grid's paging keys.
+	if !s.padHasText() {
+		return []actionBarItem{{"Esc", "Close"}}
 	}
-	return items
+	return []actionBarItem{
+		{"Enter", "Copy"},
+		{"Esc", "Close"},
+		{"UP/DN", "Scroll"},
+		{"PgUp/PgDn", "Page"},
+		{"Home/End", "Top/End"},
+	}
+}
+
+// padHasText is the single condition the pad overlay's Enter and its scroll keys
+// both turn on. The bar and handleOrderPadKey read the SAME predicate rather
+// than each spelling it out, which is what keeps them from drifting apart again.
+func (s *PurchaseOrderDetailScreen) padHasText() bool {
+	return s.orderPadExport != nil && s.orderPadExport.Text != ""
 }
 
 // orderPadHeader is the chrome pinned above the pad: what was built, from how
