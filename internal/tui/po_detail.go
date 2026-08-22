@@ -757,10 +757,11 @@ func (s *PurchaseOrderDetailScreen) padPageStep() int {
 // text (a paste lands correctly in a spreadsheet or vendor order pad). Returns
 // an empty-state note when no line carries a supplier part number.
 //
-// The part column is sized from the pane rather than pinned at 28: at 80
-// columns the body has 51 to spend, and a fixed 28-column field left the
+// The part column is sized from the pad AND the pane rather than pinned at 28:
+// at 80 columns the body has 51 to spend, and a fixed 28-column field left the
 // quantity — the half of the row an operator is actually checking — hanging off
-// the right edge where clampToBox cut it.
+// the right edge where clampToBox cut it; on a wide terminal the same 28 cut a
+// long manufacturer part number with half the pane standing empty beside it.
 func (s *PurchaseOrderDetailScreen) orderPadLines() *jdeLines {
 	l := &jdeLines{}
 	if s.orderPadExport == nil || strings.TrimSpace(s.orderPadExport.Text) == "" {
@@ -768,7 +769,22 @@ func (s *PurchaseOrderDetailScreen) orderPadLines() *jdeLines {
 		return l
 	}
 	const qtyW = 6
-	partW := 28
+	// 28 is the FLOOR the pre-columnar "%-28s %s" row used, not a ceiling: the
+	// part number is the one field an operator retypes into a vendor site, so a
+	// 40-character manufacturer number must print whole while the pane has room
+	// for it. The column therefore grows to the widest number actually on the
+	// pad and is capped only by what the pane can give.
+	const partMinW = 28
+	partW := partMinW
+	for _, line := range strings.Split(s.orderPadExport.Text, "\n") {
+		part, _, found := strings.Cut(line, "\t")
+		if !found {
+			continue
+		}
+		if w := lipgloss.Width(part); w > partW {
+			partW = w
+		}
+	}
 	if body := s.bodyWidth(); body > 0 {
 		if w := body - len(jdeIndent) - 2 - qtyW; w < partW {
 			partW = w
@@ -1662,7 +1678,16 @@ func poFitInputValue(ti *textinput.Model, shape jdeField, labelWidth, bodyWidth 
 	// bubbles box draws its caret in a cell of its own PAST its Width — so a box
 	// given the row's whole width renders width+1 and puts every focused row
 	// exactly one column over the pane.
-	if box := fitted.Width - 1; box > 0 && ti.Width != box {
+	//
+	// Never below 1. A Width of 0 does not mean "one column", it turns the
+	// scrolling viewport OFF altogether, and an unbounded box on a one-column
+	// row puts the entire value back on screen — the defect this helper exists
+	// to close, reappearing at the one pane width nobody tests.
+	box := fitted.Width - 1
+	if box < 1 {
+		box = 1
+	}
+	if ti.Width != box {
 		ti.Width = box
 		pos := ti.Position()
 		ti.CursorEnd()
@@ -1685,21 +1710,38 @@ func poFitInputValue(ti *textinput.Model, shape jdeField, labelWidth, bodyWidth 
 	// regression this repairs shipped through a green suite. A passing suite is
 	// NOT evidence that the focused field is drawn correctly; the same blind
 	// spot covers every colour and every reverse-video cue on these screens.
+	//
+	// KNOWN AND DELIBERATE DIVERGENCE FROM THE PILOT: bubbles applies TextStyle
+	// to the value runes as well as to the pad, so a focused row here draws the
+	// typed value in reverse video too, where po_edit.go reverses only the fill.
+	// That was weighed and accepted — a fully reversed field is a legitimate
+	// green-screen look, and every alternative was a further workaround on the
+	// same root cause. It is TEMPORARY: scantty-jde-textinput-width restores
+	// exact pilot parity when it lands.
 	if focused {
 		ti.TextStyle = StyleJDEFieldFocused
-	} else {
-		ti.TextStyle = lipgloss.NewStyle()
+
+		// The focused value is the box's RENDERED View() — it carries the
+		// cursor's and TextStyle's escape sequences — and it is deliberately
+		// NOT cut here. Cutting a rendered string by runes drops the trailing
+		// SGR reset, or lands inside a sequence, and the terminal then draws
+		// everything after this row in reverse video: a garbled terminal rather
+		// than a merely wrong-looking row. What keeps this row inside the pane
+		// is ti.Width above, imposed BEFORE bubbles renders anything, which is
+		// the only place a bound on styled output belongs.
+		return jdeInputValue(*ti, true)
 	}
-	value := jdeInputValue(*ti, focused)
+	ti.TextStyle = lipgloss.NewStyle()
 
 	// A BLURRED box does not go through View() at all — jdeEchoValue reads the
-	// raw value so that a masked field cannot give up its mask — and the raw
-	// value has no viewport applied to it. The same width therefore has to be
-	// imposed here, or a row overruns the moment the cursor moves off it.
-	if lipgloss.Width(value) > fitted.Width {
-		value = truncateVisible(value, fitted.Width)
-	}
-	return value
+	// raw value so that a masked field cannot give up its mask — so the viewport
+	// never applies and the width has to be imposed here. The value is plain
+	// text, so cutting it is safe; fitCell and not truncateVisible because the
+	// cut has to ANNOUNCE itself, the way poLineContinuation, poAttachmentLines
+	// and orderPadHeader all do. An operator proof-reading a file path before
+	// pressing Enter must not be shown a shortened path that reads like a whole
+	// one.
+	return fitCell(jdeInputValue(*ti, false), fitted.Width)
 }
 
 // viewShip is the mark-shipped prompt: which line, and when it went.

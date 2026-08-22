@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -457,6 +458,132 @@ func TestPOView_TypedValueLongerThanItsFieldStaysInThePane(t *testing.T) {
 	}
 }
 
+// poClippedRow returns the one line of the CLIPPED render that carries `label`.
+func poClippedRow(t *testing.T, out, label string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, label) {
+			return line
+		}
+	}
+	t.Fatalf("no %q row in the render:\n%s", label, out)
+	return ""
+}
+
+// TestPOView_BlurredOverLongValueSaysItWasCut: the two halves of a text row are
+// bounded differently, and only one of them may be cut.
+//
+// A FOCUSED box scrolls: it shows the window the caret is in, so the value it
+// draws is complete-as-far-as-it-goes and carries no ellipsis. A BLURRED box
+// does not scroll at all — the raw value is read straight out of it — so the
+// row has to shorten it, and that cut must ANNOUNCE itself. It did not: the
+// upload sheet showed "/home/operator/scans/2026-08/in" with nothing to say 30
+// characters were missing, which is a plausible-but-wrong path for an operator
+// to proof-read before pressing Enter.
+func TestPOView_BlurredOverLongValueSaysItWasCut(t *testing.T) {
+	const path = "/home/operator/scans/2026-08/incoming/purchase-order-0042.pdf"
+	const head, tail = "/home/operator", "order-0042.pdf"
+
+	for _, width := range poViewWidths {
+		t.Run(widthName(width), func(t *testing.T) {
+			s, r := poAttachAt(t, width)
+			s.openUpload()
+			s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(path)})
+
+			focused := poClippedRow(t, r.View(), "File path")
+			if strings.Contains(focused, "…") {
+				t.Errorf("the FOCUSED row was cut and marked, but a scrolling box shows a whole window: %q", focused)
+			}
+			if !strings.Contains(focused, tail) {
+				t.Errorf("the focused row lost the caret end %q: %q", tail, focused)
+			}
+
+			// Down moves to Description, which blurs the path row.
+			s.Update(tea.KeyMsg{Type: tea.KeyDown})
+			blurred := poClippedRow(t, r.View(), "File path")
+			if !strings.Contains(blurred, "…") {
+				t.Errorf("the BLURRED row shortened a %d-column path with nothing to say so: %q",
+					lipgloss.Width(path), blurred)
+			}
+			if !strings.Contains(blurred, head) {
+				t.Errorf("a blurred box does not scroll, so the row should read from the START of the value: %q", blurred)
+			}
+		})
+	}
+}
+
+// TestPOFitInputValue_MaskedBlurredValueStaysMasked: the shortening applied to a
+// blurred row must go through jdeEchoValue's mask, not around it (sc-lmsi).
+func TestPOFitInputValue_MaskedBlurredValueStaysMasked(t *testing.T) {
+	const secret = "correct-horse-battery-staple-and-then-some-more"
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.EchoMode = textinput.EchoPassword
+	ti.EchoCharacter = '•'
+	ti.SetValue(secret)
+
+	shape := jdeField{Label: "Secret", Kind: jdeText, Width: 34}
+	got := poFitInputValue(&ti, shape, 11, screenBodyWidth(80), false)
+
+	for _, leak := range []string{"correct", "horse", "staple"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("the masked value leaked %q: %q", leak, got)
+		}
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("a masked value too long for its row should still say it was cut: %q", got)
+	}
+	if w, budget := lipgloss.Width(got), screenBodyWidth(80); w > budget {
+		t.Errorf("the masked value is %d wide against a %d-column pane: %q", w, budget, got)
+	}
+}
+
+// TestPOView_OrderPadPartNumberUsesThePaneItHas: the part number is the one
+// field an operator retypes into a vendor site, so 28 columns is the FLOOR the
+// pad's part column starts at and the pane is the only thing that caps it. The
+// conversion had turned 28 into a maximum, so a 45-column manufacturer number
+// ellipsised at 120 with half the pane standing empty beside it.
+func TestPOView_OrderPadPartNumberUsesThePaneItHas(t *testing.T) {
+	// 45 columns: wider than the 28-column floor at every width, and wider than
+	// an 80-column pane can hold — which is what separates "shortened because
+	// the column was pinned" from "shortened because there is genuinely no room".
+	const part = "MANUFACTURER-PART-NUMBER-0001-REV-C-ABCDEFGHI"
+	padAt := func(t *testing.T, width int) string {
+		t.Helper()
+		s, r := poDetailAt(t, width)
+		s.orderPad = true
+		s.orderPadExport = &omsapi.OrderPadExport{
+			Text: part + "\t144", Filename: "PO-2026-0042-order.csv", LineCount: 1,
+		}
+		return r.View()
+	}
+
+	for _, width := range []int{100, 120} {
+		t.Run(widthName(width), func(t *testing.T) {
+			out := padAt(t, width)
+			if !strings.Contains(out, part) {
+				t.Errorf("the %d-column pane has room for the whole part number and did not print it:\n%s", width, out)
+			}
+			if !strings.Contains(out, "144") {
+				t.Errorf("the quantity went missing from the %d-column pad:\n%s", width, out)
+			}
+		})
+	}
+
+	t.Run(widthName(80), func(t *testing.T) {
+		out := padAt(t, 80)
+		if strings.Contains(out, part) {
+			t.Errorf("a 51-column pane cannot hold a 45-column part number beside a quantity:\n%s", out)
+		}
+		if !strings.Contains(out, "…") {
+			t.Errorf("the pane forced a cut, so the row has to say so:\n%s", out)
+		}
+		if !strings.Contains(out, "144") {
+			t.Errorf("the quantity is the half of the row being checked and must survive:\n%s", out)
+		}
+	})
+}
+
 // TestPOView_NoRowOverrunsThePane: the positive form of the same rule. Every
 // line every purchasing viewing surface draws must fit the body width, at every
 // width — because clampToBox cuts rather than wraps, and a cut line says
@@ -570,6 +697,18 @@ func poViewSurfaces(t *testing.T, width int) []poViewSurface {
 		MissingSku: []string{"Gadget", "Bracket"},
 	}
 	out = append(out, poViewSurface{"order pad", pad.View, pad.orderPadBar(), width})
+
+	// A pad whose part number is wider than the column's 28-column floor: the
+	// column grows toward the pane, so the row's width has to come from what the
+	// pane can give and not from the value.
+	longPad, _ := poDetailAt(t, width)
+	longPad.orderPad = true
+	longPad.orderPadExport = &omsapi.OrderPadExport{
+		Text:      "MANUFACTURER-PART-NUMBER-0001-REV-C-ABCDEFGHI\t144",
+		Filename:  "PO-2026-0042-order.csv",
+		LineCount: 1,
+	}
+	out = append(out, poViewSurface{"order pad, long part #", longPad.View, longPad.orderPadBar(), width})
 
 	list, _ := poAttachAt(t, width)
 	out = append(out, poViewSurface{"attachment grid", list.View, list.listBar(), width})
