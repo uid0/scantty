@@ -964,3 +964,67 @@ func TestItemFormKit_A404LeavesTheSheetOrdinary(t *testing.T) {
 		t.Fatalf("writes = %v, want a single PATCH to /items/", fake.writes)
 	}
 }
+
+// TestItemFormKit_TheFrozenStockRowExplainsItselfAtTheFloor. The row is
+// read-only, so the one line saying WHY has to survive the clip — and it did
+// not: at 80 columns the pane is 51 and the row spends 33 of it before the hint
+// gets any, so a 33-column sentence was cut to "a kit carries no s". The
+// explanation of a frozen row being itself unreadable at the canonical width is
+// the exact defect this whole change has been closing.
+//
+// Asserted on the CLIPPED render, which is what the operator sees.
+func TestItemFormKit_TheFrozenStockRowExplainsItselfAtTheFloor(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormFixture(), width) // stock 0: the ordinary kit
+		raw, clipped := kitFormRow(t, s, width, "Current stock")
+		// The clamp changing the row at all IS the defect: it cuts with nothing
+		// to show it did.
+		if clipped != raw {
+			t.Errorf("at %d columns the frozen row is cut from %q to %q", width, raw, clipped)
+		}
+		if !strings.Contains(clipped, "no stock") {
+			t.Errorf("at %d columns the frozen row does not say why it is frozen: %q", width, clipped)
+		}
+	}
+}
+
+// TestItemFormKit_TheClearingWarningSurvivesTheFloorToo is the other half, and
+// the constraint the terse hint must not have cost: when a kit DOES carry stock,
+// the sheet still says so in full and still says what saving does to it.
+func TestItemFormKit_TheClearingWarningSurvivesTheFloorToo(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormStockedKit(7), width)
+		budget := screenBodyWidth(width)
+		clipped := clampToBox(strings.Join(s.formLines().text, "\n"), budget, 200)
+		flat := strings.Join(strings.Fields(clipped), " ")
+		for _, want := range []string{
+			"Recorded as 7 on hand",
+			"A kit holds no stock of its own, so saving this sheet clears that to 0.",
+		} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("at %d columns the clipped sheet lost %q:\n%s", width, want, clipped)
+			}
+		}
+		// And the row does not ALSO carry the terse hint: two sentences about a
+		// kit holding no stock would bury the half that says what saving does.
+		if _, row := kitFormRow(t, s, width, "Current stock"); strings.Contains(row, "no stock") {
+			t.Errorf("at %d columns the warning is duplicated on the row itself: %q", width, row)
+		}
+	}
+}
+
+// kitFormRow is the named field's row as rendered and as the operator actually
+// sees it — the second return is the first put through the same clamp Root
+// applies, so a test can assert the clamp changed nothing.
+func kitFormRow(t *testing.T, s *InventoryItemFormScreen, width int, label string) (string, string) {
+	t.Helper()
+	budget := screenBodyWidth(width)
+	for _, line := range s.formLines().text {
+		if !strings.Contains(line, label) {
+			continue
+		}
+		return line, clampToBox(line, budget, 1)
+	}
+	t.Fatalf("no %q row on the sheet at %d columns", label, width)
+	return "", ""
+}

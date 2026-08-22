@@ -109,10 +109,7 @@ func (s *InventoryItemFormScreen) fieldReadOnly(id int) bool {
 // they line up under the input area the way jdeNoteLines does, with the warning
 // lead supplierWarnLines uses.
 func (s *InventoryItemFormScreen) kitStockWarnLines(id, labelWidth int) []string {
-	// Read off s.item, which is what hydrate put IN the row: the note quotes the
-	// figure the operator can see on the line above it, not a second reading of
-	// the same record from the other endpoint.
-	if !s.fieldReadOnly(id) || s.item == nil || s.item.Stock == 0 {
+	if id != fCurrentStock || !s.kitStockWillBeCleared() {
 		return nil
 	}
 	note := fmt.Sprintf(
@@ -133,6 +130,39 @@ func (s *InventoryItemFormScreen) kitStockWarnLines(id, labelWidth int) []string
 		out = append(out, jdeStripIndent(labelWidth)+StyleStatusWarn.Render(lead+line))
 	}
 	return out
+}
+
+// kitStockWillBeCleared reports whether this sheet's save is about to write a
+// stored figure down to zero — a kit whose current stock is not already 0.
+//
+// It reads s.item, which is what hydrate put IN the row, so the warning quotes
+// the figure the operator can see rather than a second reading of the same
+// record from the other endpoint. It is one predicate rather than two because
+// the warning and the row's own hint have to agree about which of them is
+// speaking: exactly one of them explains the frozen row at a time.
+func (s *InventoryItemFormScreen) kitStockWillBeCleared() bool {
+	return s.fieldReadOnly(fCurrentStock) && s.item != nil && s.item.Stock != 0
+}
+
+// kitStockHint is the terse "why can I not type here?" for a kit's read-only
+// Current stock row, and it is deliberately SHORT rather than explanatory.
+//
+// The row spends its width before the hint gets any: at an 80-column terminal
+// the pane is 51, and jdeIndent + the 21-column label column + the leader + a
+// "0" + the gutter costs 33 of it. That leaves 18, which the sentence this used
+// to carry ("a kit carries no stock of its own", 33) overran by fifteen —
+// clampToBox then cut the one line on the sheet that explains why the row is
+// frozen, at the one width the whole screen is measured against.
+//
+// It goes quiet when the row is about to be CLEARED, because kitStockWarnLines
+// is then drawn underneath saying the same thing at length plus what saving
+// does to the figure. Two sentences about a kit holding no stock, one of them
+// clipped, would bury the half that matters.
+func (s *InventoryItemFormScreen) kitStockHint() string {
+	if s.kitStockWillBeCleared() {
+		return ""
+	}
+	return "kits hold no stock"
 }
 
 // kitErrLines is what the sheet says when "is this a kit?" could not be

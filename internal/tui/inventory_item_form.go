@@ -1232,13 +1232,12 @@ func (s *InventoryItemFormScreen) fieldUnit(id int) string {
 // mode.
 func (s *InventoryItemFormScreen) fieldHint(id int) string {
 	// A kit's stock is zero by construction — receiving one credits its component
-	// items, never itself — so the row is read-only and says why. The warning
-	// about what SAVING does to a non-zero figure is a separate, unconditional
-	// note under the row (kitStockWarnLines): a hint only shows where the cursor
-	// is standing, and this one has to be seen by an operator who never goes near
-	// the row (op-8n0).
+	// items, never itself — so the row is read-only and says why, in the width the
+	// row actually affords at 80 columns. What SAVING does to a non-zero figure is
+	// a longer and separate thing, wrapped under the row by kitStockWarnLines
+	// (op-8n0).
 	if s.fieldReadOnly(id) {
-		return "a kit carries no stock of its own"
+		return s.kitStockHint()
 	}
 	if unit := s.fieldUnit(id); unit != "" {
 		return unit
