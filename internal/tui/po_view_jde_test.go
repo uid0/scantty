@@ -1791,3 +1791,97 @@ func TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves(t *testing.T) {
 		}
 	}
 }
+
+// TestPOView_ReloadThatLosesTheOrderUnderASheet: a reload that comes back with
+// no order while one of the order-level sheets is open must not take the TUI
+// with it.
+//
+// The sequence is ordinary operation, not a corner: press r on a loaded order,
+// press S while the reload is in flight — openShipForm succeeds, because the
+// order on screen is still the old one — and then let the reload fail, which on
+// a shop floor means OMS is simply unreachable. poDetailLoadedMsg stores the nil
+// order unconditionally, and the very next frame used to dereference it inside
+// viewShip's "1-N" hint: no keystroke needed, the whole program died and left
+// the terminal in raw mode.
+//
+// It is driven through Update because it is the STATE MACHINE that was wrong. A
+// test that only rendered a nil-order screen in isolation passed throughout.
+func TestPOView_ReloadThatLosesTheOrderUnderASheet(t *testing.T) {
+	for _, width := range poViewWidths {
+		t.Run(widthName(width), func(t *testing.T) {
+			s, r := poDetailAt(t, width)
+
+			s.Update(poRuneKey("r"))
+			s.Update(poRuneKey("S"))
+			if !s.shipping {
+				t.Fatalf("S should have opened the mark-shipped sheet over the reload")
+			}
+
+			s.Update(poDetailLoadedMsg{err: fmt.Errorf("OMS unreachable")})
+
+			out := r.View()
+			if !strings.Contains(out, "OMS unreachable") {
+				t.Errorf("the failed reload should draw its error, got:\n%s", out)
+			}
+			if strings.Contains(out, "Mark item shipped") {
+				t.Errorf("the mark-shipped sheet cannot be the frame without an order:\n%s", out)
+			}
+
+			// Bar honesty holds on the frame that answers for "no order": the
+			// two keys that still work are named and nothing else is.
+			bar := s.sheetBar()
+			if !barHas(bar, "Esc", "Back") || !barHas(bar, "r", "Refresh") {
+				t.Errorf("the no-order frame should name Esc and r, got %v", bar)
+			}
+			for _, dead := range [][2]string{{"Enter", "Receive"}, {"S", "Ship line"}, {"E", "Edit"}, {"x", "Order pad"}} {
+				if barHas(bar, dead[0], dead[1]) {
+					t.Errorf("the no-order frame names %s=%s, which needs an order", dead[0], dead[1])
+				}
+			}
+
+			// And the keys that ACT there are that frame's: Enter is inert
+			// rather than submitting a shipment against an order that is gone.
+			s.Update(poKeyMsg("enter"))
+			if got := r.View(); got != out {
+				t.Errorf("Enter should do nothing on the no-order frame:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestPOView_RefreshKeepsTheReadingPosition: the transient loading frame is not
+// allowed to throw away where the operator was reading.
+//
+// The sheet's scroll offset is clamped against the body being drawn and stored
+// back. The loading / error / not-found bodies are one line, so clamping against
+// one of them yields 0 — and every reload passes through one: r, and also send,
+// confirm, void and mark-delivered, which all reload when they land. Scrolling
+// into the line items and pressing r used to come back at the top.
+func TestPOView_RefreshKeepsTheReadingPosition(t *testing.T) {
+	for _, width := range poViewWidths {
+		t.Run(widthName(width), func(t *testing.T) {
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			r := poViewRootSized(t, s, width, 24)
+
+			top := r.View()
+			s.Update(poKeyMsg("pgdown"))
+			reading := r.View()
+			if reading == top {
+				t.Fatalf("the fixture must overflow the pane for this to mean anything:\n%s", top)
+			}
+
+			s.Update(poRuneKey("r"))
+			loading := r.View()
+			if !strings.Contains(loading, "Loading purchase order") {
+				t.Fatalf("r should draw the loading frame, got:\n%s", loading)
+			}
+
+			s.Update(poDetailLoadedMsg{po: poViewPO()})
+			if got := r.View(); got != reading {
+				t.Errorf("the reload should come back where the operator was reading, got:\n%s\nwant:\n%s", got, reading)
+			}
+		})
+	}
+}

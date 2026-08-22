@@ -185,7 +185,45 @@ func (s *PurchaseOrderDetailScreen) Init() tea.Cmd {
 // receive characters — and the overlay's scroll/close keys stay local —
 // without the app dispatcher claiming letters like 'r' / 'S' / 'v' / 'd'.
 func (s *PurchaseOrderDetailScreen) WantsRawInput() bool {
-	return s.shipping || s.voiding || s.delivering || s.orderPad
+	return s.orderModal() != poNoModal || s.orderPad
+}
+
+// poOrderModal names the order-level sheet that owns the frame, if any.
+type poOrderModal int
+
+const (
+	poNoModal poOrderModal = iota
+	poShipModal
+	poVoidModal
+	poDeliverModal
+)
+
+// orderModal is the ONE place that decides which of the order-level sheets is
+// open, read by View to pick the frame and by Update to pick the key handler so
+// the frame on screen and the keys that act are always the same sheet's.
+//
+// All three of them read and submit against the loaded order — viewShip sizes
+// its "1-N" hint off len(po.Items), and submitShip, handleVoidKey and
+// submitDeliver all send po.ID — so none of them is open without one. That is
+// not defensiveness: a reload can take the order away UNDER an open sheet
+// (press r, press S while it is in flight, then let the reload fail — OMS being
+// unreachable is the ordinary shop-floor case — and poDetailLoadedMsg stores
+// the nil order), and the next frame then dereferenced it and killed the TUI
+// with the terminal left in raw mode. The operator gets the not-found frame
+// instead, which names the two keys that still work there.
+func (s *PurchaseOrderDetailScreen) orderModal() poOrderModal {
+	if s.po == nil {
+		return poNoModal
+	}
+	switch {
+	case s.shipping:
+		return poShipModal
+	case s.voiding:
+		return poVoidModal
+	case s.delivering:
+		return poDeliverModal
+	}
+	return poNoModal
 }
 
 // HandlesKey claims lowercase 's' (send-to-supplier) so it beats the global
@@ -292,13 +330,12 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, tea.Batch(copyToClipboardCmd(m.export.Text), Status(s.orderPadToast(), s.orderPadToastLevel()))
 
 	case tea.KeyMsg:
-		if s.shipping {
+		switch s.orderModal() {
+		case poShipModal:
 			return s.handleShipKey(m)
-		}
-		if s.voiding {
+		case poVoidModal:
 			return s.handleVoidKey(m)
-		}
-		if s.delivering {
+		case poDeliverModal:
 			return s.handleDeliverKey(m)
 		}
 		if s.orderPad {
@@ -877,14 +914,15 @@ func (s *PurchaseOrderDetailScreen) orderPadToastLevel() StatusLevel {
 // ---------------------------------------------------------------------------
 
 func (s *PurchaseOrderDetailScreen) View() string {
-	switch {
-	case s.shipping:
+	switch s.orderModal() {
+	case poShipModal:
 		return s.viewShip()
-	case s.voiding:
+	case poVoidModal:
 		return s.viewVoid()
-	case s.delivering:
+	case poDeliverModal:
 		return s.viewDeliver()
-	case s.orderPad:
+	}
+	if s.orderPad {
 		return s.viewOrderPad()
 	}
 	return s.viewSheet()
@@ -892,11 +930,25 @@ func (s *PurchaseOrderDetailScreen) View() string {
 
 // viewSheet draws the order itself: the columnar body, windowed at the
 // operator's scroll offset, over the persistent bar.
+//
+// The clamped offset is stored back only when the ORDER is what was framed. The
+// note frames are one line, so clamping against one of them returns 0, and
+// writing that back threw the operator's reading position away every time the
+// sheet passed through a transient state: scroll down into the line items,
+// press r — or send / confirm / void / mark delivered, all of which reload —
+// and the sheet came back at the top. The offset belongs to the order's body
+// and is only ever re-measured against it.
 func (s *PurchaseOrderDetailScreen) viewSheet() string {
-	body := s.sheetBody()
+	note := s.sheetNote()
+	body := note
+	if body == nil {
+		body = s.sheetLines()
+	}
 	status := jdeStatusLine(s.loading || s.transitioning, "Working…", "")
 	frame, offset := s.frameScrolled(nil, body, s.scroll, status, s.sheetBar())
-	s.scroll = offset
+	if note == nil {
+		s.scroll = offset
+	}
 	return frame
 }
 
@@ -914,6 +966,17 @@ func (s *PurchaseOrderDetailScreen) viewSheet() string {
 // Every frame reads its body from here, including sheetScrolls, so "does this
 // body move?" is asked about the body actually on screen.
 func (s *PurchaseOrderDetailScreen) sheetBody() *jdeLines {
+	if note := s.sheetNote(); note != nil {
+		return note
+	}
+	return s.sheetLines()
+}
+
+// sheetNote is the one-line stand-in body for a sheet that has no order to
+// draw — loading, load error, not found — and nil once the order is there. It
+// is separate from sheetBody so viewSheet can tell a stand-in from the order
+// itself and leave the scroll offset alone while one is on screen.
+func (s *PurchaseOrderDetailScreen) sheetNote() *jdeLines {
 	note := func(line string) *jdeLines {
 		l := &jdeLines{}
 		l.Add(line)
@@ -928,7 +991,7 @@ func (s *PurchaseOrderDetailScreen) sheetBody() *jdeLines {
 	case s.po == nil:
 		return note(jdeIndent + StyleMuted.Render("Purchase order not found."))
 	}
-	return s.sheetLines()
+	return nil
 }
 
 // sheetBar names every key that works on the sheet, and only those. The three
