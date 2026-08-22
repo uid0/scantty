@@ -208,31 +208,36 @@ func TestPODetailKit_TheLineShowsWhatItWillCredit(t *testing.T) {
 }
 
 // TestPODetailKit_TheClippedRenderLosesNothing — the same measurement on the
-// screen that draws the line first, narrowed to the BLOCK this bead adds.
+// screen that draws the line first, narrowed to the ROWS a kit line contributes.
 //
 // That narrowing is deliberate, not an oversight: the PO detail body already
 // loses content at 80 columns that predates kits entirely — its aligned cost row
 // (PART/UNIT/QTY/TOTAL) is 81 columns wide against the 51 an 80-column terminal
-// has, and a long line description overruns on its own. Those are sc-xxpa. What
-// a kit line CONTRIBUTES has to fit the floor regardless, and the tag it adds is
-// drawn ahead of the description precisely so the clip cannot eat it.
+// has. That is sc-xxpa. What a kit line CONTRIBUTES has to fit the floor
+// regardless, and the tag it adds is drawn ahead of the description, inside the
+// grid's Item cell, precisely so the clip cannot eat it.
+//
+// Measured on the rows the sheet actually draws rather than on a
+// poKitCreditBlock called with a hand-written indent: the block hangs off the
+// grid's item column (poLineGridItemIndent), so an indent invented by the test
+// would measure a layout no operator sees and could pass while the real one
+// overran.
 func TestPODetailKit_TheClippedRenderLosesNothing(t *testing.T) {
 	empty := poKitFixtureLine()
 	empty.KitComponents = nil
 	for _, line := range []omsapi.PurchaseOrderItem{poKitFixtureLine(), empty} {
 		for _, width := range kitTestWidths {
 			budget := screenBodyWidth(width)
-			block := poKitCreditBlock(line.KitComponents, poKitDetailLead,
-				"    ", budget, line.QuantityOrdered)
-			for _, l := range block {
+			rows := poKitDetailRows(line, budget)
+			for _, l := range rows {
 				if w := lipgloss.Width(l); w > budget {
-					t.Errorf("at %d columns: a kit block line is %d wide but the pane is %d: %q",
+					t.Errorf("at %d columns: a kit line row is %d wide but the pane is %d: %q",
 						width, w, budget, l)
 				}
 			}
 			// And the tag survives the clip of an over-long description, which is
 			// the whole reason it leads the row.
-			head := poKitDetailRows(line, budget)[0]
+			head := rows[0]
 			if !strings.Contains(clampToBox(head, budget, 1), poKitTag) {
 				t.Errorf("at %d columns the kit tag was clipped off the line: %q", width, head)
 			}
