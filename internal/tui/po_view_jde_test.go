@@ -333,6 +333,76 @@ func assertClipped(t *testing.T, out string, width int, name string, want ...str
 	}
 }
 
+// poWideCellPO is poViewPO with a single line whose QUANTITY and COST are both
+// wider than the columns the poGrid* constants budget for them — 10000 is five
+// columns against four, "$12345.6700" is eleven against ten. OMS money arrives
+// with either two or four decimals, so the wide cost is an ordinary order and
+// not a contrived one.
+func poWideCellPO() *omsapi.PurchaseOrder {
+	po := poViewPO()
+	po.Items = []omsapi.PurchaseOrderItem{{
+		ID: "line-wide", Description: "M3 hex bolt, stainless",
+		ItemDetails:      map[string]any{"sku": "M3-HEX-BOLT-SS"},
+		QuantityOrdered:  10000,
+		QuantityReceived: 10000,
+		IsFullyReceived:  true,
+		UnitCostOrdered:  omsapi.DecimalString("1.2345"),
+		EstimatedCost:    omsapi.DecimalString("12345.6700"),
+		ActualCost:       omsapi.DecimalString("12345.6700"),
+		// Comfortably in the future on purpose: poShipTokens repeats an overdue
+		// or imminent ship-by as a reading under the row, and that second copy
+		// would hide a date the GRID had lost its tail off.
+		ExpectedShipmentDate: "2027-03-15",
+	}}
+	return po
+}
+
+// poScrollToLineGrid pages the sheet until the line-item grid is in frame, so a
+// caller that renders ONE frame renders the one with the grid on it.
+func poScrollToLineGrid(s *PurchaseOrderDetailScreen, want string) {
+	for i := 0; i <= s.sheetLines().Len(); i++ {
+		if strings.Contains(s.View(), want) {
+			return
+		}
+		before := s.scroll
+		s.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		if s.View(); s.scroll == before {
+			return
+		}
+	}
+}
+
+// TestPOView_WideGridCellDoesNotCutTheCellsBesideIt: a cell wider than its
+// budgeted column must widen nothing.
+//
+// poLineGridRow pads each fixed cell to its poGrid* constant and padCell never
+// truncates, so an over-wide value used to push the whole ROW past the pane and
+// clampToBox ate whatever was on the right of it — at 80 columns the ship date
+// reached the terminal as "2026-08-1", a date silently missing a digit, and at
+// 100 and 120 it was the flag that lost its tail. Every existing fixture used
+// two- and three-digit quantities, which is why this was invisible.
+//
+// The assertions are on the CLIPPED render: the wide values themselves and the
+// cells to their right all have to arrive whole.
+func TestPOView_WideGridCellDoesNotCutTheCellsBesideIt(t *testing.T) {
+	for _, width := range poViewWidths {
+		t.Run(widthName(width), func(t *testing.T) {
+			s, r := poDetailAt(t, width)
+			s.po = poWideCellPO()
+			for _, want := range []string{
+				"10000",       // the over-wide quantity, whole
+				"$12345.6700", // the over-wide cost, whole
+				"2027-03-15",  // the ship date, which sits to their right
+				"✓ received",  // and the flag, which sits right of that
+			} {
+				if !poSeenWhileScrolling(s, r, want) {
+					t.Errorf("%q never survives the clip at %d columns; last frame:\n%s", want, width, r.View())
+				}
+			}
+		})
+	}
+}
+
 // TestPOView_TypedValueLongerThanItsFieldStaysInThePane: an operator typing a
 // path longer than the field must still see what they are typing.
 //
@@ -466,6 +536,14 @@ func poViewSurfaces(t *testing.T, width int) []poViewSurface {
 
 	sheet, _ := poDetailAt(t, width)
 	out = append(out, poViewSurface{"detail sheet", sheet.View, sheet.sheetBar(), width})
+
+	// The same sheet carrying a line whose quantity and cost are wider than the
+	// columns budgeted for them: a grid row's width has to come from the values
+	// on it, not from the constants.
+	wide, _ := poDetailAt(t, width)
+	wide.po = poWideCellPO()
+	poScrollToLineGrid(wide, "10000")
+	out = append(out, poViewSurface{"detail sheet, wide grid cells", wide.View, wide.sheetBar(), width})
 
 	ship, _ := poDetailAt(t, width)
 	ship.openShipForm()

@@ -1174,16 +1174,67 @@ func (s *PurchaseOrderDetailScreen) totalFields() []jdeField {
 // under the row, where jdeWrapTokens wraps instead of trimming.
 type poLineGridFit struct {
 	itemW int
+	// The FIXED columns' widths, budgeted from the values this order actually
+	// carries rather than assumed from the poGrid* constants. poLineGridRow pads
+	// a cell to its constant and padCell never truncates, so a value wider than
+	// its constant used to widen the whole ROW: QuantityOrdered 10000 is five
+	// columns in a four-column budget, and at 80 the ship date reached the
+	// terminal as "2026-08-1" — a date silently missing a digit. Measuring the
+	// columns instead lets the ITEM column absorb the difference, which is the
+	// same guarantee poFlagBudget gives the flag cell.
+	numW  int
+	qtyW  int
+	costW int
+	shipW int
+	flagW int
 	ship  bool
 	flag  bool
 }
 
-// Grid arithmetic: six cells joined by a two-column gutter, behind jdeIndent.
+// The ceilings on those measured widths. They are set well past any value OMS
+// can legitimately send — a seven-digit quantity, a "$1234567.8900" cost, an
+// ISO date with room to spare — so an ordinary line is never shortened, and
+// they exist only so that a garbage value cannot eat the item column and push
+// the row off the pane anyway. Past the ceiling fitCell ellipsises, which at
+// least SAYS the value was cut; clampToBox says nothing.
 const (
-	poGridGutter = 2
-	// poGridCoreW is number + quantity + cost and the gutters between them.
-	poGridCoreW = len(jdeIndent) + poGridNumW + poGridGutter + poGridGutter + poGridQtyW + poGridGutter + poGridCostW
+	poGridNumMaxW  = 5
+	poGridQtyMaxW  = 9
+	poGridCostMaxW = 14
+	poGridShipMaxW = 12
 )
+
+// poGridCell fits a cell to the width its column was budgeted at and pads it
+// there, so no value can widen the row and every row's columns start in the
+// same screen position. poLineGridRow pads to the poGrid* CONSTANTS, which is
+// both too narrow for a measured column and left alone here on purpose:
+// po_edit.go owns that function and is a separate slice.
+func poGridCell(s string, w int, align colAlign) string {
+	return padCell(fitCell(s, w), w, align)
+}
+
+// poDetailGridRow is poLineGridRow with every cell already fitted and padded to
+// this pane's budget.
+func poDetailGridRow(fit poLineGridFit, num, item, qty, cost, ship, flag string) string {
+	return poLineGridRow(
+		poGridCell(num, fit.numW, alignRight),
+		poGridCell(item, fit.itemW, alignLeft),
+		poGridCell(qty, fit.qtyW, alignRight),
+		poGridCell(cost, fit.costW, alignRight),
+		poGridCell(ship, fit.shipW, alignLeft),
+		poGridCell(flag, fit.flagW, alignLeft),
+		fit.itemW,
+	)
+}
+
+// Grid arithmetic: six cells joined by a two-column gutter, behind jdeIndent.
+const poGridGutter = 2
+
+// coreW is number + quantity + cost and the gutters between them, at the widths
+// this order's own values need.
+func (fit poLineGridFit) coreW() int {
+	return len(jdeIndent) + fit.numW + poGridGutter + poGridGutter + fit.qtyW + poGridGutter + fit.costW
+}
 
 // poFlagBudget is how wide the flag cell has to be RESERVED: the widest string
 // poLineFlag can actually return, in display columns.
@@ -1212,7 +1263,12 @@ var poFlagBudget = func() int {
 // because that is the order of how much a narrow pane loses by it: the flag is
 // one word that reads fine as a reading, the ship date is a whole reading of its
 // own, and the item name is the row's subject and never goes.
-func poFitLineGrid(bodyWidth int) poLineGridFit {
+//
+// It is handed the lines so that the fixed columns can be budgeted at what they
+// will actually hold. A number cell is not a description: "1000…" is a WRONG
+// quantity rather than a shortened one, so the column grows and the item column
+// gives up the room.
+func poFitLineGrid(bodyWidth int, items []omsapi.PurchaseOrderItem) poLineGridFit {
 	const minItemW, maxItemW = 12, 44
 	if bodyWidth <= 0 {
 		bodyWidth = 76
@@ -1226,15 +1282,40 @@ func poFitLineGrid(bodyWidth int) poLineGridFit {
 		}
 		return w
 	}
-	full := poGridCoreW + poGridGutter + poGridShipW + poGridGutter + poFlagBudget
+	widen := func(at *int, s string, ceiling int) {
+		if w := lipgloss.Width(s); w > *at {
+			if w > ceiling {
+				w = ceiling
+			}
+			*at = w
+		}
+	}
+	fit := poLineGridFit{
+		numW:  poGridNumW,
+		qtyW:  poGridQtyW,
+		costW: poGridCostW,
+		shipW: poGridShipW,
+		flagW: poFlagBudget,
+	}
+	for i, li := range items {
+		widen(&fit.numW, strconv.Itoa(i+1), poGridNumMaxW)
+		widen(&fit.qtyW, strconv.Itoa(li.QuantityOrdered), poGridQtyMaxW)
+		widen(&fit.costW, poLineCostCell(li), poGridCostMaxW)
+		widen(&fit.shipW, firstNonEmpty(li.ExpectedShipmentDate, "—"), poGridShipMaxW)
+	}
+
+	full := fit.coreW() + poGridGutter + fit.shipW + poGridGutter + fit.flagW
 	if w := bodyWidth - full; w >= minItemW {
-		return poLineGridFit{itemW: clamp(w), ship: true, flag: true}
+		fit.itemW, fit.ship, fit.flag = clamp(w), true, true
+		return fit
 	}
-	withShip := poGridCoreW + poGridGutter + poGridShipW
+	withShip := fit.coreW() + poGridGutter + fit.shipW
 	if w := bodyWidth - withShip; w >= minItemW {
-		return poLineGridFit{itemW: clamp(w), ship: true}
+		fit.itemW, fit.ship = clamp(w), true
+		return fit
 	}
-	return poLineGridFit{itemW: clamp(bodyWidth - poGridCoreW)}
+	fit.itemW = clamp(bodyWidth - fit.coreW())
+	return fit
 }
 
 // addLineItems draws the lines as the JD Edwards detail grid po_edit.go picks
@@ -1258,12 +1339,12 @@ func (s *PurchaseOrderDetailScreen) addLineItems(l *jdeLines, supplier string) {
 		return
 	}
 	l.Add(StyleJDEHeading.Render(fmt.Sprintf("Line items (%d)", len(po.Items))))
-	fit := poFitLineGrid(s.bodyWidth())
+	fit := poFitLineGrid(s.bodyWidth(), po.Items)
 	ship := ""
 	if fit.ship {
 		ship = "Ship date"
 	}
-	l.Add(StyleMuted.Render(poLineGridRow("#", "Item", "Qty", "Cost", ship, "", fit.itemW)))
+	l.Add(StyleMuted.Render(poDetailGridRow(fit, "#", "Item", "Qty", "Cost", ship, "")))
 	for i, li := range po.Items {
 		for _, line := range poLineBlock(i+1, li, supplier, fit, s.bodyWidth()) {
 			l.Add(line)
@@ -1282,14 +1363,14 @@ func poLineBlock(lineNum int, li omsapi.PurchaseOrderItem, poSupplier string, fi
 	if fit.flag {
 		flag = poLineFlag(li)
 	}
-	out := []string{poLineGridRow(
+	out := []string{poDetailGridRow(
+		fit,
 		strconv.Itoa(lineNum),
-		fitCell(li.DisplayLabel(), fit.itemW),
+		li.DisplayLabel(),
 		strconv.Itoa(li.QuantityOrdered),
 		poLineCostCell(li),
 		ship,
 		flag,
-		fit.itemW,
 	)}
 	out = append(out, jdeWrapTokens(poLineTokens(li, poSupplier, fit), poLineGridItemIndent, bodyWidth)...)
 
@@ -1544,6 +1625,9 @@ func fitCellIf(s string, w int) string {
 // LOCAL WORKAROUND — bead scantty-jde-textinput-width. DELETE this helper and
 // its call sites on the four sheets (po_detail.go's ship, void and deliver
 // sheets and po_attachments.go's upload sheet) when the shared-layer fix lands.
+// That bead removes BOTH halves of what this function does: the ti.Width
+// bounding AND the TextStyle assignment below, which only exists to repair what
+// the bounding costs.
 //
 // jdeFitRow sizes the jdeField's FILL, not the bubbles textinput that produced
 // the value, and in bubbles v1.0.0 a box left at Width 0 has no scrolling
@@ -1583,6 +1667,28 @@ func poFitInputValue(ti *textinput.Model, shape jdeField, labelWidth, bodyWidth 
 		pos := ti.Position()
 		ti.CursorEnd()
 		ti.SetCursor(pos)
+	}
+
+	// A bounded box pads its own value out to Width, which leaves jdeFieldArea
+	// nothing to draw: `fill := width - lipgloss.Width(f.Value)` comes out 0 and
+	// the reverse-video block that says WHERE THE CURSOR IS disappears. The
+	// padding is emitted with the box's TextStyle, so handing it
+	// StyleJDEFieldFocused puts the highlight back on the exact columns
+	// jdeFieldArea used to own. It is read fresh each render because a theme
+	// switch reassigns the style, and it is CLEARED on a blurred row: a box that
+	// kept it would highlight a field the cursor is not standing on, inverting
+	// the one signal this whole layer uses to say where the operator is.
+	//
+	// NOTE FOR WHOEVER READS THIS NEXT: no test can catch this class of bug
+	// today. lipgloss renders flat in a test binary, so a lost highlight and a
+	// present one produce byte-identical strings of identical width — the
+	// regression this repairs shipped through a green suite. A passing suite is
+	// NOT evidence that the focused field is drawn correctly; the same blind
+	// spot covers every colour and every reverse-video cue on these screens.
+	if focused {
+		ti.TextStyle = StyleJDEFieldFocused
+	} else {
+		ti.TextStyle = lipgloss.NewStyle()
 	}
 	value := jdeInputValue(*ti, focused)
 

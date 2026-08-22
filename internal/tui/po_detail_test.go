@@ -34,7 +34,8 @@ func poDetailRow(t *testing.T, body, label string) string {
 // poLineRows renders one line item's whole block — the grid row plus the
 // readings wrapped under it — as the detail sheet draws it.
 func poLineRows(li omsapi.PurchaseOrderItem, supplier string) string {
-	return strings.Join(poLineBlock(1, li, supplier, poFitLineGrid(76), 76), "\n")
+	fit := poFitLineGrid(76, []omsapi.PurchaseOrderItem{li})
+	return strings.Join(poLineBlock(1, li, supplier, fit, 76), "\n")
 }
 
 func TestPOLineGridCostColumnAligns(t *testing.T) {
@@ -56,8 +57,11 @@ func TestPOLineGridCostColumnAligns(t *testing.T) {
 		ActualCost:      omsapi.DecimalString("37.50"),
 	}
 
-	rowA := poLineBlock(1, a, "", poFitLineGrid(76), 76)[0]
-	rowB := poLineBlock(2, b, "", poFitLineGrid(76), 76)[0]
+	// One fit across both lines, as the sheet builds it: the columns are
+	// budgeted from every line on the order, so both rows share them.
+	fit := poFitLineGrid(76, []omsapi.PurchaseOrderItem{a, b})
+	rowA := poLineBlock(1, a, "", fit, 76)[0]
+	rowB := poLineBlock(2, b, "", fit, 76)[0]
 	dotA := strings.Index(rowA, ".")
 	dotB := strings.Index(rowB, ".")
 	if dotA < 0 || dotA != dotB {
@@ -195,7 +199,7 @@ func TestPOShipTokensQuietWhenNotUrgent(t *testing.T) {
 		Description:          "Widget",
 		ExpectedShipmentDate: time.Now().UTC().AddDate(0, 2, 0).Format("2006-01-02"),
 	}
-	if got := poShipTokens(li, poFitLineGrid(76)); len(got) != 0 {
+	if got := poShipTokens(li, poFitLineGrid(76, []omsapi.PurchaseOrderItem{li})); len(got) != 0 {
 		t.Errorf("a distant ship-by should add no reading, got %+v", got)
 	}
 	if out := poLineRows(li, ""); !strings.Contains(out, li.ExpectedShipmentDate) {

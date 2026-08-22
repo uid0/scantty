@@ -184,6 +184,14 @@ func jdeFieldArea(f jdeField) string {
 		// that fill is the underscored run of a green-screen form; focused it
 		// is a solid reverse-video field, which is what makes the row the
 		// operator is standing in unmistakable without moving any columns.
+		//
+		// This holds only while the CALLER leaves a fill to draw. A caller that
+		// bounds its textinput (bubbles pads the value out to Width itself)
+		// arrives here with fill 0 and gets no highlight at all — see
+		// poFitInputValue in po_detail.go, and bead scantty-jde-textinput-width,
+		// which moves that bounding in here. No test catches the difference:
+		// lipgloss renders flat in a test binary, so a lost highlight and a
+		// present one are byte-identical.
 		width := f.Width
 		if width <= 0 {
 			width = jdeFieldWidth
