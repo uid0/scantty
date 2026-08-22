@@ -281,9 +281,14 @@ func (s *PurchaseOrderAttachmentsScreen) openUpload() tea.Cmd {
 
 // pageStep is how many rows the grid is currently showing, computed from the
 // same lines View draws so a page moves by exactly what the operator can see.
+//
+// The budget is bodyRowsForBar alone because viewList passes frameWrapped no
+// header, so that IS the frame's own avail. It used to subtract one more for a
+// header that is not there, and a page then advanced by one navigable row fewer
+// than the operator could see — the comment above claiming the opposite.
 func (s *PurchaseOrderAttachmentsScreen) pageStep() int {
 	body, _ := s.listLines()
-	avail := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), s.listBar())) - 1
+	avail := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), s.listBar()))
 	if avail < 1 {
 		avail = 1
 	}
@@ -501,13 +506,28 @@ func (s *PurchaseOrderAttachmentsScreen) listBar() []actionBarItem {
 // one row too tall.
 func (s *PurchaseOrderAttachmentsScreen) listBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Upload"}, {"Esc", "Back"}}
+	if s.listMoves() {
+		items = append(items, actionBarItem{"UP/DN", "Move"})
+	}
 	if len(s.attachments) > 0 {
-		items = append(items, actionBarItem{"UP/DN", "Move"}, actionBarItem{"Ctrl-X", "Delete"})
+		items = append(items, actionBarItem{"Ctrl-X", "Delete"})
 	}
 	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return append(items, actionBarItem{"r", "Refresh"})
+}
+
+// listMoves reports whether Up/Down have anywhere to go — the condition
+// updateList's own arms are gated on (`cursor < len-1` and `cursor > 0`), which
+// no cursor can satisfy with a single row.
+//
+// Delete deliberately does NOT share it: Ctrl-X works on one file, so it keeps
+// the `> 0` condition its handler reads. The two conditions look alike and are
+// not the same one, which is how the bar came to advertise a movement pair that
+// could not move on the repo's own canonical single-attachment fixture.
+func (s *PurchaseOrderAttachmentsScreen) listMoves() bool {
+	return len(s.attachments) > 1
 }
 
 // listPages reports whether the grid is taller than the pane leaves it, and is

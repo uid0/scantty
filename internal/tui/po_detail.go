@@ -334,7 +334,7 @@ func (s *PurchaseOrderDetailScreen) handleSheetKey(m tea.KeyMsg) (Screen, tea.Cm
 		case "end":
 			// The frame clamps whatever it is handed, so "past the end" is how
 			// the end is asked for.
-			s.scroll = s.sheetLines().Len()
+			s.scroll = s.sheetBody().Len()
 		}
 		return s, nil
 
@@ -877,15 +877,6 @@ func (s *PurchaseOrderDetailScreen) orderPadToastLevel() StatusLevel {
 // ---------------------------------------------------------------------------
 
 func (s *PurchaseOrderDetailScreen) View() string {
-	if s.loading {
-		return StyleMuted.Render("Loading purchase order…")
-	}
-	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + fitCellIf(s.loadErr, s.bodyWidth()-poErrPrefixW) + "\n\n" + StyleMuted.Render("press r to retry · esc back")
-	}
-	if s.po == nil {
-		return StyleMuted.Render("Purchase order not found.")
-	}
 	switch {
 	case s.shipping:
 		return s.viewShip()
@@ -902,11 +893,42 @@ func (s *PurchaseOrderDetailScreen) View() string {
 // viewSheet draws the order itself: the columnar body, windowed at the
 // operator's scroll offset, over the persistent bar.
 func (s *PurchaseOrderDetailScreen) viewSheet() string {
-	body := s.sheetLines()
+	body := s.sheetBody()
 	status := jdeStatusLine(s.loading || s.transitioning, "Working…", "")
 	frame, offset := s.frameScrolled(nil, body, s.scroll, status, s.sheetBar())
 	s.scroll = offset
 	return frame
+}
+
+// sheetBody is what the sheet draws in its CURRENT state — the order itself
+// once it has loaded, and before that the one-line loading, load-error or
+// not-found note.
+//
+// Those three used to return early out of View() as bare styled strings with no
+// jdeLines, no status row and no bar, while handleSheetKey stayed fully live
+// behind them: press r on a loaded sheet and then E while the reload is in
+// flight, and you left for the edit screen from a frame that named no keys at
+// all. They are frames of this screen like any other, so they are drawn like
+// any other and the bar names what works on them.
+//
+// Every frame reads its body from here, including sheetScrolls, so "does this
+// body move?" is asked about the body actually on screen.
+func (s *PurchaseOrderDetailScreen) sheetBody() *jdeLines {
+	note := func(line string) *jdeLines {
+		l := &jdeLines{}
+		l.Add(line)
+		return l
+	}
+	switch {
+	case s.loading:
+		return note(jdeIndent + StyleMuted.Render("Loading purchase order…"))
+	case s.loadErr != "":
+		return note(jdeIndent + StyleStatusError.Render("Error: ") +
+			fitCellIf(s.loadErr, s.bodyWidth()-len(jdeIndent)-poErrPrefixW))
+	case s.po == nil:
+		return note(jdeIndent + StyleMuted.Render("Purchase order not found."))
+	}
+	return s.sheetLines()
 }
 
 // sheetBar names every key that works on the sheet, and only those. The three
@@ -927,26 +949,32 @@ func (s *PurchaseOrderDetailScreen) sheetBar() []actionBarItem {
 // keys that do nothing — enough to push the bar onto a second row and take a
 // body row with it.
 func (s *PurchaseOrderDetailScreen) sheetScrolls() bool {
-	return poCanScroll(s.jdeScreen, s.sheetLines(), 0, s.sheetBarItems(true))
+	return poCanScroll(s.jdeScreen, s.sheetBody(), 0, s.sheetBarItems(true))
 }
 
 // sheetBarItems builds the bar for a given scroll state. sheetBar and
 // sheetScrolls both go through it so the bar that is MEASURED is the bar that is
 // drawn.
 func (s *PurchaseOrderDetailScreen) sheetBarItems(scroll bool) []actionBarItem {
-	items := []actionBarItem{
-		{"Enter", "Receive"},
-		{"Esc", "Back"},
+	// Enter, E, A and x every one guard on a loaded order and do nothing
+	// without one, so on the loading and not-found frames the bar names only Esc
+	// and r — which are the only two keys that work there.
+	items := []actionBarItem{}
+	if s.po != nil {
+		items = append(items, actionBarItem{"Enter", "Receive"})
 	}
+	items = append(items, actionBarItem{"Esc", "Back"})
 	if scroll {
 		items = append(items,
 			actionBarItem{"UP/DN", "Scroll"},
 			actionBarItem{"PgUp/PgDn", "Page"},
 			actionBarItem{"Home/End", "Top/End"})
 	}
-	items = append(items,
-		actionBarItem{"E", "Edit"},
-		actionBarItem{"A", "Files"})
+	if s.po != nil {
+		items = append(items,
+			actionBarItem{"E", "Edit"},
+			actionBarItem{"A", "Files"})
+	}
 	if s.po != nil {
 		switch s.po.Status {
 		case "draft":
@@ -961,7 +989,9 @@ func (s *PurchaseOrderDetailScreen) sheetBarItems(scroll bool) []actionBarItem {
 			items = append(items, actionBarItem{"d", "Delivered"})
 		}
 	}
-	items = append(items, actionBarItem{"x", "Order pad"})
+	if s.po != nil {
+		items = append(items, actionBarItem{"x", "Order pad"})
+	}
 	// Void is offered whenever the PO isn't already voided/received (the
 	// backend still enforces the staff/COO permission).
 	if s.po != nil && s.po.Status != "voided" && s.po.Status != "received" && !s.po.IsFullyReceived {

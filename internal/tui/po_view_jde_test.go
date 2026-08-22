@@ -1404,8 +1404,14 @@ func poKeyMsg(key string) tea.KeyMsg {
 // probe keystroke cannot leak into the next assertion. `state` is what counts as
 // an observable change.
 type poBarPhase struct {
-	name  string
-	build func(t *testing.T, width int) (scr Screen, state func() string, bar []actionBarItem)
+	name string
+	// typing marks a phase that has a FOCUSED TEXT FIELD. On those the rule is
+	// about COMMAND keys only: a printable character typed into an input is
+	// text, not an unnamed command, so the bar naming Enter/Esc/UP-DN and not
+	// the alphabet is correct rather than a gap. Non-printable keys are still
+	// held to the rule on these phases.
+	typing bool
+	build  func(t *testing.T, width int) (scr Screen, state func() string, bar []actionBarItem)
 }
 
 // poNavState is the CLIPPED frame plus the navigation fields the frame cannot be
@@ -1487,6 +1493,9 @@ func TestPOView_BarNamesExactlyTheKeysThatWork(t *testing.T) {
 				}
 
 				for _, key := range poAllBarKeys() {
+					if p.typing && len(key) == 1 {
+						continue
+					}
 					var changed, issued bool
 					for _, probe := range probes {
 						c, i := poKeyEffect(t, p, width, probe, key)
@@ -1578,19 +1587,114 @@ func poBarPhases() []poBarPhase {
 		}
 	}
 
+	// The detail screen's pre-body frames. `mut` runs after the screen is sized
+	// so the state under test is the one the frame renders.
+	detailIn := func(mut func(*PurchaseOrderDetailScreen)) func(*testing.T, int) (Screen, func() string, []actionBarItem) {
+		return func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
+			t.Helper()
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			r := poViewRoot(t, s, width)
+			mut(s)
+			return s, poNavState(r, func() string {
+				return fmt.Sprint(s.orderPad, s.shipping, s.voiding, s.delivering, s.loading, s.loadErr)
+			}), s.sheetBar()
+		}
+	}
+	// A modal sheet of the detail screen, opened after sizing.
+	modal := func(open func(*PurchaseOrderDetailScreen), bar func(*PurchaseOrderDetailScreen) []actionBarItem) func(*testing.T, int) (Screen, func() string, []actionBarItem) {
+		return func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
+			t.Helper()
+			s, r := poDetailAt(t, width)
+			open(s)
+			return s, poNavState(r, func() string {
+				return fmt.Sprint(s.shipping, s.voiding, s.delivering, s.shipFocus, s.deliverFocus)
+			}), bar(s)
+		}
+	}
+	// The pad's own loading and error frames, which pass their own bar.
+	padFrame := func(mut func(*PurchaseOrderDetailScreen)) func(*testing.T, int) (Screen, func() string, []actionBarItem) {
+		return func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
+			t.Helper()
+			s, r := poDetailAt(t, width)
+			s.orderPad = true
+			mut(s)
+			return s, poNavState(r, func() string {
+				return fmt.Sprint(s.orderPad)
+			}), []actionBarItem{{"Esc", "Close"}}
+		}
+	}
+	attachIn := func(n int, mut func(*PurchaseOrderAttachmentsScreen)) func(*testing.T, int) (Screen, func() string, []actionBarItem) {
+		return func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
+			t.Helper()
+			s, r := poAttachAt(t, width)
+			s.attachments = poManyAttachments(n)
+			mut(s)
+			bar := s.listBar()
+			if s.confirmingDelete {
+				bar = []actionBarItem{{"Enter", "Delete"}, {"Esc", "Cancel"}}
+			} else if s.phase == poAttachPhaseUpload {
+				bar = []actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+			}
+			return s, poNavState(r, func() string {
+				return fmt.Sprint(s.cursor, s.phase, s.confirmingDelete, s.uploadFocus)
+			}), bar
+		}
+	}
+
 	var longPad []string
 	for i := 0; i < 60; i++ {
 		longPad = append(longPad, fmt.Sprintf("PART-%04d\t%d", i, i+1))
 	}
 
+	// EVERY state of both screens. The rule is checked by enumerating the states
+	// rather than the reported instances, because five consecutive review rounds
+	// found this rule broken one entry at a time — each fix landing on whichever
+	// side of a boundary the fixture happened to sit.
 	return []poBarPhase{
-		{"detail sheet (body overflows)", detail(poViewPO)},
-		{"detail sheet (body fits)", detail(poShortPO)},
-		{"order pad (overflows)", pad(strings.Join(longPad, "\n"))},
-		{"order pad (fits)", pad("M3-HEX-BOLT-SS\t5\nGADGET-0001\t2")},
-		{"order pad (nothing to order)", pad("")},
-		{"attachments grid (overflows)", attach(60)},
-		{"attachments grid (fits)", attach(3)},
+		{name: "detail sheet (body overflows)", build: detail(poViewPO)},
+		{name: "detail sheet (body fits)", build: detail(poShortPO)},
+		{name: "detail loading (no order yet)", build: func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
+			t.Helper()
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			r := poViewRoot(t, s, width)
+			return s, poNavState(r, func() string { return fmt.Sprint(s.loading) }), s.sheetBar()
+		}},
+		{name: "detail loading (reload in flight)", build: detailIn(func(s *PurchaseOrderDetailScreen) { s.loading = true })},
+		{name: "detail load error", build: detailIn(func(s *PurchaseOrderDetailScreen) {
+			s.po, s.loadErr = nil, "dial tcp 10.0.0.4:8000: connect: connection refused"
+		})},
+		{name: "detail not found", build: detailIn(func(s *PurchaseOrderDetailScreen) { s.po = nil })},
+		{name: "mark shipped", typing: true, build: modal(
+			func(s *PurchaseOrderDetailScreen) { s.openShipForm() },
+			func(s *PurchaseOrderDetailScreen) []actionBarItem {
+				return []actionBarItem{{"Enter", "Mark shipped"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+			})},
+		{name: "void order", typing: true, build: modal(
+			func(s *PurchaseOrderDetailScreen) { s.openVoidForm() },
+			func(s *PurchaseOrderDetailScreen) []actionBarItem {
+				return []actionBarItem{{"Enter", "Void order"}, {"Esc", "Cancel"}}
+			})},
+		{name: "mark delivered", typing: true, build: modal(
+			func(s *PurchaseOrderDetailScreen) { s.openDeliverForm() },
+			func(s *PurchaseOrderDetailScreen) []actionBarItem {
+				return []actionBarItem{{"Enter", "Mark delivered"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+			})},
+		{name: "order pad (loading)", build: padFrame(func(s *PurchaseOrderDetailScreen) { s.orderPadLoading = true })},
+		{name: "order pad (error)", build: padFrame(func(s *PurchaseOrderDetailScreen) { s.orderPadErr = "order pad failed" })},
+		{name: "order pad (overflows)", build: pad(strings.Join(longPad, "\n"))},
+		{name: "order pad (fits)", build: pad("M3-HEX-BOLT-SS\t5\nGADGET-0001\t2")},
+		{name: "order pad (nothing to order)", build: pad("")},
+		{name: "attachments grid (none)", build: attachIn(0, func(*PurchaseOrderAttachmentsScreen) {})},
+		{name: "attachments grid (exactly one)", build: attachIn(1, func(*PurchaseOrderAttachmentsScreen) {})},
+		{name: "attachments grid (fits)", build: attach(3)},
+		{name: "attachments grid (overflows)", build: attach(60)},
+		{name: "attachments grid (load error)", build: attachIn(3, func(s *PurchaseOrderAttachmentsScreen) {
+			s.loadErr = "dial tcp 10.0.0.4:8000: connect: connection refused"
+		})},
+		{name: "attachments upload sheet", typing: true, build: attachIn(3, func(s *PurchaseOrderAttachmentsScreen) { s.openUpload() })},
+		{name: "attachments delete confirm", build: attachIn(3, func(s *PurchaseOrderAttachmentsScreen) { s.confirmingDelete = true })},
 	}
 }
 
@@ -1627,14 +1731,14 @@ func TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves(t *testing.T) {
 		name  string
 		build func(t *testing.T, width, height int) (Screen, Root, []actionBarItem)
 	}{
-		{"detail sheet", func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
+		{name: "detail sheet", build: func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
 			t.Helper()
 			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
 			s.loading = false
 			s.po = poViewPO()
 			return s, poViewRootSized(t, s, width, height), s.sheetBar()
 		}},
-		{"order pad", func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
+		{name: "order pad", build: func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
 			t.Helper()
 			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
 			s.loading = false
@@ -1651,7 +1755,7 @@ func TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves(t *testing.T) {
 			}
 			return s, r, s.orderPadBar()
 		}},
-		{"attachments grid", func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
+		{name: "attachments grid", build: func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
 			t.Helper()
 			s := NewPurchaseOrderAttachmentsScreen(Deps{}, poViewPO())
 			r := poViewRootSized(t, s, width, height)
