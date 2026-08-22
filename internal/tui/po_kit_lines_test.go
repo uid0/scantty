@@ -239,3 +239,76 @@ func TestPODetailKit_TheClippedRenderLosesNothing(t *testing.T) {
 		}
 	}
 }
+
+// TestPODetailKit_AResizeRelaysTheCreditBlock. A kit line's credit block wraps
+// against the pane, so a body still laid out for the OLD width after a resize
+// would be cut by clampToBox with nothing to show it had: the trailing
+// components simply vanish at exactly the terminal that most needs them.
+//
+// Driven through Update rather than through the renderer, because that is where
+// the failure lives — the block laid out at 80 was always correct, the question
+// is whether the screen lays it out again once the pane says 80. The
+// measurement is narrowed to the block this bead adds, for the reason
+// TestPODetailKit_TheClippedRenderLosesNothing gives — the PO detail's aligned
+// cost row overruns 80 columns on its own and predates kits (sc-xxpa).
+func TestPODetailKit_AResizeRelaysTheCreditBlock(t *testing.T) {
+	s := NewPurchaseOrderDetailScreen(Deps{}, "5")
+	s.Update(tea.WindowSizeMsg{Width: 120, Height: jdeSweepHeight})
+	s.Update(poDetailLoadedMsg{po: &omsapi.PurchaseOrder{
+		ID: 5, Number: "PO-1001", Items: []omsapi.PurchaseOrderItem{poKitFixtureLine()},
+	}})
+
+	// The block is on screen at the wide width, and wrapped for THAT pane —
+	// otherwise the resize below would prove nothing.
+	if got := len(poKitBlockLines(s.sheetLines().text)); got == 0 {
+		t.Fatalf("no kit credit block at 120 columns:\n%s", strings.Join(s.sheetLines().text, "\n"))
+	}
+	wide := screenBodyWidth(120)
+	if !poKitAnyLineWiderThan(s.sheetLines().text, screenBodyWidth(80)) {
+		t.Fatalf("the fixture already fits an 80-column pane at %d, so a resize proves nothing", wide)
+	}
+
+	s.Update(tea.WindowSizeMsg{Width: 80, Height: jdeSweepHeight})
+
+	budget := screenBodyWidth(80)
+	block := poKitBlockLines(s.sheetLines().text)
+	if len(block) == 0 {
+		t.Fatalf("the credit block disappeared after the resize:\n%s", strings.Join(s.sheetLines().text, "\n"))
+	}
+	for _, l := range block {
+		if w := lipgloss.Width(l); w > budget {
+			t.Errorf("after resizing to 80 the body is still laid out wide: a block line is %d against a %d pane: %q",
+				w, budget, l)
+		}
+	}
+	// Re-laid out, not truncated: every component the order credits is still
+	// named, which is the whole point of wrapping rather than clipping.
+	joined := strings.Join(block, " ")
+	for _, want := range []string{"Cyan ink", "Magenta ink", "Yellow ink", "Black ink", "Cleaning kit"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the resize lost %q from the credit block:\n%s", want, strings.Join(block, "\n"))
+		}
+	}
+}
+
+// poKitBlockLines picks the credit block out of a rendered body: its lead line
+// says what receiving credits, and each wrapped reading carries the "N ×" of a
+// component.
+func poKitBlockLines(lines []string) []string {
+	var out []string
+	for _, l := range lines {
+		if strings.Contains(l, "credits") || strings.Contains(l, "×") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func poKitAnyLineWiderThan(lines []string, budget int) bool {
+	for _, l := range poKitBlockLines(lines) {
+		if lipgloss.Width(l) > budget {
+			return true
+		}
+	}
+	return false
+}

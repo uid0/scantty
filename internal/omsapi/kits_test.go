@@ -383,3 +383,50 @@ func TestStockActionsDoNotReachAKit(t *testing.T) {
 		})
 	}
 }
+
+// TestUpdateKit_SendsAnEmptyNoteExplicitly. Clearing a component's note is a
+// real gesture in the editor, and what reaches the wire has to SAY so rather
+// than leaving the key out and relying on the far side defaulting it. The
+// failure that would otherwise be silent: the upstream default changes to
+// preserve the stored value, an operator clears a note, the save reports
+// success, and the note is back on the next load with nothing to catch it.
+func TestUpdateKit_SendsAnEmptyNoteExplicitly(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"kit-1","is_kit":true}`))
+	}))
+	defer srv.Close()
+
+	comps := []KitComponentWrite{
+		{Component: "itm-c", Quantity: 1},                     // note cleared
+		{Component: "itm-m", Quantity: 2, Notes: "keep this"}, // note untouched
+	}
+	if _, err := New(srv.URL).UpdateKit(context.Background(), "kit-1", KitWrite{
+		ItemWrite:  ItemWrite{Name: "Eufy Ink Kit"},
+		Components: &comps,
+	}); err != nil {
+		t.Fatalf("UpdateKit: %v", err)
+	}
+
+	rows, ok := body["components"].([]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("components = %v", body["components"])
+	}
+	cleared := rows[0].(map[string]any)
+	// PRESENCE is the assertion: an omitted key is exactly the shape this
+	// guards against, and it decodes to the same nil as a null would.
+	note, present := cleared["notes"]
+	if !present {
+		t.Fatalf("the cleared note was omitted from the payload instead of sent as \"\": %v", cleared)
+	}
+	if note != "" {
+		t.Errorf("cleared notes = %v, want an empty string", note)
+	}
+	// And a real note still rides unchanged.
+	if kept := rows[1].(map[string]any)["notes"]; kept != "keep this" {
+		t.Errorf("kept notes = %v", kept)
+	}
+}

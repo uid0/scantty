@@ -108,10 +108,20 @@ type Kit struct {
 // the client having to track one — the same reasoning as PackagingLevelWrite's
 // missing pk. Quantity must be at least 1 (the serializer rejects 0, which
 // would credit nothing on receipt).
+//
+// Notes carries NO omitempty, so clearing a note sends `"notes": ""` rather
+// than dropping the key. Clearing works either way today — the upstream nested
+// write reads the key with a `""` default, so an absent one already clears —
+// but that makes ScanTTY's gesture depend on an unstated default in a project
+// maintained and reviewed separately from this one. If that default ever
+// changed to preserve the stored value, an operator would clear a note, be told
+// the save succeeded, and find the note back on the next load, with nothing on
+// either side to catch it. Sending the empty string says what ScanTTY MEANS,
+// which is the same reason itemCountModeBody.CountLevel refuses omitempty.
 type KitComponentWrite struct {
 	Component string `json:"component"`
 	Quantity  int    `json:"quantity"`
-	Notes     string `json:"notes,omitempty"`
+	Notes     string `json:"notes"`
 }
 
 // KitWrite is the body of a kit save: every ordinary item field, plus the bill
