@@ -7,10 +7,24 @@
 // of the browser's file picker — and POST it multipart through
 // UploadPurchaseOrderAttachment. Deletion is staff-gated server-side.
 //
+// Columnar (sc-h412, purchasing view slice): the list is a JD Edwards detail
+// grid, the upload form is a columnar sheet, and all three phases render
+// through jde_form.go under a persistent action bar. po_edit.go is the pilot
+// this follows, and its key scheme is the one used here:
+//
+//	Up/Down       move between attachments / between fields
+//	PgUp/PgDn     page
+//	Enter         the phase's own action — upload from the list, upload from
+//	              the form, delete at the confirm
+//	Ctrl-X        delete the highlighted attachment (Ctrl-E is "open what this
+//	              row IS" everywhere else, and a file the terminal cannot open
+//	              is not that)
+//	Esc           back / cancel
+//	r             refresh, the same letter the PO detail sheet refreshes with
+//
 // Phases:
 //
-//	poAttachPhaseList    — the attachment list; j/k move, u upload, x delete
-//	                       (with a y/n confirm), r refresh, esc back.
+//	poAttachPhaseList    — the attachment grid.
 //	poAttachPhaseUpload  — file-path + description inputs; enter uploads.
 package tui
 
@@ -19,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -41,13 +56,14 @@ const (
 )
 
 type PurchaseOrderAttachmentsScreen struct {
-	deps           Deps
-	poID           string
-	poNumber       string
-	attachments    []omsapi.PurchaseOrderAttachment
-	loading        bool
-	loadErr        string
-	terminalHeight int
+	deps        Deps
+	poID        string
+	poNumber    string
+	attachments []omsapi.PurchaseOrderAttachment
+	loading     bool
+	loadErr     string
+	// jdeScreen carries the pane geometry and the frames (jde_form.go).
+	jdeScreen
 
 	phase  poAttachPhase
 	cursor int
@@ -87,15 +103,17 @@ func NewPurchaseOrderAttachmentsScreen(deps Deps, po *omsapi.PurchaseOrder) *Pur
 		s.attachments = po.Attachments
 	}
 
+	// No placeholders: in a fixed-width columnar field a placeholder fills the
+	// input area and hides the underscores that say the field is empty, so what
+	// the field wants rides beside it as a Hint (the pilot's rule — see
+	// po_edit.go's poMetaHints).
 	s.uploadInputs = make([]textinput.Model, poAttachFieldCount)
 	path := textinput.New()
 	path.Prompt = ""
-	path.Placeholder = "/path/to/file.pdf"
 	path.CharLimit = 500
 	s.uploadInputs[poAttachFieldPath] = path
 	desc := textinput.New()
 	desc.Prompt = ""
-	desc.Placeholder = "description (optional)"
 	desc.CharLimit = 300
 	s.uploadInputs[poAttachFieldDesc] = desc
 	return s
@@ -109,8 +127,9 @@ func (s *PurchaseOrderAttachmentsScreen) Title() string {
 }
 
 // WantsRawInput claims keys during the upload form and the delete confirm so
-// the path input and y/n land here; the plain list stays non-raw so global
-// hotkeys keep working while browsing.
+// the path input and the confirm's enter land here; the plain list stays
+// non-raw so the sidebar's tab and the global back-step keep working while
+// browsing.
 func (s *PurchaseOrderAttachmentsScreen) WantsRawInput() bool {
 	return s.phase == poAttachPhaseUpload || s.confirmingDelete
 }
@@ -137,7 +156,7 @@ func (s *PurchaseOrderAttachmentsScreen) load() tea.Cmd {
 func (s *PurchaseOrderAttachmentsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.setSize(m)
 		return s, nil
 
 	case poAttachLoadedMsg:
@@ -203,26 +222,25 @@ func (s *PurchaseOrderAttachmentsScreen) updateList(m tea.KeyMsg) (Screen, tea.C
 	switch m.String() {
 	case "esc":
 		return s, SwitchTo(WSPurchasing, NewPurchaseOrderDetailScreen(s.deps, s.poID))
-	case "j", "down":
+	case "down":
 		if s.cursor < len(s.attachments)-1 {
 			s.cursor++
 		}
-	case "k", "up":
+	case "up":
 		if s.cursor > 0 {
 			s.cursor--
 		}
+	case "pgdown":
+		s.cursor = jdePageCursor(s.cursor, len(s.attachments), s.pageStep(), +1)
+	case "pgup":
+		s.cursor = jdePageCursor(s.cursor, len(s.attachments), s.pageStep(), -1)
 	case "r":
 		s.loading = true
 		s.loadErr = ""
 		return s, s.load()
-	case "u":
-		s.phase = poAttachPhaseUpload
-		s.uploadFocus = poAttachFieldPath
-		s.errMsg = ""
-		s.uploadInputs[poAttachFieldPath].Focus()
-		s.uploadInputs[poAttachFieldDesc].Blur()
-		return s, textinput.Blink
-	case "x":
+	case "enter":
+		return s, s.openUpload()
+	case "ctrl+x":
 		if len(s.attachments) > 0 {
 			s.confirmingDelete = true
 		}
@@ -231,12 +249,41 @@ func (s *PurchaseOrderAttachmentsScreen) updateList(m tea.KeyMsg) (Screen, tea.C
 	return s, nil
 }
 
+// openUpload switches to the upload sheet with the path row focused.
+func (s *PurchaseOrderAttachmentsScreen) openUpload() tea.Cmd {
+	s.phase = poAttachPhaseUpload
+	s.uploadFocus = poAttachFieldPath
+	s.errMsg = ""
+	s.uploadInputs[poAttachFieldPath].Focus()
+	s.uploadInputs[poAttachFieldDesc].Blur()
+	return textinput.Blink
+}
+
+// pageStep is how many rows the grid is currently showing, computed from the
+// same lines View draws so a page moves by exactly what the operator can see.
+func (s *PurchaseOrderAttachmentsScreen) pageStep() int {
+	body, _ := s.listLines()
+	avail := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), s.listBar())) - 1
+	if avail < 1 {
+		avail = 1
+	}
+	_, rows := body.Window(s.cursor, avail)
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
+// updateConfirmDelete drives the y/n-free confirm: enter deletes, esc backs
+// out. The letters it used to take are gone with the rest of the accelerators —
+// a scanner burst is a run of letters, and "y" landing on a delete prompt is
+// exactly the accident the reduced scheme exists to rule out.
 func (s *PurchaseOrderAttachmentsScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.Cmd) {
 	if s.deleting {
 		return s, nil
 	}
 	switch m.String() {
-	case "y", "Y":
+	case "enter":
 		if s.cursor < 0 || s.cursor >= len(s.attachments) {
 			s.confirmingDelete = false
 			return s, nil
@@ -249,7 +296,7 @@ func (s *PurchaseOrderAttachmentsScreen) updateConfirmDelete(m tea.KeyMsg) (Scre
 		return s, func() tea.Msg {
 			return poAttachDeletedMsg{err: deps.OMS.DeletePurchaseOrderAttachment(ctx, id, att.ID)}
 		}
-	case "n", "N", "esc":
+	case "esc":
 		s.confirmingDelete = false
 	}
 	return s, nil
@@ -324,77 +371,179 @@ func (s *PurchaseOrderAttachmentsScreen) View() string {
 	if s.phase == poAttachPhaseUpload {
 		return s.viewUpload()
 	}
+	if s.confirmingDelete {
+		return s.viewConfirmDelete()
+	}
 	return s.viewList()
 }
 
-func (s *PurchaseOrderAttachmentsScreen) viewList() string {
-	var b strings.Builder
-	if s.loadErr != "" {
-		b.WriteString(StyleStatusError.Render("Error: ") + s.loadErr + "\n\n")
+// Detail-grid column widths. The file column takes whatever the pane has left,
+// which at 80 columns is what keeps the upload date on the row rather than off
+// the right edge.
+const (
+	poAttachNumW  = 3
+	poAttachDateW = 10
+)
+
+// poAttachIndent puts an attachment's continuation line under the file column.
+var poAttachIndent = strings.Repeat(" ", len(jdeIndent)+poAttachNumW+2)
+
+// attachNameWidth sizes the file column from the pane, with the same floor and
+// ceiling reasoning as the PO line grid: a narrow terminal shortens the name
+// rather than collapsing the column, and a wide one does not strand the dates
+// out at the far right of an otherwise empty row.
+func (s *PurchaseOrderAttachmentsScreen) attachNameWidth() int {
+	const minW, maxW = 12, 48
+	width := 76
+	if w := s.bodyWidth(); w > 0 {
+		width = w
 	}
+	switch w := width - (len(jdeIndent) + poAttachNumW + 2 + 2 + poAttachDateW); {
+	case w < minW:
+		return minW
+	case w > maxW:
+		return maxW
+	default:
+		return w
+	}
+}
+
+// poAttachGridRow lays one attachment row out in its columns.
+func poAttachGridRow(num, name, uploaded string, nameW int) string {
+	return jdeIndent + strings.TrimRight(strings.Join([]string{
+		padCell(num, poAttachNumW, alignRight),
+		padCell(name, nameW, alignLeft),
+		padCell(uploaded, poAttachDateW, alignLeft),
+	}, "  "), " ")
+}
+
+// listLines builds the grid, tagging each line with the attachment it belongs
+// to so the window keeps a whole entry — name row plus its readings — on
+// screen rather than the first line of it.
+func (s *PurchaseOrderAttachmentsScreen) listLines() (*jdeLines, int) {
+	l := &jdeLines{}
+	if s.loadErr != "" {
+		l.Add(StyleStatusError.Render("Error: ") + s.loadErr)
+		l.Add("")
+	}
+	l.Add(StyleJDEHeading.Render(fmt.Sprintf("Attachments (%d)", len(s.attachments))))
 	if len(s.attachments) == 0 {
-		b.WriteString(StyleMuted.Render("No attachments on this PO.") + "\n\n")
-	} else {
-		for i, att := range s.attachments {
-			caret := "  "
-			if i == s.cursor {
-				caret = "▸ "
-			}
-			name := att.FileName
-			if name == "" {
-				name = att.File
-			}
-			line := caret + name
-			if att.Description != "" {
-				line += " — " + att.Description
-			}
-			if i == s.cursor {
-				line = StyleSidebarItemActive.Render(line)
-			}
-			b.WriteString(line + "\n")
-			meta := []string{}
-			if !att.UploadedAt.IsZero() {
-				meta = append(meta, att.UploadedAt.Format("2006-01-02"))
-			}
-			if att.UploadedByName != "" {
-				meta = append(meta, "by "+att.UploadedByName)
-			}
-			if len(meta) > 0 {
-				b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
-			}
-		}
+		l.Add(jdeIndent + StyleMuted.Render("No attachments on this PO. Enter uploads one."))
+		return l, 0
 	}
 
-	b.WriteString("\n")
-	if s.confirmingDelete && s.cursor >= 0 && s.cursor < len(s.attachments) {
-		name := s.attachments[s.cursor].FileName
-		if s.deleting {
-			b.WriteString(StyleMuted.Render("Deleting…"))
-		} else {
-			b.WriteString(StyleStatusWarn.Render(fmt.Sprintf("Delete %q? y delete · n/esc cancel", name)))
+	nameW := s.attachNameWidth()
+	l.Add(StyleMuted.Render(poAttachGridRow("#", "File", "Uploaded", nameW)))
+	for i, att := range s.attachments {
+		name := att.FileName
+		if name == "" {
+			name = att.File
 		}
-		return b.String()
+		uploaded := ""
+		if !att.UploadedAt.IsZero() {
+			uploaded = att.UploadedAt.Format("2006-01-02")
+		}
+		row := poAttachGridRow(strconv.Itoa(i+1), fitCell(name, nameW), uploaded, nameW)
+		if i == s.cursor {
+			row = StyleJDEFieldFocused.Render(row)
+		}
+		l.AddRow(i, row)
+
+		// The description and the uploader ride under the row as wrapped
+		// readings: they are what the grid has no column for, and at 80 columns
+		// a description in a column of its own would have nowhere to go.
+		var tokens []jdeToken
+		if att.Description != "" {
+			tokens = append(tokens, jdeToken{text: att.Description, style: StyleMuted})
+		}
+		if att.UploadedByName != "" {
+			tokens = append(tokens, jdeToken{text: "by " + att.UploadedByName, style: StyleMuted})
+		}
+		for _, line := range jdeWrapTokens(tokens, poAttachIndent, s.bodyWidth()) {
+			l.AddRow(i, line)
+		}
 	}
-	b.WriteString(StyleMuted.Render("j/k move · u upload · x delete · r refresh · esc back"))
-	return b.String()
+	return l, len(s.attachments)
+}
+
+// listBar names the keys that work on the grid — and only those: Ctrl-X is
+// dropped when there is nothing to delete, and the movement keys when there is
+// nothing to move between.
+func (s *PurchaseOrderAttachmentsScreen) listBar() []actionBarItem {
+	items := []actionBarItem{{"Enter", "Upload"}, {"Esc", "Back"}}
+	if len(s.attachments) > 0 {
+		items = append(items, actionBarItem{"UP/DN", "Move"}, actionBarItem{"Ctrl-X", "Delete"})
+	}
+	if body, _ := s.listLines(); len(s.attachments) > 0 {
+		if avail := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), items)); avail > 0 && body.Len() > avail {
+			items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+		}
+	}
+	return append(items, actionBarItem{"r", "Refresh"})
+}
+
+func (s *PurchaseOrderAttachmentsScreen) viewList() string {
+	body, _ := s.listLines()
+	return s.frameWrapped(nil, body, s.cursor,
+		jdeStatusLine(s.loading, "Loading…", ""), s.listBar())
+}
+
+// viewConfirmDelete is its own phase rather than a line appended to the list:
+// deleting a file is not undoable, and the frame that asks about it should not
+// also be scrolling a grid behind the question.
+func (s *PurchaseOrderAttachmentsScreen) viewConfirmDelete() string {
+	name := ""
+	if s.cursor >= 0 && s.cursor < len(s.attachments) {
+		name = s.attachments[s.cursor].FileName
+		if name == "" {
+			name = s.attachments[s.cursor].File
+		}
+	}
+	body := &jdeLines{}
+	body.Add(StyleStatusWarn.Render("Delete attachment"))
+	body.Add("")
+	body.AddRow(0, renderJDEField(jdeField{
+		Label: "File", Kind: jdeValue, Value: fitCellIf(name, jdeStripWidth(s.bodyWidth(), 4)), Focused: true,
+	}, 4))
+	body.Add("")
+	for _, line := range jdeCaveatLines(
+		"Removes the file from this purchase order. This cannot be undone, and the server allows it only for staff.",
+		s.bodyWidth()) {
+		body.Add(line)
+	}
+	return s.frameWrapped(nil, body, 0,
+		jdeStatusLine(s.deleting, "Deleting…", ""),
+		[]actionBarItem{{"Enter", "Delete"}, {"Esc", "Cancel"}})
+}
+
+var poAttachLabels = map[int]string{
+	poAttachFieldPath: "File path",
+	poAttachFieldDesc: "Description",
+}
+
+var poAttachHints = map[int]string{
+	poAttachFieldPath: "a path on this machine",
+	poAttachFieldDesc: "optional",
 }
 
 func (s *PurchaseOrderAttachmentsScreen) viewUpload() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Upload attachment") + "\n\n")
-	labels := []string{"File path", "Description"}
+	fields := make([]jdeField, poAttachFieldCount)
 	for i := 0; i < poAttachFieldCount; i++ {
-		caret := "  "
-		if i == s.uploadFocus {
-			caret = "▸ "
+		focused := s.uploadFocus == i
+		fields[i] = jdeField{
+			Label:   poAttachLabels[i],
+			Kind:    jdeText,
+			Value:   jdeInputValue(s.uploadInputs[i], focused),
+			Width:   34,
+			Hint:    poAttachHints[i],
+			Focused: focused,
 		}
-		b.WriteString(caret + StyleTitle.Render(labels[i]+": ") + s.uploadInputs[i].View() + "\n")
 	}
-	b.WriteString("\n" + StyleMuted.Render("tab move · enter upload · esc cancel") + "\n")
-	if s.uploading {
-		b.WriteString("\n" + StyleMuted.Render("Uploading…"))
-	} else if s.errMsg != "" {
-		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.errMsg))
-	}
-	return b.String()
+	body := &jdeLines{}
+	body.Add(StyleJDEHeading.Render("Upload attachment"))
+	body.Add("")
+	body.AddFittedFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
+	return s.frameWrapped(nil, body, s.uploadFocus,
+		jdeStatusLine(s.uploading, "Uploading…", s.errMsg),
+		[]actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
 }

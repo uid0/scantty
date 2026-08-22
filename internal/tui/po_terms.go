@@ -6,6 +6,13 @@
 // second copy of "net_30 means Net 30" is a copy that can drift. The values are
 // the backend's TextChoices tokens verbatim (reorder_queue.models.PurchaseOrder):
 // the serializer validates them, so a typo here is a 400, not a display bug.
+//
+// The DISPLAY side of this file is columnar (sc-h412): poTermsFields hands the
+// detail sheet a block of jdeFields to hang off the shared leader column, the
+// way po_edit.go's metaFields does for the same four readings. It used to write
+// "Payment terms: Net 30" straight into a strings.Builder, which is the
+// hand-rolled style the redesign replaces — and which could not line its labels
+// up with the Identifiers and Dates rows drawn either side of it.
 package tui
 
 import (
@@ -89,53 +96,63 @@ func poTermsOptions(opts []selectOption, current string) []selectOption {
 	return append(out, selectOption{current, current + " (unrecognized)"})
 }
 
-// poTermsCell renders one stored term as a detail row's value. A term nobody
-// has agreed yet is muted, so the row reads as an absence rather than as a
-// value someone chose.
-func poTermsCell(opts []selectOption, value string) string {
+// poTermsValue renders one stored term as a detail row's value, with the flag
+// that says it should read as an absence. A term nobody has agreed yet is
+// dimmed rather than pre-styled here, because the columnar renderer owns the
+// styling: a value that arrived carrying its own colour sequence would end the
+// row's highlight partway across the field (the same rule assocRowValue keeps).
+func poTermsValue(opts []selectOption, value string) (string, bool) {
 	if value == "" {
-		return StyleMuted.Render(poTermsLabel(opts, ""))
+		return poTermsLabel(opts, ""), true
 	}
-	return poTermsLabel(opts, value)
+	return poTermsLabel(opts, value), false
 }
 
-// renderPOTerms draws the header terms and the payment they imply (op-bwo9) on
-// the PO detail screen.
+// poTermsFields is the header terms and the payment they imply (op-bwo9) as
+// columnar rows for the PO detail sheet. nil when the order carries none of
+// them, which is the caller's signal to draw no section at all.
 //
 // The whole block rides the PO payload, so it has no loading or failed state of
 // its own to tell apart — either the order carries the fields or it came from a
-// backend that predates them, and that second case gets nothing at all rather
-// than three invented rows reading "not agreed". Everything here is descriptive:
-// no stock moves and no money posts off any of it.
-func renderPOTerms(b *strings.Builder, po *omsapi.PurchaseOrder) {
+// backend that predates them, and that second case gets nothing rather than
+// three invented rows reading "not agreed". Everything here is descriptive: no
+// stock moves and no money posts off any of it.
+func poTermsFields(po *omsapi.PurchaseOrder) []jdeField {
 	if po.Priority == "" && po.PaymentTerms == "" && po.FreightTerms == "" && po.PaymentSchedule == nil {
-		return
+		return nil
 	}
-	b.WriteString(StyleTitle.Render("Terms") + "\n")
-	b.WriteString(StyleMuted.Render("Priority: ") +
-		poTermsLabel(poPriorityOptions, firstNonEmpty(po.Priority, poDefaultPriority)) + "\n")
-	b.WriteString(StyleMuted.Render("Payment terms: ") + poTermsCell(poPaymentTermsOptions, po.PaymentTerms) + "\n")
-	b.WriteString(StyleMuted.Render("Freight terms: ") + poTermsCell(poFreightTermsOptions, po.FreightTerms) + "\n")
+	priority, _ := poTermsValue(poPriorityOptions, firstNonEmpty(po.Priority, poDefaultPriority))
+	payment, payDim := poTermsValue(poPaymentTermsOptions, po.PaymentTerms)
+	freight, freightDim := poTermsValue(poFreightTermsOptions, po.FreightTerms)
+	out := []jdeField{
+		{Label: "Priority", Kind: jdeValue, Value: priority},
+		{Label: "Payment terms", Kind: jdeValue, Value: payment, Dim: payDim},
+		{Label: "Freight terms", Kind: jdeValue, Value: freight, Dim: freightDim},
+	}
 	// The schedule is the backend's arithmetic, rendered and not repeated: the
 	// due date it derived, the amount it derived it over, and the rule it used —
 	// which is also what says why a payment has no date yet.
 	if sched := po.PaymentSchedule; sched != nil {
-		// Rendered the way the Totals block right above renders the estimated
-		// total this amount IS — a comma-grouped copy of the same number two
-		// lines apart reads as a discrepancy.
-		value := "—"
-		if !sched.Amount.Empty() {
-			value = "$" + string(sched.Amount)
-		}
-		if sched.DueDate != "" {
-			value += " due " + sched.DueDate
-		}
-		if sched.Basis != "" {
-			value += " · " + sched.Basis
-		}
-		b.WriteString(StyleMuted.Render("Payment: ") + value + "\n")
+		out = append(out, jdeField{Label: "Payment", Kind: jdeValue, Value: poPaymentScheduleValue(sched)})
 	}
-	b.WriteString("\n")
+	return out
+}
+
+// poPaymentScheduleValue renders the derived payment. The amount is spelled the
+// way the Totals block above it spells the estimated total this amount IS — a
+// comma-grouped copy of the same number two rows apart reads as a discrepancy.
+func poPaymentScheduleValue(sched *omsapi.POPaymentSchedule) string {
+	value := "—"
+	if !sched.Amount.Empty() {
+		value = "$" + string(sched.Amount)
+	}
+	if sched.DueDate != "" {
+		value += " due " + sched.DueDate
+	}
+	if sched.Basis != "" {
+		value += " · " + sched.Basis
+	}
+	return value
 }
 
 // poSelectStrip lists a choice row's whole option set with the current one

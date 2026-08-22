@@ -976,3 +976,393 @@ func renderActionBar(width int, items []actionBarItem) string {
 	}
 	return StyleActionBarRule.Render(strings.Repeat("-", width)) + "\n" + jdeIndent + keys
 }
+
+// ---------------------------------------------------------------------------
+// A bar with more keys than one line holds
+// ---------------------------------------------------------------------------
+//
+// renderActionBar above puts every item on ONE line and tightens the gutter
+// until they fit. That is the whole story for a form: the pilot's bar names
+// four or five keys and the widest of them still fits the 49 columns an
+// 80-column terminal leaves the pane.
+//
+// A VIEWING screen is the case it does not cover. A purchase order's detail
+// (po_detail.go) carries a dozen order-level commands at once — receive, edit,
+// attachments, ship, send, confirm, deliver, void, order pad, refresh, plus
+// scrolling — and no tightening puts twelve of them on one 49-column line. The
+// line simply ran off the end of the pane and clampToBox cut it, which is the
+// exact failure renderActionBar's gutter loop exists to prevent: "a key that
+// fell off the bar is a key the operator cannot discover".
+//
+// So the bar WRAPS instead. That is also what the real thing does — a JD
+// Edwards World screen carries two or three rows of F-key legend under the
+// rule, not one — and it costs the body only the rows the keys actually need.
+// renderActionBar is left exactly as it was, so no form that already fits
+// changes by a single column.
+
+// actionBarKeyLines lays the bar's items out over as many lines as it takes,
+// each already carrying jdeIndent. One line is returned whenever the items fit
+// on one, by the same tighten-the-gutter rule renderActionBar uses — so a
+// screen that swaps to this bar and has few enough keys renders identically.
+//
+// Width accounting is done on the PLAIN "Key=Label" text and each item is
+// rendered whole afterwards, for the reason jdeWrapTokens does the same: a line
+// measured on styled text can be cut through an escape sequence.
+func actionBarKeyLines(width int, items []actionBarItem) []string {
+	if width < 8 {
+		width = 8
+	}
+	type part struct {
+		text string
+		w    int
+	}
+	parts := make([]part, 0, len(items))
+	for _, it := range items {
+		if it.Key == "" {
+			continue
+		}
+		p := part{text: StyleActionBarKey.Render(it.Key), w: len(it.Key)}
+		if it.Label != "" {
+			p.text += StyleActionBar.Render("=" + it.Label)
+			p.w += 1 + len(it.Label)
+		}
+		parts = append(parts, p)
+	}
+	if len(parts) == 0 {
+		return []string{jdeIndent}
+	}
+
+	avail := width - len(jdeIndent)
+	if avail < 1 {
+		avail = 1
+	}
+	// One line if they fit on one, gutter tightening first — identical output to
+	// renderActionBar for every bar that was already legible.
+	for _, gutter := range []string{"   ", "  ", " "} {
+		total := 0
+		for i, p := range parts {
+			if i > 0 {
+				total += len(gutter)
+			}
+			total += p.w
+		}
+		if total <= avail {
+			texts := make([]string, len(parts))
+			for i, p := range parts {
+				texts[i] = p.text
+			}
+			return []string{jdeIndent + strings.Join(texts, gutter)}
+		}
+	}
+
+	// Wrapping. The tight gutter is kept from here on: the point of the extra
+	// lines is to fit the keys, not to space them out.
+	const gutter = "  "
+	var (
+		out  []string
+		line string
+		lw   int
+	)
+	flush := func() {
+		if line != "" {
+			out = append(out, jdeIndent+line)
+			line, lw = "", 0
+		}
+	}
+	for _, p := range parts {
+		switch {
+		case line == "":
+			// An item wider than the whole line still goes out whole: a key the
+			// operator cannot discover is worse than a row that runs long, and
+			// clampToBox will cut only the tail of the label.
+			line, lw = p.text, p.w
+		case lw+len(gutter)+p.w <= avail:
+			line += gutter + p.text
+			lw += len(gutter) + p.w
+		default:
+			flush()
+			line, lw = p.text, p.w
+		}
+	}
+	flush()
+	return out
+}
+
+// actionBarRowsFor is how tall renderActionBarWrapped will draw: the rule plus
+// however many key lines the items need. A screen budgets its body against this
+// rather than against the actionBarRows constant, or the last key line is the
+// row clampToBox eats.
+func actionBarRowsFor(width int, items []actionBarItem) int {
+	return 1 + len(actionBarKeyLines(width, items))
+}
+
+// renderActionBarWrapped is renderActionBar for a screen whose keys need more
+// than one line: the rule, then every key line.
+func renderActionBarWrapped(width int, items []actionBarItem) string {
+	if width < 8 {
+		width = 8
+	}
+	return StyleActionBarRule.Render(strings.Repeat("-", width)) + "\n" +
+		strings.Join(actionBarKeyLines(width, items), "\n")
+}
+
+// ---------------------------------------------------------------------------
+// A read-only body the operator scrolls
+// ---------------------------------------------------------------------------
+
+// WindowFrom is Window for a body with no cursor in it — a read-only detail
+// sheet, where what has to stay on screen is wherever the operator scrolled to
+// rather than a row they are standing on. It returns EXACTLY `avail` lines (or
+// every line, when they all fit) starting at `offset`, spending the first and
+// last on the same "more above / more below" indicators Window uses so the
+// count — and therefore where the action bar lands — never moves with the
+// scroll position.
+func (l *jdeLines) WindowFrom(offset, avail int) []string {
+	n := len(l.text)
+	if avail <= 0 {
+		return nil
+	}
+	if n <= avail {
+		out := make([]string, n, avail)
+		copy(out, l.text)
+		return out
+	}
+	if avail <= 2 {
+		// No room for indicators: show what is under the offset and nothing else.
+		start := l.ClampScroll(offset, avail)
+		return append([]string(nil), l.text[start:start+avail]...)
+	}
+
+	body := avail - 2
+	start := l.ClampScroll(offset, avail)
+	end := start + body
+	if end > n {
+		end = n
+	}
+
+	out := make([]string, 0, avail)
+	if start > 0 {
+		out = append(out, StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)))
+	} else {
+		out = append(out, "")
+	}
+	out = append(out, l.text[start:end]...)
+	if end < n {
+		out = append(out, StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", n-end)))
+	} else {
+		out = append(out, "")
+	}
+	return out
+}
+
+// ClampScroll brings a scroll offset back inside the body, given the pane
+// height WindowFrom will be called with. Screens call it after every scroll key
+// so the offset they hold and the one that gets drawn are never different —
+// which is what makes "↓ 0 more below" impossible.
+func (l *jdeLines) ClampScroll(offset, avail int) int {
+	if offset < 0 {
+		return 0
+	}
+	body := avail
+	if avail > 2 {
+		body = avail - 2
+	}
+	if max := len(l.text) - body; offset > max {
+		if max < 0 {
+			return 0
+		}
+		return max
+	}
+	return offset
+}
+
+// ---------------------------------------------------------------------------
+// Frames for a bar that may need more than one line
+// ---------------------------------------------------------------------------
+
+// bodyRowsForBar is bodyRows for a bar of a known height: the pane, less the
+// bar and the one status row above it. Zero means "not known yet", exactly as
+// bodyRows does.
+func (g jdeScreen) bodyRowsForBar(barRows int) int {
+	if g.terminalHeight <= 0 {
+		return 0
+	}
+	h := screenBodyHeight(g.terminalHeight) - barRows - 1
+	if h < 3 {
+		return 3
+	}
+	return h
+}
+
+// frameWrapped is frameWithHeader for a screen whose bar may wrap: the body is
+// padded out to whatever the wrapped bar leaves it, so the bar still lands on
+// the same rows of the pane on every frame.
+func (g jdeScreen) frameWrapped(header []string, body *jdeLines, cursorRow int, status string, items []actionBarItem) string {
+	barRows := actionBarRowsFor(g.barWidth(), items)
+	out := append([]string{}, header...)
+	if budget := g.bodyRowsForBar(barRows); budget > 0 {
+		avail := budget - len(header)
+		if avail < 1 {
+			avail = 1
+		}
+		lines, _ := body.Window(cursorRow, avail)
+		out = append(out, lines...)
+		out = jdePadTo(out, budget)
+	} else {
+		out = append(out, body.text...)
+	}
+	out = append(out, status)
+	return strings.Join(out, "\n") + "\n" + renderActionBarWrapped(g.barWidth(), items)
+}
+
+// frameScrolled is frameWrapped for a read-only body: the window is positioned
+// by the operator's scroll offset rather than by a cursor row. It returns the
+// clamped offset alongside the frame, so a screen that scrolled past the end
+// stores back the offset that was actually drawn.
+func (g jdeScreen) frameScrolled(header []string, body *jdeLines, offset int, status string, items []actionBarItem) (string, int) {
+	barRows := actionBarRowsFor(g.barWidth(), items)
+	out := append([]string{}, header...)
+	budget := g.bodyRowsForBar(barRows)
+	if budget > 0 {
+		avail := budget - len(header)
+		if avail < 1 {
+			avail = 1
+		}
+		offset = body.ClampScroll(offset, avail)
+		out = append(out, body.WindowFrom(offset, avail)...)
+		out = jdePadTo(out, budget)
+	} else {
+		offset = 0
+		out = append(out, body.text...)
+	}
+	out = append(out, status)
+	return strings.Join(out, "\n") + "\n" + renderActionBarWrapped(g.barWidth(), items), offset
+}
+
+// scrollRows is how many lines a read-only body scrolls per page — one paneful
+// less a line of overlap for the reader's eye, the same step TextScroller used
+// before these screens moved onto the columnar layer. Never less than one.
+func (g jdeScreen) scrollRows(barRows, headerRows int) int {
+	avail := g.bodyRowsForBar(barRows) - headerRows
+	if avail > 2 {
+		avail -= 2 // the two indicator rows WindowFrom reserves
+	}
+	if step := avail - 1; step > 1 {
+		return step
+	}
+	return 1
+}
+
+// jdePadTo pads (or trims) a frame's lines to exactly n rows. The bar underneath
+// has to sit on the same row every frame, and a body that grew and shrank with
+// its content would walk it up and down the pane.
+func jdePadTo(lines []string, n int) []string {
+	for len(lines) < n {
+		lines = append(lines, "")
+	}
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return lines
+}
+
+// ---------------------------------------------------------------------------
+// Fitting a row to the pane
+// ---------------------------------------------------------------------------
+
+// jdeMinFieldWidth is the narrowest input area worth drawing. Below it the
+// underscored run stops reading as a field at all, so the HINT gives way first.
+const jdeMinFieldWidth = 10
+
+// jdeFitRow sizes one text row to the pane, and returns any lines that have to
+// be drawn under it.
+//
+// A columnar row is label + leader + input area + hint, and at 80 columns the
+// pane is 51 wide — so a 34-column notes field with an "optional" beside it is
+// already 15 columns over. clampToBox does not wrap: it cuts the tail, which is
+// the HINT, so the row loses the only thing on it that said what to type.
+//
+// Two things give way, in this order:
+//
+//	the input area shrinks   — a shorter field still takes the whole value; a
+//	                           bubbles textinput scrolls what does not fit.
+//	the hint moves under it  — once the field is down to jdeMinFieldWidth, the
+//	                           hint becomes a note line indented to the input
+//	                           area (jdeNoteLines), which is the fold this layer
+//	                           already uses for a note too long to ride along.
+//
+// bodyWidth of 0 means the pane is not sized yet, which — as everywhere in this
+// file — means "do not truncate".
+func jdeFitRow(f jdeField, labelWidth, bodyWidth int) (jdeField, []string) {
+	if bodyWidth <= 0 || f.Kind != jdeText {
+		return f, nil
+	}
+	lead := len(jdeIndent) + labelWidth + len(jdeLeader)
+	want := f.Width
+	if want <= 0 {
+		want = jdeFieldWidth
+	}
+	hintCost := 0
+	if f.Hint != "" {
+		hintCost = 2 + lipgloss.Width(f.Hint)
+	}
+	if avail := bodyWidth - lead - hintCost; avail >= jdeMinFieldWidth || f.Hint == "" {
+		if avail < 1 {
+			avail = 1
+		}
+		if want > avail {
+			want = avail
+		}
+		f.Width = want
+		return f, nil
+	}
+
+	note := f.Hint
+	f.Hint = ""
+	avail := bodyWidth - lead
+	if avail < 1 {
+		avail = 1
+	}
+	if want > avail {
+		want = avail
+	}
+	f.Width = want
+	return f, jdeNoteLines(note, labelWidth, bodyWidth)
+}
+
+// AddFittedFields appends one navigable row per field, numbered from rowBase,
+// each sized to the pane by jdeFitRow — and any hint that had to be folded is
+// added as further lines of the SAME row, so the window keeps a field and the
+// note explaining it on screen together.
+func (l *jdeLines) AddFittedFields(fields []jdeField, labelWidth, bodyWidth, rowBase int) {
+	for i, f := range fields {
+		fitted, notes := jdeFitRow(f, labelWidth, bodyWidth)
+		l.AddRow(rowBase+i, renderJDEField(fitted, labelWidth))
+		for _, note := range notes {
+			l.AddRow(rowBase+i, note)
+		}
+	}
+}
+
+// jdeCaveatLines is a standing note that belongs to the SHEET rather than to a
+// field — what a phase does, what it cannot undo. jdeNoteLines indents to the
+// input area because the note it draws is ABOUT the row above it; a caveat
+// about the whole sheet has no such row, and indenting it to a leader column it
+// is not hanging off reads as a value with a missing label.
+//
+// bodyWidth of 0 means the pane is not sized yet, which — as everywhere in this
+// file — means "do not truncate".
+func jdeCaveatLines(note string, bodyWidth int) []string {
+	width := 0
+	if bodyWidth > 0 {
+		if width = bodyWidth - len(jdeIndent); width < 1 {
+			width = 1
+		}
+	}
+	wrapped := jdeWrapNote(note, width)
+	out := make([]string, 0, len(wrapped))
+	for _, line := range wrapped {
+		out = append(out, jdeIndent+StyleMuted.Render(line))
+	}
+	return out
+}

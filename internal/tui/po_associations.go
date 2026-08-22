@@ -6,9 +6,10 @@
 // a price, nor bills anyone. That is exactly why they are optional everywhere
 // and never gate a purchase.
 //
-// This file holds what the create screen and the edit screen share: the option
-// lists (loaded once per screen), the labels a job and a committee read as, and
-// the picker rows both build from them. Keeping them here is what stops the two
+// This file holds what the create, edit and detail screens share: the option
+// lists (loaded once per screen), the labels a job and a committee read as, the
+// picker rows the editing surfaces build from them, and the columnar row the
+// detail sheet draws (poAssocValueField). Keeping them here is what stops the
 // surfaces from labelling the same job differently or disagreeing on what "no
 // association" means.
 package tui
@@ -269,10 +270,40 @@ func loadCommitteeOptionsCmd(deps Deps) tea.Cmd {
 	}
 }
 
+// poAssocValueField is one association as a COLUMNAR row (sc-h412): the reading
+// the PO detail sheet hangs off its shared leader column, beside the order's
+// identifiers and dates.
+//
+// It carries the same three states renderAssocValue does — attached, could not
+// ask, nothing attached — and for the same reason: a picker that failed to load
+// must never read as an order with nothing attached. What it does NOT do is
+// pre-style the value. The columnar renderer owns the styling (Dim renders an
+// absence muted), because a value arriving with its own colour sequence carries
+// its own reset, which would end a focused row's highlight partway across the
+// field — the rule po_edit.go's assocRowValue keeps for the very same rows on
+// the edit side.
+func poAssocValueField(label, attached, loadErr string) jdeField {
+	f := jdeField{Label: label, Kind: jdeValue}
+	switch {
+	case loadErr != "":
+		f.Value, f.Dim = "(none) · unavailable — "+loadErr, true
+	case attached != "":
+		f.Value = attached
+	default:
+		f.Value, f.Dim = "(none)", true
+	}
+	return f
+}
+
 // renderAssocValue renders one "Label: value" association row for a read-only
 // or menu surface. attached is the attached target's label ("" when none);
 // loadErr turns the row into an explicit unavailable note, because a picker
 // that could not be loaded must never read as an order with nothing attached.
+//
+// This is the PRE-columnar form, and the only caller left is the create screen
+// (po_create.go), which the JD Edwards conversion reaches in the purchasing
+// ENTRY slice rather than this one. When it converts, it takes
+// poAssocValueField above and this goes with it.
 func renderAssocValue(label, attached, loadErr string) string {
 	switch {
 	case loadErr != "":
