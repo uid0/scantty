@@ -80,10 +80,23 @@ type InventoryDetailScreen struct {
 	// answer "ordinary item" (omsapi.IsNotKit). kitErr therefore holds only the
 	// errors that left the question UNANSWERED; a not-found is not one of them.
 	//
+	// kitLoading says a /kits/ fetch is OUTSTANDING, and it is read by
+	// kitStockActionsOffered — which is the whole reason it exists, so do not
+	// prune it again as dead state.
+	//
+	// It has to exist because `kit == nil && kitErr == ""` says two completely
+	// different things that this screen otherwise cannot tell apart: "answered:
+	// ordinary item" (the 404 IS the answer) and "the fetch has not come back
+	// yet". A guard written against those two fields alone would hide c/u/p from
+	// every ordinary item FOREVER — far worse than the race it set out to close
+	// — so the third state is tracked explicitly rather than inferred, the same
+	// way usedByLoading and purchasesLoading do below.
+	//
 	// suppliedByKits is the opposite direction — the kits that contain this item
 	// — and is empty both for an item nothing bundles and for a kit itself.
 	kit            *omsapi.Kit
 	kitErr         string
+	kitLoading     bool
 	suppliedByKits []omsapi.KitSummary
 
 	// "Assets that use this item" (op-qdfr): the assets that list this item as
@@ -351,6 +364,10 @@ func (s *InventoryDetailScreen) loadSuppliedByKitsCmd() tea.Cmd {
 func (s *InventoryDetailScreen) Init() tea.Cmd {
 	s.usedByLoading = true
 	s.purchasesLoading = true
+	// Set where the fetch is DISPATCHED, so a refresh re-opens the question the
+	// same way the first load does — the stock keys are withheld again until it
+	// is answered again.
+	s.kitLoading = true
 	return tea.Batch(
 		s.loadItemCmd(), s.loadMetricsCmd(), s.loadUsedByCmd(), s.loadPurchaseHistoryCmd(),
 		s.loadKitCmd(), s.loadSuppliedByKitsCmd(),
@@ -372,6 +389,9 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, nil
 	case inventoryKitLoadedMsg:
+		// Answered either way — including the 404, which IS the answer "ordinary
+		// item" and is what re-offers the stock actions.
+		s.kitLoading = false
 		if m.err != nil {
 			// The question was not answered — say so rather than rendering the
 			// item as ordinary, which would hide a kit's whole nature behind a
@@ -563,8 +583,9 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// free in the global hotkey map, so it falls through to the screen.
 			// A KIT holds no stock to reconcile, so this is a silent no-op there
 			// — the same shape as i/b for a non-serialized item, and matching a
-			// footer that does not name the key.
-			if s.item != nil && !s.isKit() {
+			// footer that does not name the key. Withheld for an UNANSWERED kit
+			// question too; see kitStockActionsOffered.
+			if s.item != nil && s.kitStockActionsOffered() {
 				return s.openCycleCount()
 			}
 		case "u":
@@ -572,8 +593,9 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// optionally charging the value to a committee (SIG). Lowercase u is
 			// the global ForgeKey-Usage hotkey, so it's claimed via HandlesKey to
 			// reach the screen here instead. A kit has no stock to consume, so it
-			// is a no-op there for the same reason c is.
-			if s.item != nil && !s.isKit() {
+			// is a no-op there for the same reason c is, and withheld while the
+			// kit question is open for the same reason c is.
+			if s.item != nil && s.kitStockActionsOffered() {
 				return s.openConsume()
 			}
 		case "p":
@@ -586,7 +608,9 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// A KIT is one of those anything-elses however its count mode reads:
 			// packing is a stock operation and a kit holds none, so the footer
 			// does not name the key and pressing it must therefore do nothing.
-			if s.item != nil && s.item.CountMode == omsapi.CountModeOpenClosed && !s.isKit() {
+			// Same for a kit question still open — pack-container is a detail
+			// action on the kit-excluding item viewset, so it 404s for a kit id.
+			if s.item != nil && s.item.CountMode == omsapi.CountModeOpenClosed && s.kitStockActionsOffered() {
 				return s.openPack()
 			}
 		case "i":
@@ -730,39 +754,30 @@ func (s *InventoryDetailScreen) View() string {
 	if s.item.IsRetired {
 		retireHint = "T un-retire"
 	}
-	hint := "j/k scroll · o/enter reorder · c count · u use · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
+	hint := "j/k scroll · o/enter reorder · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	// The serial keys are guarded on the INSERT, not stripped again below, for
-	// the reason the pack key is: an insert-then-remove shape is what let a key
-	// slip through the kit stripping once already. A kit never names them however
-	// its stored flag reads, because a kit cannot legitimately be serialized at
-	// all and the keys are no-ops there.
+	// the reason the stock keys are: an insert-then-remove shape is what let a
+	// key slip through the kit stripping once already. A kit never names them
+	// however its stored flag reads, because a kit cannot legitimately be
+	// serialized at all and the keys are no-ops there.
 	if s.item.IsSerialized && !s.isKit() {
-		hint = "j/k scroll · o/enter reorder · c count · u use · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
+		hint = "j/k scroll · o/enter reorder · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	}
-	// The pack keys only exist for a sealed+open item, so they are only hinted
-	// there — an each-mode item's footer is untouched.
+	// The three STOCK keys are ADDED where they mean something rather than
+	// stripped where they do not, because stripping is what kept letting one
+	// through: c and u were removed for a kit by name, and p had to be guarded
+	// separately when SetItemCountMode became kit-routable and put a kit within
+	// reach of pack-container. An insert reads its own condition once.
 	//
-	// And never for a KIT, which is a second-order consequence of this same
-	// change worth naming: making SetItemCountMode kit-routable is what lets an
-	// operator put a kit into open/closed counting at all, which is what would
-	// otherwise bring them within reach of pack-container — a detail action on
-	// the kit-excluding item viewset, so a flat 404 for a kit id. Guarded on the
-	// INSERT rather than stripped again below, because an insert-then-remove
-	// shape is what let this key slip through the kit stripping in the first
-	// place.
-	if s.item.CountMode == omsapi.CountModeOpenClosed && !s.isKit() {
-		hint = strings.Replace(hint, "c count · ", "c count · p packs · ", 1)
-	}
-	// A kit carries no stock of its own — receiving one credits its components —
-	// so counting, consuming and packing it are not slow or unsupported, they are
-	// meaningless. Worse than meaningless for the count: the backend writes stock
-	// through save(update_fields=…) without full_clean(), so the model's own "a
-	// kit cannot carry stock" check never runs and the number would PERSIST as
-	// one nothing can ever draw down. Dropped from the bar AND from the key
-	// dispatch, because a key the bar does not name must do nothing.
-	if s.isKit() {
-		hint = strings.Replace(hint, "c count · ", "", 1)
-		hint = strings.Replace(hint, "u use · ", "", 1)
+	// kitStockActionsOffered owns that condition — a kit holds no stock, and an
+	// unanswered kit question cannot rule one out. The pack keys additionally
+	// only exist for a sealed+open item, so an each-mode item's footer is
+	// untouched.
+	if s.kitStockActionsOffered() {
+		hint = strings.Replace(hint, "s suppliers · ", "c count · u use · s suppliers · ", 1)
+		if s.item.CountMode == omsapi.CountModeOpenClosed {
+			hint = strings.Replace(hint, "c count · ", "c count · p packs · ", 1)
+		}
 	}
 	return header + "\n\n" + body + "\n\n" + StyleMuted.Render(hint)
 }

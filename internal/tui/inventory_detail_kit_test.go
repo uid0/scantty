@@ -747,3 +747,202 @@ func TestInventoryDetailKit_AnOrdinarySerializedItemKeepsTheSerialActions(t *tes
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The stock keys and the UNANSWERED kit question
+// ---------------------------------------------------------------------------
+
+// kitStockKeyNames are the three footer entries that live or die together: all
+// three are stock operations, and the question "is this a kit?" decides all
+// three at once.
+var kitStockKeyNames = []string{"c count", "u use", "p packs"}
+
+// kitDetailDriven builds the screen the way the app does — NewInventoryDetail +
+// Init against a fake OMS — and pumps it to whatever state kitStatus produces.
+// It is the only honest way to test the IN-FLIGHT case, which no hand-built
+// screen can reach: Init is what opens the question.
+func kitDetailDriven(t *testing.T, kitStatus int, width int, deliverKitAnswer bool) *InventoryDetailScreen {
+	t.Helper()
+	srv, _ := kitDetailServer(t, kitStatus)
+	t.Cleanup(srv.Close)
+
+	s := NewInventoryDetailScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "kit-1")
+	s.Update(tea.WindowSizeMsg{Width: width, Height: jdeSweepHeight})
+	if deliverKitAnswer {
+		kitPumpScreen(t, s, s.Init(), 0)
+	} else {
+		// Everything EXCEPT the kit answer: Init is run (so the question is
+		// open) and the item is delivered by hand, which is exactly the moment
+		// between the screen appearing and /kits/ coming back.
+		s.Init()
+		s.Update(inventoryDetailLoadedMsg{item: &omsapi.Item{
+			ID: "kit-1", Name: "Eufy Ink Kit", SKU: "EIK-4", CountMode: omsapi.CountModeOpenClosed,
+		}})
+	}
+	s.terminalHeight = jdeSweepHeight
+	return s
+}
+
+// TestInventoryDetailKit_AnOpenQuestionWithholdsTheStockKeys. c / u / p all post
+// to endpoints that deliberately omit include_kits, so a kit id gets a flat 404
+// — a bare "not found" against a record the operator is looking at. Until the
+// screen KNOWS the item is not a kit it cannot promise those actions, and the
+// item form already refuses to save under the same doubt.
+//
+// No explanation while the question is merely in flight: a banner that flashed
+// on every item open would be noise, and the keys arrive a beat later.
+func TestInventoryDetailKit_AnOpenQuestionWithholdsTheStockKeys(t *testing.T) {
+	s := kitDetailDriven(t, http.StatusNotFound, 120, false)
+
+	view := s.View()
+	for _, gone := range kitStockKeyNames {
+		if strings.Contains(view, gone) {
+			t.Errorf("the footer names %q while the kit question is still open:\n%s", gone, view)
+		}
+	}
+	if strings.Contains(view, "Kit status unavailable") {
+		t.Errorf("an in-flight question was reported as a failure:\n%s", view)
+	}
+	kitAssertStockKeysAreNoOps(t, s)
+	// The sheet is still entirely readable — this withholds three actions, not
+	// a screen.
+	for _, kept := range []string{"o/enter reorder", "s suppliers", "E edit", "x delete", "r refresh"} {
+		if !strings.Contains(view, kept) {
+			t.Errorf("an open kit question cost the footer %q:\n%s", kept, view)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AFailedQuestionWithholdsTheKeysAndSaysWhy. The failure
+// is permanent, so silence is not available: keys that are simply gone forever
+// with no reason given teach an operator that the screen is unreliable.
+func TestInventoryDetailKit_AFailedQuestionWithholdsTheKeysAndSaysWhy(t *testing.T) {
+	s := kitDetailDriven(t, http.StatusInternalServerError, 120, true)
+
+	view := s.View()
+	for _, gone := range kitStockKeyNames {
+		if strings.Contains(view, gone) {
+			t.Errorf("the footer names %q after the kit question failed:\n%s", gone, view)
+		}
+	}
+	if !strings.Contains(view, "Kit status unavailable") {
+		t.Errorf("the withheld keys were left unexplained:\n%s", view)
+	}
+	kitAssertStockKeysAreNoOps(t, s)
+}
+
+// TestInventoryDetailKit_TheFailedQuestionExplainsItselfAtEveryWidth. The clause
+// that ties the missing keys to the failure is the LAST thing on the line, so a
+// fitted (rather than wrapped) note would drop exactly it at the floor — the
+// silently-clipped-warning defect this project has already shipped once.
+func TestInventoryDetailKit_TheFailedQuestionExplainsItselfAtEveryWidth(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitDetailDriven(t, http.StatusInternalServerError, width, true)
+		body := s.renderBody()
+		budget := screenBodyWidth(width)
+		if clipped := clampToBox(body, budget, len(strings.Split(body, "\n"))); clipped != body {
+			t.Errorf("at %d columns the unavailable note is clipped:\n%s", width, kitFindLine(body, "Kit status"))
+		}
+		flat := strings.Join(strings.Fields(body), " ")
+		for _, want := range []string{
+			"Kit status unavailable:",
+			"count, use and pack are withheld until it is known.",
+		} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("at %d columns the note lost %q:\n%s", width, want, body)
+			}
+		}
+	}
+}
+
+// TestInventoryDetailKit_AnAnsweredOrdinaryItemKeepsEveryStockKey is the
+// regression that matters most here: a guard written against `kit == nil` alone
+// cannot tell the 404 answer from a fetch in flight, and would hide these keys
+// from every ordinary item FOREVER — far worse than the race it closes.
+func TestInventoryDetailKit_AnAnsweredOrdinaryItemKeepsEveryStockKey(t *testing.T) {
+	s := kitDetailDriven(t, http.StatusNotFound, 120, true)
+	s.item.CountMode = omsapi.CountModeOpenClosed
+	s.item.PackagingLevels = []omsapi.PackagingLevel{
+		{ID: 3, Name: "case", SortOrder: 0, BaseUnits: 100},
+		{ID: 4, Name: "bag", SortOrder: 1, BaseUnits: 1},
+	}
+	level := 3
+	s.item.CountLevel = &level
+	s.scroller.Set(s.renderBody())
+
+	view := s.View()
+	for _, want := range kitStockKeyNames {
+		if !strings.Contains(view, want) {
+			t.Errorf("an answered ordinary item's footer lost %q:\n%s", want, view)
+		}
+	}
+	// And every one of them still WORKS — naming a key that does nothing is the
+	// other half of the same defect.
+	s.Update(runeKey('c'))
+	if s.ccStep == ccStepNone {
+		t.Error("c no longer opens a cycle count on an answered ordinary item")
+	}
+	s.ccStep = ccStepNone
+	s.Update(runeKey('u'))
+	if s.cnStep == consumeStepNone {
+		t.Error("u no longer opens a consume prompt on an answered ordinary item")
+	}
+	s.cnStep = consumeStepNone
+	s.Update(runeKey('p'))
+	if s.pkStep == packStepNone {
+		t.Error("p no longer opens the pack prompt on an answered ordinary open/closed item")
+	}
+}
+
+// kitAssertStockKeysAreNoOps is the other half of the bar's honesty: a key the
+// footer does not name must do nothing at all.
+func kitAssertStockKeysAreNoOps(t *testing.T, s *InventoryDetailScreen) {
+	t.Helper()
+	s.Update(runeKey('c'))
+	if s.ccStep != ccStepNone {
+		t.Errorf("c opened a cycle count the footer does not offer (step %d)", s.ccStep)
+	}
+	s.Update(runeKey('u'))
+	if s.cnStep != consumeStepNone {
+		t.Errorf("u opened a consume prompt the footer does not offer (step %d)", s.cnStep)
+	}
+	s.Update(runeKey('p'))
+	if s.pkStep != packStepNone {
+		t.Errorf("p opened the pack prompt the footer does not offer (step %d)", s.pkStep)
+	}
+}
+
+// TestItemFormKit_TheComponentGridSpendsThePaneOnTheName. The editor's grid ends
+// at the per-kit quantity — it has no "On hand" column — so sizing it as though
+// it did charged the NAME cell nine columns (a 7-wide cell plus its separator)
+// for something never drawn. At the 80-column floor that is 27 columns instead
+// of 34, which elides a component name seven characters early at exactly the
+// width this project is measured against.
+func TestItemFormKit_TheComponentGridSpendsThePaneOnTheName(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormFixture(), width)
+		s.phase = itemFormPhaseKit
+		lines := s.kitListLines().text
+		budget := screenBodyWidth(width)
+
+		row := ""
+		for _, line := range lines {
+			if strings.Contains(line, "CI-100-XL") {
+				row = line
+			}
+			if w := lipgloss.Width(line); w > budget {
+				t.Errorf("at %d columns an editor line is %d wide against a %d pane: %q",
+					width, w, budget, line)
+			}
+		}
+		if row == "" {
+			t.Fatalf("at %d columns the component row is not on the sheet:\n%s", width, strings.Join(lines, "\n"))
+		}
+		// The reclaimed width, asserted rather than tolerated: "Cyan ink
+		// cartridge" needs 18 columns of name before the " (CI-100-XL)" tail,
+		// which the old 27-column cell could not afford at the floor.
+		if !strings.Contains(row, "Cyan ink cartridge") {
+			t.Errorf("at %d columns the component name elides early: %q", width, row)
+		}
+	}
+}

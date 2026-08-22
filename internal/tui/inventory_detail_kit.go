@@ -62,9 +62,22 @@ const (
 	// exotic. Reusing the 7-column stock width meant every such price rendered
 	// elided ("$1299.…") at EVERY terminal width, since the name column caps at
 	// kitMaxName and the spare pane went to nobody.
-	kitCostW   = 9
-	kitMinName = 12
-	kitMaxName = 44
+	kitCostW = 9
+	// kitNoLastCol is what a grid passes when it HAS no trailing column: the
+	// item form's component editor (kitListLines) draws the number, the
+	// component and the per-kit quantity and then stops, because an "On hand"
+	// reading is not what a sheet that EDITS the bill of materials is for.
+	//
+	// It is a named width rather than a bare 0 because the two helpers below
+	// both have to be told, and because passing the detail grid's kitStockW
+	// there anyway — which is what the editor did — reserved a cell that was
+	// never drawn into and charged the NAME column nine columns for it (the 7
+	// of the cell plus its 2-column separator). At 80 the pane is 51, so the
+	// name cell got 27 instead of 34 and component names elided seven
+	// characters early at the one width this project is measured against.
+	kitNoLastCol = 0
+	kitMinName   = 12
+	kitMaxName   = 44
 )
 
 // kitContIndent puts a continuation line under the name column, so it reads as
@@ -76,10 +89,11 @@ var kitContIndent = strings.Repeat(" ", len(jdeIndent)+kitNumW+2)
 // one doesn't strand the quantities out at the far right of an otherwise empty
 // row. The fallback is what a 100-column terminal has.
 //
-// lastW is the trailing column's width, which differs by grid — the two grids
-// end in different things ("On hand" for a bill of materials, "Cost" for the
-// kits that supply an item) — so the name column absorbs the difference and
-// both grids still end flush with the pane.
+// lastW is the trailing column's width, which differs by grid — the grids end in
+// different things ("On hand" for a bill of materials, "Cost" for the kits that
+// supply an item, and kitNoLastCol for an editor that stops at the quantity) —
+// so the name column absorbs the difference and every grid still ends flush with
+// the pane.
 func kitNameWidth(bodyWidth, lastW int) int {
 	if bodyWidth <= 0 {
 		bodyWidth = 71
@@ -97,6 +111,8 @@ func kitNameWidth(bodyWidth, lastW int) int {
 
 // kitGridRow lays one detail row out in its columns. The number and both
 // quantities right-align under their headers the way a printed parts list does.
+// A grid with no trailing column passes kitNoLastCol and an empty last cell; the
+// trailing separator is then trimmed rather than left hanging off the row.
 //
 // Every cell is FITTED to its column before it is padded, because padCell pads
 // and never truncates: a value wider than its column would otherwise push the
@@ -164,6 +180,42 @@ func (s *InventoryDetailScreen) bodyWidth() int {
 // says yes: a 404 means "ordinary item" and anything else means the question was
 // never answered, and neither may put a kit affordance on the screen.
 func (s *InventoryDetailScreen) isKit() bool { return s.kit != nil }
+
+// kitStockActionsOffered reports whether the three STOCK actions — c count,
+// u use and p packs — may be offered on this screen at all. It answers for both
+// halves at once, the footer and the key dispatch, because they must never
+// disagree: a key the bar does not name has to do nothing, and a key it names
+// has to do something.
+//
+// It is true ONLY for an item the /kits/ endpoint has already answered "no"
+// about. The three states it says no to, and why:
+//
+//	a kit               — all three are stock operations and a kit holds none.
+//	                      Worse than meaningless for the count: the backend
+//	                      writes stock through save(update_fields=…) without
+//	                      full_clean(), so the model's own "a kit cannot carry
+//	                      stock" check never runs and the figure would PERSIST
+//	                      as one nothing can ever draw down.
+//	the question failed — the screen cannot rule a kit out, and the three
+//	                      endpoints deliberately do NOT send include_kits, so a
+//	                      kit id gets a flat 404: a bare "not found" against a
+//	                      record the operator is looking at. renderKitErrLine
+//	                      says why the keys are gone; silent permanent absence
+//	                      would be its own small lie.
+//	the question is     — the same unknown, a moment earlier. The cost is that
+//	in flight             an ordinary item's three keys appear a beat after the
+//	                      screen does, which was weighed against the alternative
+//	                      and accepted: a rule with a race in it is the shape of
+//	                      the defect this closes.
+//
+// The trap this exists to avoid, for whoever reads it next: `kit == nil` alone
+// cannot tell "answered: ordinary item" from "no answer yet" — a 404 leaves
+// EXACTLY the state a fetch in flight does — so the guard reads kitLoading,
+// which Init sets and any inventoryKitLoadedMsg clears. Written against
+// kit/kitErr alone it would hide these keys from every ordinary item forever.
+func (s *InventoryDetailScreen) kitStockActionsOffered() bool {
+	return !s.kitLoading && s.kitErr == "" && !s.isKit()
+}
 
 // renderKitSection is the bill of materials — what one kit holds, and therefore
 // what receiving one credits. Drawn only for a kit, so an ordinary item's detail
@@ -458,18 +510,42 @@ func (s *InventoryDetailScreen) headerTagsWidth() int {
 // could not be answered — a network failure, a 500, an auth error, anything that
 // is NOT the 404 meaning "ordinary item".
 //
-// It is a single warned line rather than a section header because that is
-// exactly what it is worth: the item's own detail loaded fine and is entirely
-// usable, but one fact about it is missing, and an operator reading "Current
-// stock: 0" deserves to know that the screen cannot currently rule out the
-// reading being structural.
+// It is a warned note rather than a section header because that is exactly what
+// it is worth: the item's own detail loaded fine and is entirely usable, but one
+// fact about it is missing, and an operator reading "Current stock: 0" deserves
+// to know that the screen cannot currently rule out the reading being
+// structural.
+//
+// It also has to CARRY the missing keys, because this state is the one place
+// they vanish permanently: kitStockActionsOffered withholds c / u / p while the
+// question is open, and keys that are simply gone with no reason given teach an
+// operator that the screen is unreliable. The lead phrase is the item form's
+// word for word — two screens answering the same question differently is its own
+// defect — and only the consequence clause differs, because that screen refuses
+// a SAVE and this one has none to refuse.
+//
+// WRAPPED, not fitted: the sentence is 90-odd columns against a 51-column pane
+// at the floor, and fitCell would elide exactly the clause that explains the
+// keys (sc-ye0i). The continuation lines carry the "! " lead's indent so the
+// note reads as one thing.
 func (s *InventoryDetailScreen) renderKitErrLine() string {
 	if s.kitErr == "" {
 		return ""
 	}
-	line := "! Kit status unavailable: " + s.kitErr
-	if width := s.bodyWidth(); width > 0 {
-		line = fitCell(line, width)
+	note := "Kit status unavailable: " + s.kitErr +
+		" — count, use and pack are withheld until it is known."
+	width := s.bodyWidth()
+	if width > 2 {
+		width -= 2 // the "! " lead
 	}
-	return StyleStatusWarn.Render(line) + "\n\n"
+	var b strings.Builder
+	for i, line := range jdeWrapNote(note, width) {
+		lead := "! "
+		if i > 0 {
+			lead = "  "
+		}
+		b.WriteString(StyleStatusWarn.Render(lead+line) + "\n")
+	}
+	b.WriteString("\n")
+	return b.String()
 }
