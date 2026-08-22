@@ -70,8 +70,44 @@ type InventoryDetailScreen struct {
 	loading          bool
 	scroller         *TextScroller
 	terminalHeight   int
+	terminalWidth    int
 	confirmingDelete bool
 	deleting         bool
+
+	// Kit support (op-8n0). `kit` is non-nil ONLY when the /kits/ fetch
+	// succeeded, which is the only thing that makes this item a kit — the item
+	// serializer carries no `is_kit` field, so a 404 from that endpoint IS the
+	// answer "ordinary item" (omsapi.IsNotKit).
+	//
+	// kitAnswered says the question HAS AN ANSWER, and it is what kitRuledOut
+	// reads — the whole reason it exists, so do not prune it as dead state.
+	// It has to exist because `kit == nil` says two completely different things
+	// this screen otherwise cannot tell apart: "answered: ordinary item" (the
+	// 404 IS the answer) and "nothing has come back yet". A guard written
+	// against `kit` alone would hide every kit-dependent affordance from every
+	// ordinary item FOREVER — far worse than the race it set out to close.
+	//
+	// It is set once and NEVER unset, which is the rule rather than an
+	// optimisation: an answer already in hand stays in hand through a refresh,
+	// whether that refresh is still running or came back a failure. A refresh
+	// failing means the refresh failed, not that the record stopped being what
+	// it was — the same reason inventoryMetricsLoadedMsg keeps its last good
+	// value below, and the same for a kit (which keeps withholding what a kit
+	// withholds) as for an ordinary item (which keeps OFFERING count, use and
+	// pack). The mirror direction is the one that is easy to miss.
+	//
+	// kitErr therefore holds only the failure that left the question with NO
+	// answer at all — not a not-found, which is an answer, and not a failed
+	// re-ask, which cannot take one away. That is what keeps renderKitErrLine
+	// from saying the screen does not know whether this is a kit directly under
+	// a rendered bill of materials.
+	//
+	// suppliedByKits is the opposite direction — the kits that contain this item
+	// — and is empty both for an item nothing bundles and for a kit itself.
+	kit            *omsapi.Kit
+	kitErr         string
+	kitAnswered    bool
+	suppliedByKits []omsapi.KitSummary
 
 	// "Assets that use this item" (op-qdfr): the assets that list this item as
 	// a part/consumable via the AssetPart through-model. Loaded from its own
@@ -182,6 +218,24 @@ type consumeDoneMsg struct {
 	err         error
 }
 
+// inventoryKitLoadedMsg carries the answer to "is this item a kit?", fetched in
+// parallel with the item. A NOT-FOUND is a successful answer of "no" and arrives
+// with both fields nil; any other error leaves the question unanswered and is
+// reported rather than silently rendering the item as ordinary.
+type inventoryKitLoadedMsg struct {
+	kit *omsapi.Kit
+	err error
+}
+
+// inventorySuppliedByKitsLoadedMsg carries the kits that contain this item
+// (op-8n0), fetched in parallel with the item. A non-nil err is non-fatal — the
+// section is simply omitted, since it is triage context rather than an answer
+// the operator asked for.
+type inventorySuppliedByKitsLoadedMsg struct {
+	kits []omsapi.KitSummary
+	err  error
+}
+
 type inventoryDeletedMsg struct {
 	err error
 }
@@ -287,16 +341,100 @@ func (s *InventoryDetailScreen) loadPurchaseHistoryCmd() tea.Cmd {
 	}
 }
 
+// loadKitCmd asks whether this id is a kit, and if so what it contains (op-8n0).
+//
+// It is a separate request because it has to be: neither item serializer exposes
+// `is_kit` or `components`, and the kit fields live only on the /kits/ route,
+// whose queryset is filtered to kits — so fetching the id there and reading the
+// status is the ONLY way a client can tell the two apart. A 404 is therefore a
+// successful answer, not a failure; see omsapi.IsNotKit.
+func (s *InventoryDetailScreen) loadKitCmd() tea.Cmd {
+	deps, id, ctx := s.deps, s.itemID, s.ctx()
+	return func() tea.Msg {
+		kit, err := deps.OMS.GetKit(ctx, id)
+		if omsapi.IsNotKit(err) {
+			return inventoryKitLoadedMsg{}
+		}
+		return inventoryKitLoadedMsg{kit: kit, err: err}
+	}
+}
+
+// loadSuppliedByKitsCmd fetches the kits that CONTAIN this item — "the Eufy Ink
+// Kit is a way to buy this cartridge", which is reorder-triage context the web
+// shows on the same screen. Loads in parallel with the item; a failure only
+// omits the section.
+func (s *InventoryDetailScreen) loadSuppliedByKitsCmd() tea.Cmd {
+	deps, id, ctx := s.deps, s.itemID, s.ctx()
+	return func() tea.Msg {
+		kits, err := deps.OMS.ListItemKits(ctx, id)
+		return inventorySuppliedByKitsLoadedMsg{kits: kits, err: err}
+	}
+}
+
 func (s *InventoryDetailScreen) Init() tea.Cmd {
 	s.usedByLoading = true
 	s.purchasesLoading = true
-	return tea.Batch(s.loadItemCmd(), s.loadMetricsCmd(), s.loadUsedByCmd(), s.loadPurchaseHistoryCmd())
+	// Deliberately nothing to reset for the kit question: a refresh re-ASKS it
+	// but does not un-answer it, so an item already known ordinary keeps its
+	// stock keys across the whole round trip rather than having them blink out
+	// and back on every r.
+	return tea.Batch(
+		s.loadItemCmd(), s.loadMetricsCmd(), s.loadUsedByCmd(), s.loadPurchaseHistoryCmd(),
+		s.loadKitCmd(), s.loadSuppliedByKitsCmd(),
+	)
 }
 
 func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		// The kit grids size their columns from the pane, so a resize has to
+		// rebuild the body — a grid laid out for the old width would be clipped
+		// at the new one (or strand its quantity columns mid-row).
+		if m.Width != s.terminalWidth {
+			s.terminalWidth = m.Width
+			if s.item != nil {
+				s.scroller.Set(s.renderBody())
+			}
+		}
+		return s, nil
+	case inventoryKitLoadedMsg:
+		if m.err != nil {
+			// A failure only counts while there is nothing to fail back TO. With
+			// an answer already in hand this is a refresh that failed, and the
+			// record has not stopped being what it was — keeping it is the same
+			// best-effort rule inventoryMetricsLoadedMsg follows below, and it
+			// is what stops the screen drawing a bill of materials above a line
+			// saying it cannot tell whether this is a kit.
+			//
+			// With NO prior answer it is the state the screen must own up to:
+			// rendering the item as ordinary would hide a kit's whole nature
+			// behind a transient failure.
+			if !s.kitAnswered {
+				s.kitErr = m.err.Error()
+			}
+		} else {
+			// Answered either way — including the 404, which IS the answer
+			// "ordinary item" and is what offers the stock actions.
+			s.kitAnswered = true
+			s.kitErr = ""
+			s.kit = m.kit
+		}
+		if s.item != nil {
+			s.scroller.Set(s.renderBody())
+		}
+		return s, nil
+	case inventorySuppliedByKitsLoadedMsg:
+		// A failure here is swallowed on purpose: this section is triage context
+		// nobody asked for, and a "Supplied by kits: unavailable" banner on an
+		// item that is in no kits at all — which is most of them — would be noise
+		// on every screen in the catalogue.
+		if m.err == nil {
+			s.suppliedByKits = m.kits
+		}
+		if s.item != nil {
+			s.scroller.Set(s.renderBody())
+		}
 		return s, nil
 	case inventoryDetailLoadedMsg:
 		s.loading = false
@@ -462,15 +600,21 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "c":
 			// Cycle count (issue-7): record a physical count. Lowercase c is
 			// free in the global hotkey map, so it falls through to the screen.
-			if s.item != nil {
+			// A KIT holds no stock to reconcile, so this is a silent no-op there
+			// — the same shape as i/b for a non-serialized item, and matching a
+			// footer that does not name the key. Withheld for an UNANSWERED kit
+			// question too; see kitRuledOut.
+			if s.item != nil && s.kitRuledOut() {
 				return s.openCycleCount()
 			}
 		case "u":
 			// Use / consume (accounting Phase 2): record consumption of N units,
 			// optionally charging the value to a committee (SIG). Lowercase u is
 			// the global ForgeKey-Usage hotkey, so it's claimed via HandlesKey to
-			// reach the screen here instead.
-			if s.item != nil {
+			// reach the screen here instead. A kit has no stock to consume, so it
+			// is a no-op there for the same reason c is, and withheld while the
+			// kit question is open for the same reason c is.
+			if s.item != nil && s.kitRuledOut() {
 				return s.openConsume()
 			}
 		case "p":
@@ -479,20 +623,39 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// them — so for anything else p is a silent no-op, the same shape as
 			// i/b for a non-serialized item. Lowercase p is free in the global
 			// hotkey map, so it falls through to the screen.
-			if s.item != nil && s.item.CountMode == omsapi.CountModeOpenClosed {
+			//
+			// A KIT is one of those anything-elses however its count mode reads:
+			// packing is a stock operation and a kit holds none, so the footer
+			// does not name the key and pressing it must therefore do nothing.
+			// Same for a kit question still open — pack-container is a detail
+			// action on the kit-excluding item viewset, so it 404s for a kit id.
+			if s.item != nil && s.item.CountMode == omsapi.CountModeOpenClosed && s.kitRuledOut() {
 				return s.openPack()
 			}
 		case "i":
 			// Serialized items expose per-unit instance tracking; jump to
 			// the instances screen. No-op for non-serialized items.
-			if s.item != nil && s.item.IsSerialized {
+			//
+			// And no-op unless a kit has been RULED OUT. A kit's COMPONENTS are
+			// the units that carry serials — the kit is bought as one SKU and
+			// decomposes on receipt — and the server refuses to make one
+			// serialized at all, so a kit whose flag says otherwise is stray
+			// data (InventoryItem.save() never runs full_clean()), not a state
+			// this screen should act on. Accessioning instances against the kit
+			// id would put units into the same stock figure nothing can draw
+			// down that c / u / p are hidden for — which is why the doubt counts
+			// as much as the answer here; see kitRuledOut.
+			if s.item != nil && s.item.IsSerialized && s.kitRuledOut() {
 				return s, SwitchTo(WSInventory, NewItemInstancesScreen(s.deps, s.item.ID, s.item.Name, s.item.SerializedStock))
 			}
 		case "b":
 			// Batch-scan serials: rapid-fire scanner-gun capture that
 			// creates-and-receives each unit. Serialized items only; lowercase
-			// b is free in the global hotkey map, so it falls through here.
-			if s.item != nil && s.item.IsSerialized {
+			// b is free in the global hotkey map, so it falls through here. Never
+			// until a kit is ruled out, for the reason i is not — and batch-scan
+			// RECEIVES each unit it creates, so it is a stock write besides,
+			// which is the corruption kitRuledOut's comment records.
+			if s.item != nil && s.item.IsSerialized && s.kitRuledOut() {
 				return s, SwitchTo(WSInventory, NewBatchScanSerialsScreen(s.deps, s.item.ID, s.item.Name))
 			}
 		case "E":
@@ -612,14 +775,38 @@ func (s *InventoryDetailScreen) View() string {
 	if s.item.IsRetired {
 		retireHint = "T un-retire"
 	}
-	hint := "j/k scroll · o/enter reorder · c count · u use · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
-	if s.item.IsSerialized {
-		hint = "j/k scroll · o/enter reorder · c count · u use · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
+	hint := "j/k scroll · o/enter reorder · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
+	// The serial keys are guarded on the INSERT, not stripped again below, for
+	// the reason the stock keys are: an insert-then-remove shape is what let a
+	// key slip through the kit stripping once already. Named only once a kit is
+	// RULED OUT — a kit cannot legitimately be serialized at all, and an
+	// unanswered question cannot tell one from an ordinary item.
+	if s.item.IsSerialized && s.kitRuledOut() {
+		hint = "j/k scroll · o/enter reorder · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	}
-	// The pack keys only exist for a sealed+open item, so they are only hinted
-	// there — an each-mode item's footer is untouched.
-	if s.item.CountMode == omsapi.CountModeOpenClosed {
-		hint = strings.Replace(hint, "c count · ", "c count · p packs · ", 1)
+	// The three STOCK keys are ADDED where they mean something rather than
+	// stripped where they do not, because stripping is what kept letting one
+	// through: c and u were removed for a kit by name, and p had to be guarded
+	// separately when SetItemCountMode became kit-routable and put a kit within
+	// reach of pack-container. An insert reads its own condition once.
+	//
+	// kitRuledOut owns that condition — a kit holds no stock, and an
+	// unanswered kit question cannot rule one out. The pack keys additionally
+	// only exist for a sealed+open item, so an each-mode item's footer is
+	// untouched.
+	//
+	// The two hardcoded base strings and the substring surgery over them were
+	// assessed rather than tidied: every key here is inserted under exactly the
+	// predicate its case in Update reads, so the bar cannot name a key that does
+	// nothing or omit one that works, for any combination of kit state,
+	// is_serialized and count mode. That agreement is what is load-bearing, not
+	// the shape, and it is asserted directly across the whole matrix rather than
+	// argued for here — see TestInventoryDetailKit_TheBarAndTheDispatchAgree.
+	if s.kitRuledOut() {
+		hint = strings.Replace(hint, "s suppliers · ", "c count · u use · s suppliers · ", 1)
+		if s.item.CountMode == omsapi.CountModeOpenClosed {
+			hint = strings.Replace(hint, "c count · ", "c count · p packs · ", 1)
+		}
 	}
 	return header + "\n\n" + body + "\n\n" + StyleMuted.Render(hint)
 }
@@ -637,8 +824,16 @@ func (s *InventoryDetailScreen) renderHeader() string {
 	}
 	var b strings.Builder
 
-	// Line 1: item name (+ reorder / retired flags).
-	b.WriteString(StyleTitle.Render(it.Name))
+	// Line 1: item name (+ kit / reorder / retired flags). The kit tag rides on
+	// the NAME line, next to [retired], because "this is a kit" is the same order
+	// of fact: it changes what every number below means — and it is drawn by
+	// kitNameLine, which shortens the NAME rather than let the tag be clipped off
+	// a narrow pane.
+	if kitLine := s.kitNameLine(it.Name); kitLine != "" {
+		b.WriteString(kitLine)
+	} else {
+		b.WriteString(StyleTitle.Render(it.Name))
+	}
 	if it.IsRetired {
 		b.WriteString("  " + StyleMuted.Render("[retired]"))
 	}
@@ -732,6 +927,9 @@ func (s *InventoryDetailScreen) renderBody() string {
 		}
 		b.WriteString(StyleMuted.Render(countedIn) + "\n")
 	}
+	// A kit's stock is zero by construction, not by coincidence: say so where the
+	// zero is, not only in the section further down that explains why.
+	b.WriteString(s.kitStockNote())
 	// Days-since-last-count (issue-7): "Counted: 12d ago" / "Counted: never".
 	b.WriteString(StyleMuted.Render(metricsCountedLine(it)) + "\n")
 	if it.ReorderStatus != "" {
@@ -757,7 +955,18 @@ func (s *InventoryDetailScreen) renderBody() string {
 	}
 	b.WriteString("\n")
 
-	if it.IsSerialized {
+	// The bill of materials sits directly under Stock, whose zero it explains.
+	b.WriteString(s.renderKitSection())
+	b.WriteString(s.renderKitErrLine())
+
+	// Only once a kit is RULED OUT: the section's whole content is an
+	// instruction to press i and b, which do nothing until then, and a "units
+	// are tracked individually" heading under a bill of materials says the
+	// opposite of what a kit is — its COMPONENTS are the units. An item reaching
+	// here with the flag set while the kit question is open or failed is stating
+	// as settled fact something that depends on the unanswered question, and the
+	// operator reads a rendered panel as settled. See kitRuledOut.
+	if it.IsSerialized && s.kitRuledOut() {
 		b.WriteString(StyleTitle.Render("Serialized tracking") + "\n")
 		mode := it.SerialTrackingMode
 		if mode == "" {
@@ -838,6 +1047,10 @@ func (s *InventoryDetailScreen) renderBody() string {
 		}
 		b.WriteString("\n")
 	}
+
+	// "Which kits would restock this?" belongs with the other ways to buy it, so
+	// it follows the supplier blocks rather than leading them.
+	b.WriteString(s.renderSuppliedByKitsSection())
 
 	b.WriteString(s.renderPurchaseSection())
 

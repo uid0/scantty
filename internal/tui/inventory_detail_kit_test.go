@@ -1,0 +1,1342 @@
+// The item detail's kit sections (op-8n0).
+//
+// The contract these hold it to:
+//
+//	a kit says so           — the operator can tell a kit from an ordinary item
+//	                          at a glance, and is told why its stock reads zero
+//	the breakdown is there  — every component and the per-kit quantity that is
+//	                          what receiving multiplies
+//	an ordinary item is     — no tag, no section, no note: the sheet is what it
+//	untouched                 was before kits existed
+//	a 404 means "no"        — the item serializer cannot say whether an item is a
+//	                          kit, so the screen asks /kits/ and reads its 404 as
+//	                          the answer — while a REAL failure says so rather
+//	                          than silently rendering the item as ordinary
+//	it survives the clip    — the body is CLIPPED, not wrapped (clampToBox), so
+//	                          every line is measured against the pane at 80, 100
+//	                          and 120 columns and the assertion is made on the
+//	                          clipped render
+package tui
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/uid0/scantty/internal/omsapi"
+)
+
+// kitTestWidths is the three terminals every kit surface is measured at: the JD
+// Edwards World floor, an ordinary window, and a wide one. 80 is the one that
+// matters — this project has already shipped a warning silently clipped there.
+var kitTestWidths = []int{80, 100, 120}
+
+func intp(v int) *int { return &v }
+
+// kitTestKit is the fixture, and it is deliberately the WIDEST realistic one: a
+// long kit name, a component whose name runs well past any column the pane can
+// afford, a component with a note, and one whose stock is zero (which must read
+// as a zero, not as "unknown"). A width test is only as honest as its widest
+// fixture.
+func kitTestKit() *omsapi.Kit {
+	return &omsapi.Kit{
+		Item: omsapi.Item{
+			ID: "kit-1", Name: "Eufy printer maintenance kit (CMYK + cleaning)",
+			SKU: "EIK-4", Stock: 0,
+		},
+		IsKit:          true,
+		ComponentCount: 3,
+		Components: []omsapi.KitComponent{
+			{
+				ID: 7, Component: "itm-c", ComponentName: "Cyan ink cartridge, high yield",
+				ComponentSKU: "CI-100-XL", ComponentStock: intp(0), ComponentNeedsReorder: true,
+				Quantity: 1, Notes: "CMYK set — do not split",
+			},
+			{
+				ID: 8, Component: "itm-m",
+				ComponentName: "Magenta ink cartridge for the Eufy wide-format printer",
+				ComponentSKU:  "MI-100-XL", ComponentStock: intp(6), Quantity: 2,
+			},
+			{ID: 9, Component: "itm-x", ComponentName: "Cleaning kit", Quantity: 1},
+		},
+	}
+}
+
+func kitTestSupplyingKits() []omsapi.KitSummary {
+	return []omsapi.KitSummary{
+		{
+			ID: "kit-1", Name: "Eufy printer maintenance kit (CMYK + cleaning)", SKU: "EIK-4",
+			IsActive: true, QuantityInKit: intp(2), SupplierName: "Acme Office Supply",
+			SupplierSKU: "ACM-88421", UnitCost: "34.99", ComponentCount: 5,
+		},
+		{ID: "kit-2", Name: "Discontinued ink bundle", SKU: "DIB-1", QuantityInKit: intp(1)},
+		// A four-figure price. A kit is a bundle of parts bought as one SKU, so
+		// this is the ordinary case rather than the exotic one — and a fixture
+		// that only ever priced things at "34.99" is why the cost column shipped
+		// too narrow to hold a real kit's price.
+		{
+			ID: "kit-3", Name: "Whole-printer overhaul bundle", SKU: "WPO-9",
+			IsActive: true, QuantityInKit: intp(4), UnitCost: "1299.50", ComponentCount: 12,
+		},
+	}
+}
+
+// kitTestRetiredKit is the fixture for the header's hardest case: a long-named
+// kit that ALSO carries the tags renderHeader appends after the [kit] one. The
+// name is the only thing on that line that can give way, so it has to give way
+// for all of them, not just for [kit].
+func kitTestRetiredKit(pendingReorder bool) *omsapi.Kit {
+	kit := kitTestKit()
+	kit.IsRetired = true
+	kit.HasPendingReorder = pendingReorder
+	return kit
+}
+
+// kitDetail builds a loaded item-detail screen in whichever kit state is being
+// measured, sized to `width`.
+func kitDetail(t *testing.T, kit *omsapi.Kit, supplying []omsapi.KitSummary, width int) *InventoryDetailScreen {
+	t.Helper()
+	s := NewInventoryDetailScreen(Deps{}, "itm-1")
+	s.loading = false
+	s.item = &omsapi.Item{
+		ID: "itm-1", Name: "Cyan ink cartridge, high yield", SKU: "CI-100-XL",
+		Stock: 4, MinimumStock: 2,
+	}
+	if kit != nil {
+		s.item = &kit.Item
+	}
+	s.kit = kit
+	// The answer has arrived — kit or not, both are answers. These fixtures are
+	// the screen after it loaded, and every kit-gated affordance is gated on
+	// there being an answer at all.
+	s.kitAnswered = true
+	s.suppliedByKits = supplying
+	s.Update(tea.WindowSizeMsg{Width: width, Height: jdeSweepHeight})
+	s.scroller.Set(s.renderBody())
+	return s
+}
+
+// TestInventoryDetailKit_IdentifiesTheKitAndItsComponents is acceptance
+// criterion 1: a kit is visibly a kit, and every component and per-kit quantity
+// is on the screen.
+func TestInventoryDetailKit_IdentifiesTheKitAndItsComponents(t *testing.T) {
+	s := kitDetail(t, kitTestKit(), nil, 120)
+
+	if head := s.renderHeader(); !strings.Contains(head, "[kit]") {
+		t.Errorf("the header does not mark this item as a kit:\n%s", head)
+	}
+	body := s.renderBody()
+	if !strings.Contains(body, "Kit contents (3)") {
+		t.Errorf("no kit-contents section:\n%s", body)
+	}
+	// The per-kit quantity is the number receiving multiplies, so every row has
+	// to carry it — a component listed without one is a component the operator
+	// cannot reason about.
+	for _, want := range []string{"CI-100-XL", "MI-100-XL", "Cleaning kit", "Per kit", "On hand"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("kit section is missing %q:\n%s", want, body)
+		}
+	}
+	// Magenta is the "2 per kit" row: find it and check the quantity column
+	// really carries the 2 rather than the row merely existing.
+	row := kitFindLine(body, "MI-100-XL")
+	if row == "" {
+		t.Fatalf("no magenta row:\n%s", body)
+	}
+	if !strings.Contains(row, "2") {
+		t.Errorf("magenta row does not carry its per-kit quantity: %q", row)
+	}
+	// A component with none on the shelf reads as 0, not as unknown — that
+	// distinction is the whole reason the field is a pointer.
+	cyan := kitFindLine(body, "CI-100-XL")
+	if strings.Contains(cyan, "—") {
+		t.Errorf("zero stock rendered as unknown: %q", cyan)
+	}
+	if !strings.Contains(body, "needs reorder") {
+		t.Errorf("a component below its reorder point did not say so:\n%s", body)
+	}
+	if !strings.Contains(body, "CMYK set") {
+		t.Errorf("a component's note was dropped:\n%s", body)
+	}
+}
+
+// TestInventoryDetailKit_StockNoteExplainsTheZero. A kit reads "Current stock:
+// 0" whether five are on the shelf or none ever were, because it never carries
+// stock at all. Saying so where the zero is, is the difference between a number
+// and a lie.
+func TestInventoryDetailKit_StockNoteExplainsTheZero(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitDetail(t, kitTestKit(), nil, width)
+		budget := screenBodyWidth(width)
+		flat := strings.Join(strings.Fields(
+			clampToBox(s.renderBody(), budget, 200)), " ")
+		if !strings.Contains(flat, "Kits hold no stock of their own") {
+			t.Errorf("at %d columns the Stock block does not explain a kit's zero:\n%s",
+				width, s.renderBody())
+		}
+		// The ordinary case stays quiet about anything else: no figure quoted,
+		// nothing about a save this read-only screen does not perform.
+		for _, forbidden := range []string{"Recorded as", "clears", "saving"} {
+			if strings.Contains(flat, forbidden) {
+				t.Errorf("at %d columns a zero-stock kit's note grew %q:\n%s",
+					width, forbidden, s.renderBody())
+			}
+		}
+	}
+}
+
+// TestInventoryDetailKit_TheStockNoteOwnsUpToAStrayFigure. The model forbids a
+// kit carrying stock, but InventoryItem.save() never runs full_clean(), so a
+// non-zero figure does reach this screen — which is why the item form quotes it
+// before writing it back down. Asserting "kits hold no stock of their own" on
+// the line directly under "Current stock: 7" tells the operator something they
+// can see is untrue, and has the two screens describe one record differently.
+//
+// Measured on the CLIPPED render: the acknowledging reading is the longer of the
+// two, so it is the one a 51-column pane would cut.
+func TestInventoryDetailKit_TheStockNoteOwnsUpToAStrayFigure(t *testing.T) {
+	stray := kitTestKit()
+	stray.Stock = 7
+	for _, width := range kitTestWidths {
+		s := kitDetail(t, stray, nil, width)
+		body := s.renderBody()
+		budget := screenBodyWidth(width)
+		flat := strings.Join(strings.Fields(clampToBox(body, budget, 200)), " ")
+
+		if !strings.Contains(flat, "Recorded as 7 on hand") {
+			t.Errorf("at %d columns the note does not acknowledge the figure above it:\n%s", width, body)
+		}
+		if !strings.Contains(flat, "a kit holds no stock of its own") {
+			t.Errorf("at %d columns the note does not explain what the figure is not:\n%s", width, body)
+		}
+		// This screen SAVES NOTHING, so it must not borrow the item form's
+		// promise that a save will clear the figure — that would swap one untrue
+		// sentence for another.
+		for _, forbidden := range []string{"clears", "clear", "saving", "save"} {
+			if strings.Contains(flat, forbidden) {
+				t.Errorf("at %d columns a read-only screen claims %q:\n%s", width, forbidden, body)
+			}
+		}
+		// Wrapped, not clipped: the clamp must not have changed a single line.
+		if clamped := clampToBox(body, budget, len(strings.Split(body, "\n"))); clamped != body {
+			for _, line := range strings.Split(body, "\n") {
+				if w := lipgloss.Width(line); w > budget {
+					t.Errorf("at %d columns a line is %d wide against a %d pane: %q",
+						width, w, budget, line)
+				}
+			}
+		}
+	}
+}
+
+// TestInventoryDetailKit_AnOrdinaryItemIsUntouched is acceptance criterion 4.
+// Nothing about kits may appear on an item that is not one — and, since the
+// screen ASKS about every item it opens, "not one" includes the case where the
+// answer simply came back no.
+func TestInventoryDetailKit_AnOrdinaryItemIsUntouched(t *testing.T) {
+	s := kitDetail(t, nil, nil, 120)
+	whole := s.renderHeader() + "\n" + s.renderBody()
+	for _, forbidden := range []string{"[kit]", "Kit contents", "Supplied by kits", "Kits hold no stock", "Per kit"} {
+		if strings.Contains(whole, forbidden) {
+			t.Errorf("a non-kit item shows the kit affordance %q:\n%s", forbidden, whole)
+		}
+	}
+}
+
+// TestInventoryDetailKit_SuppliedByKitsListsTheBundles is the other direction: a
+// component item can be bought inside a kit, and how many it gets is the reading
+// that makes that useful.
+func TestInventoryDetailKit_SuppliedByKitsListsTheBundles(t *testing.T) {
+	body := kitDetail(t, nil, kitTestSupplyingKits(), 120).renderBody()
+	if !strings.Contains(body, "Supplied by kits (3)") {
+		t.Errorf("no supplied-by section:\n%s", body)
+	}
+	for _, want := range []string{"EIK-4", "Acme Office Supply", "ACM-88421", "$34.99", "5 components"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("supplied-by section is missing %q:\n%s", want, body)
+		}
+	}
+	// An inactive kit is dimmed-but-shown upstream rather than hidden, so an
+	// operator hunting for it learns why it is not in the PO picker.
+	if !strings.Contains(body, "[inactive]") {
+		t.Errorf("an inactive kit did not say so:\n%s", body)
+	}
+	// And a kit with no recorded price must not read as free.
+	row := kitFindLine(body, "DIB-1")
+	if !strings.Contains(row, "—") {
+		t.Errorf("a kit with no unit cost did not render as unknown: %q", row)
+	}
+}
+
+// TestInventoryDetailKit_SuppliedBySectionIsAbsentWhenEmpty. This section is
+// context nobody asked for, so an empty one is pure noise on every item in a
+// catalogue that has no kits at all.
+func TestInventoryDetailKit_SuppliedBySectionIsAbsentWhenEmpty(t *testing.T) {
+	if body := kitDetail(t, nil, nil, 120).renderBody(); strings.Contains(body, "Supplied by kits") {
+		t.Errorf("an empty supplied-by section was drawn:\n%s", body)
+	}
+}
+
+// TestInventoryDetailKit_TheClippedRenderLosesNothing is acceptance criterion 3,
+// and it asserts on the CLIPPED render rather than the raw one: Root hands every
+// screen through clampToBox, which TRUNCATES an over-wide line with nothing to
+// show it did. A test that measured the unclipped body would pass on a layout
+// the operator never actually sees.
+func TestInventoryDetailKit_TheClippedRenderLosesNothing(t *testing.T) {
+	states := []struct {
+		name      string
+		kit       *omsapi.Kit
+		supplying []omsapi.KitSummary
+	}{
+		{"a kit", kitTestKit(), nil},
+		{"a component of kits", nil, kitTestSupplyingKits()},
+		{"an empty kit", &omsapi.Kit{Item: omsapi.Item{ID: "kit-0", Name: "Empty kit"}, IsKit: true}, nil},
+		// A kit whose header carries a SECOND tag after [kit]. This is the state
+		// the [kit] reservation used to lose: the name was fitted against [kit]
+		// alone, so the name line already filled the pane and renderHeader's
+		// [retired] fell off the end of it.
+		{"a retired kit", kitTestRetiredKit(false), nil},
+		{"a retired kit with a reorder pending", kitTestRetiredKit(true), nil},
+	}
+	for _, st := range states {
+		for _, width := range kitTestWidths {
+			s := kitDetail(t, st.kit, st.supplying, width)
+			budget := screenBodyWidth(width)
+			body := s.renderBody()
+			// The clip is the assertion: if clamping changes a single line, that
+			// line is one the operator sees cut off.
+			if clipped := clampToBox(body, budget, len(strings.Split(body, "\n"))); clipped != body {
+				for _, line := range strings.Split(body, "\n") {
+					if w := lipgloss.Width(line); w > budget {
+						t.Errorf("%s at %d columns: a line is %d wide but the pane is %d — it is clipped: %q",
+							st.name, width, w, budget, line)
+					}
+				}
+			}
+			// And the header, which carries the [kit] tag.
+			head := s.renderHeader()
+			if clipped := clampToBox(head, budget, 8); clipped != head {
+				t.Errorf("%s at %d columns: the header is clipped:\n%s", st.name, width, head)
+			}
+		}
+	}
+}
+
+// TestInventoryDetailKit_TheGridColumnsLineUp is what makes it a grid rather
+// than ragged lines: a name cell that overflowed its width would shove the
+// quantities right on that row alone, which is the defect a printed parts list
+// never has.
+func TestInventoryDetailKit_TheGridColumnsLineUp(t *testing.T) {
+	for _, width := range kitTestWidths {
+		body := kitDetail(t, kitTestKit(), nil, width).renderBody()
+		header := kitFindLine(body, "Per kit")
+		if header == "" {
+			t.Fatalf("no column header at %d columns:\n%s", width, body)
+		}
+		want := lipgloss.Width(header)
+		for _, sku := range []string{"CI-100-XL", "MI-100-XL", "Cleaning kit"} {
+			row := kitFindLine(body, sku)
+			if row == "" {
+				t.Fatalf("no row for %s at %d columns:\n%s", sku, width, body)
+			}
+			if got := lipgloss.Width(row); got != want {
+				t.Errorf("at %d columns the %s row ends at column %d but the header at %d — the grid is ragged: %q",
+					width, sku, got, want, row)
+			}
+		}
+	}
+}
+
+// kitFindLine returns the first line of `body` containing `sub`, or "".
+func kitFindLine(body, sub string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, sub) {
+			return line
+		}
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
+// Where the answer comes from
+// ---------------------------------------------------------------------------
+
+// kitDetailServer is a fake OMS answering exactly the calls the item detail
+// makes. kitStatus decides what /kits/{id}/ says, which is the whole point: that
+// endpoint's STATUS is how the client learns whether an item is a kit.
+func kitDetailServer(t *testing.T, kitStatus int) (*httptest.Server, *[]string) {
+	t.Helper()
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/inventory/items/kit-1/":
+			_, _ = w.Write([]byte(`{"id":"kit-1","name":"Eufy Ink Kit","sku":"EIK-4","current_stock":0}`))
+		case "/api/inventory/kits/kit-1/":
+			if kitStatus != http.StatusOK {
+				w.WriteHeader(kitStatus)
+				_, _ = w.Write([]byte(`{"detail":"nope"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"kit-1","name":"Eufy Ink Kit","sku":"EIK-4","is_kit":true,
+				"component_count":1,
+				"components":[{"id":7,"component":"itm-c","component_name":"Cyan ink",
+				"component_sku":"CI-100","component_current_stock":3,"quantity":4}]}`))
+		case "/api/inventory/items/kit-1/kits/":
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"detail":"not found"}`))
+		}
+	}))
+	return srv, &seen
+}
+
+// kitPumpScreen runs a screen's Init to completion against a fake server, the
+// way the drive tests do — this screen fans four requests out in parallel and
+// the kit answer is one of them.
+func kitPumpScreen(t *testing.T, s *InventoryDetailScreen, cmd tea.Cmd, depth int) {
+	t.Helper()
+	if cmd == nil || depth > 12 {
+		return
+	}
+	msg := cmd()
+	if msg == nil {
+		return
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			kitPumpScreen(t, s, c, depth+1)
+		}
+		return
+	}
+	_, next := s.Update(msg)
+	kitPumpScreen(t, s, next, depth+1)
+}
+
+// TestInventoryDetailKit_AsksTheKitsEndpointAndRendersTheAnswer drives the real
+// load path: the item comes from /items/ (with include_kits, or it would 404)
+// and the kit answer from /kits/, and only the second one can say "kit".
+func TestInventoryDetailKit_AsksTheKitsEndpointAndRendersTheAnswer(t *testing.T) {
+	srv, seen := kitDetailServer(t, http.StatusOK)
+	defer srv.Close()
+
+	s := NewInventoryDetailScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "kit-1")
+	s.Update(tea.WindowSizeMsg{Width: 120, Height: jdeSweepHeight})
+	kitPumpScreen(t, s, s.Init(), 0)
+
+	if !kitSawPath(*seen, "/api/inventory/kits/kit-1/") {
+		t.Fatalf("the screen never asked whether the item is a kit: %v", *seen)
+	}
+	if !s.isKit() {
+		t.Fatalf("a 200 from /kits/ did not make the item a kit")
+	}
+	body := s.renderBody()
+	if !strings.Contains(body, "Kit contents (1)") || !strings.Contains(body, "CI-100") {
+		t.Errorf("the fetched bill of materials did not render:\n%s", body)
+	}
+}
+
+// TestInventoryDetailKit_A404MeansOrdinaryAndSaysNothing. The 404 is the API's
+// answer, so it must produce a completely ordinary screen — not an error, and
+// not a kit affordance.
+func TestInventoryDetailKit_A404MeansOrdinaryAndSaysNothing(t *testing.T) {
+	srv, _ := kitDetailServer(t, http.StatusNotFound)
+	defer srv.Close()
+
+	s := NewInventoryDetailScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "kit-1")
+	s.Update(tea.WindowSizeMsg{Width: 120, Height: jdeSweepHeight})
+	kitPumpScreen(t, s, s.Init(), 0)
+
+	if s.isKit() {
+		t.Fatal("a 404 from /kits/ made the item a kit")
+	}
+	whole := s.renderHeader() + "\n" + s.renderBody()
+	if strings.Contains(whole, "[kit]") || strings.Contains(whole, "Kit contents") {
+		t.Errorf("a 404 drew a kit affordance:\n%s", whole)
+	}
+	if strings.Contains(whole, "Kit status unavailable") {
+		t.Errorf("a 404 was reported as a failure — it is the ANSWER:\n%s", whole)
+	}
+}
+
+// TestInventoryDetailKit_AnUnansweredQuestionSaysSo. Anything that is NOT a 404
+// left the question open, and the screen must say so: silently rendering the
+// item as ordinary would hide a kit's entire nature behind a transient failure,
+// with "Current stock: 0" left standing as if it meant something.
+func TestInventoryDetailKit_AnUnansweredQuestionSaysSo(t *testing.T) {
+	srv, _ := kitDetailServer(t, http.StatusInternalServerError)
+	defer srv.Close()
+
+	s := NewInventoryDetailScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "kit-1")
+	s.Update(tea.WindowSizeMsg{Width: 120, Height: jdeSweepHeight})
+	kitPumpScreen(t, s, s.Init(), 0)
+
+	if s.isKit() {
+		t.Fatal("a 500 was taken as a yes")
+	}
+	body := s.renderBody()
+	if !strings.Contains(body, "Kit status unavailable") {
+		t.Errorf("an unanswered kit question was silently swallowed:\n%s", body)
+	}
+	// And it still fits the floor.
+	budget := screenBodyWidth(80)
+	s.Update(tea.WindowSizeMsg{Width: 80, Height: jdeSweepHeight})
+	narrow := s.renderBody()
+	if clipped := clampToBox(narrow, budget, len(strings.Split(narrow, "\n"))); clipped != narrow {
+		t.Errorf("the unavailable line is clipped at 80 columns:\n%s", kitFindLine(narrow, "Kit status"))
+	}
+}
+
+func kitSawPath(seen []string, want string) bool {
+	for _, p := range seen {
+		if p == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestInventoryDetailKit_TheHeaderKeepsEveryTagAtTheFloor. The name line is only
+// the FIRST half of the header's first line: renderHeader appends [retired],
+// "needs reorder" and [reorder pending] straight after it. Fitting the name
+// against [kit] alone filled the pane exactly, so the tags that followed were
+// pushed past the edge and clampToBox ate them — the very failure the fit
+// exists to prevent, moved one tag along.
+func TestInventoryDetailKit_TheHeaderKeepsEveryTagAtTheFloor(t *testing.T) {
+	cases := []struct {
+		name string
+		kit  *omsapi.Kit
+		tags []string
+	}{
+		{"retired", kitTestRetiredKit(false), []string{"[kit]", "[retired]"}},
+		{"retired with a reorder pending", kitTestRetiredKit(true),
+			[]string{"[kit]", "[retired]", "[reorder pending]"}},
+	}
+	for _, tc := range cases {
+		s := kitDetail(t, tc.kit, nil, 80)
+		budget := screenBodyWidth(80)
+		head := s.renderHeader()
+		// The clip is the assertion: what the operator sees is the clamped render.
+		clipped := clampToBox(head, budget, 8)
+		for _, tag := range tc.tags {
+			if !strings.Contains(clipped, tag) {
+				t.Errorf("%s: the clipped header at 80 columns lost %q:\n%s", tc.name, tag, clipped)
+			}
+		}
+		// And the name is still there in some readable form, rather than having
+		// been given away entirely to make room.
+		if !strings.Contains(clipped, "Eufy") {
+			t.Errorf("%s: the clipped header lost the name outright:\n%s", tc.name, clipped)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AFourFigurePriceIsLegibleAtEveryWidth. Two defects in
+// one row, in order: padCell pads and never truncates, so an over-wide price
+// used to push the row past the pane where clampToBox cut it silently
+// ("$1299.50" read as "$1299.5", a plausible price and the wrong one); fitting
+// the cell fixed the silence but left the price ELIDED at every terminal width,
+// because the column was sized for "On hand" rather than for money. A kit is
+// bought as one SKU, so four figures is the ordinary case — the column has to
+// hold it, not merely admit it cannot.
+func TestInventoryDetailKit_AFourFigurePriceIsLegibleAtEveryWidth(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitDetail(t, nil, kitTestSupplyingKits(), width)
+		budget := screenBodyWidth(width)
+		body := s.renderBody()
+
+		row := kitFindLine(body, "WPO-9")
+		if row == "" {
+			t.Fatalf("no row for the four-figure kit at %d columns:\n%s", width, body)
+		}
+		// The row still fits, which is what stops clampToBox eating the price.
+		if w := lipgloss.Width(row); w > budget {
+			t.Fatalf("at %d columns the row is %d wide against a %d pane: %q", width, w, budget, row)
+		}
+		if !strings.Contains(row, "$1299.50") {
+			t.Errorf("at %d columns the price is not readable in full: %q", width, row)
+		}
+		// And the cheap kit beside it is unchanged.
+		if cheap := kitFindLine(body, "EIK-4"); !strings.Contains(cheap, "$34.99") {
+			t.Errorf("at %d columns an ordinary price stopped rendering: %q", width, cheap)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AKitHidesTheStockActions is the other half of the
+// convention AGENTS.md states: a key the bar does not name must do nothing, and
+// a key it names must do something. A kit carries no stock of its own, so
+// counting and consuming it are meaningless — and a count would PERSIST, since
+// the backend writes stock without running the model's "a kit cannot carry
+// stock" check.
+func TestInventoryDetailKit_AKitHidesTheStockActions(t *testing.T) {
+	kit := kitDetail(t, kitTestKit(), nil, 120)
+	kit.terminalHeight = jdeSweepHeight
+	for _, gone := range []string{"c count", "u use"} {
+		if view := kit.View(); strings.Contains(view, gone) {
+			t.Errorf("a kit's footer still names %q:\n%s", gone, view)
+		}
+	}
+	// The keys they named must now do nothing at all: no modal, no state change.
+	kit.Update(runeKey('c'))
+	if kit.ccStep != ccStepNone {
+		t.Errorf("c opened a cycle count on a kit (step %d)", kit.ccStep)
+	}
+	kit.Update(runeKey('u'))
+	if kit.cnStep != consumeStepNone {
+		t.Errorf("u opened a consume prompt on a kit (step %d)", kit.cnStep)
+	}
+	// The rest of the footer is untouched — this hides two actions, not a screen.
+	for _, kept := range []string{"o/enter reorder", "T retire", "x delete", "s suppliers"} {
+		if view := kit.View(); !strings.Contains(view, kept) {
+			t.Errorf("a kit's footer lost %q, which is still meaningful for a kit:\n%s", kept, view)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AnOrdinaryItemKeepsTheStockActions is acceptance
+// criterion 4 on the footer: hiding the kit's meaningless actions must not cost
+// an ordinary item the two keys it has always had.
+func TestInventoryDetailKit_AnOrdinaryItemKeepsTheStockActions(t *testing.T) {
+	s := kitDetail(t, nil, nil, 120)
+	s.terminalHeight = jdeSweepHeight
+	for _, want := range []string{"c count", "u use"} {
+		if view := s.View(); !strings.Contains(view, want) {
+			t.Errorf("an ordinary item's footer lost %q:\n%s", want, view)
+		}
+	}
+	s.Update(runeKey('c'))
+	if s.ccStep == ccStepNone {
+		t.Error("c no longer opens a cycle count on an ordinary item")
+	}
+	s.ccStep = ccStepNone
+	s.Update(runeKey('u'))
+	if s.cnStep == consumeStepNone {
+		t.Error("u no longer opens a consume prompt on an ordinary item")
+	}
+}
+
+// kitTestOpenClosedKit is a kit whose count mode was set to open/closed — which
+// is reachable only BECAUSE this change made SetItemCountMode kit-routable, so
+// the exposure is one this work created.
+func kitTestOpenClosedKit() *omsapi.Kit {
+	kit := kitTestKit()
+	level := 3
+	kit.CountMode = omsapi.CountModeOpenClosed
+	kit.CountLevel = &level
+	kit.PackagingLevels = []omsapi.PackagingLevel{
+		{ID: 3, Name: "case", SortOrder: 0, BaseUnits: 100},
+		{ID: 4, Name: "bag", SortOrder: 1, BaseUnits: 1},
+	}
+	return kit
+}
+
+// TestInventoryDetailKit_AKitNeverOffersThePackKey. Packing is a STOCK
+// operation and a kit holds none, so the action is meaningless — and
+// pack-container is a detail action on the kit-excluding item viewset, so it is
+// a flat 404 for a kit id. Both halves of the convention: the bar does not name
+// the key, and the key therefore does nothing.
+func TestInventoryDetailKit_AKitNeverOffersThePackKey(t *testing.T) {
+	s := kitDetail(t, kitTestOpenClosedKit(), nil, 120)
+	s.terminalHeight = jdeSweepHeight
+	if view := s.View(); strings.Contains(view, "p packs") {
+		t.Errorf("a kit's footer names the pack key:\n%s", view)
+	}
+	s.Update(runeKey('p'))
+	if s.pkStep != packStepNone {
+		t.Errorf("p opened the pack prompt on a kit (step %d)", s.pkStep)
+	}
+}
+
+// TestInventoryDetailKit_AnOrdinaryPackedItemKeepsThePackKey is the other half:
+// suppressing the key for a kit must not have cost an ordinary sealed+open item
+// the affordance it has always had.
+func TestInventoryDetailKit_AnOrdinaryPackedItemKeepsThePackKey(t *testing.T) {
+	s := packDetail(bagItem())
+	s.terminalHeight = jdeSweepHeight
+	if view := s.View(); !strings.Contains(view, "p packs") {
+		t.Errorf("an open/closed item's footer lost the pack key:\n%s", view)
+	}
+	s.Update(runeKey('p'))
+	if s.pkStep == packStepNone {
+		t.Error("p no longer opens the pack prompt on an ordinary open/closed item")
+	}
+}
+
+// kitTestSerializedKit is the stray-data case on this screen: a kit whose stored
+// is_serialized is true. The server refuses to put a kit in that state —
+// KitSerializer.validate rejects a truthy is_serialized and the model's
+// _clean_kit says the same — so it is reachable only the way stray stock is,
+// through a direct write that never runs full_clean(). The screen must decline
+// to act on it rather than dressing it up as a feature.
+func kitTestSerializedKit() *omsapi.Kit {
+	kit := kitTestKit()
+	kit.IsSerialized = true
+	kit.SerialTrackingMode = "asset"
+	return kit
+}
+
+// kitSerializedItem is an ORDINARY serialized item, which is what every one of
+// these assertions has to leave completely untouched.
+func kitSerializedItem() *omsapi.Item {
+	return &omsapi.Item{
+		ID: "itm-1", Name: "Cyan ink cartridge, high yield", SKU: "CI-100-XL",
+		Stock: 4, MinimumStock: 2, IsSerialized: true, SerialTrackingMode: "asset",
+		SerializedStock: &omsapi.SerializedStock{Available: 4, OnHand: 4},
+	}
+}
+
+// TestInventoryDetailKit_AKitHidesTheSerialActions. A kit's COMPONENTS carry the
+// serials — the kit is bought as one SKU and decomposes on receipt — so the
+// section, the two keys and their footer entries are all meaningless on it, in
+// the same way c / u / p are. Both halves of the convention, as always: the bar
+// does not name the keys, so the keys must do nothing.
+func TestInventoryDetailKit_AKitHidesTheSerialActions(t *testing.T) {
+	s := kitDetail(t, kitTestSerializedKit(), nil, 120)
+	s.terminalHeight = jdeSweepHeight
+
+	view := s.View()
+	for _, gone := range []string{"Serialized tracking", "i instances", "b batch-scan"} {
+		if strings.Contains(view, gone) {
+			t.Errorf("a kit's screen still carries %q:\n%s", gone, view)
+		}
+	}
+	for _, key := range []rune{'i', 'b'} {
+		if _, cmd := s.Update(runeKey(key)); cmd != nil {
+			if msg, ok := cmd().(SwitchScreenMsg); ok {
+				t.Errorf("%c navigated away from a kit to %T", key, msg.Screen)
+			}
+		}
+	}
+	// The rest of the screen is untouched — this hides two actions, not a screen.
+	for _, kept := range []string{"o/enter reorder", "s suppliers", "E edit", "x delete"} {
+		if !strings.Contains(view, kept) {
+			t.Errorf("a kit's footer lost %q:\n%s", kept, view)
+		}
+	}
+	if !strings.Contains(view, "Kit contents") {
+		t.Errorf("a kit lost the section that says what its components are:\n%s", view)
+	}
+}
+
+// TestInventoryDetailKit_AnOrdinarySerializedItemKeepsTheSerialActions is
+// acceptance criterion 4 on this pair: suppressing them for a kit must not have
+// cost an ordinary serialized item the section or either key.
+func TestInventoryDetailKit_AnOrdinarySerializedItemKeepsTheSerialActions(t *testing.T) {
+	s := kitDetail(t, nil, nil, 120)
+	s.item = kitSerializedItem()
+	s.scroller.Set(s.renderBody())
+	s.terminalHeight = jdeSweepHeight
+
+	view := s.View()
+	for _, want := range []string{"Serialized tracking", "i instances", "b batch-scan"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("an ordinary serialized item lost %q:\n%s", want, view)
+		}
+	}
+	for _, key := range []rune{'i', 'b'} {
+		_, cmd := s.Update(runeKey(key))
+		if cmd == nil {
+			t.Fatalf("%c no longer does anything on an ordinary serialized item", key)
+		}
+		if _, ok := cmd().(SwitchScreenMsg); !ok {
+			t.Errorf("%c did not open a screen on an ordinary serialized item", key)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The stock keys and the UNANSWERED kit question
+// ---------------------------------------------------------------------------
+
+// kitStockKeyNames are the three footer entries that live or die together: all
+// three are stock operations, and the question "is this a kit?" decides all
+// three at once.
+var kitStockKeyNames = []string{"c count", "u use", "p packs"}
+
+// kitDetailDriven builds the screen the way the app does — NewInventoryDetail +
+// Init against a fake OMS — and pumps it to whatever state kitStatus produces.
+// It is the only honest way to test the IN-FLIGHT case, which no hand-built
+// screen can reach: Init is what opens the question.
+func kitDetailDriven(t *testing.T, kitStatus int, width int, deliverKitAnswer bool) *InventoryDetailScreen {
+	t.Helper()
+	srv, _ := kitDetailServer(t, kitStatus)
+	t.Cleanup(srv.Close)
+
+	s := NewInventoryDetailScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "kit-1")
+	s.Update(tea.WindowSizeMsg{Width: width, Height: jdeSweepHeight})
+	if deliverKitAnswer {
+		kitPumpScreen(t, s, s.Init(), 0)
+	} else {
+		// Everything EXCEPT the kit answer: Init is run (so the question is
+		// open) and the item is delivered by hand, which is exactly the moment
+		// between the screen appearing and /kits/ coming back.
+		s.Init()
+		s.Update(inventoryDetailLoadedMsg{item: &omsapi.Item{
+			ID: "kit-1", Name: "Eufy Ink Kit", SKU: "EIK-4", CountMode: omsapi.CountModeOpenClosed,
+		}})
+	}
+	s.terminalHeight = jdeSweepHeight
+	return s
+}
+
+// TestInventoryDetailKit_AnOpenQuestionWithholdsTheStockKeys. c / u / p all post
+// to endpoints that deliberately omit include_kits, so a kit id gets a flat 404
+// — a bare "not found" against a record the operator is looking at. Until the
+// screen KNOWS the item is not a kit it cannot promise those actions, and the
+// item form already refuses to save under the same doubt.
+//
+// No explanation while the question is merely in flight: a banner that flashed
+// on every item open would be noise, and the keys arrive a beat later.
+func TestInventoryDetailKit_AnOpenQuestionWithholdsTheStockKeys(t *testing.T) {
+	s := kitDetailDriven(t, http.StatusNotFound, 120, false)
+
+	view := s.View()
+	for _, gone := range kitStockKeyNames {
+		if strings.Contains(view, gone) {
+			t.Errorf("the footer names %q while the kit question is still open:\n%s", gone, view)
+		}
+	}
+	if strings.Contains(view, "Kit status unavailable") {
+		t.Errorf("an in-flight question was reported as a failure:\n%s", view)
+	}
+	kitAssertStockKeysAreNoOps(t, s)
+	// The sheet is still entirely readable — this withholds three actions, not
+	// a screen.
+	for _, kept := range []string{"o/enter reorder", "s suppliers", "E edit", "x delete", "r refresh"} {
+		if !strings.Contains(view, kept) {
+			t.Errorf("an open kit question cost the footer %q:\n%s", kept, view)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AFailedQuestionWithholdsTheKeysAndSaysWhy. The failure
+// is permanent, so silence is not available: keys that are simply gone forever
+// with no reason given teach an operator that the screen is unreliable.
+func TestInventoryDetailKit_AFailedQuestionWithholdsTheKeysAndSaysWhy(t *testing.T) {
+	s := kitDetailDriven(t, http.StatusInternalServerError, 120, true)
+
+	view := s.View()
+	for _, gone := range kitStockKeyNames {
+		if strings.Contains(view, gone) {
+			t.Errorf("the footer names %q after the kit question failed:\n%s", gone, view)
+		}
+	}
+	if !strings.Contains(view, "Kit status unavailable") {
+		t.Errorf("the withheld keys were left unexplained:\n%s", view)
+	}
+	kitAssertStockKeysAreNoOps(t, s)
+}
+
+// TestInventoryDetailKit_TheFailedQuestionExplainsItselfAtEveryWidth. The clause
+// that ties the missing affordances to the failure is the LAST thing on the
+// line, so a fitted (rather than wrapped) note would drop exactly it at the
+// floor — the silently-clipped-warning defect this project has already shipped
+// once.
+//
+// It also holds the note to the RULE rather than a list. The sentence once named
+// count, use and pack, and then went on naming three while six things were being
+// withheld: an operator who counts what is missing and finds more than the screen
+// admits to stops trusting the explanation entirely.
+func TestInventoryDetailKit_TheFailedQuestionExplainsItselfAtEveryWidth(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitDetailDrivenSerialized(t, http.StatusInternalServerError, width, true)
+		s.item.CountMode = omsapi.CountModeOpenClosed
+		s.scroller.Set(s.renderBody())
+		body := s.renderBody()
+		budget := screenBodyWidth(width)
+		if clipped := clampToBox(body, budget, len(strings.Split(body, "\n"))); clipped != body {
+			t.Errorf("at %d columns the unavailable note is clipped:\n%s", width, kitFindLine(body, "Kit status"))
+		}
+		flat := strings.Join(strings.Fields(body), " ")
+		for _, want := range []string{
+			"Kit status unavailable:",
+			"actions that depend on whether this is a kit are withheld until it is known.",
+		} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("at %d columns the note lost %q:\n%s", width, want, body)
+			}
+		}
+		// Every one of these IS withheld in this state, so naming any of them
+		// is the enumeration going stale again — this fixture withholds all six.
+		note := strings.ToLower(kitUnavailableNote(t, body))
+		for _, named := range []string{"count", "use", "pack", "instances", "batch-scan", "serial"} {
+			if strings.Contains(note, named) {
+				t.Errorf("at %d columns the note enumerates %q instead of stating the rule: %q",
+					width, named, note)
+			}
+		}
+	}
+}
+
+// TestInventoryDetailKit_AnAnsweredOrdinaryItemKeepsEveryStockKey is the
+// regression that matters most here: a guard written against `kit == nil` alone
+// cannot tell the 404 answer from a fetch in flight, and would hide these keys
+// from every ordinary item FOREVER — far worse than the race it closes.
+func TestInventoryDetailKit_AnAnsweredOrdinaryItemKeepsEveryStockKey(t *testing.T) {
+	s := kitDetailDriven(t, http.StatusNotFound, 120, true)
+	s.item.CountMode = omsapi.CountModeOpenClosed
+	s.item.PackagingLevels = []omsapi.PackagingLevel{
+		{ID: 3, Name: "case", SortOrder: 0, BaseUnits: 100},
+		{ID: 4, Name: "bag", SortOrder: 1, BaseUnits: 1},
+	}
+	level := 3
+	s.item.CountLevel = &level
+	s.scroller.Set(s.renderBody())
+
+	view := s.View()
+	for _, want := range kitStockKeyNames {
+		if !strings.Contains(view, want) {
+			t.Errorf("an answered ordinary item's footer lost %q:\n%s", want, view)
+		}
+	}
+	// And every one of them still WORKS — naming a key that does nothing is the
+	// other half of the same defect.
+	s.Update(runeKey('c'))
+	if s.ccStep == ccStepNone {
+		t.Error("c no longer opens a cycle count on an answered ordinary item")
+	}
+	s.ccStep = ccStepNone
+	s.Update(runeKey('u'))
+	if s.cnStep == consumeStepNone {
+		t.Error("u no longer opens a consume prompt on an answered ordinary item")
+	}
+	s.cnStep = consumeStepNone
+	s.Update(runeKey('p'))
+	if s.pkStep == packStepNone {
+		t.Error("p no longer opens the pack prompt on an answered ordinary open/closed item")
+	}
+}
+
+// kitAssertStockKeysAreNoOps is the other half of the bar's honesty: a key the
+// footer does not name must do nothing at all.
+func kitAssertStockKeysAreNoOps(t *testing.T, s *InventoryDetailScreen) {
+	t.Helper()
+	s.Update(runeKey('c'))
+	if s.ccStep != ccStepNone {
+		t.Errorf("c opened a cycle count the footer does not offer (step %d)", s.ccStep)
+	}
+	s.Update(runeKey('u'))
+	if s.cnStep != consumeStepNone {
+		t.Errorf("u opened a consume prompt the footer does not offer (step %d)", s.cnStep)
+	}
+	s.Update(runeKey('p'))
+	if s.pkStep != packStepNone {
+		t.Errorf("p opened the pack prompt the footer does not offer (step %d)", s.pkStep)
+	}
+}
+
+// TestItemFormKit_TheComponentGridSpendsThePaneOnTheName. The editor's grid ends
+// at the per-kit quantity — it has no "On hand" column — so sizing it as though
+// it did charged the NAME cell nine columns (a 7-wide cell plus its separator)
+// for something never drawn. At the 80-column floor that is 27 columns instead
+// of 34, which elides a component name seven characters early at exactly the
+// width this project is measured against.
+func TestItemFormKit_TheComponentGridSpendsThePaneOnTheName(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormFixture(), width)
+		s.phase = itemFormPhaseKit
+		lines := s.kitListLines().text
+		budget := screenBodyWidth(width)
+
+		row := ""
+		for _, line := range lines {
+			if strings.Contains(line, "CI-100-XL") {
+				row = line
+			}
+			if w := lipgloss.Width(line); w > budget {
+				t.Errorf("at %d columns an editor line is %d wide against a %d pane: %q",
+					width, w, budget, line)
+			}
+		}
+		if row == "" {
+			t.Fatalf("at %d columns the component row is not on the sheet:\n%s", width, strings.Join(lines, "\n"))
+		}
+		// The reclaimed width, asserted rather than tolerated: "Cyan ink
+		// cartridge" needs 18 columns of name before the " (CI-100-XL)" tail,
+		// which the old 27-column cell could not afford at the floor.
+		if !strings.Contains(row, "Cyan ink cartridge") {
+			t.Errorf("at %d columns the component name elides early: %q", width, row)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The serial affordances and the UNANSWERED kit question
+// ---------------------------------------------------------------------------
+
+// kitSerialAffordances are the three things on this screen whose meaning depends
+// on the item NOT being a kit and that are driven by is_serialized: the two keys
+// and the section that names them.
+var kitSerialAffordances = []string{"Serialized tracking", "i instances", "b batch-scan"}
+
+// kitDetailDrivenSerialized is kitDetailDriven with the loaded record carrying
+// is_serialized. On a KIT that is stray data the server would refuse — it is
+// reachable only because InventoryItem.save() never runs full_clean() — and it
+// is exactly the record that makes an unanswered kit question dangerous: batch
+// scan creates-and-receives each unit, so accessioning against a kit id writes
+// stock nothing can ever draw down.
+func kitDetailDrivenSerialized(t *testing.T, kitStatus, width int, deliverKitAnswer bool) *InventoryDetailScreen {
+	t.Helper()
+	s := kitDetailDriven(t, kitStatus, width, deliverKitAnswer)
+	s.item.IsSerialized = true
+	s.item.SerialTrackingMode = "asset"
+	s.item.SerializedStock = &omsapi.SerializedStock{Available: 2, OnHand: 2}
+	s.scroller.Set(s.renderBody())
+	return s
+}
+
+// TestInventoryDetailKit_TheSerialAffordancesFollowTheKitQuestion walks all four
+// states of that question against a serialized record. Three of them withhold —
+// and the one that does not is the regression that matters most, since a guard
+// that cannot tell "answered: ordinary" from "no answer yet" would hide these
+// from every ordinary serialized item forever.
+func TestInventoryDetailKit_TheSerialAffordancesFollowTheKitQuestion(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		screen  func(*testing.T) *InventoryDetailScreen
+		offered bool
+		saysWhy bool
+	}{
+		{
+			name: "in flight",
+			screen: func(t *testing.T) *InventoryDetailScreen {
+				return kitDetailDrivenSerialized(t, http.StatusNotFound, 120, false)
+			},
+		},
+		{
+			// The stray-serialized kit whose kit question FAILED: the record
+			// that turns a named key into inventory corruption.
+			name: "the question failed",
+			screen: func(t *testing.T) *InventoryDetailScreen {
+				return kitDetailDrivenSerialized(t, http.StatusInternalServerError, 120, true)
+			},
+			saysWhy: true,
+		},
+		{
+			name: "answered: a kit",
+			screen: func(t *testing.T) *InventoryDetailScreen {
+				return kitDetailDrivenSerialized(t, http.StatusOK, 120, true)
+			},
+		},
+		{
+			name: "answered: an ordinary item",
+			screen: func(t *testing.T) *InventoryDetailScreen {
+				return kitDetailDrivenSerialized(t, http.StatusNotFound, 120, true)
+			},
+			offered: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.screen(t)
+			view := s.View()
+			for _, aff := range kitSerialAffordances {
+				if got := strings.Contains(view, aff); got != tc.offered {
+					t.Errorf("%q present = %v, want %v:\n%s", aff, got, tc.offered, view)
+				}
+			}
+			// Both halves of the bar's honesty, in whichever direction this
+			// state calls for.
+			for _, key := range []rune{'i', 'b'} {
+				_, cmd := s.Update(runeKey(key))
+				switch {
+				case tc.offered && cmd == nil:
+					t.Errorf("%c does nothing on an ordinary serialized item", key)
+				case tc.offered:
+					if _, ok := cmd().(SwitchScreenMsg); !ok {
+						t.Errorf("%c did not open a screen on an ordinary serialized item", key)
+					}
+				case cmd != nil:
+					if msg, ok := cmd().(SwitchScreenMsg); ok {
+						t.Errorf("%c navigated to %T from a state that does not name it", key, msg.Screen)
+					}
+				}
+			}
+			// An explanation is owed only where the absence is permanent: an
+			// in-flight banner would flash on every item open.
+			if got := strings.Contains(view, "Kit status unavailable"); got != tc.saysWhy {
+				t.Errorf("%q present = %v, want %v:\n%s", "Kit status unavailable", got, tc.saysWhy, view)
+			}
+			// The rest of the screen is untouched in every one of these states.
+			for _, kept := range []string{"o/enter reorder", "s suppliers", "E edit", "x delete", "r refresh"} {
+				if !strings.Contains(view, kept) {
+					t.Errorf("this state cost the footer %q:\n%s", kept, view)
+				}
+			}
+		})
+	}
+}
+
+// TestInventoryDetailKit_TheWithheldSerialStatesStillFitTheFloor. Withholding a
+// section changes what the body contains at every width, so the floor is
+// re-measured on the states that do it.
+func TestInventoryDetailKit_TheWithheldSerialStatesStillFitTheFloor(t *testing.T) {
+	for _, width := range kitTestWidths {
+		for name, status := range map[string]int{"failed": http.StatusInternalServerError, "a kit": http.StatusOK} {
+			s := kitDetailDrivenSerialized(t, status, width, true)
+			body := s.renderBody()
+			budget := screenBodyWidth(width)
+			if clipped := clampToBox(body, budget, len(strings.Split(body, "\n"))); clipped != body {
+				t.Errorf("at %d columns the %s state is clipped:\n%s", width, name, body)
+			}
+		}
+	}
+}
+
+// kitUnavailableNote is the whole wrapped "Kit status unavailable" note as one
+// string — every line of it, since the sentence wraps at the floor and reading
+// only its first line would let a stale enumeration hide on the second.
+func kitUnavailableNote(t *testing.T, body string) string {
+	t.Helper()
+	var note []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "Kit status unavailable") {
+			note = append(note, strings.TrimSpace(line))
+			continue
+		}
+		if len(note) == 0 {
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+		note = append(note, strings.TrimSpace(line))
+	}
+	if len(note) == 0 {
+		t.Fatalf("no unavailable note in:\n%s", body)
+	}
+	return strings.Join(note, " ")
+}
+
+// TestInventoryDetailKit_TheBarAndTheDispatchAgree is the assertion the footer's
+// hardcoded base strings and substring surgery stand on. That construction was
+// assessed and kept rather than rewritten, so what has to be true is checked
+// directly instead of argued for in a comment: across every combination of kit
+// state, is_serialized and count mode, a key the bar names does something and a
+// key it does not name does nothing.
+//
+// It is the whole matrix rather than a case per key because that is how the
+// last three defects on this screen presented — c and u were stripped by name, p
+// was missed when it became reachable, i and b were left on the older guard for
+// a round. Any one of those is a cell in this table.
+func TestInventoryDetailKit_TheBarAndTheDispatchAgree(t *testing.T) {
+	kitStates := map[string]func(*testing.T, bool) *InventoryDetailScreen{
+		"in flight": func(t *testing.T, serialized bool) *InventoryDetailScreen {
+			return kitDetailState(t, http.StatusNotFound, false, serialized)
+		},
+		"failed": func(t *testing.T, serialized bool) *InventoryDetailScreen {
+			return kitDetailState(t, http.StatusInternalServerError, true, serialized)
+		},
+		"a kit": func(t *testing.T, serialized bool) *InventoryDetailScreen {
+			return kitDetailState(t, http.StatusOK, true, serialized)
+		},
+		"an ordinary item": func(t *testing.T, serialized bool) *InventoryDetailScreen {
+			return kitDetailState(t, http.StatusNotFound, true, serialized)
+		},
+	}
+	// Each key with the footer entry that names it, and a way to tell whether
+	// pressing it did anything — a modal step for the stock keys, a screen
+	// switch for the serial ones.
+	keys := []struct {
+		key   rune
+		named string
+		fired func(*InventoryDetailScreen, tea.Cmd) bool
+	}{
+		{'c', "c count", func(s *InventoryDetailScreen, _ tea.Cmd) bool { return s.ccStep != ccStepNone }},
+		{'u', "u use", func(s *InventoryDetailScreen, _ tea.Cmd) bool { return s.cnStep != consumeStepNone }},
+		{'p', "p packs", func(s *InventoryDetailScreen, _ tea.Cmd) bool { return s.pkStep != packStepNone }},
+		{'i', "i instances", kitSwitchedScreen},
+		{'b', "b batch-scan", kitSwitchedScreen},
+	}
+
+	for state, build := range kitStates {
+		for _, serialized := range []bool{false, true} {
+			for _, openClosed := range []bool{false, true} {
+				name := fmt.Sprintf("%s/serialized=%v/open_closed=%v", state, serialized, openClosed)
+				t.Run(name, func(t *testing.T) {
+					s := build(t, serialized)
+					if openClosed {
+						s.item.CountMode = omsapi.CountModeOpenClosed
+						s.item.PackagingLevels = []omsapi.PackagingLevel{
+							{ID: 3, Name: "case", SortOrder: 0, BaseUnits: 100},
+							{ID: 4, Name: "bag", SortOrder: 1, BaseUnits: 1},
+						}
+						level := 3
+						s.item.CountLevel = &level
+					} else {
+						s.item.CountMode = ""
+					}
+					s.scroller.Set(s.renderBody())
+					view := s.View()
+
+					for _, k := range keys {
+						named := strings.Contains(view, k.named)
+						fresh := build(t, serialized)
+						fresh.item.CountMode = s.item.CountMode
+						fresh.item.PackagingLevels = s.item.PackagingLevels
+						fresh.item.CountLevel = s.item.CountLevel
+						fresh.scroller.Set(fresh.renderBody())
+						_, cmd := fresh.Update(runeKey(k.key))
+						switch fired := k.fired(fresh, cmd); {
+						case named && !fired:
+							t.Errorf("the bar names %q but pressing %c does nothing", k.named, k.key)
+						case !named && fired:
+							t.Errorf("pressing %c works but the bar never names %q", k.key, k.named)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// kitSwitchedScreen reports whether a key navigated somewhere, which is what the
+// serial keys do instead of opening a modal on this screen.
+func kitSwitchedScreen(_ *InventoryDetailScreen, cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	_, ok := cmd().(SwitchScreenMsg)
+	return ok
+}
+
+// kitDetailState builds one cell of that matrix.
+func kitDetailState(t *testing.T, kitStatus int, deliverKitAnswer, serialized bool) *InventoryDetailScreen {
+	t.Helper()
+	if serialized {
+		return kitDetailDrivenSerialized(t, kitStatus, 120, deliverKitAnswer)
+	}
+	return kitDetailDriven(t, kitStatus, 120, deliverKitAnswer)
+}
+
+// ---------------------------------------------------------------------------
+// A refresh that fails does not un-answer the question
+// ---------------------------------------------------------------------------
+
+// kitFailRefresh delivers the answer a second GetKit would produce when the
+// re-ask fails — what pressing r gets when the network drops between the two
+// requests. The FIRST answer is whatever the screen already has.
+func kitFailRefresh(s *InventoryDetailScreen) {
+	s.Update(inventoryKitLoadedMsg{err: errors.New("server error (500)")})
+	s.scroller.Set(s.renderBody())
+}
+
+// TestInventoryDetailKit_AFailedRefreshKeepsAKnownKit. The screen used to draw
+// the bill of materials and, on the next line, a note saying it could not tell
+// whether this is a kit — because the failure handler set kitErr while leaving
+// the previous answer in place. It also told the operator that a permanent
+// property of kits was a transient failure they could retry away.
+func TestInventoryDetailKit_AFailedRefreshKeepsAKnownKit(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitDetailDrivenSerialized(t, http.StatusOK, width, true)
+		if !s.isKit() {
+			t.Fatal("the fixture never got its kit answer")
+		}
+		kitFailRefresh(s)
+		s.terminalHeight = jdeSweepHeight
+
+		body, view := s.renderBody(), s.View()
+		if !strings.Contains(body, "Kit contents") {
+			t.Errorf("at %d columns a failed refresh dropped the bill of materials:\n%s", width, body)
+		}
+		if strings.Contains(body, "Kit status unavailable") {
+			t.Errorf("at %d columns the screen answers the question and says it cannot:\n%s", width, body)
+		}
+		// The answer it kept is still doing its job on both halves.
+		for _, gone := range append([]string{"c count", "u use", "p packs"}, kitSerialAffordances...) {
+			if strings.Contains(view, gone) {
+				t.Errorf("at %d columns a kit's footer regained %q after a failed refresh:\n%s", width, gone, view)
+			}
+		}
+		kitAssertStockKeysAreNoOps(t, s)
+		if clipped := clampToBox(body, screenBodyWidth(width), len(strings.Split(body, "\n"))); clipped != body {
+			t.Errorf("at %d columns the body is clipped after a failed refresh:\n%s", width, body)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AFailedRefreshKeepsAKnownOrdinaryItem is the mirror
+// direction, and the one that is easy to miss: an item already answered
+// "ordinary" must not lose its stock and serial keys to a blip. Guarding on
+// "kitErr is empty" would take them all away on the first failed r and never
+// give them back.
+func TestInventoryDetailKit_AFailedRefreshKeepsAKnownOrdinaryItem(t *testing.T) {
+	s := kitDetailDrivenSerialized(t, http.StatusNotFound, 120, true)
+	s.item.CountMode = omsapi.CountModeOpenClosed
+	s.item.PackagingLevels = []omsapi.PackagingLevel{
+		{ID: 3, Name: "case", SortOrder: 0, BaseUnits: 100},
+		{ID: 4, Name: "bag", SortOrder: 1, BaseUnits: 1},
+	}
+	level := 3
+	s.item.CountLevel = &level
+	kitFailRefresh(s)
+	s.terminalHeight = jdeSweepHeight
+
+	view := s.View()
+	if strings.Contains(view, "Kit status unavailable") {
+		t.Errorf("a failed re-ask reported an answer the screen still has:\n%s", view)
+	}
+	for _, want := range append([]string{"c count", "u use", "p packs"}, kitSerialAffordances...) {
+		if !strings.Contains(view, want) {
+			t.Errorf("a failed refresh cost an ordinary item %q:\n%s", want, view)
+		}
+	}
+	// Named AND working, as always — both halves.
+	s.Update(runeKey('c'))
+	if s.ccStep == ccStepNone {
+		t.Error("c stopped working on a known-ordinary item after a failed refresh")
+	}
+	s.ccStep = ccStepNone
+	s.Update(runeKey('u'))
+	if s.cnStep == consumeStepNone {
+		t.Error("u stopped working on a known-ordinary item after a failed refresh")
+	}
+	s.cnStep = consumeStepNone
+	s.Update(runeKey('p'))
+	if s.pkStep == packStepNone {
+		t.Error("p stopped working on a known-ordinary item after a failed refresh")
+	}
+	s.pkStep = packStepNone
+	for _, key := range []rune{'i', 'b'} {
+		if _, cmd := s.Update(runeKey(key)); cmd == nil {
+			t.Errorf("%c stopped working on a known-ordinary serialized item after a failed refresh", key)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AFailureWithNoPriorAnswerStillOwnsUp. The rule cuts one
+// way only: with nothing to fall back to, the failure is the state the screen
+// has to admit to, and the existing behaviour must not regress out of it.
+func TestInventoryDetailKit_AFailureWithNoPriorAnswerStillOwnsUp(t *testing.T) {
+	s := kitDetailDrivenSerialized(t, http.StatusInternalServerError, 120, true)
+	s.terminalHeight = jdeSweepHeight
+
+	view := s.View()
+	if !strings.Contains(view, "Kit status unavailable") {
+		t.Errorf("a first-ask failure was swallowed:\n%s", view)
+	}
+	for _, gone := range append([]string{"c count", "u use", "p packs"}, kitSerialAffordances...) {
+		if strings.Contains(view, gone) {
+			t.Errorf("an unanswered question still offered %q:\n%s", gone, view)
+		}
+	}
+	// And a later SUCCESS clears it: the note is about not knowing, so it must
+	// not outlive the not-knowing.
+	s.Update(inventoryKitLoadedMsg{})
+	s.scroller.Set(s.renderBody())
+	if body := s.renderBody(); strings.Contains(body, "Kit status unavailable") {
+		t.Errorf("the note survived the answer that resolved it:\n%s", body)
+	}
+	if !strings.Contains(s.View(), "c count") {
+		t.Errorf("the answer that resolved the failure did not restore the stock keys:\n%s", s.View())
+	}
+}

@@ -292,9 +292,53 @@ func (c *Client) ListAllItems(ctx context.Context) ([]Item, error) {
 	return all, nil
 }
 
+// includeKitsQuery / includeKitsValues are the one param that lets a kit's id
+// resolve on an /api/inventory/items/{id}/ route at all (op-8n0).
+//
+// Two spellings of the same thing because the client has two shapes: Get takes
+// url.Values, while Post/Patch/Delete take no query argument at all and have to
+// carry it as a path suffix. The reason is identical at every call site:
+// InventoryItemViewSet.get_queryset excludes kits, get_object filters through
+// it, so the filter reaches EVERY detail route on the viewset — the record
+// itself, its actions, and its sub-resources — and without this param a kit id
+// is a flat 404 on all of them. An older backend ignores the unknown param and
+// a non-kit id is unaffected, so the rule is simply: every detail route a kit
+// can legitimately reach sends it.
+//
+// Two deliberate exceptions, and both are exceptions on purpose:
+//
+//   - cycle-count, log_usage and pack-container do NOT send it. All three are
+//     meaningless for a kit — a kit carries no stock by construction, and packs
+//     are a way of counting stock — and the first is worse than meaningless,
+//     because the backend writes stock through save(update_fields=…) without
+//     full_clean(), so the model's own "a kit cannot carry stock" check never
+//     runs and the number would PERSIST as one nothing can ever draw down. The
+//     item detail screen hides all three keys for a kit instead
+//     (internal/tui/inventory_detail.go).
+//   - ListItemKits ("which kits contain this item?") does not send it either,
+//     for the opposite reason: a kit is never a component, so its 404 there is
+//     the right answer rather than a gap. See kits.go, which owns that note.
+const includeKitsQuery = "?include_kits=true"
+
+func includeKitsValues() url.Values { return url.Values{"include_kits": []string{"true"}} }
+
+// GetItem fetches one item's detail record.
+//
+// ?include_kits=true is NOT optional bookkeeping (op-8n0): InventoryItemViewSet
+// filters kits out of its queryset by default, and that filter runs in
+// get_queryset — so it applies to the DETAIL route as well, and a kit's id
+// under /items/ is a flat 404 without it. Since a kit is reachable here (a
+// scanned kit resolves to an inventory-item target like any other item), a
+// detail screen that could not load one would simply report "not found" for a
+// record that exists. An older backend ignores the unknown param, and for a
+// non-kit id the param changes nothing at all.
+//
+// It does not, however, make the response say whether the item IS a kit —
+// neither item serializer carries `is_kit`. That question is GetKit's; see
+// kits.go.
 func (c *Client) GetItem(ctx context.Context, id string) (*Item, error) {
 	var out Item
-	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/", id), nil, &out); err != nil {
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/", id), includeKitsValues(), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -359,9 +403,15 @@ type ItemMetrics struct {
 // trailing slash is the canonical DRF path; the item detail treats a failure
 // here as non-fatal (an older backend without the endpoint simply hides the
 // metrics row) — see the TUI caller.
+//
+// include_kits because this is a DETAIL ACTION on the item viewset, so it
+// resolves through the same kit-excluding get_queryset the record itself does
+// (op-8n0). A kit is reachable on the item detail screen, and the non-fatal
+// handling is what would have hidden the failure: the metrics row would simply
+// have gone missing for every kit, with nothing on screen to say why.
 func (c *Client) GetItemMetrics(ctx context.Context, id string) (*ItemMetrics, error) {
 	var out ItemMetrics
-	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/metrics/", id), nil, &out); err != nil {
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/metrics/", id), includeKitsValues(), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -414,9 +464,15 @@ type ItemPurchaseHistory struct {
 // metrics/retrieve reads this one is auth-required, since it surfaces supplier
 // pricing, so an unauthenticated session fails here even though the rest of the
 // detail loads; the caller treats a failure as non-fatal (see the TUI section).
+//
+// include_kits for the same reason GetItemMetrics sends it — a detail action
+// runs through the kit-excluding get_queryset — and it matters most here: a kit
+// exists to be BOUGHT as one SKU, so its order and receipt provenance is the
+// single most relevant thing on its screen, and without the param that section
+// read "unavailable: not found" for a record visibly on screen (op-8n0).
 func (c *Client) GetPurchaseHistory(ctx context.Context, id string) (*ItemPurchaseHistory, error) {
 	var out ItemPurchaseHistory
-	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/purchase_history/", id), nil, &out); err != nil {
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/purchase_history/", id), includeKitsValues(), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -636,10 +692,15 @@ type itemCountModeBody struct {
 //
 // level must be nil for CountModeEach and non-nil for the pack modes; the
 // backend rejects the other two combinations rather than guessing.
+//
+// include_kits is on the route because a KIT reaches here too: a kit's own save
+// goes to /kits/, but the count mode is written by this second PATCH afterwards,
+// and without the param that PATCH 404s and the operator is told the item saved
+// but its packaging did not, with no way to finish the change.
 func (c *Client) SetItemCountMode(ctx context.Context, id, mode string, level *int) (*Item, error) {
 	body := itemCountModeBody{CountMode: mode, CountLevel: level}
 	var out Item
-	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/items/%s/", id), body, &out); err != nil {
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/items/%s/%s", id, includeKitsQuery), body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -716,21 +777,31 @@ func (c *Client) UpdateInventoryItem(ctx context.Context, id string, body ItemWr
 
 // DeleteInventoryItem removes an item (DELETE /api/inventory/items/{id}/). The
 // backend enforces manage-inventory permission and returns 204 on success.
+//
+// include_kits is on the route because deleting IS meaningful for a kit — a kit
+// is catalogue data like any other item — and a kit id is reachable from the
+// detail screen that offers this. Without the param it would be a 404 for a
+// record visibly on screen.
 func (c *Client) DeleteInventoryItem(ctx context.Context, id string) error {
-	return c.Delete(ctx, fmt.Sprintf("/api/inventory/items/%s/", id))
+	return c.Delete(ctx, fmt.Sprintf("/api/inventory/items/%s/%s", id, includeKitsQuery))
 }
 
 // SetItemRetired retires or un-retires an item via the backend's dedicated POST
 // actions (op-jv7r): …/items/{id}/retire/ or …/items/{id}/unretire/. Unlike a
 // plain is_retired PATCH, these also stamp (or clear) the read-only retired_at
 // audit field. Both are idempotent server-side and echo the updated item.
+//
+// include_kits is on both routes because retiring IS meaningful for a kit — a
+// kit is catalogue data that can be phased out — and a kit id is reachable from
+// the detail screen that offers this. These are detail actions, so they resolve
+// through the same kit-excluding get_queryset the plain detail route does.
 func (c *Client) SetItemRetired(ctx context.Context, id string, retired bool) (*Item, error) {
 	action := "unretire"
 	if retired {
 		action = "retire"
 	}
 	var out Item
-	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/%s/", id, action), nil, &out); err != nil {
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/%s/%s", id, action, includeKitsQuery), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

@@ -260,6 +260,35 @@ type PurchaseOrderItem struct {
 	// objects we don't need to introspect for the receive flow.
 	ItemDetails  map[string]any `json:"item_details,omitempty"`
 	AssetDetails map[string]any `json:"asset_details,omitempty"`
+
+	// Kit lines (op-8n0). A kit is bought as ONE supplier SKU and decomposes on
+	// receipt: receiving it credits the component items and leaves the kit's own
+	// stock at zero. IsKitLine is derived server-side from the item the line
+	// already points at, so no extra fetch is needed to tell the two apart.
+	//
+	// KitComponents is what receiving the ORDERED quantity will credit, rendered
+	// from the line's order-time kit_snapshot — the same generator the receipt
+	// itself applies, which is why the preview cannot disagree with what posts.
+	// It is null (nil here) for every ordinary item, asset and freeform line, so
+	// a PO without kits decodes exactly as it always did.
+	IsKitLine     bool             `json:"is_kit_line,omitempty"`
+	KitComponents []POKitComponent `json:"kit_components,omitempty"`
+}
+
+// POKitComponent is one component credit previewed on a kit PO line.
+//
+// The two quantities answer different questions and neither substitutes for the
+// other: QuantityPerKit is the bill-of-materials figure (one kit holds this
+// many), and Quantity is that multiplied by the line's ORDERED quantity. A
+// partial receipt credits neither — it credits QuantityPerKit × the quantity
+// actually received — which is why a receiving screen previews from
+// QuantityPerKit and never from Quantity.
+type POKitComponent struct {
+	Component      string `json:"component"`
+	ComponentName  string `json:"component_name,omitempty"`
+	ComponentSKU   string `json:"component_sku,omitempty"`
+	QuantityPerKit int    `json:"quantity_per_kit"`
+	Quantity       int    `json:"quantity"`
 }
 
 // DisplayLabel returns a human-friendly label for a PO line item, falling

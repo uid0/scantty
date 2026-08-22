@@ -36,6 +36,43 @@ partially received line's price by `quantity_received / quantity_ordered` on
 every trip. `unit_cost_actual` is written ONLY through that endpoint — receiving
 never sets it. `internal/tui/po_line_price.go` carries the full note.
 
+### Kits are inventory items the item API refuses to admit exist
+
+Before touching anything kit-shaped (`internal/omsapi/kits.go` carries the full
+note, and is the authority):
+
+- A kit IS an `InventoryItem` with `is_kit=True` — no table of its own — but
+  **neither item serializer exposes `is_kit`, `components` or
+  `component_count`**. Those live only on `KitSerializer` (`/api/inventory/kits/`).
+  So "is this item a kit?" is answered by fetching the id from `/kits/` and
+  reading the status: a **404 is the answer "no"**, not a failure
+  (`omsapi.IsNotKit`). Anything else left the question unanswered and must say so.
+- `/api/inventory/items/` **excludes kits by default**, and the filter lives in
+  `get_queryset`, so it applies to the DETAIL route too: GET or PATCH of a kit's
+  id under `/items/` is a flat 404 without `?include_kits=true`, and that
+  includes every ACTION and SUB-RESOURCE on the viewset. Every detail route a
+  kit can legitimately reach sends it (`omsapi.includeKitsQuery` /
+  `includeKitsValues`: `GetItem`, `GetItemMetrics`, `GetPurchaseHistory`,
+  `SetItemRetired`, `DeleteInventoryItem`, `SetItemCountMode` — which the kit
+  save fires AFTER the `/kits/` PATCH). The deliberate exceptions: cycle-count,
+  log-usage and pack-container, because a kit carries no stock (and a pack is a
+  way of counting stock) and the backend writes stock without `full_clean()`, so
+  a count against one would persist as a number nothing can draw down — the item
+  detail hides all three keys for a kit instead; and `ListItemKits`, because a
+  kit is never a component, so its 404 there is the right answer. A kit is saved
+  through `PATCH /api/inventory/kits/{id}/` — that is also the only write path
+  its `components` have (nested-writable; there is no `/kit-components/`
+  endpoint) — and the item form sends `current_stock: 0` on that PATCH, with the
+  Current stock row read-only and a warning under it whenever the stored figure
+  is not already zero.
+- Receiving is where a kit stops being a catalogue curiosity: a kit line is
+  ordered as one SKU and **credits its component items on receipt, never its
+  own stock**. ScanTTY's receive flow (`POST …/purchase-orders/{id}/receive/`)
+  explodes kits correctly server-side; the barcode-receive endpoint refuses kit
+  lines outright. PO lines carry `is_kit_line` + `kit_components`, whose
+  `quantity_per_kit` — not the pre-multiplied `quantity` — is what a PARTIAL
+  receipt multiplies. `internal/tui/po_kit_lines.go` carries that note.
+
 ## Conventions
 
 - **JD Edwards World interface.** The standing goal is parity with the OMS web

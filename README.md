@@ -153,6 +153,7 @@ Landed:
 - End-to-end scanner flow: scan → lookup → inventory detail → reorder form → submit.
 - Receive deliveries: PO list → PO detail → line-by-line qty entry → submit.
 - Serialized components: per-unit instance tracking off the item detail (`i`) with inline install/remove/consume/retire/dispose + usage history, an asset's installed-components view, per-unit serial capture during receiving, and the consumption forecast (Reports workspace — days-until-stockout / reorder point / low-stock).
+- Kits: a kit is tagged as one on the item detail and shows its components with per-kit quantities, its bill of materials is editable from the item form (saved with the kit), and a kit PO line says which component items receiving it will credit instead of the kit's own stock. A kit's detail screen opens from its id the same way any other item's does; kits are absent from the inventory list and cannot be created from scantty (the item API excludes kits and exposes no `is_kit` flag, so a listed kit would be indistinguishable from an ordinary item — see `AGENTS.md`).
 
 Not yet landed (the long tail):
 - Auth/login screen and persistent token storage. Today, tokens come from `SCANTTY_OMS_TOKEN`.

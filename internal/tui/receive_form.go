@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -43,6 +44,10 @@ type ReceiveFormScreen struct {
 	pending bool
 	result  string
 	level   StatusLevel
+
+	// terminalWidth is what the kit breakdown wraps against (op-8n0). 0 until the
+	// first WindowSizeMsg, which the JDE layer reads as "do not truncate".
+	terminalWidth int
 
 	// Serialized-unit capture (phase 2). After the quantity receive posts,
 	// each received unit of a serialized line enrolls one capture slot so
@@ -136,6 +141,12 @@ func (s *ReceiveFormScreen) currentInput() *textinput.Model {
 
 func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		// The kit breakdown wraps against the pane, so the form has to know how
+		// wide it is — a block laid out for an unknown width would be CLIPPED by
+		// layout.go's clampToBox, losing the last component it names.
+		s.terminalWidth = m.Width
+		return s, nil
 	case receiveSubmittedMsg:
 		s.pending = false
 		if m.err != nil {
@@ -292,7 +303,29 @@ func (s *ReceiveFormScreen) advanceSerial() {
 // poLineSerialized reports whether a PO line's underlying inventory item is
 // serialized, returning the item's UUID (needed to create the units). Freeform
 // / asset lines have no item_details and return ok=false.
+//
+// A KIT LINE is not such a line, whatever its item_details say, and that is the
+// rule this function states rather than a condition bolted onto one caller: the
+// question "does this line's units get serials?" is asked here by both submit()
+// (which enrolls a capture slot per received unit) and hasSerializedLine()
+// (which promises phase 2 in the banner), and two different answers would be
+// their own defect.
+//
+// Skipping a kit loses nothing legitimate. KitComponent.clean() REFUSES a
+// serialized component — "Serialized items cannot be kit components — receiving
+// the kit would credit stock without recording serial numbers" — so there is no
+// valid kit receipt for which serial capture is the right behaviour. A kit line
+// whose item carries is_serialized=true is carrying a flag that is already
+// wrong, reachable because InventoryItem.save() never runs full_clean(), so
+// _clean_kit never fires on a direct write. Acting on it would create
+// SerializedComponents against the KIT's id and accession them into a stock
+// figure nothing can ever draw down — and unlike every other path into that
+// corruption, this one fires on SUBMIT, with no keypress for the operator to
+// catch it on.
 func poLineSerialized(li omsapi.PurchaseOrderItem) (itemID string, ok bool) {
+	if li.IsKitLine {
+		return "", false
+	}
 	serialized, _ := li.ItemDetails["is_serialized"].(bool)
 	if !serialized {
 		return "", false
@@ -394,6 +427,18 @@ func (s *ReceiveFormScreen) View() string {
 	if s.hasSerializedLine() {
 		b.WriteString(StyleMuted.Render("Serialized lines will prompt for a serial per unit after submit.") + "\n\n")
 	}
+	// The standing warning for a PO carrying a kit. It is wrapped rather than
+	// clipped because its second half is the half that matters: an operator who
+	// reads only "Kit lines credit" has been told nothing.
+	if s.hasKitLine() {
+		for _, line := range jdeWrapNote(
+			"This order contains kit lines. Receiving one credits the kit's COMPONENT items, not the kit — the quantity you type is a number of kits.",
+			s.bodyWidth(),
+		) {
+			b.WriteString(StyleStatusWarn.Render(line) + "\n")
+		}
+		b.WriteString("\n")
+	}
 	if len(s.qty) == 0 {
 		b.WriteString(StyleMuted.Render("No receivable lines on this PO.") + "\n\n")
 	} else {
@@ -403,14 +448,27 @@ func (s *ReceiveFormScreen) View() string {
 				caret = "▸ "
 			}
 			line := s.lines[i]
-			label := line.DisplayLabel()
-			b.WriteString(fmt.Sprintf("%s%s\n", caret, label))
-			meta := fmt.Sprintf("    ordered %d · received %d", line.QuantityOrdered, line.QuantityReceived)
+			b.WriteString(caret + s.lineLabel(line) + "\n")
+			// "ordered 2 kits" rather than a separate "quantities are kits"
+			// clause: it says the same thing where the number is, and it fits an
+			// 80-column pane, which the clause did not.
+			unit := ""
+			if line.IsKitLine {
+				unit = " " + plural("kit", line.QuantityOrdered)
+			}
+			meta := fmt.Sprintf("    ordered %d%s · received %d",
+				line.QuantityOrdered, unit, line.QuantityReceived)
 			if line.QuantityPending > 0 {
 				meta += fmt.Sprintf(" · pending %d", line.QuantityPending)
 			}
 			b.WriteString(StyleMuted.Render(meta) + "\n")
-			b.WriteString("    qty received: " + ti.View() + "\n\n")
+			b.WriteString("    qty received: " + ti.View() + "\n")
+			// The breakdown sits directly under the box it is a preview of, and
+			// recomputes from what is currently typed there.
+			for _, kl := range s.kitCreditLines(line, ti.Value()) {
+				b.WriteString(kl + "\n")
+			}
+			b.WriteString("\n")
 		}
 	}
 	caret := "  "
@@ -426,6 +484,73 @@ func (s *ReceiveFormScreen) View() string {
 	}
 	b.WriteString("\n" + StyleMuted.Render("tab move · enter submit · esc back"))
 	return b.String()
+}
+
+// lineLabel is a receivable line's name row: the kit tag first, then as much of
+// the label as the pane has left.
+//
+// Both halves of that order are deliberate. The tag leads because it is what
+// changes the meaning of the quantity box below it, and a tag after a long name
+// is the first thing clampToBox cuts. The name is then FITTED rather than left
+// to overrun, because this row is the one an operator reads to decide which line
+// they are typing into, and a name silently cut at the pane edge reads as a
+// different (shorter) line.
+func (s *ReceiveFormScreen) lineLabel(line omsapi.PurchaseOrderItem) string {
+	label := line.DisplayLabel()
+	lead := ""
+	if line.IsKitLine {
+		lead = poKitTag + " "
+	}
+	if width := s.bodyWidth(); width > 0 {
+		// Two columns for the caret the row is drawn with.
+		if room := width - 2 - lipgloss.Width(lead); room > 0 {
+			label = fitCell(label, room)
+		}
+	}
+	if lead == "" {
+		return label
+	}
+	return StyleStatusWarn.Render(poKitTag) + " " + label
+}
+
+// bodyWidth is the columns this screen's body has, or 0 before the first
+// WindowSizeMsg — which the JDE width helpers read as "do not truncate".
+func (s *ReceiveFormScreen) bodyWidth() int {
+	if s.terminalWidth <= 0 {
+		return 0
+	}
+	return screenBodyWidth(s.terminalWidth)
+}
+
+// hasKitLine reports whether any receivable line on this form is a kit, so the
+// standing warning is drawn only for an order that actually contains one.
+func (s *ReceiveFormScreen) hasKitLine() bool {
+	for _, line := range s.lines {
+		if line.IsKitLine {
+			return true
+		}
+	}
+	return false
+}
+
+// kitCreditLines is the breakdown drawn under a kit line's quantity box: what
+// receiving the quantity currently TYPED there would credit.
+//
+// An empty or unparseable box shows the per-kit ratio instead of a row of
+// zeroes — before a quantity is entered the useful reading is "one kit is these
+// five things", and a breakdown that read "0 × cyan ink" would say the opposite
+// of what it means. Nothing at all is drawn for a non-kit line.
+func (s *ReceiveFormScreen) kitCreditLines(line omsapi.PurchaseOrderItem, typed string) []string {
+	if !line.IsKitLine {
+		return nil
+	}
+	lead := "per kit"
+	kits := 0
+	if qty, err := strconv.Atoi(strings.TrimSpace(typed)); err == nil && qty > 0 {
+		lead = fmt.Sprintf("receiving %d %s credits", qty, plural("kit", qty))
+		kits = qty
+	}
+	return poKitCreditBlock(line.KitComponents, lead, "    ", s.bodyWidth(), kits)
 }
 
 // hasSerializedLine reports whether any receivable line on the form is a

@@ -19,6 +19,7 @@ func TestConsumeModal_Flow(t *testing.T) {
 	s := NewInventoryDetailScreen(Deps{}, "abc")
 	s.item = &omsapi.Item{ID: "abc", Name: "Widget", SKU: "W-1", UnitCost: "2.50"}
 	s.loading = false
+	s.kitAnswered = true
 
 	// 'u' collides with the global ForgeKey-Usage hotkey, so the screen must
 	// claim it to open the consume modal instead.
@@ -130,6 +131,7 @@ func TestConsumeModal_Submits(t *testing.T) {
 	s := NewInventoryDetailScreen(Deps{OMS: omsapi.New(srv.URL)}, "abc")
 	s.item = &omsapi.Item{ID: "abc", Name: "Widget", SKU: "W-1", Stock: 10, UnitCost: "2.50"}
 	s.loading = false
+	s.kitAnswered = true
 
 	s.openConsume()
 	s.Update(runeKey('2'))
@@ -200,6 +202,7 @@ func TestConsumeModal_NoChargeBody(t *testing.T) {
 	s := NewInventoryDetailScreen(Deps{OMS: omsapi.New(srv.URL)}, "abc")
 	s.item = &omsapi.Item{ID: "abc", Name: "Widget", UnitCost: "2.50"}
 	s.loading = false
+	s.kitAnswered = true
 
 	s.openConsume()
 	s.Update(runeKey('2'))
