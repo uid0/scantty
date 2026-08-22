@@ -13,6 +13,12 @@
 // (in Init and after every change), and the upload form carries a kind field
 // (photo/document/other) the backend records per attachment.
 //
+// Those are the DATA differences, and they are the only ones left worth
+// following the pointer for: the PO screen has since moved to the columnar JD
+// Edwards layout and its reduced key scheme (Enter uploads, Ctrl-X deletes,
+// Up/Down move), while this screen is still the pre-columnar list described
+// below. The two no longer share a layout or a key scheme.
+//
 // Reads are open to any authenticated user, so a volunteer maker can browse the
 // list; create/upload and delete are staff / Logistics / SIG-admin only and the
 // server answers 403, which the screen surfaces rather than hiding the keys.
