@@ -33,6 +33,14 @@
 //	                 the bar and status-gated exactly as the web page gates its
 //	                 buttons
 //
+// Tab and Shift-Tab ride alongside Up/Down for field movement on the modal
+// sheets (mark shipped, mark delivered, and the attachments upload sheet). The
+// bar names the CANONICAL key of a pair rather than every alias of it — UP/DN,
+// as the pilot po_edit.go does with the same two — so "a key the bar does not
+// name does nothing" is a rule about COMMANDS, and Tab is a second spelling of
+// one the bar already names rather than a key that escaped the audit. That pair
+// is the only alias left in these files.
+//
 // Nothing else is bound. The j/k, g/G, ctrl+d/ctrl+u and R aliases the
 // TextScroller era carried are gone: they did something while the footer named
 // none of them, which is the opposite of the rule the bar exists to keep.
@@ -306,25 +314,28 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 // because the bar is now the only place an operator learns what works.
 func (s *PurchaseOrderDetailScreen) handleSheetKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
-	case "up":
-		s.scrollBy(-1)
-		return s, nil
-	case "down":
-		s.scrollBy(+1)
-		return s, nil
-	case "pgup":
-		s.scrollBy(-s.pageStep())
-		return s, nil
-	case "pgdown":
-		s.scrollBy(+s.pageStep())
-		return s, nil
-	case "home":
-		s.scroll = 0
-		return s, nil
-	case "end":
-		// The frame clamps whatever it is handed, so "past the end" is how the
-		// end is asked for.
-		s.scroll = s.sheetLines().Len()
+	case "up", "down", "pgup", "pgdown", "home", "end":
+		// Gated on the SAME predicate the bar reads, so a scroll key cannot act
+		// on a frame that does not advertise it.
+		if !s.sheetScrolls() {
+			return s, nil
+		}
+		switch m.String() {
+		case "up":
+			s.scrollBy(-1)
+		case "down":
+			s.scrollBy(+1)
+		case "pgup":
+			s.scrollBy(-s.pageStep())
+		case "pgdown":
+			s.scrollBy(+s.pageStep())
+		case "home":
+			s.scroll = 0
+		case "end":
+			// The frame clamps whatever it is handed, so "past the end" is how
+			// the end is asked for.
+			s.scroll = s.sheetLines().Len()
+		}
 		return s, nil
 
 	case "enter":
@@ -724,18 +735,24 @@ func (s *PurchaseOrderDetailScreen) handleOrderPadKey(m tea.KeyMsg) (Screen, tea
 			)
 		}
 		return s, nil
-	case "up":
-		s.padScrollBy(-1)
-	case "down":
-		s.padScrollBy(+1)
-	case "pgup":
-		s.padScrollBy(-s.padPageStep())
-	case "pgdown":
-		s.padScrollBy(+s.padPageStep())
-	case "home":
-		s.padScroll = 0
-	case "end":
-		s.padScroll = s.orderPadLines().Len()
+	case "up", "down", "pgup", "pgdown", "home", "end":
+		if !s.padScrolls() {
+			return s, nil
+		}
+		switch m.String() {
+		case "up":
+			s.padScrollBy(-1)
+		case "down":
+			s.padScrollBy(+1)
+		case "pgup":
+			s.padScrollBy(-s.padPageStep())
+		case "pgdown":
+			s.padScrollBy(+s.padPageStep())
+		case "home":
+			s.padScroll = 0
+		case "end":
+			s.padScroll = s.orderPadLines().Len()
+		}
 	}
 	return s, nil
 }
@@ -764,7 +781,7 @@ func (s *PurchaseOrderDetailScreen) padPageStep() int {
 // long manufacturer part number with half the pane standing empty beside it.
 func (s *PurchaseOrderDetailScreen) orderPadLines() *jdeLines {
 	l := &jdeLines{}
-	if s.orderPadExport == nil || strings.TrimSpace(s.orderPadExport.Text) == "" {
+	if !s.padHasText() {
 		// Through jdeCaveatLines and not hand-rolled: the sentence is 56 columns
 		// against the 51 an 80-column pane gives, so written straight it was cut
 		// by clampToBox — and because that cut drops runes off the END of a
@@ -900,15 +917,36 @@ func (s *PurchaseOrderDetailScreen) viewSheet() string {
 // renderActionBarWrapped folds it onto as many rows as it needs rather than
 // letting the tail fall off a narrow pane.
 func (s *PurchaseOrderDetailScreen) sheetBar() []actionBarItem {
+	return s.sheetBarItems(s.sheetScrolls())
+}
+
+// sheetScrolls is the sheet's half of the bar-honesty rule: the scroll keys are
+// named when, and only when, the body actually moves. A freshly created draft
+// order with no lines, dates or terms builds a body well inside the pane, and
+// naming UP/DN, PgUp/PgDn and Home/End there spent 42 of the bar's 49 columns on
+// keys that do nothing — enough to push the bar onto a second row and take a
+// body row with it.
+func (s *PurchaseOrderDetailScreen) sheetScrolls() bool {
+	return poCanScroll(s.jdeScreen, s.sheetLines(), 0, s.sheetBarItems(true))
+}
+
+// sheetBarItems builds the bar for a given scroll state. sheetBar and
+// sheetScrolls both go through it so the bar that is MEASURED is the bar that is
+// drawn.
+func (s *PurchaseOrderDetailScreen) sheetBarItems(scroll bool) []actionBarItem {
 	items := []actionBarItem{
 		{"Enter", "Receive"},
 		{"Esc", "Back"},
-		{"UP/DN", "Scroll"},
-		{"PgUp/PgDn", "Page"},
-		{"Home/End", "Top/End"},
-		{"E", "Edit"},
-		{"A", "Files"},
 	}
+	if scroll {
+		items = append(items,
+			actionBarItem{"UP/DN", "Scroll"},
+			actionBarItem{"PgUp/PgDn", "Page"},
+			actionBarItem{"Home/End", "Top/End"})
+	}
+	items = append(items,
+		actionBarItem{"E", "Edit"},
+		actionBarItem{"A", "Files"})
 	if s.po != nil {
 		switch s.po.Status {
 		case "draft":
@@ -1054,6 +1092,30 @@ func (s *PurchaseOrderDetailScreen) addBand(l *jdeLines, labelWidth int, heading
 		s.addValueRow(l, f, labelWidth)
 	}
 	l.Add("")
+}
+
+// poCanScroll reports whether a read-only body is genuinely scrollable in the
+// frame that is about to be drawn — which is the ONE condition both the bar and
+// the scroll handlers read, so neither can drift from the other.
+//
+// It asks frameScrolled's own arithmetic rather than restating it: ClampScroll
+// handed an offset past the end returns the largest offset the frame will
+// accept, so a result above zero means the body really does move. That is what
+// makes "the bar names a key that works" true by construction instead of by two
+// expressions kept in step — the drift this rule has been broken by three times.
+//
+// `items` must be the bar WITH its scroll keys on it. The decision and the bar
+// height are mutually dependent (naming the keys can cost a bar row, which costs
+// a body row, which can change the answer), and measuring against the tallest
+// bar is the fixed point: a body that overflows the smallest budget also
+// overflows the larger one left when the keys are dropped, so the answer cannot
+// oscillate between frames.
+func poCanScroll(g jdeScreen, body *jdeLines, headerRows int, items []actionBarItem) bool {
+	avail := g.bodyRowsForBar(actionBarRowsFor(g.barWidth(), items)) - headerRows
+	if avail < 1 {
+		return false
+	}
+	return body.ClampScroll(body.Len(), avail) > 0
 }
 
 // poErrPrefixW is the width of the "Error: " a load failure is drawn behind on
@@ -1986,28 +2048,51 @@ func (s *PurchaseOrderDetailScreen) viewDeliver() string {
 // ---------------------------------------------------------------------------
 
 func (s *PurchaseOrderDetailScreen) orderPadBar() []actionBarItem {
-	// Esc is the only key that works on a pad with nothing on it. Enter=Copy was
-	// named unconditionally while the handler only copies when there is text, so
-	// the bar under "No lines have a supplier part number" advertised a key that
-	// did literally nothing — the bar-honesty rule broken in the direction
-	// opposite to the attachments grid's paging keys.
+	return s.orderPadBarItems(s.padScrolls())
+}
+
+// orderPadBarItems builds the pad's bar for a given scroll state, and is what
+// both orderPadBar and padScrolls go through — the bar that is MEASURED is the
+// bar that is drawn.
+//
+// Esc is the only key that works on a pad with nothing on it, and the scroll
+// keys are named only when the pad is taller than the overlay leaves it: a
+// two-line pad fits with room to spare, and naming UP/DN, PgUp/PgDn and Home/End
+// there cost 42 of the bar's 49 columns on keys that write a clamped offset
+// straight back.
+func (s *PurchaseOrderDetailScreen) orderPadBarItems(scroll bool) []actionBarItem {
 	if !s.padHasText() {
 		return []actionBarItem{{"Esc", "Close"}}
 	}
-	return []actionBarItem{
+	items := []actionBarItem{
 		{"Enter", "Copy"},
 		{"Esc", "Close"},
-		{"UP/DN", "Scroll"},
-		{"PgUp/PgDn", "Page"},
-		{"Home/End", "Top/End"},
 	}
+	if scroll {
+		items = append(items,
+			actionBarItem{"UP/DN", "Scroll"},
+			actionBarItem{"PgUp/PgDn", "Page"},
+			actionBarItem{"Home/End", "Top/End"})
+	}
+	return items
 }
 
-// padHasText is the single condition the pad overlay's Enter and its scroll keys
-// both turn on. The bar and handleOrderPadKey read the SAME predicate rather
-// than each spelling it out, which is what keeps them from drifting apart again.
+// padScrolls is the pad's half of the bar-honesty rule, read by the bar and by
+// handleOrderPadKey alike.
+func (s *PurchaseOrderDetailScreen) padScrolls() bool {
+	if !s.padHasText() {
+		return false
+	}
+	return poCanScroll(s.jdeScreen, s.orderPadLines(), len(s.orderPadHeader()), s.orderPadBarItems(true))
+}
+
+// padHasText is the single condition the pad overlay's Enter turns on, and the
+// same one orderPadLines uses to decide it has nothing to draw. TrimSpace and
+// not a bare != "" for exactly that reason: the two used to disagree, so a
+// whitespace-only export would have drawn "nothing to order" under a bar
+// offering Copy.
 func (s *PurchaseOrderDetailScreen) padHasText() bool {
-	return s.orderPadExport != nil && s.orderPadExport.Text != ""
+	return s.orderPadExport != nil && strings.TrimSpace(s.orderPadExport.Text) != ""
 }
 
 // orderPadHeader is the chrome pinned above the pad: what was built, from how

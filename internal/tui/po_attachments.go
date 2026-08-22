@@ -490,16 +490,41 @@ func (s *PurchaseOrderAttachmentsScreen) listLines() (*jdeLines, int) {
 // dropped when there is nothing to delete, and the movement keys when there is
 // nothing to move between.
 func (s *PurchaseOrderAttachmentsScreen) listBar() []actionBarItem {
+	return s.listBarItems(s.listPages())
+}
+
+// listBarItems builds the grid's bar for a given paging state. listBar and
+// listPages both go through it so the bar that is MEASURED is the bar that is
+// drawn: the height used to be taken from a partial list — missing both the
+// PgUp/PgDn entry it was about to add and the r=Refresh appended on return — so
+// it measured a bar one row shorter than the frame draws and budgeted the body
+// one row too tall.
+func (s *PurchaseOrderAttachmentsScreen) listBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Upload"}, {"Esc", "Back"}}
 	if len(s.attachments) > 0 {
 		items = append(items, actionBarItem{"UP/DN", "Move"}, actionBarItem{"Ctrl-X", "Delete"})
 	}
-	if body, _ := s.listLines(); len(s.attachments) > 0 {
-		if avail := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), items)); avail > 0 && body.Len() > avail {
-			items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
-		}
+	if paging {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return append(items, actionBarItem{"r", "Refresh"})
+}
+
+// listPages reports whether the grid is taller than the pane leaves it, and is
+// the ONE condition both listBar and (through listNames) updateList read.
+//
+// The decision and the bar height are mutually dependent, so it is settled
+// against the bar WITH the paging entry on it — the tallest bar and therefore
+// the smallest body budget. That is conservative and cannot oscillate: a grid
+// that overflows the smallest budget also overflows the larger one left when the
+// entry is dropped.
+func (s *PurchaseOrderAttachmentsScreen) listPages() bool {
+	if len(s.attachments) == 0 {
+		return false
+	}
+	body, _ := s.listLines()
+	avail := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), s.listBarItems(true)))
+	return avail > 0 && body.Len() > avail
 }
 
 func (s *PurchaseOrderAttachmentsScreen) viewList() string {

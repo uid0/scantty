@@ -1348,3 +1348,242 @@ func TestPOView_ShipFormStillValidates(t *testing.T) {
 		t.Errorf("Up should move back to the line field, focus = %d", s.shipFocus)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The bar is honest — enforced as a rule, not per key
+// ---------------------------------------------------------------------------
+
+// poBarKeyNames maps a bar entry's Key to the keystrokes it names. The bar
+// writes ONE entry for a pair — "UP/DN", "PgUp/PgDn", "Home/End" — so this is
+// the bar's own vocabulary rather than anything read out of the handlers.
+var poBarKeyNames = map[string][]string{
+	"Enter":     {"enter"},
+	"Esc":       {"esc"},
+	"UP/DN":     {"up", "down"},
+	"PgUp/PgDn": {"pgup", "pgdown"},
+	"Home/End":  {"home", "end"},
+	"Ctrl-X":    {"ctrl+x"},
+	"r":         {"r"},
+	"E":         {"E"},
+	"A":         {"A"},
+	"x":         {"x"},
+	"s":         {"s"},
+	"c":         {"c"},
+	"d":         {"d"},
+	"v":         {"v"},
+	"S":         {"S"},
+}
+
+// poKeyMsg turns one of those keystroke names into the message the terminal
+// sends.
+func poKeyMsg(key string) tea.KeyMsg {
+	switch key {
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "pgup":
+		return tea.KeyMsg{Type: tea.KeyPgUp}
+	case "pgdown":
+		return tea.KeyMsg{Type: tea.KeyPgDown}
+	case "home":
+		return tea.KeyMsg{Type: tea.KeyHome}
+	case "end":
+		return tea.KeyMsg{Type: tea.KeyEnd}
+	case "ctrl+x":
+		return tea.KeyMsg{Type: tea.KeyCtrlX}
+	}
+	return poRuneKey(key)
+}
+
+// poBarPhase is one screen in one state, rebuilt from scratch on demand so a
+// probe keystroke cannot leak into the next assertion. `state` is what counts as
+// an observable change.
+type poBarPhase struct {
+	name  string
+	build func(t *testing.T, width int) (scr Screen, state func() string, bar []actionBarItem)
+}
+
+// poNavState is the CLIPPED frame plus the navigation fields the frame cannot be
+// trusted to show.
+//
+// The frame alone is not enough: the attachment grid marks its highlighted row
+// with StyleJDEFieldFocused, and lipgloss renders flat in a test binary, so
+// moving the cursor produces a byte-identical frame. That is the same blind spot
+// recorded on poFitInputValue — a whole class of visual state this suite cannot
+// see — so where it hides a state change the fields are named instead.
+func poNavState(r Root, nav func() string) func() string {
+	return func() string {
+		return r.View() + "\x00" + nav()
+	}
+}
+
+// poKeyEffect is what pressing `key` did: whether the observable state changed,
+// and whether the screen returned a command.
+func poKeyEffect(t *testing.T, p poBarPhase, width int, probe []string, key string) (changed, cmdIssued bool) {
+	t.Helper()
+	scr, state, _ := p.build(t, width)
+	for _, pk := range probe {
+		scr.Update(poKeyMsg(pk))
+	}
+	before := state()
+	_, cmd := scr.Update(poKeyMsg(key))
+	return state() != before, cmd != nil
+}
+
+// TestPOView_BarNamesExactlyTheKeysThatWork: the rule the whole key scheme rests
+// on, asserted as a RULE rather than one entry at a time.
+//
+// It has been broken three times in a row — the attachments grid's PgUp/PgDn,
+// the order pad's Enter=Copy, then the pad's and the sheet's scroll keys — each
+// time by a fix that corrected one bar entry and left its neighbours alone. So
+// this walks every phase in BOTH the overflowing and the fitting state and
+// checks the two halves of the rule for every key the bar's vocabulary knows:
+//
+//	a key the bar NAMES must do something, and
+//	a key the bar does NOT name must not change any state.
+//
+// A named key is probed from several positions — as opened, after End, and after
+// paging to the bottom — because Home does nothing at the top and End nothing at
+// the bottom; a key is dead only if it does nothing from any of them.
+//
+// The unnamed half asks for no STATE change rather than no command, because a
+// status-gated letter — s/c/d/v/S when the order is in the wrong status — is
+// meant to answer with an explaining toast and change nothing. That toast is the
+// send/confirm/deliver/void gating the brief requires preserved exactly, so it is
+// behaviour the rule has to allow rather than a key that escaped the audit.
+func TestPOView_BarNamesExactlyTheKeysThatWork(t *testing.T) {
+	// Enough of each to reach the far end of any of these bodies.
+	toBottom := []string{"end"}
+	for i := 0; i < 80; i++ {
+		toBottom = append(toBottom, "down")
+	}
+	probes := [][]string{nil, {"end"}, toBottom}
+
+	for _, p := range poBarPhases() {
+		for _, width := range poViewWidths {
+			t.Run(p.name+"/"+widthName(width), func(t *testing.T) {
+				_, _, bar := p.build(t, width)
+
+				named := map[string]bool{}
+				for _, it := range bar {
+					keys, ok := poBarKeyNames[it.Key]
+					if !ok {
+						t.Fatalf("bar entry %q is not in poBarKeyNames — add it so the rule covers it", it.Key)
+					}
+					for _, k := range keys {
+						named[k] = true
+					}
+				}
+
+				for _, key := range poAllBarKeys() {
+					var changed, issued bool
+					for _, probe := range probes {
+						c, i := poKeyEffect(t, p, width, probe, key)
+						changed = changed || c
+						issued = issued || i
+					}
+					switch {
+					case named[key] && !changed && !issued:
+						// Esc is the one exception: on the detail sheet the app-wide
+						// back-step belongs to Root's dispatcher, not the screen, so
+						// the screen answering nothing is correct.
+						if key == "esc" {
+							continue
+						}
+						t.Errorf("%s names %q but the key does nothing there", p.name, key)
+					case !named[key] && changed:
+						t.Errorf("%s does not name %q, but pressing it changes state", p.name, key)
+					}
+				}
+			})
+		}
+	}
+}
+
+// poAllBarKeys is every keystroke the bar's vocabulary can name, in a stable
+// order.
+func poAllBarKeys() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, entry := range []string{"Enter", "Esc", "UP/DN", "PgUp/PgDn", "Home/End", "Ctrl-X", "r", "E", "A", "x", "s", "c", "d", "v", "S"} {
+		for _, k := range poBarKeyNames[entry] {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	return out
+}
+
+// poShortPO is a freshly created draft with nothing on it — the order whose
+// sheet fits the pane, so its scroll keys must not be named.
+func poShortPO() *omsapi.PurchaseOrder {
+	return &omsapi.PurchaseOrder{
+		ID: "po-2", Number: "PO-2026-0043",
+		Status: "draft", StatusLabel: "Draft",
+		SupplierDetails: "Acme",
+		OrderDate:       time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+	}
+}
+
+// poBarPhases is every phase of the two screens, in both the state where the
+// body overflows the pane and the state where it fits.
+func poBarPhases() []poBarPhase {
+	detail := func(po func() *omsapi.PurchaseOrder) func(*testing.T, int) (Screen, func() string, []actionBarItem) {
+		return func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
+			t.Helper()
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = po()
+			r := poViewRoot(t, s, width)
+			return s, poNavState(r, func() string {
+				return fmt.Sprint(s.scroll, s.orderPad, s.shipping, s.voiding, s.delivering)
+			}), s.sheetBar()
+		}
+	}
+	pad := func(text string) func(*testing.T, int) (Screen, func() string, []actionBarItem) {
+		return func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
+			t.Helper()
+			s, r := poDetailAt(t, width)
+			s.orderPad = true
+			s.orderPadExport = &omsapi.OrderPadExport{
+				Text: text, Supplier: "Acme", Filename: "PO-2026-0042-order.csv",
+				LineCount: len(strings.Split(text, "\n")),
+			}
+			return s, poNavState(r, func() string {
+				return fmt.Sprint(s.padScroll, s.orderPad)
+			}), s.orderPadBar()
+		}
+	}
+	attach := func(n int) func(*testing.T, int) (Screen, func() string, []actionBarItem) {
+		return func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
+			t.Helper()
+			s, r := poAttachAt(t, width)
+			s.attachments = poManyAttachments(n)
+			return s, poNavState(r, func() string {
+				return fmt.Sprint(s.cursor, s.phase, s.confirmingDelete)
+			}), s.listBar()
+		}
+	}
+
+	var longPad []string
+	for i := 0; i < 60; i++ {
+		longPad = append(longPad, fmt.Sprintf("PART-%04d\t%d", i, i+1))
+	}
+
+	return []poBarPhase{
+		{"detail sheet (body overflows)", detail(poViewPO)},
+		{"detail sheet (body fits)", detail(poShortPO)},
+		{"order pad (overflows)", pad(strings.Join(longPad, "\n"))},
+		{"order pad (fits)", pad("M3-HEX-BOLT-SS\t5\nGADGET-0001\t2")},
+		{"order pad (nothing to order)", pad("")},
+		{"attachments grid (overflows)", attach(60)},
+		{"attachments grid (fits)", attach(3)},
+	}
+}
