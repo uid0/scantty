@@ -921,7 +921,21 @@ func (s *InventoryItemFormScreen) updateKitPickPhase(m tea.KeyMsg) (Screen, tea.
 	return s, nil
 }
 
+// moveKitPick moves the highlight, and the refusal on screen dies with it.
+//
+// The clear lives HERE, where the cursor moves, so every movement path —
+// down/tab, up/shift+tab, pgup/pgdown, and any added later — is covered by
+// construction rather than by remembering to add each one.
+//
+// It became necessary BECAUSE the message was shortened to drop the item name.
+// While it named the item, a stale refusal was self-evidently about a different
+// row; "that item" silently re-points at whatever the cursor moved to, so a
+// refusal left standing describes — and defames — a perfectly pickable row. The
+// shortening was still right (see commitKitPick: it duplicated what the row
+// already shows and was the part the clip ate at every width), but a message
+// that refers to "that item" must die when "that item" changes.
 func (s *InventoryItemFormScreen) moveKitPick(delta int) {
+	s.kitPickErr = ""
 	s.kitPickCursor = jdeClampPick(s.kitPickCursor+delta, len(s.kitPickOptions))
 }
 

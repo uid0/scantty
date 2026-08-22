@@ -303,7 +303,29 @@ func (s *ReceiveFormScreen) advanceSerial() {
 // poLineSerialized reports whether a PO line's underlying inventory item is
 // serialized, returning the item's UUID (needed to create the units). Freeform
 // / asset lines have no item_details and return ok=false.
+//
+// A KIT LINE is not such a line, whatever its item_details say, and that is the
+// rule this function states rather than a condition bolted onto one caller: the
+// question "does this line's units get serials?" is asked here by both submit()
+// (which enrolls a capture slot per received unit) and hasSerializedLine()
+// (which promises phase 2 in the banner), and two different answers would be
+// their own defect.
+//
+// Skipping a kit loses nothing legitimate. KitComponent.clean() REFUSES a
+// serialized component — "Serialized items cannot be kit components — receiving
+// the kit would credit stock without recording serial numbers" — so there is no
+// valid kit receipt for which serial capture is the right behaviour. A kit line
+// whose item carries is_serialized=true is carrying a flag that is already
+// wrong, reachable because InventoryItem.save() never runs full_clean(), so
+// _clean_kit never fires on a direct write. Acting on it would create
+// SerializedComponents against the KIT's id and accession them into a stock
+// figure nothing can ever draw down — and unlike every other path into that
+// corruption, this one fires on SUBMIT, with no keypress for the operator to
+// catch it on.
 func poLineSerialized(li omsapi.PurchaseOrderItem) (itemID string, ok bool) {
+	if li.IsKitLine {
+		return "", false
+	}
 	serialized, _ := li.ItemDetails["is_serialized"].(bool)
 	if !serialized {
 		return "", false

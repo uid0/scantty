@@ -20,7 +20,14 @@
 package tui
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -403,5 +410,164 @@ func TestPODetailKit_TheUnorderedFallbackLeadIsTenseNeutralToo(t *testing.T) {
 					width, w, budget, l)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Serial capture on a kit line
+// ---------------------------------------------------------------------------
+
+// receiveSerialFake is the OMS the receiving drive runs against: it accepts the
+// quantity receipt and, crucially, RECORDS every serialized unit anyone tries
+// to create against it. A guard that only suppressed the phase-2 screen while
+// still posting units would pass a screen-level assertion and still corrupt the
+// data, so the evidence here is what reached the server.
+type receiveSerialFake struct {
+	mu       sync.Mutex
+	received []map[string]any
+	serials  []map[string]any
+	actions  []string
+}
+
+func (f *receiveSerialFake) handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		body := map[string]any{}
+		if raw, _ := io.ReadAll(r.Body); len(raw) > 0 {
+			_ = json.Unmarshal(raw, &body)
+		}
+		switch {
+		case strings.Contains(r.URL.Path, "/purchase-orders/") && strings.HasSuffix(r.URL.Path, "/receive/"):
+			if items, ok := body["items"].([]any); ok {
+				for _, it := range items {
+					if line, ok := it.(map[string]any); ok {
+						f.received = append(f.received, line)
+					}
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 5, "po_number": "PO-1001", "is_fully_received": true,
+			})
+		case strings.HasSuffix(r.URL.Path, "/serialized-components/"):
+			f.serials = append(f.serials, body)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": fmt.Sprintf("sc-%d", len(f.serials)), "serial_number": body["serial_number"],
+			})
+		default:
+			// The lifecycle action that accessions a created unit into stock.
+			f.actions = append(f.actions, r.Method+" "+r.URL.Path)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "in_stock"})
+		}
+	}
+}
+
+// receiveOneLine drives the receiving form the way an operator does — type a
+// quantity, Enter past the notes, Enter to submit — through Root.Update against
+// the fake, and hands back both so the test can read the screen AND the wire.
+func receiveOneLine(t *testing.T, line omsapi.PurchaseOrderItem, qty string) (*receiveSerialFake, *ReceiveFormScreen, Root) {
+	t.Helper()
+	fake := &receiveSerialFake{}
+	srv := httptest.NewServer(fake.handler())
+	t.Cleanup(srv.Close)
+
+	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+	po := &omsapi.PurchaseOrder{ID: 5, Number: "PO-1001", Items: []omsapi.PurchaseOrderItem{line}}
+	screen := NewReceiveFormScreen(deps, po)
+	r := newTestRoot(screen)
+	r.deps = deps
+	r.Update(tea.WindowSizeMsg{Width: 120, Height: jdeSweepHeight})
+	r = pump(t, r, screen.Init(), 0)
+
+	r = key(t, r, woRuneKey(qty))
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // qty -> notes
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // submit
+	return fake, screen, r
+}
+
+// poKitSerializedLine is the line the guard exists for: a kit whose item carries
+// a stray is_serialized=true. It should not exist — KitComponent.clean() refuses
+// a serialized component outright — but InventoryItem.save() never runs
+// full_clean(), so _clean_kit never fires on a direct write and the flag
+// persists.
+func poKitSerializedLine() omsapi.PurchaseOrderItem {
+	line := poKitFixtureLine()
+	line.ItemDetails = map[string]any{"id": "kit-1", "is_serialized": true}
+	return line
+}
+
+func poSerializedPlainLine() omsapi.PurchaseOrderItem {
+	line := poPlainLine()
+	line.ItemDetails = map[string]any{"id": "itm-b", "is_serialized": true}
+	return line
+}
+
+// TestReceiveKit_AKitLineEnrolsNoSerialCapture. Receiving a kit credits its
+// COMPONENT items and leaves the kit's own stock at zero, so a serial captured
+// here would be created against the KIT's id and accessioned into a figure
+// nothing can ever draw down. Unlike every other path into that corruption this
+// one fires on SUBMIT, with no keypress for the operator to catch it on.
+func TestReceiveKit_AKitLineEnrolsNoSerialCapture(t *testing.T) {
+	fake, screen, _ := receiveOneLine(t, poKitSerializedLine(), "2")
+
+	// The receipt itself still happens — the server explodes the kit into its
+	// components — so the guard must not have swallowed the quantity.
+	if len(fake.received) != 1 || fmt.Sprint(fake.received[0]["quantity_received"]) != "2" {
+		t.Fatalf("the kit quantity did not reach the receive endpoint: %+v", fake.received)
+	}
+	if screen.phase == phaseSerial {
+		t.Errorf("a kit receipt opened serial capture:\n%s", screen.View())
+	}
+	if len(screen.serialUnits) != 0 {
+		t.Errorf("a kit receipt enrolled %d serial-capture slots: %+v", len(screen.serialUnits), screen.serialUnits)
+	}
+	if len(fake.serials) != 0 {
+		t.Errorf("a kit receipt created serialized components: %+v", fake.serials)
+	}
+	// And phase 1 never promised capture either — the banner reads off the same
+	// predicate, and a screen that promises what the flow will not do is its own
+	// defect.
+	if screen.hasSerializedLine() {
+		t.Errorf("the form promised serial capture for a kit line")
+	}
+}
+
+// TestReceiveKit_AnOrdinarySerializedLineStillCapturesSerials is the regression
+// that matters on the other side: a guard written too broadly would silently
+// disable serial capture for every serialized item on every PO.
+func TestReceiveKit_AnOrdinarySerializedLineStillCapturesSerials(t *testing.T) {
+	fake, screen, r := receiveOneLine(t, poSerializedPlainLine(), "2")
+
+	if screen.phase != phaseSerial {
+		t.Fatalf("an ordinary serialized receipt did not enter serial capture (phase %d):\n%s",
+			screen.phase, screen.View())
+	}
+	if len(screen.serialUnits) != 2 {
+		t.Fatalf("want one capture slot per received unit, got %d: %+v",
+			len(screen.serialUnits), screen.serialUnits)
+	}
+
+	for _, serial := range []string{"SN-1", "SN-2"} {
+		r = key(t, r, woRuneKey(serial))
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	}
+
+	if len(fake.serials) != 2 {
+		t.Fatalf("want two serialized components created, got %+v", fake.serials)
+	}
+	for i, want := range []string{"SN-1", "SN-2"} {
+		if got := fmt.Sprint(fake.serials[i]["serial_number"]); got != want {
+			t.Errorf("serial %d = %q, want %q", i+1, got, want)
+		}
+		if got := fmt.Sprint(fake.serials[i]["item"]); got != "itm-b" {
+			t.Errorf("serial %d was created against %q, want the line's item", i+1, got)
+		}
+	}
+	if len(fake.actions) != 2 {
+		t.Errorf("the created units were not accessioned into stock: %+v", fake.actions)
+	}
+	if screen.phase != phaseDone {
+		t.Errorf("the flow did not finish after the last serial (phase %d)", screen.phase)
 	}
 }

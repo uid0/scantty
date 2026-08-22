@@ -692,6 +692,69 @@ func TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout(t *testing.T) {
 	}
 }
 
+// TestItemFormKit_ARefusalDiesWhenTheCursorLeavesItsRow. The refusal names
+// neither the item nor the reason — it says "that item", and "that item" is
+// whichever row the cursor is on. So moving off the refused row has to take the
+// message with it: left standing, the status line asserts that the row now
+// highlighted cannot be a component when it can, and pressing Enter then
+// silently succeeds underneath a refusal that contradicts it.
+//
+// Every movement key is driven, because the clear has to hold for the movement
+// paths as a class rather than for the one that was reported.
+func TestItemFormKit_ARefusalDiesWhenTheCursorLeavesItsRow(t *testing.T) {
+	for _, move := range []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{"down", tea.KeyMsg{Type: tea.KeyDown}},
+		{"tab", tea.KeyMsg{Type: tea.KeyTab}},
+		{"up", tea.KeyMsg{Type: tea.KeyUp}},
+		{"shift+tab", tea.KeyMsg{Type: tea.KeyShiftTab}},
+		{"pgdown", tea.KeyMsg{Type: tea.KeyPgDown}},
+		{"pgup", tea.KeyMsg{Type: tea.KeyPgUp}},
+	} {
+		t.Run(move.name, func(t *testing.T) {
+			s := kitFormSheet(t, kitFormFixture(), 120)
+			s.kitItems = []omsapi.Item{
+				{ID: "itm-s", Name: "Serialized widget", IsSerialized: true},
+				{ID: "itm-y", Name: "Yellow ink", SKU: "YI-100"},
+			}
+			kitFormCursorTo(t, s, fKitComponents)
+			s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
+			s.kitCursor = s.kitAddRow()
+			s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // picker
+
+			for i, opt := range s.kitPickOptions {
+				if opt.item.ID == "itm-s" {
+					s.kitPickCursor = i
+				}
+			}
+			s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if !strings.Contains(s.View(), "cannot be a kit component") {
+				t.Fatalf("the refusal was not shown in the first place:\n%s", s.View())
+			}
+
+			s.Update(move.key)
+			if strings.Contains(s.View(), "cannot be a kit component") {
+				t.Errorf("a refusal about the old row survived %s, and now describes the one under the cursor:\n%s",
+					move.name, s.View())
+			}
+			// The options themselves are untouched — the message died, not the
+			// picker — so the pickable row still commits.
+			for i, opt := range s.kitPickOptions {
+				if opt.item.ID == "itm-y" {
+					s.kitPickCursor = i
+				}
+			}
+			before := len(s.kitRows)
+			s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if len(s.kitRows) != before+1 {
+				t.Errorf("the pickable row no longer commits after %s: %+v", move.name, s.kitRows)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // A kit's Current stock row
 // ---------------------------------------------------------------------------
