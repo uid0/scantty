@@ -70,8 +70,21 @@ type InventoryDetailScreen struct {
 	loading          bool
 	scroller         *TextScroller
 	terminalHeight   int
+	terminalWidth    int
 	confirmingDelete bool
 	deleting         bool
+
+	// Kit support (op-8n0). `kit` is non-nil ONLY when the /kits/ fetch
+	// succeeded, which is the only thing that makes this item a kit — the item
+	// serializer carries no `is_kit` field, so a 404 from that endpoint IS the
+	// answer "ordinary item" (omsapi.IsNotKit). kitErr therefore holds only the
+	// errors that left the question UNANSWERED; a not-found is not one of them.
+	//
+	// suppliedByKits is the opposite direction — the kits that contain this item
+	// — and is empty both for an item nothing bundles and for a kit itself.
+	kit            *omsapi.Kit
+	kitErr         string
+	suppliedByKits []omsapi.KitSummary
 
 	// "Assets that use this item" (op-qdfr): the assets that list this item as
 	// a part/consumable via the AssetPart through-model. Loaded from its own
@@ -182,6 +195,24 @@ type consumeDoneMsg struct {
 	err         error
 }
 
+// inventoryKitLoadedMsg carries the answer to "is this item a kit?", fetched in
+// parallel with the item. A NOT-FOUND is a successful answer of "no" and arrives
+// with both fields nil; any other error leaves the question unanswered and is
+// reported rather than silently rendering the item as ordinary.
+type inventoryKitLoadedMsg struct {
+	kit *omsapi.Kit
+	err error
+}
+
+// inventorySuppliedByKitsLoadedMsg carries the kits that contain this item
+// (op-8n0), fetched in parallel with the item. A non-nil err is non-fatal — the
+// section is simply omitted, since it is triage context rather than an answer
+// the operator asked for.
+type inventorySuppliedByKitsLoadedMsg struct {
+	kits []omsapi.KitSummary
+	err  error
+}
+
 type inventoryDeletedMsg struct {
 	err error
 }
@@ -287,16 +318,84 @@ func (s *InventoryDetailScreen) loadPurchaseHistoryCmd() tea.Cmd {
 	}
 }
 
+// loadKitCmd asks whether this id is a kit, and if so what it contains (op-8n0).
+//
+// It is a separate request because it has to be: neither item serializer exposes
+// `is_kit` or `components`, and the kit fields live only on the /kits/ route,
+// whose queryset is filtered to kits — so fetching the id there and reading the
+// status is the ONLY way a client can tell the two apart. A 404 is therefore a
+// successful answer, not a failure; see omsapi.IsNotKit.
+func (s *InventoryDetailScreen) loadKitCmd() tea.Cmd {
+	deps, id, ctx := s.deps, s.itemID, s.ctx()
+	return func() tea.Msg {
+		kit, err := deps.OMS.GetKit(ctx, id)
+		if omsapi.IsNotKit(err) {
+			return inventoryKitLoadedMsg{}
+		}
+		return inventoryKitLoadedMsg{kit: kit, err: err}
+	}
+}
+
+// loadSuppliedByKitsCmd fetches the kits that CONTAIN this item — "the Eufy Ink
+// Kit is a way to buy this cartridge", which is reorder-triage context the web
+// shows on the same screen. Loads in parallel with the item; a failure only
+// omits the section.
+func (s *InventoryDetailScreen) loadSuppliedByKitsCmd() tea.Cmd {
+	deps, id, ctx := s.deps, s.itemID, s.ctx()
+	return func() tea.Msg {
+		kits, err := deps.OMS.ListItemKits(ctx, id)
+		return inventorySuppliedByKitsLoadedMsg{kits: kits, err: err}
+	}
+}
+
 func (s *InventoryDetailScreen) Init() tea.Cmd {
 	s.usedByLoading = true
 	s.purchasesLoading = true
-	return tea.Batch(s.loadItemCmd(), s.loadMetricsCmd(), s.loadUsedByCmd(), s.loadPurchaseHistoryCmd())
+	return tea.Batch(
+		s.loadItemCmd(), s.loadMetricsCmd(), s.loadUsedByCmd(), s.loadPurchaseHistoryCmd(),
+		s.loadKitCmd(), s.loadSuppliedByKitsCmd(),
+	)
 }
 
 func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		// The kit grids size their columns from the pane, so a resize has to
+		// rebuild the body — a grid laid out for the old width would be clipped
+		// at the new one (or strand its quantity columns mid-row).
+		if m.Width != s.terminalWidth {
+			s.terminalWidth = m.Width
+			if s.item != nil {
+				s.scroller.Set(s.renderBody())
+			}
+		}
+		return s, nil
+	case inventoryKitLoadedMsg:
+		if m.err != nil {
+			// The question was not answered — say so rather than rendering the
+			// item as ordinary, which would hide a kit's whole nature behind a
+			// transient failure.
+			s.kitErr = m.err.Error()
+		} else {
+			s.kitErr = ""
+			s.kit = m.kit
+		}
+		if s.item != nil {
+			s.scroller.Set(s.renderBody())
+		}
+		return s, nil
+	case inventorySuppliedByKitsLoadedMsg:
+		// A failure here is swallowed on purpose: this section is triage context
+		// nobody asked for, and a "Supplied by kits: unavailable" banner on an
+		// item that is in no kits at all — which is most of them — would be noise
+		// on every screen in the catalogue.
+		if m.err == nil {
+			s.suppliedByKits = m.kits
+		}
+		if s.item != nil {
+			s.scroller.Set(s.renderBody())
+		}
 		return s, nil
 	case inventoryDetailLoadedMsg:
 		s.loading = false
@@ -637,8 +736,16 @@ func (s *InventoryDetailScreen) renderHeader() string {
 	}
 	var b strings.Builder
 
-	// Line 1: item name (+ reorder / retired flags).
-	b.WriteString(StyleTitle.Render(it.Name))
+	// Line 1: item name (+ kit / reorder / retired flags). The kit tag rides on
+	// the NAME line, next to [retired], because "this is a kit" is the same order
+	// of fact: it changes what every number below means — and it is drawn by
+	// kitNameLine, which shortens the NAME rather than let the tag be clipped off
+	// a narrow pane.
+	if kitLine := s.kitNameLine(it.Name); kitLine != "" {
+		b.WriteString(kitLine)
+	} else {
+		b.WriteString(StyleTitle.Render(it.Name))
+	}
 	if it.IsRetired {
 		b.WriteString("  " + StyleMuted.Render("[retired]"))
 	}
@@ -732,6 +839,9 @@ func (s *InventoryDetailScreen) renderBody() string {
 		}
 		b.WriteString(StyleMuted.Render(countedIn) + "\n")
 	}
+	// A kit's stock is zero by construction, not by coincidence: say so where the
+	// zero is, not only in the section further down that explains why.
+	b.WriteString(s.kitStockNote())
 	// Days-since-last-count (issue-7): "Counted: 12d ago" / "Counted: never".
 	b.WriteString(StyleMuted.Render(metricsCountedLine(it)) + "\n")
 	if it.ReorderStatus != "" {
@@ -756,6 +866,10 @@ func (s *InventoryDetailScreen) renderBody() string {
 		}
 	}
 	b.WriteString("\n")
+
+	// The bill of materials sits directly under Stock, whose zero it explains.
+	b.WriteString(s.renderKitSection())
+	b.WriteString(s.renderKitErrLine())
 
 	if it.IsSerialized {
 		b.WriteString(StyleTitle.Render("Serialized tracking") + "\n")
@@ -838,6 +952,10 @@ func (s *InventoryDetailScreen) renderBody() string {
 		}
 		b.WriteString("\n")
 	}
+
+	// "Which kits would restock this?" belongs with the other ways to buy it, so
+	// it follows the supplier blocks rather than leading them.
+	b.WriteString(s.renderSuppliedByKitsSection())
 
 	b.WriteString(s.renderPurchaseSection())
 

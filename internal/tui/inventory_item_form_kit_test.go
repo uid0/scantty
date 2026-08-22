@@ -1,0 +1,550 @@
+// The item form's kit-components editor (op-8n0).
+//
+// The contract these hold it to:
+//
+//	only a kit gets the row  — an ordinary item's sheet is exactly what it was,
+//	                           and "the question went unanswered" is not a kit
+//	the components are       — read AND written: the API makes the bill of
+//	editable                   materials nested-writable on the kit, so ScanTTY
+//	                           edits it rather than showing it read-only
+//	the save goes to /kits/  — /items/ 404s for a kit and has no `components`
+//	                           field, so the ordinary item PATCH would fail twice
+//	an untouched list is not — sending an empty list is a validation ERROR
+//	sent                       upstream, not a no-op, so an unopened editor must
+//	                           omit the key entirely
+//	the bar is honest        — Ctrl-E is named where it works and works where it
+//	                           is named, on every phase
+//	it fits the floor        — measured on the CLIPPED render at 80, 100 and 120
+package tui
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/uid0/scantty/internal/omsapi"
+)
+
+// kitFormFixture is the widest realistic kit: a long name, a component whose
+// name runs past any affordable column, a note, and a quantity that is not 1.
+func kitFormFixture() *omsapi.Kit {
+	return &omsapi.Kit{
+		Item: omsapi.Item{
+			ID: "kit-1", Name: "Eufy printer maintenance kit (CMYK + cleaning)",
+			SKU: "EIK-4", IsActive: true, ReorderQuantity: 1,
+		},
+		IsKit:          true,
+		ComponentCount: 2,
+		Components: []omsapi.KitComponent{
+			{
+				ID: 7, Component: "itm-c",
+				ComponentName: "Cyan ink cartridge, high yield, for the wide-format printer",
+				ComponentSKU:  "CI-100-XL", Quantity: 1, Notes: "CMYK set — do not split",
+			},
+			{ID: 8, Component: "itm-m", ComponentName: "Magenta ink", ComponentSKU: "MI-100", Quantity: 2},
+		},
+	}
+}
+
+// kitFormSheet is a loaded EDIT-mode item form in whichever kit state is being
+// measured — the state the form reaches once BOTH the item and the kit answer
+// have arrived.
+func kitFormSheet(t *testing.T, kit *omsapi.Kit, width int) *InventoryItemFormScreen {
+	t.Helper()
+	s := NewInventoryItemFormScreen(Deps{}, "kit-1")
+	s.loading = false
+	s.categories = []omsapi.Category{{ID: 1, Name: "Consumables"}}
+	s.locations = []omsapi.Location{{ID: 2, Name: "Print room"}}
+	s.item = &omsapi.Item{ID: "kit-1", Name: "Eufy Ink Kit", SKU: "EIK-4", IsActive: true, ReorderQuantity: 1}
+	if kit != nil {
+		s.item = &kit.Item
+	}
+	s.kit = kit
+	s.hydrate()
+	s.hydrateKit()
+	s.rebuildFields()
+	s.syncFocus()
+	s.snapshotBaseline()
+	s.Update(tea.WindowSizeMsg{Width: width, Height: jdeSweepHeight})
+	return s
+}
+
+// kitFormCursorTo puts the sheet's cursor on a field id, failing if it is not on
+// the sheet at all.
+func kitFormCursorTo(t *testing.T, s *InventoryItemFormScreen, id int) {
+	t.Helper()
+	for i, fid := range s.fields {
+		if fid == id {
+			s.cursor = i
+			s.syncFocus()
+			return
+		}
+	}
+	t.Fatalf("field %d is not on the sheet", id)
+}
+
+func kitFormHasField(s *InventoryItemFormScreen, id int) bool {
+	for _, fid := range s.fields {
+		if fid == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestItemFormKit_OnlyAKitGetsTheComponentsRow is acceptance criterion 4 on this
+// screen: an ordinary item's sheet is untouched. It also covers the third state
+// — the /kits/ question failed — which must behave like an ordinary item rather
+// than offering an editor whose save has nowhere to go.
+func TestItemFormKit_OnlyAKitGetsTheComponentsRow(t *testing.T) {
+	if kitFormHasField(kitFormSheet(t, nil, 120), fKitComponents) {
+		t.Error("an ordinary item's sheet grew a kit-components row")
+	}
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	if !kitFormHasField(s, fKitComponents) {
+		t.Fatal("a kit's sheet has no kit-components row")
+	}
+	if !strings.Contains(s.viewForm(), "Kit components") {
+		t.Errorf("the row is not rendered:\n%s", s.viewForm())
+	}
+}
+
+// TestItemFormKit_TheRowSummarisesTheBillOfMaterials. The summary row is what an
+// operator sees without opening anything, so it has to carry the quantities —
+// "2× Magenta ink" is the fact, "2 components" alone is not.
+func TestItemFormKit_TheRowSummarisesTheBillOfMaterials(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	value, empty := s.kitFieldValue()
+	if empty {
+		t.Fatalf("a kit with two components read as empty: %q", value)
+	}
+	for _, want := range []string{"1×", "2×", "Magenta ink", "2 components"} {
+		if !strings.Contains(value, want) {
+			t.Errorf("summary %q is missing %q", value, want)
+		}
+	}
+}
+
+// TestItemFormKit_TheStockRowSaysAKitCarriesNone. The serializer refuses to save
+// a kit with stock, so the row says so where the operator is standing rather
+// than letting them type a number the save will reject.
+func TestItemFormKit_TheStockRowSaysAKitCarriesNone(t *testing.T) {
+	kitSheet := kitFormSheet(t, kitFormFixture(), 120)
+	if hint := kitSheet.fieldHint(fCurrentStock); !strings.Contains(hint, "no stock") {
+		t.Errorf("a kit's Current stock hint = %q", hint)
+	}
+	plain := kitFormSheet(t, nil, 120)
+	if hint := plain.fieldHint(fCurrentStock); strings.Contains(hint, "no stock") {
+		t.Errorf("an ordinary item's Current stock hint changed: %q", hint)
+	}
+}
+
+// TestItemFormKit_CtrlEOpensTheEditorAndTheBarSaysSo is the bar-honesty half of
+// the JDE contract: the key that works on this row is named on the bar, and the
+// key named on the bar does what it says.
+func TestItemFormKit_CtrlEOpensTheEditorAndTheBarSaysSo(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	kitFormCursorTo(t, s, fKitComponents)
+
+	named := false
+	for _, item := range s.formBar(s.formLines()) {
+		if item.Key == "Ctrl-E" && strings.Contains(item.Label, "component") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("the bar does not name Ctrl-E on the components row: %+v", s.formBar(s.formLines()))
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != itemFormPhaseKit {
+		t.Fatalf("Ctrl-E did not open the components list (phase %d)", s.phase)
+	}
+	out := s.View()
+	for _, want := range []string{"Kit components", "Per kit", "CI-100-XL", "(add a component)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the components list is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestItemFormKit_EditingAComponentChangesItsQuantity walks the whole gesture an
+// operator makes: open the list, open a row, retype the quantity, save the row.
+func TestItemFormKit_EditingAComponentChangesItsQuantity(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	kitFormCursorTo(t, s, fKitComponents)
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
+	s.kitCursor = 1                          // the magenta row, quantity 2
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // its editor
+
+	if s.phase != itemFormPhaseKitRow {
+		t.Fatalf("Ctrl-E on a component did not open its editor (phase %d)", s.phase)
+	}
+	if out := s.View(); !strings.Contains(out, "Magenta ink") || !strings.Contains(out, "Per kit") {
+		t.Errorf("the component editor does not name what it edits:\n%s", out)
+	}
+
+	s.kitRowQty.SetValue("")
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("5")})
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.phase != itemFormPhaseKit {
+		t.Fatalf("Enter did not return to the list (phase %d)", s.phase)
+	}
+	if s.kitRows[1].quantity != 5 {
+		t.Errorf("quantity = %d, want 5", s.kitRows[1].quantity)
+	}
+	// And the sheet now knows it has unsaved edits, which is what stops the
+	// suppliers door walking off with them.
+	if !s.dirty() {
+		t.Error("editing the bill of materials did not make the sheet dirty")
+	}
+}
+
+// TestItemFormKit_AQuantityBelowOneIsRefusedBesideTheRow. The serializer's own
+// floor — a component quantity of zero would credit nothing on receipt — checked
+// where the operator can see the row it is about, not at the end of a save.
+func TestItemFormKit_AQuantityBelowOneIsRefusedBesideTheRow(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	kitFormCursorTo(t, s, fKitComponents)
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+
+	s.kitRowQty.SetValue("0")
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if s.phase != itemFormPhaseKitRow {
+		t.Fatal("a zero quantity was accepted")
+	}
+	if !strings.Contains(s.View(), "at least 1") {
+		t.Errorf("no reason was given:\n%s", s.View())
+	}
+	if s.kitRows[0].quantity != 1 {
+		t.Errorf("the row was mutated anyway: %d", s.kitRows[0].quantity)
+	}
+}
+
+// TestItemFormKit_RemovingAComponentDropsIt. Removal lives on the component's
+// own editor, which is the only place the operator can see what they are about
+// to drop — the reduced key scheme has no letter left to hide a delete behind.
+func TestItemFormKit_RemovingAComponentDropsIt(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	kitFormCursorTo(t, s, fKitComponents)
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+
+	s.kitRowFocus = kitRowFieldRemove
+	s.syncKitRowFocus()
+	named := false
+	for _, item := range []actionBarItem{{"Ctrl-E", "Remove"}} {
+		if strings.Contains(s.View(), item.Label) {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("the remove row does not name its key:\n%s", s.View())
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+
+	if len(s.kitRows) != 1 || s.kitRows[0].component != "itm-m" {
+		t.Fatalf("remove left %+v", s.kitRows)
+	}
+	if s.phase != itemFormPhaseKit {
+		t.Errorf("remove did not return to the list (phase %d)", s.phase)
+	}
+}
+
+// TestItemFormKit_AddingPicksAnItemAndLandsOnItsQuantity. Adding is a ROW you
+// navigate to, and the picker's commit drops the operator on the quantity —
+// which is the number the row exists for and the one "1" is only a guess at.
+func TestItemFormKit_AddingPicksAnItemAndLandsOnItsQuantity(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	s.kitItems = []omsapi.Item{
+		{ID: "itm-y", Name: "Yellow ink", SKU: "YI-100", Stock: 9},
+		{ID: "itm-m", Name: "Magenta ink", SKU: "MI-100"},            // already listed
+		{ID: "kit-1", Name: "Eufy printer maintenance kit"},          // the kit itself
+		{ID: "itm-s", Name: "Serialized widget", IsSerialized: true}, // cannot be a component
+	}
+	kitFormCursorTo(t, s, fKitComponents)
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
+	s.kitCursor = s.kitAddRow()
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // picker
+
+	if s.phase != itemFormPhaseKitPick {
+		t.Fatalf("the add row did not open a picker (phase %d)", s.phase)
+	}
+	// A component already on the list, and the kit itself, are not choices — the
+	// serializer rejects both, so they are not offered at all.
+	for _, opt := range s.kitPickOptions {
+		if opt.item.ID == "itm-m" || opt.item.ID == "kit-1" {
+			t.Errorf("the picker offered %q, which cannot be added", opt.item.Name)
+		}
+	}
+	// A serialized item IS offered, dimmed, with the reason — "why can't I add
+	// this?" is a question the screen has to answer.
+	var serialized *kitPickOption
+	for i := range s.kitPickOptions {
+		if s.kitPickOptions[i].item.ID == "itm-s" {
+			serialized = &s.kitPickOptions[i]
+		}
+	}
+	if serialized == nil || serialized.why == "" {
+		t.Fatalf("the serialized item is not shown as unpickable: %+v", s.kitPickOptions)
+	}
+
+	// Picking it does not commit, and says why.
+	for i, opt := range s.kitPickOptions {
+		if opt.item.ID == "itm-s" {
+			s.kitPickCursor = i
+		}
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if len(s.kitRows) != 2 {
+		t.Fatalf("an illegal component was added: %+v", s.kitRows)
+	}
+	if !strings.Contains(s.View(), "cannot be a kit component") {
+		t.Errorf("no reason was given for the refusal:\n%s", s.View())
+	}
+
+	// Picking a legal one adds it at quantity 1 and opens its editor.
+	for i, opt := range s.kitPickOptions {
+		if opt.item.ID == "itm-y" {
+			s.kitPickCursor = i
+		}
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if len(s.kitRows) != 3 || s.kitRows[2].component != "itm-y" || s.kitRows[2].quantity != 1 {
+		t.Fatalf("add left %+v", s.kitRows)
+	}
+	if s.phase != itemFormPhaseKitRow {
+		t.Errorf("adding did not land on the new component's quantity (phase %d)", s.phase)
+	}
+}
+
+// TestItemFormKit_AnUntouchedListIsNotSent. The empty list is a validation ERROR
+// upstream, not a no-op, so a save that never opened the editor must omit the
+// key — and one that DID must send exactly what is on screen.
+func TestItemFormKit_AnUntouchedListIsNotSent(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	if got := s.kitComponentsPayload(); got != nil {
+		t.Errorf("an untouched bill of materials would be sent: %+v", *got)
+	}
+	// A non-kit sheet never sends it either, whatever else it does.
+	if got := kitFormSheet(t, nil, 120).kitComponentsPayload(); got != nil {
+		t.Errorf("an ordinary item's save carried components: %+v", *got)
+	}
+
+	s.kitRows[0].quantity = 4
+	got := s.kitComponentsPayload()
+	if got == nil || len(*got) != 2 {
+		t.Fatalf("an edited bill of materials was not sent: %v", got)
+	}
+	if (*got)[0].Component != "itm-c" || (*got)[0].Quantity != 4 || (*got)[0].Notes != "CMYK set — do not split" {
+		t.Errorf("payload row 1 = %+v", (*got)[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The save
+// ---------------------------------------------------------------------------
+
+// kitFormServer records every write so a test can prove which endpoint the save
+// reached — which is the whole question here, since /items/ 404s for a kit.
+type kitFormServer struct {
+	mu     sync.Mutex
+	writes []string
+	bodies []map[string]any
+}
+
+func (f *kitFormServer) handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPatch || r.Method == http.MethodPost {
+			body := map[string]any{}
+			if raw, _ := io.ReadAll(r.Body); len(raw) > 0 {
+				_ = json.Unmarshal(raw, &body)
+			}
+			f.writes = append(f.writes, r.Method+" "+r.URL.Path)
+			f.bodies = append(f.bodies, body)
+			_, _ = w.Write([]byte(`{"id":"kit-1","name":"Eufy Ink Kit","is_kit":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"not found"}`))
+	}
+}
+
+// TestItemFormKit_SavesThroughTheKitsEndpoint. Two independent reasons this must
+// not go to /items/: that queryset excludes kits, so the PATCH is a 404; and
+// `components` is not a field on the item serializer, so the bill of materials
+// would be silently dropped even if it were not.
+func TestItemFormKit_SavesThroughTheKitsEndpoint(t *testing.T) {
+	fake := &kitFormServer{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	s.deps = Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+	s.kitRows[0].quantity = 4
+
+	_, cmd := s.submit()
+	if cmd == nil {
+		t.Fatal("submit produced no command")
+	}
+	if msg, ok := cmd().(itemFormSavedMsg); !ok || msg.err != nil {
+		t.Fatalf("save failed: %+v", msg)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.writes) != 1 || fake.writes[0] != "PATCH /api/inventory/kits/kit-1/" {
+		t.Fatalf("writes = %v, want a single PATCH to /kits/", fake.writes)
+	}
+	body := fake.bodies[0]
+	if body["name"] == nil {
+		t.Errorf("the item fields did not ride along: %v", body)
+	}
+	rows, ok := body["components"].([]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("components = %v", body["components"])
+	}
+	if rows[0].(map[string]any)["quantity"].(float64) != 4 {
+		t.Errorf("the edited quantity did not reach the wire: %v", rows[0])
+	}
+}
+
+// TestItemFormKit_AnOrdinaryItemStillSavesThroughItems. The routing above must
+// not have moved every item onto the kit endpoint.
+func TestItemFormKit_AnOrdinaryItemStillSavesThroughItems(t *testing.T) {
+	fake := &kitFormServer{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	s := kitFormSheet(t, nil, 120)
+	s.deps = Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+	_, cmd := s.submit()
+	if cmd == nil {
+		t.Fatal("submit produced no command")
+	}
+	cmd()
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.writes) != 1 || fake.writes[0] != "PATCH /api/inventory/items/kit-1/" {
+		t.Fatalf("writes = %v, want a single PATCH to /items/", fake.writes)
+	}
+	if _, present := fake.bodies[0]["components"]; present {
+		t.Errorf("an ordinary item's save carried components: %v", fake.bodies[0])
+	}
+}
+
+// TestItemFormKit_TheKitAnswerGatesTheSheet. The sheet must not finish loading —
+// and so must not render a bill-of-materials row it has not got — until the
+// /kits/ question has been answered one way or the other.
+func TestItemFormKit_TheKitAnswerGatesTheSheet(t *testing.T) {
+	s := NewInventoryItemFormScreen(Deps{}, "kit-1")
+	s.Update(itemFormRefLoadedMsg{})
+	s.Update(itemFormItemLoadedMsg{item: &omsapi.Item{ID: "kit-1", Name: "Eufy Ink Kit"}})
+	if !s.loading {
+		t.Fatal("the sheet finished loading before the kit answer arrived")
+	}
+	s.Update(itemFormKitLoadedMsg{kit: kitFormFixture()})
+	if s.loading {
+		t.Fatal("the sheet is still loading after every answer arrived")
+	}
+	if !kitFormHasField(s, fKitComponents) {
+		t.Error("the components row did not appear once the kit answer arrived")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Width
+// ---------------------------------------------------------------------------
+
+// TestItemFormKit_EveryPhaseSurvivesTheClip is acceptance criterion 3 for this
+// screen, asserted on the CLIPPED render: Root hands every screen through
+// clampToBox, which truncates an over-wide row with nothing to show it did.
+//
+// The measurement is deliberately narrowed to the lines this bead OWNS. At 80
+// columns the item sheet already loses content that predates kits entirely —
+// four field rows overrun and so does the action bar on every columnar screen —
+// which is filed as sc-xxpa; what a kit contributes has to fit the floor
+// regardless.
+func TestItemFormKit_EveryPhaseSurvivesTheClip(t *testing.T) {
+	for _, width := range kitTestWidths {
+		budget := screenBodyWidth(width)
+		check := func(label string, lines []string) {
+			for _, line := range lines {
+				if w := lipgloss.Width(line); w > budget {
+					t.Errorf("%s at %d columns: a line is %d wide but the pane is %d — it is clipped: %q",
+						label, width, w, budget, line)
+				}
+			}
+		}
+
+		// The summary row on the sheet.
+		s := kitFormSheet(t, kitFormFixture(), width)
+		kitFormCursorTo(t, s, fKitComponents)
+		fields := s.formFields()
+		labelWidth := jdeLabelWidth(fields)
+		for i, id := range s.fields {
+			if id == fKitComponents {
+				check("the components row", []string{renderJDEField(fields[i], labelWidth)})
+			}
+		}
+
+		// The list.
+		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+		check("the components list", kitFormPhaseLines(t, s))
+
+		// One component's editor.
+		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+		check("the component editor", kitFormPhaseLines(t, s))
+		s.kitRowFocus = kitRowFieldRemove
+		s.syncKitRowFocus()
+		check("the component editor's remove row", kitFormPhaseLines(t, s))
+
+		// The picker's OPTION rows. Its shared header (the always-live filter box
+		// jde_form.go draws for every picker in the app) is 70 columns wide and
+		// overruns the 80-column floor on every picker there has ever been — that
+		// is sc-xxpa, not this bead, and narrowing it here would change every
+		// screen in the app. What this picker CONTRIBUTES has to fit regardless.
+		s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		s.kitCursor = s.kitAddRow()
+		s.kitItems = []omsapi.Item{
+			{ID: "itm-y", Name: "Yellow ink cartridge, high yield, wide-format", SKU: "YI-100-XL", Stock: 9},
+			{ID: "itm-s", Name: "Serialized calibration widget assembly", IsSerialized: true},
+		}
+		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+		_, pickBody := s.kitPickView()
+		check("the component picker", pickBody.text)
+
+		// And an EMPTY kit, whose warning is the longest line either phase draws.
+		empty := kitFormSheet(t, &omsapi.Kit{Item: omsapi.Item{ID: "kit-0", Name: "Empty kit"}, IsKit: true}, width)
+		kitFormCursorTo(t, empty, fKitComponents)
+		empty.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+		check("an empty kit's list", kitFormPhaseLines(t, empty))
+	}
+}
+
+// kitFormPhaseLines is the current phase's render, minus the action bar — which
+// overruns 80 columns on every columnar screen in the app and is filed as
+// sc-xxpa, so measuring it here would only re-report a defect this bead did not
+// introduce and cannot fix from one screen.
+func kitFormPhaseLines(t *testing.T, s *InventoryItemFormScreen) []string {
+	t.Helper()
+	lines := strings.Split(s.View(), "\n")
+	if n := len(lines); n > actionBarRows {
+		lines = lines[:n-actionBarRows]
+	}
+	return lines
+}

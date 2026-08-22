@@ -1664,10 +1664,22 @@ func poLineBlock(lineNum int, li omsapi.PurchaseOrderItem, poSupplier string, fi
 	if fit.flag {
 		flag = poLineFlag(li)
 	}
+	// A kit line is not what its label says it is: it buys one SKU and credits
+	// several other items on receipt, so it is marked where the name is read —
+	// AHEAD of the name, inside the Item cell, which is the part a narrow pane
+	// truncates. The tag rides in the cell rather than in the flag column
+	// because that column is the first one poFitLineGrid sheds, and it is
+	// already spoken for by "[voided]" / "✓ received"; it goes in PLAIN, like
+	// every other cell of this grid, because poGridCell fits by runes and would
+	// cut a style's escape sequence in half.
+	item := li.DisplayLabel()
+	if li.IsKitLine {
+		item = poKitTag + " " + item
+	}
 	out := []string{poDetailGridRow(
 		fit,
 		strconv.Itoa(lineNum),
-		li.DisplayLabel(),
+		item,
 		strconv.Itoa(li.QuantityOrdered),
 		poLineCostCell(li),
 		ship,
@@ -1694,6 +1706,22 @@ func poLineBlock(lineNum int, li omsapi.PurchaseOrderItem, poSupplier string, fi
 	}
 	if li.Notes != "" {
 		out = append(out, poLineContinuation(StyleMuted, li.Notes, bodyWidth))
+	}
+
+	// What this line actually puts on the shelf. Drawn from the ORDERED
+	// quantity here — this screen is a record of the order, not a receipt — so
+	// the lead-in says so rather than leaving the multiplication implied. The
+	// block WRAPS against the pane (poKitCreditBlock) instead of riding the
+	// grid: the trailing components are as important as the leading ones and an
+	// ellipsis eats the last.
+	if li.IsKitLine {
+		lead := "credits on full receipt"
+		if li.QuantityOrdered > 0 {
+			lead = fmt.Sprintf("receiving all %d %s credits",
+				li.QuantityOrdered, plural("kit", li.QuantityOrdered))
+		}
+		out = append(out, poKitCreditBlock(li.KitComponents, lead,
+			poLineGridItemIndent, bodyWidth, li.QuantityOrdered)...)
 	}
 	return out
 }

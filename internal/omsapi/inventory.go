@@ -292,9 +292,24 @@ func (c *Client) ListAllItems(ctx context.Context) ([]Item, error) {
 	return all, nil
 }
 
+// GetItem fetches one item's detail record.
+//
+// ?include_kits=true is NOT optional bookkeeping (op-8n0): InventoryItemViewSet
+// filters kits out of its queryset by default, and that filter runs in
+// get_queryset — so it applies to the DETAIL route as well, and a kit's id
+// under /items/ is a flat 404 without it. Since a kit is reachable here (a
+// scanned kit resolves to an inventory-item target like any other item), a
+// detail screen that could not load one would simply report "not found" for a
+// record that exists. An older backend ignores the unknown param, and for a
+// non-kit id the param changes nothing at all.
+//
+// It does not, however, make the response say whether the item IS a kit —
+// neither item serializer carries `is_kit`. That question is GetKit's; see
+// kits.go.
 func (c *Client) GetItem(ctx context.Context, id string) (*Item, error) {
 	var out Item
-	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/", id), nil, &out); err != nil {
+	q := url.Values{"include_kits": []string{"true"}}
+	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/", id), q, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

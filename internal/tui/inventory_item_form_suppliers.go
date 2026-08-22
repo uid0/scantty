@@ -506,9 +506,10 @@ func (s *InventoryItemFormScreen) formSignature() string {
 		b.WriteString(s.inputs[id].Value())
 		b.WriteByte('\x1f')
 	}
-	fmt.Fprintf(&b, "%t|%t|%t|%t|%t|%t|%d|%d|%s|%s|%d|%d|%s",
+	fmt.Fprintf(&b, "%t|%t|%t|%t|%t|%t|%d|%d|%s|%s|%d|%d|%s|%s",
 		s.useCaseBased, s.reorderAlerts, s.isHazardous, s.isSerialized, s.isActive, s.isRetired,
 		s.shelfPos, s.serialMode, ptr(s.categoryID), ptr(s.locationID),
-		s.countModeIx, packagingRowIndex(s.packRows, s.countLevelKey), chainSignature(s.packRows))
+		s.countModeIx, packagingRowIndex(s.packRows, s.countLevelKey), chainSignature(s.packRows),
+		kitSignature(s.kitRows))
 	return b.String()
 }

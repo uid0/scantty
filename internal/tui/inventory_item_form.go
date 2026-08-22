@@ -59,6 +59,10 @@ const (
 	fUseCaseBasedReorder
 	fMinimumCases
 	fReorderCases
+	// fKitComponents is the kit's bill of materials (op-8n0) — present only when
+	// the edited item IS a kit, which the sheet only learns from a separate
+	// /kits/ fetch (inventory_item_form_kit.go).
+	fKitComponents
 	fBaseUnit
 	fPackChain
 	fCountMode
@@ -93,6 +97,9 @@ const (
 	// list sub-phase, since a rung has two values and a chain has any number of
 	// rungs (the sc-ue4 nested sub-list idiom).
 	kindChain
+	// kindKit is the kit's bill of materials, the same nested sub-list idiom:
+	// a component has a quantity and a note, and a kit has any number of them.
+	kindKit
 )
 
 type itemFormPhase int
@@ -106,6 +113,13 @@ const (
 	// client-side — the chain is saved nested with the item, not per row.
 	itemFormPhaseChain
 	itemFormPhaseChainRow
+	// itemFormPhaseKit lists a kit's components; itemFormPhaseKitRow edits one
+	// component's quantity + notes; itemFormPhaseKitPick chooses the inventory
+	// item a new component points at. All three are client-side — the bill of
+	// materials is saved nested with the kit, not per row.
+	itemFormPhaseKit
+	itemFormPhaseKitRow
+	itemFormPhaseKitPick
 )
 
 type selectOption struct{ value, label string }
@@ -136,6 +150,7 @@ var itemFieldLabel = map[int]string{
 	fUseCaseBasedReorder:  "Case-based reordering",
 	fMinimumCases:         "Minimum cases",
 	fReorderCases:         "Reorder cases",
+	fKitComponents:        "Kit components",
 	fBaseUnit:             "Base unit",
 	fPackChain:            "Packaging chain",
 	fCountMode:            "Count mode",
@@ -198,6 +213,7 @@ type itemFieldBand int
 const (
 	itemBandDetails itemFieldBand = iota
 	itemBandStock
+	itemBandKit
 	itemBandPackaging
 	itemBandPlacement
 	itemBandHazard
@@ -208,6 +224,7 @@ const (
 var itemBandLabel = map[itemFieldBand]string{
 	itemBandDetails:   "Item",
 	itemBandStock:     "Stock & reordering",
+	itemBandKit:       "Kit",
 	itemBandPackaging: "Units & packaging",
 	itemBandPlacement: "Alerts & placement",
 	itemBandHazard:    "Hazardous material",
@@ -219,6 +236,8 @@ func itemFieldBandOf(id int) itemFieldBand {
 	switch id {
 	case fCurrentStock, fMinimumStock, fReorderQuantity, fUseCaseBasedReorder, fMinimumCases, fReorderCases:
 		return itemBandStock
+	case fKitComponents:
+		return itemBandKit
 	case fBaseUnit, fPackChain, fCountMode, fCountLevel:
 		return itemBandPackaging
 	case fReorderAlertsEnabled, fCategory, fLocation, fShelfPosition:
@@ -248,6 +267,8 @@ func fieldKind(id int) itemFieldKind {
 		return kindPicker
 	case fPackChain:
 		return kindChain
+	case fKitComponents:
+		return kindKit
 	}
 	return kindText
 }
@@ -301,6 +322,33 @@ type InventoryItemFormScreen struct {
 	// Picker selections (nil == unset).
 	categoryID *int
 	locationID *int
+
+	// Kit support (op-8n0), all of it in inventory_item_form_kit.go. `kit` is
+	// non-nil ONLY when the /kits/ fetch succeeded, which is the only thing that
+	// makes this a kit — the item serializer carries no `is_kit` — and it is what
+	// puts the fKitComponents row on the sheet at all. kitRows is the editable
+	// bill of materials; savedKitSig is what the server already has, so a save
+	// that never opened the editor omits the key entirely.
+	kit         *omsapi.Kit
+	kitArrived  bool
+	kitRows     []kitComponentRow
+	kitNextKey  int
+	savedKitSig string
+
+	kitCursor     int
+	kitRowEditing int
+	kitRowQty     textinput.Model
+	kitRowNotes   textinput.Model
+	kitRowFocus   int
+	kitRowErr     string
+
+	// The component picker's catalogue, loaded lazily the first time it opens.
+	kitItems        []omsapi.Item
+	kitItemsLoading bool
+	kitItemsErr     string
+	kitPickOptions  []kitPickOption
+	kitPickCursor   int
+	kitPickErr      string
 
 	// Visible-field navigation. The cursor runs past the fields into the
 	// read-only suppliers band (inventory_item_form_suppliers.go), which is what
@@ -361,6 +409,15 @@ type itemFormRefLoadedMsg struct {
 type itemFormItemLoadedMsg struct {
 	item *omsapi.Item
 	err  error
+}
+
+// itemFormKitLoadedMsg answers "is the edited item a kit, and what does it
+// contain?". A NOT-FOUND is a successful answer of "no" and arrives with both
+// fields nil; anything else left the question unanswered, and the sheet must NOT
+// then offer a components row it cannot save (see maybeFinalizeLoad).
+type itemFormKitLoadedMsg struct {
+	kit *omsapi.Kit
+	err error
 }
 
 // itemFormSavedMsg is the result of a save. packErr is the packaging half
@@ -429,6 +486,19 @@ func NewInventoryItemFormScreen(deps Deps, itemID string) *InventoryItemFormScre
 	s.chainRowUnits.Placeholder = "1000"
 	s.chainRowUnits.CharLimit = 9
 
+	// Kit components: an item that is not a kit keeps an empty list, whose
+	// signature matches savedKitSig, so a save sends no `components` key.
+	s.savedKitSig = kitSignature(nil)
+	s.kitRowEditing = -1
+	s.kitRowQty = textinput.New()
+	s.kitRowQty.Prompt = ""
+	s.kitRowQty.Placeholder = "1"
+	s.kitRowQty.CharLimit = 6
+	s.kitRowNotes = textinput.New()
+	s.kitRowNotes.Prompt = ""
+	s.kitRowNotes.Placeholder = "optional"
+	s.kitRowNotes.CharLimit = 200
+
 	s.rebuildFields()
 	s.syncFocus()
 	return s
@@ -490,7 +560,7 @@ func (s *InventoryItemFormScreen) WantsRawInput() bool { return true }
 func (s *InventoryItemFormScreen) Init() tea.Cmd {
 	cmds := []tea.Cmd{s.loadRefData(), textinput.Blink}
 	if s.edit {
-		cmds = append(cmds, s.loadItem())
+		cmds = append(cmds, s.loadItem(), s.loadKit())
 	}
 	return tea.Batch(cmds...)
 }
@@ -532,6 +602,23 @@ func (s *InventoryItemFormScreen) loadItem() tea.Cmd {
 	}
 }
 
+// loadKit asks whether the edited id is a kit, and if so what it contains
+// (op-8n0). It has to be a second request: the kit fields live only on the
+// /kits/ route, and that route's queryset is filtered to kits — so its 404 is
+// the answer "ordinary item" rather than a failure (omsapi.IsNotKit).
+func (s *InventoryItemFormScreen) loadKit() tea.Cmd {
+	deps := s.deps
+	ctx := s.ctx()
+	id := s.itemID
+	return func() tea.Msg {
+		kit, err := deps.OMS.GetKit(ctx, id)
+		if omsapi.IsNotKit(err) {
+			return itemFormKitLoadedMsg{}
+		}
+		return itemFormKitLoadedMsg{kit: kit, err: err}
+	}
+}
+
 func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -547,6 +634,29 @@ func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.locations = m.locations
 		}
 		return s, s.maybeFinalizeLoad()
+
+	case itemFormKitLoadedMsg:
+		s.kitArrived = true
+		// A failure here is deliberately NOT a loadErr: the item itself is
+		// perfectly editable, and blocking the whole sheet because one extra
+		// question went unanswered would be worse than the ordinary-item sheet
+		// this falls back to. What it must not do is offer a kit affordance —
+		// which it cannot, since only a non-nil kit does that.
+		if m.err == nil {
+			s.kit = m.kit
+		}
+		return s, s.maybeFinalizeLoad()
+
+	case itemFormKitItemsMsg:
+		s.kitItemsLoading = false
+		if m.err != nil {
+			s.kitItemsErr = m.err.Error()
+		} else {
+			s.kitItemsErr = ""
+			s.kitItems = m.items
+		}
+		s.applyKitPickFilter()
+		return s, nil
 
 	case itemFormItemLoadedMsg:
 		s.itemArrived = true
@@ -617,15 +727,32 @@ func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s.updateChainPhase(m)
 		case itemFormPhaseChainRow:
 			return s.updateChainRowPhase(m)
+		case itemFormPhaseKit:
+			return s.updateKitPhase(m)
+		case itemFormPhaseKitRow:
+			return s.updateKitRowPhase(m)
+		case itemFormPhaseKitPick:
+			return s.updateKitPickPhase(m)
 		default:
 			return s.updateFormPhase(m)
 		}
 	}
 
 	// Non-key messages (cursor blink) go to whichever input owns the caret.
-	if s.phase == itemFormPhaseCategoryPick || s.phase == itemFormPhaseLocationPick {
+	if s.phase == itemFormPhaseCategoryPick || s.phase == itemFormPhaseLocationPick ||
+		s.phase == itemFormPhaseKitPick {
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(msg)
+		return s, cmd
+	}
+	if s.phase == itemFormPhaseKitRow {
+		var cmd tea.Cmd
+		switch s.kitRowFocus {
+		case kitRowFieldQty:
+			s.kitRowQty, cmd = s.kitRowQty.Update(msg)
+		case kitRowFieldNotes:
+			s.kitRowNotes, cmd = s.kitRowNotes.Update(msg)
+		}
 		return s, cmd
 	}
 	if s.phase == itemFormPhaseChainRow {
@@ -653,12 +780,13 @@ func (s *InventoryItemFormScreen) maybeFinalizeLoad() tea.Cmd {
 	if !s.refArrived {
 		return nil
 	}
-	if s.edit && !s.itemArrived {
+	if s.edit && (!s.itemArrived || !s.kitArrived) {
 		return nil
 	}
 	s.loading = false
 	if s.loadErr == "" && s.edit && s.item != nil {
 		s.hydrate()
+		s.hydrateKit()
 	}
 	s.rebuildFields()
 	s.syncFocus()
@@ -776,6 +904,11 @@ func (s *InventoryItemFormScreen) rebuildFields() {
 	// count mode are always offered — that IS the opt-in — while the counting
 	// level only exists for the two pack-counting modes, exactly as the web
 	// renders its select conditionally.
+	// The bill of materials sits with the stock it explains, and exists only for
+	// a kit: an ordinary item's sheet is exactly what it was before kits.
+	if s.isKit() {
+		f = append(f, fKitComponents)
+	}
 	f = append(f, fBaseUnit, fPackChain, fCountMode)
 	if countModeOptions[s.countModeIx].value != omsapi.CountModeEach {
 		f = append(f, fCountLevel)
@@ -919,6 +1052,9 @@ func (s *InventoryItemFormScreen) openFocusedRow() tea.Cmd {
 		return textinput.Blink
 	case kindChain:
 		s.openChain()
+		return nil
+	case kindKit:
+		s.openKitList()
 		return nil
 	}
 	return nil
@@ -1075,6 +1211,12 @@ func (s *InventoryItemFormScreen) fieldUnit(id int) string {
 // fieldHint is itemFieldHint plus the unit notes that depend on the counting
 // mode.
 func (s *InventoryItemFormScreen) fieldHint(id int) string {
+	// A kit's stock is zero by construction — the serializer refuses to save a
+	// kit carrying any — so the row says so where the operator is standing rather
+	// than letting them type a number the save will reject (op-8n0).
+	if id == fCurrentStock && s.isKit() {
+		return "a kit carries no stock of its own"
+	}
 	if unit := s.fieldUnit(id); unit != "" {
 		return unit
 	}
@@ -1255,6 +1397,8 @@ func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
 	edit := s.edit
 	id := s.itemID
 	plan := s.packagingPlan()
+	isKit := s.isKit()
+	components := s.kitComponentsPayload()
 	return s, func() tea.Msg {
 		// Clear the counting mode BEFORE the item write only when the item write
 		// would otherwise be rejected — the backend refuses to save a chain that
@@ -1271,9 +1415,21 @@ func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
 
 		var item *omsapi.Item
 		var e error
-		if edit {
+		switch {
+		case isKit:
+			// A kit is saved through /kits/, never /items/, and for two separate
+			// reasons: the item viewset filters kits out of its queryset, so the
+			// ordinary PATCH is a flat 404 for a kit id, and `components` is not a
+			// field on the item serializer at all — the bill of materials has no
+			// other write path (op-8n0).
+			var kit *omsapi.Kit
+			kit, e = deps.OMS.UpdateKit(ctx, id, omsapi.KitWrite{ItemWrite: body, Components: components})
+			if kit != nil {
+				item = &kit.Item
+			}
+		case edit:
 			item, e = deps.OMS.UpdateInventoryItem(ctx, id, body)
-		} else {
+		default:
 			item, e = deps.OMS.CreateInventoryItem(ctx, body)
 		}
 		if e != nil {
@@ -1615,6 +1771,12 @@ func (s *InventoryItemFormScreen) View() string {
 		return s.viewChain()
 	case itemFormPhaseChainRow:
 		return s.viewChainRow()
+	case itemFormPhaseKit:
+		return s.viewKitList()
+	case itemFormPhaseKitRow:
+		return s.viewKitRow()
+	case itemFormPhaseKitPick:
+		return s.viewKitPick()
 	}
 	return s.viewForm()
 }
@@ -1661,6 +1823,15 @@ func (s *InventoryItemFormScreen) formFields() []jdeField {
 			if f.Focused {
 				f.Hint = "Ctrl-E edits the levels"
 			}
+		case kindKit:
+			value, dim := s.kitFieldValue()
+			f.Kind, f.Value, f.Dim = jdeValue, value, dim
+			if f.Focused {
+				f.Hint = "Ctrl-E edits the components"
+			}
+			// Component names are long and this row is CLIPPED, not wrapped, so
+			// the summary (and, when it must, the hint) is fitted to the pane.
+			f = s.kitRowField(f)
 		default:
 			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
 		}
@@ -1724,6 +1895,8 @@ func (s *InventoryItemFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		case kindChain:
 			items = append(items, actionBarItem{"Ctrl-E", "Edit levels"})
+		case kindKit:
+			items = append(items, actionBarItem{"Ctrl-E", "Edit components"})
 		}
 	}
 	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
