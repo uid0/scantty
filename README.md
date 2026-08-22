@@ -24,7 +24,7 @@ export SCANTTY_FORGEKEY_URL=https://forgekey.example.org
 ./scantty
 ```
 
-The first run will fail fast with a clear message if either URL is missing. The cache database is created on demand under `$XDG_CACHE_HOME/scantty/cache.db` (override with `SCANTTY_CACHE_PATH`).
+The first run will fail fast with a clear message if either URL is missing. The cache database is created on demand under your OS user cache directory — `~/Library/Caches/scantty/cache.db` on macOS, `${XDG_CACHE_HOME:-~/.cache}/scantty/cache.db` on Linux (override with `SCANTTY_CACHE_PATH`).
 
 ## Configuration (environment variables)
 
@@ -37,7 +37,7 @@ The first run will fail fast with a clear message if either URL is missing. The 
 | `SCANTTY_FORGEKEY_CLIENT_CERT` | Path to mTLS client cert (post-trust-refactor) | unset |
 | `SCANTTY_FORGEKEY_CLIENT_KEY` | Path to mTLS client key | unset |
 | `SCANTTY_FORGEKEY_CA_CERT` | Path to ForgeKey CA cert for verification | unset |
-| `SCANTTY_CACHE_PATH` | SQLite cache file location | `$XDG_CACHE_HOME/scantty/cache.db` |
+| `SCANTTY_CACHE_PATH` | SQLite cache file location | `<user cache dir>/scantty/cache.db` — `~/Library/Caches` on macOS, `${XDG_CACHE_HOME:-~/.cache}` on Linux |
 | `SCANTTY_SCANNER_SOURCE` | `stdin` (keyboard-emulation scanners) or a serial device path | `stdin` |
 | `SENTRY_DSN` | Override the baked-in Sentry DSN (e.g. point at a personal sandbox). The default reports panics + `run()` errors to the `scantty` project on the self-hosted Sentry — public DSN, safe to commit. | baked-in |
 | `SENTRY_DISABLED` | Set to `1` (or `true`) to disable Sentry entirely. | unset |
