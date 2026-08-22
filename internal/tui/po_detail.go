@@ -765,7 +765,15 @@ func (s *PurchaseOrderDetailScreen) padPageStep() int {
 func (s *PurchaseOrderDetailScreen) orderPadLines() *jdeLines {
 	l := &jdeLines{}
 	if s.orderPadExport == nil || strings.TrimSpace(s.orderPadExport.Text) == "" {
-		l.Add(jdeIndent + StyleMuted.Render("No lines have a supplier part number — nothing to order."))
+		// Through jdeCaveatLines and not hand-rolled: the sentence is 56 columns
+		// against the 51 an 80-column pane gives, so written straight it was cut
+		// by clampToBox — and because that cut drops runes off the END of a
+		// STYLED string it took StyleMuted's closing SGR reset with them and
+		// left the terminal dimmed for everything drawn after. A one-line styled
+		// string that only clampToBox ever bounds is unsafe by construction.
+		for _, line := range jdeCaveatLines("No lines have a supplier part number — nothing to order.", s.bodyWidth()) {
+			l.Add(line)
+		}
 		return l
 	}
 	// Both columns are measured from the pad's own values. 28 and 6 are FLOORS,
@@ -856,7 +864,7 @@ func (s *PurchaseOrderDetailScreen) View() string {
 		return StyleMuted.Render("Loading purchase order…")
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry · esc back")
+		return StyleStatusError.Render("Error: ") + fitCellIf(s.loadErr, s.bodyWidth()-poErrPrefixW) + "\n\n" + StyleMuted.Render("press r to retry · esc back")
 	}
 	if s.po == nil {
 		return StyleMuted.Render("Purchase order not found.")
@@ -1057,6 +1065,41 @@ func (s *PurchaseOrderDetailScreen) addBand(l *jdeLines, labelWidth int, heading
 // or the payment schedule's "$1234.56 due 2026-08-14 · Net 30 from order date"
 // all overrun it. A folded value is legible at every width; a cut one is
 // legible at none.
+// poErrPrefixW is the width of the "Error: " a load failure is drawn behind on
+// the two screens that render one as a body line rather than on the status row.
+// Those lines are single Add()s, so like the status row they cannot fold and
+// carry the same dropped-SGR-reset hazard if clampToBox is left to cut them.
+const poErrPrefixW = 7
+
+// poStatusError bounds an error message before it reaches the status row.
+//
+// That row is ONE row of the frame — jdeStatusLine draws "✗ " in front of the
+// message and frameWrapped appends the result verbatim — so it cannot fold, and
+// the messages that reach it are routinely wider than the pane: "cannot read
+// file: open <path>: no such file or directory" is around 96 columns for an
+// ordinary scan path, and an OMS dial error is longer again. Left unbounded it
+// is cut by clampToBox, which drops runes off the END of a styled string and so
+// takes StyleStatusError's closing SGR reset with them, leaving the terminal red
+// for everything drawn afterwards.
+//
+// Trimming the row loses nothing: every path that sets one of these errors also
+// raises the same text as a Status() toast, which is where the full message
+// lives. fitCell rather than a bare cut, so the row says it was shortened.
+//
+// jdeStatusLine belongs to the shared layer, which is frozen while the
+// concurrent conversion is in review, so the bound goes on what the screen hands
+// it rather than on the helper.
+func poStatusError(msg string, bodyWidth int) string {
+	if msg == "" || bodyWidth <= 0 {
+		return msg
+	}
+	// "✗ " is the two display columns jdeStatusLine puts in front.
+	if avail := bodyWidth - 2; avail > 0 {
+		return fitCell(msg, avail)
+	}
+	return msg
+}
+
 // poMinFoldWidth is the narrowest line jdeWrapNote can fold onto without losing
 // content invisibly: at two columns it can still spend one on the ellipsis that
 // marks an over-long word, and at one it cannot, so it drops the word instead.
@@ -1647,7 +1690,7 @@ func poAttachmentLines(att omsapi.PurchaseOrderAttachment, bodyWidth int) []stri
 		name = att.File
 	}
 	prefix := jdeIndent + "· "
-	out := []string{prefix + fitCellIf(name, bodyWidth-len(prefix))}
+	out := []string{prefix + fitCellIf(name, bodyWidth-lipgloss.Width(prefix))}
 
 	// The description and the uploader ride UNDER the name as wrapped readings
 	// rather than after it on the same row. Glued on, the description was the
@@ -1837,7 +1880,7 @@ func (s *PurchaseOrderDetailScreen) viewShip() string {
 	body.Add("")
 	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.shipFocus,
-		jdeStatusLine(s.shipPending, "Submitting…", s.shipErr),
+		jdeStatusLine(s.shipPending, "Submitting…", poStatusError(s.shipErr, s.bodyWidth())),
 		[]actionBarItem{{"Enter", "Mark shipped"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
 }
 
@@ -1864,7 +1907,7 @@ func (s *PurchaseOrderDetailScreen) viewVoid() string {
 	body.Add("")
 	body.AddFittedFields([]jdeField{field}, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, 0,
-		jdeStatusLine(s.voidPending, "Voiding…", s.voidErr),
+		jdeStatusLine(s.voidPending, "Voiding…", poStatusError(s.voidErr, s.bodyWidth())),
 		[]actionBarItem{{"Enter", "Void order"}, {"Esc", "Cancel"}})
 }
 
@@ -1913,7 +1956,7 @@ func (s *PurchaseOrderDetailScreen) viewDeliver() string {
 	body.Add("")
 	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.deliverFocus,
-		jdeStatusLine(s.deliverPending, "Submitting…", s.deliverErr),
+		jdeStatusLine(s.deliverPending, "Submitting…", poStatusError(s.deliverErr, s.bodyWidth())),
 		[]actionBarItem{{"Enter", "Mark delivered"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
 }
 
@@ -1978,7 +2021,7 @@ func (s *PurchaseOrderDetailScreen) viewOrderPad() string {
 		// row's "✗ " in front of it.
 		body := &jdeLines{}
 		return s.frameWrapped([]string{StyleJDEHeading.Render("Order pad"), ""}, body, 0,
-			jdeStatusLine(false, "", s.orderPadErr),
+			jdeStatusLine(false, "", poStatusError(s.orderPadErr, s.bodyWidth())),
 			[]actionBarItem{{"Esc", "Close"}})
 	}
 

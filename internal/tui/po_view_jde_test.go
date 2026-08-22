@@ -604,6 +604,125 @@ func poRowWhileScrolling(s *PurchaseOrderDetailScreen, r Root, anchor string) st
 	return ""
 }
 
+// TestPOView_OrderPadEmptyStateSurvivesTheClip: the pad's empty state is a
+// 56-column sentence, and the pane at 80 is 51. Written as one styled line it
+// was cut by clampToBox, which takes the closing SGR reset with the text it
+// drops — so the row lost its tail AND left the terminal dimmed. No surface in
+// the width sweep rendered this branch, because every order-pad fixture carried
+// a non-empty pad.
+func TestPOView_OrderPadEmptyStateSurvivesTheClip(t *testing.T) {
+	for _, width := range poViewWidths {
+		t.Run(widthName(width), func(t *testing.T) {
+			s, r := poDetailAt(t, width)
+			s.orderPad = true
+			// What ExportOrderPad returns for a PO whose lines carry no supplier
+			// part number: a real export, with nothing in it.
+			s.orderPadExport = &omsapi.OrderPadExport{
+				Supplier: "Acme Fasteners & Industrial Supply Co.", LineCount: 0,
+				MissingSku: []string{"Gadget"},
+			}
+			out := r.View()
+			// The tail is what the pane used to eat, so it is the half that
+			// proves the note now folds instead of being cut.
+			for _, want := range []string{"No lines have a supplier part number", "order."} {
+				if !strings.Contains(out, want) {
+					t.Errorf("%q was clipped out of the %d-column empty pad:\n%s", want, width, out)
+				}
+			}
+		})
+	}
+}
+
+// TestPOView_StatusRowErrorIsBounded: the status row is one row of the frame and
+// cannot fold, and the errors that reach it are routinely wider than the pane —
+// a missing file's os error runs to about 96 columns. Left unbounded it was cut
+// by clampToBox, with the same dropped-SGR-reset hazard as the pad's empty
+// state. The full text is not lost: the same message goes out as a toast.
+func TestPOView_StatusRowErrorIsBounded(t *testing.T) {
+	for _, width := range poViewWidths {
+		t.Run(widthName(width), func(t *testing.T) {
+			s, r := poAttachAt(t, width)
+			s.openUpload()
+			// A path that cannot exist: submitUpload's os.Stat fails and puts
+			// "cannot read file: open …: no such file or directory" on the row.
+			s.Update(tea.KeyMsg{Type: tea.KeyRunes,
+				Runes: []rune("/home/operator/scans/2026-08/incoming/definitely-not-here.pdf")})
+			s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+			row := poClippedRow(t, r.View(), "cannot read file")
+			if !strings.Contains(row, "…") {
+				t.Errorf("the %d-column status row was cut with nothing to say so: %q", width, row)
+			}
+		})
+	}
+}
+
+// TestPOView_AttachmentPagingActsOnlyWhenTheBarNamesIt: the rule the whole key
+// scheme rests on — a key the bar does not name does nothing. The bar names
+// PgUp/PgDn only when the grid is taller than the pane, but the handler paged
+// the highlight regardless, so on a tall terminal PgDn jumped the cursor while
+// nothing on screen said the key existed.
+func TestPOView_AttachmentPagingActsOnlyWhenTheBarNamesIt(t *testing.T) {
+	t.Run("grid fits the pane", func(t *testing.T) {
+		s, _ := poAttachAt(t, 100)
+		s.attachments = poManyAttachments(3)
+		if barHas(s.listBar(), "PgUp/PgDn", "Page") {
+			t.Fatalf("three attachments in a %d-row terminal should not need paging", poViewHeight)
+		}
+		s.cursor = 0
+		s.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		if s.cursor != 0 {
+			t.Errorf("PgDn moved the highlight to %d while the bar does not name the key", s.cursor)
+		}
+	})
+
+	t.Run("grid overflows the pane", func(t *testing.T) {
+		s, _ := poAttachAt(t, 100)
+		s.attachments = poManyAttachments(40)
+		if !barHas(s.listBar(), "PgUp/PgDn", "Page") {
+			t.Fatalf("forty attachments overflow the pane, so the bar has to name paging")
+		}
+		s.cursor = 0
+		s.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		if s.cursor == 0 {
+			t.Error("PgDn should page the highlight when the bar names the key")
+		}
+	})
+}
+
+// poManyAttachments builds n distinguishable attachments.
+func poManyAttachments(n int) []omsapi.PurchaseOrderAttachment {
+	out := make([]omsapi.PurchaseOrderAttachment, n)
+	for i := range out {
+		out[i] = omsapi.PurchaseOrderAttachment{
+			ID: i + 1, FileName: fmt.Sprintf("scan-%03d.pdf", i+1),
+			UploadedAt: time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC), UploadedByName: "alice",
+		}
+	}
+	return out
+}
+
+// TestPOView_AttachmentNameUsesEveryColumnThePaneHas: the name cell was budgeted
+// with len() over a prefix containing "·" — five bytes, four columns — so a name
+// that exactly filled the pane was ellipsised with a column standing empty
+// beside it.
+func TestPOView_AttachmentNameUsesEveryColumnThePaneHas(t *testing.T) {
+	for _, width := range poViewWidths {
+		t.Run(widthName(width), func(t *testing.T) {
+			// Exactly the columns the row has left once "  · " is in front of it.
+			name := strings.Repeat("a", screenBodyWidth(width)-4) + ".pdf"
+			name = name[len(name)-(screenBodyWidth(width)-4):]
+
+			s, r := poDetailAt(t, width)
+			s.po.Attachments = []omsapi.PurchaseOrderAttachment{{ID: 1, FileName: name}}
+			if !poSeenWhileScrolling(s, r, name) {
+				t.Errorf("a name that exactly fills the %d-column pane was shortened anyway:\n%s",
+					width, r.View())
+			}
+		})
+	}
+}
+
 // TestPOView_NarrowPaneNeverShowsAFragmentOfAValue: a reading is either whole,
 // or visibly cut. It is never quietly replaced by a piece of itself.
 //
@@ -862,6 +981,26 @@ func poViewSurfaces(t *testing.T, width int) []poViewSurface {
 		LineCount: 1,
 	}
 	out = append(out, poViewSurface{"order pad, long part #", longPad.View, longPad.orderPadBar(), width})
+
+	// The pad with nothing on it. Its own sentence is the widest line the
+	// overlay draws, and no other pad fixture renders this branch.
+	emptyPad, _ := poDetailAt(t, width)
+	emptyPad.orderPad = true
+	emptyPad.orderPadExport = &omsapi.OrderPadExport{
+		Supplier: "Acme Fasteners & Industrial Supply Co.", LineCount: 0,
+		MissingSku: []string{"Gadget", "Bracket"},
+	}
+	out = append(out, poViewSurface{"order pad, nothing to order", emptyPad.View, emptyPad.orderPadBar(), width})
+
+	// The upload sheet carrying an error wider than the pane: the status row is
+	// the one row of the frame that cannot fold.
+	failed, _ := poAttachAt(t, width)
+	failed.openUpload()
+	failed.Update(tea.KeyMsg{Type: tea.KeyRunes,
+		Runes: []rune("/home/operator/scans/2026-08/incoming/definitely-not-here.pdf")})
+	failed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	out = append(out, poViewSurface{"upload sheet, error row", failed.View,
+		[]actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}, width})
 
 	list, _ := poAttachAt(t, width)
 	out = append(out, poViewSurface{"attachment grid", list.View, list.listBar(), width})

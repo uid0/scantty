@@ -218,6 +218,22 @@ func (s *PurchaseOrderAttachmentsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	return s, nil
 }
 
+// listNames reports whether the grid's bar currently names this key.
+//
+// The handler ASKS THE BAR rather than re-deriving the condition beside it,
+// which is what makes "a key the bar does not name does nothing" true by
+// construction instead of by two copies of an expression staying in step. They
+// had already drifted: the bar names PgUp/PgDn only when the grid is taller than
+// the pane, while the handler paged the highlight whatever the bar said.
+func (s *PurchaseOrderAttachmentsScreen) listNames(key string) bool {
+	for _, it := range s.listBar() {
+		if it.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *PurchaseOrderAttachmentsScreen) updateList(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
 	case "esc":
@@ -231,9 +247,13 @@ func (s *PurchaseOrderAttachmentsScreen) updateList(m tea.KeyMsg) (Screen, tea.C
 			s.cursor--
 		}
 	case "pgdown":
-		s.cursor = jdePageCursor(s.cursor, len(s.attachments), s.pageStep(), +1)
+		if s.listNames("PgUp/PgDn") {
+			s.cursor = jdePageCursor(s.cursor, len(s.attachments), s.pageStep(), +1)
+		}
 	case "pgup":
-		s.cursor = jdePageCursor(s.cursor, len(s.attachments), s.pageStep(), -1)
+		if s.listNames("PgUp/PgDn") {
+			s.cursor = jdePageCursor(s.cursor, len(s.attachments), s.pageStep(), -1)
+		}
 	case "r":
 		s.loading = true
 		s.loadErr = ""
@@ -423,7 +443,7 @@ func poAttachGridRow(num, name, uploaded string, nameW int) string {
 func (s *PurchaseOrderAttachmentsScreen) listLines() (*jdeLines, int) {
 	l := &jdeLines{}
 	if s.loadErr != "" {
-		l.Add(StyleStatusError.Render("Error: ") + s.loadErr)
+		l.Add(StyleStatusError.Render("Error: ") + fitCellIf(s.loadErr, s.bodyWidth()-poErrPrefixW))
 		l.Add("")
 	}
 	l.Add(StyleJDEHeading.Render(fmt.Sprintf("Attachments (%d)", len(s.attachments))))
@@ -549,6 +569,6 @@ func (s *PurchaseOrderAttachmentsScreen) viewUpload() string {
 	body.Add("")
 	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.uploadFocus,
-		jdeStatusLine(s.uploading, "Uploading…", s.errMsg),
+		jdeStatusLine(s.uploading, "Uploading…", poStatusError(s.errMsg, s.bodyWidth())),
 		[]actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
 }
