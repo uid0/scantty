@@ -77,26 +77,36 @@ type InventoryDetailScreen struct {
 	// Kit support (op-8n0). `kit` is non-nil ONLY when the /kits/ fetch
 	// succeeded, which is the only thing that makes this item a kit — the item
 	// serializer carries no `is_kit` field, so a 404 from that endpoint IS the
-	// answer "ordinary item" (omsapi.IsNotKit). kitErr therefore holds only the
-	// errors that left the question UNANSWERED; a not-found is not one of them.
+	// answer "ordinary item" (omsapi.IsNotKit).
 	//
-	// kitLoading says a /kits/ fetch is OUTSTANDING, and it is read by
-	// kitRuledOut — which is the whole reason it exists, so do not prune it
-	// again as dead state.
+	// kitAnswered says the question HAS AN ANSWER, and it is what kitRuledOut
+	// reads — the whole reason it exists, so do not prune it as dead state.
+	// It has to exist because `kit == nil` says two completely different things
+	// this screen otherwise cannot tell apart: "answered: ordinary item" (the
+	// 404 IS the answer) and "nothing has come back yet". A guard written
+	// against `kit` alone would hide every kit-dependent affordance from every
+	// ordinary item FOREVER — far worse than the race it set out to close.
 	//
-	// It has to exist because `kit == nil && kitErr == ""` says two completely
-	// different things that this screen otherwise cannot tell apart: "answered:
-	// ordinary item" (the 404 IS the answer) and "the fetch has not come back
-	// yet". A guard written against those two fields alone would hide every
-	// kit-dependent affordance from every ordinary item FOREVER — far worse than the race it set out to close
-	// — so the third state is tracked explicitly rather than inferred, the same
-	// way usedByLoading and purchasesLoading do below.
+	// It is set once and NEVER unset, which is the rule rather than an
+	// optimisation: an answer already in hand stays in hand through a refresh,
+	// whether that refresh is still running or came back a failure. A refresh
+	// failing means the refresh failed, not that the record stopped being what
+	// it was — the same reason inventoryMetricsLoadedMsg keeps its last good
+	// value below, and the same for a kit (which keeps withholding what a kit
+	// withholds) as for an ordinary item (which keeps OFFERING count, use and
+	// pack). The mirror direction is the one that is easy to miss.
+	//
+	// kitErr therefore holds only the failure that left the question with NO
+	// answer at all — not a not-found, which is an answer, and not a failed
+	// re-ask, which cannot take one away. That is what keeps renderKitErrLine
+	// from saying the screen does not know whether this is a kit directly under
+	// a rendered bill of materials.
 	//
 	// suppliedByKits is the opposite direction — the kits that contain this item
 	// — and is empty both for an item nothing bundles and for a kit itself.
 	kit            *omsapi.Kit
 	kitErr         string
-	kitLoading     bool
+	kitAnswered    bool
 	suppliedByKits []omsapi.KitSummary
 
 	// "Assets that use this item" (op-qdfr): the assets that list this item as
@@ -364,10 +374,10 @@ func (s *InventoryDetailScreen) loadSuppliedByKitsCmd() tea.Cmd {
 func (s *InventoryDetailScreen) Init() tea.Cmd {
 	s.usedByLoading = true
 	s.purchasesLoading = true
-	// Set where the fetch is DISPATCHED, so a refresh re-opens the question the
-	// same way the first load does — the stock keys are withheld again until it
-	// is answered again.
-	s.kitLoading = true
+	// Deliberately nothing to reset for the kit question: a refresh re-ASKS it
+	// but does not un-answer it, so an item already known ordinary keeps its
+	// stock keys across the whole round trip rather than having them blink out
+	// and back on every r.
 	return tea.Batch(
 		s.loadItemCmd(), s.loadMetricsCmd(), s.loadUsedByCmd(), s.loadPurchaseHistoryCmd(),
 		s.loadKitCmd(), s.loadSuppliedByKitsCmd(),
@@ -389,15 +399,24 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, nil
 	case inventoryKitLoadedMsg:
-		// Answered either way — including the 404, which IS the answer "ordinary
-		// item" and is what re-offers the stock actions.
-		s.kitLoading = false
 		if m.err != nil {
-			// The question was not answered — say so rather than rendering the
-			// item as ordinary, which would hide a kit's whole nature behind a
-			// transient failure.
-			s.kitErr = m.err.Error()
+			// A failure only counts while there is nothing to fail back TO. With
+			// an answer already in hand this is a refresh that failed, and the
+			// record has not stopped being what it was — keeping it is the same
+			// best-effort rule inventoryMetricsLoadedMsg follows below, and it
+			// is what stops the screen drawing a bill of materials above a line
+			// saying it cannot tell whether this is a kit.
+			//
+			// With NO prior answer it is the state the screen must own up to:
+			// rendering the item as ordinary would hide a kit's whole nature
+			// behind a transient failure.
+			if !s.kitAnswered {
+				s.kitErr = m.err.Error()
+			}
 		} else {
+			// Answered either way — including the 404, which IS the answer
+			// "ordinary item" and is what offers the stock actions.
+			s.kitAnswered = true
 			s.kitErr = ""
 			s.kit = m.kit
 		}

@@ -216,6 +216,7 @@ func TestCycleCountModal_Flow(t *testing.T) {
 	s := NewInventoryDetailScreen(Deps{}, "abc")
 	s.item = &omsapi.Item{ID: "abc", Name: "Widget", SKU: "W-1"}
 	s.loading = false
+	s.kitAnswered = true
 
 	s.Update(runeKey('c'))
 	if s.ccStep != ccStepQty {
@@ -294,6 +295,7 @@ func TestCycleCountModal_Submits(t *testing.T) {
 	s := NewInventoryDetailScreen(Deps{OMS: omsapi.New(srv.URL)}, "abc")
 	s.item = &omsapi.Item{ID: "abc", Name: "Widget", SKU: "W-1", Stock: 5}
 	s.loading = false
+	s.kitAnswered = true
 
 	s.openCycleCount()
 	s.Update(runeKey('8'))

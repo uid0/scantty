@@ -20,6 +20,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -112,6 +113,10 @@ func kitDetail(t *testing.T, kit *omsapi.Kit, supplying []omsapi.KitSummary, wid
 		s.item = &kit.Item
 	}
 	s.kit = kit
+	// The answer has arrived — kit or not, both are answers. These fixtures are
+	// the screen after it loaded, and every kit-gated affordance is gated on
+	// there being an answer at all.
+	s.kitAnswered = true
 	s.suppliedByKits = supplying
 	s.Update(tea.WindowSizeMsg{Width: width, Height: jdeSweepHeight})
 	s.scroller.Set(s.renderBody())
@@ -1211,4 +1216,127 @@ func kitDetailState(t *testing.T, kitStatus int, deliverKitAnswer, serialized bo
 		return kitDetailDrivenSerialized(t, kitStatus, 120, deliverKitAnswer)
 	}
 	return kitDetailDriven(t, kitStatus, 120, deliverKitAnswer)
+}
+
+// ---------------------------------------------------------------------------
+// A refresh that fails does not un-answer the question
+// ---------------------------------------------------------------------------
+
+// kitFailRefresh delivers the answer a second GetKit would produce when the
+// re-ask fails — what pressing r gets when the network drops between the two
+// requests. The FIRST answer is whatever the screen already has.
+func kitFailRefresh(s *InventoryDetailScreen) {
+	s.Update(inventoryKitLoadedMsg{err: errors.New("server error (500)")})
+	s.scroller.Set(s.renderBody())
+}
+
+// TestInventoryDetailKit_AFailedRefreshKeepsAKnownKit. The screen used to draw
+// the bill of materials and, on the next line, a note saying it could not tell
+// whether this is a kit — because the failure handler set kitErr while leaving
+// the previous answer in place. It also told the operator that a permanent
+// property of kits was a transient failure they could retry away.
+func TestInventoryDetailKit_AFailedRefreshKeepsAKnownKit(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitDetailDrivenSerialized(t, http.StatusOK, width, true)
+		if !s.isKit() {
+			t.Fatal("the fixture never got its kit answer")
+		}
+		kitFailRefresh(s)
+		s.terminalHeight = jdeSweepHeight
+
+		body, view := s.renderBody(), s.View()
+		if !strings.Contains(body, "Kit contents") {
+			t.Errorf("at %d columns a failed refresh dropped the bill of materials:\n%s", width, body)
+		}
+		if strings.Contains(body, "Kit status unavailable") {
+			t.Errorf("at %d columns the screen answers the question and says it cannot:\n%s", width, body)
+		}
+		// The answer it kept is still doing its job on both halves.
+		for _, gone := range append([]string{"c count", "u use", "p packs"}, kitSerialAffordances...) {
+			if strings.Contains(view, gone) {
+				t.Errorf("at %d columns a kit's footer regained %q after a failed refresh:\n%s", width, gone, view)
+			}
+		}
+		kitAssertStockKeysAreNoOps(t, s)
+		if clipped := clampToBox(body, screenBodyWidth(width), len(strings.Split(body, "\n"))); clipped != body {
+			t.Errorf("at %d columns the body is clipped after a failed refresh:\n%s", width, body)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AFailedRefreshKeepsAKnownOrdinaryItem is the mirror
+// direction, and the one that is easy to miss: an item already answered
+// "ordinary" must not lose its stock and serial keys to a blip. Guarding on
+// "kitErr is empty" would take them all away on the first failed r and never
+// give them back.
+func TestInventoryDetailKit_AFailedRefreshKeepsAKnownOrdinaryItem(t *testing.T) {
+	s := kitDetailDrivenSerialized(t, http.StatusNotFound, 120, true)
+	s.item.CountMode = omsapi.CountModeOpenClosed
+	s.item.PackagingLevels = []omsapi.PackagingLevel{
+		{ID: 3, Name: "case", SortOrder: 0, BaseUnits: 100},
+		{ID: 4, Name: "bag", SortOrder: 1, BaseUnits: 1},
+	}
+	level := 3
+	s.item.CountLevel = &level
+	kitFailRefresh(s)
+	s.terminalHeight = jdeSweepHeight
+
+	view := s.View()
+	if strings.Contains(view, "Kit status unavailable") {
+		t.Errorf("a failed re-ask reported an answer the screen still has:\n%s", view)
+	}
+	for _, want := range append([]string{"c count", "u use", "p packs"}, kitSerialAffordances...) {
+		if !strings.Contains(view, want) {
+			t.Errorf("a failed refresh cost an ordinary item %q:\n%s", want, view)
+		}
+	}
+	// Named AND working, as always — both halves.
+	s.Update(runeKey('c'))
+	if s.ccStep == ccStepNone {
+		t.Error("c stopped working on a known-ordinary item after a failed refresh")
+	}
+	s.ccStep = ccStepNone
+	s.Update(runeKey('u'))
+	if s.cnStep == consumeStepNone {
+		t.Error("u stopped working on a known-ordinary item after a failed refresh")
+	}
+	s.cnStep = consumeStepNone
+	s.Update(runeKey('p'))
+	if s.pkStep == packStepNone {
+		t.Error("p stopped working on a known-ordinary item after a failed refresh")
+	}
+	s.pkStep = packStepNone
+	for _, key := range []rune{'i', 'b'} {
+		if _, cmd := s.Update(runeKey(key)); cmd == nil {
+			t.Errorf("%c stopped working on a known-ordinary serialized item after a failed refresh", key)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AFailureWithNoPriorAnswerStillOwnsUp. The rule cuts one
+// way only: with nothing to fall back to, the failure is the state the screen
+// has to admit to, and the existing behaviour must not regress out of it.
+func TestInventoryDetailKit_AFailureWithNoPriorAnswerStillOwnsUp(t *testing.T) {
+	s := kitDetailDrivenSerialized(t, http.StatusInternalServerError, 120, true)
+	s.terminalHeight = jdeSweepHeight
+
+	view := s.View()
+	if !strings.Contains(view, "Kit status unavailable") {
+		t.Errorf("a first-ask failure was swallowed:\n%s", view)
+	}
+	for _, gone := range append([]string{"c count", "u use", "p packs"}, kitSerialAffordances...) {
+		if strings.Contains(view, gone) {
+			t.Errorf("an unanswered question still offered %q:\n%s", gone, view)
+		}
+	}
+	// And a later SUCCESS clears it: the note is about not knowing, so it must
+	// not outlive the not-knowing.
+	s.Update(inventoryKitLoadedMsg{})
+	s.scroller.Set(s.renderBody())
+	if body := s.renderBody(); strings.Contains(body, "Kit status unavailable") {
+		t.Errorf("the note survived the answer that resolved it:\n%s", body)
+	}
+	if !strings.Contains(s.View(), "c count") {
+		t.Errorf("the answer that resolved the failure did not restore the stock keys:\n%s", s.View())
+	}
 }

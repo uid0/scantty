@@ -19,6 +19,10 @@ func packDetail(item *omsapi.Item) *InventoryDetailScreen {
 	s.loading = false
 	s.usedByLoading = false
 	s.purchasesLoading = false
+	// The "is this a kit?" answer has arrived and said no, which is what every
+	// stock affordance below is gated on — these fixtures are the screen AFTER
+	// it finished loading, not part-way through.
+	s.kitAnswered = true
 	return s
 }
 

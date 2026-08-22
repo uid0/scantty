@@ -231,19 +231,22 @@ func (s *InventoryDetailScreen) isKit() bool { return s.kit != nil }
 //	                      an ordinary item's keys appear a beat after the screen
 //	                      does, which was weighed against the alternative and
 //	                      accepted: a rule with a race in it is the shape of the
-//	                      defect this closes.
+//	                      defect this closes. Only ever the FIRST ask: a refresh
+//	                      re-asks a question that already has an answer, and an
+//	                      answer in hand is not withdrawn while the re-ask runs.
 //	answered "no"       — an ordinary item, which is the ONLY state that may be
 //	                      offered anything here, and which behaves exactly as it
 //	                      did before kits existed.
 //
 // The trap this exists to avoid, for whoever reads it next: `kit == nil` alone
 // cannot tell "answered: ordinary item" from "no answer yet" — a 404 leaves
-// EXACTLY the state a fetch in flight does — so the guard reads kitLoading,
-// which Init sets and any inventoryKitLoadedMsg clears. Written against
-// kit/kitErr alone it would hide these affordances from every ordinary item
-// forever, which is quieter and worse than the fault it closes.
+// EXACTLY the state a first fetch in flight does — so the guard reads
+// kitAnswered, which the first answer sets and nothing ever unsets. Written
+// against `kit` alone it would hide these affordances from every ordinary item
+// forever, which is quieter and worse than the fault it closes; written to
+// re-open on every refresh it would take them away again on every r.
 func (s *InventoryDetailScreen) kitRuledOut() bool {
-	return !s.kitLoading && s.kitErr == "" && !s.isKit()
+	return s.kitAnswered && !s.isKit()
 }
 
 // renderKitSection is the bill of materials — what one kit holds, and therefore
@@ -544,6 +547,20 @@ func (s *InventoryDetailScreen) headerTagsWidth() int {
 // fact about it is missing, and an operator reading "Current stock: 0" deserves
 // to know that the screen cannot currently rule out the reading being
 // structural.
+//
+// "Could not be answered" means NO answer, ever — not a re-ask that failed.
+// s.kitErr is only set while kitAnswered is false, so this note cannot appear
+// beside a rendered bill of materials, which is precisely what it used to do:
+// open a kit, press r, let the refresh 500, and the screen drew "Kit contents
+// (N)" and a line saying it could not tell whether this is a kit on adjacent
+// lines — while the affordances were in fact withheld because the record is
+// KNOWN to be a kit, a permanent property being reported as a retryable blip.
+//
+// Worth recording, because it is the most interesting thing about that defect:
+// it was reachable BEFORE the wording below stated the rule. The sentence used
+// to name three keys and never claimed the question was unanswered, so the
+// broken state sat there invisibly. Language honest enough to surface a real
+// defect is an argument FOR the general form, not a cost of it.
 //
 // It also has to ACCOUNT for what is missing, because this state is the one
 // place kit-dependent affordances vanish permanently, and things that are simply
