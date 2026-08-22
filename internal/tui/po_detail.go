@@ -1094,15 +1094,27 @@ func (s *PurchaseOrderDetailScreen) addBand(l *jdeLines, labelWidth int, heading
 	l.Add("")
 }
 
-// poCanScroll reports whether a read-only body is genuinely scrollable in the
-// frame that is about to be drawn — which is the ONE condition both the bar and
-// the scroll handlers read, so neither can drift from the other.
+// poCanScroll reports whether a windowed body actually moves in the frame that
+// is about to be drawn. It is the ONE condition every bar and every movement
+// handler on these screens reads, so the two cannot drift.
 //
-// It asks frameScrolled's own arithmetic rather than restating it: ClampScroll
-// handed an offset past the end returns the largest offset the frame will
-// accept, so a result above zero means the body really does move. That is what
-// makes "the bar names a key that works" true by construction instead of by two
-// expressions kept in step — the drift this rule has been broken by three times.
+// The rule is WindowFrom's own short-circuit, and Window's: both return the
+// whole body untouched when `n <= avail`, ignoring the offset or cursor
+// entirely. So the body moves exactly when it has MORE lines than the window has
+// rows, and that is what this says.
+//
+// It used to ask ClampScroll instead, on the theory that reusing the frame's
+// arithmetic was safer than restating it. It is not the frame's gate: ClampScroll
+// reserves the two indicator rows, so it goes positive from `n > avail-2` and
+// disagreed for `n` of exactly avail-1 and avail — a two-row window in which the
+// bar named three scroll pairs over a body that could not move. Reusing the
+// WRONG expression is not sharing a condition, it is duplicating a different one.
+//
+// This belongs on jdeLines as a method beside WindowFrom, so the window helper
+// and the question "does this scroll?" cannot part company at all. It is local
+// only because jde_form.go is frozen while the concurrent conversion is in
+// review; lifting it is a candidate for the same pass as bead
+// scantty-jde-textinput-width.
 //
 // `items` must be the bar WITH its scroll keys on it. The decision and the bar
 // height are mutually dependent (naming the keys can cost a bar row, which costs
@@ -1115,7 +1127,7 @@ func poCanScroll(g jdeScreen, body *jdeLines, headerRows int, items []actionBarI
 	if avail < 1 {
 		return false
 	}
-	return body.ClampScroll(body.Len(), avail) > 0
+	return body.Len() > avail
 }
 
 // poErrPrefixW is the width of the "Error: " a load failure is drawn behind on

@@ -1411,11 +1411,17 @@ type poBarPhase struct {
 // poNavState is the CLIPPED frame plus the navigation fields the frame cannot be
 // trusted to show.
 //
-// The frame alone is not enough: the attachment grid marks its highlighted row
-// with StyleJDEFieldFocused, and lipgloss renders flat in a test binary, so
+// The frame alone is not enough for the attachment grid: it marks its highlighted
+// row with StyleJDEFieldFocused, and lipgloss renders flat in a test binary, so
 // moving the cursor produces a byte-identical frame. That is the same blind spot
 // recorded on poFitInputValue — a whole class of visual state this suite cannot
-// see — so where it hides a state change the fields are named instead.
+// see — so there the cursor field is named instead.
+//
+// The SCROLL OFFSETS are deliberately NOT named. A stored offset is not
+// observable state: WindowFrom ignores it outright when the body fits the window,
+// so padScrollBy can move s.padScroll while the frame stays byte-identical.
+// Counting it as a change is what let an inert scroll key read as "the key
+// works" and hid the boundary defect this file's boundary sweep now pins.
 func poNavState(r Root, nav func() string) func() string {
 	return func() string {
 		return r.View() + "\x00" + nav()
@@ -1543,7 +1549,7 @@ func poBarPhases() []poBarPhase {
 			s.po = po()
 			r := poViewRoot(t, s, width)
 			return s, poNavState(r, func() string {
-				return fmt.Sprint(s.scroll, s.orderPad, s.shipping, s.voiding, s.delivering)
+				return fmt.Sprint(s.orderPad, s.shipping, s.voiding, s.delivering)
 			}), s.sheetBar()
 		}
 	}
@@ -1557,7 +1563,7 @@ func poBarPhases() []poBarPhase {
 				LineCount: len(strings.Split(text, "\n")),
 			}
 			return s, poNavState(r, func() string {
-				return fmt.Sprint(s.padScroll, s.orderPad)
+				return fmt.Sprint(s.orderPad)
 			}), s.orderPadBar()
 		}
 	}
@@ -1585,5 +1591,99 @@ func poBarPhases() []poBarPhase {
 		{"order pad (nothing to order)", pad("")},
 		{"attachments grid (overflows)", attach(60)},
 		{"attachments grid (fits)", attach(3)},
+	}
+}
+
+// poViewRootSized is poViewRoot for a test that needs to vary the pane HEIGHT as
+// well as its width.
+func poViewRootSized(t *testing.T, screen Screen, width, height int) Root {
+	t.Helper()
+	r := newTestRoot(screen)
+	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	after, ok := next.(Root)
+	if !ok {
+		t.Fatalf("Root.Update returned %T, want Root", next)
+	}
+	return after
+}
+
+// TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves: the bar-honesty rule at the
+// boundary, which is the only place it has ever actually been wrong.
+//
+// The scroll predicate used to ask ClampScroll, which reserves two indicator
+// rows and so answered "scrollable" from two lines BEFORE WindowFrom's own
+// `n <= avail` short-circuit lets the body move. In that two-row window the bar
+// named UP/DN, PgUp/PgDn and Home/End — 42 of its 49 columns — over a body that
+// could not move. Fixtures either side of the window cannot see it, which is why
+// the generic bar-honesty sweep passed while the defect was live.
+//
+// So this sweeps the pane HEIGHT one row at a time. Each step changes the window
+// by a row, so the sweep necessarily crosses the boundary from both sides, and at
+// every height it asserts the equivalence directly against the CLIPPED render:
+// the bar names the scroll keys if and only if pressing one moves the frame.
+// Nothing here re-derives the threshold — it observes it.
+func TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves(t *testing.T) {
+	surfaces := []struct {
+		name  string
+		build func(t *testing.T, width, height int) (Screen, Root, []actionBarItem)
+	}{
+		{"detail sheet", func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
+			t.Helper()
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			return s, poViewRootSized(t, s, width, height), s.sheetBar()
+		}},
+		{"order pad", func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
+			t.Helper()
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			r := poViewRootSized(t, s, width, height)
+			var rows []string
+			for i := 0; i < 20; i++ {
+				rows = append(rows, fmt.Sprintf("PART-%04d\t%d", i, i+1))
+			}
+			s.orderPad = true
+			s.orderPadExport = &omsapi.OrderPadExport{
+				Text: strings.Join(rows, "\n"), Supplier: "Acme",
+				Filename: "PO-2026-0042-order.csv", LineCount: len(rows),
+			}
+			return s, r, s.orderPadBar()
+		}},
+		{"attachments grid", func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
+			t.Helper()
+			s := NewPurchaseOrderAttachmentsScreen(Deps{}, poViewPO())
+			r := poViewRootSized(t, s, width, height)
+			s.attachments = poManyAttachments(12)
+			return s, r, s.listBar()
+		}},
+	}
+
+	// Wide enough that the sweep runs from "the body dwarfs the pane" to "the
+	// pane dwarfs the body", crossing every threshold in between.
+	for _, sf := range surfaces {
+		for _, width := range poViewWidths {
+			for height := 12; height <= 60; height++ {
+				name := fmt.Sprintf("%s/%dx%d", sf.name, width, height)
+
+				// PgUp/PgDn=Page is the affordance under test on all three
+				// surfaces: it means exactly "the WINDOW moves". UP/DN is not,
+				// on the grid — there it moves the CURSOR, which is real but
+				// invisible here because lipgloss renders the highlight flat.
+				_, _, bar := sf.build(t, width, height)
+				named := barHas(bar, "PgUp/PgDn", "Page")
+
+				s, r, _ := sf.build(t, width, height)
+				before := r.View()
+				s.Update(poKeyMsg("pgdown"))
+				moved := r.View() != before
+
+				if named != moved {
+					t.Errorf("%s: bar names PgUp/PgDn = %v but paging moves the frame = %v\n%s",
+						name, named, moved, r.View())
+				}
+			}
+		}
 	}
 }

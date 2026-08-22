@@ -523,8 +523,7 @@ func (s *PurchaseOrderAttachmentsScreen) listPages() bool {
 		return false
 	}
 	body, _ := s.listLines()
-	avail := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), s.listBarItems(true)))
-	return avail > 0 && body.Len() > avail
+	return poCanScroll(s.jdeScreen, body, 0, s.listBarItems(true))
 }
 
 func (s *PurchaseOrderAttachmentsScreen) viewList() string {
