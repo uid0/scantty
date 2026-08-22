@@ -775,6 +775,14 @@ func (s *InventoryDetailScreen) View() string {
 	// unanswered kit question cannot rule one out. The pack keys additionally
 	// only exist for a sealed+open item, so an each-mode item's footer is
 	// untouched.
+	//
+	// The two hardcoded base strings and the substring surgery over them were
+	// assessed rather than tidied: every key here is inserted under exactly the
+	// predicate its case in Update reads, so the bar cannot name a key that does
+	// nothing or omit one that works, for any combination of kit state,
+	// is_serialized and count mode. That agreement is what is load-bearing, not
+	// the shape, and it is asserted directly across the whole matrix rather than
+	// argued for here — see TestInventoryDetailKit_TheBarAndTheDispatchAgree.
 	if s.kitRuledOut() {
 		hint = strings.Replace(hint, "s suppliers · ", "c count · u use · s suppliers · ", 1)
 		if s.item.CountMode == omsapi.CountModeOpenClosed {

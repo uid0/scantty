@@ -545,24 +545,34 @@ func (s *InventoryDetailScreen) headerTagsWidth() int {
 // to know that the screen cannot currently rule out the reading being
 // structural.
 //
-// It also has to CARRY the missing keys, because this state is the one place
-// they vanish permanently: kitRuledOut withholds every kit-dependent affordance
-// while the question is open, and keys that are simply gone with no reason given
-// teach an operator that the screen is unreliable. The lead phrase is the item form's
-// word for word — two screens answering the same question differently is its own
-// defect — and only the consequence clause differs, because that screen refuses
-// a SAVE and this one has none to refuse.
+// It also has to ACCOUNT for what is missing, because this state is the one
+// place kit-dependent affordances vanish permanently, and things that are simply
+// gone with no reason given teach an operator that the screen is unreliable. The
+// lead phrase is the item form's word for word — two screens answering the same
+// question differently is its own defect — and only the consequence clause
+// differs, because that screen refuses a SAVE and this one has none to refuse.
 //
-// WRAPPED, not fitted: the sentence is 90-odd columns against a 51-column pane
+// The clause states the RULE and deliberately names nothing. It used to list
+// "count, use and pack", which was written when those were the three affordances
+// kitRuledOut withheld; by the time i, b and the Serialized tracking section
+// joined them the sentence accounted for three of six. That is WORSE than a
+// vague one: the operator counts what is missing, finds more than the screen
+// admits to, and stops trusting the explanation — the same "silent absence is
+// its own small lie" failure the note exists to prevent, moved one affordance
+// along. Enumerating all six and revisiting the sentence whenever the set
+// changes is a defect scheduled for later, which is why it says what the rule is
+// instead. Do not put a list back here.
+//
+// WRAPPED, not fitted: the sentence is 100-odd columns against a 51-column pane
 // at the floor, and fitCell would elide exactly the clause that explains the
-// keys (sc-ye0i). The continuation lines carry the "! " lead's indent so the
+// absence (sc-ye0i). The continuation lines carry the "! " lead's indent so the
 // note reads as one thing.
 func (s *InventoryDetailScreen) renderKitErrLine() string {
 	if s.kitErr == "" {
 		return ""
 	}
 	note := "Kit status unavailable: " + s.kitErr +
-		" — count, use and pack are withheld until it is known."
+		" — actions that depend on whether this is a kit are withheld until it is known."
 	width := s.bodyWidth()
 	if width > 2 {
 		width -= 2 // the "! " lead

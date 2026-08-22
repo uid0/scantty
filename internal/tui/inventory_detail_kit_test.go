@@ -20,6 +20,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -832,12 +833,20 @@ func TestInventoryDetailKit_AFailedQuestionWithholdsTheKeysAndSaysWhy(t *testing
 }
 
 // TestInventoryDetailKit_TheFailedQuestionExplainsItselfAtEveryWidth. The clause
-// that ties the missing keys to the failure is the LAST thing on the line, so a
-// fitted (rather than wrapped) note would drop exactly it at the floor — the
-// silently-clipped-warning defect this project has already shipped once.
+// that ties the missing affordances to the failure is the LAST thing on the
+// line, so a fitted (rather than wrapped) note would drop exactly it at the
+// floor — the silently-clipped-warning defect this project has already shipped
+// once.
+//
+// It also holds the note to the RULE rather than a list. The sentence once named
+// count, use and pack, and then went on naming three while six things were being
+// withheld: an operator who counts what is missing and finds more than the screen
+// admits to stops trusting the explanation entirely.
 func TestInventoryDetailKit_TheFailedQuestionExplainsItselfAtEveryWidth(t *testing.T) {
 	for _, width := range kitTestWidths {
-		s := kitDetailDriven(t, http.StatusInternalServerError, width, true)
+		s := kitDetailDrivenSerialized(t, http.StatusInternalServerError, width, true)
+		s.item.CountMode = omsapi.CountModeOpenClosed
+		s.scroller.Set(s.renderBody())
 		body := s.renderBody()
 		budget := screenBodyWidth(width)
 		if clipped := clampToBox(body, budget, len(strings.Split(body, "\n"))); clipped != body {
@@ -846,10 +855,19 @@ func TestInventoryDetailKit_TheFailedQuestionExplainsItselfAtEveryWidth(t *testi
 		flat := strings.Join(strings.Fields(body), " ")
 		for _, want := range []string{
 			"Kit status unavailable:",
-			"count, use and pack are withheld until it is known.",
+			"actions that depend on whether this is a kit are withheld until it is known.",
 		} {
 			if !strings.Contains(flat, want) {
 				t.Errorf("at %d columns the note lost %q:\n%s", width, want, body)
+			}
+		}
+		// Every one of these IS withheld in this state, so naming any of them
+		// is the enumeration going stale again — this fixture withholds all six.
+		note := strings.ToLower(kitUnavailableNote(t, body))
+		for _, named := range []string{"count", "use", "pack", "instances", "batch-scan", "serial"} {
+			if strings.Contains(note, named) {
+				t.Errorf("at %d columns the note enumerates %q instead of stating the rule: %q",
+					width, named, note)
 			}
 		}
 	}
@@ -1067,4 +1085,130 @@ func TestInventoryDetailKit_TheWithheldSerialStatesStillFitTheFloor(t *testing.T
 			}
 		}
 	}
+}
+
+// kitUnavailableNote is the whole wrapped "Kit status unavailable" note as one
+// string — every line of it, since the sentence wraps at the floor and reading
+// only its first line would let a stale enumeration hide on the second.
+func kitUnavailableNote(t *testing.T, body string) string {
+	t.Helper()
+	var note []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "Kit status unavailable") {
+			note = append(note, strings.TrimSpace(line))
+			continue
+		}
+		if len(note) == 0 {
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+		note = append(note, strings.TrimSpace(line))
+	}
+	if len(note) == 0 {
+		t.Fatalf("no unavailable note in:\n%s", body)
+	}
+	return strings.Join(note, " ")
+}
+
+// TestInventoryDetailKit_TheBarAndTheDispatchAgree is the assertion the footer's
+// hardcoded base strings and substring surgery stand on. That construction was
+// assessed and kept rather than rewritten, so what has to be true is checked
+// directly instead of argued for in a comment: across every combination of kit
+// state, is_serialized and count mode, a key the bar names does something and a
+// key it does not name does nothing.
+//
+// It is the whole matrix rather than a case per key because that is how the
+// last three defects on this screen presented — c and u were stripped by name, p
+// was missed when it became reachable, i and b were left on the older guard for
+// a round. Any one of those is a cell in this table.
+func TestInventoryDetailKit_TheBarAndTheDispatchAgree(t *testing.T) {
+	kitStates := map[string]func(*testing.T, bool) *InventoryDetailScreen{
+		"in flight": func(t *testing.T, serialized bool) *InventoryDetailScreen {
+			return kitDetailState(t, http.StatusNotFound, false, serialized)
+		},
+		"failed": func(t *testing.T, serialized bool) *InventoryDetailScreen {
+			return kitDetailState(t, http.StatusInternalServerError, true, serialized)
+		},
+		"a kit": func(t *testing.T, serialized bool) *InventoryDetailScreen {
+			return kitDetailState(t, http.StatusOK, true, serialized)
+		},
+		"an ordinary item": func(t *testing.T, serialized bool) *InventoryDetailScreen {
+			return kitDetailState(t, http.StatusNotFound, true, serialized)
+		},
+	}
+	// Each key with the footer entry that names it, and a way to tell whether
+	// pressing it did anything — a modal step for the stock keys, a screen
+	// switch for the serial ones.
+	keys := []struct {
+		key   rune
+		named string
+		fired func(*InventoryDetailScreen, tea.Cmd) bool
+	}{
+		{'c', "c count", func(s *InventoryDetailScreen, _ tea.Cmd) bool { return s.ccStep != ccStepNone }},
+		{'u', "u use", func(s *InventoryDetailScreen, _ tea.Cmd) bool { return s.cnStep != consumeStepNone }},
+		{'p', "p packs", func(s *InventoryDetailScreen, _ tea.Cmd) bool { return s.pkStep != packStepNone }},
+		{'i', "i instances", kitSwitchedScreen},
+		{'b', "b batch-scan", kitSwitchedScreen},
+	}
+
+	for state, build := range kitStates {
+		for _, serialized := range []bool{false, true} {
+			for _, openClosed := range []bool{false, true} {
+				name := fmt.Sprintf("%s/serialized=%v/open_closed=%v", state, serialized, openClosed)
+				t.Run(name, func(t *testing.T) {
+					s := build(t, serialized)
+					if openClosed {
+						s.item.CountMode = omsapi.CountModeOpenClosed
+						s.item.PackagingLevels = []omsapi.PackagingLevel{
+							{ID: 3, Name: "case", SortOrder: 0, BaseUnits: 100},
+							{ID: 4, Name: "bag", SortOrder: 1, BaseUnits: 1},
+						}
+						level := 3
+						s.item.CountLevel = &level
+					} else {
+						s.item.CountMode = ""
+					}
+					s.scroller.Set(s.renderBody())
+					view := s.View()
+
+					for _, k := range keys {
+						named := strings.Contains(view, k.named)
+						fresh := build(t, serialized)
+						fresh.item.CountMode = s.item.CountMode
+						fresh.item.PackagingLevels = s.item.PackagingLevels
+						fresh.item.CountLevel = s.item.CountLevel
+						fresh.scroller.Set(fresh.renderBody())
+						_, cmd := fresh.Update(runeKey(k.key))
+						switch fired := k.fired(fresh, cmd); {
+						case named && !fired:
+							t.Errorf("the bar names %q but pressing %c does nothing", k.named, k.key)
+						case !named && fired:
+							t.Errorf("pressing %c works but the bar never names %q", k.key, k.named)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// kitSwitchedScreen reports whether a key navigated somewhere, which is what the
+// serial keys do instead of opening a modal on this screen.
+func kitSwitchedScreen(_ *InventoryDetailScreen, cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	_, ok := cmd().(SwitchScreenMsg)
+	return ok
+}
+
+// kitDetailState builds one cell of that matrix.
+func kitDetailState(t *testing.T, kitStatus int, deliverKitAnswer, serialized bool) *InventoryDetailScreen {
+	t.Helper()
+	if serialized {
+		return kitDetailDrivenSerialized(t, kitStatus, 120, deliverKitAnswer)
+	}
+	return kitDetailDriven(t, kitStatus, 120, deliverKitAnswer)
 }
