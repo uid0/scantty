@@ -516,17 +516,22 @@ func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 	}
 	l.Add("")
 
+	// ONE binding for the header and every row beneath it, so the two cannot be
+	// sized differently — a ragged grid is the one thing a columnar list must
+	// not be, and an invariant made structural beats a comment asking the next
+	// reader to keep two copies in step.
+	//
+	// This grid ENDS at the per-kit quantity: there is no "On hand" column to
+	// size for, and reserving one gave the name cell 27 columns at the
+	// 80-column floor instead of the 34 the pane actually has spare.
+	nameW := kitNameWidth(width, kitNoLastCol)
+
 	if len(s.kitRows) == 0 {
 		l.Add(jdeIndent + StyleMuted.Render("No components yet."))
 	} else {
-		nameW := kitNameWidth(width, kitNoLastCol)
 		l.Add(StyleMuted.Render(kitGridRow("#", "Component", "Per kit", "", nameW, kitNoLastCol)))
 	}
 	for i, row := range s.kitRows {
-		// This grid ENDS at the per-kit quantity: there is no "On hand" column
-		// to size for, and reserving one gave the name cell 27 columns at the
-		// 80-column floor instead of the 34 the pane actually has spare.
-		nameW := kitNameWidth(width, kitNoLastCol)
 		line := kitGridRow(
 			strconv.Itoa(i+1),
 			kitNameCell(row.name, row.sku, nameW),

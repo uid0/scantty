@@ -85,10 +85,14 @@ func poKitComponentName(comp omsapi.POKitComponent) string {
 // (not clipped) at `width` so the last reading — which is as important as the
 // first — cannot be eaten by the pane edge.
 //
-// lead is the sentence the calling screen wants ("receiving all 2 credits",
-// "per kit"); indent lines the block up under the row it belongs to; width is
-// the pane's body width, or 0 when it is not known yet, which — as everywhere in
-// the JDE layer — means "do not truncate".
+// lead is the sentence the calling screen wants, and the two callers want
+// different tenses for a reason: the PO detail is a RECORD of the order, where a
+// line may already be received, so it leads tense-neutrally ("component
+// breakdown for all 2 kits"); the receive form is ABOUT to do the thing, with no
+// completed-state mark to contradict, so it leads with the action ("receiving 2
+// kits credits"). indent lines the block up under the row it belongs to; width
+// is the pane's body width, or 0 when it is not known yet, which — as everywhere
+// in the JDE layer — means "do not truncate".
 //
 // A kit line with NO components gets a warning instead of an empty block: it
 // would credit nothing at all on receipt, which is a thing the operator has to

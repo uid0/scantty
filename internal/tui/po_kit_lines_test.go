@@ -193,8 +193,8 @@ func TestPODetailKit_TheLineShowsWhatItWillCredit(t *testing.T) {
 	if !strings.Contains(out, poKitTag) {
 		t.Errorf("the PO line is not marked as a kit:\n%s", out)
 	}
-	if !strings.Contains(out, "receiving all 2 kits credits") {
-		t.Errorf("the PO line does not say what it credits:\n%s", out)
+	if !strings.Contains(out, poKitDetailLead) {
+		t.Errorf("the PO line does not say what it breaks down into:\n%s", out)
 	}
 	// Two ordered kits × three black per kit = six.
 	if !strings.Contains(out, "6 × Black ink") {
@@ -222,7 +222,7 @@ func TestPODetailKit_TheClippedRenderLosesNothing(t *testing.T) {
 	for _, line := range []omsapi.PurchaseOrderItem{poKitFixtureLine(), empty} {
 		for _, width := range kitTestWidths {
 			budget := screenBodyWidth(width)
-			block := poKitCreditBlock(line.KitComponents, "receiving all 2 kits credits",
+			block := poKitCreditBlock(line.KitComponents, poKitDetailLead,
 				"    ", budget, line.QuantityOrdered)
 			for _, l := range block {
 				if w := lipgloss.Width(l); w > budget {
@@ -311,4 +311,92 @@ func poKitAnyLineWiderThan(lines []string, budget int) bool {
 		}
 	}
 	return false
+}
+
+// poKitDetailLead is the PO detail's lead for the two-kit fixture. It is
+// tense-neutral on purpose; see the tests below and poLineBlock's comment.
+const poKitDetailLead = "component breakdown for all 2 kits"
+
+// TestPODetailKit_TheCreditLeadReadsTheSameInEveryState. The lead used to be
+// future-tense and computed from the ordered quantity alone, so a line the
+// header had already ticked as received carried a sentence saying the receipt
+// was still to come — the screen telling the operator two things at once.
+//
+// One phrasing now serves every state, which is the point: there is no case
+// split left to fall out of date when the state model grows one.
+func TestPODetailKit_TheCreditLeadReadsTheSameInEveryState(t *testing.T) {
+	received := poKitFixtureLine()
+	received.QuantityReceived = 2
+	received.QuantityPending = 0
+	received.IsFullyReceived = true
+
+	partial := poKitFixtureLine()
+	partial.QuantityReceived = 1
+	partial.QuantityPending = 1
+
+	for _, tc := range []struct {
+		name string
+		line omsapi.PurchaseOrderItem
+	}{
+		{"pending", poKitFixtureLine()},
+		{"part received", partial},
+		{"fully received", received},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := strings.Join(poKitDetailRows(tc.line, screenBodyWidth(120)), "\n")
+
+			if !strings.Contains(out, poKitDetailLead) {
+				t.Errorf("the %s line lost the breakdown lead:\n%s", tc.name, out)
+			}
+			// Nothing may assert the receipt is still to happen — that is what
+			// contradicted the tick four lines above it.
+			for _, tense := range []string{"receiving", "will credit", "credits on"} {
+				if strings.Contains(out, tense) {
+					t.Errorf("the %s line still asserts a pending action (%q):\n%s", tc.name, tense, out)
+				}
+			}
+			// And the numbers are untouched: this screen multiplies the ORDERED
+			// quantity, whatever has arrived so far.
+			if !strings.Contains(out, "6 × Black ink") || !strings.Contains(out, "2 × Magenta ink") {
+				t.Errorf("the %s line's component quantities changed:\n%s", tc.name, out)
+			}
+		})
+	}
+}
+
+// TestPODetailKit_TheUnorderedFallbackLeadIsTenseNeutralToo. The other lead this
+// block can produce — a kit line recorded with no ordered quantity — asserted an
+// action as well ("credits on full receipt"). Leaving one of the two asserting
+// would just move the defect.
+func TestPODetailKit_TheUnorderedFallbackLeadIsTenseNeutralToo(t *testing.T) {
+	line := poKitFixtureLine()
+	line.QuantityOrdered = 0
+	line.QuantityPending = 0
+
+	for _, width := range kitTestWidths {
+		budget := screenBodyWidth(width)
+		out := strings.Join(poKitDetailRows(line, budget), "\n")
+
+		if !strings.Contains(out, "component breakdown per kit") {
+			t.Errorf("at %d columns the unordered kit line lost its lead:\n%s", width, out)
+		}
+		for _, tense := range []string{"receiving", "credits on"} {
+			if strings.Contains(out, tense) {
+				t.Errorf("at %d columns the unordered lead still asserts an action (%q):\n%s", width, tense, out)
+			}
+		}
+		// With nothing ordered the readings are the per-kit ratio, which is what
+		// the lead now says they are.
+		if !strings.Contains(out, "3 × Black ink") {
+			t.Errorf("at %d columns the per-kit readings changed:\n%s", width, out)
+		}
+		// Both leads are longer than the one they replaced, so the floor is
+		// re-measured on the block they lead.
+		for _, l := range poKitCreditBlock(line.KitComponents, "component breakdown per kit", "    ", budget, 0) {
+			if w := lipgloss.Width(l); w > budget {
+				t.Errorf("at %d columns a kit block line is %d wide but the pane is %d: %q",
+					width, w, budget, l)
+			}
+		}
+	}
 }

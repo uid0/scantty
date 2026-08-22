@@ -1710,14 +1710,30 @@ func poLineBlock(lineNum int, li omsapi.PurchaseOrderItem, poSupplier string, fi
 
 	// What this line actually puts on the shelf. Drawn from the ORDERED
 	// quantity here — this screen is a record of the order, not a receipt — so
-	// the lead-in says so rather than leaving the multiplication implied. The
-	// block WRAPS against the pane (poKitCreditBlock) instead of riding the
-	// grid: the trailing components are as important as the leading ones and an
-	// ellipsis eats the last.
+	// the lead-in names the denominator rather than leaving the multiplication
+	// implied. The block WRAPS against the pane (poKitCreditBlock) instead of
+	// riding the grid: the trailing components are as important as the leading
+	// ones and an ellipsis eats the last.
+	//
+	// Both leads are TENSE-NEUTRAL, and that is the whole point of them. They
+	// used to assert an action ("receiving all 2 kits credits", "credits on full
+	// receipt"), computed from the ordered quantity alone — so a fully received
+	// line rendered "✓ received" in its flag cell and, four lines below it, a
+	// sentence saying the receipt was still to come. No number was wrong; the
+	// sentence was, and a wrong sentence beside a right number is how an
+	// operator ends up trusting the wrong one.
+	//
+	// Making the tense follow the line state was refused: a phrasing that has to
+	// be revisited whenever the state model grows a case is a defect scheduled
+	// for later, which is the shape of nearly every defect this screen has
+	// already had. Wording true in every state — pending, part-received, done —
+	// needs no maintenance and cannot contradict the flag above it. The RECEIVE
+	// form keeps its future tense on purpose: there the action really is
+	// pending, and there is no completed-state mark to disagree with.
 	if li.IsKitLine {
-		lead := "credits on full receipt"
+		lead := "component breakdown per kit"
 		if li.QuantityOrdered > 0 {
-			lead = fmt.Sprintf("receiving all %d %s credits",
+			lead = fmt.Sprintf("component breakdown for all %d %s",
 				li.QuantityOrdered, plural("kit", li.QuantityOrdered))
 		}
 		out = append(out, poKitCreditBlock(li.KitComponents, lead,
