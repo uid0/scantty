@@ -665,3 +665,85 @@ func TestInventoryDetailKit_AnOrdinaryPackedItemKeepsThePackKey(t *testing.T) {
 		t.Error("p no longer opens the pack prompt on an ordinary open/closed item")
 	}
 }
+
+// kitTestSerializedKit is the stray-data case on this screen: a kit whose stored
+// is_serialized is true. The server refuses to put a kit in that state —
+// KitSerializer.validate rejects a truthy is_serialized and the model's
+// _clean_kit says the same — so it is reachable only the way stray stock is,
+// through a direct write that never runs full_clean(). The screen must decline
+// to act on it rather than dressing it up as a feature.
+func kitTestSerializedKit() *omsapi.Kit {
+	kit := kitTestKit()
+	kit.IsSerialized = true
+	kit.SerialTrackingMode = "asset"
+	return kit
+}
+
+// kitSerializedItem is an ORDINARY serialized item, which is what every one of
+// these assertions has to leave completely untouched.
+func kitSerializedItem() *omsapi.Item {
+	return &omsapi.Item{
+		ID: "itm-1", Name: "Cyan ink cartridge, high yield", SKU: "CI-100-XL",
+		Stock: 4, MinimumStock: 2, IsSerialized: true, SerialTrackingMode: "asset",
+		SerializedStock: &omsapi.SerializedStock{Available: 4, OnHand: 4},
+	}
+}
+
+// TestInventoryDetailKit_AKitHidesTheSerialActions. A kit's COMPONENTS carry the
+// serials — the kit is bought as one SKU and decomposes on receipt — so the
+// section, the two keys and their footer entries are all meaningless on it, in
+// the same way c / u / p are. Both halves of the convention, as always: the bar
+// does not name the keys, so the keys must do nothing.
+func TestInventoryDetailKit_AKitHidesTheSerialActions(t *testing.T) {
+	s := kitDetail(t, kitTestSerializedKit(), nil, 120)
+	s.terminalHeight = jdeSweepHeight
+
+	view := s.View()
+	for _, gone := range []string{"Serialized tracking", "i instances", "b batch-scan"} {
+		if strings.Contains(view, gone) {
+			t.Errorf("a kit's screen still carries %q:\n%s", gone, view)
+		}
+	}
+	for _, key := range []rune{'i', 'b'} {
+		if _, cmd := s.Update(runeKey(key)); cmd != nil {
+			if msg, ok := cmd().(SwitchScreenMsg); ok {
+				t.Errorf("%c navigated away from a kit to %T", key, msg.Screen)
+			}
+		}
+	}
+	// The rest of the screen is untouched — this hides two actions, not a screen.
+	for _, kept := range []string{"o/enter reorder", "s suppliers", "E edit", "x delete"} {
+		if !strings.Contains(view, kept) {
+			t.Errorf("a kit's footer lost %q:\n%s", kept, view)
+		}
+	}
+	if !strings.Contains(view, "Kit contents") {
+		t.Errorf("a kit lost the section that says what its components are:\n%s", view)
+	}
+}
+
+// TestInventoryDetailKit_AnOrdinarySerializedItemKeepsTheSerialActions is
+// acceptance criterion 4 on this pair: suppressing them for a kit must not have
+// cost an ordinary serialized item the section or either key.
+func TestInventoryDetailKit_AnOrdinarySerializedItemKeepsTheSerialActions(t *testing.T) {
+	s := kitDetail(t, nil, nil, 120)
+	s.item = kitSerializedItem()
+	s.scroller.Set(s.renderBody())
+	s.terminalHeight = jdeSweepHeight
+
+	view := s.View()
+	for _, want := range []string{"Serialized tracking", "i instances", "b batch-scan"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("an ordinary serialized item lost %q:\n%s", want, view)
+		}
+	}
+	for _, key := range []rune{'i', 'b'} {
+		_, cmd := s.Update(runeKey(key))
+		if cmd == nil {
+			t.Fatalf("%c no longer does anything on an ordinary serialized item", key)
+		}
+		if _, ok := cmd().(SwitchScreenMsg); !ok {
+			t.Errorf("%c did not open a screen on an ordinary serialized item", key)
+		}
+	}
+}

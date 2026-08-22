@@ -1028,3 +1028,205 @@ func kitFormRow(t *testing.T, s *InventoryItemFormScreen, width int, label strin
 	t.Fatalf("no %q row on the sheet at %d columns", label, width)
 	return "", ""
 }
+
+// ---------------------------------------------------------------------------
+// The serialized row
+// ---------------------------------------------------------------------------
+
+// kitFormSerializedKit is the stray-data case: a kit whose stored is_serialized
+// is true. The server REFUSES to put one in that state — KitSerializer.validate
+// rejects a truthy is_serialized for a kit, and the model's _clean_kit says the
+// same — so this is not a state an operator can reach through the sheet. It is
+// reachable the way stray stock is: InventoryItem.save() never runs
+// full_clean(), so a direct write never meets either rule.
+func kitFormSerializedKit() *omsapi.Kit {
+	kit := kitFormFixture()
+	kit.IsSerialized = true
+	kit.SerialTrackingMode = "asset"
+	return kit
+}
+
+// TestItemFormKit_TheSerializedRowIsReadOnlyForAKit. A kit's components carry
+// the serials, not the kit, and the serializer refuses the flag outright — so a
+// live toggle here is a promise the save can never keep. Frozen means frozen on
+// all four counts: the keys do nothing, the sheet does not go dirty, the row
+// draws as a value rather than a choice, and the bar stops naming ←→.
+func TestItemFormKit_TheSerializedRowIsReadOnlyForAKit(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	kitFormCursorTo(t, s, fIsSerialized)
+	before := s.isSerialized
+
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune(" ")},
+		{Type: tea.KeyRight},
+		{Type: tea.KeyLeft},
+	} {
+		s.Update(key)
+		if s.isSerialized != before {
+			t.Fatalf("%v flipped a kit's serialized row: %v -> %v", key, before, s.isSerialized)
+		}
+	}
+	if s.dirty() {
+		t.Error("pressing a toggle key on a read-only row made the sheet dirty")
+	}
+	// A frozen row must not draw the angle brackets that promise ←/→ works, and
+	// the bar must not name the key either.
+	row, _ := kitFormRow(t, s, 120, "Track serial numbers")
+	if strings.Contains(row, "<") {
+		t.Errorf("a kit's frozen serialized row still renders as a choice: %q", row)
+	}
+	for _, item := range s.formBar(s.formLines()) {
+		if item.Key == "←→" {
+			t.Errorf("the bar offers ←→ on a kit's frozen serialized row: %+v", item)
+		}
+	}
+	// And the mode row that hangs off the flag is not offered either — a select
+	// whose value the kit payload drops is the same broken promise.
+	if kitFormHasField(s, fSerialTrackingMode) {
+		t.Error("a kit was offered a serial tracking mode its save always clears")
+	}
+	if kitFormHasField(kitFormSheet(t, kitFormSerializedKit(), 120), fSerialTrackingMode) {
+		t.Error("a stray-serialized kit was offered a serial tracking mode")
+	}
+}
+
+// TestItemFormKit_AnOrdinaryItemsSerializedRowStillToggles is acceptance
+// criterion 4 on this row: only a kit's is frozen, and an ordinary item keeps
+// the toggle, the bar entry and the mode row that follows it.
+func TestItemFormKit_AnOrdinaryItemsSerializedRowStillToggles(t *testing.T) {
+	s := kitFormSheet(t, nil, 120)
+	kitFormCursorTo(t, s, fIsSerialized)
+	before := s.isSerialized
+
+	s.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if s.isSerialized == before {
+		t.Fatalf("an ordinary item's serialized row stopped toggling (still %v)", before)
+	}
+	if !s.dirty() {
+		t.Error("toggling an ordinary item's serialized row did not make the sheet dirty")
+	}
+	if !kitFormHasField(s, fSerialTrackingMode) {
+		t.Error("turning serial tracking on did not offer the mode row")
+	}
+	var named bool
+	for _, item := range s.formBar(s.formLines()) {
+		if item.Key == "←→" {
+			named = true
+		}
+	}
+	if !named {
+		t.Error("the bar stopped naming ←→ on an ordinary item's toggle row")
+	}
+	row, _ := kitFormRow(t, s, 120, "Track serial numbers")
+	if !strings.Contains(row, "<") {
+		t.Errorf("an ordinary item's serialized row stopped rendering as a choice: %q", row)
+	}
+}
+
+// TestItemFormKit_TheKitSaveAssertsNotSerialized. is_serialized has no omitempty
+// so it rides every save, and omitting it could not help: KitSerializer.validate
+// falls back to the STORED value for an absent key, so a kit carrying a stray
+// true would be unsaveable from ScanTTY for good — not just for that field. The
+// sheet therefore asserts the only value a kit may hold.
+func TestItemFormKit_TheKitSaveAssertsNotSerialized(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kit  *omsapi.Kit
+	}{
+		{"an ordinary kit", kitFormFixture()},
+		{"a kit carrying a stray flag", kitFormSerializedKit()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &kitFormServer{}
+			srv := httptest.NewServer(fake.handler())
+			defer srv.Close()
+
+			s := kitFormSheet(t, tc.kit, 120)
+			s.deps = Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+			_, cmd := s.submit()
+			if cmd == nil {
+				t.Fatal("submit produced no command")
+			}
+			if msg, ok := cmd().(itemFormSavedMsg); !ok || msg.err != nil {
+				t.Fatalf("save failed: %+v", msg)
+			}
+
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			if len(fake.bodies) != 1 || fake.writes[0] != "PATCH /api/inventory/kits/kit-1/" {
+				t.Fatalf("writes = %v", fake.writes)
+			}
+			got, present := fake.bodies[0]["is_serialized"]
+			if !present {
+				t.Fatalf("is_serialized was omitted, which leaves a stray-flagged kit unsaveable: %v", fake.bodies[0])
+			}
+			if got != false {
+				t.Errorf("is_serialized = %v, want false — a kit may hold no other value", got)
+			}
+			// The mode is what the flag hangs off, so it must not ride along
+			// asserting a tracking scheme for a kit that tracks nothing.
+			if mode, present := fake.bodies[0]["serial_tracking_mode"]; present {
+				t.Errorf("serial_tracking_mode = %v rode a kit's save", mode)
+			}
+		})
+	}
+}
+
+// TestItemFormKit_AStraySerializedFlagSaysWhatSavingDoesToIt. Same rule as the
+// stray stock figure: asserting false writes over a fact that is really there in
+// shared data, and doing that invisibly as a side effect of renaming the kit is
+// the harm. Measured on the CLIPPED render, because the pane is 51 columns at
+// the floor and this note is far longer than that.
+func TestItemFormKit_AStraySerializedFlagSaysWhatSavingDoesToIt(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormSerializedKit(), width)
+		budget := screenBodyWidth(width)
+		clipped := clampToBox(strings.Join(s.formLines().text, "\n"), budget, 200)
+		flat := strings.Join(strings.Fields(clipped), " ")
+		for _, want := range []string{
+			"Recorded as serialized.",
+			"A kit's components carry the serials, not the kit, so saving this sheet clears that to No.",
+		} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("at %d columns the clipped sheet lost %q:\n%s", width, want, clipped)
+			}
+		}
+		// Shown without the cursor going near the row: an operator renaming a
+		// kit has no reason to visit a row they cannot change.
+		if id, ok := s.currentFieldID(); ok && id == fIsSerialized {
+			t.Fatal("the fixture starts on the serialized row, which defeats the point of the check")
+		}
+		// And the frozen row still explains ITSELF at the floor rather than
+		// being cut: the clamp changing the row at all is the defect.
+		raw, row := kitFormRow(t, s, width, "Track serial numbers")
+		if row != raw {
+			t.Errorf("at %d columns the frozen serialized row is cut from %q to %q", width, raw, row)
+		}
+	}
+}
+
+// TestItemFormKit_AnUnserializedKitGetsNoNotice. The ordinary case stays quiet —
+// there is nothing to overwrite — and the row instead carries the terse hint
+// that says why it is frozen, which must survive the clip at every width.
+func TestItemFormKit_AnUnserializedKitGetsNoNotice(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormFixture(), width)
+		if body := strings.Join(s.formLines().text, "\n"); strings.Contains(body, "Recorded as serialized") {
+			t.Errorf("at %d columns a kit that is not serialized was warned about losing it:\n%s", width, body)
+		}
+		raw, row := kitFormRow(t, s, width, "Track serial numbers")
+		if row != raw {
+			t.Errorf("at %d columns the frozen serialized row is cut from %q to %q", width, raw, row)
+		}
+		if !strings.Contains(row, "its components do") {
+			t.Errorf("at %d columns the frozen serialized row does not say why it is frozen: %q", width, row)
+		}
+	}
+	// Nor is an ordinary serialized item warned about anything.
+	plain := kitFormSheet(t, nil, 120)
+	kitFormCursorTo(t, plain, fIsSerialized)
+	plain.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if body := strings.Join(plain.formLines().text, "\n"); strings.Contains(body, "Recorded as serialized") {
+		t.Errorf("an ordinary serialized item was warned about losing its flag:\n%s", body)
+	}
+}

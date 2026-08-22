@@ -592,14 +592,25 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "i":
 			// Serialized items expose per-unit instance tracking; jump to
 			// the instances screen. No-op for non-serialized items.
-			if s.item != nil && s.item.IsSerialized {
+			//
+			// And no-op for a KIT however its stored flag reads. A kit's
+			// COMPONENTS are the units that carry serials — the kit is bought as
+			// one SKU and decomposes on receipt — and the server refuses to make
+			// one serialized at all, so a kit whose flag says otherwise is stray
+			// data (InventoryItem.save() never runs full_clean()), not a state
+			// this screen should act on. Accessioning instances against the kit
+			// id would put units into the same stock figure nothing can draw
+			// down that c / u / p are hidden for.
+			if s.item != nil && s.item.IsSerialized && !s.isKit() {
 				return s, SwitchTo(WSInventory, NewItemInstancesScreen(s.deps, s.item.ID, s.item.Name, s.item.SerializedStock))
 			}
 		case "b":
 			// Batch-scan serials: rapid-fire scanner-gun capture that
 			// creates-and-receives each unit. Serialized items only; lowercase
-			// b is free in the global hotkey map, so it falls through here.
-			if s.item != nil && s.item.IsSerialized {
+			// b is free in the global hotkey map, so it falls through here. Never
+			// for a kit, for the reason i is not — and batch-scan RECEIVES each
+			// unit it creates, so it is a stock write besides.
+			if s.item != nil && s.item.IsSerialized && !s.isKit() {
 				return s, SwitchTo(WSInventory, NewBatchScanSerialsScreen(s.deps, s.item.ID, s.item.Name))
 			}
 		case "E":
@@ -720,7 +731,12 @@ func (s *InventoryDetailScreen) View() string {
 		retireHint = "T un-retire"
 	}
 	hint := "j/k scroll · o/enter reorder · c count · u use · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
-	if s.item.IsSerialized {
+	// The serial keys are guarded on the INSERT, not stripped again below, for
+	// the reason the pack key is: an insert-then-remove shape is what let a key
+	// slip through the kit stripping once already. A kit never names them however
+	// its stored flag reads, because a kit cannot legitimately be serialized at
+	// all and the keys are no-ops there.
+	if s.item.IsSerialized && !s.isKit() {
 		hint = "j/k scroll · o/enter reorder · c count · u use · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
 	}
 	// The pack keys only exist for a sealed+open item, so they are only hinted
@@ -899,7 +915,13 @@ func (s *InventoryDetailScreen) renderBody() string {
 	b.WriteString(s.renderKitSection())
 	b.WriteString(s.renderKitErrLine())
 
-	if it.IsSerialized {
+	// Never for a KIT: the section's whole content is an instruction to press i
+	// and b, which do nothing there, and a "units are tracked individually"
+	// heading under a bill of materials says the opposite of what a kit is — its
+	// COMPONENTS are the units. A kit reaching here with the flag set is stray
+	// data the server would refuse (see kit save), so the screen declines to act
+	// on it rather than dressing it up as a feature.
+	if it.IsSerialized && !s.isKit() {
 		b.WriteString(StyleTitle.Render("Serialized tracking") + "\n")
 		mode := it.SerialTrackingMode
 		if mode == "" {

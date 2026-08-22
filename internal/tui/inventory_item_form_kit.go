@@ -79,18 +79,46 @@ func (s *InventoryItemFormScreen) isKit() bool { return s.kit != nil }
 
 // fieldReadOnly reports whether a row is SHOWN but not the operator's to change.
 //
-// Only one row is, and only for a kit: Current stock. A kit holds no stock of
-// its own — receiving one credits its component items and leaves the kit at zero
-// forever — so a number typed here is not a value the operator can set, it is a
-// value the save is obliged to clear. Showing it as an ordinary input would
-// promise an edit that cannot land, and would make the sheet dirty() for it.
+// Two rows are, and only for a kit:
+//
+//	Current stock         a kit holds no stock of its own — receiving one credits
+//	                      its component items and leaves the kit at zero forever
+//	Track serial numbers  a kit's COMPONENTS are the units that get serials; the
+//	                      kit itself is bought as one SKU and decomposes
+//
+// Both are the same shape of wrong. The server REFUSES either state on a kit —
+// KitSerializer.validate rejects a truthy is_serialized ("A kit cannot be
+// serialized; its components are stocked, not it") exactly as it rejects stock,
+// and InventoryItem._clean_kit carries the same two rules at the model layer —
+// so an operator CANNOT reach a serialized kit through this sheet. That is
+// precisely the defect: leaving the toggle live offers an edit whose save is
+// refused every single time, which is a broken screen rather than a dangerous
+// one.
+//
+// The second, quieter leg is why the save then ASSERTS the cleared value rather
+// than omitting the key (see buildPayload): validate reads
+// attrs.get("is_serialized", instance.is_serialized), so a kit that already
+// carries a stray true — reachable because InventoryItem.save() never calls
+// full_clean() — would be unsaveable from ScanTTY for good, not just for that
+// one field. Same dead end the stock row's current_stock: 0 exists to avoid.
 //
 // It is a screen-level question rather than part of fieldKind, which is a pure
-// function of the field id: the same row is perfectly editable on an ordinary
+// function of the field id: the same rows are perfectly editable on an ordinary
 // item's sheet, and criterion 4 of this whole change is that an ordinary item is
 // untouched.
 func (s *InventoryItemFormScreen) fieldReadOnly(id int) bool {
-	return id == fCurrentStock && s.isKit()
+	return (id == fCurrentStock || id == fIsSerialized) && s.isKit()
+}
+
+// readOnlyValue is what a frozen row SHOWS, read from wherever that row's state
+// actually lives: a stock row keeps its reading in a textinput, a toggle in a
+// bool. It exists because a frozen row of either kind renders as the same dimmed
+// value row, so the render must not have to know which one it is looking at.
+func (s *InventoryItemFormScreen) readOnlyValue(id int) string {
+	if fieldKind(id) == kindToggle {
+		return jdeYesNo(s.toggleState(id))
+	}
+	return s.inputs[id].Value()
 }
 
 // kitStockWarnLines is the note under a kit's Current stock row when that stock
@@ -112,11 +140,51 @@ func (s *InventoryItemFormScreen) kitStockWarnLines(id, labelWidth int) []string
 	if id != fCurrentStock || !s.kitStockWillBeCleared() {
 		return nil
 	}
-	note := fmt.Sprintf(
+	return kitClearWarnLines(fmt.Sprintf(
 		"Recorded as %d on hand. A kit holds no stock of its own, so saving this sheet clears that to 0.",
 		s.item.Stock,
-	)
-	width := jdeStripWidth(s.bodyWidth(), labelWidth)
+	), labelWidth, s.bodyWidth())
+}
+
+// kitRowWarnLines is the note a row grows when the save is about to CLEAR a
+// stored figure that is really there — the one thing that stops the clearing
+// happening invisibly. Exactly one row at a time has one, and most kits have
+// none at all: both notes are silent for the ordinary values (0 on hand, not
+// serialized), because there is then nothing to overwrite and nothing to say.
+func (s *InventoryItemFormScreen) kitRowWarnLines(id, labelWidth int) []string {
+	if lines := s.kitStockWarnLines(id, labelWidth); lines != nil {
+		return lines
+	}
+	return s.kitSerialWarnLines(id, labelWidth)
+}
+
+// kitSerialWarnLines is the serialized row's half of that, and it exists for the
+// same reason and under the same condition as the stock one: the save asserts
+// is_serialized:false unconditionally for a kit, so a kit that somehow carries
+// true has a stored fact written over by an operator who came here to rename it.
+//
+// The stray true is not hypothetical for the same reason stray stock is not:
+// InventoryItem.save() never calls full_clean(), so the model's own refusal of a
+// serialized kit never runs on a direct write, and a row written that way sits
+// there until something saves it through the serializer.
+func (s *InventoryItemFormScreen) kitSerialWarnLines(id, labelWidth int) []string {
+	if id != fIsSerialized || !s.kitSerialWillBeCleared() {
+		return nil
+	}
+	return kitClearWarnLines(
+		"Recorded as serialized. A kit's components carry the serials, not the kit, "+
+			"so saving this sheet clears that to No.",
+		labelWidth, s.bodyWidth())
+}
+
+// kitClearWarnLines draws one of those notes: wrapped under the row, lined up
+// with the input area, led by the "! " of supplierWarnLines.
+//
+// Wrapped rather than carried as a Hint because a Hint is CLIPPED: at 80 columns
+// the pane is 51 and these rows already spend most of it, so clampToBox would
+// cut the sentence mid-word with nothing to show it had (sc-ye0i).
+func kitClearWarnLines(note string, labelWidth, bodyWidth int) []string {
+	width := jdeStripWidth(bodyWidth, labelWidth)
 	if width > 2 {
 		width -= 2 // the "! " lead
 	}
@@ -144,6 +212,14 @@ func (s *InventoryItemFormScreen) kitStockWillBeCleared() bool {
 	return s.fieldReadOnly(fCurrentStock) && s.item != nil && s.item.Stock != 0
 }
 
+// kitSerialWillBeCleared is the same predicate for the serialized row: a kit
+// whose STORED flag is not already false. It reads s.item rather than
+// s.isSerialized for the reason above — the warning quotes what hydrate put in
+// the row, so the note and the row can never disagree.
+func (s *InventoryItemFormScreen) kitSerialWillBeCleared() bool {
+	return s.fieldReadOnly(fIsSerialized) && s.item != nil && s.item.IsSerialized
+}
+
 // kitStockHint is the terse "why can I not type here?" for a kit's read-only
 // Current stock row, and it is deliberately SHORT rather than explanatory.
 //
@@ -163,6 +239,20 @@ func (s *InventoryItemFormScreen) kitStockHint() string {
 		return ""
 	}
 	return "kits hold no stock"
+}
+
+// kitReadOnlyHint is the terse "why can I not change this?" for whichever frozen
+// row the cursor is on, and each one is measured against the width its own row
+// leaves rather than written to taste — see kitStockHint for what the floor
+// costs, and for why each goes quiet once the fuller warning is drawn beneath.
+func (s *InventoryItemFormScreen) kitReadOnlyHint(id int) string {
+	if id == fIsSerialized {
+		if s.kitSerialWillBeCleared() {
+			return ""
+		}
+		return "its components do"
+	}
+	return s.kitStockHint()
 }
 
 // kitErrLines is what the sheet says when "is this a kit?" could not be

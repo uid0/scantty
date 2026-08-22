@@ -55,7 +55,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 )
 
 // KitComponent is one line of a kit's bill of materials: which item one kit
@@ -166,12 +165,6 @@ func (c *Client) GetKit(ctx context.Context, id string) (*Kit, error) {
 		return nil, err
 	}
 	return &out, nil
-}
-
-// ListKits pages the kit catalog (GET /api/inventory/kits/). Supported filters
-// mirror the viewset: search, is_active, supplier, component, ordering.
-func (c *Client) ListKits(ctx context.Context, q url.Values) (*Page[Kit], error) {
-	return GetPage[Kit](ctx, c, "/api/inventory/kits/", q)
 }
 
 // UpdateKit PATCHes a kit — its item fields and, when body.Components is set,

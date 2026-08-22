@@ -932,7 +932,10 @@ func (s *InventoryItemFormScreen) rebuildFields() {
 		f = append(f, fMSDSURL, fNFPAHealth, fNFPAFire, fNFPAInstability, fNFPASpecial)
 	}
 	f = append(f, fIsSerialized)
-	if s.isSerialized {
+	// The mode row hangs off a flag a kit's save always clears, so a kit never
+	// grows one — offering a select whose value the payload then drops is the
+	// same broken promise the frozen toggle above it exists to avoid.
+	if s.isSerialized && !s.isKit() {
 		f = append(f, fSerialTrackingMode)
 	}
 	f = append(f, fNotes, fIsActive, fIsRetired)
@@ -1025,7 +1028,15 @@ func (s *InventoryItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 	}
 	switch fieldKind(id) {
 	case kindToggle:
-		// A two-value choice row: it flips whichever way it is cycled.
+		// A two-value choice row: it flips whichever way it is cycled — unless
+		// the row is frozen, which for a kit's serialized toggle it is. The
+		// guard sits HERE as well as in the default arm because a toggle never
+		// reaches that arm: flipping it would change a value the save asserts
+		// back anyway, and would make the sheet dirty() for a change the server
+		// refuses outright.
+		if s.fieldReadOnly(id) {
+			return s, nil
+		}
 		switch m.String() {
 		case " ", "right", "left":
 			s.flipToggle(id)
@@ -1237,7 +1248,7 @@ func (s *InventoryItemFormScreen) fieldHint(id int) string {
 	// a longer and separate thing, wrapped under the row by kitStockWarnLines
 	// (op-8n0).
 	if s.fieldReadOnly(id) {
-		return s.kitStockHint()
+		return s.kitReadOnlyHint(id)
 	}
 	if unit := s.fieldUnit(id); unit != "" {
 		return unit
@@ -1637,6 +1648,21 @@ func (s *InventoryItemFormScreen) buildPayload() (omsapi.ItemWrite, error) {
 		return w, err
 	}
 
+	// is_serialized rides every save (no omitempty), and for a kit the sheet
+	// asserts the only value one may hold rather than passing the row's reading
+	// through. Same two reasons as current_stock above: KitSerializer.validate
+	// REFUSES a truthy is_serialized on a kit ("its components are stocked, not
+	// it"), so relaying a stray true would just fail every save the kit ever
+	// gets — and because validate falls back to the STORED value when the key is
+	// absent, omitting it would fail them just as surely. Asserting false is what
+	// lets a kit carrying a stray flag be saved at all. That it OVERWRITES a real
+	// stored fact is why the row is read-only and why a true one is called out
+	// before the save (op-8n0).
+	serialized := s.isSerialized
+	if s.isKit() {
+		serialized = false
+	}
+
 	w = omsapi.ItemWrite{
 		Name:                name,
 		Description:         strPtrTrim(s.inputs[fDescription].Value()),
@@ -1652,7 +1678,7 @@ func (s *InventoryItemFormScreen) buildPayload() (omsapi.ItemWrite, error) {
 		Location:             intPtrToStr(s.locationID),
 		ShelfPosition:        selectValuePtr(shelfPositionOptions, s.shelfPos),
 		IsHazardous:          s.isHazardous,
-		IsSerialized:         s.isSerialized,
+		IsSerialized:         serialized,
 		IsActive:             s.isActive,
 		IsRetired:            s.isRetired,
 		Notes:                strPtrTrim(s.inputs[fNotes].Value()),
@@ -1695,7 +1721,7 @@ func (s *InventoryItemFormScreen) buildPayload() (omsapi.ItemWrite, error) {
 		w.NFPASpecialHazards = strPtrTrim(s.inputs[fNFPASpecial].Value())
 	}
 
-	if s.isSerialized {
+	if serialized {
 		mode := serialModeOptions[s.serialMode].value
 		w.SerialTrackingMode = &mode
 	}
@@ -1840,6 +1866,15 @@ func (s *InventoryItemFormScreen) formFields() []jdeField {
 			Hint:    s.fieldHint(id),
 			Focused: i == s.cursor,
 		}
+		if s.fieldReadOnly(id) {
+			// Shown, not changed: the value is worth SEEING (it is what the save
+			// is about to assert over) but it is not the operator's to set, so it
+			// draws as a dimmed value rather than as an input the caret sits in
+			// or a choice whose angle brackets promise ←/→ does something.
+			f.Kind, f.Value, f.Dim = jdeValue, s.readOnlyValue(id), true
+			out[i] = f
+			continue
+		}
 		switch fieldKind(id) {
 		case kindToggle:
 			f.Kind, f.Value = jdeChoice, jdeYesNo(s.toggleState(id))
@@ -1875,14 +1910,6 @@ func (s *InventoryItemFormScreen) formFields() []jdeField {
 			// the summary (and, when it must, the hint) is fitted to the pane.
 			f = s.kitRowField(f)
 		default:
-			if s.fieldReadOnly(id) {
-				// Shown, not typed into: the figure is worth SEEING (it is what
-				// the save is about to clear) but it is not the operator's to
-				// change, so it draws as a dimmed value rather than an input the
-				// caret sits in and promises something of.
-				f.Kind, f.Value, f.Dim = jdeValue, s.inputs[id].Value(), true
-				break
-			}
 			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
 		}
 		out[i] = f
@@ -1913,7 +1940,7 @@ func (s *InventoryItemFormScreen) formLines() *jdeLines {
 		// UNCONDITIONALLY, not only when focused: the operator has no reason to
 		// move the cursor onto a read-only row, and this note is the one thing
 		// that stops the save silently clearing a figure they can see.
-		for _, line := range s.kitStockWarnLines(id, labelWidth) {
+		for _, line := range s.kitRowWarnLines(id, labelWidth) {
 			l.AddRow(i, line)
 		}
 		if i == s.cursor {
@@ -1943,7 +1970,11 @@ func (s *InventoryItemFormScreen) formBar(body *jdeLines) []actionBarItem {
 	if id, ok := s.currentFieldID(); ok {
 		switch fieldKind(id) {
 		case kindToggle:
-			items = append(items, actionBarItem{"←→", "Change"})
+			// Not on a frozen row: the bar must not teach a key that does
+			// nothing where the cursor is standing.
+			if !s.fieldReadOnly(id) {
+				items = append(items, actionBarItem{"←→", "Change"})
+			}
 		case kindSelect:
 			// A select with nothing to cycle through offers no ←/→ — the bar must
 			// not teach a key that does nothing where the cursor is standing.
