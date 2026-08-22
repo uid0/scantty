@@ -632,9 +632,9 @@ func TestItemFormKit_AShortListDoesNotOfferPaging(t *testing.T) {
 	}
 }
 
-// TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout. The refusal names one
-// option ("Serialized widget cannot be a kit component…"), so it cannot outlive
-// the list that option was in: left standing over a rebuilt picker it reads as a
+// TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout. The refusal is about one
+// option — "that item", the row the cursor was on — so it cannot outlive the
+// list that option was in: left standing over a rebuilt picker it reads as a
 // refusal of whatever is now under the cursor.
 func TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout(t *testing.T) {
 	s := kitFormSheet(t, kitFormFixture(), 120)
@@ -1228,5 +1228,183 @@ func TestItemFormKit_AnUnserializedKitGetsNoNotice(t *testing.T) {
 	plain.Update(tea.KeyMsg{Type: tea.KeyRight})
 	if body := strings.Join(plain.formLines().text, "\n"); strings.Contains(body, "Recorded as serialized") {
 		t.Errorf("an ordinary serialized item was warned about losing its flag:\n%s", body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The status line at the floor
+// ---------------------------------------------------------------------------
+
+// kitFormStatusRow is the row jdeStatusLine draws immediately above the pinned
+// action bar, as rendered AND as the operator actually sees it — the second
+// return is the first put through the same clamp Root applies.
+//
+// That row is a single unwrapped line: frame() places it exactly one row above
+// the bar, so it is CUT by the pane rather than folded, with no ellipsis to show
+// anything was lost. Reading it out of the real View() rather than off the field
+// is what makes the assertion hold when the prefix ("✗ ") or the pane budget
+// changes — a test that only measured the constant would not notice either.
+func kitFormStatusRow(t *testing.T, s *InventoryItemFormScreen, width int) (string, string) {
+	t.Helper()
+	budget := screenBodyWidth(width)
+	for _, line := range strings.Split(s.View(), "\n") {
+		if !strings.Contains(line, "✗") {
+			continue
+		}
+		return line, clampToBox(line, budget, 1)
+	}
+	t.Fatalf("no refusal is on screen at %d columns:\n%s", width, s.View())
+	return "", ""
+}
+
+// TestItemFormKit_TheQuantityRefusalIsReadableAtTheFloor. A refusal the operator
+// cannot read is a refusal that did not happen, and the floor value is the only
+// actionable part of this one — it sits at the END of the sentence, which is
+// exactly what an unwrapped cut takes first.
+func TestItemFormKit_TheQuantityRefusalIsReadableAtTheFloor(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormFixture(), width)
+		kitFormCursorTo(t, s, fKitComponents)
+		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
+		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // the first component's editor
+
+		s.kitRowQty.SetValue("0")
+		s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if s.phase != itemFormPhaseKitRow {
+			t.Fatalf("at %d columns a zero quantity was accepted", width)
+		}
+
+		raw, clipped := kitFormStatusRow(t, s, width)
+		if clipped != raw {
+			t.Errorf("at %d columns the quantity refusal is cut from %q to %q", width, raw, clipped)
+		}
+		if !strings.Contains(clipped, "at least 1") {
+			t.Errorf("at %d columns the operator cannot read the floor: %q", width, clipped)
+		}
+	}
+}
+
+// TestItemFormKit_ThePickRefusalIsReadableAtTheFloor is the same rule on the
+// picker, where the message used to be built from the item's name and the reason
+// — 113 columns for a realistic name, so it was cut at 80, 100 AND 120, and at
+// the floor the reason never appeared at all.
+//
+// Shortening it costs nothing because the picker ROW the cursor is sitting on
+// already carries both readings (kitPickLabel appends "— <why>"), which the
+// second half of this test pins: the status line was DUPLICATING the row and
+// losing the copy. The row is FITTED to the pane rather than cut by it, so it
+// carries both readings wherever the pane can hold them and ellipsizes visibly
+// where it cannot — which is why the fixture holds a long name and a short one.
+func TestItemFormKit_ThePickRefusalIsReadableAtTheFloor(t *testing.T) {
+	const (
+		longName  = "Serialized calibration widget assembly"
+		shortName = "Cal widget"
+		why       = "serialized — receiving a kit records no serials"
+	)
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormFixture(), width)
+		s.kitItems = []omsapi.Item{
+			{ID: "itm-y", Name: "Yellow ink cartridge, high yield, wide-format", SKU: "YI-100-XL", Stock: 9},
+			{ID: "itm-s", Name: longName, IsSerialized: true},
+			{ID: "itm-t", Name: shortName, IsSerialized: true},
+		}
+		kitFormCursorTo(t, s, fKitComponents)
+		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
+		s.kitCursor = s.kitAddRow()
+		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // picker
+
+		// Refuse the one with the realistic long name: that is the case whose
+		// message used to run to 113 columns.
+		long := kitFormSelectPick(t, s, "itm-s")
+		if long.why == "" {
+			t.Fatalf("at %d columns the serialized item is not unpickable: %+v", width, s.kitPickOptions)
+		}
+		s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if len(s.kitRows) != 2 {
+			t.Fatalf("at %d columns an illegal component was added: %+v", width, s.kitRows)
+		}
+
+		raw, clipped := kitFormStatusRow(t, s, width)
+		if clipped != raw {
+			t.Errorf("at %d columns the pick refusal is cut from %q to %q", width, raw, clipped)
+		}
+		if !strings.Contains(clipped, "cannot be a kit component") {
+			t.Errorf("at %d columns the operator cannot read the refusal: %q", width, clipped)
+		}
+
+		// What the status line no longer says, the rows still do.
+		for _, name := range []string{longName, shortName} {
+			row := kitFormPickRow(t, s, name)
+			if trimmed := clampToBox(row, screenBodyWidth(width), 1); trimmed != row {
+				t.Errorf("at %d columns %q's row is cut from %q to %q", width, name, row, trimmed)
+			}
+			if !strings.Contains(row, name) && !strings.HasSuffix(row, "…") {
+				t.Errorf("at %d columns %q's row neither names it nor marks itself short: %q", width, name, row)
+			}
+			if lipgloss.Width(row) < lipgloss.Width(name+" — "+why) {
+				continue // the pane cannot hold the whole reading; the ellipsis says so
+			}
+			for _, want := range []string{name, why} {
+				if !strings.Contains(row, want) {
+					t.Errorf("at %d columns %q's row lost %q: %q", width, name, want, row)
+				}
+			}
+		}
+	}
+}
+
+// kitFormSelectPick puts the picker's cursor on one option and returns it.
+func kitFormSelectPick(t *testing.T, s *InventoryItemFormScreen, id string) kitPickOption {
+	t.Helper()
+	for i := range s.kitPickOptions {
+		if s.kitPickOptions[i].item.ID == id {
+			s.kitPickCursor = i
+			return s.kitPickOptions[i]
+		}
+	}
+	t.Fatalf("the picker does not offer %q: %+v", id, s.kitPickOptions)
+	return kitPickOption{}
+}
+
+// kitFormPickRow is the picker row for the item with this name, as the list
+// draws it — matched on the leading run of the name, which survives the fitting.
+func kitFormPickRow(t *testing.T, s *InventoryItemFormScreen, name string) string {
+	t.Helper()
+	head := name
+	if len(head) > 10 {
+		head = head[:10]
+	}
+	_, body := s.kitPickView()
+	for _, line := range body.text {
+		if strings.Contains(line, head) {
+			return strings.TrimSpace(line)
+		}
+	}
+	t.Fatalf("no picker row for %q:\n%s", name, strings.Join(body.text, "\n"))
+	return ""
+}
+
+// TestItemFormKit_TheUnansweredSaveRefusalIsReadableAtTheFloor. The third
+// message this bead sends to the status line: the save refused because "is this
+// a kit?" went unanswered. It used to carry the server's own error text, which
+// is unbounded — and the body above it already states the whole thing, WRAPPED,
+// so the status row was duplicating a note it could only lose.
+func TestItemFormKit_TheUnansweredSaveRefusalIsReadableAtTheFloor(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormUnanswered(t, width)
+		s.submit()
+
+		raw, clipped := kitFormStatusRow(t, s, width)
+		if clipped != raw {
+			t.Errorf("at %d columns the save refusal is cut from %q to %q", width, raw, clipped)
+		}
+		if !strings.Contains(clipped, "cannot save") {
+			t.Errorf("at %d columns the operator cannot read what was refused: %q", width, clipped)
+		}
+		// And the full reason is still on screen, in the body, where it wraps.
+		body := clampToBox(strings.Join(s.formLines().text, "\n"), screenBodyWidth(width), 200)
+		if flat := strings.Join(strings.Fields(body), " "); !strings.Contains(flat, "Kit status unavailable") {
+			t.Errorf("at %d columns the reason is nowhere on screen:\n%s", width, body)
+		}
 	}
 }

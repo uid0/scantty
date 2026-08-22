@@ -1413,8 +1413,14 @@ func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
 	// screen. Enter is still the save key and the bar still names it: this is the
 	// same shape as every other refusal here (a missing name, an impossible pack
 	// chain), where pressing it reports why rather than doing nothing.
+	//
+	// The message carries neither the server's text nor the full sentence: the
+	// status line is one UNWRAPPED row with 49 columns at the 80-column floor,
+	// and kitErrLines already states the whole thing — reason included — WRAPPED
+	// at the top of the body, where it cannot be cut. Repeating it here only lost
+	// it, since the server's text is unbounded.
 	if s.kitErr != "" {
-		s.errMsg = "kit status unavailable: " + s.kitErr + " — cannot save until it is known"
+		s.errMsg = "kit status unavailable — cannot save"
 		return s, Status(s.errMsg, StatusError)
 	}
 	// Refuse an impossible chain here rather than sending it: the backend rejects

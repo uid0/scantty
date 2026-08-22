@@ -679,10 +679,17 @@ func (s *InventoryItemFormScreen) moveKitRowFocus(delta int) {
 // list. The quantity floor is the serializer's own — a component quantity of
 // zero would credit nothing on receipt — checked here so the message lands
 // beside the row rather than at the end of a save.
+//
+// The wording is held to 49 columns, which is what an error has on the status
+// line at the 80-column floor: jdeStatusLine is one UNWRAPPED row and the pane
+// CUTS it, so a longer sentence loses its tail with nothing to show it did — and
+// the tail here is the floor value, the only actionable part of the refusal. The
+// field already gates typing to digits, so "whole number" was saying something
+// the operator cannot make untrue anyway.
 func (s *InventoryItemFormScreen) commitKitRow() {
 	qty, err := strconv.Atoi(strings.TrimSpace(s.kitRowQty.Value()))
 	if err != nil || qty < 1 {
-		s.kitRowErr = "quantity per kit must be a whole number of at least 1"
+		s.kitRowErr = "quantity per kit must be at least 1"
 		return
 	}
 	if s.kitRowEditing < 0 || s.kitRowEditing >= len(s.kitRows) {
@@ -858,11 +865,11 @@ type kitPickOption struct {
 // dimmed, because "why can't I add this?" is a question an operator will
 // otherwise ask the screen and get no answer to.
 func (s *InventoryItemFormScreen) applyKitPickFilter() {
-	// The refusal on screen names ONE option ("Serialized widget cannot be a kit
-	// component…"), so it dies with the option list it was about: reopening the
-	// picker or typing a filter rebuilds that list, and a message about a row
-	// nobody can see any more reads as a refusal of whatever is now under the
-	// cursor. Every path that rebuilds the options comes through here.
+	// The refusal on screen is about ONE option — "that item", the row the cursor
+	// was on — so it dies with the option list it was about: reopening the picker
+	// or typing a filter rebuilds that list, and a message about a row nobody can
+	// see any more reads as a refusal of whatever is now under the cursor. Every
+	// path that rebuilds the options comes through here.
 	s.kitPickErr = ""
 	q := strings.ToLower(strings.TrimSpace(s.pickSearch.Value()))
 	listed := map[string]bool{}
@@ -931,13 +938,20 @@ func (s *InventoryItemFormScreen) closeKitPick() {
 // An option that cannot legally be a component does NOT commit: the picker stays
 // open with its reason on screen, rather than accepting a row the save would
 // reject.
+//
+// The message names NEITHER the item nor the reason, and that is not a loss: the
+// row the cursor is sitting on already carries both (kitPickLabel appends
+// "— <why>"), and it is FITTED to the pane while this row is cut by it. Built
+// from the name and the reason the sentence ran to 113 columns for a realistic
+// name — over the 49 an error has on the status line at the 80-column floor, so
+// the reason it duplicated was the very part the cut ate, at every width.
 func (s *InventoryItemFormScreen) commitKitPick() {
 	if s.kitPickCursor < 0 || s.kitPickCursor >= len(s.kitPickOptions) {
 		return
 	}
 	opt := s.kitPickOptions[s.kitPickCursor]
 	if opt.why != "" {
-		s.kitPickErr = opt.item.Name + " cannot be a kit component: " + opt.why
+		s.kitPickErr = "that item cannot be a kit component"
 		return
 	}
 	s.kitNextKey++
