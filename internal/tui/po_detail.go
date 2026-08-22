@@ -1023,7 +1023,7 @@ func (s *PurchaseOrderDetailScreen) sheetLines() *jdeLines {
 
 	if po.Notes != "" {
 		l.Add(StyleJDEHeading.Render("Notes"))
-		for _, line := range jdeWrapNote(po.Notes, jdeStripWidth(s.bodyWidth(), 0)) {
+		for _, line := range jdeWrapNote(po.Notes, poMarginWidth(s.bodyWidth())) {
 			l.Add(jdeIndent + line)
 		}
 		l.Add("")
@@ -1057,25 +1057,51 @@ func (s *PurchaseOrderDetailScreen) addBand(l *jdeLines, labelWidth int, heading
 // or the payment schedule's "$1234.56 due 2026-08-14 · Net 30 from order date"
 // all overrun it. A folded value is legible at every width; a cut one is
 // legible at none.
+// poMinFoldWidth is the narrowest line jdeWrapNote can fold onto without losing
+// content invisibly: at two columns it can still spend one on the ellipsis that
+// marks an over-long word, and at one it cannot, so it drops the word instead.
+const poMinFoldWidth = 2
+
+// poMarginWidth is how wide a line drawn behind jdeIndent ALONE may be — the
+// budget jdeCaveatLines wraps to, for the callers on this sheet that carry
+// their own style and so cannot go through it. jdeStripWidth is the wrong
+// helper for them: it also subtracts the leader column, which a line hanging
+// off the margin rather than off a label does not have, and folding to it threw
+// away seven columns of pane on every wrapped note.
+func poMarginWidth(bodyWidth int) int {
+	if bodyWidth <= 0 {
+		return 0
+	}
+	if w := bodyWidth - len(jdeIndent); w > 0 {
+		return w
+	}
+	return 1
+}
+
 func (s *PurchaseOrderDetailScreen) addValueRow(l *jdeLines, f jdeField, labelWidth int) {
 	avail := jdeStripWidth(s.bodyWidth(), labelWidth)
 	if avail <= 0 || lipgloss.Width(f.Value) <= avail {
 		l.Add(renderJDEField(f, labelWidth))
 		return
 	}
-	wrapped := jdeWrapNote(f.Value, avail)
+	// Whether the fold is USABLE is decided from the width, before asking for
+	// it. jdeWrapNote is lossless-or-visible only from poMinFoldWidth up: there
+	// it ellipsises a word too wide for the line, so the cut announces itself.
+	// Below that it has no room for even the ellipsis and its narrow-width arm
+	// DROPS such a word silently, keeping only whatever single-column tokens the
+	// value happens to contain — "Acme Fasteners & Industrial Supply Co." comes
+	// back as "&", and the sheet then draws a value that is not the value with
+	// nothing on screen to say so. Which is worse than the empty return that
+	// used to panic here, because it looks like it worked.
+	var wrapped []string
+	if avail >= poMinFoldWidth {
+		wrapped = jdeWrapNote(f.Value, avail)
+	}
 	if len(wrapped) == 0 {
-		// jdeWrapNote returns NOTHING when it cannot fold: below two columns it
-		// has no room for even the ellipsis it would mark a broken word with, so
-		// it drops every word wider than the width and can come back empty. That
-		// is documented behaviour of the shared helper — every other caller
-		// ranges over the result — and indexing it here panicked the whole TUI
-		// at exactly one terminal width (52, where this strip computes to one
-		// column), which a terminal being dragged narrower passes through.
-		//
-		// A reading that vanished instead would be the same bug told quietly, so
-		// the row still draws its label and whatever of the value fits, visibly
-		// trimmed.
+		// No usable fold — too narrow for one, or nothing to fold. The row still
+		// draws its label and as much of the value as fits, visibly trimmed: a
+		// reading that vanished, or one silently reduced to a fragment, is the
+		// same bug told quietly.
 		head := f
 		head.Value = fitCell(f.Value, avail)
 		l.Add(renderJDEField(head, labelWidth))
@@ -1928,7 +1954,7 @@ func (s *PurchaseOrderDetailScreen) orderPadHeader() []string {
 		// tells the operator to go look.
 		warn := fmt.Sprintf("⚠ %d %s no supplier part # (omitted): %s",
 			miss, plural("line", miss), strings.Join(s.orderPadExport.MissingSku, ", "))
-		for _, line := range jdeWrapNote(warn, jdeStripWidth(s.bodyWidth(), 0)) {
+		for _, line := range jdeWrapNote(warn, poMarginWidth(s.bodyWidth())) {
 			head = append(head, jdeIndent+StyleStatusWarn.Render(line))
 		}
 	}

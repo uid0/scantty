@@ -585,6 +585,100 @@ func TestPOView_OrderPadPartNumberUsesThePaneItHas(t *testing.T) {
 	})
 }
 
+// poRowWhileScrolling pages the sheet and returns the first line of the CLIPPED
+// render that carries `anchor`, or "" if it never appears.
+func poRowWhileScrolling(s *PurchaseOrderDetailScreen, r Root, anchor string) string {
+	s.scroll = 0
+	for i := 0; i <= s.sheetLines().Len(); i++ {
+		for _, line := range strings.Split(r.View(), "\n") {
+			if strings.Contains(line, anchor) {
+				return line
+			}
+		}
+		before := s.scroll
+		s.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		if s.View(); s.scroll == before {
+			break
+		}
+	}
+	return ""
+}
+
+// TestPOView_NarrowPaneNeverShowsAFragmentOfAValue: a reading is either whole,
+// or visibly cut. It is never quietly replaced by a piece of itself.
+//
+// jdeWrapNote only ellipsises an over-long word from two columns up; below that
+// it drops the word and keeps whatever single-column tokens the value happens to
+// contain. "Acme Fasteners & Industrial Supply Co." folded to one column came
+// back as "&", and the sheet drew `Supplier ..... &` — a value that is not the
+// value, with nothing to say so. Its sibling rows, whose values have no
+// one-column word, rendered "…" at the same width, so one band showed two
+// different degenerate behaviours at once.
+//
+// The crash sweep below could not catch this: a fragment is not a panic, and the
+// frame is not empty. So this asserts CONTENT, on the clipped render.
+func TestPOView_NarrowPaneNeverShowsAFragmentOfAValue(t *testing.T) {
+	// From the narrowest width at which the leader column still fits the pane —
+	// below it the strip has no room at all and the row draws untruncated, which
+	// is the pane-is-too-small floor rather than a fold — up to the first
+	// legibility width.
+	for width := 52; width < 80; width++ {
+		t.Run(fmt.Sprintf("%dcol", width), func(t *testing.T) {
+			s, r := poDetailAt(t, width)
+			// "Supplier ....." and not "Supplier": the anchor has to miss the
+			// Identifiers band's "Supplier PO #" row.
+			row := poRowWhileScrolling(s, r, "Supplier .....")
+			if row == "" {
+				t.Fatalf("the Supplier row never reaches the terminal at %d columns", width)
+			}
+			// Whole (the value, or a fold of it, starts at its first word) or
+			// visibly cut. A fragment is neither.
+			whole := strings.Contains(row, "Acme")
+			cut := strings.Contains(row, "…")
+			if !whole && !cut {
+				t.Errorf("the %d-column Supplier row shows neither the value nor a mark that it was cut: %q",
+					width, row)
+			}
+		})
+	}
+}
+
+// TestPOView_MarginNotesUseTheWholePane: a line drawn behind jdeIndent alone has
+// the pane minus two columns, not minus the leader column it does not hang off.
+// Both the Notes band and the order pad's omitted-lines warning wrapped to
+// jdeStripWidth, which also subtracts the seven-column leader, so both folded
+// seven columns early and pushed words onto rows that had room beside them.
+func TestPOView_MarginNotesUseTheWholePane(t *testing.T) {
+	// Both phrases fit the corrected budget at 80 (49 columns) and not the old
+	// one (42), so each proves the fold moved. A substring spanning a wrap point
+	// cannot match, because the wrap puts a newline through it.
+	t.Run("notes", func(t *testing.T) {
+		s, r := poDetailAt(t, 80)
+		const want = "Deliver to the loading dock; the front desk"
+		if !poSeenWhileScrolling(s, r, want) {
+			t.Errorf("the Notes band still folds before the pane needs it; %q never lands on one line:\n%s",
+				want, r.View())
+		}
+	})
+
+	t.Run("order pad warning", func(t *testing.T) {
+		s, r := poDetailAt(t, 80)
+		s.orderPad = true
+		s.orderPadExport = &omsapi.OrderPadExport{
+			Text:       "M3-HEX-BOLT-SS\t5",
+			Supplier:   "Acme Fasteners & Industrial Supply Co.",
+			Filename:   "PO-2026-0042-order.csv",
+			LineCount:  1,
+			MissingSku: []string{"Gadget", "Bracket"},
+		}
+		const want = "(omitted): Gadget,"
+		if out := r.View(); !strings.Contains(out, want) {
+			t.Errorf("the pad warning still folds before the pane needs it; %q never lands on one line:\n%s",
+				want, out)
+		}
+	})
+}
+
 // TestPOView_NarrowPaneNeverCrashes: every width the layout can be ASKED for
 // has to render, not just the three it has to be legible at.
 //
