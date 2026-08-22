@@ -1021,10 +1021,10 @@ func actionBarKeyLines(width int, items []actionBarItem) []string {
 		if it.Key == "" {
 			continue
 		}
-		p := part{text: StyleActionBarKey.Render(it.Key), w: len(it.Key)}
+		p := part{text: StyleActionBarKey.Render(it.Key), w: lipgloss.Width(it.Key)}
 		if it.Label != "" {
 			p.text += StyleActionBar.Render("=" + it.Label)
-			p.w += 1 + len(it.Label)
+			p.w += 1 + lipgloss.Width(it.Label)
 		}
 		parts = append(parts, p)
 	}
@@ -1284,12 +1284,19 @@ const jdeMinFieldWidth = 10
 //
 // Two things give way, in this order:
 //
-//	the input area shrinks   — a shorter field still takes the whole value; a
-//	                           bubbles textinput scrolls what does not fit.
+//	the input area shrinks   — the jdeField's Width, which is the underscored
+//	                           or reverse-video FILL drawn after the value.
 //	the hint moves under it  — once the field is down to jdeMinFieldWidth, the
 //	                           hint becomes a note line indented to the input
 //	                           area (jdeNoteLines), which is the fold this layer
 //	                           already uses for a note too long to ride along.
+//
+// What it does NOT size is the bubbles textinput that produced f.Value. That
+// box has its own Width, and in bubbles v1.0.0 a Width of 0 means "no scrolling
+// viewport": View() then renders the WHOLE value, so a long value walks straight
+// past the width computed here and out of the pane. Bounding the box is the
+// CALLER's job today — see poFitInputValue in po_detail.go — and moving it in
+// here is bead scantty-jde-textinput-width.
 //
 // bodyWidth of 0 means the pane is not sized yet, which — as everywhere in this
 // file — means "do not truncate".

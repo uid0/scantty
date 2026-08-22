@@ -529,20 +529,25 @@ var poAttachHints = map[int]string{
 func (s *PurchaseOrderAttachmentsScreen) viewUpload() string {
 	fields := make([]jdeField, poAttachFieldCount)
 	for i := 0; i < poAttachFieldCount; i++ {
-		focused := s.uploadFocus == i
 		fields[i] = jdeField{
 			Label:   poAttachLabels[i],
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.uploadInputs[i], focused),
 			Width:   34,
 			Hint:    poAttachHints[i],
-			Focused: focused,
+			Focused: s.uploadFocus == i,
 		}
+	}
+	// poFitInputValue, not jdeInputValue: a 500-character file path in a box
+	// nothing has bounded renders in full and walks off the pane. See the bead
+	// note on the helper in po_detail.go.
+	labelW := jdeLabelWidth(fields)
+	for i := range fields {
+		fields[i].Value = poFitInputValue(&s.uploadInputs[i], fields[i], labelW, s.bodyWidth(), fields[i].Focused)
 	}
 	body := &jdeLines{}
 	body.Add(StyleJDEHeading.Render("Upload attachment"))
 	body.Add("")
-	body.AddFittedFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
+	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.uploadFocus,
 		jdeStatusLine(s.uploading, "Uploading…", s.errMsg),
 		[]actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})

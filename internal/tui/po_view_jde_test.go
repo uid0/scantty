@@ -52,6 +52,12 @@ func barHas(items []actionBarItem, key, label string) bool {
 // poViewPO is a purchase order that exercises every band of the detail sheet:
 // both levels of association, an agreement, terms with a schedule, notes, a
 // received line, a voided line and an attachment.
+//
+// The received line and the voided line are SEPARATE lines on purpose. They
+// were once the same line, and because poLineFlag prefers "[voided]" — which is
+// exactly the 8 columns the old grid budgeted — the received flag "✓ received"
+// (10 columns) was never rendered at any width, so the row it overran the pane
+// by two columns on went unnoticed.
 func poViewPO() *omsapi.PurchaseOrder {
 	sent := time.Date(2026, 8, 2, 9, 0, 0, 0, time.UTC)
 	days := 12
@@ -78,9 +84,9 @@ func poViewPO() *omsapi.PurchaseOrder {
 		PaymentSchedule:       &omsapi.POPaymentSchedule{Amount: omsapi.DecimalString("1234.56"), DueDate: "2026-08-31", Basis: "Net 30 from order date"},
 		EstimatedTotal:        omsapi.DecimalString("1234.56"),
 		ActualTotal:           omsapi.DecimalString("240.00"),
-		TotalItems:            2,
-		TotalQuantity:         7,
-		TotalReceivedQuantity: 2,
+		TotalItems:            3,
+		TotalQuantity:         11,
+		TotalReceivedQuantity: 6,
 		Currency:              "USD",
 		Notes:                 "Deliver to the loading dock; the front desk cannot sign for pallets.",
 		SupplierAgreementRef:  &omsapi.SupplierAgreementRef{ID: 4, Name: "2026 nonprofit pricing"},
@@ -107,6 +113,14 @@ func poViewPO() *omsapi.PurchaseOrder {
 				ActualCost:         omsapi.DecimalString("24.00"),
 				ActualShipmentDate: "2026-08-05",
 				IsVoided:           true, VoidReason: "supplier discontinued the part",
+			},
+			{
+				ID: "line-3", Description: "Bracket",
+				QuantityOrdered: 4, QuantityReceived: 4, IsFullyReceived: true,
+				UnitCostOrdered:      omsapi.DecimalString("2.5000"),
+				EstimatedCost:        omsapi.DecimalString("10.00"),
+				ExpectedShipmentDate: "2026-08-06",
+				ActualShipmentDate:   "2026-08-06",
 			},
 		},
 		Attachments: []omsapi.PurchaseOrderAttachment{{
@@ -186,11 +200,16 @@ func TestPOView_ReadingsSurviveTheClip(t *testing.T) {
 				"bob on 2026-08-02",
 				"Identifiers", "SUP-88213", "SO-4417",
 				"Dates", "2026-08-01", "2026-08-20", "12 days since ordered",
-				"Totals", "$1234.56 USD", "received 2",
+				"Totals", "$1234.56 USD", "received 6",
 				"Terms", "Net 30", "FOB Destination",
 				"Notes", "Deliver to the loading dock;", "pallets.",
-				"Line items (2)", "PART M3-HEX-BOLT-SS", "type Inventory item",
+				"Line items (3)", "PART M3-HEX-BOLT-SS", "type Inventory item",
 				"ordered for: WO-9Z8Y", "[voided]", "supplier discontinued the part",
+				// The received-but-not-voided flag: 10 columns, and the cell the
+				// grid used to budget 8 for. A row that overruns loses its tail
+				// here, so "received" landing whole is what says the budget is
+				// right.
+				"✓ received",
 				"Attachments (1)", "sales-order-confirmation.pdf",
 			} {
 				if !poSeenWhileScrolling(s, r, want) {
@@ -314,6 +333,60 @@ func assertClipped(t *testing.T, out string, width int, name string, want ...str
 	}
 }
 
+// TestPOView_TypedValueLongerThanItsFieldStaysInThePane: an operator typing a
+// path longer than the field must still see what they are typing.
+//
+// jdeFitRow sizes the row's FILL, not the box behind it, and a bubbles box left
+// at Width 0 has no scrolling viewport — it renders the whole value. A 60-column
+// path at 80 columns therefore drew an ~80-column row into a 51-column pane,
+// clampToBox cut the tail, and the caret — which sits at the tail — went off the
+// screen. Every existing test used values short enough to fit, which is why it
+// was invisible.
+//
+// The assertion is made on the CLIPPED render, and it is that ONE line of it
+// carries both the label and the end of the value: a row that overran would
+// still show the label (the pane cuts the tail) but would have lost the tail
+// the caret is standing on.
+func TestPOView_TypedValueLongerThanItsFieldStaysInThePane(t *testing.T) {
+	// Wider than the 34-column field at every width under test, so the box has
+	// to scroll rather than merely fit.
+	const path = "/home/operator/scans/2026-08/incoming/purchase-order-0042.pdf"
+	const head, tail = "/home/operator", "order-0042.pdf"
+	if len(path) <= 34 {
+		t.Fatalf("fixture path is %d columns, which fits the field — it proves nothing", len(path))
+	}
+
+	for _, width := range poViewWidths {
+		t.Run(widthName(width), func(t *testing.T) {
+			s, r := poAttachAt(t, width)
+			s.openUpload()
+			// One burst of runes and no Enter: the same shape a barcode scanner
+			// delivers, and what a paste of a path looks like.
+			s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(path)})
+
+			out := r.View()
+			var row string
+			for _, line := range strings.Split(out, "\n") {
+				if strings.Contains(line, "File path") {
+					row = line
+					break
+				}
+			}
+			if row == "" {
+				t.Fatalf("no File path row in the %d-column render:\n%s", width, out)
+			}
+			if !strings.Contains(row, tail) {
+				t.Errorf("the caret end %q of the typed path was clipped off the %d-column row: %q",
+					tail, width, row)
+			}
+			if strings.Contains(row, head) {
+				t.Errorf("the %d-column row still shows the start %q of a %d-column path, so the box never scrolled: %q",
+					width, head, len(path), row)
+			}
+		})
+	}
+}
+
 // TestPOView_NoRowOverrunsThePane: the positive form of the same rule. Every
 // line every purchasing viewing surface draws must fit the body width, at every
 // width — because clampToBox cuts rather than wraps, and a cut line says
@@ -431,6 +504,16 @@ func poViewSurfaces(t *testing.T, width int) []poViewSurface {
 	upload, _ := poAttachAt(t, width)
 	upload.openUpload()
 	out = append(out, poViewSurface{"upload sheet", upload.View,
+		[]actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}, width})
+
+	// The same sheet with a value LONGER than its field, because an empty box
+	// and a box holding a 61-column path are different rows and only the second
+	// one can overrun.
+	typed, _ := poAttachAt(t, width)
+	typed.openUpload()
+	typed.Update(tea.KeyMsg{Type: tea.KeyRunes,
+		Runes: []rune("/home/operator/scans/2026-08/incoming/purchase-order-0042.pdf")})
+	out = append(out, poViewSurface{"upload sheet, long path", typed.View,
 		[]actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}, width})
 
 	return out

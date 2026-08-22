@@ -1185,6 +1185,29 @@ const (
 	poGridCoreW = len(jdeIndent) + poGridNumW + poGridGutter + poGridGutter + poGridQtyW + poGridGutter + poGridCostW
 )
 
+// poFlagBudget is how wide the flag cell has to be RESERVED: the widest string
+// poLineFlag can actually return, in display columns.
+//
+// It is measured off poLineFlag rather than taken from poGridFlagW because the
+// two disagree and poGridFlagW is the one that is wrong. poGridFlagW is 8 —
+// exactly "[voided]" — but a received line's flag is "✓ received", which is 10,
+// so budgeting 8 let the full-grid row measure two columns wider than the pane
+// and clampToBox ate the tail: "✓ receiv". That is the same silent truncation
+// this grid sheds cells to avoid, and the tests missed it only because the
+// fixture's received line was ALSO voided, which takes the 8-wide branch.
+//
+// poGridFlagW itself is left alone: po_edit.go shares it, and the entry screens
+// are a separate slice.
+var poFlagBudget = func() int {
+	widest := 0
+	for _, li := range []omsapi.PurchaseOrderItem{{IsVoided: true}, {IsFullyReceived: true}} {
+		if w := lipgloss.Width(poLineFlag(li)); w > widest {
+			widest = w
+		}
+	}
+	return widest
+}()
+
 // poFitLineGrid drops the flag column first and the ship-date column second,
 // because that is the order of how much a narrow pane loses by it: the flag is
 // one word that reads fine as a reading, the ship date is a whole reading of its
@@ -1203,7 +1226,7 @@ func poFitLineGrid(bodyWidth int) poLineGridFit {
 		}
 		return w
 	}
-	full := poGridCoreW + poGridGutter + poGridShipW + poGridGutter + poGridFlagW
+	full := poGridCoreW + poGridGutter + poGridShipW + poGridGutter + poFlagBudget
 	if w := bodyWidth - full; w >= minItemW {
 		return poLineGridFit{itemW: clamp(w), ship: true, flag: true}
 	}
@@ -1514,23 +1537,84 @@ func fitCellIf(s string, w int) string {
 // Modals
 // ---------------------------------------------------------------------------
 
+// poFitInputValue bounds one input box to the width jdeFitRow gives its row and
+// returns the value string to hang on that row. Every text row on the four
+// sheets this slice converts goes through it.
+//
+// LOCAL WORKAROUND — bead scantty-jde-textinput-width. DELETE this helper and
+// its call sites on the four sheets (po_detail.go's ship, void and deliver
+// sheets and po_attachments.go's upload sheet) when the shared-layer fix lands.
+//
+// jdeFitRow sizes the jdeField's FILL, not the bubbles textinput that produced
+// the value, and in bubbles v1.0.0 a box left at Width 0 has no scrolling
+// viewport at all — handleOverflow returns early and View() draws the ENTIRE
+// value. A 60-column path typed into the upload sheet at 80 columns therefore
+// drew an ~80-column row into a 51-column pane: clampToBox cut it and the caret
+// sat off the end of the screen, so the operator was typing blind. Giving the
+// box a Width gives it back the viewport, and the row then stays inside the
+// pane with the caret on it.
+//
+// It lives in the purchasing files rather than in jde_form.go deliberately. The
+// shared layer is being rendered through concurrently by the inventory
+// conversion, and shifting its behaviour under a live review would cost rework
+// on screens already signed off; keeping the workaround here makes lifting it
+// one obvious deletion.
+//
+// The Width is set on the STORED box and not on a render-time copy because
+// bubbles COMPUTES the scrolling window in Update/SetCursor and only READS it in
+// View: a Width set on a copy would leave the stale whole-value window in place
+// and change nothing on screen. Re-seating the cursor after the change is what
+// makes the box recompute that window when the pane resizes under a value that
+// has already been typed.
+func poFitInputValue(ti *textinput.Model, shape jdeField, labelWidth, bodyWidth int, focused bool) string {
+	// bodyWidth of 0 is "the pane is not sized yet", which everywhere in this
+	// layer means "do not truncate".
+	fitted, _ := jdeFitRow(shape, labelWidth, bodyWidth)
+	if bodyWidth <= 0 || fitted.Width <= 0 {
+		return jdeInputValue(*ti, focused)
+	}
+
+	// The box is asked for ONE COLUMN LESS than the row has, because a focused
+	// bubbles box draws its caret in a cell of its own PAST its Width — so a box
+	// given the row's whole width renders width+1 and puts every focused row
+	// exactly one column over the pane.
+	if box := fitted.Width - 1; box > 0 && ti.Width != box {
+		ti.Width = box
+		pos := ti.Position()
+		ti.CursorEnd()
+		ti.SetCursor(pos)
+	}
+	value := jdeInputValue(*ti, focused)
+
+	// A BLURRED box does not go through View() at all — jdeEchoValue reads the
+	// raw value so that a masked field cannot give up its mask — and the raw
+	// value has no viewport applied to it. The same width therefore has to be
+	// imposed here, or a row overruns the moment the cursor moves off it.
+	if lipgloss.Width(value) > fitted.Width {
+		value = truncateVisible(value, fitted.Width)
+	}
+	return value
+}
+
 // viewShip is the mark-shipped prompt: which line, and when it went.
 func (s *PurchaseOrderDetailScreen) viewShip() string {
 	fields := []jdeField{
 		{
 			Label: "Line #", Kind: jdeText,
-			Value:   jdeInputValue(s.shipIdxIn, s.shipFocus == 0),
 			Width:   6,
 			Hint:    fmt.Sprintf("1-%d", len(s.po.Items)),
 			Focused: s.shipFocus == 0,
 		},
 		{
 			Label: "Shipment date", Kind: jdeText,
-			Value:   jdeInputValue(s.shipDateIn, s.shipFocus == 1),
 			Width:   12,
 			Hint:    "YYYY-MM-DD · blank is today, '-' clears",
 			Focused: s.shipFocus == 1,
 		},
+	}
+	labelW := jdeLabelWidth(fields)
+	for i, box := range []*textinput.Model{&s.shipIdxIn, &s.shipDateIn} {
+		fields[i].Value = poFitInputValue(box, fields[i], labelW, s.bodyWidth(), fields[i].Focused)
 	}
 	body := &jdeLines{}
 	body.Add(StyleJDEHeading.Render("Mark item shipped"))
@@ -1539,7 +1623,7 @@ func (s *PurchaseOrderDetailScreen) viewShip() string {
 		body.Add(line)
 	}
 	body.Add("")
-	body.AddFittedFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
+	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.shipFocus,
 		jdeStatusLine(s.shipPending, "Submitting…", s.shipErr),
 		[]actionBarItem{{"Enter", "Mark shipped"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
@@ -1551,11 +1635,12 @@ func (s *PurchaseOrderDetailScreen) viewShip() string {
 func (s *PurchaseOrderDetailScreen) viewVoid() string {
 	field := jdeField{
 		Label: "Reason", Kind: jdeText,
-		Value:   jdeInputValue(s.voidReasonIn, true),
 		Width:   34,
 		Hint:    "optional",
 		Focused: true,
 	}
+	labelW := jdeLabelWidth([]jdeField{field})
+	field.Value = poFitInputValue(&s.voidReasonIn, field, labelW, s.bodyWidth(), true)
 	body := &jdeLines{}
 	body.Add(StyleStatusWarn.Render("Void purchase order"))
 	body.Add("")
@@ -1565,7 +1650,7 @@ func (s *PurchaseOrderDetailScreen) viewVoid() string {
 		body.Add(line)
 	}
 	body.Add("")
-	body.AddFittedFields([]jdeField{field}, jdeLabelWidth([]jdeField{field}), s.bodyWidth(), 0)
+	body.AddFittedFields([]jdeField{field}, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, 0,
 		jdeStatusLine(s.voidPending, "Voiding…", s.voidErr),
 		[]actionBarItem{{"Enter", "Void order"}, {"Esc", "Cancel"}})
@@ -1595,15 +1680,17 @@ var poDeliverWidths = map[int]int{
 func (s *PurchaseOrderDetailScreen) viewDeliver() string {
 	fields := make([]jdeField, poDeliverFieldCount)
 	for i := 0; i < poDeliverFieldCount; i++ {
-		focused := s.deliverFocus == i
 		fields[i] = jdeField{
 			Label:   poDeliverLabels[i],
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.deliverInputs[i], focused),
 			Width:   poDeliverWidths[i],
 			Hint:    poDeliverHints[i],
-			Focused: focused,
+			Focused: s.deliverFocus == i,
 		}
+	}
+	labelW := jdeLabelWidth(fields)
+	for i := range fields {
+		fields[i].Value = poFitInputValue(&s.deliverInputs[i], fields[i], labelW, s.bodyWidth(), fields[i].Focused)
 	}
 	body := &jdeLines{}
 	body.Add(StyleJDEHeading.Render("Mark delivered"))
@@ -1612,7 +1699,7 @@ func (s *PurchaseOrderDetailScreen) viewDeliver() string {
 		body.Add(line)
 	}
 	body.Add("")
-	body.AddFittedFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
+	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.deliverFocus,
 		jdeStatusLine(s.deliverPending, "Submitting…", s.deliverErr),
 		[]actionBarItem{{"Enter", "Mark delivered"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
@@ -1673,10 +1760,11 @@ func (s *PurchaseOrderDetailScreen) viewOrderPad() string {
 			[]actionBarItem{{"Esc", "Close"}})
 	}
 	if s.orderPadErr != "" {
+		// The error lives on the status row above the bar and NOWHERE else, as
+		// on every other converted phase: a caveat body here printed the same
+		// sentence twice on one frame, once plain and once with the status
+		// row's "✗ " in front of it.
 		body := &jdeLines{}
-		for _, line := range jdeCaveatLines(s.orderPadErr, s.bodyWidth()) {
-			body.Add(line)
-		}
 		return s.frameWrapped([]string{StyleJDEHeading.Render("Order pad"), ""}, body, 0,
 			jdeStatusLine(false, "", s.orderPadErr),
 			[]actionBarItem{{"Esc", "Close"}})
