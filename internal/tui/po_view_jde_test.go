@@ -21,6 +21,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -582,6 +583,64 @@ func TestPOView_OrderPadPartNumberUsesThePaneItHas(t *testing.T) {
 			t.Errorf("the quantity is the half of the row being checked and must survive:\n%s", out)
 		}
 	})
+}
+
+// TestPOView_NarrowPaneNeverCrashes: every width the layout can be ASKED for
+// has to render, not just the three it has to be legible at.
+//
+// A terminal being dragged narrower fires a WindowSizeMsg for every column it
+// passes through, and a panic in a render path takes the whole TUI down and
+// leaves the terminal in raw mode — a class of failure the 80/100/120 tests
+// cannot see. addValueRow indexed jdeWrapNote's first line without checking it
+// returned one, and jdeWrapNote comes back EMPTY when the strip is under two
+// columns and every word is wider than it; at 80/100/120 the strip is never
+// that narrow, so only a drag through 52 hit it.
+func TestPOView_NarrowPaneNeverCrashes(t *testing.T) {
+	// From the narrowest a terminal is plausibly dragged to, up to the first
+	// legibility width. Each one renders every surface of every screen: a panic
+	// fails the run and names the width it happened at.
+	for width := 20; width < 80; width++ {
+		t.Run(fmt.Sprintf("%dcol", width), func(t *testing.T) {
+			for _, tc := range poViewSurfaces(t, width) {
+				if tc.view() == "" {
+					t.Errorf("%s rendered nothing at %d columns", tc.name, width)
+				}
+			}
+			// And through Root, which is what clips — the same widths again on
+			// the path the terminal actually sees.
+			_, detail := poDetailAt(t, width)
+			_, attach := poAttachAt(t, width)
+			for _, r := range []Root{detail, attach} {
+				if r.View() == "" {
+					t.Errorf("Root rendered nothing at %d columns", width)
+				}
+			}
+		})
+	}
+}
+
+// TestPOView_OrderPadKeepsAManyDigitQuantity: the pad's quantity column is a
+// NUMBER column. "100000…" is not a shortened quantity, it is a different
+// quantity that looks plausible — the same rule the line grid already follows,
+// which the pad had not been given.
+func TestPOView_OrderPadKeepsAManyDigitQuantity(t *testing.T) {
+	const qty = "1000000"
+	for _, width := range poViewWidths {
+		t.Run(widthName(width), func(t *testing.T) {
+			s, r := poDetailAt(t, width)
+			s.orderPad = true
+			s.orderPadExport = &omsapi.OrderPadExport{
+				Text: "M3-HEX-BOLT-SS\t" + qty, Filename: "PO-2026-0042-order.csv", LineCount: 1,
+			}
+			out := r.View()
+			if !strings.Contains(out, qty) {
+				t.Errorf("the %d-column pad shortened a quantity into a different number:\n%s", width, out)
+			}
+			if !strings.Contains(out, "M3-HEX-BOLT-SS") {
+				t.Errorf("the part number went missing from the %d-column pad:\n%s", width, out)
+			}
+		})
+	}
 }
 
 // TestPOView_NoRowOverrunsThePane: the positive form of the same rule. Every

@@ -768,21 +768,32 @@ func (s *PurchaseOrderDetailScreen) orderPadLines() *jdeLines {
 		l.Add(jdeIndent + StyleMuted.Render("No lines have a supplier part number — nothing to order."))
 		return l
 	}
-	const qtyW = 6
-	// 28 is the FLOOR the pre-columnar "%-28s %s" row used, not a ceiling: the
-	// part number is the one field an operator retypes into a vendor site, so a
-	// 40-character manufacturer number must print whole while the pane has room
-	// for it. The column therefore grows to the widest number actually on the
-	// pad and is capped only by what the pane can give.
-	const partMinW = 28
-	partW := partMinW
+	// Both columns are measured from the pad's own values. 28 and 6 are FLOORS,
+	// the way the pre-columnar "%-28s %s" row used them, not ceilings: the part
+	// number is the field an operator retypes into a vendor site and the
+	// quantity is a NUMBER, and a shortened number is a wrong number — "100000…"
+	// reads as a quantity that is not the quantity. So the quantity column takes
+	// what it needs and the part column gives up the room, which is the same
+	// rule the line grid follows (poFitLineGrid).
+	//
+	// poPadQtyMaxW is past any quantity an order can carry; a token wider than
+	// that is malformed export data rather than a count, and ellipsising it is
+	// then the honest signal that it is not what it looks like.
+	const partMinW, qtyMinW, poPadQtyMaxW = 28, 6, 12
+	partW, qtyW := partMinW, qtyMinW
 	for _, line := range strings.Split(s.orderPadExport.Text, "\n") {
-		part, _, found := strings.Cut(line, "\t")
+		part, qty, found := strings.Cut(line, "\t")
 		if !found {
 			continue
 		}
 		if w := lipgloss.Width(part); w > partW {
 			partW = w
+		}
+		if w := lipgloss.Width(qty); w > qtyW {
+			if w > poPadQtyMaxW {
+				w = poPadQtyMaxW
+			}
+			qtyW = w
 		}
 	}
 	if body := s.bodyWidth(); body > 0 {
@@ -1053,6 +1064,23 @@ func (s *PurchaseOrderDetailScreen) addValueRow(l *jdeLines, f jdeField, labelWi
 		return
 	}
 	wrapped := jdeWrapNote(f.Value, avail)
+	if len(wrapped) == 0 {
+		// jdeWrapNote returns NOTHING when it cannot fold: below two columns it
+		// has no room for even the ellipsis it would mark a broken word with, so
+		// it drops every word wider than the width and can come back empty. That
+		// is documented behaviour of the shared helper — every other caller
+		// ranges over the result — and indexing it here panicked the whole TUI
+		// at exactly one terminal width (52, where this strip computes to one
+		// column), which a terminal being dragged narrower passes through.
+		//
+		// A reading that vanished instead would be the same bug told quietly, so
+		// the row still draws its label and whatever of the value fits, visibly
+		// trimmed.
+		head := f
+		head.Value = fitCell(f.Value, avail)
+		l.Add(renderJDEField(head, labelWidth))
+		return
+	}
 	head := f
 	head.Value = wrapped[0]
 	l.Add(renderJDEField(head, labelWidth))
@@ -1733,15 +1761,25 @@ func poFitInputValue(ti *textinput.Model, shape jdeField, labelWidth, bodyWidth 
 	}
 	ti.TextStyle = lipgloss.NewStyle()
 
-	// A BLURRED box does not go through View() at all — jdeEchoValue reads the
-	// raw value so that a masked field cannot give up its mask — so the viewport
-	// never applies and the width has to be imposed here. The value is plain
-	// text, so cutting it is safe; fitCell and not truncateVisible because the
-	// cut has to ANNOUNCE itself, the way poLineContinuation, poAttachmentLines
-	// and orderPadHeader all do. An operator proof-reading a file path before
-	// pressing Enter must not be shown a shortened path that reads like a whole
-	// one.
-	return fitCell(jdeInputValue(*ti, false), fitted.Width)
+	// A blurred box USUALLY hands back its raw value — jdeEchoValue reads it
+	// straight out, so that a masked field cannot give up its mask — and that
+	// value has had no viewport applied to it, so the width has to be imposed
+	// here. fitCell and not truncateVisible because the cut has to ANNOUNCE
+	// itself, the way poLineContinuation, poAttachmentLines and orderPadHeader
+	// all do: an operator proof-reading a file path before pressing Enter must
+	// not be shown a shortened path that reads like a whole one.
+	//
+	// USUALLY, not always. jdeInputValue also returns the RENDERED View() for an
+	// empty box that has a Placeholder, focused or not. No field on these four
+	// sheets carries a placeholder today, but the rule about not cutting styled
+	// text has to survive someone adding one, so the branch checks for itself
+	// rather than trusting that. A value carrying escapes is left alone: it came
+	// from View() and is therefore already bounded by ti.Width.
+	blurred := jdeInputValue(*ti, false)
+	if strings.ContainsRune(blurred, '\x1b') {
+		return blurred
+	}
+	return fitCell(blurred, fitted.Width)
 }
 
 // viewShip is the mark-shipped prompt: which line, and when it went.
