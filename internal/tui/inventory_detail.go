@@ -582,7 +582,11 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// them — so for anything else p is a silent no-op, the same shape as
 			// i/b for a non-serialized item. Lowercase p is free in the global
 			// hotkey map, so it falls through to the screen.
-			if s.item != nil && s.item.CountMode == omsapi.CountModeOpenClosed {
+			//
+			// A KIT is one of those anything-elses however its count mode reads:
+			// packing is a stock operation and a kit holds none, so the footer
+			// does not name the key and pressing it must therefore do nothing.
+			if s.item != nil && s.item.CountMode == omsapi.CountModeOpenClosed && !s.isKit() {
 				return s.openPack()
 			}
 		case "i":
@@ -721,17 +725,25 @@ func (s *InventoryDetailScreen) View() string {
 	}
 	// The pack keys only exist for a sealed+open item, so they are only hinted
 	// there — an each-mode item's footer is untouched.
-	if s.item.CountMode == omsapi.CountModeOpenClosed {
+	//
+	// And never for a KIT, which is a second-order consequence of this same
+	// change worth naming: making SetItemCountMode kit-routable is what lets an
+	// operator put a kit into open/closed counting at all, which is what would
+	// otherwise bring them within reach of pack-container — a detail action on
+	// the kit-excluding item viewset, so a flat 404 for a kit id. Guarded on the
+	// INSERT rather than stripped again below, because an insert-then-remove
+	// shape is what let this key slip through the kit stripping in the first
+	// place.
+	if s.item.CountMode == omsapi.CountModeOpenClosed && !s.isKit() {
 		hint = strings.Replace(hint, "c count · ", "c count · p packs · ", 1)
 	}
 	// A kit carries no stock of its own — receiving one credits its components —
-	// so counting and consuming it are not slow or unsupported, they are
+	// so counting, consuming and packing it are not slow or unsupported, they are
 	// meaningless. Worse than meaningless for the count: the backend writes stock
 	// through save(update_fields=…) without full_clean(), so the model's own "a
 	// kit cannot carry stock" check never runs and the number would PERSIST as
 	// one nothing can ever draw down. Dropped from the bar AND from the key
-	// dispatch, because a key the bar does not name must do nothing. Done last so
-	// the pack key above keeps whatever the line already said about it.
+	// dispatch, because a key the bar does not name must do nothing.
 	if s.isKit() {
 		hint = strings.Replace(hint, "c count · ", "", 1)
 		hint = strings.Replace(hint, "u use · ", "", 1)

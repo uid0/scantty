@@ -54,16 +54,17 @@ note, and is the authority):
   kit can legitimately reach sends it (`omsapi.includeKitsQuery` /
   `includeKitsValues`: `GetItem`, `GetItemMetrics`, `GetPurchaseHistory`,
   `SetItemRetired`, `DeleteInventoryItem`, `SetItemCountMode` — which the kit
-  save fires AFTER the `/kits/` PATCH). Two deliberate exceptions: cycle-count
-  and log-usage, because a kit carries no stock and the backend writes stock
-  without `full_clean()`, so a count against one would persist as a number
-  nothing can draw down (the item detail hides both keys for a kit instead);
-  and `ListItemKits`, because a kit is never a component, so its 404 there is
-  the right answer. A kit is saved through `PATCH /api/inventory/kits/{id}/` —
-  that is also the only write path its `components` have (nested-writable;
-  there is no `/kit-components/` endpoint) — and the item form sends
-  `current_stock: 0` on that PATCH, with the Current stock row read-only and a
-  warning under it whenever the stored figure is not already zero.
+  save fires AFTER the `/kits/` PATCH). The deliberate exceptions: cycle-count,
+  log-usage and pack-container, because a kit carries no stock (and a pack is a
+  way of counting stock) and the backend writes stock without `full_clean()`, so
+  a count against one would persist as a number nothing can draw down — the item
+  detail hides all three keys for a kit instead; and `ListItemKits`, because a
+  kit is never a component, so its 404 there is the right answer. A kit is saved
+  through `PATCH /api/inventory/kits/{id}/` — that is also the only write path
+  its `components` have (nested-writable; there is no `/kit-components/`
+  endpoint) — and the item form sends `current_stock: 0` on that PATCH, with the
+  Current stock row read-only and a warning under it whenever the stored figure
+  is not already zero.
 - Receiving is where a kit stops being a catalogue curiosity: a kit line is
   ordered as one SKU and **credits its component items on receipt, never its
   own stock**. ScanTTY's receive flow (`POST …/purchase-orders/{id}/receive/`)

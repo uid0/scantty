@@ -166,9 +166,67 @@ func TestInventoryDetailKit_IdentifiesTheKitAndItsComponents(t *testing.T) {
 // stock at all. Saying so where the zero is, is the difference between a number
 // and a lie.
 func TestInventoryDetailKit_StockNoteExplainsTheZero(t *testing.T) {
-	body := kitDetail(t, kitTestKit(), nil, 120).renderBody()
-	if !strings.Contains(body, "Kits hold no stock of their own") {
-		t.Errorf("the Stock block does not explain a kit's zero:\n%s", body)
+	for _, width := range kitTestWidths {
+		s := kitDetail(t, kitTestKit(), nil, width)
+		budget := screenBodyWidth(width)
+		flat := strings.Join(strings.Fields(
+			clampToBox(s.renderBody(), budget, 200)), " ")
+		if !strings.Contains(flat, "Kits hold no stock of their own") {
+			t.Errorf("at %d columns the Stock block does not explain a kit's zero:\n%s",
+				width, s.renderBody())
+		}
+		// The ordinary case stays quiet about anything else: no figure quoted,
+		// nothing about a save this read-only screen does not perform.
+		for _, forbidden := range []string{"Recorded as", "clears", "saving"} {
+			if strings.Contains(flat, forbidden) {
+				t.Errorf("at %d columns a zero-stock kit's note grew %q:\n%s",
+					width, forbidden, s.renderBody())
+			}
+		}
+	}
+}
+
+// TestInventoryDetailKit_TheStockNoteOwnsUpToAStrayFigure. The model forbids a
+// kit carrying stock, but InventoryItem.save() never runs full_clean(), so a
+// non-zero figure does reach this screen — which is why the item form quotes it
+// before writing it back down. Asserting "kits hold no stock of their own" on
+// the line directly under "Current stock: 7" tells the operator something they
+// can see is untrue, and has the two screens describe one record differently.
+//
+// Measured on the CLIPPED render: the acknowledging reading is the longer of the
+// two, so it is the one a 51-column pane would cut.
+func TestInventoryDetailKit_TheStockNoteOwnsUpToAStrayFigure(t *testing.T) {
+	stray := kitTestKit()
+	stray.Stock = 7
+	for _, width := range kitTestWidths {
+		s := kitDetail(t, stray, nil, width)
+		body := s.renderBody()
+		budget := screenBodyWidth(width)
+		flat := strings.Join(strings.Fields(clampToBox(body, budget, 200)), " ")
+
+		if !strings.Contains(flat, "Recorded as 7 on hand") {
+			t.Errorf("at %d columns the note does not acknowledge the figure above it:\n%s", width, body)
+		}
+		if !strings.Contains(flat, "a kit holds no stock of its own") {
+			t.Errorf("at %d columns the note does not explain what the figure is not:\n%s", width, body)
+		}
+		// This screen SAVES NOTHING, so it must not borrow the item form's
+		// promise that a save will clear the figure — that would swap one untrue
+		// sentence for another.
+		for _, forbidden := range []string{"clears", "clear", "saving", "save"} {
+			if strings.Contains(flat, forbidden) {
+				t.Errorf("at %d columns a read-only screen claims %q:\n%s", width, forbidden, body)
+			}
+		}
+		// Wrapped, not clipped: the clamp must not have changed a single line.
+		if clamped := clampToBox(body, budget, len(strings.Split(body, "\n"))); clamped != body {
+			for _, line := range strings.Split(body, "\n") {
+				if w := lipgloss.Width(line); w > budget {
+					t.Errorf("at %d columns a line is %d wide against a %d pane: %q",
+						width, w, budget, line)
+				}
+			}
+		}
 	}
 }
 
@@ -558,5 +616,52 @@ func TestInventoryDetailKit_AnOrdinaryItemKeepsTheStockActions(t *testing.T) {
 	s.Update(runeKey('u'))
 	if s.cnStep == consumeStepNone {
 		t.Error("u no longer opens a consume prompt on an ordinary item")
+	}
+}
+
+// kitTestOpenClosedKit is a kit whose count mode was set to open/closed — which
+// is reachable only BECAUSE this change made SetItemCountMode kit-routable, so
+// the exposure is one this work created.
+func kitTestOpenClosedKit() *omsapi.Kit {
+	kit := kitTestKit()
+	level := 3
+	kit.CountMode = omsapi.CountModeOpenClosed
+	kit.CountLevel = &level
+	kit.PackagingLevels = []omsapi.PackagingLevel{
+		{ID: 3, Name: "case", SortOrder: 0, BaseUnits: 100},
+		{ID: 4, Name: "bag", SortOrder: 1, BaseUnits: 1},
+	}
+	return kit
+}
+
+// TestInventoryDetailKit_AKitNeverOffersThePackKey. Packing is a STOCK
+// operation and a kit holds none, so the action is meaningless — and
+// pack-container is a detail action on the kit-excluding item viewset, so it is
+// a flat 404 for a kit id. Both halves of the convention: the bar does not name
+// the key, and the key therefore does nothing.
+func TestInventoryDetailKit_AKitNeverOffersThePackKey(t *testing.T) {
+	s := kitDetail(t, kitTestOpenClosedKit(), nil, 120)
+	s.terminalHeight = jdeSweepHeight
+	if view := s.View(); strings.Contains(view, "p packs") {
+		t.Errorf("a kit's footer names the pack key:\n%s", view)
+	}
+	s.Update(runeKey('p'))
+	if s.pkStep != packStepNone {
+		t.Errorf("p opened the pack prompt on a kit (step %d)", s.pkStep)
+	}
+}
+
+// TestInventoryDetailKit_AnOrdinaryPackedItemKeepsThePackKey is the other half:
+// suppressing the key for a kit must not have cost an ordinary sealed+open item
+// the affordance it has always had.
+func TestInventoryDetailKit_AnOrdinaryPackedItemKeepsThePackKey(t *testing.T) {
+	s := packDetail(bagItem())
+	s.terminalHeight = jdeSweepHeight
+	if view := s.View(); !strings.Contains(view, "p packs") {
+		t.Errorf("an open/closed item's footer lost the pack key:\n%s", view)
+	}
+	s.Update(runeKey('p'))
+	if s.pkStep == packStepNone {
+		t.Error("p no longer opens the pack prompt on an ordinary open/closed item")
 	}
 }

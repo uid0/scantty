@@ -307,12 +307,13 @@ func (c *Client) ListAllItems(ctx context.Context) ([]Item, error) {
 //
 // Two deliberate exceptions, and both are exceptions on purpose:
 //
-//   - cycle-count and log_usage do NOT send it. They are meaningless for a kit —
-//     a kit carries no stock by construction — and worse than meaningless,
+//   - cycle-count, log_usage and pack-container do NOT send it. All three are
+//     meaningless for a kit — a kit carries no stock by construction, and packs
+//     are a way of counting stock — and the first is worse than meaningless,
 //     because the backend writes stock through save(update_fields=…) without
 //     full_clean(), so the model's own "a kit cannot carry stock" check never
 //     runs and the number would PERSIST as one nothing can ever draw down. The
-//     item detail screen hides both keys for a kit instead
+//     item detail screen hides all three keys for a kit instead
 //     (internal/tui/inventory_detail.go).
 //   - ListItemKits ("which kits contain this item?") does not send it either,
 //     for the opposite reason: a kit is never a component, so its 404 there is

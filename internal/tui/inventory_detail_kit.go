@@ -364,20 +364,39 @@ func kitSummaryTokens(kit omsapi.KitSummary) []jdeToken {
 }
 
 // kitStockNote is what the Stock section grows for a kit: why the number above
-// it is zero and always will be. Empty for every other item, which is what leaves
-// an ordinary item's Stock block untouched.
+// it does not mean what a stock figure usually means. Empty for every other
+// item, which is what leaves an ordinary item's Stock block untouched.
 //
-// Wrapped rather than clipped: it is 57 columns and the pane is 51 at an
-// 80-column terminal, so clampToBox would cut it mid-sentence — and this is a
-// sentence whose only job is to stop a zero being read as a count.
+// It has TWO readings because a kit can carry a stray figure. The model forbids
+// it, but InventoryItem.save() never runs full_clean(), so a non-zero
+// current_stock can and does reach this screen — which is exactly why the item
+// form quotes the figure before writing it back down. Saying "kits hold no stock
+// of their own" on the line directly under "Current stock: 7" would be telling
+// the operator something they can see is untrue, and would have the two screens
+// describing the same record differently.
+//
+// What it does NOT say for a non-zero figure is that anything will be cleared:
+// that is the ITEM FORM's sentence, true there because that screen saves. This
+// one is read-only and clears nothing, so borrowing the clause would swap one
+// untrue sentence for another.
+//
+// Wrapped rather than clipped: the short reading is 57 columns against a pane of
+// 51 at an 80-column terminal and the long one is longer still, so clampToBox
+// would cut mid-sentence — and this is a sentence whose only job is to stop a
+// number being read as a count.
 func (s *InventoryDetailScreen) kitStockNote() string {
 	if !s.isKit() {
 		return ""
 	}
+	note := "Kits hold no stock of their own — see Kit contents below."
+	if s.item != nil && s.item.Stock != 0 {
+		note = fmt.Sprintf(
+			"Recorded as %d on hand, but a kit holds no stock of its own — receiving one credits the components in Kit contents below.",
+			s.item.Stock,
+		)
+	}
 	var b strings.Builder
-	for _, line := range jdeWrapNote(
-		"Kits hold no stock of their own — see Kit contents below.", s.bodyWidth(),
-	) {
+	for _, line := range jdeWrapNote(note, s.bodyWidth()) {
 		b.WriteString(StyleMuted.Render(line) + "\n")
 	}
 	return b.String()
