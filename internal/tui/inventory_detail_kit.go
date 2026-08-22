@@ -84,12 +84,19 @@ func kitNameWidth(bodyWidth int) int {
 
 // kitGridRow lays one detail row out in its columns. The number and both
 // quantities right-align under their headers the way a printed parts list does.
+//
+// Every cell is FITTED to its column before it is padded, because padCell pads
+// and never truncates: a value wider than its column would otherwise push the
+// row past the pane and be eaten whole by clampToBox, which cuts with nothing
+// to show it did (sc-ye0i). A four-figure price is the case that bites — "$1000.00"
+// is 8 columns against a 7-column cell, and a silently halved price reads as a
+// plausible one. Elided, it reads as cut.
 func kitGridRow(num, name, qty, stock string, nameW int) string {
 	cells := []string{
-		padCell(num, kitNumW, alignRight),
-		padCell(name, nameW, alignLeft),
-		padCell(qty, kitQtyW, alignRight),
-		padCell(stock, kitStockW, alignRight),
+		padCell(fitCell(num, kitNumW), kitNumW, alignRight),
+		padCell(fitCell(name, nameW), nameW, alignLeft),
+		padCell(fitCell(qty, kitQtyW), kitQtyW, alignRight),
+		padCell(fitCell(stock, kitStockW), kitStockW, alignRight),
 	}
 	return jdeIndent + strings.TrimRight(strings.Join(cells, "  "), " ")
 }
@@ -369,18 +376,49 @@ func (s *InventoryDetailScreen) kitStockNote() string {
 // a shortened name still reads, while a header clipped at the pane edge loses
 // the tag entirely and the screen goes back to looking like an ordinary item
 // with no stock. Returns "" for a non-kit, leaving that header untouched.
+//
+// The budget it fits against is [kit] PLUS every tag renderHeader appends after
+// it, not [kit] alone: this line is only the first half of a line that continues
+// with [retired] / needs reorder / [reorder pending], so reserving room for the
+// kit tag alone just moves the clip one tag along and loses THOSE instead.
 func (s *InventoryDetailScreen) kitNameLine(name string) string {
 	if !s.isKit() {
 		return ""
 	}
 	const tag = "  [kit]"
-	width := s.bodyWidth()
-	if width > 0 {
-		if room := width - lipgloss.Width(tag); room > 0 {
-			name = fitCell(name, room)
+	if width := s.bodyWidth(); width > 0 {
+		room := width - lipgloss.Width(tag) - s.headerTagsWidth()
+		// A floor rather than a hard fit: with every tag showing at once there is
+		// no width left at 80 columns for a name at all, and a header whose name
+		// vanished is worse than one whose last tag is clipped.
+		if room < kitMinName {
+			room = kitMinName
 		}
+		name = fitCell(name, room)
 	}
 	return StyleTitle.Render(name) + "  " + StyleStatusOK.Render("[kit]")
+}
+
+// headerTagsWidth is what renderHeader will append to the name line AFTER
+// kitNameLine has had its say — the tags, each with its two-space gutter. It is
+// the reservation kitNameLine fits the name against, and it has to be read from
+// the same item flags renderHeader tests or the two disagree.
+func (s *InventoryDetailScreen) headerTagsWidth() int {
+	it := s.item
+	if it == nil {
+		return 0
+	}
+	w := 0
+	if it.IsRetired {
+		w += 2 + lipgloss.Width("[retired]")
+	}
+	if it.NeedsReorder {
+		w += 2 + lipgloss.Width("needs reorder")
+	}
+	if it.HasPendingReorder {
+		w += 2 + lipgloss.Width("[reorder pending]")
+	}
+	return w
 }
 
 // renderKitErrLine is what the screen says when the "is this a kit?" question

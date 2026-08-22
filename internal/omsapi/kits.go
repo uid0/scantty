@@ -38,8 +38,12 @@
 //	                                      a component has.
 //	GET  /api/inventory/items/{id}/kits/  KitSummarySerializer: "which kits
 //	                                      supply this component, and how many of
-//	                                      it does one kit hold". Empty for a kit
-//	                                      (kits cannot contain kits).
+//	                                      it does one kit hold". A detail action,
+//	                                      so it goes through the same
+//	                                      kit-excluding get_queryset: a KIT's own
+//	                                      id is a 404 here, not an empty array.
+//	                                      There is nothing to show for one either
+//	                                      way — kits cannot contain kits.
 //
 // Source of truth: backend/inventory/serializers.py (KitComponentSerializer,
 // KitSerializer, KitSummarySerializer), backend/inventory/views.py
@@ -178,9 +182,15 @@ func (c *Client) UpdateKit(ctx context.Context, id string, body KitWrite) (*Kit,
 // one holds (GET /api/inventory/items/{id}/kits/).
 //
 // The action returns a bare array rather than a paginated envelope, so this
-// decodes into a slice directly. It returns [] for an item nothing contains and
-// for a kit itself — nested kits are out of scope upstream, so a kit is never a
-// component.
+// decodes into a slice directly. It returns [] for an item nothing contains.
+//
+// For a KIT's id it returns a 404, not an empty array: this is a detail action
+// on InventoryItemViewSet, so it resolves through get_object → get_queryset —
+// the same kit-excluding filter that 404s a kit under /items/{id}/. The param
+// that would lift it is deliberately not sent, because the answer for a kit is
+// empty either way (nested kits are out of scope upstream, so a kit is never a
+// component) and asking for it would only turn one non-answer into another. The
+// caller treats the error as "no supplying kits to show" and omits the section.
 func (c *Client) ListItemKits(ctx context.Context, itemID string) ([]KitSummary, error) {
 	var out []KitSummary
 	if err := c.Get(ctx, fmt.Sprintf("/api/inventory/items/%s/kits/", itemID), nil, &out); err != nil {

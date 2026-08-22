@@ -49,9 +49,15 @@ note, and is the authority):
   (`omsapi.IsNotKit`). Anything else left the question unanswered and must say so.
 - `/api/inventory/items/` **excludes kits by default**, and the filter lives in
   `get_queryset`, so it applies to the DETAIL route too: GET or PATCH of a kit's
-  id under `/items/` is a flat 404 without `?include_kits=true` (`GetItem` sends
-  it). A kit is saved through `PATCH /api/inventory/kits/{id}/` instead — that is
-  also the only write path its `components` have (nested-writable; there is no
+  id under `/items/` is a flat 404 without `?include_kits=true`. Every detail
+  route a kit can legitimately reach sends it (`omsapi.includeKitsQuery`:
+  `GetItem`, `SetItemRetired`, `DeleteInventoryItem`, `SetItemCountMode` — which
+  the kit save fires AFTER the `/kits/` PATCH). Cycle-count and log-usage
+  deliberately do NOT: a kit carries no stock, and the backend writes stock
+  without `full_clean()`, so a count against one would persist as a number
+  nothing can draw down. The item detail hides those two keys for a kit instead.
+  A kit is saved through `PATCH /api/inventory/kits/{id}/` — that is also the
+  only write path its `components` have (nested-writable; there is no
   `/kit-components/` endpoint).
 - Receiving is where a kit stops being a catalogue curiosity: a kit line is
   ordered as one SKU and **credits its component items on receipt, never its

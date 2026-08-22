@@ -292,6 +292,23 @@ func (c *Client) ListAllItems(ctx context.Context) ([]Item, error) {
 	return all, nil
 }
 
+// includeKitsQuery is the query string that lets a kit's id resolve on an
+// /api/inventory/items/{id}/ route at all (op-8n0).
+//
+// It is spelled as a suffix rather than a url.Values because Post/Patch/Delete
+// take no query argument, and every route that needs it is one of those; Get
+// has GetItem's url.Values instead. The reason is the same at all of them:
+// InventoryItemViewSet.get_queryset excludes kits, get_object filters through
+// it, so without this param a kit id is a flat 404 on its own detail route. An
+// older backend ignores the unknown param and a non-kit id is unaffected.
+//
+// It is deliberately NOT sent on cycle-count or log_usage. Those two are
+// meaningless for a kit — a kit carries no stock by construction, and
+// InventoryItem.save() does not full_clean(), so a count recorded against one
+// would PERSIST as a number nothing can ever draw down. The item detail screen
+// hides both keys for a kit instead (internal/tui/inventory_detail.go).
+const includeKitsQuery = "?include_kits=true"
+
 // GetItem fetches one item's detail record.
 //
 // ?include_kits=true is NOT optional bookkeeping (op-8n0): InventoryItemViewSet
@@ -651,10 +668,15 @@ type itemCountModeBody struct {
 //
 // level must be nil for CountModeEach and non-nil for the pack modes; the
 // backend rejects the other two combinations rather than guessing.
+//
+// include_kits is on the route because a KIT reaches here too: a kit's own save
+// goes to /kits/, but the count mode is written by this second PATCH afterwards,
+// and without the param that PATCH 404s and the operator is told the item saved
+// but its packaging did not, with no way to finish the change.
 func (c *Client) SetItemCountMode(ctx context.Context, id, mode string, level *int) (*Item, error) {
 	body := itemCountModeBody{CountMode: mode, CountLevel: level}
 	var out Item
-	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/items/%s/", id), body, &out); err != nil {
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/items/%s/%s", id, includeKitsQuery), body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -731,21 +753,31 @@ func (c *Client) UpdateInventoryItem(ctx context.Context, id string, body ItemWr
 
 // DeleteInventoryItem removes an item (DELETE /api/inventory/items/{id}/). The
 // backend enforces manage-inventory permission and returns 204 on success.
+//
+// include_kits is on the route because deleting IS meaningful for a kit — a kit
+// is catalogue data like any other item — and a kit id is reachable from the
+// detail screen that offers this. Without the param it would be a 404 for a
+// record visibly on screen.
 func (c *Client) DeleteInventoryItem(ctx context.Context, id string) error {
-	return c.Delete(ctx, fmt.Sprintf("/api/inventory/items/%s/", id))
+	return c.Delete(ctx, fmt.Sprintf("/api/inventory/items/%s/%s", id, includeKitsQuery))
 }
 
 // SetItemRetired retires or un-retires an item via the backend's dedicated POST
 // actions (op-jv7r): …/items/{id}/retire/ or …/items/{id}/unretire/. Unlike a
 // plain is_retired PATCH, these also stamp (or clear) the read-only retired_at
 // audit field. Both are idempotent server-side and echo the updated item.
+//
+// include_kits is on both routes because retiring IS meaningful for a kit — a
+// kit is catalogue data that can be phased out — and a kit id is reachable from
+// the detail screen that offers this. These are detail actions, so they resolve
+// through the same kit-excluding get_queryset the plain detail route does.
 func (c *Client) SetItemRetired(ctx context.Context, id string, retired bool) (*Item, error) {
 	action := "unretire"
 	if retired {
 		action = "retire"
 	}
 	var out Item
-	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/%s/", id, action), nil, &out); err != nil {
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/items/%s/%s/%s", id, action, includeKitsQuery), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

@@ -261,6 +261,10 @@ func (s *InventoryItemFormScreen) updateKitPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 		if s.kitCursor > 0 {
 			s.kitCursor--
 		}
+	case "pgdown":
+		s.pageKitCursor(+1)
+	case "pgup":
+		s.pageKitCursor(-1)
 	case "ctrl+e":
 		if s.onKitAddRow() {
 			return s, s.openKitPick()
@@ -271,10 +275,32 @@ func (s *InventoryItemFormScreen) updateKitPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 	return s, nil
 }
 
+// pageKitCursor moves a pane's worth of rows, clamping rather than wrapping —
+// the same move jdePageCursor makes on every other columnar list.
+//
+// It exists because kitListBar NAMES PgUp/PgDn once the list outgrows the pane,
+// and a key the bar names must do something. The step is measured off the lines
+// View actually draws, so a page covers exactly what the operator can see: a
+// component with a wrapped note costs more than one row, and a guessed constant
+// would skip over it. The count includes the trailing add row, which is the row
+// after the last component.
+func (s *InventoryItemFormScreen) pageKitCursor(dir int) {
+	body := s.kitListLines()
+	s.kitCursor = jdePageCursor(s.kitCursor, s.kitAddRow()+1, s.windowRows(body, s.kitCursor, 0), dir)
+}
+
 // viewKitList renders the bill of materials as a columnar detail grid, with the
 // standing rules under it — the same guidance the serializer enforces, said
 // before the save rather than after it.
 func (s *InventoryItemFormScreen) viewKitList() string {
+	l := s.kitListLines()
+	return s.frame(l, s.kitCursor, "", s.kitListBar(l))
+}
+
+// kitListLines builds the list's body. Split out of viewKitList so paging can
+// measure a page against the SAME lines View draws — the pattern the packaging
+// and slot-generate lists already follow.
+func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 	width := s.bodyWidth()
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Kit components"))
@@ -329,7 +355,7 @@ func (s *InventoryItemFormScreen) viewKitList() string {
 		l.Add("")
 		l.Add(jdeIndent + StyleStatusError.Render("✗ "+s.kitRowErr))
 	}
-	return s.frame(l, s.kitCursor, "", s.kitListBar(l))
+	return l
 }
 
 // kitListBar names the keys that apply where the cursor is standing. Enter and
@@ -619,6 +645,12 @@ type kitPickOption struct {
 // dimmed, because "why can't I add this?" is a question an operator will
 // otherwise ask the screen and get no answer to.
 func (s *InventoryItemFormScreen) applyKitPickFilter() {
+	// The refusal on screen names ONE option ("Serialized widget cannot be a kit
+	// component…"), so it dies with the option list it was about: reopening the
+	// picker or typing a filter rebuilds that list, and a message about a row
+	// nobody can see any more reads as a refusal of whatever is now under the
+	// cursor. Every path that rebuilds the options comes through here.
+	s.kitPickErr = ""
 	q := strings.ToLower(strings.TrimSpace(s.pickSearch.Value()))
 	listed := map[string]bool{}
 	for _, row := range s.kitRows {

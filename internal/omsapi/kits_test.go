@@ -253,3 +253,99 @@ func TestListItemKits_DecodesTheBareArray(t *testing.T) {
 		t.Errorf("null unit_cost decoded as %q", kits[1].UnitCost)
 	}
 }
+
+// TestItemDetailRoutesAskForKitsToBeIncluded. GetItem is not the only /items/
+// route a kit id reaches. The filter that hides kits lives in get_queryset, so
+// it runs for every DETAIL route on the viewset — the retire/unretire actions,
+// the delete, and the count-mode PATCH the kit save fires after writing the kit
+// itself. Without the param each is a flat 404 for a record the operator is
+// looking at.
+//
+// Cycle-count and log_usage are deliberately absent from this list: see
+// includeKitsQuery. Making a meaningless write succeed against a kit is worse
+// than leaving it unreachable, because a kit's stock is a number nothing can
+// ever draw down.
+func TestItemDetailRoutesAskForKitsToBeIncluded(t *testing.T) {
+	cases := []struct {
+		name     string
+		wantPath string
+		call     func(c *Client) error
+	}{
+		{"retire", "/api/inventory/items/kit-1/retire/", func(c *Client) error {
+			_, err := c.SetItemRetired(context.Background(), "kit-1", true)
+			return err
+		}},
+		{"unretire", "/api/inventory/items/kit-1/unretire/", func(c *Client) error {
+			_, err := c.SetItemRetired(context.Background(), "kit-1", false)
+			return err
+		}},
+		{"delete", "/api/inventory/items/kit-1/", func(c *Client) error {
+			return c.DeleteInventoryItem(context.Background(), "kit-1")
+		}},
+		{"count mode", "/api/inventory/items/kit-1/", func(c *Client) error {
+			_, err := c.SetItemCountMode(context.Background(), "kit-1", CountModeEach, nil)
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath, gotQuery string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath, gotQuery = r.URL.Path, r.URL.Query().Get("include_kits")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"kit-1","name":"Eufy Ink Kit"}`))
+			}))
+			defer srv.Close()
+
+			if err := tc.call(New(srv.URL)); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			// The query must ride alongside the route, not swallow it.
+			if gotPath != tc.wantPath {
+				t.Errorf("path = %q, want %q", gotPath, tc.wantPath)
+			}
+			if gotQuery != "true" {
+				t.Errorf("include_kits = %q, want \"true\" — a kit id would 404 without it", gotQuery)
+			}
+		})
+	}
+}
+
+// TestStockActionsDoNotReachAKit is the other half of that decision, and it is
+// the one worth pinning: a kit carries no stock by construction, and the backend
+// writes a cycle count through save(update_fields=…) without full_clean(), so
+// the model's own "a kit cannot carry stock" check never runs and the number
+// would persist. These two routes must stay kit-unreachable.
+func TestStockActionsDoNotReachAKit(t *testing.T) {
+	cases := []struct {
+		name string
+		call func(c *Client) error
+	}{
+		{"cycle count", func(c *Client) error {
+			_, err := c.CycleCountItem(context.Background(), "kit-1", CycleCountBody{CountedQty: 3})
+			return err
+		}},
+		{"log usage", func(c *Client) error {
+			_, err := c.LogUsage(context.Background(), "kit-1", LogUsageBody{Quantity: 1})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotQuery string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotQuery = r.URL.Query().Get("include_kits")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+
+			if err := tc.call(New(srv.URL)); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if gotQuery != "" {
+				t.Errorf("include_kits = %q — this route must stay unreachable for a kit", gotQuery)
+			}
+		})
+	}
+}

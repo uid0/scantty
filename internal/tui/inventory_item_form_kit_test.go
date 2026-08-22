@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -547,4 +548,145 @@ func kitFormPhaseLines(t *testing.T, s *InventoryItemFormScreen) []string {
 		lines = lines[:n-actionBarRows]
 	}
 	return lines
+}
+
+// kitFormBigKit is a bill of materials taller than any pane: paging only exists
+// for a list that outgrows its window, so a fixture that fits would prove
+// nothing about the key the bar names.
+func kitFormBigKit(n int) *omsapi.Kit {
+	kit := &omsapi.Kit{
+		Item:  omsapi.Item{ID: "kit-1", Name: "Bulk consumables kit", SKU: "BCK-1", IsActive: true, ReorderQuantity: 1},
+		IsKit: true, ComponentCount: n,
+	}
+	for i := 0; i < n; i++ {
+		kit.Components = append(kit.Components, omsapi.KitComponent{
+			ID:            i + 1,
+			Component:     "itm-" + strconv.Itoa(i),
+			ComponentName: "Component " + strconv.Itoa(i),
+			ComponentSKU:  "C-" + strconv.Itoa(i),
+			Quantity:      1,
+		})
+	}
+	return kit
+}
+
+// TestItemFormKit_TheListPagesWhenItSaysItDoes is the invariant AGENTS.md states
+// outright: a key the bar names must DO something. kitListBar advertises
+// PgUp/PgDn the moment the component list outgrows the pane, and the phase used
+// to drop both keys on the floor — so an operator with a long bill of materials
+// read an offer the screen did not honour.
+func TestItemFormKit_TheListPagesWhenItSaysItDoes(t *testing.T) {
+	s := kitFormSheet(t, kitFormBigKit(40), 110)
+	s.Update(tea.WindowSizeMsg{Width: 110, Height: 20})
+	kitFormCursorTo(t, s, fKitComponents)
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != itemFormPhaseKit {
+		t.Fatalf("Ctrl-E did not open the components list (phase %d)", s.phase)
+	}
+
+	named := false
+	for _, item := range s.kitListBar(s.kitListLines()) {
+		if item.Key == "PgUp/PgDn" {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("a list taller than the pane does not advertise paging: %+v", s.kitListBar(s.kitListLines()))
+	}
+
+	s.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if s.kitCursor == 0 {
+		t.Fatal("PgDn is named on the bar but moved nothing")
+	}
+	// A page is more than a row — otherwise it is just Down wearing another name.
+	if s.kitCursor < 2 {
+		t.Errorf("PgDn moved %d row(s), which is not a page", s.kitCursor)
+	}
+	// It CLAMPS rather than wrapping: overshooting stops at the trailing add row,
+	// which is the last thing the cursor can stand on.
+	for i := 0; i < 40; i++ {
+		s.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+	if s.kitCursor != s.kitAddRow() {
+		t.Errorf("PgDn clamped to %d, want the add row %d", s.kitCursor, s.kitAddRow())
+	}
+	for i := 0; i < 40; i++ {
+		s.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	}
+	if s.kitCursor != 0 {
+		t.Errorf("PgUp clamped to %d, want the first row", s.kitCursor)
+	}
+}
+
+// TestItemFormKit_AShortListDoesNotOfferPaging is the other half of the same
+// convention: the bar must not name a key that has nothing to do.
+func TestItemFormKit_AShortListDoesNotOfferPaging(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 110)
+	kitFormCursorTo(t, s, fKitComponents)
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	for _, item := range s.kitListBar(s.kitListLines()) {
+		if item.Key == "PgUp/PgDn" {
+			t.Errorf("a two-row list that fits the pane offers paging: %+v", s.kitListBar(s.kitListLines()))
+		}
+	}
+}
+
+// TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout. The refusal names one
+// option ("Serialized widget cannot be a kit component…"), so it cannot outlive
+// the list that option was in: left standing over a rebuilt picker it reads as a
+// refusal of whatever is now under the cursor.
+func TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	s.kitItems = []omsapi.Item{
+		{ID: "itm-y", Name: "Yellow ink", SKU: "YI-100"},
+		{ID: "itm-s", Name: "Serialized widget", IsSerialized: true},
+	}
+	kitFormCursorTo(t, s, fKitComponents)
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
+	s.kitCursor = s.kitAddRow()
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // picker
+
+	for i, opt := range s.kitPickOptions {
+		if opt.item.ID == "itm-s" {
+			s.kitPickCursor = i
+		}
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(s.View(), "cannot be a kit component") {
+		t.Fatalf("the refusal was not shown in the first place:\n%s", s.View())
+	}
+
+	// Typing a filter rebuilds the option list, so the message about the old one
+	// goes with it.
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if strings.Contains(s.View(), "cannot be a kit component") {
+		t.Errorf("a stale refusal survived a filter change:\n%s", s.View())
+	}
+
+	// And so does leaving the picker and opening it again.
+	for i, opt := range s.kitPickOptions {
+		if opt.item.ID == "itm-s" {
+			s.kitPickCursor = i
+		}
+	}
+	s.pickSearch.SetValue("")
+	s.applyKitPickFilter()
+	for i, opt := range s.kitPickOptions {
+		if opt.item.ID == "itm-s" {
+			s.kitPickCursor = i
+		}
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(s.View(), "cannot be a kit component") {
+		t.Fatalf("the refusal did not come back for a second attempt:\n%s", s.View())
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc}) // back to the list
+	if s.phase != itemFormPhaseKit {
+		t.Fatalf("Esc did not leave the picker (phase %d)", s.phase)
+	}
+	s.kitCursor = s.kitAddRow()
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // reopen
+	if strings.Contains(s.View(), "cannot be a kit component") {
+		t.Errorf("a stale refusal was still on screen over a freshly opened picker:\n%s", s.View())
+	}
 }

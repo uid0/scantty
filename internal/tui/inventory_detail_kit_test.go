@@ -75,7 +75,26 @@ func kitTestSupplyingKits() []omsapi.KitSummary {
 			SupplierSKU: "ACM-88421", UnitCost: "34.99", ComponentCount: 5,
 		},
 		{ID: "kit-2", Name: "Discontinued ink bundle", SKU: "DIB-1", QuantityInKit: intp(1)},
+		// A four-figure price, which is the widest thing the cost column ever
+		// carries: "$1299.50" is 8 columns against a 7-column cell. A fixture
+		// that only ever priced things at "34.99" is why a silently-clipped
+		// price could ship.
+		{
+			ID: "kit-3", Name: "Whole-printer overhaul bundle", SKU: "WPO-9",
+			IsActive: true, QuantityInKit: intp(4), UnitCost: "1299.50", ComponentCount: 12,
+		},
 	}
+}
+
+// kitTestRetiredKit is the fixture for the header's hardest case: a long-named
+// kit that ALSO carries the tags renderHeader appends after the [kit] one. The
+// name is the only thing on that line that can give way, so it has to give way
+// for all of them, not just for [kit].
+func kitTestRetiredKit(pendingReorder bool) *omsapi.Kit {
+	kit := kitTestKit()
+	kit.IsRetired = true
+	kit.HasPendingReorder = pendingReorder
+	return kit
 }
 
 // kitDetail builds a loaded item-detail screen in whichever kit state is being
@@ -172,7 +191,7 @@ func TestInventoryDetailKit_AnOrdinaryItemIsUntouched(t *testing.T) {
 // that makes that useful.
 func TestInventoryDetailKit_SuppliedByKitsListsTheBundles(t *testing.T) {
 	body := kitDetail(t, nil, kitTestSupplyingKits(), 120).renderBody()
-	if !strings.Contains(body, "Supplied by kits (2)") {
+	if !strings.Contains(body, "Supplied by kits (3)") {
 		t.Errorf("no supplied-by section:\n%s", body)
 	}
 	for _, want := range []string{"EIK-4", "Acme Office Supply", "ACM-88421", "$34.99", "5 components"} {
@@ -215,6 +234,12 @@ func TestInventoryDetailKit_TheClippedRenderLosesNothing(t *testing.T) {
 		{"a kit", kitTestKit(), nil},
 		{"a component of kits", nil, kitTestSupplyingKits()},
 		{"an empty kit", &omsapi.Kit{Item: omsapi.Item{ID: "kit-0", Name: "Empty kit"}, IsKit: true}, nil},
+		// A kit whose header carries a SECOND tag after [kit]. This is the state
+		// the [kit] reservation used to lose: the name was fitted against [kit]
+		// alone, so the name line already filled the pane and renderHeader's
+		// [retired] fell off the end of it.
+		{"a retired kit", kitTestRetiredKit(false), nil},
+		{"a retired kit with a reorder pending", kitTestRetiredKit(true), nil},
 	}
 	for _, st := range states {
 		for _, width := range kitTestWidths {
@@ -414,4 +439,118 @@ func kitSawPath(seen []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestInventoryDetailKit_TheHeaderKeepsEveryTagAtTheFloor. The name line is only
+// the FIRST half of the header's first line: renderHeader appends [retired],
+// "needs reorder" and [reorder pending] straight after it. Fitting the name
+// against [kit] alone filled the pane exactly, so the tags that followed were
+// pushed past the edge and clampToBox ate them — the very failure the fit
+// exists to prevent, moved one tag along.
+func TestInventoryDetailKit_TheHeaderKeepsEveryTagAtTheFloor(t *testing.T) {
+	cases := []struct {
+		name string
+		kit  *omsapi.Kit
+		tags []string
+	}{
+		{"retired", kitTestRetiredKit(false), []string{"[kit]", "[retired]"}},
+		{"retired with a reorder pending", kitTestRetiredKit(true),
+			[]string{"[kit]", "[retired]", "[reorder pending]"}},
+	}
+	for _, tc := range cases {
+		s := kitDetail(t, tc.kit, nil, 80)
+		budget := screenBodyWidth(80)
+		head := s.renderHeader()
+		// The clip is the assertion: what the operator sees is the clamped render.
+		clipped := clampToBox(head, budget, 8)
+		for _, tag := range tc.tags {
+			if !strings.Contains(clipped, tag) {
+				t.Errorf("%s: the clipped header at 80 columns lost %q:\n%s", tc.name, tag, clipped)
+			}
+		}
+		// And the name is still there in some readable form, rather than having
+		// been given away entirely to make room.
+		if !strings.Contains(clipped, "Eufy") {
+			t.Errorf("%s: the clipped header lost the name outright:\n%s", tc.name, clipped)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AnOverWidePriceIsElidedNotSilentlyCut. padCell pads and
+// never truncates, so a value wider than its column used to push the whole row
+// past the pane, where clampToBox cut it with nothing to show it had: "$1299.50"
+// rendered as "$1299.5", which is a plausible price and the wrong one.
+func TestInventoryDetailKit_AnOverWidePriceIsElidedNotSilentlyCut(t *testing.T) {
+	s := kitDetail(t, nil, kitTestSupplyingKits(), 80)
+	budget := screenBodyWidth(80)
+	body := s.renderBody()
+
+	row := kitFindLine(body, "WPO-9")
+	if row == "" {
+		t.Fatalf("no row for the four-figure kit:\n%s", body)
+	}
+	if w := lipgloss.Width(row); w > budget {
+		t.Fatalf("the row is %d wide against a %d pane — clampToBox would cut it: %q", w, budget, row)
+	}
+	// The price does not fit its column, so it must SAY it was shortened rather
+	// than read as a whole number that happens to be wrong.
+	if !strings.Contains(row, "…") {
+		t.Errorf("a price too wide for its column was cut with no sign of it: %q", row)
+	}
+	if strings.Contains(row, "$1299.5\u0020") || strings.HasSuffix(row, "$1299.5") {
+		t.Errorf("the price was silently truncated to a plausible wrong value: %q", row)
+	}
+}
+
+// TestInventoryDetailKit_AKitHidesTheStockActions is the other half of the
+// convention AGENTS.md states: a key the bar does not name must do nothing, and
+// a key it names must do something. A kit carries no stock of its own, so
+// counting and consuming it are meaningless — and a count would PERSIST, since
+// the backend writes stock without running the model's "a kit cannot carry
+// stock" check.
+func TestInventoryDetailKit_AKitHidesTheStockActions(t *testing.T) {
+	kit := kitDetail(t, kitTestKit(), nil, 120)
+	kit.terminalHeight = jdeSweepHeight
+	for _, gone := range []string{"c count", "u use"} {
+		if view := kit.View(); strings.Contains(view, gone) {
+			t.Errorf("a kit's footer still names %q:\n%s", gone, view)
+		}
+	}
+	// The keys they named must now do nothing at all: no modal, no state change.
+	kit.Update(runeKey('c'))
+	if kit.ccStep != ccStepNone {
+		t.Errorf("c opened a cycle count on a kit (step %d)", kit.ccStep)
+	}
+	kit.Update(runeKey('u'))
+	if kit.cnStep != consumeStepNone {
+		t.Errorf("u opened a consume prompt on a kit (step %d)", kit.cnStep)
+	}
+	// The rest of the footer is untouched — this hides two actions, not a screen.
+	for _, kept := range []string{"o/enter reorder", "T retire", "x delete", "s suppliers"} {
+		if view := kit.View(); !strings.Contains(view, kept) {
+			t.Errorf("a kit's footer lost %q, which is still meaningful for a kit:\n%s", kept, view)
+		}
+	}
+}
+
+// TestInventoryDetailKit_AnOrdinaryItemKeepsTheStockActions is acceptance
+// criterion 4 on the footer: hiding the kit's meaningless actions must not cost
+// an ordinary item the two keys it has always had.
+func TestInventoryDetailKit_AnOrdinaryItemKeepsTheStockActions(t *testing.T) {
+	s := kitDetail(t, nil, nil, 120)
+	s.terminalHeight = jdeSweepHeight
+	for _, want := range []string{"c count", "u use"} {
+		if view := s.View(); !strings.Contains(view, want) {
+			t.Errorf("an ordinary item's footer lost %q:\n%s", want, view)
+		}
+	}
+	s.Update(runeKey('c'))
+	if s.ccStep == ccStepNone {
+		t.Error("c no longer opens a cycle count on an ordinary item")
+	}
+	s.ccStep = ccStepNone
+	s.Update(runeKey('u'))
+	if s.cnStep == consumeStepNone {
+		t.Error("u no longer opens a consume prompt on an ordinary item")
+	}
 }
