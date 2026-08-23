@@ -2447,3 +2447,178 @@ func TestPOSupplierPicker_KeysDeclineWhileTheListIsNotDrawn(t *testing.T) {
 		})
 	}
 }
+
+// TestPOItemPicker_EnterOverAZeroMatchSearchMovesTheNote is the LAST arm of
+// commitSearchedItem that still re-emitted the note already on the pane.
+//
+// The zero-match arm deliberately keeps the search box OPEN so the query can be
+// edited in place, so enter there changed no rows, no cursor and — because the
+// filter had already run on the keystroke before — no note. Character for
+// character the same frame, with only the caret blinking: the original "it just
+// kinda hangs there", surviving one arm away from its own fix. The assertion is
+// the rendered note LINE before and after, which a caret cannot satisfy.
+func TestPOItemPicker_EnterOverAZeroMatchSearchMovesTheNote(t *testing.T) {
+	fake := &poPickFake{catalog: 12, pageSize: 12}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "zzz")
+
+	if len(screen.itemSuppliers) != 0 {
+		t.Fatalf("setup: %d row(s) matched a query nothing should match", len(screen.itemSuppliers))
+	}
+	before := strings.Join(poNoteLines(t, screen.itemSuppliersNote), "\n")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	after := strings.Join(poNoteLines(t, screen.itemSuppliersNote), "\n")
+
+	if before == after {
+		t.Errorf("enter over a zero-match search left the note unchanged — only the caret moved:\n%s", after)
+	}
+	if !screen.itemSuppliersTyping {
+		t.Error("enter closed the box on a zero-match search — the query can no longer be edited in place")
+	}
+	// It says what the key DID, and still carries the two facts that tell the
+	// operator whether to retype or to give up on this supplier.
+	poWantPaneLine(t, screen, "searched again")
+	poWantPaneLine(t, screen, "in catalog")
+	if screen.phase != poPhaseItemPick || len(screen.lines) != 0 {
+		t.Fatalf("a zero-match enter staged something (phase %v, %d line(s))", screen.phase, len(screen.lines))
+	}
+	poAssertFits(t, "zero-match enter", screen)
+}
+
+// TestPOItemPicker_SearchBoxOverAnUnansweredCatalogDoesNotPromiseAPick: the
+// box opens mid-walk on purpose — the rows are on their way and the query is
+// applied when they land — but commitSearchedItem declines at its first line
+// while the catalog is not on screen. The pane said the opposite twice: the
+// action bar's typing arm named "enter picks when one row is left" and the note
+// '/' posts named "enter picks the ONE match", so both of the pane's claims
+// about enter were false for as long as the walk was out.
+//
+// The second half is the decline itself. renderItemPick's loading branch
+// returned after the working line without drawing the note, so the press that
+// declined produced no visible change at all — the same defect, one frame over.
+func TestPOItemPicker_SearchBoxOverAnUnansweredCatalogDoesNotPromiseAPick(t *testing.T) {
+	fake := &poPickFake{catalog: 40, pageSize: 5} // 8 sequential pages
+	r, screen := poPickerAt(t, fake, 80)
+
+	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = next.(Root)
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = next.(Root)
+	if !screen.itemSuppliersTyping || !screen.itemSuppliersLoad {
+		t.Fatalf("setup: want the box open over an in-flight walk (typing=%v load=%v)",
+			screen.itemSuppliersTyping, screen.itemSuppliersLoad)
+	}
+
+	// Neither surface promises the key that cannot act, and both name the one
+	// that can.
+	poRejectPaneLine(t, screen, "enter picks")
+	poRejectPaneLine(t, screen, "enter picks when one row is left")
+	poWantPaneLine(t, screen, "esc closes the search")
+
+	// The note the box opened with is not a conclusion, so enter has something
+	// to change. Without the render fix neither note reaches the pane and this
+	// comparison sees the same frame twice.
+	beforePane := strings.Join(poPaneLines(t, screen), "\n")
+	next, cmd := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	r = next.(Root)
+	if !screen.itemSuppliersLoad {
+		t.Fatal("enter finished the walk — this assertion needs it in flight")
+	}
+	if beforePane == strings.Join(poPaneLines(t, screen), "\n") {
+		t.Errorf("enter mid-walk redrew an identical pane — the decline is invisible:\n%s", beforePane)
+	}
+	// The working line still speaks first; the decline is drawn UNDER it, not
+	// in place of it, so the frame never trades the fact for the reply.
+	poWantPaneLine(t, screen, "Looking up the items")
+	poWantPaneLine(t, screen, "still looking up")
+	if screen.phase != poPhaseItemPick || len(screen.lines) != 0 {
+		t.Fatalf("enter mid-walk staged something (phase %v, %d line(s))", screen.phase, len(screen.lines))
+	}
+	poAssertFits(t, "enter mid-walk with the box open", screen)
+
+	// Typing mid-walk keeps the query and never reaches a verdict either.
+	r = pump(t, r, cmd, 0)
+	r = poType(t, r, "Widget 38")
+	if !screen.itemSuppliersLoad {
+		t.Fatal("the walk finished early — this test needs it in flight")
+	}
+	poWantPaneLine(t, screen, "still looking up")
+	poRejectPaneLine(t, screen, "in catalog")
+
+	// When the rows land the promise comes back, and it is true.
+	r = pump(t, r, load, 0)
+	if screen.itemSuppliersLoad {
+		t.Fatal("the walk never finished")
+	}
+	poWantPaneLine(t, screen, "enter picks")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.phase != poPhaseLine {
+		t.Fatalf("the key the settled pane named did not work (phase %v)", screen.phase)
+	}
+	if got := screen.lineInputs[poLineFieldDesc].Value(); got != "Widget 38" {
+		t.Errorf("staged %q, want Widget 38", got)
+	}
+}
+
+// TestPOAssetPicker_SearchBoxDoesNotRunASecondSearchOverTheFirst: the asset
+// reply carries no request generation — only the supplierID the stale-reply
+// guard reads — so two searches in flight for two different queries resolve in
+// whatever order the network returns them, and the rows left on screen can
+// belong to a query the search box no longer holds. An operator picking the
+// asset they can SEE and getting a different one is the wrong purchase order.
+//
+// So the typing arm declines while a lookup is out, and both surfaces stop
+// naming enter for exactly as long as that is true. The failure frame is not
+// gated: nothing is in flight there, so enter out of the box is the retry the
+// bar's "/ retries with a search" promised one frame earlier.
+func TestPOAssetPicker_SearchBoxDoesNotRunASecondSearchOverTheFirst(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+
+	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = next.(Root)
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = next.(Root)
+	if !screen.assetsTyping || !screen.assetsLoading {
+		t.Fatalf("setup: want the box open over an in-flight lookup (typing=%v loading=%v)",
+			screen.assetsTyping, screen.assetsLoading)
+	}
+	poRejectPaneLine(t, screen, "enter runs the search")
+	poWantPaneLine(t, screen, "esc closes the search")
+
+	r = poType(t, r, "Lathe 2")
+	beforePane := strings.Join(poPaneLines(t, screen), "\n")
+	next, cmd := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	r = next.(Root)
+	// Run whatever enter returned: if it fired a lookup the fake records it.
+	// The first lookup is still un-pumped, so the count here is exactly the
+	// number of requests enter itself sent.
+	r = pump(t, r, cmd, 0)
+	if got := fake.hits("/assets/"); got != 0 {
+		t.Errorf("enter fired %d asset lookup(s) over the one already in flight", got)
+	}
+	if !screen.assetsTyping {
+		t.Error("the declining enter closed the search box anyway")
+	}
+	if beforePane == strings.Join(poPaneLines(t, screen), "\n") {
+		t.Errorf("enter over an in-flight lookup redrew an identical pane:\n%s", beforePane)
+	}
+	poWantPaneLine(t, screen, "Looking up the assets")
+	poWantPaneLine(t, screen, "still looking up")
+	poAssertFits(t, "enter over an in-flight asset lookup", screen)
+
+	// The first reply lands, and the key comes back — named and working.
+	r = pump(t, r, load, 0)
+	if screen.assetsLoading {
+		t.Fatal("the lookup never finished")
+	}
+	settled := fake.hits("/assets/")
+	poWantPaneLine(t, screen, "enter runs the search")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if got := fake.hits("/assets/"); got != settled+1 {
+		t.Fatalf("the key the settled pane named did not search (%d requests, want %d)", got, settled+1)
+	}
+}

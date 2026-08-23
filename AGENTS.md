@@ -190,12 +190,28 @@ touching any screen an operator drives:
   invisible cursor cannot be moved and an invisible row cannot be staged: an
   item going onto a purchase order the operator cannot see is a wrong purchase
   order, and the failure frame names `r`/`b`/`esc` and nothing else.
-- **One sentence, both surfaces.** A picker's keys are stated once — by
+  The SEARCH BOX is not an exception: enter inside it is gated too — on
+  `itemListOnScreen` for items (the filter is client-side, so a pick out of an
+  unanswered catalog is a pick out of nothing) and on `assetsLoading` for assets
+  (that search goes off the terminal, and the reply carries no request
+  generation, so a second one racing the first can leave rows belonging to a
+  query the box no longer holds). Gate a key and the bar must stop naming it
+  for exactly as long as the gate holds, in the typing arm as well as the
+  browsing one, and the note the box OPENS with must not promise it either.
+- **One WAY-OUT line, both surfaces.** A picker's way out is stated once — by
   `itemPickBar` / `assetPickBar` / `reorderPickBar` / `supplierPickBar` /
   `supplierSwitchBar` — and BOTH the screen's action bar (`helpText`) and the
-  frame's own way-out line read it. Keeping the two in sync by hand is what put
-  "enter picks the match" in the bar four rows above a note saying enter closes
-  the search, with enter doing neither. `po_create_picker_status_test.go`'s
+  frame's own hint read it. Keeping the two in sync by hand is what put "enter
+  picks the match" in the bar four rows above a note saying enter closes the
+  search, with enter doing neither. Those bars are NOT the only place a picker
+  names a key: a note answers a specific press, so it can be narrower than the
+  bar, and the rule is the weaker one — whatever a bar names must act in the
+  state being drawn, and bar and note must not CONTRADICT each other about the
+  same key. One gap is known and DEFERRED to the queued columnar conversion,
+  with the reasoning at the "One statement of what works here" comment in
+  `po_create_pickers.go`: `itemPickBar`'s empty-list arm cannot tell "matched
+  nothing" from "sells nothing" by row count, so it says only `r reloads` while
+  the note says `/ edits the search`. `po_create_picker_status_test.go`'s
   `TestPOPickers_PaneNamesExactlyTheKeysThatWork` presses the whole vocabulary
   against every non-typing picker state and fails a key the bar names that does
   nothing AND a key it does not name that acts — "acts" meaning CHANGES
@@ -214,9 +230,14 @@ touching any screen an operator drives:
 - **A keypress that changes nothing visible IS the reported bug.** Enter over an
   ambiguous search re-emitted the note already on screen, so only the caret
   moved — the original "it just kinda hangs there", surviving inside its own
-  fix. Every arm that declines to pick now leads with what the key did
-  ("too many to pick · …"), and the test compares the rendered NOTE before and
-  after rather than the pane, because a blinking cursor satisfies the latter.
+  fix, and then again in the zero-match arm beside it, which keeps the box OPEN
+  so not even the caret moves. Both filter arms of `commitSearchedItem` now lead
+  with what the key DID ("too many to pick · …", "searched again · …") and the
+  test compares the rendered NOTE line before and after, because a blinking
+  cursor satisfies a comparison of the pane. Where the change IS the note
+  arriving — the frames that draw a working or failure line and used to return
+  before drawing the note under it — the comparison is the other way round, on
+  the clipped pane, because the note object changed in both worlds.
 - **Assert a mid-flight state while it is still mid-flight.** Driving the fake
   to completion and then checking is how a note that concluded "0 in catalog"
   during an eight-page walk passed its own test. Split the load command out
@@ -225,8 +246,9 @@ touching any screen an operator drives:
   still out" and "the walk failed" all look like `len(rows) == 0`, and only the
   first is safe to act on. The flag that means an ANSWER is the one recording
   which supplier the rows came back for (`itemSuppliersFor`); `catalogAnswered`
-  / `catalogVerdict` gate on it, and a working frame never defers to a note
-  that might be a conclusion. Every wording of a filter outcome goes through the
+  / `catalogVerdict` gate on it, and a working frame never SUBSTITUTES a note
+  for its working line — it draws the note underneath, so the fact stays first
+  and the reply to the keypress is still visible. Every wording of a filter outcome goes through the
   one gated choke point (`itemFilterOrVerdict`) — the live count typed into the
   box reached the ungated wording on its own the first time round.
 - **Do not silently discard staged work.** Committing a different supplier

@@ -456,14 +456,29 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 // One statement of what works here
 // ---------------------------------------------------------------------------
 
-// The three picker bars below are the ONLY place each picker says which keys
-// act, and they are read by BOTH surfaces that used to say it separately: the
-// screen's action bar (helpText, drawn at the top of the pane) and the frame's
-// own way-out line (drawn beside the note). Keeping those two in sync by hand
-// is what produced a bar promising "enter picks the match" four rows above a
-// note saying enter closes the search — with enter doing neither, because with
-// several matches it declines and says so. Two surfaces, one sentence, no
-// drift.
+// The three picker bars below are each picker's WAY-OUT line, and they are read
+// by BOTH surfaces that used to state it separately: the screen's action bar
+// (helpText, drawn at the top of the pane) and the frame's own hint (drawn
+// beside the note). Keeping those two in sync by hand is what produced a bar
+// promising "enter picks the match" four rows above a note saying enter closes
+// the search — with enter doing neither, because with several matches it
+// declines and says so. Two surfaces, one sentence, no drift.
+//
+// They are NOT the only place a picker names a key, and the earlier wording of
+// this comment claimed they were. The notes name keys too, and they have to:
+// a note is what answers a specific press, so it can be narrower than the bar
+// (itemFilterNote's zero-match arm names '/' to edit the query, which the bar's
+// empty-list arm — reached for a filter that matched nothing AND for a supplier
+// that sells nothing — does not name, because it cannot tell those two apart
+// from the row count alone). The rule the bars enforce is the weaker and real
+// one: whatever a bar names must act in the state being drawn, and the bar and
+// the note must not make CONTRADICTORY claims about the same key.
+//
+// Reconciling that empty-list arm — so the bar can say "no match, / edits the
+// search" separately from "sells nothing, r reloads" — is deferred to the
+// queued columnar conversion of these screens, which restates every bar in the
+// JD Edwards layer anyway. It is a gap in coverage, not a contradiction: the
+// note is the more specific of the two and both are true.
 //
 // "Acts" means CHANGES something. A key that declines and says why — enter over
 // an empty list, `]` at the last page — is not acting, and is deliberately left
@@ -478,6 +493,18 @@ func (s *PurchaseOrderCreateScreen) itemPickBar() string {
 		// CONDITION and the note states this moment's outcome. Neither can
 		// contradict the other, and "picks the match" — which promised the
 		// multi-match staging the design deliberately refuses — is gone.
+		//
+		// Both of those hold only while the catalog is ON SCREEN. The box opens
+		// mid-walk on purpose (the rows are on their way and the query lands
+		// with them) and it survives a failed reload, because the frame keeps
+		// the rows it was showing; in both of those states commitSearchedItem
+		// declines at its first line. Naming enter there put the pane's ONLY
+		// claim about enter in flat contradiction with what enter does, so name
+		// the two keys that really work: runes go into the query, esc shuts the
+		// box.
+		if !s.itemListOnScreen() {
+			return "type to filter · " + searchBoxWayOut
+		}
 		return "type to filter · enter picks when one row is left · esc closes the search"
 	case s.itemSuppliersLoad:
 		// A query typed now is applied when the rows land, so '/' is real here.
@@ -495,6 +522,14 @@ func (s *PurchaseOrderCreateScreen) itemPickBar() string {
 func (s *PurchaseOrderCreateScreen) assetPickBar() string {
 	switch {
 	case s.assetsTyping:
+		if s.assetsLoading {
+			// Enter is gated while a search is in flight (see the typing arm of
+			// updateAssetPickPhase), so it is not named here. The failure frame
+			// is deliberately NOT gated: with nothing in flight there is no
+			// race, and enter out of the box is the retry "/ retries with a
+			// search" promised one frame earlier.
+			return "type to search · " + searchBoxWayOut
+		}
 		return "type to search · enter runs the search · esc closes the search"
 	case s.assetsLoading:
 		return "/ searches · " + pickerWayOut
@@ -576,6 +611,13 @@ func (s *PurchaseOrderCreateScreen) supplierSwitchBar() string {
 // The failure frame is worse again, because it names r/b/esc and nothing else,
 // so enter acting there is also the bar naming one set of keys while another
 // set works.
+//
+// itemListOnScreen answers for the SEARCH BOX too, not just the row keys: the
+// item filter runs client-side over the loaded catalog, so enter inside the box
+// picks out of the same invisible slice j/k would move through. The asset box
+// is gated on assetsLoading instead — that search really goes off the terminal,
+// and there the hazard is a second request racing the first rather than a pick
+// out of nothing.
 func (s *PurchaseOrderCreateScreen) itemListOnScreen() bool {
 	return !s.itemSuppliersLoad && s.itemSuppliersErr == ""
 }
@@ -956,8 +998,14 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 		}
 		s.itemSuppliersTyping = true
 		s.itemSuppliersSearch.Focus()
+		// Same split as the typing arm of itemPickBar: opening the box while
+		// the walk is out is allowed, but promising a pick out of it is not.
+		opened := "type to search · enter picks the ONE match\nesc closes the search and keeps the filter"
+		if !s.itemListOnScreen() {
+			opened = "type to search · esc closes the search and keeps the filter"
+		}
 		return s, tea.Batch(
-			s.itemSuppliersNote.say("type to search · enter picks the ONE match\nesc closes the search and keeps the filter", StatusInfo),
+			s.itemSuppliersNote.say(opened, StatusInfo),
 			textinput.Blink,
 		)
 	case "r":
@@ -1022,8 +1070,18 @@ func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
 		// Through the gate, not around it: with the walk still out this says so
 		// rather than concluding "no match … (N in catalog)" about a catalog
 		// that has not finished arriving.
+		//
+		// The lead is here for the same reason it is on the multi-match arm
+		// below, and this arm is where the original report survived longest:
+		// the box STAYS OPEN on no-match, so enter changed the cursor position
+		// not at all, the rows not at all, and the note not at all — the filter
+		// had already been applied on the keystroke before, so
+		// reportItemFilterState("") re-emitted the note character for character.
+		// The only moving thing on the pane was the caret, which is precisely
+		// what "it just kinda hangs there" describes. "searched again" is what
+		// the key DID; the clause after it is the outcome.
 		s.itemSuppliersCur = 0
-		return s.reportItemFilterState("")
+		return s.reportItemFilterState("searched again")
 	case len(s.itemSuppliers) == 1:
 		s.itemSuppliersTyping = false
 		s.itemSuppliersSearch.Blur()
@@ -1257,11 +1315,30 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 			verb = "Reloading"
 		}
 		b.WriteString(pickerHint(verb + " the items " + s.supplierLabel() + " sells…"))
+		// …and the note goes UNDER it, not instead of it. A key pressed while
+		// the walk is out declines and says why (catalogVerdictNote), but this
+		// branch used to return before anything drew that answer, so the press
+		// left the pane byte-for-byte unchanged — the original hang, one state
+		// over. The working line still speaks first: it is the fact, the note
+		// is the reply to the key.
+		if note := s.itemSuppliersNote.render(); note != "" {
+			b.WriteString("\n" + note)
+		}
 		return b.String()
 	}
 	if s.itemSuppliersErr != "" {
 		b.WriteString(pickerFail("looking up this supplier's items failed", s.itemSuppliersErr) + "\n")
+		// Same reason as the loading branch above: the failure frame is durable,
+		// so without this a key pressed on it answered only into the four-second
+		// status flash and the body never moved.
+		//
+		// Keys ABOVE the reply, as on the supplier-switch confirm: clampToBox
+		// drops from the bottom, and of these two lines the one that must
+		// survive a short terminal is the one naming r/b/esc.
 		b.WriteString(pickerHint(s.itemPickBar()))
+		if note := s.itemSuppliersNote.render(); note != "" {
+			b.WriteString("\n" + note)
+		}
 		return b.String()
 	}
 	if len(s.itemSuppliers) == 0 {
@@ -1319,6 +1396,20 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 			s.assetsSearch.Blur()
 			return s, s.assetsSearchClosedNote()
 		case tea.KeyEnter:
+			if s.assetsLoading {
+				// A search is already out. Firing a second one is how two
+				// replies for two different queries race: the asset reply
+				// carries no request generation, only supplierID, so whichever
+				// lands LAST wins and the rows on screen can belong to a query
+				// the search box no longer holds — an operator picking the
+				// asset they can see and getting a different one.
+				//
+				// This declines rather than cancelling, which is why the
+				// typing arm of assetPickBar stops naming enter here: a key
+				// that cannot act must not be advertised, and the note says
+				// what is happening instead of the screen sitting still.
+				return s, s.assetVerdictNote()
+			}
 			// Unlike the item picker this really does go off the terminal, so
 			// the note says so BEFORE the request leaves: the reply repaints it
 			// with the result (handlePickerLoaded), and a slow or failed lookup
@@ -1366,8 +1457,15 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 	case "/":
 		s.assetsTyping = true
 		s.assetsSearch.Focus()
+		// The bar names '/' on the working frame too, so the box can open with
+		// a lookup still out — and there enter is gated. Promising the key the
+		// box cannot run is the same false claim the bar just stopped making.
+		opened := "type to search · enter runs the search"
+		if s.assetsLoading {
+			opened = "type to search · " + searchBoxWayOut
+		}
 		return s, tea.Batch(
-			s.assetsNote.say("type to search · enter runs the search", StatusInfo),
+			s.assetsNote.say(opened, StatusInfo),
 			textinput.Blink,
 		)
 	case "]":
@@ -1443,6 +1541,16 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 // is the bar-honesty rule broken by the frame's own note. The item picker's esc
 // path already branches this way through reportItemFilterState.
 func (s *PurchaseOrderCreateScreen) assetsSearchClosedNote() tea.Cmd {
+	// The rows this note counts are only an ANSWER once the lookup has come
+	// back. esc can close the box with a search still out or after one failed —
+	// the frame keeps the rows it was showing either way — and concluding "this
+	// supplier has no assets on file" there is a verdict about a request nobody
+	// has seen. That used to expire with the status flash; the working and
+	// failure frames now DRAW their note, so it would be a false line sitting
+	// on the pane.
+	if !s.assetListOnScreen() {
+		return s.assetVerdictNote()
+	}
 	if len(s.assets) > 0 {
 		return s.assetsNote.say(
 			fmt.Sprintf("search closed · %d asset(s) · j/k move · enter picks", len(s.assets)), StatusInfo)
@@ -1463,13 +1571,29 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 	}
 	if s.assetsLoading {
 		b.WriteString(pickerHint("Looking up the assets " + s.supplierLabel() + " supplied…"))
+		// The note goes UNDER the working line, never instead of it — the same
+		// split the item picker's loading frame makes. Every key this frame
+		// does not name now declines through assetVerdictNote, INCLUDING enter
+		// inside the search box, and a decline the frame does not draw is a
+		// keypress that changes nothing: the four-second status flash expires
+		// and the operator who missed it is still looking at a screen that has
+		// not moved.
+		if note := s.assetsNote.render(); note != "" {
+			b.WriteString("\n" + note)
+		}
 		return b.String()
 	}
 	// Same gate as the item picker: with the search box open, '/' is a slash in
 	// the query, 'b' is a letter, and esc closes the box rather than the order.
 	if s.assetsErr != "" {
 		b.WriteString(pickerFail("looking up this supplier's assets failed", s.assetsErr) + "\n")
+		// Keys above the reply: clampToBox drops from the bottom, and of these
+		// two lines the one that must survive a short terminal is the one
+		// naming the way out.
 		b.WriteString(pickerHint(s.assetPickBar()))
+		if note := s.assetsNote.render(); note != "" {
+			b.WriteString("\n" + note)
+		}
 		return b.String()
 	}
 	if len(s.assets) == 0 {
