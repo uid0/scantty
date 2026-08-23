@@ -99,6 +99,11 @@ const (
 	poPhaseAssetPick
 	poPhaseLine
 	poPhaseReview
+	// poPhaseSupplierSwitch is the confirm the supplier picker raises when
+	// committing a DIFFERENT supplier would invalidate lines already in the
+	// cart. Appended rather than slotted in beside poPhaseSupplier so the
+	// existing constants keep their values.
+	poPhaseSupplierSwitch
 )
 
 // Field indexes inside the line-entry form (Phase 4). Every line collects a
@@ -437,6 +442,8 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		switch s.phase {
 		case poPhaseSupplier:
 			return s.updateSupplierPhase(m)
+		case poPhaseSupplierSwitch:
+			return s.updateSupplierSwitchPhase(m)
 		case poPhaseAgreement:
 			return s.updateAgreementPhase(m)
 		case poPhaseWorkOrder:
@@ -501,6 +508,19 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 			s.supplierCursor--
 		}
 	case "enter", "tab":
+		// Changing supplier under a cart that already names the old supplier's
+		// catalog rows destroys work, so it asks first. Only a CHANGE, and only
+		// when there is something to lose: re-committing the same supplier, or
+		// committing one with an empty (or wholly supplier-agnostic) cart, is
+		// the same single keypress it has always been.
+		if s.supplierCursor >= 0 && s.supplierCursor < len(s.suppliers) &&
+			s.suppliers[s.supplierCursor].ID != s.supplierID &&
+			s.supplierScopedLineCount() > 0 {
+			s.phase = poPhaseSupplierSwitch
+			return s, Status(fmt.Sprintf(
+				"%d staged line(s) belong to %s — ctrl+x drops them and switches, esc keeps them",
+				s.supplierScopedLineCount(), s.supplierLabel()), StatusWarn)
+		}
 		cmd := s.commitSupplier()
 		if s.supplierID > 0 {
 			s.phase = poPhaseSource
@@ -508,6 +528,111 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 		return s, cmd
 	}
 	return s, nil
+}
+
+// ---------------------------------------------------------------------------
+// Phase: "changing supplier will drop part of the cart"
+// ---------------------------------------------------------------------------
+
+// supplierScopedLineCount is how many staged lines only the CURRENT supplier
+// can fill — the ones whose payload names an item_supplier_id.
+//
+// An ItemSupplier row IS the (item, supplier) pair, so its id is meaningless
+// against any other supplier, and the backend accepts it without cross-checking
+// it against the order's supplier: the POST succeeds and the purchase order
+// quietly names another supplier's item. That is the failure
+// resetSupplierScopedPickers closes inside the pickers, one step further along.
+//
+// Freeform lines carry only a description and a cost, so they are valid against
+// anybody. ASSET lines are kept for the same reason, and that is a reading of
+// the wire contract rather than a guess: PurchaseOrderCreateItem documents
+// asset_id as one of three line SHAPES with no supplier coupling, the same file
+// calls out supplier validation explicitly where it does exist (the backend
+// validates supplier_agreement against the order's supplier), and the asset
+// picker scopes its list with ?manufacturer= — who BUILT the equipment, a
+// property of the asset, not a sales relationship with whoever is being
+// ordered from. Buying a part for a mill from a different vendor is ordinary.
+// (No OpenMakerSuite checkout is reachable from a task worktree, so this is the
+// contract as this repo models it; if the backend does reject such a line the
+// failure is a visible 400 at submit, where dropping the lines outright would
+// have destroyed valid staged work to prevent a rejection that never comes.)
+func (s *PurchaseOrderCreateScreen) supplierScopedLineCount() int {
+	n := 0
+	for _, l := range s.lines {
+		if l.item.ItemSupplierID != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// dropSupplierScopedLines removes exactly those lines and returns how many went.
+func (s *PurchaseOrderCreateScreen) dropSupplierScopedLines() int {
+	kept := make([]poCartLine, 0, len(s.lines))
+	dropped := 0
+	for _, l := range s.lines {
+		if l.item.ItemSupplierID != nil {
+			dropped++
+			continue
+		}
+		kept = append(kept, l)
+	}
+	s.lines = kept
+	s.clampReviewCursor()
+	return dropped
+}
+
+// updateSupplierSwitchPhase drives the confirm: ctrl+x drops and switches, esc
+// keeps the cart AND the current supplier. Two keys, both named, nothing else.
+//
+// The affirmative is ctrl+x rather than enter for two reasons. It is the chord
+// this screen already spends on "remove a staged line" (the review cart and the
+// source chooser both bind it), so it means the same thing here; and enter is
+// the key that OPENED this frame, so binding it to the destructive answer would
+// turn one reflexive double-tap on the supplier list into a silently emptied
+// cart. Letters stay out of it for the reason the attachment delete records: a
+// scanner burst is a run of letters, and one landing on a confirm is the
+// accident the reduced key scheme exists to rule out.
+func (s *PurchaseOrderCreateScreen) updateSupplierSwitchPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "ctrl+x":
+		from := s.supplierLabel()
+		dropped := s.dropSupplierScopedLines()
+		cmd := s.commitSupplier()
+		s.phase = poPhaseSupplier
+		if s.supplierID > 0 {
+			s.phase = poPhaseSource
+		}
+		return s, tea.Batch(Status(fmt.Sprintf(
+			"dropped %d line(s) only %s carried · %d left in the cart",
+			dropped, from, len(s.lines)), StatusWarn), cmd)
+	case "esc":
+		s.phase = poPhaseSupplier
+		return s, Status("kept the cart · still ordering from "+s.supplierLabel(), StatusInfo)
+	}
+	return s, nil
+}
+
+func (s *PurchaseOrderCreateScreen) renderSupplierSwitchPhase() string {
+	scoped := s.supplierScopedLineCount()
+	to := "the highlighted supplier"
+	if s.supplierCursor >= 0 && s.supplierCursor < len(s.suppliers) {
+		if name := s.suppliers[s.supplierCursor].Name; name != "" {
+			to = pickerClip(name, 20)
+		}
+	}
+	var b strings.Builder
+	b.WriteString(StyleStatusWarn.Render("! Changing supplier drops part of the cart") + "\n\n")
+	b.WriteString(pickerHint(fmt.Sprintf(
+		"%d of %d staged line(s) name a catalog item only %s carries, so they cannot be ordered from %s.",
+		scoped, len(s.lines), s.supplierLabel(), to)) + "\n\n")
+	if kept := len(s.lines) - scoped; kept > 0 {
+		b.WriteString(pickerHint(fmt.Sprintf(
+			"The other %d line(s) are freeform or asset lines and stay in the cart.", kept)) + "\n\n")
+	}
+	b.WriteString(pickerHint("ctrl+x drops those lines and switches to " + to +
+		" · esc keeps the cart and stays on " + s.supplierLabel()))
+	return b.String()
 }
 
 // commitSupplier locks in the highlighted supplier and, when that changed the
@@ -1476,6 +1601,8 @@ func (s *PurchaseOrderCreateScreen) View() string {
 	switch s.phase {
 	case poPhaseSupplier:
 		b.WriteString(s.renderSupplierPhase())
+	case poPhaseSupplierSwitch:
+		b.WriteString(s.renderSupplierSwitchPhase())
 	case poPhaseAgreement:
 		b.WriteString(s.renderAgreementPhase())
 	case poPhaseWorkOrder:
@@ -1509,6 +1636,11 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 	switch s.phase {
 	case poPhaseSupplier:
 		return "Pick a supplier (j/k move, enter to commit, esc to cancel)."
+	case poPhaseSupplierSwitch:
+		// Exactly the two keys the frame binds. j/k, enter and the rest are
+		// deliberately absent: they do nothing here, and the bar may only name
+		// keys that work in the state it is drawing.
+		return "Changing supplier · ctrl+x drops the lines only the old supplier carries and switches · esc keeps the cart."
 	case poPhaseAgreement:
 		return "Pick the purchase / pricing agreement this order is placed under (j/k move · enter commit · esc keep current · row 1 = none)."
 	case poPhaseWorkOrder:

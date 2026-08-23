@@ -193,18 +193,57 @@ func listRuneKey(k string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
 
+// listPaneLines is the list body as the CONTENT PANE actually shows it: the
+// screen's own View clipped to screenBodyWidth(80), which is what Root.View()
+// does to it before painting (app.go clamps the joined content, and clampToBox
+// truncates rather than wraps).
+//
+// Reading the clipped pane rather than footerHint() is the point. The claim and
+// the handler were made one record last round, which fixed the keys — but a
+// claim the operator cannot see is not a claim, and asserting the method's
+// return value is exactly the blindness that let it ship: every list's footer
+// was cut at 51 columns with all eight restored keys past the cut.
+func listPaneLines(t *testing.T, s *ListScreen) []string {
+	t.Helper()
+	return strings.Split(clampToBox(s.View(), screenBodyWidth(80), 400), "\n")
+}
+
+// listFooterLegible reports whether one footer segment ("N new PO") survives
+// the clip whole, on a single visible line.
+func listFooterLegible(t *testing.T, s *ListScreen, segment string) bool {
+	t.Helper()
+	for _, line := range listPaneLines(t, s) {
+		if strings.Contains(line, segment) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestList_FooterNamesExactlyTheKeysThatWork is the rule, as a rule, over every
 // list screen in the app.
 //
 // Each named key is probed from several positions — as opened, after G, after
 // paging down — because `g` does nothing at the top and `G` nothing at the
 // bottom; a key is dead only if it does nothing from any of them.
+//
+// It also requires each claim to be READABLE at 80 columns. A key named on a
+// line the pane cuts off is dead to the operator whatever the handler does, so
+// it fails this sweep rather than passing it.
 func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 	probes := [][]string{nil, {"G"}, {"pgdown"}}
 
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
-			named := listNamedKeys(t, listLoaded(surface.build).footerHint())
+			loaded := listLoaded(surface.build)
+			named := listNamedKeys(t, loaded.footerHint())
+
+			for _, segment := range strings.Split(loaded.footerHint(), " · ") {
+				if !listFooterLegible(t, loaded, segment) {
+					t.Errorf("the %s footer claims %q on a line the 51-column pane cuts off:\n%s",
+						surface.name, segment, strings.Join(listPaneLines(t, loaded), "\n"))
+				}
+			}
 
 			for _, key := range listAllBarKeys() {
 				var changed, issued bool
@@ -292,8 +331,15 @@ func TestList_NOnThePurchaseOrderListOpensTheNewOrderScreen(t *testing.T) {
 	next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	r = next.(Root)
 
-	if hint := s.footerHint(); !strings.Contains(hint, "N new PO") {
-		t.Fatalf("the Purchasing footer no longer offers N: %q", hint)
+	// The CLAIM has to be on the operator's screen, not merely in the string
+	// the screen would like to show. This assertion used to read footerHint()
+	// and so passed while "N new PO" sat 20 columns past the right edge.
+	if !listFooterLegible(t, s, "N new PO") {
+		t.Fatalf("the Purchasing footer does not offer a legible N at 80 columns:\n%s",
+			strings.Join(listPaneLines(t, s), "\n"))
+	}
+	if out := r.View(); !strings.Contains(out, "N new PO") {
+		t.Fatalf("the 80-column render does not carry the N claim:\n%s", out)
 	}
 
 	next, cmd := r.Update(listRuneKey("N"))

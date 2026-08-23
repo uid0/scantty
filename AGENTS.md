@@ -133,21 +133,48 @@ touching any screen an operator drives:
   the whole of the "the item picker hangs after I press enter" report.
 - Notes go in the screen BODY as well as the status bar: `StatusBar.Flash`
   expires after four seconds and the operator who saw nothing is still looking.
-- **Do not hand-count a hint against 51 columns — fold it.** Every note and
-  fixed hint on these screens goes through `pickerWrap` / `pickerHint` /
+- **Do not hand-count a hint against 51 columns — fold it.** Every note, fixed
+  hint and prose ACTION BAR goes through `pickerWrap` / `pickerHint` /
   `pickerFail` (`po_create_pickers.go`), which fold at the `·` joints and indent
-  continuations. Hand-counting is what broke: each line read fine at the width
-  its author had in mind and then grew a `search closed · ` prefix, a supplier
-  name or an unbounded OMS error string, and `clampToBox` took the TAIL — which
+  continuations. That folder is deliberately pane-local, outside the JD Edwards
+  layer, so the list screens and the New PO help line can be legible at 80
+  columns without joining the columnar layout. Hand-counting is what broke: each
+  line read fine at the width its author had in mind and then grew a
+  `search closed · ` prefix, a supplier name or an unbounded OMS error string,
+  and `clampToBox` took the TAIL — which
   is exactly where these lines name the key that gets the operator out. A hint
   the operator cannot finish reading is worse than none, because they believe
   they read it. Assert it too: check `clampToBox(screen.View(), screenBodyWidth(80), n)`,
   never `strings.Contains(Root.View(), …)` — the 80-column status bar satisfies
   that substring while the body line is cut in half.
-- **A frame may only name keys that work in the state it is drawing.** With a
-  search box open, `b` is a letter going into the query and `esc` only closes
-  the box; the picker frames used to print "b picks another line source · esc
-  cancels the order" there anyway, one line under a note that said the opposite.
+- **A frame may only name keys that work in the state it is drawing** — and
+  that includes the WORDING of a note rendered in two states. With a search box
+  open, `b` is a letter going into the query and `esc` only closes the box; with
+  it shut, `esc` cancels the whole order. The picker frames used to print "b
+  picks another line source · esc cancels the order" while the box was open, and
+  the zero-match note used to keep its open-box tail after the box shut, so one
+  frame carried two claims about `esc` with the costly reading being the wrong
+  one. A note rendered in both states takes the state as an argument
+  (`itemFilterNote`).
+- **A bar the operator cannot READ is not honest, it is absent.** The list
+  sweep (`list_bar_honesty_test.go`) therefore checks each footer segment
+  survives `clampToBox` at 80 as a whole line, not just that `footerHint()`
+  returns it — asserting the method's return value is what let every list ship
+  with all eight sibling-surface keys past the 51-column cut.
+- **An empty slice is three different facts.** "Sells nothing", "the walk is
+  still out" and "the walk failed" all look like `len(rows) == 0`, and only the
+  first is safe to act on. The flag that means an ANSWER is the one recording
+  which supplier the rows came back for (`itemSuppliersFor`); `catalogAnswered`
+  / `catalogVerdictNote` gate on it, and a working frame never defers to a note
+  that might be a conclusion.
+- **Do not silently discard staged work.** Committing a different supplier
+  invalidates every cart line carrying an `item_supplier_id` (that id IS the
+  item↔supplier pair, and the backend accepts it without checking it against
+  the order), so the supplier picker warns, names the count, and waits:
+  `poPhaseSupplierSwitch`, `ctrl+x` to drop and switch, `esc` to keep both.
+  Freeform and ASSET lines survive — an `asset_id` names equipment, not a
+  (item, supplier) pair, and the asset picker's `?manufacturer=` scoping is who
+  built the machine, not who is being ordered from.
 - **A picker that filters client-side must load every page.** The page count is
   then a correctness property, not a performance one:
   `omsapi.ListItemSuppliersForSupplier` fetched page one and dropped `next`, so

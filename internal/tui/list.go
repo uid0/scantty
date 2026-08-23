@@ -608,7 +608,7 @@ func (s *ListScreen) View() string {
 			head.WriteString("  " + StyleMuted.Render(fmt.Sprintf("%d match(es)", len(s.rows))))
 		}
 		head.WriteString("\n")
-		head.WriteString(StyleMuted.Render("↑/↓ move · enter open · esc cancel") + "\n\n")
+		head.WriteString(pickerHint("↑/↓ move · enter open · esc cancel") + "\n\n")
 		return head.String() + s.bodyView()
 	}
 	return s.bodyView()
@@ -689,7 +689,15 @@ func (s *ListScreen) bodyView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render(s.footerHint()))
+	// FOLDED, not truncated. footerHint is one long sentence and the content
+	// pane is 51 columns at 80 (screenBodyWidth), where clampToBox cuts rather
+	// than wraps — the fixed prefix alone filled all 51, so every sibling-
+	// surface key the footer restored ("N new PO" and its seven siblings) was
+	// off the right edge on every list. A bar the operator cannot read is not
+	// an honest bar, it is an absent one, and the report this came from opens
+	// "as the command line says". pickerWrap is pane-local (po_create_pickers.go)
+	// so this needs nothing from the shared JD Edwards layer.
+	b.WriteString(pickerHint(s.footerHint()))
 	return b.String()
 }
 

@@ -765,7 +765,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.itemSuppliersTyping = true
 			s.itemSuppliersSearch.SetValue("a search nobody would type")
 			s.applyItemSupplierFilter()
-			s.itemSuppliersNote = itemFilterNote(s.itemSuppliersSearch.Value(), 0, 400, "")
+			s.itemSuppliersNote = itemFilterNote(s.itemSuppliersSearch.Value(), 0, 400, "", true)
 		}, (*PurchaseOrderCreateScreen).renderItemPick,
 			[]string{"no match for", "in catalog", "edit the search"}},
 
@@ -773,7 +773,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.itemSuppliersAll = poCatalog(400)
 			s.itemSuppliersSearch.SetValue("Widget 1")
 			s.applyItemSupplierFilter()
-			s.itemSuppliersNote = itemFilterNote("Widget 1", len(s.itemSuppliers), 400, "search closed")
+			s.itemSuppliersNote = itemFilterNote("Widget 1", len(s.itemSuppliers), 400, "search closed", false)
 		}, (*PurchaseOrderCreateScreen).renderItemPick,
 			[]string{"search closed", "match", "j/k choose", "enter picks"}},
 
@@ -781,14 +781,14 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.itemSuppliersAll = poCatalog(400)
 			s.itemSuppliersSearch.SetValue("Widget 137")
 			s.applyItemSupplierFilter()
-			s.itemSuppliersNote = itemFilterNote("Widget 137", 1, 400, "search closed")
+			s.itemSuppliersNote = itemFilterNote("Widget 137", 1, 400, "search closed", false)
 		}, (*PurchaseOrderCreateScreen).renderItemPick,
 			[]string{"search closed", "enter picks it"}},
 
 		{"items, unfiltered count", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersAll = poCatalog(400)
 			s.applyItemSupplierFilter()
-			s.itemSuppliersNote = itemFilterNote("", 400, 400, "search closed")
+			s.itemSuppliersNote = itemFilterNote("", 400, 400, "search closed", false)
 		}, (*PurchaseOrderCreateScreen).renderItemPick,
 			[]string{"search closed", "enter picks the highlighted row"}},
 
@@ -1108,7 +1108,7 @@ func TestPOItemPicker_CatalogIsNotRewalkedForEveryLine(t *testing.T) {
 	if !screen.itemSuppliersLoad {
 		t.Fatal("r did not start a reload")
 	}
-	poWantPaneLine(t, screen, "reloading what")
+	poWantPaneLine(t, screen, "Reloading the items")
 	r = pump(t, r, cmd, 0)
 	if got := fake.hits("/item-suppliers/"); got <= first {
 		t.Errorf("r did not go back to OMS (%d requests, was %d)", got, first)
@@ -1146,4 +1146,139 @@ func TestPOItemPicker_EnterAgainstAnEmptyCatalogKeepsSayingItIsEmpty(t *testing.
 		t.Error("'/' opened a search box over a catalog with nothing in it to search")
 	}
 	poWantPaneLine(t, screen, "b picks another line source")
+}
+
+// ---------------------------------------------------------------------------
+// "Found nothing" and "could not tell" are still different mid-walk
+// ---------------------------------------------------------------------------
+
+// TestPOItemPicker_KeysPressedMidWalkDoNotClaimAnEmptyCatalog: an empty
+// itemSuppliersAll is equally true of a supplier that sells nothing, a walk
+// still in flight, and a walk that failed. The catalog is now fetched a page at
+// a time, so the in-flight window is wide enough for an operator to press a key
+// inside it — and the answer they used to get was the conclusion of a lookup
+// that had not finished.
+func TestPOItemPicker_KeysPressedMidWalkDoNotClaimAnEmptyCatalog(t *testing.T) {
+	fake := &poPickFake{catalog: 40, pageSize: 5} // 8 sequential page requests
+	r, screen := poPickerAt(t, fake, 80)
+
+	// Enter the picker WITHOUT pumping: the walk is genuinely out.
+	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = next.(Root)
+	if !screen.itemSuppliersLoad || len(screen.itemSuppliersAll) != 0 {
+		t.Fatalf("setup: want an in-flight walk over an empty catalog slice")
+	}
+
+	// enter mid-walk: says the walk is still out, never that there is nothing.
+	next, cmd := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	r = next.(Root)
+	r = pump(t, r, cmd, 0)
+	poWantPaneLine(t, screen, "Looking up the items Acme Supply sells")
+	poRejectPaneLine(t, screen, "has no active catalog items")
+	if out := r.View(); !strings.Contains(out, "still looking up") {
+		t.Errorf("enter mid-walk does not say the lookup is still out:\n%s", out)
+	} else if strings.Contains(out, "has no active catalog items") {
+		t.Errorf("enter mid-walk claims the supplier sells nothing:\n%s", out)
+	}
+	if screen.phase != poPhaseItemPick {
+		t.Fatalf("enter mid-walk staged something (phase %v)", screen.phase)
+	}
+
+	// '/' mid-walk OPENS the box — the rows are on their way, so there is
+	// something for the query to filter once they land.
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = next.(Root)
+	if !screen.itemSuppliersTyping {
+		t.Error("'/' mid-walk refused to open the search box")
+	}
+	poAssertFits(t, "mid-walk", screen.View())
+
+	// And the query typed mid-walk is honoured when the rows arrive.
+	r = poType(t, r, "Widget 38")
+	r = pump(t, r, load, 0)
+	if screen.itemSuppliersLoad {
+		t.Fatal("the walk never finished")
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.phase != poPhaseLine {
+		t.Fatalf("the mid-walk search could not be completed (phase %v)", screen.phase)
+	}
+	if got := screen.lineInputs[poLineFieldDesc].Value(); got != "Widget 38" {
+		t.Errorf("staged %q, want Widget 38", got)
+	}
+}
+
+// TestPOItemPicker_KeysAfterAFailedWalkReportTheFailure: the other state an
+// empty slice hides. A failed lookup answering "this supplier has no catalog"
+// is a conclusion drawn from a request that never came back.
+func TestPOItemPicker_KeysAfterAFailedWalkReportTheFailure(t *testing.T) {
+	fake := &poPickFake{catalog: 12, pageSize: 5, failItems: true}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	if screen.itemSuppliersErr == "" {
+		t.Fatal("setup: the failing fixture did not fail")
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	poWantPaneLine(t, screen, "looking up this supplier's items failed")
+	poWantPaneLine(t, screen, "r retries the lookup")
+	poRejectPaneLine(t, screen, "has no active catalog items")
+	if out := r.View(); !strings.Contains(out, "the catalog lookup failed") {
+		t.Errorf("enter after a failed walk does not report the failure:\n%s", out)
+	} else if strings.Contains(out, "has no active catalog items") {
+		t.Errorf("enter after a failed walk claims the supplier sells nothing:\n%s", out)
+	}
+
+	// r is named on that frame, so r must work — and it recovers.
+	fake.mu.Lock()
+	fake.failItems = false
+	fake.mu.Unlock()
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if screen.itemSuppliersErr != "" {
+		t.Errorf("r did not clear the failure: %q", screen.itemSuppliersErr)
+	}
+	poWantPaneLine(t, screen, "Widget 1")
+}
+
+// ---------------------------------------------------------------------------
+// The zero-match note must not keep open-box wording once the box is closed
+// ---------------------------------------------------------------------------
+
+// TestPOItemPicker_ZeroMatchNoteMatchesTheBoxState: with the box OPEN, esc
+// closes the search; with it CLOSED, esc cancels the whole purchase order. The
+// zero-match note used to emit the open-box wording in both, so the closed
+// frame carried "esc then b for another source" one line above "esc cancels the
+// order" — and the reading that costs the operator their order is the wrong one.
+func TestPOItemPicker_ZeroMatchNoteMatchesTheBoxState(t *testing.T) {
+	fake := &poPickFake{catalog: 12, pageSize: 5}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "flux capacitor")
+
+	// Box OPEN: nothing may claim esc leads anywhere but out of the search.
+	poWantPaneLine(t, screen, "edit the search")
+	poWantPaneLine(t, screen, "esc closes the search")
+	poRejectPaneLine(t, screen, "esc cancels the order")
+	poRejectPaneLine(t, screen, "esc then b for another source")
+	poAssertFits(t, "zero match, box open", screen.View())
+
+	// esc closes it. The note must now speak for the CLOSED frame, and must
+	// acknowledge what esc just did rather than dropping the lead in silence.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	if screen.itemSuppliersTyping {
+		t.Fatal("esc did not close the search box")
+	}
+	poWantPaneLine(t, screen, "search closed")
+	poWantPaneLine(t, screen, "no match for")
+	poWantPaneLine(t, screen, "/ edits the search")
+	poWantPaneLine(t, screen, "esc cancels the order")
+	poRejectPaneLine(t, screen, "esc then b for another source")
+	poAssertFits(t, "zero match, box closed", screen.View())
+
+	// And the keys the closed frame names do what it says.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	if screen.phase != poPhaseSource {
+		t.Fatalf("b on the closed zero-match frame did not pick another source (phase %v)", screen.phase)
+	}
 }

@@ -232,10 +232,15 @@ func pickerWords(text string, width int) []string {
 	return out
 }
 
-// pickerHint renders a fixed muted line — a way out, a working line, a summary
-// — folded to the pane. Nothing on these screens writes such a line directly
+// pickerHint renders a fixed muted line — a way out, a working line, a summary,
+// a list's action bar — folded to the pane. Nothing writes such a line directly
 // any more: routing them all through one function is what keeps the next one
 // from being the one that overruns.
+//
+// Named for the pickers it was written for, but it is the project's pane-local
+// folder generally, and deliberately outside internal/tui/jde_form.go: the list
+// screens and the New PO help line are not on the columnar layer and must not
+// have to join it just to be legible at 80 columns.
 func pickerHint(text string) string {
 	lines := pickerWrap(text, pickerPaneWidth)
 	for i, line := range lines {
@@ -711,7 +716,7 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 		}
 		// Live count as they type, so "nothing matches" is visible BEFORE the
 		// enter that used to answer it with silence.
-		s.itemSuppliersNote = itemFilterNote(s.itemSuppliersSearch.Value(), len(s.itemSuppliers), len(s.itemSuppliersAll), "")
+		s.itemSuppliersNote = itemFilterNote(s.itemSuppliersSearch.Value(), len(s.itemSuppliers), len(s.itemSuppliersAll), "", true)
 		return s, cmd
 	}
 	switch m.String() {
@@ -729,12 +734,14 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 			s.itemSuppliersCur--
 		}
 	case "/":
-		if len(s.itemSuppliersAll) == 0 {
-			// This filter is client-side over the loaded catalog, so with
-			// nothing loaded the box can only ever answer "no match" — and
-			// opening it would take the keyboard away from b and esc, the two
-			// keys that can still do something here. Decline, and say why.
-			return s, s.emptyCatalogNote()
+		if s.catalogAnswered() && len(s.itemSuppliersAll) == 0 {
+			// This filter is client-side over the loaded catalog, so against a
+			// supplier we KNOW sells nothing the box can only ever answer "no
+			// match" — and opening it would take the keyboard away from b and
+			// esc, the two keys that can still do something here. Decline, and
+			// say why. Mid-walk is a different state: the rows are on their
+			// way, so the box opens and the query is applied when they land.
+			return s, s.catalogVerdictNote()
 		}
 		s.itemSuppliersTyping = true
 		s.itemSuppliersSearch.Focus()
@@ -747,13 +754,18 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 		// re-walks it (see the 'i' arm in po_create.go), so there has to be a
 		// named way to go and ask again — a cache with no refresh is its own
 		// silent-wrong-answer bug. Named in the bar, and it does exactly what
-		// it says: the frame goes back to "looking up…" because work really is
+		// it says: the frame goes back to a working line because work really is
 		// happening this time.
+		//
+		// itemSuppliersFor is deliberately LEFT set: it is what tells the
+		// working frame this is a reload rather than a first look, and the
+		// reply overwrites it either way. catalogAnswered() is false while
+		// itemSuppliersLoad is up, so nothing reads it as an answer meanwhile.
 		s.itemSuppliersLoad = true
 		s.itemSuppliersErr = ""
-		s.itemSuppliersFor = 0
+		s.itemSuppliersNote.clear() // the working line speaks for this one
 		return s, tea.Batch(
-			s.itemSuppliersNote.say("reloading what "+s.supplierLabel()+" sells…", StatusInfo),
+			Status("reloading what "+s.supplierLabel()+" sells…", StatusInfo),
 			s.loadItemSuppliersForSupplier(),
 		)
 	case "enter":
@@ -790,10 +802,10 @@ func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
 	q := strings.TrimSpace(s.itemSuppliersSearch.Value())
 	switch {
 	case len(s.itemSuppliersAll) == 0:
-		return s.emptyCatalogNote()
+		return s.catalogVerdictNote()
 	case len(s.itemSuppliers) == 0:
 		s.itemSuppliersCur = 0
-		s.itemSuppliersNote = itemFilterNote(q, 0, len(s.itemSuppliersAll), "")
+		s.itemSuppliersNote = itemFilterNote(q, 0, len(s.itemSuppliersAll), "", s.itemSuppliersTyping)
 		return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
 	case len(s.itemSuppliers) == 1:
 		s.itemSuppliersTyping = false
@@ -815,11 +827,11 @@ func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
 // answering that with nil is how the picker told the operator nothing at all.
 func (s *PurchaseOrderCreateScreen) commitHighlightedItem() tea.Cmd {
 	if len(s.itemSuppliersAll) == 0 {
-		return s.emptyCatalogNote()
+		return s.catalogVerdictNote()
 	}
 	if len(s.itemSuppliers) == 0 {
 		q := strings.TrimSpace(s.itemSuppliersSearch.Value())
-		s.itemSuppliersNote = itemFilterNote(q, 0, len(s.itemSuppliersAll), "")
+		s.itemSuppliersNote = itemFilterNote(q, 0, len(s.itemSuppliersAll), "", s.itemSuppliersTyping)
 		return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
 	}
 	if s.itemSuppliersCur < 0 || s.itemSuppliersCur >= len(s.itemSuppliers) {
@@ -862,15 +874,52 @@ func (s *PurchaseOrderCreateScreen) pickItemSupplier(i int) tea.Cmd {
 	)
 }
 
-// emptyCatalogNote answers a pick attempted against a supplier with no catalog
-// at all. itemFilterNote cannot speak for that state: with nothing loaded and
-// no query its unfiltered wording is "0 item(s) · enter picks the highlighted
-// row", which offers the key that just declined to act as the way forward and
-// overwrites the warning the empty load posted with something less true.
-func (s *PurchaseOrderCreateScreen) emptyCatalogNote() tea.Cmd {
+// catalogAnswered reports whether the picker actually HAS an answer about this
+// supplier's catalog, as opposed to merely holding an empty slice.
+//
+// itemSuppliersFor is the flag that means it: it is set only by a reply that
+// arrived for the supplier the order is on. An empty itemSuppliersAll is
+// equally true while the walk is in flight (which is now N sequential page
+// requests, so the window is wide) and after it failed, and neither of those is
+// the fact "this supplier sells nothing".
+func (s *PurchaseOrderCreateScreen) catalogAnswered() bool {
+	return s.supplierID > 0 &&
+		s.itemSuppliersFor == s.supplierID &&
+		!s.itemSuppliersLoad &&
+		s.itemSuppliersErr == ""
+}
+
+// catalogVerdictNote answers a key that needed the catalog when there are no
+// rows to give it — and says which of the four reasons that is.
+//
+// "Found nothing" and "could not tell" are different facts and only one of them
+// is safe to act on. This is the same distinction the loaded path draws; drawn
+// here too, because a key pressed mid-walk used to report the conclusion of a
+// walk that had not finished.
+func (s *PurchaseOrderCreateScreen) catalogVerdictNote() tea.Cmd {
 	way := pickerWayOut
 	if s.itemSuppliersTyping {
 		way = searchBoxWayOut
+	}
+	switch {
+	case s.itemSuppliersLoad:
+		return s.itemSuppliersNote.say(
+			"still looking up the items "+s.supplierLabel()+" sells…", StatusInfo)
+	case s.itemSuppliersErr != "":
+		// r is a letter going into the query while the box is open, so it is
+		// only named when it is really the retry.
+		if s.itemSuppliersTyping {
+			return s.itemSuppliersNote.say("the catalog lookup failed\n"+searchBoxWayOut, StatusError)
+		}
+		return s.itemSuppliersNote.say(
+			"the catalog lookup failed\nr retries the lookup · "+pickerWayOut, StatusError)
+	case !s.catalogAnswered():
+		if s.itemSuppliersTyping {
+			return s.itemSuppliersNote.say(
+				"this supplier's catalog has not been looked up yet\n"+searchBoxWayOut, StatusWarn)
+		}
+		return s.itemSuppliersNote.say(
+			"this supplier's catalog has not been looked up yet\nr looks it up · "+pickerWayOut, StatusWarn)
 	}
 	return s.itemSuppliersNote.say(s.noCatalogSentence()+"\n"+way, StatusWarn)
 }
@@ -879,7 +928,7 @@ func (s *PurchaseOrderCreateScreen) emptyCatalogNote() tea.Cmd {
 // picked". prefix, when given, leads with what the key did.
 func (s *PurchaseOrderCreateScreen) reportItemFilterState(prefix string) tea.Cmd {
 	q := strings.TrimSpace(s.itemSuppliersSearch.Value())
-	s.itemSuppliersNote = itemFilterNote(q, len(s.itemSuppliers), len(s.itemSuppliersAll), prefix)
+	s.itemSuppliersNote = itemFilterNote(q, len(s.itemSuppliers), len(s.itemSuppliersAll), prefix, s.itemSuppliersTyping)
 	return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
 }
 
@@ -889,7 +938,16 @@ func (s *PurchaseOrderCreateScreen) reportItemFilterState(prefix string) tea.Cmd
 // sell the thing — "No inventory items match" alone said neither, and said it
 // about a catalog that (before ListItemSuppliersForSupplier paged) might not
 // even have been fully loaded.
-func itemFilterNote(query string, matched, total int, prefix string) pickerNote {
+//
+// typing is which of two screens this note is going onto, and the zero-match
+// arm needs it. That arm is rendered in BOTH states, and its way out is not the
+// same in each: with the box open, editing the query is the move and esc merely
+// closes the box; with the box closed, esc cancels the whole purchase order and
+// `/` is what reopens the search. The single open-box wording it used to emit
+// therefore appeared one line above "esc cancels the order" on the closed-box
+// frame — two claims about esc at once, with the dangerous reading (esc as a
+// step toward another source) being the wrong one.
+func itemFilterNote(query string, matched, total int, prefix string, typing bool) pickerNote {
 	lead := ""
 	if prefix != "" {
 		lead = prefix + " · "
@@ -899,8 +957,15 @@ func itemFilterNote(query string, matched, total int, prefix string) pickerNote 
 	case query == "":
 		return pickerNote{fmt.Sprintf("%s%d item(s) · enter picks the highlighted row", lead, total), StatusInfo}
 	case matched == 0:
+		// The lead is kept here too: esc having just closed the box is the
+		// thing the operator most needs acknowledged on this frame, and
+		// dropping it was why nothing on screen answered that press.
+		tail := "/ edits the search · b picks another source"
+		if typing {
+			tail = "edit the search to widen it"
+		}
 		return pickerNote{
-			fmt.Sprintf("no match for %s (%d in catalog)\nedit the search · esc then b for another source", q, total),
+			fmt.Sprintf("%sno match for %s (%d in catalog)\n%s", lead, q, total, tail),
 			StatusWarn,
 		}
 	case matched == 1:
@@ -921,13 +986,17 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 		// Name the WORK, not the wait. "Loading…" tells the operator a
 		// rectangle is busy; this tells them which request is out and against
 		// whom, which is the difference between a status line and a spinner.
-		// A note set by the key that started this load (r) is more specific
-		// still — it says the operator's own press is what is out.
-		if note := s.itemSuppliersNote.render(); note != "" {
-			b.WriteString(note)
-			return b.String()
+		//
+		// The working line is UNCONDITIONAL here. It used to defer to a note
+		// when one was set, which let a key pressed mid-walk paint its own
+		// answer over the frame — and the answer a key gets while the catalog
+		// is empty-because-unfetched used to be "this supplier has no catalog",
+		// so the operator was told the conclusion of a walk still in flight.
+		verb := "Looking up"
+		if s.itemSuppliersFor == s.supplierID && s.supplierID > 0 {
+			verb = "Reloading"
 		}
-		b.WriteString(pickerHint("Looking up the items " + s.supplierLabel() + " sells…"))
+		b.WriteString(pickerHint(verb + " the items " + s.supplierLabel() + " sells…"))
 		return b.String()
 	}
 	// While the search box owns the keyboard, b is a letter going into the
