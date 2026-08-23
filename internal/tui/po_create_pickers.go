@@ -108,6 +108,62 @@ func (n *pickerNote) say(text string, level StatusLevel) tea.Cmd {
 	return Status(n.flash(), level)
 }
 
+// cellPrefix returns the longest prefix of text that draws within max CELLS.
+// It is the measurement half of every bound on these screens, and it makes ONE
+// forward pass: it stops as soon as the budget is spent, so its cost is the
+// budget rather than the length of what it was handed.
+//
+// That is the whole reason it exists beside truncateVisible (layout.go), which
+// does the same job by dropping ONE rune off the end and re-measuring the whole
+// remaining string — O(n²) with an O(n) allocation per step. Harmless on a
+// label; not on the values these screens clip, because omsapi.parseError puts
+// the ENTIRE raw response body into APIError.Message whenever the JSON envelope
+// carries no code, and the source chooser re-renders the row carrying it about
+// ten times per frame. Measured against a 20 KB gateway page: 711ms for one
+// clip, and 1.5s for one fold of a 5 KB unspaced token — seconds of freeze per
+// keystroke, which is the symptom this whole change exists to remove.
+//
+// Escape sequences are stepped over rather than measured, and the scan only
+// ever returns on a boundary between them, so a cut never splits one and never
+// bleeds colour into the next column — the property truncateVisible's doc
+// comment is about. A rune's width is asked of lipgloss one rune at a time,
+// which over-counts a multi-rune grapheme cluster (an emoji built from a ZWJ
+// run) rather than under-counting it: the error is on the side of clipping
+// early, so the result is never WIDER than the budget it was given.
+func cellPrefix(text string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	const (
+		plain = iota
+		afterEsc
+		inEsc
+	)
+	state, used := plain, 0
+	for i, r := range text {
+		switch state {
+		case afterEsc:
+			state = inEsc
+			continue
+		case inEsc:
+			if (r >= 0x40 && r <= 0x7e) || r == 0x07 {
+				state = plain
+			}
+			continue
+		}
+		if r == 0x1b {
+			state = afterEsc
+			continue
+		}
+		w := lipgloss.Width(string(r))
+		if used+w > max {
+			return text[:i]
+		}
+		used += w
+	}
+	return text
+}
+
 // pickerClip bounds an operator-supplied string before it goes into a note. The
 // pane is 51 columns at the terminal's narrowest supported width and Root.View()
 // truncates, so an unbounded search term or supplier name would push the rest of
@@ -118,16 +174,23 @@ func (n *pickerNote) say(text string, level StatusLevel) tea.Cmd {
 // disagree with the budget it was asked for: one CJK or emoji rune is two
 // cells, so a clipped value could render twice as wide as the room reserved for
 // it and clampToBox would take the tail — the very cut the clip exists to stop,
-// reached with a different alphabet. truncateVisible (layout.go) drops runes
-// until the VISIBLE width fits, and the ellipsis is one cell of the budget.
+// reached with a different alphabet.
+//
+// Nothing here measures the WHOLE string: cellPrefix stops at the budget, so
+// clipping a multi-KB OMS error body costs the same as clipping a supplier
+// name. An unbounded value reaching a clip must stay cheap, because the row
+// carrying one is redrawn on every keystroke.
 func pickerClip(text string, max int) string {
-	if lipgloss.Width(text) <= max {
+	if max <= 0 {
+		return ""
+	}
+	if head := cellPrefix(text, max); head == text {
 		return text
 	}
 	if max <= 1 {
-		return truncateVisible(text, max)
+		return cellPrefix(text, max)
 	}
-	return truncateVisible(text, max-1) + "…"
+	return cellPrefix(text, max-1) + "…"
 }
 
 func (n *pickerNote) clear() { n.text, n.level = "", StatusInfo }
@@ -223,16 +286,19 @@ func pickerWords(text string, width int) []string {
 	}
 	var out []string
 	for _, word := range strings.Fields(text) {
-		for lipgloss.Width(word) > width {
-			// The cut is measured in CELLS, the same unit the comparison above
-			// uses: slicing `width` RUNES off a double-width token would hand
-			// back a piece up to twice the line it was cut to fit.
-			head := truncateVisible(word, width)
-			if head == "" {
+		for {
+			// The cut is measured in CELLS: slicing `width` RUNES off a
+			// double-width token would hand back a piece up to twice the line
+			// it was cut to fit. cellPrefix walks forward and stops at the
+			// budget, so a token is split in one pass over it rather than one
+			// pass per piece — an unspaced 5 KB body took 1.5 seconds to fold
+			// when each piece re-measured the rest of the token.
+			head := cellPrefix(word, width)
+			if head == word || head == "" {
 				break
 			}
 			out = append(out, head)
-			word = strings.TrimPrefix(word, head)
+			word = word[len(head):]
 		}
 		if word != "" {
 			out = append(out, word)
@@ -277,9 +343,26 @@ func pickerHint(text string) string {
 // horizontal cut for a vertical one, exactly as it did for the list footer.
 //
 // rows <= 0 means the caller has no height yet (terminalHeight unset); nothing
-// is trimmed, because a guess would be worse than the clip clampToBox already
-// applies.
+// is TRIMMED then, because a guess would be worse than the clip clampToBox
+// already applies — but the detail is still bounded before it is folded.
+//
+// Bounding it first is the point: at most `rows` lines of it can ever be drawn,
+// so folding the whole body is work whose result is thrown away, and the body
+// has no size limit. Folding a 5 KB unspaced payload took 1.5 seconds, and this
+// block is rebuilt on every keystroke. Below the bound the hidden-row count is
+// exact; above it the marker stops counting rather than name a number that is
+// only true of the part that was folded.
 func pickerFail(what, detail string, rows int) string {
+	fold := rows
+	if fold <= 0 {
+		fold = pickerFailUnsizedRows
+	}
+	long := false
+	if detail != "" {
+		if head := cellPrefix(detail, fold*pickerPaneWidth); head != detail {
+			detail, long = head, true
+		}
+	}
 	text := what
 	if detail != "" {
 		text += "\n" + detail
@@ -297,11 +380,20 @@ func pickerFail(what, detail string, rows int) string {
 	}
 	// A block that cannot fit says how many rows it hid, the same contract
 	// renderWindowedList's markers keep.
+	hid := fmt.Sprintf("  … %d more line(s) of the error", len(lines)-(rows-1))
+	if long {
+		hid = "  … more of the error than this pane can hold"
+	}
 	kept := append([]string{}, lines[:rows-1]...)
-	kept = append(kept, StyleMuted.Render(
-		fmt.Sprintf("  … %d more line(s) of the error", len(lines)-(rows-1))))
+	kept = append(kept, StyleMuted.Render(hid))
 	return strings.Join(kept, "\n")
 }
+
+// pickerFailUnsizedRows is how much of an error body a failure block folds when
+// the caller has no pane height yet. Nothing is trimmed in that state, so this
+// is only a ceiling on the WORK: deeper than any terminal this app is driven
+// at, and finite, which is what an OMS response body is not.
+const pickerFailUnsizedRows = 40
 
 // pickerWayOut is what every picker frame says when the list itself cannot help
 // — both keys are live in every non-typing picker state.
@@ -1071,7 +1163,7 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 	var b strings.Builder
 	b.WriteString(renderWindowedList(
 		len(s.reorderItems), s.reorderCursor, s.bodyRowBudget(poRenderedRows(tail)),
-		func(i int) string {
+		func(i, room int) string {
 			it := s.reorderItems[i]
 			// Checkbox for the bulk-add marks, so a marked row still reads as
 			// marked once the highlight moves off it.
@@ -1087,10 +1179,13 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 			if it.UnitCost != "" {
 				cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s", it.UnitCost))
 			}
-			return fmt.Sprintf(
-				"%s%s  qty %d (current %d / min %d)%s%s",
-				mark, it.ItemName, it.SuggestedQuantity, it.CurrentStock, it.MinimumStock, cost, tag,
-			)
+			// The mark is the row's own state and never gives. What is being
+			// ORDERED — the suggested quantity — is the fact; the stock levels
+			// behind it, the price and the request flag are the decorations,
+			// dropped from the right so the columns that stay keep their places.
+			levels := fmt.Sprintf(" (current %d / min %d)", it.CurrentStock, it.MinimumStock)
+			return mark + poFitRow(room-lipgloss.Width(mark), it.ItemName,
+				fmt.Sprintf("  qty %d", it.SuggestedQuantity), levels, cost, tag)
 		},
 	))
 	b.WriteString(tail)
@@ -1565,7 +1660,7 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 	}
 	b.WriteString(renderWindowedList(
 		len(s.itemSuppliers), s.itemSuppliersCur, s.bodyRowBudget(poRenderedRows(b.String())),
-		func(i int) string {
+		func(i, room int) string {
 			it := s.itemSuppliers[i]
 			sku := it.SupplierSKU
 			if sku == "" {
@@ -1585,7 +1680,9 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 			if it.LeadTimeDays > 0 {
 				lead = "  " + StyleMuted.Render(fmt.Sprintf("lead %gd", it.LeadTimeDays))
 			}
-			return fmt.Sprintf("%s  %s%s%s%s", it.ItemName, sku, cost, pack, lead)
+			// The SKU and the price are what the row is picked ON, so they are
+			// facts; the case and lead-time flags are context and go first.
+			return poFitRow(room, it.ItemName, "  "+sku+cost, pack, lead)
 		},
 	))
 	return b.String()
@@ -1928,7 +2025,7 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 	b.WriteString(renderWindowedList(
 		len(s.assets), s.assetsCursor,
 		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)),
-		func(i int) string {
+		func(i, room int) string {
 			a := s.assets[i]
 			tag := a.AssetTag
 			if tag == "" {
@@ -1938,7 +2035,9 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 			if a.SerialNumber != "" {
 				serial = "  " + StyleMuted.Render("s/n "+a.SerialNumber)
 			}
-			return fmt.Sprintf("%s  %s%s", a.Name, tag, serial)
+			// The asset TAG is what the machine is called on the shop floor, so
+			// it keeps its cells; the serial is the piece that gives.
+			return poFitRow(room, a.Name, "  "+tag, serial)
 		},
 	))
 	b.WriteString(tail)
@@ -1968,7 +2067,14 @@ const windowedListDefaultRows = 12
 // list that does not fit says how many rows it hid rather than losing them
 // silently — and the markers that say it are counted inside the budget, not
 // added on top of it. rows <= 0 keeps the historic ten.
-func renderWindowedList(total, cursor, rows int, formatRow func(int) string) string {
+//
+// The formatter is handed the CELLS its row may draw into as well as the index,
+// because the horizontal cut is the same defect as the vertical one: a row
+// clampToBox trims loses its right-hand end — the SKU and the price an item is
+// picked on — with no mark to say it happened. The room is computed once here
+// (windowedListRoom) rather than by each formatter, so no picker can be the one
+// that forgets the caret or the highlight.
+func renderWindowedList(total, cursor, rows int, formatRow func(i, room int) string) string {
 	if rows <= 0 {
 		rows = windowedListDefaultRows
 	}
@@ -2005,12 +2111,13 @@ func renderWindowedList(total, cursor, rows int, formatRow func(int) string) str
 		// and pushed that row past the 51-column cut.
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
 	}
+	room := windowedListRoom()
 	for i := start; i < end; i++ {
 		caret := "    "
 		if i == cursor {
 			caret = "  ▸ "
 		}
-		line := caret + formatRow(i)
+		line := caret + formatRow(i, room)
 		if i == cursor {
 			line = StyleSidebarItemActive.Render(line)
 		}
@@ -2020,6 +2127,66 @@ func renderWindowedList(total, cursor, rows int, formatRow func(int) string) str
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", total-end)) + "\n")
 	}
 	return b.String()
+}
+
+// windowedListCaretCells is the fixed gutter every row carries — four cells,
+// highlighted ("  ▸ ") or not ("    ").
+const windowedListCaretCells = 4
+
+// windowedListRoom is the cells a formatted row may draw into.
+//
+// The HIGHLIGHT's padding is reserved on every row, not only the highlighted
+// one: StyleSidebarItemActive pads what it wraps, so a row that fits until it
+// is selected is a row the pane cuts on exactly the press that stages it — and
+// the padding is asked of the style rather than counted, the same way
+// renderCart asks.
+func windowedListRoom() int {
+	room := pickerPaneWidth - windowedListCaretCells - StyleSidebarItemActive.GetHorizontalPadding()
+	if room < poHeaderValueFloor {
+		room = poHeaderValueFloor
+	}
+	return room
+}
+
+// poFitRow assembles one windowed-list row inside `room` cells with a STATED
+// order of sacrifice, the same shape the cart row gives its own parts.
+//
+// name is the only piece that may be ABBREVIATED — it is the identifier, and a
+// shortened one is still recognisable beside the code the operator typed.
+// facts never give: they are the SKU, the price and the quantity, the numbers a
+// picker exists to be read for, and a number cut by clampToBox is worse than an
+// absent one because "@ 3." reads as a whole price. trailers are the row's
+// decorations and are dropped from the LAST one backwards, keeping the columns
+// that remain in the order they were written — column position is how a
+// columnar row is read.
+//
+// Whatever it shortens says so: the name keeps pickerClip's ellipsis, and a
+// dropped trailer leaves one of its own at the end of the row, so a row that
+// gave something up never reads as a whole one.
+func poFitRow(room int, name, facts string, trailers ...string) string {
+	need := lipgloss.Width(name)
+	if need > poHeaderValueFloor {
+		need = poHeaderValueFloor
+	}
+	tail := func(n int) string { return strings.Join(trailers[:n], "") }
+	keep, dropped := len(trailers), ""
+	for keep > 0 {
+		spent := need + lipgloss.Width(facts) + lipgloss.Width(tail(keep)) + lipgloss.Width(dropped)
+		if spent <= room {
+			break
+		}
+		keep--
+		// Spaced off the column before it: an ellipsis butted against the last
+		// surviving fact reads as THAT fact having been cut, which is the
+		// mangled-value defect this bound exists to stop.
+		dropped = "  …"
+	}
+	suffix := facts + tail(keep) + dropped
+	space := room - lipgloss.Width(suffix)
+	if space < need {
+		space = need
+	}
+	return pickerClip(name, space) + suffix
 }
 
 // windowedListSpan centres a window of `size` item rows on cursor.

@@ -2395,11 +2395,13 @@ func (s *PurchaseOrderCreateScreen) renderAgreementPhase() string {
 	b.WriteString(renderWindowedList(
 		s.agreementRows(), s.agreementCursor,
 		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)),
-		func(i int) string {
+		func(i, room int) string {
 			if i == 0 {
 				return "— no agreement —"
 			}
-			return s.agreements[i-1].Name
+			// An OMS-supplied name with nothing beside it: the whole row is the
+			// identifier, so it abbreviates rather than being cut.
+			return pickerClip(s.agreements[i-1].Name, room)
 		},
 	))
 	b.WriteString(tail)
@@ -2476,7 +2478,7 @@ func (s *PurchaseOrderCreateScreen) renderAssocPickPhase(title string, rows []po
 		"Records who this order is for. It does not change stock, pricing, or what a committee is billed.") + "\n"
 	b.WriteString(renderWindowedList(len(rows), cursor,
 		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)),
-		func(i int) string { return rows[i].label }))
+		func(i, room int) string { return pickerClip(rows[i].label, room) }))
 	b.WriteString(tail)
 	return b.String()
 }
@@ -2528,9 +2530,12 @@ func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
 	}
 	return renderWindowedList(len(s.suppliers), s.supplierCursor,
 		s.bodyRowBudget(poRenderedRows(tail)),
-		func(i int) string {
+		func(i, room int) string {
 			sup := s.suppliers[i]
-			return fmt.Sprintf("%s  (#%d)", sup.Name, sup.ID)
+			// The id is what an operator reads back to confirm they are on the
+			// right supplier, so the NAME is what gives — this is the row the
+			// round-5 comment above is about, whose "(#id)" went past the cut.
+			return poFitRow(room, sup.Name, fmt.Sprintf("  (#%d)", sup.ID))
 		}) + tail
 }
 

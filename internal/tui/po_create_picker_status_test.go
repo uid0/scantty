@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -51,12 +52,23 @@ type poPickFake struct {
 	// third picker can be driven the same way the other two are.
 	reorder int
 
-	// itemName overrides the catalog's generated name. Every cart fixture used
-	// the generated "Widget 1", eight cells, so no test ever staged a line
-	// whose OMS-supplied name could push the quantity, the price and the type
-	// badge off the 51-column pane — which is the row the operator reads to
-	// confirm the order.
+	// itemName overrides the catalog's generated name for the FIRST row. Every
+	// cart fixture used the generated "Widget 1", eight cells, so no test ever
+	// staged a line whose OMS-supplied name could push the quantity, the price
+	// and the type badge off the 51-column pane — which is the row the operator
+	// reads to confirm the order. Only the first row takes it, so a picker
+	// fixture is a MIXED list the way a real catalog is, and the long row can
+	// be told from its neighbours.
 	itemName string
+
+	// assetName / assetSerial / reorderName are the same knob for the other two
+	// pickers' first row. Their generated names are "Lathe 1" and "Bolt 1",
+	// seven cells, so every picker LIST shipped unbounded: the rows an operator
+	// picks FROM were the last OMS-supplied values on these screens that no
+	// fixture ever made long enough to reach the cut.
+	assetName   string
+	assetSerial string
+	reorderName string
 
 	// The three OPTIONAL header lookups. Every source-chooser test ran with
 	// these at zero — the fake fell through to an empty envelope — so the g / w
@@ -75,6 +87,11 @@ type poPickFake struct {
 	itemsErrBody string
 	failAssets   bool
 	failReorder  bool
+
+	// workOrdersErrBody makes the OPTIONAL work-order lookup answer with a raw
+	// gateway body rather than JSON, which is how an unbounded string reaches
+	// the source chooser's attribution row — a row redrawn on every keystroke.
+	workOrdersErrBody string
 
 	// failCreate answers the submit with a gateway page rather than JSON.
 	// omsapi.parseError puts the ENTIRE raw body in APIError.Message when the
@@ -123,7 +140,7 @@ func (f *poPickFake) hits(substr string) int {
 // catalogItemName is the name the catalog reports for row n: the generated one
 // unless a test wants a realistic MRO name, which is long enough to matter.
 func (f *poPickFake) catalogItemName(n int) string {
-	if f.itemName != "" {
+	if f.itemName != "" && n == 1 {
 		return f.itemName
 	}
 	return fmt.Sprintf("Widget %d", n)
@@ -162,9 +179,13 @@ func (f *poPickFake) handler() http.HandlerFunc {
 			}
 			items := []map[string]any{}
 			for i := 0; i < f.reorder; i++ {
+				name := fmt.Sprintf("Bolt %d", i+1)
+				if f.reorderName != "" && i == 0 {
+					name = f.reorderName
+				}
 				items = append(items, map[string]any{
 					"item_supplier_id":   i + 1,
-					"item_name":          fmt.Sprintf("Bolt %d", i+1),
+					"item_name":          name,
 					"sku":                fmt.Sprintf("BLT-%03d", i+1),
 					"suggested_quantity": 2,
 					"unit_cost":          "1.50",
@@ -204,13 +225,20 @@ func (f *poPickFake) handler() http.HandlerFunc {
 			rows := []map[string]any{}
 			for i := 0; i < f.assets; i++ {
 				name := fmt.Sprintf("Lathe %d", i+1)
+				if f.assetName != "" && i == 0 {
+					name = f.assetName
+				}
 				if search != "" && !strings.Contains(strings.ToLower(name), search) {
 					continue
 				}
-				rows = append(rows, map[string]any{
+				row := map[string]any{
 					"id": fmt.Sprintf("as-%d", i+1), "name": name,
 					"asset_tag": fmt.Sprintf("TAG-%03d", i+1),
-				})
+				}
+				if f.assetSerial != "" {
+					row["serial_number"] = f.assetSerial
+				}
+				rows = append(rows, row)
 			}
 			envelope(rows, len(rows))
 		case strings.Contains(r.URL.Path, "/supplier-agreements/"):
@@ -226,6 +254,11 @@ func (f *poPickFake) handler() http.HandlerFunc {
 			}
 			envelope(rows, len(rows))
 		case strings.Contains(r.URL.Path, "/work-orders/"):
+			if f.workOrdersErrBody != "" {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(f.workOrdersErrBody))
+				return
+			}
 			rows := []map[string]any{}
 			// ListActiveWorkOrders asks twice, once per status, so only the
 			// first status answers or the picker would hold each job twice.
@@ -4476,8 +4509,13 @@ func TestPOCreate_AFailedSubmitSaysWhyWithoutTakingTheCartWithIt(t *testing.T) {
 			// rows of them it hid. An 18-row pane under a 16-line cart has room
 			// for the second and not the first, which is the sacrifice order
 			// working rather than a silence.
-			if !poPaneHasLine(t, screen, "502") &&
-				!poPaneHasLine(t, screen, "more line(s) of the error") {
+			// Two wordings for what it hid, because the block bounds the body
+			// BEFORE folding it: under that bound the hidden count is exact,
+			// over it the marker stops counting rather than name a number that
+			// is only true of the part it folded.
+			hid := poPaneHasLine(t, screen, "more line(s) of the error") ||
+				poPaneHasLine(t, screen, "more of the error than this pane can hold")
+			if !poPaneHasLine(t, screen, "502") && !hid {
 				t.Errorf("the failure names neither a detail nor what it hid at 80x%d:\n%s",
 					h, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
 			}
@@ -4871,5 +4909,173 @@ func TestPOItemPicker_AWideRuneFailureBodyStillFitsThePane(t *testing.T) {
 			poWantPaneLine(t, screen, "b picks another line source")
 			_ = r
 		})
+	}
+}
+
+// poHugeErrorBody is the body an OMS failure can actually carry: 20 KB with no
+// whitespace in it at all, the shape DRF and json.Marshal emit and the shape a
+// minified gateway page arrives in. omsapi.parseError puts a body whose JSON
+// envelope has no error code into APIError.Message WHOLE, so this is what the
+// screens' folders and clips are handed, not the short literals every other
+// error fixture here uses.
+var poHugeErrorBody = strings.Repeat("A", 20000)
+
+// TestPOCreate_AHugeErrorBodyDoesNotFreezeTheFrame is the freeze this project
+// exists to remove, arriving through the fix for the last one.
+//
+// Bounding every width in CELLS is right, but it was done by delegating to
+// truncateVisible, which drops ONE rune off the end and re-measures the whole
+// remaining string: quadratic, and cubic once pickerWords cuts an unspaced
+// token one piece at a time. Measured against this body before the fix, one
+// clip took 711ms and one fold of a fifth of it took 1.5 seconds — and the
+// source chooser rebuilds the row carrying an unavailable lookup about ten
+// times per frame, so the operator got seconds of dead terminal per keystroke.
+//
+// The assertion is wall-clock because the defect is wall-clock. The margin is
+// three orders of magnitude, not a hair: after the fix these frames render in
+// single-digit milliseconds, and before it a SINGLE render of the item failure
+// frame did not come back inside a minute.
+func TestPOCreate_AHugeErrorBodyDoesNotFreezeTheFrame(t *testing.T) {
+	const budget = 2 * time.Second
+	const renders = 5
+
+	cases := []struct {
+		name  string
+		fake  *poPickFake
+		open  []string
+		frame string
+	}{
+		{
+			"item picker failure frame",
+			&poPickFake{catalog: 12, suppliers: 1, failItems: true, itemsErrBody: poHugeErrorBody},
+			[]string{"i"},
+			"the failure frame folds the body",
+		},
+		{
+			// The attribution row is the worse of the two: it is not a failure
+			// frame the operator chose to look at, it is a line on the screen
+			// they build the whole order from, redrawn on every press.
+			"source chooser with an unavailable work-order lookup",
+			&poPickFake{catalog: 4, suppliers: 1, workOrdersErrBody: poHugeErrorBody},
+			nil,
+			"the attribution row clips the body",
+		},
+	}
+
+	for _, tc := range cases {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", tc.name, h), func(t *testing.T) {
+				r, _ := poPickerAtSize(t, tc.fake, 80, h)
+				for _, k := range tc.open {
+					r = key(t, r, poPhaseKeyMsg(k))
+				}
+				// Warm the frame once outside the clock: the first render of any
+				// screen builds strings the rest reuse, and the defect is not a
+				// one-off cost, it is a per-keystroke one.
+				_ = r.View()
+
+				start := time.Now()
+				for i := 0; i < renders; i++ {
+					_ = r.View()
+				}
+				if took := time.Since(start); took > budget {
+					t.Fatalf("%d renders of %s took %s (budget %s) — a %d-byte OMS body is "+
+						"being measured end to end on every frame, which is the freeze",
+						renders, tc.frame, took, budget, len(poHugeErrorBody))
+				}
+			})
+		}
+	}
+}
+
+// TestPOPickers_ALongNameKeepsTheFactsOnEveryPickerRow holds the rows an
+// operator picks FROM to the rule the cart row, the supplier header and the
+// association rows already obey.
+//
+// Every picker fixture used "Widget 1" / "Lathe 1" / "Bolt 1", seven or eight
+// cells, so no test ever drew a picker row with a name of the length OMS
+// actually carries. At 51 columns an ordinary MRO name pushed the SKU and the
+// unit price off the right edge — and clampToBox cuts without a mark, so
+// "@ 3.50" was drawn as "@ 3.", a whole-looking price that is not the price.
+// The name is what may be abbreviated; the facts are what the row is picked on.
+//
+// Both highlight states, because StyleSidebarItemActive pads what it wraps: a
+// row that fits until it is selected is cut on exactly the press that stages it.
+func TestPOPickers_ALongNameKeepsTheFactsOnEveryPickerRow(t *testing.T) {
+	const (
+		mro      = "1/4-20 x 1 Hex Cap Screw, Zinc"
+		machine  = "Haas VF-2SS Vertical Machining Center"
+		supplier = "Fastenal Industrial & Construction Supplies"
+	)
+
+	cases := []struct {
+		picker string
+		fake   *poPickFake
+		open   []string
+		long   string
+		facts  []string
+	}{
+		{
+			"items", &poPickFake{catalog: 3, suppliers: 1, itemName: mro},
+			[]string{"i"}, mro, []string{"SKU-001", "@ 3.50"},
+		},
+		{
+			"assets", &poPickFake{assets: 3, suppliers: 1, assetName: machine, assetSerial: "SN-8891-2231-A"},
+			[]string{"a"}, machine, []string{"TAG-001"},
+		},
+		{
+			"reorder", &poPickFake{reorder: 3, suppliers: 1, reorderName: mro},
+			[]string{"r"}, mro, []string{"qty 2"},
+		},
+		{
+			"suppliers", &poPickFake{catalog: 1, suppliers: 3, supplierName: supplier},
+			[]string{"b"}, supplier, []string{"(#1)"},
+		},
+	}
+
+	for _, tc := range cases {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", tc.picker, h), func(t *testing.T) {
+				r, screen := poPickerAtSize(t, tc.fake, 80, h)
+				for _, k := range tc.open {
+					r = key(t, r, poPhaseKeyMsg(k))
+				}
+
+				// The long row is the first one, so it is highlighted to start
+				// with and plain after one j — the same row, drawn both ways.
+				// Five runes: the name gives down to poHeaderValueFloor on the
+				// tightest of these rows, so a longer marker would be looking
+				// for cells the row has already given up.
+				head := string([]rune(tc.long)[:5])
+				check := func(what, marker string) {
+					t.Helper()
+					row := poTypedRow(t, screen, h, marker)
+					if row == "<not on the pane>" {
+						t.Fatalf("%s: the %s row is not on the pane at all:\n%s",
+							tc.picker, what, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+					}
+					for _, fact := range tc.facts {
+						if !strings.Contains(row, fact) {
+							t.Errorf("%s: the %s row lost %q to the 51-column cut — a fact the row is "+
+								"picked on, and a number cut without a mark reads as a whole one:\n\t%q",
+								tc.picker, what, fact, row)
+						}
+					}
+					if !strings.Contains(row, "…") {
+						t.Errorf("%s: the %s row carries no ellipsis, so a shortened %d-cell name reads "+
+							"as the whole name:\n\t%q", tc.picker, what, lipgloss.Width(tc.long), row)
+					}
+					if strings.Contains(row, tc.long) {
+						t.Errorf("%s: the %s row drew the %d-cell name whole, so nothing was bounded:\n\t%q",
+							tc.picker, what, lipgloss.Width(tc.long), row)
+					}
+					poAssertFits(t, tc.picker+" picker, "+what+" row", screen)
+				}
+
+				check("highlighted", "▸")
+				r = key(t, r, poPhaseKeyMsg("j"))
+				check("unhighlighted", head)
+			})
+		}
 	}
 }

@@ -73,6 +73,16 @@ func (o *poAssocOptions) load(deps Deps) tea.Cmd {
 	return tea.Batch(loadWorkOrderOptionsCmd(deps), loadCommitteeOptionsCmd(deps))
 }
 
+// poAssocErrCells bounds a stored load error where it is RECORDED rather than
+// where it is drawn. omsapi.parseError puts the entire raw response body into
+// APIError.Message whenever the JSON envelope carries no code, and these two
+// strings are read by two different renderers on two different screens — the
+// create screen's one-row renderAssocValue and the edit screen's columnar
+// field, whose fitter is the shared JD Edwards one. Four panes' worth is far
+// more than either can draw, so nothing visible changes; what changes is that
+// neither renderer is ever handed a multi-KB string to measure on every frame.
+var poAssocErrCells = 4 * pickerPaneWidth
+
 // handle absorbs the two loaded messages, reporting whether msg was one of
 // them so the embedding screen's Update can return early.
 func (o *poAssocOptions) handle(msg tea.Msg) bool {
@@ -85,7 +95,7 @@ func (o *poAssocOptions) handle(msg tea.Msg) bool {
 		o.workOrders = m.rows
 		o.workOrderErr = ""
 		if m.err != nil {
-			o.workOrderErr = m.err.Error()
+			o.workOrderErr = pickerClip(m.err.Error(), poAssocErrCells)
 		}
 		return true
 	case poCommitteesLoadedMsg:
@@ -93,7 +103,7 @@ func (o *poAssocOptions) handle(msg tea.Msg) bool {
 		o.committees = m.rows
 		o.committeeErr = ""
 		if m.err != nil {
-			o.committeeErr = m.err.Error()
+			o.committeeErr = pickerClip(m.err.Error(), poAssocErrCells)
 		}
 		return true
 	}

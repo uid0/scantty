@@ -230,7 +230,24 @@ touching any screen an operator drives:
   ordinary line the fixed parts alone came to 52 cells and the pane took the
   badge while the clipped label bought nothing. The highlighted row reserves
   two cells more, asked of `StyleSidebarItemActive.GetHorizontalPadding()`
-  rather than counted. The source chooser's `g` / `w` / `c` rows and the `Supplier: … ·
+  rather than counted.
+  A PICKER row is the same shape and was the last one left unbounded — the rows
+  an operator picks FROM, on the screen the report is about. Every one now goes
+  through `poFitRow` against `windowedListRoom()`: the NAME abbreviates, the
+  FACTS never give (the SKU and the unit price on an item, the tag on an asset,
+  the suggested quantity on a reorder row, the `(#id)` on a supplier), and the
+  decorations behind them are dropped from the RIGHT so the columns that stay
+  keep their places — reordering a columnar row costs more than an ellipsis.
+  A cut number is worse than an absent one: `@ 3.50` used to be drawn as `@ 3.`,
+  which reads as a price. That room reserves the highlight's padding on EVERY
+  row, not just the highlighted one, because a row that fits until it is
+  selected is cut on exactly the press that stages it
+  (`TestPOPickers_ALongNameKeepsTheFactsOnEveryPickerRow`, both states, both
+  pane heights). Its fixtures are half the check: every picker fixture drew
+  `Widget 1` / `Lathe 1` / `Bolt 1`, seven cells, so no test had ever rendered a
+  picker row at the length OMS actually carries — and the long name is on the
+  FIRST row only, so a fixture list is mixed the way a real one is.
+  The source chooser's `g` / `w` / `c` rows and the `Supplier: … ·
   agreement: …` header are `label: value` rows carrying OMS-supplied names, so
   `renderAssocValue` and `renderSupplierHeader` clip each value to what the
   labels leave (`pickerClip`, ellipsis included) and keep them one row each —
@@ -263,19 +280,42 @@ touching any screen an operator drives:
   frame carried two claims about `esc` with the costly reading being the wrong
   one. A note rendered in both states takes the state as an argument
   (`itemFilterNote`).
-- **Every width is CELLS, never runes.** `lipgloss.Width` and `truncateVisible`
-  (layout.go) measure what the terminal draws; `len` over a string or a `[]rune`
-  measures something else. A bound enforced in one unit while its caller budgets
-  in the other is the same off-the-edge defect with a different alphabet: a CJK
-  or emoji value clipped to `room` RUNES renders up to twice `room` cells, and
-  clampToBox takes the tail the clip existed to protect. `pickerClip` and
-  `pickerWords` both counted runes while every caller budgeted cells
-  (`renderCart`, `renderSupplierHeader`, `renderAssocValue`, `pickerWrap`); both
-  delegate the measurement to `truncateVisible` now, and the ellipsis costs one
-  cell of the budget. `TestPOReview_ALongCatalogNameKeepsTheFactsOnTheRow` walks
-  a catalog name in both alphabets and
-  `TestPOItemPicker_AWideRuneFailureBodyStillFitsThePane` folds an unspaced
-  wide-rune error body, so the rule is checked rather than asserted.
+- **Every width is CELLS, never runes — measured in ONE forward pass.**
+  `lipgloss.Width` measures what the terminal draws; `len` over a string or a
+  `[]rune` measures something else. A bound enforced in one unit while its
+  caller budgets in the other is the same off-the-edge defect with a different
+  alphabet: a CJK or emoji value clipped to `room` RUNES renders up to twice
+  `room` cells, and clampToBox takes the tail the clip existed to protect.
+  `pickerClip` and `pickerWords` both counted runes while every caller budgeted
+  cells (`renderCart`, `renderSupplierHeader`, `renderAssocValue`,
+  `pickerWrap`), and the ellipsis costs one cell of the budget.
+  The second half of the rule is what the first attempt at it cost: both were
+  fixed by delegating to `truncateVisible` (layout.go), which drops ONE rune off
+  the end and re-measures the whole remaining string, so a bound became O(n²) —
+  and these bounds are handed OMS response bodies, which `omsapi.parseError`
+  fills with the entire raw payload whenever the JSON envelope carries no code.
+  Measured on a 20 KB gateway page: 711ms for one clip, 1.5s to fold a fifth of
+  it (unspaced, the shape DRF and a minified error page arrive in), and the
+  source chooser rebuilds the attribution row carrying one about ten times a
+  frame — 45 seconds for five renders, nine seconds of dead terminal per
+  keystroke, which is the reported hang restored by its own fix. So every bound
+  on these screens goes through `cellPrefix` (po_create_pickers.go), which walks
+  FORWARD and stops when the budget is spent: its cost is the budget, not the
+  length of what it was handed. `truncateVisible` is untouched — it belongs to
+  the shared columnar layer — so a value that could be multi-KB should be
+  bounded before it is handed to that layer rather than measured by it.
+  And the input is bounded BEFORE a folder ever sees it, because at most `rows`
+  lines of it can be drawn and folding the rest is work that is thrown away:
+  `pickerFail` cuts the detail to `rows × pickerPaneWidth` first (and stops
+  claiming an exact hidden-line count when it does, since that count would only
+  be true of the part it folded), and `poAssocOptions.handle` bounds the two
+  association load errors where they are RECORDED — one string, two renderers,
+  the second of which is the edit screen's columnar field whose fitter is the
+  shared one. `TestPOCreate_AHugeErrorBodyDoesNotFreezeTheFrame` drives a 20 KB
+  whitespace-free body through both surfaces and fails on wall-clock;
+  `TestPOReview_ALongCatalogNameKeepsTheFactsOnTheRow` walks a catalog name in
+  both alphabets and `TestPOItemPicker_AWideRuneFailureBodyStillFitsThePane`
+  folds an unspaced wide-rune error body.
 - **A bar the operator cannot READ is not honest, it is absent.** The list
   sweep (`list_bar_honesty_test.go`) therefore checks each footer segment
   survives `clampToBox` as a whole line at 80 columns AND at a real pane height
