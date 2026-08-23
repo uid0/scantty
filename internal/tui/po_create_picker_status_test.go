@@ -45,6 +45,10 @@ type poPickFake struct {
 	// can move the order off one supplier while its catalog is still in flight.
 	suppliers int
 
+	// reorder is how many rows the supplier's reorder queue holds, so the
+	// third picker can be driven the same way the other two are.
+	reorder int
+
 	failItems  bool
 	failAssets bool
 }
@@ -86,6 +90,20 @@ func (f *poPickFake) handler() http.HandlerFunc {
 		}
 
 		switch {
+		case strings.Contains(r.URL.Path, "/reorder_data/"):
+			items := []map[string]any{}
+			for i := 0; i < f.reorder; i++ {
+				items = append(items, map[string]any{
+					"item_supplier_id":   i + 1,
+					"item_name":          fmt.Sprintf("Bolt %d", i+1),
+					"sku":                fmt.Sprintf("BLT-%03d", i+1),
+					"suggested_quantity": 2,
+					"unit_cost":          "1.50",
+				})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"suppliers": []map[string]any{{"id": 1, "name": "Acme Supply", "items": items}},
+			})
 		case strings.Contains(r.URL.Path, "/item-suppliers/"):
 			if f.failItems {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -1709,5 +1727,338 @@ func TestPOItemPicker_ReloadDoesNotLetAVerdictPastTheGate(t *testing.T) {
 	}
 	if screen.phase != poPhaseItemPick {
 		t.Fatalf("a no-match search staged something (phase %v)", screen.phase)
+	}
+}
+
+// TestPOItemPicker_EnterOverAnAmbiguousSearchMovesTheNote is the report itself,
+// on the path that still had it: several matches.
+//
+// The assertion is the point. The old one was `Root.View() != before`, which
+// the textinput CARET leaving the search box satisfies all on its own — so
+// enter could leave a body note byte-for-byte identical to the one already on
+// screen and still pass. That is exactly "I press enter and it just kinda hangs
+// there". This compares the rendered NOTE, which a blinking cursor cannot move.
+func TestPOItemPicker_EnterOverAnAmbiguousSearchMovesTheNote(t *testing.T) {
+	fake := &poPickFake{catalog: 12, pageSize: 12}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "Widget 1") // Widget 1, 10, 11, 12
+
+	before := strings.Join(poNoteLines(t, screen.itemSuppliersNote), "\n")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	after := strings.Join(poNoteLines(t, screen.itemSuppliersNote), "\n")
+
+	if before == after {
+		t.Errorf("enter over an ambiguous search left the note unchanged — only the caret moved:\n%s", after)
+	}
+	if screen.itemSuppliersTyping {
+		t.Error("enter did not close the search box")
+	}
+	if len(screen.lines) != 0 || screen.phase != poPhaseItemPick {
+		t.Fatalf("an ambiguous search staged something (phase %v, %d line(s))", screen.phase, len(screen.lines))
+	}
+	// It says what enter DID and hands the operator the keys that now work.
+	poWantPaneLine(t, screen, "too many to pick")
+	poWantPaneLine(t, screen, "j/k choose")
+	poAssertFits(t, "ambiguous enter", screen)
+}
+
+// TestPOItemPicker_OpenBoxNoteNamesOnlyTheKeysTheBoxLeavesAlive: with the
+// search box open j and k are characters going into the query and enter only
+// picks when exactly one row is left, so a note naming "j/k choose · enter
+// picks" over eleven matches names three keys of which two do something else.
+func TestPOItemPicker_OpenBoxNoteNamesOnlyTheKeysTheBoxLeavesAlive(t *testing.T) {
+	fake := &poPickFake{catalog: 12, pageSize: 12}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+
+	// Empty query, box open: every row "matches" but enter will not pick one.
+	if poNoteSays(t, screen.itemSuppliersNote, "enter picks the highlighted row") {
+		t.Errorf("the open box claims enter picks the highlighted row: %q", screen.itemSuppliersNote.text)
+	}
+
+	r = poType(t, r, "Widget 1") // 4 matches, box still open
+	if !screen.itemSuppliersTyping {
+		t.Fatal("setup: the box closed")
+	}
+	if poNoteSays(t, screen.itemSuppliersNote, "j/k choose") {
+		t.Errorf("the open box claims j/k choose, where they are query characters: %q",
+			screen.itemSuppliersNote.text)
+	}
+	poWantPaneLine(t, screen, "4 of 12 match")
+	poAssertFits(t, "open box, several matches", screen)
+
+	// j really is a character here, which is why naming it would be a lie.
+	r = poType(t, r, "j")
+	if got := screen.itemSuppliersSearch.Value(); got != "Widget 1j" {
+		t.Errorf("'j' with the box open produced query %q, want it typed in", got)
+	}
+
+	// Narrow to one and the wording that DOES hold in both states appears.
+	next, _ := r.Update(tea.KeyMsg{Type: tea.KeyBackspace}) // drop the 'j'
+	r = next.(Root)
+	r = poType(t, r, "2") // "Widget 12"
+	if len(screen.itemSuppliers) != 1 {
+		t.Fatalf("setup: %d match(es), want 1", len(screen.itemSuppliers))
+	}
+	if !poNoteSays(t, screen.itemSuppliersNote, "enter picks it") {
+		t.Errorf("a single match does not name the key that takes it: %q", screen.itemSuppliersNote.text)
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.phase != poPhaseLine {
+		t.Fatalf("the key the note named did not pick (phase %v)", screen.phase)
+	}
+}
+
+// TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList sweeps the rule across
+// all three pickers and both off-screen states.
+//
+// Every picker holds the rows it was showing while a reload is out and after
+// one fails — deliberately, so a failed refresh does not also destroy what was
+// on screen — but neither frame DRAWS them. A cursor the operator cannot see is
+// still a cursor j/k will move and enter will stage, and an item going onto a
+// purchase order that the operator cannot see is a wrong purchase order. The
+// failure frame compounds it: it names r/b/esc and nothing else.
+func TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList(t *testing.T) {
+	// item picker, reload in flight over held rows.
+	t.Run("items, reloading", func(t *testing.T) {
+		fake := &poPickFake{catalog: 20, pageSize: 20}
+		r, screen := poPickerAt(t, fake, 80)
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		wantCur := screen.itemSuppliersCur
+
+		next, reload := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		r = next.(Root)
+		if !screen.itemSuppliersLoad || len(screen.itemSuppliers) == 0 {
+			t.Fatalf("setup: want a reload over held rows (load=%v rows=%d)",
+				screen.itemSuppliersLoad, len(screen.itemSuppliers))
+		}
+		poRejectPaneLine(t, screen, "Widget 1  ")
+
+		for _, k := range []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyRunes, Runes: []rune("k")},
+			{Type: tea.KeyEnter},
+		} {
+			next, cmd := r.Update(k)
+			r = next.(Root)
+			r = pump(t, r, cmd, 0)
+			if screen.phase != poPhaseItemPick {
+				t.Fatalf("%v staged a row the frame is not drawing (phase %v)", k, screen.phase)
+			}
+			if screen.itemSuppliersCur != wantCur {
+				t.Fatalf("%v moved a cursor the operator cannot see (%d -> %d)",
+					k, wantCur, screen.itemSuppliersCur)
+			}
+			if out := r.View(); !strings.Contains(out, "still looking up") {
+				t.Errorf("%v mid-reload said nothing about the walk:\n%s", k, out)
+			}
+		}
+		// Once it lands the same keys work again.
+		r = pump(t, r, reload, 0)
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if screen.phase != poPhaseLine {
+			t.Fatalf("enter stopped working after the reload landed (phase %v)", screen.phase)
+		}
+	})
+
+	t.Run("items, failed reload", func(t *testing.T) {
+		fake := &poPickFake{catalog: 20, pageSize: 20}
+		r, screen := poPickerAt(t, fake, 80)
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+		fake.mu.Lock()
+		fake.failItems = true
+		fake.mu.Unlock()
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		if screen.itemSuppliersErr == "" || len(screen.itemSuppliers) == 0 {
+			t.Fatalf("setup: want a failed reload over held rows (err=%q rows=%d)",
+				screen.itemSuppliersErr, len(screen.itemSuppliers))
+		}
+		// The frame names r, b and esc — and not enter.
+		poWantPaneLine(t, screen, "r retries the lookup")
+		poRejectPaneLine(t, screen, "Widget 1  ")
+
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if screen.phase != poPhaseItemPick {
+			t.Fatalf("enter staged a row from the failure frame (phase %v)", screen.phase)
+		}
+		if out := r.View(); !strings.Contains(out, "the catalog lookup failed") {
+			t.Errorf("enter on the failure frame said nothing:\n%s", out)
+		}
+	})
+
+	t.Run("assets, page load in flight", func(t *testing.T) {
+		fake := &poPickFake{assets: 12, pageSize: 5}
+		r, screen := poPickerAt(t, fake, 80)
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		if !screen.assetsHasNext {
+			t.Fatalf("setup: wanted a next page, got %d asset(s)", len(screen.assets))
+		}
+		wantCur := screen.assetsCursor
+
+		next, page := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+		r = next.(Root)
+		if !screen.assetsLoading || len(screen.assets) == 0 {
+			t.Fatalf("setup: want a page load over held rows (load=%v rows=%d)",
+				screen.assetsLoading, len(screen.assets))
+		}
+		for _, k := range []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyEnter},
+		} {
+			next, cmd := r.Update(k)
+			r = next.(Root)
+			r = pump(t, r, cmd, 0)
+			if screen.phase != poPhaseAssetPick {
+				t.Fatalf("%v staged an asset the frame is not drawing (phase %v)", k, screen.phase)
+			}
+			if screen.assetsCursor != wantCur {
+				t.Fatalf("%v moved an invisible cursor (%d -> %d)", k, wantCur, screen.assetsCursor)
+			}
+			if out := r.View(); !strings.Contains(out, "still looking up the assets") {
+				t.Errorf("%v mid-load said nothing about the request:\n%s", k, out)
+			}
+		}
+		r = pump(t, r, page, 0)
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if screen.phase != poPhaseLine {
+			t.Fatalf("enter stopped working after the page landed (phase %v)", screen.phase)
+		}
+	})
+
+	t.Run("reorder, reload in flight", func(t *testing.T) {
+		fake := &poPickFake{reorder: 6}
+		r, screen := poPickerAt(t, fake, 80)
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		if len(screen.reorderItems) != 6 {
+			t.Fatalf("setup: loaded %d reorder row(s), want 6", len(screen.reorderItems))
+		}
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+
+		next, reload := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		r = next.(Root)
+		if !screen.reorderLoading || len(screen.reorderItems) == 0 {
+			t.Fatalf("setup: want a reload over held rows (load=%v rows=%d)",
+				screen.reorderLoading, len(screen.reorderItems))
+		}
+		poRejectPaneLine(t, screen, "Bolt 1  ")
+
+		for _, k := range []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyRunes, Runes: []rune(" ")},
+			{Type: tea.KeyRunes, Runes: []rune("a")},
+			{Type: tea.KeyEnter},
+		} {
+			next, cmd := r.Update(k)
+			r = next.(Root)
+			r = pump(t, r, cmd, 0)
+			if screen.phase != poPhaseReorderPick {
+				t.Fatalf("%v acted on rows the frame is not drawing (phase %v)", k, screen.phase)
+			}
+			if len(screen.lines) != 0 {
+				t.Fatalf("%v staged %d line(s) mid-reload", k, len(screen.lines))
+			}
+			if len(screen.reorderSelected) != 0 {
+				t.Fatalf("%v marked an invisible row", k)
+			}
+			if out := r.View(); !strings.Contains(out, "still looking up what") {
+				t.Errorf("%v mid-reload said nothing about the walk:\n%s", k, out)
+			}
+		}
+		r = pump(t, r, reload, 0)
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if screen.phase != poPhaseLine {
+			t.Fatalf("enter stopped working after the reload landed (phase %v)", screen.phase)
+		}
+	})
+}
+
+// TestPOAssetPicker_RowsLandingWithTheBoxOpenDoNotClaimEnterPicks: the asset
+// reply can arrive with the search box still open, where enter runs the search
+// again rather than picking — the same typing gate the item picker's notes have.
+func TestPOAssetPicker_RowsLandingWithTheBoxOpenDoNotClaimEnterPicks(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+
+	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = next.(Root)
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = next.(Root)
+	if !screen.assetsTyping || !screen.assetsLoading {
+		t.Fatalf("setup: want the box open over an in-flight load (typing=%v load=%v)",
+			screen.assetsTyping, screen.assetsLoading)
+	}
+	r = pump(t, r, load, 0)
+
+	if !screen.assetsTyping {
+		t.Fatal("the reply closed the search box")
+	}
+	if poNoteSays(t, screen.assetsNote, "enter picks the highlighted row") {
+		t.Errorf("the open box claims enter picks a row: %q", screen.assetsNote.text)
+	}
+	poAssertFits(t, "assets landed with the box open", screen)
+
+	// esc closes it and the closed-box wording returns.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	if !poNoteSays(t, screen.assetsNote, "enter picks") {
+		t.Errorf("the closed box stopped naming the key that picks: %q", screen.assetsNote.text)
+	}
+}
+
+// TestPOSupplierPicker_IsWindowedLikeEveryOtherBlock: the supplier list was the
+// one scrolling block outside the shared budget, and it carried the marker bug
+// that budget's own windower was fixed for — a newline inside Render, which
+// makes lipgloss pad the block and leak twenty columns onto the row underneath.
+func TestPOSupplierPicker_IsWindowedLikeEveryOtherBlock(t *testing.T) {
+	for _, height := range poPaneSizes {
+		t.Run(fmt.Sprintf("height %d", height), func(t *testing.T) {
+			fake := &poPickFake{suppliers: 30}
+			srv := httptest.NewServer(fake.handler())
+			t.Cleanup(srv.Close)
+
+			deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+			screen := NewPurchaseOrderCreateScreen(deps)
+			r := newTestRoot(screen)
+			r.deps = deps
+			next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: height})
+			r = next.(Root)
+			r = pump(t, r, screen.Init(), 0)
+			if screen.phase != poPhaseSupplier || len(screen.suppliers) != 30 {
+				t.Fatalf("setup: phase %v with %d supplier(s)", screen.phase, len(screen.suppliers))
+			}
+
+			// Walk down past the point the window starts scrolling; every step
+			// must keep the highlighted supplier on the pane and the frame must
+			// say how many it hid.
+			for i := 0; i < 29; i++ {
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+				poAssertFits(t, "supplier picker, scrolling", screen)
+				want := fmt.Sprintf("(#%d)", screen.suppliers[screen.supplierCursor].ID)
+				if !poPaneHasLine(t, screen, want) {
+					t.Fatalf("the highlighted supplier %s is not on the 80x%d pane:\n%s",
+						want, height, strings.Join(poPaneLines(t, screen), "\n"))
+				}
+			}
+			poWantPaneLine(t, screen, "more above")
+
+			// The row under the ↑ marker keeps its own indentation: a marker
+			// that pads its block pushes that row's "(#id)" past the cut.
+			for _, line := range poPaneLines(t, screen) {
+				if strings.Contains(line, "(#") && strings.HasPrefix(line, "        ") {
+					t.Errorf("a supplier row is indented by the marker above it: %q", line)
+				}
+			}
+
+			// And enter commits the supplier the operator is looking at.
+			want := screen.suppliers[screen.supplierCursor].ID
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			if screen.supplierID != want {
+				t.Errorf("enter committed supplier %d, want the highlighted %d", screen.supplierID, want)
+			}
+		})
 	}
 }

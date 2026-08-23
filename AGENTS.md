@@ -182,6 +182,26 @@ touching any screen an operator drives:
 - **Measure a tail before you draw the list above it.** The asset pager and the
   reorder summary are written after their list; a list sized without counting
   them pushes exactly them off the bottom, taking the `]`/`[` keys with it.
+- **A key that acts on a row must ask whether the row is DRAWN.** All three
+  pickers keep the rows they were showing while a reload is out and after one
+  fails — a failed refresh should not also destroy what was on screen — but
+  neither frame draws them. `itemListOnScreen` / `assetListOnScreen` /
+  `reorderListOnScreen` gate `j`/`k`/`enter` (and the reorder marks) so an
+  invisible cursor cannot be moved and an invisible row cannot be staged: an
+  item going onto a purchase order the operator cannot see is a wrong purchase
+  order, and the failure frame names `r`/`b`/`esc` and nothing else.
+- **A note is rendered in two states, so word BOTH.** `itemFilterNote` takes
+  `typing` and every arm consults it: with the box open `j`/`k` are characters
+  and `enter` only picks a lone match. Gating one arm and leaving the rest is
+  how the ordinary search path — type three letters, see eleven matches — went
+  on naming three keys of which two did something else. Same gate on
+  `assetLoadedNote`, whose reply can land with the box still open.
+- **A keypress that changes nothing visible IS the reported bug.** Enter over an
+  ambiguous search re-emitted the note already on screen, so only the caret
+  moved — the original "it just kinda hangs there", surviving inside its own
+  fix. Every arm that declines to pick now leads with what the key did
+  ("too many to pick · …"), and the test compares the rendered NOTE before and
+  after rather than the pane, because a blinking cursor satisfies the latter.
 - **Assert a mid-flight state while it is still mid-flight.** Driving the fake
   to completion and then checking is how a note that concluded "0 in catalog"
   during an eight-page walk passed its own test. Split the load command out

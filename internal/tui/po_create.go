@@ -1901,39 +1901,18 @@ func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
 	if len(s.suppliers) == 0 {
 		return StyleMuted.Render("(no suppliers configured)")
 	}
-	const window = 10
-	start := s.supplierCursor - window/2
-	if start < 0 {
-		start = 0
-	}
-	end := start + window
-	if end > len(s.suppliers) {
-		end = len(s.suppliers)
-		start = end - window
-		if start < 0 {
-			start = 0
-		}
-	}
-	var b strings.Builder
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above\n", start)))
-	}
-	for i := start; i < end; i++ {
-		sup := s.suppliers[i]
-		caret := "    "
-		if i == s.supplierCursor {
-			caret = "  ▸ "
-		}
-		line := fmt.Sprintf("%s%s  (#%d)", caret, sup.Name, sup.ID)
-		if i == s.supplierCursor {
-			line = StyleSidebarItemActive.Render(line)
-		}
-		b.WriteString(line + "\n")
-	}
-	if end < len(s.suppliers) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below\n", len(s.suppliers)-end)))
-	}
-	return b.String()
+	// Through the shared windower like every other scrolling block on this
+	// screen. Its own copy of the logic had both of the failures that one was
+	// fixed for: a fixed ten-row window that no row budget could shrink, and
+	// scroll markers whose newline sat INSIDE Render — which makes lipgloss
+	// treat the marker as a two-line block, pad the short line, and leak twenty
+	// columns onto the supplier row underneath it, pushing that row's "(#id)"
+	// past the 51-column cut.
+	return renderWindowedList(len(s.suppliers), s.supplierCursor, s.bodyRowBudget(0),
+		func(i int) string {
+			sup := s.suppliers[i]
+			return fmt.Sprintf("%s  (#%d)", sup.Name, sup.ID)
+		})
 }
 
 func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {

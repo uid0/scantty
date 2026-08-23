@@ -447,18 +447,81 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 		s.assets = m.rows
 		s.assetsHasNext = m.hasNext
 		s.assetsCursor = 0
-		if len(m.rows) == 0 {
-			// A search that found nothing is a RESULT, not a blank screen: say
-			// what was searched for so the operator can tell "no such asset"
-			// from "I mistyped".
-			if q := strings.TrimSpace(s.assetsSearch.Value()); q != "" {
-				return s.assetsNote.say("no asset matches "+strconv.Quote(pickerClip(q, 16))+"\n/ edits the search · b picks another source", StatusWarn)
-			}
-			return s.assetsNote.say("this supplier has no assets on file", StatusWarn)
-		}
-		return s.assetsNote.say(fmt.Sprintf("%d asset(s) · enter picks the highlighted row", len(m.rows)), StatusOK)
+		return s.assetLoadedNote(len(m.rows))
 	}
 	return nil
+}
+
+// itemListOnScreen / assetListOnScreen / reorderListOnScreen report whether the
+// picker's renderer is actually DRAWING its rows. Each renderer returns early
+// on its working frame and on its failure frame, and none of the three clears
+// the rows it was holding when it does — deliberately, because a reload that
+// fails should not also destroy what the operator was looking at.
+//
+// The keys that act on a row have to ask. A picker that holds twenty rows
+// behind a "Reloading…" line still had a cursor the operator could move with
+// j/k and a row enter would stage, and neither was on the pane: an item going
+// onto a purchase order that the operator cannot see is a wrong purchase order.
+// The failure frame is worse again, because it names r/b/esc and nothing else,
+// so enter acting there is also the bar naming one set of keys while another
+// set works.
+func (s *PurchaseOrderCreateScreen) itemListOnScreen() bool {
+	return !s.itemSuppliersLoad && s.itemSuppliersErr == ""
+}
+
+func (s *PurchaseOrderCreateScreen) assetListOnScreen() bool {
+	return !s.assetsLoading && s.assetsErr == ""
+}
+
+func (s *PurchaseOrderCreateScreen) reorderListOnScreen() bool {
+	return !s.reorderLoading && s.reorderLoadErr == ""
+}
+
+// assetLoadedNote words what a finished asset search found — through the same
+// typing gate the item picker's notes go through. The reply can land with the
+// search box still OPEN (press 'a', then '/' while the request is out), and
+// there enter runs the search again rather than picking, while '/' and 'b' are
+// characters going into the query.
+func (s *PurchaseOrderCreateScreen) assetLoadedNote(rows int) tea.Cmd {
+	if rows == 0 {
+		// A search that found nothing is a RESULT, not a blank screen: say
+		// what was searched for so the operator can tell "no such asset"
+		// from "I mistyped".
+		if q := strings.TrimSpace(s.assetsSearch.Value()); q != "" {
+			tail := "/ edits the search · b picks another source"
+			if s.assetsTyping {
+				tail = "edit the search to widen it"
+			}
+			return s.assetsNote.say(
+				"no asset matches "+strconv.Quote(pickerClip(q, 16))+"\n"+tail, StatusWarn)
+		}
+		return s.assetsNote.say("this supplier has no assets on file", StatusWarn)
+	}
+	if s.assetsTyping {
+		return s.assetsNote.say(
+			fmt.Sprintf("%d asset(s) · enter runs the search again · esc closes it", rows), StatusInfo)
+	}
+	return s.assetsNote.say(
+		fmt.Sprintf("%d asset(s) · enter picks the highlighted row", rows), StatusOK)
+}
+
+// assetVerdictNote and reorderVerdictStatus are the asset and reorder pickers'
+// equivalents of catalogVerdictNote: they say which of the two off-screen
+// states a declining key is answering from, and name the key that leaves it.
+func (s *PurchaseOrderCreateScreen) assetVerdictNote() tea.Cmd {
+	if s.assetsLoading {
+		return s.assetsNote.say(
+			"still looking up the assets "+s.supplierLabel()+" supplied…", StatusInfo)
+	}
+	return s.assetsNote.say(
+		"the asset lookup failed\n/ retries with a search · "+pickerWayOut, StatusError)
+}
+
+func (s *PurchaseOrderCreateScreen) reorderVerdictStatus() tea.Cmd {
+	if s.reorderLoading {
+		return Status("still looking up what "+s.supplierLabel()+" has flagged for reorder…", StatusInfo)
+	}
+	return Status("reading the reorder queue failed — b picks another line source", StatusError)
 }
 
 // noCatalogSentence is the single wording of "this supplier sells nothing".
@@ -507,6 +570,12 @@ func (s *PurchaseOrderCreateScreen) applyItemSupplierFilter() {
 // ---------------------------------------------------------------------------
 
 func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if !s.reorderListOnScreen() {
+		switch m.String() {
+		case "j", "down", "k", "up", " ", "a", "enter":
+			return s, s.reorderVerdictStatus()
+		}
+	}
 	switch m.String() {
 	case "esc":
 		return s, SwitchTo(WSPurchasing, nil)
@@ -734,6 +803,12 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 		s.itemSuppliersNote = s.itemFilterOrVerdict("")
 		return s, cmd
 	}
+	if !s.itemListOnScreen() {
+		switch m.String() {
+		case "j", "down", "k", "up", "enter":
+			return s, s.catalogVerdictNote()
+		}
+	}
 	switch m.String() {
 	case "esc":
 		return s, SwitchTo(WSPurchasing, nil)
@@ -761,7 +836,7 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 		s.itemSuppliersTyping = true
 		s.itemSuppliersSearch.Focus()
 		return s, tea.Batch(
-			s.itemSuppliersNote.say("type to search · enter picks the match\nesc closes the search and keeps the filter", StatusInfo),
+			s.itemSuppliersNote.say("type to search · enter picks the ONE match\nesc closes the search and keeps the filter", StatusInfo),
 			textinput.Blink,
 		)
 	case "r":
@@ -813,6 +888,9 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 //     dead end: enter over an empty list returned nil forever, and no key on the
 //     screen could reach the item.
 func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
+	if !s.itemListOnScreen() {
+		return s.catalogVerdictNote()
+	}
 	s.applyItemSupplierFilter()
 	switch {
 	case len(s.itemSuppliers) == 0:
@@ -832,7 +910,12 @@ func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
 		if s.itemSuppliersCur < 0 || s.itemSuppliersCur >= len(s.itemSuppliers) {
 			s.itemSuppliersCur = 0
 		}
-		return s.reportItemFilterState("")
+		// The lead is the whole point. Without it this arm produced the note
+		// the screen was ALREADY showing — same count, same query, same keys —
+		// so the only thing that changed was the caret leaving the search box,
+		// and "the screen just hangs after I press enter" survived on the
+		// multi-match path inside its own fix.
+		return s.reportItemFilterState("too many to pick")
 	}
 }
 
@@ -840,6 +923,9 @@ func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
 // the other half of the dead end: with no rows there is nothing to pick, and
 // answering that with nil is how the picker told the operator nothing at all.
 func (s *PurchaseOrderCreateScreen) commitHighlightedItem() tea.Cmd {
+	if !s.itemListOnScreen() {
+		return s.catalogVerdictNote()
+	}
 	if len(s.itemSuppliers) == 0 {
 		return s.reportItemFilterState("")
 	}
@@ -973,14 +1059,14 @@ func (s *PurchaseOrderCreateScreen) itemFilterOrVerdict(prefix string) pickerNot
 // about a catalog that (before ListItemSuppliersForSupplier paged) might not
 // even have been fully loaded.
 //
-// typing is which of two screens this note is going onto, and the zero-match
-// arm needs it. That arm is rendered in BOTH states, and its way out is not the
-// same in each: with the box open, editing the query is the move and esc merely
-// closes the box; with the box closed, esc cancels the whole purchase order and
-// `/` is what reopens the search. The single open-box wording it used to emit
-// therefore appeared one line above "esc cancels the order" on the closed-box
-// frame — two claims about esc at once, with the dangerous reading (esc as a
-// step toward another source) being the wrong one.
+// typing is which of two screens this note is going onto, and EVERY arm needs
+// it, not just the zero-match one. These notes are rendered in both states and
+// the keys differ completely between them: with the box open j and k are
+// characters going into the query and enter only picks when exactly one row
+// matches; with it shut j/k move the highlight, enter picks it, and esc cancels
+// the whole purchase order. Gating one arm and leaving the other two is how the
+// ORDINARY search path — type a few letters, see eleven matches — ended up
+// naming three keys of which two did something else.
 func itemFilterNote(query string, matched, total int, prefix string, typing bool) pickerNote {
 	lead := ""
 	if prefix != "" {
@@ -989,6 +1075,12 @@ func itemFilterNote(query string, matched, total int, prefix string, typing bool
 	q := strconv.Quote(pickerClip(query, 16))
 	switch {
 	case query == "":
+		if typing {
+			return pickerNote{
+				fmt.Sprintf("%s%d item(s) · type to narrow · esc closes the search", lead, total),
+				StatusInfo,
+			}
+		}
 		return pickerNote{fmt.Sprintf("%s%d item(s) · enter picks the highlighted row", lead, total), StatusInfo}
 	case matched == 0:
 		// The lead is kept here too: esc having just closed the box is the
@@ -1003,7 +1095,16 @@ func itemFilterNote(query string, matched, total int, prefix string, typing bool
 			StatusWarn,
 		}
 	case matched == 1:
+		// The one arm whose wording holds in both states: a single match is
+		// taken by enter inside the box (the scanner path) and by enter over
+		// the one-row list alike.
 		return pickerNote{fmt.Sprintf("%s1 of %d match %s · enter picks it", lead, total, q), StatusOK}
+	}
+	if typing {
+		return pickerNote{
+			fmt.Sprintf("%s%d of %d match %s · keep typing to narrow\nenter closes the search and hands j/k back", lead, matched, total, q),
+			StatusOK,
+		}
 	}
 	return pickerNote{
 		fmt.Sprintf("%s%d of %d match %s · j/k choose · enter picks", lead, matched, total, q),
@@ -1128,6 +1229,12 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		var cmd tea.Cmd
 		s.assetsSearch, cmd = s.assetsSearch.Update(m)
 		return s, cmd
+	}
+	if !s.assetListOnScreen() {
+		switch m.String() {
+		case "j", "down", "k", "up", "enter":
+			return s, s.assetVerdictNote()
+		}
 	}
 	switch m.String() {
 	case "esc":
