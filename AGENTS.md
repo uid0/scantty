@@ -171,6 +171,17 @@ touching any screen an operator drives:
   constant, and a growing top chunk must window whatever the frame draws LAST —
   on the PO review phase that is the focused notes input, and an operator typing
   into a field that is off the pane is the worst form of this defect.
+- **One budget, not one per block.** Every scrolling block on the New PO screen
+  takes its height from `bodyRowBudget(otherRows)`, which measures the frame
+  chrome and whatever the phase draws around the block; `renderWindowedList`
+  takes that budget and counts its own `↑`/`↓` markers INSIDE it. The first pass
+  gave the list footer and the review cart their own answers and left the
+  pickers on a fixed ten rows, so a matched row could be highlighted and STAGED
+  while off the pane — a wrong purchase order, on the screen the report was
+  about. A block that cannot fit says how many rows it hid.
+- **Measure a tail before you draw the list above it.** The asset pager and the
+  reorder summary are written after their list; a list sized without counting
+  them pushes exactly them off the bottom, taking the `]`/`[` keys with it.
 - **Assert a mid-flight state while it is still mid-flight.** Driving the fake
   to completion and then checking is how a note that concluded "0 in catalog"
   during an eight-page walk passed its own test. Split the load command out

@@ -474,8 +474,8 @@ func (s *PurchaseOrderCreateScreen) noCatalogSentence() string {
 // over work that is not happening. Same three-way split as a fresh load, minus
 // the tick: nothing was just fetched, so nothing succeeded.
 func (s *PurchaseOrderCreateScreen) itemPickEntryNote() tea.Cmd {
-	if len(s.itemSuppliersAll) == 0 {
-		return s.itemSuppliersNote.say(s.noCatalogSentence(), StatusWarn)
+	if !s.catalogAnswered() || len(s.itemSuppliersAll) == 0 {
+		return s.catalogVerdictNote()
 	}
 	return s.itemSuppliersNote.say(
 		fmt.Sprintf("%d catalog item(s) · / searches · r reloads", len(s.itemSuppliersAll)), StatusInfo)
@@ -666,9 +666,15 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 		return pickerHint("Nothing flagged for reorder under this supplier.") + "\n" +
 			pickerHint(pickerWayOut)
 	}
+	summary := fmt.Sprintf("space marks a row · a adds all %d item(s) at their suggested quantities", len(s.reorderItems))
+	if n := len(s.reorderSelected); n > 0 {
+		summary = fmt.Sprintf("%d marked — enter adds them · a adds all %d", n, len(s.reorderItems))
+	}
+	tail := "\n" + pickerHint(summary)
+
 	var b strings.Builder
 	b.WriteString(renderWindowedList(
-		len(s.reorderItems), s.reorderCursor,
+		len(s.reorderItems), s.reorderCursor, s.bodyRowBudget(poRenderedRows(tail)),
 		func(i int) string {
 			it := s.reorderItems[i]
 			// Checkbox for the bulk-add marks, so a marked row still reads as
@@ -691,11 +697,7 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 			)
 		},
 	))
-	summary := fmt.Sprintf("space marks a row · a adds all %d item(s) at their suggested quantities", len(s.reorderItems))
-	if n := len(s.reorderSelected); n > 0 {
-		summary = fmt.Sprintf("%d marked — enter adds them · a adds all %d", n, len(s.reorderItems))
-	}
-	b.WriteString("\n" + pickerHint(summary))
+	b.WriteString(tail)
 	return b.String()
 }
 
@@ -812,14 +814,13 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 //     screen could reach the item.
 func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
 	s.applyItemSupplierFilter()
-	q := strings.TrimSpace(s.itemSuppliersSearch.Value())
 	switch {
-	case len(s.itemSuppliersAll) == 0:
-		return s.catalogVerdictNote()
 	case len(s.itemSuppliers) == 0:
+		// Through the gate, not around it: with the walk still out this says so
+		// rather than concluding "no match … (N in catalog)" about a catalog
+		// that has not finished arriving.
 		s.itemSuppliersCur = 0
-		s.itemSuppliersNote = itemFilterNote(q, 0, len(s.itemSuppliersAll), "", s.itemSuppliersTyping)
-		return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
+		return s.reportItemFilterState("")
 	case len(s.itemSuppliers) == 1:
 		s.itemSuppliersTyping = false
 		s.itemSuppliersSearch.Blur()
@@ -839,13 +840,8 @@ func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
 // the other half of the dead end: with no rows there is nothing to pick, and
 // answering that with nil is how the picker told the operator nothing at all.
 func (s *PurchaseOrderCreateScreen) commitHighlightedItem() tea.Cmd {
-	if len(s.itemSuppliersAll) == 0 {
-		return s.catalogVerdictNote()
-	}
 	if len(s.itemSuppliers) == 0 {
-		q := strings.TrimSpace(s.itemSuppliersSearch.Value())
-		s.itemSuppliersNote = itemFilterNote(q, 0, len(s.itemSuppliersAll), "", s.itemSuppliersTyping)
-		return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
+		return s.reportItemFilterState("")
 	}
 	if s.itemSuppliersCur < 0 || s.itemSuppliersCur >= len(s.itemSuppliers) {
 		s.itemSuppliersCur = 0
@@ -957,7 +953,12 @@ func (s *PurchaseOrderCreateScreen) reportItemFilterState(prefix string) tea.Cmd
 // box and the note esc leaves behind come through here so neither can drift
 // past the gate on its own.
 func (s *PurchaseOrderCreateScreen) itemFilterOrVerdict(prefix string) pickerNote {
-	if !s.catalogAnswered() {
+	// Not answered, or answered with nothing: neither is a filter outcome.
+	// The emptiness test is not enough on its own — an 'r' reload leaves the
+	// previous rows in place while the walk is out, so a guard written as
+	// len(itemSuppliersAll) == 0 sails past a mid-reload frame and words a
+	// verdict about a request that has not come back.
+	if !s.catalogAnswered() || len(s.itemSuppliersAll) == 0 {
 		return s.catalogVerdict()
 	}
 	return itemFilterNote(
@@ -1065,7 +1066,7 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 		b.WriteString(note + "\n\n")
 	}
 	b.WriteString(renderWindowedList(
-		len(s.itemSuppliers), s.itemSuppliersCur,
+		len(s.itemSuppliers), s.itemSuppliersCur, s.bodyRowBudget(poRenderedRows(b.String())),
 		func(i int) string {
 			it := s.itemSuppliers[i]
 			sku := it.SupplierSKU
@@ -1262,8 +1263,21 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 	if note := s.assetsNote.render(); note != "" {
 		b.WriteString(note + "\n\n")
 	}
+	// The pager is built BEFORE the list so the list can be budgeted against
+	// it. It is drawn after, and a block sized without counting what follows it
+	// pushes exactly that block off the bottom — here, the two paging keys the
+	// frame names.
+	pager := fmt.Sprintf("page %d", s.assetsPage)
+	if s.assetsHasNext {
+		pager += " · ] next"
+	}
+	if s.assetsPage > 1 {
+		pager += " · [ prev"
+	}
+	tail := "\n" + pickerHint(pager)
 	b.WriteString(renderWindowedList(
 		len(s.assets), s.assetsCursor,
+		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)),
 		func(i int) string {
 			a := s.assets[i]
 			tag := a.AssetTag
@@ -1277,14 +1291,7 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 			return fmt.Sprintf("%s  %s%s", a.Name, tag, serial)
 		},
 	))
-	pager := fmt.Sprintf("page %d", s.assetsPage)
-	if s.assetsHasNext {
-		pager += " · ] next"
-	}
-	if s.assetsPage > 1 {
-		pager += " · [ prev"
-	}
-	b.WriteString("\n" + pickerHint(pager))
+	b.WriteString(tail)
 	return b.String()
 }
 
@@ -1292,28 +1299,61 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 // Shared windowed-list renderer
 // ---------------------------------------------------------------------------
 
-// renderWindowedList draws `total` items via the supplied formatter,
-// keeping `cursor` on screen with ~10 lines of context. Same pattern
-// as the supplier picker so all four pickers look consistent — and a
-// free function rather than a method on the create screen, because the
-// PO edit screen's association pickers draw their lists the same way.
-func renderWindowedList(total, cursor int, formatRow func(int) string) string {
-	const window = 10
-	start := cursor - window/2
-	if start < 0 {
-		start = 0
+// windowedListDefaultRows is the block height a caller that has not measured
+// its pane gets. It is the old fixed ten-row window plus its two markers, so an
+// unbudgeted caller draws exactly what it always did.
+const windowedListDefaultRows = 12
+
+// renderWindowedList draws `total` items via the supplied formatter, keeping
+// `cursor` on screen inside a block of `rows` terminal lines — MARKERS
+// INCLUDED. Same pattern as the supplier picker so all four pickers look
+// consistent, and a free function rather than a method on the create screen,
+// because the PO edit screen's association pickers draw their lists the same
+// way.
+//
+// rows is a budget, not a preference: `clampToBox` drops whatever runs past the
+// bottom of the pane, and a row it drops out of a PICKER is a row the cursor
+// can still be moved onto and enter can still stage. An item going onto a
+// purchase order that the operator cannot see is a wrong purchase order, so a
+// list that does not fit says how many rows it hid rather than losing them
+// silently — and the markers that say it are counted inside the budget, not
+// added on top of it. rows <= 0 keeps the historic ten.
+func renderWindowedList(total, cursor, rows int, formatRow func(int) string) string {
+	if rows <= 0 {
+		rows = windowedListDefaultRows
 	}
-	end := start + window
-	if end > total {
-		end = total
-		start = end - window
-		if start < 0 {
-			start = 0
+	if rows < 3 {
+		rows = 3
+	}
+	// Fit the item rows and their markers together. Reserving a marker shrinks
+	// the window, which can move it to an edge and remove the need for that
+	// marker, so this settles rather than assuming: at most two passes change
+	// anything, and a spare row left over beats a clipped one.
+	visible, start, end := rows, 0, 0
+	for i := 0; i < 3; i++ {
+		start, end = windowedListSpan(total, cursor, visible)
+		markers := 0
+		if start > 0 {
+			markers++
+		}
+		if end < total {
+			markers++
+		}
+		if visible+markers <= rows {
+			break
+		}
+		if visible = rows - markers; visible < 1 {
+			visible = 1
 		}
 	}
+
 	var b strings.Builder
 	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above\n", start)))
+		// The newline stays OUTSIDE Render: lipgloss treats a styled string
+		// containing one as a two-line block and pads the short line, which
+		// leaked twenty columns of padding onto the row underneath the marker
+		// and pushed that row past the 51-column cut.
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
 	}
 	for i := start; i < end; i++ {
 		caret := "    "
@@ -1327,7 +1367,27 @@ func renderWindowedList(total, cursor int, formatRow func(int) string) string {
 		b.WriteString(line + "\n")
 	}
 	if end < total {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below\n", total-end)))
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", total-end)) + "\n")
 	}
 	return b.String()
+}
+
+// windowedListSpan centres a window of `size` item rows on cursor.
+func windowedListSpan(total, cursor, size int) (start, end int) {
+	if size >= total {
+		return 0, total
+	}
+	start = cursor - size/2
+	if start < 0 {
+		start = 0
+	}
+	end = start + size
+	if end > total {
+		end = total
+		start = end - size
+		if start < 0 {
+			start = 0
+		}
+	}
+	return start, end
 }

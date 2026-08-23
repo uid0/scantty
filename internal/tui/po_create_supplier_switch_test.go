@@ -90,7 +90,7 @@ func TestPOSupplierSwitch_WarnsBeforeDroppingStagedLines(t *testing.T) {
 	poWantPaneLine(t, screen, "1 of 2 staged line(s)")
 	poWantPaneLine(t, screen, "Acme Supply")
 	poWantPaneLine(t, screen, "The other 1 line(s)")
-	poAssertFits(t, "supplier switch confirm", screen.View())
+	poAssertFits(t, "supplier switch confirm", screen)
 	if out := r.View(); !strings.Contains(out, "staged line(s) belong to") {
 		t.Errorf("nothing on the status bar says why the commit stopped:\n%s", out)
 	}

@@ -142,6 +142,13 @@ func (f *poPickFake) handler() http.HandlerFunc {
 // committed, sized to `width`, and returns the Root plus the screen.
 func poPickerAt(t *testing.T, fake *poPickFake, width int) (Root, *PurchaseOrderCreateScreen) {
 	t.Helper()
+	return poPickerAtSize(t, fake, width, 30)
+}
+
+// poPickerAtSize is the same fixture at an explicit terminal height, so a
+// journey can be replayed on the tight pane as well as the roomy one.
+func poPickerAtSize(t *testing.T, fake *poPickFake, width, height int) (Root, *PurchaseOrderCreateScreen) {
+	t.Helper()
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 
@@ -149,7 +156,7 @@ func poPickerAt(t *testing.T, fake *poPickFake, width int) (Root, *PurchaseOrder
 	screen := NewPurchaseOrderCreateScreen(deps)
 	r := newTestRoot(screen)
 	r.deps = deps
-	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	r = next.(Root)
 	r = pump(t, r, screen.Init(), 0)
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // commit the only supplier
@@ -641,10 +648,39 @@ func TestPOCreate_PendingHeaderLookupsSayTheyArePending(t *testing.T) {
 // four-second Flash while the DURABLE body line — the one the operator who
 // pressed enter and saw nothing is still reading a minute later — has had the
 // key it names cut off the right-hand edge.
-func poPaneLines(t *testing.T, s Screen) []string {
+// poPaneSizes is every terminal height these frames are driven at. 24 is the
+// classic terminal and the tighter of the two; a frame checked only at the
+// roomier one is a frame whose bottom nobody has looked at.
+var poPaneSizes = []int{24, 30}
+
+// poFrameHeight is the terminal height the frame under test was actually sized
+// to, so an assertion clips it exactly as Root would. Reading it off the screen
+// rather than taking a constant is what lets one set of helpers serve a journey
+// driven at 24 and the same journey driven at 30.
+func poFrameHeight(s Screen) int {
+	switch v := s.(type) {
+	case *PurchaseOrderCreateScreen:
+		if v.terminalHeight > 0 {
+			return v.terminalHeight
+		}
+	case poFrameScreen:
+		if v.height > 0 {
+			return v.height
+		}
+	}
+	return poPaneSizes[len(poPaneSizes)-1]
+}
+
+func poPaneLinesAt(t *testing.T, s Screen, termHeight int) []string {
 	t.Helper()
 	return strings.Split(
-		clampToBox(s.View(), screenBodyWidth(80), screenBodyHeight(30)), "\n")
+		clampToBox(s.View(), screenBodyWidth(80), screenBodyHeight(termHeight)), "\n")
+}
+
+// poPaneLines is the pane as the terminal this frame was sized for shows it.
+func poPaneLines(t *testing.T, s Screen) []string {
+	t.Helper()
+	return poPaneLinesAt(t, s, poFrameHeight(s))
 }
 
 // poPaneHasLine reports whether some WHOLE clipped line contains want.
@@ -662,8 +698,8 @@ func poPaneHasLine(t *testing.T, s Screen, want string) bool {
 func poWantPaneLine(t *testing.T, s Screen, want string) {
 	t.Helper()
 	if !poPaneHasLine(t, s, want) {
-		t.Errorf("the 51-column pane does not carry %q on any whole line:\n%s",
-			want, strings.Join(poPaneLines(t, s), "\n"))
+		t.Errorf("the pane at 80x%d does not carry %q on any whole line:\n%s",
+			poFrameHeight(s), want, strings.Join(poPaneLines(t, s), "\n"))
 	}
 }
 
@@ -671,21 +707,48 @@ func poWantPaneLine(t *testing.T, s Screen, want string) {
 func poRejectPaneLine(t *testing.T, s Screen, want string) {
 	t.Helper()
 	if poPaneHasLine(t, s, want) {
-		t.Errorf("the pane still says %q:\n%s", want, strings.Join(poPaneLines(t, s), "\n"))
+		t.Errorf("the pane at 80x%d still says %q:\n%s",
+			poFrameHeight(s), want, strings.Join(poPaneLines(t, s), "\n"))
 	}
 }
 
-// poAssertFits fails for every line of a picker frame that the pane would cut.
-func poAssertFits(t *testing.T, what, frame string) {
+// poAssertFits fails for anything the operator cannot see: a line the
+// 51-column pane cuts, or a ROW the pane's height drops.
+//
+// Both axes, because they fail independently and this project has now shipped
+// each of them in turn — folding the bars to survive the width cut is what
+// spent the rows that then fell off the bottom. A row dropped from a PICKER is
+// worse than a dropped hint: the cursor can still be moved onto it and enter
+// still stages it, so the operator puts an item on a purchase order they cannot
+// see.
+func poAssertFits(t *testing.T, what string, s Screen) {
 	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(s.View(), "\n"), "\n")
 	budget := screenBodyWidth(80)
-	for i, line := range strings.Split(frame, "\n") {
+	for i, line := range lines {
 		if w := lipgloss.Width(line); w > budget {
 			t.Errorf("%s: line %d is %d cells and is cut at %d, losing %q\n\tfull line: %q",
 				what, i+1, w, budget, string([]rune(line)[budget:]), line)
 		}
 	}
+	h := poFrameHeight(s)
+	if rows := screenBodyHeight(h); len(lines) > rows {
+		t.Errorf("%s: the frame is %d rows and the pane at 80x%d keeps %d, dropping %q",
+			what, len(lines), h, rows, strings.Join(lines[rows:], " / "))
+	}
 }
+
+// poFrameScreen adapts a pre-rendered frame to the Screen the pane helpers
+// take, for the table cases that build a frame directly from one renderer.
+type poFrameScreen struct {
+	frame  string
+	height int
+}
+
+func (f poFrameScreen) Init() tea.Cmd                    { return nil }
+func (f poFrameScreen) Update(tea.Msg) (Screen, tea.Cmd) { return f, nil }
+func (f poFrameScreen) View() string                     { return f.frame }
+func (f poFrameScreen) Title() string                    { return "frame" }
 
 // poWidestSupplierScreen is a create screen whose supplier name is at the
 // 20-character clip supplierLabel allows. Every "Looking up what <supplier>…"
@@ -695,6 +758,7 @@ func poWidestSupplierScreen() *PurchaseOrderCreateScreen {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	s.suppliers = []omsapi.Supplier{{ID: 1, Name: "Northern Tool & Die Supply Co"}}
 	s.supplierID = 1
+	s.terminalHeight = poPaneSizes[0]
 	return s
 }
 
@@ -814,6 +878,41 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 		}, (*PurchaseOrderCreateScreen).renderAssetPick,
 			[]string{"no assets on file", "/ searches", "b picks another line source", "esc cancels the order"}},
 
+		{"items, a list longer than the pane", func(s *PurchaseOrderCreateScreen) {
+			s.itemSuppliersAll = poCatalog(400)
+			s.itemSuppliersFor = s.supplierID
+			s.applyItemSupplierFilter()
+			s.itemSuppliersCur = len(s.itemSuppliers) - 1
+			s.itemSuppliersNote = itemFilterNote("", 400, 400, "search closed", false)
+		}, (*PurchaseOrderCreateScreen).renderItemPick,
+			[]string{"more above", "Widget 400"}},
+
+		{"items, mid-reload over rows already held", func(s *PurchaseOrderCreateScreen) {
+			s.itemSuppliersAll = poCatalog(400)
+			s.itemSuppliersFor = s.supplierID
+			s.itemSuppliersLoad = true
+			s.applyItemSupplierFilter()
+		}, (*PurchaseOrderCreateScreen).renderItemPick, []string{"Reloading the items"}},
+
+		{"reorder, a queue longer than the pane", func(s *PurchaseOrderCreateScreen) {
+			for i := 0; i < 40; i++ {
+				s.reorderItems = append(s.reorderItems, reorderItem(fmt.Sprintf("Bolt %d", i+1), 100+i, 2, ""))
+			}
+			s.reorderCursor = 39
+		}, (*PurchaseOrderCreateScreen).renderReorderPick,
+			[]string{"more above", "Bolt 40", "a adds all"}},
+
+		{"assets, a list longer than the pane with a pager", func(s *PurchaseOrderCreateScreen) {
+			for i := 0; i < 40; i++ {
+				s.assets = append(s.assets, omsapi.Asset{
+					ID: fmt.Sprintf("as-%d", i+1), Name: fmt.Sprintf("Lathe %d", i+1)})
+			}
+			s.assetsCursor = 39
+			s.assetsPage = 2
+			s.assetsHasNext = true
+		}, (*PurchaseOrderCreateScreen).renderAssetPick,
+			[]string{"more above", "Lathe 40", "] next", "[ prev"}},
+
 		{"assets, search matched nothing", func(s *PurchaseOrderCreateScreen) {
 			s.assetsSearch.SetValue("hovercraft full of eels")
 			s.assetsNote = pickerNote{
@@ -828,7 +927,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s := poWidestSupplierScreen()
 			tc.setup(s)
 			frame := tc.frame(s)
-			poAssertFits(t, tc.name, frame)
+			poAssertFits(t, tc.name, poFrameScreen{frame, poPaneSizes[0]})
 
 			clipped := clampToBox(frame, screenBodyWidth(80), screenBodyHeight(30))
 			for _, want := range tc.want {
@@ -877,7 +976,7 @@ func TestPOItemPicker_AmbiguousNoteSurvivesTheClip(t *testing.T) {
 
 	poWantPaneLine(t, screen, "4 of 12 match")
 	poWantPaneLine(t, screen, "enter picks")
-	poAssertFits(t, "ambiguous search", screen.View())
+	poAssertFits(t, "ambiguous search", screen)
 
 	// And the esc-closes-the-box variant, whose "search closed · " prefix is
 	// what pushed the same note from 53 cells to 69.
@@ -885,7 +984,7 @@ func TestPOItemPicker_AmbiguousNoteSurvivesTheClip(t *testing.T) {
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
 	poWantPaneLine(t, screen, "search closed")
 	poWantPaneLine(t, screen, "enter picks")
-	poAssertFits(t, "search closed", screen.View())
+	poAssertFits(t, "search closed", screen)
 	_ = r
 }
 
@@ -1135,7 +1234,7 @@ func TestPOItemPicker_EnterAgainstAnEmptyCatalogKeepsSayingItIsEmpty(t *testing.
 		r = key(t, r, press)
 		poWantPaneLine(t, screen, "has no active catalog items on file")
 		poRejectPaneLine(t, screen, "0 item(s)")
-		poAssertFits(t, "empty catalog", screen.View())
+		poAssertFits(t, "empty catalog", screen)
 	}
 	if screen.phase != poPhaseItemPick {
 		t.Fatalf("an empty catalog staged something (phase %v)", screen.phase)
@@ -1192,7 +1291,7 @@ func TestPOItemPicker_KeysPressedMidWalkDoNotClaimAnEmptyCatalog(t *testing.T) {
 	if !screen.itemSuppliersTyping {
 		t.Error("'/' mid-walk refused to open the search box")
 	}
-	poAssertFits(t, "mid-walk", screen.View())
+	poAssertFits(t, "mid-walk", screen)
 
 	// And the query typed mid-walk is honoured when the rows arrive.
 	r = poType(t, r, "Widget 38")
@@ -1262,7 +1361,7 @@ func TestPOItemPicker_ZeroMatchNoteMatchesTheBoxState(t *testing.T) {
 	poWantPaneLine(t, screen, "esc closes the search")
 	poRejectPaneLine(t, screen, "esc cancels the order")
 	poRejectPaneLine(t, screen, "esc then b for another source")
-	poAssertFits(t, "zero match, box open", screen.View())
+	poAssertFits(t, "zero match, box open", screen)
 
 	// esc closes it. The note must now speak for the CLOSED frame, and must
 	// acknowledge what esc just did rather than dropping the lead in silence.
@@ -1275,7 +1374,7 @@ func TestPOItemPicker_ZeroMatchNoteMatchesTheBoxState(t *testing.T) {
 	poWantPaneLine(t, screen, "/ edits the search")
 	poWantPaneLine(t, screen, "esc cancels the order")
 	poRejectPaneLine(t, screen, "esc then b for another source")
-	poAssertFits(t, "zero match, box closed", screen.View())
+	poAssertFits(t, "zero match, box closed", screen)
 
 	// And the keys the closed frame names do what it says.
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
@@ -1364,7 +1463,7 @@ func TestPOItemPicker_TypingMidWalkDoesNotConcludeTheCatalogIsEmpty(t *testing.T
 		t.Fatal("the walk never finished")
 	}
 	poWantPaneLine(t, screen, "match")
-	poAssertFits(t, "rows landed after a mid-walk search", screen.View())
+	poAssertFits(t, "rows landed after a mid-walk search", screen)
 }
 
 // TestPOItemPicker_RowsLandingWithTheBoxOpenDoNotAdvertiseSlash: '/' is a
@@ -1392,7 +1491,7 @@ func TestPOItemPicker_RowsLandingWithTheBoxOpenDoNotAdvertiseSlash(t *testing.T)
 		t.Errorf("the loaded note does not name the key that finishes the search: %q",
 			screen.itemSuppliersNote.text)
 	}
-	poAssertFits(t, "rows landed with the box open", screen.View())
+	poAssertFits(t, "rows landed with the box open", screen)
 
 	// And that key works.
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
@@ -1433,7 +1532,7 @@ func TestPOAssetPicker_SearchClosedNoteNamesOnlyLiveKeys(t *testing.T) {
 	if !poNoteSays(t, screen.assetsNote, "no asset matches") {
 		t.Errorf("the empty asset frame does not say why it is empty: %q", screen.assetsNote.text)
 	}
-	poAssertFits(t, "asset search closed over an empty list", screen.View())
+	poAssertFits(t, "asset search closed over an empty list", screen)
 
 	// The keys it DOES name work: / reopens the box.
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
@@ -1459,5 +1558,156 @@ func TestPOAssetPicker_SearchClosedNoteNamesOnlyLiveKeys(t *testing.T) {
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	if screen.phase != poPhaseLine {
 		t.Fatalf("the note named enter but enter did not pick (phase %v)", screen.phase)
+	}
+}
+
+// TestPOPickers_FitEveryPaneSizeAndNeverHideTheCursor drives the pickers the
+// operator actually drives, at BOTH supported terminal heights, and requires
+// two things of every frame: nothing is cut off either edge, and the row the
+// cursor is on is on the pane.
+//
+// The second is the one that matters. A windowed list that overflows does not
+// merely lose a hint: j still moves the highlight onto a row the pane has
+// dropped and enter still stages it, so the operator puts an item on a purchase
+// order they never saw. The frame must instead SAY how many rows it hid.
+func TestPOPickers_FitEveryPaneSizeAndNeverHideTheCursor(t *testing.T) {
+	for _, height := range poPaneSizes {
+		t.Run(fmt.Sprintf("height %d", height), func(t *testing.T) {
+			t.Run("item picker", func(t *testing.T) {
+				fake := &poPickFake{catalog: 40, pageSize: 40}
+				r, screen := poPickerAtSize(t, fake, 80, height)
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+				poAssertFits(t, "item picker, loaded", screen)
+
+				// Walk the cursor to the bottom; every step must stay visible.
+				for i := 0; i < len(screen.itemSuppliers)-1; i++ {
+					r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+					poAssertFits(t, "item picker, scrolling", screen)
+					want := screen.itemSuppliers[screen.itemSuppliersCur].ItemName
+					if !poPaneHasLine(t, screen, want) {
+						t.Fatalf("the highlighted row %q is not on the 80x%d pane:\n%s",
+							want, height, strings.Join(poPaneLines(t, screen), "\n"))
+					}
+				}
+				// And the frame says rows are hidden rather than dropping them.
+				poWantPaneLine(t, screen, "more above")
+
+				// Enter stages the row the operator is looking at.
+				staged := screen.itemSuppliers[screen.itemSuppliersCur].ItemName
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+				if got := screen.lineInputs[poLineFieldDesc].Value(); got != staged {
+					t.Errorf("staged %q, want the highlighted %q", got, staged)
+				}
+			})
+
+			t.Run("item picker with a search note", func(t *testing.T) {
+				fake := &poPickFake{catalog: 40, pageSize: 40}
+				r, screen := poPickerAtSize(t, fake, 80, height)
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+				r = poType(t, r, "Widget 1")
+				poAssertFits(t, "item picker, box open", screen)
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+				poAssertFits(t, "item picker, box closed over a note", screen)
+				poWantPaneLine(t, screen, "search closed")
+				_ = r
+			})
+
+			t.Run("asset picker with a pager", func(t *testing.T) {
+				fake := &poPickFake{assets: 12, pageSize: 5}
+				r, screen := poPickerAtSize(t, fake, 80, height)
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+				if !screen.assetsHasNext {
+					t.Fatalf("setup: wanted a pager, got %d asset(s) and no next page", len(screen.assets))
+				}
+				poAssertFits(t, "asset picker, loaded", screen)
+				// The pager is drawn after the list, so it is the first thing an
+				// unbudgeted list pushes off the bottom — and it names ']'.
+				poWantPaneLine(t, screen, "] next")
+				for i := 0; i < len(screen.assets)-1; i++ {
+					r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+					poAssertFits(t, "asset picker, scrolling", screen)
+					if want := screen.assets[screen.assetsCursor].Name; !poPaneHasLine(t, screen, want) {
+						t.Fatalf("the highlighted asset %q is not on the 80x%d pane:\n%s",
+							want, height, strings.Join(poPaneLines(t, screen), "\n"))
+					}
+				}
+				poWantPaneLine(t, screen, "] next")
+			})
+		})
+	}
+}
+
+// TestPOItemPicker_ReloadDoesNotLetAVerdictPastTheGate: 'r' leaves the previous
+// rows in place while the new walk is out, so catalogAnswered() goes false with
+// itemSuppliersAll still full. A guard written as len(itemSuppliersAll) == 0
+// sails straight past that, and the commit paths then word a verdict about a
+// request that has not come back — one keystroke after the typing path
+// correctly said it could not tell.
+func TestPOItemPicker_ReloadDoesNotLetAVerdictPastTheGate(t *testing.T) {
+	fake := &poPickFake{catalog: 20, pageSize: 20}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	if !screen.catalogAnswered() || len(screen.itemSuppliersAll) != 20 {
+		t.Fatalf("setup: catalog not loaded (answered=%v rows=%d)",
+			screen.catalogAnswered(), len(screen.itemSuppliersAll))
+	}
+
+	// Start a reload WITHOUT pumping it: stale rows held, no answer in hand.
+	next, reload := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	r = next.(Root)
+	if screen.catalogAnswered() || len(screen.itemSuppliersAll) == 0 {
+		t.Fatalf("setup: want an unanswered reload over held rows (answered=%v rows=%d)",
+			screen.catalogAnswered(), len(screen.itemSuppliersAll))
+	}
+
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = next.(Root)
+	r = poType(t, r, "zzz")
+	if poNoteSays(t, screen.itemSuppliersNote, "in catalog") {
+		t.Errorf("typing mid-reload concluded a catalog size: %q", screen.itemSuppliersNote.text)
+	}
+
+	// enter, the site that used to bypass the gate because rows were held.
+	next, cmd := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	r = next.(Root)
+	r = pump(t, r, cmd, 0)
+	if poNoteSays(t, screen.itemSuppliersNote, "in catalog") {
+		t.Errorf("enter mid-reload concluded a catalog size: %q", screen.itemSuppliersNote.text)
+	}
+	if !poNoteSays(t, screen.itemSuppliersNote, "still looking up") {
+		t.Errorf("enter mid-reload does not say the walk is out: %q", screen.itemSuppliersNote.text)
+	}
+	if out := r.View(); strings.Contains(out, "in catalog") {
+		t.Errorf("enter mid-reload flashed a catalog verdict:\n%s", out)
+	}
+
+	// Leaving and re-entering the picker mid-reload must not post an entry note
+	// that counts rows the reload may be about to replace.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = next.(Root)
+	if poNoteSays(t, screen.itemSuppliersNote, "catalog item(s) ·") {
+		t.Errorf("re-entering mid-reload counted rows still in transit: %q", screen.itemSuppliersNote.text)
+	}
+	if got := fake.hits("/item-suppliers/"); got > 2 {
+		t.Errorf("re-entering mid-reload fired another walk (%d requests)", got)
+	}
+
+	// Once it lands, the gate opens and a verdict is a verdict again.
+	r = pump(t, r, reload, 0)
+	if !screen.catalogAnswered() {
+		t.Fatal("the reload never landed")
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "zzz")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if !poNoteSays(t, screen.itemSuppliersNote, "in catalog") {
+		t.Errorf("after the reload landed the screen still will not answer: %q",
+			screen.itemSuppliersNote.text)
+	}
+	if screen.phase != poPhaseItemPick {
+		t.Fatalf("a no-match search staged something (phase %v)", screen.phase)
 	}
 }

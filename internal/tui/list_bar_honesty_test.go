@@ -406,9 +406,46 @@ func TestList_SearchOverlayBarNamesExactlyTheKeysThatWork(t *testing.T) {
 		t.Fatal("/ did not open the search overlay on a list that names it")
 	}
 	out := s.View()
-	const bar = "↑/↓ move · enter open · esc cancel"
-	if !strings.Contains(out, bar) {
+	if !strings.Contains(out, listSearchBarHint) {
 		t.Fatalf("the search overlay does not render its bar:\n%s", out)
+	}
+
+	// And it is the ONLY bar. updateSearch swallows every key that is not an
+	// arrow, enter or esc into the query, so the browse footer's claims are all
+	// false here — pressing N types "N". Folding that footer is what made all
+	// eight of its sibling-surface claims legible in exactly this state, so the
+	// sweep has to say they are gone, not merely that the overlay's own four
+	// keys work.
+	for _, height := range []int{24, 30} {
+		sized := listSized(t, func() *ListScreen { return newScreenFor(WSAssets, Deps{}).(*ListScreen) }, height)
+		next, _ := sized.Update(listRuneKey("/"))
+		sized = next.(*ListScreen)
+		if !sized.searching {
+			t.Fatal("/ did not open the search overlay")
+		}
+		pane := strings.Join(listPaneLines(t, sized, height), "\n")
+		if !strings.Contains(pane, listSearchBarHint) {
+			t.Errorf("the overlay bar is not on the 80x%d pane:\n%s", height, pane)
+		}
+		for _, segment := range strings.Split(sized.footerHint(), " · ") {
+			if strings.Contains(pane, segment) && !strings.Contains(listSearchBarHint, segment) {
+				t.Errorf("the browse footer still claims %q while the search box owns the keyboard (80x%d):\n%s",
+					segment, height, pane)
+			}
+		}
+	}
+
+	// Every browse-footer key is inert here, which is why naming them would be
+	// a lie: they go into the query instead.
+	typed := listLoaded(func() *ListScreen { return newScreenFor(WSAssets, Deps{}).(*ListScreen) })
+	n, _ := typed.Update(listRuneKey("/"))
+	typed = n.(*ListScreen)
+	for _, k := range []string{"N", "Q", "n", "s", "f", "r", "g", "G"} {
+		n, _ = typed.Update(listRuneKey(k))
+		typed = n.(*ListScreen)
+	}
+	if got := typed.searchInput.Value(); got != "NQnsfrgG" {
+		t.Errorf("the browse-footer keys produced query %q — they are not inert under the overlay", got)
 	}
 	// Every key the overlay bar names must act there — probed from both ends,
 	// since ↑ does nothing at the top and ↓ nothing at the bottom.

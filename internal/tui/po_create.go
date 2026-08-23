@@ -937,7 +937,13 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		s.itemSuppliersSearch.Blur()
 		s.itemSuppliersTyping = false
 		s.itemSuppliersCur = 0
-		if s.supplierID > 0 && s.itemSuppliersFor == s.supplierID && s.itemSuppliersErr == "" {
+		if s.itemSuppliersLoad {
+			// A walk is already out for this supplier — say so rather than
+			// firing a second one or posting an entry note that concludes
+			// something about rows still in transit.
+			return s, s.catalogVerdictNote()
+		}
+		if s.catalogAnswered() {
 			// Already held for THIS supplier. Showing the "Looking up the items
 			// … sells…" frame here would be the same rule broken from the other
 			// side: that frame is a claim that work is happening, and on a
@@ -1768,8 +1774,15 @@ func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
 func (s *PurchaseOrderCreateScreen) renderAgreementPhase() string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Purchase / pricing agreement (optional)") + "\n")
+	tail := ""
+	if s.agreementCursor > 0 && s.agreementCursor-1 < len(s.agreements) {
+		if notes := strings.TrimSpace(s.agreements[s.agreementCursor-1].Notes); notes != "" {
+			tail = "\n" + StyleMuted.Render("  "+notes) + "\n"
+		}
+	}
 	b.WriteString(renderWindowedList(
 		s.agreementRows(), s.agreementCursor,
+		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)),
 		func(i int) string {
 			if i == 0 {
 				return "— no agreement —"
@@ -1777,11 +1790,7 @@ func (s *PurchaseOrderCreateScreen) renderAgreementPhase() string {
 			return s.agreements[i-1].Name
 		},
 	))
-	if s.agreementCursor > 0 && s.agreementCursor-1 < len(s.agreements) {
-		if notes := strings.TrimSpace(s.agreements[s.agreementCursor-1].Notes); notes != "" {
-			b.WriteString("\n" + StyleMuted.Render("  "+notes) + "\n")
-		}
-	}
+	b.WriteString(tail)
 	return b.String()
 }
 
@@ -1852,9 +1861,12 @@ func (s *PurchaseOrderCreateScreen) renderPendingLookups() string {
 func (s *PurchaseOrderCreateScreen) renderAssocPickPhase(title string, rows []poAssocOption, cursor int) string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render(title) + "\n")
-	b.WriteString(renderWindowedList(len(rows), cursor, func(i int) string { return rows[i].label }))
-	b.WriteString("\n" + StyleMuted.Render(
-		"  Records who this order is for. It does not change stock, pricing, or what a committee is billed.") + "\n")
+	tail := "\n" + StyleMuted.Render(
+		"  Records who this order is for. It does not change stock, pricing, or what a committee is billed.") + "\n"
+	b.WriteString(renderWindowedList(len(rows), cursor,
+		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)),
+		func(i int) string { return rows[i].label }))
+	b.WriteString(tail)
 	return b.String()
 }
 
@@ -2044,21 +2056,38 @@ func (s *PurchaseOrderCreateScreen) frameRows() int {
 	return n
 }
 
-// cartRowBudget is how many cart LINE rows are left once the frame chrome and
-// bodyRows of the phase's own body have taken theirs. Reserves the cart's own
-// chrome too: its header, its total, the "priced from the supplier catalog"
-// caveat, and both scroll markers — over-reserving one row beats clipping one,
-// the same trade computeWindowSize makes on the list screens.
-func (s *PurchaseOrderCreateScreen) cartRowBudget(bodyRows int) int {
+// bodyRowBudget is THE row budget for every scrolling block on this screen —
+// the review cart, the three pickers, the supplier list and the association
+// pickers all take theirs from here. otherRows is whatever the phase draws
+// around the block, measured rather than assumed.
+//
+// One derivation on purpose. The first pass at this gave the list footer, the
+// review cart and the picker bodies each their own hand-rolled answer, and the
+// two that were not written that round went on clipping: `clampToBox` drops
+// from the bottom, so every row the folded action bar gained at the TOP came
+// out of whatever the frame drew LAST. A per-block constant is stale the next
+// time a line is added anywhere above it.
+//
+// Zero means unbounded, which is what an unsized screen gets: guessing a pane
+// height would hide rows nobody asked to hide.
+func (s *PurchaseOrderCreateScreen) bodyRowBudget(otherRows int) int {
 	if s.terminalHeight <= 0 {
 		return 0
 	}
-	const cartChromeRows = 5
-	avail := screenBodyHeight(s.terminalHeight) - s.frameRows() - bodyRows - cartChromeRows
+	avail := screenBodyHeight(s.terminalHeight) - s.frameRows() - otherRows
 	if avail < 3 {
 		avail = 3
 	}
 	return avail
+}
+
+// cartRowBudget is bodyRowBudget with the cart's own chrome taken off: its
+// header, its total, the "priced from the supplier catalog" caveat, and both
+// scroll markers — over-reserving one row beats clipping one, the same trade
+// computeWindowSize makes on the list screens.
+func (s *PurchaseOrderCreateScreen) cartRowBudget(bodyRows int) int {
+	const cartChromeRows = 5
+	return s.bodyRowBudget(bodyRows + cartChromeRows)
 }
 
 // renderCart lists the staged lines and the running total. When highlight >= 0

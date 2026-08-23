@@ -1788,7 +1788,7 @@ func (s *PurchaseOrderEditScreen) viewAssocPick() string {
 	// The list windows around its OWN cursor before the frame ever sees it, so
 	// the line to keep on screen is wherever that render put the marker — not
 	// assocCursor, which indexes the options rather than the drawn lines.
-	rows := strings.Split(strings.TrimRight(renderWindowedList(len(s.assocRows), s.assocCursor,
+	rows := strings.Split(strings.TrimRight(renderWindowedList(len(s.assocRows), s.assocCursor, 0,
 		func(i int) string { return s.assocRows[i].label }), "\n"), "\n")
 	cursorLine := 0
 	for i, line := range rows {

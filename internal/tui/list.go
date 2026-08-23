@@ -166,12 +166,14 @@ func (s *ListScreen) computeWindowSize() int {
 	// overflows.
 	const listIndicatorRows = 2
 
-	avail := screenBodyHeight(s.terminalHeight) - listHeaderRows - s.footerRows() - listIndicatorRows
-	// The search overlay adds an input line + its folded bar + a blank
-	// separator above the list body; reserve those rows so results don't
-	// overflow.
+	avail := screenBodyHeight(s.terminalHeight) - listHeaderRows - listIndicatorRows
 	if s.searching {
+		// The overlay replaces the browse footer rather than sitting above it
+		// (bodyView drops the footer while searching), and adds an input line,
+		// its folded bar and a blank separator of its own.
 		avail -= 2 + len(pickerWrap(listSearchBarHint, pickerPaneWidth))
+	} else {
+		avail -= s.footerRows()
 	}
 	if avail < 2 {
 		avail = 2
@@ -688,6 +690,16 @@ func (s *ListScreen) bodyView() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
 	}
 
+	if s.searching {
+		// The search overlay owns the keyboard: updateSearch swallows every
+		// key that is not an arrow, enter or esc straight into the query, so
+		// pressing N here types "N". Drawing the browse footer under the
+		// overlay's own bar put two contradictory action bars on the pane at
+		// once, and folding the footer is what made all eight sibling-surface
+		// claims legible in the one state where none of them work. A frame
+		// names only the keys that work in the state it is drawing.
+		return b.String()
+	}
 	b.WriteString("\n")
 	// FOLDED, not truncated — and computeWindowSize reserves footerRows() for
 	// what the fold produces. Folding without moving that budget is how the
