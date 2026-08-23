@@ -1162,7 +1162,7 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 
 	var b strings.Builder
 	b.WriteString(renderWindowedList(
-		len(s.reorderItems), s.reorderCursor, s.bodyRowBudget(poRenderedRows(tail)),
+		len(s.reorderItems), s.reorderCursor, s.bodyRowBudget(poRenderedRows(tail)), s.paneWidth(),
 		func(i, room int) string {
 			it := s.reorderItems[i]
 			// Checkbox for the bulk-add marks, so a marked row still reads as
@@ -1659,7 +1659,7 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 		b.WriteString(note + "\n\n")
 	}
 	b.WriteString(renderWindowedList(
-		len(s.itemSuppliers), s.itemSuppliersCur, s.bodyRowBudget(poRenderedRows(b.String())),
+		len(s.itemSuppliers), s.itemSuppliersCur, s.bodyRowBudget(poRenderedRows(b.String())), s.paneWidth(),
 		func(i, room int) string {
 			it := s.itemSuppliers[i]
 			sku := it.SupplierSKU
@@ -1680,9 +1680,18 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 			if it.LeadTimeDays > 0 {
 				lead = "  " + StyleMuted.Render(fmt.Sprintf("lead %gd", it.LeadTimeDays))
 			}
-			// The SKU and the price are what the row is picked ON, so they are
-			// facts; the case and lead-time flags are context and go first.
-			return poFitRow(room, it.ItemName, "  "+sku+cost, pack, lead)
+			// The SKU is an IDENTIFIER, not a number: OMS-supplied, unbounded,
+			// and ordinary MRO part numbers run past thirty cells. It is
+			// clipped to what the PRICE, the name's floor and a possible drop
+			// mark leave, so the row's one fact — the price the operator is
+			// picking on — is whole by construction.
+			skuRoom := room - lipgloss.Width(cost) - 2 -
+				poHeaderValueFloor - lipgloss.Width(poRowDropMark)
+			if skuRoom < poHeaderValueFloor {
+				skuRoom = poHeaderValueFloor
+			}
+			// The case and lead-time flags are context and go first.
+			return poFitRow(room, it.ItemName, "  "+pickerClip(sku, skuRoom)+cost, pack, lead)
 		},
 	))
 	return b.String()
@@ -2024,7 +2033,7 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 	tail := "\n" + pickerHint(pager)
 	b.WriteString(renderWindowedList(
 		len(s.assets), s.assetsCursor,
-		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)),
+		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)), s.paneWidth(),
 		func(i, room int) string {
 			a := s.assets[i]
 			tag := a.AssetTag
@@ -2036,8 +2045,14 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 				serial = "  " + StyleMuted.Render("s/n "+a.SerialNumber)
 			}
 			// The asset TAG is what the machine is called on the shop floor, so
-			// it keeps its cells; the serial is the piece that gives.
-			return poFitRow(room, a.Name, "  "+tag, serial)
+			// it gives last of the two identifiers and the serial is dropped
+			// whole before it — but it is OMS-supplied and unbounded, so it is
+			// bounded here rather than left to clampToBox.
+			tagRoom := room - 2 - poHeaderValueFloor - lipgloss.Width(poRowDropMark)
+			if tagRoom < poHeaderValueFloor {
+				tagRoom = poHeaderValueFloor
+			}
+			return poFitRow(room, a.Name, "  "+pickerClip(tag, tagRoom), serial)
 		},
 	))
 	b.WriteString(tail)
@@ -2073,8 +2088,9 @@ const windowedListDefaultRows = 12
 // clampToBox trims loses its right-hand end — the SKU and the price an item is
 // picked on — with no mark to say it happened. The room is computed once here
 // (windowedListRoom) rather than by each formatter, so no picker can be the one
-// that forgets the caret or the highlight.
-func renderWindowedList(total, cursor, rows int, formatRow func(i, room int) string) string {
+// that forgets the caret or the highlight, and it comes from the pane the
+// caller is really drawing into rather than from the 51-column floor.
+func renderWindowedList(total, cursor, rows, width int, formatRow func(i, room int) string) string {
 	if rows <= 0 {
 		rows = windowedListDefaultRows
 	}
@@ -2111,7 +2127,7 @@ func renderWindowedList(total, cursor, rows int, formatRow func(i, room int) str
 		// and pushed that row past the 51-column cut.
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
 	}
-	room := windowedListRoom()
+	room := windowedListRoom(width)
 	for i := start; i < end; i++ {
 		caret := "    "
 		if i == cursor {
@@ -2140,25 +2156,43 @@ const windowedListCaretCells = 4
 // is selected is a row the pane cuts on exactly the press that stages it — and
 // the padding is asked of the style rather than counted, the same way
 // renderCart asks.
-func windowedListRoom() int {
-	room := pickerPaneWidth - windowedListCaretCells - StyleSidebarItemActive.GetHorizontalPadding()
+// `width` is the pane the row is actually drawn into, not the 51-column pane
+// this project checks against: clipping a name to 45 cells on a 120-column
+// terminal discards what the pane had room for (paneWidth, po_create.go).
+func windowedListRoom(width int) int {
+	room := width - windowedListCaretCells - StyleSidebarItemActive.GetHorizontalPadding()
 	if room < poHeaderValueFloor {
 		room = poHeaderValueFloor
 	}
 	return room
 }
 
+// poRowDropMark is what a row leaves behind when it gives a trailer up. A
+// caller that bounds its own identifiers reserves these cells too: the mark is
+// spent out of the same `room` everything else is measured against, and a row
+// that overflows BECAUSE it said it was short is the defect twice over.
+const poRowDropMark = "  …"
+
 // poFitRow assembles one windowed-list row inside `room` cells with a STATED
 // order of sacrifice, the same shape the cart row gives its own parts.
 //
-// name is the only piece that may be ABBREVIATED — it is the identifier, and a
-// shortened one is still recognisable beside the code the operator typed.
-// facts never give: they are the SKU, the price and the quantity, the numbers a
-// picker exists to be read for, and a number cut by clampToBox is worse than an
-// absent one because "@ 3." reads as a whole price. trailers are the row's
-// decorations and are dropped from the LAST one backwards, keeping the columns
-// that remain in the order they were written — column position is how a
-// columnar row is read.
+// Every part of the row is one of two things and there is no third: a BOUNDED
+// IDENTIFIER, or a FACT THAT NEVER GIVES. `name` is an identifier and is what
+// this function abbreviates — a shortened one is still recognisable beside the
+// code the operator typed. `facts` never give: they are the price and the
+// quantity, the numbers a picker exists to be read for, and a number cut by
+// clampToBox is worse than an absent one because "@ 3." reads as a whole
+// price. trailers are the row's decorations and are dropped from the LAST one
+// backwards, keeping the columns that remain in the order they were written —
+// column position is how a columnar row is read.
+//
+// So `facts` must be BOUNDED BY ITS CALLER, and a caller that puts an
+// OMS-supplied string in there has not bounded the row: a bound expressed in
+// terms of an unbounded value is not a bound. An item's SKU and an asset's tag
+// are identifiers that happen to sit in the facts column, and each is clipped
+// against what the price and the name's floor leave before it ever gets here —
+// a 32-cell manufacturer part number used to push the unit price off the pane
+// and draw "@ 3.".
 //
 // Whatever it shortens says so: the name keeps pickerClip's ellipsis, and a
 // dropped trailer leaves one of its own at the end of the row, so a row that
@@ -2176,10 +2210,16 @@ func poFitRow(room int, name, facts string, trailers ...string) string {
 			break
 		}
 		keep--
-		// Spaced off the column before it: an ellipsis butted against the last
-		// surviving fact reads as THAT fact having been cut, which is the
-		// mangled-value defect this bound exists to stop.
-		dropped = "  …"
+		// Only a trailer that CARRIED something leaves a mark. Most rows offer
+		// an empty trailer (an item with no case pack, an asset with no serial)
+		// and a row that marked one of those would be claiming a cut nobody
+		// made — and paying three cells of the very budget it is short of for
+		// the claim. Spaced off the column before it, because an ellipsis
+		// butted against the last surviving fact reads as THAT fact having been
+		// cut, which is the mangled-value defect this bound exists to stop.
+		if trailers[keep] != "" {
+			dropped = poRowDropMark
+		}
 	}
 	suffix := facts + tail(keep) + dropped
 	space := room - lipgloss.Width(suffix)

@@ -322,6 +322,15 @@ type PurchaseOrderCreateScreen struct {
 	// in a unit test — and windows nothing, because guessing a pane height
 	// would hide rows nobody asked to hide.
 	terminalHeight int
+
+	// terminalWidth is the other half of that size, and every value this
+	// screen CLIPS is measured against it (paneWidth). 80 columns is the width
+	// that must HOLD — nothing may overflow there — but it is not the width to
+	// render as though we had: bounding a catalog name to 51 cells on a
+	// 120-column terminal throws away data the pane had room for, which is a
+	// loss folding never causes. Zero means "not sized yet" and falls back to
+	// the 80-column pane, the narrowest this project supports.
+	terminalWidth int
 }
 
 type poCreatedMsg struct {
@@ -428,6 +437,25 @@ func poLineRowPrefix(i int) string {
 	return "▸ " + poLineFieldLabel(i) + ": "
 }
 
+// paneWidth is the cells this screen's body actually has on THIS terminal, and
+// is what every value the screen CLIPS is measured against.
+//
+// The distinction it draws is between the two things a bound can do. FOLDING a
+// hint at 51 columns on a wider terminal costs an extra line and loses nothing,
+// so the folders stay on pickerPaneWidth — 51 is the width they are checked at.
+// CLIPPING a value at 51 on a 91-cell pane DESTROYS the tail of a catalog name
+// the terminal had room to draw, on the rows an operator picks from. 80 columns
+// is the width that must hold; it is not the width to render as though we had.
+//
+// Unsized (a screen driven straight in a unit test, or before Root's first
+// WindowSizeMsg) falls back to the 80-column pane, the narrowest supported.
+func (s *PurchaseOrderCreateScreen) paneWidth() int {
+	if s.terminalWidth <= 0 {
+		return pickerPaneWidth
+	}
+	return screenBodyWidth(s.terminalWidth)
+}
+
 // poInputWidth is how many cells a textinput may spend on a row whose fixed
 // prefix is `prefix`: the 51-column pane, less that prefix, less the one cell
 // bubbles renders for the cursor sitting past the end of the value.
@@ -501,6 +529,7 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		return s, nil
 
 	case poCreateSuppliersLoadedMsg:
@@ -2351,7 +2380,8 @@ func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
 		const label, agreeLabel = "Supplier: ", "  · agreement: "
 		id := fmt.Sprintf(" (#%d)", s.supplierID)
 		agreement := s.pickedAgreementName()
-		room := pickerPaneWidth - lipgloss.Width(label) - lipgloss.Width(id)
+		pane := s.paneWidth()
+		room := pane - lipgloss.Width(label) - lipgloss.Width(id)
 		if agreement != "" {
 			// The supplier is the row's subject and takes what is left, but the
 			// agreement's label and floor are reserved FIRST: that a pricing
@@ -2367,7 +2397,7 @@ func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
 		// A committed agreement is header-level context, not a line item, so it
 		// rides with the supplier and stays on screen through every phase.
 		if agreement != "" {
-			left := pickerPaneWidth - lipgloss.Width(label+name+id+agreeLabel)
+			left := pane - lipgloss.Width(label+name+id+agreeLabel)
 			if left < poHeaderValueFloor {
 				left = poHeaderValueFloor
 			}
@@ -2394,7 +2424,7 @@ func (s *PurchaseOrderCreateScreen) renderAgreementPhase() string {
 	}
 	b.WriteString(renderWindowedList(
 		s.agreementRows(), s.agreementCursor,
-		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)),
+		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)), s.paneWidth(),
 		func(i, room int) string {
 			if i == 0 {
 				return "— no agreement —"
@@ -2431,7 +2461,7 @@ func (s *PurchaseOrderCreateScreen) renderAgreementRow(withKey bool) string {
 	// "couldn't ask" are different facts, and only one of them is safe to let
 	// the operator assume. Bounded like every other OMS-supplied value on these
 	// rows; an APIError message is the whole raw response body.
-	return renderAssocValue(label, s.pickedAgreementName(), s.agreementLoadErr) + "\n"
+	return renderAssocValue(s.paneWidth(), label, s.pickedAgreementName(), s.agreementLoadErr) + "\n"
 }
 
 // renderPendingLookups names the optional header lookups that are still in
@@ -2477,7 +2507,7 @@ func (s *PurchaseOrderCreateScreen) renderAssocPickPhase(title string, rows []po
 	tail := "\n" + pickerHint(
 		"Records who this order is for. It does not change stock, pricing, or what a committee is billed.") + "\n"
 	b.WriteString(renderWindowedList(len(rows), cursor,
-		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)),
+		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)), s.paneWidth(),
 		func(i, room int) string { return pickerClip(rows[i].label, room) }))
 	b.WriteString(tail)
 	return b.String()
@@ -2495,14 +2525,14 @@ func (s *PurchaseOrderCreateScreen) renderAssocRows(withKey bool) string {
 		if withKey {
 			label = "  " + StyleStatusOK.Render("w") + "  " + StyleTitle.Render("Work order (optional)")
 		}
-		b.WriteString(renderAssocValue(label, s.pickedWorkOrderLabel(), s.assoc.workOrderErr) + "\n")
+		b.WriteString(renderAssocValue(s.paneWidth(), label, s.pickedWorkOrderLabel(), s.assoc.workOrderErr) + "\n")
 	}
 	if s.assoc.committeesOffered() {
 		label := "  " + StyleTitle.Render("Committee")
 		if withKey {
 			label = "  " + StyleStatusOK.Render("c") + "  " + StyleTitle.Render("Committee (optional)")
 		}
-		b.WriteString(renderAssocValue(label, s.pickedCommitteeLabel(), s.assoc.committeeErr) + "\n")
+		b.WriteString(renderAssocValue(s.paneWidth(), label, s.pickedCommitteeLabel(), s.assoc.committeeErr) + "\n")
 	}
 	return b.String()
 }
@@ -2529,7 +2559,7 @@ func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
 		tail = "\n" + note
 	}
 	return renderWindowedList(len(s.suppliers), s.supplierCursor,
-		s.bodyRowBudget(poRenderedRows(tail)),
+		s.bodyRowBudget(poRenderedRows(tail)), s.paneWidth(),
 		func(i, room int) string {
 			sup := s.suppliers[i]
 			// The id is what an operator reads back to confirm they are on the
@@ -3146,16 +3176,17 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight, rowBudget int) string 
 		if need > poHeaderValueFloor {
 			need = poHeaderValueFloor
 		}
+		pane := s.paneWidth()
 		short := func() bool {
-			return pickerPaneWidth-fixed-need-lipgloss.Width(date)-lipgloss.Width(badge) < 0
+			return pane-fixed-need-lipgloss.Width(date)-lipgloss.Width(badge) < 0
 		}
 		if short() && date != "" {
 			date = poCartDateMark
 		}
 		if short() {
-			badge = poCartBadge(badgeName, pickerPaneWidth-fixed-need-lipgloss.Width(date))
+			badge = poCartBadge(badgeName, pane-fixed-need-lipgloss.Width(date))
 		}
-		room := pickerPaneWidth - fixed - lipgloss.Width(date) - lipgloss.Width(badge)
+		room := pane - fixed - lipgloss.Width(date) - lipgloss.Width(badge)
 		if room < need {
 			room = need
 		}

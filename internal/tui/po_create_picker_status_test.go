@@ -70,6 +70,14 @@ type poPickFake struct {
 	assetSerial string
 	reorderName string
 
+	// itemSKU / assetTag are the row's other OMS-supplied IDENTIFIER. Every
+	// fixture used "SKU-001" and "TAG-001", seven cells, so no test ever put a
+	// real manufacturer part number in the column poFitRow treats as facts —
+	// and an unbounded value sitting in the part that never gives is what
+	// pushed the unit price off the pane and drew "@ 3.".
+	itemSKU  string
+	assetTag string
+
 	// The three OPTIONAL header lookups. Every source-chooser test ran with
 	// these at zero — the fake fell through to an empty envelope — so the g / w
 	// / c rows were never on the frame, and the four rows they cost were what
@@ -146,6 +154,15 @@ func (f *poPickFake) catalogItemName(n int) string {
 	return fmt.Sprintf("Widget %d", n)
 }
 
+// catalogSKU is the part number row n reports, long-form on the first row only
+// so a picker fixture is the MIXED list a real catalog is.
+func (f *poPickFake) catalogSKU(n int) string {
+	if f.itemSKU != "" && n == 1 {
+		return f.itemSKU
+	}
+	return fmt.Sprintf("SKU-%03d", n)
+}
+
 func (f *poPickFake) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -210,7 +227,7 @@ func (f *poPickFake) handler() http.HandlerFunc {
 					"id": i + 1, "item": fmt.Sprintf("it-%d", i+1),
 					"item_name":    f.catalogItemName(i + 1),
 					"supplier":     1,
-					"supplier_sku": fmt.Sprintf("SKU-%03d", i+1),
+					"supplier_sku": f.catalogSKU(i + 1),
 					"unit_cost":    "3.50", "quantity_per_package": 1,
 				})
 			}
@@ -231,9 +248,13 @@ func (f *poPickFake) handler() http.HandlerFunc {
 				if search != "" && !strings.Contains(strings.ToLower(name), search) {
 					continue
 				}
+				tag := fmt.Sprintf("TAG-%03d", i+1)
+				if f.assetTag != "" && i == 0 {
+					tag = f.assetTag
+				}
 				row := map[string]any{
 					"id": fmt.Sprintf("as-%d", i+1), "name": name,
-					"asset_tag": fmt.Sprintf("TAG-%03d", i+1),
+					"asset_tag": tag,
 				}
 				if f.assetSerial != "" {
 					row["serial_number"] = f.assetSerial
@@ -846,6 +867,22 @@ func TestPOCreate_PendingHeaderLookupsSayTheyArePending(t *testing.T) {
 // roomier one is a frame whose bottom nobody has looked at.
 var poPaneSizes = []int{24, 30}
 
+// poPaneWidths is every terminal width these frames are driven at, and it is
+// three rather than one because the two failures are opposite: at 80 a value
+// may not OVERFLOW, and at 100 or 120 a value may not be DISCARDED for a pane
+// the terminal never had. A helper that hard-codes 80 cannot see the second.
+var poPaneWidths = []int{80, 100, 120}
+
+// poFrameWidth is the terminal WIDTH the frame under test was sized to, so an
+// assertion clips it exactly as Root would. Unsized frames (a pre-rendered
+// poFrameScreen) get 80, the narrowest supported.
+func poFrameWidth(s Screen) int {
+	if v, ok := s.(*PurchaseOrderCreateScreen); ok && v.terminalWidth > 0 {
+		return v.terminalWidth
+	}
+	return poPaneWidths[0]
+}
+
 // poFrameHeight is the terminal height the frame under test was actually sized
 // to, so an assertion clips it exactly as Root would. Reading it off the screen
 // rather than taking a constant is what lets one set of helpers serve a journey
@@ -867,7 +904,7 @@ func poFrameHeight(s Screen) int {
 func poPaneLinesAt(t *testing.T, s Screen, termHeight int) []string {
 	t.Helper()
 	return strings.Split(
-		clampToBox(s.View(), screenBodyWidth(80), screenBodyHeight(termHeight)), "\n")
+		clampToBox(s.View(), screenBodyWidth(poFrameWidth(s)), screenBodyHeight(termHeight)), "\n")
 }
 
 // poPaneLines is the pane as the terminal this frame was sized for shows it.
@@ -917,7 +954,7 @@ func poRejectPaneLine(t *testing.T, s Screen, want string) {
 func poAssertFits(t *testing.T, what string, s Screen) {
 	t.Helper()
 	lines := strings.Split(strings.TrimSuffix(s.View(), "\n"), "\n")
-	budget := screenBodyWidth(80)
+	budget := screenBodyWidth(poFrameWidth(s))
 	for i, line := range lines {
 		if w := lipgloss.Width(line); w > budget {
 			t.Errorf("%s: line %d is %d cells and is cut at %d, losing %q\n\tfull line: %q",
@@ -2389,7 +2426,7 @@ var poBarAliasKeys = map[string][]string{
 // keypress passes.
 func poPickerState(s *PurchaseOrderCreateScreen) string {
 	var b strings.Builder
-	fmt.Fprint(&b, s.phase, "|", s.pending, s.terminalHeightForState(),
+	fmt.Fprint(&b, s.phase, "|", s.pending, s.paneForState(),
 		"|", s.itemSuppliersCur, s.itemSuppliersTyping, s.itemSuppliersLoad,
 		s.itemSuppliersErr, s.itemSuppliersSearch.Value(),
 		len(s.itemSuppliers), len(s.itemSuppliersAll), s.itemSuppliersFor,
@@ -2512,17 +2549,21 @@ func poDerefStr(p *string) string {
 	return *p
 }
 
-// terminalHeightForState keeps the pane size in the fingerprint without letting
-// a resize masquerade as a keypress: no key changes it, so it can only differ
-// between two presses if the harness itself moved.
-func (s *PurchaseOrderCreateScreen) terminalHeightForState() int { return s.terminalHeight }
+// paneForState keeps the pane SIZE — both dimensions, because both change what
+// is drawn — in the fingerprint without letting a resize masquerade as a
+// keypress: no key changes either, so they can only differ between two presses
+// if the harness itself moved.
+func (s *PurchaseOrderCreateScreen) paneForState() string {
+	return fmt.Sprintf("%dx%d", s.terminalWidth, s.terminalHeight)
+}
 
 // poStateFingerprinted / poStateDeclined classify EVERY field of the screen.
 // The struct is enumerated by reflection, so a field added tomorrow fails the
 // check by name until somebody decides which half it belongs in — the omission
 // cannot be made quietly, which is the whole point.
 var poStateFingerprinted = map[string]bool{
-	"phase": true, "pending": true, "terminalHeight": true,
+	"phase": true, "pending": true,
+	"terminalHeight": true, "terminalWidth": true,
 	"suppliers": true, "supplierLoading": true, "supplierLoadErr": true,
 	"supplierCursor": true, "supplierID": true,
 	"agreements": true, "agreementLoading": true, "agreementLoadErr": true,
@@ -5003,9 +5044,11 @@ func TestPOCreate_AHugeErrorBodyDoesNotFreezeTheFrame(t *testing.T) {
 // row that fits until it is selected is cut on exactly the press that stages it.
 func TestPOPickers_ALongNameKeepsTheFactsOnEveryPickerRow(t *testing.T) {
 	const (
-		mro      = "1/4-20 x 1 Hex Cap Screw, Zinc"
-		machine  = "Haas VF-2SS Vertical Machining Center"
-		supplier = "Fastenal Industrial & Construction Supplies"
+		mro        = "1/4-20 x 1 Hex Cap Screw, Zinc"
+		machine    = "Haas VF-2SS Vertical Machining Center"
+		supplier   = "Fastenal Industrial & Construction Supplies"
+		partNumber = "M8CS-1.25X40-A2-70-DIN912-BOX100"
+		assetTag   = "LATHE-HAAS-ST20Y-2021-ASSET-0000123456"
 	)
 
 	cases := []struct {
@@ -5016,12 +5059,18 @@ func TestPOPickers_ALongNameKeepsTheFactsOnEveryPickerRow(t *testing.T) {
 		facts  []string
 	}{
 		{
-			"items", &poPickFake{catalog: 3, suppliers: 1, itemName: mro},
-			[]string{"i"}, mro, []string{"SKU-001", "@ 3.50"},
+			// The SKU is a real manufacturer part number, so the column
+			// poFitRow calls facts carries an unbounded identifier as well as
+			// the one number on the row. The PRICE is what must survive whole.
+			"items", &poPickFake{catalog: 3, suppliers: 1, itemName: mro, itemSKU: partNumber},
+			[]string{"i"}, mro, []string{"@ 3.50"},
 		},
 		{
-			"assets", &poPickFake{assets: 3, suppliers: 1, assetName: machine, assetSerial: "SN-8891-2231-A"},
-			[]string{"a"}, machine, []string{"TAG-001"},
+			"assets", &poPickFake{
+				assets: 3, suppliers: 1, assetName: machine,
+				assetTag: assetTag, assetSerial: "SN-8891-2231-A",
+			},
+			[]string{"a"}, machine, []string{"LATHE-HAAS"},
 		},
 		{
 			"reorder", &poPickFake{reorder: 3, suppliers: 1, reorderName: mro},
@@ -5075,6 +5124,107 @@ func TestPOPickers_ALongNameKeepsTheFactsOnEveryPickerRow(t *testing.T) {
 				check("highlighted", "▸")
 				r = key(t, r, poPhaseKeyMsg("j"))
 				check("unhighlighted", head)
+			})
+		}
+	}
+}
+
+// TestPOPickers_AWideTerminalDrawsTheWholeRow is the other half of the bound:
+// 80 columns is the width that must HOLD, not the width to render as though we
+// had.
+//
+// Every clip on these screens was measured against pickerPaneWidth — the
+// 51-cell pane an 80-column terminal gets — evaluated once at package level,
+// and the screen recorded only the terminal's HEIGHT. So a 120-column terminal
+// drew every picker row abbreviated to 45 cells with forty columns of pane left
+// blank. Folding a hint narrow costs an extra line and loses nothing; clipping
+// a value narrow destroys the tail of a name the operator had room to read, on
+// the rows they pick FROM.
+//
+// The assertion is comparative rather than a hand-computed width, because what
+// is at stake is that the extra columns are USED: the same row, same data, must
+// draw wider at 120 than at 80. A future narrowing fails here rather than on
+// the operator's terminal.
+func TestPOPickers_AWideTerminalDrawsTheWholeRow(t *testing.T) {
+	const (
+		mro        = "1/4-20 x 1 Hex Cap Screw, Zinc"
+		machine    = "Haas VF-2SS Vertical Machining Center"
+		supplier   = "Fastenal Industrial & Construction Supplies"
+		partNumber = "M8CS-1.25X40-A2-70-DIN912-BOX100"
+		assetTag   = "LATHE-HAAS-ST20Y-2021-ASSET-0000123456"
+	)
+
+	cases := []struct {
+		picker string
+		fake   func() *poPickFake
+		open   []string
+		// whole is what the WIDEST pane has room to draw in full: at 120 the
+		// operator sees the identifier OMS actually stores, not its head.
+		whole []string
+	}{
+		{
+			"items",
+			func() *poPickFake {
+				return &poPickFake{catalog: 3, suppliers: 1, itemName: mro, itemSKU: partNumber}
+			},
+			[]string{"i"}, []string{mro, partNumber, "@ 3.50"},
+		},
+		{
+			"assets",
+			func() *poPickFake {
+				return &poPickFake{assets: 3, suppliers: 1, assetName: machine, assetTag: assetTag}
+			},
+			[]string{"a"}, []string{machine, assetTag},
+		},
+		{
+			"reorder",
+			func() *poPickFake { return &poPickFake{reorder: 3, suppliers: 1, reorderName: mro} },
+			[]string{"r"}, []string{mro, "qty 2"},
+		},
+		{
+			"suppliers",
+			func() *poPickFake { return &poPickFake{catalog: 1, suppliers: 3, supplierName: supplier} },
+			[]string{"b"}, []string{supplier, "(#1)"},
+		},
+	}
+
+	for _, tc := range cases {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at %d rows", tc.picker, h), func(t *testing.T) {
+				rows := map[int]string{}
+				for _, w := range poPaneWidths {
+					r, screen := poPickerAtSize(t, tc.fake(), w, h)
+					for _, k := range tc.open {
+						r = key(t, r, poPhaseKeyMsg(k))
+					}
+					_ = r
+					// Nothing may overflow at ANY of the three, measured
+					// against the pane that width really gives.
+					poAssertFits(t, fmt.Sprintf("%s picker at %dx%d", tc.picker, w, h), screen)
+
+					row := poTypedRow(t, screen, h, "▸")
+					if row == "<not on the pane>" {
+						t.Fatalf("%s: no highlighted row on the pane at %dx%d:\n%s",
+							tc.picker, w, h, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+					}
+					rows[w] = row
+				}
+
+				narrow, wide := rows[poPaneWidths[0]], rows[poPaneWidths[len(poPaneWidths)-1]]
+				if lipgloss.Width(wide) <= lipgloss.Width(narrow) {
+					t.Errorf("%s: the row is %d cells at %d columns and %d at %d — the wider pane's "+
+						"columns are left blank while the value is clipped as though they were not there:"+
+						"\n\t%q\n\t%q",
+						tc.picker, lipgloss.Width(narrow), poPaneWidths[0],
+						lipgloss.Width(wide), poPaneWidths[len(poPaneWidths)-1], narrow, wide)
+				}
+				for _, want := range tc.whole {
+					if !strings.Contains(wide, want) {
+						t.Errorf("%s: at %d columns the row still does not carry %q whole, so a value "+
+							"was discarded for a pane the terminal never had:\n\t%q",
+							tc.picker, poPaneWidths[len(poPaneWidths)-1], want, wide)
+					}
+				}
 			})
 		}
 	}

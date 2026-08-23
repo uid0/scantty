@@ -166,6 +166,20 @@ note, and is the authority):
   and it is small enough that a hint, a six-column grid or a long value will not
   fit without help — `jdeFitRow`, `poFitLineGrid` and `jdeCaveatLines` in
   `jde_form.go` / `po_detail.go` are the three folds that exist for it.
+  51 is the width that must HOLD, not the width to render as though we had, and
+  which of the two a bound is depends on what it does when it bites. FOLDING
+  narrow costs an extra line and loses nothing, so the folders (`pickerWrap` and
+  everything through it) stay on `pickerPaneWidth`. CLIPPING narrow DESTROYS the
+  tail, so every clip is measured against the pane the terminal really gives:
+  `PurchaseOrderCreateScreen.paneWidth()` — `screenBodyWidth` of the width
+  recorded from `WindowSizeMsg`, falling back to 51 unsized — and the picker
+  rows, the cart row, the supplier header and the association rows all read it.
+  Clipped to a fixed 51, a 120-column terminal drew every picker row abbreviated
+  with forty columns of pane left blank, on the rows an operator picks FROM.
+  `TestPOPickers_AWideTerminalDrawsTheWholeRow` holds both directions at 80, 100
+  and 120: nothing overflows at the narrowest, and the same row draws WIDER at
+  the widest. A test helper that hard-codes 80 cannot see the second half, which
+  is why `poAssertFits` and `poPaneLinesAt` clip against `poFrameWidth(screen)`.
 - **Check the CLIPPED render.** `clampToBox` truncates in `Root.View()`, not in
   the screen, so a test that reads `screen.View()` passes while the terminal
   shows a cut line. Assert against `Root.View()` at 80/100/120 —
@@ -234,10 +248,20 @@ touching any screen an operator drives:
   A PICKER row is the same shape and was the last one left unbounded — the rows
   an operator picks FROM, on the screen the report is about. Every one now goes
   through `poFitRow` against `windowedListRoom()`: the NAME abbreviates, the
-  FACTS never give (the SKU and the unit price on an item, the tag on an asset,
-  the suggested quantity on a reorder row, the `(#id)` on a supplier), and the
-  decorations behind them are dropped from the RIGHT so the columns that stay
-  keep their places — reordering a columnar row costs more than an ellipsis.
+  FACTS never give, and the decorations behind them are dropped from the RIGHT
+  so the columns that stay keep their places — reordering a columnar row costs
+  more than an ellipsis. Every part of such a row is one of exactly two things:
+  a BOUNDED IDENTIFIER or a FACT THAT NEVER GIVES, because a bound expressed in
+  terms of an unbounded value is not a bound. The unit price on an item, the
+  suggested quantity on a reorder row and the `(#id)` on a supplier are facts;
+  the item's SKU and the asset's TAG are identifiers that happen to sit in the
+  facts column, so each is clipped to what the price and the name's floor leave
+  BEFORE `poFitRow` sees it — a 32-cell manufacturer part number is ordinary MRO
+  data and used to push the price off the pane as `@ 3.`. What a row gives up it
+  marks (`poRowDropMark`), and only when something was really given up: a row
+  that marked an empty trailer would be claiming a cut nobody made and spending
+  three cells of the budget it is short of to claim it. Callers reserve those
+  cells too.
   A cut number is worse than an absent one: `@ 3.50` used to be drawn as `@ 3.`,
   which reads as a price. That room reserves the highlight's padding on EVERY
   row, not just the highlighted one, because a row that fits until it is

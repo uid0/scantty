@@ -463,35 +463,42 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor++
 				s.scrollIntoView()
 			}
+			return s, nil
 		case "k", "up":
 			if s.cursor > 0 {
 				s.cursor--
 				s.scrollIntoView()
 			}
+			return s, nil
 		case "pgdown":
 			s.cursor += s.windowSize
 			if s.cursor >= len(s.rows) {
 				s.cursor = len(s.rows) - 1
 			}
 			s.scrollIntoView()
+			return s, nil
 		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
 				s.cursor = 0
 			}
 			s.scrollIntoView()
+			return s, nil
 		case "g", "home":
 			s.cursor = 0
 			s.scrollIntoView()
+			return s, nil
 		case "G", "end":
 			s.cursor = len(s.rows) - 1
 			if s.cursor < 0 {
 				s.cursor = 0
 			}
 			s.scrollIntoView()
+			return s, nil
 		case "s":
 			s.sort = (s.sort + 1) % 4
 			s.applySort()
+			return s, nil
 		case "f":
 			// Cycle the server-side view (e.g. PO status). `f` reaches us only
 			// because HandlesKey claims it over the global firmware hotkey,
@@ -526,9 +533,14 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "enter":
 			return s.openSelected()
 		}
-		// The uppercase sibling-surface accelerators. Last, so a letter the list
-		// itself binds always wins — and checked from the SAME table the footer
-		// prints, which is what stops the two from drifting apart again.
+		// The uppercase sibling-surface accelerators. Last, and reached only by
+		// a key the switch above did NOT handle — every arm of it returns, so
+		// the precedence this comment claims is the control flow rather than a
+		// property of which letters the table happens to hold today. A shortcut
+		// added on a letter the list already binds (G was, before categories
+		// was re-keyed to C) would otherwise scroll the list AND navigate away
+		// on one press. Checked from the SAME table the footer prints, which is
+		// what stops the two from drifting apart again.
 		for _, sc := range listShortcuts(s.spec.kind) {
 			if m.String() == sc.key {
 				return s, SwitchTo(workspaceForKind(s.spec.kind), sc.open(s.deps))
