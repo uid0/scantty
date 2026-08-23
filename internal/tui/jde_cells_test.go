@@ -296,9 +296,11 @@ func jdeSized(t *testing.T, s Screen, width int) (Screen, Root) {
 //
 // The set is not a judgement call. A sheet is affected by the sizing rule if and
 // only if it builds a jdeField with an Input, and
-// TestJDEForm_NoSheetRendersItsOwnUnboundedValue holds the package to there
-// being no other way to build a text row — so the files carrying an Input ARE
-// the blast radius, and these cases cover every one of them.
+// TestJDEForm_EveryTextRowIsSizedByTheLayer holds the package to there being no
+// other way to build a text row — it reads the whole package's syntax tree and
+// fails any row that draws its own string instead of handing over its box — so
+// the files carrying an Input ARE the blast radius, and these cases cover every
+// one of them.
 func jdeTextRowCases(t *testing.T) []jdeTextRowCase {
 	t.Helper()
 	var out []jdeTextRowCase
@@ -866,27 +868,77 @@ func TestJDEFitInputValue_FocusedBoxKeepsTheCaretInView(t *testing.T) {
 // TestJDEForm_EveryTextRowIsSizedByTheLayer reads the package's own source and
 // fails if any sheet draws a typed row itself.
 //
-// It is here because every defect on this branch of work has recurred by a fix
-// going exactly as far as the list of screens it was handed. Thirty-three files
-// render through this layer; a rendering test can only reach the sheets a test
-// can build, and the sheets it cannot build are precisely the ones a sweep
-// forgets. A rule about how a text row is CONSTRUCTED can be checked on all of
-// them at once, whether or not anything can drive them.
+// READ THIS BEFORE DELETING IT. This is a LINT, not a behavioural test. It
+// executes no screen, renders no frame and cannot fail for a wrong pixel: it
+// parses the package into a syntax tree and judges how a row is CONSTRUCTED.
+// The project's test-quality rule names exactly that — assertions over source
+// text and AST shapes — as an anti-pattern, and the rule is right in general,
+// because source inspection is a poor substitute for behaviour: matching syntax
+// can be dead, and a behaviour-preserving refactor of how a row is built can
+// break this while nothing an operator sees has changed. This test is a
+// DELIBERATE, STATED EXCEPTION to that rule, and this comment is the record of
+// the exception so the next reader does not remove it as a violation.
 //
-// It is also how the blast radius of the sizing rule is established rather than
-// assumed: the affected set is the set of jdeText rows, this test enumerates
-// that set from the syntax tree, and jde_cells_test.go's sheet sweep then drives
-// every screen that owns one.
+// It earns the exception because it reaches a property behaviour cannot. Every
+// defect on this branch of work has recurred by a fix going exactly as far as
+// the list of screens it was handed. Thirty-three files render through this
+// layer; a rendering test can only reach the sheets a test can BUILD, and the
+// sheets it cannot build are precisely the ones a sweep forgets. "No sheet
+// constructs a text row outside the layer" is a claim about all of them at
+// once, whether or not anything can drive them, and syntax is the only place
+// that claim can be checked.
 //
-// The two ways a row can escape the layer, both of which have existed:
+// So it is COMPLEMENTARY to the sheet sweep in jdeTextRowCases, not a duplicate
+// of it, and neither half is sufficient alone: that sweep is the BEHAVIOURAL
+// half — thirty-six sheets rendered at 80/100/120 through a clipped Root.View()
+// with the colour profile forced, asserting what the operator actually sees —
+// and this is the REACHABILITY half, which says the sweep's set is the whole
+// set. Delete this and a new sheet can quietly build an unbounded row in a file
+// no test constructs; delete that and nothing checks a pixel.
+//
+// It is also how the blast radius of the sizing rule was established rather
+// than assumed: the affected set is the set of jdeText rows, this test
+// enumerates that set from the syntax tree, and the sweep then drives every
+// screen that owns one.
+//
+// The three ways a row can escape the layer, all of which have existed:
 //
 //	Value on a jdeText row   — a string the sheet rendered itself, which the
 //	                           layer can then only measure, not bound. po_edit's
 //	                           void-line prompt was still doing this, straight
 //	                           off textinput.View(), on the pilot screen.
+//	no Kind at all           — jdeText is the ZERO VALUE of jdeFieldKind, so
+//	                           jdeField{Label: "x", Value: "y"} is a text row
+//	                           drawing an unbounded string just as surely as one
+//	                           that spells Kind out, and an earlier draft of
+//	                           this test looked only at a Kind key and missed
+//	                           it. A Kind-less literal is therefore judged as
+//	                           jdeText — but only when it actually carries a
+//	                           Value, because a literal with neither a Value nor
+//	                           an Input draws nothing: jdeLabelFields,
+//	                           poDetailLabelWidth and the item form's
+//	                           labelColumnWidth all build jdeField{Label: l}
+//	                           purely so jdeLabelWidth can MEASURE the label,
+//	                           and those are not rows. A spelled-out
+//	                           Kind: jdeText with neither is still flagged,
+//	                           because that one is rendered. The other exemption
+//	                           is a row kinded IMPERATIVELY: po_edit's
+//	                           lineFields builds three Kind-less literals in a
+//	                           []jdeField and sets f.Kind = jdeValue as it
+//	                           ranges over them, so the literal's zero value is
+//	                           never what gets drawn. A function that assigns a
+//	                           non-text Kind is therefore out of this check's
+//	                           syntactic reach for its Kind-less literals — the
+//	                           narrowest exclusion that admits it, and one that
+//	                           costs coverage only inside such a function.
 //	jdeInputValue outside    — the unbounded half of the render. It is exported
 //	  jde_form.go              to the package only because jdeFitInputValue is
 //	                           built on it.
+//
+// A jdeField literal is found both where it names its type and where the type
+// is ELIDED inside a []jdeField or a map of them — []jdeField{{Label: …}} is
+// how several sheets build their first row, and a check that only looked at
+// named types would have missed the very shape the Kind-less case is about.
 func TestJDEForm_EveryTextRowIsSizedByTheLayer(t *testing.T) {
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
@@ -895,73 +947,147 @@ func TestJDEForm_EveryTextRowIsSizedByTheLayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing the package: %v", err)
 	}
+	// checkFieldLit judges one jdeField literal, however its type was spelled.
+	// kinded says the enclosing function assigns a non-text Kind imperatively,
+	// which is the one way a Kind-less literal is not the text row its zero
+	// value makes it.
+	checkFieldLit := func(lit *ast.CompositeLit, kinded bool) {
+		kindKey, kind := false, ""
+		value, input := false, false
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, _ := kv.Key.(*ast.Ident)
+			if key == nil {
+				continue
+			}
+			switch key.Name {
+			case "Kind":
+				kindKey = true
+				if v, ok := kv.Value.(*ast.Ident); ok {
+					kind = v.Name
+				}
+			case "Value":
+				value = true
+			case "Input":
+				input = true
+			}
+		}
+		if kindKey {
+			// A Kind that is not the jdeText ident (jdeChoice, jdeValue, or a
+			// variable this test cannot resolve) is not this rule's business.
+			if kind != "jdeText" || (input && !value) {
+				return
+			}
+		} else if !value || kinded {
+			// Zero value, so this IS a text row — unless it draws nothing (a
+			// measurement of its own label, not a row) or the function kinds it
+			// afterwards.
+			return
+		}
+		t.Errorf("%s: a jdeText row built with %s. A text row hands the layer its "+
+			"BOX (Input), so that jdeFitInputValue can bound it to the pane; a row "+
+			"that renders its own string is one the layer can only measure",
+			fset.Position(lit.Pos()), jdeHowBuilt(value, input))
+	}
+	// elided reports the jdeField literals inside a []jdeField / map[…]jdeField
+	// composite, which carry no type of their own.
+	elided := func(lit *ast.CompositeLit, isField, kinded bool) {
+		if !isField {
+			return
+		}
+		for _, elt := range lit.Elts {
+			if kv, ok := elt.(*ast.KeyValueExpr); ok {
+				elt = kv.Value
+			}
+			if inner, ok := elt.(*ast.CompositeLit); ok && inner.Type == nil {
+				checkFieldLit(inner, kinded)
+			}
+		}
+	}
+	isFieldIdent := func(e ast.Expr) bool {
+		id, ok := e.(*ast.Ident)
+		return ok && id.Name == "jdeField"
+	}
+	// assignsNonTextKind is the imperative-kind exemption above: `f.Kind = X`
+	// for any X that is not jdeText means this function decides its rows' kinds
+	// after building them, so their zero values say nothing.
+	assignsNonTextKind := func(fn *ast.FuncDecl) bool {
+		found := false
+		ast.Inspect(fn, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for i, lhs := range assign.Lhs {
+				sel, ok := lhs.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "Kind" || i >= len(assign.Rhs) {
+					continue
+				}
+				if id, ok := assign.Rhs[i].(*ast.Ident); ok && id.Name != "jdeText" {
+					found = true
+				}
+			}
+			return true
+		})
+		return found
+	}
 	files := 0
 	for _, pkg := range pkgs {
 		for path, file := range pkg.Files {
 			files++
 			base := filepath.Base(path)
-			ast.Inspect(file, func(n ast.Node) bool {
-				switch node := n.(type) {
-				case *ast.CompositeLit:
-					id, ok := node.Type.(*ast.Ident)
-					if !ok || id.Name != "jdeField" {
-						return true
-					}
-					kind, value, input := "", false, false
-					for _, elt := range node.Elts {
-						kv, ok := elt.(*ast.KeyValueExpr)
-						if !ok {
-							continue
-						}
-						key, _ := kv.Key.(*ast.Ident)
-						if key == nil {
-							continue
-						}
-						switch key.Name {
-						case "Kind":
-							if v, ok := kv.Value.(*ast.Ident); ok {
-								kind = v.Name
-							}
-						case "Value":
-							value = true
-						case "Input":
-							input = true
-						}
-					}
-					if kind == "jdeText" && (value || !input) {
-						t.Errorf("%s: a jdeText row built with %s. A text row hands the layer its "+
-							"BOX (Input), so that jdeFitInputValue can bound it to the pane; a row "+
-							"that renders its own string is one the layer can only measure",
-							fset.Position(node.Pos()), jdeHowBuilt(value, input))
-					}
-				case *ast.AssignStmt:
-					// The other spelling: f.Kind, f.Value = jdeText, …
-					text := false
-					for _, rhs := range node.Rhs {
-						if id, ok := rhs.(*ast.Ident); ok && id.Name == "jdeText" {
-							text = true
-						}
-					}
-					if !text {
-						return true
-					}
-					for _, lhs := range node.Lhs {
-						if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "Value" {
-							t.Errorf("%s: a jdeText row assigned a Value. Assign Input instead — the "+
-								"layer bounds the box, and cannot bound a string", fset.Position(lhs.Pos()))
-						}
-					}
-				case *ast.CallExpr:
-					id, ok := node.Fun.(*ast.Ident)
-					if !ok || id.Name != "jdeInputValue" || base == "jde_form.go" {
-						return true
-					}
-					t.Errorf("%s: jdeInputValue is the UNBOUNDED half of the render and belongs to "+
-						"jde_form.go. Give the row an Input and let jdeFitInputValue size it",
-						fset.Position(node.Pos()))
+			// Declaration by declaration, because the imperative-kind exemption
+			// is a property of the enclosing function.
+			for _, decl := range file.Decls {
+				kinded := false
+				if fn, ok := decl.(*ast.FuncDecl); ok {
+					kinded = assignsNonTextKind(fn)
 				}
-				return true
-			})
+				ast.Inspect(decl, func(n ast.Node) bool {
+					switch node := n.(type) {
+					case *ast.CompositeLit:
+						switch t := node.Type.(type) {
+						case *ast.Ident:
+							if t.Name == "jdeField" {
+								checkFieldLit(node, false)
+							}
+						case *ast.ArrayType:
+							elided(node, isFieldIdent(t.Elt), kinded)
+						case *ast.MapType:
+							elided(node, isFieldIdent(t.Value), kinded)
+						}
+					case *ast.AssignStmt:
+						// The other spelling: f.Kind, f.Value = jdeText, …
+						text := false
+						for _, rhs := range node.Rhs {
+							if id, ok := rhs.(*ast.Ident); ok && id.Name == "jdeText" {
+								text = true
+							}
+						}
+						if !text {
+							return true
+						}
+						for _, lhs := range node.Lhs {
+							if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "Value" {
+								t.Errorf("%s: a jdeText row assigned a Value. Assign Input instead — the "+
+									"layer bounds the box, and cannot bound a string", fset.Position(lhs.Pos()))
+							}
+						}
+					case *ast.CallExpr:
+						id, ok := node.Fun.(*ast.Ident)
+						if !ok || id.Name != "jdeInputValue" || base == "jde_form.go" {
+							return true
+						}
+						t.Errorf("%s: jdeInputValue is the UNBOUNDED half of the render and belongs to "+
+							"jde_form.go. Give the row an Input and let jdeFitInputValue size it",
+							fset.Position(node.Pos()))
+					}
+					return true
+				})
+			}
 		}
 	}
 	// A parse that found nothing would pass this test silently, which is the

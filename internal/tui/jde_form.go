@@ -51,9 +51,16 @@ import (
 type jdeFieldKind int
 
 const (
-	// jdeText is a bubbles textinput. Value is its already-rendered View(),
-	// which carries the cursor, so this file never re-styles it — it only
-	// fills the rest of the input area.
+	// jdeText is a bubbles textinput, and the row hands this layer the BOX
+	// itself in Input — never a string it rendered on its own. The layer calls
+	// View() (jdeFitInputValue), because the typed value and the underscored
+	// fill after it are two halves of ONE width and only jdeFieldArea knows
+	// that width: a caller that pre-renders its own value leaves the layer able
+	// to measure the result but not to bound it, which is how a long typed
+	// value used to walk out of the pane with the caret behind it (sc-jde-tiw).
+	// jdeFitInputValue sizes a COPY of the box, so this stays a pure render;
+	// see the note on jdeField.Input. It is the ZERO VALUE of this type, so a
+	// row that names no Kind is a text row too.
 	jdeText jdeFieldKind = iota
 	// jdeChoice is a fixed choice set, drawn "< value >" — the universal
 	// signal for ←/→.
