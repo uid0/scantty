@@ -2254,6 +2254,9 @@ var poPickerBarKeys = map[string][]string{
 	"Review":      nil,
 	"row":         nil,
 	"submitting…": nil,
+	// The head of both frozen bars, where the submit's own working line leads
+	// the claim instead of trailing it (the source chooser's pending bar).
+	"Submitting…": nil,
 }
 
 // poPickerVocabulary is every keystroke the sweep presses. A key outside the

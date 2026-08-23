@@ -634,6 +634,11 @@ func (s *PurchaseOrderCreateScreen) supplierPickBar() string {
 		return "esc cancels the order"
 	case len(s.suppliers) == 0:
 		return "esc cancels the order"
+	case s.pending:
+		// A submit is out and the commit is frozen with the rest of the
+		// payload (updateSupplierPhase), so the bar drops it. j/k still move a
+		// highlight and esc still leaves, which are the keys that remain true.
+		return "j/k move · esc cancels the order"
 	}
 	return "j/k move · enter commits · esc cancels the order"
 }

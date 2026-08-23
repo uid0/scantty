@@ -117,15 +117,27 @@ note, and is the authority):
   arm could be judged at all).
   KEYS are the exception that proves it: no authority can be derived for them,
   so the answer is not to curate a vocabulary but to press the whole SPACE —
-  every printable ASCII rune plus the named specials (`poKeySpace`), which is
-  what `TestPOCreate_EveryPhaseNamesExactlyTheKeysThatWork` does. `tab` on the
-  supplier picker and `N` on the purchase-order list both fail it the moment
-  their fix is reverted; that is the check, not the comment.
-  `TestPOPickers_PaneNamesExactlyTheKeysThatWork` keeps its narrower
-  `poPickerVocabulary` and earns its keep on the other axis — it walks the
+  every printable ASCII rune plus the named specials. There are two such spaces
+  because the two halves of the app read their bars differently, and each
+  catches the defect on ITS half: `poKeySpace`
+  (`TestPOCreate_EveryPhaseNamesExactlyTheKeysThatWork`), which fails on `tab`
+  the moment the supplier picker's alias is put back; and `listKeySpace`
+  (`TestList_FooterNamesExactlyTheKeysThatWork`), which reports all eight dead
+  claims — `N` on purchasing among them — the moment the `listShortcuts` handler
+  is reverted. Both were verified by reverting, not asserted: the phase sweep
+  builds only a `PurchaseOrderCreateScreen`, so it never could have caught `N`,
+  and saying otherwise was itself a false invariant.
+  `listKeySpace` replaced the last curated roster (`listAllBarKeys`), which was
+  safe in one direction only — `listNamedKeys` still fails on a footer token it
+  does not know, so a NAMED key could not be skipped, but a key bound in
+  `ListScreen.Update` and absent from the roster was pressed in NEITHER
+  direction, which is verbatim how `N` survived.
+  `TestPOPickers_PaneNamesExactlyTheKeysThatWork` is the ONE roster still
+  curated (`poPickerVocabulary`), and the guard that makes that safe is the
+  phase sweep beside it: it earns its keep on the other axis — it walks the
   picker STATES (empty, failed, mid-flight) the phase sweep does not reach —
-  so between them every phase meets the whole key space and every picker state
-  meets the keys it can plausibly be sent. Where a bar is prose rather than `key claim · key claim`, reshape the
+  while every PHASE it covers meets the whole key space there, so a key missing
+  from its vocabulary is still pressed, in both directions, one file over. Where a bar is prose rather than `key claim · key claim`, reshape the
   bar: `poBarNamedKeys` reads single-letter keys only at a segment START,
   because scanning prose for a bare `a` finds the article. That reshaping is how
   `b` — bound on all three association pickers exactly as `esc` is, named by
@@ -373,6 +385,31 @@ touching any screen an operator drives:
   answers on the "Submitting…" line through `pendingLead`, because an operator
   watching a slow gateway is exactly the operator who will have missed a
   four-second flash.
+  **And the CART IS FROZEN for as long as the request is out**, which is the
+  same rule with something at stake: `finalize` copies the lines and the notes
+  into the payload, so a removal, an edit, a typed note or a supplier commit
+  after it is work the 201's navigation discards — and until then the pane is
+  describing a cart that is not the one being created. Dropping the LAST line
+  was the worst of it, because `removeLineAt` sends the phase back to the source
+  chooser: the operator told to add a line while their two-line order was
+  already going in. So while `pending` every arm that would touch the payload
+  declines through `pendingLead` and the bar stops naming it, on all THREE
+  phases the operator can be on — review, the source chooser (`r`/`i`/`a`/`f`,
+  `x`, `ctrl+e`, `g`/`w`/`c`) and the supplier picker (`enter` commits nothing).
+  Those two are reachable because `esc` is deliberately NOT gated — a frame with
+  no way out while a slow gateway thinks is the worse defect — so freezing only
+  the review arms would have left the identical defect one phase over. (Leaving
+  the screen with `esc` does not CANCEL the request: the order may still be
+  created with nobody watching. That gap is open and known; gating the last way
+  out to close it would trade it for a dead end.) What
+  stays live is what only READS: `↑↓` / `j`/`k` move a highlight through a
+  windowed cart, `d` reviews it, `b` and `esc` leave. The notes input is BLURRED
+  by `finalize` and focused again by `poCreatedMsg` when the submit comes back
+  failed, so a caret is never left blinking in a field whose contents have
+  already gone. `TestPOSubmit_TheCartIsFrozenUntilItAnswers` walks all three
+  phases in sequence; `TestPOSubmit_AFailedSubmitHandsTheCartBack` is the other
+  half, because a freeze that outlived a 502 would hold the order hostage to a
+  gateway.
   The GATED frames (loading, failed) are the same rule and were the last
   instance of it: `a`/`enter` on the reorder gate, `]`/`[` on the asset gate and
   `j`/`k` on the supplier gate each shared one sentence between two keys, and

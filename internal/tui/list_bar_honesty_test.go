@@ -67,22 +67,31 @@ var listBarKeyNames = map[string][]string{
 	"A":         {"A"},
 }
 
-// listAllBarKeys is every keystroke the list vocabulary can name, in a stable
-// order. A list that does NOT name one is checked to be silent on it — which is
-// how a shortcut wired onto the wrong kind would be caught.
-func listAllBarKeys() []string {
-	seen := map[string]bool{}
+// listKeySpace is every keystroke the sweep presses: printable ASCII, then the
+// named keys a terminal sends that are not runes. It is the KEY SPACE, not a
+// vocabulary, and that is the whole point — the roster it replaced was a
+// hand-written token list (the same shape as poAllBarKeys and
+// poPickerVocabulary), safe only in the FORWARD direction, because
+// listNamedKeys fails on a footer token it does not know. In REVERSE it was
+// blind: a key bound in ListScreen.Update and absent from the roster was
+// pressed in neither direction, which is verbatim how `N` survived a sweep
+// written to catch exactly it.
+//
+// Nothing here is curated, so a key bound tomorrow is pressed by this list
+// today. Mirrors poKeySpace (po_create_phase_sweep_test.go); the two are
+// separate because the halves of the app they walk read their bars differently
+// — a []actionBarItem, a picker bar, and this one a footer STRING.
+func listKeySpace() []string {
 	var out []string
-	for _, token := range []string{"j/k", "pgup/pgdn", "g/G", "s", "f", "r", "enter", "/", "n",
-		"N", "Q", "I", "C", "L", "U", "M", "A"} {
-		for _, k := range listBarKeyNames[token] {
-			if !seen[k] {
-				seen[k] = true
-				out = append(out, k)
-			}
-		}
+	for c := byte(0x20); c <= 0x7e; c++ {
+		out = append(out, string(rune(c)))
 	}
-	return out
+	return append(out,
+		"enter", "esc", "tab", "shift+tab",
+		"up", "down", "left", "right", "home", "end", "pgup", "pgdown",
+		"backspace", "delete",
+		"ctrl+u", "ctrl+d", "ctrl+e", "ctrl+x", "ctrl+p", "ctrl+n",
+	)
 }
 
 // listNamedKeys parses a footer hint into the set of keystrokes it claims.
@@ -231,6 +240,26 @@ func listRuneKey(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlU}
 	case "ctrl+d":
 		return tea.KeyMsg{Type: tea.KeyCtrlD}
+	case "ctrl+e":
+		return tea.KeyMsg{Type: tea.KeyCtrlE}
+	case "ctrl+x":
+		return tea.KeyMsg{Type: tea.KeyCtrlX}
+	case "ctrl+p":
+		return tea.KeyMsg{Type: tea.KeyCtrlP}
+	case "ctrl+n":
+		return tea.KeyMsg{Type: tea.KeyCtrlN}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
+	case "backspace":
+		return tea.KeyMsg{Type: tea.KeyBackspace}
+	case "delete":
+		return tea.KeyMsg{Type: tea.KeyDelete}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
@@ -283,9 +312,18 @@ func listSized(t *testing.T, build func() *ListScreen, termHeight int) *ListScre
 }
 
 // TestList_FooterNamesExactlyTheKeysThatWork is the rule, as a rule, over every
-// list screen in the app.
+// list screen in the app, pressed over the whole key space.
 //
-// Each named key is probed from several positions — as opened, after G, after
+// The key space rather than a roster is the point: this is the sweep that
+// catches `N` (revert the listShortcuts handler and it reports all eight dead
+// claims across four lists), and until now it could only catch a key that was
+// already in listAllBarKeys. That roster was safe forwards — listNamedKeys
+// still fails on a footer token it does not know, so a NAMED key cannot be
+// skipped — and blind backwards: a key bound in ListScreen.Update and absent
+// from it was pressed in neither direction, which is exactly how `N` survived
+// the sweep written to catch it.
+//
+// Each key is probed from several positions — as opened, after G, after
 // paging down — because `g` does nothing at the top and `G` nothing at the
 // bottom; a key is dead only if it does nothing from any of them.
 //
@@ -320,7 +358,7 @@ func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 				}
 			}
 
-			for _, key := range listAllBarKeys() {
+			for _, key := range listKeySpace() {
 				var changed, issued bool
 				for _, probe := range probes {
 					c, i := listKeyEffect(surface.build, probe, key)
@@ -489,6 +527,45 @@ func TestList_SearchOverlayBarNamesExactlyTheKeysThatWork(t *testing.T) {
 	if got := typed.searchInput.Value(); got != "NQnsfrgG" {
 		t.Errorf("the browse-footer keys produced query %q — they are not inert under the overlay", got)
 	}
+	// The whole key space against the overlay, in both directions. Printable
+	// runes are exempt and by design: with the box open they act by going into
+	// the query, which is what the box is FOR, so the reverse half of the rule
+	// cannot apply to them (the same exemption poFieldKeys makes on the New PO
+	// screen's typing phases). Everything else is judged — a key bound in
+	// updateSearch that this bar does not name would be `N` all over again, on
+	// the one list state the browse footer has nothing to say about.
+	overlayNamed := map[string]bool{}
+	for _, k := range []string{"up", "down", "ctrl+p", "ctrl+n", "enter", "esc"} {
+		// ↑/↓ names the emacs pair the same way it names the arrows: updateSearch
+		// writes `case tea.KeyUp, tea.KeyCtrlP:` as one arm.
+		overlayNamed[k] = true
+	}
+	for _, k := range listKeySpace() {
+		if r := []rune(k); len(r) == 1 && r[0] >= 0x20 && r[0] <= 0x7e {
+			continue
+		}
+		acted := false
+		for _, probe := range [][]string{nil, {"down"}} {
+			fresh := listLoaded(func() *ListScreen { return newScreenFor(WSAssets, Deps{}).(*ListScreen) })
+			n, _ := fresh.Update(listRuneKey("/"))
+			fresh = n.(*ListScreen)
+			for _, p := range probe {
+				n, _ = fresh.Update(listRuneKey(p))
+				fresh = n.(*ListScreen)
+			}
+			before := listBarState(fresh)
+			n, cmd := fresh.Update(listRuneKey(k))
+			fresh = n.(*ListScreen)
+			acted = acted || listBarState(fresh) != before || cmd != nil
+		}
+		switch {
+		case overlayNamed[k] && !acted:
+			t.Errorf("the search overlay names %q but pressing it does nothing", k)
+		case !overlayNamed[k] && acted:
+			t.Errorf("the search overlay does not name %q, but pressing it acts", k)
+		}
+	}
+
 	// Every key the overlay bar names must act there — probed from both ends,
 	// since ↑ does nothing at the top and ↓ nothing at the bottom.
 	for _, key := range []string{"up", "down", "enter", "esc"} {

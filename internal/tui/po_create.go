@@ -477,6 +477,17 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// left, so what the operator loses on a short terminal is the tail
 			// of the gateway's HTML and never the sentence naming what failed.
 			s.setErr("submitting this purchase order failed", m.err.Error())
+			if s.phase == poPhaseReview {
+				// The freeze is over, so the field takes input again. Only on
+				// review: the operator may have escaped to the source chooser
+				// while the POST was out, and focusing a field that phase does
+				// not draw would send its keystrokes nowhere.
+				s.poNotes.Focus()
+				return s, tea.Batch(
+					Status("create PO failed: "+m.err.Error(), StatusError),
+					textinput.Blink,
+				)
+			}
 			return s, Status("create PO failed: "+m.err.Error(), StatusError)
 		}
 		s.setErr("", "")
@@ -602,6 +613,16 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 			s.supplierCursor--
 		}
 	case "enter":
+		if s.pending {
+			// Reachable while the POST is out (review → esc → b), and
+			// committing a supplier from here would change the order's supplier
+			// and can drop half the cart through the switch confirm — against a
+			// request that carries the old supplier and every line. Frozen with
+			// the rest of the payload; supplierPickBar stops naming enter for
+			// exactly as long.
+			s.pendingLead = "enter commits nothing"
+			return s, Status("the submit is already out", StatusInfo)
+		}
 		// Changing supplier under a cart that already names the old supplier's
 		// catalog rows destroys work, so it asks first. Only a CHANGE, and only
 		// when there is something to lose: re-committing the same supplier, or
@@ -1060,6 +1081,34 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		s.cartLead = ""
 	default:
 		s.cartLead, s.attrLead = "", ""
+	}
+	if s.pending {
+		// The submit is reachable from here: esc off the review phase lands on
+		// this chooser with the POST still out, and every key below that stages,
+		// removes, edits or re-attributes a line is changing a cart finalize()
+		// has already copied into the request. The 201 navigates away and takes
+		// the change with it, so the freeze that starts on review has to hold
+		// here too: gating the review arms alone would leave the identical
+		// defect one phase over, one esc away.
+		//
+		// j/k, d, b and esc are deliberately still live: they read the cart,
+		// review it, or leave, and none of them touches the payload. The lead
+		// names the key because two of these sharing one sentence would redraw
+		// the pane the first press left (the frame has no cursor of its own).
+		switch m.String() {
+		case "r", "i", "a", "f":
+			s.pendingLead = m.String() + " adds nothing"
+			return s, Status("the submit is already out", StatusInfo)
+		case "x":
+			s.pendingLead = "x removes nothing"
+			return s, Status("the submit is already out", StatusInfo)
+		case "ctrl+e":
+			s.pendingLead = "ctrl+e edits nothing"
+			return s, Status("the submit is already out", StatusInfo)
+		case "g", "w", "c":
+			s.pendingLead = m.String() + " changes nothing"
+			return s, Status("the submit is already out", StatusInfo)
+		}
 	}
 	switch m.String() {
 	case "esc", "b":
@@ -1740,6 +1789,12 @@ func (s *PurchaseOrderCreateScreen) finalize() tea.Cmd {
 
 	s.pending = true
 	s.pendingLead = ""
+	// Blurred for as long as the request is out. The cart and these notes are
+	// in the payload now, so a caret still blinking in the field would be the
+	// screen inviting input it is going to throw away — the same lie as a bar
+	// naming a key that no longer acts. poCreatedMsg focuses it again if the
+	// submit comes back failed and there is something to edit.
+	s.poNotes.Blur()
 	s.setErr("", "")
 	deps := s.deps
 	ctx := deps.Ctx
@@ -1788,6 +1843,19 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 	case "ctrl+x":
 		// Remove the highlighted line. ctrl+x (not plain x) so the key
 		// doesn't collide with typing 'x' into the notes field.
+		if s.pending {
+			// finalize() copied the cart and the notes into the request, so
+			// nothing pressed after it can reach the order being created: the
+			// removal would be discarded by the navigation the 201 triggers,
+			// and until then the pane would be describing a cart that is not
+			// the one going in. Worse on the LAST line, where removeLineAt
+			// drops the phase back to the source chooser — the operator told
+			// to add a line while the order they already have is being
+			// created. So the cart is frozen for as long as the POST is out,
+			// and the bar stops naming these two for exactly that long.
+			s.pendingLead = "ctrl+x removes nothing"
+			return s, Status("the submit is already out", StatusInfo)
+		}
 		s.removeLineAt(s.reviewCursor)
 		return s, nil
 	case "ctrl+e":
@@ -1796,7 +1864,20 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 		// chord never collides. openLineEditor re-opens the Phase-4 form
 		// pre-filled and flags editIndex so addLine writes the change back to
 		// s.lines[reviewCursor] instead of appending.
+		if s.pending {
+			s.pendingLead = "ctrl+e edits nothing"
+			return s, Status("the submit is already out", StatusInfo)
+		}
 		return s, s.openLineEditor(s.reviewCursor, poPhaseReview)
+	}
+	if s.pending {
+		// The notes went into the request with the cart, so a rune typed now is
+		// work the 201 throws away. The field is BLURRED while the POST is out
+		// (finalize), which is what stops the caret inviting the typing in the
+		// first place; this answers the press that comes anyway, and names the
+		// key so two of them cannot redraw one pane.
+		s.pendingLead = m.String() + " is not in the notes"
+		return s, Status("the submit is already out", StatusInfo)
 	}
 	var cmd tea.Cmd
 	s.poNotes, cmd = s.poNotes.Update(m)
@@ -1964,6 +2045,23 @@ const poFailBodyFloor = 3
 // (cart-listed) wording, which is the conservative direction — the collapsed
 // bar folds to no more rows, so it can never turn the answer back round.
 func (s *PurchaseOrderCreateScreen) sourceHelpText(cartListed, attribution bool) string {
+	if s.pending {
+		// Everything that would change the cart is declining while the POST is
+		// out (updateSourcePhase), so the bar names none of it — not r/i/a/f,
+		// not x or ctrl+e, and not g/w/c even when their rows are on the pane.
+		// What is left is what still works: the highlight when the cart is
+		// listed, the way to review it, and the two ways out.
+		//
+		// Answered here rather than at the call sites so every row budget on
+		// this phase measures the bar that will actually be drawn: frameRowsWith
+		// and the two sacrifice decisions all reach the bar through this
+		// function, and a budget computed from a different wording is how a
+		// block passes its own fit check and then overflows.
+		if cartListed && len(s.lines) > 0 {
+			return "Submitting… · j/k highlight · d review the cart · b back · esc cancel."
+		}
+		return "Submitting… · d review the cart · b back · esc cancel."
+	}
 	base := "Add a line · r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel"
 	switch {
 	case len(s.lines) > 0 && cartListed:
@@ -2046,16 +2144,18 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 		}
 		return "Line entry · tab/shift+tab cycle fields · enter adds to the cart · esc picks a different source"
 	case poPhaseReview:
-		bar := "Review cart — type PO notes · ↑↓ highlight a line · ctrl+e edit it · ctrl+x remove it"
 		if s.pending {
-			// The POST is out and the enter arm declines, so the bar stops
-			// naming it — the same drop itemPickBar and assetPickBar make for a
-			// gated key. esc still works: leaving review does not cancel the
-			// request, and stranding the operator on a frame with no way out
-			// while a slow gateway thinks about it would be the worse defect.
-			return bar + " · esc back · submitting…"
+			// The POST is out, so the cart and the notes are frozen and every
+			// key that would change them declines — the bar drops all four, the
+			// same drop itemPickBar and assetPickBar make for a gated key. ↑↓
+			// stays: it moves the highlight through a windowed cart, which is
+			// reading rather than editing, and is the one useful thing left
+			// while the gateway thinks. esc stays too: leaving review does not
+			// cancel the request, and stranding the operator on a frame with no
+			// way out would be the worse defect.
+			return "Review cart · ↑↓ highlight a line · esc back · submitting…"
 		}
-		return bar + " · enter submit · esc back."
+		return "Review cart — type PO notes · ↑↓ highlight a line · ctrl+e edit it · ctrl+x remove it · enter submit · esc back."
 	}
 	return ""
 }

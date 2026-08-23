@@ -210,6 +210,18 @@ func poPhaseCases() []poPhaseCase {
 		}
 		return r
 	}
+	// submitting leaves a create POST genuinely in flight: r.Update without
+	// pump, so the command is never run and nothing resolves it.
+	submitting := func() func(*testing.T, Root, *PurchaseOrderCreateScreen) Root {
+		return func(t *testing.T, r Root, s *PurchaseOrderCreateScreen) Root {
+			r = key(t, stageTwo(t, r, s), poPhaseKeyMsg("d"))
+			next, _ := r.Update(poPhaseKeyMsg("enter"))
+			if !s.pending {
+				t.Fatalf("setup did not leave a submit in flight")
+			}
+			return next.(Root)
+		}
+	}
 	return []poPhaseCase{
 		{poPhaseSource, "source chooser", plain, press(), false},
 		{poPhaseSupplier, "supplier picker", plain, press("b"), false},
@@ -227,18 +239,24 @@ func poPhaseCases() []poPhaseCase {
 		{poPhaseReview, "review cart", plain, func(t *testing.T, r Root, s *PurchaseOrderCreateScreen) Root {
 			return key(t, stageTwo(t, r, s), poPhaseKeyMsg("d"))
 		}, true},
-		// The same phase with the POST out: the bar drops `enter submit` for as
-		// long as the arm declines. Driven with r.Update and no pump, so the
-		// request is genuinely still in flight rather than resolved.
-		{poPhaseReview, "review cart, submit in flight", plain,
-			func(t *testing.T, r Root, s *PurchaseOrderCreateScreen) Root {
-				r = key(t, stageTwo(t, r, s), poPhaseKeyMsg("d"))
-				next, _ := r.Update(poPhaseKeyMsg("enter"))
-				if !s.pending {
-					t.Fatalf("setup did not leave a submit in flight")
-				}
-				return next.(Root)
-			}, true},
+		// The same phase with the POST out: the bar drops `enter submit`, and
+		// with it ctrl+e, ctrl+x and "type PO notes", for as long as those arms
+		// decline. Driven with r.Update and no pump, so the request is
+		// genuinely still in flight rather than resolved.
+		//
+		// It stays typing:true, and the two OTHER phases the freeze reaches (the
+		// source chooser esc lands on, the supplier picker one `b` further) are
+		// not entries here, for one reason: this sweep rebuilds the whole screen
+		// for every key at every probe position, and a case whose reach stages
+		// two lines costs about 210 seconds per pane height once printable runes
+		// stop being skipped. Three more of those would put the package past the
+		// 600-second `go test` deadline, which is a test suite nobody can run.
+		// TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork presses the same
+		// whole key space against all three frozen states instead, in sequence
+		// off ONE screen — a key that declines leaves the state it found, so the
+		// next key meets the same frame, and only a key that ACTS costs a
+		// rebuild. Same rule, same key space, seconds instead of minutes.
+		{poPhaseReview, "review cart, submit in flight", plain, submitting(), true},
 		{poPhaseSupplierSwitch, "supplier-switch confirm", plain,
 			func(t *testing.T, r Root, s *PurchaseOrderCreateScreen) Root {
 				r = stageOne(t, r, s)
@@ -435,6 +453,268 @@ func TestPOReview_EnterWhileTheSubmitIsOutSaysSo(t *testing.T) {
 			poAssertFits(t, "review with a submit in flight", screen)
 			// The field the operator is typing into is still on the pane.
 			poWantPaneLine(t, screen, "PO notes:")
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The submit's in-flight window: the cart is frozen until the POST answers
+// ---------------------------------------------------------------------------
+
+// poFrozenScreen stages two lines, sends the create POST and leaves it in
+// flight, then walks `out` further keys — because the freeze has to hold on
+// every phase the operator can reach while the request is out, not only the one
+// they pressed enter on.
+//
+// The submit is fired with r.Update and NEVER pumped, so the command is never
+// run and nothing resolves it: `pending` stays true for as long as the test
+// wants it, which is what makes this window assertable at all.
+func poFrozenScreen(t *testing.T, h int, out ...string) (Root, *PurchaseOrderCreateScreen) {
+	t.Helper()
+	fake := &poPickFake{catalog: 4, suppliers: 3,
+		agreements: 1, workOrders: 2, committees: 1}
+	r, screen := poPickerAtSize(t, fake, 80, h)
+	for _, k := range []string{"i", "enter", "enter", "i", "j", "enter", "enter", "d"} {
+		r = key(t, r, poPhaseKeyMsg(k))
+	}
+	if screen.phase != poPhaseReview || len(screen.lines) != 2 {
+		t.Fatalf("setup landed on phase %v with %d line(s)", screen.phase, len(screen.lines))
+	}
+	next, _ := r.Update(poPhaseKeyMsg("enter"))
+	r = next.(Root)
+	if !screen.pending {
+		t.Fatal("the submit did not go out")
+	}
+	for _, k := range out {
+		r = key(t, r, poPhaseKeyMsg(k))
+	}
+	if !screen.pending {
+		t.Fatalf("the submit resolved while walking to %v", screen.phase)
+	}
+	return r, screen
+}
+
+// poFrozenState is one phase the operator can be on while the POST is out.
+//
+// There are three, and that is not a choice: esc is deliberately NOT gated — a
+// frame with no way out while a slow gateway thinks is the worse defect — so
+// review's esc lands on the source chooser and its `b` on the supplier picker,
+// both with the request still in flight. Freezing only the review arms would
+// have left the identical defect one phase over, which is how this screen has
+// been found wanting every round.
+type poFrozenState struct {
+	name  string
+	phase poPhase
+	out   []string
+}
+
+func poFrozenStates() []poFrozenState {
+	return []poFrozenState{
+		{"review cart", poPhaseReview, nil},
+		{"source chooser", poPhaseSource, []string{"esc"}},
+		{"supplier picker", poPhaseSupplier, []string{"esc", "b"}},
+	}
+}
+
+// TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork presses the WHOLE key
+// space against each frozen phase, in both directions of the bar-honesty rule,
+// and checks the payload after every single press.
+//
+// It presses in SEQUENCE off one screen rather than rebuilding per key, which
+// is what makes the whole key space affordable here: a key that declines leaves
+// the state it found (a decline writes only poStateDeclined fields), so the next
+// key meets the same frame, and only a key that ACTS costs a rebuild. A named
+// key that looks dead is retried from the probe positions the phase sweep uses,
+// because ↑ does nothing with the highlight already at the top.
+func TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork(t *testing.T) {
+	for _, st := range poFrozenStates() {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", st.name, h), func(t *testing.T) {
+				build := func(probe ...string) (Root, *PurchaseOrderCreateScreen) {
+					r, s := poFrozenScreen(t, h, append(append([]string{}, st.out...), probe...)...)
+					if s.phase != st.phase {
+						t.Fatalf("the walk landed on phase %v, want %v", s.phase, st.phase)
+					}
+					return r, s
+				}
+				r, screen := build()
+				bar := screen.helpText()
+				named := poBarNamedKeys(t, bar)
+				poAssertFits(t, st.name+" with a submit in flight", screen)
+				// The payload finalize() copied. Nothing pressed below may move
+				// any of it — that is the freeze, and it is checked on every key
+				// rather than on the handful this round happened to name.
+				lines, notes, supplier := len(screen.lines), screen.poNotes.Value(), screen.supplierID
+
+				for _, k := range poKeySpace() {
+					before := poPickerState(screen)
+					_, cmd := r.Update(poPhaseKeyMsg(k))
+					acted := poPickerState(screen) != before || poCmdActs(cmd)
+					if len(screen.lines) != lines ||
+						screen.poNotes.Value() != notes ||
+						screen.supplierID != supplier {
+						t.Fatalf("%q changed the payload while the submit was out: %d line(s), notes %q, supplier %d",
+							k, len(screen.lines), screen.poNotes.Value(), screen.supplierID)
+					}
+					if !named[k] && acted {
+						t.Errorf("%s with a submit in flight does not name %q, but pressing it acts (bar: %q)",
+							st.name, k, bar)
+					}
+					if named[k] && !acted {
+						for _, probe := range []string{"up", "j"} {
+							pr, ps := build(probe)
+							pb := poPickerState(ps)
+							_, pc := pr.Update(poPhaseKeyMsg(k))
+							if poPickerState(ps) != pb || poCmdActs(pc) {
+								acted = true
+								break
+							}
+						}
+						if !acted {
+							t.Errorf("%s with a submit in flight names %q but pressing it changes nothing (bar: %q)",
+								st.name, k, bar)
+						}
+					}
+					if acted {
+						// The frame has moved on, so the next key would be
+						// judged against a state this one left rather than the
+						// one the bar was read from.
+						r, screen = build()
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestPOSubmit_TheCartIsFrozenUntilItAnswers is the same window as a journey:
+// the keys an operator actually reaches for, pressed in sequence with no state
+// reset between them, with what the pane says checked after each one.
+//
+// finalize() copies the cart and the notes into the request, so from the moment
+// the POST leaves nothing pressed on this screen can reach the order being
+// created: a removal, an edit or a typed note is work the 201's navigation
+// throws away, and until it lands the pane is describing a cart that is not the
+// one going in. Removing the LAST line was the worst of it — removeLineAt drops
+// the phase back to the source chooser, so the operator was told to add a line
+// while their two-line order was already being created.
+func TestPOSubmit_TheCartIsFrozenUntilItAnswers(t *testing.T) {
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			r, screen := poFrozenScreen(t, h)
+
+			// The bar drops every claim the freeze has made false. It may not go
+			// on inviting an edit it is about to discard.
+			for _, gone := range []string{"type PO notes", "ctrl+e edit it", "ctrl+x remove it", "enter submit"} {
+				poRejectPaneLine(t, screen, gone)
+			}
+
+			pane := func() string { return strings.Join(poPaneLinesAt(t, screen, h), "\n") }
+			before := pane()
+			step := func(k, say string) {
+				t.Helper()
+				lines, notes := len(screen.lines), screen.poNotes.Value()
+				phase := screen.phase
+				next, _ := r.Update(poPhaseKeyMsg(k))
+				r = next.(Root)
+				if len(screen.lines) != lines || screen.poNotes.Value() != notes {
+					t.Fatalf("%q changed the frozen cart: %d line(s), notes %q",
+						k, len(screen.lines), screen.poNotes.Value())
+				}
+				if screen.phase != phase {
+					t.Fatalf("%q left phase %v for %v while the submit was out", k, phase, screen.phase)
+				}
+				if after := pane(); after == before {
+					t.Errorf("%q redrew a byte-for-byte identical pane:\n%s", k, after)
+				} else {
+					before = after
+				}
+				poWantPaneLine(t, screen, say)
+				poAssertFits(t, "submit in flight after "+k, screen)
+			}
+
+			// Review: the two chords and the notes field itself.
+			step("ctrl+x", "ctrl+x removes nothing")
+			step("ctrl+e", "ctrl+e edits nothing")
+			step("q", "q is not in the notes")
+			// Reading the cart is not editing it, so the highlight still moves —
+			// which is why the bar goes on naming ↑↓.
+			cursor := screen.reviewCursor
+			next, _ := r.Update(poPhaseKeyMsg("up"))
+			r = next.(Root)
+			if screen.reviewCursor == cursor {
+				t.Errorf("↑ did not move the highlight while the submit was out")
+			}
+
+			// The source chooser, reached the way an operator reaches it.
+			r = key(t, r, poPhaseKeyMsg("esc"))
+			if screen.phase != poPhaseSource || !screen.pending {
+				t.Fatalf("esc landed on phase %v with pending=%v", screen.phase, screen.pending)
+			}
+			for _, gone := range []string{"r reorder queue", "i inventory items", "f freeform",
+				"x remove", "ctrl+e edit", "g agreement", "w work order", "c committee"} {
+				poRejectPaneLine(t, screen, gone)
+			}
+			before = pane()
+			step("i", "i adds nothing")
+			step("f", "f adds nothing")
+			step("x", "x removes nothing")
+			step("ctrl+e", "ctrl+e edits nothing")
+			step("g", "g changes nothing")
+
+			// The supplier picker, one step further out, where a commit would
+			// re-target a request that already names the old supplier.
+			r = key(t, r, poPhaseKeyMsg("b"))
+			if screen.phase != poPhaseSupplier {
+				t.Fatalf("b landed on phase %v, want the supplier picker", screen.phase)
+			}
+			r = key(t, r, poPhaseKeyMsg("j")) // highlight a DIFFERENT supplier
+			poRejectPaneLine(t, screen, "enter commits")
+			supplier := screen.supplierID
+			before = pane()
+			step("enter", "enter commits nothing")
+			if screen.supplierID != supplier {
+				t.Errorf("enter committed supplier %d while the submit was out", screen.supplierID)
+			}
+		})
+	}
+}
+
+// TestPOSubmit_AFailedSubmitHandsTheCartBack is the other half: the freeze lasts
+// exactly as long as the request. A screen that stayed frozen after a 502 would
+// have taken the operator's order hostage to a gateway.
+func TestPOSubmit_AFailedSubmitHandsTheCartBack(t *testing.T) {
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			fake := &poPickFake{catalog: 4, failCreate: true}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			for _, k := range []string{"i", "enter", "enter", "i", "j", "enter", "enter", "d"} {
+				r = key(t, r, poPhaseKeyMsg(k))
+			}
+			if screen.phase != poPhaseReview || len(screen.lines) != 2 {
+				t.Fatalf("setup landed on phase %v with %d line(s)", screen.phase, len(screen.lines))
+			}
+
+			r = key(t, r, poPhaseKeyMsg("enter")) // pumped: the 502 comes back
+			if screen.pending {
+				t.Fatal("the submit is still pending after its reply")
+			}
+			poWantPaneLine(t, screen, "submitting this purchase order failed")
+			poWantPaneLine(t, screen, "enter submit")
+			poAssertFits(t, "review after a failed submit", screen)
+
+			// The notes take input again — the field was blurred for the flight.
+			r = poType(t, r, "z")
+			if screen.poNotes.Value() != "z" {
+				t.Errorf("the notes hold %q after the failure, want the typed rune", screen.poNotes.Value())
+			}
+			next, _ := r.Update(poPhaseKeyMsg("ctrl+x"))
+			r = next.(Root)
+			_ = r
+			if len(screen.lines) != 1 {
+				t.Errorf("ctrl+x left %d line(s) after the failure, want the removal to work again",
+					len(screen.lines))
+			}
 		})
 	}
 }
