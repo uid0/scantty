@@ -922,7 +922,7 @@ func TestPOReorderMarksClearOnReload(t *testing.T) {
 	if len(s.reorderSelected) != 1 {
 		t.Fatalf("setup: expected 1 mark, got %d", len(s.reorderSelected))
 	}
-	s.handlePickerLoaded(poReorderItemsLoadedMsg{items: []omsapi.ReorderDataItem{reorderItem("C", 13, 1, "1.00")}})
+	s.handlePickerLoaded(poReorderItemsLoadedMsg{supplierID: s.supplierID, items: []omsapi.ReorderDataItem{reorderItem("C", 13, 1, "1.00")}})
 	if len(s.reorderSelected) != 0 {
 		t.Errorf("reload should clear marks; %d left", len(s.reorderSelected))
 	}

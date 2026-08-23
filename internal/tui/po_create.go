@@ -177,8 +177,15 @@ type PurchaseOrderCreateScreen struct {
 	reorderSelected map[int]bool
 
 	// Phase 3b: inventory items for this supplier.
-	itemSuppliers       []omsapi.ItemSupplier
-	itemSuppliersAll    []omsapi.ItemSupplier // whole catalog, so '/' search is client-side
+	itemSuppliers    []omsapi.ItemSupplier
+	itemSuppliersAll []omsapi.ItemSupplier // whole catalog, so '/' search is client-side
+	// itemSuppliersFor is the supplier itemSuppliersAll was loaded for, or 0
+	// when nothing usable is held. The catalog is now paged in whole — one
+	// request per page — and the picker is re-entered once per line, so
+	// re-walking it on every entry is dozens of round trips for an answer that
+	// cannot have changed. It is keyed rather than just cached because a
+	// catalog that outlived its supplier is the wrong catalog, not a stale one.
+	itemSuppliersFor    int
 	itemSuppliersLoad   bool
 	itemSuppliersErr    string
 	itemSuppliersCur    int
@@ -527,7 +534,51 @@ func (s *PurchaseOrderCreateScreen) commitSupplier() tea.Cmd {
 	s.agreementCursor = 0
 	s.agreementLoadErr = ""
 	s.agreementLoading = true
+	s.resetSupplierScopedPickers()
 	return s.loadAgreements()
+}
+
+// resetSupplierScopedPickers drops everything the three line-source pickers
+// hold, because every row in them belongs to the supplier that was current when
+// it loaded. The agreement reset above has always been done for this reason —
+// an agreement belongs to one supplier and the backend rejects a foreign one —
+// and the pickers are the same fact with a worse failure mode: the backend
+// accepts an item_supplier id happily, so a stale catalog row staged after a
+// supplier change is a purchase order that quietly names another supplier's
+// item. Nothing on the screen would have flagged it.
+//
+// Note it also drops the in-flight flags: any reply still out for the previous
+// supplier is discarded by the supplierID guard in handlePickerLoaded, so
+// leaving them set would strand the picker on a "looking up…" frame for a
+// request whose answer is never going to be used.
+func (s *PurchaseOrderCreateScreen) resetSupplierScopedPickers() {
+	s.reorderItems = nil
+	s.reorderLoading = false
+	s.reorderLoadErr = ""
+	s.reorderCursor = 0
+	s.reorderSelected = map[int]bool{}
+
+	s.itemSuppliers = nil
+	s.itemSuppliersAll = nil
+	s.itemSuppliersFor = 0
+	s.itemSuppliersLoad = false
+	s.itemSuppliersErr = ""
+	s.itemSuppliersCur = 0
+	s.itemSuppliersTyping = false
+	s.itemSuppliersSearch.SetValue("")
+	s.itemSuppliersSearch.Blur()
+	s.itemSuppliersNote.clear()
+
+	s.assets = nil
+	s.assetsLoading = false
+	s.assetsErr = ""
+	s.assetsCursor = 0
+	s.assetsTyping = false
+	s.assetsSearch.SetValue("")
+	s.assetsSearch.Blur()
+	s.assetsPage = 1
+	s.assetsHasNext = false
+	s.assetsNote.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -747,10 +798,22 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		return s, s.loadReorderItemsForSupplier()
 	case "i":
 		s.phase = poPhaseItemPick
+		s.itemSuppliersSearch.SetValue("")
+		s.itemSuppliersSearch.Blur()
+		s.itemSuppliersTyping = false
+		s.itemSuppliersCur = 0
+		if s.supplierID > 0 && s.itemSuppliersFor == s.supplierID && s.itemSuppliersErr == "" {
+			// Already held for THIS supplier. Showing the "Looking up the items
+			// … sells…" frame here would be the same rule broken from the other
+			// side: that frame is a claim that work is happening, and on a
+			// ten-line order it would be claimed ten times over one catalog
+			// that is fetched once. Open on the rows; r goes and asks again.
+			s.applyItemSupplierFilter()
+			return s, s.itemPickEntryNote()
+		}
 		s.itemSuppliersLoad = true
 		s.itemSuppliersErr = ""
-		s.itemSuppliersSearch.SetValue("")
-		s.itemSuppliersTyping = false
+		s.itemSuppliersNote.clear() // the generic working line speaks for this one
 		return s, s.loadItemSuppliersForSupplier()
 	case "a":
 		s.phase = poPhaseAssetPick
@@ -1395,7 +1458,13 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 
 func (s *PurchaseOrderCreateScreen) View() string {
 	var b strings.Builder
-	b.WriteString(StyleMuted.Render(s.helpText()))
+	// Folded, not truncated. This line is the screen's action bar — it is the
+	// only place several of these phases name enter, b and esc at all — and at
+	// 80 columns the pane cuts it around "…(j/k move, / sear", which loses
+	// every key it exists to advertise. Folding is not the columnar conversion
+	// that is queued for this screen; it is the same "a hint the operator
+	// cannot finish reading is worse than none" rule the pickers now follow.
+	b.WriteString(pickerHint(s.helpText()))
 	b.WriteString("\n\n")
 
 	// Always show the committed supplier (if any) as a header so the
@@ -1477,7 +1546,7 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 		if s.itemSuppliersTyping {
 			return "Search this supplier's catalog (type to filter · enter picks the match · esc closes the search and keeps the filter)."
 		}
-		return "Inventory items for this supplier (j/k move, / search, enter pick, b back, esc cancel)."
+		return "Inventory items for this supplier (j/k move, / search, r reload, enter pick, b back, esc cancel)."
 	case poPhaseAssetPick:
 		if s.assetsTyping {
 			return "Search this supplier's assets (type to search · enter runs the search · esc closes the search)."
@@ -1625,7 +1694,14 @@ func (s *PurchaseOrderCreateScreen) renderPendingLookups() string {
 	if len(pending) == 0 {
 		return ""
 	}
-	return "  " + StyleMuted.Render("still looking up "+strings.Join(pending, " · ")+"…") + "\n"
+	// Three pending lookups name 74 columns' worth of subject, so this folds
+	// like every other line on these screens: a wait that says which lookups
+	// are outstanding is only useful if the operator can read which.
+	var b strings.Builder
+	for _, line := range pickerWrap("still looking up "+strings.Join(pending, " · ")+"…", pickerPaneWidth-2) {
+		b.WriteString("  " + StyleMuted.Render(line) + "\n")
+	}
+	return b.String()
 }
 
 // renderAssocPickPhase draws a work-order / committee picker: row 0 is the

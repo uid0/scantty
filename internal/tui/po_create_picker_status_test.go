@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -39,6 +41,9 @@ type poPickFake struct {
 	catalog  int // item-suppliers this supplier sells
 	pageSize int
 	assets   int
+	// suppliers is how many suppliers the picker can choose between, so a test
+	// can move the order off one supplier while its catalog is still in flight.
+	suppliers int
 
 	failItems  bool
 	failAssets bool
@@ -118,7 +123,15 @@ func (f *poPickFake) handler() http.HandlerFunc {
 			}
 			envelope(rows, len(rows))
 		case strings.Contains(r.URL.Path, "/suppliers/"):
-			envelope([]map[string]any{{"id": 1, "name": "Acme Supply"}}, 1)
+			n := f.suppliers
+			if n <= 0 {
+				n = 1
+			}
+			rows := []map[string]any{{"id": 1, "name": "Acme Supply"}}
+			for i := 2; i <= n; i++ {
+				rows = append(rows, map[string]any{"id": i, "name": fmt.Sprintf("Supplier %d", i)})
+			}
+			envelope(rows, len(rows))
 		default:
 			envelope(nil, 0)
 		}
@@ -612,4 +625,525 @@ func TestPOCreate_PendingHeaderLookupsSayTheyArePending(t *testing.T) {
 	if strings.Contains(s.helpText(), "g agreement") {
 		t.Error("the bar names g while the agreement list is still loading")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The pane is 51 columns and Root.View() TRUNCATES
+// ---------------------------------------------------------------------------
+
+// poPaneLines is the picker frame as the CONTENT PANE actually shows it: the
+// screen's own body clipped to screenBodyWidth(80), which is exactly what
+// Root.View() does to it (app.go clamps the joined content before rendering).
+//
+// The distinction matters and is why the first round of these tests passed over
+// a broken screen. Root.View() also paints an 80-column status bar underneath
+// the pane, so a strings.Contains over the whole frame can be satisfied by the
+// four-second Flash while the DURABLE body line — the one the operator who
+// pressed enter and saw nothing is still reading a minute later — has had the
+// key it names cut off the right-hand edge.
+func poPaneLines(t *testing.T, s Screen) []string {
+	t.Helper()
+	return strings.Split(clampToBox(s.View(), screenBodyWidth(80), 400), "\n")
+}
+
+// poPaneHasLine reports whether some WHOLE clipped line contains want.
+func poPaneHasLine(t *testing.T, s Screen, want string) bool {
+	t.Helper()
+	for _, line := range poPaneLines(t, s) {
+		if strings.Contains(line, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// poWantPaneLine fails unless want survives the clip on one line of the pane.
+func poWantPaneLine(t *testing.T, s Screen, want string) {
+	t.Helper()
+	if !poPaneHasLine(t, s, want) {
+		t.Errorf("the 51-column pane does not carry %q on any whole line:\n%s",
+			want, strings.Join(poPaneLines(t, s), "\n"))
+	}
+}
+
+// poRejectPaneLine fails if want appears anywhere in the pane.
+func poRejectPaneLine(t *testing.T, s Screen, want string) {
+	t.Helper()
+	if poPaneHasLine(t, s, want) {
+		t.Errorf("the pane still says %q:\n%s", want, strings.Join(poPaneLines(t, s), "\n"))
+	}
+}
+
+// poAssertFits fails for every line of a picker frame that the pane would cut.
+func poAssertFits(t *testing.T, what, frame string) {
+	t.Helper()
+	budget := screenBodyWidth(80)
+	for i, line := range strings.Split(frame, "\n") {
+		if w := lipgloss.Width(line); w > budget {
+			t.Errorf("%s: line %d is %d cells and is cut at %d, losing %q\n\tfull line: %q",
+				what, i+1, w, budget, string([]rune(line)[budget:]), line)
+		}
+	}
+}
+
+// poWidestSupplierScreen is a create screen whose supplier name is at the
+// 20-character clip supplierLabel allows. Every "Looking up what <supplier>…"
+// line has to survive THAT, not the short name the other fixtures use — the
+// reorder working line was 52 cells for an eleven-character supplier.
+func poWidestSupplierScreen() *PurchaseOrderCreateScreen {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.suppliers = []omsapi.Supplier{{ID: 1, Name: "Northern Tool & Die Supply Co"}}
+	s.supplierID = 1
+	return s
+}
+
+// TestPOPickerFrames_NeverLoseTheKeyTheyName walks every frame the three
+// pickers can draw and fails on any line the 51-column pane would truncate.
+//
+// This is the test the width defect needed and did not have. A hint the
+// operator cannot finish reading is worse than no hint, because they believe
+// they read it — and the part that goes over the edge is always the tail, which
+// is where these lines name the key that gets the operator out.
+func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
+	long := strings.Repeat("x", 200) // an OMS error string is not bounded
+
+	cases := []struct {
+		name  string
+		setup func(*PurchaseOrderCreateScreen)
+		frame func(*PurchaseOrderCreateScreen) string
+		// want is a phrase that has to survive on one line of the frame, not
+		// merely somewhere in the string.
+		want []string
+	}{
+		{"reorder, working", func(s *PurchaseOrderCreateScreen) {
+			s.reorderLoading = true
+		}, (*PurchaseOrderCreateScreen).renderReorderPick, []string{"reorder"}},
+
+		{"reorder, failed", func(s *PurchaseOrderCreateScreen) {
+			s.reorderLoadErr = long
+		}, (*PurchaseOrderCreateScreen).renderReorderPick,
+			[]string{"reading the reorder queue failed", "b picks another line source", "esc cancels the order"}},
+
+		{"reorder, empty", func(s *PurchaseOrderCreateScreen) {},
+			(*PurchaseOrderCreateScreen).renderReorderPick,
+			[]string{"b picks another line source", "esc cancels the order"}},
+
+		{"reorder, list", func(s *PurchaseOrderCreateScreen) {
+			s.reorderItems = []omsapi.ReorderDataItem{
+				reorderItem("Bolt M8", 11, 4, ""),
+				reorderItem("Bolt M10", 12, 6, ""),
+			}
+		}, (*PurchaseOrderCreateScreen).renderReorderPick, []string{"a adds all"}},
+
+		{"items, working", func(s *PurchaseOrderCreateScreen) {
+			s.itemSuppliersLoad = true
+		}, (*PurchaseOrderCreateScreen).renderItemPick, []string{"Looking up the items"}},
+
+		{"items, failed", func(s *PurchaseOrderCreateScreen) {
+			s.itemSuppliersErr = long
+		}, (*PurchaseOrderCreateScreen).renderItemPick,
+			[]string{"looking up this supplier's items failed", "r retries the lookup",
+				"b picks another line source", "esc cancels the order"}},
+
+		{"items, failed while the search box is open", func(s *PurchaseOrderCreateScreen) {
+			s.itemSuppliersErr = long
+			s.itemSuppliersTyping = true
+		}, (*PurchaseOrderCreateScreen).renderItemPick,
+			[]string{"looking up this supplier's items failed", "esc closes the search"}},
+
+		{"items, empty catalog", func(s *PurchaseOrderCreateScreen) {
+			s.itemSuppliersNote = pickerNote{s.noCatalogSentence(), StatusWarn}
+		}, (*PurchaseOrderCreateScreen).renderItemPick,
+			[]string{"has no active catalog items", "b picks another line source", "esc cancels the order"}},
+
+		{"items, no note at all", func(s *PurchaseOrderCreateScreen) {},
+			(*PurchaseOrderCreateScreen).renderItemPick,
+			[]string{"has no active catalog items", "b picks another line source"}},
+
+		{"items, search matched nothing", func(s *PurchaseOrderCreateScreen) {
+			s.itemSuppliersAll = poCatalog(400)
+			s.itemSuppliersTyping = true
+			s.itemSuppliersSearch.SetValue("a search nobody would type")
+			s.applyItemSupplierFilter()
+			s.itemSuppliersNote = itemFilterNote(s.itemSuppliersSearch.Value(), 0, 400, "")
+		}, (*PurchaseOrderCreateScreen).renderItemPick,
+			[]string{"no match for", "in catalog", "edit the search"}},
+
+		{"items, several matched, after esc closed the box", func(s *PurchaseOrderCreateScreen) {
+			s.itemSuppliersAll = poCatalog(400)
+			s.itemSuppliersSearch.SetValue("Widget 1")
+			s.applyItemSupplierFilter()
+			s.itemSuppliersNote = itemFilterNote("Widget 1", len(s.itemSuppliers), 400, "search closed")
+		}, (*PurchaseOrderCreateScreen).renderItemPick,
+			[]string{"search closed", "match", "j/k choose", "enter picks"}},
+
+		{"items, exactly one matched, after esc closed the box", func(s *PurchaseOrderCreateScreen) {
+			s.itemSuppliersAll = poCatalog(400)
+			s.itemSuppliersSearch.SetValue("Widget 137")
+			s.applyItemSupplierFilter()
+			s.itemSuppliersNote = itemFilterNote("Widget 137", 1, 400, "search closed")
+		}, (*PurchaseOrderCreateScreen).renderItemPick,
+			[]string{"search closed", "enter picks it"}},
+
+		{"items, unfiltered count", func(s *PurchaseOrderCreateScreen) {
+			s.itemSuppliersAll = poCatalog(400)
+			s.applyItemSupplierFilter()
+			s.itemSuppliersNote = itemFilterNote("", 400, 400, "search closed")
+		}, (*PurchaseOrderCreateScreen).renderItemPick,
+			[]string{"search closed", "enter picks the highlighted row"}},
+
+		{"assets, working", func(s *PurchaseOrderCreateScreen) {
+			s.assetsLoading = true
+		}, (*PurchaseOrderCreateScreen).renderAssetPick, []string{"Looking up the assets"}},
+
+		{"assets, failed", func(s *PurchaseOrderCreateScreen) {
+			s.assetsErr = long
+		}, (*PurchaseOrderCreateScreen).renderAssetPick,
+			[]string{"looking up this supplier's assets failed", "/ retries with a search",
+				"b picks another line source", "esc cancels the order"}},
+
+		{"assets, failed while the search box is open", func(s *PurchaseOrderCreateScreen) {
+			s.assetsErr = long
+			s.assetsTyping = true
+		}, (*PurchaseOrderCreateScreen).renderAssetPick,
+			[]string{"looking up this supplier's assets failed", "esc closes the search"}},
+
+		{"assets, empty", func(s *PurchaseOrderCreateScreen) {
+			s.assetsNote = pickerNote{"this supplier has no assets on file", StatusWarn}
+		}, (*PurchaseOrderCreateScreen).renderAssetPick,
+			[]string{"no assets on file", "/ searches", "b picks another line source", "esc cancels the order"}},
+
+		{"assets, search matched nothing", func(s *PurchaseOrderCreateScreen) {
+			s.assetsSearch.SetValue("hovercraft full of eels")
+			s.assetsNote = pickerNote{
+				"no asset matches " + strconv.Quote(pickerClip("hovercraft full of eels", 16)) +
+					"\n/ edits the search · b picks another source", StatusWarn}
+		}, (*PurchaseOrderCreateScreen).renderAssetPick,
+			[]string{"no asset matches", "/ edits the search", "b picks another source"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := poWidestSupplierScreen()
+			tc.setup(s)
+			frame := tc.frame(s)
+			poAssertFits(t, tc.name, frame)
+
+			clipped := clampToBox(frame, screenBodyWidth(80), 400)
+			for _, want := range tc.want {
+				found := false
+				for _, line := range strings.Split(clipped, "\n") {
+					if strings.Contains(line, want) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("the clipped frame does not carry %q on any whole line:\n%s", want, clipped)
+				}
+			}
+		})
+	}
+}
+
+// poCatalog builds n catalog rows named the way the httptest fake names them.
+func poCatalog(n int) []omsapi.ItemSupplier {
+	rows := make([]omsapi.ItemSupplier, n)
+	for i := range rows {
+		rows[i] = omsapi.ItemSupplier{
+			ID: i + 1, ItemName: fmt.Sprintf("Widget %d", i+1),
+			SupplierSKU: fmt.Sprintf("SKU-%03d", i+1),
+		}
+	}
+	return rows
+}
+
+// TestPOItemPicker_AmbiguousNoteSurvivesTheClip is the same journey as
+// TestPOItemPicker_AmbiguousSearchDoesNotGuess, asserted where it counts.
+//
+// That test's strings.Contains(Root.View(), "enter picks") passed over a body
+// line that was cut at "j/k c", because Root.View() also renders the
+// full-80-column status bar and the flash satisfied the substring. The note is
+// the durable half — it is still on screen when the flash has expired — so it
+// is the half that has to be checked inside the pane.
+func TestPOItemPicker_AmbiguousNoteSurvivesTheClip(t *testing.T) {
+	fake := &poPickFake{catalog: 12, pageSize: 5}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "Widget 1") // Widget 1, 10, 11, 12
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	poWantPaneLine(t, screen, "4 of 12 match")
+	poWantPaneLine(t, screen, "enter picks")
+	poAssertFits(t, "ambiguous search", screen.View())
+
+	// And the esc-closes-the-box variant, whose "search closed · " prefix is
+	// what pushed the same note from 53 cells to 69.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	poWantPaneLine(t, screen, "search closed")
+	poWantPaneLine(t, screen, "enter picks")
+	poAssertFits(t, "search closed", screen.View())
+	_ = r
+}
+
+// ---------------------------------------------------------------------------
+// A frame may only name keys that work in the state it is drawing
+// ---------------------------------------------------------------------------
+
+// TestPOItemPicker_SearchBoxNeverNamesTheKeysItIsSwallowing: with the box open,
+// 'b' is a letter going into the query and esc only closes the box. The empty
+// frame used to print "b picks another line source · esc cancels the order"
+// anyway, one line under a note that correctly said "esc then b for another
+// source" — two contradictory claims at once, which is the same bar-honesty
+// class just closed in eight places on the list screens.
+func TestPOItemPicker_SearchBoxNeverNamesTheKeysItIsSwallowing(t *testing.T) {
+	fake := &poPickFake{catalog: 12, pageSize: 5}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "flux capacitor")
+
+	poRejectPaneLine(t, screen, "b picks another line source")
+	poRejectPaneLine(t, screen, "esc cancels the order")
+	poWantPaneLine(t, screen, "esc closes the search")
+
+	// 'b' does what the box says it does, not what the old line claimed.
+	r = poType(t, r, "b")
+	if screen.phase != poPhaseItemPick {
+		t.Fatalf("'b' left the picker (phase %v) — the frame that named it was right after all", screen.phase)
+	}
+	if got := screen.itemSuppliersSearch.Value(); got != "flux capacitorb" {
+		t.Errorf("'b' in the search box produced query %q, want it typed into the query", got)
+	}
+	_ = r
+}
+
+// TestPOAssetPicker_SearchBoxNeverNamesTheKeysItIsSwallowing — same frame, same
+// rule, on the picker next door, where '/' is swallowed too.
+func TestPOAssetPicker_SearchBoxNeverNamesTheKeysItIsSwallowing(t *testing.T) {
+	fake := &poPickFake{assets: 0}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+
+	poRejectPaneLine(t, screen, "b picks another line source")
+	poRejectPaneLine(t, screen, "esc cancels the order")
+	poRejectPaneLine(t, screen, "/ searches")
+	poWantPaneLine(t, screen, "esc closes the search")
+
+	r = poType(t, r, "b")
+	if screen.phase != poPhaseAssetPick {
+		t.Fatalf("'b' left the asset picker (phase %v)", screen.phase)
+	}
+	if got := screen.assetsSearch.Value(); got != "b" {
+		t.Errorf("'b' in the asset search produced query %q", got)
+	}
+	_ = r
+}
+
+// TestPOAssetPicker_FailedLoadWithTheBoxOpenNamesOnlyEsc: the third site — a
+// failure landing while the search box is open. '/' cannot retry from there
+// either; it is a slash in the query.
+func TestPOAssetPicker_FailedLoadWithTheBoxOpenNamesOnlyEsc(t *testing.T) {
+	fake := &poPickFake{assets: 3, failAssets: true}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if screen.assetsErr == "" {
+		t.Fatal("the failing fixture did not fail")
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+
+	poWantPaneLine(t, screen, "looking up this supplier's assets failed")
+	poWantPaneLine(t, screen, "esc closes the search")
+	poRejectPaneLine(t, screen, "/ retries with a search")
+	poRejectPaneLine(t, screen, "b picks another line source")
+	_ = r
+}
+
+// ---------------------------------------------------------------------------
+// Found nothing and could-not-tell are different facts
+// ---------------------------------------------------------------------------
+
+// TestPOItemPicker_EmptyCatalogIsReportedAsEmpty: a supplier with no catalog
+// used to get "✓ 0 catalog item(s) loaded · / searches" — a green tick on an
+// empty result, advertising a '/' that can only ever answer "no match", and
+// telling the operator the supplier sells nothing in the same voice a
+// successful load uses. It also suppressed the sentence written for exactly
+// this case, because that fallback only renders when the note is empty.
+func TestPOItemPicker_EmptyCatalogIsReportedAsEmpty(t *testing.T) {
+	fake := &poPickFake{catalog: 0, pageSize: 5}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+
+	poRejectPaneLine(t, screen, "0 catalog item(s) loaded")
+	poWantPaneLine(t, screen, "has no active catalog items on file")
+	poWantPaneLine(t, screen, "b picks another line source")
+	if screen.itemSuppliersNote.level != StatusWarn {
+		t.Errorf("an empty catalog is reported at level %v, want a warning", screen.itemSuppliersNote.level)
+	}
+
+	// A failed load must NOT read the same as an empty one.
+	fake.mu.Lock()
+	fake.failItems = true
+	fake.mu.Unlock()
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	poWantPaneLine(t, screen, "looking up this supplier's items failed")
+	poRejectPaneLine(t, screen, "has no active catalog items on file")
+}
+
+// ---------------------------------------------------------------------------
+// A reply for the supplier the order has moved off is a WRONG reply
+// ---------------------------------------------------------------------------
+
+// TestPOPickers_LateReplyForTheOldSupplierIsDropped: staging an ItemSupplier id
+// belonging to supplier A onto a purchase order for supplier B is a wrong
+// purchase order, and the backend accepts it — nothing downstream would flag
+// it. The catalog is now walked a page at a time, so the window between "press
+// i" and "the rows land" is wide enough to change supplier inside.
+func TestPOPickers_LateReplyForTheOldSupplierIsDropped(t *testing.T) {
+	fake := &poPickFake{catalog: 6, pageSize: 5, assets: 2, suppliers: 2}
+	r, screen := poPickerAt(t, fake, 80) // supplier 1 committed
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	if len(screen.itemSuppliersAll) != 6 {
+		t.Fatalf("setup: supplier 1's catalog did not load (%d rows)", len(screen.itemSuppliersAll))
+	}
+
+	// Move the order to supplier 2.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")}) // → source chooser
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")}) // → supplier picker
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.supplierID != 2 {
+		t.Fatalf("setup: the order is still on supplier %d", screen.supplierID)
+	}
+	if len(screen.itemSuppliersAll) != 0 {
+		t.Errorf("committing another supplier left %d of the previous one's catalog rows in the picker",
+			len(screen.itemSuppliersAll))
+	}
+
+	// Supplier 1's reply finally lands.
+	ghost := []omsapi.ItemSupplier{{ID: 999, ItemName: "Ghost Widget"}}
+	next, _ := r.Update(poItemSuppliersLoadedMsg{supplierID: 1, rows: ghost})
+	r = next.(Root)
+	next, _ = r.Update(poAssetsLoadedMsg{supplierID: 1, rows: []omsapi.Asset{{ID: "ghost", Name: "Ghost Lathe"}}})
+	r = next.(Root)
+
+	for _, row := range screen.itemSuppliersAll {
+		if row.ID == 999 {
+			t.Fatal("a reply for the previous supplier populated this order's catalog")
+		}
+	}
+	if screen.itemSuppliersFor == 1 {
+		t.Error("the picker is holding supplier 1's catalog against an order for supplier 2")
+	}
+	for _, a := range screen.assets {
+		if a.Name == "Ghost Lathe" {
+			t.Fatal("a reply for the previous supplier populated this order's asset picker")
+		}
+	}
+
+	// And the picker for supplier 2 loads its own rows on demand.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	if len(screen.itemSuppliersAll) != 6 {
+		t.Fatalf("supplier 2's catalog did not load (%d rows)", len(screen.itemSuppliersAll))
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.phase != poPhaseLine {
+		t.Fatalf("could not stage a line for supplier 2 (phase %v)", screen.phase)
+	}
+	if got := *screen.pickedItemSup; got == 999 {
+		t.Fatal("the staged line names the previous supplier's item-supplier id")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The catalog is fetched when it is needed, and the frame says so only then
+// ---------------------------------------------------------------------------
+
+// TestPOItemPicker_CatalogIsNotRewalkedForEveryLine: the picker is re-entered
+// once per line, and the correctness fix turned one request into one per page.
+// A ten-line order against a 500-item catalog would be ~200 sequential requests
+// for an answer that cannot have changed — and every one of them would show the
+// "Looking up the items … sells…" frame, which is the working/succeeded/failed
+// rule broken from the other side: that frame is a claim that work is
+// happening.
+func TestPOItemPicker_CatalogIsNotRewalkedForEveryLine(t *testing.T) {
+	fake := &poPickFake{catalog: 40, pageSize: 5} // 8 pages
+	r, screen := poPickerAt(t, fake, 80)
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	first := fake.hits("/item-suppliers/")
+	if first < 8 {
+		t.Fatalf("setup: only %d request(s) for an 8-page catalog", first)
+	}
+
+	// Stage a line and come back for the next one, the way a multi-line order
+	// is actually built.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // pick the highlighted row
+	if screen.phase != poPhaseLine {
+		t.Fatalf("setup: the pick did not open the line form (phase %v)", screen.phase)
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc}) // back to the source chooser
+
+	// Re-entering must NOT re-walk, and must NOT claim to be working.
+	next, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = next.(Root)
+	if screen.itemSuppliersLoad {
+		t.Error("re-entering the picker started another walk of the same catalog")
+	}
+	poRejectPaneLine(t, screen, "Looking up the items")
+	poWantPaneLine(t, screen, "Widget 1")
+	poWantPaneLine(t, screen, "r reloads")
+	if got := fake.hits("/item-suppliers/"); got != first {
+		t.Errorf("re-entering the picker cost %d more request(s)", got-first)
+	}
+
+	// r is named, so r must work — and it is the one entry that SHOULD show the
+	// working frame, because work is genuinely happening.
+	next, cmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	r = next.(Root)
+	if !screen.itemSuppliersLoad {
+		t.Fatal("r did not start a reload")
+	}
+	poWantPaneLine(t, screen, "reloading what")
+	r = pump(t, r, cmd, 0)
+	if got := fake.hits("/item-suppliers/"); got <= first {
+		t.Errorf("r did not go back to OMS (%d requests, was %d)", got, first)
+	}
+	poWantPaneLine(t, screen, "Widget 1")
+}
+
+// TestPOItemPicker_EnterAgainstAnEmptyCatalogKeepsSayingItIsEmpty: with no
+// catalog at all there is no filter to report on, and the unfiltered wording
+// ("0 item(s) · enter picks the highlighted row") would answer the key that
+// just declined to act by offering that same key — and would overwrite the
+// warning the empty load posted with something less true.
+func TestPOItemPicker_EnterAgainstAnEmptyCatalogKeepsSayingItIsEmpty(t *testing.T) {
+	fake := &poPickFake{catalog: 0, pageSize: 5}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+
+	for _, press := range []tea.KeyMsg{
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyRunes, Runes: []rune("/")},
+		{Type: tea.KeyEnter},
+	} {
+		r = key(t, r, press)
+		poWantPaneLine(t, screen, "has no active catalog items on file")
+		poRejectPaneLine(t, screen, "0 item(s)")
+		poAssertFits(t, "empty catalog", screen.View())
+	}
+	if screen.phase != poPhaseItemPick {
+		t.Fatalf("an empty catalog staged something (phase %v)", screen.phase)
+	}
+	// '/' declines too: the filter is client-side over the loaded catalog, so
+	// with nothing loaded the box could only ever answer "no match" while
+	// taking the keyboard away from the two keys that still work.
+	if screen.itemSuppliersTyping {
+		t.Error("'/' opened a search box over a catalog with nothing in it to search")
+	}
+	poWantPaneLine(t, screen, "b picks another line source")
 }

@@ -133,13 +133,30 @@ touching any screen an operator drives:
   the whole of the "the item picker hangs after I press enter" report.
 - Notes go in the screen BODY as well as the status bar: `StatusBar.Flash`
   expires after four seconds and the operator who saw nothing is still looking.
-  Keep them inside 51 columns (see above) or split them onto two lines —
-  `pickerNote` does both.
+- **Do not hand-count a hint against 51 columns — fold it.** Every note and
+  fixed hint on these screens goes through `pickerWrap` / `pickerHint` /
+  `pickerFail` (`po_create_pickers.go`), which fold at the `·` joints and indent
+  continuations. Hand-counting is what broke: each line read fine at the width
+  its author had in mind and then grew a `search closed · ` prefix, a supplier
+  name or an unbounded OMS error string, and `clampToBox` took the TAIL — which
+  is exactly where these lines name the key that gets the operator out. A hint
+  the operator cannot finish reading is worse than none, because they believe
+  they read it. Assert it too: check `clampToBox(screen.View(), screenBodyWidth(80), n)`,
+  never `strings.Contains(Root.View(), …)` — the 80-column status bar satisfies
+  that substring while the body line is cut in half.
+- **A frame may only name keys that work in the state it is drawing.** With a
+  search box open, `b` is a letter going into the query and `esc` only closes
+  the box; the picker frames used to print "b picks another line source · esc
+  cancels the order" there anyway, one line under a note that said the opposite.
 - **A picker that filters client-side must load every page.** The page count is
   then a correctness property, not a performance one:
   `omsapi.ListItemSuppliersForSupplier` fetched page one and dropped `next`, so
   a search for a real item on page two answered "No inventory items match" and
-  no key on the screen could reach it.
+  no key on the screen could reach it. Paging makes the reply expensive and
+  slow, so it is cached per supplier (`itemSuppliersFor`) with `r` to refetch —
+  and every picker reply echoes its `supplierID` so one for a supplier the order
+  has moved off is DROPPED. Found-nothing and could-not-tell are different
+  facts: an empty catalog reports as a warning, never as a green "0 loaded".
 
 ## Gotchas
 
