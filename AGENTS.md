@@ -406,7 +406,27 @@ touching any screen an operator drives:
   windowed cart, `d` reviews it, `b` and `esc` leave. The notes input is BLURRED
   by `finalize` and focused again by `poCreatedMsg` when the submit comes back
   failed, so a caret is never left blinking in a field whose contents have
-  already gone. `TestPOSubmit_TheCartIsFrozenUntilItAnswers` walks all three
+  already gone — and `d`, which moves ONTO the notes frame, leaves it blurred
+  for the same reason.
+  The freeze is an ALLOW-LIST, not a list of frozen keys, and that is the whole
+  lesson of it: written the other way round it froze the nine keys somebody
+  thought of, and `d` — added to the chooser bar in the same round — was free by
+  default and put the caret back into the field the submit had just blurred.
+  Every frozen phase now names what may act and declines everything else through
+  `pendingDecline`, including keys the phase does not bind at all. An arm added
+  later is frozen until somebody says otherwise.
+  Two derivations hold it: `poPhasesUnreachableWhilePending` classifies EVERY
+  phase of the iota as swept-frozen or unreachable-with-a-reason, and the sweep
+  fails when a key actually reaches a phase outside the frozen set, so the
+  reason is checked by walking rather than trusted. `pendingLead` is cleared
+  where the phase changes — once, in `Update`'s key dispatch, not in the three
+  arms that navigate — because a lead NAMES a key and "ctrl+x removes nothing"
+  on the source chooser advertises a key that frame does not bind.
+  FOCUS is in the state fingerprint (`poPickerState`) for every input on the
+  screen, and `poFocusFingerprinted` is derived by reflecting for
+  `textinput.Model` fields, because a caret lives INSIDE the value rather than
+  beside it: the field-name check could not see focus at all, which is why `d`
+  re-focusing the notes was invisible to every sweep. `TestPOSubmit_TheCartIsFrozenUntilItAnswers` walks all three
   phases in sequence; `TestPOSubmit_AFailedSubmitHandsTheCartBack` is the other
   half, because a freeze that outlived a 502 would hold the order hostage to a
   gateway.

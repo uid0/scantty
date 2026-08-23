@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -2334,10 +2335,94 @@ func poPickerState(s *PurchaseOrderCreateScreen) string {
 		poDerefInt(s.pickedItemSup), poDerefStr(s.pickedAssetID),
 		"|", len(s.lines), s.reviewCursor, s.poNotes.Value(),
 		s.editIndex, s.editReturn)
+	// FOCUS, for every input on the screen. It is not a struct field of the
+	// screen — it lives inside the textinput — so the reflect check over field
+	// names cannot reach it, and a key that only moves a caret into a field was
+	// therefore invisible to every fingerprint here. That is exactly what `d`
+	// did while a submit was out: it re-focused the notes the submit had
+	// blurred, and no sweep could see it.
+	fmt.Fprint(&b, "|", s.poNotes.Focused(),
+		s.itemSuppliersSearch.Focused(), s.assetsSearch.Focused())
 	for _, in := range s.lineInputs {
-		fmt.Fprint(&b, "|", in.Value())
+		fmt.Fprint(&b, "|", in.Value(), in.Focused())
 	}
 	return b.String()
+}
+
+// poFocusFingerprinted is every input whose FOCUS poPickerState carries, keyed
+// by the screen field that holds it. Derived against the struct below, so an
+// input added tomorrow fails by name until somebody puts its caret in the
+// fingerprint — the same guarantee poStateFingerprinted gives the fields.
+var poFocusFingerprinted = map[string]bool{
+	"poNotes":             true,
+	"itemSuppliersSearch": true,
+	"assetsSearch":        true,
+	"lineInputs":          true,
+}
+
+// TestPOCreateScreen_EveryInputFocusIsFingerprinted walks the struct for
+// textinputs rather than listing them: focus is state a key can move, and the
+// field-name check one function up cannot see it because it is inside the
+// value rather than beside it.
+func TestPOCreateScreen_EveryInputFocusIsFingerprinted(t *testing.T) {
+	typ := reflect.TypeOf(PurchaseOrderCreateScreen{})
+	input := reflect.TypeOf(textinput.Model{})
+	found := map[string]bool{}
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		ft := f.Type
+		for ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array || ft.Kind() == reflect.Ptr {
+			ft = ft.Elem()
+		}
+		if ft != input {
+			continue
+		}
+		found[f.Name] = true
+		if !poFocusFingerprinted[f.Name] {
+			t.Errorf("field %q holds a textinput whose focus poPickerState does not carry — "+
+				"a key that only moves the caret into it would be judged by nothing", f.Name)
+		}
+	}
+	if len(found) == 0 {
+		t.Fatal("the derivation found no textinput fields at all — it is broken, not the screen")
+	}
+	for name := range poFocusFingerprinted {
+		if !found[name] {
+			t.Errorf("poFocusFingerprinted names %q, which is no longer a textinput on the screen", name)
+		}
+	}
+}
+
+// poFocusedInput names the input this phase DRAWS if it is holding the caret,
+// or "" when none is. While a submit is out that answer must be "": the payload
+// has gone, so a caret on the pane is the screen inviting input it will refuse.
+//
+// Drawn is the qualifier that makes it an invariant rather than a tidiness
+// check. A line-form input stays focused after the form is left — nothing
+// blurs it and nothing draws it either, so no caret reaches the operator — and
+// failing on that would be measuring bookkeeping instead of the pane.
+func poFocusedInput(s *PurchaseOrderCreateScreen) string {
+	switch s.phase {
+	case poPhaseReview:
+		if s.poNotes.Focused() {
+			return "the PO-notes input"
+		}
+	case poPhaseLine:
+		for i, in := range s.lineInputs {
+			if in.Focused() {
+				return fmt.Sprintf("line-form field %d", i)
+			}
+		}
+	case poPhaseItemPick:
+		if s.itemSuppliersSearch.Focused() {
+			return "the item search box"
+		}
+	case poPhaseAssetPick:
+		if s.assetsSearch.Focused() {
+			return "the asset search box"
+		}
+	}
+	return ""
 }
 
 func poDerefInt(p *int) string {

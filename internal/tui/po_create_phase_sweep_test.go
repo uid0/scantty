@@ -516,6 +516,44 @@ func poFrozenStates() []poFrozenState {
 	}
 }
 
+// poPhasesUnreachableWhilePending is every OTHER phase, with the reason the
+// freeze cannot be standing on it. Each one is unreachable because the key that
+// opens it declines while the POST is out, so this table is a claim about the
+// gates — and the sweep below checks it by walking, not by trusting: any phase
+// a key actually reaches mid-flight must be in poFrozenStates.
+var poPhasesUnreachableWhilePending = map[poPhase]string{
+	poPhaseSupplierSwitch: "only commitSupplier opens it, and enter declines on the frozen supplier picker",
+	poPhaseAgreement:      "g declines on the frozen source chooser",
+	poPhaseWorkOrder:      "w declines on the frozen source chooser",
+	poPhaseCommittee:      "c declines on the frozen source chooser",
+	poPhaseReorderPick:    "r declines on the frozen source chooser",
+	poPhaseItemPick:       "i declines on the frozen source chooser",
+	poPhaseAssetPick:      "a declines on the frozen source chooser",
+	poPhaseLine:           "f and ctrl+e decline on the frozen source chooser, ctrl+e on review",
+}
+
+// TestPOSubmit_EveryPhaseIsClassifiedAgainstTheFreeze walks the poPhase enum to
+// its sentinel: a phase is either swept as frozen or recorded as unreachable
+// while a submit is out, with a reason. A phase added tomorrow fails by name
+// until somebody decides which it is — the freeze was scoped by enumeration
+// once already, and `d` fell outside the list somebody wrote.
+func TestPOSubmit_EveryPhaseIsClassifiedAgainstTheFreeze(t *testing.T) {
+	frozen := map[poPhase]bool{}
+	for _, st := range poFrozenStates() {
+		frozen[st.phase] = true
+	}
+	for p := poPhase(0); p < poPhaseCount; p++ {
+		why, unreachable := poPhasesUnreachableWhilePending[p]
+		switch {
+		case frozen[p] && unreachable:
+			t.Errorf("phase %v is both swept as frozen and recorded unreachable (%q)", p, why)
+		case !frozen[p] && !unreachable:
+			t.Errorf("phase %v is neither swept as frozen nor recorded unreachable while a "+
+				"submit is out — a key on it would be judged by nothing", p)
+		}
+	}
+}
+
 // TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork presses the WHOLE key
 // space against each frozen phase, in both directions of the bar-honesty rule,
 // and checks the payload after every single press.
@@ -527,6 +565,10 @@ func poFrozenStates() []poFrozenState {
 // key that looks dead is retried from the probe positions the phase sweep uses,
 // because ↑ does nothing with the highlight already at the top.
 func TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork(t *testing.T) {
+	frozen := map[poPhase]bool{}
+	for _, st := range poFrozenStates() {
+		frozen[st.phase] = true
+	}
 	for _, st := range poFrozenStates() {
 		for _, h := range poPaneSizes {
 			t.Run(fmt.Sprintf("%s at 80x%d", st.name, h), func(t *testing.T) {
@@ -555,6 +597,19 @@ func TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork(t *testing.T) {
 						screen.supplierID != supplier {
 						t.Fatalf("%q changed the payload while the submit was out: %d line(s), notes %q, supplier %d",
 							k, len(screen.lines), screen.poNotes.Value(), screen.supplierID)
+					}
+					// No caret, ever, while the request is out: a focused field
+					// is the screen asking for input the pending arm refuses.
+					if in := poFocusedInput(screen); in != "" {
+						t.Fatalf("%q left %s focused while the submit was out", k, in)
+					}
+					// Where a key navigated, it may only have navigated to
+					// another frozen frame. This is the derivation: a phase
+					// reachable mid-flight that nobody classified fails here
+					// rather than quietly running unfrozen.
+					if screen.phase != st.phase && !frozen[screen.phase] {
+						t.Fatalf("%q reached phase %v while the submit was out, and it is not "+
+							"swept as frozen", k, screen.phase)
 					}
 					if !named[k] && acted {
 						t.Errorf("%s with a submit in flight does not name %q, but pressing it acts (bar: %q)",
@@ -640,8 +695,8 @@ func TestPOSubmit_TheCartIsFrozenUntilItAnswers(t *testing.T) {
 			// Reading the cart is not editing it, so the highlight still moves —
 			// which is why the bar goes on naming ↑↓.
 			cursor := screen.reviewCursor
-			next, _ := r.Update(poPhaseKeyMsg("up"))
-			r = next.(Root)
+			up, _ := r.Update(poPhaseKeyMsg("up"))
+			r = up.(Root)
 			if screen.reviewCursor == cursor {
 				t.Errorf("↑ did not move the highlight while the submit was out")
 			}
@@ -650,6 +705,13 @@ func TestPOSubmit_TheCartIsFrozenUntilItAnswers(t *testing.T) {
 			r = key(t, r, poPhaseKeyMsg("esc"))
 			if screen.phase != poPhaseSource || !screen.pending {
 				t.Fatalf("esc landed on phase %v with pending=%v", screen.phase, screen.pending)
+			}
+			// The lead belongs to the frame that declined the key. Carried
+			// here it would name a key this frame does not bind — the review
+			// notes arm answers `q`, the chooser has no notes at all.
+			poRejectPaneLine(t, screen, "is not in the notes")
+			if in := poFocusedInput(screen); in != "" {
+				t.Fatalf("esc onto the frozen chooser left %s focused", in)
 			}
 			for _, gone := range []string{"r reorder queue", "i inventory items", "f freeform",
 				"x remove", "ctrl+e edit", "g agreement", "w work order", "c committee"} {
@@ -662,8 +724,35 @@ func TestPOSubmit_TheCartIsFrozenUntilItAnswers(t *testing.T) {
 			step("ctrl+e", "ctrl+e edits nothing")
 			step("g", "g changes nothing")
 
+			// `d` is on the frozen allow-list — reviewing the cart reads it —
+			// so it must navigate WITHOUT focusing the notes the submit
+			// blurred. It was the one arm the enumerated freeze missed: it sat
+			// outside the frozen key list, the bar named it, and it put the
+			// caret back into a field whose contents had already gone.
+			r = key(t, r, poPhaseKeyMsg("d"))
+			if screen.phase != poPhaseReview || !screen.pending {
+				t.Fatalf("d landed on phase %v with pending=%v", screen.phase, screen.pending)
+			}
+			if in := poFocusedInput(screen); in != "" {
+				t.Fatalf("d re-focused %s while the submit was out", in)
+			}
+			poRejectPaneLine(t, screen, "changes nothing")
+			poRejectPaneLine(t, screen, "type PO notes")
+			poAssertFits(t, "review reached with d while the submit was out", screen)
+			// Typing there is still refused, so the blurred field is the truth.
+			notes := screen.poNotes.Value()
+			next, _ := r.Update(poPhaseKeyMsg("z"))
+			r = next.(Root)
+			if screen.poNotes.Value() != notes {
+				t.Errorf("a rune reached the notes after d: %q", screen.poNotes.Value())
+			}
+
 			// The supplier picker, one step further out, where a commit would
 			// re-target a request that already names the old supplier.
+			r = key(t, r, poPhaseKeyMsg("esc"))
+			if screen.phase != poPhaseSource {
+				t.Fatalf("esc landed on phase %v, want the source chooser", screen.phase)
+			}
 			r = key(t, r, poPhaseKeyMsg("b"))
 			if screen.phase != poPhaseSupplier {
 				t.Fatalf("b landed on phase %v, want the supplier picker", screen.phase)

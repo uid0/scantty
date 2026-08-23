@@ -532,29 +532,50 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, nil
 
 	case tea.KeyMsg:
+		// The phase the key was pressed ON, so a lead that answered it cannot
+		// ride to the next frame. pendingLead names a key — "ctrl+x removes
+		// nothing" — and ctrl+x is not bound on the source chooser that esc
+		// lands on, so carrying it there advertises a key that frame does not
+		// have. Cleared HERE, at the one place every phase change passes
+		// through, rather than in the three arms that navigate while a submit
+		// is out: a fourth added later would have to remember, and enumerating
+		// the sites is the mistake this screen has made in every other place
+		// it appeared.
+		before := s.phase
+		var next Screen
+		var cmd tea.Cmd
+		handled := true
 		switch s.phase {
 		case poPhaseSupplier:
-			return s.updateSupplierPhase(m)
+			next, cmd = s.updateSupplierPhase(m)
 		case poPhaseSupplierSwitch:
-			return s.updateSupplierSwitchPhase(m)
+			next, cmd = s.updateSupplierSwitchPhase(m)
 		case poPhaseAgreement:
-			return s.updateAgreementPhase(m)
+			next, cmd = s.updateAgreementPhase(m)
 		case poPhaseWorkOrder:
-			return s.updateWorkOrderPhase(m)
+			next, cmd = s.updateWorkOrderPhase(m)
 		case poPhaseCommittee:
-			return s.updateCommitteePhase(m)
+			next, cmd = s.updateCommitteePhase(m)
 		case poPhaseSource:
-			return s.updateSourcePhase(m)
+			next, cmd = s.updateSourcePhase(m)
 		case poPhaseReorderPick:
-			return s.updateReorderPickPhase(m)
+			next, cmd = s.updateReorderPickPhase(m)
 		case poPhaseItemPick:
-			return s.updateItemPickPhase(m)
+			next, cmd = s.updateItemPickPhase(m)
 		case poPhaseAssetPick:
-			return s.updateAssetPickPhase(m)
+			next, cmd = s.updateAssetPickPhase(m)
 		case poPhaseLine:
-			return s.updateLinePhase(m)
+			next, cmd = s.updateLinePhase(m)
 		case poPhaseReview:
-			return s.updateReviewPhase(m)
+			next, cmd = s.updateReviewPhase(m)
+		default:
+			handled = false
+		}
+		if handled {
+			if s.phase != before {
+				s.pendingLead = ""
+			}
+			return next, cmd
 		}
 	}
 
@@ -601,6 +622,20 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 			return s, s.supplierVerdictNote("nothing to commit")
 		}
 	}
+	if s.pending {
+		// Same default-deny as the source chooser, one phase further out:
+		// review → esc → b reaches this picker with the POST still in flight,
+		// and committing here would re-target a request that already names the
+		// old supplier and can drop half the cart through the switch confirm.
+		// Moving the highlight and leaving are all that stay true.
+		switch m.String() {
+		case "esc", "j", "down", "k", "up":
+		case "enter":
+			return s, s.pendingDecline("enter commits nothing")
+		default:
+			return s, s.pendingDecline(m.String() + " waits for the submit")
+		}
+	}
 	switch m.String() {
 	case "esc":
 		return s, SwitchTo(WSPurchasing, nil)
@@ -613,16 +648,6 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 			s.supplierCursor--
 		}
 	case "enter":
-		if s.pending {
-			// Reachable while the POST is out (review → esc → b), and
-			// committing a supplier from here would change the order's supplier
-			// and can drop half the cart through the switch confirm — against a
-			// request that carries the old supplier and every line. Frozen with
-			// the rest of the payload; supplierPickBar stops naming enter for
-			// exactly as long.
-			s.pendingLead = "enter commits nothing"
-			return s, Status("the submit is already out", StatusInfo)
-		}
 		// Changing supplier under a cart that already names the old supplier's
 		// catalog rows destroys work, so it asks first. Only a CHANGE, and only
 		// when there is something to lose: re-committing the same supplier, or
@@ -1083,31 +1108,34 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		s.cartLead, s.attrLead = "", ""
 	}
 	if s.pending {
-		// The submit is reachable from here: esc off the review phase lands on
-		// this chooser with the POST still out, and every key below that stages,
-		// removes, edits or re-attributes a line is changing a cart finalize()
-		// has already copied into the request. The 201 navigates away and takes
-		// the change with it, so the freeze that starts on review has to hold
-		// here too: gating the review arms alone would leave the identical
-		// defect one phase over, one esc away.
+		// DEFAULT-DENY while the create POST is out. The submit is reachable
+		// from here — esc off the review phase lands on this chooser with the
+		// request still out — and every key that stages, removes, edits or
+		// re-attributes a line is changing a cart finalize() has already copied
+		// into the payload; the 201 navigates away and takes the change with
+		// it.
 		//
-		// j/k, d, b and esc are deliberately still live: they read the cart,
-		// review it, or leave, and none of them touches the payload. The lead
-		// names the key because two of these sharing one sentence would redraw
-		// the pane the first press left (the frame has no cursor of its own).
+		// The ALLOW-LIST is the gate, not the list of frozen keys. Written the
+		// other way round it froze the nine keys somebody thought of and let
+		// `d` through, which then re-focused the notes field the submit had
+		// just blurred — the arm added after the freeze was free by default.
+		// Anything not named here declines, including a key this phase does not
+		// bind at all: the operator learns the submit owns the screen, which is
+		// true of every key on it.
 		switch m.String() {
+		case "esc", "b", "d", "j", "down", "k", "up":
+			// Leave, review the cart, or move a highlight through it. None of
+			// them touches the payload or focuses an input.
 		case "r", "i", "a", "f":
-			s.pendingLead = m.String() + " adds nothing"
-			return s, Status("the submit is already out", StatusInfo)
+			return s, s.pendingDecline(m.String() + " adds nothing")
 		case "x":
-			s.pendingLead = "x removes nothing"
-			return s, Status("the submit is already out", StatusInfo)
+			return s, s.pendingDecline("x removes nothing")
 		case "ctrl+e":
-			s.pendingLead = "ctrl+e edits nothing"
-			return s, Status("the submit is already out", StatusInfo)
+			return s, s.pendingDecline("ctrl+e edits nothing")
 		case "g", "w", "c":
-			s.pendingLead = m.String() + " changes nothing"
-			return s, Status("the submit is already out", StatusInfo)
+			return s, s.pendingDecline(m.String() + " changes nothing")
+		default:
+			return s, s.pendingDecline(m.String() + " waits for the submit")
 		}
 	}
 	switch m.String() {
@@ -1235,6 +1263,14 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		}
 		s.phase = poPhaseReview
 		s.clampReviewCursor()
+		if s.pending {
+			// `d` is on the frozen allow-list because reviewing the cart reads
+			// it; focusing the notes would be the screen inviting input the
+			// pending arm is going to refuse, which is the caret finalize()
+			// blurred for exactly that reason.
+			s.poNotes.Blur()
+			return s, nil
+		}
 		s.poNotes.Focus()
 		return s, textinput.Blink
 	case "j", "down":
@@ -1826,8 +1862,7 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 			// answers on the "Submitting…" line rather than into a flash: an
 			// operator watching a slow POST and pressing enter again is exactly
 			// the operator who will have missed a four-second status.
-			s.pendingLead = "enter is already in"
-			return s, Status("the submit is already out", StatusInfo)
+			return s, s.pendingDecline("enter is already in")
 		}
 		return s, s.finalize()
 	case "up", "ctrl+p":
@@ -1853,8 +1888,11 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 			// to add a line while the order they already have is being
 			// created. So the cart is frozen for as long as the POST is out,
 			// and the bar stops naming these two for exactly that long.
-			s.pendingLead = "ctrl+x removes nothing"
-			return s, Status("the submit is already out", StatusInfo)
+			//
+			// Default-deny like the other two frozen phases: everything this
+			// arm does not allow falls to the notes arm at the foot of the
+			// switch, which declines rather than typing.
+			return s, s.pendingDecline("ctrl+x removes nothing")
 		}
 		s.removeLineAt(s.reviewCursor)
 		return s, nil
@@ -1865,8 +1903,7 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 		// pre-filled and flags editIndex so addLine writes the change back to
 		// s.lines[reviewCursor] instead of appending.
 		if s.pending {
-			s.pendingLead = "ctrl+e edits nothing"
-			return s, Status("the submit is already out", StatusInfo)
+			return s, s.pendingDecline("ctrl+e edits nothing")
 		}
 		return s, s.openLineEditor(s.reviewCursor, poPhaseReview)
 	}
@@ -1876,8 +1913,7 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 		// (finalize), which is what stops the caret inviting the typing in the
 		// first place; this answers the press that comes anyway, and names the
 		// key so two of them cannot redraw one pane.
-		s.pendingLead = m.String() + " is not in the notes"
-		return s, Status("the submit is already out", StatusInfo)
+		return s, s.pendingDecline(m.String() + " is not in the notes")
 	}
 	var cmd tea.Cmd
 	s.poNotes, cmd = s.poNotes.Update(m)
@@ -1942,6 +1978,17 @@ func (s *PurchaseOrderCreateScreen) View() string {
 // the validation, which is a worse lie than either sentence alone.
 func (s *PurchaseOrderCreateScreen) setErr(what, detail string) {
 	s.errMsg, s.errDetail = what, detail
+}
+
+// pendingDecline is how every frozen arm answers while the create POST is out:
+// it records what the key did on the "Submitting…" line and flashes the same
+// sentence. One writer so the three frozen phases cannot drift into three
+// different ways of saying the submit owns the cart, and so the lead — which
+// NAMES the key, because two keys sharing one sentence would redraw the pane
+// the first press left — is always set beside the status it goes with.
+func (s *PurchaseOrderCreateScreen) pendingDecline(lead string) tea.Cmd {
+	s.pendingLead = lead
+	return Status("the submit is already out", StatusInfo)
 }
 
 // renderFailLine is the last thing View draws: the submit's working line, or
