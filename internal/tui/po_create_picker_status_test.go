@@ -614,6 +614,27 @@ func TestPOCreate_EveryPickerKeyThatDeclinesToActSaysWhy(t *testing.T) {
 		{"reorder picker, add-all with nothing to add", func(s *PurchaseOrderCreateScreen) {
 			s.phase = poPhaseReorderPick
 		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}},
+		// The cursor keys and the mark key sit in the same switch as the arms
+		// above and were the ones still answering with nil: a list that is
+		// DRAWN and empty is past the !listOnScreen() gate, and comparing a
+		// cursor against len-1 there does nothing and says nothing.
+		{"reorder picker, mark with nothing flagged", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseReorderPick
+		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")}},
+		{"reorder picker, move with nothing flagged", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseReorderPick
+		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}},
+		{"item picker, move over a list that matched nothing", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseItemPick
+			s.itemSuppliersAll = []omsapi.ItemSupplier{{ID: 1, ItemName: "Widget"}}
+			s.itemSuppliersFor = s.supplierID
+			s.itemSuppliersSearch.SetValue("nope")
+			s.applyItemSupplierFilter()
+		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")}},
+		{"asset picker, move over a search that matched nothing", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseAssetPick
+			s.assetsQuery = "hovercraft"
+		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}},
 	}
 
 	for _, tc := range cases {
@@ -3521,44 +3542,270 @@ func TestPOCreate_EveryFixedHintOnTheseScreensSurvivesTheClip(t *testing.T) {
 	}
 }
 
-// TestPOSourceChooser_CartKeysOutrankTheCatalogCaveat: with a cart on the
-// source chooser the fixed chrome — three folded help rows, the supplier
-// header, four source rows, the cart header, a row, the total and the catalog
-// caveat — exceeds an 18-row pane whatever the cart does, because the cart
-// cannot shrink past its own header and total. Something is always cut there,
-// so what matters is WHICH: the d row and the row naming ctrl+e / x sat UNDER
-// the cart and were what clampToBox ate. They are now above it, and the prose
-// caveat is what yields — the same order the supplier-switch confirm keeps.
+// TestPOPickers_JKOverAnEmptyListSaysWhy: the reported hang's exact shape, on
+// the state the report is about.
 //
-// The residual overflow is pre-existing and is deliberately not asserted away
-// here: at 24 rows the caveat is dropped whole, which is why it is checked at
-// 30 only.
-func TestPOSourceChooser_CartKeysOutrankTheCatalogCaveat(t *testing.T) {
-	id := 7
+// The !listOnScreen() gates answer j/k while a lookup is out or has failed, but
+// a list that is DRAWN and empty — a search that matched nothing, a supplier
+// with nothing flagged — fell through to the cursor arms, which compared
+// against len-1 and returned nil. Nothing moved: no rows to scroll, no
+// highlight to see stay put, and with the search box shut not even a caret.
+//
+// The note LINE is compared before and after, not the whole pane, because a
+// blinking cursor satisfies a comparison of the pane — and the pane is checked
+// too, clipped, at both supported heights.
+func TestPOPickers_JKOverAnEmptyListSaysWhy(t *testing.T) {
+	cases := []struct {
+		name string
+		fake *poPickFake
+		// open drives the screen to a picker showing a drawn, empty list.
+		open func(t *testing.T, r Root, screen *PurchaseOrderCreateScreen) Root
+		note func(s *PurchaseOrderCreateScreen) *pickerNote
+		rows func(s *PurchaseOrderCreateScreen) int
+	}{
+		{
+			name: "items, a search that matched nothing",
+			fake: &poPickFake{catalog: 12, pageSize: 5, assets: 1},
+			open: func(t *testing.T, r Root, screen *PurchaseOrderCreateScreen) Root {
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+				r = poType(t, r, "flux capacitor")
+				return key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+			},
+			note: func(s *PurchaseOrderCreateScreen) *pickerNote { return &s.itemSuppliersNote },
+			rows: func(s *PurchaseOrderCreateScreen) int { return len(s.itemSuppliers) },
+		},
+		{
+			name: "assets, a search that matched nothing",
+			fake: &poPickFake{catalog: 2, assets: 3},
+			open: func(t *testing.T, r Root, screen *PurchaseOrderCreateScreen) Root {
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+				r = poType(t, r, "hovercraft")
+				return key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			},
+			note: func(s *PurchaseOrderCreateScreen) *pickerNote { return &s.assetsNote },
+			rows: func(s *PurchaseOrderCreateScreen) int { return len(s.assets) },
+		},
+		{
+			name: "reorder, nothing flagged",
+			fake: &poPickFake{catalog: 2, assets: 1, reorder: 0},
+			open: func(t *testing.T, r Root, screen *PurchaseOrderCreateScreen) Root {
+				return key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+			},
+			note: func(s *PurchaseOrderCreateScreen) *pickerNote { return &s.reorderNote },
+			rows: func(s *PurchaseOrderCreateScreen) int { return len(s.reorderItems) },
+		},
+	}
+
+	for _, tc := range cases {
+		for _, h := range poPaneSizes {
+			r, screen := poPickerAtSize(t, tc.fake, 80, h)
+			r = tc.open(t, r, screen)
+			if got := tc.rows(screen); got != 0 {
+				t.Fatalf("%s at 80x%d: setup left %d rows on screen", tc.name, h, got)
+			}
+			for _, k := range []string{"j", "k"} {
+				beforeNote := strings.Join(poNoteLines(t, *tc.note(screen)), "\n")
+				beforePane := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
+				if after := strings.Join(poNoteLines(t, *tc.note(screen)), "\n"); after == beforeNote {
+					t.Errorf("%s at 80x%d: %q left the note line byte-for-byte identical:\n%s",
+						tc.name, h, k, after)
+				}
+				if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after == beforePane {
+					t.Errorf("%s at 80x%d: %q redrew an identical pane:\n%s", tc.name, h, k, after)
+				}
+				poAssertFits(t, tc.name+" after "+k, screen)
+				// Reset to the un-led wording so the second key is judged from
+				// the state the operator arrives in, not from the first key's
+				// answer — j and k share a lead, as they do everywhere on these
+				// screens, so only the first press would otherwise move it.
+				tc.note(screen).clear()
+			}
+		}
+	}
+}
+
+// TestPOAssetPicker_ASupplierRoundTripDoesNotLetAStaleLookupLand closes the
+// last hole in "one asset lookup at a time".
+//
+// Every arm that fires one declines while assetsLoading is up, but
+// resetSupplierScopedPickers clears that flag — reasonably, since a picker
+// stranded on a "looking up…" frame for an answer nobody will use is its own
+// defect — and the reply is identified by supplierID alone. So going A → B → A
+// through the supplier picker made supplier A current again with A's search
+// still in flight and every guard reset, and the search reply landing last
+// replaced the unfiltered list with its own matches: a FILTERED SUBSET drawn as
+// the supplier's whole asset list, at StatusOK with a green tick, an empty
+// search box and no label to contradict it.
+//
+// The in-flight search is held here rather than simulated: r.Update hands back
+// the command the keystroke produced, and not running it is exactly what a slow
+// request looks like from the screen's side.
+func TestPOAssetPicker_ASupplierRoundTripDoesNotLetAStaleLookupLand(t *testing.T) {
+	fake := &poPickFake{assets: 3, catalog: 2, suppliers: 2}
+	r, screen := poPickerAt(t, fake, 80)
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if len(screen.assets) != 3 {
+		t.Fatalf("setup: supplier 1's assets did not load (%d rows)", len(screen.assets))
+	}
+
+	// Run a search and leave it in flight.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "Lathe 1")
+	next, inFlight := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	r = next.(Root)
+	if !screen.assetsLoading {
+		t.Fatalf("setup: enter in the search box did not start a lookup")
+	}
+
+	// A → B → A, which resets the picker twice and clears the in-flight flag.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")}) // → source
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")}) // → supplier picker
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.supplierID != 1 {
+		t.Fatalf("setup: the order is on supplier %d, want 1 again", screen.supplierID)
+	}
+
+	// The picker is opened again and this time the lookup lands.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if len(screen.assets) != 3 {
+		t.Fatalf("setup: re-entering the picker did not load all 3 assets (%d rows)", len(screen.assets))
+	}
+	if strings.TrimSpace(screen.assetsQuery) != "" {
+		t.Fatalf("setup: the fresh lookup carried %q", screen.assetsQuery)
+	}
+
+	// Now the abandoned search finally answers.
+	r = pump(t, r, inFlight, 0)
+
+	if len(screen.assets) != 3 {
+		t.Errorf("the stale search replaced the supplier's asset list: %d rows, want 3", len(screen.assets))
+	}
+	unfiltered := false
+	for _, a := range screen.assets {
+		if a.Name == "Lathe 2" {
+			unfiltered = true
+		}
+	}
+	if !unfiltered {
+		t.Errorf("the rows on screen are the stale search's matches, not this supplier's list: %+v", screen.assets)
+	}
+	if screen.assetsLoading {
+		t.Error("the stale reply cleared the in-flight flag of a request it does not answer")
+	}
+	poWantPaneLine(t, screen, "Lathe 2")
+	poRejectPaneLine(t, screen, "search: ")
+	poAssertFits(t, "asset picker after a stale reply", screen)
+}
+
+// TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline is the source
+// chooser's half of "nothing may act on a row the operator cannot see".
+//
+// At 80x24 the chooser's fixed chrome — the folded bar, the supplier header,
+// the four source rows and the d row — leaves the cart fewer rows than its own
+// header and total need. bodyRowBudget floors at three rows it does not have,
+// so the cart was drawn past the bottom of the pane and clampToBox took the
+// HIGHLIGHTED line, the "N more below" marker that would have said rows were
+// hidden, and the total — while x still removed and ctrl+e still edited the
+// line nobody could see. The previous version of this test asserted that the
+// rows naming those keys survived and said "something is always cut there": it
+// kept the KEYS and lost the row the keys act on.
+//
+// So: when the rows fit, they are listed with their highlight and the keys act.
+// When they do not, one sentence says how many lines there are, what they come
+// to, that they are not listed and which key opens them; the bar stops naming
+// the four keys; and each of those keys declines without touching the cart
+// while still moving the body.
+func TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline(t *testing.T) {
 	for _, h := range poPaneSizes {
-		s := poWidestSupplierScreen()
-		s.terminalHeight = h
-		s.phase = poPhaseSource
-		s.lines = []poCartLine{
-			{item: omsapi.PurchaseOrderCreateItem{ItemSupplierID: &id, Quantity: 1}, label: "Hex bolt"},
+		fake := &poPickFake{reorder: 15, catalog: 2, assets: 1}
+		r, screen := poPickerAtSize(t, fake, 80, h)
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}) // add all 15
+		if len(screen.lines) != 15 {
+			t.Fatalf("80x%d: setup staged %d lines, want 15", h, len(screen.lines))
+		}
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc}) // review → source chooser
+		if screen.phase != poPhaseSource {
+			t.Fatalf("80x%d: setup left the screen on phase %v", h, screen.phase)
+		}
+		// A highlight in the MIDDLE of the cart, which is where the reported
+		// failure lives: poCartWindow centres the window on it, so at 80x24 the
+		// highlighted row and the "N more below" marker under it were both past
+		// the bottom of the pane while x still removed that very line.
+		screen.reviewCursor = 7
+
+		what := fmt.Sprintf("source chooser with a 15-line cart at 80x%d", h)
+		poAssertFits(t, what, screen)
+
+		if screen.cartListedOnScreen() {
+			// The roomy pane lists them, so the highlight is on screen and the
+			// keys that act on it are named and do act.
+			poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", screen.reviewCursor+1))
+			poWantPaneLine(t, screen, "x remove it")
+			before := len(screen.lines)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+			if len(screen.lines) != before-1 {
+				t.Errorf("80x%d: the cart is listed but x removed nothing (%d lines)", h, len(screen.lines))
+			}
+			continue
 		}
 
-		for _, want := range []string{"Done — review & submit", "ctrl+e edit it", "x remove it"} {
-			if !poPaneHasLine(t, s, want) {
-				t.Errorf("80x%d: the pane does not carry %q on any whole line:\n%s",
-					h, want, strings.Join(poPaneLinesAt(t, s, h), "\n"))
+		// The count, the total, that the lines are NOT listed and the key that
+		// lists them, all on one line the 51-column pane keeps whole.
+		poWantPaneLine(t, screen, "d lists the 15 line(s) · $45.00 · not listed here")
+		// A key the bar names must act, so a bar that still named these would
+		// be advertising the four keys the collapse has just made inert.
+		for _, gone := range []string{"j/k highlight", "ctrl+e edit", "x remove"} {
+			poRejectPaneLine(t, screen, gone)
+		}
+
+		for _, k := range []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyRunes, Runes: []rune("k")},
+			{Type: tea.KeyRunes, Runes: []rune("x")},
+			{Type: tea.KeyCtrlE},
+		} {
+			// Each key is pressed from the state the operator actually arrives
+			// in — the un-led summary — so a lead dropped from any one arm
+			// leaves the pane unchanged and fails here.
+			screen.cartLead = ""
+			before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+			lines, cur, phase := len(screen.lines), screen.reviewCursor, screen.phase
+			r = key(t, r, k)
+			if len(screen.lines) != lines {
+				t.Errorf("80x%d: %q changed the cart (%d lines, was %d) with no line on the pane",
+					h, k.String(), len(screen.lines), lines)
 			}
-		}
-		// Whatever IS drawn has to be readable across the 51-column cut.
-		for i, line := range poPaneLinesAt(t, s, h) {
-			if w := lipgloss.Width(line); w > screenBodyWidth(80) {
-				t.Errorf("80x%d: line %d is %d cells and is cut at %d: %q",
-					h, i+1, w, screenBodyWidth(80), line)
+			if screen.reviewCursor != cur {
+				t.Errorf("80x%d: %q moved a highlight that is not on the pane", h, k.String())
 			}
+			if screen.phase != phase {
+				t.Errorf("80x%d: %q left the source chooser (phase %v)", h, k.String(), screen.phase)
+			}
+			if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after == before {
+				t.Errorf("80x%d: %q redrew a byte-for-byte identical pane:\n%s", h, k.String(), after)
+			}
+			poAssertFits(t, what+" after "+k.String(), screen)
 		}
-		if h == poPaneSizes[len(poPaneSizes)-1] && !poPaneHasLine(t, s, "priced from the supplier catalog") {
-			t.Errorf("80x%d: the roomy pane drops the catalog caveat:\n%s",
-				h, strings.Join(poPaneLinesAt(t, s, h), "\n"))
+
+		// d is the way out the summary names, and it has to be a real one: the
+		// review phase must list the lines and show the highlight at this very
+		// pane height, or the escape the operator is told to take is a worse
+		// dead end than no escape at all.
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+		if screen.phase != poPhaseReview {
+			t.Fatalf("80x%d: d did not open the full cart (phase %v)", h, screen.phase)
 		}
+		poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", screen.reviewCursor+1))
+		poWantPaneLine(t, screen, "more below")
+		poAssertFits(t, fmt.Sprintf("review with a 15-line cart at 80x%d", h), screen)
 	}
 }

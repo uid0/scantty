@@ -208,6 +208,17 @@ type PurchaseOrderCreateScreen struct {
 	// Phase 3c: assets-from-supplier picker (server-side search).
 	assets        []omsapi.Asset
 	assetsLoading bool
+	// assetsSeq is the generation of the asset lookup that is allowed to land.
+	// assetsLoading alone cannot carry that: it is the flag every arm tests to
+	// refuse a SECOND lookup, and resetSupplierScopedPickers clears it while a
+	// request is still out, so an A -> B -> A round trip through the supplier
+	// picker put two lookups for the SAME supplier on the wire again. The reply
+	// is identified by supplierID, both matched, and whichever landed last won
+	// — a filtered subset painted as the supplier's whole asset list, with a
+	// green tick and an empty search box. Only the asset reply varies by query
+	// and page, which is why it is the one that needs a generation and the
+	// other two pickers do not. Same shape as ListScreen.searchSeq (list.go).
+	assetsSeq     int
 	assetsErr     string
 	assetsCursor  int
 	assetsSearch  textinput.Model
@@ -251,6 +262,13 @@ type PurchaseOrderCreateScreen struct {
 	lines        []poCartLine
 	reviewCursor int
 	poNotes      textinput.Model
+	// cartLead is what the last declined key DID on a source chooser whose cart
+	// is collapsed. Only the lead is kept, never the finished sentence: the
+	// count and the total are re-derived on every render, so a line added from
+	// the line form cannot leave a stale figure sitting on the pane. A decline
+	// that only flashes on the status bar is gone in four seconds with the pane
+	// unchanged, which is the silence this screen exists to remove.
+	cartLead string
 
 	// editIndex is the s.lines index being edited in place (ctrl+e re-opens the
 	// Phase-4 form pre-filled), or -1 when the line form is adding a new line.
@@ -717,10 +735,13 @@ func (s *PurchaseOrderCreateScreen) commitSupplier() tea.Cmd {
 // supplier change is a purchase order that quietly names another supplier's
 // item. Nothing on the screen would have flagged it.
 //
-// Note it also drops the in-flight flags: any reply still out for the previous
-// supplier is discarded by the supplierID guard in handlePickerLoaded, so
-// leaving them set would strand the picker on a "looking up…" frame for a
-// request whose answer is never going to be used.
+// Note it also drops the in-flight flags, so a reply still out cannot strand
+// the picker on a "looking up…" frame for an answer nobody is going to use.
+// Clearing them is what reopened the asset race: the supplierID echo drops a
+// reply only while the order has MOVED OFF that supplier, and coming back to
+// the first one made it current again with its lookup still in flight and the
+// guards reset. The asset generation counter is bumped here for that reason —
+// anything asked for before this reset is answered too late to be believed.
 func (s *PurchaseOrderCreateScreen) resetSupplierScopedPickers() {
 	s.reorderItems = nil
 	s.reorderLoading = false
@@ -742,6 +763,7 @@ func (s *PurchaseOrderCreateScreen) resetSupplierScopedPickers() {
 
 	s.assets = nil
 	s.assetsLoading = false
+	s.assetsSeq++
 	s.assetsErr = ""
 	s.assetsCursor = 0
 	s.assetsTyping = false
@@ -956,6 +978,14 @@ func (s *PurchaseOrderCreateScreen) updateCommitteePhase(m tea.KeyMsg) (Screen, 
 
 func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
+	case "j", "down", "k", "up", "x", "ctrl+e":
+		// cartNote answers exactly these four keys. Any other key has moved on
+		// from the question it was asked, so the sentence goes back to the
+		// un-led summary and the next decline is visibly a new one.
+	default:
+		s.cartLead = ""
+	}
+	switch m.String() {
 	case "esc", "b":
 		// Back to supplier picker — operator can change their mind
 		// before committing to any source. Pick stays committed so
@@ -1010,8 +1040,10 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 	case "a":
 		s.phase = poPhaseAssetPick
 		if s.assetsLoading {
-			// The asset reply carries only supplierID, so two lookups for the
-			// SAME supplier cannot be told apart and whichever lands last wins.
+			// Two lookups for the SAME supplier are still wrong even though
+			// the reply now carries a generation and the stale one is dropped:
+			// the operator would be watching a "looking up…" frame whose answer
+			// is thrown away, and the second request is work nobody asked for.
 			// Gating the search box (updateAssetPickPhase) closed that race
 			// only from inside the picker: 'a' -> '/' + search -> 'b' -> 'a'
 			// left the search request in flight and fired an unfiltered page 1
@@ -1074,11 +1106,24 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 	case "j", "down":
 		// Move the cart highlight — the same cursor the review phase uses, so
 		// x / ctrl+e below act on ANY line, not just the last one added.
+		//
+		// All four of these decline when the cart is collapsed. A highlight
+		// that is not on the pane is one the operator cannot check before
+		// pressing x, and removing or editing a line nobody can see is the
+		// wrong-purchase-order failure this screen keeps being measured
+		// against. The bar stops naming them for exactly as long as the gate
+		// holds (sourceHelpText).
+		if !s.cartListedOnScreen() {
+			return s, s.cartHiddenNote("no line shown to move")
+		}
 		if s.reviewCursor < len(s.lines)-1 {
 			s.reviewCursor++
 		}
 		return s, nil
 	case "k", "up":
+		if !s.cartListedOnScreen() {
+			return s, s.cartHiddenNote("no line shown to move")
+		}
 		if s.reviewCursor > 0 {
 			s.reviewCursor--
 		}
@@ -1088,6 +1133,9 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		// parks it on the new line), so with an untouched highlight this is
 		// still the "undo the line I just added" it always was — but j/k can
 		// now aim it at any line in the cart.
+		if !s.cartListedOnScreen() {
+			return s, s.cartHiddenNote("no line shown to remove")
+		}
 		s.removeLineAt(s.reviewCursor)
 		return s, nil
 	case "ctrl+e":
@@ -1095,6 +1143,9 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		// Same handler the review cart uses; saving/cancelling comes back here
 		// (editReturn) so the operator keeps adding lines where they left off.
 		// ctrl+e (not a bare letter) matches the review-cart chord.
+		if !s.cartListedOnScreen() {
+			return s, s.cartHiddenNote("no line shown to edit")
+		}
 		return s, s.openLineEditor(s.reviewCursor, poPhaseSource)
 	}
 	return s, nil
@@ -1716,6 +1767,47 @@ func (s *PurchaseOrderCreateScreen) View() string {
 	return b.String()
 }
 
+// sourceHelpText is the source chooser's action bar. cartListed says whether
+// the cart's ROWS are on the pane, because the four keys that act on a row —
+// j, k, ctrl+e and x — may only be named while there is a row to act on. On an
+// 18-row pane a long cart is collapsed to a summary and those keys decline, so
+// naming them there would be the "a key the bar names must act" half of the
+// rule broken by the bar itself.
+//
+// Taken as an argument rather than read from the screen because the collapse
+// decision is measured against this very sentence: frameRows() folds it to
+// count the rows it costs, so cartListedOnScreen() would recurse through
+// helpText() if this arm asked it. The decision is made against the LONGER
+// (cart-listed) wording, which is the conservative direction — the collapsed
+// bar folds to no more rows, so it can never turn the answer back round.
+func (s *PurchaseOrderCreateScreen) sourceHelpText(cartListed bool) string {
+	base := "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel."
+	switch {
+	case len(s.lines) > 0 && cartListed:
+		base = fmt.Sprintf(
+			"Add a line (r/i/a/f) · j/k highlight · ctrl+e edit · x remove · d done → review %d line(s) · b back · esc cancel.",
+			len(s.lines),
+		)
+	case len(s.lines) > 0:
+		base = fmt.Sprintf(
+			"Add a line (r/i/a/f) · d review & edit %d line(s) · b back · esc cancel.",
+			len(s.lines),
+		)
+	}
+	// g / w / c only appear once there is something behind them —
+	// advertising a key that does nothing is worse than not offering it.
+	if s.agreementOffered() {
+		base += " g agreement."
+	}
+	if s.assoc.workOrdersOffered() {
+		base += " w work order."
+	}
+	if s.assoc.committeesOffered() {
+		base += " c committee."
+	}
+	return base
+}
+
 func (s *PurchaseOrderCreateScreen) helpText() string {
 	switch s.phase {
 	case poPhaseSupplier:
@@ -1732,25 +1824,7 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 	case poPhaseCommittee:
 		return "Pick the committee this purchase is on behalf of (j/k move · enter commit · esc keep current · row 1 = none)."
 	case poPhaseSource:
-		base := "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel."
-		if len(s.lines) > 0 {
-			base = fmt.Sprintf(
-				"Add a line (r/i/a/f) · j/k highlight · ctrl+e edit · x remove · d done → review %d line(s) · b back · esc cancel.",
-				len(s.lines),
-			)
-		}
-		// g / w / c only appear once there is something behind them —
-		// advertising a key that does nothing is worse than not offering it.
-		if s.agreementOffered() {
-			base += " g agreement."
-		}
-		if s.assoc.workOrdersOffered() {
-			base += " w work order."
-		}
-		if s.assoc.committeesOffered() {
-			base += " c committee."
-		}
-		return base
+		return s.sourceHelpText(s.cartListedOnScreen())
 	case poPhaseReorderPick:
 		// The three picker bars come from the pickers themselves
 		// (po_create_pickers.go), which is also where each frame's own way-out
@@ -1985,7 +2059,11 @@ func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
 		}) + tail
 }
 
-func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
+// sourceCartChrome is everything the source chooser draws ABOVE the cart. It is
+// one function because the collapse decision has to measure exactly what the
+// renderer will write, and a second hand-kept copy of these rows would be the
+// stale constant this screen has already been bitten by.
+func (s *PurchaseOrderCreateScreen) sourceCartChrome() string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Where should this line come from?") + "\n\n")
 	b.WriteString("  " + StyleStatusOK.Render("r") + "  Reorder queue (items flagged for reorder)\n")
@@ -2000,16 +2078,137 @@ func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
 	}
 	if len(s.lines) > 0 {
 		// Keys ABOVE the block that grows, as on the supplier-switch confirm.
-		// These three rows used to sit UNDER the cart, and the cart cannot
-		// shrink past its own header and total — so on an 18-row pane with a
-		// one-line cart the fixed chrome alone overflowed and clampToBox ate
-		// exactly the row naming d, then the row naming ctrl+e and x. The cart
-		// is the part that can give, and renderCart says how many rows it hid.
+		// This row used to sit UNDER the cart, and the cart cannot shrink past
+		// its own header and total — so on an 18-row pane with a one-line cart
+		// the fixed chrome alone overflowed and clampToBox ate exactly the row
+		// naming d. The cart is the part that can give.
 		b.WriteString("\n  " + StyleStatusOK.Render("d") + "  Done — review & submit\n")
-		b.WriteString(pickerHint("j/k highlight a line · ctrl+e edit it · x remove it") + "\n\n")
-		b.WriteString(s.renderCart(s.reviewCursor, s.cartRowBudget(poRenderedRows(b.String()))))
 	}
 	return b.String()
+}
+
+// sourceCartKeys is the hint naming the four keys that act on a cart ROW. It is
+// drawn only while those rows are on the pane, for the same reason
+// sourceHelpText stops naming them: the keys decline when the cart is
+// collapsed, and a hint that outlives the thing it names is the defect.
+func sourceCartKeys() string {
+	return pickerHint("j/k highlight a line · ctrl+e edit it · x remove it") + "\n\n"
+}
+
+// cartListedOnScreen reports whether the source chooser is drawing the cart's
+// ROWS — the same question itemListOnScreen / assetListOnScreen answer for the
+// pickers, and it gates the same three things: the keys the bar names, the keys
+// the arms honour, and whether a highlight exists to act on.
+//
+// It is measured, not assumed. At 80x24 the chooser's fixed chrome leaves the
+// cart one or two rows, bodyRowBudget floors at three and hands out rows that
+// do not exist, and clampToBox then dropped the HIGHLIGHTED line, the "N more
+// below" marker that would have said rows were hidden, and the total — while x
+// still removed and ctrl+e still edited the line the operator could not see.
+//
+// The frame rows are counted against the cart-LISTED bar (see sourceHelpText):
+// that bar is the longer of the two, so the answer cannot flip back when the
+// collapsed wording is folded instead.
+func (s *PurchaseOrderCreateScreen) cartListedOnScreen() bool {
+	if len(s.lines) == 0 || s.terminalHeight <= 0 {
+		// Unsized screens get no budget at all, here as everywhere else on this
+		// screen: guessing a pane height would hide rows nobody asked to hide.
+		return true
+	}
+	left, budget := s.sourceCartSpace()
+	return poRenderedRows(s.renderCart(s.reviewCursor, budget)) <= left
+}
+
+// sourceCartSpace is the rows the source chooser has left for the cart block
+// and the row budget renderCart gets out of them. ONE derivation, because the
+// decision to collapse and the render that follows it have to agree: measuring
+// with one budget and drawing with another is how a block passes its own fit
+// check and then overflows.
+//
+// It does not go through cartRowBudget, for two reasons. bodyRowBudget floors
+// at three rows it may not have — that floor is the arithmetic that handed the
+// cart room it did not own and let clampToBox eat the highlighted line — and it
+// reads frameRows(), which folds helpText(), which asks this very question.
+func (s *PurchaseOrderCreateScreen) sourceCartSpace() (left, budget int) {
+	if s.terminalHeight <= 0 {
+		return 0, 0
+	}
+	other := poRenderedRows(s.sourceCartChrome() + sourceCartKeys())
+	left = screenBodyHeight(s.terminalHeight) - s.frameRowsWith(s.sourceHelpText(true)) - other
+	budget = left - poCartChromeRows
+	if budget < 1 {
+		budget = 1
+	}
+	return left, budget
+}
+
+// cartHiddenSentence is what the source chooser says INSTEAD of the cart when
+// the cart's rows will not fit. One sentence, because the operator must not
+// have to add up a count that is drawn in one place and a caveat drawn in
+// another: it names the key that opens the lines, how many are staged, what
+// they come to, and that they are not listed here. The review phase really does
+// list and highlight them at this pane height, so d is a route and not a hope.
+//
+// The KEY goes first for the reason the supplier-switch confirm puts its keys
+// above its prose: this block is the LAST thing the source chooser draws, and
+// on a supplier carrying agreements and associations the chooser's fixed rows
+// can fill an 18-row pane on their own, so whatever is at the end of this
+// sentence is what clampToBox eats. The count and the total can go; the way out
+// cannot. The leads are kept short for the same reason — they fold onto the
+// first line ahead of the key rather than pushing it onto a second one.
+//
+// lead is what a declining key just did, so pressing j over a cart that is not
+// on screen moves the body rather than redrawing the sentence already there.
+func (s *PurchaseOrderCreateScreen) cartHiddenSentence(lead string) string {
+	total, noCost := poCartTotal(s.lines)
+	money := fmtMoney(total)
+	if noCost > 0 {
+		// The sum is a floor: a line with no cost is priced from the supplier
+		// catalog at save time, so reporting it flat would read as free.
+		money = "at least " + money
+	}
+	// Short enough to be ONE folded row at 51 columns, which is all the block
+	// gets on a supplier carrying agreements and associations: a second row
+	// would put "not listed" — the whole point of the sentence — past the cut.
+	out := fmt.Sprintf("d lists the %d line(s) · %s · not listed here", len(s.lines), money)
+	if lead != "" {
+		out = lead + " · " + out
+	}
+	return out
+}
+
+// cartHiddenNote answers j / k / x / ctrl+e on a collapsed cart: no state
+// change, and the same sentence the frame already carries, now led by what the
+// key did. The lead is also what turns the muted summary into a warned one, so
+// the press changes the body twice over.
+func (s *PurchaseOrderCreateScreen) cartHiddenNote(lead string) tea.Cmd {
+	s.cartLead = lead
+	n := s.cartHiddenNoteText()
+	return Status(n.flash(), n.level)
+}
+
+func (s *PurchaseOrderCreateScreen) cartHiddenNoteText() pickerNote {
+	level := StatusInfo
+	if s.cartLead != "" {
+		level = StatusWarn
+	}
+	return pickerNote{text: s.cartHiddenSentence(s.cartLead), level: level}
+}
+
+func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
+	body := s.sourceCartChrome()
+	if len(s.lines) == 0 {
+		return body
+	}
+	if !s.cartListedOnScreen() {
+		// One block: the count, the total, the "not listed" and the way out are
+		// one sentence, so nothing here can be cut without the rest going with
+		// it — and the reply to a declined key is a lead on that same sentence
+		// rather than a second line under it.
+		return body + "\n" + s.cartHiddenNoteText().render() + "\n"
+	}
+	_, budget := s.sourceCartSpace()
+	return body + sourceCartKeys() + s.renderCart(s.reviewCursor, budget)
 }
 
 // poCartLineType derives the wire item_type token a staged line will carry once
@@ -2096,7 +2295,14 @@ func poRenderedRows(chunk string) int {
 // several phases, and every row it gained came straight out of the bottom of
 // the pane.
 func (s *PurchaseOrderCreateScreen) frameRows() int {
-	n := poRenderedRows(pickerHint(s.helpText())) + 1
+	return s.frameRowsWith(s.helpText())
+}
+
+// frameRowsWith is frameRows against a given action bar. The source chooser
+// needs it: deciding whether its cart fits means measuring the chrome, and the
+// chrome includes the bar whose wording that same decision changes.
+func (s *PurchaseOrderCreateScreen) frameRowsWith(help string) int {
+	n := poRenderedRows(pickerHint(help)) + 1
 	n += poRenderedRows(s.renderSupplierHeader()) + 1
 	n++ // the newline View writes after the phase body
 	if s.pending || s.errMsg != "" {
@@ -2105,10 +2311,15 @@ func (s *PurchaseOrderCreateScreen) frameRows() int {
 	return n
 }
 
-// bodyRowBudget is THE row budget for every scrolling block on this screen —
+// bodyRowBudget is the row budget for the scrolling blocks on this screen —
 // the review cart, the three pickers, the supplier list and the association
 // pickers all take theirs from here. otherRows is whatever the phase draws
 // around the block, measured rather than assumed.
+//
+// One block does its own sum and says why: the SOURCE chooser's cart, through
+// sourceCartSpace. The floor below hands out three rows the pane may not have,
+// which is right for a block that can be a little cramped and wrong for one
+// whose highlighted row is what x and ctrl+e act on.
 //
 // One derivation on purpose. The first pass at this gave the list footer, the
 // review cart and the picker bodies each their own hand-rolled answer, and the
@@ -2135,9 +2346,13 @@ func (s *PurchaseOrderCreateScreen) bodyRowBudget(otherRows int) int {
 // scroll markers — over-reserving one row beats clipping one, the same trade
 // computeWindowSize makes on the list screens.
 func (s *PurchaseOrderCreateScreen) cartRowBudget(bodyRows int) int {
-	const cartChromeRows = 5
-	return s.bodyRowBudget(bodyRows + cartChromeRows)
+	return s.bodyRowBudget(bodyRows + poCartChromeRows)
 }
+
+// poCartChromeRows is what renderCart spends on everything that is not a line:
+// its header, its total, the "priced from the supplier catalog" caveat and both
+// scroll markers.
+const poCartChromeRows = 5
 
 // renderCart lists the staged lines and the running total. When highlight >= 0
 // the matching row is marked (used by the review phase and the source chooser's

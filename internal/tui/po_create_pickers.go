@@ -332,8 +332,15 @@ type poItemSuppliersLoadedMsg struct {
 	err        error
 }
 
+// poAssetsLoadedMsg carries a request generation as well as the supplier,
+// because the asset picker is the one picker whose reply depends on more than
+// the supplier: it answers a query and a page. Two lookups for the SAME
+// supplier therefore cannot be told apart by supplierID, and the in-flight flag
+// that used to keep there from being two is cleared by
+// resetSupplierScopedPickers, so a supplier round trip reopened the race.
 type poAssetsLoadedMsg struct {
 	supplierID int
+	seq        int
 	rows       []omsapi.Asset
 	hasNext    bool
 	err        error
@@ -388,13 +395,18 @@ func (s *PurchaseOrderCreateScreen) loadAssetsForSupplier(search string) tea.Cmd
 	if page <= 0 {
 		page = 1
 	}
+	// Stamped here rather than at the five arms that fire a load, so a sixth
+	// one cannot be added without a generation: this is the only place an asset
+	// request is built.
+	s.assetsSeq++
+	seq := s.assetsSeq
 	return func() tea.Msg {
 		p, err := deps.OMS.ListAssetsForSupplier(ctx, supplierID, search, page)
 		if err != nil {
-			return poAssetsLoadedMsg{supplierID: supplierID, err: err}
+			return poAssetsLoadedMsg{supplierID: supplierID, seq: seq, err: err}
 		}
 		hasNext := p.Next != nil && *p.Next != ""
-		return poAssetsLoadedMsg{supplierID: supplierID, rows: p.Results, hasNext: hasNext}
+		return poAssetsLoadedMsg{supplierID: supplierID, seq: seq, rows: p.Results, hasNext: hasNext}
 	}
 }
 
@@ -472,6 +484,12 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 		return s.itemSuppliersNote.say(
 			fmt.Sprintf("%d catalog item(s) loaded · / searches", len(m.rows)), StatusOK)
 	case poAssetsLoadedMsg:
+		if m.seq != s.assetsSeq {
+			// An older lookup for this same supplier. Dropped whole, flag
+			// included: assetsLoading belongs to the request that is still out,
+			// and clearing it here would paint that one's reply as arrived.
+			return nil
+		}
 		s.assetsLoading = false
 		if m.err != nil {
 			s.assetsErr = m.err.Error()
@@ -802,6 +820,19 @@ func (s *PurchaseOrderCreateScreen) applyItemSupplierFilter() {
 // Phase 3a: Reorder-queue picker
 // ---------------------------------------------------------------------------
 
+// reorderEmptyNote answers every key that acts on a row while the reorder
+// picker is drawing a list with no rows in it. Say so in the BODY as well as
+// the flash: the frame's fixed "Nothing flagged…" line is already on the pane,
+// so a Status alone left it byte-for-byte unchanged and expired four seconds
+// later with nothing recording the press. The lead is what the key DID, so two
+// different keys do not answer with the same sentence.
+func (s *PurchaseOrderCreateScreen) reorderEmptyNote(lead string) tea.Cmd {
+	if lead != "" {
+		lead += " · "
+	}
+	return s.reorderNote.say(lead+"nothing flagged for reorder here\n"+pickerWayOut, StatusWarn)
+}
+
 func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	if !s.reorderListOnScreen() {
 		switch m.String() {
@@ -820,10 +851,20 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 		s.phase = poPhaseSource
 		return s, nil
 	case "j", "down":
+		// Drawn and EMPTY, which the !reorderListOnScreen() gate above does not
+		// catch: the frame is showing "Nothing flagged for reorder…" and these
+		// arms answered with nil, so the pane did not move and there was not
+		// even a highlight to see stay put.
+		if len(s.reorderItems) == 0 {
+			return s, s.reorderEmptyNote("nothing to move through")
+		}
 		if s.reorderCursor < len(s.reorderItems)-1 {
 			s.reorderCursor++
 		}
 	case "k", "up":
+		if len(s.reorderItems) == 0 {
+			return s, s.reorderEmptyNote("nothing to move through")
+		}
 		if s.reorderCursor > 0 {
 			s.reorderCursor--
 		}
@@ -831,6 +872,9 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 		// Mark/unmark this row for a bulk add. Marking several rows and
 		// pressing enter is the middle ground between adding one item at a
 		// time and taking the supplier's whole queue with 'a' (sc-ytr5).
+		if len(s.reorderItems) == 0 {
+			return s, s.reorderEmptyNote("nothing to mark")
+		}
 		if s.reorderCursor >= 0 && s.reorderCursor < len(s.reorderItems) {
 			if s.reorderSelected == nil {
 				s.reorderSelected = map[int]bool{}
@@ -862,12 +906,7 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 			return s, s.addReorderLines(picked)
 		}
 		if len(s.reorderItems) == 0 {
-			// Nothing to stage. Say so in the BODY as well as the flash: the
-			// frame's fixed "Nothing flagged…" line is already there, so a
-			// Status alone left the pane byte-for-byte unchanged and expired
-			// four seconds later with nothing recording the press.
-			return s, s.reorderNote.say(
-				"nothing to pick · nothing flagged for reorder here\n"+pickerWayOut, StatusWarn)
+			return s, s.reorderEmptyNote("nothing to pick")
 		}
 		if s.reorderCursor < 0 || s.reorderCursor >= len(s.reorderItems) {
 			s.reorderCursor = 0
@@ -1074,10 +1113,24 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 		s.phase = poPhaseSource
 		return s, nil
 	case "j", "down":
+		// The gate above catches a list that is not DRAWN; this catches one
+		// that is drawn and EMPTY, which is the state the report is about — a
+		// search that matched nothing. `return s, nil` there redrew a
+		// byte-for-byte identical pane with not even a cursor to see stay put,
+		// because the frame has no rows and the box is shut.
+		//
+		// Only the empty list. An EDGE is a weaker case: the highlight is on
+		// screen and visibly at the end, so the press has answered itself.
+		if len(s.itemSuppliers) == 0 {
+			return s, s.reportItemFilterState("nothing to move through")
+		}
 		if s.itemSuppliersCur < len(s.itemSuppliers)-1 {
 			s.itemSuppliersCur++
 		}
 	case "k", "up":
+		if len(s.itemSuppliers) == 0 {
+			return s, s.reportItemFilterState("nothing to move through")
+		}
 		if s.itemSuppliersCur > 0 {
 			s.itemSuppliersCur--
 		}
@@ -1519,12 +1572,12 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 			return s, s.assetsSearchClosedNote()
 		case tea.KeyEnter:
 			if s.assetsLoading {
-				// A search is already out. Firing a second one is how two
-				// replies for two different queries race: the asset reply
-				// carries no request generation, only supplierID, so whichever
-				// lands LAST wins and the rows on screen can belong to a query
-				// the search box no longer holds — an operator picking the
-				// asset they can see and getting a different one.
+				// A search is already out. The reply's generation now drops
+				// the loser of a race outright, but firing a second search is
+				// still the wrong answer to this key: it would leave the
+				// operator watching a lookup whose result is discarded, and it
+				// is the sequence that used to leave the rows on screen
+				// belonging to a query the search box no longer held.
 				//
 				// This declines rather than cancelling, which is why the
 				// typing arm of assetPickBar stops naming enter here: a key
@@ -1572,10 +1625,16 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		s.phase = poPhaseSource
 		return s, nil
 	case "j", "down":
+		if len(s.assets) == 0 {
+			return s, s.assetEmptyNote("nothing to move through")
+		}
 		if s.assetsCursor < len(s.assets)-1 {
 			s.assetsCursor++
 		}
 	case "k", "up":
+		if len(s.assets) == 0 {
+			return s, s.assetEmptyNote("nothing to move through")
+		}
 		if s.assetsCursor > 0 {
 			s.assetsCursor--
 		}
@@ -1632,12 +1691,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		)
 	case "enter":
 		if len(s.assets) == 0 {
-			// Same dead end the item picker had: nothing to pick is a fact the
-			// operator has to be told, not a reason to answer with nil.
-			if q := strings.TrimSpace(s.assetsQuery); q != "" {
-				return s, s.assetsNote.say("nothing to pick · no asset matches "+strconv.Quote(pickerClip(q, 16))+"\n/ edits the search · b picks another source", StatusWarn)
-			}
-			return s, s.assetsNote.say("no assets to pick\nb picks another line source", StatusWarn)
+			return s, s.assetEmptyNote("nothing to pick")
 		}
 		if s.assetsCursor < 0 || s.assetsCursor >= len(s.assets) {
 			s.assetsCursor = 0
@@ -1660,6 +1714,26 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		)
 	}
 	return s, nil
+}
+
+// assetEmptyNote answers any key that acts on a row when the picker is drawing
+// a list with no rows in it. Every such key gets the SAME sentence with a
+// different lead: enter, j and k all used to reach separate arms, and the two
+// cursor arms answered with nil — a byte-for-byte identical pane, which is the
+// reported hang's exact shape one key over from where it was reported.
+//
+// It words the outcome from assetsQuery, never the live box: that query is what
+// the rows on screen actually answer, and a box the operator typed into without
+// pressing enter has run nothing.
+func (s *PurchaseOrderCreateScreen) assetEmptyNote(lead string) tea.Cmd {
+	if lead != "" {
+		lead += " · "
+	}
+	if q := strings.TrimSpace(s.assetsQuery); q != "" {
+		return s.assetsNote.say(lead+"no asset matches "+strconv.Quote(pickerClip(q, 16))+
+			"\n/ edits the search · b picks another source", StatusWarn)
+	}
+	return s.assetsNote.say(lead+"this supplier has no assets on file\n"+pickerWayOut, StatusWarn)
 }
 
 // assetsSearchClosedNote answers esc out of the asset search box. It has to
