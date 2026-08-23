@@ -713,7 +713,7 @@ func (s *AssetPartFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks · required"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -730,7 +730,7 @@ func (s *AssetPartFormScreen) formLines() *jdeLines {
 		heading += "  " + StyleMuted.Render("of ") + s.assetName
 	}
 	l.Add(heading)
-	l.AddFields(fields, jdeLabelWidth(fields), 0)
+	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
 	return l
 }
 
@@ -781,7 +781,7 @@ func (s *AssetPartFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickOptions[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  "(no matching inventory items)",
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *AssetPartFormScreen) viewPick() string {

@@ -189,8 +189,14 @@ func (s *InventoryItemFormScreen) supplierBand(l *jdeLines) {
 }
 
 // supplierRowKind is how a link's grid row is drawn, as an enum rather than as
-// the style itself: lipgloss renders flat in a test binary, so the treatment
-// only survives as a DECISION something can assert (sc-lmsi/sc-rdrk).
+// the style itself, so that the treatment survives as a DECISION something can
+// assert (sc-lmsi/sc-rdrk).
+//
+// It was once the ONLY way to assert it, because lipgloss renders flat in a test
+// binary. It is not any more: withColorProfile forces the sequences back on and
+// jdeCells (jde_cells_test.go) decodes a frame into cells carrying their
+// attributes. The enum stays because naming the four readings is clearer than
+// four inline styles — not because the render is unassertable.
 type supplierRowKind int
 
 const (

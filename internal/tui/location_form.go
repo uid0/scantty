@@ -556,7 +556,7 @@ func (s *LocationFormScreen) formFields() []jdeField {
 		case lfIsActive:
 			f.Kind, f.Value = jdeChoice, jdeYesNo(s.isActive)
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -567,7 +567,7 @@ func (s *LocationFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Location"))
 	l.Add("")
-	l.AddFields(s.formFields(), locationLabelWidth, 0)
+	l.AddFields(s.formFields(), locationLabelWidth, s.bodyWidth(), 0)
 	return l
 }
 
@@ -615,7 +615,7 @@ func (s *LocationFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickOptions[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  "(no matching locations)",
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *LocationFormScreen) viewPick() string {

@@ -384,7 +384,7 @@ func (s *SIGFormScreen) formFields() []jdeField {
 		out[i] = jdeField{
 			Label:   sigFieldLabel[id],
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.inputs[id], focused),
+			Input:   &s.inputs[id],
 			Width:   sigFieldWidth(id),
 			Hint:    sigFieldHint[id],
 			Focused: focused,
@@ -398,7 +398,7 @@ func (s *SIGFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("SIG"))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], sigLabelWidth))
+		l.AddRow(i, renderJDEField(fields[i], sigLabelWidth, s.bodyWidth()))
 		if id == sigfGroupEmail {
 			// Tagged with the row it is about, so the window keeps the note and
 			// the field it explains on screen together.

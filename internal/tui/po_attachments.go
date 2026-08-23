@@ -568,7 +568,7 @@ func (s *PurchaseOrderAttachmentsScreen) viewConfirmDelete() string {
 	body.Add("")
 	body.AddRow(0, renderJDEField(jdeField{
 		Label: "File", Kind: jdeValue, Value: fitCellIf(name, jdeStripWidth(s.bodyWidth(), 4)), Focused: true,
-	}, 4))
+	}, 4, s.bodyWidth()))
 	body.Add("")
 	for _, line := range jdeCaveatLines(
 		"Removes the file from this purchase order. This cannot be undone, and the server allows it only for staff.",
@@ -596,18 +596,13 @@ func (s *PurchaseOrderAttachmentsScreen) viewUpload() string {
 		fields[i] = jdeField{
 			Label:   poAttachLabels[i],
 			Kind:    jdeText,
+			Input:   &s.uploadInputs[i],
 			Width:   34,
 			Hint:    poAttachHints[i],
 			Focused: s.uploadFocus == i,
 		}
 	}
-	// poFitInputValue, not jdeInputValue: a 500-character file path in a box
-	// nothing has bounded renders in full and walks off the pane. See the bead
-	// note on the helper in po_detail.go.
 	labelW := jdeLabelWidth(fields)
-	for i := range fields {
-		fields[i].Value = poFitInputValue(&s.uploadInputs[i], fields[i], labelW, s.bodyWidth(), fields[i].Focused)
-	}
 	body := &jdeLines{}
 	body.Add(StyleJDEHeading.Render("Upload attachment"))
 	body.Add("")

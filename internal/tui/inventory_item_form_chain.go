@@ -434,14 +434,14 @@ func (s *InventoryItemFormScreen) viewChainRow() string {
 		{
 			Label:   "Level name",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.chainRowName, s.chainRowFocus == chainRowFieldName),
+			Input:   &s.chainRowName,
 			Hint:    "required",
 			Focused: s.chainRowFocus == chainRowFieldName,
 		},
 		{
 			Label:   capitalizeFirst(pluralizeUnit(unit, 2)) + " held",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.chainRowUnits, s.chainRowFocus == chainRowFieldUnits),
+			Input:   &s.chainRowUnits,
 			Width:   10,
 			Hint:    "whole number · the innermost level holds 1",
 			Focused: s.chainRowFocus == chainRowFieldUnits,
@@ -462,7 +462,7 @@ func (s *InventoryItemFormScreen) viewChainRow() string {
 	l.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf(
 		"How many %s one of these holds.", pluralizeUnit(unit, 2))))
 	l.Add("")
-	l.AddFields(fields, jdeLabelWidth(fields), 0)
+	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
 
 	items := []actionBarItem{{"Enter", "Save level"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if s.chainRowFocus == chainRowFieldRemove {

@@ -95,6 +95,22 @@ note, and is the authority):
   shows a cut line. Assert against `Root.View()` at 80/100/120 —
   `internal/tui/po_view_jde_test.go` is the pattern (and `poSeenWhileScrolling`
   for a body taller than the pane).
+- **A typed row is handed to the layer as a BOX, never as a string.** Build it
+  with `jdeField{Kind: jdeText, Input: &box}` and pass the pane to
+  `renderJDEField` / `AddFields`; `jdeFitInputValue` then bounds the box, keeps
+  the caret inside the field and leaves the fill for the reverse-video
+  highlight. A row that renders its own `textinput.View()` is unbounded, and
+  bubbles gives a box no scrolling window at all at `Width 0`, so the value walks
+  off the pane and the caret goes with it. `jde_form.go` carries the full note;
+  `TestJDEForm_EveryTextRowIsSizedByTheLayer` enforces it over the package source
+  so a new sheet cannot opt out.
+- **Colour and reverse video ARE testable — force the profile.** lipgloss strips
+  every sequence when stdout is not a TTY, which is always in a test binary, so a
+  lost highlight and a present one are byte-identical and a width assertion sees
+  nothing. `withColorProfile(t, termenv.TrueColor)` turns them back on and
+  `jdeCells` (`internal/tui/jde_cells_test.go`) decodes a frame into cells with
+  their attributes. Any claim about what an operator SEES belongs there, not in a
+  comment saying no test can catch it.
 - **Viewing screens** use the read-only half of the columnar layer:
   `jdeScreen.frameScrolled` (scroll offset, not a cursor) and
   `renderActionBarWrapped` (a bar of a dozen order-level keys folds onto several

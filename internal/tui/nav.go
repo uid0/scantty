@@ -60,10 +60,15 @@ type navRow struct {
 }
 
 // navRowKind is which of the four readings a row gets. It exists as an enum
-// rather than as a style picked inline in View because lipgloss renders PLAIN
-// in a test binary (no TTY, ASCII profile), so the cursor row and an ordinary
-// row produce byte-identical strings — the only honest way to assert the focus
-// treatment is on the decision, not on its output.
+// rather than as a style picked inline in View so that the focus treatment can
+// be asserted as a decision.
+//
+// The reason it HAD to be was that lipgloss renders PLAIN in a test binary (no
+// TTY, ASCII profile), so the cursor row and an ordinary row produce
+// byte-identical strings. That is no longer a dead end: withColorProfile forces
+// the profile and jdeCells (jde_cells_test.go) decodes the frame into attributed
+// cells, so the OUTPUT is assertable too when what is being pinned is what the
+// operator sees.
 type navRowKind int
 
 const (

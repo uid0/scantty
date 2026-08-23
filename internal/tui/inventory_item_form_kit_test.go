@@ -500,7 +500,7 @@ func TestItemFormKit_EveryPhaseSurvivesTheClip(t *testing.T) {
 		labelWidth := jdeLabelWidth(fields)
 		for i, id := range s.fields {
 			if id == fKitComponents {
-				check("the components row", []string{renderJDEField(fields[i], labelWidth)})
+				check("the components row", []string{renderJDEField(fields[i], labelWidth, 0)})
 			}
 		}
 

@@ -26,7 +26,7 @@ func TestJDEField_ColumnarLayout(t *testing.T) {
 		t.Fatalf("label column = %d, want the widest label (%d)", w, len("Date ordered"))
 	}
 
-	lines := renderJDEFields(fields)
+	lines := renderJDEFields(fields, 0)
 	// Every leader starts at the same column: that is what "right-aligned into
 	// a common column" has to mean for the block to read as one sheet.
 	col := -1
@@ -63,8 +63,8 @@ func TestJDEField_ColumnarLayout(t *testing.T) {
 // has to look different, and the columns must not shift when it does — a form
 // whose leaders moved as the cursor walked it would be unreadable.
 func TestJDEField_FocusIsVisibleWithoutMovingAnything(t *testing.T) {
-	blurred := renderJDEField(jdeField{Label: "Supplier", Kind: jdeText, Value: "Acme", Width: 12}, 12)
-	focused := renderJDEField(jdeField{Label: "Supplier", Kind: jdeText, Value: "Acme", Width: 12, Focused: true}, 12)
+	blurred := renderJDEField(jdeField{Label: "Supplier", Kind: jdeText, Value: "Acme", Width: 12}, 12, 0)
+	focused := renderJDEField(jdeField{Label: "Supplier", Kind: jdeText, Value: "Acme", Width: 12, Focused: true}, 12, 0)
 
 	if blurred == focused {
 		t.Fatal("a focused row must render differently from a blurred one")
@@ -88,7 +88,7 @@ func TestJDEField_LongLabelCannotWidenTheColumnForever(t *testing.T) {
 	if w := jdeLabelWidth([]jdeField{{Label: long}}); w != jdeLabelMaxWidth {
 		t.Errorf("label column = %d, want it capped at %d", w, jdeLabelMaxWidth)
 	}
-	line := renderJDEField(jdeField{Label: long, Kind: jdeValue, Value: "v"}, jdeLabelMaxWidth)
+	line := renderJDEField(jdeField{Label: long, Kind: jdeValue, Value: "v"}, jdeLabelMaxWidth, 0)
 	if at := strings.Index(line, jdeLeader); at != len(jdeIndent)+jdeLabelMaxWidth {
 		t.Errorf("an over-long label should be truncated into the column, leader at %d: %q", at, line)
 	}

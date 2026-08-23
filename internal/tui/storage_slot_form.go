@@ -693,7 +693,7 @@ func (s *StorageSlotFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -725,8 +725,8 @@ func (s *StorageSlotFormScreen) formLines() *jdeLines {
 		Value: s.currentCodePreview(),
 		Dim:   true,
 		Hint:  s.codeHint(),
-	}, storageLabelWidth))
-	l.AddFields(fields, storageLabelWidth, 0)
+	}, storageLabelWidth, s.bodyWidth()))
+	l.AddFields(fields, storageLabelWidth, s.bodyWidth(), 0)
 	return l
 }
 
@@ -817,7 +817,7 @@ func (s *StorageSlotFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickRows[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  "(no matching SIGs)",
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *StorageSlotFormScreen) viewPicker() string {

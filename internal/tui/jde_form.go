@@ -51,9 +51,16 @@ import (
 type jdeFieldKind int
 
 const (
-	// jdeText is a bubbles textinput. Value is its already-rendered View(),
-	// which carries the cursor, so this file never re-styles it — it only
-	// fills the rest of the input area.
+	// jdeText is a bubbles textinput, and the row hands this layer the BOX
+	// itself in Input — never a string it rendered on its own. The layer calls
+	// View() (jdeFitInputValue), because the typed value and the underscored
+	// fill after it are two halves of ONE width and only jdeFieldArea knows
+	// that width: a caller that pre-renders its own value leaves the layer able
+	// to measure the result but not to bound it, which is how a long typed
+	// value used to walk out of the pane with the caret behind it (sc-jde-tiw).
+	// jdeFitInputValue sizes a COPY of the box, so this stays a pure render;
+	// see the note on jdeField.Input. It is the ZERO VALUE of this type, so a
+	// row that names no Kind is a text row too.
 	jdeText jdeFieldKind = iota
 	// jdeChoice is a fixed choice set, drawn "< value >" — the universal
 	// signal for ←/→.
@@ -67,9 +74,28 @@ const (
 type jdeField struct {
 	Label string
 	Kind  jdeFieldKind
-	// Value is plain text for jdeChoice / jdeValue, and the pre-rendered
-	// textinput View() for jdeText.
+	// Value is plain text for jdeChoice / jdeValue. A jdeText row carries its
+	// box in Input instead and leaves this empty — see the note there.
 	Value string
+	// Input is the bubbles box a jdeText row is typed into, and is how a text
+	// row is meant to be built: hand the LAYER the box rather than the string
+	// it renders to.
+	//
+	// It is a pointer only so that "no box" is expressible; nothing here ever
+	// writes through it. jdeFitInputValue takes a COPY and sizes that, because
+	// sizing is a property of the row being drawn, not of the operator's box:
+	// two frames at two terminal widths must not leave the box in different
+	// states, and a View() that mutated the model would be a side effect in the
+	// one place bubbletea guarantees there is none.
+	//
+	// A caller that sets Value on a jdeText row instead is drawing its own
+	// unbounded string, which is the defect this layer now owns (sc-jde-tiw):
+	// jdeFitRow sized the underscored FILL and nobody sized the box, so a long
+	// typed value walked straight out of the pane with the caret behind it.
+	// Bounding lives here, once, so that every converted sheet gets it — and
+	// so that the four purchasing sheets could delete the local copy of it that
+	// had already grown two workarounds of its own.
+	Input *textinput.Model
 	// Width is the input area a jdeText row fills with underscores (unfocused)
 	// or a reverse-video run (focused). Zero takes jdeFieldWidth.
 	Width int
@@ -140,7 +166,16 @@ func jdeLabelFields(labels map[int]string) []jdeField {
 
 // renderJDEField draws one row: the right-aligned label, the leader, the input
 // area, and any hint.
-func renderJDEField(f jdeField, labelWidth int) string {
+//
+// bodyWidth is the pane the row is being drawn into, and is not optional
+// decoration: it is what stops a text row from running past the edge of the
+// screen. 0 means "the pane is not sized yet", which — as everywhere in this
+// file — means "do not truncate". It is a parameter rather than a field on
+// jdeField so that the compiler asks every sheet for it; the fill this layer
+// draws was sized against a pane nobody had told it about for as long as it was
+// possible not to (sc-jde-tiw).
+func renderJDEField(f jdeField, labelWidth, bodyWidth int) string {
+	f.Width = jdePaneFieldWidth(f, labelWidth, bodyWidth)
 	label := f.Label
 	if n := lipgloss.Width(label); n > labelWidth {
 		label = truncateVisible(label, labelWidth)
@@ -162,6 +197,50 @@ func renderJDEField(f jdeField, labelWidth int) string {
 	return row
 }
 
+// jdePaneFieldWidth is a text row's input area, capped at what is left of the
+// pane after the indent, the label column and the leader.
+//
+// It is the floor under the whole sizing rule, and it is deliberately separate
+// from jdeFitRow. jdeFitRow is a LAYOUT decision a sheet opts into: it trades
+// the field against the hint and folds the hint underneath when neither fits.
+// This is not a decision at all — it is the edge of the screen.
+//
+// Bounding the BOX to the row is not enough on its own, which is what the first
+// run at this bead got wrong. A sheet that declares a 40-column field behind a
+// 30-column label has 21 columns at 80, so a box sized to 40 still hands back 40
+// and clampToBox drops the other 19 — and what is drawn last, and therefore lost
+// first, is the caret at the end of the value. That is the defect exactly: the
+// operator is typing into a field whose cursor is not on the screen. Every
+// unfitted sheet in the package had it, po_edit and the inventory forms
+// included, and it is why this cap is applied on the way into every row rather
+// than left to the sheets that had opted into jdeFitRow.
+//
+// Nothing on screen moves because of it. The fill it shortens is fill clampToBox
+// was cutting anyway, and a hint sitting past the fill is still past the pane
+// afterwards — which is exactly why the fold is jdeFitRow's job and not this
+// one's.
+//
+// Only a text row has an input area to cap. A jdeValue or jdeChoice row draws
+// its value at whatever width the value is, and shortening THAT is a content
+// decision each sheet already makes for itself (poFitLineGrid, fitCellIf).
+func jdePaneFieldWidth(f jdeField, labelWidth, bodyWidth int) int {
+	width := f.Width
+	if f.Kind != jdeText || bodyWidth <= 0 {
+		return width
+	}
+	if width <= 0 {
+		width = jdeFieldWidth
+	}
+	avail := bodyWidth - (len(jdeIndent) + labelWidth + len(jdeLeader))
+	if avail < 1 {
+		avail = 1
+	}
+	if width > avail {
+		width = avail
+	}
+	return width
+}
+
 // jdeFieldArea renders the input area alone — the part right of the leader.
 func jdeFieldArea(f jdeField) string {
 	switch f.Kind {
@@ -179,32 +258,130 @@ func jdeFieldArea(f jdeField) string {
 		return jdeValueText(f)
 
 	default:
-		// A text row: the textinput has drawn the value and its own cursor, so
-		// all that is left is to fill the field out to its width. Unfocused
-		// that fill is the underscored run of a green-screen form; focused it
-		// is a solid reverse-video field, which is what makes the row the
-		// operator is standing in unmistakable without moving any columns.
+		// A text row: the box has drawn the value and its own cursor, so all
+		// that is left is to fill the field out to its width. Unfocused that
+		// fill is the underscored run of a green-screen form; focused it is a
+		// solid reverse-video field, which is what makes the row the operator is
+		// standing in unmistakable without moving any columns.
 		//
-		// This holds only while the CALLER leaves a fill to draw. A caller that
-		// bounds its textinput (bubbles pads the value out to Width itself)
-		// arrives here with fill 0 and gets no highlight at all — see
-		// poFitInputValue in po_detail.go, and bead scantty-jde-textinput-width,
-		// which moves that bounding in here. No test catches the difference:
-		// lipgloss renders flat in a test binary, so a lost highlight and a
-		// present one are byte-identical.
+		// The value is rendered HERE rather than by the caller because the fill
+		// and the value are two halves of one width, and only this line knows
+		// what that width is. jdeFitInputValue is what keeps the value from
+		// eating the fill: a box left to its own devices renders its whole
+		// value, so a long one used to leave fill 0 (no highlight) and a row
+		// several columns past the pane (no visible caret).
 		width := f.Width
 		if width <= 0 {
 			width = jdeFieldWidth
 		}
-		fill := width - lipgloss.Width(f.Value)
+		value := f.Value
+		if f.Input != nil {
+			value = jdeFitInputValue(*f.Input, f.Focused, width)
+		}
+		fill := width - lipgloss.Width(value)
 		if fill < 0 {
 			fill = 0
 		}
 		if f.Focused {
-			return f.Value + StyleJDEFieldFocused.Render(strings.Repeat(" ", fill))
+			return value + StyleJDEFieldFocused.Render(strings.Repeat(" ", fill))
 		}
-		return f.Value + StyleJDEInput.Render(strings.Repeat("_", fill))
+		return value + StyleJDEInput.Render(strings.Repeat("_", fill))
 	}
+}
+
+// jdeFitInputValue renders one bubbles box as the string a text row hangs off,
+// bounded to the input area the row was given. It is the whole of the sizing
+// rule for typed values, and it applies to EVERY text row on every converted
+// sheet — there is no second copy of it (sc-jde-tiw closed the one there was).
+//
+// The rule is one sentence: what a text row draws never exceeds its input area,
+// caret included. Three separate faults hid behind that sentence, and each is
+// answered by a specific line below.
+//
+//  1. THE BOX HAS NO VIEWPORT AT Width 0. bubbles v1.0.0 returns early from
+//     handleOverflow when Width <= 0, so View() draws the ENTIRE value: a
+//     60-column path typed into a 34-column field rendered 60 columns, the row
+//     ran past the pane, clampToBox cut it, and the caret was off-screen — the
+//     operator typing blind. Giving the box a Width gives it back the scrolling
+//     window that keeps the caret in view.
+//
+//  2. THE CARET SITS ONE CELL PAST Width. A focused box renders Width+1
+//     columns: the pad loop tops the value up to Width and the cursor takes a
+//     cell of its own after it (or the pad gains one when the cursor is inside
+//     the value). So the box is asked for one column LESS than the row has.
+//
+//  3. A BOUNDED BOX PADS, AND THE PAD IS THE FILL. bubbles pads the value out
+//     to Width itself whenever the value fits, which left jdeFieldArea nothing
+//     to draw — fill 0, no reverse-video block, and no way to see which row the
+//     cursor was on. The local fix for that was to hand the box
+//     StyleJDEFieldFocused as its TextStyle, which bubbles then applied to the
+//     VALUE RUNES too, so a focused row drew its typed value fully reversed
+//     where the pilot draws it plain. Both are avoided by not letting the box
+//     pad at all: a value that FITS is drawn by an unbounded box (Width 0),
+//     which is exactly what the pilot has always done, and the fill is left to
+//     jdeFieldArea. A value that does NOT fit fills the area by itself, so
+//     there is no fill to lose. Either way the value is plain text and only the
+//     fill is reversed.
+//
+// The re-seat is not optional. bubbles computes its scrolling window in
+// SetCursor, not in View, and handleOverflow only recomputes when the cursor has
+// fallen OUTSIDE the current window — so a Width imposed on a box whose window
+// still spans the whole value changes nothing on screen. CursorEnd() forces the
+// recompute (the cursor is then past the right edge by construction) and
+// SetCursor puts it back.
+//
+// A blurred row is bounded HERE and not by the box, because jdeInputValue hands
+// back the raw value for one — jdeEchoValue reads it out directly so a masked
+// field cannot give up its mask — and a raw value has had no window applied to
+// it. fitCell rather than a silent cut: an operator proof-reading a path before
+// pressing Enter must not be shown a shortened one that reads whole.
+//
+// Anything carrying an escape sequence is returned UNCUT. Cutting rendered text
+// by runes drops the trailing SGR reset or lands inside a sequence, and what the
+// terminal then draws is whatever state the cut left it in rather than a merely
+// shortened row. What bounds those is the Width imposed before bubbles rendered
+// anything, which is the only place a bound on styled output belongs.
+//
+// The one case it cannot hold is an input area of 1 column or less, where a
+// focused box still costs 2 (a rune and its caret). That is a pane narrower than
+// its own label column, and a one-column overrun is the least of what is wrong
+// with it.
+func jdeFitInputValue(ti textinput.Model, focused bool, area int) string {
+	if area <= 0 {
+		area = jdeFieldWidth
+	}
+	// The prompt is drawn INSIDE the box and outside its Width accounting, so
+	// it comes off the budget here. Every box on these sheets clears it; the
+	// arithmetic does not depend on that staying true.
+	fits := area - 1 - lipgloss.Width(ti.Prompt)
+
+	// What View() will actually draw. An empty box with a placeholder draws the
+	// PLACEHOLDER — the one string on a text row that is not the value, and one
+	// that is routinely longer than the field it is offered in.
+	drawn := ti.Value()
+	if drawn == "" && ti.Placeholder != "" {
+		drawn = ti.Placeholder
+	}
+	if lipgloss.Width(drawn) <= fits {
+		// It fits: leave the viewport OFF, which is what the pilot has always
+		// done and what leaves bubbles nothing to pad — so the fill, and with it
+		// the highlight, stays jdeFieldArea's to draw.
+		ti.Width = 0
+	} else {
+		ti.Width = fits
+		if ti.Width < 1 {
+			ti.Width = 1
+		}
+	}
+	pos := ti.Position()
+	ti.CursorEnd()
+	ti.SetCursor(pos)
+
+	value := jdeInputValue(ti, focused)
+	if strings.ContainsRune(value, '\x1b') {
+		return value
+	}
+	return fitCell(value, area)
 }
 
 // jdeColorRow finishes a hex-colour text row: the sample of what the value is,
@@ -231,12 +408,16 @@ func jdeValueText(f jdeField) string {
 	return f.Value
 }
 
-// jdeInputValue is what a jdeText row should carry for a bubbles textinput:
-// the live View() when the row has focus — it draws the cursor — and the plain
-// value when it does not. A blurred textinput still renders a cursor cell, and
-// in a columnar form that reads as a stray gap between the value and the
-// underscores filling the rest of the field. A field showing its placeholder
-// keeps View(), which is the only thing that renders one.
+// jdeInputValue is what a jdeText row draws for a bubbles textinput: the live
+// View() when the row has focus — it draws the cursor — and the plain value when
+// it does not. A blurred textinput still renders a cursor cell, and in a
+// columnar form that reads as a stray gap between the value and the underscores
+// filling the rest of the field. A field showing its placeholder keeps View(),
+// which is the only thing that renders one.
+//
+// It is the UNBOUNDED half of the job and is not what a screen should call:
+// jdeFitInputValue wraps it with the sizing, and a row hands the layer its box
+// through jdeField.Input.
 func jdeInputValue(ti textinput.Model, focused bool) string {
 	if focused || (ti.Value() == "" && ti.Placeholder != "") {
 		return ti.View()
@@ -260,11 +441,11 @@ func jdeEchoValue(ti textinput.Model) string {
 }
 
 // renderJDEFields is the convenience form: one block, its own label column.
-func renderJDEFields(fields []jdeField) []string {
+func renderJDEFields(fields []jdeField, bodyWidth int) []string {
 	w := jdeLabelWidth(fields)
 	out := make([]string, len(fields))
 	for i, f := range fields {
-		out[i] = renderJDEField(f, w)
+		out[i] = renderJDEField(f, w, bodyWidth)
 	}
 	return out
 }
@@ -391,8 +572,9 @@ func fitCell(s string, w int) string {
 // accounting on the PLAIN text and renders each token whole afterwards — which
 // is what keeps a line from ever being cut through an escape sequence. Holding
 // the style as a value also lets a test assert the styling contract on the
-// STRUCT, which is the only place it survives (lipgloss renders flat in a test
-// binary — sc-lmsi).
+// STRUCT (sc-lmsi) — and, since jde_cells_test.go, on the rendered frame as
+// well: lipgloss renders flat in a test binary only until the profile is
+// forced.
 type jdeToken struct {
 	text  string
 	style lipgloss.Style
@@ -559,9 +741,9 @@ func (l *jdeLines) AddRow(row int, text string) {
 // shape of every columnar form whose rows are simply its fields. A form that has
 // to interleave something (an option strip under the focused row, a derived
 // preview under the one it is derived from) adds those lines itself.
-func (l *jdeLines) AddFields(fields []jdeField, labelWidth, rowBase int) {
+func (l *jdeLines) AddFields(fields []jdeField, labelWidth, bodyWidth, rowBase int) {
 	for i, f := range fields {
-		l.AddRow(rowBase+i, renderJDEField(f, labelWidth))
+		l.AddRow(rowBase+i, renderJDEField(f, labelWidth, bodyWidth))
 	}
 }
 
@@ -879,7 +1061,11 @@ type jdePickList struct {
 // render returns the pinned header and the scrollable body, ready for
 // frameWithHeader. Each option line is tagged with its own index, so the frame
 // windows the list around the selection with no second windowing pass.
-func (p jdePickList) render() ([]string, *jdeLines) {
+//
+// bodyWidth is the pane, for the same reason renderJDEField takes one: the
+// filter box is a text row like any other, and an operator who has pasted a long
+// string into it must still be able to see the caret.
+func (p jdePickList) render(bodyWidth int) ([]string, *jdeLines) {
 	head := StyleJDEHeading.Render(p.Title)
 	if p.For != "" {
 		head += "  " + StyleMuted.Render("for ") + p.For
@@ -893,12 +1079,12 @@ func (p jdePickList) render() ([]string, *jdeLines) {
 	filter := jdeField{
 		Label:   "Filter",
 		Kind:    jdeText,
-		Value:   jdeInputValue(box, true),
+		Input:   &box,
 		Width:   30,
 		Hint:    "type to narrow the list",
 		Focused: true,
 	}
-	header := []string{head, renderJDEFields([]jdeField{filter})[0], ""}
+	header := []string{head, renderJDEFields([]jdeField{filter}, bodyWidth)[0], ""}
 	if p.Note != "" {
 		header = append(header, jdeIndent+StyleMuted.Render(p.Note), "")
 	}
@@ -1299,12 +1485,12 @@ const jdeMinFieldWidth = 10
 //	                           area (jdeNoteLines), which is the fold this layer
 //	                           already uses for a note too long to ride along.
 //
-// What it does NOT size is the bubbles textinput that produced f.Value. That
-// box has its own Width, and in bubbles v1.0.0 a Width of 0 means "no scrolling
-// viewport": View() then renders the WHOLE value, so a long value walks straight
-// past the width computed here and out of the pane. Bounding the box is the
-// CALLER's job today — see poFitInputValue in po_detail.go — and moving it in
-// here is bead scantty-jde-textinput-width.
+// What it sizes is the ROW. The box that fills it is bounded to the Width set
+// here by jdeFitInputValue, at render time, for every text row on every sheet —
+// including the ones that never call this function, which are bounded to the
+// input area they declared instead. The two halves have to stay in step: a row
+// sized here and a value sized nowhere is how a typed value used to walk out of
+// the pane (sc-jde-tiw).
 //
 // bodyWidth of 0 means the pane is not sized yet, which — as everywhere in this
 // file — means "do not truncate".
@@ -1352,7 +1538,7 @@ func jdeFitRow(f jdeField, labelWidth, bodyWidth int) (jdeField, []string) {
 func (l *jdeLines) AddFittedFields(fields []jdeField, labelWidth, bodyWidth, rowBase int) {
 	for i, f := range fields {
 		fitted, notes := jdeFitRow(f, labelWidth, bodyWidth)
-		l.AddRow(rowBase+i, renderJDEField(fitted, labelWidth))
+		l.AddRow(rowBase+i, renderJDEField(fitted, labelWidth, bodyWidth))
 		for _, note := range notes {
 			l.AddRow(rowBase+i, note)
 		}

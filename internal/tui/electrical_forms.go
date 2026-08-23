@@ -928,7 +928,7 @@ func (s *PowerPanelFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -940,7 +940,7 @@ func (s *PowerPanelFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Power panel"))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth))
+		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth, s.bodyWidth()))
 		// The set around the FOCUSED choice row, so eleven breaker families are
 		// never cycled blind (jdeOptionStrip returns nothing for a yes/no).
 		if i == s.cursor {
@@ -1057,7 +1057,7 @@ func (s *PowerPanelFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickOptions[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  empty,
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *PowerPanelFormScreen) viewPick() string {
@@ -1850,7 +1850,7 @@ func (s *PowerBreakerFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -1890,7 +1890,7 @@ func (s *PowerBreakerFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Breaker"))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth))
+		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth, s.bodyWidth()))
 		if i == s.cursor {
 			if strip := s.selectStrip(id); strip != "" {
 				l.AddRow(i, jdeStripIndent(elecLabelWidth)+StyleMuted.Render(strip))
@@ -1981,7 +1981,7 @@ func (s *PowerBreakerFormScreen) pickView() ([]string, *jdeLines) {
 		Label:  func(i int) string { return s.pickOptions[i].label },
 		Cursor: s.pickCursor,
 		Empty:  "(no matching panels)",
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *PowerBreakerFormScreen) viewPick() string {
@@ -2575,7 +2575,7 @@ func (s *PowerCircuitFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -2601,9 +2601,9 @@ func (s *PowerCircuitFormScreen) formLines() *jdeLines {
 	fields := s.formFields()
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Circuit"))
-	l.AddFields(fields, elecLabelWidth, 0)
+	l.AddFields(fields, elecLabelWidth, s.bodyWidth(), 0)
 	// Drawn with Add, not AddRow: there is nothing to navigate to.
-	l.Add(renderJDEField(s.maxLoadField(), elecLabelWidth))
+	l.Add(renderJDEField(s.maxLoadField(), elecLabelWidth, s.bodyWidth()))
 	return l
 }
 
@@ -2654,7 +2654,7 @@ func (s *PowerCircuitFormScreen) pickView() ([]string, *jdeLines) {
 		Label:  func(i int) string { return s.pickOptions[i].label },
 		Cursor: s.pickCursor,
 		Empty:  "(no matching breakers)",
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *PowerCircuitFormScreen) viewPick() string {

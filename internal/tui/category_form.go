@@ -622,7 +622,7 @@ func (s *CategoryFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks"
 			}
 		} else {
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 			if id == cfColor {
 				// Live off the input, not off the loaded record: the sample has
 				// to track what is being TYPED, which is the whole point of it.
@@ -641,7 +641,7 @@ func (s *CategoryFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Category details"))
 	for i, f := range fields {
-		l.AddRow(i, renderJDEField(f, labelWidth))
+		l.AddRow(i, renderJDEField(f, labelWidth, s.bodyWidth()))
 		if s.fields[i] == cfName {
 			// The slug is DERIVED from the name and generated server-side, so it
 			// belongs under the field it comes from rather than in a band of its
@@ -704,7 +704,7 @@ func (s *CategoryFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickOptions[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  "(no matching categories)",
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *CategoryFormScreen) viewPick() string {
