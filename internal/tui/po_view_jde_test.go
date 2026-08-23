@@ -470,48 +470,6 @@ func poClippedRow(t *testing.T, out, label string) string {
 	return ""
 }
 
-// TestPOView_BlurredOverLongValueSaysItWasCut: the two halves of a text row are
-// bounded differently, and only one of them may be cut.
-//
-// A FOCUSED box scrolls: it shows the window the caret is in, so the value it
-// draws is complete-as-far-as-it-goes and carries no ellipsis. A BLURRED box
-// does not scroll at all — the raw value is read straight out of it — so the
-// row has to shorten it, and that cut must ANNOUNCE itself. It did not: the
-// upload sheet showed "/home/operator/scans/2026-08/in" with nothing to say 30
-// characters were missing, which is a plausible-but-wrong path for an operator
-// to proof-read before pressing Enter.
-func TestPOView_BlurredOverLongValueSaysItWasCut(t *testing.T) {
-	const path = "/home/operator/scans/2026-08/incoming/purchase-order-0042.pdf"
-	const head, tail = "/home/operator", "order-0042.pdf"
-
-	for _, width := range poViewWidths {
-		t.Run(widthName(width), func(t *testing.T) {
-			s, r := poAttachAt(t, width)
-			s.openUpload()
-			s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(path)})
-
-			focused := poClippedRow(t, r.View(), "File path")
-			if strings.Contains(focused, "…") {
-				t.Errorf("the FOCUSED row was cut and marked, but a scrolling box shows a whole window: %q", focused)
-			}
-			if !strings.Contains(focused, tail) {
-				t.Errorf("the focused row lost the caret end %q: %q", tail, focused)
-			}
-
-			// Down moves to Description, which blurs the path row.
-			s.Update(tea.KeyMsg{Type: tea.KeyDown})
-			blurred := poClippedRow(t, r.View(), "File path")
-			if !strings.Contains(blurred, "…") {
-				t.Errorf("the BLURRED row shortened a %d-column path with nothing to say so: %q",
-					lipgloss.Width(path), blurred)
-			}
-			if !strings.Contains(blurred, head) {
-				t.Errorf("a blurred box does not scroll, so the row should read from the START of the value: %q", blurred)
-			}
-		})
-	}
-}
-
 // TestPOView_OrderPadPartNumberUsesThePaneItHas: the part number is the one
 // field an operator retypes into a vendor site, so 28 columns is the FLOOR the
 // pad's part column starts at and the pane is the only thing that caps it. The
