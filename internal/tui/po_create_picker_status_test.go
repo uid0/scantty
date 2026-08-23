@@ -61,7 +61,30 @@ type poPickFake struct {
 	failItems   bool
 	failAssets  bool
 	failReorder bool
+
+	// failCreate answers the submit with a gateway page rather than JSON.
+	// omsapi.parseError puts the ENTIRE raw body in APIError.Message when the
+	// envelope carries no code, which is what makes the failure line on the
+	// last step of this flow an unbounded string — the case the screen's own
+	// error surface went four rounds without folding or budgeting.
+	failCreate bool
+
+	// OMS-supplied names long enough to exercise the 51-column pane. Every
+	// other fixture uses "Acme Supply" and "Annual 1", which is why the
+	// supplier header shipped unbounded: at those widths it never reached the
+	// cut it was drawn past for a real supplier.
+	supplierName  string
+	agreementName string
 }
+
+// poGatewayHTML is the shape of body a proxy, WAF or Django debug page returns:
+// several hundred characters, no JSON envelope, and newlines in it.
+const poGatewayHTML = `<!DOCTYPE html>
+<html><head><title>502 Bad Gateway</title></head>
+<body><h1>502 Bad Gateway</h1><p>The upstream server did not respond to the ` +
+	`request in time and the gateway gave up waiting on it. Retry the request ` +
+	`or contact the administrator of the OpenMakerSuite deployment if this ` +
+	`keeps happening for every order you try to submit.</p></body></html>`
 
 // seen is every request the fake has served, so a test can assert what a
 // lookup CARRIED and not merely that one happened.
@@ -166,8 +189,12 @@ func (f *poPickFake) handler() http.HandlerFunc {
 		case strings.Contains(r.URL.Path, "/supplier-agreements/"):
 			rows := []map[string]any{}
 			for i := 0; i < f.agreements; i++ {
+				name := fmt.Sprintf("Annual %d", i+1)
+				if f.agreementName != "" {
+					name = f.agreementName
+				}
 				rows = append(rows, map[string]any{
-					"id": i + 1, "name": fmt.Sprintf("Annual %d", i+1), "supplier": 1,
+					"id": i + 1, "name": name, "supplier": 1,
 				})
 			}
 			envelope(rows, len(rows))
@@ -191,12 +218,23 @@ func (f *poPickFake) handler() http.HandlerFunc {
 				})
 			}
 			envelope(rows, len(rows))
+		case strings.Contains(r.URL.Path, "/purchase-orders/"):
+			if f.failCreate {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(poGatewayHTML))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 900, "po_number": "PO-900"})
 		case strings.Contains(r.URL.Path, "/suppliers/"):
 			n := f.suppliers
 			if n <= 0 {
 				n = 1
 			}
-			rows := []map[string]any{{"id": 1, "name": "Acme Supply"}}
+			first := "Acme Supply"
+			if f.supplierName != "" {
+				first = f.supplierName
+			}
+			rows := []map[string]any{{"id": 1, "name": first}}
 			for i := 2; i <= n; i++ {
 				rows = append(rows, map[string]any{"id": i, "name": fmt.Sprintf("Supplier %d", i)})
 			}
@@ -4018,5 +4056,206 @@ func TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline(t *testing.T) 
 				poAssertFits(t, fmt.Sprintf("review with a %d-line cart at 80x%d", want, h), screen)
 			})
 		}
+	}
+}
+
+// TestPOCreate_TheSupplierHeaderKeepsBothNamesOnThePane pins the one row that
+// is drawn on EVERY phase of this screen — including review, where it is the
+// last thing seen before submit.
+//
+// Both values on it are OMS-supplied and were unbounded, so at 51 columns
+// "Supplier: <name> (#1)  · agreement: <name>" was cut mid-agreement, and a
+// longer supplier name took the agreement and the `(#id)` off the row
+// altogether: the confirm-before-submit surface silently losing which pricing
+// agreement the order is placed under. Every other fixture on this screen names
+// the supplier "Acme Supply" and the agreement "Annual 1", which is exactly why
+// nothing saw it.
+func TestPOCreate_TheSupplierHeaderKeepsBothNamesOnThePane(t *testing.T) {
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			fake := &poPickFake{
+				catalog:       2,
+				agreements:    1,
+				supplierName:  "Northern Tool & Die Supply Company of Wisconsin",
+				agreementName: "Annual 2026 Structural Steel Contract",
+			}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			// g opens the agreement picker; row 1 is the first real agreement.
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+			if screen.phase != poPhaseAgreement {
+				t.Fatalf("g left the screen on phase %v, want the agreement picker", screen.phase)
+			}
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			_ = r
+			if screen.agreementID == nil {
+				t.Fatalf("the agreement was not committed")
+			}
+
+			what := fmt.Sprintf("supplier header at 80x%d", h)
+			poAssertFits(t, what, screen)
+
+			// The header is ONE row and it carries both facts: which supplier,
+			// and that a pricing agreement is attached. Neither may be the
+			// thing the pane drops.
+			header := ""
+			for _, line := range poPaneLinesAt(t, screen, h) {
+				if strings.Contains(line, "Supplier:") {
+					header = line
+					break
+				}
+			}
+			if header == "" {
+				t.Fatalf("no supplier header on the pane:\n%s",
+					strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+			}
+			// Both values are clipped at this width — 51 columns cannot hold
+			// two long OMS names — so what is pinned is that BOTH are still
+			// identifiable, the id among them, rather than one silently gone.
+			for _, want := range []string{"Northern", "(#1)", "agreement:", "Annu"} {
+				if !strings.Contains(header, want) {
+					t.Errorf("the header lost %q: %q", want, header)
+				}
+			}
+			// A clipped value says it was clipped, the way renderAssocValue's
+			// does — otherwise the operator reads a truncated agreement name as
+			// the whole of it.
+			if !strings.Contains(header, "…") {
+				t.Errorf("both names were shortened but nothing on the row says so: %q", header)
+			}
+		})
+	}
+}
+
+// TestPOCreate_AFailedSubmitSaysWhyWithoutTakingTheCartWithIt is requirement
+// (4) of the report on the LAST step of the flow: when it fails the screen must
+// say what went wrong and leave the operator somewhere they can act.
+//
+// The failure line was the one surface on this screen still written straight to
+// the pane, and its content is an OMS response body — omsapi.parseError puts
+// the ENTIRE raw payload in APIError.Message whenever the JSON envelope carries
+// no code, so a gateway's HTML page arrives here whole. Unfolded it was cut at
+// 51 columns to "✗ oms: http 502: <!DOCTYPE html><htm"; unbudgeted it was
+// counted as ONE row by frameRowsWith while rendering as several, so every
+// budget on the screen was computed against a wrong number and the line pushed
+// itself off the bottom of the source chooser entirely.
+//
+// Driven at both supported heights and asserted through the real clipped pane,
+// on the review phase where the failure happens AND on the source chooser the
+// operator reaches with esc, where the frame is tightest.
+func TestPOCreate_AFailedSubmitSaysWhyWithoutTakingTheCartWithIt(t *testing.T) {
+	const headline = "submitting this purchase order failed"
+
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			fake := &poPickFake{reorder: 15, catalog: 2, assets: 1,
+				committees: 1, failCreate: true}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}) // add all 15
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})                       // review → source chooser
+			r = poStageCostlessLine(t, r, screen)
+			if len(screen.lines) != 16 {
+				t.Fatalf("setup staged %d line(s), want 16", len(screen.lines))
+			}
+
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+			if screen.phase != poPhaseReview {
+				t.Fatalf("d left the screen on phase %v, want review", screen.phase)
+			}
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // submit → 502
+			if screen.errMsg == "" {
+				t.Fatalf("the submit failed and the screen recorded nothing")
+			}
+
+			what := fmt.Sprintf("review after a failed submit at 80x%d", h)
+			poAssertFits(t, what, screen)
+			poWantPaneLine(t, screen, headline)
+			// The operator is still in the field they were typing into: the
+			// failure line's rows are reserved, so the cart gives them up.
+			poWantPaneLine(t, screen, "PO notes:")
+			// The headline must not read as the whole story: either OMS's own
+			// words reach the pane folded under it, or the block says how many
+			// rows of them it hid. An 18-row pane under a 16-line cart has room
+			// for the second and not the first, which is the sacrifice order
+			// working rather than a silence.
+			if !poPaneHasLine(t, screen, "502") &&
+				!poPaneHasLine(t, screen, "more line(s) of the error") {
+				t.Errorf("the failure names neither a detail nor what it hid at 80x%d:\n%s",
+					h, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+			}
+
+			// esc carries the failure back to the source chooser, which is the
+			// tightest frame on this screen: four line sources, an optional
+			// committee row, the d row and a cart too long to list.
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+			_ = r
+			if screen.phase != poPhaseSource {
+				t.Fatalf("esc left the screen on phase %v, want the source chooser", screen.phase)
+			}
+
+			what = fmt.Sprintf("source chooser carrying a failed submit at 80x%d", h)
+			poAssertFits(t, what, screen)
+			poWantPaneLine(t, screen, headline)
+			poWantPaneLine(t, screen, "d  Done")
+
+			// The cart's VALUE is on the pane either way: listed with a total
+			// row when the rows fit, or carried by the collapsed sentence when
+			// they do not. It is the last thing this screen gives up, and the
+			// title is what goes instead.
+			if screen.cartListedOnScreen() {
+				poWantPaneLine(t, screen, "Total:")
+			} else {
+				poWantPaneLine(t, screen, "d lists the 16 line(s)")
+				poWantPaneLine(t, screen, "at least $")
+			}
+		})
+	}
+}
+
+// TestPOSourceChooser_TheTitleGivesBeforeTheCartsTotal pins the step of the
+// sacrifice order that makes "never the cart's total" true rather than lucky.
+//
+// cartHiddenSentence is ordered by what may be sacrificed — the key, the count
+// and "not listed here" lead it, so the TOTAL is what a one-row overflow takes.
+// With one optional row offered the chooser sits on an 18-row pane with nothing
+// spare, so the frame gives up "Where should this line come from?" and its
+// blank line: two rows naming no key, with the four r/i/a/f rows right under
+// them still saying what the screen is.
+func TestPOSourceChooser_TheTitleGivesBeforeTheCartsTotal(t *testing.T) {
+	const title = "Where should this line come from?"
+
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			fake := &poPickFake{reorder: 15, catalog: 2, assets: 1,
+				committees: 1, failCreate: true}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+			r = poStageCostlessLine(t, r, screen)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+			_ = r
+
+			poAssertFits(t, fmt.Sprintf("source chooser at 80x%d", h), screen)
+			if screen.sourceTitleShown() {
+				// Room for it: then it is drawn, and dropping it would be the
+				// "hiding a row that costs nothing" defect.
+				poWantPaneLine(t, screen, title)
+				return
+			}
+			poRejectPaneLine(t, screen, title)
+			// What the title bought: the whole cart sentence, total included.
+			poWantPaneLine(t, screen, "d lists the 16 line(s)")
+			poWantPaneLine(t, screen, "at least $")
+			// And the rows the title named are still there, so nothing the
+			// operator can act on went with it.
+			for _, row := range []string{"r  Reorder queue", "i  Inventory items",
+				"a  Assets purchased", "f  Freeform line"} {
+				poWantPaneLine(t, screen, row)
+			}
+		})
 	}
 }

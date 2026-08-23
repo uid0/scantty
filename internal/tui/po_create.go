@@ -78,6 +78,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -136,7 +137,18 @@ type PurchaseOrderCreateScreen struct {
 	deps    Deps
 	phase   poPhase
 	pending bool
-	errMsg  string
+
+	// The failure line View draws last: errMsg is the sentence the operator
+	// reads first, errDetail the unbounded half underneath it. They are two
+	// fields because omsapi.parseError puts the ENTIRE raw response body in
+	// APIError.Message whenever the JSON envelope carries no code, so a 502
+	// from a gateway or a Django debug page arrives here multi-KB — and the
+	// one line that used to carry it was neither folded nor budgeted, so at
+	// submit the operator read "✗ oms: http 502: <!DOCTYPE html><htm" and
+	// nothing else. Split, the headline is what pickerFail keeps and the body
+	// is what it sacrifices. Always set through setErr, never separately.
+	errMsg    string
+	errDetail string
 
 	// Phase 1: supplier picker (unchanged from PR #38).
 	suppliers       []omsapi.Supplier
@@ -439,10 +451,14 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case poCreatedMsg:
 		s.pending = false
 		if m.err != nil {
-			s.errMsg = m.err.Error()
+			// Headline + detail, because the detail is a whole OMS response
+			// body: pickerFail folds it and trims it to the rows the pane has
+			// left, so what the operator loses on a short terminal is the tail
+			// of the gateway's HTML and never the sentence naming what failed.
+			s.setErr("submitting this purchase order failed", m.err.Error())
 			return s, Status("create PO failed: "+m.err.Error(), StatusError)
 		}
-		s.errMsg = ""
+		s.setErr("", "")
 		poNum := ""
 		if m.po != nil {
 			poNum = m.po.Number
@@ -675,7 +691,10 @@ func (s *PurchaseOrderCreateScreen) renderSupplierSwitchPhase() string {
 		}
 	}
 	var b strings.Builder
-	b.WriteString(StyleStatusWarn.Render("! Changing supplier drops part of the cart") + "\n\n")
+	// Through the folder like every other note on these screens, even though
+	// this one is fixed and fits: a styled literal written straight to the pane
+	// is how each of the others started, and the wording is the kind that grows.
+	b.WriteString(pickerNote{text: "Changing supplier drops part of the cart", level: StatusWarn}.render() + "\n\n")
 	// The two KEY CLAIMS go above the prose, and carry no supplier name. This
 	// is a destructive confirm and the decline is the safe answer, so the
 	// decline is the one line that must never be what the pane cuts — and a
@@ -1113,7 +1132,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		// Done adding lines → review + submit. Only meaningful once the
 		// cart has at least one line (the backend rejects an empty PO).
 		if len(s.lines) == 0 {
-			s.errMsg = "add at least one line before submitting"
+			s.setErr("add at least one line before submitting", "")
 			return s, Status(s.errMsg, StatusError)
 		}
 		s.phase = poPhaseReview
@@ -1189,7 +1208,7 @@ func (s *PurchaseOrderCreateScreen) removeLineAt(idx int) {
 	}
 	s.lines = append(s.lines[:idx], s.lines[idx+1:]...)
 	s.clampReviewCursor()
-	s.errMsg = ""
+	s.setErr("", "")
 	if len(s.lines) == 0 && s.phase == poPhaseReview {
 		s.phase = poPhaseSource
 		s.poNotes.Blur()
@@ -1255,7 +1274,7 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 	s.editIndex = -1
 	s.editReturn = poPhaseReview
 	s.lineFocused = poLineFieldDesc
-	s.errMsg = ""
+	s.setErr("", "")
 	s.pickedItemSup = itemSupplierID
 	s.pickedAssetID = assetID
 	s.pickedQPP = qpp
@@ -1421,12 +1440,12 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 	// (backend will fall back to item/asset name), but when the line
 	// came from freeform we require one.
 	if desc == "" && s.pickedItemSup == nil && s.pickedAssetID == nil {
-		s.errMsg = "item description is required"
+		s.setErr("item description is required", "")
 		return Status(s.errMsg, StatusError)
 	}
 	qty, err := strconv.Atoi(strings.TrimSpace(s.lineInputs[poLineFieldQty].Value()))
 	if err != nil || qty <= 0 {
-		s.errMsg = "quantity must be a positive integer"
+		s.setErr("quantity must be a positive integer", "")
 		return Status(s.errMsg, StatusError)
 	}
 
@@ -1451,7 +1470,7 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 		if s.costBasisCase {
 			label = "case cost"
 		}
-		s.errMsg = label + " must be a non-negative number"
+		s.setErr(label+" must be a non-negative number", "")
 		return Status(s.errMsg, StatusError)
 	}
 	if provided {
@@ -1465,7 +1484,7 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 		raw := strings.TrimSpace(s.lineInputs[poLineFieldDate].Value())
 		if raw != "" {
 			if _, err := time.Parse("2006-01-02", raw); err != nil {
-				s.errMsg = "expected date must be YYYY-MM-DD (or blank)"
+				s.setErr("expected date must be YYYY-MM-DD (or blank)", "")
 				return Status(s.errMsg, StatusError)
 			}
 			line.ExpectedShipmentDate = raw
@@ -1473,7 +1492,7 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 	}
 
 	cartLine := poCartLine{item: line, label: s.lineLabel(desc), qpp: s.pickedQPP}
-	s.errMsg = ""
+	s.setErr("", "")
 
 	if s.editIndex >= 0 && s.editIndex < len(s.lines) {
 		// In-place edit: overwrite the line (not append) and return to whichever
@@ -1640,11 +1659,11 @@ func (s *PurchaseOrderCreateScreen) costDerivationHint() string {
 // review phase; the PO-level notes come from the review notes input.
 func (s *PurchaseOrderCreateScreen) finalize() tea.Cmd {
 	if s.supplierID <= 0 {
-		s.errMsg = "supplier is required (return to supplier phase)"
+		s.setErr("supplier is required (return to supplier phase)", "")
 		return Status(s.errMsg, StatusError)
 	}
 	if len(s.lines) == 0 {
-		s.errMsg = "add at least one line before submitting"
+		s.setErr("add at least one line before submitting", "")
 		return Status(s.errMsg, StatusError)
 	}
 
@@ -1671,7 +1690,7 @@ func (s *PurchaseOrderCreateScreen) finalize() tea.Cmd {
 	req.OwningGroup = poCommitteeID(s.committeeID)
 
 	s.pending = true
-	s.errMsg = ""
+	s.setErr("", "")
 	deps := s.deps
 	ctx := deps.Ctx
 	if ctx == nil {
@@ -1776,13 +1795,99 @@ func (s *PurchaseOrderCreateScreen) View() string {
 	}
 
 	b.WriteString("\n")
-	if s.pending {
-		b.WriteString(StyleMuted.Render("Submitting…"))
-	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	}
+	b.WriteString(s.renderFailLine(s.helpText()))
 	return b.String()
 }
+
+// setErr records the screen's failure line: what went wrong, and the unbounded
+// half underneath it. Both fields, here and only here, so a detail can never
+// outlive the headline it belonged to — a 502's HTML body left standing under
+// "quantity must be a positive integer" would read as the gateway explaining
+// the validation, which is a worse lie than either sentence alone.
+func (s *PurchaseOrderCreateScreen) setErr(what, detail string) {
+	s.errMsg, s.errDetail = what, detail
+}
+
+// renderFailLine is the last thing View draws: the submit's working line, or
+// the failure that came back from it.
+//
+// Through pickerFail like the three picker failure frames, for the same two
+// reasons. It is FOLDED because the detail is an OMS response body and the pane
+// is 51 columns that clampToBox truncates — at submit, which is the one place
+// where losing the reason costs the whole order, the operator used to read
+// "✗ oms: http 502: <!DOCTYPE html><htm" and nothing more. And it is TRIMMED to
+// a row budget because that body renders as however many rows it needs: an
+// unbudgeted block here is a block that pushes itself, and whatever the phase
+// draws last, off the bottom.
+//
+// help is the action bar the caller is measuring against, so the budget and
+// the frame accounting that reserves for it are computed from one wording.
+func (s *PurchaseOrderCreateScreen) renderFailLine(help string) string {
+	switch {
+	case s.pending:
+		return StyleMuted.Render("Submitting…")
+	case s.errMsg == "":
+		return ""
+	}
+	return pickerFail(s.errMsg, s.errDetail, s.failRowBudget(help))
+}
+
+// failRowBudget is how many rendered rows the failure line may spend. Derived,
+// not constant: the pane, less the chrome around the body, less the smallest
+// body this phase can honestly draw. What is left is the failure's, and the
+// DETAIL is what pickerFail sacrifices when it does not fit — the headline is
+// the row that survives.
+func (s *PurchaseOrderCreateScreen) failRowBudget(help string) int {
+	if s.terminalHeight <= 0 {
+		// Unsized screens get no budget at all, here as everywhere else on this
+		// screen: guessing a pane height would hide rows nobody asked to hide.
+		return 0
+	}
+	rows := screenBodyHeight(s.terminalHeight) - s.frameChromeRows(help) - s.failBodyFloor()
+	if rows < 1 {
+		// One row is the floor rather than zero: a failure with no line at all
+		// is the silence this whole file exists to remove, and pickerFail's
+		// first row is the sentence naming what failed.
+		rows = 1
+	}
+	return rows
+}
+
+// failBodyFloor is the rows the phase body keeps even under a long failure.
+//
+// It is measured from the phase's SMALLEST honest layout rather than the one
+// on screen, because the layout decisions that shrink a phase
+// (sourceTitleShown, sourceAttributionShown) measure a frame that includes this
+// very line — reading the live layout here would send them round in a circle.
+// The source chooser is the one phase whose body cannot scroll: its four line
+// sources and the cart's collapsed sentence are a fixed height, so a failure
+// line budgeted against bodyRowBudget's three-row floor would have pushed the
+// cart's existence off the pane instead of trimming its own detail.
+func (s *PurchaseOrderCreateScreen) failBodyFloor() int {
+	switch s.phase {
+	case poPhaseSource:
+		return poRenderedRows(s.sourceChrome(false, false)) + s.sourceCartMinRows()
+	case poPhaseReview:
+		// The cart's own chrome and the tail at its shortest — which still
+		// carries the focused PO-notes input. This is the phase the failure
+		// actually arrives on, and an operator typing into a field that is off
+		// the pane is the worst form of this defect, so the notes row is
+		// reserved before the gateway's HTML gets a single line.
+		//
+		// The cart's one LISTED line is deliberately not reserved here:
+		// renderReviewPhase clamps its budget up to one row whatever this
+		// answer is, so counting it again would spend a row twice and leave the
+		// failure a single line — the headline with nothing under it saying
+		// there is more, which reads as the whole story.
+		return s.cartChromeRows() + poRenderedRows(s.reviewTail(false))
+	}
+	return poFailBodyFloor
+}
+
+// poFailBodyFloor mirrors bodyRowBudget's floor: every scrolling block on this
+// screen is guaranteed three rows, so the failure line may not take the pane
+// below them.
+const poFailBodyFloor = 3
 
 // sourceHelpText is the source chooser's action bar. cartListed says whether
 // the cart's ROWS are on the pane, because the four keys that act on a row —
@@ -1903,12 +2008,36 @@ func (s *PurchaseOrderCreateScreen) supplierLabel() string {
 	return "this supplier"
 }
 
+// poHeaderValueFloor is the cells a clipped header value keeps, the same floor
+// renderAssocValue uses: enough that the operator can see a value is there and
+// that it was shortened, rather than reading a label followed by nothing.
+const poHeaderValueFloor = 6
+
+// headerFailRows caps the rows the supplier header may spend on a failed
+// supplier load. A fraction of the pane rather than a measurement of what is
+// left, deliberately: this row is chrome that rides on EVERY phase, so the
+// honest measurement would be "the pane less the body" — and the body's own
+// height is decided by sourceTitleShown / sourceAttributionShown, which measure
+// a frame that includes this header. A third is what the header may take; the
+// rest of the pane belongs to whatever the operator came to do.
+func (s *PurchaseOrderCreateScreen) headerFailRows() int {
+	if s.terminalHeight <= 0 {
+		return 0
+	}
+	return screenBodyHeight(s.terminalHeight) / 3
+}
+
 func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
 	switch {
 	case s.supplierLoading:
 		return StyleTitle.Render("Supplier:") + " " + StyleMuted.Render("loading suppliers…")
 	case s.supplierLoadErr != "":
-		return StyleTitle.Render("Supplier:") + " " + StyleStatusError.Render("✗ "+s.supplierLoadErr)
+		// Folded and trimmed like every other failure on these screens: the
+		// string is an OMS response body, so written straight to the pane it
+		// was cut at 51 columns AND — with the newlines an HTML error page
+		// always carries — rendered as a lipgloss BLOCK that padded every short
+		// line to the widest, leaking columns onto the row beneath it.
+		return pickerFail("loading the suppliers failed", s.supplierLoadErr, s.headerFailRows())
 	case s.supplierID > 0:
 		name := ""
 		for _, sup := range s.suppliers {
@@ -1917,12 +2046,42 @@ func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
 				break
 			}
 		}
-		line := StyleTitle.Render("Supplier:") + " " + StyleStatusOK.Render(fmt.Sprintf("%s (#%d)", name, s.supplierID))
+		// Both values here are OMS-supplied and were unbounded, on the one row
+		// that is drawn on every phase — including review, where it is the last
+		// thing seen before submit. At 51 columns "Supplier: Acme Supply (#1) ·
+		// agreement: Annual 2026 Steel Contract" is 67 cells, so the pane cut
+		// the agreement mid-name and a longer supplier name removed it, and the
+		// `(#id)`, altogether: the confirm-before-submit surface losing which
+		// agreement the order is placed under.
+		//
+		// Bounded the way renderAssocValue bounds an association's value —
+		// pickerClip to the room the labels leave, one row, ellipsis included —
+		// rather than folded, because this row is drawn on every phase and a
+		// second row would come out of every one of their budgets.
+		const label, agreeLabel = "Supplier: ", "  · agreement: "
+		id := fmt.Sprintf(" (#%d)", s.supplierID)
+		agreement := s.pickedAgreementName()
+		room := pickerPaneWidth - lipgloss.Width(label) - lipgloss.Width(id)
+		if agreement != "" {
+			// The supplier is the row's subject and takes what is left, but the
+			// agreement's label and floor are reserved FIRST: that a pricing
+			// agreement is attached at all is the fact a long supplier name
+			// used to take off the pane.
+			room -= lipgloss.Width(agreeLabel) + poHeaderValueFloor
+		}
+		if room < poHeaderValueFloor {
+			room = poHeaderValueFloor
+		}
+		name = pickerClip(name, room)
+		line := StyleTitle.Render("Supplier:") + " " + StyleStatusOK.Render(name+id)
 		// A committed agreement is header-level context, not a line item, so it
-		// rides with the supplier and stays on screen through every phase —
-		// including review, where it's the last thing seen before submit.
-		if agreement := s.pickedAgreementName(); agreement != "" {
-			line += "  " + StyleMuted.Render("· agreement:") + " " + agreement
+		// rides with the supplier and stays on screen through every phase.
+		if agreement != "" {
+			left := pickerPaneWidth - lipgloss.Width(label+name+id+agreeLabel)
+			if left < poHeaderValueFloor {
+				left = poHeaderValueFloor
+			}
+			line += "  " + StyleMuted.Render("· agreement:") + " " + pickerClip(agreement, left)
 		}
 		return line
 	default:
@@ -2105,8 +2264,9 @@ func (s *PurchaseOrderCreateScreen) sourceAttributionRows() string {
 //
 // The source chooser gives ground in a fixed order when the pane is too short,
 // and this is the first thing to go. Last to go, in order: the cart's EXISTENCE
-// — the count, the total and the `d` that opens it — then the title and the
-// r/i/a/f rows the screen is for, then these. Three header rows plus the bar
+// — the count, the `d` that opens it, and its total — then the r/i/a/f rows the
+// screen is for, then the TITLE (sourceTitleShown, the step after this one),
+// then these. Three header rows plus the bar
 // they lengthen were enough on their own to push the whole collapsed-cart
 // sentence off an 18-row pane, so the frame drew no cart at all and the four
 // gated keys answered into a four-second flash: the operator could not see that
@@ -2135,23 +2295,59 @@ func (s *PurchaseOrderCreateScreen) sourceAttributionShown() bool {
 		// screen, and there is nothing to hide when the block is empty.
 		return true
 	}
-	shown := poRenderedRows(s.sourceChrome(true)) + s.frameRowsWith(s.sourceHelpText(false, true))
-	hidden := poRenderedRows(s.sourceChrome(false)) + s.frameRowsWith(s.sourceHelpText(false, false))
+	// Measured WITH the title in both worlds: the title is the next thing to
+	// give after these rows, not before them, so a decision about them may not
+	// help itself to rows the title is still holding.
+	shown := poRenderedRows(s.sourceChrome(true, true)) + s.frameRowsWith(s.sourceHelpText(false, true))
+	hidden := poRenderedRows(s.sourceChrome(false, true)) + s.frameRowsWith(s.sourceHelpText(false, false))
 	if hidden >= shown {
 		return true
 	}
-	need := shown
-	if len(s.lines) > 0 {
-		// Whatever else gives, the cart has to be able to say it is there: its
-		// blank separator, the sentence, and one row of slack. The slack is
-		// what a declining key's lead costs when it folds the sentence onto a
-		// second row, and it is reserved up front so that this answer cannot
-		// change under the operator's hands because they pressed j — the
-		// optional rows must not vanish as a side effect of a keypress about
-		// the cart. Over-reserving one row beats clipping one, as everywhere
-		// else on this screen.
-		need += 2 + poRenderedRows(pickerNote{text: s.cartHiddenSentence("")}.render())
+	return shown+s.sourceCartMinRows() <= screenBodyHeight(s.terminalHeight)
+}
+
+// sourceCartMinRows is what the cart's EXISTENCE costs the frame: its blank
+// separator, the collapsed sentence folded, and one row of slack.
+//
+// The slack is what a declining key's lead costs when it folds the sentence
+// onto another row, and it is reserved up front so that neither this frame's
+// layout decisions can change under the operator's hands because they pressed
+// j. Over-reserving one row beats clipping one, as everywhere else on this
+// screen. One function because sourceAttributionShown and sourceTitleShown are
+// consecutive steps of one sacrifice order and must reserve the same cart.
+func (s *PurchaseOrderCreateScreen) sourceCartMinRows() int {
+	if len(s.lines) == 0 {
+		return 0
 	}
+	return 2 + poRenderedRows(pickerNote{text: s.cartHiddenSentence("")}.render())
+}
+
+// sourceTitleShown is the NEXT step of that order, and the reason the cart's
+// total is no longer what a short pane takes.
+//
+// "Where should this line come from?" and its blank line are two rows that name
+// no key and carry no value: the four r/i/a/f rows immediately under them say
+// what the screen is, so dropping the title costs the operator nothing and no
+// substitute notice is owed for it — unlike the optional rows, whose keys stop
+// working and which therefore have to say they are gone.
+//
+// It is measured against the same conservative reservation the attribution
+// decision uses — the chrome, the folded bar and the cart's minimum — rather
+// than against cartListedOnScreen, which asks this very question through
+// sourceCartChrome. That reservation is a row or two more than the frame spends
+// today, so the title goes while the pane still has a row spare, and that is
+// deliberate: the spare row is what a declining key's lead spends when it folds
+// the cart sentence onto another line, and the title is the row this screen can
+// most afford to lose. Dropping it costs nothing; letting a keypress push the
+// cart's total off the bottom is the defect this step exists to close.
+func (s *PurchaseOrderCreateScreen) sourceTitleShown() bool {
+	if s.terminalHeight <= 0 {
+		return true
+	}
+	attribution := s.sourceAttributionShown()
+	need := poRenderedRows(s.sourceChrome(attribution, true)) +
+		s.frameRowsWith(s.sourceHelpText(false, attribution)) +
+		s.sourceCartMinRows()
 	return need <= screenBodyHeight(s.terminalHeight)
 }
 
@@ -2184,12 +2380,14 @@ func (s *PurchaseOrderCreateScreen) attributionHiddenNote(key string) tea.Cmd {
 }
 
 func (s *PurchaseOrderCreateScreen) sourceCartChrome() string {
-	return s.sourceChrome(s.sourceAttributionShown())
+	return s.sourceChrome(s.sourceAttributionShown(), s.sourceTitleShown())
 }
 
-func (s *PurchaseOrderCreateScreen) sourceChrome(attribution bool) string {
+func (s *PurchaseOrderCreateScreen) sourceChrome(attribution, title bool) string {
 	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Where should this line come from?") + "\n\n")
+	if title {
+		b.WriteString(StyleTitle.Render("Where should this line come from?") + "\n\n")
+	}
 	b.WriteString("  " + StyleStatusOK.Render("r") + "  Reorder queue (items flagged for reorder)\n")
 	b.WriteString("  " + StyleStatusOK.Render("i") + "  Inventory items associated with this supplier\n")
 	b.WriteString("  " + StyleStatusOK.Render("a") + "  Assets purchased from this supplier\n")
@@ -2278,8 +2476,11 @@ func (s *PurchaseOrderCreateScreen) sourceCartSpace() (left, budget int) {
 // above its prose: this block is the LAST thing the source chooser draws, and
 // on a supplier carrying agreements and associations the chooser's fixed rows
 // can fill an 18-row pane on their own, so whatever is at the end of this
-// sentence is what clampToBox eats. The count and the total can go; the way out
-// cannot. The leads are kept short for the same reason — they fold onto the
+// sentence is what clampToBox eats. The order inside the sentence is the order
+// of sacrifice: the total goes first, then the count, and the way out never.
+// The frame gives up its TITLE before any of them (sourceTitleShown), so on the
+// pane sizes this project checks the total is not what a short terminal takes.
+// The leads are kept short for the same reason — they fold onto the
 // first line ahead of the key rather than pushing it onto a second one.
 //
 // lead is what a declining key just did, so pressing j over a cart that is not
@@ -2435,12 +2636,20 @@ func (s *PurchaseOrderCreateScreen) frameRows() int {
 // needs it: deciding whether its cart fits means measuring the chrome, and the
 // chrome includes the bar whose wording that same decision changes.
 func (s *PurchaseOrderCreateScreen) frameRowsWith(help string) int {
+	// The failure line is MEASURED, not counted as one. It used to be reserved
+	// as a single row while an OMS error body carrying newlines rendered as a
+	// block of them, so every budget on this screen was computed against a line
+	// count that was wrong — the same stale-constant shape as poCartChromeRows.
+	return s.frameChromeRows(help) + poRenderedRows(s.renderFailLine(help))
+}
+
+// frameChromeRows is everything View draws around the body EXCEPT that trailing
+// failure line: the folded help, its blank separator, the supplier header, and
+// the newline after the phase body.
+func (s *PurchaseOrderCreateScreen) frameChromeRows(help string) int {
 	n := poRenderedRows(pickerHint(help)) + 1
 	n += poRenderedRows(s.renderSupplierHeader()) + 1
 	n++ // the newline View writes after the phase body
-	if s.pending || s.errMsg != "" {
-		n++
-	}
 	return n
 }
 

@@ -152,17 +152,31 @@ touching any screen an operator drives:
   `ctrl+t` cost-basis hint (110), the two line-form notes, the cart's
   catalog-pricing caveat, `Line source:` (a UUID puts it over), and an
   agreement's OMS-supplied notes. A styled literal on these screens that does
-  not go through the folder is the defect, not a style choice. The source
-  chooser's `g` / `w` / `c` rows are the one shape that does not FOLD, and they
-  are bounded rather than exempt: they are `label: value` FIELD rows carrying an
-  OMS-supplied name, so `renderAssocValue` clips the value to what the label
-  leaves (`pickerClip`, ellipsis included) and keeps them one row each — folding
-  them would spend rows the 24-row chooser does not have, and these are the
-  first rows it drops when it runs out. The agreement row also lost the long
-  form of its label: `  g  Purchase / pricing agreement (optional): (none)` is
-  52 cells with an EMPTY value, so the pane cut the value on every render. That folder is deliberately pane-local, outside the JD Edwards
-  layer, so the list screens and the New PO help line can be legible at 80
-  columns without joining the columnar layout. Hand-counting is what broke: each
+  not go through the folder is the defect, not a style choice. That now
+  includes the SUBMIT-failure line and the supplier header's load error
+  (`renderFailLine`, `renderSupplierHeader`), which were the last two written
+  straight to the pane — and both carry an OMS response body, which
+  `omsapi.parseError` fills with the ENTIRE raw payload whenever the JSON
+  envelope has no code, so at submit the operator read
+  `✗ oms: http 502: <!DOCTYPE html><htm` and nothing else, on the one step where
+  losing the reason costs the whole order.
+  FIELD rows are the shape that does not FOLD, and they are bounded rather than
+  exempt: the source chooser's `g` / `w` / `c` rows and the `Supplier: … ·
+  agreement: …` header are `label: value` rows carrying OMS-supplied names, so
+  `renderAssocValue` and `renderSupplierHeader` clip each value to what the
+  labels leave (`pickerClip`, ellipsis included) and keep them one row each —
+  folding them would spend rows the 24-row chooser does not have, and the g/w/c
+  rows are the first ones it drops when it runs out. The header is bounded in
+  PRIORITY order, the agreement's label and floor reserved before the supplier
+  name takes the rest, because at 51 columns a long supplier name used to remove
+  the agreement and the `(#id)` with it — on the row that is drawn on every
+  phase, review included, where it is the last thing seen before submit.
+  The agreement row also lost the long form of its label:
+  `  g  Purchase / pricing agreement (optional): (none)` is 52 cells with an
+  EMPTY value, so the pane cut the value on every render.
+  That folder is deliberately pane-local, outside the JD Edwards layer, so the
+  list screens and the New PO help line can be legible at 80 columns without
+  joining the columnar layout. Hand-counting is what broke: each
   line read fine at the width its author had in mind and then grew a
   `search closed · ` prefix, a supplier name or an unbounded OMS error string,
   and `clampToBox` took the TAIL — which
@@ -191,10 +205,18 @@ touching any screen an operator drives:
   51-column cut then falls off the BOTTOM instead — the same claim, a different
   edge. Any row reservation must be DERIVED from what will be drawn
   (`ListScreen.footerRows` is `1 + len(pickerWrap(footerHint(), …))`;
-  `PurchaseOrderCreateScreen.frameRows` measures the folded help line), never a
-  constant, and a growing top chunk must window whatever the frame draws LAST —
+  `PurchaseOrderCreateScreen.frameRows` measures the folded help line AND the
+  failure line under the body), never a constant, and a growing top chunk must
+  window whatever the frame draws LAST —
   on the PO review phase that is the focused notes input, and an operator typing
   into a field that is off the pane is the worst form of this defect.
+  `frameRowsWith` reserved the failure line as ONE row for four rounds while an
+  OMS body carrying newlines rendered as a block of them, so every budget on the
+  screen was computed against a count that was wrong; it measures
+  `renderFailLine` now, and that line trims its own DETAIL to
+  `failRowBudget` — the pane, less the chrome, less the smallest body the phase
+  can honestly draw — so what a short terminal loses is the tail of the
+  gateway's HTML and never the sentence naming what failed.
 - **One budget, not one per block.** Nearly every scrolling block on the New PO
   screen takes its height from `bodyRowBudget(otherRows)`, which measures the frame
   chrome and whatever the phase draws around the block; `renderWindowedList`
@@ -221,11 +243,12 @@ touching any screen an operator drives:
 - **When the pane runs out, sacrifice in a stated order — do not shave words.**
   The New PO screen gives ground in this order, last named being last to go:
   the optional ATTRIBUTION rows (`g` agreement, `w` work order, `c` committee,
-  and the review tail's repeat of them), then prose and caveats, then the title
-  and the `r`/`i`/`a`/`f` rows the screen is for, and never the cart's existence
-  — its count, its total and the `d` that opens it — or the focused PO-notes
-  input. `sourceAttributionShown` and `reviewAttributionShown` are that order in
-  code: three header rows plus the bar they lengthen were enough on their own to
+  and the review tail's repeat of them), then prose and caveats, then the TITLE,
+  then the `r`/`i`/`a`/`f` rows the screen is for, and never the cart's
+  existence — the `d` that opens it, its count and its total, in that order of
+  protection — or the focused PO-notes input. `sourceAttributionShown`,
+  `sourceTitleShown` and `reviewAttributionShown` are that order in code: three
+  header rows plus the bar they lengthen were enough on their own to
   push the whole collapsed-cart sentence off an 18-row pane, so the frame drew
   no cart at all while `j`/`k`/`x`/`ctrl+e` answered into a four-second flash;
   on review the same rows plus a caveat folded onto two left the cart no line
@@ -238,6 +261,20 @@ touching any screen an operator drives:
   a real committee row with "optional rows need more height", which was FALSE,
   stopped naming `c`, and made `c` decline. Dropping a row that costs nothing to
   keep is worse than the overflow it avoids.
+  The TITLE step is what makes the total half of that order true rather than
+  accidental, and it is the one place the order runs INSIDE a sentence.
+  `cartHiddenSentence` is ORDERED by sacrifice — the key, then the count, then
+  "not listed here", and the total LAST — so the total
+  is what a one-row overflow takes, and with one optional row offered the
+  chooser sits exactly on an 18-row pane with nothing spare. `sourceTitleShown`
+  gives up "Where should this line come from?" and its blank line first: two
+  rows that name no key and carry no value, with the four `r`/`i`/`a`/`f` rows
+  right under them still saying what the screen is. It is measured against the
+  same conservative reservation the attribution step uses (`sourceCartMinRows`, one
+  function so the two consecutive steps cannot reserve different carts), which
+  includes a row of slack for a declining key's lead, so the title goes while
+  the pane still has a row spare. That is the trade: the title costs nothing to
+  lose, and the spare row is what stops a keypress pushing the total off.
   Two rules ride along. **The bar follows the cut**: `sourceHelpText` stops
   naming `g`/`w`/`c` for exactly as long as their rows are off the pane and the
   three arms decline (`attributionHiddenNote`) — a key naming a row the frame
@@ -245,7 +282,10 @@ touching any screen an operator drives:
   says so**, in one row that cannot fold: both notices are FIXED strings sized
   so that even led by a decline (`g is off here · …`) they stay one rendered
   row, since a second row appearing on a keypress would take back the row it was
-  dropped to free.
+  dropped to free. The TITLE is the one exception to that second rule and says
+  why in its own decision: nothing stops working when it goes, so spending a row
+  to announce a row that cost the operator nothing would be the overflow it was
+  dropped to avoid.
 - **Measure a tail before you draw the list above it.** The asset pager and the
   reorder summary are written after their list; a list sized without counting
   them pushes exactly them off the bottom, taking the `]`/`[` keys with it. The
