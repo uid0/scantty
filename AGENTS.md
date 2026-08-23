@@ -190,6 +190,21 @@ touching any screen an operator drives:
   invisible cursor cannot be moved and an invisible row cannot be staged: an
   item going onto a purchase order the operator cannot see is a wrong purchase
   order, and the failure frame names `r`/`b`/`esc` and nothing else.
+- **One sentence, both surfaces.** A picker's keys are stated once — by
+  `itemPickBar` / `assetPickBar` / `reorderPickBar` / `supplierPickBar` /
+  `supplierSwitchBar` — and BOTH the screen's action bar (`helpText`) and the
+  frame's own way-out line read it. Keeping the two in sync by hand is what put
+  "enter picks the match" in the bar four rows above a note saying enter closes
+  the search, with enter doing neither. `po_create_picker_status_test.go`'s
+  `TestPOPickers_PaneNamesExactlyTheKeysThatWork` presses the whole vocabulary
+  against every non-typing picker state and fails a key the bar names that does
+  nothing AND a key it does not name that acts — "acts" meaning CHANGES
+  something, since a key that declines and says why has not acted.
+- **On a destructive confirm the KEYS go above the prose.** `clampToBox` drops
+  from the bottom, so whatever is last is what a short terminal eats; on
+  `poPhaseSupplierSwitch` that was the decline hint, which is the safe answer.
+  The keys carry no supplier name (a 20-cell `pickerClip` name is what pushed
+  the fold over), and the prose below them is trimmed to `bodyRowBudget`.
 - **A note is rendered in two states, so word BOTH.** `itemFilterNote` takes
   `typing` and every arm consults it: with the box open `j`/`k` are characters
   and `enter` only picks a lone match. Gating one arm and leaving the rest is

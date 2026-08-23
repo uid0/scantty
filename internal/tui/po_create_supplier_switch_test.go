@@ -30,8 +30,16 @@ import (
 // freeform (carries nothing but words, so anybody can).
 func poSwitchCart(t *testing.T) (Root, *PurchaseOrderCreateScreen) {
 	t.Helper()
+	return poSwitchCartAt(t, poPaneSizes[len(poPaneSizes)-1])
+}
+
+// poSwitchCartAt is the same fixture at an explicit terminal height. The switch
+// tests used to run only at 30, which is why a confirm frame that overflowed a
+// 24-row terminal passed every one of them.
+func poSwitchCartAt(t *testing.T, height int) (Root, *PurchaseOrderCreateScreen) {
+	t.Helper()
 	fake := &poPickFake{catalog: 6, pageSize: 5, suppliers: 2}
-	r, screen := poPickerAt(t, fake, 80)
+	r, screen := poPickerAtSize(t, fake, 80, height)
 
 	// A catalog line.
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
@@ -75,7 +83,16 @@ func poOpenSwitchConfirm(t *testing.T, r Root, screen *PurchaseOrderCreateScreen
 // TestPOSupplierSwitch_WarnsBeforeDroppingStagedLines: the operator is told what
 // will go and how much of it, BEFORE anything goes.
 func TestPOSupplierSwitch_WarnsBeforeDroppingStagedLines(t *testing.T) {
-	r, screen := poSwitchCart(t)
+	for _, height := range poPaneSizes {
+		t.Run(fmt.Sprintf("height %d", height), func(t *testing.T) {
+			poAssertSwitchConfirmWarns(t, height)
+		})
+	}
+}
+
+func poAssertSwitchConfirmWarns(t *testing.T, height int) {
+	t.Helper()
+	r, screen := poSwitchCartAt(t, height)
 	r = poOpenSwitchConfirm(t, r, screen)
 
 	if len(screen.lines) != 2 {
@@ -89,7 +106,7 @@ func TestPOSupplierSwitch_WarnsBeforeDroppingStagedLines(t *testing.T) {
 	poWantPaneLine(t, screen, "Changing supplier drops part of the cart")
 	poWantPaneLine(t, screen, "1 of 2 staged line(s)")
 	poWantPaneLine(t, screen, "Acme Supply")
-	poWantPaneLine(t, screen, "The other 1 line(s)")
+	poWantPaneLine(t, screen, "line(s) stay.")
 	poAssertFits(t, "supplier switch confirm", screen)
 	if out := r.View(); !strings.Contains(out, "staged line(s) belong to") {
 		t.Errorf("nothing on the status bar says why the commit stopped:\n%s", out)
@@ -104,8 +121,8 @@ func TestPOSupplierSwitch_NamesExactlyTheKeysThatWork(t *testing.T) {
 	r, screen := poSwitchCart(t)
 	r = poOpenSwitchConfirm(t, r, screen)
 
-	poWantPaneLine(t, screen, "ctrl+x drops those lines")
-	poWantPaneLine(t, screen, "esc keeps the cart")
+	poWantPaneLine(t, screen, "ctrl+x drops 1 line(s) and switches")
+	poWantPaneLine(t, screen, "esc keeps the cart and this supplier")
 
 	// enter is deliberately NOT named: it is the key that opened this frame, so
 	// a reflexive double-tap must not be the destructive answer.

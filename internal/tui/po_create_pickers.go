@@ -452,6 +452,117 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// One statement of what works here
+// ---------------------------------------------------------------------------
+
+// The three picker bars below are the ONLY place each picker says which keys
+// act, and they are read by BOTH surfaces that used to say it separately: the
+// screen's action bar (helpText, drawn at the top of the pane) and the frame's
+// own way-out line (drawn beside the note). Keeping those two in sync by hand
+// is what produced a bar promising "enter picks the match" four rows above a
+// note saying enter closes the search — with enter doing neither, because with
+// several matches it declines and says so. Two surfaces, one sentence, no
+// drift.
+//
+// "Acts" means CHANGES something. A key that declines and says why — enter over
+// an empty list, `]` at the last page — is not acting, and is deliberately left
+// unnamed: naming it would advertise a dead end, and the project's rule is that
+// such an arm must answer, not that the bar must promise it.
+
+// itemPickBar names the keys that act in the item picker's current state.
+func (s *PurchaseOrderCreateScreen) itemPickBar() string {
+	switch {
+	case s.itemSuppliersTyping:
+		// enter's outcome depends on the match count, so the bar states the
+		// CONDITION and the note states this moment's outcome. Neither can
+		// contradict the other, and "picks the match" — which promised the
+		// multi-match staging the design deliberately refuses — is gone.
+		return "type to filter · enter picks when one row is left · esc closes the search"
+	case s.itemSuppliersLoad:
+		// A query typed now is applied when the rows land, so '/' is real here.
+		// r is not: a walk is already out.
+		return "/ searches · " + pickerWayOut
+	case s.itemSuppliersErr != "":
+		return "r retries the lookup · " + pickerWayOut
+	case len(s.itemSuppliers) == 0:
+		return "r reloads · " + pickerWayOut
+	}
+	return "j/k move · enter picks · / searches · r reloads · " + pickerWayOut
+}
+
+// assetPickBar names the keys that act in the asset picker's current state.
+func (s *PurchaseOrderCreateScreen) assetPickBar() string {
+	switch {
+	case s.assetsTyping:
+		return "type to search · enter runs the search · esc closes the search"
+	case s.assetsLoading:
+		return "/ searches · " + pickerWayOut
+	case s.assetsErr != "":
+		return "/ retries with a search · " + pickerWayOut
+	case len(s.assets) == 0:
+		return "/ searches · " + pickerWayOut
+	}
+	bar := "j/k move · enter picks · / searches"
+	if s.assetsHasNext {
+		bar += " · ] next page"
+	}
+	if s.assetsPage > 1 {
+		bar += " · [ prev page"
+	}
+	return bar + " · " + pickerWayOut
+}
+
+// reorderPickBar names the keys that act in the reorder picker's current state.
+func (s *PurchaseOrderCreateScreen) reorderPickBar() string {
+	if !s.reorderListOnScreen() || len(s.reorderItems) == 0 {
+		return pickerWayOut
+	}
+	return "j/k move · space marks · a adds all · enter adds · " + pickerWayOut
+}
+
+// supplierPickBar names the keys that act in the supplier picker's current
+// state. The supplier list is the fourth picker frame on this screen and had
+// the same hole the other three did: while the suppliers were still loading —
+// or had failed — the bar promised "j/k move · enter commits" over a frame that
+// renders nothing, and enter with no highlighted row returned nil in silence.
+func (s *PurchaseOrderCreateScreen) supplierPickBar() string {
+	switch {
+	case s.supplierLoading:
+		return "esc cancels the order"
+	case s.supplierLoadErr != "":
+		return "esc cancels the order"
+	case len(s.suppliers) == 0:
+		return "esc cancels the order"
+	}
+	return "j/k move · enter commits · esc cancels the order"
+}
+
+// supplierListOnScreen reports whether renderSupplierPhase is drawing rows.
+func (s *PurchaseOrderCreateScreen) supplierListOnScreen() bool {
+	return !s.supplierLoading && s.supplierLoadErr == "" && len(s.suppliers) > 0
+}
+
+// supplierVerdictStatus says which of the three off-screen states a declining
+// key is answering from.
+func (s *PurchaseOrderCreateScreen) supplierVerdictStatus() tea.Cmd {
+	switch {
+	case s.supplierLoading:
+		return Status("still looking up the suppliers…", StatusInfo)
+	case s.supplierLoadErr != "":
+		return Status("loading suppliers failed — esc cancels the order", StatusError)
+	}
+	return Status("no suppliers are configured — esc cancels the order", StatusWarn)
+}
+
+// supplierSwitchBar names the confirm's two keys, and deliberately carries no
+// supplier NAME: a 20-cell name is what pushed the decline claim off the bottom
+// of a 24-row pane, and the decline is the safe answer on a destructive confirm.
+func (s *PurchaseOrderCreateScreen) supplierSwitchBar() string {
+	return fmt.Sprintf("ctrl+x drops %d line(s) and switches · esc keeps the cart and this supplier",
+		s.supplierScopedLineCount())
+}
+
 // itemListOnScreen / assetListOnScreen / reorderListOnScreen report whether the
 // picker's renderer is actually DRAWING its rows. Each renderer returns early
 // on its working frame and on its failure frame, and none of the three clears
@@ -729,15 +840,17 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 	}
 	if s.reorderLoadErr != "" {
 		return pickerFail("reading the reorder queue failed", s.reorderLoadErr) + "\n" +
-			pickerHint(pickerWayOut)
+			pickerHint(s.reorderPickBar())
 	}
 	if len(s.reorderItems) == 0 {
 		return pickerHint("Nothing flagged for reorder under this supplier.") + "\n" +
-			pickerHint(pickerWayOut)
+			pickerHint(s.reorderPickBar())
 	}
-	summary := fmt.Sprintf("space marks a row · a adds all %d item(s) at their suggested quantities", len(s.reorderItems))
+	// Counts only. The keys are the bar's job, and a summary that also named
+	// them was a second copy of the same claim waiting to go stale.
+	summary := fmt.Sprintf("%d in the queue", len(s.reorderItems))
 	if n := len(s.reorderSelected); n > 0 {
-		summary = fmt.Sprintf("%d marked — enter adds them · a adds all %d", n, len(s.reorderItems))
+		summary = fmt.Sprintf("%d marked of %d in the queue", n, len(s.reorderItems))
 	}
 	tail := "\n" + pickerHint(summary)
 
@@ -824,6 +937,14 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 			s.itemSuppliersCur--
 		}
 	case "/":
+		if s.itemSuppliersErr != "" {
+			// The failure frame names r, b and esc. '/' is not among them, and
+			// opening the box here would redraw the frame with "esc closes the
+			// search" WHERE "r retries the lookup" was — an unnamed key that
+			// acts and erases the only key that repairs the state. Mid-load is
+			// different and still opens: rows are on their way.
+			return s, s.catalogVerdictNote()
+		}
 		if s.catalogAnswered() && len(s.itemSuppliersAll) == 0 {
 			// This filter is client-side over the loaded catalog, so against a
 			// supplier we KNOW sells nothing the box can only ever answer "no
@@ -840,6 +961,10 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 			textinput.Blink,
 		)
 	case "r":
+		if s.itemSuppliersLoad {
+			// A walk is already out; the bar does not name r there.
+			return s, s.catalogVerdictNote()
+		}
 		// The catalog is held per supplier and re-entering the picker no longer
 		// re-walks it (see the 'i' arm in po_create.go), so there has to be a
 		// named way to go and ask again — a cache with no refresh is its own
@@ -1134,21 +1259,9 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 		b.WriteString(pickerHint(verb + " the items " + s.supplierLabel() + " sells…"))
 		return b.String()
 	}
-	// While the search box owns the keyboard, b is a letter going into the
-	// query and esc only closes the box. Naming them as "another line source"
-	// and "cancels the order" there would have the frame printing two
-	// contradictory claims at once.
-	wayOut := pickerWayOut
-	if s.itemSuppliersTyping {
-		wayOut = searchBoxWayOut
-	}
 	if s.itemSuppliersErr != "" {
 		b.WriteString(pickerFail("looking up this supplier's items failed", s.itemSuppliersErr) + "\n")
-		if s.itemSuppliersTyping {
-			b.WriteString(pickerHint(wayOut)) // r is a letter in the query too
-		} else {
-			b.WriteString(pickerHint("r retries the lookup · " + wayOut))
-		}
+		b.WriteString(pickerHint(s.itemPickBar()))
 		return b.String()
 	}
 	if len(s.itemSuppliers) == 0 {
@@ -1160,7 +1273,7 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 		} else {
 			b.WriteString(pickerHint(s.noCatalogSentence() + "."))
 		}
-		b.WriteString("\n" + pickerHint(wayOut))
+		b.WriteString("\n" + pickerHint(s.itemPickBar()))
 		return b.String()
 	}
 	if note := s.itemSuppliersNote.render(); note != "" {
@@ -1261,6 +1374,12 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		// The two paging keys are named only alongside a page that exists, so
 		// the bar stays honest — but the arm still has to answer when the state
 		// moved underneath the operator between the render and the press.
+		if !s.assetListOnScreen() {
+			// Neither the working frame nor the failure frame names them, and
+			// stepping the page over one that just FAILED means the retry
+			// silently skips it.
+			return s, s.assetVerdictNote()
+		}
 		if !s.assetsHasNext {
 			return s, s.assetsNote.say(fmt.Sprintf("already on the last page (page %d)", s.assetsPage), StatusWarn)
 		}
@@ -1272,6 +1391,9 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 			s.loadAssetsForSupplier(s.assetsSearch.Value()),
 		)
 	case "[":
+		if !s.assetListOnScreen() {
+			return s, s.assetVerdictNote()
+		}
 		if s.assetsPage <= 1 {
 			return s, s.assetsNote.say("already on the first page", StatusWarn)
 		}
@@ -1347,11 +1469,7 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 	// the query, 'b' is a letter, and esc closes the box rather than the order.
 	if s.assetsErr != "" {
 		b.WriteString(pickerFail("looking up this supplier's assets failed", s.assetsErr) + "\n")
-		if s.assetsTyping {
-			b.WriteString(pickerHint(searchBoxWayOut))
-		} else {
-			b.WriteString(pickerHint("/ retries with a search · " + pickerWayOut))
-		}
+		b.WriteString(pickerHint(s.assetPickBar()))
 		return b.String()
 	}
 	if len(s.assets) == 0 {
@@ -1360,11 +1478,7 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 		} else {
 			b.WriteString(pickerHint(s.supplierLabel() + " has no assets on file."))
 		}
-		if s.assetsTyping {
-			b.WriteString("\n" + pickerHint(searchBoxWayOut))
-		} else {
-			b.WriteString("\n" + pickerHint("/ searches · "+pickerWayOut))
-		}
+		b.WriteString("\n" + pickerHint(s.assetPickBar()))
 		return b.String()
 	}
 	if note := s.assetsNote.render(); note != "" {

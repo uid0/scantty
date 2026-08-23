@@ -49,8 +49,9 @@ type poPickFake struct {
 	// third picker can be driven the same way the other two are.
 	reorder int
 
-	failItems  bool
-	failAssets bool
+	failItems   bool
+	failAssets  bool
+	failReorder bool
 }
 
 func (f *poPickFake) hits(substr string) int {
@@ -91,6 +92,11 @@ func (f *poPickFake) handler() http.HandlerFunc {
 
 		switch {
 		case strings.Contains(r.URL.Path, "/reorder_data/"):
+			if f.failReorder {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"detail":"reorder data exploded"}`))
+				return
+			}
 			items := []map[string]any{}
 			for i := 0; i < f.reorder; i++ {
 				items = append(items, map[string]any{
@@ -816,7 +822,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 				reorderItem("Bolt M8", 11, 4, ""),
 				reorderItem("Bolt M10", 12, 6, ""),
 			}
-		}, (*PurchaseOrderCreateScreen).renderReorderPick, []string{"a adds all"}},
+		}, (*PurchaseOrderCreateScreen).renderReorderPick, []string{"in the queue"}},
 
 		{"items, working", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersLoad = true
@@ -918,7 +924,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			}
 			s.reorderCursor = 39
 		}, (*PurchaseOrderCreateScreen).renderReorderPick,
-			[]string{"more above", "Bolt 40", "a adds all"}},
+			[]string{"more above", "Bolt 40", "in the queue"}},
 
 		{"assets, a list longer than the pane with a pager", func(s *PurchaseOrderCreateScreen) {
 			for i := 0; i < 40; i++ {
@@ -930,6 +936,18 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.assetsHasNext = true
 		}, (*PurchaseOrderCreateScreen).renderAssetPick,
 			[]string{"more above", "Lathe 40", "] next", "[ prev"}},
+
+		{"supplier switch confirm", func(s *PurchaseOrderCreateScreen) {
+			s.suppliers = append(s.suppliers, omsapi.Supplier{ID: 2, Name: "Southern Fastener Supply"})
+			s.supplierCursor = 1
+			id := 7
+			s.lines = []poCartLine{
+				{item: omsapi.PurchaseOrderCreateItem{ItemSupplierID: &id, Quantity: 1}, label: "Hex bolt"},
+				{item: omsapi.PurchaseOrderCreateItem{Description: "Shop rags", Quantity: 2}, label: "Shop rags"},
+			}
+		}, (*PurchaseOrderCreateScreen).renderSupplierSwitchPhase,
+			[]string{"Changing supplier drops part of the cart",
+				"ctrl+x drops 1 line(s) and switches", "esc keeps the cart and this supplier"}},
 
 		{"assets, search matched nothing", func(s *PurchaseOrderCreateScreen) {
 			s.assetsSearch.SetValue("hovercraft full of eels")
@@ -2054,6 +2072,373 @@ func TestPOSupplierPicker_IsWindowedLikeEveryOtherBlock(t *testing.T) {
 			}
 
 			// And enter commits the supplier the operator is looking at.
+			want := screen.suppliers[screen.supplierCursor].ID
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			if screen.supplierID != want {
+				t.Errorf("enter committed supplier %d, want the highlighted %d", screen.supplierID, want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The bar-honesty rule, as ONE sweep, over the New PO pickers
+// ---------------------------------------------------------------------------
+
+// poPickerBarKeys maps a bar segment's first token to the keystroke it claims.
+// Every token the three pickers can emit must be here: an unrecognised one is a
+// claim the sweep would skip in silence, which is how a dead key survives.
+var poPickerBarKeys = map[string][]string{
+	"j/k":    {"j", "k"},
+	"enter":  {"enter"},
+	"/":      {"/"},
+	"r":      {"r"},
+	"b":      {"b"},
+	"esc":    {"esc"},
+	"]":      {"]"},
+	"[":      {"["},
+	"space":  {" "},
+	"a":      {"a"},
+	"type":   nil, // "type to filter" names no single key
+	"ctrl+x": {"ctrl+x"},
+}
+
+// poPickerVocabulary is every keystroke the sweep presses. A key outside the
+// bar's claim must leave the screen alone; one inside it must do something.
+var poPickerVocabulary = []string{"j", "k", "enter", "/", "r", "b", "esc", "]", "[", " ", "a"}
+
+func poPickerNamedKeys(t *testing.T, bar string) map[string]bool {
+	t.Helper()
+	named := map[string]bool{}
+	for _, seg := range strings.Split(bar, " · ") {
+		fields := strings.Fields(strings.TrimSpace(seg))
+		if len(fields) == 0 {
+			continue
+		}
+		keys, ok := poPickerBarKeys[fields[0]]
+		if !ok {
+			t.Fatalf("bar segment %q starts with an unknown token — add it to poPickerBarKeys (bar: %q)", seg, bar)
+		}
+		for _, k := range keys {
+			named[k] = true
+		}
+	}
+	return named
+}
+
+// poPickerState is everything a key can CHANGE. Deliberately excludes the note
+// and the status flash: a key that declines and says why has not acted, and the
+// project's rule is that such an arm must answer, not that the bar must promise
+// it. Anything in here moving means the key did something.
+func poPickerState(s *PurchaseOrderCreateScreen) string {
+	return fmt.Sprint(s.phase, "|", s.itemSuppliersCur, s.itemSuppliersTyping, s.itemSuppliersLoad,
+		s.itemSuppliersErr, s.itemSuppliersSearch.Value(), len(s.itemSuppliers),
+		"|", s.assetsCursor, s.assetsTyping, s.assetsLoading, s.assetsErr,
+		s.assetsSearch.Value(), s.assetsPage, len(s.assets),
+		"|", s.reorderCursor, s.reorderLoading, s.reorderLoadErr, len(s.reorderSelected),
+		"|", s.supplierCursor, s.supplierLoading, s.supplierLoadErr,
+		"|", len(s.lines), s.supplierID)
+}
+
+// poCmdActs reports whether a command does anything beyond posting a status.
+// esc leaves the screen entirely and b changes phase, so a fingerprint alone
+// would call the first of those dead.
+func poCmdActs(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	switch m := msg.(type) {
+	case nil:
+		return false
+	case StatusMsg:
+		return false
+	case tea.BatchMsg:
+		for _, c := range m {
+			if poCmdActs(c) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// TestPOPickers_PaneNamesExactlyTheKeysThatWork sweeps the rule over every
+// non-typing state of the three pickers.
+//
+// The typing states are excluded on purpose and not by oversight: with a search
+// box open every printable key "acts" by going into the query, so the reverse
+// direction is meaningless there, and enter's claim is a CONDITION ("picks when
+// one row is left") rather than a promise. Those states are covered by the
+// wording tests below instead.
+//
+// This is the sweep the list screens have had since the first round and the New
+// PO pickers never did — which is why a bar that named '/' on a frame where '/'
+// erased the only repair key went five rounds unnoticed.
+func TestPOPickers_PaneNamesExactlyTheKeysThatWork(t *testing.T) {
+	type picker struct {
+		name  string
+		fake  func() *poPickFake
+		enter func(*testing.T, Root) Root // reach the state under test
+		bar   func(*PurchaseOrderCreateScreen) string
+	}
+	press := func(k string) func(*testing.T, Root) Root {
+		return func(t *testing.T, r Root) Root { return key(t, r, poPickerKeyMsg(k)) }
+	}
+	// midFlight presses a key WITHOUT pumping its command, so the request is
+	// genuinely still out — the working frame is a state the sweep has to reach
+	// while it is real, not after it resolves.
+	midFlight := func(pumped []string, k string) func(*testing.T, Root) Root {
+		return func(t *testing.T, r Root) Root {
+			for _, p := range pumped {
+				r = key(t, r, poPickerKeyMsg(p))
+			}
+			next, _ := r.Update(poPickerKeyMsg(k))
+			return next.(Root)
+		}
+	}
+	pickers := []picker{
+		{"items, loaded", func() *poPickFake { return &poPickFake{catalog: 8, pageSize: 8} },
+			press("i"), (*PurchaseOrderCreateScreen).itemPickBar},
+		{"items, empty catalog", func() *poPickFake { return &poPickFake{catalog: 0} },
+			press("i"), (*PurchaseOrderCreateScreen).itemPickBar},
+		{"items, failed", func() *poPickFake { return &poPickFake{catalog: 8, failItems: true} },
+			press("i"), (*PurchaseOrderCreateScreen).itemPickBar},
+		{"items, first walk in flight", func() *poPickFake { return &poPickFake{catalog: 8, pageSize: 2} },
+			midFlight(nil, "i"), (*PurchaseOrderCreateScreen).itemPickBar},
+		{"items, reload in flight", func() *poPickFake { return &poPickFake{catalog: 8, pageSize: 2} },
+			midFlight([]string{"i"}, "r"), (*PurchaseOrderCreateScreen).itemPickBar},
+		{"assets, loaded with a pager", func() *poPickFake { return &poPickFake{assets: 12, pageSize: 5} },
+			press("a"), (*PurchaseOrderCreateScreen).assetPickBar},
+		{"assets, empty", func() *poPickFake { return &poPickFake{assets: 0} },
+			press("a"), (*PurchaseOrderCreateScreen).assetPickBar},
+		{"assets, failed", func() *poPickFake { return &poPickFake{assets: 3, failAssets: true} },
+			press("a"), (*PurchaseOrderCreateScreen).assetPickBar},
+		{"assets, load in flight", func() *poPickFake { return &poPickFake{assets: 12, pageSize: 5} },
+			midFlight(nil, "a"), (*PurchaseOrderCreateScreen).assetPickBar},
+		{"assets, page load in flight", func() *poPickFake { return &poPickFake{assets: 12, pageSize: 5} },
+			midFlight([]string{"a"}, "]"), (*PurchaseOrderCreateScreen).assetPickBar},
+		{"reorder, loaded", func() *poPickFake { return &poPickFake{reorder: 6} },
+			press("r"), (*PurchaseOrderCreateScreen).reorderPickBar},
+		{"reorder, empty", func() *poPickFake { return &poPickFake{reorder: 0} },
+			press("r"), (*PurchaseOrderCreateScreen).reorderPickBar},
+		{"reorder, failed", func() *poPickFake { return &poPickFake{failReorder: true} },
+			press("r"), (*PurchaseOrderCreateScreen).reorderPickBar},
+		{"reorder, load in flight", func() *poPickFake { return &poPickFake{reorder: 6} },
+			midFlight(nil, "r"), (*PurchaseOrderCreateScreen).reorderPickBar},
+		// The supplier list is the fourth picker frame on this screen. It is
+		// reached by backing out of the source chooser, and its loaded/loading
+		// states have the same two directions to check.
+		{"suppliers, loaded", func() *poPickFake { return &poPickFake{suppliers: 4} },
+			press("b"), (*PurchaseOrderCreateScreen).supplierPickBar},
+	}
+
+	for _, p := range pickers {
+		for _, height := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", p.name, height), func(t *testing.T) {
+				fresh := func(probe []string) (Root, *PurchaseOrderCreateScreen) {
+					r, screen := poPickerAtSize(t, p.fake(), 80, height)
+					r = p.enter(t, r)
+					for _, k := range probe {
+						next, _ := r.Update(poPickerKeyMsg(k))
+						r = next.(Root)
+					}
+					return r, screen
+				}
+
+				_, screen := fresh(nil)
+				bar := p.bar(screen)
+				named := poPickerNamedKeys(t, bar)
+
+				// Every claim the bar makes has to be READABLE on the pane it
+				// is drawn on, at this height, or it is not a claim.
+				for _, seg := range strings.Split(bar, " · ") {
+					if !poPaneHasLine(t, screen, seg) {
+						t.Errorf("the bar claims %q but the 80x%d pane does not carry it:\n%s",
+							seg, height, strings.Join(poPaneLines(t, screen), "\n"))
+					}
+				}
+				poAssertFits(t, p.name, screen)
+
+				// Probed from more than one position, because j does nothing at
+				// the bottom of a list and k nothing at the top: a key is dead
+				// only if it does nothing from ANY of them. Same reasoning the
+				// list sweep uses.
+				for _, k := range poPickerVocabulary {
+					acted := false
+					for _, probe := range [][]string{nil, {"j"}} {
+						pr, ps := fresh(probe)
+						before := poPickerState(ps)
+						_, cmd := pr.Update(poPickerKeyMsg(k))
+						if poPickerState(ps) != before || poCmdActs(cmd) {
+							acted = true
+						}
+					}
+					switch {
+					case named[k] && !acted:
+						t.Errorf("%s names %q but pressing it changes nothing (bar: %q)", p.name, k, bar)
+					case !named[k] && acted:
+						t.Errorf("%s does not name %q, but pressing it acts (bar: %q)", p.name, k, bar)
+					}
+				}
+			})
+		}
+	}
+}
+
+func poPickerKeyMsg(k string) tea.KeyMsg {
+	switch k {
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "ctrl+x":
+		return tea.KeyMsg{Type: tea.KeyCtrlX}
+	}
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+}
+
+// TestPOItemPicker_BarAndNoteNeverDisagreeAboutEnter: with the box open over
+// SEVERAL matches the pane used to carry "enter picks the match" from the
+// action bar and "enter closes the search" from the note, four rows apart —
+// and enter did neither, because with more than one match it declines. The
+// operator who trusts the bar presses enter expecting a staged line, which is
+// the reported defect wearing a different hat.
+func TestPOItemPicker_BarAndNoteNeverDisagreeAboutEnter(t *testing.T) {
+	for _, height := range poPaneSizes {
+		t.Run(fmt.Sprintf("height %d", height), func(t *testing.T) {
+			fake := &poPickFake{catalog: 12, pageSize: 12}
+			r, screen := poPickerAtSize(t, fake, 80, height)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+			r = poType(t, r, "Widget 1") // 4 matches
+
+			// Nothing on the pane may promise that enter picks here.
+			poRejectPaneLine(t, screen, "enter picks the match")
+			poRejectPaneLine(t, screen, "enter pick,")
+			// The bar states the condition, once.
+			poWantPaneLine(t, screen, "enter picks when one row is left")
+			poAssertFits(t, "open box over several matches", screen)
+
+			// And that is what enter does: it declines to guess.
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			if screen.phase == poPhaseLine || len(screen.lines) != 0 {
+				t.Fatalf("enter over several matches staged a line (phase %v, %d line(s))",
+					screen.phase, len(screen.lines))
+			}
+
+			// With exactly one match left it does pick, so the condition holds.
+			r2, screen2 := poPickerAtSize(t, &poPickFake{catalog: 12, pageSize: 12}, 80, height)
+			r2 = key(t, r2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+			r2 = key(t, r2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+			r2 = poType(t, r2, "Widget 12")
+			poWantPaneLine(t, screen2, "enter picks when one row is left")
+			r2 = key(t, r2, tea.KeyMsg{Type: tea.KeyEnter})
+			if screen2.phase != poPhaseLine {
+				t.Fatalf("enter over the one match did not pick (phase %v)", screen2.phase)
+			}
+			_ = r
+		})
+	}
+}
+
+// TestPOAssetPicker_PagerDoesNotStepOverAPageThatFailed: the failure frame keeps
+// assetsHasNext from the page that DID load, so an ungated ']' increments past
+// the page that just 500'd — and the retry silently skips it.
+func TestPOAssetPicker_PagerDoesNotStepOverAPageThatFailed(t *testing.T) {
+	fake := &poPickFake{assets: 12, pageSize: 5}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if !screen.assetsHasNext {
+		t.Fatalf("setup: wanted a next page, got %d asset(s)", len(screen.assets))
+	}
+
+	fake.mu.Lock()
+	fake.failAssets = true
+	fake.mu.Unlock()
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	if screen.assetsErr == "" {
+		t.Fatal("setup: the failing page did not fail")
+	}
+	failedPage := screen.assetsPage
+	if !screen.assetsHasNext {
+		t.Fatal("setup: this trace needs hasNext still set from the page that loaded")
+	}
+
+	before := fake.hits("/assets/")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	if screen.assetsPage != failedPage {
+		t.Errorf("']' stepped from the failed page %d to %d — the retry would skip it",
+			failedPage, screen.assetsPage)
+	}
+	if got := fake.hits("/assets/"); got != before {
+		t.Errorf("']' fired %d more request(s) from a frame that does not name it", got-before)
+	}
+	// The frame still names the key that repairs it, and that key works.
+	poWantPaneLine(t, screen, "/ retries with a search")
+	fake.mu.Lock()
+	fake.failAssets = false
+	fake.mu.Unlock()
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	if !screen.assetsTyping {
+		t.Fatal("the key the failure frame names did not open the search")
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.assetsErr != "" {
+		t.Errorf("the retry the frame named did not clear the failure: %q", screen.assetsErr)
+	}
+}
+
+// TestPOSupplierPicker_KeysDeclineWhileTheListIsNotDrawn: the supplier list is
+// the frame the whole order starts on, and while it is loading (or has failed)
+// renderSupplierPhase draws nothing at all — yet the bar promised j/k and enter
+// and enter answered with silence, which is the reported symptom exactly.
+func TestPOSupplierPicker_KeysDeclineWhileTheListIsNotDrawn(t *testing.T) {
+	for _, height := range poPaneSizes {
+		t.Run(fmt.Sprintf("height %d", height), func(t *testing.T) {
+			fake := &poPickFake{suppliers: 3}
+			srv := httptest.NewServer(fake.handler())
+			t.Cleanup(srv.Close)
+
+			deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+			screen := NewPurchaseOrderCreateScreen(deps)
+			r := newTestRoot(screen)
+			r.deps = deps
+			next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: height})
+			r = next.(Root)
+			if !screen.supplierLoading {
+				t.Fatal("setup: the supplier load is not in flight")
+			}
+
+			// The bar promises only esc here, and j/k/enter say why they cannot.
+			poRejectPaneLine(t, screen, "j/k move")
+			poRejectPaneLine(t, screen, "enter commits")
+			poWantPaneLine(t, screen, "esc cancels the order")
+			poAssertFits(t, "suppliers, load in flight", screen)
+
+			for _, k := range []tea.KeyMsg{
+				{Type: tea.KeyRunes, Runes: []rune("j")},
+				{Type: tea.KeyRunes, Runes: []rune("k")},
+				{Type: tea.KeyEnter},
+			} {
+				next, cmd := r.Update(k)
+				r = next.(Root)
+				r = pump(t, r, cmd, 0)
+				if screen.phase != poPhaseSupplier || screen.supplierID != 0 {
+					t.Fatalf("%v acted while the supplier list was not drawn (phase %v, supplier %d)",
+						k, screen.phase, screen.supplierID)
+				}
+				if out := r.View(); !strings.Contains(out, "still looking up the suppliers") {
+					t.Errorf("%v mid-load said nothing:\n%s", k, out)
+				}
+			}
+
+			// Once the list lands, the bar names them and they work.
+			r = pump(t, r, screen.Init(), 0)
+			poWantPaneLine(t, screen, "j/k move")
+			poWantPaneLine(t, screen, "enter commits")
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 			want := screen.suppliers[screen.supplierCursor].ID
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 			if screen.supplierID != want {

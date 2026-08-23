@@ -506,6 +506,12 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 // ---------------------------------------------------------------------------
 
 func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if !s.supplierListOnScreen() {
+		switch m.String() {
+		case "j", "down", "k", "up", "enter", "tab":
+			return s, s.supplierVerdictStatus()
+		}
+	}
 	switch m.String() {
 	case "esc":
 		return s, SwitchTo(WSPurchasing, nil)
@@ -633,15 +639,29 @@ func (s *PurchaseOrderCreateScreen) renderSupplierSwitchPhase() string {
 	}
 	var b strings.Builder
 	b.WriteString(StyleStatusWarn.Render("! Changing supplier drops part of the cart") + "\n\n")
-	b.WriteString(pickerHint(fmt.Sprintf(
-		"%d of %d staged line(s) name a catalog item only %s carries, so they cannot be ordered from %s.",
-		scoped, len(s.lines), s.supplierLabel(), to)) + "\n\n")
+	// The two KEY CLAIMS go above the prose, and carry no supplier name. This
+	// is a destructive confirm and the decline is the safe answer, so the
+	// decline is the one line that must never be what the pane cuts — and a
+	// 20-cell supplier name folded onto the end of it was exactly what pushed
+	// it off a 24-row terminal. Prose is what gets sacrificed when the rows
+	// run out; the keys are not.
+	b.WriteString(pickerHint(s.supplierSwitchBar()) + "\n\n")
+
+	prose := fmt.Sprintf("%d of %d staged line(s) name items only %s sells, so %s cannot fill them.",
+		scoped, len(s.lines), s.supplierLabel(), to)
 	if kept := len(s.lines) - scoped; kept > 0 {
-		b.WriteString(pickerHint(fmt.Sprintf(
-			"The other %d line(s) are freeform or asset lines and stay in the cart.", kept)) + "\n\n")
+		prose += fmt.Sprintf(" The other %d line(s) stay.", kept)
 	}
-	b.WriteString(pickerHint("ctrl+x drops those lines and switches to " + to +
-		" · esc keeps the cart and stays on " + s.supplierLabel()))
+	lines := pickerWrap(prose, pickerPaneWidth)
+	if budget := s.bodyRowBudget(poRenderedRows(b.String())); budget > 0 && len(lines) > budget {
+		lines = lines[:budget]
+	}
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(StyleMuted.Render(line))
+	}
 	return b.String()
 }
 
@@ -1651,12 +1671,12 @@ func (s *PurchaseOrderCreateScreen) View() string {
 func (s *PurchaseOrderCreateScreen) helpText() string {
 	switch s.phase {
 	case poPhaseSupplier:
-		return "Pick a supplier (j/k move, enter to commit, esc to cancel)."
+		return "Pick a supplier · " + s.supplierPickBar()
 	case poPhaseSupplierSwitch:
-		// Exactly the two keys the frame binds. j/k, enter and the rest are
-		// deliberately absent: they do nothing here, and the bar may only name
-		// keys that work in the state it is drawing.
-		return "Changing supplier · ctrl+x drops the lines only the old supplier carries and switches · esc keeps the cart."
+		// Exactly the two keys the frame binds, from the same sentence the
+		// frame prints. j/k, enter and the rest are deliberately absent: they
+		// do nothing here.
+		return "Changing supplier · " + s.supplierSwitchBar()
 	case poPhaseAgreement:
 		return "Pick the purchase / pricing agreement this order is placed under (j/k move · enter commit · esc keep current · row 1 = none)."
 	case poPhaseWorkOrder:
@@ -1684,22 +1704,16 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 		}
 		return base
 	case poPhaseReorderPick:
-		return "Reorder-queue suggestions (j/k move · space mark · a add ALL · enter add marked/highlighted · b back · esc cancel)."
+		// The three picker bars come from the pickers themselves
+		// (po_create_pickers.go), which is also where each frame's own way-out
+		// line comes from. One sentence, both surfaces: a bar and a body line
+		// that state the same fact by hand are a bar and a body line that end
+		// up contradicting each other.
+		return "Reorder queue · " + s.reorderPickBar()
 	case poPhaseItemPick:
-		// While the search box owns the keyboard, j/k/b are LETTERS being typed
-		// — naming them there would be the bar claiming keys that do something
-		// else. The typing line names only the two that are real, and says what
-		// enter does, because "enter picks the match" is the sentence whose
-		// absence made this picker read as hung.
-		if s.itemSuppliersTyping {
-			return "Search this supplier's catalog (type to filter · enter picks the match · esc closes the search and keeps the filter)."
-		}
-		return "Inventory items for this supplier (j/k move, / search, r reload, enter pick, b back, esc cancel)."
+		return "Items · " + s.itemPickBar()
 	case poPhaseAssetPick:
-		if s.assetsTyping {
-			return "Search this supplier's assets (type to search · enter runs the search · esc closes the search)."
-		}
-		return "Assets purchased from this supplier (j/k move, / search, ] next page, [ prev page, enter pick, b back, esc cancel)."
+		return "Assets · " + s.assetPickBar()
 	case poPhaseLine:
 		if s.editIndex >= 0 {
 			// Editing an existing cart line (opened with ctrl+e from review).
@@ -1896,10 +1910,12 @@ func (s *PurchaseOrderCreateScreen) renderAssocRows(withKey bool) string {
 
 func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
 	if s.supplierLoading || s.supplierLoadErr != "" {
+		// The header above already says which of the two this is; the bar says
+		// the only key that acts here.
 		return ""
 	}
 	if len(s.suppliers) == 0 {
-		return StyleMuted.Render("(no suppliers configured)")
+		return pickerHint("(no suppliers configured)")
 	}
 	// Through the shared windower like every other scrolling block on this
 	// screen. Its own copy of the logic had both of the failures that one was
