@@ -2622,3 +2622,204 @@ func TestPOAssetPicker_SearchBoxDoesNotRunASecondSearchOverTheFirst(t *testing.T
 		t.Fatalf("the key the settled pane named did not search (%d requests, want %d)", got, settled+1)
 	}
 }
+
+// TestPOItemPicker_EnterOverAnEmptyFilteredListMovesTheNote is the browse-path
+// sibling of the search-box arm: with the box CLOSED over a filter that matched
+// nothing, enter reaches commitHighlightedItem, which used to answer with
+// reportItemFilterState("") — itemFilterOrVerdict re-entered with identical
+// arguments, so the note came back character for character. The filter row
+// above it is a blurred textinput with no caret, so the pane was byte-for-byte
+// what it already was and only the four-second status flash moved.
+//
+// The reload is what makes the FIRST press silent: it clears the note and keeps
+// the query, so the reply words the filter outcome and the enter after it words
+// the same one again.
+func TestPOItemPicker_EnterOverAnEmptyFilteredListMovesTheNote(t *testing.T) {
+	fake := &poPickFake{catalog: 12, pageSize: 12}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "zzz")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+
+	if screen.itemSuppliersTyping {
+		t.Fatal("setup: the search box is still open — this is the browse path")
+	}
+	if len(screen.itemSuppliers) != 0 || len(screen.itemSuppliersAll) != 12 {
+		t.Fatalf("setup: want a filtered-empty list over a loaded catalog (%d of %d)",
+			len(screen.itemSuppliers), len(screen.itemSuppliersAll))
+	}
+	before := strings.Join(poNoteLines(t, screen.itemSuppliersNote), "\n")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	after := strings.Join(poNoteLines(t, screen.itemSuppliersNote), "\n")
+
+	if before == after {
+		t.Errorf("enter over an empty filtered list redrew the same note:\n%s", after)
+	}
+	poWantPaneLine(t, screen, "nothing to pick")
+	poWantPaneLine(t, screen, "in catalog")
+	if screen.phase != poPhaseItemPick || len(screen.lines) != 0 {
+		t.Fatalf("enter over an empty list staged something (phase %v, %d line(s))", screen.phase, len(screen.lines))
+	}
+	poAssertFits(t, "enter over an empty filtered list", screen)
+}
+
+// TestPOAssetPicker_EnterOverAnEmptySearchResultMovesTheNote is the same arm in
+// the asset picker: the reply that found nothing and the enter that declines to
+// pick from it worded the outcome identically.
+func TestPOAssetPicker_EnterOverAnEmptySearchResultMovesTheNote(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "zzz")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(screen.assets) != 0 || screen.assetsLoading {
+		t.Fatalf("setup: want a settled empty search result (%d row(s), loading=%v)",
+			len(screen.assets), screen.assetsLoading)
+	}
+	before := strings.Join(poNoteLines(t, screen.assetsNote), "\n")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	after := strings.Join(poNoteLines(t, screen.assetsNote), "\n")
+
+	if before == after {
+		t.Errorf("enter over an empty asset search redrew the same note:\n%s", after)
+	}
+	poWantPaneLine(t, screen, "nothing to pick")
+	if screen.phase != poPhaseAssetPick || len(screen.lines) != 0 {
+		t.Fatalf("enter over no assets staged something (phase %v, %d line(s))", screen.phase, len(screen.lines))
+	}
+	poAssertFits(t, "enter over an empty asset search", screen)
+}
+
+// TestPOAssetPicker_ClosingTheSearchMidLookupSaysWhatEscDid: esc out of the box
+// while the lookup is still out lands on the verdict, which the declining enter
+// before it had already put on the pane. The query stays in the box so the
+// "search:" row does not go with it, and without a lead the only thing that
+// moved was the caret.
+func TestPOAssetPicker_ClosingTheSearchMidLookupSaysWhatEscDid(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = next.(Root)
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = next.(Root)
+	r = poType(t, r, "Lathe")
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyEnter}) // declines, lookup still out
+	r = next.(Root)
+	if !screen.assetsLoading || !screen.assetsTyping {
+		t.Fatalf("setup: want the box open over an in-flight lookup (typing=%v loading=%v)",
+			screen.assetsTyping, screen.assetsLoading)
+	}
+
+	before := strings.Join(poNoteLines(t, screen.assetsNote), "\n")
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	r = next.(Root)
+	after := strings.Join(poNoteLines(t, screen.assetsNote), "\n")
+
+	if screen.assetsTyping {
+		t.Fatal("esc did not close the search box")
+	}
+	if before == after {
+		t.Errorf("esc mid-lookup redrew the same note:\n%s", after)
+	}
+	poWantPaneLine(t, screen, "search closed")
+	poWantPaneLine(t, screen, "Looking up the assets")
+	poAssertFits(t, "esc out of the asset search mid-lookup", screen)
+	r = pump(t, r, load, 0)
+	_ = r
+}
+
+// TestPOAssetPicker_ReenteringDoesNotRaceTheLookupAlreadyOut is the race the
+// search-box gate did not close: 'b' is named on the working frame and has to
+// keep working, so leaving mid-lookup and pressing 'a' again fired an
+// unfiltered page-1 request over a search that was still out. Whichever landed
+// last won, and the losing order painted a FILTERED SUBSET as the supplier's
+// whole asset list — empty search box, no "search:" row, "N asset(s)" with a
+// green tick.
+func TestPOAssetPicker_ReenteringDoesNotRaceTheLookupAlreadyOut(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}) // first load settles
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "Lathe 2")
+
+	next, search := r.Update(tea.KeyMsg{Type: tea.KeyEnter}) // search out, un-pumped
+	r = next.(Root)
+	if !screen.assetsLoading {
+		t.Fatal("setup: the search did not go out")
+	}
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	r = next.(Root)
+	if screen.phase != poPhaseSource {
+		t.Fatalf("setup: 'b' did not leave the picker (phase %v)", screen.phase)
+	}
+
+	sent := fake.hits("/assets/")
+	next, reenter := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = next.(Root)
+	r = pump(t, r, reenter, 0)
+
+	if got := fake.hits("/assets/"); got != sent {
+		t.Errorf("re-entering fired %d lookup(s) over the one already out", got-sent)
+	}
+	if screen.phase != poPhaseAssetPick {
+		t.Fatalf("'a' did not open the picker (phase %v)", screen.phase)
+	}
+	if got := screen.assetsSearch.Value(); got != "Lathe 2" {
+		t.Errorf("re-entry cleared the query the in-flight request owns: %q", got)
+	}
+	poWantPaneLine(t, screen, "Looking up the assets")
+
+	// The one reply that IS out lands, and the rows match the box.
+	r = pump(t, r, search, 0)
+	if screen.assetsLoading {
+		t.Fatal("the lookup never finished")
+	}
+	if len(screen.assets) != 1 {
+		t.Errorf("the settled list holds %d row(s), want the 1 match for the query in the box", len(screen.assets))
+	}
+	poWantPaneLine(t, screen, "search: Lathe 2")
+	poAssertFits(t, "re-entered the asset picker mid-lookup", screen)
+}
+
+// TestPOReorderPicker_ReenteringDoesNotRaceTheLookupAlreadyOut is the same
+// re-entry shape on the third picker. Its two replies carry the same rows, so
+// nothing is painted wrong — but the second request is still one the first was
+// already going to answer, and the guard belongs at every load site or the next
+// parameter added to the call makes it the asset bug again.
+func TestPOReorderPicker_ReenteringDoesNotRaceTheLookupAlreadyOut(t *testing.T) {
+	fake := &poPickFake{reorder: 3}
+	r, screen := poPickerAt(t, fake, 80)
+
+	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	r = next.(Root)
+	if !screen.reorderLoading {
+		t.Fatal("setup: the reorder lookup did not go out")
+	}
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	r = next.(Root)
+
+	sent := fake.hits("/reorder_data/")
+	next, reenter := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	r = next.(Root)
+	r = pump(t, r, reenter, 0)
+
+	if got := fake.hits("/reorder_data/"); got != sent {
+		t.Errorf("re-entering fired %d reorder lookup(s) over the one already out", got-sent)
+	}
+	if screen.phase != poPhaseReorderPick {
+		t.Fatalf("'r' did not open the picker (phase %v)", screen.phase)
+	}
+	poWantPaneLine(t, screen, "Looking up what")
+
+	r = pump(t, r, load, 0)
+	if screen.reorderLoading {
+		t.Fatal("the lookup never finished")
+	}
+	if len(screen.reorderItems) != 3 {
+		t.Errorf("the settled queue holds %d row(s), want 3", len(screen.reorderItems))
+	}
+}

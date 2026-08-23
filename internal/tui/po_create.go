@@ -948,6 +948,14 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		return s, nil
 	case "r":
 		s.phase = poPhaseReorderPick
+		if s.reorderLoading {
+			// Same guard as 'i' below. 'b' out of a picker is not gated on the
+			// working frame — the bar names it and it has to keep working — so
+			// leaving mid-lookup and pressing the source key again is an
+			// ordinary sequence, and it used to put a second request on the
+			// wire for a reply the first one is already going to deliver.
+			return s, s.reorderVerdictStatus()
+		}
 		s.reorderLoading = true
 		s.reorderLoadErr = ""
 		return s, s.loadReorderItemsForSupplier()
@@ -978,6 +986,21 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		return s, s.loadItemSuppliersForSupplier()
 	case "a":
 		s.phase = poPhaseAssetPick
+		if s.assetsLoading {
+			// The asset reply carries only supplierID, so two lookups for the
+			// SAME supplier cannot be told apart and whichever lands last wins.
+			// Gating the search box (updateAssetPickPhase) closed that race
+			// only from inside the picker: 'a' -> '/' + search -> 'b' -> 'a'
+			// left the search request in flight and fired an unfiltered page 1
+			// over it, and if the search reply landed last the pane showed a
+			// FILTERED SUBSET as the supplier's whole asset list — empty search
+			// box, no "search:" row, "N asset(s)" with a green tick.
+			//
+			// Nothing below this line runs either: resetting the query and the
+			// page while the request that owns them is still out is what made
+			// the mismatch legible as a success.
+			return s, s.assetVerdictNote("")
+		}
 		s.assetsLoading = true
 		s.assetsErr = ""
 		s.assetsSearch.SetValue("")

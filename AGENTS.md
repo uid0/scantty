@@ -193,11 +193,23 @@ touching any screen an operator drives:
   The SEARCH BOX is not an exception: enter inside it is gated too — on
   `itemListOnScreen` for items (the filter is client-side, so a pick out of an
   unanswered catalog is a pick out of nothing) and on `assetsLoading` for assets
-  (that search goes off the terminal, and the reply carries no request
-  generation, so a second one racing the first can leave rows belonging to a
-  query the box no longer holds). Gate a key and the bar must stop naming it
-  for exactly as long as the gate holds, in the typing arm as well as the
+  (that search goes off the terminal). Gate a key and the bar must stop naming
+  it for exactly as long as the gate holds, in the typing arm as well as the
   browsing one, and the note the box OPENS with must not promise it either.
+- **Two loads for one picker is a wrong list, so guard EVERY load site.** A
+  picker reply carries only `supplierID` (`pickerReplySupplier`), so two lookups
+  for the same supplier cannot be told apart and whichever lands last wins.
+  `b` is named on the working frame and has to keep working, so leaving
+  mid-lookup and pressing the source key again is an ordinary sequence — and
+  gating only the search box left `a` → `/`+search → `b` → `a` firing an
+  unfiltered page 1 over a search still out, painting a FILTERED SUBSET as the
+  supplier's whole asset list with an empty box and a green tick. Every site
+  that fires one now declines while one is out: `updateSourcePhase`'s `r`/`i`/`a`
+  arms, the item picker's `r`, and the asset picker's search and `]`/`[`. The
+  guard goes AFTER the phase change and BEFORE the query/page reset — resetting
+  the fields the in-flight request owns is what made the mismatch legible as a
+  success — so the key still acts (it opens the picker on the lookup that is
+  really out) and the bar can go on naming it.
 - **One WAY-OUT line, both surfaces.** A picker's way out is stated once — by
   `itemPickBar` / `assetPickBar` / `reorderPickBar` / `supplierPickBar` /
   `supplierSwitchBar` — and BOTH the screen's action bar (`helpText`) and the
@@ -207,11 +219,13 @@ touching any screen an operator drives:
   names a key: a note answers a specific press, so it can be narrower than the
   bar, and the rule is the weaker one — whatever a bar names must act in the
   state being drawn, and bar and note must not CONTRADICT each other about the
-  same key. One gap is known and DEFERRED to the queued columnar conversion,
+  same key. Two gaps are known and DEFERRED to the queued columnar conversion,
   with the reasoning at the "One statement of what works here" comment in
   `po_create_pickers.go`: `itemPickBar`'s empty-list arm cannot tell "matched
   nothing" from "sells nothing" by row count, so it says only `r reloads` while
-  the note says `/ edits the search`. `po_create_picker_status_test.go`'s
+  the note says `/ edits the search`; and the two failure frames print the
+  way-out line twice, once as the bar and once as the tail of the verdict note
+  drawn under it. `po_create_picker_status_test.go`'s
   `TestPOPickers_PaneNamesExactlyTheKeysThatWork` presses the whole vocabulary
   against every non-typing picker state and fails a key the bar names that does
   nothing AND a key it does not name that acts — "acts" meaning CHANGES
@@ -222,8 +236,10 @@ touching any screen an operator drives:
   The keys carry no supplier name (a 20-cell `pickerClip` name is what pushed
   the fold over), and the prose below them is trimmed to `bodyRowBudget`.
 - **A note is rendered in two states, so word BOTH.** `itemFilterNote` takes
-  `typing` and every arm consults it: with the box open `j`/`k` are characters
-  and `enter` only picks a lone match. Gating one arm and leaving the rest is
+  `typing` and every arm whose keys DIFFER between the two consults it: with the
+  box open `j`/`k` are characters and `enter` only picks a lone match. The
+  one-match arm is the exception and says so in place — "enter picks it" holds
+  with the box open and shut alike. Gating one arm and leaving the rest is
   how the ordinary search path — type three letters, see eleven matches — went
   on naming three keys of which two did something else. Same gate on
   `assetLoadedNote`, whose reply can land with the box still open.
@@ -231,10 +247,16 @@ touching any screen an operator drives:
   ambiguous search re-emitted the note already on screen, so only the caret
   moved — the original "it just kinda hangs there", surviving inside its own
   fix, and then again in the zero-match arm beside it, which keeps the box OPEN
-  so not even the caret moves. Both filter arms of `commitSearchedItem` now lead
-  with what the key DID ("too many to pick · …", "searched again · …") and the
-  test compares the rendered NOTE line before and after, because a blinking
-  cursor satisfies a comparison of the pane. Where the change IS the note
+  so not even the caret moves. EVERY arm that declines in answer to a key now
+  leads with what the key DID — `commitSearchedItem` ("too many to pick",
+  "searched again"), `commitHighlightedItem` and the asset picker's empty-list
+  enter ("nothing to pick"), and esc out of either search box ("search closed",
+  which `catalogVerdict` and `assetVerdictNote` take as a prefix so the verdict
+  path carries it as well as the filter path). Without the lead the note comes
+  back character for character, and on the browse path there is not even a caret
+  in a blurred textinput to move. The test compares the rendered NOTE line
+  before and after, because a blinking cursor satisfies a comparison of the
+  pane. Where the change IS the note
   arriving — the frames that draw a working or failure line and used to return
   before drawing the note under it — the comparison is the other way round, on
   the clipped pane, because the note object changed in both worlds.

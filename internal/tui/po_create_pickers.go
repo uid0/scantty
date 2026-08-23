@@ -480,6 +480,18 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 // JD Edwards layer anyway. It is a gap in coverage, not a contradiction: the
 // note is the more specific of the two and both are true.
 //
+// Deferred to the same conversion, and for the same reason, is the REPEAT of
+// the way-out line on the two failure frames. Drawing the note under the bar
+// (so a declining key produces a visible change there) means the item and asset
+// error frames print "r retries the lookup · b picks another line source · esc
+// cancels the order" as the bar and then again as the verdict note's second
+// line, with a third copy in helpText at the top of the pane. Both copies are
+// true, no key is dead and nothing wrong is staged; it costs two rows of an
+// 18-row pane. Dropping the way-out tail from catalogVerdict and
+// assetVerdictNote when the frame already draws the bar is the fix, and it is
+// a bar-layout decision that belongs with the conversion rather than another
+// hand-folded hint here.
+//
 // "Acts" means CHANGES something. A key that declines and says why — enter over
 // an empty list, `]` at the last page — is not acting, and is deliberately left
 // unnamed: naming it would advertise a dead end, and the project's rule is that
@@ -661,13 +673,23 @@ func (s *PurchaseOrderCreateScreen) assetLoadedNote(rows int) tea.Cmd {
 // assetVerdictNote and reorderVerdictStatus are the asset and reorder pickers'
 // equivalents of catalogVerdictNote: they say which of the two off-screen
 // states a declining key is answering from, and name the key that leaves it.
-func (s *PurchaseOrderCreateScreen) assetVerdictNote() tea.Cmd {
+// prefix, when given, leads with what the key did — the same shape
+// reportItemFilterState uses, and for the same reason: esc out of the search
+// box lands here whenever the lookup is still out, and without a lead it
+// re-emits the note the declining keypress before it already put on the pane,
+// leaving a query in the box, the same two lines under it and only the caret
+// moving.
+func (s *PurchaseOrderCreateScreen) assetVerdictNote(prefix string) tea.Cmd {
+	lead := ""
+	if prefix != "" {
+		lead = prefix + " · "
+	}
 	if s.assetsLoading {
 		return s.assetsNote.say(
-			"still looking up the assets "+s.supplierLabel()+" supplied…", StatusInfo)
+			lead+"still looking up the assets "+s.supplierLabel()+" supplied…", StatusInfo)
 	}
 	return s.assetsNote.say(
-		"the asset lookup failed\n/ retries with a search · "+pickerWayOut, StatusError)
+		lead+"the asset lookup failed\n/ retries with a search · "+pickerWayOut, StatusError)
 }
 
 func (s *PurchaseOrderCreateScreen) reorderVerdictStatus() tea.Cmd {
@@ -1110,7 +1132,7 @@ func (s *PurchaseOrderCreateScreen) commitHighlightedItem() tea.Cmd {
 		return s.catalogVerdictNote()
 	}
 	if len(s.itemSuppliers) == 0 {
-		return s.reportItemFilterState("")
+		return s.reportItemFilterState("nothing to pick")
 	}
 	if s.itemSuppliersCur < 0 || s.itemSuppliersCur >= len(s.itemSuppliers) {
 		s.itemSuppliersCur = 0
@@ -1175,35 +1197,45 @@ func (s *PurchaseOrderCreateScreen) catalogAnswered() bool {
 // here too, because a key pressed mid-walk used to report the conclusion of a
 // walk that had not finished.
 func (s *PurchaseOrderCreateScreen) catalogVerdictNote() tea.Cmd {
-	s.itemSuppliersNote = s.catalogVerdict()
+	s.itemSuppliersNote = s.catalogVerdict("")
 	return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
 }
 
 // catalogVerdict is the same four-way answer as a pickerNote, without posting
 // it. The typing path needs the wording on every keystroke but must not fire a
 // status flash per rune, so the note and the flash are separated here.
-func (s *PurchaseOrderCreateScreen) catalogVerdict() pickerNote {
+func (s *PurchaseOrderCreateScreen) catalogVerdict(prefix string) pickerNote {
 	way := pickerWayOut
 	if s.itemSuppliersTyping {
 		way = searchBoxWayOut
 	}
+	// The lead travels down the verdict path too, not just the filter path.
+	// itemFilterOrVerdict used to drop it here, so esc out of the search box
+	// mid-walk answered with the same "still looking up…" the last keystroke
+	// had already left on the pane — a query still in the box, the same line
+	// under it, and only the caret leaving. Same for enter over a catalog that
+	// really is empty.
+	lead := ""
+	if prefix != "" {
+		lead = prefix + " · "
+	}
 	switch {
 	case s.itemSuppliersLoad:
-		return pickerNote{"still looking up the items " + s.supplierLabel() + " sells…", StatusInfo}
+		return pickerNote{lead + "still looking up the items " + s.supplierLabel() + " sells…", StatusInfo}
 	case s.itemSuppliersErr != "":
 		// r is a letter going into the query while the box is open, so it is
 		// only named when it is really the retry.
 		if s.itemSuppliersTyping {
-			return pickerNote{"the catalog lookup failed\n" + searchBoxWayOut, StatusError}
+			return pickerNote{lead + "the catalog lookup failed\n" + searchBoxWayOut, StatusError}
 		}
-		return pickerNote{"the catalog lookup failed\nr retries the lookup · " + pickerWayOut, StatusError}
+		return pickerNote{lead + "the catalog lookup failed\nr retries the lookup · " + pickerWayOut, StatusError}
 	case !s.catalogAnswered():
 		if s.itemSuppliersTyping {
-			return pickerNote{"this supplier's catalog has not been looked up yet\n" + searchBoxWayOut, StatusWarn}
+			return pickerNote{lead + "this supplier's catalog has not been looked up yet\n" + searchBoxWayOut, StatusWarn}
 		}
-		return pickerNote{"this supplier's catalog has not been looked up yet\nr looks it up · " + pickerWayOut, StatusWarn}
+		return pickerNote{lead + "this supplier's catalog has not been looked up yet\nr looks it up · " + pickerWayOut, StatusWarn}
 	}
-	return pickerNote{s.noCatalogSentence() + "\n" + way, StatusWarn}
+	return pickerNote{lead + s.noCatalogSentence() + "\n" + way, StatusWarn}
 }
 
 // reportItemFilterState is the note for "the filter changed and nothing was
@@ -1228,7 +1260,7 @@ func (s *PurchaseOrderCreateScreen) itemFilterOrVerdict(prefix string) pickerNot
 	// len(itemSuppliersAll) == 0 sails past a mid-reload frame and words a
 	// verdict about a request that has not come back.
 	if !s.catalogAnswered() || len(s.itemSuppliersAll) == 0 {
-		return s.catalogVerdict()
+		return s.catalogVerdict(prefix)
 	}
 	return itemFilterNote(
 		strings.TrimSpace(s.itemSuppliersSearch.Value()),
@@ -1408,7 +1440,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 				// typing arm of assetPickBar stops naming enter here: a key
 				// that cannot act must not be advertised, and the note says
 				// what is happening instead of the screen sitting still.
-				return s, s.assetVerdictNote()
+				return s, s.assetVerdictNote("")
 			}
 			// Unlike the item picker this really does go off the terminal, so
 			// the note says so BEFORE the request leaves: the reply repaints it
@@ -1437,7 +1469,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 	if !s.assetListOnScreen() {
 		switch m.String() {
 		case "j", "down", "k", "up", "enter":
-			return s, s.assetVerdictNote()
+			return s, s.assetVerdictNote("")
 		}
 	}
 	switch m.String() {
@@ -1476,7 +1508,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 			// Neither the working frame nor the failure frame names them, and
 			// stepping the page over one that just FAILED means the retry
 			// silently skips it.
-			return s, s.assetVerdictNote()
+			return s, s.assetVerdictNote("")
 		}
 		if !s.assetsHasNext {
 			return s, s.assetsNote.say(fmt.Sprintf("already on the last page (page %d)", s.assetsPage), StatusWarn)
@@ -1490,7 +1522,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		)
 	case "[":
 		if !s.assetListOnScreen() {
-			return s, s.assetVerdictNote()
+			return s, s.assetVerdictNote("")
 		}
 		if s.assetsPage <= 1 {
 			return s, s.assetsNote.say("already on the first page", StatusWarn)
@@ -1507,7 +1539,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 			// Same dead end the item picker had: nothing to pick is a fact the
 			// operator has to be told, not a reason to answer with nil.
 			if q := strings.TrimSpace(s.assetsSearch.Value()); q != "" {
-				return s, s.assetsNote.say("no asset matches "+strconv.Quote(pickerClip(q, 16))+"\n/ edits the search · b picks another source", StatusWarn)
+				return s, s.assetsNote.say("nothing to pick · no asset matches "+strconv.Quote(pickerClip(q, 16))+"\n/ edits the search · b picks another source", StatusWarn)
 			}
 			return s, s.assetsNote.say("no assets to pick\nb picks another line source", StatusWarn)
 		}
@@ -1549,7 +1581,7 @@ func (s *PurchaseOrderCreateScreen) assetsSearchClosedNote() tea.Cmd {
 	// failure frames now DRAW their note, so it would be a false line sitting
 	// on the pane.
 	if !s.assetListOnScreen() {
-		return s.assetVerdictNote()
+		return s.assetVerdictNote("search closed")
 	}
 	if len(s.assets) > 0 {
 		return s.assetsNote.say(
