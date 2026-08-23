@@ -49,6 +49,15 @@ type poPickFake struct {
 	// third picker can be driven the same way the other two are.
 	reorder int
 
+	// The three OPTIONAL header lookups. Every source-chooser test ran with
+	// these at zero — the fake fell through to an empty envelope — so the g / w
+	// / c rows were never on the frame, and the four rows they cost were what
+	// pushed the collapsed cart clean off an 18-row pane with nothing on it
+	// saying a cart existed.
+	agreements int
+	workOrders int
+	committees int
+
 	failItems   bool
 	failAssets  bool
 	failReorder bool
@@ -151,6 +160,34 @@ func (f *poPickFake) handler() http.HandlerFunc {
 				rows = append(rows, map[string]any{
 					"id": fmt.Sprintf("as-%d", i+1), "name": name,
 					"asset_tag": fmt.Sprintf("TAG-%03d", i+1),
+				})
+			}
+			envelope(rows, len(rows))
+		case strings.Contains(r.URL.Path, "/supplier-agreements/"):
+			rows := []map[string]any{}
+			for i := 0; i < f.agreements; i++ {
+				rows = append(rows, map[string]any{
+					"id": i + 1, "name": fmt.Sprintf("Annual %d", i+1), "supplier": 1,
+				})
+			}
+			envelope(rows, len(rows))
+		case strings.Contains(r.URL.Path, "/work-orders/"):
+			rows := []map[string]any{}
+			// ListActiveWorkOrders asks twice, once per status, so only the
+			// first status answers or the picker would hold each job twice.
+			if r.URL.Query().Get("status") == "open" {
+				for i := 0; i < f.workOrders; i++ {
+					rows = append(rows, map[string]any{
+						"id": 1000 + i, "title": fmt.Sprintf("Lathe teardown %d", i+1),
+					})
+				}
+			}
+			envelope(rows, len(rows))
+		case strings.Contains(r.URL.Path, "/sigs/"):
+			rows := []map[string]any{}
+			for i := 0; i < f.committees; i++ {
+				rows = append(rows, map[string]any{
+					"id": 50 + i, "name": fmt.Sprintf("Shop %d", i+1),
 				})
 			}
 			envelope(rows, len(rows))
@@ -3705,6 +3742,32 @@ func TestPOAssetPicker_ASupplierRoundTripDoesNotLetAStaleLookupLand(t *testing.T
 	poAssertFits(t, "asset picker after a stale reply", screen)
 }
 
+// poStageCostlessLine picks the highlighted catalog row and CLEARS the cost
+// field the picker prefilled, which is the only route to a staged line with no
+// unit cost: the backend prices those from the item-supplier at save time, so
+// the cart's total becomes a floor and renderCart draws the "priced from the
+// supplier catalog" caveat under it.
+//
+// Every fixture used to stage lines that all carried a cost, so that caveat —
+// 63 cells, and two rows once it goes through the folder — never rendered in
+// any row-budget test.
+func poStageCostlessLine(t *testing.T, r Root, screen *PurchaseOrderCreateScreen) Root {
+	t.Helper()
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // pick the highlighted row
+	for screen.lineFocused != poLineFieldCost {
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyTab})
+	}
+	for i := 0; i < 12; i++ {
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if _, noCost := poCartTotal(screen.lines); noCost == 0 {
+		t.Fatalf("setup: no staged line is priced from the catalog (%d lines)", len(screen.lines))
+	}
+	return r
+}
+
 // TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline is the source
 // chooser's half of "nothing may act on a row the operator cannot see".
 //
@@ -3714,98 +3777,168 @@ func TestPOAssetPicker_ASupplierRoundTripDoesNotLetAStaleLookupLand(t *testing.T
 // so the cart was drawn past the bottom of the pane and clampToBox took the
 // HIGHLIGHTED line, the "N more below" marker that would have said rows were
 // hidden, and the total — while x still removed and ctrl+e still edited the
-// line nobody could see. The previous version of this test asserted that the
-// rows naming those keys survived and said "something is always cut there": it
-// kept the KEYS and lost the row the keys act on.
+// line nobody could see.
 //
 // So: when the rows fit, they are listed with their highlight and the keys act.
 // When they do not, one sentence says how many lines there are, what they come
 // to, that they are not listed and which key opens them; the bar stops naming
 // the four keys; and each of those keys declines without touching the cart
 // while still moving the body.
+//
+// The second fixture is the one every earlier version of this test could not
+// build. A supplier carrying an agreement, work orders AND committees draws
+// three more header rows and lengthens the bar that measures against them, and
+// a line priced from the catalog folds the cart's caveat onto two rows: those
+// four rows put the whole collapsed sentence off the pane, so the frame said
+// nothing about the cart at all while j/k/x/ctrl+e answered into a four-second
+// flash. The optional rows are what yield now, and they say they have.
 func TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline(t *testing.T) {
-	for _, h := range poPaneSizes {
-		fake := &poPickFake{reorder: 15, catalog: 2, assets: 1}
-		r, screen := poPickerAtSize(t, fake, 80, h)
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}) // add all 15
-		if len(screen.lines) != 15 {
-			t.Fatalf("80x%d: setup staged %d lines, want 15", h, len(screen.lines))
-		}
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc}) // review → source chooser
-		if screen.phase != poPhaseSource {
-			t.Fatalf("80x%d: setup left the screen on phase %v", h, screen.phase)
-		}
-		// A highlight in the MIDDLE of the cart, which is where the reported
-		// failure lives: poCartWindow centres the window on it, so at 80x24 the
-		// highlighted row and the "N more below" marker under it were both past
-		// the bottom of the pane while x still removed that very line.
-		screen.reviewCursor = 7
+	cases := []struct {
+		name     string
+		fake     func() *poPickFake
+		costless bool
+	}{
+		{"plain supplier", func() *poPickFake {
+			return &poPickFake{reorder: 15, catalog: 2, assets: 1}
+		}, false},
+		{"supplier with agreement, work orders and committees", func() *poPickFake {
+			return &poPickFake{reorder: 15, catalog: 2, assets: 1,
+				agreements: 1, workOrders: 2, committees: 1}
+		}, true},
+	}
 
-		what := fmt.Sprintf("source chooser with a 15-line cart at 80x%d", h)
-		poAssertFits(t, what, screen)
+	for _, tc := range cases {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", tc.name, h), func(t *testing.T) {
+				r, screen := poPickerAtSize(t, tc.fake(), 80, h)
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}) // add all 15
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})                       // review → source chooser
+				if tc.costless {
+					// addLine lands back on the source chooser, ready for the
+					// next line, so no esc is needed here.
+					r = poStageCostlessLine(t, r, screen)
+				}
+				want := 15
+				if tc.costless {
+					want = 16
+				}
+				if len(screen.lines) != want {
+					t.Fatalf("setup staged %d line(s), want %d", len(screen.lines), want)
+				}
+				if screen.phase != poPhaseSource {
+					t.Fatalf("setup left the screen on phase %v", screen.phase)
+				}
+				// A highlight in the MIDDLE of the cart, which is where the
+				// reported failure lives: poCartWindow centres the window on it,
+				// so at 80x24 the highlighted row and the "N more below" marker
+				// under it were both past the bottom of the pane while x still
+				// removed that very line.
+				screen.reviewCursor = 7
 
-		if screen.cartListedOnScreen() {
-			// The roomy pane lists them, so the highlight is on screen and the
-			// keys that act on it are named and do act.
-			poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", screen.reviewCursor+1))
-			poWantPaneLine(t, screen, "x remove it")
-			before := len(screen.lines)
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-			if len(screen.lines) != before-1 {
-				t.Errorf("80x%d: the cart is listed but x removed nothing (%d lines)", h, len(screen.lines))
-			}
-			continue
-		}
+				what := fmt.Sprintf("source chooser with a %d-line cart at 80x%d", want, h)
+				poAssertFits(t, what, screen)
 
-		// The count, the total, that the lines are NOT listed and the key that
-		// lists them, all on one line the 51-column pane keeps whole.
-		poWantPaneLine(t, screen, "d lists the 15 line(s) · $45.00 · not listed here")
-		// A key the bar names must act, so a bar that still named these would
-		// be advertising the four keys the collapse has just made inert.
-		for _, gone := range []string{"j/k highlight", "ctrl+e edit", "x remove"} {
-			poRejectPaneLine(t, screen, gone)
-		}
+				if screen.cartListedOnScreen() {
+					// The roomy pane lists them, so the highlight is on screen
+					// and the keys that act on it are named and do act.
+					poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", screen.reviewCursor+1))
+					poWantPaneLine(t, screen, "x remove it")
+					before := len(screen.lines)
+					r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+					if len(screen.lines) != before-1 {
+						t.Errorf("the cart is listed but x removed nothing (%d lines)", len(screen.lines))
+					}
+					return
+				}
 
-		for _, k := range []tea.KeyMsg{
-			{Type: tea.KeyRunes, Runes: []rune("j")},
-			{Type: tea.KeyRunes, Runes: []rune("k")},
-			{Type: tea.KeyRunes, Runes: []rune("x")},
-			{Type: tea.KeyCtrlE},
-		} {
-			// Each key is pressed from the state the operator actually arrives
-			// in — the un-led summary — so a lead dropped from any one arm
-			// leaves the pane unchanged and fails here.
-			screen.cartLead = ""
-			before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
-			lines, cur, phase := len(screen.lines), screen.reviewCursor, screen.phase
-			r = key(t, r, k)
-			if len(screen.lines) != lines {
-				t.Errorf("80x%d: %q changed the cart (%d lines, was %d) with no line on the pane",
-					h, k.String(), len(screen.lines), lines)
-			}
-			if screen.reviewCursor != cur {
-				t.Errorf("80x%d: %q moved a highlight that is not on the pane", h, k.String())
-			}
-			if screen.phase != phase {
-				t.Errorf("80x%d: %q left the source chooser (phase %v)", h, k.String(), screen.phase)
-			}
-			if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after == before {
-				t.Errorf("80x%d: %q redrew a byte-for-byte identical pane:\n%s", h, k.String(), after)
-			}
-			poAssertFits(t, what+" after "+k.String(), screen)
-		}
+				// The count, that the lines are NOT listed, the key that lists
+				// them and what they come to — all on the pane, whatever else
+				// the frame had to give up to keep them there.
+				poWantPaneLine(t, screen, fmt.Sprintf("d lists the %d line(s) · not listed here", want))
+				total, noCost := poCartTotal(screen.lines)
+				money := fmtMoney(total)
+				if noCost > 0 {
+					money = "at least " + money
+				}
+				poWantPaneLine(t, screen, money)
+				// A key the bar names must act, so a bar that still named these
+				// would be advertising the four keys the collapse made inert.
+				for _, gone := range []string{"j/k highlight", "ctrl+e edit", "x remove"} {
+					poRejectPaneLine(t, screen, gone)
+				}
+				// And whatever the frame dropped to make room says it is gone,
+				// with the bar dropping the keys that named those rows.
+				if !screen.sourceAttributionShown() {
+					poWantPaneLine(t, screen, "optional rows need more height")
+					for _, gone := range []string{"g agreement", "w work order", "c committee"} {
+						if strings.Contains(screen.helpText(), gone) {
+							t.Errorf("the bar still names %q with those rows off the pane: %q",
+								gone, screen.helpText())
+						}
+					}
+				}
 
-		// d is the way out the summary names, and it has to be a real one: the
-		// review phase must list the lines and show the highlight at this very
-		// pane height, or the escape the operator is told to take is a worse
-		// dead end than no escape at all.
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-		if screen.phase != poPhaseReview {
-			t.Fatalf("80x%d: d did not open the full cart (phase %v)", h, screen.phase)
+				for _, k := range []tea.KeyMsg{
+					{Type: tea.KeyRunes, Runes: []rune("j")},
+					{Type: tea.KeyRunes, Runes: []rune("k")},
+					{Type: tea.KeyRunes, Runes: []rune("x")},
+					{Type: tea.KeyCtrlE},
+				} {
+					// Each key is pressed from the state the operator actually
+					// arrives in — the un-led summary — so a lead dropped from
+					// any one arm leaves the pane unchanged and fails here.
+					screen.cartLead = ""
+					before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+					lines, cur, phase := len(screen.lines), screen.reviewCursor, screen.phase
+					r = key(t, r, k)
+					if len(screen.lines) != lines {
+						t.Errorf("%q changed the cart (%d lines, was %d) with no line on the pane",
+							k.String(), len(screen.lines), lines)
+					}
+					if screen.reviewCursor != cur {
+						t.Errorf("%q moved a highlight that is not on the pane", k.String())
+					}
+					if screen.phase != phase {
+						t.Errorf("%q left the source chooser (phase %v)", k.String(), screen.phase)
+					}
+					if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after == before {
+						t.Errorf("%q redrew a byte-for-byte identical pane:\n%s", k.String(), after)
+					}
+					poAssertFits(t, what+" after "+k.String(), screen)
+				}
+
+				// The keys whose rows were dropped decline the same way, and
+				// say so in the body rather than only in the flash.
+				if !screen.sourceAttributionShown() {
+					for _, k := range []string{"g", "w", "c"} {
+						screen.attrLead = ""
+						before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+						r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
+						if screen.phase != poPhaseSource {
+							t.Fatalf("%q opened a picker whose row the frame is not drawing (phase %v)",
+								k, screen.phase)
+						}
+						if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after == before {
+							t.Errorf("%q redrew a byte-for-byte identical pane:\n%s", k, after)
+						}
+						poAssertFits(t, what+" after "+k, screen)
+					}
+					screen.attrLead = ""
+				}
+
+				// d is the way out the summary names, and it has to be a real
+				// one: the review phase must list the lines and show the
+				// highlight at this very pane height, or the escape the
+				// operator is told to take is a worse dead end than no escape.
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+				if screen.phase != poPhaseReview {
+					t.Fatalf("d did not open the full cart (phase %v)", screen.phase)
+				}
+				poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", screen.reviewCursor+1))
+				poWantPaneLine(t, screen, "more below")
+				poAssertFits(t, fmt.Sprintf("review with a %d-line cart at 80x%d", want, h), screen)
+			})
 		}
-		poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", screen.reviewCursor+1))
-		poWantPaneLine(t, screen, "more below")
-		poAssertFits(t, fmt.Sprintf("review with a 15-line cart at 80x%d", h), screen)
 	}
 }

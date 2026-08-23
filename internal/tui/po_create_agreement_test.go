@@ -93,7 +93,11 @@ func TestPOAgreement_LoadIsBackgroundAndOffersG(t *testing.T) {
 	}
 
 	out := s.renderSourcePhase()
-	if !strings.Contains(out, "Purchase / pricing agreement") || !strings.Contains(out, "(none)") {
+	// The short label, not "Purchase / pricing agreement (optional)": that put
+	// the row at 52 cells with an EMPTY value, so the 51-column pane cut the
+	// value — the one thing on the row the operator has not already read off
+	// the key — off every render.
+	if !strings.Contains(out, "Agreement (optional)") || !strings.Contains(out, "(none)") {
 		t.Errorf("source chooser should advertise the unset agreement:\n%s", out)
 	}
 	if !strings.Contains(s.helpText(), "g agreement") {

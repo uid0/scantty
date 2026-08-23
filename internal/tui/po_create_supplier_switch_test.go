@@ -297,68 +297,182 @@ func TestPOSupplierSwitch_NoConfirmWhenThereIsNothingToLose(t *testing.T) {
 	})
 }
 
-// TestPOReview_NotesInputStaysOnThePaneUnderALongCart: clampToBox drops rows
-// from the BOTTOM, and the review phase draws the focused PO-notes input last.
-// A cart long enough to fill the pane therefore took the field the operator is
-// typing into off the screen with it — and folding the help line onto three
-// rows made a 15-line cart, which the 'a' add-ALL flow produces routinely,
-// enough to do it.
-func TestPOReview_NotesInputStaysOnThePaneUnderALongCart(t *testing.T) {
+// TestPOReview_ASmallCartLeavesTheNotesFieldOnThePane is the same rule from the
+// other end, and the end that actually broke: a SHORT cart is where
+// bodyRowBudget's floor of three rows has room to overreach. Five lines, three
+// optional rows repeated in the tail and one line priced from the catalog left
+// the phase asking for three cart rows out of the one it had, and the focused
+// PO-notes input is what clampToBox took off the bottom.
+func TestPOReview_ASmallCartLeavesTheNotesFieldOnThePane(t *testing.T) {
 	for _, termHeight := range []int{24, 30} {
 		t.Run(fmt.Sprintf("height %d", termHeight), func(t *testing.T) {
-			fake := &poPickFake{catalog: 40, pageSize: 40}
-			srv := httptest.NewServer(fake.handler())
-			t.Cleanup(srv.Close)
+			fake := &poPickFake{catalog: 40, pageSize: 40,
+				agreements: 1, workOrders: 2, committees: 1}
+			r, screen := poPickerAtSize(t, fake, 80, termHeight)
 
-			deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-			screen := NewPurchaseOrderCreateScreen(deps)
-			r := newTestRoot(screen)
-			r.deps = deps
-			next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
-			r = next.(Root)
-			r = pump(t, r, screen.Init(), 0)
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // commit the supplier
-
-			// Fifteen catalog lines, the size the reorder add-ALL flow is sized
-			// against, plus a line with no cost so the "priced from the supplier
-			// catalog" caveat row is present too.
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-			for i := 0; i < 15; i++ {
-				r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // pick highlighted
-				r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // add (qty prefilled)
-				if i < 14 {
-					r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-				}
+			for i := 0; i < 4; i++ {
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
 			}
-			if len(screen.lines) != 15 {
-				t.Fatalf("setup staged %d line(s), want 15", len(screen.lines))
+			r = poStageCostlessLine(t, r, screen)
+			if len(screen.lines) != 5 {
+				t.Fatalf("setup staged %d line(s), want 5", len(screen.lines))
 			}
-
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 			if screen.phase != poPhaseReview {
 				t.Fatalf("d did not open the review cart (phase %v)", screen.phase)
 			}
 
 			pane := clampToBox(screen.View(), screenBodyWidth(80), screenBodyHeight(termHeight))
-			if !strings.Contains(pane, "PO notes") {
-				t.Errorf("the focused PO-notes field is off the %d-row pane:\n%s",
-					screenBodyHeight(termHeight), pane)
+			for _, want := range []string{"PO notes", "Cart (5 line(s))", "priced from the supplier catalog"} {
+				if !strings.Contains(pane, want) {
+					t.Errorf("the %d-row pane does not carry %q:\n%s",
+						screenBodyHeight(termHeight), want, pane)
+				}
 			}
-			// Typing has to land somewhere the operator can see it.
-			r = poType(t, r, "rush")
-			pane = clampToBox(screen.View(), screenBodyWidth(80), screenBodyHeight(termHeight))
-			if !strings.Contains(pane, "rush") {
-				t.Errorf("what the operator typed is not on the pane:\n%s", pane)
+			if !strings.Contains(pane, fmt.Sprintf("▸ %d)", screen.reviewCursor+1)) {
+				t.Errorf("the highlighted line is off the pane:\n%s", pane)
 			}
-			// And the cart says how much of itself is out of view rather than
-			// silently showing a subset.
-			if !strings.Contains(pane, "Cart (15 line(s))") {
-				t.Errorf("the cart no longer says how many lines it holds:\n%s", pane)
+			poAssertFits(t, fmt.Sprintf("review with a 5-line cart at 80x%d", termHeight), screen)
+		})
+	}
+}
+
+// TestPOCart_TheRowsReservedAreTheRowsDrawn pins the reservation to the render.
+// cartRowBudget takes the cart's non-line rows off the top, and that count was
+// the constant 5 — one per item — while the catalog-pricing caveat, once it
+// went through the folder at 63 cells, drew TWO. A reservation that is a row
+// short is the horizontal-cut-traded-for-a-vertical-one this screen has been
+// bitten by three times, so the two are measured against each other here rather
+// than kept in step by hand.
+func TestPOCart_TheRowsReservedAreTheRowsDrawn(t *testing.T) {
+	id := 7
+	cost := 3.0
+	for _, costless := range []bool{false, true} {
+		t.Run(fmt.Sprintf("catalog-priced line=%v", costless), func(t *testing.T) {
+			s := NewPurchaseOrderCreateScreen(Deps{})
+			s.terminalHeight = 30
+			for i := 0; i < 8; i++ {
+				it := omsapi.PurchaseOrderCreateItem{ItemSupplierID: &id, Quantity: 1, UnitCost: &cost}
+				if costless && i == 0 {
+					it.UnitCost = nil
+				}
+				s.lines = append(s.lines, poCartLine{item: it, label: fmt.Sprintf("Widget %d", i+1)})
 			}
-			shown := strings.Count(pane, ") Widget ")
-			if shown < 15 && !strings.Contains(pane, "more below") && !strings.Contains(pane, "more above") {
-				t.Errorf("the cart shows %d of 15 lines and says nothing about the rest:\n%s", shown, pane)
+			// A window in the MIDDLE, so both scroll markers are drawn and the
+			// chrome is at its widest.
+			const budget = 2
+			s.reviewCursor = 4
+			drawn := poRenderedRows(s.renderCart(s.reviewCursor, budget))
+			if got, want := drawn-budget, s.cartChromeRows(); got != want {
+				t.Errorf("renderCart drew %d rows that are not lines; the budget reserves %d", got, want)
 			}
 		})
+	}
+}
+
+// TestPOReview_NotesInputStaysOnThePaneUnderALongCart: clampToBox drops rows
+// from the BOTTOM, and the review phase draws the focused PO-notes input last.
+// A cart long enough to fill the pane therefore took the field the operator is
+// typing into off the screen with it — and folding the help line onto three
+// rows made a 15-line cart, which the 'a' add-ALL flow produces routinely,
+// enough to do it.
+//
+// The second fixture adds the three optional rows the review tail REPEATS
+// beside the cart — the agreement and the two associations. With a
+// catalog-priced line folding the caveat onto two rows they left the cart no
+// line at all at 80x24 and it was the notes field that fell off the bottom, so
+// those repeats now yield to it and say they have.
+func TestPOReview_NotesInputStaysOnThePaneUnderALongCart(t *testing.T) {
+	fakes := map[string]func() *poPickFake{
+		"plain supplier": func() *poPickFake {
+			return &poPickFake{catalog: 40, pageSize: 40}
+		},
+		"supplier with agreement, work orders and committees": func() *poPickFake {
+			return &poPickFake{catalog: 40, pageSize: 40,
+				agreements: 1, workOrders: 2, committees: 1}
+		},
+	}
+	for name, newFake := range fakes {
+		for _, termHeight := range []int{24, 30} {
+			t.Run(fmt.Sprintf("%s at height %d", name, termHeight), func(t *testing.T) {
+				fake := newFake()
+				srv := httptest.NewServer(fake.handler())
+				t.Cleanup(srv.Close)
+
+				deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+				screen := NewPurchaseOrderCreateScreen(deps)
+				r := newTestRoot(screen)
+				r.deps = deps
+				next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
+				r = next.(Root)
+				r = pump(t, r, screen.Init(), 0)
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // commit the supplier
+
+				// Fifteen catalog lines, the size the reorder add-ALL flow is sized
+				// against, and the last of them staged with its cost CLEARED so the
+				// "priced from the supplier catalog" caveat really is on the frame.
+				// It never was: every fixture row carries unit_cost "3.50" and the
+				// line form prefills from it, so noCost was 0 and the two rows that
+				// caveat folds onto were never in any measurement this test made.
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+				for i := 0; i < 14; i++ {
+					r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // pick highlighted
+					r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // add (qty prefilled)
+					r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+				}
+				r = poStageCostlessLine(t, r, screen)
+				if len(screen.lines) != 15 {
+					t.Fatalf("setup staged %d line(s), want 15", len(screen.lines))
+				}
+				if _, noCost := poCartTotal(screen.lines); noCost != 1 {
+					t.Fatalf("setup left %d catalog-priced line(s), want 1", noCost)
+				}
+
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+				if screen.phase != poPhaseReview {
+					t.Fatalf("d did not open the review cart (phase %v)", screen.phase)
+				}
+
+				pane := clampToBox(screen.View(), screenBodyWidth(80), screenBodyHeight(termHeight))
+				if !strings.Contains(pane, "PO notes") {
+					t.Errorf("the focused PO-notes field is off the %d-row pane:\n%s",
+						screenBodyHeight(termHeight), pane)
+				}
+				// Typing has to land somewhere the operator can see it.
+				r = poType(t, r, "rush")
+				pane = clampToBox(screen.View(), screenBodyWidth(80), screenBodyHeight(termHeight))
+				if !strings.Contains(pane, "rush") {
+					t.Errorf("what the operator typed is not on the pane:\n%s", pane)
+				}
+				// And the cart says how much of itself is out of view rather than
+				// silently showing a subset.
+				if !strings.Contains(pane, "Cart (15 line(s))") {
+					t.Errorf("the cart no longer says how many lines it holds:\n%s", pane)
+				}
+				shown := strings.Count(pane, ") Widget ")
+				if shown < 15 && !strings.Contains(pane, "more below") && !strings.Contains(pane, "more above") {
+					t.Errorf("the cart shows %d of 15 lines and says nothing about the rest:\n%s", shown, pane)
+				}
+				// The caveat is the reason the total is a floor rather than the
+				// order's value, so it has to be readable and not merely reserved
+				// for: a row count kept in step by hand had it at one row while the
+				// folder was giving it two.
+				if !strings.Contains(pane, "priced from the supplier catalog") {
+					t.Errorf("the caveat that says the total is a floor is off the pane:\n%s", pane)
+				}
+				// Nothing may be cut silently, whatever had to give: the repeated
+				// attribution rows either read out in full or say they were left to
+				// the header they repeat.
+				if !screen.reviewAttributionShown() {
+					if !strings.Contains(pane, "agreement / association rows need more height") {
+						t.Errorf("the repeated agreement / association rows vanished with nothing saying so:\n%s", pane)
+					}
+				}
+				poAssertFits(t, fmt.Sprintf("review with a 15-line cart at 80x%d", termHeight), screen)
+			})
+		}
 	}
 }

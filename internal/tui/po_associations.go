@@ -20,6 +20,7 @@ import (
 	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -304,12 +305,22 @@ func poAssocValueField(label, attached, loadErr string) jdeField {
 // (po_create.go), which the JD Edwards conversion reaches in the purchasing
 // ENTRY slice rather than this one. When it converts, it takes
 // poAssocValueField above and this goes with it.
+// The VALUE is bounded to whatever the 51-column pane has left after the label,
+// because it is OMS-supplied: a work-order title or an unbounded error string
+// pushed the row past the cut, and clampToBox takes it silently and mid-word.
+// One row, clipped with an ellipsis that says a cut happened — folding would
+// spend rows the source chooser does not have at 24, and these rows are the
+// first thing it drops when it runs out (sourceAttributionShown).
 func renderAssocValue(label, attached, loadErr string) string {
+	room := pickerPaneWidth - lipgloss.Width(label) - 2
+	if room < 6 {
+		room = 6
+	}
 	switch {
 	case loadErr != "":
-		return label + ": " + StyleStatusWarn.Render("unavailable — "+loadErr)
+		return label + ": " + StyleStatusWarn.Render(pickerClip("unavailable — "+loadErr, room))
 	case attached != "":
-		return label + ": " + StyleStatusOK.Render(attached)
+		return label + ": " + StyleStatusOK.Render(pickerClip(attached, room))
 	}
 	return label + ": " + StyleMuted.Render("(none)")
 }

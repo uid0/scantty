@@ -152,14 +152,15 @@ touching any screen an operator drives:
   `ctrl+t` cost-basis hint (110), the two line-form notes, the cart's
   catalog-pricing caveat, `Line source:` (a UUID puts it over), and an
   agreement's OMS-supplied notes. A styled literal on these screens that does
-  not go through the folder is the defect, not a style choice — with one KNOWN
-  and unfixed exception, recorded here so the sweep's claim is not read wider
-  than it is: the source chooser's `g` / `w` / `c` header rows are `label:
-  value` FIELD rows, not hints, and the agreement one is 52 cells with an empty
-  value (`  g  Purchase / pricing agreement (optional): (none)`), so the pane
-  cuts the VALUE. Folding them would spend rows the 24-row source chooser does
-  not have, and shortening the labels is a presentation change the queued
-  columnar conversion owns; the key is at the LEFT of each row and survives. That folder is deliberately pane-local, outside the JD Edwards
+  not go through the folder is the defect, not a style choice. The source
+  chooser's `g` / `w` / `c` rows are the one shape that does not FOLD, and they
+  are bounded rather than exempt: they are `label: value` FIELD rows carrying an
+  OMS-supplied name, so `renderAssocValue` clips the value to what the label
+  leaves (`pickerClip`, ellipsis included) and keeps them one row each — folding
+  them would spend rows the 24-row chooser does not have, and these are the
+  first rows it drops when it runs out. The agreement row also lost the long
+  form of its label: `  g  Purchase / pricing agreement (optional): (none)` is
+  52 cells with an EMPTY value, so the pane cut the value on every render. That folder is deliberately pane-local, outside the JD Edwards
   layer, so the list screens and the New PO help line can be legible at 80
   columns without joining the columnar layout. Hand-counting is what broke: each
   line read fine at the width its author had in mind and then grew a
@@ -209,8 +210,34 @@ touching any screen an operator drives:
   total. `sourceCartSpace` therefore does that one sum itself (and both the
   collapse decision and the render read it, because measuring with one budget
   and drawing with another is how a block passes its own fit check and then
-  overflows). Do not "fix" the floor in `bodyRowBudget`: it is shared with the
-  queued columnar conversion.
+  overflows). `reviewCartSpace` is the same sum for the review phase, where the
+  row that floor spends is the focused notes input. Do not "fix" the floor in
+  `bodyRowBudget`: it is shared with the queued columnar conversion.
+  The cart's own chrome is derived too (`cartChromeRows`), and was the last
+  hand-kept row count here: `poCartChromeRows = 5` counted one row per item
+  while the catalog-pricing caveat, once it went through the folder, took TWO
+  at 63 cells. `poCartCaveat` is the one wording both the renderer and the
+  reservation read, so they cannot disagree about how tall it is.
+- **When the pane runs out, sacrifice in a stated order — do not shave words.**
+  The New PO screen gives ground in this order, last named being last to go:
+  the optional ATTRIBUTION rows (`g` agreement, `w` work order, `c` committee,
+  and the review tail's repeat of them), then prose and caveats, then the title
+  and the `r`/`i`/`a`/`f` rows the screen is for, and never the cart's existence
+  — its count, its total and the `d` that opens it — or the focused PO-notes
+  input. `sourceAttributionShown` and `reviewAttributionShown` are that order in
+  code: three header rows plus the bar they lengthen were enough on their own to
+  push the whole collapsed-cart sentence off an 18-row pane, so the frame drew
+  no cart at all while `j`/`k`/`x`/`ctrl+e` answered into a four-second flash;
+  on review the same rows plus a caveat folded onto two left the cart no line
+  and took the notes field with them.
+  Two rules ride along. **The bar follows the cut**: `sourceHelpText` stops
+  naming `g`/`w`/`c` for exactly as long as their rows are off the pane and the
+  three arms decline (`attributionHiddenNote`) — a key naming a row the frame
+  has dropped is the same defect as a key acting on one. And **what is dropped
+  says so**, in one row that cannot fold: both notices are FIXED strings sized
+  so that even led by a decline (`g is off here · …`) they stay one rendered
+  row, since a second row appearing on a keypress would take back the row it was
+  dropped to free.
 - **Measure a tail before you draw the list above it.** The asset pager and the
   reorder summary are written after their list; a list sized without counting
   them pushes exactly them off the bottom, taking the `]`/`[` keys with it. The
@@ -240,12 +267,15 @@ touching any screen an operator drives:
   `cartListedOnScreen` measures whether its rows fit, and when they do not the
   block collapses to one sentence carrying the count, the total, that the lines
   are not listed and the key that opens them, while `j`/`k`/`x`/`ctrl+e` decline
-  and `sourceHelpText` stops naming them. That sentence leads with the KEY and
-  is kept to one folded row, because it is the LAST thing the chooser draws and
-  a supplier carrying agreements and associations can fill an 18-row pane with
-  fixed rows alone — so the count and the total are what a cut takes, never the
-  way out. The declining leads are short for the same reason: they fold onto the
-  first line AHEAD of the key rather than pushing it onto a second. `x` removing, and `ctrl+e` editing, a
+  and `sourceHelpText` stops naming them.
+  That sentence is ORDERED by what may be sacrificed rather than shaved to fit,
+  because its length is data: `at least $…` (any line priced from the catalog at
+  save time) or a five-figure order takes it past one row whatever the wording.
+  So the key, the count and `not listed here` lead it and the TOTAL is what
+  folds onto a second row — and the row budget counts that fold instead of
+  assuming one row, which the first version claimed and was not. The declining
+  leads are short for the same reason: they fold onto the first line AHEAD of
+  the key rather than pushing it onto a second. `x` removing, and `ctrl+e` editing, a
   line clampToBox had dropped is the worst instance of this rule this screen
   has had. The way out has to be real: the review phase lists and highlights the
   same cart at 80x24, which is why `d` is what the sentence names.

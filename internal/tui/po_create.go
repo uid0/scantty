@@ -269,6 +269,10 @@ type PurchaseOrderCreateScreen struct {
 	// that only flashes on the status bar is gone in four seconds with the pane
 	// unchanged, which is the silence this screen exists to remove.
 	cartLead string
+	// attrLead is the same thing for the optional g / w / c rows: what the last
+	// declined one of those keys DID, on a pane too short to draw the rows they
+	// name. Only the lead is kept — the sentence is rebuilt on every render.
+	attrLead string
 
 	// editIndex is the s.lines index being edited in place (ctrl+e re-opens the
 	// Phase-4 form pre-filled), or -1 when the line form is adding a new line.
@@ -979,11 +983,15 @@ func (s *PurchaseOrderCreateScreen) updateCommitteePhase(m tea.KeyMsg) (Screen, 
 func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
 	case "j", "down", "k", "up", "x", "ctrl+e":
-		// cartNote answers exactly these four keys. Any other key has moved on
-		// from the question it was asked, so the sentence goes back to the
-		// un-led summary and the next decline is visibly a new one.
-	default:
+		// The collapsed-cart sentence answers exactly these four keys, and the
+		// hidden-rows sentence answers g / w / c. Any other key has moved on
+		// from the question it was asked, so the sentence goes back to its
+		// un-led wording and the next decline is visibly a new one.
+		s.attrLead = ""
+	case "g", "w", "c":
 		s.cartLead = ""
+	default:
+		s.cartLead, s.attrLead = "", ""
 	}
 	switch m.String() {
 	case "esc", "b":
@@ -1077,6 +1085,9 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		if !s.agreementOffered() {
 			return s, nil
 		}
+		if !s.sourceAttributionShown() {
+			return s, s.attributionHiddenNote("g")
+		}
 		return s, s.enterAgreementPhase()
 	case "w":
 		// Optional work-order association (op-shb9). Silent when there are no
@@ -1084,12 +1095,18 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		if !s.assoc.workOrdersOffered() {
 			return s, nil
 		}
+		if !s.sourceAttributionShown() {
+			return s, s.attributionHiddenNote("w")
+		}
 		return s, s.enterWorkOrderPhase()
 	case "c":
 		// Optional committee association. 'c' is free here — the source chooser
 		// spends r/i/a/f on line sources and g/d/x on the rest.
 		if !s.assoc.committeesOffered() {
 			return s, nil
+		}
+		if !s.sourceAttributionShown() {
+			return s, s.attributionHiddenNote("c")
 		}
 		return s, s.enterCommitteePhase()
 	case "d":
@@ -1780,32 +1797,42 @@ func (s *PurchaseOrderCreateScreen) View() string {
 // helpText() if this arm asked it. The decision is made against the LONGER
 // (cart-listed) wording, which is the conservative direction — the collapsed
 // bar folds to no more rows, so it can never turn the answer back round.
-func (s *PurchaseOrderCreateScreen) sourceHelpText(cartListed bool) string {
-	base := "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel."
+func (s *PurchaseOrderCreateScreen) sourceHelpText(cartListed, attribution bool) string {
+	base := "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel"
 	switch {
 	case len(s.lines) > 0 && cartListed:
 		base = fmt.Sprintf(
-			"Add a line (r/i/a/f) · j/k highlight · ctrl+e edit · x remove · d done → review %d line(s) · b back · esc cancel.",
+			"Add a line (r/i/a/f) · j/k highlight · ctrl+e edit · x remove · d done → review %d line(s) · b back · esc cancel",
 			len(s.lines),
 		)
 	case len(s.lines) > 0:
 		base = fmt.Sprintf(
-			"Add a line (r/i/a/f) · d review & edit %d line(s) · b back · esc cancel.",
+			"Add a line (r/i/a/f) · d review & edit %d line(s) · b back · esc cancel",
 			len(s.lines),
 		)
 	}
-	// g / w / c only appear once there is something behind them —
-	// advertising a key that does nothing is worse than not offering it.
-	if s.agreementOffered() {
-		base += " g agreement."
+	// g / w / c only appear once there is something behind them AND their rows
+	// are on the pane. Advertising a key that does nothing is worse than not
+	// offering it, and a key naming a row the frame has dropped for want of
+	// space is the same defect one step along: the rows go first when the pane
+	// runs out (sourceAttributionShown), so the bar has to go with them.
+	//
+	// Joined at the same " · " the rest of the bar uses. Appended with a plain
+	// space they merged into one 51-cell chunk that pickerWrap could only
+	// word-fold, and the bar spread over FOUR rows — rows taken straight out of
+	// the bottom of the pane, which is where the cart is.
+	if attribution {
+		if s.agreementOffered() {
+			base += " · g agreement"
+		}
+		if s.assoc.workOrdersOffered() {
+			base += " · w work order"
+		}
+		if s.assoc.committeesOffered() {
+			base += " · c committee"
+		}
 	}
-	if s.assoc.workOrdersOffered() {
-		base += " w work order."
-	}
-	if s.assoc.committeesOffered() {
-		base += " c committee."
-	}
-	return base
+	return base + "."
 }
 
 func (s *PurchaseOrderCreateScreen) helpText() string {
@@ -1824,7 +1851,7 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 	case poPhaseCommittee:
 		return "Pick the committee this purchase is on behalf of (j/k move · enter commit · esc keep current · row 1 = none)."
 	case poPhaseSource:
-		return s.sourceHelpText(s.cartListedOnScreen())
+		return s.sourceHelpText(s.cartListedOnScreen(), s.sourceAttributionShown())
 	case poPhaseReorderPick:
 		// The three picker bars come from the pickers themselves
 		// (po_create_pickers.go), which is also where each frame's own way-out
@@ -1942,19 +1969,18 @@ func (s *PurchaseOrderCreateScreen) renderAgreementRow(withKey bool) string {
 	// screen, where the short label the PO detail screen uses reads better.
 	label := "  " + StyleTitle.Render("Agreement")
 	if withKey {
+		// "Purchase / pricing agreement (optional)" put this row at 52 cells
+		// with an EMPTY value, so the 51-column pane cut the value off every
+		// time and any real agreement name with it. The short label the PO
+		// detail screen uses is the one the non-key form already preferred.
 		label = "  " + StyleStatusOK.Render("g") + "  " +
-			StyleTitle.Render("Purchase / pricing agreement (optional)")
+			StyleTitle.Render("Agreement (optional)")
 	}
-	if s.agreementLoadErr != "" {
-		// Say the list is MISSING rather than absent — "no agreements" and
-		// "couldn't ask" are different facts, and only one of them is safe to
-		// let the operator assume.
-		return label + ": " + StyleStatusWarn.Render("unavailable — "+s.agreementLoadErr) + "\n"
-	}
-	if name := s.pickedAgreementName(); name != "" {
-		return label + ": " + StyleStatusOK.Render(name) + "\n"
-	}
-	return label + ": " + StyleMuted.Render("(none)") + "\n"
+	// Say the list is MISSING rather than absent — "no agreements" and
+	// "couldn't ask" are different facts, and only one of them is safe to let
+	// the operator assume. Bounded like every other OMS-supplied value on these
+	// rows; an APIError message is the whole raw response body.
+	return renderAssocValue(label, s.pickedAgreementName(), s.agreementLoadErr) + "\n"
 }
 
 // renderPendingLookups names the optional header lookups that are still in
@@ -2063,18 +2089,98 @@ func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
 // one function because the collapse decision has to measure exactly what the
 // renderer will write, and a second hand-kept copy of these rows would be the
 // stale constant this screen has already been bitten by.
+// sourceAttributionRows is the optional header block: the agreement row, the
+// work-order and committee rows, and the "still looking up…" line for whichever
+// of those is in flight. Header-level, not line sources — so they sit below the
+// r/i/a/f block with a blank line between, and only when there is something
+// behind each key.
+//
+// They are also the LOWEST-value rows on this frame, which is what decides the
+// order of sacrifice when the pane runs out. See sourceAttributionShown.
+func (s *PurchaseOrderCreateScreen) sourceAttributionRows() string {
+	return s.renderAgreementRow(true) + s.renderAssocRows(true) + s.renderPendingLookups()
+}
+
+// sourceAttributionShown reports whether that block is drawn.
+//
+// The source chooser gives ground in a fixed order when the pane is too short,
+// and this is the first thing to go. Last to go, in order: the cart's EXISTENCE
+// — the count, the total and the `d` that opens it — then the title and the
+// r/i/a/f rows the screen is for, then these. Three header rows plus the bar
+// they lengthen were enough on their own to push the whole collapsed-cart
+// sentence off an 18-row pane, so the frame drew no cart at all and the four
+// gated keys answered into a four-second flash: the operator could not see that
+// a cart existed, let alone what it came to.
+//
+// Measured against the bar that WOULD be drawn with the rows present, which is
+// the longer of the two — the shorter one only exists because they were hidden,
+// so the answer cannot flip back once it is folded instead.
+func (s *PurchaseOrderCreateScreen) sourceAttributionShown() bool {
+	if s.terminalHeight <= 0 || s.sourceAttributionRows() == "" {
+		// Unsized screens get no budget at all, here as everywhere else on this
+		// screen, and there is nothing to hide when the block is empty.
+		return true
+	}
+	need := poRenderedRows(s.sourceChrome(true))
+	if len(s.lines) > 0 {
+		// Whatever else gives, the cart has to be able to say it is there: its
+		// blank separator, the sentence, and one row of slack. The slack is
+		// what a declining key's lead costs when it folds the sentence onto a
+		// second row, and it is reserved up front so that this answer cannot
+		// change under the operator's hands because they pressed j — the
+		// optional rows must not vanish as a side effect of a keypress about
+		// the cart. Over-reserving one row beats clipping one, as everywhere
+		// else on this screen.
+		need += 2 + poRenderedRows(pickerNote{text: s.cartHiddenSentence("")}.render())
+	}
+	return need <= screenBodyHeight(s.terminalHeight)-s.frameRowsWith(s.sourceHelpText(false, true))
+}
+
+// sourceAttributionNote is what the frame says INSTEAD of those rows. Dropping
+// them silently would leave the operator reading a screen whose g / w / c keys
+// have quietly stopped working with nothing to say why, which is the same
+// silence as the rest of this file. It carries a lead when one of those keys
+// has just been declined, so the press moves the body.
+// Both strings are FIXED, which is what lets this be one rendered row led or
+// not: "g is off here · optional rows need more height" is 46 of the 49 a
+// warned note gets. That is a budget, not a preference — the frame draws this
+// where the rows would have been, nothing downstream reserves for it, and a
+// second row appearing on a keypress would push the cart summary off the
+// bottom, which is the defect this whole block exists to close.
+func (s *PurchaseOrderCreateScreen) sourceAttributionNote() pickerNote {
+	text := "optional rows need more height"
+	level := StatusInfo
+	if s.attrLead != "" {
+		text, level = s.attrLead+" · "+text, StatusWarn
+	}
+	return pickerNote{text: text, level: level}
+}
+
+// attributionHiddenNote answers g / w / c while their rows are off the pane.
+// The bar has stopped naming them (sourceHelpText), so they must not act.
+func (s *PurchaseOrderCreateScreen) attributionHiddenNote(key string) tea.Cmd {
+	s.attrLead = key + " is off here"
+	n := s.sourceAttributionNote()
+	return Status(n.flash(), n.level)
+}
+
 func (s *PurchaseOrderCreateScreen) sourceCartChrome() string {
+	return s.sourceChrome(s.sourceAttributionShown())
+}
+
+func (s *PurchaseOrderCreateScreen) sourceChrome(attribution bool) string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Where should this line come from?") + "\n\n")
 	b.WriteString("  " + StyleStatusOK.Render("r") + "  Reorder queue (items flagged for reorder)\n")
 	b.WriteString("  " + StyleStatusOK.Render("i") + "  Inventory items associated with this supplier\n")
 	b.WriteString("  " + StyleStatusOK.Render("a") + "  Assets purchased from this supplier\n")
 	b.WriteString("  " + StyleStatusOK.Render("f") + "  Freeform line (no item / asset reference)\n")
-	// Header-level, not line sources — so they sit below the r/i/a/f block with
-	// a blank line between, and only when there is something behind each key.
-	header := s.renderAgreementRow(true) + s.renderAssocRows(true) + s.renderPendingLookups()
-	if header != "" {
-		b.WriteString("\n" + header)
+	if header := s.sourceAttributionRows(); header != "" {
+		if attribution {
+			b.WriteString("\n" + header)
+		} else {
+			b.WriteString("\n" + s.sourceAttributionNote().render() + "\n")
+		}
 	}
 	if len(s.lines) > 0 {
 		// Keys ABOVE the block that grows, as on the supplier-switch confirm.
@@ -2134,8 +2240,8 @@ func (s *PurchaseOrderCreateScreen) sourceCartSpace() (left, budget int) {
 		return 0, 0
 	}
 	other := poRenderedRows(s.sourceCartChrome() + sourceCartKeys())
-	left = screenBodyHeight(s.terminalHeight) - s.frameRowsWith(s.sourceHelpText(true)) - other
-	budget = left - poCartChromeRows
+	left = screenBodyHeight(s.terminalHeight) - s.frameRowsWith(s.sourceHelpText(true, s.sourceAttributionShown())) - other
+	budget = left - s.cartChromeRows()
 	if budget < 1 {
 		budget = 1
 	}
@@ -2167,10 +2273,13 @@ func (s *PurchaseOrderCreateScreen) cartHiddenSentence(lead string) string {
 		// catalog at save time, so reporting it flat would read as free.
 		money = "at least " + money
 	}
-	// Short enough to be ONE folded row at 51 columns, which is all the block
-	// gets on a supplier carrying agreements and associations: a second row
-	// would put "not listed" — the whole point of the sentence — past the cut.
-	out := fmt.Sprintf("d lists the %d line(s) · %s · not listed here", len(s.lines), money)
+	// Ordered by what may be sacrificed, not shaved to fit: the key, the count
+	// and "not listed" are the sentence's whole job and they lead it, so the
+	// TOTAL is what falls onto a second row. It really does fall — "at least"
+	// (any line priced from the catalog at save time) or a five-figure order
+	// takes this past 49 cells — and the row budget counts the fold rather than
+	// assuming one row, which is what the previous wording claimed and was not.
+	out := fmt.Sprintf("d lists the %d line(s) · not listed here · %s", len(s.lines), money)
 	if lead != "" {
 		out = lead + " · " + out
 	}
@@ -2341,18 +2450,40 @@ func (s *PurchaseOrderCreateScreen) bodyRowBudget(otherRows int) int {
 	return avail
 }
 
-// cartRowBudget is bodyRowBudget with the cart's own chrome taken off: its
-// header, its total, the "priced from the supplier catalog" caveat, and both
-// scroll markers — over-reserving one row beats clipping one, the same trade
-// computeWindowSize makes on the list screens.
+// cartRowBudget is bodyRowBudget with the cart's own chrome taken off —
+// over-reserving one row beats clipping one, the same trade computeWindowSize
+// makes on the list screens.
 func (s *PurchaseOrderCreateScreen) cartRowBudget(bodyRows int) int {
-	return s.bodyRowBudget(bodyRows + poCartChromeRows)
+	return s.bodyRowBudget(bodyRows + s.cartChromeRows())
 }
 
-// poCartChromeRows is what renderCart spends on everything that is not a line:
-// its header, its total, the "priced from the supplier catalog" caveat and both
-// scroll markers.
-const poCartChromeRows = 5
+// cartChromeRows is what renderCart spends on everything that is not a line:
+// its header, both scroll markers, its total, and the catalog-pricing caveat as
+// that caveat will ACTUALLY fold.
+//
+// It was the constant 5 — one row per item — which stopped being true the
+// moment the caveat went through pickerHint: at 63 cells it folds to TWO rows
+// whenever a line carries no cost, so the reservation was a row short. That is
+// the horizontal-cut-traded-for-a-vertical-one this screen has been bitten by
+// three times, and it is why nothing here is counted by hand any more.
+func (s *PurchaseOrderCreateScreen) cartChromeRows() int {
+	n := 4 // header, the two scroll markers, the total
+	if _, noCost := poCartTotal(s.lines); noCost > 0 {
+		n += poRenderedRows(pickerHint(poCartCaveat(noCost)))
+	}
+	return n
+}
+
+// poCartCaveat is the ONE wording of the catalog-priced caveat. The renderer
+// and the row reservation both read it, so they cannot disagree about how many
+// rows it takes.
+func poCartCaveat(noCost int) string {
+	subject := fmt.Sprintf("%d lines are", noCost)
+	if noCost == 1 {
+		subject = "1 line is"
+	}
+	return subject + " priced from the supplier catalog — not included above"
+}
 
 // renderCart lists the staged lines and the running total. When highlight >= 0
 // the matching row is marked (used by the review phase and the source chooser's
@@ -2398,38 +2529,72 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight, rowBudget int) string 
 		b.WriteString(StyleTitle.Render("  Total: "+fmtMoney(total)) +
 			StyleMuted.Render(fmt.Sprintf("  (%d %s)", len(s.lines), noun)) + "\n")
 		if noCost > 0 {
-			subject := fmt.Sprintf("%d lines are", noCost)
-			if noCost == 1 {
-				subject = "1 line is"
-			}
-			b.WriteString(pickerHint(
-				subject+" priced from the supplier catalog — not included above") + "\n")
+			b.WriteString(pickerHint(poCartCaveat(noCost)) + "\n")
 		}
 	}
 	return b.String()
 }
 
-func (s *PurchaseOrderCreateScreen) renderReviewPhase() string {
-	// The tail is built FIRST so the cart can be windowed against what is left
-	// after it. Its last row is the focused PO-notes input, and that row is the
-	// one an unbounded cart used to push off the bottom of the pane.
+// reviewTail is everything the review phase draws UNDER the cart, ending in the
+// focused PO-notes input. Built before the cart so the cart can be windowed
+// against what is left after it: that last row is the one an unbounded cart
+// used to push off the bottom of the pane, and an operator typing into a field
+// that is not on screen is the worst form of this screen's defect.
+//
+// attribution repeats the agreement and the order-level associations beside the
+// cart they apply to. Review is the confirm-before-submit surface and a long
+// cart can push the header line well off the top, so "(none)" is worth showing
+// as readily as a name — but they are a REPEAT, which makes them the rows that
+// yield when the pane cannot hold the cart's lines and the notes field too.
+func (s *PurchaseOrderCreateScreen) reviewTail(attribution bool) string {
 	var tail strings.Builder
-	// Repeat the agreement here, next to the cart it prices: review is the
-	// confirm-before-submit surface, and a long cart can push the header line
-	// well off the top of the terminal. Skipped is a choice worth seeing too,
-	// so this shows "(none)" as readily as a name — but still only when the
-	// supplier has agreements, since there is nothing to have chosen otherwise.
-	if row := s.renderAgreementRow(false); row != "" {
-		tail.WriteString(row)
+	rows := s.renderAgreementRow(false) + s.renderAssocRows(false)
+	switch {
+	case rows == "":
+	case attribution:
+		tail.WriteString(rows)
+	default:
+		// One row, worded like the source chooser's: at 45 cells it cannot fold
+		// and take back the row it was dropped to free.
+		tail.WriteString(pickerHint("agreement / association rows need more height") + "\n")
 	}
-	// Same reasoning for the order-level associations: who the purchase is for
-	// is worth confirming next to the cart, and "(none)" is as much a choice
-	// here as a name is.
-	tail.WriteString(s.renderAssocRows(false))
 	tail.WriteString("\n")
 	tail.WriteString("▸ " + StyleTitle.Render("PO notes: ") + s.poNotes.View() + "\n")
+	return tail.String()
+}
 
-	return s.renderCart(s.reviewCursor, s.cartRowBudget(poRenderedRows(tail.String()))) + tail.String()
+// reviewCartSpace is the rows left for the cart's LINES once the frame and the
+// tail are drawn. Computed here rather than through cartRowBudget for the
+// reason sourceCartSpace gives: bodyRowBudget floors at three rows it may not
+// have, and on this phase the row that floor spends is the focused PO-notes
+// input. Zero or less means the cart cannot draw a line at this size.
+func (s *PurchaseOrderCreateScreen) reviewCartSpace(tail string) int {
+	return screenBodyHeight(s.terminalHeight) - s.frameRows() - poRenderedRows(tail) - s.cartChromeRows()
+}
+
+// reviewAttributionShown reports whether the review tail repeats the agreement
+// and association rows in full. Three repeated rows and a caveat folded onto
+// two were enough to leave the cart no line at all at 80x24, and what fell off
+// the bottom of the pane was the notes field being typed into — so the REPEAT
+// is what gives, the same order of sacrifice the source chooser keeps.
+func (s *PurchaseOrderCreateScreen) reviewAttributionShown() bool {
+	if s.terminalHeight <= 0 {
+		return true
+	}
+	return s.reviewCartSpace(s.reviewTail(true)) >= 1
+}
+
+func (s *PurchaseOrderCreateScreen) renderReviewPhase() string {
+	tail := s.reviewTail(s.reviewAttributionShown())
+	if s.terminalHeight <= 0 {
+		// Unsized screens get no budget at all, here as everywhere else.
+		return s.renderCart(s.reviewCursor, 0) + tail
+	}
+	budget := s.reviewCartSpace(tail)
+	if budget < 1 {
+		budget = 1
+	}
+	return s.renderCart(s.reviewCursor, budget) + tail
 }
 
 func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
