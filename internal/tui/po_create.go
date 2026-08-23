@@ -3064,6 +3064,26 @@ func poCartCaveat(noCost int) string {
 // the matching row is marked (used by the review phase and the source chooser's
 // cart list); pass -1 for a plain list. The total lives here rather than in
 // renderReviewPhase so both surfaces that show the cart also show what it costs.
+// poCartDateMark is what an expected shipment date shrinks to when the row
+// cannot hold it: the fact that the line HAS one, plus the ellipsis that says
+// the value was taken. The full date is one ctrl+e away on the line form.
+const poCartDateMark = "  exp…"
+
+// poCartBadge renders the line-type badge inside `room` cells, abbreviating the
+// type name rather than letting the pane cut the bracket off. It is the LAST
+// thing on the row to give, after the label and the date.
+func poCartBadge(name string, room int) string {
+	const brackets = 4 // "  [" + "]"
+	if room >= lipgloss.Width(name)+brackets {
+		return "  [" + name + "]"
+	}
+	inner := room - brackets
+	if inner < 2 {
+		inner = 2
+	}
+	return "  [" + pickerClip(name, inner) + "]"
+}
+
 func (s *PurchaseOrderCreateScreen) renderCart(highlight, rowBudget int) string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render(fmt.Sprintf("Cart (%d line(s))", len(s.lines))) + "\n")
@@ -3077,41 +3097,64 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight, rowBudget int) string 
 		if i == highlight {
 			caret = "  ▸ "
 		}
-		// The LABEL is the OMS-supplied part of this row and the only part that
-		// may be shortened: the quantity, the price and the type badge are the
-		// facts the operator is confirming before submit, and clampToBox takes
-		// the row's TAIL, so an ordinary catalog name ("1/4-20 x 1 Hex Cap
-		// Screw, Zinc" is 30 cells against a 51-column pane) used to push all
-		// three off the edge. Bounded the way every other OMS-supplied value on
-		// these screens is — pickerClip to what the fixed parts leave, one row,
-		// with the ellipsis that says a cut happened (renderAssocValue,
-		// renderSupplierHeader), rather than a fourth hand-rolled clip.
+		// This row is the review phase's whole job, so it gives ground in a
+		// STATED order rather than letting clampToBox choose: the LABEL first
+		// (an OMS-supplied identifier the operator still recognises shortened),
+		// then the expected DATE (optional per line, and the line form still
+		// holds it in full), and only then may the BADGE abbreviate. The index,
+		// the quantity and the price never give — they are the facts review
+		// exists to confirm. Whatever is shortened carries the ellipsis that
+		// says so, because a silently cut row reads as the whole row.
+		//
+		// Clipping the label alone was not enough: an item-supplier line is the
+		// only shape that CAN carry an expected date (lineTakesDate) and it is
+		// also the shape carrying the 14-cell "Inventory item" badge, so the
+		// fixed parts alone came to 52 cells and the pane took the badge on an
+		// ordinary line.
 		prefix := fmt.Sprintf("%s%d) ", caret, i+1)
+		facts := fmt.Sprintf("  ×%d", l.item.Quantity)
+		if l.item.UnitCost != nil {
+			facts += fmt.Sprintf(" @ $%s", strconv.FormatFloat(*l.item.UnitCost, 'f', -1, 64))
+		}
+		date := ""
+		if l.item.ExpectedShipmentDate != "" {
+			date = "  exp " + l.item.ExpectedShipmentDate
+		}
 		// Target type as a trailing badge: plain text inside the row so the
 		// whole-row highlight style still applies cleanly.
-		suffix := fmt.Sprintf("  ×%d", l.item.Quantity)
-		if l.item.UnitCost != nil {
-			suffix += fmt.Sprintf(" @ $%s", strconv.FormatFloat(*l.item.UnitCost, 'f', -1, 64))
-		}
-		if l.item.ExpectedShipmentDate != "" {
-			suffix += "  exp " + l.item.ExpectedShipmentDate
-		}
-		suffix += "  [" + poLineTypeLabel(poCartLineType(l)) + "]"
-		room := pickerPaneWidth - lipgloss.Width(prefix) - lipgloss.Width(suffix)
+		badgeName := poLineTypeLabel(poCartLineType(l))
+		badge := "  [" + badgeName + "]"
+		// The highlight style PADS the row it wraps, so the line the cursor is
+		// on is wider than the same line unhighlighted — and that row is the one
+		// whose facts matter most. Asked of the style rather than counted, so a
+		// theme change cannot make this two cells wrong.
+		pad := 0
 		if i == highlight {
-			// The highlight style PADS the row it wraps, so the line the cursor
-			// is on is wider than the same line unhighlighted — and that row is
-			// the one whose facts matter most. Asked of the style rather than
-			// counted, so a theme change cannot make this two cells wrong.
-			room -= StyleSidebarItemActive.GetHorizontalPadding()
+			pad = StyleSidebarItemActive.GetHorizontalPadding()
 		}
-		if room < poHeaderValueFloor {
-			// A line carrying every optional part can leave less than a
-			// recognisable name; six cells of it beats none, and what the pane
-			// then takes is the badge, which the line's source already says.
-			room = poHeaderValueFloor
+		fixed := lipgloss.Width(prefix) + lipgloss.Width(facts) + pad
+		// What the label costs once it has given everything it can: its own
+		// width, or the floor, whichever is smaller. Asking for the floor
+		// outright would make a THREE-cell name demand six and abbreviate a
+		// badge that fitted.
+		need := lipgloss.Width(l.label)
+		if need > poHeaderValueFloor {
+			need = poHeaderValueFloor
 		}
-		row := prefix + pickerClip(l.label, room) + suffix
+		short := func() bool {
+			return pickerPaneWidth-fixed-need-lipgloss.Width(date)-lipgloss.Width(badge) < 0
+		}
+		if short() && date != "" {
+			date = poCartDateMark
+		}
+		if short() {
+			badge = poCartBadge(badgeName, pickerPaneWidth-fixed-need-lipgloss.Width(date))
+		}
+		room := pickerPaneWidth - fixed - lipgloss.Width(date) - lipgloss.Width(badge)
+		if room < need {
+			room = need
+		}
+		row := prefix + pickerClip(l.label, room) + facts + date + badge
 		if i == highlight {
 			row = StyleSidebarItemActive.Render(row)
 		}

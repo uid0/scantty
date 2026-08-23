@@ -112,15 +112,22 @@ func (n *pickerNote) say(text string, level StatusLevel) tea.Cmd {
 // pane is 51 columns at the terminal's narrowest supported width and Root.View()
 // truncates, so an unbounded search term or supplier name would push the rest of
 // the sentence — the part naming the key to press — off the right edge.
+//
+// `max` is CELLS, not runes, because every caller computes its budget in cells
+// (lipgloss.Width against pickerPaneWidth). Counting runes here made the bound
+// disagree with the budget it was asked for: one CJK or emoji rune is two
+// cells, so a clipped value could render twice as wide as the room reserved for
+// it and clampToBox would take the tail — the very cut the clip exists to stop,
+// reached with a different alphabet. truncateVisible (layout.go) drops runes
+// until the VISIBLE width fits, and the ellipsis is one cell of the budget.
 func pickerClip(text string, max int) string {
-	r := []rune(text)
-	if len(r) <= max {
+	if lipgloss.Width(text) <= max {
 		return text
 	}
 	if max <= 1 {
-		return string(r[:max])
+		return truncateVisible(text, max)
 	}
-	return string(r[:max-1]) + "…"
+	return truncateVisible(text, max-1) + "…"
 }
 
 func (n *pickerNote) clear() { n.text, n.level = "", StatusInfo }
@@ -155,7 +162,7 @@ func pickerWrap(text string, width int) []string {
 		if len(out) == 0 {
 			return width
 		}
-		return width - len(indent)
+		return width - lipgloss.Width(indent)
 	}
 	push := func(line string) {
 		if len(out) == 0 {
@@ -187,7 +194,7 @@ func pickerWrap(text string, width int) []string {
 			}
 			// One claim too long for a line of its own — fold it on spaces
 			// rather than let clampToBox take the end off it.
-			for _, word := range pickerWords(seg, width-len(indent)) {
+			for _, word := range pickerWords(seg, width-lipgloss.Width(indent)) {
 				switch {
 				case cur == "":
 					cur = word
@@ -217,13 +224,15 @@ func pickerWords(text string, width int) []string {
 	var out []string
 	for _, word := range strings.Fields(text) {
 		for lipgloss.Width(word) > width {
-			r := []rune(word)
-			cut := width
-			if cut > len(r) {
-				cut = len(r)
+			// The cut is measured in CELLS, the same unit the comparison above
+			// uses: slicing `width` RUNES off a double-width token would hand
+			// back a piece up to twice the line it was cut to fit.
+			head := truncateVisible(word, width)
+			if head == "" {
+				break
 			}
-			out = append(out, string(r[:cut]))
-			word = string(r[cut:])
+			out = append(out, head)
+			word = strings.TrimPrefix(word, head)
 		}
 		if word != "" {
 			out = append(out, word)

@@ -1276,9 +1276,14 @@ func TestPOEditLine_EditsQtyAndDateOnABulkAddedLine(t *testing.T) {
 	if s.lines[0].item.Quantity != 4 {
 		t.Errorf("sibling line changed: %+v", s.lines[0].item)
 	}
-	// The staged date is visible in the cart, and re-opening the edit restores it.
-	if out := s.renderCart(1, 0); !strings.Contains(out, "exp 2026-09-01") {
-		t.Errorf("cart should show the per-line expected date:\n%s", out)
+	// The cart row says the line carries an expected date, and re-opening the
+	// edit restores the value. At 51 columns an ISO date cannot sit beside the
+	// price and the "Inventory item" badge, and the row's sacrifice order
+	// (label, then date, then badge) makes the DATE what gives — marked with
+	// the ellipsis rather than dropped, so the operator is never shown a row
+	// that reads as carrying no date at all.
+	if out := s.renderCart(1, 0); !strings.Contains(out, "exp…") {
+		t.Errorf("cart should still say the line carries an expected date:\n%s", out)
 	}
 	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
 	if got := s.lineInputs[poLineFieldDate].Value(); got != "2026-09-01" {

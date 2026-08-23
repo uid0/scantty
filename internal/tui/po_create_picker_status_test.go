@@ -67,9 +67,14 @@ type poPickFake struct {
 	workOrders int
 	committees int
 
-	failItems   bool
-	failAssets  bool
-	failReorder bool
+	failItems bool
+	// itemsErrBody replaces the catalog failure's JSON envelope. omsapi puts a
+	// body with no error code into APIError.Message WHOLE, so this is how a
+	// gateway page — or one in a language whose runes are two cells wide —
+	// reaches the failure frame's folder.
+	itemsErrBody string
+	failAssets   bool
+	failReorder  bool
 
 	// failCreate answers the submit with a gateway page rather than JSON.
 	// omsapi.parseError puts the ENTIRE raw body in APIError.Message when the
@@ -171,7 +176,11 @@ func (f *poPickFake) handler() http.HandlerFunc {
 		case strings.Contains(r.URL.Path, "/item-suppliers/"):
 			if f.failItems {
 				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(`{"detail":"item-suppliers exploded"}`))
+				body := `{"detail":"item-suppliers exploded"}`
+				if f.itemsErrBody != "" {
+					body = f.itemsErrBody
+				}
+				_, _ = w.Write([]byte(body))
 				return
 			}
 			rows := []map[string]any{}
@@ -4780,38 +4789,87 @@ func TestPOTypedRows_EveryKeystrokeMovesTheRow(t *testing.T) {
 // while the name they belong to stayed. The name is what may be shortened, and
 // the ellipsis is what says it was.
 func TestPOReview_ALongCatalogNameKeepsTheFactsOnTheRow(t *testing.T) {
-	const name = "1/4-20 x 1 Hex Cap Screw, Zinc"
+	// Both alphabets, because the row's budget is in CELLS: the second name is
+	// 20 runes and 26 cells, so a clip that counted runes would hand back a
+	// value up to twice the room reserved for it and the pane would take the
+	// facts anyway — the same defect the clip exists to stop.
+	names := []string{"1/4-20 x 1 Hex Cap Screw, Zinc", "六角ボルト 亜鉛メッキ 1/4-20"}
+
+	for _, name := range names {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", name, h), func(t *testing.T) {
+				r, screen := poPickerAtSize(t, &poPickFake{catalog: 2, suppliers: 1, itemName: name}, 80, h)
+				// An expected shipment date is the ordinary shape here, not an
+				// edge: lineTakesDate offers the field on item-supplier lines
+				// and only those, which are exactly the lines carrying the
+				// widest badge. Staged without one, the row was the single
+				// shape where every fixed part happened to fit.
+				for _, k := range []string{"i", "enter", "tab", "tab", "tab"} {
+					r = key(t, r, poPhaseKeyMsg(k))
+				}
+				if got := screen.lineFocused; got != poLineFieldDate {
+					t.Fatalf("three tabs left the line form on field %d, want the expected-date field", got)
+				}
+				r = poType(t, r, "2026-09-01")
+				for _, k := range []string{"enter", "d"} {
+					r = key(t, r, poPhaseKeyMsg(k))
+				}
+				if screen.phase != poPhaseReview || len(screen.lines) != 1 {
+					t.Fatalf("setup landed on phase %v with %d line(s)", screen.phase, len(screen.lines))
+				}
+
+				row := poTypedRow(t, screen, h, "1) ")
+				if row == "<not on the pane>" {
+					t.Fatalf("the cart row is not on the pane at all:\n%s",
+						strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				}
+				// The date gives before the badge does, and says so with the
+				// same ellipsis the label carries — a shortened value must
+				// never read as the whole one.
+				for _, fact := range []string{"×1", "@ $3.5", "[Inventory item]", "exp…"} {
+					if !strings.Contains(row, fact) {
+						t.Errorf("the cart row lost %q to the 51-column cut — the facts are what the\n"+
+							"operator confirms and the name is what may be shortened:\n\t%q", fact, row)
+					}
+				}
+				if !strings.Contains(row, "…") {
+					t.Errorf("the cart row shows no ellipsis, so a shortened name reads as the whole "+
+						"name (%d-cell label %q):\n\t%q", lipgloss.Width(name), name, row)
+				}
+				if strings.Contains(row, name) {
+					t.Errorf("the %d-cell name was drawn whole, so nothing was clipped:\n\t%q",
+						lipgloss.Width(name), row)
+				}
+				poAssertFits(t, "review cart with a real catalog name", screen)
+			})
+		}
+	}
+}
+
+// TestPOItemPicker_AWideRuneFailureBodyStillFitsThePane holds the folder to the
+// same unit the clips are held to.
+//
+// omsapi.parseError puts a response body carrying no error code into
+// APIError.Message whole, so the failure frame folds whatever the gateway sent
+// — and pickerWords has to break a token that has no spaces in it. Cutting that
+// token at `width` RUNES rather than cells handed back a piece up to twice the
+// line it was cut to fit, which clampToBox then took the end off: the way-out
+// keys the failure frame exists to name are what sits under it.
+func TestPOItemPicker_AWideRuneFailureBodyStillFitsThePane(t *testing.T) {
+	body := strings.Repeat("障害発生", 40)
 
 	for _, h := range poPaneSizes {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
-			r, screen := poPickerAtSize(t, &poPickFake{catalog: 2, suppliers: 1, itemName: name}, 80, h)
-			for _, k := range []string{"i", "enter", "enter", "d"} {
-				r = key(t, r, poPhaseKeyMsg(k))
-			}
-			if screen.phase != poPhaseReview || len(screen.lines) != 1 {
-				t.Fatalf("setup landed on phase %v with %d line(s)", screen.phase, len(screen.lines))
+			fake := &poPickFake{catalog: 12, failItems: true, itemsErrBody: body}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			r = key(t, r, poPhaseKeyMsg("i"))
+			if screen.itemSuppliersErr == "" {
+				t.Fatalf("setup: the catalog lookup did not fail")
 			}
 
-			row := poTypedRow(t, screen, h, "1) ")
-			if row == "<not on the pane>" {
-				t.Fatalf("the cart row is not on the pane at all:\n%s",
-					strings.Join(poPaneLinesAt(t, screen, h), "\n"))
-			}
-			for _, fact := range []string{"×1", "@ $3.5", "[Inventory item]"} {
-				if !strings.Contains(row, fact) {
-					t.Errorf("the cart row lost %q to the 51-column cut — the facts are what the\n"+
-						"operator confirms and the name is what may be shortened:\n\t%q", fact, row)
-				}
-			}
-			if !strings.Contains(row, "…") {
-				t.Errorf("the cart row shows no ellipsis, so a shortened name reads as the whole "+
-					"name (%d-cell label %q):\n\t%q", len([]rune(name)), name, row)
-			}
-			if strings.Contains(row, name) {
-				t.Errorf("the %d-cell name was drawn whole, so nothing was clipped:\n\t%q",
-					len([]rune(name)), row)
-			}
-			poAssertFits(t, "review cart with a real catalog name", screen)
+			poAssertFits(t, "item picker, wide-rune failure body", screen)
+			poWantPaneLine(t, screen, "b picks another line source")
+			_ = r
 		})
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/forgekeyapi"
 	"github.com/uid0/scantty/internal/omsapi"
@@ -135,7 +136,7 @@ const (
 )
 
 var listSearchInputWidth = screenBodyWidth(80) -
-	len([]rune(listSearchPrompt)) - 1 - len(listSearchWidestSuffix)
+	lipgloss.Width(listSearchPrompt) - 1 - lipgloss.Width(listSearchWidestSuffix)
 
 type ListScreen struct {
 	deps           Deps

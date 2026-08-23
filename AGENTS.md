@@ -219,11 +219,18 @@ touching any screen an operator drives:
   `✗ oms: http 502: <!DOCTYPE html><htm` and nothing else, on the one step where
   losing the reason costs the whole order.
   FIELD rows are the shape that does not FOLD, and they are bounded rather than
-  exempt — the CART row included: `renderCart` clips the OMS-supplied `label`
-  to what the index, the quantity, the price and the type badge leave (and to
-  two cells less on the highlighted row, which the highlight style pads), so
-  what a long catalog name costs is its own tail and never the facts the review
-  phase exists to confirm. The source chooser's `g` / `w` / `c` rows and the `Supplier: … ·
+  exempt — the CART row included, which gives ground in its own STATED order
+  because clipping its label alone was not enough: the LABEL first, then the
+  expected DATE (`poCartDateMark`, and the line form still holds the value in
+  full), and only then may the BADGE abbreviate (`poCartBadge`). The index, the
+  quantity and the price never give — they are what review exists to confirm —
+  and whatever is shortened carries the ellipsis that says so. An item-supplier
+  line is the ONLY shape that can carry an expected date (`lineTakesDate`) and
+  it is also the shape carrying the 14-cell `Inventory item` badge, so on an
+  ordinary line the fixed parts alone came to 52 cells and the pane took the
+  badge while the clipped label bought nothing. The highlighted row reserves
+  two cells more, asked of `StyleSidebarItemActive.GetHorizontalPadding()`
+  rather than counted. The source chooser's `g` / `w` / `c` rows and the `Supplier: … ·
   agreement: …` header are `label: value` rows carrying OMS-supplied names, so
   `renderAssocValue` and `renderSupplierHeader` clip each value to what the
   labels leave (`pickerClip`, ellipsis included) and keep them one row each —
@@ -256,6 +263,19 @@ touching any screen an operator drives:
   frame carried two claims about `esc` with the costly reading being the wrong
   one. A note rendered in both states takes the state as an argument
   (`itemFilterNote`).
+- **Every width is CELLS, never runes.** `lipgloss.Width` and `truncateVisible`
+  (layout.go) measure what the terminal draws; `len` over a string or a `[]rune`
+  measures something else. A bound enforced in one unit while its caller budgets
+  in the other is the same off-the-edge defect with a different alphabet: a CJK
+  or emoji value clipped to `room` RUNES renders up to twice `room` cells, and
+  clampToBox takes the tail the clip existed to protect. `pickerClip` and
+  `pickerWords` both counted runes while every caller budgeted cells
+  (`renderCart`, `renderSupplierHeader`, `renderAssocValue`, `pickerWrap`); both
+  delegate the measurement to `truncateVisible` now, and the ellipsis costs one
+  cell of the budget. `TestPOReview_ALongCatalogNameKeepsTheFactsOnTheRow` walks
+  a catalog name in both alphabets and
+  `TestPOItemPicker_AWideRuneFailureBodyStillFitsThePane` folds an unspaced
+  wide-rune error body, so the rule is checked rather than asserted.
 - **A bar the operator cannot READ is not honest, it is absent.** The list
   sweep (`list_bar_honesty_test.go`) therefore checks each footer segment
   survives `clampToBox` as a whole line at 80 columns AND at a real pane height
@@ -585,6 +605,21 @@ touching any screen an operator drives:
   against every non-typing picker state and fails a key the bar names that does
   nothing AND a key it does not name that acts — "acts" meaning CHANGES
   something, since a key that declines and says why has not acted.
+  A THIRD gap is deferred to the same conversion, and as a RULE rather than a
+  list: EVERY list surface should name and bind the same navigation set. The
+  bar-honesty work unbound four alias chords on the surfaces it swept —
+  `ctrl+u`/`ctrl+d` on `ListScreen`'s pager, `ctrl+p`/`ctrl+n` on its search
+  overlay and on the review cart — while the list-SHAPED screens outside those
+  sweeps (category, location, supplier, asset parts, storage slots, device
+  types, thermostats, e-paper panels and the rest) still bind them, so `ctrl+d`
+  pages the supplier list and does nothing on the inventory list the operator
+  reached it from. The asymmetry is deliberate for now: the ARROWS were kept and
+  NAMED (`j/k ↑↓ move`, `g/G home/end top/bottom`) because they cost three cells
+  and are what a non-vim operator reaches for, and the chords were dropped
+  because naming them costs cells a 51-column bar does not have. Aligning the
+  rest is a change to roughly twenty screens nobody reported, which is why it
+  waits — and why it is written here as one rule, since an enumeration of the
+  twenty is how the drift started.
 - **On a destructive confirm the KEYS go above the prose.** `clampToBox` drops
   from the bottom, so whatever is last is what a short terminal eats; on
   `poPhaseSupplierSwitch` that was the decline hint, which is the safe answer.
