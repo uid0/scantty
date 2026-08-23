@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -2216,6 +2217,43 @@ var poPickerBarKeys = map[string][]string{
 	"a":      {"a"},
 	"type":   nil, // "type to filter" names no single key
 	"ctrl+x": {"ctrl+x"},
+	"ctrl+e": {"ctrl+e"},
+	"ctrl+t": {"ctrl+t"},
+	// The source chooser's line-source and attribution letters.
+	"i": {"i"},
+	"f": {"f"},
+	"g": {"g"},
+	"w": {"w"},
+	"c": {"c"},
+	"d": {"d"},
+	"x": {"x"},
+	// The line form's field cycle. The arrows ride with it for the same reason
+	// the arrows ride with "j/k" above: `case "tab", "down":` and
+	// `case "shift+tab", "up":` are one arm each, and spelling the synonym out
+	// would spend cells of a 51-column bar saying the same thing twice.
+	"tab/shift+tab": {"tab", "shift+tab", "down", "up"},
+	// The review cart writes `case "up", "ctrl+p":` and `case "down", "ctrl+n":`
+	// — one arm each — so the emacs pair are synonyms of the arrows exactly as
+	// the arrows are synonyms of j/k above, and the token that names the arrows
+	// is the claim that covers them.
+	"↑↓": {"up", "down", "ctrl+p", "ctrl+n"},
+	// Segment heads that name the FRAME rather than a key. They are listed
+	// rather than ignored so an unrecognised token still fails loudly: a token
+	// the parser skips in silence is a claim the sweep cannot judge.
+	"Add":         nil,
+	"Pick":        nil,
+	"Purchase":    nil,
+	"Work":        nil,
+	"Committee":   nil,
+	"Changing":    nil,
+	"Items":       nil,
+	"Assets":      nil,
+	"Reorder":     nil,
+	"Line":        nil,
+	"Editing":     nil,
+	"Review":      nil,
+	"row":         nil,
+	"submitting…": nil,
 }
 
 // poPickerVocabulary is every keystroke the sweep presses. A key outside the
@@ -2261,14 +2299,135 @@ func poPickerNamedKeys(t *testing.T, bar string) map[string]bool {
 // and the status flash: a key that declines and says why has not acted, and the
 // project's rule is that such an arm must answer, not that the bar must promise
 // it. Anything in here moving means the key did something.
+//
+// Which fields it reads is not a matter of taste any more:
+// TestPOCreateScreen_EveryFieldIsClassified reflects over the struct and fails
+// on a field that is in neither this fingerprint nor poStateDeclined. `pending`
+// and `errMsg` were both missing from it, so no review-phase arm could be
+// judged by it at all — the same silent-omission shape as poAllBarKeys and
+// poPickerVocabulary, one layer down.
+//
+// Text inputs contribute their VALUE and never their View: a blinking caret
+// moving is not a key acting, and a fingerprint a caret can move is a test any
+// keypress passes.
 func poPickerState(s *PurchaseOrderCreateScreen) string {
-	return fmt.Sprint(s.phase, "|", s.itemSuppliersCur, s.itemSuppliersTyping, s.itemSuppliersLoad,
-		s.itemSuppliersErr, s.itemSuppliersSearch.Value(), len(s.itemSuppliers),
+	var b strings.Builder
+	fmt.Fprint(&b, s.phase, "|", s.pending, s.terminalHeightForState(),
+		"|", s.itemSuppliersCur, s.itemSuppliersTyping, s.itemSuppliersLoad,
+		s.itemSuppliersErr, s.itemSuppliersSearch.Value(),
+		len(s.itemSuppliers), len(s.itemSuppliersAll), s.itemSuppliersFor,
 		"|", s.assetsCursor, s.assetsTyping, s.assetsLoading, s.assetsErr,
-		s.assetsSearch.Value(), s.assetsPage, len(s.assets),
-		"|", s.reorderCursor, s.reorderLoading, s.reorderLoadErr, len(s.reorderSelected),
+		s.assetsSearch.Value(), s.assetsPage, s.assetsHasNext, s.assetsSeq,
+		s.assetsQuery, len(s.assets),
+		"|", s.reorderCursor, s.reorderLoading, s.reorderLoadErr,
+		len(s.reorderSelected), len(s.reorderItems),
 		"|", s.supplierCursor, s.supplierLoading, s.supplierLoadErr,
-		"|", len(s.lines), s.supplierID)
+		len(s.suppliers), s.supplierID,
+		"|", s.agreementCursor, s.agreementLoading, s.agreementLoadErr,
+		len(s.agreements), poDerefInt(s.agreementID),
+		"|", s.workOrderCursor, s.workOrderID, s.committeeCursor, s.committeeID,
+		s.assoc.workOrdersOffered(), s.assoc.committeesOffered(),
+		"|", s.lineFocused, s.pickedQPP, s.costBasisCase,
+		poDerefInt(s.pickedItemSup), poDerefStr(s.pickedAssetID),
+		"|", len(s.lines), s.reviewCursor, s.poNotes.Value(),
+		s.editIndex, s.editReturn)
+	for _, in := range s.lineInputs {
+		fmt.Fprint(&b, "|", in.Value())
+	}
+	return b.String()
+}
+
+func poDerefInt(p *int) string {
+	if p == nil {
+		return "-"
+	}
+	return fmt.Sprint(*p)
+}
+
+func poDerefStr(p *string) string {
+	if p == nil {
+		return "-"
+	}
+	return *p
+}
+
+// terminalHeightForState keeps the pane size in the fingerprint without letting
+// a resize masquerade as a keypress: no key changes it, so it can only differ
+// between two presses if the harness itself moved.
+func (s *PurchaseOrderCreateScreen) terminalHeightForState() int { return s.terminalHeight }
+
+// poStateFingerprinted / poStateDeclined classify EVERY field of the screen.
+// The struct is enumerated by reflection, so a field added tomorrow fails the
+// check by name until somebody decides which half it belongs in — the omission
+// cannot be made quietly, which is the whole point.
+var poStateFingerprinted = map[string]bool{
+	"phase": true, "pending": true, "terminalHeight": true,
+	"suppliers": true, "supplierLoading": true, "supplierLoadErr": true,
+	"supplierCursor": true, "supplierID": true,
+	"agreements": true, "agreementLoading": true, "agreementLoadErr": true,
+	"agreementCursor": true, "agreementID": true,
+	"assoc": true, "workOrderCursor": true, "workOrderID": true,
+	"committeeCursor": true, "committeeID": true,
+	"reorderItems": true, "reorderLoading": true, "reorderLoadErr": true,
+	"reorderCursor": true, "reorderSelected": true,
+	"itemSuppliers": true, "itemSuppliersAll": true, "itemSuppliersFor": true,
+	"itemSuppliersLoad": true, "itemSuppliersErr": true, "itemSuppliersCur": true,
+	"itemSuppliersSearch": true, "itemSuppliersTyping": true,
+	"assets": true, "assetsLoading": true, "assetsSeq": true, "assetsErr": true,
+	"assetsCursor": true, "assetsSearch": true, "assetsTyping": true,
+	"assetsPage": true, "assetsHasNext": true, "assetsQuery": true,
+	"lineInputs": true, "lineFocused": true, "pickedItemSup": true,
+	"pickedAssetID": true, "pickedQPP": true, "costBasisCase": true,
+	"lines": true, "reviewCursor": true, "poNotes": true,
+	"editIndex": true, "editReturn": true,
+}
+
+// poStateDeclined is every field a key may move WITHOUT having acted, with the
+// reason. All of them are the screen answering a decline: counting them would
+// call "j moves nothing" an action and invert the rule the sweep enforces.
+var poStateDeclined = map[string]string{
+	"deps":              "injected dependencies; no keystroke reaches them",
+	"errMsg":            "the failure line's headline — a validation decline writes here",
+	"errDetail":         "the failure line's unbounded half, written with errMsg",
+	"supplierNote":      "the supplier picker's decline note",
+	"reorderNote":       "the reorder picker's decline note",
+	"itemSuppliersNote": "the item picker's decline note",
+	"assetsNote":        "the asset picker's decline note",
+	"cartLead":          "what a declined key did to a collapsed cart",
+	"attrLead":          "what a declined g / w / c did",
+	"switchLead":        "what a declined key did on the supplier-switch confirm",
+	"pendingLead":       "what a key the submit made inert just did",
+}
+
+// TestPOCreateScreen_EveryFieldIsClassified is the completeness guarantee for
+// the fingerprint above. `pending` and `errMsg` fell out of it unnoticed, and
+// nothing failed — a review-phase arm could not be judged at all.
+func TestPOCreateScreen_EveryFieldIsClassified(t *testing.T) {
+	typ := reflect.TypeOf(PurchaseOrderCreateScreen{})
+	seen := map[string]bool{}
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		seen[name] = true
+		_, in := poStateFingerprinted[name]
+		_, out := poStateDeclined[name]
+		switch {
+		case in && out:
+			t.Errorf("field %q is in BOTH poStateFingerprinted and poStateDeclined", name)
+		case !in && !out:
+			t.Errorf("field %q is in neither poStateFingerprinted nor poStateDeclined — "+
+				"a key that moves it would be judged by nothing", name)
+		}
+	}
+	for name := range poStateFingerprinted {
+		if !seen[name] {
+			t.Errorf("poStateFingerprinted names %q, which the screen no longer has", name)
+		}
+	}
+	for name := range poStateDeclined {
+		if !seen[name] {
+			t.Errorf("poStateDeclined names %q, which the screen no longer has", name)
+		}
+	}
 }
 
 // poCmdActs reports whether a command does anything beyond posting a status.

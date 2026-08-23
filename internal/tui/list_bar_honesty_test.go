@@ -113,21 +113,63 @@ type listBarSurface struct {
 	build func() *ListScreen
 }
 
-// listBarSurfaces is EVERY ListScreen in the app, not the ones this report
-// happened to name. The Purchasing list was outside the old sweep; enumerating
-// the constructors rather than the reported instances is what stops the next
-// list from being outside this one.
+// listBarSurfaces is EVERY ListScreen in the app, DERIVED rather than listed.
+// It walks Workspaces() — the nav tree's own authority, which route.go and the
+// sidebar already read — and takes every workspace whose newScreenFor yields a
+// *ListScreen. A list added to a workspace joins this sweep by existing.
+//
+// The Purchasing list was outside the previous sweep, which is the whole reason
+// eight advertised keys reached an operator's terminal doing nothing; a
+// hand-kept roster of constructors would have been the same omission one
+// workspace over. Screens reachable OUTSIDE the nav tree cannot be derived from
+// it, so they are named in listBarSurfacesOffTree with the reason — absent and
+// deliberately-not-a-workspace are then different states, not the same silence.
 func listBarSurfaces() []listBarSurface {
-	fromWorkspace := func(ws Workspace) func() *ListScreen {
-		return func() *ListScreen { return newScreenFor(ws, Deps{}).(*ListScreen) }
+	var out []listBarSurface
+	for _, ws := range Workspaces() {
+		screen := newScreenFor(ws.Key, Deps{})
+		if _, ok := screen.(*ListScreen); !ok {
+			continue
+		}
+		id, label := ws.Key, ws.Label
+		out = append(out, listBarSurface{
+			name:  strings.ToLower(label),
+			build: func() *ListScreen { return newScreenFor(id, Deps{}).(*ListScreen) },
+		})
 	}
+	return append(out, listBarSurfacesOffTree()...)
+}
+
+// listBarSurfacesOffTree is every ListScreen the nav tree cannot reach, so
+// Workspaces() cannot name it. Each line states why it is here rather than
+// derived; anything that can be reached from a workspace must NOT be listed
+// here, because that would take it back out of the derivation.
+func listBarSurfacesOffTree() []listBarSurface {
 	return []listBarSurface{
-		{"purchasing", fromWorkspace(WSPurchasing)},
-		{"inventory", fromWorkspace(WSInventory)},
-		{"assets", fromWorkspace(WSAssets)},
-		{"maintenance", fromWorkspace(WSMaintenance)},
-		{"forgekey devices", fromWorkspace(WSForgeKey)},
+		// Reached from a project's detail screen, not from the sidebar.
 		{"project storage", func() *ListScreen { return NewProjectStorageListScreen(Deps{}) }},
+	}
+}
+
+// TestList_EveryWorkspaceListIsSwept is the completeness half: the derivation
+// above only helps if it actually reaches every workspace list, so this fails
+// when one is missing rather than letting the sweep quietly cover five of six.
+func TestList_EveryWorkspaceListIsSwept(t *testing.T) {
+	swept := map[string]bool{}
+	for _, s := range listBarSurfaces() {
+		swept[s.name] = true
+	}
+	for _, ws := range Workspaces() {
+		if _, ok := newScreenFor(ws.Key, Deps{}).(*ListScreen); !ok {
+			continue
+		}
+		if !swept[strings.ToLower(ws.Label)] {
+			t.Errorf("workspace %q builds a *ListScreen but the bar-honesty sweep does not cover it",
+				ws.Label)
+		}
+	}
+	if len(swept) < 2 {
+		t.Fatalf("the sweep found %d list screen(s) — the derivation is broken, not the app", len(swept))
 	}
 }
 

@@ -87,8 +87,8 @@ note, and is the authority):
   pressed in neither direction, so it is untested rather than passing. That is
   how `N` on the purchase-order list survived `poAllBarKeys`, and how `tab`
   silently committing the New PO screen's supplier survived `poPickerVocabulary`
-  one round after that sweep was written to replace the first. Two sweeps hold the rule and they cover
-  different halves of the app: `po_view_jde_test.go`'s
+  one round after that sweep was written to replace the first. Two sweeps hold
+  the rule and they cover different halves of the app: `po_view_jde_test.go`'s
   `TestPOView_BarNamesExactlyTheKeysThatWork` walks the columnar screens, whose
   bar is a `[]actionBarItem`; `list_bar_honesty_test.go` walks every
   `ListScreen`, whose bar is still a hand-built STRING (`ListScreen.footerHint`)
@@ -96,6 +96,40 @@ note, and is the authority):
   whichever sweep matches its bar — the header comment in
   `list_bar_honesty_test.go` records how eight advertised keys survived across
   four lists by falling between them.
+- **A sweep DERIVES its members; it never restates them.** Three keys reached an
+  operator's terminal doing nothing while the bar named them, and every time the
+  sweep that existed to stop it was reading a hand-kept roster the key was not
+  in: `poAllBarKeys` held none of the list letters, `poPickerVocabulary` held no
+  `tab`, and the picker table held no `poPhaseSupplierSwitch` — where `enter`,
+  the key that OPENS the confirm, was answered with `nil`. A list that has to be
+  edited in step with the code is that omission waiting to happen again, and it
+  fails SILENTLY, which is why it keeps being made.
+  So each roster comes from its authority and a missing member FAILS:
+  PHASES from the `poPhase` iota walked to the `poPhaseCount` sentinel
+  (`TestPOCreate_EveryPhaseIsSwept`; a phase where genuinely no key acts is
+  recorded in `poPhasesWithoutKeys`, so absent and empty are different states);
+  LIST screens from `Workspaces()` (`listBarSurfaces`, with
+  `listBarSurfacesOffTree` for the ones the nav tree cannot reach and
+  `TestList_EveryWorkspaceListIsSwept` to prove the derivation reaches them);
+  the screen's STATE from `reflect.TypeOf(PurchaseOrderCreateScreen{})`, every
+  field either in `poStateFingerprinted` or in `poStateDeclined` WITH A REASON
+  (`pending` and `errMsg` had fallen out of the fingerprint, so no review-phase
+  arm could be judged at all).
+  KEYS are the exception that proves it: no authority can be derived for them,
+  so the answer is not to curate a vocabulary but to press the whole SPACE —
+  every printable ASCII rune plus the named specials (`poKeySpace`), which is
+  what `TestPOCreate_EveryPhaseNamesExactlyTheKeysThatWork` does. `tab` on the
+  supplier picker and `N` on the purchase-order list both fail it the moment
+  their fix is reverted; that is the check, not the comment.
+  `TestPOPickers_PaneNamesExactlyTheKeysThatWork` keeps its narrower
+  `poPickerVocabulary` and earns its keep on the other axis — it walks the
+  picker STATES (empty, failed, mid-flight) the phase sweep does not reach —
+  so between them every phase meets the whole key space and every picker state
+  meets the keys it can plausibly be sent. Where a bar is prose rather than `key claim · key claim`, reshape the
+  bar: `poBarNamedKeys` reads single-letter keys only at a segment START,
+  because scanning prose for a bare `a` finds the article. That reshaping is how
+  `b` — bound on all three association pickers exactly as `esc` is, named by
+  none of them — was finally caught.
 - **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
   hint literal.** The footer and the handler read that one table; the previous
   shape appended the words to a hint string and left the key to a global
@@ -323,6 +357,22 @@ touching any screen an operator drives:
   byte-for-byte identical pane — the reported hang, reached by pressing `j` then
   `k`. Test it IN SEQUENCE with no state reset between presses; resetting the
   lead before every key is what made the sweep structurally unable to see it.
+  A frame that binds only a HANDFUL of keys is the same rule, not an exemption:
+  the supplier-switch confirm binds `ctrl+x` and `esc` and answered every other
+  press with `nil`, so a reflexive double-tap of the `enter` that OPENED it
+  landed on a renderer that is a pure function of unchanged state and redrew the
+  pane byte for byte. It declines through `supplierSwitchNote` now, which reads
+  the two live keys off `supplierSwitchBar` — the sentence the frame already
+  prints — so a decline cannot name a key the confirm does not honour. `enter`
+  is still NOT bound to the destructive answer: `ctrl+x` is that key precisely
+  so a double-tap cannot empty a half-built cart, and declining to bind a key is
+  not licence to leave the press silent.
+  A key the SUBMIT has made inert is the same shape once more: while the POST is
+  out `helpText` drops `enter submit` from the review bar (the drop
+  `itemPickBar` and `assetPickBar` already make for a gated key) and the press
+  answers on the "Submitting…" line through `pendingLead`, because an operator
+  watching a slow gateway is exactly the operator who will have missed a
+  four-second flash.
   The GATED frames (loading, failed) are the same rule and were the last
   instance of it: `a`/`enter` on the reorder gate, `]`/`[` on the asset gate and
   `j`/`k` on the supplier gate each shared one sentence between two keys, and

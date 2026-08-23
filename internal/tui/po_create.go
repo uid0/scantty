@@ -105,6 +105,15 @@ const (
 	// cart. Appended rather than slotted in beside poPhaseSupplier so the
 	// existing constants keep their values.
 	poPhaseSupplierSwitch
+
+	// poPhaseCount is the sentinel the sweeps walk to. It exists so a phase
+	// added above it is covered by construction rather than by somebody
+	// remembering to extend a table: the key sweep iterates 0..poPhaseCount-1
+	// and fails on any phase it has no entry for. Three rounds of this project
+	// lost a key to a hand-maintained member list — poAllBarKeys had none of
+	// the list letters, poPickerVocabulary had no tab — and a list that must be
+	// edited in step with an enum is the same shape of omission waiting again.
+	poPhaseCount
 )
 
 // Field indexes inside the line-entry form (Phase 4). Every line collects a
@@ -285,6 +294,18 @@ type PurchaseOrderCreateScreen struct {
 	// declined one of those keys DID, on a pane too short to draw the rows they
 	// name. Only the lead is kept — the sentence is rebuilt on every render.
 	attrLead string
+	// switchLead is the same shape for the supplier-switch confirm, which binds
+	// exactly two keys and had NOTHING to say to any other press. enter is the
+	// one that matters: it is the key that opened this frame, so a reflexive
+	// double-tap landed on a pure function of unchanged state and redrew a
+	// byte-for-byte identical pane — the reported hang, on a destructive
+	// confirm. The answer is a note, not a binding: see updateSupplierSwitchPhase.
+	switchLead string
+	// pendingLead is what a key that the submit has made inert just did. The
+	// review bar drops `enter submit` while the POST is out, and the press
+	// itself answers on the "Submitting…" line rather than into a flash the
+	// operator watching a slow request will have missed.
+	pendingLead string
 
 	// editIndex is the s.lines index being edited in place (ctrl+e re-opens the
 	// Phase-4 form pre-filled), or -1 when the line form is adding a new line.
@@ -590,6 +611,7 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 			s.suppliers[s.supplierCursor].ID != s.supplierID &&
 			s.supplierScopedLineCount() > 0 {
 			s.phase = poPhaseSupplierSwitch
+			s.switchLead = ""
 			return s, Status(fmt.Sprintf(
 				"%d staged line(s) belong to %s — ctrl+x drops them and switches, esc keeps them",
 				s.supplierScopedLineCount(), s.supplierLabel()), StatusWarn)
@@ -670,6 +692,7 @@ func (s *PurchaseOrderCreateScreen) updateSupplierSwitchPhase(m tea.KeyMsg) (Scr
 	switch m.String() {
 	case "ctrl+x":
 		from := s.supplierLabel()
+		s.switchLead = ""
 		dropped := s.dropSupplierScopedLines()
 		cmd := s.commitSupplier()
 		s.phase = poPhaseSupplier
@@ -681,9 +704,25 @@ func (s *PurchaseOrderCreateScreen) updateSupplierSwitchPhase(m tea.KeyMsg) (Scr
 			dropped, from, len(s.lines)), StatusWarn), cmd)
 	case "esc":
 		s.phase = poPhaseSupplier
+		s.switchLead = ""
 		return s, Status("kept the cart · still ordering from "+s.supplierLabel(), StatusInfo)
 	}
-	return s, nil
+	// Everything else declines and SAYS SO. enter is why this arm exists: it is
+	// the key that opened the confirm, this frame has no cursor, no highlight
+	// and no focused textinput, and the renderer is a pure function of state —
+	// so returning nil redrew the pane byte for byte, which is the reported
+	// hang landing on a destructive confirm. The lead names the key so two
+	// different presses cannot answer with the same sentence.
+	s.switchLead = m.String() + " does neither"
+	n := s.supplierSwitchNote()
+	return s, Status(n.flash(), n.level)
+}
+
+// supplierSwitchNote answers a key this frame does not bind. It reads the two
+// live keys off supplierSwitchBar — the same sentence the frame draws above it —
+// so a decline can never name a key the confirm does not honour.
+func (s *PurchaseOrderCreateScreen) supplierSwitchNote() pickerNote {
+	return pickerNote{text: s.switchLead + "\n" + s.supplierSwitchBar(), level: StatusWarn}
 }
 
 func (s *PurchaseOrderCreateScreen) renderSupplierSwitchPhase() string {
@@ -706,6 +745,12 @@ func (s *PurchaseOrderCreateScreen) renderSupplierSwitchPhase() string {
 	// it off a 24-row terminal. Prose is what gets sacrificed when the rows
 	// run out; the keys are not.
 	b.WriteString(pickerHint(s.supplierSwitchBar()) + "\n\n")
+	if s.switchLead != "" {
+		// Under the keys and ABOVE the prose, so the prose is what the row
+		// budget below sacrifices when the pane runs out — the same order this
+		// frame already keeps between its keys and its sentence.
+		b.WriteString(s.supplierSwitchNote().render() + "\n\n")
+	}
 
 	prose := fmt.Sprintf("%d of %d staged line(s) name items only %s sells, so %s cannot fill them.",
 		scoped, len(s.lines), s.supplierLabel(), to)
@@ -1694,6 +1739,7 @@ func (s *PurchaseOrderCreateScreen) finalize() tea.Cmd {
 	req.OwningGroup = poCommitteeID(s.committeeID)
 
 	s.pending = true
+	s.pendingLead = ""
 	s.setErr("", "")
 	deps := s.deps
 	ctx := deps.Ctx
@@ -1721,7 +1767,12 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 		return s, nil
 	case "enter":
 		if s.pending {
-			return s, nil
+			// The bar has already stopped naming enter here, and the press
+			// answers on the "Submitting…" line rather than into a flash: an
+			// operator watching a slow POST and pressing enter again is exactly
+			// the operator who will have missed a four-second status.
+			s.pendingLead = "enter is already in"
+			return s, Status("the submit is already out", StatusInfo)
 		}
 		return s, s.finalize()
 	case "up", "ctrl+p":
@@ -1829,7 +1880,13 @@ func (s *PurchaseOrderCreateScreen) setErr(what, detail string) {
 func (s *PurchaseOrderCreateScreen) renderFailLine(help string) string {
 	switch {
 	case s.pending:
-		return StyleMuted.Render("Submitting…")
+		// The lead is what a key the submit has made inert just did, so the
+		// press moves the BODY rather than only the four-second flash. Folded
+		// like every other line on these screens: the lead grows it past 51.
+		if s.pendingLead != "" {
+			return pickerHint(s.pendingLead + " · Submitting…")
+		}
+		return pickerHint("Submitting…")
 	case s.errMsg == "":
 		return ""
 	}
@@ -1907,7 +1964,7 @@ const poFailBodyFloor = 3
 // (cart-listed) wording, which is the conservative direction — the collapsed
 // bar folds to no more rows, so it can never turn the answer back round.
 func (s *PurchaseOrderCreateScreen) sourceHelpText(cartListed, attribution bool) string {
-	base := "Add a line: r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel"
+	base := "Add a line · r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel"
 	switch {
 	case len(s.lines) > 0 && cartListed:
 		base = fmt.Sprintf(
@@ -1954,11 +2011,15 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 		// do nothing here.
 		return "Changing supplier · " + s.supplierSwitchBar()
 	case poPhaseAgreement:
-		return "Pick the purchase / pricing agreement this order is placed under (j/k move · enter commit · esc keep current · row 1 = none)."
+		// One claim per segment, and `b` among them: it is bound here exactly as
+		// esc is (both return to the source chooser) and no bar named it, which
+		// is the "a key the bar does not name must do nothing" half of the rule
+		// the derived phase sweep now presses for.
+		return "Purchase / pricing agreement · j/k move · enter commits · b back · esc keeps the current one · row 1 is none"
 	case poPhaseWorkOrder:
-		return "Pick the work order this purchase is for (j/k move · enter commit · esc keep current · row 1 = none)."
+		return "Work order for this purchase · j/k move · enter commits · b back · esc keeps the current one · row 1 is none"
 	case poPhaseCommittee:
-		return "Pick the committee this purchase is on behalf of (j/k move · enter commit · esc keep current · row 1 = none)."
+		return "Committee this purchase is on behalf of · j/k move · enter commits · b back · esc keeps the current one · row 1 is none"
 	case poPhaseSource:
 		return s.sourceHelpText(s.cartListedOnScreen(), s.sourceAttributionShown())
 	case poPhaseReorderPick:
@@ -1976,16 +2037,25 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 		if s.editIndex >= 0 {
 			// Editing an existing cart line (opened with ctrl+e from review).
 			if s.pickedItemSup != nil && s.pickedQPP > 1 {
-				return "Editing line (tab/shift-tab cycle fields · ctrl+t unit/case cost basis · enter save changes · esc cancel edit)."
+				return "Editing line · tab/shift+tab cycle fields · ctrl+t unit/case cost basis · enter saves the changes · esc cancels the edit"
 			}
-			return "Editing line (tab/shift-tab cycle fields, enter to save changes, esc to cancel edit)."
+			return "Editing line · tab/shift+tab cycle fields · enter saves the changes · esc cancels the edit"
 		}
 		if s.pickedItemSup != nil && s.pickedQPP > 1 {
-			return "Line entry (tab/shift-tab cycle fields · ctrl+t unit/case cost basis · enter add · esc different source)."
+			return "Line entry · tab/shift+tab cycle fields · ctrl+t unit/case cost basis · enter adds to the cart · esc picks a different source"
 		}
-		return "Line entry (tab/shift-tab cycle fields, enter to add to cart, esc to pick a different source)."
+		return "Line entry · tab/shift+tab cycle fields · enter adds to the cart · esc picks a different source"
 	case poPhaseReview:
-		return "Review cart — type PO notes · ↑↓ highlight a line · ctrl+e edit it · ctrl+x remove it · enter submit · esc back."
+		bar := "Review cart — type PO notes · ↑↓ highlight a line · ctrl+e edit it · ctrl+x remove it"
+		if s.pending {
+			// The POST is out and the enter arm declines, so the bar stops
+			// naming it — the same drop itemPickBar and assetPickBar make for a
+			// gated key. esc still works: leaving review does not cancel the
+			// request, and stranding the operator on a frame with no way out
+			// while a slow gateway thinks about it would be the worse defect.
+			return bar + " · esc back · submitting…"
+		}
+		return bar + " · enter submit · esc back."
 	}
 	return ""
 }
