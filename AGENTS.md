@@ -230,6 +230,14 @@ touching any screen an operator drives:
   no cart at all while `j`/`k`/`x`/`ctrl+e` answered into a four-second flash;
   on review the same rows plus a caveat folded onto two left the cart no line
   and took the notes field with them.
+  Ask BOTH halves before dropping anything: does hiding actually free rows, and
+  does the frame overflow with them shown. Asking only the second is what the
+  first version did, and a supplier offering exactly ONE optional row spends the
+  same rows either way — the substitute notice is one row in the slot the row
+  occupied and the bar folds to the same height — so at 80x24 the frame replaced
+  a real committee row with "optional rows need more height", which was FALSE,
+  stopped naming `c`, and made `c` decline. Dropping a row that costs nothing to
+  keep is worse than the overflow it avoids.
   Two rules ride along. **The bar follows the cut**: `sourceHelpText` stops
   naming `g`/`w`/`c` for exactly as long as their rows are off the pane and the
   three arms decline (`attributionHiddenNote`) — a key naming a row the frame
@@ -261,7 +269,14 @@ touching any screen an operator drives:
   compared a cursor against `len-1`, did nothing and said nothing, which is the
   hang exactly. Every such arm now answers — `reportItemFilterState`,
   `assetEmptyNote`, `reorderEmptyNote` (which also takes the reorder mark key) —
-  with a lead saying what the key did. List EDGES stay silent on purpose: the
+  with a lead saying what the key did, and that lead NAMES the key
+  (`m.String() + " moves nothing"`). Naming it is not decoration: two keys
+  sharing one lead answer with the same sentence, and on a frame drawing no
+  rows, no highlight and no focused textinput the second press then redraws a
+  byte-for-byte identical pane — the reported hang, reached by pressing `j` then
+  `k`. Test it IN SEQUENCE with no state reset between presses; resetting the
+  lead before every key is what made the sweep structurally unable to see it.
+  List EDGES stay silent on purpose: the
   highlight is on the pane and visibly at the end, so the press has answered
   itself. The CART on the source chooser is the same rule off the pickers:
   `cartListedOnScreen` measures whether its rows fit, and when they do not the
@@ -274,8 +289,10 @@ touching any screen an operator drives:
   So the key, the count and `not listed here` lead it and the TOTAL is what
   folds onto a second row — and the row budget counts that fold instead of
   assuming one row, which the first version claimed and was not. The declining
-  leads are short for the same reason: they fold onto the first line AHEAD of
-  the key rather than pushing it onto a second. `x` removing, and `ctrl+e` editing, a
+  leads are short for the same reason — they fold onto the first line AHEAD of
+  the key rather than pushing it onto a second — and each one names the key it
+  answers (`j moves nothing`, `x removes nothing`, `ctrl+e edits nothing`), so
+  no two of them can redraw the same pane. `x` removing, and `ctrl+e` editing, a
   line clampToBox had dropped is the worst instance of this rule this screen
   has had. The way out has to be real: the review phase lists and highlights the
   same cart at 80x24, which is why `d` is what the sentence names.

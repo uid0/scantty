@@ -837,7 +837,7 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 	if !s.reorderListOnScreen() {
 		switch m.String() {
 		case "j", "down", "k", "up":
-			return s, s.reorderVerdictNote("nothing to move through")
+			return s, s.reorderVerdictNote(m.String() + " moves nothing")
 		case " ":
 			return s, s.reorderVerdictNote("nothing to mark")
 		case "a", "enter":
@@ -856,14 +856,14 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 		// arms answered with nil, so the pane did not move and there was not
 		// even a highlight to see stay put.
 		if len(s.reorderItems) == 0 {
-			return s, s.reorderEmptyNote("nothing to move through")
+			return s, s.reorderEmptyNote(m.String() + " moves nothing")
 		}
 		if s.reorderCursor < len(s.reorderItems)-1 {
 			s.reorderCursor++
 		}
 	case "k", "up":
 		if len(s.reorderItems) == 0 {
-			return s, s.reorderEmptyNote("nothing to move through")
+			return s, s.reorderEmptyNote(m.String() + " moves nothing")
 		}
 		if s.reorderCursor > 0 {
 			s.reorderCursor--
@@ -1101,7 +1101,7 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 	if !s.itemListOnScreen() {
 		switch m.String() {
 		case "j", "down", "k", "up":
-			return s, s.catalogVerdictNote("nothing to move through")
+			return s, s.catalogVerdictNote(m.String() + " moves nothing")
 		case "enter":
 			return s, s.catalogVerdictNote("nothing to pick")
 		}
@@ -1122,14 +1122,14 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 		// Only the empty list. An EDGE is a weaker case: the highlight is on
 		// screen and visibly at the end, so the press has answered itself.
 		if len(s.itemSuppliers) == 0 {
-			return s, s.reportItemFilterState("nothing to move through")
+			return s, s.reportItemFilterState(m.String() + " moves nothing")
 		}
 		if s.itemSuppliersCur < len(s.itemSuppliers)-1 {
 			s.itemSuppliersCur++
 		}
 	case "k", "up":
 		if len(s.itemSuppliers) == 0 {
-			return s, s.reportItemFilterState("nothing to move through")
+			return s, s.reportItemFilterState(m.String() + " moves nothing")
 		}
 		if s.itemSuppliersCur > 0 {
 			s.itemSuppliersCur--
@@ -1613,7 +1613,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 	if !s.assetListOnScreen() {
 		switch m.String() {
 		case "j", "down", "k", "up":
-			return s, s.assetVerdictNote("nothing to move through")
+			return s, s.assetVerdictNote(m.String() + " moves nothing")
 		case "enter":
 			return s, s.assetVerdictNote("nothing to pick")
 		}
@@ -1626,14 +1626,14 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		return s, nil
 	case "j", "down":
 		if len(s.assets) == 0 {
-			return s, s.assetEmptyNote("nothing to move through")
+			return s, s.assetEmptyNote(m.String() + " moves nothing")
 		}
 		if s.assetsCursor < len(s.assets)-1 {
 			s.assetsCursor++
 		}
 	case "k", "up":
 		if len(s.assets) == 0 {
-			return s, s.assetEmptyNote("nothing to move through")
+			return s, s.assetEmptyNote(m.String() + " moves nothing")
 		}
 		if s.assetsCursor > 0 {
 			s.assetsCursor--

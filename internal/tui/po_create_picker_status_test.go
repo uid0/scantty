@@ -3642,7 +3642,11 @@ func TestPOPickers_JKOverAnEmptyListSaysWhy(t *testing.T) {
 			if got := tc.rows(screen); got != 0 {
 				t.Fatalf("%s at 80x%d: setup left %d rows on screen", tc.name, h, got)
 			}
-			for _, k := range []string{"j", "k"} {
+			// In SEQUENCE, with no reset between them: these frames draw no
+			// rows and no caret, so if j and k shared a lead the second press
+			// would redraw a byte-for-byte identical pane and only the
+			// four-second flash would move. Each names the key it answers.
+			for _, k := range []string{"j", "k", "j"} {
 				beforeNote := strings.Join(poNoteLines(t, *tc.note(screen)), "\n")
 				beforePane := strings.Join(poPaneLinesAt(t, screen, h), "\n")
 				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
@@ -3654,11 +3658,6 @@ func TestPOPickers_JKOverAnEmptyListSaysWhy(t *testing.T) {
 					t.Errorf("%s at 80x%d: %q redrew an identical pane:\n%s", tc.name, h, k, after)
 				}
 				poAssertFits(t, tc.name+" after "+k, screen)
-				// Reset to the un-led wording so the second key is judged from
-				// the state the operator arrives in, not from the first key's
-				// answer — j and k share a lead, as they do everywhere on these
-				// screens, so only the first press would otherwise move it.
-				tc.note(screen).clear()
 			}
 		}
 	}
@@ -3766,6 +3765,75 @@ func poStageCostlessLine(t *testing.T, r Root, screen *PurchaseOrderCreateScreen
 		t.Fatalf("setup: no staged line is priced from the catalog (%d lines)", len(screen.lines))
 	}
 	return r
+}
+
+// TestPOSourceChooser_OneOptionalRowIsNeverDroppedForNothing: the source
+// chooser sacrifices the optional g / w / c rows when the pane is too short,
+// and the first version of that decision asked only whether the layout WITH
+// them fits — never whether dropping them helps.
+//
+// With exactly ONE of them offered it does not help: the substitute notice is
+// one rendered row in the same blank-plus-row slot the row occupied, and the
+// bar folds to the same height with or without that one clause. So at 80x24 a
+// supplier carrying only a committee had its committee row replaced by
+// "optional rows need more height" — false, the height was sufficient — while
+// the bar stopped naming `c` and the `c` arm declined. A false sentence plus a
+// disabled working key is the bar-honesty rule inside out.
+//
+// Every fixture that turned the optional lookups on turned on all THREE, where
+// hiding genuinely saves rows, which is why nothing could see it.
+func TestPOSourceChooser_OneOptionalRowIsNeverDroppedForNothing(t *testing.T) {
+	cases := []struct {
+		name  string
+		fake  func() *poPickFake
+		row   string
+		key   string
+		named string
+		phase poPhase
+	}{
+		{"agreement only", func() *poPickFake {
+			return &poPickFake{reorder: 15, catalog: 2, assets: 1, agreements: 1}
+		}, "Agreement (optional)", "g", "g agreement", poPhaseAgreement},
+		{"work orders only", func() *poPickFake {
+			return &poPickFake{reorder: 15, catalog: 2, assets: 1, workOrders: 2}
+		}, "Work order (optional)", "w", "w work order", poPhaseWorkOrder},
+		{"committees only", func() *poPickFake {
+			return &poPickFake{reorder: 15, catalog: 2, assets: 1, committees: 1}
+		}, "Committee (optional)", "c", "c committee", poPhaseCommittee},
+	}
+
+	for _, tc := range cases {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", tc.name, h), func(t *testing.T) {
+				r, screen := poPickerAtSize(t, tc.fake(), 80, h)
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}) // add all 15
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})                       // review → source
+				if screen.phase != poPhaseSource || len(screen.lines) != 15 {
+					t.Fatalf("setup: phase %v with %d line(s)", screen.phase, len(screen.lines))
+				}
+
+				what := fmt.Sprintf("source chooser, %s, 15-line cart at 80x%d", tc.name, h)
+				poAssertFits(t, what, screen)
+
+				// The row is drawn, the frame does not claim otherwise, and the
+				// bar still names the key.
+				poWantPaneLine(t, screen, tc.row)
+				poRejectPaneLine(t, screen, "optional rows need more height")
+				if !strings.Contains(screen.helpText(), tc.named) {
+					t.Errorf("the bar stopped naming %q while the row is on the pane: %q",
+						tc.named, screen.helpText())
+				}
+
+				// And the key still WORKS — a named key must act.
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
+				if screen.phase != tc.phase {
+					t.Fatalf("%q did not open its picker (phase %v, want %v)", tc.key, screen.phase, tc.phase)
+				}
+				poAssertFits(t, what+" after "+tc.key, screen)
+			})
+		}
+	}
 }
 
 // TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline is the source
@@ -3879,52 +3947,62 @@ func TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline(t *testing.T) 
 					}
 				}
 
-				for _, k := range []tea.KeyMsg{
-					{Type: tea.KeyRunes, Runes: []rune("j")},
-					{Type: tea.KeyRunes, Runes: []rune("k")},
-					{Type: tea.KeyRunes, Runes: []rune("x")},
-					{Type: tea.KeyCtrlE},
-				} {
-					// Each key is pressed from the state the operator actually
-					// arrives in — the un-led summary — so a lead dropped from
-					// any one arm leaves the pane unchanged and fails here.
-					screen.cartLead = ""
-					before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+				// Pressed IN SEQUENCE, with no state reset between them. The
+				// previous version cleared the lead before every key, so every
+				// press was measured from the un-led summary and no two presses
+				// were ever compared against each other — which is why j and k
+				// could share one lead and redraw a byte-for-byte identical
+				// pane, on a frame with no cursor, no highlighted row and no
+				// focused textinput for anything else to move.
+				before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+				press := func(name string, k tea.KeyMsg) {
+					t.Helper()
 					lines, cur, phase := len(screen.lines), screen.reviewCursor, screen.phase
 					r = key(t, r, k)
 					if len(screen.lines) != lines {
 						t.Errorf("%q changed the cart (%d lines, was %d) with no line on the pane",
-							k.String(), len(screen.lines), lines)
+							name, len(screen.lines), lines)
 					}
 					if screen.reviewCursor != cur {
-						t.Errorf("%q moved a highlight that is not on the pane", k.String())
+						t.Errorf("%q moved a highlight that is not on the pane", name)
 					}
 					if screen.phase != phase {
-						t.Errorf("%q left the source chooser (phase %v)", k.String(), screen.phase)
+						t.Errorf("%q left the source chooser (phase %v)", name, screen.phase)
 					}
-					if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after == before {
-						t.Errorf("%q redrew a byte-for-byte identical pane:\n%s", k.String(), after)
+					after := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+					if after == before {
+						t.Errorf("%q redrew a byte-for-byte identical pane:\n%s", name, after)
 					}
-					poAssertFits(t, what+" after "+k.String(), screen)
+					before = after
+					poAssertFits(t, what+" after "+name, screen)
 				}
+				press("j", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+				press("k", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+				press("x", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+				press("ctrl+e", tea.KeyMsg{Type: tea.KeyCtrlE})
+				// Back round the loop: k after ctrl+e, then j after k, so the
+				// pair that shared a lead is compared in both orders.
+				press("k", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+				press("j", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 
 				// The keys whose rows were dropped decline the same way, and
-				// say so in the body rather than only in the flash.
+				// say so in the body rather than only in the flash — in
+				// sequence too, for the same reason.
 				if !screen.sourceAttributionShown() {
 					for _, k := range []string{"g", "w", "c"} {
-						screen.attrLead = ""
-						before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+						phase := screen.phase
 						r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
-						if screen.phase != poPhaseSource {
+						if screen.phase != phase {
 							t.Fatalf("%q opened a picker whose row the frame is not drawing (phase %v)",
 								k, screen.phase)
 						}
-						if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after == before {
+						after := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+						if after == before {
 							t.Errorf("%q redrew a byte-for-byte identical pane:\n%s", k, after)
 						}
+						before = after
 						poAssertFits(t, what+" after "+k, screen)
 					}
-					screen.attrLead = ""
 				}
 
 				// d is the way out the summary names, and it has to be a real

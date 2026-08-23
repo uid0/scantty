@@ -1131,7 +1131,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		// against. The bar stops naming them for exactly as long as the gate
 		// holds (sourceHelpText).
 		if !s.cartListedOnScreen() {
-			return s, s.cartHiddenNote("no line shown to move")
+			return s, s.cartHiddenNote(m.String() + " moves nothing")
 		}
 		if s.reviewCursor < len(s.lines)-1 {
 			s.reviewCursor++
@@ -1139,7 +1139,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		return s, nil
 	case "k", "up":
 		if !s.cartListedOnScreen() {
-			return s, s.cartHiddenNote("no line shown to move")
+			return s, s.cartHiddenNote(m.String() + " moves nothing")
 		}
 		if s.reviewCursor > 0 {
 			s.reviewCursor--
@@ -1151,7 +1151,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		// still the "undo the line I just added" it always was — but j/k can
 		// now aim it at any line in the cart.
 		if !s.cartListedOnScreen() {
-			return s, s.cartHiddenNote("no line shown to remove")
+			return s, s.cartHiddenNote("x removes nothing")
 		}
 		s.removeLineAt(s.reviewCursor)
 		return s, nil
@@ -1161,7 +1161,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		// (editReturn) so the operator keeps adding lines where they left off.
 		// ctrl+e (not a bare letter) matches the review-cart chord.
 		if !s.cartListedOnScreen() {
-			return s, s.cartHiddenNote("no line shown to edit")
+			return s, s.cartHiddenNote("ctrl+e edits nothing")
 		}
 		return s, s.openLineEditor(s.reviewCursor, poPhaseSource)
 	}
@@ -2112,16 +2112,35 @@ func (s *PurchaseOrderCreateScreen) sourceAttributionRows() string {
 // gated keys answered into a four-second flash: the operator could not see that
 // a cart existed, let alone what it came to.
 //
-// Measured against the bar that WOULD be drawn with the rows present, which is
-// the longer of the two — the shorter one only exists because they were hidden,
-// so the answer cannot flip back once it is folded instead.
+// It asks TWO questions, and both have to say yes before a row is dropped: does
+// hiding actually free rows, and does the frame overflow with them shown.
+//
+// Asking only the second is what the first version did, and dropping a row that
+// costs nothing to keep is worse than the overflow it was avoiding. A supplier
+// offering exactly ONE optional row spends the same rows either way — the
+// substitute notice is one row in the same blank-plus-row slot the row occupied,
+// and the bar folds to the same height with or without that one clause — so at
+// 80x24 the frame replaced a real committee row with "optional rows need more
+// height", which was FALSE, stopped naming `c`, and made `c` decline. A false
+// sentence plus a disabled working key is the bar-honesty rule inside out.
+//
+// Both layouts are measured whole (chrome plus the frame the bar folds to),
+// because that is what "does hiding help" means: with three rows the hidden
+// layout is three rows shorter and the trade is real, with one it is level and
+// there is nothing to trade. The cart block is the same in both, so it only
+// enters the second question.
 func (s *PurchaseOrderCreateScreen) sourceAttributionShown() bool {
 	if s.terminalHeight <= 0 || s.sourceAttributionRows() == "" {
 		// Unsized screens get no budget at all, here as everywhere else on this
 		// screen, and there is nothing to hide when the block is empty.
 		return true
 	}
-	need := poRenderedRows(s.sourceChrome(true))
+	shown := poRenderedRows(s.sourceChrome(true)) + s.frameRowsWith(s.sourceHelpText(false, true))
+	hidden := poRenderedRows(s.sourceChrome(false)) + s.frameRowsWith(s.sourceHelpText(false, false))
+	if hidden >= shown {
+		return true
+	}
+	need := shown
 	if len(s.lines) > 0 {
 		// Whatever else gives, the cart has to be able to say it is there: its
 		// blank separator, the sentence, and one row of slack. The slack is
@@ -2133,7 +2152,7 @@ func (s *PurchaseOrderCreateScreen) sourceAttributionShown() bool {
 		// else on this screen.
 		need += 2 + poRenderedRows(pickerNote{text: s.cartHiddenSentence("")}.render())
 	}
-	return need <= screenBodyHeight(s.terminalHeight)-s.frameRowsWith(s.sourceHelpText(false, true))
+	return need <= screenBodyHeight(s.terminalHeight)
 }
 
 // sourceAttributionNote is what the frame says INSTEAD of those rows. Dropping
@@ -2265,6 +2284,11 @@ func (s *PurchaseOrderCreateScreen) sourceCartSpace() (left, budget int) {
 //
 // lead is what a declining key just did, so pressing j over a cart that is not
 // on screen moves the body rather than redrawing the sentence already there.
+// Every one of the four NAMES its key, because two of them used to share the
+// wording: j and k both said "no line shown to move", and this frame has no
+// cursor, no highlighted row and no focused textinput, so j-then-k redrew a
+// byte-for-byte identical pane — the reported hang's shape, in the code written
+// against it.
 func (s *PurchaseOrderCreateScreen) cartHiddenSentence(lead string) string {
 	total, noCost := poCartTotal(s.lines)
 	money := fmtMoney(total)
