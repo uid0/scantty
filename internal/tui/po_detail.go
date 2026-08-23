@@ -1204,10 +1204,12 @@ func (s *PurchaseOrderDetailScreen) addBand(l *jdeLines, labelWidth int, heading
 // WRONG expression is not sharing a condition, it is duplicating a different one.
 //
 // This belongs on jdeLines as a method beside WindowFrom, so the window helper
-// and the question "does this scroll?" cannot part company at all. It is local
-// only because jde_form.go is frozen while the concurrent conversion is in
-// review; lifting it is a candidate for the same pass as bead
-// scantty-jde-textinput-width.
+// and the question "does this scroll?" cannot part company at all. It was local
+// because jde_form.go was frozen while the concurrent conversion was in review;
+// that freeze is over (sc-jde-tiw reopened the shared layer to size a typed
+// row), and it is still local only because lifting it would move scroll
+// arithmetic every converted sheet reads, which is a change of its own rather
+// than a rider on a sizing fix. It is the next thing to lift.
 //
 // `items` must be the bar WITH its scroll keys on it. The decision and the bar
 // height are mutually dependent (naming the keys can cost a bar row, which costs
@@ -1265,9 +1267,12 @@ const poErrPrefixW = 7
 //
 // fitCell rather than a bare cut, so the row says it was shortened.
 //
-// jdeStatusLine belongs to the shared layer, which is frozen while the
-// concurrent conversion is in review, so the bound goes on what the screen hands
-// it rather than on the helper.
+// The bound goes on what the screen hands jdeStatusLine rather than on the
+// helper itself. That was originally forced — the shared layer was frozen while
+// the concurrent conversion was in review — and the freeze is over (sc-jde-tiw
+// reopened jde_form.go), but a bound inside jdeStatusLine would shorten the
+// status line on every converted screen, not just the three paths measured
+// above, so moving it is a change to make on its own evidence.
 func poStatusError(msg string, bodyWidth int) string {
 	if msg == "" || bodyWidth <= 0 {
 		return msg
