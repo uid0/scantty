@@ -523,7 +523,7 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 		switch m.String() {
 		case "j", "down", "k", "up":
 			return s, s.supplierVerdictNote("nothing to move through")
-		case "enter", "tab":
+		case "enter":
 			return s, s.supplierVerdictNote("nothing to commit")
 		}
 	}
@@ -538,7 +538,7 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 		if s.supplierCursor > 0 {
 			s.supplierCursor--
 		}
-	case "enter", "tab":
+	case "enter":
 		// Changing supplier under a cart that already names the old supplier's
 		// catalog rows destroys work, so it asks first. Only a CHANGE, and only
 		// when there is something to lose: re-committing the same supplier, or

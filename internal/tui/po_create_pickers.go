@@ -1677,10 +1677,25 @@ func (s *PurchaseOrderCreateScreen) assetsSearchClosedNote() tea.Cmd {
 	// and say nothing at all about what is typed here — concluding "no asset
 	// matches X" would be found-nothing where could-not-tell is the fact, and
 	// it would point at '/' to retype when the supplier may simply have none.
-	if q := strings.TrimSpace(s.assetsSearch.Value()); q != strings.TrimSpace(s.assetsQuery) {
+	if q, ran := strings.TrimSpace(s.assetsSearch.Value()), strings.TrimSpace(s.assetsQuery); q != ran {
+		// This note is only ever drawn with the box SHUT, so enter is the key
+		// that STAGES the highlighted row here, not the one that runs a search.
+		// Naming it "enter runs it" pointed the operator who wanted a search at
+		// the key that puts an unrelated line on their purchase order, and the
+		// bar four rows above said "enter picks" at the same time.
+		typed := strconv.Quote(pickerClip(q, 16)) + " was never run"
+		if q == "" {
+			typed = "the box was emptied without running"
+		}
+		// …and say what the rows on the pane DO answer. Quoting an emptied box
+		// named no query at all while the list was still filtered by the last
+		// one, with the search row gone too.
+		answers := "the rows are this supplier's whole list"
+		if ran != "" {
+			answers = "the rows still answer " + strconv.Quote(pickerClip(ran, 16))
+		}
 		return s.assetsNote.say(
-			"search closed · "+strconv.Quote(pickerClip(q, 16))+" was never run\n"+
-				"/ reopens the search · enter runs it", StatusWarn)
+			"search closed · "+typed+"\n"+answers+" · / reopens the search", StatusWarn)
 	}
 	if len(s.assets) > 0 {
 		return s.assetsNote.say(
@@ -1697,7 +1712,30 @@ func (s *PurchaseOrderCreateScreen) assetsSearchClosedNote() tea.Cmd {
 
 func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 	var b strings.Builder
-	if s.assetsSearch.Value() != "" || s.assetsTyping {
+	// The label is the first thing an operator reads to know WHAT a list is, so
+	// it has to name the query the rows answer — assetsQuery — and never the
+	// live textinput. Reading the box let an uncommitted esc plus a page draw
+	// "search: hovercraft" over an unfiltered page 2 with a green tick and a
+	// count, and the only line that said the query was never run had by then
+	// been overwritten by the reply's own note.
+	draft := strings.TrimSpace(s.assetsSearch.Value())
+	ran := strings.TrimSpace(s.assetsQuery)
+	switch {
+	case s.assetsTyping:
+		// Being edited: the box IS the subject, and the note under it says the
+		// rows have not been asked yet.
+		b.WriteString(StyleMuted.Render("search: ") + s.assetsSearch.View() + "\n\n")
+	case draft != ran:
+		shown := "all of this supplier's assets"
+		if ran != "" {
+			shown = strconv.Quote(pickerClip(ran, 16))
+		}
+		b.WriteString(StyleMuted.Render("showing: "+shown) + "\n")
+		if draft != "" {
+			b.WriteString(StyleMuted.Render("search (not run): "+pickerClip(draft, 16)) + "\n")
+		}
+		b.WriteString("\n")
+	case ran != "":
 		b.WriteString(StyleMuted.Render("search: ") + s.assetsSearch.View() + "\n\n")
 	}
 	if s.assetsLoading {

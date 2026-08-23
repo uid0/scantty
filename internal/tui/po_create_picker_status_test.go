@@ -2104,7 +2104,11 @@ func TestPOSupplierPicker_IsWindowedLikeEveryOtherBlock(t *testing.T) {
 // Every token the three pickers can emit must be here: an unrecognised one is a
 // claim the sweep would skip in silence, which is how a dead key survives.
 var poPickerBarKeys = map[string][]string{
-	"j/k":    {"j", "k"},
+	// The arrows are aliases of j/k, not keys of their own: every arm that
+	// moves a picker cursor is written `case "j", "down":` / `case "k", "up":`,
+	// so the token "j/k move" is the claim that covers all four. Naming the
+	// arrows separately in a 51-column bar would spend cells on a synonym.
+	"j/k":    {"j", "k", "down", "up"},
 	"enter":  {"enter"},
 	"/":      {"/"},
 	"r":      {"r"},
@@ -2120,7 +2124,23 @@ var poPickerBarKeys = map[string][]string{
 
 // poPickerVocabulary is every keystroke the sweep presses. A key outside the
 // bar's claim must leave the screen alone; one inside it must do something.
-var poPickerVocabulary = []string{"j", "k", "enter", "/", "r", "b", "esc", "]", "[", " ", "a"}
+// poPickerVocabulary is what the sweep presses. A key ABSENT from this list is
+// never pressed in either direction, so it is untested BOTH as a claim the bar
+// makes and as an action the screen takes — which is exactly how two defects in
+// this run survived: 'N' on the purchase-order list sat outside poAllBarKeys,
+// and 'tab' committing the order's supplier sat outside this list.
+//
+// So it covers every key any of these phases binds, not just the ones the bars
+// happen to name: the cursor keys and their arrow aliases, the paging pair, the
+// source-chooser letters (which must do NOTHING inside a picker), the line
+// form's tab/shift+tab, and the two ctrl chords the review and switch frames
+// use. Adding a key here is cheap; leaving one out is invisible.
+var poPickerVocabulary = []string{
+	"j", "k", "down", "up", "enter", "esc", "tab", "shift+tab",
+	"/", "r", "b", "]", "[", " ",
+	"a", "i", "f", "g", "w", "c", "d", "x",
+	"ctrl+e", "ctrl+x",
+}
 
 func poPickerNamedKeys(t *testing.T, bar string) map[string]bool {
 	t.Helper()
@@ -2308,6 +2328,16 @@ func poPickerKeyMsg(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":
 		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "ctrl+e":
+		return tea.KeyMsg{Type: tea.KeyCtrlE}
 	case "ctrl+x":
 		return tea.KeyMsg{Type: tea.KeyCtrlX}
 	}
@@ -3134,6 +3164,10 @@ func TestPOAssetPicker_EscOutOfAnUncommittedSearchDoesNotReportAResult(t *testin
 	}
 	poRejectPaneLine(t, screen, "no asset matches")
 	poWantPaneLine(t, screen, "was never run")
+	// The box is SHUT here, so enter stages rather than searching. A note that
+	// names it as the way to run the search points the operator at the key that
+	// puts an unrelated row on the order.
+	poRejectPaneLine(t, screen, "enter runs it")
 	poAssertFits(t, "esc out of an uncommitted asset search", screen)
 
 	// And the pager asks for a PAGE, not for the text nobody submitted.
@@ -3246,5 +3280,120 @@ func TestPOSupplierPicker_ListFrameDrawsItsNote(t *testing.T) {
 			t.Errorf("80x%d: the note is not on the pane:\n%s", h, after)
 		}
 		poAssertFits(t, fmt.Sprintf("supplier list with a note at 80x%d", h), s)
+	}
+}
+
+// TestPOAssetPicker_UncommittedEscOverRowsNamesNeitherEnterNorTheWrongList is
+// the dangerous half the assets:0 fixture cannot reach: with rows on the pane,
+// enter STAGES the highlighted asset, so a note reading "enter runs it" sends
+// an operator who asked for a search away with a line from an unrelated row.
+func TestPOAssetPicker_UncommittedEscOverRowsNamesNeitherEnterNorTheWrongList(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if len(screen.assets) != 3 {
+		t.Fatalf("setup: want 3 rows on the pane, got %d", len(screen.assets))
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "hovercraft")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+
+	poRejectPaneLine(t, screen, "enter runs it")
+	poWantPaneLine(t, screen, "was never run")
+	// …and the pane says what the rows on it DO answer.
+	poWantPaneLine(t, screen, "whole list")
+	// The label may not present the unsubmitted draft as the result set.
+	poRejectPaneLine(t, screen, "search: hovercraft")
+	poWantPaneLine(t, screen, "search (not run): hovercraft")
+	poAssertFits(t, "uncommitted esc over rows", screen)
+
+	// Paging replaces the note; the label must still not claim the draft ran.
+	screen.assetsHasNext = true
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	poRejectPaneLine(t, screen, "search: hovercraft")
+	poWantPaneLine(t, screen, "search (not run): hovercraft")
+	for _, req := range fake.seen() {
+		if strings.Contains(req, "search=hovercraft") {
+			t.Errorf("a lookup carried the uncommitted query: %s", req)
+		}
+	}
+	poAssertFits(t, "paged after an uncommitted esc", screen)
+}
+
+// TestPOAssetPicker_EmptyingACommittedSearchSaysWhatTheRowsStillAnswer: commit
+// a query, reopen the box, backspace it empty and escape. Quoting the empty box
+// named no query at all, and the "search:" row vanished with it, so the pane
+// showed a list still filtered by the committed query with nothing saying so.
+func TestPOAssetPicker_EmptyingACommittedSearchSaysWhatTheRowsStillAnswer(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "Lathe")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.assetsQuery != "Lathe" || len(screen.assets) == 0 {
+		t.Fatalf("setup: query %q over %d row(s), want \"Lathe\" over some rows",
+			screen.assetsQuery, len(screen.assets))
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	for i := 0; i < len("Lathe"); i++ {
+		next, _ := r.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		r = next.(Root)
+	}
+	if screen.assetsSearch.Value() != "" {
+		t.Fatalf("setup: the box still holds %q", screen.assetsSearch.Value())
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+
+	poRejectPaneLine(t, screen, `"" was never run`)
+	poWantPaneLine(t, screen, "emptied without running")
+	poWantPaneLine(t, screen, `the rows still answer "Lathe"`)
+	// The label row went with the box; it has to name the query the rows answer.
+	poWantPaneLine(t, screen, `showing: "Lathe"`)
+	poAssertFits(t, "emptied a committed asset search", screen)
+	_ = r
+}
+
+// TestPOSupplierPicker_TabDoesNotCommit: tab used to commit the order's
+// supplier while supplierPickBar named only j/k, enter and esc — an unnamed key
+// taking the most consequential action on the frame. It is dropped rather than
+// named: tab is "next field" in this same screen's line form, and an accidental
+// tab silently choosing the supplier is exactly the class this change removes.
+func TestPOSupplierPicker_TabDoesNotCommit(t *testing.T) {
+	for _, h := range poPaneSizes {
+		fake := &poPickFake{suppliers: 3, catalog: 2, pageSize: 5}
+		r, screen := poPickerAtSize(t, fake, 80, h)
+		// poPickerAt commits the first supplier on entry; go back to the picker.
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+		if screen.phase != poPhaseSupplier {
+			t.Fatalf("80x%d: setup left phase %v, want the supplier picker", h, screen.phase)
+		}
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		want := screen.suppliers[screen.supplierCursor].ID
+		if want == screen.supplierID {
+			t.Fatalf("80x%d: setup did not move onto a DIFFERENT supplier", h)
+		}
+
+		before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+		next, _ := r.Update(tea.KeyMsg{Type: tea.KeyTab})
+		r = next.(Root)
+
+		if screen.supplierID == want {
+			t.Errorf("80x%d: tab committed supplier #%d, which no bar on the pane names", h, want)
+		}
+		if screen.phase != poPhaseSupplier {
+			t.Errorf("80x%d: tab left the supplier picker (phase %v)", h, screen.phase)
+		}
+		if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after != before {
+			t.Errorf("80x%d: tab changed the pane:\n%s", h, after)
+		}
+
+		// enter, which the bar DOES name, still commits.
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if screen.supplierID != want {
+			t.Errorf("80x%d: enter did not commit supplier #%d (supplierID %d)", h, want, screen.supplierID)
+		}
 	}
 }

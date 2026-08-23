@@ -83,7 +83,11 @@ note, and is the authority):
   the pilot and `po_edit_jde_test.go` is where the layout and key scheme are
   pinned. Extend that layer — do not hand-roll a second style beside it.
 - **A key the bar does not name must do nothing**, and a key it names must do
-  something. Tests assert both. Two sweeps hold the rule and they cover
+  something. Tests assert both — and a key absent from a sweep's VOCABULARY is
+  pressed in neither direction, so it is untested rather than passing. That is
+  how `N` on the purchase-order list survived `poAllBarKeys`, and how `tab`
+  silently committing the New PO screen's supplier survived `poPickerVocabulary`
+  one round after that sweep was written to replace the first. Two sweeps hold the rule and they cover
   different halves of the app: `po_view_jde_test.go`'s
   `TestPOView_BarNamesExactlyTheKeysThatWork` walks the columnar screens, whose
   bar is a `[]actionBarItem`; `list_bar_honesty_test.go` walks every
@@ -319,8 +323,14 @@ touching any screen an operator drives:
   report `no asset matches "hovercraft"` against a supplier that simply has none
   — found-nothing where could-not-tell is the fact — and let `]` page with a
   query nobody submitted. `assetsQuery` records what the last load actually
-  CARRIED; every asset note and the pager read it, and a box holding something
-  else says so instead of concluding.
+  CARRIED, and every surface that describes the rows reads it: the notes, the
+  pager, AND the `search:` LABEL above the list — that label is what an operator
+  reads first to know what a list IS, and leaving it on the live textinput for
+  one round drew `search: hovercraft` over an unfiltered page with a green tick.
+  A box holding something else says so instead of concluding (`showing: …` plus
+  `search (not run): …`), and the wording is for the state it is DRAWN in: that
+  note only ever appears with the box SHUT, where enter stages the highlighted
+  row, so it names `/ reopens the search` and never "enter runs it".
 
 ## Gotchas
 
