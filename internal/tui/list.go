@@ -167,15 +167,6 @@ type ListScreen struct {
 	searchPending bool
 }
 
-// computeWindowSize returns how many list ROWS the window starting at the
-// CURRENT windowStart can show. It is rowsFittingFrom under another name, kept
-// because every sizing site already calls it; the packing lives there because
-// scrollIntoView has to ask the same question about a start it is still
-// choosing.
-func (s *ListScreen) computeWindowSize() int {
-	return s.rowsFittingFrom(s.windowStart)
-}
-
 // listBodyLines is how many LINES of list body the pane has left after the
 // chrome around it.
 //
@@ -429,7 +420,6 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
-		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
 	case listLoadedMsg:
@@ -441,10 +431,9 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loadErr = ""
 		}
 		s.applySort()
-		// Re-compute now that rows are known: computeWindowSize walks
-		// the actual subtitle population, so the first sizing pass
-		// from WindowSizeMsg used a 0-row fallback.
-		s.windowSize = s.computeWindowSize()
+		// scrollIntoView re-derives the window now that rows are known:
+		// rowsFittingFrom walks the actual subtitle population, and the sizing
+		// pass from WindowSizeMsg had only the 0-row fallback to go on.
 		s.scrollIntoView()
 		return s, nil
 	case listSearchedMsg:
@@ -461,7 +450,6 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.cursor = 0
 		s.windowStart = 0
 		s.applySort()
-		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
 	case tea.KeyMsg:
@@ -479,13 +467,13 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor--
 				s.scrollIntoView()
 			}
-		case "ctrl+d", "pgdown":
+		case "pgdown":
 			s.cursor += s.windowSize
 			if s.cursor >= len(s.rows) {
 				s.cursor = len(s.rows) - 1
 			}
 			s.scrollIntoView()
-		case "ctrl+u", "pgup":
+		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
 				s.cursor = 0
@@ -562,7 +550,6 @@ func (s *ListScreen) enterSearch() (Screen, tea.Cmd) {
 	in.CursorEnd()
 	in.Focus()
 	s.searchInput = in
-	s.windowSize = s.computeWindowSize()
 	s.scrollIntoView()
 	return s, textinput.Blink
 }
@@ -576,7 +563,6 @@ func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case tea.KeyEsc:
 		s.searching = false
 		s.searchInput.Blur()
-		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		if s.searchQuery != "" {
 			// Restore the full list the plain loader produces.
@@ -586,13 +572,13 @@ func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
 			return s, s.Init()
 		}
 		return s, nil
-	case tea.KeyUp, tea.KeyCtrlP:
+	case tea.KeyUp:
 		if s.cursor > 0 {
 			s.cursor--
 			s.scrollIntoView()
 		}
 		return s, nil
-	case tea.KeyDown, tea.KeyCtrlN:
+	case tea.KeyDown:
 		if s.cursor < len(s.rows)-1 {
 			s.cursor++
 			s.scrollIntoView()
@@ -773,7 +759,7 @@ func (s *ListScreen) bodyView() string {
 		return b.String()
 	}
 	b.WriteString("\n")
-	// FOLDED, not truncated — and computeWindowSize reserves footerRows() for
+	// FOLDED, not truncated — and listBodyLines reserves footerRows() for
 	// what the fold produces. Folding without moving that budget is how the
 	// first attempt at this traded a horizontal cut for a vertical one and
 	// dropped the same claim off the BOTTOM of the pane instead of the right
@@ -792,7 +778,7 @@ func (s *ListScreen) bodyView() string {
 }
 
 // listSearchBarHint is the search overlay's action bar. A named constant so the
-// renderer and computeWindowSize's row reservation read the same string — a bar
+// renderer and listBodyLines's row reservation read the same string — a bar
 // whose rows are budgeted from a different literal is a bar that gets cut.
 const listSearchBarHint = "↑/↓ move · enter open · esc cancel"
 
@@ -814,7 +800,7 @@ func (s *ListScreen) footerRows() int {
 // create form. Keep them paired: an arm added here without its guard in Update
 // is the exact defect this shape exists to prevent.
 func (s *ListScreen) footerHint() string {
-	hint := "j/k move · pgup/pgdn page · g/G top/bottom · s sort"
+	hint := "j/k ↑↓ move · pgup/pgdn page · g/G home/end top/bottom · s sort"
 	if s.hasFilters() {
 		hint += " · f filter"
 	}

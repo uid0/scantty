@@ -43,14 +43,24 @@ import (
 // state across four lists, not one. listShortcuts (list.go) now makes the claim
 // and the handler one record, and this file walks that record.
 
-// listBarKeyNames maps a footer token to the keystrokes it claims. The
-// multi-key tokens are the arrow ALIASES — a bar that says "j/k move" is also
-// promising the arrow keys, and a sweep that did not know that would report
-// every list as binding an unnamed `down`.
+// listBarKeyNames maps a footer token to the keystrokes it claims, and every
+// entry is a LITERAL transcription of the token: it names the keys it spells
+// and no synonyms.
+//
+// It used to credit "j/k" with the arrows, "pgup/pgdn" with ctrl+u/ctrl+d and
+// "g/G" with home/end, on the reasoning that a synonym costs cells in a
+// 51-column footer. That is the sweep handing the bar a claim the bar never
+// made — the very thing it reports — and it hides the next key bound behind
+// one of those arms. The footer names the arrows and home/end itself now
+// ("j/k ↑↓ move", "g/G home/end top/bottom"), and the two paging chords went
+// the way the supplier picker's `tab` alias did: unbound, because a chord in a
+// bar this narrow costs more than it is worth.
 var listBarKeyNames = map[string][]string{
-	"j/k":       {"j", "k", "down", "up"},
-	"pgup/pgdn": {"pgup", "pgdown", "ctrl+u", "ctrl+d"},
-	"g/G":       {"g", "G", "home", "end"},
+	"j/k":       {"j", "k"},
+	"↑↓":        {"up", "down"},
+	"pgup/pgdn": {"pgup", "pgdown"},
+	"g/G":       {"g", "G"},
+	"home/end":  {"home", "end"},
 	"s":         {"s"},
 	"f":         {"f"},
 	"r":         {"r"},
@@ -111,6 +121,14 @@ func listNamedKeys(t *testing.T, hint string) map[string]bool {
 		}
 		for _, k := range keys {
 			named[k] = true
+		}
+		// A segment can name a second key beside its head ("j/k ↑↓ move"), and
+		// only a token that SPELLS its keys may be read that way — poBarAliasKeys
+		// is the same rule on the other half of the app.
+		for _, f := range token[1:] {
+			for _, k := range poBarAliasKeys[f] {
+				named[k] = true
+			}
 		}
 	}
 	return named
@@ -671,9 +689,11 @@ func TestList_SearchOverlayBarNamesExactlyTheKeysThatWork(t *testing.T) {
 	// updateSearch that this bar does not name would be `N` all over again, on
 	// the one list state the browse footer has nothing to say about.
 	overlayNamed := map[string]bool{}
-	for _, k := range []string{"up", "down", "ctrl+p", "ctrl+n", "enter", "esc"} {
-		// ↑/↓ names the emacs pair the same way it names the arrows: updateSearch
-		// writes `case tea.KeyUp, tea.KeyCtrlP:` as one arm.
+	// Exactly what listSearchBarHint spells. It used to carry ctrl+p/ctrl+n too,
+	// on the reasoning that "↑/↓" named the emacs pair as readily as it named
+	// the arrows — a synonym this bar never says, credited by the check rather
+	// than by the frame. updateSearch binds the arrows alone now.
+	for _, k := range []string{"up", "down", "enter", "esc"} {
 		overlayNamed[k] = true
 	}
 	for _, k := range listKeySpace() {

@@ -1934,12 +1934,12 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 			return s, s.pendingDecline("enter is already in")
 		}
 		return s, s.finalize()
-	case "up", "ctrl+p":
+	case "up":
 		if s.reviewCursor > 0 {
 			s.reviewCursor--
 		}
 		return s, nil
-	case "down", "ctrl+n":
+	case "down":
 		if s.reviewCursor < len(s.lines)-1 {
 			s.reviewCursor++
 		}
@@ -2229,11 +2229,11 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 		// esc is (both return to the source chooser) and no bar named it, which
 		// is the "a key the bar does not name must do nothing" half of the rule
 		// the derived phase sweep now presses for.
-		return "Purchase / pricing agreement · j/k move · enter commits · b back · esc keeps the current one · row 1 is none"
+		return "Purchase / pricing agreement · j/k ↑↓ move · enter commits · b back · esc keeps the current one · row 1 is none"
 	case poPhaseWorkOrder:
-		return "Work order for this purchase · j/k move · enter commits · b back · esc keeps the current one · row 1 is none"
+		return "Work order for this purchase · j/k ↑↓ move · enter commits · b back · esc keeps the current one · row 1 is none"
 	case poPhaseCommittee:
-		return "Committee this purchase is on behalf of · j/k move · enter commits · b back · esc keeps the current one · row 1 is none"
+		return "Committee this purchase is on behalf of · j/k ↑↓ move · enter commits · b back · esc keeps the current one · row 1 is none"
 	case poPhaseSource:
 		return s.sourceHelpText(s.cartListedOnScreen(), s.sourceAttributionShown())
 	case poPhaseReorderPick:
@@ -2251,14 +2251,14 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 		if s.editIndex >= 0 {
 			// Editing an existing cart line (opened with ctrl+e from review).
 			if s.pickedItemSup != nil && s.pickedQPP > 1 {
-				return "Editing line · tab/shift+tab cycle fields · ctrl+t unit/case cost basis · enter saves the changes · esc cancels the edit"
+				return "Editing line · tab/shift+tab ↑↓ cycle fields · ctrl+t unit/case cost basis · enter saves the changes · esc cancels the edit"
 			}
-			return "Editing line · tab/shift+tab cycle fields · enter saves the changes · esc cancels the edit"
+			return "Editing line · tab/shift+tab ↑↓ cycle fields · enter saves the changes · esc cancels the edit"
 		}
 		if s.pickedItemSup != nil && s.pickedQPP > 1 {
-			return "Line entry · tab/shift+tab cycle fields · ctrl+t unit/case cost basis · enter adds to the cart · esc picks a different source"
+			return "Line entry · tab/shift+tab ↑↓ cycle fields · ctrl+t unit/case cost basis · enter adds to the cart · esc picks a different source"
 		}
-		return "Line entry · tab/shift+tab cycle fields · enter adds to the cart · esc picks a different source"
+		return "Line entry · tab/shift+tab ↑↓ cycle fields · enter adds to the cart · esc picks a different source"
 	case poPhaseReview:
 		if s.pending {
 			// The POST is out, so the cart and the notes are frozen and every
@@ -2747,9 +2747,9 @@ func (s *PurchaseOrderCreateScreen) sourceChrome(attribution, title bool) string
 // (updateSourcePhase), so neither surface names them for exactly that long.
 func (s *PurchaseOrderCreateScreen) sourceCartKeyClaim() string {
 	if s.pending {
-		return "j/k highlight"
+		return "j/k ↑↓ highlight"
 	}
-	return "j/k highlight · ctrl+e edit · x remove"
+	return "j/k ↑↓ highlight · ctrl+e edit · x remove"
 }
 
 // sourceCartKeys is the hint naming the keys that act on a cart ROW. It is
@@ -3077,16 +3077,41 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight, rowBudget int) string 
 		if i == highlight {
 			caret = "  ▸ "
 		}
-		row := fmt.Sprintf("%s%d) %s  ×%d", caret, i+1, l.label, l.item.Quantity)
-		if l.item.UnitCost != nil {
-			row += fmt.Sprintf(" @ $%s", strconv.FormatFloat(*l.item.UnitCost, 'f', -1, 64))
-		}
-		if l.item.ExpectedShipmentDate != "" {
-			row += "  exp " + l.item.ExpectedShipmentDate
-		}
+		// The LABEL is the OMS-supplied part of this row and the only part that
+		// may be shortened: the quantity, the price and the type badge are the
+		// facts the operator is confirming before submit, and clampToBox takes
+		// the row's TAIL, so an ordinary catalog name ("1/4-20 x 1 Hex Cap
+		// Screw, Zinc" is 30 cells against a 51-column pane) used to push all
+		// three off the edge. Bounded the way every other OMS-supplied value on
+		// these screens is — pickerClip to what the fixed parts leave, one row,
+		// with the ellipsis that says a cut happened (renderAssocValue,
+		// renderSupplierHeader), rather than a fourth hand-rolled clip.
+		prefix := fmt.Sprintf("%s%d) ", caret, i+1)
 		// Target type as a trailing badge: plain text inside the row so the
 		// whole-row highlight style still applies cleanly.
-		row += "  [" + poLineTypeLabel(poCartLineType(l)) + "]"
+		suffix := fmt.Sprintf("  ×%d", l.item.Quantity)
+		if l.item.UnitCost != nil {
+			suffix += fmt.Sprintf(" @ $%s", strconv.FormatFloat(*l.item.UnitCost, 'f', -1, 64))
+		}
+		if l.item.ExpectedShipmentDate != "" {
+			suffix += "  exp " + l.item.ExpectedShipmentDate
+		}
+		suffix += "  [" + poLineTypeLabel(poCartLineType(l)) + "]"
+		room := pickerPaneWidth - lipgloss.Width(prefix) - lipgloss.Width(suffix)
+		if i == highlight {
+			// The highlight style PADS the row it wraps, so the line the cursor
+			// is on is wider than the same line unhighlighted — and that row is
+			// the one whose facts matter most. Asked of the style rather than
+			// counted, so a theme change cannot make this two cells wrong.
+			room -= StyleSidebarItemActive.GetHorizontalPadding()
+		}
+		if room < poHeaderValueFloor {
+			// A line carrying every optional part can leave less than a
+			// recognisable name; six cells of it beats none, and what the pane
+			// then takes is the badge, which the line's source already says.
+			room = poHeaderValueFloor
+		}
+		row := prefix + pickerClip(l.label, room) + suffix
 		if i == highlight {
 			row = StyleSidebarItemActive.Render(row)
 		}

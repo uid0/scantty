@@ -114,14 +114,20 @@ func poBarNamedKeys(t *testing.T, bar string) map[string]bool {
 			named[k] = true
 		}
 	}
+	// Every token maps to the keys it SPELLS and to nothing else. A token
+	// credited with a synonym it does not name — "j/k" with the arrows, "↑↓"
+	// with ctrl+p/ctrl+n — is this sweep granting a claim the bar never made,
+	// which is the defect it exists to report; the bars name their arrows now
+	// and the emacs chords are unbound.
 	buried := []struct {
 		token string
 		keys  []string
 	}{
-		{"j/k", []string{"j", "k", "down", "up"}},
-		{"tab/shift+tab", []string{"tab", "shift+tab", "down", "up"}},
-		{"tab/shift-tab", []string{"tab", "shift+tab", "down", "up"}},
-		{"↑↓", []string{"up", "down", "ctrl+p", "ctrl+n"}},
+		{"j/k", []string{"j", "k"}},
+		{"tab/shift+tab", []string{"tab", "shift+tab"}},
+		{"tab/shift-tab", []string{"tab", "shift+tab"}},
+		{"↑↓", []string{"up", "down"}},
+		{"home/end", []string{"home", "end"}},
 		{"shift-tab", []string{"shift+tab"}},
 		{"shift+tab", []string{"shift+tab"}},
 		{"tab", []string{"tab"}},
@@ -138,7 +144,9 @@ func poBarNamedKeys(t *testing.T, bar string) map[string]bool {
 		}
 		if keys, ok := poPickerBarKeys[fields[0]]; ok {
 			add(keys)
-			continue
+			// NOT a continue: a head token that is a key does not stop the
+			// segment naming a second one beside it ("j/k ↑↓ move"), and
+			// returning here is what let the arrows ride on j/k unnamed.
 		}
 		lower := strings.ToLower(seg)
 		for _, b := range buried {
@@ -917,9 +925,10 @@ func TestPOSubmit_TheFrozenChooserDropsTheCartChordsFromBothSurfaces(t *testing.
 			// The highlight still moves, so both surfaces keep naming it —
 			// where there are rows to move through.
 			if listed {
-				if n := poPaneCount(t, screen, h, "j/k highlight"); n < 2 {
-					t.Errorf("the frozen chooser states \"j/k highlight\" on %d line(s), want the bar and the hint:\n%s",
-						n, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				claim := screen.sourceCartKeyClaim()
+				if n := poPaneCount(t, screen, h, claim); n < 2 {
+					t.Errorf("the frozen chooser states %q on %d line(s), want the bar and the hint:\n%s",
+						claim, n, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
 				}
 			}
 			poAssertFits(t, "frozen source chooser with a listed cart", screen)

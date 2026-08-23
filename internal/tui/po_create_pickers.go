@@ -580,7 +580,7 @@ func (s *PurchaseOrderCreateScreen) itemPickBar() string {
 	case len(s.itemSuppliers) == 0:
 		return "r reloads · " + pickerWayOut
 	}
-	return "j/k move · enter picks · / searches · r reloads · " + pickerWayOut
+	return "j/k ↑↓ move · enter picks · / searches · r reloads · " + pickerWayOut
 }
 
 // assetPickBar names the keys that act in the asset picker's current state.
@@ -603,7 +603,7 @@ func (s *PurchaseOrderCreateScreen) assetPickBar() string {
 	case len(s.assets) == 0:
 		return "/ searches · " + pickerWayOut
 	}
-	bar := "j/k move · enter picks · / searches"
+	bar := "j/k ↑↓ move · enter picks · / searches"
 	if s.assetsHasNext {
 		bar += " · ] next page"
 	}
@@ -618,7 +618,7 @@ func (s *PurchaseOrderCreateScreen) reorderPickBar() string {
 	if !s.reorderListOnScreen() || len(s.reorderItems) == 0 {
 		return pickerWayOut
 	}
-	return "j/k move · space marks · a adds all · enter adds · " + pickerWayOut
+	return "j/k ↑↓ move · space marks · a adds all · enter adds · " + pickerWayOut
 }
 
 // supplierPickBar names the keys that act in the supplier picker's current
@@ -639,15 +639,15 @@ func (s *PurchaseOrderCreateScreen) supplierPickBar() string {
 		// enter commits nothing and only goes back to the source chooser —
 		// navigation, not a change, and the one way back into the order from
 		// this frame while the POST is out. Named for exactly that row.
-		return "j/k move · enter goes back · esc cancels the order"
+		return "j/k ↑↓ move · enter goes back · esc cancels the order"
 	case s.pending:
 		// A DIFFERENT supplier: committing it would re-target the request, so
 		// it is frozen with the rest of the payload (updateSupplierPhase) and
 		// the bar drops it. j/k still move a highlight — onto the committed row
 		// among others — and esc still leaves.
-		return "j/k move · esc cancels the order"
+		return "j/k ↑↓ move · esc cancels the order"
 	}
-	return "j/k move · enter commits · esc cancels the order"
+	return "j/k ↑↓ move · enter commits · esc cancels the order"
 }
 
 // supplierListOnScreen reports whether renderSupplierPhase is drawing rows.

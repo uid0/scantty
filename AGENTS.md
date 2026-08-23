@@ -127,6 +127,18 @@ note, and is the authority):
   is reverted. Both were verified by reverting, not asserted: the phase sweep
   builds only a `PurchaseOrderCreateScreen`, so it never could have caught `N`,
   and saying otherwise was itself a false invariant.
+  A bar-token TABLE is the other half of a key space, and it must transcribe
+  rather than interpret: `poPickerBarKeys`, the phase sweep's `buried` list and
+  `listBarKeyNames` map each token to the keys it SPELLS and to no synonyms.
+  Credit for a synonym is the sweep making the claim on the bar's behalf — the
+  defect it exists to report, sitting inside the check. `↑↓` used to be read as
+  naming `ctrl+p`/`ctrl+n`, `j/k` as naming the arrows, `pgup/pgdn` as naming
+  `ctrl+u`/`ctrl+d` and `g/G` as naming `home`/`end`, so four bound-but-unnamed
+  keys passed and any arm added behind them would have passed too. The bars now
+  say what they bind (`j/k ↑↓ move`, `g/G home/end top/bottom`, and
+  `poBarAliasKeys` for the second token in a segment), and the four emacs chords
+  went the way the supplier picker's `tab` alias went: unbound, because a chord
+  costs cells a 51-column bar does not have and names nothing an operator reads.
   `listKeySpace` replaced the last curated roster (`listAllBarKeys`), which was
   safe in one direction only — `listNamedKeys` still fails on a footer token it
   does not know, so a NAMED key could not be skipped, but a key bound in
@@ -207,7 +219,11 @@ touching any screen an operator drives:
   `✗ oms: http 502: <!DOCTYPE html><htm` and nothing else, on the one step where
   losing the reason costs the whole order.
   FIELD rows are the shape that does not FOLD, and they are bounded rather than
-  exempt: the source chooser's `g` / `w` / `c` rows and the `Supplier: … ·
+  exempt — the CART row included: `renderCart` clips the OMS-supplied `label`
+  to what the index, the quantity, the price and the type badge leave (and to
+  two cells less on the highlighted row, which the highlight style pads), so
+  what a long catalog name costs is its own tail and never the facts the review
+  phase exists to confirm. The source chooser's `g` / `w` / `c` rows and the `Supplier: … ·
   agreement: …` header are `label: value` rows carrying OMS-supplied names, so
   `renderAssocValue` and `renderSupplierHeader` clip each value to what the
   labels leave (`pickerClip`, ellipsis included) and keep them one row each —

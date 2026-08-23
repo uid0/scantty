@@ -51,6 +51,13 @@ type poPickFake struct {
 	// third picker can be driven the same way the other two are.
 	reorder int
 
+	// itemName overrides the catalog's generated name. Every cart fixture used
+	// the generated "Widget 1", eight cells, so no test ever staged a line
+	// whose OMS-supplied name could push the quantity, the price and the type
+	// badge off the 51-column pane — which is the row the operator reads to
+	// confirm the order.
+	itemName string
+
 	// The three OPTIONAL header lookups. Every source-chooser test ran with
 	// these at zero — the fake fell through to an empty envelope — so the g / w
 	// / c rows were never on the frame, and the four rows they cost were what
@@ -108,6 +115,15 @@ func (f *poPickFake) hits(substr string) int {
 	return n
 }
 
+// catalogItemName is the name the catalog reports for row n: the generated one
+// unless a test wants a realistic MRO name, which is long enough to matter.
+func (f *poPickFake) catalogItemName(n int) string {
+	if f.itemName != "" {
+		return f.itemName
+	}
+	return fmt.Sprintf("Widget %d", n)
+}
+
 func (f *poPickFake) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -162,7 +178,7 @@ func (f *poPickFake) handler() http.HandlerFunc {
 			for i := (page - 1) * size; i < page*size && i < f.catalog; i++ {
 				rows = append(rows, map[string]any{
 					"id": i + 1, "item": fmt.Sprintf("it-%d", i+1),
-					"item_name":    fmt.Sprintf("Widget %d", i+1),
+					"item_name":    f.catalogItemName(i + 1),
 					"supplier":     1,
 					"supplier_sku": fmt.Sprintf("SKU-%03d", i+1),
 					"unit_cost":    "3.50", "quantity_per_package": 1,
@@ -2202,11 +2218,16 @@ func TestPOSupplierPicker_IsWindowedLikeEveryOtherBlock(t *testing.T) {
 // Every token the three pickers can emit must be here: an unrecognised one is a
 // claim the sweep would skip in silence, which is how a dead key survives.
 var poPickerBarKeys = map[string][]string{
-	// The arrows are aliases of j/k, not keys of their own: every arm that
-	// moves a picker cursor is written `case "j", "down":` / `case "k", "up":`,
-	// so the token "j/k move" is the claim that covers all four. Naming the
-	// arrows separately in a 51-column bar would spend cells on a synonym.
-	"j/k":    {"j", "k", "down", "up"},
+	// Every entry here is a LITERAL transcription: the token names exactly the
+	// keys it maps to and no synonyms. It used to credit "j/k" with the arrows,
+	// "tab/shift+tab" with the arrows and "↑↓" with the emacs pair, on the
+	// reasoning that a synonym costs cells — and that is the sweep granting a
+	// bar a claim it never makes, which is the defect this file exists to
+	// report, sitting inside the check and keeping it green. The bars name the
+	// arrows themselves now ("j/k ↑↓ move"), and the two emacs chords the
+	// review cart bound behind "↑↓" are gone the way the supplier picker's
+	// `tab` alias went.
+	"j/k":    {"j", "k"},
 	"enter":  {"enter"},
 	"/":      {"/"},
 	"r":      {"r"},
@@ -2228,16 +2249,10 @@ var poPickerBarKeys = map[string][]string{
 	"c": {"c"},
 	"d": {"d"},
 	"x": {"x"},
-	// The line form's field cycle. The arrows ride with it for the same reason
-	// the arrows ride with "j/k" above: `case "tab", "down":` and
-	// `case "shift+tab", "up":` are one arm each, and spelling the synonym out
-	// would spend cells of a 51-column bar saying the same thing twice.
-	"tab/shift+tab": {"tab", "shift+tab", "down", "up"},
-	// The review cart writes `case "up", "ctrl+p":` and `case "down", "ctrl+n":`
-	// — one arm each — so the emacs pair are synonyms of the arrows exactly as
-	// the arrows are synonyms of j/k above, and the token that names the arrows
-	// is the claim that covers them.
-	"↑↓": {"up", "down", "ctrl+p", "ctrl+n"},
+	// The line form's field cycle, and the arrow token every bar that binds
+	// `case "j", "down":` now carries beside it.
+	"tab/shift+tab": {"tab", "shift+tab"},
+	"↑↓":            {"up", "down"},
 	// Segment heads that name the FRAME rather than a key. They are listed
 	// rather than ignored so an unrecognised token still fails loudly: a token
 	// the parser skips in silence is a claim the sweep cannot judge.
@@ -2295,8 +2310,24 @@ func poPickerNamedKeys(t *testing.T, bar string) map[string]bool {
 		for _, k := range keys {
 			named[k] = true
 		}
+		for _, f := range fields[1:] {
+			for _, k := range poBarAliasKeys[f] {
+				named[k] = true
+			}
+		}
 	}
 	return named
+}
+
+// poBarAliasKeys is the tokens a bar carries AFTER its head to name a second
+// key that acts exactly as the head's does — "j/k ↑↓ move". Only tokens that
+// SPELL the keys they map to belong here: the whole point of the entries is
+// that the bar says the key, so the sweep may credit it. A token standing in
+// for a key it does not name is what these maps used to do, and it let two
+// bound-but-unnamed chords pass.
+var poBarAliasKeys = map[string][]string{
+	"↑↓":       {"up", "down"},
+	"home/end": {"home", "end"},
 }
 
 // poPickerState is everything a key can CHANGE. Deliberately excludes the note
@@ -2800,7 +2831,11 @@ func TestPOSupplierPicker_KeysDeclineWhileTheListIsNotDrawn(t *testing.T) {
 			}
 
 			// The bar promises only esc here, and j/k/enter say why they cannot.
-			poRejectPaneLine(t, screen, "j/k move")
+			// The claim is spelled as the bar spells it — "j/k move" stopped
+			// being the wording when the bar started naming the arrows it
+			// binds, and a reject assertion for a string the pane can no longer
+			// print passes without looking at anything.
+			poRejectPaneLine(t, screen, "j/k ↑↓ move")
 			poRejectPaneLine(t, screen, "enter commits")
 			poWantPaneLine(t, screen, "esc cancels the order")
 			poAssertFits(t, "suppliers, load in flight", screen)
@@ -2824,7 +2859,7 @@ func TestPOSupplierPicker_KeysDeclineWhileTheListIsNotDrawn(t *testing.T) {
 
 			// Once the list lands, the bar names them and they work.
 			r = pump(t, r, screen.Init(), 0)
-			poWantPaneLine(t, screen, "j/k move")
+			poWantPaneLine(t, screen, "j/k ↑↓ move")
 			poWantPaneLine(t, screen, "enter commits")
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 			want := screen.suppliers[screen.supplierCursor].ID
@@ -4220,7 +4255,10 @@ func TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline(t *testing.T) 
 				poWantPaneLine(t, screen, money)
 				// A key the bar names must act, so a bar that still named these
 				// would be advertising the four keys the collapse made inert.
-				for _, gone := range []string{"j/k highlight", "ctrl+e edit", "x remove"} {
+				// Read off the claim itself rather than restated: a hand-copied
+				// wording that the code has since changed rejects a string the
+				// pane cannot print, which passes over the very keys it names.
+				for _, gone := range strings.Split(screen.sourceCartKeyClaim(), " · ") {
 					poRejectPaneLine(t, screen, gone)
 				}
 				// And whatever the frame dropped to make room says it is gone,
@@ -4729,5 +4767,51 @@ func TestPOTypedRows_EveryKeystrokeMovesTheRow(t *testing.T) {
 				poAssertFits(t, fmt.Sprintf("%s after %d runes", tc.name, tc.runes), screen)
 			})
 		}
+	}
+}
+
+// TestPOReview_ALongCatalogNameKeepsTheFactsOnTheRow is the cart row held to
+// the rule every other OMS-supplied value on these screens already obeys.
+//
+// "1/4-20 x 1 Hex Cap Screw, Zinc" is an ordinary MRO name and 30 cells; the
+// row's fixed parts — the index, the quantity, the unit price and the type
+// badge — are 36 more, and clampToBox takes the TAIL, so the three facts the
+// operator is confirming used to go off the right edge of the review pane
+// while the name they belong to stayed. The name is what may be shortened, and
+// the ellipsis is what says it was.
+func TestPOReview_ALongCatalogNameKeepsTheFactsOnTheRow(t *testing.T) {
+	const name = "1/4-20 x 1 Hex Cap Screw, Zinc"
+
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			r, screen := poPickerAtSize(t, &poPickFake{catalog: 2, suppliers: 1, itemName: name}, 80, h)
+			for _, k := range []string{"i", "enter", "enter", "d"} {
+				r = key(t, r, poPhaseKeyMsg(k))
+			}
+			if screen.phase != poPhaseReview || len(screen.lines) != 1 {
+				t.Fatalf("setup landed on phase %v with %d line(s)", screen.phase, len(screen.lines))
+			}
+
+			row := poTypedRow(t, screen, h, "1) ")
+			if row == "<not on the pane>" {
+				t.Fatalf("the cart row is not on the pane at all:\n%s",
+					strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+			}
+			for _, fact := range []string{"×1", "@ $3.5", "[Inventory item]"} {
+				if !strings.Contains(row, fact) {
+					t.Errorf("the cart row lost %q to the 51-column cut — the facts are what the\n"+
+						"operator confirms and the name is what may be shortened:\n\t%q", fact, row)
+				}
+			}
+			if !strings.Contains(row, "…") {
+				t.Errorf("the cart row shows no ellipsis, so a shortened name reads as the whole "+
+					"name (%d-cell label %q):\n\t%q", len([]rune(name)), name, row)
+			}
+			if strings.Contains(row, name) {
+				t.Errorf("the %d-cell name was drawn whole, so nothing was clipped:\n\t%q",
+					len([]rune(name)), row)
+			}
+			poAssertFits(t, "review cart with a real catalog name", screen)
+		})
 	}
 }
