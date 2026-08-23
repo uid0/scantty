@@ -634,10 +634,17 @@ func (s *PurchaseOrderCreateScreen) supplierPickBar() string {
 		return "esc cancels the order"
 	case len(s.suppliers) == 0:
 		return "esc cancels the order"
+	case s.pending && s.supplierHighlightIsCommitted():
+		// The highlighted row is the supplier the order already carries, so
+		// enter commits nothing and only goes back to the source chooser —
+		// navigation, not a change, and the one way back into the order from
+		// this frame while the POST is out. Named for exactly that row.
+		return "j/k move · enter goes back · esc cancels the order"
 	case s.pending:
-		// A submit is out and the commit is frozen with the rest of the
-		// payload (updateSupplierPhase), so the bar drops it. j/k still move a
-		// highlight and esc still leaves, which are the keys that remain true.
+		// A DIFFERENT supplier: committing it would re-target the request, so
+		// it is frozen with the rest of the payload (updateSupplierPhase) and
+		// the bar drops it. j/k still move a highlight — onto the committed row
+		// among others — and esc still leaves.
 		return "j/k move · esc cancels the order"
 	}
 	return "j/k move · enter commits · esc cancels the order"

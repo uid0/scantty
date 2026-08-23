@@ -395,15 +395,26 @@ touching any screen an operator drives:
   already going in. So while `pending` every arm that would touch the payload
   declines through `pendingLead` and the bar stops naming it, on all THREE
   phases the operator can be on — review, the source chooser (`r`/`i`/`a`/`f`,
-  `x`, `ctrl+e`, `g`/`w`/`c`) and the supplier picker (`enter` commits nothing).
+  `x`, `ctrl+e`, `g`/`w`/`c`) and the supplier picker (`enter` onto a DIFFERENT
+  supplier, which would re-target the request).
   Those two are reachable because `esc` is deliberately NOT gated — a frame with
   no way out while a slow gateway thinks is the worse defect — so freezing only
   the review arms would have left the identical defect one phase over. (Leaving
   the screen with `esc` does not CANCEL the request: the order may still be
   created with nobody watching. That gap is open and known; gating the last way
   out to close it would trade it for a dead end.) What
-  stays live is what only READS: `↑↓` / `j`/`k` move a highlight through a
-  windowed cart, `d` reviews it, `b` and `esc` leave. The notes input is BLURRED
+  stays live is what only READS or MOVES: `↑↓` / `j`/`k` move a highlight
+  through a windowed cart, `d` reviews it, `b` and `esc` leave — and on the
+  supplier picker `enter` on the row the order ALREADY carries, which commits
+  nothing (`commitSupplier` returns early on the same id) and only sets the
+  phase back to the source chooser. The line is what a key would CHANGE, not
+  which frame it sits on: freezing that enter outright cornered the one frame
+  that binds no `b` and no `d` and whose `esc` leaves the SCREEN, so the
+  operator who wandered there mid-flight could only wait or throw the answer
+  away. `supplierHighlightIsCommitted` is the one predicate the arm and
+  `supplierPickBar` both read, and the sweep now walks the rule rather than
+  trusting it: a frozen frame with no key that returns to another frozen frame
+  FAILS `TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork`. The notes input is BLURRED
   by `finalize` and focused again by `poCreatedMsg` when the submit comes back
   failed, so a caret is never left blinking in a field whose contents have
   already gone — and `d`, which moves ONTO the notes frame, leaves it blurred
@@ -415,6 +426,18 @@ touching any screen an operator drives:
   Every frozen phase now names what may act and declines everything else through
   `pendingDecline`, including keys the phase does not bind at all. An arm added
   later is frozen until somebody says otherwise.
+  The frozen chooser SAYS which keys are off rather than merely dimming them:
+  the four line-source rows keep their letters and their places — that block is
+  the map of the screen — and each reads `Reorder queue — off while submitting`
+  (shorter wording, so a marked row still fits 51 columns), while the `g`/`w`/`c`
+  rows drop their key COLUMN and become the value-only lines the review phase
+  already draws. Colour alone could not carry it: lipgloss renders plain with no
+  terminal attached, so a dimmed row is a claim no test can check.
+  The cart-row keys are stated ONCE (`sourceCartKeyClaim`) and read by both
+  surfaces that make the claim — the action bar and the hint above the rows.
+  They were two sentences until the freeze dropped `ctrl+e` and `x` from the bar
+  and left the hint three rows below still naming them, so one pane advertised
+  and refused the same two keys.
   Two derivations hold it: `poPhasesUnreachableWhilePending` classifies EVERY
   phase of the iota as swept-frozen or unreachable-with-a-reason, and the sweep
   fails when a key actually reaches a phase outside the frozen set, so the

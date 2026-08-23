@@ -471,13 +471,28 @@ func TestPOReview_EnterWhileTheSubmitIsOutSaysSo(t *testing.T) {
 // wants it, which is what makes this window assertable at all.
 func poFrozenScreen(t *testing.T, h int, out ...string) (Root, *PurchaseOrderCreateScreen) {
 	t.Helper()
-	fake := &poPickFake{catalog: 4, suppliers: 3,
-		agreements: 1, workOrders: 2, committees: 1}
+	return poFrozenScreenWith(t, &poPickFake{catalog: 4, suppliers: 3,
+		agreements: 1, workOrders: 2, committees: 1}, h, 2, out...)
+}
+
+// poFrozenScreenWith is the same window against a chosen supplier and cart
+// size, because the fixture decides which SURFACE the frozen chooser draws. The
+// standard one offers all three attribution rows, which is what pushes the cart
+// into its collapsed sentence — so the cart-key hint is never rendered and an
+// assertion that it drops the frozen chords passes without the hint existing.
+// A supplier with no agreement, work order or committee leaves the rows listed
+// and the hint on the pane, which is the state that assertion is about.
+func poFrozenScreenWith(t *testing.T, fake *poPickFake, h, lines int, out ...string) (Root, *PurchaseOrderCreateScreen) {
+	t.Helper()
 	r, screen := poPickerAtSize(t, fake, 80, h)
-	for _, k := range []string{"i", "enter", "enter", "i", "j", "enter", "enter", "d"} {
+	stage := []string{"i", "enter", "enter"}
+	if lines > 1 {
+		stage = append(stage, "i", "j", "enter", "enter")
+	}
+	for _, k := range append(stage, "d") {
 		r = key(t, r, poPhaseKeyMsg(k))
 	}
-	if screen.phase != poPhaseReview || len(screen.lines) != 2 {
+	if screen.phase != poPhaseReview || len(screen.lines) != lines {
 		t.Fatalf("setup landed on phase %v with %d line(s)", screen.phase, len(screen.lines))
 	}
 	next, _ := r.Update(poPhaseKeyMsg("enter"))
@@ -582,6 +597,13 @@ func TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork(t *testing.T) {
 				r, screen := build()
 				bar := screen.helpText()
 				named := poBarNamedKeys(t, bar)
+				// Rule C, derived rather than reasoned about per frame: a
+				// frozen frame must keep at least one key that goes BACK into
+				// the order. Freezing the supplier picker's enter took the last
+				// one there — that phase binds no b and no d, and its esc
+				// leaves the screen — so the operator who wandered in mid-flight
+				// could only wait or throw the POST's answer away.
+				wayBack := false
 				poAssertFits(t, st.name+" with a submit in flight", screen)
 				// The payload finalize() copied. Nothing pressed below may move
 				// any of it — that is the freeze, and it is checked on every key
@@ -607,9 +629,12 @@ func TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork(t *testing.T) {
 					// another frozen frame. This is the derivation: a phase
 					// reachable mid-flight that nobody classified fails here
 					// rather than quietly running unfrozen.
-					if screen.phase != st.phase && !frozen[screen.phase] {
-						t.Fatalf("%q reached phase %v while the submit was out, and it is not "+
-							"swept as frozen", k, screen.phase)
+					if screen.phase != st.phase {
+						if !frozen[screen.phase] {
+							t.Fatalf("%q reached phase %v while the submit was out, and it is not "+
+								"swept as frozen", k, screen.phase)
+						}
+						wayBack = true
 					}
 					if !named[k] && acted {
 						t.Errorf("%s with a submit in flight does not name %q, but pressing it acts (bar: %q)",
@@ -636,6 +661,11 @@ func TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork(t *testing.T) {
 						// one the bar was read from.
 						r, screen = build()
 					}
+				}
+				if !wayBack {
+					t.Errorf("no key on the frozen %s returns to another frozen frame — every route "+
+						"out of it abandons the screen and the POST's answer with it (bar: %q)",
+						st.name, bar)
 				}
 			})
 		}
@@ -804,6 +834,187 @@ func TestPOSubmit_AFailedSubmitHandsTheCartBack(t *testing.T) {
 				t.Errorf("ctrl+x left %d line(s) after the failure, want the removal to work again",
 					len(screen.lines))
 			}
+		})
+	}
+}
+
+// poPaneCount is how many CLIPPED lines carry want — the count matters because
+// the source chooser states its cart keys twice, in the action bar and in the
+// hint above the rows, and a claim dropped from one surface but not the other
+// is the defect this pair of tests exists for.
+func poPaneCount(t *testing.T, s *PurchaseOrderCreateScreen, h int, want string) int {
+	t.Helper()
+	n := 0
+	for _, line := range poPaneLinesAt(t, s, h) {
+		if strings.Contains(line, want) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestPOSubmit_TheFrozenChooserDropsTheCartChordsFromBOTHSurfaces.
+//
+// The bar dropped ctrl+e and x when the freeze landed and the body hint three
+// rows below it did not, so one pane advertised and refused the same two keys.
+// The fixture is the other half of that defect: the standard frozen screen
+// offers all three attribution rows, which collapses the cart, so the hint is
+// never drawn and "the pane does not say ctrl+e" passed without a hint to say
+// it. This supplier offers none, the cart's rows are listed, and the count
+// before the submit proves BOTH surfaces are on the pane to begin with.
+func TestPOSubmit_TheFrozenChooserDropsTheCartChordsFromBothSurfaces(t *testing.T) {
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			fake := &poPickFake{catalog: 4, suppliers: 3}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			for _, k := range []string{"i", "enter", "enter"} {
+				r = key(t, r, poPhaseKeyMsg(k))
+			}
+			if screen.phase != poPhaseSource || len(screen.lines) != 1 {
+				t.Fatalf("setup landed on phase %v with %d line(s)", screen.phase, len(screen.lines))
+			}
+			// Is this height one that LISTS the cart? At 80x24 the chooser
+			// keeps the title and collapses the cart by its own sacrifice
+			// order, so the hint is not a surface that pane draws at all and
+			// the chords must be absent from both states rather than dropped
+			// from one. Where the cart IS listed, both surfaces must state the
+			// chords before the submit — otherwise the fixture is not
+			// rendering the thing under test and the absence check below would
+			// pass on nothing.
+			listed := poPaneCount(t, screen, h, "ctrl+e edit") >= 2
+			if !listed {
+				if h != 24 {
+					t.Fatalf("the chooser does not list the cart at 80x%d, so the cart hint is "+
+						"never drawn and this assertion would be vacuous:\n%s",
+						h, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				}
+				poWantPaneLine(t, screen, "not listed here")
+			}
+			if listed {
+				if n := poPaneCount(t, screen, h, "x remove"); n < 2 {
+					t.Fatalf("the listed cart states \"x remove\" on %d line(s), want the bar and the hint:\n%s",
+						n, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				}
+			}
+
+			r = key(t, r, poPhaseKeyMsg("d"))
+			next, _ := r.Update(poPhaseKeyMsg("enter"))
+			r = key(t, next.(Root), poPhaseKeyMsg("esc"))
+			if screen.phase != poPhaseSource || !screen.pending {
+				t.Fatalf("esc landed on phase %v with pending=%v", screen.phase, screen.pending)
+			}
+			if listed {
+				// Still LISTING the cart, so the hint is a surface the frame
+				// draws rather than one the collapse quietly removed.
+				poWantPaneLine(t, screen, "Widget")
+			}
+			for _, chord := range []string{"ctrl+e edit", "x remove"} {
+				if n := poPaneCount(t, screen, h, chord); n != 0 {
+					t.Errorf("the frozen chooser still states %q on %d line(s):\n%s",
+						chord, n, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				}
+			}
+			// The highlight still moves, so both surfaces keep naming it —
+			// where there are rows to move through.
+			if listed {
+				if n := poPaneCount(t, screen, h, "j/k highlight"); n < 2 {
+					t.Errorf("the frozen chooser states \"j/k highlight\" on %d line(s), want the bar and the hint:\n%s",
+						n, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				}
+			}
+			poAssertFits(t, "frozen source chooser with a listed cart", screen)
+		})
+	}
+}
+
+// TestPOSubmit_TheFrozenChooserRowsSayTheyAreOff: the four line sources stay on
+// the pane while the submit is out — they are the map of the screen — but every
+// one of them declines, so each row says so in words. Colour alone cannot carry
+// that: lipgloss renders plain when there is no terminal, which is also to say
+// nothing outside a real TTY could ever check it.
+func TestPOSubmit_TheFrozenChooserRowsSayTheyAreOff(t *testing.T) {
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			fake := &poPickFake{catalog: 4, suppliers: 3,
+				agreements: 1, workOrders: 2, committees: 1}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			for _, k := range []string{"i", "enter", "enter"} {
+				r = key(t, r, poPhaseKeyMsg(k))
+			}
+			poWantPaneLine(t, screen, "Reorder queue (items flagged for reorder)")
+			attribution := poPaneHasLine(t, screen, "Agreement (optional)")
+
+			r = key(t, r, poPhaseKeyMsg("d"))
+			next, _ := r.Update(poPhaseKeyMsg("enter"))
+			r = key(t, next.(Root), poPhaseKeyMsg("esc"))
+			_ = r
+			if screen.phase != poPhaseSource || !screen.pending {
+				t.Fatalf("esc landed on phase %v with pending=%v", screen.phase, screen.pending)
+			}
+			for _, off := range []string{
+				"r  Reorder queue — off while submitting",
+				"i  Inventory items — off while submitting",
+				"a  Assets — off while submitting",
+				"f  Freeform line — off while submitting",
+			} {
+				poWantPaneLine(t, screen, off)
+			}
+			poRejectPaneLine(t, screen, "(items flagged for reorder)")
+			if attribution {
+				// The value stays — it is part of the order — but the key
+				// column goes with the key, the way the review phase already
+				// draws these rows.
+				poWantPaneLine(t, screen, "Agreement")
+				poRejectPaneLine(t, screen, "Agreement (optional)")
+			}
+			poAssertFits(t, "frozen source chooser", screen)
+		})
+	}
+}
+
+// TestPOSubmit_TheFrozenSupplierPickerHasAWayBack is Rule C on the frame the
+// freeze had cornered. This picker binds no `b` and no `d`, and its `esc`
+// leaves the SCREEN — so declining enter outright left the operator who wandered
+// here with the wait or with throwing the outcome away, on exactly the slow
+// gateway the freeze is for. Enter on the row the order already carries commits
+// nothing, so it is navigation and stays live; enter on any OTHER row would
+// re-target the request and stays frozen.
+func TestPOSubmit_TheFrozenSupplierPickerHasAWayBack(t *testing.T) {
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			r, screen := poFrozenScreen(t, h, "esc", "b")
+			if screen.phase != poPhaseSupplier {
+				t.Fatalf("the walk landed on phase %v, want the supplier picker", screen.phase)
+			}
+			supplier, lines := screen.supplierID, len(screen.lines)
+			poWantPaneLine(t, screen, "enter goes back")
+
+			r = key(t, r, poPhaseKeyMsg("enter"))
+			if screen.phase != poPhaseSource {
+				t.Fatalf("enter on the committed supplier landed on phase %v, want the source chooser",
+					screen.phase)
+			}
+			if !screen.pending || screen.supplierID != supplier || len(screen.lines) != lines {
+				t.Fatalf("enter changed the order: pending=%v supplier=%d line(s)=%d",
+					screen.pending, screen.supplierID, len(screen.lines))
+			}
+
+			// A DIFFERENT row is still frozen, and the bar stops offering it.
+			r = key(t, r, poPhaseKeyMsg("b"))
+			r = key(t, r, poPhaseKeyMsg("j"))
+			poRejectPaneLine(t, screen, "enter goes back")
+			before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+			next, _ := r.Update(poPhaseKeyMsg("enter"))
+			_ = next
+			if screen.phase != poPhaseSupplier || screen.supplierID != supplier {
+				t.Fatalf("enter on another supplier moved the order: phase %v supplier %d",
+					screen.phase, screen.supplierID)
+			}
+			if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after == before {
+				t.Errorf("enter on another supplier redrew an identical pane:\n%s", after)
+			}
+			poWantPaneLine(t, screen, "enter commits nothing")
+			poAssertFits(t, "frozen supplier picker", screen)
 		})
 	}
 }

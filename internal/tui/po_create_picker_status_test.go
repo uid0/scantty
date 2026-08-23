@@ -4196,7 +4196,10 @@ func TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline(t *testing.T) 
 					// The roomy pane lists them, so the highlight is on screen
 					// and the keys that act on it are named and do act.
 					poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", screen.reviewCursor+1))
-					poWantPaneLine(t, screen, "x remove it")
+					// The one claim, drawn by the bar and by the hint above the
+					// rows; both read sourceCartKeyClaim, so this is the
+					// wording an operator sees in both places.
+					poWantPaneLine(t, screen, "x remove")
 					before := len(screen.lines)
 					r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 					if len(screen.lines) != before-1 {

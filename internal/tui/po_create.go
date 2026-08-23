@@ -625,13 +625,25 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 	if s.pending {
 		// Same default-deny as the source chooser, one phase further out:
 		// review → esc → b reaches this picker with the POST still in flight,
-		// and committing here would re-target a request that already names the
-		// old supplier and can drop half the cart through the switch confirm.
-		// Moving the highlight and leaving are all that stay true.
+		// and committing a DIFFERENT supplier would re-target a request that
+		// already names the old one and can drop half the cart through the
+		// switch confirm.
+		//
+		// What the freeze may not do is take the way back. This phase binds no
+		// `b` and no `d`, and its `esc` leaves the SCREEN — so freezing enter
+		// outright left the operator who wandered here with nothing but the
+		// wait or throwing the outcome away, on exactly the slow gateway the
+		// freeze exists for. Enter on the row the order ALREADY carries commits
+		// nothing (commitSupplier returns early on the same id) and only sets
+		// the phase back to the source chooser, so it is navigation and stays
+		// live; the bar names it for precisely that row (supplierPickBar). The
+		// line is what the key would CHANGE, not which frame it sits on.
 		switch m.String() {
 		case "esc", "j", "down", "k", "up":
 		case "enter":
-			return s, s.pendingDecline("enter commits nothing")
+			if !s.supplierHighlightIsCommitted() {
+				return s, s.pendingDecline("enter commits nothing · the committed row goes back")
+			}
 		default:
 			return s, s.pendingDecline(m.String() + " waits for the submit")
 		}
@@ -669,6 +681,16 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 		return s, cmd
 	}
 	return s, nil
+}
+
+// supplierHighlightIsCommitted reports whether the highlighted row is the
+// supplier the order already carries, so enter would commit nothing and merely
+// return to the source chooser. ONE predicate, read by the arm that decides
+// whether the freeze applies and by the bar that says so, because two answers
+// to the same question are how a bar comes to name a key that declines.
+func (s *PurchaseOrderCreateScreen) supplierHighlightIsCommitted() bool {
+	return s.supplierCursor >= 0 && s.supplierCursor < len(s.suppliers) &&
+		s.suppliers[s.supplierCursor].ID == s.supplierID
 }
 
 // ---------------------------------------------------------------------------
@@ -2105,7 +2127,7 @@ func (s *PurchaseOrderCreateScreen) sourceHelpText(cartListed, attribution bool)
 		// function, and a budget computed from a different wording is how a
 		// block passes its own fit check and then overflows.
 		if cartListed && len(s.lines) > 0 {
-			return "Submitting… · j/k highlight · d review the cart · b back · esc cancel."
+			return "Submitting… · " + s.sourceCartKeyClaim() + " · d review the cart · b back · esc cancel."
 		}
 		return "Submitting… · d review the cart · b back · esc cancel."
 	}
@@ -2113,8 +2135,8 @@ func (s *PurchaseOrderCreateScreen) sourceHelpText(cartListed, attribution bool)
 	switch {
 	case len(s.lines) > 0 && cartListed:
 		base = fmt.Sprintf(
-			"Add a line (r/i/a/f) · j/k highlight · ctrl+e edit · x remove · d done → review %d line(s) · b back · esc cancel",
-			len(s.lines),
+			"Add a line (r/i/a/f) · %s · d done → review %d line(s) · b back · esc cancel",
+			s.sourceCartKeyClaim(), len(s.lines),
 		)
 	case len(s.lines) > 0:
 		base = fmt.Sprintf(
@@ -2478,7 +2500,12 @@ func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
 // They are also the LOWEST-value rows on this frame, which is what decides the
 // order of sacrifice when the pane runs out. See sourceAttributionShown.
 func (s *PurchaseOrderCreateScreen) sourceAttributionRows() string {
-	return s.renderAgreementRow(true) + s.renderAssocRows(true) + s.renderPendingLookups()
+	// WITHOUT the key column while the submit is out: g / w / c decline then,
+	// and these rows carry a VALUE the operator still wants to read, so they
+	// become what the review phase already draws them as — a line of the order
+	// rather than an affordance. Same rows, same count, no key advertised.
+	withKey := !s.pending
+	return s.renderAgreementRow(withKey) + s.renderAssocRows(withKey) + s.renderPendingLookups()
 }
 
 // sourceAttributionShown reports whether that block is drawn.
@@ -2600,6 +2627,20 @@ func (s *PurchaseOrderCreateScreen) attributionHiddenNote(key string) tea.Cmd {
 	return Status(n.flash(), n.level)
 }
 
+// sourceKeyStyle draws a key letter as LIVE or as frozen. The rows these
+// letters lead stay on the pane while the submit is out — they are the
+// structure the operator navigates by, and erasing them would move the frame
+// under their hands — but every one of those keys declines then, and a row that
+// looks exactly as it did when it worked is the bar-honesty rule broken by the
+// body instead of the bar. Muted is the difference an operator sees without
+// having to press one to find out; `d`, which still acts, stays lit beside them.
+func (s *PurchaseOrderCreateScreen) sourceKeyStyle(key string) string {
+	if s.pending {
+		return StyleMuted.Render(key)
+	}
+	return StyleStatusOK.Render(key)
+}
+
 func (s *PurchaseOrderCreateScreen) sourceCartChrome() string {
 	return s.sourceChrome(s.sourceAttributionShown(), s.sourceTitleShown())
 }
@@ -2609,10 +2650,26 @@ func (s *PurchaseOrderCreateScreen) sourceChrome(attribution, title bool) string
 	if title {
 		b.WriteString(StyleTitle.Render("Where should this line come from?") + "\n\n")
 	}
-	b.WriteString("  " + StyleStatusOK.Render("r") + "  Reorder queue (items flagged for reorder)\n")
-	b.WriteString("  " + StyleStatusOK.Render("i") + "  Inventory items associated with this supplier\n")
-	b.WriteString("  " + StyleStatusOK.Render("a") + "  Assets purchased from this supplier\n")
-	b.WriteString("  " + StyleStatusOK.Render("f") + "  Freeform line (no item / asset reference)\n")
+	// The four line sources. They keep their rows and their letters while the
+	// submit is out — this block is the map of the screen, and pulling it out
+	// from under the operator mid-flight would be a worse answer than saying it
+	// is off — but each row SAYS it is off, because colour alone is a claim
+	// nothing can check and a row that reads exactly as it did when it worked
+	// invites the press the arm is going to decline. The frozen wording is
+	// shorter than the live one so the marked row still fits the 51-column pane
+	// without folding, which would cost the cart a line.
+	for _, src := range []struct{ key, live, off string }{
+		{"r", "Reorder queue (items flagged for reorder)", "Reorder queue"},
+		{"i", "Inventory items associated with this supplier", "Inventory items"},
+		{"a", "Assets purchased from this supplier", "Assets"},
+		{"f", "Freeform line (no item / asset reference)", "Freeform line"},
+	} {
+		label := src.live
+		if s.pending {
+			label = StyleMuted.Render(src.off + " — off while submitting")
+		}
+		b.WriteString("  " + s.sourceKeyStyle(src.key) + "  " + label + "\n")
+	}
 	if header := s.sourceAttributionRows(); header != "" {
 		if attribution {
 			b.WriteString("\n" + header)
@@ -2631,12 +2688,29 @@ func (s *PurchaseOrderCreateScreen) sourceChrome(attribution, title bool) string
 	return b.String()
 }
 
-// sourceCartKeys is the hint naming the four keys that act on a cart ROW. It is
+// sourceCartKeyClaim is the ONE statement of which keys act on a cart ROW, and
+// both surfaces that make that claim read it: the action bar at the top of the
+// pane (sourceHelpText) and the hint drawn directly above the rows
+// (sourceCartKeys). They used to be two independent sentences, and they drifted
+// the moment the submit freeze dropped `ctrl+e` and `x` from the bar — the body
+// hint went on naming both three rows below a bar that had stopped, so one pane
+// advertised and refused the same two keys.
+//
+// While the POST is out only the highlight still moves; ctrl+e and x decline
+// (updateSourcePhase), so neither surface names them for exactly that long.
+func (s *PurchaseOrderCreateScreen) sourceCartKeyClaim() string {
+	if s.pending {
+		return "j/k highlight"
+	}
+	return "j/k highlight · ctrl+e edit · x remove"
+}
+
+// sourceCartKeys is the hint naming the keys that act on a cart ROW. It is
 // drawn only while those rows are on the pane, for the same reason
 // sourceHelpText stops naming them: the keys decline when the cart is
 // collapsed, and a hint that outlives the thing it names is the defect.
-func sourceCartKeys() string {
-	return pickerHint("j/k highlight a line · ctrl+e edit it · x remove it") + "\n\n"
+func (s *PurchaseOrderCreateScreen) sourceCartKeys() string {
+	return pickerHint(s.sourceCartKeyClaim()) + "\n\n"
 }
 
 // cartListedOnScreen reports whether the source chooser is drawing the cart's
@@ -2677,7 +2751,7 @@ func (s *PurchaseOrderCreateScreen) sourceCartSpace() (left, budget int) {
 	if s.terminalHeight <= 0 {
 		return 0, 0
 	}
-	other := poRenderedRows(s.sourceCartChrome() + sourceCartKeys())
+	other := poRenderedRows(s.sourceCartChrome() + s.sourceCartKeys())
 	left = screenBodyHeight(s.terminalHeight) - s.frameRowsWith(s.sourceHelpText(true, s.sourceAttributionShown())) - other
 	budget = left - s.cartChromeRows()
 	if budget < 1 {
@@ -2763,7 +2837,7 @@ func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
 		return body + "\n" + s.cartHiddenNoteText().render() + "\n"
 	}
 	_, budget := s.sourceCartSpace()
-	return body + sourceCartKeys() + s.renderCart(s.reviewCursor, budget)
+	return body + s.sourceCartKeys() + s.renderCart(s.reviewCursor, budget)
 }
 
 // poCartLineType derives the wire item_type token a staged line will carry once
