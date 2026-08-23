@@ -535,18 +535,28 @@ func TestPOAssetPicker_PagingEdgesAnswer(t *testing.T) {
 
 // TestPOReorderPicker_EmptyEnterIsNeverSilent — the third picker, same rule.
 func TestPOReorderPicker_EmptyEnterIsNeverSilent(t *testing.T) {
-	s := reorderScreen()
-	s.phase = poPhaseReorderPick
-	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("enter over an empty reorder queue said nothing")
-	}
-	msg, ok := cmd().(StatusMsg)
-	if !ok {
-		t.Fatalf("produced %T, want a status", cmd())
-	}
-	if !strings.Contains(msg.Text, "nothing flagged for reorder") {
-		t.Errorf("said %q", msg.Text)
+	for _, h := range poPaneSizes {
+		s := reorderScreen()
+		s.phase = poPhaseReorderPick
+		s.terminalHeight = h
+
+		before := strings.Join(poPaneLinesAt(t, s, h), "\n")
+		_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatalf("80x%d: enter over an empty reorder queue said nothing", h)
+		}
+		after := strings.Join(poPaneLinesAt(t, s, h), "\n")
+
+		// The BODY, not the flash. This frame's "Nothing flagged…" line was
+		// already on the pane, so a Status alone left it byte-for-byte what it
+		// was and expired four seconds later with nothing recording the press.
+		if before == after {
+			t.Errorf("80x%d: enter redrew an identical pane — only the flash moved:\n%s", h, after)
+		}
+		if !poPaneHasLine(t, s, "nothing to pick") {
+			t.Errorf("80x%d: the pane does not say what enter did:\n%s", h, after)
+		}
+		poAssertFits(t, fmt.Sprintf("empty reorder queue at 80x%d", h), s)
 	}
 }
 
@@ -600,31 +610,26 @@ func TestPOCreate_EveryPickerKeyThatDeclinesToActSaysWhy(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := NewPurchaseOrderCreateScreen(Deps{})
-			s.supplierID = 1
-			tc.setup(s)
+			for _, h := range poPaneSizes {
+				s := NewPurchaseOrderCreateScreen(Deps{})
+				s.supplierID = 1
+				s.terminalHeight = h
+				tc.setup(s)
 
-			_, cmd := s.Update(tc.key)
-			if cmd == nil {
-				t.Fatalf("the key was answered with nothing at all — this is the hang")
-			}
-			msg := cmd()
-			status, ok := msg.(StatusMsg)
-			if !ok {
-				if batch, isBatch := msg.(tea.BatchMsg); isBatch {
-					for _, c := range batch {
-						if st, is := c().(StatusMsg); is {
-							status, ok = st, true
-							break
-						}
-					}
+				before := strings.Join(poPaneLinesAt(t, s, h), "\n")
+				_, cmd := s.Update(tc.key)
+				if cmd == nil {
+					t.Fatalf("80x%d: the key was answered with nothing at all — this is the hang", h)
 				}
-			}
-			if !ok {
-				t.Fatalf("the key produced %T, want words for the operator", msg)
-			}
-			if strings.TrimSpace(status.Text) == "" {
-				t.Fatal("the key produced an empty status")
+				after := strings.Join(poPaneLinesAt(t, s, h), "\n")
+
+				// A StatusMsg is NOT the standard. StatusBar.Flash expires
+				// after four seconds and the operator who saw nothing is still
+				// looking at the picker, so the BODY has to carry the answer.
+				if before == after {
+					t.Errorf("80x%d: the key redrew an identical pane:\n%s", h, after)
+				}
+				poAssertFits(t, fmt.Sprintf("%s at 80x%d", tc.name, h), s)
 			}
 		})
 	}
@@ -2547,6 +2552,29 @@ func TestPOItemPicker_SearchBoxOverAnUnansweredCatalogDoesNotPromiseAPick(t *tes
 	poWantPaneLine(t, screen, "still looking up")
 	poRejectPaneLine(t, screen, "in catalog")
 
+	// And enter AFTER typing is the case the first comparison above cannot
+	// reach: every keystroke leaves catalogVerdict's own wording on the pane,
+	// so a gate that answers with the same wording answers with the note the
+	// rune before it already drew. The enter arm never touches the textinput,
+	// so not even the caret moves — the reported hang, on the search box the
+	// report was about. Compare the NOTE LINE, which no caret can satisfy.
+	beforeNote := strings.Join(poNoteLines(t, screen.itemSuppliersNote), "\n")
+	next, cmd2 := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	r = next.(Root)
+	if !screen.itemSuppliersLoad {
+		t.Fatal("the second enter finished the walk — this assertion needs it in flight")
+	}
+	if beforeNote == strings.Join(poNoteLines(t, screen.itemSuppliersNote), "\n") {
+		t.Errorf("enter after typing mid-walk re-emitted the note already on the pane:\n%s", beforeNote)
+	}
+	poWantPaneLine(t, screen, "searched again")
+	poWantPaneLine(t, screen, "Looking up the items")
+	if screen.phase != poPhaseItemPick || len(screen.lines) != 0 {
+		t.Fatalf("enter mid-walk staged something (phase %v, %d line(s))", screen.phase, len(screen.lines))
+	}
+	poAssertFits(t, "enter after typing mid-walk", screen)
+	r = pump(t, r, cmd2, 0)
+
 	// When the rows land the promise comes back, and it is true.
 	r = pump(t, r, load, 0)
 	if screen.itemSuppliersLoad {
@@ -2821,5 +2849,250 @@ func TestPOReorderPicker_ReenteringDoesNotRaceTheLookupAlreadyOut(t *testing.T) 
 	}
 	if len(screen.reorderItems) != 3 {
 		t.Errorf("the settled queue holds %d row(s), want 3", len(screen.reorderItems))
+	}
+}
+
+// TestPOAssetPicker_ReenteringDoesNotPaintTheLastLookupOverThisOne: the source
+// chooser's 'a' arm reset the query, the page and the typing flag but not the
+// note, so re-entering the picker drew a settled "✓ 3 asset(s) · enter picks
+// the highlighted row" UNDER the working line of a request still out — a green
+// tick on a count belonging to a reply nobody asked for again, naming a key the
+// working frame has just gated off.
+func TestPOAssetPicker_ReenteringDoesNotPaintTheLastLookupOverThisOne(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if len(screen.assets) != 3 {
+		t.Fatalf("setup: the first lookup returned %d row(s), want 3", len(screen.assets))
+	}
+	poWantPaneLine(t, screen, "3 asset(s)")
+
+	next, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	r = next.(Root)
+	next, reload := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = next.(Root)
+	if !screen.assetsLoading {
+		t.Fatal("setup: re-entering did not start a fresh lookup")
+	}
+
+	poWantPaneLine(t, screen, "Looking up the assets")
+	poRejectPaneLine(t, screen, "3 asset(s)")
+	poRejectPaneLine(t, screen, "enter picks the highlighted row")
+	poAssertFits(t, "re-entered the asset picker", screen)
+
+	r = pump(t, r, reload, 0)
+	if screen.assetsLoading {
+		t.Fatal("the lookup never finished")
+	}
+	poWantPaneLine(t, screen, "3 asset(s)")
+}
+
+// TestPOSupplierPicker_DecliningKeysMoveTheBody: renderSupplierPhase returned
+// "" while the supplier lookup was out and after it failed, so the gate added
+// for those states answered j/k/enter/tab into the four-second flash and left
+// the pane exactly as it was — the standard the item and asset pickers are held
+// to, applied to the frame that chooses the order's supplier.
+func TestPOSupplierPicker_DecliningKeysMoveTheBody(t *testing.T) {
+	states := []struct {
+		name  string
+		setup func(*PurchaseOrderCreateScreen)
+		says  string
+	}{
+		{"lookup still out", func(s *PurchaseOrderCreateScreen) {
+			s.supplierLoading = true
+		}, "still looking up the suppliers"},
+		{"lookup failed", func(s *PurchaseOrderCreateScreen) {
+			s.supplierLoading = false
+			s.supplierLoadErr = "suppliers exploded"
+		}, "loading suppliers failed"},
+		{"none configured", func(s *PurchaseOrderCreateScreen) {
+			s.supplierLoading = false
+			s.suppliers = nil
+		}, "no suppliers are configured"},
+	}
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("j")},
+		{Type: tea.KeyEnter},
+	}
+
+	for _, st := range states {
+		for _, k := range keys {
+			for _, h := range poPaneSizes {
+				s := NewPurchaseOrderCreateScreen(Deps{})
+				s.phase = poPhaseSupplier
+				s.terminalHeight = h
+				st.setup(s)
+
+				before := strings.Join(poPaneLinesAt(t, s, h), "\n")
+				_, cmd := s.Update(k)
+				if cmd == nil {
+					t.Fatalf("%s / %s at 80x%d: the key said nothing at all", st.name, k.String(), h)
+				}
+				after := strings.Join(poPaneLinesAt(t, s, h), "\n")
+				if before == after {
+					t.Errorf("%s / %s at 80x%d: the pane did not move:\n%s", st.name, k.String(), h, after)
+				}
+				if !poPaneHasLine(t, s, st.says) {
+					t.Errorf("%s / %s at 80x%d: the body does not say why:\n%s", st.name, k.String(), h, after)
+				}
+				poAssertFits(t, fmt.Sprintf("%s at 80x%d", st.name, h), s)
+			}
+		}
+	}
+}
+
+// TestPOReorderPicker_DecliningKeysMoveTheBodyMidLookup is the reorder half of
+// the same rule: its loading and failure frames drew one line each and every
+// gated key answered into the flash alone.
+func TestPOReorderPicker_DecliningKeysMoveTheBodyMidLookup(t *testing.T) {
+	states := []struct {
+		name  string
+		setup func(*PurchaseOrderCreateScreen)
+		says  string
+	}{
+		{"lookup still out", func(s *PurchaseOrderCreateScreen) {
+			s.reorderLoading = true
+		}, "still looking up what"},
+		{"lookup failed", func(s *PurchaseOrderCreateScreen) {
+			s.reorderLoadErr = "reorder exploded"
+		}, "reading the reorder queue failed"},
+	}
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("j")},
+		{Type: tea.KeyRunes, Runes: []rune(" ")},
+		{Type: tea.KeyEnter},
+	}
+
+	for _, st := range states {
+		for _, k := range keys {
+			for _, h := range poPaneSizes {
+				s := NewPurchaseOrderCreateScreen(Deps{})
+				s.phase = poPhaseReorderPick
+				s.supplierID = 1
+				s.terminalHeight = h
+				st.setup(s)
+
+				before := strings.Join(poPaneLinesAt(t, s, h), "\n")
+				_, cmd := s.Update(k)
+				if cmd == nil {
+					t.Fatalf("%s / %s at 80x%d: the key said nothing at all", st.name, k.String(), h)
+				}
+				after := strings.Join(poPaneLinesAt(t, s, h), "\n")
+				if before == after {
+					t.Errorf("%s / %s at 80x%d: the pane did not move:\n%s", st.name, k.String(), h, after)
+				}
+				if !poPaneHasLine(t, s, st.says) {
+					t.Errorf("%s / %s at 80x%d: the body does not say why:\n%s", st.name, k.String(), h, after)
+				}
+				poAssertFits(t, fmt.Sprintf("%s at 80x%d", st.name, h), s)
+			}
+		}
+	}
+}
+
+// TestPOPickers_EveryGatedKeyMovesTheBody is the by-construction check behind
+// the rule: for the item and asset pickers, in each state where the frame draws
+// no list, press every key the gate intercepts and require the clipped pane to
+// change. It completes the matrix the supplier and reorder sweeps above cover
+// for the other two frames.
+//
+// The states are built from a settled list and then pushed off-screen, so the
+// note already on the pane is the SETTLED one — which is how the reported hang
+// survived five rounds: each fix made the transition into a state visible and
+// left the arm that answers from inside it re-emitting what was already there.
+func TestPOPickers_EveryGatedKeyMovesTheBody(t *testing.T) {
+	rows := []omsapi.ItemSupplier{{ID: 1, ItemName: "Widget 1"}, {ID: 2, ItemName: "Widget 2"}}
+	assets := []omsapi.Asset{{ID: "as-1", Name: "Lathe 1"}, {ID: "as-2", Name: "Lathe 2"}}
+
+	cases := []struct {
+		name  string
+		setup func(*PurchaseOrderCreateScreen)
+		keys  []tea.KeyMsg
+	}{
+		{"items, walk in flight", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseItemPick
+			s.itemSuppliersAll, s.itemSuppliers, s.itemSuppliersFor = rows, rows, 1
+			s.itemSuppliersLoad = true
+			s.itemSuppliersNote = s.catalogVerdict("")
+		}, []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyRunes, Runes: []rune("k")},
+			{Type: tea.KeyEnter},
+			{Type: tea.KeyRunes, Runes: []rune("r")},
+		}},
+		{"items, walk failed", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseItemPick
+			s.itemSuppliersAll, s.itemSuppliers, s.itemSuppliersFor = rows, rows, 1
+			s.itemSuppliersErr = "items exploded"
+			s.itemSuppliersNote = s.catalogVerdict("")
+		}, []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyEnter},
+			{Type: tea.KeyRunes, Runes: []rune("/")},
+		}},
+		{"items, search box over a walk in flight", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseItemPick
+			s.itemSuppliersAll, s.itemSuppliers, s.itemSuppliersFor = rows, rows, 1
+			s.itemSuppliersTyping = true
+			s.itemSuppliersSearch.SetValue("Widget 1")
+			s.applyItemSupplierFilter()
+			s.itemSuppliersLoad = true
+			s.itemSuppliersNote = s.itemFilterOrVerdict("")
+		}, []tea.KeyMsg{{Type: tea.KeyEnter}}},
+		{"assets, lookup in flight", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseAssetPick
+			s.assets, s.assetsHasNext, s.assetsPage = assets, true, 2
+			s.assetsLoading = true
+			_ = s.assetVerdictNote("")
+		}, []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyEnter},
+			{Type: tea.KeyRunes, Runes: []rune("]")},
+			{Type: tea.KeyRunes, Runes: []rune("[")},
+		}},
+		{"assets, lookup failed", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseAssetPick
+			s.assets, s.assetsHasNext, s.assetsPage = assets, true, 2
+			s.assetsErr = "assets exploded"
+			_ = s.assetVerdictNote("")
+		}, []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyEnter},
+			{Type: tea.KeyRunes, Runes: []rune("]")},
+		}},
+		{"assets, search box over a lookup in flight", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseAssetPick
+			s.assets = assets
+			s.assetsTyping = true
+			s.assetsSearch.SetValue("Lathe")
+			s.assetsLoading = true
+			_ = s.assetVerdictNote("")
+		}, []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyEsc}}},
+	}
+
+	for _, tc := range cases {
+		for _, k := range tc.keys {
+			for _, h := range poPaneSizes {
+				name := fmt.Sprintf("%s/%s/80x%d", tc.name, k.String(), h)
+				t.Run(name, func(t *testing.T) {
+					s := NewPurchaseOrderCreateScreen(Deps{})
+					s.supplierID = 1
+					s.suppliers = []omsapi.Supplier{{ID: 1, Name: "Acme Supply"}}
+					s.terminalHeight = h
+					tc.setup(s)
+
+					before := strings.Join(poPaneLinesAt(t, s, h), "\n")
+					next, cmd := s.Update(k)
+					s = next.(*PurchaseOrderCreateScreen)
+					if cmd == nil {
+						t.Fatalf("the key was answered with nothing at all — this is the hang")
+					}
+					if before == strings.Join(poPaneLinesAt(t, s, h), "\n") {
+						t.Errorf("the key re-emitted the pane already on screen:\n%s", before)
+					}
+					poAssertFits(t, name, s)
+				})
+			}
+		}
 	}
 }

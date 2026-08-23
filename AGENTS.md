@@ -133,6 +133,10 @@ touching any screen an operator drives:
   the whole of the "the item picker hangs after I press enter" report.
 - Notes go in the screen BODY as well as the status bar: `StatusBar.Flash`
   expires after four seconds and the operator who saw nothing is still looking.
+  All FOUR pickers carry a `pickerNote` for this and every frame of each of them
+  draws it — the reorder and supplier frames answered into the flash alone for
+  several rounds, and two of their frames drew no body at all, so the rule was
+  documented wider than the code honoured it.
 - **Do not hand-count a hint against 51 columns — fold it.** Every note, fixed
   hint and prose ACTION BAR goes through `pickerWrap` / `pickerHint` /
   `pickerFail` (`po_create_pickers.go`), which fold at the `·` joints and indent
@@ -247,19 +251,26 @@ touching any screen an operator drives:
   ambiguous search re-emitted the note already on screen, so only the caret
   moved — the original "it just kinda hangs there", surviving inside its own
   fix, and then again in the zero-match arm beside it, which keeps the box OPEN
-  so not even the caret moves. EVERY arm that declines in answer to a key now
-  leads with what the key DID — `commitSearchedItem` ("too many to pick",
-  "searched again"), `commitHighlightedItem` and the asset picker's empty-list
-  enter ("nothing to pick"), and esc out of either search box ("search closed",
-  which `catalogVerdict` and `assetVerdictNote` take as a prefix so the verdict
-  path carries it as well as the filter path). Without the lead the note comes
-  back character for character, and on the browse path there is not even a caret
-  in a blurred textinput to move. The test compares the rendered NOTE line
-  before and after, because a blinking cursor satisfies a comparison of the
-  pane. Where the change IS the note
-  arriving — the frames that draw a working or failure line and used to return
-  before drawing the note under it — the comparison is the other way round, on
-  the clipped pane, because the note object changed in both worlds.
+  so not even the caret moves. EVERY arm that declines in answer to a key leads
+  with what the key DID, and the GATES do too, not just the filter arms: all
+  four verdict helpers (`catalogVerdictNote`, `assetVerdictNote`,
+  `reorderVerdictNote`, `supplierVerdictNote`) take a prefix and every call site
+  passes one. That last step is what finally closed the reported hang on the
+  search box it was reported about — the typing branch words the note with
+  `catalogVerdict("")` on every rune, so a gate answering with the same wording
+  answered with the note the keystroke before it had already drawn, and the
+  enter arm never touches the textinput, so not even the caret moved. Without
+  the lead the note comes back character for character, and on the browse path
+  there is not even a caret in a blurred textinput to move.
+  `TestPOPickers_EveryGatedKeyMovesTheBody` is the by-construction check: it
+  seeds each off-screen picker state with that state's OWN un-led verdict and
+  requires every gated key to change the clipped pane, so a lead dropped
+  anywhere fails it. Targeted tests compare the rendered NOTE line before and
+  after, because a blinking cursor satisfies a comparison of the pane; where the
+  change IS the note arriving — the frames that draw a working or failure line
+  and used to return before drawing the note under it — the comparison is the
+  other way round, on the clipped pane, because the note object changed in both
+  worlds.
 - **Assert a mid-flight state while it is still mid-flight.** Driving the fake
   to completion and then checking is how a note that concluded "0 in catalog"
   during an eight-page walk passed its own test. Split the load command out

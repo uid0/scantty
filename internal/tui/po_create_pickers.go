@@ -392,6 +392,7 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 	switch m := msg.(type) {
 	case poReorderItemsLoadedMsg:
 		s.reorderLoading = false
+		s.reorderNote.clear() // the reply's own frame answers for this one
 		if m.err != nil {
 			s.reorderLoadErr = m.err.Error()
 			return Status("load reorder items failed: "+m.err.Error(), StatusError)
@@ -590,16 +591,24 @@ func (s *PurchaseOrderCreateScreen) supplierListOnScreen() bool {
 	return !s.supplierLoading && s.supplierLoadErr == "" && len(s.suppliers) > 0
 }
 
-// supplierVerdictStatus says which of the three off-screen states a declining
-// key is answering from.
-func (s *PurchaseOrderCreateScreen) supplierVerdictStatus() tea.Cmd {
+// supplierVerdictNote says which of the three off-screen states a declining key
+// is answering from. It is a pickerNote and not a bare Status for the reason
+// the other two pickers already are: a flash expires after four seconds and
+// renderSupplierPhase drew nothing at all in two of these three states, so the
+// pane never moved and the operator who pressed the key saw exactly what the
+// report described.
+func (s *PurchaseOrderCreateScreen) supplierVerdictNote(prefix string) tea.Cmd {
+	lead := ""
+	if prefix != "" {
+		lead = prefix + " · "
+	}
 	switch {
 	case s.supplierLoading:
-		return Status("still looking up the suppliers…", StatusInfo)
+		return s.supplierNote.say(lead+"still looking up the suppliers…", StatusInfo)
 	case s.supplierLoadErr != "":
-		return Status("loading suppliers failed — esc cancels the order", StatusError)
+		return s.supplierNote.say(lead+"loading suppliers failed\nesc cancels the order", StatusError)
 	}
-	return Status("no suppliers are configured — esc cancels the order", StatusWarn)
+	return s.supplierNote.say(lead+"no suppliers are configured\nesc cancels the order", StatusWarn)
 }
 
 // supplierSwitchBar names the confirm's two keys, and deliberately carries no
@@ -670,7 +679,7 @@ func (s *PurchaseOrderCreateScreen) assetLoadedNote(rows int) tea.Cmd {
 		fmt.Sprintf("%d asset(s) · enter picks the highlighted row", rows), StatusOK)
 }
 
-// assetVerdictNote and reorderVerdictStatus are the asset and reorder pickers'
+// assetVerdictNote and reorderVerdictNote are the asset and reorder pickers'
 // equivalents of catalogVerdictNote: they say which of the two off-screen
 // states a declining key is answering from, and name the key that leaves it.
 // prefix, when given, leads with what the key did — the same shape
@@ -692,11 +701,17 @@ func (s *PurchaseOrderCreateScreen) assetVerdictNote(prefix string) tea.Cmd {
 		lead+"the asset lookup failed\n/ retries with a search · "+pickerWayOut, StatusError)
 }
 
-func (s *PurchaseOrderCreateScreen) reorderVerdictStatus() tea.Cmd {
-	if s.reorderLoading {
-		return Status("still looking up what "+s.supplierLabel()+" has flagged for reorder…", StatusInfo)
+func (s *PurchaseOrderCreateScreen) reorderVerdictNote(prefix string) tea.Cmd {
+	lead := ""
+	if prefix != "" {
+		lead = prefix + " · "
 	}
-	return Status("reading the reorder queue failed — b picks another line source", StatusError)
+	if s.reorderLoading {
+		return s.reorderNote.say(
+			lead+"still looking up what "+s.supplierLabel()+" has flagged for reorder…", StatusInfo)
+	}
+	return s.reorderNote.say(
+		lead+"reading the reorder queue failed\n"+pickerWayOut, StatusError)
 }
 
 // noCatalogSentence is the single wording of "this supplier sells nothing".
@@ -713,7 +728,7 @@ func (s *PurchaseOrderCreateScreen) noCatalogSentence() string {
 // the tick: nothing was just fetched, so nothing succeeded.
 func (s *PurchaseOrderCreateScreen) itemPickEntryNote() tea.Cmd {
 	if !s.catalogAnswered() || len(s.itemSuppliersAll) == 0 {
-		return s.catalogVerdictNote()
+		return s.catalogVerdictNote("")
 	}
 	return s.itemSuppliersNote.say(
 		fmt.Sprintf("%d catalog item(s) · / searches · r reloads", len(s.itemSuppliersAll)), StatusInfo)
@@ -747,8 +762,12 @@ func (s *PurchaseOrderCreateScreen) applyItemSupplierFilter() {
 func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	if !s.reorderListOnScreen() {
 		switch m.String() {
-		case "j", "down", "k", "up", " ", "a", "enter":
-			return s, s.reorderVerdictStatus()
+		case "j", "down", "k", "up":
+			return s, s.reorderVerdictNote("nothing to move through")
+		case " ":
+			return s, s.reorderVerdictNote("nothing to mark")
+		case "a", "enter":
+			return s, s.reorderVerdictNote("nothing to add")
 		}
 	}
 	switch m.String() {
@@ -800,9 +819,12 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 			return s, s.addReorderLines(picked)
 		}
 		if len(s.reorderItems) == 0 {
-			// Nothing to stage. Say so rather than answering the key with the
-			// blank redraw that reads as a wedge.
-			return s, Status("nothing flagged for reorder under this supplier — b picks another line source", StatusWarn)
+			// Nothing to stage. Say so in the BODY as well as the flash: the
+			// frame's fixed "Nothing flagged…" line is already there, so a
+			// Status alone left the pane byte-for-byte unchanged and expired
+			// four seconds later with nothing recording the press.
+			return s, s.reorderNote.say(
+				"nothing to pick · nothing flagged for reorder here\n"+pickerWayOut, StatusWarn)
 		}
 		if s.reorderCursor < 0 || s.reorderCursor >= len(s.reorderItems) {
 			s.reorderCursor = 0
@@ -824,6 +846,7 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 		// line stays single-basis (qpp 0) — the case-cost toggle is offered
 		// from the inventory-items picker, which does expose qpp. (op-7j8v)
 		s.enterLinePhase(it.ItemSupplierID, nil, desc, qty, unitCost, 0, 0)
+		s.reorderNote.clear()
 		return s, tea.Batch(
 			Status("picked "+desc+" — set quantity and cost, enter adds the line", StatusOK),
 			textinput.Blink,
@@ -881,13 +904,14 @@ func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
 // re-entered for a second batch.
 func (s *PurchaseOrderCreateScreen) addReorderLines(items []omsapi.ReorderDataItem) tea.Cmd {
 	if len(items) == 0 {
-		s.errMsg = "nothing to add — this supplier has no reorder items"
+		s.errMsg = "nothing to add — nothing is flagged for reorder"
 		return Status(s.errMsg, StatusError)
 	}
 	for _, it := range items {
 		s.lines = append(s.lines, reorderCartLine(it))
 	}
 	s.reorderSelected = map[int]bool{}
+	s.reorderNote.clear()
 	s.errMsg = ""
 	s.phase = poPhaseReview
 	s.reviewCursor = len(s.lines) - len(items) // first line of this batch
@@ -899,16 +923,24 @@ func (s *PurchaseOrderCreateScreen) addReorderLines(items []omsapi.ReorderDataIt
 }
 
 func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
+	// Every frame draws reorderNote UNDER its own line, the way the item and
+	// asset frames do: this picker used to answer a declining key with a Status
+	// flash alone, so the body was byte-for-byte unchanged and four seconds
+	// later nothing on the pane recorded that the key had been pressed.
+	note := ""
+	if n := s.reorderNote.render(); n != "" {
+		note = "\n" + n
+	}
 	if s.reorderLoading {
-		return pickerHint("Looking up what " + s.supplierLabel() + " has flagged for reorder…")
+		return pickerHint("Looking up what "+s.supplierLabel()+" has flagged for reorder…") + note
 	}
 	if s.reorderLoadErr != "" {
 		return pickerFail("reading the reorder queue failed", s.reorderLoadErr) + "\n" +
-			pickerHint(s.reorderPickBar())
+			pickerHint(s.reorderPickBar()) + note
 	}
 	if len(s.reorderItems) == 0 {
 		return pickerHint("Nothing flagged for reorder under this supplier.") + "\n" +
-			pickerHint(s.reorderPickBar())
+			pickerHint(s.reorderPickBar()) + note
 	}
 	// Counts only. The keys are the bar's job, and a summary that also named
 	// them was a second copy of the same claim waiting to go stale.
@@ -916,7 +948,7 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 	if n := len(s.reorderSelected); n > 0 {
 		summary = fmt.Sprintf("%d marked of %d in the queue", n, len(s.reorderItems))
 	}
-	tail := "\n" + pickerHint(summary)
+	tail := "\n" + pickerHint(summary) + note
 
 	var b strings.Builder
 	b.WriteString(renderWindowedList(
@@ -982,8 +1014,10 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 	}
 	if !s.itemListOnScreen() {
 		switch m.String() {
-		case "j", "down", "k", "up", "enter":
-			return s, s.catalogVerdictNote()
+		case "j", "down", "k", "up":
+			return s, s.catalogVerdictNote("nothing to move through")
+		case "enter":
+			return s, s.catalogVerdictNote("nothing to pick")
 		}
 	}
 	switch m.String() {
@@ -1007,7 +1041,7 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 			// search" WHERE "r retries the lookup" was — an unnamed key that
 			// acts and erases the only key that repairs the state. Mid-load is
 			// different and still opens: rows are on their way.
-			return s, s.catalogVerdictNote()
+			return s, s.catalogVerdictNote("search needs the catalog")
 		}
 		if s.catalogAnswered() && len(s.itemSuppliersAll) == 0 {
 			// This filter is client-side over the loaded catalog, so against a
@@ -1016,7 +1050,7 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 			// esc, the two keys that can still do something here. Decline, and
 			// say why. Mid-walk is a different state: the rows are on their
 			// way, so the box opens and the query is applied when they land.
-			return s, s.catalogVerdictNote()
+			return s, s.catalogVerdictNote("search needs the catalog")
 		}
 		s.itemSuppliersTyping = true
 		s.itemSuppliersSearch.Focus()
@@ -1033,7 +1067,7 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 	case "r":
 		if s.itemSuppliersLoad {
 			// A walk is already out; the bar does not name r there.
-			return s, s.catalogVerdictNote()
+			return s, s.catalogVerdictNote("already reloading")
 		}
 		// The catalog is held per supplier and re-entering the picker no longer
 		// re-walks it (see the 'i' arm in po_create.go), so there has to be a
@@ -1084,7 +1118,7 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 //     screen could reach the item.
 func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
 	if !s.itemListOnScreen() {
-		return s.catalogVerdictNote()
+		return s.catalogVerdictNote("searched again")
 	}
 	s.applyItemSupplierFilter()
 	switch {
@@ -1129,7 +1163,7 @@ func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
 // answering that with nil is how the picker told the operator nothing at all.
 func (s *PurchaseOrderCreateScreen) commitHighlightedItem() tea.Cmd {
 	if !s.itemListOnScreen() {
-		return s.catalogVerdictNote()
+		return s.catalogVerdictNote("nothing to pick")
 	}
 	if len(s.itemSuppliers) == 0 {
 		return s.reportItemFilterState("nothing to pick")
@@ -1196,8 +1230,13 @@ func (s *PurchaseOrderCreateScreen) catalogAnswered() bool {
 // is safe to act on. This is the same distinction the loaded path draws; drawn
 // here too, because a key pressed mid-walk used to report the conclusion of a
 // walk that had not finished.
-func (s *PurchaseOrderCreateScreen) catalogVerdictNote() tea.Cmd {
-	s.itemSuppliersNote = s.catalogVerdict("")
+// prefix leads with what the key DID. Without it this was the last way the
+// reported hang could still be produced: the typing branch sets the note to
+// catalogVerdict("") on every keystroke, so enter mid-walk answered with the
+// note the rune before it had already drawn — same text, same level, same
+// working line above it, and a focused textinput the enter arm never touches.
+func (s *PurchaseOrderCreateScreen) catalogVerdictNote(prefix string) tea.Cmd {
+	s.itemSuppliersNote = s.catalogVerdict(prefix)
 	return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
 }
 
@@ -1440,7 +1479,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 				// typing arm of assetPickBar stops naming enter here: a key
 				// that cannot act must not be advertised, and the note says
 				// what is happening instead of the screen sitting still.
-				return s, s.assetVerdictNote("")
+				return s, s.assetVerdictNote("searched again")
 			}
 			// Unlike the item picker this really does go off the terminal, so
 			// the note says so BEFORE the request leaves: the reply repaints it
@@ -1468,8 +1507,10 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 	}
 	if !s.assetListOnScreen() {
 		switch m.String() {
-		case "j", "down", "k", "up", "enter":
-			return s, s.assetVerdictNote("")
+		case "j", "down", "k", "up":
+			return s, s.assetVerdictNote("nothing to move through")
+		case "enter":
+			return s, s.assetVerdictNote("nothing to pick")
 		}
 	}
 	switch m.String() {
@@ -1508,7 +1549,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 			// Neither the working frame nor the failure frame names them, and
 			// stepping the page over one that just FAILED means the retry
 			// silently skips it.
-			return s, s.assetVerdictNote("")
+			return s, s.assetVerdictNote("still on this page")
 		}
 		if !s.assetsHasNext {
 			return s, s.assetsNote.say(fmt.Sprintf("already on the last page (page %d)", s.assetsPage), StatusWarn)
@@ -1522,7 +1563,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		)
 	case "[":
 		if !s.assetListOnScreen() {
-			return s, s.assetVerdictNote("")
+			return s, s.assetVerdictNote("still on this page")
 		}
 		if s.assetsPage <= 1 {
 			return s, s.assetsNote.say("already on the first page", StatusWarn)

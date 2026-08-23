@@ -144,6 +144,7 @@ type PurchaseOrderCreateScreen struct {
 	supplierLoadErr string
 	supplierCursor  int
 	supplierID      int
+	supplierNote    pickerNote
 
 	// Phase 1b: the supplier's ACTIVE purchase/pricing agreements (op-yoos).
 	// Loaded in the background the moment a supplier is committed, so the
@@ -180,6 +181,7 @@ type PurchaseOrderCreateScreen struct {
 	reorderLoadErr  string
 	reorderCursor   int
 	reorderSelected map[int]bool
+	reorderNote     pickerNote
 
 	// Phase 3b: inventory items for this supplier.
 	itemSuppliers    []omsapi.ItemSupplier
@@ -391,6 +393,7 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 	case poCreateSuppliersLoadedMsg:
 		s.supplierLoading = false
+		s.supplierNote.clear()
 		if m.err != nil {
 			s.supplierLoadErr = m.err.Error()
 			return s, Status("load suppliers failed: "+m.err.Error(), StatusError)
@@ -508,8 +511,10 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	if !s.supplierListOnScreen() {
 		switch m.String() {
-		case "j", "down", "k", "up", "enter", "tab":
-			return s, s.supplierVerdictStatus()
+		case "j", "down", "k", "up":
+			return s, s.supplierVerdictNote("nothing to move through")
+		case "enter", "tab":
+			return s, s.supplierVerdictNote("nothing to commit")
 		}
 	}
 	switch m.String() {
@@ -711,6 +716,7 @@ func (s *PurchaseOrderCreateScreen) resetSupplierScopedPickers() {
 	s.reorderLoading = false
 	s.reorderLoadErr = ""
 	s.reorderCursor = 0
+	s.reorderNote.clear()
 	s.reorderSelected = map[int]bool{}
 
 	s.itemSuppliers = nil
@@ -954,10 +960,11 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 			// leaving mid-lookup and pressing the source key again is an
 			// ordinary sequence, and it used to put a second request on the
 			// wire for a reply the first one is already going to deliver.
-			return s, s.reorderVerdictStatus()
+			return s, s.reorderVerdictNote("")
 		}
 		s.reorderLoading = true
 		s.reorderLoadErr = ""
+		s.reorderNote.clear()
 		return s, s.loadReorderItemsForSupplier()
 	case "i":
 		s.phase = poPhaseItemPick
@@ -969,7 +976,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 			// A walk is already out for this supplier — say so rather than
 			// firing a second one or posting an entry note that concludes
 			// something about rows still in transit.
-			return s, s.catalogVerdictNote()
+			return s, s.catalogVerdictNote("")
 		}
 		if s.catalogAnswered() {
 			// Already held for THIS supplier. Showing the "Looking up the items
@@ -1006,6 +1013,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		s.assetsSearch.SetValue("")
 		s.assetsTyping = false
 		s.assetsPage = 1
+		s.assetsNote.clear()
 		return s, s.loadAssetsForSupplier("")
 	case "f":
 		// Freeform: go straight to the line form with nothing
@@ -1933,11 +1941,12 @@ func (s *PurchaseOrderCreateScreen) renderAssocRows(withKey bool) string {
 
 func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
 	if s.supplierLoading || s.supplierLoadErr != "" {
-		// The header above already says which of the two this is; the bar says
-		// the only key that acts here.
-		return ""
+		return s.supplierNote.render()
 	}
 	if len(s.suppliers) == 0 {
+		if note := s.supplierNote.render(); note != "" {
+			return note
+		}
 		return pickerHint("(no suppliers configured)")
 	}
 	// Through the shared windower like every other scrolling block on this
