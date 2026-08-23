@@ -1492,7 +1492,7 @@ func itemFilterNote(query string, matched, total int, prefix string, typing bool
 func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 	var b strings.Builder
 	if s.itemSuppliersSearch.Value() != "" || s.itemSuppliersTyping {
-		b.WriteString(StyleMuted.Render("filter: ") + s.itemSuppliersSearch.View() + "\n\n")
+		b.WriteString(StyleMuted.Render(poItemFilterLabel) + s.itemSuppliersSearch.View() + "\n\n")
 	}
 	if s.itemSuppliersLoad {
 		// Name the WORK, not the wait. "Loading…" tells the operator a
@@ -1848,7 +1848,7 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 			shown = strconv.Quote(pickerClip(ran, 16))
 		}
 		b.WriteString(StyleMuted.Render("showing: "+shown) + "\n")
-		b.WriteString(StyleMuted.Render("search: ") + s.assetsSearch.View() + "\n\n")
+		b.WriteString(StyleMuted.Render(poAssetSearchLabel) + s.assetsSearch.View() + "\n\n")
 	case draft != ran:
 		shown := "all of this supplier's assets"
 		if ran != "" {
@@ -1860,7 +1860,7 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 		}
 		b.WriteString("\n")
 	case ran != "":
-		b.WriteString(StyleMuted.Render("search: ") + s.assetsSearch.View() + "\n\n")
+		b.WriteString(StyleMuted.Render(poAssetSearchLabel) + s.assetsSearch.View() + "\n\n")
 	}
 	if s.assetsLoading {
 		b.WriteString(pickerHint("Looking up the assets " + s.supplierLabel() + " supplied…"))

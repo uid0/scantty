@@ -4651,3 +4651,83 @@ func TestPOPickers_NoTwoGatedKeysShareASentence(t *testing.T) {
 		}
 	}
 }
+
+// poTypedRow returns the whole clipped pane line the marker sits on, or a
+// sentinel when the pane does not carry it. The line, never the pane: a caret
+// blinking somewhere else, or a status flash, must not be able to satisfy
+// "this keystroke did something".
+func poTypedRow(t *testing.T, s Screen, h int, marker string) string {
+	t.Helper()
+	for _, line := range poPaneLinesAt(t, s, h) {
+		if strings.Contains(line, marker) {
+			return line
+		}
+	}
+	return "<not on the pane>"
+}
+
+// TestPOTypedRows_EveryKeystrokeMovesTheRow is the reported hang reached by
+// TYPING rather than by pressing enter: a field whose value has outgrown the
+// row it is drawn on.
+//
+// bubbles treats Width as the width of a scrolling viewport onto the value,
+// and handleOverflow returns early when it is zero — so an unset Width makes
+// View() emit the entire value plus the cursor, the row grows past the pane,
+// and clampToBox takes the tail. Past that column the operator keeps typing
+// into a 500-character notes field (or a 200-character line description) while
+// the pane comes back byte for byte identical, which is exactly the complaint
+// this whole change exists to answer, on the one row the source chooser's
+// sacrifice order spends rows keeping visible.
+//
+// Distinct runes, because a scrolling viewport full of one repeated character
+// looks the same however far it has scrolled — an assertion a repeated key can
+// pass is not an assertion about scrolling.
+func TestPOTypedRows_EveryKeystrokeMovesTheRow(t *testing.T) {
+	// runes stays under each field's CharLimit. A full field refusing the next
+	// rune is a different question from a row that cannot show it — the value
+	// visibly stops growing there — and the caps (60 on the two search boxes,
+	// 200 and 500 on the line description and the notes) are deliberate.
+	cases := []struct {
+		name   string
+		fake   *poPickFake
+		open   []string
+		marker string
+		runes  int
+	}{
+		{"PO notes", &poPickFake{catalog: 4, suppliers: 1},
+			[]string{"i", "enter", "enter", "d"}, "▸ " + poNotesLabel, 120},
+		{"line description", &poPickFake{catalog: 4, suppliers: 1},
+			[]string{"f"}, "▸ " + poLineFieldLabel(poLineFieldDesc), 120},
+		{"item filter", &poPickFake{catalog: 4, suppliers: 1},
+			[]string{"i", "/"}, poItemFilterLabel, 55},
+		{"asset search", &poPickFake{assets: 3, suppliers: 1},
+			[]string{"a", "/"}, poAssetSearchLabel, 55},
+	}
+
+	for _, tc := range cases {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", tc.name, h), func(t *testing.T) {
+				r, screen := poPickerAtSize(t, tc.fake, 80, h)
+				for _, k := range tc.open {
+					r = key(t, r, poPhaseKeyMsg(k))
+				}
+				before := poTypedRow(t, screen, h, tc.marker)
+				if before == "<not on the pane>" {
+					t.Fatalf("the %s row is not on the pane to begin with:\n%s",
+						tc.name, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				}
+				for i := 0; i < tc.runes; i++ {
+					r = poType(t, r, string(rune('a'+i%26)))
+					after := poTypedRow(t, screen, h, tc.marker)
+					if after == before {
+						t.Fatalf("keystroke %d into the %s row redrew it byte for byte — "+
+							"the value has outgrown the row and the pane is cutting the caret off:\n\t%q",
+							i+1, tc.name, after)
+					}
+					before = after
+				}
+				poAssertFits(t, fmt.Sprintf("%s after %d runes", tc.name, tc.runes), screen)
+			})
+		}
+	}
+}

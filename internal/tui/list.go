@@ -116,6 +116,27 @@ type listSearchedMsg struct {
 
 const listWindowSize = 20
 
+// The search overlay's own row, stated once so its two halves cannot disagree
+// about how wide the other is. listSearchInputWidth is the scrolling viewport
+// bubbles gives the query: the pane, less the prompt, less the cell the cursor
+// takes past the end of the value, less the widest suffix View can append
+// after the box.
+//
+// Without a Width, bubbles emits the whole value and clampToBox cut the caret
+// off the right edge past roughly the 43rd character — every further keystroke
+// redrew the row byte for byte, which is the reported hang reached by typing.
+// The suffix is reserved rather than left to be cut because a width also makes
+// bubbles PAD a short value out to it, so an unreserved count would be pushed
+// past the pane edge on every query instead of only on long ones.
+const (
+	listSearchPrompt = "search ▸ "
+	// "  " + the longest count View writes, at four digits of results.
+	listSearchWidestSuffix = "  9999 match(es)"
+)
+
+var listSearchInputWidth = screenBodyWidth(80) -
+	len([]rune(listSearchPrompt)) - 1 - len(listSearchWidestSuffix)
+
 type ListScreen struct {
 	deps           Deps
 	title          string
@@ -146,11 +167,17 @@ type ListScreen struct {
 	searchPending bool
 }
 
-// computeWindowSize returns how many list ROWS the current terminal can
-// show. The list view renders one row of content per visible item plus a
-// "    subtitle" line under any row that has a subtitle. We size against
-// the real subtitle population so a list of plain-title rows fills the
-// pane instead of getting halved by an old worst-case heuristic.
+// computeWindowSize returns how many list ROWS the window starting at the
+// CURRENT windowStart can show. It is rowsFittingFrom under another name, kept
+// because every sizing site already calls it; the packing lives there because
+// scrollIntoView has to ask the same question about a start it is still
+// choosing.
+func (s *ListScreen) computeWindowSize() int {
+	return s.rowsFittingFrom(s.windowStart)
+}
+
+// listBodyLines is how many LINES of list body the pane has left after the
+// chrome around it.
 //
 // Chrome accounted for here, in addition to the global screen body math
 // in layout.go:
@@ -159,7 +186,7 @@ type ListScreen struct {
 //	1 row each for ↑/↓ indicators when the list overflows the window
 //	1 blank separator above the hint
 //	however many rows the FOLDED hint actually occupies
-func (s *ListScreen) computeWindowSize() int {
+func (s *ListScreen) listBodyLines() int {
 	const listHeaderRows = 1
 	// Reserve both indicator slots up front; we'd rather waste one row
 	// when only one indicator shows than clip a row when the list
@@ -178,17 +205,32 @@ func (s *ListScreen) computeWindowSize() int {
 	if avail < 2 {
 		avail = 2
 	}
-	// Each visible row takes 1 line of title, plus 1 more if it carries
-	// a subtitle. Walk the actual rows from the current windowStart
-	// forward, packing as many as fit. Falls back to a per-row estimate
-	// when rows haven't loaded yet.
+	return avail
+}
+
+// rowsFittingFrom returns how many rows starting at `start` fit in the body,
+// counting the LINES each one actually renders: a title line, plus a line for
+// a subtitle and another for a metrics line where the loader supplies them.
+// Falls back to the line budget itself when no rows are loaded yet.
+//
+// The count depends on WHICH rows are in the window, which is why nothing may
+// hold on to an answer computed for a different start. Sizing once at load
+// time and keeping it through every scroll is what put twenty lines into an
+// eighteen-line pane on a list whose first rows are plain and whose later ones
+// carry both extra lines (an inventory list is exactly that shape) — and what
+// clampToBox then dropped was the folded footer, taking "N new PO" and its
+// siblings with it. The same claim, cut off the same edge, for the third time:
+// horizontally, then vertically, then by counting rows where the renderer
+// counts lines.
+func (s *ListScreen) rowsFittingFrom(start int) int {
+	avail := s.listBodyLines()
 	if len(s.rows) == 0 {
 		return avail
 	}
-	used, count, start := 0, 0, s.windowStart
 	if start < 0 {
 		start = 0
 	}
+	used, count := 0, 0
 	for i := start; i < len(s.rows); i++ {
 		cost := 1
 		if s.rows[i].Subtitle != "" {
@@ -203,8 +245,12 @@ func (s *ListScreen) computeWindowSize() int {
 		used += cost
 		count++
 	}
-	if count < 2 {
-		count = 2
+	if count < 1 {
+		// One row over the budget beats zero rows: a window of none renders a
+		// list with no rows in it, and scrollIntoView's walk would never
+		// terminate. It takes a pane too short for a single fat row to get
+		// here, which 24 lines is not.
+		count = 1
 	}
 	return count
 }
@@ -333,25 +379,50 @@ func (s *ListScreen) applySort() {
 	s.scrollIntoView()
 }
 
+// scrollIntoView keeps the cursor inside the window AND re-derives how many
+// rows that window holds. The two cannot be separated: rowsFittingFrom packs
+// by the LINES each row renders, so the answer depends on which rows the
+// window starts at, and every key that moves the cursor moves that start.
 func (s *ListScreen) scrollIntoView() {
-	if s.windowSize <= 0 {
-		s.windowSize = listWindowSize
+	if len(s.rows) == 0 {
+		s.windowStart = 0
+		s.windowSize = s.rowsFittingFrom(0)
+		return
 	}
-	if s.cursor < s.windowStart {
+	if s.cursor < 0 {
+		s.cursor = 0
+	}
+	if s.cursor >= len(s.rows) {
+		s.cursor = len(s.rows) - 1
+	}
+	if s.windowStart > s.cursor {
 		s.windowStart = s.cursor
-	}
-	if s.cursor >= s.windowStart+s.windowSize {
-		s.windowStart = s.cursor - s.windowSize + 1
 	}
 	if s.windowStart < 0 {
 		s.windowStart = 0
 	}
-	if maxStart := len(s.rows) - s.windowSize; maxStart > 0 && s.windowStart > maxStart {
-		s.windowStart = maxStart
+	// Walk the start forward until the cursor is inside the window that start
+	// can actually afford, re-packing at each step because moving the start
+	// changes which rows are counted. It terminates at windowStart == cursor,
+	// where a window of one row is enough.
+	for s.windowStart < s.cursor && s.cursor >= s.windowStart+s.rowsFittingFrom(s.windowStart) {
+		s.windowStart++
 	}
-	if len(s.rows) <= s.windowSize {
-		s.windowStart = 0
+	// Then back, while the rows below still reach the end of the list: a
+	// window that runs off the end wastes pane on blank space (a taller
+	// terminal, or a filter that shortened the list, is the ordinary way to
+	// get there). Pulling back is only allowed while the cursor stays inside
+	// it — this is the old maxStart clamp, asked of the packed window instead
+	// of a row count.
+	for s.windowStart > 0 {
+		prev := s.windowStart - 1
+		fits := s.rowsFittingFrom(prev)
+		if prev+fits < len(s.rows) || prev+fits <= s.cursor {
+			break
+		}
+		s.windowStart = prev
 	}
+	s.windowSize = s.rowsFittingFrom(s.windowStart)
 }
 
 func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -483,9 +554,10 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 func (s *ListScreen) enterSearch() (Screen, tea.Cmd) {
 	s.searching = true
 	in := textinput.New()
-	in.Prompt = "search ▸ "
+	in.Prompt = listSearchPrompt
 	in.Placeholder = "name / tag / serial…"
 	in.CharLimit = 120
+	in.Width = listSearchInputWidth
 	in.SetValue(s.searchQuery)
 	in.CursorEnd()
 	in.Focus()

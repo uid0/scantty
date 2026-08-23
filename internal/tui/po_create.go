@@ -361,24 +361,28 @@ func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
 	desc.Prompt = ""
 	desc.Placeholder = "item description (freeform line)"
 	desc.CharLimit = 200
+	desc.Width = poInputWidth(poLineRowPrefix(poLineFieldDesc))
 	s.lineInputs[poLineFieldDesc] = desc
 
 	qty := textinput.New()
 	qty.Prompt = ""
 	qty.Placeholder = "quantity"
 	qty.CharLimit = 10
+	qty.Width = poInputWidth(poLineRowPrefix(poLineFieldQty))
 	s.lineInputs[poLineFieldQty] = qty
 
 	cost := textinput.New()
 	cost.Prompt = ""
 	cost.Placeholder = "unit cost (e.g. 12.50)"
 	cost.CharLimit = 20
+	cost.Width = poInputWidth(poLineRowPrefix(poLineFieldCost))
 	s.lineInputs[poLineFieldCost] = cost
 
 	date := textinput.New()
 	date.Prompt = ""
 	date.Placeholder = "YYYY-MM-DD (optional)"
 	date.CharLimit = 12
+	date.Width = poInputWidth(poLineRowPrefix(poLineFieldDate))
 	s.lineInputs[poLineFieldDate] = date
 
 	// PO-level notes, captured once in the review phase.
@@ -386,6 +390,7 @@ func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
 	poNotes.Prompt = ""
 	poNotes.Placeholder = "notes for the whole PO (optional)"
 	poNotes.CharLimit = 500
+	poNotes.Width = poInputWidth("▸ " + poNotesLabel)
 	s.poNotes = poNotes
 
 	// Picker search inputs (Phase 3b/3c).
@@ -393,15 +398,57 @@ func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
 	is.Prompt = ""
 	is.Placeholder = "filter by name / SKU"
 	is.CharLimit = 60
+	is.Width = poInputWidth(poItemFilterLabel)
 	s.itemSuppliersSearch = is
 
 	as := textinput.New()
 	as.Prompt = ""
 	as.Placeholder = "search (name / tag / serial)"
 	as.CharLimit = 60
+	as.Width = poInputWidth(poAssetSearchLabel)
 	s.assetsSearch = as
 
 	return s
+}
+
+// The fixed prefixes the four typed rows on these screens carry. Each is
+// stated ONCE: the renderer draws it and poInputWidth measures it, so the room
+// the caret is given and the room the row actually leaves cannot drift apart.
+const (
+	poNotesLabel       = "PO notes: "
+	poItemFilterLabel  = "filter: "
+	poAssetSearchLabel = "search: "
+)
+
+// poLineRowPrefix is the line form's own prefix for field i, as renderLinePhase
+// draws it: the focus marker, the label and its colon. The cost label toggles
+// between "Unit cost" and "Case cost", which are the same width, so the row
+// keeps its measurement when the basis flips.
+func poLineRowPrefix(i int) string {
+	return "▸ " + poLineFieldLabel(i) + ": "
+}
+
+// poInputWidth is how many cells a textinput may spend on a row whose fixed
+// prefix is `prefix`: the 51-column pane, less that prefix, less the one cell
+// bubbles renders for the cursor sitting past the end of the value.
+//
+// Setting it AT ALL is the point. With Width left at zero, bubbles'
+// handleOverflow returns early and View() emits the whole value plus the
+// cursor, so past the column where the row fills the pane clampToBox cut every
+// further keystroke off the right edge and the pane came back byte for byte
+// identical — the reported hang, reached by typing, in the PO-notes field this
+// screen's whole sacrifice order exists to keep on the pane VERTICALLY. With a
+// width the value SCROLLS instead and the caret is always the last thing on
+// the row. Measured against pickerPaneWidth for the same reason every fold on
+// these screens is: 51 is the width they are checked at.
+func poInputWidth(prefix string) int {
+	w := pickerPaneWidth - lipgloss.Width(prefix) - 1
+	if w < 8 {
+		// A prefix long enough to reach here would be the defect; eight cells
+		// of query still scroll rather than truncate.
+		w = 8
+	}
+	return w
 }
 
 func (s *PurchaseOrderCreateScreen) Title() string { return "New purchase order" }
@@ -3087,7 +3134,7 @@ func (s *PurchaseOrderCreateScreen) reviewTail(attribution bool) string {
 		tail.WriteString(pickerHint("agreement / association rows need more height") + "\n")
 	}
 	tail.WriteString("\n")
-	tail.WriteString("▸ " + StyleTitle.Render("PO notes: ") + s.poNotes.View() + "\n")
+	tail.WriteString("▸ " + StyleTitle.Render(poNotesLabel) + s.poNotes.View() + "\n")
 	return tail.String()
 }
 

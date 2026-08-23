@@ -246,6 +246,43 @@ touching any screen an operator drives:
   (`screenBodyHeight(24)` and `(30)`, scrolled and unscrolled), not just that
   `footerHint()` returns it — asserting the method's return value is what let
   every list ship with all eight sibling-surface keys past the 51-column cut.
+  Two positions are not enough either, and the FIXTURE is half the check: a
+  list row renders a title plus a line for a `Subtitle` and another for a
+  `MetricsLine`, so `listFixtureRows` shapes rows the way the loaders do
+  (plain, then subtitled, then metric'd — `purchaseOrderRows` leaves the
+  subtitle empty on a PO with no supplier and no total, `loadInventoryItems`
+  writes a metrics line only where the item has metrics) and
+  `TestList_TheFooterSurvivesEveryScrollPosition` walks the cursor down the
+  whole list. Rows of `listRow{ID, Title}` are ONE line each, which closed the
+  arithmetic on a body half the real height and passed every legibility
+  assertion over the defect below.
+- **A list window is measured in LINES and re-derived on every move.**
+  `rowsFittingFrom(start)` packs rows into `listBodyLines()` by what each one
+  will actually draw, so the answer depends on WHICH rows the window starts at
+  — and `scrollIntoView` therefore chooses the start and the size together,
+  every time, rather than keeping a size taken at load. Sizing once over the
+  title-only rows at the top of a list and holding it through the scroll put
+  twenty lines into an eighteen-line pane the moment the cursor reached rows
+  carrying a subtitle or a metrics line, and what `clampToBox` dropped was the
+  folded footer with `N new PO` in it: the same claim, off the same edge, for
+  the third time — horizontally, then vertically, then by counting rows where
+  the renderer counts lines.
+- **A textinput with no `Width` grows past its row, and `clampToBox` takes the
+  caret.** bubbles' `handleOverflow` returns early when `Width` is zero, so
+  `View()` emits the whole value: past the column where the row fills the pane
+  every further keystroke redrew it byte for byte — the reported hang, reached
+  by typing, in the PO-notes field the sacrifice order below spends rows
+  keeping on the pane vertically. Every typed row on these screens is measured
+  from the prefix it is drawn with (`poInputWidth` against `poNotesLabel`,
+  `poItemFilterLabel`, `poAssetSearchLabel` and `poLineRowPrefix`;
+  `listSearchInputWidth` against `listSearchPrompt`), so the value SCROLLS and
+  the caret is always the last thing on the row. The list box also RESERVES its
+  `  N match(es)` suffix, because a width makes bubbles pad a short value out
+  to it and an unreserved suffix would then be pushed off the pane on every
+  query rather than only on long ones. `TestPOTypedRows_EveryKeystrokeMovesTheRow`
+  and `TestList_SearchBoxCaretStaysOnThePane` type DISTINCT runes past the cut:
+  a viewport full of one repeated character looks the same however far it has
+  scrolled, so a test that holds one key down passes without scrolling at all.
 - **Folding a bar spends ROWS: move the row budget with it.** `clampToBox`
   truncates on both axes, so a hint folded onto three lines to survive the
   51-column cut then falls off the BOTTOM instead — the same claim, a different

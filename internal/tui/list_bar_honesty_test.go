@@ -182,15 +182,45 @@ func TestList_EveryWorkspaceListIsSwept(t *testing.T) {
 	}
 }
 
+// listFixtureRows builds rows the shape the real loaders build them, which is
+// the shape the pane has to survive: a row renders its title, plus a line for
+// a Subtitle and another for a MetricsLine. The loaders do not agree on which
+// — purchaseOrderRows sets a Subtitle for any PO carrying a supplier name or a
+// total and leaves it empty otherwise, loadInventoryItems sets a MetricsLine
+// when the item has metrics and a Subtitle when it does not — so a real list
+// is MIXED, and the cheap rows come wherever the data puts them.
+//
+// The order here is deliberate: plain rows FIRST, taller rows after. A window
+// sized once over the cheap rows and kept through the scroll is what put more
+// lines into the pane than it has, and the fixture these sweeps used to carry
+// (listRow{ID, Title} and nothing else) rendered one line per row, so the
+// arithmetic closed on a body half the height of the real one and every
+// legibility assertion below passed over it.
+func listFixtureRows(n int) []listRow {
+	rows := make([]listRow, 0, n)
+	for i := 0; i < n; i++ {
+		row := listRow{ID: fmt.Sprint(i + 1), Title: fmt.Sprintf("Row %d", i+1)}
+		switch {
+		case i < n/3:
+			// A PO with neither supplier name nor total: title only.
+		case i%2 == 0:
+			row.Subtitle = fmt.Sprintf("Acme Supply Company · $%d,234.56", i)
+		default:
+			row.MetricsLine = StyleTitle.Render("On hand: ") + "12  " +
+				StyleTitle.Render("Reorder: ") + "4"
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
 // listLoaded is the state every named key is meaningful in: enough rows that
 // the cursor can move in both directions.
 func listLoaded(build func() *ListScreen) *ListScreen {
 	s := build()
 	s.loading = false
 	s.windowSize = 3
-	for i := 0; i < 8; i++ {
-		s.rows = append(s.rows, listRow{ID: fmt.Sprint(i + 1), Title: fmt.Sprintf("Row %d", i+1)})
-	}
+	s.rows = listFixtureRows(8)
 	return s
 }
 
@@ -304,9 +334,7 @@ func listSized(t *testing.T, build func() *ListScreen, termHeight int) *ListScre
 	t.Helper()
 	s := build()
 	s.loading = false
-	for i := 0; i < 60; i++ {
-		s.rows = append(s.rows, listRow{ID: fmt.Sprint(i + 1), Title: fmt.Sprintf("Row %d", i+1)})
-	}
+	s.rows = listFixtureRows(60)
 	next, _ := s.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
 	return next.(*ListScreen)
 }
@@ -370,6 +398,114 @@ func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 					t.Errorf("the %s footer names %q but pressing it does nothing", surface.name, key)
 				case !named[key] && (changed || issued):
 					t.Errorf("the %s footer does not name %q, but pressing it acts", surface.name, key)
+				}
+			}
+		})
+	}
+}
+
+// TestList_TheFooterSurvivesEveryScrollPosition walks the cursor through a
+// whole list and requires, at every position, that the footer is still
+// readable and the highlighted row is still on the pane.
+//
+// The sweep above checks two positions (as opened, and after G). Two is not
+// enough, because how many LINES the window spends depends on which rows are
+// in it: the window is sized by packing rows into the body's line budget, and
+// a size taken at one start is wrong at another. Before the window was
+// re-derived on every move, a list whose first rows are title-only and whose
+// later rows carry a subtitle or a metrics line — the ordinary shape of the
+// purchasing and inventory lists — rendered twenty lines into an eighteen-line
+// pane the moment the cursor reached the taller rows, and what clampToBox
+// dropped off the bottom was the folded footer with "N new PO" in it.
+//
+// The cursor half matters for the same reason it does on the pickers: a
+// highlighted row the operator cannot see is a row they act on blind.
+func TestList_TheFooterSurvivesEveryScrollPosition(t *testing.T) {
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			for _, termHeight := range []int{24, 30} {
+				for _, key := range []string{"j", "pgdown"} {
+					s := listSized(t, surface.build, termHeight)
+					for step := 0; step < len(s.rows); step++ {
+						pane := listPaneLines(t, s, termHeight)
+						for _, segment := range strings.Split(s.footerHint(), " · ") {
+							if !listFooterLegible(t, s, termHeight, segment) {
+								t.Fatalf("the %s footer claims %q on a line the pane cuts off "+
+									"(height %d, %s x%d, cursor %d, window %d+%d):\n%s",
+									surface.name, segment, termHeight, key, step,
+									s.cursor, s.windowStart, s.windowSize, strings.Join(pane, "\n"))
+							}
+						}
+						if !listCursorRowOnPane(t, s, termHeight) {
+							t.Fatalf("the %s highlight is on a row the pane cuts off "+
+								"(height %d, %s x%d, cursor %d, window %d+%d):\n%s",
+								surface.name, termHeight, key, step,
+								s.cursor, s.windowStart, s.windowSize, strings.Join(pane, "\n"))
+						}
+						next, _ := s.Update(listRuneKey(key))
+						s = next.(*ListScreen)
+					}
+				}
+			}
+		})
+	}
+}
+
+// listCursorRowOnPane reports whether the row the cursor is on survives the
+// clip. bodyView marks it with "▸ ", and it is the only row so marked.
+func listCursorRowOnPane(t *testing.T, s *ListScreen, termHeight int) bool {
+	t.Helper()
+	if len(s.rows) == 0 {
+		return true
+	}
+	title := s.rows[s.cursor].Title
+	for _, line := range listPaneLines(t, s, termHeight) {
+		if strings.Contains(line, "▸ ") && strings.Contains(line, title) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestList_SearchBoxCaretStaysOnThePane is the typing half of the same rule
+// the sweeps above hold for the footer: a keystroke the operator cannot see is
+// a keystroke that did nothing, and a search box whose value has outgrown its
+// row cuts the caret off the right edge on every rune after it.
+//
+// Distinct runes, because a scrolling viewport full of one repeated character
+// looks the same however far it has scrolled.
+func TestList_SearchBoxCaretStaysOnThePane(t *testing.T) {
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			for _, termHeight := range []int{24, 30} {
+				s := listSized(t, surface.build, termHeight)
+				next, _ := s.Update(listRuneKey("/"))
+				s = next.(*ListScreen)
+				if !s.searching {
+					return // this list names no search key
+				}
+				row := func() string {
+					for _, line := range listPaneLines(t, s, termHeight) {
+						if strings.Contains(line, listSearchPrompt) {
+							return line
+						}
+					}
+					return "<not on the pane>"
+				}
+				before := row()
+				if before == "<not on the pane>" {
+					t.Fatalf("the search box is not on the 80x%d pane at all", termHeight)
+				}
+				for i := 0; i < 100; i++ {
+					next, _ := s.Update(listRuneKey(string(rune('a' + i%26))))
+					s = next.(*ListScreen)
+					after := row()
+					if after == before {
+						t.Fatalf("keystroke %d into the %s search box redrew the row byte for byte "+
+							"at 80x%d — the query has outgrown it and the pane is cutting the caret off:\n\t%q",
+							i+1, surface.name, termHeight, after)
+					}
+					before = after
 				}
 			}
 		})
