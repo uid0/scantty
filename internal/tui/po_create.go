@@ -249,6 +249,12 @@ type PurchaseOrderCreateScreen struct {
 	// dumping the operator in review.
 	editIndex  int
 	editReturn poPhase
+
+	// terminalHeight is the last size Root forwarded, and is what the cart
+	// windows against. Zero means "not sized yet" — a screen driven straight
+	// in a unit test — and windows nothing, because guessing a pane height
+	// would hide rows nobody asked to hide.
+	terminalHeight int
 }
 
 type poCreatedMsg struct {
@@ -379,6 +385,10 @@ func (s *PurchaseOrderCreateScreen) loadAgreements() tea.Cmd {
 
 func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalHeight = m.Height
+		return s, nil
+
 	case poCreateSuppliersLoadedMsg:
 		s.supplierLoading = false
 		if m.err != nil {
@@ -1929,11 +1939,14 @@ func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
 	}
 	if len(s.lines) > 0 {
 		b.WriteString("\n")
+		tail := "\n  " + StyleStatusOK.Render("d") + "  Done — review & submit    " +
+			StyleMuted.Render("(j/k highlight a line · ctrl+e edit it · x remove it)") + "\n"
 		// Highlight the same line the review cart would: j/k aim it, and
-		// ctrl+e / x act on it.
-		b.WriteString(s.renderCart(s.reviewCursor))
-		b.WriteString("\n  " + StyleStatusOK.Render("d") + "  Done — review & submit    " +
-			StyleMuted.Render("(j/k highlight a line · ctrl+e edit it · x remove it)") + "\n")
+		// ctrl+e / x act on it. Windowed against whatever the chooser above and
+		// the d-row below have already spent, so d stays on the pane.
+		budget := s.cartRowBudget(poRenderedRows(b.String()) + poRenderedRows(tail))
+		b.WriteString(s.renderCart(s.reviewCursor, budget))
+		b.WriteString(tail)
 	}
 	return b.String()
 }
@@ -1975,14 +1988,92 @@ func poCartTotal(lines []poCartLine) (total float64, noCost int) {
 	return total, noCost
 }
 
+// poCartWindow picks which cart rows to draw so the frame's LAST row — on the
+// review phase, the focused PO-notes input the operator is typing into — is
+// still on the pane. clampToBox drops from the bottom, so an unbounded cart
+// does not merely scroll off: it takes the field being typed into with it, and
+// a field that is not on screen is the "the screen is not telling me what is
+// happening" defect at its worst, because data is going into it.
+//
+// budget <= 0 means unbounded, which is what an unsized screen gets.
+func poCartWindow(total, highlight, budget int) (start, end int) {
+	if budget <= 0 || total <= budget {
+		return 0, total
+	}
+	if highlight < 0 || highlight >= total {
+		highlight = 0
+	}
+	start = highlight - budget/2
+	if start < 0 {
+		start = 0
+	}
+	end = start + budget
+	if end > total {
+		end = total
+		start = end - budget
+		if start < 0 {
+			start = 0
+		}
+	}
+	return start, end
+}
+
+// poRenderedRows counts the terminal rows a rendered chunk occupies.
+func poRenderedRows(chunk string) int {
+	if chunk == "" {
+		return 0
+	}
+	return len(strings.Split(strings.TrimSuffix(chunk, "\n"), "\n"))
+}
+
+// frameRows is what View() draws around every phase body: the folded help line,
+// its blank separator, the supplier header and its own separator, plus the
+// trailing newline and the error/pending line when one is showing.
+//
+// It is computed from the folded help rather than assumed to be one row. The
+// help line is the screen's action bar and now wraps to two or three rows on
+// several phases, and every row it gained came straight out of the bottom of
+// the pane.
+func (s *PurchaseOrderCreateScreen) frameRows() int {
+	n := poRenderedRows(pickerHint(s.helpText())) + 1
+	n += poRenderedRows(s.renderSupplierHeader()) + 1
+	n++ // the newline View writes after the phase body
+	if s.pending || s.errMsg != "" {
+		n++
+	}
+	return n
+}
+
+// cartRowBudget is how many cart LINE rows are left once the frame chrome and
+// bodyRows of the phase's own body have taken theirs. Reserves the cart's own
+// chrome too: its header, its total, the "priced from the supplier catalog"
+// caveat, and both scroll markers — over-reserving one row beats clipping one,
+// the same trade computeWindowSize makes on the list screens.
+func (s *PurchaseOrderCreateScreen) cartRowBudget(bodyRows int) int {
+	if s.terminalHeight <= 0 {
+		return 0
+	}
+	const cartChromeRows = 5
+	avail := screenBodyHeight(s.terminalHeight) - s.frameRows() - bodyRows - cartChromeRows
+	if avail < 3 {
+		avail = 3
+	}
+	return avail
+}
+
 // renderCart lists the staged lines and the running total. When highlight >= 0
 // the matching row is marked (used by the review phase and the source chooser's
 // cart list); pass -1 for a plain list. The total lives here rather than in
 // renderReviewPhase so both surfaces that show the cart also show what it costs.
-func (s *PurchaseOrderCreateScreen) renderCart(highlight int) string {
+func (s *PurchaseOrderCreateScreen) renderCart(highlight, rowBudget int) string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render(fmt.Sprintf("Cart (%d line(s))", len(s.lines))) + "\n")
-	for i, l := range s.lines {
+	start, end := poCartWindow(len(s.lines), highlight, rowBudget)
+	if start > 0 {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("    ↑ %d more above", start)) + "\n")
+	}
+	for i := start; i < end; i++ {
+		l := s.lines[i]
 		caret := "    "
 		if i == highlight {
 			caret = "  ▸ "
@@ -2001,6 +2092,9 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight int) string {
 			row = StyleSidebarItemActive.Render(row)
 		}
 		b.WriteString(row + "\n")
+	}
+	if end < len(s.lines) {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("    ↓ %d more below", len(s.lines)-end)) + "\n")
 	}
 	if len(s.lines) > 0 {
 		total, noCost := poCartTotal(s.lines)
@@ -2023,23 +2117,26 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight int) string {
 }
 
 func (s *PurchaseOrderCreateScreen) renderReviewPhase() string {
-	var b strings.Builder
-	b.WriteString(s.renderCart(s.reviewCursor))
+	// The tail is built FIRST so the cart can be windowed against what is left
+	// after it. Its last row is the focused PO-notes input, and that row is the
+	// one an unbounded cart used to push off the bottom of the pane.
+	var tail strings.Builder
 	// Repeat the agreement here, next to the cart it prices: review is the
 	// confirm-before-submit surface, and a long cart can push the header line
 	// well off the top of the terminal. Skipped is a choice worth seeing too,
 	// so this shows "(none)" as readily as a name — but still only when the
 	// supplier has agreements, since there is nothing to have chosen otherwise.
 	if row := s.renderAgreementRow(false); row != "" {
-		b.WriteString(row)
+		tail.WriteString(row)
 	}
 	// Same reasoning for the order-level associations: who the purchase is for
 	// is worth confirming next to the cart, and "(none)" is as much a choice
 	// here as a name is.
-	b.WriteString(s.renderAssocRows(false))
-	b.WriteString("\n")
-	b.WriteString("▸ " + StyleTitle.Render("PO notes: ") + s.poNotes.View() + "\n")
-	return b.String()
+	tail.WriteString(s.renderAssocRows(false))
+	tail.WriteString("\n")
+	tail.WriteString("▸ " + StyleTitle.Render("PO notes: ") + s.poNotes.View() + "\n")
+
+	return s.renderCart(s.reviewCursor, s.cartRowBudget(poRenderedRows(tail.String()))) + tail.String()
 }
 
 func (s *PurchaseOrderCreateScreen) renderLinePhase() string {

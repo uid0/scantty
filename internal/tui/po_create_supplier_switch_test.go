@@ -1,10 +1,15 @@
 package tui
 
 import (
+	"context"
+	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/uid0/scantty/internal/omsapi"
 )
 
 // po_create_supplier_switch_test.go — changing the supplier under a half-built
@@ -273,4 +278,70 @@ func TestPOSupplierSwitch_NoConfirmWhenThereIsNothingToLose(t *testing.T) {
 			t.Errorf("re-committing the same supplier lost %d line(s)", 2-len(screen.lines))
 		}
 	})
+}
+
+// TestPOReview_NotesInputStaysOnThePaneUnderALongCart: clampToBox drops rows
+// from the BOTTOM, and the review phase draws the focused PO-notes input last.
+// A cart long enough to fill the pane therefore took the field the operator is
+// typing into off the screen with it — and folding the help line onto three
+// rows made a 15-line cart, which the 'a' add-ALL flow produces routinely,
+// enough to do it.
+func TestPOReview_NotesInputStaysOnThePaneUnderALongCart(t *testing.T) {
+	for _, termHeight := range []int{24, 30} {
+		t.Run(fmt.Sprintf("height %d", termHeight), func(t *testing.T) {
+			fake := &poPickFake{catalog: 40, pageSize: 40}
+			srv := httptest.NewServer(fake.handler())
+			t.Cleanup(srv.Close)
+
+			deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+			screen := NewPurchaseOrderCreateScreen(deps)
+			r := newTestRoot(screen)
+			r.deps = deps
+			next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
+			r = next.(Root)
+			r = pump(t, r, screen.Init(), 0)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // commit the supplier
+
+			// Fifteen catalog lines, the size the reorder add-ALL flow is sized
+			// against, plus a line with no cost so the "priced from the supplier
+			// catalog" caveat row is present too.
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+			for i := 0; i < 15; i++ {
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // pick highlighted
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // add (qty prefilled)
+				if i < 14 {
+					r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+				}
+			}
+			if len(screen.lines) != 15 {
+				t.Fatalf("setup staged %d line(s), want 15", len(screen.lines))
+			}
+
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+			if screen.phase != poPhaseReview {
+				t.Fatalf("d did not open the review cart (phase %v)", screen.phase)
+			}
+
+			pane := clampToBox(screen.View(), screenBodyWidth(80), screenBodyHeight(termHeight))
+			if !strings.Contains(pane, "PO notes") {
+				t.Errorf("the focused PO-notes field is off the %d-row pane:\n%s",
+					screenBodyHeight(termHeight), pane)
+			}
+			// Typing has to land somewhere the operator can see it.
+			r = poType(t, r, "rush")
+			pane = clampToBox(screen.View(), screenBodyWidth(80), screenBodyHeight(termHeight))
+			if !strings.Contains(pane, "rush") {
+				t.Errorf("what the operator typed is not on the pane:\n%s", pane)
+			}
+			// And the cart says how much of itself is out of view rather than
+			// silently showing a subset.
+			if !strings.Contains(pane, "Cart (15 line(s))") {
+				t.Errorf("the cart no longer says how many lines it holds:\n%s", pane)
+			}
+			shown := strings.Count(pane, ") Widget ")
+			if shown < 15 && !strings.Contains(pane, "more below") && !strings.Contains(pane, "more above") {
+				t.Errorf("the cart shows %d of 15 lines and says nothing about the rest:\n%s", shown, pane)
+			}
+		})
+	}
 }

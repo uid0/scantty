@@ -158,15 +158,31 @@ touching any screen an operator drives:
   (`itemFilterNote`).
 - **A bar the operator cannot READ is not honest, it is absent.** The list
   sweep (`list_bar_honesty_test.go`) therefore checks each footer segment
-  survives `clampToBox` at 80 as a whole line, not just that `footerHint()`
-  returns it — asserting the method's return value is what let every list ship
-  with all eight sibling-surface keys past the 51-column cut.
+  survives `clampToBox` as a whole line at 80 columns AND at a real pane height
+  (`screenBodyHeight(24)` and `(30)`, scrolled and unscrolled), not just that
+  `footerHint()` returns it — asserting the method's return value is what let
+  every list ship with all eight sibling-surface keys past the 51-column cut.
+- **Folding a bar spends ROWS: move the row budget with it.** `clampToBox`
+  truncates on both axes, so a hint folded onto three lines to survive the
+  51-column cut then falls off the BOTTOM instead — the same claim, a different
+  edge. Any row reservation must be DERIVED from what will be drawn
+  (`ListScreen.footerRows` is `1 + len(pickerWrap(footerHint(), …))`;
+  `PurchaseOrderCreateScreen.frameRows` measures the folded help line), never a
+  constant, and a growing top chunk must window whatever the frame draws LAST —
+  on the PO review phase that is the focused notes input, and an operator typing
+  into a field that is off the pane is the worst form of this defect.
+- **Assert a mid-flight state while it is still mid-flight.** Driving the fake
+  to completion and then checking is how a note that concluded "0 in catalog"
+  during an eight-page walk passed its own test. Split the load command out
+  (`r.Update` without `pump`), assert, then pump.
 - **An empty slice is three different facts.** "Sells nothing", "the walk is
   still out" and "the walk failed" all look like `len(rows) == 0`, and only the
   first is safe to act on. The flag that means an ANSWER is the one recording
   which supplier the rows came back for (`itemSuppliersFor`); `catalogAnswered`
-  / `catalogVerdictNote` gate on it, and a working frame never defers to a note
-  that might be a conclusion.
+  / `catalogVerdict` gate on it, and a working frame never defers to a note
+  that might be a conclusion. Every wording of a filter outcome goes through the
+  one gated choke point (`itemFilterOrVerdict`) — the live count typed into the
+  box reached the ungated wording on its own the first time round.
 - **Do not silently discard staged work.** Committing a different supplier
   invalidates every cart line carrying an `item_supplier_id` (that id IS the
   item↔supplier pair, and the backend accepts it without checking it against

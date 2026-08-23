@@ -426,6 +426,14 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 			// warning it is. The asset path next door already does this.
 			return s.itemSuppliersNote.say(s.noCatalogSentence(), StatusWarn)
 		}
+		if s.itemSuppliersTyping || strings.TrimSpace(s.itemSuppliersSearch.Value()) != "" {
+			// A query was typed while the walk was out. Answer THAT rather than
+			// the whole catalog — and through the shared gate, so the box being
+			// open decides whether '/' may be named. With the box open '/' is a
+			// character going into the query, not a key that searches.
+			s.itemSuppliersNote = s.itemFilterOrVerdict("")
+			return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
+		}
 		return s.itemSuppliersNote.say(
 			fmt.Sprintf("%d catalog item(s) loaded · / searches", len(m.rows)), StatusOK)
 	case poAssetsLoadedMsg:
@@ -715,8 +723,13 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 			s.itemSuppliersCur = 0
 		}
 		// Live count as they type, so "nothing matches" is visible BEFORE the
-		// enter that used to answer it with silence.
-		s.itemSuppliersNote = itemFilterNote(s.itemSuppliersSearch.Value(), len(s.itemSuppliers), len(s.itemSuppliersAll), "", true)
+		// enter that used to answer it with silence — but only once the walk
+		// has ANSWERED. Filtering an empty slice that is empty because the
+		// request has not come back yet produced `no match for "w" (0 in
+		// catalog)`, which is a conclusion about a catalog nobody has seen:
+		// the same found-nothing / could-not-tell conflation catalogVerdict
+		// exists to close, reached from the typing path instead of a key arm.
+		s.itemSuppliersNote = s.itemFilterOrVerdict("")
 		return s, cmd
 	}
 	switch m.String() {
@@ -897,39 +910,59 @@ func (s *PurchaseOrderCreateScreen) catalogAnswered() bool {
 // here too, because a key pressed mid-walk used to report the conclusion of a
 // walk that had not finished.
 func (s *PurchaseOrderCreateScreen) catalogVerdictNote() tea.Cmd {
+	s.itemSuppliersNote = s.catalogVerdict()
+	return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
+}
+
+// catalogVerdict is the same four-way answer as a pickerNote, without posting
+// it. The typing path needs the wording on every keystroke but must not fire a
+// status flash per rune, so the note and the flash are separated here.
+func (s *PurchaseOrderCreateScreen) catalogVerdict() pickerNote {
 	way := pickerWayOut
 	if s.itemSuppliersTyping {
 		way = searchBoxWayOut
 	}
 	switch {
 	case s.itemSuppliersLoad:
-		return s.itemSuppliersNote.say(
-			"still looking up the items "+s.supplierLabel()+" sells…", StatusInfo)
+		return pickerNote{"still looking up the items " + s.supplierLabel() + " sells…", StatusInfo}
 	case s.itemSuppliersErr != "":
 		// r is a letter going into the query while the box is open, so it is
 		// only named when it is really the retry.
 		if s.itemSuppliersTyping {
-			return s.itemSuppliersNote.say("the catalog lookup failed\n"+searchBoxWayOut, StatusError)
+			return pickerNote{"the catalog lookup failed\n" + searchBoxWayOut, StatusError}
 		}
-		return s.itemSuppliersNote.say(
-			"the catalog lookup failed\nr retries the lookup · "+pickerWayOut, StatusError)
+		return pickerNote{"the catalog lookup failed\nr retries the lookup · " + pickerWayOut, StatusError}
 	case !s.catalogAnswered():
 		if s.itemSuppliersTyping {
-			return s.itemSuppliersNote.say(
-				"this supplier's catalog has not been looked up yet\n"+searchBoxWayOut, StatusWarn)
+			return pickerNote{"this supplier's catalog has not been looked up yet\n" + searchBoxWayOut, StatusWarn}
 		}
-		return s.itemSuppliersNote.say(
-			"this supplier's catalog has not been looked up yet\nr looks it up · "+pickerWayOut, StatusWarn)
+		return pickerNote{"this supplier's catalog has not been looked up yet\nr looks it up · " + pickerWayOut, StatusWarn}
 	}
-	return s.itemSuppliersNote.say(s.noCatalogSentence()+"\n"+way, StatusWarn)
+	return pickerNote{s.noCatalogSentence() + "\n" + way, StatusWarn}
 }
 
 // reportItemFilterState is the note for "the filter changed and nothing was
 // picked". prefix, when given, leads with what the key did.
 func (s *PurchaseOrderCreateScreen) reportItemFilterState(prefix string) tea.Cmd {
-	q := strings.TrimSpace(s.itemSuppliersSearch.Value())
-	s.itemSuppliersNote = itemFilterNote(q, len(s.itemSuppliers), len(s.itemSuppliersAll), prefix, s.itemSuppliersTyping)
+	s.itemSuppliersNote = s.itemFilterOrVerdict(prefix)
 	return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
+}
+
+// itemFilterOrVerdict is the ONE place a filter outcome is worded, and the one
+// gate in front of it: a filter result is only a fact once the catalog walk has
+// answered. Filtering a slice that is empty because the request has not come
+// back yet reads out as `no match for "w" (0 in catalog)` — a conclusion about
+// a catalog nobody has seen, which is the found-nothing / could-not-tell
+// conflation catalogVerdict exists to close. Both the live count typed into the
+// box and the note esc leaves behind come through here so neither can drift
+// past the gate on its own.
+func (s *PurchaseOrderCreateScreen) itemFilterOrVerdict(prefix string) pickerNote {
+	if !s.catalogAnswered() {
+		return s.catalogVerdict()
+	}
+	return itemFilterNote(
+		strings.TrimSpace(s.itemSuppliersSearch.Value()),
+		len(s.itemSuppliers), len(s.itemSuppliersAll), prefix, s.itemSuppliersTyping)
 }
 
 // itemFilterNote words the three outcomes of a filter. A zero-match note names
@@ -1069,7 +1102,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		case tea.KeyEsc:
 			s.assetsTyping = false
 			s.assetsSearch.Blur()
-			return s, s.assetsNote.say("search closed · j/k move · enter picks", StatusInfo)
+			return s, s.assetsSearchClosedNote()
 		case tea.KeyEnter:
 			// Unlike the item picker this really does go off the terminal, so
 			// the note says so BEFORE the request leaves: the reply repaints it
@@ -1171,6 +1204,26 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		)
 	}
 	return s, nil
+}
+
+// assetsSearchClosedNote answers esc out of the asset search box. It has to
+// branch on what is actually in the list: the unconditional "j/k move · enter
+// picks" it used to post names three keys that do nothing over an empty one —
+// j/k hit the no-op cursor guards and enter answers "no asset matches" — which
+// is the bar-honesty rule broken by the frame's own note. The item picker's esc
+// path already branches this way through reportItemFilterState.
+func (s *PurchaseOrderCreateScreen) assetsSearchClosedNote() tea.Cmd {
+	if len(s.assets) > 0 {
+		return s.assetsNote.say(
+			fmt.Sprintf("search closed · %d asset(s) · j/k move · enter picks", len(s.assets)), StatusInfo)
+	}
+	if q := strings.TrimSpace(s.assetsSearch.Value()); q != "" {
+		return s.assetsNote.say(
+			"search closed · no asset matches "+strconv.Quote(pickerClip(q, 16))+
+				"\n/ edits the search · b picks another source", StatusWarn)
+	}
+	return s.assetsNote.say(
+		"search closed · this supplier has no assets on file\n/ searches · b picks another source", StatusWarn)
 }
 
 func (s *PurchaseOrderCreateScreen) renderAssetPick() string {

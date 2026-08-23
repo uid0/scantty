@@ -643,7 +643,8 @@ func TestPOCreate_PendingHeaderLookupsSayTheyArePending(t *testing.T) {
 // key it names cut off the right-hand edge.
 func poPaneLines(t *testing.T, s Screen) []string {
 	t.Helper()
-	return strings.Split(clampToBox(s.View(), screenBodyWidth(80), 400), "\n")
+	return strings.Split(
+		clampToBox(s.View(), screenBodyWidth(80), screenBodyHeight(30)), "\n")
 }
 
 // poPaneHasLine reports whether some WHOLE clipped line contains want.
@@ -829,7 +830,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			frame := tc.frame(s)
 			poAssertFits(t, tc.name, frame)
 
-			clipped := clampToBox(frame, screenBodyWidth(80), 400)
+			clipped := clampToBox(frame, screenBodyWidth(80), screenBodyHeight(30))
 			for _, want := range tc.want {
 				found := false
 				for _, line := range strings.Split(clipped, "\n") {
@@ -1280,5 +1281,183 @@ func TestPOItemPicker_ZeroMatchNoteMatchesTheBoxState(t *testing.T) {
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
 	if screen.phase != poPhaseSource {
 		t.Fatalf("b on the closed zero-match frame did not pick another source (phase %v)", screen.phase)
+	}
+}
+
+// poNoteLines is a pickerNote as the pane will show it: rendered, then clipped
+// to screenBodyWidth(80). Assert a note's own wording here rather than over the
+// whole pane — the phase help line at the top names the picker's keys
+// generally, so a pane-wide substring check cannot tell a note that claims a
+// dead key from the bar that legitimately lists it.
+func poNoteLines(t *testing.T, n pickerNote) []string {
+	t.Helper()
+	return strings.Split(clampToBox(n.render(), screenBodyWidth(80), 10), "\n")
+}
+
+// poNoteSays reports whether the rendered, clipped note carries want.
+func poNoteSays(t *testing.T, n pickerNote, want string) bool {
+	t.Helper()
+	for _, line := range poNoteLines(t, n) {
+		if strings.Contains(line, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPOItemPicker_TypingMidWalkDoesNotConcludeTheCatalogIsEmpty: the live
+// filter note runs on every keystroke, and mid-walk it was filtering a slice
+// that is empty because the request has not come back. `no match for "w" (0 in
+// catalog)` is a statement about a catalog nobody has seen yet, and esc then
+// flashes that sentence onto the status bar.
+//
+// Asserted WHILE the walk is out, not after it lands — checking only the
+// settled state is how the previous test over this journey missed it.
+func TestPOItemPicker_TypingMidWalkDoesNotConcludeTheCatalogIsEmpty(t *testing.T) {
+	fake := &poPickFake{catalog: 40, pageSize: 5} // 8 sequential page requests
+	r, screen := poPickerAt(t, fake, 80)
+
+	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = next.(Root)
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = next.(Root)
+	if !screen.itemSuppliersTyping || !screen.itemSuppliersLoad {
+		t.Fatalf("setup: want the box open over an in-flight walk (typing=%v load=%v)",
+			screen.itemSuppliersTyping, screen.itemSuppliersLoad)
+	}
+
+	// Every keystroke, still mid-walk.
+	for _, ch := range "wid" {
+		next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		r = next.(Root)
+		if !screen.itemSuppliersLoad {
+			t.Fatal("the walk finished early — this test needs it in flight")
+		}
+		// The body says the work is out...
+		poWantPaneLine(t, screen, "Looking up the items")
+		// ...and the note behind it holds no verdict about a catalog nobody
+		// has seen. It is what esc is about to put on the status bar.
+		if poNoteSays(t, screen.itemSuppliersNote, "in catalog") {
+			t.Errorf("typing mid-walk concluded a catalog size: %q", screen.itemSuppliersNote.text)
+		}
+		if !poNoteSays(t, screen.itemSuppliersNote, "still looking up") {
+			t.Errorf("typing mid-walk does not say the walk is still out: %q", screen.itemSuppliersNote.text)
+		}
+	}
+
+	// esc mid-walk flashes that note. It must not announce a verdict either.
+	next, cmd := r.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	r = next.(Root)
+	r = pump(t, r, cmd, 0)
+	if !screen.itemSuppliersLoad {
+		t.Fatal("esc finished the walk — this assertion needs it in flight")
+	}
+	if out := r.View(); strings.Contains(out, "in catalog") {
+		t.Errorf("esc mid-walk flashed a catalog verdict:\n%s", out)
+	} else if !strings.Contains(out, "still looking up") {
+		t.Errorf("esc mid-walk does not say the walk is still out:\n%s", out)
+	}
+
+	// When the rows land, the note answers the query that was typed.
+	r = pump(t, r, load, 0)
+	if screen.itemSuppliersLoad {
+		t.Fatal("the walk never finished")
+	}
+	poWantPaneLine(t, screen, "match")
+	poAssertFits(t, "rows landed after a mid-walk search", screen.View())
+}
+
+// TestPOItemPicker_RowsLandingWithTheBoxOpenDoNotAdvertiseSlash: '/' is a
+// character going into the query while the box is open, so the loaded note may
+// not name it as the key that searches.
+func TestPOItemPicker_RowsLandingWithTheBoxOpenDoNotAdvertiseSlash(t *testing.T) {
+	fake := &poPickFake{catalog: 40, pageSize: 5}
+	r, screen := poPickerAt(t, fake, 80)
+
+	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = next.(Root)
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = next.(Root)
+	r = poType(t, r, "Widget 38")
+	r = pump(t, r, load, 0)
+
+	if !screen.itemSuppliersTyping {
+		t.Fatal("setup: the box closed before the rows landed")
+	}
+	if poNoteSays(t, screen.itemSuppliersNote, "/ searches") {
+		t.Errorf("the loaded note advertises / while / is a character in the query: %q",
+			screen.itemSuppliersNote.text)
+	}
+	if !poNoteSays(t, screen.itemSuppliersNote, "enter picks") {
+		t.Errorf("the loaded note does not name the key that finishes the search: %q",
+			screen.itemSuppliersNote.text)
+	}
+	poAssertFits(t, "rows landed with the box open", screen.View())
+
+	// And that key works.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.phase != poPhaseLine {
+		t.Fatalf("the key the note named did not work (phase %v)", screen.phase)
+	}
+	if got := screen.lineInputs[poLineFieldDesc].Value(); got != "Widget 38" {
+		t.Errorf("staged %q, want Widget 38", got)
+	}
+}
+
+// TestPOAssetPicker_SearchClosedNoteNamesOnlyLiveKeys: esc out of the asset
+// search used to post "j/k move · enter picks" unconditionally, and that note
+// IS the body of the empty frame — so it named three keys over nothing to move
+// through and nothing to pick.
+func TestPOAssetPicker_SearchClosedNoteNamesOnlyLiveKeys(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+
+	// Search for something that is not there, so the list is left empty.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "hovercraft")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(screen.assets) != 0 {
+		t.Fatalf("setup: the search returned %d asset(s)", len(screen.assets))
+	}
+
+	// Re-open the box and back out of it: THIS is the note that overwrote the
+	// honest one.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+
+	poWantPaneLine(t, screen, "search closed")
+	if poNoteSays(t, screen.assetsNote, "j/k move") || poNoteSays(t, screen.assetsNote, "enter picks") {
+		t.Errorf("the empty asset frame names keys that do nothing: %q", screen.assetsNote.text)
+	}
+	if !poNoteSays(t, screen.assetsNote, "no asset matches") {
+		t.Errorf("the empty asset frame does not say why it is empty: %q", screen.assetsNote.text)
+	}
+	poAssertFits(t, "asset search closed over an empty list", screen.View())
+
+	// The keys it DOES name work: / reopens the box.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	if !screen.assetsTyping {
+		t.Error("the note names / but / did not reopen the search")
+	}
+
+	// With rows present the same path may name j/k and enter, because there
+	// they do something.
+	for range "hovercraft" {
+		next, _ := r.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		r = next.(Root)
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(screen.assets) == 0 {
+		t.Fatalf("setup: clearing the query returned no assets")
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	if !poNoteSays(t, screen.assetsNote, "j/k move") || !poNoteSays(t, screen.assetsNote, "enter picks") {
+		t.Errorf("with rows on screen the note stopped naming the keys that work: %q", screen.assetsNote.text)
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.phase != poPhaseLine {
+		t.Fatalf("the note named enter but enter did not pick (phase %v)", screen.phase)
 	}
 }

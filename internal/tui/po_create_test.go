@@ -1269,7 +1269,7 @@ func TestPOEditLine_EditsQtyAndDateOnABulkAddedLine(t *testing.T) {
 		t.Errorf("sibling line changed: %+v", s.lines[0].item)
 	}
 	// The staged date is visible in the cart, and re-opening the edit restores it.
-	if out := s.renderCart(1); !strings.Contains(out, "exp 2026-09-01") {
+	if out := s.renderCart(1, 0); !strings.Contains(out, "exp 2026-09-01") {
 		t.Errorf("cart should show the per-line expected date:\n%s", out)
 	}
 	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
@@ -1364,7 +1364,7 @@ func TestPOEditLine_CatalogCostOverrideRoundTrips(t *testing.T) {
 	if got := s.lines[0].item.UnitCost; got == nil || math.Abs(*got-3.25) > 1e-12 {
 		t.Fatalf("unit_cost after an untouched edit = %v, want 3.25", got)
 	}
-	if out := s.renderCart(0); !strings.Contains(out, "@ $3.25") {
+	if out := s.renderCart(0, 0); !strings.Contains(out, "@ $3.25") {
 		t.Errorf("cart should show the overridden cost:\n%s", out)
 	}
 
@@ -1542,7 +1542,7 @@ func TestPORenderCart_TotalAndTypeBadges(t *testing.T) {
 		poCartLineFor(omsapi.PurchaseOrderCreateItem{Description: "Freight", Quantity: 1, UnitCost: cost(0.50)}, "Freight"),
 	}
 
-	out := s.renderCart(-1)
+	out := s.renderCart(-1, 0)
 	for _, want := range []string{"[Inventory item]", "[Asset]", "[Freeform]"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cart missing type badge %s:\n%s", want, out)
@@ -1576,7 +1576,7 @@ func TestPORenderCart_FlagsCatalogPricedLines(t *testing.T) {
 		poCartLineFor(omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 5, UnitCost: &unit}, "Priced"),
 		poCartLineFor(omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 5}, "Unpriced"),
 	}
-	out := s.renderCart(0)
+	out := s.renderCart(0, 0)
 	if !strings.Contains(out, "Total: $10.00") {
 		t.Errorf("total should sum only the priced line:\n%s", out)
 	}
@@ -1589,7 +1589,7 @@ func TestPORenderCart_FlagsCatalogPricedLines(t *testing.T) {
 // $0.00 order.
 func TestPORenderCart_EmptyDrawsNoTotal(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
-	if out := s.renderCart(-1); strings.Contains(out, "Total:") {
+	if out := s.renderCart(-1, 0); strings.Contains(out, "Total:") {
 		t.Errorf("empty cart should draw no total:\n%s", out)
 	}
 }

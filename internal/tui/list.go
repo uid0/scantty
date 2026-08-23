@@ -158,20 +158,20 @@ type ListScreen struct {
 //	1 row for the "Sort: … · N rows" header
 //	1 row each for ↑/↓ indicators when the list overflows the window
 //	1 blank separator above the hint
-//	1 row for the hint line itself
+//	however many rows the FOLDED hint actually occupies
 func (s *ListScreen) computeWindowSize() int {
 	const listHeaderRows = 1
-	const listFooterRows = 2 // blank + hint
 	// Reserve both indicator slots up front; we'd rather waste one row
 	// when only one indicator shows than clip a row when the list
 	// overflows.
 	const listIndicatorRows = 2
 
-	avail := screenBodyHeight(s.terminalHeight) - listHeaderRows - listFooterRows - listIndicatorRows
-	// The search overlay adds an input line + its hint + a blank separator
-	// above the list body; reserve those rows so results don't overflow.
+	avail := screenBodyHeight(s.terminalHeight) - listHeaderRows - s.footerRows() - listIndicatorRows
+	// The search overlay adds an input line + its folded bar + a blank
+	// separator above the list body; reserve those rows so results don't
+	// overflow.
 	if s.searching {
-		avail -= 3
+		avail -= 2 + len(pickerWrap(listSearchBarHint, pickerPaneWidth))
 	}
 	if avail < 2 {
 		avail = 2
@@ -608,7 +608,7 @@ func (s *ListScreen) View() string {
 			head.WriteString("  " + StyleMuted.Render(fmt.Sprintf("%d match(es)", len(s.rows))))
 		}
 		head.WriteString("\n")
-		head.WriteString(pickerHint("↑/↓ move · enter open · esc cancel") + "\n\n")
+		head.WriteString(pickerHint(listSearchBarHint) + "\n\n")
 		return head.String() + s.bodyView()
 	}
 	return s.bodyView()
@@ -689,7 +689,13 @@ func (s *ListScreen) bodyView() string {
 	}
 
 	b.WriteString("\n")
-	// FOLDED, not truncated. footerHint is one long sentence and the content
+	// FOLDED, not truncated — and computeWindowSize reserves footerRows() for
+	// what the fold produces. Folding without moving that budget is how the
+	// first attempt at this traded a horizontal cut for a vertical one and
+	// dropped the same claim off the BOTTOM of the pane instead of the right
+	// edge; the number of rows the bar occupies is derived from the bar, never
+	// assumed.
+	// footerHint is one long sentence and the content
 	// pane is 51 columns at 80 (screenBodyWidth), where clampToBox cuts rather
 	// than wraps — the fixed prefix alone filled all 51, so every sibling-
 	// surface key the footer restored ("N new PO" and its seven siblings) was
@@ -699,6 +705,19 @@ func (s *ListScreen) bodyView() string {
 	// so this needs nothing from the shared JD Edwards layer.
 	b.WriteString(pickerHint(s.footerHint()))
 	return b.String()
+}
+
+// listSearchBarHint is the search overlay's action bar. A named constant so the
+// renderer and computeWindowSize's row reservation read the same string — a bar
+// whose rows are budgeted from a different literal is a bar that gets cut.
+const listSearchBarHint = "↑/↓ move · enter open · esc cancel"
+
+// footerRows is how many rows the folded footer occupies, plus its blank
+// separator. Derived from the hint that will actually be drawn rather than
+// assumed: the hint grows a segment whenever a list gains a sibling surface,
+// and a constant here silently spends the extra row out of the pane's bottom.
+func (s *ListScreen) footerRows() int {
+	return 1 + len(pickerWrap(s.footerHint(), pickerPaneWidth))
 }
 
 // footerHint is the list's action bar: every key that works here, and nothing

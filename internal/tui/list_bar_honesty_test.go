@@ -203,21 +203,41 @@ func listRuneKey(k string) tea.KeyMsg {
 // claim the operator cannot see is not a claim, and asserting the method's
 // return value is exactly the blindness that let it ship: every list's footer
 // was cut at 51 columns with all eight restored keys past the cut.
-func listPaneLines(t *testing.T, s *ListScreen) []string {
+func listPaneLines(t *testing.T, s *ListScreen, termHeight int) []string {
 	t.Helper()
-	return strings.Split(clampToBox(s.View(), screenBodyWidth(80), 400), "\n")
+	return strings.Split(
+		clampToBox(s.View(), screenBodyWidth(80), screenBodyHeight(termHeight)), "\n")
 }
 
 // listFooterLegible reports whether one footer segment ("N new PO") survives
-// the clip whole, on a single visible line.
-func listFooterLegible(t *testing.T, s *ListScreen, segment string) bool {
+// the clip whole, on a single visible line of a REAL pane.
+//
+// The height matters as much as the width and for the same reason. The first
+// pass at this helper clamped at 400 rows, which no terminal has, so folding
+// the footer onto three lines looked fine here while clampToBox was dropping
+// the third one — the same claim, cut off a different edge.
+func listFooterLegible(t *testing.T, s *ListScreen, termHeight int, segment string) bool {
 	t.Helper()
-	for _, line := range listPaneLines(t, s) {
+	for _, line := range listPaneLines(t, s, termHeight) {
 		if strings.Contains(line, segment) {
 			return true
 		}
 	}
 	return false
+}
+
+// listSized builds a list the way the runtime does: sized through a
+// WindowSizeMsg so computeWindowSize runs, and filled with enough rows to
+// overflow the window it computes.
+func listSized(t *testing.T, build func() *ListScreen, termHeight int) *ListScreen {
+	t.Helper()
+	s := build()
+	s.loading = false
+	for i := 0; i < 60; i++ {
+		s.rows = append(s.rows, listRow{ID: fmt.Sprint(i + 1), Title: fmt.Sprintf("Row %d", i+1)})
+	}
+	next, _ := s.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
+	return next.(*ListScreen)
 }
 
 // TestList_FooterNamesExactlyTheKeysThatWork is the rule, as a rule, over every
@@ -238,10 +258,23 @@ func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 			loaded := listLoaded(surface.build)
 			named := listNamedKeys(t, loaded.footerHint())
 
-			for _, segment := range strings.Split(loaded.footerHint(), " · ") {
-				if !listFooterLegible(t, loaded, segment) {
-					t.Errorf("the %s footer claims %q on a line the 51-column pane cuts off:\n%s",
-						surface.name, segment, strings.Join(listPaneLines(t, loaded), "\n"))
+			// Legibility on a REAL pane, at both supported heights and in both
+			// scroll positions. A footer claim that survives the 51-column cut
+			// only to be dropped off the bottom by clampToBox is just as unread.
+			for _, termHeight := range []int{24, 30} {
+				for _, scrolled := range []bool{false, true} {
+					sized := listSized(t, surface.build, termHeight)
+					if scrolled {
+						next, _ := sized.Update(listRuneKey("G"))
+						sized = next.(*ListScreen)
+					}
+					for _, segment := range strings.Split(sized.footerHint(), " · ") {
+						if !listFooterLegible(t, sized, termHeight, segment) {
+							t.Errorf("the %s footer claims %q on a line the pane cuts off (height %d, scrolled %v):\n%s",
+								surface.name, segment, termHeight, scrolled,
+								strings.Join(listPaneLines(t, sized, termHeight), "\n"))
+						}
+					}
 				}
 			}
 
@@ -334,9 +367,9 @@ func TestList_NOnThePurchaseOrderListOpensTheNewOrderScreen(t *testing.T) {
 	// The CLAIM has to be on the operator's screen, not merely in the string
 	// the screen would like to show. This assertion used to read footerHint()
 	// and so passed while "N new PO" sat 20 columns past the right edge.
-	if !listFooterLegible(t, s, "N new PO") {
-		t.Fatalf("the Purchasing footer does not offer a legible N at 80 columns:\n%s",
-			strings.Join(listPaneLines(t, s), "\n"))
+	if !listFooterLegible(t, s, 30, "N new PO") {
+		t.Fatalf("the Purchasing footer does not offer a legible N at 80x30:\n%s",
+			strings.Join(listPaneLines(t, s, 30), "\n"))
 	}
 	if out := r.View(); !strings.Contains(out, "N new PO") {
 		t.Fatalf("the 80-column render does not carry the N claim:\n%s", out)
