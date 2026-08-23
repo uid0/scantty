@@ -3061,7 +3061,7 @@ func (s *PurchaseOrderCreateScreen) bodyRowBudget(otherRows int) int {
 }
 
 // cartRowBudget is bodyRowBudget with the cart's own chrome taken off —
-// over-reserving one row beats clipping one, the same trade computeWindowSize
+// over-reserving one row beats clipping one, the same trade listBodyLines
 // makes on the list screens.
 func (s *PurchaseOrderCreateScreen) cartRowBudget(bodyRows int) int {
 	return s.bodyRowBudget(bodyRows + s.cartChromeRows())

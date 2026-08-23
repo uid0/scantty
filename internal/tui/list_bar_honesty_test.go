@@ -346,8 +346,8 @@ func listFooterLegible(t *testing.T, s *ListScreen, termHeight int, segment stri
 }
 
 // listSized builds a list the way the runtime does: sized through a
-// WindowSizeMsg so computeWindowSize runs, and filled with enough rows to
-// overflow the window it computes.
+// WindowSizeMsg so scrollIntoView re-derives the window (rowsFittingFrom packs
+// by rendered LINES), and filled with enough rows to overflow it.
 func listSized(t *testing.T, build func() *ListScreen, termHeight int) *ListScreen {
 	t.Helper()
 	s := build()
