@@ -1512,21 +1512,33 @@ func (c *Client) ListItemSuppliers(ctx context.Context, q url.Values) (*Page[Ite
 	return GetPage[ItemSupplier](ctx, c, "/api/inventory/item-suppliers/", q)
 }
 
-// ListItemSuppliersForSupplier is a convenience wrapper for the
-// supplier-scoped item picker in the New PO flow. It only loads
-// active rows so the warden doesn't see discontinued lines.
+// ListItemSuppliersForSupplier loads EVERY active item this supplier sells, for
+// the supplier-scoped item picker in the New PO flow. Only active rows, so the
+// warden doesn't see discontinued lines.
 //
-// ItemSupplierViewSet does not accept ?search= on the backend today,
-// so the picker filters client-side after fetch. Typical supplier
-// catalogs are small enough that one or two pages cover everything.
-func (c *Client) ListItemSuppliersForSupplier(ctx context.Context, supplierID int, page int) (*Page[ItemSupplier], error) {
+// ItemSupplierViewSet does not accept ?search= on the backend today, so the
+// picker filters client-side over whatever this returns. That makes the page
+// count a correctness property, not a performance one: this used to fetch page
+// ONE and drop the envelope's `next`, on the reasoning that "typical supplier
+// catalogs are small enough that one or two pages cover everything" — and for a
+// supplier whose catalog ran past a page, every item after it was invisible to
+// the picker's filter. The screen then answered a search for a real item with
+// "No inventory items match", which is a different and false statement, and the
+// operator had no key that could reach the item at all. So it pages: an
+// unreachable item is worth more than a saved round trip, and the picker says
+// it is looking the catalog up while this runs.
+func (c *Client) ListItemSuppliersForSupplier(ctx context.Context, supplierID int) ([]ItemSupplier, error) {
 	q := url.Values{}
 	q.Set("supplier_id", strconv.Itoa(supplierID))
 	q.Set("active_only", "true")
-	if page > 0 {
-		q.Set("page", strconv.Itoa(page))
+	var all []ItemSupplier
+	if err := IterPages[ItemSupplier](ctx, c, "/api/inventory/item-suppliers/", q, func(batch []ItemSupplier) error {
+		all = append(all, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	return c.ListItemSuppliers(ctx, q)
+	return all, nil
 }
 
 // ListItemSuppliersForItem loads every supplier link for one inventory item,

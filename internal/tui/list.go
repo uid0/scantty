@@ -464,6 +464,14 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "enter":
 			return s.openSelected()
 		}
+		// The uppercase sibling-surface accelerators. Last, so a letter the list
+		// itself binds always wins — and checked from the SAME table the footer
+		// prints, which is what stops the two from drifting apart again.
+		for _, sc := range listShortcuts(s.spec.kind) {
+			if m.String() == sc.key {
+				return s, SwitchTo(workspaceForKind(s.spec.kind), sc.open(s.deps))
+			}
+		}
 	}
 	return s, nil
 }
@@ -681,6 +689,20 @@ func (s *ListScreen) bodyView() string {
 	}
 
 	b.WriteString("\n")
+	b.WriteString(StyleMuted.Render(s.footerHint()))
+	return b.String()
+}
+
+// footerHint is the list's action bar: every key that works here, and nothing
+// else. A method rather than a local so the honesty sweep can read the CLAIM
+// structurally and press each key it makes, instead of scraping the last line
+// of a rendered pane (list_bar_honesty_test.go).
+//
+// Each conditional arm is the bar's half of a guard the handler also applies —
+// `f` only with a filter cycle, `/` only with a search loader, `n` only with a
+// create form. Keep them paired: an arm added here without its guard in Update
+// is the exact defect this shape exists to prevent.
+func (s *ListScreen) footerHint() string {
 	hint := "j/k move · pgup/pgdn page · g/G top/bottom · s sort"
 	if s.hasFilters() {
 		hint += " · f filter"
@@ -695,33 +717,70 @@ func (s *ListScreen) bodyView() string {
 	if s.spec.newScreen != nil {
 		hint += " · n new"
 	}
-	// Surface the per-workspace create shortcuts so an operator doesn't
-	// have to memorize them. `N` is the global hotkey for the
-	// PurchaseOrderCreateScreen (app.go:194) but the prompt was never
-	// rendered, so the create form was effectively invisible. Same
-	// thing for `Q` (the existing pending-reorders queue), advertised
-	// here from the Purchasing list so an operator looking for
-	// in-flight reorders can find them.
-	switch s.spec.kind {
-	case "purchase_orders":
-		hint += " · N new PO · Q pending reorders"
-	case "inventory_items":
-		// `I` is a global hotkey (app.go) that opens the create-item form
-		// from anywhere; advertise it here where an operator looks for it.
-		// Editing/deleting an item lives on its detail screen (E / x).
-		hint += " · I new item · G categories · L locations · U suppliers"
-	case "work_orders":
-		// The Maintenance landing lists work orders; `M` (global) opens the
-		// PM-item list, where PM items are created/edited and their actions
-		// (complete / clone / generate-WO) live.
-		hint += " · M PM items"
-	case "assets":
-		// `A` is the global new-asset hotkey (app.go). Edit/delete of an
-		// existing asset live on its detail screen (E / x).
-		hint += " · A new asset"
+	for _, sc := range listShortcuts(s.spec.kind) {
+		hint += " · " + sc.key + " " + sc.label
 	}
-	b.WriteString(StyleMuted.Render(hint))
-	return b.String()
+	return hint
+}
+
+// listShortcut is one SIBLING SURFACE a list advertises in its footer: an
+// uppercase letter, the words printed after it, and the screen it opens.
+//
+// It exists because the footer used to name these as a hand-written string —
+// "· N new PO · Q pending reorders" and its four siblings — pointing at global
+// letter accelerators in app.go. Phase 3 of the redesign deleted every one of
+// those globals ("the root holds no letter", app.go) and moved their
+// destinations into the nav tree. The hint strings stayed. The result was that
+// EIGHT advertised keys did nothing at all — N, Q, I, L, U, M, A dead, and G
+// worse than dead, since the same footer already binds G to "go to bottom" —
+// and the one the captain reached for first was N on the purchase-order list.
+//
+// A hint appended as a literal beside a handler that never learned about it can
+// only drift. So the letter, the words and the destination are ONE record, read
+// by the footer and by Update, and the honesty sweep walks this table: a key
+// here is named and works, or it is not here at all.
+//
+// The case carries meaning. LOWERCASE acts on this list (j/k move, s sort, f
+// filter, r refresh, n create, enter open); UPPERCASE leaves it for another
+// surface of the same workspace. G is the exception that proves it, and is why
+// categories is C: `G` was already the list's own go-to-bottom.
+type listShortcut struct {
+	key   string
+	label string
+	open  func(Deps) Screen
+}
+
+// listShortcuts is the per-kind table. Every destination here is also a row of
+// the nav tree (workspaceSurfaces, route.go) — these are accelerators for the
+// surface an operator on this list reaches for most, not the only way there.
+func listShortcuts(kind string) []listShortcut {
+	switch kind {
+	case "purchase_orders":
+		return []listShortcut{
+			{"N", "new PO", func(d Deps) Screen { return NewPurchaseOrderCreateScreen(d) }},
+			{"Q", "pending reorders", func(d Deps) Screen { return NewReorderQueueScreen(d) }},
+		}
+	case "inventory_items":
+		// Editing/deleting an item lives on its detail screen (E / x).
+		return []listShortcut{
+			{"I", "new item", func(d Deps) Screen { return NewInventoryItemFormScreen(d, "") }},
+			{"C", "categories", func(d Deps) Screen { return NewCategoryListScreen(d) }},
+			{"L", "locations", func(d Deps) Screen { return NewLocationListScreen(d) }},
+			{"U", "suppliers", func(d Deps) Screen { return NewSupplierListScreen(d) }},
+		}
+	case "work_orders":
+		// The Maintenance landing lists work orders; PM items are created,
+		// edited and acted on (complete / clone / generate-WO) over there.
+		return []listShortcut{
+			{"M", "PM items", func(d Deps) Screen { return NewMaintenanceItemsScreen(d) }},
+		}
+	case "assets":
+		// Edit/delete of an existing asset live on its detail screen (E / x).
+		return []listShortcut{
+			{"A", "new asset", func(d Deps) Screen { return NewAssetFormScreen(d, "") }},
+		}
+	}
+	return nil
 }
 
 func loadInventoryItems(ctx context.Context, deps Deps) ([]listRow, error) {

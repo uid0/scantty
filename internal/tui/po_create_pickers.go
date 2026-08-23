@@ -21,6 +21,101 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Saying something — the rule these pickers broke
+// ---------------------------------------------------------------------------
+
+// Every operator action on these screens that performs work off the terminal
+// must report that it is WORKING, and must report FAILURE. A key that declines
+// to act must say why. The pickers used to answer several keys with a bare
+// `return s, nil`, which redraws a screen byte-for-byte identical to the one
+// before the press — and from the operator's seat a keystroke that changes
+// nothing and says nothing is indistinguishable from a wedged program.
+//
+// That is what the "the screen just hangs after I press enter" report actually
+// was. Nothing was blocked and nothing was in flight: enter inside the item
+// picker's search box only CLOSED the box (the pick needed a second enter), and
+// enter over an empty filtered list returned nil. Both redrew the same pixels,
+// so the operator concluded the program had stopped. The three states below —
+// working, succeeded, failed — are now all visible, and no arm of these
+// switches is allowed to be silent.
+
+// pickerNote is a picker's own answer to the last keypress, rendered in the
+// screen BODY. The status bar carries the same words, but a Flash expires after
+// four seconds (status.go) and the operator who pressed enter and saw nothing is
+// exactly the operator still staring at the picker a minute later — so the body
+// line is the one that has to survive.
+type pickerNote struct {
+	text  string
+	level StatusLevel
+}
+
+// render styles the note for the BODY. text may carry newlines: at 80 columns
+// the screen pane is 51 wide (AGENTS.md) and Root.View() TRUNCATES rather than
+// wraps, so a note that says two things says them on two lines — a sentence
+// whose second half is clipped off is the silence this whole file exists to
+// remove, wearing a tick mark.
+func (n pickerNote) render() string {
+	if n.text == "" {
+		return ""
+	}
+	mark, style := "", StyleMuted
+	switch n.level {
+	case StatusError:
+		mark, style = "✗ ", StyleStatusError
+	case StatusWarn:
+		mark, style = "! ", StyleStatusWarn
+	case StatusOK:
+		mark, style = "✓ ", StyleStatusOK
+	}
+	lines := strings.Split(n.text, "\n")
+	out := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if i == 0 {
+			out = append(out, style.Render(mark+line))
+			continue
+		}
+		// Continuation lines are muted and indented under the mark: they carry
+		// the way OUT of the state, not the state itself.
+		out = append(out, StyleMuted.Render("  "+line))
+	}
+	return strings.Join(out, "\n")
+}
+
+// flash is the note reduced to ONE line for the status bar, which has no room
+// for the continuation.
+func (n pickerNote) flash() string {
+	if i := strings.IndexByte(n.text, '\n'); i >= 0 {
+		return n.text[:i]
+	}
+	return n.text
+}
+
+// say records the note and flashes the same words on the status bar. Both, not
+// either: the bar is where an operator's eye already goes for "did that work",
+// and the body line is what is still there once the flash has gone.
+func (n *pickerNote) say(text string, level StatusLevel) tea.Cmd {
+	n.text, n.level = text, level
+	return Status(n.flash(), level)
+}
+
+// pickerClip bounds an operator-supplied string before it goes into a note. The
+// pane is 51 columns at the terminal's narrowest supported width and Root.View()
+// truncates, so an unbounded search term or supplier name would push the rest of
+// the sentence — the part naming the key to press — off the right edge.
+func pickerClip(text string, max int) string {
+	r := []rune(text)
+	if len(r) <= max {
+		return text
+	}
+	if max <= 1 {
+		return string(r[:max])
+	}
+	return string(r[:max-1]) + "…"
+}
+
+func (n *pickerNote) clear() { n.text, n.level = "", StatusInfo }
+
+// ---------------------------------------------------------------------------
 // Async loaders + msg types
 // ---------------------------------------------------------------------------
 
@@ -70,11 +165,11 @@ func (s *PurchaseOrderCreateScreen) loadItemSuppliersForSupplier() tea.Cmd {
 	}
 	supplierID := s.supplierID
 	return func() tea.Msg {
-		page, err := deps.OMS.ListItemSuppliersForSupplier(ctx, supplierID, 0)
+		rows, err := deps.OMS.ListItemSuppliersForSupplier(ctx, supplierID)
 		if err != nil {
 			return poItemSuppliersLoadedMsg{err: err}
 		}
-		return poItemSuppliersLoadedMsg{rows: page.Results}
+		return poItemSuppliersLoadedMsg{rows: rows}
 	}
 }
 
@@ -109,6 +204,7 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 			s.reorderLoadErr = m.err.Error()
 			return Status("load reorder items failed: "+m.err.Error(), StatusError)
 		}
+		s.reorderLoadErr = ""
 		s.reorderItems = m.items
 		s.reorderCursor = 0
 		// Selections index into the list we just replaced — drop them so a
@@ -118,20 +214,38 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 		s.itemSuppliersLoad = false
 		if m.err != nil {
 			s.itemSuppliersErr = m.err.Error()
-			return Status("load inventory items failed: "+m.err.Error(), StatusError)
+			s.itemSuppliersNote.clear() // the error line answers for the screen
+			return Status("looking up this supplier's items failed: "+m.err.Error(), StatusError)
 		}
+		// Clear the PREVIOUS failure. renderItemPick shows the error instead of
+		// the list, so a stale string left here would hide a load that worked.
+		s.itemSuppliersErr = ""
 		s.itemSuppliersAll = m.rows
 		s.applyItemSupplierFilter()
 		s.itemSuppliersCur = 0
+		return s.itemSuppliersNote.say(
+			fmt.Sprintf("%d catalog item(s) loaded · / searches", len(m.rows)), StatusOK)
 	case poAssetsLoadedMsg:
 		s.assetsLoading = false
 		if m.err != nil {
 			s.assetsErr = m.err.Error()
-			return Status("load assets failed: "+m.err.Error(), StatusError)
+			s.assetsNote.clear()
+			return Status("looking up this supplier's assets failed: "+m.err.Error(), StatusError)
 		}
+		s.assetsErr = ""
 		s.assets = m.rows
 		s.assetsHasNext = m.hasNext
 		s.assetsCursor = 0
+		if len(m.rows) == 0 {
+			// A search that found nothing is a RESULT, not a blank screen: say
+			// what was searched for so the operator can tell "no such asset"
+			// from "I mistyped".
+			if q := strings.TrimSpace(s.assetsSearch.Value()); q != "" {
+				return s.assetsNote.say("no asset matches "+strconv.Quote(pickerClip(q, 16))+"\n/ edits the search · b picks another source", StatusWarn)
+			}
+			return s.assetsNote.say("this supplier has no assets on file", StatusWarn)
+		}
+		return s.assetsNote.say(fmt.Sprintf("%d asset(s) · enter picks the highlighted row", len(m.rows)), StatusOK)
 	}
 	return nil
 }
@@ -139,7 +253,8 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 // applyItemSupplierFilter populates itemSuppliers from itemSuppliersAll
 // using the search-input value (case-insensitive substring on
 // ItemName / SupplierSKU). Backend has no ?search= on this endpoint
-// today, so we do it client-side over the loaded page.
+// today, so we do it client-side over the whole catalog — which
+// ListItemSuppliersForSupplier pages in for exactly this reason.
 func (s *PurchaseOrderCreateScreen) applyItemSupplierFilter() {
 	q := strings.ToLower(strings.TrimSpace(s.itemSuppliersSearch.Value()))
 	if q == "" {
@@ -209,8 +324,13 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 			}
 			return s, s.addReorderLines(picked)
 		}
+		if len(s.reorderItems) == 0 {
+			// Nothing to stage. Say so rather than answering the key with the
+			// blank redraw that reads as a wedge.
+			return s, Status("nothing flagged for reorder under this supplier — b picks another line source", StatusWarn)
+		}
 		if s.reorderCursor < 0 || s.reorderCursor >= len(s.reorderItems) {
-			return s, nil
+			s.reorderCursor = 0
 		}
 		it := s.reorderItems[s.reorderCursor]
 		qty := it.SuggestedQuantity
@@ -229,7 +349,10 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 		// line stays single-basis (qpp 0) — the case-cost toggle is offered
 		// from the inventory-items picker, which does expose qpp. (op-7j8v)
 		s.enterLinePhase(it.ItemSupplierID, nil, desc, qty, unitCost, 0, 0)
-		return s, textinput.Blink
+		return s, tea.Batch(
+			Status("picked "+desc+" — set quantity and cost, enter adds the line", StatusOK),
+			textinput.Blink,
+		)
 	}
 	return s, nil
 }
@@ -302,13 +425,15 @@ func (s *PurchaseOrderCreateScreen) addReorderLines(items []omsapi.ReorderDataIt
 
 func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 	if s.reorderLoading {
-		return StyleMuted.Render("Loading reorder-queue suggestions…")
+		return StyleMuted.Render("Looking up what " + s.supplierLabel() + " has flagged for reorder…")
 	}
 	if s.reorderLoadErr != "" {
-		return StyleStatusError.Render("✗ " + s.reorderLoadErr)
+		return StyleStatusError.Render("✗ reading the reorder queue failed: "+s.reorderLoadErr) + "\n" +
+			StyleMuted.Render("b picks another line source · esc cancels the order")
 	}
 	if len(s.reorderItems) == 0 {
-		return StyleMuted.Render("Nothing flagged for reorder under this supplier.")
+		return StyleMuted.Render("Nothing flagged for reorder under this supplier.") + "\n" +
+			StyleMuted.Render("b picks another line source · esc cancels the order")
 	}
 	var b strings.Builder
 	b.WriteString(renderWindowedList(
@@ -351,13 +476,14 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 	if s.itemSuppliersTyping {
 		switch m.Type {
 		case tea.KeyEsc:
+			// Close the box but KEEP the filter — this is the browse path, so
+			// it has to say that the rows still on screen are a filtered subset
+			// and that j/k now move again.
 			s.itemSuppliersTyping = false
-			return s, nil
+			s.itemSuppliersSearch.Blur()
+			return s, s.reportItemFilterState("search closed")
 		case tea.KeyEnter:
-			s.itemSuppliersTyping = false
-			s.applyItemSupplierFilter()
-			s.itemSuppliersCur = 0
-			return s, nil
+			return s, s.commitSearchedItem()
 		}
 		var cmd tea.Cmd
 		s.itemSuppliersSearch, cmd = s.itemSuppliersSearch.Update(m)
@@ -365,6 +491,9 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 		if s.itemSuppliersCur >= len(s.itemSuppliers) {
 			s.itemSuppliersCur = 0
 		}
+		// Live count as they type, so "nothing matches" is visible BEFORE the
+		// enter that used to answer it with silence.
+		s.itemSuppliersNote = itemFilterNote(s.itemSuppliersSearch.Value(), len(s.itemSuppliers), len(s.itemSuppliersAll), "")
 		return s, cmd
 	}
 	switch m.String() {
@@ -384,32 +513,146 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 	case "/":
 		s.itemSuppliersTyping = true
 		s.itemSuppliersSearch.Focus()
-		return s, textinput.Blink
+		return s, tea.Batch(
+			s.itemSuppliersNote.say("type to search · enter picks the match\nesc closes the search and keeps the filter", StatusInfo),
+			textinput.Blink,
+		)
 	case "enter":
-		if s.itemSuppliersCur < 0 || s.itemSuppliersCur >= len(s.itemSuppliers) {
-			return s, nil
-		}
-		row := s.itemSuppliers[s.itemSuppliersCur]
-		id := row.ID
-		unitCost := 0.0
-		if v, err := strconv.ParseFloat(string(row.UnitCost), 64); err == nil {
-			unitCost = v
-		}
-		pkgCost := 0.0
-		if v, err := strconv.ParseFloat(string(row.PackageCost), 64); err == nil {
-			pkgCost = v
-		}
-		desc := row.ItemName
-		if desc == "" {
-			desc = row.SupplierSKU
-		}
-		// PackQuantity (quantity_per_package) drives the case-cost toggle: when
-		// > 1 the line form offers per-case entry prefilled from package_cost
-		// (deriving unit_cost = case_cost / qpp — op-7j8v).
-		s.enterLinePhase(&id, nil, desc, 1, unitCost, pkgCost, row.PackQuantity)
-		return s, textinput.Blink
+		return s, s.commitHighlightedItem()
 	}
 	return s, nil
+}
+
+// commitSearchedItem is enter inside the item picker's SEARCH box, and the
+// centre of the "it just kinda hangs there" report.
+//
+// It used to set typing=false, re-apply the filter and return nil. Every one of
+// those is invisible: the filter had already been applied on the keystroke
+// before, so the redraw was byte-for-byte what was already on screen — same
+// rows, same caret still blinking in the search box. The pick needed a SECOND
+// enter, which nothing on the screen said. The operator's model ("enter selects
+// the item") was the right one; the screen's ("enter closes the box") was never
+// stated anywhere.
+//
+// So enter now selects, with the one exception that protects the cart:
+//
+//   - exactly one row matches → take it. This is also the SCANNER path, since a
+//     barcode arrives as a burst of runes plus enter, and a scan that resolves
+//     to one item must be one press.
+//   - several match → do NOT guess which. Close the box, hand j/k back, and say
+//     how many matched and what to press. The screen visibly changes and names
+//     the next key, which is the whole difference from the old behaviour.
+//   - none match → keep the box OPEN and focused so the query can be edited in
+//     place, and say what was searched for. This is the state that used to be a
+//     dead end: enter over an empty list returned nil forever, and no key on the
+//     screen could reach the item.
+func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
+	s.applyItemSupplierFilter()
+	q := strings.TrimSpace(s.itemSuppliersSearch.Value())
+	switch {
+	case len(s.itemSuppliers) == 0:
+		s.itemSuppliersCur = 0
+		s.itemSuppliersNote = itemFilterNote(q, 0, len(s.itemSuppliersAll), "")
+		return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
+	case len(s.itemSuppliers) == 1:
+		s.itemSuppliersTyping = false
+		s.itemSuppliersSearch.Blur()
+		s.itemSuppliersCur = 0
+		return s.pickItemSupplier(0)
+	default:
+		s.itemSuppliersTyping = false
+		s.itemSuppliersSearch.Blur()
+		if s.itemSuppliersCur < 0 || s.itemSuppliersCur >= len(s.itemSuppliers) {
+			s.itemSuppliersCur = 0
+		}
+		return s.reportItemFilterState("")
+	}
+}
+
+// commitHighlightedItem is enter over the item list itself. The empty case is
+// the other half of the dead end: with no rows there is nothing to pick, and
+// answering that with nil is how the picker told the operator nothing at all.
+func (s *PurchaseOrderCreateScreen) commitHighlightedItem() tea.Cmd {
+	if len(s.itemSuppliers) == 0 {
+		q := strings.TrimSpace(s.itemSuppliersSearch.Value())
+		s.itemSuppliersNote = itemFilterNote(q, 0, len(s.itemSuppliersAll), "")
+		return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
+	}
+	if s.itemSuppliersCur < 0 || s.itemSuppliersCur >= len(s.itemSuppliers) {
+		s.itemSuppliersCur = 0
+	}
+	return s.pickItemSupplier(s.itemSuppliersCur)
+}
+
+// pickItemSupplier stages row i as the line under construction and says which
+// item it took. Naming the item matters more here than anywhere else on the
+// screen: the operator pressed enter over a filtered list, and "which of the
+// rows did it take" is the question the old silence left open.
+func (s *PurchaseOrderCreateScreen) pickItemSupplier(i int) tea.Cmd {
+	row := s.itemSuppliers[i]
+	id := row.ID
+	unitCost := 0.0
+	if v, err := strconv.ParseFloat(string(row.UnitCost), 64); err == nil {
+		unitCost = v
+	}
+	pkgCost := 0.0
+	if v, err := strconv.ParseFloat(string(row.PackageCost), 64); err == nil {
+		pkgCost = v
+	}
+	desc := row.ItemName
+	if desc == "" {
+		desc = row.SupplierSKU
+	}
+	// PackQuantity (quantity_per_package) drives the case-cost toggle: when
+	// > 1 the line form offers per-case entry prefilled from package_cost
+	// (deriving unit_cost = case_cost / qpp — op-7j8v).
+	s.enterLinePhase(&id, nil, desc, 1, unitCost, pkgCost, row.PackQuantity)
+	s.itemSuppliersNote.clear() // the picker is behind us; the line form speaks now
+	label := desc
+	if label == "" {
+		label = fmt.Sprintf("item-supplier #%d", id)
+	}
+	return tea.Batch(
+		Status("picked "+label+" — set quantity and cost, enter adds the line", StatusOK),
+		textinput.Blink,
+	)
+}
+
+// reportItemFilterState is the note for "the filter changed and nothing was
+// picked". prefix, when given, leads with what the key did.
+func (s *PurchaseOrderCreateScreen) reportItemFilterState(prefix string) tea.Cmd {
+	q := strings.TrimSpace(s.itemSuppliersSearch.Value())
+	s.itemSuppliersNote = itemFilterNote(q, len(s.itemSuppliers), len(s.itemSuppliersAll), prefix)
+	return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
+}
+
+// itemFilterNote words the three outcomes of a filter. A zero-match note names
+// the query AND the catalog size, because those two facts together are what
+// tell the operator whether to retype or to conclude this supplier does not
+// sell the thing — "No inventory items match" alone said neither, and said it
+// about a catalog that (before ListItemSuppliersForSupplier paged) might not
+// even have been fully loaded.
+func itemFilterNote(query string, matched, total int, prefix string) pickerNote {
+	lead := ""
+	if prefix != "" {
+		lead = prefix + " · "
+	}
+	q := strconv.Quote(pickerClip(query, 16))
+	switch {
+	case query == "":
+		return pickerNote{fmt.Sprintf("%s%d item(s) · enter picks the highlighted row", lead, total), StatusInfo}
+	case matched == 0:
+		return pickerNote{
+			fmt.Sprintf("no match for %s (%d in catalog)\nedit the search · esc then b for another source", q, total),
+			StatusWarn,
+		}
+	case matched == 1:
+		return pickerNote{fmt.Sprintf("%s1 of %d match %s · enter picks it", lead, total, q), StatusOK}
+	}
+	return pickerNote{
+		fmt.Sprintf("%s%d of %d match %s · j/k choose · enter picks", lead, matched, total, q),
+		StatusOK,
+	}
 }
 
 func (s *PurchaseOrderCreateScreen) renderItemPick() string {
@@ -418,16 +661,30 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 		b.WriteString(StyleMuted.Render("filter: ") + s.itemSuppliersSearch.View() + "\n\n")
 	}
 	if s.itemSuppliersLoad {
-		b.WriteString(StyleMuted.Render("Loading inventory items…"))
+		// Name the WORK, not the wait. "Loading…" tells the operator a
+		// rectangle is busy; this tells them which request is out and against
+		// whom, which is the difference between a status line and a spinner.
+		b.WriteString(StyleMuted.Render("Looking up the items " + s.supplierLabel() + " sells…"))
 		return b.String()
 	}
 	if s.itemSuppliersErr != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.itemSuppliersErr))
+		b.WriteString(StyleStatusError.Render("✗ looking up this supplier's items failed: "+s.itemSuppliersErr) + "\n")
+		b.WriteString(StyleMuted.Render("b picks another line source · esc cancels the order"))
 		return b.String()
 	}
 	if len(s.itemSuppliers) == 0 {
-		b.WriteString(StyleMuted.Render("No inventory items match."))
+		// Never the bare "No inventory items match." this used to print: that
+		// sentence is the same whether the supplier sells nothing, the search
+		// missed, or the catalog failed to load, and it names no key out.
+		b.WriteString(s.itemSuppliersNote.render())
+		if s.itemSuppliersNote.text == "" {
+			b.WriteString(StyleMuted.Render(s.supplierLabel() + " has no active catalog items on file."))
+		}
+		b.WriteString("\n" + StyleMuted.Render("b picks another line source · esc cancels the order"))
 		return b.String()
+	}
+	if note := s.itemSuppliersNote.render(); note != "" {
+		b.WriteString(note + "\n\n")
 	}
 	b.WriteString(renderWindowedList(
 		len(s.itemSuppliers), s.itemSuppliersCur,
@@ -466,13 +723,28 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		switch m.Type {
 		case tea.KeyEsc:
 			s.assetsTyping = false
-			return s, nil
+			s.assetsSearch.Blur()
+			return s, s.assetsNote.say("search closed · j/k move · enter picks", StatusInfo)
 		case tea.KeyEnter:
+			// Unlike the item picker this really does go off the terminal, so
+			// the note says so BEFORE the request leaves: the reply repaints it
+			// with the result (handlePickerLoaded), and a slow or failed lookup
+			// leaves the operator reading "searching…" rather than a screen that
+			// has not moved.
 			s.assetsTyping = false
+			s.assetsSearch.Blur()
 			s.assetsPage = 1
 			s.assetsLoading = true
 			s.assetsErr = ""
-			return s, s.loadAssetsForSupplier(s.assetsSearch.Value())
+			q := strings.TrimSpace(s.assetsSearch.Value())
+			what := "this supplier's assets"
+			if q != "" {
+				what = strconv.Quote(q)
+			}
+			return s, tea.Batch(
+				s.assetsNote.say("searching "+what+"…", StatusInfo),
+				s.loadAssetsForSupplier(s.assetsSearch.Value()),
+			)
 		}
 		var cmd tea.Cmd
 		s.assetsSearch, cmd = s.assetsSearch.Update(m)
@@ -495,22 +767,46 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 	case "/":
 		s.assetsTyping = true
 		s.assetsSearch.Focus()
-		return s, textinput.Blink
+		return s, tea.Batch(
+			s.assetsNote.say("type to search · enter runs the search", StatusInfo),
+			textinput.Blink,
+		)
 	case "]":
-		if s.assetsHasNext {
-			s.assetsPage++
-			s.assetsLoading = true
-			return s, s.loadAssetsForSupplier(s.assetsSearch.Value())
+		// The two paging keys are named only alongside a page that exists, so
+		// the bar stays honest — but the arm still has to answer when the state
+		// moved underneath the operator between the render and the press.
+		if !s.assetsHasNext {
+			return s, s.assetsNote.say(fmt.Sprintf("already on the last page (page %d)", s.assetsPage), StatusWarn)
 		}
+		s.assetsPage++
+		s.assetsLoading = true
+		s.assetsErr = ""
+		return s, tea.Batch(
+			s.assetsNote.say(fmt.Sprintf("loading page %d…", s.assetsPage), StatusInfo),
+			s.loadAssetsForSupplier(s.assetsSearch.Value()),
+		)
 	case "[":
-		if s.assetsPage > 1 {
-			s.assetsPage--
-			s.assetsLoading = true
-			return s, s.loadAssetsForSupplier(s.assetsSearch.Value())
+		if s.assetsPage <= 1 {
+			return s, s.assetsNote.say("already on the first page", StatusWarn)
 		}
+		s.assetsPage--
+		s.assetsLoading = true
+		s.assetsErr = ""
+		return s, tea.Batch(
+			s.assetsNote.say(fmt.Sprintf("loading page %d…", s.assetsPage), StatusInfo),
+			s.loadAssetsForSupplier(s.assetsSearch.Value()),
+		)
 	case "enter":
+		if len(s.assets) == 0 {
+			// Same dead end the item picker had: nothing to pick is a fact the
+			// operator has to be told, not a reason to answer with nil.
+			if q := strings.TrimSpace(s.assetsSearch.Value()); q != "" {
+				return s, s.assetsNote.say("no asset matches "+strconv.Quote(pickerClip(q, 16))+"\n/ edits the search · b picks another source", StatusWarn)
+			}
+			return s, s.assetsNote.say("no assets to pick\nb picks another line source", StatusWarn)
+		}
 		if s.assetsCursor < 0 || s.assetsCursor >= len(s.assets) {
-			return s, nil
+			s.assetsCursor = 0
 		}
 		a := s.assets[s.assetsCursor]
 		// Asset.ID is a polyglot `any` (UUID strings + int rows both
@@ -523,7 +819,11 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		}
 		// Assets are not case-packed (qpp 0): single per-unit cost, unchanged.
 		s.enterLinePhase(nil, &idStr, desc, 1, 0, 0, 0)
-		return s, textinput.Blink
+		s.assetsNote.clear()
+		return s, tea.Batch(
+			Status("picked "+desc+" — set quantity and cost, enter adds the line", StatusOK),
+			textinput.Blink,
+		)
 	}
 	return s, nil
 }
@@ -534,16 +834,24 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 		b.WriteString(StyleMuted.Render("search: ") + s.assetsSearch.View() + "\n\n")
 	}
 	if s.assetsLoading {
-		b.WriteString(StyleMuted.Render("Loading assets…"))
+		b.WriteString(StyleMuted.Render("Looking up the assets " + s.supplierLabel() + " supplied…"))
 		return b.String()
 	}
 	if s.assetsErr != "" {
-		b.WriteString(StyleStatusError.Render("✗ " + s.assetsErr))
+		b.WriteString(StyleStatusError.Render("✗ looking up this supplier's assets failed: "+s.assetsErr) + "\n")
+		b.WriteString(StyleMuted.Render("/ retries with a search · b picks another line source · esc cancels the order"))
 		return b.String()
 	}
 	if len(s.assets) == 0 {
-		b.WriteString(StyleMuted.Render("No assets match."))
+		b.WriteString(s.assetsNote.render())
+		if s.assetsNote.text == "" {
+			b.WriteString(StyleMuted.Render(s.supplierLabel() + " has no assets on file."))
+		}
+		b.WriteString("\n" + StyleMuted.Render("/ searches · b picks another line source · esc cancels the order"))
 		return b.String()
+	}
+	if note := s.assetsNote.render(); note != "" {
+		b.WriteString(note + "\n\n")
 	}
 	b.WriteString(renderWindowedList(
 		len(s.assets), s.assetsCursor,

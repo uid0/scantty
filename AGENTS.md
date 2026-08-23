@@ -83,7 +83,21 @@ note, and is the authority):
   the pilot and `po_edit_jde_test.go` is where the layout and key scheme are
   pinned. Extend that layer — do not hand-roll a second style beside it.
 - **A key the bar does not name must do nothing**, and a key it names must do
-  something. Tests assert both.
+  something. Tests assert both. Two sweeps hold the rule and they cover
+  different halves of the app: `po_view_jde_test.go`'s
+  `TestPOView_BarNamesExactlyTheKeysThatWork` walks the columnar screens, whose
+  bar is a `[]actionBarItem`; `list_bar_honesty_test.go` walks every
+  `ListScreen`, whose bar is still a hand-built STRING (`ListScreen.footerHint`)
+  and is therefore invisible to the first. Adding a screen means adding it to
+  whichever sweep matches its bar — the header comment in
+  `list_bar_honesty_test.go` records how eight advertised keys survived across
+  four lists by falling between them.
+- **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
+  hint literal.** The footer and the handler read that one table; the previous
+  shape appended the words to a hint string and left the key to a global
+  accelerator in `app.go` that phase 3 had deleted. Lowercase acts on the list,
+  uppercase opens a sibling surface of the same workspace (which is also a
+  `workspaceSurfaces` row in `route.go`).
 - **80 columns leaves the pane 51.** `screenBodyWidth(80)` is
   `80 - navColumnWidth(24) - 1 - padding(4)` = **51**, and the action bar gets 49
   of them. That is the number every columnar layout has to be checked against,
@@ -102,6 +116,30 @@ note, and is the authority):
   those, as `po_edit.go` is for forms.
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
+
+### A screen that is working must say so, and a key that declines must say why
+
+`po_create_pickers.go` carries the full note; the rule is worth knowing before
+touching any screen an operator drives:
+
+- Any action that goes off the terminal reports **working** (naming the work and
+  the subject — "Looking up the items Acme Supply sells…", not "Loading…"),
+  **succeeded**, and **failed**, and a failure frame names a key that still
+  works. An error string must be CLEARED on the next success: several renderers
+  show the error *instead of* the list, so a stale one hides a load that worked.
+- Any key arm that declines to act — an empty list, a search that matched
+  nothing, either edge of a pager — must say why. `return s, nil` there redraws
+  a byte-for-byte identical screen, which reads as a wedged program; that was
+  the whole of the "the item picker hangs after I press enter" report.
+- Notes go in the screen BODY as well as the status bar: `StatusBar.Flash`
+  expires after four seconds and the operator who saw nothing is still looking.
+  Keep them inside 51 columns (see above) or split them onto two lines —
+  `pickerNote` does both.
+- **A picker that filters client-side must load every page.** The page count is
+  then a correctness property, not a performance one:
+  `omsapi.ListItemSuppliersForSupplier` fetched page one and dropped `next`, so
+  a search for a real item on page two answered "No inventory items match" and
+  no key on the screen could reach it.
 
 ## Gotchas
 

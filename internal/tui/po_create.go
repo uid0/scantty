@@ -178,12 +178,18 @@ type PurchaseOrderCreateScreen struct {
 
 	// Phase 3b: inventory items for this supplier.
 	itemSuppliers       []omsapi.ItemSupplier
-	itemSuppliersAll    []omsapi.ItemSupplier // unfiltered page so '/' search is client-side
+	itemSuppliersAll    []omsapi.ItemSupplier // whole catalog, so '/' search is client-side
 	itemSuppliersLoad   bool
 	itemSuppliersErr    string
 	itemSuppliersCur    int
 	itemSuppliersSearch textinput.Model
 	itemSuppliersTyping bool
+	// itemSuppliersNote is the picker's OWN answer to the last keypress: what
+	// the search matched, or why nothing was picked. It lives on the screen
+	// rather than only in a Status flash because a flash expires after four
+	// seconds and the operator who pressed enter and saw nothing is precisely
+	// the operator who is still staring at the picker. See pickerNote.
+	itemSuppliersNote pickerNote
 
 	// Phase 3c: assets-from-supplier picker (server-side search).
 	assets        []omsapi.Asset
@@ -194,6 +200,7 @@ type PurchaseOrderCreateScreen struct {
 	assetsTyping  bool
 	assetsPage    int
 	assetsHasNext bool
+	assetsNote    pickerNote
 
 	// Phase 4: line-entry form. The pointer fields drive which
 	// PurchaseOrderCreateItem shape we build at add time —
@@ -1462,8 +1469,19 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 	case poPhaseReorderPick:
 		return "Reorder-queue suggestions (j/k move · space mark · a add ALL · enter add marked/highlighted · b back · esc cancel)."
 	case poPhaseItemPick:
-		return "Inventory items for this supplier (j/k move, / filter, enter pick, b back, esc cancel)."
+		// While the search box owns the keyboard, j/k/b are LETTERS being typed
+		// — naming them there would be the bar claiming keys that do something
+		// else. The typing line names only the two that are real, and says what
+		// enter does, because "enter picks the match" is the sentence whose
+		// absence made this picker read as hung.
+		if s.itemSuppliersTyping {
+			return "Search this supplier's catalog (type to filter · enter picks the match · esc closes the search and keeps the filter)."
+		}
+		return "Inventory items for this supplier (j/k move, / search, enter pick, b back, esc cancel)."
 	case poPhaseAssetPick:
+		if s.assetsTyping {
+			return "Search this supplier's assets (type to search · enter runs the search · esc closes the search)."
+		}
 		return "Assets purchased from this supplier (j/k move, / search, ] next page, [ prev page, enter pick, b back, esc cancel)."
 	case poPhaseLine:
 		if s.editIndex >= 0 {
@@ -1481,6 +1499,28 @@ func (s *PurchaseOrderCreateScreen) helpText() string {
 		return "Review cart — type PO notes · ↑↓ highlight a line · ctrl+e edit it · ctrl+x remove it · enter submit · esc back."
 	}
 	return ""
+}
+
+// supplierLabel names the committed supplier for the pickers' "working" lines.
+// A status line that names the supplier is the difference between "something is
+// happening" and "we are asking OMS what Acme sells", which is what the report
+// asked for. Falls back to the id, and then to a generic noun, so the sentence
+// is never left with a hole in it.
+func (s *PurchaseOrderCreateScreen) supplierLabel() string {
+	for _, sup := range s.suppliers {
+		if sup.ID == s.supplierID {
+			if sup.Name != "" {
+				// Bounded: the label goes inside a one-line status sentence in a
+				// 51-column pane that TRUNCATES, so a long supplier name would
+				// push the verb off the edge and leave "Looking up the items Ac".
+				return pickerClip(sup.Name, 20)
+			}
+		}
+	}
+	if s.supplierID > 0 {
+		return fmt.Sprintf("supplier #%d", s.supplierID)
+	}
+	return "this supplier"
 }
 
 func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
@@ -1559,6 +1599,33 @@ func (s *PurchaseOrderCreateScreen) renderAgreementRow(withKey bool) string {
 		return label + ": " + StyleStatusOK.Render(name) + "\n"
 	}
 	return label + ": " + StyleMuted.Render("(none)") + "\n"
+}
+
+// renderPendingLookups names the optional header lookups that are still in
+// flight — the supplier's agreements, and the work-order / committee option
+// lists that ride along with the screen opening.
+//
+// None of them gate anything, which is why they load in the background and why
+// their affordances (g / w / c) only appear once there is something to pick.
+// But "no row yet" and "this supplier has no agreements" render identically,
+// and the second is a conclusion the operator may act on. So the wait says it
+// is a wait. Deliberately WITHOUT a key: naming g here would advertise a key
+// that opens an empty picker, and the bar may only name keys that work.
+func (s *PurchaseOrderCreateScreen) renderPendingLookups() string {
+	var pending []string
+	if s.agreementLoading && !s.agreementOffered() {
+		pending = append(pending, "purchase / pricing agreements")
+	}
+	if s.assoc.workOrderLoad && !s.assoc.workOrdersOffered() {
+		pending = append(pending, "work orders")
+	}
+	if s.assoc.committeeLoad && !s.assoc.committeesOffered() {
+		pending = append(pending, "committees")
+	}
+	if len(pending) == 0 {
+		return ""
+	}
+	return "  " + StyleMuted.Render("still looking up "+strings.Join(pending, " · ")+"…") + "\n"
 }
 
 // renderAssocPickPhase draws a work-order / committee picker: row 0 is the
@@ -1648,7 +1715,7 @@ func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
 	b.WriteString("  " + StyleStatusOK.Render("f") + "  Freeform line (no item / asset reference)\n")
 	// Header-level, not line sources — so they sit below the r/i/a/f block with
 	// a blank line between, and only when there is something behind each key.
-	header := s.renderAgreementRow(true) + s.renderAssocRows(true)
+	header := s.renderAgreementRow(true) + s.renderAssocRows(true) + s.renderPendingLookups()
 	if header != "" {
 		b.WriteString("\n" + header)
 	}
