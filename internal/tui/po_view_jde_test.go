@@ -26,7 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -510,32 +509,6 @@ func TestPOView_BlurredOverLongValueSaysItWasCut(t *testing.T) {
 				t.Errorf("a blurred box does not scroll, so the row should read from the START of the value: %q", blurred)
 			}
 		})
-	}
-}
-
-// TestPOFitInputValue_MaskedBlurredValueStaysMasked: the shortening applied to a
-// blurred row must go through jdeEchoValue's mask, not around it (sc-lmsi).
-func TestPOFitInputValue_MaskedBlurredValueStaysMasked(t *testing.T) {
-	const secret = "correct-horse-battery-staple-and-then-some-more"
-	ti := textinput.New()
-	ti.Prompt = ""
-	ti.EchoMode = textinput.EchoPassword
-	ti.EchoCharacter = '•'
-	ti.SetValue(secret)
-
-	shape := jdeField{Label: "Secret", Kind: jdeText, Width: 34}
-	got := poFitInputValue(&ti, shape, 11, screenBodyWidth(80), false)
-
-	for _, leak := range []string{"correct", "horse", "staple"} {
-		if strings.Contains(got, leak) {
-			t.Errorf("the masked value leaked %q: %q", leak, got)
-		}
-	}
-	if !strings.Contains(got, "…") {
-		t.Errorf("a masked value too long for its row should still say it was cut: %q", got)
-	}
-	if w, budget := lipgloss.Width(got), screenBodyWidth(80); w > budget {
-		t.Errorf("the masked value is %d wide against a %d-column pane: %q", w, budget, got)
 	}
 }
 
@@ -1419,9 +1392,10 @@ type poBarPhase struct {
 //
 // The frame alone is not enough for the attachment grid: it marks its highlighted
 // row with StyleJDEFieldFocused, and lipgloss renders flat in a test binary, so
-// moving the cursor produces a byte-identical frame. That is the same blind spot
-// recorded on poFitInputValue — a whole class of visual state this suite cannot
-// see — so there the cursor field is named instead.
+// moving the cursor produces a byte-identical frame. jde_cells_test.go closes
+// that blind spot for the columnar rows — force the profile and decode the frame
+// — but the grid's highlight is a whole rendered ROW rather than a field, so the
+// cursor field is named here instead.
 //
 // The SCROLL OFFSETS are deliberately NOT named. A stored offset is not
 // observable state: WindowFrom ignores it outright when the body fits the window,

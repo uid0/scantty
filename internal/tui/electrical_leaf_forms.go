@@ -779,7 +779,7 @@ func (s *PowerOutletFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -791,7 +791,7 @@ func (s *PowerOutletFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Outlet"))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth))
+		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth, s.bodyWidth()))
 		// The set around the FOCUSED choice row, so seventeen receptacle types
 		// are never cycled blind (jdeOptionStrip returns nothing for a yes/no).
 		if i == s.cursor {
@@ -932,7 +932,7 @@ func (s *PowerOutletFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickOptions[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  empty,
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *PowerOutletFormScreen) viewPick() string {
@@ -1706,7 +1706,7 @@ func (s *DisconnectFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E chooses"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -1726,7 +1726,7 @@ func (s *DisconnectFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Disconnect"))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth))
+		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth, s.bodyWidth()))
 		if i == s.cursor && id == dcDisconnectType {
 			labels := make([]string, len(disconnectTypeOptions))
 			for j, o := range disconnectTypeOptions {
@@ -1850,7 +1850,7 @@ func (s *DisconnectFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickOptions[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  empty,
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *DisconnectFormScreen) pickRowLabel(i int) string {

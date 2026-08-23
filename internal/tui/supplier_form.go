@@ -445,7 +445,7 @@ func (s *SupplierFormScreen) formFields() []jdeField {
 			Focused: i == s.cursor,
 		}
 		if supplierFieldIsText(id) {
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		} else {
 			f.Kind, f.Value = jdeChoice, s.choiceLabel(id)
 		}
@@ -474,7 +474,7 @@ func (s *SupplierFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Supplier details"))
 	for i, f := range fields {
-		l.AddRow(i, renderJDEField(f, labelWidth))
+		l.AddRow(i, renderJDEField(f, labelWidth, s.bodyWidth()))
 		// The whole set under the FOCUSED choice row, so a short fixed list is
 		// never cycled blind (jdeOptionStrip returns nothing for a yes/no).
 		if i == s.cursor && s.fields[i] == sfType {

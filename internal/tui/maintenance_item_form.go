@@ -1709,7 +1709,7 @@ func (s *MaintenanceItemFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E manages"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -1730,7 +1730,7 @@ func (s *MaintenanceItemFormScreen) formLines() *jdeLines {
 			l.Add(StyleJDEHeading.Render(mfBandLabel[b]))
 			band = b
 		}
-		l.AddRow(i, renderJDEField(fields[i], labelWidth))
+		l.AddRow(i, renderJDEField(fields[i], labelWidth, s.bodyWidth()))
 	}
 	return l
 }
@@ -1805,7 +1805,7 @@ func (s *MaintenanceItemFormScreen) pickView() ([]string, *jdeLines) {
 		Label:  func(i int) string { return s.pickOptions[i].label },
 		Cursor: s.pickCursor,
 		Empty:  empty,
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *MaintenanceItemFormScreen) viewAssetPick() string {
@@ -1960,7 +1960,7 @@ func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
 		{
 			Label:   "Title",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.teTitle, s.editCursor == taskEditTitle),
+			Input:   &s.teTitle,
 			Width:   40,
 			Hint:    "required",
 			Focused: s.editCursor == taskEditTitle,
@@ -1968,7 +1968,7 @@ func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
 		{
 			Label:   "Description",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.teDesc, s.editCursor == taskEditDesc),
+			Input:   &s.teDesc,
 			Width:   44,
 			Focused: s.editCursor == taskEditDesc,
 		},
@@ -1981,7 +1981,7 @@ func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
 		{
 			Label:   "Reference photo",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.teRefImage, s.editCursor == taskEditPhoto),
+			Input:   &s.teRefImage,
 			Width:   40,
 			Hint:    "absolute path · blank keeps current",
 			Focused: s.editCursor == taskEditPhoto,
@@ -1996,7 +1996,7 @@ func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
 	l.Add(StyleJDEHeading.Render(s.editorTitle("task step")))
 	l.Add(jdeIndent + StyleMuted.Render("Shown against this step on every work order the item generates."))
 	l.Add("")
-	l.AddFields(fields, labelWidth, 0)
+	l.AddFields(fields, labelWidth, s.bodyWidth(), 0)
 	// The photo already on the step: read-only, and left in place unless a new
 	// path above replaces it.
 	if s.editIndex >= 0 && s.editIndex < len(s.tasks) {
@@ -2034,7 +2034,7 @@ func (s *MaintenanceItemFormScreen) viewMaterialEdit() string {
 		{
 			Label:   "Name",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.meName, s.editCursor == materialEditName),
+			Input:   &s.meName,
 			Width:   36,
 			Hint:    "required",
 			Focused: s.editCursor == materialEditName,
@@ -2042,28 +2042,28 @@ func (s *MaintenanceItemFormScreen) viewMaterialEdit() string {
 		{
 			Label:   "Quantity",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.meQty, s.editCursor == materialEditQty),
+			Input:   &s.meQty,
 			Width:   10,
 			Focused: s.editCursor == materialEditQty,
 		},
 		{
 			Label:   "Unit",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.meUnit, s.editCursor == materialEditUnit),
+			Input:   &s.meUnit,
 			Width:   12,
 			Focused: s.editCursor == materialEditUnit,
 		},
 		{
 			Label:   "Cost per unit ($)",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.meCost, s.editCursor == materialEditCost),
+			Input:   &s.meCost,
 			Width:   10,
 			Focused: s.editCursor == materialEditCost,
 		},
 		{
 			Label:   "Notes",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.meNotes, s.editCursor == materialEditNotes),
+			Input:   &s.meNotes,
 			Width:   44,
 			Focused: s.editCursor == materialEditNotes,
 		},
@@ -2075,7 +2075,7 @@ func (s *MaintenanceItemFormScreen) viewMaterialEdit() string {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render(s.editorTitle("material")))
 	l.Add("")
-	l.AddFields(fields, jdeLabelWidth(fields), 0)
+	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
 	return s.frame(l, s.editCursor, jdeStatusLine(false, "", s.editErr),
 		s.editorBar("material", s.editCursor == materialEditRemove && s.editIndex >= 0))
 }
@@ -2109,7 +2109,7 @@ func (s *MaintenanceItemFormScreen) viewToolEdit() string {
 		{
 			Label:   "Name",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.toName, s.editCursor == toolEditName),
+			Input:   &s.toName,
 			Width:   36,
 			Hint:    "required",
 			Focused: s.editCursor == toolEditName,
@@ -2117,14 +2117,14 @@ func (s *MaintenanceItemFormScreen) viewToolEdit() string {
 		{
 			Label:   "Quantity",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.toQty, s.editCursor == toolEditQty),
+			Input:   &s.toQty,
 			Width:   10,
 			Focused: s.editCursor == toolEditQty,
 		},
 		{
 			Label:   "Where to find it",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.toLoc, s.editCursor == toolEditLoc),
+			Input:   &s.toLoc,
 			Width:   36,
 			Focused: s.editCursor == toolEditLoc,
 		},
@@ -2137,7 +2137,7 @@ func (s *MaintenanceItemFormScreen) viewToolEdit() string {
 		{
 			Label:   "Notes",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.toNotes, s.editCursor == toolEditNotes),
+			Input:   &s.toNotes,
 			Width:   44,
 			Focused: s.editCursor == toolEditNotes,
 		},
@@ -2149,7 +2149,7 @@ func (s *MaintenanceItemFormScreen) viewToolEdit() string {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render(s.editorTitle("tool")))
 	l.Add("")
-	l.AddFields(fields, jdeLabelWidth(fields), 0)
+	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
 	return s.frame(l, s.editCursor, jdeStatusLine(false, "", s.editErr),
 		s.editorBar("tool", s.editCursor == toolEditRemove && s.editIndex >= 0))
 }

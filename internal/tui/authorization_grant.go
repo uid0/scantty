@@ -470,7 +470,7 @@ func (s *AuthorizationGrantScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.notesInput, f.Focused)
+			f.Kind, f.Input = jdeText, &s.notesInput
 		}
 		out[i] = f
 	}
@@ -489,7 +489,7 @@ func (s *AuthorizationGrantScreen) formLines() *jdeLines {
 	fields := s.formFields()
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Grant access"))
-	l.AddFields(fields, authGrantLabelWidth, 0)
+	l.AddFields(fields, authGrantLabelWidth, s.bodyWidth(), 0)
 	return l
 }
 
@@ -550,7 +550,7 @@ func (s *AuthorizationGrantScreen) pickView() ([]string, *jdeLines) {
 		Label:  func(i int) string { return s.pickOptions[i].label },
 		Cursor: s.pickCursor,
 		Empty:  empty,
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *AuthorizationGrantScreen) viewPick() string {

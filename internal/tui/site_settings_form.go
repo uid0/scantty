@@ -581,7 +581,7 @@ func (s *SiteSettingsFormScreen) formFields() []jdeField {
 		if ssKind(id) == akToggle {
 			f.Kind, f.Value = jdeChoice, jdeYesNo(s.toggleState(id))
 		} else {
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 			if id == ssPrimaryColor || id == ssSecondaryColor {
 				// Same treatment as the category sheet's Color: one shared
 				// helper, live off the input. A blank row shows no sample —
@@ -612,7 +612,7 @@ func (s *SiteSettingsFormScreen) formLines() *jdeLines {
 			}
 			l.Add(StyleJDEHeading.Render(heading))
 		}
-		l.AddRow(i, renderJDEField(fields[i], ssLabelWidth))
+		l.AddRow(i, renderJDEField(fields[i], ssLabelWidth, s.bodyWidth()))
 		// What is on file for an image belongs UNDER the row that replaces it —
 		// it was a header line above the whole sheet, which is the one place an
 		// operator deciding whether to remove the logo would not look (sc-6qsk).

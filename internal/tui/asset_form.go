@@ -1375,7 +1375,7 @@ func (s *AssetFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E chooses"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -1398,7 +1398,7 @@ func (s *AssetFormScreen) formLines() *jdeLines {
 			l.Add(StyleJDEHeading.Render(assetBandLabel[b]))
 			band = b
 		}
-		l.AddRow(i, renderJDEField(fields[i], labelWidth))
+		l.AddRow(i, renderJDEField(fields[i], labelWidth, s.bodyWidth()))
 		if i == s.cursor {
 			if strip := s.selectStrip(id, jdeStripWidth(s.bodyWidth(), labelWidth)); strip != "" {
 				l.AddRow(i, jdeStripIndent(labelWidth)+StyleMuted.Render(strip))
@@ -1601,7 +1601,7 @@ func (s *AssetFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickOptions[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  "(no matches)",
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *AssetFormScreen) pickRowLabel(i int) string {

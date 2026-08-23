@@ -1916,7 +1916,7 @@ func (s *InventoryItemFormScreen) formFields() []jdeField {
 			// the summary (and, when it must, the hint) is fitted to the pane.
 			f = s.kitRowField(f)
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -1942,7 +1942,7 @@ func (s *InventoryItemFormScreen) formLines() *jdeLines {
 			l.Add(StyleJDEHeading.Render(itemBandLabel[b]))
 			band = b
 		}
-		l.AddRow(i, renderJDEField(fields[i], labelWidth))
+		l.AddRow(i, renderJDEField(fields[i], labelWidth, s.bodyWidth()))
 		// UNCONDITIONALLY, not only when focused: the operator has no reason to
 		// move the cursor onto a read-only row, and this note is the one thing
 		// that stops the save silently clearing a figure they can see.
@@ -2110,7 +2110,7 @@ func (s *InventoryItemFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickOptions[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  empty,
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *InventoryItemFormScreen) viewPick() string {

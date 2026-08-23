@@ -1043,7 +1043,7 @@ func (s *ItemSupplierFormScreen) formFields() []jdeField {
 		case isPrimary:
 			f.Kind, f.Value = jdeChoice, jdeYesNo(s.isPrimary)
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -1058,7 +1058,7 @@ func (s *ItemSupplierFormScreen) formLines() *jdeLines {
 		heading += "  " + StyleMuted.Render("for ") + s.itemName
 	}
 	l.Add(heading)
-	l.AddFields(fields, jdeLabelWidth(fields), 0)
+	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
 	return l
 }
 
@@ -1106,7 +1106,7 @@ func (s *ItemSupplierFormScreen) pickView() ([]string, *jdeLines) {
 		Label:  func(i int) string { return s.pickOptions[i].label },
 		Cursor: s.pickCursor,
 		Empty:  "(no matching suppliers — create one first from the menu: Inventory › Suppliers)",
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *ItemSupplierFormScreen) viewPick() string {

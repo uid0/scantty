@@ -769,7 +769,7 @@ func (s *InventoryItemFormScreen) viewKitRow() string {
 		{
 			Label:   "Per kit",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.kitRowQty, s.kitRowFocus == kitRowFieldQty),
+			Input:   &s.kitRowQty,
 			Width:   6,
 			Hint:    "at least 1",
 			Focused: s.kitRowFocus == kitRowFieldQty,
@@ -777,7 +777,7 @@ func (s *InventoryItemFormScreen) viewKitRow() string {
 		{
 			Label:   "Notes",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.kitRowNotes, s.kitRowFocus == kitRowFieldNotes),
+			Input:   &s.kitRowNotes,
 			Width:   kitNotesWidth(s.bodyWidth()),
 			Hint:    "optional",
 			Focused: s.kitRowFocus == kitRowFieldNotes,
@@ -808,8 +808,8 @@ func (s *InventoryItemFormScreen) viewKitRow() string {
 	// The component row is not navigable, so the field cursor is offset by one:
 	// row 0 IS the quantity, which is what kitRowFieldQty names.
 	labelWidth := jdeLabelWidth(fields)
-	l.Add(renderJDEField(fields[0], labelWidth))
-	l.AddFields(fields[1:], labelWidth, kitRowFieldQty)
+	l.Add(renderJDEField(fields[0], labelWidth, s.bodyWidth()))
+	l.AddFields(fields[1:], labelWidth, s.bodyWidth(), kitRowFieldQty)
 
 	items := []actionBarItem{{"Enter", "Save component"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if s.kitRowFocus == kitRowFieldRemove {
@@ -1021,7 +1021,7 @@ func (s *InventoryItemFormScreen) kitPickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.kitPickOptions[i].why != "" },
 		Cursor: s.kitPickCursor,
 		Empty:  empty,
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 // kitPickLabel is one picker row: what the item is, its stock, and — for a row

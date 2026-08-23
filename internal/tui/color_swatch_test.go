@@ -185,8 +185,8 @@ func TestJDEField_SwatchIsAppendedOutsideEverythingElse(t *testing.T) {
 	withSwatch := bare
 	withSwatch.Swatch = hexSwatch("#FF5733")
 
-	plain := renderJDEField(bare, labelWidth)
-	row := renderJDEField(withSwatch, labelWidth)
+	plain := renderJDEField(bare, labelWidth, 0)
+	row := renderJDEField(withSwatch, labelWidth, 0)
 
 	// Byte-for-byte the row without a swatch, plus the swatch. Nothing before it
 	// can have changed, which is the whole claim.
@@ -225,7 +225,7 @@ func TestJDEField_SwatchIsAppendedOutsideEverythingElse(t *testing.T) {
 func TestJDEField_NoSwatchAddsNothing(t *testing.T) {
 	withColorProfile(t, termenv.TrueColor)
 	f := jdeField{Label: "Color", Kind: jdeText, Value: "#FF5", Width: 8, Hint: "#RRGGBB"}
-	row := renderJDEField(f, 11)
+	row := renderJDEField(f, 11, 0)
 	if strings.Contains(row, swatchGlyph) {
 		t.Errorf("an unset Swatch drew a glyph anyway: %q", row)
 	}
@@ -432,7 +432,7 @@ func TestCategoryForm_FocusedColorRowKeepsItsHighlight(t *testing.T) {
 	if f.Swatch == "" {
 		t.Fatalf("the focused Color row lost its swatch")
 	}
-	row := renderJDEField(f, jdeLabelWidth(s.formFields()))
+	row := renderJDEField(f, jdeLabelWidth(s.formFields()), 0)
 	if !strings.Contains(row, jdeFieldArea(f)) {
 		t.Errorf("the focused Color row's input area is not contiguous — the swatch got inside the "+
 			"highlight: %q", row)
@@ -457,7 +457,7 @@ func TestCategoryForm_ColorRowFitsTheBody(t *testing.T) {
 		for _, cursor := range []int{row, 0} {
 			s.cursor = cursor
 			s.syncFocus()
-			line := renderJDEField(categoryColorField(t, s), jdeLabelWidth(s.formFields()))
+			line := renderJDEField(categoryColorField(t, s), jdeLabelWidth(s.formFields()), 0)
 			if w := lipgloss.Width(line); w > budget {
 				t.Errorf("at %d cols the Color row is %d wide but the pane is %d — it will be "+
 					"clipped: %q", width, w, budget, line)
@@ -613,7 +613,7 @@ func TestSiteSettingsForm_ColorRowsFitTheBody(t *testing.T) {
 			for _, cursor := range []int{row, 0} {
 				s.cursor = cursor
 				s.syncFocus()
-				line := renderJDEField(ssFieldAt(t, s, id), ssLabelWidth)
+				line := renderJDEField(ssFieldAt(t, s, id), ssLabelWidth, 0)
 				if w := lipgloss.Width(line); w > budget {
 					t.Errorf("at %d cols the %q row is %d wide but the pane is %d — it will be "+
 						"clipped: %q", width, ssFieldLabel[id], w, budget, line)

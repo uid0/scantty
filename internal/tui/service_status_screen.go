@@ -173,7 +173,7 @@ func (s *ServiceStatusScreen) render() ([]string, *jdeLines) {
 			body.AddRow(i, jdeIndent+"  "+StyleJDEHeading.Render(name))
 		}
 		for _, f := range serviceStatusFields(svc, now, s.staff()) {
-			body.AddRow(i, renderJDEField(f, labelWidth))
+			body.AddRow(i, renderJDEField(f, labelWidth, s.bodyWidth()))
 		}
 		if i < len(services)-1 {
 			body.AddRow(i, "")

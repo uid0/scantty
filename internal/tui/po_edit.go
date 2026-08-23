@@ -1337,7 +1337,7 @@ func (s *PurchaseOrderEditScreen) metaFields() []jdeField {
 		if sel, ok := s.selects[i]; ok {
 			f.Kind, f.Value = jdeChoice, sel.label()
 		} else {
-			f.Kind, f.Value = jdeText, jdeInputValue(s.meta[i], f.Focused)
+			f.Kind, f.Input = jdeText, &s.meta[i]
 		}
 		out[i] = f
 	}
@@ -1381,7 +1381,7 @@ func (s *PurchaseOrderEditScreen) formLines() *jdeLines {
 
 	l.Add(StyleJDEHeading.Render("Order details"))
 	for i := 0; i < poEditMetaCount; i++ {
-		l.AddRow(i, renderJDEField(meta[i], labelWidth))
+		l.AddRow(i, renderJDEField(meta[i], labelWidth, s.bodyWidth()))
 		if sel, ok := s.selects[i]; ok && s.cursor == i {
 			// The whole set under the focused row: these are short fixed lists,
 			// so showing every label beats cycling blind through six terms to
@@ -1394,7 +1394,7 @@ func (s *PurchaseOrderEditScreen) formLines() *jdeLines {
 	l.Add(StyleJDEHeading.Render("Ordered for") + "  " +
 		StyleMuted.Render("(attribution only — moves no stock, bills nobody)"))
 	for i := 0; i < poEditAssocCount; i++ {
-		l.AddRow(poEditMetaCount+i, renderJDEField(assoc[i], labelWidth))
+		l.AddRow(poEditMetaCount+i, renderJDEField(assoc[i], labelWidth, s.bodyWidth()))
 	}
 
 	l.Add("")
@@ -1574,7 +1574,7 @@ func (s *PurchaseOrderEditScreen) lineFields() []jdeField {
 		out = append(out, jdeField{
 			Label:   poLineEditLabels[i],
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.lineInputs[i], focused),
+			Input:   &s.lineInputs[i],
 			Hint:    hint,
 			Width:   width,
 			Focused: focused,
@@ -1662,7 +1662,7 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 	body.Add("")
 	// One block, so it finds its own label column — unlike the header form,
 	// whose two bands share one.
-	for i, line := range renderJDEFields(s.lineFields()) {
+	for i, line := range renderJDEFields(s.lineFields(), s.bodyWidth()) {
 		body.AddRow(i, line)
 	}
 	body.Add("")
@@ -1813,7 +1813,7 @@ func (s *PurchaseOrderEditScreen) viewVoidLine() string {
 	field := jdeField{
 		Label:   "Reason",
 		Kind:    jdeText,
-		Value:   s.voidReason.View(),
+		Input:   &s.voidReason,
 		Width:   40,
 		Hint:    "required",
 		Focused: true,
@@ -1825,7 +1825,7 @@ func (s *PurchaseOrderEditScreen) viewVoidLine() string {
 	body.Add(jdeIndent + StyleMuted.Render("Line: ") + li.DisplayLabel())
 	body.Add(jdeIndent + StyleMuted.Render("This marks the line voided and the supplier link discontinued."))
 	body.Add("")
-	body.AddRow(0, renderJDEFields([]jdeField{field})[0])
+	body.AddRow(0, renderJDEFields([]jdeField{field}, s.bodyWidth())[0])
 	return s.frame(body, 0, "Voiding…", []actionBarItem{
 		{"Enter", "Void line"}, {"Esc", "Cancel"},
 	})

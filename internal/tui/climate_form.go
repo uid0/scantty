@@ -669,7 +669,7 @@ func (s *ThermostatFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks"
 			}
 		} else {
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -682,7 +682,7 @@ func (s *ThermostatFormScreen) formLines() *jdeLines {
 
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Thermostat"))
-	l.AddFields(fields, labelWidth, 0)
+	l.AddFields(fields, labelWidth, s.bodyWidth(), 0)
 	return l
 }
 
@@ -791,7 +791,7 @@ func (s *ThermostatFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickOptions[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  empty,
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *ThermostatFormScreen) viewPick() string {

@@ -597,7 +597,7 @@ func (s *StorageAssignFormScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks"
 			}
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.inputs[id], f.Focused)
+			f.Kind, f.Input = jdeText, &s.inputs[id]
 		}
 		out[i] = f
 	}
@@ -618,9 +618,9 @@ func (s *StorageAssignFormScreen) formLines() *jdeLines {
 		Kind:  jdeValue,
 		Value: s.code,
 		Hint:  "no expiry — theirs until released",
-	}, storageLabelWidth))
+	}, storageLabelWidth, s.bodyWidth()))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], storageLabelWidth))
+		l.AddRow(i, renderJDEField(fields[i], storageLabelWidth, s.bodyWidth()))
 		// The set around the FOCUSED type row: each option carries the letter
 		// the grid will paint, which is what the warden reads off the rack
 		// afterwards, so it must never be cycled blind.
@@ -687,7 +687,7 @@ func (s *StorageAssignFormScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickRows[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  "(no matching SIGs)",
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *StorageAssignFormScreen) viewPicker() string {

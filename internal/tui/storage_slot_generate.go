@@ -793,9 +793,9 @@ func (s *StorageSlotGenerateScreen) formFields() []jdeField {
 				f.Hint = "Ctrl-E picks"
 			}
 		case sgRack:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.rackInput, f.Focused)
+			f.Kind, f.Input = jdeText, &s.rackInput
 		default:
-			f.Kind, f.Value = jdeText, jdeInputValue(s.notesInput, f.Focused)
+			f.Kind, f.Input = jdeText, &s.notesInput
 		}
 		out[i] = f
 	}
@@ -807,7 +807,7 @@ func (s *StorageSlotGenerateScreen) formLines() *jdeLines {
 	l.Add(StyleJDEHeading.Render("Generate rack"))
 	l.Add(jdeIndent + StyleMuted.Render("Re-running is safe — existing codes are skipped, never overwritten."))
 	l.Add("")
-	l.AddFields(s.formFields(), storageLabelWidth, 0)
+	l.AddFields(s.formFields(), storageLabelWidth, s.bodyWidth(), 0)
 	return l
 }
 
@@ -936,7 +936,7 @@ func (s *StorageSlotGenerateScreen) viewLevelRow() string {
 		{
 			Label:   "Level",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.rowLevel, s.rowCursor == genRowLevel),
+			Input:   &s.rowLevel,
 			Width:   4,
 			Hint:    "required · one letter A-Z",
 			Focused: s.rowCursor == genRowLevel,
@@ -944,7 +944,7 @@ func (s *StorageSlotGenerateScreen) viewLevelRow() string {
 		{
 			Label:   "Positions",
 			Kind:    jdeText,
-			Value:   jdeInputValue(s.rowPositions, s.rowCursor == genRowPositions),
+			Input:   &s.rowPositions,
 			Width:   6,
 			Hint:    "required · 1-100 on this level",
 			Focused: s.rowCursor == genRowPositions,
@@ -976,7 +976,7 @@ func (s *StorageSlotGenerateScreen) viewLevelRow() string {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render(title))
 	l.Add("")
-	l.AddFields(fields, storageLabelWidth, 0)
+	l.AddFields(fields, storageLabelWidth, s.bodyWidth(), 0)
 
 	items := []actionBarItem{{"Enter", "Save level"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	switch {
@@ -1006,7 +1006,7 @@ func (s *StorageSlotGenerateScreen) pickView() ([]string, *jdeLines) {
 		Dim:    func(i int) bool { return s.pickRows[i].clear },
 		Cursor: s.pickCursor,
 		Empty:  "(no matching SIGs)",
-	}.render()
+	}.render(s.bodyWidth())
 }
 
 func (s *StorageSlotGenerateScreen) viewPicker() string {

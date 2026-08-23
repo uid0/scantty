@@ -1312,7 +1312,7 @@ func poMarginWidth(bodyWidth int) int {
 func (s *PurchaseOrderDetailScreen) addValueRow(l *jdeLines, f jdeField, labelWidth int) {
 	avail := jdeStripWidth(s.bodyWidth(), labelWidth)
 	if avail <= 0 || lipgloss.Width(f.Value) <= avail {
-		l.Add(renderJDEField(f, labelWidth))
+		l.Add(renderJDEField(f, labelWidth, s.bodyWidth()))
 		return
 	}
 	// Whether the fold is USABLE is decided from the width, before asking for
@@ -1335,12 +1335,12 @@ func (s *PurchaseOrderDetailScreen) addValueRow(l *jdeLines, f jdeField, labelWi
 		// same bug told quietly.
 		head := f
 		head.Value = fitCell(f.Value, avail)
-		l.Add(renderJDEField(head, labelWidth))
+		l.Add(renderJDEField(head, labelWidth, s.bodyWidth()))
 		return
 	}
 	head := f
 	head.Value = wrapped[0]
-	l.Add(renderJDEField(head, labelWidth))
+	l.Add(renderJDEField(head, labelWidth, s.bodyWidth()))
 	for _, line := range wrapped[1:] {
 		if f.Dim {
 			line = StyleMuted.Render(line)
@@ -1963,146 +1963,25 @@ func fitCellIf(s string, w int) string {
 // Modals
 // ---------------------------------------------------------------------------
 
-// poFitInputValue bounds one input box to the width jdeFitRow gives its row and
-// returns the value string to hang on that row. Every text row on the four
-// sheets this slice converts goes through it.
-//
-// LOCAL WORKAROUND — bead scantty-jde-textinput-width. DELETE this helper and
-// its call sites on the four sheets (po_detail.go's ship, void and deliver
-// sheets and po_attachments.go's upload sheet) when the shared-layer fix lands.
-// That bead removes BOTH halves of what this function does: the ti.Width
-// bounding AND the TextStyle assignment below, which only exists to repair what
-// the bounding costs.
-//
-// jdeFitRow sizes the jdeField's FILL, not the bubbles textinput that produced
-// the value, and in bubbles v1.0.0 a box left at Width 0 has no scrolling
-// viewport at all — handleOverflow returns early and View() draws the ENTIRE
-// value. A 60-column path typed into the upload sheet at 80 columns therefore
-// drew an ~80-column row into a 51-column pane: clampToBox cut it and the caret
-// sat off the end of the screen, so the operator was typing blind. Giving the
-// box a Width gives it back the viewport, and the row then stays inside the
-// pane with the caret on it.
-//
-// It lives in the purchasing files rather than in jde_form.go deliberately. The
-// shared layer is being rendered through concurrently by the inventory
-// conversion, and shifting its behaviour under a live review would cost rework
-// on screens already signed off; keeping the workaround here makes lifting it
-// one obvious deletion.
-//
-// The Width is set on the STORED box and not on a render-time copy because
-// bubbles COMPUTES the scrolling window in Update/SetCursor and only READS it in
-// View: a Width set on a copy would leave the stale whole-value window in place
-// and change nothing on screen. Re-seating the cursor after the change is what
-// makes the box recompute that window when the pane resizes under a value that
-// has already been typed.
-func poFitInputValue(ti *textinput.Model, shape jdeField, labelWidth, bodyWidth int, focused bool) string {
-	// bodyWidth of 0 is "the pane is not sized yet", which everywhere in this
-	// layer means "do not truncate".
-	fitted, _ := jdeFitRow(shape, labelWidth, bodyWidth)
-	if bodyWidth <= 0 || fitted.Width <= 0 {
-		return jdeInputValue(*ti, focused)
-	}
-
-	// The box is asked for ONE COLUMN LESS than the row has, because a focused
-	// bubbles box draws its caret in a cell of its own PAST its Width — so a box
-	// given the row's whole width renders width+1 and puts every focused row
-	// exactly one column over the pane.
-	//
-	// Never below 1. A Width of 0 does not mean "one column", it turns the
-	// scrolling viewport OFF altogether, and an unbounded box on a one-column
-	// row puts the entire value back on screen — the defect this helper exists
-	// to close, reappearing at the one pane width nobody tests.
-	box := fitted.Width - 1
-	if box < 1 {
-		box = 1
-	}
-	if ti.Width != box {
-		ti.Width = box
-		pos := ti.Position()
-		ti.CursorEnd()
-		ti.SetCursor(pos)
-	}
-
-	// A bounded box pads its own value out to Width, which leaves jdeFieldArea
-	// nothing to draw: `fill := width - lipgloss.Width(f.Value)` comes out 0 and
-	// the reverse-video block that says WHERE THE CURSOR IS disappears. The
-	// padding is emitted with the box's TextStyle, so handing it
-	// StyleJDEFieldFocused puts the highlight back on the exact columns
-	// jdeFieldArea used to own. It is read fresh each render because a theme
-	// switch reassigns the style, and it is CLEARED on a blurred row: a box that
-	// kept it would highlight a field the cursor is not standing on, inverting
-	// the one signal this whole layer uses to say where the operator is.
-	//
-	// NOTE FOR WHOEVER READS THIS NEXT: no test can catch this class of bug
-	// today. lipgloss renders flat in a test binary, so a lost highlight and a
-	// present one produce byte-identical strings of identical width — the
-	// regression this repairs shipped through a green suite. A passing suite is
-	// NOT evidence that the focused field is drawn correctly; the same blind
-	// spot covers every colour and every reverse-video cue on these screens.
-	//
-	// KNOWN AND DELIBERATE DIVERGENCE FROM THE PILOT: bubbles applies TextStyle
-	// to the value runes as well as to the pad, so a focused row here draws the
-	// typed value in reverse video too, where po_edit.go reverses only the fill.
-	// That was weighed and accepted — a fully reversed field is a legitimate
-	// green-screen look, and every alternative was a further workaround on the
-	// same root cause. It is TEMPORARY: scantty-jde-textinput-width restores
-	// exact pilot parity when it lands.
-	if focused {
-		ti.TextStyle = StyleJDEFieldFocused
-
-		// The focused value is the box's RENDERED View() — it carries the
-		// cursor's and TextStyle's escape sequences — and it is deliberately
-		// NOT cut here. Cutting a rendered string by runes drops the trailing
-		// SGR reset, or lands inside a sequence, and the terminal then draws
-		// everything after this row in reverse video: a garbled terminal rather
-		// than a merely wrong-looking row. What keeps this row inside the pane
-		// is ti.Width above, imposed BEFORE bubbles renders anything, which is
-		// the only place a bound on styled output belongs.
-		return jdeInputValue(*ti, true)
-	}
-	ti.TextStyle = lipgloss.NewStyle()
-
-	// A blurred box USUALLY hands back its raw value — jdeEchoValue reads it
-	// straight out, so that a masked field cannot give up its mask — and that
-	// value has had no viewport applied to it, so the width has to be imposed
-	// here. fitCell and not truncateVisible because the cut has to ANNOUNCE
-	// itself, the way poLineContinuation, poAttachmentLines and orderPadHeader
-	// all do: an operator proof-reading a file path before pressing Enter must
-	// not be shown a shortened path that reads like a whole one.
-	//
-	// USUALLY, not always. jdeInputValue also returns the RENDERED View() for an
-	// empty box that has a Placeholder, focused or not. No field on these four
-	// sheets carries a placeholder today, but the rule about not cutting styled
-	// text has to survive someone adding one, so the branch checks for itself
-	// rather than trusting that. A value carrying escapes is left alone: it came
-	// from View() and is therefore already bounded by ti.Width.
-	blurred := jdeInputValue(*ti, false)
-	if strings.ContainsRune(blurred, '\x1b') {
-		return blurred
-	}
-	return fitCell(blurred, fitted.Width)
-}
-
 // viewShip is the mark-shipped prompt: which line, and when it went.
 func (s *PurchaseOrderDetailScreen) viewShip() string {
 	fields := []jdeField{
 		{
 			Label: "Line #", Kind: jdeText,
+			Input:   &s.shipIdxIn,
 			Width:   6,
 			Hint:    fmt.Sprintf("1-%d", len(s.po.Items)),
 			Focused: s.shipFocus == 0,
 		},
 		{
 			Label: "Shipment date", Kind: jdeText,
+			Input:   &s.shipDateIn,
 			Width:   12,
 			Hint:    "YYYY-MM-DD · blank is today, '-' clears",
 			Focused: s.shipFocus == 1,
 		},
 	}
 	labelW := jdeLabelWidth(fields)
-	for i, box := range []*textinput.Model{&s.shipIdxIn, &s.shipDateIn} {
-		fields[i].Value = poFitInputValue(box, fields[i], labelW, s.bodyWidth(), fields[i].Focused)
-	}
 	body := &jdeLines{}
 	body.Add(StyleJDEHeading.Render("Mark item shipped"))
 	body.Add("")
@@ -2122,12 +2001,12 @@ func (s *PurchaseOrderDetailScreen) viewShip() string {
 func (s *PurchaseOrderDetailScreen) viewVoid() string {
 	field := jdeField{
 		Label: "Reason", Kind: jdeText,
+		Input:   &s.voidReasonIn,
 		Width:   34,
 		Hint:    "optional",
 		Focused: true,
 	}
 	labelW := jdeLabelWidth([]jdeField{field})
-	field.Value = poFitInputValue(&s.voidReasonIn, field, labelW, s.bodyWidth(), true)
 	body := &jdeLines{}
 	body.Add(StyleStatusWarn.Render("Void purchase order"))
 	body.Add("")
@@ -2170,15 +2049,13 @@ func (s *PurchaseOrderDetailScreen) viewDeliver() string {
 		fields[i] = jdeField{
 			Label:   poDeliverLabels[i],
 			Kind:    jdeText,
+			Input:   &s.deliverInputs[i],
 			Width:   poDeliverWidths[i],
 			Hint:    poDeliverHints[i],
 			Focused: s.deliverFocus == i,
 		}
 	}
 	labelW := jdeLabelWidth(fields)
-	for i := range fields {
-		fields[i].Value = poFitInputValue(&s.deliverInputs[i], fields[i], labelW, s.bodyWidth(), fields[i].Focused)
-	}
 	body := &jdeLines{}
 	body.Add(StyleJDEHeading.Render("Mark delivered"))
 	body.Add("")
