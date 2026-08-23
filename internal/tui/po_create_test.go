@@ -909,8 +909,16 @@ func TestPOReorderAddAll_EmptyListIsRefused(t *testing.T) {
 	if s.phase != poPhaseReorderPick {
 		t.Errorf("phase = %v, want to stay on the picker", s.phase)
 	}
-	if !strings.Contains(s.errMsg, "nothing to add") {
-		t.Errorf("errMsg = %q, want it to explain there is nothing to add", s.errMsg)
+	// Reported in the picker's own BODY note, where its j / k / space / enter
+	// siblings answer, and NOT through the screen-level failure line: that line
+	// carries a failed submit's headline plus the raw OMS body underneath it,
+	// so a validation sentence written into it inherits whatever detail the
+	// last failure left behind.
+	if !strings.Contains(s.reorderNote.text, "nothing to add") {
+		t.Errorf("reorder note = %q, want it to explain there is nothing to add", s.reorderNote.text)
+	}
+	if s.errMsg != "" {
+		t.Errorf("the screen-level failure line was used for a picker decline: %q", s.errMsg)
 	}
 }
 

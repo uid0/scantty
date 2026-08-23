@@ -4259,3 +4259,145 @@ func TestPOSourceChooser_TheTitleGivesBeforeTheCartsTotal(t *testing.T) {
 		})
 	}
 }
+
+// TestPOReorder_AddAllDoesNotInheritTheLastFailuresDetail is the stale-detail
+// leak in the one arm that still wrote the screen-level failure line by hand.
+//
+// The failure line is a headline plus an unbounded OMS body underneath it, and
+// the two are set together for exactly this reason: writing only the headline
+// leaves the previous failure's DETAIL standing, so "nothing to add" was drawn
+// with several folded rows of a 502 gateway page beneath it, reading as the
+// gateway's explanation of a validation message. The picker's own note is where
+// this decline belongs — the same place j / k / space / enter answer.
+func TestPOReorder_AddAllDoesNotInheritTheLastFailuresDetail(t *testing.T) {
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			fake := &poPickFake{catalog: 2, reorder: 0, failCreate: true}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			r = poStageCostlessLine(t, r, screen)
+			if len(screen.lines) != 1 {
+				t.Fatalf("setup staged %d line(s), want 1", len(screen.lines))
+			}
+
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // submit → 502 HTML
+			if screen.errDetail == "" {
+				t.Fatalf("setup: the failed submit recorded no detail to leak")
+			}
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc}) // → source chooser
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+			if screen.phase != poPhaseReorderPick {
+				t.Fatalf("r left the screen on phase %v, want the reorder picker", screen.phase)
+			}
+			if len(screen.reorderItems) != 0 {
+				t.Fatalf("setup: the reorder queue is not empty (%d)", len(screen.reorderItems))
+			}
+
+			before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+			_ = r
+			if len(screen.lines) != 1 || screen.phase != poPhaseReorderPick {
+				t.Fatalf("add-all over an empty queue staged or navigated: %d line(s), phase %v",
+					len(screen.lines), screen.phase)
+			}
+			after := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+			if after == before {
+				t.Errorf("a redrew a byte-for-byte identical pane:\n%s", after)
+			}
+
+			poAssertFits(t, fmt.Sprintf("reorder picker after add-all at 80x%d", h), screen)
+			// The decline is on the pane, and the failure line still carries
+			// the headline its detail belongs to rather than this sentence.
+			poWantPaneLine(t, screen, "nothing to add")
+			poWantPaneLine(t, screen, "submitting this purchase order failed")
+
+			lines := poPaneLinesAt(t, screen, h)
+			decline, gateway := -1, -1
+			for i, line := range lines {
+				if decline < 0 && strings.Contains(line, "nothing to add") {
+					decline = i
+				}
+				if gateway < 0 && (strings.Contains(line, "502") || strings.Contains(line, "DOCTYPE")) {
+					gateway = i
+				}
+			}
+			if gateway >= 0 && gateway > decline {
+				submit := -1
+				for i, line := range lines {
+					if strings.Contains(line, "submitting this purchase order failed") {
+						submit = i
+					}
+				}
+				if submit < 0 || submit > gateway {
+					t.Errorf("the gateway body on row %d is attributed to the decline on row %d:\n%s",
+						gateway, decline, strings.Join(lines, "\n"))
+				}
+			}
+		})
+	}
+}
+
+// TestPOPickers_NoTwoGatedKeysShareASentence presses the keys that decline
+// TOGETHER in one gated state, in sequence and with no reset between them.
+//
+// These frames draw no rows, no highlight and no focused input, so a lead
+// shared by two keys means the second press redraws the pane the first one
+// left — the reported hang's shape. Each of these arms used to share one:
+// `a` and `enter` on a reorder frame that is loading or failed, `]` and `[` on
+// the asset equivalent, and `j` and `k` on the supplier picker.
+func TestPOPickers_NoTwoGatedKeysShareASentence(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(*PurchaseOrderCreateScreen)
+		keys  []tea.KeyMsg
+	}{
+		{"reorder lookup failed: a then enter", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseReorderPick
+			s.reorderLoadErr = "reorder data exploded"
+		}, []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("a")},
+			{Type: tea.KeyEnter},
+		}},
+		{"asset lookup failed: ] then [", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseAssetPick
+			s.assetsErr = "assets exploded"
+			s.assetsPage = 2
+		}, []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("]")},
+			{Type: tea.KeyRunes, Runes: []rune("[")},
+		}},
+		{"supplier lookup failed: j then k", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseSupplier
+			s.supplierLoadErr = "suppliers exploded"
+		}, []tea.KeyMsg{
+			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyRunes, Runes: []rune("k")},
+		}},
+	}
+
+	for _, tc := range cases {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", tc.name, h), func(t *testing.T) {
+				s := NewPurchaseOrderCreateScreen(Deps{})
+				s.supplierID = 1
+				s.terminalHeight = h
+				tc.setup(s)
+
+				before := strings.Join(poPaneLinesAt(t, s, h), "\n")
+				for _, k := range tc.keys {
+					next, cmd := s.Update(k)
+					s = next.(*PurchaseOrderCreateScreen)
+					if cmd == nil {
+						t.Fatalf("%q was answered with nothing at all — this is the hang", k.String())
+					}
+					after := strings.Join(poPaneLinesAt(t, s, h), "\n")
+					if after == before {
+						t.Errorf("%q redrew the pane the press before it left:\n%s", k.String(), after)
+					}
+					before = after
+					poAssertFits(t, tc.name+" after "+k.String(), s)
+				}
+			})
+		}
+	}
+}

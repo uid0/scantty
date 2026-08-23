@@ -820,8 +820,9 @@ func (s *PurchaseOrderCreateScreen) applyItemSupplierFilter() {
 // Phase 3a: Reorder-queue picker
 // ---------------------------------------------------------------------------
 
-// reorderEmptyNote answers every key that acts on a row while the reorder
-// picker is drawing a list with no rows in it. Say so in the BODY as well as
+// reorderEmptyNote answers every key that acts on the reorder queue — a row
+// (j / k / space / enter) or all of it (a) — while the picker is drawing a list
+// with no rows in it. Say so in the BODY as well as
 // the flash: the frame's fixed "Nothing flagged…" line is already on the pane,
 // so a Status alone left it byte-for-byte unchanged and expired four seconds
 // later with nothing recording the press. The lead is what the key DID, so two
@@ -840,8 +841,13 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 			return s, s.reorderVerdictNote(m.String() + " moves nothing")
 		case " ":
 			return s, s.reorderVerdictNote("nothing to mark")
-		case "a", "enter":
+		case "a":
 			return s, s.reorderVerdictNote("nothing to add")
+		case "enter":
+			// Its own lead, not `a`'s: this frame draws no rows, no highlight
+			// and no focused input, so two keys sharing one sentence redraw a
+			// byte-for-byte identical pane on the second press.
+			return s, s.reorderVerdictNote("nothing to pick")
 		}
 	}
 	switch m.String() {
@@ -986,15 +992,20 @@ func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
 // re-entered for a second batch.
 func (s *PurchaseOrderCreateScreen) addReorderLines(items []omsapi.ReorderDataItem) tea.Cmd {
 	if len(items) == 0 {
-		s.errMsg = "nothing to add — nothing is flagged for reorder"
-		return Status(s.errMsg, StatusError)
+		// Through the picker's own note, like the j / k / space / enter arms
+		// one switch above: this was the last arm answering through the
+		// SCREEN-level failure line, which is where a failed submit's detail
+		// lives. Writing errMsg alone left errDetail standing, so after a 502
+		// the pane drew "nothing to add" with several folded rows of the
+		// gateway's HTML underneath it, presented as that sentence's reason.
+		return s.reorderEmptyNote("nothing to add")
 	}
 	for _, it := range items {
 		s.lines = append(s.lines, reorderCartLine(it))
 	}
 	s.reorderSelected = map[int]bool{}
 	s.reorderNote.clear()
-	s.errMsg = ""
+	s.setErr("", "")
 	s.phase = poPhaseReview
 	s.reviewCursor = len(s.lines) - len(items) // first line of this batch
 	s.poNotes.Focus()
@@ -1659,8 +1670,10 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		if !s.assetListOnScreen() {
 			// Neither the working frame nor the failure frame names them, and
 			// stepping the page over one that just FAILED means the retry
-			// silently skips it.
-			return s, s.assetVerdictNote("still on this page")
+			// silently skips it. Each pager key names ITSELF: with one page
+			// loaded both decline, and a shared sentence would make the second
+			// press redraw the pane the first one left.
+			return s, s.assetVerdictNote("] stays on this page")
 		}
 		if !s.assetsHasNext {
 			return s, s.assetsNote.say(fmt.Sprintf("already on the last page (page %d)", s.assetsPage), StatusWarn)
@@ -1677,7 +1690,7 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		)
 	case "[":
 		if !s.assetListOnScreen() {
-			return s, s.assetVerdictNote("still on this page")
+			return s, s.assetVerdictNote("[ stays on this page")
 		}
 		if s.assetsPage <= 1 {
 			return s, s.assetsNote.say("already on the first page", StatusWarn)

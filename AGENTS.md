@@ -217,6 +217,13 @@ touching any screen an operator drives:
   `failRowBudget` — the pane, less the chrome, less the smallest body the phase
   can honestly draw — so what a short terminal loses is the tail of the
   gateway's HTML and never the sentence naming what failed.
+  That line is a HEADLINE PLUS A DETAIL and the two are written together
+  (`setErr`, the only writer of either field): a picker's decline that set the
+  headline alone left the previous failure's detail standing, so
+  `nothing to add` was drawn with the 502's HTML folded underneath it, reading
+  as the gateway explaining a validation message. It also belongs to the
+  SUBMIT — a picker's decline goes in that picker's own note
+  (`reorderEmptyNote` and its siblings), never in this line.
 - **One budget, not one per block.** Nearly every scrolling block on the New PO
   screen takes its height from `bodyRowBudget(otherRows)`, which measures the frame
   chrome and whatever the phase draws around the block; `renderWindowedList`
@@ -316,6 +323,13 @@ touching any screen an operator drives:
   byte-for-byte identical pane — the reported hang, reached by pressing `j` then
   `k`. Test it IN SEQUENCE with no state reset between presses; resetting the
   lead before every key is what made the sweep structurally unable to see it.
+  The GATED frames (loading, failed) are the same rule and were the last
+  instance of it: `a`/`enter` on the reorder gate, `]`/`[` on the asset gate and
+  `j`/`k` on the supplier gate each shared one sentence between two keys, and
+  those frames draw no rows, no highlight and no focused input, so the second
+  press redrew the pane the first one left.
+  `TestPOPickers_NoTwoGatedKeysShareASentence` presses each such pair together,
+  in sequence, at both pane heights.
   List EDGES stay silent on purpose: the
   highlight is on the pane and visibly at the end, so the press has answered
   itself. The CART on the source chooser is the same rule off the pickers:

@@ -560,7 +560,11 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 	if !s.supplierListOnScreen() {
 		switch m.String() {
 		case "j", "down", "k", "up":
-			return s, s.supplierVerdictNote("nothing to move through")
+			// Named, like every other cursor decline on this screen: j and k
+			// share this arm, and this frame has no rows and no highlight, so
+			// one sentence for both would make the second press redraw the
+			// pane the first one left.
+			return s, s.supplierVerdictNote(m.String() + " moves nothing")
 		case "enter":
 			return s, s.supplierVerdictNote("nothing to commit")
 		}
