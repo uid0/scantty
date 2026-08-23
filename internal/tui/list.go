@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/forgekeyapi"
 	"github.com/uid0/scantty/internal/omsapi"
@@ -116,6 +117,27 @@ type listSearchedMsg struct {
 
 const listWindowSize = 20
 
+// The search overlay's own row, stated once so its two halves cannot disagree
+// about how wide the other is. listSearchInputWidth is the scrolling viewport
+// bubbles gives the query: the pane, less the prompt, less the cell the cursor
+// takes past the end of the value, less the widest suffix View can append
+// after the box.
+//
+// Without a Width, bubbles emits the whole value and clampToBox cut the caret
+// off the right edge past roughly the 43rd character — every further keystroke
+// redrew the row byte for byte, which is the reported hang reached by typing.
+// The suffix is reserved rather than left to be cut because a width also makes
+// bubbles PAD a short value out to it, so an unreserved count would be pushed
+// past the pane edge on every query instead of only on long ones.
+const (
+	listSearchPrompt = "search ▸ "
+	// "  " + the longest count View writes, at four digits of results.
+	listSearchWidestSuffix = "  9999 match(es)"
+)
+
+var listSearchInputWidth = screenBodyWidth(80) -
+	lipgloss.Width(listSearchPrompt) - 1 - lipgloss.Width(listSearchWidestSuffix)
+
 type ListScreen struct {
 	deps           Deps
 	title          string
@@ -146,11 +168,8 @@ type ListScreen struct {
 	searchPending bool
 }
 
-// computeWindowSize returns how many list ROWS the current terminal can
-// show. The list view renders one row of content per visible item plus a
-// "    subtitle" line under any row that has a subtitle. We size against
-// the real subtitle population so a list of plain-title rows fills the
-// pane instead of getting halved by an old worst-case heuristic.
+// listBodyLines is how many LINES of list body the pane has left after the
+// chrome around it.
 //
 // Chrome accounted for here, in addition to the global screen body math
 // in layout.go:
@@ -158,35 +177,52 @@ type ListScreen struct {
 //	1 row for the "Sort: … · N rows" header
 //	1 row each for ↑/↓ indicators when the list overflows the window
 //	1 blank separator above the hint
-//	1 row for the hint line itself
-func (s *ListScreen) computeWindowSize() int {
+//	however many rows the FOLDED hint actually occupies
+func (s *ListScreen) listBodyLines() int {
 	const listHeaderRows = 1
-	const listFooterRows = 2 // blank + hint
 	// Reserve both indicator slots up front; we'd rather waste one row
 	// when only one indicator shows than clip a row when the list
 	// overflows.
 	const listIndicatorRows = 2
 
-	avail := screenBodyHeight(s.terminalHeight) - listHeaderRows - listFooterRows - listIndicatorRows
-	// The search overlay adds an input line + its hint + a blank separator
-	// above the list body; reserve those rows so results don't overflow.
+	avail := screenBodyHeight(s.terminalHeight) - listHeaderRows - listIndicatorRows
 	if s.searching {
-		avail -= 3
+		// The overlay replaces the browse footer rather than sitting above it
+		// (bodyView drops the footer while searching), and adds an input line,
+		// its folded bar and a blank separator of its own.
+		avail -= 2 + len(pickerWrap(listSearchBarHint, pickerPaneWidth))
+	} else {
+		avail -= s.footerRows()
 	}
 	if avail < 2 {
 		avail = 2
 	}
-	// Each visible row takes 1 line of title, plus 1 more if it carries
-	// a subtitle. Walk the actual rows from the current windowStart
-	// forward, packing as many as fit. Falls back to a per-row estimate
-	// when rows haven't loaded yet.
+	return avail
+}
+
+// rowsFittingFrom returns how many rows starting at `start` fit in the body,
+// counting the LINES each one actually renders: a title line, plus a line for
+// a subtitle and another for a metrics line where the loader supplies them.
+// Falls back to the line budget itself when no rows are loaded yet.
+//
+// The count depends on WHICH rows are in the window, which is why nothing may
+// hold on to an answer computed for a different start. Sizing once at load
+// time and keeping it through every scroll is what put twenty lines into an
+// eighteen-line pane on a list whose first rows are plain and whose later ones
+// carry both extra lines (an inventory list is exactly that shape) — and what
+// clampToBox then dropped was the folded footer, taking "N new PO" and its
+// siblings with it. The same claim, cut off the same edge, for the third time:
+// horizontally, then vertically, then by counting rows where the renderer
+// counts lines.
+func (s *ListScreen) rowsFittingFrom(start int) int {
+	avail := s.listBodyLines()
 	if len(s.rows) == 0 {
 		return avail
 	}
-	used, count, start := 0, 0, s.windowStart
 	if start < 0 {
 		start = 0
 	}
+	used, count := 0, 0
 	for i := start; i < len(s.rows); i++ {
 		cost := 1
 		if s.rows[i].Subtitle != "" {
@@ -201,8 +237,12 @@ func (s *ListScreen) computeWindowSize() int {
 		used += cost
 		count++
 	}
-	if count < 2 {
-		count = 2
+	if count < 1 {
+		// One row over the budget beats zero rows: a window of none renders a
+		// list with no rows in it, and scrollIntoView's walk would never
+		// terminate. It takes a pane too short for a single fat row to get
+		// here, which 24 lines is not.
+		count = 1
 	}
 	return count
 }
@@ -331,32 +371,56 @@ func (s *ListScreen) applySort() {
 	s.scrollIntoView()
 }
 
+// scrollIntoView keeps the cursor inside the window AND re-derives how many
+// rows that window holds. The two cannot be separated: rowsFittingFrom packs
+// by the LINES each row renders, so the answer depends on which rows the
+// window starts at, and every key that moves the cursor moves that start.
 func (s *ListScreen) scrollIntoView() {
-	if s.windowSize <= 0 {
-		s.windowSize = listWindowSize
+	if len(s.rows) == 0 {
+		s.windowStart = 0
+		s.windowSize = s.rowsFittingFrom(0)
+		return
 	}
-	if s.cursor < s.windowStart {
+	if s.cursor < 0 {
+		s.cursor = 0
+	}
+	if s.cursor >= len(s.rows) {
+		s.cursor = len(s.rows) - 1
+	}
+	if s.windowStart > s.cursor {
 		s.windowStart = s.cursor
-	}
-	if s.cursor >= s.windowStart+s.windowSize {
-		s.windowStart = s.cursor - s.windowSize + 1
 	}
 	if s.windowStart < 0 {
 		s.windowStart = 0
 	}
-	if maxStart := len(s.rows) - s.windowSize; maxStart > 0 && s.windowStart > maxStart {
-		s.windowStart = maxStart
+	// Walk the start forward until the cursor is inside the window that start
+	// can actually afford, re-packing at each step because moving the start
+	// changes which rows are counted. It terminates at windowStart == cursor,
+	// where a window of one row is enough.
+	for s.windowStart < s.cursor && s.cursor >= s.windowStart+s.rowsFittingFrom(s.windowStart) {
+		s.windowStart++
 	}
-	if len(s.rows) <= s.windowSize {
-		s.windowStart = 0
+	// Then back, while the rows below still reach the end of the list: a
+	// window that runs off the end wastes pane on blank space (a taller
+	// terminal, or a filter that shortened the list, is the ordinary way to
+	// get there). Pulling back is only allowed while the cursor stays inside
+	// it — this is the old maxStart clamp, asked of the packed window instead
+	// of a row count.
+	for s.windowStart > 0 {
+		prev := s.windowStart - 1
+		fits := s.rowsFittingFrom(prev)
+		if prev+fits < len(s.rows) || prev+fits <= s.cursor {
+			break
+		}
+		s.windowStart = prev
 	}
+	s.windowSize = s.rowsFittingFrom(s.windowStart)
 }
 
 func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
-		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
 	case listLoadedMsg:
@@ -368,10 +432,9 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loadErr = ""
 		}
 		s.applySort()
-		// Re-compute now that rows are known: computeWindowSize walks
-		// the actual subtitle population, so the first sizing pass
-		// from WindowSizeMsg used a 0-row fallback.
-		s.windowSize = s.computeWindowSize()
+		// scrollIntoView re-derives the window now that rows are known:
+		// rowsFittingFrom walks the actual subtitle population, and the sizing
+		// pass from WindowSizeMsg had only the 0-row fallback to go on.
 		s.scrollIntoView()
 		return s, nil
 	case listSearchedMsg:
@@ -388,7 +451,6 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.cursor = 0
 		s.windowStart = 0
 		s.applySort()
-		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
 	case tea.KeyMsg:
@@ -401,35 +463,42 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor++
 				s.scrollIntoView()
 			}
+			return s, nil
 		case "k", "up":
 			if s.cursor > 0 {
 				s.cursor--
 				s.scrollIntoView()
 			}
-		case "ctrl+d", "pgdown":
+			return s, nil
+		case "pgdown":
 			s.cursor += s.windowSize
 			if s.cursor >= len(s.rows) {
 				s.cursor = len(s.rows) - 1
 			}
 			s.scrollIntoView()
-		case "ctrl+u", "pgup":
+			return s, nil
+		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
 				s.cursor = 0
 			}
 			s.scrollIntoView()
+			return s, nil
 		case "g", "home":
 			s.cursor = 0
 			s.scrollIntoView()
+			return s, nil
 		case "G", "end":
 			s.cursor = len(s.rows) - 1
 			if s.cursor < 0 {
 				s.cursor = 0
 			}
 			s.scrollIntoView()
+			return s, nil
 		case "s":
 			s.sort = (s.sort + 1) % 4
 			s.applySort()
+			return s, nil
 		case "f":
 			// Cycle the server-side view (e.g. PO status). `f` reaches us only
 			// because HandlesKey claims it over the global firmware hotkey,
@@ -464,6 +533,19 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "enter":
 			return s.openSelected()
 		}
+		// The uppercase sibling-surface accelerators. Last, and reached only by
+		// a key the switch above did NOT handle — every arm of it returns, so
+		// the precedence this comment claims is the control flow rather than a
+		// property of which letters the table happens to hold today. A shortcut
+		// added on a letter the list already binds (G was, before categories
+		// was re-keyed to C) would otherwise scroll the list AND navigate away
+		// on one press. Checked from the SAME table the footer prints, which is
+		// what stops the two from drifting apart again.
+		for _, sc := range listShortcuts(s.spec.kind) {
+			if m.String() == sc.key {
+				return s, SwitchTo(workspaceForKind(s.spec.kind), sc.open(s.deps))
+			}
+		}
 	}
 	return s, nil
 }
@@ -473,14 +555,14 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 func (s *ListScreen) enterSearch() (Screen, tea.Cmd) {
 	s.searching = true
 	in := textinput.New()
-	in.Prompt = "search ▸ "
+	in.Prompt = listSearchPrompt
 	in.Placeholder = "name / tag / serial…"
 	in.CharLimit = 120
+	in.Width = listSearchInputWidth
 	in.SetValue(s.searchQuery)
 	in.CursorEnd()
 	in.Focus()
 	s.searchInput = in
-	s.windowSize = s.computeWindowSize()
 	s.scrollIntoView()
 	return s, textinput.Blink
 }
@@ -494,7 +576,6 @@ func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case tea.KeyEsc:
 		s.searching = false
 		s.searchInput.Blur()
-		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		if s.searchQuery != "" {
 			// Restore the full list the plain loader produces.
@@ -504,13 +585,13 @@ func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
 			return s, s.Init()
 		}
 		return s, nil
-	case tea.KeyUp, tea.KeyCtrlP:
+	case tea.KeyUp:
 		if s.cursor > 0 {
 			s.cursor--
 			s.scrollIntoView()
 		}
 		return s, nil
-	case tea.KeyDown, tea.KeyCtrlN:
+	case tea.KeyDown:
 		if s.cursor < len(s.rows)-1 {
 			s.cursor++
 			s.scrollIntoView()
@@ -600,7 +681,7 @@ func (s *ListScreen) View() string {
 			head.WriteString("  " + StyleMuted.Render(fmt.Sprintf("%d match(es)", len(s.rows))))
 		}
 		head.WriteString("\n")
-		head.WriteString(StyleMuted.Render("↑/↓ move · enter open · esc cancel") + "\n\n")
+		head.WriteString(pickerHint(listSearchBarHint) + "\n\n")
 		return head.String() + s.bodyView()
 	}
 	return s.bodyView()
@@ -680,8 +761,59 @@ func (s *ListScreen) bodyView() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
 	}
 
+	if s.searching {
+		// The search overlay owns the keyboard: updateSearch swallows every
+		// key that is not an arrow, enter or esc straight into the query, so
+		// pressing N here types "N". Drawing the browse footer under the
+		// overlay's own bar put two contradictory action bars on the pane at
+		// once, and folding the footer is what made all eight sibling-surface
+		// claims legible in the one state where none of them work. A frame
+		// names only the keys that work in the state it is drawing.
+		return b.String()
+	}
 	b.WriteString("\n")
-	hint := "j/k move · pgup/pgdn page · g/G top/bottom · s sort"
+	// FOLDED, not truncated — and listBodyLines reserves footerRows() for
+	// what the fold produces. Folding without moving that budget is how the
+	// first attempt at this traded a horizontal cut for a vertical one and
+	// dropped the same claim off the BOTTOM of the pane instead of the right
+	// edge; the number of rows the bar occupies is derived from the bar, never
+	// assumed.
+	// footerHint is one long sentence and the content
+	// pane is 51 columns at 80 (screenBodyWidth), where clampToBox cuts rather
+	// than wraps — the fixed prefix alone filled all 51, so every sibling-
+	// surface key the footer restored ("N new PO" and its seven siblings) was
+	// off the right edge on every list. A bar the operator cannot read is not
+	// an honest bar, it is an absent one, and the report this came from opens
+	// "as the command line says". pickerWrap is pane-local (po_create_pickers.go)
+	// so this needs nothing from the shared JD Edwards layer.
+	b.WriteString(pickerHint(s.footerHint()))
+	return b.String()
+}
+
+// listSearchBarHint is the search overlay's action bar. A named constant so the
+// renderer and listBodyLines's row reservation read the same string — a bar
+// whose rows are budgeted from a different literal is a bar that gets cut.
+const listSearchBarHint = "↑/↓ move · enter open · esc cancel"
+
+// footerRows is how many rows the folded footer occupies, plus its blank
+// separator. Derived from the hint that will actually be drawn rather than
+// assumed: the hint grows a segment whenever a list gains a sibling surface,
+// and a constant here silently spends the extra row out of the pane's bottom.
+func (s *ListScreen) footerRows() int {
+	return 1 + len(pickerWrap(s.footerHint(), pickerPaneWidth))
+}
+
+// footerHint is the list's action bar: every key that works here, and nothing
+// else. A method rather than a local so the honesty sweep can read the CLAIM
+// structurally and press each key it makes, instead of scraping the last line
+// of a rendered pane (list_bar_honesty_test.go).
+//
+// Each conditional arm is the bar's half of a guard the handler also applies —
+// `f` only with a filter cycle, `/` only with a search loader, `n` only with a
+// create form. Keep them paired: an arm added here without its guard in Update
+// is the exact defect this shape exists to prevent.
+func (s *ListScreen) footerHint() string {
+	hint := "j/k ↑↓ move · pgup/pgdn page · g/G home/end top/bottom · s sort"
 	if s.hasFilters() {
 		hint += " · f filter"
 	}
@@ -695,33 +827,70 @@ func (s *ListScreen) bodyView() string {
 	if s.spec.newScreen != nil {
 		hint += " · n new"
 	}
-	// Surface the per-workspace create shortcuts so an operator doesn't
-	// have to memorize them. `N` is the global hotkey for the
-	// PurchaseOrderCreateScreen (app.go:194) but the prompt was never
-	// rendered, so the create form was effectively invisible. Same
-	// thing for `Q` (the existing pending-reorders queue), advertised
-	// here from the Purchasing list so an operator looking for
-	// in-flight reorders can find them.
-	switch s.spec.kind {
-	case "purchase_orders":
-		hint += " · N new PO · Q pending reorders"
-	case "inventory_items":
-		// `I` is a global hotkey (app.go) that opens the create-item form
-		// from anywhere; advertise it here where an operator looks for it.
-		// Editing/deleting an item lives on its detail screen (E / x).
-		hint += " · I new item · G categories · L locations · U suppliers"
-	case "work_orders":
-		// The Maintenance landing lists work orders; `M` (global) opens the
-		// PM-item list, where PM items are created/edited and their actions
-		// (complete / clone / generate-WO) live.
-		hint += " · M PM items"
-	case "assets":
-		// `A` is the global new-asset hotkey (app.go). Edit/delete of an
-		// existing asset live on its detail screen (E / x).
-		hint += " · A new asset"
+	for _, sc := range listShortcuts(s.spec.kind) {
+		hint += " · " + sc.key + " " + sc.label
 	}
-	b.WriteString(StyleMuted.Render(hint))
-	return b.String()
+	return hint
+}
+
+// listShortcut is one SIBLING SURFACE a list advertises in its footer: an
+// uppercase letter, the words printed after it, and the screen it opens.
+//
+// It exists because the footer used to name these as a hand-written string —
+// "· N new PO · Q pending reorders" and its four siblings — pointing at global
+// letter accelerators in app.go. Phase 3 of the redesign deleted every one of
+// those globals ("the root holds no letter", app.go) and moved their
+// destinations into the nav tree. The hint strings stayed. The result was that
+// EIGHT advertised keys did nothing at all — N, Q, I, L, U, M, A dead, and G
+// worse than dead, since the same footer already binds G to "go to bottom" —
+// and the one the captain reached for first was N on the purchase-order list.
+//
+// A hint appended as a literal beside a handler that never learned about it can
+// only drift. So the letter, the words and the destination are ONE record, read
+// by the footer and by Update, and the honesty sweep walks this table: a key
+// here is named and works, or it is not here at all.
+//
+// The case carries meaning. LOWERCASE acts on this list (j/k move, s sort, f
+// filter, r refresh, n create, enter open); UPPERCASE leaves it for another
+// surface of the same workspace. G is the exception that proves it, and is why
+// categories is C: `G` was already the list's own go-to-bottom.
+type listShortcut struct {
+	key   string
+	label string
+	open  func(Deps) Screen
+}
+
+// listShortcuts is the per-kind table. Every destination here is also a row of
+// the nav tree (workspaceSurfaces, route.go) — these are accelerators for the
+// surface an operator on this list reaches for most, not the only way there.
+func listShortcuts(kind string) []listShortcut {
+	switch kind {
+	case "purchase_orders":
+		return []listShortcut{
+			{"N", "new PO", func(d Deps) Screen { return NewPurchaseOrderCreateScreen(d) }},
+			{"Q", "pending reorders", func(d Deps) Screen { return NewReorderQueueScreen(d) }},
+		}
+	case "inventory_items":
+		// Editing/deleting an item lives on its detail screen (E / x).
+		return []listShortcut{
+			{"I", "new item", func(d Deps) Screen { return NewInventoryItemFormScreen(d, "") }},
+			{"C", "categories", func(d Deps) Screen { return NewCategoryListScreen(d) }},
+			{"L", "locations", func(d Deps) Screen { return NewLocationListScreen(d) }},
+			{"U", "suppliers", func(d Deps) Screen { return NewSupplierListScreen(d) }},
+		}
+	case "work_orders":
+		// The Maintenance landing lists work orders; PM items are created,
+		// edited and acted on (complete / clone / generate-WO) over there.
+		return []listShortcut{
+			{"M", "PM items", func(d Deps) Screen { return NewMaintenanceItemsScreen(d) }},
+		}
+	case "assets":
+		// Edit/delete of an existing asset live on its detail screen (E / x).
+		return []listShortcut{
+			{"A", "new asset", func(d Deps) Screen { return NewAssetFormScreen(d, "") }},
+		}
+	}
+	return nil
 }
 
 func loadInventoryItems(ctx context.Context, deps Deps) ([]listRow, error) {

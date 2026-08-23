@@ -49,9 +49,9 @@ If `SCANTTY_OMS_TOKEN` is unset, scantty still works for the `AllowAny` endpoint
 ## Keys
 
 Scantty reserves system keys for **scroll / exit / submit / edit** and nothing
-else. There are no letter accelerators and no workspace digits: navigation
-happens through the sidebar menu and each screen's own on-screen menu, and every
-screen names the keys that apply to it along its foot.
+else. There are no app-wide letter accelerators and no workspace digits:
+navigation happens through the sidebar menu and each screen's own on-screen
+menu, and every screen names the keys that apply to it along its foot.
 
 | Key | What it does |
 |---|---|
@@ -64,6 +64,13 @@ screen names the keys that apply to it along its foot.
 | `Ctrl+E` | Edit / open the highlighted row |
 | `Ctrl+K` | Search palette (items, assets, orders, people) — works from anywhere |
 | `Ctrl+C` / `Ctrl+Q` | Quit, from anywhere |
+
+On a **list** screen the letters in that foot carry case: lowercase acts on the
+list you are looking at (`s` sort, `f` filter, `r` refresh, `n` new), and
+uppercase leaves it for a sibling surface of the same workspace — `N` for a new
+purchase order from Purchasing, for example. Each list names its own along its
+foot; they are shortcuts to surfaces the sidebar tree already carries, never the
+only way there.
 
 The purchasing **viewing** screens — a purchase order's detail sheet and its
 attachments, associations and terms — are drawn in the fixed columnar JD Edwards

@@ -20,6 +20,7 @@ import (
 	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -72,6 +73,16 @@ func (o *poAssocOptions) load(deps Deps) tea.Cmd {
 	return tea.Batch(loadWorkOrderOptionsCmd(deps), loadCommitteeOptionsCmd(deps))
 }
 
+// poAssocErrCells bounds a stored load error where it is RECORDED rather than
+// where it is drawn. omsapi.parseError puts the entire raw response body into
+// APIError.Message whenever the JSON envelope carries no code, and these two
+// strings are read by two different renderers on two different screens — the
+// create screen's one-row renderAssocValue and the edit screen's columnar
+// field, whose fitter is the shared JD Edwards one. Four panes' worth is far
+// more than either can draw, so nothing visible changes; what changes is that
+// neither renderer is ever handed a multi-KB string to measure on every frame.
+var poAssocErrCells = 4 * pickerPaneWidth
+
 // handle absorbs the two loaded messages, reporting whether msg was one of
 // them so the embedding screen's Update can return early.
 func (o *poAssocOptions) handle(msg tea.Msg) bool {
@@ -84,7 +95,7 @@ func (o *poAssocOptions) handle(msg tea.Msg) bool {
 		o.workOrders = m.rows
 		o.workOrderErr = ""
 		if m.err != nil {
-			o.workOrderErr = m.err.Error()
+			o.workOrderErr = pickerClip(m.err.Error(), poAssocErrCells)
 		}
 		return true
 	case poCommitteesLoadedMsg:
@@ -92,7 +103,7 @@ func (o *poAssocOptions) handle(msg tea.Msg) bool {
 		o.committees = m.rows
 		o.committeeErr = ""
 		if m.err != nil {
-			o.committeeErr = m.err.Error()
+			o.committeeErr = pickerClip(m.err.Error(), poAssocErrCells)
 		}
 		return true
 	}
@@ -304,12 +315,26 @@ func poAssocValueField(label, attached, loadErr string) jdeField {
 // (po_create.go), which the JD Edwards conversion reaches in the purchasing
 // ENTRY slice rather than this one. When it converts, it takes
 // poAssocValueField above and this goes with it.
-func renderAssocValue(label, attached, loadErr string) string {
+// The VALUE is bounded to whatever the pane has left after the label, because
+// it is OMS-supplied: a work-order title or an unbounded error string pushed
+// the row past the cut, and clampToBox takes it silently and mid-word. One row,
+// clipped with an ellipsis that says a cut happened — folding would spend rows
+// the source chooser does not have at 24, and these rows are the first thing it
+// drops when it runs out (sourceAttributionShown).
+//
+// `pane` is the caller's real body width, not the 51-column floor: a clip is
+// the one bound that DESTROYS what it trims, so it may never be tighter than
+// the terminal the operator is on.
+func renderAssocValue(pane int, label, attached, loadErr string) string {
+	room := pane - lipgloss.Width(label) - 2
+	if room < 6 {
+		room = 6
+	}
 	switch {
 	case loadErr != "":
-		return label + ": " + StyleStatusWarn.Render("unavailable — "+loadErr)
+		return label + ": " + StyleStatusWarn.Render(pickerClip("unavailable — "+loadErr, room))
 	case attached != "":
-		return label + ": " + StyleStatusOK.Render(attached)
+		return label + ": " + StyleStatusOK.Render(pickerClip(attached, room))
 	}
 	return label + ": " + StyleMuted.Render("(none)")
 }

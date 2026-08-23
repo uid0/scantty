@@ -188,7 +188,7 @@ func TestPOCatalogCost_PlaceholderAndNoteSayBlankMeansCatalog(t *testing.T) {
 	if got := s.lineInputs[poLineFieldCost].Placeholder; !strings.Contains(got, "optional") {
 		t.Errorf("catalog-line placeholder = %q, want it to read as optional", got)
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "supplier catalog price") {
+	if out := s.renderLinePhase(); !strings.Contains(out, "Cost is optional") {
 		t.Errorf("catalog line should explain the optional cost:\n%s", out)
 	}
 
@@ -198,7 +198,7 @@ func TestPOCatalogCost_PlaceholderAndNoteSayBlankMeansCatalog(t *testing.T) {
 		!strings.Contains(got, "optional") {
 		t.Errorf("case-packed catalog placeholder = %q, want an optional case-cost hint", got)
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "supplier catalog price") {
+	if out := s.renderLinePhase(); !strings.Contains(out, "Cost is optional") {
 		t.Errorf("case-packed catalog line should explain the optional cost:\n%s", out)
 	}
 
@@ -208,7 +208,7 @@ func TestPOCatalogCost_PlaceholderAndNoteSayBlankMeansCatalog(t *testing.T) {
 	if got := s.lineInputs[poLineFieldCost].Placeholder; !strings.Contains(got, "e.g.") {
 		t.Errorf("freeform placeholder = %q, want the example hint for a required cost", got)
 	}
-	if out := s.renderLinePhase(); strings.Contains(out, "supplier catalog price") {
+	if out := s.renderLinePhase(); strings.Contains(out, "Cost is optional") {
 		t.Errorf("freeform line should not offer catalog pricing:\n%s", out)
 	}
 }
@@ -465,7 +465,7 @@ func TestPORenderLinePhase_CasePacked(t *testing.T) {
 	}
 	// A case-packed line is still a catalog line: clearing the cost falls back
 	// to catalog pricing there too, so the note belongs on it.
-	if !strings.Contains(out, "supplier catalog price") {
+	if !strings.Contains(out, "Cost is optional") {
 		t.Errorf("case-packed catalog line should show the optional-cost note:\n%s", out)
 	}
 
@@ -909,8 +909,16 @@ func TestPOReorderAddAll_EmptyListIsRefused(t *testing.T) {
 	if s.phase != poPhaseReorderPick {
 		t.Errorf("phase = %v, want to stay on the picker", s.phase)
 	}
-	if !strings.Contains(s.errMsg, "nothing to add") {
-		t.Errorf("errMsg = %q, want it to explain there is nothing to add", s.errMsg)
+	// Reported in the picker's own BODY note, where its j / k / space / enter
+	// siblings answer, and NOT through the screen-level failure line: that line
+	// carries a failed submit's headline plus the raw OMS body underneath it,
+	// so a validation sentence written into it inherits whatever detail the
+	// last failure left behind.
+	if !strings.Contains(s.reorderNote.text, "nothing to add") {
+		t.Errorf("reorder note = %q, want it to explain there is nothing to add", s.reorderNote.text)
+	}
+	if s.errMsg != "" {
+		t.Errorf("the screen-level failure line was used for a picker decline: %q", s.errMsg)
 	}
 }
 
@@ -922,7 +930,7 @@ func TestPOReorderMarksClearOnReload(t *testing.T) {
 	if len(s.reorderSelected) != 1 {
 		t.Fatalf("setup: expected 1 mark, got %d", len(s.reorderSelected))
 	}
-	s.handlePickerLoaded(poReorderItemsLoadedMsg{items: []omsapi.ReorderDataItem{reorderItem("C", 13, 1, "1.00")}})
+	s.handlePickerLoaded(poReorderItemsLoadedMsg{supplierID: s.supplierID, items: []omsapi.ReorderDataItem{reorderItem("C", 13, 1, "1.00")}})
 	if len(s.reorderSelected) != 0 {
 		t.Errorf("reload should clear marks; %d left", len(s.reorderSelected))
 	}
@@ -1268,9 +1276,14 @@ func TestPOEditLine_EditsQtyAndDateOnABulkAddedLine(t *testing.T) {
 	if s.lines[0].item.Quantity != 4 {
 		t.Errorf("sibling line changed: %+v", s.lines[0].item)
 	}
-	// The staged date is visible in the cart, and re-opening the edit restores it.
-	if out := s.renderCart(1); !strings.Contains(out, "exp 2026-09-01") {
-		t.Errorf("cart should show the per-line expected date:\n%s", out)
+	// The cart row says the line carries an expected date, and re-opening the
+	// edit restores the value. At 51 columns an ISO date cannot sit beside the
+	// price and the "Inventory item" badge, and the row's sacrifice order
+	// (label, then date, then badge) makes the DATE what gives — marked with
+	// the ellipsis rather than dropped, so the operator is never shown a row
+	// that reads as carrying no date at all.
+	if out := s.renderCart(1, 0); !strings.Contains(out, "exp…") {
+		t.Errorf("cart should still say the line carries an expected date:\n%s", out)
 	}
 	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
 	if got := s.lineInputs[poLineFieldDate].Value(); got != "2026-09-01" {
@@ -1364,7 +1377,7 @@ func TestPOEditLine_CatalogCostOverrideRoundTrips(t *testing.T) {
 	if got := s.lines[0].item.UnitCost; got == nil || math.Abs(*got-3.25) > 1e-12 {
 		t.Fatalf("unit_cost after an untouched edit = %v, want 3.25", got)
 	}
-	if out := s.renderCart(0); !strings.Contains(out, "@ $3.25") {
+	if out := s.renderCart(0, 0); !strings.Contains(out, "@ $3.25") {
 		t.Errorf("cart should show the overridden cost:\n%s", out)
 	}
 
@@ -1542,7 +1555,7 @@ func TestPORenderCart_TotalAndTypeBadges(t *testing.T) {
 		poCartLineFor(omsapi.PurchaseOrderCreateItem{Description: "Freight", Quantity: 1, UnitCost: cost(0.50)}, "Freight"),
 	}
 
-	out := s.renderCart(-1)
+	out := s.renderCart(-1, 0)
 	for _, want := range []string{"[Inventory item]", "[Asset]", "[Freeform]"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cart missing type badge %s:\n%s", want, out)
@@ -1576,7 +1589,7 @@ func TestPORenderCart_FlagsCatalogPricedLines(t *testing.T) {
 		poCartLineFor(omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 5, UnitCost: &unit}, "Priced"),
 		poCartLineFor(omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 5}, "Unpriced"),
 	}
-	out := s.renderCart(0)
+	out := s.renderCart(0, 0)
 	if !strings.Contains(out, "Total: $10.00") {
 		t.Errorf("total should sum only the priced line:\n%s", out)
 	}
@@ -1589,7 +1602,7 @@ func TestPORenderCart_FlagsCatalogPricedLines(t *testing.T) {
 // $0.00 order.
 func TestPORenderCart_EmptyDrawsNoTotal(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
-	if out := s.renderCart(-1); strings.Contains(out, "Total:") {
+	if out := s.renderCart(-1, 0); strings.Contains(out, "Total:") {
 		t.Errorf("empty cart should draw no total:\n%s", out)
 	}
 }

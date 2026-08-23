@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -93,7 +94,11 @@ func TestPOAgreement_LoadIsBackgroundAndOffersG(t *testing.T) {
 	}
 
 	out := s.renderSourcePhase()
-	if !strings.Contains(out, "Purchase / pricing agreement") || !strings.Contains(out, "(none)") {
+	// The short label, not "Purchase / pricing agreement (optional)": that put
+	// the row at 52 cells with an EMPTY value, so the 51-column pane cut the
+	// value — the one thing on the row the operator has not already read off
+	// the key — off every render.
+	if !strings.Contains(out, "Agreement (optional)") || !strings.Contains(out, "(none)") {
 		t.Errorf("source chooser should advertise the unset agreement:\n%s", out)
 	}
 	if !strings.Contains(s.helpText(), "g agreement") {
@@ -151,8 +156,19 @@ func TestPOAgreement_PickRoundTripsToSubmit(t *testing.T) {
 	}
 
 	// Visible in the header (every phase) and again on the review surface.
-	if got := s.renderSupplierHeader(); !strings.Contains(got, "2026 nonprofit pricing") {
-		t.Errorf("header should name the committed agreement:\n%s", got)
+	//
+	// Asserted against what the 51-column pane can actually SHOW, not against
+	// the unclipped string: "Supplier: Acme Supply (#7)  · agreement: 2026
+	// nonprofit pricing" is 63 cells, so the full name was never on the pane —
+	// this assertion passed on a row clampToBox had already cut. The header now
+	// clips the value itself, ellipsis included, so what is pinned is that the
+	// agreement is still named and still identifiable.
+	header := s.renderSupplierHeader()
+	if w := lipgloss.Width(header); w > pickerPaneWidth {
+		t.Errorf("the header is %d cells and the pane cuts at %d: %q", w, pickerPaneWidth, header)
+	}
+	if !strings.Contains(header, "agreement:") || !strings.Contains(header, "2026 nonp") {
+		t.Errorf("header should name the committed agreement:\n%s", header)
 	}
 	stageOneLine(s)
 	if got := s.renderReviewPhase(); !strings.Contains(got, "2026 nonprofit pricing") {
