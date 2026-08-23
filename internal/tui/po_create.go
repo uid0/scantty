@@ -1839,7 +1839,7 @@ func (s *PurchaseOrderCreateScreen) renderAgreementPhase() string {
 	tail := ""
 	if s.agreementCursor > 0 && s.agreementCursor-1 < len(s.agreements) {
 		if notes := strings.TrimSpace(s.agreements[s.agreementCursor-1].Notes); notes != "" {
-			tail = "\n" + StyleMuted.Render("  "+notes) + "\n"
+			tail = "\n" + pickerHint(notes) + "\n"
 		}
 	}
 	b.WriteString(renderWindowedList(
@@ -1923,8 +1923,8 @@ func (s *PurchaseOrderCreateScreen) renderPendingLookups() string {
 func (s *PurchaseOrderCreateScreen) renderAssocPickPhase(title string, rows []poAssocOption, cursor int) string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render(title) + "\n")
-	tail := "\n" + StyleMuted.Render(
-		"  Records who this order is for. It does not change stock, pricing, or what a committee is billed.") + "\n"
+	tail := "\n" + pickerHint(
+		"Records who this order is for. It does not change stock, pricing, or what a committee is billed.") + "\n"
 	b.WriteString(renderWindowedList(len(rows), cursor,
 		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)),
 		func(i int) string { return rows[i].label }))
@@ -1999,15 +1999,15 @@ func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
 		b.WriteString("\n" + header)
 	}
 	if len(s.lines) > 0 {
-		b.WriteString("\n")
-		tail := "\n  " + StyleStatusOK.Render("d") + "  Done — review & submit    " +
-			StyleMuted.Render("(j/k highlight a line · ctrl+e edit it · x remove it)") + "\n"
-		// Highlight the same line the review cart would: j/k aim it, and
-		// ctrl+e / x act on it. Windowed against whatever the chooser above and
-		// the d-row below have already spent, so d stays on the pane.
-		budget := s.cartRowBudget(poRenderedRows(b.String()) + poRenderedRows(tail))
-		b.WriteString(s.renderCart(s.reviewCursor, budget))
-		b.WriteString(tail)
+		// Keys ABOVE the block that grows, as on the supplier-switch confirm.
+		// These three rows used to sit UNDER the cart, and the cart cannot
+		// shrink past its own header and total — so on an 18-row pane with a
+		// one-line cart the fixed chrome alone overflowed and clampToBox ate
+		// exactly the row naming d, then the row naming ctrl+e and x. The cart
+		// is the part that can give, and renderCart says how many rows it hid.
+		b.WriteString("\n  " + StyleStatusOK.Render("d") + "  Done — review & submit\n")
+		b.WriteString(pickerHint("j/k highlight a line · ctrl+e edit it · x remove it") + "\n\n")
+		b.WriteString(s.renderCart(s.reviewCursor, s.cartRowBudget(poRenderedRows(b.String()))))
 	}
 	return b.String()
 }
@@ -2187,8 +2187,8 @@ func (s *PurchaseOrderCreateScreen) renderCart(highlight, rowBudget int) string 
 			if noCost == 1 {
 				subject = "1 line is"
 			}
-			b.WriteString(StyleMuted.Render(
-				"    "+subject+" priced from the supplier catalog — not included above") + "\n")
+			b.WriteString(pickerHint(
+				subject+" priced from the supplier catalog — not included above") + "\n")
 		}
 	}
 	return b.String()
@@ -2231,7 +2231,7 @@ func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
 		// highlighted line rather than adding a new one.
 		b.WriteString(StyleTitle.Render(fmt.Sprintf("Editing line %d of %d", s.editIndex+1, len(s.lines))) + "\n")
 	}
-	b.WriteString(StyleMuted.Render("Line source: "+source) + "\n\n")
+	b.WriteString(pickerHint("Line source: "+source) + "\n\n")
 	for _, i := range s.lineFields() {
 		marker := "  "
 		if i == s.lineFocused {
@@ -2249,19 +2249,19 @@ func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
 		// = unit) and the basis-toggle key directly under the cost row.
 		if i == poLineFieldCost {
 			if hint := s.costDerivationHint(); hint != "" {
-				b.WriteString(StyleMuted.Render("    "+hint) + "\n")
+				b.WriteString(pickerHint(hint) + "\n")
 			}
 		}
 	}
 	// Catalog lines: the cost is an optional override, so say what a blank field
 	// does. (Case-packed lines also show the unit/case derivation hint above.)
 	if s.pickedItemSup != nil {
-		b.WriteString(StyleMuted.Render("  Cost is optional — blank uses the supplier catalog price.") + "\n")
+		b.WriteString(pickerHint("Cost is optional — blank uses the supplier catalog price.") + "\n")
 	}
 	// Asset / freeform lines carry no date field — say why, so its absence
 	// doesn't read as an oversight.
 	if !s.lineTakesDate() {
-		b.WriteString(StyleMuted.Render("  Expected dates are stored on inventory lines only; set this line's dates at send/receive.") + "\n")
+		b.WriteString(pickerHint("Expected dates are stored on inventory lines only; set this line's dates at send/receive.") + "\n")
 	}
 	return b.String()
 }

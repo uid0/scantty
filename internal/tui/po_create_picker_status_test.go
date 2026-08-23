@@ -3397,3 +3397,168 @@ func TestPOSupplierPicker_TabDoesNotCommit(t *testing.T) {
 		}
 	}
 }
+
+// TestPOAssetPicker_TypingOverAnUnsearchedListLabelsWhatTheRowsAnswer: the
+// label branch for an OPEN box read the live textinput, so the pane could read
+// "search: hovercraft" over three rows that answer no query at all — the same
+// mislabel the shut-box branches were fixed for, one state over. The note under
+// it said "enter runs the search AGAIN" about a search that never ran.
+//
+// The box is opened while the unfiltered page-1 load is still out, which is
+// what makes the reply land with assetsTyping true.
+func TestPOAssetPicker_TypingOverAnUnsearchedListLabelsWhatTheRowsAnswer(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+
+	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = next.(Root)
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = next.(Root)
+	r = poType(t, r, "hovercraft")
+	r = pump(t, r, load, 0)
+
+	if !screen.assetsTyping || screen.assetsQuery != "" || len(screen.assets) != 3 {
+		t.Fatalf("setup: typing=%v query=%q rows=%d, want the box open over 3 unfiltered rows",
+			screen.assetsTyping, screen.assetsQuery, len(screen.assets))
+	}
+
+	// The box may still be labelled `search:` — it IS the search box, and the
+	// caret is in it — but it can no longer be the ONLY label: the line above
+	// has to say what the rows on the pane actually answer.
+	poWantPaneLine(t, screen, "showing: all of this supplier's assets")
+	// …and the note must not claim a search has already run.
+	poRejectPaneLine(t, screen, "runs the search again")
+	poWantPaneLine(t, screen, "enter runs the search")
+	poAssertFits(t, "typing over an unsearched asset list", screen)
+
+	// Once a search HAS run, "again" is true and the label names it.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	if !screen.assetsTyping || screen.assetsQuery != "hovercraft" {
+		t.Fatalf("setup: typing=%v query=%q, want the box reopened over a run search",
+			screen.assetsTyping, screen.assetsQuery)
+	}
+	poWantPaneLine(t, screen, `showing: "hovercraft"`)
+	poAssertFits(t, "typing over a searched asset list", screen)
+	_ = r
+}
+
+// TestPOAssetPicker_EmptyingASearchThatFoundNothingKeepsTheNoMatch: the
+// emptied-box arm worded its second line from assetsQuery alone, so on the
+// zero-result path it asserted "the rows still answer X" on a frame with no
+// rows — and because that note IS the body of the empty frame, it replaced the
+// one line saying the search had found nothing.
+func TestPOAssetPicker_EmptyingASearchThatFoundNothingKeepsTheNoMatch(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "hovercraft")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.assetsQuery != "hovercraft" || len(screen.assets) != 0 {
+		t.Fatalf("setup: query %q over %d row(s), want a committed search that found nothing",
+			screen.assetsQuery, len(screen.assets))
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	for i := 0; i < len("hovercraft"); i++ {
+		next, _ := r.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		r = next.(Root)
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+
+	poWantPaneLine(t, screen, "emptied without running")
+	// The frame has no rows, so it must not claim any.
+	poRejectPaneLine(t, screen, "the rows still answer")
+	poWantPaneLine(t, screen, "no asset matches")
+	poAssertFits(t, "emptied a search that found nothing", screen)
+	_ = r
+}
+
+// TestPOCreate_EveryFixedHintOnTheseScreensSurvivesTheClip drives the frames
+// whose fixed hints were written straight to the pane rather than through
+// pickerHint — the association pickers' caveat, the source chooser's d row, and
+// the three line-form hints, one of which names ctrl+t. Each was cut mid-
+// sentence at 51 columns; the caveat lost the "does NOT" it exists to state.
+func TestPOCreate_EveryFixedHintOnTheseScreensSurvivesTheClip(t *testing.T) {
+	id := 7
+	cases := []struct {
+		name  string
+		setup func(*PurchaseOrderCreateScreen)
+		want  []string
+	}{
+		{"work-order picker caveat", func(s *PurchaseOrderCreateScreen) {
+			s.phase = poPhaseWorkOrder
+			s.assoc.workOrders = []omsapi.WorkOrder{{ID: 1001, Title: "Lathe teardown"}}
+		}, []string{"does not change", "what a committee is billed"}},
+
+		{"line form, catalog line", func(s *PurchaseOrderCreateScreen) {
+			s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 0)
+		}, []string{"Cost is optional", "supplier catalog"}},
+
+		{"line form, case-packed cost basis", func(s *PurchaseOrderCreateScreen) {
+			s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
+		}, []string{"ctrl+t"}},
+
+		{"line form, freeform line has no date field", func(s *PurchaseOrderCreateScreen) {
+			s.enterLinePhase(nil, nil, "Shop rags", 1, 0, 0, 0)
+		}, []string{"send/receive"}},
+	}
+
+	for _, tc := range cases {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s/80x%d", tc.name, h), func(t *testing.T) {
+				s := poWidestSupplierScreen()
+				s.terminalHeight = h
+				tc.setup(s)
+
+				poAssertFits(t, tc.name, s)
+				for _, want := range tc.want {
+					poWantPaneLine(t, s, want)
+				}
+			})
+		}
+	}
+}
+
+// TestPOSourceChooser_CartKeysOutrankTheCatalogCaveat: with a cart on the
+// source chooser the fixed chrome — three folded help rows, the supplier
+// header, four source rows, the cart header, a row, the total and the catalog
+// caveat — exceeds an 18-row pane whatever the cart does, because the cart
+// cannot shrink past its own header and total. Something is always cut there,
+// so what matters is WHICH: the d row and the row naming ctrl+e / x sat UNDER
+// the cart and were what clampToBox ate. They are now above it, and the prose
+// caveat is what yields — the same order the supplier-switch confirm keeps.
+//
+// The residual overflow is pre-existing and is deliberately not asserted away
+// here: at 24 rows the caveat is dropped whole, which is why it is checked at
+// 30 only.
+func TestPOSourceChooser_CartKeysOutrankTheCatalogCaveat(t *testing.T) {
+	id := 7
+	for _, h := range poPaneSizes {
+		s := poWidestSupplierScreen()
+		s.terminalHeight = h
+		s.phase = poPhaseSource
+		s.lines = []poCartLine{
+			{item: omsapi.PurchaseOrderCreateItem{ItemSupplierID: &id, Quantity: 1}, label: "Hex bolt"},
+		}
+
+		for _, want := range []string{"Done — review & submit", "ctrl+e edit it", "x remove it"} {
+			if !poPaneHasLine(t, s, want) {
+				t.Errorf("80x%d: the pane does not carry %q on any whole line:\n%s",
+					h, want, strings.Join(poPaneLinesAt(t, s, h), "\n"))
+			}
+		}
+		// Whatever IS drawn has to be readable across the 51-column cut.
+		for i, line := range poPaneLinesAt(t, s, h) {
+			if w := lipgloss.Width(line); w > screenBodyWidth(80) {
+				t.Errorf("80x%d: line %d is %d cells and is cut at %d: %q",
+					h, i+1, w, screenBodyWidth(80), line)
+			}
+		}
+		if h == poPaneSizes[len(poPaneSizes)-1] && !poPaneHasLine(t, s, "priced from the supplier catalog") {
+			t.Errorf("80x%d: the roomy pane drops the catalog caveat:\n%s",
+				h, strings.Join(poPaneLinesAt(t, s, h), "\n"))
+		}
+	}
+}

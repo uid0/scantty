@@ -188,7 +188,7 @@ func TestPOCatalogCost_PlaceholderAndNoteSayBlankMeansCatalog(t *testing.T) {
 	if got := s.lineInputs[poLineFieldCost].Placeholder; !strings.Contains(got, "optional") {
 		t.Errorf("catalog-line placeholder = %q, want it to read as optional", got)
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "supplier catalog price") {
+	if out := s.renderLinePhase(); !strings.Contains(out, "Cost is optional") {
 		t.Errorf("catalog line should explain the optional cost:\n%s", out)
 	}
 
@@ -198,7 +198,7 @@ func TestPOCatalogCost_PlaceholderAndNoteSayBlankMeansCatalog(t *testing.T) {
 		!strings.Contains(got, "optional") {
 		t.Errorf("case-packed catalog placeholder = %q, want an optional case-cost hint", got)
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "supplier catalog price") {
+	if out := s.renderLinePhase(); !strings.Contains(out, "Cost is optional") {
 		t.Errorf("case-packed catalog line should explain the optional cost:\n%s", out)
 	}
 
@@ -208,7 +208,7 @@ func TestPOCatalogCost_PlaceholderAndNoteSayBlankMeansCatalog(t *testing.T) {
 	if got := s.lineInputs[poLineFieldCost].Placeholder; !strings.Contains(got, "e.g.") {
 		t.Errorf("freeform placeholder = %q, want the example hint for a required cost", got)
 	}
-	if out := s.renderLinePhase(); strings.Contains(out, "supplier catalog price") {
+	if out := s.renderLinePhase(); strings.Contains(out, "Cost is optional") {
 		t.Errorf("freeform line should not offer catalog pricing:\n%s", out)
 	}
 }
@@ -465,7 +465,7 @@ func TestPORenderLinePhase_CasePacked(t *testing.T) {
 	}
 	// A case-packed line is still a catalog line: clearing the cost falls back
 	// to catalog pricing there too, so the note belongs on it.
-	if !strings.Contains(out, "supplier catalog price") {
+	if !strings.Contains(out, "Cost is optional") {
 		t.Errorf("case-packed catalog line should show the optional-cost note:\n%s", out)
 	}
 

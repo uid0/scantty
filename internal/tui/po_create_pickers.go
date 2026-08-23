@@ -708,8 +708,15 @@ func (s *PurchaseOrderCreateScreen) assetLoadedNote(rows int) tea.Cmd {
 		return s.assetsNote.say("this supplier has no assets on file", StatusWarn)
 	}
 	if s.assetsTyping {
+		// "again" asserts a previous run, which is false whenever the box was
+		// opened over an unfiltered page-1 load — the rows landing here answer
+		// no query at all.
+		runs := "enter runs the search"
+		if strings.TrimSpace(s.assetsQuery) != "" {
+			runs = "enter runs the search again"
+		}
 		return s.assetsNote.say(
-			fmt.Sprintf("%d asset(s) · enter runs the search again · esc closes it", rows), StatusInfo)
+			fmt.Sprintf("%d asset(s) · %s · esc closes it", rows, runs), StatusInfo)
 	}
 	return s.assetsNote.say(
 		fmt.Sprintf("%d asset(s) · enter picks the highlighted row", rows), StatusOK)
@@ -1687,12 +1694,21 @@ func (s *PurchaseOrderCreateScreen) assetsSearchClosedNote() tea.Cmd {
 		if q == "" {
 			typed = "the box was emptied without running"
 		}
-		// …and say what the rows on the pane DO answer. Quoting an emptied box
-		// named no query at all while the list was still filtered by the last
-		// one, with the search row gone too.
-		answers := "the rows are this supplier's whole list"
-		if ran != "" {
+		// …and say what the rows on the pane DO answer, which means asking
+		// whether any came back. Reading assetsQuery alone put "the rows still
+		// answer \"Lathe\"" on a frame with no rows at all, and because this
+		// note IS the body of the empty frame it replaced the one line that
+		// said the search for "Lathe" had found nothing.
+		var answers string
+		switch {
+		case len(s.assets) == 0 && ran != "":
+			answers = "no asset matches " + strconv.Quote(pickerClip(ran, 16))
+		case len(s.assets) == 0:
+			answers = "this supplier has no assets on file"
+		case ran != "":
 			answers = "the rows still answer " + strconv.Quote(pickerClip(ran, 16))
+		default:
+			answers = "the rows are this supplier's whole list"
 		}
 		return s.assetsNote.say(
 			"search closed · "+typed+"\n"+answers+" · / reopens the search", StatusWarn)
@@ -1722,8 +1738,17 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 	ran := strings.TrimSpace(s.assetsQuery)
 	switch {
 	case s.assetsTyping:
-		// Being edited: the box IS the subject, and the note under it says the
-		// rows have not been asked yet.
+		// Being edited, so the box is one of TWO subjects and cannot be the
+		// only label: the rows underneath still answer assetsQuery, and this
+		// branch used to draw `search: hovercraft` over an unfiltered list
+		// while nothing had ever been searched for. Same two-row shape the
+		// shut-box branch below builds, with the live textinput in place of
+		// the frozen draft so the caret is where the operator is typing.
+		shown := "all of this supplier's assets"
+		if ran != "" {
+			shown = strconv.Quote(pickerClip(ran, 16))
+		}
+		b.WriteString(StyleMuted.Render("showing: "+shown) + "\n")
 		b.WriteString(StyleMuted.Render("search: ") + s.assetsSearch.View() + "\n\n")
 	case draft != ran:
 		shown := "all of this supplier's assets"

@@ -146,7 +146,13 @@ touching any screen an operator drives:
 - **Do not hand-count a hint against 51 columns — fold it.** Every note, fixed
   hint and prose ACTION BAR goes through `pickerWrap` / `pickerHint` /
   `pickerFail` (`po_create_pickers.go`), which fold at the `·` joints and indent
-  continuations. That folder is deliberately pane-local, outside the JD Edwards
+  continuations. EVERY one: the last sweep found seven still written straight to
+  the pane with `StyleMuted.Render` — the association caveat (98 cells, cut
+  mid-negation, and the negation is the whole point of the sentence), the
+  `ctrl+t` cost-basis hint (110), the two line-form notes, the cart's
+  catalog-pricing caveat, `Line source:` (a UUID puts it over), and an
+  agreement's OMS-supplied notes. A styled literal on these screens that does
+  not go through the folder is the defect, not a style choice. That folder is deliberately pane-local, outside the JD Edwards
   layer, so the list screens and the New PO help line can be legible at 80
   columns without joining the columnar layout. Hand-counting is what broke: each
   line read fine at the width its author had in mind and then grew a
@@ -327,10 +333,18 @@ touching any screen an operator drives:
   pager, AND the `search:` LABEL above the list — that label is what an operator
   reads first to know what a list IS, and leaving it on the live textinput for
   one round drew `search: hovercraft` over an unfiltered page with a green tick.
-  A box holding something else says so instead of concluding (`showing: …` plus
-  `search (not run): …`), and the wording is for the state it is DRAWN in: that
+  A box holding something else says so instead of concluding — `showing: …`
+  above the box in EVERY state, open or shut, plus `search (not run): …` once
+  it is shut. Drawing the box alone while it was being typed into was the same
+  mislabel one state over, and it survived a round because every label test
+  asserted with the box closed.
+  The wording is for the state it is DRAWN in, twice over: the uncommitted-esc
   note only ever appears with the box SHUT, where enter stages the highlighted
-  row, so it names `/ reopens the search` and never "enter runs it".
+  row, so it names `/ reopens the search` and never "enter runs it"; and it
+  asks whether any rows came BACK before saying what they answer, because on a
+  search that found nothing that note IS the body of the frame and "the rows
+  still answer X" would assert rows that are not there. "enter runs the search
+  AGAIN" is likewise conditional on a search having run.
 
 ## Gotchas
 
