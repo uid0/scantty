@@ -54,6 +54,14 @@ type poPickFake struct {
 	failReorder bool
 }
 
+// seen is every request the fake has served, so a test can assert what a
+// lookup CARRIED and not merely that one happened.
+func (f *poPickFake) seen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.requests...)
+}
+
 func (f *poPickFake) hits(substr string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -799,27 +807,32 @@ func poWidestSupplierScreen() *PurchaseOrderCreateScreen {
 // they read it — and the part that goes over the edge is always the tail, which
 // is where these lines name the key that gets the operator out.
 func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
-	long := strings.Repeat("x", 200) // an OMS error string is not bounded
+	// An OMS error string is NOT bounded: omsapi.parseError puts the whole raw
+	// response body in APIError.Message when the JSON envelope carries no code,
+	// so a gateway or Django-debug page arrives multi-KB and pickerWords folds an
+	// unspaced blob at one line per 47 cells. 200 characters fitted an 80x24 pane
+	// and hid the defect; this does not.
+	long := strings.Repeat("x", 900)
 
 	cases := []struct {
 		name  string
 		setup func(*PurchaseOrderCreateScreen)
-		frame func(*PurchaseOrderCreateScreen) string
+		phase poPhase
 		// want is a phrase that has to survive on one line of the frame, not
 		// merely somewhere in the string.
 		want []string
 	}{
 		{"reorder, working", func(s *PurchaseOrderCreateScreen) {
 			s.reorderLoading = true
-		}, (*PurchaseOrderCreateScreen).renderReorderPick, []string{"reorder"}},
+		}, poPhaseReorderPick, []string{"reorder"}},
 
 		{"reorder, failed", func(s *PurchaseOrderCreateScreen) {
 			s.reorderLoadErr = long
-		}, (*PurchaseOrderCreateScreen).renderReorderPick,
+		}, poPhaseReorderPick,
 			[]string{"reading the reorder queue failed", "b picks another line source", "esc cancels the order"}},
 
 		{"reorder, empty", func(s *PurchaseOrderCreateScreen) {},
-			(*PurchaseOrderCreateScreen).renderReorderPick,
+			poPhaseReorderPick,
 			[]string{"b picks another line source", "esc cancels the order"}},
 
 		{"reorder, list", func(s *PurchaseOrderCreateScreen) {
@@ -827,31 +840,31 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 				reorderItem("Bolt M8", 11, 4, ""),
 				reorderItem("Bolt M10", 12, 6, ""),
 			}
-		}, (*PurchaseOrderCreateScreen).renderReorderPick, []string{"in the queue"}},
+		}, poPhaseReorderPick, []string{"in the queue"}},
 
 		{"items, working", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersLoad = true
-		}, (*PurchaseOrderCreateScreen).renderItemPick, []string{"Looking up the items"}},
+		}, poPhaseItemPick, []string{"Looking up the items"}},
 
 		{"items, failed", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersErr = long
-		}, (*PurchaseOrderCreateScreen).renderItemPick,
+		}, poPhaseItemPick,
 			[]string{"looking up this supplier's items failed", "r retries the lookup",
 				"b picks another line source", "esc cancels the order"}},
 
 		{"items, failed while the search box is open", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersErr = long
 			s.itemSuppliersTyping = true
-		}, (*PurchaseOrderCreateScreen).renderItemPick,
+		}, poPhaseItemPick,
 			[]string{"looking up this supplier's items failed", "esc closes the search"}},
 
 		{"items, empty catalog", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersNote = pickerNote{s.noCatalogSentence(), StatusWarn}
-		}, (*PurchaseOrderCreateScreen).renderItemPick,
+		}, poPhaseItemPick,
 			[]string{"has no active catalog items", "b picks another line source", "esc cancels the order"}},
 
 		{"items, no note at all", func(s *PurchaseOrderCreateScreen) {},
-			(*PurchaseOrderCreateScreen).renderItemPick,
+			poPhaseItemPick,
 			[]string{"has no active catalog items", "b picks another line source"}},
 
 		{"items, search matched nothing", func(s *PurchaseOrderCreateScreen) {
@@ -860,7 +873,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.itemSuppliersSearch.SetValue("a search nobody would type")
 			s.applyItemSupplierFilter()
 			s.itemSuppliersNote = itemFilterNote(s.itemSuppliersSearch.Value(), 0, 400, "", true)
-		}, (*PurchaseOrderCreateScreen).renderItemPick,
+		}, poPhaseItemPick,
 			[]string{"no match for", "in catalog", "edit the search"}},
 
 		{"items, several matched, after esc closed the box", func(s *PurchaseOrderCreateScreen) {
@@ -868,7 +881,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.itemSuppliersSearch.SetValue("Widget 1")
 			s.applyItemSupplierFilter()
 			s.itemSuppliersNote = itemFilterNote("Widget 1", len(s.itemSuppliers), 400, "search closed", false)
-		}, (*PurchaseOrderCreateScreen).renderItemPick,
+		}, poPhaseItemPick,
 			[]string{"search closed", "match", "j/k choose", "enter picks"}},
 
 		{"items, exactly one matched, after esc closed the box", func(s *PurchaseOrderCreateScreen) {
@@ -876,35 +889,35 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.itemSuppliersSearch.SetValue("Widget 137")
 			s.applyItemSupplierFilter()
 			s.itemSuppliersNote = itemFilterNote("Widget 137", 1, 400, "search closed", false)
-		}, (*PurchaseOrderCreateScreen).renderItemPick,
+		}, poPhaseItemPick,
 			[]string{"search closed", "enter picks it"}},
 
 		{"items, unfiltered count", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersAll = poCatalog(400)
 			s.applyItemSupplierFilter()
 			s.itemSuppliersNote = itemFilterNote("", 400, 400, "search closed", false)
-		}, (*PurchaseOrderCreateScreen).renderItemPick,
+		}, poPhaseItemPick,
 			[]string{"search closed", "enter picks the highlighted row"}},
 
 		{"assets, working", func(s *PurchaseOrderCreateScreen) {
 			s.assetsLoading = true
-		}, (*PurchaseOrderCreateScreen).renderAssetPick, []string{"Looking up the assets"}},
+		}, poPhaseAssetPick, []string{"Looking up the assets"}},
 
 		{"assets, failed", func(s *PurchaseOrderCreateScreen) {
 			s.assetsErr = long
-		}, (*PurchaseOrderCreateScreen).renderAssetPick,
+		}, poPhaseAssetPick,
 			[]string{"looking up this supplier's assets failed", "/ retries with a search",
 				"b picks another line source", "esc cancels the order"}},
 
 		{"assets, failed while the search box is open", func(s *PurchaseOrderCreateScreen) {
 			s.assetsErr = long
 			s.assetsTyping = true
-		}, (*PurchaseOrderCreateScreen).renderAssetPick,
+		}, poPhaseAssetPick,
 			[]string{"looking up this supplier's assets failed", "esc closes the search"}},
 
 		{"assets, empty", func(s *PurchaseOrderCreateScreen) {
 			s.assetsNote = pickerNote{"this supplier has no assets on file", StatusWarn}
-		}, (*PurchaseOrderCreateScreen).renderAssetPick,
+		}, poPhaseAssetPick,
 			[]string{"no assets on file", "/ searches", "b picks another line source", "esc cancels the order"}},
 
 		{"items, a list longer than the pane", func(s *PurchaseOrderCreateScreen) {
@@ -913,7 +926,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.applyItemSupplierFilter()
 			s.itemSuppliersCur = len(s.itemSuppliers) - 1
 			s.itemSuppliersNote = itemFilterNote("", 400, 400, "search closed", false)
-		}, (*PurchaseOrderCreateScreen).renderItemPick,
+		}, poPhaseItemPick,
 			[]string{"more above", "Widget 400"}},
 
 		{"items, mid-reload over rows already held", func(s *PurchaseOrderCreateScreen) {
@@ -921,14 +934,14 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.itemSuppliersFor = s.supplierID
 			s.itemSuppliersLoad = true
 			s.applyItemSupplierFilter()
-		}, (*PurchaseOrderCreateScreen).renderItemPick, []string{"Reloading the items"}},
+		}, poPhaseItemPick, []string{"Reloading the items"}},
 
 		{"reorder, a queue longer than the pane", func(s *PurchaseOrderCreateScreen) {
 			for i := 0; i < 40; i++ {
 				s.reorderItems = append(s.reorderItems, reorderItem(fmt.Sprintf("Bolt %d", i+1), 100+i, 2, ""))
 			}
 			s.reorderCursor = 39
-		}, (*PurchaseOrderCreateScreen).renderReorderPick,
+		}, poPhaseReorderPick,
 			[]string{"more above", "Bolt 40", "in the queue"}},
 
 		{"assets, a list longer than the pane with a pager", func(s *PurchaseOrderCreateScreen) {
@@ -939,7 +952,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.assetsCursor = 39
 			s.assetsPage = 2
 			s.assetsHasNext = true
-		}, (*PurchaseOrderCreateScreen).renderAssetPick,
+		}, poPhaseAssetPick,
 			[]string{"more above", "Lathe 40", "] next", "[ prev"}},
 
 		{"supplier switch confirm", func(s *PurchaseOrderCreateScreen) {
@@ -950,7 +963,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 				{item: omsapi.PurchaseOrderCreateItem{ItemSupplierID: &id, Quantity: 1}, label: "Hex bolt"},
 				{item: omsapi.PurchaseOrderCreateItem{Description: "Shop rags", Quantity: 2}, label: "Shop rags"},
 			}
-		}, (*PurchaseOrderCreateScreen).renderSupplierSwitchPhase,
+		}, poPhaseSupplierSwitch,
 			[]string{"Changing supplier drops part of the cart",
 				"ctrl+x drops 1 line(s) and switches", "esc keeps the cart and this supplier"}},
 
@@ -959,35 +972,32 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.assetsNote = pickerNote{
 				"no asset matches " + strconv.Quote(pickerClip("hovercraft full of eels", 16)) +
 					"\n/ edits the search · b picks another source", StatusWarn}
-		}, (*PurchaseOrderCreateScreen).renderAssetPick,
+		}, poPhaseAssetPick,
 			[]string{"no asset matches", "/ edits the search", "b picks another source"}},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s := poWidestSupplierScreen()
-			tc.setup(s)
-			frame := tc.frame(s)
-			poAssertFits(t, tc.name, poFrameScreen{frame, poPaneSizes[0]})
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s/80x%d", tc.name, h), func(t *testing.T) {
+				// The REAL screen, not the frame in isolation: View() spends
+				// rows on the folded help line, a blank and the supplier
+				// header before the frame gets any, so measuring the frame
+				// alone was ~5 rows more generous than the terminal and let a
+				// long error push the way-out bar off the bottom unnoticed.
+				s := poWidestSupplierScreen()
+				s.phase = tc.phase
+				s.terminalHeight = h
+				tc.setup(s)
 
-			clipped := clampToBox(frame, screenBodyWidth(80), screenBodyHeight(30))
-			for _, want := range tc.want {
-				found := false
-				for _, line := range strings.Split(clipped, "\n") {
-					if strings.Contains(line, want) {
-						found = true
-						break
-					}
+				poAssertFits(t, tc.name, s)
+				for _, want := range tc.want {
+					poWantPaneLine(t, s, want)
 				}
-				if !found {
-					t.Errorf("the clipped frame does not carry %q on any whole line:\n%s", want, clipped)
-				}
-			}
-		})
+			})
+		}
 	}
 }
 
-// poCatalog builds n catalog rows named the way the httptest fake names them.
 func poCatalog(n int) []omsapi.ItemSupplier {
 	rows := make([]omsapi.ItemSupplier, n)
 	for i := range rows {
@@ -3094,5 +3104,147 @@ func TestPOPickers_EveryGatedKeyMovesTheBody(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestPOAssetPicker_EscOutOfAnUncommittedSearchDoesNotReportAResult: the asset
+// search is SERVER-side and runs only on enter, so a box the operator typed
+// into and escaped without committing has produced no result at all. The note
+// used to read the live textinput and conclude "no asset matches
+// \"hovercraft\"" against a supplier that simply has no assets on file —
+// found-nothing stated where could-not-tell is the fact, pointing at '/' to
+// retype when the only useful key is 'b'.
+func TestPOAssetPicker_EscOutOfAnUncommittedSearchDoesNotReportAResult(t *testing.T) {
+	fake := &poPickFake{assets: 0}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if len(screen.assets) != 0 || screen.assetsLoading {
+		t.Fatalf("setup: want a settled empty asset list (%d row(s), loading=%v)",
+			len(screen.assets), screen.assetsLoading)
+	}
+	poWantPaneLine(t, screen, "has no assets on file")
+
+	sent := fake.hits("/assets/")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "hovercraft")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+
+	if got := fake.hits("/assets/"); got != sent {
+		t.Fatalf("setup: typing fired %d lookup(s); this test needs the query UNSUBMITTED", got-sent)
+	}
+	poRejectPaneLine(t, screen, "no asset matches")
+	poWantPaneLine(t, screen, "was never run")
+	poAssertFits(t, "esc out of an uncommitted asset search", screen)
+
+	// And the pager asks for a PAGE, not for the text nobody submitted.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	for _, req := range fake.seen() {
+		if strings.Contains(req, "search=hovercraft") {
+			t.Errorf("a lookup carried the uncommitted query: %s", req)
+		}
+	}
+	_ = r
+}
+
+// TestPOAssetPicker_PagerCarriesTheQueryThatWasRun is the committed half: once
+// enter has submitted a search, ']' must page THAT search rather than dropping
+// it, so the two halves of the fix cannot be satisfied by ignoring the box
+// entirely.
+func TestPOAssetPicker_PagerCarriesTheQueryThatWasRun(t *testing.T) {
+	fake := &poPickFake{assets: 3}
+	r, screen := poPickerAt(t, fake, 80)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = poType(t, r, "Lathe")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.assetsQuery != "Lathe" {
+		t.Fatalf("setup: the committed query is %q, want \"Lathe\"", screen.assetsQuery)
+	}
+
+	screen.assetsHasNext = true
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+
+	last := ""
+	for _, req := range fake.seen() {
+		if strings.Contains(req, "/assets/") {
+			last = req
+		}
+	}
+	if !strings.Contains(last, "search=Lathe") {
+		t.Errorf("paging dropped the committed search: %s", last)
+	}
+	_ = r
+}
+
+// TestPOItemPicker_ReenteringMidWalkKeepsTheTypedQuery: the 'i' arm cleared the
+// search box before its own in-flight guard, so 'i' → '/' → type → 'b' → 'i'
+// while the catalog walk was still out threw the operator's query away with
+// nothing on the pane saying it had gone. The guard belongs ahead of the reset,
+// as it does on the 'a' arm.
+func TestPOItemPicker_ReenteringMidWalkKeepsTheTypedQuery(t *testing.T) {
+	fake := &poPickFake{catalog: 40, pageSize: 5}
+	r, screen := poPickerAt(t, fake, 80)
+
+	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = next.(Root)
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	r = next.(Root)
+	r = poType(t, r, "Widget 38")
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	r = next.(Root)
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	r = next.(Root)
+	if screen.phase != poPhaseSource {
+		t.Fatalf("setup: 'b' did not leave the picker (phase %v)", screen.phase)
+	}
+
+	sent := fake.hits("/item-suppliers/")
+	next, reenter := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	r = next.(Root)
+	r = pump(t, r, reenter, 0)
+
+	if !screen.itemSuppliersLoad {
+		t.Fatal("the walk finished early — this test needs it in flight")
+	}
+	if got := fake.hits("/item-suppliers/"); got != sent {
+		t.Errorf("re-entering fired %d walk(s) over the one already out", got-sent)
+	}
+	if got := screen.itemSuppliersSearch.Value(); got != "Widget 38" {
+		t.Errorf("re-entering mid-walk discarded the typed query: %q", got)
+	}
+
+	// The query survives to answer the rows when they land.
+	r = pump(t, r, load, 0)
+	if screen.itemSuppliersLoad {
+		t.Fatal("the walk never finished")
+	}
+	if len(screen.itemSuppliers) != 1 {
+		t.Errorf("the preserved query matched %d row(s), want 1", len(screen.itemSuppliers))
+	}
+}
+
+// TestPOSupplierPicker_ListFrameDrawsItsNote: the supplier picker's LIST frame
+// was the one frame of the four pickers that returned without drawing its
+// pickerNote, so a note set while rows were on screen would have been swallowed
+// whole — the same silent keypress the other three frames were fixed for.
+func TestPOSupplierPicker_ListFrameDrawsItsNote(t *testing.T) {
+	for _, h := range poPaneSizes {
+		s := NewPurchaseOrderCreateScreen(Deps{})
+		s.phase = poPhaseSupplier
+		s.terminalHeight = h
+		s.supplierLoading = false
+		s.suppliers = []omsapi.Supplier{{ID: 1, Name: "Acme Supply"}, {ID: 2, Name: "Beta Tool"}}
+
+		before := strings.Join(poPaneLinesAt(t, s, h), "\n")
+		_ = s.supplierNote.say("nothing to commit · the list is right here", StatusWarn)
+		after := strings.Join(poPaneLinesAt(t, s, h), "\n")
+
+		if before == after {
+			t.Errorf("80x%d: the supplier list frame swallowed its note:\n%s", h, after)
+		}
+		if !poPaneHasLine(t, s, "nothing to commit") {
+			t.Errorf("80x%d: the note is not on the pane:\n%s", h, after)
+		}
+		poAssertFits(t, fmt.Sprintf("supplier list with a note at 80x%d", h), s)
 	}
 }

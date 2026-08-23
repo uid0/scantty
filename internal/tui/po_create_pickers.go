@@ -253,11 +253,45 @@ func pickerHint(text string) string {
 // its own folded continuation because an OMS error string is arbitrarily long:
 // on one line the label alone ("looking up this supplier's items failed:" is 40
 // of the 51 columns) leaves the operator reading a colon and nothing after it.
-func pickerFail(what, detail string) string {
-	if detail == "" {
-		return pickerNote{what, StatusError}.render()
+// rows caps how many rendered rows the whole failure block may occupy, and the
+// DETAIL is what gets sacrificed to fit — never the way-out bar or the verdict
+// note the callers write under it.
+//
+// The detail is an OMS response body and it is unbounded: omsapi.parseError
+// puts the ENTIRE raw body in APIError.Message whenever the JSON envelope
+// carries no code, so a gateway page or a Django debug page is multi-KB, and
+// pickerWords folds an unspaced blob at one line per 47 cells. Before the cap,
+// roughly 380 characters pushed the verdict note off an 80x24 pane — a
+// declining key on the failure frame answering into the four-second flash
+// alone — and roughly 470 took "esc cancels the order" with it, stranding the
+// operator on an error frame naming no way out. Folding had traded the
+// horizontal cut for a vertical one, exactly as it did for the list footer.
+//
+// rows <= 0 means the caller has no height yet (terminalHeight unset); nothing
+// is trimmed, because a guess would be worse than the clip clampToBox already
+// applies.
+func pickerFail(what, detail string, rows int) string {
+	text := what
+	if detail != "" {
+		text += "\n" + detail
 	}
-	return pickerNote{what + "\n" + detail, StatusError}.render()
+	out := pickerNote{text, StatusError}.render()
+	if rows <= 0 {
+		return out
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) <= rows {
+		return out
+	}
+	if rows == 1 {
+		return lines[0]
+	}
+	// A block that cannot fit says how many rows it hid, the same contract
+	// renderWindowedList's markers keep.
+	kept := append([]string{}, lines[:rows-1]...)
+	kept = append(kept, StyleMuted.Render(
+		fmt.Sprintf("  … %d more line(s) of the error", len(lines)-(rows-1))))
+	return strings.Join(kept, "\n")
 }
 
 // pickerWayOut is what every picker frame says when the list itself cannot help
@@ -660,8 +694,10 @@ func (s *PurchaseOrderCreateScreen) assetLoadedNote(rows int) tea.Cmd {
 	if rows == 0 {
 		// A search that found nothing is a RESULT, not a blank screen: say
 		// what was searched for so the operator can tell "no such asset"
-		// from "I mistyped".
-		if q := strings.TrimSpace(s.assetsSearch.Value()); q != "" {
+		// from "I mistyped" — and read assetsQuery, the query this reply
+		// actually answers, not the live box, which may already hold
+		// something nobody has submitted.
+		if q := strings.TrimSpace(s.assetsQuery); q != "" {
 			tail := "/ edits the search · b picks another source"
 			if s.assetsTyping {
 				tail = "edit the search to widen it"
@@ -935,8 +971,12 @@ func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
 		return pickerHint("Looking up what "+s.supplierLabel()+" has flagged for reorder…") + note
 	}
 	if s.reorderLoadErr != "" {
-		return pickerFail("reading the reorder queue failed", s.reorderLoadErr) + "\n" +
-			pickerHint(s.reorderPickBar()) + note
+		// The tail is measured BEFORE the failure block is built, so the error
+		// detail is budgeted against what is left rather than the bar and note
+		// against what the error happens to leave.
+		tail := pickerHint(s.reorderPickBar()) + note
+		return pickerFail("reading the reorder queue failed", s.reorderLoadErr,
+			s.bodyRowBudget(poRenderedRows(tail))) + "\n" + tail
 	}
 	if len(s.reorderItems) == 0 {
 		return pickerHint("Nothing flagged for reorder under this supplier.") + "\n" +
@@ -1398,18 +1438,22 @@ func (s *PurchaseOrderCreateScreen) renderItemPick() string {
 		return b.String()
 	}
 	if s.itemSuppliersErr != "" {
-		b.WriteString(pickerFail("looking up this supplier's items failed", s.itemSuppliersErr) + "\n")
 		// Same reason as the loading branch above: the failure frame is durable,
-		// so without this a key pressed on it answered only into the four-second
-		// status flash and the body never moved.
+		// so without the note a key pressed on it answered only into the
+		// four-second status flash and the body never moved.
 		//
 		// Keys ABOVE the reply, as on the supplier-switch confirm: clampToBox
 		// drops from the bottom, and of these two lines the one that must
-		// survive a short terminal is the one naming r/b/esc.
-		b.WriteString(pickerHint(s.itemPickBar()))
+		// survive a short terminal is the one naming r/b/esc. Both are built
+		// FIRST so the unbounded error detail is budgeted against what they
+		// leave, rather than the other way round.
+		tail := pickerHint(s.itemPickBar())
 		if note := s.itemSuppliersNote.render(); note != "" {
-			b.WriteString("\n" + note)
+			tail += "\n" + note
 		}
+		b.WriteString(pickerFail("looking up this supplier's items failed", s.itemSuppliersErr,
+			s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail))) + "\n")
+		b.WriteString(tail)
 		return b.String()
 	}
 	if len(s.itemSuppliers) == 0 {
@@ -1491,14 +1535,15 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 			s.assetsPage = 1
 			s.assetsLoading = true
 			s.assetsErr = ""
-			q := strings.TrimSpace(s.assetsSearch.Value())
+			s.assetsQuery = s.assetsSearch.Value()
+			q := strings.TrimSpace(s.assetsQuery)
 			what := "this supplier's assets"
 			if q != "" {
 				what = strconv.Quote(q)
 			}
 			return s, tea.Batch(
 				s.assetsNote.say("searching "+what+"…", StatusInfo),
-				s.loadAssetsForSupplier(s.assetsSearch.Value()),
+				s.loadAssetsForSupplier(s.assetsQuery),
 			)
 		}
 		var cmd tea.Cmd
@@ -1557,9 +1602,12 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		s.assetsPage++
 		s.assetsLoading = true
 		s.assetsErr = ""
+		// assetsQuery, never the live box: it can hold text nobody submitted,
+		// and paging with that would answer a key that asked for the next page
+		// with a search the operator never ran.
 		return s, tea.Batch(
 			s.assetsNote.say(fmt.Sprintf("loading page %d…", s.assetsPage), StatusInfo),
-			s.loadAssetsForSupplier(s.assetsSearch.Value()),
+			s.loadAssetsForSupplier(s.assetsQuery),
 		)
 	case "[":
 		if !s.assetListOnScreen() {
@@ -1573,13 +1621,13 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 		s.assetsErr = ""
 		return s, tea.Batch(
 			s.assetsNote.say(fmt.Sprintf("loading page %d…", s.assetsPage), StatusInfo),
-			s.loadAssetsForSupplier(s.assetsSearch.Value()),
+			s.loadAssetsForSupplier(s.assetsQuery),
 		)
 	case "enter":
 		if len(s.assets) == 0 {
 			// Same dead end the item picker had: nothing to pick is a fact the
 			// operator has to be told, not a reason to answer with nil.
-			if q := strings.TrimSpace(s.assetsSearch.Value()); q != "" {
+			if q := strings.TrimSpace(s.assetsQuery); q != "" {
 				return s, s.assetsNote.say("nothing to pick · no asset matches "+strconv.Quote(pickerClip(q, 16))+"\n/ edits the search · b picks another source", StatusWarn)
 			}
 			return s, s.assetsNote.say("no assets to pick\nb picks another line source", StatusWarn)
@@ -1624,11 +1672,21 @@ func (s *PurchaseOrderCreateScreen) assetsSearchClosedNote() tea.Cmd {
 	if !s.assetListOnScreen() {
 		return s.assetVerdictNote("search closed")
 	}
+	// Text in the box that was never submitted is not a result. This search is
+	// server-side and runs only on enter, so the rows below answer assetsQuery
+	// and say nothing at all about what is typed here — concluding "no asset
+	// matches X" would be found-nothing where could-not-tell is the fact, and
+	// it would point at '/' to retype when the supplier may simply have none.
+	if q := strings.TrimSpace(s.assetsSearch.Value()); q != strings.TrimSpace(s.assetsQuery) {
+		return s.assetsNote.say(
+			"search closed · "+strconv.Quote(pickerClip(q, 16))+" was never run\n"+
+				"/ reopens the search · enter runs it", StatusWarn)
+	}
 	if len(s.assets) > 0 {
 		return s.assetsNote.say(
 			fmt.Sprintf("search closed · %d asset(s) · j/k move · enter picks", len(s.assets)), StatusInfo)
 	}
-	if q := strings.TrimSpace(s.assetsSearch.Value()); q != "" {
+	if q := strings.TrimSpace(s.assetsQuery); q != "" {
 		return s.assetsNote.say(
 			"search closed · no asset matches "+strconv.Quote(pickerClip(q, 16))+
 				"\n/ edits the search · b picks another source", StatusWarn)
@@ -1659,14 +1717,17 @@ func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
 	// Same gate as the item picker: with the search box open, '/' is a slash in
 	// the query, 'b' is a letter, and esc closes the box rather than the order.
 	if s.assetsErr != "" {
-		b.WriteString(pickerFail("looking up this supplier's assets failed", s.assetsErr) + "\n")
 		// Keys above the reply: clampToBox drops from the bottom, and of these
 		// two lines the one that must survive a short terminal is the one
-		// naming the way out.
-		b.WriteString(pickerHint(s.assetPickBar()))
+		// naming the way out. Measured first so the error detail is what the
+		// budget trims.
+		tail := pickerHint(s.assetPickBar())
 		if note := s.assetsNote.render(); note != "" {
-			b.WriteString("\n" + note)
+			tail += "\n" + note
 		}
+		b.WriteString(pickerFail("looking up this supplier's assets failed", s.assetsErr,
+			s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail))) + "\n")
+		b.WriteString(tail)
 		return b.String()
 	}
 	if len(s.assets) == 0 {

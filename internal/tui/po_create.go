@@ -215,6 +215,16 @@ type PurchaseOrderCreateScreen struct {
 	assetsPage    int
 	assetsHasNext bool
 	assetsNote    pickerNote
+	// assetsQuery is the search the last asset load actually CARRIED, which is
+	// not the same thing as what the search box holds. This search is
+	// SERVER-side and runs only on enter, so a box the operator typed into and
+	// escaped without committing left the rows answering the PREVIOUS query
+	// while every note read the live textinput — "no asset matches
+	// \"hovercraft\"" against a supplier that simply has no assets, which is
+	// found-nothing stated where could-not-tell is the fact. The pager read it
+	// too, so ']' after an uncommitted esc quietly applied a query nobody
+	// submitted to page 2.
+	assetsQuery string
 
 	// Phase 4: line-entry form. The pointer fields drive which
 	// PurchaseOrderCreateItem shape we build at add time —
@@ -737,6 +747,7 @@ func (s *PurchaseOrderCreateScreen) resetSupplierScopedPickers() {
 	s.assetsTyping = false
 	s.assetsSearch.SetValue("")
 	s.assetsSearch.Blur()
+	s.assetsQuery = ""
 	s.assetsPage = 1
 	s.assetsHasNext = false
 	s.assetsNote.clear()
@@ -968,16 +979,21 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		return s, s.loadReorderItemsForSupplier()
 	case "i":
 		s.phase = poPhaseItemPick
-		s.itemSuppliersSearch.SetValue("")
-		s.itemSuppliersSearch.Blur()
-		s.itemSuppliersTyping = false
-		s.itemSuppliersCur = 0
 		if s.itemSuppliersLoad {
 			// A walk is already out for this supplier — say so rather than
 			// firing a second one or posting an entry note that concludes
 			// something about rows still in transit.
+			//
+			// AHEAD of the reset below, like the 'a' arm: this arm used to
+			// clear the search box first, so 'i' → '/' → type → 'b' → 'i'
+			// mid-walk threw away the query the operator had typed with
+			// nothing on the pane saying it had gone.
 			return s, s.catalogVerdictNote("")
 		}
+		s.itemSuppliersSearch.SetValue("")
+		s.itemSuppliersSearch.Blur()
+		s.itemSuppliersTyping = false
+		s.itemSuppliersCur = 0
 		if s.catalogAnswered() {
 			// Already held for THIS supplier. Showing the "Looking up the items
 			// … sells…" frame here would be the same rule broken from the other
@@ -1013,6 +1029,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		s.assetsSearch.SetValue("")
 		s.assetsTyping = false
 		s.assetsPage = 1
+		s.assetsQuery = ""
 		s.assetsNote.clear()
 		return s, s.loadAssetsForSupplier("")
 	case "f":
@@ -1956,11 +1973,16 @@ func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
 	// treat the marker as a two-line block, pad the short line, and leak twenty
 	// columns onto the supplier row underneath it, pushing that row's "(#id)"
 	// past the 51-column cut.
-	return renderWindowedList(len(s.suppliers), s.supplierCursor, s.bodyRowBudget(0),
+	tail := ""
+	if note := s.supplierNote.render(); note != "" {
+		tail = "\n" + note
+	}
+	return renderWindowedList(len(s.suppliers), s.supplierCursor,
+		s.bodyRowBudget(poRenderedRows(tail)),
 		func(i int) string {
 			sup := s.suppliers[i]
 			return fmt.Sprintf("%s  (#%d)", sup.Name, sup.ID)
-		})
+		}) + tail
 }
 
 func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {

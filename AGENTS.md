@@ -134,9 +134,11 @@ touching any screen an operator drives:
 - Notes go in the screen BODY as well as the status bar: `StatusBar.Flash`
   expires after four seconds and the operator who saw nothing is still looking.
   All FOUR pickers carry a `pickerNote` for this and every frame of each of them
-  draws it — the reorder and supplier frames answered into the flash alone for
-  several rounds, and two of their frames drew no body at all, so the rule was
-  documented wider than the code honoured it.
+  draws it, the loaded LIST frames included — the reorder and supplier frames
+  answered into the flash alone for several rounds, two of their frames drew no
+  body at all, and the supplier list frame then went one more round returning
+  its rows with the note dropped, so the rule kept being documented wider than
+  the code honoured it.
 - **Do not hand-count a hint against 51 columns — fold it.** Every note, fixed
   hint and prose ACTION BAR goes through `pickerWrap` / `pickerHint` /
   `pickerFail` (`po_create_pickers.go`), which fold at the `·` joints and indent
@@ -185,7 +187,14 @@ touching any screen an operator drives:
   about. A block that cannot fit says how many rows it hid.
 - **Measure a tail before you draw the list above it.** The asset pager and the
   reorder summary are written after their list; a list sized without counting
-  them pushes exactly them off the bottom, taking the `]`/`[` keys with it.
+  them pushes exactly them off the bottom, taking the `]`/`[` keys with it. The
+  three picker FAILURE frames do the same with their way-out bar and verdict
+  note: both are built first and the unbounded error DETAIL is what `pickerFail`
+  trims to `bodyRowBudget` (saying how many rows it hid). An OMS error string is
+  the whole raw response body whenever the JSON envelope carries no code, so
+  roughly 380 characters used to push the verdict note off an 80x24 pane and
+  roughly 470 took `esc cancels the order` with it — folding had traded the
+  horizontal cut for a vertical one, for the third time in this file.
 - **A key that acts on a row must ask whether the row is DRAWN.** All three
   pickers keep the rows they were showing while a reload is out and after one
   fails — a failed refresh should not also destroy what was on screen — but
@@ -254,8 +263,11 @@ touching any screen an operator drives:
   so not even the caret moves. EVERY arm that declines in answer to a key leads
   with what the key DID, and the GATES do too, not just the filter arms: all
   four verdict helpers (`catalogVerdictNote`, `assetVerdictNote`,
-  `reorderVerdictNote`, `supplierVerdictNote`) take a prefix and every call site
-  passes one. That last step is what finally closed the reported hang on the
+  `reorderVerdictNote`, `supplierVerdictNote`) take a prefix, and every call
+  site that answers a key IN PLACE passes one. The four that pass `""` are the
+  picker-ENTRY arms (`itemPickEntryNote`, and `updateSourcePhase`'s `r`/`i`/`a`
+  guards): those change the phase, so the whole pane is the answer and a lead
+  naming a key that did something else would be noise. That last step is what finally closed the reported hang on the
   search box it was reported about — the typing branch words the note with
   `catalogVerdict("")` on every rune, so a gate answering with the same wording
   answered with the note the keystroke before it had already drawn, and the
@@ -301,6 +313,14 @@ touching any screen an operator drives:
   and every picker reply echoes its `supplierID` so one for a supplier the order
   has moved off is DROPPED. Found-nothing and could-not-tell are different
   facts: an empty catalog reports as a warning, never as a green "0 loaded".
+- **A server-side search has a fourth fact: NOT ASKED.** The asset search runs
+  only on enter, so what the box holds and what the rows answer are different
+  things. Reading `assetsSearch.Value()` let esc out of an uncommitted box
+  report `no asset matches "hovercraft"` against a supplier that simply has none
+  — found-nothing where could-not-tell is the fact — and let `]` page with a
+  query nobody submitted. `assetsQuery` records what the last load actually
+  CARRIED; every asset note and the pager read it, and a box holding something
+  else says so instead of concluding.
 
 ## Gotchas
 
