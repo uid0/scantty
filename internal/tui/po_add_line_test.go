@@ -760,15 +760,30 @@ func TestPOAddLine_ACappedCandidateListSaysSo(t *testing.T) {
 // It fits — asserted on the CLIPPED render, at the width the terminal gives
 // ---------------------------------------------------------------------------
 
-// poAddAssertFits checks that no line of the frame overruns the pane. A row
-// that did would lose its tail to clampToBox, which is where these frames name
-// the key that gets the operator out.
+// poAddAssertFits checks that no line the SCREEN builds overruns the pane it
+// will be drawn into. A row that did would lose its tail to clampToBox, which
+// is where these frames name the key that gets the operator out.
+//
+// It measures the screen's own View(), not Root's: Root.View has ALREADY run
+// clampToBox, so every line of it is at most screenBodyWidth by construction
+// and an assertion against it can never fail on the class it was written for.
+// That vacuity is what let the working status row ship 54 cells wide into a
+// 51-column pane. poAssertFits (po_create_picker_status_test.go) is the shape
+// this follows; the clipped-render assertions (poAddWantPane and friends) are a
+// different check and stay as they are — they ask what SURVIVES the clip.
 func poAddAssertFits(t *testing.T, what string, r Root, width int) {
 	t.Helper()
-	for i, line := range strings.Split(r.View(), "\n") {
-		if n := lipgloss.Width(line); n > width {
-			t.Errorf("%s line %d is %d cells wide, past the %d-column terminal:\n%q",
-				what, i, n, width, line)
+	screen, ok := r.screen.(*PurchaseOrderAddLineScreen)
+	if !ok {
+		t.Fatalf("%s: the flow is on %T, not the add-line screen, so no frame was measured",
+			what, r.screen)
+	}
+	budget := screenBodyWidth(width)
+	for i, line := range strings.Split(strings.TrimSuffix(screen.View(), "\n"), "\n") {
+		if n := lipgloss.Width(line); n > budget {
+			t.Errorf("%s line %d is %d cells and the %d-column terminal's pane keeps %d, "+
+				"so clampToBox cuts it after %q\n\tfull line: %q",
+				what, i+1, n, width, budget, cellPrefix(line, budget), line)
 		}
 	}
 }
@@ -824,6 +839,15 @@ func poAddReaches() []poAddReach {
 	enter := tea.KeyMsg{Type: tea.KeyEnter}
 	return []poAddReach{
 		{name: "identify", drive: press()},
+		// The lookup is fired WITHOUT pumping, so the working frame is really in
+		// flight while it is measured. It is the frame whose status row carries
+		// "Looking up <query> in <supplier>'s catalogue…", which at this
+		// fixture's supplier name is 54 cells against a 51-column pane.
+		{name: "looking", drive: func(t *testing.T, r Root, _ *PurchaseOrderAddLineScreen) Root {
+			r = key(t, r, poRuneKey("widget"))
+			next, _ := r.Update(enter)
+			return next.(Root)
+		}},
 		{name: "choose", showsName: true, drive: press(poRuneKey("widget"), enter)},
 		{name: "confirm", showsName: true,
 			drive: press(poRuneKey("AF-99-12-ZP-LH-HEAVY"), enter)},
@@ -864,4 +888,125 @@ func TestPOAddLine_AStaleLookupNeverPaintsOverTheFrame(t *testing.T) {
 	if s.phase != poAddPhaseIdentify {
 		t.Errorf("a reply the operator walked away from moved the flow to %v", s.phase)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The typed rows are FIELD-parsed before anything is posted
+// ---------------------------------------------------------------------------
+
+// A price row is parsed as MONEY, not as a number. big.Rat.SetString accepts a
+// fraction, an exponent and a negative, and this screen posts the row verbatim,
+// so a mis-keyed leading minus either created a negative-priced line or came
+// back as a DRF validation envelope — which AsLineEntryError deliberately does
+// not recognise, so the operator read "the add did not answer — the line may or
+// may not be on the order" about a request that definitively added nothing.
+//
+// The refusal is local field parsing only: no request leaves the terminal, the
+// entry survives, and the sentence names the key, the field and the way out.
+func TestPOAddLine_AMalformedPriceIsRefusedBeforeAnythingIsPosted(t *testing.T) {
+	for _, typed := range []string{"-5", "1/3", "1e9", "4.5.0", "four fifty"} {
+		t.Run(typed, func(t *testing.T) {
+			fake := &poAddFake{rows: poAddRows()}
+			r, s := poAddAt(t, fake, 80, 24)
+			r = key(t, r, poRuneKey("AF-99-12-ZP-LH-HEAVY"))
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			if s.phase != poAddPhasePrice {
+				t.Fatalf("the flow is on %v, not the price prompt", s.phase)
+			}
+
+			// Onto the cost row, clear the prefilled suggestion, type the entry.
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
+			for range s.costIn.Value() {
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+			}
+			r = key(t, r, poRuneKey(typed))
+			if got := s.costIn.Value(); got != typed {
+				t.Fatalf("the cost row holds %q, not %q", got, typed)
+			}
+
+			before := poAddPane(r)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+			fake.mu.Lock()
+			posts := len(fake.adds)
+			fake.mu.Unlock()
+			if posts != 0 {
+				t.Errorf("a unit cost of %q was posted; the server answered %d add(s)", typed, posts)
+			}
+			if s.phase != poAddPhasePrice {
+				t.Errorf("the refusal moved the flow to %v", s.phase)
+			}
+			if s.costIn.Value() != typed {
+				t.Errorf("the refusal threw away what was typed: %q", s.costIn.Value())
+			}
+			if poAddPane(r) == before {
+				t.Error("enter redrew a byte-identical pane, which reads as a wedged program")
+			}
+			for _, want := range []string{"enter did not add it", "unit cost", "clear the row"} {
+				poAddWantPane(t, r, want)
+			}
+			// A row it cannot post is a row it must not price either.
+			poAddRejectPane(t, r, "Line total")
+		})
+	}
+}
+
+// The rows the price prompt EXISTS for must stay on the pane when the body
+// overflows, and that is what a read-only band numbered into the navigable
+// range destroys: AddFittedFields numbers rows rowBase+i, so a band based at
+// jdeNoRow used to exempt only its first line and hand its second the number 0
+// — the Quantity input's own row. block(0) then spanned from the read-only
+// Supplier SKU line through the Quantity line, Window anchored on that inflated
+// block, and the frame started on the read-only lines and dropped Unit cost.
+func TestPOAddLine_AShortPaneKeepsBothTypedRowsOnThePricePrompt(t *testing.T) {
+	for _, height := range []int{18, 19, 20, 21, 24} {
+		fake := &poAddFake{rows: poAddRows()}
+		r, s := poAddAt(t, fake, 80, height)
+		r = key(t, r, poRuneKey("AF-99-12-ZP-LH-HEAVY"))
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if s.phase != poAddPhasePrice {
+			t.Fatalf("at 80x%d the flow is on %v, not the price prompt", height, s.phase)
+		}
+		pane := poAddPane(r)
+		for _, want := range []string{"Quantity", "Unit cost"} {
+			if !strings.Contains(pane, want) {
+				t.Errorf("at 80x%d the price prompt drew no %q row:\n%s", height, want, pane)
+			}
+		}
+	}
+}
+
+// The FACTS on a candidate row never give and the identifier does — the same
+// rule poFitRow applies to the line above, applied to the line below it.
+//
+// The match label is OMS prose: "another supplier's listing (Globex
+// Industrial)" is 45 cells. Budgeted BEHIND it, the price and the on-order
+// count were what a 51-column pane cut, and "50 @ 4." reads as a whole price —
+// on the row an operator is picking from.
+func TestPOAddLine_ACandidateRowKeepsItsFactsBehindALongMatchLabel(t *testing.T) {
+	fake := &poAddFake{rows: []poAddCatalogRow{
+		{itemSupplier: 21, name: "Widget bracket, zinc-plated, heavy duty, 12-hole, left-hand",
+			sku: "WB-1200", supplierSKU: "XV-1", perPackage: 25, suggestQty: 50,
+			suggestCost: "4.5000", crossVendor: "Globex Industrial",
+			onOrder: 5, onOrderID: "line-21", linePrice: "4.5000"},
+		{itemSupplier: 22, name: "Widget clamp", sku: "WC-1", supplierSKU: "XV-1",
+			perPackage: 1, suggestQty: 4, suggestCost: "9.9900",
+			crossVendor: "Globex Industrial"},
+	}}
+	r, s := poAddAt(t, fake, 80, 24)
+	r = key(t, r, poRuneKey("XV-1"))
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if s.phase != poAddPhaseChoose {
+		t.Fatalf("two equally strong matches landed on %v, not the choice list", s.phase)
+	}
+
+	poAddAssertFits(t, "choose, long match label", r, 80)
+	for _, want := range []string{"50 @ 4.5000", "on order: 5", "4 @ 9.9900"} {
+		poAddWantPane(t, r, want)
+	}
+	// The label is what abbreviated, and it says so.
+	poAddWantPane(t, r, "another supplie")
+	poAddRejectPane(t, r, "another supplier's listing (Globex Industrial)")
 }

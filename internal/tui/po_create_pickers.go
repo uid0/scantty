@@ -59,8 +59,24 @@ type pickerNote struct {
 // silence this whole file exists to remove, wearing a tick mark, and it is
 // worse than no hint at all because the operator believes they read it.
 func (n pickerNote) render() string {
+	return strings.Join(n.renderLines(pickerPaneWidth), "\n")
+}
+
+// renderLines is render's whole body, folded to the width the CALLER has rather
+// than to the 51 columns the narrowest supported terminal gives.
+//
+// It exists because the columnar screens draw the same note into a pane whose
+// width they read off the live terminal (po_add_line.go's noteLines), and
+// clipping a note to 51 cells on a 120-column terminal throws away what the
+// pane had room for. Only the width differs, so only the width is a parameter:
+// the mark, the styling and the first-line-versus-continuation split live here
+// once, and a new StatusLevel is added in one place.
+//
+// `width` is the room the note has BEFORE the mark, which this function
+// subtracts, so a caller budgets against its own pane and nothing else.
+func (n pickerNote) renderLines(width int) []string {
 	if n.text == "" {
-		return ""
+		return nil
 	}
 	mark, style := "", StyleMuted
 	switch n.level {
@@ -73,7 +89,6 @@ func (n pickerNote) render() string {
 	}
 	// The mark eats two cells of the first line. Budgeting it off every line is
 	// two columns conservative on the continuations and costs nothing.
-	width := pickerPaneWidth
 	if mark != "" {
 		width -= lipgloss.Width(mark)
 	}
@@ -88,7 +103,7 @@ func (n pickerNote) render() string {
 		// they carry the way OUT of the state, not the state itself.
 		out = append(out, StyleMuted.Render(line))
 	}
-	return strings.Join(out, "\n")
+	return out
 }
 
 // flash is the note reduced to ONE line for the status bar, which has no room

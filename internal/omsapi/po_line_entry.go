@@ -324,10 +324,13 @@ func AsLineEntryError(err error) (*POLineEntryError, bool) {
 // LookupPurchaseOrderLine resolves one typed or scanned identifier against the
 // order's supplier WITHOUT adding anything.
 //
-// A blank query is not sent: the server answers it with an empty result, and a
-// request whose answer is known is a round trip an operator waits through for
-// nothing. The empty result is returned verbatim so callers see the same shape
-// either way.
+// The query is issued exactly as it is given: there is no blank-query
+// short-circuit here, so a caller must not pass one. Refusing an empty
+// identifier belongs where the operator's input is validated — the TUI's
+// identify phase already declines a blank box and says so — and a second copy
+// of that rule in the transport layer is the duplication this package has been
+// removing. Anyone who wants the round trip saved adds the early return
+// deliberately, with a test.
 func (c *Client) LookupPurchaseOrderLine(ctx context.Context, poID, query string) (*POLineLookup, error) {
 	var out POLineLookup
 	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/item-lookup/", poID)

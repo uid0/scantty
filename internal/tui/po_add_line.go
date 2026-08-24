@@ -593,7 +593,8 @@ func (s *PurchaseOrderAddLineScreen) keyAdding(m tea.KeyMsg) (Screen, tea.Cmd) {
 	if m.String() == "esc" {
 		return s, s.leave()
 	}
-	return s, s.say(m.String()+" is frozen until the add answers · "+
+	return s, s.say(m.String()+" is frozen until the add answers — "+
+		s.addingSentence(poAddNoteNameCells)+" has already gone to "+s.orderName()+" · "+
 		"esc goes back to the order, but the line may still be added", StatusWarn)
 }
 
@@ -772,9 +773,9 @@ func (s *PurchaseOrderAddLineScreen) submit() tea.Cmd {
 		req.Quantity = n
 	}
 	if raw := strings.TrimSpace(s.costIn.Value()); raw != "" {
-		if _, ok := new(big.Rat).SetString(raw); !ok {
-			return s.say(fmt.Sprintf("enter did not add it — unit cost %q is not a number · "+
-				"clear the row to take the price on file", pickerClip(raw, 12)), StatusWarn)
+		if !poAddIsDecimal(raw) {
+			return s.say(fmt.Sprintf("enter did not add it — unit cost %q is not a plain price like "+
+				"4.50 · clear the row to take the price on file", pickerClip(raw, 12)), StatusWarn)
 		}
 		req.UnitCost = raw
 	}
@@ -970,7 +971,13 @@ func (s *PurchaseOrderAddLineScreen) confirmBarItems(scroll bool) []actionBarIte
 // ---------------------------------------------------------------------------
 
 func (s *PurchaseOrderAddLineScreen) View() string {
-	status := jdeStatusLine(s.phase == poAddPhaseLooking || s.pending, s.workingLine(), "")
+	// The working line is BOUNDED by the same rule as the failure headline two
+	// rows below it: the status row cannot fold, and clampToBox cutting it would
+	// drop the closing SGR reset off the styled string and leave the terminal
+	// coloured for everything drawn afterwards. Two lines the operator reads
+	// together must not be bounded by different rules.
+	status := jdeStatusLine(s.phase == poAddPhaseLooking || s.pending,
+		poStatusError(s.workingLine(), s.barWidth()), "")
 	if status == "" && s.failHead != "" {
 		status = StyleStatusError.Render("✗ " + poStatusError(s.failHead, s.barWidth()))
 	}
@@ -1006,40 +1013,38 @@ func (s *PurchaseOrderAddLineScreen) headerLines() []string {
 }
 
 // workingLine names the work AND the subject: "Loading…" tells an operator
-// nothing they could act on.
+// nothing they could act on. "Adding the line" was half of that — it named the
+// order but not what was going on it, which is the one thing an operator
+// watching a slow gateway wants confirmed.
+//
+// The identifier is what gives here, as everywhere else on this screen: the
+// item name is bounded against what the fixed words and the order number leave,
+// so a long catalogue name shortens rather than pushing the order off the row.
 func (s *PurchaseOrderAddLineScreen) workingLine() string {
 	if s.pending {
-		return "Adding the line to " + s.orderName() + "…"
+		lead, tail := "Adding ", " to "+s.orderName()+"…"
+		room := s.barWidth() - poStatusMarkCells - lipgloss.Width(lead) - lipgloss.Width(tail)
+		return lead + s.addingSentence(room) + tail
 	}
 	return "Looking up " + pickerClip(strings.TrimSpace(s.idIn.Value()), 20) +
 		" in " + pickerClip(s.supplierName(), 20) + "'s catalogue…"
 }
+
+// poStatusMarkCells is what poStatusError reserves for the mark jdeStatusLine
+// draws in front of an error. The working line carries no mark, so budgeting
+// against the same number is two columns conservative and keeps the two rows
+// measured by one rule.
+const poStatusMarkCells = 2
 
 // noteLines renders the screen's answer to the last keypress, folded to the
 // pane the terminal really gave. Root.View TRUNCATES rather than wrapping, and
 // the tail of these sentences is where the key that gets the operator OUT is
 // named — a clipped hint is worse than none, because they believe they read it.
 func (s *PurchaseOrderAddLineScreen) noteLines() []string {
-	if s.note.text == "" {
-		return nil
-	}
-	mark, style := "", StyleMuted
-	switch s.note.level {
-	case StatusError:
-		mark, style = "✗ ", StyleStatusError
-	case StatusWarn:
-		mark, style = "! ", StyleStatusWarn
-	case StatusOK:
-		mark, style = "✓ ", StyleStatusOK
-	}
-	width := s.paneWidth() - len(jdeIndent) - lipgloss.Width(mark)
-	out := make([]string, 0, 4)
-	for i, line := range pickerWrap(s.note.text, width) {
-		if i == 0 {
-			out = append(out, jdeIndent+style.Render(mark+line))
-			continue
-		}
-		out = append(out, jdeIndent+StyleMuted.Render(line))
+	lines := s.note.renderLines(s.paneWidth() - len(jdeIndent))
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, jdeIndent+line)
 	}
 	return out
 }
@@ -1187,7 +1192,7 @@ func (s *PurchaseOrderAddLineScreen) chooseBody() *jdeLines {
 			row = StyleSidebarItemActive.Render("  ▸ " + poFitRow(room, head, facts))
 		}
 		l.AddRow(i, row)
-		l.AddRow(i, "      "+StyleMuted.Render(fitCell(s.candidateFacts(c), pane-6)))
+		l.AddRow(i, "      "+StyleMuted.Render(fitCell(s.candidateFacts(c, pane-6), pane-6)))
 	}
 	return l
 }
@@ -1205,19 +1210,61 @@ func poAddSKUCells(room int) int {
 }
 
 // candidateFacts is the second line of a candidate row: why it matched, what a
-// fresh line would land on, and whether the order already carries it. All three
-// are bounded before they are joined.
-func (s *PurchaseOrderAddLineScreen) candidateFacts(c omsapi.POLineCandidate) string {
-	parts := []string{pickerClip(c.MatchLabel, 34)}
-	parts = append(parts, fmt.Sprintf("%d @ %s", c.SuggestedQuantity, poAddMoney(c.SuggestedUnitCost.String())))
+// fresh line would land on, and whether the order already carries it.
+//
+// It obeys the same rule as poFitRow one line above it, and for the same
+// reason: this is the row an operator PICKS from. The suggested quantity, the
+// price and the on-order count are FACTS and never give — a price cut to
+// "@ 4." reads as a whole price, which is worse than an absent one. The match
+// LABEL is OMS prose ("another supplier's listing (Globex Industrial)") and is
+// the identifier that abbreviates, so it is bounded against what the facts and
+// their separators leave BEFORE the line is assembled. Budgeting the facts
+// behind an unbounded label is not a bound at all: at 51 columns that label
+// plus an on-order count pushed the price off the row entirely.
+func (s *PurchaseOrderAddLineScreen) candidateFacts(c omsapi.POLineCandidate, room int) string {
+	facts := []string{fmt.Sprintf("%d @ %s", c.SuggestedQuantity, poAddMoney(c.SuggestedUnitCost.String()))}
 	if c.AlreadyOnOrder != nil {
-		parts = append(parts, fmt.Sprintf("on order: %d", c.AlreadyOnOrder.QuantityOrdered))
+		facts = append(facts, fmt.Sprintf("on order: %d", c.AlreadyOnOrder.QuantityOrdered))
 	}
 	if c.Item.IsKit {
-		parts = append(parts, "kit")
+		facts = append(facts, "kit")
 	}
-	return strings.Join(parts, " · ")
+	tail := strings.Join(facts, poAddFactSep)
+
+	label := pickerClip(c.MatchLabel, poAddMatchLabelCells(room-lipgloss.Width(tail)))
+	if label == "" {
+		// Nothing left for the label after the facts: it goes rather than
+		// shortening them, and the confirm frame still carries it in full.
+		return tail
+	}
+	return label + poAddFactSep + tail
 }
+
+// poAddFactSep joins the parts of a candidate's fact line.
+const poAddFactSep = " · "
+
+// poAddMatchLabelCells is what the match label may draw into once the facts
+// have taken theirs. `room` is what is left INCLUDING the separator, so the
+// separator is charged here rather than by a caller who might forget it. The
+// ceiling is the label's own reasonable width on a wide terminal; below the
+// floor the label is dropped entirely rather than clipped to an ellipsis and a
+// letter, which would claim a fact nobody could read.
+func poAddMatchLabelCells(room int) int {
+	room -= lipgloss.Width(poAddFactSep)
+	if room > poAddMatchLabelMax {
+		room = poAddMatchLabelMax
+	}
+	if room < poHeaderValueFloor {
+		return 0
+	}
+	return room
+}
+
+// poAddMatchLabelMax is as wide as the label is ever worth drawing: on a
+// 120-column terminal the facts leave far more room than the longest label OMS
+// composes, and a whole line of prose beside a two-word fact reads as the row
+// being ABOUT the label.
+const poAddMatchLabelMax = 34
 
 func (s *PurchaseOrderAddLineScreen) confirmBody() *jdeLines {
 	l := &jdeLines{}
@@ -1417,6 +1464,12 @@ func (s *PurchaseOrderAddLineScreen) lineTotal() string {
 	if qtyRaw == "" || costRaw == "" {
 		return ""
 	}
+	// The same predicate the submit refuses on, so the row cannot show a total
+	// for an entry enter is about to reject — and never a NEGATIVE one, which
+	// big.Rat would have multiplied out and drawn as a real figure.
+	if !poAddIsDecimal(qtyRaw) || !poAddIsDecimal(costRaw) {
+		return ""
+	}
 	qty, ok := new(big.Rat).SetString(qtyRaw)
 	if !ok {
 		return ""
@@ -1428,14 +1481,37 @@ func (s *PurchaseOrderAddLineScreen) lineTotal() string {
 	return new(big.Rat).Mul(qty, cost).FloatString(2)
 }
 
-// addingSentence names the work and the subject, for the working line and the
-// freeze's declines alike.
-func (s *PurchaseOrderAddLineScreen) addingSentence() string {
-	qty := strings.TrimSpace(s.qtyIn.Value())
-	if qty == "" {
-		qty = "the default quantity of"
+// addingSentence names the SUBJECT of the add — the quantity and the item that
+// have already gone to the server — for the working line and the freeze's
+// declines alike. Both used to name the order or nothing at all, so the one
+// fact an operator watching a slow gateway wants confirmed was on neither.
+//
+// A blank quantity row is left unspoken rather than guessed at: blank means the
+// server derives it, and this screen does not hold that number.
+//
+// `room` is the cells the caller has left after its own fixed words, so the
+// name is bounded by what the row really has rather than by a constant that was
+// true of one caller.
+func (s *PurchaseOrderAddLineScreen) addingSentence(room int) string {
+	lead := ""
+	if qty := strings.TrimSpace(s.qtyIn.Value()); qty != "" {
+		lead = qty + " × "
 	}
-	return fmt.Sprintf("%s × %s", qty, pickerClip(s.chosenName(), 28))
+	return lead + pickerClip(s.chosenName(), poAddSubjectCells(room-lipgloss.Width(lead)))
+}
+
+// poAddSubjectCells bounds the item name inside addingSentence: never wider
+// than this screen's own note bound, never so narrow that the name disappears
+// entirely — a subject clipped to nothing would undo the whole point of naming
+// it.
+func poAddSubjectCells(room int) int {
+	if room > poAddNoteNameCells {
+		room = poAddNoteNameCells
+	}
+	if room < poHeaderValueFloor {
+		room = poHeaderValueFloor
+	}
+	return room
 }
 
 // ---------------------------------------------------------------------------
@@ -1488,6 +1564,39 @@ func poAddMoney(v string) string {
 		return "(no price)"
 	}
 	return v
+}
+
+// poAddIsDecimal reports whether a typed row holds a plain non-negative decimal
+// — the only shape a quantity or a price has.
+//
+// It exists because big.Rat.SetString is a NUMBER parser, not a MONEY parser:
+// it accepts "1/3", "1e9" and "-5", and this screen posts the row verbatim as
+// unit_cost. A mis-keyed leading minus therefore either created a
+// negative-priced line or came back as a DRF validation envelope — which
+// omsapi.AsLineEntryError deliberately declines to recognise, so the operator
+// read "the add did not answer — the line may or may not be on the order" with
+// the raw JSON folded underneath, about a request that definitively answered
+// and definitively added nothing.
+//
+// This is FIELD PARSING of a local textbox and nothing more. Whether the
+// supplier carries the item, whether the order is still a draft and what a
+// price is allowed to be are the SERVER's to refuse, and none of them is
+// duplicated here.
+func poAddIsDecimal(raw string) bool {
+	digits, dots := 0, 0
+	for _, r := range raw {
+		switch {
+		case r >= '0' && r <= '9':
+			digits++
+		case r == '.':
+			if dots++; dots > 1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return digits > 0
 }
 
 // poAddIsZeroMoney reports the server's "nothing on file" price. It is compared
