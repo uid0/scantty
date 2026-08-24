@@ -1067,15 +1067,20 @@ func (s *StorageSlotGenerateScreen) viewResult() string {
 	// is that a key it shows works HERE.
 	//
 	// It goes through the shared status row rather than being styled here: that
-	// row is ONE unwrapped line and the pane is 51 columns at the 80-column
-	// floor, so this sentence was 65 cells of it and clampToBox took the tail —
-	// along with StyleMuted's closing reset, leaving the terminal muted for
-	// whatever was drawn next. The wording lost "the " twice to come inside the
-	// 49 an unmarked message has there, so nothing is shortened at any width
-	// rather than the same tail being ellipsised instead of cut.
+	// row is ONE unwrapped line, and a styled line only clampToBox ever bounds
+	// is unsafe by construction — the cut drops runes off the END and takes
+	// StyleMuted's closing reset with them, leaving the terminal muted for
+	// everything drawn afterwards.
+	//
+	// The sentence is 51 cells and it keeps every one of them: an UNMARKED
+	// message has the whole pane, which is 51 at the 80-column floor, because
+	// the bound reserves the mark it is actually given and this row draws none.
+	// It was shortened by a word while that bound reserved a flat two columns
+	// for a "✗ " nothing here prints — two columns the terminal had room to
+	// show, which is the rule this row exists to keep, backwards.
 	return s.frame(body, s.resultCursor,
 		storageSlotStatusLine(s.jdeScreen, false, "", "", "",
-			"cards for these slots print from the slots list"), items)
+			"the cards for these slots print from the slots list"), items)
 }
 
 // storageGenCodeList prints the codes a run touched, WRAPPED to the pane and

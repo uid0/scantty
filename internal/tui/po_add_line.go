@@ -1172,10 +1172,16 @@ func (s *PurchaseOrderAddLineScreen) headerLines() []string {
 // In…'s cata…` — an ellipsis from the inner clip, and the sentence's OWN
 // closing words destroyed by the outer one. At 120 columns the same constant
 // threw away sixty-odd columns the pane had for the supplier's name.
+//
+// Neither branch reserves anything for a MARK. This is the muted branch of the
+// status row and it draws none — the "✗ " belongs to the failure line — and the
+// row's own bound now measures the mark it is actually handed, so a reservation
+// here would be two more columns of the operator's supplier name thrown away on
+// a pane that had room for them.
 func (s *PurchaseOrderAddLineScreen) workingLine() string {
 	if s.pending {
 		lead, tail := "Adding ", " to "+s.orderName()+"…"
-		room := s.barWidth() - jdeStatusMarkCells - lipgloss.Width(lead) - lipgloss.Width(tail)
+		room := s.barWidth() - lipgloss.Width(lead) - lipgloss.Width(tail)
 		return lead + s.addingSentence(room) + tail
 	}
 	const (
@@ -1183,7 +1189,7 @@ func (s *PurchaseOrderAddLineScreen) workingLine() string {
 		mid  = " in "
 		tail = "'s catalogue…"
 	)
-	room := s.barWidth() - jdeStatusMarkCells -
+	room := s.barWidth() -
 		lipgloss.Width(lead) - lipgloss.Width(mid) - lipgloss.Width(tail)
 	query, supplier := poAddShareRow(room, strings.TrimSpace(s.idIn.Value()), s.supplierName())
 	return lead + query + mid + supplier + tail

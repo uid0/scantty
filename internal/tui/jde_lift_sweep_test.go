@@ -38,6 +38,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+	"github.com/uid0/scantty/internal/omsapi"
 )
 
 // jdeLayerFile is the one file the shared columnar layer lives in. Everything
@@ -881,4 +882,216 @@ func jdeLiftStyleLeftOpen(line string) bool {
 		i = j
 	}
 	return open
+}
+
+// TestJDEStatus_AMultiLineErrorKeepsTheActionBarOnThePane is the ROW half of
+// the same bound, and it is a different failure from the width one.
+//
+// A message carrying newlines does not overflow the width at all:
+// lipgloss.Width reports the widest LINE, and nginx's stock 502 page is seven
+// lines of at most 42 columns — inside the 49 an error has at 80 columns — so
+// the bound let it through untouched and the frame appended a SEVEN-row block
+// where its budget had reserved one. clampToBox drops from the bottom, so what
+// went off the pane was the whole action bar: every key on the screen unnamed
+// at once, the operator staring at HTML with nothing telling them how to leave.
+// omsapi.parseError puts the entire raw body into APIError.Message whenever the
+// envelope carries no code, so this is the ordinary shape of a gateway failure
+// on any of the thirty-odd converted sheets.
+//
+// It asserts what the operator's terminal shows: one status row, the bar still
+// on it, and nothing wider than the pane.
+func TestJDEStatus_AMultiLineErrorKeepsTheActionBarOnThePane(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+
+	const gateway = "oms: http 502: <html>\r\n<head><title>502 Bad Gateway</title></head>\n" +
+		"<body>\n<center><h1>502 Bad Gateway</h1></center>\n<hr><center>nginx</center>\n" +
+		"</body>\n</html>\n"
+
+	for _, width := range []int{80, 100, 120} {
+		for _, height := range []int{24, 30} {
+			s := NewSupplierFormScreen(Deps{}, "")
+			r := newTestRoot(s)
+			r, _ = jdeLiftUpdate(r, tea.WindowSizeMsg{Width: width, Height: height})
+			s.errMsg = gateway
+
+			pane := clampToBox(r.View(), width, height)
+			rows := strings.Split(pane, "\n")
+
+			marked := 0
+			for _, row := range rows {
+				if strings.Contains(row, "✗") {
+					marked++
+				}
+			}
+			if marked != 1 {
+				t.Errorf("at %dx%d the status row is %d rows of the frame; it is ONE row and "+
+					"the budget above it is sized for one:\n%s", width, height, marked, pane)
+			}
+			// The bar the supplier sheet always draws. Losing it is losing every
+			// key on the screen at once, which is what this test is about.
+			for _, key := range []string{"Enter", "Esc"} {
+				if !strings.Contains(pane, key) {
+					t.Errorf("at %dx%d the action bar is off the pane — no %q anywhere on it:\n%s",
+						width, height, key, pane)
+				}
+			}
+			for i, row := range rows {
+				if w := lipgloss.Width(row); w > width {
+					t.Errorf("at %dx%d row %d is %d cells and the terminal is %d: %q",
+						width, height, i+1, w, width, row)
+				}
+			}
+			if msg := jdeLiftPaneText(jdeLiftErrorRow(t, pane, width, height)); lipgloss.Width(msg) > screenBodyWidth(width) {
+				t.Errorf("at %dx%d the flattened message is %d cells against a %d-cell pane: %q",
+					width, height, lipgloss.Width(msg), screenBodyWidth(width), msg)
+			}
+			jdeLiftAssertColourCloses(t, pane, width, height)
+		}
+	}
+}
+
+// TestJDEStatus_AnUnmarkedRowKeepsWhatNoMarkTakes is the other direction of the
+// same bound, and the rule it holds is the one this project states about every
+// width: never discard data the terminal had room to show.
+//
+// The row's budget used to subtract a flat two columns for the "✗ " on EVERY
+// branch, including the two that draw no mark at all — the muted working line
+// and the storage sheets' standing note. Those rows have the whole pane, 51
+// cells at the 80-column floor, and were cut at 49.
+//
+// Both surfaces here are real screens rendered through Root, because a bound
+// measured on a frame in isolation cannot see the pane the terminal really
+// gives. The marked branch is checked in the same breath: it must still reserve
+// its two, or the mark pushes the message a cell past the pane.
+func TestJDEStatus_AnUnmarkedRowKeepsWhatNoMarkTakes(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+
+	// Exactly the pane at 80 columns. It is what the rack generator really
+	// says, and it fits only because no mark is drawn in front of it.
+	const note = "the cards for these slots print from the slots list"
+
+	for _, width := range []int{80, 100, 120} {
+		for _, height := range []int{24, 30} {
+			pane := width - 80 + 51 // screenBodyWidth is width less the nav column
+			if pane != screenBodyWidth(width) {
+				t.Fatalf("the pane at %d columns is %d, not %d", width, screenBodyWidth(width), pane)
+			}
+
+			// The NOTE branch: a fixed sentence the width of the pane.
+			g := NewStorageSlotGenerateScreen(Deps{}, 7)
+			g.phase = genPhaseResult
+			g.result = &omsapi.GenerateRackResult{Rack: 7, CreatedCount: 2, Created: []string{"7A1", "7A2"}}
+			gr := newTestRoot(g)
+			gr, _ = jdeLiftUpdate(gr, tea.WindowSizeMsg{Width: width, Height: height})
+			gpane := clampToBox(gr.View(), width, height)
+			if !strings.Contains(jdeLiftStripSGR(gpane), note) {
+				t.Errorf("at %dx%d the %d-cell note was shortened on a %d-cell pane that had room "+
+					"for all of it:\n%s", width, height, lipgloss.Width(note), pane, gpane)
+			}
+
+			// The WORKING LINE branch: data-driven, so it grows to whatever the
+			// pane gives and shows how much that is.
+			a := NewPurchaseOrderAddLineScreen(Deps{}, &omsapi.PurchaseOrder{
+				ID: "po-1", Number: "PO-2026-0042", Status: "draft",
+				SupplierDetails: "Consolidated Fastener & Industrial Supply Company of Ohio",
+			})
+			ar := newTestRoot(a)
+			ar, _ = jdeLiftUpdate(ar, tea.WindowSizeMsg{Width: width, Height: height})
+			a.idIn.SetValue("MFR-PART-NUMBER-000000000000000000000000000000")
+			a.phase = poAddPhaseLooking
+			apane := clampToBox(ar.View(), width, height)
+			work := ""
+			for _, row := range strings.Split(apane, "\n") {
+				if strings.Contains(jdeLiftStripSGR(row), "Looking up ") {
+					work = jdeLiftPaneText(row)
+				}
+			}
+			if work == "" {
+				t.Fatalf("no working line on the pane at %dx%d:\n%s", width, height, apane)
+			}
+			if w := lipgloss.Width(work); w != pane {
+				t.Errorf("at %dx%d the working line is %d cells on a %d-cell pane; with no mark "+
+					"in front of it every one of them is its to spend: %q",
+					width, height, w, pane, work)
+			}
+
+			// And the MARKED branch still reserves what the mark spends.
+			s := NewSupplierFormScreen(Deps{}, "")
+			sr := newTestRoot(s)
+			sr, _ = jdeLiftUpdate(sr, tea.WindowSizeMsg{Width: width, Height: height})
+			s.errMsg = strings.Repeat("x", pane)
+			spane := clampToBox(sr.View(), width, height)
+			row := jdeLiftPaneText(jdeLiftErrorRow(t, spane, width, height))
+			if w := lipgloss.Width(row); w > pane {
+				t.Errorf("at %dx%d the marked status row is %d cells against a %d-cell pane: %q",
+					width, height, w, pane, row)
+			}
+			if !strings.Contains(row, "…") {
+				t.Errorf("at %dx%d a %d-cell message plus a 2-cell mark was drawn on a %d-cell "+
+					"pane with no sign it was shortened: %q", width, height, pane, pane, row)
+			}
+			jdeLiftAssertColourCloses(t, spane, width, height)
+		}
+	}
+}
+
+// TestJDEScroll_APaneTooShortToDrawTheBodyKeepsTheOperatorsPlace.
+//
+// frameScrolled hands the clamped offset back and both callers store it, so
+// clamping against a body that gets NO rows — a pinned header that fills the
+// pane — answered zero and overwrote where the operator had scrolled to. The
+// frame is identical either way (nothing of the body is drawn at that height),
+// which is exactly why it went unnoticed: the cost is only paid when the
+// terminal grows back, and what it costs is the operator's place in a long
+// order pad.
+func TestJDEScroll_APaneTooShortToDrawTheBodyKeepsTheOperatorsPlace(t *testing.T) {
+	build := func(t *testing.T) (*PurchaseOrderDetailScreen, Root) {
+		t.Helper()
+		s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+		s.loading = false
+		s.po = poViewPO()
+		r := poViewRootSized(t, s, 80, 40)
+		var rows []string
+		for i := 0; i < 40; i++ {
+			rows = append(rows, fmt.Sprintf("PART-%04d\t%d", i, i+1))
+		}
+		s.orderPad = true
+		s.orderPadExport = &omsapi.OrderPadExport{
+			Text: strings.Join(rows, "\n"), Supplier: "Acme Fasteners & Industrial Supply",
+			Filename: "PO-2026-0042-order.csv", LineCount: len(rows),
+			// A header tall enough that a short pane leaves the body nothing,
+			// which is the state the offset used to be thrown away in.
+			MissingSku: []string{"Widget clamp", "Gear housing", "Bearing race"},
+		}
+		return s, r
+	}
+
+	s, r := build(t)
+	for i := 0; i < 3; i++ {
+		s.Update(poKeyMsg("pgdown"))
+	}
+	scrolled := r.View()
+	place := s.padScroll
+	if place == 0 {
+		t.Fatalf("the pad did not scroll at 80x40, so there is no place to lose:\n%s", scrolled)
+	}
+
+	// The terminal is dragged short — the body gets no rows at all — and back.
+	r, _ = jdeLiftUpdate(r, tea.WindowSizeMsg{Width: 80, Height: 12})
+	short := r.View()
+	if avail := s.bodyAvailForBar(len(s.orderPadHeader()), s.orderPadBar()); avail != 0 {
+		t.Fatalf("at 80x12 the body still gets %d row(s), so this is not the state under test:\n%s",
+			avail, short)
+	}
+	if s.padScroll != place {
+		t.Errorf("a pane too short to draw the body reset the scroll offset from %d to %d; "+
+			"there is nothing to clamp against, and the operator's place is not the frame's "+
+			"to throw away", place, s.padScroll)
+	}
+
+	r, _ = jdeLiftUpdate(r, tea.WindowSizeMsg{Width: 80, Height: 40})
+	if got := r.View(); got != scrolled {
+		t.Errorf("growing the terminal back did not return the operator to where they were.\n"+
+			"before:\n%s\nafter:\n%s", scrolled, got)
+	}
 }

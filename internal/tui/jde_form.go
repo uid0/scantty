@@ -1068,11 +1068,23 @@ func jdeClampPick(next, count int) int {
 	return next
 }
 
-// jdeStatusMarkCells is what the status row reserves for the mark drawn in
-// front of a message. "✗ " is two display columns; the working line carries no
-// mark, so budgeting it against the same number is two columns conservative and
-// keeps the two rows an operator reads together measured by ONE rule.
-const jdeStatusMarkCells = 2
+// jdeStatusErrMark and jdeStatusWarnMark are the marks the status row draws in
+// FRONT of a message: the failure's "✗ ", and — on the storage family's
+// composite row — the warning's "! ".
+//
+// They are handed to fitStatus rather than counted inside it. The branches that
+// draw NO mark (the muted working line, and the storage sheets' standing note)
+// have those two columns and must keep them: budgeting every branch against a
+// flat two was two columns conservative on the marked rows' behalf and cut a
+// 51-cell note at 49 on an 80-column pane that had room for all of it, which is
+// this project's "never discard data the terminal had room to show" rule
+// pointed backwards. Passing the mark ITSELF also means the reservation is
+// measured from the very string that gets prepended, so a mark and its
+// reservation cannot drift apart the way a constant sitting beside them can.
+const (
+	jdeStatusErrMark  = "✗ "
+	jdeStatusWarnMark = "! "
+)
 
 // statusRow is the one row above the bar: what is in flight, or what went
 // wrong. A screen renders it on every frame, blank included, so the bar
@@ -1087,17 +1099,19 @@ const jdeStatusMarkCells = 2
 func (g jdeScreen) statusRow(saving bool, verb, errMsg string) string {
 	switch {
 	case saving:
-		return StyleMuted.Render(g.fitStatus(verb))
+		return StyleMuted.Render(g.fitStatus("", verb))
 	case errMsg != "":
-		return StyleStatusError.Render("✗ " + g.fitStatus(errMsg))
+		return StyleStatusError.Render(g.fitStatus(jdeStatusErrMark, errMsg))
 	}
 	return ""
 }
 
-// fitStatus bounds one message to the status row.
+// fitStatus bounds one message to the status row and returns it behind `mark`
+// — the two together, because the mark is what the message's own budget is
+// measured against (jdeStatusErrMark).
 //
-// That row is ONE row of the frame — statusRow draws the mark in front of the
-// message and the frames append the result verbatim — so it cannot fold, and
+// That row is ONE row of the frame — the frames append what comes back here
+// verbatim — so it cannot fold, and
 // the messages that reach it are routinely wider than the pane: "cannot read
 // file: open <path>: no such file or directory" is around 96 columns for an
 // ordinary scan path, and an OMS dial error is longer again. Left unbounded it
@@ -1132,16 +1146,58 @@ func (g jdeScreen) statusRow(saving bool, verb, errMsg string) string {
 // fitCell rather than a bare cut, so the row says it was shortened. bodyWidth of
 // zero is "the width is not known yet", which every bound in this layer reads as
 // "do not truncate" — an unsized screen must not throw away columns the terminal
-// may well have.
-func (g jdeScreen) fitStatus(msg string) string {
+// may well have. The ROW bound is not skipped there, only the width one: a
+// message is flattened at every size, because a row several rows tall is wrong
+// on a pane of any width.
+//
+// The message is cut to the budget by a FORWARD pass (cellPrefix) before fitCell
+// measures it. fitCell falls back on truncateVisible, which drops ONE rune off
+// the end and re-measures the whole remaining string, so what arrives here — a
+// 20 KB gateway page, now that jdeStatusOneLine has made it a single line —
+// would cost O(n²) and freeze the frame, which is the hang AGENTS.md records
+// against the picker bounds. Two cells of slack rather than one, so a
+// double-width rune cannot land the prefix exactly on the budget: fitCell would
+// then return it untouched and the row would claim a whole message where a cut
+// one was drawn.
+func (g jdeScreen) fitStatus(mark, msg string) string {
+	msg = jdeStatusOneLine(msg)
+	if msg == "" {
+		return ""
+	}
 	bodyWidth := g.bodyWidth()
-	if msg == "" || bodyWidth <= 0 {
-		return msg
+	if bodyWidth <= 0 {
+		return mark + msg
 	}
-	if avail := bodyWidth - jdeStatusMarkCells; avail > 0 {
-		return fitCell(msg, avail)
+	if avail := bodyWidth - lipgloss.Width(mark); avail > 0 {
+		return mark + fitCell(cellPrefix(msg, avail+2), avail)
 	}
-	return msg
+	return mark + msg
+}
+
+// jdeStatusOneLine collapses a message onto ONE line.
+//
+// The status row cannot fold, and a message carrying newlines does not overflow
+// the WIDTH — lipgloss.Width reports the widest LINE, and nginx's stock 502 page
+// is seven lines of at most 42 columns, comfortably inside the 49 an error has
+// at 80 columns — it overflows the HEIGHT. The budget above it is sized so the
+// body, this one row and the action bar exactly fill the pane, so the frame runs
+// over by however many lines the message brought and clampToBox, which drops
+// from the BOTTOM, takes the whole action bar with it: every key on the screen
+// unnamed at once, the operator left staring at HTML with nothing saying how to
+// get out. omsapi.parseError puts the ENTIRE raw response body into
+// APIError.Message whenever the JSON envelope carries no code, so that page
+// reaches this row verbatim on any of the thirty-odd converted sheets.
+//
+// It runs BEFORE the width is measured. The other way round, a long single line
+// is bounded and then re-expanded by the flattening, which is the same defect
+// with an extra step.
+func jdeStatusOneLine(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "\r", " ")
 }
 
 // frame assembles a phase: the windowed body, padded out to the pane's budget,
@@ -1551,11 +1607,15 @@ func (l *jdeLines) Scrolls(avail int) bool {
 // height WindowFrom will be called with. Screens call it after every scroll key
 // so the offset they hold and the one that gets drawn are never different —
 // which is what makes "↓ 0 more below" impossible.
+//
+// `avail` is the rows the body really gets, and every caller has already
+// established that it is positive: WindowFrom returns before it reaches here
+// when it is not, and frameScrolled skips the clamp entirely so a pane too short
+// to draw the body HOLDS the operator's position instead of resetting it. A
+// guard here answering zero for that case is what reset it, and a branch nothing
+// exercises is only an invitation to answer that way again.
 func (l *jdeLines) ClampScroll(offset, avail int) int {
-	if offset < 0 || avail <= 0 {
-		// No rows: the body is not on the pane, so there is no position to hold.
-		// WindowFrom never reaches here with avail <= 0 (it returns early);
-		// frameScrolled can, when a pinned header fills the pane.
+	if offset < 0 {
 		return 0
 	}
 	body := avail
@@ -1618,7 +1678,17 @@ func (g jdeScreen) frameScrolled(header []string, body *jdeLines, offset int, st
 	budget := g.bodyRowsForBar(barRows)
 	if budget > 0 {
 		avail := g.bodyAvailForBar(len(header), items)
-		offset = body.ClampScroll(offset, avail)
+		if avail > 0 {
+			// Only when the body HAS rows. Zero is a pinned header that fills
+			// the pane, and the clamped offset is written straight back onto the
+			// sheet by both callers (po_detail's padScroll, po_add_line's
+			// scroll), so clamping against no rows would answer 0 and throw away
+			// where the operator had scrolled to — a terminal briefly dragged
+			// short, then grown again, would come back at the top of a long
+			// order pad. The frame is the same either way: WindowFrom draws
+			// nothing at all with no rows to draw it in.
+			offset = body.ClampScroll(offset, avail)
+		}
 		out = append(out, body.WindowFrom(offset, avail)...)
 		out = jdePadTo(out, budget)
 	} else {

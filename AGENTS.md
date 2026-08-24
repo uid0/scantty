@@ -288,7 +288,24 @@ note, and is the authority):
   and takes the windowed line with it. Reading it as one row made the order
   pad's bar name PgUp/PgDn at 80x12 over a frame that does not move —
   `TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves` walks the pane height one
-  row at a time and is what caught it.
+  row at a time and is what caught it. Zero rows is also not a licence to
+  DISCARD the operator's place: `frameScrolled` hands its clamped offset back
+  and both callers store it, so clamping against no rows answered 0 and a
+  terminal briefly dragged short came back at the top of a long order pad.
+  Nothing to clamp against means nothing to clamp, so the clamp is skipped and
+  `ClampScroll` no longer carries a branch for a state it cannot be called in.
+  The status bound is measured in BOTH axes and in what is really drawn.
+  `fitStatus` takes the MARK it is about to sit behind and reserves that — two
+  cells for the error's `✗ ` and the storage warning's `! `, and nothing at all
+  for the muted working line and the standing note, which used to be cut at 49
+  on a pane with 51 to give. And it FLATTENS the message before measuring it: a
+  multi-line body is inside the width on every line (nginx's 502 page is seven
+  lines of at most 42 columns) and overflows the HEIGHT instead, so the frame
+  ran six rows over and `clampToBox`, which drops from the bottom, took the
+  whole action bar — every key on the screen unnamed at once. It is bounded by
+  a forward pass (`cellPrefix`) before `fitCell` sees it, because `fitCell`
+  falls back on `truncateVisible` and a flattened 20 KB gateway page through an
+  O(n²) bound is the hang recorded further down this file.
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
 

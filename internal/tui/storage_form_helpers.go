@@ -38,12 +38,18 @@ var storageLabelWidth = jdeLabelWidth(
 // the SAME row, and the row cannot fold: the warning and the note are bounded by
 // jdeScreen.fitStatus exactly as the verb and the error are, so clampToBox
 // cannot cut a styled line and take its closing SGR reset with it.
+//
+// Each branch hands fitStatus the mark it is really going to draw — the warning
+// its "! ", the note nothing at all — so the bound reserves what is spent and no
+// more. Reserving the mark's two columns on the note as well cut it at 49 on an
+// 80-column pane with 51 to give, which is the rule this row exists for pointed
+// the wrong way.
 func storageSlotStatusLine(g jdeScreen, saving bool, verb, errMsg, warn, note string) string {
 	if line := g.statusRow(saving, verb, errMsg); line != "" {
 		return line
 	}
 	if warn != "" {
-		return StyleStatusWarn.Render("! " + g.fitStatus(warn))
+		return StyleStatusWarn.Render(g.fitStatus(jdeStatusWarnMark, warn))
 	}
-	return StyleMuted.Render(g.fitStatus(note))
+	return StyleMuted.Render(g.fitStatus("", note))
 }
