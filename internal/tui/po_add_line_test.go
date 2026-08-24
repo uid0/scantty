@@ -1024,30 +1024,40 @@ func TestPOAddLine_ACandidateRowKeepsItsFactsBehindALongMatchLabel(t *testing.T)
 // One reader per typed row, so the total and the submit cannot disagree
 // ---------------------------------------------------------------------------
 
-// The Line total row is the figure the operator is really approving, so it must
-// appear exactly when Enter would accept the entry — never over one Enter is
-// about to refuse, and never withheld from one that will go through.
+// The Line total row is the figure the operator is really approving, so it is
+// drawn EXACTLY when both rows hold a value the submit will accept, and when it
+// is drawn it equals quantity × unit cost.
 //
-// Two readers used to decide that and they disagreed: quantity "5.5" drew a
-// total and was then refused as "not a whole number of 1 or more", and "+5" was
-// posted with the total hidden.
-func TestPOAddLine_TheLineTotalAppearsExactlyWhenEnterWouldAcceptIt(t *testing.T) {
+// Both halves are asserted here. A total over an entry Enter is about to refuse
+// is the defect two disagreeing readers produced — quantity "5.5" drew one and
+// was then rejected as "not a whole number of 1 or more", and "+5" was posted
+// with the total hidden. A total over a BLANK row would be the opposite
+// defect: blank means "the server decides", which Enter accepts and which is
+// the ordinary repeat-add entry, and the number the server will decide on is
+// not one this screen holds.
+func TestPOAddLine_TheLineTotalAppearsExactlyWhenBothRowsAreAccepted(t *testing.T) {
 	for _, entry := range []struct {
 		qty, cost string
 		accepted  bool
+		// total is the figure the row must carry, empty when no row may be drawn.
+		total string
 	}{
-		{"50", "4.50", true},
-		{"+5", "4.50", true},
-		{"1", "0", true},
-		{"5.5", "4.50", false},
-		{"0", "4.50", false},
-		{"-1", "4.50", false},
-		{"two", "4.50", false},
-		{"50", "-4.50", false},
-		{"50", "1/3", false},
-		{"50", "1e9", false},
+		{qty: "50", cost: "4.50", accepted: true, total: "225.00"},
+		{qty: "+5", cost: "4.50", accepted: true, total: "22.50"},
+		{qty: "1", cost: "0", accepted: true, total: "0.00"},
+		// Blank is accepted and draws nothing: the server decides the number.
+		{qty: "", cost: "4.50", accepted: true},
+		{qty: "50", cost: "", accepted: true},
+		{qty: "", cost: "", accepted: true},
+		{qty: "5.5", cost: "4.50"},
+		{qty: "0", cost: "4.50"},
+		{qty: "-1", cost: "4.50"},
+		{qty: "two", cost: "4.50"},
+		{qty: "50", cost: "-4.50"},
+		{qty: "50", cost: "1/3"},
+		{qty: "50", cost: "1e9"},
 	} {
-		t.Run(entry.qty+"|"+entry.cost, func(t *testing.T) {
+		t.Run("fresh "+entry.qty+"|"+entry.cost, func(t *testing.T) {
 			fake := &poAddFake{rows: poAddRows()}
 			r, s := poAddAt(t, fake, 80, 24)
 			r = key(t, r, poRuneKey("AF-99-12-ZP-LH-HEAVY"))
@@ -1057,23 +1067,74 @@ func TestPOAddLine_TheLineTotalAppearsExactlyWhenEnterWouldAcceptIt(t *testing.T
 				t.Fatalf("the flow is on %v, not the price prompt", s.phase)
 			}
 			r = poAddRetype(t, r, s, entry.qty, entry.cost)
-
-			totalDrawn := strings.Contains(poAddPane(r), "Line total")
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-
-			fake.mu.Lock()
-			posted := len(fake.adds) > 0
-			fake.mu.Unlock()
-			if posted != entry.accepted {
-				t.Fatalf("quantity %q cost %q: posted=%v, want %v", entry.qty, entry.cost, posted, entry.accepted)
-			}
-			if totalDrawn != posted {
-				t.Errorf("quantity %q cost %q: the Line total row was drawn=%v while enter posted=%v — "+
-					"the row showed a figure for an entry enter %s",
-					entry.qty, entry.cost, totalDrawn, posted,
-					map[bool]string{true: "refused", false: "accepted"}[totalDrawn])
-			}
+			poAddAssertTotal(t, r, fake, entry.qty, entry.cost, entry.accepted, entry.total)
 		})
+	}
+}
+
+// The repeat-add path reaches the same prompt with the cost row deliberately
+// BLANK — the server keeps the price the line already carries unless one is
+// sent — so the ordinary repeat entry is accepted with no total drawn, and one
+// appears the moment the operator types a price over it.
+func TestPOAddLine_ARepeatAddDrawsNoTotalUntilAPriceIsTyped(t *testing.T) {
+	rows := func() []poAddCatalogRow {
+		out := poAddRows()
+		out[0].onOrder, out[0].onOrderID, out[0].linePrice = 25, "line-12", "4.5000"
+		return out
+	}
+	reach := func(t *testing.T) (Root, *poAddFake, *PurchaseOrderAddLineScreen) {
+		t.Helper()
+		fake := &poAddFake{rows: rows()}
+		r, s := poAddAt(t, fake, 80, 24)
+		r = key(t, r, poRuneKey("AF-99-12-ZP-LH-HEAVY"))
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if s.phase != poAddPhasePrice {
+			t.Fatalf("the flow is on %v, not the price prompt", s.phase)
+		}
+		if s.costIn.Value() != "" {
+			t.Fatalf("a repeat add prefilled the cost row with %q", s.costIn.Value())
+		}
+		return r, fake, s
+	}
+
+	t.Run("defaults", func(t *testing.T) {
+		r, fake, s := reach(t)
+		poAddAssertTotal(t, r, fake, s.qtyIn.Value(), "", true, "")
+	})
+	t.Run("a price typed over the blank", func(t *testing.T) {
+		r, fake, s := reach(t)
+		r = poAddRetype(t, r, s, "4", "2.50")
+		poAddAssertTotal(t, r, fake, "4", "2.50", true, "10.00")
+	})
+}
+
+// poAddAssertTotal presses enter on the price prompt and holds the whole
+// invariant: the row is drawn exactly when the entry is accepted AND both rows
+// hold a value, and when drawn it carries `total`.
+func poAddAssertTotal(t *testing.T, r Root, fake *poAddFake, qty, cost string, accepted bool, total string) {
+	t.Helper()
+	row := ""
+	for _, line := range strings.Split(poAddPane(r), "\n") {
+		if strings.Contains(line, "Line total") {
+			row = line
+		}
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	fake.mu.Lock()
+	posted := len(fake.adds) > 0
+	fake.mu.Unlock()
+	if posted != accepted {
+		t.Fatalf("quantity %q cost %q: enter posted=%v, want %v", qty, cost, posted, accepted)
+	}
+	if (row != "") != (total != "") {
+		t.Fatalf("quantity %q cost %q: the Line total row drawn=%v, want %v (enter posted=%v)\n\t%q",
+			qty, cost, row != "", total != "", posted, row)
+	}
+	if total != "" && !strings.Contains(row, total) {
+		t.Errorf("quantity %q cost %q: the Line total row reads %q, want it to carry %q",
+			qty, cost, row, total)
 	}
 }
 
@@ -1088,10 +1149,14 @@ func poAddRetype(t *testing.T, r Root, s *PurchaseOrderAddLineScreen, qty, cost 
 		return r
 	}
 	r = clear()
-	r = key(t, r, poRuneKey(qty))
+	if qty != "" {
+		r = key(t, r, poRuneKey(qty))
+	}
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 	r = clear()
-	r = key(t, r, poRuneKey(cost))
+	if cost != "" {
+		r = key(t, r, poRuneKey(cost))
+	}
 	if s.qtyIn.Value() != qty || s.costIn.Value() != cost {
 		t.Fatalf("the rows hold %q / %q, not %q / %q", s.qtyIn.Value(), s.costIn.Value(), qty, cost)
 	}
@@ -1186,4 +1251,164 @@ func TestPOAddLine_AGrownLineTheLookupNeverSawReportsNoInventedDelta(t *testing.
 		}
 	}
 	poAddAssertFits(t, "raced grow", r, 80)
+}
+
+// ---------------------------------------------------------------------------
+// The choice list: the count describes the rows, and a page is a paneful
+// ---------------------------------------------------------------------------
+
+// poAddMixedTierRows is a catalogue where ONE query reaches two different match
+// tiers — two rows carry the identifier as their supplier SKU, a third merely
+// has it inside its name. Every other fixture in this file puts every match in
+// one tier, which is exactly why a sentence quoting the strongest tier's count
+// over a list of all tiers could not be caught here.
+func poAddMixedTierRows() []poAddCatalogRow {
+	return []poAddCatalogRow{
+		{itemSupplier: 31, name: "Widget bracket", sku: "WB-1", supplierSKU: "WIDGET-A",
+			perPackage: 1, suggestQty: 2, suggestCost: "4.5000"},
+		{itemSupplier: 32, name: "Widget clamp", sku: "WC-1", supplierSKU: "WIDGET-A",
+			perPackage: 1, suggestQty: 3, suggestCost: "1.2500"},
+		{itemSupplier: 33, name: "WIDGET-A mounting plate", sku: "WM-1", supplierSKU: "AF-55",
+			perPackage: 1, suggestQty: 4, suggestCost: "2.0000"},
+	}
+}
+
+// A count in the ambiguity sentence is a promise about rows the operator can
+// count on screen, so it must be the size of the list chooseBody draws — not
+// the size of the strongest TIER, which is a different quantity and used to be
+// quoted alongside a total taken from the other one.
+func TestPOAddLine_TheAmbiguityCountIsTheListTheOperatorSees(t *testing.T) {
+	rows := poAddMixedTierRows()
+	fake := &poAddFake{rows: rows}
+	r, s := poAddAt(t, fake, 80, 24)
+	r = key(t, r, poRuneKey("WIDGET-A"))
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if s.phase != poAddPhaseChoose {
+		t.Fatalf("two equally strong matches landed on %v, not the choice list", s.phase)
+	}
+	if got := len(s.candidates()); got != len(rows) {
+		t.Fatalf("the server sent %d candidates, want %d", got, len(rows))
+	}
+	if best := s.lookup.BestMatchTotal; best == len(rows) {
+		t.Fatalf("the fixture no longer mixes tiers: best_match_total is %d of %d candidates",
+			best, len(rows))
+	}
+
+	pane := poAddPane(r)
+	if !strings.Contains(pane, fmt.Sprintf("matches %d items", len(rows))) {
+		t.Errorf("the sentence does not count the %d rows it drew:\n%s", len(rows), pane)
+	}
+	if strings.Contains(pane, fmt.Sprintf("matches %d items", s.lookup.BestMatchTotal)) {
+		t.Errorf("the sentence counts the strongest tier (%d) over a list of %d:\n%s",
+			s.lookup.BestMatchTotal, len(rows), pane)
+	}
+	// Every row it counted is really drawn, weaker tiers included.
+	for _, row := range rows {
+		poAddWantPane(t, r, row.name)
+	}
+}
+
+// PgDn covers one PANEFUL of candidates. Measured against the whole pane with
+// no allowance for the bar or for the answer pinned above the body, the step
+// came out as the entire list and PgDn was End — on the row list an operator
+// picks a purchase-order line from, while the bar said "Page".
+func TestPOAddLine_APageOfCandidatesIsAPanefulNotTheWholeList(t *testing.T) {
+	rows := []poAddCatalogRow{}
+	for i := 0; i < 6; i++ {
+		rows = append(rows, poAddCatalogRow{
+			itemSupplier: 40 + i, name: fmt.Sprintf("Widget bracket, variant %d", i+1),
+			sku: fmt.Sprintf("WB-%d", i), supplierSKU: fmt.Sprintf("AF-%02d", i),
+			perPackage: 1, suggestQty: 2, suggestCost: "4.5000",
+		})
+	}
+	fake := &poAddFake{rows: rows}
+	r, s := poAddAt(t, fake, 80, 24)
+	r = key(t, r, poRuneKey("widget"))
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if s.phase != poAddPhaseChoose {
+		t.Fatalf("six partial matches landed on %v, not the choice list", s.phase)
+	}
+	if !s.choosePages() {
+		t.Fatalf("the bar does not name paging at 80x24 with %d candidates, so there is "+
+			"no step to check", len(rows))
+	}
+
+	last := len(rows) - 1
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyPgDown})
+	if s.cursor == 0 {
+		t.Fatalf("pgdown moved nothing while the bar named it")
+	}
+	if s.cursor >= last {
+		t.Fatalf("pgdown jumped from the first candidate to %d of %d — that is End, not a page",
+			s.cursor, last)
+	}
+	first := s.cursor
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyPgDown})
+	if s.cursor <= first {
+		t.Fatalf("a second pgdown did not move past %d", first)
+	}
+	// The step is re-derived at each position, so pgup is not required to land
+	// back on the exact row pgdown left — only to cover ground the other way.
+	back := s.cursor
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyPgUp})
+	if s.cursor >= back {
+		t.Errorf("pgup did not move back from %d", back)
+	}
+	poAddAssertFits(t, "choose, paging", r, 80)
+}
+
+// ---------------------------------------------------------------------------
+// The confirm note is worded for the path that reached it
+// ---------------------------------------------------------------------------
+
+// Two states reach the confirm frame and `esc` does a different thing in each,
+// so the note that names it has to be worded twice. Off the choice list esc
+// returns to that list with the other matches already drawn; telling that
+// operator to narrow a search describes the other path's key.
+func TestPOAddLine_TheConfirmNoteWordsBothPathsThatReachIt(t *testing.T) {
+	t.Run("straight off a lookup that resolved", func(t *testing.T) {
+		rows := append(poAddMixedTierRows(), poAddCatalogRow{
+			itemSupplier: 34, name: "Bracket AF-77 spare", sku: "BS-1", supplierSKU: "AF-91",
+			perPackage: 1, suggestQty: 1, suggestCost: "3.0000"})
+		fake := &poAddFake{rows: rows}
+		r, s := poAddAt(t, fake, 80, 24)
+		// "AF-77" is row 13's supplier SKU exactly and sits inside the name above,
+		// so the best tier holds one row and the lookup resolves with company.
+		rows[1].supplierSKU = "AF-77"
+		fake.rows = rows
+		r = key(t, r, poRuneKey("AF-77"))
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if s.phase != poAddPhaseConfirm {
+			t.Fatalf("a lone strongest match landed on %v, not the confirm frame", s.phase)
+		}
+		if s.lookup.TotalCandidates < 2 {
+			t.Fatalf("the fixture sent %d candidates, so there is no tail to word",
+				s.lookup.TotalCandidates)
+		}
+		// A fold-safe token: pickerWrap breaks this tail between "narrow the" and
+		// "the search", and the fit assertions elsewhere own the folding.
+		poAddWantPane(t, r, "narrow")
+		poAddRejectPane(t, r, "esc goes back to the")
+	})
+
+	t.Run("off the choice list", func(t *testing.T) {
+		fake := &poAddFake{rows: poAddMixedTierRows()}
+		r, s := poAddAt(t, fake, 80, 24)
+		r = key(t, r, poRuneKey("WIDGET-A"))
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if s.phase != poAddPhaseChoose {
+			t.Fatalf("landed on %v, not the choice list", s.phase)
+		}
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if s.phase != poAddPhaseConfirm {
+			t.Fatalf("enter on a candidate landed on %v, not the confirm frame", s.phase)
+		}
+		// esc really does go back to the list, which is what the note now claims.
+		poAddWantPane(t, r, "esc goes back to the 3 matches")
+		poAddRejectPane(t, r, "narrow")
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+		if s.phase != poAddPhaseChoose {
+			t.Errorf("esc went to %v, not back to the candidate list the note named", s.phase)
+		}
+	})
 }

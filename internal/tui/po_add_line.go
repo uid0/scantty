@@ -492,7 +492,7 @@ func (s *PurchaseOrderAddLineScreen) keyChoose(m tea.KeyMsg) (Screen, tea.Cmd) {
 		if !s.choosePages() {
 			return s, s.decline(m.String())
 		}
-		step := s.windowRows(s.chooseBody(), s.cursor, 0)
+		step := s.chooseStep()
 		dir := +1
 		if m.String() == "pgup" {
 			dir = -1
@@ -711,12 +711,27 @@ func (s *PurchaseOrderAddLineScreen) noMatchSentence(query string, res *omsapi.P
 // ambiguitySentence reports the choice set honestly, including the part of it
 // that was capped away server-side. Being told "20" when 63 matched sends an
 // operator hunting for an item that was never in the list.
+//
+// Every number in it comes from the CANDIDATE LIST, which is what chooseBody
+// draws, and that is the whole rule: a count in this sentence is a promise
+// about rows the operator can count on screen. The lead used to be
+// BestMatchTotal — the size of the STRONGEST tier — while the list carries
+// every tier the server sent, so a partial-name search that also turned up
+// weaker matches read "matches 2 items · choose one" over five rows, and the
+// capped-list clause below it then quoted a total from the other source
+// entirely: one sentence, two quantities, presented as one.
+//
+// The weaker tiers are not dropped to make the old number true. The lookup
+// endpoint returns the full set precisely so a client can show the whole
+// picture, and hiding the partial matches would remove exactly what an operator
+// typing part of a name is looking for.
 func (s *PurchaseOrderAddLineScreen) ambiguitySentence(query string, res *omsapi.POLineLookup) string {
+	shown := len(res.Candidates)
 	sentence := fmt.Sprintf("%q matches %d items %s supplies · choose one",
-		pickerClip(query, 20), res.BestMatchTotal, s.supplierName())
-	if res.Truncated || len(res.Candidates) < res.TotalCandidates {
+		pickerClip(query, 20), shown, s.supplierName())
+	if res.Truncated || shown < res.TotalCandidates {
 		sentence += fmt.Sprintf(" · %d of %d shown, narrow the search to reach the rest",
-			len(res.Candidates), res.TotalCandidates)
+			shown, res.TotalCandidates)
 	}
 	return sentence
 }
@@ -731,7 +746,7 @@ func (s *PurchaseOrderAddLineScreen) chooseCandidate(c omsapi.POLineCandidate, f
 	s.scroll = 0
 	s.priceEdited = false
 	s.primePriceRows(staged)
-	return s.say(s.confirmEntryNote(staged), StatusInfo)
+	return s.say(s.confirmEntryNote(staged, from), StatusInfo)
 }
 
 // primePriceRows fills the quantity and price prompts with the defaults the
@@ -1008,13 +1023,49 @@ func (s *PurchaseOrderAddLineScreen) bar() []actionBarItem {
 // choosePages reports whether the candidate list is longer than the pane shows,
 // which is the only state where PgUp/PgDn move anything.
 func (s *PurchaseOrderAddLineScreen) choosePages() bool {
-	body := s.chooseBody()
-	avail := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), s.chooseBarItems(true))) -
-		len(s.headerLines())
+	avail := s.chooseFrameRows()
 	if avail < 1 {
 		return false
 	}
-	return body.Len() > avail
+	return s.chooseBody().Len() > avail
+}
+
+// chooseFrameRows is the lines the choose frame really windows its body into,
+// and it is the ONE place that number is worked out. Zero means the frame does
+// not window at all — an unsized terminal draws every line — which is the state
+// where nothing can page.
+//
+// It exists because three things must agree about it and two of them had
+// already drifted: the RENDER (frameWrapped, which takes the bar's measured
+// height off the pane and then the pinned header off what is left), the BAR's
+// claim that PgUp/PgDn move something, and the pager's STEP. The step was
+// written before the answer to a keypress was pinned into a header, was never
+// re-derived, and measured against the whole pane with no header at all — so at
+// 80x24 with six candidates it stepped by the entire list and PgDn was End on
+// the row list an operator picks a purchase-order line from, while the bar said
+// "Page".
+//
+// The bar it measures is the PAGING bar, because a step is only ever taken when
+// paging is on and that is therefore the bar being drawn.
+func (s *PurchaseOrderAddLineScreen) chooseFrameRows() int {
+	budget := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), s.chooseBarItems(true)))
+	if budget <= 0 {
+		return 0
+	}
+	if avail := budget - len(s.headerLines()); avail > 1 {
+		return avail
+	}
+	return 1
+}
+
+// chooseStep is how many candidate rows one page covers — measured off the same
+// window the frame draws, so a page moves by exactly what the operator can see.
+func (s *PurchaseOrderAddLineScreen) chooseStep() int {
+	_, rows := s.chooseBody().Window(s.cursor, s.chooseFrameRows())
+	if rows < 1 {
+		return 1
+	}
+	return rows
 }
 
 // chooseBarItems is the choose bar for a given paging state, so the bar that is
@@ -1483,9 +1534,20 @@ func (s *PurchaseOrderAddLineScreen) confirmCaveats(c omsapi.POLineCandidate) []
 // confirmEntryNote is what the confirm frame says on arrival. It carries no key
 // lead: the whole pane changed, so a lead naming the key that got here would be
 // noise.
-func (s *PurchaseOrderAddLineScreen) confirmEntryNote(c omsapi.POLineCandidate) string {
+//
+// TWO states reach this frame and the tail is worded for each, because what
+// `esc` DOES differs between them and a frame may only name keys as they behave
+// where it is drawn. Straight off a lookup that resolved, esc goes back to the
+// scan box and the other matches are nowhere on screen, so the note says how to
+// reach them. Off the choice list, esc goes back to that list with those
+// matches already drawn — telling that operator to narrow a search would
+// describe the other path's key.
+func (s *PurchaseOrderAddLineScreen) confirmEntryNote(c omsapi.POLineCandidate, from poAddPhase) string {
 	extra := ""
-	if s.lookup != nil && s.lookup.TotalCandidates > 1 {
+	switch {
+	case from == poAddPhaseChoose && len(s.candidates()) > 1:
+		extra = fmt.Sprintf(" · esc goes back to the %d matches", len(s.candidates()))
+	case from != poAddPhaseChoose && s.lookup != nil && s.lookup.TotalCandidates > 1:
 		extra = fmt.Sprintf(" · %d other items also matched — esc, then narrow the search, to see them",
 			s.lookup.TotalCandidates-1)
 	}
@@ -1580,12 +1642,22 @@ func (s *PurchaseOrderAddLineScreen) existingLinePrice(lineID string) string {
 	return ""
 }
 
-// lineTotal is quantity × unit cost, computed EXACTLY (big.Rat, not float) and
-// shown only when both rows hold an entry the submit would accept. It is the
-// figure the operator is really approving, so a rounding artefact in it would
-// be worse than its absence — and so would a total for an entry Enter is about
-// to refuse, which is why the two rows are read through the SAME functions the
-// submit reads them through rather than through a predicate of this row's own.
+// lineTotal is quantity × unit cost, computed EXACTLY (big.Rat, not float).
+//
+// It is drawn EXACTLY when both rows hold a value the submit would accept, and
+// nothing is drawn otherwise. Both halves of that matter and neither is wider
+// than the code:
+//
+//   - Never over an entry Enter is about to refuse. That is why the rows are
+//     read through the SAME functions the submit reads them through rather than
+//     through a predicate of this row's own — two judges disagreed, and "5.5"
+//     drew a total that Enter then rejected.
+//   - Never over a BLANK row either. Blank means "the server decides", which is
+//     the ordinary repeat-add entry and is accepted, but the number it will
+//     decide on is not one this screen holds. A figure invented to fill the row
+//     is the fabrication this whole screen refuses everywhere else.
+//
+// A rounding artefact would be worse than the row's absence, hence big.Rat.
 func (s *PurchaseOrderAddLineScreen) lineTotal() string {
 	qty, refusal := s.readQuantityRow()
 	if refusal != "" || qty == 0 {
