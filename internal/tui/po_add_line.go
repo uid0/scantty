@@ -725,13 +725,26 @@ func (s *PurchaseOrderAddLineScreen) noMatchSentence(query string, res *omsapi.P
 // endpoint returns the full set precisely so a client can show the whole
 // picture, and hiding the partial matches would remove exactly what an operator
 // typing part of a name is looking for.
+//
+// The number behind "matches" is the number of MATCHES — TotalCandidates — and
+// the count of rows on screen is a separate claim in the clause after it. Both
+// have been wrong in turn: first the lead quoted the strongest TIER while the
+// list drew every tier, then it quoted the SHOWN count, which made one sentence
+// say "matches 20 items · … · 20 of 63 shown" — two different claims about the
+// same figure. Sixty-three matched; twenty are on the pane; each sentence says
+// exactly one of those things.
+//
+// The wording is OMS's own, from resolve_identifier. An operator moving between
+// the web app and the terminal must not have to reconcile two vocabularies for
+// one fact, so this sentence follows the server's rather than inventing a
+// second — and with nothing capped it degenerates to the plain sentence with no
+// special case to keep in step.
 func (s *PurchaseOrderAddLineScreen) ambiguitySentence(query string, res *omsapi.POLineLookup) string {
-	shown := len(res.Candidates)
 	sentence := fmt.Sprintf("%q matches %d items %s supplies · choose one",
-		pickerClip(query, 20), shown, s.supplierName())
-	if res.Truncated || shown < res.TotalCandidates {
-		sentence += fmt.Sprintf(" · %d of %d shown, narrow the search to reach the rest",
-			shown, res.TotalCandidates)
+		pickerClip(query, 20), res.TotalCandidates, s.supplierName())
+	if shown := len(res.Candidates); res.Truncated || shown < res.TotalCandidates {
+		sentence += fmt.Sprintf(" · the first %d are offered here, narrow the search to see the rest",
+			shown)
 	}
 	return sentence
 }
@@ -1157,14 +1170,49 @@ func (s *PurchaseOrderAddLineScreen) headerLines() []string {
 // The identifier is what gives here, as everywhere else on this screen: the
 // item name is bounded against what the fixed words and the order number leave,
 // so a long catalogue name shortens rather than pushing the order off the row.
+//
+// BOTH branches are bounded by that one rule, which is the whole point of
+// saying it. The lookup branch used to clip the query and the supplier to a
+// hard-coded twenty cells each and was then clipped AGAIN by poStatusError in
+// View, so at 80 columns the row read `Looking up widget in Acme Fasteners &
+// In…'s cata…` — an ellipsis from the inner clip, and the sentence's OWN
+// closing words destroyed by the outer one. At 120 columns the same constant
+// threw away sixty-odd columns the pane had for the supplier's name.
 func (s *PurchaseOrderAddLineScreen) workingLine() string {
 	if s.pending {
 		lead, tail := "Adding ", " to "+s.orderName()+"…"
 		room := s.barWidth() - poStatusMarkCells - lipgloss.Width(lead) - lipgloss.Width(tail)
 		return lead + s.addingSentence(room) + tail
 	}
-	return "Looking up " + pickerClip(strings.TrimSpace(s.idIn.Value()), 20) +
-		" in " + pickerClip(s.supplierName(), 20) + "'s catalogue…"
+	const (
+		lead = "Looking up "
+		mid  = " in "
+		tail = "'s catalogue…"
+	)
+	room := s.barWidth() - poStatusMarkCells -
+		lipgloss.Width(lead) - lipgloss.Width(mid) - lipgloss.Width(tail)
+	query, supplier := poAddShareRow(room, strings.TrimSpace(s.idIn.Value()), s.supplierName())
+	return lead + query + mid + supplier + tail
+}
+
+// poAddShareRow splits `room` between the two identifiers on the working line.
+//
+// Neither is a fact that never gives — they are both identifiers, and the frame
+// carries each of them in full on a field row of its own — so they share evenly
+// rather than one being served ahead of the other, and whatever one does not
+// need is left to the other. That is what makes the common case (a short
+// scanned SKU beside a long supplier name) spend the whole row on the name.
+func poAddShareRow(room int, first, second string) (string, string) {
+	firstRoom, secondRoom := room/2, room-room/2
+	switch fw, sw := lipgloss.Width(first), lipgloss.Width(second); {
+	case fw+sw <= room:
+		return first, second
+	case fw < firstRoom:
+		firstRoom, secondRoom = fw, room-fw
+	case sw < secondRoom:
+		firstRoom, secondRoom = room-sw, sw
+	}
+	return pickerClip(first, firstRoom), pickerClip(second, secondRoom)
 }
 
 // poStatusMarkCells is what poStatusError reserves for the mark jdeStatusLine
@@ -1548,8 +1596,14 @@ func (s *PurchaseOrderAddLineScreen) confirmEntryNote(c omsapi.POLineCandidate, 
 	case from == poAddPhaseChoose && len(s.candidates()) > 1:
 		extra = fmt.Sprintf(" · esc goes back to the %d matches", len(s.candidates()))
 	case from != poAddPhaseChoose && s.lookup != nil && s.lookup.TotalCandidates > 1:
-		extra = fmt.Sprintf(" · %d other items also matched — esc, then narrow the search, to see them",
-			s.lookup.TotalCandidates-1)
+		// One is the ORDINARY shape of a resolving lookup with company — an
+		// exact identifier alongside a single partial-name match — not a corner.
+		others, items, them := s.lookup.TotalCandidates-1, "items", "them"
+		if others == 1 {
+			items, them = "item", "it"
+		}
+		extra = fmt.Sprintf(" · %d other %s also matched — esc, then narrow the search, to see %s",
+			others, items, them)
 	}
 	// The label is FOLDED, not clipped to a row, so its bound is the one every
 	// server-supplied sentence on this screen gets rather than a row budget: at

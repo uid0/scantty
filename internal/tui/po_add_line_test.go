@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -73,6 +75,11 @@ type poAddFake struct {
 	unavailable []map[string]any
 	// fail makes the lookup answer with a gateway page instead of an answer.
 	fail bool
+	// capAt, when non-zero, is the server-side cap on the candidate list: the
+	// reply carries that many candidates, reports the full count in
+	// total_candidates and sets truncated. It is the only way to drive the
+	// capped-list sentence through the real screen.
+	capAt int
 	// raceExisting simulates ANOTHER terminal putting a line on the order in the
 	// window between this one's lookup and its add: the lookup reports no
 	// existing line, and the add nonetheless comes back created=false with the
@@ -186,6 +193,11 @@ func (f *poAddFake) handler() http.HandlerFunc {
 					bestTotal++
 				}
 			}
+			total := len(cands)
+			truncated := false
+			if f.capAt > 0 && f.capAt < len(cands) {
+				cands, truncated = cands[:f.capAt], true
+			}
 			status := f.status
 			if status == "" {
 				status = "draft"
@@ -202,9 +214,9 @@ func (f *poAddFake) handler() http.HandlerFunc {
 				"best_match_kind":       "vendor_sku",
 				"resolves":              bestTotal == 1,
 				"candidates":            cands,
-				"total_candidates":      len(cands),
+				"total_candidates":      total,
 				"best_match_total":      bestTotal,
-				"truncated":             false,
+				"truncated":             truncated,
 				"unavailable":           un,
 				"total_unavailable":     len(un),
 				"unavailable_truncated": false,
@@ -743,26 +755,86 @@ func TestPOAddLine_LeavingSaysWhatItCosts(t *testing.T) {
 	poAddWantPane(t, r, "dropped the quantity and price")
 }
 
-// A capped candidate list must be shown as capped. Being told "20" when 63
-// matched sends an operator hunting for an item that was never in the list.
+// A capped candidate list must be shown as capped, and the number behind the
+// word "matches" must be the number of MATCHES.
+//
+// Written this way on purpose. Its predecessor called ambiguitySentence
+// directly and asserted only that "63", "20 of 63" and "narrow the search"
+// appeared SOMEWHERE in the result — every one of which the truncation clause
+// supplies on its own — so the lead was unpinned and the test passed over
+// three different wordings in turn, including one that said "matches 20 items
+// … · 20 of 63 shown": two different claims about the same figure in one
+// sentence. So this drives the real screen and parses the figure BOUND to the
+// word, rather than looking for digits anywhere in the line. Do not simplify it
+// back to a substring check.
 func TestPOAddLine_ACappedCandidateListSaysSo(t *testing.T) {
-	s := NewPurchaseOrderAddLineScreen(Deps{}, &omsapi.PurchaseOrder{
-		ID: "po-1", Number: "PO-2026-0042", Status: "draft", SupplierDetails: "Acme"})
-	got := s.ambiguitySentence("bolt", &omsapi.POLineLookup{
-		BestMatchTotal: 63, TotalCandidates: 63, Truncated: true,
-		Candidates: make([]omsapi.POLineCandidate, 20),
-	})
-	for _, want := range []string{"63", "20 of 63", "narrow the search"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the ambiguity sentence %q does not carry %q", got, want)
+	rows := []poAddCatalogRow{}
+	for i := 0; i < 5; i++ {
+		rows = append(rows, poAddCatalogRow{
+			itemSupplier: 50 + i, name: fmt.Sprintf("Widget bracket, variant %d", i+1),
+			sku: fmt.Sprintf("WV-%d", i), supplierSKU: fmt.Sprintf("AF-1%d", i),
+			perPackage: 1, suggestQty: 2, suggestCost: "4.5000",
+		})
+	}
+
+	t.Run("capped", func(t *testing.T) {
+		fake := &poAddFake{rows: rows, capAt: 2}
+		r, s := poAddAt(t, fake, 80, 24)
+		r = key(t, r, poRuneKey("widget"))
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if s.phase != poAddPhaseChoose {
+			t.Fatalf("a capped ambiguous lookup landed on %v, not the choice list", s.phase)
 		}
-	}
-	whole := s.ambiguitySentence("bolt", &omsapi.POLineLookup{
-		BestMatchTotal: 2, TotalCandidates: 2, Candidates: make([]omsapi.POLineCandidate, 2),
+		if got, want := len(s.candidates()), 2; got != want {
+			t.Fatalf("the screen holds %d candidates, want the capped %d", got, want)
+		}
+
+		if got := poAddMatchCount(t, r); got != len(rows) {
+			t.Errorf("the sentence says %d items matched; %d did (%d are on the pane)",
+				got, len(rows), len(s.candidates()))
+		}
+		poAddWantPane(t, r, "the first 2 are offered here")
+		poAddWantPane(t, r, "narrow the search")
 	})
-	if strings.Contains(whole, "of 2") {
-		t.Errorf("an un-capped list claimed to be capped: %q", whole)
+
+	t.Run("uncapped", func(t *testing.T) {
+		fake := &poAddFake{rows: rows}
+		r, s := poAddAt(t, fake, 80, 24)
+		r = key(t, r, poRuneKey("widget"))
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if s.phase != poAddPhaseChoose {
+			t.Fatalf("an ambiguous lookup landed on %v, not the choice list", s.phase)
+		}
+		if got := poAddMatchCount(t, r); got != len(rows) {
+			t.Errorf("the sentence says %d items matched; %d did", got, len(rows))
+		}
+		// Nothing was capped, so no clause may claim it was.
+		poAddRejectPane(t, r, "offered here")
+		poAddRejectPane(t, r, "narrow the search")
+	})
+}
+
+// poAddMatchCount reads the figure the rendered sentence binds to the word
+// "matches". The note FOLDS, so the pane is flattened first — a claim split
+// across two lines is still one claim.
+func poAddMatchCount(t *testing.T, r Root) int {
+	t.Helper()
+	flat := poAddFlatPane(r)
+	m := regexp.MustCompile(`matches (\d+) items`).FindStringSubmatch(flat)
+	if m == nil {
+		t.Fatalf("no \"matches N items\" claim on the pane:\n%s", poAddPane(r))
 	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("the match count %q is not a number", m[1])
+	}
+	return n
+}
+
+// poAddFlatPane is the rendered pane as one whitespace-normalised line, so a
+// sentence pickerWrap folded can still be read as the sentence it is.
+func poAddFlatPane(r Root) string {
+	return strings.Join(strings.Fields(poAddPane(r)), " ")
 }
 
 // ---------------------------------------------------------------------------
@@ -1387,7 +1459,13 @@ func TestPOAddLine_TheConfirmNoteWordsBothPathsThatReachIt(t *testing.T) {
 		}
 		// A fold-safe token: pickerWrap breaks this tail between "narrow the" and
 		// "the search", and the fit assertions elsewhere own the folding.
-		poAddWantPane(t, r, "narrow")
+		if got := s.lookup.TotalCandidates; got != 2 {
+			t.Fatalf("the fixture sent %d candidates, so the tail is not the singular case", got)
+		}
+		// One is the ordinary shape of a resolving lookup with company, and the
+		// tail used to read "1 other items also matched … to see them".
+		poAddWantPane(t, r, "1 other item also matched")
+		poAddRejectPane(t, r, "other items")
 		poAddRejectPane(t, r, "esc goes back to the")
 	})
 
@@ -1411,4 +1489,71 @@ func TestPOAddLine_TheConfirmNoteWordsBothPathsThatReachIt(t *testing.T) {
 			t.Errorf("esc went to %v, not back to the candidate list the note named", s.phase)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// The working line is bounded by ONE rule, in both directions
+// ---------------------------------------------------------------------------
+
+// "Looking up <query> in <supplier>'s catalogue…" used to clip the query and
+// the supplier to a hard-coded twenty cells EACH and was then clipped again by
+// poStatusError, so the row lost its own closing words — `… & In…'s cata…` — on
+// the frame whose whole job is saying what is happening. The same constant threw
+// away sixty-odd columns a 120-column terminal had for the supplier's name.
+//
+// Both halves are asserted here, and neither was reachable before: poAddAssertFits
+// sees a row the outer clip has already made fit, and the "looking" reach is
+// showsName: false so the wide direction was never exercised.
+func TestPOAddLine_TheLookingRowIsBoundedOnceAndUsesTheWholeTerminal(t *testing.T) {
+	const (
+		tail  = "'s catalogue…"
+		query = "AF-99-12-ZP-LH-HEAVY"
+	)
+	// The fixture's supplier is "Acme Fasteners & Industrial Supply Co." — 38
+	// cells, longer than the row can hold at 80 and shorter than it has at 120.
+	looking := func(t *testing.T, width int) string {
+		t.Helper()
+		fake := &poAddFake{rows: poAddRows()}
+		r, _ := poAddAt(t, fake, width, 24)
+		r = key(t, r, poRuneKey(query))
+		// Fire the lookup WITHOUT pumping: the working row is what is measured.
+		next, _ := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		r = next.(Root)
+		poAddAssertFits(t, fmt.Sprintf("looking at %d columns", width), r, width)
+		return poAddLineWith(t, poAddPane(r), "Looking up")
+	}
+
+	narrow := looking(t, 80)
+	if !strings.Contains(narrow, tail) {
+		t.Errorf("at 80 columns the row lost its own closing words — a second bound cut "+
+			"what the first had already fitted:\n\t%q", narrow)
+	}
+	wide := looking(t, 120)
+	if !strings.Contains(wide, tail) {
+		t.Errorf("at 120 columns the row lost its own closing words:\n\t%q", wide)
+	}
+
+	// The supplier is what the extra room buys, and it must buy some.
+	supplier := "Acme Fasteners & Industrial Supply Co."
+	narrowKeeps := poAddLongestPrefixOf(narrow, supplier)
+	wideKeeps := poAddLongestPrefixOf(wide, supplier)
+	if wideKeeps <= narrowKeeps {
+		t.Errorf("a 120-column terminal drew %d cells of the supplier name and an 80-column one "+
+			"drew %d — the row is not using the width it was given:\n\t%q\n\t%q",
+			wideKeeps, narrowKeeps, narrow, wide)
+	}
+	if wideKeeps != len(supplier) {
+		t.Errorf("at 120 columns the supplier name is still abbreviated to %d of %d cells:\n\t%q",
+			wideKeeps, len(supplier), wide)
+	}
+}
+
+// poAddLongestPrefixOf is how much of `whole` the line actually carries.
+func poAddLongestPrefixOf(line, whole string) int {
+	for n := len(whole); n > 0; n-- {
+		if strings.Contains(line, whole[:n]) {
+			return n
+		}
+	}
+	return 0
 }
