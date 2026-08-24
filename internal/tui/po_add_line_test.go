@@ -73,6 +73,11 @@ type poAddFake struct {
 	unavailable []map[string]any
 	// fail makes the lookup answer with a gateway page instead of an answer.
 	fail bool
+	// raceExisting simulates ANOTHER terminal putting a line on the order in the
+	// window between this one's lookup and its add: the lookup reports no
+	// existing line, and the add nonetheless comes back created=false with the
+	// line standing at that quantity plus what was posted.
+	raceExisting int
 }
 
 func (f *poAddFake) order() map[string]any {
@@ -251,6 +256,10 @@ func (f *poAddFake) handler() http.HandlerFunc {
 					row.onOrderID = fmt.Sprintf("line-%d", row.itemSupplier)
 					row.linePrice = cost
 				}
+			}
+			if f.raceExisting > 0 {
+				created = false
+				qty += f.raceExisting
 			}
 			status := http.StatusCreated
 			if !created {
@@ -1009,4 +1018,172 @@ func TestPOAddLine_ACandidateRowKeepsItsFactsBehindALongMatchLabel(t *testing.T)
 	// The label is what abbreviated, and it says so.
 	poAddWantPane(t, r, "another supplie")
 	poAddRejectPane(t, r, "another supplier's listing (Globex Industrial)")
+}
+
+// ---------------------------------------------------------------------------
+// One reader per typed row, so the total and the submit cannot disagree
+// ---------------------------------------------------------------------------
+
+// The Line total row is the figure the operator is really approving, so it must
+// appear exactly when Enter would accept the entry — never over one Enter is
+// about to refuse, and never withheld from one that will go through.
+//
+// Two readers used to decide that and they disagreed: quantity "5.5" drew a
+// total and was then refused as "not a whole number of 1 or more", and "+5" was
+// posted with the total hidden.
+func TestPOAddLine_TheLineTotalAppearsExactlyWhenEnterWouldAcceptIt(t *testing.T) {
+	for _, entry := range []struct {
+		qty, cost string
+		accepted  bool
+	}{
+		{"50", "4.50", true},
+		{"+5", "4.50", true},
+		{"1", "0", true},
+		{"5.5", "4.50", false},
+		{"0", "4.50", false},
+		{"-1", "4.50", false},
+		{"two", "4.50", false},
+		{"50", "-4.50", false},
+		{"50", "1/3", false},
+		{"50", "1e9", false},
+	} {
+		t.Run(entry.qty+"|"+entry.cost, func(t *testing.T) {
+			fake := &poAddFake{rows: poAddRows()}
+			r, s := poAddAt(t, fake, 80, 24)
+			r = key(t, r, poRuneKey("AF-99-12-ZP-LH-HEAVY"))
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			if s.phase != poAddPhasePrice {
+				t.Fatalf("the flow is on %v, not the price prompt", s.phase)
+			}
+			r = poAddRetype(t, r, s, entry.qty, entry.cost)
+
+			totalDrawn := strings.Contains(poAddPane(r), "Line total")
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+			fake.mu.Lock()
+			posted := len(fake.adds) > 0
+			fake.mu.Unlock()
+			if posted != entry.accepted {
+				t.Fatalf("quantity %q cost %q: posted=%v, want %v", entry.qty, entry.cost, posted, entry.accepted)
+			}
+			if totalDrawn != posted {
+				t.Errorf("quantity %q cost %q: the Line total row was drawn=%v while enter posted=%v — "+
+					"the row showed a figure for an entry enter %s",
+					entry.qty, entry.cost, totalDrawn, posted,
+					map[bool]string{true: "refused", false: "accepted"}[totalDrawn])
+			}
+		})
+	}
+}
+
+// poAddRetype clears both price rows and types the given entry into them,
+// leaving the caret back on the quantity row.
+func poAddRetype(t *testing.T, r Root, s *PurchaseOrderAddLineScreen, qty, cost string) Root {
+	t.Helper()
+	clear := func() Root {
+		for i := len(s.qtyIn.Value()) + len(s.costIn.Value()); i > 0; i-- {
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+		}
+		return r
+	}
+	r = clear()
+	r = key(t, r, poRuneKey(qty))
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	r = clear()
+	r = key(t, r, poRuneKey(cost))
+	if s.qtyIn.Value() != qty || s.costIn.Value() != cost {
+		t.Fatalf("the rows hold %q / %q, not %q / %q", s.qtyIn.Value(), s.costIn.Value(), qty, cost)
+	}
+	return key(t, r, tea.KeyMsg{Type: tea.KeyUp})
+}
+
+// ---------------------------------------------------------------------------
+// The confirm frame confirms the VALUE, not the server's prose about it
+// ---------------------------------------------------------------------------
+
+// On a confirm surface the fact being confirmed survives whole and the
+// identifier abbreviates. The matched VALUE is what the operator scanned; the
+// server's match label is prose explaining why it matched, and the Supplier SKU
+// row above and the pinned "matched on …" note both still carry it.
+//
+// Assembled label-first and clipped as one string, the row gave up the value:
+// an ordinary supplier SKU came out cut mid-value at 80 columns, and a
+// cross-vendor label filled the row and dropped the scanned value entirely.
+func TestPOAddLine_TheConfirmFrameKeepsTheScannedValueWhole(t *testing.T) {
+	scanned := "AF-99-12-ZP-LH-HEAVY"
+	for _, vendor := range []string{"", "Globex Industrial"} {
+		name := "same vendor"
+		if vendor != "" {
+			name = "cross vendor"
+		}
+		t.Run(name, func(t *testing.T) {
+			rows := poAddRows()
+			rows[0].crossVendor = vendor
+			fake := &poAddFake{rows: rows}
+			r, s := poAddAt(t, fake, 80, 24)
+			r = key(t, r, poRuneKey(scanned))
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			if s.phase != poAddPhaseConfirm {
+				t.Fatalf("an exact identifier landed on %v, not the confirm frame", s.phase)
+			}
+
+			poAddAssertFits(t, "confirm, "+name, r, 80)
+			matched := poAddLineWith(t, poAddPane(r), "Matched")
+			if !strings.Contains(matched, `"`+scanned+`"`) {
+				t.Errorf("the Matched row does not carry the whole scanned value %q:\n\t%q", scanned, matched)
+			}
+		})
+	}
+}
+
+// poAddLineWith returns the single pane line carrying `marker`.
+func poAddLineWith(t *testing.T, pane, marker string) string {
+	t.Helper()
+	for _, line := range strings.Split(pane, "\n") {
+		if strings.Contains(line, marker) {
+			return line
+		}
+	}
+	t.Fatalf("no pane line carries %q:\n%s", marker, pane)
+	return ""
+}
+
+// ---------------------------------------------------------------------------
+// A delta the reply does not support is not reported as one
+// ---------------------------------------------------------------------------
+
+// (purchase_order, item_supplier) is unique, so another terminal can put a line
+// on the order in the window between this one's lookup and its add. The reply
+// then says created=false while the lookup reported no existing line: we know
+// where the line ENDED UP and we cannot know what it grew BY, and subtracting a
+// before-figure we never had drew "grew that line by 12 to 12".
+func TestPOAddLine_AGrownLineTheLookupNeverSawReportsNoInventedDelta(t *testing.T) {
+	fake := &poAddFake{rows: poAddRows(), raceExisting: 7}
+	r, s := poAddAt(t, fake, 80, 24)
+	r = key(t, r, poRuneKey("AF-99-12-ZP-LH-HEAVY"))
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.phase != poAddPhaseIdentify {
+		t.Fatalf("the add landed on %v, not back at the identifier row", s.phase)
+	}
+	if len(s.added) != 1 {
+		t.Fatalf("the tally holds %d entries, want 1", len(s.added))
+	}
+	// 50 posted onto a line another terminal had already put 7 on.
+	if got := s.added[0].after; got != 57 {
+		t.Fatalf("the line stands at %d, want 57", got)
+	}
+	pane := poAddPane(r)
+	if !strings.Contains(pane, "now stands at 57") {
+		t.Errorf("the reply does not say where the line stands:\n%s", pane)
+	}
+	for _, invented := range []string{"grew that line by", "by 57 to 57", "  0 @ "} {
+		if strings.Contains(pane, invented) {
+			t.Errorf("the pane reports a delta nobody measured (%q):\n%s", invented, pane)
+		}
+	}
+	poAddAssertFits(t, "raced grow", r, 80)
 }

@@ -171,6 +171,14 @@ type poAddedLine struct {
 	unitCost string
 	created  bool
 	after    int
+	// deltaKnown is whether `quantity` is a figure this screen could actually
+	// derive. A grown line's delta is the reply's ordered quantity less the
+	// before-figure the LOOKUP reported, so when the server grows a line the
+	// lookup never saw — another terminal adding one in between — there is no
+	// before-figure and the delta is unknowable rather than zero. Found-nothing
+	// and could-not-tell are different facts here as everywhere else on this
+	// screen, and the wording follows this flag rather than inventing a number.
+	deltaKnown bool
 }
 
 // poAddLookupMsg is one item-lookup reply. `seq` is the stamp the request
@@ -753,6 +761,78 @@ func (s *PurchaseOrderAddLineScreen) primePriceRows(c omsapi.POLineCandidate) {
 	s.priceFocus = poAddFieldQty
 }
 
+// readQuantityRow and readCostRow are the ONE place each typed row is judged.
+//
+// They exist because the answer is needed twice — the submit refuses on it, and
+// the Line total row must not draw a figure for an entry Enter is about to
+// reject — and a rule written out twice drifts. It already had: the submit
+// wanted a whole number and the total row was gated on a decimal predicate, so
+// a quantity of "5.5" drew a total and was then refused, and "+5" was posted
+// with the total hidden. One reader per row makes the disagreement
+// unrepresentable rather than merely fixed.
+//
+// Each returns the value to SEND — the zero value meaning "the row is blank, so
+// the server decides" — and an operator-facing refusal, empty when the row is
+// acceptable. The refusal is the sentence's middle: the caller supplies the
+// lead naming what the key did.
+func (s *PurchaseOrderAddLineScreen) readQuantityRow() (int, string) {
+	raw := strings.TrimSpace(s.qtyIn.Value())
+	if raw == "" {
+		return 0, ""
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 0, fmt.Sprintf("quantity %q is not a whole number of 1 or more · "+
+			"clear the row to take %s's own suggestion", pickerClip(raw, 12), s.supplierName())
+	}
+	return n, ""
+}
+
+// readCostRow judges the price row as MONEY, which big.Rat.SetString does not:
+// it is a number parser and accepts "1/3", "1e9" and "-5", and this screen
+// posts the row verbatim as unit_cost. A mis-keyed leading minus therefore
+// either created a negative-priced line or came back as a DRF validation
+// envelope — which omsapi.AsLineEntryError deliberately declines to recognise,
+// so the operator read "the add did not answer — the line may or may not be on
+// the order" with the raw JSON folded underneath, about a request that
+// definitively answered and definitively added nothing.
+//
+// The scan lives INSIDE this reader rather than beside it as a predicate any
+// caller could reach for, because a second, looser judge of the same row is
+// exactly what this pair of functions exists to make impossible.
+//
+// This is FIELD PARSING of a local textbox and nothing more. Whether the
+// supplier carries the item, whether the order is still a draft and what a
+// price is allowed to be are the SERVER's to refuse, and none of them is
+// duplicated here.
+func (s *PurchaseOrderAddLineScreen) readCostRow() (string, string) {
+	raw := strings.TrimSpace(s.costIn.Value())
+	if raw == "" {
+		return "", ""
+	}
+	plainDecimal := func(v string) bool {
+		digits, dots := 0, 0
+		for _, r := range v {
+			switch {
+			case r >= '0' && r <= '9':
+				digits++
+			case r == '.':
+				if dots++; dots > 1 {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		return digits > 0
+	}
+	if !plainDecimal(raw) {
+		return "", fmt.Sprintf("unit cost %q is not a plain price like 4.50 · "+
+			"clear the row to take the price on file", pickerClip(raw, 12))
+	}
+	return raw, ""
+}
+
 // submit posts the confirmed row. Quantity and cost are sent only when the box
 // holds something: an empty box means "let the server derive it", which for a
 // fresh line is the same number that was prefilled and for a repeat is the
@@ -763,22 +843,17 @@ func (s *PurchaseOrderAddLineScreen) submit() tea.Cmd {
 	}
 	req := omsapi.POLineAdd{ItemSupplier: s.chosen.ItemSupplier}
 
-	if raw := strings.TrimSpace(s.qtyIn.Value()); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 {
-			return s.say(fmt.Sprintf("enter did not add it — quantity %q is not a whole number of "+
-				"1 or more · clear the row to take %s's own suggestion", pickerClip(raw, 12), s.supplierName()),
-				StatusWarn)
-		}
-		req.Quantity = n
+	qty, refusal := s.readQuantityRow()
+	if refusal != "" {
+		return s.say("enter did not add it — "+refusal, StatusWarn)
 	}
-	if raw := strings.TrimSpace(s.costIn.Value()); raw != "" {
-		if !poAddIsDecimal(raw) {
-			return s.say(fmt.Sprintf("enter did not add it — unit cost %q is not a plain price like "+
-				"4.50 · clear the row to take the price on file", pickerClip(raw, 12)), StatusWarn)
-		}
-		req.UnitCost = raw
+	req.Quantity = qty
+
+	cost, refusal := s.readCostRow()
+	if refusal != "" {
+		return s.say("enter did not add it — "+refusal, StatusWarn)
 	}
+	req.UnitCost = cost
 
 	s.pending = true
 	s.phase = poAddPhaseAdding
@@ -825,16 +900,24 @@ func (s *PurchaseOrderAddLineScreen) handleAdded(m poAddLineMsg) tea.Cmd {
 	}
 
 	s.clearFail()
-	line := poAddedLine{name: s.chosenName(), created: m.res.Created}
-	line.quantity = m.res.LineItem.QuantityOrdered
+	line := poAddedLine{name: s.chosenName(), created: m.res.Created, deltaKnown: true}
 	line.unitCost = m.res.LineItem.UnitCostOrdered.String()
 	line.after = m.res.LineItem.QuantityOrdered
-	if m.res.Created {
-		// A fresh line's ordered quantity IS what was added; a grown one's is
-		// where it ended up, so the two numbers are recorded separately below.
-		line.quantity = m.res.LineItem.QuantityOrdered
-	} else if s.chosen != nil && s.chosen.AlreadyOnOrder != nil {
-		line.quantity = m.res.LineItem.QuantityOrdered - s.chosen.AlreadyOnOrder.QuantityOrdered
+	// A fresh line's ordered quantity IS what was added; a grown one's is where
+	// it ended up, so the two numbers are recorded separately.
+	line.quantity = m.res.LineItem.QuantityOrdered
+	if !m.res.Created {
+		if s.chosen != nil && s.chosen.AlreadyOnOrder != nil {
+			line.quantity = m.res.LineItem.QuantityOrdered - s.chosen.AlreadyOnOrder.QuantityOrdered
+		} else {
+			// The server grew a line the LOOKUP had not reported — another
+			// terminal put one there in the window (purchase_order,
+			// item_supplier) uniqueness leaves open. We know where the line
+			// ended up and we do not know what it grew BY, and subtracting a
+			// before-figure we never had would have drawn "grew that line by 12
+			// to 12": a number nobody measured, reported as fact.
+			line.quantity, line.deltaKnown = 0, false
+		}
 	}
 	s.added = append(s.added, line)
 	if m.res.PurchaseOrder != nil {
@@ -860,6 +943,9 @@ func poAddedSentence(l poAddedLine) string {
 	name := pickerClip(l.name, poAddNoteNameCells)
 	if l.created {
 		return fmt.Sprintf("added %d × %s at %s as a new line", l.quantity, name, poAddMoney(l.unitCost))
+	}
+	if !l.deltaKnown {
+		return fmt.Sprintf("%s was already on this order — that line now stands at %d", name, l.after)
 	}
 	return fmt.Sprintf("%s was already here — grew that line by %d to %d", name, l.quantity, l.after)
 }
@@ -1152,7 +1238,14 @@ func (s *PurchaseOrderAddLineScreen) addTally(l *jdeLines) {
 
 // poAddTallyRow fits one tally entry: the item NAME is the bounded identifier
 // and abbreviates, the quantity and the price are facts and never give.
+//
+// A grown line whose delta this screen could not derive reports where the line
+// STANDS rather than a delta of zero — the row would otherwise read "0 @ 4.50"
+// about an add that really did put stock on the order.
 func poAddTallyRow(l poAddedLine, room int) string {
+	if !l.deltaKnown {
+		return poFitRow(room, l.name, fmt.Sprintf("  now %d @ %s", l.after, poAddMoney(l.unitCost)))
+	}
 	facts := fmt.Sprintf("  %d @ %s", l.quantity, poAddMoney(l.unitCost))
 	grew := ""
 	if !l.created {
@@ -1243,6 +1336,40 @@ func (s *PurchaseOrderAddLineScreen) candidateFacts(c omsapi.POLineCandidate, ro
 // poAddFactSep joins the parts of a candidate's fact line.
 const poAddFactSep = " · "
 
+// poAddMatchedRow is the confirm frame's Matched row, and it is the one row on
+// this screen where the sacrifice order is most costly to get backwards.
+//
+// This is a CONFIRM surface, so the fact being confirmed survives whole and the
+// identifier abbreviates: the MATCHED VALUE is what the operator scanned or
+// typed and is the very thing they are being asked to say yes to, while the
+// server's MatchLabel is prose explaining WHY it matched. Assembled label-first
+// and clipped as one string, the row gave up the value — an ordinary supplier
+// SKU came out as `supplier SKU "AF-99-12-ZP-LH…` on the frame whose whole job
+// is confirming it, and a cross-vendor label (45 cells on its own) filled the
+// row with prose and dropped the scanned value entirely, with the ellipsis
+// reading as a cut LABEL rather than a missing field.
+//
+// So the value is bounded first and the label takes what is left. Dropping the
+// label costs nothing the operator cannot recover: the Supplier SKU row is
+// directly above it and the pinned note reads "matched on <label>" in full,
+// folded. Dropping the value has no such fallback.
+//
+// The label is NOT capped at a constant here, unlike the candidate list's: a
+// wide terminal has room for the whole sentence and discarding what the pane
+// could have shown is the other half of the same rule.
+func poAddMatchedRow(label, value string, room int) string {
+	quoted := pickerClip(fmt.Sprintf("%q", value), room)
+	budget := room - lipgloss.Width(quoted) - len(poAddMatchedSep)
+	if budget < poHeaderValueFloor {
+		return quoted
+	}
+	return pickerClip(label, budget) + poAddMatchedSep + quoted
+}
+
+// poAddMatchedSep is the single space between the match label and the value it
+// explains. One cell, because every cell it takes comes out of the label's.
+const poAddMatchedSep = " "
+
 // poAddMatchLabelCells is what the match label may draw into once the facts
 // have taken theirs. `room` is what is left INCLUDING the separator, so the
 // separator is charged here rather than by a caller who might forget it. The
@@ -1284,8 +1411,7 @@ func (s *PurchaseOrderAddLineScreen) confirmBody() *jdeLines {
 		{Label: "Item SKU", Kind: jdeValue, Value: pickerClip(orDash(c.Item.SKU), room)},
 		{Label: "Supplier", Kind: jdeValue, Value: pickerClip(s.supplierName(), room)},
 		{Label: "Supplier SKU", Kind: jdeValue, Value: pickerClip(orDash(c.SupplierSKU), room)},
-		{Label: "Matched", Kind: jdeValue, Value: pickerClip(
-			fmt.Sprintf("%s %q", c.MatchLabel, c.MatchedValue), room)},
+		{Label: "Matched", Kind: jdeValue, Value: poAddMatchedRow(c.MatchLabel, c.MatchedValue, room)},
 	}
 	if c.QuantityPerPackage > 1 {
 		fields = append(fields, jdeField{Label: "Pack", Kind: jdeValue,
@@ -1455,30 +1581,25 @@ func (s *PurchaseOrderAddLineScreen) existingLinePrice(lineID string) string {
 }
 
 // lineTotal is quantity × unit cost, computed EXACTLY (big.Rat, not float) and
-// shown only when both rows hold numbers. It is the figure the operator is
-// really approving, so a rounding artefact in it would be worse than its
-// absence.
+// shown only when both rows hold an entry the submit would accept. It is the
+// figure the operator is really approving, so a rounding artefact in it would
+// be worse than its absence — and so would a total for an entry Enter is about
+// to refuse, which is why the two rows are read through the SAME functions the
+// submit reads them through rather than through a predicate of this row's own.
 func (s *PurchaseOrderAddLineScreen) lineTotal() string {
-	qtyRaw := strings.TrimSpace(s.qtyIn.Value())
-	costRaw := strings.TrimSpace(s.costIn.Value())
-	if qtyRaw == "" || costRaw == "" {
+	qty, refusal := s.readQuantityRow()
+	if refusal != "" || qty == 0 {
 		return ""
 	}
-	// The same predicate the submit refuses on, so the row cannot show a total
-	// for an entry enter is about to reject — and never a NEGATIVE one, which
-	// big.Rat would have multiplied out and drawn as a real figure.
-	if !poAddIsDecimal(qtyRaw) || !poAddIsDecimal(costRaw) {
-		return ""
-	}
-	qty, ok := new(big.Rat).SetString(qtyRaw)
-	if !ok {
+	costRaw, refusal := s.readCostRow()
+	if refusal != "" || costRaw == "" {
 		return ""
 	}
 	cost, ok := new(big.Rat).SetString(costRaw)
 	if !ok {
 		return ""
 	}
-	return new(big.Rat).Mul(qty, cost).FloatString(2)
+	return new(big.Rat).Mul(new(big.Rat).SetInt64(int64(qty)), cost).FloatString(2)
 }
 
 // addingSentence names the SUBJECT of the add — the quantity and the item that
@@ -1564,39 +1685,6 @@ func poAddMoney(v string) string {
 		return "(no price)"
 	}
 	return v
-}
-
-// poAddIsDecimal reports whether a typed row holds a plain non-negative decimal
-// — the only shape a quantity or a price has.
-//
-// It exists because big.Rat.SetString is a NUMBER parser, not a MONEY parser:
-// it accepts "1/3", "1e9" and "-5", and this screen posts the row verbatim as
-// unit_cost. A mis-keyed leading minus therefore either created a
-// negative-priced line or came back as a DRF validation envelope — which
-// omsapi.AsLineEntryError deliberately declines to recognise, so the operator
-// read "the add did not answer — the line may or may not be on the order" with
-// the raw JSON folded underneath, about a request that definitively answered
-// and definitively added nothing.
-//
-// This is FIELD PARSING of a local textbox and nothing more. Whether the
-// supplier carries the item, whether the order is still a draft and what a
-// price is allowed to be are the SERVER's to refuse, and none of them is
-// duplicated here.
-func poAddIsDecimal(raw string) bool {
-	digits, dots := 0, 0
-	for _, r := range raw {
-		switch {
-		case r >= '0' && r <= '9':
-			digits++
-		case r == '.':
-			if dots++; dots > 1 {
-				return false
-			}
-		default:
-			return false
-		}
-	}
-	return digits > 0
 }
 
 // poAddIsZeroMoney reports the server's "nothing on file" price. It is compared
