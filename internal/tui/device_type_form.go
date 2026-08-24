@@ -498,7 +498,7 @@ func (s *DeviceTypeFormScreen) View() string {
 
 func (s *DeviceTypeFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the form as columnar rows: the code and the active flag
@@ -599,7 +599,7 @@ func (s *DeviceTypeFormScreen) formBar(body *jdeLines) []actionBarItem {
 	if id, ok := s.currentFieldID(); ok && !deviceTypeIsTextKind(id) {
 		items = append(items, actionBarItem{"←→", "Change"})
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items

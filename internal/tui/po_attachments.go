@@ -288,11 +288,7 @@ func (s *PurchaseOrderAttachmentsScreen) openUpload() tea.Cmd {
 // than the operator could see — the comment above claiming the opposite.
 func (s *PurchaseOrderAttachmentsScreen) pageStep() int {
 	body, _ := s.listLines()
-	avail := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), s.listBar()))
-	if avail < 1 {
-		avail = 1
-	}
-	_, rows := body.Window(s.cursor, avail)
+	_, rows := body.Window(s.cursor, s.bodyAvailForBar(0, s.listBar()))
 	if rows < 1 {
 		return 1
 	}
@@ -543,13 +539,13 @@ func (s *PurchaseOrderAttachmentsScreen) listPages() bool {
 		return false
 	}
 	body, _ := s.listLines()
-	return poCanScroll(s.jdeScreen, body, 0, s.listBarItems(true))
+	return s.bodyScrollsForBar(body, 0, s.listBarItems(true))
 }
 
 func (s *PurchaseOrderAttachmentsScreen) viewList() string {
 	body, _ := s.listLines()
 	return s.frameWrapped(nil, body, s.cursor,
-		jdeStatusLine(s.loading, "Loading…", ""), s.listBar())
+		s.statusRow(s.loading, "Loading…", ""), s.listBar())
 }
 
 // viewConfirmDelete is its own phase rather than a line appended to the list:
@@ -576,7 +572,7 @@ func (s *PurchaseOrderAttachmentsScreen) viewConfirmDelete() string {
 		body.Add(line)
 	}
 	return s.frameWrapped(nil, body, 0,
-		jdeStatusLine(s.deleting, "Deleting…", ""),
+		s.statusRow(s.deleting, "Deleting…", ""),
 		[]actionBarItem{{"Enter", "Delete"}, {"Esc", "Cancel"}})
 }
 
@@ -608,6 +604,6 @@ func (s *PurchaseOrderAttachmentsScreen) viewUpload() string {
 	body.Add("")
 	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.uploadFocus,
-		jdeStatusLine(s.uploading, "Uploading…", poStatusError(s.errMsg, s.bodyWidth())),
+		s.statusRow(s.uploading, "Uploading…", s.errMsg),
 		[]actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
 }

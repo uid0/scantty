@@ -356,7 +356,7 @@ func (s *PurchaseOrderAddLineScreen) clearFail() { s.setFail("", "") }
 // one-line status row and a DETAIL the body folds under the note.
 //
 // The split matters because the status row cannot fold: it is one row of the
-// frame and poStatusError clips it. So the row gets a short fixed headline and
+// frame and jdeScreen.fitStatus clips it. So the row gets a short fixed headline and
 // the unbounded half goes in the body, where it is folded and bounded — never
 // the other way round, which is how the server's reason came to be shown as
 // "✗ Acme Fasteners no longer supplies Widget clamp (…".
@@ -438,7 +438,7 @@ func (s *PurchaseOrderAddLineScreen) keyIdentify(m tea.KeyMsg) (Screen, tea.Cmd)
 		s.phase = poAddPhaseLooking
 		s.lookupSeq++
 		// No flash goes out with the request. The frame's own status ROW draws
-		// the working line (jdeStatusLine, naming the work and the subject) for
+		// the working line (jdeScreen.statusRow, naming the work and the subject) for
 		// exactly as long as the lookup is out, and it is state-driven — where a
 		// flash sent alongside the request races the flash the REPLY sends and
 		// can land after it, leaving "looking up…" on the bar over a frame that
@@ -529,7 +529,7 @@ func (s *PurchaseOrderAddLineScreen) keyConfirm(m tea.KeyMsg) (Screen, tea.Cmd) 
 			return s, s.decline(m.String())
 		}
 		body := s.confirmBody()
-		step := s.scrollRows(actionBarRowsFor(s.barWidth(), s.bar()), len(s.headerLines()))
+		step := s.scrollRows(len(s.headerLines()), s.bar())
 		switch m.String() {
 		case "up":
 			s.scroll--
@@ -1036,17 +1036,13 @@ func (s *PurchaseOrderAddLineScreen) bar() []actionBarItem {
 // choosePages reports whether the candidate list is longer than the pane shows,
 // which is the only state where PgUp/PgDn move anything.
 func (s *PurchaseOrderAddLineScreen) choosePages() bool {
-	avail := s.chooseFrameRows()
-	if avail < 1 {
-		return false
-	}
-	return s.chooseBody().Len() > avail
+	return s.bodyScrollsForBar(s.chooseBody(), len(s.headerLines()), s.chooseBarItems(true))
 }
 
-// chooseFrameRows is the lines the choose frame really windows its body into,
-// and it is the ONE place that number is worked out. Zero means the frame does
-// not window at all — an unsized terminal draws every line — which is the state
-// where nothing can page.
+// chooseFrameRows is the lines the choose frame really windows its body into.
+// It is now a one-line call on the shared layer's bodyAvailForBar, and is kept
+// only so that the reason this screen asks the question at all stays written
+// down beside the two callers that ask it.
 //
 // It exists because three things must agree about it and two of them had
 // already drifted: the RENDER (frameWrapped, which takes the bar's measured
@@ -1056,19 +1052,14 @@ func (s *PurchaseOrderAddLineScreen) choosePages() bool {
 // re-derived, and measured against the whole pane with no header at all — so at
 // 80x24 with six candidates it stepped by the entire list and PgDn was End on
 // the row list an operator picks a purchase-order line from, while the bar said
-// "Page".
+// "Page". Restating the frame's arithmetic here is what let them drift in the
+// first place, so it is not restated: sc-jde-lift moved it into jde_form.go,
+// next to the Window it has to agree with.
 //
 // The bar it measures is the PAGING bar, because a step is only ever taken when
 // paging is on and that is therefore the bar being drawn.
 func (s *PurchaseOrderAddLineScreen) chooseFrameRows() int {
-	budget := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), s.chooseBarItems(true)))
-	if budget <= 0 {
-		return 0
-	}
-	if avail := budget - len(s.headerLines()); avail > 1 {
-		return avail
-	}
-	return 1
+	return s.bodyAvailForBar(len(s.headerLines()), s.chooseBarItems(true))
 }
 
 // chooseStep is how many candidate rows one page covers — measured off the same
@@ -1094,7 +1085,7 @@ func (s *PurchaseOrderAddLineScreen) chooseBarItems(paging bool) []actionBarItem
 // confirmScrolls is the confirm frame's half of the bar-honesty rule: the
 // scroll keys are named when, and only when, the body actually moves.
 func (s *PurchaseOrderAddLineScreen) confirmScrolls() bool {
-	return poCanScroll(s.jdeScreen, s.confirmBody(), len(s.headerLines()), s.confirmBarItems(true))
+	return s.bodyScrollsForBar(s.confirmBody(), len(s.headerLines()), s.confirmBarItems(true))
 }
 
 // confirmBarItems is the confirm bar for a given scroll state, so the bar that
@@ -1125,11 +1116,14 @@ func (s *PurchaseOrderAddLineScreen) View() string {
 	// rows below it: the status row cannot fold, and clampToBox cutting it would
 	// drop the closing SGR reset off the styled string and leave the terminal
 	// coloured for everything drawn afterwards. Two lines the operator reads
-	// together must not be bounded by different rules.
-	status := jdeStatusLine(s.phase == poAddPhaseLooking || s.pending,
-		poStatusError(s.workingLine(), s.barWidth()), "")
+	// together must not be bounded by different rules — which is now structural
+	// rather than a promise, because BOTH go through statusRow and the bound
+	// lives inside it. The failure branch used to render its own styled row with
+	// its own copy of the mark and the clip; it asks the layer for an error row
+	// instead, which is the only way this screen can draw one.
+	status := s.statusRow(s.phase == poAddPhaseLooking || s.pending, s.workingLine(), "")
 	if status == "" && s.failHead != "" {
-		status = StyleStatusError.Render("✗ " + poStatusError(s.failHead, s.barWidth()))
+		status = s.statusRow(false, "", s.failHead)
 	}
 	header := s.headerLines()
 	switch s.phase {
@@ -1173,15 +1167,15 @@ func (s *PurchaseOrderAddLineScreen) headerLines() []string {
 //
 // BOTH branches are bounded by that one rule, which is the whole point of
 // saying it. The lookup branch used to clip the query and the supplier to a
-// hard-coded twenty cells each and was then clipped AGAIN by poStatusError in
-// View, so at 80 columns the row read `Looking up widget in Acme Fasteners &
+// hard-coded twenty cells each and was then clipped AGAIN by the status row's
+// own bound, so at 80 columns the row read `Looking up widget in Acme Fasteners &
 // In…'s cata…` — an ellipsis from the inner clip, and the sentence's OWN
 // closing words destroyed by the outer one. At 120 columns the same constant
 // threw away sixty-odd columns the pane had for the supplier's name.
 func (s *PurchaseOrderAddLineScreen) workingLine() string {
 	if s.pending {
 		lead, tail := "Adding ", " to "+s.orderName()+"…"
-		room := s.barWidth() - poStatusMarkCells - lipgloss.Width(lead) - lipgloss.Width(tail)
+		room := s.barWidth() - jdeStatusMarkCells - lipgloss.Width(lead) - lipgloss.Width(tail)
 		return lead + s.addingSentence(room) + tail
 	}
 	const (
@@ -1189,7 +1183,7 @@ func (s *PurchaseOrderAddLineScreen) workingLine() string {
 		mid  = " in "
 		tail = "'s catalogue…"
 	)
-	room := s.barWidth() - poStatusMarkCells -
+	room := s.barWidth() - jdeStatusMarkCells -
 		lipgloss.Width(lead) - lipgloss.Width(mid) - lipgloss.Width(tail)
 	query, supplier := poAddShareRow(room, strings.TrimSpace(s.idIn.Value()), s.supplierName())
 	return lead + query + mid + supplier + tail
@@ -1214,12 +1208,6 @@ func poAddShareRow(room int, first, second string) (string, string) {
 	}
 	return pickerClip(first, firstRoom), pickerClip(second, secondRoom)
 }
-
-// poStatusMarkCells is what poStatusError reserves for the mark jdeStatusLine
-// draws in front of an error. The working line carries no mark, so budgeting
-// against the same number is two columns conservative and keeps the two rows
-// measured by one rule.
-const poStatusMarkCells = 2
 
 // noteLines renders the screen's answer to the last keypress, folded to the
 // pane the terminal really gave. Root.View TRUNCATES rather than wrapping, and
@@ -1308,8 +1296,7 @@ func (s *PurchaseOrderAddLineScreen) addTally(l *jdeLines) {
 
 	// Two rows of chrome (the blank and the heading) plus at least one entry,
 	// measured against what the frame has left rather than assumed.
-	budget := s.bodyRowsForBar(actionBarRowsFor(s.barWidth(), s.bar())) -
-		len(s.headerLines()) - l.Len() - 2
+	budget := s.bodyAvailForBar(len(s.headerLines()), s.bar()) - l.Len() - 2
 	if budget < 1 {
 		// No room to list any of them: say how many there are, which is the fact
 		// the operator would otherwise lose entirely.

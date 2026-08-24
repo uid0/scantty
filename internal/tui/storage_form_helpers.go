@@ -32,13 +32,18 @@ var storageLabelWidth = jdeLabelWidth(
 // storageSlotStatusLine is the row above the bar on the storage sheets: what is
 // in flight or what went wrong, and otherwise the standing note that field
 // carries. A screen renders it on every frame, blank included, so the bar
-// underneath never moves between frames (jdeStatusLine's contract).
-func storageSlotStatusLine(saving bool, verb, errMsg, warn, note string) string {
-	if line := jdeStatusLine(saving, verb, errMsg); line != "" {
+// underneath never moves between frames (jdeScreen.statusRow's contract).
+//
+// It takes the pane rather than a bare string because all four of these rows are
+// the SAME row, and the row cannot fold: the warning and the note are bounded by
+// jdeScreen.fitStatus exactly as the verb and the error are, so clampToBox
+// cannot cut a styled line and take its closing SGR reset with it.
+func storageSlotStatusLine(g jdeScreen, saving bool, verb, errMsg, warn, note string) string {
+	if line := g.statusRow(saving, verb, errMsg); line != "" {
 		return line
 	}
 	if warn != "" {
-		return StyleStatusWarn.Render("! " + warn)
+		return StyleStatusWarn.Render("! " + g.fitStatus(warn))
 	}
-	return StyleMuted.Render(note)
+	return StyleMuted.Render(g.fitStatus(note))
 }

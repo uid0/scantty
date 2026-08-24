@@ -261,6 +261,34 @@ note, and is the authority):
   `renderActionBarWrapped` (a bar of a dozen order-level keys folds onto several
   rows rather than losing its tail). `internal/tui/po_detail.go` is the pilot for
   those, as `po_edit.go` is for forms.
+- **A sheet may not answer "how many rows?", "does this scroll?" or "what goes
+  on the status row?" itself.** All three are `jde_form.go`'s
+  (`bodyAvail` / `bodyAvailForBar`, `bodyScrolls` / `bodyScrollsForBar`,
+  `statusRow` / `fitStatus`), and the frames read the SAME functions, so a bar's
+  claim that UP/DN or PgUp/PgDn move something cannot part company with the
+  window that decides whether they do. Two of them lived as per-sheet copies
+  until sc-jde-lift: roughly fifty copies of the scroll arithmetic in two shapes
+  that disagreed at the edges — one had already been rewritten once for asking
+  `ClampScroll`, which reserves the two indicator rows and so says "scrollable"
+  two lines early — and a status bound applied on the three purchasing screens
+  and on none of the other thirty-odd, which handed an unbounded OMS body to a
+  row that cannot fold. `clampToBox` then cut it and took the closing SGR reset
+  with it, colouring everything drawn afterwards.
+  Two sweeps in `jde_lift_sweep_test.go` keep them there and BOTH were verified
+  by reverting: `TestJDEForm_NoSheetAnswersTheScrollQuestionItself` (the
+  forbidden set is derived from a `jde:layer-only` line in the layer's own doc
+  comments, plus a second net on any `jdeLines.Len()` in a comparison) and
+  `TestJDEForm_EveryStatusRowComesFromTheLayer` (the frame set AND the position
+  of the `status` argument are read out of `jde_form.go`, so a frame variant
+  added later is swept without anyone remembering it). Mark a new budget helper
+  `jde:layer-only` at its declaration; a roster kept in the test is the
+  hand-maintained list this project keeps being bitten by.
+  Zero rows means ZERO, not one: a pinned header that fills the pane leaves the
+  body nothing, because `jdePadTo` trims the assembled frame back to the budget
+  and takes the windowed line with it. Reading it as one row made the order
+  pad's bar name PgUp/PgDn at 80x12 over a frame that does not move —
+  `TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves` walks the pane height one
+  row at a time and is what caught it.
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
 

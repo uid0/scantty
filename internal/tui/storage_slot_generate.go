@@ -765,7 +765,7 @@ func (s *StorageSlotGenerateScreen) statusLine() string {
 	if s.sigsErr != "" {
 		warn = "SIG list unavailable — " + s.sigsErr
 	}
-	return storageSlotStatusLine(s.saving, "Generating…", s.errMsg, warn, s.previewLine())
+	return storageSlotStatusLine(s.jdeScreen, s.saving, "Generating…", s.errMsg, warn, s.previewLine())
 }
 
 // formFields describes the sheet as columnar rows: two rows Ctrl-E opens (the
@@ -824,7 +824,7 @@ func (s *StorageSlotGenerateScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -925,7 +925,7 @@ func (s *StorageSlotGenerateScreen) viewLevels() string {
 	} else {
 		items = append(items, actionBarItem{"Ctrl-E", "Edit"})
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return s.frame(body, s.levelCursor, "", items)
@@ -985,7 +985,7 @@ func (s *StorageSlotGenerateScreen) viewLevelRow() string {
 	case s.rowCursor == genRowRemove && s.rowIndex >= 0:
 		items = append(items, actionBarItem{"Ctrl-E", "Remove"})
 	}
-	return s.frame(l, s.rowCursor, jdeStatusLine(false, "", s.rowErr), items)
+	return s.frame(l, s.rowCursor, s.statusRow(false, "", s.rowErr), items)
 }
 
 func (s *StorageSlotGenerateScreen) pickView() ([]string, *jdeLines) {
@@ -1012,11 +1012,11 @@ func (s *StorageSlotGenerateScreen) pickView() ([]string, *jdeLines) {
 func (s *StorageSlotGenerateScreen) viewPicker() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }
 
 // resultLines is the run report. Every line is its own navigable row so the
@@ -1060,13 +1060,22 @@ func (s *StorageSlotGenerateScreen) resultLines() *jdeLines {
 func (s *StorageSlotGenerateScreen) viewResult() string {
 	body := s.resultLines()
 	items := []actionBarItem{{"Enter", "Back to the rack"}, {"Esc", "Back"}, {"UP/DN", "Scroll"}}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	// Not "press p": that key belongs to the slots list, and the bar's contract
 	// is that a key it shows works HERE.
+	//
+	// It goes through the shared status row rather than being styled here: that
+	// row is ONE unwrapped line and the pane is 51 columns at the 80-column
+	// floor, so this sentence was 65 cells of it and clampToBox took the tail —
+	// along with StyleMuted's closing reset, leaving the terminal muted for
+	// whatever was drawn next. The wording lost "the " twice to come inside the
+	// 49 an unmarked message has there, so nothing is shortened at any width
+	// rather than the same tail being ellipsised instead of cut.
 	return s.frame(body, s.resultCursor,
-		StyleMuted.Render("the cards for these slots print from the slots list"), items)
+		storageSlotStatusLine(s.jdeScreen, false, "", "", "",
+			"cards for these slots print from the slots list"), items)
 }
 
 // storageGenCodeList prints the codes a run touched, WRAPPED to the pane and

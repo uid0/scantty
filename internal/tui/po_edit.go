@@ -1316,7 +1316,7 @@ func (s *PurchaseOrderEditScreen) View() string {
 // into the status line — the pane geometry itself lives in jde_form.go, shared
 // with every other columnar screen.
 func (s *PurchaseOrderEditScreen) frame(body *jdeLines, cursorRow int, verb string, items []actionBarItem) string {
-	return s.jdeScreen.frame(body, cursorRow, jdeStatusLine(s.saving, verb, s.errMsg), items)
+	return s.jdeScreen.frame(body, cursorRow, s.statusRow(s.saving, verb, s.errMsg), items)
 }
 
 // ---------------------------------------------------------------------------
@@ -1507,7 +1507,7 @@ func (s *PurchaseOrderEditScreen) formBar(body *jdeLines) []actionBarItem {
 	case s.cursorOnLine():
 		items = append(items, actionBarItem{"Ctrl-E", "Edit line"})
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items

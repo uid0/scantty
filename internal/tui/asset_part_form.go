@@ -688,7 +688,7 @@ func (s *AssetPartFormScreen) View() string {
 
 func (s *AssetPartFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the part as columnar rows: the part itself is a picker,
@@ -744,7 +744,7 @@ func (s *AssetPartFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"←→", "Change"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -787,9 +787,9 @@ func (s *AssetPartFormScreen) pickView() ([]string, *jdeLines) {
 func (s *AssetPartFormScreen) viewPick() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }

@@ -1497,7 +1497,8 @@ func TestPOAddLine_TheConfirmNoteWordsBothPathsThatReachIt(t *testing.T) {
 
 // "Looking up <query> in <supplier>'s catalogue…" used to clip the query and
 // the supplier to a hard-coded twenty cells EACH and was then clipped again by
-// poStatusError, so the row lost its own closing words — `… & In…'s cata…` — on
+// the status row's own bound, so the row lost its own closing words —
+// `… & In…'s cata…` — on
 // the frame whose whole job is saying what is happening. The same constant threw
 // away sixty-odd columns a 120-column terminal had for the supplier's name.
 //

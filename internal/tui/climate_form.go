@@ -648,7 +648,7 @@ func (s *ThermostatFormScreen) View() string {
 
 func (s *ThermostatFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the form as columnar rows: three FK rows Ctrl-E opens,
@@ -693,7 +693,7 @@ func (s *ThermostatFormScreen) formBar(body *jdeLines) []actionBarItem {
 	if id, ok := s.currentFieldID(); ok && s.isPickerField(id) {
 		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -797,11 +797,11 @@ func (s *ThermostatFormScreen) pickView() ([]string, *jdeLines) {
 func (s *ThermostatFormScreen) viewPick() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }
 
 // thermostatAssetKey renders an asset's UUID pk (Asset.ID is `any`) to the

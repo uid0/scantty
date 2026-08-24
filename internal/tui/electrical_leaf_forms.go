@@ -748,7 +748,7 @@ func (s *PowerOutletFormScreen) View() string {
 
 func (s *PowerOutletFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the form as columnar rows: three FK rows Ctrl-E opens,
@@ -815,7 +815,7 @@ func (s *PowerOutletFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -938,11 +938,11 @@ func (s *PowerOutletFormScreen) pickView() ([]string, *jdeLines) {
 func (s *PowerOutletFormScreen) viewPick() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }
 
 // ===========================================================================
@@ -1674,7 +1674,7 @@ func (s *DisconnectFormScreen) View() string {
 
 func (s *DisconnectFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the form as columnar rows: two FK rows and one MULTI
@@ -1755,7 +1755,7 @@ func (s *DisconnectFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Choose"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -1868,17 +1868,17 @@ func (s *DisconnectFormScreen) pickRowLabel(i int) string {
 func (s *DisconnectFormScreen) viewPick() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	// The multi picker's esc is "done", not "cancel" — its toggles were applied
 	// as they were made, so there is nothing left to undo.
 	if s.pickField == dcLOTODevices {
 		return s.frameWithHeader(header, body, s.pickCursor,
-			jdeStatusLine(false, "", ""), jdePickBarWith("Toggle", "Done", paging))
+			s.statusRow(false, "", ""), jdePickBarWith("Toggle", "Done", paging))
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }
 
 // ---------------------------------------------------------------------------

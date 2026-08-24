@@ -1342,7 +1342,7 @@ func (s *AssetFormScreen) View() string {
 
 func (s *AssetFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the visible fields as columnar rows. Toggles and selects
@@ -1435,7 +1435,7 @@ func (s *AssetFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Choose"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -1619,17 +1619,17 @@ func (s *AssetFormScreen) pickRowLabel(i int) string {
 func (s *AssetFormScreen) viewPick() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	// The multi picker's esc is "done", not "cancel" — its toggles were applied
 	// as they were made.
 	if s.pickField == afRequiredCerts {
 		return s.frameWithHeader(header, body, s.pickCursor,
-			jdeStatusLine(false, "", ""), jdePickBarWith("Toggle", "Done", paging))
+			s.statusRow(false, "", ""), jdePickBarWith("Toggle", "Done", paging))
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }
 
 // pickWhatLabel names what the open picker is picking. It is the picker's

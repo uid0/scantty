@@ -522,7 +522,7 @@ func (s *WebhookFormScreen) View() string {
 
 func (s *WebhookFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the sheet as columnar rows: one bounded set of event
@@ -600,7 +600,7 @@ func (s *WebhookFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"←→", "Change"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
