@@ -36,6 +36,45 @@ partially received line's price by `quantity_received / quantity_ordered` on
 every trip. `unit_cost_actual` is written ONLY through that endpoint — receiving
 never sets it. `internal/tui/po_line_price.go` carries the full note.
 
+### A line goes onto a draft order by scanning an identifier
+
+`internal/omsapi/po_line_entry.go` carries the API note and
+`internal/tui/po_add_line.go` is the flow; both are the authority. What is worth
+knowing before touching either:
+
+- Two endpoints, both DRIVEN and neither re-implemented:
+  `GET …/purchase-orders/{id}/item-lookup/?q=` is a pure read that resolves one
+  identifier in the context of THAT order's supplier, and
+  `POST …/purchase-orders/{id}/items/` is the write. The match ladder, the
+  ambiguity set and every refusal (not a draft, supplier does not carry it,
+  discontinued) come off the wire.
+- **`resolves` is the server's answer, not a count.** It means "the strongest
+  tier that matched holds exactly one candidate", which is neither
+  `len(candidates) == 1` nor `candidates[0].is_exact`: an exact barcode
+  routinely comes back beside partial-name matches, so recomputing it
+  client-side disagrees with the server on the ordinary case and would send a
+  scan through a choice list it does not need.
+- **The add posts `item_supplier`, never `identifier`.** Re-posting the
+  identifier RE-RESOLVES it, and the catalogue can change between the lookup and
+  the operator's confirm — they would have approved one item and added another.
+- **The refusal body is NOT the standard envelope.** `add_item` writes
+  `{"error": "<prose>", "code": "<code>"}` by hand, so it never reaches OMS's
+  DRF exception handler and `omsapi.parseError` puts the ENTIRE raw body into
+  `APIError.Message`. `omsapi.AsLineEntryError` recovers the sentence and the
+  code — without it the operator reads the JSON — and it is deliberately narrow,
+  so a gateway page and a DRF validation envelope keep the shape they arrived in.
+- **The quantity and price defaults differ between a fresh line and a repeat,
+  because the SERVER's do.** A fresh line lands on `suggested_quantity` /
+  `suggested_unit_cost`; a repeat GROWS the line already there by
+  `repeat_increment` and leaves its price alone unless a price is sent.
+  Prefilling the fresh-line price on a repeat and posting it reprices the whole
+  line. Blank means "the server decides" on both rows, which is why the prompt
+  can offer the defaults and still be safe.
+- `suggested_unit_cost` of `0.00` is a real answer — no price on the supplier
+  relationship AND no purchase history — rather than an absence. It is still
+  what the prompt shows, because it is still what the server would apply, with
+  the fact named beside it: a zero accepted by reflex is a zero-priced line.
+
 ### Kits are inventory items the item API refuses to admit exist
 
 Before touching anything kit-shaped (`internal/omsapi/kits.go` carries the full
@@ -154,6 +193,22 @@ note, and is the authority):
   because scanning prose for a bare `a` finds the article. That reshaping is how
   `b` — bound on all three association pickers exactly as `esc` is, named by
   none of them — was finally caught.
+- **A bar sweep presses the KEY SPACE, not the bar's own vocabulary.**
+  `po_view_jde_test.go`'s `TestPOView_BarNamesExactlyTheKeysThatWork` used to
+  walk `poAllBarKeys`, a roster of the tokens its bars happened to spell, so a
+  key bound in a handler and absent from the roster was pressed in NEITHER
+  direction — untested rather than passing, which is verbatim how `N` survived
+  on the purchasing list. It walks `poKeySpace()` now, as the New PO phase sweep
+  does, and `po_add_line_sweep_test.go` walks the same space over the add-line
+  flow's phases (derived from the `poAddPhase` iota) with its state fingerprint
+  derived by `reflect` over the screen struct.
+  Two exceptions are RECORDED rather than omitted, which is the whole
+  difference: `poFormNavAliases` (Tab / Shift-Tab ride alongside Up/Down on a
+  sheet with fields, and roughly twenty columnar forms name that pair as
+  `UP/DN=Fields` — naming the alias on three purchasing modals alone would make
+  them disagree with every other form in the program), and `poAddSilentKeys` (a
+  NAMED key resting against an edge it cannot move past, where the highlight or
+  the absent `↑ more above` marker has already answered the press).
 - **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
   hint literal.** The footer and the handler read that one table; the previous
   shape appended the words to a hint string and left the key to a global

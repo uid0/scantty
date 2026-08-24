@@ -741,10 +741,29 @@ func (l *jdeLines) AddRow(row int, text string) {
 // shape of every columnar form whose rows are simply its fields. A form that has
 // to interleave something (an option strip under the focused row, a derived
 // preview under the one it is derived from) adds those lines itself.
+//
+// A rowBase of jdeNoRow means the whole band is read-only, so EVERY line of it
+// is tagged jdeNoRow rather than -1, 0, 1… — see jdeRowAt.
 func (l *jdeLines) AddFields(fields []jdeField, labelWidth, bodyWidth, rowBase int) {
 	for i, f := range fields {
-		l.AddRow(rowBase+i, renderJDEField(f, labelWidth, bodyWidth))
+		l.AddRow(jdeRowAt(rowBase, i), renderJDEField(f, labelWidth, bodyWidth))
 	}
+}
+
+// jdeRowAt numbers the i-th field of a band based at rowBase.
+//
+// The jdeNoRow case is the one that matters and is why this is a function: a
+// band of read-only lines is added with rowBase == jdeNoRow, and rowBase+i
+// there exempts only the FIRST line while handing the second row 0, the third
+// row 1 and so on — the numbers the sheet's real navigable rows already own. A
+// read-only line sharing a number with an input makes block() span from one to
+// the other, so Window anchors on that inflated block and starts the pane on
+// the read-only lines, dropping an input row the operator is typing into.
+func jdeRowAt(rowBase, i int) int {
+	if rowBase == jdeNoRow {
+		return jdeNoRow
+	}
+	return rowBase + i
 }
 
 func (l *jdeLines) Len() int { return len(l.text) }
@@ -1534,13 +1553,15 @@ func jdeFitRow(f jdeField, labelWidth, bodyWidth int) (jdeField, []string) {
 // AddFittedFields appends one navigable row per field, numbered from rowBase,
 // each sized to the pane by jdeFitRow — and any hint that had to be folded is
 // added as further lines of the SAME row, so the window keeps a field and the
-// note explaining it on screen together.
+// note explaining it on screen together. A rowBase of jdeNoRow tags the whole
+// band read-only, as it does in AddFields.
 func (l *jdeLines) AddFittedFields(fields []jdeField, labelWidth, bodyWidth, rowBase int) {
 	for i, f := range fields {
+		row := jdeRowAt(rowBase, i)
 		fitted, notes := jdeFitRow(f, labelWidth, bodyWidth)
-		l.AddRow(rowBase+i, renderJDEField(fitted, labelWidth, bodyWidth))
+		l.AddRow(row, renderJDEField(fitted, labelWidth, bodyWidth))
 		for _, note := range notes {
-			l.AddRow(rowBase+i, note)
+			l.AddRow(row, note)
 		}
 	}
 }

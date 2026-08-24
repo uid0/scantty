@@ -29,9 +29,11 @@
 //	Enter            the phase's own action — receive items on the sheet,
 //	                 submit in a modal, copy the order pad
 //	Esc              back / cancel  (Ctrl-C always quits, app-wide)
-//	E A S s c d v x r   the order-level commands, every one of them named on
+//	E A S n s c d v x r  the order-level commands, every one of them named on
 //	                 the bar and status-gated exactly as the web page gates its
-//	                 buttons
+//	                 buttons. `n` opens the scan-a-SKU add-line flow
+//	                 (po_add_line.go) and is named only on a draft, because that
+//	                 is the only status the backend will take a new line in.
 //
 // Tab and Shift-Tab ride alongside Up/Down for field movement on the modal
 // sheets (mark shipped, mark delivered, and the attachments upload sheet). The
@@ -408,6 +410,17 @@ func (s *PurchaseOrderDetailScreen) handleSheetKey(m tea.KeyMsg) (Screen, tea.Cm
 			return s, nil
 		}
 		return s, s.transitionPO("confirm")
+	case "n":
+		// Add a line by typing or SCANNING what is on the box (po_add_line.go).
+		// Gated on draft exactly as the backend gates it (assert_addable), and
+		// the bar names `n` only while that holds — but a press in the wrong
+		// status still answers, the way s / c / d / v do, rather than redrawing
+		// the same pane. Lowercase n is free in the global keymap: since phase 3
+		// the root holds no letter at all.
+		if s.po == nil || s.po.Status != "draft" {
+			return s, Status("add line is only available on draft POs", StatusWarn)
+		}
+		return s, SwitchTo(WSPurchasing, NewPurchaseOrderAddLineScreen(s.deps, s.po))
 	case "E":
 		// Edit metadata + line items. Uppercase E because lowercase e is
 		// a global ForgeKey hotkey (matches inventory-detail's E edit).
@@ -1041,6 +1054,9 @@ func (s *PurchaseOrderDetailScreen) sheetBarItems(scroll bool) []actionBarItem {
 	if s.po != nil {
 		switch s.po.Status {
 		case "draft":
+			// Adding a line is a DRAFT-only action server-side, so the key that
+			// opens the flow is named only where it works.
+			items = append(items, actionBarItem{"n", "Add line"})
 			items = append(items, actionBarItem{"s", "Send"})
 		case "sent":
 			items = append(items, actionBarItem{"c", "Confirm"})
