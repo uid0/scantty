@@ -983,8 +983,8 @@ func TestPOView_SheetBarNamesEveryKeyThatWorks(t *testing.T) {
 	for _, want := range [][2]string{
 		{"Enter", "Receive"}, {"Esc", "Back"}, {"UP/DN", "Scroll"},
 		{"PgUp/PgDn", "Page"}, {"Home/End", "Top/End"},
-		{"E", "Edit"}, {"A", "Files"}, {"s", "Send"}, {"S", "Ship line"},
-		{"x", "Order pad"}, {"v", "Void"}, {"r", "Refresh"},
+		{"E", "Edit"}, {"A", "Files"}, {"n", "Add line"}, {"s", "Send"},
+		{"S", "Ship line"}, {"x", "Order pad"}, {"v", "Void"}, {"r", "Refresh"},
 	} {
 		if !barHas(bar, want[0], want[1]) {
 			t.Errorf("the sheet's bar should name %q=%q: %+v", want[0], want[1], bar)
@@ -1005,8 +1005,14 @@ func TestPOView_SheetBarNamesEveryKeyThatWorks(t *testing.T) {
 // on the bar, so they must not act. A key that works while nothing names it is
 // the failure the bar exists to prevent, and on a scanner-driven terminal it is
 // also a burst of barcode characters firing commands.
+//
+// `n` left this list when it became the add-a-line key (po_add_line.go). It is
+// STATUS-GATED rather than retired, so on the wrong status it answers with an
+// explaining toast exactly as s / c / d / v / S do — which is behaviour the
+// bar-honesty sweep allows and this test, which rejects any command at all,
+// cannot express.
 func TestPOView_RetiredKeysDoNothing(t *testing.T) {
-	for _, k := range []string{"j", "k", "g", "G", "R", "u", "y", "n"} {
+	for _, k := range []string{"j", "k", "g", "G", "R", "u", "y"} {
 		s, _ := poDetailAt(t, 100)
 		before := s.View()
 		next, cmd := s.Update(poRuneKey(k))
@@ -1303,6 +1309,7 @@ var poBarKeyNames = map[string][]string{
 	"d":         {"d"},
 	"v":         {"v"},
 	"S":         {"S"},
+	"n":         {"n"},
 }
 
 // poKeyMsg turns one of those keystroke names into the message the terminal
@@ -1328,7 +1335,10 @@ func poKeyMsg(key string) tea.KeyMsg {
 	case "ctrl+x":
 		return tea.KeyMsg{Type: tea.KeyCtrlX}
 	}
-	return poRuneKey(key)
+	// Everything else — the rest of poKeySpace's named specials, and every
+	// printable rune — is spelled by the phase sweep's translator, so the two
+	// sweeps cannot disagree about what a key name means.
+	return poPhaseKeyMsg(key)
 }
 
 // poBarPhase is one screen in one state, rebuilt from scratch on demand so a
@@ -1424,8 +1434,15 @@ func TestPOView_BarNamesExactlyTheKeysThatWork(t *testing.T) {
 					}
 				}
 
-				for _, key := range poAllBarKeys() {
-					if p.typing && len(key) == 1 {
+				for _, key := range poKeySpace() {
+					// A focused text field OWNS the printable runes and the
+					// field-editing keys: they act by editing the value, which is
+					// what the field is for, so the reverse direction cannot apply
+					// to them there. The forward direction still does.
+					if p.typing && (poIsPrintable(key) || poFieldKeys[key]) && !named[key] {
+						continue
+					}
+					if p.typing && poFormNavAliases[key] {
 						continue
 					}
 					var changed, issued bool
@@ -1452,21 +1469,34 @@ func TestPOView_BarNamesExactlyTheKeysThatWork(t *testing.T) {
 	}
 }
 
-// poAllBarKeys is every keystroke the bar's vocabulary can name, in a stable
-// order.
-func poAllBarKeys() []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, entry := range []string{"Enter", "Esc", "UP/DN", "PgUp/PgDn", "Home/End", "Ctrl-X", "r", "E", "A", "x", "s", "c", "d", "v", "S"} {
-		for _, k := range poBarKeyNames[entry] {
-			if !seen[k] {
-				seen[k] = true
-				out = append(out, k)
-			}
-		}
-	}
-	return out
-}
+// poFormNavAliases are Tab and Shift-Tab on a SHEET WITH FIELDS, where they
+// ride alongside Up/Down and the bar names the canonical key of the pair
+// ("UP/DN=Fields") rather than every spelling of it.
+//
+// It is recorded here rather than left out of a roster, which is the whole
+// difference: an omission is silent and this is a statement with a reason
+// attached. The convention is app-wide — roughly twenty columnar forms build
+// that exact bar entry (jde_form.go's callers) — so naming the alias on these
+// three modals alone would make the purchasing sheets disagree with every other
+// form in the program, and naming it everywhere is a change to all of them that
+// nobody has asked for. po_detail.go's header comment records the same
+// deviation from the screen's side.
+//
+// It applies only to phases with a focused field, because that is the only
+// place the pair means "next field": nothing else in this package binds them.
+var poFormNavAliases = map[string]bool{"tab": true, "shift+tab": true}
+
+// The key space this sweep presses is poKeySpace() — every printable ASCII rune
+// plus the named specials a terminal sends — and NOT a roster of the bar's own
+// vocabulary.
+//
+// It used to be the latter (poAllBarKeys), and that is exactly how `N` reached
+// an operator's terminal doing nothing on the purchase-order list while the
+// footer named it: a key bound in a handler and absent from the roster was
+// pressed in NEITHER direction, so it was untested rather than passing. A
+// roster that has to be edited in step with the code is that omission waiting
+// to happen again, and it fails SILENTLY. Pressing the whole space costs a
+// little more wall-clock and cannot be forgotten.
 
 // poShortPO is a freshly created draft with nothing on it — the order whose
 // sheet fits the pane, so its scroll keys must not be named.
