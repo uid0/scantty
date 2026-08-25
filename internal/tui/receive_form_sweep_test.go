@@ -273,6 +273,14 @@ func receivePhaseCases() []receivePhaseCase {
 		// must not name it — the state the honesty rule is easiest to get wrong
 		// in, because the form still draws a notes row and a caret.
 		{phaseQty, "qty nothing receivable", true, nil, pressed()},
+		// A box holding a ZERO. This is a different STATE of the quantity
+		// phase, not a different phase, which is exactly why it had to be added
+		// by hand: walking the receivePhase iota makes a phase impossible to
+		// forget and says nothing about the states inside one. Enter used to be
+		// named here — a box "holds something" — while submit skipped the zero,
+		// posted nothing and came straight back with a local refusal, so the
+		// bar named a key whose whole effect was to write a note.
+		{phaseQty, "qty all zero", true, all, typedQty(map[int]string{1: "0"}, pressed())},
 		// Frozen: the receipt is out and the payload has already gone.
 		{phaseQty, "qty receiving", false, all, typedQty(receiveOne, inFlight(enter))},
 		{phaseSerial, "serial", true, all, typedQty(receiveOne, pressed(enter))},

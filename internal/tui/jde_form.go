@@ -1035,6 +1035,32 @@ func (g jdeScreen) windowRows(body *jdeLines, cursorRow, headerRows int) int {
 	return rows
 }
 
+// windowRowsForBar is windowRows for the WRAPPING frames — frameWrapped and
+// frameScrolled — whose bar may take several rows off the pane before the body
+// gets any. It pairs with windowRows exactly as bodyAvailForBar pairs with
+// bodyAvail and bodyScrollsForBar with bodyScrolls, and `items` carries the
+// same obligation it does there: it must be the bar that is about to be DRAWN,
+// and where the answer feeds the bar's own contents the caller passes the bar
+// WITH the scroll keys on it, because the tallest bar is the fixed point.
+//
+// It exists because the first sheet framing with frameWrapped that needed a
+// page step had no layer variant to call and inlined windowRows' two lines
+// instead. That is how the ~50 copies sc-jde-lift had to unpick began — not
+// with fifty, but with one that was too small to be worth a shared function,
+// and each of the next forty-nine had the same argument available to it. Two of
+// those copies had drifted apart at the edges by the time anybody looked, and
+// one had already been rewritten once for asking ClampScroll, which reserves
+// the two indicator rows and so answers two lines early. A page that moves by a
+// different count than the window draws walks the cursor past rows the operator
+// never saw, and nothing about it looks wrong in a diff.
+func (g jdeScreen) windowRowsForBar(body *jdeLines, cursorRow, headerRows int, items []actionBarItem) int {
+	_, rows := body.Window(cursorRow, g.bodyAvailForBar(headerRows, items))
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
 // jdePageCursor moves a cursor one page in `dir`. It CLAMPS where field nav
 // wraps: paging is a way of covering ground in a body taller than the pane, and
 // a page that jumped from the last row back to the first would lose the

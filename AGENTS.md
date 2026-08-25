@@ -202,6 +202,20 @@ note, and is the authority):
   because scanning prose for a bare `a` finds the article. That reshaping is how
   `b` — bound on all three association pickers exactly as `esc` is, named by
   none of them — was finally caught.
+  A DERIVED ROSTER IS ONE AXIS, AND A SWEEP HAS TWO. Walking an iota to its
+  sentinel makes a PHASE impossible to forget and says nothing whatever about
+  the STATES inside one, and it is the states a bar changes shape in — so a
+  sweep can be rigorous along the axis it derives while being silent along the
+  axis that carries the defect, which reads as coverage and is not. The cases a
+  phase is reached through are therefore still a judgement (`receivePhaseCases`
+  is the authority for receiving) and the bar is what says which ones are
+  needed: a phase's cases must span every state its bar changes shape in,
+  because that is exactly where the honesty rule can break. `Enter` on the
+  receiving form is the instance, beside `N`, `tab` and `poPhaseSupplierSwitch`
+  above: an empty quantity box and one holding `0` are different states of one
+  phase, the bar named `Enter` in both, and in the second submit skipped the
+  zero and could only refuse — no case had typed a zero, so nothing pressed it
+  there.
 - **A bar sweep presses the KEY SPACE, not the bar's own vocabulary.**
   `po_view_jde_test.go`'s `TestPOView_BarNamesExactlyTheKeysThatWork` used to
   walk `poAllBarKeys`, a roster of the tokens its bars happened to spell, so a

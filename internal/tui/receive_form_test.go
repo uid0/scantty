@@ -157,6 +157,23 @@ func receivePaneText(s *ReceiveFormScreen, w, h int) string {
 	return strings.Join(strings.Fields(strings.Join(receivePaneLines(s, w, h), " ")), " ")
 }
 
+// receiveCursorMarker is a short identifier for the row the cursor is ACTUALLY
+// on, taken from that line's own label rather than written down beside the
+// setup. A test that names a row by index is one cursor move away from checking
+// a different row than the one it talks about, and it fails in the safe
+// direction — it passes.
+func receiveCursorMarker(t *testing.T, s *ReceiveFormScreen) string {
+	t.Helper()
+	if s.focused >= len(s.lines) {
+		t.Fatalf("the cursor is on row %d, the notes row, which carries no line label", s.focused)
+	}
+	fields := strings.Fields(s.lines[s.focused].DisplayLabel())
+	if len(fields) == 0 {
+		t.Fatalf("line %d has no label to identify it by", s.focused)
+	}
+	return fields[0]
+}
+
 // receiveRowWith is the clipped line carrying `marker`, or "" when the pane
 // does not carry it at all. It is how a row whose highlight has been eaten by
 // its own value is found: once a typed value fills the input area there is no
@@ -845,11 +862,16 @@ func TestReceive_TheFrozenFormOffersNoRowToTypeInto(t *testing.T) {
 		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
 			fake := &receiveFake{failWith: http.StatusBadGateway, failBody: nginx502}
 			r, s := receiveDrive(t, fake, receiveManyLines(3), width, 24)
-			s.qty[1].SetValue("1")
+			// The cursor is MOVED off row 0 on purpose, so the assertion below
+			// is aimed by s.focused rather than by an index that happens to be
+			// the one the screen opens on.
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+			s.qty[s.focused].SetValue("1")
 			if receiveFocusedRow(s, width, 24) == "" {
 				t.Fatalf("no row is highlighted before the receipt goes out:\n%s",
 					strings.Join(receivePaneLines(s, width, 24), "\n"))
 			}
+			cursor := receiveCursorMarker(t, s)
 
 			r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 			if !s.pending {
@@ -858,11 +880,15 @@ func TestReceive_TheFrozenFormOffersNoRowToTypeInto(t *testing.T) {
 			if got := receiveFocusedRow(s, width, 24); got != "" {
 				t.Errorf("a row still invites typing while the receipt is out: %q", got)
 			}
-			// The operator's PLACE is not what was given up: the row keeps its
-			// number, its name, its readings and what was typed into it.
-			if row := receiveRowWith(s, width, 24, "Line-2"); row == "" {
-				t.Errorf("the frozen form lost the row the cursor is on:\n%s",
-					strings.Join(receivePaneLines(s, width, 24), "\n"))
+			// The operator's PLACE is not what was given up: the row the CURSOR
+			// is on keeps its number, its name and its readings. The marker is
+			// derived from s.focused, because an earlier version of this named
+			// row 1 while the cursor sat on row 0 — so it would have passed
+			// with the cursor's own row dropped entirely, which is the exact
+			// regression the sentence above claims it guards.
+			if row := receiveRowWith(s, width, 24, cursor); row == "" {
+				t.Errorf("the frozen form lost %q, the row the cursor is on:\n%s",
+					cursor, strings.Join(receivePaneLines(s, width, 24), "\n"))
 			}
 
 			// And a failed receipt hands the keyboard back: the invitation
@@ -917,4 +943,159 @@ func TestReceive_LeavingCaptureMidSaveLeavesNoCaretBehind(t *testing.T) {
 		t.Errorf("the summary is not what the operator is left looking at:\n%s", got)
 	}
 	_ = r
+}
+
+// ---------------------------------------------------------------------------
+// The pinned note does not outlive the state it describes
+// ---------------------------------------------------------------------------
+
+// receiveNoteLine is the pinned answer-to-the-last-keypress as the operator
+// reads it, folds undone. "" when the pane carries no note at all.
+func receiveNoteLine(s *ReceiveFormScreen, w, h int, marker string) string {
+	text := receivePaneText(s, w, h)
+	i := strings.Index(text, marker)
+	if i < 0 {
+		return ""
+	}
+	return text[i:]
+}
+
+// TestReceive_ANoteDoesNotOutliveTheStateItDescribes.
+//
+// headerLines PINS the note above the body on every frame, so a note that
+// answers a keypress in one state and is still there in the next is a line
+// contradicting the bar four rows under it. Two keystrokes reach it on the
+// phase the operator spends most of their time on, which is why the clear is in
+// the key dispatch rather than in the arms that happen to have been thought of.
+//
+// Driven in SEQUENCE with no reset between presses: resetting is what makes
+// this class of defect invisible.
+func TestReceive_ANoteDoesNotOutliveTheStateItDescribes(t *testing.T) {
+	t.Run("typing a quantity retires the enter refusal", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, receiveManyLines(3), 80, 24)
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if got := receiveNoteLine(s, 80, 24, "enter has nothing to receive"); got == "" {
+			t.Fatalf("enter on an empty form did not say why:\n%s", receivePaneText(s, 80, 24))
+		}
+
+		r = receiveType(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+		// The bar now names Enter, because a quantity is something to attempt.
+		named := false
+		for _, it := range s.bar() {
+			if it.Key == "Enter" {
+				named = true
+			}
+		}
+		if !named {
+			t.Fatalf("the bar does not name Enter with a quantity typed: %v", s.bar())
+		}
+		if got := receiveNoteLine(s, 80, 24, "enter has nothing to receive"); got != "" {
+			t.Errorf("the bar names Enter=Receive while the pinned line above it still "+
+				"says Enter has nothing to receive: %q", got)
+		}
+	})
+
+	t.Run("moving the cursor retires a claim about the cursor", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, receiveManyLines(9), 80, 24)
+		if !s.qtyPages() {
+			t.Fatal("the body does not page at 80x24, so pgup cannot decline here")
+		}
+		r = receiveKey(t, r, poPhaseKeyMsg("pgup"))
+		if got := receiveNoteLine(s, 80, 24, "pgup is already at"); got == "" {
+			t.Fatalf("pgup at the top said nothing:\n%s", receivePaneText(s, 80, 24))
+		}
+
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+		if s.focused == 0 {
+			t.Fatal("down did not move the cursor")
+		}
+		if got := receiveNoteLine(s, 80, 24, "pgup is already at"); got != "" {
+			t.Errorf("the cursor has moved off the first row but the pane still says %q", got)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Enter is named for what submit will actually attempt
+// ---------------------------------------------------------------------------
+
+// receiveBarNames reports whether the bar the frame is drawing names `key`.
+func receiveBarNames(s *ReceiveFormScreen, key string) bool {
+	for _, it := range s.bar() {
+		if it.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// TestReceive_EnterIsNamedForWhatSubmitWillAttempt.
+//
+// A box holding "0" is skipped by submit, leaves nothing to post and comes
+// straight back as a local refusal — so naming Enter there advertised a key
+// whose entire effect was to write a note. A box holding "two" is the opposite
+// case and must STAY named: it is a real attempt, and the refusal naming the
+// line is the answer to it.
+//
+// The two refusals stay distinct, because an operator who cannot tell which one
+// they hit does not know what to do next.
+func TestReceive_EnterIsNamedForWhatSubmitWillAttempt(t *testing.T) {
+	cases := []struct {
+		name    string
+		typed   map[int]string
+		named   bool
+		wantSay string
+	}{
+		{"every box empty", nil, false, "type a quantity against a line"},
+		{"one box holding a zero", map[int]string{1: "0"}, false, "every quantity entered is zero"},
+		{"zeroes in every box", map[int]string{0: "0", 1: "00", 2: " 0 "}, false, "every quantity entered is zero"},
+		{"a typo", map[int]string{1: "two"}, true, "line 2: quantity must be a whole number"},
+		{"a negative", map[int]string{1: "-3"}, true, "line 2: quantity must be a whole number"},
+		{"a zero and a real quantity", map[int]string{0: "0", 1: "2"}, true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &receiveFake{}
+			r, s := receiveDrive(t, fake, receiveManyLines(3), 80, 24)
+			for i, v := range tc.typed {
+				s.qty[i].SetValue(v)
+			}
+			if got := receiveBarNames(s, "Enter"); got != tc.named {
+				t.Fatalf("the bar names Enter = %v, want %v: %v", got, tc.named, s.bar())
+			}
+
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			receipts, _ := fake.count()
+			if tc.named && tc.wantSay == "" {
+				if receipts != 1 {
+					t.Fatalf("a named Enter posted %d receipts, want 1", receipts)
+				}
+				return
+			}
+			if receipts != 0 {
+				t.Errorf("a receipt went out for %q: %d posted", tc.name, receipts)
+			}
+			if got := receivePaneText(s, 80, 24); !strings.Contains(got, tc.wantSay) {
+				t.Errorf("the refusal does not say %q:\n%s", tc.wantSay, got)
+			}
+		})
+	}
+
+	// And the two refusals are DIFFERENT sentences: an operator who cannot tell
+	// an empty form from a pad of zeroes does not know what to do next.
+	fake := &receiveFake{}
+	r, empty := receiveDrive(t, fake, receiveManyLines(3), 80, 24)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	emptyPane := receivePaneText(empty, 80, 24)
+
+	r2, zero := receiveDrive(t, fake, receiveManyLines(3), 80, 24)
+	zero.qty[0].SetValue("0")
+	r2 = receiveKey(t, r2, tea.KeyMsg{Type: tea.KeyEnter})
+	zeroPane := receivePaneText(zero, 80, 24)
+	if emptyPane == zeroPane {
+		t.Errorf("an empty form and a pad of zeroes refuse with the same pane:\n%s", emptyPane)
+	}
+	_, _ = r, r2
 }

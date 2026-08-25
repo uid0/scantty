@@ -455,6 +455,30 @@ func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 }
 
 func (s *ReceiveFormScreen) handleKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// The note answers the LAST keypress, so this press retires it and whatever
+	// arm runs below writes the answer to THIS one. Cleared here, once, for the
+	// reason the reply-side clear at the top of Update is written once: a note
+	// that outlives the state it describes is a pinned line contradicting the
+	// bar four rows under it, and headerLines draws it on every phase.
+	//
+	// Within the quantity phase that is two keystrokes away on the screen an
+	// operator spends most of their time on. Press Enter on a fresh form and
+	// the note reads "enter has nothing to receive — type a quantity against a
+	// line"; type a 2 and qtyBarItems gains {Enter, Receive} because a box now
+	// holds something, so the bar names Enter while the line above it says
+	// Enter has nothing. The same shape holds for a claim about the CURSOR —
+	// "pgup is already at the first row", then Down — and for the all-zero
+	// refusal, which survived the operator typing a real quantity.
+	//
+	// Not per-arm. focusNext, pageQty and the typing fall-through would each
+	// need their own clear, which is the hand-kept discipline this file's
+	// history is made of: the arm somebody adds next is the one that forgets,
+	// and it fails silently.
+	//
+	// The FAILURE line is not retired with it. failHead/failDetail came off the
+	// wire rather than answering a keypress, and a gateway's reason must not be
+	// dismissed by the operator pressing a key to look at it.
+	s.note.clear()
 	switch s.phase {
 	case phaseSerial:
 		return s.keySerial(m)
@@ -492,16 +516,13 @@ func (s *ReceiveFormScreen) keyQty(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case "esc":
 		return s, s.leave()
 	case "enter":
-		if !s.hasQuantityEntry() {
+		if s.entryState() != receiveAttemptable {
 			// The bar does not name Enter here, so the press has to say why
 			// rather than redraw an identical pane — and it says the useful
-			// thing rather than the generic one, because "type a quantity" is
-			// what the operator has to do next.
-			lead := "enter has nothing to receive — type a quantity against a line"
-			if len(s.qty) == 0 {
-				lead = "enter has nothing to receive — no line on this order is receivable"
-			}
-			return s, s.say(lead+" · "+s.waysOut(), StatusWarn)
+			// thing rather than the generic one, because what the operator has
+			// to do next differs with the reason (entryRefusal).
+			return s, s.say(
+				"enter has nothing to receive — "+s.entryRefusal()+" · "+s.waysOut(), StatusWarn)
 		}
 		return s.submit()
 	case "up", "shift+tab":
@@ -669,12 +690,15 @@ func (s *ReceiveFormScreen) submit() (Screen, tea.Cmd) {
 		}
 	}
 	if len(items) == 0 {
-		// Every box that held anything held a zero, which is a different fact
-		// from an empty form and gets a different sentence: two refusals that
-		// read the same would leave the operator unable to tell which one they
-		// had hit.
+		// The BACKSTOP, not the ordinary path: the bar stops naming Enter the
+		// moment entryState leaves receiveAttemptable, and the arm above
+		// refuses before submit is reached, so nothing an operator can type
+		// arrives here today. It is kept because the refusal must not depend on
+		// two predicates agreeing — a future arm that submits without asking
+		// would otherwise post an empty receipt — and it reads its sentence off
+		// entryRefusal so the screen cannot refuse the same fact in two voices.
 		s.serialUnits = nil
-		return s, s.say("nothing to receive — every quantity entered is zero", StatusWarn)
+		return s, s.say("nothing to receive — "+s.entryRefusal(), StatusWarn)
 	}
 	req := omsapi.ReceiveRequest{
 		Items:        items,
@@ -905,13 +929,14 @@ func (s *ReceiveFormScreen) qtyBarItems(paging bool) []actionBarItem {
 		return []actionBarItem{{"Esc", "Back to order"}}
 	}
 	var items []actionBarItem
-	if s.hasQuantityEntry() {
-		// Named only when there is something to attempt. With every quantity
-		// box empty Enter cannot receive anything — it can only refuse — and a
-		// bar that names it there is teaching the operator a key that does not
-		// work. What Enter does with a quantity the server will reject is still
-		// an ACT: it attempts the receipt and reports the refusal, which is the
-		// answer the operator needs.
+	if s.entryState() == receiveAttemptable {
+		// Named only when there is something to ATTEMPT. With every box empty —
+		// or every box holding a zero, which submit skips and which therefore
+		// never leaves the terminal — Enter cannot receive anything and can
+		// only refuse, and a bar that names it there teaches a key that does
+		// not work. What Enter does with a quantity the PARSER or the server
+		// will reject is still an act: it reports the refusal naming the line,
+		// which is the answer the operator needs.
 		items = append(items, actionBarItem{"Enter", "Receive"})
 	}
 	// The Esc label says what leaving COSTS, because leaving destroys the
@@ -931,10 +956,10 @@ func (s *ReceiveFormScreen) qtyBarItems(paging bool) []actionBarItem {
 	return items
 }
 
-// hasQuantityEntry reports whether any quantity box holds something — which is
-// what makes Enter a key that acts rather than one that can only refuse. It is
-// deliberately not "…holds a VALID quantity": a box holding "two" is something
-// to attempt, and the refusal naming the line is the answer to that attempt.
+// hasQuantityEntry reports whether any quantity box holds something. It is what
+// Esc's label is decided by — leaving destroys the screen and takes a typed
+// zero with it exactly as it takes a typed 2 — and is NOT what decides whether
+// the bar names Enter. entryState answers that.
 func (s *ReceiveFormScreen) hasQuantityEntry() bool {
 	for _, ti := range s.qty {
 		if strings.TrimSpace(ti.Value()) != "" {
@@ -942,6 +967,79 @@ func (s *ReceiveFormScreen) hasQuantityEntry() bool {
 		}
 	}
 	return false
+}
+
+// receiveEntry is what the quantity boxes amount to: the four different answers
+// Enter can give, which are four different sentences and not one.
+type receiveEntry int
+
+const (
+	// receiveNoLines — every line is voided or already received in full.
+	receiveNoLines receiveEntry = iota
+	// receiveNothingTyped — receivable lines, every box empty.
+	receiveNothingTyped
+	// receiveAllZero — boxes were typed into and every one of them parses as 0.
+	receiveAllZero
+	// receiveAttemptable — at least one box holds something submit will really
+	// attempt, which includes a value the server or the parser will reject.
+	receiveAttemptable
+)
+
+// entryState classifies the boxes, and it is the ONE predicate the bar and the
+// Enter arm both read.
+//
+// The distinction that matters is between a value that leaves the terminal and
+// one that cannot. The predicate this replaced was "any box holds something",
+// written reasoning about TYPOS: a box holding "two" is an attempt, and the
+// refusal naming the line ("line 1: quantity must be a whole number, 0 or more
+// — \"two\" is not") is the answer to that attempt, so Enter is named and Enter
+// acts. That reasoning is right and it does not extend to a ZERO. A box holding
+// "0" is skipped by submit, leaves nothing to post, and comes straight back as
+// a local refusal — so the bar named a key whose whole effect was to write a
+// note, which is the bar-honesty rule broken on the phase the operator lives
+// on. "0" stays out of the ATTEMPT and stays in hasQuantityEntry, because it is
+// still something Esc would throw away.
+func (s *ReceiveFormScreen) entryState() receiveEntry {
+	if len(s.qty) == 0 {
+		return receiveNoLines
+	}
+	typed := false
+	for _, ti := range s.qty {
+		raw := strings.TrimSpace(ti.Value())
+		if raw == "" {
+			continue
+		}
+		typed = true
+		if n, err := strconv.Atoi(raw); err == nil && n == 0 {
+			continue
+		}
+		return receiveAttemptable
+	}
+	if typed {
+		return receiveAllZero
+	}
+	return receiveNothingTyped
+}
+
+// entryRefusal is WHY Enter cannot receive, in the words that fit the state.
+//
+// The three stay DISTINCT because they are three different facts and the
+// operator's next move differs for each: nothing typed says type a quantity, a
+// pad of zeroes says the zeroes are the problem, and an order with nothing
+// receivable says no keystroke on this screen will help. Collapsing them into
+// one sentence would leave an operator unable to tell which refusal they had
+// hit — the same reason the empty and all-zero cases were separate before this.
+//
+// One home for the wording, read by the Enter arm and by submit's own backstop,
+// so a screen that refuses in two places cannot refuse in two voices.
+func (s *ReceiveFormScreen) entryRefusal() string {
+	switch s.entryState() {
+	case receiveNoLines:
+		return "no line on this order is receivable"
+	case receiveAllZero:
+		return "every quantity entered is zero"
+	}
+	return "type a quantity against a line"
 }
 
 // anythingTyped reports whether Esc would throw entry away — the quantities
@@ -960,13 +1058,11 @@ func (s *ReceiveFormScreen) qtyPages() bool {
 }
 
 // qtyStep is how many rows one page covers — measured off the same window the
-// frame draws, so a page moves by exactly what the operator can see.
+// frame draws, so a page moves by exactly what the operator can see. The
+// arithmetic is the LAYER's (windowRowsForBar), not a local copy of it, for the
+// reason that method's own comment records.
 func (s *ReceiveFormScreen) qtyStep() int {
-	_, rows := s.qtyBody().Window(s.focused, s.bodyAvailForBar(len(s.headerLines()), s.qtyBarItems(true)))
-	if rows < 1 {
-		return 1
-	}
-	return rows
+	return s.windowRowsForBar(s.qtyBody(), s.focused, len(s.headerLines()), s.qtyBarItems(true))
 }
 
 // serialBar follows the BOX: with nothing in it, Enter skips the unit, and
