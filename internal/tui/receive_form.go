@@ -394,6 +394,33 @@ func receiveReason(err error) string {
 // ---------------------------------------------------------------------------
 
 func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
+	// A reply off the wire is what ENDS a freeze, so it is also what retires
+	// the note the freeze wrote. The note answers the last keypress IN THE
+	// STATE THAT KEY WAS PRESSED IN, and headerLines pins it on every phase, so
+	// a decline that outlives its own state is a frame asserting something the
+	// screen has stopped being true of: press any key while the receipt is out
+	// and the note reads "j is frozen until the receipt answers · esc back to
+	// order"; when the reply lands on a serialized order the phase becomes
+	// serial, whose bar is "Enter=Skip unit · Esc=Finish", and that pinned
+	// sentence still claims a freeze that has ended and still says esc goes
+	// back to the ORDER — contradicting the bar about the one key it names. On
+	// the failure branch it is worse: the stale warn line is drawn immediately
+	// above the fresh 502 detail with the bar fully unfrozen again.
+	//
+	// Cleared HERE, once, rather than in the arms that clear pending and move
+	// the phase — the same shape as the New PO screen's pendingLead, which is
+	// cleared in Update's key dispatch and not in the three arms that navigate
+	// (AGENTS.md). A clear per arm is a clear somebody adding the next branch
+	// has to remember, and this defect fails silently.
+	//
+	// The FAILURE line is deliberately not cleared with it: failHead/failDetail
+	// are what came back off the wire rather than an answer to a keypress, and
+	// they are the fact the operator most needs kept.
+	switch msg.(type) {
+	case receiveSubmittedMsg, serialUnitDoneMsg:
+		s.note.clear()
+	}
+
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.setSize(m)
@@ -783,6 +810,16 @@ func (s *ReceiveFormScreen) handleSerialUnit(m serialUnitDoneMsg) tea.Cmd {
 
 // advanceSerial moves to the next capture slot, finishing into the summary
 // when the queue is exhausted.
+//
+// The caret only ever goes back into the box while CAPTURE is still the phase
+// on screen. Esc pressed while a create is in flight is not gated — no screen
+// here gates the way out — and it runs finishSerial, which moves to the summary
+// and blurs the box; the reply then lands with units still enrolled and this
+// function would have re-focused a field the summary does not draw.
+// handleSerialUnit already asks the same question one line above its own
+// Focus(), and a guard undone by the call underneath it protects nothing: the
+// state is what decides who owns the caret, in both places and for the same
+// reason.
 func (s *ReceiveFormScreen) advanceSerial() {
 	s.serialCursor++
 	s.serialInput.SetValue("")
@@ -791,7 +828,9 @@ func (s *ReceiveFormScreen) advanceSerial() {
 		s.serialInput.Blur()
 		return
 	}
-	s.serialInput.Focus()
+	if s.phase == phaseSerial {
+		s.serialInput.Focus()
+	}
 }
 
 // uncapturedUnits is how many enrolled units never got a serial — derived from
@@ -1124,9 +1163,29 @@ func (s *ReceiveFormScreen) qtyBody() *jdeLines {
 		Input:   &s.notes,
 		Width:   40,
 		Hint:    "optional",
-		Focused: s.focused == len(s.qty),
+		Focused: s.caretOn(len(s.qty)),
 	}, lw, width)
 	return l
+}
+
+// caretOn reports whether row i is the one that may be TYPED INTO right now,
+// which is not the same question as which row the operator is standing on.
+//
+// jdeFieldArea draws a focused text row as a solid reverse-video field — the
+// layer's strongest "you are standing here and may type" signal — and while the
+// receipt is out every key but Esc declines, so a row left highlighted through
+// the freeze is the bar-honesty rule broken in its most visual form: the pane
+// invites the one thing submit() has just blurred the box to refuse. serialBody
+// answers the identical question with `Focused: !s.serialPending` one function
+// over, so the rule is now stated the same way on both phases rather than
+// honoured on one of them.
+//
+// Nothing is lost by dropping the fill. The row's number keeps its focused
+// style, and its name, its readings and its typed quantity all stay drawn, so
+// the operator keeps their place — and the frozen bar plus the "Booking the
+// delivery against …" status row already say what state the screen is in.
+func (s *ReceiveFormScreen) caretOn(i int) bool {
+	return s.focused == i && !s.pending
 }
 
 // standingCaveats are the facts about the ORDER that the per-line rows cannot
@@ -1158,8 +1217,13 @@ func (s *ReceiveFormScreen) standingCaveats(width int) []string {
 // box, and — for a kit — what the quantity currently typed would credit.
 func (s *ReceiveFormScreen) addLineBlock(l *jdeLines, i, lw, width int) {
 	line := s.lines[i]
-	focused := s.focused == i
-	l.AddRow(i, jdeIndent+s.lineHeading(i, line, focused, width))
+	// The heading's marker and the box's fill answer DIFFERENT questions, which
+	// is why they are asked separately here. The number stays styled for
+	// whichever row the cursor is on — that is the operator's PLACE, and a
+	// freeze that took it away would leave them hunting for it when the receipt
+	// answers — while the box's reverse-video fill says "type here", which is
+	// false for as long as the receipt is out (caretOn).
+	l.AddRow(i, jdeIndent+s.lineHeading(i, line, s.focused == i, width))
 	for _, row := range jdeWrapTokens(receiveLineTokens(line), receiveMetaIndent, width) {
 		l.AddRow(i, row)
 	}
@@ -1168,7 +1232,7 @@ func (s *ReceiveFormScreen) addLineBlock(l *jdeLines, i, lw, width int) {
 		Kind:    jdeText,
 		Input:   &s.qty[i],
 		Width:   8,
-		Focused: focused,
+		Focused: s.caretOn(i),
 	}
 	if line.IsKitLine {
 		// The unit of the box, right beside the box. "ordered 2 kits" says it

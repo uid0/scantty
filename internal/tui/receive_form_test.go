@@ -715,3 +715,206 @@ func TestReceive_AKitOrderStillSaysWhatItCredits(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// A frame stops asserting what the state has stopped being true of
+// ---------------------------------------------------------------------------
+
+// receiveInFlight fires one key with a BARE Update, leaving whatever it started
+// genuinely out, and hands back the command so the caller can land the reply
+// later. Asserting a mid-flight state after driving to completion is how a note
+// that had already expired passed its own test (AGENTS.md).
+func receiveInFlight(t *testing.T, r Root, msg tea.KeyMsg) (Root, tea.Cmd) {
+	t.Helper()
+	next, cmd := r.Update(msg)
+	after, ok := next.(Root)
+	if !ok {
+		t.Fatalf("Root.Update returned %T, want Root", next)
+	}
+	return after, cmd
+}
+
+// TestReceive_TheReplyRetiresTheNoteTheFreezeWrote.
+//
+// The note is the screen's answer to the last keypress and headerLines PINS it
+// on every phase, so a decline that outlives the state it was written in is a
+// frame naming keys that state no longer has. Press anything while the receipt
+// is out and the note reads "… is frozen until the receipt answers · esc back
+// to order"; when the reply lands the freeze is over and — on a serialized
+// order — esc no longer goes back to the order at all, so the pinned sentence
+// contradicts the bar drawn four rows under it. On the failure branch the same
+// stale warn line was drawn immediately above the fresh 502 detail with the bar
+// fully unfrozen again.
+//
+// Driven in SEQUENCE with no state reset between the presses, because resetting
+// between them is exactly what makes this class of defect invisible.
+func TestReceive_TheReplyRetiresTheNoteTheFreezeWrote(t *testing.T) {
+	const frozen = "frozen until the receipt answers"
+
+	t.Run("the receipt opens serial capture", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
+		s.qty[2].SetValue("1") // the serialized line, so the reply moves phase
+		r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if !s.pending {
+			t.Fatal("the receipt did not go out")
+		}
+		r, _ = receiveInFlight(t, r, poPhaseKeyMsg("j"))
+		if got := receivePaneText(s, 80, 24); !strings.Contains(got, frozen) {
+			t.Fatalf("a key pressed under the freeze did not say so:\n%s", got)
+		}
+
+		r = receiveSettle(t, r, cmd, 0)
+		if s.phase != phaseSerial {
+			t.Fatalf("the receipt left the flow on phase %v, want serial", s.phase)
+		}
+		if got := receivePaneText(s, 80, 24); strings.Contains(got, frozen) {
+			t.Errorf("the freeze is over and the phase has moved, but the pane still "+
+				"claims the receipt is out — and still says esc goes back to the order, "+
+				"which the bar under it contradicts:\n%s", got)
+		}
+	})
+
+	t.Run("the receipt fails", func(t *testing.T) {
+		fake := &receiveFake{failWith: http.StatusBadGateway, failBody: nginx502}
+		r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
+		s.qty[1].SetValue("1")
+		r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		r, _ = receiveInFlight(t, r, poPhaseKeyMsg("j"))
+		if got := receivePaneText(s, 80, 24); !strings.Contains(got, frozen) {
+			t.Fatalf("a key pressed under the freeze did not say so:\n%s", got)
+		}
+
+		r = receiveSettle(t, r, cmd, 0)
+		pane := receivePaneText(s, 80, 24)
+		if strings.Contains(pane, frozen) {
+			t.Errorf("the stale freeze note is drawn above the failure that ended it:\n%s", pane)
+		}
+		// The failure itself is a different fact and is what the operator needs
+		// kept: it came off the wire rather than answering a keypress.
+		if !strings.Contains(pane, "Receiving PO-1001 failed") {
+			t.Errorf("clearing the note took the failure with it:\n%s", pane)
+		}
+		if !strings.Contains(pane, "502 Bad Gateway") {
+			t.Errorf("clearing the note took the failure's reason with it:\n%s", pane)
+		}
+	})
+
+	t.Run("a captured serial", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
+		s.qty[2].SetValue("2") // two units, so the reply lands mid-capture
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if s.phase != phaseSerial {
+			t.Fatalf("capture did not open: phase %v", s.phase)
+		}
+		s.serialInput.SetValue("SN-1")
+		r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		if !s.serialPending {
+			t.Fatal("the capture did not go out")
+		}
+		r, _ = receiveInFlight(t, r, poPhaseKeyMsg("j"))
+		if got := receivePaneText(s, 80, 24); !strings.Contains(got, frozen) {
+			t.Fatalf("a key pressed under the capture freeze did not say so:\n%s", got)
+		}
+
+		r = receiveSettle(t, r, cmd, 0)
+		if got := receivePaneText(s, 80, 24); strings.Contains(got, frozen) {
+			t.Errorf("the capture answered and the unit advanced, but the pane still "+
+				"claims a request is out:\n%s", got)
+		}
+	})
+}
+
+// TestReceive_TheFrozenFormOffersNoRowToTypeInto.
+//
+// jdeFieldArea draws a focused text row as a solid reverse-video field — the
+// layer's strongest "you are standing here and may type" signal — and while the
+// receipt is out every key but Esc declines. submit() blurs the box for exactly
+// that reason; drawing the row focused anyway put the invitation back on the
+// pane, which is the bar-honesty rule broken in its most visual form. serialBody
+// already answered the identical question with !s.serialPending one function
+// over, so the two halves of the same screen disagreed about it.
+//
+// The profile has to be forced or this claim is unmeasurable: lipgloss strips
+// every sequence when stdout is not a TTY, so a lost highlight and a present one
+// are byte-identical.
+func TestReceive_TheFrozenFormOffersNoRowToTypeInto(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+	for _, width := range receiveWidths {
+		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
+			fake := &receiveFake{failWith: http.StatusBadGateway, failBody: nginx502}
+			r, s := receiveDrive(t, fake, receiveManyLines(3), width, 24)
+			s.qty[1].SetValue("1")
+			if receiveFocusedRow(s, width, 24) == "" {
+				t.Fatalf("no row is highlighted before the receipt goes out:\n%s",
+					strings.Join(receivePaneLines(s, width, 24), "\n"))
+			}
+
+			r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			if !s.pending {
+				t.Fatal("the receipt did not go out")
+			}
+			if got := receiveFocusedRow(s, width, 24); got != "" {
+				t.Errorf("a row still invites typing while the receipt is out: %q", got)
+			}
+			// The operator's PLACE is not what was given up: the row keeps its
+			// number, its name, its readings and what was typed into it.
+			if row := receiveRowWith(s, width, 24, "Line-2"); row == "" {
+				t.Errorf("the frozen form lost the row the cursor is on:\n%s",
+					strings.Join(receivePaneLines(s, width, 24), "\n"))
+			}
+
+			// And a failed receipt hands the keyboard back: the invitation
+			// returns with the keys it stands for.
+			r = receiveSettle(t, r, cmd, 0)
+			if s.pending {
+				t.Fatal("the receipt is still in flight after the fake answered")
+			}
+			if receiveFocusedRow(s, width, 24) == "" {
+				t.Errorf("the form came back live but no row says where the caret is:\n%s",
+					strings.Join(receivePaneLines(s, width, 24), "\n"))
+			}
+		})
+	}
+}
+
+// TestReceive_LeavingCaptureMidSaveLeavesNoCaretBehind.
+//
+// Esc is never gated on these screens, so it is pressed while a create is out
+// and finishSerial moves to the summary with the box blurred. The reply then
+// lands with units still enrolled, and advanceSerial's non-terminal branch used
+// to focus the box unconditionally — re-arming a caret in a field the summary
+// does not draw, one line after handleSerialUnit had asked the very question
+// that guard exists to answer.
+func TestReceive_LeavingCaptureMidSaveLeavesNoCaretBehind(t *testing.T) {
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
+	s.qty[2].SetValue("3") // three units, so the reply leaves two unanswered
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if s.phase != phaseSerial {
+		t.Fatalf("capture did not open: phase %v", s.phase)
+	}
+
+	s.serialInput.SetValue("SN-1")
+	r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if !s.serialPending {
+		t.Fatal("the capture did not go out")
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	if s.phase != phaseDone {
+		t.Fatalf("esc under a capture left the flow on phase %v, want done", s.phase)
+	}
+
+	r = receiveSettle(t, r, cmd, 0)
+	if s.phase != phaseDone {
+		t.Fatalf("the capture's reply dragged the operator back to phase %v", s.phase)
+	}
+	if s.serialInput.Focused() {
+		t.Error("the summary is on screen with a caret armed in a box it does not draw")
+	}
+	if got := receivePaneText(s, 80, 24); !strings.Contains(got, "Receive complete") {
+		t.Errorf("the summary is not what the operator is left looking at:\n%s", got)
+	}
+	_ = r
+}
