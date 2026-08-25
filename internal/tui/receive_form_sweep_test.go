@@ -486,6 +486,21 @@ func receiveHarness(t *testing.T, lines []omsapi.PurchaseOrderItem, width, heigh
 	}
 }
 
+// receiveClippedPane is what the operator can actually READ: the screen's frame
+// clipped on both axes exactly as Root clips it, joined back into one string.
+//
+// These sweeps used to compare `Root.View()` — the whole terminal, nav column
+// and border included, unclipped. That is the pattern AGENTS.md names as the
+// trap that let eight advertised keys ship past the 51-column cut, and it was
+// safe here only by accident: every declining lead happens to name its key at
+// position 0 of the note, so nothing distinguishing sat past the cut. The claim
+// these sweeps make is about what the operator sees, so they measure the pane
+// the operator sees, and a lead that grows a prefix cannot quietly move the
+// distinguishing part off the edge.
+func receiveClippedPane(s *ReceiveFormScreen, height int) string {
+	return strings.Join(receivePaneLines(s, 80, height), "\n")
+}
+
 // receivePaneSizes are the pane heights every state is checked at. 24 is the
 // terminal this interface is modelled on and the one that clips; 30 is there so
 // a frame cannot be tuned for the short pane.
@@ -607,9 +622,9 @@ func TestReceive_NoTwoDecliningKeysRedrawTheSamePane(t *testing.T) {
 					}
 					return r, s
 				}
-				base, screen := fresh(t)
+				_, screen := fresh(t)
 				named := receiveNamedKeys(t, screen.bar())
-				resting := base.View()
+				resting := receiveClippedPane(screen, height)
 
 				panes := map[string]string{}
 				for _, k := range space {
@@ -623,7 +638,7 @@ func TestReceive_NoTwoDecliningKeysRedrawTheSamePane(t *testing.T) {
 					if receiveState(s) != before || poCmdActs(cmd) {
 						continue // it acted; this sweep is about the ones that do not
 					}
-					if after := r.View(); after == resting {
+					if after := receiveClippedPane(s, height); after == resting {
 						t.Errorf("%s: %q answers with a byte-for-byte identical pane — "+
 							"that reads as a wedged program (named by the bar: %v)", c.name, k, named[k])
 					} else if other, clash := panes[after]; clash {
@@ -656,17 +671,21 @@ func TestReceive_EveryDeclineNamesTheKeyItAnswers(t *testing.T) {
 	}
 	// In SEQUENCE, with no reset between presses: two keys answering with one
 	// sentence would redraw the pane the first one left.
-	before := r.View()
+	before := receiveClippedPane(s, 24)
 	for _, k := range []string{"x", "z", "ctrl+t"} {
 		next, _ := r.Update(poPhaseKeyMsg(k))
 		r = next.(Root)
-		if !strings.Contains(r.View(), k+" does nothing here") {
-			t.Errorf("the decline for %q does not name it:\n%s", k, r.View())
+		// The sentence FOLDS on a 51-column pane, so it is read out of the
+		// flattened pane rather than the raw lines: a substring check against
+		// the lines fails on the line break rather than on the defect.
+		if pane := receivePaneText(s, 80, 24); !strings.Contains(pane, k+" does nothing here") {
+			t.Errorf("the decline for %q does not name it:\n%s", k, pane)
 		}
-		if r.View() == before {
+		if now := receiveClippedPane(s, 24); now == before {
 			t.Errorf("%q redrew a byte-for-byte identical pane", k)
+		} else {
+			before = now
 		}
-		before = r.View()
 	}
 }
 

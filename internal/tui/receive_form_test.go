@@ -1099,3 +1099,69 @@ func TestReceive_EnterIsNamedForWhatSubmitWillAttempt(t *testing.T) {
 	}
 	_, _ = r, r2
 }
+
+// ---------------------------------------------------------------------------
+// The paging claim and the paging guard describe the SAME frame
+// ---------------------------------------------------------------------------
+
+// TestReceive_ThePagingClaimHoldsWithANoteOnThePane.
+//
+// The note is part of the PINNED HEADER, the header costs the body rows, and
+// the body's height is what decides whether PgUp/PgDn move anything — so the
+// frame an operator is looking at and the frame left after the dispatch retires
+// the note are two different frames with two different answers.
+//
+// Retiring the note at the top of handleKey (which is what stopped a decline
+// outliving its own state) opened exactly that gap: the bar was drawn on the
+// frame WITH the note and the guard in pageQty then asked about the frame
+// WITHOUT it. In the two-row band where those disagree the bar said
+// PgUp/PgDn=Page and the press declined — and since the decline rewrote the same
+// sentence, a second press redrew a byte-for-byte identical pane.
+//
+// Sweeping the terminal HEIGHT one row at a time is the point: the band is two
+// or three rows wide, so the two heights the other tests sample walk straight
+// past it. po_view_jde_test.go's TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves
+// is this project's precedent, and it is what caught the same defect on the
+// order pad.
+//
+// Driven in SEQUENCE: the first press is what puts a note on the pane, and the
+// second is the one being judged.
+func TestReceive_ThePagingClaimHoldsWithANoteOnThePane(t *testing.T) {
+	for _, width := range receiveWidths {
+		for height := 10; height <= 40; height++ {
+			t.Run(fmt.Sprintf("%dx%d", width, height), func(t *testing.T) {
+				fake := &receiveFake{}
+				r, s := receiveDrive(t, fake, receiveManyLines(3), width, height)
+
+				// A key that declines without moving the cursor, so what
+				// changes between the two presses is the NOTE and nothing else.
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+				if s.focused != 0 {
+					t.Fatalf("the refusal moved the cursor to row %d", s.focused)
+				}
+				if len(s.headerLines()) == 0 {
+					t.Fatalf("the refusal put no note on the pane, so this height "+
+						"proves nothing:\n%s", receivePaneText(s, width, height))
+				}
+
+				// What the operator reads, on the frame they are about to press
+				// against.
+				named := receiveBarNames(s, "PgUp/PgDn")
+				pane := receiveClippedPane(s, height)
+				before := s.focused
+
+				r = receiveKey(t, r, poPhaseKeyMsg("pgdown"))
+				moved := s.focused != before
+				if named != moved {
+					t.Fatalf("the bar named PgUp/PgDn = %v but pressing it moved the body = %v"+
+						"\n--- the frame the key was pressed against ---\n%s"+
+						"\n--- the frame it produced ---\n%s",
+						named, moved, pane, receiveClippedPane(s, height))
+				}
+				if !moved && receiveClippedPane(s, height) == pane {
+					t.Errorf("pgdown declined with a byte-for-byte identical pane:\n%s", pane)
+				}
+			})
+		}
+	}
+}

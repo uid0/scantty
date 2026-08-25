@@ -325,22 +325,26 @@ func (s *ReceiveFormScreen) say(text string, level StatusLevel) tea.Cmd {
 // NAMES the key, which is not decoration: two keys sharing one sentence would
 // let the second press redraw the pane the first one left, and on a frame with
 // no cursor and no caret that is indistinguishable from a wedged program.
-func (s *ReceiveFormScreen) decline(key string) tea.Cmd {
-	return s.say(key+" does nothing here · "+s.waysOut(), StatusWarn)
+//
+// headerRows is the pinned header of the frame the key was pressed AGAINST —
+// see handleKey for why every arm carries it.
+func (s *ReceiveFormScreen) decline(key string, headerRows int) tea.Cmd {
+	return s.say(key+" does nothing here · "+s.waysOut(headerRows), StatusWarn)
 }
 
 // declineFrozen is decline for a key the in-flight receipt has made inert. It
 // says WHY rather than "does nothing", because the key does work — one second
 // from now — and an operator watching a slow gateway is exactly the operator
 // who will press it again.
-func (s *ReceiveFormScreen) declineFrozen(key string) tea.Cmd {
-	return s.say(key+" is frozen until the receipt answers · "+s.waysOut(), StatusWarn)
+func (s *ReceiveFormScreen) declineFrozen(key string, headerRows int) tea.Cmd {
+	return s.say(key+" is frozen until the receipt answers · "+s.waysOut(headerRows), StatusWarn)
 }
 
-// waysOut names the keys that DO act, read off the bar the frame is drawing, so
-// a decline cannot advertise a key this state does not honour.
-func (s *ReceiveFormScreen) waysOut() string {
-	items := s.bar()
+// waysOut names the keys that DO act, read off the bar of the frame the key was
+// pressed against, so a decline cannot advertise a key that frame did not
+// honour — nor omit one it did.
+func (s *ReceiveFormScreen) waysOut(headerRows int) string {
+	items := s.barFor(headerRows)
 	parts := make([]string, 0, len(items))
 	for _, it := range items {
 		parts = append(parts, strings.ToLower(it.Key)+" "+strings.ToLower(it.Label))
@@ -411,7 +415,13 @@ func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	// the phase — the same shape as the New PO screen's pendingLead, which is
 	// cleared in Update's key dispatch and not in the three arms that navigate
 	// (AGENTS.md). A clear per arm is a clear somebody adding the next branch
-	// has to remember, and this defect fails silently.
+	// has to remember, and this defect fails silently. There are exactly TWO
+	// clearing points, this one and handleKey's, and between them they cover
+	// every way the note's state can end: a reply off the wire and a keypress.
+	// finishSerial and submit each carried a third until it was noticed they had
+	// been dead since handleKey's was written — and finishSerial's was an arm
+	// that moves the phase, which is the very thing this paragraph says the note
+	// is not cleared in.
 	//
 	// The FAILURE line is deliberately not cleared with it: failHead/failDetail
 	// are what came back off the wire rather than an answer to a keypress, and
@@ -478,14 +488,38 @@ func (s *ReceiveFormScreen) handleKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 	// The FAILURE line is not retired with it. failHead/failDetail came off the
 	// wire rather than answering a keypress, and a gateway's reason must not be
 	// dismissed by the operator pressing a key to look at it.
+	//
+	// Together with the reply switch at the top of Update these are the ONLY
+	// two places the note is retired. finishSerial and submit used to clear it
+	// as well; both are reachable only through this dispatch, so those calls
+	// were dead the moment this one was written — and one of them was an arm
+	// that clears pending and moves the phase, which is precisely what the
+	// comment above says the note is NOT cleared in.
+	//
+	// The header is measured BEFORE the clear, and every arm carries it, because
+	// clearing the note SHRINKS the pinned header and so GROWS the body's row
+	// budget. A key is pressed to honour the bar the operator was reading, and
+	// that bar was drawn on a frame that had the note on it: asking "does the
+	// body scroll?" after the clear answers about a taller window than the one
+	// they were looking at. In the two-row band where the answers differ the bar
+	// named PgUp/PgDn and the press then declined — the bar-honesty rule broken
+	// by the fix for the stale note — and because the decline rewrote the same
+	// sentence the second press redrew a byte-for-byte identical pane. It also
+	// made the page STEP a lie: the cursor would move by the rows a note-free
+	// window holds, past rows that were never drawn.
+	//
+	// So the frame is the argument (po_create.go's sourceHelpText takes
+	// cartListed for the same reason), and the bar's claim and the guard behind
+	// it read one expression — qtyPagesFor — bound to the same frame.
+	headerRows := len(s.headerLines())
 	s.note.clear()
 	switch s.phase {
 	case phaseSerial:
-		return s.keySerial(m)
+		return s.keySerial(m, headerRows)
 	case phaseDone:
-		return s.keyDone(m)
+		return s.keyDone(m, headerRows)
 	}
-	return s.keyQty(m)
+	return s.keyQty(m, headerRows)
 }
 
 // leave returns to the purchase order this screen was opened from. The order
@@ -503,13 +537,13 @@ func (s *ReceiveFormScreen) leave() tea.Cmd {
 // tomorrow would bind — declines by name. The other way round froze the keys
 // somebody thought of, which is exactly how a key got past the New PO screen's
 // freeze one round after it was written.
-func (s *ReceiveFormScreen) keyQty(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *ReceiveFormScreen) keyQty(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	k := m.String()
 	if s.pending {
 		if k == "esc" {
 			return s, s.leave()
 		}
-		return s, s.declineFrozen(k)
+		return s, s.declineFrozen(k, headerRows)
 	}
 
 	switch k {
@@ -522,23 +556,23 @@ func (s *ReceiveFormScreen) keyQty(m tea.KeyMsg) (Screen, tea.Cmd) {
 			// thing rather than the generic one, because what the operator has
 			// to do next differs with the reason (entryRefusal).
 			return s, s.say(
-				"enter has nothing to receive — "+s.entryRefusal()+" · "+s.waysOut(), StatusWarn)
+				"enter has nothing to receive — "+s.entryRefusal()+" · "+s.waysOut(headerRows), StatusWarn)
 		}
 		return s.submit()
 	case "up", "shift+tab":
 		if s.totalInputs() < 2 {
-			return s, s.decline(k)
+			return s, s.decline(k, headerRows)
 		}
 		s.focusNext(true)
 		return s, nil
 	case "down", "tab":
 		if s.totalInputs() < 2 {
-			return s, s.decline(k)
+			return s, s.decline(k, headerRows)
 		}
 		s.focusNext(false)
 		return s, nil
 	case "pgup", "pgdown":
-		return s, s.pageQty(k)
+		return s, s.pageQty(k, headerRows)
 	}
 
 	var cmd tea.Cmd
@@ -550,20 +584,23 @@ func (s *ReceiveFormScreen) keyQty(m tea.KeyMsg) (Screen, tea.Cmd) {
 	return s, cmd
 }
 
-// pageQty moves the cursor a paneful at a time. The step is measured off the
-// same window the frame draws (jdeScreen.windowRows), so a page moves by
-// exactly what the operator can see rather than by a guessed constant — and it
-// declines when the body does not move at all, because the bar does not name
-// PgUp/PgDn there either.
-func (s *ReceiveFormScreen) pageQty(k string) tea.Cmd {
-	if !s.qtyPages() {
-		return s.decline(k)
+// pageQty moves the cursor a paneful at a time.
+//
+// Both halves are measured against `headerRows` — the pinned header of the
+// frame the operator pressed the key ON — so the guard here and the bar they
+// read are the same expression over the same frame, and the step moves by
+// exactly the rows that frame drew. Measuring either against the header the
+// dispatch has just emptied answers about a different frame from the one the
+// press was made against (handleKey carries the reasoning).
+func (s *ReceiveFormScreen) pageQty(k string, headerRows int) tea.Cmd {
+	if !s.qtyPagesFor(headerRows) {
+		return s.decline(k, headerRows)
 	}
 	dir := +1
 	if k == "pgup" {
 		dir = -1
 	}
-	next := jdePageCursor(s.focused, s.totalInputs(), s.qtyStep(), dir)
+	next := jdePageCursor(s.focused, s.totalInputs(), s.qtyStepFor(headerRows), dir)
 	if next == s.focused {
 		// Resting against an edge the page cannot move past. The window's own
 		// "↑ more above" / "↓ more below" markers are absent there, so the
@@ -573,7 +610,7 @@ func (s *ReceiveFormScreen) pageQty(k string) tea.Cmd {
 		if dir < 0 {
 			edge = "the first row"
 		}
-		return s.say(k+" is already at "+edge+" · "+s.waysOut(), StatusInfo)
+		return s.say(k+" is already at "+edge+" · "+s.waysOut(headerRows), StatusInfo)
 	}
 	s.currentInput().Blur()
 	s.focused = next
@@ -595,7 +632,7 @@ func (s *ReceiveFormScreen) focusNext(reverse bool) {
 }
 
 // keySerial handles keys during phase-2 serial capture.
-func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	k := m.String()
 	if s.serialPending {
 		if k == "esc" {
@@ -605,7 +642,7 @@ func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg) (Screen, tea.Cmd) {
 			// no way out is the worse defect.
 			return s, s.finishSerial()
 		}
-		return s, s.declineFrozen(k)
+		return s, s.declineFrozen(k, headerRows)
 	}
 	switch k {
 	case "esc":
@@ -622,7 +659,6 @@ func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg) (Screen, tea.Cmd) {
 func (s *ReceiveFormScreen) finishSerial() tea.Cmd {
 	s.phase = phaseDone
 	s.serialInput.Blur()
-	s.note.clear()
 	return nil
 }
 
@@ -630,12 +666,12 @@ func (s *ReceiveFormScreen) finishSerial() tea.Cmd {
 // not a claim an action bar can make honestly — and a scanner burst arriving on
 // this frame would have dismissed the summary before anyone read it. Enter and
 // Esc both go back, both are named, and everything else says what it did.
-func (s *ReceiveFormScreen) keyDone(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *ReceiveFormScreen) keyDone(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	switch k := m.String(); k {
 	case "enter", "esc":
 		return s, s.leave()
 	default:
-		return s, s.decline(k)
+		return s, s.decline(k, headerRows)
 	}
 }
 
@@ -707,7 +743,6 @@ func (s *ReceiveFormScreen) submit() (Screen, tea.Cmd) {
 	poID := fmt.Sprint(s.po.ID)
 	s.pending = true
 	s.clearFail()
-	s.note.clear()
 	// The payload has gone, so nothing that shaped it may keep a caret: a
 	// cursor blinking in a field whose contents are already on the wire says
 	// the opposite of what the frozen bar says.
@@ -908,16 +943,33 @@ func poLineSerialized(li omsapi.PurchaseOrderItem) (itemID string, ok bool) {
 // The action bar
 // ---------------------------------------------------------------------------
 
-// bar names exactly the keys that act in the state being drawn, and only those.
-// Every decline reads its way-out sentence off this, so the two cannot drift.
+// bar names exactly the keys that act on the frame being drawn NOW. View draws
+// it, and a test reading it is reading what the operator reads.
 func (s *ReceiveFormScreen) bar() []actionBarItem {
+	return s.barFor(len(s.headerLines()))
+}
+
+// barFor is bar for a frame with a KNOWN pinned header, and it is the one the
+// key arms use.
+//
+// The two exist because the bar an operator obeys and the bar the screen is
+// about to draw are not always the same bar: the note is part of the pinned
+// header, the header costs the body rows, and the body's height is what decides
+// whether PgUp/PgDn are named at all. A press must be judged against the frame
+// it was made ON — the frame whose bar the operator read — so handleKey
+// measures that header before it retires the note and hands it down. Deriving
+// the header inside here instead is exactly the drift this pair exists to make
+// impossible, and it is the shape po_create.go's sourceHelpText uses for the
+// same reason: the decision is passed IN rather than recomputed against a frame
+// that has moved on.
+func (s *ReceiveFormScreen) barFor(headerRows int) []actionBarItem {
 	switch s.phase {
 	case phaseSerial:
 		return s.serialBar()
 	case phaseDone:
 		return []actionBarItem{{"Enter/Esc", "Back to order"}}
 	}
-	return s.qtyBarItems(s.qtyPages())
+	return s.qtyBarItems(s.qtyPagesFor(headerRows))
 }
 
 // qtyBarItems is the quantity form's bar for a given paging state, so the bar
@@ -1048,21 +1100,41 @@ func (s *ReceiveFormScreen) anythingTyped() bool {
 	return s.hasQuantityEntry() || strings.TrimSpace(s.notes.Value()) != ""
 }
 
-// qtyPages reports whether the form is taller than the pane shows, which is the
-// only state where PgUp/PgDn move anything. It measures against the PAGING bar
-// — the tallest one — because that is the fixed point: a body that overflows
-// the smallest budget also overflows the larger one left when the keys are
-// dropped, so the answer cannot oscillate between frames.
-func (s *ReceiveFormScreen) qtyPages() bool {
-	return s.bodyScrollsForBar(s.qtyBody(), len(s.headerLines()), s.qtyBarItems(true))
+// qtyPagesFor reports whether the form is taller than the pane shows on a frame
+// whose pinned header is `headerRows` tall — the only state where PgUp/PgDn
+// move anything, and therefore the only state the bar may name them in.
+//
+// TWO things are held fixed here and they are fixed for different reasons.
+//
+// The BAR is the tallest one (`qtyBarItems(true)`) because a taller bar is a
+// smaller body: a body that overflows the smallest budget also overflows the
+// larger one left when the keys are dropped, so measuring against the tallest
+// is a genuine fixed point and the answer cannot oscillate between frames.
+//
+// The HEADER is not monotone that way and so cannot be pinned to a constant in
+// either direction — a note assumed present names a key that is dead on a
+// note-free frame, and one assumed absent omits a key that works. It is a
+// PARAMETER instead, and the caller binds it to the frame the question is
+// really about: View to the frame it is drawing, and a key arm to the frame the
+// press was made against (handleKey).
+func (s *ReceiveFormScreen) qtyPagesFor(headerRows int) bool {
+	return s.bodyScrollsForBar(s.qtyBody(), headerRows, s.qtyBarItems(true))
 }
 
-// qtyStep is how many rows one page covers — measured off the same window the
-// frame draws, so a page moves by exactly what the operator can see. The
-// arithmetic is the LAYER's (windowRowsForBar), not a local copy of it, for the
-// reason that method's own comment records.
-func (s *ReceiveFormScreen) qtyStep() int {
-	return s.windowRowsForBar(s.qtyBody(), s.focused, len(s.headerLines()), s.qtyBarItems(true))
+// qtyPages is qtyPagesFor bound to the frame being drawn now, for View and for
+// a test asking what the operator can see.
+func (s *ReceiveFormScreen) qtyPages() bool {
+	return s.qtyPagesFor(len(s.headerLines()))
+}
+
+// qtyStepFor is how many rows one page covers on a frame whose pinned header is
+// `headerRows` tall — measured off the same window that frame draws, so a page
+// moves by exactly what the operator could see on it. The arithmetic is the
+// LAYER's (windowRowsForBar), not a local copy of it, for the reason that
+// method's own comment records; the header is a parameter for the reason
+// qtyPagesFor's is.
+func (s *ReceiveFormScreen) qtyStepFor(headerRows int) int {
+	return s.windowRowsForBar(s.qtyBody(), s.focused, headerRows, s.qtyBarItems(true))
 }
 
 // serialBar follows the BOX: with nothing in it, Enter skips the unit, and
