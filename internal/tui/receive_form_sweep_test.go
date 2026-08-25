@@ -879,3 +879,115 @@ func TestReceive_TheFailedReceiptIsSweptWhereItsBarDiffers(t *testing.T) {
 			"the state without reaching the bar it was added for", failure.paneSizes())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Every body line belongs to a navigable row
+// ---------------------------------------------------------------------------
+
+// TestReceive_EveryBodyLineBelongsToANavigableRow is the rule of this screen's
+// bodies, checked over EVERY phase rather than over the one it was written for.
+//
+// jdeLines.Window anchors the window on the CURSOR's block. A line tagged
+// jdeNoRow ahead of the first block is therefore a line no key can bring onto
+// the pane — while the layer goes on drawing "↑ N more above" and counting it,
+// so the frame tells the operator there is content up there and then refuses
+// every key they reach for.
+//
+// It was closed on the quantity form and left open one phase over, which is the
+// omission this sweep exists to make impossible rather than to remember:
+// serialBody led with a heading, a counter and a blank, all jdeNoRow, and the
+// Serial field was the only line belonging to row 0 — so at 80x17 the item
+// label the serial is being scanned AGAINST sat behind a marker no key on that
+// phase can act on, because keySerial binds Enter and Esc and nothing else.
+//
+// The roster is DERIVED twice over: the phases come from receivePhaseCases,
+// which TestReceive_EveryPhaseIsSwept walks against the receivePhase iota, and
+// the body comes from the screen's own body() — the same expression View draws
+// through. A phase added tomorrow is swept because the iota says so, and its
+// body is whatever View would really build.
+func TestReceive_EveryBodyLineBelongsToANavigableRow(t *testing.T) {
+	seen := map[receivePhase]bool{}
+	for _, c := range receivePhaseCases() {
+		for _, height := range c.paneSizes() {
+			t.Run(fmt.Sprintf("%s at 80x%d", c.name, height), func(t *testing.T) {
+				r, s := receiveHarness(t, c.fake, c.lines, 80, height)(t)
+				r = c.reach(t, r, s)
+				if s.phase != c.phase {
+					t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
+				}
+				seen[s.phase] = true
+				body, cursor := s.body()
+				if body.Len() == 0 {
+					t.Fatalf("%s draws no body at all, so this case judges nothing", c.name)
+				}
+				for i, row := range body.row {
+					if row == jdeNoRow {
+						t.Errorf("body line %d (%q) belongs to no navigable row, so no key "+
+							"can bring it onto the pane once the body overflows",
+							i, strings.Join(strings.Fields(body.text[i]), " "))
+					}
+				}
+				// The cursor's own block has to exist, because a body whose
+				// every line is tagged to a row NOBODY is standing on is the
+				// same defect wearing the tag: block() answers (0,0) for a row
+				// that owns nothing, and the window is then positioned against
+				// a row that is not there.
+				if first, last := body.block(cursor); first == last && body.row[first] != cursor {
+					t.Errorf("no line belongs to the cursor's row %d, so the window is "+
+						"anchored on a row that owns nothing", cursor)
+				}
+			})
+		}
+	}
+	// The sweep has to have reached every phase it claims to cover; a reach
+	// that quietly landed elsewhere would leave a body judged by nothing.
+	for p := receivePhase(0); p < receivePhaseCount; p++ {
+		if !seen[p] && receivePhasesWithoutKeys[p] == "" {
+			t.Errorf("phase %v was never reached, so its body was never checked", p)
+		}
+	}
+}
+
+// TestReceive_ABodyWithOneRowNeverHidesLinesAboveTheWindow is the behavioural
+// half of the rule above, on the states where getting it wrong is permanent.
+//
+// jdeLines.Window draws "↑ N more above" whenever it starts past the body's
+// first line, and that marker is a claim: there is content up there, fetch it.
+// On a body with exactly ONE navigable row there is nowhere for a cursor to go
+// — not one key on the screen can change which lines the window holds — so a
+// marker drawn there can never be acted on, whatever the bar names. That is the
+// state serial capture is always in (keySerial binds Enter and Esc, body()
+// anchors on row 0), the state the summary is always in, and the state an order
+// with nothing receivable is in.
+//
+// The set is derived from the body rather than listed: "how many rows does this
+// body have?" is a question the built body answers, and a roster of phases
+// would be one more list to forget to extend — which is how the serial and
+// summary bodies kept their unreachable leads for a round after the quantity
+// form lost its own.
+func TestReceive_ABodyWithOneRowNeverHidesLinesAboveTheWindow(t *testing.T) {
+	judged := 0
+	for _, c := range receivePhaseCases() {
+		for height := 10; height <= 30; height++ {
+			t.Run(fmt.Sprintf("%s at 80x%d", c.name, height), func(t *testing.T) {
+				r, s := receiveHarness(t, c.fake, c.lines, 80, height)(t)
+				r = c.reach(t, r, s)
+				if s.phase != c.phase {
+					t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
+				}
+				body, _ := s.body()
+				if rows := body.rowsIn(0, body.Len()); rows != 1 {
+					return // the cursor has somewhere to go; a marker there is actionable
+				}
+				judged++
+				if pane := receiveClippedPane(s, 80, height); strings.Contains(pane, "more above") {
+					t.Errorf("%s has one navigable row and hides lines above the window, "+
+						"behind a marker no key on this screen can act on:\n%s", c.name, pane)
+				}
+			})
+		}
+	}
+	if judged == 0 {
+		t.Error("no swept state had a single navigable row, so this property judged nothing")
+	}
+}

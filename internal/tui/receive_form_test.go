@@ -1574,12 +1574,84 @@ func TestReceive_AHugeNoteDoesNotFreezeTheFrame(t *testing.T) {
 // The reservation yields to the pane; the form is always drawn
 // ---------------------------------------------------------------------------
 
-// receiveCursorRowDrawn reports whether the row the cursor is on is on the
-// clipped pane — the one row the form cannot be useful without, since it is the
-// quantity box the operator is about to type into.
-func receiveCursorRowDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) bool {
+// receiveCursorRowIdentified reports whether the pane says WHICH row the cursor
+// is on — its line name, the first line of the cursor's block.
+//
+// It is deliberately the weaker of the two questions, and its name now says so.
+// It was called receiveCursorRowDrawn and documented as reporting whether "the
+// quantity box the operator is about to type into" was on the pane, which it
+// never checked: it matched the line LABEL, and because jdeLines.Window pins an
+// overflowing block to its FIRST line the label is exactly what survives when
+// the box does not. So the guard passed in precisely the state it was written
+// to catch — and a separator that opened the block below it, pushing every box
+// but row 0's one line further down, shipped straight past it.
+func receiveCursorRowIdentified(t *testing.T, s *ReceiveFormScreen, w, h int) bool {
 	t.Helper()
 	return receiveRowWith(s, w, h, receiveCursorMarker(t, s)) != ""
+}
+
+// receiveCursorBox is the body line the cursor's own INPUT is drawn on, and
+// how deep into that row's block it sits.
+//
+// Both are taken from the body the frame is about to draw rather than written
+// down beside the test: which line carries the box is decided by AddFittedFields
+// and by the order this screen's own builder puts the block's lines in, and a
+// marker copied into a test is one reorder away from aiming at a different line
+// while still passing. The line is found by the LABEL COLUMN (receiveLabels, the
+// screen's one roster of them) followed by its dot leader, which is what
+// renderJDEField draws and what nothing else on these rows can produce.
+func receiveCursorBox(t *testing.T, s *ReceiveFormScreen) (line string, depth int) {
+	t.Helper()
+	body, cursor := s.body()
+	first, last := body.block(cursor)
+	for i := first; i <= last && i < body.Len(); i++ {
+		for _, label := range receiveLabels {
+			if strings.Contains(body.text[i], label+" .") {
+				return strings.Join(strings.Fields(body.text[i]), " "), i - first
+			}
+		}
+	}
+	t.Fatalf("the block for row %d carries no input row, so there is no box to look for:\n%s",
+		cursor, strings.Join(body.text[first:last+1], "\n"))
+	return "", 0
+}
+
+// receiveCursorBoxDrawn reports whether the operator can SEE the box they are
+// typing into, and whether the pane could have paid for it.
+//
+// The second half is what stops the first from being a demand the geometry
+// cannot meet. A body that fits its window is drawn whole and needs no
+// arithmetic at all; one that overflows spends two of the window's rows on the
+// "more above / more below" markers, so a box `depth` lines into its block
+// needs `depth+1` of the rows that are left. Below that the pane genuinely
+// cannot draw it, and what it keeps instead is the block's first line, which is
+// the row's own name.
+//
+// The one place this is deliberately CONSERVATIVE is the window of one or two
+// rows, where the layer draws no markers at all and starts at the block's first
+// line: the box may be drawn there and this still reports it unpayable. That
+// fails in the safe direction — it never demands a row the pane does not have —
+// and the alternative is a second copy of Window's own branch living in a test.
+func receiveCursorBoxDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) (drawn, payable bool) {
+	t.Helper()
+	line, depth := receiveCursorBox(t, s)
+	body, _ := s.body()
+	avail := s.bodyAvailForBar(len(s.headerLines()), s.bar())
+	payable = body.Len() <= avail || avail-2 > depth
+	return strings.Contains(receivePaneText(s, w, h), line), payable
+}
+
+// receiveAssertBoxDrawn fails when the pane could have drawn the cursor's own
+// input and did not. Split out so all three arms of the height sweep ask it,
+// rather than the resting one asking and the other two taking it on trust.
+func receiveAssertBoxDrawn(t *testing.T, s *ReceiveFormScreen, w, h int, what string) {
+	t.Helper()
+	drawn, payable := receiveCursorBoxDrawn(t, s, w, h)
+	if payable && !drawn {
+		line, depth := receiveCursorBox(t, s)
+		t.Errorf("%s has room for the box on row %d (%d lines into its block) and does not "+
+			"draw it — %q:\n%s", what, s.focused, depth, line, receiveClippedPane(s, w, h))
+	}
 }
 
 // TestReceive_AShortPaneStillDrawsTheForm.
@@ -1609,10 +1681,11 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 
 				// The form is drawn at rest: the row the cursor is standing on
 				// is what the operator is here to type into.
-				if !receiveCursorRowDrawn(t, s, width, height) {
+				if !receiveCursorRowIdentified(t, s, width, height) {
 					t.Fatalf("the resting frame does not draw the row the cursor is on:\n%s",
 						receiveClippedPane(s, width, height))
 				}
+				receiveAssertBoxDrawn(t, s, width, height, "the resting frame")
 				restingHeader := len(s.headerLines())
 				restingNames := receiveBarNames(s, "PgUp/PgDn")
 
@@ -1631,10 +1704,11 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 					t.Errorf("writing a note flipped whether the bar names PgUp/PgDn "+
 						"(%v -> %v)", restingNames, got)
 				}
-				if !receiveCursorRowDrawn(t, s, width, height) {
+				if !receiveCursorRowIdentified(t, s, width, height) {
 					t.Errorf("the note pushed the cursor's own row off the pane:\n%s",
 						receiveClippedPane(s, width, height))
 				}
+				receiveAssertBoxDrawn(t, s, width, height, "the note")
 				// And the answer to that keypress is on the pane too: a note
 				// squeezed to nothing is a decline the operator cannot read.
 				if pane := receivePaneText(s, width, height); !strings.Contains(pane, "enter") {
@@ -1656,10 +1730,11 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 				if s.failDetail == "" {
 					t.Fatalf("no failure detail is standing, so this height proves nothing")
 				}
-				if !receiveCursorRowDrawn(t, s, width, height) {
+				if !receiveCursorRowIdentified(t, s, width, height) {
 					t.Fatalf("a failure blanked the row the cursor is on:\n%s",
 						receiveClippedPane(s, width, height))
 				}
+				receiveAssertBoxDrawn(t, s, width, height, "a standing failure")
 				// The failure is what gives first, but it gives its TAIL, not
 				// itself. The headline is on the status row and never gives, so
 				// the operator always knows something failed — but "something
@@ -1910,5 +1985,114 @@ func TestReceive_AnUnsizedFrameKeepsEveryCeiling(t *testing.T) {
 	view := strings.Join(strings.Fields(s.View()), " ")
 	if !strings.Contains(view, "Line-1") {
 		t.Errorf("an unsized frame draws no form:\n%s", s.View())
+	}
+}
+
+// TestReceive_EveryRowDrawsTheBoxTheCursorIsOn walks the cursor across every
+// row at every swept height, which is the axis the sweep beside this one does
+// not have: it judges the resting frame, where the cursor is always row 0, and
+// row 0 is the one row whose block was built correctly.
+//
+// The defect it exists for: the inter-line separator was tagged to the block
+// BELOW it, so every block except the first opened on a blank line. Window
+// keeps a block's START when the block will not fit, so that blank was the
+// first line those blocks drew — at 80x17 with three lines the body window is
+// one row, and pressing Down drew the blank: "↑ 4 more above", nothing, "↓ 8
+// more below", not one word about the line the cursor had just moved to. The
+// rule the same commit wrote into AGENTS.md — a separator travels with the
+// block ABOVE it, so a block never opens on a blank — was honoured for the last
+// separator and broken for every other one.
+func TestReceive_EveryRowDrawsTheBoxTheCursorIsOn(t *testing.T) {
+	orders := map[string][]omsapi.PurchaseOrderItem{
+		"three plain lines": receiveManyLines(3),
+		"a kit among plain lines": {
+			poKitFixtureLine(), poPlainLine(), poPlainLine(),
+		},
+	}
+	for name, lines := range orders {
+		payable, unpayable := 0, 0
+		for height := 10; height <= 30; height++ {
+			t.Run(fmt.Sprintf("%s at 80x%d", name, height), func(t *testing.T) {
+				fake := &receiveFake{}
+				r, s := receiveDrive(t, fake, lines, 80, height)
+				// In SEQUENCE, with no rebuild between presses: a defect that
+				// only shows once the cursor has left row 0 is invisible to a
+				// test that resets the screen for each position.
+				for row := 0; row < s.totalInputs(); row++ {
+					if s.focused != row {
+						t.Fatalf("walking down landed on row %d, want %d", s.focused, row)
+					}
+					// The notes row carries no line label to be identified by,
+					// so only the receivable rows are asked that question.
+					if row < len(s.qty) && !receiveCursorRowIdentified(t, s, 80, height) {
+						t.Fatalf("standing on row %d, the pane says nothing about which row "+
+							"that is:\n%s", row, receiveClippedPane(s, 80, height))
+					}
+					receiveAssertBoxDrawn(t, s, 80, height, fmt.Sprintf("row %d", row))
+					if _, ok := receiveCursorBoxDrawn(t, s, 80, height); ok {
+						payable++
+					} else {
+						unpayable++
+					}
+					r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+				}
+			})
+		}
+		// Both halves have to have been exercised. Every position payable at
+		// every height would mean the sweep never reached the short panes the
+		// separator defect lived on; none payable would mean the box assertion
+		// never fired at all.
+		if payable == 0 {
+			t.Errorf("%s: the box was never drawable at any swept height and row, so the "+
+				"assertion above never judged anything", name)
+		}
+		if unpayable == 0 {
+			t.Errorf("%s: every swept height could pay for the box, so the sweep never "+
+				"reached the short panes this property is about", name)
+		}
+	}
+}
+
+// TestReceive_AnUnnumberedOrderIsStillNamed.
+//
+// The body's "Receive into <order>" heading was dropped when the lead lines
+// were found to be unreachable, and the justification for dropping it was that
+// Root pins the screen's Title above the pane on every frame. That was true
+// only while the order carried a NUMBER: Title answered a generic "Receive
+// Items" otherwise, so an order with no number was named nowhere at all — not
+// in the title, not in the body — on the screen that moves stock. The rest of
+// the screen already answers that case (orderName falls back to "PO #<id>", and
+// the working line and the receipt sentence both read it), so the title was the
+// one voice disagreeing.
+//
+// Asserted through the whole terminal frame as well as through Title, because
+// the claim being made is about what Root DRAWS, and Title returning the right
+// string would prove nothing if the title line were not on the frame.
+func TestReceive_AnUnnumberedOrderIsStillNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		po   *omsapi.PurchaseOrder
+		want string
+	}{
+		{"numbered", &omsapi.PurchaseOrder{ID: 5, Number: "PO-1001", Items: receiveManyLines(2)}, "PO-1001"},
+		{"unnumbered", &omsapi.PurchaseOrder{ID: 5, Items: receiveManyLines(2)}, "PO #5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := Deps{Ctx: context.Background()}
+			s := NewReceiveFormScreen(deps, tc.po)
+			r := newTestRoot(s)
+			next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			r = next.(Root)
+
+			if got := s.orderName(); got != tc.want {
+				t.Fatalf("orderName() = %q, want %q — the fixture is not the case it names", got, tc.want)
+			}
+			if !strings.Contains(s.Title(), tc.want) {
+				t.Errorf("the title %q does not name the order (%s)", s.Title(), tc.want)
+			}
+			if frame := strings.Join(strings.Fields(r.View()), " "); !strings.Contains(frame, tc.want) {
+				t.Errorf("nothing on the terminal names the order (%s):\n%s", tc.want, r.View())
+			}
+		})
 	}
 }

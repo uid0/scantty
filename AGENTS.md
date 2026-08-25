@@ -351,7 +351,27 @@ note, and is the authority):
   last row. `TestReceive_NoBodyLineSitsWhereNoKeyCanReach` holds both halves —
   structurally, that no line falls outside a row, and behaviourally, that the
   body's first line is drawn at rest and comes back after the cursor has walked
-  away and returned. `po_edit.go` and `po_add_line.go` still open their bodies
+  away and returned.
+  A separator is the same rule at one row's scale and is the half that was got
+  BACKWARDS first: it closes the block above it, never opens the one below,
+  because Window keeps a block's START and a blank at the front is then the one
+  line a short window draws — at 80x17 pressing Down drew a pane of two markers
+  and a blank, naming nothing about the row the cursor had just reached.
+  Where NO key moves a cursor the block has only one end to protect and the
+  order inverts: `serialBody` draws the FIELD first and what identifies it
+  after, since a scanner firing into a box the operator cannot see is worse than
+  a label they have to press nothing to lose. On such a body the marker itself
+  is the claim to keep honest — nothing can act on it, ever — so
+  `TestReceive_ABodyWithOneRowNeverHidesLinesAboveTheWindow` sweeps the pane
+  height and fails on any `↑ more above` at all, with the set of one-row states
+  read off the built body rather than listed.
+  Apply it to every body of a screen at once and DERIVE the check, or it is
+  applied to the one that was reported: the receiving conversion fixed its
+  quantity form and left the other two stranding their leads for a round.
+  `TestReceive_EveryBodyLineBelongsToANavigableRow` walks the phase cases
+  through `ReceiveFormScreen.body()` — the same expression `View` draws — so a
+  phase added to the iota brings its body with it.
+  `po_edit.go` and `po_add_line.go` still open their bodies
   with `l.Add` headings; they are safe only while their cursor blocks stay short
   of the pane, and the queued New PO conversion should not copy the shape.
 - Comments in this codebase explain WHY, at length, including the failure that

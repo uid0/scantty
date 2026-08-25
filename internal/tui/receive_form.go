@@ -279,11 +279,23 @@ func NewReceiveFormScreen(deps Deps, po *omsapi.PurchaseOrder) *ReceiveFormScree
 	return s
 }
 
+// Title names the order in the SAME voice the frames do, which is why it reads
+// orderName rather than s.po.Number.
+//
+// It used to fall back to a generic "Receive Items" whenever Number was empty,
+// and that became load-bearing the moment the body stopped carrying a heading
+// of its own: an order with no number was then named NOWHERE on the resting
+// frame — not in the title Root pins above the pane, not in the body — on the
+// screen that moves stock. Every other sentence on this screen already answers
+// that case (orderName falls back to "PO #<id>", the working line and the
+// receipt line both go through it), so the title was the one voice disagreeing.
+// The generic wording survives for the one state that genuinely has no order to
+// name.
 func (s *ReceiveFormScreen) Title() string {
-	if s.po != nil && s.po.Number != "" {
-		return fmt.Sprintf("Receive %s", s.po.Number)
+	if s.po == nil {
+		return "Receive Items"
 	}
-	return "Receive Items"
+	return "Receive " + s.orderName()
 }
 
 // WantsRawInput routes every key here. Two phases hold a focused textinput, and
@@ -959,9 +971,10 @@ func (s *ReceiveFormScreen) uncapturedUnits() int {
 // A KIT LINE is not such a line, whatever its item_details say, and that is the
 // rule this function states rather than a condition bolted onto one caller: the
 // question "does this line's units get serials?" is asked here by both submit()
-// (which enrolls a capture slot per received unit) and hasSerializedLine()
-// (which promises phase 2 in the banner), and two different answers would be
-// their own defect.
+// (which enrolls a capture slot per received unit) and lineCaveats (which draws
+// the caveat promising phase 2 under that line's quantity box), and two
+// different answers would be their own defect — the form would advertise a
+// capture the receipt then refuses to open.
 //
 // Skipping a kit loses nothing legitimate. KitComponent.clean() REFUSES a
 // serialized component — "Serialized items cannot be kit components — receiving
@@ -1254,14 +1267,32 @@ func (s *ReceiveFormScreen) View() string {
 	if status == "" {
 		status = s.statusRow(false, "", s.failLine())
 	}
-	header := s.headerLines()
+	body, cursor := s.body()
+	return s.frameWrapped(s.headerLines(), body, cursor, status, s.bar())
+}
+
+// body is the phase's scrollable body and the row the window is anchored on,
+// answered in ONE place so that a sweep asking what the frame draws cannot end
+// up asking a different builder from the one View picks. (The paging guards
+// still read qtyBody directly: those are questions about the quantity form in
+// particular, asked only from arms that phase owns.)
+//
+// It exists because the rule these bodies are built to — EVERY LINE BELONGS TO
+// A NAVIGABLE ROW, see qtyBody — was applied to the quantity form alone and the
+// other two went on stranding their leads for a round, with nothing able to
+// notice. A roster of body builders kept in a test is the hand-maintained list
+// this project keeps being bitten by; a switch the sweep and the frame both
+// read is not, and a phase added to the iota tomorrow arrives here or it draws
+// nothing at all. TestReceive_EveryBodyLineBelongsToANavigableRow walks the
+// phase cases through this.
+func (s *ReceiveFormScreen) body() (*jdeLines, int) {
 	switch s.phase {
 	case phaseSerial:
-		return s.frameWrapped(header, s.serialBody(), 0, status, s.bar())
+		return s.serialBody(), 0
 	case phaseDone:
-		return s.frameWrapped(header, s.doneBody(), 0, status, s.bar())
+		return s.doneBody(), 0
 	}
-	return s.frameWrapped(header, s.qtyBody(), s.focused, status, s.bar())
+	return s.qtyBody(), s.focused
 }
 
 // workingLine names the work AND the subject: "Submitting…" tells an operator
@@ -1772,8 +1803,10 @@ func (s *ReceiveFormScreen) failDetailLines() []string {
 // instead. At 80x22 with the same order that is exactly what it does, which is
 // defect (1) of this conversion coming back by another route. What each line
 // needs is drawn on that line's own row (lineCaveats), the order is named by
-// the title Root pins above the pane on every frame, and what is left over
-// belongs to the notes row.
+// the title Root pins above the pane on every frame — which is a claim Title
+// had to be corrected to honour, since it answered a generic "Receive Items"
+// for an order carrying no number and that is exactly the order this body no
+// longer names — and what is left over belongs to the notes row.
 //
 // Every line of a block is tagged with that block's navigable ROW, so
 // jdeLines.Window keeps the name, the readings, the quantity box and the kit
@@ -1818,20 +1851,28 @@ func (s *ReceiveFormScreen) qtyBody() *jdeLines {
 	}
 	for i := range s.qty {
 		if i > 0 {
-			// The separator travels with the block below it, so a window that
-			// starts on this line still shows the whole block.
-			l.AddRow(i, "")
+			// EVERY separator closes the block above it rather than opening
+			// the one below, and the two are not interchangeable. Window keeps
+			// a block's START when the block will not fit, so a blank tagged
+			// to the block BELOW is the first line that block draws: at 80x17
+			// with three lines the body window is one row, and pressing Down
+			// drew that blank — a pane of "↑ 4 more above", nothing, "↓ 8 more
+			// below", with not one word about the line the cursor had just
+			// moved to. At the TAIL of the block above it costs nothing, since
+			// what a short window drops there is a blank.
+			//
+			// This was written the other way round for the first block only,
+			// and the trailing blank below already had this reasoning beside
+			// it — so the rule was honoured for the last separator and broken
+			// for every other one.
+			l.AddRow(i-1, "")
 		}
 		s.addLineBlock(l, i, lw, width)
 	}
 	if len(s.qty) > 0 {
-		// This blank goes with the block ABOVE it, not with the notes row
-		// below. Window keeps a block's START, so a separator tagged to the
-		// notes row makes the blank the first line of that block and the
-		// FOCUSED notes field the second — and on a pane with one body row
-		// that draws the blank and leaves the field the operator is typing
-		// into off the pane. At the tail of the last line's block it costs
-		// nothing: what a short window drops there is a blank.
+		// The same rule for the last block: this blank closes it rather than
+		// opening the notes row, which would otherwise draw a blank where the
+		// FOCUSED notes field belongs.
 		l.AddRow(len(s.qty)-1, "")
 	}
 	// AddFittedFields is the LAYER's — it fits the row to the pane and keeps any
@@ -2041,23 +2082,55 @@ func (s *ReceiveFormScreen) kitCreditLines(line omsapi.PurchaseOrderItem, typed 
 // Serial capture
 // ---------------------------------------------------------------------------
 
+// serialBody is phase 2: the box a serial is scanned into, then what that box
+// is FOR.
+//
+// The field comes FIRST and everything identifying it follows, which is the
+// opposite of how a form usually reads and is the only order this phase can
+// afford. Two facts decide it. jdeLines.Window keeps a block's START when the
+// block will not fit, so whatever leads the block is what a short pane keeps —
+// and NO key on this phase moves a cursor at all: keySerial binds Enter and Esc
+// and nothing else, and body() anchors the window on row 0. So there is exactly
+// one block here, nothing can ever sit above the window, and the one choice
+// left is which end of that block a short pane keeps.
+//
+// It used to lead with a heading, a progress counter and a blank, all tagged
+// jdeNoRow, with the Serial field the only line belonging to row 0. Window
+// therefore anchored on the LAST line and drew "↑ N more above" over four lines
+// no key could fetch: at 80x17 the item label the serial is being scanned
+// AGAINST was off the pane, and at 80x18 the counter went the same way. Tagging
+// that lead onto row 0 without reordering only moves the loss to the other end
+// — the block starts at the heading and the FOCUSED box leaves the pane
+// instead, which is the operator scanning a barcode into a field they cannot
+// see and cannot check before Enter commits it.
+//
+// So the box leads, the item and the unit follow it, and the standalone heading
+// is gone: the phase names itself on the row that carries the counter
+// ("capture 1 of 3 · …"), on the field's own label, and on a bar reading
+// Enter=Save serial · Esc=Finish. That heading was a row the pane paid for
+// before it paid for the box a scanner is already firing into.
 func (s *ReceiveFormScreen) serialBody() *jdeLines {
 	l := &jdeLines{}
 	lw := receiveLabelWidth()
 	width := s.bodyWidth()
-
-	l.Add(StyleJDEHeading.Render("Capture serial numbers"))
 	total := len(s.serialUnits)
 	shown := s.serialCursor + 1
 	if shown > total {
 		shown = total
 	}
-	l.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf(
-		"unit %d of %d · created %d · skipped %d", shown, total, s.createdCount, s.skippedCount)))
-	l.Add("")
+	// "capture N of M" rather than "unit N of M": the per-line row below says
+	// "unit N of M on this line", and two adjacent counters both reading
+	// "unit N of M" over different denominators is a row an operator has to
+	// stop and decode. It also carries the word the dropped heading carried.
+	progress := jdeIndent + StyleMuted.Render(fmt.Sprintf(
+		"capture %d of %d · created %d · skipped %d", shown, total, s.createdCount, s.skippedCount))
 
 	if s.serialCursor >= total {
-		l.Add(jdeIndent + StyleMuted.Render("Every enrolled unit has been answered."))
+		// Nothing left to capture, so there is no box to lead with. Both lines
+		// still belong to row 0: a line tagged jdeNoRow is a line no key can
+		// bring back, and this phase has no key that moves a cursor at all.
+		l.AddRow(0, jdeIndent+StyleMuted.Render("Every enrolled unit has been answered."))
+		l.AddRow(0, progress)
 		return l
 	}
 
@@ -2068,9 +2141,6 @@ func (s *ReceiveFormScreen) serialBody() *jdeLines {
 			label = fitCell(label, room)
 		}
 	}
-	l.Add(jdeIndent + label)
-	l.Add(receiveMetaIndent + StyleMuted.Render(
-		fmt.Sprintf("unit %d of %d on this line", unit.unitNo, unit.unitTot)))
 	l.AddFittedFields([]jdeField{{
 		Label: "Serial",
 		Kind:  jdeText,
@@ -2083,6 +2153,10 @@ func (s *ReceiveFormScreen) serialBody() *jdeLines {
 		// twelve columns of a 51-column pane to make.
 		Focused: !s.serialPending,
 	}}, lw, width, 0)
+	l.AddRow(0, jdeIndent+label)
+	l.AddRow(0, receiveMetaIndent+StyleMuted.Render(
+		fmt.Sprintf("unit %d of %d on this line", unit.unitNo, unit.unitTot)))
+	l.AddRow(0, progress)
 	return l
 }
 
@@ -2093,13 +2167,26 @@ func (s *ReceiveFormScreen) serialBody() *jdeLines {
 // doneBody reports what the visit did, as columnar value rows. Rows that would
 // report nothing are left out rather than drawn as zeroes: "Failed ..... 0" is
 // a row that makes an operator look for a failure there was none of.
+//
+// Every line belongs to row 0, and this one is bookkeeping in the sense that it
+// changes nothing DRAWN today — say so rather than dress it up. The summary
+// carries no input, so block(0) used to degenerate to the layer's (0,0) answer
+// for "this row owns nothing", which happens to leave the window at the top,
+// which is where it belongs. What the tagging buys is that the safety stops
+// being a coincidence two functions apart: the rule this screen's bodies are
+// built to is that no line sits outside a block, one sweep checks it over every
+// phase, and a summary line added later cannot be the one that quietly opts
+// out. What a pane too short for the summary loses either way is the TAIL,
+// which is the order these rows are already written in — the receipt first, the
+// counts that are only drawn when they are non-zero last — and that is the
+// layer's behaviour for any block bigger than the pane.
 func (s *ReceiveFormScreen) doneBody() *jdeLines {
 	l := &jdeLines{}
 	lw := receiveLabelWidth()
 	width := s.bodyWidth()
 
-	l.Add(StyleJDEHeading.Render("Receive complete"))
-	l.Add("")
+	l.AddRow(0, StyleJDEHeading.Render("Receive complete"))
+	l.AddRow(0, "")
 
 	fields := []jdeField{{Label: "Receipt", Kind: jdeValue, Value: s.receipt, Dim: s.receipt == ""}}
 	if fields[0].Value == "" {
@@ -2139,7 +2226,7 @@ func (s *ReceiveFormScreen) doneBody() *jdeLines {
 				fields[i].Value = fitCell(fields[i].Value, room)
 			}
 		}
-		l.Add(renderJDEField(fields[i], lw, width))
+		l.AddRow(0, renderJDEField(fields[i], lw, width))
 	}
 	return l
 }
