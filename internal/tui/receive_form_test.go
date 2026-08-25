@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1445,7 +1446,14 @@ func TestReceive_ANoteTooLongToFitSaysSo(t *testing.T) {
 			// A sentence no wording on this screen produces today, which is the
 			// point: the guard must hold for the say() call site added later,
 			// not only for the ones a probe list happens to name.
-			s.note.text = strings.TrimSpace(strings.Repeat("overlong ", 60)) + " esc back to order"
+			//
+			// The LEAD is deliberately distinct from the filler. A fixture built
+			// only of repeated words could not tell dropping from the END from
+			// dropping from the FRONT, which is the whole justification
+			// fittedNote gives for its direction.
+			const lead = "pgdown does nothing here"
+			s.note.text = lead + " · " +
+				strings.TrimSpace(strings.Repeat("overlong ", 60)) + " · esc back to order"
 			s.note.level = StatusWarn
 
 			pane := receivePaneText(s, width, 30)
@@ -1454,6 +1462,17 @@ func TestReceive_ANoteTooLongToFitSaysSo(t *testing.T) {
 			}
 			if strings.Contains(pane, "esc back to order") {
 				t.Fatalf("the fixture did not overrun, so this proves nothing:\n%s", pane)
+			}
+			// The lead survives WHOLE, which is what "words go from the END"
+			// means and what the cut is for: the lead names the key that was
+			// pressed and IS the answer. A cut that took it — by dropping from
+			// the front, or by falling through to a bare mark — leaves a note
+			// naming no key at all, and two declining keys then redraw the same
+			// pane. Compared as words because pickerWrap folds at the `·` joints
+			// and eats the separator it broke on.
+			if got := receiveNoteWords(pane); !strings.Contains(got, receiveNoteWords(lead)) {
+				t.Errorf("the cut took the lead, so the note names no key:\nwant: %s\npane: %s",
+					receiveNoteWords(lead), got)
 			}
 			// And the cut costs a word, never the header's height — the paging
 			// claim is measured against that.
@@ -1464,4 +1483,41 @@ func TestReceive_ANoteTooLongToFitSaysSo(t *testing.T) {
 			_ = r
 		})
 	}
+}
+
+// TestReceive_AHugeNoteDoesNotFreezeTheFrame is the behavioural half of
+// fittedNote's bound.
+//
+// The note block is rebuilt two or three times per frame, and the frame is
+// rebuilt on every keystroke, so a bound whose cost is the LENGTH OF ITS INPUT
+// rather than the size of its budget is seconds of dead terminal per press —
+// the hang this project has already fixed once on the picker screens, where
+// omsapi.parseError had put an entire multi-KB gateway page into a string a
+// fold was handed. Every note this screen writes today is a screen-composed
+// sentence, so the input is short; the bound is measured against a long one
+// because the next arm that hands say() something off the wire is what this
+// exists to survive.
+//
+// Wall-clock, because the property IS the cost. It is deliberately loose: the
+// bounded shape does this in microseconds, and the shape it replaced grows with
+// the input without limit.
+func TestReceive_AHugeNoteDoesNotFreezeTheFrame(t *testing.T) {
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveManyLines(3), 80, 24)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	s.note.text = "pgdown does nothing here · " + strings.Repeat("overlong ", 4000)
+	s.note.level = StatusWarn
+
+	start := time.Now()
+	for i := 0; i < 5; i++ {
+		if got := receivePaneText(s, 80, 24); !strings.Contains(got, "pgdown does nothing here") {
+			t.Fatalf("the huge note lost its lead:\n%s", got)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("five frames carrying a %d-cell note took %s — the note bound is measuring "+
+			"its input rather than its budget", len(s.note.text), elapsed)
+	}
+	_ = r
 }

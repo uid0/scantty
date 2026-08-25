@@ -519,17 +519,26 @@ func (s *ReceiveFormScreen) handleKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 	// that clears pending and moves the phase, which is precisely what the
 	// comment above says the note is NOT cleared in.
 	//
-	// The header is measured BEFORE the clear, and every arm carries it, because
-	// clearing the note SHRINKS the pinned header and so GROWS the body's row
-	// budget. A key is pressed to honour the bar the operator was reading, and
-	// that bar was drawn on a frame that had the note on it: asking "does the
-	// body scroll?" after the clear answers about a taller window than the one
-	// they were looking at. In the two-row band where the answers differ the bar
-	// named PgUp/PgDn and the press then declined — the bar-honesty rule broken
-	// by the fix for the stale note — and because the decline rewrote the same
-	// sentence the second press redrew a byte-for-byte identical pane. It also
-	// made the page STEP a lie: the cursor would move by the rows a note-free
-	// window holds, past rows that were never drawn.
+	// The header is measured BEFORE the arms run, and every arm carries it, so
+	// that a press is judged against ONE frame: the frame whose bar the operator
+	// was reading when they pressed.
+	//
+	// The NOTE is not what makes that necessary, and this paragraph used to say
+	// it was. Since receiveNoteRows the note block is a fixed allocation —
+	// noteLines returns exactly receiveNoteRows entries in every state — so
+	// headerLines() is receiveNoteRows + len(failDetailLines()) + 1 and
+	// retiring the note on the next line cannot move it by a row. Reserving it
+	// unconditionally is what bought that, and the reason is recorded there:
+	// a header that grew with the sentence let a decline add PgUp/PgDn to the
+	// bar drawn under it, so the bar named a key the next press refused.
+	//
+	// What headerRows still varies with is the reply-driven FAILURE DETAIL,
+	// which an arm CAN retire mid-dispatch (submit's clearFail). It is
+	// legitimately variable rather than self-referential: it comes off the wire,
+	// it names no keys, and the bar and the guard see it identically — so a
+	// frame that grows or loses one is a frame that genuinely changed, and
+	// pinning the question to the frame the press was made against is what stops
+	// an arm answering about the frame it is on its way to producing.
 	//
 	// So the frame is the argument (po_create.go's sourceHelpText takes
 	// cartListed for the same reason), and the bar's claim and the guard behind
@@ -612,9 +621,12 @@ func (s *ReceiveFormScreen) keyQty(m tea.KeyMsg, headerRows int) (Screen, tea.Cm
 // Both halves are measured against `headerRows` — the pinned header of the
 // frame the operator pressed the key ON — so the guard here and the bar they
 // read are the same expression over the same frame, and the step moves by
-// exactly the rows that frame drew. Measuring either against the header the
-// dispatch has just emptied answers about a different frame from the one the
-// press was made against (handleKey carries the reasoning).
+// exactly the rows that frame drew. Re-deriving the header here instead would
+// answer about whatever frame this dispatch is on its way to producing: the
+// note cannot move it (its rows are reserved unconditionally), but the
+// reply-driven failure detail can, and an arm that retires one mid-dispatch
+// would leave the guard describing a taller window than the operator was
+// looking at (handleKey carries the reasoning).
 func (s *ReceiveFormScreen) pageQty(k string, headerRows int) tea.Cmd {
 	if !s.qtyPagesFor(headerRows) {
 		return s.decline(k, headerRows)
@@ -976,15 +988,17 @@ func (s *ReceiveFormScreen) bar() []actionBarItem {
 // key arms use.
 //
 // The two exist because the bar an operator obeys and the bar the screen is
-// about to draw are not always the same bar: the note is part of the pinned
-// header, the header costs the body rows, and the body's height is what decides
-// whether PgUp/PgDn are named at all. A press must be judged against the frame
-// it was made ON — the frame whose bar the operator read — so handleKey
-// measures that header before it retires the note and hands it down. Deriving
-// the header inside here instead is exactly the drift this pair exists to make
-// impossible, and it is the shape po_create.go's sourceHelpText uses for the
-// same reason: the decision is passed IN rather than recomputed against a frame
-// that has moved on.
+// about to draw are not always the same bar: the pinned header costs the body
+// rows, and the body's height is what decides whether PgUp/PgDn are named at
+// all. The NOTE is not what varies it — receiveNoteRows reserves its rows
+// unconditionally, so writing or retiring one moves the header by nothing — but
+// the reply-driven FAILURE DETAIL does, and an arm can retire one mid-dispatch
+// (submit's clearFail). So a press must be judged against the frame it was made
+// ON, and handleKey measures that header before the arms run and hands it down.
+// Deriving the header inside here instead is exactly the drift this pair exists
+// to make impossible, and it is the shape po_create.go's sourceHelpText uses
+// for the same reason: the decision is passed IN rather than recomputed against
+// a frame that has moved on.
 func (s *ReceiveFormScreen) barFor(headerRows int) []actionBarItem {
 	switch s.phase {
 	case phaseSerial:
@@ -1360,11 +1374,32 @@ func (s *ReceiveFormScreen) noteLines() []string {
 // continuation indent changing there cannot leave this measuring something
 // else. The loop runs only when a sentence overruns, which no wording this
 // screen produces does today — the margin is zero, not absent.
+//
+// The BUDGET is spent first, in one forward pass, before anything is folded —
+// the shape failDetailLines uses seven functions down, and for its reason:
+// receiveNoteRows lines of `width` cells is everything that can be DRAWN, so
+// folding what lies past it is work whose result is thrown away, on a block
+// headerLines rebuilds two or three times a frame. cellPrefix walks forward and
+// stops when the budget is spent, so the cost is the budget rather than the
+// length of what it was handed, and the word walk below then runs over a string
+// that is already bounded. Today every note is a screen-composed sentence of
+// about 120 cells, so this buys nothing measurable; it is here because the
+// unbounded shape is what the standing rule forbids, and because an OMS-supplied
+// string reaching say() is one arm away — omsapi.parseError puts the ENTIRE raw
+// response body into APIError.Message when the envelope carries no code, which
+// is the multi-KB page behind the hang this project has already fixed once.
+//
+// A cut by cellPrefix implies an overrun: text longer than receiveNoteRows ×
+// width cells cannot fold into receiveNoteRows lines of width cells.
 func (s *ReceiveFormScreen) fittedNote(width int) pickerNote {
-	if s.note.text == "" || len(s.note.renderLines(width)) <= receiveNoteRows {
+	if s.note.text == "" {
 		return s.note
 	}
-	words := strings.Fields(s.note.text)
+	bounded := cellPrefix(s.note.text, receiveNoteRows*width)
+	if bounded == s.note.text && len(s.note.renderLines(width)) <= receiveNoteRows {
+		return s.note
+	}
+	words := strings.Fields(bounded)
 	for keep := len(words) - 1; keep > 0; keep-- {
 		trial := s.note
 		trial.text = strings.Join(words[:keep], " ") + receiveNoteDropMark
