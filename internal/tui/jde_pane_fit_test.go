@@ -197,6 +197,14 @@ func jdeScreenFixtures() map[string]func() Screen {
 // jdeScreenFixtures by TestJDEForm_EveryColumnarScreenIsSwept, so a state
 // naming a screen that has been renamed away fails rather than quietly
 // sweeping nothing.
+//
+// The PICK-LIST states are not optional and are not a hand-picked selection:
+// every `<Type>/<method>` that builds a jdePickList in the package's own source
+// must appear here, and TestJDEForm_EveryPickListSiteIsSwept derives that
+// roster and fails on an omission. One picker in the sweep would have caught
+// the filter-box defect and nineteen prove it is closed everywhere, which is
+// the difference between fixing a rule at the site that was reported and
+// applying it.
 func jdeScreenStates() map[string]func() Screen {
 	return map[string]func() Screen{
 		// A long export over a three-line pinned header: the state the notice
@@ -216,6 +224,144 @@ func jdeScreenStates() map[string]func() Screen {
 				Filename: "PO-2026-0042-order.csv", LineCount: len(rows),
 				MissingSku: []string{"Widget clamp", "Gear housing", "Bearing race"},
 			}
+			return s
+		},
+
+		"AssetFormScreen/pickView": func() Screen {
+			s := NewAssetFormScreen(Deps{}, "")
+			s.loading = false
+			s.categories = []omsapi.Category{{ID: 1, Name: "Bolts"}, {ID: 2, Name: "Bolt washers"}}
+			s.openPicker(afCategory)
+			return s
+		},
+		"AssetPartFormScreen/pickView": func() Screen {
+			s := NewAssetPartFormScreen(Deps{}, "a1", "Asset", "")
+			s.loading = false
+			s.items = []omsapi.Item{{ID: "item-1", Name: "Drive belt", SKU: "B-1"}, {ID: "item-2", Name: "Air filter"}}
+			s.openPicker()
+			return s
+		},
+		"AuthorizationGrantScreen/pickView": func() Screen {
+			s := NewAuthorizationGrantScreen(Deps{})
+			s.loading = false
+			s.assets = []omsapi.Asset{{ID: "a-1", Name: "Laser cutter"}, {ID: "a-2", Name: "Lathe"}}
+			s.openPicker(agAsset)
+			return s
+		},
+		"CategoryFormScreen/pickView": func() Screen {
+			s := NewCategoryFormScreen(Deps{}, "")
+			s.loading = false
+			s.categories = []omsapi.Category{{ID: 1, Name: "Hardware"}, {ID: 2, Name: "Consumables"}}
+			s.openParentPicker()
+			return s
+		},
+		"DisconnectFormScreen/pickView": func() Screen {
+			s := NewDisconnectFormScreen(Deps{}, 0, 0, 0)
+			s.loading = false
+			s.lotoDevices = []omsapi.LOTODevice{
+				{ID: 7, DeviceType: "breaker_lock", DeviceTypeDisplay: "Breaker lock", Label: "BL-1", Status: "available"},
+				{ID: 9, DeviceType: "padlock", DeviceTypeDisplay: "Padlock", Label: "PAD-2", Status: "available"},
+			}
+			s.openPicker(dcLOTODevices)
+			return s
+		},
+		"InventoryItemFormScreen/pickView": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.categories = []omsapi.Category{{ID: 1, Name: "Bolts"}, {ID: 2, Name: "Bolt washers"}}
+			s.openPicker(fCategory)
+			return s
+		},
+		"InventoryItemFormScreen/kitPickView": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.kitItems = []omsapi.Item{{ID: "i-1", Name: "Drive belt", SKU: "B-1"}, {ID: "i-2", Name: "Air filter"}}
+			s.openKitPick()
+			return s
+		},
+		"ItemSupplierFormScreen/pickView": func() Screen {
+			s := NewItemSupplierFormScreen(Deps{}, "i1", "Item", nil)
+			s.loading = false
+			s.suppliers = []omsapi.Supplier{{ID: 4, Name: "Acme"}, {ID: 5, Name: "Beta"}}
+			s.openPicker()
+			return s
+		},
+		"LocationFormScreen/pickView": func() Screen {
+			s := NewLocationFormScreen(Deps{}, "")
+			s.loading = false
+			s.locations = []omsapi.Location{{ID: 1, Name: "Hall"}, {ID: 2, Name: "Shop"}}
+			s.openParentPicker()
+			return s
+		},
+		"MaintenanceItemFormScreen/pickView": func() Screen {
+			s := NewMaintenanceItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.assets = []omsapi.Asset{{ID: "a1", Name: "Lathe", AssetTag: "LT-1"}, {ID: "a2", Name: "Mill"}}
+			s.openAssetPick()
+			return s
+		},
+		"PowerBreakerFormScreen/pickView": func() Screen {
+			s := NewPowerBreakerFormScreen(Deps{}, 0, 0)
+			s.loading = false
+			s.panels = []omsapi.PowerPanel{{ID: 1, Name: "P1", LocationName: "Shop", PhaseConfiguration: "split"}}
+			s.openPicker()
+			return s
+		},
+		"PowerCircuitFormScreen/pickView": func() Screen {
+			s := NewPowerCircuitFormScreen(Deps{}, 0, 0, 0)
+			s.loading = false
+			s.breakers = []omsapi.PowerBreakerDetail{
+				{ID: 3, Position: "12", Amperage: 20, PoleCount: 1, Label: "north wall"},
+				{ID: 4, Position: "14", Amperage: 30, PoleCount: 2},
+			}
+			s.openPicker()
+			return s
+		},
+		"PowerOutletFormScreen/pickView": func() Screen {
+			s := NewPowerOutletFormScreen(Deps{}, 0, 0, 0)
+			s.loading = false
+			s.disconnects = []omsapi.DisconnectDetail{{ID: 8, Label: "d", DisconnectType: "fused"}}
+			s.openPicker(poDisconnect)
+			return s
+		},
+		"PowerPanelFormScreen/pickView": func() Screen {
+			s := NewPowerPanelFormScreen(Deps{}, 0)
+			s.loading = false
+			s.locations = []omsapi.Location{{ID: 1, Name: "Hall"}, {ID: 2, Name: "Shop"}}
+			s.openPicker(ppLocation)
+			return s
+		},
+		"ProjectStorageFormScreen/pickView": func() Screen {
+			s := NewProjectStorageFormScreen(Deps{})
+			next, _ := s.Update(projectStorageSlotsLoadedMsg{slots: freeSlots()})
+			ps := next.(*ProjectStorageFormScreen)
+			ps.openSlotPick()
+			return ps
+		},
+		"StorageAssignFormScreen/pickView": func() Screen {
+			s := NewStorageAssignFormScreen(Deps{}, "R1-S1", nil)
+			s.sigs = []omsapi.SIG{{ID: 3, Name: "Woodshop"}, {ID: 4, Name: "Metal"}}
+			s.openPicker()
+			return s
+		},
+		"StorageSlotFormScreen/pickView": func() Screen {
+			s := NewStorageSlotFormScreen(Deps{}, "")
+			next, _ := s.Update(storageSlotFormLoadedMsg{sigs: []omsapi.SIG{{ID: 3, Name: "Woodshop"}, {ID: 4, Name: "Metal"}}})
+			sf := next.(*StorageSlotFormScreen)
+			sf.openPicker()
+			return sf
+		},
+		"StorageSlotGenerateScreen/pickView": func() Screen {
+			s := NewStorageSlotGenerateScreen(Deps{}, 0)
+			s.sigs = []omsapi.SIG{{ID: 3, Name: "Woodshop"}, {ID: 4, Name: "Metal"}}
+			s.openPicker()
+			return s
+		},
+		"ThermostatFormScreen/pickView": func() Screen {
+			s := NewThermostatFormScreen(Deps{}, "")
+			s.loading = false
+			s.locations = []omsapi.Location{{ID: 1, Name: "Hall"}, {ID: 2, Name: "Shop"}}
+			s.openPicker(tfLocation)
 			return s
 		},
 	}
@@ -610,5 +756,160 @@ func TestJDEForm_TheHeightTheNoticeNamesActuallyWorks(t *testing.T) {
 		t.Error("no screen at any supported size drew a refusal notice, so this sweep " +
 			"asserted nothing. If the layer now fits every bar into every supported " +
 			"pane, this test needs rewriting rather than deleting")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The picker's filter box
+// ---------------------------------------------------------------------------
+
+// jdePickSites is every place in the package's own non-test source that builds
+// a jdePickList — keyed `<receiver type>/<method>`, which is exactly the key
+// shape jdeScreenStates uses.
+//
+// It is DERIVED for the reason every roster in this project is: a picker added
+// tomorrow and left out of a hand-kept list is a picker no sweep ever draws,
+// and it fails silently. There are nineteen of them across seventeen files, so
+// a list would have been wrong within a round.
+func jdePickSites(t *testing.T) map[string]bool {
+	t.Helper()
+	_, files := jdeParsePackage(t)
+	out := map[string]bool{}
+	for path, f := range files {
+		if jdeIsLayer(path) {
+			continue // the layer DECLARES jdePickList; it builds none
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || fn.Body == nil {
+				continue
+			}
+			recv := ""
+			switch e := fn.Recv.List[0].Type.(type) {
+			case *ast.StarExpr:
+				if id, ok := e.X.(*ast.Ident); ok {
+					recv = id.Name
+				}
+			case *ast.Ident:
+				recv = e.Name
+			}
+			if recv == "" {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				lit, ok := n.(*ast.CompositeLit)
+				if !ok {
+					return true
+				}
+				if id, ok := lit.Type.(*ast.Ident); ok && id.Name == "jdePickList" {
+					out[recv+"/"+fn.Name.Name] = true
+				}
+				return true
+			})
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("no function in this package builds a jdePickList, so the filter-box " +
+			"sweep below would pass vacuously. If pickers stopped going through " +
+			"jdePickList this derivation needs rewriting rather than deleting")
+	}
+	return out
+}
+
+// TestJDEForm_EveryPickListSiteIsSwept: every picker in the app is one of the
+// states the sweeps here walk.
+//
+// The same rule as TestJDEForm_EveryColumnarScreenIsSwept, one axis in: that
+// one makes a SCREEN impossible to forget and says nothing about the states
+// inside one, and a picker is a state. The filter-box defect lived in the one
+// shared jdePickList.render, so it was on all nineteen pickers at once and
+// visible on none of them — jdeScreenFixtures builds every screen in its base
+// form and never opens a picker at all.
+func TestJDEForm_EveryPickListSiteIsSwept(t *testing.T) {
+	states := jdeScreenStates()
+	for site := range jdePickSites(t) {
+		if _, ok := states[site]; !ok {
+			t.Errorf("%s builds a jdePickList and has no state in jdeScreenStates, so no "+
+				"sweep in this file ever draws that picker. Add one in the state the "+
+				"operator reaches it in — a rule applied to the pickers somebody "+
+				"thought of is the omission this project keeps paying for", site)
+		}
+	}
+}
+
+// jdePickFilterLabel is the label renderJDEField draws on the picker's filter
+// row. It leads the row, so it survives any horizontal clip the pane applies
+// and finding it is finding the box.
+const jdePickFilterLabel = "Filter"
+
+// jdePickFilterRow returns the frame's filter row, or "" when the frame does
+// not carry one at all.
+func jdePickFilterRow(view string) string {
+	for _, line := range strings.Split(view, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), jdePickFilterLabel) {
+			return line
+		}
+	}
+	return ""
+}
+
+// TestJDEForm_ThePickFilterBoxIsOnEveryPane: the box the operator types into is
+// drawn at every supported size.
+//
+// A picker's filter is ALWAYS LIVE — it holds the caret for as long as the
+// picker is open, and typing is the only thing that narrows the list — so a
+// frame that does not draw it is a frame where every keystroke goes somewhere
+// invisible. The list under it is windowed on the CURSOR, which typing does not
+// move, so the pane comes back byte for byte: rule 1 by geometry, which is
+// this project's oldest report.
+//
+// It reached the pane through the HEADER. jdeFitHeader trims a pinned header
+// from the END, and the header used to open with a decorative title, so at the
+// minimum drawable budget the one row that survived was the title. Measured on
+// InventoryItemFormScreen's category picker at 80x11: pane 5, a two-row bar,
+// budget 2, the body floor takes one, keep is 1 — "Category" on the pane and
+// the box nowhere. jdePickList.render draws the filter FIRST now, which is
+// receive_form.go's serialBody rule for a block no key can move.
+//
+// Asserted on the CLIPPED Root.View(), and in two steps because the row can be
+// lost two different ways: the layer can trim it out of the frame, or the pane
+// can cut it off the bottom.
+func TestJDEForm_ThePickFilterBoxIsOnEveryPane(t *testing.T) {
+	sites := jdePickSites(t)
+	checked := 0
+	for _, c := range jdePaneCases() {
+		if !sites[c.name] {
+			continue
+		}
+		for _, w := range jdePaneWidths {
+			for _, h := range jdePaneHeights() {
+				s := c.mk()
+				r := jdeRootAt(t, s, w, h)
+				view := s.View()
+				if jdeBarOf(view) == nil {
+					continue // a frame the layer refused; it draws no rows at all
+				}
+				checked++
+				row := jdePickFilterRow(view)
+				if row == "" {
+					t.Errorf("%s at %dx%d draws a frame with no filter row in it — the box "+
+						"the operator types into was trimmed off the pinned header, so "+
+						"every keystroke goes somewhere they cannot see:\n%s",
+						c.name, w, h, r.View())
+					continue
+				}
+				clipped := truncateVisible(strings.TrimRight(row, " "), screenBodyWidth(w))
+				if clipped != "" && !strings.Contains(r.View(), clipped) {
+					t.Errorf("%s at %dx%d: the filter row %q is cut off the pane, so the box "+
+						"the operator types into is not on it:\n%s",
+						c.name, w, h, row, r.View())
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("no picker drew a frame at any supported size, so this sweep asserted " +
+			"nothing. Either jdeScreenStates has no pick-list state left or every one " +
+			"of them is being refused; both need this test rewritten rather than deleted")
 	}
 }

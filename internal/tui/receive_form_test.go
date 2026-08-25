@@ -1598,17 +1598,6 @@ func TestReceive_AHugeNoteDoesNotFreezeTheFrame(t *testing.T) {
 // The reservation yields to the pane; the form is always drawn
 // ---------------------------------------------------------------------------
 
-// receiveCursorRowIdentified reports whether the pane says WHICH row the cursor
-// is on — its line name, the first line of the cursor's block.
-//
-// It is deliberately the weaker of the two questions, and its name now says so.
-// It was called receiveCursorRowDrawn and documented as reporting whether "the
-// quantity box the operator is about to type into" was on the pane, which it
-// never checked: it matched the line LABEL, and because jdeLines.Window pins an
-// overflowing block to its FIRST line the label is exactly what survives when
-// the box does not. So the guard passed in precisely the state it was written
-// to catch — and a separator that opened the block below it, pushing every box
-// but row 0's one line further down, shipped straight past it.
 // receiveFrameDrawn reports whether the columnar layer will draw this screen's
 // frame at all at the size it has been given, and asserts the REFUSAL when it
 // will not.
@@ -1645,6 +1634,17 @@ func receiveFrameDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) bool {
 	return false
 }
 
+// receiveCursorRowIdentified reports whether the pane says WHICH row the cursor
+// is on — its line name, the first line of the cursor's block.
+//
+// It is deliberately the weaker of the two questions, and its name now says so.
+// It was called receiveCursorRowDrawn and documented as reporting whether "the
+// quantity box the operator is about to type into" was on the pane, which it
+// never checked: it matched the line LABEL, and because jdeLines.Window pins an
+// overflowing block to its FIRST line the label is exactly what survives when
+// the box does not. So the guard passed in precisely the state it was written
+// to catch — and a separator that opened the block below it, pushing every box
+// but row 0's one line further down, shipped straight past it.
 func receiveCursorRowIdentified(t *testing.T, s *ReceiveFormScreen, w, h int) bool {
 	t.Helper()
 	return receiveRowWith(s, w, h, receiveCursorMarker(t, s)) != ""

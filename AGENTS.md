@@ -344,7 +344,11 @@ note, and is the authority):
   `screenBodyRows` (layout.go, the unfloored answer) and nothing else.
   When even that will not fit, the frame is REFUSED rather than mutilated:
   `jdeTooShort` draws a bounded two-sentence notice naming how tall a terminal
-  the screen needs and saying the keys still work. A bar with rows cut off it
+  the screen needs — a height DERIVED at the fixed point, so resizing to it
+  really does draw the frame — and warning that the keys still ACT on a screen
+  nobody is drawing, so their effect cannot be seen. That second sentence used
+  to reassure ("They still work"), which is what made the offset drift routed
+  below a surprise. A bar with rows cut off it
   names some keys and hides the rest SILENTLY and the operator cannot tell
   which; naming none is the only honest alternative. Both floors are rule 1 — a
   keypress must change something the operator can see — and each covers a press
@@ -367,6 +371,20 @@ note, and is the authority):
   fix and the floor fix reduces it. The fix is to give those frames
   `renderActionBarWrapped`, which means giving `bodyAvail` and `bodyScrolls` the
   `items` they do not take, on some thirty sheets — a conversion, not a patch.
+  A SECOND routed item rides on the same signature change, so treat the two as
+  ONE conversion rather than two: movement is gated on SCROLLABILITY where it
+  should be gated on DRAWABILITY. On a pane the frame is REFUSED on the body
+  still gets its floor of one row (`jdeBodyAvail`, which is what makes the
+  refusal notice's height honest), so `bodyScrolls` answers true and the
+  movement arms act over a pane showing nothing but the notice — `end` on the
+  order pad sets `padScroll` to the pad's length and growing the terminal back
+  lands the operator at the bottom of a forty-line pad. `frameScrolled` cannot
+  fix it: the sheet's own handler destroys the offset before the frame is ever
+  called. Nor is a layer-side stash of the last DRAWN offset enough — the same
+  thing happens to the CURSOR on every `frame` / `frameWrapped` screen, so
+  fixing the two `frameScrolled` sheets would be the apply-it-where-it-was-
+  reported failure again. That is why its priority is not cosmetic: until it
+  lands, the too-short notice says so in as many words rather than reassuring.
 - **A body line that belongs to no navigable ROW is a line no key can reach.**
   `jdeLines.Window` anchors the window on the CURSOR's block, and a columnar
   sheet's cursor cannot go above its first row — up WRAPS to the last row, which
@@ -401,7 +419,18 @@ note, and is the authority):
   scanner firing into a box the operator cannot see is worse than a label they
   have to press nothing to lose. It is a RULE and not two cases: whichever body
   has one navigable row is in it, so applying it to the one that was reported
-  leaves the other stranding its field a round later. On such a body NEITHER marker can
+  leaves the other stranding its field a round later. A PINNED HEADER is a third
+  instance of the same rule and it took a round to be seen as one — nothing an
+  operator presses brings back a row `jdeFitHeader` has trimmed, so it has one
+  end to protect too. `jdePickList.render` therefore draws the always-live
+  FILTER BOX first and the title after it, unconditionally at every height, the
+  way `serialBody` does. Title-first cost the operator the box on all nineteen
+  pickers at their minimum drawable height (80x11: keep is 1 and the one row
+  kept was the decorative title), and the list is windowed on the CURSOR, which
+  typing does not move, so every keystroke redrew the pane byte for byte.
+  `TestJDEForm_ThePickFilterBoxIsOnEveryPane` walks it over a picker roster
+  DERIVED from the `jdePickList` literals in the package's own source, so a
+  picker added later cannot be the one nobody swept. On such a body NEITHER marker can
   be acted on, and only one of them is the sheet's to prevent: `↑ more above`
   appears when the window starts past line 0, which is a consequence of where
   the sheet puts its lines, so

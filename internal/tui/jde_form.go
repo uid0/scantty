@@ -1427,7 +1427,30 @@ func (p jdePickList) render(bodyWidth int) ([]string, *jdeLines) {
 		Hint:    "type to narrow the list",
 		Focused: true,
 	}
-	header := []string{head, renderJDEFields([]jdeField{filter}, bodyWidth)[0], ""}
+	// THE FILTER LEADS THE HEADER AND THE TITLE FOLLOWS IT, and the order is
+	// inverted UNCONDITIONALLY — at every height, not only the short ones.
+	//
+	// This is receive_form.go's serialBody rule applied to a block of the other
+	// kind: where NO key can move a window, the block has only one end to
+	// protect, so what the operator TYPES INTO is drawn first and what
+	// identifies it after. A pinned header is exactly such a block —
+	// jdeFitHeader trims it from the END and nothing an operator can press
+	// brings a trimmed row back — and the title is a label they can afford to
+	// lose while the filter carries the caret.
+	//
+	// Title-first was measured wrong on InventoryItemFormScreen's category
+	// picker at 80x11: pane 5, a two-row bar, budget 2, the body's floor takes
+	// one, so keep is 1 and the ONE header row that survived was the decorative
+	// "Category" while the operator typed into a box that was not on the pane.
+	// The list under it is windowed on the CURSOR, which typing does not move,
+	// so `b`, `o`, `l` over "Bolts" / "Bolt washers" redrew the pane byte for
+	// byte — rule 1 by geometry, arriving through the header after
+	// jdeBodyAvail's body floor had closed the same defect on the body side.
+	//
+	// A layout that changed shape at some budget was rejected for the reason
+	// serialBody's is not conditional either: a second arrangement to reason
+	// about, at exactly the sizes nobody looks at.
+	header := []string{renderJDEFields([]jdeField{filter}, bodyWidth)[0], head, ""}
 	if p.Note != "" {
 		header = append(header, jdeIndent+StyleMuted.Render(p.Note), "")
 	}
@@ -1874,13 +1897,46 @@ func jdeTooShortRows(barRows, headerRows int) int {
 // hides the rest, silently, and the operator has no way to know which. Drawing
 // the body instead and losing the bar entirely is the same trade with all of
 // the bar hidden. So the frame gives up and says so: no keys named, and a
-// sentence saying what is wrong and what would fix it. Every key still WORKS —
-// Update is untouched — which is why the notice says the keys are hidden rather
-// than gone.
+// sentence saying what is wrong and what would fix it.
+//
+// THE SECOND SENTENCE USED TO REASSURE, and that was the wrong claim. It said
+// "They still work", which an operator reads as "so go ahead and press them" —
+// and pressing them is exactly what they must not do without knowing the cost.
+// Update is untouched, so every key DOES act; it acts on a screen that is not
+// being drawn, so nothing on the pane shows what it did, and what it did can be
+// destructive of the operator's place. `end` on the purchase-order detail's
+// order pad sets padScroll to the pad's length against a pane showing nothing
+// but this notice, and growing the terminal back lands them at the bottom of a
+// forty-line pad instead of where they left. The wording now says that, because
+// a warning an operator can act on beats a reassurance they cannot.
+//
+// WHY THE KEYS ARE NOT GATED HERE, so the next reader does not reopen it. Two
+// things were checked before the decision:
+//
+//   - frameScrolled ALREADY hands the offset back untouched on this path. It is
+//     not enough: the drift happens in the SHEET's handler, before the frame is
+//     ever called, so the frame is faithfully preserving a value that has
+//     already been destroyed. (The UNSIZED path does the opposite and resets the
+//     offset to 0, so "hold it the way unsized does" would make this worse.)
+//   - a layer-only stash of the last DRAWN offset would fix this instance and
+//     leave the CLASS. The same thing happens to the CURSOR on every frame /
+//     frameWrapped screen: at a refused height Up/Down still move it, nothing is
+//     drawn, and the operator comes back on a different field. Fixing the two
+//     frameScrolled screens and leaving twenty-nine cursor screens is the
+//     "apply the rule to the site that was reported" failure this project keeps
+//     paying for.
+//
+// The class fix is to gate movement on DRAWABILITY rather than on
+// scrollability, which means giving bodyAvail and bodyScrolls the arguments
+// they do not take across ~30 sheets. That is the same signature change the
+// renderActionBar width fix needs, so the two are routed as ONE conversion
+// (AGENTS.md carries it).
 //
 // It is bounded in both axes by the layer, not by clampToBox: `rows` lines of
 // at most `width` cells. A notice that was itself cut would be the defect it
-// exists to report.
+// exists to report — and the HEIGHT FACT leads, because a one-row pane keeps
+// only the first line and the height is the one thing on here that can be acted
+// on.
 // jde:layer-only — a sheet reaches it through the frames.
 func jdeTooShort(width, rows, terminalHeight, needRows int) string {
 	if rows <= 0 {
@@ -1899,7 +1955,8 @@ func jdeTooShort(width, rows, terminalHeight, needRows int) string {
 	lines := jdeWrapNote(fmt.Sprintf("Too short: needs %d rows, has %d.",
 		needRows+screenChromeRows, terminalHeight), width)
 	lines = append(lines, jdeWrapNote(
-		"The action bar would be cut, so no keys are named here. They still work.", width)...)
+		"No keys are named: the action bar would be cut. Keys still act, but on a "+
+			"screen that is not drawn, so you will not see what they do.", width)...)
 	if len(lines) > rows {
 		lines = lines[:rows]
 	}
