@@ -1149,12 +1149,24 @@ func (s *PurchaseOrderAddLineScreen) View() string {
 // grown two caveats — and a key that answers off the pane has not answered. The
 // diagnostic DETAIL rides with it, bounded, so a failure and its reason are one
 // block rather than two that can be separated by a scroll.
-func (s *PurchaseOrderAddLineScreen) headerLines() []string {
-	lines := append(s.noteLines(), s.failLines()...)
-	if len(lines) == 0 {
+// The note's FIRST line is essential for the reason the block is pinned at all:
+// it is the answer to the last keypress, and a key that answers off the pane has
+// not answered. The rest of the note folds and the failure DETAIL is context —
+// its headline rides the status row, which never gives.
+func (s *PurchaseOrderAddLineScreen) headerLines() jdeHeader {
+	notes, fails := s.noteLines(), s.failLines()
+	if len(notes)+len(fails) == 0 {
 		return nil
 	}
-	return append(lines, "")
+	out := jdeHeader(nil)
+	for i, line := range notes {
+		rank := jdeHeadContext
+		if i == 0 {
+			rank = jdeHeadEssential
+		}
+		out = out.add(rank, line)
+	}
+	return out.add(jdeHeadContext, fails...).add(jdeHeadDecorative, "")
 }
 
 // workingLine names the work AND the subject: "Loading…" tells an operator

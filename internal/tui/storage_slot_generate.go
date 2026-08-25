@@ -988,7 +988,7 @@ func (s *StorageSlotGenerateScreen) viewLevelRow() string {
 	return s.frame(l, s.rowCursor, s.statusRow(false, "", s.rowErr), items)
 }
 
-func (s *StorageSlotGenerateScreen) pickView() ([]string, *jdeLines) {
+func (s *StorageSlotGenerateScreen) pickView() (jdeHeader, *jdeLines) {
 	note := "Row 1 leaves the slots unreserved — general use."
 	switch {
 	case s.sigsErr != "":

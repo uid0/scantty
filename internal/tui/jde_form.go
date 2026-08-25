@@ -1028,21 +1028,125 @@ func jdeBodyAvail(pane, budget, headerRows int) int {
 	return 1
 }
 
+// jdeHeadRank is how expendable one pinned-header row is, and it exists so that
+// DISPLAY ORDER and SACRIFICE ORDER can be different things.
+//
+// They used to be the same thing, because jdeFitHeader trimmed by POSITION.
+// That coupling is not a simplification, it is a trap: it forces every builder
+// to choose between a header that READS correctly and one that SURVIVES
+// correctly, and both screens that hit it chose reading and lost the row that
+// mattered. The purchase-order pad drew its "Order pad" heading at 80x12 and
+// 80x13 and dropped the ⚠ saying lines had been left out of the pad the
+// operator was about to paste — a screen showing wrong data, from a header
+// nobody had put in an order. The picker did the same with its filter box, and
+// was fixed by INVERTING the display so the box led the block: that worked and
+// it was the wrong lever, because it moved the layout of nineteen screens at
+// every height to buy a row at one height.
+//
+// So the layer takes the rank and the builders keep their natural layout. The
+// New PO chooser has given ground in a stated order for a while
+// (sourceAttributionShown / sourceTitleShown, and AGENTS.md's "sacrifice in a
+// stated order — do not shave words"); this is that idea applied to the pinned
+// header, in the layer, once.
+type jdeHeadRank int
+
+const (
+	// jdeHeadEssential is a row the operator would ACT DIFFERENTLY without: the
+	// box they are typing into, the warning that what is on screen is
+	// incomplete, the screen's answer to a press that declined. Last to go, and
+	// a builder may not mark more of them than the smallest drawable budget can
+	// hold — TestJDEForm_EveryEssentialHeaderRowIsOnThePane is where that bound
+	// is enforced, because an "essential" row that gets dropped anyway is the
+	// same false claim in a new place.
+	jdeHeadEssential jdeHeadRank = iota
+	// jdeHeadContext is a row that helps and does not decide: the supplier and
+	// filename over the order pad, the tail of a folded warning, a picker's
+	// standing note.
+	jdeHeadContext
+	// jdeHeadDecorative is a row that names nothing and carries no value — a
+	// title, a blank separator. First to go.
+	jdeHeadDecorative
+)
+
+// jdeHeadRow is one line of a pinned header and how expendable it is.
+type jdeHeadRow struct {
+	Text string
+	Rank jdeHeadRank
+}
+
+// jdeHeader is a pinned header: the rows in DISPLAY order, each carrying the
+// rank that decides when it is given up. A nil header is a frame with none,
+// which is what most sheets pass.
+type jdeHeader []jdeHeadRow
+
+// add appends rows at one rank, in display order.
+//
+// A BLANK row is forced to decorative whatever rank it is added at, because a
+// separator must never outlive the row it closes — AGENTS.md's separator rule
+// read from the other side. It also means a builder that pads a block out to a
+// reserved height (receive_form's noteLines does) does not have to strip the
+// padding back off to rank it honestly.
+func (h jdeHeader) add(rank jdeHeadRank, lines ...string) jdeHeader {
+	for _, line := range lines {
+		r := rank
+		if strings.TrimSpace(line) == "" {
+			r = jdeHeadDecorative
+		}
+		h = append(h, jdeHeadRow{Text: line, Rank: r})
+	}
+	return h
+}
+
+// lines is the header as the frame draws it when nothing has to give.
+func (h jdeHeader) lines() []string {
+	out := make([]string, 0, len(h))
+	for _, row := range h {
+		out = append(out, row.Text)
+	}
+	return out
+}
+
 // jdeFitHeader trims a pinned header to the rows left over once the body has
 // been given its share, so that header + body is EXACTLY the budget.
 //
 // It is the other half of jdeBodyAvail and must be read with it: the two are
 // called with the same budget and the same header, so the frame cannot window
-// the body against one split and draw the header against another. Trimming from
-// the END keeps the head of the block, which is where a header says what it is.
-func jdeFitHeader(header []string, budget, avail int) []string {
-	if keep := budget - avail; keep < len(header) {
-		if keep < 0 {
-			keep = 0
-		}
-		return header[:keep]
+// the body against one split and draw the header against another.
+//
+// It gives ground by RANK, most expendable first, and WITHIN a rank from the
+// END — so the head of a block still says what it is, and the rows that survive
+// are the rows the builder said the operator cannot do without. What comes back
+// is in DISPLAY order whatever was dropped out of the middle of it: a header
+// that reordered itself as the terminal shrank would be a second layout to
+// learn at exactly the sizes nobody looks at.
+func jdeFitHeader(header jdeHeader, budget, avail int) []string {
+	keep := budget - avail
+	if keep < 0 {
+		keep = 0
 	}
-	return header
+	drop := len(header) - keep
+	if drop <= 0 {
+		return header.lines()
+	}
+	kept := make([]bool, len(header))
+	for i := range kept {
+		kept[i] = true
+	}
+	for rank := jdeHeadDecorative; rank >= jdeHeadEssential && drop > 0; rank-- {
+		for i := len(header) - 1; i >= 0 && drop > 0; i-- {
+			if kept[i] && header[i].Rank == rank {
+				kept[i] = false
+				drop--
+			}
+		}
+	}
+	out := make([]string, 0, keep)
+	for i, row := range header {
+		if kept[i] {
+			out = append(out, row.Text)
+		}
+	}
+	return out
 }
 
 // bodyAvailForBar is bodyAvail for the WRAPPING frames — frameWrapped and
@@ -1308,7 +1412,7 @@ func (g jdeScreen) frame(body *jdeLines, cursorRow int, status string, items []a
 // picker's filter box, the record a sub-form is amending. They cost the body its
 // height and are drawn on every frame, so what the operator typed into the
 // filter cannot scroll away under a long list.
-func (g jdeScreen) frameWithHeader(header []string, body *jdeLines, cursorRow int, status string, items []actionBarItem) string {
+func (g jdeScreen) frameWithHeader(header jdeHeader, body *jdeLines, cursorRow int, status string, items []actionBarItem) string {
 	if g.tooShort(actionBarRows, len(header)) {
 		return g.tooShortNotice(actionBarRows, len(header))
 	}
@@ -1317,14 +1421,14 @@ func (g jdeScreen) frameWithHeader(header []string, body *jdeLines, cursorRow in
 		// jdeFitHeader is the same split seen from the header's side, so the
 		// two together are exactly the budget.
 		avail := g.bodyAvail(len(header))
-		out := jdeFitHeader(append([]string{}, header...), budget, avail)
+		out := jdeFitHeader(header, budget, avail)
 		lines, _ := body.Window(cursorRow, avail)
 		out = append(out, lines...)
 		out = jdePadTo(out, budget)
 		out = append(out, status)
 		return strings.Join(out, "\n") + "\n" + renderActionBar(g.barWidth(), items)
 	}
-	out := append([]string{}, header...)
+	out := header.lines()
 	out = append(out, body.text...)
 	out = append(out, status)
 	return strings.Join(out, "\n") + "\n" + renderActionBar(g.barWidth(), items)
@@ -1408,7 +1512,7 @@ type jdePickList struct {
 // bodyWidth is the pane, for the same reason renderJDEField takes one: the
 // filter box is a text row like any other, and an operator who has pasted a long
 // string into it must still be able to see the caret.
-func (p jdePickList) render(bodyWidth int) ([]string, *jdeLines) {
+func (p jdePickList) render(bodyWidth int) (jdeHeader, *jdeLines) {
 	head := StyleJDEHeading.Render(p.Title)
 	if p.For != "" {
 		head += "  " + StyleMuted.Render("for ") + p.For
@@ -1427,32 +1531,35 @@ func (p jdePickList) render(bodyWidth int) ([]string, *jdeLines) {
 		Hint:    "type to narrow the list",
 		Focused: true,
 	}
-	// THE FILTER LEADS THE HEADER AND THE TITLE FOLLOWS IT, and the order is
-	// inverted UNCONDITIONALLY — at every height, not only the short ones.
+	// THE FILTER BOX IS THE ONE ROW THIS HEADER CANNOT LOSE, and it says so
+	// with a RANK rather than by leading the block.
 	//
-	// This is receive_form.go's serialBody rule applied to a block of the other
-	// kind: where NO key can move a window, the block has only one end to
-	// protect, so what the operator TYPES INTO is drawn first and what
-	// identifies it after. A pinned header is exactly such a block —
-	// jdeFitHeader trims it from the END and nothing an operator can press
-	// brings a trimmed row back — and the title is a label they can afford to
-	// lose while the filter carries the caret.
-	//
-	// Title-first was measured wrong on InventoryItemFormScreen's category
-	// picker at 80x11: pane 5, a two-row bar, budget 2, the body's floor takes
-	// one, so keep is 1 and the ONE header row that survived was the decorative
-	// "Category" while the operator typed into a box that was not on the pane.
-	// The list under it is windowed on the CURSOR, which typing does not move,
-	// so `b`, `o`, `l` over "Bolts" / "Bolt washers" redrew the pane byte for
-	// byte — rule 1 by geometry, arriving through the header after
+	// It was measured on InventoryItemFormScreen's category picker at 80x11:
+	// pane 5, a two-row bar, budget 2, the body's floor takes one, so keep is 1
+	// — and while jdeFitHeader trimmed by POSITION the one row that survived was
+	// the decorative "Category" while the operator typed into a box that was not
+	// on the pane. The list under it is windowed on the CURSOR, which typing does
+	// not move, so `b`, `o`, `l` over "Bolts" / "Bolt washers" redrew the pane
+	// byte for byte — rule 1 by geometry, arriving through the header after
 	// jdeBodyAvail's body floor had closed the same defect on the body side.
 	//
-	// A layout that changed shape at some budget was rejected for the reason
-	// serialBody's is not conditional either: a second arrangement to reason
-	// about, at exactly the sizes nobody looks at.
-	header := []string{renderJDEFields([]jdeField{filter}, bodyWidth)[0], head, ""}
+	// The first fix INVERTED the display, drawing the filter above the title the
+	// way serialBody draws a field above what identifies it. That was the wrong
+	// lever and it is recorded here because the reasoning was nearly right: a
+	// pinned header IS a block no key can move, so it does have one end to
+	// protect — but the end that has to survive and the end that reads first are
+	// not the same end, and conflating them relaid out nineteen pickers at every
+	// height to buy one row at one height. It also fixed nothing for the order
+	// pad, whose warning had the identical problem and would have needed the
+	// identical inversion. jdeHeadRank decouples the two, so the title goes back
+	// on top and is still the first row dropped.
+	header := jdeHeader(nil).
+		add(jdeHeadDecorative, head).
+		add(jdeHeadEssential, renderJDEFields([]jdeField{filter}, bodyWidth)[0]).
+		add(jdeHeadDecorative, "")
 	if p.Note != "" {
-		header = append(header, jdeIndent+StyleMuted.Render(p.Note), "")
+		header = header.add(jdeHeadContext, jdeIndent+StyleMuted.Render(p.Note)).
+			add(jdeHeadDecorative, "")
 	}
 
 	body := &jdeLines{}
@@ -1859,12 +1966,30 @@ func jdeMinBudget(headerRows int) int {
 //
 //   - paneRows is strictly increasing in terminal height: screenBodyRows is
 //     height − screenChromeRows.
-//   - For a FIXED bar, avail is non-decreasing in paneRows — bodyRowsForBar is
-//     pane − barRows − 1 and jdeBodyAvail subtracts a constant header off it.
+//
+//   - For a FIXED bar, avail is NON-DECREASING in paneRows. bodyRowsForBar is
+//     pane − barRows − 1, so the budget rises with the pane, and jdeBodyAvail
+//     subtracts headerRows off it.
+//
+//     The premise this step needs is the WEAK one — avail never goes backwards —
+//     and the original wording smuggled in a stronger claim that is FALSE: that
+//     the header is a constant. It is not on ReceiveFormScreen, the one screen
+//     whose pinned header is a function of the pane (headerLines → noteLines /
+//     failDetailLines → headerSplit → headerRoom → headerBudget, and noteRows'
+//     own comment says the reservation "yields to the PANE"). The weak form
+//     still holds there, and headerRoom is where to check it: it hands the
+//     header `budget − receiveBodyFloor` once that clears the header's floor, so
+//     the header grows by at most ONE row per pane row and the body's floor of
+//     receiveBodyFloor rows is subtracted BEFORE the header is served. A header
+//     that never grows faster than the budget cannot make budget − headerRows
+//     shrink, so avail never goes backwards.
+//
 //   - Scrolls(avail) is len(text) > avail, so it is non-increasing in avail.
+//
 //   - A bar naming the scroll keys is taller-or-equal to the same bar without
 //     them: naming them costs cells and cells only ever fold a bar onto MORE
 //     rows.
+//
 //   - Therefore barRows is NON-INCREASING in terminal height. Going UP, the
 //     scroll claim can only go true → false, never false → true.
 //
@@ -1966,21 +2091,21 @@ func jdeTooShort(width, rows, terminalHeight, needRows int) string {
 // frameWrapped is frameWithHeader for a screen whose bar may wrap: the body is
 // padded out to whatever the wrapped bar leaves it, so the bar still lands on
 // the same rows of the pane on every frame.
-func (g jdeScreen) frameWrapped(header []string, body *jdeLines, cursorRow int, status string, items []actionBarItem) string {
+func (g jdeScreen) frameWrapped(header jdeHeader, body *jdeLines, cursorRow int, status string, items []actionBarItem) string {
 	barRows := actionBarRowsFor(g.barWidth(), items)
 	if g.tooShort(barRows, len(header)) {
 		return g.tooShortNotice(barRows, len(header))
 	}
 	if budget := g.bodyRowsForBar(barRows); budget > 0 {
 		avail := g.bodyAvailForBar(len(header), items)
-		out := jdeFitHeader(append([]string{}, header...), budget, avail)
+		out := jdeFitHeader(header, budget, avail)
 		lines, _ := body.Window(cursorRow, avail)
 		out = append(out, lines...)
 		out = jdePadTo(out, budget)
 		out = append(out, status)
 		return strings.Join(out, "\n") + "\n" + renderActionBarWrapped(g.barWidth(), items)
 	}
-	out := append([]string{}, header...)
+	out := header.lines()
 	out = append(out, body.text...)
 	out = append(out, status)
 	return strings.Join(out, "\n") + "\n" + renderActionBarWrapped(g.barWidth(), items)
@@ -1990,7 +2115,7 @@ func (g jdeScreen) frameWrapped(header []string, body *jdeLines, cursorRow int, 
 // by the operator's scroll offset rather than by a cursor row. It returns the
 // clamped offset alongside the frame, so a screen that scrolled past the end
 // stores back the offset that was actually drawn.
-func (g jdeScreen) frameScrolled(header []string, body *jdeLines, offset int, status string, items []actionBarItem) (string, int) {
+func (g jdeScreen) frameScrolled(header jdeHeader, body *jdeLines, offset int, status string, items []actionBarItem) (string, int) {
 	barRows := actionBarRowsFor(g.barWidth(), items)
 	if g.tooShort(barRows, len(header)) {
 		// The offset is handed back UNTOUCHED. Both callers store what they are
@@ -2005,7 +2130,7 @@ func (g jdeScreen) frameScrolled(header []string, body *jdeLines, offset int, st
 	budget := g.bodyRowsForBar(barRows)
 	if budget > 0 {
 		avail := g.bodyAvailForBar(len(header), items)
-		out := jdeFitHeader(append([]string{}, header...), budget, avail)
+		out := jdeFitHeader(header, budget, avail)
 		offset = body.ClampScroll(offset, avail)
 		out = append(out, body.WindowFrom(offset, avail)...)
 		out = jdePadTo(out, budget)
@@ -2013,7 +2138,7 @@ func (g jdeScreen) frameScrolled(header []string, body *jdeLines, offset int, st
 		return strings.Join(out, "\n") + "\n" + renderActionBarWrapped(g.barWidth(), items), offset
 	}
 	offset = 0
-	out := append([]string{}, header...)
+	out := header.lines()
 	out = append(out, body.text...)
 	out = append(out, status)
 	return strings.Join(out, "\n") + "\n" + renderActionBarWrapped(g.barWidth(), items), offset

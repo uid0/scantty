@@ -2053,10 +2053,23 @@ func (s *PurchaseOrderDetailScreen) padHasText() bool {
 
 // orderPadHeader is the chrome pinned above the pad: what was built, from how
 // many lines, and which of them had no part number to build from.
-func (s *PurchaseOrderDetailScreen) orderPadHeader() []string {
-	head := []string{StyleJDEHeading.Render("Order pad")}
+// The RANKS are the whole of this screen's answer to a short pane. The ⚠ is
+// ESSENTIAL: the pad text is already on the clipboard by the time this frame is
+// drawn, so an operator who pastes it without that row pastes an order with
+// lines silently missing from it — wrong data, not lost decoration. The
+// supplier/count/filename meta is CONTEXT and the "Order pad" heading names
+// nothing, so it goes first. Trimming by POSITION dropped the ⚠ and kept the
+// heading at 80x12 and 80x13.
+//
+// Only the warning's FIRST line is essential, and its own wording is what makes
+// that honest: the count leads and the names follow, so "3 lines have no part #"
+// is the half that still tells the operator to go and look. The smallest
+// drawable budget keeps one header row, so a builder claiming two would be
+// making a promise the geometry cannot keep.
+func (s *PurchaseOrderDetailScreen) orderPadHeader() jdeHeader {
+	head := jdeHeader(nil).add(jdeHeadDecorative, StyleJDEHeading.Render("Order pad"))
 	if s.orderPadExport == nil {
-		return append(head, "")
+		return head.add(jdeHeadDecorative, "")
 	}
 	var meta []string
 	if s.orderPadExport.Supplier != "" {
@@ -2066,18 +2079,20 @@ func (s *PurchaseOrderDetailScreen) orderPadHeader() []string {
 	if s.orderPadExport.Filename != "" {
 		meta = append(meta, s.orderPadExport.Filename)
 	}
-	head = append(head, jdeIndent+StyleMuted.Render(fitCellIf(strings.Join(meta, " · "), s.bodyWidth()-len(jdeIndent))))
+	head = head.add(jdeHeadContext,
+		jdeIndent+StyleMuted.Render(fitCellIf(strings.Join(meta, " · "), s.bodyWidth()-len(jdeIndent))))
 	if miss := len(s.orderPadExport.MissingSku); miss > 0 {
-		// The count leads and the names follow: at 80 columns the names are what
-		// the fold eats, and "3 lines have no part #" is the half that still
-		// tells the operator to go look.
 		warn := fmt.Sprintf("⚠ %d %s no supplier part # (omitted): %s",
 			miss, plural("line", miss), strings.Join(s.orderPadExport.MissingSku, ", "))
-		for _, line := range jdeWrapNote(warn, poMarginWidth(s.bodyWidth())) {
-			head = append(head, jdeIndent+StyleStatusWarn.Render(line))
+		for i, line := range jdeWrapNote(warn, poMarginWidth(s.bodyWidth())) {
+			rank := jdeHeadContext
+			if i == 0 {
+				rank = jdeHeadEssential
+			}
+			head = head.add(rank, jdeIndent+StyleStatusWarn.Render(line))
 		}
 	}
-	return append(head, "")
+	return head.add(jdeHeadDecorative, "")
 }
 
 // viewOrderPad renders the overlay: the pinned chrome, the scrollable part#/qty
@@ -2087,7 +2102,7 @@ func (s *PurchaseOrderDetailScreen) viewOrderPad() string {
 	if s.orderPadLoading {
 		body := &jdeLines{}
 		body.Add(jdeIndent + StyleMuted.Render("Building order pad…"))
-		return s.frameWrapped([]string{StyleJDEHeading.Render("Order pad"), ""}, body, 0, "",
+		return s.frameWrapped(jdeHeader(nil).add(jdeHeadDecorative, StyleJDEHeading.Render("Order pad"), ""), body, 0, "",
 			[]actionBarItem{{"Esc", "Close"}})
 	}
 	if s.orderPadErr != "" {
@@ -2096,7 +2111,7 @@ func (s *PurchaseOrderDetailScreen) viewOrderPad() string {
 		// sentence twice on one frame, once plain and once with the status
 		// row's "✗ " in front of it.
 		body := &jdeLines{}
-		return s.frameWrapped([]string{StyleJDEHeading.Render("Order pad"), ""}, body, 0,
+		return s.frameWrapped(jdeHeader(nil).add(jdeHeadDecorative, StyleJDEHeading.Render("Order pad"), ""), body, 0,
 			s.statusRow(false, "", s.orderPadErr),
 			[]actionBarItem{{"Esc", "Close"}})
 	}

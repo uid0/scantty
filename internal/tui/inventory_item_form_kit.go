@@ -985,7 +985,7 @@ func (s *InventoryItemFormScreen) commitKitPick() {
 	s.openKitRow(s.kitCursor)
 }
 
-func (s *InventoryItemFormScreen) kitPickView() ([]string, *jdeLines) {
+func (s *InventoryItemFormScreen) kitPickView() (jdeHeader, *jdeLines) {
 	note := "Kits cannot contain kits, so kits are not listed."
 	empty := "(no matching items)"
 	switch {

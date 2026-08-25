@@ -621,9 +621,9 @@ func TestJDEScroll_TheAnswerMatchesTheFrameThatDrawsIt(t *testing.T) {
 			for _, bar := range [][]actionBarItem{shortBar, longBar} {
 				g := jdeScreen{}
 				g.setSize(size)
-				header := make([]string, headerRows)
-				for i := range header {
-					header[i] = fmt.Sprintf("pinned %d", i)
+				var header jdeHeader
+				for i := 0; i < headerRows; i++ {
+					header = header.add(jdeHeadContext, fmt.Sprintf("pinned %d", i))
 				}
 				// Straddle both budgets so the boundary cases are always hit.
 				for _, n := range jdeLiftBodyLengths(g, headerRows, bar) {

@@ -1651,9 +1651,27 @@ func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 // note whether or not one is standing, plus the blank that separates the block
 // from the body. Only the reply-driven failure detail varies — and the PANE,
 // which noteRows yields to and which the bar and the guard see identically.
-func (s *ReceiveFormScreen) headerLines() []string {
-	lines := append(s.noteLines(), s.failDetailLines()...)
-	return append(lines, "")
+// The NOTE'S FIRST LINE is the one essential row, and jdeMinBudget's own
+// reasoning is why: the header floor exists on this screen because the note is
+// the whole of "enter needs a quantity first", so a refusal with nowhere to be
+// drawn is silent. The rest of the note folds, and the failure DETAIL is
+// context — its headline is on the status row, which is outside this budget and
+// never gives, so a short pane costs the reason and never the fact.
+//
+// One essential row and no more, because the smallest drawable budget on a
+// screen with a pinned header keeps exactly one (jdeMinBudget), and a row marked
+// essential that the geometry drops anyway is the same false claim jdeHeadRank
+// exists to remove.
+func (s *ReceiveFormScreen) headerLines() jdeHeader {
+	out := jdeHeader(nil)
+	for i, line := range s.noteLines() {
+		rank := jdeHeadContext
+		if i == 0 {
+			rank = jdeHeadEssential
+		}
+		out = out.add(rank, line)
+	}
+	return out.add(jdeHeadContext, s.failDetailLines()...).add(jdeHeadDecorative, "")
 }
 
 // noteLines renders the screen's answer to the last keypress into the rows

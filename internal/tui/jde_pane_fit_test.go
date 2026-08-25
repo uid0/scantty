@@ -760,156 +760,368 @@ func TestJDEForm_TheHeightTheNoticeNamesActuallyWorks(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// The picker's filter box
+// The pinned header's essential rows
 // ---------------------------------------------------------------------------
 
-// jdePickSites is every place in the package's own non-test source that builds
-// a jdePickList — keyed `<receiver type>/<method>`, which is exactly the key
-// shape jdeScreenStates uses.
+// jdeHeaderFrames is the name of every layer frame that takes a pinned header,
+// and the position of that argument, read out of the layer's own declarations.
 //
-// It is DERIVED for the reason every roster in this project is: a picker added
-// tomorrow and left out of a hand-kept list is a picker no sweep ever draws,
-// and it fails silently. There are nineteen of them across seventeen files, so
-// a list would have been wrong within a round.
-func jdePickSites(t *testing.T) map[string]bool {
+// Derived rather than listed for the reason TestJDEForm_EveryStatusRowComesFromTheLayer
+// derives its frame set the same way: a frame variant added later is swept the
+// moment it declares a `header jdeHeader` parameter, without anyone remembering
+// to come back here.
+func jdeHeaderFrames(t *testing.T) map[string]int {
 	t.Helper()
+	_, files := jdeParsePackage(t)
+	frames := map[string]int{}
+	for path, f := range files {
+		if !jdeIsLayer(path) {
+			continue
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || fn.Type.Params == nil {
+				continue
+			}
+			i := 0
+			for _, p := range fn.Type.Params.List {
+				id, isIdent := p.Type.(*ast.Ident)
+				for _, name := range p.Names {
+					if isIdent && id.Name == "jdeHeader" && name.Name == "header" {
+						frames[fn.Name.Name] = i
+					}
+					i++
+				}
+				if len(p.Names) == 0 {
+					i++
+				}
+			}
+		}
+	}
+	if len(frames) == 0 {
+		t.Fatalf("no method in %s takes a `header jdeHeader` parameter, so the header "+
+			"sweep below has nothing to derive its sites from. If the pinned header "+
+			"stopped being a frame argument this derivation needs rewriting rather "+
+			"than deleting", jdeLayerFile)
+	}
+	return frames
+}
+
+// jdeHeaderSites is every place in the package's own non-test source that hands
+// a frame a header that is not nil — keyed `<receiver type>/<method>` of the
+// function making the call, which is the key shape jdeScreenStates uses.
+//
+// This roster used to be scoped to jdePickList literals, and that is exactly
+// why the SECOND instance of the header-trim defect went uncaught: the order
+// pad builds its header by hand, so the picker sweep never looked at it and the
+// ⚠ saying lines had been dropped from the pad went missing at 80x12 and 80x13
+// with nothing to report it. A roster narrower than the rule it enforces is the
+// same omission as a hand-kept one.
+func jdeHeaderSites(t *testing.T) map[string]bool {
+	t.Helper()
+	frames := jdeHeaderFrames(t)
 	_, files := jdeParsePackage(t)
 	out := map[string]bool{}
 	for path, f := range files {
 		if jdeIsLayer(path) {
-			continue // the layer DECLARES jdePickList; it builds none
+			continue // the layer DECLARES the frames; it calls them with nil
 		}
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
 			if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || fn.Body == nil {
 				continue
 			}
-			recv := ""
-			switch e := fn.Recv.List[0].Type.(type) {
-			case *ast.StarExpr:
-				if id, ok := e.X.(*ast.Ident); ok {
-					recv = id.Name
-				}
-			case *ast.Ident:
-				recv = e.Name
-			}
+			recv := jdeRecvName(fn)
 			if recv == "" {
 				continue
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				lit, ok := n.(*ast.CompositeLit)
+				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
 				}
-				if id, ok := lit.Type.(*ast.Ident); ok && id.Name == "jdePickList" {
-					out[recv+"/"+fn.Name.Name] = true
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
 				}
+				pos, ok := frames[sel.Sel.Name]
+				if !ok || pos >= len(call.Args) {
+					return true
+				}
+				if id, ok := call.Args[pos].(*ast.Ident); ok && id.Name == "nil" {
+					return true // a frame with no pinned header at all
+				}
+				out[recv+"/"+fn.Name.Name] = true
 				return true
 			})
 		}
 	}
 	if len(out) == 0 {
-		t.Fatal("no function in this package builds a jdePickList, so the filter-box " +
-			"sweep below would pass vacuously. If pickers stopped going through " +
-			"jdePickList this derivation needs rewriting rather than deleting")
+		t.Fatal("no function in this package hands a frame a pinned header, so the " +
+			"sweep below would pass vacuously. If pinned headers went away this " +
+			"derivation needs rewriting rather than deleting")
 	}
 	return out
 }
 
-// TestJDEForm_EveryPickListSiteIsSwept: every picker in the app is one of the
-// states the sweeps here walk.
-//
-// The same rule as TestJDEForm_EveryColumnarScreenIsSwept, one axis in: that
-// one makes a SCREEN impossible to forget and says nothing about the states
-// inside one, and a picker is a state. The filter-box defect lived in the one
-// shared jdePickList.render, so it was on all nineteen pickers at once and
-// visible on none of them — jdeScreenFixtures builds every screen in its base
-// form and never opens a picker at all.
-func TestJDEForm_EveryPickListSiteIsSwept(t *testing.T) {
-	states := jdeScreenStates()
-	for site := range jdePickSites(t) {
-		if _, ok := states[site]; !ok {
-			t.Errorf("%s builds a jdePickList and has no state in jdeScreenStates, so no "+
-				"sweep in this file ever draws that picker. Add one in the state the "+
-				"operator reaches it in — a rule applied to the pickers somebody "+
-				"thought of is the omission this project keeps paying for", site)
+// jdeRecvName is a method's receiver type, pointer or not.
+func jdeRecvName(fn *ast.FuncDecl) string {
+	switch e := fn.Recv.List[0].Type.(type) {
+	case *ast.StarExpr:
+		if id, ok := e.X.(*ast.Ident); ok {
+			return id.Name
 		}
-	}
-}
-
-// jdePickFilterLabel is the label renderJDEField draws on the picker's filter
-// row. It leads the row, so it survives any horizontal clip the pane applies
-// and finding it is finding the box.
-const jdePickFilterLabel = "Filter"
-
-// jdePickFilterRow returns the frame's filter row, or "" when the frame does
-// not carry one at all.
-func jdePickFilterRow(view string) string {
-	for _, line := range strings.Split(view, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), jdePickFilterLabel) {
-			return line
-		}
+	case *ast.Ident:
+		return e.Name
 	}
 	return ""
 }
 
-// TestJDEForm_ThePickFilterBoxIsOnEveryPane: the box the operator types into is
-// drawn at every supported size.
+// jdeHeaderCase is one header site, built in the state that reaches it, paired
+// with the header its own builder produces there.
 //
-// A picker's filter is ALWAYS LIVE — it holds the caret for as long as the
-// picker is open, and typing is the only thing that narrows the list — so a
-// frame that does not draw it is a frame where every keystroke goes somewhere
-// invisible. The list under it is windowed on the CURSOR, which typing does not
-// move, so the pane comes back byte for byte: rule 1 by geometry, which is
-// this project's oldest report.
+// `header` calls the REAL builder on the REAL state rather than re-deriving the
+// rows, because the rank is a claim the builder makes and this sweep exists to
+// hold it to that claim. It is written per site because the builders are
+// unexported methods with different names and no interface in common; what may
+// NOT be written by hand is the SET OF KEYS, which jdeHeaderSites derives and
+// TestJDEForm_EveryHeaderSiteIsSwept compares against.
+type jdeHeaderCase struct {
+	mk func() Screen
+	// after runs once the screen has been SIZED, for a state a resize destroys.
+	// The receiving form clears its note on every WindowSizeMsg on purpose — a
+	// note is an answer about a frame and a resize destroys the frame it was an
+	// answer about — so the only way to sweep a header with a standing note in
+	// it is to press the key that declines after the pane is known, which is
+	// also the only way an operator ever sees one.
+	after  func(Screen)
+	header func(Screen) jdeHeader
+}
+
+// jdeHeaderCases builds every header site in a state that reaches its frame.
 //
-// It reached the pane through the HEADER. jdeFitHeader trims a pinned header
-// from the END, and the header used to open with a decorative title, so at the
-// minimum drawable budget the one row that survived was the title. Measured on
-// InventoryItemFormScreen's category picker at 80x11: pane 5, a two-row bar,
-// budget 2, the body floor takes one, keep is 1 — "Category" on the pane and
-// the box nowhere. jdePickList.render draws the filter FIRST now, which is
-// receive_form.go's serialBody rule for a block no key can move.
+// The picker sites reuse jdeScreenStates' own builders, so the two rosters
+// cannot describe different screens.
+func jdeHeaderCases() map[string]jdeHeaderCase {
+	states := jdeScreenStates()
+	pick := func(state string, hdr func(Screen) jdeHeader) jdeHeaderCase {
+		return jdeHeaderCase{mk: states[state], header: hdr}
+	}
+	return map[string]jdeHeaderCase{
+		"AssetFormScreen/viewPick": pick("AssetFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*AssetFormScreen).pickView(); return h }),
+		"AssetPartFormScreen/viewPick": pick("AssetPartFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*AssetPartFormScreen).pickView(); return h }),
+		"AuthorizationGrantScreen/viewPick": pick("AuthorizationGrantScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*AuthorizationGrantScreen).pickView(); return h }),
+		"CategoryFormScreen/viewPick": pick("CategoryFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*CategoryFormScreen).pickView(); return h }),
+		"DisconnectFormScreen/viewPick": pick("DisconnectFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*DisconnectFormScreen).pickView(); return h }),
+		"InventoryItemFormScreen/viewPick": pick("InventoryItemFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*InventoryItemFormScreen).pickView(); return h }),
+		"InventoryItemFormScreen/viewKitPick": pick("InventoryItemFormScreen/kitPickView",
+			func(s Screen) jdeHeader { h, _ := s.(*InventoryItemFormScreen).kitPickView(); return h }),
+		"ItemSupplierFormScreen/viewPick": pick("ItemSupplierFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*ItemSupplierFormScreen).pickView(); return h }),
+		"LocationFormScreen/viewPick": pick("LocationFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*LocationFormScreen).pickView(); return h }),
+		"MaintenanceItemFormScreen/viewAssetPick": pick("MaintenanceItemFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*MaintenanceItemFormScreen).pickView(); return h }),
+		"PowerBreakerFormScreen/viewPick": pick("PowerBreakerFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*PowerBreakerFormScreen).pickView(); return h }),
+		"PowerCircuitFormScreen/viewPick": pick("PowerCircuitFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*PowerCircuitFormScreen).pickView(); return h }),
+		"PowerOutletFormScreen/viewPick": pick("PowerOutletFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*PowerOutletFormScreen).pickView(); return h }),
+		"PowerPanelFormScreen/viewPick": pick("PowerPanelFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*PowerPanelFormScreen).pickView(); return h }),
+		"ProjectStorageFormScreen/viewSlotPick": pick("ProjectStorageFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*ProjectStorageFormScreen).pickView(); return h }),
+		"StorageAssignFormScreen/viewPicker": pick("StorageAssignFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*StorageAssignFormScreen).pickView(); return h }),
+		"StorageSlotFormScreen/viewPicker": pick("StorageSlotFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*StorageSlotFormScreen).pickView(); return h }),
+		"StorageSlotGenerateScreen/viewPicker": pick("StorageSlotGenerateScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*StorageSlotGenerateScreen).pickView(); return h }),
+		"ThermostatFormScreen/viewPick": pick("ThermostatFormScreen/pickView",
+			func(s Screen) jdeHeader { h, _ := s.(*ThermostatFormScreen).pickView(); return h }),
+
+		"PurchaseOrderDetailScreen/viewOrderPad": pick("PurchaseOrderDetailScreen/order pad",
+			func(s Screen) jdeHeader { return s.(*PurchaseOrderDetailScreen).orderPadHeader() }),
+
+		// The receiving form with a note standing AND a 502's detail under it:
+		// the state its header is tallest in, and the one the header floor was
+		// written for.
+		"ReceiveFormScreen/View": {
+			mk: func() Screen {
+				s := NewReceiveFormScreen(Deps{}, poViewPO())
+				s.failDetail = nginx502
+				return s
+			},
+			after: func(s Screen) {
+				s.Update(tea.KeyMsg{Type: tea.KeyEnter}) // declines: no quantity typed yet
+			},
+			header: func(s Screen) jdeHeader { return s.(*ReceiveFormScreen).headerLines() },
+		},
+		// Same shape one screen over: the add-line flow pins its answer to the
+		// last keypress, with the failure detail riding under it.
+		"PurchaseOrderAddLineScreen/View": {
+			mk: func() Screen {
+				s := NewPurchaseOrderAddLineScreen(Deps{}, poViewPO())
+				s.note.text, s.note.level = "Scan or type an identifier.", StatusWarn
+				s.failDetail = nginx502
+				return s
+			},
+			header: func(s Screen) jdeHeader { return s.(*PurchaseOrderAddLineScreen).headerLines() },
+		},
+		"ServiceStatusScreen/View": {
+			mk:     func() Screen { return NewServiceStatusScreen(Deps{}) },
+			header: func(s Screen) jdeHeader { h, _ := s.(*ServiceStatusScreen).render(); return h },
+		},
+	}
+}
+
+// jdeHeadersWithoutEssentials are the header sites that genuinely mark NO row
+// essential, each with the reason.
 //
-// Asserted on the CLIPPED Root.View(), and in two steps because the row can be
-// lost two different ways: the layer can trim it out of the frame, or the pane
-// can cut it off the bottom.
-func TestJDEForm_ThePickFilterBoxIsOnEveryPane(t *testing.T) {
-	sites := jdePickSites(t)
-	checked := 0
-	for _, c := range jdePaneCases() {
-		if !sites[c.name] {
+// It is the same shape as po_create_phase_sweep_test.go's poPhasesWithoutKeys
+// and exists for the same reason: absent and empty have to be different states.
+// Without it a site could be made to pass by demoting the row that mattered,
+// which is precisely the move jdeHeadRank exists to make visible; with it, a
+// site that declares nothing essential has to be written down as such, and a
+// site written down here that LATER declares one fails as a stale entry.
+var jdeHeadersWithoutEssentials = map[string]string{
+	"ServiceStatusScreen/View": "the header is a roll-up — service count, all-working or " +
+		"degraded count, checked-at — and the body under it lists every service and its " +
+		"own state, so an operator who loses the row loses a summary and no fact.",
+}
+
+// TestJDEForm_EveryHeaderSiteIsSwept: every pinned header in the app is one of
+// the cases the header sweep walks, and every one of them says which of its
+// rows the operator cannot do without.
+func TestJDEForm_EveryHeaderSiteIsSwept(t *testing.T) {
+	cases := jdeHeaderCases()
+	sites := jdeHeaderSites(t)
+	for site := range sites {
+		if _, ok := cases[site]; !ok {
+			t.Errorf("%s hands a frame a pinned header and has no case in "+
+				"jdeHeaderCases, so no sweep ever asks which of its rows survive a "+
+				"short pane. Add one in the state the operator reaches it in", site)
+		}
+	}
+	for site := range cases {
+		if !sites[site] {
+			t.Errorf("jdeHeaderCases builds %s, which no longer hands a frame a pinned "+
+				"header. A stale case is a sweep spending its time on a header nobody "+
+				"draws while the one that replaced it goes unchecked", site)
+		}
+	}
+	for site, reason := range jdeHeadersWithoutEssentials {
+		if !sites[site] {
+			t.Errorf("jdeHeadersWithoutEssentials excuses %s, which is not a header site. "+
+				"A stale excuse silently exempts nothing and hides the next one", site)
+		}
+		if reason == "" {
+			t.Errorf("%s is excused from having an essential row with no reason given", site)
+		}
+	}
+
+	for site, c := range cases {
+		if c.mk == nil {
+			t.Errorf("the %s case has no builder, so every assertion about it is "+
+				"vacuous — most likely it names a jdeScreenStates key that has moved", site)
 			continue
 		}
+		s := c.mk()
+		jdeRootAt(t, s, 80, 40)
+		if c.after != nil {
+			c.after(s)
+		}
+		header := c.header(s)
+		if len(header) == 0 {
+			t.Errorf("the %s case builds an empty header at 80x40, so the sweep would "+
+				"assert nothing about it — the state it is built in does not reach the "+
+				"frame that pins one", site)
+			continue
+		}
+		essential := 0
+		for _, row := range header {
+			if row.Rank == jdeHeadEssential {
+				essential++
+			}
+		}
+		_, excused := jdeHeadersWithoutEssentials[site]
+		if essential == 0 && !excused {
+			t.Errorf("%s marks none of its %d header rows essential. Either one of them "+
+				"IS the row the operator cannot act without — say so with "+
+				"jdeHeadEssential — or none is, and that belongs in "+
+				"jdeHeadersWithoutEssentials with the reason. Everything expendable is "+
+				"how a header passes this sweep while dropping the row that mattered",
+				site, len(header))
+		}
+		if essential > 0 && excused {
+			t.Errorf("%s is listed in jdeHeadersWithoutEssentials and marks %d row(s) "+
+				"essential. The excuse is stale, and while it stands the sweep's own "+
+				"vacuity guard is switched off for this site", site, essential)
+		}
+	}
+}
+
+// TestJDEForm_EveryEssentialHeaderRowIsOnThePane: the rows a builder said the
+// operator cannot act without are drawn at every size the frame is drawn at.
+//
+// This is the check the rank exists to make possible. Before it, the only thing
+// a sweep could ask about a pinned header was "is SOMETHING left of it", which
+// both instances of the defect satisfied: the picker kept its "Category" title
+// while the filter box the operator was typing into went, and the order pad kept
+// its "Order pad" heading while the ⚠ saying lines had been dropped from the pad
+// went — at 80x12 and 80x13, on a pad whose text is already on the clipboard, so
+// what the operator pastes is short and nothing on the screen says so.
+//
+// Inferring which row matters from POSITION is what caused that, and a per-site
+// table in a test is the hand-kept roster this project keeps being bitten by. So
+// the builder declares it, in production, beside the row — and this walks every
+// derived site at every width and every drawable height, asserting on the
+// CLIPPED Root.View() because the screen's own string is not what the operator
+// reads.
+func TestJDEForm_EveryEssentialHeaderRowIsOnThePane(t *testing.T) {
+	asserted := 0
+	for site, c := range jdeHeaderCases() {
 		for _, w := range jdePaneWidths {
 			for _, h := range jdePaneHeights() {
 				s := c.mk()
 				r := jdeRootAt(t, s, w, h)
-				view := s.View()
-				if jdeBarOf(view) == nil {
-					continue // a frame the layer refused; it draws no rows at all
+				if c.after != nil {
+					c.after(s)
 				}
-				checked++
-				row := jdePickFilterRow(view)
-				if row == "" {
-					t.Errorf("%s at %dx%d draws a frame with no filter row in it — the box "+
-						"the operator types into was trimmed off the pinned header, so "+
-						"every keystroke goes somewhere they cannot see:\n%s",
-						c.name, w, h, r.View())
-					continue
+				if jdeBarOf(s.View()) == nil {
+					continue // a frame the layer refused; it draws no header rows at all
 				}
-				clipped := truncateVisible(strings.TrimRight(row, " "), screenBodyWidth(w))
-				if clipped != "" && !strings.Contains(r.View(), clipped) {
-					t.Errorf("%s at %dx%d: the filter row %q is cut off the pane, so the box "+
-						"the operator types into is not on it:\n%s",
-						c.name, w, h, row, r.View())
+				shown := r.View()
+				for _, row := range c.header(s) {
+					if row.Rank != jdeHeadEssential {
+						continue
+					}
+					want := truncateVisible(strings.TrimRight(row.Text, " "), screenBodyWidth(w))
+					if want == "" {
+						continue
+					}
+					asserted++
+					if !strings.Contains(shown, want) {
+						t.Errorf("%s at %dx%d drops the header row it marked essential — "+
+							"%q is not on the pane, so the operator is acting on a screen "+
+							"that is not telling them what it said it could not do "+
+							"without:\n%s", site, w, h, row.Text, shown)
+					}
 				}
 			}
 		}
 	}
-	if checked == 0 {
-		t.Error("no picker drew a frame at any supported size, so this sweep asserted " +
-			"nothing. Either jdeScreenStates has no pick-list state left or every one " +
-			"of them is being refused; both need this test rewritten rather than deleted")
+	if asserted == 0 {
+		t.Error("no header site drew an essential row at any supported size, so this " +
+			"sweep asserted nothing. Either every builder has stopped marking rows " +
+			"essential or every frame is being refused; both need this test rewritten " +
+			"rather than deleted")
 	}
 }

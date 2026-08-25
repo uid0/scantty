@@ -419,18 +419,30 @@ note, and is the authority):
   scanner firing into a box the operator cannot see is worse than a label they
   have to press nothing to lose. It is a RULE and not two cases: whichever body
   has one navigable row is in it, so applying it to the one that was reported
-  leaves the other stranding its field a round later. A PINNED HEADER is a third
-  instance of the same rule and it took a round to be seen as one — nothing an
-  operator presses brings back a row `jdeFitHeader` has trimmed, so it has one
-  end to protect too. `jdePickList.render` therefore draws the always-live
-  FILTER BOX first and the title after it, unconditionally at every height, the
-  way `serialBody` does. Title-first cost the operator the box on all nineteen
-  pickers at their minimum drawable height (80x11: keep is 1 and the one row
-  kept was the decorative title), and the list is windowed on the CURSOR, which
-  typing does not move, so every keystroke redrew the pane byte for byte.
-  `TestJDEForm_ThePickFilterBoxIsOnEveryPane` walks it over a picker roster
-  DERIVED from the `jdePickList` literals in the package's own source, so a
-  picker added later cannot be the one nobody swept. On such a body NEITHER marker can
+  leaves the other stranding its field a round later. A PINNED HEADER is the
+  same rule with a DIFFERENT LEVER, and getting the lever wrong cost a round:
+  nothing an operator presses brings back a row `jdeFitHeader` has trimmed, so a
+  header does have one end to protect — but the end that must SURVIVE and the
+  end that READS first are not the same end. Inverting the display (drawing the
+  picker's filter box above its own title, the way `serialBody` draws a field
+  above what identifies it) bought one row at one height by relaying out
+  nineteen screens at every height, and it fixed nothing for the ORDER PAD,
+  whose ⚠ omitted-lines warning had the identical problem one file over. So the
+  two orders are decoupled: `jdeHeadRank` (`jdeHeadEssential` / `jdeHeadContext`
+  / `jdeHeadDecorative`) travels with each header row, builders keep their
+  natural layout, and `jdeFitHeader` gives ground BY RANK — most expendable
+  first, within a rank from the END, output still in display order. Blank
+  separators are forced decorative, which is the separator rule read from the
+  other side. A builder may mark at most as many rows essential as the smallest
+  drawable budget keeps (one, on any screen with a header), because an
+  "essential" row the geometry drops anyway is the same false claim in a new
+  place. `TestJDEForm_EveryEssentialHeaderRowIsOnThePane` holds it over a roster
+  DERIVED from the `header jdeHeader` parameter of the layer's own frames, so
+  every pinned header in the app is swept — the previous roster was derived from
+  `jdePickList` literals, which is exactly why the order pad's warning went
+  missing at 80x12 and 80x13 with nothing to report it. A site that marks
+  nothing essential must say so in `jdeHeadersWithoutEssentials` WITH A REASON,
+  so absent and empty are different states. On such a body NEITHER marker can
   be acted on, and only one of them is the sheet's to prevent: `↑ more above`
   appears when the window starts past line 0, which is a consequence of where
   the sheet puts its lines, so

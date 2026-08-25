@@ -1585,7 +1585,7 @@ func (s *AssetFormScreen) certsValue() (string, bool) {
 // pickView builds the open picker's pinned header and its option list. The
 // certifications picker marks membership with a checkbox in the label itself —
 // the layer never learns what is being picked, so the caller draws the mark.
-func (s *AssetFormScreen) pickView() ([]string, *jdeLines) {
+func (s *AssetFormScreen) pickView() (jdeHeader, *jdeLines) {
 	multi := s.pickField == afRequiredCerts
 	note := "Row 1 is none — it clears the field."
 	if multi {
