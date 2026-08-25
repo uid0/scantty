@@ -464,8 +464,13 @@ func (f *receiveSerialFake) handler() http.HandlerFunc {
 }
 
 // receiveOneLine drives the receiving form the way an operator does — type a
-// quantity, Enter past the notes, Enter to submit — through Root.Update against
-// the fake, and hands back both so the test can read the screen AND the wire.
+// quantity, Enter to receive — through Root.Update against the fake, and hands
+// back both so the test can read the screen AND the wire.
+//
+// ONE Enter, from the quantity row itself. Enter used to advance a field and
+// submit only from the last one; the columnar conversion (sc-jde-recv) made it
+// commit from any row, which is what every other purchasing sheet does
+// (po_edit's Enter=Save, po_add_line's Enter=Add line).
 func receiveOneLine(t *testing.T, line omsapi.PurchaseOrderItem, qty string) (*receiveSerialFake, *ReceiveFormScreen, Root) {
 	t.Helper()
 	fake := &receiveSerialFake{}
@@ -481,8 +486,7 @@ func receiveOneLine(t *testing.T, line omsapi.PurchaseOrderItem, qty string) (*r
 	r = pump(t, r, screen.Init(), 0)
 
 	r = key(t, r, woRuneKey(qty))
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // qty -> notes
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // submit
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // receive
 	return fake, screen, r
 }
 

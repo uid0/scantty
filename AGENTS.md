@@ -121,6 +121,15 @@ note, and is the authority):
   `internal/tui/jde_form.go` is the shared layer; `internal/tui/po_edit.go` is
   the pilot and `po_edit_jde_test.go` is where the layout and key scheme are
   pinned. Extend that layer — do not hand-roll a second style beside it.
+  Purchasing is converted screen by screen: the VIEW half (`po_detail.go`), the
+  edit sheet, the add-line flow (`po_add_line.go`) and RECEIVING
+  (`receive_form.go`, sc-jde-recv). The ENTRY half of New PO
+  (`po_create.go` + `po_create_pickers.go`) is still on its own pane-local
+  dialect and is queued. A flow with PHASES of its own brings its own derived
+  sweep rather than joining a shared one — `po_add_line_sweep_test.go` and
+  `receive_form_sweep_test.go` are the two examples, and they are the same
+  file with the nouns changed: phases from the iota's sentinel, keys from
+  `poKeySpace()`, state and focus from `reflect` over the screen struct.
 - **A key the bar does not name must do nothing**, and a key it names must do
   something. Tests assert both — and a key absent from a sweep's VOCABULARY is
   pressed in neither direction, so it is untested rather than passing. That is
@@ -901,6 +910,20 @@ touching any screen an operator drives:
   test that only sets `XDG_CONFIG_HOME` therefore writes the developer's real
   prefs file and fails on its second run; set `HOME` as well. `internal/config/prefs_test.go`'s
   `setRequiredConfigEnv` does this and is what any new config test should call.
+- **A drive that settles a keystroke pays 200ms for the cursor blink.** `pump`
+  (`wo_materials_drive_test.go`) abandons the textinput blink tick by WAITING IT
+  OUT — 200ms of dead wall-clock per `key()` — and bubbles' tick is 530ms, so a
+  drive that runs the tick itself pays even more. It is invisible on a handful of
+  presses and ruinous on a sweep: the receiving key-space sweep took 292s through
+  `pump` and 242s through a settler that ran the tick, against 1s once neither
+  did. Two facts get you out, both in `receive_form_sweep_test.go`:
+  `textinput.Blink` returns its message IMMEDIATELY and it is only FEEDING that
+  message back to `Update` that starts the tick (so recognise it and stop —
+  `receiveIsBlink`, checked against `textinput.Blink()` by a test so a bubbles
+  rename cannot turn it into a drive that skips nothing); and TYPING is
+  synchronous, so a typed rune needs no settling at all (`receiveType`). Do not
+  shorten `pump`'s own budget to fix this — it is shared with ~30 drive tests and
+  would make all of them racier on a loaded machine.
 - `gofmt -l` flags a few pre-existing files (doc-comment backtick rewrites).
   Format only what you touch.
 
