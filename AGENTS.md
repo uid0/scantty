@@ -306,17 +306,16 @@ note, and is the authority):
   added later is swept without anyone remembering it). Mark a new budget helper
   `jde:layer-only` at its declaration; a roster kept in the test is the
   hand-maintained list this project keeps being bitten by.
-  Zero rows means ZERO, not one: a pinned header that fills the pane leaves the
-  body nothing, because `jdePadTo` trims the assembled frame back to the budget
-  and takes the windowed line with it. Reading it as one row made the order
-  pad's bar name PgUp/PgDn at 80x12 over a frame that does not move —
-  `TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves` walks the pane height one
-  row at a time and is what caught it. Zero rows is also not a licence to
-  DISCARD the operator's place: `frameScrolled` hands its clamped offset back
-  and both callers store it, so clamping against no rows answered 0 and a
-  terminal briefly dragged short came back at the top of a long order pad.
-  Nothing to clamp against means nothing to clamp, so the clamp is skipped and
-  `ClampScroll` no longer carries a branch for a state it cannot be called in.
+  Zero rows is not a licence to DISCARD the operator's place: `frameScrolled`
+  hands its clamped offset back and both callers store it, so clamping against
+  no rows answered 0 and a terminal briefly dragged short came back at the top
+  of a long order pad. Nothing to clamp against means nothing to clamp, so the
+  clamp is skipped and `ClampScroll` no longer carries a branch for a state it
+  cannot be called in. That state is now reached only through the refusal below,
+  and `TestJDEScroll_APaneTooShortToDrawTheBodyKeepsTheOperatorsPlace` DERIVES
+  the height it happens at rather than naming one — it named 80x12, and 80x12
+  stopped being that state the moment the budget stopped being floored, so the
+  test would have gone on passing over a state it was no longer in.
   The status bound is measured in BOTH axes and in what is really drawn.
   `fitStatus` takes the MARK it is about to sit behind and reserves that — two
   cells for the error's `✗ ` and the storage warning's `! `, and nothing at all
@@ -329,6 +328,45 @@ note, and is the authority):
   a forward pass (`cellPrefix`) before `fitCell` sees it, because `fitCell`
   falls back on `truncateVisible` and a flattened 20 KB gateway page through an
   O(n²) bound is the hang recorded further down this file.
+- **What the layer assembles FITS THE PANE, and the order it gives ground in is
+  written down.** `jdeBodyAvail` / `jdeFitHeader` / `bodyRowsForBar` are that
+  order: the body gives rows first, down to ONE and no further; the pinned
+  header gives up whatever that costs; the status row and the action bar never
+  give. `bodyRowsForBar` used to FLOOR its budget at three rows, which does not
+  create rows — it only makes the assembled frame claim rows the pane does not
+  have — so whenever `screenBodyRows(H) < barRows+4` the frame ran over and
+  `clampToBox`, which drops from the BOTTOM, took the action bar off it. On the
+  purchase-order detail at 80 columns (a four-key-line bar) that is one key line
+  gone at 80x14, three at 80x12 and the whole bar, rule and all, at 80x10 — with
+  every one of those keys still working and nothing on the screen saying the
+  legend was a fragment. `screenBodyHeight` floors at four for the same reason
+  and so lies below a terminal height of 10, which is why the layer reads
+  `screenBodyRows` (layout.go, the unfloored answer) and nothing else.
+  When even that will not fit, the frame is REFUSED rather than mutilated:
+  `jdeTooShort` draws a bounded two-sentence notice naming how tall a terminal
+  the screen needs and saying the keys still work. A bar with rows cut off it
+  names some keys and hides the rest SILENTLY and the operator cannot tell
+  which; naming none is the only honest alternative. Both floors are rule 1 — a
+  keypress must change something the operator can see — and each covers a press
+  the other does not: the BODY row carries the cursor and the focused box, the
+  HEADER row carries the screen's answer to a press that DECLINED (the receiving
+  form's note is the whole of "enter needs a quantity first"). At a budget of
+  one they cannot both be had, so a budget of one with a header pinned is
+  refused rather than resolved in favour of whichever defect.
+  `jde_pane_fit_test.go` holds all of it over every screen at once, at 80/100/120
+  and at every height Root will draw (derived from Root's own "terminal too
+  short" gate, not written down). The SET of screens is derived too — every type
+  embedding `jdeScreen`, read out of the package source — and
+  `jdeScreenFixtures` fails on an omission, on a stale entry, and on a fixture
+  left in its loading state, which renders one line of "Loading…", fits every
+  pane and proves nothing.
+  KNOWN AND ROUTED, on the other axis: `renderActionBar` — the one-line bar the
+  NON-wrapping frames draw — tightens its gutter and then lets the line run past
+  the pane, so eleven form screens (MaintenanceItemFormScreen's bar is 63 cells
+  against 51) lose the tail of their legend at 80 columns. It predates the floor
+  fix and the floor fix reduces it. The fix is to give those frames
+  `renderActionBarWrapped`, which means giving `bodyAvail` and `bodyScrolls` the
+  `items` they do not take, on some thirty sheets — a conversion, not a patch.
 - **A body line that belongs to no navigable ROW is a line no key can reach.**
   `jdeLines.Window` anchors the window on the CURSOR's block, and a columnar
   sheet's cursor cannot go above its first row — up WRAPS to the last row, which

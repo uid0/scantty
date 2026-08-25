@@ -1409,8 +1409,16 @@ const receiveNoteRows = 3
 const receiveNoteDropMark = " …"
 
 // receiveBodyFloor is the body's target floor once the terminal has told us how
-// tall it is — the same three rows jde_form.go's bodyRowsForBar floors at,
-// deliberately, so this agrees with the layer rather than fighting it.
+// tall it is: three rows, which is the shortest body this form has anything
+// useful to say in — a line's name, its readings and its quantity box.
+//
+// It used to be justified as "the same three rows jde_form.go's bodyRowsForBar
+// floors at, deliberately, so this agrees with the layer rather than fighting
+// it". The layer floors at nothing any more, and it never should have: the
+// floor did not create rows, it only made the assembled frame claim rows the
+// pane did not have, and clampToBox then took the action bar off the bottom of
+// it. So this number now stands on its own reasoning, which is about what a
+// RECEIVING body needs rather than about what the layer will tolerate.
 //
 // It is a target and not a guarantee, and the difference is worth stating
 // because the sentence used to claim the guarantee. headerSplit delivers it in
@@ -1418,6 +1426,9 @@ const receiveNoteDropMark = " …"
 // and from receiveBodyFloor+3 with one — those are the first budgets that can
 // pay for the floor AND every header floor beside it. Below that the body gives
 // one row at a time, never to nothing, and the exact ladder is in headerSplit.
+// Below THAT the layer refuses the frame outright (jdeScreen.tooShort), so the
+// ladder's bottom rung is never the last thing between the operator and a blank
+// pane.
 const receiveBodyFloor = 3
 
 // headerRoom is what the WHOLE pinned header may spend on this pane.

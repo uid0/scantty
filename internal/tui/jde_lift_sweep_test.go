@@ -1076,12 +1076,34 @@ func TestJDEScroll_APaneTooShortToDrawTheBodyKeepsTheOperatorsPlace(t *testing.T
 		t.Fatalf("the pad did not scroll at 80x40, so there is no place to lose:\n%s", scrolled)
 	}
 
+	// The height at which the body gets no rows is DERIVED, not written down.
+	// It used to be 80x12 and this test said so; then the layer stopped
+	// flooring its budget at three rows and started giving the pinned header up
+	// before the body's last row, and 80x12 became a height that draws a row of
+	// the pad perfectly well. A written-down height would have gone on passing
+	// while exercising a different state entirely — the guard below is only
+	// what caught it because it asserts the state rather than assuming it.
+	shortH := 0
+	probe, pr := build(t)
+	for h := 20; h >= 7; h-- {
+		pr, _ = jdeLiftUpdate(pr, tea.WindowSizeMsg{Width: 80, Height: h})
+		pr.View()
+		if probe.bodyAvailForBar(len(probe.orderPadHeader()), probe.orderPadBar()) == 0 {
+			shortH = h
+			break
+		}
+	}
+	if shortH == 0 {
+		t.Fatal("no supported height leaves this body without a row, so the state this " +
+			"test is about is unreachable and it needs rewriting rather than deleting")
+	}
+
 	// The terminal is dragged short — the body gets no rows at all — and back.
-	r, _ = jdeLiftUpdate(r, tea.WindowSizeMsg{Width: 80, Height: 12})
+	r, _ = jdeLiftUpdate(r, tea.WindowSizeMsg{Width: 80, Height: shortH})
 	short := r.View()
 	if avail := s.bodyAvailForBar(len(s.orderPadHeader()), s.orderPadBar()); avail != 0 {
-		t.Fatalf("at 80x12 the body still gets %d row(s), so this is not the state under test:\n%s",
-			avail, short)
+		t.Fatalf("at 80x%d the body still gets %d row(s), so this is not the state under test:\n%s",
+			shortH, avail, short)
 	}
 	if s.padScroll != place {
 		t.Errorf("a pane too short to draw the body reset the scroll offset from %d to %d; "+
