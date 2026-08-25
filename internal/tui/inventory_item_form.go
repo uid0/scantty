@@ -2096,7 +2096,7 @@ func fieldWindow(cursor, total, visible int) (int, int) {
 }
 
 // pickView builds the open picker's pinned header and its option list.
-func (s *InventoryItemFormScreen) pickView() ([]string, *jdeLines) {
+func (s *InventoryItemFormScreen) pickView() (jdeHeader, *jdeLines) {
 	title, empty := "Category", "(no matching categories)"
 	if s.phase == itemFormPhaseLocationPick {
 		title, empty = "Location", "(no matching locations)"

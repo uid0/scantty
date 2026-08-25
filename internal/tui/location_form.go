@@ -604,7 +604,7 @@ func (s *LocationFormScreen) parentValue() (string, bool) {
 	return fmt.Sprintf("#%d", *s.parentID), false
 }
 
-func (s *LocationFormScreen) pickView() ([]string, *jdeLines) {
+func (s *LocationFormScreen) pickView() (jdeHeader, *jdeLines) {
 	return jdePickList{
 		Title:  "Parent location",
 		For:    strings.TrimSpace(s.inputs[lfName].Value()),

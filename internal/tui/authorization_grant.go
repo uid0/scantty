@@ -537,7 +537,7 @@ func (s *AuthorizationGrantScreen) pickerValue(id int) (string, bool) {
 }
 
 // pickView builds the open picker's pinned header and its option list.
-func (s *AuthorizationGrantScreen) pickView() ([]string, *jdeLines) {
+func (s *AuthorizationGrantScreen) pickView() (jdeHeader, *jdeLines) {
 	title, empty := "Asset", "(no matching assets)"
 	if s.pickField == agUser {
 		title, empty = "Member", "(no matching members)"

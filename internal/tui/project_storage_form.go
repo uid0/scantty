@@ -629,7 +629,7 @@ func (s *ProjectStorageFormScreen) slotRowValue() (string, bool) {
 // covers the two things about this list that are not self-evident: what the
 // clear row does, and — when the load failed — that a code can still be typed
 // straight in (the backend re-checks it either way).
-func (s *ProjectStorageFormScreen) pickView() ([]string, *jdeLines) {
+func (s *ProjectStorageFormScreen) pickView() (jdeHeader, *jdeLines) {
 	note := "Row 1 is no slot — ad-hoc storage. A claimed slot wins over the location below."
 	if s.slotsErr != "" {
 		note = "Slot list unavailable — type the code off the card, or Ctrl-R to retry."

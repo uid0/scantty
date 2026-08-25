@@ -1598,6 +1598,42 @@ func TestReceive_AHugeNoteDoesNotFreezeTheFrame(t *testing.T) {
 // The reservation yields to the pane; the form is always drawn
 // ---------------------------------------------------------------------------
 
+// receiveFrameDrawn reports whether the columnar layer will draw this screen's
+// frame at all at the size it has been given, and asserts the REFUSAL when it
+// will not.
+//
+// The layer refuses when the pane cannot hold the action bar, the status row
+// and one row each of the pinned header and the body (jdeScreen.tooShort). That
+// is a state these sweeps never had to think about, because the layer used to
+// FLOOR the body budget at three rows and assemble a frame that did not fit:
+// clampToBox took the action bar off the bottom, and every sweep in this file
+// asserts about the BODY, so 80x8 "drew the form" with no legend under it at
+// all and passed. The frame now either fits whole or is replaced by a notice,
+// so those heights have to be ASSERTED rather than swept past — otherwise
+// raising a sweep's floor to make it pass is just the check being weakened to
+// whatever is easy to assert.
+//
+// The bound is DERIVED: the same predicate the frames use, asked of the same
+// bar and the same header they are about to be handed. A change to the geometry
+// moves it instead of leaving a band of heights untested.
+func receiveFrameDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) bool {
+	t.Helper()
+	if !s.tooShort(actionBarRowsFor(s.barWidth(), s.bar()), len(s.headerLines())) {
+		return true
+	}
+	if pane := receivePaneText(s, w, h); !strings.Contains(pane, "Too short") {
+		t.Errorf("at %dx%d the layer cannot fit this frame and the pane does not say so — "+
+			"a blank pane is one the operator cannot tell from a wedged program:\n%s",
+			w, h, receiveClippedPane(s, w, h))
+	}
+	if jdeBarOf(s.View()) != nil {
+		t.Errorf("at %dx%d the pane cannot carry the action bar and the frame draws one "+
+			"anyway, so what the operator reads is whatever clampToBox leaves of "+
+			"it:\n%s", w, h, receiveClippedPane(s, w, h))
+	}
+	return false
+}
+
 // receiveCursorRowIdentified reports whether the pane says WHICH row the cursor
 // is on — its line name, the first line of the cursor's block.
 //
@@ -1715,6 +1751,9 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 				fake := &receiveFake{}
 				r, s := receiveDrive(t, fake, receiveManyLines(3), width, height)
 
+				if !receiveFrameDrawn(t, s, width, height) {
+					return
+				}
 				// The form is drawn at rest: the row the cursor is standing on
 				// is what the operator is here to type into.
 				if !receiveCursorRowIdentified(t, s, width, height) {
@@ -1739,6 +1778,9 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 				if got := receiveBarNames(s, "PgUp/PgDn"); got != restingNames {
 					t.Errorf("writing a note flipped whether the bar names PgUp/PgDn "+
 						"(%v -> %v)", restingNames, got)
+				}
+				if !receiveFrameDrawn(t, s, width, height) {
+					return
 				}
 				if !receiveCursorRowIdentified(t, s, width, height) {
 					t.Errorf("the note pushed the cursor's own row off the pane:\n%s",
@@ -1765,6 +1807,9 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 				if s.failDetail == "" {
 					t.Fatalf("no failure detail is standing, so this height proves nothing")
+				}
+				if !receiveFrameDrawn(t, s, width, height) {
+					return
 				}
 				if !receiveCursorRowIdentified(t, s, width, height) {
 					t.Fatalf("a failure blanked the row the cursor is on:\n%s",
@@ -1899,6 +1944,9 @@ func TestReceive_NoBodyLineSitsWhereNoKeyCanReach(t *testing.T) {
 				fake := &receiveFake{}
 				r, s := receiveDrive(t, fake, lines, 80, height)
 
+				if !receiveFrameDrawn(t, s, 80, height) {
+					return
+				}
 				body := s.qtyBody()
 				for i, row := range body.row {
 					if row == jdeNoRow {
@@ -2069,6 +2117,9 @@ func TestReceive_EveryRowDrawsTheBoxTheCursorIsOn(t *testing.T) {
 					}
 					// The notes row carries no line label to be identified by,
 					// so only the receivable rows are asked that question.
+					if !receiveFrameDrawn(t, s, 80, height) {
+						return
+					}
 					if row < len(s.qty) && !receiveCursorRowIdentified(t, s, 80, height) {
 						t.Fatalf("standing on row %d, the pane says nothing about which row "+
 							"that is:\n%s", row, receiveClippedPane(s, 80, height))

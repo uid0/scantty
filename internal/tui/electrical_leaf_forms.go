@@ -913,7 +913,7 @@ func (s *PowerOutletFormScreen) pickerValue(id int) (string, bool) {
 // pickView builds the open picker's pinned header and its option list. The note
 // explains what the clear row does, which is the one thing about these lists
 // that is not self-evident.
-func (s *PowerOutletFormScreen) pickView() ([]string, *jdeLines) {
+func (s *PowerOutletFormScreen) pickView() (jdeHeader, *jdeLines) {
 	title, note, empty := "Location", "", "(no matching locations)"
 	switch s.pickField {
 	case poCircuit:
@@ -1830,7 +1830,7 @@ func (s *DisconnectFormScreen) lotoValue() (string, bool) {
 // pickView builds the open picker's pinned header and its option list. The LOTO
 // picker marks membership with a checkbox in the label itself — the layer never
 // learns what is being picked, so the caller draws the mark.
-func (s *DisconnectFormScreen) pickView() ([]string, *jdeLines) {
+func (s *DisconnectFormScreen) pickView() (jdeHeader, *jdeLines) {
 	title, note, empty := "Circuit", "", "(no matching circuits)"
 	switch s.pickField {
 	case dcLocation:

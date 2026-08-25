@@ -1791,7 +1791,7 @@ func plural(noun string, n int) string {
 }
 
 // pickView builds the asset picker's pinned header and its option list.
-func (s *MaintenanceItemFormScreen) pickView() ([]string, *jdeLines) {
+func (s *MaintenanceItemFormScreen) pickView() (jdeHeader, *jdeLines) {
 	empty := "(no matches)"
 	if len(s.assets) == 0 {
 		empty = "(no assets loaded)"

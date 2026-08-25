@@ -124,7 +124,7 @@ func (s *ServiceStatusScreen) View() string {
 
 // render builds the pinned header and the scrollable body. Split out of View so
 // paging can measure the same lines the operator is looking at.
-func (s *ServiceStatusScreen) render() ([]string, *jdeLines) {
+func (s *ServiceStatusScreen) render() (jdeHeader, *jdeLines) {
 	snapshot := s.deps.Health.Snapshot()
 	body := &jdeLines{}
 
@@ -132,7 +132,8 @@ func (s *ServiceStatusScreen) render() ([]string, *jdeLines) {
 		// Unknown is not an outage, and this line is deliberately muted rather
 		// than an error: the status check being unreachable tells us nothing
 		// about the services themselves, and nothing is gated on it.
-		header := []string{jdeIndent + StyleMuted.Render("Service status unavailable"), ""}
+		header := jdeHeader(nil).add(jdeHeadContext, jdeIndent+StyleMuted.Render("Service status unavailable")).
+			add(jdeHeadDecorative, "")
 		body.Add(jdeIndent + "The status check could not be reached, so nothing is known")
 		body.Add(jdeIndent + "about the external services right now.")
 		body.Add("")
@@ -152,7 +153,13 @@ func (s *ServiceStatusScreen) render() ([]string, *jdeLines) {
 	if !snapshot.CheckedAt.IsZero() {
 		summary += "  ·  " + StyleMuted.Render("checked "+snapshot.CheckedAt.Local().Format("15:04:05"))
 	}
-	header := []string{jdeIndent + summary, ""}
+	// CONTEXT and not essential, deliberately: the body lists every service
+	// and its state, so an operator who loses this row loses the roll-up and the
+	// checked-at time and still reads the same facts one row down. Nothing here
+	// is a row they would act differently without, which is why this screen is
+	// recorded in jdeHeadersWithoutEssentials rather than promoting a row to
+	// make a sweep happy.
+	header := jdeHeader(nil).add(jdeHeadContext, jdeIndent+summary).add(jdeHeadDecorative, "")
 
 	now := s.clock()
 	// One label column across every service's block, so the leaders line up

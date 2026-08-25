@@ -771,7 +771,7 @@ func (s *ThermostatFormScreen) locationName(id int) string {
 // pickView builds the open picker's pinned header and its option list. The
 // title names what is being picked; the note explains what the clear row does,
 // which is the one thing about these three lists that is not self-evident.
-func (s *ThermostatFormScreen) pickView() ([]string, *jdeLines) {
+func (s *ThermostatFormScreen) pickView() (jdeHeader, *jdeLines) {
 	title, note, empty := "Mounted location", "", "(no matching locations)"
 	switch s.pickField {
 	case tfControlsLocation:

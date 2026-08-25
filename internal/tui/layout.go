@@ -62,17 +62,48 @@ func screenBodyWidth(terminalWidth int) int {
 	return w
 }
 
+// screenBodyRows is how many rows a screen's View() really gets inside the
+// content pane: the terminal height less the status bar, the content padding
+// and the title+blank header, and NOTHING ELSE. Zero when the terminal is too
+// short to give it any.
+//
+// It is the truthful half of screenBodyHeight, split out because the floor
+// below is a LIE at small heights and a caller that has to fit a fixed piece of
+// chrome — the columnar layer's action bar — cannot budget against a lie. At a
+// terminal height of 9 this answers 3 and screenBodyHeight answers 4, so a
+// frame built to the latter runs a row over and clampToBox takes the bar's last
+// key line off the bottom: keys that work, unnamed, which is the one thing the
+// bar exists to make impossible.
+//
+// Callers that only need "a sane number to size a viewport with" should keep
+// using screenBodyHeight; callers that must EXACTLY FILL the pane use this.
+func screenBodyRows(terminalHeight int) int {
+	h := terminalHeight - screenChromeRows
+	if h < 0 {
+		return 0
+	}
+	return h
+}
+
+// screenChromeRows is everything Root.View spends around a screen's body: the
+// status bar, the content pane's vertical padding and the title+blank header.
+// It is the inverse of screenBodyRows, and it exists so that a screen that has
+// to say how tall a terminal it NEEDS can convert its own row count back
+// without restating the sum (jdeTooShort).
+const screenChromeRows = statusBarRows + contentVerticalPadding + screenHeaderRows
+
 // screenBodyHeight returns the number of rows a screen's View() can render
 // inside the content pane without clipping at the bottom. Callers pass the
 // raw terminal height; this peels off the status bar, content padding, and
 // title+blank header. Falls back to a sane minimum so the layout never
-// degenerates to 0 or negative.
+// degenerates to 0 or negative — see screenBodyRows for the unfloored answer
+// and for why a screen pinning chrome to the bottom of the pane must use that
+// one instead.
 func screenBodyHeight(terminalHeight int) int {
-	h := terminalHeight - statusBarRows - contentVerticalPadding - screenHeaderRows
-	if h < 4 {
-		return 4
+	if h := screenBodyRows(terminalHeight); h >= 4 {
+		return h
 	}
-	return h
+	return 4
 }
 
 // scrollerViewHeight returns the rows available to a TextScroller embedded
@@ -99,18 +130,6 @@ func scrollerViewHeight(terminalHeight, footerRows int) int {
 // rows for its own body, and has to PAD its body out to that budget, or the
 // bar walks up and down the pane as the content changes length.
 const actionBarRows = 2
-
-// screenBodyHeightWithActionBar is screenBodyHeight less the persistent action
-// bar and the one row above it a screen keeps for its "saving…" / error line.
-// Split out rather than folded into screenBodyHeight because only the columnar
-// screens draw a bar; every other screen's budget must not move.
-func screenBodyHeightWithActionBar(terminalHeight int) int {
-	h := screenBodyHeight(terminalHeight) - actionBarRows - 1
-	if h < 3 {
-		return 3
-	}
-	return h
-}
 
 // detailFooterRows is the standard footer height for a detail screen with
 // no action message displayed: one blank line + one hint line.

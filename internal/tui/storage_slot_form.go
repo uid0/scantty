@@ -792,7 +792,7 @@ func (s *StorageSlotFormScreen) owningGroupValue() (string, bool) {
 // pickView builds the open picker's pinned header and its option list. The note
 // explains what the clear row does — the one thing about the list that is not
 // self-evident — or why the list is short.
-func (s *StorageSlotFormScreen) pickView() ([]string, *jdeLines) {
+func (s *StorageSlotFormScreen) pickView() (jdeHeader, *jdeLines) {
 	note := "Row 1 releases the reservation — the slot goes back to general use."
 	switch {
 	case s.sigsErr != "":

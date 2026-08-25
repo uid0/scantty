@@ -1409,8 +1409,16 @@ const receiveNoteRows = 3
 const receiveNoteDropMark = " …"
 
 // receiveBodyFloor is the body's target floor once the terminal has told us how
-// tall it is — the same three rows jde_form.go's bodyRowsForBar floors at,
-// deliberately, so this agrees with the layer rather than fighting it.
+// tall it is: three rows, which is the shortest body this form has anything
+// useful to say in — a line's name, its readings and its quantity box.
+//
+// It used to be justified as "the same three rows jde_form.go's bodyRowsForBar
+// floors at, deliberately, so this agrees with the layer rather than fighting
+// it". The layer floors at nothing any more, and it never should have: the
+// floor did not create rows, it only made the assembled frame claim rows the
+// pane did not have, and clampToBox then took the action bar off the bottom of
+// it. So this number now stands on its own reasoning, which is about what a
+// RECEIVING body needs rather than about what the layer will tolerate.
 //
 // It is a target and not a guarantee, and the difference is worth stating
 // because the sentence used to claim the guarantee. headerSplit delivers it in
@@ -1418,6 +1426,9 @@ const receiveNoteDropMark = " …"
 // and from receiveBodyFloor+3 with one — those are the first budgets that can
 // pay for the floor AND every header floor beside it. Below that the body gives
 // one row at a time, never to nothing, and the exact ladder is in headerSplit.
+// Below THAT the layer refuses the frame outright (jdeScreen.tooShort), so the
+// ladder's bottom rung is never the last thing between the operator and a blank
+// pane.
 const receiveBodyFloor = 3
 
 // headerRoom is what the WHOLE pinned header may spend on this pane.
@@ -1640,9 +1651,27 @@ func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 // note whether or not one is standing, plus the blank that separates the block
 // from the body. Only the reply-driven failure detail varies — and the PANE,
 // which noteRows yields to and which the bar and the guard see identically.
-func (s *ReceiveFormScreen) headerLines() []string {
-	lines := append(s.noteLines(), s.failDetailLines()...)
-	return append(lines, "")
+// The NOTE'S FIRST LINE is the one essential row, and jdeMinBudget's own
+// reasoning is why: the header floor exists on this screen because the note is
+// the whole of "enter needs a quantity first", so a refusal with nowhere to be
+// drawn is silent. The rest of the note folds, and the failure DETAIL is
+// context — its headline is on the status row, which is outside this budget and
+// never gives, so a short pane costs the reason and never the fact.
+//
+// One essential row and no more, because the smallest drawable budget on a
+// screen with a pinned header keeps exactly one (jdeMinBudget), and a row marked
+// essential that the geometry drops anyway is the same false claim jdeHeadRank
+// exists to remove.
+func (s *ReceiveFormScreen) headerLines() jdeHeader {
+	out := jdeHeader(nil)
+	for i, line := range s.noteLines() {
+		rank := jdeHeadContext
+		if i == 0 {
+			rank = jdeHeadEssential
+		}
+		out = out.add(rank, line)
+	}
+	return out.add(jdeHeadContext, s.failDetailLines()...).add(jdeHeadDecorative, "")
 }
 
 // noteLines renders the screen's answer to the last keypress into the rows

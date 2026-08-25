@@ -1041,7 +1041,7 @@ func (s *PowerPanelFormScreen) pickerValue(id int) (string, bool) {
 }
 
 // pickView builds the open picker's pinned header and its option list.
-func (s *PowerPanelFormScreen) pickView() ([]string, *jdeLines) {
+func (s *PowerPanelFormScreen) pickView() (jdeHeader, *jdeLines) {
 	title, note, empty := "Location", "", "(no matching locations)"
 	if s.pickField == ppFedBy {
 		title, empty = "Fed by", "(no matching circuits)"
@@ -1068,7 +1068,7 @@ func (s *PowerPanelFormScreen) viewPick() string {
 
 // pickPaging reports whether the option list overflows the pane, which is the
 // only time the bar names the paging keys.
-func (s *PowerPanelFormScreen) pickPaging(header []string, body *jdeLines) bool {
+func (s *PowerPanelFormScreen) pickPaging(header jdeHeader, body *jdeLines) bool {
 	return s.bodyScrolls(body, len(header))
 }
 
@@ -1971,7 +1971,7 @@ func (s *PowerBreakerFormScreen) panelValue() (string, bool) {
 	return fmt.Sprintf("#%d", *s.panelID), false
 }
 
-func (s *PowerBreakerFormScreen) pickView() ([]string, *jdeLines) {
+func (s *PowerBreakerFormScreen) pickView() (jdeHeader, *jdeLines) {
 	return jdePickList{
 		Title:  "Panel",
 		For:    strings.TrimSpace(s.inputs[pbLabel].Value()),
@@ -2644,7 +2644,7 @@ func (s *PowerCircuitFormScreen) breakerValue() (string, bool) {
 	return fmt.Sprintf("#%d", *s.breakerID), false
 }
 
-func (s *PowerCircuitFormScreen) pickView() ([]string, *jdeLines) {
+func (s *PowerCircuitFormScreen) pickView() (jdeHeader, *jdeLines) {
 	return jdePickList{
 		Title:  "Breaker",
 		For:    strings.TrimSpace(s.inputs[pcLabel].Value()),

@@ -694,7 +694,7 @@ func (s *CategoryFormScreen) parentValue() (string, bool) {
 }
 
 // pickView builds the parent picker's pinned header and its option list.
-func (s *CategoryFormScreen) pickView() ([]string, *jdeLines) {
+func (s *CategoryFormScreen) pickView() (jdeHeader, *jdeLines) {
 	return jdePickList{
 		Title:  "Parent category",
 		Note:   "Row 1 is none — it makes this a top-level category.",

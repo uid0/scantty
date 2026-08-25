@@ -669,7 +669,7 @@ func (s *StorageAssignFormScreen) groupValue() (string, bool) {
 	return fmt.Sprintf("SIG #%d", *s.owningGroupID), false
 }
 
-func (s *StorageAssignFormScreen) pickView() ([]string, *jdeLines) {
+func (s *StorageAssignFormScreen) pickView() (jdeHeader, *jdeLines) {
 	note := "Row 1 is none — describe the committee in Occupant instead."
 	switch {
 	case s.sigsErr != "":

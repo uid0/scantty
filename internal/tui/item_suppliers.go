@@ -1097,7 +1097,7 @@ func (s *ItemSupplierFormScreen) supplierValue() (string, bool) {
 }
 
 // pickView builds the supplier picker's pinned header and its option list.
-func (s *ItemSupplierFormScreen) pickView() ([]string, *jdeLines) {
+func (s *ItemSupplierFormScreen) pickView() (jdeHeader, *jdeLines) {
 	return jdePickList{
 		Title:  "Supplier",
 		For:    s.itemName,

@@ -770,7 +770,7 @@ func (s *AssetPartFormScreen) partValue() (string, bool) {
 }
 
 // pickView builds the part picker's pinned header and its option list.
-func (s *AssetPartFormScreen) pickView() ([]string, *jdeLines) {
+func (s *AssetPartFormScreen) pickView() (jdeHeader, *jdeLines) {
 	return jdePickList{
 		Title:  "Part",
 		For:    s.assetName,

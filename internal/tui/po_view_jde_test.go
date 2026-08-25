@@ -1688,6 +1688,15 @@ func poViewRootSized(t *testing.T, screen Screen, width, height int) Root {
 // every height it asserts the equivalence directly against the CLIPPED render:
 // the bar names the scroll keys if and only if pressing one moves the frame.
 // Nothing here re-derives the threshold — it observes it.
+//
+// The heights the layer REFUSES the frame at are asserted rather than swept
+// past. A refused pane draws the notice and NO BAR, so there is no claim on it
+// to be honest or dishonest about — asking `barHas` there is asking about a
+// legend nobody can read. It passed for a round by accident: while a refused
+// pane answered the body an avail of 0, jdeLines.Scrolls came back false there
+// and the equivalence held at both ends for the wrong reason. Skipping those
+// heights silently would leave a band of the sweep untested, which is the shape
+// this file exists to prevent, so the notice is checked for instead.
 func TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves(t *testing.T) {
 	surfaces := []struct {
 		name  string
@@ -1737,7 +1746,15 @@ func TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves(t *testing.T) {
 				// surfaces: it means exactly "the WINDOW moves". UP/DN is not,
 				// on the grid — there it moves the CURSOR, which is real but
 				// invisible here because lipgloss renders the highlight flat.
-				_, _, bar := sf.build(t, width, height)
+				probe, _, bar := sf.build(t, width, height)
+				if jdeBarOf(probe.View()) == nil {
+					if !strings.Contains(probe.View(), "Too short") {
+						t.Errorf("%s: the frame draws no action bar and does not say why, "+
+							"so the operator reads a pane with no legend and no "+
+							"explanation:\n%s", name, probe.View())
+					}
+					continue
+				}
 				named := barHas(bar, "PgUp/PgDn", "Page")
 
 				s, r, _ := sf.build(t, width, height)
