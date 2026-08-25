@@ -1654,12 +1654,27 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 					t.Fatalf("a failure blanked the row the cursor is on:\n%s",
 						receiveClippedPane(s, width, height))
 				}
-				// The failure is what gives first, but it does not vanish while
-				// the pane can pay for a row of it: the headline is on the
-				// status row and never gives, so the operator is never left
-				// without the fact that something failed.
-				if pane := receivePaneText(s, width, height); !strings.Contains(pane, "failed") {
+				// The failure is what gives first, but it gives its TAIL, not
+				// itself. The headline is on the status row and never gives, so
+				// the operator always knows something failed — but "something
+				// failed" without a reason is the state that decides nothing:
+				// it cannot tell them whether to retype a quantity or fetch
+				// somebody. The allocator used to hand the note its whole
+				// ceiling and the detail the remainder, so at every body budget
+				// of 7 or less the remainder was zero and a 502 arrived with no
+				// reason at all.
+				pane := receivePaneText(s, width, height)
+				if !strings.Contains(pane, "failed") {
 					t.Errorf("the failure headline is not on the pane:\n%s", pane)
+				}
+				// "502" can only have come from the DETAIL: the headline the
+				// status row draws is "Receiving PO-1001 failed" and carries no
+				// status code.
+				budget := s.bodyAvailForBar(0, s.barCeiling())
+				if budget > receiveBodyFloor && !strings.Contains(pane, "502") {
+					t.Errorf("the pane can pay %d body rows but carries no reason for the "+
+						"failure — the detail was dropped whole rather than shortened:\n%s",
+						budget, pane)
 				}
 				_ = r
 			})

@@ -1344,15 +1344,11 @@ const receiveNoteDropMark = " …"
 // deliberately, so this agrees with the layer rather than fighting it.
 //
 // It is a target and not a guarantee, and the difference is worth stating
-// because the sentence used to claim the guarantee. headerRoom delivers it in
-// full from a body budget of receiveBodyFloor+2 upward — that is the first
-// budget that can pay for the floor AND the header's irreducible two rows. On
-// the two budgets below it (3 and 4, which bodyRowsForBar's own floor makes the
-// smallest there are) the body gets 1 row and 2, because what the header cannot
-// give up is the note's LAST row and the blank under it: a decline with no row
-// to be drawn on is a keypress the operator gets no answer to, which is the
-// defect this screen was converted to remove. So the floor gives one row at a
-// time, from below, and only after the header has given everything it can.
+// because the sentence used to claim the guarantee. headerSplit delivers it in
+// full from a body budget of receiveBodyFloor+2 upward with no failure standing,
+// and from receiveBodyFloor+3 with one — those are the first budgets that can
+// pay for the floor AND every header floor beside it. Below that the body gives
+// one row at a time, never to nothing, and the exact ladder is in headerSplit.
 const receiveBodyFloor = 3
 
 // headerRoom is what the WHOLE pinned header may spend on this pane.
@@ -1386,35 +1382,120 @@ func (s *ReceiveFormScreen) headerRoom() int {
 	if budget <= 0 {
 		return receiveNoteRows + receiveFailDetailRows + 1
 	}
-	if room := budget - receiveBodyFloor; room > receiveHeaderFloor {
+	floor := s.headerFloor()
+	if room := budget - receiveBodyFloor; room > floor {
 		return room
 	}
-	return receiveHeaderFloor
+	// The body keeps at least one row whatever else goes: a form that draws
+	// nothing is the worst outcome on this screen, and rounds 7 and 8 were both
+	// spent closing exactly that.
+	if floor > budget-1 {
+		floor = budget - 1
+	}
+	if floor < receiveHeaderFloor {
+		floor = receiveHeaderFloor
+	}
+	return floor
 }
 
-// receiveHeaderFloor is what the header cannot give up: one row for the note —
-// so a decline always has somewhere to be drawn — and the blank that keeps it
-// off the body. Everything above it gives before the body does.
+// receiveHeaderFloor is what the header cannot give up with nothing but a note
+// in it: one row for the note — so a decline always has somewhere to be drawn —
+// and the blank that keeps it off the body.
 const receiveHeaderFloor = 2
 
-// failDetailRows is how many rows the failure detail gets on this pane.
-//
-// It is what headerRoom has left after the note, so the DETAIL is what gives
-// first when the pane cannot pay for everything: its headline is on the status
-// row and never gives, so what a short terminal loses here is the tail of the
-// gateway's HTML — which is what failDetailLines' own comment has always said
-// it loses. The note gives second, down to its last row; the body gives last,
-// because the operator cannot receive against a form that is not drawn.
-func (s *ReceiveFormScreen) failDetailRows() int {
-	left := s.headerRoom() - 1 - s.noteRows()
-	if left > receiveFailDetailRows {
-		return receiveFailDetailRows
+// headerFloor is receiveHeaderFloor plus the failure detail's own floor when a
+// detail is standing. It is a floor rather than a RESERVATION: it appears only
+// when there is a detail to draw, which is reply-driven and which the bar and
+// the guard see identically — the note's rows are the ones reserved
+// unconditionally, and that distinction is the one receiveNoteRows exists to
+// keep.
+func (s *ReceiveFormScreen) headerFloor() int {
+	if s.failDetailText() == "" {
+		return receiveHeaderFloor
 	}
-	if left < 0 {
-		return 0
-	}
-	return left
+	return receiveHeaderFloor + 1
 }
+
+// receiveHeader is the header's row allocation on this pane, written ONCE and
+// read by everything that asks. Two blocks with floors in one header cannot be
+// budgeted separately: the previous shape computed the note's share and handed
+// the detail whatever was left, which is how "the detail gives FIRST" became
+// "the detail gives EVERYTHING".
+type receiveHeader struct{ note, detail int }
+
+// headerSplit divides headerRoom between the note and the failure detail.
+//
+// EVERY PARTICIPANT HAS A FLOOR, and the giving is by degree rather than by
+// elimination. That is the correction: the order was right and its arithmetic
+// was not. failDetailRows used to be `headerRoom - 1 - noteRows`, which gave
+// the note its whole ceiling first and left the detail the remainder — so at
+// every body budget of 7 or less (which at 80 columns with a quantity typed is
+// every terminal 17 rows or shorter) the remainder was zero and a 502 left the
+// operator reading "✗ Receiving PO-1001 failed" with no reason at all, on the
+// one screen where the reason is what decides whether they retype a quantity or
+// go and fetch somebody. Both this file's comments claimed a short terminal
+// loses "the TAIL of the gateway's HTML"; it was losing the whole of it.
+//
+// So the floors are paid FIRST, in this order, and only then is the surplus
+// spent:
+//
+//	the status headline    never gives at all — it is on the status row, which
+//	                       is outside this budget entirely
+//	the note               one row, always: it is the answer to a keypress, and
+//	                       a decline with nowhere to be drawn is a press the
+//	                       operator gets no answer to
+//	the failure detail     one row whenever a detail exists, so it loses its
+//	                       TAIL and never itself
+//	the separator          one row, so the block is not read as body
+//	the body               everything left, and never nothing
+//
+// Then the surplus fills the NOTE to receiveNoteRows before the DETAIL to
+// receiveFailDetailRows, which is the same "detail gives first" ordering read
+// from the other end: what is served last is what is given up first.
+//
+// ONE height cannot pay all four floors — a body budget of 3, which is
+// jde_form.go's own bodyRowsForBar floor and so the smallest there is. There
+// the four rows needed (note, detail, separator, body) do not exist, and what
+// gives is the DETAIL: the note's row is a keypress's only answer, the body's
+// row is the form itself, and the operator still has the headline on the status
+// row telling them the receipt failed. Every budget from 4 up pays all four.
+func (s *ReceiveFormScreen) headerSplit() receiveHeader {
+	want := 0
+	if s.failDetailText() != "" {
+		want = receiveFailDetailRows
+	}
+	if s.bodyAvailForBar(0, s.barCeiling()) <= 0 {
+		// Unsized: the frame draws whole and Root's clampToBox decides, so
+		// there is no geometry to divide.
+		return receiveHeader{note: receiveNoteRows, detail: want}
+	}
+
+	content := s.headerRoom() - 1 // the separator is not divisible
+	note, detail := 1, 0
+	if want > 0 && content >= note+1 {
+		detail = 1
+	}
+	spare := content - note - detail
+	if grow := receiveNoteRows - note; grow > 0 && spare > 0 {
+		if grow > spare {
+			grow = spare
+		}
+		note += grow
+		spare -= grow
+	}
+	if grow := want - detail; grow > 0 && spare > 0 {
+		if grow > spare {
+			grow = spare
+		}
+		detail += grow
+	}
+	return receiveHeader{note: note, detail: detail}
+}
+
+// failDetailRows is how many rows the failure detail gets on this pane —
+// headerSplit's answer, so the two blocks in the header cannot be budgeted
+// against different arithmetic.
+func (s *ReceiveFormScreen) failDetailRows() int { return s.headerSplit().detail }
 
 // noteRows is how many rows the note block gets ON THIS PANE.
 //
@@ -1446,16 +1527,7 @@ func (s *ReceiveFormScreen) failDetailRows() int {
 // The bar it measures against is the phase's TALLEST (barCeiling), which is the
 // same fixed point qtyPagesFor uses and is what keeps this out of the recursion:
 // a bar that varied with the header would make the header vary with the bar.
-func (s *ReceiveFormScreen) noteRows() int {
-	room := s.headerRoom() - 1 // the blank between the block and the body
-	if room > receiveNoteRows {
-		return receiveNoteRows
-	}
-	if room < 1 {
-		return 1
-	}
-	return room
-}
+func (s *ReceiveFormScreen) noteRows() int { return s.headerSplit().note }
 
 // barCeiling is the tallest bar this phase can draw, and it is deliberately
 // blind to headerRows: it is what the header allowance measures itself against,
@@ -1596,9 +1668,24 @@ func (s *ReceiveFormScreen) fittedNote(width, rows int) pickerNote {
 	return trial
 }
 
-// receiveFailDetailRows caps the failure detail. The sentence naming what
-// failed is on the status row above it and never gives; what a short terminal
-// loses is the tail of the gateway's HTML.
+// failDetailText is the unbounded half of whatever failure is standing, and it
+// is the ONE predicate for "is there a detail to draw". headerSplit asks it to
+// decide whether the detail's floor is owed, and failDetailLines asks it for
+// the text: a second copy of that condition would let the budget reserve a row
+// the renderer does not fill, or the renderer want a row the budget never gave.
+func (s *ReceiveFormScreen) failDetailText() string {
+	if s.failDetail != "" {
+		return s.failDetail
+	}
+	return s.serialErr
+}
+
+// receiveFailDetailRows is the CEILING of the failure detail. The sentence
+// naming what failed is on the status row above it and never gives, and what a
+// short terminal loses here is the TAIL of the gateway's HTML — headerSplit
+// keeps the detail's first row ahead of the note's second, so the detail is
+// shortened rather than dropped at every pane that can pay four rows at all.
+// The single budget that cannot is named there.
 const receiveFailDetailRows = 3
 
 // failDetailLines draws the unbounded half of a failure under the headline the
@@ -1607,10 +1694,7 @@ const receiveFailDetailRows = 3
 // block redrawn every keystroke (cellPrefix walks forward and stops when the
 // budget is spent; truncateVisible would be O(n²) here).
 func (s *ReceiveFormScreen) failDetailLines() []string {
-	detail := s.failDetail
-	if detail == "" {
-		detail = s.serialErr
-	}
+	detail := s.failDetailText()
 	if detail == "" {
 		return nil
 	}
