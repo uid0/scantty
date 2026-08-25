@@ -31,11 +31,15 @@ package tui
 import (
 	"fmt"
 	"go/ast"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/uid0/scantty/internal/omsapi"
 )
 
 // jdePaneWidths are the widths the columnar screens are checked at. 80 is the
@@ -174,6 +178,74 @@ func jdeScreenFixtures() map[string]func() Screen {
 	}
 }
 
+// jdeScreenStates are EXTRA states of screens jdeScreenFixtures already builds,
+// and they are the second axis of this file: DERIVING the set of screens makes
+// a screen impossible to forget and says nothing whatever about the states
+// inside one.
+//
+// The layer's geometry only bites where a screen has a BODY long enough to
+// overflow its window and a bar that changes shape around it, and a freshly
+// built form has neither — its body fits, so jdeLines.Scrolls is false at every
+// height and its bar never names a scroll key. So the fixtures above sweep
+// thirty screens over the one state where the interesting arithmetic is inert.
+// That is not hypothetical either: the refusal notice named a height at which
+// the screen was still refused, it was measured on the purchase-order detail's
+// ORDER PAD, and the sweep written to catch it passed — no fixture reached that
+// state.
+//
+// The KEYS are `<fixture name>/<state>` and the prefix is checked against
+// jdeScreenFixtures by TestJDEForm_EveryColumnarScreenIsSwept, so a state
+// naming a screen that has been renamed away fails rather than quietly
+// sweeping nothing.
+func jdeScreenStates() map[string]func() Screen {
+	return map[string]func() Screen{
+		// A long export over a three-line pinned header: the state the notice
+		// defect was measured in. The bar names PgUp/PgDn exactly while the pad
+		// overflows, which is what makes its height vary with the pane.
+		"PurchaseOrderDetailScreen/order pad": func() Screen {
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			var rows []string
+			for i := 0; i < 40; i++ {
+				rows = append(rows, fmt.Sprintf("PART-%04d\t%d", i, i+1))
+			}
+			s.orderPad = true
+			s.orderPadExport = &omsapi.OrderPadExport{
+				Text: strings.Join(rows, "\n"), Supplier: "Acme Fasteners & Industrial Supply",
+				Filename: "PO-2026-0042-order.csv", LineCount: len(rows),
+				MissingSku: []string{"Widget clamp", "Gear housing", "Bearing race"},
+			}
+			return s
+		},
+	}
+}
+
+// jdePaneCases is every (screen, state) pair the sweeps in this file walk:
+// jdeScreenFixtures plus jdeScreenStates. Sorted, so a failure names the same
+// case run to run.
+func jdePaneCases() []struct {
+	name string
+	mk   func() Screen
+} {
+	var out []struct {
+		name string
+		mk   func() Screen
+	}
+	add := func(m map[string]func() Screen) {
+		for name, mk := range m {
+			out = append(out, struct {
+				name string
+				mk   func() Screen
+			}{name, mk})
+		}
+	}
+	add(jdeScreenFixtures())
+	add(jdeScreenStates())
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
+}
+
 // TestJDEForm_EveryColumnarScreenIsSwept: the fixtures and the screens agree,
 // and every fixture really draws a frame.
 //
@@ -201,12 +273,25 @@ func TestJDEForm_EveryColumnarScreenIsSwept(t *testing.T) {
 				"does not draw, while the one that replaced it goes unchecked", name)
 		}
 	}
-	for name, mk := range got {
-		s := mk()
+	for name := range jdeScreenStates() {
+		screen, _, ok := strings.Cut(name, "/")
+		if !ok {
+			t.Errorf("the extra state %q is not named <fixture>/<state>, so nothing "+
+				"checks that it still belongs to a screen the layer draws", name)
+			continue
+		}
+		if _, ok := got[screen]; !ok {
+			t.Errorf("jdeScreenStates builds the state %q of %s, which jdeScreenFixtures "+
+				"no longer builds. A state whose screen has been renamed away is a sweep "+
+				"spending its time on nothing", name, screen)
+		}
+	}
+	for _, c := range jdePaneCases() {
+		s := c.mk()
 		jdeRootAt(t, s, 80, 40)
 		if jdeBarOf(s.View()) == nil {
 			t.Errorf("the %s fixture draws no action bar at 80x40, so every assertion "+
-				"this file makes about it is vacuous:\n%s", name, s.View())
+				"this file makes about it is vacuous:\n%s", c.name, s.View())
 		}
 	}
 }
@@ -253,7 +338,8 @@ func jdeBarOf(view string) []string {
 // bar, whatever the bar happens to be carrying; a frame one row too tall loses
 // it silently and looks perfectly ordinary in a diff.
 func TestJDEForm_NoColumnarScreenOverflowsThePane(t *testing.T) {
-	for name, mk := range jdeScreenFixtures() {
+	for _, c := range jdePaneCases() {
+		name, mk := c.name, c.mk
 		for _, w := range jdePaneWidths {
 			for _, h := range jdePaneHeights() {
 				s := mk()
@@ -290,7 +376,8 @@ func TestJDEForm_NoColumnarScreenOverflowsThePane(t *testing.T) {
 // currently do not take, on some thirty sheets. It is recorded and routed, not
 // smuggled in here.
 func TestJDEForm_TheActionBarSurvivesEveryHeight(t *testing.T) {
-	for name, mk := range jdeScreenFixtures() {
+	for _, c := range jdePaneCases() {
+		name, mk := c.name, c.mk
 		for _, w := range jdePaneWidths {
 			for _, h := range jdePaneHeights() {
 				s := mk()
@@ -327,7 +414,8 @@ func TestJDEForm_TheActionBarSurvivesEveryHeight(t *testing.T) {
 // is what closes that gap: where no bar is drawn, the notice must be.
 func TestJDEForm_AScreenThatCannotDrawItsBarNamesNoKeys(t *testing.T) {
 	refused := 0
-	for name, mk := range jdeScreenFixtures() {
+	for _, c := range jdePaneCases() {
+		name, mk := c.name, c.mk
 		for _, w := range jdePaneWidths {
 			for _, h := range jdePaneHeights() {
 				s := mk()
@@ -376,7 +464,8 @@ func TestJDEForm_AScreenThatCannotDrawItsBarNamesNoKeys(t *testing.T) {
 // the status row directly above it, which is exactly what the frame is built
 // from: header, body, status, bar.
 func TestJDEForm_AFrameThatIsDrawnShowsSomething(t *testing.T) {
-	for name, mk := range jdeScreenFixtures() {
+	for _, c := range jdePaneCases() {
+		name, mk := c.name, c.mk
 		for _, w := range jdePaneWidths {
 			for _, h := range jdePaneHeights() {
 				s := mk()
@@ -443,5 +532,83 @@ func TestJDEForm_TheNoticeFitsThePaneItReplaces(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// jdeNoticeNeeds reads the required TERMINAL height back out of a rendered
+// too-short notice.
+//
+// It is read off the PANE rather than recomputed from the layer on purpose: the
+// number the operator can act on is the number that was drawn, and a check that
+// asked jdeTooShortRows for it would agree with the layer by construction —
+// including when the layer is wrong. The notice is this screen's one
+// operator-facing contract at a refused height, so its text is the interface
+// being read.
+//
+// The view is flattened first because the sentence goes through jdeWrapNote,
+// which may fold it at a narrow pane.
+func jdeNoticeNeeds(view string) (int, bool) {
+	m := jdeNoticeNeedsRe.FindStringSubmatch(strings.Join(strings.Fields(view), " "))
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+var jdeNoticeNeedsRe = regexp.MustCompile(`needs (\d+) rows`)
+
+// TestJDEForm_TheHeightTheNoticeNamesActuallyWorks: resize to the height the
+// refusal names and the screen draws its bar.
+//
+// A notice exists to be ACTED ON, so the one actionable fact it carries has to
+// be a height that WORKS. This is the empirical half of the argument written
+// out in jdeTooShortRows' doc comment — that argument says the number cannot be
+// an under-estimate, and this walks every screen at every supported size to see
+// whether it is.
+//
+// It caught a real one. While a REFUSED pane answered the body an avail of 0,
+// jdeLines.Scrolls went false at exactly the refused heights, the sheet dropped
+// the scroll keys, the bar it handed the layer lost a row, and the number came
+// out one row short: the operator resized to precisely what the screen asked
+// for and was refused again, with a number one larger. A screen with genuinely
+// no fixed point would fail here too, which is the other thing this is for.
+func TestJDEForm_TheHeightTheNoticeNamesActuallyWorks(t *testing.T) {
+	checked := 0
+	for _, c := range jdePaneCases() {
+		name, mk := c.name, c.mk
+		for _, w := range jdePaneWidths {
+			for _, h := range jdePaneHeights() {
+				s := mk()
+				jdeRootAt(t, s, w, h)
+				view := s.View()
+				if jdeBarOf(view) != nil {
+					continue // drawn; there is no advice to act on
+				}
+				need, ok := jdeNoticeNeeds(view)
+				if !ok {
+					t.Errorf("%s at %dx%d draws no bar and no height the operator could "+
+						"resize to — being stuck is all they learn:\n%s", name, w, h, view)
+					continue
+				}
+				checked++
+				grown := mk()
+				jdeRootAt(t, grown, w, need)
+				if jdeBarOf(grown.View()) == nil {
+					t.Errorf("%s at %dx%d tells the operator to resize to %d rows, and at "+
+						"%dx%d it is REFUSED again — they did exactly what the screen "+
+						"asked and got the same blank pane:\n%s",
+						name, w, h, need, w, need, grown.View())
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("no screen at any supported size drew a refusal notice, so this sweep " +
+			"asserted nothing. If the layer now fits every bar into every supported " +
+			"pane, this test needs rewriting rather than deleting")
 	}
 }

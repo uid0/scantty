@@ -1044,6 +1044,15 @@ func TestJDEStatus_AnUnmarkedRowKeepsWhatNoMarkTakes(t *testing.T) {
 // which is exactly why it went unnoticed: the cost is only paid when the
 // terminal grows back, and what it costs is the operator's place in a long
 // order pad.
+//
+// The state that reaches it has now moved TWICE, and both times the guard below
+// is what said so rather than the test quietly exercising something else. It
+// was a written-down 80x12; then the budget stopped being floored and the
+// header started giving way before the body's last row; and now the body's
+// floor holds on a REFUSED pane too (jdeBodyAvail), so "the body gets no rows"
+// is no longer a state a sized terminal can be in at all. What is left is the
+// REFUSAL — the one path in frameScrolled that still skips the clamp — so that
+// is what this searches for, asked of the same predicate the frame asks.
 func TestJDEScroll_APaneTooShortToDrawTheBodyKeepsTheOperatorsPlace(t *testing.T) {
 	build := func(t *testing.T) (*PurchaseOrderDetailScreen, Root) {
 		t.Helper()
@@ -1076,34 +1085,38 @@ func TestJDEScroll_APaneTooShortToDrawTheBodyKeepsTheOperatorsPlace(t *testing.T
 		t.Fatalf("the pad did not scroll at 80x40, so there is no place to lose:\n%s", scrolled)
 	}
 
-	// The height at which the body gets no rows is DERIVED, not written down.
-	// It used to be 80x12 and this test said so; then the layer stopped
-	// flooring its budget at three rows and started giving the pinned header up
-	// before the body's last row, and 80x12 became a height that draws a row of
-	// the pad perfectly well. A written-down height would have gone on passing
-	// while exercising a different state entirely — the guard below is only
-	// what caught it because it asserts the state rather than assuming it.
+	// The height the frame is refused at is DERIVED, not written down. A
+	// written-down height would go on passing while exercising a different
+	// state entirely, which is what it did the last two times the geometry
+	// moved under it.
+	padRefused := func(g *PurchaseOrderDetailScreen) bool {
+		return g.tooShort(actionBarRowsFor(g.barWidth(), g.orderPadBar()), len(g.orderPadHeader()))
+	}
 	shortH := 0
 	probe, pr := build(t)
 	for h := 20; h >= 7; h-- {
 		pr, _ = jdeLiftUpdate(pr, tea.WindowSizeMsg{Width: 80, Height: h})
 		pr.View()
-		if probe.bodyAvailForBar(len(probe.orderPadHeader()), probe.orderPadBar()) == 0 {
+		if padRefused(probe) {
 			shortH = h
 			break
 		}
 	}
 	if shortH == 0 {
-		t.Fatal("no supported height leaves this body without a row, so the state this " +
-			"test is about is unreachable and it needs rewriting rather than deleting")
+		t.Fatal("no supported height refuses this frame, so the state this test is " +
+			"about is unreachable and it needs rewriting rather than deleting")
 	}
 
-	// The terminal is dragged short — the body gets no rows at all — and back.
+	// The terminal is dragged short — the frame is refused outright — and back.
 	r, _ = jdeLiftUpdate(r, tea.WindowSizeMsg{Width: 80, Height: shortH})
 	short := r.View()
-	if avail := s.bodyAvailForBar(len(s.orderPadHeader()), s.orderPadBar()); avail != 0 {
-		t.Fatalf("at 80x%d the body still gets %d row(s), so this is not the state under test:\n%s",
-			shortH, avail, short)
+	if !padRefused(s) {
+		t.Fatalf("at 80x%d the layer still draws this frame, so this is not the state "+
+			"under test:\n%s", shortH, short)
+	}
+	if !strings.Contains(s.View(), "Too short") {
+		t.Fatalf("at 80x%d the frame is refused and the pane does not say so, so the "+
+			"state under test is not the one on screen:\n%s", shortH, short)
 	}
 	if s.padScroll != place {
 		t.Errorf("a pane too short to draw the body reset the scroll offset from %d to %d; "+

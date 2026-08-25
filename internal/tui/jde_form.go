@@ -956,11 +956,12 @@ func (g jdeScreen) barWidth() int {
 // restatements drifted (see bodyScrollsForBar).
 //
 // ZERO means "the body gets no rows on this pane", which is also "nothing can
-// scroll", and there is now exactly ONE cause of it: no budget at all — an
-// unsized terminal, where the frame draws every line and Root's clampToBox
-// decides; or a pane the frame was refused on (bodyRowsForBar). A pinned header
-// can no longer be a cause, because jdeBodyAvail gives the body its row and
-// jdeFitHeader trims the header to pay for it.
+// scroll", and there is now exactly ONE cause of it: an UNSIZED terminal, where
+// the frame draws every line and Root's clampToBox decides. A pinned header
+// cannot be a cause, because jdeBodyAvail gives the body its row and
+// jdeFitHeader trims the header to pay for it; and a pane the frame is REFUSED
+// on is not one either, which is the correction that makes the refusal notice
+// honest — see jdeTooShortRows.
 //
 // It used to be able to. An earlier draft clamped to one row here, reasoning
 // that the frame still has to leave the cursor's row somewhere to be drawn, and
@@ -972,7 +973,7 @@ func (g jdeScreen) barWidth() int {
 // The two halves have to move TOGETHER, which is why they are one pair of
 // functions called with one budget rather than a clamp on either side.
 func (g jdeScreen) bodyAvail(headerRows int) int {
-	return jdeBodyAvail(g.bodyRows(), headerRows)
+	return jdeBodyAvail(g.paneRows(), g.bodyRows(), headerRows)
 }
 
 // jdeBodyAvail splits a frame's budget between the pinned header and the body,
@@ -998,11 +999,27 @@ func (g jdeScreen) bodyAvail(headerRows int) int {
 // chooser makes when it drops its title (po_create.go): give up what names
 // nothing before giving up what acts.
 //
-// Zero comes back only when there is no budget at all, which is either an
-// unsized terminal or a pane too short to carry the bar. Both mean "nothing can
-// scroll", which is what bodyScrolls reads it as.
-func jdeBodyAvail(budget, headerRows int) int {
-	if budget <= 0 {
+// THE FLOOR HOLDS WHENEVER THE PANE IS SIZED, including on a pane the frame is
+// about to be REFUSED on, and that is why `pane` is an argument rather than
+// something inferred from a budget of zero.
+//
+// Inferring it is what made the refusal notice lie. `budget` arrives as zero
+// for two unrelated reasons — an unsized terminal and a pane too short to carry
+// the bar (bodyRowsForBar) — and answering zero for the second put the body's
+// row back into the header's hands at exactly the heights the frame is refused
+// at. Scrolls(0) is false there, so the sheet dropped the scroll keys, so the
+// bar the layer was handed lost a row, so jdeTooShortRows named a height one
+// row shorter than the one that works: the operator resized to precisely what
+// the screen asked for and was refused again. A quantity that changes the thing
+// it is measured against is this project's recurring shape, and it is broken
+// here the way it is broken everywhere else — by making the reservation
+// UNCONDITIONAL.
+//
+// Zero comes back only when there is NO PANE at all: an unsized terminal, where
+// every screen in the app draws whole and clampToBox decides. That means
+// "nothing can scroll", which is what bodyScrolls reads it as.
+func jdeBodyAvail(pane, budget, headerRows int) int {
+	if pane <= 0 {
 		return 0
 	}
 	if avail := budget - headerRows; avail > 1 {
@@ -1040,7 +1057,7 @@ func jdeFitHeader(header []string, budget, avail int) []string {
 // overflows the larger one left when the keys are dropped, so the answer cannot
 // oscillate between frames.
 func (g jdeScreen) bodyAvailForBar(headerRows int, items []actionBarItem) int {
-	return jdeBodyAvail(g.bodyRowsForBar(actionBarRowsFor(g.barWidth(), items)), headerRows)
+	return jdeBodyAvail(g.paneRows(), g.bodyRowsForBar(actionBarRowsFor(g.barWidth(), items)), headerRows)
 }
 
 // bodyScrolls reports whether `body` actually MOVES in the frame that frame /
@@ -1689,9 +1706,13 @@ func (l *jdeLines) WindowFrom(offset, avail int) []string {
 // them together — if that short-circuit ever changes, this line is in the same
 // field of view and changes with it. A copy on a sheet is not.
 //
-// `avail` is what bodyAvail / bodyAvailForBar answer, and zero from those means
-// "the body gets no rows on this pane" — unsized, or a pinned header that fills
-// it — which is exactly the state where nothing can scroll.
+// `avail` is what bodyAvail / bodyAvailForBar answer, and zero from those has
+// exactly one meaning now: the terminal is UNSIZED, so there is no pane to
+// window against and nothing can scroll. A pinned header that fills the pane
+// used to be a second cause and is not — read bodyAvail for why, and for why a
+// pane the frame is REFUSED on is not one either. That second correction is
+// what stops this answer flipping at the refusal boundary and shrinking the bar
+// the refusal notice is measured against.
 //
 // jde:layer-only — a sheet asks bodyScrolls / bodyScrollsForBar.
 func (l *jdeLines) Scrolls(avail int) bool {
@@ -1803,6 +1824,42 @@ func jdeMinBudget(headerRows int) int {
 
 // jdeTooShortRows is the smallest pane a frame with this bar and this header can
 // be drawn honestly into: the bar, the status row above it, and jdeMinBudget.
+//
+// THE NUMBER IT PRODUCES IS THE NUMBER THE OPERATOR IS TOLD TO RESIZE TO, so it
+// has to be a height that ACTUALLY WORKS when they get there. It is computed at
+// the CURRENT height from the bar the sheet built at the CURRENT height — there
+// is no other bar available, because `items` is handed to the layer already
+// built — so the claim needs an argument rather than a loop. Here it is, and it
+// is a claim about the HEIGHT axis at a FIXED WIDTH: a bar's wrapping is a
+// function of width too, and this notice only ever tells the operator to make
+// the terminal taller.
+//
+//   - paneRows is strictly increasing in terminal height: screenBodyRows is
+//     height − screenChromeRows.
+//   - For a FIXED bar, avail is non-decreasing in paneRows — bodyRowsForBar is
+//     pane − barRows − 1 and jdeBodyAvail subtracts a constant header off it.
+//   - Scrolls(avail) is len(text) > avail, so it is non-increasing in avail.
+//   - A bar naming the scroll keys is taller-or-equal to the same bar without
+//     them: naming them costs cells and cells only ever fold a bar onto MORE
+//     rows.
+//   - Therefore barRows is NON-INCREASING in terminal height. Going UP, the
+//     scroll claim can only go true → false, never false → true.
+//
+// So drawable(H) is monotone: once true it stays true. And the height computed
+// from the CURRENT barRows is drawable AT that height, because barRows(H′) ≤
+// barRows(H) gives pane(H′) − barRows(H′) − 1 ≥ pane(H′) − barRows(H) − 1,
+// which is exactly jdeMinBudget by construction. There is no loop to bound and
+// nothing to converge: termination is by construction. The worst the number can
+// be is an OVER-estimate, by however many rows the bar sheds on the way up —
+// never an under-estimate, which is the direction that makes it a lie.
+//
+// The fourth step is what had to be REPAIRED for the rest to hold, and it is
+// recorded in jdeBodyAvail: while a refused pane answered avail 0, the scroll
+// claim went false at exactly the heights this function is asked about, the bar
+// SHRANK there, and the number came out one row short. The PO-detail order pad
+// at 80 columns said "needs 11 rows" at every height from 7 to 10 and was still
+// refused at 11.
+//
 // jde:layer-only — the layer decides what is drawable.
 func jdeTooShortRows(barRows, headerRows int) int {
 	return barRows + 1 + jdeMinBudget(headerRows)
@@ -1880,28 +1937,19 @@ func (g jdeScreen) frameScrolled(header []string, body *jdeLines, offset int, st
 	barRows := actionBarRowsFor(g.barWidth(), items)
 	if g.tooShort(barRows, len(header)) {
 		// The offset is handed back UNTOUCHED. Both callers store what they are
-		// given, and a pane too short to draw the body is exactly the state
-		// where clamping would answer 0 and throw away where the operator had
-		// scrolled to — the same reason the clamp below is skipped when the body
-		// gets no rows. A terminal dragged short and grown again comes back
-		// where it was.
+		// given (po_detail's padScroll, po_add_line's scroll), and a pane too
+		// short to draw the body is exactly the state where clamping would
+		// answer 0 and throw away where the operator had scrolled to. A terminal
+		// dragged short and grown again comes back where it was. This is now the
+		// ONLY path that skips the clamp: past it the body always has at least
+		// one row (bodyAvail), so there is always something to clamp against.
 		return g.tooShortNotice(barRows, len(header)), offset
 	}
 	budget := g.bodyRowsForBar(barRows)
 	if budget > 0 {
 		avail := g.bodyAvailForBar(len(header), items)
 		out := jdeFitHeader(append([]string{}, header...), budget, avail)
-		if avail > 0 {
-			// Only when the body HAS rows. Zero is a pinned header that fills
-			// the pane, and the clamped offset is written straight back onto the
-			// sheet by both callers (po_detail's padScroll, po_add_line's
-			// scroll), so clamping against no rows would answer 0 and throw away
-			// where the operator had scrolled to — a terminal briefly dragged
-			// short, then grown again, would come back at the top of a long
-			// order pad. The frame is the same either way: WindowFrom draws
-			// nothing at all with no rows to draw it in.
-			offset = body.ClampScroll(offset, avail)
-		}
+		offset = body.ClampScroll(offset, avail)
 		out = append(out, body.WindowFrom(offset, avail)...)
 		out = jdePadTo(out, budget)
 		out = append(out, status)
