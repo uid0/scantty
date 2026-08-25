@@ -571,7 +571,7 @@ func (s *StorageAssignFormScreen) statusLine() string {
 	if s.isCommittee() && s.sigsErr != "" {
 		warn = "SIG list unavailable — describe the committee in Occupant instead"
 	}
-	return storageSlotStatusLine(s.saving, "Assigning…", s.errMsg, warn,
+	return storageSlotStatusLine(s.jdeScreen, s.saving, "Assigning…", s.errMsg, warn,
 		"the slot must be free and in service · staff / Storage Admin only")
 }
 
@@ -650,7 +650,7 @@ func (s *StorageAssignFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -693,9 +693,9 @@ func (s *StorageAssignFormScreen) pickView() ([]string, *jdeLines) {
 func (s *StorageAssignFormScreen) viewPicker() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }

@@ -581,7 +581,7 @@ func (s *InventoryItemFormScreen) kitListBar(body *jdeLines) []actionBarItem {
 	} else {
 		items = append(items, actionBarItem{"Ctrl-E", "Edit component"})
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -681,9 +681,11 @@ func (s *InventoryItemFormScreen) moveKitRowFocus(delta int) {
 // beside the row rather than at the end of a save.
 //
 // The wording is held to 49 columns, which is what an error has on the status
-// line at the 80-column floor: jdeStatusLine is one UNWRAPPED row and the pane
-// CUTS it, so a longer sentence loses its tail with nothing to show it did — and
-// the tail here is the floor value, the only actionable part of the refusal. The
+// line at the 80-column floor: jdeScreen.statusRow draws one UNWRAPPED row, so
+// anything longer is shortened by its bound (fitStatus) — and the tail here is
+// the floor value, the only actionable part of the refusal. Before that bound
+// moved into the layer (sc-jde-lift) this row was cut by clampToBox instead,
+// losing its tail with nothing to show it had. The
 // field already gates typing to digits, so "whole number" was saying something
 // the operator cannot make untrue anyway.
 func (s *InventoryItemFormScreen) commitKitRow() {
@@ -815,7 +817,7 @@ func (s *InventoryItemFormScreen) viewKitRow() string {
 	if s.kitRowFocus == kitRowFieldRemove {
 		items = append(items, actionBarItem{"Ctrl-E", "Remove"})
 	}
-	return s.frame(l, s.kitRowFocus, jdeStatusLine(false, "", s.kitRowErr), items)
+	return s.frame(l, s.kitRowFocus, s.statusRow(false, "", s.kitRowErr), items)
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,10 +1052,10 @@ func kitPickLabel(opt kitPickOption, width int) string {
 func (s *InventoryItemFormScreen) viewKitPick() string {
 	header, body := s.kitPickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	return s.frameWithHeader(header, body, s.kitPickCursor,
-		jdeStatusLine(s.kitItemsLoading, "Loading items…", s.kitPickErr),
+		s.statusRow(s.kitItemsLoading, "Loading items…", s.kitPickErr),
 		jdePickBar("Add", paging))
 }

@@ -261,6 +261,51 @@ note, and is the authority):
   `renderActionBarWrapped` (a bar of a dozen order-level keys folds onto several
   rows rather than losing its tail). `internal/tui/po_detail.go` is the pilot for
   those, as `po_edit.go` is for forms.
+- **A sheet may not answer "how many rows?", "does this scroll?" or "what goes
+  on the status row?" itself.** All three are `jde_form.go`'s
+  (`bodyAvail` / `bodyAvailForBar`, `bodyScrolls` / `bodyScrollsForBar`,
+  `statusRow` / `fitStatus`), and the frames read the SAME functions, so a bar's
+  claim that UP/DN or PgUp/PgDn move something cannot part company with the
+  window that decides whether they do. Two of them lived as per-sheet copies
+  until sc-jde-lift: roughly fifty copies of the scroll arithmetic in two shapes
+  that disagreed at the edges — one had already been rewritten once for asking
+  `ClampScroll`, which reserves the two indicator rows and so says "scrollable"
+  two lines early — and a status bound applied on the three purchasing screens
+  and on none of the other thirty-odd, which handed an unbounded OMS body to a
+  row that cannot fold. `clampToBox` then cut it and took the closing SGR reset
+  with it, colouring everything drawn afterwards.
+  Two sweeps in `jde_lift_sweep_test.go` keep them there and BOTH were verified
+  by reverting: `TestJDEForm_NoSheetAnswersTheScrollQuestionItself` (the
+  forbidden set is derived from a `jde:layer-only` line in the layer's own doc
+  comments, plus a second net on any `jdeLines.Len()` in a comparison) and
+  `TestJDEForm_EveryStatusRowComesFromTheLayer` (the frame set AND the position
+  of the `status` argument are read out of `jde_form.go`, so a frame variant
+  added later is swept without anyone remembering it). Mark a new budget helper
+  `jde:layer-only` at its declaration; a roster kept in the test is the
+  hand-maintained list this project keeps being bitten by.
+  Zero rows means ZERO, not one: a pinned header that fills the pane leaves the
+  body nothing, because `jdePadTo` trims the assembled frame back to the budget
+  and takes the windowed line with it. Reading it as one row made the order
+  pad's bar name PgUp/PgDn at 80x12 over a frame that does not move —
+  `TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves` walks the pane height one
+  row at a time and is what caught it. Zero rows is also not a licence to
+  DISCARD the operator's place: `frameScrolled` hands its clamped offset back
+  and both callers store it, so clamping against no rows answered 0 and a
+  terminal briefly dragged short came back at the top of a long order pad.
+  Nothing to clamp against means nothing to clamp, so the clamp is skipped and
+  `ClampScroll` no longer carries a branch for a state it cannot be called in.
+  The status bound is measured in BOTH axes and in what is really drawn.
+  `fitStatus` takes the MARK it is about to sit behind and reserves that — two
+  cells for the error's `✗ ` and the storage warning's `! `, and nothing at all
+  for the muted working line and the standing note, which used to be cut at 49
+  on a pane with 51 to give. And it FLATTENS the message before measuring it: a
+  multi-line body is inside the width on every line (nginx's 502 page is seven
+  lines of at most 42 columns) and overflows the HEIGHT instead, so the frame
+  ran six rows over and `clampToBox`, which drops from the bottom, took the
+  whole action bar — every key on the screen unnamed at once. It is bounded by
+  a forward pass (`cellPrefix`) before `fitCell` sees it, because `fitCell`
+  falls back on `truncateVisible` and a flattened 20 KB gateway page through an
+  O(n²) bound is the hang recorded further down this file.
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
 

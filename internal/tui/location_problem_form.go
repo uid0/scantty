@@ -286,7 +286,7 @@ func (s *LocationProblemFormScreen) cancelCmd() tea.Cmd {
 
 func (s *LocationProblemFormScreen) View() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Reporting…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Reporting…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the report as columnar rows: severity is the one bounded
@@ -344,7 +344,7 @@ func (s *LocationProblemFormScreen) formBar(body *jdeLines) []actionBarItem {
 	if id, ok := s.currentFieldID(); ok && id == lpfSeverity {
 		items = append(items, actionBarItem{"←→", "Change"})
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items

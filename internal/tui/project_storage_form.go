@@ -551,7 +551,7 @@ func (s *ProjectStorageFormScreen) View() string {
 }
 
 func (s *ProjectStorageFormScreen) statusLine() string {
-	return storageSlotStatusLine(s.saving, "Saving…", s.errMsg, "",
+	return storageSlotStatusLine(s.jdeScreen, s.saving, "Saving…", s.errMsg, "",
 		"intake self-issues a 30-day stint")
 }
 
@@ -596,7 +596,7 @@ func (s *ProjectStorageFormScreen) formBar(body *jdeLines) []actionBarItem {
 	if id, ok := s.currentFieldID(); ok && projectStorageFieldKind(id) == akPicker {
 		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -650,12 +650,12 @@ func (s *ProjectStorageFormScreen) pickView() ([]string, *jdeLines) {
 func (s *ProjectStorageFormScreen) viewSlotPick() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	items := jdePickBar("Claim", paging)
 	if s.slotsErr != "" {
 		items = append(items, actionBarItem{"Ctrl-R", "Retry list"})
 	}
-	return s.frameWithHeader(header, body, s.pickCursor, jdeStatusLine(false, "", ""), items)
+	return s.frameWithHeader(header, body, s.pickCursor, s.statusRow(false, "", ""), items)
 }

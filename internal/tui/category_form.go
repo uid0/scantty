@@ -601,7 +601,7 @@ func (s *CategoryFormScreen) View() string {
 
 func (s *CategoryFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the form as columnar rows. Only the parent is a picker;
@@ -671,7 +671,7 @@ func (s *CategoryFormScreen) formBar(body *jdeLines) []actionBarItem {
 	if id, ok := s.currentFieldID(); ok && id == cfParent {
 		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -710,11 +710,11 @@ func (s *CategoryFormScreen) pickView() ([]string, *jdeLines) {
 func (s *CategoryFormScreen) viewPick() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }
 
 // ===========================================================================

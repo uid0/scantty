@@ -1678,7 +1678,7 @@ func (s *MaintenanceItemFormScreen) View() string {
 
 func (s *MaintenanceItemFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the visible fields as columnar rows: the active flag is a
@@ -1749,7 +1749,7 @@ func (s *MaintenanceItemFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Manage"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -1811,11 +1811,11 @@ func (s *MaintenanceItemFormScreen) pickView() ([]string, *jdeLines) {
 func (s *MaintenanceItemFormScreen) viewAssetPick() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }
 
 // ---------------------------------------------------------------------------
@@ -1868,7 +1868,7 @@ func (s *MaintenanceItemFormScreen) sublistBar(body *jdeLines, count int, noun, 
 	} else {
 		items = append(items, actionBarItem{"Ctrl-E", "Edit"})
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -2004,7 +2004,7 @@ func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
 			l.AddRow(taskEditPhoto, jdeStripIndent(labelWidth)+StyleMuted.Render("current: ")+u)
 		}
 	}
-	return s.frame(l, s.editCursor, jdeStatusLine(false, "", s.editErr),
+	return s.frame(l, s.editCursor, s.statusRow(false, "", s.editErr),
 		s.editorBar("step", s.editCursor == taskEditRemove && s.editIndex >= 0))
 }
 
@@ -2076,7 +2076,7 @@ func (s *MaintenanceItemFormScreen) viewMaterialEdit() string {
 	l.Add(StyleJDEHeading.Render(s.editorTitle("material")))
 	l.Add("")
 	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
-	return s.frame(l, s.editCursor, jdeStatusLine(false, "", s.editErr),
+	return s.frame(l, s.editCursor, s.statusRow(false, "", s.editErr),
 		s.editorBar("material", s.editCursor == materialEditRemove && s.editIndex >= 0))
 }
 
@@ -2150,6 +2150,6 @@ func (s *MaintenanceItemFormScreen) viewToolEdit() string {
 	l.Add(StyleJDEHeading.Render(s.editorTitle("tool")))
 	l.Add("")
 	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
-	return s.frame(l, s.editCursor, jdeStatusLine(false, "", s.editErr),
+	return s.frame(l, s.editCursor, s.statusRow(false, "", s.editErr),
 		s.editorBar("tool", s.editCursor == toolEditRemove && s.editIndex >= 0))
 }

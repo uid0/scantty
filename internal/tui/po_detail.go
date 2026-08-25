@@ -480,7 +480,7 @@ func (s *PurchaseOrderDetailScreen) scrollBy(delta int) {
 // drawing — a wrapped bar leaves fewer rows, and a page that moved by more than
 // the operator can see would skip content.
 func (s *PurchaseOrderDetailScreen) pageStep() int {
-	return s.scrollRows(actionBarRowsFor(s.barWidth(), s.sheetBar()), 0)
+	return s.scrollRows(0, s.sheetBar())
 }
 
 // poCanMarkDelivered reports whether a PO in the given status can be
@@ -815,7 +815,7 @@ func (s *PurchaseOrderDetailScreen) padScrollBy(delta int) {
 }
 
 func (s *PurchaseOrderDetailScreen) padPageStep() int {
-	return s.scrollRows(actionBarRowsFor(s.barWidth(), s.orderPadBar()), len(s.orderPadHeader()))
+	return s.scrollRows(len(s.orderPadHeader()), s.orderPadBar())
 }
 
 // orderPadLines formats the pad's part#/qty lines for on-screen display. The raw
@@ -957,7 +957,7 @@ func (s *PurchaseOrderDetailScreen) viewSheet() string {
 	if body == nil {
 		body = s.sheetLines()
 	}
-	status := jdeStatusLine(s.loading || s.transitioning, "Working…", "")
+	status := s.statusRow(s.loading || s.transitioning, "Working…", "")
 	frame, offset := s.frameScrolled(nil, body, s.scroll, status, s.sheetBar())
 	if note == nil {
 		s.scroll = offset
@@ -1025,7 +1025,7 @@ func (s *PurchaseOrderDetailScreen) sheetBar() []actionBarItem {
 // keys that do nothing — enough to push the bar onto a second row and take a
 // body row with it.
 func (s *PurchaseOrderDetailScreen) sheetScrolls() bool {
-	return poCanScroll(s.jdeScreen, s.sheetBody(), 0, s.sheetBarItems(true))
+	return s.bodyScrollsForBar(s.sheetBody(), 0, s.sheetBarItems(true))
 }
 
 // sheetBarItems builds the bar for a given scroll state. sheetBar and
@@ -1203,102 +1203,11 @@ func (s *PurchaseOrderDetailScreen) addBand(l *jdeLines, labelWidth int, heading
 	l.Add("")
 }
 
-// poCanScroll reports whether a windowed body actually moves in the frame that
-// is about to be drawn. It is the ONE condition every bar and every movement
-// handler on these screens reads, so the two cannot drift.
-//
-// The rule is WindowFrom's own short-circuit, and Window's: both return the
-// whole body untouched when `n <= avail`, ignoring the offset or cursor
-// entirely. So the body moves exactly when it has MORE lines than the window has
-// rows, and that is what this says.
-//
-// It used to ask ClampScroll instead, on the theory that reusing the frame's
-// arithmetic was safer than restating it. It is not the frame's gate: ClampScroll
-// reserves the two indicator rows, so it goes positive from `n > avail-2` and
-// disagreed for `n` of exactly avail-1 and avail — a two-row window in which the
-// bar named three scroll pairs over a body that could not move. Reusing the
-// WRONG expression is not sharing a condition, it is duplicating a different one.
-//
-// This belongs on jdeLines as a method beside WindowFrom, so the window helper
-// and the question "does this scroll?" cannot part company at all. It was local
-// because jde_form.go was frozen while the concurrent conversion was in review;
-// that freeze is over (sc-jde-tiw reopened the shared layer to size a typed
-// row), and it is still local only because lifting it would move scroll
-// arithmetic every converted sheet reads, which is a change of its own rather
-// than a rider on a sizing fix. It is the next thing to lift.
-//
-// `items` must be the bar WITH its scroll keys on it. The decision and the bar
-// height are mutually dependent (naming the keys can cost a bar row, which costs
-// a body row, which can change the answer), and measuring against the tallest
-// bar is the fixed point: a body that overflows the smallest budget also
-// overflows the larger one left when the keys are dropped, so the answer cannot
-// oscillate between frames.
-func poCanScroll(g jdeScreen, body *jdeLines, headerRows int, items []actionBarItem) bool {
-	avail := g.bodyRowsForBar(actionBarRowsFor(g.barWidth(), items)) - headerRows
-	if avail < 1 {
-		return false
-	}
-	return body.Len() > avail
-}
-
 // poErrPrefixW is the width of the "Error: " a load failure is drawn behind on
 // the two screens that render one as a body line rather than on the status row.
 // Those lines are single Add()s, so like the status row they cannot fold and
 // carry the same dropped-SGR-reset hazard if clampToBox is left to cut them.
 const poErrPrefixW = 7
-
-// poStatusError bounds an error message before it reaches the status row.
-//
-// That row is ONE row of the frame — jdeStatusLine draws "✗ " in front of the
-// message and frameWrapped appends the result verbatim — so it cannot fold, and
-// the messages that reach it are routinely wider than the pane: "cannot read
-// file: open <path>: no such file or directory" is around 96 columns for an
-// ordinary scan path, and an OMS dial error is longer again. Left unbounded it
-// is cut by clampToBox, which drops runes off the END of a styled string and so
-// takes StyleStatusError's closing SGR reset with them, leaving the terminal red
-// for everything drawn afterwards.
-//
-// What the row loses by being trimmed depends on where the message came from,
-// and only some of them have a toast behind them:
-//
-//   - The ASYNC failures — poItemShippedMsg, poVoidedMsg, poDeliveredMsg,
-//     poOrderPadMsg, poAttachUploadedMsg — carry an OMS error of any length, and
-//     every one of them ALSO returns Status() with the same text. Those lose
-//     nothing: the full message is on the toast.
-//   - The three LOCAL validation refusals set the field and return no command,
-//     so there is NO toast behind them. Two are comfortably inside the bound at
-//     every width (submitShip's "line number must be between 1 and N" is 35-39
-//     columns, submitDeliver's "delivery date is required (YYYY-MM-DD)" is 38,
-//     against a budget of 49 at 80 columns). The third is NOT: submitShip's
-//     "date must be YYYY-MM-DD (or '-' to clear, blank for today)" is 58, so at
-//     80 columns it is shortened and its tail is not readable anywhere.
-//
-// That last one is knowingly accepted rather than overlooked. It is not a
-// regression — before this bound existed clampToBox cut the same row at the same
-// column AND dropped the closing SGR reset — and what it loses is the tail of a
-// fixed sentence whose first 49 columns still name the format. Adding a longer
-// validation message on one of those three paths, or letting one interpolate
-// variable text, is what would make this genuinely lossy; a toast on that path
-// (a behaviour change, deliberately not made here) is what would fix it.
-//
-// fitCell rather than a bare cut, so the row says it was shortened.
-//
-// The bound goes on what the screen hands jdeStatusLine rather than on the
-// helper itself. That was originally forced — the shared layer was frozen while
-// the concurrent conversion was in review — and the freeze is over (sc-jde-tiw
-// reopened jde_form.go), but a bound inside jdeStatusLine would shorten the
-// status line on every converted screen, not just the three paths measured
-// above, so moving it is a change to make on its own evidence.
-func poStatusError(msg string, bodyWidth int) string {
-	if msg == "" || bodyWidth <= 0 {
-		return msg
-	}
-	// "✗ " is the two display columns jdeStatusLine puts in front.
-	if avail := bodyWidth - 2; avail > 0 {
-		return fitCell(msg, avail)
-	}
-	return msg
-}
 
 // poMinFoldWidth is the narrowest line jdeWrapNote can fold onto without losing
 // content invisibly: at two columns it can still spend one on the ellipsis that
@@ -2012,7 +1921,7 @@ func (s *PurchaseOrderDetailScreen) viewShip() string {
 	body.Add("")
 	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.shipFocus,
-		jdeStatusLine(s.shipPending, "Submitting…", poStatusError(s.shipErr, s.bodyWidth())),
+		s.statusRow(s.shipPending, "Submitting…", s.shipErr),
 		[]actionBarItem{{"Enter", "Mark shipped"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
 }
 
@@ -2039,7 +1948,7 @@ func (s *PurchaseOrderDetailScreen) viewVoid() string {
 	body.Add("")
 	body.AddFittedFields([]jdeField{field}, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, 0,
-		jdeStatusLine(s.voidPending, "Voiding…", poStatusError(s.voidErr, s.bodyWidth())),
+		s.statusRow(s.voidPending, "Voiding…", s.voidErr),
 		[]actionBarItem{{"Enter", "Void order"}, {"Esc", "Cancel"}})
 }
 
@@ -2086,7 +1995,7 @@ func (s *PurchaseOrderDetailScreen) viewDeliver() string {
 	body.Add("")
 	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.deliverFocus,
-		jdeStatusLine(s.deliverPending, "Submitting…", poStatusError(s.deliverErr, s.bodyWidth())),
+		s.statusRow(s.deliverPending, "Submitting…", s.deliverErr),
 		[]actionBarItem{{"Enter", "Mark delivered"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
 }
 
@@ -2130,7 +2039,7 @@ func (s *PurchaseOrderDetailScreen) padScrolls() bool {
 	if !s.padHasText() {
 		return false
 	}
-	return poCanScroll(s.jdeScreen, s.orderPadLines(), len(s.orderPadHeader()), s.orderPadBarItems(true))
+	return s.bodyScrollsForBar(s.orderPadLines(), len(s.orderPadHeader()), s.orderPadBarItems(true))
 }
 
 // padHasText is the single condition the pad overlay's Enter turns on, and the
@@ -2188,7 +2097,7 @@ func (s *PurchaseOrderDetailScreen) viewOrderPad() string {
 		// row's "✗ " in front of it.
 		body := &jdeLines{}
 		return s.frameWrapped([]string{StyleJDEHeading.Render("Order pad"), ""}, body, 0,
-			jdeStatusLine(false, "", poStatusError(s.orderPadErr, s.bodyWidth())),
+			s.statusRow(false, "", s.orderPadErr),
 			[]actionBarItem{{"Esc", "Close"}})
 	}
 

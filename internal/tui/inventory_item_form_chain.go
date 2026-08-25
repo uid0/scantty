@@ -406,7 +406,7 @@ func (s *InventoryItemFormScreen) chainBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"←→", "Move level"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -468,5 +468,5 @@ func (s *InventoryItemFormScreen) viewChainRow() string {
 	if s.chainRowFocus == chainRowFieldRemove {
 		items = append(items, actionBarItem{"Ctrl-E", "Remove"})
 	}
-	return s.frame(l, s.chainRowFocus, jdeStatusLine(false, "", s.chainRowErr), items)
+	return s.frame(l, s.chainRowFocus, s.statusRow(false, "", s.chainRowErr), items)
 }

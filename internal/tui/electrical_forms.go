@@ -902,7 +902,7 @@ func (s *PowerPanelFormScreen) View() string {
 
 func (s *PowerPanelFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the form as columnar rows: three bounded sets, two FK
@@ -964,7 +964,7 @@ func (s *PowerPanelFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -1063,14 +1063,13 @@ func (s *PowerPanelFormScreen) pickView() ([]string, *jdeLines) {
 func (s *PowerPanelFormScreen) viewPick() string {
 	header, body := s.pickView()
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", s.pickPaging(header, body)))
+		s.statusRow(false, "", ""), jdePickBar("Select", s.pickPaging(header, body)))
 }
 
 // pickPaging reports whether the option list overflows the pane, which is the
 // only time the bar names the paging keys.
 func (s *PowerPanelFormScreen) pickPaging(header []string, body *jdeLines) bool {
-	avail := s.bodyRows()
-	return avail > 0 && body.Len() > avail-len(header)
+	return s.bodyScrolls(body, len(header))
 }
 
 // ===========================================================================
@@ -1823,7 +1822,7 @@ func (s *PowerBreakerFormScreen) View() string {
 
 func (s *PowerBreakerFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the form as columnar rows. The visible set is
@@ -1912,7 +1911,7 @@ func (s *PowerBreakerFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -1987,11 +1986,11 @@ func (s *PowerBreakerFormScreen) pickView() ([]string, *jdeLines) {
 func (s *PowerBreakerFormScreen) viewPick() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }
 
 // ===========================================================================
@@ -2551,7 +2550,7 @@ func (s *PowerCircuitFormScreen) View() string {
 
 func (s *PowerCircuitFormScreen) viewForm() string {
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the form as columnar rows: one FK row Ctrl-E opens, one
@@ -2619,7 +2618,7 @@ func (s *PowerCircuitFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		}
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -2660,9 +2659,9 @@ func (s *PowerCircuitFormScreen) pickView() ([]string, *jdeLines) {
 func (s *PowerCircuitFormScreen) viewPick() string {
 	header, body := s.pickView()
 	paging := false
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail-len(header) {
+	if s.bodyScrolls(body, len(header)) {
 		paging = true
 	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		jdeStatusLine(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), jdePickBar("Select", paging))
 }

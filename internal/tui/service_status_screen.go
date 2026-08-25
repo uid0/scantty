@@ -115,7 +115,7 @@ func (s *ServiceStatusScreen) View() string {
 		// Paging only earns a slot on the bar when there is something off
 		// screen to page to — the bar's contract is that every key on it does
 		// something here.
-		if budget := s.bodyRows(); budget > 0 && body.Len() > budget-serviceStatusHeaderRows {
+		if s.bodyScrolls(body, serviceStatusHeaderRows) {
 			items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 		}
 	}

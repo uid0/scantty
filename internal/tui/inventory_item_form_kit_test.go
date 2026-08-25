@@ -1298,12 +1298,13 @@ func TestItemFormKit_AnUnserializedKitGetsNoNotice(t *testing.T) {
 // The status line at the floor
 // ---------------------------------------------------------------------------
 
-// kitFormStatusRow is the row jdeStatusLine draws immediately above the pinned
-// action bar, as rendered AND as the operator actually sees it — the second
-// return is the first put through the same clamp Root applies.
+// kitFormStatusRow is the row jdeScreen.statusRow draws immediately above the
+// pinned action bar, as rendered AND as the operator actually sees it — the
+// second return is the first put through the same clamp Root applies.
 //
 // That row is a single unwrapped line: frame() places it exactly one row above
-// the bar, so it is CUT by the pane rather than folded, with no ellipsis to show
+// the bar, so it is bounded by the layer (fitStatus) rather than folded — and
+// before that bound existed it was CUT by the pane, with no ellipsis to show
 // anything was lost. Reading it out of the real View() rather than off the field
 // is what makes the assertion hold when the prefix ("✗ ") or the pane budget
 // changes — a test that only measured the constant would not notice either.

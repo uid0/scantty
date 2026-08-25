@@ -372,7 +372,7 @@ func (s *SIGFormScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("esc to go back")
 	}
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the sheet as columnar rows. A SIG has exactly two
@@ -415,7 +415,7 @@ func (s *SIGFormScreen) formLines() *jdeLines {
 // this sheet is text, so there is never anything for ←→ or Ctrl-E to do.
 func (s *SIGFormScreen) formBar(body *jdeLines) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items

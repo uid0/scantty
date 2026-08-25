@@ -563,7 +563,7 @@ func (s *SiteSettingsFormScreen) View() string {
 	}
 
 	body := s.formLines()
-	return s.frame(body, s.cursor, jdeStatusLine(s.saving, "Saving…", s.errMsg), s.formBar(body))
+	return s.frame(body, s.cursor, s.statusRow(s.saving, "Saving…", s.errMsg), s.formBar(body))
 }
 
 // formFields describes the sheet as columnar rows: two toggles as bounded sets,
@@ -653,7 +653,7 @@ func (s *SiteSettingsFormScreen) formBar(body *jdeLines) []actionBarItem {
 	if id, ok := s.currentFieldID(); ok && ssKind(id) == akToggle {
 		items = append(items, actionBarItem{"←→", "Change"})
 	}
-	if avail := s.bodyRows(); avail > 0 && body.Len() > avail {
+	if s.bodyScrolls(body, 0) {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
