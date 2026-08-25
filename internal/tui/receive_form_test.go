@@ -1283,11 +1283,18 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 		keys  []tea.KeyMsg
 		bare  bool // fire the last key without settling, so a request is out
 	}
+	// Every row here must reach a say() call site. The keys that DECLINE differ
+	// by phase — on the quantity form most of `long` is typed into the focused
+	// box or moves the cursor and writes nothing, which is why the edge probes
+	// name their keys rather than looping the whole set.
+	down := tea.KeyMsg{Type: tea.KeyDown}
+	toLastRow := make([]tea.KeyMsg, 9)
+	for i := range toLastRow {
+		toLastRow[i] = down
+	}
 	var probes []probe
 	for _, k := range long {
 		probes = append(probes,
-			probe{"qty page edge " + k, receiveManyLines(9), map[int]string{0: "2"},
-				[]tea.KeyMsg{poPhaseKeyMsg(k)}, false},
 			probe{"summary decline " + k, receiveManyLines(3), map[int]string{0: "2"},
 				[]tea.KeyMsg{enter, poPhaseKeyMsg(k)}, false},
 			probe{"frozen " + k, receiveManyLines(3), map[int]string{0: "2"},
@@ -1295,12 +1302,18 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 		)
 	}
 	probes = append(probes,
+		probe{"qty page edge pgup", receiveManyLines(9), map[int]string{0: "2"},
+			[]tea.KeyMsg{poPhaseKeyMsg("pgup")}, false},
+		probe{"qty page edge pgdown", receiveManyLines(9), map[int]string{0: "2"},
+			append(append([]tea.KeyMsg{}, toLastRow...), poPhaseKeyMsg("pgdown")), false},
+		probe{"qty decline with nothing receivable", nil, nil,
+			[]tea.KeyMsg{poPhaseKeyMsg("down")}, false},
 		probe{"enter with nothing typed", receiveManyLines(9), nil, []tea.KeyMsg{enter}, false},
 		probe{"enter with every box zero", receiveManyLines(9), map[int]string{0: "0", 1: "0"},
 			[]tea.KeyMsg{enter}, false},
 		probe{"enter with nothing receivable", nil, nil, []tea.KeyMsg{enter}, false},
 		probe{"enter on an unparseable quantity", receiveManyLines(9),
-			map[int]string{8: "12345678"}, []tea.KeyMsg{enter}, false},
+			map[int]string{8: "two"}, []tea.KeyMsg{enter}, false},
 	)
 
 	for _, p := range probes {
@@ -1321,18 +1334,30 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 				}
 				r = receiveKey(t, r, k)
 			}
+			// A probe that writes no note is a table row that proves nothing
+			// while reading as coverage — the skip that used to sit here hid
+			// several. This is a FAILURE now, so the roster above has to earn
+			// its rows: every entry must reach a say() call site.
 			if s.note.text == "" {
-				t.Skip("this probe wrote no note")
+				t.Fatalf("this probe wrote no note, so it tests nothing:\n%s",
+					receivePaneText(s, 80, 24))
 			}
-			drawn := 0
-			for _, line := range s.noteLines() {
-				if strings.TrimSpace(line) != "" {
-					drawn++
-				}
-			}
-			if drawn > receiveNoteRows {
-				t.Fatalf("the note takes %d rows, more than the %d reserved: %q",
-					drawn, receiveNoteRows, s.note.text)
+			// The block's height cannot exceed its reservation — noteLines caps
+			// and pads, so asking that directly asks a question the renderer
+			// makes structurally impossible to answer wrongly, which is a guard
+			// that cannot fire. What CAN still be wrong is the property the
+			// reservation exists for: the block is the same height whether or
+			// not a note is standing, so writing one cannot move the bar below
+			// it. Measured by retiring this probe's own note and re-measuring.
+			withNote := len(s.headerLines())
+			held := s.note
+			s.note.clear()
+			bare := len(s.headerLines())
+			s.note = held
+			if withNote != bare {
+				t.Fatalf("this note moved the pinned header from %d rows to %d — the "+
+					"reservation is conditional on the note again: %q",
+					bare, withNote, s.note.text)
 			}
 			// Cut or whole is what matters: the reservation caps the render, so
 			// a sentence that overran would lose its tail silently. Compared as
@@ -1474,6 +1499,23 @@ func TestReceive_ANoteTooLongToFitSaysSo(t *testing.T) {
 				t.Errorf("the cut took the lead, so the note names no key:\nwant: %s\npane: %s",
 					receiveNoteWords(lead), got)
 			}
+
+			// A note with NO word boundary is the same rule with nothing to
+			// walk: the word loop stops at keep > 0, so a single token used to
+			// fall through to a note whose entire content was the drop mark. A
+			// note reading "…" names no key, which is the state two declining
+			// keys sharing a pane is made of — and a minified JSON or HTML body
+			// is exactly that shape, which is the input fittedNote's own bound
+			// says is one arm away.
+			s.note.text = "pgdown" + strings.Repeat("x", 4000)
+			s.note.level = StatusWarn
+			single := receivePaneText(s, width, 30)
+			if !strings.Contains(single, "pgdown") {
+				t.Errorf("a single-token note lost its lead — it now names no key:\n%s", single)
+			}
+			if !strings.Contains(single, strings.TrimSpace(receiveNoteDropMark)) {
+				t.Errorf("a single-token note was cut with nothing saying so:\n%s", single)
+			}
 			// And the cut costs a word, never the header's height — the paging
 			// claim is measured against that.
 			if got := len(s.headerLines()); got != headerBefore {
@@ -1520,4 +1562,79 @@ func TestReceive_AHugeNoteDoesNotFreezeTheFrame(t *testing.T) {
 			"its input rather than its budget", len(s.note.text), elapsed)
 	}
 	_ = r
+}
+
+// ---------------------------------------------------------------------------
+// The reservation yields to the pane; the form is always drawn
+// ---------------------------------------------------------------------------
+
+// receiveCursorRowDrawn reports whether the row the cursor is on is on the
+// clipped pane — the one row the form cannot be useful without, since it is the
+// quantity box the operator is about to type into.
+func receiveCursorRowDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) bool {
+	t.Helper()
+	return receiveRowWith(s, w, h, receiveCursorMarker(t, s)) != ""
+}
+
+// TestReceive_AShortPaneStillDrawsTheForm.
+//
+// The unconditional note reservation bought a fixed point — writing a note can
+// never move the bar below it — and cost four pinned rows. On a short pane
+// those four rows were the whole body budget: at 80x12 the pane keeps six rows,
+// the bar and the status row take two, bodyAvailForBar answered 0, and
+// jdeLines.Window returned nothing. The frame was four BLANK rows over a status
+// row and a bar — no order name, no line names, no quantity box — and it was
+// built empty, so clampToBox was nowhere near it. Every height up to 16 lost
+// the heading the same way.
+//
+// The two height sweeps beside this one ran those exact heights and passed,
+// because both only compare "the bar names PgUp/PgDn" against "the cursor
+// moved". A blackout satisfies that: nothing on the pane is asserted at all.
+// So this asserts the two properties TOGETHER, because the fix sits between
+// them — the reservation yields to the PANE (geometry, which the bar and the
+// guard see identically) and never to the note's PRESENCE (which would be the
+// circle reopened).
+func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
+	for _, width := range receiveWidths {
+		for height := 8; height <= 30; height++ {
+			t.Run(fmt.Sprintf("%dx%d", width, height), func(t *testing.T) {
+				fake := &receiveFake{}
+				r, s := receiveDrive(t, fake, receiveManyLines(3), width, height)
+
+				// The form is drawn at rest: the row the cursor is standing on
+				// is what the operator is here to type into.
+				if !receiveCursorRowDrawn(t, s, width, height) {
+					t.Fatalf("the resting frame does not draw the row the cursor is on:\n%s",
+						receiveClippedPane(s, width, height))
+				}
+				restingHeader := len(s.headerLines())
+				restingNames := receiveBarNames(s, "PgUp/PgDn")
+
+				// Writing a note must not move the header, the bar's claim, or
+				// the form off the pane.
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+				if s.note.text == "" {
+					t.Fatalf("the refusal wrote no note, so this height proves nothing")
+				}
+				if got := len(s.headerLines()); got != restingHeader {
+					t.Errorf("writing a note moved the pinned header from %d rows to %d — "+
+						"the reservation is conditional on the note again",
+						restingHeader, got)
+				}
+				if got := receiveBarNames(s, "PgUp/PgDn"); got != restingNames {
+					t.Errorf("writing a note flipped whether the bar names PgUp/PgDn "+
+						"(%v -> %v)", restingNames, got)
+				}
+				if !receiveCursorRowDrawn(t, s, width, height) {
+					t.Errorf("the note pushed the cursor's own row off the pane:\n%s",
+						receiveClippedPane(s, width, height))
+				}
+				// And the answer to that keypress is on the pane too: a note
+				// squeezed to nothing is a decline the operator cannot read.
+				if pane := receivePaneText(s, width, height); !strings.Contains(pane, "enter") {
+					t.Errorf("the note was squeezed off the pane entirely:\n%s", pane)
+				}
+			})
+		}
+	}
 }

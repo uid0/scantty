@@ -1252,11 +1252,16 @@ func (s *ReceiveFormScreen) failLine() string {
 	return ""
 }
 
-// receiveNoteRows is the block the note ALWAYS occupies, drawn blank when there
-// is no note — the fixed point that makes every claim on this screen honest.
+// receiveNoteRows is the CEILING of the block the note occupies — drawn blank
+// when there is no note, and the fixed point that makes every claim on this
+// screen honest. noteRows() is the block's height on a given pane: this
+// constant when the pane can afford it, less when it cannot, and never a
+// function of whether a note is standing.
 //
-// It is UNCONDITIONAL, and that is the whole design rather than an oversight to
-// tidy away. The note is pinned above the body, the header is subtracted from
+// It is UNCONDITIONAL IN THE NOTE, and that is the whole design rather than an
+// oversight to tidy away. (It yields to the PANE, which is a different axis
+// entirely — noteRows() carries that reasoning and why it does not reopen any
+// of what follows.) The note is pinned above the body, the header is subtracted from
 // the body's row budget, and the body's height is what decides whether
 // PgUp/PgDn are named at all — so a note that costs rows only WHEN IT IS THERE
 // makes the answer depend on the sentence, and the sentence is itself a list of
@@ -1312,6 +1317,75 @@ const receiveNoteRows = 3
 // cut made that sentence false of the code two lines under it.
 const receiveNoteDropMark = " …"
 
+// receiveBodyFloor is the least the body may keep once the terminal has told us
+// how tall it is — the same three rows jde_form.go's bodyRowsForBar floors at,
+// deliberately, so this agrees with the layer rather than fighting it.
+const receiveBodyFloor = 3
+
+// noteRows is how many rows the note block gets ON THIS PANE.
+//
+// The reservation is still UNCONDITIONAL in the sense that was decided, and
+// that sense is the one that matters: it is a pure function of the PANE, and it
+// never asks whether a note is currently held. Writing or retiring a note
+// therefore cannot move the pinned header by a row, so it cannot add or remove
+// PgUp/PgDn from the bar drawn under it — the circle receiveNoteRows exists to
+// break. Do NOT "restore" the constant by deleting this clamp: making the
+// reservation conditional on the NOTE is the reopened circle; making it yield
+// to the PANE is not, because height is an axis the bar and the guard already
+// see identically and there is no self-reference in it to protect.
+//
+// It yields because the flat reservation had a second consequence nobody had
+// measured. At 80x12 the pane keeps six rows, the bar and the status row take
+// two, and the four pinned rows took the four that were left: bodyAvailForBar
+// answered 0, jdeLines.Window returned nothing, and the frame was four BLANK
+// rows over a status row and a bar — no order name, no line names, no quantity
+// box. Not a clipped form: an empty one, built empty, with clampToBox nowhere
+// near it. Every height up to 16 lost the heading the same way.
+//
+// So when the pane cannot afford both, the RESERVATION gives and the BODY is
+// kept, in that order: an operator cannot receive against a form that is not
+// drawn, and the body is what they are there for. The note keeps its last row
+// rather than vanishing, because a decline that draws nothing on the pane is
+// the "keypress with no visible answer" defect this screen was converted to
+// remove — what a short pane costs it is words, which fittedNote marks.
+//
+// The bar it measures against is the phase's TALLEST (barCeiling), which is the
+// same fixed point qtyPagesFor uses and is what keeps this out of the recursion:
+// a bar that varied with the header would make the header vary with the bar.
+func (s *ReceiveFormScreen) noteRows() int {
+	budget := s.bodyAvailForBar(0, s.barCeiling())
+	if budget <= 0 {
+		// Unsized: nothing has told us the height yet, the frame draws whole and
+		// Root's clampToBox decides. There is no geometry to clamp against, so
+		// the full reservation stands.
+		return receiveNoteRows
+	}
+	room := budget - receiveBodyFloor - 1 // the separator below the block
+	if room > receiveNoteRows {
+		return receiveNoteRows
+	}
+	if room < 1 {
+		return 1
+	}
+	return room
+}
+
+// barCeiling is the tallest bar this phase can draw, and it is deliberately
+// blind to headerRows: it is what the header allowance measures itself against,
+// so a bar that asked the header how tall it was would close a loop. On the
+// quantity phase that is the bar WITH the paging keys on it, which is the same
+// fixed point qtyPagesFor measures against and for the same reason — a body
+// that overflows the smallest budget also overflows the larger one.
+func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
+	switch s.phase {
+	case phaseSerial:
+		return s.serialBar()
+	case phaseDone:
+		return []actionBarItem{{"Enter/Esc", "Back to order"}}
+	}
+	return s.qtyBarItems(true)
+}
+
 // headerLines is the screen's answer to the last keypress, PINNED above the
 // scrollable body on every frame.
 //
@@ -1321,17 +1395,18 @@ const receiveNoteDropMark = " …"
 // answered. The diagnostic DETAIL rides with it, bounded, so a failure and its
 // reason are one block rather than two a scroll can separate.
 //
-// The height is CONSTANT in everything a keypress controls: receiveNoteRows for
-// the note whether or not one is standing, plus the blank that separates the
-// block from the body. Only the reply-driven failure detail varies.
+// The height is CONSTANT in everything a keypress controls: noteRows() for the
+// note whether or not one is standing, plus the blank that separates the block
+// from the body. Only the reply-driven failure detail varies — and the PANE,
+// which noteRows yields to and which the bar and the guard see identically.
 func (s *ReceiveFormScreen) headerLines() []string {
 	lines := append(s.noteLines(), s.failDetailLines()...)
 	return append(lines, "")
 }
 
 // noteLines renders the screen's answer to the last keypress into the rows
-// receiveNoteRows reserves for it, folded to the pane the terminal really gave
-// and padded out when it is shorter or absent.
+// noteRows reserves for it, folded to the pane the terminal really gave and
+// padded out when it is shorter or absent.
 //
 // Folded rather than clipped because Root.View TRUNCATES, and the tail of these
 // sentences is where the key that gets the operator OUT is named — a clipped
@@ -1341,9 +1416,10 @@ func (s *ReceiveFormScreen) headerLines() []string {
 // expression read by both the renderer and the budget).
 func (s *ReceiveFormScreen) noteLines() []string {
 	width := s.paneWidth() - len(jdeIndent)
-	out := make([]string, 0, receiveNoteRows)
-	for _, line := range s.fittedNote(width).renderLines(width) {
-		if len(out) == receiveNoteRows {
+	rows := s.noteRows()
+	out := make([]string, 0, rows)
+	for _, line := range s.fittedNote(width, rows).renderLines(width) {
+		if len(out) == rows {
 			// fittedNote has already guaranteed this cannot happen. The bound
 			// stays because the block's HEIGHT is now load-bearing — the paging
 			// claim is measured against it — so an overrun must cost a word
@@ -1352,7 +1428,7 @@ func (s *ReceiveFormScreen) noteLines() []string {
 		}
 		out = append(out, jdeIndent+line)
 	}
-	for len(out) < receiveNoteRows {
+	for len(out) < rows {
 		out = append(out, "")
 	}
 	return out
@@ -1389,21 +1465,42 @@ func (s *ReceiveFormScreen) noteLines() []string {
 // response body into APIError.Message when the envelope carries no code, which
 // is the multi-KB page behind the hang this project has already fixed once.
 //
-// A cut by cellPrefix implies an overrun: text longer than receiveNoteRows ×
-// width cells cannot fold into receiveNoteRows lines of width cells.
-func (s *ReceiveFormScreen) fittedNote(width int) pickerNote {
-	if s.note.text == "" {
+// A cut by cellPrefix implies an overrun: text longer than `rows` × width cells
+// cannot fold into `rows` lines of width cells.
+//
+// `rows` is the block's height on THIS pane (noteRows), not the constant, because
+// a short terminal makes the block smaller and a bound measured against a budget
+// the frame will not give is not a bound.
+//
+// The LEAD SURVIVES in every branch, and the last one is why this is spelled out
+// rather than left to the word walk. The walk stops at `keep > 0`, so a text with
+// no word boundary at all — a minified JSON or HTML body, which is exactly the
+// shape omsapi.parseError hands over — used to fall through to a note whose whole
+// content was the drop mark. A note reading "…" names no key, which on this screen
+// means two declining keys redraw the same pane: the defect the decline lead exists
+// to prevent, reintroduced by the bound that was supposed to protect it. So the
+// last resort keeps as much of the lead as the block can carry, marked, and only a
+// pane too narrow to draw three cells gets the bare mark.
+func (s *ReceiveFormScreen) fittedNote(width, rows int) pickerNote {
+	if s.note.text == "" || rows <= 0 {
 		return s.note
 	}
-	bounded := cellPrefix(s.note.text, receiveNoteRows*width)
-	if bounded == s.note.text && len(s.note.renderLines(width)) <= receiveNoteRows {
+	bounded := cellPrefix(s.note.text, rows*width)
+	if bounded == s.note.text && len(s.note.renderLines(width)) <= rows {
 		return s.note
 	}
 	words := strings.Fields(bounded)
 	for keep := len(words) - 1; keep > 0; keep-- {
 		trial := s.note
 		trial.text = strings.Join(words[:keep], " ") + receiveNoteDropMark
-		if len(trial.renderLines(width)) <= receiveNoteRows {
+		if len(trial.renderLines(width)) <= rows {
+			return trial
+		}
+	}
+	for room := rows * width; room > 0; room-- {
+		trial := s.note
+		trial.text = cellPrefix(bounded, room) + receiveNoteDropMark
+		if len(trial.renderLines(width)) <= rows {
 			return trial
 		}
 	}
