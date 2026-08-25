@@ -78,7 +78,11 @@ World style and follow its reduced key scheme instead: no `j`/`k` or `g`/`G`
 aliases (arrows, `PgUp`/`PgDn` and `Home`/`End` only), and `Enter` fires the
 screen's own action rather than opening a row. Each of those screens carries a
 persistent action bar naming every key that works there, and a key the bar does
-not name does nothing. The rest of the app is being converted screen by screen.
+not name does nothing. On a terminal too short to hold that bar whole, any
+screen drawn in this style shows nothing but a notice saying how many rows it
+needs — a bar with rows cut off it would name some keys and hide the rest with
+no way to tell which — and warning that the keys still act on a screen you
+cannot see. The rest of the app is being converted screen by screen.
 
 The purchasing **entry** sheets in that same style — editing a line, adding one
 by scanning an identifier, and receiving a delivery — read the same way, with
