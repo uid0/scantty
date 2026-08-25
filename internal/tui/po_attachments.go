@@ -282,10 +282,11 @@ func (s *PurchaseOrderAttachmentsScreen) openUpload() tea.Cmd {
 // pageStep is how many rows the grid is currently showing, computed from the
 // same lines View draws so a page moves by exactly what the operator can see.
 //
-// The budget is bodyRowsForBar alone because viewList passes frameWrapped no
-// header, so that IS the frame's own avail. It used to subtract one more for a
-// header that is not there, and a page then advanced by one navigable row fewer
-// than the operator could see — the comment above claiming the opposite.
+// The header cost passed to bodyAvailForBar is zero because viewList passes
+// frameWrapped no header, so what comes back IS the frame's own avail. It used
+// to subtract one more for a header that is not there, and a page then advanced
+// by one navigable row fewer than the operator could see — the comment above
+// claiming the opposite.
 func (s *PurchaseOrderAttachmentsScreen) pageStep() int {
 	body, _ := s.listLines()
 	_, rows := body.Window(s.cursor, s.bodyAvailForBar(0, s.listBar()))

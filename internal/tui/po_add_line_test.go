@@ -1498,9 +1498,9 @@ func TestPOAddLine_TheConfirmNoteWordsBothPathsThatReachIt(t *testing.T) {
 // "Looking up <query> in <supplier>'s catalogue…" used to clip the query and
 // the supplier to a hard-coded twenty cells EACH and was then clipped again by
 // the status row's own bound, so the row lost its own closing words —
-// `… & In…'s cata…` — on
-// the frame whose whole job is saying what is happening. The same constant threw
-// away sixty-odd columns a 120-column terminal had for the supplier's name.
+// `… & In…'s cata…` — on the frame whose whole job is saying what is happening.
+// The same constant threw away sixty-odd columns a 120-column terminal had for
+// the supplier's name.
 //
 // Both halves are asserted here, and neither was reachable before: poAddAssertFits
 // sees a row the outer clip has already made fit, and the "looking" reach is

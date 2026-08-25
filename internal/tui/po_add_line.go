@@ -356,10 +356,10 @@ func (s *PurchaseOrderAddLineScreen) clearFail() { s.setFail("", "") }
 // one-line status row and a DETAIL the body folds under the note.
 //
 // The split matters because the status row cannot fold: it is one row of the
-// frame and jdeScreen.fitStatus clips it. So the row gets a short fixed headline and
-// the unbounded half goes in the body, where it is folded and bounded — never
-// the other way round, which is how the server's reason came to be shown as
-// "✗ Acme Fasteners no longer supplies Widget clamp (…".
+// frame and jdeScreen.fitStatus clips it. So the row gets a short fixed
+// headline and the unbounded half goes in the body, where it is folded and
+// bounded — never the other way round, which is how the server's reason came to
+// be shown as "✗ Acme Fasteners no longer supplies Widget clamp (…".
 //
 // A REFUSAL is not routed through here at all: it carries the server's own
 // operator-facing sentence, which belongs in the note rather than in a
@@ -438,11 +438,11 @@ func (s *PurchaseOrderAddLineScreen) keyIdentify(m tea.KeyMsg) (Screen, tea.Cmd)
 		s.phase = poAddPhaseLooking
 		s.lookupSeq++
 		// No flash goes out with the request. The frame's own status ROW draws
-		// the working line (jdeScreen.statusRow, naming the work and the subject) for
-		// exactly as long as the lookup is out, and it is state-driven — where a
-		// flash sent alongside the request races the flash the REPLY sends and
-		// can land after it, leaving "looking up…" on the bar over a frame that
-		// has already answered.
+		// the working line (jdeScreen.statusRow, naming the work and the
+		// subject) for exactly as long as the lookup is out, and it is
+		// state-driven — where a flash sent alongside the request races the
+		// flash the REPLY sends and can land after it, leaving "looking up…" on
+		// the bar over a frame that has already answered.
 		return s, s.runLookup(query, s.lookupSeq)
 	}
 	var cmd tea.Cmd
@@ -1042,7 +1042,8 @@ func (s *PurchaseOrderAddLineScreen) choosePages() bool {
 // chooseFrameRows is the lines the choose frame really windows its body into.
 // It is now a one-line call on the shared layer's bodyAvailForBar, and is kept
 // only so that the reason this screen asks the question at all stays written
-// down beside the two callers that ask it.
+// down beside chooseStep, the one caller left that needs the number rather than
+// the yes/no (choosePages asks bodyScrollsForBar for that directly).
 //
 // It exists because three things must agree about it and two of them had
 // already drifted: the RENDER (frameWrapped, which takes the bar's measured
@@ -1168,16 +1169,17 @@ func (s *PurchaseOrderAddLineScreen) headerLines() []string {
 // BOTH branches are bounded by that one rule, which is the whole point of
 // saying it. The lookup branch used to clip the query and the supplier to a
 // hard-coded twenty cells each and was then clipped AGAIN by the status row's
-// own bound, so at 80 columns the row read `Looking up widget in Acme Fasteners &
-// In…'s cata…` — an ellipsis from the inner clip, and the sentence's OWN
-// closing words destroyed by the outer one. At 120 columns the same constant
-// threw away sixty-odd columns the pane had for the supplier's name.
+// own bound, so at 80 columns the row read `Looking up widget in Acme
+// Fasteners & In…'s cata…` — an ellipsis from the inner clip, and the
+// sentence's OWN closing words destroyed by the outer one. At 120 columns the
+// same constant threw away sixty-odd columns the pane had for the supplier's
+// name.
 //
 // Neither branch reserves anything for a MARK. This is the muted branch of the
-// status row and it draws none — the "✗ " belongs to the failure line — and the
-// row's own bound now measures the mark it is actually handed, so a reservation
-// here would be two more columns of the operator's supplier name thrown away on
-// a pane that had room for them.
+// status row and it draws none — the "✗ " belongs to the failure line — and
+// the row's own bound now measures the mark it is actually handed, so a
+// reservation here would be two more columns of the operator's supplier name
+// thrown away on a pane that had room for them.
 func (s *PurchaseOrderAddLineScreen) workingLine() string {
 	if s.pending {
 		lead, tail := "Adding ", " to "+s.orderName()+"…"

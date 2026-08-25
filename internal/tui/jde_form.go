@@ -1604,9 +1604,10 @@ func (l *jdeLines) Scrolls(avail int) bool {
 }
 
 // ClampScroll brings a scroll offset back inside the body, given the pane
-// height WindowFrom will be called with. Screens call it after every scroll key
-// so the offset they hold and the one that gets drawn are never different —
-// which is what makes "↓ 0 more below" impossible.
+// height WindowFrom will be called with. No sheet calls it: WindowFrom clamps
+// what it is about to draw, and frameScrolled hands the clamped offset back for
+// the sheet to store, so the offset a screen holds and the one that gets drawn
+// are never different — which is what makes "↓ 0 more below" impossible.
 //
 // `avail` is the rows the body really gets, and every caller has already
 // established that it is positive: WindowFrom returns before it reaches here
