@@ -1163,7 +1163,29 @@ func (s *ReceiveFormScreen) anythingTyped() bool {
 // mid-dispatch: View binds it to the frame it is drawing, and a key arm to the
 // frame the press was made against (handleKey).
 func (s *ReceiveFormScreen) qtyPagesFor(headerRows int) bool {
-	return s.bodyScrollsForBar(s.qtyBody(), headerRows, s.qtyBarItems(true))
+	// TWO conditions, because the keys make two claims and both have to hold.
+	//
+	// The body must MOVE — that is the binding this conversion added, and it is
+	// bodyScrollsForBar's question. But PgUp/PgDn do not scroll the body: they
+	// move the CURSOR (jdePageCursor) and the window follows it, so a page can
+	// only do anything when there is another row to land on. Those two questions
+	// agree in almost every state and come apart in one that is DESIGNED: an
+	// order whose lines are all voided or already received leaves no quantity
+	// boxes, so the notes row is the only navigable row, and jdePageCursor
+	// clamps to count-1 = 0 and returns the row it was handed. At 80x18 the body
+	// still overflowed, so the bar printed PgUp/PgDn=Page over a key whose whole
+	// effect was to write "pgdown is already at the last row" — a key named on
+	// the bar that cannot act, which is the one thing this screen's bar may
+	// never do.
+	//
+	// Both halves live here rather than in the arm so the bar and pageQty read
+	// ONE expression, the way they were bound together when the header was: two
+	// conditions that agree in most states are two conditions that will
+	// eventually disagree in one. UP/DN was already written this way —
+	// qtyBarItems names it on totalInputs() > 1 and keyQty declines on the same
+	// predicate — which is the shape this now matches.
+	return s.totalInputs() > 1 &&
+		s.bodyScrollsForBar(s.qtyBody(), headerRows, s.qtyBarItems(true))
 }
 
 // qtyPages is qtyPagesFor bound to the frame being drawn now, for View and for
@@ -1317,10 +1339,82 @@ const receiveNoteRows = 3
 // cut made that sentence false of the code two lines under it.
 const receiveNoteDropMark = " …"
 
-// receiveBodyFloor is the least the body may keep once the terminal has told us
-// how tall it is — the same three rows jde_form.go's bodyRowsForBar floors at,
+// receiveBodyFloor is the body's target floor once the terminal has told us how
+// tall it is — the same three rows jde_form.go's bodyRowsForBar floors at,
 // deliberately, so this agrees with the layer rather than fighting it.
+//
+// It is a target and not a guarantee, and the difference is worth stating
+// because the sentence used to claim the guarantee. headerRoom delivers it in
+// full from a body budget of receiveBodyFloor+2 upward — that is the first
+// budget that can pay for the floor AND the header's irreducible two rows. On
+// the two budgets below it (3 and 4, which bodyRowsForBar's own floor makes the
+// smallest there are) the body gets 1 row and 2, because what the header cannot
+// give up is the note's LAST row and the blank under it: a decline with no row
+// to be drawn on is a keypress the operator gets no answer to, which is the
+// defect this screen was converted to remove. So the floor gives one row at a
+// time, from below, and only after the header has given everything it can.
 const receiveBodyFloor = 3
+
+// headerRoom is what the WHOLE pinned header may spend on this pane.
+//
+// One clamp over the whole block, because the header is what starves the body
+// and it has three parts: the note, the failure detail and the blank between
+// the block and the body. Clamping the note alone — which is what this was when
+// it was first written — protected the resting frame and left the FAILURE frame
+// exactly where it had been: at 80x16 a 502 put three rows of gateway HTML into
+// the same header, bodyAvailForBar answered 0, jdeLines.Window returned nothing
+// and the pane was blank rows over a status row and a bar, with no order name,
+// no line names and no quantity box, while Enter and UP/DN went on being named
+// and acting on rows that were not drawn.
+//
+// CLAMPING IS NOT RESERVING, and the difference is the whole reason this is
+// allowed to measure the failure detail. RESERVING is "always subtract these
+// rows whether or not the content is there" — that was decided for the NOTE,
+// unconditionally, and is not reopenable; the failure detail is deliberately
+// not reserved because it is reply-driven and names no keys, so the bar and the
+// guard see it appear and vanish identically. CLAMPING is "do not let the
+// header, whatever it happens to be carrying this frame, starve the body to
+// nothing", and that is a pure function of the pane and of what is actually
+// standing — never of whether a NOTE is held, which is the self-reference the
+// reservation exists to break.
+//
+// The unsized branch keeps every ceiling: nothing has told us the height, the
+// frame draws whole and Root's clampToBox decides, so there is no geometry to
+// clamp against.
+func (s *ReceiveFormScreen) headerRoom() int {
+	budget := s.bodyAvailForBar(0, s.barCeiling())
+	if budget <= 0 {
+		return receiveNoteRows + receiveFailDetailRows + 1
+	}
+	if room := budget - receiveBodyFloor; room > receiveHeaderFloor {
+		return room
+	}
+	return receiveHeaderFloor
+}
+
+// receiveHeaderFloor is what the header cannot give up: one row for the note —
+// so a decline always has somewhere to be drawn — and the blank that keeps it
+// off the body. Everything above it gives before the body does.
+const receiveHeaderFloor = 2
+
+// failDetailRows is how many rows the failure detail gets on this pane.
+//
+// It is what headerRoom has left after the note, so the DETAIL is what gives
+// first when the pane cannot pay for everything: its headline is on the status
+// row and never gives, so what a short terminal loses here is the tail of the
+// gateway's HTML — which is what failDetailLines' own comment has always said
+// it loses. The note gives second, down to its last row; the body gives last,
+// because the operator cannot receive against a form that is not drawn.
+func (s *ReceiveFormScreen) failDetailRows() int {
+	left := s.headerRoom() - 1 - s.noteRows()
+	if left > receiveFailDetailRows {
+		return receiveFailDetailRows
+	}
+	if left < 0 {
+		return 0
+	}
+	return left
+}
 
 // noteRows is how many rows the note block gets ON THIS PANE.
 //
@@ -1353,14 +1447,7 @@ const receiveBodyFloor = 3
 // same fixed point qtyPagesFor uses and is what keeps this out of the recursion:
 // a bar that varied with the header would make the header vary with the bar.
 func (s *ReceiveFormScreen) noteRows() int {
-	budget := s.bodyAvailForBar(0, s.barCeiling())
-	if budget <= 0 {
-		// Unsized: nothing has told us the height yet, the frame draws whole and
-		// Root's clampToBox decides. There is no geometry to clamp against, so
-		// the full reservation stands.
-		return receiveNoteRows
-	}
-	room := budget - receiveBodyFloor - 1 // the separator below the block
+	room := s.headerRoom() - 1 // the blank between the block and the body
 	if room > receiveNoteRows {
 		return receiveNoteRows
 	}
@@ -1531,10 +1618,14 @@ func (s *ReceiveFormScreen) failDetailLines() []string {
 	if width < 12 {
 		width = 12
 	}
-	trimmed := cellPrefix(detail, receiveFailDetailRows*width)
-	out := make([]string, 0, receiveFailDetailRows)
+	rows := s.failDetailRows()
+	if rows <= 0 {
+		return nil
+	}
+	trimmed := cellPrefix(detail, rows*width)
+	out := make([]string, 0, rows)
 	for i, line := range pickerWrap(trimmed, width) {
-		if i >= receiveFailDetailRows {
+		if i >= rows {
 			break
 		}
 		out = append(out, jdeIndent+StyleMuted.Render(line))

@@ -1635,6 +1635,79 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 					t.Errorf("the note was squeezed off the pane entirely:\n%s", pane)
 				}
 			})
+
+			// The FAILURE frame at the same height. The clamp that fixed the
+			// resting frame measured the note block alone and left the failure
+			// detail — pinned in the SAME header — unaccounted for, so at 80x16
+			// a 502's three rows of gateway HTML took the body's whole budget
+			// and the form was blank again. The sweep beside this one ran that
+			// height and could not see it: it never put a failure on the screen.
+			t.Run(fmt.Sprintf("%dx%d with a failure", width, height), func(t *testing.T) {
+				fake := &receiveFake{failWith: http.StatusBadGateway, failBody: nginx502}
+				r, s := receiveDrive(t, fake, receiveManyLines(3), width, height)
+				s.qty[0].SetValue("1")
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+				if s.failDetail == "" {
+					t.Fatalf("no failure detail is standing, so this height proves nothing")
+				}
+				if !receiveCursorRowDrawn(t, s, width, height) {
+					t.Fatalf("a failure blanked the row the cursor is on:\n%s",
+						receiveClippedPane(s, width, height))
+				}
+				// The failure is what gives first, but it does not vanish while
+				// the pane can pay for a row of it: the headline is on the
+				// status row and never gives, so the operator is never left
+				// without the fact that something failed.
+				if pane := receivePaneText(s, width, height); !strings.Contains(pane, "failed") {
+					t.Errorf("the failure headline is not on the pane:\n%s", pane)
+				}
+				_ = r
+			})
+		}
+	}
+}
+
+// TestReceive_ThePagingPairIsNamedWhenAPageMovesTheCursor.
+//
+// qtyPagesFor used to ask only bodyScrollsForBar — "is the body taller than the
+// window" — but PgUp/PgDn move the CURSOR and the window follows it. The two
+// questions come apart in a DESIGNED state: an order whose lines are all voided
+// or already received leaves no quantity boxes, so the notes row is the only
+// navigable row and jdePageCursor clamps to it. At 80x18 the body still
+// overflowed, so the bar printed PgUp/PgDn=Page over a key whose whole effect
+// was to write "pgdown is already at the last row".
+//
+// Asserted as the biconditional at every height, on BOTH orders, because a
+// predicate that is merely stricter would pass a test that only checked the
+// dead direction.
+func TestReceive_ThePagingPairIsNamedWhenAPageMovesTheCursor(t *testing.T) {
+	orders := map[string][]omsapi.PurchaseOrderItem{
+		"nothing receivable": nil,
+		"nine lines":         receiveManyLines(9),
+		"three lines":        receiveManyLines(3),
+	}
+	for name, lines := range orders {
+		for height := 10; height <= 30; height++ {
+			t.Run(fmt.Sprintf("%s at 80x%d", name, height), func(t *testing.T) {
+				fake := &receiveFake{}
+				r, s := receiveDrive(t, fake, lines, 80, height)
+				named := receiveBarNames(s, "PgUp/PgDn")
+
+				// Try BOTH directions from the top: the pair is named when
+				// either can move, and pgdown is the one with room from row 0.
+				before := s.focused
+				r = receiveKey(t, r, poPhaseKeyMsg("pgdown"))
+				movedDown := s.focused != before
+				before = s.focused
+				r = receiveKey(t, r, poPhaseKeyMsg("pgup"))
+				moved := movedDown || s.focused != before
+
+				if named != moved {
+					t.Fatalf("the bar names PgUp/PgDn = %v but a page moved the cursor = %v"+
+						" (inputs %d)\n%s", named, moved, s.totalInputs(),
+						receiveClippedPane(s, 80, height))
+				}
+			})
 		}
 	}
 }
