@@ -715,19 +715,25 @@ func TestReceive_AKitOrderStillSaysWhatItCredits(t *testing.T) {
 			_, s := receiveDrive(t, fake, []omsapi.PurchaseOrderItem{poKitFixtureLine()}, width, 30)
 			s.qty[0].SetValue("1")
 			pane := strings.Join(receivePaneLines(s, width, 30), "\n")
+			// Read as the operator reads it, across the fold: the kit caveat
+			// travels with the line now and wraps inside the pane, so at 51
+			// cells "COMPONENT items" straddles two rows. A raw substring over
+			// the joined lines would call that a loss when nothing was lost —
+			// and would go on doing so for any phrase a re-wording moved.
+			read := receivePaneText(s, width, 30)
 			for _, want := range []string{
 				poKitTag,          // the line is marked
 				"ordered 2 kits",  // the quantity column's unit, on the row
 				"kits",            // and again beside the box the number goes in
-				"COMPONENT items", // the standing caveat
+				"COMPONENT items", // the caveat, on the kit line's own row
 				"receiving 1 kit", // what the typed quantity would credit
 				"3 × Black ink",   // per-kit, not the pre-multiplied figure
 			} {
-				if !strings.Contains(pane, want) {
+				if !strings.Contains(read, want) {
 					t.Errorf("the kit contract lost %q at %d columns:\n%s", want, width, pane)
 				}
 			}
-			if strings.Contains(pane, "6 × Black ink") {
+			if strings.Contains(read, "6 × Black ink") {
 				t.Errorf("the ordered-quantity figure leaked into a partial receipt:\n%s", pane)
 			}
 		})
@@ -1583,9 +1589,9 @@ func receiveCursorRowDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) bool {
 // those four rows were the whole body budget: at 80x12 the pane keeps six rows,
 // the bar and the status row take two, bodyAvailForBar answered 0, and
 // jdeLines.Window returned nothing. The frame was four BLANK rows over a status
-// row and a bar — no order name, no line names, no quantity box — and it was
-// built empty, so clampToBox was nowhere near it. Every height up to 16 lost
-// the heading the same way.
+// row and a bar — no line names, no quantity box, nothing — and it was built
+// empty, so clampToBox was nowhere near it. Every height up to 16 lost the form
+// the same way.
 //
 // The two height sweeps beside this one ran those exact heights and passed,
 // because both only compare "the bar names PgUp/PgDn" against "the cursor
@@ -1724,5 +1730,185 @@ func TestReceive_ThePagingPairIsNamedWhenAPageMovesTheCursor(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// receiveBodyLine is one line of a built body as the operator would read it —
+// styling stripped by lipgloss (no TTY under test) and whitespace collapsed the
+// way receivePaneText collapses the pane, so a line can be looked for on the
+// pane without the comparison turning into a fight about indentation.
+func receiveBodyLine(t *testing.T, body *jdeLines, i int) string {
+	t.Helper()
+	got := strings.Join(strings.Fields(body.text[i]), " ")
+	if got == "" {
+		t.Fatalf("body line %d is blank, so looking for it on the pane would prove nothing", i)
+	}
+	return got
+}
+
+// TestReceive_NoBodyLineSitsWhereNoKeyCanReach.
+//
+// jdeLines.Window anchors the window on the CURSOR's block, and no key on this
+// screen moves a cursor above the first navigable row: up wraps round to the
+// last row, which moves the window further DOWN, and jdePageCursor clamps at 0
+// so pgup answers "already at the first row". A line tagged jdeNoRow ahead of
+// the first block is therefore a line NO key can bring onto the pane — while
+// the layer goes on drawing "↑ N more above" and counting it, so the frame
+// tells the operator there is something up there and then refuses every key
+// they reach for.
+//
+// It was not hypothetical. At the canonical 80x24 with one kit line the pane
+// opened on "↑ 5 more above": the order heading and the whole kit caveat — the
+// sentence that stops "received 2" being read as two of the thing named on the
+// line — sat behind a marker nothing could act on. Before the conversion the
+// form drew every line and clampToBox cut from the BOTTOM, so those lead lines
+// were always visible; the conversion inverted which end is lost.
+//
+// The property asserted here is the one that makes the layer's marker honest,
+// and it is asserted in both halves: STRUCTURALLY, that no line of the body
+// falls outside a navigable row; and BEHAVIOURALLY, that the body's first line
+// is on the pane at rest and comes back after the cursor has been walked to the
+// far end and returned with the keys the bar names.
+func TestReceive_NoBodyLineSitsWhereNoKeyCanReach(t *testing.T) {
+	orders := map[string][]omsapi.PurchaseOrderItem{
+		// The kit order is the one that reported this: its credit block makes
+		// row 0's own block nine lines, which is what pushes the lead out.
+		"one kit line":            {poKitFixtureLine()},
+		"a kit among plain lines": {poKitFixtureLine(), poPlainLine(), poPlainLine()},
+		"four plain lines":        receiveManyLines(4),
+		// The order whose body is nothing BUT lead: no quantity boxes, so the
+		// notes row is the only row there is and the screen's whole explanation
+		// of itself used to sit above it.
+		"nothing receivable": nil,
+	}
+	for name, lines := range orders {
+		overflowed, sawMarker := false, false
+		for height := 10; height <= 40; height++ {
+			t.Run(fmt.Sprintf("%s at 80x%d", name, height), func(t *testing.T) {
+				fake := &receiveFake{}
+				r, s := receiveDrive(t, fake, lines, 80, height)
+
+				body := s.qtyBody()
+				for i, row := range body.row {
+					if row == jdeNoRow {
+						t.Fatalf("body line %d (%q) belongs to no navigable row, so no key "+
+							"can bring it onto the pane once the body overflows",
+							i, strings.Join(strings.Fields(body.text[i]), " "))
+					}
+				}
+				if body.Len() > s.bodyAvailForBar(len(s.headerLines()), s.bar()) {
+					overflowed = true
+				}
+
+				// At rest the cursor is on the first navigable row, and that
+				// row's block starts at the body's first line — so the top of
+				// the body is drawn and there is nothing above the window at
+				// all.
+				top := receiveBodyLine(t, body, 0)
+				if pane := receivePaneText(s, 80, height); !strings.Contains(pane, top) {
+					t.Fatalf("the resting frame does not draw the body's first line %q:\n%s",
+						top, receiveClippedPane(s, 80, height))
+				}
+				if pane := receivePaneText(s, 80, height); strings.Contains(pane, "more above") {
+					t.Fatalf("the resting frame hides lines above the cursor's own first row:\n%s",
+						receiveClippedPane(s, 80, height))
+				}
+
+				if s.totalInputs() < 2 {
+					// One row: there is nowhere to walk to, and the bar names
+					// no key that moves — which the paging sweep beside this
+					// one is what holds.
+					return
+				}
+				// Walk to the far end with the key the bar names for it. If the
+				// frame then says there is more above, the bar must name a key
+				// that goes back — and pressing it must actually bring the top
+				// line back.
+				down := tea.KeyMsg{Type: tea.KeyDown}
+				up := tea.KeyMsg{Type: tea.KeyUp}
+				for i := 1; i < s.totalInputs(); i++ {
+					r = receiveKey(t, r, down)
+				}
+				// The mirror at the far end: the last row's block ends at the
+				// body's last line, so standing there draws it. It is the
+				// FOCUSED notes field, and a separator tagged to the notes row
+				// instead of to the block above it makes the blank the first
+				// line of that block and the field the second — which on a
+				// one-row body draws the blank and leaves the operator typing
+				// into a field that is not on the pane.
+				tail := s.qtyBody()
+				last := receiveBodyLine(t, tail, tail.Len()-1)
+				if pane := receivePaneText(s, 80, height); !strings.Contains(pane, last) {
+					t.Fatalf("standing on the last row does not draw the body's last line %q:\n%s",
+						last, receiveClippedPane(s, 80, height))
+				}
+				if strings.Contains(receivePaneText(s, 80, height), "more above") {
+					sawMarker = true
+					if !receiveBarNames(s, "UP/DN") {
+						t.Fatalf("the frame says there is more above and the bar names no key "+
+							"that moves the cursor:\n%s", receiveClippedPane(s, 80, height))
+					}
+				}
+				for i := 1; i < s.totalInputs(); i++ {
+					r = receiveKey(t, r, up)
+				}
+				if s.focused != 0 {
+					t.Fatalf("walking down and back left the cursor on row %d, not row 0", s.focused)
+				}
+				back := receiveBodyLine(t, s.qtyBody(), 0)
+				if pane := receivePaneText(s, 80, height); !strings.Contains(pane, back) {
+					t.Fatalf("the keys the bar names did not bring the body's first line %q "+
+						"back onto the pane:\n%s", back, receiveClippedPane(s, 80, height))
+				}
+			})
+		}
+		// Both halves of the sweep have to have had something to judge. An
+		// order that fits every swept pane never overflows, and one the cursor
+		// never leaves the top of never draws the marker — either way the
+		// property above would be asserted over a frame it cannot break on,
+		// which reads as coverage and is not.
+		if !overflowed {
+			t.Errorf("%s never overflowed the window at any swept height, so nothing here "+
+				"was judged against a windowed body", name)
+		}
+		if !sawMarker && len(lines) > 0 {
+			t.Errorf("%s never drew a \"more above\" marker at any swept height, so the "+
+				"reachability half of this test never fired", name)
+		}
+	}
+}
+
+// TestReceive_AnUnsizedFrameKeepsEveryCeiling.
+//
+// headerSplit owns the "has the terminal told us anything?" question, and it is
+// the ONLY place that question is asked: headerRoom is reached past that arm and
+// so is only ever asked about a sized pane. It used to carry a branch of its own
+// for a budget of zero, with a paragraph beside it explaining behaviour nothing
+// performed — unreachable, because headerSplit tests the same condition three
+// lines earlier and returns.
+//
+// What the surviving arm has to do is what this asserts: with no WindowSizeMsg
+// there is no geometry to divide, so every ceiling is kept whole and the frame
+// draws entire for Root's clampToBox to cut.
+func TestReceive_AnUnsizedFrameKeepsEveryCeiling(t *testing.T) {
+	s := NewReceiveFormScreen(Deps{Ctx: context.Background()}, &omsapi.PurchaseOrder{
+		ID: 5, Number: "PO-1001", Items: receiveManyLines(3),
+	})
+	if s.terminalHeight != 0 {
+		t.Fatalf("the screen came up already sized (%d rows), so this proves nothing",
+			s.terminalHeight)
+	}
+	s.setFail("Receiving PO-1001 failed", nginx502)
+	_ = s.say("enter does nothing here", StatusWarn)
+
+	if got, want := len(s.headerLines()), receiveNoteRows+receiveFailDetailRows+1; got != want {
+		t.Errorf("an unsized header is %d rows, want every ceiling (%d)", got, want)
+	}
+	// And the body is still there: an unsized frame that clamped against a
+	// budget it does not have is the blank form rounds of this work were spent
+	// closing, reached from the other end.
+	view := strings.Join(strings.Fields(s.View()), " ")
+	if !strings.Contains(view, "Line-1") {
+		t.Errorf("an unsized frame draws no form:\n%s", s.View())
 	}
 }

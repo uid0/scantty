@@ -529,11 +529,14 @@ func TestReceiveKit_AKitLineEnrolsNoSerialCapture(t *testing.T) {
 	if len(fake.serials) != 0 {
 		t.Errorf("a kit receipt created serialized components: %+v", fake.serials)
 	}
-	// And phase 1 never promised capture either — the banner reads off the same
-	// predicate, and a screen that promises what the flow will not do is its own
-	// defect.
-	if screen.hasSerializedLine() {
-		t.Errorf("the form promised serial capture for a kit line")
+	// And phase 1 never promised capture either — the caveat under the quantity
+	// box reads off the same predicate the enrolment does, and a screen that
+	// promises what the flow will not do is its own defect. Asserted on the
+	// FRAME rather than on the predicate: the caveat moved onto the line's own
+	// row when the standing block was found to be unreachable, and a check on
+	// the helper would have gone on passing whatever the row drew.
+	if frame := strings.Join(strings.Fields(screen.View()), " "); strings.Contains(frame, "is serialized") {
+		t.Errorf("the form promised serial capture for a kit line:\n%s", screen.View())
 	}
 }
 

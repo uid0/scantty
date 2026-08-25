@@ -135,12 +135,27 @@ func receiveLabelWidth() int {
 // hanging off a label (jde_form.go's detail-grid idiom).
 const receiveMetaIndent = jdeIndent + "   "
 
-// receiveKitCaveat is the standing warning for an order carrying a kit. Its
+// receiveKitCaveat is the warning drawn under a KIT LINE's quantity box. Its
 // second half is the half that matters — an operator who reads only "kit lines
 // credit" has been told nothing — so it is WRAPPED wherever it is drawn rather
 // than clipped.
-const receiveKitCaveat = "This order contains kit lines. Receiving one credits the kit's " +
-	"COMPONENT items, not the kit — the quantity you type is a number of kits."
+//
+// It used to lead the whole body as a standing sentence about the ORDER, and
+// that is where it could not be read: qtyBody's lead lines belong to no
+// navigable row, jdeLines.Window anchors on the cursor's block, and no key on
+// this screen moves a cursor above the first row — so at the canonical 80x24
+// with one kit line the pane opened on "↑ 5 more above" with this sentence
+// among the five and nothing able to bring it back. It is drawn where the
+// number is typed instead, which is both reachable and the place it is about.
+const receiveKitCaveat = "Receiving one credits the kit's COMPONENT items, not the kit — " +
+	"the quantity here is a number of kits."
+
+// receiveSerialCaveat is the same fact one line-kind over: a serialized line
+// asks for a serial per unit AFTER the receipt posts, so an operator typing a
+// quantity into it should know a second phase is coming. It travels with the
+// line for the reason receiveKitCaveat does.
+const receiveSerialCaveat = "This line is serialized: a serial is prompted for each unit " +
+	"once the receipt posts."
 
 type ReceiveFormScreen struct {
 	deps Deps
@@ -1359,9 +1374,9 @@ const receiveBodyFloor = 3
 // it was first written — protected the resting frame and left the FAILURE frame
 // exactly where it had been: at 80x16 a 502 put three rows of gateway HTML into
 // the same header, bodyAvailForBar answered 0, jdeLines.Window returned nothing
-// and the pane was blank rows over a status row and a bar, with no order name,
-// no line names and no quantity box, while Enter and UP/DN went on being named
-// and acting on rows that were not drawn.
+// and the pane was blank rows over a status row and a bar, with no line names
+// and no quantity box, while Enter and UP/DN went on being named and acting on
+// rows that were not drawn.
 //
 // CLAMPING IS NOT RESERVING, and the difference is the whole reason this is
 // allowed to measure the failure detail. RESERVING is "always subtract these
@@ -1374,14 +1389,15 @@ const receiveBodyFloor = 3
 // standing — never of whether a NOTE is held, which is the self-reference the
 // reservation exists to break.
 //
-// The unsized branch keeps every ceiling: nothing has told us the height, the
-// frame draws whole and Root's clampToBox decides, so there is no geometry to
-// clamp against.
+// It is only ever asked about a SIZED pane. headerSplit is the one caller and
+// it answers the unsized case itself, before it gets here, off the same
+// headerBudget expression — so this used to carry a branch for a budget of
+// zero that could not execute, with a paragraph beside it explaining a
+// behaviour nothing performed and a value (7) that disagreed with what
+// headerSplit actually allocates when unsized. That branch is deleted rather
+// than reworded: dead code with a justification next to it reads as considered.
 func (s *ReceiveFormScreen) headerRoom() int {
-	budget := s.bodyAvailForBar(0, s.barCeiling())
-	if budget <= 0 {
-		return receiveNoteRows + receiveFailDetailRows + 1
-	}
+	budget := s.headerBudget()
 	floor := s.headerFloor()
 	if room := budget - receiveBodyFloor; room > floor {
 		return room
@@ -1414,6 +1430,15 @@ func (s *ReceiveFormScreen) headerFloor() int {
 		return receiveHeaderFloor
 	}
 	return receiveHeaderFloor + 1
+}
+
+// headerBudget is the rows the WHOLE frame has for the header and the body
+// together, measured against the phase's tallest bar. One expression for one
+// condition: headerSplit asks it whether the pane has been sized at all and
+// headerRoom asks it how much there is to divide, so a change of bar or of
+// geometry cannot move one answer without moving the other.
+func (s *ReceiveFormScreen) headerBudget() int {
+	return s.bodyAvailForBar(0, s.barCeiling())
 }
 
 // receiveHeader is the header's row allocation on this pane, written ONCE and
@@ -1464,9 +1489,12 @@ func (s *ReceiveFormScreen) headerSplit() receiveHeader {
 	if s.failDetailText() != "" {
 		want = receiveFailDetailRows
 	}
-	if s.bodyAvailForBar(0, s.barCeiling()) <= 0 {
+	if s.headerBudget() <= 0 {
 		// Unsized: the frame draws whole and Root's clampToBox decides, so
-		// there is no geometry to divide.
+		// there is no geometry to divide. This is the ONE place that question
+		// is answered — headerRoom below is reached only past this line, and
+		// it reads the same headerBudget, so the two cannot come to different
+		// views of whether the pane has told us anything.
 		return receiveHeader{note: receiveNoteRows, detail: want}
 	}
 
@@ -1513,9 +1541,9 @@ func (s *ReceiveFormScreen) failDetailRows() int { return s.headerSplit().detail
 // measured. At 80x12 the pane keeps six rows, the bar and the status row take
 // two, and the four pinned rows took the four that were left: bodyAvailForBar
 // answered 0, jdeLines.Window returned nothing, and the frame was four BLANK
-// rows over a status row and a bar — no order name, no line names, no quantity
-// box. Not a clipped form: an empty one, built empty, with clampToBox nowhere
-// near it. Every height up to 16 lost the heading the same way.
+// rows over a status row and a bar — no line names, no quantity box, nothing.
+// Not a clipped form: an empty one, built empty, with clampToBox nowhere near
+// it. Every height up to 16 lost the form the same way.
 //
 // So when the pane cannot afford both, the RESERVATION gives and the BODY is
 // kept, in that order: an operator cannot receive against a form that is not
@@ -1721,8 +1749,31 @@ func (s *ReceiveFormScreen) failDetailLines() []string {
 // The quantity form
 // ---------------------------------------------------------------------------
 
-// qtyBody is the scrollable body of phase 1: the standing caveats, then one
-// block per receivable line, then the notes row.
+// qtyBody is the scrollable body of phase 1: one block per receivable line,
+// then the notes row.
+//
+// EVERY LINE BELONGS TO A NAVIGABLE ROW. That is the rule this body is built
+// to, and it is a rule rather than a tidiness because of what breaks without
+// it. jdeLines.Window anchors the window on the CURSOR's block, and no key on
+// this screen moves a cursor above the first row — up wraps to the last row,
+// which moves the window further down, and jdePageCursor clamps at 0, so pgup
+// answers "already at the first row". A line tagged jdeNoRow ahead of the first
+// block is therefore a line NO key can bring onto the pane, while the layer
+// goes on drawing "↑ N more above" and counting it. Measured at the canonical
+// 80x24 with one kit line: the pane opened on "↑ 5 more above" with the order
+// heading and the whole kit caveat among the five — the sentence that stops
+// "received 2" being read as two of the thing named on the line, off the pane,
+// with the frame saying it was up there and nothing able to fetch it.
+//
+// So the lead is gone rather than merely re-tagged, and the difference matters.
+// Tagging those five lines onto row 0 makes them reachable and pays for it at
+// the other end: Window keeps a block's START when the block will not fit, so
+// the quantity box — five rows further down the block — leaves the pane
+// instead. At 80x22 with the same order that is exactly what it does, which is
+// defect (1) of this conversion coming back by another route. What each line
+// needs is drawn on that line's own row (lineCaveats), the order is named by
+// the title Root pins above the pane on every frame, and what is left over
+// belongs to the notes row.
 //
 // Every line of a block is tagged with that block's navigable ROW, so
 // jdeLines.Window keeps the name, the readings, the quantity box and the kit
@@ -1747,20 +1798,23 @@ func (s *ReceiveFormScreen) qtyBody() *jdeLines {
 	l := &jdeLines{}
 	lw := receiveLabelWidth()
 	width := s.bodyWidth()
-
-	l.Add(StyleJDEHeading.Render("Receive into " + s.orderName()))
-	for _, line := range s.standingCaveats(width) {
-		l.Add(line)
-	}
-	l.Add("")
+	// The notes row is the last navigable row, and it is where everything that
+	// is not a receivable line hangs: the blank above it, and — on an order
+	// with nothing to receive — the sentence saying so. On that order the notes
+	// row is the ONLY row, so tagging the explanation to it is what puts the
+	// explanation at the top of its own block and keeps it on the pane; as lead
+	// it sat behind "↑ 3 more above" with an inert notes box drawn under the
+	// marker, on a frame whose whole job is to explain why there is nothing
+	// here.
+	notesRow := len(s.qty)
 
 	if len(s.qty) == 0 {
-		l.Add(jdeIndent + StyleMuted.Render("No receivable lines on this order."))
+		l.AddRow(notesRow, jdeIndent+StyleMuted.Render("No receivable lines on this order."))
 		for _, line := range jdeCaveatLines(
 			"Every line is voided or already received in full, so there is nothing to book here.", width) {
-			l.Add(line)
+			l.AddRow(notesRow, line)
 		}
-		l.Add("")
+		l.AddRow(notesRow, "")
 	}
 	for i := range s.qty {
 		if i > 0 {
@@ -1771,7 +1825,14 @@ func (s *ReceiveFormScreen) qtyBody() *jdeLines {
 		s.addLineBlock(l, i, lw, width)
 	}
 	if len(s.qty) > 0 {
-		l.Add("")
+		// This blank goes with the block ABOVE it, not with the notes row
+		// below. Window keeps a block's START, so a separator tagged to the
+		// notes row makes the blank the first line of that block and the
+		// FOCUSED notes field the second — and on a pane with one body row
+		// that draws the blank and leaves the field the operator is typing
+		// into off the pane. At the tail of the last line's block it costs
+		// nothing: what a short window drops there is a blank.
+		l.AddRow(len(s.qty)-1, "")
 	}
 	// AddFittedFields is the LAYER's — it fits the row to the pane and keeps any
 	// folded hint on the SAME navigable row, so the window cannot separate a
@@ -1810,27 +1871,52 @@ func (s *ReceiveFormScreen) caretOn(i int) bool {
 	return s.focused == i && !s.pending
 }
 
-// standingCaveats are the facts about the ORDER that the per-line rows cannot
-// carry on their own.
-func (s *ReceiveFormScreen) standingCaveats(width int) []string {
+// lineCaveats are what a receivable line has to say about itself beyond its
+// readings: that it is a kit, that it is serialized. They are drawn on the
+// LINE's own navigable row rather than once at the top of the form, which is
+// the whole of the fix qtyBody's comment records — a sentence above the first
+// row is a sentence no key can reach once the body overflows.
+//
+// The trade is stated rather than assumed. Standing, each sentence was drawn
+// once for the whole order; per line it is drawn once per line it is true of,
+// so an order with three kit lines carries it three times. That is more rows
+// than before — but they are rows inside a windowed block, so they cost the
+// pane nothing except while the cursor is on that very line, which is the one
+// moment the sentence is about: it explains the box the number is going into.
+func lineCaveats(line omsapi.PurchaseOrderItem, width int) []string {
 	var out []string
-	if s.hasKitLine() {
+	if line.IsKitLine {
 		// Wrapped rather than clipped, and WARN rather than muted: this is the
 		// sentence that stops "received 2" being read as two of the thing named
 		// on the line.
-		room := 0
-		if width > 0 {
-			if room = width - len(jdeIndent); room < 1 {
-				room = 1
-			}
-		}
-		for _, line := range jdeWrapNote(receiveKitCaveat, room) {
-			out = append(out, jdeIndent+StyleStatusWarn.Render(line))
+		out = append(out, receiveCaveatLines(receiveKitCaveat, StyleStatusWarn, width)...)
+	}
+	if _, ok := poLineSerialized(line); ok {
+		// The SAME predicate the enrolment reads (poLineSerialized), so the
+		// form cannot promise a capture the receipt will not open: a kit line
+		// can look serialized and enrols nothing, and a caveat drawn off a
+		// broader test would advertise a phase that never arrives.
+		out = append(out, receiveCaveatLines(receiveSerialCaveat, StyleMuted, width)...)
+	}
+	return out
+}
+
+// receiveCaveatLines folds one caveat under the row it belongs to, indented to
+// the line's own content the way its readings and its credit block are: it is a
+// continuation of the row above it, not a value hanging off a label.
+func receiveCaveatLines(text string, style lipgloss.Style, width int) []string {
+	// A width of 0 means the pane has not been sized yet, which everywhere in
+	// this layer means "do not truncate".
+	room := 0
+	if width > 0 {
+		if room = width - len(receiveMetaIndent); room < 1 {
+			room = 1
 		}
 	}
-	if s.hasSerializedLine() {
-		out = append(out, jdeCaveatLines(
-			"Serialized lines prompt for a serial per unit once the receipt posts.", width)...)
+	wrapped := jdeWrapNote(text, room)
+	out := make([]string, 0, len(wrapped))
+	for _, line := range wrapped {
+		out = append(out, receiveMetaIndent+style.Render(line))
 	}
 	return out
 }
@@ -1862,6 +1948,15 @@ func (s *ReceiveFormScreen) addLineBlock(l *jdeLines, i, lw, width int) {
 		qty.Hint = "kits"
 	}
 	l.AddFittedFields([]jdeField{qty}, lw, width, i)
+	// AFTER the box, never before it. These lines are part of row i's block, so
+	// Window keeps them with the box — but a block too tall for the pane keeps
+	// its START, so anything placed ahead of the box is a row the box is pushed
+	// down by, and three caveat rows ahead of it is the box off the pane at
+	// 80x22. Behind it they cost the tail of the credit preview instead, which
+	// is a figure that recomputes rather than a field being typed into.
+	for _, cl := range lineCaveats(line, width) {
+		l.AddRow(i, cl)
+	}
 	// The breakdown sits directly under the box it is a preview of, and
 	// recomputes from what is currently typed there.
 	for _, kl := range s.kitCreditLines(line, s.qty[i].Value()) {
@@ -1922,17 +2017,6 @@ func receiveLineTokens(line omsapi.PurchaseOrderItem) []jdeToken {
 	return toks
 }
 
-// hasKitLine reports whether any receivable line on this form is a kit, so the
-// standing warning is drawn only for an order that actually contains one.
-func (s *ReceiveFormScreen) hasKitLine() bool {
-	for _, line := range s.lines {
-		if line.IsKitLine {
-			return true
-		}
-	}
-	return false
-}
-
 // kitCreditLines is the breakdown drawn under a kit line's quantity box: what
 // receiving the quantity currently TYPED there would credit.
 //
@@ -1951,17 +2035,6 @@ func (s *ReceiveFormScreen) kitCreditLines(line omsapi.PurchaseOrderItem, typed 
 		kits = qty
 	}
 	return poKitCreditBlock(line.KitComponents, lead, receiveMetaIndent, s.bodyWidth(), kits)
-}
-
-// hasSerializedLine reports whether any receivable line on the form is a
-// serialized item, so phase 1 can warn that serials will be captured.
-func (s *ReceiveFormScreen) hasSerializedLine() bool {
-	for _, line := range s.lines {
-		if _, ok := poLineSerialized(line); ok {
-			return true
-		}
-	}
-	return false
 }
 
 // ---------------------------------------------------------------------------

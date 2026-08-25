@@ -46,12 +46,25 @@ import (
 // It blocks nothing: the in-flight states are reached by firing the key with a
 // bare Update instead of pumping it, which is what leaves the request genuinely
 // out.
-type receiveSweepFake struct{ serialFails bool }
+type receiveSweepFake struct{ receiveFails, serialFails bool }
+
+// receiveSweepGateway is what a failing receipt answers with: a gateway page
+// rather than a DRF envelope, because omsapi.parseError puts the ENTIRE raw
+// body into APIError.Message when the envelope carries no code — so this is
+// what really reaches the failure detail, and the detail's height is the only
+// thing left that varies the pinned header.
+const receiveSweepGateway = "<html><head><title>502 Bad Gateway</title></head>" +
+	"<body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body></html>"
 
 func (f *receiveSweepFake) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/receive/"):
+			if f.receiveFails {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(receiveSweepGateway))
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id": 5, "po_number": "PO-1001",
 				"total_received_quantity": 2, "total_quantity": 9,
@@ -71,10 +84,10 @@ func (f *receiveSweepFake) handler() http.HandlerFunc {
 }
 
 // receiveSweepLines is the order every state is reached against: one plain
-// line, one SERIALIZED line (so the receipt opens capture), and one kit (so the
-// standing caveat and the credit block are on the pane while the keys are
-// pressed). The kit line is also what makes the body tall enough to page at 24
-// rows, which is the only state where PgUp/PgDn are named.
+// line, one SERIALIZED line (so the receipt opens capture), and one kit (so its
+// caveat and its credit block are on the pane while the keys are pressed). The
+// kit line is also what makes the body tall enough to page at 24 rows, which is
+// the only state where PgUp/PgDn are named.
 func receiveSweepLines() []omsapi.PurchaseOrderItem {
 	serialized := poPlainLine()
 	serialized.ID = 14
@@ -213,6 +226,17 @@ type receivePhaseCase struct {
 	typing bool
 	// lines is the order this state is reached against.
 	lines []omsapi.PurchaseOrderItem
+	// fake is what OMS answers with while this state is reached and pressed.
+	// It is per-case because a FAILED reply is a state of its own: since the
+	// note block became a constant height, the failure detail is the only
+	// input left that varies the pinned header, and headerRows is what the
+	// paging claim is measured against.
+	fake receiveSweepFake
+	// heights are the pane heights this state is pressed at, nil meaning
+	// receivePaneSizes. A state whose bar changes shape only on a particular
+	// pane has to be swept on THAT pane, or the case reaches the state without
+	// ever reaching the bar it was added for — coverage in name only.
+	heights []int
 	// reach drives a freshly opened form into this state.
 	reach func(t *testing.T, r Root, s *ReceiveFormScreen) Root
 }
@@ -263,16 +287,20 @@ func receivePhaseCases() []receivePhaseCase {
 	// capture. Line 3 (index 2) is that line.
 	receiveOne := map[int]string{2: "1"}
 
+	ok := receiveSweepFake{}
+	receiptFails := receiveSweepFake{receiveFails: true}
+	captureFails := receiveSweepFake{serialFails: true}
+
 	return []receivePhaseCase{
-		{phaseQty, "qty", true, all, pressed()},
+		{phaseQty, "qty", true, all, ok, nil, pressed()},
 		// The same phase with something typed: the Esc label changes to
 		// "Discard & back", and the paging keys are named because the kit block
 		// has grown a credit breakdown.
-		{phaseQty, "qty entered", true, all, typedQty(map[int]string{0: "2"}, pressed())},
+		{phaseQty, "qty entered", true, all, ok, nil, typedQty(map[int]string{0: "2"}, pressed())},
 		// An order with nothing receivable. Enter cannot receive, so the bar
 		// must not name it — the state the honesty rule is easiest to get wrong
 		// in, because the form still draws a notes row and a caret.
-		{phaseQty, "qty nothing receivable", true, nil, pressed()},
+		{phaseQty, "qty nothing receivable", true, nil, ok, nil, pressed()},
 		// A box holding a ZERO. This is a different STATE of the quantity
 		// phase, not a different phase, which is exactly why it had to be added
 		// by hand: walking the receivePhase iota makes a phase impossible to
@@ -280,11 +308,11 @@ func receivePhaseCases() []receivePhaseCase {
 		// named here — a box "holds something" — while submit skipped the zero,
 		// posted nothing and came straight back with a local refusal, so the
 		// bar named a key whose whole effect was to write a note.
-		{phaseQty, "qty all zero", true, all, typedQty(map[int]string{1: "0"}, pressed())},
+		{phaseQty, "qty all zero", true, all, ok, nil, typedQty(map[int]string{1: "0"}, pressed())},
 		// Frozen: the receipt is out and the payload has already gone.
-		{phaseQty, "qty receiving", false, all, typedQty(receiveOne, inFlight(enter))},
-		{phaseSerial, "serial", true, all, typedQty(receiveOne, pressed(enter))},
-		{phaseSerial, "serial saving", false, all, typedQty(receiveOne,
+		{phaseQty, "qty receiving", false, all, ok, nil, typedQty(receiveOne, inFlight(enter))},
+		{phaseSerial, "serial", true, all, ok, nil, typedQty(receiveOne, pressed(enter))},
+		{phaseSerial, "serial saving", false, all, ok, nil, typedQty(receiveOne,
 			func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
 				r = receiveKey(t, r, enter) // receive -> capture
 				s.serialInput.SetValue("SN-1")
@@ -292,8 +320,38 @@ func receivePhaseCases() []receivePhaseCase {
 				return next.(Root)
 			})},
 		// The summary, reached by finishing capture with Esc.
-		{phaseDone, "done", false, all, typedQty(receiveOne,
+		{phaseDone, "done", false, all, ok, nil, typedQty(receiveOne,
 			pressed(enter, tea.KeyMsg{Type: tea.KeyEsc}))},
+		// A FAILED receipt, standing. This is the state the last three fix
+		// rounds were written for and the one no sweep had ever reached: the
+		// failure detail is pinned in the same header as the note, so it is the
+		// only input left that moves headerRows — and headerRows is what
+		// qtyPagesFor measures the paging claim against, so the bar can
+		// genuinely be a different bar here. Every arm of the header allocator
+		// that exists because a detail is standing (headerFloor's extra row,
+		// headerSplit's detail floor) is unreachable without it.
+		{phaseQty, "qty after a failed receipt", true, all, receiptFails, receiveFailureHeights,
+			typedQty(receiveOne, func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+				r = receiveKey(t, r, enter)
+				if s.failDetail == "" {
+					t.Fatalf("the receipt did not fail, so this case is not the state it names")
+				}
+				return r
+			})},
+		// And a failed CAPTURE, which changes the serial bar's own wording:
+		// serialBar reads "Save serial" with a filled box and "Retry serial"
+		// once an attempt has failed, so this is a state its bar changes shape
+		// in — checked rather than assumed, which is what the rule asks.
+		{phaseSerial, "serial after a failed capture", true, all, captureFails, nil,
+			typedQty(receiveOne, func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+				r = receiveKey(t, r, enter) // receive -> capture
+				s.serialInput.SetValue("SN-1")
+				r = receiveKey(t, r, enter) // the create comes back failed
+				if s.serialErr == "" {
+					t.Fatalf("the capture did not fail, so this case is not the state it names")
+				}
+				return r
+			})},
 	}
 }
 
@@ -470,9 +528,8 @@ func receiveNamedKeys(t *testing.T, bar []actionBarItem) map[string]bool {
 // receiveHarness serves one fake for a whole subtest and hands back a builder
 // that opens a fresh form against it, so a probe keystroke cannot leak into the
 // next assertion and the sweep does not stand up a server per keypress.
-func receiveHarness(t *testing.T, lines []omsapi.PurchaseOrderItem, width, height int) func(*testing.T) (Root, *ReceiveFormScreen) {
+func receiveHarness(t *testing.T, fake receiveSweepFake, lines []omsapi.PurchaseOrderItem, width, height int) func(*testing.T) (Root, *ReceiveFormScreen) {
 	t.Helper()
-	fake := &receiveSweepFake{}
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
@@ -516,6 +573,30 @@ func receiveClippedPane(s *ReceiveFormScreen, width, height int) string {
 // a frame cannot be tuned for the short pane.
 var receivePaneSizes = []int{24, 30}
 
+// receiveFailureHeights are the panes the failed-receipt case is swept at.
+//
+// The extra one is the point of the case. A standing failure detail is the only
+// input left that moves the pinned header, so it can only change the BAR at a
+// height where the three rows it takes are the three that decide whether the
+// body overflows — and for receiveSweepLines that is 38, not 24 or 30, where
+// the body overflows either way. Swept only at the usual pair the case would
+// reach the state and never reach the bar it exists for.
+//
+// 38 is a MEASURED height and not a guessed one, and it is checked rather than
+// trusted: TestReceive_TheFailedReceiptIsSweptWhereItsBarDiffers fails if the
+// swept set stops containing a height at which the failure flips the claim, so
+// a re-wording that moves the flip point reports itself instead of quietly
+// turning this case into ordinary coverage.
+var receiveFailureHeights = []int{24, 30, 38}
+
+// paneSizes is the heights this case is pressed at.
+func (c receivePhaseCase) paneSizes() []int {
+	if len(c.heights) > 0 {
+		return c.heights
+	}
+	return receivePaneSizes
+}
+
 // receiveProbes is where a named key is pressed FROM.
 //
 // A key is dead only if it does nothing from ANY position, because a cursor on
@@ -550,9 +631,9 @@ func receiveProbes(named map[string]bool) [][]string {
 func TestReceive_EveryStateNamesExactlyTheKeysThatWork(t *testing.T) {
 	space := poKeySpace()
 	for _, c := range receivePhaseCases() {
-		for _, height := range receivePaneSizes {
+		for _, height := range c.paneSizes() {
 			t.Run(fmt.Sprintf("%s at 80x%d", c.name, height), func(t *testing.T) {
-				build := receiveHarness(t, c.lines, 80, height)
+				build := receiveHarness(t, c.fake, c.lines, 80, height)
 				fresh := func(t *testing.T, probe []string) (Root, *ReceiveFormScreen) {
 					t.Helper()
 					r, s := build(t)
@@ -620,9 +701,9 @@ func TestReceive_NoTwoDecliningKeysRedrawTheSamePane(t *testing.T) {
 		if c.typing {
 			continue
 		}
-		for _, height := range receivePaneSizes {
+		for _, height := range c.paneSizes() {
 			t.Run(fmt.Sprintf("%s at 80x%d", c.name, height), func(t *testing.T) {
-				build := receiveHarness(t, c.lines, 80, height)
+				build := receiveHarness(t, c.fake, c.lines, 80, height)
 				fresh := func(t *testing.T) (Root, *ReceiveFormScreen) {
 					t.Helper()
 					r, s := build(t)
@@ -671,7 +752,7 @@ func TestReceive_NoTwoDecliningKeysRedrawTheSamePane(t *testing.T) {
 // the property AND its mechanism is deliberate — the mechanism is what a future
 // change would break first, and it breaks quietly.
 func TestReceive_EveryDeclineNamesTheKeyItAnswers(t *testing.T) {
-	build := receiveHarness(t, receiveSweepLines(), 80, 24)
+	build := receiveHarness(t, receiveSweepFake{}, receiveSweepLines(), 80, 24)
 	r, s := build(t)
 	s.qty[2].SetValue("1")
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
@@ -709,7 +790,7 @@ func TestReceive_EveryDeclineNamesTheKeyItAnswers(t *testing.T) {
 // receipt a second time while the first was in flight, and typing changed
 // quantities the request no longer reflected.
 func TestReceive_TheFreezeIsAnAllowList(t *testing.T) {
-	build := receiveHarness(t, receiveSweepLines(), 80, 24)
+	build := receiveHarness(t, receiveSweepFake{}, receiveSweepLines(), 80, 24)
 	r, s := build(t)
 	s.qty[1].SetValue("2")
 	// Fire the receipt without the pump: it is genuinely still out.
@@ -742,5 +823,59 @@ func TestReceive_TheFreezeIsAnAllowList(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Error("a frozen key answered with nothing at all")
+	}
+}
+
+// TestReceive_TheFailedReceiptIsSweptWhereItsBarDiffers keeps the failed-receipt
+// case honest about why it exists.
+//
+// The rule this file's own commit put in AGENTS.md is that a phase's cases must
+// span every state its BAR changes shape in, because that is exactly where the
+// honesty rule can break. A standing failure DETAIL is the only input left that
+// moves the pinned header — the note block has been a constant height since the
+// reservation became unconditional — and headerRows is what qtyPagesFor
+// measures the paging claim against. But a header three rows taller only
+// CHANGES the answer on a pane where those three rows are the ones that decide
+// whether the body overflows: at 24 and 30 this order's body overflows either
+// way, so a case swept only there reaches the state and never reaches the bar.
+//
+// So the swept set is required to contain such a height, rather than assumed to.
+// If a re-wording moves the flip point off 38 this fails and says so, instead of
+// leaving a case that reads as coverage of the failure frame's bar and is not.
+func TestReceive_TheFailedReceiptIsSweptWhereItsBarDiffers(t *testing.T) {
+	var failure *receivePhaseCase
+	for _, c := range receivePhaseCases() {
+		if c.fake.receiveFails {
+			c := c
+			failure = &c
+		}
+	}
+	if failure == nil {
+		t.Fatal("no case reaches the quantity phase with a failed receipt, so every arm of " +
+			"the header allocator that exists because a detail is standing is swept by nothing")
+	}
+
+	differs := false
+	for _, height := range failure.paneSizes() {
+		r, s := receiveHarness(t, failure.fake, failure.lines, 80, height)(t)
+		r = failure.reach(t, r, s)
+		if s.failDetail == "" {
+			t.Fatalf("at 80x%d the case did not leave a failure standing", height)
+		}
+		// The same order and the same typed quantities with NO failure on the
+		// pane. Copied off the reached screen rather than restated here: a
+		// second spelling of the quantities is a second thing to keep in step.
+		_, clean := receiveHarness(t, receiveSweepFake{}, failure.lines, 80, height)(t)
+		for i := range clean.qty {
+			clean.qty[i].SetValue(s.qty[i].Value())
+		}
+		if s.qtyPages() != clean.qtyPages() {
+			differs = true
+		}
+	}
+	if !differs {
+		t.Errorf("the failed-receipt case is swept at %v, and at none of those heights does "+
+			"the standing detail change whether the bar names PgUp/PgDn — the case reaches "+
+			"the state without reaching the bar it was added for", failure.paneSizes())
 	}
 }

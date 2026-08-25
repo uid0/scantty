@@ -329,6 +329,31 @@ note, and is the authority):
   a forward pass (`cellPrefix`) before `fitCell` sees it, because `fitCell`
   falls back on `truncateVisible` and a flattened 20 KB gateway page through an
   O(n²) bound is the hang recorded further down this file.
+- **A body line that belongs to no navigable ROW is a line no key can reach.**
+  `jdeLines.Window` anchors the window on the CURSOR's block, and a columnar
+  sheet's cursor cannot go above its first row — up WRAPS to the last row, which
+  moves the window further down, and `jdePageCursor` clamps at 0 — so anything
+  added with `l.Add` (that is, tagged `jdeNoRow`) AHEAD of the first block is
+  stranded the moment the body overflows, while the layer goes on drawing
+  `↑ N more above` and counting it. The frame says there is content up there and
+  every key the bar names refuses to fetch it. At the canonical 80x24 the
+  receiving form lost its heading and the whole kit caveat that way — the
+  sentence that stops "received 2" being read as two of the thing named on the
+  line — and the conversion is what inverted which end is lost, since the
+  pre-conversion form drew every line and `clampToBox` cut from the BOTTOM.
+  Re-tagging the lead onto row 0 is NOT the fix and the arithmetic says why:
+  Window keeps a block's START when the block will not fit, so lines placed
+  ahead of the field push the FIELD off the pane instead (measured at 80x22 with
+  one kit line, and `TestReceive_AShortPaneStillDrawsTheForm` fails on it). So
+  what a row needs is drawn ON that row and AFTER its field
+  (`receive_form.go`'s `lineCaveats`), a separator travels with the block ABOVE
+  it so a block never opens on a blank, and anything left over hangs off the
+  last row. `TestReceive_NoBodyLineSitsWhereNoKeyCanReach` holds both halves —
+  structurally, that no line falls outside a row, and behaviourally, that the
+  body's first line is drawn at rest and comes back after the cursor has walked
+  away and returned. `po_edit.go` and `po_add_line.go` still open their bodies
+  with `l.Add` headings; they are safe only while their cursor blocks stay short
+  of the pane, and the queued New PO conversion should not copy the shape.
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
 
