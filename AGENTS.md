@@ -121,6 +121,15 @@ note, and is the authority):
   `internal/tui/jde_form.go` is the shared layer; `internal/tui/po_edit.go` is
   the pilot and `po_edit_jde_test.go` is where the layout and key scheme are
   pinned. Extend that layer — do not hand-roll a second style beside it.
+  Purchasing is converted screen by screen: the VIEW half (`po_detail.go`), the
+  edit sheet, the add-line flow (`po_add_line.go`) and RECEIVING
+  (`receive_form.go`, sc-jde-recv). The ENTRY half of New PO
+  (`po_create.go` + `po_create_pickers.go`) is still on its own pane-local
+  dialect and is queued. A flow with PHASES of its own brings its own derived
+  sweep rather than joining a shared one — `po_add_line_sweep_test.go` and
+  `receive_form_sweep_test.go` are the two examples, and they are the same
+  file with the nouns changed: phases from the iota's sentinel, keys from
+  `poKeySpace()`, state and focus from `reflect` over the screen struct.
 - **A key the bar does not name must do nothing**, and a key it names must do
   something. Tests assert both — and a key absent from a sweep's VOCABULARY is
   pressed in neither direction, so it is untested rather than passing. That is
@@ -193,6 +202,20 @@ note, and is the authority):
   because scanning prose for a bare `a` finds the article. That reshaping is how
   `b` — bound on all three association pickers exactly as `esc` is, named by
   none of them — was finally caught.
+  A DERIVED ROSTER IS ONE AXIS, AND A SWEEP HAS TWO. Walking an iota to its
+  sentinel makes a PHASE impossible to forget and says nothing whatever about
+  the STATES inside one, and it is the states a bar changes shape in — so a
+  sweep can be rigorous along the axis it derives while being silent along the
+  axis that carries the defect, which reads as coverage and is not. The cases a
+  phase is reached through are therefore still a judgement (`receivePhaseCases`
+  is the authority for receiving) and the bar is what says which ones are
+  needed: a phase's cases must span every state its bar changes shape in,
+  because that is exactly where the honesty rule can break. `Enter` on the
+  receiving form is the instance, beside `N`, `tab` and `poPhaseSupplierSwitch`
+  above: an empty quantity box and one holding `0` are different states of one
+  phase, the bar named `Enter` in both, and in the second submit skipped the
+  zero and could only refuse — no case had typed a zero, so nothing pressed it
+  there.
 - **A bar sweep presses the KEY SPACE, not the bar's own vocabulary.**
   `po_view_jde_test.go`'s `TestPOView_BarNamesExactlyTheKeysThatWork` used to
   walk `poAllBarKeys`, a roster of the tokens its bars happened to spell, so a
@@ -306,6 +329,60 @@ note, and is the authority):
   a forward pass (`cellPrefix`) before `fitCell` sees it, because `fitCell`
   falls back on `truncateVisible` and a flattened 20 KB gateway page through an
   O(n²) bound is the hang recorded further down this file.
+- **A body line that belongs to no navigable ROW is a line no key can reach.**
+  `jdeLines.Window` anchors the window on the CURSOR's block, and a columnar
+  sheet's cursor cannot go above its first row — up WRAPS to the last row, which
+  moves the window further down, and `jdePageCursor` clamps at 0 — so anything
+  added with `l.Add` (that is, tagged `jdeNoRow`) AHEAD of the first block is
+  stranded the moment the body overflows, while the layer goes on drawing
+  `↑ N more above` and counting it. The frame says there is content up there and
+  every key the bar names refuses to fetch it. At the canonical 80x24 the
+  receiving form lost its heading and the whole kit caveat that way — the
+  sentence that stops "received 2" being read as two of the thing named on the
+  line — and the conversion is what inverted which end is lost, since the
+  pre-conversion form drew every line and `clampToBox` cut from the BOTTOM.
+  Re-tagging the lead onto row 0 is NOT the fix and the arithmetic says why:
+  Window keeps a block's START when the block will not fit, so lines placed
+  ahead of the field push the FIELD off the pane instead (measured at 80x22 with
+  one kit line, and `TestReceive_AShortPaneStillDrawsTheForm` fails on it). So
+  what a row needs is drawn ON that row and AFTER its field
+  (`receive_form.go`'s `lineCaveats`), a separator travels with the block ABOVE
+  it so a block never opens on a blank, and anything left over hangs off the
+  last row. `TestReceive_NoBodyLineSitsWhereNoKeyCanReach` holds both halves —
+  structurally, that no line falls outside a row, and behaviourally, that the
+  body's first line is drawn at rest and comes back after the cursor has walked
+  away and returned.
+  A separator is the same rule at one row's scale and is the half that was got
+  BACKWARDS first: it closes the block above it, never opens the one below,
+  because Window keeps a block's START and a blank at the front is then the one
+  line a short window draws — at 80x17 pressing Down drew a pane of two markers
+  and a blank, naming nothing about the row the cursor had just reached.
+  Where NO key moves a cursor the block has only one end to protect and the
+  order inverts: `serialBody` draws the FIELD first and what identifies it
+  after, and `qtyBody`'s nothing-receivable branch does the same, since a
+  scanner firing into a box the operator cannot see is worse than a label they
+  have to press nothing to lose. It is a RULE and not two cases: whichever body
+  has one navigable row is in it, so applying it to the one that was reported
+  leaves the other stranding its field a round later. On such a body NEITHER marker can
+  be acted on, and only one of them is the sheet's to prevent: `↑ more above`
+  appears when the window starts past line 0, which is a consequence of where
+  the sheet puts its lines, so
+  `TestReceive_ABodyWithOneRowNeverHidesLinesAboveTheWindow` sweeps the pane
+  height and fails on any of it, with the set of one-row states read off the
+  built body rather than listed. `↓ more below` appears when the block outruns
+  the pane, which no arrangement of ONE block can avoid — it is drawn from
+  80x14 to 80x18 on the receiving screen — so the TAIL is the accepted loss and
+  the block is ordered so that what a short pane keeps is what the operator
+  cannot do without. Do not read the sweep as holding both directions.
+  Apply it to every body of a screen at once and DERIVE the check, or it is
+  applied to the one that was reported: the receiving conversion fixed its
+  quantity form and left the other two stranding their leads for a round.
+  `TestReceive_EveryBodyLineBelongsToANavigableRow` walks the phase cases
+  through `ReceiveFormScreen.body()` — the same expression `View` draws — so a
+  phase added to the iota brings its body with it.
+  `po_edit.go` and `po_add_line.go` still open their bodies
+  with `l.Add` headings; they are safe only while their cursor blocks stay short
+  of the pane, and the queued New PO conversion should not copy the shape.
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
 
@@ -901,6 +978,20 @@ touching any screen an operator drives:
   test that only sets `XDG_CONFIG_HOME` therefore writes the developer's real
   prefs file and fails on its second run; set `HOME` as well. `internal/config/prefs_test.go`'s
   `setRequiredConfigEnv` does this and is what any new config test should call.
+- **A drive that settles a keystroke pays 200ms for the cursor blink.** `pump`
+  (`wo_materials_drive_test.go`) abandons the textinput blink tick by WAITING IT
+  OUT — 200ms of dead wall-clock per `key()` — and bubbles' tick is 530ms, so a
+  drive that runs the tick itself pays even more. It is invisible on a handful of
+  presses and ruinous on a sweep: the receiving key-space sweep took 292s through
+  `pump` and 242s through a settler that ran the tick, against 1s once neither
+  did. Two facts get you out, both in `receive_form_sweep_test.go`:
+  `textinput.Blink` returns its message IMMEDIATELY and it is only FEEDING that
+  message back to `Update` that starts the tick (so recognise it and stop —
+  `receiveIsBlink`, checked against `textinput.Blink()` by a test so a bubbles
+  rename cannot turn it into a drive that skips nothing); and TYPING is
+  synchronous, so a typed rune needs no settling at all (`receiveType`). Do not
+  shorten `pump`'s own budget to fix this — it is shared with ~30 drive tests and
+  would make all of them racier on a loaded machine.
 - `gofmt -l` flags a few pre-existing files (doc-comment backtick rewrites).
   Format only what you touch.
 

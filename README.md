@@ -80,6 +80,19 @@ screen's own action rather than opening a row. Each of those screens carries a
 persistent action bar naming every key that works there, and a key the bar does
 not name does nothing. The rest of the app is being converted screen by screen.
 
+The purchasing **entry** sheets in that same style — editing a line, adding one
+by scanning an identifier, and receiving a delivery — read the same way, with
+field navigation on top: `↑`/`↓` (or `Tab`/`Shift+Tab`) move between fields,
+`PgUp`/`PgDn` page a body taller than the pane, `Enter` fires the sheet's own
+action from whichever row the cursor is on — receive the delivery, save the
+line, add the one just scanned — and `Esc` backs out, the bar saying so when
+that discards what you typed. Each of those keys is named only while it will
+actually act: on the receiving form `Enter` appears once a quantity box holds a
+quantity to receive, and the bar drops it entirely while the receipt is in
+flight, when `Esc` is the one key that still acts. Receiving ends on a summary
+of what was booked, which `Enter` or `Esc` closes. New PO is the last purchasing
+screen still on its own key scheme.
+
 The sidebar lists the eleven workspaces; the workspace you are in also shows its
 own surfaces indented beneath it (Inventory › New item / Categories / Locations
 / Suppliers, ForgeKey › Firmware / Lockouts / …). Facilities and Reports open a

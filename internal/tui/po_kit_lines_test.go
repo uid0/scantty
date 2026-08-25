@@ -464,8 +464,13 @@ func (f *receiveSerialFake) handler() http.HandlerFunc {
 }
 
 // receiveOneLine drives the receiving form the way an operator does — type a
-// quantity, Enter past the notes, Enter to submit — through Root.Update against
-// the fake, and hands back both so the test can read the screen AND the wire.
+// quantity, Enter to receive — through Root.Update against the fake, and hands
+// back both so the test can read the screen AND the wire.
+//
+// ONE Enter, from the quantity row itself. Enter used to advance a field and
+// submit only from the last one; the columnar conversion (sc-jde-recv) made it
+// commit from any row, which is what every other purchasing sheet does
+// (po_edit's Enter=Save, po_add_line's Enter=Add line).
 func receiveOneLine(t *testing.T, line omsapi.PurchaseOrderItem, qty string) (*receiveSerialFake, *ReceiveFormScreen, Root) {
 	t.Helper()
 	fake := &receiveSerialFake{}
@@ -481,8 +486,7 @@ func receiveOneLine(t *testing.T, line omsapi.PurchaseOrderItem, qty string) (*r
 	r = pump(t, r, screen.Init(), 0)
 
 	r = key(t, r, woRuneKey(qty))
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // qty -> notes
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // submit
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // receive
 	return fake, screen, r
 }
 
@@ -525,11 +529,34 @@ func TestReceiveKit_AKitLineEnrolsNoSerialCapture(t *testing.T) {
 	if len(fake.serials) != 0 {
 		t.Errorf("a kit receipt created serialized components: %+v", fake.serials)
 	}
-	// And phase 1 never promised capture either — the banner reads off the same
-	// predicate, and a screen that promises what the flow will not do is its own
-	// defect.
-	if screen.hasSerializedLine() {
-		t.Errorf("the form promised serial capture for a kit line")
+	// And phase 1 never promised capture either — the caveat under the quantity
+	// box reads off the same predicate the enrolment does, and a screen that
+	// promises what the flow will not do is its own defect.
+	//
+	// Asserted on a form that is STILL ON THE QUANTITY PHASE, which is the
+	// whole of what went wrong with this check once already. It was a live
+	// predicate call; a fix round replaced it with a substring over
+	// `screen.View()` taken from the screen above — and that screen has
+	// submitted, a kit enrols no units, so handleReceived has moved it to the
+	// SUMMARY. lineCaveats draws the caveat on the quantity frame and nowhere
+	// else, so the substring was structurally absent from the frame being
+	// searched and the assertion could not fail in either direction, on the one
+	// guard standing between a stray is_serialized flag and SerializedComponents
+	// accessioned against a kit's own id.
+	//
+	// Both halves are asserted because they fail for different reasons: the
+	// predicate is the rule, and the frame is the rule reaching the operator.
+	if id, ok := poLineSerialized(poKitSerializedLine()); ok {
+		t.Errorf("poLineSerialized says a kit line is serialized (item %q), so submit would "+
+			"enrol capture slots against the kit's own id", id)
+	}
+	form := poKitReceiveForm(t, []omsapi.PurchaseOrderItem{poKitSerializedLine()}, 120)
+	if form.phase != phaseQty {
+		t.Fatalf("the fixture form is on phase %v, not the quantity phase that draws the "+
+			"caveat — this assertion would be searching the wrong frame", form.phase)
+	}
+	if frame := strings.Join(strings.Fields(form.View()), " "); strings.Contains(frame, "is serialized") {
+		t.Errorf("the quantity form promised serial capture for a kit line:\n%s", form.View())
 	}
 }
 
