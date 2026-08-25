@@ -1207,6 +1207,52 @@ func (s *ReceiveFormScreen) failLine() string {
 	return ""
 }
 
+// receiveNoteRows is the block the note ALWAYS occupies, drawn blank when there
+// is no note — the fixed point that makes every claim on this screen honest.
+//
+// It is UNCONDITIONAL, and that is the whole design rather than an oversight to
+// tidy away. The note is pinned above the body, the header is subtracted from
+// the body's row budget, and the body's height is what decides whether
+// PgUp/PgDn are named at all — so a note that costs rows only WHEN IT IS THERE
+// makes the answer depend on the sentence, and the sentence is itself a list of
+// the keys that act. That circle had two visible ends. Writing a decline could
+// ADD PgUp/PgDn to the bar drawn under it, so the pane carried "pgdown does
+// nothing here" immediately above a bar naming PgUp/PgDn, and the next press
+// paged — the key alternating between working and refusing. A decline that
+// folded to FEWER rows than the note it replaced did the mirror of it, leaving
+// "pgup/pgdn page" spelled in a sentence sitting under a bar that had dropped
+// the pair.
+//
+// Reserving CONDITIONALLY is what creates the circle, so the fixed point has to
+// be unconditional. Do not "optimise" this back into rows that appear with the
+// note: that is the same defect wearing a different hat.
+//
+// Two cheaper-looking answers were considered and refused. Unpinning the note
+// into the scrollable body would buy the rows back by giving up "a key that
+// answers off the pane has not answered", which is why the note is pinned in
+// the first place — trading a live defect for a dormant one is not a saving.
+// Writing the contradiction down as a known limitation was refused outright: a
+// decline naming a key that then declines is the precise defect this screen was
+// converted to remove, and recording it would be a claim the code does not
+// honour. The row cost is accepted deliberately — on a screen where the
+// operator is scanning goods in, a command line that tells the truth about
+// which keys work is worth more than the rows of body it spends.
+//
+// The size is the MINIMUM that restores the fixed point, not the worst case.
+// The FAILURE DETAIL is deliberately NOT reserved: it is written by a reply off
+// the wire and names no keys, so a frame that grows one is a frame that
+// genuinely changed, and the bar and the guard see that change identically. It
+// is not self-referential and must not be paid for.
+//
+// Three text rows is what the longest sentence this screen can produce folds to
+// at the narrowest pane it supports (51 cells, so 49 after the indent) — the
+// all-zero Enter refusal and the page-edge notes, each around 110 cells with
+// their way-out tail. TestReceive_EveryNoteFitsItsReservation drives the states
+// that produce them and fails if one is CUT, because the tail is where the key
+// that gets the operator out is named; if a new sentence does not fit, shorten
+// the SENTENCE rather than raising this and paying another row on every frame.
+const receiveNoteRows = 3
+
 // headerLines is the screen's answer to the last keypress, PINNED above the
 // scrollable body on every frame.
 //
@@ -1215,23 +1261,35 @@ func (s *ReceiveFormScreen) failLine() string {
 // had walked down a long line list, and a key that answers off the pane has not
 // answered. The diagnostic DETAIL rides with it, bounded, so a failure and its
 // reason are one block rather than two a scroll can separate.
+//
+// The height is CONSTANT in everything a keypress controls: receiveNoteRows for
+// the note whether or not one is standing, plus the blank that separates the
+// block from the body. Only the reply-driven failure detail varies.
 func (s *ReceiveFormScreen) headerLines() []string {
 	lines := append(s.noteLines(), s.failDetailLines()...)
-	if len(lines) == 0 {
-		return nil
-	}
 	return append(lines, "")
 }
 
-// noteLines renders the screen's answer to the last keypress, folded to the
-// pane the terminal really gave. Root.View TRUNCATES rather than wrapping, and
-// the tail of these sentences is where the key that gets the operator OUT is
-// named — a clipped hint is worse than none, because they believe they read it.
+// noteLines renders the screen's answer to the last keypress into the rows
+// receiveNoteRows reserves for it, folded to the pane the terminal really gave
+// and padded out when it is shorter or absent.
+//
+// Folded rather than clipped because Root.View TRUNCATES, and the tail of these
+// sentences is where the key that gets the operator OUT is named — a clipped
+// hint is worse than none, because they believe they read it. Capped at the
+// same constant the reservation spends, so the two cannot part company about
+// how tall the block is (po_create.go's poCartCaveat is the idiom: one
+// expression read by both the renderer and the budget).
 func (s *ReceiveFormScreen) noteLines() []string {
-	lines := s.note.renderLines(s.paneWidth() - len(jdeIndent))
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
+	out := make([]string, 0, receiveNoteRows)
+	for _, line := range s.note.renderLines(s.paneWidth() - len(jdeIndent)) {
+		if len(out) == receiveNoteRows {
+			break
+		}
 		out = append(out, jdeIndent+line)
+	}
+	for len(out) < receiveNoteRows {
+		out = append(out, "")
 	}
 	return out
 }
@@ -1325,14 +1383,20 @@ func (s *ReceiveFormScreen) qtyBody() *jdeLines {
 	if len(s.qty) > 0 {
 		l.Add("")
 	}
-	s.addField(l, len(s.qty), jdeField{
+	// AddFittedFields is the LAYER's — it fits the row to the pane and keeps any
+	// folded hint on the SAME navigable row, so the window cannot separate a
+	// field from the note explaining it. This screen carried a line-for-line
+	// copy of its body until sc-jde-recv; the copy that gets tolerated is the
+	// one the next fifty grow from, which is the whole history sc-jde-lift
+	// exists to record.
+	l.AddFittedFields([]jdeField{{
 		Label:   "Notes",
 		Kind:    jdeText,
 		Input:   &s.notes,
 		Width:   40,
 		Hint:    "optional",
 		Focused: s.caretOn(len(s.qty)),
-	}, lw, width)
+	}}, lw, width, len(s.qty))
 	return l
 }
 
@@ -1407,23 +1471,11 @@ func (s *ReceiveFormScreen) addLineBlock(l *jdeLines, i, lw, width int) {
 		// once on the row above; this says it where the number is typed.
 		qty.Hint = "kits"
 	}
-	s.addField(l, i, qty, lw, width)
+	l.AddFittedFields([]jdeField{qty}, lw, width, i)
 	// The breakdown sits directly under the box it is a preview of, and
 	// recomputes from what is currently typed there.
 	for _, kl := range s.kitCreditLines(line, s.qty[i].Value()) {
 		l.AddRow(i, kl)
-	}
-}
-
-// addField renders one columnar row sized to the pane, and any hint that had to
-// be folded under it as further lines of the SAME row — so the window keeps a
-// field and the note explaining it on screen together (jdeLines.AddFittedFields
-// for a band; this is the same thing for a row interleaved with others).
-func (s *ReceiveFormScreen) addField(l *jdeLines, row int, f jdeField, lw, width int) {
-	fitted, notes := jdeFitRow(f, lw, width)
-	l.AddRow(row, renderJDEField(fitted, lw, width))
-	for _, note := range notes {
-		l.AddRow(row, note)
 	}
 }
 
@@ -1556,7 +1608,7 @@ func (s *ReceiveFormScreen) serialBody() *jdeLines {
 	l.Add(jdeIndent + label)
 	l.Add(receiveMetaIndent + StyleMuted.Render(
 		fmt.Sprintf("unit %d of %d on this line", unit.unitNo, unit.unitTot)))
-	s.addField(l, 0, jdeField{
+	l.AddFittedFields([]jdeField{{
 		Label: "Serial",
 		Kind:  jdeText,
 		Input: &s.serialInput,
@@ -1567,7 +1619,7 @@ func (s *ReceiveFormScreen) serialBody() *jdeLines {
 		// be a second, static claim about the same key, and it cost the field
 		// twelve columns of a 51-column pane to make.
 		Focused: !s.serialPending,
-	}, lw, width)
+	}}, lw, width, 0)
 	return l
 }
 

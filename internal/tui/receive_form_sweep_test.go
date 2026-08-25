@@ -360,11 +360,13 @@ var receiveStateFingerprinted = map[string]bool{
 // the reason. All of them are the screen ANSWERING a key: counting them would
 // call "x does nothing here" an action and invert the rule the sweep enforces.
 var receiveStateDeclined = map[string]string{
-	"deps":       "injected dependencies; no keystroke reaches them",
-	"note":       "the screen's answer to the last keypress — a decline writes here",
-	"failHead":   "the failure line's headline, written only by a reply off the wire",
-	"failDetail": "the failure line's unbounded half, written with failHead",
-	"serialErr":  "one capture's failure, written only by a reply off the wire",
+	"deps": "injected dependencies; no keystroke reaches them",
+	"note": "the screen's answer to the last keypress — a decline writes here",
+	"failHead": "the failure line's headline: written by a reply off the wire, and " +
+		"RETIRED by the submit that supersedes it (clearFail), which a keypress reaches",
+	"failDetail": "the failure line's unbounded half, written and retired with failHead",
+	"serialErr": "one capture's failure: written by a reply off the wire, and cleared by " +
+		"the press that re-attempts the unit (submitSerial, on both branches)",
 }
 
 func TestReceiveFormScreen_EveryFieldIsClassified(t *testing.T) {
@@ -497,8 +499,16 @@ func receiveHarness(t *testing.T, lines []omsapi.PurchaseOrderItem, width, heigh
 // these sweeps make is about what the operator sees, so they measure the pane
 // the operator sees, and a lead that grows a prefix cannot quietly move the
 // distinguishing part off the edge.
-func receiveClippedPane(s *ReceiveFormScreen, height int) string {
-	return strings.Join(receivePaneLines(s, 80, height), "\n")
+//
+// The WIDTH is a parameter for the same reason it is not 80 everywhere else on
+// these screens: it hard-coded 80 while a caller looped over 80/100/120, so at
+// two of the three widths the comparison and the failure dumps were measured
+// against a pane the screen had never been sized for. That fails in the safe
+// direction, but a helper documented as "what the operator can READ" measuring
+// a pane the terminal never gave is the same claim-the-code-does-not-honour
+// this file keeps closing.
+func receiveClippedPane(s *ReceiveFormScreen, width, height int) string {
+	return strings.Join(receivePaneLines(s, width, height), "\n")
 }
 
 // receivePaneSizes are the pane heights every state is checked at. 24 is the
@@ -624,7 +634,7 @@ func TestReceive_NoTwoDecliningKeysRedrawTheSamePane(t *testing.T) {
 				}
 				_, screen := fresh(t)
 				named := receiveNamedKeys(t, screen.bar())
-				resting := receiveClippedPane(screen, height)
+				resting := receiveClippedPane(screen, 80, height)
 
 				panes := map[string]string{}
 				for _, k := range space {
@@ -638,7 +648,7 @@ func TestReceive_NoTwoDecliningKeysRedrawTheSamePane(t *testing.T) {
 					if receiveState(s) != before || poCmdActs(cmd) {
 						continue // it acted; this sweep is about the ones that do not
 					}
-					if after := receiveClippedPane(s, height); after == resting {
+					if after := receiveClippedPane(s, 80, height); after == resting {
 						t.Errorf("%s: %q answers with a byte-for-byte identical pane — "+
 							"that reads as a wedged program (named by the bar: %v)", c.name, k, named[k])
 					} else if other, clash := panes[after]; clash {
@@ -671,7 +681,7 @@ func TestReceive_EveryDeclineNamesTheKeyItAnswers(t *testing.T) {
 	}
 	// In SEQUENCE, with no reset between presses: two keys answering with one
 	// sentence would redraw the pane the first one left.
-	before := receiveClippedPane(s, 24)
+	before := receiveClippedPane(s, 80, 24)
 	for _, k := range []string{"x", "z", "ctrl+t"} {
 		next, _ := r.Update(poPhaseKeyMsg(k))
 		r = next.(Root)
@@ -681,7 +691,7 @@ func TestReceive_EveryDeclineNamesTheKeyItAnswers(t *testing.T) {
 		if pane := receivePaneText(s, 80, 24); !strings.Contains(pane, k+" does nothing here") {
 			t.Errorf("the decline for %q does not name it:\n%s", k, pane)
 		}
-		if now := receiveClippedPane(s, 24); now == before {
+		if now := receiveClippedPane(s, 80, 24); now == before {
 			t.Errorf("%q redrew a byte-for-byte identical pane", k)
 		} else {
 			before = now

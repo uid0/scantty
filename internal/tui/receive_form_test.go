@@ -1147,7 +1147,7 @@ func TestReceive_ThePagingClaimHoldsWithANoteOnThePane(t *testing.T) {
 				// What the operator reads, on the frame they are about to press
 				// against.
 				named := receiveBarNames(s, "PgUp/PgDn")
-				pane := receiveClippedPane(s, height)
+				pane := receiveClippedPane(s, width, height)
 				before := s.focused
 
 				r = receiveKey(t, r, poPhaseKeyMsg("pgdown"))
@@ -1156,12 +1156,188 @@ func TestReceive_ThePagingClaimHoldsWithANoteOnThePane(t *testing.T) {
 					t.Fatalf("the bar named PgUp/PgDn = %v but pressing it moved the body = %v"+
 						"\n--- the frame the key was pressed against ---\n%s"+
 						"\n--- the frame it produced ---\n%s",
-						named, moved, pane, receiveClippedPane(s, height))
+						named, moved, pane, receiveClippedPane(s, width, height))
 				}
-				if !moved && receiveClippedPane(s, height) == pane {
+				if !moved && receiveClippedPane(s, width, height) == pane {
 					t.Errorf("pgdown declined with a byte-for-byte identical pane:\n%s", pane)
 				}
 			})
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The note costs the same rows whether or not it is there
+// ---------------------------------------------------------------------------
+
+// TestReceive_WritingANoteNeverChangesThePagingClaim.
+//
+// The note is pinned above the body, the header is subtracted from the body's
+// row budget, and the body's height is what decides whether PgUp/PgDn are named
+// — so while the note's rows appeared WITH the note, the sentence naming which
+// keys act could itself add or remove the paging pair from the bar drawn under
+// it. Two ends of one circle were reachable: a decline could print "pgdown does
+// nothing here" immediately above a bar naming PgUp/PgDn (and the next press
+// would then page, the key alternating between working and refusing), and a
+// shorter decline replacing a taller one could leave "pgup/pgdn page" spelled
+// in a sentence sitting under a bar that had dropped the pair.
+//
+// receiveNoteRows closed it by reserving those rows UNCONDITIONALLY, so this
+// asserts exactly that: writing a note never moves the claim. Sweeping the
+// terminal HEIGHT one row at a time is the point — the disagreement lived in a
+// band a few rows wide, which sampled heights walk straight past.
+//
+// Driven in SEQUENCE, and the RESTING frame is the one judged first: the
+// previous height sweep pressed Enter before judging anything, so the note was
+// always already on the pane and the note-free frame — one half of the circle —
+// was never the frame a judged key was pressed against.
+func TestReceive_WritingANoteNeverChangesThePagingClaim(t *testing.T) {
+	for _, width := range receiveWidths {
+		for height := 10; height <= 40; height++ {
+			t.Run(fmt.Sprintf("%dx%d", width, height), func(t *testing.T) {
+				fake := &receiveFake{}
+				r, s := receiveDrive(t, fake, receiveManyLines(3), width, height)
+
+				resting := receiveBarNames(s, "PgUp/PgDn")
+				restingRows := len(s.headerLines())
+
+				// A key that declines without moving the cursor: what changes
+				// between the frames is the NOTE and nothing else.
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+				if s.focused != 0 {
+					t.Fatalf("the refusal moved the cursor to row %d", s.focused)
+				}
+				if s.note.text == "" {
+					t.Fatalf("the refusal wrote no note, so this height proves nothing")
+				}
+				if got := len(s.headerLines()); got != restingRows {
+					t.Errorf("writing a note changed the pinned header from %d rows to %d — "+
+						"the reservation is conditional again", restingRows, got)
+				}
+				if got := receiveBarNames(s, "PgUp/PgDn"); got != resting {
+					t.Fatalf("writing a note changed whether the bar names PgUp/PgDn "+
+						"(%v -> %v):\n%s", resting, got,
+						receiveClippedPane(s, width, height))
+				}
+
+				// And the claim is still true of the body: named exactly when
+				// pressing it moves.
+				named := receiveBarNames(s, "PgUp/PgDn")
+				pane := receiveClippedPane(s, width, height)
+				before := s.focused
+				r = receiveKey(t, r, poPhaseKeyMsg("pgdown"))
+				if moved := s.focused != before; named != moved {
+					t.Fatalf("the bar named PgUp/PgDn = %v but pressing it moved the body = %v"+
+						"\n--- pressed against ---\n%s\n--- produced ---\n%s",
+						named, moved, pane, receiveClippedPane(s, width, height))
+				}
+			})
+		}
+	}
+}
+
+// receiveNoteWords is a sentence reduced to the words it says, with the `·`
+// joints pickerWrap folds at removed — so "whole" and "folded" compare equal
+// and only a genuinely LOST word reads as a cut.
+func receiveNoteWords(text string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(text, "·", " ")), " ")
+}
+
+// receiveNoteWordsCheck keeps the normaliser from being the thing under test:
+// it must not equate a sentence with its own truncation.
+func receiveNoteWordsCheck(t *testing.T) {
+	t.Helper()
+	whole := "pgup is already at the first row · esc back to order"
+	if receiveNoteWords(whole) == receiveNoteWords("pgup is already at the first row") {
+		t.Fatal("receiveNoteWords cannot tell a whole sentence from a cut one")
+	}
+}
+
+// TestReceive_EveryNoteFitsItsReservation is the other half of the constant.
+//
+// receiveNoteRows is spent on EVERY frame, so it is deliberately the minimum
+// that restores the fixed point — which means a sentence longer than it would
+// be CUT, and the tail of these sentences is where the key that gets the
+// operator out is named. So every note this screen can produce is driven at the
+// NARROWEST pane it supports (51 cells, where the fold is worst) and has to
+// arrive whole.
+//
+// If a new sentence fails this, shorten the SENTENCE. Raising the constant
+// spends another row of body on every frame the screen ever draws.
+func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
+	receiveNoteWordsCheck(t)
+
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	long := []string{"shift+tab", "backspace", "ctrl+t", "pgup", "pgdown", "j"}
+
+	type probe struct {
+		name  string
+		lines []omsapi.PurchaseOrderItem
+		typed map[int]string
+		keys  []tea.KeyMsg
+		bare  bool // fire the last key without settling, so a request is out
+	}
+	var probes []probe
+	for _, k := range long {
+		probes = append(probes,
+			probe{"qty page edge " + k, receiveManyLines(9), map[int]string{0: "2"},
+				[]tea.KeyMsg{poPhaseKeyMsg(k)}, false},
+			probe{"summary decline " + k, receiveManyLines(3), map[int]string{0: "2"},
+				[]tea.KeyMsg{enter, poPhaseKeyMsg(k)}, false},
+			probe{"frozen " + k, receiveManyLines(3), map[int]string{0: "2"},
+				[]tea.KeyMsg{enter, poPhaseKeyMsg(k)}, true},
+		)
+	}
+	probes = append(probes,
+		probe{"enter with nothing typed", receiveManyLines(9), nil, []tea.KeyMsg{enter}, false},
+		probe{"enter with every box zero", receiveManyLines(9), map[int]string{0: "0", 1: "0"},
+			[]tea.KeyMsg{enter}, false},
+		probe{"enter with nothing receivable", nil, nil, []tea.KeyMsg{enter}, false},
+		probe{"enter on an unparseable quantity", receiveManyLines(9),
+			map[int]string{8: "12345678"}, []tea.KeyMsg{enter}, false},
+	)
+
+	for _, p := range probes {
+		t.Run(p.name, func(t *testing.T) {
+			fake := &receiveFake{}
+			r, s := receiveDrive(t, fake, p.lines, 80, 24)
+			for i, v := range p.typed {
+				s.qty[i].SetValue(v)
+			}
+			for i, k := range p.keys {
+				if p.bare && i == len(p.keys)-1 {
+					r, _ = receiveInFlight(t, r, k)
+					continue
+				}
+				if p.bare && i == len(p.keys)-2 {
+					r, _ = receiveInFlight(t, r, k)
+					continue
+				}
+				r = receiveKey(t, r, k)
+			}
+			if s.note.text == "" {
+				t.Skip("this probe wrote no note")
+			}
+			drawn := 0
+			for _, line := range s.noteLines() {
+				if strings.TrimSpace(line) != "" {
+					drawn++
+				}
+			}
+			if drawn > receiveNoteRows {
+				t.Fatalf("the note takes %d rows, more than the %d reserved: %q",
+					drawn, receiveNoteRows, s.note.text)
+			}
+			// Cut or whole is what matters: the reservation caps the render, so
+			// a sentence that overran would lose its tail silently. Compared as
+			// WORDS, because pickerWrap folds at the `·` joints and eats the
+			// separator it broke on — a raw substring check would report every
+			// fold as a cut and prove nothing about either.
+			want := receiveNoteWords(s.note.text)
+			if got := receiveNoteWords(receivePaneText(s, 80, 24)); !strings.Contains(got, want) {
+				t.Errorf("the note is cut by its own reservation — the tail names the way "+
+					"out:\nwant: %s\npane: %s", want, got)
+			}
+		})
 	}
 }
