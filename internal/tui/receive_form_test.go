@@ -1139,7 +1139,12 @@ func TestReceive_ThePagingClaimHoldsWithANoteOnThePane(t *testing.T) {
 				if s.focused != 0 {
 					t.Fatalf("the refusal moved the cursor to row %d", s.focused)
 				}
-				if len(s.headerLines()) == 0 {
+				// The NOTE, not the reservation: headerLines is a constant
+				// height now, so asking it whether a note was written is a
+				// branch that can never be false — a guard whose message claims
+				// it prevents vacuity while checking nothing is the same defect
+				// as the wrong-row assertion two rounds back.
+				if s.note.text == "" {
 					t.Fatalf("the refusal put no note on the pane, so this height "+
 						"proves nothing:\n%s", receivePaneText(s, width, height))
 				}
@@ -1338,6 +1343,125 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 				t.Errorf("the note is cut by its own reservation — the tail names the way "+
 					"out:\nwant: %s\npane: %s", want, got)
 			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A resize retires the answer it invalidates
+// ---------------------------------------------------------------------------
+
+// receiveResize drives a real WindowSizeMsg through Root, the way a terminal
+// drag arrives — not by writing the screen's fields.
+func receiveResize(t *testing.T, r Root, w, h int) Root {
+	t.Helper()
+	next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	after, ok := next.(Root)
+	if !ok {
+		t.Fatalf("Root.Update returned %T, want Root", next)
+	}
+	return after
+}
+
+// TestReceive_AResizeRetiresTheNoteItInvalidates.
+//
+// The note is an answer about a FRAME, and a resize destroys the frame it was
+// an answer about: WindowSizeMsg moves bodyRowsForBar, which is the one input
+// the paging claim is made of. A 3-line order at 80x40 does not page, so the
+// bar names no paging keys and pgdown declines with "pgdown does nothing here";
+// dragged to 80x24 the same form pages, the bar gains PgUp/PgDn, and that
+// pinned sentence used to sit immediately above a bar naming the key it says
+// does nothing — with the very next press paging, so the key read as
+// alternating between working and refusing.
+//
+// Driven in SEQUENCE through one live screen, which is the whole point: every
+// other test here sizes once before the first keypress, so no sweep could reach
+// a note that had outlived its frame.
+func TestReceive_AResizeRetiresTheNoteItInvalidates(t *testing.T) {
+	for _, width := range receiveWidths {
+		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
+			fake := &receiveFake{}
+			r, s := receiveDrive(t, fake, receiveManyLines(3), width, 40)
+			if s.qtyPages() {
+				t.Fatalf("the form already pages at %dx40, so shrinking proves nothing", width)
+			}
+
+			r = receiveKey(t, r, poPhaseKeyMsg("pgdown"))
+			if s.note.text == "" {
+				t.Fatal("pgdown on a form that does not page said nothing")
+			}
+			if !strings.Contains(s.note.text, "pgdown") {
+				t.Fatalf("the decline does not name the key: %q", s.note.text)
+			}
+
+			// The drag. The form now pages, so the bar names the pair the note
+			// says does nothing.
+			r = receiveResize(t, r, width, 24)
+			if !s.qtyPages() {
+				t.Fatalf("the form does not page at %dx24, so this drag proves nothing", width)
+			}
+			if !receiveBarNames(s, "PgUp/PgDn") {
+				t.Fatalf("the bar does not name PgUp/PgDn at %dx24: %v", width, s.bar())
+			}
+			if got := receivePaneText(s, width, 24); strings.Contains(got, "pgdown does nothing here") {
+				t.Errorf("the pane pins \"pgdown does nothing here\" above a bar naming "+
+					"PgUp/PgDn — the note answers a frame the resize destroyed:\n%s", got)
+			}
+			// The failure line is a different fact and is NOT retired with it;
+			// nothing here wrote one, so the pane must simply have no note.
+			if s.note.text != "" {
+				t.Errorf("the note survived the resize: %q", s.note.text)
+			}
+			_ = r
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The note says when it gave something up
+// ---------------------------------------------------------------------------
+
+// TestReceive_ANoteTooLongToFitSaysSo.
+//
+// receiveNoteRows caps what the note may draw, and the cap used to break at the
+// last row and draw nothing to say it had. What it drops is the TAIL, which on
+// these sentences is where the key that gets the operator OUT is named — and
+// noteLines' own comment says a clipped hint is worse than none because they
+// believe they read it, so a silent cut made that sentence false of the code
+// two lines under it.
+//
+// The margin at the narrowest pane is zero rather than comfortable, so this is
+// reachable by one more bar item rather than only by a pathological sentence.
+// It is driven here through the real note field so the mark is asserted on what
+// the operator SEES, at the width the screen was sized for.
+func TestReceive_ANoteTooLongToFitSaysSo(t *testing.T) {
+	for _, width := range receiveWidths {
+		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
+			fake := &receiveFake{}
+			r, s := receiveDrive(t, fake, receiveManyLines(3), width, 30)
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			headerBefore := len(s.headerLines())
+
+			// A sentence no wording on this screen produces today, which is the
+			// point: the guard must hold for the say() call site added later,
+			// not only for the ones a probe list happens to name.
+			s.note.text = strings.TrimSpace(strings.Repeat("overlong ", 60)) + " esc back to order"
+			s.note.level = StatusWarn
+
+			pane := receivePaneText(s, width, 30)
+			if !strings.Contains(pane, strings.TrimSpace(receiveNoteDropMark)) {
+				t.Errorf("the note was cut with nothing on the pane saying so:\n%s", pane)
+			}
+			if strings.Contains(pane, "esc back to order") {
+				t.Fatalf("the fixture did not overrun, so this proves nothing:\n%s", pane)
+			}
+			// And the cut costs a word, never the header's height — the paging
+			// claim is measured against that.
+			if got := len(s.headerLines()); got != headerBefore {
+				t.Errorf("an overlong note moved the pinned header from %d rows to %d",
+					headerBefore, got)
+			}
+			_ = r
 		})
 	}
 }

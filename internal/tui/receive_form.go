@@ -400,7 +400,7 @@ func receiveReason(err error) string {
 func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	// A reply off the wire is what ENDS a freeze, so it is also what retires
 	// the note the freeze wrote. The note answers the last keypress IN THE
-	// STATE THAT KEY WAS PRESSED IN, and headerLines pins it on every phase, so
+	// FRAME THAT KEY WAS PRESSED AGAINST, and headerLines pins it on every phase, so
 	// a decline that outlives its own state is a frame asserting something the
 	// screen has stopped being true of: press any key while the receipt is out
 	// and the note reads "j is frozen until the receipt answers · esc back to
@@ -415,19 +415,42 @@ func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	// the phase — the same shape as the New PO screen's pendingLead, which is
 	// cleared in Update's key dispatch and not in the three arms that navigate
 	// (AGENTS.md). A clear per arm is a clear somebody adding the next branch
-	// has to remember, and this defect fails silently. There are exactly TWO
-	// clearing points, this one and handleKey's, and between them they cover
-	// every way the note's state can end: a reply off the wire and a keypress.
-	// finishSerial and submit each carried a third until it was noticed they had
-	// been dead since handleKey's was written — and finishSerial's was an arm
-	// that moves the phase, which is the very thing this paragraph says the note
-	// is not cleared in.
+	// has to remember, and this defect fails silently. finishSerial and submit
+	// each carried a third clear until it was noticed they had been dead since
+	// handleKey's was written — and finishSerial's was an arm that moves the
+	// phase, which is the very thing this paragraph says the note is not
+	// cleared in.
+	//
+	// A RESIZE retires it too, and that is a third MESSAGE rather than a third
+	// exception: the note is an answer about a FRAME, and a WindowSizeMsg
+	// destroys the frame it was an answer about. It moves bodyRowsForBar, which
+	// is the one input the paging claim is made of — so a 3-line order at 80x40
+	// (body fits, the bar names no paging keys, pgdown declines with "pgdown
+	// does nothing here") dragged down to 80x24 starts paging, the bar gains
+	// PgUp/PgDn, and that pinned sentence sits immediately above a bar naming
+	// the key it says does nothing. The next press then pages, so the key reads
+	// as alternating between working and refusing.
+	//
+	// Re-deriving the way-out TAIL at render time instead — the New PO screen's
+	// collapsed-cart idiom, where only the lead is kept — does not close this
+	// one on its own: the LEAD is itself a claim about the frame ("pgdown does
+	// nothing here"), so a re-derived tail would leave the note naming
+	// pgup/pgdn as a way out in the same breath as saying pgdown does nothing.
+	// What has stopped being true is the whole answer, not half of it, so the
+	// whole answer goes.
+	//
+	// The rule is therefore not a COUNT of clearing points but what they have in
+	// common: the note is retired by anything that ends the frame it answers
+	// about — a reply off the wire, another keypress, or a resize. Nothing else
+	// Update sees ends one. What falls through below is the cursor blink, which
+	// moves a caret inside the frame rather than changing the frame's shape, and
+	// a note retired by a blink would expire on a timer rather than on an event.
 	//
 	// The FAILURE line is deliberately not cleared with it: failHead/failDetail
 	// are what came back off the wire rather than an answer to a keypress, and
 	// they are the fact the operator most needs kept.
 	switch msg.(type) {
-	case receiveSubmittedMsg, serialUnitDoneMsg:
+	case receiveSubmittedMsg, serialUnitDoneMsg, tea.WindowSizeMsg:
 		s.note.clear()
 	}
 
@@ -1111,12 +1134,20 @@ func (s *ReceiveFormScreen) anythingTyped() bool {
 // larger one left when the keys are dropped, so measuring against the tallest
 // is a genuine fixed point and the answer cannot oscillate between frames.
 //
-// The HEADER is not monotone that way and so cannot be pinned to a constant in
-// either direction — a note assumed present names a key that is dead on a
-// note-free frame, and one assumed absent omits a key that works. It is a
-// PARAMETER instead, and the caller binds it to the frame the question is
-// really about: View to the frame it is drawing, and a key arm to the frame the
-// press was made against (handleKey).
+// The HEADER is a PARAMETER, and since receiveNoteRows it is no longer the NOTE
+// that makes it one — the note block is the same height in every state, so
+// writing or retiring a note cannot move this answer at all. That was the whole
+// point of reserving it, and the hazard this paragraph used to describe (a note
+// assumed present naming a key that is dead on a note-free frame) no longer
+// exists, because a note-free frame no longer exists.
+//
+// What is left varying is the FAILURE DETAIL, and it is legitimately variable
+// for the reason it is not reserved: it is written by a reply off the wire, it
+// names no keys, and both the bar and this guard see it identically — a frame
+// that grows one is a frame that genuinely changed. The parameter pins the
+// question to ONE frame so that reply cannot move the answer under a key arm
+// mid-dispatch: View binds it to the frame it is drawing, and a key arm to the
+// frame the press was made against (handleKey).
 func (s *ReceiveFormScreen) qtyPagesFor(headerRows int) bool {
 	return s.bodyScrollsForBar(s.qtyBody(), headerRows, s.qtyBarItems(true))
 }
@@ -1247,11 +1278,25 @@ func (s *ReceiveFormScreen) failLine() string {
 // Three text rows is what the longest sentence this screen can produce folds to
 // at the narrowest pane it supports (51 cells, so 49 after the indent) — the
 // all-zero Enter refusal and the page-edge notes, each around 110 cells with
-// their way-out tail. TestReceive_EveryNoteFitsItsReservation drives the states
-// that produce them and fails if one is CUT, because the tail is where the key
-// that gets the operator out is named; if a new sentence does not fit, shorten
-// the SENTENCE rather than raising this and paying another row on every frame.
+// their way-out tail. That margin is ZERO rather than comfortable: one more bar
+// item, or one more word in entryRefusal, puts either over.
+// TestReceive_EveryNoteFitsItsReservation drives the states that produce them
+// and fails if one is cut, because the tail is where the key that gets the
+// operator out is named; receiveNoteDropMark makes a cut VISIBLE even where
+// that probe list misses it. If a new sentence does not fit, shorten the
+// SENTENCE rather than raising this and paying another row on every frame.
 const receiveNoteRows = 3
+
+// receiveNoteDropMark is what the note leaves behind when it does not fit.
+//
+// Every other bound on these screens marks what it gave up — poRowDropMark on a
+// picker row, pickerFail's hidden-row count, fitCell's ellipsis — and this one
+// used to be the exception: it stopped at receiveNoteRows and drew nothing to
+// say so. What it drops is the TAIL, which on these sentences is where the key
+// that gets the operator out is named, and noteLines' own comment says a
+// clipped hint is worse than none because they believe they read it. A silent
+// cut made that sentence false of the code two lines under it.
+const receiveNoteDropMark = " …"
 
 // headerLines is the screen's answer to the last keypress, PINNED above the
 // scrollable body on every frame.
@@ -1281,9 +1326,14 @@ func (s *ReceiveFormScreen) headerLines() []string {
 // how tall the block is (po_create.go's poCartCaveat is the idiom: one
 // expression read by both the renderer and the budget).
 func (s *ReceiveFormScreen) noteLines() []string {
+	width := s.paneWidth() - len(jdeIndent)
 	out := make([]string, 0, receiveNoteRows)
-	for _, line := range s.note.renderLines(s.paneWidth() - len(jdeIndent)) {
+	for _, line := range s.fittedNote(width).renderLines(width) {
 		if len(out) == receiveNoteRows {
+			// fittedNote has already guaranteed this cannot happen. The bound
+			// stays because the block's HEIGHT is now load-bearing — the paging
+			// claim is measured against it — so an overrun must cost a word
+			// rather than the header's constancy.
 			break
 		}
 		out = append(out, jdeIndent+line)
@@ -1292,6 +1342,39 @@ func (s *ReceiveFormScreen) noteLines() []string {
 		out = append(out, "")
 	}
 	return out
+}
+
+// fittedNote is the note shortened to the rows reserved for it, carrying the
+// mark that says so — the TEXT bounded rather than the rendered lines.
+//
+// Bounding the text and not the lines is the point. renderLines emits styled
+// runs, so dropping a rendered line can take a closing SGR reset with it and
+// colour everything drawn afterwards — the defect the status row's own bound
+// exists for. Words go from the END because that is the only end there is a
+// choice about: the lead names the key that was pressed and IS the answer, so
+// what gives is the way-out tail, and the mark is what stops that being
+// invisible.
+//
+// renderLines is the oracle rather than a re-derived fold, so the fit is
+// measured by the very function that will draw it: a mark width or a
+// continuation indent changing there cannot leave this measuring something
+// else. The loop runs only when a sentence overruns, which no wording this
+// screen produces does today — the margin is zero, not absent.
+func (s *ReceiveFormScreen) fittedNote(width int) pickerNote {
+	if s.note.text == "" || len(s.note.renderLines(width)) <= receiveNoteRows {
+		return s.note
+	}
+	words := strings.Fields(s.note.text)
+	for keep := len(words) - 1; keep > 0; keep-- {
+		trial := s.note
+		trial.text = strings.Join(words[:keep], " ") + receiveNoteDropMark
+		if len(trial.renderLines(width)) <= receiveNoteRows {
+			return trial
+		}
+	}
+	trial := s.note
+	trial.text = strings.TrimSpace(receiveNoteDropMark)
+	return trial
 }
 
 // receiveFailDetailRows caps the failure detail. The sentence naming what
