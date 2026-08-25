@@ -531,12 +531,32 @@ func TestReceiveKit_AKitLineEnrolsNoSerialCapture(t *testing.T) {
 	}
 	// And phase 1 never promised capture either — the caveat under the quantity
 	// box reads off the same predicate the enrolment does, and a screen that
-	// promises what the flow will not do is its own defect. Asserted on the
-	// FRAME rather than on the predicate: the caveat moved onto the line's own
-	// row when the standing block was found to be unreachable, and a check on
-	// the helper would have gone on passing whatever the row drew.
-	if frame := strings.Join(strings.Fields(screen.View()), " "); strings.Contains(frame, "is serialized") {
-		t.Errorf("the form promised serial capture for a kit line:\n%s", screen.View())
+	// promises what the flow will not do is its own defect.
+	//
+	// Asserted on a form that is STILL ON THE QUANTITY PHASE, which is the
+	// whole of what went wrong with this check once already. It was a live
+	// predicate call; a fix round replaced it with a substring over
+	// `screen.View()` taken from the screen above — and that screen has
+	// submitted, a kit enrols no units, so handleReceived has moved it to the
+	// SUMMARY. lineCaveats draws the caveat on the quantity frame and nowhere
+	// else, so the substring was structurally absent from the frame being
+	// searched and the assertion could not fail in either direction, on the one
+	// guard standing between a stray is_serialized flag and SerializedComponents
+	// accessioned against a kit's own id.
+	//
+	// Both halves are asserted because they fail for different reasons: the
+	// predicate is the rule, and the frame is the rule reaching the operator.
+	if id, ok := poLineSerialized(poKitSerializedLine()); ok {
+		t.Errorf("poLineSerialized says a kit line is serialized (item %q), so submit would "+
+			"enrol capture slots against the kit's own id", id)
+	}
+	form := poKitReceiveForm(t, []omsapi.PurchaseOrderItem{poKitSerializedLine()}, 120)
+	if form.phase != phaseQty {
+		t.Fatalf("the fixture form is on phase %v, not the quantity phase that draws the "+
+			"caveat — this assertion would be searching the wrong frame", form.phase)
+	}
+	if frame := strings.Join(strings.Fields(form.View()), " "); strings.Contains(frame, "is serialized") {
+		t.Errorf("the quantity form promised serial capture for a kit line:\n%s", form.View())
 	}
 }
 

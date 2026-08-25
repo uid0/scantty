@@ -773,7 +773,14 @@ func receiveInFlight(t *testing.T, r Root, msg tea.KeyMsg) (Root, tea.Cmd) {
 // Driven in SEQUENCE with no state reset between the presses, because resetting
 // between them is exactly what makes this class of defect invisible.
 func TestReceive_TheReplyRetiresTheNoteTheFreezeWrote(t *testing.T) {
-	const frozen = "frozen until the receipt answers"
+	// The sentence is read off the screen WHILE the request is out rather than
+	// written down here, because the two frozen states wait on different
+	// requests and a literal would pin this test to one of them: it did, and
+	// the capture freeze went on saying "the receipt answers" under a status
+	// row reading "Recording the serial…" until the wording was fixed.
+	frozenSays := func(s *ReceiveFormScreen) string {
+		return "frozen until " + s.inFlightSubject() + " answers"
+	}
 
 	t.Run("the receipt opens serial capture", func(t *testing.T) {
 		fake := &receiveFake{}
@@ -784,6 +791,7 @@ func TestReceive_TheReplyRetiresTheNoteTheFreezeWrote(t *testing.T) {
 			t.Fatal("the receipt did not go out")
 		}
 		r, _ = receiveInFlight(t, r, poPhaseKeyMsg("j"))
+		frozen := frozenSays(s)
 		if got := receivePaneText(s, 80, 24); !strings.Contains(got, frozen) {
 			t.Fatalf("a key pressed under the freeze did not say so:\n%s", got)
 		}
@@ -805,6 +813,7 @@ func TestReceive_TheReplyRetiresTheNoteTheFreezeWrote(t *testing.T) {
 		s.qty[1].SetValue("1")
 		r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 		r, _ = receiveInFlight(t, r, poPhaseKeyMsg("j"))
+		frozen := frozenSays(s)
 		if got := receivePaneText(s, 80, 24); !strings.Contains(got, frozen) {
 			t.Fatalf("a key pressed under the freeze did not say so:\n%s", got)
 		}
@@ -838,8 +847,23 @@ func TestReceive_TheReplyRetiresTheNoteTheFreezeWrote(t *testing.T) {
 			t.Fatal("the capture did not go out")
 		}
 		r, _ = receiveInFlight(t, r, poPhaseKeyMsg("j"))
-		if got := receivePaneText(s, 80, 24); !strings.Contains(got, frozen) {
-			t.Fatalf("a key pressed under the capture freeze did not say so:\n%s", got)
+		frozen := frozenSays(s)
+		pane := receivePaneText(s, 80, 24)
+		if !strings.Contains(pane, frozen) {
+			t.Fatalf("a key pressed under the capture freeze did not say so:\n%s", pane)
+		}
+		// And it names the SERIAL, not the receipt. The receipt answered
+		// already — that is what opened this phase — so a decline naming it sits
+		// directly under a status row saying the serial is what is being
+		// recorded, and the operator is told to wait on the one that has come
+		// back.
+		if strings.Contains(pane, "frozen until the receipt answers") {
+			t.Errorf("the capture freeze says the receipt is out, under a status row that "+
+				"says the serial is:\n%s", pane)
+		}
+		if !strings.Contains(pane, "Recording the serial") {
+			t.Fatalf("the status row does not say the serial is out, so the two lines "+
+				"cannot be compared:\n%s", pane)
 		}
 
 		r = receiveSettle(t, r, cmd, 0)
@@ -1591,7 +1615,8 @@ func receiveCursorRowIdentified(t *testing.T, s *ReceiveFormScreen, w, h int) bo
 }
 
 // receiveCursorBox is the body line the cursor's own INPUT is drawn on, and
-// how deep into that row's block it sits.
+// how deep into that row's block it sits. The depth is for the failure MESSAGE
+// only — see receiveCursorBoxDrawn for why it is not what decides anything.
 //
 // Both are taken from the body the frame is about to draw rather than written
 // down beside the test: which line carries the box is decided by AddFittedFields
@@ -1620,24 +1645,35 @@ func receiveCursorBox(t *testing.T, s *ReceiveFormScreen) (line string, depth in
 // typing into, and whether the pane could have paid for it.
 //
 // The second half is what stops the first from being a demand the geometry
-// cannot meet. A body that fits its window is drawn whole and needs no
-// arithmetic at all; one that overflows spends two of the window's rows on the
-// "more above / more below" markers, so a box `depth` lines into its block
-// needs `depth+1` of the rows that are left. Below that the pane genuinely
-// cannot draw it, and what it keeps instead is the block's first line, which is
-// the row's own name.
+// cannot meet — and it is measured against the PANE alone, never against the
+// block being judged. It used to compare the window against the box's own depth
+// in its own block, and that is an escape hatch wired to the thing it polices:
+// the separator defect this file's sibling sweep exists for works by pushing
+// the box one line further down its block, which raised the depth in lockstep,
+// flipped the gate to unpayable and SKIPPED the assertion instead of failing
+// it. A gate a regression can widen is not a gate.
 //
-// The one place this is deliberately CONSERVATIVE is the window of one or two
-// rows, where the layer draws no markers at all and starts at the block's first
-// line: the box may be drawn there and this still reports it unpayable. That
-// fails in the safe direction — it never demands a row the pane does not have —
-// and the alternative is a second copy of Window's own branch living in a test.
+// So the gate asks how deep the box is CONTRACTED to be, not how deep it turned
+// out. A body that fits its window is drawn whole; one that overflows spends
+// two of the window's rows on the "more above / more below" markers, leaving
+// avail-2, and the box has to be inside those. Where the cursor can move, a
+// receivable line's block is its name, its readings and then the box, so the
+// box sits two lines in. Where NOTHING can move the window — one navigable row,
+// the state serial capture and an order with nothing receivable are always in —
+// the box LEADS its block, because a block whose start is all a short pane
+// keeps must start with the thing the operator types into. Those two numbers
+// are the builder's promise; measuring the block as built is what let a
+// regression widen its own gate.
 func receiveCursorBoxDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) (drawn, payable bool) {
 	t.Helper()
-	line, depth := receiveCursorBox(t, s)
+	line, _ := receiveCursorBox(t, s)
 	body, _ := s.body()
+	lead := 0
+	if body.rowsIn(0, body.Len()) > 1 {
+		lead = 2
+	}
 	avail := s.bodyAvailForBar(len(s.headerLines()), s.bar())
-	payable = body.Len() <= avail || avail-2 > depth
+	payable = body.Len() <= avail || avail-2 > lead
 	return strings.Contains(receivePaneText(s, w, h), line), payable
 }
 
@@ -2008,6 +2044,15 @@ func TestReceive_EveryRowDrawsTheBoxTheCursorIsOn(t *testing.T) {
 		"a kit among plain lines": {
 			poKitFixtureLine(), poPlainLine(), poPlainLine(),
 		},
+		// The order with NOTHING receivable belongs here for the same reason
+		// serial capture does: its notes row is the only navigable row, so no
+		// key moves the window and whatever leads that block is the whole of
+		// what a short pane keeps, permanently. Drawn prose-first it kept the
+		// sentence and lost the FOCUSED box — an operator typing into a field
+		// off the pane, every keystroke redrawing it byte for byte — and the
+		// sweep could not see it, because it only ever built orders that had
+		// lines.
+		"nothing receivable": nil,
 	}
 	for name, lines := range orders {
 		payable, unpayable := 0, 0

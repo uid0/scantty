@@ -960,6 +960,23 @@ func TestReceive_EveryBodyLineBelongsToANavigableRow(t *testing.T) {
 // anchors on row 0), the state the summary is always in, and the state an order
 // with nothing receivable is in.
 //
+// It is the ABOVE marker this holds, and the narrowing is deliberate rather
+// than an oversight to widen later. Window draws BOTH, and on a one-row body
+// neither can be acted on — but only one of them is this sheet's to prevent.
+// The above-marker appears when the window starts past line 0, which is a
+// consequence of where the sheet puts its lines, and pinning every line to the
+// one block is what makes it impossible. The below-marker appears when the
+// block outruns the pane, which no arrangement of one block can avoid: measured
+// across the swept phases it is drawn from 80x14 to 80x18 on serial capture,
+// the summary and the nothing-receivable order. Suppressing it would mean
+// changing what jdeLines.Window emits, which is the shared layer forty screens
+// read, and the block is ordered precisely so that what a short pane keeps is
+// what the operator cannot do without — the box a scanner fires into, the
+// sentence explaining an order with nothing on it. So the TAIL is the accepted
+// loss, and the residual — that the frame counts lines it cannot fetch — is a
+// property of the layer's marker rather than of this body, recorded rather than
+// asserted away.
+//
 // The set is derived from the body rather than listed: "how many rows does this
 // body have?" is a question the built body answers, and a roster of phases
 // would be one more list to forget to extend — which is how the serial and

@@ -359,12 +359,35 @@ func (s *ReceiveFormScreen) decline(key string, headerRows int) tea.Cmd {
 	return s.say(key+" does nothing here · "+s.waysOut(headerRows), StatusWarn)
 }
 
-// declineFrozen is decline for a key the in-flight receipt has made inert. It
+// declineFrozen is decline for a key an in-flight request has made inert. It
 // says WHY rather than "does nothing", because the key does work — one second
 // from now — and an operator watching a slow gateway is exactly the operator
 // who will press it again.
+//
+// It names WHAT is out, because the two frozen states on this screen are
+// waiting on different requests and the sentence used to say "the receipt" in
+// both. On serial capture the receipt has already ANSWERED — that is what
+// opened the phase — and what is out is one unit's CreateSerializedComponent,
+// so the pane carried "j is frozen until the receipt answers" directly under a
+// status row reading "Recording the serial for unit 1 of 2…": two lines of one
+// frame disagreeing about what the screen is waiting for, with the operator
+// told to wait on the one that had already come back.
 func (s *ReceiveFormScreen) declineFrozen(key string, headerRows int) tea.Cmd {
-	return s.say(key+" is frozen until the receipt answers · "+s.waysOut(headerRows), StatusWarn)
+	return s.say(key+" is frozen until "+s.inFlightSubject()+" answers · "+
+		s.waysOut(headerRows), StatusWarn)
+}
+
+// inFlightSubject is the request the screen is waiting on, in the words a
+// decline can be built out of.
+//
+// Two arms and no default, because declineFrozen is the only caller and both of
+// its call sites are past a guard on one of these flags — a third answer would
+// be a branch for a state the screen is never frozen in.
+func (s *ReceiveFormScreen) inFlightSubject() string {
+	if s.serialPending {
+		return "the serial"
+	}
+	return "the receipt"
 }
 
 // waysOut names the keys that DO act, read off the bar of the frame the key was
@@ -1832,22 +1855,51 @@ func (s *ReceiveFormScreen) qtyBody() *jdeLines {
 	lw := receiveLabelWidth()
 	width := s.bodyWidth()
 	// The notes row is the last navigable row, and it is where everything that
-	// is not a receivable line hangs: the blank above it, and — on an order
-	// with nothing to receive — the sentence saying so. On that order the notes
-	// row is the ONLY row, so tagging the explanation to it is what puts the
-	// explanation at the top of its own block and keeps it on the pane; as lead
-	// it sat behind "↑ 3 more above" with an inert notes box drawn under the
-	// marker, on a frame whose whole job is to explain why there is nothing
-	// here.
+	// is not a receivable line hangs: on an order with lines, the blank that
+	// closes the block above it; on an order with none, the sentence saying so.
 	notesRow := len(s.qty)
+	// AddFittedFields is the LAYER's — it fits the row to the pane and keeps any
+	// folded hint on the SAME navigable row, so the window cannot separate a
+	// field from the note explaining it. This screen carried a line-for-line
+	// copy of its body until sc-jde-recv; the copy that gets tolerated is the
+	// one the next fifty grow from, which is the whole history sc-jde-lift
+	// exists to record.
+	notes := []jdeField{{
+		Label:   "Notes",
+		Kind:    jdeText,
+		Input:   &s.notes,
+		Width:   40,
+		Hint:    "optional",
+		Focused: s.caretOn(notesRow),
+	}}
 
 	if len(s.qty) == 0 {
+		// The FIELD leads, and the sentence explaining the order follows it —
+		// serialBody's rule, applied to the one other body on this screen that
+		// is in serialBody's situation. There are no quantity boxes here, so
+		// the notes row is the ONLY navigable row: up, down, pgup and pgdown
+		// all decline, nothing moves the window, and Window keeps a block's
+		// START — so whatever leads this block is the whole of what a short
+		// pane keeps, permanently.
+		//
+		// Drawn the other way round it kept the prose. At 80x16 the window is
+		// one row: the pane read "No receivable lines on this order." and
+		// "↓ 4 more below", with the FOCUSED notes box off the pane — an
+		// operator typing into a field they cannot see, every keystroke
+		// redrawing the pane byte for byte, which is the reported-hang class
+		// this conversion exists to remove. Between 80x13 and 80x15 it went
+		// with no marker at all.
+		//
+		// The blank that used to sit between the prose and the box is gone with
+		// the reorder: after the field it would be the second line a two-row
+		// window draws, spending on nothing the row the sentence needs.
+		l.AddFittedFields(notes, lw, width, notesRow)
 		l.AddRow(notesRow, jdeIndent+StyleMuted.Render("No receivable lines on this order."))
 		for _, line := range jdeCaveatLines(
 			"Every line is voided or already received in full, so there is nothing to book here.", width) {
 			l.AddRow(notesRow, line)
 		}
-		l.AddRow(notesRow, "")
+		return l
 	}
 	for i := range s.qty {
 		if i > 0 {
@@ -1869,26 +1921,11 @@ func (s *ReceiveFormScreen) qtyBody() *jdeLines {
 		}
 		s.addLineBlock(l, i, lw, width)
 	}
-	if len(s.qty) > 0 {
-		// The same rule for the last block: this blank closes it rather than
-		// opening the notes row, which would otherwise draw a blank where the
-		// FOCUSED notes field belongs.
-		l.AddRow(len(s.qty)-1, "")
-	}
-	// AddFittedFields is the LAYER's — it fits the row to the pane and keeps any
-	// folded hint on the SAME navigable row, so the window cannot separate a
-	// field from the note explaining it. This screen carried a line-for-line
-	// copy of its body until sc-jde-recv; the copy that gets tolerated is the
-	// one the next fifty grow from, which is the whole history sc-jde-lift
-	// exists to record.
-	l.AddFittedFields([]jdeField{{
-		Label:   "Notes",
-		Kind:    jdeText,
-		Input:   &s.notes,
-		Width:   40,
-		Hint:    "optional",
-		Focused: s.caretOn(len(s.qty)),
-	}}, lw, width, len(s.qty))
+	// The same rule for the last block: this blank closes it rather than
+	// opening the notes row, which would otherwise draw a blank where the
+	// FOCUSED notes field belongs.
+	l.AddRow(len(s.qty)-1, "")
+	l.AddFittedFields(notes, lw, width, notesRow)
 	return l
 }
 

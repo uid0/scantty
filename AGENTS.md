@@ -359,12 +359,21 @@ note, and is the authority):
   and a blank, naming nothing about the row the cursor had just reached.
   Where NO key moves a cursor the block has only one end to protect and the
   order inverts: `serialBody` draws the FIELD first and what identifies it
-  after, since a scanner firing into a box the operator cannot see is worse than
-  a label they have to press nothing to lose. On such a body the marker itself
-  is the claim to keep honest — nothing can act on it, ever — so
+  after, and `qtyBody`'s nothing-receivable branch does the same, since a
+  scanner firing into a box the operator cannot see is worse than a label they
+  have to press nothing to lose. It is a RULE and not two cases: whichever body
+  has one navigable row is in it, so applying it to the one that was reported
+  leaves the other stranding its field a round later. On such a body NEITHER marker can
+  be acted on, and only one of them is the sheet's to prevent: `↑ more above`
+  appears when the window starts past line 0, which is a consequence of where
+  the sheet puts its lines, so
   `TestReceive_ABodyWithOneRowNeverHidesLinesAboveTheWindow` sweeps the pane
-  height and fails on any `↑ more above` at all, with the set of one-row states
-  read off the built body rather than listed.
+  height and fails on any of it, with the set of one-row states read off the
+  built body rather than listed. `↓ more below` appears when the block outruns
+  the pane, which no arrangement of ONE block can avoid — it is drawn from
+  80x14 to 80x18 on the receiving screen — so the TAIL is the accepted loss and
+  the block is ordered so that what a short pane keeps is what the operator
+  cannot do without. Do not read the sweep as holding both directions.
   Apply it to every body of a screen at once and DERIVE the check, or it is
   applied to the one that was reported: the receiving conversion fixed its
   quantity form and left the other two stranding their leads for a round.
