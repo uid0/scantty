@@ -869,6 +869,22 @@ func receiveProbes(named map[string]bool) [][]string {
 // row cannot move up and one on the last cannot move down: a key is dead only
 // if it does nothing from ANY of them.
 //
+// The two directions are judged DIFFERENTLY, and the difference is the whole
+// correctness of this sweep on a bar whose shape follows the cursor:
+//
+//   - FORWARD ("a key the bar names must act") is asked across the probes. A
+//     key named where the cursor rests may only be able to act from somewhere
+//     else, and that is not a dead key.
+//   - REVERSE ("a key the bar does not name must not act") is asked AT EACH
+//     PROBE, against the bar read AT THAT PROBE. It used to compare the bar at
+//     REST with the action at any probe — the bar in one place against the
+//     press in another — and Ctrl+K is exactly the key that shape gets wrong:
+//     qtyBarItems names it only with the cursor on a line with an outstanding
+//     balance, which is also the only place it acts, and the old comparison
+//     read the bar on the scan row and the press three rows down and reported
+//     an honest key as a violation. A conditionally-named key is the ordinary
+//     case on this screen, not the exception.
+//
 // The reverse direction asks for no STATE change rather than no COMMAND,
 // because a declining key is meant to answer with a sentence and change nothing
 // — that answer is the rule this screen exists to keep, not a key that escaped
@@ -901,20 +917,24 @@ func TestReceive_EveryStateNamesExactlyTheKeysThatWork(t *testing.T) {
 					if c.typing && (poIsPrintable(k) || poFieldKeys[k] || poFormNavAliases[k]) && !named[k] {
 						continue
 					}
-					acted := false
+					acted, namedSomewhere := false, named[k]
 					for _, probe := range probes {
 						pr, ps := fresh(t, probe)
+						here := receiveNamedKeys(t, ps.bar())
+						namedSomewhere = namedSomewhere || here[k]
 						before := receiveState(ps)
 						_, cmd := pr.Update(poPhaseKeyMsg(k))
-						if receiveState(ps) != before || poCmdActs(cmd) {
-							acted = true
+						if receiveState(ps) == before && !poCmdActs(cmd) {
+							continue
+						}
+						acted = true
+						if !here[k] {
+							t.Errorf("%s does not name %q where the cursor is after %v, but "+
+								"pressing it there acts (bar: %+v)", c.name, k, probe, ps.bar())
 						}
 					}
-					switch {
-					case named[k] && !acted:
+					if namedSomewhere && !acted {
 						t.Errorf("%s names %q but pressing it changes nothing (bar: %+v)", c.name, k, bar)
-					case !named[k] && acted:
-						t.Errorf("%s does not name %q, but pressing it acts (bar: %+v)", c.name, k, bar)
 					}
 				}
 			})

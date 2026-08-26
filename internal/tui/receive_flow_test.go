@@ -1080,6 +1080,103 @@ func TestReceiveFlow_AnExpiredSessionIsASentenceAndNotABody(t *testing.T) {
 	}
 }
 
+// TestReceiveFlow_TheExpiredSessionSentenceNamesNoKeyTheFrameRefuses.
+//
+// The 401 sentence is the ONE failure detail this screen composes rather than
+// relays, and it used to end "then r re-reads the worksheet" — reasoning about
+// the blocked frame while being shared by all three failure paths. Only two of
+// six phases bind `r`:
+//
+//   - on the REVIEW (a 401 on the receipt) `r` answers "r does nothing here",
+//     so the frame's own diagnostic named a key the frame refuses; and
+//   - on the WRITE-OFF CONFIRM (a 401 on the close-short or the mark-received)
+//     `r` falls through to the Reason box, so following the instruction types a
+//     letter into the free text that gets recorded against the line — the
+//     screen altering what the operator is about to commit.
+//
+// The three cases below are the three call sites of receiveFailure crossed with
+// the phase each leaves the screen on, which is the whole set of frames this
+// sentence can be drawn on.
+func TestReceiveFlow_TheExpiredSessionSentenceNamesNoKeyTheFrameRefuses(t *testing.T) {
+	const denied = `{"detail":"Authentication credentials were not provided."}`
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+
+	cases := []struct {
+		name  string
+		phase receivePhase
+		fake  func() *receiveFake
+		reach func(t *testing.T, r Root, s *ReceiveFormScreen) Root
+	}{
+		{"the worksheet fetch", phaseBlocked, func() *receiveFake {
+			return &receiveFake{sheet: receiveWorksheet(receiveOrder()...),
+				sheetFail: http.StatusUnauthorized, sheetBody: denied}
+		}, func(t *testing.T, r Root, s *ReceiveFormScreen) Root { return r }},
+		{"the receipt", phaseReview, func() *receiveFake {
+			return &receiveFake{failWith: http.StatusUnauthorized, failBody: denied}
+		}, func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+			r = receiveGoToLine(t, r, s, 0)
+			r = receiveTypeInto(t, r, "1")
+			r = receiveKey(t, r, enter) // -> review
+			return receiveKey(t, r, enter)
+		}},
+		{"the write-off", phaseWriteOff, func() *receiveFake {
+			return &receiveFake{failWith: http.StatusUnauthorized, failBody: denied}
+		}, func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR})
+			return receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+		}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, s := receiveDrive(t, c.fake(), receiveOrder(), 80, 30)
+			r = c.reach(t, r, s)
+			if s.phase != c.phase {
+				t.Fatalf("the 401 left the screen on phase %v, want %v", s.phase, c.phase)
+			}
+			if s.failDetail == "" {
+				t.Fatalf("no failure detail is standing, so this case checks nothing")
+			}
+			// The fact and the next move, which are true on every frame.
+			if !strings.Contains(s.failDetail, "no longer signed in") {
+				t.Errorf("the 401 is relayed rather than named: %q", s.failDetail)
+			}
+			if pane := receivePaneText(s, 80, 30); !strings.Contains(pane, "sign in again") {
+				t.Errorf("the next move does not survive the clip:\n%s", pane)
+			}
+			// And NO key beyond what this frame's bar names. The vocabulary is
+			// receiveBarKeyNames — the same map the bar sweeps read — so a key
+			// spelling added there is checked for here without anyone
+			// remembering to.
+			named := receiveNamedKeys(t, s.bar())
+			for _, word := range strings.Fields(strings.Trim(s.failDetail, ".,")) {
+				word = strings.Trim(word, ".,;:")
+				if !receiveIsAKeyName(word) || named[word] {
+					continue
+				}
+				t.Errorf("the failure detail names %q, which this frame's bar does not "+
+					"(bar: %+v): %q", word, s.bar(), s.failDetail)
+			}
+			_ = r
+		})
+	}
+}
+
+// receiveIsAKeyName reports whether a word in prose is the name of a keystroke,
+// against the vocabulary the bar sweeps already read. Derived rather than
+// listed, so a bar entry added tomorrow makes its keystroke checkable in prose
+// too.
+func receiveIsAKeyName(word string) bool {
+	for _, keys := range receiveBarKeyNames {
+		for _, k := range keys {
+			if word == k {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // TestReceiveFlow_MarkReceivedIsNotNamedOnASettledOrder. A key the server would
 // refuse must not be advertised, and the press has to say why rather than
 // opening a confirm for something that cannot happen.

@@ -29,15 +29,38 @@ import (
 //     states rather than the same silence.
 //   - KEYS from the key SPACE, not a vocabulary: every printable ASCII rune
 //     plus the named specials. There is no authoritative source to derive a
-//     vocabulary from, so the answer is not to curate one.
+//     vocabulary from, so the answer is not to curate one — with the CHORD
+//     caveat poKeySpace records.
 //
 // The LIST screens get the same treatment from Workspaces() in
 // list_bar_honesty_test.go, and the screen's own state fields from
 // reflect.TypeOf in po_create_picker_status_test.go.
 
 // poKeySpace is every keystroke the sweep presses: printable ASCII, then the
-// named keys a terminal sends that are not runes. Nothing is curated — a key
-// bound tomorrow is pressed by this list today.
+// named keys a terminal sends that are not runes.
+//
+// The RUNE half is a true space — every printable ASCII character, so a letter
+// bound tomorrow is pressed by this list today. The CHORD half is not, and this
+// comment used to claim otherwise ("nothing is curated"), which is a documented
+// claim the code does not honour and it cost real coverage: Ctrl+K and Ctrl+R
+// were added to the receiving form — one closes a LINE short, one marks the
+// whole ORDER received, both destructive and both behind a confirm — and
+// neither appeared here, so every sweep that exists to prove "the bar names
+// exactly the keys that work" pressed neither of them in EITHER direction. A
+// key absent from the space is untested rather than passing, which is verbatim
+// how `N` survived on the purchasing list (AGENTS.md). They are in the list
+// now.
+//
+// The chord half stays hand-kept for one reason, recorded so the next author
+// does not have to rediscover it: Ctrl+C and Ctrl+Q are a GLOBAL quit, claimed
+// by Root.dispatch ahead of every screen and named by no screen's bar, so a
+// chord list derived from bubbletea's own key types would report every screen
+// in the program at once. Deriving it therefore needs a recorded home for the
+// global keys first — the shape poPhasesWithoutKeys uses for the same kind of
+// exception — and that is a change to every sweep in this package rather than
+// to this function. Until then: a chord a screen binds must be added HERE, and
+// the receiving sweeps' receiveNamedKeyMsg is what turns whatever name is added
+// into the keystroke a terminal really sends.
 func poKeySpace() []string {
 	var keys []string
 	for c := byte(0x20); c <= 0x7e; c++ {
@@ -48,6 +71,7 @@ func poKeySpace() []string {
 		"up", "down", "left", "right", "home", "end", "pgup", "pgdown",
 		"backspace", "delete",
 		"ctrl+e", "ctrl+x", "ctrl+t", "ctrl+p", "ctrl+n",
+		"ctrl+k", "ctrl+r",
 	)
 }
 

@@ -939,6 +939,73 @@ func TestReceive_TheConfirmAnswersTheKeysTheOperatorArrivesUsing(t *testing.T) {
 	_ = r
 }
 
+// TestReceive_ReEnteringCaptureSaysWhichFrameItOpened.
+//
+// beginReceipt opens capture at firstUncaptured(), which answers len(captures)
+// when every slot already holds something — and toSerial on that index draws
+// serialBody's past-the-end branch, "Every unit has been answered." The note
+// above it announced "N serialized units to capture" regardless, so the screen
+// contradicted itself about the one thing the phase is for.
+//
+// The route is ordinary, not a corner: capture a serial, land on the review,
+// press Esc back to the quantities to re-check a count, press Enter again.
+// enrol carries the captures across by identity, so there is nothing left to
+// type.
+//
+// The second half is the caret. toSerial ends in focusCurrent, and currentInput
+// used to hand back s.serialInput on a frame that draws no field at all — an
+// armed caret in a box nobody renders, which is exactly what focusCurrent's own
+// comment says must not happen. It was harmless only because keySerial's
+// past-the-end block returns before anything routes a keystroke there, and
+// "harmless because of what another arm happens to do" is not a property.
+func TestReceive_ReEnteringCaptureSaysWhichFrameItOpened(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 30)
+	s.qty[2].SetValue("1") // one unit of the serialized line
+	r = receiveKey(t, r, enter)
+	if s.phase != phaseSerial || len(s.serialUnits) != 1 {
+		t.Fatalf("capture did not open: phase %v, %d units", s.phase, len(s.serialUnits))
+	}
+	r = receiveType(t, r, poRuneKey("SN-1"))
+	r = receiveKey(t, r, enter) // the last unit lands on the review
+	if s.phase != phaseReview {
+		t.Fatalf("the last unit did not reach the review: phase %v", s.phase)
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc}) // back to the quantities
+	if s.phase != phaseQty {
+		t.Fatalf("esc did not hand back the quantity form: phase %v", s.phase)
+	}
+
+	r = receiveKey(t, r, enter) // re-enter capture with nothing left to type
+	if s.phase != phaseSerial {
+		t.Fatalf("the re-entry did not reach capture: phase %v", s.phase)
+	}
+	pane := receivePaneText(s, 80, 30)
+	if !strings.Contains(pane, "Every unit has been answered") {
+		t.Fatalf("the re-entry did not open the answered frame, so this test is not "+
+			"looking at the state it names:\n%s", pane)
+	}
+	if strings.Contains(pane, "to capture") {
+		t.Errorf("the note announces units to capture over a frame saying every unit "+
+			"is answered:\n%s", pane)
+	}
+	if !strings.Contains(pane, "already answered") {
+		t.Errorf("the note does not say which frame it opened:\n%s", pane)
+	}
+	// The way out it names is the bar's, so it cannot advertise a key this
+	// frame refuses.
+	for _, item := range s.bar() {
+		if !strings.Contains(pane, strings.ToLower(item.Key)) {
+			t.Errorf("the note does not name %q, which the bar does:\n%s", item.Key, pane)
+		}
+	}
+	if armed := receiveFocusedBoxes(t, s); len(armed) != 0 {
+		t.Errorf("the answered frame draws no field and armed %v", armed)
+	}
+	_ = r
+}
+
 // TestReceive_TheSerialBarFollowsTheBox. With nothing typed, Enter PASSES OVER
 // the unit; saying "Save" there would name a key that does something else. The
 // bar is the only place that fact is stated, so it has to follow the box.
@@ -1753,6 +1820,12 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 			nil, []tea.KeyMsg{longCode, enter}, false},
 		probe{"a long code on several live lines", shared, nil,
 			[]tea.KeyMsg{longCode, enter}, false},
+		// Re-entering capture with nothing left to type: the note names the
+		// answered frame AND carries that frame's whole way-out tail, so it is
+		// the longest sentence this transition can produce.
+		probe{"re-entering an answered capture", receiveSweepLines(), map[int]string{2: "1"},
+			[]tea.KeyMsg{enter, poRuneKey("SN-1"), enter,
+				tea.KeyMsg{Type: tea.KeyEsc}, enter}, false},
 	)
 
 	for _, p := range probes {

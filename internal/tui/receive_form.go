@@ -620,6 +620,18 @@ func (s *ReceiveFormScreen) inputAt(row int) *textinput.Model {
 func (s *ReceiveFormScreen) currentInput() *textinput.Model {
 	switch s.phase {
 	case phaseSerial:
+		if s.serialCursor >= len(s.serialUnits) {
+			// Past the end of the queue serialBody draws NO field at all, so
+			// there is no box for the caret to belong in and the scratch field
+			// is the honest answer. toSerial ends in focusCurrent, so without
+			// this the re-entry path above armed s.serialInput on a frame that
+			// renders none of it — verbatim the lie this function's comment
+			// exists to prevent, and harmless today only because keySerial's
+			// past-the-end block returns before anything routes a keystroke
+			// there. "Harmless because of what some other arm happens to do"
+			// is not a property; this is.
+			return &s.parked
+		}
 		return s.serialBox(s.serialField)
 	case phaseWriteOff:
 		return &s.reason
@@ -938,9 +950,25 @@ func receiveReason(err error) string {
 		// APIError.IsAuth is where that fact already lives. The client retries
 		// once through a token refresh before this is ever reached, so getting
 		// here means the refresh failed too.
+		//
+		// It NAMES NO KEY, and that is the correction of a real defect rather
+		// than a shortening. The sentence used to end "then r re-reads the
+		// worksheet", reasoning — as the paragraph above still does — about the
+		// blocked frame. But receiveFailure is shared by all three failure
+		// paths, and only two of six phases bind `r`: a 401 on the RECEIPT
+		// leaves the screen on the review, where `r` answers "r does nothing
+		// here"; a 401 on the WRITE-OFF leaves it on the confirm, where `r`
+		// falls into the Reason box and types a letter into the free text that
+		// gets recorded against the line — the screen's own diagnostic altering
+		// what the operator is about to commit. This function is handed an
+		// error and nothing else: it cannot see the frame, so it may not make a
+		// claim about one. The way out is named where every other way out on
+		// this screen is named — the ACTION BAR of the frame being drawn, which
+		// sits directly under this line and is derived from the phase — and
+		// "try again" is true on all three of them.
 		if api.IsAuth() {
 			return "this session is no longer signed in to OpenMakerSuite — " +
-				"sign in again, then r re-reads the worksheet"
+				"sign in again, then try again"
 		}
 		if api.Code != "" && api.Message != "" {
 			return api.Message
@@ -1973,8 +2001,28 @@ func (s *ReceiveFormScreen) beginReceipt(headerRows int) (Screen, tea.Cmd) {
 	if len(units) == 0 {
 		return s, s.toReview(headerRows, "", StatusInfo)
 	}
-	s.toSerial(s.firstUncaptured())
+	// The note names the frame this OPENED, which is not always the same frame.
+	//
+	// firstUncaptured answers len(captures) when every slot already holds
+	// something, and toSerial on that index draws serialBody's past-the-end
+	// branch — "Every unit has been answered." Re-entry reaches it by an
+	// ordinary route: capture a serial, land on the review, press Esc back to
+	// the quantities to double-check a count, press Enter again. enrol carries
+	// the captures across by identity, so nothing is left to type and the note
+	// used to announce "1 serialized unit to capture" directly above a body
+	// saying the opposite — the screen contradicting itself about the one thing
+	// the phase is for.
+	at := s.firstUncaptured()
+	s.toSerial(at)
 	lead := fmt.Sprintf("%d serialized %s to capture", len(units), plural("unit", len(units)))
+	if at >= len(units) {
+		// The way out comes off the bar, as every decline's does: this frame
+		// binds a different set from the capture frame (there is no box to type
+		// into), and a fixed sentence here would be the same claim-about-a-
+		// frame-it-cannot-see the auth detail was corrected for.
+		lead = fmt.Sprintf("all %d %s already answered · %s",
+			len(units), plural("unit", len(units)), s.waysOut(headerRows))
+	}
 	if dropped > 0 {
 		lead += fmt.Sprintf(" · %d captured %s no longer fit the quantities and were dropped",
 			dropped, plural("serial", dropped))
