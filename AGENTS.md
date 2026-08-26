@@ -246,6 +246,21 @@ note, and is the authority):
   them disagree with every other form in the program), and `poAddSilentKeys` (a
   NAMED key resting against an edge it cannot move past, where the highlight or
   the absent `↑ more above` marker has already answered the press).
+- **A FIELD form wraps; a LIST clamps, and the two are different keys reaching
+  different handlers.** A short form has no edge worth defending: clamped, Down
+  or Tab on the last of four fields blurs and re-focuses the same field — no
+  state change, no note, and the bar naming `UP/DN` at that moment, which is
+  rule 1. A LIST is the opposite: running off the bottom and reappearing at the
+  top would land the cursor on a row that CLEARS a field, so `jdeClampPick` and
+  `jdePageCursor` clamp on purpose. The shared cursor (`po_create.go`'s
+  `setCursorRow` / `moveCursor`) is a LIST cursor, so the line form answers
+  `up`/`down`/`tab`/`shift+tab` BEFORE `moveCursor` sees them and wraps modulo
+  `lineFields()` (`focusNextLine`); paging stays clamped. `po_add_line.go`'s
+  price rows wrap for the same reason, and the conversion routing the line form
+  through the shared clamp is what briefly made the two purchasing field forms
+  disagree — `TestPOLineForm_FieldNavigationWrapsAtBothEnds` is where that
+  fails now. The wrap must not leak into the other phases: a fix applied inside
+  `setCursorRow` would unclamp every list on the screen.
 - **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
   hint literal.** The footer and the handler read that one table; the previous
   shape appended the words to a hint string and left the key to a global
@@ -804,6 +819,14 @@ touching any screen an operator drives:
   The rows spelled the same keys the bar spells, six rows of a twelve-row budget
   spent on a second copy of it, and the conversion deleted them rather than
   re-synchronising them.
+  The KEY COLUMN on the optional agreement / work-order / committee rows is the
+  same claim in two cells and it survived the deletion for a round, because the
+  check that replaced the old rows-say-so test only read the BAR. Those rows are
+  drawn `attributionRows(!s.pending)`: the letters go when the bar drops them,
+  the VALUES stay, because they are part of the order being created and only the
+  affordance is false. `TestPOSubmit_TheFrozenChooserHeaderDropsTheKeyColumn`
+  asserts both directions on the clipped PANE — the at-rest half is not
+  optional, or the absence check passes on a frame that never drew a letter.
   Two derivations hold the freeze: `poPhasesUnreachableWhilePending` classifies
   EVERY phase of the iota as swept-frozen or unreachable-with-a-reason, and the
   sweep fails when a key actually reaches a phase outside the frozen set, so the

@@ -1019,3 +1019,203 @@ func poPaneBodyCount(t *testing.T, s *PurchaseOrderCreateScreen, h int, want str
 	}
 	return n
 }
+
+// poAttributionRow is the pinned header row for one optional association as the
+// clipped pane draws it, and whether it carries the KEY COLUMN in front of the
+// label.
+//
+// The letter is read off the FRONT of the row rather than looked for anywhere
+// on it, because the values themselves are OMS-supplied prose: an agreement
+// named "Grade 8 fasteners" carries a g, a w and a c between them and a
+// substring search would report a key column on every row of every frame.
+func poAttributionRow(t *testing.T, s *PurchaseOrderCreateScreen, h int, label string) (row string, keyed bool, found bool) {
+	t.Helper()
+	key, ok := poAttributionKeys[label]
+	if !ok {
+		t.Fatalf("no attribution key is recorded for %q", label)
+	}
+	for _, line := range poPaneLinesAt(t, s, h) {
+		if !strings.Contains(line, label+jdeLeader) {
+			continue
+		}
+		return line, strings.HasPrefix(strings.TrimLeft(line, " "), key+" "), true
+	}
+	return "", false, false
+}
+
+// poAttributionKeys is the letter each optional association row is keyed with,
+// which is also the letter the bar spells for it. Written out rather than
+// derived from the label, because the agreement row is keyed `g` and no rule
+// takes that from the word "Agreement".
+var poAttributionKeys = map[string]string{
+	poRowAgreement: "g", poRowWorkOrder: "w", poRowCommittee: "c",
+}
+
+// TestPOSubmit_TheFrozenChooserHeaderDropsTheKeyColumn is the PANE half of the
+// claim TestPOSubmit_TheFrozenChooserBarDropsEveryKeyItHasGated makes about the
+// bar, and it exists because that bar check alone let the defect through.
+//
+// Its predecessor (TestPOSubmit_TheFrozenChooserRowsSayTheyAreOff) asserted the
+// pane by rejecting the line-source rows outright; those rows are gone, and
+// nothing replaced the pane half. So the frozen chooser went on drawing the
+// highlighted letters g / w / c beside their values while barItems had dropped
+// all three and updateSourcePhase answered them with pendingDecline — one pane
+// advertising and refusing the same key, which is exactly what deleting the
+// line-source rows was for.
+//
+// BOTH directions, because an absence check on a pane that never drew the
+// letters passes over everything: at rest the key column is there, while the
+// submit is out it is not, and the VALUES stay in both — they are part of the
+// order being created and only the affordance is false.
+func TestPOSubmit_TheFrozenChooserHeaderDropsTheKeyColumn(t *testing.T) {
+	// The three optional lookups all answer, so all three rows are offered.
+	// Every source-chooser fixture used to leave them at zero, which is how a
+	// claim about g / w / c could be asserted against a frame that had none.
+	rows := []string{poRowAgreement, poRowWorkOrder, poRowCommittee}
+
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			fake := &poPickFake{catalog: 4, suppliers: 3,
+				agreements: 1, workOrders: 2, committees: 1}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			// Commit an agreement and a work order first, so the "the values
+			// stay" half is a claim about real OMS-supplied prose rather than
+			// two "(none)"s comparing equal.
+			for _, k := range []string{"g", "down", "enter", "w", "down", "enter"} {
+				r = key(t, r, poPhaseKeyMsg(k))
+			}
+			if screen.agreementID == nil || screen.workOrderID == "" {
+				t.Fatalf("setup committed agreement=%v work order=%q",
+					screen.agreementID, screen.workOrderID)
+			}
+			for _, k := range []string{"i", "enter", "enter"} {
+				r = key(t, r, poPhaseKeyMsg(k))
+			}
+			if screen.phase != poPhaseSource || len(screen.lines) != 1 {
+				t.Fatalf("setup landed on phase %v with %d line(s)", screen.phase, len(screen.lines))
+			}
+
+			resting := map[string]string{}
+			for _, label := range rows {
+				line, keyed, found := poAttributionRow(t, screen, h, label)
+				if !found {
+					t.Fatalf("the resting chooser draws no %q row, so the freeze check below "+
+						"would assert nothing:\n%s", label,
+						strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				}
+				if !keyed {
+					t.Fatalf("the resting chooser draws %q without its key column, so the freeze "+
+						"check below would pass on a letter that was never there:\n\t%q", label, line)
+				}
+				resting[label] = strings.TrimSpace(strings.SplitN(line, jdeLeader, 2)[1])
+			}
+
+			r = key(t, r, poPhaseKeyMsg("d"))
+			next, _ := r.Update(poPhaseKeyMsg("enter"))
+			r = key(t, next.(Root), poPhaseKeyMsg("esc"))
+			if screen.phase != poPhaseSource || !screen.pending {
+				t.Fatalf("esc landed on phase %v with pending=%v", screen.phase, screen.pending)
+			}
+			named := poBarNamedKeys(t, screen.bar())
+			for _, k := range []string{"g", "w", "c"} {
+				if named[k] {
+					t.Fatalf("the frozen chooser bar still names %q, so the pane is not the "+
+						"surface under test: %s", k, poBarText(screen.bar()))
+				}
+			}
+			for _, label := range rows {
+				line, keyed, found := poAttributionRow(t, screen, h, label)
+				if !found {
+					t.Errorf("the frozen chooser dropped the %q row altogether — the value is part "+
+						"of the order being created and only the affordance is false:\n%s", label,
+						strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+					continue
+				}
+				if keyed {
+					t.Errorf("the frozen chooser still draws %q with its key column while the bar "+
+						"has dropped that key and the arm declines it:\n\t%q", label, line)
+				}
+				if got := strings.TrimSpace(strings.SplitN(line, jdeLeader, 2)[1]); got != resting[label] {
+					t.Errorf("the frozen chooser changed the %q value from %q to %q — the freeze "+
+						"drops the affordance, not the fact", label, resting[label], got)
+				}
+			}
+			poAssertFits(t, "frozen source chooser header", screen)
+		})
+	}
+}
+
+// TestPOLineForm_FieldNavigationWrapsAtBothEnds holds the one place on this
+// screen where the cursor WRAPS rather than clamping.
+//
+// The conversion routed tab / shift+tab and UP/DN through the shared
+// setCursorRow, which clamps (jdeClampPick) because a LIST must not run off the
+// bottom and reappear at the row that clears a field. A four-field form is the
+// other case: clamped, Down on the expected-date row blurred and re-focused the
+// same field — no state change, no note, and the bar naming UP/DN at that
+// moment, which is rule 1 exactly. po_add_line's price rows wrap for the same
+// reason, so clamping here also made the two purchasing field forms disagree.
+func TestPOLineForm_FieldNavigationWrapsAtBothEnds(t *testing.T) {
+	// An item-supplier line, because it is the only shape that offers all four
+	// fields — the wrap on a three-field form would step over the row the
+	// defect was reported on.
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			r, screen := poPickerAtSize(t, &poPickFake{catalog: 2, suppliers: 1}, 80, h)
+			for _, k := range []string{"i", "enter"} {
+				r = key(t, r, poPhaseKeyMsg(k))
+			}
+			if screen.phase != poPhaseLine || len(screen.lineFields()) != 4 {
+				t.Fatalf("setup landed on phase %v with %d field(s), want the four-field line form",
+					screen.phase, len(screen.lineFields()))
+			}
+
+			for _, tc := range []struct {
+				name       string
+				from, want int
+				press      string
+			}{
+				{"down off the last field", poLineFieldDate, poLineFieldDesc, "down"},
+				{"tab off the last field", poLineFieldDate, poLineFieldDesc, "tab"},
+				{"up off the first field", poLineFieldDesc, poLineFieldDate, "up"},
+				{"shift+tab off the first field", poLineFieldDesc, poLineFieldDate, "shift+tab"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					// BOUNDED, and it fails rather than spinning: with the
+					// clamp back in place tab cannot leave the last field, so
+					// an unbounded walk to a starting row would hang the suite
+					// instead of reporting the defect it is here for.
+					for i := 0; screen.lineFocused != tc.from; i++ {
+						if i >= len(screen.lineFields()) {
+							t.Fatalf("tab could not reach field %d from field %d in %d press(es) — "+
+								"the form's navigation does not cover its own fields",
+								tc.from, screen.lineFocused, i)
+						}
+						r = key(t, r, poPhaseKeyMsg("tab"))
+					}
+					before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+					r = key(t, r, poPhaseKeyMsg(tc.press))
+					if got := screen.lineFocused; got != tc.want {
+						t.Errorf("%q from field %d left focus on field %d, want %d — a clamped "+
+							"cursor here is a named key that does nothing",
+							tc.press, tc.from, got, tc.want)
+					}
+					if !screen.lineInputs[screen.lineFocused].Focused() {
+						t.Errorf("%q left no field focused", tc.press)
+					}
+					for i := range screen.lineInputs {
+						if i != screen.lineFocused && screen.lineInputs[i].Focused() {
+							t.Errorf("%q left a caret in field %d as well as %d",
+								tc.press, i, screen.lineFocused)
+						}
+					}
+					if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after == before {
+						t.Errorf("%q from field %d redrew a byte-for-byte identical pane:\n%s",
+							tc.press, tc.from, after)
+					}
+				})
+			}
+			poAssertFits(t, "line form after wrapping", screen)
+		})
+	}
+}

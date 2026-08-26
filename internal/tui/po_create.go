@@ -1455,15 +1455,23 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 
 func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	switch m.String() {
-	case "tab":
+	case "tab", "down":
 		// Tab / Shift-Tab ride alongside UP/DN on a sheet with fields and are
 		// deliberately NOT named: roughly twenty converted forms name that pair
 		// as UP/DN=Fields alone, and naming the alias here would make this
 		// sheet disagree with every other one (poFormNavAliases).
-		s.setCursorRow(s.cursorRow() + 1)
+		//
+		// All four WRAP, which is why they are answered here rather than left
+		// to moveCursor: the shared cursor clamps (jdeClampPick), and clamping
+		// a four-field form means Down on the last row blurs and re-focuses the
+		// same field — no state change, no note, and the bar naming UP/DN at
+		// that moment. A list is the other case and keeps the clamp: running
+		// off the bottom of one must not reappear at the row that CLEARS a
+		// field. po_add_line's price rows wrap for the same reason.
+		s.focusNextLine(1)
 		return s, nil
-	case "shift+tab":
-		s.setCursorRow(s.cursorRow() - 1)
+	case "shift+tab", "up":
+		s.focusNextLine(-1)
 		return s, nil
 	}
 	if moved, cmd := s.moveCursor(m, headerRows); moved {
@@ -1563,6 +1571,9 @@ func (s *PurchaseOrderCreateScreen) costFieldLabel() string {
 	return "Unit cost"
 }
 
+// focusNextLine moves the line form's focus by delta, WRAPPING at either end,
+// and blurs on the way past so a caret is never left in a field the form is not
+// drawing as active.
 func (s *PurchaseOrderCreateScreen) focusNextLine(delta int) {
 	fields := s.lineFields()
 	cur := 0
@@ -1742,7 +1753,11 @@ func poDisplayMoney(v float64) string {
 // toggleCostBasis flips the Phase-4 cost field between per-unit and per-case
 // entry for a case-packed inventory line (a no-op for any other line). The
 // current value is converted so the economics are preserved (case = unit ×
-// qpp) at full precision, and the placeholder is refreshed to match.
+// qpp) at full precision. Nothing on this screen carries a placeholder — a
+// placeholder fills the columnar input area and hides the underscored run that
+// says the field is EMPTY — so what the row is asking for is carried by the
+// basis-aware LABEL (costFieldLabel) and by the caveat under it
+// (costDerivationHint), both of which follow the flip.
 func (s *PurchaseOrderCreateScreen) toggleCostBasis() {
 	if s.pickedItemSup == nil || s.pickedQPP <= 1 {
 		return
@@ -1854,10 +1869,9 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg, headerRows i
 		// it never scrolls away and it takes every rune — so these four are
 		// free to move the cart highlight, which is what they did before the
 		// conversion too.
-		if s.pending {
-			// Reading the cart is not changing it, so movement stays live while
-			// the POST is out. The bar names it for exactly that reason.
-		}
+		//
+		// They stay live while the POST is out: reading the cart is not
+		// changing it, and the bar names them for exactly that reason.
 		if moved, cmd := s.moveCursor(m, headerRows); moved {
 			return s, cmd
 		}
@@ -2164,7 +2178,15 @@ func (s *PurchaseOrderCreateScreen) headerLines() jdeHeader {
 		// ONE block, one separator: the attribution values and what the cart
 		// comes to are both facts about the order, and a blank row between them
 		// is a row of the body's.
-		h = h.addBlock(jdeHeadContext, append(s.attributionRows(true), s.cartTotalRows()...))
+		//
+		// The key column goes with the BAR's claim about g / w / c, because it
+		// is the same claim: while the create POST is out barItems drops those
+		// three and updateSourcePhase answers them with pendingDecline, so a
+		// highlighted letter beside the value would be this pane advertising
+		// and refusing one key at once — the defect the line-source rows were
+		// deleted to remove. The VALUES stay: they are part of the order being
+		// created, and only the affordance is false.
+		h = h.addBlock(jdeHeadContext, append(s.attributionRows(!s.pending), s.cartTotalRows()...))
 	case poPhaseReview:
 		h = h.addBlock(jdeHeadContext, append(s.attributionRows(false), s.cartTotalRows()...))
 	case poPhaseItemPick:
@@ -2274,10 +2296,11 @@ func poHeaderLabelWidth() int {
 // attributionRows is the optional agreement / work-order / committee block:
 // what this order is being placed under and who for.
 //
-// withKey draws them as the source chooser's affordances, keyed like the line
-// sources; without, as plain value rows on the review surface. Both are pure
-// labels — the keys live on the bar — so this is a difference of reading rather
-// than of what works, which is why the "still looking up…" line under them can
+// withKey draws them as the source chooser's affordances, keyed with the letter
+// the bar names; without, as plain value rows — on the review surface, and on
+// the chooser itself while the submit is out, where those three letters decline.
+// The key column is a READING of what the bar already says, never a second
+// place a key is named, which is why the "still looking up…" line under them can
 // name no key at all and lose nothing.
 func (s *PurchaseOrderCreateScreen) attributionRows(withKey bool) []string {
 	lw, pane := poHeaderLabelWidth(), s.paneWidth()
@@ -3185,15 +3208,16 @@ func (s *PurchaseOrderCreateScreen) lineFieldCaveat(i int) string {
 		if s.pickedItemSup != nil {
 			return "Blank prices this line from the supplier catalog at save time."
 		}
+		// Asset / freeform lines carry no date field — say why, so its absence
+		// does not read as an oversight. This is the LAST row the form draws for
+		// those two shapes (lineFields), and the row the missing date field
+		// would have followed, so a caveat about an absent row can sit here
+		// without pretending to belong to one that is present. It cannot
+		// collide with the two notes above it: both of those are item-supplier
+		// notes and this branch is only reached with pickedItemSup nil.
+		return "Expected dates are stored on inventory lines only; set this line's dates at send/receive."
 	case poLineFieldDate:
 		return ""
-	}
-	if i == poLineFieldQty && !s.lineTakesDate() {
-		// Asset / freeform lines carry no date field — say why, so its absence
-		// does not read as an oversight. On the last row this form draws for
-		// those two shapes, which is where a caveat about a MISSING row can go
-		// without pretending to belong to one.
-		return "Expected dates are stored on inventory lines only; set this line's dates at send/receive."
 	}
 	return ""
 }

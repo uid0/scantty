@@ -172,8 +172,8 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 			s.itemSuppliersNote.clear() // the error line answers for the screen
 			return Status("looking up this supplier's items failed: "+m.err.Error(), StatusError)
 		}
-		// Clear the PREVIOUS failure. renderItemPick shows the error instead of
-		// the list, so a stale string left here would hide a load that worked.
+		// Clear the PREVIOUS failure. itemBody draws the error instead of the
+		// list, so a stale string left here would hide a load that worked.
 		s.itemSuppliersErr = ""
 		s.itemSuppliersAll = m.rows
 		s.itemSuppliersFor = m.supplierID

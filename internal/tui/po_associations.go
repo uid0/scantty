@@ -311,16 +311,16 @@ func poAssocValueField(label, attached, loadErr string) jdeField {
 // loadErr turns the row into an explicit unavailable note, because a picker
 // that could not be loaded must never read as an order with nothing attached.
 //
-// This is the PRE-columnar form, and the only caller left is the create screen
-// (po_create.go), which the JD Edwards conversion reaches in the purchasing
-// ENTRY slice rather than this one. When it converts, it takes
-// poAssocValueField above and this goes with it.
+// This is the PRE-columnar form. Its last caller was the create screen, which
+// the JD Edwards conversion moved onto poAssocValueField above; nothing in the
+// package calls it now.
 // The VALUE is bounded to whatever the pane has left after the label, because
 // it is OMS-supplied: a work-order title or an unbounded error string pushed
 // the row past the cut, and clampToBox takes it silently and mid-word. One row,
 // clipped with an ellipsis that says a cut happened — folding would spend rows
-// the source chooser does not have at 24, and these rows are the first thing it
-// drops when it runs out (sourceAttributionShown).
+// the source chooser does not have at 24, where those rows are pinned header
+// rows ranked jdeHeadContext and the layer gives them ground by RANK
+// (jdeFitHeader).
 //
 // `pane` is the caller's real body width, not the 51-column floor: a clip is
 // the one bound that DESTROYS what it trims, so it may never be tighter than

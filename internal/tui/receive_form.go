@@ -590,9 +590,9 @@ func (s *ReceiveFormScreen) handleKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 	// pinning the question to the frame the press was made against is what stops
 	// an arm answering about the frame it is on its way to producing.
 	//
-	// So the frame is the argument (po_create.go's sourceHelpText takes
-	// cartListed for the same reason), and the bar's claim and the guard behind
-	// it read one expression — qtyPagesFor — bound to the same frame.
+	// So the frame is the argument (po_create.go's barFor takes headerRows for
+	// the same reason), and the bar's claim and the guard behind it read one
+	// expression — qtyPagesFor — bound to the same frame.
 	headerRows := len(s.headerLines())
 	s.note.clear()
 	switch s.phase {
@@ -1047,9 +1047,9 @@ func (s *ReceiveFormScreen) bar() []actionBarItem {
 // (submit's clearFail). So a press must be judged against the frame it was made
 // ON, and handleKey measures that header before the arms run and hands it down.
 // Deriving the header inside here instead is exactly the drift this pair exists
-// to make impossible, and it is the shape po_create.go's sourceHelpText uses
-// for the same reason: the decision is passed IN rather than recomputed against
-// a frame that has moved on.
+// to make impossible, and it is the shape po_create.go's barFor / barItems pair
+// uses for the same reason: the decision is passed IN rather than recomputed
+// against a frame that has moved on.
 func (s *ReceiveFormScreen) barFor(headerRows int) []actionBarItem {
 	switch s.phase {
 	case phaseSerial:
