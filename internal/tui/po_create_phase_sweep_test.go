@@ -411,7 +411,7 @@ func TestPOReview_EnterWhileTheSubmitIsOutSaysSo(t *testing.T) {
 			// on its own tells an operator watching a slow gateway nothing they
 			// could act on — and it is the LAYER's status row, so a multi-line
 			// OMS body cannot push the action bar off the bottom of the pane.
-			poWantPaneLine(t, screen, "Creating the purchase order for")
+			poWantPaneLine(t, screen, poSubmitWords)
 
 			before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
 			next, _ = r.Update(poPhaseKeyMsg("enter"))
@@ -1427,6 +1427,91 @@ func poFrameRefused(t *testing.T, s Screen, h int) bool {
 	return strings.Contains(strings.Join(poPaneLinesAt(t, s, h), "\n"), "Too short:")
 }
 
+// TestPOSearchBoxes_ADecliningKeyChangesThePaneAtEveryDrawableHeight.
+//
+// A picker with its search box open has nowhere to answer a declining key but
+// the NOTE: pendingDecline — the one channel that reaches the layer's status
+// row, which is outside the header budget and never gives — is reached from the
+// supplier, source and review phases only. So while the note rode as CONTEXT
+// under the box, jdeFitHeader trimmed the only answer those presses had, and
+// the pane came back byte-identical: 80x11 and 80x12 on the item filter, and
+// 80x11 through 80x13 on the asset search, whose header carries a row more.
+// This screen's oldest report, reached by geometry rather than a missing arm.
+//
+// The HEIGHT is derived rather than named, because that is what made this
+// invisible for nine rounds: poPaneSizes is {24, 30} and every existing sweep
+// of these states runs at one of them, where the header is not trimmed at all.
+// Frames the layer REFUSES to draw are skipped — jdeTooShort is its own rule —
+// and everything else must answer.
+func TestPOSearchBoxes_ADecliningKeyChangesThePaneAtEveryDrawableHeight(t *testing.T) {
+	cases := []struct {
+		name string
+		// reach leaves the screen one press short of the decline.
+		reach   func(t *testing.T, h int) (Root, *PurchaseOrderCreateScreen)
+		decline tea.KeyMsg
+	}{
+		{
+			name: "item filter over a query that matches nothing",
+			reach: func(t *testing.T, h int) (Root, *PurchaseOrderCreateScreen) {
+				t.Helper()
+				r, screen := poPickerAtSize(t, &poPickFake{catalog: 4, suppliers: 1}, 80, h)
+				r = key(t, r, poPhaseKeyMsg("i"))
+				r = pump(t, r, nil, 0)
+				r = key(t, r, poPickerKeyMsg("/"))
+				r = poType(t, r, "zzz")
+				if !screen.itemSuppliersTyping {
+					t.Fatalf("setup did not open the item filter")
+				}
+				return r, screen
+			},
+			decline: poPickerKeyMsg("enter"),
+		},
+		{
+			name: "asset search while one is already out",
+			reach: func(t *testing.T, h int) (Root, *PurchaseOrderCreateScreen) {
+				t.Helper()
+				r, screen := poPickerAtSize(t, &poPickFake{catalog: 4, suppliers: 1, assets: 3}, 80, h)
+				r = key(t, r, poPhaseKeyMsg("a"))
+				r = pump(t, r, nil, 0)
+				r = key(t, r, poPickerKeyMsg("/"))
+				r = poType(t, r, "zzz")
+				// UN-PUMPED, so the search is still out; enter closes the
+				// box on its way, so `/` opens it again over the lookup —
+				// which is the state the next enter declines from.
+				next, _ := r.Update(poPickerKeyMsg("enter"))
+				r = next.(Root)
+				next, _ = r.Update(poPickerKeyMsg("/"))
+				r = next.(Root)
+				if !screen.assetsTyping || !screen.assetsLoading {
+					t.Fatalf("setup left typing=%v loading=%v, want both",
+						screen.assetsTyping, screen.assetsLoading)
+				}
+				return r, screen
+			},
+			decline: poPickerKeyMsg("enter"),
+		},
+	}
+
+	for _, tc := range cases {
+		for _, h := range poDrawableHeights() {
+			t.Run(fmt.Sprintf("%s/80x%d", tc.name, h), func(t *testing.T) {
+				r, screen := tc.reach(t, h)
+				if poFrameRefused(t, screen, h) {
+					t.Skip("the layer refuses this frame, which is jdeTooShort's rule")
+				}
+				before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+				next, _ := r.Update(tc.decline)
+				r = next.(Root)
+				after := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+				if before == after {
+					t.Fatalf("the declining key redrew a byte-identical pane at 80x%d:\n%s", h, after)
+				}
+				poAssertFits(t, "a declining key inside a search box", screen)
+			})
+		}
+	}
+}
+
 // TestPOReview_TheCartTotalOutlivesTheOptionalRows.
 //
 // A RANK DOES NOT REMOVE THE SIGNIFICANCE OF ORDER WITHIN A RANK. jdeFitHeader
@@ -1802,6 +1887,16 @@ func TestPOOneSurface_TheScanSeesPastAFold(t *testing.T) {
 // asserted: the subject because losing it is the defect, and the lead's KEY
 // NAME because a lead that no longer says which press it answers is the
 // identical-pane defect one row over.
+//
+// AN ASSERTION CHOSEN BECAUSE IT PASSES IS NOT EVIDENCE. This test asserted
+// "Creating the purchase" — 21 cells, which SURVIVED the 25-cell clip the
+// defect left — so it went green over a row reading "Creating the purchase
+// or…" with the supplier gone: the fixed words cut mid-word and the identifier
+// lost, rule 6 inverted, certified by a passing check. The substring to assert
+// is the one the RULE requires (the fixed words in full), not one the
+// truncation happens to leave. It is the third of this shape in this run,
+// beside the two fixtures too short to reach the bound they asserted about
+// (AGENTS.md carries the general form).
 func TestPOSubmit_ADeclineDoesNotPushTheSubmitOffTheStatusRow(t *testing.T) {
 	for _, h := range poPaneSizes {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
@@ -1828,14 +1923,36 @@ func TestPOSubmit_ADeclineDoesNotPushTheSubmitOffTheStatusRow(t *testing.T) {
 				t.Fatalf("enter on another supplier left no lead to crowd the row")
 			}
 
-			// The SUBJECT survives: the operator can still see an order is
-			// being created. Its TAIL — the supplier name — is what a
-			// 51-cell row takes, which is the identifier giving while the
-			// fact stays, so the assertion is on the fact.
-			poWantPaneLine(t, screen, "Creating the purchase")
-			// And the lead still carries its first clause, which is the part
-			// that answers the press.
-			poWantPaneLine(t, screen, "enter commits nothing")
+			// Both halves are read off the ONE row they now share, because
+			// the supplier this order is for is drawn in the pinned header
+			// and in the body's own list as well: a pane-wide substring
+			// would find "Acme Supply" there and prove nothing about the
+			// status row.
+			var status string
+			for _, line := range poPaneLines(t, screen) {
+				if strings.Contains(line, "enter commits nothing") {
+					status = strings.TrimRight(line, " ")
+				}
+			}
+			if status == "" {
+				t.Fatalf("no pane line carries the lead's key name:\n%s",
+					strings.Join(poPaneLines(t, screen), "\n"))
+			}
+			// The FACT survives whole — not a prefix of it that the clip
+			// happened to spare.
+			if !strings.Contains(status, poSubmitWords) {
+				t.Fatalf("the status row %q does not carry %q whole", status, poSubmitWords)
+			}
+			// And the IDENTIFIER is what gave, visibly marked. The fixture
+			// reaches that bound: "Acme Supply" is 11 cells into the 6 the
+			// row has left for it under this lead.
+			if strings.Contains(status, "Acme Supply") {
+				t.Fatalf("the status row %q kept the whole supplier name, so the "+
+					"bound under test was never reached", status)
+			}
+			if !strings.HasSuffix(status, "…") {
+				t.Fatalf("the status row %q dropped the supplier without saying so", status)
+			}
 			poAssertFits(t, "a declined key while the submit is out", screen)
 		})
 	}

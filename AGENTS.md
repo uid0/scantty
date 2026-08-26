@@ -638,6 +638,13 @@ touching any screen an operator drives:
   cells, so the claim was only true of the `Annual 1` / `Shop 1` names the fake
   generated. Whenever a check is about a bound, the fixture has to carry a value
   that reaches it.
+  AN ASSERTION CHOSEN BECAUSE IT PASSES IS THE SAME FAILURE WITH THE FIXTURE
+  LEFT ALONE, and it is the third instance:
+  `TestPOSubmit_ADeclineDoesNotPushTheSubmitOffTheStatusRow` asserted the
+  21-cell `Creating the purchase` — a prefix the 25-cell clip happened to spare
+  — so it went green over `Creating the purchase or…` with the supplier gone,
+  certifying rule 6 on a row that inverted it. Assert the substring the RULE
+  requires, not one the truncation leaves.
   The supplier, agreement, work-order and committee rows are columnar VALUE
   rows carrying OMS-supplied names (`renderJDEField` with `jdeValue`), each
   clipped to what the shared label column leaves (`poFieldValueRoom`, ellipsis

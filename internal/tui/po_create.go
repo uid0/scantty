@@ -521,6 +521,12 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 	case poCreatedMsg:
 		s.pending = false
+		// The lead is what a key THE SUBMIT MADE INERT just did, so it dies
+		// with the submit. Nothing draws it after this today — the phases that
+		// set one have no working sentence of their own — but that is geometry
+		// rather than a guarantee, and a lead outliving its submit would name a
+		// key against a sentence it was never pressed on.
+		s.pendingLead = ""
 		if m.err != nil {
 			// Headline + detail, because the detail is a whole OMS response
 			// body: failLines cuts it to poFailDetailRows before folding it, so
@@ -2077,7 +2083,7 @@ func (s *PurchaseOrderCreateScreen) failure() (head, detail string) {
 // reverse.
 func (s *PurchaseOrderCreateScreen) workingSubject() string {
 	if s.pending {
-		return "Creating the purchase order for " + s.supplierLabel() + "…"
+		return poSubmitWords + s.supplierLabel() + "…"
 	}
 	switch s.phase {
 	case poPhaseSupplier, poPhaseSupplierSwitch:
@@ -2129,10 +2135,9 @@ func (s *PurchaseOrderCreateScreen) workingSubject() string {
 // pass — so both halves of this row have to be measured against it here. Two
 // things were wrong before, and the doc comment above denied the second:
 //
-//   - the SUBJECT could overflow on its own. "Creating the purchase order for "
-//     is 32 cells and supplierLabel clips at 20, so the worst case is 53 into
-//     the 51 a body has at 80 columns; "Looking up the assets bought from …"
-//     is worse at 55. Bounded HERE, at the one exit every one of these
+//   - the SUBJECT could overflow on its own. supplierLabel clips at 20, so
+//     "Looking up the assets bought from …" reaches 55 into the 51 a body has
+//     at 80 columns. Bounded HERE, at the one exit every one of these
 //     sentences leaves through, rather than by shortening them one at a time.
 //   - the LEAD was joined in front of it unbounded, so a decline pushed the
 //     subject off the row and, with the longest lead in this file (51 cells),
@@ -2141,9 +2146,9 @@ func (s *PurchaseOrderCreateScreen) workingSubject() string {
 //
 // So both are bounded against the row, and what gives is chosen by rule 6: the
 // FACTS survive and the IDENTIFIERS abbreviate. The facts here are the fixed
-// words of the subject ("Creating the purchase order for …") and the KEY NAME
-// the lead opens with; what gives is the supplier name at the subject's tail
-// and the lead's own tail.
+// words of the subject (poSubmitWords, and see there for why they are short
+// enough to be kept) and the KEY NAME the lead opens with; what gives is the
+// supplier name at the subject's tail and the lead's own tail.
 //
 // The subject therefore RESERVES the lead's own fact before clipping, rather
 // than taking the row and leaving the remainder. Subject-takes-all was tried
@@ -2158,7 +2163,7 @@ func (s *PurchaseOrderCreateScreen) workingSubject() string {
 // answers for is its first token; putting it after the subject would cut away
 // the one token that distinguishes the presses.
 //
-// At 80 columns the two sentences want about 66 cells of a 51-cell row, so the
+// At 80 columns the two sentences want about 54 cells of a 51-cell row, so the
 // SUPPLIER at the subject's tail is what goes — the identifier abbreviating
 // while the facts stay, which is rule 6. At 100 and 120 neither gives.
 func (s *PurchaseOrderCreateScreen) workingLine() string {
@@ -2179,8 +2184,9 @@ func (s *PurchaseOrderCreateScreen) workingLine() string {
 	if half := room / 2; floor > half {
 		floor = half
 	}
-	subject = pickerClip(subject, room-floor-len(poLeadJoint))
-	lead := pickerClip(s.pendingLead, room-lipgloss.Width(subject)-len(poLeadJoint))
+	joint := lipgloss.Width(poLeadJoint)
+	subject = pickerClip(subject, room-floor-joint)
+	lead := pickerClip(s.pendingLead, room-lipgloss.Width(subject)-joint)
 	if lead == "" {
 		return subject
 	}
@@ -2189,7 +2195,29 @@ func (s *PurchaseOrderCreateScreen) workingLine() string {
 
 // poLeadJoint is what separates a lead from the sentence it leads, and it is
 // the same ` · ` joint every note on this screen is written at.
+//
+// It is measured with lipgloss.Width and never len: U+00B7 is two BYTES and one
+// CELL, so len says 4 where the terminal draws 3. The error was conservative
+// while the joint was this one — a cell wasted on a row this file spends pages
+// defending — but a bound in bytes is only ever accidentally right, and the
+// next joint could be wide enough to make it too small instead.
 const poLeadJoint = " · "
+
+// poSubmitWords is the FACT the submit's working row carries, and it is short
+// because that row cannot fold and may have to share 51 cells with a lead.
+//
+// The arithmetic, at 80 columns where room is 51: a lead reserves its first
+// clause, capped at room/2 = 25, and the joint costs 3, so the subject is
+// bounded to 23 in the WORST case (the file's longest first clauses —
+// "shift+tab waits for the submit", "shift+tab is not in the notes" — are over
+// the cap; "enter commits nothing" reserves 22 and leaves 26). These 20 cells
+// fit that with room over for the supplier, which is the part that abbreviates.
+//
+// "Creating the purchase order for " was 32 and could not: under the longest
+// lead the row drew "Creating the purchase or…" with the supplier gone
+// altogether — the sentence cut mid-word AND the identifier lost, which is
+// rule 6 exactly inverted on the surface an order is committed from.
+const poSubmitWords = "Creating the PO for "
 
 // ---------------------------------------------------------------------------
 // The pinned header, and what a short pane gives up
@@ -2218,12 +2246,13 @@ const poLeadJoint = " · "
 //	             and the "still looking up…" line under them.
 //	essential  — exactly one row per phase, and it is the row the operator
 //	             would ACT DIFFERENTLY without: the screen's answer to the last
-//	             keypress on every phase but two, the SEARCH BOX on a picker
-//	             whose box is open, and the PO-NOTES BOX on review. A box being
-//	             typed into is the layer's own first example of the rank, and it
-//	             is why review pins its notes rather than hanging them off the
-//	             bottom of the cart: an operator typing into a field that is not
-//	             on the pane is the worst form of this screen's oldest defect.
+//	             keypress wherever there is one, the SEARCH BOX on a picker
+//	             whose box is open and whose note has nothing to say, and the
+//	             PO-NOTES BOX on review. A box being typed into is the layer's
+//	             own first example of the rank, and it is why review pins its
+//	             notes rather than hanging them off the bottom of the cart: an
+//	             operator typing into a field that is not on the pane is the
+//	             worst form of this screen's oldest defect.
 //
 // A RANK DOES NOT REMOVE THE SIGNIFICANCE OF ORDER WITHIN A RANK, and that is
 // why the cart total is emitted BEFORE the optional values rather than after
@@ -2289,13 +2318,55 @@ func (s *PurchaseOrderCreateScreen) headerLines() jdeHeader {
 	// carry the tail of a sentence whose head has already said what happened.
 	note := s.noteRows()
 	if box := s.essentialBoxRow(); box != "" {
-		// The box has taken the one essential slot, so the note rides as
-		// context. That is honest on exactly these two phases and nowhere else:
-		// both of them answer a declining key on the STATUS row
-		// (pendingDecline through workingLine), which is outside the budget and
-		// never gives, so a trimmed note there costs a repetition rather than
-		// the answer.
-		return h.addBlock(jdeHeadContext, note).add(jdeHeadDecorative, "").add(jdeHeadEssential, box)
+		if s.phase == poPhaseReview || len(note) == 0 {
+			// REVIEW, and any box phase with nothing to answer. The box takes
+			// the one essential slot and the note rides as context, which is
+			// honest here because review answers a declining key on the STATUS
+			// row (pendingDecline through workingLine), outside the budget and
+			// never given up — so a trimmed note there costs a repetition
+			// rather than the answer.
+			return h.addBlock(jdeHeadContext, note).add(jdeHeadDecorative, "").add(jdeHeadEssential, box)
+		}
+		// A PICKER's open search box is the other case, and the sentence above
+		// was written as though it covered this one. It does not: pendingDecline
+		// is reached from the supplier, source and review phases only, so a
+		// picker's declining key has nowhere to answer but this note — and with
+		// the note ranked context, jdeFitHeader trimmed the only answer the
+		// press had. Measured, at 80 columns: the item picker's `/`, a query
+		// matching nothing, enter, at 11 and 12 rows; the asset picker's second
+		// enter over a search still out, at 11, 12 and 13 — the pane was
+		// BYTE-IDENTICAL before and after the press, this screen's oldest
+		// report reached by geometry rather than by a missing arm.
+		//
+		// So the note's first line takes the slot while it has something to
+		// say. THE TRADE IS REAL AND IS NOT CLOSED BY THIS, and it is worth
+		// more written down than argued away:
+		//
+		//   - Only one row may be essential, so where the budget keeps exactly
+		//     one the BOX is what goes. Measured at 80 columns after the
+		//     change, on both pickers with a search box open: the box is drawn
+		//     from 14 rows up and is gone at 11, 12 and 13. An operator typing
+		//     into a box that is not on the pane is a defect of its own. It is
+		//     recorded here as a RESIDUAL rather than fixed: closing it means
+		//     giving a picker's declines a surface outside the budget, the way
+		//     review has one, which is a change to the status channel rather
+		//     than to a rank.
+		//   - The box loses the row to the note's CONTINUATION as well as to
+		//     its head, because within a rank the layer gives ground from the
+		//     END and the continuation is drawn above the box. That is why 13
+		//     is in the list and not just 11 and 12.
+		//   - What takes the slot is whatever the phase last SAID, and on a
+		//     freshly opened asset search that is an instruction ("type a name,
+		//     tag or serial") rather than an answer to anything.
+		//
+		// What is NOT traded: below those heights the query still narrows the
+		// body and the note is rewritten on every rune, so typing goes on
+		// changing the pane — while the declining key changed nothing at all.
+		return h.add(jdeHeadDecorative, "").
+			add(jdeHeadEssential, note[0]).
+			add(jdeHeadContext, note[1:]...).
+			add(jdeHeadDecorative, "").
+			add(jdeHeadContext, box)
 	}
 	if len(note) == 0 {
 		return h
@@ -2461,8 +2532,9 @@ func (s *PurchaseOrderCreateScreen) pendingLookupRows() []string {
 }
 
 // essentialBoxRow is the row a phase pins because the operator is TYPING into
-// it, or "" on a phase that pins none. See headerLines for why a box outranks
-// the note on exactly these two phases.
+// it, or "" on a phase that pins none. Which of it and the note takes the one
+// essential slot is headerLines' answer, and it differs between review and the
+// two pickers — see there.
 func (s *PurchaseOrderCreateScreen) essentialBoxRow() string {
 	lw, pane := poHeaderLabelWidth(), s.paneWidth()
 	switch {
