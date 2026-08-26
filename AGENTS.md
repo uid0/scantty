@@ -271,6 +271,12 @@ note, and is the authority):
   `TestPOLineForm_TheBarDoesNotOfferPagingItCannotDo` sweeps every drawable
   height, because the state only exists below 20 rows and `poPaneSizes` is
   {24, 30}.
+  So the pair's reach on this screen is a QUALIFIED claim rather than a flat
+  one, and it is worth stating that way: `PgUp`/`PgDn` page a scrolling body on
+  the phases that draw a LIST, and are offered on the line form at NO height.
+  Nothing was taken from the operator by that — before the conversion this
+  screen bound neither key anywhere — so the pair is new on the phases that have
+  a list to page and simply never offered on the one that does not.
 - **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
   hint literal.** The footer and the handler read that one table; the previous
   shape appended the words to a hint string and left the key to a global

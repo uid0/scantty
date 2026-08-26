@@ -583,15 +583,9 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, nil
 
 	case tea.KeyMsg:
-		// The phase the key was pressed ON, so a lead that answered it cannot
-		// ride to the next frame. pendingLead names a key — "ctrl+x removes
-		// nothing" — and ctrl+x is not bound on the source chooser that esc
-		// lands on, so carrying it there advertises a key that frame does not
-		// have. Cleared HERE, at the one place every phase change passes
-		// through, rather than in the three arms that navigate while a submit
-		// is out: a fourth added later would have to remember, and enumerating
-		// the sites is the mistake this screen has made in every other place
-		// it appeared.
+		// The phase the key was pressed ON, captured before any arm can change
+		// it, so the block below can tell whether this press navigated. What it
+		// does with that answer, and why it is done there, is on that block.
 		before := s.phase
 		// The pinned header is measured ONCE, on the frame the key was pressed
 		// against, and handed down. An arm can retire a note or a failure
@@ -1574,8 +1568,11 @@ func (s *PurchaseOrderCreateScreen) costFieldLabel() string {
 }
 
 // focusNextLine moves the line form's focus by delta, WRAPPING at either end,
-// and blurs on the way past so a caret is never left in a field the form is not
-// drawing as active.
+// and it BLURS on the way past: a caret left in a field the cursor has moved
+// off is the screen taking input into a row it is not drawing as active. It is
+// the only thing that moves this form's focus — the shared setCursorRow carries
+// no line-form branch, because neither of the paths that used to reach it does
+// so any more.
 func (s *PurchaseOrderCreateScreen) focusNextLine(delta int) {
 	fields := s.lineFields()
 	cur := 0
@@ -2995,10 +2992,13 @@ func (s *PurchaseOrderCreateScreen) cursorRow() int {
 	return jdeClampPick(cur, s.rowCount())
 }
 
-// setCursorRow moves the phase's cursor to row n, clamped into the body. The
-// line form moves FOCUS rather than a highlight, so it blurs and focuses on
-// the way past — a caret left in a field the cursor has moved off is the
-// screen taking input into a row it is not drawing as active.
+// setCursorRow moves the phase's cursor to row n, clamped into the body.
+//
+// The LINE form is not here: it moves focus rather than a highlight, and both
+// ways in were closed — updateLinePhase answers up / down / tab / shift+tab
+// ahead of moveCursor (focusNextLine, which wraps) and bodyPagesFor gates
+// pgup / pgdown off that phase — so moveCursor cannot reach this function while
+// the line form is drawn.
 func (s *PurchaseOrderCreateScreen) setCursorRow(n int) {
 	n = jdeClampPick(n, s.rowCount())
 	switch s.phase {
@@ -3018,14 +3018,6 @@ func (s *PurchaseOrderCreateScreen) setCursorRow(n int) {
 		s.itemSuppliersCur = n
 	case poPhaseAssetPick:
 		s.assetsCursor = n
-	case poPhaseLine:
-		fields := s.lineFields()
-		if n < 0 || n >= len(fields) {
-			return
-		}
-		s.lineInputs[s.lineFocused].Blur()
-		s.lineFocused = fields[n]
-		s.lineInputs[s.lineFocused].Focus()
 	}
 }
 
