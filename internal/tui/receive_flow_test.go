@@ -258,6 +258,130 @@ func TestReceiveFlow_ACodeOnTwoLinesNamesTheOthersAndTheKeyThatReachesThem(t *te
 	})
 }
 
+// TestReceiveFlow_AScanNamesTheLineByTheNumberTheFormDraws.
+//
+// `scanMatches` counted positions over `s.sheet.Lines` — every line of the
+// order — while everything the operator reads counts over `s.lines`, which
+// leaves the voided and closed-short ones out (applyWorksheet splits them into
+// s.closed). The two agree only on an order with nothing settled, and a settled
+// line ahead of a live one is the ordinary shape of the partial-receipt flow
+// this screen exists for.
+//
+// So on [#11 voided, #12, #13] the form drew #13 as line 2 and the scan note
+// called it line 3 — a number no row on the pane carries. On the multi-match
+// path the same wrong numbers were listed under "up/dn walks there", which
+// walks the operator to a different line, on the screen whose whole job is
+// booking stock against the right one.
+//
+// Held against what the FORM draws rather than against a number written here:
+// the assertion reads the heading off the pane for the row the scan actually
+// focused, so it cannot agree with a second index the way the note did.
+func TestReceiveFlow_AScanNamesTheLineByTheNumberTheFormDraws(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+
+	// One voided line ahead of two live ones, and the same code on both live
+	// ones so the single-match lead and the multi-match list are both driven.
+	order := func() []omsapi.ReceivingLine {
+		voided := receiveWSLine(11, "Cancelled bracket", 3, 0)
+		voided.IsVoided, voided.IsSettled = true, true
+		voided.QuantityPending = 0
+		second := receiveWSLine(12, "Box of M3 bolts", 4, 0)
+		third := receiveWSLine(13, "Reel of 24AWG wire", 10, 0)
+		return []omsapi.ReceivingLine{voided, second, third}
+	}
+
+	t.Run("a live line is named the number its own row carries", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, order(), 80, 24)
+		r = receiveTypeInto(t, r, "SKU-13")
+		r = receiveKey(t, r, enter)
+
+		i, ok := s.lineAt(s.focused)
+		if !ok {
+			t.Fatalf("the scan left the cursor on row %d, which carries no line", s.focused)
+		}
+		if got := fmt.Sprint(s.lines[i].sheet.PurchaseOrderItem); got != "13" {
+			t.Fatalf("the scan focused line id %s, want 13", got)
+		}
+		// The number the FORM draws for that row, read off the pane rather than
+		// computed here: `2  Reel of 24AWG wire`.
+		text := receivePaneText(s, 80, 24)
+		drawn := fmt.Sprintf("%d %s", i+1, s.lines[i].sheet.Label)
+		if !strings.Contains(text, drawn) {
+			t.Fatalf("the form does not draw %q, so this test cannot tell what it "+
+				"calls the line:\n%s", drawn, text)
+		}
+		if !strings.Contains(text, fmt.Sprintf("is line %d", i+1)) {
+			t.Errorf("the scan note does not call the line by the number the form draws "+
+				"(%d):\n%s", i+1, text)
+		}
+		// And it does not use the worksheet's own position, which is one more
+		// because of the voided line ahead of it.
+		if strings.Contains(text, fmt.Sprintf("is line %d", i+2)) {
+			t.Errorf("the scan note numbers over the worksheet, not over the form:\n%s", text)
+		}
+	})
+
+	t.Run("the other matches are listed by form number too", func(t *testing.T) {
+		lines := order()
+		lines[2].ScanCodes = lines[1].ScanCodes // one code on both live lines
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, lines, 80, 24)
+		r = receiveTypeInto(t, r, "SKU-12")
+		r = receiveKey(t, r, enter)
+
+		text := receivePaneText(s, 80, 24)
+		// The live lines are 1 and 2 on the form; the scan lands on 1, so the
+		// note has to point at 2 and never at 3.
+		if !strings.Contains(text, "line 2 carries it too") {
+			t.Errorf("the other match is not listed by the number the form draws:\n%s", text)
+		}
+		if strings.Contains(text, "line 3 carries it too") {
+			t.Errorf("the other match is listed by its worksheet position:\n%s", text)
+		}
+		// And the key the note names really lands on the line it pointed at.
+		for i := 0; i < receiveRowFirstLine+len(s.lines)+2 && s.focused != receiveRowFirstLine+1; i++ {
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+		}
+		if s.focused != receiveRowFirstLine+1 {
+			t.Fatalf("up/dn never reached the row the note named")
+		}
+		if got := fmt.Sprint(s.lines[1].sheet.PurchaseOrderItem); got != "13" {
+			t.Errorf("form line 2 is order line %s, so the note pointed somewhere else", got)
+		}
+		_ = r
+	})
+
+	t.Run("a settled line is named without inventing a number", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, order(), 80, 24)
+		r = receiveTypeInto(t, r, "SKU-11") // the voided line
+		r = receiveKey(t, r, enter)
+
+		text := receivePaneText(s, 80, 24)
+		// The label the closed list draws, bounded the way a refusal note bounds
+		// it — asserted through the same clip rather than against a literal, so
+		// the check cannot disagree with the bound it is checking.
+		if want := receiveRefusalClip("Cancelled bracket"); !strings.Contains(text, want) {
+			t.Errorf("a settled match is not identified by the label the closed list "+
+				"draws (%q):\n%s", want, text)
+		}
+		if !strings.Contains(text, "struck off the order") {
+			t.Errorf("a settled match does not say why it cannot take a receipt:\n%s", text)
+		}
+		// No number at all: the closed list counts 1..n of its own, so any
+		// "line N" here would point at a receivable line instead.
+		if strings.Contains(text, "is line ") {
+			t.Errorf("a settled match was given a line number the form does not draw "+
+				"for it:\n%s", text)
+		}
+		if s.focused != receiveRowScan {
+			t.Errorf("a settled match moved the cursor to row %d", s.focused)
+		}
+		_ = r
+	})
+}
+
 // TestReceiveFlow_ACodeThatMatchesNothingSaysSo, and says WHICH kind of nothing.
 //
 // "No line carries that code" sends the operator back to the label; "no line on
@@ -271,7 +395,7 @@ func TestReceiveFlow_ACodeThatMatchesNothingSaysSo(t *testing.T) {
 		r = receiveTypeInto(t, r, "NOT-A-CODE")
 		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 		text := receivePaneText(s, 80, 24)
-		if !strings.Contains(text, "matches no line on this order") {
+		if !strings.Contains(text, "matches no line here") {
 			t.Errorf("a scan that found nothing did not say so:\n%s", text)
 		}
 		if s.focused != receiveRowScan {

@@ -1692,6 +1692,37 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 		probe{"a code on more lines than the note lists", receiveSharedCode(receiveScanListMax + 2), nil,
 			[]tea.KeyMsg{poRuneKey("SKU-90"), enter}, false},
 	)
+	// EVERY sentence findLine can answer with, driven with a code long enough
+	// to spend the whole note budget on its own. s.scan takes 120 characters
+	// and a GS1 string really is that long, so the operator-supplied half of
+	// these sentences is exactly the unbounded value the rule is about — and
+	// the half a cut takes is the tail, where the key that gets them out is
+	// named. The four rows below are findLine's four branches: nothing
+	// matched, nothing on the order is scannable at all, the code names a
+	// settled line, and the code names several live ones.
+	longCode := poRuneKey(strings.Repeat("0195012345678", 7)[:91])
+	unscannable := receiveWSLine(31, "Custom fabricated bracket", 1, 0)
+	unscannable.ScanCodes = nil
+	settled := receiveWSLine(32, "Backordered gasket", 6, 2)
+	settled.IsClosedShort, settled.IsSettled = true, true
+	settled.ReceiptState, settled.ReceiptStateLabel = omsapi.ReceiptStateClosedShort, "Closed short"
+	settled.QuantityPending = 0
+	settled.ScanCodes = []omsapi.ScanCode{{Code: longCode.String(), Kind: omsapi.ScanCodeItemSKU}}
+	shared := receiveSharedCode(2)
+	for i := range shared {
+		shared[i].ScanCodes = []omsapi.ScanCode{{Code: longCode.String(), Kind: omsapi.ScanCodeItemSKU}}
+	}
+	probes = append(probes,
+		probe{"a long code that matches nothing", receiveOrder(), nil,
+			[]tea.KeyMsg{longCode, enter}, false},
+		probe{"a long code on an order with no codes at all",
+			[]omsapi.ReceivingLine{unscannable}, nil, []tea.KeyMsg{longCode, enter}, false},
+		probe{"a long code on a settled line",
+			[]omsapi.ReceivingLine{receiveWSLine(30, "Box of M3 bolts", 4, 0), settled}, nil,
+			[]tea.KeyMsg{longCode, enter}, false},
+		probe{"a long code on several live lines", shared, nil,
+			[]tea.KeyMsg{longCode, enter}, false},
+	)
 
 	for _, p := range probes {
 		t.Run(p.name, func(t *testing.T) {

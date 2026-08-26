@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	bubblekey "github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -868,24 +869,89 @@ func TestReceive_NoTwoDecliningKeysRedrawTheSamePane(t *testing.T) {
 // down, and a version bump moves the set under the list. So the question is put
 // to a real textinput — value present, caret in the MIDDLE, so every movement
 // and deletion binding has somewhere to go — and answered by whether the widget
-// changes what it HOLDS: its value or its caret, which is the same pair
-// typeInto asks about, so the sweep and the code cannot come apart over who
-// owns a key. Not what it DRAWS — lipgloss strips the caret's reverse video
-// when stdout is not a TTY, so a rendered comparison classifies every movement
-// key as the frame's inside a test binary and as the field's in production.
+// changes what it HOLDS or hands back WORK: its value, its caret or its command,
+// which is the same triple typeInto asks about, so the sweep and the code cannot
+// come apart over who owns a key. Not what it DRAWS — lipgloss strips the
+// caret's reverse video when stdout is not a TTY, so a rendered comparison
+// classifies every movement key as the frame's inside a test binary and as the
+// field's in production.
+//
+// The COMMAND is in the triple because bubbles has bindings whose whole effect
+// is asynchronous: Paste comes back as `return m, Paste`, model untouched. Left
+// out, a paste is indistinguishable from a key the widget ignored — which is
+// how ctrl+v came to be answered with "ctrl+v does nothing here" while its
+// command was discarded.
 //
 // Asked with the caret in the middle on purpose: at an edge, Left or Home
 // answers with no change and would be classified as the frame's, which is a
 // different question (that one is "does this key do anything from HERE", and
 // typeInto answers it at run time).
 func receiveFieldOwns(k string) bool {
+	msg, ok := receiveNamedKeyMsg(k)
+	if !ok {
+		return false
+	}
+	return receiveBoxTakes(msg)
+}
+
+// receiveBoxTakes is the question typeInto asks, put to a bare box.
+func receiveBoxTakes(msg tea.KeyMsg) bool {
 	box := textinput.New()
 	box.Focus()
 	box.SetValue("abc")
 	box.SetCursor(1)
 	before, at := box.Value(), box.Position()
-	box, _ = box.Update(poPhaseKeyMsg(k))
-	return box.Value() != before || box.Position() != at
+	box, cmd := box.Update(msg)
+	return cmd != nil || box.Value() != before || box.Position() != at
+}
+
+// receiveNamedKeyMsg turns a key NAME into the KeyMsg a terminal delivers for
+// it, by asking bubbletea what each of its own key types is CALLED.
+//
+// Derived rather than tabulated because the names this file needs come out of
+// bubbles' KeyMap — chords like "alt+backspace" and "ctrl+right" that no
+// hand-written switch in this package has ever had a case for, and that a
+// bubbles version bump can add. poPhaseKeyMsg falls back to KeyRunes for
+// anything it does not recognise, which would turn "ctrl+v" into the six
+// literal characters and quietly test nothing.
+func receiveNamedKeyMsg(name string) (tea.KeyMsg, bool) {
+	base, alt := name, false
+	if rest, cut := strings.CutPrefix(name, "alt+"); cut {
+		base, alt = rest, true
+	}
+	for t := -40; t <= 127; t++ {
+		typ := tea.KeyType(t)
+		if typ == tea.KeyRunes {
+			continue
+		}
+		if (tea.Key{Type: typ}).String() == base {
+			return tea.KeyMsg{Type: typ, Alt: alt}, true
+		}
+	}
+	if r := []rune(base); len(r) == 1 {
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: r, Alt: alt}, true
+	}
+	return tea.KeyMsg{}, false
+}
+
+// TestReceive_TheKeyNameLookupIsNotAFallback keeps receiveNamedKeyMsg from
+// silently degrading. It resolves the chords the KeyMap really carries — if the
+// scan ever stopped finding them it would hand back KeyRunes, and every guard
+// built on it would go on passing while pressing the wrong thing entirely.
+func TestReceive_TheKeyNameLookupIsNotAFallback(t *testing.T) {
+	for _, name := range []string{"ctrl+v", "ctrl+right", "alt+backspace", "pgup", "enter"} {
+		msg, ok := receiveNamedKeyMsg(name)
+		if !ok {
+			t.Errorf("no key type is named %q", name)
+			continue
+		}
+		if msg.Type == tea.KeyRunes {
+			t.Errorf("%q resolved to runes %q rather than to its own key type", name, msg.Runes)
+		}
+		if got := msg.String(); got != name {
+			t.Errorf("%q resolved to a key that calls itself %q", name, got)
+		}
+	}
 }
 
 // TestReceive_TheFieldOwnershipProbeIsNotVacuous keeps the derivation above
@@ -907,6 +973,164 @@ func TestReceive_TheFieldOwnershipProbeIsNotVacuous(t *testing.T) {
 				"press it on a typing state", k)
 		}
 	}
+	// typeInto reads a nil command as "the box ignored it", and that reading is
+	// only safe while bubbles really answers a key it ignores with nothing. A
+	// version that started handing back a blink on every keystroke would make
+	// typeInto stop declining anything at all, on every typing phase at once,
+	// and no other check in this file would notice.
+	box := textinput.New()
+	box.Focus()
+	box.SetValue("abc")
+	box.SetCursor(1)
+	ignored, ok := receiveNamedKeyMsg("pgdown")
+	if !ok {
+		t.Fatal("pgdown has no key type, so this check is looking at nothing")
+	}
+	if _, cmd := box.Update(ignored); cmd != nil {
+		t.Error("a focused textinput hands back a command for a key it ignores, so " +
+			"typeInto's command half now reads every key as taken and declines nothing")
+	}
+	// And the half that broke: a binding whose whole effect is in the command.
+	paste, ok := receiveNamedKeyMsg("ctrl+v")
+	if !ok {
+		t.Fatal("ctrl+v has no key type")
+	}
+	if _, cmd := box.Update(paste); cmd == nil {
+		t.Error("a focused textinput hands back no command for its Paste binding, so " +
+			"the command half of the probe is guarding nothing")
+	}
+}
+
+// receiveDeferredFieldKeys is every key the box's own KeyMap claims whose whole
+// effect is in the returned COMMAND — it changes neither the value nor the
+// caret, so a frame that judged ownership by mutation alone would decline it
+// and throw the command away.
+//
+// Derived twice over, because both halves are things that move under us. The
+// key NAMES come from reflection over textinput.KeyMap, so a binding added by a
+// version bump is covered without anyone extending a list; which of them are
+// DEFERRED is answered by pressing each at a bare widget, so a binding that
+// changes shape from synchronous to asynchronous moves into this set on its
+// own. Today it is exactly Paste, and Paste is the one poKeySpace has never
+// contained — which is why the sweep that presses the whole space never saw
+// ctrl+v fall silent.
+func receiveDeferredFieldKeys(t *testing.T) []tea.KeyMsg {
+	t.Helper()
+	km := reflect.ValueOf(textinput.New().KeyMap)
+	binding := reflect.TypeOf(bubblekey.Binding{})
+	var out []tea.KeyMsg
+	seen := map[string]bool{}
+	for i := 0; i < km.NumField(); i++ {
+		if km.Field(i).Type() != binding {
+			continue
+		}
+		b := km.Field(i).Interface().(bubblekey.Binding)
+		for _, name := range b.Keys() {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			msg, ok := receiveNamedKeyMsg(name)
+			if !ok {
+				continue
+			}
+			box := textinput.New()
+			box.Focus()
+			before, at := box.Value(), box.Position()
+			next, cmd := box.Update(msg)
+			if cmd != nil && next.Value() == before && next.Position() == at {
+				out = append(out, msg)
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("no binding in the box's KeyMap defers its work to a command, so the " +
+			"guard below is looking at nothing — either bubbles changed shape or the " +
+			"reflection stopped finding its bindings")
+	}
+	return out
+}
+
+// TestReceive_ADeferredFieldKeyIsNotDeclined.
+//
+// typeInto decides whether the focused box took a key. Written to compare the
+// value and the caret alone, it read a PASTE as a key the box ignored: bubbles
+// answers its Paste binding with `return m, Paste`, so the model comes back
+// unchanged and all of the work is in the command. The frame then printed
+// "ctrl+v does nothing here" and dropped the command — a silent discard of the
+// operator's action and a false claim about it in the same press, on all three
+// typing phases at once.
+//
+// Held over the whole class rather than over ctrl+v, and over every typing
+// phase rather than the one it was noticed on, because a hand-kept exception
+// for the binding somebody happened to report is the shape this file exists to
+// stop.
+func TestReceive_ADeferredFieldKeyIsNotDeclined(t *testing.T) {
+	deferred := receiveDeferredFieldKeys(t)
+	for _, c := range receivePhaseCases() {
+		if !c.typing {
+			continue
+		}
+		t.Run(c.name, func(t *testing.T) {
+			build := receiveHarness(t, c.fake, c.lines, 80, 24)
+			for _, msg := range deferred {
+				r, s := build(t)
+				r = c.reach(t, r, s)
+				if s.phase != c.phase {
+					t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
+				}
+				k := msg.String()
+				next, cmd := r.Update(msg)
+				r = next.(Root)
+				if pane := receivePaneText(s, 80, 24); strings.Contains(pane, k+" does nothing here") {
+					t.Errorf("%s: %q is the box's own binding and the frame declined it:\n%s",
+						c.name, k, pane)
+				}
+				// And the work really went out. The box's answer to this key is
+				// a command; the frame's answer to a declined key is a status
+				// write, so the MESSAGE the command yields tells the two apart
+				// without needing a clipboard to be present.
+				want := receiveBareBoxMsgType(t, msg)
+				if got := receiveCmdMsgType(cmd); got != want {
+					t.Errorf("%s: %q answered with %s, want the box's own %s — the "+
+						"command the widget handed back was dropped", c.name, k, got, want)
+				}
+			}
+		})
+	}
+}
+
+// receiveBareBoxMsgType is what the widget's own answer to this key resolves
+// to, taken from a bare focused box so the expectation is bubbles' rather than
+// a name written down here.
+func receiveBareBoxMsgType(t *testing.T, msg tea.KeyMsg) string {
+	t.Helper()
+	box := textinput.New()
+	box.Focus()
+	_, cmd := box.Update(msg)
+	return receiveCmdMsgType(cmd)
+}
+
+// receiveCmdMsgType runs a command once and names the type of what came back.
+// A tea.Batch is unwrapped to the one message that is not the cursor's blink,
+// because the frame batches its own status write alongside whatever it returns.
+func receiveCmdMsgType(cmd tea.Cmd) string {
+	if cmd == nil {
+		return "<nil>"
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if t := receiveCmdMsgType(c); t != "<nil>" {
+				return t
+			}
+		}
+		return "<nil>"
+	}
+	if msg == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%T", msg)
 }
 
 // TestReceive_NoKeyFallsSilentIntoAField is the typing half of "a keypress that

@@ -771,23 +771,45 @@ func (s *ReceiveFormScreen) decline(key string, headerRows int) tea.Cmd {
 // Right with the caret already at the end of the value, or a rune typed into a
 // box that is at its CharLimit.
 //
-// "Took it" is the VALUE and the CARET, and deliberately not the RENDERED box.
-// A rendered comparison was the first shape of this and it is wrong in a way
-// only a real terminal shows: lipgloss draws the caret with reverse video, so
-// moving it changes the render — but lipgloss strips every sequence when stdout
-// is not a TTY, so with the profile off Left over "abc" renders "abc" either
-// way, and the key would be declined inside a test binary and honoured in
-// production. A bound that answers differently depending on whether anybody is
-// watching is not a bound. The value and the caret are what the box really
-// holds, and between them they are what every binding bubbles has changes.
+// "Took it" is asked of EVERYTHING the widget hands back: the VALUE, the CARET,
+// and the COMMAND. The command is the half this was first written without, and
+// leaving it out broke Ctrl+V on all three typing phases. bubbles handles its
+// Paste binding as `return m, Paste` — the model comes back byte for byte
+// unchanged and the whole of the work is in the returned command — so against a
+// value/caret comparison a paste is indistinguishable from a key the box
+// ignored: the frame printed "ctrl+v does nothing here" and threw the Paste
+// command away, which is a silent discard AND a false claim in one press. Any
+// binding whose effect is asynchronous has that shape, so the command is asked
+// about rather than ctrl+v being named: bubbles adds bindings, and the next one
+// of this shape must not have to be remembered.
 //
-// The cmd dropped on the declining path is the blink restart, which there is no
-// caret movement to restart.
+// The box's KEY MAP is deliberately NOT the authority, and that is not an
+// oversight — it was tried. It claims more than the widget can act on: Up and
+// Down are its suggestion keys, live only with ShowSuggestions set, which this
+// screen never sets. Routing every key the map claims would hand Up, Down,
+// Ctrl+P and Ctrl+N back to a box that does nothing with them, which is
+// verbatim the silence on the write-off confirm this function exists to end.
+// A command is what the widget really did; a binding is only what it advertises.
+//
+// The value and the caret are asked about rather than the RENDERED box, for a
+// reason only a real terminal shows: lipgloss draws the caret with reverse
+// video, so moving it changes the render — but lipgloss strips every sequence
+// when stdout is not a TTY, so with the profile off Left over "abc" renders
+// "abc" either way, and the key would be declined inside a test binary and
+// honoured in production. A bound that answers differently depending on whether
+// anybody is watching is not a bound.
+//
+// Nothing is dropped on the declining path: cursor.Update ignores a KeyMsg and
+// tea.Batch of nothing but nils is nil, so a key the box ignored hands back no
+// command at all. That is what makes the command half safe to read as an
+// answer, and TestReceive_TheFieldOwnershipProbeIsNotVacuous pins it, because a
+// bubbles that started returning a blink on every keystroke would make this
+// function stop declining anything and say so nowhere.
 func (s *ReceiveFormScreen) typeInto(box *textinput.Model, m tea.KeyMsg, headerRows int) tea.Cmd {
 	before, at := box.Value(), box.Position()
 	next, cmd := box.Update(m)
 	*box = next
-	if box.Value() == before && box.Position() == at {
+	if cmd == nil && box.Value() == before && box.Position() == at {
 		return s.decline(m.String(), headerRows)
 	}
 	return cmd
@@ -1489,13 +1511,34 @@ func receiveScanKindLabel(kind string) string {
 }
 
 // receiveScanMatch is one line a scanned code resolved to.
+//
+// It carries ONE index and that index is the form's: the position in s.lines,
+// which is what every number the operator reads on this screen is counted
+// over — lineHeading's `1 `, openLineWriteOff's refusal, the review's blocks.
+// It used to carry a second one, the position in s.sheet.Lines, and the two
+// disagree the moment a settled line sits ahead of a live one, which is the
+// ordinary shape of the partial-receipt flow this screen exists for: an order
+// of [#11 voided, #12, #13] draws #13 as line 2 and the scan note called it
+// line 3. On the multi-match path that note also said "up/dn walks there", so
+// following it walked the operator to a DIFFERENT line, on the screen whose
+// whole job is booking stock against the right one. A second index is a second
+// authority; there is now one.
 type receiveScanMatch struct {
-	row      int // the form row, or -1 for a line that cannot take a receipt
-	label    string
-	kind     string
-	settled  string // why it cannot take a receipt, blank when it can
-	position int    // 1-based position in the worksheet, for naming it
+	line    int // index into s.lines, or -1 for a line that cannot take a receipt
+	label   string
+	kind    string
+	settled string // why it cannot take a receipt, blank when it can
 }
+
+// live reports a match the form has a row for — the only kind a receipt can be
+// typed against, and the only kind that has a number at all.
+func (m receiveScanMatch) live() bool { return m.line >= 0 }
+
+// row is where the cursor goes for this match, and number is what the form
+// DRAWS beside it. Both are derived from the one index rather than stored, so
+// they cannot come apart from each other or from the body that draws the line.
+func (m receiveScanMatch) row() int    { return receiveRowFirstLine + m.line }
+func (m receiveScanMatch) number() int { return m.line + 1 }
 
 // scanMatches resolves a code against the worksheet's own scan_codes.
 //
@@ -1515,19 +1558,23 @@ func (s *ReceiveFormScreen) scanMatches(code string) []receiveScanMatch {
 	if want == "" || s.sheet == nil {
 		return nil
 	}
-	rowOf := map[string]int{}
+	// Keyed by the line's id and valued by its place in s.lines, because that
+	// is the number the form draws. Walking s.sheet.Lines is still right — a
+	// settled line has to be findable, and it is only in the worksheet — but
+	// its INDEX there is not a fact the operator can see anywhere.
+	lineOf := map[string]int{}
 	for i, l := range s.lines {
-		rowOf[fmt.Sprint(l.sheet.PurchaseOrderItem)] = receiveRowFirstLine + i
+		lineOf[fmt.Sprint(l.sheet.PurchaseOrderItem)] = i
 	}
 	var out []receiveScanMatch
-	for i, l := range s.sheet.Lines {
+	for _, l := range s.sheet.Lines {
 		for _, c := range l.ScanCodes {
 			if strings.ToLower(strings.TrimSpace(c.Code)) != want {
 				continue
 			}
-			m := receiveScanMatch{row: -1, label: l.Label, kind: c.Kind, position: i + 1}
-			if row, ok := rowOf[fmt.Sprint(l.PurchaseOrderItem)]; ok {
-				m.row = row
+			m := receiveScanMatch{line: -1, label: l.Label, kind: c.Kind}
+			if i, ok := lineOf[fmt.Sprint(l.PurchaseOrderItem)]; ok {
+				m.line = i
 			} else if l.IsVoided {
 				m.settled = "struck off the order"
 			} else {
@@ -1548,30 +1595,50 @@ func (s *ReceiveFormScreen) scanMatches(code string) []receiveScanMatch {
 // able to reach the second, and receiveOtherLineNote carries the note on why
 // the key that reaches it is up/dn and not another Enter.
 func (s *ReceiveFormScreen) findLine(headerRows int) tea.Cmd {
+	// TWO names for the code, and the split is the point. `code` is what the
+	// worksheet is MATCHED against and never reaches a sentence; `shown` is
+	// what every sentence names, bounded in cells at the one place it is read
+	// out of the box, so a note added below is bounded by construction rather
+	// than by whoever remembers to wrap it.
+	//
+	// It matters because s.scan carries a CharLimit of 120 against a note
+	// budget of receiveNoteRows lines of the pane, and the note is shortened
+	// FROM THE END — where the tail naming the way out lives. A 90-character
+	// GS1 string that matched nothing used to spend the whole budget on itself
+	// and leave "pick the line with up/dn" cut off: the only instruction the
+	// frame gives, lost to the value that caused the refusal. The OMS-supplied
+	// label in the same sentence has been bounded since it was written
+	// (receiveScanClip); a bound over half a sentence is not a bound.
 	code := strings.TrimSpace(s.scan.Value())
+	shown := receiveRefusalClip(code)
 	matches := s.scanMatches(code)
 	if len(matches) == 0 {
-		return s.say(s.noScanMatchNote(code)+" · "+s.waysOut(headerRows), StatusWarn)
+		return s.say(s.noScanMatchNote(shown)+" · "+s.waysOut(headerRows), StatusWarn)
 	}
 
 	var live []receiveScanMatch
 	for _, m := range matches {
-		if m.row >= 0 {
+		if m.live() {
 			live = append(live, m)
 		}
 	}
 	if len(live) == 0 {
+		// Named by its LABEL and not by a number. A settled line has no row on
+		// the form and therefore no number the operator can look for: the
+		// closed list under the body counts 1..n of its own, so "line 2" here
+		// would point at a receivable line two rows up. The label is what that
+		// list draws, so it is what identifies the line.
 		m := matches[0]
-		return s.say(fmt.Sprintf("%q is line %d (%s), %s — it cannot take a receipt · %s",
-			code, m.position, receiveScanKindLabel(m.kind), m.settled, s.waysOut(headerRows)), StatusWarn)
+		return s.say(fmt.Sprintf("%q is %s, %s — no receipt · %s",
+			shown, receiveRefusalClip(m.label), m.settled, s.waysOut(headerRows)), StatusWarn)
 	}
 
 	hit := live[0]
 	s.currentInput().Blur()
-	s.focused = hit.row
+	s.focused = hit.row()
 	s.focusCurrent()
 
-	lead := fmt.Sprintf("%q is line %d, %s (%s)", code, hit.position,
+	lead := fmt.Sprintf("%q is line %d, %s (%s)", shown, hit.number(),
 		receiveScanClip(hit.label), receiveScanKindLabel(hit.kind))
 	switch {
 	case len(live) > 1:
@@ -1610,10 +1677,10 @@ func (s *ReceiveFormScreen) findLine(headerRows int) tea.Cmd {
 func receiveOtherLineNote(live []receiveScanMatch, hit receiveScanMatch) string {
 	var others []string
 	for _, m := range live {
-		if m.position == hit.position {
+		if m.line == hit.line {
 			continue
 		}
-		others = append(others, strconv.Itoa(m.position))
+		others = append(others, strconv.Itoa(m.number()))
 	}
 	if len(others) > receiveScanListMax {
 		return fmt.Sprintf("%d more lines carry it — up/dn walks to them", len(others))
@@ -1632,20 +1699,53 @@ func receiveOtherLineNote(live []receiveScanMatch, hit receiveScanMatch) string 
 // the tail is the half that names the key.
 const receiveScanListMax = 3
 
-// receiveScanClip bounds a line label before it goes into a NOTE.
+// receiveScanClip bounds an OMS-supplied line label before it goes into the
+// scan's SUCCESS note.
 //
 // The note is folded into receiveNoteRows lines and shortened from the end when
-// it overruns, and the end is where the tail naming the way out lives — so an
-// OMS-supplied label of any length must not be what spends that budget. Twenty
-// cells is enough to recognise a part and small enough that the sentence around
-// it survives. cellPrefix rather than a rune count, because every width on
-// these screens is measured in CELLS.
-func receiveScanClip(label string) string {
-	const room = 20
-	if lipgloss.Width(label) <= room {
-		return label
+// it overruns, and the end is where the tail naming the way out lives — so a
+// label of any length must not be what spends that budget. Twenty cells is
+// enough to recognise a part and small enough that the sentence around it
+// survives. cellPrefix rather than a rune count, because every width on these
+// screens is measured in CELLS.
+//
+// Every value that goes into a REFUSAL is bounded harder, and receiveRefusalClip
+// is where the arithmetic for that is.
+func receiveScanClip(label string) string { return receiveNoteClip(label, receiveScanLabelRoom) }
+
+// receiveRefusalClip is the same bound, tighter, for a value going into a note
+// that carries a WAY-OUT TAIL.
+//
+// The tail is what decides, and it is most of the budget: waysOut spells the
+// quantity form's whole bar, five claims and about ninety cells of the roughly
+// hundred and sixty a four-row note really holds once folding waste is paid.
+// A refusal lead therefore has room for about seventy, and the values it names
+// — the scanned code, and the label of the line it hit — are the only parts of
+// it that are not fixed text. Measured with a 91-character GS1 code and a
+// 44-character part name, the twenty-cell bound above overran the reservation
+// and fittedNote dropped "received" off the end of "ctrl+r mark received": the
+// key that finishes the order, lost to the value that caused the refusal.
+//
+// A quoted code costs more than its cells, which is the other half of why this
+// is not one number with the lead above. The fold breaks at WORDS, and a quoted
+// code is one unbreakable word — where "Backordered gasket" splits across the
+// break, "0195012345…" cannot — so it pushes a whole segment down a line.
+//
+// The SUCCESS lead keeps the twenty-cell bound because it carries no tail at
+// all: `say(lead, StatusOK)` names no keys, so its whole budget is the
+// sentence, and there a longer part name is worth having.
+func receiveRefusalClip(v string) string { return receiveNoteClip(v, receiveScanRefusalRoom) }
+
+const (
+	receiveScanLabelRoom   = 20
+	receiveScanRefusalRoom = 10
+)
+
+func receiveNoteClip(v string, room int) string {
+	if lipgloss.Width(v) <= room {
+		return v
 	}
-	return cellPrefix(label, room-1) + "…"
+	return cellPrefix(v, room-1) + "…"
 }
 
 // noScanMatchNote says WHICH kind of nothing was found.
@@ -1655,6 +1755,11 @@ func receiveScanClip(label string) string {
 // second tells them this order simply cannot be scanned to and they must pick
 // the line by hand. An asset or freeform line contributes no codes at all, so
 // an order made of those is exactly the second case and is not rare.
+//
+// `code` arrives already bounded in cells — findLine clips it once, where it is
+// read out of the box — because both sentences below interpolate it beside the
+// instruction that gets the operator out, and the instruction is what a long
+// code used to push off the pane.
 func (s *ReceiveFormScreen) noScanMatchNote(code string) string {
 	coded := 0
 	if s.sheet != nil {
@@ -1665,11 +1770,14 @@ func (s *ReceiveFormScreen) noScanMatchNote(code string) string {
 		}
 	}
 	if coded == 0 {
-		return fmt.Sprintf("no line on this order carries a scannable code, so %q cannot "+
-			"find one — pick the line with up/dn", code)
+		// The CODE is not named in this one, and that is deliberate rather than
+		// a saving: the fact is about the ORDER, not about what was scanned —
+		// no code whatever could find a line here — so naming it would spend
+		// the tail's cells saying something the sentence does not turn on.
+		return "no line here carries a scannable code — pick a line with up/dn"
 	}
-	return fmt.Sprintf("%q matches no line on this order — check the label, or pick the "+
-		"line with up/dn", code)
+	return fmt.Sprintf("%q matches no line here — check the label, or pick "+
+		"with up/dn", code)
 }
 
 // ---------------------------------------------------------------------------
