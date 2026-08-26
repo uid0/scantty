@@ -25,8 +25,31 @@
 //	     This is how a SHORT receipt ends.
 //
 //	POST /api/reorders/purchase-orders/{id}/mark-received/
-//	     Finish the order off: close every still-outstanding line short and
-//	     advance the order to `received`.
+//	     Finish the order off: close every still-outstanding line short.
+//
+// # Every one of them is an authenticated read or write
+//
+// Including the WORKSHEET, which is a GET. It was served under
+// IsAuthenticatedOrReadOnly — a class that lets a read through with no
+// credentials at all — and is being gated to IsAuthenticated, so a fetch that
+// used to answer whatever the session's state was can now come back 401. The
+// client already sends the bearer token on every request and refreshes once on
+// a 401, so nothing here assumed an anonymous read; what the gate changes is
+// that the FAILURE is reachable on the worksheet as well as on the writes, and
+// DRF renders it as `{"detail": ...}` rather than as either shape below.
+// internal/tui/receive_form.go's receiveReason is where that becomes a sentence
+// an operator can act on.
+//
+// # The received transition is the server's, and it is conditional
+//
+// Closing the last outstanding balance does not, on its own, mean the order
+// becomes `received`: an order nothing was ever received against does not
+// advance. That rule lives on the server and has already changed once, so
+// NOTHING here predicts it. Every one of these calls answers with the updated
+// purchase order — read `Status` / `StatusLabel` off that reply and report what
+// it says. A client that told the operator what the order would become would be
+// keeping a copy of a rule it does not own, which is the one thing this package
+// is written not to do.
 //
 // # What this package deliberately does NOT do
 //
@@ -269,10 +292,12 @@ type ReceivingWorksheet struct {
 	StatusLabel       string `json:"status_label"`
 	CanReceive        bool   `json:"can_receive"`
 	UnavailableReason string `json:"unavailable_reason"`
-	// IsSettled is "receiving is finished with every active line", which is what
-	// advances the order to `received`. IsFullyReceived is the stricter
-	// "everything we ordered turned up" and stays false for ever once a line is
-	// closed short — the honest answer to "did it all arrive?".
+	// IsSettled is "receiving is finished with every active line" and is what
+	// decides whether a line still blocks the order. It is an INPUT to the
+	// order's status and not a synonym for it — see the note above on the
+	// received transition. IsFullyReceived is the stricter "everything we
+	// ordered turned up" and stays false for ever once a line is closed short —
+	// the honest answer to "did it all arrive?".
 	IsSettled            bool `json:"is_settled"`
 	IsFullyReceived      bool `json:"is_fully_received"`
 	HasReceiptVariance   bool `json:"has_receipt_variance"`
@@ -344,6 +369,8 @@ func (c *Client) GetReceivingWorksheet(ctx context.Context, poID string) (*Recei
 // recorded, not erased. Refused when the line is already closed short (the
 // first reason and actor are a record, not a draft), is voided, or has nothing
 // outstanding.
+//
+// What the ORDER becomes is in the reply and is not predicted here.
 func (c *Client) CloseShortPOLines(ctx context.Context, poID string, req CloseShortRequest) (*PurchaseOrder, error) {
 	var out PurchaseOrder
 	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/close-short/", poID)
@@ -354,8 +381,11 @@ func (c *Client) CloseShortPOLines(ctx context.Context, poID string, req CloseSh
 }
 
 // MarkPurchaseOrderReceived finishes the order off: every still-outstanding
-// line is closed short with `reason` recorded against it, and the order
-// advances to `received`.
+// line is closed short with `reason` recorded against it.
+//
+// It does NOT guarantee the order comes back `received` — an order nothing was
+// ever received against does not advance, and that rule is the server's. Read
+// the returned order's status rather than assuming one.
 //
 //	POST /api/reorders/purchase-orders/{poID}/mark-received/
 //

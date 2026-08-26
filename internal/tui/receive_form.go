@@ -176,9 +176,15 @@ type receiveScope int
 const (
 	// receiveScopeLine closes ONE line's outstanding balance short.
 	receiveScopeLine receiveScope = iota
-	// receiveScopeOrder closes EVERY still-outstanding line short and advances
-	// the order to received. Deliberately NOT mark-delivered, which asserts the
-	// opposite — that the outstanding quantity did arrive — and stocks it.
+	// receiveScopeOrder closes EVERY still-outstanding line short. Deliberately
+	// NOT mark-delivered, which asserts the opposite — that the outstanding
+	// quantity did arrive — and stocks it.
+	//
+	// What the ORDER then becomes is the server's, and this screen does not
+	// predict it: whether closing the last balance advances the order to
+	// `received` is a rule that has already changed once (an order nothing was
+	// ever received against no longer advances), so the confirm says what the
+	// write DOES and the summary reports what came back.
 	receiveScopeOrder
 )
 
@@ -831,8 +837,30 @@ func receiveReason(err error) string {
 		return prose
 	}
 	var api *omsapi.APIError
-	if errors.As(err, &api) && api.Code != "" && api.Message != "" {
-		return api.Message
+	if errors.As(err, &api) {
+		// An expired session is NAMED rather than relayed, and it is named here
+		// because the receiving endpoints are the ones it newly reaches: the
+		// worksheet is a GET, it was served under IsAuthenticatedOrReadOnly —
+		// which lets a read through unauthenticated — and gating it to
+		// IsAuthenticated turns a fetch that always answered into one that can
+		// 401. DRF writes that as `{"detail": "..."}`, which is neither the
+		// hand-built refusal envelope nor a coded one, so it would arrive on
+		// the blocked frame as `oms: http 401: {"detail":"Authentication
+		// credentials were not provided."}` — a raw dump on the frame whose
+		// whole job is explaining why nothing can be received.
+		//
+		// This is not a second opinion about anything the server decides. It is
+		// an HTTP fact with one operator-facing meaning and one next move, and
+		// APIError.IsAuth is where that fact already lives. The client retries
+		// once through a token refresh before this is ever reached, so getting
+		// here means the refresh failed too.
+		if api.IsAuth() {
+			return "this session is no longer signed in to OpenMakerSuite — " +
+				"sign in again, then r re-reads the worksheet"
+		}
+		if api.Code != "" && api.Message != "" {
+			return api.Message
+		}
 	}
 	return err.Error()
 }
@@ -3636,9 +3664,9 @@ func (s *ReceiveFormScreen) writeOffBody() *jdeLines {
 			s.orderName(), n, plural("line", n)), width, len(jdeIndent))))
 		for _, line := range jdeCaveatLines(
 			"Every line still being waited on is closed SHORT — what arrived stays as it "+
-				"is, the rest is recorded as never arriving, and the order goes to "+
-				"received. This is not the same as saying it all turned up: nothing is "+
-				"stocked by it.", width) {
+				"is and the rest is recorded as never arriving. This is not the same as "+
+				"saying it all turned up: nothing is stocked by it. What the order is left "+
+				"as is the server's answer, and the summary reports it.", width) {
 			l.AddRow(0, line)
 		}
 		return l

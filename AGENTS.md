@@ -161,6 +161,21 @@ either:
   than through a predicate: the previous guard was a predicate call, a fix round
   replaced its assertion with a substring over a frame the caveat is
   structurally absent from, and the check could then fail in neither direction.
+- **The RECEIVED transition is the server's and it is conditional.** Closing the
+  last outstanding balance does not on its own make the order `received` — an
+  order nothing was ever received against does not advance — and that rule has
+  already changed once since this client was written. So nothing on this side
+  predicts it: the confirm says what the write DOES, and the summary reports the
+  `status_label` that came back. `is_settled` is an INPUT to the order's status,
+  never a synonym for it.
+- **Every receiving endpoint is authenticated, the worksheet included.** It is a
+  GET and was served under `IsAuthenticatedOrReadOnly`, which lets a read
+  through with no credentials; gating it to `IsAuthenticated` turns a fetch that
+  always answered into one that can 401. `Client.do` already sends the bearer
+  token and refreshes once, so the happy path is unchanged — what the gate adds
+  is a reachable FAILURE, rendered by DRF as `{"detail": ...}`, which is neither
+  shape below. `receiveReason` names it ("no longer signed in") rather than
+  relaying it; reaching it means the refresh failed too.
 - **The refusal body is NOT the standard envelope**, again. All four endpoints
   write `{"error": "<prose>"}` by hand with no `code`, so `parseError` hands the
   whole raw body over. `omsapi.AsReceivingRefusal` recovers the sentence and is

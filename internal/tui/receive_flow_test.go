@@ -580,6 +580,84 @@ func TestReceiveFlow_MarkingReceivedFinishesTheOrderOff(t *testing.T) {
 	}
 }
 
+// TestReceiveFlow_TheSummaryReportsWhatTheOrderBecameRatherThanAssumingIt.
+//
+// Closing the last outstanding balance does NOT on its own make the order
+// `received`: an order nothing was ever received against does not advance, and
+// that rule is the server's — it has already changed once since this client was
+// written. So nothing on this screen may predict it. The confirm says what the
+// write DOES, and the summary reports the status that came back, whatever it is.
+//
+// Driven with a reply that came back NOT advanced, which is the case an
+// assumption gets wrong and the ordinary one hides.
+func TestReceiveFlow_TheSummaryReportsWhatTheOrderBecameRatherThanAssumingIt(t *testing.T) {
+	fake := &receiveFake{replyWith: map[string]any{
+		"id": 5, "po_number": "PO-1001",
+		// Every line closed short, nothing ever received against the order — so
+		// it stays where it was rather than advancing.
+		"status": "sent", "status_label": "Sent",
+		"total_received_quantity": 0, "total_quantity": 9,
+		"outstanding_line_count": 0,
+	}}
+	r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+
+	// The confirm must not promise the transition either: the operator reads it
+	// before pressing the key, and a promise the server will not keep is the
+	// same defect one frame earlier.
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR})
+	confirm := receivePaneText(s, 80, 30)
+	if strings.Contains(confirm, "order goes to received") ||
+		strings.Contains(confirm, "advances the order") {
+		t.Errorf("the confirm predicts what the order will become:\n%s", confirm)
+	}
+
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+	if len(fake.marked()) != 1 {
+		t.Fatalf("mark-received was called %d times", len(fake.marked()))
+	}
+	text := receivePaneText(s, 80, 30)
+	if !strings.Contains(text, "PO-1001 · Sent") {
+		t.Errorf("the summary does not report the status that came back:\n%s", text)
+	}
+	if strings.Contains(text, "Received") {
+		t.Errorf("the summary reports a transition the server did not make:\n%s", text)
+	}
+	_ = r
+}
+
+// TestReceiveFlow_AnExpiredSessionIsASentenceAndNotABody.
+//
+// The worksheet is a GET and was served under IsAuthenticatedOrReadOnly, which
+// lets a read through unauthenticated; gating it to IsAuthenticated turns a
+// fetch that always answered into one that can 401. DRF renders that as
+// `{"detail": ...}` — neither the receiving endpoints' hand-built refusal
+// envelope nor a coded one — so without a name for it the operator reads the
+// JSON on the frame whose whole job is explaining why nothing can be received.
+//
+// The client refreshes its token once before this is reached, so arriving here
+// means the refresh failed too and signing in again is the actual next move.
+func TestReceiveFlow_AnExpiredSessionIsASentenceAndNotABody(t *testing.T) {
+	fake := &receiveFake{sheet: receiveWorksheet(receiveOrder()...),
+		sheetFail: http.StatusUnauthorized,
+		sheetBody: `{"detail":"Authentication credentials were not provided."}`}
+	_, s := receiveDrive(t, fake, receiveOrder(), 80, 24)
+
+	if s.phase != phaseBlocked {
+		t.Fatalf("a 401 on the worksheet left the screen on phase %v", s.phase)
+	}
+	text := receivePaneText(s, 80, 24)
+	if !strings.Contains(text, "no longer signed in") {
+		t.Errorf("an expired session is not named:\n%s", text)
+	}
+	if strings.Contains(text, `{"detail"`) || strings.Contains(text, "http 401") {
+		t.Errorf("the operator is reading a raw body:\n%s", text)
+	}
+	// And it still names the key that gets them back once they have signed in.
+	if !barHas(s.bar(), "R", "Re-read") {
+		t.Errorf("the frame offers no way to try again: %+v", s.bar())
+	}
+}
+
 // TestReceiveFlow_MarkReceivedIsNotNamedOnASettledOrder. A key the server would
 // refuse must not be advertised, and the press has to say why rather than
 // opening a confirm for something that cannot happen.

@@ -212,8 +212,10 @@ type PurchaseOrder struct {
 	// The receiving roll-up (oms-po-receiving), all derived server-side from
 	// the lines and never recomputed here — po_receiving.go carries the note.
 	//
-	// IsSettled is "receiving is finished with every active line", which is
-	// what advances the order to `received`. IsFullyReceived is the stricter
+	// IsSettled is "receiving is finished with every active line" and is an
+	// INPUT to the order's status rather than a synonym for it: whether the
+	// order then advances to `received` is the server's rule and is
+	// conditional (po_receiving.go). IsFullyReceived is the stricter
 	// "everything we ordered turned up" and stays false for ever once a line is
 	// closed short; they differ exactly there, and HasReceiptVariance is what
 	// keeps that difference visible after the order is closed.
