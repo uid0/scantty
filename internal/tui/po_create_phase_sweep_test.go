@@ -902,8 +902,12 @@ func TestPOSubmit_TheFrozenChooserOffersTheCartChordsOnOneSurfaceOnly(t *testing
 func TestPOSubmit_TheFrozenChooserBarDropsEveryKeyItHasGated(t *testing.T) {
 	for _, h := range poPaneSizes {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			// 36 cells, past BOTH budgets (30 keyed, 32 unkeyed at 80
+			// columns), so the clip really bites and the two states really do
+			// render different lengths. A short name asserts nothing here.
 			fake := &poPickFake{catalog: 4, suppliers: 3,
-				agreements: 1, workOrders: 2, committees: 1}
+				agreements: 1, workOrders: 2, committees: 1,
+				agreementName: "Annual 2026 Structural Steel Contract"}
 			r, screen := poPickerAtSize(t, fake, 80, h)
 			for _, k := range []string{"i", "enter", "enter"} {
 				r = key(t, r, poPhaseKeyMsg(k))
@@ -1067,6 +1071,18 @@ var poAttributionKeys = map[string]string{
 // letters passes over everything: at rest the key column is there, while the
 // submit is out it is not, and the VALUES stay in both — they are part of the
 // order being created and only the affordance is false.
+//
+// The VALUE half asserted byte-equality at first, and passed for a reason that
+// had nothing to do with the property: the two rows are clipped to DIFFERENT
+// budgets (poFieldValueRoom reserves two cells for the key column, so 30 keyed
+// against 32 unkeyed at 80 columns), and the fake's `Annual 1` / `Shop 1` names
+// were nowhere near either. That is rule 9 in its subtler form — not a check
+// that cannot fail, but one whose FIXTURE NEVER REACHES THE BOUND IT ASSERTS
+// ABOUT — and it is the same family as the picker fixtures that drew seven-cell
+// names. So the fixture now carries a name at the length OMS really sends, and
+// the claim is the one the code actually makes: the same value, possibly LESS
+// ABBREVIATED once the letter is gone, because those two freed cells belong to
+// the operator's data.
 func TestPOSubmit_TheFrozenChooserHeaderDropsTheKeyColumn(t *testing.T) {
 	// The three optional lookups all answer, so all three rows are offered.
 	// Every source-chooser fixture used to leave them at zero, which is how a
@@ -1075,8 +1091,12 @@ func TestPOSubmit_TheFrozenChooserHeaderDropsTheKeyColumn(t *testing.T) {
 
 	for _, h := range poPaneSizes {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			// 36 cells, past BOTH budgets (30 keyed, 32 unkeyed at 80
+			// columns), so the clip really bites and the two states really do
+			// render different lengths. A short name asserts nothing here.
 			fake := &poPickFake{catalog: 4, suppliers: 3,
-				agreements: 1, workOrders: 2, committees: 1}
+				agreements: 1, workOrders: 2, committees: 1,
+				agreementName: "Annual 2026 Structural Steel Contract"}
 			r, screen := poPickerAtSize(t, fake, 80, h)
 			// Commit an agreement and a work order first, so the "the values
 			// stay" half is a claim about real OMS-supplied prose rather than
@@ -1135,9 +1155,10 @@ func TestPOSubmit_TheFrozenChooserHeaderDropsTheKeyColumn(t *testing.T) {
 					t.Errorf("the frozen chooser still draws %q with its key column while the bar "+
 						"has dropped that key and the arm declines it:\n\t%q", label, line)
 				}
-				if got := strings.TrimSpace(strings.SplitN(line, jdeLeader, 2)[1]); got != resting[label] {
+				got := strings.TrimSpace(strings.SplitN(line, jdeLeader, 2)[1])
+				if was := resting[label]; !poSameValueNoLessShown(was, got) {
 					t.Errorf("the frozen chooser changed the %q value from %q to %q — the freeze "+
-						"drops the affordance, not the fact", label, resting[label], got)
+						"drops the affordance, not the fact", label, was, got)
 				}
 			}
 			poAssertFits(t, "frozen source chooser header", screen)
@@ -1533,4 +1554,20 @@ func TestPOLineForm_TheBarDoesNotOfferPagingItCannotDo(t *testing.T) {
 		t.Errorf("no drawable height made the line body outrun the pane, so this sweep never " +
 			"reached the state the paging keys used to be named in")
 	}
+}
+
+// poSameValueNoLessShown reports whether `after` is the same value as `before`,
+// shown at no less length — which is exactly what dropping the key column does
+// to an attribution row: the two freed cells go to the operator's data, so a
+// clipped name comes back two characters longer.
+//
+// Written as "the shorter stem prefixes the longer" rather than as equality,
+// because equality is a claim the code does not make and only held while the
+// fixture stayed under the bound. It is still strong enough for what this test
+// is for: any OTHER change to the value — a different name, an emptied row, a
+// truncation going the wrong way — fails it.
+func poSameValueNoLessShown(before, after string) bool {
+	stem := func(v string) string { return strings.TrimSuffix(v, "…") }
+	b, a := stem(before), stem(after)
+	return len(a) >= len(b) && strings.HasPrefix(a, b)
 }

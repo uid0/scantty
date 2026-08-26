@@ -2340,13 +2340,18 @@ func (s *PurchaseOrderCreateScreen) attributionRows(withKey bool) []string {
 		}
 		out = append(out, line)
 	}
-	if s.agreementOffered() || s.agreementLoadErr != "" {
+	// The bare predicate, never `offered() || err != ""`: each of the three
+	// already ANSWERS for a failed load (agreementOffered is
+	// `len(...) > 0 || loadErr != ""`), and repeating the error half reads as
+	// though a failure were a separate case these rows handle — which is the
+	// one thing those predicates' own doc comments exist to deny.
+	if s.agreementOffered() {
 		row("g", poRowAgreement, s.pickedAgreementName(), s.agreementLoadErr)
 	}
-	if s.assoc.workOrdersOffered() || s.assoc.workOrderErr != "" {
+	if s.assoc.workOrdersOffered() {
 		row("w", poRowWorkOrder, s.pickedWorkOrderLabel(), s.assoc.workOrderErr)
 	}
-	if s.assoc.committeesOffered() || s.assoc.committeeErr != "" {
+	if s.assoc.committeesOffered() {
 		row("c", poRowCommittee, s.pickedCommitteeLabel(), s.assoc.committeeErr)
 	}
 	return append(out, s.pendingLookupRows()...)

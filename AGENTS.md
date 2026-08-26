@@ -261,12 +261,23 @@ note, and is the authority):
   disagree — `TestPOLineForm_FieldNavigationWrapsAtBothEnds` is where that
   fails now. The wrap must not leak into the other phases: a fix applied inside
   `setCursorRow` would unclamp every list on the screen.
-  It follows that a field form is not OFFERED `PgUp`/`PgDn` at all: a wrapping
-  three-or-four-row cursor reaches every row in three presses and has nothing to
-  page, and `jdePageCursor` clamps on purpose (a page that jumped from the last
-  row to the first would lose the operator's place), so leaving the pair on the
-  shared path named a key that blurred and re-focused the SAME field wherever
-  the fields outran the pane. `bodyPagesFor` is the ONE predicate that answers
+  It follows that a field form SHORT ENOUGH for its wrapping cursor to reach
+  every row in a few presses is not OFFERED `PgUp`/`PgDn` at all: it has nothing
+  to page, and `jdePageCursor` clamps on purpose (a page that jumped from the
+  last row to the first would lose the operator's place), so leaving the pair on
+  the shared path named a key that blurred and re-focused the SAME field
+  wherever the fields outran the pane.
+  LENGTH is the whole of that test, and the boundary is written down here rather
+  than left to be inferred, because the over-general version of the sentence — "a
+  field form is not offered PgUp/PgDn" — sounds right and would march the next
+  reader, by rule 10, into STRIPPING a key a long form genuinely needs.
+  `inventory_item_form.go` is the case on the other side of the line: its cursor
+  WRAPS in exactly this sense (`moveCursor`: `(cursor + delta + n) % n`), and it
+  offers `PgUp`/`PgDn` gated on `bodyScrolls` and says so in its own header
+  comment, because it is roughly twenty rows and a wrapping cursor is no way to
+  cross that. `category_form.go`, `maintenance_item_form.go` and
+  `storage_slot_form.go` are the same shape. The New PO line form is three or
+  four rows, which is the only reason the pair buys nothing there. `bodyPagesFor` is the ONE predicate that answers
   for both the bar and the arm, so the gate goes there and nowhere else;
   `TestPOLineForm_TheBarDoesNotOfferPagingItCannotDo` sweeps every drawable
   height, because the state only exists below 20 rows and `poPaneSizes` is
@@ -618,6 +629,15 @@ touching any screen an operator drives:
   `Widget 1` / `Lathe 1` / `Bolt 1`, seven cells, so no test had ever rendered a
   picker row at the length OMS actually carries — and the long name is on the
   FIRST row only, so a fixture list is mixed the way a real one is.
+  **A FIXTURE THAT CANNOT REACH THE BOUND UNDER TEST MAKES THE ASSERTION VACUOUS
+  however precisely it is worded**, and that is rule 9 in its subtler form: not a
+  check that cannot fail, but one that passes for reasons unrelated to the
+  property it names. `TestPOSubmit_TheFrozenChooserHeaderDropsTheKeyColumn` is
+  the second instance — it asserted the attribution VALUE was byte-identical
+  across the freeze while the keyed and unkeyed rows are clipped to 30 and 32
+  cells, so the claim was only true of the `Annual 1` / `Shop 1` names the fake
+  generated. Whenever a check is about a bound, the fixture has to carry a value
+  that reaches it.
   The supplier, agreement, work-order and committee rows are columnar VALUE
   rows carrying OMS-supplied names (`renderJDEField` with `jdeValue`), each
   clipped to what the shared label column leaves (`poFieldValueRoom`, ellipsis
