@@ -2359,9 +2359,23 @@ func (s *PurchaseOrderCreateScreen) headerLines() jdeHeader {
 		//     freshly opened asset search that is an instruction ("type a name,
 		//     tag or serial") rather than an answer to anything.
 		//
-		// What is NOT traded: below those heights the query still narrows the
-		// body and the note is rewritten on every rune, so typing goes on
-		// changing the pane — while the declining key changed nothing at all.
+		// What is NOT traded ON THE ITEM PICKER: below those heights the query
+		// still narrows the body and itemFilterOrVerdict rewrites the note on
+		// every rune, so typing goes on changing the pane — while the declining
+		// key changed nothing at all.
+		//
+		// The ASSET picker does NOT have that, and this sentence claimed it for
+		// both for a round. Its search is SERVER-side and runs on enter, so the
+		// typing branch only updates the box: assetScopeRows reads the
+		// COMMITTED assetsQuery, the note is written once by openAssetSearch
+		// and never again while a rune is typed, and neither the body nor the
+		// working line moves. With the box trimmed off the pane at 11, 12 and
+		// 13 rows, every typed rune there redraws it BYTE FOR BYTE — rule 1
+		// broken by geometry rather than by a missing arm. It is the same
+		// residual as the first bullet above and closes with it; it is written
+		// down rather than left implied because "typing goes on changing the
+		// pane" is precisely the sentence a future reader would trust instead
+		// of measuring.
 		return h.add(jdeHeadDecorative, "").
 			add(jdeHeadEssential, note[0]).
 			add(jdeHeadContext, note[1:]...).
