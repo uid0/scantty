@@ -939,6 +939,101 @@ func TestReceive_TheConfirmAnswersTheKeysTheOperatorArrivesUsing(t *testing.T) {
 	_ = r
 }
 
+// TestReceive_ReEnteringCaptureCountsWhatIsLeft.
+//
+// The note that opens capture used to name len(serialUnits) — the QUEUE LENGTH
+// — which is right only until the operator walks back. enrol carries captured
+// serials across by identity, so a re-entry gets a queue the same length with
+// less work in it: capture one of three, Esc to the review, Esc to the
+// quantities to re-check a count, Enter, and the pinned note read "3 serialized
+// units to capture" over a body two rows down reading "capture 2 of 3 · 1
+// serial(s) so far". Two rows of one pane, two counts of one thing, on the
+// phase whose whole job is tracking exactly that.
+//
+// Round 5 reworded only the all-answered branch, which is why this drives the
+// PARTIAL one — one captured, two left — and why it checks the fresh entry in
+// the same walk: both branches read off one count now, so both are asserted
+// against a figure DERIVED from the screen's own captures rather than a literal
+// that could be made to agree with a wrong lead.
+func TestReceive_ReEnteringCaptureCountsWhatIsLeft(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	esc := tea.KeyMsg{Type: tea.KeyEsc}
+
+	// A serialized line ordered THREE, so the queue is long enough for
+	// "captured" and "left" to be different numbers.
+	lines := []omsapi.ReceivingLine{receiveWSSerialized(21, "Serialized controller board", 3, 0)}
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, lines, 80, 30)
+	s.qty[0].SetValue("3")
+	r = receiveKey(t, r, enter)
+	if s.phase != phaseSerial || len(s.serialUnits) != 3 {
+		t.Fatalf("capture did not open on three units: phase %v, %d units",
+			s.phase, len(s.serialUnits))
+	}
+
+	// A FRESH enrolment: nothing captured, so the whole queue is outstanding.
+	receiveAssertCaptureLead(t, s)
+
+	r = receiveType(t, r, poRuneKey("SN-1"))
+	r = receiveKey(t, r, enter) // records unit 1, moves to unit 2
+	r = receiveKey(t, r, esc)   // -> review
+	if s.phase != phaseReview {
+		t.Fatalf("esc did not reach the review: phase %v", s.phase)
+	}
+	r = receiveKey(t, r, esc) // -> quantities, re-checking a count
+	if s.phase != phaseQty {
+		t.Fatalf("esc did not hand back the quantity form: phase %v", s.phase)
+	}
+
+	r = receiveKey(t, r, enter) // re-enter capture with one already answered
+	if s.phase != phaseSerial {
+		t.Fatalf("the re-entry did not reach capture: phase %v", s.phase)
+	}
+	if left, total := receiveCapturesLeft(s), len(s.serialUnits); left == total {
+		t.Fatalf("the re-entry carried nothing across (%d of %d left), so this test is "+
+			"not on the partial path it names", left, total)
+	}
+	receiveAssertCaptureLead(t, s)
+	_ = r
+}
+
+// receiveCapturesLeft counts the capture slots still holding nothing, WITHOUT
+// asking the screen's own helper: the point of the assertion is that the note
+// agrees with what the operator can see, so the oracle is the same thing the
+// body counts — a slot with no serial in it.
+func receiveCapturesLeft(s *ReceiveFormScreen) int {
+	n := 0
+	for _, c := range s.captures {
+		if strings.TrimSpace(c.serial) == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// receiveAssertCaptureLead holds the note against the pane it is pinned over.
+//
+// Asserted on the CLIPPED render, and against a count derived from the screen
+// rather than written down: a literal would have to be edited in step with the
+// drive, and an edit that agreed with a wrong lead is how a count like this
+// stays wrong.
+func receiveAssertCaptureLead(t *testing.T, s *ReceiveFormScreen) {
+	t.Helper()
+	left, total := receiveCapturesLeft(s), len(s.serialUnits)
+	pane := receivePaneText(s, 80, 30)
+	if want := fmt.Sprintf("%d of %d serialized", left, total); !strings.Contains(pane, want) {
+		t.Errorf("the note does not say %q — it must count what is left, not the "+
+			"queue:\n%s", want, pane)
+	}
+	// And the body it is pinned over agrees: what is left plus what has been
+	// captured is the whole queue, so the two rows cannot give different counts
+	// of the same thing.
+	if want := fmt.Sprintf("%d serial(s) so far", total-left); !strings.Contains(pane, want) {
+		t.Errorf("the body does not say %q, so the note and the body disagree about "+
+			"the same queue:\n%s", want, pane)
+	}
+}
+
 // TestReceive_ReEnteringCaptureSaysWhichFrameItOpened.
 //
 // beginReceipt opens capture at firstUncaptured(), which answers len(captures)
@@ -1826,6 +1921,13 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 		probe{"re-entering an answered capture", receiveSweepLines(), map[int]string{2: "1"},
 			[]tea.KeyMsg{enter, poRuneKey("SN-1"), enter,
 				tea.KeyMsg{Type: tea.KeyEsc}, enter}, false},
+		// The OTHER branch of that lead: a queue with work left in it, which is
+		// the longer of the two wordings ("N of M serialized units to capture").
+		probe{"re-entering a partly answered capture",
+			[]omsapi.ReceivingLine{receiveWSSerialized(21, "Serialized controller board", 3, 0)},
+			map[int]string{0: "3"},
+			[]tea.KeyMsg{enter, poRuneKey("SN-1"), enter,
+				tea.KeyMsg{Type: tea.KeyEsc}, tea.KeyMsg{Type: tea.KeyEsc}, enter}, false},
 	)
 
 	for _, p := range probes {

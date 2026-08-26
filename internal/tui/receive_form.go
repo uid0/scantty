@@ -865,17 +865,25 @@ func (s *ReceiveFormScreen) inFlightSubject() string {
 	switch {
 	case s.loading:
 		return "the worksheet"
-	case s.phase == phaseWriteOff || s.scopePending():
+	// The PHASE is the whole test, and one flag is why. `pending` means "a POST
+	// is out" on every phase and the phase says which POST it is — the write-off
+	// confirm is the one place `pending` is not a receipt — so there is no
+	// second flag to consult and nothing to keep in step with it. This arm read
+	// `phase == phaseWriteOff || scopePending()` for a while, and the second
+	// disjunct was `pending && phase == phaseWriteOff`: strictly implied by the
+	// first, so it could never change the answer while reading as a distinction
+	// the code makes and does not.
+	//
+	// Reaching this at all means a request IS out — declineFrozen is the only
+	// caller and every arm that reaches it has already tested `pending` or
+	// `loading` — so the phase is the only thing left to ask about. The shape is
+	// workingLine's, which is what lets a decline and the status row above it
+	// name the same request.
+	case s.phase == phaseWriteOff:
 		return "the write-off"
 	}
 	return "the receipt"
 }
-
-// scopePending reports a write-off in flight. It is `pending` on the write-off
-// phase, which is the one place `pending` does not mean a receipt — one flag
-// rather than two, because two flags for "a POST is out" is two places to
-// forget to clear.
-func (s *ReceiveFormScreen) scopePending() bool { return s.pending && s.phase == phaseWriteOff }
 
 // waysOut names the keys that DO act, read off the bar of the frame the key was
 // pressed against, so a decline cannot advertise a key that frame did not
@@ -2001,21 +2009,35 @@ func (s *ReceiveFormScreen) beginReceipt(headerRows int) (Screen, tea.Cmd) {
 	if len(units) == 0 {
 		return s, s.toReview(headerRows, "", StatusInfo)
 	}
-	// The note names the frame this OPENED, which is not always the same frame.
+	// The note counts what is LEFT, and both of its branches are read off that
+	// ONE number so they cannot disagree with each other or with the frame.
 	//
-	// firstUncaptured answers len(captures) when every slot already holds
-	// something, and toSerial on that index draws serialBody's past-the-end
-	// branch — "Every unit has been answered." Re-entry reaches it by an
-	// ordinary route: capture a serial, land on the review, press Esc back to
-	// the quantities to double-check a count, press Enter again. enrol carries
-	// the captures across by identity, so nothing is left to type and the note
-	// used to announce "1 serialized unit to capture" directly above a body
-	// saying the opposite — the screen contradicting itself about the one thing
-	// the phase is for.
-	at := s.firstUncaptured()
+	// Re-entry is an ordinary route, not a corner: capture a serial, land on the
+	// review, press Esc back to the quantities to double-check a count, press
+	// Enter again. enrol carries the captures across by identity, so the queue
+	// comes back the same LENGTH with less work in it — and `len(units)` is the
+	// length, not the work. Announcing it said "3 serialized units to capture"
+	// over a body two rows down reading "capture 2 of 3 · 1 serial(s) so far":
+	// two rows of one pane giving different counts of the same thing, on the
+	// phase whose whole job is tracking exactly that.
+	//
+	// capturesLeft is also what decides WHICH frame this opened. It is zero
+	// exactly when firstUncaptured walks off the end, which is when toSerial
+	// draws serialBody's past-the-end branch ("Every unit has been answered") —
+	// so the answered sentence and the outstanding one are two readings of one
+	// count rather than two conditions somebody has to keep in step. Fixing
+	// only the branch that was reported is what left this one wrong.
+	//
+	// Every other sentence on this screen that counts capture slots is already
+	// an X-of-Y — serialBody's "capture i of N", commitUnit's "N of M captured",
+	// captureSummary's "N of M units carry a serial", reviewLead's "N of M
+	// serials captured" — and this was the one bare count among them. It is
+	// X-of-Y now too, so the shape says which number is which.
+	at, left := s.firstUncaptured(), s.capturesLeft()
 	s.toSerial(at)
-	lead := fmt.Sprintf("%d serialized %s to capture", len(units), plural("unit", len(units)))
-	if at >= len(units) {
+	lead := fmt.Sprintf("%d of %d serialized %s to capture",
+		left, len(units), plural("unit", len(units)))
+	if left == 0 {
 		// The way out comes off the bar, as every decline's does: this frame
 		// binds a different set from the capture frame (there is no box to type
 		// into), and a fixed sentence here would be the same claim-about-a-
@@ -2039,6 +2061,29 @@ func (s *ReceiveFormScreen) firstUncaptured() int {
 		}
 	}
 	return len(s.captures)
+}
+
+// capturesLeft is how many slots are still empty — the same walk firstUncaptured
+// makes, counted rather than stopped at.
+//
+// It is the count a sentence about outstanding work must use, because the QUEUE
+// LENGTH is not the work: a re-entry carries captured serials across by
+// identity, so len(serialUnits) stays put while the work in it falls. The two
+// answers agree only on a fresh enrolment, which is exactly why naming the
+// wrong one survived — it is right until the operator walks back.
+//
+// It is also the predicate for "is there anything left at all": zero here is
+// firstUncaptured walking off the end, which is the frame serialBody draws as
+// "Every unit has been answered". One count, so the note and the frame cannot
+// come apart.
+func (s *ReceiveFormScreen) capturesLeft() int {
+	n := 0
+	for _, c := range s.captures {
+		if c.empty() {
+			n++
+		}
+	}
+	return n
 }
 
 // toSerial moves to serial capture with the cursor on unit i, loading whatever
@@ -3758,10 +3803,21 @@ func receiveLineTokens(line omsapi.ReceivingLine) []jdeToken {
 	if line.QuantityPending > 0 {
 		toks = append(toks, jdeToken{fmt.Sprintf("pending %d", line.QuantityPending), StyleMuted})
 	}
-	// The VARIANCE is the server's signed figure and it is drawn whenever it is
-	// non-zero, which includes the case quantity_pending floors away: a line
-	// closed two short and a line two over both read 0 pending, and the
-	// variance is the only reading that tells them apart.
+	// The VARIANCE is the server's signed figure, and the two signs are drawn
+	// under DIFFERENT conditions because they are different facts.
+	//
+	// OVER is always drawn: more arrived than was ordered, which is a mismatch
+	// the moment it happens and stays one however the line ends.
+	//
+	// SHORT waits for the line to be SETTLED, and that gate is the receiving
+	// contract's own rule rather than a nicety. On a line still being waited on,
+	// less-than-ordered is OUTSTANDING and not a mismatch — the goods may still
+	// be coming — and `pending` two tokens up already carries that figure; a
+	// "6 short" beside "pending 6" would raise a vendor query on every ordinary
+	// backorder. Once the line settles, quantity_pending has floored the
+	// shortfall away, so a line closed two short and a line two over both read
+	// 0 pending and the variance is the only reading that tells them apart.
+	// That last case is what this token exists for.
 	if line.QuantityVariance > 0 {
 		toks = append(toks, jdeToken{fmt.Sprintf("%d over", line.QuantityVariance), StyleStatusWarn})
 	} else if line.QuantityVariance < 0 && line.IsSettled {
