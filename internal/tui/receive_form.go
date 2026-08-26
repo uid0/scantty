@@ -1305,10 +1305,12 @@ const (
 // The distinction that matters is between a value that leaves the terminal and
 // one that cannot. The predicate this replaced was "any box holds something",
 // written reasoning about TYPOS: a box holding "two" is an attempt, and the
-// refusal naming the line ("line 1: quantity must be a whole number, 1 or more
-// — \"two\" is not") is the answer to that attempt, so Enter is named and Enter
-// acts. That reasoning is right and it does not extend to a ZERO. A box holding
-// "0" is skipped, leaves nothing to post, and comes straight back as a local
+// refusal naming the line (quantityRefusal's "line 1: a quantity is a whole
+// number, 0 or more — \"two\" is not") is the answer to that attempt, so Enter
+// is named and Enter acts. That reasoning is right and it does not extend to a
+// ZERO — which that sentence accepts, and which receiveQuantity parses for the
+// same reason. A box holding "0"
+// is skipped, leaves nothing to post, and comes straight back as a local
 // refusal — so the bar named a key whose whole effect was to write a note,
 // which is the bar-honesty rule broken on the phase the operator lives on. "0"
 // stays out of the ATTEMPT and stays in hasQuantityEntry, because it is still
@@ -1524,21 +1526,32 @@ func receiveScanKindLabel(kind string) string {
 // whole job is booking stock against the right one. A second index is a second
 // authority; there is now one.
 type receiveScanMatch struct {
-	line    int // index into s.lines, or -1 for a line that cannot take a receipt
+	// EXACTLY ONE of these is set, and each is an index into a list the form
+	// really draws: s.lines, whose entries carry the quantity boxes, and
+	// s.closed, whose entries are listed under "N settled lines cannot take a
+	// receipt". A match is in one or the other because applyWorksheet puts
+	// every line in one or the other.
+	line    int // index into s.lines, or -1
+	closed  int // index into s.closed, or -1
 	label   string
 	kind    string
 	settled string // why it cannot take a receipt, blank when it can
 }
 
-// live reports a match the form has a row for — the only kind a receipt can be
-// typed against, and the only kind that has a number at all.
+// live reports a match the form has a QUANTITY BOX for — the only kind a
+// receipt can be typed against.
 func (m receiveScanMatch) live() bool { return m.line >= 0 }
 
-// row is where the cursor goes for this match, and number is what the form
+// row is where the cursor goes for a live match, and number is what the form
 // DRAWS beside it. Both are derived from the one index rather than stored, so
 // they cannot come apart from each other or from the body that draws the line.
 func (m receiveScanMatch) row() int    { return receiveRowFirstLine + m.line }
 func (m receiveScanMatch) number() int { return m.line + 1 }
+
+// settledNumber is what the SETTLED list draws beside this match. A separate
+// numbering from number() because it is a separate list with a separate count,
+// which is exactly why a note may not say "line N" about one of these.
+func (m receiveScanMatch) settledNumber() int { return m.closed + 1 }
 
 // scanMatches resolves a code against the worksheet's own scan_codes.
 //
@@ -1562,9 +1575,12 @@ func (s *ReceiveFormScreen) scanMatches(code string) []receiveScanMatch {
 	// is the number the form draws. Walking s.sheet.Lines is still right — a
 	// settled line has to be findable, and it is only in the worksheet — but
 	// its INDEX there is not a fact the operator can see anywhere.
-	lineOf := map[string]int{}
+	lineOf, closedOf := map[string]int{}, map[string]int{}
 	for i, l := range s.lines {
 		lineOf[fmt.Sprint(l.sheet.PurchaseOrderItem)] = i
+	}
+	for i, l := range s.closed {
+		closedOf[fmt.Sprint(l.sheet.PurchaseOrderItem)] = i
 	}
 	var out []receiveScanMatch
 	for _, l := range s.sheet.Lines {
@@ -1572,13 +1588,17 @@ func (s *ReceiveFormScreen) scanMatches(code string) []receiveScanMatch {
 			if strings.ToLower(strings.TrimSpace(c.Code)) != want {
 				continue
 			}
-			m := receiveScanMatch{line: -1, label: l.Label, kind: c.Kind}
-			if i, ok := lineOf[fmt.Sprint(l.PurchaseOrderItem)]; ok {
+			m := receiveScanMatch{line: -1, closed: -1, label: l.Label, kind: c.Kind}
+			switch i, ok := lineOf[fmt.Sprint(l.PurchaseOrderItem)]; {
+			case ok:
 				m.line = i
-			} else if l.IsVoided {
-				m.settled = "struck off the order"
-			} else {
-				m.settled = "closed short"
+			default:
+				m.closed = closedOf[fmt.Sprint(l.PurchaseOrderItem)]
+				if l.IsVoided {
+					m.settled = "struck off the order"
+				} else {
+					m.settled = "closed short"
+				}
 			}
 			out = append(out, m)
 			break // one line matches once, however many of its codes match
@@ -1623,14 +1643,30 @@ func (s *ReceiveFormScreen) findLine(headerRows int) tea.Cmd {
 		}
 	}
 	if len(live) == 0 {
-		// Named by its LABEL and not by a number. A settled line has no row on
-		// the form and therefore no number the operator can look for: the
-		// closed list under the body counts 1..n of its own, so "line 2" here
-		// would point at a receivable line two rows up. The label is what that
-		// list draws, so it is what identifies the line.
+		// Named by its place in the SETTLED list, not by its label and not by a
+		// form line number.
+		//
+		// A form number is out: a settled line has no quantity box, and the
+		// receivable lines are numbered 1..n of their own, so "line 2" in this
+		// sentence would point an operator at a line they CAN receive against —
+		// the worst possible miss on the screen that books stock.
+		//
+		// The LABEL was the first answer and it does not survive the budget.
+		// This sentence carries the way-out tail, so its values live inside
+		// receiveScanRefusalRoom, and ten cells of "Backordered gasket, 10mm"
+		// and ten cells of "Backordered gasket, 12mm" are the same ten cells:
+		// an operator holding one of two boxes could not tell which line the
+		// screen meant. Widening the clip is not available — the arithmetic at
+		// receiveRefusalClip is what keeps the tail on the pane.
+		//
+		// The settled list's own number costs three cells, cannot be ambiguous,
+		// and points at a row that draws the label IN FULL beside the state.
+		// addClosedLines names that list "settled" for this sentence to refer
+		// to, and "settled" is already this screen's word for these lines (the
+		// multi-match tail below says "N settled lines carry it too").
 		m := matches[0]
-		return s.say(fmt.Sprintf("%q is %s, %s — no receipt · %s",
-			shown, receiveRefusalClip(m.label), m.settled, s.waysOut(headerRows)), StatusWarn)
+		return s.say(fmt.Sprintf("%q is settled line %d, %s — no receipt · %s",
+			shown, m.settledNumber(), m.settled, s.waysOut(headerRows)), StatusWarn)
 	}
 
 	hit := live[0]
@@ -1719,12 +1755,13 @@ func receiveScanClip(label string) string { return receiveNoteClip(label, receiv
 // The tail is what decides, and it is most of the budget: waysOut spells the
 // quantity form's whole bar, five claims and about ninety cells of the roughly
 // hundred and sixty a four-row note really holds once folding waste is paid.
-// A refusal lead therefore has room for about seventy, and the values it names
-// — the scanned code, and the label of the line it hit — are the only parts of
-// it that are not fixed text. Measured with a 91-character GS1 code and a
-// 44-character part name, the twenty-cell bound above overran the reservation
-// and fittedNote dropped "received" off the end of "ctrl+r mark received": the
-// key that finishes the order, lost to the value that caused the refusal.
+// A refusal lead therefore has room for about seventy, and the SCANNED CODE is
+// the only part of it that is not fixed text — findLine is the one caller left,
+// since the settled branch stopped naming a label at all and names the settled
+// list's own number instead. Measured with a 91-character GS1 code, the
+// twenty-cell bound above overran the reservation and fittedNote dropped
+// "received" off the end of "ctrl+r mark received": the key that finishes the
+// order, lost to the value that caused the refusal.
 //
 // A quoted code costs more than its cells, which is the other half of why this
 // is not one number with the lead above. The fold breaks at WORDS, and a quoted
@@ -1848,9 +1885,18 @@ func (s *ReceiveFormScreen) enrol() ([]serialUnit, []receiveCapture, int) {
 }
 
 // receiveQuantity parses a quantity box. ok is false for anything that is not a
-// whole number of one or more — which is what the server's own field accepts —
-// so the refusal naming the line can be written once and read the same way by
-// the enrolment and by the payload.
+// whole number of ZERO or more, so the refusal naming the line can be written
+// once (quantityRefusal) and read the same way by the enrolment and by the
+// payload.
+//
+// Zero parses. It is not a quantity anybody would send, and it never reaches
+// the wire — buildReceipt and plannedLines both drop a line whose quantity is
+// not above zero — but it is a whole number, and refusing it HERE would make
+// the parser and the sentence beside it disagree: quantityRefusal says "a
+// quantity is a whole number, 0 or more", which is what an operator reads when
+// they type "two". What a typed zero really means to this screen is answered
+// one level up, by entryState, which is a different question from whether the
+// characters parse.
 func receiveQuantity(raw string) (int, bool) {
 	n, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || n < 0 {
@@ -3268,7 +3314,12 @@ func (s *ReceiveFormScreen) addClosedLines(l *jdeLines, row, width int) {
 		return
 	}
 	l.AddRow(row, "")
-	l.AddRow(row, jdeIndent+StyleMuted.Render(fmt.Sprintf("%d %s cannot take a receipt:",
+	// SETTLED, said out loud, because a scan that lands on one of these answers
+	// with "settled line 2" and the operator has to be able to find the list
+	// that counts to two. It was "N lines cannot take a receipt:", which names
+	// no list at all, and a bare "2" in a note beside a form whose own lines
+	// are numbered 1..n is the ambiguity this heading exists to remove.
+	l.AddRow(row, jdeIndent+StyleMuted.Render(fmt.Sprintf("%d settled %s cannot take a receipt:",
 		len(s.closed), plural("line", len(s.closed)))))
 	for i, line := range s.closed {
 		l.AddRow(row, receiveMetaIndent+StyleMuted.Render(
@@ -3962,6 +4013,45 @@ func (s *ReceiveFormScreen) writeOffBody() *jdeLines {
 // The summary
 // ---------------------------------------------------------------------------
 
+// receiveDoneLines is the LINE count — po_detail.go's meaning of the word, so
+// the same row says the same thing on both screens.
+//
+// TotalItems is `omitempty`, so a reply that carries no line total at all
+// arrives as 0, and 0 is also a legitimate count. The two are not the same
+// fact, so an absent total is not drawn as "0 lines": the row falls back to the
+// outstanding count alone, which the receiving roll-up always sends. Naming a
+// figure the server did not give would be this screen inventing a second
+// opinion about the order.
+func receiveDoneLines(po *omsapi.PurchaseOrder) string {
+	left := fmt.Sprintf("%d outstanding", po.OutstandingLineCount)
+	if po.OutstandingLineCount == 0 {
+		// "none" rather than "0", because this row is read at a glance beside
+		// a line total and two zeroes side by side invite the subtraction the
+		// old single row led people into.
+		left = "none outstanding"
+	}
+	if po.TotalItems > 0 {
+		return fmt.Sprintf("%d · %s", po.TotalItems, left)
+	}
+	return left
+}
+
+// receiveDoneQuantity is the UNIT count, blank when the reply carries no order
+// total to report.
+//
+// po_detail.go appends "· received N" only when something has been received;
+// this screen always appends it, because it is the screen the operator reaches
+// by receiving, and "received 0" coming back from a write is the fact they are
+// there to check — a close-short or a mark-received against an order nothing
+// ever arrived on answers exactly that, and omitting it would read as the row
+// having nothing to say.
+func receiveDoneQuantity(po *omsapi.PurchaseOrder) string {
+	if po.TotalQuantity <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d · received %d", po.TotalQuantity, po.TotalReceivedQuantity)
+}
+
 // doneBody reports what the visit did, in the SERVER's words, as columnar value
 // rows.
 //
@@ -3994,9 +4084,22 @@ func (s *ReceiveFormScreen) doneBody() *jdeLines {
 		}
 		fields = append(fields, jdeField{Label: "Order", Kind: jdeValue,
 			Value: fmtOrderName(po, s.poID()) + " · " + state})
+		// LINES and QUANTITY are two facts and two rows, in the words
+		// po_detail.go already uses for the same order: Lines off TotalItems,
+		// Quantity off TotalQuantity / TotalReceivedQuantity. They were ONE row
+		// labelled "Lines" carrying a line count and two unit counts —
+		// "Lines ..... 0 outstanding · 0 received of 9" on a THREE-line order —
+		// and an operator reading a row of numbers under one noun reads them as
+		// that noun: they came away believing the order had nine lines, on the
+		// frame they read after stock has moved. Every figure was the server's
+		// and correct; only the label over them was not. Two screens using one
+		// word for two things is the same defect one file apart, which is why
+		// the vocabulary is taken from the sibling rather than invented here.
 		fields = append(fields, jdeField{Label: "Lines", Kind: jdeValue,
-			Value: fmt.Sprintf("%d outstanding · %d received of %d",
-				po.OutstandingLineCount, po.TotalReceivedQuantity, po.TotalQuantity)})
+			Value: receiveDoneLines(po)})
+		if q := receiveDoneQuantity(po); q != "" {
+			fields = append(fields, jdeField{Label: "Quantity", Kind: jdeValue, Value: q})
+		}
 		if po.HasReceiptVariance {
 			fields = append(fields, jdeField{Label: "Variance", Kind: jdeValue,
 				Value: fmt.Sprintf("! %d %s short or over", po.VarianceLineCount,

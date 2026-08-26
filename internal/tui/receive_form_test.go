@@ -101,6 +101,30 @@ func receiveManyLines(n int) []omsapi.ReceivingLine {
 	return out
 }
 
+// receiveStruckOff is an order of n VOIDED lines with the scan code on the LAST
+// of them — so a scan lands on settled entry n, where the refusal's position
+// field is at its widest and its reason ("struck off the order") at its
+// longest.
+//
+// It keeps ONE receivable line, and that is not decoration: with nothing
+// receivable the quantity form has no boxes, so its bar loses Enter and UP/DN
+// and the way-out tail the refusal carries gets shorter — the probe would
+// measure an easier sentence than the one an operator meets.
+func receiveStruckOff(n int, code string) []omsapi.ReceivingLine {
+	out := []omsapi.ReceivingLine{receiveWSLine(59, "Box of M3 bolts", 4, 0)}
+	for i := 0; i < n; i++ {
+		l := receiveWSLine(60+i, fmt.Sprintf("Cancelled bracket, crate %d", i+1), 3, 0)
+		l.IsVoided, l.IsSettled = true, true
+		l.QuantityPending = 0
+		l.ScanCodes = nil
+		if i == n-1 {
+			l.ScanCodes = []omsapi.ScanCode{{Code: code, Kind: omsapi.ScanCodeItemSKU}}
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
 // receiveSharedCode is an order of n lines that ALL carry one scan code — the
 // same part ordered n times, which is the shape a scan resolving to several
 // lines is really reached through. n is a parameter because the note that comes
@@ -1720,6 +1744,13 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 		probe{"a long code on a settled line",
 			[]omsapi.ReceivingLine{receiveWSLine(30, "Box of M3 bolts", 4, 0), settled}, nil,
 			[]tea.KeyMsg{longCode, enter}, false},
+		// The WORST case of that sentence and not the fixture case: the settled
+		// reason it names is "struck off the order" (twenty cells against
+		// "closed short"'s twelve) and the position it names is two digits, so
+		// this is the longest the settled refusal can be. It is the row that
+		// would fail first if the sentence grew a word.
+		probe{"a long code on the tenth struck-off line", receiveStruckOff(10, longCode.String()),
+			nil, []tea.KeyMsg{longCode, enter}, false},
 		probe{"a long code on several live lines", shared, nil,
 			[]tea.KeyMsg{longCode, enter}, false},
 	)

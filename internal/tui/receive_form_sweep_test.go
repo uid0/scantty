@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1086,12 +1087,13 @@ func TestReceive_ADeferredFieldKeyIsNotDeclined(t *testing.T) {
 					t.Errorf("%s: %q is the box's own binding and the frame declined it:\n%s",
 						c.name, k, pane)
 				}
-				// And the work really went out. The box's answer to this key is
-				// a command; the frame's answer to a declined key is a status
-				// write, so the MESSAGE the command yields tells the two apart
-				// without needing a clipboard to be present.
-				want := receiveBareBoxMsgType(t, msg)
-				if got := receiveCmdMsgType(cmd); got != want {
+				// And the work really went out: the command the frame handed
+				// back is the SAME FUNCTION the widget hands back for this key.
+				// The frame's answer to a declined key is a status write, so
+				// the two are different functions and the comparison separates
+				// them.
+				want := receiveCmdIdentity(receiveBareBoxCmd(msg))
+				if got := receiveCmdIdentity(cmd); got != want {
 					t.Errorf("%s: %q answered with %s, want the box's own %s — the "+
 						"command the widget handed back was dropped", c.name, k, got, want)
 				}
@@ -1100,37 +1102,40 @@ func TestReceive_ADeferredFieldKeyIsNotDeclined(t *testing.T) {
 	}
 }
 
-// receiveBareBoxMsgType is what the widget's own answer to this key resolves
-// to, taken from a bare focused box so the expectation is bubbles' rather than
-// a name written down here.
-func receiveBareBoxMsgType(t *testing.T, msg tea.KeyMsg) string {
-	t.Helper()
+// receiveBareBoxCmd is the widget's own answer to this key, taken from a bare
+// focused box so the expectation is bubbles' rather than a name written here.
+func receiveBareBoxCmd(msg tea.KeyMsg) tea.Cmd {
 	box := textinput.New()
 	box.Focus()
 	_, cmd := box.Update(msg)
-	return receiveCmdMsgType(cmd)
+	return cmd
 }
 
-// receiveCmdMsgType runs a command once and names the type of what came back.
-// A tea.Batch is unwrapped to the one message that is not the cursor's blink,
-// because the frame batches its own status write alongside whatever it returns.
-func receiveCmdMsgType(cmd tea.Cmd) string {
+// receiveCmdIdentity names the FUNCTION a command is, WITHOUT running it.
+//
+// Not running it is the point. The one deferred binding bubbles has today is
+// Paste, and textinput.Paste calls clipboard.ReadAll — pbpaste on darwin,
+// xclip or xsel on Linux. The first shape of this check compared the MESSAGE
+// each command yielded, which meant executing both sides on every typing phase:
+// a unit sweep that spawns half a dozen external processes and reads whatever
+// the developer happens to have copied. It was not flaky, but a test that
+// reaches outside the process for its evidence is unsound whether or not it
+// happens to agree today, and the clipboard is state no test owns.
+//
+// The identity of the function answers the same question. Root.Update hands the
+// screen's command straight back (app.go's dispatch returns it unwrapped), so a
+// frame that routed the key to the box returns the box's own function pointer,
+// and a frame that DECLINED returns the closure s.say built — a different
+// function, reported by name, which is what makes the failure readable.
+func receiveCmdIdentity(cmd tea.Cmd) string {
 	if cmd == nil {
 		return "<nil>"
 	}
-	msg := cmd()
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		for _, c := range batch {
-			if t := receiveCmdMsgType(c); t != "<nil>" {
-				return t
-			}
-		}
-		return "<nil>"
+	pc := reflect.ValueOf(cmd).Pointer()
+	if fn := runtime.FuncForPC(pc); fn != nil {
+		return fn.Name()
 	}
-	if msg == nil {
-		return "<nil>"
-	}
-	return fmt.Sprintf("%T", msg)
+	return fmt.Sprintf("func@%#x", pc)
 }
 
 // TestReceive_NoKeyFallsSilentIntoAField is the typing half of "a keypress that

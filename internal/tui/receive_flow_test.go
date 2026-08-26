@@ -352,31 +352,76 @@ func TestReceiveFlow_AScanNamesTheLineByTheNumberTheFormDraws(t *testing.T) {
 		_ = r
 	})
 
-	t.Run("a settled line is named without inventing a number", func(t *testing.T) {
+	// A settled match is named by its place in the SETTLED list, which is the
+	// one identifier that both fits the refusal's budget and cannot point
+	// somewhere else.
+	//
+	// The label cannot do it. The refusal carries the way-out tail, so its
+	// values live inside receiveScanRefusalRoom, and two lines whose names
+	// differ only past that bound clip to the same string — an operator holding
+	// one of two boxes reads a sentence that is true of either. That is the
+	// order this drives: two closed-short gaskets differing at their last four
+	// characters, which is what a size or a revision looks like in a real
+	// catalogue.
+	//
+	// A FORM number cannot do it either, and that is the constraint the whole
+	// sentence is shaped around: the receivable lines are numbered 1..n of
+	// their own, so "line 2" would point at a line the operator CAN receive
+	// against.
+	t.Run("a settled line is named by the settled list's own number", func(t *testing.T) {
+		first := receiveWSLine(41, "Backordered gasket, 10mm", 6, 2)
+		second := receiveWSLine(42, "Backordered gasket, 12mm", 6, 0)
+		for _, l := range []*omsapi.ReceivingLine{&first, &second} {
+			l.IsClosedShort, l.IsSettled = true, true
+			l.ReceiptState, l.ReceiptStateLabel = omsapi.ReceiptStateClosedShort, "Closed short"
+			l.QuantityPending = 0
+		}
+		lines := []omsapi.ReceivingLine{
+			receiveWSLine(40, "Box of M3 bolts", 4, 0), first, second,
+		}
 		fake := &receiveFake{}
-		r, s := receiveDrive(t, fake, order(), 80, 24)
-		r = receiveTypeInto(t, r, "SKU-11") // the voided line
+		r, s := receiveDrive(t, fake, lines, 80, 24)
+
+		// The two labels really are indistinguishable once the refusal bounds
+		// them, so this order is the ambiguity and not a fixture that dodges it.
+		if receiveRefusalClip(first.Label) != receiveRefusalClip(second.Label) {
+			t.Fatalf("the two settled labels clip apart (%q vs %q), so this order does "+
+				"not reach the case the sentence was reshaped for",
+				receiveRefusalClip(first.Label), receiveRefusalClip(second.Label))
+		}
+
+		r = receiveTypeInto(t, r, "SKU-42") // the SECOND settled line
 		r = receiveKey(t, r, enter)
 
 		text := receivePaneText(s, 80, 24)
-		// The label the closed list draws, bounded the way a refusal note bounds
-		// it — asserted through the same clip rather than against a literal, so
-		// the check cannot disagree with the bound it is checking.
-		if want := receiveRefusalClip("Cancelled bracket"); !strings.Contains(text, want) {
-			t.Errorf("a settled match is not identified by the label the closed list "+
-				"draws (%q):\n%s", want, text)
+		if !strings.Contains(text, "is settled line 2") {
+			t.Errorf("a settled match is not named by its place in the settled list:\n%s", text)
 		}
-		if !strings.Contains(text, "struck off the order") {
+		if !strings.Contains(text, "closed short") {
 			t.Errorf("a settled match does not say why it cannot take a receipt:\n%s", text)
 		}
-		// No number at all: the closed list counts 1..n of its own, so any
-		// "line N" here would point at a receivable line instead.
+		// And never a FORM number, which would point at a receivable line.
 		if strings.Contains(text, "is line ") {
-			t.Errorf("a settled match was given a line number the form does not draw "+
-				"for it:\n%s", text)
+			t.Errorf("a settled match was given a form line number:\n%s", text)
 		}
 		if s.focused != receiveRowScan {
 			t.Errorf("a settled match moved the cursor to row %d", s.focused)
+		}
+
+		// The number points at a list the pane really draws, and at the entry
+		// carrying the label IN FULL — which is what makes it an identifier
+		// rather than a second index nobody can resolve. The list hangs off the
+		// notes row, so it is reached the way an operator reaches it.
+		for s.focused != s.notesRow() {
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+		}
+		tail := receivePaneText(s, 80, 30)
+		if !strings.Contains(tail, "2 settled lines cannot take a receipt") {
+			t.Errorf("the settled list does not name itself, so \"settled line 2\" "+
+				"resolves to nothing:\n%s", tail)
+		}
+		if !strings.Contains(tail, "2. "+second.Label) {
+			t.Errorf("the settled list's entry 2 is not the line the note named:\n%s", tail)
 		}
 		_ = r
 	})
@@ -845,6 +890,104 @@ func TestReceiveFlow_TheSummaryReportsWhatTheOrderBecameRatherThanAssumingIt(t *
 		t.Errorf("the summary reports a transition the server did not make:\n%s", text)
 	}
 	_ = r
+}
+
+// TestReceiveFlow_TheSummaryDoesNotCountUNITSUNDERTheWordLINES.
+//
+// The summary is the frame an operator reads after stock has moved, and it used
+// to draw one row for two different nouns:
+//
+//	Lines ....... 0 outstanding · 0 received of 9
+//
+// on a THREE-line order. `total_received_quantity` and `total_quantity` are
+// UNITS; only `outstanding_line_count` is lines — but a row of three numbers
+// under one label reads as three of that label, and the operator came away
+// believing the order had nine lines. Every figure was the server's and
+// correct; the word over them was not.
+//
+// po_detail.go is the sibling screen for the same order and already says Lines
+// for TotalItems and Quantity for the two totals, so the split here is taken
+// from there rather than invented: the same word has to mean the same thing on
+// both screens or the operator learns it twice.
+//
+// Asserted against the CLIPPED pane at 80 columns, because these are jdeValue
+// rows and a value row cannot fold — a row that overran would be cut, and a cut
+// number is worse than an absent one.
+func TestReceiveFlow_TheSummaryDoesNotCountUNITSUNDERTheWordLINES(t *testing.T) {
+	lines := receiveOrder() // three lines, nine units ordered across them
+	fake := &receiveFake{replyWith: map[string]any{
+		"id": 5, "po_number": "PO-1001", "status": "sent", "status_label": "Sent",
+		"total_items": len(lines), "total_quantity": 9, "total_received_quantity": 2,
+		"outstanding_line_count": 1,
+	}}
+	r, s := receiveDrive(t, fake, lines, 80, 30)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR})
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+	if s.phase != phaseDone {
+		t.Fatalf("the write did not reach the summary: phase %v", s.phase)
+	}
+
+	// The row leaders are the columnar layer's, so the rows are read as whole
+	// pane LINES rather than by substring: a Lines row that had swallowed the
+	// quantities again would still contain "3".
+	lineRow := receiveSummaryRow(t, s, "Lines")
+	qtyRow := receiveSummaryRow(t, s, "Quantity")
+
+	if !strings.Contains(lineRow, "3") || !strings.Contains(lineRow, "1 outstanding") {
+		t.Errorf("the Lines row does not report the LINE counts: %q", lineRow)
+	}
+	// The two unit totals may not appear under Lines at all — that is the whole
+	// defect, and "9" under a line count is what an operator misreads.
+	for _, unit := range []string{"9", "received"} {
+		if strings.Contains(lineRow, unit) {
+			t.Errorf("the Lines row still carries a UNIT figure (%q): %q", unit, lineRow)
+		}
+	}
+	if !strings.Contains(qtyRow, "9") || !strings.Contains(qtyRow, "received 2") {
+		t.Errorf("the Quantity row does not report the UNIT counts: %q", qtyRow)
+	}
+	_ = r
+}
+
+// TestReceiveFlow_TheSummarySaysSoWhenTheServerSentNoLineTotal.
+//
+// TotalItems is `omitempty`, so "the reply carried no line total" and "the
+// order has no lines" arrive identically as 0 — and this screen may not turn
+// the first into the second. The receiving roll-up always sends the outstanding
+// count, so that is what the row falls back to.
+func TestReceiveFlow_TheSummarySaysSoWhenTheServerSentNoLineTotal(t *testing.T) {
+	fake := &receiveFake{replyWith: map[string]any{
+		"id": 5, "po_number": "PO-1001", "status": "sent", "status_label": "Sent",
+		"total_quantity": 9, "total_received_quantity": 0,
+		"outstanding_line_count": 0,
+	}}
+	r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR})
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+
+	row := receiveSummaryRow(t, s, "Lines")
+	if !strings.Contains(row, "none outstanding") {
+		t.Errorf("the Lines row does not report the count the reply did carry: %q", row)
+	}
+	if strings.Contains(row, "0 ·") {
+		t.Errorf("an absent line total was drawn as a count of zero: %q", row)
+	}
+	_ = r
+}
+
+// receiveSummaryRow is the summary's row for a label, taken from the CLIPPED
+// pane so a row the terminal cut cannot pass as a row that fits.
+func receiveSummaryRow(t *testing.T, s *ReceiveFormScreen, label string) string {
+	t.Helper()
+	want := label + jdeLeader
+	for _, line := range receivePaneLines(s, 80, 30) {
+		if strings.Contains(line, want) {
+			return strings.TrimSpace(line)
+		}
+	}
+	t.Fatalf("the summary draws no %q row:\n%s", label,
+		strings.Join(receivePaneLines(s, 80, 30), "\n"))
+	return ""
 }
 
 // TestReceiveFlow_AnExpiredSessionIsASentenceAndNotABody.
