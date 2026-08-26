@@ -678,6 +678,93 @@ func TestReceiveFlow_MarkReceivedIsNotNamedOnASettledOrder(t *testing.T) {
 	}
 }
 
+// TestReceiveFlow_AnOrderWithNothingLeftToReceiveNamesTheWayOut.
+//
+// A state the merged contract added and calls out to read twice:
+// `can_receive: true` with `outstanding_line_count: 0`. It is what an order
+// lands in when every line was closed short or struck off without a single
+// delivery — it never reached `received`, because that status means goods
+// arrived, so it is still a receivable status with nothing left to receive.
+//
+// The contract instructs a client here in as many words: "say so, and point at
+// voiding or cancelling the order." Saying only the first half leaves the
+// operator on a form with no lines, a key that refuses, and nowhere to go.
+func TestReceiveFlow_AnOrderWithNothingLeftToReceiveNamesTheWayOut(t *testing.T) {
+	closed := receiveWSLine(15, "Backordered gasket", 6, 0)
+	closed.IsClosedShort, closed.IsSettled = true, true
+	closed.ReceiptState, closed.ReceiptStateLabel = omsapi.ReceiptStateClosedShort, "Closed short"
+	closed.QuantityPending, closed.QuantityVariance = 0, -6
+
+	sheet := receiveWorksheet(closed)
+	// Still receivable, and nothing to receive: the order never advanced,
+	// because nothing was ever received against it.
+	sheet.CanReceive, sheet.Status, sheet.StatusLabel = true, "sent", "Sent"
+	sheet.OutstandingLineCount = 0
+	fake := &receiveFake{sheet: sheet}
+	r, s := receiveDrive(t, fake, []omsapi.ReceivingLine{closed}, 80, 30)
+
+	if s.phase != phaseQty {
+		t.Fatalf("a receivable order left the screen on phase %v", s.phase)
+	}
+	if len(s.qty) != 0 {
+		t.Fatalf("want no receivable lines, got %d", len(s.qty))
+	}
+	for s.focused != s.notesRow() {
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	text := receivePaneText(s, 80, 30)
+	if !strings.Contains(text, "nothing to book against this order") {
+		t.Errorf("the form does not say there is nothing to receive:\n%s", text)
+	}
+	if !strings.Contains(text, "Void or cancel the ORDER") {
+		t.Errorf("the form leaves the operator with no way to finish with the order:\n%s", text)
+	}
+
+	// And the key that looks like the way out says the same thing rather than
+	// refusing into a dead end — the server would, and this saves the trip.
+	if barHas(s.bar(), "Ctrl+R", "Mark received") {
+		t.Errorf("the bar names Ctrl+R on an order with nothing outstanding: %+v", s.bar())
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR})
+	if decline := receivePaneText(s, 80, 30); !strings.Contains(decline, "void or cancel the order") {
+		t.Errorf("ctrl+r declines without naming the way out:\n%s", decline)
+	}
+	if len(fake.marked()) != 0 {
+		t.Errorf("the decline still called mark-received: %v", fake.marked())
+	}
+}
+
+// TestReceiveFlow_AReopenedLineSaysItWasClosedShortOnce.
+//
+// `reopen-short/` takes back a close-short recorded in error, and it is a
+// CORRECTION rather than an undo: the write-off keeps its stamps and the reopen
+// is recorded beside it. The line comes back outstanding, so it is receivable
+// again — and an operator receiving against it is receiving against one
+// somebody has already got wrong once, which the row says.
+//
+// ScanTTY does not drive reopen-short; what it must not do is show the
+// corrected line as though nothing had happened to it.
+func TestReceiveFlow_AReopenedLineSaysItWasClosedShortOnce(t *testing.T) {
+	line := receiveWSLine(12, "Reel of 24AWG wire", 10, 3)
+	line.WasReopened, line.ReopenedReason = true, "closed the wrong line"
+	line.ClosedShortReason = "backorder cancelled"
+
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, []omsapi.ReceivingLine{line}, 80, 30)
+
+	// It is receivable again: is_closed_short is derived from both stamps, so a
+	// reopened line is simply not closed short any more.
+	if len(s.qty) != 1 {
+		t.Fatalf("a reopened line is not receivable again: %d boxes, %d held back",
+			len(s.qty), len(s.closed))
+	}
+	r = receiveGoToLine(t, r, s, 0)
+	if text := receivePaneText(s, 80, 30); !strings.Contains(text, "reopened") {
+		t.Errorf("the line does not say it was closed short once:\n%s", text)
+	}
+	_ = r
+}
+
 // ---------------------------------------------------------------------------
 // A refusal is a sentence, never a raw dump
 // ---------------------------------------------------------------------------

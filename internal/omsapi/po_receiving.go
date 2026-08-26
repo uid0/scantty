@@ -22,23 +22,37 @@
 //
 //	POST /api/reorders/purchase-orders/{id}/close-short/
 //	     Write off the outstanding balance on named lines as never arriving.
-//	     This is how a SHORT receipt ends.
+//	     This is how a SHORT receipt ends. A line closed short is then REFUSED
+//	     by `receive`, and the refusal names `reopen-short/` as the correction.
+//
+//	POST /api/reorders/purchase-orders/{id}/reopen-short/
+//	     Take back a close-short recorded in error. NOT driven by this client —
+//	     see the note on ReceivingLine.WasReopened for what is decoded of it.
+//	     An operator who closes the wrong line short corrects it elsewhere and
+//	     the corrected line comes back outstanding on the next worksheet fetch.
 //
 //	POST /api/reorders/purchase-orders/{id}/mark-received/
 //	     Finish the order off: close every still-outstanding line short.
 //
 // # Every one of them is an authenticated read or write
 //
-// Including the WORKSHEET, which is a GET. It was served under
-// IsAuthenticatedOrReadOnly — a class that lets a read through with no
-// credentials at all — and is being gated to IsAuthenticated, so a fetch that
-// used to answer whatever the session's state was can now come back 401. The
-// client already sends the bearer token on every request and refreshes once on
-// a 401, so nothing here assumed an anonymous read; what the gate changes is
-// that the FAILURE is reachable on the worksheet as well as on the writes, and
-// DRF renders it as `{"detail": ...}` rather than as either shape below.
-// internal/tui/receive_form.go's receiveReason is where that becomes a sentence
-// an operator can act on.
+// The WORKSHEET included, GET though it is.
+// `PurchaseOrderViewSet.get_permissions` returns AllowAny for `list` and
+// `retrieve` and IsAuthenticated for everything else, and every endpoint here
+// is an @action — so none of them has ever been anonymously readable.
+//
+// Do not read that off `backend/config/api_permission_matrix.yaml`, which
+// records `receiving` as IsAuthenticatedOrReadOnly: the YAML is generated from
+// the declared `permission_classes` and cannot see a `get_permissions`
+// override, so on this viewset it is the DEFAULT rather than what is enforced.
+// Reading it as the effective permission is a mistake this file has already
+// made once.
+//
+// The client sends the bearer token on every request and refreshes once on a
+// 401, so the happy path needs nothing. What matters is the FAILURE: a session
+// whose refresh has also failed gets a 401 here, and DRF renders it as
+// `{"detail": ...}` — neither shape below. internal/tui/receive_form.go's
+// receiveReason is where that becomes a sentence an operator can act on.
 //
 // # The received transition is the server's, and it is conditional
 //
@@ -265,7 +279,19 @@ type ReceivingLine struct {
 	IsVoided          bool   `json:"is_voided"`
 	IsClosedShort     bool   `json:"is_closed_short"`
 	ClosedShortReason string `json:"closed_short_reason"`
-	IsKitLine         bool   `json:"is_kit_line"`
+	// WasReopened and ReopenedReason are a close-short that was TAKEN BACK,
+	// reported beside what it corrects rather than in place of it: the
+	// close-short's own stamps keep their values, so a line back in receiving
+	// after a mistaken write-off still shows the write-off. IsClosedShort is
+	// derived from the two stamps together, so a reopened line is simply not
+	// closed short any more and needs no reconciling by a client.
+	//
+	// They are decoded because the contract says a client reading the line
+	// afterwards sees both, and because a documented field a client silently
+	// drops is how the next author starts guessing at one.
+	WasReopened    bool   `json:"was_reopened"`
+	ReopenedReason string `json:"reopened_reason"`
+	IsKitLine      bool   `json:"is_kit_line"`
 	// ScanCodes is every identifier a scanner could read off this line's goods,
 	// so a scan resolves locally without a round trip. See ScanCode for why an
 	// empty slice is an answer rather than an absence.

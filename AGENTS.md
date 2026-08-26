@@ -168,14 +168,32 @@ either:
   predicts it: the confirm says what the write DOES, and the summary reports the
   `status_label` that came back. `is_settled` is an INPUT to the order's status,
   never a synonym for it.
-- **Every receiving endpoint is authenticated, the worksheet included.** It is a
-  GET and was served under `IsAuthenticatedOrReadOnly`, which lets a read
-  through with no credentials; gating it to `IsAuthenticated` turns a fetch that
-  always answered into one that can 401. `Client.do` already sends the bearer
-  token and refreshes once, so the happy path is unchanged — what the gate adds
-  is a reachable FAILURE, rendered by DRF as `{"detail": ...}`, which is neither
-  shape below. `receiveReason` names it ("no longer signed in") rather than
-  relaying it; reaching it means the refresh failed too.
+- **Every receiving endpoint is authenticated, the worksheet included** — GET
+  though it is. `PurchaseOrderViewSet.get_permissions` returns `AllowAny` for
+  `list`/`retrieve` and `IsAuthenticated` for everything else, and all of these
+  are `@action`s. Do NOT read that off
+  `backend/config/api_permission_matrix.yaml`, which records `receiving` as
+  `IsAuthenticatedOrReadOnly`: the YAML is generated from the declared
+  `permission_classes` and cannot see a `get_permissions` override, so on this
+  viewset it is the default rather than what is enforced. Reading it as the
+  effective permission is a mistake this work already made once.
+  `Client.do` sends the bearer token and refreshes once, so the happy path needs
+  nothing; what matters is the FAILURE, which DRF renders as `{"detail": ...}` —
+  neither shape below. `receiveReason` names it ("no longer signed in") rather
+  than relaying it, and reaching it means the refresh failed too.
+- **An order can be receivable with nothing left to receive.** `can_receive:
+  true` alongside `outstanding_line_count: 0` is a real state, not a
+  contradiction: every line closed short or struck off without a single delivery
+  settles the order without it ever reaching `received`. The contract instructs
+  a client to say so AND point at voiding or cancelling the ORDER — `qtyBody`'s
+  empty branch and Ctrl+R's decline both do, because refusing without it is a
+  dead end.
+- **`reopen-short/` exists and this client does not drive it.** A close-short
+  recorded in error is corrected there; the correction is stamped BESIDE the
+  write-off rather than erasing it, so a reopened line comes back outstanding
+  with `was_reopened` set and its `closed_short_reason` intact. Both are decoded
+  and the line's readings say `reopened`, because receiving against a line
+  somebody already got wrong once is worth knowing.
 - **The refusal body is NOT the standard envelope**, again. All four endpoints
   write `{"error": "<prose>"}` by hand with no `code`, so `parseError` hands the
   whole raw body over. `omsapi.AsReceivingRefusal` recovers the sentence and is

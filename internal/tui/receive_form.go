@@ -838,16 +838,16 @@ func receiveReason(err error) string {
 	}
 	var api *omsapi.APIError
 	if errors.As(err, &api) {
-		// An expired session is NAMED rather than relayed, and it is named here
-		// because the receiving endpoints are the ones it newly reaches: the
-		// worksheet is a GET, it was served under IsAuthenticatedOrReadOnly —
-		// which lets a read through unauthenticated — and gating it to
-		// IsAuthenticated turns a fetch that always answered into one that can
-		// 401. DRF writes that as `{"detail": "..."}`, which is neither the
-		// hand-built refusal envelope nor a coded one, so it would arrive on
-		// the blocked frame as `oms: http 401: {"detail":"Authentication
-		// credentials were not provided."}` — a raw dump on the frame whose
-		// whole job is explaining why nothing can be received.
+		// An expired session is NAMED rather than relayed. Every receiving
+		// endpoint is authenticated — the worksheet included, GET though it is,
+		// because PurchaseOrderViewSet.get_permissions gates every @action —
+		// so a session whose token has expired and whose refresh has also
+		// failed gets a 401 from the very first fetch this screen makes. DRF
+		// writes that as `{"detail": "..."}`, which is neither the hand-built
+		// refusal envelope nor a coded one, so it would arrive on the blocked
+		// frame as `oms: http 401: {"detail":"Authentication credentials were
+		// not provided."}` — a raw dump on the frame whose whole job is
+		// explaining why nothing can be received.
 		//
 		// This is not a second opinion about anything the server decides. It is
 		// an HTTP fact with one operator-facing meaning and one next move, and
@@ -2210,8 +2210,11 @@ func (s *ReceiveFormScreen) openLineWriteOff(headerRows int) tea.Cmd {
 // openOrderWriteOff is Ctrl+R: finish the order off.
 func (s *ReceiveFormScreen) openOrderWriteOff(headerRows int) tea.Cmd {
 	if s.outstandingLines() == 0 {
-		return s.say("ctrl+r finishes the order off and every line is already settled · "+
-			s.waysOut(headerRows), StatusWarn)
+		// The same way out the empty form names, for the same reason: the
+		// server refuses a settled order and points at voiding or cancelling
+		// it, and declining without that leaves the operator nowhere.
+		return s.say("ctrl+r finishes the order off and every line is already settled — "+
+			"void or cancel the order instead · "+s.waysOut(headerRows), StatusWarn)
 	}
 	s.scope = receiveScopeOrder
 	s.toWriteOff()
@@ -2879,9 +2882,23 @@ func (s *ReceiveFormScreen) qtyBody() *jdeLines {
 		// the reported-hang class this screen exists to remove.
 		l.AddFittedFields(notes, lw, width, notesRow)
 		l.AddRow(notesRow, jdeIndent+StyleMuted.Render("No line here can take a receipt."))
+		// The way out is NAMED, because this frame is reachable in a state that
+		// is otherwise a dead end. An order every line of which was closed
+		// short or struck off without a single delivery never reaches
+		// `received` — that status means goods arrived — so it stays receivable
+		// and comes back here with `can_receive: true` and nothing to receive.
+		// Ctrl+R cannot finish it either: the server refuses a settled order
+		// and says to void or cancel it instead, which is what this says before
+		// the operator spends a round trip finding out.
+		//
+		// It does not assert that nothing arrived. Whether anything did is the
+		// server's own condition on the transition, and the worksheet carries
+		// no receipt total to read it off — so the sentence names the action
+		// that exists rather than diagnosing the order.
 		for _, line := range jdeCaveatLines(
 			"Every line is voided or closed short, so there is nothing to book against "+
-				"this order.", width) {
+				"this order. Void or cancel the ORDER to finish with it — an order only "+
+				"reads as received once goods actually arrived.", width) {
 			l.AddRow(notesRow, line)
 		}
 		s.addClosedLines(l, notesRow, width)
@@ -3367,6 +3384,13 @@ func receiveLineTokens(line omsapi.ReceivingLine) []jdeToken {
 		toks = append(toks, jdeToken{fmt.Sprintf("%d over", line.QuantityVariance), StyleStatusWarn})
 	} else if line.QuantityVariance < 0 && line.IsSettled {
 		toks = append(toks, jdeToken{fmt.Sprintf("%d short", -line.QuantityVariance), StyleStatusWarn})
+	}
+	// A line that was closed short in ERROR and taken back reads as outstanding
+	// again, which is correct and is not the whole story: the write-off stays
+	// on the record beside the correction, and an operator receiving against
+	// this line is receiving against one somebody has already got wrong once.
+	if line.WasReopened {
+		toks = append(toks, jdeToken{"reopened", StyleStatusWarn})
 	}
 	toks = append(toks, jdeToken{receiveStateLabel(line), StyleMuted})
 	return toks

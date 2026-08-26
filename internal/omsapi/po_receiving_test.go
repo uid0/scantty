@@ -19,11 +19,18 @@ import (
 // arrives as the server's own sentence rather than as a raw body, and that what
 // the operator typed reaches the wire in the field the contract names.
 
-// receivingWorksheetBody is a worksheet as the endpoint renders one, nulls
-// included: `unavailable_reason` is null when the order CAN be received, and
-// `item` is null on an asset or freeform line.
+// receivingWorksheetBody is a worksheet as the endpoint renders one.
+//
+// Every awkward shape the contract names is in it, because a fixture that only
+// carries the easy ones is a fixture that agrees with any decoder:
+//   - `unavailable_reason` is null when the order CAN be received;
+//   - `item` is null on an asset or freeform line;
+//   - the order and its lines are INTEGER ids while an item is a UUID string;
+//   - line 301 was closed short in error and TAKEN BACK, so `is_closed_short`
+//     is false again (it is derived from both stamps) while the close-short's
+//     own reason stays on the record beside the correction.
 const receivingWorksheetBody = `{
-  "purchase_order": "6f2c", "po_number": "PO-2026-0500", "supplier": "Grainger",
+  "purchase_order": 412, "po_number": "PO-2026-0500", "supplier": "Grainger",
   "status": "partially_received", "status_label": "Partially Received",
   "can_receive": true, "unavailable_reason": null,
   "is_settled": false, "is_fully_received": false,
@@ -35,7 +42,9 @@ const receivingWorksheetBody = `{
      "quantity_ordered": 10, "quantity_received": 3, "quantity_pending": 7,
      "quantity_variance": -7, "receipt_state": "partially_received",
      "receipt_state_label": "Partially received", "is_settled": false,
-     "is_voided": false, "is_closed_short": false, "closed_short_reason": "",
+     "is_voided": false,
+     "is_closed_short": false, "closed_short_reason": "backorder cancelled",
+     "was_reopened": true, "reopened_reason": "closed the wrong line",
      "is_kit_line": false,
      "scan_codes": [{"code": "BOLT-1", "kind": "item_sku"},
                     {"code": "0123456789012", "kind": "package_upc"}],
@@ -109,8 +118,22 @@ func TestGetReceivingWorksheet_ANullIsAnAbsence(t *testing.T) {
 		t.Errorf("can_receive=%v with reason %q — the pair disagrees with itself",
 			w.CanReceive, w.UnavailableReason)
 	}
+	// The two id kinds are NOT interchangeable and the merged contract says so
+	// outright: a purchase order and a purchase-order line are INTEGERS, an
+	// inventory item is a UUID string. Both travel as `any` here so a client
+	// cannot silently coerce one into the other, and both render through
+	// fmt.Sprint at the one place a URL or a comparison needs them.
+	if got := fmt.Sprint(w.PurchaseOrder); got != "412" {
+		t.Errorf("purchase_order rendered as %q, want the integer 412", got)
+	}
 	if len(w.Lines) != 3 {
 		t.Fatalf("want 3 lines, got %d", len(w.Lines))
+	}
+	if got := fmt.Sprint(w.Lines[0].PurchaseOrderItem); got != "301" {
+		t.Errorf("purchase_order_item rendered as %q, want the integer 301", got)
+	}
+	if w.Lines[0].Item != "a71f" {
+		t.Errorf("item = %q, want the UUID string", w.Lines[0].Item)
 	}
 	if got := w.Lines[1].Item; got != "" {
 		t.Errorf("a freeform line's null item decoded as %q", got)
@@ -122,6 +145,17 @@ func TestGetReceivingWorksheet_ANullIsAnAbsence(t *testing.T) {
 	}
 	if len(w.Lines[0].ScanCodes) != 2 || w.Lines[0].ScanCodes[1].Kind != ScanCodePackageUPC {
 		t.Errorf("the scan codes did not decode: %+v", w.Lines[0].ScanCodes)
+	}
+	// A close-short that was TAKEN BACK is reported beside what it corrects,
+	// not in place of it: both stamps come back, and a client that decoded only
+	// one of them would show a line whose history reads as a clean slate.
+	l := w.Lines[0]
+	if !l.WasReopened || l.ReopenedReason != "closed the wrong line" {
+		t.Errorf("the reopen was dropped: was_reopened=%v reason=%q",
+			l.WasReopened, l.ReopenedReason)
+	}
+	if l.ClosedShortReason != "backorder cancelled" {
+		t.Errorf("the reopen erased the close-short it corrects: %q", l.ClosedShortReason)
 	}
 }
 
