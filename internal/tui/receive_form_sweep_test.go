@@ -858,6 +858,135 @@ func TestReceive_NoTwoDecliningKeysRedrawTheSamePane(t *testing.T) {
 	}
 }
 
+// receiveFieldOwns reports whether a focused textinput would answer this key
+// ITSELF, and it asks BUBBLES rather than a roster.
+//
+// The typing sweep below needs to know which keys belong to the field and which
+// belong to the frame, and a hand-kept list of the first is this file's
+// standing failure mode: bubbles binds fifteen actions across some
+// twenty-five keystrokes, several of them chords nobody would think to write
+// down, and a version bump moves the set under the list. So the question is put
+// to a real textinput — value present, caret in the MIDDLE, so every movement
+// and deletion binding has somewhere to go — and answered by whether the widget
+// changes what it HOLDS: its value or its caret, which is the same pair
+// typeInto asks about, so the sweep and the code cannot come apart over who
+// owns a key. Not what it DRAWS — lipgloss strips the caret's reverse video
+// when stdout is not a TTY, so a rendered comparison classifies every movement
+// key as the frame's inside a test binary and as the field's in production.
+//
+// Asked with the caret in the middle on purpose: at an edge, Left or Home
+// answers with no change and would be classified as the frame's, which is a
+// different question (that one is "does this key do anything from HERE", and
+// typeInto answers it at run time).
+func receiveFieldOwns(k string) bool {
+	box := textinput.New()
+	box.Focus()
+	box.SetValue("abc")
+	box.SetCursor(1)
+	before, at := box.Value(), box.Position()
+	box, _ = box.Update(poPhaseKeyMsg(k))
+	return box.Value() != before || box.Position() != at
+}
+
+// TestReceive_TheFieldOwnershipProbeIsNotVacuous keeps the derivation above
+// from being the thing under test. A probe that answered "the field owns it"
+// for everything would empty the sweep below and read as coverage; one that
+// answered "nothing" would fail on every key of every typing state and be
+// reverted rather than believed.
+func TestReceive_TheFieldOwnershipProbeIsNotVacuous(t *testing.T) {
+	// A rune and a movement chord are the field's; Enter and Esc are the
+	// frame's on every screen in this program.
+	for _, k := range []string{"a", "left", "backspace", "ctrl+e"} {
+		if !receiveFieldOwns(k) {
+			t.Errorf("the probe says a focused field does not own %q", k)
+		}
+	}
+	for _, k := range []string{"enter", "esc", "pgup", "pgdown"} {
+		if receiveFieldOwns(k) {
+			t.Errorf("the probe says a focused field owns %q, so the sweep would never "+
+				"press it on a typing state", k)
+		}
+	}
+}
+
+// TestReceive_NoKeyFallsSilentIntoAField is the typing half of "a keypress that
+// changes nothing visible IS the reported bug".
+//
+// The sweep above runs on the NON-typing states, because with a field focused
+// the printable keys act by editing the value and the property is neither true
+// nor meaningful for them. That exemption was being taken by the whole STATE,
+// though, and the keys the field has no opinion about were riding out on it:
+// every typing phase ended its switch by handing the key to the box, and the
+// box silently dropped ctrl+t, ctrl+p, ctrl+n, ctrl+x and ctrl+r — plus Up and
+// Down on the write-off confirm, the one frame of this screen where the next
+// key writes a balance off, reached from four frames whose bars all name UP/DN.
+//
+// So the exemption is taken per KEY instead, and which keys get it is derived
+// from bubbles (receiveFieldOwns) rather than listed. What is left is the set
+// the FRAME is answerable for, and it is held to both halves of the rule: no
+// key may redraw the resting pane, and no two may redraw each other's.
+func TestReceive_NoKeyFallsSilentIntoAField(t *testing.T) {
+	space := poKeySpace()
+	for _, c := range receivePhaseCases() {
+		if !c.typing {
+			continue
+		}
+		for _, height := range c.paneSizes() {
+			t.Run(fmt.Sprintf("%s at 80x%d", c.name, height), func(t *testing.T) {
+				build := receiveHarness(t, c.fake, c.lines, 80, height)
+				fresh := func(t *testing.T) (Root, *ReceiveFormScreen) {
+					t.Helper()
+					r, s := build(t)
+					r = c.reach(t, r, s)
+					if s.phase != c.phase {
+						t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
+					}
+					return r, s
+				}
+				_, screen := fresh(t)
+				resting := receiveClippedPane(screen, 80, height)
+
+				pressed, panes := 0, map[string]string{}
+				for _, k := range space {
+					if receiveFieldOwns(k) {
+						continue // the field answers it, which is what the field is FOR
+					}
+					if poFormNavAliases[k] {
+						// Tab and Shift-Tab, recorded rather than omitted: they
+						// ride alongside Up/Down on a sheet WITH FIELDS and
+						// roughly twenty columnar forms name the pair as
+						// UP/DN=Fields, so this screen cannot answer for them
+						// on its own (poFormNavAliases).
+						continue
+					}
+					pressed++
+					r, s := fresh(t)
+					before := receiveState(s)
+					next, cmd := r.Update(poPhaseKeyMsg(k))
+					r = next.(Root)
+					if receiveState(s) != before || poCmdActs(cmd) {
+						continue // it acted
+					}
+					after := receiveClippedPane(s, 80, height)
+					if after == resting {
+						t.Errorf("%s: %q falls into the focused field and answers with a "+
+							"byte-for-byte identical pane — that reads as a wedged program", c.name, k)
+					} else if other, clash := panes[after]; clash {
+						t.Errorf("%s: %q and %q redraw the same pane — the second press would "+
+							"leave the first one's answer standing", c.name, other, k)
+					} else {
+						panes[after] = k
+					}
+				}
+				if pressed == 0 {
+					t.Errorf("%s: every key in the space was classified as the field's, so "+
+						"this sweep pressed nothing at all", c.name)
+				}
+			})
+		}
+	}
+}
+
 // TestReceive_EveryDeclineNamesTheKeyItAnswers is the reason the sweep above
 // can pass: a lead that names the key cannot be shared by two keys. Checking
 // the property AND its mechanism is deliberate — the mechanism is what a future

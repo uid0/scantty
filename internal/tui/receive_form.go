@@ -749,6 +749,50 @@ func (s *ReceiveFormScreen) decline(key string, headerRows int) tea.Cmd {
 	return s.say(key+" does nothing here · "+s.waysOut(headerRows), StatusWarn)
 }
 
+// typeInto hands a key to the focused box and ANSWERS for it when the box does
+// not.
+//
+// The three typing phases used to end their switch with a bare box.Update, and
+// a fallthrough like that cannot be audited: the set of keys it swallows is
+// "everything nobody thought of". What it swallowed here was ctrl+t, ctrl+p,
+// ctrl+n, ctrl+x and ctrl+r — none of them bound by bubbles' textinput, all of
+// them named by some other frame of this same screen — and Up and Down on the
+// write-off confirm, which is the frame where the next key writes a balance
+// off and the frame every route into it comes from names UP/DN. Every one of
+// those presses redrew a byte-for-byte identical pane, which from the
+// operator's seat is a program that has stopped responding: rule 1, broken by
+// omission.
+//
+// The box's OWN answer is what decides, rather than a roster of the keys it
+// binds: the key goes to the box, and if the box did not take it the frame
+// declines by name. Derived from bubbles itself, so a binding a version bump
+// adds or drops changes this answer with it, where a roster would go on
+// claiming the old set — and it covers the edges a roster never reaches, like
+// Right with the caret already at the end of the value, or a rune typed into a
+// box that is at its CharLimit.
+//
+// "Took it" is the VALUE and the CARET, and deliberately not the RENDERED box.
+// A rendered comparison was the first shape of this and it is wrong in a way
+// only a real terminal shows: lipgloss draws the caret with reverse video, so
+// moving it changes the render — but lipgloss strips every sequence when stdout
+// is not a TTY, so with the profile off Left over "abc" renders "abc" either
+// way, and the key would be declined inside a test binary and honoured in
+// production. A bound that answers differently depending on whether anybody is
+// watching is not a bound. The value and the caret are what the box really
+// holds, and between them they are what every binding bubbles has changes.
+//
+// The cmd dropped on the declining path is the blink restart, which there is no
+// caret movement to restart.
+func (s *ReceiveFormScreen) typeInto(box *textinput.Model, m tea.KeyMsg, headerRows int) tea.Cmd {
+	before, at := box.Value(), box.Position()
+	next, cmd := box.Update(m)
+	*box = next
+	if box.Value() == before && box.Position() == at {
+		return s.decline(m.String(), headerRows)
+	}
+	return cmd
+}
+
 // declineFrozen is decline for a key an in-flight request has made inert. It
 // says WHY rather than "does nothing", because the key does work — one second
 // from now — and an operator watching a slow gateway is exactly the operator
@@ -1182,11 +1226,7 @@ func (s *ReceiveFormScreen) keyQty(m tea.KeyMsg, headerRows int) (Screen, tea.Cm
 	case "ctrl+r":
 		return s, s.openOrderWriteOff(headerRows)
 	}
-
-	box := s.currentInput()
-	var cmd tea.Cmd
-	*box, cmd = box.Update(m)
-	return s, cmd
+	return s, s.typeInto(s.currentInput(), m, headerRows)
 }
 
 // receiveEnter is what Enter does on the quantity form, which is not one thing.
@@ -1502,13 +1542,11 @@ func (s *ReceiveFormScreen) scanMatches(code string) []receiveScanMatch {
 
 // findLine is Enter in the scan box: move the cursor to the line the code names.
 //
-// CYCLING is derived rather than remembered. Two lines of one order can carry
-// the same code — the same part ordered twice, on two lines with different
-// expected dates — and the operator has to be able to reach the second. Which
-// one is "next" is answered by where the cursor IS: the match after the focused
-// row, wrapping. Nothing is stored, so a code retyped after walking away
-// behaves the same as one scanned fresh, and there is no stale index to go
-// stale.
+// It lands on the FIRST live match and says what the others are. Two lines of
+// one order really can carry the same code — the same part ordered twice, on
+// two lines with different expected dates — so the operator does have to be
+// able to reach the second, and receiveOtherLineNote carries the note on why
+// the key that reaches it is up/dn and not another Enter.
 func (s *ReceiveFormScreen) findLine(headerRows int) tea.Cmd {
 	code := strings.TrimSpace(s.scan.Value())
 	matches := s.scanMatches(code)
@@ -1528,17 +1566,7 @@ func (s *ReceiveFormScreen) findLine(headerRows int) tea.Cmd {
 			code, m.position, receiveScanKindLabel(m.kind), m.settled, s.waysOut(headerRows)), StatusWarn)
 	}
 
-	// The match AFTER the one the cursor is on, wrapping — so pressing Enter
-	// again on a code that names two lines walks to the second rather than
-	// redrawing the pane it just drew.
-	next := 0
-	for i, m := range live {
-		if m.row == s.focused {
-			next = (i + 1) % len(live)
-			break
-		}
-	}
-	hit := live[next]
+	hit := live[0]
 	s.currentInput().Blur()
 	s.focused = hit.row
 	s.focusCurrent()
@@ -1547,13 +1575,62 @@ func (s *ReceiveFormScreen) findLine(headerRows int) tea.Cmd {
 		receiveScanClip(hit.label), receiveScanKindLabel(hit.kind))
 	switch {
 	case len(live) > 1:
-		lead += fmt.Sprintf(" · %d lines carry it, enter finds the next", len(live))
+		lead += " · " + receiveOtherLineNote(live, hit)
 	case len(matches) > len(live):
 		lead += fmt.Sprintf(" · %d settled %s carry it too",
 			len(matches)-len(live), plural("line", len(matches)-len(live)))
 	}
 	return s.say(lead, StatusOK)
 }
+
+// receiveOtherLineNote names the OTHER lines a scanned code resolved to, and
+// the key that actually reaches them.
+//
+// It used to read "N lines carry it, enter finds the next", which was a claim
+// the code did not honour in either half. Enter cannot mean FIND from a line
+// row: enterAction returns receiveEnterFind only while the cursor is in the
+// SCAN box, and findLine has just moved it onto a line — so the operator told
+// to press Enter again was taken to the REVIEW of a receipt instead of to the
+// second match, on a screen where that difference is stock. The cycling loop
+// behind the sentence could not fire either, for the same reason: it looked for
+// the focused row among the matches and the focused row was the scan box, so
+// `next` was always 0 and no key on the screen reached the second line.
+//
+// Enter is not the key to fix that with. Enter from a line row has to go on
+// committing into the review — that is the whole entry half of this phase — so
+// what changes is the SENTENCE: it names up/dn, which the bar names, which
+// focusNext honours from every row of the form, and which walks onto the lines
+// the note has just listed.
+//
+// The positions are LISTED while the list is short and COUNTED once it is not.
+// The note is folded into receiveNoteRows lines and shortened FROM THE END, and
+// the end is where the way out is named — a run of line numbers is unbounded in
+// the number of lines an order can have, and a bound expressed in terms of an
+// unbounded value is not a bound.
+func receiveOtherLineNote(live []receiveScanMatch, hit receiveScanMatch) string {
+	var others []string
+	for _, m := range live {
+		if m.position == hit.position {
+			continue
+		}
+		others = append(others, strconv.Itoa(m.position))
+	}
+	if len(others) > receiveScanListMax {
+		return fmt.Sprintf("%d more lines carry it — up/dn walks to them", len(others))
+	}
+	verb := "carries"
+	if len(others) > 1 {
+		verb = "carry"
+	}
+	return fmt.Sprintf("%s %s %s it too — up/dn walks there",
+		plural("line", len(others)), strings.Join(others, ", "), verb)
+}
+
+// receiveScanListMax is how many other positions the note spells out before it
+// gives up and counts them instead. Three is what a 51-column pane holds beside
+// the lead and the way-out tail; the fourth is what pushes the tail off, and
+// the tail is the half that names the key.
+const receiveScanListMax = 3
 
 // receiveScanClip bounds a line label before it goes into a NOTE.
 //
@@ -1761,19 +1838,77 @@ func (s *ReceiveFormScreen) loadUnit() {
 	s.expiryInput.SetValue(c.expiry)
 }
 
-// storeUnit writes the three boxes back into the slot the cursor is on. Every
-// arm that moves the cursor calls it FIRST — that is what makes walking back to
-// unit 1 to fix a typo safe, and it is the whole of "never silently discard
+// storeUnit writes the three boxes back into the slot the cursor is on — or
+// REFUSES, and writes nothing.
+//
+// Every arm that leaves the slot calls it FIRST, and that is what makes walking
+// back to unit 1 to fix a typo safe: it is the whole of "never silently discard
 // what the operator typed" on this phase.
-func (s *ReceiveFormScreen) storeUnit() {
+//
+// The VALIDATION lives here, at the one place a capture is recorded, rather
+// than in the arms that call it. It used to live in the Enter arm alone, and
+// the other two callers therefore recorded slots Enter would have refused —
+// both of them doing the exact thing the checks were written to stop. Esc with
+// a lot typed beside a blank serial recorded {serial:"", lot:"LOT-9"}, which
+// buildReceipt drops (it skips every capture without a serial), so the lot went
+// into nothing with no sentence anywhere saying so. And Esc or PgUp/PgDn with
+// "12/31/2026" in the expiry carried it to the wire, where a 400 rolls back the
+// WHOLE single-transaction receipt over one character in an optional field.
+//
+// Copying the two checks into those arms is not the fix, because that is the
+// shape that produced the defect: the checks were written when Enter was the
+// only way out of a slot, and the arms added afterwards were each a fresh
+// chance to forget. Putting them where the store is means a caller added
+// tomorrow is covered by construction and cannot opt out.
+//
+// A refusal hands back the sentence to say and leaves the three boxes exactly
+// as they were typed, so whatever the arm was trying to do — go to the review,
+// walk to another unit — simply does not happen and the operator can fix the
+// slot in place.
+func (s *ReceiveFormScreen) storeUnit(key string, headerRows int) tea.Cmd {
 	if s.serialCursor < 0 || s.serialCursor >= len(s.captures) {
-		return
+		// Past the end of the queue the frame draws no boxes at all, so there
+		// is nothing to record and nothing to refuse.
+		return nil
 	}
-	s.captures[s.serialCursor] = receiveCapture{
+	c := receiveCapture{
 		serial: strings.TrimSpace(s.serialInput.Value()),
 		lot:    strings.TrimSpace(s.lotInput.Value()),
 		expiry: strings.TrimSpace(s.expiryInput.Value()),
 	}
+	if why, level := receiveCaptureRefusal(key, c); why != "" {
+		return s.say(why+" · "+s.waysOut(headerRows), level)
+	}
+	s.captures[s.serialCursor] = c
+	return nil
+}
+
+// receiveCaptureRefusal is why a slot cannot be recorded, worded for the key
+// that is trying to leave it, or "" when it can be.
+//
+// ONE wording, read by every arm through storeUnit, because a screen that
+// refuses the same fact in two voices leaves the operator unable to tell
+// whether they hit the same refusal twice. The key LEADS the sentence for the
+// reason every decline on this screen names its key: two keys sharing one
+// sentence redraw each other's pane, which from the operator's seat is a
+// program that stopped responding.
+//
+// A wholly blank slot is NOT refused. It is a deliberate skip — the contract
+// accepts fewer serials than units on purpose, and the gap comes back as
+// serials_outstanding rather than being hidden.
+func receiveCaptureRefusal(key string, c receiveCapture) (string, StatusLevel) {
+	if c.serial == "" && (c.lot != "" || c.expiry != "") {
+		// There is nothing for these two to hang off: the payload carries lot
+		// and expiry ON a serial and nowhere else, so recording the slot would
+		// throw them away without saying so.
+		return key + " needs a serial before a lot or an expiry — a lot hangs off " +
+			"a serial and there is nothing here to hang it on", StatusWarn
+	}
+	if c.expiry != "" && !receiveIsISODate(c.expiry) {
+		return key + " needs an expiry written YYYY-MM-DD — " +
+			strconv.Quote(cellPrefix(c.expiry, 12)) + " is not", StatusError
+	}
+	return "", StatusOK
 }
 
 // keySerial handles serial capture.
@@ -1807,7 +1942,13 @@ func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg, headerRows int) (Screen, tea
 
 	switch k {
 	case "esc":
-		s.storeUnit()
+		// Esc goes FORWARD to the review, so it carries the slot with it — and
+		// a slot the receipt would be refused for must not be what it carries.
+		// storeUnit answers for that; a refusal here leaves the cursor where it
+		// is, with what was typed still in the boxes.
+		if cmd := s.storeUnit(k, headerRows); cmd != nil {
+			return s, cmd
+		}
 		return s, s.toReview(headerRows, "", StatusInfo)
 	case "enter":
 		return s.commitUnit(headerRows)
@@ -1820,10 +1961,7 @@ func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg, headerRows int) (Screen, tea
 	case "pgup", "pgdown":
 		return s, s.pageUnit(k, headerRows)
 	}
-	box := s.currentInput()
-	var cmd tea.Cmd
-	*box, cmd = box.Update(m)
-	return s, cmd
+	return s, s.typeInto(s.currentInput(), m, headerRows)
 }
 
 func (s *ReceiveFormScreen) moveSerialField(dir int) {
@@ -1848,7 +1986,9 @@ func (s *ReceiveFormScreen) pageUnit(k string, headerRows int) tea.Cmd {
 		}
 		return s.say(k+" is already at "+edge+" · "+s.waysOut(headerRows), StatusInfo)
 	}
-	s.storeUnit()
+	if cmd := s.storeUnit(k, headerRows); cmd != nil {
+		return cmd
+	}
 	s.toSerial(next)
 	return s.say(fmt.Sprintf("unit %d of %d", next+1, len(s.serialUnits)), StatusInfo)
 }
@@ -1856,27 +1996,11 @@ func (s *ReceiveFormScreen) pageUnit(k string, headerRows int) tea.Cmd {
 // commitUnit is Enter during capture: record what is in the boxes and move to
 // the next slot.
 //
-// A blank SERIAL with a lot or an expiry typed beside it is REFUSED rather than
-// recorded, because there is nothing for them to hang off — the payload carries
-// lot and expiry on a serial and on nothing else, so recording the slot would
-// throw the two of them away without saying so. A wholly blank slot is a
-// deliberate skip and is allowed: the contract accepts fewer serials than units
-// on purpose, and the gap comes back as serials_outstanding rather than being
-// hidden.
+// Whether the slot MAY be recorded is storeUnit's answer and no longer this
+// arm's — the two checks that used to stand here were bypassed by every other
+// way out of a slot, which is the note on storeUnit.
 func (s *ReceiveFormScreen) commitUnit(headerRows int) (Screen, tea.Cmd) {
 	serial := strings.TrimSpace(s.serialInput.Value())
-	lot := strings.TrimSpace(s.lotInput.Value())
-	expiry := strings.TrimSpace(s.expiryInput.Value())
-
-	if serial == "" && (lot != "" || expiry != "") {
-		return s, s.say("enter needs a serial before a lot or an expiry — "+
-			"a lot hangs off a serial and there is nothing here to hang it on · "+
-			s.waysOut(headerRows), StatusWarn)
-	}
-	if expiry != "" && !receiveIsISODate(expiry) {
-		return s, s.say("enter needs an expiry written YYYY-MM-DD — "+
-			strconv.Quote(cellPrefix(expiry, 12))+" is not · "+s.waysOut(headerRows), StatusError)
-	}
 
 	warn := ""
 	if serial != "" {
@@ -1891,7 +2015,9 @@ func (s *ReceiveFormScreen) commitUnit(headerRows int) (Screen, tea.Cmd) {
 		}
 	}
 
-	s.storeUnit()
+	if cmd := s.storeUnit("enter", headerRows); cmd != nil {
+		return s, cmd
+	}
 	at := s.serialCursor + 1
 	if at >= len(s.serialUnits) {
 		// The LAST unit goes straight to the review, because that is what the
@@ -2264,11 +2390,23 @@ func (s *ReceiveFormScreen) keyWriteOff(m tea.KeyMsg, headerRows int) (Screen, t
 	case "enter":
 		return s, s.say("enter is not the key here — ctrl+x is, so a reflex cannot "+
 			"write a balance off · "+s.waysOut(headerRows), StatusWarn)
+	case "up", "down", "pgup", "pgdown":
+		// The confirm is one field and a question, so there is nothing here for
+		// these to move — but the operator arrives on it from a frame whose bar
+		// named UP/DN, because every other phase of this screen binds the pair,
+		// and they press it out of habit. bubbles' textinput binds neither, so
+		// handing them to the box redrew a byte-for-byte identical pane on the
+		// ONE frame of this screen where the next key writes a balance off.
+		// They decline by name instead, and writeOffBar names neither, so the
+		// bar and the keys still agree.
+		//
+		// Named explicitly rather than left to typeInto below, because what
+		// makes them inert today is a bubbles binding that does nothing without
+		// suggestions — turn suggestions on and the box would start swallowing
+		// Up and Down again, silently, on this frame of all of them.
+		return s, s.decline(k, headerRows)
 	}
-	box := &s.reason
-	var cmd tea.Cmd
-	*box, cmd = box.Update(m)
-	return s, cmd
+	return s, s.typeInto(&s.reason, m, headerRows)
 }
 
 func (s *ReceiveFormScreen) commitWriteOff() (Screen, tea.Cmd) {

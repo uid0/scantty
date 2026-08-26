@@ -160,6 +160,104 @@ func TestReceiveFlow_AScannedCodeFindsItsLine(t *testing.T) {
 	}
 }
 
+// TestReceiveFlow_ACodeOnTwoLinesNamesTheOthersAndTheKeyThatReachesThem.
+//
+// The same part ordered twice — two lines, two expected dates, one code — is an
+// ordinary order, so a scan that resolves to more than one line has to leave
+// the operator able to reach the rest.
+//
+// The note used to say "N lines carry it, enter finds the next", which was
+// false in both halves. Enter cannot mean FIND from a line row (enterAction
+// returns receiveEnterFind only while the cursor is in the SCAN box, and
+// findLine has just moved it off), so the operator who followed the
+// instruction, with a quantity typed as the screen asks, was taken to the
+// REVIEW of a receipt; and the cycling loop behind the sentence looked for the
+// focused row among the matches when the focused row was the scan box, so it
+// never fired and no key on the screen reached the second line at all.
+//
+// Both halves are held here: the OTHER positions are named, the key the note
+// names really walks to them, and Enter from the found line still commits.
+func TestReceiveFlow_ACodeOnTwoLinesNamesTheOthersAndTheKeyThatReachesThem(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+
+	// One code on lines 1 and 3 of a three-line order.
+	shared := func() []omsapi.ReceivingLine {
+		first := receiveWSLine(11, "Box of M3 bolts", 4, 0)
+		second := receiveWSLine(12, "Reel of 24AWG wire", 10, 3)
+		third := receiveWSLine(13, "Box of M3 bolts", 6, 0)
+		third.ScanCodes = first.ScanCodes
+		return []omsapi.ReceivingLine{first, second, third}
+	}
+
+	t.Run("it names the other line and the key that reaches it", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, shared(), 80, 24)
+		r = receiveTypeInto(t, r, "SKU-11")
+		r = receiveKey(t, r, enter)
+
+		if want := receiveRowFirstLine; s.focused != want {
+			t.Fatalf("the scan landed on row %d, want the first match at %d", s.focused, want)
+		}
+		text := receivePaneText(s, 80, 24)
+		if !strings.Contains(text, "line 3 carries it too") {
+			t.Errorf("the scan does not name the other line the code resolved to:\n%s", text)
+		}
+		if !strings.Contains(text, "up/dn walks there") {
+			t.Errorf("the scan does not say how to reach it:\n%s", text)
+		}
+		if strings.Contains(text, "enter finds the next") {
+			t.Errorf("the scan still names enter, which finds nothing from a line row:\n%s", text)
+		}
+
+		// The key it names really gets there: walk down until the cursor is on
+		// the other match, within the rows the form has.
+		reached := false
+		for i := 0; i < receiveRowFirstLine+len(s.lines)+2; i++ {
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+			if s.focused == receiveRowFirstLine+2 {
+				reached = true
+				break
+			}
+		}
+		if !reached {
+			t.Fatalf("up/dn never reached the other line the note named")
+		}
+		if got := receiveCursorMarker(t, s); got != "Box" {
+			t.Errorf("the cursor landed on %q, not on the other line carrying the code", got)
+		}
+
+		// And Enter from a line row still COMMITS, which is why the note cannot
+		// name it as the way to the next match.
+		r = receiveTypeInto(t, r, "2")
+		r = receiveKey(t, r, enter)
+		if s.phase != phaseReview {
+			t.Fatalf("enter from a found line did not commit into the review: phase %v", s.phase)
+		}
+	})
+
+	t.Run("a long run of matches is counted rather than listed", func(t *testing.T) {
+		var lines []omsapi.ReceivingLine
+		for i := 0; i < 6; i++ {
+			l := receiveWSLine(20+i, fmt.Sprintf("Box of M3 bolts, crate %d", i+1), 4, 0)
+			l.ScanCodes = []omsapi.ScanCode{{Code: "SKU-20", Kind: omsapi.ScanCodeItemSKU}}
+			lines = append(lines, l)
+		}
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, lines, 80, 24)
+		r = receiveTypeInto(t, r, "SKU-20")
+		r = receiveKey(t, r, enter)
+
+		text := receivePaneText(s, 80, 24)
+		if !strings.Contains(text, "5 more lines carry it") {
+			t.Errorf("a long run of matches was not counted:\n%s", text)
+		}
+		if !strings.Contains(text, "up/dn walks to them") {
+			t.Errorf("the counted note does not say how to reach them:\n%s", text)
+		}
+		_ = r
+	})
+}
+
 // TestReceiveFlow_ACodeThatMatchesNothingSaysSo, and says WHICH kind of nothing.
 //
 // "No line carries that code" sends the operator back to the label; "no line on

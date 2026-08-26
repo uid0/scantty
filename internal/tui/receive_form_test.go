@@ -101,6 +101,21 @@ func receiveManyLines(n int) []omsapi.ReceivingLine {
 	return out
 }
 
+// receiveSharedCode is an order of n lines that ALL carry one scan code — the
+// same part ordered n times, which is the shape a scan resolving to several
+// lines is really reached through. n is a parameter because the note that comes
+// back lists the other positions up to receiveScanListMax and counts them
+// after, and the two wordings are different lengths.
+func receiveSharedCode(n int) []omsapi.ReceivingLine {
+	out := make([]omsapi.ReceivingLine, 0, n)
+	for i := 0; i < n; i++ {
+		l := receiveWSLine(90+i, fmt.Sprintf("Box of M3 bolts, crate %d", i+1), 4, 0)
+		l.ScanCodes = []omsapi.ScanCode{{Code: "SKU-90", Kind: omsapi.ScanCodeItemSKU}}
+		out = append(out, l)
+	}
+	return out
+}
+
 // receiveTypeInto types a value into the box the cursor is on, a keystroke at a
 // time, the way an operator or a scanner delivers it.
 func receiveTypeInto(t *testing.T, r Root, value string) Root {
@@ -712,6 +727,190 @@ func TestReceive_ALotWithNoSerialIsRefusedRatherThanDropped(t *testing.T) {
 	}
 	if text := receivePaneText(s, 80, 24); !strings.Contains(text, "needs a serial before a lot") {
 		t.Errorf("the refusal does not say why:\n%s", text)
+	}
+	_ = r
+}
+
+// TestReceive_NoWayOutOfASlotRecordsWhatEnterWouldRefuse.
+//
+// The two checks on a capture slot lived in the ENTER arm alone, and Enter is
+// not the only way out of a slot: Esc goes forward to the review and PgUp/PgDn
+// walk between units, and both of those recorded whatever was in the boxes. So
+// the operator who typed a lot number and left with Esc had it recorded against
+// a blank serial, where buildReceipt drops it and nothing on the review says a
+// word; and the operator who typed "12/31/2026" into Expires and left with
+// PgDn sent it to the wire, where a 400 rolls back the WHOLE receipt over one
+// character in an optional field. Both are the exact outcomes the two checks
+// exist to stop, reached through the arms added after them.
+//
+// So the checks moved to storeUnit — the one place a slot is recorded — and
+// this walks every key that leaves a slot through both refusals. It is written
+// as a matrix rather than as the reported case for the reason the defect
+// happened: fixing the arm that was reported leaves the next arm free.
+func TestReceive_NoWayOutOfASlotRecordsWhatEnterWouldRefuse(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	down := tea.KeyMsg{Type: tea.KeyDown}
+
+	type slot struct {
+		name string
+		fill func(t *testing.T, r Root) Root
+		says string
+	}
+	slots := []slot{
+		{"a lot with no serial", func(t *testing.T, r Root) Root {
+			r = receiveKey(t, r, down) // onto Lot
+			return receiveType(t, r, poRuneKey("LOT-9"))
+		}, "needs a serial before a lot"},
+		{"an expiry that is not a date", func(t *testing.T, r Root) Root {
+			r = receiveType(t, r, poRuneKey("SN-1"))
+			r = receiveKey(t, r, down) // onto Lot
+			r = receiveKey(t, r, down) // onto Expires
+			return receiveType(t, r, poRuneKey("12/31/2026"))
+		}, "needs an expiry written YYYY-MM-DD"},
+	}
+	exits := []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{"enter", enter},
+		{"esc", tea.KeyMsg{Type: tea.KeyEsc}},
+		{"pgdown", tea.KeyMsg{Type: tea.KeyPgDown}},
+	}
+
+	for _, exit := range exits {
+		for _, sl := range slots {
+			t.Run(exit.name+" on "+sl.name, func(t *testing.T) {
+				fake := &receiveFake{}
+				r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
+				s.qty[2].SetValue("2") // two units, so PgDn has somewhere to go
+				r = receiveKey(t, r, enter)
+				if s.phase != phaseSerial || len(s.serialUnits) != 2 {
+					t.Fatalf("capture did not open: phase %v, %d units", s.phase, len(s.serialUnits))
+				}
+				r = sl.fill(t, r)
+				serial, lot, expiry := s.serialInput.Value(), s.lotInput.Value(), s.expiryInput.Value()
+
+				r = receiveKey(t, r, exit.key)
+
+				if s.phase != phaseSerial {
+					t.Errorf("%s left capture on phase %v, carrying a slot the receipt "+
+						"would be refused for", exit.name, s.phase)
+				}
+				if s.serialCursor != 0 {
+					t.Errorf("%s walked off the slot anyway: cursor %d", exit.name, s.serialCursor)
+				}
+				// What was typed stays in the boxes, so it can be fixed in place.
+				if got := s.serialInput.Value(); got != serial {
+					t.Errorf("%s discarded the serial: %q, want %q", exit.name, got, serial)
+				}
+				if got := s.lotInput.Value(); got != lot {
+					t.Errorf("%s discarded the lot: %q, want %q", exit.name, got, lot)
+				}
+				if got := s.expiryInput.Value(); got != expiry {
+					t.Errorf("%s discarded the expiry: %q, want %q", exit.name, got, expiry)
+				}
+				if got := s.captures[0]; got != (receiveCapture{}) {
+					t.Errorf("%s recorded the refused slot anyway: %+v", exit.name, got)
+				}
+				// The refusal NAMES the key that was pressed: three keys share
+				// one wording, so without the lead two of them would answer
+				// with the sentence the third had already drawn.
+				if text := receivePaneText(s, 80, 24); !strings.Contains(text, exit.name+" "+sl.says) {
+					t.Errorf("the refusal does not name %q and say why:\n%s", exit.name, text)
+				}
+				if got := fake.sent(); len(got) != 0 {
+					t.Errorf("a refused slot still reached the wire: %+v", got)
+				}
+				_ = r
+			})
+		}
+	}
+}
+
+// TestReceive_ACorrectedSlotStillReachesTheWire is the other half: the refusal
+// is a refusal to RECORD, not a dead end. Fixing the box and pressing the same
+// key must go through and carry the whole slot.
+func TestReceive_ACorrectedSlotStillReachesTheWire(t *testing.T) {
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
+	s.qty[2].SetValue("1")
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = receiveType(t, r, poRuneKey("SN-1"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown}) // Lot
+	r = receiveType(t, r, poRuneKey("LOT-9"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown}) // Expires
+	r = receiveType(t, r, poRuneKey("12/31/2026"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	if s.phase != phaseSerial {
+		t.Fatalf("the malformed expiry was not refused: phase %v", s.phase)
+	}
+	for range "12/31/2026" {
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	r = receiveType(t, r, poRuneKey("2026-12-31"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	if s.phase != phaseReview {
+		t.Fatalf("the corrected slot was still refused: phase %v", s.phase)
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	sent := fake.sent()
+	if len(sent) != 1 || len(sent[0].Items) != 1 {
+		t.Fatalf("want one receipt naming one line, got %+v", sent)
+	}
+	got := sent[0].Items[0].Serials
+	if len(got) != 1 || got[0].SerialNumber != "SN-1" || got[0].Lot != "LOT-9" ||
+		got[0].ExpirationDate != "2026-12-31" {
+		t.Errorf("the corrected slot did not reach the wire whole: %+v", got)
+	}
+	_ = r
+}
+
+// TestReceive_TheConfirmAnswersTheKeysTheOperatorArrivesUsing.
+//
+// keyWriteOff bound esc, ctrl+x and enter and handed everything else to the
+// reason box, and bubbles' textinput binds neither Up nor Down — so on the ONE
+// frame of this screen where the next key writes a balance off, the pair
+// redrew a byte-for-byte identical pane. It is the pair every route into the
+// confirm has just been using: keyQty, keySerial, keyBlocked and keyReview all
+// bind it and all four bars name UP/DN.
+//
+// They decline BY NAME here, and writeOffBar names neither, so the bar and the
+// keys still agree about what acts.
+func TestReceive_TheConfirmAnswersTheKeysTheOperatorArrivesUsing(t *testing.T) {
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveOrder(), 80, 24)
+	r = receiveGoToLine(t, r, s, 0)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlK})
+	if s.phase != phaseWriteOff {
+		t.Fatalf("ctrl+k did not open the confirm: phase %v", s.phase)
+	}
+	named := receiveNamedKeys(t, s.bar())
+	for _, k := range []string{"up", "down", "pgup", "pgdown"} {
+		if named[k] {
+			t.Fatalf("the confirm's bar names %q, so this test is checking the wrong "+
+				"direction: %+v", k, s.bar())
+		}
+	}
+	// In SEQUENCE, with no reset between presses: a decline that did not name
+	// its key would let the second press redraw the first one's pane.
+	before := receivePaneText(s, 80, 24)
+	for _, k := range []string{"up", "down", "pgup", "pgdown"} {
+		r = receiveKey(t, r, poPhaseKeyMsg(k))
+		text := receivePaneText(s, 80, 24)
+		if !strings.Contains(text, k+" does nothing here") {
+			t.Errorf("%q on the confirm does not say so:\n%s", k, text)
+		}
+		if text == before {
+			t.Errorf("%q on the confirm redrew a byte-for-byte identical pane", k)
+		}
+		before = text
+	}
+	if s.phase != phaseWriteOff {
+		t.Errorf("a declining key left the confirm: phase %v", s.phase)
+	}
+	if got := fake.closedShort(); len(got) != 0 {
+		t.Errorf("a declining key wrote a balance off: %+v", got)
 	}
 	_ = r
 }
@@ -1477,6 +1676,21 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 		probe{"enter with nothing receivable", nil, nil, []tea.KeyMsg{enter}, false},
 		probe{"enter on an unparseable quantity", receiveManyLines(9),
 			map[int]string{8: "two"}, []tea.KeyMsg{enter}, false},
+		// The capture refusals, through the LONGEST key that can reach them:
+		// the key leads the sentence, so pgdown is the widest each one gets.
+		probe{"pgdown on a lot with no serial", receiveSweepLines(), map[int]string{2: "2"},
+			[]tea.KeyMsg{enter, down, poRuneKey("LOT-9"), poPhaseKeyMsg("pgdown")}, false},
+		probe{"pgdown on an expiry that is not a date", receiveSweepLines(), map[int]string{2: "2"},
+			[]tea.KeyMsg{enter, poRuneKey("SN-1"), down, down,
+				poRuneKey("12/31/2026"), poPhaseKeyMsg("pgdown")}, false},
+		// The scan note that names the OTHER lines a code resolved to. Listed
+		// at the maximum the note spells out, and counted one past it, because
+		// the two wordings are different lengths and the longer one is what a
+		// 51-column pane has to hold.
+		probe{"a code on receiveScanListMax+1 lines", receiveSharedCode(receiveScanListMax + 1), nil,
+			[]tea.KeyMsg{poRuneKey("SKU-90"), enter}, false},
+		probe{"a code on more lines than the note lists", receiveSharedCode(receiveScanListMax + 2), nil,
+			[]tea.KeyMsg{poRuneKey("SKU-90"), enter}, false},
 	)
 
 	for _, p := range probes {
