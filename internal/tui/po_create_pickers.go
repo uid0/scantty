@@ -198,7 +198,7 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 			return Status(s.itemSuppliersNote.flash(), s.itemSuppliersNote.level)
 		}
 		return s.itemSuppliersNote.say(
-			fmt.Sprintf("%d catalog item(s) loaded · / searches", len(m.rows)), StatusOK)
+			fmt.Sprintf("%d catalog item(s) loaded", len(m.rows)), StatusOK)
 	case poAssetsLoadedMsg:
 		if m.seq != s.assetsSeq {
 			// An older lookup for this same supplier. Dropped whole, flag

@@ -1274,7 +1274,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg, headerRows i
 		// has at least one line (the backend rejects an empty PO), and the bar
 		// names D for exactly that long.
 		if len(s.lines) == 0 {
-			return s, s.sourceNote.say("nothing staged yet · R, I, A or F adds a line", StatusWarn)
+			return s, s.sourceNote.say("Nothing staged yet.", StatusWarn)
 		}
 		s.phase = poPhaseReview
 		s.clampReviewCursor()

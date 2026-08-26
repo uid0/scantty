@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -288,12 +289,21 @@ func TestPOCreate_EveryPhaseNamesExactlyTheKeysThatWork(t *testing.T) {
 					// the set for the review cart, where j types into the notes
 					// field and the cursor lands on the LAST line, so nothing
 					// else would let `down` move.
-					for _, probe := range [][]string{nil, {"down"}, {"up"}} {
+					for i, probe := range [][]string{nil, {"down"}, {"up"}} {
 						pr, ps := fresh(probe)
 						before := poPickerState(ps)
 						_, cmd := pr.Update(poPhaseKeyMsg(k))
 						if poPickerState(ps) != before || poCmdActs(cmd) {
 							acted = true
+						}
+						if i == 0 {
+							// The NOTE a press leaves behind is a body line and
+							// is held to the one-surface rule too. `d` on an
+							// empty cart is the state whose note named four
+							// keys, and nothing in the package had ever
+							// rendered it.
+							poAssertBodyNamesNoKey(t,
+								fmt.Sprintf("%s after %q", c.name, k), ps, height)
 						}
 					}
 					switch {
@@ -1570,4 +1580,107 @@ func poSameValueNoLessShown(before, after string) bool {
 	stem := func(v string) string { return strings.TrimSuffix(v, "…") }
 	b, a := stem(before), stem(after)
 	return len(a) >= len(b) && strings.HasPrefix(a, b)
+}
+
+// poBarSpellableTokens is every token the ACTION BAR can spell, lower-cased,
+// derived from poBarKeyNames — the same table both purchasing bar sweeps read.
+//
+// Derived rather than listed, because the roster it replaces could only ever
+// find duplication somebody had already imagined: six phrases ("esc closes",
+// "r reloads", "/=Search"…) chosen by hand, inside the check built to enforce
+// the one-surface rule. Two notes naming keys sat under it for the whole run.
+var poBarSpellableTokens = func() map[string]bool {
+	out := map[string]bool{}
+	for token := range poBarKeyNames {
+		out[strings.ToLower(token)] = true
+	}
+	return out
+}()
+
+// poBarKeysEnglishAlso are the single-letter keys that are also ordinary
+// English words, matched in upper case only. See poBodyKeyClaims.
+var poBarKeysEnglishAlso = map[string]bool{"a": true, "i": true}
+
+// poBodyKeyClaims returns the body lines that NAME a key the bar can spell.
+//
+// SINGLE-LETTER AMBIGUITY, and which way it errs. A bare `a` is also the
+// English article, a bare `/` is also the divider in "current 0 / min 0", and a
+// bare `[` is also half a checkbox — so a naive token scan matches every row on
+// the screen. It is resolved the way the sibling parser poBarNamedKeys resolved
+// the same problem: a key is read only at the START of a segment, segments
+// being the ` · ` joints every note on this screen is written and folded at.
+// A key claim is "<key> <what it does>"; prose that merely CONTAINS a letter
+// carries it mid-sentence.
+//
+// Two further rules, each stated once rather than curated per sentence:
+//
+//   - a bracketed span is a MARK, not a key: `[ ]` and `[x]` on a reorder row,
+//     `[Inventory item]` on a cart row, `[reorder pending]` on a queue row. The
+//     asset pager's `[` and `]` name themselves UNPAIRED, so removing paired
+//     spans leaves a real claim standing.
+//   - a line carrying jdeLeader is a LABEL/VALUE row, whose key column (the `g`
+//     on `g  Agreement ..... `) is a re-reading of what the bar says on the same
+//     frame, governed by TestPOSubmit_TheFrozenChooserHeaderDropsTheKeyColumn.
+//     What this scan is for is a key named in PROSE, the second surface.
+//
+// The match is CASE-INSENSITIVE — "R, I, A or F" names r/i/a/f whatever case it
+// is written in — with ONE stated exception, poBarKeysEnglishAlso: `a` and `i`
+// are also the English article and pronoun, and a note may legitimately open a
+// segment with either ("a lookup is still out"). Those two are matched in UPPER
+// case only.
+//
+// That exception is a NAMED RESIDUAL GAP rather than a tidy-up, and it has a
+// sibling: a note writing a LOWER-case "a …" or "i …" as a key claim slips
+// through, and so does one whose FIRST segment is a bare claim rather than a
+// lead. Both are bounded and written down here, which is the whole difference
+// from the roster of six hand-picked phrases this replaces — that one's gaps
+// were everything nobody had thought of, and two notes naming keys sat in them
+// for the length of the run.
+func poBodyKeyClaims(t *testing.T, s *PurchaseOrderCreateScreen, h int) []string {
+	t.Helper()
+	marks := regexp.MustCompile(`\[[^\[\]]*\]`)
+	var out []string
+	for _, line := range poPaneLinesAt(t, s, h) {
+		if strings.HasPrefix(strings.TrimSpace(line), "----") {
+			break
+		}
+		if strings.Contains(line, jdeLeader) {
+			continue
+		}
+		for i, segment := range strings.Split(marks.ReplaceAllString(line, " "), "·") {
+			if i == 0 {
+				// The LEAD, which decision 4 allows to name a key and
+				// AGENTS.md requires to: "ctrl+x removes nothing" is a
+				// statement about the press just made, and naming the key is
+				// what stops two keys answering with one sentence and redrawing
+				// an identical pane. What the rule forbids is a CLAIM ABOUT
+				// WHAT WORKS, and those ride in a later segment — both of the
+				// notes this scan was written for did.
+				continue
+			}
+			fields := strings.Fields(segment)
+			if len(fields) == 0 {
+				continue
+			}
+			head := strings.Trim(fields[0], ",.;:!?()")
+			if head == "" || poBarKeysEnglishAlso[head] {
+				continue
+			}
+			if poBarSpellableTokens[strings.ToLower(head)] {
+				out = append(out, line)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// poAssertBodyNamesNoKey is the one-surface rule read off the rendered pane.
+func poAssertBodyNamesNoKey(t *testing.T, what string, s *PurchaseOrderCreateScreen, h int) {
+	t.Helper()
+	for _, line := range poBodyKeyClaims(t, s, h) {
+		t.Errorf("%s: a body line names a key the bar can spell — the bar is the one "+
+			"surface that names a key:\n\t%q\nwhole pane:\n%s",
+			what, line, strings.Join(poPaneLinesAt(t, s, h), "\n"))
+	}
 }

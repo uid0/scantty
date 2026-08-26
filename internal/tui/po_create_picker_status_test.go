@@ -2539,6 +2539,12 @@ func TestPOPickers_PaneNamesExactlyTheKeysThatWork(t *testing.T) {
 					}
 				}
 				poAssertFits(t, p.name, screen)
+				// The one-surface rule on the NON-typing states. Both notes
+				// that named keys lived out here — an empty source chooser and
+				// a loaded catalog — while the only body scan in the package
+				// ran over the TYPING states, which is a guard scoped to where
+				// somebody expected the defect rather than to where it was.
+				poAssertBodyNamesNoKey(t, p.name, screen, height)
 
 				// Probed from more than one position, because j does nothing at
 				// the bottom of a list and k nothing at the top: a key is dead
@@ -5074,15 +5080,10 @@ func TestPOSearchBoxes_TheBarNamesExactlyTheKeysThatWork(t *testing.T) {
 				}
 				// And the BODY names none of them: one surface, which is what
 				// the five tests this replaces were each policing a corner of.
-				for _, tok := range []string{"esc closes", "esc cancels", "b picks another",
-					"r retries", "r reloads", "/=Search", "/ edits", "enter picks",
-					"enter runs", "j/k"} {
-					if n := poPaneBodyCount(t, screen, h, tok); n != 0 {
-						t.Errorf("a body line names %q %d time(s); the bar is the one surface "+
-							"that names a key:\n%s", tok, n,
-							strings.Join(poPaneLinesAt(t, screen, h), "\n"))
-					}
-				}
+				// DERIVED from poBarKeyNames — the roster of six phrases that
+				// used to stand here could only find duplication somebody had
+				// already thought of, and two notes naming keys sat under it.
+				poAssertBodyNamesNoKey(t, st.name, screen, h)
 
 				for _, k := range poKeySpace() {
 					if (poIsPrintable(k) || poFieldKeys[k]) && !named[k] {
