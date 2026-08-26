@@ -1962,8 +1962,8 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg, headerRows i
 //	the action bar        — []actionBarItem through renderActionBarWrapped.
 //
 // WHAT MOVED, and why it is the same screen. The bar is at the BOTTOM and names
-// keys rather than spelling sentences; the supplier line, the four line-source
-// rows, the optional g/w/c rows and the review phase's PO-notes box are PINNED
+// keys rather than spelling sentences; the supplier line, the optional g/w/c
+// values, what the cart comes to and the review phase's PO-notes box are PINNED
 // above the body; and the body is the thing the operator moves a cursor
 // through — the cart on the source chooser and on review, the rows on each
 // picker, the fields on the line form. The keys that act on a row (Ctrl-E,
@@ -2152,12 +2152,12 @@ func (s *PurchaseOrderCreateScreen) workingLine() string {
 //
 //	decorative — the blank separators. Nothing names them and nothing reads
 //	             them, so they go first.
-//	context    — the supplier line, the four line-source labels, the optional
-//	             agreement / work-order / committee values, the "still looking
-//	             up…" line, the failure DETAIL. Within the rank the layer gives
-//	             ground from the END, which is why the optional attribution
-//	             rows sit last: they are the lowest-value block on the frame
-//	             and were the first thing the old order dropped too.
+//	context    — the supplier line, the failure DETAIL, the optional agreement /
+//	             work-order / committee values, the "still looking up…" line
+//	             under them, and what the cart comes to. Within the rank the
+//	             layer gives ground from the END, which is why the optional
+//	             attribution rows sit last: they are the lowest-value block on
+//	             the frame and were the first thing the old order dropped too.
 //	essential  — exactly one row per phase, and it is the row the operator
 //	             would ACT DIFFERENTLY without: the screen's answer to the last
 //	             keypress on every phase but two, the SEARCH BOX on a picker
@@ -2521,6 +2521,21 @@ func (s *PurchaseOrderCreateScreen) lineSourceName() string {
 // row carries. The detail is an OMS response body, so it is CUT to what this
 // block can hold before it is folded — folding a multi-KB gateway page is work
 // whose result is thrown away, on a header rebuilt on every keystroke.
+//
+// Whatever the two cuts drop is MARKED, and the mark is spent on the LAST of
+// the block's OWN rows rather than on a fourth one. This is a pinned header
+// block: its height feeds bodyAvailForBar, so a block that grew a row when a
+// reply landed could change whether the bar names PgUp/PgDn — the circularity
+// receive_form.go's receiveNoteRows warns about. An error cut off mid-token
+// with nothing saying more exists is the defect this conversion has spent its
+// whole length removing, and this is the one step where losing the reason
+// costs the operator the order.
+//
+// TWO wordings, because the two cuts know different things. The FOLD knows
+// exactly how many lines it left behind, so it names the number. The
+// cellPrefix bound does not: past it the fold only ever saw a PREFIX, so a
+// count would be true of the prefix and not of the error — and naming a number
+// that is only true of a fraction is the same false claim as marking nothing.
 func (s *PurchaseOrderCreateScreen) failLines() []string {
 	_, detail := s.failure()
 	if detail == "" {
@@ -2531,19 +2546,35 @@ func (s *PurchaseOrderCreateScreen) failLines() []string {
 		width = 12
 	}
 	trimmed := cellPrefix(detail, poFailDetailRows*width)
-	out := make([]string, 0, poFailDetailRows)
-	for i, line := range pickerWrap(trimmed, width) {
-		if i >= poFailDetailRows {
-			break
+	bounded := trimmed != detail
+	folded := pickerWrap(trimmed, width)
+
+	keep, mark := folded, ""
+	if bounded || len(folded) > poFailDetailRows {
+		if len(keep) > poFailDetailRows-1 {
+			keep = keep[:poFailDetailRows-1]
 		}
+		mark = "… more of the error than this pane can hold"
+		if !bounded {
+			mark = fmt.Sprintf("… %d more line(s) of the error", len(folded)-len(keep))
+		}
+	}
+	out := make([]string, 0, poFailDetailRows)
+	for _, line := range keep {
 		out = append(out, jdeIndent+StyleMuted.Render(line))
+	}
+	if mark != "" {
+		// Bounded like every other line here: the row that says something was
+		// cut may not be the row that runs off the pane.
+		out = append(out, jdeIndent+StyleMuted.Render(cellPrefix(mark, width)))
 	}
 	return out
 }
 
 // poFailDetailRows caps that detail. The sentence naming WHAT failed is on the
 // status row and never gives; what a short terminal loses is the tail of the
-// gateway's HTML. Same bound, same reason, as po_add_line's.
+// gateway's HTML, and the last of these rows says so. Same bound, same reason,
+// as po_add_line's — whose own failLines does not yet carry the mark.
 const poFailDetailRows = 3
 
 // ---------------------------------------------------------------------------
@@ -3223,8 +3254,9 @@ func (s *PurchaseOrderCreateScreen) lineFieldCaveat(i int) string {
 // The cart
 // ---------------------------------------------------------------------------
 
-// cartBody is the staged cart, one navigable row per line, with the running
-// total tagged onto the LAST row.
+// cartBody is the staged cart, one navigable row per line and nothing else.
+// What the cart COMES TO is not here: it is pinned above the block by
+// cartTotalRows, for the reason recorded there.
 //
 // It is the same block on the source chooser and on review, and it is where the
 // biggest piece of this screen's own machinery went. The cart used to be
@@ -3237,10 +3269,6 @@ func (s *PurchaseOrderCreateScreen) lineFieldCaveat(i int) string {
 // construction and there is no such case: Ctrl-E and Ctrl-X can no longer be
 // pressed against a line the operator cannot see, which is the wrong-purchase-
 // order failure the whole apparatus existed to prevent.
-//
-// The TOTAL rides on the last row rather than under the block, so a body that
-// overflows loses it from the tail — where the operator can bring it back with
-// End — rather than stranding it below a window that cannot reach it.
 func (s *PurchaseOrderCreateScreen) cartBody() *jdeLines {
 	if len(s.lines) == 0 {
 		return poEmptyBody(s.paneWidth(), "Nothing staged yet.")

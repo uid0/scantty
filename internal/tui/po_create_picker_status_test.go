@@ -109,6 +109,13 @@ type poPickFake struct {
 	// the source chooser's attribution row — a row redrawn on every keystroke.
 	workOrdersErrBody string
 
+	// createErrBody replaces the gateway page failCreate answers with. The
+	// failure block's two cuts drop content for different reasons and mark it
+	// with different wordings, so a fixture has to be able to land on either
+	// side of the cellPrefix bound rather than only on the far side of it,
+	// which is where poGatewayHTML falls.
+	createErrBody string
+
 	// failCreate answers the submit with a gateway page rather than JSON.
 	// omsapi.parseError puts the ENTIRE raw body in APIError.Message when the
 	// envelope carries no code, which is what makes the failure line on the
@@ -312,8 +319,12 @@ func (f *poPickFake) handler() http.HandlerFunc {
 			envelope(rows, len(rows))
 		case strings.Contains(r.URL.Path, "/purchase-orders/"):
 			if f.failCreate {
+				body := poGatewayHTML
+				if f.createErrBody != "" {
+					body = f.createErrBody
+				}
 				w.WriteHeader(http.StatusBadGateway)
-				_, _ = w.Write([]byte(poGatewayHTML))
+				_, _ = w.Write([]byte(body))
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 900, "po_number": "PO-900"})

@@ -1043,11 +1043,11 @@ func jdeBodyAvail(pane, budget, headerRows int) int {
 // it was the wrong lever, because it moved the layout of nineteen screens at
 // every height to buy a row at one height.
 //
-// So the layer takes the rank and the builders keep their natural layout. The
-// New PO chooser has given ground in a stated order for a while
-// (sourceAttributionShown / sourceTitleShown, and AGENTS.md's "sacrifice in a
-// stated order — do not shave words"); this is that idea applied to the pinned
-// header, in the layer, once.
+// So the layer takes the rank and the builders keep their natural layout: the
+// two screens above are the whole justification, and the answer is written once
+// here rather than a third time in each of them. The New PO chooser is a
+// CONSUMER of it — it arrived carrying a hand-rolled sacrifice order of its own
+// and gave it up for this one — not the precedent for it.
 type jdeHeadRank int
 
 const (

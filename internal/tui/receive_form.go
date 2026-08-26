@@ -1400,13 +1400,17 @@ const receiveNoteRows = 3
 // receiveNoteDropMark is what the note leaves behind when it does not fit.
 //
 // Every other bound on these screens marks what it gave up — poRowDropMark on a
-// picker row, jdeLines.Window's hidden-row count, fitCell's ellipsis — and this
-// one
-// used to be the exception: it stopped at receiveNoteRows and drew nothing to
-// say so. What it drops is the TAIL, which on these sentences is where the key
-// that gets the operator out is named, and noteLines' own comment says a
-// clipped hint is worse than none because they believe they read it. A silent
-// cut made that sentence false of the code two lines under it.
+// picker row, jdeLines.Window's hidden-row count, fitCell's ellipsis,
+// po_create.go's failLines — with ONE known exception, filed separately:
+// po_add_line.go's failLines still cuts an OMS error body to three rows in
+// silence. Naming it keeps this sentence true and leaves the gap findable;
+// widening the words until they happened to cover it would not.
+//
+// This one used to be the exception too: it stopped at receiveNoteRows and drew
+// nothing to say so. What it drops is the TAIL, which on these sentences is
+// where the key that gets the operator out is named, and noteLines' own comment
+// says a clipped hint is worse than none because they believe they read it. A
+// silent cut made that sentence false of the code two lines under it.
 const receiveNoteDropMark = " …"
 
 // receiveBodyFloor is the body's target floor once the terminal has told us how

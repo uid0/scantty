@@ -1278,3 +1278,101 @@ func TestPOAssetPicker_AnEscapeHeavyQueryKeepsThePageOnTheShowingRow(t *testing.
 		})
 	}
 }
+
+// poFailMarkCount / poFailMarkBound are the two things the failure block says
+// when it has dropped part of an OMS error body. They are different sentences
+// because the two cuts know different things: the fold knows exactly what it
+// left behind, the cellPrefix bound does not.
+const (
+	poFailMarkCount = "more line(s) of the error"
+	poFailMarkBound = "more of the error than this pane can hold"
+)
+
+// poSubmitFailure drives a real failed submit — stage one line, review, enter —
+// and hands back the screen sitting on the failure it produced.
+func poSubmitFailure(t *testing.T, body string, h int) (Root, *PurchaseOrderCreateScreen) {
+	t.Helper()
+	fake := &poPickFake{catalog: 2, reorder: 0, failCreate: true, createErrBody: body}
+	r, screen := poPickerAtSize(t, fake, 80, h)
+	r = poStageCostlessLine(t, r, screen)
+	r = key(t, r, poPhaseKeyMsg("d"))
+	r = key(t, r, poPhaseKeyMsg("enter"))
+	if screen.errDetail == "" {
+		t.Fatalf("the submit did not fail: phase %v errMsg %q", screen.phase, screen.errMsg)
+	}
+	return r, screen
+}
+
+// TestPOSubmit_AClippedFailureSaysWhatItDropped.
+//
+// The failure block cuts an unbounded OMS response body twice — cellPrefix
+// bounds it before folding, and the fold's tail is dropped to fit three rows —
+// and after the conversion it did neither out loud. The operator read three
+// muted rows of `<!DOCTYPE html>…` ending mid-token with nothing saying more of
+// it existed, on the one step where losing the reason costs the whole order.
+// pickerFail, the renderer this block replaced, marked exactly this surface.
+//
+// All THREE states, because the marker's honesty is the point and two of them
+// would pass on a block that always marks or never does: past the cellPrefix
+// bound the count would only be true of the prefix that was folded, so the
+// sentence carries no number; under it the count is exact and is named; and a
+// body that fits carries no marker at all.
+func TestPOSubmit_AClippedFailureSaysWhatItDropped(t *testing.T) {
+	// Four thirty-cell tokens: under the cellPrefix bound (147 cells at 80
+	// columns) and past what three folded rows hold, which is the only body
+	// shape that reaches the exact-count arm. A gateway page cannot — it is
+	// over the bound — so a fixture list of one would have left that arm untried.
+	chunky := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb " +
+		"cccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddd"
+
+	for _, tc := range []struct {
+		name       string
+		body       string
+		want, deny string
+	}{
+		{"a gateway page past the cellPrefix bound", poGatewayHTML,
+			poFailMarkBound, poFailMarkCount},
+		{"a body the fold outruns", chunky,
+			poFailMarkCount, poFailMarkBound},
+		{"a body that fits", "the upstream server refused the connection",
+			"", ""},
+	} {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", tc.name, h), func(t *testing.T) {
+				_, screen := poSubmitFailure(t, tc.body, h)
+
+				// The block may never grow a fourth row: its height feeds
+				// bodyAvailForBar, so a block that grew when a reply landed
+				// could change whether the bar names PgUp/PgDn.
+				if n := len(screen.failLines()); n > poFailDetailRows {
+					t.Errorf("the failure block is %d rows, over its %d-row budget",
+						n, poFailDetailRows)
+				}
+
+				if tc.want == "" {
+					for _, mark := range []string{poFailMarkCount, poFailMarkBound} {
+						if poPaneHasLine(t, screen, mark) {
+							t.Errorf("a failure that fits still claims it dropped something (%q):\n%s",
+								mark, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+						}
+					}
+					// …and the whole reason is on the pane, which is what makes
+					// the absence above a fact about the marker rather than
+					// about a block that drew nothing.
+					poWantPaneLine(t, screen, "upstream server refused")
+					poAssertFits(t, "a failure that fits", screen)
+					return
+				}
+				if !poPaneHasLine(t, screen, tc.want) {
+					t.Errorf("the failure dropped part of the body and does not say so (%q):\n%s",
+						tc.want, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				}
+				if poPaneHasLine(t, screen, tc.deny) {
+					t.Errorf("the failure marks its cut with the OTHER cut's wording (%q):\n%s",
+						tc.deny, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				}
+				poAssertFits(t, tc.name, screen)
+			})
+		}
+	}
+}
