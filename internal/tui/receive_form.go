@@ -46,12 +46,26 @@
 // # The key scheme is the columnar one
 //
 //	Enter        FIND on the scan row, RECEIVE from anywhere else
-//	Up/Down      move between rows
-//	Tab/Shift-Tab  the same, the alias ~20 columnar forms name as UP/DN=Fields
-//	PgUp/PgDn    page, when the body is taller than the pane
+//	Up/Down      move between rows (the three FIELDS of a unit, on capture)
+//	Tab/Shift-Tab  the same, but ONLY on the phases with fields
+//	PgUp/PgDn    page, when the body is taller than the pane (units, on capture)
 //	Ctrl+K       close the focused LINE short (a confirm, then the server)
 //	Ctrl+R       mark the whole order received (a confirm, then the server)
+//	Ctrl+E       back to serial capture from the review
+//	r            re-read the worksheet (the blocked frame, and the summary)
 //	Esc          back to the order (and the bar says when that DISCARDS entry)
+//
+// The Tab alias is the one line of that table with an exception, and the
+// exception is the point: it rides alongside Up/Down on a sheet WITH FIELDS,
+// which is what roughly twenty columnar forms name as UP/DN=Fields — so on the
+// read-only BLOCKED and REVIEW frames, which have no fields and only a row
+// cursor, it is deliberately unbound and answers "tab does nothing here". A bar
+// that named UP/DN while Tab also moved the cursor would be advertising one key
+// and honouring two.
+//
+// Ctrl+K and Ctrl+R are named by the bar for exactly as long as they would act,
+// and a typed quantity is one of the things that stops them — see
+// lineWriteOffRefusal for why a write-off refuses rather than absorbing it.
 //
 // # A mismatch is recorded and flagged, never rounded
 //
@@ -1860,15 +1874,7 @@ func receiveNoteClip(v string, room int) string {
 // instruction that gets the operator out, and the instruction is what a long
 // code used to push off the pane.
 func (s *ReceiveFormScreen) noScanMatchNote(code string) string {
-	coded := 0
-	if s.sheet != nil {
-		for _, l := range s.sheet.Lines {
-			if len(l.ScanCodes) > 0 {
-				coded++
-			}
-		}
-	}
-	if coded == 0 {
+	if s.codedLines() == 0 {
 		// The CODE is not named in this one, and that is deliberate rather than
 		// a saving: the fact is about the ORDER, not about what was scanned —
 		// no code whatever could find a line here — so naming it would spend
@@ -1877,6 +1883,29 @@ func (s *ReceiveFormScreen) noScanMatchNote(code string) string {
 	}
 	return fmt.Sprintf("%q matches no line here — check the label, or pick "+
 		"with up/dn", code)
+}
+
+// codedLines is how many lines of the ORDER carry a scannable identifier at
+// all, settled ones included.
+//
+// It is a fact about the order rather than about the receivable half of it, and
+// both sentences that ask it need it that way: the scan hint uses it to tell
+// "nothing here carries a code" apart from "the codes here are all on settled
+// lines", and the no-match note uses it to tell "that code is wrong" apart from
+// "no code could have worked". One walk, because two copies of a count is two
+// answers waiting to disagree — which is the defect the hint's own count was
+// just corrected for.
+func (s *ReceiveFormScreen) codedLines() int {
+	if s.sheet == nil {
+		return 0
+	}
+	n := 0
+	for _, l := range s.sheet.Lines {
+		if len(l.ScanCodes) > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // ---------------------------------------------------------------------------
@@ -2206,6 +2235,21 @@ func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg, headerRows int) (Screen, tea
 			// — and binding Up as well while the bar named only PgUp is the
 			// bar-honesty rule broken in the direction that is hardest to see,
 			// a key that works and is advertised nowhere.
+			//
+			// The GUARD matches serialBar's, which names PgUp only when the
+			// queue has a unit to step back to. They disagreed: the bar tested
+			// the queue and the arm did not, so on an empty queue this walked
+			// serialCursor to -1, currentInput's past-the-end test went false,
+			// focusCurrent armed the serial box, and serialBody indexed
+			// serialUnits[-1] and panicked. Nothing can produce that state
+			// today — beginReceipt reviews instead of capturing when the queue
+			// is empty, and Ctrl+E declines on the same test — but "unreachable
+			// because of what some other arm happens to do" is the property
+			// currentInput's own comment refuses to rest on, and a refactor is
+			// exactly what makes it reachable.
+			if len(s.serialUnits) == 0 {
+				return s, s.decline(k, headerRows)
+			}
 			s.toSerial(len(s.serialUnits) - 1)
 			return s, s.say("back on unit "+strconv.Itoa(len(s.serialUnits))+" of "+
 				strconv.Itoa(len(s.serialUnits)), StatusInfo)
@@ -2587,18 +2631,108 @@ func fmtOrderName(po *omsapi.PurchaseOrder, id string) string {
 // Writing a balance off
 // ---------------------------------------------------------------------------
 
+// A WRITE-OFF NEVER CONSUMES A TYPED QUANTITY.
+//
+// Both refusals below exist for one reason, and it is the reason refusing beats
+// absorbing: a close-short cannot be taken back from this client. The
+// correction is `reopen-short/`, which this change decodes and deliberately
+// does not drive — so a balance written off over the top of a number the
+// operator had just typed is unrecoverable HERE, and the operator would have no
+// way of knowing it happened.
+//
+// It happened like this. Line 2 is ordered 10, received 3. The operator walks
+// to it, types 8 (the rest of the shipment is on the bench), and presses Ctrl+K
+// — which the bar names exactly there, because that is the only row it acts on.
+// Every figure the confirm then showed was the SERVER's: "closing line 2 short
+// leaves 7 units unreceived for good". Ctrl+X posted close-short and nothing
+// else. The line settled at received 3, the 8 was never sent, and no frame on
+// the way through said a word about it.
+//
+// Ctrl+R is the same shape with the blast radius of the whole order, and its
+// label makes it worse: "Mark received" is the phrase an operator is most
+// likely to read as "book what I typed and finish up".
+//
+// Absorbing the quantity — receiving it and then closing the rest — is NOT what
+// these do. That is a second write on a key that says it does one thing, and it
+// is out of scope besides. They refuse, they say what is in the way, and what
+// was typed stays exactly where it was typed.
+
+// lineWriteOffRefusal is why Ctrl+K cannot act, or "" when it can.
+//
+// ONE predicate, read by the ARM and by qtyBarItems, so the bar names the key
+// for exactly as long as it would act. That is not tidiness: a bar naming a key
+// whose whole effect is to write a note is the bar-honesty rule broken, and the
+// sweeps count a decline as NOT acting, so the two halves have to come off the
+// same answer or the sweep reports the disagreement rather than the defect.
+func (s *ReceiveFormScreen) lineWriteOffRefusal() string {
+	i, ok := s.lineAt(s.focused)
+	if !ok {
+		return "ctrl+k closes a LINE short and the cursor is not on one"
+	}
+	if s.lines[i].sheet.QuantityPending <= 0 {
+		return fmt.Sprintf("line %d has nothing outstanding to close short", i+1)
+	}
+	if typed := s.typedOn(i); typed != "" {
+		// The number is QUOTED and bounded: it is the operator's own text, so
+		// it goes into the sentence the way every other operator-supplied value
+		// on this screen does, and the box takes eight characters.
+		return fmt.Sprintf("ctrl+k would discard the %s typed on line %d — receive or clear it first",
+			strconv.Quote(cellPrefix(typed, 8)), i+1)
+	}
+	return ""
+}
+
+// orderWriteOffRefusal is why Ctrl+R cannot act, or "" when it can.
+//
+// The typed-quantity arm counts the LINES rather than naming one, because
+// mark-received closes every outstanding line at once: an operator sent hunting
+// for "the line with something in it" on a nine-line order is being asked to do
+// the screen's work, and the count is what tells them how much hunting there is.
+func (s *ReceiveFormScreen) orderWriteOffRefusal() string {
+	if s.outstandingLines() == 0 {
+		// The same way out the empty form names, for the same reason: the
+		// server refuses a settled order and points at voiding or cancelling
+		// it, and declining without that leaves the operator nowhere.
+		return "ctrl+r finishes the order off and every line is already settled — " +
+			"void or cancel the order instead"
+	}
+	if n := s.linesTyped(); n > 0 {
+		return fmt.Sprintf("ctrl+r would discard a typed quantity on %d %s — receive or clear first",
+			n, plural("line", n))
+	}
+	return ""
+}
+
+// typedOn is what line i's quantity box holds, trimmed. Blank when the line has
+// no box, which keeps the refusals above total over the row model.
+func (s *ReceiveFormScreen) typedOn(i int) string {
+	if i < 0 || i >= len(s.qty) {
+		return ""
+	}
+	return strings.TrimSpace(s.qty[i].Value())
+}
+
+// linesTyped is how many lines hold a typed quantity. A typed ZERO counts: it
+// is something the operator put there and a write-off would take it away just
+// as surely as it takes a 2 — the same reasoning hasQuantityEntry records for
+// what Esc costs.
+func (s *ReceiveFormScreen) linesTyped() int {
+	n := 0
+	for i := range s.qty {
+		if s.typedOn(i) != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // openLineWriteOff is Ctrl+K: close the focused LINE's outstanding balance
 // short. It declines from anywhere the key cannot mean that, naming which.
 func (s *ReceiveFormScreen) openLineWriteOff(headerRows int) tea.Cmd {
-	i, ok := s.lineAt(s.focused)
-	if !ok {
-		return s.say("ctrl+k closes a LINE short and the cursor is not on one · "+
-			s.waysOut(headerRows), StatusWarn)
+	if why := s.lineWriteOffRefusal(); why != "" {
+		return s.say(why+" · "+s.waysOut(headerRows), StatusWarn)
 	}
-	if s.lines[i].sheet.QuantityPending <= 0 {
-		return s.say(fmt.Sprintf("line %d has nothing outstanding to close short · %s",
-			i+1, s.waysOut(headerRows)), StatusWarn)
-	}
+	i, _ := s.lineAt(s.focused)
 	s.scope, s.scopeLine = receiveScopeLine, i
 	s.toWriteOff()
 	return s.say(fmt.Sprintf("closing line %d short leaves %d %s unreceived for good",
@@ -2608,12 +2742,8 @@ func (s *ReceiveFormScreen) openLineWriteOff(headerRows int) tea.Cmd {
 
 // openOrderWriteOff is Ctrl+R: finish the order off.
 func (s *ReceiveFormScreen) openOrderWriteOff(headerRows int) tea.Cmd {
-	if s.outstandingLines() == 0 {
-		// The same way out the empty form names, for the same reason: the
-		// server refuses a settled order and points at voiding or cancelling
-		// it, and declining without that leaves the operator nowhere.
-		return s.say("ctrl+r finishes the order off and every line is already settled — "+
-			"void or cancel the order instead · "+s.waysOut(headerRows), StatusWarn)
+	if why := s.orderWriteOffRefusal(); why != "" {
+		return s.say(why+" · "+s.waysOut(headerRows), StatusWarn)
 	}
 	s.scope = receiveScopeOrder
 	s.toWriteOff()
@@ -2898,10 +3028,15 @@ func (s *ReceiveFormScreen) qtyBarItems(paging bool) []actionBarItem {
 	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
-	if _, ok := s.lineAt(s.focused); ok && s.lines[s.focused-receiveRowFirstLine].sheet.QuantityPending > 0 {
+	// Both destructive keys are named for exactly as long as they would ACT,
+	// and the predicate is the arm's own — see lineWriteOffRefusal. A typed
+	// quantity is one of the things that stops them, so the bar loses the key
+	// on the keystroke that makes it refuse and gets it back when the box is
+	// cleared or received.
+	if s.lineWriteOffRefusal() == "" {
 		items = append(items, actionBarItem{"Ctrl+K", "Close short"})
 	}
-	if s.outstandingLines() > 0 {
+	if s.orderWriteOffRefusal() == "" {
 		items = append(items, actionBarItem{"Ctrl+R", "Mark received"})
 	}
 	return items
@@ -3377,19 +3512,40 @@ func (s *ReceiveFormScreen) addScanBlock(l *jdeLines, width, lw int) {
 // otherwise there would be a claim the code does not honour on the row an
 // operator reaches for first.
 func (s *ReceiveFormScreen) scanHint() string {
-	coded := 0
-	if s.sheet != nil {
-		for _, line := range s.sheet.Lines {
-			if len(line.ScanCodes) > 0 {
-				coded++
-			}
+	// The count is of lines Enter can JUMP TO, which is not the same as lines
+	// that carry a code. A settled line keeps its scan_codes, and findLine's
+	// `live` filter is what decides: a code that resolves only to settled lines
+	// leaves the cursor where it was and answers "…is settled line N, closed
+	// short — no receipt". Counting over the worksheet said "1 of 2 lines can
+	// be scanned to" on an order whose one coded line was closed short, beside
+	// a promise that Enter jumps to it — the same sheet-lines-versus-form-lines
+	// split scanMatches was corrected for, in the sentence that was left behind.
+	//
+	// Derived from the SAME walk findLine makes rather than a second notion of
+	// codeable, so the promise and the key cannot part company: scanMatches
+	// answers what a code resolves to, and `live` is the half of that answer a
+	// receipt can be typed against.
+	reachable := 0
+	for i := range s.lines {
+		if len(s.lines[i].sheet.ScanCodes) > 0 {
+			reachable++
 		}
 	}
-	if coded == 0 {
-		return "No line on this order carries a scannable code — pick the line with up/dn."
+	if reachable == 0 {
+		// TWO different nothings, and they are not the same next move. An order
+		// that carries no code AT ALL simply cannot be scanned to; an order
+		// whose only coded lines are settled CAN be scanned — the scan resolves
+		// and says which settled line it hit — it just cannot reach a box. The
+		// second is the case this count was corrected for, so folding it back
+		// into "carries no code" would be found-nothing standing in for
+		// could-not-tell one sentence later.
+		if s.codedLines() == 0 {
+			return "No line on this order carries a scannable code — pick the line with up/dn."
+		}
+		return "Only settled lines here carry a code, so no scan reaches a box — pick with up/dn."
 	}
 	return fmt.Sprintf("Scan or type a code from the box; enter jumps to its line. %d of %d "+
-		"lines can be scanned to.", coded, len(s.sheet.Lines))
+		"lines can be scanned to.", reachable, len(s.lines))
 }
 
 // addDeliveryBlock draws what the parcel was, which is recorded and never

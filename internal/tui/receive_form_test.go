@@ -1835,6 +1835,11 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 	for i := range toLastRow {
 		toLastRow[i] = down
 	}
+	// The FIRST line row, derived the same way: the fixed rows and no further.
+	toFirstLine := make([]tea.KeyMsg, receiveRowFirstLine)
+	for i := range toFirstLine {
+		toFirstLine[i] = down
+	}
 	var probes []probe
 	for _, k := range long {
 		probes = append(probes,
@@ -1855,6 +1860,14 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 		probe{"ctrl+k off a line", receiveManyLines(9), nil,
 			[]tea.KeyMsg{tea.KeyMsg{Type: tea.KeyCtrlK}}, false},
 		probe{"ctrl+r with nothing outstanding", nil, nil,
+			[]tea.KeyMsg{tea.KeyMsg{Type: tea.KeyCtrlR}}, false},
+		// The two write-off refusals, at their widest: ctrl+k quotes the box's
+		// whole eight characters, and ctrl+r counts every line of a long order.
+		probe{"ctrl+k over a typed quantity", receiveManyLines(9),
+			map[int]string{0: "88888888"},
+			append(append([]tea.KeyMsg{}, toFirstLine...), tea.KeyMsg{Type: tea.KeyCtrlK}), false},
+		probe{"ctrl+r over typed quantities", receiveManyLines(9),
+			map[int]string{0: "1", 1: "2", 2: "3", 3: "4", 4: "5", 5: "6", 6: "7", 7: "8", 8: "9"},
 			[]tea.KeyMsg{tea.KeyMsg{Type: tea.KeyCtrlR}}, false},
 		probe{"enter with nothing typed", receiveManyLines(9), nil, []tea.KeyMsg{enter}, false},
 		probe{"enter with every box zero", receiveManyLines(9), map[int]string{0: "0", 1: "0"},

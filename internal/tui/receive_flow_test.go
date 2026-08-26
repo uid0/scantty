@@ -844,6 +844,178 @@ func TestReceiveFlow_ClosingALineShortIsConfirmedAndReachesItsEndpoint(t *testin
 	}
 }
 
+// TestReceiveFlow_AWriteOffRefusesToConsumeATypedQuantity.
+//
+// Ctrl+K and Ctrl+R post writes this client cannot take back — the correction
+// is reopen-short, which is decoded and deliberately not driven — and neither
+// of them used to look at the quantity boxes. So: walk to line 2 (ordered 10,
+// received 3), type 8 because the rest of the shipment is on the bench, press
+// Ctrl+K. Every figure on the confirm was the server's ("leaves 7 units
+// unreceived for good"), Ctrl+X posted close-short, the line settled at
+// received 3, and the 8 was never sent or mentioned.
+//
+// They refuse now, and refusing rather than absorbing is the point: receiving
+// the quantity and then closing the rest is a second write behind a key that
+// says it does one thing. The number stays exactly where it was typed.
+//
+// Three assertions per key, because the defect had three faces: nothing on the
+// WIRE, the typed figure still in the BOX, and a refusal on the PANE that names
+// what is in the way.
+func TestReceiveFlow_AWriteOffRefusesToConsumeATypedQuantity(t *testing.T) {
+	t.Run("ctrl+k on the line the quantity is typed on", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+		r = receiveGoToLine(t, r, s, 1) // ordered 10, received 3
+		r = receiveTypeInto(t, r, "8")
+
+		// The bar follows the gate: a key that could only refuse is not named.
+		if barHas(s.bar(), "Ctrl+K", "Close short") {
+			t.Errorf("the bar names Ctrl+K over a typed quantity: %+v", s.bar())
+		}
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlK})
+
+		if s.phase != phaseQty {
+			t.Fatalf("ctrl+k opened the confirm over a typed quantity: phase %v", s.phase)
+		}
+		if got := s.qty[1].Value(); got != "8" {
+			t.Errorf("the refusal disturbed what was typed: %q", got)
+		}
+		if got := fake.closedShort(); len(got) != 0 {
+			t.Errorf("a line was closed short anyway: %+v", got)
+		}
+		if text := receivePaneText(s, 80, 30); !strings.Contains(text, `"8" typed on line 2`) {
+			t.Errorf("the refusal does not name what is in the way:\n%s", text)
+		}
+
+		// Clearing the box hands the key back, so the gate is a gate and not a
+		// removal: the bar names it again and it opens the confirm.
+		s.qty[1].SetValue("")
+		if !barHas(s.bar(), "Ctrl+K", "Close short") {
+			t.Fatalf("clearing the box did not hand Ctrl+K back: %+v", s.bar())
+		}
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlK})
+		if s.phase != phaseWriteOff {
+			t.Errorf("ctrl+k did not open the confirm with the box clear: phase %v", s.phase)
+		}
+		_ = r
+	})
+
+	t.Run("ctrl+r while any line holds one", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+		// Typed on a line the cursor is NOT on: mark-received closes every
+		// outstanding line, so where the cursor happens to be is irrelevant and
+		// the operator must not have to hunt for the one that matters.
+		r = receiveGoToLine(t, r, s, 0)
+		r = receiveTypeInto(t, r, "2")
+		for s.focused != receiveRowScan {
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyUp})
+		}
+
+		if barHas(s.bar(), "Ctrl+R", "Mark received") {
+			t.Errorf("the bar names Ctrl+R over a typed quantity: %+v", s.bar())
+		}
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR})
+
+		if s.phase != phaseQty {
+			t.Fatalf("ctrl+r opened the confirm over a typed quantity: phase %v", s.phase)
+		}
+		if got := s.qty[0].Value(); got != "2" {
+			t.Errorf("the refusal disturbed what was typed: %q", got)
+		}
+		if got := fake.marked(); len(got) != 0 {
+			t.Errorf("the order was marked received anyway: %+v", got)
+		}
+		// It names HOW MANY lines are in the way rather than sending the
+		// operator hunting for them.
+		text := receivePaneText(s, 80, 30)
+		if !strings.Contains(text, "typed quantity on 1 line") {
+			t.Errorf("the refusal does not count the lines in the way:\n%s", text)
+		}
+		_ = r
+	})
+
+	// A typed ZERO is still the operator's, and a write-off would take it away
+	// exactly as it takes a 2 — the reasoning hasQuantityEntry already records
+	// for what Esc costs. Enter cannot receive a zero, so this is the one state
+	// where the gate is the only thing standing between a typed figure and an
+	// irreversible write.
+	t.Run("a typed zero counts", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+		r = receiveGoToLine(t, r, s, 1)
+		r = receiveTypeInto(t, r, "0")
+		if barHas(s.bar(), "Ctrl+K", "Close short") {
+			t.Errorf("the bar names Ctrl+K over a typed zero: %+v", s.bar())
+		}
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlK})
+		if s.phase != phaseQty {
+			t.Errorf("a typed zero was written off: phase %v", s.phase)
+		}
+		if got := s.qty[1].Value(); got != "0" {
+			t.Errorf("the refusal disturbed the typed zero: %q", got)
+		}
+		_ = r
+	})
+}
+
+// TestReceiveFlow_TheScanHintCountsLinesEnterCanReach.
+//
+// The hint counted lines carrying a code over the WORKSHEET — settled ones
+// included — beside the promise "enter jumps to its line". A settled line keeps
+// its scan_codes, and Enter does not jump to one: findLine's live filter leaves
+// the cursor where it was and says which settled line the code hit. So an order
+// of one live asset line and one closed-short coded line drew "1 of 2 lines can
+// be scanned to" when no scan on it could reach a quantity box at all.
+//
+// The two nothings stay apart, which is why this drives both: an order carrying
+// no code is a different fact, and a different next move, from an order whose
+// codes are all on settled lines.
+func TestReceiveFlow_TheScanHintCountsLinesEnterCanReach(t *testing.T) {
+	settled := func(id int, label string) omsapi.ReceivingLine {
+		l := receiveWSLine(id, label, 6, 2)
+		l.IsClosedShort, l.IsSettled = true, true
+		l.ReceiptState, l.ReceiptStateLabel = omsapi.ReceiptStateClosedShort, "Closed short"
+		l.QuantityPending = 0
+		return l
+	}
+
+	t.Run("codes only on settled lines", func(t *testing.T) {
+		asset := receiveWSLine(31, "Bench lathe", 1, 0)
+		asset.ScanCodes = nil
+		fake := &receiveFake{}
+		_, s := receiveDrive(t, fake, []omsapi.ReceivingLine{asset, settled(32, "Backordered gasket")}, 80, 30)
+
+		text := receivePaneText(s, 80, 30)
+		if strings.Contains(text, "enter jumps to its line") {
+			t.Errorf("the hint promises a jump no scan on this order can make:\n%s", text)
+		}
+		if !strings.Contains(text, "Only settled lines here carry a code") {
+			t.Errorf("the hint does not say which kind of nothing this is:\n%s", text)
+		}
+	})
+
+	t.Run("a coded live line is counted and a settled one is not", func(t *testing.T) {
+		fake := &receiveFake{}
+		lines := []omsapi.ReceivingLine{
+			receiveWSLine(33, "Box of M3 bolts", 4, 0), settled(34, "Backordered gasket"),
+		}
+		_, s := receiveDrive(t, fake, lines, 80, 30)
+
+		// One live line, and it is the only one the form draws a box for.
+		if len(s.lines) != 1 {
+			t.Fatalf("the fixture built %d receivable lines, want 1", len(s.lines))
+		}
+		text := receivePaneText(s, 80, 30)
+		if want := fmt.Sprintf("%d of %d lines can be scanned to", 1, len(s.lines)); !strings.Contains(text, want) {
+			t.Errorf("the hint does not count over the lines the form draws (%q):\n%s", want, text)
+		}
+		if strings.Contains(text, "of 2 lines can be scanned to") {
+			t.Errorf("the hint counts the settled line Enter cannot jump to:\n%s", text)
+		}
+	})
+}
+
 // TestReceiveFlow_EscOnTheConfirmWritesNothingOff. The safe answer has to be
 // reachable and has to say that nothing happened.
 func TestReceiveFlow_EscOnTheConfirmWritesNothingOff(t *testing.T) {
