@@ -2652,18 +2652,126 @@ func fmtOrderName(po *omsapi.PurchaseOrder, id string) string {
 // label makes it worse: "Mark received" is the phrase an operator is most
 // likely to read as "book what I typed and finish up".
 //
-// Absorbing the quantity — receiving it and then closing the rest — is NOT what
+// Absorbing the entry — receiving it and then closing the rest — is NOT what
 // these do. That is a second write on a key that says it does one thing, and it
 // is out of scope besides. They refuse, they say what is in the way, and what
 // was typed stays exactly where it was typed.
-
-// lineWriteOffRefusal is why Ctrl+K cannot act, or "" when it can.
 //
-// ONE predicate, read by the ARM and by qtyBarItems, so the bar names the key
+// THE GATE IS ABOUT THE WHOLE FORM, and both keys read the same one. The first
+// version of it scoped Ctrl+K to the FOCUSED line and Ctrl+R to any line, and
+// that asymmetry was wrong for a reason worth writing down: what makes these
+// unrecoverable is that COMMITTING ENDS THE FORM. handleSubmitted lands on the
+// summary, `r` there calls resetEntry before the reload, and enter/esc leave the
+// screen — so the only path that hands the boxes back is a write-off that
+// FAILED. A close-short against line 2 therefore destroys the 4 typed on line 1
+// exactly as surely as mark-received does, and the per-line predicate could not
+// see it.
+//
+// It is not only the quantity boxes, for the same reason. A form-ending write
+// throws away the tracking number, the carrier, the delivered date, the receipt
+// notes and every serial captured so far — all of it operator input, all of it
+// on a path with no way back. So the gate asks what the action would ACTUALLY
+// destroy (writeOffDiscards), derived from the same roster allBoxes is checked
+// against rather than from a fresh list of fields, because a fresh list is what
+// this defect was made of.
+
+// receiveEntryBox is a box a form-ending write would destroy, and the word a
+// refusal calls it by.
+type receiveEntryBox struct {
+	name string
+	box  *textinput.Model
+}
+
+// entryBoxes is every box whose contents the RECEIPT carries and a write-off
+// would therefore throw away, in the order the form draws them.
+//
+// The quantity boxes are counted separately (linesTyped) because a refusal
+// naming nine of them by name says nothing an operator can act on, and the
+// capture boxes are counted through s.captures, which is where storeUnit has
+// already put them. What is left is the delivery block and the notes.
+//
+// entryBoxesExcluded records every OTHER box in allBoxes() and why it is not
+// entry this gate protects, so absent and deliberate are different states —
+// TestReceiveFormScreen_EveryBoxIsClassifiedForTheWriteOffGate walks allBoxes
+// and fails on a box in neither, which is how a box added tomorrow gets an
+// answer rather than a silent exemption.
+func (s *ReceiveFormScreen) entryBoxes() []receiveEntryBox {
+	return []receiveEntryBox{
+		{"a tracking number", &s.tracking},
+		{"a carrier", &s.carrier},
+		{"a delivered date", &s.delivered},
+		{"receipt notes", &s.notes},
+	}
+}
+
+func (s *ReceiveFormScreen) entryBoxesExcluded() map[*textinput.Model]string {
+	return map[*textinput.Model]string{
+		// A LOOKUP input, not something the receipt carries: Enter consumes it
+		// to find a line and buildReceipt never reads it, so a write-off
+		// destroys nothing an operator would want back. Esc's label still
+		// counts it (anythingTyped), because Esc destroys the screen and the
+		// half-typed code with it.
+		&s.scan: "a lookup input Enter consumes; the receipt does not carry it",
+		// Counted as LINES by linesTyped rather than named one by one.
+		&s.serialInput: "the live capture slot; storeUnit records it into s.captures, which is counted",
+		&s.lotInput:    "the live capture slot; storeUnit records it into s.captures, which is counted",
+		&s.expiryInput: "the live capture slot; storeUnit records it into s.captures, which is counted",
+		// The write-off's OWN field, typed on the confirm this gate opens. It is
+		// what the write-off carries, not what it destroys, and toWriteOff
+		// clears it on the way in.
+		&s.reason: "the write-off's own reason, typed after this gate has already passed",
+		&s.parked: "the scratch field no frame draws (focusCurrent's null object)",
+	}
+}
+
+// writeOffDiscards names what a form-ending write-off would throw away, or ""
+// when it would throw away nothing.
+//
+// It names the FIRST thing and counts the rest, which is a bound rather than a
+// style: the note folds into receiveNoteRows lines and is shortened from the
+// end, where the way out is named, so a sentence listing nine lines and four
+// fields would spend the tail on itself. The quantity count leads because it is
+// the most common and the most actionable.
+func (s *ReceiveFormScreen) writeOffDiscards() string {
+	var parts []string
+	if n := s.linesTyped(); n > 0 {
+		parts = append(parts, fmt.Sprintf("a quantity on %d %s", n, plural("line", n)))
+	}
+	for _, f := range s.entryBoxes() {
+		if strings.TrimSpace(f.box.Value()) != "" {
+			parts = append(parts, f.name)
+		}
+	}
+	if n := s.capturesTaken(); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d captured %s", n, plural("serial", n)))
+	}
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	}
+	return fmt.Sprintf("%s and %d more", parts[0], len(parts)-1)
+}
+
+// writeOffRefusal is the ONE gate both write-off keys read, worded for the key
+// that is trying to act.
+//
+// One predicate, read by the ARM and by qtyBarItems, so the bar names the key
 // for exactly as long as it would act. That is not tidiness: a bar naming a key
 // whose whole effect is to write a note is the bar-honesty rule broken, and the
 // sweeps count a decline as NOT acting, so the two halves have to come off the
 // same answer or the sweep reports the disagreement rather than the defect.
+func (s *ReceiveFormScreen) writeOffRefusal(key string) string {
+	if what := s.writeOffDiscards(); what != "" {
+		return fmt.Sprintf("%s would discard %s — receive or clear first", key, what)
+	}
+	return ""
+}
+
+// lineWriteOffRefusal is why Ctrl+K cannot act, or "" when it can. The two
+// arms above it are about the CURSOR and the LINE; the shared gate below is
+// about the form, and it is the same one Ctrl+R reads.
 func (s *ReceiveFormScreen) lineWriteOffRefusal() string {
 	i, ok := s.lineAt(s.focused)
 	if !ok {
@@ -2672,22 +2780,10 @@ func (s *ReceiveFormScreen) lineWriteOffRefusal() string {
 	if s.lines[i].sheet.QuantityPending <= 0 {
 		return fmt.Sprintf("line %d has nothing outstanding to close short", i+1)
 	}
-	if typed := s.typedOn(i); typed != "" {
-		// The number is QUOTED and bounded: it is the operator's own text, so
-		// it goes into the sentence the way every other operator-supplied value
-		// on this screen does, and the box takes eight characters.
-		return fmt.Sprintf("ctrl+k would discard the %s typed on line %d — receive or clear it first",
-			strconv.Quote(cellPrefix(typed, 8)), i+1)
-	}
-	return ""
+	return s.writeOffRefusal("ctrl+k")
 }
 
 // orderWriteOffRefusal is why Ctrl+R cannot act, or "" when it can.
-//
-// The typed-quantity arm counts the LINES rather than naming one, because
-// mark-received closes every outstanding line at once: an operator sent hunting
-// for "the line with something in it" on a nine-line order is being asked to do
-// the screen's work, and the count is what tells them how much hunting there is.
 func (s *ReceiveFormScreen) orderWriteOffRefusal() string {
 	if s.outstandingLines() == 0 {
 		// The same way out the empty form names, for the same reason: the
@@ -2696,11 +2792,7 @@ func (s *ReceiveFormScreen) orderWriteOffRefusal() string {
 		return "ctrl+r finishes the order off and every line is already settled — " +
 			"void or cancel the order instead"
 	}
-	if n := s.linesTyped(); n > 0 {
-		return fmt.Sprintf("ctrl+r would discard a typed quantity on %d %s — receive or clear first",
-			n, plural("line", n))
-	}
-	return ""
+	return s.writeOffRefusal("ctrl+r")
 }
 
 // typedOn is what line i's quantity box holds, trimmed. Blank when the line has
@@ -2720,6 +2812,21 @@ func (s *ReceiveFormScreen) linesTyped() int {
 	n := 0
 	for i := range s.qty {
 		if s.typedOn(i) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// capturesTaken is how many capture slots hold something. It is capturesLeft's
+// complement over the slots that exist, and it counts a slot with a LOT or an
+// expiry beside a blank serial too — storeUnit refuses to record one of those,
+// so reaching here means the operator has something in a box that a write-off
+// would take.
+func (s *ReceiveFormScreen) capturesTaken() int {
+	n := 0
+	for _, c := range s.captures {
+		if !c.empty() {
 			n++
 		}
 	}
@@ -3532,17 +3639,30 @@ func (s *ReceiveFormScreen) scanHint() string {
 		}
 	}
 	if reachable == 0 {
-		// TWO different nothings, and they are not the same next move. An order
-		// that carries no code AT ALL simply cannot be scanned to; an order
-		// whose only coded lines are settled CAN be scanned — the scan resolves
-		// and says which settled line it hit — it just cannot reach a box. The
-		// second is the case this count was corrected for, so folding it back
-		// into "carries no code" would be found-nothing standing in for
-		// could-not-tell one sentence later.
-		if s.codedLines() == 0 {
-			return "No line on this order carries a scannable code — pick the line with up/dn."
+		// The TAIL is decided first, because a way out that cannot be taken is
+		// worse than none. "Pick the line with up/dn" assumes there is a line
+		// to pick, and on an order every line of which is voided or closed
+		// short there is not: applyWorksheet puts all of them in s.closed,
+		// qtyBody draws the scan row before its own empty branch, and up/dn
+		// then walks the fixed rows and reaches no line at all. Both sentences
+		// below carried that tail, so both pointed at a picker with nothing in
+		// it. When nothing can be received against, the way out is the ORDER's
+		// — void or cancel it — which is the same sentence qtyBody's empty
+		// branch already gives, rather than a second weaker one beside it.
+		out := "pick the line with up/dn"
+		if len(s.lines) == 0 {
+			out = "void or cancel the ORDER to finish with it"
 		}
-		return "Only settled lines here carry a code, so no scan reaches a box — pick with up/dn."
+		// TWO different nothings above that tail, and they are not the same
+		// next move. An order that carries no code AT ALL simply cannot be
+		// scanned to; an order whose only coded lines are settled CAN be
+		// scanned — the scan resolves and says which settled line it hit — it
+		// just cannot reach a box. Folding the second into the first would be
+		// found-nothing standing in for could-not-tell one sentence later.
+		if s.codedLines() == 0 {
+			return "No line on this order carries a scannable code — " + out + "."
+		}
+		return "Only settled lines here carry a code, so no scan reaches a box — " + out + "."
 	}
 	return fmt.Sprintf("Scan or type a code from the box; enter jumps to its line. %d of %d "+
 		"lines can be scanned to.", reachable, len(s.lines))

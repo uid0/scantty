@@ -1869,6 +1869,17 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 		probe{"ctrl+r over typed quantities", receiveManyLines(9),
 			map[int]string{0: "1", 1: "2", 2: "3", 3: "4", 4: "5", 5: "6", 6: "7", 7: "8", 8: "9"},
 			[]tea.KeyMsg{tea.KeyMsg{Type: tea.KeyCtrlR}}, false},
+		// The write-off refusal at its WIDEST: the sentence names the first
+		// thing and counts the rest, so this is a form holding a quantity, all
+		// four delivery-block fields and a captured serial at once.
+		probe{"ctrl+r over a form full of entry", receiveSweepLines(), map[int]string{2: "1"},
+			[]tea.KeyMsg{
+				enter, poRuneKey("SN-1"), enter, tea.KeyMsg{Type: tea.KeyEsc},
+				down, poRuneKey("1Z999AA10123456784"),
+				down, poRuneKey("United Parcel"),
+				down, poRuneKey("2026-08-20"),
+				tea.KeyMsg{Type: tea.KeyCtrlR},
+			}, false},
 		probe{"enter with nothing typed", receiveManyLines(9), nil, []tea.KeyMsg{enter}, false},
 		probe{"enter with every box zero", receiveManyLines(9), map[int]string{0: "0", 1: "0"},
 			[]tea.KeyMsg{enter}, false},

@@ -628,6 +628,79 @@ func TestReceiveFormScreen_EveryBoxIsInAllBoxes(t *testing.T) {
 	}
 }
 
+// TestReceiveFormScreen_EveryBoxIsClassifiedForTheWriteOffGate.
+//
+// The write-off gate asks what a form-ending write would DESTROY, and the answer
+// has to cover every box on the screen. Its first version asked only about the
+// focused line's quantity box, so a `4` typed on line 1 was thrown away by a
+// close-short against line 2 — an unrecoverable write with nothing on the pane
+// saying so. Widening it to the whole form is only half a fix: a hand-written
+// list of fields is exactly what was too narrow, and the next box added is the
+// next silent discard.
+//
+// So every box in allBoxes() must be either entry the gate protects or recorded
+// as excluded WITH A REASON, and this walks allBoxes — the roster the reflection
+// guard above already proves complete — to make the omission impossible to make
+// quietly. Absent and deliberate are different states.
+func TestReceiveFormScreen_EveryBoxIsClassifiedForTheWriteOffGate(t *testing.T) {
+	lines := receiveSweepLines()
+	s := NewReceiveFormScreen(Deps{}, receivePO(lines...))
+	s.Update(receiveSheetMsg{sheet: receiveWorksheet(lines...)})
+	if len(s.qty) == 0 {
+		t.Fatal("the fixture built no quantity boxes, so the slice half of the walk " +
+			"is checking nothing")
+	}
+
+	protected := map[*textinput.Model]bool{}
+	for _, f := range s.entryBoxes() {
+		if f.name == "" {
+			t.Errorf("an entry box has no name, so a refusal could not say what is holding it")
+		}
+		if protected[f.box] {
+			t.Errorf("entryBoxes lists %q twice", f.name)
+		}
+		protected[f.box] = true
+	}
+	excluded := s.entryBoxesExcluded()
+	names := receiveEveryBox(t, s)
+	if len(names) == 0 {
+		t.Fatal("the derivation found no textinput fields at all — it is broken, not the screen")
+	}
+
+	// The QUANTITY boxes are the one group counted rather than named, so they
+	// are classified by the count that covers them rather than by either map.
+	quantity := map[*textinput.Model]bool{}
+	for i := range s.qty {
+		quantity[&s.qty[i]] = true
+	}
+
+	for _, box := range s.allBoxes() {
+		name := names[box]
+		switch {
+		case quantity[box]:
+			// linesTyped walks these.
+		case protected[box]:
+		case excluded[box] != "":
+		case excluded[box] == "":
+			if _, recorded := excluded[box]; recorded {
+				t.Errorf("box %q is recorded as excluded from the write-off gate with no "+
+					"reason — absent and deliberate must be different states", name)
+				continue
+			}
+			t.Errorf("box %q is in neither entryBoxes nor entryBoxesExcluded — a write-off "+
+				"would destroy it and the gate would not know", name)
+		}
+	}
+	for box, why := range excluded {
+		if _, ok := names[box]; !ok {
+			t.Errorf("entryBoxesExcluded records a box the screen no longer has (%q)", why)
+		}
+		if protected[box] {
+			t.Errorf("a box is both protected and excluded (%q)", why)
+		}
+	}
+}
+
 // receiveFocusedBoxes names every box on a live screen whose caret is armed.
 //
 // It walks the STRUCT and not allBoxes, which is the whole point: a box missing

@@ -844,107 +844,128 @@ func TestReceiveFlow_ClosingALineShortIsConfirmedAndReachesItsEndpoint(t *testin
 	}
 }
 
-// TestReceiveFlow_AWriteOffRefusesToConsumeATypedQuantity.
+// TestReceiveFlow_AWriteOffRefusesToDiscardEntryAnywhereOnTheForm.
 //
-// Ctrl+K and Ctrl+R post writes this client cannot take back — the correction
-// is reopen-short, which is decoded and deliberately not driven — and neither
-// of them used to look at the quantity boxes. So: walk to line 2 (ordered 10,
-// received 3), type 8 because the rest of the shipment is on the bench, press
-// Ctrl+K. Every figure on the confirm was the server's ("leaves 7 units
-// unreceived for good"), Ctrl+X posted close-short, the line settled at
-// received 3, and the 8 was never sent or mentioned.
+// Both write-off keys END THE FORM and neither can be undone from this client —
+// reopen-short is decoded and deliberately not driven — so committing one over
+// the top of anything the operator typed destroys it with no way back. The only
+// path that hands the boxes back is a write-off that FAILED: on success
+// handleSubmitted lands on the summary, `r` there calls resetEntry before the
+// reload, and enter/esc leave the screen.
 //
-// They refuse now, and refusing rather than absorbing is the point: receiving
-// the quantity and then closing the rest is a second write behind a key that
-// says it does one thing. The number stays exactly where it was typed.
-//
-// Three assertions per key, because the defect had three faces: nothing on the
-// WIRE, the typed figure still in the BOX, and a refusal on the PANE that names
-// what is in the way.
-func TestReceiveFlow_AWriteOffRefusesToConsumeATypedQuantity(t *testing.T) {
-	t.Run("ctrl+k on the line the quantity is typed on", func(t *testing.T) {
-		fake := &receiveFake{}
-		r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
-		r = receiveGoToLine(t, r, s, 1) // ordered 10, received 3
-		r = receiveTypeInto(t, r, "8")
+// The gate they share was per-line for Ctrl+K to begin with, and that is what
+// this drives: the entry is put somewhere the cursor is NOT, which is the case
+// the focused-line predicate could not see. It is also not only the quantity
+// boxes — a form-ending write throws away the tracking number, the carrier, the
+// delivered date, the notes and every captured serial — so the holds below are
+// a table rather than one case, and the keys are a table beside it because the
+// rule is the same rule for both.
+func TestReceiveFlow_AWriteOffRefusesToDiscardEntryAnywhereOnTheForm(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	esc := tea.KeyMsg{Type: tea.KeyEsc}
+	down := tea.KeyMsg{Type: tea.KeyDown}
 
-		// The bar follows the gate: a key that could only refuse is not named.
-		if barHas(s.bar(), "Ctrl+K", "Close short") {
-			t.Errorf("the bar names Ctrl+K over a typed quantity: %+v", s.bar())
-		}
-		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlK})
+	// Ctrl+K needs the cursor on a line with an outstanding balance; Ctrl+R does
+	// not care where it is. Both reaches leave the cursor OFF whatever the hold
+	// put down, which is the point of the case.
+	keys := []struct {
+		name  string
+		msg   tea.KeyMsg
+		token string
+		label string
+		reach func(t *testing.T, r Root, s *ReceiveFormScreen) Root
+	}{
+		{"ctrl+k", tea.KeyMsg{Type: tea.KeyCtrlK}, "Ctrl+K", "Close short",
+			func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+				return receiveGoToLine(t, r, s, 1) // ordered 10, received 3
+			}},
+		{"ctrl+r", tea.KeyMsg{Type: tea.KeyCtrlR}, "Ctrl+R", "Mark received",
+			func(t *testing.T, r Root, s *ReceiveFormScreen) Root { return r }},
+	}
 
-		if s.phase != phaseQty {
-			t.Fatalf("ctrl+k opened the confirm over a typed quantity: phase %v", s.phase)
-		}
-		if got := s.qty[1].Value(); got != "8" {
-			t.Errorf("the refusal disturbed what was typed: %q", got)
-		}
-		if got := fake.closedShort(); len(got) != 0 {
-			t.Errorf("a line was closed short anyway: %+v", got)
-		}
-		if text := receivePaneText(s, 80, 30); !strings.Contains(text, `"8" typed on line 2`) {
-			t.Errorf("the refusal does not name what is in the way:\n%s", text)
-		}
+	holds := []struct {
+		name string
+		put  func(t *testing.T, r Root, s *ReceiveFormScreen) Root
+		says string
+		// intact re-reads what the hold put down, so the assertion that the
+		// refusal disturbed nothing is about the operator's own text.
+		intact func(s *ReceiveFormScreen) string
+		want   string
+	}{
+		{"a quantity on ANOTHER line", func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+			r = receiveGoToLine(t, r, s, 0) // ordered 4, and NOT where either key acts from
+			return receiveTypeInto(t, r, "4")
+		}, "a quantity on 1 line",
+			func(s *ReceiveFormScreen) string { return s.qty[0].Value() }, "4"},
 
-		// Clearing the box hands the key back, so the gate is a gate and not a
-		// removal: the bar names it again and it opens the confirm.
-		s.qty[1].SetValue("")
-		if !barHas(s.bar(), "Ctrl+K", "Close short") {
-			t.Fatalf("clearing the box did not hand Ctrl+K back: %+v", s.bar())
-		}
-		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlK})
-		if s.phase != phaseWriteOff {
-			t.Errorf("ctrl+k did not open the confirm with the box clear: phase %v", s.phase)
-		}
-		_ = r
-	})
+		{"a tracking number", func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+			for s.focused != receiveRowTracking {
+				r = receiveKey(t, r, down)
+			}
+			return receiveTypeInto(t, r, "1Z999AA10123456784")
+		}, "a tracking number",
+			func(s *ReceiveFormScreen) string { return s.tracking.Value() }, "1Z999AA10123456784"},
 
-	t.Run("ctrl+r while any line holds one", func(t *testing.T) {
-		fake := &receiveFake{}
-		r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
-		// Typed on a line the cursor is NOT on: mark-received closes every
-		// outstanding line, so where the cursor happens to be is irrelevant and
-		// the operator must not have to hunt for the one that matters.
-		r = receiveGoToLine(t, r, s, 0)
-		r = receiveTypeInto(t, r, "2")
-		for s.focused != receiveRowScan {
-			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyUp})
-		}
+		// A captured serial AND a quantity: the second half proves the sentence
+		// is bounded — it names the first thing and counts the rest rather than
+		// listing every line and field into the tail where the way out lives.
+		{"a captured serial beside a quantity", func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+			r = receiveGoToLine(t, r, s, 2) // the serialized line
+			r = receiveTypeInto(t, r, "1")
+			r = receiveKey(t, r, enter) // -> capture
+			r = receiveType(t, r, poRuneKey("SN-1"))
+			r = receiveKey(t, r, enter) // the last unit lands on the review
+			return receiveKey(t, r, esc)
+		}, "a quantity on 1 line and 1 more",
+			func(s *ReceiveFormScreen) string { return s.captures[0].serial }, "SN-1"},
+	}
 
-		if barHas(s.bar(), "Ctrl+R", "Mark received") {
-			t.Errorf("the bar names Ctrl+R over a typed quantity: %+v", s.bar())
-		}
-		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR})
+	for _, k := range keys {
+		for _, h := range holds {
+			t.Run(k.name+" over "+h.name, func(t *testing.T) {
+				fake := &receiveFake{}
+				r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+				r = h.put(t, r, s)
+				r = k.reach(t, r, s)
 
-		if s.phase != phaseQty {
-			t.Fatalf("ctrl+r opened the confirm over a typed quantity: phase %v", s.phase)
+				// The bar follows the gate: a key that could only refuse is not
+				// named, on either key and over any hold.
+				if barHas(s.bar(), k.token, k.label) {
+					t.Errorf("the bar names %s over %s: %+v", k.token, h.name, s.bar())
+				}
+				r = receiveKey(t, r, k.msg)
+
+				if s.phase != phaseQty {
+					t.Fatalf("%s opened the confirm over %s: phase %v", k.name, h.name, s.phase)
+				}
+				if got := h.intact(s); got != h.want {
+					t.Errorf("the refusal disturbed what was typed: %q, want %q", got, h.want)
+				}
+				if got := fake.closedShort(); len(got) != 0 {
+					t.Errorf("a line was closed short anyway: %+v", got)
+				}
+				if got := fake.marked(); len(got) != 0 {
+					t.Errorf("the order was marked received anyway: %+v", got)
+				}
+				if text := receivePaneText(s, 80, 30); !strings.Contains(text, h.says) {
+					t.Errorf("the refusal does not say what is holding it (%q):\n%s", h.says, text)
+				}
+				_ = r
+			})
 		}
-		if got := s.qty[0].Value(); got != "2" {
-			t.Errorf("the refusal disturbed what was typed: %q", got)
-		}
-		if got := fake.marked(); len(got) != 0 {
-			t.Errorf("the order was marked received anyway: %+v", got)
-		}
-		// It names HOW MANY lines are in the way rather than sending the
-		// operator hunting for them.
-		text := receivePaneText(s, 80, 30)
-		if !strings.Contains(text, "typed quantity on 1 line") {
-			t.Errorf("the refusal does not count the lines in the way:\n%s", text)
-		}
-		_ = r
-	})
+	}
 
 	// A typed ZERO is still the operator's, and a write-off would take it away
-	// exactly as it takes a 2 — the reasoning hasQuantityEntry already records
+	// exactly as it takes a 4 — the reasoning hasQuantityEntry already records
 	// for what Esc costs. Enter cannot receive a zero, so this is the one state
-	// where the gate is the only thing standing between a typed figure and an
+	// where the gate is the only thing between a typed figure and an
 	// irreversible write.
 	t.Run("a typed zero counts", func(t *testing.T) {
 		fake := &receiveFake{}
 		r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
-		r = receiveGoToLine(t, r, s, 1)
+		r = receiveGoToLine(t, r, s, 0)
 		r = receiveTypeInto(t, r, "0")
+		r = receiveGoToLine(t, r, s, 1)
 		if barHas(s.bar(), "Ctrl+K", "Close short") {
 			t.Errorf("the bar names Ctrl+K over a typed zero: %+v", s.bar())
 		}
@@ -952,8 +973,50 @@ func TestReceiveFlow_AWriteOffRefusesToConsumeATypedQuantity(t *testing.T) {
 		if s.phase != phaseQty {
 			t.Errorf("a typed zero was written off: phase %v", s.phase)
 		}
-		if got := s.qty[1].Value(); got != "0" {
+		if got := s.qty[0].Value(); got != "0" {
 			t.Errorf("the refusal disturbed the typed zero: %q", got)
+		}
+		_ = r
+	})
+
+	// The SCAN box is excluded from the gate ON PURPOSE — entryBoxesExcluded
+	// records why: Enter consumes it to find a line and buildReceipt never
+	// carries it, so a write-off destroys nothing the operator would want back.
+	// Driven rather than trusted, because a recorded exception that the code
+	// does not actually make is the same defect one layer down.
+	t.Run("the scan box does not hold it", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+		r = receiveTypeInto(t, r, "SKU-11") // the scan row is where a fresh form opens
+		r = receiveGoToLine(t, r, s, 1)
+		if !barHas(s.bar(), "Ctrl+K", "Close short") {
+			t.Fatalf("a half-typed lookup code held the write-off gate: %+v", s.bar())
+		}
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlK})
+		if s.phase != phaseWriteOff {
+			t.Errorf("ctrl+k did not open the confirm with only the scan box filled: phase %v", s.phase)
+		}
+		_ = r
+	})
+
+	// And the gate is a gate rather than a removal: clearing what holds it hands
+	// the key back, named and acting.
+	t.Run("clearing what holds it hands the key back", func(t *testing.T) {
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+		r = receiveGoToLine(t, r, s, 0)
+		r = receiveTypeInto(t, r, "4")
+		r = receiveGoToLine(t, r, s, 1)
+		if barHas(s.bar(), "Ctrl+R", "Mark received") {
+			t.Fatalf("the bar names Ctrl+R over a typed quantity: %+v", s.bar())
+		}
+		s.qty[0].SetValue("")
+		if !barHas(s.bar(), "Ctrl+R", "Mark received") {
+			t.Fatalf("clearing the box did not hand Ctrl+R back: %+v", s.bar())
+		}
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR})
+		if s.phase != phaseWriteOff {
+			t.Errorf("ctrl+r did not open the confirm with the form clear: phase %v", s.phase)
 		}
 		_ = r
 	})
@@ -992,6 +1055,33 @@ func TestReceiveFlow_TheScanHintCountsLinesEnterCanReach(t *testing.T) {
 		}
 		if !strings.Contains(text, "Only settled lines here carry a code") {
 			t.Errorf("the hint does not say which kind of nothing this is:\n%s", text)
+		}
+	})
+
+	// A way out that cannot be taken is worse than none. On an order every line
+	// of which is settled, applyWorksheet leaves s.lines empty, qtyBody still
+	// draws the scan row, and "pick the line with up/dn" then points at a picker
+	// with nothing in it: up/dn walks the fixed rows and reaches no line at all.
+	// Both nothing-branches carried that tail. The way out there is the ORDER's,
+	// and it is the sentence qtyBody's own empty branch already gives.
+	t.Run("nothing receivable names the order's way out, not a picker", func(t *testing.T) {
+		coded := settled(35, "Backordered gasket")
+		bare := settled(36, "Cancelled bracket")
+		bare.ScanCodes = nil
+		for _, lines := range [][]omsapi.ReceivingLine{{bare, coded}, {bare}} {
+			fake := &receiveFake{}
+			_, s := receiveDrive(t, fake, lines, 80, 30)
+			if len(s.lines) != 0 {
+				t.Fatalf("the fixture left %d receivable lines, so this is not the state "+
+					"it names", len(s.lines))
+			}
+			text := receivePaneText(s, 80, 30)
+			if strings.Contains(text, "up/dn") {
+				t.Errorf("the scan hint points at a picker with no line in it:\n%s", text)
+			}
+			if !strings.Contains(text, "void or cancel the ORDER") {
+				t.Errorf("the scan hint does not name the way out that exists:\n%s", text)
+			}
 		}
 	})
 
