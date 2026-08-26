@@ -55,7 +55,7 @@ func TestReceiveFlow_AnUnreadableWorksheetIsNotAnEmptyOne(t *testing.T) {
 		t.Errorf("a screen that could not read the worksheet built %d quantity boxes anyway",
 			len(s.qty))
 	}
-	if !barHas(s.bar(), "R", "Re-read") {
+	if !barHas(s.bar(), "r", "Re-read") {
 		t.Errorf("the frame offers no way to try again: %+v", s.bar())
 	}
 
@@ -1075,7 +1075,7 @@ func TestReceiveFlow_AnExpiredSessionIsASentenceAndNotABody(t *testing.T) {
 		t.Errorf("the operator is reading a raw body:\n%s", text)
 	}
 	// And it still names the key that gets them back once they have signed in.
-	if !barHas(s.bar(), "R", "Re-read") {
+	if !barHas(s.bar(), "r", "Re-read") {
 		t.Errorf("the frame offers no way to try again: %+v", s.bar())
 	}
 }

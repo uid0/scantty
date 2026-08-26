@@ -2788,7 +2788,7 @@ func (s *ReceiveFormScreen) barFor(headerRows int) []actionBarItem {
 	case phaseWriteOff:
 		return s.writeOffBar()
 	case phaseDone:
-		return []actionBarItem{{"Enter/Esc", "Back to order"}, {"R", "Receive more"}}
+		return []actionBarItem{{"Enter/Esc", "Back to order"}, {"r", "Receive more"}}
 	}
 	return s.qtyBarItems(s.qtyPagesFor(headerRows))
 }
@@ -2797,7 +2797,18 @@ func (s *ReceiveFormScreen) barFor(headerRows int) []actionBarItem {
 // every state of it, because both facts the frame draws — a failed fetch and a
 // server refusal — can change under the operator.
 func (s *ReceiveFormScreen) blockedBarItems(paging bool) []actionBarItem {
-	items := []actionBarItem{{"R", "Re-read"}, {"Esc", "Back to order"}}
+	// LOWERCASE, because lowercase is the keystroke the handler binds and a bar
+	// token is read literally by the operator. It was spelled "R" on all three
+	// of this screen's re-read bars while keyBlocked and keyDone both bind "r",
+	// so the frame whose ONLY recovery key is the re-read drew "R=Re-read",
+	// answered Shift+R with "R does nothing here", and contradicted its own
+	// body two rows up — blockedBody says "r tries again", because waysOut
+	// lowercases what the bar carries. The case is not decoration on a single
+	// letter: a terminal sends "R" and "r" as different keystrokes, and this
+	// program already treats them as different keys (lowercase acts on the
+	// screen you are on, uppercase opens a sibling surface — list.go's
+	// listShortcuts). No binding changed; the bar stopped lying about one.
+	items := []actionBarItem{{"r", "Re-read"}, {"Esc", "Back to order"}}
 	if s.blockedRows() > 1 {
 		items = append(items, actionBarItem{"UP/DN", "Lines"})
 	}
@@ -2998,7 +3009,7 @@ func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 	case phaseWriteOff:
 		return s.writeOffBar()
 	case phaseDone:
-		return []actionBarItem{{"Enter/Esc", "Back to order"}, {"R", "Receive more"}}
+		return []actionBarItem{{"Enter/Esc", "Back to order"}, {"r", "Receive more"}}
 	}
 	return s.qtyBarCeiling()
 }
@@ -4030,10 +4041,20 @@ func (s *ReceiveFormScreen) reviewSerialLines(lineIdx, width int) []string {
 
 // writeOffBody is the destructive confirm.
 //
-// The KEYS are named at the TOP and the prose follows, because clampToBox drops
-// from the bottom and Window keeps a block's start: whatever is last is what a
-// short pane eats, and here that must be the explanation rather than the way
-// out. Everything belongs to row 0, since no key on this phase moves a cursor.
+// The FIELD leads and the prose follows, which is serialBody's rule and is here
+// for serialBody's reason. jdeLines.Window keeps a block's START, no key on this
+// phase moves a cursor, and everything below belongs to row 0 — so there is
+// exactly one block, nothing can sit above the window, and whatever leads it is
+// the whole of what a short pane keeps. A scanner or an operator typing a
+// reason into a box they cannot see is the worse loss, so the box is what
+// survives and the explanation is what gives.
+//
+// This comment used to say the KEYS were named at the top. They are not: this
+// body names no key at all. The way out is on the ACTION BAR, which is outside
+// this block entirely and never gives ground, so the ordering here was never
+// about protecting it — the reasoning was borrowed from a block that does carry
+// its own keys, and a WHY that does not describe the code is a defect in this
+// repo whether or not the code is right.
 func (s *ReceiveFormScreen) writeOffBody() *jdeLines {
 	l := &jdeLines{}
 	lw := receiveLabelWidth()

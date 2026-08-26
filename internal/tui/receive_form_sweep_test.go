@@ -688,6 +688,19 @@ func TestReceive_NoStateArmsTwoCarets(t *testing.T) {
 // receiveBarKeyNames maps a bar entry's Key to the keystrokes it SPELLS, and to
 // no synonyms. Credit for a synonym would be the sweep making a claim on the
 // bar's behalf — the defect it exists to report, sitting inside the check.
+//
+// It held `"R": {"r"}` and that is exactly the shape it warns about. Three bars
+// spelled the re-read as "R" while both handlers bind "r", so the pane drew
+// "R=Re-read" on the frame whose only recovery key that is and answered Shift+R
+// with "R does nothing here" — and this table hid it from both directions at
+// once. Forward, the sweep pressed "r", saw it act and passed; reverse, it
+// pressed "R", saw it decline and passed because no bar entry named "R". The
+// key was swept in a direction that could never fail.
+//
+// TestReceive_TheBarTokenTableTranscribes is what stops the next entry
+// interpreting instead of transcribing, and receiveBarTokenAbbreviations is
+// where the two entries that genuinely abbreviate are recorded WITH a reason,
+// so "absent" and "allowed" are different states.
 var receiveBarKeyNames = map[string][]string{
 	"Enter":     {"enter"},
 	"Esc":       {"esc"},
@@ -695,11 +708,117 @@ var receiveBarKeyNames = map[string][]string{
 	"UP/DN":     {"up", "down"},
 	"PgUp/PgDn": {"pgup", "pgdown"},
 	"PgUp":      {"pgup"},
-	"R":         {"r"},
+	"r":         {"r"},
 	"Ctrl+K":    {"ctrl+k"},
 	"Ctrl+R":    {"ctrl+r"},
 	"Ctrl+E":    {"ctrl+e"},
 	"Ctrl+X":    {"ctrl+x"},
+}
+
+// receiveBarTokenAbbreviations records the tokens whose segments do not spell
+// their keystroke letter for letter, and why each is allowed to.
+//
+// Both are the columnar layer's own shorthand for keys a terminal names longer
+// than a 49-cell bar can afford, and both are the spelling roughly twenty other
+// forms in this program use. Respelling them here would make the receiving
+// screen disagree with every one of them, which is the reasoning poFormNavAliases
+// records for Tab/Shift-Tab — the exception is the consistency, not a
+// convenience.
+//
+// An entry here still has to be an abbreviation OF ITS OWN KEY: the guard below
+// requires every letter of the token to appear in the keystroke, in order, so
+// this map cannot be used to credit a token with a key it has nothing to do
+// with. That is the whole difference between recording an exception and
+// creating a loophole.
+var receiveBarTokenAbbreviations = map[string]string{
+	"UP/DN": "DN is the layer's shorthand for down; UP/DN=Fields is how every " +
+		"columnar form in this program spells the pair",
+	"PgUp/PgDn": "PgDn is the layer's shorthand for pgdown, spelled the same way " +
+		"on every form that pages",
+}
+
+// TestReceive_TheBarTokenTableTranscribes.
+//
+// A bar-token table is half of a key space: the sweeps ask it what a bar CLAIMS,
+// so an entry that interprets rather than transcribes puts the defect inside the
+// check. `"R": {"r"}` did exactly that for three bars at once.
+//
+// The rule is applied by CASE of what the keystroke is, and that distinction is
+// derived rather than listed: receiveNamedKeyMsg answers whether a terminal
+// sends the key as a named type or as a RUNE. For a named key ("enter", "pgup",
+// "ctrl+k") the bar's capitalisation is display convention — a terminal has no
+// other "Enter" to send — so the token need only match case-insensitively. For a
+// RUNE the case IS the keystroke: "R" and "r" are two keys this program already
+// treats as different (list.go's listShortcuts gives lowercase to the screen and
+// uppercase to a sibling surface), so the token must match exactly.
+func TestReceive_TheBarTokenTableTranscribes(t *testing.T) {
+	if len(receiveBarKeyNames) == 0 {
+		t.Fatal("the token table is empty, so this guard is checking nothing")
+	}
+	for token, keys := range receiveBarKeyNames {
+		segments := strings.Split(token, "/")
+		if len(segments) != len(keys) {
+			t.Errorf("token %q has %d segment(s) but is credited with %d key(s) %v — a "+
+				"segment and a key are what the operator reads and what the terminal "+
+				"sends, and they must pair up", token, len(segments), len(keys), keys)
+			continue
+		}
+		for i, seg := range segments {
+			key := keys[i]
+			msg, ok := receiveNamedKeyMsg(key)
+			if !ok {
+				t.Errorf("token %q is credited with %q, which is no keystroke at all", token, key)
+				continue
+			}
+			if msg.Type == tea.KeyRunes {
+				// A rune: the case is the key, so the spelling must be exact.
+				if seg != key {
+					t.Errorf("token %q spells %q where the key is %q — a terminal sends "+
+						"those as different keystrokes, so the bar is naming one key and "+
+						"the handler binding another", token, seg, key)
+				}
+				continue
+			}
+			if strings.EqualFold(seg, key) {
+				continue
+			}
+			why, recorded := receiveBarTokenAbbreviations[token]
+			if !recorded {
+				t.Errorf("token %q spells %q where the key is %q, and is not recorded in "+
+					"receiveBarTokenAbbreviations — either spell what the bar binds or "+
+					"say why it may not", token, seg, key)
+				continue
+			}
+			if why == "" {
+				t.Errorf("token %q is recorded as an abbreviation with no reason", token)
+			}
+			if !receiveIsAbbreviationOf(seg, key) {
+				t.Errorf("token %q is recorded as an abbreviation but %q is not one of "+
+					"%q — the exception is being used to credit an unrelated key", token, seg, key)
+			}
+		}
+	}
+	for token := range receiveBarTokenAbbreviations {
+		if _, ok := receiveBarKeyNames[token]; !ok {
+			t.Errorf("receiveBarTokenAbbreviations records %q, which no bar entry spells "+
+				"any more — a standing exception nothing needs", token)
+		}
+	}
+}
+
+// receiveIsAbbreviationOf reports whether every letter of the token segment
+// appears in the keystroke, in order. It is what keeps a recorded abbreviation
+// tied to its own key rather than becoming a licence to name anything.
+func receiveIsAbbreviationOf(seg, key string) bool {
+	rest := strings.ToLower(key)
+	for _, r := range strings.ToLower(seg) {
+		i := strings.IndexRune(rest, r)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(string(r)):]
+	}
+	return true
 }
 
 func receiveNamedKeys(t *testing.T, bar []actionBarItem) map[string]bool {
