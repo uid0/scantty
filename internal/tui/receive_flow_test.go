@@ -440,7 +440,7 @@ func TestReceiveFlow_ACodeThatMatchesNothingSaysSo(t *testing.T) {
 		r = receiveTypeInto(t, r, "NOT-A-CODE")
 		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 		text := receivePaneText(s, 80, 24)
-		if !strings.Contains(text, "matches no line here") {
+		if !strings.Contains(text, "matches no line") {
 			t.Errorf("a scan that found nothing did not say so:\n%s", text)
 		}
 		if s.focused != receiveRowScan {
@@ -909,13 +909,23 @@ func TestReceiveFlow_AWriteOffRefusesToDiscardEntryAnywhereOnTheForm(t *testing.
 		// A captured serial AND a quantity: the second half proves the sentence
 		// is bounded — it names the first thing and counts the rest rather than
 		// listing every line and field into the tail where the way out lives.
-		{"a captured serial beside a quantity", func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+		// A quantity AND a carrier, with a serial already captured beside them.
+		// Two holds prove the sentence is bounded — it names the first thing and
+		// counts the rest rather than listing every line and field into the tail
+		// where the way out lives — and the CAPTURE is what the intact check
+		// reads, because a refusal must disturb nothing at all, including the
+		// half of the form the gate itself no longer counts.
+		{"a quantity and a carrier over a captured serial", func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
 			r = receiveGoToLine(t, r, s, 2) // the serialized line
 			r = receiveTypeInto(t, r, "1")
 			r = receiveKey(t, r, enter) // -> capture
 			r = receiveType(t, r, poRuneKey("SN-1"))
 			r = receiveKey(t, r, enter) // the last unit lands on the review
-			return receiveKey(t, r, esc)
+			r = receiveKey(t, r, esc)
+			for s.focused != receiveRowCarrier {
+				r = receiveKey(t, r, down)
+			}
+			return receiveTypeInto(t, r, "United Parcel")
 		}, "a quantity on 1 line and 1 more",
 			func(s *ReceiveFormScreen) string { return s.captures[0].serial }, "SN-1"},
 	}
@@ -1020,6 +1030,100 @@ func TestReceiveFlow_AWriteOffRefusesToDiscardEntryAnywhereOnTheForm(t *testing.
 		}
 		_ = r
 	})
+}
+
+// TestReceiveFlow_AWriteOffNamesTheCapturedSerialsItDiscards.
+//
+// The other half of the gate above, and the half that must NOT refuse.
+//
+// "Never silently discard what the operator typed" demands non-silence, not
+// refusal, and refusal is only legitimate where the operator can satisfy it
+// from the frame it is drawn on. Captured serials fail that test: s.captures is
+// written by beginReceipt, storeUnit and resetEntry, none of which is reachable
+// from the quantity form once the boxes are empty. So when the gate counted
+// them, this exact sequence — capture a serial, walk back, change your mind and
+// clear the quantity — left both destructive keys permanently unnamed, refusing
+// with "receive or clear first" where receiving was impossible (Enter refuses
+// an empty form), clearing was impossible (no key on the phase touches
+// s.captures), and the serial being protected could not have reached the wire
+// anyway, since buildReceipt drops a line whose box is blank.
+//
+// So the keys are NAMED, the confirm says what the write costs, and Ctrl+X
+// goes through. The count is asserted on the CONFIRM BODY rather than only in
+// the note that opened it: a note is the answer to a keypress and is retired by
+// the next one, and the confirm is the frame Ctrl+X is pressed on.
+func TestReceiveFlow_AWriteOffNamesTheCapturedSerialsItDiscards(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	esc := tea.KeyMsg{Type: tea.KeyEsc}
+
+	// The dead end exactly as it was reached: a serial captured against line 3,
+	// then the quantity that opened it taken back out.
+	held := func(t *testing.T) (Root, *ReceiveFormScreen, *receiveFake) {
+		t.Helper()
+		fake := &receiveFake{}
+		r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+		r = receiveGoToLine(t, r, s, 2)
+		r = receiveTypeInto(t, r, "1")
+		r = receiveKey(t, r, enter) // -> capture
+		r = receiveType(t, r, poRuneKey("SN-1"))
+		r = receiveKey(t, r, enter) // the last unit lands on the review
+		r = receiveKey(t, r, esc)   // back to the quantities
+		s.qty[2].SetValue("")
+		if s.linesTyped() != 0 || s.capturesTaken() != 1 {
+			t.Fatalf("the setup is not the state this is about: %d lines typed, %d captures",
+				s.linesTyped(), s.capturesTaken())
+		}
+		return r, s, fake
+	}
+
+	for _, k := range []struct {
+		name  string
+		msg   tea.KeyMsg
+		token string
+		label string
+		reach func(t *testing.T, r Root, s *ReceiveFormScreen) Root
+		wrote func(f *receiveFake) bool
+	}{
+		{"ctrl+k", tea.KeyMsg{Type: tea.KeyCtrlK}, "Ctrl+K", "Close short",
+			func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+				return receiveGoToLine(t, r, s, 1) // ordered 10, received 3
+			},
+			func(f *receiveFake) bool { return len(f.closedShort()) == 1 }},
+		{"ctrl+r", tea.KeyMsg{Type: tea.KeyCtrlR}, "Ctrl+R", "Mark received",
+			func(t *testing.T, r Root, s *ReceiveFormScreen) Root { return r },
+			func(f *receiveFake) bool { return len(f.marked()) == 1 }},
+	} {
+		t.Run(k.name, func(t *testing.T) {
+			r, s, fake := held(t)
+			r = k.reach(t, r, s)
+
+			// THE BAR FOLLOWS THE GATE, and a key that will proceed is named.
+			// Left unnamed, the dead end simply moves onto the bar.
+			if !barHas(s.bar(), k.token, k.label) {
+				t.Fatalf("the bar does not name %s over a capture nothing can clear: %+v",
+					k.token, s.bar())
+			}
+			r = receiveKey(t, r, k.msg)
+			if s.phase != phaseWriteOff {
+				t.Fatalf("%s refused a hold the operator cannot clear: phase %v", k.name, s.phase)
+			}
+			if got := receivePaneText(s, 80, 30); !strings.Contains(got, "1 captured serial will be discarded") {
+				t.Errorf("the confirm does not name what this write costs:\n%s", got)
+			}
+
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+			if !k.wrote(fake) {
+				t.Errorf("%s did not reach its endpoint: closed %+v, marked %+v",
+					k.name, fake.closedShort(), fake.marked())
+			}
+			// The discard really happens, and it happens WITHOUT a receipt:
+			// the warning is honest about the serial going nowhere.
+			if got := fake.sent(); len(got) != 0 {
+				t.Errorf("a write-off sent a receipt after all: %+v", got)
+			}
+			_ = r
+		})
+	}
 }
 
 // TestReceiveFlow_TheScanHintCountsLinesEnterCanReach.

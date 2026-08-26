@@ -125,6 +125,34 @@ func receiveStruckOff(n int, code string) []omsapi.ReceivingLine {
 	return out
 }
 
+// receiveAllSettled is an order NOTHING can be received against: every line is
+// closed short, so applyWorksheet puts all of them in s.closed and s.lines is
+// empty.
+//
+// It is not a corner. `can_receive: true` alongside `outstanding_line_count: 0`
+// is a state the contract calls out as reachable — every line closed short or
+// struck off without a single delivery settles the order without it ever
+// reaching `received` — and qtyBody draws the scan row before its own empty
+// branch, so the operator lands on a scan box with no line behind it.
+//
+// `coded` decides which of the two nothing-branches the scan notes take: an
+// order carrying no scannable code at all is a different fact from one whose
+// only codes are on settled lines, and both used to point at a picker with
+// nothing in it.
+func receiveAllSettled(coded bool) []omsapi.ReceivingLine {
+	shut := func(id int, label string) omsapi.ReceivingLine {
+		l := receiveWSLine(id, label, 6, 2)
+		l.IsClosedShort, l.IsSettled = true, true
+		l.ReceiptState, l.ReceiptStateLabel = omsapi.ReceiptStateClosedShort, "Closed short"
+		l.QuantityPending = 0
+		if !coded {
+			l.ScanCodes = nil
+		}
+		return l
+	}
+	return []omsapi.ReceivingLine{shut(41, "Backordered gasket"), shut(42, "Cancelled bracket")}
+}
+
 // receiveSharedCode is an order of n lines that ALL carry one scan code — the
 // same part ordered n times, which is the shape a scan resolving to several
 // lines is really reached through. n is a parameter because the note that comes
@@ -1922,6 +1950,24 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 	for i := range shared {
 		shared[i].ScanCodes = []omsapi.ScanCode{{Code: longCode.String(), Kind: omsapi.ScanCodeItemSKU}}
 	}
+	// An order of n plain lines every one of which is over-received, plus ONE
+	// serialized unit so the review is arrived at through commitUnit and the
+	// warning has to share the note with that key's own lead. The two sizes are
+	// the bound and one past it, derived from receiveScanListMax rather than
+	// written down, because the two wordings are different lengths and the
+	// wrong side of the bound is the one that used to overrun.
+	overOrder := func(n int) ([]omsapi.ReceivingLine, map[int]string) {
+		lines := receiveManyLines(n)
+		lines = append(lines, receiveWSSerialized(80, "Serialized controller board", 1, 0))
+		typed := map[int]string{n: "1"}
+		for i := 0; i < n; i++ {
+			typed[i] = "99"
+		}
+		return lines, typed
+	}
+	overListed, overListedQty := overOrder(receiveScanListMax)
+	overCounted, overCountedQty := overOrder(receiveScanListMax + 4)
+	overKeys := []tea.KeyMsg{enter, poRuneKey("SN-1"), enter}
 	probes = append(probes,
 		probe{"a long code that matches nothing", receiveOrder(), nil,
 			[]tea.KeyMsg{longCode, enter}, false},
@@ -1939,12 +1985,30 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 			nil, []tea.KeyMsg{longCode, enter}, false},
 		probe{"a long code on several live lines", shared, nil,
 			[]tea.KeyMsg{longCode, enter}, false},
+		// findLine's fourth kind of nothing, and the one with the longest tail:
+		// on an order with no receivable line the way out is the ORDER's, which
+		// is a longer sentence than "pick a line with up/dn" and rides behind
+		// the same 91-character code.
+		probe{"a long code on an order with nothing receivable", receiveAllSettled(true), nil,
+			[]tea.KeyMsg{longCode, enter}, false},
 		// Re-entering capture with nothing left to type: the note names the
 		// answered frame AND carries that frame's whole way-out tail, so it is
 		// the longest sentence this transition can produce.
 		probe{"re-entering an answered capture", receiveSweepLines(), map[int]string{2: "1"},
 			[]tea.KeyMsg{enter, poRuneKey("SN-1"), enter,
 				tea.KeyMsg{Type: tea.KeyEsc}, enter}, false},
+		// The OVER-RECEIPT warning, in both of its wordings and at the widest
+		// LEAD it can carry. The run of "line N by M" entries was unbounded in
+		// the number of lines an order can have, and toReview folds it into the
+		// note with "enter sends it as typed" behind it — so seven over lines
+		// pushed the pre-send warning's own instruction off the pane, on the
+		// last frame before stock moves. It is reached through CAPTURE rather
+		// than straight off the quantity form because commitUnit's lead comes
+		// ahead of it, which is what makes the sentence overrun sooner.
+		probe{"an over-receipt on as many lines as the note lists", overListed,
+			overListedQty, overKeys, false},
+		probe{"an over-receipt on more lines than the note lists", overCounted,
+			overCountedQty, overKeys, false},
 		// The OTHER branch of that lead: a queue with work left in it, which is
 		// the longer of the two wordings ("N of M serialized units to capture").
 		probe{"re-entering a partly answered capture",

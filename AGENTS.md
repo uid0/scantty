@@ -188,6 +188,28 @@ either:
   a client to say so AND point at voiding or cancelling the ORDER — `qtyBody`'s
   empty branch and Ctrl+R's decline both do, because refusing without it is a
   dead end.
+- **"Never silently discard" demands NON-SILENCE, not refusal — and a refusal
+  is only legitimate where the operator can satisfy it from the frame it is
+  drawn on.** If input is about to be dropped, SAY SO FIRST; blocking the key is
+  one way to be non-silent and it is the right one only when the operator,
+  standing on that frame, can clear what is in the way. Irreversibility argues
+  for making the consequence UNMISSABLE, never for blocking a key nobody can
+  unblock: a refusal that cannot be satisfied is a dead end, and a dead end is
+  its own defect. The failure that motivated it: the write-off gate
+  (`receive_form.go`, `writeOffDiscards` / `writeOffCaptureLoss`) counted
+  CAPTURED SERIALS, and `s.captures` is written only by `beginReceipt`,
+  `storeUnit` and `resetEntry` — none reachable from the quantity form once the
+  boxes are empty. Capture a serial, walk back, clear the quantity that opened
+  it, and both destructive keys went permanently unnamed answering "receive or
+  clear first", with receiving impossible (Enter refuses an empty form),
+  clearing impossible (no key on the phase touches `s.captures`) and the serial
+  not even sendable, since `buildReceipt` drops a line whose box is blank. So
+  the gate SPLITS by what the frame can act on: the quantity boxes and the
+  delivery/notes block REFUSE (a backspace away), and the captures are NAMED
+  BY COUNT on the confirm — the frame Ctrl+X is pressed on, rather than a note
+  the next keypress retires — and the write proceeds. **The bar follows the
+  gate in both directions**: a key that will proceed, warning and all, is named;
+  only a key that would refuse is unnamed, or the dead end moves onto the bar.
 - **`reopen-short/` exists and this client does not drive it.** A close-short
   recorded in error is corrected there; the correction is stamped BESIDE the
   write-off rather than erasing it, so a reopened line comes back outstanding

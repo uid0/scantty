@@ -701,6 +701,83 @@ func TestReceiveFormScreen_EveryBoxIsClassifiedForTheWriteOffGate(t *testing.T) 
 	}
 }
 
+// ---------------------------------------------------------------------------
+// No sentence points at an empty line picker
+// ---------------------------------------------------------------------------
+
+// TestReceive_NoSentencePointsAtAnEmptyLinePicker.
+//
+// A frame may only name a key that acts in the state it is drawing, and "pick
+// the line with up/dn" is a promise about an OUTCOME rather than about a key:
+// up/dn does still move, it just reaches no line, because applyWorksheet puts
+// every voided and closed-short line in s.closed and an order all of whose
+// lines are settled leaves s.lines empty. qtyBody draws the scan row before its
+// own empty branch, so that is the state the operator lands in.
+//
+// It is swept rather than asserted at the two sites that were reported, because
+// the reported-site fix has now been made twice: scanHint was corrected in one
+// round and noScanMatchNote, two functions away, carried the identical tail in
+// the identical state into the next. A third sentence added later would be a
+// fourth round.
+//
+// The forbidden PHRASE is read off the code — it is what linePickWayOut answers
+// on an order that has lines — so rewording the promise does not quietly retire
+// this check, and the whole key space is pressed so that a sentence reachable
+// only through some particular key is still reached. Both nothing-fixtures are
+// swept because the notes branch on them: an order carrying no code at all is a
+// different fact from one whose codes are all on settled lines.
+func TestReceive_NoSentencePointsAtAnEmptyLinePicker(t *testing.T) {
+	_, with := receiveDrive(t, &receiveFake{}, receiveOrder(), 80, 30)
+	if len(with.lines) == 0 {
+		t.Fatal("the reference order draws no line, so the phrase derived from it is the " +
+			"empty-order wording and this check would be vacuous")
+	}
+	promise := with.linePickWayOut()
+	if promise == "" {
+		t.Fatal("linePickWayOut answers nothing on an order with lines")
+	}
+
+	space := poKeySpace()
+	for _, coded := range []bool{true, false} {
+		lines := receiveAllSettled(coded)
+		for _, seed := range []struct{ name, typed string }{
+			// The bare seed reaches the scan HINT, which is drawn on every
+			// frame of this phase; the typed one reaches findLine, whose
+			// no-match note is the sibling that was missed.
+			{"nothing typed", ""},
+			// A code no line on the order carries, so findLine cannot resolve
+			// it and has to say which kind of nothing this is.
+			{"an unmatched code in the scan box", "SKU-77"},
+		} {
+			for _, k := range space {
+				t.Run(fmt.Sprintf("coded=%v %s then %q", coded, seed.name, k), func(t *testing.T) {
+					r, s := receiveDrive(t, &receiveFake{}, lines, 80, 30)
+					if len(s.lines) != 0 {
+						t.Fatalf("the fixture left %d receivable lines, so this is not the "+
+							"state the check is about", len(s.lines))
+					}
+					if seed.typed != "" {
+						r = receiveTypeInto(t, r, seed.typed)
+					}
+					next, _ := r.Update(poPhaseKeyMsg(k))
+					r = next.(Root)
+
+					// The NOTE is read raw beside the clipped pane: the pane is
+					// what the operator sees, but a promise cut off by the
+					// reservation would pass a pane-only check while still
+					// being what the screen meant to say.
+					said := s.note.text + " " + receiveClippedPane(s, 80, 30)
+					if strings.Contains(said, promise) {
+						t.Errorf("after %q the screen promises %q on an order with no line "+
+							"to pick:\n%s", k, promise, said)
+					}
+					_ = r
+				})
+			}
+		}
+	}
+}
+
 // receiveFocusedBoxes names every box on a live screen whose caret is armed.
 //
 // It walks the STRUCT and not allBoxes, which is the whole point: a box missing
