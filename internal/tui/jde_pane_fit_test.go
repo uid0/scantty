@@ -139,24 +139,28 @@ func jdeEmbedders(t *testing.T) map[string]bool {
 // second half exists to catch.
 func jdeScreenFixtures() map[string]func() Screen {
 	return map[string]func() Screen{
-		"AssetFormScreen":                func() Screen { s := NewAssetFormScreen(Deps{}, ""); s.loading = false; return s },
-		"AssetPartFormScreen":            func() Screen { s := NewAssetPartFormScreen(Deps{}, "a1", "Asset", ""); s.loading = false; return s },
-		"AuthorizationGrantScreen":       func() Screen { s := NewAuthorizationGrantScreen(Deps{}); s.loading = false; return s },
-		"CategoryFormScreen":             func() Screen { s := NewCategoryFormScreen(Deps{}, ""); s.loading = false; return s },
-		"DeviceTypeFormScreen":           func() Screen { return NewDeviceTypeFormScreen(Deps{}, 0) },
-		"DisconnectFormScreen":           func() Screen { s := NewDisconnectFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
-		"InventoryItemFormScreen":        func() Screen { s := NewInventoryItemFormScreen(Deps{}, ""); s.loading = false; return s },
-		"ItemSupplierFormScreen":         func() Screen { s := NewItemSupplierFormScreen(Deps{}, "i1", "Item", nil); s.loading = false; return s },
-		"LocationFormScreen":             func() Screen { s := NewLocationFormScreen(Deps{}, ""); s.loading = false; return s },
-		"LocationProblemFormScreen":      func() Screen { return NewLocationProblemFormScreen(Deps{}, 1, "Loc") },
-		"MaintenanceItemFormScreen":      func() Screen { s := NewMaintenanceItemFormScreen(Deps{}, ""); s.loading = false; return s },
-		"MakerBoxFormScreen":             func() Screen { return NewMakerBoxFormScreen(Deps{}, 0) },
-		"PowerBreakerFormScreen":         func() Screen { s := NewPowerBreakerFormScreen(Deps{}, 0, 0); s.loading = false; return s },
-		"PowerCircuitFormScreen":         func() Screen { s := NewPowerCircuitFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
-		"PowerOutletFormScreen":          func() Screen { s := NewPowerOutletFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
-		"PowerPanelFormScreen":           func() Screen { s := NewPowerPanelFormScreen(Deps{}, 0); s.loading = false; return s },
-		"ProjectStorageFormScreen":       func() Screen { return NewProjectStorageFormScreen(Deps{}) },
-		"PurchaseOrderAddLineScreen":     func() Screen { return NewPurchaseOrderAddLineScreen(Deps{}, poViewPO()) },
+		"AssetFormScreen":            func() Screen { s := NewAssetFormScreen(Deps{}, ""); s.loading = false; return s },
+		"AssetPartFormScreen":        func() Screen { s := NewAssetPartFormScreen(Deps{}, "a1", "Asset", ""); s.loading = false; return s },
+		"AuthorizationGrantScreen":   func() Screen { s := NewAuthorizationGrantScreen(Deps{}); s.loading = false; return s },
+		"CategoryFormScreen":         func() Screen { s := NewCategoryFormScreen(Deps{}, ""); s.loading = false; return s },
+		"DeviceTypeFormScreen":       func() Screen { return NewDeviceTypeFormScreen(Deps{}, 0) },
+		"DisconnectFormScreen":       func() Screen { s := NewDisconnectFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
+		"InventoryItemFormScreen":    func() Screen { s := NewInventoryItemFormScreen(Deps{}, ""); s.loading = false; return s },
+		"ItemSupplierFormScreen":     func() Screen { s := NewItemSupplierFormScreen(Deps{}, "i1", "Item", nil); s.loading = false; return s },
+		"LocationFormScreen":         func() Screen { s := NewLocationFormScreen(Deps{}, ""); s.loading = false; return s },
+		"LocationProblemFormScreen":  func() Screen { return NewLocationProblemFormScreen(Deps{}, 1, "Loc") },
+		"MaintenanceItemFormScreen":  func() Screen { s := NewMaintenanceItemFormScreen(Deps{}, ""); s.loading = false; return s },
+		"MakerBoxFormScreen":         func() Screen { return NewMakerBoxFormScreen(Deps{}, 0) },
+		"PowerBreakerFormScreen":     func() Screen { s := NewPowerBreakerFormScreen(Deps{}, 0, 0); s.loading = false; return s },
+		"PowerCircuitFormScreen":     func() Screen { s := NewPowerCircuitFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
+		"PowerOutletFormScreen":      func() Screen { s := NewPowerOutletFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
+		"PowerPanelFormScreen":       func() Screen { s := NewPowerPanelFormScreen(Deps{}, 0); s.loading = false; return s },
+		"ProjectStorageFormScreen":   func() Screen { return NewProjectStorageFormScreen(Deps{}) },
+		"PurchaseOrderAddLineScreen": func() Screen { return NewPurchaseOrderAddLineScreen(Deps{}, poViewPO()) },
+		// Past its loading state, on the supplier picker it opens on: a screen
+		// still fetching draws one muted line and no rows, and a fixture that
+		// renders nothing proves nothing.
+		"PurchaseOrderCreateScreen":      func() Screen { return poCreateFixture() },
 		"PurchaseOrderAttachmentsScreen": func() Screen { return NewPurchaseOrderAttachmentsScreen(Deps{}, poViewPO()) },
 		"PurchaseOrderDetailScreen": func() Screen {
 			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
@@ -176,6 +180,45 @@ func jdeScreenFixtures() map[string]func() Screen {
 		"ThermostatFormScreen":      func() Screen { s := NewThermostatFormScreen(Deps{}, ""); s.loading = false; return s },
 		"WebhookFormScreen":         func() Screen { return NewWebhookFormScreen(Deps{}, 0) },
 	}
+}
+
+// poCreateFixture is the New PO screen with a supplier list on it. Its EXTRA
+// states — the source chooser under a long cart, the review surface, the line
+// form, the four pickers — are in jdeScreenStates, because they are where this
+// screen's geometry is actually interesting: the pinned header is at its
+// tallest on the chooser and the body at its longest on review.
+func poCreateFixture() *PurchaseOrderCreateScreen {
+	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.supplierLoading = false
+	s.suppliers = []omsapi.Supplier{
+		{ID: 1, Name: "Northern Tool & Die Supply Co"},
+		{ID: 2, Name: "Acme Fasteners"},
+		{ID: 3, Name: "Midwest Bearing"},
+	}
+	s.supplierCursor = 0
+	return s
+}
+
+// poCreateStaged is that screen with a supplier committed, the optional rows
+// offered and a cart long enough to overflow every pane this sweep draws.
+func poCreateStaged() *PurchaseOrderCreateScreen {
+	s := poCreateFixture()
+	s.supplierID = 1
+	s.agreements = []omsapi.SupplierAgreement{{ID: 4, Name: "2026 nonprofit pricing"}}
+	s.assoc.workOrders = []omsapi.WorkOrder{{ID: "wo-1", DisplayTitle: "Lathe teardown"}}
+	s.assoc.committees = []omsapi.SIG{{ID: 3, Name: "Metal shop"}}
+	id, cost := 7, 3.5
+	for i := 0; i < 12; i++ {
+		s.lines = append(s.lines, poCartLine{
+			item: omsapi.PurchaseOrderCreateItem{
+				ItemSupplierID: &id, Quantity: 2, UnitCost: &cost,
+				ExpectedShipmentDate: "2026-09-01",
+			},
+			label: fmt.Sprintf("Hex bolt M8x40 zinc plated grade 8.8 #%d", i+1),
+		})
+	}
+	s.phase = poPhaseSource
+	return s
 }
 
 // jdeScreenStates are EXTRA states of screens jdeScreenFixtures already builds,
@@ -227,6 +270,86 @@ func jdeScreenStates() map[string]func() Screen {
 			return s
 		},
 
+		"PurchaseOrderCreateScreen/source chooser": func() Screen { return poCreateStaged() },
+		"PurchaseOrderCreateScreen/review": func() Screen {
+			s := poCreateStaged()
+			s.phase = poPhaseReview
+			s.poNotes.Focus()
+			return s
+		},
+		"PurchaseOrderCreateScreen/line form": func() Screen {
+			s := poCreateStaged()
+			id := 7
+			s.enterLinePhase(&id, nil, "Hex bolt M8x40 zinc plated grade 8.8", 2, 3.5, 0, 12)
+			return s
+		},
+		"PurchaseOrderCreateScreen/supplier switch": func() Screen {
+			s := poCreateStaged()
+			s.phase = poPhaseSupplierSwitch
+			s.supplierCursor = 1
+			return s
+		},
+		"PurchaseOrderCreateScreen/item picker": func() Screen {
+			s := poCreateStaged()
+			s.phase = poPhaseItemPick
+			s.itemSuppliersFor = s.supplierID
+			for i := 0; i < 12; i++ {
+				s.itemSuppliersAll = append(s.itemSuppliersAll, omsapi.ItemSupplier{
+					ID: i + 1, ItemName: fmt.Sprintf("Hex bolt M8x40 zinc #%d", i+1),
+					SupplierSKU: fmt.Sprintf("AF-99-12-ZP-LH-%04d", i), UnitCost: "3.50",
+				})
+			}
+			s.itemSuppliers = s.itemSuppliersAll
+			return s
+		},
+		"PurchaseOrderCreateScreen/item search open": func() Screen {
+			s := poCreateStaged()
+			s.phase = poPhaseItemPick
+			s.itemSuppliersFor = s.supplierID
+			s.itemSuppliersAll = []omsapi.ItemSupplier{{ID: 1, ItemName: "Hex bolt", SupplierSKU: "AF-1"}}
+			s.itemSuppliers = s.itemSuppliersAll
+			s.itemSuppliersTyping = true
+			s.itemSuppliersSearch.Focus()
+			s.itemSuppliersSearch.SetValue("hex")
+			return s
+		},
+		"PurchaseOrderCreateScreen/asset picker": func() Screen {
+			s := poCreateStaged()
+			s.phase = poPhaseAssetPick
+			// A page number, because the phase is only ever reached through an
+			// arm that sets one — a fixture that leaves it 0 draws "page 0",
+			// which is a state no operator can be in.
+			s.assetsPage = 1
+			s.assetsHasNext = true
+			for i := 0; i < 8; i++ {
+				s.assets = append(s.assets, omsapi.Asset{
+					ID: fmt.Sprintf("a-%d", i), Name: fmt.Sprintf("Bridgeport mill #%d", i+1),
+					AssetTag: fmt.Sprintf("TAG-%04d", i), SerialNumber: "SN-12345678",
+				})
+			}
+			return s
+		},
+		"PurchaseOrderCreateScreen/reorder picker": func() Screen {
+			s := poCreateStaged()
+			s.phase = poPhaseReorderPick
+			for i := 0; i < 9; i++ {
+				s.reorderItems = append(s.reorderItems, omsapi.ReorderDataItem{
+					ItemName:          fmt.Sprintf("Hex bolt M8x40 zinc #%d", i+1),
+					SuggestedQuantity: 25, CurrentStock: 2, MinimumStock: 10,
+					UnitCost: "3.50",
+				})
+			}
+			return s
+		},
+		"PurchaseOrderCreateScreen/agreement picker": func() Screen {
+			s := poCreateStaged()
+			s.phase = poPhaseAgreement
+			s.agreementCursor = 1
+			s.agreements = []omsapi.SupplierAgreement{
+				{ID: 4, Name: "2026 nonprofit pricing", Notes: "15% off list, net 30, free freight over $250."},
+			}
+			return s
+		},
 		"AssetFormScreen/pickView": func() Screen {
 			s := NewAssetFormScreen(Deps{}, "")
 			s.loading = false
@@ -949,6 +1072,29 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 
 		"PurchaseOrderDetailScreen/viewOrderPad": pick("PurchaseOrderDetailScreen/order pad",
 			func(s Screen) jdeHeader { return s.(*PurchaseOrderDetailScreen).orderPadHeader() }),
+
+		// The New PO screen pins the tallest header in the app: the supplier
+		// row, the failure's unbounded detail, three optional attribution
+		// values, and — on this phase — the screen's answer to the last
+		// keypress. Built on the SOURCE CHOOSER because that is where all of
+		// them are standing at once, with a 502's body under it, which is the
+		// state the header floor has to hold in.
+		"PurchaseOrderCreateScreen/View": {
+			mk: func() Screen {
+				s := poCreateStaged()
+				// An EMPTY cart, so that the key pressed below really declines:
+				// the essential row then carries the screen's answer to a
+				// keypress rather than its standing note, which is the sentence
+				// rule 1 depends on being drawn.
+				s.lines = nil
+				s.setErr("submitting this purchase order failed", nginx502)
+				return s
+			},
+			after: func(s Screen) {
+				s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+			},
+			header: func(s Screen) jdeHeader { return s.(*PurchaseOrderCreateScreen).headerLines() },
+		},
 
 		// The receiving form with a note standing AND a 502's detail under it:
 		// the state its header is tallest in, and the one the header floor was

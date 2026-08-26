@@ -22,406 +22,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Saying something — the rule these pickers broke
-// ---------------------------------------------------------------------------
-
-// Every operator action on these screens that performs work off the terminal
-// must report that it is WORKING, and must report FAILURE. A key that declines
-// to act must say why. The pickers used to answer several keys with a bare
-// `return s, nil`, which redraws a screen byte-for-byte identical to the one
-// before the press — and from the operator's seat a keystroke that changes
-// nothing and says nothing is indistinguishable from a wedged program.
-//
-// That is what the "the screen just hangs after I press enter" report actually
-// was. Nothing was blocked and nothing was in flight: enter inside the item
-// picker's search box only CLOSED the box (the pick needed a second enter), and
-// enter over an empty filtered list returned nil. Both redrew the same pixels,
-// so the operator concluded the program had stopped. The three states below —
-// working, succeeded, failed — are now all visible, and no arm of these
-// switches is allowed to be silent.
-
-// pickerNote is a picker's own answer to the last keypress, rendered in the
-// screen BODY. The status bar carries the same words, but a Flash expires after
-// four seconds (status.go) and the operator who pressed enter and saw nothing is
-// exactly the operator still staring at the picker a minute later — so the body
-// line is the one that has to survive.
-type pickerNote struct {
-	text  string
-	level StatusLevel
-}
-
-// render styles the note for the BODY, folded to the pane by pickerWrap. text
-// may also carry explicit newlines, which stay as forced breaks.
-//
-// Folding is not cosmetic here. Root.View() TRUNCATES the pane rather than
-// wrapping it, and the tail of one of these sentences is where the key that
-// gets the operator OUT of the state is named — so a clipped hint is the
-// silence this whole file exists to remove, wearing a tick mark, and it is
-// worse than no hint at all because the operator believes they read it.
-func (n pickerNote) render() string {
-	return strings.Join(n.renderLines(pickerPaneWidth), "\n")
-}
-
-// renderLines is render's whole body, folded to the width the CALLER has rather
-// than to the 51 columns the narrowest supported terminal gives.
-//
-// It exists because the columnar screens draw the same note into a pane whose
-// width they read off the live terminal (po_add_line.go's noteLines), and
-// clipping a note to 51 cells on a 120-column terminal throws away what the
-// pane had room for. Only the width differs, so only the width is a parameter:
-// the mark, the styling and the first-line-versus-continuation split live here
-// once, and a new StatusLevel is added in one place.
-//
-// `width` is the room the note has BEFORE the mark, which this function
-// subtracts, so a caller budgets against its own pane and nothing else.
-func (n pickerNote) renderLines(width int) []string {
-	if n.text == "" {
-		return nil
-	}
-	mark, style := "", StyleMuted
-	switch n.level {
-	case StatusError:
-		mark, style = "✗ ", StyleStatusError
-	case StatusWarn:
-		mark, style = "! ", StyleStatusWarn
-	case StatusOK:
-		mark, style = "✓ ", StyleStatusOK
-	}
-	// The mark eats two cells of the first line. Budgeting it off every line is
-	// two columns conservative on the continuations and costs nothing.
-	if mark != "" {
-		width -= lipgloss.Width(mark)
-	}
-	lines := pickerWrap(n.text, width)
-	out := make([]string, 0, len(lines))
-	for i, line := range lines {
-		if i == 0 {
-			out = append(out, style.Render(mark+line))
-			continue
-		}
-		// Continuation lines are muted and already indented by pickerWrap:
-		// they carry the way OUT of the state, not the state itself.
-		out = append(out, StyleMuted.Render(line))
-	}
-	return out
-}
-
-// flash is the note reduced to ONE line for the status bar, which has no room
-// for the continuation.
-func (n pickerNote) flash() string {
-	if i := strings.IndexByte(n.text, '\n'); i >= 0 {
-		return n.text[:i]
-	}
-	return n.text
-}
-
-// say records the note and flashes the same words on the status bar. Both, not
-// either: the bar is where an operator's eye already goes for "did that work",
-// and the body line is what is still there once the flash has gone.
-func (n *pickerNote) say(text string, level StatusLevel) tea.Cmd {
-	n.text, n.level = text, level
-	return Status(n.flash(), level)
-}
-
-// cellPrefix returns the longest prefix of text that draws within max CELLS.
-// It is the measurement half of every bound on these screens, and it makes ONE
-// forward pass: it stops as soon as the budget is spent, so its cost is the
-// budget rather than the length of what it was handed.
-//
-// That is the whole reason it exists beside truncateVisible (layout.go), which
-// does the same job by dropping ONE rune off the end and re-measuring the whole
-// remaining string — O(n²) with an O(n) allocation per step. Harmless on a
-// label; not on the values these screens clip, because omsapi.parseError puts
-// the ENTIRE raw response body into APIError.Message whenever the JSON envelope
-// carries no code, and the source chooser re-renders the row carrying it about
-// ten times per frame. Measured against a 20 KB gateway page: 711ms for one
-// clip, and 1.5s for one fold of a 5 KB unspaced token — seconds of freeze per
-// keystroke, which is the symptom this whole change exists to remove.
-//
-// Escape sequences are stepped over rather than measured, and the scan only
-// ever returns on a boundary between them, so a cut never splits one and never
-// bleeds colour into the next column — the property truncateVisible's doc
-// comment is about. A rune's width is asked of lipgloss one rune at a time,
-// which over-counts a multi-rune grapheme cluster (an emoji built from a ZWJ
-// run) rather than under-counting it: the error is on the side of clipping
-// early, so the result is never WIDER than the budget it was given.
-func cellPrefix(text string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	const (
-		plain = iota
-		afterEsc
-		inEsc
-	)
-	state, used := plain, 0
-	for i, r := range text {
-		switch state {
-		case afterEsc:
-			state = inEsc
-			continue
-		case inEsc:
-			if (r >= 0x40 && r <= 0x7e) || r == 0x07 {
-				state = plain
-			}
-			continue
-		}
-		if r == 0x1b {
-			state = afterEsc
-			continue
-		}
-		w := lipgloss.Width(string(r))
-		if used+w > max {
-			return text[:i]
-		}
-		used += w
-	}
-	return text
-}
-
-// pickerClip bounds an operator-supplied string before it goes into a note. The
-// pane is 51 columns at the terminal's narrowest supported width and Root.View()
-// truncates, so an unbounded search term or supplier name would push the rest of
-// the sentence — the part naming the key to press — off the right edge.
-//
-// `max` is CELLS, not runes, because every caller computes its budget in cells
-// (lipgloss.Width against pickerPaneWidth). Counting runes here made the bound
-// disagree with the budget it was asked for: one CJK or emoji rune is two
-// cells, so a clipped value could render twice as wide as the room reserved for
-// it and clampToBox would take the tail — the very cut the clip exists to stop,
-// reached with a different alphabet.
-//
-// Nothing here measures the WHOLE string: cellPrefix stops at the budget, so
-// clipping a multi-KB OMS error body costs the same as clipping a supplier
-// name. An unbounded value reaching a clip must stay cheap, because the row
-// carrying one is redrawn on every keystroke.
-func pickerClip(text string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	if head := cellPrefix(text, max); head == text {
-		return text
-	}
-	if max <= 1 {
-		return cellPrefix(text, max)
-	}
-	return cellPrefix(text, max-1) + "…"
-}
-
-func (n *pickerNote) clear() { n.text, n.level = "", StatusInfo }
-
-// pickerPaneWidth is the columns a picker frame actually gets at the narrowest
-// terminal this project checks against: Root.View() clamps the body to
-// screenBodyWidth(80) = 51 (AGENTS.md) and TRUNCATES what does not fit.
-//
-// Every note and every fixed hint on these screens is folded to it rather than
-// hand-counted against it. Hand-counting is what produced the class of bug this
-// constant exists to close — a note reads fine at the width its author had in
-// mind and then grows a prefix, a supplier name or a match count and silently
-// loses the key it was written to name.
-var pickerPaneWidth = screenBodyWidth(80)
-
-// pickerWrap folds text onto as many lines as it needs to fit width, and
-// indents every line after the first by two so a folded sentence still reads as
-// one. Explicit newlines in text are forced breaks.
-//
-// It folds at the " · " joints these hints are built from before it falls back
-// to spaces, because those joints separate whole claims ("b picks another line
-// source", "esc cancels the order") and a claim split across two lines is
-// harder to read than one claim per line. The separator itself is dropped at a
-// fold — the indent already says the line is a continuation.
-func pickerWrap(text string, width int) []string {
-	const indent = "  "
-	if width < 12 {
-		width = 12
-	}
-	var out []string
-	budget := func() int {
-		if len(out) == 0 {
-			return width
-		}
-		return width - lipgloss.Width(indent)
-	}
-	push := func(line string) {
-		if len(out) == 0 {
-			out = append(out, line)
-			return
-		}
-		out = append(out, indent+line)
-	}
-	for _, para := range strings.Split(text, "\n") {
-		cur := ""
-		flush := func() {
-			if cur != "" {
-				push(cur)
-				cur = ""
-			}
-		}
-		for _, seg := range strings.Split(para, " · ") {
-			if seg == "" {
-				continue
-			}
-			if cur != "" && lipgloss.Width(cur)+3+lipgloss.Width(seg) <= budget() {
-				cur += " · " + seg
-				continue
-			}
-			flush()
-			if lipgloss.Width(seg) <= budget() {
-				cur = seg
-				continue
-			}
-			// One claim too long for a line of its own — fold it on spaces
-			// rather than let clampToBox take the end off it.
-			for _, word := range pickerWords(seg, width-lipgloss.Width(indent)) {
-				switch {
-				case cur == "":
-					cur = word
-				case lipgloss.Width(cur)+1+lipgloss.Width(word) <= budget():
-					cur += " " + word
-				default:
-					flush()
-					cur = word
-				}
-			}
-		}
-		flush()
-	}
-	return out
-}
-
-// pickerWords splits a run of text into pieces no wider than width, breaking
-// mid-token when a token is wider than that on its own. The tokens that need it
-// are not English: a failed lookup carries whatever OMS put in the response
-// body, and a URL or an unspaced JSON blob has nowhere to fold. Better to break
-// one in the middle than to hand clampToBox a 200-cell line and lose all but
-// the first 51 of it.
-func pickerWords(text string, width int) []string {
-	if width < 4 {
-		width = 4
-	}
-	var out []string
-	for _, word := range strings.Fields(text) {
-		for {
-			// The cut is measured in CELLS: slicing `width` RUNES off a
-			// double-width token would hand back a piece up to twice the line
-			// it was cut to fit. cellPrefix walks forward and stops at the
-			// budget, so a token is split in one pass over it rather than one
-			// pass per piece — an unspaced 5 KB body took 1.5 seconds to fold
-			// when each piece re-measured the rest of the token.
-			head := cellPrefix(word, width)
-			if head == word || head == "" {
-				break
-			}
-			out = append(out, head)
-			word = word[len(head):]
-		}
-		if word != "" {
-			out = append(out, word)
-		}
-	}
-	return out
-}
-
-// pickerHint renders a fixed muted line — a way out, a working line, a summary,
-// a list's action bar — folded to the pane. Nothing writes such a line directly
-// any more: routing them all through one function is what keeps the next one
-// from being the one that overruns.
-//
-// Named for the pickers it was written for, but it is the project's pane-local
-// folder generally, and deliberately outside internal/tui/jde_form.go: the list
-// screens and the New PO help line are not on the columnar layer and must not
-// have to join it just to be legible at 80 columns.
-func pickerHint(text string) string {
-	lines := pickerWrap(text, pickerPaneWidth)
-	for i, line := range lines {
-		lines[i] = StyleMuted.Render(line)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// pickerFail renders a failed lookup as headline + detail. The detail goes on
-// its own folded continuation because an OMS error string is arbitrarily long:
-// on one line the label alone ("looking up this supplier's items failed:" is 40
-// of the 51 columns) leaves the operator reading a colon and nothing after it.
-// rows caps how many rendered rows the whole failure block may occupy, and the
-// DETAIL is what gets sacrificed to fit — never the way-out bar or the verdict
-// note the callers write under it.
-//
-// The detail is an OMS response body and it is unbounded: omsapi.parseError
-// puts the ENTIRE raw body in APIError.Message whenever the JSON envelope
-// carries no code, so a gateway page or a Django debug page is multi-KB, and
-// pickerWords folds an unspaced blob at one line per 47 cells. Before the cap,
-// roughly 380 characters pushed the verdict note off an 80x24 pane — a
-// declining key on the failure frame answering into the four-second flash
-// alone — and roughly 470 took "esc cancels the order" with it, stranding the
-// operator on an error frame naming no way out. Folding had traded the
-// horizontal cut for a vertical one, exactly as it did for the list footer.
-//
-// rows <= 0 means the caller has no height yet (terminalHeight unset); nothing
-// is TRIMMED then, because a guess would be worse than the clip clampToBox
-// already applies — but the detail is still bounded before it is folded.
-//
-// Bounding it first is the point: at most `rows` lines of it can ever be drawn,
-// so folding the whole body is work whose result is thrown away, and the body
-// has no size limit. Folding a 5 KB unspaced payload took 1.5 seconds, and this
-// block is rebuilt on every keystroke. Below the bound the hidden-row count is
-// exact; above it the marker stops counting rather than name a number that is
-// only true of the part that was folded.
-func pickerFail(what, detail string, rows int) string {
-	fold := rows
-	if fold <= 0 {
-		fold = pickerFailUnsizedRows
-	}
-	long := false
-	if detail != "" {
-		if head := cellPrefix(detail, fold*pickerPaneWidth); head != detail {
-			detail, long = head, true
-		}
-	}
-	text := what
-	if detail != "" {
-		text += "\n" + detail
-	}
-	out := pickerNote{text, StatusError}.render()
-	if rows <= 0 {
-		return out
-	}
-	lines := strings.Split(out, "\n")
-	if len(lines) <= rows {
-		return out
-	}
-	if rows == 1 {
-		return lines[0]
-	}
-	// A block that cannot fit says how many rows it hid, the same contract
-	// renderWindowedList's markers keep.
-	hid := fmt.Sprintf("  … %d more line(s) of the error", len(lines)-(rows-1))
-	if long {
-		hid = "  … more of the error than this pane can hold"
-	}
-	kept := append([]string{}, lines[:rows-1]...)
-	kept = append(kept, StyleMuted.Render(hid))
-	return strings.Join(kept, "\n")
-}
-
-// pickerFailUnsizedRows is how much of an error body a failure block folds when
-// the caller has no pane height yet. Nothing is trimmed in that state, so this
-// is only a ceiling on the WORK: deeper than any terminal this app is driven
-// at, and finite, which is what an OMS response body is not.
-const pickerFailUnsizedRows = 40
-
-// pickerWayOut is what every picker frame says when the list itself cannot help
-// — both keys are live in every non-typing picker state.
-const pickerWayOut = "b picks another line source · esc cancels the order"
-
-// searchBoxWayOut is the same sentence while the SEARCH BOX owns the keyboard,
-// where it would be a lie: b is a letter going into the query and esc only
-// closes the box, it does not cancel the order. A frame that prints both claims
-// at once is the bar-honesty defect, two frames away from the eight instances
-// of it just fixed on the list screens.
-const searchBoxWayOut = "esc closes the search"
-
-// ---------------------------------------------------------------------------
 // Async loaders + msg types
 // ---------------------------------------------------------------------------
 
@@ -625,158 +225,44 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 // One statement of what works here
 // ---------------------------------------------------------------------------
 
-// The three picker bars below are each picker's WAY-OUT line, and they are read
-// by BOTH surfaces that used to state it separately: the screen's action bar
-// (helpText, drawn at the top of the pane) and the frame's own hint (drawn
-// beside the note). Keeping those two in sync by hand is what produced a bar
+// The pickers used to state their live keys TWICE — once in a prose action bar
+// at the top of the pane (helpText) and once as a way-out line in the frame
+// beside the note — and keeping the two in sync by hand produced a bar
 // promising "enter picks the match" four rows above a note saying enter closes
-// the search — with enter doing neither, because with several matches it
-// declines and says so. Two surfaces, one sentence, no drift.
+// the search, with enter doing neither. Three separate gaps between those two
+// surfaces were recorded here as deferred to this conversion; all three are
+// closed by it, and closed the same way rather than reconciled one at a time.
 //
-// They are NOT the only place a picker names a key, and the earlier wording of
-// this comment claimed they were. The notes name keys too, and they have to:
-// a note is what answers a specific press, so it can be narrower than the bar
-// (itemFilterNote's zero-match arm names '/' to edit the query, which the bar's
-// empty-list arm — reached for a filter that matched nothing AND for a supplier
-// that sells nothing — does not name, because it cannot tell those two apart
-// from the row count alone). The rule the bars enforce is the weaker and real
-// one: whatever a bar names must act in the state being drawn, and the bar and
-// the note must not make CONTRADICTORY claims about the same key.
+// There is now ONE surface that names a key: the action bar (barItems,
+// po_create.go), built per frame from the phase and the state being drawn, and
+// drawn at the bottom of the pane where the layer's own budget guarantees it a
+// whole row. The notes name no keys at all. What a note still carries is the
+// LEAD — what the key that was just pressed DID — because two keys sharing one
+// sentence redraw the pane the first press left, and that is a statement about
+// a press rather than a claim about what works.
 //
-// Reconciling that empty-list arm — so the bar can say "no match, / edits the
-// search" separately from "sells nothing, r reloads" — is deferred to the
-// queued columnar conversion of these screens, which restates every bar in the
-// JD Edwards layer anyway. It is a gap in coverage, not a contradiction: the
-// note is the more specific of the two and both are true.
+// So the three gaps go with the sentences that had them: the empty-list arm
+// that could not tell "matched nothing" from "sells nothing" was naming keys
+// for two different states out of one row count, and it names none now; the two
+// failure frames that printed their way-out line as the bar AND as the verdict
+// note's tail print it once; and the way-out tail itself is gone from
+// catalogVerdict and assetVerdictNote.
 //
-// Deferred to the same conversion, and for the same reason, is the REPEAT of
-// the way-out line on the two failure frames. Drawing the note under the bar
-// (so a declining key produces a visible change there) means the item and asset
-// error frames print "r retries the lookup · b picks another line source · esc
-// cancels the order" as the bar and then again as the verdict note's second
-// line, with a third copy in helpText at the top of the pane. Both copies are
-// true, no key is dead and nothing wrong is staged; it costs two rows of an
-// 18-row pane. Dropping the way-out tail from catalogVerdict and
-// assetVerdictNote when the frame already draws the bar is the fix, and it is
-// a bar-layout decision that belongs with the conversion rather than another
-// hand-folded hint here.
-//
-// "Acts" means CHANGES something. A key that declines and says why — enter over
-// an empty list, `]` at the last page — is not acting, and is deliberately left
-// unnamed: naming it would advertise a dead end, and the project's rule is that
-// such an arm must answer, not that the bar must promise it.
+// "Acts" still means CHANGES something. A key that declines and says why —
+// enter over an empty list, `]` at the last page — is not acting, and is
+// deliberately left off the bar: naming it would advertise a dead end, and the
+// rule is that such an arm must answer, not that the bar must promise it.
 
-// itemPickBar names the keys that act in the item picker's current state.
-func (s *PurchaseOrderCreateScreen) itemPickBar() string {
-	switch {
-	case s.itemSuppliersTyping:
-		// enter's outcome depends on the match count, so the bar states the
-		// CONDITION and the note states this moment's outcome. Neither can
-		// contradict the other, and "picks the match" — which promised the
-		// multi-match staging the design deliberately refuses — is gone.
-		//
-		// Both of those hold only while the catalog is ON SCREEN. The box opens
-		// mid-walk on purpose (the rows are on their way and the query lands
-		// with them) and it survives a failed reload, because the frame keeps
-		// the rows it was showing; in both of those states commitSearchedItem
-		// declines at its first line. Naming enter there put the pane's ONLY
-		// claim about enter in flat contradiction with what enter does, so name
-		// the two keys that really work: runes go into the query, esc shuts the
-		// box.
-		if !s.itemListOnScreen() {
-			return "type to filter · " + searchBoxWayOut
-		}
-		return "type to filter · enter picks when one row is left · esc closes the search"
-	case s.itemSuppliersLoad:
-		// A query typed now is applied when the rows land, so '/' is real here.
-		// r is not: a walk is already out.
-		return "/ searches · " + pickerWayOut
-	case s.itemSuppliersErr != "":
-		return "r retries the lookup · " + pickerWayOut
-	case len(s.itemSuppliers) == 0:
-		return "r reloads · " + pickerWayOut
-	}
-	return "j/k ↑↓ move · enter picks · / searches · r reloads · " + pickerWayOut
-}
-
-// assetPickBar names the keys that act in the asset picker's current state.
-func (s *PurchaseOrderCreateScreen) assetPickBar() string {
-	switch {
-	case s.assetsTyping:
-		if s.assetsLoading {
-			// Enter is gated while a search is in flight (see the typing arm of
-			// updateAssetPickPhase), so it is not named here. The failure frame
-			// is deliberately NOT gated: with nothing in flight there is no
-			// race, and enter out of the box is the retry "/ retries with a
-			// search" promised one frame earlier.
-			return "type to search · " + searchBoxWayOut
-		}
-		return "type to search · enter runs the search · esc closes the search"
-	case s.assetsLoading:
-		return "/ searches · " + pickerWayOut
-	case s.assetsErr != "":
-		return "/ retries with a search · " + pickerWayOut
-	case len(s.assets) == 0:
-		return "/ searches · " + pickerWayOut
-	}
-	bar := "j/k ↑↓ move · enter picks · / searches"
-	if s.assetsHasNext {
-		bar += " · ] next page"
-	}
-	if s.assetsPage > 1 {
-		bar += " · [ prev page"
-	}
-	return bar + " · " + pickerWayOut
-}
-
-// reorderPickBar names the keys that act in the reorder picker's current state.
-func (s *PurchaseOrderCreateScreen) reorderPickBar() string {
-	if !s.reorderListOnScreen() || len(s.reorderItems) == 0 {
-		return pickerWayOut
-	}
-	return "j/k ↑↓ move · space marks · a adds all · enter adds · " + pickerWayOut
-}
-
-// supplierPickBar names the keys that act in the supplier picker's current
-// state. The supplier list is the fourth picker frame on this screen and had
-// the same hole the other three did: while the suppliers were still loading —
-// or had failed — the bar promised "j/k move · enter commits" over a frame that
-// renders nothing, and enter with no highlighted row returned nil in silence.
-func (s *PurchaseOrderCreateScreen) supplierPickBar() string {
-	switch {
-	case s.supplierLoading:
-		return "esc cancels the order"
-	case s.supplierLoadErr != "":
-		return "esc cancels the order"
-	case len(s.suppliers) == 0:
-		return "esc cancels the order"
-	case s.pending && s.supplierHighlightIsCommitted():
-		// The highlighted row is the supplier the order already carries, so
-		// enter commits nothing and only goes back to the source chooser —
-		// navigation, not a change, and the one way back into the order from
-		// this frame while the POST is out. Named for exactly that row.
-		return "j/k ↑↓ move · enter goes back · esc cancels the order"
-	case s.pending:
-		// A DIFFERENT supplier: committing it would re-target the request, so
-		// it is frozen with the rest of the payload (updateSupplierPhase) and
-		// the bar drops it. j/k still move a highlight — onto the committed row
-		// among others — and esc still leaves.
-		return "j/k ↑↓ move · esc cancels the order"
-	}
-	return "j/k ↑↓ move · enter commits · esc cancels the order"
-}
-
-// supplierListOnScreen reports whether renderSupplierPhase is drawing rows.
+// supplierListOnScreen reports whether supplierBody is drawing rows.
 func (s *PurchaseOrderCreateScreen) supplierListOnScreen() bool {
 	return !s.supplierLoading && s.supplierLoadErr == "" && len(s.suppliers) > 0
 }
 
 // supplierVerdictNote says which of the three off-screen states a declining key
 // is answering from. It is a pickerNote and not a bare Status for the reason
-// the other two pickers already are: a flash expires after four seconds and
-// renderSupplierPhase drew nothing at all in two of these three states, so the
-// pane never moved and the operator who pressed the key saw exactly what the
-// report described.
+// the other two pickers already are: a flash expires after four seconds, and
+// this note is what the pinned header draws as its ESSENTIAL row, so the answer
+// is still on the pane a minute later.
 func (s *PurchaseOrderCreateScreen) supplierVerdictNote(prefix string) tea.Cmd {
 	lead := ""
 	if prefix != "" {
@@ -786,23 +272,34 @@ func (s *PurchaseOrderCreateScreen) supplierVerdictNote(prefix string) tea.Cmd {
 	case s.supplierLoading:
 		return s.supplierNote.say(lead+"still looking up the suppliers…", StatusInfo)
 	case s.supplierLoadErr != "":
-		return s.supplierNote.say(lead+"loading suppliers failed\nesc cancels the order", StatusError)
+		return s.supplierNote.say(lead+"loading the suppliers failed", StatusError)
 	}
-	return s.supplierNote.say(lead+"no suppliers are configured\nesc cancels the order", StatusWarn)
+	return s.supplierNote.say(lead+"no suppliers are configured", StatusWarn)
 }
 
-// supplierSwitchBar names the confirm's two keys, and deliberately carries no
-// supplier NAME: a 20-cell name is what pushed the decline claim off the bottom
-// of a 24-row pane, and the decline is the safe answer on a destructive confirm.
-func (s *PurchaseOrderCreateScreen) supplierSwitchBar() string {
-	return fmt.Sprintf("ctrl+x drops %d line(s) and switches · esc keeps the cart and this supplier",
-		s.supplierScopedLineCount())
+// itemSearchOpens reports whether '/' hands the keyboard to the filter box.
+//
+// ONE predicate, read by the arm that opens the box and by the bar that names
+// the key, because two answers to the same question are how a bar comes to
+// name a key that declines. Both refusals are real states: the failure frame's
+// only repair is `r`, and opening the box over it would take the keyboard away
+// from that; and against a supplier we KNOW sells nothing the box can only
+// ever answer "no match", so it would take the keyboard away from the two keys
+// that can still do something.
+//
+// Mid-walk is NOT a refusal, deliberately: the rows are on their way and the
+// query is applied when they land.
+func (s *PurchaseOrderCreateScreen) itemSearchOpens() bool {
+	if s.itemSuppliersErr != "" {
+		return false
+	}
+	return !(s.catalogAnswered() && len(s.itemSuppliersAll) == 0)
 }
 
 // itemListOnScreen / assetListOnScreen / reorderListOnScreen report whether the
-// picker's renderer is actually DRAWING its rows. Each renderer returns early
-// on its working frame and on its failure frame, and none of the three clears
-// the rows it was holding when it does — deliberately, because a reload that
+// picker's body is actually DRAWING its rows. Each body answers with a single
+// muted line on its working frame and on its failure frame, and none of the
+// three clears the rows it was holding when it does — deliberately, because a reload that
 // fails should not also destroy what the operator was looking at.
 //
 // The keys that act on a row have to ask. A picker that holds twenty rows
@@ -844,28 +341,15 @@ func (s *PurchaseOrderCreateScreen) assetLoadedNote(rows int) tea.Cmd {
 		// actually answers, not the live box, which may already hold
 		// something nobody has submitted.
 		if q := strings.TrimSpace(s.assetsQuery); q != "" {
-			tail := "/ edits the search · b picks another source"
-			if s.assetsTyping {
-				tail = "edit the search to widen it"
-			}
 			return s.assetsNote.say(
-				"no asset matches "+strconv.Quote(pickerClip(q, 16))+"\n"+tail, StatusWarn)
+				"no asset matches "+strconv.Quote(pickerClip(q, 16)), StatusWarn)
 		}
 		return s.assetsNote.say("this supplier has no assets on file", StatusWarn)
 	}
 	if s.assetsTyping {
-		// "again" asserts a previous run, which is false whenever the box was
-		// opened over an unfiltered page-1 load — the rows landing here answer
-		// no query at all.
-		runs := "enter runs the search"
-		if strings.TrimSpace(s.assetsQuery) != "" {
-			runs = "enter runs the search again"
-		}
-		return s.assetsNote.say(
-			fmt.Sprintf("%d asset(s) · %s · esc closes it", rows, runs), StatusInfo)
+		return s.assetsNote.say(fmt.Sprintf("%d asset(s) matched", rows), StatusInfo)
 	}
-	return s.assetsNote.say(
-		fmt.Sprintf("%d asset(s) · enter picks the highlighted row", rows), StatusOK)
+	return s.assetsNote.say(fmt.Sprintf("%d asset(s)", rows), StatusOK)
 }
 
 // assetVerdictNote and reorderVerdictNote are the asset and reorder pickers'
@@ -886,8 +370,7 @@ func (s *PurchaseOrderCreateScreen) assetVerdictNote(prefix string) tea.Cmd {
 		return s.assetsNote.say(
 			lead+"still looking up the assets "+s.supplierLabel()+" supplied…", StatusInfo)
 	}
-	return s.assetsNote.say(
-		lead+"the asset lookup failed\n/ retries with a search · "+pickerWayOut, StatusError)
+	return s.assetsNote.say(lead+"the asset lookup failed", StatusError)
 }
 
 func (s *PurchaseOrderCreateScreen) reorderVerdictNote(prefix string) tea.Cmd {
@@ -899,8 +382,7 @@ func (s *PurchaseOrderCreateScreen) reorderVerdictNote(prefix string) tea.Cmd {
 		return s.reorderNote.say(
 			lead+"still looking up what "+s.supplierLabel()+" has flagged for reorder…", StatusInfo)
 	}
-	return s.reorderNote.say(
-		lead+"reading the reorder queue failed\n"+pickerWayOut, StatusError)
+	return s.reorderNote.say(lead+"reading the reorder queue failed", StatusError)
 }
 
 // noCatalogSentence is the single wording of "this supplier sells nothing".
@@ -920,7 +402,7 @@ func (s *PurchaseOrderCreateScreen) itemPickEntryNote() tea.Cmd {
 		return s.catalogVerdictNote("")
 	}
 	return s.itemSuppliersNote.say(
-		fmt.Sprintf("%d catalog item(s) · / searches · r reloads", len(s.itemSuppliersAll)), StatusInfo)
+		fmt.Sprintf("%d catalog item(s) held for this supplier", len(s.itemSuppliersAll)), StatusInfo)
 }
 
 // applyItemSupplierFilter populates itemSuppliers from itemSuppliersAll
@@ -959,24 +441,35 @@ func (s *PurchaseOrderCreateScreen) reorderEmptyNote(lead string) tea.Cmd {
 	if lead != "" {
 		lead += " · "
 	}
-	return s.reorderNote.say(lead+"nothing flagged for reorder here\n"+pickerWayOut, StatusWarn)
+	return s.reorderNote.say(lead+"nothing flagged for reorder here", StatusWarn)
 }
 
-func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	if !s.reorderListOnScreen() {
+		// The list is not DRAWN. The bar names B and Esc and nothing else, so
+		// every key that would act on a row declines and says why — each
+		// naming ITSELF, because this frame has no rows, no highlight and no
+		// focused input, so two keys sharing one sentence would redraw the pane
+		// the first press left.
 		switch m.String() {
-		case "j", "down", "k", "up":
+		case "esc":
+			return s, SwitchTo(WSPurchasing, nil)
+		case "b":
+			s.phase = poPhaseSource
+			return s, nil
+		case "up", "down", "pgup", "pgdown":
 			return s, s.reorderVerdictNote(m.String() + " moves nothing")
 		case " ":
 			return s, s.reorderVerdictNote("nothing to mark")
 		case "a":
 			return s, s.reorderVerdictNote("nothing to add")
 		case "enter":
-			// Its own lead, not `a`'s: this frame draws no rows, no highlight
-			// and no focused input, so two keys sharing one sentence redraw a
-			// byte-for-byte identical pane on the second press.
 			return s, s.reorderVerdictNote("nothing to pick")
 		}
+		return s, nil
+	}
+	if moved, cmd := s.moveCursor(m, headerRows); moved {
+		return s, cmd
 	}
 	switch m.String() {
 	case "esc":
@@ -984,28 +477,19 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 	case "b":
 		s.phase = poPhaseSource
 		return s, nil
-	case "j", "down":
-		// Drawn and EMPTY, which the !reorderListOnScreen() gate above does not
-		// catch: the frame is showing "Nothing flagged for reorder…" and these
-		// arms answered with nil, so the pane did not move and there was not
-		// even a highlight to see stay put.
+	case "up", "down", "pgup", "pgdown":
+		// Drawn and EMPTY, which the gate above does not catch: the frame is
+		// showing "Nothing flagged for reorder…" and these arms answered with
+		// nil, so the pane did not move and there was not even a highlight to
+		// see stay put.
 		if len(s.reorderItems) == 0 {
 			return s, s.reorderEmptyNote(m.String() + " moves nothing")
 		}
-		if s.reorderCursor < len(s.reorderItems)-1 {
-			s.reorderCursor++
-		}
-	case "k", "up":
-		if len(s.reorderItems) == 0 {
-			return s, s.reorderEmptyNote(m.String() + " moves nothing")
-		}
-		if s.reorderCursor > 0 {
-			s.reorderCursor--
-		}
+		return s, nil
 	case " ":
 		// Mark/unmark this row for a bulk add. Marking several rows and
-		// pressing enter is the middle ground between adding one item at a
-		// time and taking the supplier's whole queue with 'a' (sc-ytr5).
+		// pressing enter is the middle ground between adding one item at a time
+		// and taking the supplier's whole queue with A.
 		if len(s.reorderItems) == 0 {
 			return s, s.reorderEmptyNote("nothing to mark")
 		}
@@ -1022,14 +506,17 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 		return s, nil
 	case "a":
 		// Add ALL of this supplier's reorder items in one press — the fix for
-		// "a supplier with 15 items is ~30 keystrokes". Every row is staged
-		// with its suggested_quantity; the review cart is where individual
-		// lines get adjusted (ctrl+e), so land there.
+		// "a supplier with 15 items is ~30 keystrokes". Every row is staged with
+		// its suggested_quantity; the review cart is where individual lines get
+		// adjusted (Ctrl-E), so land there.
+		if len(s.reorderItems) == 0 {
+			return s, s.reorderEmptyNote("nothing to add")
+		}
 		return s, s.addReorderLines(s.reorderItems)
 	case "enter":
 		// With rows marked, enter stages exactly those (in list order).
-		// Otherwise it keeps the original one-row behavior: open the line
-		// form pre-filled so quantity/date/cost can be set before staging.
+		// Otherwise it keeps the original one-row behavior: open the line form
+		// pre-filled so quantity/date/cost can be set before staging.
 		if len(s.reorderSelected) > 0 {
 			picked := make([]omsapi.ReorderDataItem, 0, len(s.reorderSelected))
 			for i, it := range s.reorderItems {
@@ -1059,8 +546,8 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg) (Screen
 			desc = it.SKU
 		}
 		// The reorder_data row carries no quantity_per_package, so a reorder
-		// line stays single-basis (qpp 0) — the case-cost toggle is offered
-		// from the inventory-items picker, which does expose qpp. (op-7j8v)
+		// line stays single-basis (qpp 0) — the case-cost toggle is offered from
+		// the inventory-items picker, which does expose qpp.
 		s.enterLinePhase(it.ItemSupplierID, nil, desc, qty, unitCost, 0, 0)
 		s.reorderNote.clear()
 		return s, tea.Batch(
@@ -1143,81 +630,71 @@ func (s *PurchaseOrderCreateScreen) addReorderLines(items []omsapi.ReorderDataIt
 	)
 }
 
-func (s *PurchaseOrderCreateScreen) renderReorderPick() string {
-	// Every frame draws reorderNote UNDER its own line, the way the item and
-	// asset frames do: this picker used to answer a declining key with a Status
-	// flash alone, so the body was byte-for-byte unchanged and four seconds
-	// later nothing on the pane recorded that the key had been pressed.
-	note := ""
-	if n := s.reorderNote.render(); n != "" {
-		note = "\n" + n
+// reorderBody is the reorder queue as navigable rows.
+//
+// The working and failure frames are ONE muted line rather than the block of
+// prose they used to be: the subject of the request is on the status row
+// (workingLine), the failure's headline is there too and its detail rides in
+// the pinned header, and the keys are on the bar. What is left for the body is
+// the one fact the operator cannot get anywhere else — whether there are rows.
+func (s *PurchaseOrderCreateScreen) reorderBody() *jdeLines {
+	switch {
+	case s.reorderLoading:
+		return poEmptyBody(s.paneWidth(), "The reorder queue is on its way.")
+	case s.reorderLoadErr != "":
+		return poEmptyBody(s.paneWidth(), "No reorder queue on the pane — the lookup failed.")
+	case len(s.reorderItems) == 0:
+		return poEmptyBody(s.paneWidth(), "Nothing flagged for reorder under this supplier.")
 	}
-	if s.reorderLoading {
-		return pickerHint("Looking up what "+s.supplierLabel()+" has flagged for reorder…") + note
+	l := &jdeLines{}
+	cur, room := s.cursorRow(), s.poRowRoom()
+	for i, it := range s.reorderItems {
+		// Checkbox for the bulk-add marks, so a marked row still reads as
+		// marked once the highlight moves off it.
+		mark := "[ ] "
+		if s.reorderSelected[i] {
+			mark = "[x] "
+		}
+		tag := ""
+		if it.HasActiveReorderReq {
+			tag = " " + StyleStatusOK.Render(fmt.Sprintf("[reorder %s]", it.ReorderRequestStatus))
+		}
+		cost := ""
+		if it.UnitCost != "" {
+			cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s", it.UnitCost))
+		}
+		// The mark is the row's own state and never gives. What is being
+		// ORDERED — the suggested quantity — is the fact; the stock levels
+		// behind it, the price and the request flag are the decorations,
+		// dropped from the right so the columns that stay keep their places.
+		levels := fmt.Sprintf(" (current %d / min %d)", it.CurrentStock, it.MinimumStock)
+		l.AddRow(i, poPickRow(i, cur, mark+poFitRow(room-lipgloss.Width(mark), it.ItemName,
+			fmt.Sprintf("  qty %d", it.SuggestedQuantity), levels, cost, tag)))
 	}
-	if s.reorderLoadErr != "" {
-		// The tail is measured BEFORE the failure block is built, so the error
-		// detail is budgeted against what is left rather than the bar and note
-		// against what the error happens to leave.
-		tail := pickerHint(s.reorderPickBar()) + note
-		return pickerFail("reading the reorder queue failed", s.reorderLoadErr,
-			s.bodyRowBudget(poRenderedRows(tail))) + "\n" + tail
-	}
-	if len(s.reorderItems) == 0 {
-		return pickerHint("Nothing flagged for reorder under this supplier.") + "\n" +
-			pickerHint(s.reorderPickBar()) + note
-	}
-	// Counts only. The keys are the bar's job, and a summary that also named
-	// them was a second copy of the same claim waiting to go stale.
+	// Counts only, tagged onto the LAST row so a body that overflows loses it
+	// from the tail rather than stranding the first row behind it. The keys are
+	// the bar's job, and a summary that also named them was a second copy of
+	// the same claim waiting to go stale.
 	summary := fmt.Sprintf("%d in the queue", len(s.reorderItems))
 	if n := len(s.reorderSelected); n > 0 {
 		summary = fmt.Sprintf("%d marked of %d in the queue", n, len(s.reorderItems))
 	}
-	tail := "\n" + pickerHint(summary) + note
-
-	var b strings.Builder
-	b.WriteString(renderWindowedList(
-		len(s.reorderItems), s.reorderCursor, s.bodyRowBudget(poRenderedRows(tail)), s.paneWidth(),
-		func(i, room int) string {
-			it := s.reorderItems[i]
-			// Checkbox for the bulk-add marks, so a marked row still reads as
-			// marked once the highlight moves off it.
-			mark := "[ ] "
-			if s.reorderSelected[i] {
-				mark = "[x] "
-			}
-			tag := ""
-			if it.HasActiveReorderReq {
-				tag = " " + StyleStatusOK.Render(fmt.Sprintf("[reorder %s]", it.ReorderRequestStatus))
-			}
-			cost := ""
-			if it.UnitCost != "" {
-				cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s", it.UnitCost))
-			}
-			// The mark is the row's own state and never gives. What is being
-			// ORDERED — the suggested quantity — is the fact; the stock levels
-			// behind it, the price and the request flag are the decorations,
-			// dropped from the right so the columns that stay keep their places.
-			levels := fmt.Sprintf(" (current %d / min %d)", it.CurrentStock, it.MinimumStock)
-			return mark + poFitRow(room-lipgloss.Width(mark), it.ItemName,
-				fmt.Sprintf("  qty %d", it.SuggestedQuantity), levels, cost, tag)
-		},
-	))
-	b.WriteString(tail)
-	return b.String()
+	for _, line := range jdeCaveatLines(summary, s.paneWidth()) {
+		l.AddRow(len(s.reorderItems)-1, line)
+	}
+	return l
 }
 
 // ---------------------------------------------------------------------------
 // Phase 3b: Inventory items picker
 // ---------------------------------------------------------------------------
 
-func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	if s.itemSuppliersTyping {
 		switch m.Type {
 		case tea.KeyEsc:
 			// Close the box but KEEP the filter — this is the browse path, so
-			// it has to say that the rows still on screen are a filtered subset
-			// and that j/k now move again.
+			// it has to say that the rows still on screen are a filtered subset.
 			s.itemSuppliersTyping = false
 			s.itemSuppliersSearch.Blur()
 			return s, s.reportItemFilterState("search closed")
@@ -1234,19 +711,37 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 		// enter that used to answer it with silence — but only once the walk
 		// has ANSWERED. Filtering an empty slice that is empty because the
 		// request has not come back yet produced `no match for "w" (0 in
-		// catalog)`, which is a conclusion about a catalog nobody has seen:
-		// the same found-nothing / could-not-tell conflation catalogVerdict
-		// exists to close, reached from the typing path instead of a key arm.
+		// catalog)`, which is a conclusion about a catalog nobody has seen.
 		s.itemSuppliersNote = s.itemFilterOrVerdict("")
 		return s, cmd
 	}
 	if !s.itemListOnScreen() {
 		switch m.String() {
-		case "j", "down", "k", "up":
+		case "esc":
+			return s, SwitchTo(WSPurchasing, nil)
+		case "b":
+			s.phase = poPhaseSource
+			return s, nil
+		case "up", "down", "pgup", "pgdown":
 			return s, s.catalogVerdictNote(m.String() + " moves nothing")
 		case "enter":
 			return s, s.catalogVerdictNote("nothing to pick")
+		case "/":
+			if !s.itemSearchOpens() {
+				return s, s.catalogVerdictNote("search needs the catalog")
+			}
+			return s, s.openItemSearch()
+		case "r":
+			if s.itemSuppliersLoad {
+				// A walk is already out; the bar does not name R there.
+				return s, s.catalogVerdictNote("already reloading")
+			}
+			return s, s.reloadCatalog()
 		}
+		return s, nil
+	}
+	if moved, cmd := s.moveCursor(m, headerRows); moved {
+		return s, cmd
 	}
 	switch m.String() {
 	case "esc":
@@ -1254,85 +749,66 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg) (Screen, t
 	case "b":
 		s.phase = poPhaseSource
 		return s, nil
-	case "j", "down":
+	case "up", "down", "pgup", "pgdown":
 		// The gate above catches a list that is not DRAWN; this catches one
 		// that is drawn and EMPTY, which is the state the report is about — a
 		// search that matched nothing. `return s, nil` there redrew a
-		// byte-for-byte identical pane with not even a cursor to see stay put,
-		// because the frame has no rows and the box is shut.
+		// byte-for-byte identical pane with not even a cursor to see stay put.
 		//
 		// Only the empty list. An EDGE is a weaker case: the highlight is on
 		// screen and visibly at the end, so the press has answered itself.
 		if len(s.itemSuppliers) == 0 {
 			return s, s.reportItemFilterState(m.String() + " moves nothing")
 		}
-		if s.itemSuppliersCur < len(s.itemSuppliers)-1 {
-			s.itemSuppliersCur++
-		}
-	case "k", "up":
-		if len(s.itemSuppliers) == 0 {
-			return s, s.reportItemFilterState(m.String() + " moves nothing")
-		}
-		if s.itemSuppliersCur > 0 {
-			s.itemSuppliersCur--
-		}
+		return s, nil
 	case "/":
-		if s.itemSuppliersErr != "" {
-			// The failure frame names r, b and esc. '/' is not among them, and
-			// opening the box here would redraw the frame with "esc closes the
-			// search" WHERE "r retries the lookup" was — an unnamed key that
-			// acts and erases the only key that repairs the state. Mid-load is
-			// different and still opens: rows are on their way.
+		if !s.itemSearchOpens() {
 			return s, s.catalogVerdictNote("search needs the catalog")
 		}
-		if s.catalogAnswered() && len(s.itemSuppliersAll) == 0 {
-			// This filter is client-side over the loaded catalog, so against a
-			// supplier we KNOW sells nothing the box can only ever answer "no
-			// match" — and opening it would take the keyboard away from b and
-			// esc, the two keys that can still do something here. Decline, and
-			// say why. Mid-walk is a different state: the rows are on their
-			// way, so the box opens and the query is applied when they land.
-			return s, s.catalogVerdictNote("search needs the catalog")
-		}
-		s.itemSuppliersTyping = true
-		s.itemSuppliersSearch.Focus()
-		// Same split as the typing arm of itemPickBar: opening the box while
-		// the walk is out is allowed, but promising a pick out of it is not.
-		opened := "type to search · enter picks the ONE match\nesc closes the search and keeps the filter"
-		if !s.itemListOnScreen() {
-			opened = "type to search · esc closes the search and keeps the filter"
-		}
-		return s, tea.Batch(
-			s.itemSuppliersNote.say(opened, StatusInfo),
-			textinput.Blink,
-		)
+		return s, s.openItemSearch()
 	case "r":
-		if s.itemSuppliersLoad {
-			// A walk is already out; the bar does not name r there.
-			return s, s.catalogVerdictNote("already reloading")
-		}
-		// The catalog is held per supplier and re-entering the picker no longer
-		// re-walks it (see the 'i' arm in po_create.go), so there has to be a
-		// named way to go and ask again — a cache with no refresh is its own
-		// silent-wrong-answer bug. Named in the bar, and it does exactly what
-		// it says: the frame goes back to a working line because work really is
-		// happening this time.
-		//
-		// itemSuppliersFor is deliberately LEFT set: it is what tells the
-		// working frame this is a reload rather than a first look, and the
-		// reply overwrites it either way. catalogAnswered() is false while
-		// itemSuppliersLoad is up, so nothing reads it as an answer meanwhile.
-		s.itemSuppliersLoad = true
-		s.itemSuppliersErr = ""
-		s.itemSuppliersNote.clear() // the working line speaks for this one
-		return s, tea.Batch(
-			Status("reloading what "+s.supplierLabel()+" sells…", StatusInfo),
-			s.loadItemSuppliersForSupplier(),
-		)
+		return s, s.reloadCatalog()
 	case "enter":
 		return s, s.commitHighlightedItem()
 	}
 	return s, nil
+}
+
+// openItemSearch hands the keyboard to the filter box.
+//
+// The note it opens with does NOT promise a pick: the box opens over a walk
+// that is still out on purpose (the rows are on their way and the query lands
+// with them), and there commitSearchedItem declines at its first line. The bar
+// makes the same split — Enter is named inside the box only while the catalog
+// is on the pane — so the two surfaces agree by construction.
+func (s *PurchaseOrderCreateScreen) openItemSearch() tea.Cmd {
+	s.itemSuppliersTyping = true
+	s.itemSuppliersSearch.Focus()
+	opened := "type to narrow the catalog"
+	if !s.itemListOnScreen() {
+		opened = "type to narrow the catalog · the rows are still on their way"
+	}
+	return tea.Batch(s.itemSuppliersNote.say(opened, StatusInfo), textinput.Blink)
+}
+
+// reloadCatalog goes and asks again.
+//
+// The catalog is held per supplier and re-entering the picker no longer
+// re-walks it (the `i` arm in po_create.go), so there has to be a named way to
+// refetch — a cache with no refresh is its own silent-wrong-answer bug.
+//
+// itemSuppliersFor is deliberately LEFT set: it is what tells the working line
+// this is a reload rather than a first look, and the reply overwrites it either
+// way. catalogAnswered() is false while itemSuppliersLoad is up, so nothing
+// reads it as an answer meanwhile.
+func (s *PurchaseOrderCreateScreen) reloadCatalog() tea.Cmd {
+	s.itemSuppliersLoad = true
+	s.itemSuppliersErr = ""
+	s.itemSuppliersNote.clear() // the working line speaks for this one
+	return tea.Batch(
+		Status("reloading what "+s.supplierLabel()+" sells…", StatusInfo),
+		s.loadItemSuppliersForSupplier(),
+	)
 }
 
 // commitSearchedItem is enter inside the item picker's SEARCH box, and the
@@ -1486,16 +962,17 @@ func (s *PurchaseOrderCreateScreen) catalogVerdictNote(prefix string) tea.Cmd {
 // it. The typing path needs the wording on every keystroke but must not fire a
 // status flash per rune, so the note and the flash are separated here.
 func (s *PurchaseOrderCreateScreen) catalogVerdict(prefix string) pickerNote {
-	way := pickerWayOut
-	if s.itemSuppliersTyping {
-		way = searchBoxWayOut
-	}
 	// The lead travels down the verdict path too, not just the filter path.
 	// itemFilterOrVerdict used to drop it here, so esc out of the search box
 	// mid-walk answered with the same "still looking up…" the last keystroke
 	// had already left on the pane — a query still in the box, the same line
 	// under it, and only the caret leaving. Same for enter over a catalog that
 	// really is empty.
+	//
+	// It names no key. It used to carry a way-out tail whose wording had to
+	// switch on whether the search box was open (r is a letter going into the
+	// query there, b is another), which is two claims about the same keys on
+	// one pane — the action bar makes both of them, correctly, in every state.
 	lead := ""
 	if prefix != "" {
 		lead = prefix + " · "
@@ -1504,19 +981,11 @@ func (s *PurchaseOrderCreateScreen) catalogVerdict(prefix string) pickerNote {
 	case s.itemSuppliersLoad:
 		return pickerNote{lead + "still looking up the items " + s.supplierLabel() + " sells…", StatusInfo}
 	case s.itemSuppliersErr != "":
-		// r is a letter going into the query while the box is open, so it is
-		// only named when it is really the retry.
-		if s.itemSuppliersTyping {
-			return pickerNote{lead + "the catalog lookup failed\n" + searchBoxWayOut, StatusError}
-		}
-		return pickerNote{lead + "the catalog lookup failed\nr retries the lookup · " + pickerWayOut, StatusError}
+		return pickerNote{lead + "the catalog lookup failed", StatusError}
 	case !s.catalogAnswered():
-		if s.itemSuppliersTyping {
-			return pickerNote{lead + "this supplier's catalog has not been looked up yet\n" + searchBoxWayOut, StatusWarn}
-		}
-		return pickerNote{lead + "this supplier's catalog has not been looked up yet\nr looks it up · " + pickerWayOut, StatusWarn}
+		return pickerNote{lead + "this supplier's catalog has not been looked up yet", StatusWarn}
 	}
-	return pickerNote{lead + s.noCatalogSentence() + "\n" + way, StatusWarn}
+	return pickerNote{lead + s.noCatalogSentence(), StatusWarn}
 }
 
 // reportItemFilterState is the note for "the filter changed and nothing was
@@ -1572,151 +1041,92 @@ func itemFilterNote(query string, matched, total int, prefix string, typing bool
 	switch {
 	case query == "":
 		if typing {
-			return pickerNote{
-				fmt.Sprintf("%s%d item(s) · type to narrow · esc closes the search", lead, total),
-				StatusInfo,
-			}
+			return pickerNote{fmt.Sprintf("%s%d item(s) · type to narrow", lead, total), StatusInfo}
 		}
-		return pickerNote{fmt.Sprintf("%s%d item(s) · enter picks the highlighted row", lead, total), StatusInfo}
+		return pickerNote{fmt.Sprintf("%s%d item(s)", lead, total), StatusInfo}
 	case matched == 0:
 		// The lead is kept here too: esc having just closed the box is the
 		// thing the operator most needs acknowledged on this frame, and
 		// dropping it was why nothing on screen answered that press.
-		tail := "/ edits the search · b picks another source"
-		if typing {
-			tail = "edit the search to widen it"
-		}
 		return pickerNote{
-			fmt.Sprintf("%sno match for %s (%d in catalog)\n%s", lead, q, total, tail),
+			fmt.Sprintf("%sno match for %s (%d in catalog)", lead, q, total),
 			StatusWarn,
 		}
 	case matched == 1:
-		// The one arm whose wording holds in both states: a single match is
-		// taken by enter inside the box (the scanner path) and by enter over
-		// the one-row list alike.
-		return pickerNote{fmt.Sprintf("%s1 of %d match %s · enter picks it", lead, total, q), StatusOK}
+		return pickerNote{fmt.Sprintf("%s1 of %d match %s", lead, total, q), StatusOK}
 	}
-	if typing {
-		return pickerNote{
-			fmt.Sprintf("%s%d of %d match %s · keep typing to narrow\nenter closes the search and hands j/k back", lead, matched, total, q),
-			StatusOK,
-		}
-	}
-	return pickerNote{
-		fmt.Sprintf("%s%d of %d match %s · j/k choose · enter picks", lead, matched, total, q),
-		StatusOK,
-	}
+	return pickerNote{fmt.Sprintf("%s%d of %d match %s", lead, matched, total, q), StatusOK}
 }
 
-func (s *PurchaseOrderCreateScreen) renderItemPick() string {
-	var b strings.Builder
-	if s.itemSuppliersSearch.Value() != "" || s.itemSuppliersTyping {
-		b.WriteString(StyleMuted.Render(poItemFilterLabel) + s.itemSuppliersSearch.View() + "\n\n")
-	}
-	if s.itemSuppliersLoad {
-		// Name the WORK, not the wait. "Loading…" tells the operator a
-		// rectangle is busy; this tells them which request is out and against
-		// whom, which is the difference between a status line and a spinner.
+// itemBody is the supplier's catalog as navigable rows.
+func (s *PurchaseOrderCreateScreen) itemBody() *jdeLines {
+	switch {
+	case s.itemSuppliersLoad:
+		return poEmptyBody(s.paneWidth(), "The catalog is on its way.")
+	case s.itemSuppliersErr != "":
+		// The rows this picker was showing are DELIBERATELY kept behind a
+		// failed reload — a refresh that fails should not also destroy what the
+		// operator was looking at — but they are not drawn, which is what
+		// rowCount answers 0 for and what stops the bar naming a key that would
+		// act on one.
+		return poEmptyBody(s.paneWidth(), "No catalog on the pane — the lookup failed.")
+	case len(s.itemSuppliers) == 0:
+		// Never a bare "No inventory items match": that sentence is the same
+		// whether the supplier sells nothing, the search missed, or the catalog
+		// failed to load, and only one of those is safe to act on.
 		//
-		// The working line is UNCONDITIONAL here. It used to defer to a note
-		// when one was set, which let a key pressed mid-walk paint its own
-		// answer over the frame — and the answer a key gets while the catalog
-		// is empty-because-unfetched used to be "this supplier has no catalog",
-		// so the operator was told the conclusion of a walk still in flight.
-		verb := "Looking up"
-		if s.itemSuppliersFor == s.supplierID && s.supplierID > 0 {
-			verb = "Reloading"
+		// And never the NOTE either, which is what the pinned header carries.
+		// The note answers the last keypress and names the query and the
+		// catalog size; this line says what the LIST is. Drawing one sentence
+		// in both places put the same words on two rows of a pane whose rows
+		// are the thing every other rule here is protecting.
+		if strings.TrimSpace(s.itemSuppliersSearch.Value()) != "" {
+			return poEmptyBody(s.paneWidth(), "No catalog item matches the filter.")
 		}
-		b.WriteString(pickerHint(verb + " the items " + s.supplierLabel() + " sells…"))
-		// …and the note goes UNDER it, not instead of it. A key pressed while
-		// the walk is out declines and says why (catalogVerdictNote), but this
-		// branch used to return before anything drew that answer, so the press
-		// left the pane byte-for-byte unchanged — the original hang, one state
-		// over. The working line still speaks first: it is the fact, the note
-		// is the reply to the key.
-		if note := s.itemSuppliersNote.render(); note != "" {
-			b.WriteString("\n" + note)
+		return poEmptyBody(s.paneWidth(), s.noCatalogSentence()+".")
+	}
+	l := &jdeLines{}
+	cur, room := s.cursorRow(), s.poRowRoom()
+	for i, it := range s.itemSuppliers {
+		sku := it.SupplierSKU
+		if sku == "" {
+			sku = "—"
 		}
-		return b.String()
-	}
-	if s.itemSuppliersErr != "" {
-		// Same reason as the loading branch above: the failure frame is durable,
-		// so without the note a key pressed on it answered only into the
-		// four-second status flash and the body never moved.
-		//
-		// Keys ABOVE the reply, as on the supplier-switch confirm: clampToBox
-		// drops from the bottom, and of these two lines the one that must
-		// survive a short terminal is the one naming r/b/esc. Both are built
-		// FIRST so the unbounded error detail is budgeted against what they
-		// leave, rather than the other way round.
-		tail := pickerHint(s.itemPickBar())
-		if note := s.itemSuppliersNote.render(); note != "" {
-			tail += "\n" + note
+		cost := ""
+		if it.UnitCost != "" {
+			cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s", it.UnitCost))
 		}
-		b.WriteString(pickerFail("looking up this supplier's items failed", s.itemSuppliersErr,
-			s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail))) + "\n")
-		b.WriteString(tail)
-		return b.String()
-	}
-	if len(s.itemSuppliers) == 0 {
-		// Never the bare "No inventory items match." this used to print: that
-		// sentence is the same whether the supplier sells nothing, the search
-		// missed, or the catalog failed to load, and it names no key out.
-		if note := s.itemSuppliersNote.render(); note != "" {
-			b.WriteString(note)
-		} else {
-			b.WriteString(pickerHint(s.noCatalogSentence() + "."))
+		// Flag case-packed items so the operator knows a case-cost entry will
+		// be offered on the line form.
+		pack := ""
+		if it.PackQuantity > 1 {
+			pack = "  " + StyleStatusOK.Render(fmt.Sprintf("case ×%d", it.PackQuantity))
 		}
-		b.WriteString("\n" + pickerHint(s.itemPickBar()))
-		return b.String()
+		lead := ""
+		if it.LeadTimeDays > 0 {
+			lead = "  " + StyleMuted.Render(fmt.Sprintf("lead %gd", it.LeadTimeDays))
+		}
+		// The SKU is an IDENTIFIER, not a number: OMS-supplied, unbounded, and
+		// ordinary MRO part numbers run past thirty cells. It is clipped to what
+		// the PRICE, the name's floor and a possible drop mark leave, so the
+		// row's one fact — the price the operator is picking on — is whole by
+		// construction.
+		skuRoom := room - lipgloss.Width(cost) - 2 -
+			poHeaderValueFloor - lipgloss.Width(poRowDropMark)
+		if skuRoom < poHeaderValueFloor {
+			skuRoom = poHeaderValueFloor
+		}
+		l.AddRow(i, poPickRow(i, cur, poFitRow(room, it.ItemName,
+			"  "+pickerClip(sku, skuRoom)+cost, pack, lead)))
 	}
-	if note := s.itemSuppliersNote.render(); note != "" {
-		b.WriteString(note + "\n\n")
-	}
-	b.WriteString(renderWindowedList(
-		len(s.itemSuppliers), s.itemSuppliersCur, s.bodyRowBudget(poRenderedRows(b.String())), s.paneWidth(),
-		func(i, room int) string {
-			it := s.itemSuppliers[i]
-			sku := it.SupplierSKU
-			if sku == "" {
-				sku = "—"
-			}
-			cost := ""
-			if it.UnitCost != "" {
-				cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s", it.UnitCost))
-			}
-			// Flag case-packed items so the operator knows a case-cost entry
-			// will be offered on the line form (op-7j8v).
-			pack := ""
-			if it.PackQuantity > 1 {
-				pack = "  " + StyleStatusOK.Render(fmt.Sprintf("case ×%d", it.PackQuantity))
-			}
-			lead := ""
-			if it.LeadTimeDays > 0 {
-				lead = "  " + StyleMuted.Render(fmt.Sprintf("lead %gd", it.LeadTimeDays))
-			}
-			// The SKU is an IDENTIFIER, not a number: OMS-supplied, unbounded,
-			// and ordinary MRO part numbers run past thirty cells. It is
-			// clipped to what the PRICE, the name's floor and a possible drop
-			// mark leave, so the row's one fact — the price the operator is
-			// picking on — is whole by construction.
-			skuRoom := room - lipgloss.Width(cost) - 2 -
-				poHeaderValueFloor - lipgloss.Width(poRowDropMark)
-			if skuRoom < poHeaderValueFloor {
-				skuRoom = poHeaderValueFloor
-			}
-			// The case and lead-time flags are context and go first.
-			return poFitRow(room, it.ItemName, "  "+pickerClip(sku, skuRoom)+cost, pack, lead)
-		},
-	))
-	return b.String()
+	return l
 }
 
 // ---------------------------------------------------------------------------
 // Phase 3c: Assets-from-supplier picker (server-side search + pagination)
 // ---------------------------------------------------------------------------
 
-func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	if s.assetsTyping {
 		switch m.Type {
 		case tea.KeyEsc:
@@ -1725,37 +1135,36 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 			return s, s.assetsSearchClosedNote()
 		case tea.KeyEnter:
 			if s.assetsLoading {
-				// A search is already out. The reply's generation now drops
-				// the loser of a race outright, but firing a second search is
-				// still the wrong answer to this key: it would leave the
-				// operator watching a lookup whose result is discarded, and it
-				// is the sequence that used to leave the rows on screen
-				// belonging to a query the search box no longer held.
-				//
-				// This declines rather than cancelling, which is why the
-				// typing arm of assetPickBar stops naming enter here: a key
-				// that cannot act must not be advertised, and the note says
-				// what is happening instead of the screen sitting still.
+				// A search is already out. The reply's generation drops the
+				// loser of a race outright, but firing a second search is still
+				// the wrong answer to this key: it would leave the operator
+				// watching a lookup whose result is discarded. The bar stops
+				// naming Enter here for exactly that reason.
 				return s, s.assetVerdictNote("searched again")
 			}
 			// Unlike the item picker this really does go off the terminal, so
 			// the note says so BEFORE the request leaves: the reply repaints it
-			// with the result (handlePickerLoaded), and a slow or failed lookup
-			// leaves the operator reading "searching…" rather than a screen that
-			// has not moved.
+			// with the result, and a slow or failed lookup leaves the operator
+			// reading "searching…" rather than a screen that has not moved.
 			s.assetsTyping = false
 			s.assetsSearch.Blur()
 			s.assetsPage = 1
 			s.assetsLoading = true
 			s.assetsErr = ""
 			s.assetsQuery = s.assetsSearch.Value()
+			// The note is CLEARED rather than set: what is in flight, and what
+			// it is searching for, is the status row's job now (workingLine),
+			// and a note saying the same thing would put one sentence on two
+			// rows of the pane. The reply repaints the note with the RESULT,
+			// which is the half the status row cannot carry.
+			s.assetsNote.clear()
 			q := strings.TrimSpace(s.assetsQuery)
 			what := "this supplier's assets"
 			if q != "" {
-				what = strconv.Quote(q)
+				what = strconv.Quote(pickerClip(q, 24))
 			}
 			return s, tea.Batch(
-				s.assetsNote.say("searching "+what+"…", StatusInfo),
+				Status("searching "+what+"…", StatusInfo),
 				s.loadAssetsForSupplier(s.assetsQuery),
 			)
 		}
@@ -1765,11 +1174,30 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 	}
 	if !s.assetListOnScreen() {
 		switch m.String() {
-		case "j", "down", "k", "up":
+		case "esc":
+			return s, SwitchTo(WSPurchasing, nil)
+		case "b":
+			s.phase = poPhaseSource
+			return s, nil
+		case "up", "down", "pgup", "pgdown":
 			return s, s.assetVerdictNote(m.String() + " moves nothing")
 		case "enter":
 			return s, s.assetVerdictNote("nothing to pick")
+		case "/":
+			return s, s.openAssetSearch()
+		case "]":
+			// Neither the working frame nor the failure frame names the pager,
+			// and stepping the page over one that just FAILED means the retry
+			// silently skips it. Each pager key names ITSELF: a shared sentence
+			// would make the second press redraw the pane the first one left.
+			return s, s.assetVerdictNote("] stays on this page")
+		case "[":
+			return s, s.assetVerdictNote("[ stays on this page")
 		}
+		return s, nil
+	}
+	if moved, cmd := s.moveCursor(m, headerRows); moved {
+		return s, cmd
 	}
 	switch m.String() {
 	case "esc":
@@ -1777,71 +1205,42 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 	case "b":
 		s.phase = poPhaseSource
 		return s, nil
-	case "j", "down":
+	case "up", "down", "pgup", "pgdown":
 		if len(s.assets) == 0 {
 			return s, s.assetEmptyNote(m.String() + " moves nothing")
 		}
-		if s.assetsCursor < len(s.assets)-1 {
-			s.assetsCursor++
-		}
-	case "k", "up":
-		if len(s.assets) == 0 {
-			return s, s.assetEmptyNote(m.String() + " moves nothing")
-		}
-		if s.assetsCursor > 0 {
-			s.assetsCursor--
-		}
+		return s, nil
 	case "/":
-		s.assetsTyping = true
-		s.assetsSearch.Focus()
-		// The bar names '/' on the working frame too, so the box can open with
-		// a lookup still out — and there enter is gated. Promising the key the
-		// box cannot run is the same false claim the bar just stopped making.
-		opened := "type to search · enter runs the search"
-		if s.assetsLoading {
-			opened = "type to search · " + searchBoxWayOut
-		}
-		return s, tea.Batch(
-			s.assetsNote.say(opened, StatusInfo),
-			textinput.Blink,
-		)
+		return s, s.openAssetSearch()
 	case "]":
 		// The two paging keys are named only alongside a page that exists, so
 		// the bar stays honest — but the arm still has to answer when the state
 		// moved underneath the operator between the render and the press.
-		if !s.assetListOnScreen() {
-			// Neither the working frame nor the failure frame names them, and
-			// stepping the page over one that just FAILED means the retry
-			// silently skips it. Each pager key names ITSELF: with one page
-			// loaded both decline, and a shared sentence would make the second
-			// press redraw the pane the first one left.
-			return s, s.assetVerdictNote("] stays on this page")
-		}
 		if !s.assetsHasNext {
-			return s, s.assetsNote.say(fmt.Sprintf("already on the last page (page %d)", s.assetsPage), StatusWarn)
+			return s, s.assetsNote.say(
+				fmt.Sprintf("already on the last page (page %d)", s.assetsPage), StatusWarn)
 		}
 		s.assetsPage++
 		s.assetsLoading = true
 		s.assetsErr = ""
+		s.assetsNote.clear() // the working line speaks for this one
 		// assetsQuery, never the live box: it can hold text nobody submitted,
 		// and paging with that would answer a key that asked for the next page
 		// with a search the operator never ran.
 		return s, tea.Batch(
-			s.assetsNote.say(fmt.Sprintf("loading page %d…", s.assetsPage), StatusInfo),
+			Status(fmt.Sprintf("loading page %d…", s.assetsPage), StatusInfo),
 			s.loadAssetsForSupplier(s.assetsQuery),
 		)
 	case "[":
-		if !s.assetListOnScreen() {
-			return s, s.assetVerdictNote("[ stays on this page")
-		}
 		if s.assetsPage <= 1 {
 			return s, s.assetsNote.say("already on the first page", StatusWarn)
 		}
 		s.assetsPage--
 		s.assetsLoading = true
 		s.assetsErr = ""
+		s.assetsNote.clear()
 		return s, tea.Batch(
-			s.assetsNote.say(fmt.Sprintf("loading page %d…", s.assetsPage), StatusInfo),
+			Status(fmt.Sprintf("loading page %d…", s.assetsPage), StatusInfo),
 			s.loadAssetsForSupplier(s.assetsQuery),
 		)
 	case "enter":
@@ -1852,9 +1251,9 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 			s.assetsCursor = 0
 		}
 		a := s.assets[s.assetsCursor]
-		// Asset.ID is a polyglot `any` (UUID strings + int rows both
-		// occur in inventory). Convert to a string for the PO create
-		// payload — backend's asset_id accepts the string repr.
+		// Asset.ID is a polyglot `any` (UUID strings + int rows both occur in
+		// inventory). Convert to a string for the PO create payload — the
+		// backend's asset_id accepts the string repr.
 		idStr := fmt.Sprintf("%v", a.ID)
 		desc := a.Name
 		if a.AssetTag != "" {
@@ -1871,6 +1270,21 @@ func (s *PurchaseOrderCreateScreen) updateAssetPickPhase(m tea.KeyMsg) (Screen, 
 	return s, nil
 }
 
+// openAssetSearch hands the keyboard to the search box.
+//
+// The bar names / on the working frame too, so the box can open with a lookup
+// still out — and there Enter is gated. Promising the key the box cannot run
+// would be the same false claim the bar carefully does not make.
+func (s *PurchaseOrderCreateScreen) openAssetSearch() tea.Cmd {
+	s.assetsTyping = true
+	s.assetsSearch.Focus()
+	opened := "type a name, tag or serial"
+	if s.assetsLoading {
+		opened = "type a name, tag or serial · a lookup is still out"
+	}
+	return tea.Batch(s.assetsNote.say(opened, StatusInfo), textinput.Blink)
+}
+
 // assetEmptyNote answers any key that acts on a row when the picker is drawing
 // a list with no rows in it. Every such key gets the SAME sentence with a
 // different lead: enter, j and k all used to reach separate arms, and the two
@@ -1885,10 +1299,9 @@ func (s *PurchaseOrderCreateScreen) assetEmptyNote(lead string) tea.Cmd {
 		lead += " · "
 	}
 	if q := strings.TrimSpace(s.assetsQuery); q != "" {
-		return s.assetsNote.say(lead+"no asset matches "+strconv.Quote(pickerClip(q, 16))+
-			"\n/ edits the search · b picks another source", StatusWarn)
+		return s.assetsNote.say(lead+"no asset matches "+strconv.Quote(pickerClip(q, 16)), StatusWarn)
 	}
-	return s.assetsNote.say(lead+"this supplier has no assets on file\n"+pickerWayOut, StatusWarn)
+	return s.assetsNote.say(lead+"this supplier has no assets on file", StatusWarn)
 }
 
 // assetsSearchClosedNote answers esc out of the asset search box. It has to
@@ -1899,35 +1312,25 @@ func (s *PurchaseOrderCreateScreen) assetEmptyNote(lead string) tea.Cmd {
 // path already branches this way through reportItemFilterState.
 func (s *PurchaseOrderCreateScreen) assetsSearchClosedNote() tea.Cmd {
 	// The rows this note counts are only an ANSWER once the lookup has come
-	// back. esc can close the box with a search still out or after one failed —
+	// back. Esc can close the box with a search still out or after one failed —
 	// the frame keeps the rows it was showing either way — and concluding "this
 	// supplier has no assets on file" there is a verdict about a request nobody
-	// has seen. That used to expire with the status flash; the working and
-	// failure frames now DRAW their note, so it would be a false line sitting
-	// on the pane.
+	// has seen.
 	if !s.assetListOnScreen() {
 		return s.assetVerdictNote("search closed")
 	}
 	// Text in the box that was never submitted is not a result. This search is
-	// server-side and runs only on enter, so the rows below answer assetsQuery
+	// SERVER-side and runs only on enter, so the rows below answer assetsQuery
 	// and say nothing at all about what is typed here — concluding "no asset
-	// matches X" would be found-nothing where could-not-tell is the fact, and
-	// it would point at '/' to retype when the supplier may simply have none.
+	// matches X" would be found-nothing where could-not-tell is the fact.
 	if q, ran := strings.TrimSpace(s.assetsSearch.Value()), strings.TrimSpace(s.assetsQuery); q != ran {
-		// This note is only ever drawn with the box SHUT, so enter is the key
-		// that STAGES the highlighted row here, not the one that runs a search.
-		// Naming it "enter runs it" pointed the operator who wanted a search at
-		// the key that puts an unrelated line on their purchase order, and the
-		// bar four rows above said "enter picks" at the same time.
 		typed := strconv.Quote(pickerClip(q, 16)) + " was never run"
 		if q == "" {
 			typed = "the box was emptied without running"
 		}
 		// …and say what the rows on the pane DO answer, which means asking
 		// whether any came back. Reading assetsQuery alone put "the rows still
-		// answer \"Lathe\"" on a frame with no rows at all, and because this
-		// note IS the body of the empty frame it replaced the one line that
-		// said the search for "Lathe" had found nothing.
+		// answer \"Lathe\"" on a frame with no rows at all.
 		var answers string
 		switch {
 		case len(s.assets) == 0 && ran != "":
@@ -1939,327 +1342,114 @@ func (s *PurchaseOrderCreateScreen) assetsSearchClosedNote() tea.Cmd {
 		default:
 			answers = "the rows are this supplier's whole list"
 		}
-		return s.assetsNote.say(
-			"search closed · "+typed+"\n"+answers+" · / reopens the search", StatusWarn)
+		return s.assetsNote.say("search closed · "+typed+"\n"+answers, StatusWarn)
 	}
 	if len(s.assets) > 0 {
 		return s.assetsNote.say(
-			fmt.Sprintf("search closed · %d asset(s) · j/k move · enter picks", len(s.assets)), StatusInfo)
+			fmt.Sprintf("search closed · %d asset(s)", len(s.assets)), StatusInfo)
 	}
 	if q := strings.TrimSpace(s.assetsQuery); q != "" {
 		return s.assetsNote.say(
-			"search closed · no asset matches "+strconv.Quote(pickerClip(q, 16))+
-				"\n/ edits the search · b picks another source", StatusWarn)
+			"search closed · no asset matches "+strconv.Quote(pickerClip(q, 16)), StatusWarn)
 	}
-	return s.assetsNote.say(
-		"search closed · this supplier has no assets on file\n/ searches · b picks another source", StatusWarn)
+	return s.assetsNote.say("search closed · this supplier has no assets on file", StatusWarn)
 }
 
-func (s *PurchaseOrderCreateScreen) renderAssetPick() string {
-	var b strings.Builder
-	// The label is the first thing an operator reads to know WHAT a list is, so
-	// it has to name the query the rows answer — assetsQuery — and never the
-	// live textinput. Reading the box let an uncommitted esc plus a page draw
-	// "search: hovercraft" over an unfiltered page 2 with a green tick and a
-	// count, and the only line that said the query was never run had by then
-	// been overwritten by the reply's own note.
-	draft := strings.TrimSpace(s.assetsSearch.Value())
-	ran := strings.TrimSpace(s.assetsQuery)
+// assetBody is the assets bought from this supplier, as navigable rows.
+//
+// What the rows ANSWER — the query the last load actually carried, and whether
+// the box holds something nobody submitted — is drawn in the pinned header
+// (assetScopeRows), not here: it is a label for the list and a label that can
+// scroll away from the list it labels is worse than none. The pager's page
+// number goes there for the same reason; the two paging KEYS are on the bar,
+// named for exactly as long as there is a page on that side.
+func (s *PurchaseOrderCreateScreen) assetBody() *jdeLines {
 	switch {
-	case s.assetsTyping:
-		// Being edited, so the box is one of TWO subjects and cannot be the
-		// only label: the rows underneath still answer assetsQuery, and this
-		// branch used to draw `search: hovercraft` over an unfiltered list
-		// while nothing had ever been searched for. Same two-row shape the
-		// shut-box branch below builds, with the live textinput in place of
-		// the frozen draft so the caret is where the operator is typing.
-		shown := "all of this supplier's assets"
-		if ran != "" {
-			shown = strconv.Quote(pickerClip(ran, 16))
+	case s.assetsLoading:
+		return poEmptyBody(s.paneWidth(), "The asset list is on its way.")
+	case s.assetsErr != "":
+		return poEmptyBody(s.paneWidth(), "No assets on the pane — the lookup failed.")
+	case len(s.assets) == 0:
+		if q := strings.TrimSpace(s.assetsQuery); q != "" {
+			return poEmptyBody(s.paneWidth(),
+				"No asset matches "+strconv.Quote(pickerClip(q, 24))+".")
 		}
-		b.WriteString(StyleMuted.Render("showing: "+shown) + "\n")
-		b.WriteString(StyleMuted.Render(poAssetSearchLabel) + s.assetsSearch.View() + "\n\n")
-	case draft != ran:
-		shown := "all of this supplier's assets"
-		if ran != "" {
-			shown = strconv.Quote(pickerClip(ran, 16))
+		return poEmptyBody(s.paneWidth(), s.supplierLabel()+" has no assets on file.")
+	}
+	l := &jdeLines{}
+	cur, room := s.cursorRow(), s.poRowRoom()
+	for i, a := range s.assets {
+		tag := a.AssetTag
+		if tag == "" {
+			tag = "—"
 		}
-		b.WriteString(StyleMuted.Render("showing: "+shown) + "\n")
-		if draft != "" {
-			b.WriteString(StyleMuted.Render("search (not run): "+pickerClip(draft, 16)) + "\n")
+		serial := ""
+		if a.SerialNumber != "" {
+			serial = "  " + StyleMuted.Render("s/n "+a.SerialNumber)
 		}
-		b.WriteString("\n")
-	case ran != "":
-		b.WriteString(StyleMuted.Render(poAssetSearchLabel) + s.assetsSearch.View() + "\n\n")
-	}
-	if s.assetsLoading {
-		b.WriteString(pickerHint("Looking up the assets " + s.supplierLabel() + " supplied…"))
-		// The note goes UNDER the working line, never instead of it — the same
-		// split the item picker's loading frame makes. Every key this frame
-		// does not name now declines through assetVerdictNote, INCLUDING enter
-		// inside the search box, and a decline the frame does not draw is a
-		// keypress that changes nothing: the four-second status flash expires
-		// and the operator who missed it is still looking at a screen that has
-		// not moved.
-		if note := s.assetsNote.render(); note != "" {
-			b.WriteString("\n" + note)
+		// The asset TAG is what the machine is called on the shop floor, so it
+		// gives last of the two identifiers and the serial is dropped whole
+		// before it — but it is OMS-supplied and unbounded, so it is bounded
+		// here rather than left to clampToBox.
+		tagRoom := room - 2 - poHeaderValueFloor - lipgloss.Width(poRowDropMark)
+		if tagRoom < poHeaderValueFloor {
+			tagRoom = poHeaderValueFloor
 		}
-		return b.String()
+		l.AddRow(i, poPickRow(i, cur, poFitRow(room, a.Name, "  "+pickerClip(tag, tagRoom), serial)))
 	}
-	// Same gate as the item picker: with the search box open, '/' is a slash in
-	// the query, 'b' is a letter, and esc closes the box rather than the order.
-	if s.assetsErr != "" {
-		// Keys above the reply: clampToBox drops from the bottom, and of these
-		// two lines the one that must survive a short terminal is the one
-		// naming the way out. Measured first so the error detail is what the
-		// budget trims.
-		tail := pickerHint(s.assetPickBar())
-		if note := s.assetsNote.render(); note != "" {
-			tail += "\n" + note
-		}
-		b.WriteString(pickerFail("looking up this supplier's assets failed", s.assetsErr,
-			s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail))) + "\n")
-		b.WriteString(tail)
-		return b.String()
-	}
-	if len(s.assets) == 0 {
-		if note := s.assetsNote.render(); note != "" {
-			b.WriteString(note)
-		} else {
-			b.WriteString(pickerHint(s.supplierLabel() + " has no assets on file."))
-		}
-		b.WriteString("\n" + pickerHint(s.assetPickBar()))
-		return b.String()
-	}
-	if note := s.assetsNote.render(); note != "" {
-		b.WriteString(note + "\n\n")
-	}
-	// The pager is built BEFORE the list so the list can be budgeted against
-	// it. It is drawn after, and a block sized without counting what follows it
-	// pushes exactly that block off the bottom — here, the two paging keys the
-	// frame names.
-	pager := fmt.Sprintf("page %d", s.assetsPage)
-	if s.assetsHasNext {
-		pager += " · ] next"
-	}
-	if s.assetsPage > 1 {
-		pager += " · [ prev"
-	}
-	tail := "\n" + pickerHint(pager)
-	b.WriteString(renderWindowedList(
-		len(s.assets), s.assetsCursor,
-		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)), s.paneWidth(),
-		func(i, room int) string {
-			a := s.assets[i]
-			tag := a.AssetTag
-			if tag == "" {
-				tag = "—"
-			}
-			serial := ""
-			if a.SerialNumber != "" {
-				serial = "  " + StyleMuted.Render("s/n "+a.SerialNumber)
-			}
-			// The asset TAG is what the machine is called on the shop floor, so
-			// it gives last of the two identifiers and the serial is dropped
-			// whole before it — but it is OMS-supplied and unbounded, so it is
-			// bounded here rather than left to clampToBox.
-			tagRoom := room - 2 - poHeaderValueFloor - lipgloss.Width(poRowDropMark)
-			if tagRoom < poHeaderValueFloor {
-				tagRoom = poHeaderValueFloor
-			}
-			return poFitRow(room, a.Name, "  "+pickerClip(tag, tagRoom), serial)
-		},
-	))
-	b.WriteString(tail)
-	return b.String()
+	return l
 }
 
-// ---------------------------------------------------------------------------
-// Shared windowed-list renderer
-// ---------------------------------------------------------------------------
-
-// windowedListDefaultRows is the block height a caller that has not measured
-// its pane gets. It is the old fixed ten-row window plus its two markers, so an
-// unbudgeted caller draws exactly what it always did.
-const windowedListDefaultRows = 12
-
-// renderWindowedList draws `total` items via the supplied formatter, keeping
-// `cursor` on screen inside a block of `rows` terminal lines — MARKERS
-// INCLUDED. Same pattern as the supplier picker so all four pickers look
-// consistent, and a free function rather than a method on the create screen,
-// because the PO edit screen's association pickers draw their lists the same
-// way.
+// assetScopeRows say WHAT the rows on the pane answer.
 //
-// rows is a budget, not a preference: `clampToBox` drops whatever runs past the
-// bottom of the pane, and a row it drops out of a PICKER is a row the cursor
-// can still be moved onto and enter can still stage. An item going onto a
-// purchase order that the operator cannot see is a wrong purchase order, so a
-// list that does not fit says how many rows it hid rather than losing them
-// silently — and the markers that say it are counted inside the budget, not
-// added on top of it. rows <= 0 keeps the historic ten.
-//
-// The formatter is handed the CELLS its row may draw into as well as the index,
-// because the horizontal cut is the same defect as the vertical one: a row
-// clampToBox trims loses its right-hand end — the SKU and the price an item is
-// picked on — with no mark to say it happened. The room is computed once here
-// (windowedListRoom) rather than by each formatter, so no picker can be the one
-// that forgets the caret or the highlight, and it comes from the pane the
-// caller is really drawing into rather than from the 51-column floor.
-func renderWindowedList(total, cursor, rows, width int, formatRow func(i, room int) string) string {
-	if rows <= 0 {
-		rows = windowedListDefaultRows
+// The first row has to name the query the rows really carry — assetsQuery —
+// and never the live textinput. Reading the box let an uncommitted esc plus a
+// page draw `search: hovercraft` over an unfiltered page 2 with a green tick
+// and a count, and the only line that said the query was never run had by then
+// been overwritten by the reply's own note. This search is SERVER-side and runs
+// only on Enter, so what is typed and what is shown are different facts and the
+// header states both.
+func (s *PurchaseOrderCreateScreen) assetScopeRows() []string {
+	lw, pane := poHeaderLabelWidth(), s.paneWidth()
+	ran := strings.TrimSpace(s.assetsQuery)
+	// The PAGE never gives and the QUERY abbreviates: which page these rows
+	// come from is a fact the operator pages on, and a query shortened with an
+	// ellipsis is still recognisable beside what they typed. Reserved BEFORE
+	// the query is clipped, because a bound applied to one part and then
+	// appended to is not a bound — the page suffix used to be added after the
+	// clip and pushed the row six cells past a 51-column pane.
+	page := ""
+	if s.assetsPage > 1 || s.assetsHasNext {
+		page = fmt.Sprintf(" · page %d", s.assetsPage)
 	}
-	if rows < 3 {
-		rows = 3
-	}
-	// Fit the item rows and their markers together. Reserving a marker shrinks
-	// the window, which can move it to an edge and remove the need for that
-	// marker, so this settles rather than assuming: at most two passes change
-	// anything, and a spare row left over beats a clipped one.
-	visible, start, end := rows, 0, 0
-	for i := 0; i < 3; i++ {
-		start, end = windowedListSpan(total, cursor, visible)
-		markers := 0
-		if start > 0 {
-			markers++
-		}
-		if end < total {
-			markers++
-		}
-		if visible+markers <= rows {
-			break
-		}
-		if visible = rows - markers; visible < 1 {
-			visible = 1
-		}
-	}
-
-	var b strings.Builder
-	if start > 0 {
-		// The newline stays OUTSIDE Render: lipgloss treats a styled string
-		// containing one as a two-line block and pads the short line, which
-		// leaked twenty columns of padding onto the row underneath the marker
-		// and pushed that row past the 51-column cut.
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	room := windowedListRoom(width)
-	for i := start; i < end; i++ {
-		caret := "    "
-		if i == cursor {
-			caret = "  ▸ "
-		}
-		line := caret + formatRow(i, room)
-		if i == cursor {
-			line = StyleSidebarItemActive.Render(line)
-		}
-		b.WriteString(line + "\n")
-	}
-	if end < total {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", total-end)) + "\n")
-	}
-	return b.String()
-}
-
-// windowedListCaretCells is the fixed gutter every row carries — four cells,
-// highlighted ("  ▸ ") or not ("    ").
-const windowedListCaretCells = 4
-
-// windowedListRoom is the cells a formatted row may draw into.
-//
-// The HIGHLIGHT's padding is reserved on every row, not only the highlighted
-// one: StyleSidebarItemActive pads what it wraps, so a row that fits until it
-// is selected is a row the pane cuts on exactly the press that stages it — and
-// the padding is asked of the style rather than counted, the same way
-// renderCart asks.
-// `width` is the pane the row is actually drawn into, not the 51-column pane
-// this project checks against: clipping a name to 45 cells on a 120-column
-// terminal discards what the pane had room for (paneWidth, po_create.go).
-func windowedListRoom(width int) int {
-	room := width - windowedListCaretCells - StyleSidebarItemActive.GetHorizontalPadding()
+	room := poFieldValueRoom(pane, lw, false) - lipgloss.Width(page)
 	if room < poHeaderValueFloor {
 		room = poHeaderValueFloor
 	}
-	return room
-}
-
-// poRowDropMark is what a row leaves behind when it gives a trailer up. A
-// caller that bounds its own identifiers reserves these cells too: the mark is
-// spent out of the same `room` everything else is measured against, and a row
-// that overflows BECAUSE it said it was short is the defect twice over.
-const poRowDropMark = "  …"
-
-// poFitRow assembles one windowed-list row inside `room` cells with a STATED
-// order of sacrifice, the same shape the cart row gives its own parts.
-//
-// Every part of the row is one of two things and there is no third: a BOUNDED
-// IDENTIFIER, or a FACT THAT NEVER GIVES. `name` is an identifier and is what
-// this function abbreviates — a shortened one is still recognisable beside the
-// code the operator typed. `facts` never give: they are the price and the
-// quantity, the numbers a picker exists to be read for, and a number cut by
-// clampToBox is worse than an absent one because "@ 3." reads as a whole
-// price. trailers are the row's decorations and are dropped from the LAST one
-// backwards, keeping the columns that remain in the order they were written —
-// column position is how a columnar row is read.
-//
-// So `facts` must be BOUNDED BY ITS CALLER, and a caller that puts an
-// OMS-supplied string in there has not bounded the row: a bound expressed in
-// terms of an unbounded value is not a bound. An item's SKU and an asset's tag
-// are identifiers that happen to sit in the facts column, and each is clipped
-// against what the price and the name's floor leave before it ever gets here —
-// a 32-cell manufacturer part number used to push the unit price off the pane
-// and draw "@ 3.".
-//
-// Whatever it shortens says so: the name keeps pickerClip's ellipsis, and a
-// dropped trailer leaves one of its own at the end of the row, so a row that
-// gave something up never reads as a whole one.
-func poFitRow(room int, name, facts string, trailers ...string) string {
-	need := lipgloss.Width(name)
-	if need > poHeaderValueFloor {
-		need = poHeaderValueFloor
+	shown := "all of this supplier's assets"
+	if ran != "" {
+		shown = strconv.Quote(pickerClip(ran, room-2)) // the quotes are cells too
+	} else {
+		shown = pickerClip(shown, room)
 	}
-	tail := func(n int) string { return strings.Join(trailers[:n], "") }
-	keep, dropped := len(trailers), ""
-	for keep > 0 {
-		spent := need + lipgloss.Width(facts) + lipgloss.Width(tail(keep)) + lipgloss.Width(dropped)
-		if spent <= room {
-			break
+	out := []string{renderJDEField(jdeField{
+		Label: "Showing", Kind: jdeValue, Value: shown + page}, lw, pane)}
+	if s.assetsTyping {
+		// The box itself is the header's ESSENTIAL row while it is open
+		// (essentialBoxRow), so it is not repeated here.
+		return out
+	}
+	if draft := strings.TrimSpace(s.assetsSearch.Value()); draft != ran {
+		// An EMPTIED box and an unrun query are different facts, and a value row
+		// drawn blank states neither. Both are "what the box holds that the rows
+		// do not answer", so both belong on this row — one as a value, one as
+		// the visible absence of one.
+		value, dim := pickerClip(draft, poFieldValueRoom(pane, lw, false)), false
+		if draft == "" {
+			value, dim = "(emptied, never run)", true
 		}
-		keep--
-		// Only a trailer that CARRIED something leaves a mark. Most rows offer
-		// an empty trailer (an item with no case pack, an asset with no serial)
-		// and a row that marked one of those would be claiming a cut nobody
-		// made — and paying three cells of the very budget it is short of for
-		// the claim. Spaced off the column before it, because an ellipsis
-		// butted against the last surviving fact reads as THAT fact having been
-		// cut, which is the mangled-value defect this bound exists to stop.
-		if trailers[keep] != "" {
-			dropped = poRowDropMark
-		}
+		out = append(out, renderJDEField(jdeField{
+			Label: "Not run", Kind: jdeValue, Dim: dim, Value: value}, lw, pane))
 	}
-	suffix := facts + tail(keep) + dropped
-	space := room - lipgloss.Width(suffix)
-	if space < need {
-		space = need
-	}
-	return pickerClip(name, space) + suffix
-}
-
-// windowedListSpan centres a window of `size` item rows on cursor.
-func windowedListSpan(total, cursor, size int) (start, end int) {
-	if size >= total {
-		return 0, total
-	}
-	start = cursor - size/2
-	if start < 0 {
-		start = 0
-	}
-	end = start + size
-	if end > total {
-		end = total
-		start = end - size
-		if start < 0 {
-			start = 0
-		}
-	}
-	return start, end
+	return out
 }

@@ -283,17 +283,20 @@ type PurchaseOrderCreateScreen struct {
 	lines        []poCartLine
 	reviewCursor int
 	poNotes      textinput.Model
-	// cartLead is what the last declined key DID on a source chooser whose cart
-	// is collapsed. Only the lead is kept, never the finished sentence: the
-	// count and the total are re-derived on every render, so a line added from
-	// the line form cannot leave a stale figure sitting on the pane. A decline
-	// that only flashes on the status bar is gone in four seconds with the pane
-	// unchanged, which is the silence this screen exists to remove.
-	cartLead string
-	// attrLead is the same thing for the optional g / w / c rows: what the last
-	// declined one of those keys DID, on a pane too short to draw the rows they
-	// name. Only the lead is kept — the sentence is rebuilt on every render.
-	attrLead string
+	// sourceNote is the source chooser's own answer to the last keypress, in
+	// the screen BODY rather than only in a four-second flash. It replaces the
+	// two leads this phase used to keep (cartLead / attrLead) and the two
+	// sentences rebuilt around them: those existed because the cart's rows and
+	// the optional attribution rows could be OFF the pane while their keys were
+	// still bound, and neither state survives the conversion — the window
+	// anchors on the cursor's block, so the highlighted line is always drawn,
+	// and G/W/C name a phase rather than a row.
+	sourceNote pickerNote
+	// switchScroll is where the supplier-switch confirm's read-only prose is
+	// scrolled to. frameScrolled hands back the offset it actually drew and
+	// this stores it, so a terminal dragged short and grown again comes back
+	// where the operator left it.
+	switchScroll int
 	// switchLead is the same shape for the supplier-switch confirm, which binds
 	// exactly two keys and had NOTHING to say to any other press. enter is the
 	// one that matters: it is the key that opened this frame, so a reflexive
@@ -317,20 +320,15 @@ type PurchaseOrderCreateScreen struct {
 	editIndex  int
 	editReturn poPhase
 
-	// terminalHeight is the last size Root forwarded, and is what the cart
-	// windows against. Zero means "not sized yet" — a screen driven straight
-	// in a unit test — and windows nothing, because guessing a pane height
-	// would hide rows nobody asked to hide.
-	terminalHeight int
-
-	// terminalWidth is the other half of that size, and every value this
-	// screen CLIPS is measured against it (paneWidth). 80 columns is the width
-	// that must HOLD — nothing may overflow there — but it is not the width to
-	// render as though we had: bounding a catalog name to 51 cells on a
-	// 120-column terminal throws away data the pane had room for, which is a
-	// loss folding never causes. Zero means "not sized yet" and falls back to
-	// the 80-column pane, the narrowest this project supports.
-	terminalWidth int
+	// jdeScreen is the pane geometry and the framing every columnar screen
+	// shares: how many rows the body gets under the bar that is about to be
+	// drawn, whether that body MOVES, the bounded status row, and the frames
+	// themselves. It replaces the hand-rolled row budgets this screen used to
+	// carry — frameRows / frameChromeRows / bodyRowBudget / cartRowBudget /
+	// sourceCartSpace / reviewCartSpace, six answers to one question — and the
+	// sacrifice order that rode on them (sc-jde-poc). What a short pane gives
+	// up is now said with jdeHeadRank, beside the row, once.
+	jdeScreen
 }
 
 type poCreatedMsg struct {
@@ -368,115 +366,91 @@ func NewPurchaseOrderCreateScreen(deps Deps) *PurchaseOrderCreateScreen {
 	s.lineInputs = make([]textinput.Model, poLineFieldCount)
 	desc := textinput.New()
 	desc.Prompt = ""
-	desc.Placeholder = "item description (freeform line)"
 	desc.CharLimit = 200
-	desc.Width = poInputWidth(poLineRowPrefix(poLineFieldDesc))
+	desc.Width = poFieldWidth
 	s.lineInputs[poLineFieldDesc] = desc
 
 	qty := textinput.New()
 	qty.Prompt = ""
-	qty.Placeholder = "quantity"
 	qty.CharLimit = 10
-	qty.Width = poInputWidth(poLineRowPrefix(poLineFieldQty))
+	qty.Width = poFieldWidth
 	s.lineInputs[poLineFieldQty] = qty
 
 	cost := textinput.New()
 	cost.Prompt = ""
-	cost.Placeholder = "unit cost (e.g. 12.50)"
 	cost.CharLimit = 20
-	cost.Width = poInputWidth(poLineRowPrefix(poLineFieldCost))
+	cost.Width = poFieldWidth
 	s.lineInputs[poLineFieldCost] = cost
 
 	date := textinput.New()
 	date.Prompt = ""
-	date.Placeholder = "YYYY-MM-DD (optional)"
 	date.CharLimit = 12
-	date.Width = poInputWidth(poLineRowPrefix(poLineFieldDate))
+	date.Width = poFieldWidth
 	s.lineInputs[poLineFieldDate] = date
 
 	// PO-level notes, captured once in the review phase.
 	poNotes := textinput.New()
 	poNotes.Prompt = ""
-	poNotes.Placeholder = "notes for the whole PO (optional)"
 	poNotes.CharLimit = 500
-	poNotes.Width = poInputWidth("▸ " + poNotesLabel)
+	poNotes.Width = poFieldWidth
 	s.poNotes = poNotes
 
 	// Picker search inputs (Phase 3b/3c).
 	is := textinput.New()
 	is.Prompt = ""
-	is.Placeholder = "filter by name / SKU"
 	is.CharLimit = 60
-	is.Width = poInputWidth(poItemFilterLabel)
+	is.Width = poFieldWidth
 	s.itemSuppliersSearch = is
 
 	as := textinput.New()
 	as.Prompt = ""
-	as.Placeholder = "search (name / tag / serial)"
 	as.CharLimit = 60
-	as.Width = poInputWidth(poAssetSearchLabel)
+	as.Width = poFieldWidth
 	s.assetsSearch = as
 
 	return s
 }
 
-// The fixed prefixes the four typed rows on these screens carry. Each is
-// stated ONCE: the renderer draws it and poInputWidth measures it, so the room
-// the caret is given and the room the row actually leaves cannot drift apart.
+// poNotesLabel is the PO-level notes row's label. It is a jdeField Label now,
+// so the layer right-aligns it into the shared column and sizes the box that
+// hangs off it — the local poInputWidth / poLineRowPrefix pair that used to
+// measure a hand-drawn prefix against a fixed 51 columns is gone with the rest
+// of the pane-local layer (sc-jde-poc).
+const poNotesLabel = "PO notes"
+
+// poItemFilterLabel / poAssetSearchLabel are the two picker search rows'
+// labels, on the same terms.
 const (
-	poNotesLabel       = "PO notes: "
-	poItemFilterLabel  = "filter: "
-	poAssetSearchLabel = "search: "
+	poItemFilterLabel  = "Filter"
+	poAssetSearchLabel = "Search"
 )
 
-// poLineRowPrefix is the line form's own prefix for field i, as renderLinePhase
-// draws it: the focus marker, the label and its colon. The cost label toggles
-// between "Unit cost" and "Case cost", which are the same width, so the row
-// keeps its measurement when the basis flips.
-func poLineRowPrefix(i int) string {
-	return "▸ " + poLineFieldLabel(i) + ": "
-}
+// poFieldWidth is the input area every typed row on this screen asks for. The
+// layer shrinks it to what the pane really has (jdeFitRow) and bounds the value
+// inside it (jdeFitInputValue), so this is a preference rather than a promise —
+// which is the whole difference from the fixed width poInputWidth used to
+// compute against a pane it had guessed at.
+const poFieldWidth = 30
 
 // paneWidth is the cells this screen's body actually has on THIS terminal, and
 // is what every value the screen CLIPS is measured against.
 //
 // The distinction it draws is between the two things a bound can do. FOLDING a
-// hint at 51 columns on a wider terminal costs an extra line and loses nothing,
-// so the folders stay on pickerPaneWidth — 51 is the width they are checked at.
+// hint at 51 columns on a wider terminal costs an extra line and loses nothing.
 // CLIPPING a value at 51 on a 91-cell pane DESTROYS the tail of a catalog name
 // the terminal had room to draw, on the rows an operator picks from. 80 columns
 // is the width that must hold; it is not the width to render as though we had.
 //
 // Unsized (a screen driven straight in a unit test, or before Root's first
-// WindowSizeMsg) falls back to the 80-column pane, the narrowest supported.
+// WindowSizeMsg) falls back to the 80-column pane, the narrowest supported —
+// the layer's own bodyWidth answers 0 there, which every bound in jde_form.go
+// reads as "do not truncate", and a row this screen CLIPS has to be clipped
+// against something. Same shape as po_add_line.go's paneWidth.
 func (s *PurchaseOrderCreateScreen) paneWidth() int {
-	if s.terminalWidth <= 0 {
-		return pickerPaneWidth
+	if w := s.bodyWidth(); w > 0 {
+		return w
 	}
-	return screenBodyWidth(s.terminalWidth)
-}
-
-// poInputWidth is how many cells a textinput may spend on a row whose fixed
-// prefix is `prefix`: the 51-column pane, less that prefix, less the one cell
-// bubbles renders for the cursor sitting past the end of the value.
-//
-// Setting it AT ALL is the point. With Width left at zero, bubbles'
-// handleOverflow returns early and View() emits the whole value plus the
-// cursor, so past the column where the row fills the pane clampToBox cut every
-// further keystroke off the right edge and the pane came back byte for byte
-// identical — the reported hang, reached by typing, in the PO-notes field this
-// screen's whole sacrifice order exists to keep on the pane VERTICALLY. With a
-// width the value SCROLLS instead and the caret is always the last thing on
-// the row. Measured against pickerPaneWidth for the same reason every fold on
-// these screens is: 51 is the width they are checked at.
-func poInputWidth(prefix string) int {
-	w := pickerPaneWidth - lipgloss.Width(prefix) - 1
-	if w < 8 {
-		// A prefix long enough to reach here would be the defect; eight cells
-		// of query still scroll rather than truncate.
-		w = 8
-	}
-	return w
+	return pickerPaneWidth
 }
 
 func (s *PurchaseOrderCreateScreen) Title() string { return "New purchase order" }
@@ -528,8 +502,7 @@ func (s *PurchaseOrderCreateScreen) loadAgreements() tea.Cmd {
 func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
-		s.terminalWidth = m.Width
+		s.setSize(m)
 		return s, nil
 
 	case poCreateSuppliersLoadedMsg:
@@ -618,38 +591,55 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		// the sites is the mistake this screen has made in every other place
 		// it appeared.
 		before := s.phase
+		// The pinned header is measured ONCE, on the frame the key was pressed
+		// against, and handed down. An arm can retire a note or a failure
+		// detail mid-dispatch, and the header's height is what decides how many
+		// rows the body gets and therefore whether PgUp/PgDn are named at all —
+		// so a press judged against a header re-derived after the arm ran would
+		// be judged against a frame the operator never saw. Same shape, same
+		// reason, as receive_form's barFor / handleKey pair.
+		headerRows := len(s.headerLines())
 		var next Screen
 		var cmd tea.Cmd
 		handled := true
 		switch s.phase {
 		case poPhaseSupplier:
-			next, cmd = s.updateSupplierPhase(m)
+			next, cmd = s.updateSupplierPhase(m, headerRows)
 		case poPhaseSupplierSwitch:
-			next, cmd = s.updateSupplierSwitchPhase(m)
+			next, cmd = s.updateSupplierSwitchPhase(m, headerRows)
 		case poPhaseAgreement:
-			next, cmd = s.updateAgreementPhase(m)
+			next, cmd = s.updateAgreementPhase(m, headerRows)
 		case poPhaseWorkOrder:
-			next, cmd = s.updateWorkOrderPhase(m)
+			next, cmd = s.updateWorkOrderPhase(m, headerRows)
 		case poPhaseCommittee:
-			next, cmd = s.updateCommitteePhase(m)
+			next, cmd = s.updateCommitteePhase(m, headerRows)
 		case poPhaseSource:
-			next, cmd = s.updateSourcePhase(m)
+			next, cmd = s.updateSourcePhase(m, headerRows)
 		case poPhaseReorderPick:
-			next, cmd = s.updateReorderPickPhase(m)
+			next, cmd = s.updateReorderPickPhase(m, headerRows)
 		case poPhaseItemPick:
-			next, cmd = s.updateItemPickPhase(m)
+			next, cmd = s.updateItemPickPhase(m, headerRows)
 		case poPhaseAssetPick:
-			next, cmd = s.updateAssetPickPhase(m)
+			next, cmd = s.updateAssetPickPhase(m, headerRows)
 		case poPhaseLine:
-			next, cmd = s.updateLinePhase(m)
+			next, cmd = s.updateLinePhase(m, headerRows)
 		case poPhaseReview:
-			next, cmd = s.updateReviewPhase(m)
+			next, cmd = s.updateReviewPhase(m, headerRows)
 		default:
 			handled = false
 		}
 		if handled {
 			if s.phase != before {
+				// A lead NAMES a key, and the key it names belongs to the frame
+				// it was pressed on — "ctrl+x removes nothing" on the source
+				// chooser advertises a key the supplier picker does not bind.
+				// Cleared HERE, at the one place every phase change passes
+				// through, rather than in the arms that navigate: a fourth
+				// added later would have to remember, and enumerating the sites
+				// is the mistake this screen has made everywhere else it
+				// appeared.
 				s.pendingLead = ""
+				s.sourceNote.clear()
 			}
 			return next, cmd
 		}
@@ -685,37 +675,37 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 // Phase: Supplier picker
 // ---------------------------------------------------------------------------
 
-func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	if !s.supplierListOnScreen() {
+		// No rows on the pane. The bar names esc and nothing else here, so
+		// every other key DECLINES and says why — each naming itself, because
+		// this frame has no highlight and no focused box, so two keys sharing
+		// one sentence would redraw the pane the first press left.
 		switch m.String() {
-		case "j", "down", "k", "up":
-			// Named, like every other cursor decline on this screen: j and k
-			// share this arm, and this frame has no rows and no highlight, so
-			// one sentence for both would make the second press redraw the
-			// pane the first one left.
+		case "esc":
+			return s, SwitchTo(WSPurchasing, nil)
+		case "up", "down", "pgup", "pgdown":
 			return s, s.supplierVerdictNote(m.String() + " moves nothing")
 		case "enter":
 			return s, s.supplierVerdictNote("nothing to commit")
 		}
+		return s, nil
 	}
 	if s.pending {
 		// Same default-deny as the source chooser, one phase further out:
-		// review → esc → b reaches this picker with the POST still in flight,
-		// and committing a DIFFERENT supplier would re-target a request that
-		// already names the old one and can drop half the cart through the
-		// switch confirm.
+		// review → esc → sources → esc reaches this picker with the POST still
+		// in flight, and committing a DIFFERENT supplier would re-target a
+		// request that already names the old one.
 		//
 		// What the freeze may not do is take the way back. This phase binds no
-		// `b` and no `d`, and its `esc` leaves the SCREEN — so freezing enter
-		// outright left the operator who wandered here with nothing but the
-		// wait or throwing the outcome away, on exactly the slow gateway the
-		// freeze exists for. Enter on the row the order ALREADY carries commits
+		// `b`, and its esc leaves the SCREEN — so freezing enter outright left
+		// the operator who wandered here with nothing but the wait or throwing
+		// the outcome away. Enter on the row the order ALREADY carries commits
 		// nothing (commitSupplier returns early on the same id) and only sets
 		// the phase back to the source chooser, so it is navigation and stays
-		// live; the bar names it for precisely that row (supplierPickBar). The
-		// line is what the key would CHANGE, not which frame it sits on.
+		// live; the bar names it for precisely that row.
 		switch m.String() {
-		case "esc", "j", "down", "k", "up":
+		case "esc", "up", "down", "pgup", "pgdown":
 		case "enter":
 			if !s.supplierHighlightIsCommitted() {
 				return s, s.pendingDecline("enter commits nothing · the committed row goes back")
@@ -724,17 +714,12 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 			return s, s.pendingDecline(m.String() + " waits for the submit")
 		}
 	}
+	if moved, cmd := s.moveCursor(m, headerRows); moved {
+		return s, cmd
+	}
 	switch m.String() {
 	case "esc":
 		return s, SwitchTo(WSPurchasing, nil)
-	case "j", "down":
-		if s.supplierCursor < len(s.suppliers)-1 {
-			s.supplierCursor++
-		}
-	case "k", "up":
-		if s.supplierCursor > 0 {
-			s.supplierCursor--
-		}
 	case "enter":
 		// Changing supplier under a cart that already names the old supplier's
 		// catalog rows destroys work, so it asks first. Only a CHANGE, and only
@@ -746,6 +731,7 @@ func (s *PurchaseOrderCreateScreen) updateSupplierPhase(m tea.KeyMsg) (Screen, t
 			s.supplierScopedLineCount() > 0 {
 			s.phase = poPhaseSupplierSwitch
 			s.switchLead = ""
+			s.switchScroll = 0
 			return s, Status(fmt.Sprintf(
 				"%d staged line(s) belong to %s — ctrl+x drops them and switches, esc keeps them",
 				s.supplierScopedLineCount(), s.supplierLabel()), StatusWarn)
@@ -832,7 +818,7 @@ func (s *PurchaseOrderCreateScreen) dropSupplierScopedLines() int {
 // cart. Letters stay out of it for the reason the attachment delete records: a
 // scanner burst is a run of letters, and one landing on a confirm is the
 // accident the reduced key scheme exists to rule out.
-func (s *PurchaseOrderCreateScreen) updateSupplierSwitchPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *PurchaseOrderCreateScreen) updateSupplierSwitchPhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	switch m.String() {
 	case "ctrl+x":
 		from := s.supplierLabel()
@@ -850,6 +836,22 @@ func (s *PurchaseOrderCreateScreen) updateSupplierSwitchPhase(m tea.KeyMsg) (Scr
 		s.phase = poPhaseSupplier
 		s.switchLead = ""
 		return s, Status("kept the cart · still ordering from "+s.supplierLabel(), StatusInfo)
+	case "up", "down":
+		// The prose is a READ-ONLY body, so these scroll it rather than moving
+		// a cursor — and they are named on the bar for exactly as long as the
+		// layer says the body moves. Without that gate they would be a key the
+		// bar names doing nothing on every frame the confirm fits on.
+		if s.bodyPagesFor(headerRows) {
+			delta := 1
+			if m.String() == "up" {
+				delta = -1
+			}
+			s.switchScroll += delta
+			if s.switchScroll < 0 {
+				s.switchScroll = 0
+			}
+			return s, nil
+		}
 	}
 	// Everything else declines and SAYS SO. enter is why this arm exists: it is
 	// the key that opened the confirm, this frame has no cursor, no highlight
@@ -862,56 +864,21 @@ func (s *PurchaseOrderCreateScreen) updateSupplierSwitchPhase(m tea.KeyMsg) (Scr
 	return s, Status(n.flash(), n.level)
 }
 
-// supplierSwitchNote answers a key this frame does not bind. It reads the two
-// live keys off supplierSwitchBar — the same sentence the frame draws above it —
-// so a decline can never name a key the confirm does not honour.
+// supplierSwitchNote answers a key this frame does not bind: what the key DID,
+// and nothing else.
+//
+// It used to repeat the confirm's two live keys, read off a supplierSwitchBar
+// the frame also printed, so that a decline could not name a key the confirm
+// does not honour. The action bar makes that claim now — Ctrl-X and Esc, drawn
+// on every frame at the bottom of the pane, where they cannot be trimmed — so
+// repeating them here would be two statements of one claim, which on this
+// screen is how a bar and a body line came to contradict each other about
+// `esc` twice.
 func (s *PurchaseOrderCreateScreen) supplierSwitchNote() pickerNote {
-	return pickerNote{text: s.switchLead + "\n" + s.supplierSwitchBar(), level: StatusWarn}
-}
-
-func (s *PurchaseOrderCreateScreen) renderSupplierSwitchPhase() string {
-	scoped := s.supplierScopedLineCount()
-	to := "the highlighted supplier"
-	if s.supplierCursor >= 0 && s.supplierCursor < len(s.suppliers) {
-		if name := s.suppliers[s.supplierCursor].Name; name != "" {
-			to = pickerClip(name, 20)
-		}
+	if s.switchLead == "" {
+		return pickerNote{}
 	}
-	var b strings.Builder
-	// Through the folder like every other note on these screens, even though
-	// this one is fixed and fits: a styled literal written straight to the pane
-	// is how each of the others started, and the wording is the kind that grows.
-	b.WriteString(pickerNote{text: "Changing supplier drops part of the cart", level: StatusWarn}.render() + "\n\n")
-	// The two KEY CLAIMS go above the prose, and carry no supplier name. This
-	// is a destructive confirm and the decline is the safe answer, so the
-	// decline is the one line that must never be what the pane cuts — and a
-	// 20-cell supplier name folded onto the end of it was exactly what pushed
-	// it off a 24-row terminal. Prose is what gets sacrificed when the rows
-	// run out; the keys are not.
-	b.WriteString(pickerHint(s.supplierSwitchBar()) + "\n\n")
-	if s.switchLead != "" {
-		// Under the keys and ABOVE the prose, so the prose is what the row
-		// budget below sacrifices when the pane runs out — the same order this
-		// frame already keeps between its keys and its sentence.
-		b.WriteString(s.supplierSwitchNote().render() + "\n\n")
-	}
-
-	prose := fmt.Sprintf("%d of %d staged line(s) name items only %s sells, so %s cannot fill them.",
-		scoped, len(s.lines), s.supplierLabel(), to)
-	if kept := len(s.lines) - scoped; kept > 0 {
-		prose += fmt.Sprintf(" The other %d line(s) stay.", kept)
-	}
-	lines := pickerWrap(prose, pickerPaneWidth)
-	if budget := s.bodyRowBudget(poRenderedRows(b.String())); budget > 0 && len(lines) > budget {
-		lines = lines[:budget]
-	}
-	for i, line := range lines {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(StyleMuted.Render(line))
-	}
-	return b.String()
+	return pickerNote{text: s.switchLead, level: StatusWarn}
 }
 
 // commitSupplier locks in the highlighted supplier and, when that changed the
@@ -1028,21 +995,16 @@ func (s *PurchaseOrderCreateScreen) pickedAgreementName() string {
 	return ""
 }
 
-func (s *PurchaseOrderCreateScreen) updateAgreementPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *PurchaseOrderCreateScreen) updateAgreementPhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
+	if moved, cmd := s.moveCursor(m, headerRows); moved {
+		return s, cmd
+	}
 	switch m.String() {
-	case "esc", "b":
+	case "esc":
 		// Leave the pick as it was — esc is "I'm done looking", not "clear it".
-		// Row 0 is the explicit way to clear.
+		// Row 1 is the explicit way to clear, which the header says.
 		s.phase = poPhaseSource
 		return s, nil
-	case "j", "down":
-		if s.agreementCursor < s.agreementRows()-1 {
-			s.agreementCursor++
-		}
-	case "k", "up":
-		if s.agreementCursor > 0 {
-			s.agreementCursor--
-		}
 	case "enter":
 		s.commitAgreement()
 		s.phase = poPhaseSource
@@ -1142,21 +1104,14 @@ func (s *PurchaseOrderCreateScreen) enterCommitteePhase() tea.Cmd {
 	return nil
 }
 
-func (s *PurchaseOrderCreateScreen) updateWorkOrderPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *PurchaseOrderCreateScreen) updateWorkOrderPhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
+	if moved, cmd := s.moveCursor(m, headerRows); moved {
+		return s, cmd
+	}
 	rows := s.workOrderRows()
 	switch m.String() {
-	case "esc", "b":
-		// Leave the pick as it was — esc is "I'm done looking", not "clear it".
-		// Row 0 is the explicit way to detach.
+	case "esc":
 		s.phase = poPhaseSource
-	case "j", "down":
-		if s.workOrderCursor < len(rows)-1 {
-			s.workOrderCursor++
-		}
-	case "k", "up":
-		if s.workOrderCursor > 0 {
-			s.workOrderCursor--
-		}
 	case "enter":
 		if s.workOrderCursor >= 0 && s.workOrderCursor < len(rows) {
 			s.workOrderID = rows[s.workOrderCursor].value
@@ -1166,19 +1121,14 @@ func (s *PurchaseOrderCreateScreen) updateWorkOrderPhase(m tea.KeyMsg) (Screen, 
 	return s, nil
 }
 
-func (s *PurchaseOrderCreateScreen) updateCommitteePhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *PurchaseOrderCreateScreen) updateCommitteePhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
+	if moved, cmd := s.moveCursor(m, headerRows); moved {
+		return s, cmd
+	}
 	rows := s.committeeRows()
 	switch m.String() {
-	case "esc", "b":
+	case "esc":
 		s.phase = poPhaseSource
-	case "j", "down":
-		if s.committeeCursor < len(rows)-1 {
-			s.committeeCursor++
-		}
-	case "k", "up":
-		if s.committeeCursor > 0 {
-			s.committeeCursor--
-		}
 	case "enter":
 		if s.committeeCursor >= 0 && s.committeeCursor < len(rows) {
 			s.committeeID = rows[s.committeeCursor].value
@@ -1192,19 +1142,7 @@ func (s *PurchaseOrderCreateScreen) updateCommitteePhase(m tea.KeyMsg) (Screen, 
 // Phase: Source chooser (r/i/a/f)
 // ---------------------------------------------------------------------------
 
-func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	switch m.String() {
-	case "j", "down", "k", "up", "x", "ctrl+e":
-		// The collapsed-cart sentence answers exactly these four keys, and the
-		// hidden-rows sentence answers g / w / c. Any other key has moved on
-		// from the question it was asked, so the sentence goes back to its
-		// un-led wording and the next decline is visibly a new one.
-		s.attrLead = ""
-	case "g", "w", "c":
-		s.cartLead = ""
-	default:
-		s.cartLead, s.attrLead = "", ""
-	}
+func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	if s.pending {
 		// DEFAULT-DENY while the create POST is out. The submit is reachable
 		// from here — esc off the review phase lands on this chooser with the
@@ -1213,7 +1151,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		// into the payload; the 201 navigates away and takes the change with
 		// it.
 		//
-		// The ALLOW-LIST is the gate, not the list of frozen keys. Written the
+		// The ALLOW-LIST is the gate, not a list of frozen keys. Written the
 		// other way round it froze the nine keys somebody thought of and let
 		// `d` through, which then re-focused the notes field the submit had
 		// just blurred — the arm added after the freeze was free by default.
@@ -1221,13 +1159,13 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		// bind at all: the operator learns the submit owns the screen, which is
 		// true of every key on it.
 		switch m.String() {
-		case "esc", "b", "d", "j", "down", "k", "up":
+		case "esc", "d", "up", "down", "pgup", "pgdown":
 			// Leave, review the cart, or move a highlight through it. None of
 			// them touches the payload or focuses an input.
 		case "r", "i", "a", "f":
 			return s, s.pendingDecline(m.String() + " adds nothing")
-		case "x":
-			return s, s.pendingDecline("x removes nothing")
+		case "ctrl+x":
+			return s, s.pendingDecline("ctrl+x removes nothing")
 		case "ctrl+e":
 			return s, s.pendingDecline("ctrl+e edits nothing")
 		case "g", "w", "c":
@@ -1236,18 +1174,20 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 			return s, s.pendingDecline(m.String() + " waits for the submit")
 		}
 	}
+	if moved, cmd := s.moveCursor(m, headerRows); moved {
+		return s, cmd
+	}
 	switch m.String() {
-	case "esc", "b":
-		// Back to supplier picker — operator can change their mind
-		// before committing to any source. Pick stays committed so
-		// they don't have to re-pick if they only want a different
-		// supplier source.
+	case "esc":
+		// Back to the supplier picker — the operator can change their mind
+		// before committing to any source. The pick stays committed so they do
+		// not have to re-pick if they only want a different supplier.
 		s.phase = poPhaseSupplier
 		return s, nil
 	case "r":
 		s.phase = poPhaseReorderPick
 		if s.reorderLoading {
-			// Same guard as 'i' below. 'b' out of a picker is not gated on the
+			// Same guard as 'i' below. B out of a picker is not gated on the
 			// working frame — the bar names it and it has to keep working — so
 			// leaving mid-lookup and pressing the source key again is an
 			// ordinary sequence, and it used to put a second request on the
@@ -1266,9 +1206,9 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 			// something about rows still in transit.
 			//
 			// AHEAD of the reset below, like the 'a' arm: this arm used to
-			// clear the search box first, so 'i' → '/' → type → 'b' → 'i'
-			// mid-walk threw away the query the operator had typed with
-			// nothing on the pane saying it had gone.
+			// clear the search box first, so i → / → type → b → i mid-walk
+			// threw away the query the operator had typed with nothing on the
+			// pane saying it had gone.
 			return s, s.catalogVerdictNote("")
 		}
 		s.itemSuppliersSearch.SetValue("")
@@ -1276,31 +1216,26 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		s.itemSuppliersTyping = false
 		s.itemSuppliersCur = 0
 		if s.catalogAnswered() {
-			// Already held for THIS supplier. Showing the "Looking up the items
-			// … sells…" frame here would be the same rule broken from the other
-			// side: that frame is a claim that work is happening, and on a
-			// ten-line order it would be claimed ten times over one catalog
-			// that is fetched once. Open on the rows; r goes and asks again.
+			// Already held for THIS supplier. Showing a working line here would
+			// be the same rule broken from the other side: that line is a claim
+			// that work is happening, and on a ten-line order it would be
+			// claimed ten times over one catalog fetched once. Open on the
+			// rows; R goes and asks again.
 			s.applyItemSupplierFilter()
 			return s, s.itemPickEntryNote()
 		}
 		s.itemSuppliersLoad = true
 		s.itemSuppliersErr = ""
-		s.itemSuppliersNote.clear() // the generic working line speaks for this one
+		s.itemSuppliersNote.clear() // the working line speaks for this one
 		return s, s.loadItemSuppliersForSupplier()
 	case "a":
 		s.phase = poPhaseAssetPick
 		if s.assetsLoading {
-			// Two lookups for the SAME supplier are still wrong even though
-			// the reply now carries a generation and the stale one is dropped:
-			// the operator would be watching a "looking up…" frame whose answer
-			// is thrown away, and the second request is work nobody asked for.
-			// Gating the search box (updateAssetPickPhase) closed that race
-			// only from inside the picker: 'a' -> '/' + search -> 'b' -> 'a'
-			// left the search request in flight and fired an unfiltered page 1
-			// over it, and if the search reply landed last the pane showed a
-			// FILTERED SUBSET as the supplier's whole asset list — empty search
-			// box, no "search:" row, "N asset(s)" with a green tick.
+			// Two lookups for the SAME supplier are still wrong even though the
+			// reply carries a generation and the stale one is dropped: the
+			// operator would be watching a working frame whose answer is thrown
+			// away, and the second request is work nobody asked for. Gating the
+			// search box closed that race only from inside the picker.
 			//
 			// Nothing below this line runs either: resetting the query and the
 			// page while the request that owns them is still out is what made
@@ -1316,53 +1251,39 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		s.assetsNote.clear()
 		return s, s.loadAssetsForSupplier("")
 	case "f":
-		// Freeform: go straight to the line form with nothing
-		// pre-filled.
+		// Freeform: straight to the line form with nothing pre-filled.
 		s.enterLinePhase(nil, nil, "", 0, 0, 0, 0)
 		return s, textinput.Blink
 	case "g":
-		// Optional purchase/pricing agreement. Silent when this supplier has
-		// none on file — the key is only advertised alongside a rendered row,
-		// and opening an empty picker would be a dead end (the web form
-		// likewise renders the select only when agreements exist).
+		// Optional purchase/pricing agreement. The bar names G only once there
+		// is something behind it, so this arm is only ever reached by a key the
+		// bar named — and it no longer has to ask whether the ROW is on the
+		// pane, because the row is a label and the key is named on the bar.
 		if !s.agreementOffered() {
 			return s, nil
 		}
-		if !s.sourceAttributionShown() {
-			return s, s.attributionHiddenNote("g")
-		}
 		return s, s.enterAgreementPhase()
 	case "w":
-		// Optional work-order association (op-shb9). Silent when there are no
-		// unfinished jobs, for the same reason g is silent without agreements.
 		if !s.assoc.workOrdersOffered() {
 			return s, nil
 		}
-		if !s.sourceAttributionShown() {
-			return s, s.attributionHiddenNote("w")
-		}
 		return s, s.enterWorkOrderPhase()
 	case "c":
-		// Optional committee association. 'c' is free here — the source chooser
-		// spends r/i/a/f on line sources and g/d/x on the rest.
 		if !s.assoc.committeesOffered() {
 			return s, nil
 		}
-		if !s.sourceAttributionShown() {
-			return s, s.attributionHiddenNote("c")
-		}
 		return s, s.enterCommitteePhase()
 	case "d":
-		// Done adding lines → review + submit. Only meaningful once the
-		// cart has at least one line (the backend rejects an empty PO).
+		// Done adding lines → review + submit. Only meaningful once the cart
+		// has at least one line (the backend rejects an empty PO), and the bar
+		// names D for exactly that long.
 		if len(s.lines) == 0 {
-			s.setErr("add at least one line before submitting", "")
-			return s, Status(s.errMsg, StatusError)
+			return s, s.sourceNote.say("nothing staged yet · R, I, A or F adds a line", StatusWarn)
 		}
 		s.phase = poPhaseReview
 		s.clampReviewCursor()
 		if s.pending {
-			// `d` is on the frozen allow-list because reviewing the cart reads
+			// D is on the frozen allow-list because reviewing the cart reads
 			// it; focusing the notes would be the screen inviting input the
 			// pending arm is going to refuse, which is the caret finalize()
 			// blurred for exactly that reason.
@@ -1371,48 +1292,30 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg) (Screen, tea
 		}
 		s.poNotes.Focus()
 		return s, textinput.Blink
-	case "j", "down":
-		// Move the cart highlight — the same cursor the review phase uses, so
-		// x / ctrl+e below act on ANY line, not just the last one added.
-		//
-		// All four of these decline when the cart is collapsed. A highlight
-		// that is not on the pane is one the operator cannot check before
-		// pressing x, and removing or editing a line nobody can see is the
-		// wrong-purchase-order failure this screen keeps being measured
-		// against. The bar stops naming them for exactly as long as the gate
-		// holds (sourceHelpText).
-		if !s.cartListedOnScreen() {
-			return s, s.cartHiddenNote(m.String() + " moves nothing")
-		}
-		if s.reviewCursor < len(s.lines)-1 {
-			s.reviewCursor++
-		}
-		return s, nil
-	case "k", "up":
-		if !s.cartListedOnScreen() {
-			return s, s.cartHiddenNote(m.String() + " moves nothing")
-		}
-		if s.reviewCursor > 0 {
-			s.reviewCursor--
-		}
-		return s, nil
-	case "x":
+	case "ctrl+x":
 		// Remove the highlighted line. The cursor follows each add (addLine
 		// parks it on the new line), so with an untouched highlight this is
-		// still the "undo the line I just added" it always was — but j/k can
-		// now aim it at any line in the cart.
-		if !s.cartListedOnScreen() {
-			return s, s.cartHiddenNote("x removes nothing")
+		// still the "undo the line I just added" it always was — but UP/DN can
+		// aim it at any line in the cart, and the window keeps whatever it is
+		// aimed at ON the pane, which is what retired the four gates this arm
+		// and its three neighbours used to carry.
+		//
+		// Ctrl-X rather than the bare `x` this phase used to bind: the review
+		// cart already spends that chord on the same act, and one screen
+		// binding two different keys to "remove the highlighted line" is a
+		// difference the operator has to learn for nothing.
+		if len(s.lines) == 0 {
+			return s, s.sourceNote.say("ctrl+x removes nothing · the cart is empty", StatusWarn)
 		}
 		s.removeLineAt(s.reviewCursor)
 		return s, nil
 	case "ctrl+e":
 		// Edit the highlighted line in place without a detour through review.
-		// Same handler the review cart uses; saving/cancelling comes back here
-		// (editReturn) so the operator keeps adding lines where they left off.
-		// ctrl+e (not a bare letter) matches the review-cart chord.
-		if !s.cartListedOnScreen() {
-			return s, s.cartHiddenNote("ctrl+e edits nothing")
+		// Same handler the review cart uses; saving or cancelling comes back
+		// here (editReturn) so the operator keeps adding lines where they left
+		// off.
+		if len(s.lines) == 0 {
+			return s, s.sourceNote.say("ctrl+e edits nothing · the cart is empty", StatusWarn)
 		}
 		return s, s.openLineEditor(s.reviewCursor, poPhaseSource)
 	}
@@ -1547,11 +1450,25 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(unitCost))
 		}
 	}
-	s.applyCostPlaceholder()
 	s.lineInputs[s.lineFocused].Focus()
 }
 
-func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "tab":
+		// Tab / Shift-Tab ride alongside UP/DN on a sheet with fields and are
+		// deliberately NOT named: roughly twenty converted forms name that pair
+		// as UP/DN=Fields alone, and naming the alias here would make this
+		// sheet disagree with every other one (poFormNavAliases).
+		s.setCursorRow(s.cursorRow() + 1)
+		return s, nil
+	case "shift+tab":
+		s.setCursorRow(s.cursorRow() - 1)
+		return s, nil
+	}
+	if moved, cmd := s.moveCursor(m, headerRows); moved {
+		return s, cmd
+	}
 	switch m.String() {
 	case "esc":
 		// Esc cancels the line form. During an in-place edit it returns to
@@ -1570,16 +1487,14 @@ func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg) (Screen, tea.C
 		}
 		s.phase = poPhaseSource
 		return s, nil
-	case "tab", "down":
-		s.focusNextLine(+1)
-		return s, nil
-	case "shift+tab", "up":
-		s.focusNextLine(-1)
-		return s, nil
 	case "ctrl+t":
 		// Toggle the cost field between per-unit and per-case entry for a
-		// case-packed inventory line (a no-op otherwise). ctrl+t (not a bare
-		// letter) so the key never collides with typing into the field.
+		// case-packed inventory line. A chord, not a bare letter, so the key
+		// never collides with typing into the field — and named on the bar only
+		// on the lines that have two bases to toggle between.
+		if s.pickedItemSup == nil || s.pickedQPP <= 1 {
+			return s, nil
+		}
 		s.toggleCostBasis()
 		return s, nil
 	case "enter":
@@ -1842,30 +1757,17 @@ func (s *PurchaseOrderCreateScreen) toggleCostBasis() {
 		s.lineInputs[poLineFieldCost].SetValue(poFormatCost(v))
 	}
 	s.costBasisCase = !s.costBasisCase
-	s.applyCostPlaceholder()
 }
 
-// applyCostPlaceholder keeps the cost input's placeholder in step with the
-// active basis (case vs unit) and with what the field means for this line kind:
-// a catalog line's cost is an override the operator may leave empty, so the
-// empty field reads "(optional)" instead of prompting for a value it doesn't
-// need. What blank actually does is spelled out by the note renderLinePhase
-// prints under the form.
-func (s *PurchaseOrderCreateScreen) applyCostPlaceholder() {
-	basis, hint := "unit cost", "(e.g. 12.50)"
-	if s.costBasisCase {
-		basis, hint = "case cost", "(e.g. 30.00)"
-	}
-	if s.pickedItemSup != nil {
-		hint = "(optional)"
-	}
-	s.lineInputs[poLineFieldCost].Placeholder = basis + " " + hint
-}
-
-// costDerivationHint is the muted line shown under a case-packed inventory
-// line's cost field: it echoes the entered cost in both bases (case ÷ qpp =
-// unit) so the operator always sees the derived counterpart, plus the toggle
-// key. Returns "" for any non-case line.
+// costDerivationHint is the muted line drawn under a case-packed inventory
+// line's cost field: it echoes the entered cost in BOTH bases (case ÷ qpp =
+// unit) so the operator always sees the derived counterpart. Returns "" for any
+// non-case line.
+//
+// It names no key. It used to end "· ctrl+t: toggle unit/case basis", which the
+// action bar says — with the label the row's own state decides — on every frame
+// of this phase; two statements of one claim on one pane is how this screen
+// came to advertise and refuse the same keys.
 func (s *PurchaseOrderCreateScreen) costDerivationHint() string {
 	if s.pickedItemSup == nil || s.pickedQPP <= 1 {
 		return ""
@@ -1875,16 +1777,15 @@ func (s *PurchaseOrderCreateScreen) costDerivationHint() string {
 	v, err := strconv.ParseFloat(raw, 64)
 	if raw == "" || err != nil {
 		if s.costBasisCase {
-			return fmt.Sprintf("Enter the CASE cost — divided by %d units/case for the unit cost. ctrl+t: switch to unit-cost entry.", qpp)
+			return fmt.Sprintf("The CASE cost, divided by %d units per case for the unit cost.", qpp)
 		}
-		return fmt.Sprintf("Enter the UNIT cost — multiplied by %d for the case cost. ctrl+t: switch to case-cost entry.", qpp)
+		return fmt.Sprintf("The UNIT cost, multiplied by %d for the case cost.", qpp)
 	}
 	unit, cas := v, v*float64(qpp)
 	if s.costBasisCase {
 		unit, cas = v/float64(qpp), v
 	}
-	return fmt.Sprintf("$%s/case ÷ %d = $%s/unit  ·  ctrl+t: toggle unit/case basis",
-		poDisplayMoney(cas), qpp, poDisplayMoney(unit))
+	return fmt.Sprintf("$%s per case ÷ %d = $%s per unit", poDisplayMoney(cas), qpp, poDisplayMoney(unit))
 }
 
 // finalize POSTs the whole cart as one PurchaseOrderCreate. Called from the
@@ -1945,61 +1846,54 @@ func (s *PurchaseOrderCreateScreen) finalize() tea.Cmd {
 // Phase: Review cart + submit
 // ---------------------------------------------------------------------------
 
-func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
+func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
 	switch m.String() {
+	case "up", "down", "pgup", "pgdown":
+		// Intercepted AHEAD of the notes box, which is focused on this phase
+		// and would otherwise swallow them. The box is pinned in the header —
+		// it never scrolls away and it takes every rune — so these four are
+		// free to move the cart highlight, which is what they did before the
+		// conversion too.
+		if s.pending {
+			// Reading the cart is not changing it, so movement stays live while
+			// the POST is out. The bar names it for exactly that reason.
+		}
+		if moved, cmd := s.moveCursor(m, headerRows); moved {
+			return s, cmd
+		}
+		return s, nil
 	case "esc":
-		// Back to the source chooser to add or remove lines. Keep the cart
-		// and any notes already typed. Only esc (not a letter) goes back so
-		// every character still reaches the focused notes field.
+		// Back to the source chooser to add or remove lines. Keep the cart and
+		// any notes already typed. Only esc goes back, so every character still
+		// reaches the notes field.
 		s.phase = poPhaseSource
 		s.poNotes.Blur()
 		return s, nil
 	case "enter":
 		if s.pending {
 			// The bar has already stopped naming enter here, and the press
-			// answers on the "Submitting…" line rather than into a flash: an
-			// operator watching a slow POST and pressing enter again is exactly
-			// the operator who will have missed a four-second status.
+			// answers on the working line rather than into a flash: an operator
+			// watching a slow POST and pressing enter again is exactly the
+			// operator who will have missed a four-second status.
 			return s, s.pendingDecline("enter is already in")
 		}
 		return s, s.finalize()
-	case "up":
-		if s.reviewCursor > 0 {
-			s.reviewCursor--
-		}
-		return s, nil
-	case "down":
-		if s.reviewCursor < len(s.lines)-1 {
-			s.reviewCursor++
-		}
-		return s, nil
 	case "ctrl+x":
-		// Remove the highlighted line. ctrl+x (not plain x) so the key
-		// doesn't collide with typing 'x' into the notes field.
+		// Remove the highlighted line. A chord, not a bare letter, so it does
+		// not collide with typing into the notes field.
 		if s.pending {
 			// finalize() copied the cart and the notes into the request, so
 			// nothing pressed after it can reach the order being created: the
 			// removal would be discarded by the navigation the 201 triggers,
 			// and until then the pane would be describing a cart that is not
 			// the one going in. Worse on the LAST line, where removeLineAt
-			// drops the phase back to the source chooser — the operator told
-			// to add a line while the order they already have is being
-			// created. So the cart is frozen for as long as the POST is out,
-			// and the bar stops naming these two for exactly that long.
-			//
-			// Default-deny like the other two frozen phases: everything this
-			// arm does not allow falls to the notes arm at the foot of the
-			// switch, which declines rather than typing.
+			// drops the phase back to the source chooser — the operator told to
+			// add a line while the order they already have is being created.
 			return s, s.pendingDecline("ctrl+x removes nothing")
 		}
 		s.removeLineAt(s.reviewCursor)
 		return s, nil
 	case "ctrl+e":
-		// Edit the highlighted line in place. ctrl+e (not a bare letter, which
-		// types into the focused notes field, nor enter, which submits) so the
-		// chord never collides. openLineEditor re-opens the Phase-4 form
-		// pre-filled and flags editIndex so addLine writes the change back to
-		// s.lines[reviewCursor] instead of appending.
 		if s.pending {
 			return s, s.pendingDecline("ctrl+e edits nothing")
 		}
@@ -2019,344 +1913,321 @@ func (s *PurchaseOrderCreateScreen) updateReviewPhase(m tea.KeyMsg) (Screen, tea
 }
 
 // ---------------------------------------------------------------------------
-// View
+// The columnar frame
 // ---------------------------------------------------------------------------
+//
+// This screen used to assemble its own pane: a prose action bar folded at the
+// TOP, a supplier header under it, a phase body, and a failure line last —
+// with six hand-rolled answers to "how many rows does that leave?"
+// (frameRows / frameRowsWith / frameChromeRows / bodyRowBudget / cartRowBudget
+// / sourceCartSpace / reviewCartSpace), its own windower (poCartWindow,
+// renderWindowedList), its own status bound (renderFailLine + failRowBudget +
+// failBodyFloor) and its own SACRIFICE ORDER for a short pane
+// (sourceAttributionShown / sourceTitleShown / cartListedOnScreen /
+// reviewAttributionShown). That was a second design system standing beside
+// jde_form.go rather than a screen that had not been converted yet, and every
+// one of those pieces had already been the site of the same defect the layer
+// exists to prevent: a claim measured against one budget and drawn against
+// another.
+//
+// All of it is the layer's now (sc-jde-poc):
+//
+//	the pane geometry     — jdeScreen, embedded.
+//	the row budget        — bodyAvailForBar, one answer, read by the frame and
+//	                        by every question asked ABOUT the frame.
+//	the window            — jdeLines.Window, anchored on the cursor's block, so
+//	                        the highlighted row is on the pane BY CONSTRUCTION.
+//	                        That is what retired cartListedOnScreen and the four
+//	                        keys it used to gate: a cart line the operator
+//	                        cannot see is no longer a state this screen has.
+//	the status row        — jdeScreen.statusRow, which flattens a multi-line OMS
+//	                        body and bounds it in one forward pass.
+//	the sacrifice order   — jdeHeadRank, declared beside each pinned row.
+//	the action bar        — []actionBarItem through renderActionBarWrapped.
+//
+// WHAT MOVED, and why it is the same screen. The bar is at the BOTTOM and names
+// keys rather than spelling sentences; the supplier line, the four line-source
+// rows, the optional g/w/c rows and the review phase's PO-notes box are PINNED
+// above the body; and the body is the thing the operator moves a cursor
+// through — the cart on the source chooser and on review, the rows on each
+// picker, the fields on the line form. The keys that act on a row (Ctrl-E,
+// Ctrl-X) can no longer be pressed against a row that is not drawn, and the
+// keys that open a phase (R/I/A/F/G/W/C/D) no longer stop working when the
+// pane is too short to draw their row, because the row was only ever their
+// LABEL and the bar is where they are named.
 
 func (s *PurchaseOrderCreateScreen) View() string {
-	var b strings.Builder
-	// Folded, not truncated. This line is the screen's action bar — it is the
-	// only place several of these phases name enter, b and esc at all — and at
-	// 80 columns the pane cuts it around "…(j/k move, / sear", which loses
-	// every key it exists to advertise. Folding is not the columnar conversion
-	// that is queued for this screen; it is the same "a hint the operator
-	// cannot finish reading is worse than none" rule the pickers now follow.
-	b.WriteString(pickerHint(s.helpText()))
-	b.WriteString("\n\n")
-
-	// Always show the committed supplier (if any) as a header so the
-	// operator never loses context on which supplier the line will be
-	// billed to.
-	b.WriteString(s.renderSupplierHeader())
-	b.WriteString("\n")
-
-	switch s.phase {
-	case poPhaseSupplier:
-		b.WriteString(s.renderSupplierPhase())
-	case poPhaseSupplierSwitch:
-		b.WriteString(s.renderSupplierSwitchPhase())
-	case poPhaseAgreement:
-		b.WriteString(s.renderAgreementPhase())
-	case poPhaseWorkOrder:
-		b.WriteString(s.renderAssocPickPhase("Work order (optional)", s.workOrderRows(), s.workOrderCursor))
-	case poPhaseCommittee:
-		b.WriteString(s.renderAssocPickPhase("Committee (optional)", s.committeeRows(), s.committeeCursor))
-	case poPhaseSource:
-		b.WriteString(s.renderSourcePhase())
-	case poPhaseReorderPick:
-		b.WriteString(s.renderReorderPick())
-	case poPhaseItemPick:
-		b.WriteString(s.renderItemPick())
-	case poPhaseAssetPick:
-		b.WriteString(s.renderAssetPick())
-	case poPhaseLine:
-		b.WriteString(s.renderLinePhase())
-	case poPhaseReview:
-		b.WriteString(s.renderReviewPhase())
+	header := s.headerLines()
+	items := s.barFor(len(header))
+	status := s.statusLine()
+	if s.phase == poPhaseSupplierSwitch {
+		// A read-only body: what has to stay on the pane is wherever the
+		// operator scrolled to rather than a row they are standing on.
+		frame, offset := s.frameScrolled(header, s.switchBody(), s.switchScroll, status, items)
+		s.switchScroll = offset
+		return frame
 	}
-
-	b.WriteString("\n")
-	b.WriteString(s.renderFailLine(s.helpText()))
-	return b.String()
+	body, cursor := s.body()
+	return s.frameWrapped(header, body, cursor, status, items)
 }
 
-// setErr records the screen's failure line: what went wrong, and the unbounded
-// half underneath it. Both fields, here and only here, so a detail can never
-// outlive the headline it belonged to — a 502's HTML body left standing under
-// "quantity must be a positive integer" would read as the gateway explaining
-// the validation, which is a worse lie than either sentence alone.
-func (s *PurchaseOrderCreateScreen) setErr(what, detail string) {
-	s.errMsg, s.errDetail = what, detail
-}
-
-// pendingDecline is how every frozen arm answers while the create POST is out:
-// it records what the key did on the "Submitting…" line and flashes the same
-// sentence. One writer so the three frozen phases cannot drift into three
-// different ways of saying the submit owns the cart, and so the lead — which
-// NAMES the key, because two keys sharing one sentence would redraw the pane
-// the first press left — is always set beside the status it goes with.
-func (s *PurchaseOrderCreateScreen) pendingDecline(lead string) tea.Cmd {
-	s.pendingLead = lead
-	return Status("the submit is already out", StatusInfo)
-}
-
-// renderFailLine is the last thing View draws: the submit's working line, or
-// the failure that came back from it.
+// statusLine is the row above the bar: what is in flight, or what came back
+// failed. Both halves go through the LAYER's status row, which flattens a
+// multi-line message and bounds it to the pane in one forward pass.
 //
-// Through pickerFail like the three picker failure frames, for the same two
-// reasons. It is FOLDED because the detail is an OMS response body and the pane
-// is 51 columns that clampToBox truncates — at submit, which is the one place
-// where losing the reason costs the whole order, the operator used to read
-// "✗ oms: http 502: <!DOCTYPE html><htm" and nothing more. And it is TRIMMED to
-// a row budget because that body renders as however many rows it needs: an
-// unbudgeted block here is a block that pushes itself, and whatever the phase
-// draws last, off the bottom.
+// That is not a nicety. omsapi.parseError puts the ENTIRE raw response body
+// into APIError.Message whenever the JSON envelope carries no code, so nginx's
+// stock 502 page — seven lines — reaches this row verbatim; unflattened it
+// pushed the frame six rows over and clampToBox, which drops from the BOTTOM,
+// took the whole action bar with it. The screen's own renderFailLine used to
+// fold and budget it instead, which traded the height overflow for a block of
+// rows taken out of whatever the phase drew last.
 //
-// help is the action bar the caller is measuring against, so the budget and
-// the frame accounting that reserves for it are computed from one wording.
-func (s *PurchaseOrderCreateScreen) renderFailLine(help string) string {
-	switch {
-	case s.pending:
-		// The lead is what a key the submit has made inert just did, so the
-		// press moves the BODY rather than only the four-second flash. Folded
-		// like every other line on these screens: the lead grows it past 51.
-		if s.pendingLead != "" {
-			return pickerHint(s.pendingLead + " · Submitting…")
+// Only the HEADLINE is here. The unbounded half rides in the pinned header
+// (failLines), where it is cut to a fixed row count before it is folded.
+func (s *PurchaseOrderCreateScreen) statusLine() string {
+	if working := s.workingLine(); working != "" {
+		return s.statusRow(true, working, "")
+	}
+	head, _ := s.failure()
+	return s.statusRow(false, "", head)
+}
+
+// failure is the headline and the unbounded detail of whatever has gone wrong
+// on the phase being drawn.
+//
+// ONE function, because the two halves are drawn in two places — the headline
+// on the status row, the detail in the pinned header — and a headline that
+// could outlive its detail is how "quantity must be a positive integer" ended
+// up with a gateway's HTML folded underneath it, reading as the gateway
+// explaining the validation.
+//
+// It answers for the PHASE, not for the screen: a failed agreement load is not
+// a fact about the item picker, and reporting it there would put a sentence
+// nobody can act on over the one they came for. The screen-level errMsg — a
+// validation refusal, or the submit coming back failed — is checked first,
+// because it belongs to the whole order rather than to the list being drawn.
+func (s *PurchaseOrderCreateScreen) failure() (head, detail string) {
+	if s.errMsg != "" {
+		return s.errMsg, s.errDetail
+	}
+	switch s.phase {
+	case poPhaseSupplier, poPhaseSupplierSwitch:
+		if s.supplierLoadErr != "" {
+			return "loading the suppliers failed", s.supplierLoadErr
 		}
-		return pickerHint("Submitting…")
-	case s.errMsg == "":
-		return ""
+	case poPhaseAgreement:
+		if s.agreementLoadErr != "" {
+			return "loading this supplier's agreements failed", s.agreementLoadErr
+		}
+	case poPhaseWorkOrder:
+		if s.assoc.workOrderErr != "" {
+			return "loading the work orders failed", s.assoc.workOrderErr
+		}
+	case poPhaseCommittee:
+		if s.assoc.committeeErr != "" {
+			return "loading the committees failed", s.assoc.committeeErr
+		}
+	case poPhaseReorderPick:
+		if s.reorderLoadErr != "" {
+			return "reading the reorder queue failed", s.reorderLoadErr
+		}
+	case poPhaseItemPick:
+		if s.itemSuppliersErr != "" {
+			return "looking up this supplier's items failed", s.itemSuppliersErr
+		}
+	case poPhaseAssetPick:
+		if s.assetsErr != "" {
+			return "looking up this supplier's assets failed", s.assetsErr
+		}
 	}
-	return pickerFail(s.errMsg, s.errDetail, s.failRowBudget(help))
+	return "", ""
 }
 
-// failRowBudget is how many rendered rows the failure line may spend. Derived,
-// not constant: the pane, less the chrome around the body, less the smallest
-// body this phase can honestly draw. What is left is the failure's, and the
-// DETAIL is what pickerFail sacrifices when it does not fit — the headline is
-// the row that survives.
-func (s *PurchaseOrderCreateScreen) failRowBudget(help string) int {
-	if s.terminalHeight <= 0 {
-		// Unsized screens get no budget at all, here as everywhere else on this
-		// screen: guessing a pane height would hide rows nobody asked to hide.
-		return 0
-	}
-	rows := screenBodyHeight(s.terminalHeight) - s.frameChromeRows(help) - s.failBodyFloor()
-	if rows < 1 {
-		// One row is the floor rather than zero: a failure with no line at all
-		// is the silence this whole file exists to remove, and pickerFail's
-		// first row is the sentence naming what failed.
-		rows = 1
-	}
-	return rows
-}
-
-// failBodyFloor is the rows the phase body keeps even under a long failure.
+// workingLine names the WORK and the SUBJECT of whatever request is out on the
+// phase being drawn: "Loading…" tells an operator that a rectangle is busy,
+// "Looking up the items Acme Supply sells…" tells them which request is out
+// and against whom.
 //
-// It is measured from the phase's SMALLEST honest layout rather than the one
-// on screen, because the layout decisions that shrink a phase
-// (sourceTitleShown, sourceAttributionShown) measure a frame that includes this
-// very line — reading the live layout here would send them round in a circle.
-// The source chooser is the one phase whose body cannot scroll: its four line
-// sources and the cart's collapsed sentence are a fixed height, so a failure
-// line budgeted against bodyRowBudget's three-row floor would have pushed the
-// cart's existence off the pane instead of trimming its own detail.
-func (s *PurchaseOrderCreateScreen) failBodyFloor() int {
-	switch s.phase {
-	case poPhaseSource:
-		return poRenderedRows(s.sourceChrome(false, false)) + s.sourceCartMinRows()
-	case poPhaseReview:
-		// The cart's own chrome and the tail at its shortest — which still
-		// carries the focused PO-notes input. This is the phase the failure
-		// actually arrives on, and an operator typing into a field that is off
-		// the pane is the worst form of this defect, so the notes row is
-		// reserved before the gateway's HTML gets a single line.
-		//
-		// The cart's one LISTED line is deliberately not reserved here:
-		// renderReviewPhase clamps its budget up to one row whatever this
-		// answer is, so counting it again would spend a row twice and leave the
-		// failure a single line — the headline with nothing under it saying
-		// there is more, which reads as the whole story.
-		return s.cartChromeRows() + poRenderedRows(s.reviewTail(false))
-	}
-	return poFailBodyFloor
-}
-
-// poFailBodyFloor mirrors bodyRowBudget's floor: every scrolling block on this
-// screen is guaranteed three rows, so the failure line may not take the pane
-// below them.
-const poFailBodyFloor = 3
-
-// sourceHelpText is the source chooser's action bar. cartListed says whether
-// the cart's ROWS are on the pane, because the four keys that act on a row —
-// j, k, ctrl+e and x — may only be named while there is a row to act on. On an
-// 18-row pane a long cart is collapsed to a summary and those keys decline, so
-// naming them there would be the "a key the bar names must act" half of the
-// rule broken by the bar itself.
+// It answers for the phase on screen and not for the screen as a whole, because
+// several of these loads run in the background against phases that are not
+// drawing them — the association options ride along with the screen opening,
+// and the agreements ride along with a supplier commit. A row that named those
+// would be reporting work the operator did not ask for over the work they did.
+// The submit is the one exception and comes first: it owns the whole screen for
+// as long as it is out, on every phase esc can reach.
 //
-// Taken as an argument rather than read from the screen because the collapse
-// decision is measured against this very sentence: frameRows() folds it to
-// count the rows it costs, so cartListedOnScreen() would recurse through
-// helpText() if this arm asked it. The decision is made against the LONGER
-// (cart-listed) wording, which is the conservative direction — the collapsed
-// bar folds to no more rows, so it can never turn the answer back round.
-func (s *PurchaseOrderCreateScreen) sourceHelpText(cartListed, attribution bool) string {
+// pendingLead is what a key the submit has made inert just did, and it leads
+// this row rather than answering into a four-second flash — the operator
+// watching a slow gateway is exactly the operator who will have missed one.
+// The row is bounded and flattened by the layer, so a lead cannot push the
+// subject off it.
+func (s *PurchaseOrderCreateScreen) workingLine() string {
 	if s.pending {
-		// Everything that would change the cart is declining while the POST is
-		// out (updateSourcePhase), so the bar names none of it — not r/i/a/f,
-		// not x or ctrl+e, and not g/w/c even when their rows are on the pane.
-		// What is left is what still works: the highlight when the cart is
-		// listed, the way to review it, and the two ways out.
-		//
-		// Answered here rather than at the call sites so every row budget on
-		// this phase measures the bar that will actually be drawn: frameRowsWith
-		// and the two sacrifice decisions all reach the bar through this
-		// function, and a budget computed from a different wording is how a
-		// block passes its own fit check and then overflows.
-		if cartListed && len(s.lines) > 0 {
-			return "Submitting… · " + s.sourceCartKeyClaim() + " · d review the cart · b back · esc cancel."
+		out := "Creating the purchase order for " + s.supplierLabel() + "…"
+		if s.pendingLead != "" {
+			out = s.pendingLead + " · " + out
 		}
-		return "Submitting… · d review the cart · b back · esc cancel."
+		return out
 	}
-	base := "Add a line · r reorder queue · i inventory items · a assets · f freeform · b back · esc cancel"
-	switch {
-	case len(s.lines) > 0 && cartListed:
-		base = fmt.Sprintf(
-			"Add a line (r/i/a/f) · %s · d done → review %d line(s) · b back · esc cancel",
-			s.sourceCartKeyClaim(), len(s.lines),
-		)
-	case len(s.lines) > 0:
-		base = fmt.Sprintf(
-			"Add a line (r/i/a/f) · d review & edit %d line(s) · b back · esc cancel",
-			len(s.lines),
-		)
-	}
-	// g / w / c only appear once there is something behind them AND their rows
-	// are on the pane. Advertising a key that does nothing is worse than not
-	// offering it, and a key naming a row the frame has dropped for want of
-	// space is the same defect one step along: the rows go first when the pane
-	// runs out (sourceAttributionShown), so the bar has to go with them.
-	//
-	// Joined at the same " · " the rest of the bar uses. Appended with a plain
-	// space they merged into one 51-cell chunk that pickerWrap could only
-	// word-fold, and the bar spread over FOUR rows — rows taken straight out of
-	// the bottom of the pane, which is where the cart is.
-	if attribution {
-		if s.agreementOffered() {
-			base += " · g agreement"
-		}
-		if s.assoc.workOrdersOffered() {
-			base += " · w work order"
-		}
-		if s.assoc.committeesOffered() {
-			base += " · c committee"
-		}
-	}
-	return base + "."
-}
-
-func (s *PurchaseOrderCreateScreen) helpText() string {
 	switch s.phase {
-	case poPhaseSupplier:
-		return "Pick a supplier · " + s.supplierPickBar()
-	case poPhaseSupplierSwitch:
-		// Exactly the two keys the frame binds, from the same sentence the
-		// frame prints. j/k, enter and the rest are deliberately absent: they
-		// do nothing here.
-		return "Changing supplier · " + s.supplierSwitchBar()
+	case poPhaseSupplier, poPhaseSupplierSwitch:
+		if s.supplierLoading {
+			return "Looking up the suppliers…"
+		}
 	case poPhaseAgreement:
-		// One claim per segment, and `b` among them: it is bound here exactly as
-		// esc is (both return to the source chooser) and no bar named it, which
-		// is the "a key the bar does not name must do nothing" half of the rule
-		// the derived phase sweep now presses for.
-		return "Purchase / pricing agreement · j/k ↑↓ move · enter commits · b back · esc keeps the current one · row 1 is none"
+		if s.agreementLoading {
+			return "Looking up what " + s.supplierLabel() + " has on agreement…"
+		}
 	case poPhaseWorkOrder:
-		return "Work order for this purchase · j/k ↑↓ move · enter commits · b back · esc keeps the current one · row 1 is none"
+		if s.assoc.workOrderLoad {
+			return "Looking up the open work orders…"
+		}
 	case poPhaseCommittee:
-		return "Committee this purchase is on behalf of · j/k ↑↓ move · enter commits · b back · esc keeps the current one · row 1 is none"
-	case poPhaseSource:
-		return s.sourceHelpText(s.cartListedOnScreen(), s.sourceAttributionShown())
+		if s.assoc.committeeLoad {
+			return "Looking up the committees…"
+		}
 	case poPhaseReorderPick:
-		// The three picker bars come from the pickers themselves
-		// (po_create_pickers.go), which is also where each frame's own way-out
-		// line comes from. One sentence, both surfaces: a bar and a body line
-		// that state the same fact by hand are a bar and a body line that end
-		// up contradicting each other.
-		return "Reorder queue · " + s.reorderPickBar()
+		if s.reorderLoading {
+			return "Looking up what " + s.supplierLabel() + " has flagged for reorder…"
+		}
 	case poPhaseItemPick:
-		return "Items · " + s.itemPickBar()
-	case poPhaseAssetPick:
-		return "Assets · " + s.assetPickBar()
-	case poPhaseLine:
-		if s.editIndex >= 0 {
-			// Editing an existing cart line (opened with ctrl+e from review).
-			if s.pickedItemSup != nil && s.pickedQPP > 1 {
-				return "Editing line · tab/shift+tab ↑↓ cycle fields · ctrl+t unit/case cost basis · enter saves the changes · esc cancels the edit"
+		if s.itemSuppliersLoad {
+			// "Reloading" is not decoration: the catalog is held per supplier
+			// and r goes and asks again, so the operator has to be able to tell
+			// a first look from a refresh they asked for.
+			verb := "Looking up"
+			if s.itemSuppliersFor == s.supplierID && s.supplierID > 0 {
+				verb = "Reloading"
 			}
-			return "Editing line · tab/shift+tab ↑↓ cycle fields · enter saves the changes · esc cancels the edit"
+			return verb + " the items " + s.supplierLabel() + " sells…"
 		}
-		if s.pickedItemSup != nil && s.pickedQPP > 1 {
-			return "Line entry · tab/shift+tab ↑↓ cycle fields · ctrl+t unit/case cost basis · enter adds to the cart · esc picks a different source"
+	case poPhaseAssetPick:
+		if s.assetsLoading {
+			if q := strings.TrimSpace(s.assetsQuery); q != "" {
+				return "Searching " + s.supplierLabel() + "'s assets for " +
+					strconv.Quote(pickerClip(q, 20)) + "…"
+			}
+			return "Looking up the assets bought from " + s.supplierLabel() + "…"
 		}
-		return "Line entry · tab/shift+tab ↑↓ cycle fields · enter adds to the cart · esc picks a different source"
-	case poPhaseReview:
-		if s.pending {
-			// The POST is out, so the cart and the notes are frozen and every
-			// key that would change them declines — the bar drops all four, the
-			// same drop itemPickBar and assetPickBar make for a gated key. ↑↓
-			// stays: it moves the highlight through a windowed cart, which is
-			// reading rather than editing, and is the one useful thing left
-			// while the gateway thinks. esc stays too: leaving review does not
-			// cancel the request, and stranding the operator on a frame with no
-			// way out would be the worse defect.
-			return "Review cart · ↑↓ highlight a line · esc back · submitting…"
-		}
-		return "Review cart — type PO notes · ↑↓ highlight a line · ctrl+e edit it · ctrl+x remove it · enter submit · esc back."
 	}
 	return ""
 }
 
-// supplierLabel names the committed supplier for the pickers' "working" lines.
-// A status line that names the supplier is the difference between "something is
-// happening" and "we are asking OMS what Acme sells", which is what the report
-// asked for. Falls back to the id, and then to a generic noun, so the sentence
-// is never left with a hole in it.
-func (s *PurchaseOrderCreateScreen) supplierLabel() string {
-	for _, sup := range s.suppliers {
-		if sup.ID == s.supplierID {
-			if sup.Name != "" {
-				// Bounded: the label goes inside a one-line status sentence in a
-				// 51-column pane that TRUNCATES, so a long supplier name would
-				// push the verb off the edge and leave "Looking up the items Ac".
-				return pickerClip(sup.Name, 20)
+// ---------------------------------------------------------------------------
+// The pinned header, and what a short pane gives up
+// ---------------------------------------------------------------------------
+
+// headerLines is everything drawn ABOVE the scrollable body on every frame,
+// each row carrying the RANK that decides when it is given up (jdeHeadRank).
+//
+// This is where this screen's sacrifice order lives now. It used to be four
+// predicates and two substitute notices — sourceAttributionShown,
+// sourceTitleShown, cartListedOnScreen, reviewAttributionShown,
+// sourceAttributionNote, attributionHiddenNote — each measuring a frame that
+// included the very bar its own answer changed, and each of them had to make
+// the keys it hid stop working so the bar could stop naming them. None of that
+// is needed once the bar is the place a key is named: a row here is a LABEL and
+// a VALUE, never an affordance, so dropping one costs the operator a fact and
+// never a key.
+//
+// The order the rows give ground in is therefore the order they are worth
+// least in, and it is stated once, per row, in the rank:
+//
+//	decorative — the blank separators. Nothing names them and nothing reads
+//	             them, so they go first.
+//	context    — the supplier line, the four line-source labels, the optional
+//	             agreement / work-order / committee values, the "still looking
+//	             up…" line, the failure DETAIL. Within the rank the layer gives
+//	             ground from the END, which is why the optional attribution
+//	             rows sit last: they are the lowest-value block on the frame
+//	             and were the first thing the old order dropped too.
+//	essential  — exactly one row per phase, and it is the row the operator
+//	             would ACT DIFFERENTLY without: the screen's answer to the last
+//	             keypress on every phase but two, the SEARCH BOX on a picker
+//	             whose box is open, and the PO-NOTES BOX on review. A box being
+//	             typed into is the layer's own first example of the rank, and it
+//	             is why review pins its notes rather than hanging them off the
+//	             bottom of the cart: an operator typing into a field that is not
+//	             on the pane is the worst form of this screen's oldest defect.
+//
+// Only one row may be essential, because the smallest pane a frame is drawn
+// into keeps exactly one header row (jdeMinBudget). Two would be a claim the
+// geometry cannot honour, which is the same false claim in a new place —
+// TestJDEForm_EveryEssentialHeaderRowIsOnThePane is where it fails.
+func (s *PurchaseOrderCreateScreen) headerLines() jdeHeader {
+	h := jdeHeader(nil).add(jdeHeadContext, s.supplierHeaderRows()...)
+	h = h.add(jdeHeadContext, s.failLines()...)
+
+	switch s.phase {
+	case poPhaseSource:
+		// ONE block, one separator: the attribution values and what the cart
+		// comes to are both facts about the order, and a blank row between them
+		// is a row of the body's.
+		h = h.addBlock(jdeHeadContext, append(s.attributionRows(true), s.cartTotalRows()...))
+	case poPhaseReview:
+		h = h.addBlock(jdeHeadContext, append(s.attributionRows(false), s.cartTotalRows()...))
+	case poPhaseItemPick:
+		// With the box SHUT and a filter still applied, the rows on the pane
+		// are a subset and nothing else says so. The box itself is the
+		// essential row while it is open (essentialBoxRow), so it is not
+		// repeated here.
+		if !s.itemSuppliersTyping {
+			if q := strings.TrimSpace(s.itemSuppliersSearch.Value()); q != "" {
+				lw, pane := poHeaderLabelWidth(), s.paneWidth()
+				h = h.addBlock(jdeHeadContext, []string{renderJDEField(jdeField{
+					Label: poItemFilterLabel, Kind: jdeValue,
+					Value: pickerClip(q, poFieldValueRoom(pane, lw, false))}, lw, pane)})
 			}
 		}
+	case poPhaseAssetPick:
+		h = h.addBlock(jdeHeadContext, s.assetScopeRows())
 	}
-	if s.supplierID > 0 {
-		return fmt.Sprintf("supplier #%d", s.supplierID)
+
+	// The essential row, last, so it sits directly above the body it is about.
+	// Only the FIRST line of the note is essential: the fold's continuations
+	// carry the tail of a sentence whose head has already said what happened.
+	note := s.noteRows()
+	if box := s.essentialBoxRow(); box != "" {
+		// The box has taken the one essential slot, so the note rides as
+		// context. That is honest on exactly these two phases and nowhere else:
+		// both of them answer a declining key on the STATUS row
+		// (pendingDecline through workingLine), which is outside the budget and
+		// never gives, so a trimmed note there costs a repetition rather than
+		// the answer.
+		return h.addBlock(jdeHeadContext, note).add(jdeHeadDecorative, "").add(jdeHeadEssential, box)
 	}
-	return "this supplier"
+	if len(note) == 0 {
+		return h
+	}
+	return h.add(jdeHeadDecorative, "").
+		add(jdeHeadEssential, note[0]).
+		add(jdeHeadContext, note[1:]...)
 }
 
-// poHeaderValueFloor is the cells a clipped header value keeps, the same floor
-// renderAssocValue uses: enough that the operator can see a value is there and
-// that it was shortened, rather than reading a label followed by nothing.
-const poHeaderValueFloor = 6
-
-// headerFailRows caps the rows the supplier header may spend on a failed
-// supplier load. A fraction of the pane rather than a measurement of what is
-// left, deliberately: this row is chrome that rides on EVERY phase, so the
-// honest measurement would be "the pane less the body" — and the body's own
-// height is decided by sourceTitleShown / sourceAttributionShown, which measure
-// a frame that includes this header. A third is what the header may take; the
-// rest of the pane belongs to whatever the operator came to do.
-func (s *PurchaseOrderCreateScreen) headerFailRows() int {
-	if s.terminalHeight <= 0 {
-		return 0
-	}
-	return screenBodyHeight(s.terminalHeight) / 3
-}
-
-func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
+// supplierHeaderRows is the committed supplier, drawn as a columnar value row.
+//
+// Both values on it are OMS-supplied and are bounded in PRIORITY order, because
+// this row is drawn on EVERY phase — review included, where it is the last
+// thing seen before submit. At 51 columns "Acme Supply (#1)  · agreement:
+// Annual 2026 Steel Contract" is over the pane on its own, and an unbounded
+// supplier name used to take the agreement, and the (#id) with it, off the
+// row: the confirm-before-submit surface losing which agreement the order is
+// placed under.
+func (s *PurchaseOrderCreateScreen) supplierHeaderRows() []string {
+	labels := []jdeField{{Label: poRowSupplier}, {Label: poRowAgreement},
+		{Label: poRowWorkOrder}, {Label: poRowCommittee}}
+	lw := jdeLabelWidth(labels)
+	pane := s.paneWidth()
+	value, dim := "(none picked)", true
 	switch {
 	case s.supplierLoading:
-		return StyleTitle.Render("Supplier:") + " " + StyleMuted.Render("loading suppliers…")
+		value, dim = "looking them up…", true
 	case s.supplierLoadErr != "":
-		// Folded and trimmed like every other failure on these screens: the
-		// string is an OMS response body, so written straight to the pane it
-		// was cut at 51 columns AND — with the newlines an HTML error page
-		// always carries — rendered as a lipgloss BLOCK that padded every short
-		// line to the widest, leaking columns onto the row beneath it.
-		return pickerFail("loading the suppliers failed", s.supplierLoadErr, s.headerFailRows())
+		// The reason is on the status row and its body in failLines; this row
+		// says only that there is no supplier to show, so a failed load can
+		// never read as "this order has no supplier yet".
+		value, dim = "unavailable", true
 	case s.supplierID > 0:
 		name := ""
 		for _, sup := range s.suppliers {
@@ -2365,116 +2236,108 @@ func (s *PurchaseOrderCreateScreen) renderSupplierHeader() string {
 				break
 			}
 		}
-		// Both values here are OMS-supplied and were unbounded, on the one row
-		// that is drawn on every phase — including review, where it is the last
-		// thing seen before submit. At 51 columns "Supplier: Acme Supply (#1) ·
-		// agreement: Annual 2026 Steel Contract" is 67 cells, so the pane cut
-		// the agreement mid-name and a longer supplier name removed it, and the
-		// `(#id)`, altogether: the confirm-before-submit surface losing which
-		// agreement the order is placed under.
-		//
-		// Bounded the way renderAssocValue bounds an association's value —
-		// pickerClip to the room the labels leave, one row, ellipsis included —
-		// rather than folded, because this row is drawn on every phase and a
-		// second row would come out of every one of their budgets.
-		const label, agreeLabel = "Supplier: ", "  · agreement: "
 		id := fmt.Sprintf(" (#%d)", s.supplierID)
-		agreement := s.pickedAgreementName()
-		pane := s.paneWidth()
-		room := pane - lipgloss.Width(label) - lipgloss.Width(id)
-		if agreement != "" {
-			// The supplier is the row's subject and takes what is left, but the
-			// agreement's label and floor are reserved FIRST: that a pricing
-			// agreement is attached at all is the fact a long supplier name
-			// used to take off the pane.
-			room -= lipgloss.Width(agreeLabel) + poHeaderValueFloor
-		}
+		// The room the VALUE has, measured off the row the layer is about to
+		// draw rather than off a constant: label column, leader and indent.
+		room := pane - len(jdeIndent) - lw - len(jdeLeader) - lipgloss.Width(id)
 		if room < poHeaderValueFloor {
 			room = poHeaderValueFloor
 		}
-		name = pickerClip(name, room)
-		line := StyleTitle.Render("Supplier:") + " " + StyleStatusOK.Render(name+id)
-		// A committed agreement is header-level context, not a line item, so it
-		// rides with the supplier and stays on screen through every phase.
-		if agreement != "" {
-			left := pane - lipgloss.Width(label+name+id+agreeLabel)
-			if left < poHeaderValueFloor {
-				left = poHeaderValueFloor
-			}
-			line += "  " + StyleMuted.Render("· agreement:") + " " + pickerClip(agreement, left)
-		}
-		return line
-	default:
-		return StyleTitle.Render("Supplier:") + " " + StyleMuted.Render("(none picked)")
+		value, dim = pickerClip(name, room)+id, false
 	}
+	return []string{renderJDEField(jdeField{
+		Label: poRowSupplier, Kind: jdeValue, Value: value, Dim: dim}, lw, pane)}
 }
 
-// renderAgreementPhase draws the optional agreement picker: a leading
-// "no agreement" row followed by the supplier's active agreements. The picked
-// agreement's notes render underneath (the terms are the reason to cite one),
-// mirroring the web form's notes paragraph under its select.
-func (s *PurchaseOrderCreateScreen) renderAgreementPhase() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Purchase / pricing agreement (optional)") + "\n")
-	tail := ""
-	if s.agreementCursor > 0 && s.agreementCursor-1 < len(s.agreements) {
-		if notes := strings.TrimSpace(s.agreements[s.agreementCursor-1].Notes); notes != "" {
-			tail = "\n" + pickerHint(notes) + "\n"
-		}
-	}
-	b.WriteString(renderWindowedList(
-		s.agreementRows(), s.agreementCursor,
-		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)), s.paneWidth(),
-		func(i, room int) string {
-			if i == 0 {
-				return "— no agreement —"
-			}
-			// An OMS-supplied name with nothing beside it: the whole row is the
-			// identifier, so it abbreviates rather than being cut.
-			return pickerClip(s.agreements[i-1].Name, room)
-		},
-	))
-	b.WriteString(tail)
-	return b.String()
+// poHeaderValueFloor is the cells a clipped value keeps: enough that the
+// operator can see a value is there and that it was shortened, rather than
+// reading a label followed by nothing. Shared with po_add_line.go and the
+// picker rows, which is why it is a package constant rather than a local one.
+const poHeaderValueFloor = 6
+
+// The four columnar labels this screen's header rows share. Stated once so
+// jdeLabelWidth measures the same set every builder draws from, which is what
+// keeps the leader column in one place as the frame changes phase.
+const (
+	poRowSupplier  = "Supplier"
+	poRowAgreement = "Agreement"
+	poRowWorkOrder = "Work order"
+	poRowCommittee = "Committee"
+)
+
+// poHeaderLabelWidth is that shared column.
+func poHeaderLabelWidth() int {
+	return jdeLabelWidth([]jdeField{{Label: poRowSupplier}, {Label: poRowAgreement},
+		{Label: poRowWorkOrder}, {Label: poRowCommittee}})
 }
 
-// renderAgreementRow is the source chooser's / review phase's one-line summary
-// of the agreement state. Returns "" when this supplier offers none, so the
-// surfaces that call it render nothing at all.
-func (s *PurchaseOrderCreateScreen) renderAgreementRow(withKey bool) string {
-	if !s.agreementOffered() {
-		return ""
-	}
-	// With the key it's an affordance in a menu of them, so it names the field
-	// and says the field is optional; without, it's a line on a confirmation
-	// screen, where the short label the PO detail screen uses reads better.
-	label := "  " + StyleTitle.Render("Agreement")
-	if withKey {
-		// "Purchase / pricing agreement (optional)" put this row at 52 cells
-		// with an EMPTY value, so the 51-column pane cut the value off every
-		// time and any real agreement name with it. The short label the PO
-		// detail screen uses is the one the non-key form already preferred.
-		label = "  " + StyleStatusOK.Render("g") + "  " +
-			StyleTitle.Render("Agreement (optional)")
-	}
-	// Say the list is MISSING rather than absent — "no agreements" and
-	// "couldn't ask" are different facts, and only one of them is safe to let
-	// the operator assume. Bounded like every other OMS-supplied value on these
-	// rows; an APIError message is the whole raw response body.
-	return renderAssocValue(s.paneWidth(), label, s.pickedAgreementName(), s.agreementLoadErr) + "\n"
-}
-
-// renderPendingLookups names the optional header lookups that are still in
-// flight — the supplier's agreements, and the work-order / committee option
-// lists that ride along with the screen opening.
+// attributionRows is the optional agreement / work-order / committee block:
+// what this order is being placed under and who for.
 //
-// None of them gate anything, which is why they load in the background and why
-// their affordances (g / w / c) only appear once there is something to pick.
-// But "no row yet" and "this supplier has no agreements" render identically,
-// and the second is a conclusion the operator may act on. So the wait says it
-// is a wait. Deliberately WITHOUT a key: naming g here would advertise a key
-// that opens an empty picker, and the bar may only name keys that work.
-func (s *PurchaseOrderCreateScreen) renderPendingLookups() string {
+// withKey draws them as the source chooser's affordances, keyed like the line
+// sources; without, as plain value rows on the review surface. Both are pure
+// labels — the keys live on the bar — so this is a difference of reading rather
+// than of what works, which is why the "still looking up…" line under them can
+// name no key at all and lose nothing.
+func (s *PurchaseOrderCreateScreen) attributionRows(withKey bool) []string {
+	lw, pane := poHeaderLabelWidth(), s.paneWidth()
+	var out []string
+	row := func(key, label, value, loadErr string) {
+		f := jdeField{Label: label, Kind: jdeValue}
+		switch {
+		case loadErr != "":
+			// Say the list is MISSING rather than absent: "no agreements" and
+			// "couldn't ask" are different facts and only one is safe to act
+			// on. Bounded where it is drawn, because an APIError message is the
+			// whole raw response body.
+			f.Value = "unavailable — " + loadErr
+		case value != "":
+			f.Value = value
+		default:
+			f.Value, f.Dim = "(none)", true
+		}
+		f.Value = pickerClip(f.Value, poFieldValueRoom(pane, lw, withKey))
+		line := renderJDEField(f, lw, pane)
+		if withKey {
+			line = StyleActionBarKey.Render(key) + " " + line
+		}
+		out = append(out, line)
+	}
+	if s.agreementOffered() || s.agreementLoadErr != "" {
+		row("g", poRowAgreement, s.pickedAgreementName(), s.agreementLoadErr)
+	}
+	if s.assoc.workOrdersOffered() || s.assoc.workOrderErr != "" {
+		row("w", poRowWorkOrder, s.pickedWorkOrderLabel(), s.assoc.workOrderErr)
+	}
+	if s.assoc.committeesOffered() || s.assoc.committeeErr != "" {
+		row("c", poRowCommittee, s.pickedCommitteeLabel(), s.assoc.committeeErr)
+	}
+	return append(out, s.pendingLookupRows()...)
+}
+
+// poFieldValueRoom is the cells a columnar value row leaves its VALUE, given
+// the pane and the shared label column. keyed rows carry a two-cell key column
+// in front of the indent, so they are measured with it rather than against a
+// row that does not have one.
+func poFieldValueRoom(pane, labelWidth int, keyed bool) int {
+	room := pane - len(jdeIndent) - labelWidth - len(jdeLeader)
+	if keyed {
+		room -= 2
+	}
+	if room < poHeaderValueFloor {
+		room = poHeaderValueFloor
+	}
+	return room
+}
+
+// pendingLookupRows names the optional lookups still in flight.
+//
+// None of them gates anything, which is why they load in the background — but
+// "no row yet" and "this supplier has no agreements" render identically, and
+// the second is a conclusion an operator may act on. So the wait says it is a
+// wait. Folded, because three pending subjects come to 74 columns and a wait
+// that says which lookups are out is only useful if it can be read.
+func (s *PurchaseOrderCreateScreen) pendingLookupRows() []string {
 	var pending []string
 	if s.agreementLoading && !s.agreementOffered() {
 		pending = append(pending, "purchase / pricing agreements")
@@ -2486,440 +2349,1010 @@ func (s *PurchaseOrderCreateScreen) renderPendingLookups() string {
 		pending = append(pending, "committees")
 	}
 	if len(pending) == 0 {
-		return ""
+		return nil
 	}
-	// Three pending lookups name 74 columns' worth of subject, so this folds
-	// like every other line on these screens: a wait that says which lookups
-	// are outstanding is only useful if the operator can read which.
-	var b strings.Builder
-	for _, line := range pickerWrap("still looking up "+strings.Join(pending, " · ")+"…", pickerPaneWidth-2) {
-		b.WriteString("  " + StyleMuted.Render(line) + "\n")
-	}
-	return b.String()
+	return jdeCaveatLines("still looking up "+strings.Join(pending, " · ")+"…", s.paneWidth())
 }
 
-// renderAssocPickPhase draws a work-order / committee picker: row 0 is the
-// explicit "none", the rest are whatever loaded. One renderer for both, so the
-// two associations can never diverge in how they're picked.
-func (s *PurchaseOrderCreateScreen) renderAssocPickPhase(title string, rows []poAssocOption, cursor int) string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render(title) + "\n")
-	tail := "\n" + pickerHint(
-		"Records who this order is for. It does not change stock, pricing, or what a committee is billed.") + "\n"
-	b.WriteString(renderWindowedList(len(rows), cursor,
-		s.bodyRowBudget(poRenderedRows(b.String())+poRenderedRows(tail)), s.paneWidth(),
-		func(i, room int) string { return pickerClip(rows[i].label, room) }))
-	b.WriteString(tail)
-	return b.String()
+// essentialBoxRow is the row a phase pins because the operator is TYPING into
+// it, or "" on a phase that pins none. See headerLines for why a box outranks
+// the note on exactly these two phases.
+func (s *PurchaseOrderCreateScreen) essentialBoxRow() string {
+	lw, pane := poHeaderLabelWidth(), s.paneWidth()
+	switch {
+	case s.phase == poPhaseReview:
+		box := s.poNotes
+		return renderJDEField(jdeField{
+			Label: poNotesLabel, Kind: jdeText, Input: &box, Width: poFieldWidth,
+			Focused: box.Focused()}, lw, pane)
+	case s.phase == poPhaseItemPick && s.itemSuppliersTyping:
+		box := s.itemSuppliersSearch
+		return renderJDEField(jdeField{
+			Label: poItemFilterLabel, Kind: jdeText, Input: &box, Width: poFieldWidth,
+			Focused: true}, lw, pane)
+	case s.phase == poPhaseAssetPick && s.assetsTyping:
+		box := s.assetsSearch
+		return renderJDEField(jdeField{
+			Label: poAssetSearchLabel, Kind: jdeText, Input: &box, Width: poFieldWidth,
+			Focused: true}, lw, pane)
+	}
+	return ""
 }
 
-// renderAssocRows is the source chooser's / review phase's summary of the two
-// order-level associations (op-shb9). withKey renders them as affordances in a
-// menu of them; without, as lines on the confirm-before-submit surface. Returns
-// "" when neither is offered, so a shop that runs no work orders and no
-// committees sees nothing about either.
-func (s *PurchaseOrderCreateScreen) renderAssocRows(withKey bool) string {
-	var b strings.Builder
-	if s.assoc.workOrdersOffered() {
-		label := "  " + StyleTitle.Render("Work order")
-		if withKey {
-			label = "  " + StyleStatusOK.Render("w") + "  " + StyleTitle.Render("Work order (optional)")
-		}
-		b.WriteString(renderAssocValue(s.paneWidth(), label, s.pickedWorkOrderLabel(), s.assoc.workOrderErr) + "\n")
+// noteRows is the screen's answer to the last keypress, folded to the pane the
+// terminal really gave. Root.View TRUNCATES rather than wrapping, and the tail
+// of these sentences is where the key that gets the operator OUT is named — a
+// clipped hint is worse than none, because they believe they read it.
+func (s *PurchaseOrderCreateScreen) noteRows() []string {
+	note := s.phaseNote()
+	if note.text == "" && s.essentialBoxRow() != "" {
+		// A phase that pins a BOX has its essential row already, so there is
+		// nothing for a standing note to fill and drawing one spends two rows
+		// (itself and its separator) of a body that is showing the operator
+		// their cart. At 80x24 under three attribution rows those two were the
+		// difference between a two-row window — which jdeLines.Window draws no
+		// "N more below" marker in — and one that says how much of a 15-line
+		// cart is out of view.
+		return nil
 	}
-	if s.assoc.committeesOffered() {
-		label := "  " + StyleTitle.Render("Committee")
-		if withKey {
-			label = "  " + StyleStatusOK.Render("c") + "  " + StyleTitle.Render("Committee (optional)")
-		}
-		b.WriteString(renderAssocValue(s.paneWidth(), label, s.pickedCommitteeLabel(), s.assoc.committeeErr) + "\n")
+	if note.text == "" {
+		// A phase with nothing to ANSWER still pins a row, because "nothing to
+		// say" and "the row scrolled away" have to be different states — and
+		// because the essential slot has to be filled on every phase: a header
+		// that marks none is a header the layer may trim to whichever row
+		// happened to be first.
+		//
+		// What fills it is a FACT about the phase rather than a list of keys.
+		// The bar names the keys, on every frame, at the bottom of the pane
+		// where nothing can trim it; a standing note that repeated them would
+		// be the second statement of one claim that this screen's own history
+		// says will eventually contradict the first.
+		note = pickerNote{text: s.standingNote()}
 	}
-	return b.String()
-}
-
-func (s *PurchaseOrderCreateScreen) renderSupplierPhase() string {
-	if s.supplierLoading || s.supplierLoadErr != "" {
-		return s.supplierNote.render()
-	}
-	if len(s.suppliers) == 0 {
-		if note := s.supplierNote.render(); note != "" {
-			return note
-		}
-		return pickerHint("(no suppliers configured)")
-	}
-	// Through the shared windower like every other scrolling block on this
-	// screen. Its own copy of the logic had both of the failures that one was
-	// fixed for: a fixed ten-row window that no row budget could shrink, and
-	// scroll markers whose newline sat INSIDE Render — which makes lipgloss
-	// treat the marker as a two-line block, pad the short line, and leak twenty
-	// columns onto the supplier row underneath it, pushing that row's "(#id)"
-	// past the 51-column cut.
-	tail := ""
-	if note := s.supplierNote.render(); note != "" {
-		tail = "\n" + note
-	}
-	return renderWindowedList(len(s.suppliers), s.supplierCursor,
-		s.bodyRowBudget(poRenderedRows(tail)), s.paneWidth(),
-		func(i, room int) string {
-			sup := s.suppliers[i]
-			// The id is what an operator reads back to confirm they are on the
-			// right supplier, so the NAME is what gives — this is the row the
-			// round-5 comment above is about, whose "(#id)" went past the cut.
-			return poFitRow(room, sup.Name, fmt.Sprintf("  (#%d)", sup.ID))
-		}) + tail
-}
-
-// sourceCartChrome is everything the source chooser draws ABOVE the cart. It is
-// one function because the collapse decision has to measure exactly what the
-// renderer will write, and a second hand-kept copy of these rows would be the
-// stale constant this screen has already been bitten by.
-// sourceAttributionRows is the optional header block: the agreement row, the
-// work-order and committee rows, and the "still looking up…" line for whichever
-// of those is in flight. Header-level, not line sources — so they sit below the
-// r/i/a/f block with a blank line between, and only when there is something
-// behind each key.
-//
-// They are also the LOWEST-value rows on this frame, which is what decides the
-// order of sacrifice when the pane runs out. See sourceAttributionShown.
-func (s *PurchaseOrderCreateScreen) sourceAttributionRows() string {
-	// WITHOUT the key column while the submit is out: g / w / c decline then,
-	// and these rows carry a VALUE the operator still wants to read, so they
-	// become what the review phase already draws them as — a line of the order
-	// rather than an affordance. Same rows, same count, no key advertised.
-	withKey := !s.pending
-	return s.renderAgreementRow(withKey) + s.renderAssocRows(withKey) + s.renderPendingLookups()
-}
-
-// sourceAttributionShown reports whether that block is drawn.
-//
-// The source chooser gives ground in a fixed order when the pane is too short,
-// and this is the first thing to go. Last to go, in order: the cart's EXISTENCE
-// — the count, the `d` that opens it, and its total — then the r/i/a/f rows the
-// screen is for, then the TITLE (sourceTitleShown, the step after this one),
-// then these. Three header rows plus the bar
-// they lengthen were enough on their own to push the whole collapsed-cart
-// sentence off an 18-row pane, so the frame drew no cart at all and the four
-// gated keys answered into a four-second flash: the operator could not see that
-// a cart existed, let alone what it came to.
-//
-// It asks TWO questions, and both have to say yes before a row is dropped: does
-// hiding actually free rows, and does the frame overflow with them shown.
-//
-// Asking only the second is what the first version did, and dropping a row that
-// costs nothing to keep is worse than the overflow it was avoiding. A supplier
-// offering exactly ONE optional row spends the same rows either way — the
-// substitute notice is one row in the same blank-plus-row slot the row occupied,
-// and the bar folds to the same height with or without that one clause — so at
-// 80x24 the frame replaced a real committee row with "optional rows need more
-// height", which was FALSE, stopped naming `c`, and made `c` decline. A false
-// sentence plus a disabled working key is the bar-honesty rule inside out.
-//
-// Both layouts are measured whole (chrome plus the frame the bar folds to),
-// because that is what "does hiding help" means: with three rows the hidden
-// layout is three rows shorter and the trade is real, with one it is level and
-// there is nothing to trade. The cart block is the same in both, so it only
-// enters the second question.
-func (s *PurchaseOrderCreateScreen) sourceAttributionShown() bool {
-	if s.terminalHeight <= 0 || s.sourceAttributionRows() == "" {
-		// Unsized screens get no budget at all, here as everywhere else on this
-		// screen, and there is nothing to hide when the block is empty.
-		return true
-	}
-	// Measured WITH the title in both worlds: the title is the next thing to
-	// give after these rows, not before them, so a decision about them may not
-	// help itself to rows the title is still holding.
-	shown := poRenderedRows(s.sourceChrome(true, true)) + s.frameRowsWith(s.sourceHelpText(false, true))
-	hidden := poRenderedRows(s.sourceChrome(false, true)) + s.frameRowsWith(s.sourceHelpText(false, false))
-	if hidden >= shown {
-		return true
-	}
-	return shown+s.sourceCartMinRows() <= screenBodyHeight(s.terminalHeight)
-}
-
-// sourceCartMinRows is what the cart's EXISTENCE costs the frame: its blank
-// separator, the collapsed sentence folded, and one row of slack.
-//
-// The slack is what a declining key's lead costs when it folds the sentence
-// onto another row, and it is reserved up front so that neither this frame's
-// layout decisions can change under the operator's hands because they pressed
-// j. Over-reserving one row beats clipping one, as everywhere else on this
-// screen. One function because sourceAttributionShown and sourceTitleShown are
-// consecutive steps of one sacrifice order and must reserve the same cart.
-func (s *PurchaseOrderCreateScreen) sourceCartMinRows() int {
-	if len(s.lines) == 0 {
-		return 0
-	}
-	return 2 + poRenderedRows(pickerNote{text: s.cartHiddenSentence("")}.render())
-}
-
-// sourceTitleShown is the NEXT step of that order, and the reason the cart's
-// total is no longer what a short pane takes.
-//
-// "Where should this line come from?" and its blank line are two rows that name
-// no key and carry no value: the four r/i/a/f rows immediately under them say
-// what the screen is, so dropping the title costs the operator nothing and no
-// substitute notice is owed for it — unlike the optional rows, whose keys stop
-// working and which therefore have to say they are gone.
-//
-// It is measured against the same conservative reservation the attribution
-// decision uses — the chrome, the folded bar and the cart's minimum — rather
-// than against cartListedOnScreen, which asks this very question through
-// sourceCartChrome. That reservation is a row or two more than the frame spends
-// today, so the title goes while the pane still has a row spare, and that is
-// deliberate: the spare row is what a declining key's lead spends when it folds
-// the cart sentence onto another line, and the title is the row this screen can
-// most afford to lose. Dropping it costs nothing; letting a keypress push the
-// cart's total off the bottom is the defect this step exists to close.
-func (s *PurchaseOrderCreateScreen) sourceTitleShown() bool {
-	if s.terminalHeight <= 0 {
-		return true
-	}
-	attribution := s.sourceAttributionShown()
-	need := poRenderedRows(s.sourceChrome(attribution, true)) +
-		s.frameRowsWith(s.sourceHelpText(false, attribution)) +
-		s.sourceCartMinRows()
-	return need <= screenBodyHeight(s.terminalHeight)
-}
-
-// sourceAttributionNote is what the frame says INSTEAD of those rows. Dropping
-// them silently would leave the operator reading a screen whose g / w / c keys
-// have quietly stopped working with nothing to say why, which is the same
-// silence as the rest of this file. It carries a lead when one of those keys
-// has just been declined, so the press moves the body.
-// Both strings are FIXED, which is what lets this be one rendered row led or
-// not: "g is off here · optional rows need more height" is 46 of the 49 a
-// warned note gets. That is a budget, not a preference — the frame draws this
-// where the rows would have been, nothing downstream reserves for it, and a
-// second row appearing on a keypress would push the cart summary off the
-// bottom, which is the defect this whole block exists to close.
-func (s *PurchaseOrderCreateScreen) sourceAttributionNote() pickerNote {
-	text := "optional rows need more height"
-	level := StatusInfo
-	if s.attrLead != "" {
-		text, level = s.attrLead+" · "+text, StatusWarn
-	}
-	return pickerNote{text: text, level: level}
-}
-
-// attributionHiddenNote answers g / w / c while their rows are off the pane.
-// The bar has stopped naming them (sourceHelpText), so they must not act.
-func (s *PurchaseOrderCreateScreen) attributionHiddenNote(key string) tea.Cmd {
-	s.attrLead = key + " is off here"
-	n := s.sourceAttributionNote()
-	return Status(n.flash(), n.level)
-}
-
-// sourceKeyStyle draws a key letter as LIVE or as frozen. The rows these
-// letters lead stay on the pane while the submit is out — they are the
-// structure the operator navigates by, and erasing them would move the frame
-// under their hands — but every one of those keys declines then, and a row that
-// looks exactly as it did when it worked is the bar-honesty rule broken by the
-// body instead of the bar. Muted is the difference an operator sees without
-// having to press one to find out; `d`, which still acts, stays lit beside them.
-func (s *PurchaseOrderCreateScreen) sourceKeyStyle(key string) string {
-	if s.pending {
-		return StyleMuted.Render(key)
-	}
-	return StyleStatusOK.Render(key)
-}
-
-func (s *PurchaseOrderCreateScreen) sourceCartChrome() string {
-	return s.sourceChrome(s.sourceAttributionShown(), s.sourceTitleShown())
-}
-
-func (s *PurchaseOrderCreateScreen) sourceChrome(attribution, title bool) string {
-	var b strings.Builder
-	if title {
-		b.WriteString(StyleTitle.Render("Where should this line come from?") + "\n\n")
-	}
-	// The four line sources. They keep their rows and their letters while the
-	// submit is out — this block is the map of the screen, and pulling it out
-	// from under the operator mid-flight would be a worse answer than saying it
-	// is off — but each row SAYS it is off, because colour alone is a claim
-	// nothing can check and a row that reads exactly as it did when it worked
-	// invites the press the arm is going to decline. The frozen wording is
-	// shorter than the live one so the marked row still fits the 51-column pane
-	// without folding, which would cost the cart a line.
-	for _, src := range []struct{ key, live, off string }{
-		{"r", "Reorder queue (items flagged for reorder)", "Reorder queue"},
-		{"i", "Inventory items associated with this supplier", "Inventory items"},
-		{"a", "Assets purchased from this supplier", "Assets"},
-		{"f", "Freeform line (no item / asset reference)", "Freeform line"},
-	} {
-		label := src.live
-		if s.pending {
-			label = StyleMuted.Render(src.off + " — off while submitting")
-		}
-		b.WriteString("  " + s.sourceKeyStyle(src.key) + "  " + label + "\n")
-	}
-	if header := s.sourceAttributionRows(); header != "" {
-		if attribution {
-			b.WriteString("\n" + header)
-		} else {
-			b.WriteString("\n" + s.sourceAttributionNote().render() + "\n")
-		}
-	}
-	if len(s.lines) > 0 {
-		// Keys ABOVE the block that grows, as on the supplier-switch confirm.
-		// This row used to sit UNDER the cart, and the cart cannot shrink past
-		// its own header and total — so on an 18-row pane with a one-line cart
-		// the fixed chrome alone overflowed and clampToBox ate exactly the row
-		// naming d. The cart is the part that can give.
-		b.WriteString("\n  " + StyleStatusOK.Render("d") + "  Done — review & submit\n")
-	}
-	return b.String()
-}
-
-// sourceCartKeyClaim is the ONE statement of which keys act on a cart ROW, and
-// both surfaces that make that claim read it: the action bar at the top of the
-// pane (sourceHelpText) and the hint drawn directly above the rows
-// (sourceCartKeys). They used to be two independent sentences, and they drifted
-// the moment the submit freeze dropped `ctrl+e` and `x` from the bar — the body
-// hint went on naming both three rows below a bar that had stopped, so one pane
-// advertised and refused the same two keys.
-//
-// While the POST is out only the highlight still moves; ctrl+e and x decline
-// (updateSourcePhase), so neither surface names them for exactly that long.
-func (s *PurchaseOrderCreateScreen) sourceCartKeyClaim() string {
-	if s.pending {
-		return "j/k ↑↓ highlight"
-	}
-	return "j/k ↑↓ highlight · ctrl+e edit · x remove"
-}
-
-// sourceCartKeys is the hint naming the keys that act on a cart ROW. It is
-// drawn only while those rows are on the pane, for the same reason
-// sourceHelpText stops naming them: the keys decline when the cart is
-// collapsed, and a hint that outlives the thing it names is the defect.
-func (s *PurchaseOrderCreateScreen) sourceCartKeys() string {
-	return pickerHint(s.sourceCartKeyClaim()) + "\n\n"
-}
-
-// cartListedOnScreen reports whether the source chooser is drawing the cart's
-// ROWS — the same question itemListOnScreen / assetListOnScreen answer for the
-// pickers, and it gates the same three things: the keys the bar names, the keys
-// the arms honour, and whether a highlight exists to act on.
-//
-// It is measured, not assumed. At 80x24 the chooser's fixed chrome leaves the
-// cart one or two rows, bodyRowBudget floors at three and hands out rows that
-// do not exist, and clampToBox then dropped the HIGHLIGHTED line, the "N more
-// below" marker that would have said rows were hidden, and the total — while x
-// still removed and ctrl+e still edited the line the operator could not see.
-//
-// The frame rows are counted against the cart-LISTED bar (see sourceHelpText):
-// that bar is the longer of the two, so the answer cannot flip back when the
-// collapsed wording is folded instead.
-func (s *PurchaseOrderCreateScreen) cartListedOnScreen() bool {
-	if len(s.lines) == 0 || s.terminalHeight <= 0 {
-		// Unsized screens get no budget at all, here as everywhere else on this
-		// screen: guessing a pane height would hide rows nobody asked to hide.
-		return true
-	}
-	left, budget := s.sourceCartSpace()
-	return poRenderedRows(s.renderCart(s.reviewCursor, budget)) <= left
-}
-
-// sourceCartSpace is the rows the source chooser has left for the cart block
-// and the row budget renderCart gets out of them. ONE derivation, because the
-// decision to collapse and the render that follows it have to agree: measuring
-// with one budget and drawing with another is how a block passes its own fit
-// check and then overflows.
-//
-// It does not go through cartRowBudget, for two reasons. bodyRowBudget floors
-// at three rows it may not have — that floor is the arithmetic that handed the
-// cart room it did not own and let clampToBox eat the highlighted line — and it
-// reads frameRows(), which folds helpText(), which asks this very question.
-func (s *PurchaseOrderCreateScreen) sourceCartSpace() (left, budget int) {
-	if s.terminalHeight <= 0 {
-		return 0, 0
-	}
-	other := poRenderedRows(s.sourceCartChrome() + s.sourceCartKeys())
-	left = screenBodyHeight(s.terminalHeight) - s.frameRowsWith(s.sourceHelpText(true, s.sourceAttributionShown())) - other
-	budget = left - s.cartChromeRows()
-	if budget < 1 {
-		budget = 1
-	}
-	return left, budget
-}
-
-// cartHiddenSentence is what the source chooser says INSTEAD of the cart when
-// the cart's rows will not fit. One sentence, because the operator must not
-// have to add up a count that is drawn in one place and a caveat drawn in
-// another: it names the key that opens the lines, how many are staged, what
-// they come to, and that they are not listed here. The review phase really does
-// list and highlight them at this pane height, so d is a route and not a hope.
-//
-// The KEY goes first for the reason the supplier-switch confirm puts its keys
-// above its prose: this block is the LAST thing the source chooser draws, and
-// on a supplier carrying agreements and associations the chooser's fixed rows
-// can fill an 18-row pane on their own, so whatever is at the end of this
-// sentence is what clampToBox eats. The order inside the sentence is the order
-// of sacrifice: the total goes first, then the count, and the way out never.
-// The frame gives up its TITLE before any of them (sourceTitleShown), so on the
-// pane sizes this project checks the total is not what a short terminal takes.
-// The leads are kept short for the same reason — they fold onto the
-// first line ahead of the key rather than pushing it onto a second one.
-//
-// lead is what a declining key just did, so pressing j over a cart that is not
-// on screen moves the body rather than redrawing the sentence already there.
-// Every one of the four NAMES its key, because two of them used to share the
-// wording: j and k both said "no line shown to move", and this frame has no
-// cursor, no highlighted row and no focused textinput, so j-then-k redrew a
-// byte-for-byte identical pane — the reported hang's shape, in the code written
-// against it.
-func (s *PurchaseOrderCreateScreen) cartHiddenSentence(lead string) string {
-	total, noCost := poCartTotal(s.lines)
-	money := fmtMoney(total)
-	if noCost > 0 {
-		// The sum is a floor: a line with no cost is priced from the supplier
-		// catalog at save time, so reporting it flat would read as free.
-		money = "at least " + money
-	}
-	// Ordered by what may be sacrificed, not shaved to fit: the key, the count
-	// and "not listed" are the sentence's whole job and they lead it, so the
-	// TOTAL is what falls onto a second row. It really does fall — "at least"
-	// (any line priced from the catalog at save time) or a five-figure order
-	// takes this past 49 cells — and the row budget counts the fold rather than
-	// assuming one row, which is what the previous wording claimed and was not.
-	out := fmt.Sprintf("d lists the %d line(s) · not listed here · %s", len(s.lines), money)
-	if lead != "" {
-		out = lead + " · " + out
+	// Folded, never hand-counted. Root.View TRUNCATES rather than wrapping, and
+	// the tail of one of these sentences is the half that says what the state
+	// IS — a clipped note is worse than none, because the operator believes
+	// they read it.
+	lines := note.renderLines(s.paneWidth() - len(jdeIndent))
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, jdeIndent+line)
 	}
 	return out
 }
 
-// cartHiddenNote answers j / k / x / ctrl+e on a collapsed cart: no state
-// change, and the same sentence the frame already carries, now led by what the
-// key did. The lead is also what turns the muted summary into a warned one, so
-// the press changes the body twice over.
-func (s *PurchaseOrderCreateScreen) cartHiddenNote(lead string) tea.Cmd {
-	s.cartLead = lead
-	n := s.cartHiddenNoteText()
-	return Status(n.flash(), n.level)
-}
-
-func (s *PurchaseOrderCreateScreen) cartHiddenNoteText() pickerNote {
-	level := StatusInfo
-	if s.cartLead != "" {
-		level = StatusWarn
+// phaseNote is the pickerNote whose words this phase's essential row carries.
+// One switch, so a phase cannot answer a key into a note no frame draws — which
+// is what the four picker notes each had to be wired up for separately.
+func (s *PurchaseOrderCreateScreen) phaseNote() pickerNote {
+	switch s.phase {
+	case poPhaseSupplier:
+		return s.supplierNote
+	case poPhaseSupplierSwitch:
+		return s.supplierSwitchNote()
+	case poPhaseSource:
+		return s.sourceNote
+	case poPhaseReorderPick:
+		return s.reorderNote
+	case poPhaseItemPick:
+		return s.itemSuppliersNote
+	case poPhaseAssetPick:
+		return s.assetsNote
 	}
-	return pickerNote{text: s.cartHiddenSentence(s.cartLead), level: level}
+	return pickerNote{}
 }
 
-func (s *PurchaseOrderCreateScreen) renderSourcePhase() string {
-	body := s.sourceCartChrome()
+// standingNote is what a phase with nothing to answer says instead. It is a
+// FACT about the phase rather than an instruction — the keys are the bar's job
+// — and it is what fills the essential slot on the phases whose notes are
+// empty, so every frame has a row it can be judged by.
+func (s *PurchaseOrderCreateScreen) standingNote() string {
+	switch s.phase {
+	case poPhaseSupplier:
+		return "Every picker after this is scoped to the supplier you commit."
+	case poPhaseSupplierSwitch:
+		return "Dropped lines cannot be recovered."
+	case poPhaseAgreement:
+		return "Row 1 places the order under no agreement."
+	case poPhaseWorkOrder:
+		return "Row 1 attaches the order to no work order."
+	case poPhaseCommittee:
+		return "Row 1 places the order on behalf of nobody."
+	case poPhaseSource:
+		return "Staged lines are not saved until the order is submitted."
+	case poPhaseReorderPick:
+		return "Quantities come from each item's suggested reorder quantity."
+	case poPhaseItemPick:
+		return "The filter runs over the catalog already loaded, not on the server."
+	case poPhaseAssetPick:
+		return "The search runs on the server, over name, tag and serial."
+	case poPhaseLine:
+		// WHAT is being ordered, which is the fact an operator would act
+		// differently without: a freeform line and a catalog line take the same
+		// keystrokes and produce different purchase orders.
+		return "Line source: " + s.lineSourceName()
+	case poPhaseReview:
+		// Never reached — review pins its notes box as the essential row and
+		// carries this one as context — but answered rather than left empty,
+		// because a phase that falls through to "" here would spend a header
+		// row on nothing.
+		return "The whole cart is submitted in one request."
+	}
+	return ""
+}
+
+// lineSourceName names where the line being entered came from.
+func (s *PurchaseOrderCreateScreen) lineSourceName() string {
+	switch {
+	case s.pickedItemSup != nil:
+		return fmt.Sprintf("item-supplier #%d", *s.pickedItemSup)
+	case s.pickedAssetID != nil:
+		return "asset " + pickerClip(*s.pickedAssetID, 24)
+	}
+	return "freeform"
+}
+
+// failLines draws the failure's unbounded half under the headline the status
+// row carries. The detail is an OMS response body, so it is CUT to what this
+// block can hold before it is folded — folding a multi-KB gateway page is work
+// whose result is thrown away, on a header rebuilt on every keystroke.
+func (s *PurchaseOrderCreateScreen) failLines() []string {
+	_, detail := s.failure()
+	if detail == "" {
+		return nil
+	}
+	width := s.paneWidth() - len(jdeIndent)
+	if width < 12 {
+		width = 12
+	}
+	trimmed := cellPrefix(detail, poFailDetailRows*width)
+	out := make([]string, 0, poFailDetailRows)
+	for i, line := range pickerWrap(trimmed, width) {
+		if i >= poFailDetailRows {
+			break
+		}
+		out = append(out, jdeIndent+StyleMuted.Render(line))
+	}
+	return out
+}
+
+// poFailDetailRows caps that detail. The sentence naming WHAT failed is on the
+// status row and never gives; what a short terminal loses is the tail of the
+// gateway's HTML. Same bound, same reason, as po_add_line's.
+const poFailDetailRows = 3
+
+// ---------------------------------------------------------------------------
+// The action bar
+// ---------------------------------------------------------------------------
+
+// bar is the bar the frame is about to draw.
+func (s *PurchaseOrderCreateScreen) bar() []actionBarItem {
+	return s.barFor(len(s.headerLines()))
+}
+
+// barFor is bar for a frame with a KNOWN pinned header, and it is the one the
+// key arms read.
+//
+// The two exist for the reason receive_form's pair does: the bar an operator
+// obeys and the bar the screen is about to draw are not always the same bar.
+// The header costs the body rows, the body's height is what decides whether
+// PgUp/PgDn are named at all, and an arm can retire a note or a failure detail
+// mid-dispatch — so a press has to be judged against the frame it was made ON.
+// Update measures the header before the arms run and hands it down.
+func (s *PurchaseOrderCreateScreen) barFor(headerRows int) []actionBarItem {
+	return s.barItems(s.bodyPagesFor(headerRows))
+}
+
+// barItems is the bar for a given paging state, so the bar that is MEASURED is
+// the bar that is DRAWN. Measuring against one wording and drawing another is
+// how a block passes its own fit check and then overflows — this screen did it
+// three times with the sentence version of this function.
+//
+// Every arm below is an ALLOW-LIST of what acts in the state being drawn. That
+// is the direction the freeze had to be rewritten in once already: written as a
+// list of what is FROZEN it froze the nine keys somebody thought of, and `d`,
+// added in the same round, was free by default and re-focused the notes field
+// the submit had just blurred.
+func (s *PurchaseOrderCreateScreen) barItems(paging bool) []actionBarItem {
+	var items []actionBarItem
+	add := func(key, label string) { items = append(items, actionBarItem{key, label}) }
+	move := func() {
+		if s.rowCount() > 1 {
+			add("UP/DN", "Move")
+		}
+		if paging {
+			add("PgUp/PgDn", "Page")
+		}
+	}
+	switch s.phase {
+	case poPhaseSupplier:
+		if !s.supplierListOnScreen() {
+			// No rows: nothing to move onto and nothing to commit. Esc is the
+			// one key that acts, so it is the one key named.
+			add("Esc", "Cancel order")
+			return items
+		}
+		switch {
+		case s.pending && s.supplierHighlightIsCommitted():
+			// The highlighted row is the supplier the order already carries, so
+			// enter commits nothing and only goes back to the source chooser —
+			// navigation, not a change, and the one way back into the order
+			// from this frame while the POST is out.
+			add("Enter", "Back to sources")
+		case s.pending:
+			// A DIFFERENT supplier would re-target a request that already names
+			// the old one, so it is frozen with the rest of the payload.
+		default:
+			add("Enter", "Commit supplier")
+		}
+		move()
+		add("Esc", "Cancel order")
+	case poPhaseSupplierSwitch:
+		add("Ctrl-X", "Drop & switch")
+		add("Esc", "Keep cart")
+		if paging {
+			add("UP/DN", "Scroll")
+		}
+	case poPhaseAgreement, poPhaseWorkOrder, poPhaseCommittee:
+		add("Enter", "Commit")
+		move()
+		add("Esc", "Keep current")
+	case poPhaseSource:
+		if !s.pending {
+			// Everything that stages, removes, edits or re-attributes a line is
+			// changing a cart finalize() has already copied into the payload;
+			// the 201 navigates away and takes the change with it.
+			add("r", "Reorder")
+			add("i", "Inventory")
+			add("a", "Assets")
+			add("f", "Freeform")
+			if s.agreementOffered() {
+				add("g", "Agreement")
+			}
+			if s.assoc.workOrdersOffered() {
+				add("w", "Work order")
+			}
+			if s.assoc.committeesOffered() {
+				add("c", "Committee")
+			}
+		}
+		if len(s.lines) > 0 {
+			add("d", "Review")
+			move()
+			if !s.pending {
+				add("Ctrl-E", "Edit line")
+				add("Ctrl-X", "Remove line")
+			}
+		}
+		add("Esc", "Supplier")
+	case poPhaseReorderPick:
+		if s.reorderListOnScreen() && len(s.reorderItems) > 0 {
+			commit := "Add line"
+			if len(s.reorderSelected) > 0 {
+				// With rows marked, enter stages exactly those — a different
+				// act, so a different word. The bar naming "Add line" over a
+				// key that adds nine is the claim this pair exists to keep
+				// honest.
+				commit = fmt.Sprintf("Add %d marked", len(s.reorderSelected))
+			}
+			add("Enter", commit)
+			add("Space", "Mark")
+			add("a", "Add all")
+			move()
+		}
+		add("b", "Line sources")
+		add("Esc", "Cancel order")
+	case poPhaseItemPick:
+		if s.itemSuppliersTyping {
+			// Enter's outcome depends on the MATCH COUNT, so the bar says which
+			// of the two it is about to do — and names nothing at all over a
+			// query that matched nothing, where enter can only decline.
+			//
+			// A single label for all three was the state this bar was in before
+			// the conversion, promising "picks the match" over a search with
+			// eleven matches and over one with none. Both halves matter: a key
+			// named where it declines teaches a key that does not work, and a
+			// key whose label describes a different act is the same lie with
+			// more words.
+			if s.itemListOnScreen() && len(s.itemSuppliers) > 0 {
+				if len(s.itemSuppliers) == 1 {
+					add("Enter", "Pick it")
+				} else {
+					add("Enter", "Close & choose")
+				}
+			}
+			add("Esc", "Close search")
+			return items
+		}
+		// The list on the pane decides what Enter and the movement keys can do;
+		// '/' and 'r' are decided by their OWN predicates, because a filter
+		// that matched nothing is a state where the list is empty and the box
+		// still opens — the previous shape read the row count for all four and
+		// dropped '/' from a frame where it was the operator's only way to fix
+		// the query.
+		if len(s.itemSuppliers) > 0 && s.itemListOnScreen() {
+			add("Enter", "Pick item")
+		}
+		if s.itemSearchOpens() {
+			add("/", "Search")
+		}
+		if !s.itemSuppliersLoad {
+			// A walk is already out, so R would fire a second one for a reply
+			// the first is going to deliver.
+			retry := "Reload"
+			if s.itemSuppliersErr != "" {
+				retry = "Retry"
+			}
+			add("r", retry)
+		}
+		move()
+		add("b", "Line sources")
+		add("Esc", "Cancel order")
+	case poPhaseAssetPick:
+		if s.assetsTyping {
+			if !s.assetsLoading {
+				// Gated while a search is in flight: a second one would leave
+				// the operator watching a lookup whose result is discarded.
+				add("Enter", "Run search")
+			}
+			add("Esc", "Close search")
+			return items
+		}
+		switch {
+		case s.assetsLoading:
+			add("/", "Search")
+		case s.assetsErr != "":
+			add("/", "Retry with a search")
+		case len(s.assets) == 0:
+			add("/", "Search")
+		default:
+			add("Enter", "Pick asset")
+			add("/", "Search")
+			move()
+			if s.assetsHasNext {
+				add("]", "Next page")
+			}
+			if s.assetsPage > 1 {
+				add("[", "Prev page")
+			}
+		}
+		add("b", "Line sources")
+		add("Esc", "Cancel order")
+	case poPhaseLine:
+		commit := "Add to cart"
+		if s.editIndex >= 0 {
+			commit = "Save changes"
+		}
+		add("Enter", commit)
+		move()
+		if s.pickedItemSup != nil && s.pickedQPP > 1 {
+			add("Ctrl-T", "Unit/case cost")
+		}
+		if s.editIndex >= 0 {
+			add("Esc", "Cancel edit")
+		} else {
+			add("Esc", "Pick another source")
+		}
+	case poPhaseReview:
+		if !s.pending {
+			add("Enter", "Submit order")
+		}
+		move()
+		if !s.pending {
+			add("Ctrl-E", "Edit line")
+			add("Ctrl-X", "Remove line")
+		}
+		add("Esc", "Back to sources")
+	}
+	return items
+}
+
+// bodyPagesFor reports whether PgUp/PgDn do anything on a frame whose pinned
+// header is headerRows tall.
+//
+// TWO conditions, because the keys make two claims and both have to hold. The
+// body must MOVE — bodyScrollsForBar's question, asked of the LAYER so a bar's
+// claim and the window that decides it cannot part company. And a page moves
+// the CURSOR (jdePageCursor) rather than the body, so there has to be another
+// row to land on. They agree in almost every state and come apart in the ones
+// this screen has by design: a picker drawing a working or failure frame has a
+// body that can overflow and no rows at all.
+//
+// The bar passed to the layer is the bar WITH the paging keys on it, because
+// the tallest bar is the fixed point: a body that overflows the smallest budget
+// also overflows the larger one left when the keys are dropped, so the answer
+// cannot oscillate between frames.
+func (s *PurchaseOrderCreateScreen) bodyPagesFor(headerRows int) bool {
+	if s.phase == poPhaseSupplierSwitch {
+		// The confirm has no cursor: its body is read-only and UP/DN scroll it,
+		// so the second condition — "is there another row to land on" — is not
+		// one it has. What is left is the layer's own question.
+		return s.bodyScrollsForBar(s.switchBody(), headerRows, s.barItems(true))
+	}
+	if s.rowCount() <= 1 {
+		return false
+	}
+	body, _ := s.body()
+	return s.bodyScrollsForBar(body, headerRows, s.barItems(true))
+}
+
+// bodyPages is bodyPagesFor bound to the frame being drawn now.
+func (s *PurchaseOrderCreateScreen) bodyPages() bool {
+	return s.bodyPagesFor(len(s.headerLines()))
+}
+
+// pageStep is how many rows one page covers on the frame being drawn: measured
+// off the same window that frame draws, so a page moves by exactly what the
+// operator could see. The arithmetic is the LAYER's, not a local copy.
+func (s *PurchaseOrderCreateScreen) pageStep(headerRows int) int {
+	body, cursor := s.body()
+	return s.windowRowsForBar(body, cursor, headerRows, s.barItems(true))
+}
+
+// ---------------------------------------------------------------------------
+// The cursor, said once
+// ---------------------------------------------------------------------------
+//
+// Every phase's movement keys read these three rather than the eight cursor
+// fields behind them. It is what lets UP/DN, PgUp/PgDn and the bar's claim
+// about them be written ONCE — the eight copies they replace had already
+// drifted into eight slightly different edge cases, and the bar could only
+// name the pair by asking each phase separately.
+
+// moveCursor honours UP/DN and PgUp/PgDn on any phase that has a cursor, and
+// is the ONE place the bar's claim about those keys is kept.
+//
+// It returns whether the key BELONGED to movement, not whether the cursor
+// actually moved: a highlight resting against an edge it cannot pass has
+// already answered the press — the row is drawn at the end of the list and the
+// "more above / more below" marker is absent — so a sentence there would be
+// noise on a frame that is already correct (poAddSilentKeys records the same
+// judgement one screen over).
+//
+// Paging is gated on the LAYER's answer, not on a second opinion about it:
+// bodyPagesFor asks bodyScrollsForBar, which is the same expression the window
+// itself short-circuits on, so a bar naming PgUp/PgDn and a body that moves
+// cannot part company. Without the gate the keys would still page the cursor
+// on a body that fits, which is a key acting where the bar does not name it.
+func (s *PurchaseOrderCreateScreen) moveCursor(m tea.KeyMsg, headerRows int) (bool, tea.Cmd) {
+	if s.rowCount() <= 1 {
+		// Nothing to move between. The bar names neither pair here, so both
+		// have to be inert — an arm that moved a cursor with one row to move it
+		// through would be a key acting unnamed.
+		return false, nil
+	}
+	switch m.String() {
+	case "up":
+		s.setCursorRow(s.cursorRow() - 1)
+		return true, nil
+	case "down":
+		s.setCursorRow(s.cursorRow() + 1)
+		return true, nil
+	case "pgup", "pgdown":
+		if !s.bodyPagesFor(headerRows) {
+			return false, nil
+		}
+		dir := 1
+		if m.String() == "pgup" {
+			dir = -1
+		}
+		s.setCursorRow(jdePageCursor(s.cursorRow(), s.rowCount(), s.pageStep(headerRows), dir))
+		return true, nil
+	}
+	return false, nil
+}
+
+// rowCount is how many NAVIGABLE rows the phase being drawn has. Zero on a
+// frame whose list is not on the pane, which is what stops the bar naming a
+// movement key over a working or failed picker.
+func (s *PurchaseOrderCreateScreen) rowCount() int {
+	switch s.phase {
+	case poPhaseSupplier:
+		if !s.supplierListOnScreen() {
+			return 0
+		}
+		return len(s.suppliers)
+	case poPhaseAgreement:
+		return s.agreementRows()
+	case poPhaseWorkOrder:
+		return len(s.workOrderRows())
+	case poPhaseCommittee:
+		return len(s.committeeRows())
+	case poPhaseSource, poPhaseReview:
+		return len(s.lines)
+	case poPhaseReorderPick:
+		if !s.reorderListOnScreen() {
+			return 0
+		}
+		return len(s.reorderItems)
+	case poPhaseItemPick:
+		if !s.itemListOnScreen() {
+			return 0
+		}
+		return len(s.itemSuppliers)
+	case poPhaseAssetPick:
+		if !s.assetListOnScreen() {
+			return 0
+		}
+		return len(s.assets)
+	case poPhaseLine:
+		return len(s.lineFields())
+	}
+	return 0
+}
+
+// cursorRow is the navigable row the window is anchored on. Clamped rather
+// than trusted: supplierCursor starts at -1 (nothing picked yet) and a list
+// that shrank under a reply can leave any of these past its end, and a cursor
+// outside the body makes jdeLines.block answer the TOP of the body — which
+// would silently unpin the window from the row the operator is standing on.
+func (s *PurchaseOrderCreateScreen) cursorRow() int {
+	var cur int
+	switch s.phase {
+	case poPhaseSupplier:
+		cur = s.supplierCursor
+	case poPhaseAgreement:
+		cur = s.agreementCursor
+	case poPhaseWorkOrder:
+		cur = s.workOrderCursor
+	case poPhaseCommittee:
+		cur = s.committeeCursor
+	case poPhaseSource, poPhaseReview:
+		cur = s.reviewCursor
+	case poPhaseReorderPick:
+		cur = s.reorderCursor
+	case poPhaseItemPick:
+		cur = s.itemSuppliersCur
+	case poPhaseAssetPick:
+		cur = s.assetsCursor
+	case poPhaseLine:
+		for i, f := range s.lineFields() {
+			if f == s.lineFocused {
+				cur = i
+				break
+			}
+		}
+	}
+	return jdeClampPick(cur, s.rowCount())
+}
+
+// setCursorRow moves the phase's cursor to row n, clamped into the body. The
+// line form moves FOCUS rather than a highlight, so it blurs and focuses on
+// the way past — a caret left in a field the cursor has moved off is the
+// screen taking input into a row it is not drawing as active.
+func (s *PurchaseOrderCreateScreen) setCursorRow(n int) {
+	n = jdeClampPick(n, s.rowCount())
+	switch s.phase {
+	case poPhaseSupplier:
+		s.supplierCursor = n
+	case poPhaseAgreement:
+		s.agreementCursor = n
+	case poPhaseWorkOrder:
+		s.workOrderCursor = n
+	case poPhaseCommittee:
+		s.committeeCursor = n
+	case poPhaseSource, poPhaseReview:
+		s.reviewCursor = n
+	case poPhaseReorderPick:
+		s.reorderCursor = n
+	case poPhaseItemPick:
+		s.itemSuppliersCur = n
+	case poPhaseAssetPick:
+		s.assetsCursor = n
+	case poPhaseLine:
+		fields := s.lineFields()
+		if n < 0 || n >= len(fields) {
+			return
+		}
+		s.lineInputs[s.lineFocused].Blur()
+		s.lineFocused = fields[n]
+		s.lineInputs[s.lineFocused].Focus()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The bodies
+// ---------------------------------------------------------------------------
+
+// body is the phase's scrollable body and the row the window is anchored on,
+// answered in ONE place so a sweep asking what the frame draws cannot end up
+// asking a different builder from the one View picks. A phase added to the
+// iota arrives here or it draws nothing at all.
+func (s *PurchaseOrderCreateScreen) body() (*jdeLines, int) {
+	switch s.phase {
+	case poPhaseSupplier:
+		return s.supplierBody(), s.cursorRow()
+	case poPhaseSupplierSwitch:
+		return s.switchBody(), 0
+	case poPhaseAgreement:
+		return s.agreementBody(), s.cursorRow()
+	case poPhaseWorkOrder:
+		return s.assocBody(s.workOrderRows(), s.cursorRow()), s.cursorRow()
+	case poPhaseCommittee:
+		return s.assocBody(s.committeeRows(), s.cursorRow()), s.cursorRow()
+	case poPhaseReorderPick:
+		return s.reorderBody(), s.cursorRow()
+	case poPhaseItemPick:
+		return s.itemBody(), s.cursorRow()
+	case poPhaseAssetPick:
+		return s.assetBody(), s.cursorRow()
+	case poPhaseLine:
+		return s.lineBody(), s.cursorRow()
+	case poPhaseReview:
+		return s.cartBody(), s.cursorRow()
+	}
+	return s.cartBody(), s.cursorRow()
+}
+
+// poPickRow draws one option row the way jdePickList draws its own: a caret and
+// the reverse-video highlight on the cursor, four cells of gutter otherwise.
+// One function, so no list on this screen can be the one that forgets the
+// caret — which is what windowedListRoom is reserving on EVERY row.
+func poPickRow(i, cursor int, text string) string {
+	if i == cursor {
+		return StyleSidebarItemActive.Render("  ▸ " + text)
+	}
+	return "    " + text
+}
+
+// poRowRoom is the cells one of those rows may draw into on this pane.
+func (s *PurchaseOrderCreateScreen) poRowRoom() int {
+	return windowedListRoom(s.paneWidth())
+}
+
+// emptyBody is the body a phase draws when it has no rows: ONE muted line
+// saying what the list is, so "the list is empty" and "the window scrolled off
+// the rows" can never look the same. It is jdeNoRow, which is safe for exactly
+// the reason a lead-in line is not — there is no navigable row below it for the
+// window to anchor on and strand it behind.
+func poEmptyBody(pane int, what string) *jdeLines {
+	lines := jdeCaveatLines(what, pane)
+	if len(lines) == 0 {
+		// A body with no lines at all is not the same thing as an empty state:
+		// the frame would pad the pane out and the operator would be looking at
+		// a blank rectangle with no way to tell it from a load that had not
+		// started. One blank line is what keeps the block a block.
+		lines = []string{""}
+	}
+	l := &jdeLines{}
+	for _, line := range lines {
+		l.Add(line)
+	}
+	return l
+}
+
+func (s *PurchaseOrderCreateScreen) supplierBody() *jdeLines {
+	switch {
+	case s.supplierLoading:
+		return poEmptyBody(s.paneWidth(), "The supplier list is on its way.")
+	case s.supplierLoadErr != "":
+		return poEmptyBody(s.paneWidth(), "No supplier list — the lookup failed.")
+	case len(s.suppliers) == 0:
+		return poEmptyBody(s.paneWidth(), "No suppliers are configured in OpenMakerSuite.")
+	}
+	l := &jdeLines{}
+	cur, room := s.cursorRow(), s.poRowRoom()
+	for i, sup := range s.suppliers {
+		// The id is what an operator reads back to confirm they are on the
+		// right supplier, so the NAME is what gives.
+		l.AddRow(i, poPickRow(i, cur, poFitRow(room, sup.Name, fmt.Sprintf("  (#%d)", sup.ID))))
+	}
+	return l
+}
+
+// switchBody is the destructive confirm's prose. It carries no keys: those are
+// on the bar, which never gives, and putting them here as well is how this
+// screen used to end up with two statements of one claim drifting apart.
+func (s *PurchaseOrderCreateScreen) switchBody() *jdeLines {
+	scoped := s.supplierScopedLineCount()
+	to := "the highlighted supplier"
+	if s.supplierCursor >= 0 && s.supplierCursor < len(s.suppliers) {
+		if name := s.suppliers[s.supplierCursor].Name; name != "" {
+			to = pickerClip(name, 20)
+		}
+	}
+	prose := fmt.Sprintf("%d of %d staged line(s) name items only %s sells, so %s cannot fill them.",
+		scoped, len(s.lines), s.supplierLabel(), to)
+	if kept := len(s.lines) - scoped; kept > 0 {
+		prose += fmt.Sprintf(" The other %d line(s) stay.", kept)
+	}
+	return poEmptyBody(s.paneWidth(), prose)
+}
+
+// agreementBody is the optional agreement picker: a leading "no agreement" row
+// followed by the supplier's active agreements.
+//
+// The picked agreement's NOTES — the terms, which are the reason to cite one —
+// are tagged onto the cursor's own row rather than hung off the bottom of the
+// list. That is the receiving form's rule: what a row needs is drawn ON that
+// row and AFTER its field, so the window keeps the row and its explanation
+// together instead of stranding one of them.
+func (s *PurchaseOrderCreateScreen) agreementBody() *jdeLines {
+	l := &jdeLines{}
+	cur, room, pane := s.cursorRow(), s.poRowRoom(), s.paneWidth()
+	for i := 0; i < s.agreementRows(); i++ {
+		if i == 0 {
+			l.AddRow(0, poPickRow(0, cur, "— no agreement —"))
+			continue
+		}
+		a := s.agreements[i-1]
+		// An OMS-supplied name with nothing beside it: the whole row is the
+		// identifier, so it abbreviates rather than being cut.
+		l.AddRow(i, poPickRow(i, cur, pickerClip(a.Name, room)))
+		if i != cur {
+			continue
+		}
+		for _, line := range jdeCaveatLines(strings.TrimSpace(a.Notes), pane) {
+			l.AddRow(i, line)
+		}
+	}
+	return l
+}
+
+// assocBody draws a work-order / committee picker. One renderer for both, so
+// the two associations can never diverge in how they are picked.
+func (s *PurchaseOrderCreateScreen) assocBody(rows []poAssocOption, cur int) *jdeLines {
+	if len(rows) == 0 {
+		return poEmptyBody(s.paneWidth(), "Nothing to attach this order to.")
+	}
+	l := &jdeLines{}
+	room := s.poRowRoom()
+	for i, r := range rows {
+		l.AddRow(i, poPickRow(i, cur, pickerClip(r.label, room)))
+	}
+	// The caveat travels with the LAST row, so a body that overflows loses it
+	// from the tail rather than stranding the first row behind it.
+	for _, line := range jdeCaveatLines(
+		"Records who this order is for. It does not change stock, pricing, or what a committee is billed.",
+		s.paneWidth()) {
+		l.AddRow(len(rows)-1, line)
+	}
+	return l
+}
+
+// lineBody is the line-entry form: one navigable row per active field, sized
+// and bounded by the LAYER (AddFittedFields → jdeFitRow → jdeFitInputValue).
+//
+// That is the whole of what replaced this screen's own field layout. The rows
+// used to be "▸ Label: " plus a textinput the screen had sized against a fixed
+// 51-column pane, which is a bound computed against a width the terminal may
+// not have — too narrow at 120 columns and, before poInputWidth existed at all,
+// unbounded. The layer sizes the row against the pane it is really drawing
+// into, folds a hint that will not fit onto a line of its own, and keeps the
+// caret inside the field on every width.
+func (s *PurchaseOrderCreateScreen) lineBody() *jdeLines {
+	fields := s.lineFields()
+	pane := s.paneWidth()
+	rows := make([]jdeField, 0, len(fields))
+	for _, i := range fields {
+		label := poLineFieldLabel(i)
+		if i == poLineFieldCost {
+			label = s.costFieldLabel()
+		}
+		box := s.lineInputs[i]
+		rows = append(rows, jdeField{
+			Label: label, Kind: jdeText, Input: &box, Width: poFieldWidth,
+			Hint: s.lineFieldHint(i), Focused: i == s.lineFocused,
+		})
+	}
+	lw := jdeLabelWidth(rows)
+	l := &jdeLines{}
+	for pos, f := range rows {
+		// ONE row at a time, so a caveat lands directly UNDER the field it is
+		// about. AddFittedFields over the whole block first and the caveats
+		// after it put every note at the foot of the form, tagged to rows they
+		// were nowhere near — which is the shape that strands a note behind a
+		// window, and it is also simply the wrong thing to read.
+		l.AddFittedFields([]jdeField{f}, lw, pane, pos)
+		for _, line := range jdeNoteLines(s.lineFieldCaveat(fields[pos]), lw, pane) {
+			l.AddRow(pos, line)
+		}
+	}
+	return l
+}
+
+// lineFieldHint is the short note that rides on a field row: the format it
+// takes, or what leaving it blank means.
+func (s *PurchaseOrderCreateScreen) lineFieldHint(i int) string {
+	switch i {
+	case poLineFieldCost:
+		// An item-supplier line's cost is an OVERRIDE the operator may leave
+		// empty; an asset or freeform line's is required, because the backend
+		// rejects those two branches without one. Same predicate the payload is
+		// built from (addLine), so the row cannot promise what the wire refuses.
+		if s.pickedItemSup != nil {
+			return "optional"
+		}
+		return "required"
+	case poLineFieldDate:
+		return "YYYY-MM-DD"
+	}
+	return ""
+}
+
+// lineFieldCaveat is the longer note under a field: what a blank cost actually
+// does, and the case/unit derivation a case-packed line is being priced by.
+//
+// Both were sheet-level hints printed under the whole form, which is where a
+// note nobody ties to a field goes to be ignored — and, once the body could
+// scroll, where it goes to be stranded. They belong to their rows now.
+func (s *PurchaseOrderCreateScreen) lineFieldCaveat(i int) string {
+	switch i {
+	case poLineFieldCost:
+		if hint := s.costDerivationHint(); hint != "" {
+			return hint
+		}
+		if s.pickedItemSup != nil {
+			return "Blank prices this line from the supplier catalog at save time."
+		}
+	case poLineFieldDate:
+		return ""
+	}
+	if i == poLineFieldQty && !s.lineTakesDate() {
+		// Asset / freeform lines carry no date field — say why, so its absence
+		// does not read as an oversight. On the last row this form draws for
+		// those two shapes, which is where a caveat about a MISSING row can go
+		// without pretending to belong to one.
+		return "Expected dates are stored on inventory lines only; set this line's dates at send/receive."
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
+// The cart
+// ---------------------------------------------------------------------------
+
+// cartBody is the staged cart, one navigable row per line, with the running
+// total tagged onto the LAST row.
+//
+// It is the same block on the source chooser and on review, and it is where the
+// biggest piece of this screen's own machinery went. The cart used to be
+// windowed by poCartWindow against a budget computed twice — once to decide
+// whether to draw the rows at all (cartListedOnScreen / sourceCartSpace) and
+// once to draw them (reviewCartSpace) — with a whole substitute sentence
+// (cartHiddenSentence) and four gated keys (j/k/x/ctrl+e, through
+// cartHiddenNote) for the case where the rows did not fit. jdeLines.Window
+// anchors on the CURSOR's block, so the highlighted row is on the pane by
+// construction and there is no such case: Ctrl-E and Ctrl-X can no longer be
+// pressed against a line the operator cannot see, which is the wrong-purchase-
+// order failure the whole apparatus existed to prevent.
+//
+// The TOTAL rides on the last row rather than under the block, so a body that
+// overflows loses it from the tail — where the operator can bring it back with
+// End — rather than stranding it below a window that cannot reach it.
+func (s *PurchaseOrderCreateScreen) cartBody() *jdeLines {
 	if len(s.lines) == 0 {
-		return body
+		return poEmptyBody(s.paneWidth(), "Nothing staged yet.")
 	}
-	if !s.cartListedOnScreen() {
-		// One block: the count, the total, the "not listed" and the way out are
-		// one sentence, so nothing here can be cut without the rest going with
-		// it — and the reply to a declined key is a lead on that same sentence
-		// rather than a second line under it.
-		return body + "\n" + s.cartHiddenNoteText().render() + "\n"
+	l := &jdeLines{}
+	cur, pane := s.cursorRow(), s.paneWidth()
+	for i := range s.lines {
+		l.AddRow(i, s.cartRow(i, cur, pane))
 	}
-	_, budget := s.sourceCartSpace()
-	return body + s.sourceCartKeys() + s.renderCart(s.reviewCursor, budget)
+	return l
+}
+
+// cartTotalRows are what the cart COMES TO, pinned above it rather than drawn
+// under its last line.
+//
+// They were tagged onto the last row at first, on the reasoning that anything
+// left over hangs off the last row and End brings it back. That is the right
+// rule for a decoration and the wrong one for these two: the total is the
+// figure the review phase EXISTS to confirm, and the caveat is what makes it a
+// floor rather than the order's value — "1 line is priced from the supplier
+// catalog" is the difference between a $14 order and one nobody has priced.
+// Hanging off row N-1 means the block is the row plus three folded lines, which
+// jdeLines.Window keeps the START of when it cannot fit them all, so at 80x24
+// under a five-line cart with three attribution rows the caveat was two lines
+// past the bottom with `↓ 2 more below` where it had been. A fact an operator
+// has to press a key to see is a fact they will confirm the order without.
+//
+// Context rank, not essential: the PO-notes box has that slot on review, and
+// what a pane too short for both loses is a figure the operator can still reach
+// by leaving review — where a trimmed notes box would be a field taking input
+// nobody can see.
+func (s *PurchaseOrderCreateScreen) cartTotalRows() []string {
+	if len(s.lines) == 0 {
+		return nil
+	}
+	pane := s.paneWidth()
+	total, noCost := poCartTotal(s.lines)
+	money := fmtMoney(total)
+	if noCost > 0 {
+		// The sum is a FLOOR: a line with no cost is priced from the supplier
+		// catalog at save time, so reporting it flat would read as free.
+		money = "at least " + money
+	}
+	noun := "line items"
+	if len(s.lines) == 1 {
+		noun = "line item"
+	}
+	count := fmt.Sprintf("  (%d %s)", len(s.lines), noun)
+	room := pane - len(jdeIndent) - lipgloss.Width(count)
+	if room < poHeaderValueFloor {
+		room = poHeaderValueFloor
+	}
+	out := []string{jdeIndent + StyleTitle.Render(fitCell("Total: "+money, room)) +
+		StyleMuted.Render(count)}
+	if noCost > 0 {
+		out = append(out, jdeCaveatLines(poCartCaveat(noCost), pane)...)
+	}
+	return out
+}
+
+// cartRow draws one staged line.
+//
+// This row is the review phase's whole job, so it gives ground in a STATED
+// order rather than letting clampToBox choose: the LABEL first (an OMS-supplied
+// identifier the operator still recognises shortened), then the expected DATE
+// (optional per line, and the line form still holds it in full), and only then
+// may the BADGE abbreviate. The index, the quantity and the price NEVER give —
+// they are the facts review exists to confirm — and whatever is shortened
+// carries the ellipsis that says so, because a silently cut row reads as a
+// whole one and "@ 3." reads as a price.
+//
+// Clipping the label alone was not enough: an item-supplier line is the only
+// shape that CAN carry an expected date (lineTakesDate) and it is also the
+// shape carrying the 14-cell "Inventory item" badge, so the fixed parts alone
+// came to 52 cells and the pane took the badge on an ordinary line.
+func (s *PurchaseOrderCreateScreen) cartRow(i, cursor, pane int) string {
+	l := s.lines[i]
+	prefix := fmt.Sprintf("%d) ", i+1)
+	facts := fmt.Sprintf("  ×%d", l.item.Quantity)
+	if l.item.UnitCost != nil {
+		facts += fmt.Sprintf(" @ $%s", strconv.FormatFloat(*l.item.UnitCost, 'f', -1, 64))
+	}
+	date := ""
+	if l.item.ExpectedShipmentDate != "" {
+		date = "  exp " + l.item.ExpectedShipmentDate
+	}
+	badgeName := poLineTypeLabel(poCartLineType(l))
+	badge := "  [" + badgeName + "]"
+	// The caret gutter and the highlight's padding are reserved on EVERY row,
+	// not only the highlighted one: a row that fits until it is selected is a
+	// row the pane cuts on exactly the press that stages it.
+	room := windowedListRoom(pane) - lipgloss.Width(prefix)
+	// What the label costs once it has given everything it can: its own width,
+	// or the floor, whichever is smaller. Asking for the floor outright would
+	// make a THREE-cell name demand six and abbreviate a badge that fitted.
+	need := lipgloss.Width(l.label)
+	if need > poHeaderValueFloor {
+		need = poHeaderValueFloor
+	}
+	spent := func() int {
+		return need + lipgloss.Width(facts) + lipgloss.Width(date) + lipgloss.Width(badge)
+	}
+	if spent() > room && date != "" {
+		date = poCartDateMark
+	}
+	if spent() > room {
+		badge = poCartBadge(badgeName, room-need-lipgloss.Width(facts)-lipgloss.Width(date))
+	}
+	label := room - lipgloss.Width(facts) - lipgloss.Width(date) - lipgloss.Width(badge)
+	if label < need {
+		label = need
+	}
+	return poPickRow(i, cursor, prefix+pickerClip(l.label, label)+facts+date+badge)
+}
+
+// poCartDateMark is what an expected shipment date shrinks to when the row
+// cannot hold it: the fact that the line HAS one, plus the ellipsis that says
+// the value was taken. The full date is one Ctrl-E away on the line form.
+const poCartDateMark = "  exp…"
+
+// poCartBadge renders the line-type badge inside `room` cells, abbreviating the
+// type name rather than letting the pane cut the bracket off. It is the LAST
+// thing on the row to give, after the label and the date.
+func poCartBadge(name string, room int) string {
+	const brackets = 4 // "  [" + "]"
+	if room >= lipgloss.Width(name)+brackets {
+		return "  [" + name + "]"
+	}
+	inner := room - brackets
+	if inner < 2 {
+		inner = 2
+	}
+	return "  [" + pickerClip(name, inner) + "]"
 }
 
 // poCartLineType derives the wire item_type token a staged line will carry once
@@ -2938,16 +3371,13 @@ func poCartLineType(l poCartLine) string {
 }
 
 // poCartTotal sums the staged cart's extended cost — quantity × unit_cost per
-// line. Quantity is always in UNITS and unit_cost is always per-unit (a
-// case-packed line's case cost is divided down at add time), so the case
-// quantity-per-package never enters the sum.
+// line — and reports how many lines carry NO cost at all.
 //
-// A line with no cost contributes 0 rather than dropping the whole total: a
-// blank cost on a catalog line means "price it from item_supplier.unit_cost at
-// save time", so the sum is a floor, not the PO's final value. noCost counts
-// those lines so the caller can say the total is incomplete instead of letting
-// them read as free. A cost that is explicitly 0 is an explicit $0 — same
-// nil-versus-typed-zero distinction the backend makes — and is not counted.
+// The second return is not a detail: a catalog line with a blank cost field is
+// priced by the backend from the item-supplier's stored unit_cost at save time,
+// so the sum here is a FLOOR rather than the order's value. Reporting it flat
+// would read as "these lines are free", which is the one thing a
+// confirm-before-submit surface may not say.
 func poCartTotal(lines []poCartLine) (total float64, noCost int) {
 	for _, l := range lines {
 		if l.item.UnitCost == nil {
@@ -2959,368 +3389,68 @@ func poCartTotal(lines []poCartLine) (total float64, noCost int) {
 	return total, noCost
 }
 
-// poCartWindow picks which cart rows to draw so the frame's LAST row — on the
-// review phase, the focused PO-notes input the operator is typing into — is
-// still on the pane. clampToBox drops from the bottom, so an unbounded cart
-// does not merely scroll off: it takes the field being typed into with it, and
-// a field that is not on screen is the "the screen is not telling me what is
-// happening" defect at its worst, because data is going into it.
+// poCartCaveat is the ONE wording of the catalog-priced caveat.
 //
-// budget <= 0 means unbounded, which is what an unsized screen gets.
-func poCartWindow(total, highlight, budget int) (start, end int) {
-	if budget <= 0 || total <= budget {
-		return 0, total
-	}
-	if highlight < 0 || highlight >= total {
-		highlight = 0
-	}
-	start = highlight - budget/2
-	if start < 0 {
-		start = 0
-	}
-	end = start + budget
-	if end > total {
-		end = total
-		start = end - budget
-		if start < 0 {
-			start = 0
-		}
-	}
-	return start, end
-}
-
-// poRenderedRows counts the terminal rows a rendered chunk occupies.
-func poRenderedRows(chunk string) int {
-	if chunk == "" {
-		return 0
-	}
-	return len(strings.Split(strings.TrimSuffix(chunk, "\n"), "\n"))
-}
-
-// frameRows is what View() draws around every phase body: the folded help line,
-// its blank separator, the supplier header and its own separator, plus the
-// trailing newline and the error/pending line when one is showing.
-//
-// It is computed from the folded help rather than assumed to be one row. The
-// help line is the screen's action bar and now wraps to two or three rows on
-// several phases, and every row it gained came straight out of the bottom of
-// the pane.
-func (s *PurchaseOrderCreateScreen) frameRows() int {
-	return s.frameRowsWith(s.helpText())
-}
-
-// frameRowsWith is frameRows against a given action bar. The source chooser
-// needs it: deciding whether its cart fits means measuring the chrome, and the
-// chrome includes the bar whose wording that same decision changes.
-func (s *PurchaseOrderCreateScreen) frameRowsWith(help string) int {
-	// The failure line is MEASURED, not counted as one. It used to be reserved
-	// as a single row while an OMS error body carrying newlines rendered as a
-	// block of them, so every budget on this screen was computed against a line
-	// count that was wrong — the same stale-constant shape as poCartChromeRows.
-	return s.frameChromeRows(help) + poRenderedRows(s.renderFailLine(help))
-}
-
-// frameChromeRows is everything View draws around the body EXCEPT that trailing
-// failure line: the folded help, its blank separator, the supplier header, and
-// the newline after the phase body.
-func (s *PurchaseOrderCreateScreen) frameChromeRows(help string) int {
-	n := poRenderedRows(pickerHint(help)) + 1
-	n += poRenderedRows(s.renderSupplierHeader()) + 1
-	n++ // the newline View writes after the phase body
-	return n
-}
-
-// bodyRowBudget is the row budget for the scrolling blocks on this screen —
-// the review cart, the three pickers, the supplier list and the association
-// pickers all take theirs from here. otherRows is whatever the phase draws
-// around the block, measured rather than assumed.
-//
-// One block does its own sum and says why: the SOURCE chooser's cart, through
-// sourceCartSpace. The floor below hands out three rows the pane may not have,
-// which is right for a block that can be a little cramped and wrong for one
-// whose highlighted row is what x and ctrl+e act on.
-//
-// One derivation on purpose. The first pass at this gave the list footer, the
-// review cart and the picker bodies each their own hand-rolled answer, and the
-// two that were not written that round went on clipping: `clampToBox` drops
-// from the bottom, so every row the folded action bar gained at the TOP came
-// out of whatever the frame drew LAST. A per-block constant is stale the next
-// time a line is added anywhere above it.
-//
-// Zero means unbounded, which is what an unsized screen gets: guessing a pane
-// height would hide rows nobody asked to hide.
-func (s *PurchaseOrderCreateScreen) bodyRowBudget(otherRows int) int {
-	if s.terminalHeight <= 0 {
-		return 0
-	}
-	avail := screenBodyHeight(s.terminalHeight) - s.frameRows() - otherRows
-	if avail < 3 {
-		avail = 3
-	}
-	return avail
-}
-
-// cartRowBudget is bodyRowBudget with the cart's own chrome taken off —
-// over-reserving one row beats clipping one, the same trade listBodyLines
-// makes on the list screens.
-func (s *PurchaseOrderCreateScreen) cartRowBudget(bodyRows int) int {
-	return s.bodyRowBudget(bodyRows + s.cartChromeRows())
-}
-
-// cartChromeRows is what renderCart spends on everything that is not a line:
-// its header, both scroll markers, its total, and the catalog-pricing caveat as
-// that caveat will ACTUALLY fold.
-//
-// It was the constant 5 — one row per item — which stopped being true the
-// moment the caveat went through pickerHint: at 63 cells it folds to TWO rows
-// whenever a line carries no cost, so the reservation was a row short. That is
-// the horizontal-cut-traded-for-a-vertical-one this screen has been bitten by
-// three times, and it is why nothing here is counted by hand any more.
-func (s *PurchaseOrderCreateScreen) cartChromeRows() int {
-	n := 4 // header, the two scroll markers, the total
-	if _, noCost := poCartTotal(s.lines); noCost > 0 {
-		n += poRenderedRows(pickerHint(poCartCaveat(noCost)))
-	}
-	return n
-}
-
-// poCartCaveat is the ONE wording of the catalog-priced caveat. The renderer
-// and the row reservation both read it, so they cannot disagree about how many
-// rows it takes.
+// It is kept to ONE folded row on a 51-column pane, and that is a budget rather
+// than a preference: it rides in the pinned header directly under the total,
+// on the two phases whose header is already the tallest in the app, and every
+// row it takes comes out of a body that is showing the operator their cart. The
+// previous wording ("… — not included above") was 61 cells and folded to two,
+// which at 80x24 under three attribution rows left the body ONE row — and a
+// one-row window is the one case jdeLines.Window draws no "N more below"
+// marker in, so a 15-line cart showed a single line and said nothing about the
+// rest. What the tail said is already on the total beside it: "at least".
 func poCartCaveat(noCost int) string {
-	subject := fmt.Sprintf("%d lines are", noCost)
 	if noCost == 1 {
-		subject = "1 line is"
+		return "1 of them is priced from the catalog"
 	}
-	return subject + " priced from the supplier catalog — not included above"
+	return fmt.Sprintf("%d of them are priced from the catalog", noCost)
 }
 
-// renderCart lists the staged lines and the running total. When highlight >= 0
-// the matching row is marked (used by the review phase and the source chooser's
-// cart list); pass -1 for a plain list. The total lives here rather than in
-// renderReviewPhase so both surfaces that show the cart also show what it costs.
-// poCartDateMark is what an expected shipment date shrinks to when the row
-// cannot hold it: the fact that the line HAS one, plus the ellipsis that says
-// the value was taken. The full date is one ctrl+e away on the line form.
-const poCartDateMark = "  exp…"
+// ---------------------------------------------------------------------------
+// Failures and declines
+// ---------------------------------------------------------------------------
 
-// poCartBadge renders the line-type badge inside `room` cells, abbreviating the
-// type name rather than letting the pane cut the bracket off. It is the LAST
-// thing on the row to give, after the label and the date.
-func poCartBadge(name string, room int) string {
-	const brackets = 4 // "  [" + "]"
-	if room >= lipgloss.Width(name)+brackets {
-		return "  [" + name + "]"
-	}
-	inner := room - brackets
-	if inner < 2 {
-		inner = 2
-	}
-	return "  [" + pickerClip(name, inner) + "]"
+// setErr records the screen's failure: what went wrong, and the unbounded half
+// underneath it. Both fields, here and only here, so a detail can never outlive
+// the headline it belonged to — a 502's HTML body left standing under "quantity
+// must be a positive integer" would read as the gateway explaining the
+// validation, which is a worse lie than either sentence alone.
+func (s *PurchaseOrderCreateScreen) setErr(what, detail string) {
+	s.errMsg, s.errDetail = what, detail
 }
 
-func (s *PurchaseOrderCreateScreen) renderCart(highlight, rowBudget int) string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render(fmt.Sprintf("Cart (%d line(s))", len(s.lines))) + "\n")
-	start, end := poCartWindow(len(s.lines), highlight, rowBudget)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("    ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
-		l := s.lines[i]
-		caret := "    "
-		if i == highlight {
-			caret = "  ▸ "
-		}
-		// This row is the review phase's whole job, so it gives ground in a
-		// STATED order rather than letting clampToBox choose: the LABEL first
-		// (an OMS-supplied identifier the operator still recognises shortened),
-		// then the expected DATE (optional per line, and the line form still
-		// holds it in full), and only then may the BADGE abbreviate. The index,
-		// the quantity and the price never give — they are the facts review
-		// exists to confirm. Whatever is shortened carries the ellipsis that
-		// says so, because a silently cut row reads as the whole row.
-		//
-		// Clipping the label alone was not enough: an item-supplier line is the
-		// only shape that CAN carry an expected date (lineTakesDate) and it is
-		// also the shape carrying the 14-cell "Inventory item" badge, so the
-		// fixed parts alone came to 52 cells and the pane took the badge on an
-		// ordinary line.
-		prefix := fmt.Sprintf("%s%d) ", caret, i+1)
-		facts := fmt.Sprintf("  ×%d", l.item.Quantity)
-		if l.item.UnitCost != nil {
-			facts += fmt.Sprintf(" @ $%s", strconv.FormatFloat(*l.item.UnitCost, 'f', -1, 64))
-		}
-		date := ""
-		if l.item.ExpectedShipmentDate != "" {
-			date = "  exp " + l.item.ExpectedShipmentDate
-		}
-		// Target type as a trailing badge: plain text inside the row so the
-		// whole-row highlight style still applies cleanly.
-		badgeName := poLineTypeLabel(poCartLineType(l))
-		badge := "  [" + badgeName + "]"
-		// The highlight style PADS the row it wraps, so the line the cursor is
-		// on is wider than the same line unhighlighted — and that row is the one
-		// whose facts matter most. Asked of the style rather than counted, so a
-		// theme change cannot make this two cells wrong.
-		pad := 0
-		if i == highlight {
-			pad = StyleSidebarItemActive.GetHorizontalPadding()
-		}
-		fixed := lipgloss.Width(prefix) + lipgloss.Width(facts) + pad
-		// What the label costs once it has given everything it can: its own
-		// width, or the floor, whichever is smaller. Asking for the floor
-		// outright would make a THREE-cell name demand six and abbreviate a
-		// badge that fitted.
-		need := lipgloss.Width(l.label)
-		if need > poHeaderValueFloor {
-			need = poHeaderValueFloor
-		}
-		pane := s.paneWidth()
-		short := func() bool {
-			return pane-fixed-need-lipgloss.Width(date)-lipgloss.Width(badge) < 0
-		}
-		if short() && date != "" {
-			date = poCartDateMark
-		}
-		if short() {
-			badge = poCartBadge(badgeName, pane-fixed-need-lipgloss.Width(date))
-		}
-		room := pane - fixed - lipgloss.Width(date) - lipgloss.Width(badge)
-		if room < need {
-			room = need
-		}
-		row := prefix + pickerClip(l.label, room) + facts + date + badge
-		if i == highlight {
-			row = StyleSidebarItemActive.Render(row)
-		}
-		b.WriteString(row + "\n")
-	}
-	if end < len(s.lines) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("    ↓ %d more below", len(s.lines)-end)) + "\n")
-	}
-	if len(s.lines) > 0 {
-		total, noCost := poCartTotal(s.lines)
-		noun := "line items"
-		if len(s.lines) == 1 {
-			noun = "line item"
-		}
-		b.WriteString(StyleTitle.Render("  Total: "+fmtMoney(total)) +
-			StyleMuted.Render(fmt.Sprintf("  (%d %s)", len(s.lines), noun)) + "\n")
-		if noCost > 0 {
-			b.WriteString(pickerHint(poCartCaveat(noCost)) + "\n")
-		}
-	}
-	return b.String()
-}
-
-// reviewTail is everything the review phase draws UNDER the cart, ending in the
-// focused PO-notes input. Built before the cart so the cart can be windowed
-// against what is left after it: that last row is the one an unbounded cart
-// used to push off the bottom of the pane, and an operator typing into a field
-// that is not on screen is the worst form of this screen's defect.
+// pendingDecline is how every frozen arm answers while the create POST is out:
+// it records what the key did on the WORKING line and flashes the same
+// sentence. One writer, so the three frozen phases cannot drift into three ways
+// of saying the submit owns the cart, and so the lead — which NAMES the key,
+// because two keys sharing one sentence would redraw the pane the first press
+// left — is always set beside the status it goes with.
 //
-// attribution repeats the agreement and the order-level associations beside the
-// cart they apply to. Review is the confirm-before-submit surface and a long
-// cart can push the header line well off the top, so "(none)" is worth showing
-// as readily as a name — but they are a REPEAT, which makes them the rows that
-// yield when the pane cannot hold the cart's lines and the notes field too.
-func (s *PurchaseOrderCreateScreen) reviewTail(attribution bool) string {
-	var tail strings.Builder
-	rows := s.renderAgreementRow(false) + s.renderAssocRows(false)
-	switch {
-	case rows == "":
-	case attribution:
-		tail.WriteString(rows)
-	default:
-		// One row, worded like the source chooser's: at 45 cells it cannot fold
-		// and take back the row it was dropped to free.
-		tail.WriteString(pickerHint("agreement / association rows need more height") + "\n")
-	}
-	tail.WriteString("\n")
-	tail.WriteString("▸ " + StyleTitle.Render(poNotesLabel) + s.poNotes.View() + "\n")
-	return tail.String()
+// The lead rides the STATUS ROW rather than a note in the body, which is what
+// lets the two phases that pin a typed box spend their one essential header row
+// on the box: the status row is outside the budget and never gives, so a
+// decline made there cannot be trimmed off a short pane.
+func (s *PurchaseOrderCreateScreen) pendingDecline(lead string) tea.Cmd {
+	s.pendingLead = lead
+	return Status("the submit is already out", StatusInfo)
 }
 
-// reviewCartSpace is the rows left for the cart's LINES once the frame and the
-// tail are drawn. Computed here rather than through cartRowBudget for the
-// reason sourceCartSpace gives: bodyRowBudget floors at three rows it may not
-// have, and on this phase the row that floor spends is the focused PO-notes
-// input. Zero or less means the cart cannot draw a line at this size.
-func (s *PurchaseOrderCreateScreen) reviewCartSpace(tail string) int {
-	return screenBodyHeight(s.terminalHeight) - s.frameRows() - poRenderedRows(tail) - s.cartChromeRows()
-}
-
-// reviewAttributionShown reports whether the review tail repeats the agreement
-// and association rows in full. Three repeated rows and a caveat folded onto
-// two were enough to leave the cart no line at all at 80x24, and what fell off
-// the bottom of the pane was the notes field being typed into — so the REPEAT
-// is what gives, the same order of sacrifice the source chooser keeps.
-func (s *PurchaseOrderCreateScreen) reviewAttributionShown() bool {
-	if s.terminalHeight <= 0 {
-		return true
-	}
-	return s.reviewCartSpace(s.reviewTail(true)) >= 1
-}
-
-func (s *PurchaseOrderCreateScreen) renderReviewPhase() string {
-	tail := s.reviewTail(s.reviewAttributionShown())
-	if s.terminalHeight <= 0 {
-		// Unsized screens get no budget at all, here as everywhere else.
-		return s.renderCart(s.reviewCursor, 0) + tail
-	}
-	budget := s.reviewCartSpace(tail)
-	if budget < 1 {
-		budget = 1
-	}
-	return s.renderCart(s.reviewCursor, budget) + tail
-}
-
-func (s *PurchaseOrderCreateScreen) renderLinePhase() string {
-	var b strings.Builder
-	source := "freeform"
-	if s.pickedItemSup != nil {
-		source = fmt.Sprintf("item-supplier #%d", *s.pickedItemSup)
-	}
-	if s.pickedAssetID != nil {
-		source = fmt.Sprintf("asset %s", *s.pickedAssetID)
-	}
-	if s.editIndex >= 0 {
-		// Editing an existing cart line — make it unmistakable this modifies the
-		// highlighted line rather than adding a new one.
-		b.WriteString(StyleTitle.Render(fmt.Sprintf("Editing line %d of %d", s.editIndex+1, len(s.lines))) + "\n")
-	}
-	b.WriteString(pickerHint("Line source: "+source) + "\n\n")
-	for _, i := range s.lineFields() {
-		marker := "  "
-		if i == s.lineFocused {
-			marker = "▸ "
-		}
-		label := poLineFieldLabel(i)
-		if i == poLineFieldCost {
-			label = s.costFieldLabel()
-		}
-		b.WriteString(marker)
-		b.WriteString(StyleTitle.Render(label + ": "))
-		b.WriteString(s.lineInputs[i].View())
-		b.WriteString("\n")
-		// Case-packed inventory line: echo the derived counterpart (case ÷ qpp
-		// = unit) and the basis-toggle key directly under the cost row.
-		if i == poLineFieldCost {
-			if hint := s.costDerivationHint(); hint != "" {
-				b.WriteString(pickerHint(hint) + "\n")
-			}
+// supplierLabel names the committed supplier for the working lines. A status
+// line that names the supplier is the difference between "something is
+// happening" and "we are asking OMS what Acme sells". Falls back to the id, and
+// then to a generic noun, so the sentence is never left with a hole in it.
+func (s *PurchaseOrderCreateScreen) supplierLabel() string {
+	for _, sup := range s.suppliers {
+		if sup.ID == s.supplierID && sup.Name != "" {
+			// Bounded: the label goes inside a one-line status sentence that the
+			// layer then bounds again, so a long supplier name would spend the
+			// whole row and leave "Looking up the items Ac…".
+			return pickerClip(sup.Name, 20)
 		}
 	}
-	// Catalog lines: the cost is an optional override, so say what a blank field
-	// does. (Case-packed lines also show the unit/case derivation hint above.)
-	if s.pickedItemSup != nil {
-		b.WriteString(pickerHint("Cost is optional — blank uses the supplier catalog price.") + "\n")
+	if s.supplierID > 0 {
+		return fmt.Sprintf("supplier #%d", s.supplierID)
 	}
-	// Asset / freeform lines carry no date field — say why, so its absence
-	// doesn't read as an oversight.
-	if !s.lineTakesDate() {
-		b.WriteString(pickerHint("Expected dates are stored on inventory lines only; set this line's dates at send/receive.") + "\n")
-	}
-	return b.String()
+	return "this supplier"
 }

@@ -1097,6 +1097,25 @@ func (h jdeHeader) add(rank jdeHeadRank, lines ...string) jdeHeader {
 	return h
 }
 
+// addBlock appends a separator and then `lines`, and appends NOTHING when the
+// block is empty.
+//
+// It exists because a builder whose blocks are conditional was writing
+//
+//	h = h.add(jdeHeadDecorative, "").add(rank, block...)
+//
+// at every site, and a block that turned out to be empty then left its
+// separator behind — a blank row spent on nothing, on a pane where the row
+// budget is the thing every other rule in this file is protecting. The
+// separator travels with the block it opens, which is AGENTS.md's separator
+// rule seen from the one side that needs the emptiness test.
+func (h jdeHeader) addBlock(rank jdeHeadRank, lines []string) jdeHeader {
+	if len(lines) == 0 {
+		return h
+	}
+	return h.add(jdeHeadDecorative, "").add(rank, lines...)
+}
+
 // lines is the header as the frame draws it when nothing has to give.
 func (h jdeHeader) lines() []string {
 	out := make([]string, 0, len(h))

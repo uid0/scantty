@@ -50,31 +50,11 @@ func poKeySpace() []string {
 	)
 }
 
+// poPhaseKeyMsg is poPickerKeyMsg. The two names are kept because the two
+// sweeps read differently at their call sites, but there is ONE translation —
+// the pair used to be two switches over overlapping key sets, and the picker
+// one silently spelled every name it had not been taught as literal text.
 func poPhaseKeyMsg(k string) tea.KeyMsg {
-	switch k {
-	case "left":
-		return tea.KeyMsg{Type: tea.KeyLeft}
-	case "right":
-		return tea.KeyMsg{Type: tea.KeyRight}
-	case "home":
-		return tea.KeyMsg{Type: tea.KeyHome}
-	case "end":
-		return tea.KeyMsg{Type: tea.KeyEnd}
-	case "pgup":
-		return tea.KeyMsg{Type: tea.KeyPgUp}
-	case "pgdown":
-		return tea.KeyMsg{Type: tea.KeyPgDown}
-	case "backspace":
-		return tea.KeyMsg{Type: tea.KeyBackspace}
-	case "delete":
-		return tea.KeyMsg{Type: tea.KeyDelete}
-	case "ctrl+t":
-		return tea.KeyMsg{Type: tea.KeyCtrlT}
-	case "ctrl+p":
-		return tea.KeyMsg{Type: tea.KeyCtrlP}
-	case "ctrl+n":
-		return tea.KeyMsg{Type: tea.KeyCtrlN}
-	}
 	return poPickerKeyMsg(k)
 }
 
@@ -93,73 +73,40 @@ func poIsPrintable(k string) bool {
 	return len(r) == 1 && r[0] >= 0x20 && r[0] <= 0x7e
 }
 
-// poBarNamedKeys reads a frame's action bar into the set of keys it CLAIMS.
+// poBarNamedKeys reads an action bar into the set of keystrokes it CLAIMS,
+// through the ONE table both purchasing sweeps share (poBarKeyNames,
+// po_view_jde_test.go).
 //
-// Segment-start tokens are looked up strictly (poPickerBarKeys), because a
-// single-letter key is only unambiguous when it leads its own claim: scanning
-// prose for a bare "a" would find the article. Segments whose first token is
-// not a key are then scanned for the MULTI-character key names, which cannot
-// collide with English. A single-letter key buried inside prose is therefore
-// NOT counted as named, which is the safe direction: the sweep reports it as
-// acting-while-unnamed rather than passing over it — and that is exactly how
-// `b` was caught. It is bound on all three association pickers precisely as
-// `esc` is, and none of their bars named it; the bars are `key claim · key
-// claim` now, which is what a bar has to be for this rule to be checkable at
-// all. The buried scan stays for the bars that keep a prose lead-in.
-func poBarNamedKeys(t *testing.T, bar string) map[string]bool {
+// It replaces a function that had to parse PROSE. The New PO bar was a
+// sentence, so a single-letter key could only be recognised at the start of a
+// "key claim" segment and a bare `a` inside prose was the definite article —
+// which is how `b`, bound on all three association pickers exactly as esc is
+// and named by none of them, went unreported for a round. The bar is
+// []actionBarItem now: the key and the label are separate fields and there is
+// nothing left to parse.
+func poBarNamedKeys(t *testing.T, bar []actionBarItem) map[string]bool {
 	t.Helper()
 	named := map[string]bool{}
-	add := func(keys []string) {
+	for _, it := range bar {
+		keys, ok := poBarKeyNames[it.Key]
+		if !ok {
+			t.Fatalf("bar entry %q is not in poBarKeyNames — add it so the rule covers it", it.Key)
+		}
 		for _, k := range keys {
 			named[k] = true
 		}
 	}
-	// Every token maps to the keys it SPELLS and to nothing else. A token
-	// credited with a synonym it does not name — "j/k" with the arrows, "↑↓"
-	// with ctrl+p/ctrl+n — is this sweep granting a claim the bar never made,
-	// which is the defect it exists to report; the bars name their arrows now
-	// and the emacs chords are unbound.
-	buried := []struct {
-		token string
-		keys  []string
-	}{
-		{"j/k", []string{"j", "k"}},
-		{"tab/shift+tab", []string{"tab", "shift+tab"}},
-		{"tab/shift-tab", []string{"tab", "shift+tab"}},
-		{"↑↓", []string{"up", "down"}},
-		{"home/end", []string{"home", "end"}},
-		{"shift-tab", []string{"shift+tab"}},
-		{"shift+tab", []string{"shift+tab"}},
-		{"tab", []string{"tab"}},
-		{"enter", []string{"enter"}},
-		{"esc", []string{"esc"}},
-		{"ctrl+t", []string{"ctrl+t"}},
-		{"ctrl+e", []string{"ctrl+e"}},
-		{"ctrl+x", []string{"ctrl+x"}},
-	}
-	for _, seg := range strings.Split(bar, " · ") {
-		fields := strings.Fields(strings.TrimSpace(seg))
-		if len(fields) == 0 {
-			continue
-		}
-		if keys, ok := poPickerBarKeys[fields[0]]; ok {
-			add(keys)
-			// NOT a continue: a head token that is a key does not stop the
-			// segment naming a second one beside it ("j/k ↑↓ move"), and
-			// returning here is what let the arrows ride on j/k unnamed.
-		}
-		lower := strings.ToLower(seg)
-		for _, b := range buried {
-			for _, word := range strings.FieldsFunc(lower, func(r rune) bool {
-				return r == ' ' || r == ',' || r == '(' || r == ')' || r == '.'
-			}) {
-				if word == b.token {
-					add(b.keys)
-				}
-			}
-		}
-	}
 	return named
+}
+
+// poBarText renders a bar as one string, for a failure message and for the
+// handful of assertions that ask whether a bar advertises something at all.
+func poBarText(items []actionBarItem) string {
+	parts := make([]string, 0, len(items))
+	for _, it := range items {
+		parts = append(parts, it.Key+"="+it.Label)
+	}
+	return strings.Join(parts, "  ")
 }
 
 // poPhaseCase is one phase of the New PO screen, driven into a real state
@@ -210,7 +157,7 @@ func poPhaseCases() []poPhaseCase {
 	stageTwo := func(t *testing.T, r Root, s *PurchaseOrderCreateScreen) Root {
 		r = stageOne(t, r, s)
 		r = key(t, r, poPhaseKeyMsg("i"))
-		r = key(t, r, poPhaseKeyMsg("j"))
+		r = key(t, r, poPhaseKeyMsg("down"))
 		r = key(t, r, poPhaseKeyMsg("enter"))
 		r = key(t, r, poPhaseKeyMsg("enter"))
 		if len(s.lines) != 2 {
@@ -232,7 +179,7 @@ func poPhaseCases() []poPhaseCase {
 	}
 	return []poPhaseCase{
 		{poPhaseSource, "source chooser", plain, press(), false},
-		{poPhaseSupplier, "supplier picker", plain, press("b"), false},
+		{poPhaseSupplier, "supplier picker", plain, press("esc"), false},
 		{poPhaseAgreement, "agreement picker", plain, press("g"), false},
 		{poPhaseWorkOrder, "work-order picker", plain, press("w"), false},
 		{poPhaseCommittee, "committee picker", plain, press("c"), false},
@@ -268,8 +215,8 @@ func poPhaseCases() []poPhaseCase {
 		{poPhaseSupplierSwitch, "supplier-switch confirm", plain,
 			func(t *testing.T, r Root, s *PurchaseOrderCreateScreen) Root {
 				r = stageOne(t, r, s)
-				r = key(t, r, poPhaseKeyMsg("b"))
-				r = key(t, r, poPhaseKeyMsg("j"))
+				r = key(t, r, poPhaseKeyMsg("esc"))
+				r = key(t, r, poPhaseKeyMsg("down"))
 				r = key(t, r, poPhaseKeyMsg("enter"))
 				if s.phase != poPhaseSupplierSwitch {
 					t.Fatalf("setup landed on phase %v, want the switch confirm", s.phase)
@@ -326,12 +273,12 @@ func TestPOCreate_EveryPhaseNamesExactlyTheKeysThatWork(t *testing.T) {
 					return r, s
 				}
 				_, screen := fresh(nil)
-				bar := screen.helpText()
+				bar := screen.bar()
 				named := poBarNamedKeys(t, bar)
 				poAssertFits(t, c.name, screen)
 
 				for _, k := range space {
-					if c.typing && (poIsPrintable(k) || poFieldKeys[k]) && !named[k] {
+					if c.typing && (poIsPrintable(k) || poFieldKeys[k] || poFormNavAliases[k]) && !named[k] {
 						continue
 					}
 					acted := false
@@ -341,7 +288,7 @@ func TestPOCreate_EveryPhaseNamesExactlyTheKeysThatWork(t *testing.T) {
 					// the set for the review cart, where j types into the notes
 					// field and the cursor lands on the LAST line, so nothing
 					// else would let `down` move.
-					for _, probe := range [][]string{nil, {"j"}, {"up"}} {
+					for _, probe := range [][]string{nil, {"down"}, {"up"}} {
 						pr, ps := fresh(probe)
 						before := poPickerState(ps)
 						_, cmd := pr.Update(poPhaseKeyMsg(k))
@@ -351,9 +298,9 @@ func TestPOCreate_EveryPhaseNamesExactlyTheKeysThatWork(t *testing.T) {
 					}
 					switch {
 					case named[k] && !acted:
-						t.Errorf("%s names %q but pressing it changes nothing (bar: %q)", c.name, k, bar)
+						t.Errorf("%s names %q but pressing it changes nothing (bar: %s)", c.name, k, poBarText(bar))
 					case !named[k] && acted:
-						t.Errorf("%s does not name %q, but pressing it acts (bar: %q)", c.name, k, bar)
+						t.Errorf("%s does not name %q, but pressing it acts (bar: %s)", c.name, k, poBarText(bar))
 					}
 				}
 			})
@@ -378,8 +325,8 @@ func TestPOSupplierSwitch_EveryUnboundKeyAnswers(t *testing.T) {
 			r = key(t, r, poPhaseKeyMsg("i"))
 			r = key(t, r, poPhaseKeyMsg("enter"))
 			r = key(t, r, poPhaseKeyMsg("enter"))
-			r = key(t, r, poPhaseKeyMsg("b"))
-			r = key(t, r, poPhaseKeyMsg("j"))
+			r = key(t, r, poPhaseKeyMsg("esc"))
+			r = key(t, r, poPhaseKeyMsg("down"))
 			r = key(t, r, poPhaseKeyMsg("enter"))
 			if screen.phase != poPhaseSupplierSwitch {
 				t.Fatalf("setup landed on phase %v, want the switch confirm", screen.phase)
@@ -388,7 +335,7 @@ func TestPOSupplierSwitch_EveryUnboundKeyAnswers(t *testing.T) {
 			before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
 			// In sequence, no reset between presses: two keys that answered
 			// with one sentence would redraw the pane the first one left.
-			for _, k := range []string{"enter", "j", "enter"} {
+			for _, k := range []string{"enter", "down", "enter"} {
 				lines, supplier := len(screen.lines), screen.supplierID
 				r = key(t, r, poPhaseKeyMsg(k))
 				if screen.phase != poPhaseSupplierSwitch {
@@ -404,10 +351,13 @@ func TestPOSupplierSwitch_EveryUnboundKeyAnswers(t *testing.T) {
 				}
 				before = after
 				poAssertFits(t, "supplier-switch confirm after "+k, screen)
-				// The decline points at the keys that DO answer, and it reads
-				// them off the same sentence the frame prints above it.
-				poWantPaneLine(t, screen, "ctrl+x drops")
-				poWantPaneLine(t, screen, "esc keeps the cart")
+				// The decline names what the key DID; the two keys that ANSWER
+				// are on the bar, which is drawn on every frame and cannot be
+				// trimmed. Both are checked, because a decline on a destructive
+				// confirm that left the operator without a way out would be the
+				// worse half of this defect.
+				poWantPaneLine(t, screen, "Ctrl-X=Drop & switch")
+				poWantPaneLine(t, screen, "Esc=Keep cart")
 			}
 
 			// The way out still works after all that.
@@ -438,7 +388,7 @@ func TestPOReview_EnterWhileTheSubmitIsOutSaysSo(t *testing.T) {
 			if screen.phase != poPhaseReview {
 				t.Fatalf("setup landed on phase %v, want review", screen.phase)
 			}
-			poWantPaneLine(t, screen, "enter submit")
+			poWantPaneLine(t, screen, "Enter=Submit order")
 
 			// r.Update without pump: the POST is genuinely still out.
 			next, _ := r.Update(poPhaseKeyMsg("enter"))
@@ -446,8 +396,12 @@ func TestPOReview_EnterWhileTheSubmitIsOutSaysSo(t *testing.T) {
 			if !screen.pending {
 				t.Fatalf("the submit did not go out")
 			}
-			poRejectPaneLine(t, screen, "enter submit")
-			poWantPaneLine(t, screen, "Submitting…")
+			poRejectPaneLine(t, screen, "Enter=Submit order")
+			// The working line names the WORK and the SUBJECT — "Submitting…"
+			// on its own tells an operator watching a slow gateway nothing they
+			// could act on — and it is the LAYER's status row, so a multi-line
+			// OMS body cannot push the action bar off the bottom of the pane.
+			poWantPaneLine(t, screen, "Creating the purchase order for")
 
 			before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
 			next, _ = r.Update(poPhaseKeyMsg("enter"))
@@ -460,7 +414,7 @@ func TestPOReview_EnterWhileTheSubmitIsOutSaysSo(t *testing.T) {
 			poWantPaneLine(t, screen, "enter is already in")
 			poAssertFits(t, "review with a submit in flight", screen)
 			// The field the operator is typing into is still on the pane.
-			poWantPaneLine(t, screen, "PO notes:")
+			poWantPaneLine(t, screen, "PO notes")
 		})
 	}
 }
@@ -495,7 +449,7 @@ func poFrozenScreenWith(t *testing.T, fake *poPickFake, h, lines int, out ...str
 	r, screen := poPickerAtSize(t, fake, 80, h)
 	stage := []string{"i", "enter", "enter"}
 	if lines > 1 {
-		stage = append(stage, "i", "j", "enter", "enter")
+		stage = append(stage, "i", "down", "enter", "enter")
 	}
 	for _, k := range append(stage, "d") {
 		r = key(t, r, poPhaseKeyMsg(k))
@@ -535,7 +489,7 @@ func poFrozenStates() []poFrozenState {
 	return []poFrozenState{
 		{"review cart", poPhaseReview, nil},
 		{"source chooser", poPhaseSource, []string{"esc"}},
-		{"supplier picker", poPhaseSupplier, []string{"esc", "b"}},
+		{"supplier picker", poPhaseSupplier, []string{"esc", "esc"}},
 	}
 }
 
@@ -603,7 +557,7 @@ func TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork(t *testing.T) {
 					return r, s
 				}
 				r, screen := build()
-				bar := screen.helpText()
+				bar := screen.bar()
 				named := poBarNamedKeys(t, bar)
 				// Rule C, derived rather than reasoned about per frame: a
 				// frozen frame must keep at least one key that goes BACK into
@@ -645,11 +599,11 @@ func TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork(t *testing.T) {
 						wayBack = true
 					}
 					if !named[k] && acted {
-						t.Errorf("%s with a submit in flight does not name %q, but pressing it acts (bar: %q)",
-							st.name, k, bar)
+						t.Errorf("%s with a submit in flight does not name %q, but pressing it acts (bar: %s)",
+							st.name, k, poBarText(bar))
 					}
 					if named[k] && !acted {
-						for _, probe := range []string{"up", "j"} {
+						for _, probe := range []string{"up", "down"} {
 							pr, ps := build(probe)
 							pb := poPickerState(ps)
 							_, pc := pr.Update(poPhaseKeyMsg(k))
@@ -659,8 +613,8 @@ func TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork(t *testing.T) {
 							}
 						}
 						if !acted {
-							t.Errorf("%s with a submit in flight names %q but pressing it changes nothing (bar: %q)",
-								st.name, k, bar)
+							t.Errorf("%s with a submit in flight names %q but pressing it changes nothing (bar: %s)",
+								st.name, k, poBarText(bar))
 						}
 					}
 					if acted {
@@ -672,8 +626,8 @@ func TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork(t *testing.T) {
 				}
 				if !wayBack {
 					t.Errorf("no key on the frozen %s returns to another frozen frame — every route "+
-						"out of it abandons the screen and the POST's answer with it (bar: %q)",
-						st.name, bar)
+						"out of it abandons the screen and the POST's answer with it (bar: %s)",
+						st.name, poBarText(bar))
 				}
 			})
 		}
@@ -758,7 +712,7 @@ func TestPOSubmit_TheCartIsFrozenUntilItAnswers(t *testing.T) {
 			before = pane()
 			step("i", "i adds nothing")
 			step("f", "f adds nothing")
-			step("x", "x removes nothing")
+			step("ctrl+x", "ctrl+x removes nothing")
 			step("ctrl+e", "ctrl+e edits nothing")
 			step("g", "g changes nothing")
 
@@ -791,11 +745,11 @@ func TestPOSubmit_TheCartIsFrozenUntilItAnswers(t *testing.T) {
 			if screen.phase != poPhaseSource {
 				t.Fatalf("esc landed on phase %v, want the source chooser", screen.phase)
 			}
-			r = key(t, r, poPhaseKeyMsg("b"))
+			r = key(t, r, poPhaseKeyMsg("esc"))
 			if screen.phase != poPhaseSupplier {
-				t.Fatalf("b landed on phase %v, want the supplier picker", screen.phase)
+				t.Fatalf("esc landed on phase %v, want the supplier picker", screen.phase)
 			}
-			r = key(t, r, poPhaseKeyMsg("j")) // highlight a DIFFERENT supplier
+			r = key(t, r, poPhaseKeyMsg("down")) // highlight a DIFFERENT supplier
 			poRejectPaneLine(t, screen, "enter commits")
 			supplier := screen.supplierID
 			before = pane()
@@ -815,7 +769,7 @@ func TestPOSubmit_AFailedSubmitHandsTheCartBack(t *testing.T) {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
 			fake := &poPickFake{catalog: 4, failCreate: true}
 			r, screen := poPickerAtSize(t, fake, 80, h)
-			for _, k := range []string{"i", "enter", "enter", "i", "j", "enter", "enter", "d"} {
+			for _, k := range []string{"i", "enter", "enter", "i", "down", "enter", "enter", "d"} {
 				r = key(t, r, poPhaseKeyMsg(k))
 			}
 			if screen.phase != poPhaseReview || len(screen.lines) != 2 {
@@ -827,7 +781,7 @@ func TestPOSubmit_AFailedSubmitHandsTheCartBack(t *testing.T) {
 				t.Fatal("the submit is still pending after its reply")
 			}
 			poWantPaneLine(t, screen, "submitting this purchase order failed")
-			poWantPaneLine(t, screen, "enter submit")
+			poWantPaneLine(t, screen, "Enter=Submit order")
 			poAssertFits(t, "review after a failed submit", screen)
 
 			// The notes take input again — the field was blurred for the flight.
@@ -861,47 +815,50 @@ func poPaneCount(t *testing.T, s *PurchaseOrderCreateScreen, h int, want string)
 	return n
 }
 
-// TestPOSubmit_TheFrozenChooserDropsTheCartChordsFromBOTHSurfaces.
+// TestPOSubmit_TheFrozenChooserOffersTheCartChordsOnOneSurfaceOnly.
 //
-// The bar dropped ctrl+e and x when the freeze landed and the body hint three
-// rows below it did not, so one pane advertised and refused the same two keys.
-// The fixture is the other half of that defect: the standard frozen screen
-// offers all three attribution rows, which collapses the cart, so the hint is
-// never drawn and "the pane does not say ctrl+e" passed without a hint to say
-// it. This supplier offers none, the cart's rows are listed, and the count
-// before the submit proves BOTH surfaces are on the pane to begin with.
-func TestPOSubmit_TheFrozenChooserDropsTheCartChordsFromBothSurfaces(t *testing.T) {
+// This used to be a test about TWO surfaces. The source chooser stated its cart
+// keys in the prose action bar at the top of the pane AND in a hint drawn three
+// rows above the rows themselves, and when the freeze landed the bar dropped
+// ctrl+e and x while the hint did not — one pane advertising and refusing the
+// same two keys.
+//
+// The conversion removed the second surface rather than re-synchronising it, so
+// the check is now the stronger one: exactly ONE surface names a key, the
+// action bar, and no body line may name either chord in either state. The
+// before-the-submit half is what makes the after half non-vacuous — a bar that
+// never named them would pass the absence check on nothing.
+func TestPOSubmit_TheFrozenChooserOffersTheCartChordsOnOneSurfaceOnly(t *testing.T) {
 	for _, h := range poPaneSizes {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
 			fake := &poPickFake{catalog: 4, suppliers: 3}
 			r, screen := poPickerAtSize(t, fake, 80, h)
-			for _, k := range []string{"i", "enter", "enter"} {
+			// TWO lines, not one: UP/DN is named only where there is another row
+			// to move onto, so a one-line cart would make the "UP/DN survives
+			// the freeze" half of this pass or fail for the wrong reason.
+			for _, k := range []string{"i", "enter", "enter", "i", "down", "enter", "enter"} {
 				r = key(t, r, poPhaseKeyMsg(k))
 			}
-			if screen.phase != poPhaseSource || len(screen.lines) != 1 {
+			if screen.phase != poPhaseSource || len(screen.lines) != 2 {
 				t.Fatalf("setup landed on phase %v with %d line(s)", screen.phase, len(screen.lines))
 			}
-			// Is this height one that LISTS the cart? At 80x24 the chooser
-			// keeps the title and collapses the cart by its own sacrifice
-			// order, so the hint is not a surface that pane draws at all and
-			// the chords must be absent from both states rather than dropped
-			// from one. Where the cart IS listed, both surfaces must state the
-			// chords before the submit — otherwise the fixture is not
-			// rendering the thing under test and the absence check below would
-			// pass on nothing.
-			listed := poPaneCount(t, screen, h, "ctrl+e edit") >= 2
-			if !listed {
-				if h != 24 {
-					t.Fatalf("the chooser does not list the cart at 80x%d, so the cart hint is "+
-						"never drawn and this assertion would be vacuous:\n%s",
-						h, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+			// At rest the bar names both chords, and the highlighted line is on
+			// the pane for them to act on.
+			bar := poBarText(screen.bar())
+			for _, want := range []string{"Ctrl-E=Edit line", "Ctrl-X=Remove line"} {
+				if !strings.Contains(bar, want) {
+					t.Fatalf("the resting chooser bar does not name %q (%s) — the freeze "+
+						"assertions below would pass on nothing", want, bar)
 				}
-				poWantPaneLine(t, screen, "not listed here")
 			}
-			if listed {
-				if n := poPaneCount(t, screen, h, "x remove"); n < 2 {
-					t.Fatalf("the listed cart states \"x remove\" on %d line(s), want the bar and the hint:\n%s",
-						n, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+			poWantPaneLine(t, screen, "Widget")
+			// …and NO body line names them, which is the second surface staying
+			// gone.
+			for _, chord := range []string{"ctrl+e", "ctrl+x", "Ctrl-E", "Ctrl-X"} {
+				if n := poPaneBodyCount(t, screen, h, chord); n != 0 {
+					t.Errorf("a body line on the resting chooser names %q %d time(s) — the bar is "+
+						"the one surface that names a key:\n%s",
+						chord, n, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
 				}
 			}
 
@@ -911,37 +868,38 @@ func TestPOSubmit_TheFrozenChooserDropsTheCartChordsFromBothSurfaces(t *testing.
 			if screen.phase != poPhaseSource || !screen.pending {
 				t.Fatalf("esc landed on phase %v with pending=%v", screen.phase, screen.pending)
 			}
-			if listed {
-				// Still LISTING the cart, so the hint is a surface the frame
-				// draws rather than one the collapse quietly removed.
-				poWantPaneLine(t, screen, "Widget")
-			}
-			for _, chord := range []string{"ctrl+e edit", "x remove"} {
-				if n := poPaneCount(t, screen, h, chord); n != 0 {
-					t.Errorf("the frozen chooser still states %q on %d line(s):\n%s",
-						chord, n, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+			// The cart is still LISTED — the window anchors on the highlighted
+			// row, so it is drawn whatever the pane height — which is what makes
+			// "the bar dropped the chords" a claim about the freeze rather than
+			// about a collapsed block.
+			poWantPaneLine(t, screen, "Widget")
+			frozen := poBarText(screen.bar())
+			for _, gone := range []string{"Ctrl-E=", "Ctrl-X="} {
+				if strings.Contains(frozen, gone) {
+					t.Errorf("the frozen chooser bar still names %q: %s", gone, frozen)
 				}
 			}
-			// The highlight still moves, so both surfaces keep naming it —
-			// where there are rows to move through.
-			if listed {
-				claim := screen.sourceCartKeyClaim()
-				if n := poPaneCount(t, screen, h, claim); n < 2 {
-					t.Errorf("the frozen chooser states %q on %d line(s), want the bar and the hint:\n%s",
-						claim, n, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
-				}
+			// UP/DN survives: reading the cart is not changing it.
+			if !strings.Contains(frozen, "UP/DN=") {
+				t.Errorf("the frozen chooser dropped UP/DN, which still moves the highlight: %s", frozen)
 			}
 			poAssertFits(t, "frozen source chooser with a listed cart", screen)
 		})
 	}
 }
 
-// TestPOSubmit_TheFrozenChooserRowsSayTheyAreOff: the four line sources stay on
-// the pane while the submit is out — they are the map of the screen — but every
-// one of them declines, so each row says so in words. Colour alone cannot carry
-// that: lipgloss renders plain when there is no terminal, which is also to say
-// nothing outside a real TTY could ever check it.
-func TestPOSubmit_TheFrozenChooserRowsSayTheyAreOff(t *testing.T) {
+// TestPOSubmit_TheFrozenChooserBarDropsEveryKeyItHasGated.
+//
+// This used to be a test about the four line-source ROWS, which stayed on the
+// pane while the submit was out and each said "— off while submitting" in
+// words, because colour alone is a claim nothing outside a real TTY can check.
+//
+// Those rows are gone: they spelled the same four keys the action bar spells,
+// six rows of a twelve-row budget spent on a second copy of the bar. So the
+// claim moves to the one surface that makes it, and the check gets stronger in
+// the process — the bar must drop EVERY key the freeze has gated, not just the
+// four that had rows, and each of those keys must still ANSWER when pressed.
+func TestPOSubmit_TheFrozenChooserBarDropsEveryKeyItHasGated(t *testing.T) {
 	for _, h := range poPaneSizes {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
 			fake := &poPickFake{catalog: 4, suppliers: 3,
@@ -950,31 +908,44 @@ func TestPOSubmit_TheFrozenChooserRowsSayTheyAreOff(t *testing.T) {
 			for _, k := range []string{"i", "enter", "enter"} {
 				r = key(t, r, poPhaseKeyMsg(k))
 			}
-			poWantPaneLine(t, screen, "Reorder queue (items flagged for reorder)")
-			attribution := poPaneHasLine(t, screen, "Agreement (optional)")
+			// Every one of these is named at rest, which is what stops the
+			// absence check below passing over a key the bar never offered.
+			gated := []string{"r", "i", "a", "f", "g", "w", "c", "ctrl+e", "ctrl+x"}
+			named := poBarNamedKeys(t, screen.bar())
+			for _, k := range gated {
+				if !named[k] {
+					t.Fatalf("the resting chooser does not name %q, so the freeze check "+
+						"would assert nothing about it (bar: %s)", k, poBarText(screen.bar()))
+				}
+			}
 
 			r = key(t, r, poPhaseKeyMsg("d"))
 			next, _ := r.Update(poPhaseKeyMsg("enter"))
 			r = key(t, next.(Root), poPhaseKeyMsg("esc"))
-			_ = r
 			if screen.phase != poPhaseSource || !screen.pending {
 				t.Fatalf("esc landed on phase %v with pending=%v", screen.phase, screen.pending)
 			}
-			for _, off := range []string{
-				"r  Reorder queue — off while submitting",
-				"i  Inventory items — off while submitting",
-				"a  Assets — off while submitting",
-				"f  Freeform line — off while submitting",
-			} {
-				poWantPaneLine(t, screen, off)
+			frozenBar := screen.bar()
+			frozen := poBarNamedKeys(t, frozenBar)
+			for _, k := range gated {
+				if frozen[k] {
+					t.Errorf("the frozen chooser still names %q, which declines: %s",
+						k, poBarText(frozenBar))
+				}
 			}
-			poRejectPaneLine(t, screen, "(items flagged for reorder)")
-			if attribution {
-				// The value stays — it is part of the order — but the key
-				// column goes with the key, the way the review phase already
-				// draws these rows.
-				poWantPaneLine(t, screen, "Agreement")
-				poRejectPaneLine(t, screen, "Agreement (optional)")
+			// …and each of them answers rather than going silent.
+			for _, k := range gated {
+				before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+				nxt, _ := r.Update(poPhaseKeyMsg(k))
+				r = nxt.(Root)
+				if screen.phase != poPhaseSource || !screen.pending {
+					t.Fatalf("%q left the frozen chooser: phase %v pending %v",
+						k, screen.phase, screen.pending)
+				}
+				if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after == before {
+					t.Errorf("%q on the frozen chooser redrew a byte-for-byte identical pane:\n%s",
+						k, after)
+				}
 			}
 			poAssertFits(t, "frozen source chooser", screen)
 		})
@@ -991,12 +962,12 @@ func TestPOSubmit_TheFrozenChooserRowsSayTheyAreOff(t *testing.T) {
 func TestPOSubmit_TheFrozenSupplierPickerHasAWayBack(t *testing.T) {
 	for _, h := range poPaneSizes {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
-			r, screen := poFrozenScreen(t, h, "esc", "b")
+			r, screen := poFrozenScreen(t, h, "esc", "esc")
 			if screen.phase != poPhaseSupplier {
 				t.Fatalf("the walk landed on phase %v, want the supplier picker", screen.phase)
 			}
 			supplier, lines := screen.supplierID, len(screen.lines)
-			poWantPaneLine(t, screen, "enter goes back")
+			poWantPaneLine(t, screen, "Enter=Back to sources")
 
 			r = key(t, r, poPhaseKeyMsg("enter"))
 			if screen.phase != poPhaseSource {
@@ -1009,9 +980,9 @@ func TestPOSubmit_TheFrozenSupplierPickerHasAWayBack(t *testing.T) {
 			}
 
 			// A DIFFERENT row is still frozen, and the bar stops offering it.
-			r = key(t, r, poPhaseKeyMsg("b"))
-			r = key(t, r, poPhaseKeyMsg("j"))
-			poRejectPaneLine(t, screen, "enter goes back")
+			r = key(t, r, poPhaseKeyMsg("esc"))
+			r = key(t, r, poPhaseKeyMsg("down"))
+			poRejectPaneLine(t, screen, "Enter=Back to sources")
 			before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
 			next, _ := r.Update(poPhaseKeyMsg("enter"))
 			_ = next
@@ -1026,4 +997,25 @@ func TestPOSubmit_TheFrozenSupplierPickerHasAWayBack(t *testing.T) {
 			poAssertFits(t, "frozen supplier picker", screen)
 		})
 	}
+}
+
+// poPaneBodyCount is poPaneCount over the pane ABOVE the action bar's rule —
+// the lines the screen composed, rather than the bar it was handed.
+//
+// The distinction is the whole point of the tests that use it: after the
+// conversion exactly one surface on this screen names a key, and that surface
+// is the bar. Counting the whole pane would credit the bar's own text to the
+// body and the check would pass over the defect it exists to report.
+func poPaneBodyCount(t *testing.T, s *PurchaseOrderCreateScreen, h int, want string) int {
+	t.Helper()
+	n := 0
+	for _, line := range poPaneLinesAt(t, s, h) {
+		if strings.HasPrefix(strings.TrimSpace(line), "----") {
+			break
+		}
+		if strings.Contains(line, want) {
+			n++
+		}
+	}
+	return n
 }

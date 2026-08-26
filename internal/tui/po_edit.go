@@ -1837,3 +1837,109 @@ func (s *PurchaseOrderEditScreen) viewVoidLine() string {
 // stringPtr returns a pointer to s. Used to send a metadata/line field even
 // when empty (an empty expected-delivery/ship-date is the clear signal).
 func stringPtr(s string) *string { return &s }
+
+// ---------------------------------------------------------------------------
+// Shared windowed-list renderer
+// ---------------------------------------------------------------------------
+
+// windowedListDefaultRows is the block height a caller that has not measured
+// its pane gets. It is the old fixed ten-row window plus its two markers, so an
+// unbudgeted caller draws exactly what it always did.
+const windowedListDefaultRows = 12
+
+// renderWindowedList draws `total` items via the supplied formatter, keeping
+// `cursor` on screen inside a block of `rows` terminal lines — MARKERS
+// INCLUDED. Same pattern as the supplier picker so all four pickers look
+// consistent, and a free function rather than a method on the create screen,
+// because the PO edit screen's association pickers draw their lists the same
+// way.
+//
+// rows is a budget, not a preference: `clampToBox` drops whatever runs past the
+// bottom of the pane, and a row it drops out of a PICKER is a row the cursor
+// can still be moved onto and enter can still stage. An item going onto a
+// purchase order that the operator cannot see is a wrong purchase order, so a
+// list that does not fit says how many rows it hid rather than losing them
+// silently — and the markers that say it are counted inside the budget, not
+// added on top of it. rows <= 0 keeps the historic ten.
+//
+// The formatter is handed the CELLS its row may draw into as well as the index,
+// because the horizontal cut is the same defect as the vertical one: a row
+// clampToBox trims loses its right-hand end — the SKU and the price an item is
+// picked on — with no mark to say it happened. The room is computed once here
+// (windowedListRoom) rather than by each formatter, so no picker can be the one
+// that forgets the caret or the highlight, and it comes from the pane the
+// caller is really drawing into rather than from the 51-column floor.
+func renderWindowedList(total, cursor, rows, width int, formatRow func(i, room int) string) string {
+	if rows <= 0 {
+		rows = windowedListDefaultRows
+	}
+	if rows < 3 {
+		rows = 3
+	}
+	// Fit the item rows and their markers together. Reserving a marker shrinks
+	// the window, which can move it to an edge and remove the need for that
+	// marker, so this settles rather than assuming: at most two passes change
+	// anything, and a spare row left over beats a clipped one.
+	visible, start, end := rows, 0, 0
+	for i := 0; i < 3; i++ {
+		start, end = windowedListSpan(total, cursor, visible)
+		markers := 0
+		if start > 0 {
+			markers++
+		}
+		if end < total {
+			markers++
+		}
+		if visible+markers <= rows {
+			break
+		}
+		if visible = rows - markers; visible < 1 {
+			visible = 1
+		}
+	}
+
+	var b strings.Builder
+	if start > 0 {
+		// The newline stays OUTSIDE Render: lipgloss treats a styled string
+		// containing one as a two-line block and pads the short line, which
+		// leaked twenty columns of padding onto the row underneath the marker
+		// and pushed that row past the 51-column cut.
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
+	}
+	room := windowedListRoom(width)
+	for i := start; i < end; i++ {
+		caret := "    "
+		if i == cursor {
+			caret = "  ▸ "
+		}
+		line := caret + formatRow(i, room)
+		if i == cursor {
+			line = StyleSidebarItemActive.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	if end < total {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", total-end)) + "\n")
+	}
+	return b.String()
+}
+
+// windowedListSpan centres a window of `size` item rows on cursor.
+func windowedListSpan(total, cursor, size int) (start, end int) {
+	if size >= total {
+		return 0, total
+	}
+	start = cursor - size/2
+	if start < 0 {
+		start = 0
+	}
+	end = start + size
+	if end > total {
+		end = total
+		start = end - size
+		if start < 0 {
+			start = 0
+		}
+	}
+	return start, end
+}
