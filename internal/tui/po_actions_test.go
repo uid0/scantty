@@ -99,9 +99,10 @@ func TestPOCreate_MultiLineCart(t *testing.T) {
 	if s.phase != poPhaseReview {
 		t.Fatalf("d should enter review phase, got %v", s.phase)
 	}
-	// The cart's own count rides on the total that hangs off its last row —
-	// the "Cart (N line(s))" heading went with the rest of the block that could
-	// be stranded above the window.
+	// The cart's own count rides on cartTotalRows, which is a PINNED HEADER
+	// block rather than anything in the body: tagged onto the cart's last row
+	// it was two lines past the bottom at 80x24, because jdeLines.Window keeps
+	// a block's START when it cannot fit the whole of it.
 	if out := s.View(); !strings.Contains(out, "(2 line items)") {
 		t.Errorf("review view missing the cart total: %q", out)
 	}

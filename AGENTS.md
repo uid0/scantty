@@ -261,6 +261,16 @@ note, and is the authority):
   disagree — `TestPOLineForm_FieldNavigationWrapsAtBothEnds` is where that
   fails now. The wrap must not leak into the other phases: a fix applied inside
   `setCursorRow` would unclamp every list on the screen.
+  It follows that a field form is not OFFERED `PgUp`/`PgDn` at all: a wrapping
+  three-or-four-row cursor reaches every row in three presses and has nothing to
+  page, and `jdePageCursor` clamps on purpose (a page that jumped from the last
+  row to the first would lose the operator's place), so leaving the pair on the
+  shared path named a key that blurred and re-focused the SAME field wherever
+  the fields outran the pane. `bodyPagesFor` is the ONE predicate that answers
+  for both the bar and the arm, so the gate goes there and nowhere else;
+  `TestPOLineForm_TheBarDoesNotOfferPagingItCannotDo` sweeps every drawable
+  height, because the state only exists below 20 rows and `poPaneSizes` is
+  {24, 30}.
 - **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
   hint literal.** The footer and the handler read that one table; the previous
   shape appended the words to a hint string and left the key to a global
@@ -467,7 +477,20 @@ note, and is the authority):
   natural layout, and `jdeFitHeader` gives ground BY RANK — most expendable
   first, within a rank from the END, output still in display order. Blank
   separators are forced decorative, which is the separator rule read from the
-  other side. A builder may mark at most as many rows essential as the smallest
+  other side.
+  **A RANK DOES NOT REMOVE THE SIGNIFICANCE OF ORDER WITHIN A RANK**: ground is
+  given from the END within each one, so two rows sharing a rank are still
+  separated by POSITION and whichever is emitted LAST goes first. Merging the
+  New PO chooser's attribution block and its cart-total block into one, to save
+  a separator row, quietly made position the tiebreak again — and at 80x20 the
+  review frame dropped `Total: at least $84.00` while `Agreement ..... (none)`
+  and `Committee ..... (none)` stayed: the money floor going off the surface an
+  order is COMMITTED from so two empty optionals could stay. The total is
+  emitted first now (`po_create.go`'s `headerLines`), and the position is
+  written down as a decision so it is not tidied back.
+  `TestPOReview_TheCartTotalOutlivesTheOptionalRows` sweeps every drawable
+  height rather than the two in `poPaneSizes`, because the defect lived below
+  both of them, which is why nothing caught it. A builder may mark at most as many rows essential as the smallest
   drawable budget keeps (one, on any screen with a header), because an
   "essential" row the geometry drops anyway is the same false claim in a new
   place. `TestJDEForm_EveryEssentialHeaderRowIsOnThePane` holds it over a roster

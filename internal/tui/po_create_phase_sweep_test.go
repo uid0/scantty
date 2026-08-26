@@ -1376,3 +1376,161 @@ func TestPOSubmit_AClippedFailureSaysWhatItDropped(t *testing.T) {
 		}
 	}
 }
+
+// poDrawableHeights is every terminal height Root will draw a frame at, which
+// is the range these two sweeps walk. poPaneSizes is {24, 30} and BOTH defects
+// below lived under 20 — a check written at those two heights would have passed
+// over each of them, which is exactly why nothing caught either.
+func poDrawableHeights() []int {
+	out := make([]int, 0, 23)
+	for h := 8; h <= 30; h++ {
+		out = append(out, h)
+	}
+	return out
+}
+
+// poFrameRefused reports whether the layer declined to draw this frame at all,
+// which is jdeTooShort's rule and not the one these sweeps are about.
+func poFrameRefused(t *testing.T, s Screen, h int) bool {
+	t.Helper()
+	return strings.Contains(strings.Join(poPaneLinesAt(t, s, h), "\n"), "Too short:")
+}
+
+// TestPOReview_TheCartTotalOutlivesTheOptionalRows.
+//
+// A RANK DOES NOT REMOVE THE SIGNIFICANCE OF ORDER WITHIN A RANK. jdeFitHeader
+// gives ground from the END within each rank, so two rows sharing one are still
+// separated by POSITION — and merging the attribution block and the cart-total
+// block into a single jdeHeadContext block, to save a separator row, made
+// position the tiebreak again. Written total-last, an 80x20 review frame under
+// a dozen staged lines dropped `Total: … (12 line items)` while
+// `Agreement ..... (none)` and `Committee ..... (none)` were still drawn: the
+// money floor going off the surface an order is COMMITTED from, so two empty
+// optionals could stay.
+//
+// The assertion is the rank rule read off the PANE rather than off the function
+// that implements it: within the context rank the layer gives ground from the
+// end, so a context row that IS drawn implies every context row emitted before
+// it is drawn too. That catches the append order for the whole block, not just
+// the one row the report named.
+func TestPOReview_TheCartTotalOutlivesTheOptionalRows(t *testing.T) {
+	// The band where the header is really trimmed is narrow and nothing says
+	// where it is, so the sweep walks every drawable height and counts the ones
+	// that exercised it. Zero would mean the check asserted nothing.
+	trimmed := 0
+
+	for _, h := range poDrawableHeights() {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			fake := &poPickFake{reorder: 12, catalog: 2, assets: 1,
+				agreements: 1, workOrders: 2, committees: 1}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			r = key(t, r, poPhaseKeyMsg("r"))
+			r = key(t, r, poPhaseKeyMsg("a"))
+			_ = r
+			if screen.phase != poPhaseReview || len(screen.lines) != 12 {
+				t.Fatalf("setup landed on phase %v with %d line(s)", screen.phase, len(screen.lines))
+			}
+			if poFrameRefused(t, screen, h) {
+				return
+			}
+			shown := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+
+			drawn := func(text string) bool {
+				return strings.Contains(shown,
+					truncateVisible(strings.TrimRight(text, " "), screenBodyWidth(80)))
+			}
+			lost := ""
+			for _, row := range screen.headerLines() {
+				if row.Rank != jdeHeadContext || strings.TrimSpace(row.Text) == "" {
+					continue
+				}
+				if !drawn(row.Text) {
+					if lost == "" {
+						lost = strings.TrimSpace(row.Text)
+					}
+					continue
+				}
+				if lost != "" {
+					t.Errorf("the pane at 80x%d keeps %q while it has dropped %q, which the "+
+						"header emits EARLIER at the same rank — ground is given from the END, "+
+						"so this is the block ordered so the wrong row survives:\n%s",
+						h, strings.TrimSpace(row.Text), lost, shown)
+				}
+			}
+
+			// The half the report was filed about, stated in its own terms so a
+			// future reader sees the money fact named rather than inferred.
+			total, optional := drawn("Total:"), drawn(poRowAgreement+jdeLeader)
+			if !optional && total {
+				trimmed++
+			}
+			if optional && !total {
+				t.Errorf("the pane at 80x%d draws an optional attribution row and NOT what the "+
+					"cart comes to — the money floor is what a confirm surface may not lose:\n%s",
+					h, shown)
+			}
+		})
+	}
+	if trimmed == 0 {
+		t.Errorf("no drawable height trimmed an optional row while keeping the total, so this " +
+			"sweep asserted nothing about the order of sacrifice")
+	}
+}
+
+// TestPOLineForm_TheBarDoesNotOfferPagingItCannotDo.
+//
+// A FIELD form has nothing to page: its cursor WRAPS, so UP/DN reaches every
+// one of its three or four rows in at most three presses. Paging was left on
+// the shared clamped path, so wherever the fields outran the pane the bar named
+// PgUp/PgDn and jdePageCursor clamped — on the first row PgUp blurred and
+// re-focused the SAME field, which is a named key with no visible effect.
+//
+// That state does not exist at 24 or 30 rows, where the line body fits and the
+// keys are not named at all, so this sweep walks every drawable height and
+// counts the ones where the body really does outrun the pane.
+func TestPOLineForm_TheBarDoesNotOfferPagingItCannotDo(t *testing.T) {
+	overflowed := 0
+
+	for _, h := range poDrawableHeights() {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			r, screen := poPickerAtSize(t, &poPickFake{catalog: 2, suppliers: 1}, 80, h)
+			r = key(t, r, poPhaseKeyMsg("i"))
+			r = key(t, r, poPhaseKeyMsg("enter"))
+			if screen.phase != poPhaseLine || len(screen.lineFields()) != 4 {
+				t.Fatalf("setup landed on phase %v with %d field(s)", screen.phase, len(screen.lineFields()))
+			}
+			if poFrameRefused(t, screen, h) {
+				return
+			}
+			// Asked of the LAYER directly rather than through bodyPagesFor,
+			// which is the predicate under test: this is "does the body outrun
+			// the pane", the state in which the shared path used to name the
+			// keys.
+			body, _ := screen.body()
+			if screen.bodyScrollsForBar(body, len(screen.headerLines()), screen.barItems(true)) {
+				overflowed++
+			}
+
+			if bar := poBarText(screen.bar()); strings.Contains(bar, "PgUp") {
+				t.Errorf("the line form's bar at 80x%d names PgUp/PgDn, which clamps on a "+
+					"wrapping field form and cannot move the cursor: %s", h, bar)
+			}
+			for _, k := range []string{"pgup", "pgdown"} {
+				before, was := strings.Join(poPaneLinesAt(t, screen, h), "\n"), screen.lineFocused
+				r = key(t, r, poPhaseKeyMsg(k))
+				if screen.lineFocused != was {
+					t.Errorf("%q moved the line form's focus from field %d to %d while the bar "+
+						"does not name it", k, was, screen.lineFocused)
+				}
+				if after := strings.Join(poPaneLinesAt(t, screen, h), "\n"); after != before {
+					t.Errorf("%q changed the pane at 80x%d while the bar does not name it:\n%s",
+						k, h, after)
+				}
+			}
+		})
+	}
+	if overflowed == 0 {
+		t.Errorf("no drawable height made the line body outrun the pane, so this sweep never " +
+			"reached the state the paging keys used to be named in")
+	}
+}

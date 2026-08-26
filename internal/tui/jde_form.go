@@ -1048,6 +1048,15 @@ func jdeBodyAvail(pane, budget, headerRows int) int {
 // here rather than a third time in each of them. The New PO chooser is a
 // CONSUMER of it — it arrived carrying a hand-rolled sacrifice order of its own
 // and gave it up for this one — not the precedent for it.
+//
+// A RANK DOES NOT REMOVE THE SIGNIFICANCE OF ORDER WITHIN A RANK. jdeFitHeader
+// gives ground from the END within each rank, so two rows that share one are
+// still separated by POSITION: whichever a builder emits LAST is the one a
+// short pane drops first. Wherever two rows share a rank and it matters which
+// survives, that position is a decision and must be written down as one —
+// otherwise somebody merging two blocks to save a separator row makes position
+// the tiebreak again, which is the exact coupling this type exists to break,
+// and it fails silently because a rank was declared for every row.
 type jdeHeadRank int
 
 const (

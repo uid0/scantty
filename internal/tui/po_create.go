@@ -2152,12 +2152,9 @@ func (s *PurchaseOrderCreateScreen) workingLine() string {
 //
 //	decorative — the blank separators. Nothing names them and nothing reads
 //	             them, so they go first.
-//	context    — the supplier line, the failure DETAIL, the optional agreement /
-//	             work-order / committee values, the "still looking up…" line
-//	             under them, and what the cart comes to. Within the rank the
-//	             layer gives ground from the END, which is why the optional
-//	             attribution rows sit last: they are the lowest-value block on
-//	             the frame and were the first thing the old order dropped too.
+//	context    — the supplier line, the failure DETAIL, what the cart COMES TO,
+//	             then the optional agreement / work-order / committee values
+//	             and the "still looking up…" line under them.
 //	essential  — exactly one row per phase, and it is the row the operator
 //	             would ACT DIFFERENTLY without: the screen's answer to the last
 //	             keypress on every phase but two, the SEARCH BOX on a picker
@@ -2166,6 +2163,17 @@ func (s *PurchaseOrderCreateScreen) workingLine() string {
 //	             is why review pins its notes rather than hanging them off the
 //	             bottom of the cart: an operator typing into a field that is not
 //	             on the pane is the worst form of this screen's oldest defect.
+//
+// A RANK DOES NOT REMOVE THE SIGNIFICANCE OF ORDER WITHIN A RANK, and that is
+// why the cart total is emitted BEFORE the optional values rather than after
+// them. jdeFitHeader gives ground from the END within each rank, so two rows
+// sharing a rank are still separated by POSITION — merging the attribution
+// block and the total block into one to save a separator row quietly made
+// position the tiebreak again, which is the coupling jdeHeadRank exists to
+// break. Written the other way round, an 80x20 review frame under a dozen
+// staged lines dropped "at least $84.00" — the money floor, on the surface the
+// operator commits an order from — while "Agreement ..... (none)" and
+// "Committee ..... (none)" were still drawn. Do not "tidy" the append back.
 //
 // Only one row may be essential, because the smallest pane a frame is drawn
 // into keeps exactly one header row (jdeMinBudget). Two would be a claim the
@@ -2181,6 +2189,13 @@ func (s *PurchaseOrderCreateScreen) headerLines() jdeHeader {
 		// comes to are both facts about the order, and a blank row between them
 		// is a row of the body's.
 		//
+		// The TOTAL is emitted FIRST and that order is load-bearing, not
+		// cosmetic — see the rank ledger above. Merging the two blocks to save
+		// a separator row put them at one rank, and within a rank jdeFitHeader
+		// gives ground from the END, so whichever is written last is the one a
+		// short pane drops. Written the other way round the confirm surface
+		// lost "at least $84.00" while "Committee ..... (none)" stayed.
+		//
 		// The key column goes with the BAR's claim about g / w / c, because it
 		// is the same claim: while the create POST is out barItems drops those
 		// three and updateSourcePhase answers them with pendingDecline, so a
@@ -2188,9 +2203,9 @@ func (s *PurchaseOrderCreateScreen) headerLines() jdeHeader {
 		// and refusing one key at once — the defect the line-source rows were
 		// deleted to remove. The VALUES stay: they are part of the order being
 		// created, and only the affordance is false.
-		h = h.addBlock(jdeHeadContext, append(s.attributionRows(!s.pending), s.cartTotalRows()...))
+		h = h.addBlock(jdeHeadContext, append(s.cartTotalRows(), s.attributionRows(!s.pending)...))
 	case poPhaseReview:
-		h = h.addBlock(jdeHeadContext, append(s.attributionRows(false), s.cartTotalRows()...))
+		h = h.addBlock(jdeHeadContext, append(s.cartTotalRows(), s.attributionRows(false)...))
 	case poPhaseItemPick:
 		// With the box SHUT and a filter still applied, the rows on the pane
 		// are a subset and nothing else says so. The box itself is the
@@ -2819,6 +2834,19 @@ func (s *PurchaseOrderCreateScreen) barItems(paging bool) []actionBarItem {
 // also overflows the larger one left when the keys are dropped, so the answer
 // cannot oscillate between frames.
 func (s *PurchaseOrderCreateScreen) bodyPagesFor(headerRows int) bool {
+	if s.phase == poPhaseLine {
+		// A FIELD form has nothing to page. Its cursor WRAPS (focusNextLine),
+		// so UP/DN reaches every one of its three or four rows in at most three
+		// presses and the window follows the cursor — nothing is out of reach.
+		// jdePageCursor clamps on purpose, so at a height where the fields
+		// outrun the pane PgUp on the first row blurred and re-focused the same
+		// field while the bar named the key: a named key with no visible
+		// effect. Wrapping the page instead would contradict the layer, which
+		// clamps so a page cannot lose the operator's place, so the key is not
+		// offered at all. ONE predicate, read by barItems through barFor and by
+		// moveCursor's paging arm, so the bar and the arm cannot disagree.
+		return false
+	}
 	if s.phase == poPhaseSupplierSwitch {
 		// The confirm has no cursor: its body is read-only and UP/DN scroll it,
 		// so the second condition — "is there another row to land on" — is not
@@ -3029,10 +3057,15 @@ func (s *PurchaseOrderCreateScreen) body() (*jdeLines, int) {
 		return s.assetBody(), s.cursorRow()
 	case poPhaseLine:
 		return s.lineBody(), s.cursorRow()
-	case poPhaseReview:
+	case poPhaseSource, poPhaseReview:
 		return s.cartBody(), s.cursorRow()
 	}
-	return s.cartBody(), s.cursorRow()
+	// Every phase of the iota is named above, so this is unreachable today —
+	// and it draws NOTHING rather than falling through to the cart, because a
+	// phase added later would otherwise draw a cart while rowCount(), which has
+	// no default, answered 0 for it: the bar and the body disagreeing about
+	// whether there are rows at all.
+	return poEmptyBody(s.paneWidth(), "This screen has nothing to draw here."), 0
 }
 
 // poPickRow draws one option row the way jdePickList draws its own: a caret and
