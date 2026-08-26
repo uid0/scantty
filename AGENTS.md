@@ -111,6 +111,70 @@ note, and is the authority):
   lines outright. PO lines carry `is_kit_line` + `kit_components`, whose
   `quantity_per_kit` — not the pre-multiplied `quantity` — is what a PARTIAL
   receipt multiplies. `internal/tui/po_kit_lines.go` carries that note.
+- **Serialized items ARE allowed as kit components now**, and that is a
+  different fact from where a serial goes. The OMS ban was lifted deliberately
+  (`docs/PO_RECEIVING_API.md`): it blocked a legitimate configuration while the
+  hazard it named — stock credited with no serial recorded — was never unique to
+  kits, since `mark-delivered` has always done it to an ordinary serialized
+  line. What guards the identity rule now is the receipt itself (naming the kit
+  is a 400) plus **`serials_outstanding`**, which every receive path reports and
+  a client must surface. Receiving a kit WITH serial capture is a live path.
+
+## The receiving flow is driven off ONE fetch, and the server decides
+
+`internal/omsapi/po_receiving.go` carries the contract note and
+`internal/tui/receive_form.go` is the flow; OMS's `docs/PO_RECEIVING_API.md` is
+the specification and outranks both. What is worth knowing before touching
+either:
+
+- **`GET …/purchase-orders/{id}/receiving/` is the whole input.** It answers, in
+  one round trip, whether the order may be received against and why not, which
+  lines are outstanding and which settled, what a scanner will read off each
+  line (`scan_codes`) and which identities each line's serials may name
+  (`serial_targets`). There is NO fall-back to `po.Items`: a failed fetch is
+  COULD NOT TELL, and receiving off the order's own items would mean guessing at
+  exactly the two things that must not be guessed. `phaseBlocked` draws both
+  facts and keeps them apart.
+- **`can_receive` and `unavailable_reason` are a pair.** "You may not receive
+  against this, and here is why" is a different fact from "there is nothing left
+  to receive", and an operator at the bench with a box acts differently on each.
+- **A mismatch is recorded and flagged, never rounded.** `quantity_received`
+  goes as typed even when it exceeds the outstanding balance; the server flags
+  the line `over_received` with a positive `quantity_variance`. The review phase
+  raises it BEFORE the post because the contract asks a client to. SHORT is not
+  the same fact and is not flagged as one — receiving 8 of 10 leaves 2
+  outstanding, which may be a backorder; only an explicit close-short says the
+  balance is not coming.
+- **`receipt_state` / `is_settled` are the server's and are never re-derived.**
+  Asking "is received < ordered?" calls a line closed short a partial one, and
+  closed short is the one state that means somebody DECIDED. `is_settled` is not
+  `is_fully_received`: a line closed two short is settled and not fully
+  received, and both facts stay on the record.
+- **Serials ride INSIDE the receipt** (one transaction: a refused receipt writes
+  nothing), so capture is local until Enter on the review — which is what lets
+  the operator walk back to a unit and fix a typo. Every arm that moves the
+  cursor stores the boxes first. Fewer serials than units is allowed on purpose
+  and comes back as `serials_outstanding`.
+- **`serial_targets` is the ONLY thing consulted for "may this carry a serial".**
+  Never `item_details.is_serialized`, which on a kit line describes the KIT.
+  `TestReceiveKit_ASerialNeverNamesTheKitItself` asserts it ON THE WIRE rather
+  than through a predicate: the previous guard was a predicate call, a fix round
+  replaced its assertion with a substring over a frame the caveat is
+  structurally absent from, and the check could then fail in neither direction.
+- **The refusal body is NOT the standard envelope**, again. All four endpoints
+  write `{"error": "<prose>"}` by hand with no `code`, so `parseError` hands the
+  whole raw body over. `omsapi.AsReceivingRefusal` recovers the sentence and is
+  narrower than `AsLineEntryError` (which requires a code this shape has not):
+  it accepts only an object whose `error` is a non-blank JSON STRING, so a
+  gateway page, the DRF envelope and a field-validation body all keep the shape
+  they arrived in.
+- **A block taller than the window loses its TAIL and no key can fetch it.**
+  `jdeLines.Window` keeps a block's START and nothing scrolls inside one, so a
+  line block's contents are in a stated SACRIFICE ORDER (`addLineBlock`): what
+  the typed number means, then what a kit receipt credits, then the readings,
+  then the serial story. Measured at 80x30 with a kit, the window is eleven rows
+  — with the readings ahead of the credit the second component was off the pane,
+  on the block whose whole point is what a kit puts into stock.
 
 ## Conventions
 
@@ -463,7 +527,8 @@ note, and is the authority):
   ahead of the field push the FIELD off the pane instead (measured at 80x22 with
   one kit line, and `TestReceive_AShortPaneStillDrawsTheForm` fails on it). So
   what a row needs is drawn ON that row and AFTER its field
-  (`receive_form.go`'s `lineCaveats`), a separator travels with the block ABOVE
+  (`receive_form.go`'s `addLineBlock`, whose sacrifice order is above), a
+  separator travels with the block ABOVE
   it so a block never opens on a blank, and anything left over hangs off the
   last row. `TestReceive_NoBodyLineSitsWhereNoKeyCanReach` holds both halves —
   structurally, that no line falls outside a row, and behaviourally, that the

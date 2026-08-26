@@ -209,7 +209,26 @@ type PurchaseOrder struct {
 	TotalQuantity         int                       `json:"total_quantity,omitempty"`
 	TotalReceivedQuantity int                       `json:"total_received_quantity,omitempty"`
 	IsFullyReceived       bool                      `json:"is_fully_received,omitempty"`
-	DaysSinceOrdered      *int                      `json:"days_since_ordered,omitempty"`
+	// The receiving roll-up (oms-po-receiving), all derived server-side from
+	// the lines and never recomputed here — po_receiving.go carries the note.
+	//
+	// IsSettled is "receiving is finished with every active line", which is
+	// what advances the order to `received`. IsFullyReceived is the stricter
+	// "everything we ordered turned up" and stays false for ever once a line is
+	// closed short; they differ exactly there, and HasReceiptVariance is what
+	// keeps that difference visible after the order is closed.
+	IsSettled            bool `json:"is_settled,omitempty"`
+	HasReceiptVariance   bool `json:"has_receipt_variance,omitempty"`
+	OutstandingLineCount int  `json:"outstanding_line_count,omitempty"`
+	VarianceLineCount    int  `json:"variance_line_count,omitempty"`
+	CanReceive           bool `json:"can_receive,omitempty"`
+	// SerialsOutstanding is units on this order sitting in stock with no serial
+	// recorded, summed across the lines. Non-zero means somebody received goods
+	// — through any path — without capturing the serials, and a client should
+	// surface it: it is the hazard the old ban on serialized kit components
+	// existed to prevent, reported now rather than forbidden.
+	SerialsOutstanding int  `json:"serials_outstanding,omitempty"`
+	DaysSinceOrdered   *int `json:"days_since_ordered,omitempty"`
 }
 
 type PurchaseOrderAttachment struct {
@@ -478,7 +497,30 @@ func (c *Client) GetReorderData(ctx context.Context) (*ReorderData, error) {
 // longer sends it.
 type ReceiptLine struct {
 	PurchaseOrderItem any `json:"purchase_order_item"`
-	QuantityReceived  int `json:"quantity_received"`
+	// QuantityReceived is what actually arrived, in base units, and MAY exceed
+	// the outstanding quantity: the server records the figure sent and flags
+	// the line `over_received` rather than rounding it down to the order. A
+	// client that clamped it here would destroy the only record of the
+	// discrepancy — see po_receiving.go.
+	QuantityReceived int `json:"quantity_received"`
+	// AtLevel reads QuantityReceived as a count of whole PACKS of the item's
+	// count_level ("three cases came in") rather than base units. Invalid on a
+	// line whose item is not counted in packs and on asset/freeform lines,
+	// where it is an error rather than a silent base-unit reading.
+	AtLevel bool `json:"at_level,omitempty"`
+	// Serials are the serial-numbered units that came in with this quantity,
+	// each naming the identity it belongs to (on a kit line that is a
+	// COMPONENT, never the kit). Fewer than the units received is allowed on
+	// purpose; more is a 400 naming the count, never a truncation.
+	Serials []ReceiptSerial `json:"serials,omitempty"`
+	// CloseShort writes off whatever is still outstanding AFTER this receipt as
+	// never arriving, which is how a short receipt ends. It is the payload form
+	// of the close-short endpoint and the two are equivalent; ScanTTY drives
+	// the ENDPOINT, because writing a balance off is a decision the operator
+	// makes after seeing what actually arrived, behind its own confirm, rather
+	// than a flag riding on the receipt that revealed it.
+	CloseShort       bool   `json:"close_short,omitempty"`
+	CloseShortReason string `json:"close_short_reason,omitempty"`
 }
 
 // ReceiveRequest is the body for the PO receive endpoint. The PO id
@@ -486,9 +528,22 @@ type ReceiptLine struct {
 // optional delivery metadata. received_by is stamped server-side from the
 // authenticated session and must never be sent by the client.
 type ReceiveRequest struct {
-	Items        []ReceiptLine `json:"items"`
-	DeliveryDate string        `json:"delivery_date,omitempty"`
-	ReceiptNotes string        `json:"receipt_notes,omitempty"`
+	Items []ReceiptLine `json:"items"`
+	// DeliveryDate is the date the OPERATOR states the goods arrived, not a
+	// clock reading: it is stored at midnight and defaults to now when omitted.
+	// The accurate receipt time is the server's own created_at, which no client
+	// may set — the two answer different questions and neither substitutes for
+	// the other.
+	DeliveryDate string `json:"delivery_date,omitempty"`
+	// TrackingNumber is the carrier's tracking barcode for the parcel, stored
+	// exactly as scanned and never parsed. TRANSIT DURATION IS NOT COMPUTED
+	// anywhere in this API and must not be computed here either: goods are not
+	// always recorded on the day they arrive, so any figure derived from
+	// DeliveryDate would be wrong. This is stored so the calculation can be
+	// built later, once its definition is settled.
+	TrackingNumber string `json:"tracking_number,omitempty"`
+	Carrier        string `json:"carrier,omitempty"`
+	ReceiptNotes   string `json:"receipt_notes,omitempty"`
 }
 
 // ReceivePOItems records receipt of one or more PO line items and returns

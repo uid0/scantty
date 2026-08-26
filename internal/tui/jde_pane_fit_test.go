@@ -169,7 +169,7 @@ func jdeScreenFixtures() map[string]func() Screen {
 			return s
 		},
 		"PurchaseOrderEditScreen":   func() Screen { return NewPurchaseOrderEditScreen(Deps{}, poViewPO()) },
-		"ReceiveFormScreen":         func() Screen { return NewReceiveFormScreen(Deps{}, poViewPO()) },
+		"ReceiveFormScreen":         func() Screen { return receivePaneFixture(nil) },
 		"SIGFormScreen":             func() Screen { return NewSIGFormScreen(Deps{}, "") },
 		"ServiceStatusScreen":       func() Screen { return NewServiceStatusScreen(Deps{}) },
 		"SiteSettingsFormScreen":    func() Screen { s := NewSiteSettingsFormScreen(Deps{}); s.loading = false; return s },
@@ -218,6 +218,44 @@ func poCreateStaged() *PurchaseOrderCreateScreen {
 		})
 	}
 	s.phase = poPhaseSource
+	return s
+}
+
+// receivePaneFixture is the receiving screen PAST its loading frame.
+//
+// It has to be, and that is the rule this file already states rather than a
+// special case: a screen still fetching draws "Loading…" and no frame at all,
+// so an entry left there proves nothing. Everything the receiving form draws
+// comes off the worksheet, so the fixture lands one — through the reply the
+// fetch really produces, not by writing the fields, since the row model is
+// derived in applyWorksheet and a fixture that bypassed it would be sweeping a
+// layout the endpoint cannot produce.
+func receivePaneFixture(tweak func(*ReceiveFormScreen)) Screen {
+	po := poViewPO()
+	sheet := &omsapi.ReceivingWorksheet{
+		PurchaseOrder: po.ID, Number: po.Number, Supplier: "Acme Supply",
+		Status: "sent", StatusLabel: "Sent", CanReceive: true,
+	}
+	for _, li := range po.Items {
+		sheet.Lines = append(sheet.Lines, omsapi.ReceivingLine{
+			PurchaseOrderItem: li.ID,
+			Label:             li.DisplayLabel(),
+			ItemType:          "inventory_item",
+			QuantityOrdered:   li.QuantityOrdered,
+			QuantityReceived:  li.QuantityReceived,
+			QuantityPending:   li.QuantityPending,
+			QuantityVariance:  li.QuantityReceived - li.QuantityOrdered,
+			ReceiptState:      omsapi.ReceiptStateNotReceived,
+			ReceiptStateLabel: "Not received",
+			IsKitLine:         li.IsKitLine,
+		})
+		sheet.OutstandingLineCount++
+	}
+	s := NewReceiveFormScreen(Deps{}, po)
+	s.Update(receiveSheetMsg{sheet: sheet})
+	if tweak != nil {
+		tweak(s)
+	}
 	return s
 }
 
@@ -1101,9 +1139,7 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 		// written for.
 		"ReceiveFormScreen/View": {
 			mk: func() Screen {
-				s := NewReceiveFormScreen(Deps{}, poViewPO())
-				s.failDetail = nginx502
-				return s
+				return receivePaneFixture(func(s *ReceiveFormScreen) { s.failDetail = nginx502 })
 			},
 			after: func(s Screen) {
 				s.Update(tea.KeyMsg{Type: tea.KeyEnter}) // declines: no quantity typed yet
