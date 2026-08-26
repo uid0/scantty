@@ -57,7 +57,7 @@ func poAgreementScreen(t *testing.T, srv *httptest.Server) *PurchaseOrderCreateS
 	s.suppliers = []omsapi.Supplier{{ID: 7, Name: "Acme Supply"}, {ID: 8, Name: "Other Co"}}
 	s.supplierCursor = 0
 
-	_, cmd := s.updateSupplierPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := s.updateSupplierPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if cmd == nil {
 		t.Fatal("committing a supplier must kick off the agreement load")
 	}
@@ -93,16 +93,20 @@ func TestPOAgreement_LoadIsBackgroundAndOffersG(t *testing.T) {
 		t.Error("a supplier with agreements on file should offer the picker")
 	}
 
-	out := s.renderSourcePhase()
+	out := s.View()
 	// The short label, not "Purchase / pricing agreement (optional)": that put
 	// the row at 52 cells with an EMPTY value, so the 51-column pane cut the
 	// value — the one thing on the row the operator has not already read off
 	// the key — off every render.
-	if !strings.Contains(out, "Agreement (optional)") || !strings.Contains(out, "(none)") {
+	// The columnar value row: the label right-aligned into the shared column,
+	// the leader, then what the order carries. "(optional)" went with the
+	// affordance — the bar names the key and says what it opens, so the row is
+	// a label and a VALUE and nothing else.
+	if !strings.Contains(out, "Agreement") || !strings.Contains(out, "(none)") {
 		t.Errorf("source chooser should advertise the unset agreement:\n%s", out)
 	}
-	if !strings.Contains(s.helpText(), "g agreement") {
-		t.Errorf("help text should mention g: %q", s.helpText())
+	if !strings.Contains(poBarText(s.bar()), "g=Agreement") {
+		t.Errorf("the bar should name g: %q", poBarText(s.bar()))
 	}
 }
 
@@ -117,14 +121,14 @@ func TestPOAgreement_NoneOnFileOffersNothing(t *testing.T) {
 	if s.agreementOffered() {
 		t.Error("a supplier with no agreements must not offer the picker")
 	}
-	if out := s.renderSourcePhase(); strings.Contains(out, "agreement") {
+	if out := s.View(); strings.Contains(out, "greement") {
 		t.Errorf("source chooser should stay silent about agreements:\n%s", out)
 	}
-	if strings.Contains(s.helpText(), "agreement") {
-		t.Errorf("help text should not advertise g: %q", s.helpText())
+	if strings.Contains(poBarText(s.bar()), "Agreement") {
+		t.Errorf("the bar should not advertise g: %q", poBarText(s.bar()))
 	}
 
-	s.updateSourcePhase(runeKey('g'))
+	s.updateSourcePhase(runeKey('g'), 0)
 	if s.phase != poPhaseSource {
 		t.Errorf("g opened a picker with nothing in it; phase = %v", s.phase)
 	}
@@ -137,16 +141,16 @@ func TestPOAgreement_PickRoundTripsToSubmit(t *testing.T) {
 	srv, body := poAgreementSrv(t, poTwoAgreements)
 	s := poAgreementScreen(t, srv)
 
-	s.updateSourcePhase(runeKey('g'))
+	s.updateSourcePhase(runeKey('g'), 0)
 	if s.phase != poPhaseAgreement {
 		t.Fatalf("g should open the agreement picker; phase = %v", s.phase)
 	}
-	// Row 0 is "no agreement", so the first real agreement is one j away.
-	if out := s.renderAgreementPhase(); !strings.Contains(out, "— no agreement —") {
+	// Row 0 is "no agreement", so the first real agreement is one Down away.
+	if out := s.View(); !strings.Contains(out, "— no agreement —") {
 		t.Errorf("picker must offer an explicit skip row:\n%s", out)
 	}
-	s.updateAgreementPhase(runeKey('j'))
-	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 
 	if s.phase != poPhaseSource {
 		t.Errorf("committing an agreement should return to the source chooser; phase = %v", s.phase)
@@ -155,23 +159,26 @@ func TestPOAgreement_PickRoundTripsToSubmit(t *testing.T) {
 		t.Fatalf("agreementID = %v, want 4", s.agreementID)
 	}
 
-	// Visible in the header (every phase) and again on the review surface.
+	// Visible in the pinned header (every phase the chooser and review draw)
+	// and again on the review surface.
 	//
 	// Asserted against what the 51-column pane can actually SHOW, not against
-	// the unclipped string: "Supplier: Acme Supply (#7)  · agreement: 2026
-	// nonprofit pricing" is 63 cells, so the full name was never on the pane —
-	// this assertion passed on a row clampToBox had already cut. The header now
-	// clips the value itself, ellipsis included, so what is pinned is that the
-	// agreement is still named and still identifiable.
-	header := s.renderSupplierHeader()
-	if w := lipgloss.Width(header); w > pickerPaneWidth {
-		t.Errorf("the header is %d cells and the pane cuts at %d: %q", w, pickerPaneWidth, header)
+	// the unclipped string: the agreement used to ride on the supplier row and
+	// "Supplier: Acme Supply (#7)  · agreement: 2026 nonprofit pricing" is 63
+	// cells, so the full name was never on the pane and this assertion passed
+	// on a row clampToBox had already cut. It is a columnar row of its own now
+	// — one label, one value, bounded to what the shared label column leaves.
+	for _, line := range s.headerLines().lines() {
+		if w := lipgloss.Width(line); w > pickerPaneWidth {
+			t.Errorf("a header row is %d cells and the pane cuts at %d: %q", w, pickerPaneWidth, line)
+		}
 	}
-	if !strings.Contains(header, "agreement:") || !strings.Contains(header, "2026 nonp") {
+	header := strings.Join(s.headerLines().lines(), "\n")
+	if !strings.Contains(header, "Agreement") || !strings.Contains(header, "2026 nonp") {
 		t.Errorf("header should name the committed agreement:\n%s", header)
 	}
 	stageOneLine(s)
-	if got := s.renderReviewPhase(); !strings.Contains(got, "2026 nonprofit pricing") {
+	if got := s.View(); !strings.Contains(got, "2026 nonprofit pricing") {
 		t.Errorf("review should name the agreement before submit:\n%s", got)
 	}
 
@@ -197,15 +204,15 @@ func TestPOAgreement_SkippedOrderOmitsTheField(t *testing.T) {
 	srv, body := poAgreementSrv(t, poTwoAgreements)
 	s := poAgreementScreen(t, srv)
 
-	s.updateSourcePhase(runeKey('g'))
-	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEnter}) // enter on row 0 = none
+	s.updateSourcePhase(runeKey('g'), 0)
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0) // enter on row 0 = none
 	if s.agreementID != nil {
 		t.Fatalf("row 0 should commit 'no agreement'; got %v", s.agreementID)
 	}
 	// The review surface still says so — a skipped agreement is a choice worth
 	// seeing when the supplier had some to offer.
 	stageOneLine(s)
-	if got := s.renderReviewPhase(); !strings.Contains(got, "(none)") {
+	if got := s.View(); !strings.Contains(got, "(none)") {
 		t.Errorf("review should show the agreement was skipped:\n%s", got)
 	}
 
@@ -225,28 +232,28 @@ func TestPOAgreement_RowZeroClearsAPickAndEscKeepsIt(t *testing.T) {
 	srv, _ := poAgreementSrv(t, poTwoAgreements)
 	s := poAgreementScreen(t, srv)
 
-	s.updateSourcePhase(runeKey('g'))
-	s.updateAgreementPhase(runeKey('j'))
-	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateSourcePhase(runeKey('g'), 0)
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if s.agreementID == nil {
 		t.Fatal("setup: agreement should be committed")
 	}
 
 	// Re-opening parks the cursor on the current pick, so enter is a no-op
 	// confirm rather than a silent reset to "none".
-	s.updateSourcePhase(runeKey('g'))
+	s.updateSourcePhase(runeKey('g'), 0)
 	if s.agreementCursor != 1 {
 		t.Errorf("re-opened cursor = %d, want 1 (the committed agreement)", s.agreementCursor)
 	}
-	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEsc})
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEsc}, 0)
 	if s.agreementID == nil || *s.agreementID != 4 {
 		t.Errorf("esc cleared the pick; agreementID = %v", s.agreementID)
 	}
 
 	// The skip row is the way to clear it.
-	s.updateSourcePhase(runeKey('g'))
-	s.updateAgreementPhase(runeKey('k'))
-	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateSourcePhase(runeKey('g'), 0)
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyUp}, 0)
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if s.agreementID != nil {
 		t.Errorf("row 0 should clear the pick; got %v", s.agreementID)
 	}
@@ -259,17 +266,17 @@ func TestPOAgreement_ChangingSupplierDropsThePick(t *testing.T) {
 	srv, _ := poAgreementSrv(t, poTwoAgreements)
 	s := poAgreementScreen(t, srv)
 
-	s.updateSourcePhase(runeKey('g'))
-	s.updateAgreementPhase(runeKey('j'))
-	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateSourcePhase(runeKey('g'), 0)
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if s.agreementID == nil {
 		t.Fatal("setup: agreement should be committed")
 	}
 
 	// Back to the supplier picker, move to a different supplier, commit.
-	s.updateSourcePhase(runeKey('b'))
-	s.updateSupplierPhase(runeKey('j'))
-	_, cmd := s.updateSupplierPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyEsc}, 0)
+	s.updateSupplierPhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	_, cmd := s.updateSupplierPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 
 	if s.supplierID != 8 {
 		t.Fatalf("supplierID = %d, want 8", s.supplierID)
@@ -286,8 +293,8 @@ func TestPOAgreement_ChangingSupplierDropsThePick(t *testing.T) {
 
 	// Stepping back and re-committing the SAME supplier is not a change: the
 	// operator only went to look. No refetch, and nothing to clear.
-	s.updateSourcePhase(runeKey('b'))
-	if _, again := s.updateSupplierPhase(tea.KeyMsg{Type: tea.KeyEnter}); again != nil {
+	s.updateSourcePhase(runeKey('b'), 0)
+	if _, again := s.updateSupplierPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0); again != nil {
 		t.Error("re-committing the same supplier should not refetch its agreements")
 	}
 }
@@ -336,11 +343,11 @@ func TestPOAgreement_FailedLoadSaysUnavailableAndStillSubmits(t *testing.T) {
 	if s.phase != poPhaseSource {
 		t.Errorf("a failed agreement load must not strand the flow; phase = %v", s.phase)
 	}
-	if out := s.renderSourcePhase(); !strings.Contains(out, "unavailable") {
+	if out := s.View(); !strings.Contains(out, "unavailable") {
 		t.Errorf("source chooser should say the list is unavailable, not imply there are none:\n%s", out)
 	}
 	// g retries rather than opening a picker over an empty list.
-	s.updateSourcePhase(runeKey('g'))
+	s.updateSourcePhase(runeKey('g'), 0)
 	if s.phase == poPhaseAgreement {
 		t.Error("g should retry a failed load, not open an empty picker")
 	}
@@ -360,18 +367,18 @@ func TestPOAgreement_FailedLoadSaysUnavailableAndStillSubmits(t *testing.T) {
 func TestPOAgreement_NotesRenderUnderTheHighlightedRow(t *testing.T) {
 	srv, _ := poAgreementSrv(t, poTwoAgreements)
 	s := poAgreementScreen(t, srv)
-	s.updateSourcePhase(runeKey('g'))
+	s.updateSourcePhase(runeKey('g'), 0)
 
-	if out := s.renderAgreementPhase(); strings.Contains(out, "15% off list") {
+	if out := s.View(); strings.Contains(out, "15% off list") {
 		t.Errorf("the skip row has no notes to show:\n%s", out)
 	}
-	s.updateAgreementPhase(runeKey('j'))
-	if out := s.renderAgreementPhase(); !strings.Contains(out, "15% off list, net 30") {
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	if out := s.View(); !strings.Contains(out, "15% off list, net 30") {
 		t.Errorf("highlighted agreement should show its terms:\n%s", out)
 	}
 	// The second agreement has no notes — the row must simply carry none.
-	s.updateAgreementPhase(runeKey('j'))
-	out := s.renderAgreementPhase()
+	s.updateAgreementPhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	out := s.View()
 	if !strings.Contains(out, "Standing quote Q3") {
 		t.Errorf("second agreement missing from the list:\n%s", out)
 	}

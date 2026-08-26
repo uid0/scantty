@@ -1290,26 +1290,50 @@ func TestPOView_ShipFormStillValidates(t *testing.T) {
 // The bar is honest — enforced as a rule, not per key
 // ---------------------------------------------------------------------------
 
-// poBarKeyNames maps a bar entry's Key to the keystrokes it names. The bar
-// writes ONE entry for a pair — "UP/DN", "PgUp/PgDn", "Home/End" — so this is
-// the bar's own vocabulary rather than anything read out of the handlers.
+// poBarKeyNames maps a bar entry's Key to the keystrokes it names, for EVERY
+// columnar purchasing screen — the viewing half swept here and the New PO flow
+// swept in po_create_phase_sweep_test.go.
+//
+// ONE table, because the two sweeps are enforcing one rule and a second
+// vocabulary is a second chance to credit a bar with a claim it never made. It
+// also enforces the convention by construction: a bar entry's Key is the
+// LITERAL keystroke, so "a" is the letter a and "A" is shift+A, and a screen
+// that displayed "A" for a key that is really `a` would be spelling a
+// keystroke the operator does not press.
+//
+// A pair the bar writes as one entry — "UP/DN", "PgUp/PgDn", "Home/End" — maps
+// to both, and to no synonyms: crediting "UP/DN" with ctrl+p/ctrl+n would be
+// the sweep making the claim on the bar's behalf, which is the defect it exists
+// to report. A Key absent from this table FAILS rather than being skipped.
 var poBarKeyNames = map[string][]string{
 	"Enter":     {"enter"},
 	"Esc":       {"esc"},
 	"UP/DN":     {"up", "down"},
 	"PgUp/PgDn": {"pgup", "pgdown"},
 	"Home/End":  {"home", "end"},
+	"Space":     {" "},
+	"Ctrl-E":    {"ctrl+e"},
 	"Ctrl-X":    {"ctrl+x"},
-	"r":         {"r"},
-	"E":         {"E"},
-	"A":         {"A"},
-	"x":         {"x"},
-	"s":         {"s"},
+	"Ctrl-T":    {"ctrl+t"},
+	"/":         {"/"},
+	"]":         {"]"},
+	"[":         {"["},
+	"a":         {"a"},
+	"b":         {"b"},
 	"c":         {"c"},
 	"d":         {"d"},
-	"v":         {"v"},
-	"S":         {"S"},
+	"f":         {"f"},
+	"g":         {"g"},
+	"i":         {"i"},
 	"n":         {"n"},
+	"r":         {"r"},
+	"s":         {"s"},
+	"v":         {"v"},
+	"w":         {"w"},
+	"x":         {"x"},
+	"A":         {"A"},
+	"E":         {"E"},
+	"S":         {"S"},
 }
 
 // poKeyMsg turns one of those keystroke names into the message the terminal

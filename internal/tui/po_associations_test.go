@@ -73,7 +73,7 @@ func poAssocCreateScreen(t *testing.T, srv *httptest.Server) *PurchaseOrderCreat
 	s.supplierCursor = 0
 	s.Update(loadWorkOrderOptionsCmd(s.deps)())
 	s.Update(loadCommitteeOptionsCmd(s.deps)())
-	s.updateSupplierPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateSupplierPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	return s
 }
 
@@ -91,16 +91,16 @@ func TestPOAssoc_OptionsLoadInBackgroundAndOfferKeys(t *testing.T) {
 		t.Fatalf("loaded %d work order(s) / %d committee(s), want 1 / 2",
 			len(s.assoc.workOrders), len(s.assoc.committees))
 	}
-	out := s.renderSourcePhase()
+	out := s.View()
 	if !strings.Contains(out, "Work order") || !strings.Contains(out, "Committee") {
 		t.Errorf("source chooser should advertise both associations:\n%s", out)
 	}
 	if !strings.Contains(out, "(none)") {
 		t.Errorf("an untagged order should read (none):\n%s", out)
 	}
-	help := s.helpText()
-	if !strings.Contains(help, "w work order") || !strings.Contains(help, "c committee") {
-		t.Errorf("help text should mention both keys: %q", help)
+	help := poBarText(s.bar())
+	if !strings.Contains(help, "w=Work order") || !strings.Contains(help, "c=Committee") {
+		t.Errorf("the bar should name both keys: %q", help)
 	}
 }
 
@@ -114,14 +114,14 @@ func TestPOAssoc_NothingToPickOffersNothing(t *testing.T) {
 	if s.assoc.workOrdersOffered() || s.assoc.committeesOffered() {
 		t.Error("nothing to pick must not offer either picker")
 	}
-	if out := s.renderSourcePhase(); strings.Contains(out, "Work order") || strings.Contains(out, "Committee") {
+	if out := s.View(); strings.Contains(out, "Work order") || strings.Contains(out, "Committee") {
 		t.Errorf("source chooser should stay silent:\n%s", out)
 	}
-	if strings.Contains(s.helpText(), "work order") || strings.Contains(s.helpText(), "committee") {
-		t.Errorf("help text should not advertise dead keys: %q", s.helpText())
+	if help := poBarText(s.bar()); strings.Contains(help, "Work order") || strings.Contains(help, "Committee") {
+		t.Errorf("the bar should not advertise dead keys: %q", help)
 	}
-	s.updateSourcePhase(runeKey('w'))
-	s.updateSourcePhase(runeKey('c'))
+	s.updateSourcePhase(runeKey('w'), 0)
+	s.updateSourcePhase(runeKey('c'), 0)
 	if s.phase != poPhaseSource {
 		t.Errorf("w / c opened a picker with nothing in it; phase = %v", s.phase)
 	}
@@ -135,15 +135,15 @@ func TestPOAssoc_PickRoundTripsToSubmit(t *testing.T) {
 	srv, body := poAssocSrv(t, poActiveWOs, poSIGs)
 	s := poAssocCreateScreen(t, srv)
 
-	s.updateSourcePhase(runeKey('w'))
+	s.updateSourcePhase(runeKey('w'), 0)
 	if s.phase != poPhaseWorkOrder {
 		t.Fatalf("w should open the work-order picker; phase = %v", s.phase)
 	}
 	if out := s.View(); !strings.Contains(out, "— no work order —") {
 		t.Errorf("picker must offer an explicit skip row:\n%s", out)
 	}
-	s.updateWorkOrderPhase(runeKey('j')) // row 0 is "none"
-	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyDown}, 0) // row 0 is "none"
+	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if s.phase != poPhaseSource {
 		t.Errorf("committing should return to the source chooser; phase = %v", s.phase)
 	}
@@ -151,17 +151,17 @@ func TestPOAssoc_PickRoundTripsToSubmit(t *testing.T) {
 		t.Fatalf("workOrderID = %q, want the picked job's uuid", s.workOrderID)
 	}
 
-	s.updateSourcePhase(runeKey('c'))
-	s.updateCommitteePhase(runeKey('j'))
-	s.updateCommitteePhase(runeKey('j')) // Metal Shop
-	s.updateCommitteePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateSourcePhase(runeKey('c'), 0)
+	s.updateCommitteePhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	s.updateCommitteePhase(tea.KeyMsg{Type: tea.KeyDown}, 0) // Metal Shop
+	s.updateCommitteePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if s.committeeID != "5" {
 		t.Fatalf("committeeID = %q, want 5 (Metal Shop)", s.committeeID)
 	}
 
 	// Both are visible before the order goes out.
 	stageOneLine(s)
-	review := s.renderReviewPhase()
+	review := s.View()
 	if !strings.Contains(review, "WO-1A2B — Replace drive belt") {
 		t.Errorf("review should name the job:\n%s", review)
 	}
@@ -188,10 +188,10 @@ func TestPOAssoc_SkippedOrderOmitsBothFields(t *testing.T) {
 	srv, body := poAssocSrv(t, poActiveWOs, poSIGs)
 	s := poAssocCreateScreen(t, srv)
 
-	s.updateSourcePhase(runeKey('w'))
-	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyEnter}) // row 0 = none
-	s.updateSourcePhase(runeKey('c'))
-	s.updateCommitteePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateSourcePhase(runeKey('w'), 0)
+	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0) // row 0 = none
+	s.updateSourcePhase(runeKey('c'), 0)
+	s.updateCommitteePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 
 	stageOneLine(s)
 	if msg := s.finalize()(); msg.(poCreatedMsg).err != nil {
@@ -211,27 +211,27 @@ func TestPOAssoc_RowZeroClearsAPickAndEscKeepsIt(t *testing.T) {
 	srv, _ := poAssocSrv(t, poActiveWOs, poSIGs)
 	s := poAssocCreateScreen(t, srv)
 
-	s.updateSourcePhase(runeKey('w'))
-	s.updateWorkOrderPhase(runeKey('j'))
-	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateSourcePhase(runeKey('w'), 0)
+	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if s.workOrderID == "" {
 		t.Fatal("setup: a job should be committed")
 	}
 
 	// Re-opening parks the cursor on the current pick, so enter is a no-op
 	// confirm rather than a silent reset to "none".
-	s.updateSourcePhase(runeKey('w'))
+	s.updateSourcePhase(runeKey('w'), 0)
 	if s.workOrderCursor != 1 {
 		t.Errorf("re-opened cursor = %d, want 1 (the committed job)", s.workOrderCursor)
 	}
-	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyEsc})
+	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyEsc}, 0)
 	if s.workOrderID != poWorkOrderUUID {
 		t.Errorf("esc cleared the pick; workOrderID = %q", s.workOrderID)
 	}
 
-	s.updateSourcePhase(runeKey('w'))
-	s.updateWorkOrderPhase(runeKey('k'))
-	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateSourcePhase(runeKey('w'), 0)
+	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyUp}, 0)
+	s.updateWorkOrderPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if s.workOrderID != "" {
 		t.Errorf("row 0 should detach; got %q", s.workOrderID)
 	}
@@ -266,11 +266,11 @@ func TestPOAssoc_FailedLoadSaysUnavailableAndStillSubmits(t *testing.T) {
 	if s.phase != poPhaseSource {
 		t.Errorf("a failed load must not strand the flow; phase = %v", s.phase)
 	}
-	if out := s.renderSourcePhase(); !strings.Contains(out, "unavailable") {
+	if out := s.View(); !strings.Contains(out, "unavailable") {
 		t.Errorf("source chooser should say the list is unavailable, not imply there are none:\n%s", out)
 	}
 	// w retries rather than opening a picker over an empty list.
-	s.updateSourcePhase(runeKey('w'))
+	s.updateSourcePhase(runeKey('w'), 0)
 	if s.phase == poPhaseWorkOrder {
 		t.Error("w should retry a failed load, not open an empty picker")
 	}
@@ -618,8 +618,8 @@ func TestPOEditAssoc_NothingToPickIsRefusedNotOpened(t *testing.T) {
 }
 
 // TestPOAssocValueField_ThreeStates: the columnar row the detail sheet draws
-// keeps the three states renderAssocValue has always had. The middle one is the
-// point — a picker that could not be loaded must never render as an order with
+// keeps the three states an association row has always had. The middle one is
+// the point — a picker that could not be loaded must never render as an order with
 // nothing attached, because "we couldn't ask" and "there is none" lead an
 // operator to opposite conclusions.
 func TestPOAssocValueField_ThreeStates(t *testing.T) {

@@ -95,17 +95,21 @@ func TestPOCreate_MultiLineCart(t *testing.T) {
 	}
 
 	// 'd' from the source chooser enters review.
-	s.updateSourcePhase(runeKey('d'))
+	s.updateSourcePhase(runeKey('d'), 0)
 	if s.phase != poPhaseReview {
 		t.Fatalf("d should enter review phase, got %v", s.phase)
 	}
-	if out := s.View(); !strings.Contains(out, "Cart (2 line(s))") {
-		t.Errorf("review view missing cart summary: %q", out)
+	// The cart's own count rides on cartTotalRows, which is a PINNED HEADER
+	// block rather than anything in the body: tagged onto the cart's last row
+	// it was two lines past the bottom at 80x24, because jdeLines.Window keeps
+	// a block's START when it cannot fit the whole of it.
+	if out := s.View(); !strings.Contains(out, "(2 line items)") {
+		t.Errorf("review view missing the cart total: %q", out)
 	}
 
 	// ctrl+x in review removes the highlighted line.
 	s.reviewCursor = 0
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlX})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlX}, 0)
 	if len(s.lines) != 1 {
 		t.Errorf("after ctrl+x remove, cart len = %d, want 1", len(s.lines))
 	}
@@ -162,7 +166,7 @@ func TestPOCreate_ItemSupplierLineCostIsOptional(t *testing.T) {
 	if got := s.lineInputs[poLineFieldCost].Value(); got != "2.5" {
 		t.Errorf("cost prefill = %q, want the catalog price %q", got, "2.5")
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "Unit cost:") {
+	if out := s.View(); !strings.Contains(out, "Unit cost") {
 		t.Errorf("item-supplier line should render a unit-cost input:\n%s", out)
 	}
 	// Cleared → no unit_cost, so the backend prices it from the catalog.
@@ -181,7 +185,7 @@ func TestPOCreate_ItemSupplierLineCostIsOptional(t *testing.T) {
 	if got := s.lineFields(); !hasField(got, poLineFieldCost) || hasField(got, poLineFieldDate) {
 		t.Errorf("freeform line fields = %v, want [desc qty cost]", got)
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "Unit cost:") {
+	if out := s.View(); !strings.Contains(out, "Unit cost") {
 		t.Errorf("freeform line should render a unit-cost input:\n%s", out)
 	}
 }
@@ -190,12 +194,12 @@ func TestPOCreate_DoneRequiresLine(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	s.supplierID = 7
 	s.phase = poPhaseSource
-	s.updateSourcePhase(runeKey('d'))
+	s.updateSourcePhase(runeKey('d'), 0)
 	if s.phase == poPhaseReview {
 		t.Errorf("d with an empty cart should not enter review")
 	}
-	if s.errMsg == "" {
-		t.Errorf("expected an error when submitting an empty cart")
+	if s.sourceNote.text == "" {
+		t.Errorf("expected the chooser to say why d did nothing on an empty cart")
 	}
 }
 

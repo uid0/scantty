@@ -68,11 +68,11 @@ func poSwitchCartAt(t *testing.T, height int) (Root, *PurchaseOrderCreateScreen)
 // highlighting the OTHER supplier and pressing enter.
 func poOpenSwitchConfirm(t *testing.T, r Root, screen *PurchaseOrderCreateScreen) Root {
 	t.Helper()
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")}) // → supplier picker
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc}) // → supplier picker
 	if screen.phase != poPhaseSupplier {
-		t.Fatalf("b from the source chooser landed in phase %v", screen.phase)
+		t.Fatalf("esc from the source chooser landed in phase %v", screen.phase)
 	}
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	if screen.phase != poPhaseSupplierSwitch {
 		t.Fatalf("committing another supplier over a staged catalog line went straight through (phase %v)", screen.phase)
@@ -103,7 +103,7 @@ func poAssertSwitchConfirmWarns(t *testing.T, height int) {
 	}
 
 	// It names the count, whose lines they are, and that the rest survive.
-	poWantPaneLine(t, screen, "Changing supplier drops part of the cart")
+	poWantPaneLine(t, screen, "Dropped lines cannot be recovered")
 	poWantPaneLine(t, screen, "1 of 2 staged line(s)")
 	poWantPaneLine(t, screen, "Acme Supply")
 	poWantPaneLine(t, screen, "line(s) stay.")
@@ -121,35 +121,33 @@ func TestPOSupplierSwitch_NamesExactlyTheKeysThatWork(t *testing.T) {
 	r, screen := poSwitchCart(t)
 	r = poOpenSwitchConfirm(t, r, screen)
 
-	poWantPaneLine(t, screen, "ctrl+x drops 1 line(s) and switches")
-	poWantPaneLine(t, screen, "esc keeps the cart and this supplier")
+	poWantPaneLine(t, screen, "Ctrl-X=Drop & switch")
+	poWantPaneLine(t, screen, "Esc=Keep cart")
 
 	// enter is deliberately NOT named: it is the key that opened this frame, so
 	// a reflexive double-tap must not be the destructive answer.
-	for _, line := range poPaneLines(t, screen) {
-		if strings.Contains(line, "enter") {
-			t.Errorf("the confirm frame names enter, which does nothing here:\n%s", line)
-		}
+	named := poBarNamedKeys(t, screen.bar())
+	if named["enter"] {
+		t.Errorf("the confirm names enter, which must not be the destructive answer: %s",
+			poBarText(screen.bar()))
 	}
 
-	// Unnamed keys must be inert — the cart, the supplier and the phase all
-	// stay exactly where they are.
+	// Every key the bar does not name is inert — the cart, the supplier and the
+	// phase all stay exactly where they are. Derived from the bar rather than
+	// listed, so a key bound here tomorrow is judged by this without anyone
+	// remembering to add it.
 	before := screen.phase
-	for _, k := range []tea.KeyMsg{
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyTab},
-		{Type: tea.KeyRunes, Runes: []rune("j")},
-		{Type: tea.KeyRunes, Runes: []rune("k")},
-		{Type: tea.KeyRunes, Runes: []rune("b")},
-		{Type: tea.KeyRunes, Runes: []rune("d")},
-		{Type: tea.KeyRunes, Runes: []rune("x")},
-	} {
-		r = key(t, r, k)
+	for _, k := range poKeySpace() {
+		if named[k] {
+			continue
+		}
+		r = key(t, r, poPhaseKeyMsg(k))
 		if screen.phase != before {
-			t.Fatalf("%v moved off the confirm frame (phase %v)", k, screen.phase)
+			t.Fatalf("%q moved off the confirm frame (phase %v)", k, screen.phase)
 		}
 		if len(screen.lines) != 2 || screen.supplierID != 1 {
-			t.Fatalf("%v changed the cart (%d lines) or the supplier (%d)", k, len(screen.lines), screen.supplierID)
+			t.Fatalf("%q changed the cart (%d lines) or the supplier (%d)",
+				k, len(screen.lines), screen.supplierID)
 		}
 	}
 }
@@ -254,8 +252,8 @@ func TestPOSupplierSwitch_NoConfirmWhenThereIsNothingToLose(t *testing.T) {
 	t.Run("empty cart", func(t *testing.T) {
 		fake := &poPickFake{catalog: 6, pageSize: 5, suppliers: 2}
 		r, screen := poPickerAt(t, fake, 80)
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 		if screen.phase != poPhaseSource || screen.supplierID != 2 {
 			t.Fatalf("an empty cart still asked (phase %v, supplier %d)", screen.phase, screen.supplierID)
@@ -273,8 +271,8 @@ func TestPOSupplierSwitch_NoConfirmWhenThereIsNothingToLose(t *testing.T) {
 		r = poType(t, r, "4.00")
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 		if screen.phase != poPhaseSource || screen.supplierID != 2 {
 			t.Fatalf("a supplier-agnostic cart still asked (phase %v, supplier %d)", screen.phase, screen.supplierID)
@@ -286,7 +284,7 @@ func TestPOSupplierSwitch_NoConfirmWhenThereIsNothingToLose(t *testing.T) {
 
 	t.Run("same supplier re-committed", func(t *testing.T) {
 		r, screen := poSwitchCart(t)
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // cursor still on supplier 1
 		if screen.phase != poPhaseSource {
 			t.Fatalf("re-committing the same supplier asked to drop the cart (phase %v)", screen.phase)
@@ -326,7 +324,13 @@ func TestPOReview_ASmallCartLeavesTheNotesFieldOnThePane(t *testing.T) {
 			}
 
 			pane := clampToBox(screen.View(), screenBodyWidth(80), screenBodyHeight(termHeight))
-			for _, want := range []string{"PO notes", "Cart (5 line(s))", "priced from the supplier catalog"} {
+			// The notes box is PINNED, the cart's total hangs off its last row,
+			// and the caveat that makes the total a floor hangs off it too — so
+			// the caveat is on the pane exactly when the last row is, which the
+			// highlight guarantees only when the cursor is standing on it.
+			// End is what puts it there, and naming that here is the point: the
+			// facts an operator confirms are reachable, not always resident.
+			for _, want := range []string{"PO notes", "(5 line items)", "priced from the catalog"} {
 				if !strings.Contains(pane, want) {
 					t.Errorf("the %d-row pane does not carry %q:\n%s",
 						screenBodyHeight(termHeight), want, pane)
@@ -340,20 +344,32 @@ func TestPOReview_ASmallCartLeavesTheNotesFieldOnThePane(t *testing.T) {
 	}
 }
 
-// TestPOCart_TheRowsReservedAreTheRowsDrawn pins the reservation to the render.
-// cartRowBudget takes the cart's non-line rows off the top, and that count was
-// the constant 5 — one per item — while the catalog-pricing caveat, once it
-// went through the folder at 63 cells, drew TWO. A reservation that is a row
-// short is the horizontal-cut-traded-for-a-vertical-one this screen has been
-// bitten by three times, so the two are measured against each other here rather
-// than kept in step by hand.
-func TestPOCart_TheRowsReservedAreTheRowsDrawn(t *testing.T) {
+// TestPOCart_EveryBodyLineIsALine replaces a test about a RESERVATION.
+//
+// The cart used to be windowed by hand against a budget with its own chrome
+// taken off the top (cartRowBudget), and that chrome was the constant 5 — one
+// row per item — while the catalog-pricing caveat, once it went through the
+// folder at 63 cells, drew TWO. A reservation a row short is the
+// horizontal-cut-traded-for-a-vertical-one this screen was bitten by three
+// times, so the reservation and the render were measured against each other.
+//
+// The layer windows the cart now and there is no reservation to keep in step.
+// What replaced it is a structural rule, and this is that rule: the cart body
+// is NOTHING BUT navigable line rows, one line each. What the cart comes to —
+// the total, and the caveat that makes it a floor — is PINNED above it
+// (cartTotalRows), because it was tagged onto the last row first and a window
+// that keeps a block's START pushed the caveat two lines off an 80x24 pane
+// under a five-line cart. A line belonging to no row at all is the defect
+// AGENTS.md records against the receiving form: the frame goes on drawing
+// "↓ N more below" and counting it while no key can fetch it.
+func TestPOCart_EveryBodyLineIsALine(t *testing.T) {
 	id := 7
 	cost := 3.0
 	for _, costless := range []bool{false, true} {
 		t.Run(fmt.Sprintf("catalog-priced line=%v", costless), func(t *testing.T) {
 			s := NewPurchaseOrderCreateScreen(Deps{})
-			s.terminalHeight = 30
+			s.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+			s.phase = poPhaseReview
 			for i := 0; i < 8; i++ {
 				it := omsapi.PurchaseOrderCreateItem{ItemSupplierID: &id, Quantity: 1, UnitCost: &cost}
 				if costless && i == 0 {
@@ -361,13 +377,28 @@ func TestPOCart_TheRowsReservedAreTheRowsDrawn(t *testing.T) {
 				}
 				s.lines = append(s.lines, poCartLine{item: it, label: fmt.Sprintf("Widget %d", i+1)})
 			}
-			// A window in the MIDDLE, so both scroll markers are drawn and the
-			// chrome is at its widest.
-			const budget = 2
 			s.reviewCursor = 4
-			drawn := poRenderedRows(s.renderCart(s.reviewCursor, budget))
-			if got, want := drawn-budget, s.cartChromeRows(); got != want {
-				t.Errorf("renderCart drew %d rows that are not lines; the budget reserves %d", got, want)
+
+			body := s.cartBody()
+			if body.Len() != len(s.lines) {
+				t.Errorf("the cart body draws %d line(s) for %d cart line(s); it must be "+
+					"nothing but rows, one line each", body.Len(), len(s.lines))
+			}
+			for i, row := range body.row {
+				if row != i {
+					t.Errorf("cart body line %d (%q) is tagged to row %d — every line of this "+
+						"body is a cart LINE and owns its own row", i, body.text[i], row)
+				}
+			}
+			// …and the two facts that used to hang off the last row are on the
+			// pinned header, where no scroll position can take them.
+			header := strings.Join(s.headerLines().lines(), "\n")
+			if !strings.Contains(header, "Total:") {
+				t.Errorf("the cart total is not pinned:\n%s", header)
+			}
+			if costless != strings.Contains(header, "priced from the catalog") {
+				t.Errorf("catalog-priced line = %v but the pinned caveat says otherwise:\n%s",
+					costless, header)
 			}
 		})
 	}
@@ -448,28 +479,19 @@ func TestPOReview_NotesInputStaysOnThePaneUnderALongCart(t *testing.T) {
 					t.Errorf("what the operator typed is not on the pane:\n%s", pane)
 				}
 				// And the cart says how much of itself is out of view rather than
-				// silently showing a subset.
-				if !strings.Contains(pane, "Cart (15 line(s))") {
-					t.Errorf("the cart no longer says how many lines it holds:\n%s", pane)
-				}
+				// silently showing a subset. The markers are the LAYER's now
+				// (jdeLines.Window), which is also why the count of staged lines
+				// moved off a "Cart (N line(s))" heading and onto the total that
+				// hangs off the last row.
 				shown := strings.Count(pane, ") Widget ")
 				if shown < 15 && !strings.Contains(pane, "more below") && !strings.Contains(pane, "more above") {
 					t.Errorf("the cart shows %d of 15 lines and says nothing about the rest:\n%s", shown, pane)
 				}
-				// The caveat is the reason the total is a floor rather than the
-				// order's value, so it has to be readable and not merely reserved
-				// for: a row count kept in step by hand had it at one row while the
-				// folder was giving it two.
-				if !strings.Contains(pane, "priced from the supplier catalog") {
-					t.Errorf("the caveat that says the total is a floor is off the pane:\n%s", pane)
-				}
-				// Nothing may be cut silently, whatever had to give: the repeated
-				// attribution rows either read out in full or say they were left to
-				// the header they repeat.
-				if !screen.reviewAttributionShown() {
-					if !strings.Contains(pane, "agreement / association rows need more height") {
-						t.Errorf("the repeated agreement / association rows vanished with nothing saying so:\n%s", pane)
-					}
+				// The highlighted line is on the pane at every height, which is
+				// the property Window gives by construction and the reason the
+				// keys that act on a row no longer need a gate.
+				if !strings.Contains(pane, fmt.Sprintf("▸ %d)", screen.reviewCursor+1)) {
+					t.Errorf("the highlighted line is off the pane:\n%s", pane)
 				}
 				poAssertFits(t, fmt.Sprintf("review with a 15-line cart at 80x%d", termHeight), screen)
 			})

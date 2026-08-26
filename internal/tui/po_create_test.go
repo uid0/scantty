@@ -177,38 +177,51 @@ func TestPOLineFields_CaseVsSinglePackVsAsset(t *testing.T) {
 	}
 }
 
-// TestPOCatalogCost_PlaceholderAndNoteSayBlankMeansCatalog: the cost field on a
+// TestPOCatalogCost_TheRowSaysWhetherBlankMeansCatalog: the cost field on a
 // catalog line has to READ as optional, or an operator who wants catalog pricing
-// won't know clearing it is the way to ask for it.
-func TestPOCatalogCost_PlaceholderAndNoteSayBlankMeansCatalog(t *testing.T) {
+// will not know clearing it is the way to ask for it — and an asset or freeform
+// line has to read as required, because the backend rejects those without one.
+//
+// It used to be checked on the textinput's PLACEHOLDER. Those are gone: a
+// placeholder fills the input area and hides the underscored run that says the
+// field is EMPTY, which is the one thing the columnar fill exists to show
+// (jdePickList drops its own for the same reason). What they said is on the row
+// — the label the basis decides, the HINT that says required or optional, and
+// the note under it that says what a blank field actually does.
+func TestPOCatalogCost_TheRowSaysWhetherBlankMeansCatalog(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
+	s.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	id := 1
 
 	s.enterLinePhase(&id, nil, "Bolt", 1, 0, 0, 1)
-	if got := s.lineInputs[poLineFieldCost].Placeholder; !strings.Contains(got, "optional") {
-		t.Errorf("catalog-line placeholder = %q, want it to read as optional", got)
+	if got := s.lineFieldHint(poLineFieldCost); got != "optional" {
+		t.Errorf("catalog-line cost hint = %q, want it to read as optional", got)
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "Cost is optional") {
+	if out := s.View(); !strings.Contains(out, "optional") ||
+		!strings.Contains(out, "supplier catalog") {
 		t.Errorf("catalog line should explain the optional cost:\n%s", out)
 	}
 
 	// Case-packed catalog line: same promise, in the case basis.
 	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
-	if got := s.lineInputs[poLineFieldCost].Placeholder; !strings.HasPrefix(got, "case cost") ||
-		!strings.Contains(got, "optional") {
-		t.Errorf("case-packed catalog placeholder = %q, want an optional case-cost hint", got)
+	if got := s.costFieldLabel(); got != "Case cost" {
+		t.Errorf("case-packed label = %q, want the case basis", got)
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "Cost is optional") {
+	if got := s.lineFieldHint(poLineFieldCost); got != "optional" {
+		t.Errorf("case-packed catalog cost hint = %q, want optional", got)
+	}
+	if out := s.View(); !strings.Contains(out, "Case cost") || !strings.Contains(out, "optional") {
 		t.Errorf("case-packed catalog line should explain the optional cost:\n%s", out)
 	}
 
-	// Asset / freeform lines REQUIRE a cost, so they keep the example hint and
-	// must not promise catalog pricing that branch never applies.
+	// Asset / freeform lines REQUIRE a cost, and must not promise catalog
+	// pricing that branch never applies.
 	s.enterLinePhase(nil, nil, "Rags", 1, 0, 0, 0)
-	if got := s.lineInputs[poLineFieldCost].Placeholder; !strings.Contains(got, "e.g.") {
-		t.Errorf("freeform placeholder = %q, want the example hint for a required cost", got)
+	if got := s.lineFieldHint(poLineFieldCost); got != "required" {
+		t.Errorf("freeform cost hint = %q, want required", got)
 	}
-	if out := s.renderLinePhase(); strings.Contains(out, "Cost is optional") {
+	if out := s.View(); strings.Contains(out, "optional") ||
+		strings.Contains(out, "supplier catalog") {
 		t.Errorf("freeform line should not offer catalog pricing:\n%s", out)
 	}
 }
@@ -437,8 +450,14 @@ func TestPOCostDerivationHint(t *testing.T) {
 	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
 	s.lineInputs[poLineFieldCost].SetValue("30")
 	hint := s.costDerivationHint()
-	if !strings.Contains(hint, "30.00/case") || !strings.Contains(hint, "2.50/unit") {
-		t.Errorf("hint = %q, want it to show $30.00/case and $2.50/unit", hint)
+	if !strings.Contains(hint, "$30.00 per case") || !strings.Contains(hint, "$2.50 per unit") {
+		t.Errorf("hint = %q, want it to show $30.00 per case and $2.50 per unit", hint)
+	}
+	// It names no KEY: the bar says Ctrl-T and what basis the row is on, and one
+	// claim stated twice on one pane is how this screen came to advertise and
+	// refuse the same keys.
+	if strings.Contains(strings.ToLower(hint), "ctrl+t") {
+		t.Errorf("the derivation hint names a key the bar already names: %q", hint)
 	}
 
 	// Non-case line: no hint.
@@ -456,22 +475,25 @@ func TestPORenderLinePhase_CasePacked(t *testing.T) {
 	id := 42
 	s.enterLinePhase(&id, nil, "Widget", 1, 0, 30.00, 12)
 
-	out := s.renderLinePhase()
-	if !strings.Contains(out, "Case cost:") {
-		t.Errorf("case-packed line should render 'Case cost:' label:\n%s", out)
+	s.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	out := s.View()
+	if !strings.Contains(out, "Case cost") {
+		t.Errorf("case-packed line should render the 'Case cost' label:\n%s", out)
 	}
-	if !strings.Contains(out, "/case") || !strings.Contains(out, "/unit") {
+	if !strings.Contains(out, "per case") || !strings.Contains(out, "per unit") {
 		t.Errorf("case-packed line should render the derivation hint:\n%s", out)
 	}
-	// A case-packed line is still a catalog line: clearing the cost falls back
-	// to catalog pricing there too, so the note belongs on it.
-	if !strings.Contains(out, "Cost is optional") {
-		t.Errorf("case-packed catalog line should show the optional-cost note:\n%s", out)
+	// A case-packed line is still a catalog line, so its cost row reads as
+	// optional — the derivation hint takes the note slot under it, which is why
+	// the "blank prices it from the catalog" sentence yields to it there and the
+	// row's own HINT is what carries the fact on every line.
+	if got := s.lineFieldHint(poLineFieldCost); got != "optional" {
+		t.Errorf("case-packed catalog cost hint = %q, want optional", got)
 	}
 
 	s.toggleCostBasis()
-	if out := s.renderLinePhase(); !strings.Contains(out, "Unit cost:") {
-		t.Errorf("after toggle, line should render 'Unit cost:' label:\n%s", out)
+	if out := s.View(); !strings.Contains(out, "Unit cost") {
+		t.Errorf("after toggle, line should render the 'Unit cost' label:\n%s", out)
 	}
 }
 
@@ -504,7 +526,7 @@ func TestPOEditLine_UpdatesInPlace(t *testing.T) {
 	}
 
 	enterReviewAt(s, 0)
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	if s.phase != poPhaseLine {
 		t.Fatalf("ctrl+e should open the line form; phase = %v", s.phase)
 	}
@@ -526,7 +548,7 @@ func TestPOEditLine_UpdatesInPlace(t *testing.T) {
 	s.lineInputs[poLineFieldDesc].SetValue("Shop rags")
 	s.lineInputs[poLineFieldQty].SetValue("9")
 	s.lineInputs[poLineFieldCost].SetValue("2.25")
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 
 	if len(s.lines) != 2 {
 		t.Fatalf("edit must not change cart length; len = %d, want 2", len(s.lines))
@@ -565,11 +587,11 @@ func TestPOEditLine_EscCancelsUnchanged(t *testing.T) {
 	s.addLine()
 
 	enterReviewAt(s, 0)
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	// Mutate the inputs, then cancel.
 	s.lineInputs[poLineFieldDesc].SetValue("WRONG")
 	s.lineInputs[poLineFieldQty].SetValue("999")
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc}, 0)
 
 	if s.phase != poPhaseReview {
 		t.Fatalf("esc from an edit should return to review; phase = %v", s.phase)
@@ -617,7 +639,7 @@ func TestPOEditLine_CasePackedRoundTrips(t *testing.T) {
 	unit0 := *s.lines[0].item.UnitCost
 
 	enterReviewAt(s, 0)
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	if !s.costBasisCase {
 		t.Errorf("case-packed edit should default to case basis")
 	}
@@ -625,14 +647,14 @@ func TestPOEditLine_CasePackedRoundTrips(t *testing.T) {
 		t.Errorf("case cost prefill = %q, want %q (unit × qpp)", got, "30")
 	}
 	// ctrl+t → unit basis shows the derived unit cost; save still derives the same.
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyCtrlT})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyCtrlT}, 0)
 	if s.costBasisCase {
 		t.Errorf("ctrl+t should switch to unit basis")
 	}
 	if got := s.lineInputs[poLineFieldCost].Value(); got != "2.5" {
 		t.Errorf("unit prefill after toggle = %q, want %q", got, "2.5")
 	}
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}) // save
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0) // save
 
 	if len(s.lines) != 1 {
 		t.Fatalf("edit changed cart length: %d", len(s.lines))
@@ -665,7 +687,7 @@ func TestPOEditLine_RestoresSourceFields(t *testing.T) {
 
 	// Single-pack line: per-unit cost field, item-supplier source restored.
 	enterReviewAt(s, 0)
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	if !hasField(s.lineFields(), poLineFieldCost) {
 		t.Errorf("editing a single-pack inventory line should show the cost field")
 	}
@@ -675,22 +697,22 @@ func TestPOEditLine_RestoresSourceFields(t *testing.T) {
 	if s.pickedItemSup == nil || *s.pickedItemSup != 7 {
 		t.Errorf("edit should restore the item-supplier source; got %v", s.pickedItemSup)
 	}
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc}, 0)
 
 	// Case-packed line: cost field shown, case basis.
 	enterReviewAt(s, 1)
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	if !hasField(s.lineFields(), poLineFieldCost) {
 		t.Errorf("editing a case-packed line should show the cost field")
 	}
 	if !s.costBasisCase {
 		t.Errorf("editing a case-packed line should default to case basis")
 	}
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc}, 0)
 
 	// Asset line: cost field shown, asset source restored.
 	enterReviewAt(s, 2)
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	if !hasField(s.lineFields(), poLineFieldCost) {
 		t.Errorf("editing an asset line should show the cost field")
 	}
@@ -708,18 +730,22 @@ func TestPOEditLine_HelpAndTitleReadAsEditing(t *testing.T) {
 	s.addLine()
 
 	s.phase = poPhaseReview
-	if help := s.helpText(); !strings.Contains(help, "ctrl+e") {
+	if help := poBarText(s.bar()); !strings.Contains(help, "Ctrl-E") {
 		t.Errorf("review help should advertise ctrl+e edit; got %q", help)
 	}
 
 	enterReviewAt(s, 0)
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
-	help := s.helpText()
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
+	help := poBarText(s.bar())
 	if !strings.Contains(strings.ToLower(help), "edit") || strings.Contains(help, "add to cart") {
 		t.Errorf("line help while editing should read as editing; got %q", help)
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "Editing line 1 of 1") {
-		t.Errorf("render should show 'Editing line 1 of 1':\n%s", out)
+	// The frame used to carry an "Editing line 1 of 1" heading of its own.
+	// What it says now is on the BAR — Enter=Save changes, Esc=Cancel edit —
+	// which is the surface that cannot scroll away and the one an operator
+	// reads to know what a key will do.
+	if !strings.Contains(help, "Enter=Save changes") || !strings.Contains(help, "Esc=Cancel edit") {
+		t.Errorf("the bar should read as editing rather than adding; got %q", help)
 	}
 }
 
@@ -763,7 +789,7 @@ func TestPOReorderAddAll_SeedsEveryItem(t *testing.T) {
 	}
 	s := reorderScreen(items...)
 
-	s.updateReorderPickPhase(runeKey('a'))
+	s.updateReorderPickPhase(runeKey('a'), 0)
 
 	if len(s.lines) != 15 {
 		t.Fatalf("add-all staged %d line(s), want 15", len(s.lines))
@@ -792,7 +818,7 @@ func TestPOReorderAddAll_SeedsEveryItem(t *testing.T) {
 // stages a orderable line (qty 1), matching the single-row prefill.
 func TestPOReorderAddAll_QuantityFloor(t *testing.T) {
 	s := reorderScreen(reorderItem("Zero", 11, 0, "1.00"))
-	s.updateReorderPickPhase(runeKey('a'))
+	s.updateReorderPickPhase(runeKey('a'), 0)
 	if len(s.lines) != 1 || s.lines[0].item.Quantity != 1 {
 		t.Fatalf("lines = %+v, want one line with quantity 1", s.lines)
 	}
@@ -810,7 +836,7 @@ func TestPOReorderAddAll_CostPolicyMatchesTheLineForm(t *testing.T) {
 		reorderItem("Orphan widget", 0, 3, "7.75"),
 		reorderItem("Unpriced nut", 12, 2, "0.00"),
 	)
-	s.updateReorderPickPhase(runeKey('a'))
+	s.updateReorderPickPhase(runeKey('a'), 0)
 	if len(s.lines) != 3 {
 		t.Fatalf("staged %d line(s), want 3", len(s.lines))
 	}
@@ -830,8 +856,8 @@ func TestPOReorderAddAll_CostPolicyMatchesTheLineForm(t *testing.T) {
 	// Same rows through the single-row form: staging line 0 by hand lands on the
 	// same payload the bulk add produced.
 	s2 := reorderScreen(reorderItem("Catalog bolt", 11, 4, "2.50"))
-	s2.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyEnter})
-	s2.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s2.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
+	s2.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if len(s2.lines) != 1 {
 		t.Fatalf("single-row path staged %d line(s), want 1 (err %q)", len(s2.lines), s2.errMsg)
 	}
@@ -850,21 +876,21 @@ func TestPOReorderMultiSelect_AddsOnlyMarkedRows(t *testing.T) {
 		reorderItem("C", 13, 3, "3.00"),
 	)
 	// Mark C (bottom-up, so the add must re-sort into list order), then A.
-	s.updateReorderPickPhase(runeKey('j'))
-	s.updateReorderPickPhase(runeKey('j'))
-	s.updateReorderPickPhase(runeKey(' '))
-	s.updateReorderPickPhase(runeKey('k'))
-	s.updateReorderPickPhase(runeKey('k'))
-	s.updateReorderPickPhase(runeKey(' '))
+	s.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	s.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	s.updateReorderPickPhase(runeKey(' '), 0)
+	s.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyUp}, 0)
+	s.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyUp}, 0)
+	s.updateReorderPickPhase(runeKey(' '), 0)
 	if len(s.reorderSelected) != 2 {
 		t.Fatalf("marked %d row(s), want 2", len(s.reorderSelected))
 	}
 	// Marks render as checkboxes so they survive the highlight moving away.
-	if out := s.renderReorderPick(); !strings.Contains(out, "[x] A") || !strings.Contains(out, "[ ] B") {
+	if out := s.View(); !strings.Contains(out, "[x] A") || !strings.Contains(out, "[ ] B") {
 		t.Errorf("marked rows should render checked:\n%s", out)
 	}
 
-	s.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 
 	if len(s.lines) != 2 {
 		t.Fatalf("staged %d line(s), want 2 (only the marked rows)", len(s.lines))
@@ -883,13 +909,13 @@ func TestPOReorderMultiSelect_AddsOnlyMarkedRows(t *testing.T) {
 // TestPOReorderSpaceToggle_Unmarks: space is a toggle, not a one-way set.
 func TestPOReorderSpaceToggle_Unmarks(t *testing.T) {
 	s := reorderScreen(reorderItem("A", 11, 1, "1.00"))
-	s.updateReorderPickPhase(runeKey(' '))
-	s.updateReorderPickPhase(runeKey(' '))
+	s.updateReorderPickPhase(runeKey(' '), 0)
+	s.updateReorderPickPhase(runeKey(' '), 0)
 	if len(s.reorderSelected) != 0 {
 		t.Fatalf("second space should unmark the row; %d still marked", len(s.reorderSelected))
 	}
 	// With nothing marked, enter falls back to the single-row line form.
-	s.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateReorderPickPhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if s.phase != poPhaseLine {
 		t.Errorf("unmarked enter should open the line form; phase = %v", s.phase)
 	}
@@ -902,7 +928,7 @@ func TestPOReorderSpaceToggle_Unmarks(t *testing.T) {
 // than silently jumping to an empty review cart.
 func TestPOReorderAddAll_EmptyListIsRefused(t *testing.T) {
 	s := reorderScreen()
-	s.updateReorderPickPhase(runeKey('a'))
+	s.updateReorderPickPhase(runeKey('a'), 0)
 	if len(s.lines) != 0 {
 		t.Fatalf("empty add-all staged %d line(s), want 0", len(s.lines))
 	}
@@ -926,7 +952,7 @@ func TestPOReorderAddAll_EmptyListIsRefused(t *testing.T) {
 // against, so a reload must drop them rather than re-point them at new rows.
 func TestPOReorderMarksClearOnReload(t *testing.T) {
 	s := reorderScreen(reorderItem("A", 11, 1, "1.00"), reorderItem("B", 12, 1, "1.00"))
-	s.updateReorderPickPhase(runeKey(' '))
+	s.updateReorderPickPhase(runeKey(' '), 0)
 	if len(s.reorderSelected) != 1 {
 		t.Fatalf("setup: expected 1 mark, got %d", len(s.reorderSelected))
 	}
@@ -965,11 +991,11 @@ func TestPOSourcePhase_RemovesAnyLineNotJustTheLast(t *testing.T) {
 	if s.reviewCursor != 2 {
 		t.Fatalf("cursor should follow the last add; got %d", s.reviewCursor)
 	}
-	s.updateSourcePhase(runeKey('k'))
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyUp}, 0)
 	if s.reviewCursor != 1 {
-		t.Fatalf("k should move the cart highlight; cursor = %d", s.reviewCursor)
+		t.Fatalf("Up should move the cart highlight; cursor = %d", s.reviewCursor)
 	}
-	s.updateSourcePhase(runeKey('x'))
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyCtrlX}, 0)
 
 	if len(s.lines) != 2 {
 		t.Fatalf("x should remove exactly one line; len = %d", len(s.lines))
@@ -981,13 +1007,13 @@ func TestPOSourcePhase_RemovesAnyLineNotJustTheLast(t *testing.T) {
 		t.Errorf("phase = %v, want to stay in the source chooser", s.phase)
 	}
 	// Removing the last line leaves the cursor in range.
-	s.updateSourcePhase(runeKey('j'))
-	s.updateSourcePhase(runeKey('x'))
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyDown}, 0)
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyCtrlX}, 0)
 	if len(s.lines) != 1 || s.reviewCursor != 0 {
 		t.Errorf("lines=%d cursor=%d, want 1 line with the cursor clamped to 0", len(s.lines), s.reviewCursor)
 	}
 	// The highlighted line is the one the cart marks.
-	if out := s.renderSourcePhase(); !strings.Contains(out, "▸ 1) First") {
+	if out := s.View(); !strings.Contains(out, "▸ 1) First") {
 		t.Errorf("source cart should mark the highlighted line:\n%s", out)
 	}
 }
@@ -997,13 +1023,13 @@ func TestPOSourcePhase_RemovesAnyLineNotJustTheLast(t *testing.T) {
 // to the SOURCE chooser (where the edit started) rather than to review.
 func TestPOSourcePhase_EditsAnyLineAndComesBack(t *testing.T) {
 	s := buildThreeLineCart(t)
-	s.updateSourcePhase(runeKey('k'))
-	s.updateSourcePhase(runeKey('k')) // highlight line 0
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyUp}, 0)
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyUp}, 0) // highlight line 0
 	if s.reviewCursor != 0 {
 		t.Fatalf("cursor = %d, want 0", s.reviewCursor)
 	}
 
-	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	if s.phase != poPhaseLine || s.editIndex != 0 {
 		t.Fatalf("ctrl+e should edit line 0; phase=%v editIndex=%d", s.phase, s.editIndex)
 	}
@@ -1012,7 +1038,7 @@ func TestPOSourcePhase_EditsAnyLineAndComesBack(t *testing.T) {
 	}
 	s.lineInputs[poLineFieldDesc].SetValue("First (edited)")
 	s.lineInputs[poLineFieldQty].SetValue("12")
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 
 	if s.phase != poPhaseSource {
 		t.Errorf("phase = %v, want back in the source chooser where the edit started", s.phase)
@@ -1039,9 +1065,9 @@ func TestPOSourcePhase_EditsAnyLineAndComesBack(t *testing.T) {
 // building also comes back to the source chooser, unchanged.
 func TestPOSourcePhase_EditEscReturnsToSource(t *testing.T) {
 	s := buildThreeLineCart(t)
-	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateSourcePhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	s.lineInputs[poLineFieldDesc].SetValue("WRONG")
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc}, 0)
 
 	if s.phase != poPhaseSource {
 		t.Errorf("phase = %v, want the source chooser", s.phase)
@@ -1059,9 +1085,9 @@ func TestPOSourcePhase_EditEscReturnsToSource(t *testing.T) {
 func TestPOReviewPhase_EditStillReturnsToReview(t *testing.T) {
 	s := buildThreeLineCart(t)
 	enterReviewAt(s, 1)
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	s.lineInputs[poLineFieldQty].SetValue("4")
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if s.phase != poPhaseReview {
 		t.Errorf("phase = %v, want review", s.phase)
 	}
@@ -1077,7 +1103,7 @@ func TestPOSourcePhase_EmptyCartKeysAreNoOps(t *testing.T) {
 	s.supplierID = 7
 	s.phase = poPhaseSource
 	for _, k := range []tea.KeyMsg{runeKey('j'), runeKey('k'), runeKey('x'), {Type: tea.KeyCtrlE}} {
-		s.updateSourcePhase(k)
+		s.updateSourcePhase(k, 0)
 		if s.phase != poPhaseSource {
 			t.Fatalf("key %q left the source chooser (phase %v) on an empty cart", k.String(), s.phase)
 		}
@@ -1103,7 +1129,7 @@ func TestPOLineDate_OfferedOnInventoryLinesOnly(t *testing.T) {
 	if !hasField(s.lineFields(), poLineFieldDate) {
 		t.Errorf("single-pack inventory line should offer the expected-date field")
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "Expected date:") {
+	if out := s.View(); !strings.Contains(out, "Expected date") {
 		t.Errorf("inventory line should render the date input:\n%s", out)
 	}
 
@@ -1117,7 +1143,7 @@ func TestPOLineDate_OfferedOnInventoryLinesOnly(t *testing.T) {
 	if hasField(s.lineFields(), poLineFieldDate) {
 		t.Errorf("asset line should not offer a date the backend ignores")
 	}
-	if out := s.renderLinePhase(); !strings.Contains(out, "inventory lines only") {
+	if out := s.View(); !strings.Contains(out, "inventory lines only") {
 		t.Errorf("asset line should explain the missing date field:\n%s", out)
 	}
 
@@ -1232,13 +1258,13 @@ func TestPOEditLine_EditsQtyAndDateOnABulkAddedLine(t *testing.T) {
 		reorderItem("Bolt", 11, 4, "2.50"),
 		reorderItem("Nut", 12, 6, "0.75"),
 	)
-	s.updateReorderPickPhase(runeKey('a'))
+	s.updateReorderPickPhase(runeKey('a'), 0)
 	if len(s.lines) != 2 || s.phase != poPhaseReview {
 		t.Fatalf("setup: lines=%d phase=%v", len(s.lines), s.phase)
 	}
 
 	s.reviewCursor = 1
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	if s.phase != poPhaseLine {
 		t.Fatalf("ctrl+e should open the line form on a bulk-added line; phase = %v", s.phase)
 	}
@@ -1258,7 +1284,7 @@ func TestPOEditLine_EditsQtyAndDateOnABulkAddedLine(t *testing.T) {
 	}
 	s.lineInputs[poLineFieldQty].SetValue("10")
 	s.lineInputs[poLineFieldDate].SetValue("2026-09-01")
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 
 	if len(s.lines) != 2 {
 		t.Fatalf("edit changed cart length: %d", len(s.lines))
@@ -1282,10 +1308,10 @@ func TestPOEditLine_EditsQtyAndDateOnABulkAddedLine(t *testing.T) {
 	// (label, then date, then badge) makes the DATE what gives — marked with
 	// the ellipsis rather than dropped, so the operator is never shown a row
 	// that reads as carrying no date at all.
-	if out := s.renderCart(1, 0); !strings.Contains(out, "exp…") {
+	if out := poCartText(s, 1); !strings.Contains(out, "exp…") {
 		t.Errorf("cart should still say the line carries an expected date:\n%s", out)
 	}
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	if got := s.lineInputs[poLineFieldDate].Value(); got != "2026-09-01" {
 		t.Errorf("re-opened edit date prefill = %q, want 2026-09-01", got)
 	}
@@ -1369,22 +1395,22 @@ func TestPOEditLine_CatalogCostOverrideRoundTrips(t *testing.T) {
 
 	// Re-open: the field shows the override, and saving keeps it.
 	enterReviewAt(s, 0)
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	if got := s.lineInputs[poLineFieldCost].Value(); got != "3.25" {
 		t.Errorf("cost prefill = %q, want the staged override %q", got, "3.25")
 	}
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if got := s.lines[0].item.UnitCost; got == nil || math.Abs(*got-3.25) > 1e-12 {
 		t.Fatalf("unit_cost after an untouched edit = %v, want 3.25", got)
 	}
-	if out := s.renderCart(0, 0); !strings.Contains(out, "@ $3.25") {
+	if out := poCartText(s, 0); !strings.Contains(out, "@ $3.25") {
 		t.Errorf("cart should show the overridden cost:\n%s", out)
 	}
 
 	// Re-open and clear it: back to catalog pricing.
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	s.lineInputs[poLineFieldCost].SetValue("")
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 	if got := s.lines[0].item.UnitCost; got != nil {
 		t.Errorf("unit_cost after clearing = %v, want nil", *got)
 	}
@@ -1405,7 +1431,7 @@ func TestPOBulkAddedCatalogLine_CostEditsThroughToTheSubmit(t *testing.T) {
 		reorderItem("Nut", 12, 6, "0.00"),
 	)
 	s.deps = Deps{OMS: omsapi.New(srv.URL)}
-	s.updateReorderPickPhase(runeKey('a'))
+	s.updateReorderPickPhase(runeKey('a'), 0)
 	if len(s.lines) != 2 || s.phase != poPhaseReview {
 		t.Fatalf("setup: lines=%d phase=%v", len(s.lines), s.phase)
 	}
@@ -1416,7 +1442,7 @@ func TestPOBulkAddedCatalogLine_CostEditsThroughToTheSubmit(t *testing.T) {
 	}
 
 	s.reviewCursor = 0
-	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE})
+	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
 	if !hasField(s.lineFields(), poLineFieldCost) {
 		t.Fatalf("a bulk-added catalog line must expose a cost field to correct")
 	}
@@ -1424,7 +1450,7 @@ func TestPOBulkAddedCatalogLine_CostEditsThroughToTheSubmit(t *testing.T) {
 		t.Errorf("cost prefill = %q, want blank when the catalog has no price", got)
 	}
 	s.lineInputs[poLineFieldCost].SetValue("12.50")
-	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter})
+	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEnter}, 0)
 
 	items := submitAndReadItems(t, s, body)
 	if len(items) != 2 {
@@ -1555,7 +1581,7 @@ func TestPORenderCart_TotalAndTypeBadges(t *testing.T) {
 		poCartLineFor(omsapi.PurchaseOrderCreateItem{Description: "Freight", Quantity: 1, UnitCost: cost(0.50)}, "Freight"),
 	}
 
-	out := s.renderCart(-1, 0)
+	out := poCartText(s, -1)
 	for _, want := range []string{"[Inventory item]", "[Asset]", "[Freeform]"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cart missing type badge %s:\n%s", want, out)
@@ -1573,8 +1599,9 @@ func TestPORenderCart_TotalAndTypeBadges(t *testing.T) {
 		t.Errorf("fully-priced cart should not warn about catalog pricing:\n%s", out)
 	}
 
-	// The review phase shows the cart, so it inherits the same total.
-	if rev := s.renderReviewPhase(); !strings.Contains(rev, "Total: $1,251.50") {
+	// The review phase draws the same cart body, so it inherits the same total.
+	s.phase = poPhaseReview
+	if rev := s.View(); !strings.Contains(rev, "Total: $1,251.50") {
 		t.Errorf("review phase missing running total:\n%s", rev)
 	}
 }
@@ -1589,11 +1616,14 @@ func TestPORenderCart_FlagsCatalogPricedLines(t *testing.T) {
 		poCartLineFor(omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 5, UnitCost: &unit}, "Priced"),
 		poCartLineFor(omsapi.PurchaseOrderCreateItem{ItemSupplierID: &sup, Quantity: 5}, "Unpriced"),
 	}
-	out := s.renderCart(0, 0)
-	if !strings.Contains(out, "Total: $10.00") {
-		t.Errorf("total should sum only the priced line:\n%s", out)
+	out := poCartText(s, 0)
+	// "at least", because the sum is a FLOOR: the unpriced line is priced from
+	// the supplier catalog at save time, so a flat $10.00 would read as the
+	// order's value on the one surface that exists to confirm it.
+	if !strings.Contains(out, "Total: at least $10.00") {
+		t.Errorf("total should sum only the priced line, and say it is a floor:\n%s", out)
 	}
-	if !strings.Contains(out, "1 line is priced from the supplier catalog") {
+	if !strings.Contains(out, "1 of them is priced from the catalog") {
 		t.Errorf("cart should flag the unpriced line:\n%s", out)
 	}
 }
@@ -1602,7 +1632,24 @@ func TestPORenderCart_FlagsCatalogPricedLines(t *testing.T) {
 // $0.00 order.
 func TestPORenderCart_EmptyDrawsNoTotal(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
-	if out := s.renderCart(-1, 0); strings.Contains(out, "Total:") {
+	if out := poCartText(s, -1); strings.Contains(out, "Total:") {
 		t.Errorf("empty cart should draw no total:\n%s", out)
 	}
+}
+
+// poCartText renders the staged cart as the frame draws it, for the assertions
+// that are about a cart ROW rather than about a whole phase.
+//
+// highlight is the cursor the body is built around; -1 means "no row
+// highlighted", which the cart's own callers never pass but which several of
+// these tests do to read a row without the reverse-video padding on it.
+func poCartText(s *PurchaseOrderCreateScreen, highlight int) string {
+	saved := s.reviewCursor
+	s.reviewCursor = highlight
+	defer func() { s.reviewCursor = saved }()
+	// The rows AND what they come to. The total and its caveat are pinned above
+	// the body (cartTotalRows) rather than drawn under its last line, so a
+	// helper that read only the body would assert about half the cart.
+	return strings.Join(append(append([]string{}, s.cartBody().text...),
+		s.cartTotalRows()...), "\n")
 }

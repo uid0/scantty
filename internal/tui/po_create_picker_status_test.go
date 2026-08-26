@@ -78,6 +78,14 @@ type poPickFake struct {
 	itemSKU  string
 	assetTag string
 
+	// assetSearchServerSide makes the asset lookup answer a query with every
+	// asset rather than filtering on the generated NAME. OMS's asset search
+	// covers the tag, the serial and the description as well, so a query that
+	// matches nothing a fixture row draws can still come back with a full page
+	// — which is the only way to reach a committed query AND a next page at
+	// once, and that pair is where the `Showing` row's two bounds meet.
+	assetSearchServerSide bool
+
 	// The three OPTIONAL header lookups. Every source-chooser test ran with
 	// these at zero — the fake fell through to an empty envelope — so the g / w
 	// / c rows were never on the frame, and the four rows they cost were what
@@ -100,6 +108,13 @@ type poPickFake struct {
 	// gateway body rather than JSON, which is how an unbounded string reaches
 	// the source chooser's attribution row — a row redrawn on every keystroke.
 	workOrdersErrBody string
+
+	// createErrBody replaces the gateway page failCreate answers with. The
+	// failure block's two cuts drop content for different reasons and mark it
+	// with different wordings, so a fixture has to be able to land on either
+	// side of the cellPrefix bound rather than only on the far side of it,
+	// which is where poGatewayHTML falls.
+	createErrBody string
 
 	// failCreate answers the submit with a gateway page rather than JSON.
 	// omsapi.parseError puts the ENTIRE raw body in APIError.Message when the
@@ -239,6 +254,9 @@ func (f *poPickFake) handler() http.HandlerFunc {
 				return
 			}
 			search := strings.ToLower(r.URL.Query().Get("search"))
+			if f.assetSearchServerSide {
+				search = ""
+			}
 			rows := []map[string]any{}
 			for i := 0; i < f.assets; i++ {
 				name := fmt.Sprintf("Lathe %d", i+1)
@@ -301,8 +319,12 @@ func (f *poPickFake) handler() http.HandlerFunc {
 			envelope(rows, len(rows))
 		case strings.Contains(r.URL.Path, "/purchase-orders/"):
 			if f.failCreate {
+				body := poGatewayHTML
+				if f.createErrBody != "" {
+					body = f.createErrBody
+				}
 				w.WriteHeader(http.StatusBadGateway)
-				_, _ = w.Write([]byte(poGatewayHTML))
+				_, _ = w.Write([]byte(body))
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 900, "po_number": "PO-900"})
@@ -462,7 +484,7 @@ func TestPOItemPicker_AmbiguousSearchDoesNotGuess(t *testing.T) {
 	if !strings.Contains(out, "4 of 12 match") {
 		t.Errorf("the screen does not say how many matched:\n%s", out)
 	}
-	if !strings.Contains(out, "enter picks") {
+	if !strings.Contains(out, "Enter=Pick item") {
 		t.Errorf("the screen does not name the key that finishes the job:\n%s", out)
 	}
 	// And that second enter does finish it.
@@ -494,9 +516,10 @@ func TestPOItemPicker_NoMatchIsNeverSilent(t *testing.T) {
 	// At 80 columns the pane is 51 wide and Root.View() TRUNCATES, so each of
 	// these has to be a whole line or it is not on the operator's screen.
 	for _, want := range []string{
-		`no match for "flux capacitor"`, // what was searched for
-		"12 in catalog",                 // and against what
-		"edit the search",               // and the way out
+		`no match for "flux capacitor"`,       // what was searched for
+		"12 in catalog",                       // and against what
+		"Esc=Close search",                    // and the way out, on the bar
+		"No catalog item matches the filter.", // and what the LIST is
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the 80-column render is missing %q:\n%s", want, out)
@@ -577,7 +600,11 @@ func TestPOItemPicker_FailureSaysSoAndLeavesAWayOut(t *testing.T) {
 	if !strings.Contains(out, "looking up this supplier's items failed") {
 		t.Errorf("a failed lookup does not say so at 80 columns:\n%s", out)
 	}
-	if !strings.Contains(out, "b picks another line source") {
+	// The way out is on the BAR, which the layer draws on every frame at the
+	// bottom of the pane and never trims. It used to be a way-out line printed
+	// in the body AND repeated as the frame's own bar, two statements of one
+	// claim on one pane.
+	if !strings.Contains(out, "b=Line sources") {
 		t.Errorf("a failed lookup leaves the operator nowhere to act:\n%s", out)
 	}
 
@@ -588,8 +615,8 @@ func TestPOItemPicker_FailureSaysSoAndLeavesAWayOut(t *testing.T) {
 	}
 }
 
-// TestPOItemPicker_RetryAfterAFailureShowsTheList: renderItemPick shows the
-// error INSTEAD of the list, so a stale error string left behind by a fixed
+// TestPOItemPicker_RetryAfterAFailureShowsTheList: itemBody draws its "the
+// lookup failed" line INSTEAD of the list, so a stale error string left behind by a fixed
 // request would hide a load that worked — a second, quieter way for the screen
 // to stop telling the truth.
 func TestPOItemPicker_RetryAfterAFailureShowsTheList(t *testing.T) {
@@ -631,7 +658,10 @@ func TestPOAssetPicker_SearchSaysItIsSearchingThenSaysWhatItFound(t *testing.T) 
 	if !screen.assetsLoading {
 		t.Fatal("enter in the asset search did not mark a request in flight")
 	}
-	if out := r.View(); !strings.Contains(out, "Looking up the assets Acme Supply supplied") {
+	// The WORK and the SUBJECT, on the layer's status row: which request is
+	// out, against whom, and — because this search really goes off the terminal
+	// — what it is searching for.
+	if out := r.View(); !strings.Contains(out, `Searching Acme Supply's assets for "Lathe 2"`) {
 		t.Errorf("the in-flight frame does not name the work:\n%s", out)
 	}
 	r = pump(t, r, cmd, 0)
@@ -702,7 +732,10 @@ func TestPOReorderPicker_EmptyEnterIsNeverSilent(t *testing.T) {
 	for _, h := range poPaneSizes {
 		s := reorderScreen()
 		s.phase = poPhaseReorderPick
-		s.terminalHeight = h
+		// BOTH dimensions: the columnar frame pins its action bar to the pane
+		// and draws the rule at the pane's width, so a screen given a height
+		// and no width draws a bar sized for the layer's unsized fallback.
+		s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 
 		before := strings.Join(poPaneLinesAt(t, s, h), "\n")
 		_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -779,18 +812,18 @@ func TestPOCreate_EveryPickerKeyThatDeclinesToActSaysWhy(t *testing.T) {
 		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")}},
 		{"reorder picker, move with nothing flagged", func(s *PurchaseOrderCreateScreen) {
 			s.phase = poPhaseReorderPick
-		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}},
+		}, tea.KeyMsg{Type: tea.KeyDown}},
 		{"item picker, move over a list that matched nothing", func(s *PurchaseOrderCreateScreen) {
 			s.phase = poPhaseItemPick
 			s.itemSuppliersAll = []omsapi.ItemSupplier{{ID: 1, ItemName: "Widget"}}
 			s.itemSuppliersFor = s.supplierID
 			s.itemSuppliersSearch.SetValue("nope")
 			s.applyItemSupplierFilter()
-		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")}},
+		}, tea.KeyMsg{Type: tea.KeyUp}},
 		{"asset picker, move over a search that matched nothing", func(s *PurchaseOrderCreateScreen) {
 			s.phase = poPhaseAssetPick
 			s.assetsQuery = "hovercraft"
-		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}},
+		}, tea.KeyMsg{Type: tea.KeyDown}},
 	}
 
 	for _, tc := range cases {
@@ -798,7 +831,7 @@ func TestPOCreate_EveryPickerKeyThatDeclinesToActSaysWhy(t *testing.T) {
 			for _, h := range poPaneSizes {
 				s := NewPurchaseOrderCreateScreen(Deps{})
 				s.supplierID = 1
-				s.terminalHeight = h
+				s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 				tc.setup(s)
 
 				before := strings.Join(poPaneLinesAt(t, s, h), "\n")
@@ -843,8 +876,8 @@ func TestPOCreate_PendingHeaderLookupsSayTheyArePending(t *testing.T) {
 	}
 	// And it must NOT name g/w/c while they are, because those keys do nothing
 	// yet — the bar may only name keys that work.
-	if strings.Contains(s.helpText(), "g agreement") {
-		t.Error("the bar names g while the agreement list is still loading")
+	if poBarNamedKeys(t, s.bar())["g"] {
+		t.Errorf("the bar names g while the agreement list is still loading: %s", poBarText(s.bar()))
 	}
 }
 
@@ -988,7 +1021,7 @@ func poWidestSupplierScreen() *PurchaseOrderCreateScreen {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	s.suppliers = []omsapi.Supplier{{ID: 1, Name: "Northern Tool & Die Supply Co"}}
 	s.supplierID = 1
-	s.terminalHeight = poPaneSizes[0]
+	s.Update(tea.WindowSizeMsg{Width: 80, Height: poPaneSizes[0]})
 	return s
 }
 
@@ -1022,11 +1055,11 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 		{"reorder, failed", func(s *PurchaseOrderCreateScreen) {
 			s.reorderLoadErr = long
 		}, poPhaseReorderPick,
-			[]string{"reading the reorder queue failed", "b picks another line source", "esc cancels the order"}},
+			[]string{"reading the reorder queue failed", "b=Line sources", "Esc=Cancel order"}},
 
 		{"reorder, empty", func(s *PurchaseOrderCreateScreen) {},
 			poPhaseReorderPick,
-			[]string{"b picks another line source", "esc cancels the order"}},
+			[]string{"b=Line sources", "Esc=Cancel order"}},
 
 		{"reorder, list", func(s *PurchaseOrderCreateScreen) {
 			s.reorderItems = []omsapi.ReorderDataItem{
@@ -1042,23 +1075,23 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 		{"items, failed", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersErr = long
 		}, poPhaseItemPick,
-			[]string{"looking up this supplier's items failed", "r retries the lookup",
-				"b picks another line source", "esc cancels the order"}},
+			[]string{"looking up this supplier's items failed", "r=Retry",
+				"b=Line sources", "Esc=Cancel order"}},
 
 		{"items, failed while the search box is open", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersErr = long
 			s.itemSuppliersTyping = true
 		}, poPhaseItemPick,
-			[]string{"looking up this supplier's items failed", "esc closes the search"}},
+			[]string{"looking up this supplier's items failed", "Esc=Close search"}},
 
 		{"items, empty catalog", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersNote = pickerNote{s.noCatalogSentence(), StatusWarn}
 		}, poPhaseItemPick,
-			[]string{"has no active catalog items", "b picks another line source", "esc cancels the order"}},
+			[]string{"has no active catalog items", "b=Line sources", "Esc=Cancel order"}},
 
 		{"items, no note at all", func(s *PurchaseOrderCreateScreen) {},
 			poPhaseItemPick,
-			[]string{"has no active catalog items", "b picks another line source"}},
+			[]string{"has no active catalog items", "b=Line sources"}},
 
 		{"items, search matched nothing", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersAll = poCatalog(400)
@@ -1067,7 +1100,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.applyItemSupplierFilter()
 			s.itemSuppliersNote = itemFilterNote(s.itemSuppliersSearch.Value(), 0, 400, "", true)
 		}, poPhaseItemPick,
-			[]string{"no match for", "in catalog", "edit the search"}},
+			[]string{"no match for", "400 in", "Esc=Close search"}},
 
 		{"items, several matched, after esc closed the box", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersAll = poCatalog(400)
@@ -1075,7 +1108,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.applyItemSupplierFilter()
 			s.itemSuppliersNote = itemFilterNote("Widget 1", len(s.itemSuppliers), 400, "search closed", false)
 		}, poPhaseItemPick,
-			[]string{"search closed", "match", "j/k choose", "enter picks"}},
+			[]string{"search closed", "match", "UP/DN=Move", "Enter=Pick item"}},
 
 		{"items, exactly one matched, after esc closed the box", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersAll = poCatalog(400)
@@ -1083,14 +1116,14 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.applyItemSupplierFilter()
 			s.itemSuppliersNote = itemFilterNote("Widget 137", 1, 400, "search closed", false)
 		}, poPhaseItemPick,
-			[]string{"search closed", "enter picks it"}},
+			[]string{"search closed", "Enter=Pick item"}},
 
 		{"items, unfiltered count", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersAll = poCatalog(400)
 			s.applyItemSupplierFilter()
 			s.itemSuppliersNote = itemFilterNote("", 400, 400, "search closed", false)
 		}, poPhaseItemPick,
-			[]string{"search closed", "enter picks the highlighted row"}},
+			[]string{"search closed", "Enter=Pick item"}},
 
 		{"assets, working", func(s *PurchaseOrderCreateScreen) {
 			s.assetsLoading = true
@@ -1099,19 +1132,19 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 		{"assets, failed", func(s *PurchaseOrderCreateScreen) {
 			s.assetsErr = long
 		}, poPhaseAssetPick,
-			[]string{"looking up this supplier's assets failed", "/ retries with a search",
-				"b picks another line source", "esc cancels the order"}},
+			[]string{"looking up this supplier's assets failed", "/=Retry with a search",
+				"b=Line sources", "Esc=Cancel order"}},
 
 		{"assets, failed while the search box is open", func(s *PurchaseOrderCreateScreen) {
 			s.assetsErr = long
 			s.assetsTyping = true
 		}, poPhaseAssetPick,
-			[]string{"looking up this supplier's assets failed", "esc closes the search"}},
+			[]string{"looking up this supplier's assets failed", "Esc=Close search"}},
 
 		{"assets, empty", func(s *PurchaseOrderCreateScreen) {
 			s.assetsNote = pickerNote{"this supplier has no assets on file", StatusWarn}
 		}, poPhaseAssetPick,
-			[]string{"no assets on file", "/ searches", "b picks another line source", "esc cancels the order"}},
+			[]string{"no assets on file", "/=Search", "b=Line sources", "Esc=Cancel order"}},
 
 		{"items, a list longer than the pane", func(s *PurchaseOrderCreateScreen) {
 			s.itemSuppliersAll = poCatalog(400)
@@ -1146,7 +1179,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.assetsPage = 2
 			s.assetsHasNext = true
 		}, poPhaseAssetPick,
-			[]string{"more above", "Lathe 40", "] next", "[ prev"}},
+			[]string{"more above", "Lathe 40", "]=Next page", "[=Prev page"}},
 
 		{"supplier switch confirm", func(s *PurchaseOrderCreateScreen) {
 			s.suppliers = append(s.suppliers, omsapi.Supplier{ID: 2, Name: "Southern Fastener Supply"})
@@ -1157,16 +1190,15 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 				{item: omsapi.PurchaseOrderCreateItem{Description: "Shop rags", Quantity: 2}, label: "Shop rags"},
 			}
 		}, poPhaseSupplierSwitch,
-			[]string{"Changing supplier drops part of the cart",
-				"ctrl+x drops 1 line(s) and switches", "esc keeps the cart and this supplier"}},
+			[]string{"fill them", "Ctrl-X=Drop & switch", "Esc=Keep cart"}},
 
 		{"assets, search matched nothing", func(s *PurchaseOrderCreateScreen) {
 			s.assetsSearch.SetValue("hovercraft full of eels")
+			s.assetsQuery = "hovercraft full of eels"
 			s.assetsNote = pickerNote{
-				"no asset matches " + strconv.Quote(pickerClip("hovercraft full of eels", 16)) +
-					"\n/ edits the search · b picks another source", StatusWarn}
+				"no asset matches " + strconv.Quote(pickerClip("hovercraft full of eels", 16)), StatusWarn}
 		}, poPhaseAssetPick,
-			[]string{"no asset matches", "/ edits the search", "b picks another source"}},
+			[]string{"no asset matches", "/=Search", "b=Line sources"}},
 	}
 
 	for _, tc := range cases {
@@ -1179,7 +1211,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 				// long error push the way-out bar off the bottom unnoticed.
 				s := poWidestSupplierScreen()
 				s.phase = tc.phase
-				s.terminalHeight = h
+				s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 				tc.setup(s)
 
 				poAssertFits(t, tc.name, s)
@@ -1219,7 +1251,7 @@ func TestPOItemPicker_AmbiguousNoteSurvivesTheClip(t *testing.T) {
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 
 	poWantPaneLine(t, screen, "4 of 12 match")
-	poWantPaneLine(t, screen, "enter picks")
+	poWantPaneLine(t, screen, "Enter=Pick item")
 	poAssertFits(t, "ambiguous search", screen)
 
 	// And the esc-closes-the-box variant, whose "search closed · " prefix is
@@ -1227,7 +1259,7 @@ func TestPOItemPicker_AmbiguousNoteSurvivesTheClip(t *testing.T) {
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
 	poWantPaneLine(t, screen, "search closed")
-	poWantPaneLine(t, screen, "enter picks")
+	poWantPaneLine(t, screen, "Enter=Pick item")
 	poAssertFits(t, "search closed", screen)
 	_ = r
 }
@@ -1249,9 +1281,9 @@ func TestPOItemPicker_SearchBoxNeverNamesTheKeysItIsSwallowing(t *testing.T) {
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 	r = poType(t, r, "flux capacitor")
 
-	poRejectPaneLine(t, screen, "b picks another line source")
-	poRejectPaneLine(t, screen, "esc cancels the order")
-	poWantPaneLine(t, screen, "esc closes the search")
+	poRejectPaneLine(t, screen, "b=Line sources")
+	poRejectPaneLine(t, screen, "Esc=Cancel order")
+	poWantPaneLine(t, screen, "Esc=Close search")
 
 	// 'b' does what the box says it does, not what the old line claimed.
 	r = poType(t, r, "b")
@@ -1272,10 +1304,10 @@ func TestPOAssetPicker_SearchBoxNeverNamesTheKeysItIsSwallowing(t *testing.T) {
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 
-	poRejectPaneLine(t, screen, "b picks another line source")
-	poRejectPaneLine(t, screen, "esc cancels the order")
-	poRejectPaneLine(t, screen, "/ searches")
-	poWantPaneLine(t, screen, "esc closes the search")
+	poRejectPaneLine(t, screen, "b=Line sources")
+	poRejectPaneLine(t, screen, "Esc=Cancel order")
+	poRejectPaneLine(t, screen, "/=Search")
+	poWantPaneLine(t, screen, "Esc=Close search")
 
 	r = poType(t, r, "b")
 	if screen.phase != poPhaseAssetPick {
@@ -1300,9 +1332,9 @@ func TestPOAssetPicker_FailedLoadWithTheBoxOpenNamesOnlyEsc(t *testing.T) {
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 
 	poWantPaneLine(t, screen, "looking up this supplier's assets failed")
-	poWantPaneLine(t, screen, "esc closes the search")
-	poRejectPaneLine(t, screen, "/ retries with a search")
-	poRejectPaneLine(t, screen, "b picks another line source")
+	poWantPaneLine(t, screen, "Esc=Close search")
+	poRejectPaneLine(t, screen, "/=Retry with a search")
+	poRejectPaneLine(t, screen, "b=Line sources")
 	_ = r
 }
 
@@ -1323,7 +1355,7 @@ func TestPOItemPicker_EmptyCatalogIsReportedAsEmpty(t *testing.T) {
 
 	poRejectPaneLine(t, screen, "0 catalog item(s) loaded")
 	poWantPaneLine(t, screen, "has no active catalog items on file")
-	poWantPaneLine(t, screen, "b picks another line source")
+	poWantPaneLine(t, screen, "b=Line sources")
 	if screen.itemSuppliersNote.level != StatusWarn {
 		t.Errorf("an empty catalog is reported at level %v, want a warning", screen.itemSuppliersNote.level)
 	}
@@ -1357,8 +1389,8 @@ func TestPOPickers_LateReplyForTheOldSupplierIsDropped(t *testing.T) {
 
 	// Move the order to supplier 2.
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")}) // → source chooser
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")}) // → supplier picker
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})                       // → supplier picker
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	if screen.supplierID != 2 {
 		t.Fatalf("setup: the order is still on supplier %d", screen.supplierID)
@@ -1440,7 +1472,7 @@ func TestPOItemPicker_CatalogIsNotRewalkedForEveryLine(t *testing.T) {
 	}
 	poRejectPaneLine(t, screen, "Looking up the items")
 	poWantPaneLine(t, screen, "Widget 1")
-	poWantPaneLine(t, screen, "r reloads")
+	poWantPaneLine(t, screen, "r=Reload")
 	if got := fake.hits("/item-suppliers/"); got != first {
 		t.Errorf("re-entering the picker cost %d more request(s)", got-first)
 	}
@@ -1489,7 +1521,7 @@ func TestPOItemPicker_EnterAgainstAnEmptyCatalogKeepsSayingItIsEmpty(t *testing.
 	if screen.itemSuppliersTyping {
 		t.Error("'/' opened a search box over a catalog with nothing in it to search")
 	}
-	poWantPaneLine(t, screen, "b picks another line source")
+	poWantPaneLine(t, screen, "b=Line sources")
 }
 
 // ---------------------------------------------------------------------------
@@ -1565,7 +1597,7 @@ func TestPOItemPicker_KeysAfterAFailedWalkReportTheFailure(t *testing.T) {
 
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	poWantPaneLine(t, screen, "looking up this supplier's items failed")
-	poWantPaneLine(t, screen, "r retries the lookup")
+	poWantPaneLine(t, screen, "r=Retry")
 	poRejectPaneLine(t, screen, "has no active catalog items")
 	if out := r.View(); !strings.Contains(out, "the catalog lookup failed") {
 		t.Errorf("enter after a failed walk does not report the failure:\n%s", out)
@@ -1601,9 +1633,9 @@ func TestPOItemPicker_ZeroMatchNoteMatchesTheBoxState(t *testing.T) {
 	r = poType(t, r, "flux capacitor")
 
 	// Box OPEN: nothing may claim esc leads anywhere but out of the search.
-	poWantPaneLine(t, screen, "edit the search")
-	poWantPaneLine(t, screen, "esc closes the search")
-	poRejectPaneLine(t, screen, "esc cancels the order")
+	poRejectPaneLine(t, screen, "Enter=")
+	poWantPaneLine(t, screen, "Esc=Close search")
+	poRejectPaneLine(t, screen, "Esc=Cancel order")
 	poRejectPaneLine(t, screen, "esc then b for another source")
 	poAssertFits(t, "zero match, box open", screen)
 
@@ -1615,8 +1647,8 @@ func TestPOItemPicker_ZeroMatchNoteMatchesTheBoxState(t *testing.T) {
 	}
 	poWantPaneLine(t, screen, "search closed")
 	poWantPaneLine(t, screen, "no match for")
-	poWantPaneLine(t, screen, "/ edits the search")
-	poWantPaneLine(t, screen, "esc cancels the order")
+	poWantPaneLine(t, screen, "/=Search")
+	poWantPaneLine(t, screen, "Esc=Cancel order")
 	poRejectPaneLine(t, screen, "esc then b for another source")
 	poAssertFits(t, "zero match, box closed", screen)
 
@@ -1710,101 +1742,6 @@ func TestPOItemPicker_TypingMidWalkDoesNotConcludeTheCatalogIsEmpty(t *testing.T
 	poAssertFits(t, "rows landed after a mid-walk search", screen)
 }
 
-// TestPOItemPicker_RowsLandingWithTheBoxOpenDoNotAdvertiseSlash: '/' is a
-// character going into the query while the box is open, so the loaded note may
-// not name it as the key that searches.
-func TestPOItemPicker_RowsLandingWithTheBoxOpenDoNotAdvertiseSlash(t *testing.T) {
-	fake := &poPickFake{catalog: 40, pageSize: 5}
-	r, screen := poPickerAt(t, fake, 80)
-
-	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	r = next.(Root)
-	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	r = next.(Root)
-	r = poType(t, r, "Widget 38")
-	r = pump(t, r, load, 0)
-
-	if !screen.itemSuppliersTyping {
-		t.Fatal("setup: the box closed before the rows landed")
-	}
-	if poNoteSays(t, screen.itemSuppliersNote, "/ searches") {
-		t.Errorf("the loaded note advertises / while / is a character in the query: %q",
-			screen.itemSuppliersNote.text)
-	}
-	if !poNoteSays(t, screen.itemSuppliersNote, "enter picks") {
-		t.Errorf("the loaded note does not name the key that finishes the search: %q",
-			screen.itemSuppliersNote.text)
-	}
-	poAssertFits(t, "rows landed with the box open", screen)
-
-	// And that key works.
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	if screen.phase != poPhaseLine {
-		t.Fatalf("the key the note named did not work (phase %v)", screen.phase)
-	}
-	if got := screen.lineInputs[poLineFieldDesc].Value(); got != "Widget 38" {
-		t.Errorf("staged %q, want Widget 38", got)
-	}
-}
-
-// TestPOAssetPicker_SearchClosedNoteNamesOnlyLiveKeys: esc out of the asset
-// search used to post "j/k move · enter picks" unconditionally, and that note
-// IS the body of the empty frame — so it named three keys over nothing to move
-// through and nothing to pick.
-func TestPOAssetPicker_SearchClosedNoteNamesOnlyLiveKeys(t *testing.T) {
-	fake := &poPickFake{assets: 3}
-	r, screen := poPickerAt(t, fake, 80)
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-
-	// Search for something that is not there, so the list is left empty.
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	r = poType(t, r, "hovercraft")
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	if len(screen.assets) != 0 {
-		t.Fatalf("setup: the search returned %d asset(s)", len(screen.assets))
-	}
-
-	// Re-open the box and back out of it: THIS is the note that overwrote the
-	// honest one.
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
-
-	poWantPaneLine(t, screen, "search closed")
-	if poNoteSays(t, screen.assetsNote, "j/k move") || poNoteSays(t, screen.assetsNote, "enter picks") {
-		t.Errorf("the empty asset frame names keys that do nothing: %q", screen.assetsNote.text)
-	}
-	if !poNoteSays(t, screen.assetsNote, "no asset matches") {
-		t.Errorf("the empty asset frame does not say why it is empty: %q", screen.assetsNote.text)
-	}
-	poAssertFits(t, "asset search closed over an empty list", screen)
-
-	// The keys it DOES name work: / reopens the box.
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	if !screen.assetsTyping {
-		t.Error("the note names / but / did not reopen the search")
-	}
-
-	// With rows present the same path may name j/k and enter, because there
-	// they do something.
-	for range "hovercraft" {
-		next, _ := r.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-		r = next.(Root)
-	}
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	if len(screen.assets) == 0 {
-		t.Fatalf("setup: clearing the query returned no assets")
-	}
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
-	if !poNoteSays(t, screen.assetsNote, "j/k move") || !poNoteSays(t, screen.assetsNote, "enter picks") {
-		t.Errorf("with rows on screen the note stopped naming the keys that work: %q", screen.assetsNote.text)
-	}
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	if screen.phase != poPhaseLine {
-		t.Fatalf("the note named enter but enter did not pick (phase %v)", screen.phase)
-	}
-}
-
 // TestPOPickers_FitEveryPaneSizeAndNeverHideTheCursor drives the pickers the
 // operator actually drives, at BOTH supported terminal heights, and requires
 // two things of every frame: nothing is cut off either edge, and the row the
@@ -1825,7 +1762,7 @@ func TestPOPickers_FitEveryPaneSizeAndNeverHideTheCursor(t *testing.T) {
 
 				// Walk the cursor to the bottom; every step must stay visible.
 				for i := 0; i < len(screen.itemSuppliers)-1; i++ {
-					r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+					r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 					poAssertFits(t, "item picker, scrolling", screen)
 					want := screen.itemSuppliers[screen.itemSuppliersCur].ItemName
 					if !poPaneHasLine(t, screen, want) {
@@ -1867,16 +1804,16 @@ func TestPOPickers_FitEveryPaneSizeAndNeverHideTheCursor(t *testing.T) {
 				poAssertFits(t, "asset picker, loaded", screen)
 				// The pager is drawn after the list, so it is the first thing an
 				// unbudgeted list pushes off the bottom — and it names ']'.
-				poWantPaneLine(t, screen, "] next")
+				poWantPaneLine(t, screen, "]=Next page")
 				for i := 0; i < len(screen.assets)-1; i++ {
-					r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+					r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 					poAssertFits(t, "asset picker, scrolling", screen)
 					if want := screen.assets[screen.assetsCursor].Name; !poPaneHasLine(t, screen, want) {
 						t.Fatalf("the highlighted asset %q is not on the 80x%d pane:\n%s",
 							want, height, strings.Join(poPaneLines(t, screen), "\n"))
 					}
 				}
-				poWantPaneLine(t, screen, "] next")
+				poWantPaneLine(t, screen, "]=Next page")
 			})
 		})
 	}
@@ -1986,56 +1923,8 @@ func TestPOItemPicker_EnterOverAnAmbiguousSearchMovesTheNote(t *testing.T) {
 	}
 	// It says what enter DID and hands the operator the keys that now work.
 	poWantPaneLine(t, screen, "too many to pick")
-	poWantPaneLine(t, screen, "j/k choose")
+	poWantPaneLine(t, screen, "UP/DN=Move")
 	poAssertFits(t, "ambiguous enter", screen)
-}
-
-// TestPOItemPicker_OpenBoxNoteNamesOnlyTheKeysTheBoxLeavesAlive: with the
-// search box open j and k are characters going into the query and enter only
-// picks when exactly one row is left, so a note naming "j/k choose · enter
-// picks" over eleven matches names three keys of which two do something else.
-func TestPOItemPicker_OpenBoxNoteNamesOnlyTheKeysTheBoxLeavesAlive(t *testing.T) {
-	fake := &poPickFake{catalog: 12, pageSize: 12}
-	r, screen := poPickerAt(t, fake, 80)
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-
-	// Empty query, box open: every row "matches" but enter will not pick one.
-	if poNoteSays(t, screen.itemSuppliersNote, "enter picks the highlighted row") {
-		t.Errorf("the open box claims enter picks the highlighted row: %q", screen.itemSuppliersNote.text)
-	}
-
-	r = poType(t, r, "Widget 1") // 4 matches, box still open
-	if !screen.itemSuppliersTyping {
-		t.Fatal("setup: the box closed")
-	}
-	if poNoteSays(t, screen.itemSuppliersNote, "j/k choose") {
-		t.Errorf("the open box claims j/k choose, where they are query characters: %q",
-			screen.itemSuppliersNote.text)
-	}
-	poWantPaneLine(t, screen, "4 of 12 match")
-	poAssertFits(t, "open box, several matches", screen)
-
-	// j really is a character here, which is why naming it would be a lie.
-	r = poType(t, r, "j")
-	if got := screen.itemSuppliersSearch.Value(); got != "Widget 1j" {
-		t.Errorf("'j' with the box open produced query %q, want it typed in", got)
-	}
-
-	// Narrow to one and the wording that DOES hold in both states appears.
-	next, _ := r.Update(tea.KeyMsg{Type: tea.KeyBackspace}) // drop the 'j'
-	r = next.(Root)
-	r = poType(t, r, "2") // "Widget 12"
-	if len(screen.itemSuppliers) != 1 {
-		t.Fatalf("setup: %d match(es), want 1", len(screen.itemSuppliers))
-	}
-	if !poNoteSays(t, screen.itemSuppliersNote, "enter picks it") {
-		t.Errorf("a single match does not name the key that takes it: %q", screen.itemSuppliersNote.text)
-	}
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	if screen.phase != poPhaseLine {
-		t.Fatalf("the key the note named did not pick (phase %v)", screen.phase)
-	}
 }
 
 // TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList sweeps the rule across
@@ -2053,8 +1942,8 @@ func TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList(t *testing.T) {
 		fake := &poPickFake{catalog: 20, pageSize: 20}
 		r, screen := poPickerAt(t, fake, 80)
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 		wantCur := screen.itemSuppliersCur
 
 		next, reload := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
@@ -2066,8 +1955,8 @@ func TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList(t *testing.T) {
 		poRejectPaneLine(t, screen, "Widget 1  ")
 
 		for _, k := range []tea.KeyMsg{
-			{Type: tea.KeyRunes, Runes: []rune("j")},
-			{Type: tea.KeyRunes, Runes: []rune("k")},
+			{Type: tea.KeyDown},
+			{Type: tea.KeyUp},
 			{Type: tea.KeyEnter},
 		} {
 			next, cmd := r.Update(k)
@@ -2105,7 +1994,7 @@ func TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList(t *testing.T) {
 				screen.itemSuppliersErr, len(screen.itemSuppliers))
 		}
 		// The frame names r, b and esc — and not enter.
-		poWantPaneLine(t, screen, "r retries the lookup")
+		poWantPaneLine(t, screen, "r=Retry")
 		poRejectPaneLine(t, screen, "Widget 1  ")
 
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
@@ -2133,7 +2022,7 @@ func TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList(t *testing.T) {
 				screen.assetsLoading, len(screen.assets))
 		}
 		for _, k := range []tea.KeyMsg{
-			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyDown},
 			{Type: tea.KeyEnter},
 		} {
 			next, cmd := r.Update(k)
@@ -2174,7 +2063,7 @@ func TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList(t *testing.T) {
 		poRejectPaneLine(t, screen, "Bolt 1  ")
 
 		for _, k := range []tea.KeyMsg{
-			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyDown},
 			{Type: tea.KeyRunes, Runes: []rune(" ")},
 			{Type: tea.KeyRunes, Runes: []rune("a")},
 			{Type: tea.KeyEnter},
@@ -2203,38 +2092,6 @@ func TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList(t *testing.T) {
 	})
 }
 
-// TestPOAssetPicker_RowsLandingWithTheBoxOpenDoNotClaimEnterPicks: the asset
-// reply can arrive with the search box still open, where enter runs the search
-// again rather than picking — the same typing gate the item picker's notes have.
-func TestPOAssetPicker_RowsLandingWithTheBoxOpenDoNotClaimEnterPicks(t *testing.T) {
-	fake := &poPickFake{assets: 3}
-	r, screen := poPickerAt(t, fake, 80)
-
-	next, load := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-	r = next.(Root)
-	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	r = next.(Root)
-	if !screen.assetsTyping || !screen.assetsLoading {
-		t.Fatalf("setup: want the box open over an in-flight load (typing=%v load=%v)",
-			screen.assetsTyping, screen.assetsLoading)
-	}
-	r = pump(t, r, load, 0)
-
-	if !screen.assetsTyping {
-		t.Fatal("the reply closed the search box")
-	}
-	if poNoteSays(t, screen.assetsNote, "enter picks the highlighted row") {
-		t.Errorf("the open box claims enter picks a row: %q", screen.assetsNote.text)
-	}
-	poAssertFits(t, "assets landed with the box open", screen)
-
-	// esc closes it and the closed-box wording returns.
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
-	if !poNoteSays(t, screen.assetsNote, "enter picks") {
-		t.Errorf("the closed box stopped naming the key that picks: %q", screen.assetsNote.text)
-	}
-}
-
 // TestPOSupplierPicker_IsWindowedLikeEveryOtherBlock: the supplier list was the
 // one scrolling block outside the shared budget, and it carried the marker bug
 // that budget's own windower was fixed for — a newline inside Render, which
@@ -2261,7 +2118,7 @@ func TestPOSupplierPicker_IsWindowedLikeEveryOtherBlock(t *testing.T) {
 			// must keep the highlighted supplier on the pane and the frame must
 			// say how many it hid.
 			for i := 0; i < 29; i++ {
-				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 				poAssertFits(t, "supplier picker, scrolling", screen)
 				want := fmt.Sprintf("(#%d)", screen.suppliers[screen.supplierCursor].ID)
 				if !poPaneHasLine(t, screen, want) {
@@ -2293,120 +2150,33 @@ func TestPOSupplierPicker_IsWindowedLikeEveryOtherBlock(t *testing.T) {
 // The bar-honesty rule, as ONE sweep, over the New PO pickers
 // ---------------------------------------------------------------------------
 
-// poPickerBarKeys maps a bar segment's first token to the keystroke it claims.
-// Every token the three pickers can emit must be here: an unrecognised one is a
-// claim the sweep would skip in silence, which is how a dead key survives.
-var poPickerBarKeys = map[string][]string{
-	// Every entry here is a LITERAL transcription: the token names exactly the
-	// keys it maps to and no synonyms. It used to credit "j/k" with the arrows,
-	// "tab/shift+tab" with the arrows and "↑↓" with the emacs pair, on the
-	// reasoning that a synonym costs cells — and that is the sweep granting a
-	// bar a claim it never makes, which is the defect this file exists to
-	// report, sitting inside the check and keeping it green. The bars name the
-	// arrows themselves now ("j/k ↑↓ move"), and the two emacs chords the
-	// review cart bound behind "↑↓" are gone the way the supplier picker's
-	// `tab` alias went.
-	"j/k":    {"j", "k"},
-	"enter":  {"enter"},
-	"/":      {"/"},
-	"r":      {"r"},
-	"b":      {"b"},
-	"esc":    {"esc"},
-	"]":      {"]"},
-	"[":      {"["},
-	"space":  {" "},
-	"a":      {"a"},
-	"type":   nil, // "type to filter" names no single key
-	"ctrl+x": {"ctrl+x"},
-	"ctrl+e": {"ctrl+e"},
-	"ctrl+t": {"ctrl+t"},
-	// The source chooser's line-source and attribution letters.
-	"i": {"i"},
-	"f": {"f"},
-	"g": {"g"},
-	"w": {"w"},
-	"c": {"c"},
-	"d": {"d"},
-	"x": {"x"},
-	// The line form's field cycle, and the arrow token every bar that binds
-	// `case "j", "down":` now carries beside it.
-	"tab/shift+tab": {"tab", "shift+tab"},
-	"↑↓":            {"up", "down"},
-	// Segment heads that name the FRAME rather than a key. They are listed
-	// rather than ignored so an unrecognised token still fails loudly: a token
-	// the parser skips in silence is a claim the sweep cannot judge.
-	"Add":         nil,
-	"Pick":        nil,
-	"Purchase":    nil,
-	"Work":        nil,
-	"Committee":   nil,
-	"Changing":    nil,
-	"Items":       nil,
-	"Assets":      nil,
-	"Reorder":     nil,
-	"Line":        nil,
-	"Editing":     nil,
-	"Review":      nil,
-	"row":         nil,
-	"submitting…": nil,
-	// The head of both frozen bars, where the submit's own working line leads
-	// the claim instead of trailing it (the source chooser's pending bar).
-	"Submitting…": nil,
-}
-
-// poPickerVocabulary is every keystroke the sweep presses. A key outside the
-// bar's claim must leave the screen alone; one inside it must do something.
-// poPickerVocabulary is what the sweep presses. A key ABSENT from this list is
-// never pressed in either direction, so it is untested BOTH as a claim the bar
-// makes and as an action the screen takes — which is exactly how two defects in
-// this run survived: 'N' on the purchase-order list sat outside poAllBarKeys,
-// and 'tab' committing the order's supplier sat outside this list.
+// poPickerVocabulary is every keystroke this sweep presses.
 //
-// So it covers every key any of these phases binds, not just the ones the bars
-// happen to name: the cursor keys and their arrow aliases, the paging pair, the
-// source-chooser letters (which must do NOTHING inside a picker), the line
-// form's tab/shift+tab, and the two ctrl chords the review and switch frames
-// use. Adding a key here is cheap; leaving one out is invisible.
+// It is the ONE curated roster left in this package, and what makes that safe
+// is the phase sweep beside it (po_create_phase_sweep_test.go): that one
+// presses the whole KEY SPACE — every printable ASCII rune plus the named
+// specials — against every phase of the iota, so a key missing from this list
+// is still pressed, in both directions, one file over. What this sweep earns
+// its keep on is the other axis: it walks the picker STATES the phase sweep
+// does not reach (empty, failed, mid-flight, mid-page), and pressing the whole
+// space against fifteen of those at two pane heights is minutes of wall clock
+// for coverage the phase sweep already has.
+//
+// A key ABSENT from this list is pressed in NEITHER direction, so it is
+// untested rather than passing — which is exactly how two defects in this
+// project's history survived. Adding one here is cheap; leaving one out is
+// invisible. It covers every key any of these phases binds, not only the ones
+// a bar happens to name.
+//
+// It was rewritten wholesale by the columnar conversion, and the diff IS the
+// key-scheme change: j/k are gone (the arrows and the paging pair moved in),
+// the source chooser's bare `x` became Ctrl-X, and PgUp/PgDn arrived with the
+// layer's windowed body.
 var poPickerVocabulary = []string{
-	"j", "k", "down", "up", "enter", "esc", "tab", "shift+tab",
+	"down", "up", "pgdown", "pgup", "enter", "esc", "tab", "shift+tab",
 	"/", "r", "b", "]", "[", " ",
-	"a", "i", "f", "g", "w", "c", "d", "x",
+	"a", "i", "f", "g", "w", "c", "d",
 	"ctrl+e", "ctrl+x",
-}
-
-func poPickerNamedKeys(t *testing.T, bar string) map[string]bool {
-	t.Helper()
-	named := map[string]bool{}
-	for _, seg := range strings.Split(bar, " · ") {
-		fields := strings.Fields(strings.TrimSpace(seg))
-		if len(fields) == 0 {
-			continue
-		}
-		keys, ok := poPickerBarKeys[fields[0]]
-		if !ok {
-			t.Fatalf("bar segment %q starts with an unknown token — add it to poPickerBarKeys (bar: %q)", seg, bar)
-		}
-		for _, k := range keys {
-			named[k] = true
-		}
-		for _, f := range fields[1:] {
-			for _, k := range poBarAliasKeys[f] {
-				named[k] = true
-			}
-		}
-	}
-	return named
-}
-
-// poBarAliasKeys is the tokens a bar carries AFTER its head to name a second
-// key that acts exactly as the head's does — "j/k ↑↓ move". Only tokens that
-// SPELL the keys they map to belong here: the whole point of the entries is
-// that the bar says the key, so the sweep may credit it. A token standing in
-// for a key it does not name is what these maps used to do, and it let two
-// bound-but-unnamed chords pass.
-var poBarAliasKeys = map[string][]string{
-	"↑↓":       {"up", "down"},
-	"home/end": {"home", "end"},
 }
 
 // poPickerState is everything a key can CHANGE. Deliberately excludes the note
@@ -2554,7 +2324,7 @@ func poDerefStr(p *string) string {
 // keypress: no key changes either, so they can only differ between two presses
 // if the harness itself moved.
 func (s *PurchaseOrderCreateScreen) paneForState() string {
-	return fmt.Sprintf("%dx%d", s.terminalWidth, s.terminalHeight)
+	return fmt.Sprintf("%dx%d/%d", s.terminalWidth, s.terminalHeight, s.switchScroll)
 }
 
 // poStateFingerprinted / poStateDeclined classify EVERY field of the screen.
@@ -2563,7 +2333,10 @@ func (s *PurchaseOrderCreateScreen) paneForState() string {
 // cannot be made quietly, which is the whole point.
 var poStateFingerprinted = map[string]bool{
 	"phase": true, "pending": true,
-	"terminalHeight": true, "terminalWidth": true,
+	// The pane geometry is one embedded struct now (jdeScreen), so the two
+	// dimensions are classified together — and paneForState still reads both,
+	// because both change what is drawn.
+	"jdeScreen": true, "switchScroll": true,
 	"suppliers": true, "supplierLoading": true, "supplierLoadErr": true,
 	"supplierCursor": true, "supplierID": true,
 	"agreements": true, "agreementLoading": true, "agreementLoadErr": true,
@@ -2595,8 +2368,7 @@ var poStateDeclined = map[string]string{
 	"reorderNote":       "the reorder picker's decline note",
 	"itemSuppliersNote": "the item picker's decline note",
 	"assetsNote":        "the asset picker's decline note",
-	"cartLead":          "what a declined key did to a collapsed cart",
-	"attrLead":          "what a declined g / w / c did",
+	"sourceNote":        "the source chooser's decline note",
 	"switchLead":        "what a declined key did on the supplier-switch confirm",
 	"pendingLead":       "what a key the submit made inert just did",
 }
@@ -2639,6 +2411,16 @@ func poCmdActs(cmd tea.Cmd) bool {
 	if cmd == nil {
 		return false
 	}
+	if poIsBlink(cmd()) {
+		// A CARET blinking is not a key acting, and every key that reaches a
+		// focused textinput comes back with one: bubbles falls through to
+		// Cursor.Update for anything its own switch does not handle, and that
+		// returns a blink tick unconditionally. Counting it made every
+		// unhandled key inside a search box look like an act — the fingerprint
+		// has excluded the caret since it was written, for exactly this
+		// reason, and the command had to be excluded with it.
+		return false
+	}
 	msg := cmd()
 	switch m := msg.(type) {
 	case nil:
@@ -2673,7 +2455,7 @@ func TestPOPickers_PaneNamesExactlyTheKeysThatWork(t *testing.T) {
 		name  string
 		fake  func() *poPickFake
 		enter func(*testing.T, Root) Root // reach the state under test
-		bar   func(*PurchaseOrderCreateScreen) string
+		bar   func(*PurchaseOrderCreateScreen) []actionBarItem
 	}
 	press := func(k string) func(*testing.T, Root) Root {
 		return func(t *testing.T, r Root) Root { return key(t, r, poPickerKeyMsg(k)) }
@@ -2692,38 +2474,38 @@ func TestPOPickers_PaneNamesExactlyTheKeysThatWork(t *testing.T) {
 	}
 	pickers := []picker{
 		{"items, loaded", func() *poPickFake { return &poPickFake{catalog: 8, pageSize: 8} },
-			press("i"), (*PurchaseOrderCreateScreen).itemPickBar},
+			press("i"), (*PurchaseOrderCreateScreen).bar},
 		{"items, empty catalog", func() *poPickFake { return &poPickFake{catalog: 0} },
-			press("i"), (*PurchaseOrderCreateScreen).itemPickBar},
+			press("i"), (*PurchaseOrderCreateScreen).bar},
 		{"items, failed", func() *poPickFake { return &poPickFake{catalog: 8, failItems: true} },
-			press("i"), (*PurchaseOrderCreateScreen).itemPickBar},
+			press("i"), (*PurchaseOrderCreateScreen).bar},
 		{"items, first walk in flight", func() *poPickFake { return &poPickFake{catalog: 8, pageSize: 2} },
-			midFlight(nil, "i"), (*PurchaseOrderCreateScreen).itemPickBar},
+			midFlight(nil, "i"), (*PurchaseOrderCreateScreen).bar},
 		{"items, reload in flight", func() *poPickFake { return &poPickFake{catalog: 8, pageSize: 2} },
-			midFlight([]string{"i"}, "r"), (*PurchaseOrderCreateScreen).itemPickBar},
+			midFlight([]string{"i"}, "r"), (*PurchaseOrderCreateScreen).bar},
 		{"assets, loaded with a pager", func() *poPickFake { return &poPickFake{assets: 12, pageSize: 5} },
-			press("a"), (*PurchaseOrderCreateScreen).assetPickBar},
+			press("a"), (*PurchaseOrderCreateScreen).bar},
 		{"assets, empty", func() *poPickFake { return &poPickFake{assets: 0} },
-			press("a"), (*PurchaseOrderCreateScreen).assetPickBar},
+			press("a"), (*PurchaseOrderCreateScreen).bar},
 		{"assets, failed", func() *poPickFake { return &poPickFake{assets: 3, failAssets: true} },
-			press("a"), (*PurchaseOrderCreateScreen).assetPickBar},
+			press("a"), (*PurchaseOrderCreateScreen).bar},
 		{"assets, load in flight", func() *poPickFake { return &poPickFake{assets: 12, pageSize: 5} },
-			midFlight(nil, "a"), (*PurchaseOrderCreateScreen).assetPickBar},
+			midFlight(nil, "a"), (*PurchaseOrderCreateScreen).bar},
 		{"assets, page load in flight", func() *poPickFake { return &poPickFake{assets: 12, pageSize: 5} },
-			midFlight([]string{"a"}, "]"), (*PurchaseOrderCreateScreen).assetPickBar},
+			midFlight([]string{"a"}, "]"), (*PurchaseOrderCreateScreen).bar},
 		{"reorder, loaded", func() *poPickFake { return &poPickFake{reorder: 6} },
-			press("r"), (*PurchaseOrderCreateScreen).reorderPickBar},
+			press("r"), (*PurchaseOrderCreateScreen).bar},
 		{"reorder, empty", func() *poPickFake { return &poPickFake{reorder: 0} },
-			press("r"), (*PurchaseOrderCreateScreen).reorderPickBar},
+			press("r"), (*PurchaseOrderCreateScreen).bar},
 		{"reorder, failed", func() *poPickFake { return &poPickFake{failReorder: true} },
-			press("r"), (*PurchaseOrderCreateScreen).reorderPickBar},
+			press("r"), (*PurchaseOrderCreateScreen).bar},
 		{"reorder, load in flight", func() *poPickFake { return &poPickFake{reorder: 6} },
-			midFlight(nil, "r"), (*PurchaseOrderCreateScreen).reorderPickBar},
+			midFlight(nil, "r"), (*PurchaseOrderCreateScreen).bar},
 		// The supplier list is the fourth picker frame on this screen. It is
 		// reached by backing out of the source chooser, and its loaded/loading
 		// states have the same two directions to check.
 		{"suppliers, loaded", func() *poPickFake { return &poPickFake{suppliers: 4} },
-			press("b"), (*PurchaseOrderCreateScreen).supplierPickBar},
+			press("esc"), (*PurchaseOrderCreateScreen).bar},
 	}
 
 	for _, p := range pickers {
@@ -2741,17 +2523,28 @@ func TestPOPickers_PaneNamesExactlyTheKeysThatWork(t *testing.T) {
 
 				_, screen := fresh(nil)
 				bar := p.bar(screen)
-				named := poPickerNamedKeys(t, bar)
+				named := poBarNamedKeys(t, bar)
 
 				// Every claim the bar makes has to be READABLE on the pane it
-				// is drawn on, at this height, or it is not a claim.
-				for _, seg := range strings.Split(bar, " · ") {
-					if !poPaneHasLine(t, screen, seg) {
+				// is drawn on, at this height, or it is not a claim. The layer
+				// tightens the gutter and then WRAPS rather than dropping an
+				// item, so this is a check on the pane's height as much as its
+				// width — a bar folded onto a fourth line on a pane with three
+				// to give is a key the operator cannot discover.
+				for _, it := range bar {
+					want := it.Key + "=" + it.Label
+					if !poPaneHasLine(t, screen, want) {
 						t.Errorf("the bar claims %q but the 80x%d pane does not carry it:\n%s",
-							seg, height, strings.Join(poPaneLines(t, screen), "\n"))
+							want, height, strings.Join(poPaneLines(t, screen), "\n"))
 					}
 				}
 				poAssertFits(t, p.name, screen)
+				// The one-surface rule on the NON-typing states. Both notes
+				// that named keys lived out here — an empty source chooser and
+				// a loaded catalog — while the only body scan in the package
+				// ran over the TYPING states, which is a guard scoped to where
+				// somebody expected the defect rather than to where it was.
+				poAssertBodyNamesNoKey(t, p.name, screen, height)
 
 				// Probed from more than one position, because j does nothing at
 				// the bottom of a list and k nothing at the top: a key is dead
@@ -2759,7 +2552,7 @@ func TestPOPickers_PaneNamesExactlyTheKeysThatWork(t *testing.T) {
 				// list sweep uses.
 				for _, k := range poPickerVocabulary {
 					acted := false
-					for _, probe := range [][]string{nil, {"j"}} {
+					for _, probe := range [][]string{nil, {"down"}} {
 						pr, ps := fresh(probe)
 						before := poPickerState(ps)
 						_, cmd := pr.Update(poPickerKeyMsg(k))
@@ -2769,9 +2562,9 @@ func TestPOPickers_PaneNamesExactlyTheKeysThatWork(t *testing.T) {
 					}
 					switch {
 					case named[k] && !acted:
-						t.Errorf("%s names %q but pressing it changes nothing (bar: %q)", p.name, k, bar)
+						t.Errorf("%s names %q but pressing it changes nothing (bar: %s)", p.name, k, poBarText(bar))
 					case !named[k] && acted:
-						t.Errorf("%s does not name %q, but pressing it acts (bar: %q)", p.name, k, bar)
+						t.Errorf("%s does not name %q, but pressing it acts (bar: %s)", p.name, k, poBarText(bar))
 					}
 				}
 			})
@@ -2779,69 +2572,74 @@ func TestPOPickers_PaneNamesExactlyTheKeysThatWork(t *testing.T) {
 	}
 }
 
+// poPickerKeyMsg turns one of poKeySpace's names into the message a terminal
+// really sends.
+//
+// It is COMPLETE over that space, and the completeness is checked
+// (TestPOCreate_EveryKeyNameTranslates) rather than trusted. It used to fall
+// through to KeyRunes for anything it did not recognise, which is silent and
+// wrong in the one direction that matters: "pgup" reached a focused search box
+// as the four letters p-g-u-p, so the sweep pressing it saw the query change
+// and reported the picker as acting on a key its bar does not name. A
+// translator that spells an unknown name as text turns every new key name into
+// a false positive, and the failure reads as a defect in the screen.
+//
+// The single-rune fallback stays, because that IS how a printable key arrives.
 func poPickerKeyMsg(k string) tea.KeyMsg {
-	switch k {
-	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
-	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEsc}
-	case "tab":
-		return tea.KeyMsg{Type: tea.KeyTab}
-	case "shift+tab":
-		return tea.KeyMsg{Type: tea.KeyShiftTab}
-	case "up":
-		return tea.KeyMsg{Type: tea.KeyUp}
-	case "down":
-		return tea.KeyMsg{Type: tea.KeyDown}
-	case "ctrl+e":
-		return tea.KeyMsg{Type: tea.KeyCtrlE}
-	case "ctrl+x":
-		return tea.KeyMsg{Type: tea.KeyCtrlX}
+	if t, ok := poNamedKeyTypes[k]; ok {
+		return tea.KeyMsg{Type: t}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
 
-// TestPOItemPicker_BarAndNoteNeverDisagreeAboutEnter: with the box open over
-// SEVERAL matches the pane used to carry "enter picks the match" from the
-// action bar and "enter closes the search" from the note, four rows apart —
-// and enter did neither, because with more than one match it declines. The
-// operator who trusts the bar presses enter expecting a staged line, which is
-// the reported defect wearing a different hat.
-func TestPOItemPicker_BarAndNoteNeverDisagreeAboutEnter(t *testing.T) {
-	for _, height := range poPaneSizes {
-		t.Run(fmt.Sprintf("height %d", height), func(t *testing.T) {
-			fake := &poPickFake{catalog: 12, pageSize: 12}
-			r, screen := poPickerAtSize(t, fake, 80, height)
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-			r = poType(t, r, "Widget 1") // 4 matches
+// poNamedKeyTypes is every key poKeySpace names that is not a printable rune.
+// One table, read by both translators, so the two sweeps cannot disagree about
+// what a key name means.
+var poNamedKeyTypes = map[string]tea.KeyType{
+	"enter":     tea.KeyEnter,
+	"esc":       tea.KeyEsc,
+	"tab":       tea.KeyTab,
+	"shift+tab": tea.KeyShiftTab,
+	"up":        tea.KeyUp,
+	"down":      tea.KeyDown,
+	"left":      tea.KeyLeft,
+	"right":     tea.KeyRight,
+	"home":      tea.KeyHome,
+	"end":       tea.KeyEnd,
+	"pgup":      tea.KeyPgUp,
+	"pgdown":    tea.KeyPgDown,
+	"backspace": tea.KeyBackspace,
+	"delete":    tea.KeyDelete,
+	"ctrl+e":    tea.KeyCtrlE,
+	"ctrl+x":    tea.KeyCtrlX,
+	"ctrl+t":    tea.KeyCtrlT,
+	"ctrl+p":    tea.KeyCtrlP,
+	"ctrl+n":    tea.KeyCtrlN,
+}
 
-			// Nothing on the pane may promise that enter picks here.
-			poRejectPaneLine(t, screen, "enter picks the match")
-			poRejectPaneLine(t, screen, "enter pick,")
-			// The bar states the condition, once.
-			poWantPaneLine(t, screen, "enter picks when one row is left")
-			poAssertFits(t, "open box over several matches", screen)
-
-			// And that is what enter does: it declines to guess.
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-			if screen.phase == poPhaseLine || len(screen.lines) != 0 {
-				t.Fatalf("enter over several matches staged a line (phase %v, %d line(s))",
-					screen.phase, len(screen.lines))
+// TestPOCreate_EveryKeyNameTranslates walks poKeySpace and fails on any name
+// the translator would spell out as text instead of sending as a key.
+//
+// DERIVED from the space rather than from the table, so a key added to
+// poKeySpace tomorrow fails here until somebody teaches the translator about
+// it — which is the direction the silent fallback made impossible to see.
+func TestPOCreate_EveryKeyNameTranslates(t *testing.T) {
+	for _, k := range poKeySpace() {
+		msg := poPickerKeyMsg(k)
+		if len([]rune(k)) == 1 {
+			if msg.Type != tea.KeyRunes || string(msg.Runes) != k {
+				t.Errorf("the printable key %q translates to %v, want the rune itself", k, msg.Type)
 			}
-
-			// With exactly one match left it does pick, so the condition holds.
-			r2, screen2 := poPickerAtSize(t, &poPickFake{catalog: 12, pageSize: 12}, 80, height)
-			r2 = key(t, r2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-			r2 = key(t, r2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-			r2 = poType(t, r2, "Widget 12")
-			poWantPaneLine(t, screen2, "enter picks when one row is left")
-			r2 = key(t, r2, tea.KeyMsg{Type: tea.KeyEnter})
-			if screen2.phase != poPhaseLine {
-				t.Fatalf("enter over the one match did not pick (phase %v)", screen2.phase)
-			}
-			_ = r
-		})
+			continue
+		}
+		if msg.Type == tea.KeyRunes {
+			t.Errorf("the key name %q translates to the literal text %q — a focused text box "+
+				"would receive it as typing, and a sweep pressing it would report the screen "+
+				"as acting on a key nothing bound", k, string(msg.Runes))
+		}
+		if got := poPhaseKeyMsg(k); got.Type != msg.Type {
+			t.Errorf("the two translators disagree about %q: %v and %v", k, msg.Type, got.Type)
+		}
 	}
 }
 
@@ -2878,7 +2676,7 @@ func TestPOAssetPicker_PagerDoesNotStepOverAPageThatFailed(t *testing.T) {
 		t.Errorf("']' fired %d more request(s) from a frame that does not name it", got-before)
 	}
 	// The frame still names the key that repairs it, and that key works.
-	poWantPaneLine(t, screen, "/ retries with a search")
+	poWantPaneLine(t, screen, "/=Retry with a search")
 	fake.mu.Lock()
 	fake.failAssets = false
 	fake.mu.Unlock()
@@ -2894,7 +2692,7 @@ func TestPOAssetPicker_PagerDoesNotStepOverAPageThatFailed(t *testing.T) {
 
 // TestPOSupplierPicker_KeysDeclineWhileTheListIsNotDrawn: the supplier list is
 // the frame the whole order starts on, and while it is loading (or has failed)
-// renderSupplierPhase draws nothing at all — yet the bar promised j/k and enter
+// supplierBody drew nothing at all — yet the bar promised j/k and enter
 // and enter answered with silence, which is the reported symptom exactly.
 func TestPOSupplierPicker_KeysDeclineWhileTheListIsNotDrawn(t *testing.T) {
 	for _, height := range poPaneSizes {
@@ -2918,14 +2716,14 @@ func TestPOSupplierPicker_KeysDeclineWhileTheListIsNotDrawn(t *testing.T) {
 			// being the wording when the bar started naming the arrows it
 			// binds, and a reject assertion for a string the pane can no longer
 			// print passes without looking at anything.
-			poRejectPaneLine(t, screen, "j/k ↑↓ move")
-			poRejectPaneLine(t, screen, "enter commits")
-			poWantPaneLine(t, screen, "esc cancels the order")
+			poRejectPaneLine(t, screen, "UP/DN=Move")
+			poRejectPaneLine(t, screen, "Enter=Commit supplier")
+			poWantPaneLine(t, screen, "Esc=Cancel order")
 			poAssertFits(t, "suppliers, load in flight", screen)
 
 			for _, k := range []tea.KeyMsg{
-				{Type: tea.KeyRunes, Runes: []rune("j")},
-				{Type: tea.KeyRunes, Runes: []rune("k")},
+				{Type: tea.KeyDown},
+				{Type: tea.KeyUp},
 				{Type: tea.KeyEnter},
 			} {
 				next, cmd := r.Update(k)
@@ -2942,9 +2740,9 @@ func TestPOSupplierPicker_KeysDeclineWhileTheListIsNotDrawn(t *testing.T) {
 
 			// Once the list lands, the bar names them and they work.
 			r = pump(t, r, screen.Init(), 0)
-			poWantPaneLine(t, screen, "j/k ↑↓ move")
-			poWantPaneLine(t, screen, "enter commits")
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+			poWantPaneLine(t, screen, "UP/DN=Move")
+			poWantPaneLine(t, screen, "Enter=Commit supplier")
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 			want := screen.suppliers[screen.supplierCursor].ID
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 			if screen.supplierID != want {
@@ -3001,7 +2799,7 @@ func TestPOItemPicker_EnterOverAZeroMatchSearchMovesTheNote(t *testing.T) {
 // '/' posts named "enter picks the ONE match", so both of the pane's claims
 // about enter were false for as long as the walk was out.
 //
-// The second half is the decline itself. renderItemPick's loading branch
+// The second half is the decline itself. The item picker's loading branch
 // returned after the working line without drawing the note, so the press that
 // declined produced no visible change at all — the same defect, one frame over.
 func TestPOItemPicker_SearchBoxOverAnUnansweredCatalogDoesNotPromiseAPick(t *testing.T) {
@@ -3021,7 +2819,7 @@ func TestPOItemPicker_SearchBoxOverAnUnansweredCatalogDoesNotPromiseAPick(t *tes
 	// that can.
 	poRejectPaneLine(t, screen, "enter picks")
 	poRejectPaneLine(t, screen, "enter picks when one row is left")
-	poWantPaneLine(t, screen, "esc closes the search")
+	poWantPaneLine(t, screen, "Esc=Close search")
 
 	// The note the box opened with is not a conclusion, so enter has something
 	// to change. Without the render fix neither note reaches the pane and this
@@ -3081,7 +2879,11 @@ func TestPOItemPicker_SearchBoxOverAnUnansweredCatalogDoesNotPromiseAPick(t *tes
 	if screen.itemSuppliersLoad {
 		t.Fatal("the walk never finished")
 	}
-	poWantPaneLine(t, screen, "enter picks")
+	// With ONE row left the box's Enter says which of its two acts it is about
+	// to do, so the claim is "Pick it" rather than the browse frame's
+	// "Pick item" — a single label for every match count is what the prose bar
+	// had, and it promised a pick over eleven matches and over none.
+	poWantPaneLine(t, screen, "Enter=Pick it")
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	if screen.phase != poPhaseLine {
 		t.Fatalf("the key the settled pane named did not work (phase %v)", screen.phase)
@@ -3101,7 +2903,7 @@ func TestPOItemPicker_SearchBoxOverAnUnansweredCatalogDoesNotPromiseAPick(t *tes
 // So the typing arm declines while a lookup is out, and both surfaces stop
 // naming enter for exactly as long as that is true. The failure frame is not
 // gated: nothing is in flight there, so enter out of the box is the retry the
-// bar's "/ retries with a search" promised one frame earlier.
+// bar's "/=Retry with a search" promised one frame earlier.
 func TestPOAssetPicker_SearchBoxDoesNotRunASecondSearchOverTheFirst(t *testing.T) {
 	fake := &poPickFake{assets: 3}
 	r, screen := poPickerAt(t, fake, 80)
@@ -3114,8 +2916,8 @@ func TestPOAssetPicker_SearchBoxDoesNotRunASecondSearchOverTheFirst(t *testing.T
 		t.Fatalf("setup: want the box open over an in-flight lookup (typing=%v loading=%v)",
 			screen.assetsTyping, screen.assetsLoading)
 	}
-	poRejectPaneLine(t, screen, "enter runs the search")
-	poWantPaneLine(t, screen, "esc closes the search")
+	poRejectPaneLine(t, screen, "Enter=Run search")
+	poWantPaneLine(t, screen, "Esc=Close search")
 
 	r = poType(t, r, "Lathe 2")
 	beforePane := strings.Join(poPaneLines(t, screen), "\n")
@@ -3134,7 +2936,7 @@ func TestPOAssetPicker_SearchBoxDoesNotRunASecondSearchOverTheFirst(t *testing.T
 	if beforePane == strings.Join(poPaneLines(t, screen), "\n") {
 		t.Errorf("enter over an in-flight lookup redrew an identical pane:\n%s", beforePane)
 	}
-	poWantPaneLine(t, screen, "Looking up the assets")
+	poWantPaneLine(t, screen, "still looking up the assets")
 	poWantPaneLine(t, screen, "still looking up")
 	poAssertFits(t, "enter over an in-flight asset lookup", screen)
 
@@ -3144,7 +2946,7 @@ func TestPOAssetPicker_SearchBoxDoesNotRunASecondSearchOverTheFirst(t *testing.T
 		t.Fatal("the lookup never finished")
 	}
 	settled := fake.hits("/assets/")
-	poWantPaneLine(t, screen, "enter runs the search")
+	poWantPaneLine(t, screen, "Enter=Run search")
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	if got := fake.hits("/assets/"); got != settled+1 {
@@ -3255,7 +3057,7 @@ func TestPOAssetPicker_ClosingTheSearchMidLookupSaysWhatEscDid(t *testing.T) {
 		t.Errorf("esc mid-lookup redrew the same note:\n%s", after)
 	}
 	poWantPaneLine(t, screen, "search closed")
-	poWantPaneLine(t, screen, "Looking up the assets")
+	poWantPaneLine(t, screen, "still looking up the assets")
 	poAssertFits(t, "esc out of the asset search mid-lookup", screen)
 	r = pump(t, r, load, 0)
 	_ = r
@@ -3300,7 +3102,7 @@ func TestPOAssetPicker_ReenteringDoesNotRaceTheLookupAlreadyOut(t *testing.T) {
 	if got := screen.assetsSearch.Value(); got != "Lathe 2" {
 		t.Errorf("re-entry cleared the query the in-flight request owns: %q", got)
 	}
-	poWantPaneLine(t, screen, "Looking up the assets")
+	poWantPaneLine(t, screen, "still looking up the assets")
 
 	// The one reply that IS out lands, and the rows match the box.
 	r = pump(t, r, search, 0)
@@ -3310,7 +3112,7 @@ func TestPOAssetPicker_ReenteringDoesNotRaceTheLookupAlreadyOut(t *testing.T) {
 	if len(screen.assets) != 1 {
 		t.Errorf("the settled list holds %d row(s), want the 1 match for the query in the box", len(screen.assets))
 	}
-	poWantPaneLine(t, screen, "search: Lathe 2")
+	poWantPaneLine(t, screen, `Showing ..... "Lathe 2"`)
 	poAssertFits(t, "re-entered the asset picker mid-lookup", screen)
 }
 
@@ -3376,9 +3178,12 @@ func TestPOAssetPicker_ReenteringDoesNotPaintTheLastLookupOverThisOne(t *testing
 		t.Fatal("setup: re-entering did not start a fresh lookup")
 	}
 
-	poWantPaneLine(t, screen, "Looking up the assets")
+	// The WORK is on the layer's status row now, naming the request and the
+	// subject; the note is cleared by the arm that fires it, so the previous
+	// lookup's count cannot stand over a fresh one.
+	poWantPaneLine(t, screen, "Looking up the assets bought from")
 	poRejectPaneLine(t, screen, "3 asset(s)")
-	poRejectPaneLine(t, screen, "enter picks the highlighted row")
+	poRejectPaneLine(t, screen, "Enter=Pick asset")
 	poAssertFits(t, "re-entered the asset picker", screen)
 
 	r = pump(t, r, reload, 0)
@@ -3388,7 +3193,7 @@ func TestPOAssetPicker_ReenteringDoesNotPaintTheLastLookupOverThisOne(t *testing
 	poWantPaneLine(t, screen, "3 asset(s)")
 }
 
-// TestPOSupplierPicker_DecliningKeysMoveTheBody: renderSupplierPhase returned
+// TestPOSupplierPicker_DecliningKeysMoveTheBody: the supplier body returned
 // "" while the supplier lookup was out and after it failed, so the gate added
 // for those states answered j/k/enter/tab into the four-second flash and left
 // the pane exactly as it was — the standard the item and asset pickers are held
@@ -3405,14 +3210,14 @@ func TestPOSupplierPicker_DecliningKeysMoveTheBody(t *testing.T) {
 		{"lookup failed", func(s *PurchaseOrderCreateScreen) {
 			s.supplierLoading = false
 			s.supplierLoadErr = "suppliers exploded"
-		}, "loading suppliers failed"},
+		}, "loading the suppliers failed"},
 		{"none configured", func(s *PurchaseOrderCreateScreen) {
 			s.supplierLoading = false
 			s.suppliers = nil
 		}, "no suppliers are configured"},
 	}
 	keys := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune("j")},
+		{Type: tea.KeyDown},
 		{Type: tea.KeyEnter},
 	}
 
@@ -3421,7 +3226,7 @@ func TestPOSupplierPicker_DecliningKeysMoveTheBody(t *testing.T) {
 			for _, h := range poPaneSizes {
 				s := NewPurchaseOrderCreateScreen(Deps{})
 				s.phase = poPhaseSupplier
-				s.terminalHeight = h
+				s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 				st.setup(s)
 
 				before := strings.Join(poPaneLinesAt(t, s, h), "\n")
@@ -3459,7 +3264,7 @@ func TestPOReorderPicker_DecliningKeysMoveTheBodyMidLookup(t *testing.T) {
 		}, "reading the reorder queue failed"},
 	}
 	keys := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune("j")},
+		{Type: tea.KeyDown},
 		{Type: tea.KeyRunes, Runes: []rune(" ")},
 		{Type: tea.KeyEnter},
 	}
@@ -3470,7 +3275,7 @@ func TestPOReorderPicker_DecliningKeysMoveTheBodyMidLookup(t *testing.T) {
 				s := NewPurchaseOrderCreateScreen(Deps{})
 				s.phase = poPhaseReorderPick
 				s.supplierID = 1
-				s.terminalHeight = h
+				s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 				st.setup(s)
 
 				before := strings.Join(poPaneLinesAt(t, s, h), "\n")
@@ -3516,8 +3321,8 @@ func TestPOPickers_EveryGatedKeyMovesTheBody(t *testing.T) {
 			s.itemSuppliersLoad = true
 			s.itemSuppliersNote = s.catalogVerdict("")
 		}, []tea.KeyMsg{
-			{Type: tea.KeyRunes, Runes: []rune("j")},
-			{Type: tea.KeyRunes, Runes: []rune("k")},
+			{Type: tea.KeyDown},
+			{Type: tea.KeyUp},
 			{Type: tea.KeyEnter},
 			{Type: tea.KeyRunes, Runes: []rune("r")},
 		}},
@@ -3527,7 +3332,7 @@ func TestPOPickers_EveryGatedKeyMovesTheBody(t *testing.T) {
 			s.itemSuppliersErr = "items exploded"
 			s.itemSuppliersNote = s.catalogVerdict("")
 		}, []tea.KeyMsg{
-			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyDown},
 			{Type: tea.KeyEnter},
 			{Type: tea.KeyRunes, Runes: []rune("/")},
 		}},
@@ -3546,7 +3351,7 @@ func TestPOPickers_EveryGatedKeyMovesTheBody(t *testing.T) {
 			s.assetsLoading = true
 			_ = s.assetVerdictNote("")
 		}, []tea.KeyMsg{
-			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyDown},
 			{Type: tea.KeyEnter},
 			{Type: tea.KeyRunes, Runes: []rune("]")},
 			{Type: tea.KeyRunes, Runes: []rune("[")},
@@ -3557,7 +3362,7 @@ func TestPOPickers_EveryGatedKeyMovesTheBody(t *testing.T) {
 			s.assetsErr = "assets exploded"
 			_ = s.assetVerdictNote("")
 		}, []tea.KeyMsg{
-			{Type: tea.KeyRunes, Runes: []rune("j")},
+			{Type: tea.KeyDown},
 			{Type: tea.KeyEnter},
 			{Type: tea.KeyRunes, Runes: []rune("]")},
 		}},
@@ -3579,7 +3384,7 @@ func TestPOPickers_EveryGatedKeyMovesTheBody(t *testing.T) {
 					s := NewPurchaseOrderCreateScreen(Deps{})
 					s.supplierID = 1
 					s.suppliers = []omsapi.Supplier{{ID: 1, Name: "Acme Supply"}}
-					s.terminalHeight = h
+					s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 					tc.setup(s)
 
 					before := strings.Join(poPaneLinesAt(t, s, h), "\n")
@@ -3726,7 +3531,7 @@ func TestPOSupplierPicker_ListFrameDrawsItsNote(t *testing.T) {
 	for _, h := range poPaneSizes {
 		s := NewPurchaseOrderCreateScreen(Deps{})
 		s.phase = poPhaseSupplier
-		s.terminalHeight = h
+		s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 		s.supplierLoading = false
 		s.suppliers = []omsapi.Supplier{{ID: 1, Name: "Acme Supply"}, {ID: 2, Name: "Beta Tool"}}
 
@@ -3766,14 +3571,14 @@ func TestPOAssetPicker_UncommittedEscOverRowsNamesNeitherEnterNorTheWrongList(t 
 	poWantPaneLine(t, screen, "whole list")
 	// The label may not present the unsubmitted draft as the result set.
 	poRejectPaneLine(t, screen, "search: hovercraft")
-	poWantPaneLine(t, screen, "search (not run): hovercraft")
+	poWantPaneLine(t, screen, `Not run ..... hovercraft`)
 	poAssertFits(t, "uncommitted esc over rows", screen)
 
 	// Paging replaces the note; the label must still not claim the draft ran.
 	screen.assetsHasNext = true
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	poRejectPaneLine(t, screen, "search: hovercraft")
-	poWantPaneLine(t, screen, "search (not run): hovercraft")
+	poWantPaneLine(t, screen, `Not run ..... hovercraft`)
 	for _, req := range fake.seen() {
 		if strings.Contains(req, "search=hovercraft") {
 			t.Errorf("a lookup carried the uncommitted query: %s", req)
@@ -3812,13 +3617,13 @@ func TestPOAssetPicker_EmptyingACommittedSearchSaysWhatTheRowsStillAnswer(t *tes
 	poWantPaneLine(t, screen, "emptied without running")
 	poWantPaneLine(t, screen, `the rows still answer "Lathe"`)
 	// The label row went with the box; it has to name the query the rows answer.
-	poWantPaneLine(t, screen, `showing: "Lathe"`)
+	poWantPaneLine(t, screen, `Showing ..... "Lathe"`)
 	poAssertFits(t, "emptied a committed asset search", screen)
 	_ = r
 }
 
 // TestPOSupplierPicker_TabDoesNotCommit: tab used to commit the order's
-// supplier while supplierPickBar named only j/k, enter and esc — an unnamed key
+// supplier while the bar named only the arrows, enter and esc — an unnamed key
 // taking the most consequential action on the frame. It is dropped rather than
 // named: tab is "next field" in this same screen's line form, and an accidental
 // tab silently choosing the supplier is exactly the class this change removes.
@@ -3827,11 +3632,11 @@ func TestPOSupplierPicker_TabDoesNotCommit(t *testing.T) {
 		fake := &poPickFake{suppliers: 3, catalog: 2, pageSize: 5}
 		r, screen := poPickerAtSize(t, fake, 80, h)
 		// poPickerAt commits the first supplier on entry; go back to the picker.
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
 		if screen.phase != poPhaseSupplier {
 			t.Fatalf("80x%d: setup left phase %v, want the supplier picker", h, screen.phase)
 		}
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 		want := screen.suppliers[screen.supplierCursor].ID
 		if want == screen.supplierID {
 			t.Fatalf("80x%d: setup did not move onto a DIFFERENT supplier", h)
@@ -3886,10 +3691,10 @@ func TestPOAssetPicker_TypingOverAnUnsearchedListLabelsWhatTheRowsAnswer(t *test
 	// The box may still be labelled `search:` — it IS the search box, and the
 	// caret is in it — but it can no longer be the ONLY label: the line above
 	// has to say what the rows on the pane actually answer.
-	poWantPaneLine(t, screen, "showing: all of this supplier's assets")
+	poWantPaneLine(t, screen, "Showing ..... all of this supplier's assets")
 	// …and the note must not claim a search has already run.
 	poRejectPaneLine(t, screen, "runs the search again")
-	poWantPaneLine(t, screen, "enter runs the search")
+	poWantPaneLine(t, screen, "Enter=Run search")
 	poAssertFits(t, "typing over an unsearched asset list", screen)
 
 	// Once a search HAS run, "again" is true and the label names it.
@@ -3899,7 +3704,7 @@ func TestPOAssetPicker_TypingOverAnUnsearchedListLabelsWhatTheRowsAnswer(t *test
 		t.Fatalf("setup: typing=%v query=%q, want the box reopened over a run search",
 			screen.assetsTyping, screen.assetsQuery)
 	}
-	poWantPaneLine(t, screen, `showing: "hovercraft"`)
+	poWantPaneLine(t, screen, `Showing ..... "hovercraft"`)
 	poAssertFits(t, "typing over a searched asset list", screen)
 	_ = r
 }
@@ -3953,13 +3758,20 @@ func TestPOCreate_EveryFixedHintOnTheseScreensSurvivesTheClip(t *testing.T) {
 			s.assoc.workOrders = []omsapi.WorkOrder{{ID: 1001, Title: "Lathe teardown"}}
 		}, []string{"does not change", "what a committee is billed"}},
 
+		// The cost row's HINT says whether a cost is required, and its note
+		// says what a blank field does — both drawn by the layer under the row
+		// they are about, so neither can be cut and neither can be read as
+		// belonging to the wrong field.
 		{"line form, catalog line", func(s *PurchaseOrderCreateScreen) {
 			s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 0)
-		}, []string{"Cost is optional", "supplier catalog"}},
+		}, []string{"optional", "supplier catalog"}},
 
+		// The basis-toggle KEY is on the bar, where it says which basis the row
+		// is on; the note under the row does the arithmetic. It used to name
+		// ctrl+t as well, which is the two-surfaces defect in miniature.
 		{"line form, case-packed cost basis", func(s *PurchaseOrderCreateScreen) {
 			s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
-		}, []string{"ctrl+t"}},
+		}, []string{"Ctrl-T=Unit/case cost", "The CASE cost"}},
 
 		{"line form, freeform line has no date field", func(s *PurchaseOrderCreateScreen) {
 			s.enterLinePhase(nil, nil, "Shop rags", 1, 0, 0, 0)
@@ -3970,7 +3782,7 @@ func TestPOCreate_EveryFixedHintOnTheseScreensSurvivesTheClip(t *testing.T) {
 		for _, h := range poPaneSizes {
 			t.Run(fmt.Sprintf("%s/80x%d", tc.name, h), func(t *testing.T) {
 				s := poWidestSupplierScreen()
-				s.terminalHeight = h
+				s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 				tc.setup(s)
 
 				poAssertFits(t, tc.name, s)
@@ -4049,7 +3861,7 @@ func TestPOPickers_JKOverAnEmptyListSaysWhy(t *testing.T) {
 			// rows and no caret, so if j and k shared a lead the second press
 			// would redraw a byte-for-byte identical pane and only the
 			// four-second flash would move. Each names the key it answers.
-			for _, k := range []string{"j", "k", "j"} {
+			for _, k := range []string{"down", "up", "down"} {
 				beforeNote := strings.Join(poNoteLines(t, *tc.note(screen)), "\n")
 				beforePane := strings.Join(poPaneLinesAt(t, screen, h), "\n")
 				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
@@ -4102,11 +3914,11 @@ func TestPOAssetPicker_ASupplierRoundTripDoesNotLetAStaleLookupLand(t *testing.T
 
 	// A → B → A, which resets the picker twice and clears the in-flight flag.
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")}) // → source
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")}) // → supplier picker
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})                       // → supplier picker
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyUp})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	if screen.supplierID != 1 {
 		t.Fatalf("setup: the order is on supplier %d, want 1 again", screen.supplierID)
@@ -4147,7 +3959,7 @@ func TestPOAssetPicker_ASupplierRoundTripDoesNotLetAStaleLookupLand(t *testing.T
 // poStageCostlessLine picks the highlighted catalog row and CLEARS the cost
 // field the picker prefilled, which is the only route to a staged line with no
 // unit cost: the backend prices those from the item-supplier at save time, so
-// the cart's total becomes a floor and renderCart draws the "priced from the
+// the cart's total becomes a floor and cartBody draws the "priced from the
 // supplier catalog" caveat under it.
 //
 // Every fixture used to stage lines that all carried a cost, so that caveat —
@@ -4170,39 +3982,51 @@ func poStageCostlessLine(t *testing.T, r Root, screen *PurchaseOrderCreateScreen
 	return r
 }
 
-// TestPOSourceChooser_OneOptionalRowIsNeverDroppedForNothing: the source
-// chooser sacrifices the optional g / w / c rows when the pane is too short,
-// and the first version of that decision asked only whether the layout WITH
-// them fits — never whether dropping them helps.
+// TestPOSourceChooser_AnOptionalKeyNeverStopsWorking.
 //
-// With exactly ONE of them offered it does not help: the substitute notice is
-// one rendered row in the same blank-plus-row slot the row occupied, and the
-// bar folds to the same height with or without that one clause. So at 80x24 a
-// supplier carrying only a committee had its committee row replaced by
-// "optional rows need more height" — false, the height was sufficient — while
-// the bar stopped naming `c` and the `c` arm declined. A false sentence plus a
-// disabled working key is the bar-honesty rule inside out.
+// This used to be a test about a ROW. The source chooser dropped its optional
+// agreement / work-order / committee rows when the pane ran short, the bar
+// stopped naming g/w/c for exactly as long, and the three arms declined — so a
+// supplier carrying exactly ONE optional row had it replaced by "optional rows
+// need more height" at 80x24, which was FALSE (hiding one row freed nothing,
+// because the substitute notice took the same slot), while a working key was
+// disabled to match the lie.
 //
-// Every fixture that turned the optional lookups on turned on all THREE, where
-// hiding genuinely saves rows, which is why nothing could see it.
-func TestPOSourceChooser_OneOptionalRowIsNeverDroppedForNothing(t *testing.T) {
+// The conversion removed the coupling rather than repairing the arithmetic. The
+// rows are pinned header rows now, ranked as context, and what a short pane
+// gives up is the layer's decision (jdeHeadRank) — but a row here is a LABEL
+// and a VALUE, never an affordance, so dropping one costs the operator a fact
+// and never a key. So the check is the one that matters: at every pane height
+// this project draws, the bar names the key and the key opens its picker.
+//
+// The row is asserted where it survives, which is what keeps this honest in the
+// other direction: a conversion that quietly stopped drawing the values would
+// pass a bar-only check.
+func TestPOSourceChooser_AnOptionalKeyNeverStopsWorking(t *testing.T) {
 	cases := []struct {
 		name  string
 		fake  func() *poPickFake
 		row   string
 		key   string
-		named string
 		phase poPhase
 	}{
 		{"agreement only", func() *poPickFake {
 			return &poPickFake{reorder: 15, catalog: 2, assets: 1, agreements: 1}
-		}, "Agreement (optional)", "g", "g agreement", poPhaseAgreement},
+		}, "Agreement", "g", poPhaseAgreement},
 		{"work orders only", func() *poPickFake {
 			return &poPickFake{reorder: 15, catalog: 2, assets: 1, workOrders: 2}
-		}, "Work order (optional)", "w", "w work order", poPhaseWorkOrder},
+		}, "Work order", "w", poPhaseWorkOrder},
 		{"committees only", func() *poPickFake {
 			return &poPickFake{reorder: 15, catalog: 2, assets: 1, committees: 1}
-		}, "Committee (optional)", "c", "c committee", poPhaseCommittee},
+		}, "Committee", "c", poPhaseCommittee},
+		// All three at once is the fixture the old test could not tell apart
+		// from one: with three rows to drop, hiding them genuinely freed rows,
+		// so the defect only showed with a single row offered. Both are swept
+		// now, because the rule no longer depends on how many there are.
+		{"all three", func() *poPickFake {
+			return &poPickFake{reorder: 15, catalog: 2, assets: 1,
+				agreements: 1, workOrders: 2, committees: 1}
+		}, "Committee", "c", poPhaseCommittee},
 	}
 
 	for _, tc := range cases {
@@ -4219,14 +4043,14 @@ func TestPOSourceChooser_OneOptionalRowIsNeverDroppedForNothing(t *testing.T) {
 				what := fmt.Sprintf("source chooser, %s, 15-line cart at 80x%d", tc.name, h)
 				poAssertFits(t, what, screen)
 
-				// The row is drawn, the frame does not claim otherwise, and the
-				// bar still names the key.
-				poWantPaneLine(t, screen, tc.row)
-				poRejectPaneLine(t, screen, "optional rows need more height")
-				if !strings.Contains(screen.helpText(), tc.named) {
-					t.Errorf("the bar stopped naming %q while the row is on the pane: %q",
-						tc.named, screen.helpText())
+				// The bar names the key at every height, and there is no
+				// substitute notice to make a false claim with.
+				if !poBarNamedKeys(t, screen.bar())[tc.key] {
+					t.Errorf("the bar stopped naming %q: %s", tc.key, poBarText(screen.bar()))
 				}
+				poRejectPaneLine(t, screen, "optional rows need more height")
+				// The row itself is drawn at the heights this project checks.
+				poWantPaneLine(t, screen, tc.row)
 
 				// And the key still WORKS — a named key must act.
 				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
@@ -4239,192 +4063,71 @@ func TestPOSourceChooser_OneOptionalRowIsNeverDroppedForNothing(t *testing.T) {
 	}
 }
 
-// TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline is the source
-// chooser's half of "nothing may act on a row the operator cannot see".
+// TestPOSourceChooser_TheHighlightedLineIsAlwaysOnThePane.
 //
-// At 80x24 the chooser's fixed chrome — the folded bar, the supplier header,
-// the four source rows and the d row — leaves the cart fewer rows than its own
-// header and total need. bodyRowBudget floors at three rows it does not have,
-// so the cart was drawn past the bottom of the pane and clampToBox took the
-// HIGHLIGHTED line, the "N more below" marker that would have said rows were
-// hidden, and the total — while x still removed and ctrl+e still edited the
-// line nobody could see.
+// This used to be a test about a cart the chooser could NOT list. A long cart
+// on a short pane was replaced by a one-line summary and the four keys that act
+// on a row — j, k, x and ctrl+e — declined, because a line clampToBox had
+// dropped was still a line x would remove and ctrl+e would edit: a wrong
+// purchase order with nothing on the pane to show it.
 //
-// So: when the rows fit, they are listed with their highlight and the keys act.
-// When they do not, one sentence says how many lines there are, what they come
-// to, that they are not listed and which key opens them; the bar stops naming
-// the four keys; and each of those keys declines without touching the cart
-// while still moving the body.
-//
-// The second fixture is the one every earlier version of this test could not
-// build. A supplier carrying an agreement, work orders AND committees draws
-// three more header rows and lengthens the bar that measures against them, and
-// a line priced from the catalog folds the cart's caveat onto two rows: those
-// four rows put the whole collapsed sentence off the pane, so the frame said
-// nothing about the cart at all while j/k/x/ctrl+e answered into a four-second
-// flash. The optional rows are what yield now, and they say they have.
-func TestPOSourceChooser_ACartItCannotListSaysSoAndItsKeysDecline(t *testing.T) {
-	cases := []struct {
-		name     string
-		fake     func() *poPickFake
-		costless bool
+// The whole apparatus is gone, and so is the state it protected. jdeLines.Window
+// anchors on the CURSOR's block, so the highlighted row is on the pane by
+// construction at every height the frame is drawn at; there is no "cannot list"
+// case left to collapse into, no substitute sentence, and no gate. What this
+// asserts is that property, directly, at the position the reported failure
+// lived at: a highlight in the MIDDLE of a fifteen-line cart, where the old
+// window centred and pushed both the row and its "N more below" marker past the
+// bottom of the pane.
+func TestPOSourceChooser_TheHighlightedLineIsAlwaysOnThePane(t *testing.T) {
+	for _, phase := range []struct {
+		name string
+		to   []tea.KeyMsg
 	}{
-		{"plain supplier", func() *poPickFake {
-			return &poPickFake{reorder: 15, catalog: 2, assets: 1}
-		}, false},
-		{"supplier with agreement, work orders and committees", func() *poPickFake {
-			return &poPickFake{reorder: 15, catalog: 2, assets: 1,
-				agreements: 1, workOrders: 2, committees: 1}
-		}, true},
-	}
-
-	for _, tc := range cases {
+		{"source chooser", nil},
+		{"review cart", []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune("d")}}},
+	} {
 		for _, h := range poPaneSizes {
-			t.Run(fmt.Sprintf("%s at 80x%d", tc.name, h), func(t *testing.T) {
-				r, screen := poPickerAtSize(t, tc.fake(), 80, h)
+			t.Run(fmt.Sprintf("%s at 80x%d", phase.name, h), func(t *testing.T) {
+				fake := &poPickFake{reorder: 15, catalog: 2, assets: 1,
+					agreements: 1, workOrders: 2, committees: 1}
+				r, screen := poPickerAtSize(t, fake, 80, h)
 				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}) // add all 15
-				r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})                       // review → source chooser
-				if tc.costless {
-					// addLine lands back on the source chooser, ready for the
-					// next line, so no esc is needed here.
-					r = poStageCostlessLine(t, r, screen)
-				}
-				want := 15
-				if tc.costless {
-					want = 16
-				}
-				if len(screen.lines) != want {
-					t.Fatalf("setup staged %d line(s), want %d", len(screen.lines), want)
-				}
-				if screen.phase != poPhaseSource {
-					t.Fatalf("setup left the screen on phase %v", screen.phase)
-				}
-				// A highlight in the MIDDLE of the cart, which is where the
-				// reported failure lives: poCartWindow centres the window on it,
-				// so at 80x24 the highlighted row and the "N more below" marker
-				// under it were both past the bottom of the pane while x still
-				// removed that very line.
-				screen.reviewCursor = 7
-
-				what := fmt.Sprintf("source chooser with a %d-line cart at 80x%d", want, h)
-				poAssertFits(t, what, screen)
-
-				if screen.cartListedOnScreen() {
-					// The roomy pane lists them, so the highlight is on screen
-					// and the keys that act on it are named and do act.
-					poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", screen.reviewCursor+1))
-					// The one claim, drawn by the bar and by the hint above the
-					// rows; both read sourceCartKeyClaim, so this is the
-					// wording an operator sees in both places.
-					poWantPaneLine(t, screen, "x remove")
-					before := len(screen.lines)
-					r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-					if len(screen.lines) != before-1 {
-						t.Errorf("the cart is listed but x removed nothing (%d lines)", len(screen.lines))
-					}
-					return
-				}
-
-				// The count, that the lines are NOT listed, the key that lists
-				// them and what they come to — all on the pane, whatever else
-				// the frame had to give up to keep them there.
-				poWantPaneLine(t, screen, fmt.Sprintf("d lists the %d line(s) · not listed here", want))
-				total, noCost := poCartTotal(screen.lines)
-				money := fmtMoney(total)
-				if noCost > 0 {
-					money = "at least " + money
-				}
-				poWantPaneLine(t, screen, money)
-				// A key the bar names must act, so a bar that still named these
-				// would be advertising the four keys the collapse made inert.
-				// Read off the claim itself rather than restated: a hand-copied
-				// wording that the code has since changed rejects a string the
-				// pane cannot print, which passes over the very keys it names.
-				for _, gone := range strings.Split(screen.sourceCartKeyClaim(), " · ") {
-					poRejectPaneLine(t, screen, gone)
-				}
-				// And whatever the frame dropped to make room says it is gone,
-				// with the bar dropping the keys that named those rows.
-				if !screen.sourceAttributionShown() {
-					poWantPaneLine(t, screen, "optional rows need more height")
-					for _, gone := range []string{"g agreement", "w work order", "c committee"} {
-						if strings.Contains(screen.helpText(), gone) {
-							t.Errorf("the bar still names %q with those rows off the pane: %q",
-								gone, screen.helpText())
-						}
-					}
-				}
-
-				// Pressed IN SEQUENCE, with no state reset between them. The
-				// previous version cleared the lead before every key, so every
-				// press was measured from the un-led summary and no two presses
-				// were ever compared against each other — which is why j and k
-				// could share one lead and redraw a byte-for-byte identical
-				// pane, on a frame with no cursor, no highlighted row and no
-				// focused textinput for anything else to move.
-				before := strings.Join(poPaneLinesAt(t, screen, h), "\n")
-				press := func(name string, k tea.KeyMsg) {
-					t.Helper()
-					lines, cur, phase := len(screen.lines), screen.reviewCursor, screen.phase
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+				for _, k := range phase.to {
 					r = key(t, r, k)
-					if len(screen.lines) != lines {
-						t.Errorf("%q changed the cart (%d lines, was %d) with no line on the pane",
-							name, len(screen.lines), lines)
-					}
-					if screen.reviewCursor != cur {
-						t.Errorf("%q moved a highlight that is not on the pane", name)
-					}
-					if screen.phase != phase {
-						t.Errorf("%q left the source chooser (phase %v)", name, screen.phase)
-					}
-					after := strings.Join(poPaneLinesAt(t, screen, h), "\n")
-					if after == before {
-						t.Errorf("%q redrew a byte-for-byte identical pane:\n%s", name, after)
-					}
-					before = after
-					poAssertFits(t, what+" after "+name, screen)
 				}
-				press("j", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-				press("k", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-				press("x", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-				press("ctrl+e", tea.KeyMsg{Type: tea.KeyCtrlE})
-				// Back round the loop: k after ctrl+e, then j after k, so the
-				// pair that shared a lead is compared in both orders.
-				press("k", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-				press("j", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+				if len(screen.lines) != 15 {
+					t.Fatalf("setup staged %d line(s), want 15", len(screen.lines))
+				}
 
-				// The keys whose rows were dropped decline the same way, and
-				// say so in the body rather than only in the flash — in
-				// sequence too, for the same reason.
-				if !screen.sourceAttributionShown() {
-					for _, k := range []string{"g", "w", "c"} {
-						phase := screen.phase
-						r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
-						if screen.phase != phase {
-							t.Fatalf("%q opened a picker whose row the frame is not drawing (phase %v)",
-								k, screen.phase)
-						}
-						after := strings.Join(poPaneLinesAt(t, screen, h), "\n")
-						if after == before {
-							t.Errorf("%q redrew a byte-for-byte identical pane:\n%s", k, after)
-						}
-						before = after
-						poAssertFits(t, what+" after "+k, screen)
+				// Walk the highlight down the WHOLE cart. Every position, not
+				// the one somebody picked: the defect this replaces was
+				// position-dependent, and a single probe in the middle is how it
+				// would come back unseen at the ends.
+				for want := 0; want < len(screen.lines); want++ {
+					if screen.reviewCursor != want {
+						t.Fatalf("the highlight is on line %d, want %d", screen.reviewCursor, want)
+					}
+					what := fmt.Sprintf("%s, 15-line cart at 80x%d, highlight on %d",
+						phase.name, h, want+1)
+					poAssertFits(t, what, screen)
+					poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", want+1))
+					if want < len(screen.lines)-1 {
+						r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 					}
 				}
 
-				// d is the way out the summary names, and it has to be a real
-				// one: the review phase must list the lines and show the
-				// highlight at this very pane height, or the escape the
-				// operator is told to take is a worse dead end than no escape.
-				r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-				if screen.phase != poPhaseReview {
-					t.Fatalf("d did not open the full cart (phase %v)", screen.phase)
+				// …and the key that acts on it really does, from the position
+				// the old window used to hide.
+				screen.reviewCursor = 7
+				poWantPaneLine(t, screen, "▸ 8)")
+				before := len(screen.lines)
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+				if len(screen.lines) != before-1 {
+					t.Errorf("ctrl+x removed nothing (%d lines, was %d)", len(screen.lines), before)
 				}
-				poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", screen.reviewCursor+1))
-				poWantPaneLine(t, screen, "more below")
-				poAssertFits(t, fmt.Sprintf("review with a %d-line cart at 80x%d", want, h), screen)
 			})
 		}
 	}
@@ -4456,7 +4159,7 @@ func TestPOCreate_TheSupplierHeaderKeepsBothNamesOnThePane(t *testing.T) {
 			if screen.phase != poPhaseAgreement {
 				t.Fatalf("g left the screen on phase %v, want the agreement picker", screen.phase)
 			}
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 			_ = r
 			if screen.agreementID == nil {
@@ -4466,33 +4169,40 @@ func TestPOCreate_TheSupplierHeaderKeepsBothNamesOnThePane(t *testing.T) {
 			what := fmt.Sprintf("supplier header at 80x%d", h)
 			poAssertFits(t, what, screen)
 
-			// The header is ONE row and it carries both facts: which supplier,
-			// and that a pricing agreement is attached. Neither may be the
-			// thing the pane drops.
-			header := ""
-			for _, line := range poPaneLinesAt(t, screen, h) {
-				if strings.Contains(line, "Supplier:") {
-					header = line
-					break
+			// TWO rows now, one value each. They used to be one — "Supplier:
+			// Acme (#1)  · agreement: Annual 2026 Structural Steel Contract" is
+			// 67 cells, so at 51 a long supplier name took the agreement and
+			// the (#id) with it, on the row drawn on every phase including
+			// review. Neither may be the thing the pane drops, and each has to
+			// stay identifiable at a width that cannot hold both in full.
+			pane := poPaneLinesAt(t, screen, h)
+			find := func(label string) string {
+				for _, line := range pane {
+					if strings.Contains(line, label+" .....") {
+						return line
+					}
+				}
+				return ""
+			}
+			supplierRow, agreementRow := find("Supplier"), find("Agreement")
+			if supplierRow == "" || agreementRow == "" {
+				t.Fatalf("the header lost a row (supplier %q, agreement %q):\n%s",
+					supplierRow, agreementRow, strings.Join(pane, "\n"))
+			}
+			for _, want := range []string{"Northern", "(#1)"} {
+				if !strings.Contains(supplierRow, want) {
+					t.Errorf("the supplier row lost %q: %q", want, supplierRow)
 				}
 			}
-			if header == "" {
-				t.Fatalf("no supplier header on the pane:\n%s",
-					strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+			if !strings.Contains(agreementRow, "Annu") {
+				t.Errorf("the agreement row lost its name: %q", agreementRow)
 			}
-			// Both values are clipped at this width — 51 columns cannot hold
-			// two long OMS names — so what is pinned is that BOTH are still
-			// identifiable, the id among them, rather than one silently gone.
-			for _, want := range []string{"Northern", "(#1)", "agreement:", "Annu"} {
-				if !strings.Contains(header, want) {
-					t.Errorf("the header lost %q: %q", want, header)
+			// A clipped value says it was clipped — otherwise the operator
+			// reads a truncated agreement name as the whole of it.
+			for _, row := range []string{supplierRow, agreementRow} {
+				if !strings.Contains(row, "…") {
+					t.Errorf("a long name was shortened but nothing on the row says so: %q", row)
 				}
-			}
-			// A clipped value says it was clipped, the way renderAssocValue's
-			// does — otherwise the operator reads a truncated agreement name as
-			// the whole of it.
-			if !strings.Contains(header, "…") {
-				t.Errorf("both names were shortened but nothing on the row says so: %q", header)
 			}
 		})
 	}
@@ -4544,7 +4254,7 @@ func TestPOCreate_AFailedSubmitSaysWhyWithoutTakingTheCartWithIt(t *testing.T) {
 			poWantPaneLine(t, screen, headline)
 			// The operator is still in the field they were typing into: the
 			// failure line's rows are reserved, so the cart gives them up.
-			poWantPaneLine(t, screen, "PO notes:")
+			poWantPaneLine(t, screen, "PO notes")
 			// The headline must not read as the whole story: either OMS's own
 			// words reach the pane folded under it, or the block says how many
 			// rows of them it hid. An 18-row pane under a 16-line cart has room
@@ -4573,64 +4283,103 @@ func TestPOCreate_AFailedSubmitSaysWhyWithoutTakingTheCartWithIt(t *testing.T) {
 			what = fmt.Sprintf("source chooser carrying a failed submit at 80x%d", h)
 			poAssertFits(t, what, screen)
 			poWantPaneLine(t, screen, headline)
-			poWantPaneLine(t, screen, "d  Done")
-
-			// The cart's VALUE is on the pane either way: listed with a total
-			// row when the rows fit, or carried by the collapsed sentence when
-			// they do not. It is the last thing this screen gives up, and the
-			// title is what goes instead.
-			if screen.cartListedOnScreen() {
-				poWantPaneLine(t, screen, "Total:")
-			} else {
-				poWantPaneLine(t, screen, "d lists the 16 line(s)")
-				poWantPaneLine(t, screen, "at least $")
+			// The way to review is on the BAR, which is where every key on this
+			// screen is named now — the chooser's own "d  Done" row went with
+			// the rest of the block that spelled the bar a second time.
+			if !poBarNamedKeys(t, screen.bar())["d"] {
+				t.Errorf("the chooser carrying a failed submit stopped naming d: %s",
+					poBarText(screen.bar()))
 			}
+			// The cart's rows are listed at every height, and the window is
+			// anchored on the HIGHLIGHT — so whichever line the cursor is on is
+			// the one on the pane, which is the property that retired the
+			// collapsed-cart sentence and the four keys it used to gate. What
+			// the cart COMES TO is pinned above it and never scrolls at all.
+			poWantPaneLine(t, screen, fmt.Sprintf("▸ %d)", screen.reviewCursor+1))
+			poWantPaneLine(t, screen, "Total: at least $")
 		})
 	}
 }
 
-// TestPOSourceChooser_TheTitleGivesBeforeTheCartsTotal pins the step of the
-// sacrifice order that makes "never the cart's total" true rather than lucky.
+// TestPOSourceChooser_TheHeaderGivesGroundByRank replaces a test about the
+// screen's own sacrifice order.
 //
-// cartHiddenSentence is ordered by what may be sacrificed — the key, the count
-// and "not listed here" lead it, so the TOTAL is what a one-row overflow takes.
-// With one optional row offered the chooser sits on an 18-row pane with nothing
-// spare, so the frame gives up "Where should this line come from?" and its
-// blank line: two rows naming no key, with the four r/i/a/f rows right under
-// them still saying what the screen is.
-func TestPOSourceChooser_TheTitleGivesBeforeTheCartsTotal(t *testing.T) {
-	const title = "Where should this line come from?"
-
-	for _, h := range poPaneSizes {
+// That order was four predicates and two substitute notices, and the step this
+// test used to pin was "the TITLE goes before the cart's total": the chooser
+// gave up "Where should this line come from?" and its blank line — two rows
+// naming no key — so that the collapsed cart sentence kept its money.
+//
+// jdeHeadRank is that idea in the layer, and the title is not the interesting
+// case any more because there is no title: the block that spelled the bar a
+// second time went with it. What survives is the RULE, and this is it stated
+// against the header the frame is really handed — most expendable first, and
+// the row the builder marked essential last of all, at every height the frame
+// is drawn at.
+func TestPOSourceChooser_TheHeaderGivesGroundByRank(t *testing.T) {
+	fake := func() *poPickFake {
+		return &poPickFake{reorder: 15, catalog: 2, assets: 1,
+			agreements: 1, workOrders: 2, committees: 1}
+	}
+	// Every height Root will draw, not the two the rest of this file uses: the
+	// rank only bites where the budget is short, and 24 and 30 are both roomy.
+	for h := 8; h <= 30; h++ {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
-			fake := &poPickFake{reorder: 15, catalog: 2, assets: 1,
-				committees: 1, failCreate: true}
-			r, screen := poPickerAtSize(t, fake, 80, h)
+			r, screen := poPickerAtSize(t, fake(), 80, h)
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
-			r = poStageCostlessLine(t, r, screen)
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-			r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
 			_ = r
-
+			if screen.phase != poPhaseSource || len(screen.lines) != 15 {
+				t.Fatalf("setup: phase %v with %d line(s)", screen.phase, len(screen.lines))
+			}
 			poAssertFits(t, fmt.Sprintf("source chooser at 80x%d", h), screen)
-			if screen.sourceTitleShown() {
-				// Room for it: then it is drawn, and dropping it would be the
-				// "hiding a row that costs nothing" defect.
-				poWantPaneLine(t, screen, title)
+
+			header := screen.headerLines()
+			essential := 0
+			for _, row := range header {
+				if row.Rank == jdeHeadEssential {
+					essential++
+				}
+			}
+			if essential != 1 {
+				t.Fatalf("the chooser marks %d header rows essential, want exactly 1 — the "+
+					"smallest drawable budget keeps one, so two is a claim the geometry "+
+					"cannot honour", essential)
+			}
+
+			// What the frame REALLY drew. A frame the layer refused draws no
+			// header at all and says so, which is a different rule
+			// (jdeTooShort) and not this one.
+			shown := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+			if strings.Contains(shown, "Too short:") {
 				return
 			}
-			poRejectPaneLine(t, screen, title)
-			// What the title bought: the whole cart sentence, total included.
-			poWantPaneLine(t, screen, "d lists the 16 line(s)")
-			poWantPaneLine(t, screen, "at least $")
-			// And the rows the title named are still there, so nothing the
-			// operator can act on went with it.
-			for _, row := range []string{"r  Reorder queue", "i  Inventory items",
-				"a  Assets purchased", "f  Freeform line"} {
-				poWantPaneLine(t, screen, row)
+			kept := map[jdeHeadRank]int{}
+			for _, row := range header {
+				if strings.TrimSpace(row.Text) == "" {
+					continue
+				}
+				if strings.Contains(shown, truncateVisible(strings.TrimRight(row.Text, " "),
+					screenBodyWidth(80))) {
+					kept[row.Rank]++
+				}
+			}
+			total := map[jdeHeadRank]int{}
+			for _, row := range header {
+				if strings.TrimSpace(row.Text) != "" {
+					total[row.Rank]++
+				}
+			}
+			if kept[jdeHeadEssential] != total[jdeHeadEssential] {
+				t.Errorf("the pane at 80x%d dropped the row the chooser marked essential:\n%s", h, shown)
+			}
+			// A context row may only be dropped once every decorative row is
+			// gone, which is the rank order seen from the pane rather than
+			// asserted of the function that implements it.
+			if kept[jdeHeadContext] < total[jdeHeadContext] && kept[jdeHeadDecorative] > 0 {
+				t.Errorf("the pane at 80x%d dropped a context row while keeping %d decorative "+
+					"one(s) — the header is giving ground by position, not by rank:\n%s",
+					h, kept[jdeHeadDecorative], shown)
 			}
 		})
 	}
@@ -4746,8 +4495,8 @@ func TestPOPickers_NoTwoGatedKeysShareASentence(t *testing.T) {
 			s.phase = poPhaseSupplier
 			s.supplierLoadErr = "suppliers exploded"
 		}, []tea.KeyMsg{
-			{Type: tea.KeyRunes, Runes: []rune("j")},
-			{Type: tea.KeyRunes, Runes: []rune("k")},
+			{Type: tea.KeyDown},
+			{Type: tea.KeyUp},
 		}},
 	}
 
@@ -4756,7 +4505,7 @@ func TestPOPickers_NoTwoGatedKeysShareASentence(t *testing.T) {
 			t.Run(fmt.Sprintf("%s at 80x%d", tc.name, h), func(t *testing.T) {
 				s := NewPurchaseOrderCreateScreen(Deps{})
 				s.supplierID = 1
-				s.terminalHeight = h
+				s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 				tc.setup(s)
 
 				before := strings.Join(poPaneLinesAt(t, s, h), "\n")
@@ -4820,14 +4569,18 @@ func TestPOTypedRows_EveryKeystrokeMovesTheRow(t *testing.T) {
 		marker string
 		runes  int
 	}{
+		// The MARKER is the columnar leader now: the label right-aligned into
+		// the shared column, then " ..... ". The layer draws it, so a row that
+		// stopped being a jdeField would stop matching here rather than pass
+		// with a hand-drawn prefix that happens to read the same.
 		{"PO notes", &poPickFake{catalog: 4, suppliers: 1},
-			[]string{"i", "enter", "enter", "d"}, "▸ " + poNotesLabel, 120},
+			[]string{"i", "enter", "enter", "d"}, poNotesLabel + jdeLeader, 120},
 		{"line description", &poPickFake{catalog: 4, suppliers: 1},
-			[]string{"f"}, "▸ " + poLineFieldLabel(poLineFieldDesc), 120},
+			[]string{"f"}, poLineFieldLabel(poLineFieldDesc) + jdeLeader, 120},
 		{"item filter", &poPickFake{catalog: 4, suppliers: 1},
-			[]string{"i", "/"}, poItemFilterLabel, 55},
+			[]string{"i", "/"}, poItemFilterLabel + jdeLeader, 55},
 		{"asset search", &poPickFake{assets: 3, suppliers: 1},
-			[]string{"a", "/"}, poAssetSearchLabel, 55},
+			[]string{"a", "/"}, poAssetSearchLabel + jdeLeader, 55},
 	}
 
 	for _, tc := range cases {
@@ -4947,7 +4700,7 @@ func TestPOItemPicker_AWideRuneFailureBodyStillFitsThePane(t *testing.T) {
 			}
 
 			poAssertFits(t, "item picker, wide-rune failure body", screen)
-			poWantPaneLine(t, screen, "b picks another line source")
+			poWantPaneLine(t, screen, "b=Line sources")
 			_ = r
 		})
 	}
@@ -5078,7 +4831,7 @@ func TestPOPickers_ALongNameKeepsTheFactsOnEveryPickerRow(t *testing.T) {
 		},
 		{
 			"suppliers", &poPickFake{catalog: 1, suppliers: 3, supplierName: supplier},
-			[]string{"b"}, supplier, []string{"(#1)"},
+			[]string{"esc"}, supplier, []string{"(#1)"},
 		},
 	}
 
@@ -5122,7 +4875,7 @@ func TestPOPickers_ALongNameKeepsTheFactsOnEveryPickerRow(t *testing.T) {
 				}
 
 				check("highlighted", "▸")
-				r = key(t, r, poPhaseKeyMsg("j"))
+				r = key(t, r, poPhaseKeyMsg("down"))
 				check("unhighlighted", head)
 			})
 		}
@@ -5184,7 +4937,7 @@ func TestPOPickers_AWideTerminalDrawsTheWholeRow(t *testing.T) {
 		{
 			"suppliers",
 			func() *poPickFake { return &poPickFake{catalog: 1, suppliers: 3, supplierName: supplier} },
-			[]string{"b"}, []string{supplier, "(#1)"},
+			[]string{"esc"}, []string{supplier, "(#1)"},
 		},
 	}
 
@@ -5226,6 +4979,156 @@ func TestPOPickers_AWideTerminalDrawsTheWholeRow(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The search boxes: the bar names exactly the keys the box leaves alive
+// ---------------------------------------------------------------------------
+
+// This replaces FIVE tests, and the reason they collapse into one is the whole
+// shape of the conversion.
+//
+// Each of them was about a NOTE naming keys. With a search box open, `/` is a
+// slash going into the query, `b` is a letter and `r` is a letter; esc closes
+// the box rather than cancelling the order; and enter's meaning depends on how
+// many rows matched. The pickers stated all of that TWICE — in a prose action
+// bar at the top of the pane and again in the frame's own note — so each state
+// needed a test pinning the two surfaces to each other, and they still drifted
+// (TestPOItemPicker_BarAndNoteNeverDisagreeAboutEnter existed because they had).
+//
+// The notes name no keys at all now. There is one surface, the action bar, and
+// the rule it is held to is the rule this presses: in every search-box state,
+// every key the bar names ACTS and every key it does not name does not. The
+// key space is the whole space, so a key bound behind one of these boxes
+// tomorrow is pressed by this today — the typing states are the ones the pane
+// sweep excludes, precisely because printable runes act there by design, so
+// this is where they get their coverage.
+//
+// Printable runes and the field-editing keys are skipped in the REVERSE
+// direction only: typing into the box is what the box is for.
+func TestPOSearchBoxes_TheBarNamesExactlyTheKeysThatWork(t *testing.T) {
+	type boxState struct {
+		name  string
+		fake  func() *poPickFake
+		reach func(*testing.T, Root) Root
+	}
+	open := func(source string, query string) func(*testing.T, Root) Root {
+		return func(t *testing.T, r Root) Root {
+			r = key(t, r, poPickerKeyMsg(source))
+			r = key(t, r, poPickerKeyMsg("/"))
+			for _, c := range query {
+				r = poType(t, r, string(c))
+			}
+			return r
+		}
+	}
+	// The box opened OVER a lookup that is still out: the source key is fired
+	// with a bare Update so its command never runs, and '/' opens the box on
+	// top of it. That is the state the asset box's Enter is gated in, and it is
+	// reachable exactly this way — pressing Enter inside the box would close
+	// the box, which is why the obvious reach does not produce it.
+	openMidFlight := func(source string) func(*testing.T, Root) Root {
+		return func(t *testing.T, r Root) Root {
+			next, _ := r.Update(poPickerKeyMsg(source))
+			r = next.(Root)
+			next, _ = r.Update(poPickerKeyMsg("/"))
+			return next.(Root)
+		}
+	}
+	states := []boxState{
+		{"item filter, several matched", func() *poPickFake { return &poPickFake{catalog: 12, pageSize: 12} },
+			open("i", "Widget 1")},
+		{"item filter, exactly one matched", func() *poPickFake { return &poPickFake{catalog: 12, pageSize: 12} },
+			open("i", "Widget 12")},
+		{"item filter, matched nothing", func() *poPickFake { return &poPickFake{catalog: 12, pageSize: 12} },
+			open("i", "flux capacitor")},
+		{"item filter, unfiltered", func() *poPickFake { return &poPickFake{catalog: 12, pageSize: 12} },
+			open("i", "")},
+		{"item filter, opened over a walk in flight", func() *poPickFake {
+			return &poPickFake{catalog: 12, pageSize: 2}
+		}, openMidFlight("i")},
+		{"asset search, box open", func() *poPickFake { return &poPickFake{assets: 3} },
+			open("a", "Lathe")},
+		{"asset search, opened over a lookup in flight", func() *poPickFake {
+			return &poPickFake{assets: 3}
+		}, openMidFlight("a")},
+	}
+
+	for _, st := range states {
+		for _, h := range poPaneSizes {
+			t.Run(fmt.Sprintf("%s at 80x%d", st.name, h), func(t *testing.T) {
+				fresh := func() (Root, *PurchaseOrderCreateScreen) {
+					r, s := poPickerAtSize(t, st.fake(), 80, h)
+					return st.reach(t, r), s
+				}
+				_, screen := fresh()
+				if !screen.itemSuppliersTyping && !screen.assetsTyping {
+					t.Fatalf("the reach left no search box open, so this state is not the one "+
+						"under test:\n%s", strings.Join(poPaneLinesAt(t, screen, h), "\n"))
+				}
+				bar := screen.bar()
+				named := poBarNamedKeys(t, bar)
+				poAssertFits(t, st.name, screen)
+
+				// Every claim the bar makes is READABLE on the pane it is drawn
+				// on. A key named on a bar the pane cut is a key the operator
+				// cannot discover.
+				for _, it := range bar {
+					poWantPaneLine(t, screen, it.Key+"="+it.Label)
+				}
+				// And the BODY names none of them: one surface, which is what
+				// the five tests this replaces were each policing a corner of.
+				// DERIVED from poBarKeyNames — the roster of six phrases that
+				// used to stand here could only find duplication somebody had
+				// already thought of, and two notes naming keys sat under it.
+				poAssertBodyNamesNoKey(t, st.name, screen, h)
+
+				for _, k := range poKeySpace() {
+					if (poIsPrintable(k) || poFieldKeys[k]) && !named[k] {
+						continue
+					}
+					r, s := fresh()
+					before := poPickerState(s)
+					_, cmd := r.Update(poPickerKeyMsg(k))
+					acted := poPickerState(s) != before || poCmdActs(cmd)
+					switch {
+					case named[k] && !acted:
+						t.Errorf("%s names %q but pressing it changes nothing (bar: %s)",
+							st.name, k, poBarText(bar))
+					case !named[k] && acted:
+						t.Errorf("%s does not name %q, but pressing it acts (bar: %s)",
+							st.name, k, poBarText(bar))
+					}
+				}
+			})
+		}
+	}
+}
+
+// poIsBlink recognises the cursor tick bubbles returns for any key a focused
+// textinput does not handle itself. Matched by TYPE NAME rather than by
+// importing the message, and checked against textinput.Blink() by the test
+// below, so a bubbles rename fails loudly instead of silently turning this into
+// a filter that skips a real message.
+func poIsBlink(msg tea.Msg) bool {
+	return strings.Contains(strings.ToLower(fmt.Sprintf("%T", msg)), "blink")
+}
+
+func TestPOCreate_TheBlinkIsWhatTheSweepsIgnore(t *testing.T) {
+	if !poIsBlink(textinput.Blink()) {
+		t.Fatalf("textinput.Blink now produces %T, which poIsBlink does not match — every "+
+			"key that reaches a focused box would read as acting again", textinput.Blink())
+	}
+	for _, msg := range []tea.Msg{
+		StatusMsg{},
+		poItemSuppliersLoadedMsg{},
+		poCreatedMsg{},
+		SwitchScreenMsg{},
+	} {
+		if poIsBlink(msg) {
+			t.Errorf("poIsBlink matches %T, which the sweeps must not ignore", msg)
 		}
 	}
 }

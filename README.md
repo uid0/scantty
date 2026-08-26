@@ -84,18 +84,30 @@ needs — a bar with rows cut off it would name some keys and hide the rest with
 no way to tell which — and warning that the keys still act on a screen you
 cannot see. The rest of the app is being converted screen by screen.
 
-The purchasing **entry** sheets in that same style — editing a line, adding one
-by scanning an identifier, and receiving a delivery — read the same way, with
-field navigation on top: `↑`/`↓` (or `Tab`/`Shift+Tab`) move between fields,
-`PgUp`/`PgDn` page a body taller than the pane, `Enter` fires the sheet's own
-action from whichever row the cursor is on — receive the delivery, save the
-line, add the one just scanned — and `Esc` backs out, the bar saying so when
-that discards what you typed. Each of those keys is named only while it will
-actually act: on the receiving form `Enter` appears once a quantity box holds a
-quantity to receive, and the bar drops it entirely while the receipt is in
-flight, when `Esc` is the one key that still acts. Receiving ends on a summary
-of what was booked, which `Enter` or `Esc` closes. New PO is the last purchasing
-screen still on its own key scheme.
+The purchasing **entry** sheets in that same style — starting a new order,
+editing a line, adding one by scanning an identifier, and receiving a delivery
+— read the same way, with field navigation on top: `↑`/`↓` (or `Tab`/`Shift+Tab`)
+move between fields, `PgUp`/`PgDn` page a body taller than the pane, `Enter`
+fires the sheet's own action from whichever row the cursor is on — receive the
+delivery, save the line, add the one just scanned — and `Esc` backs out, the bar
+saying so when that discards what you typed. Each of those keys is named only
+while it will actually act: on the receiving form `Enter` appears once a quantity
+box holds a quantity to receive, and the bar drops it entirely while the receipt
+is in flight, when `Esc` is the one key that still acts. Receiving ends on a
+summary of what was booked, which `Enter` or `Esc` closes. Every purchasing
+screen now reads this way; New PO was the last one on a scheme of its own, so
+`j`/`k` no longer move anything there either.
+
+New PO is a multi-step entry rather than a single sheet, and each step — the
+supplier picker, the line-source chooser, the reorder/inventory/asset pickers,
+the line form, the review cart — carries its own bar naming only what acts
+there: `r`/`i`/`a`/`f` choose where a line comes from, `Ctrl-E` and `Ctrl-X` edit
+and remove the highlighted cart line, and `d` reviews it. Inside a picker `b`
+goes back to the line sources and `Esc` cancels the whole order — except with
+that picker's search box open, where every letter goes into the query and `Esc`
+only closes the box; the bar names whichever pair is live. While the order is
+being submitted the bar drops every key that would change what has already been
+sent, so the cart on the pane is the cart going in.
 
 The sidebar lists the eleven workspaces; the workspace you are in also shows its
 own surfaces indented beneath it (Inventory › New item / Categories / Locations

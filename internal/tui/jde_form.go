@@ -1043,11 +1043,20 @@ func jdeBodyAvail(pane, budget, headerRows int) int {
 // it was the wrong lever, because it moved the layout of nineteen screens at
 // every height to buy a row at one height.
 //
-// So the layer takes the rank and the builders keep their natural layout. The
-// New PO chooser has given ground in a stated order for a while
-// (sourceAttributionShown / sourceTitleShown, and AGENTS.md's "sacrifice in a
-// stated order — do not shave words"); this is that idea applied to the pinned
-// header, in the layer, once.
+// So the layer takes the rank and the builders keep their natural layout: the
+// two screens above are the whole justification, and the answer is written once
+// here rather than a third time in each of them. The New PO chooser is a
+// CONSUMER of it — it arrived carrying a hand-rolled sacrifice order of its own
+// and gave it up for this one — not the precedent for it.
+//
+// A RANK DOES NOT REMOVE THE SIGNIFICANCE OF ORDER WITHIN A RANK. jdeFitHeader
+// gives ground from the END within each rank, so two rows that share one are
+// still separated by POSITION: whichever a builder emits LAST is the one a
+// short pane drops first. Wherever two rows share a rank and it matters which
+// survives, that position is a decision and must be written down as one —
+// otherwise somebody merging two blocks to save a separator row makes position
+// the tiebreak again, which is the exact coupling this type exists to break,
+// and it fails silently because a rank was declared for every row.
 type jdeHeadRank int
 
 const (
@@ -1095,6 +1104,25 @@ func (h jdeHeader) add(rank jdeHeadRank, lines ...string) jdeHeader {
 		h = append(h, jdeHeadRow{Text: line, Rank: r})
 	}
 	return h
+}
+
+// addBlock appends a separator and then `lines`, and appends NOTHING when the
+// block is empty.
+//
+// It exists because a builder whose blocks are conditional was writing
+//
+//	h = h.add(jdeHeadDecorative, "").add(rank, block...)
+//
+// at every site, and a block that turned out to be empty then left its
+// separator behind — a blank row spent on nothing, on a pane where the row
+// budget is the thing every other rule in this file is protecting. The
+// separator travels with the block it opens, which is AGENTS.md's separator
+// rule seen from the one side that needs the emptiness test.
+func (h jdeHeader) addBlock(rank jdeHeadRank, lines []string) jdeHeader {
+	if len(lines) == 0 {
+		return h
+	}
+	return h.add(jdeHeadDecorative, "").add(rank, lines...)
 }
 
 // lines is the header as the frame draws it when nothing has to give.

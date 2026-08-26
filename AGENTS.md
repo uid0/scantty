@@ -121,15 +121,21 @@ note, and is the authority):
   `internal/tui/jde_form.go` is the shared layer; `internal/tui/po_edit.go` is
   the pilot and `po_edit_jde_test.go` is where the layout and key scheme are
   pinned. Extend that layer — do not hand-roll a second style beside it.
-  Purchasing is converted screen by screen: the VIEW half (`po_detail.go`), the
-  edit sheet, the add-line flow (`po_add_line.go`) and RECEIVING
-  (`receive_form.go`, sc-jde-recv). The ENTRY half of New PO
-  (`po_create.go` + `po_create_pickers.go`) is still on its own pane-local
-  dialect and is queued. A flow with PHASES of its own brings its own derived
-  sweep rather than joining a shared one — `po_add_line_sweep_test.go` and
-  `receive_form_sweep_test.go` are the two examples, and they are the same
-  file with the nouns changed: phases from the iota's sentinel, keys from
-  `poKeySpace()`, state and focus from `reflect` over the screen struct.
+  **Purchasing is fully converted** (sc-jde-poc closed the last of it): the VIEW
+  half (`po_detail.go`), the edit sheet, the add-line flow (`po_add_line.go`),
+  RECEIVING (`receive_form.go`) and the New PO ENTRY flow (`po_create.go` +
+  `po_create_pickers.go`). A flow with PHASES of its own brings its own derived
+  sweep rather than joining a shared one — `po_add_line_sweep_test.go`,
+  `receive_form_sweep_test.go` and `po_create_phase_sweep_test.go` are three
+  copies of one file with the nouns changed: phases from the iota's sentinel,
+  keys from `poKeySpace()`, state and focus from `reflect` over the screen
+  struct.
+  **A bar entry's `Key` is the LITERAL keystroke.** `{"a", "Assets"}` is the
+  letter `a`; `{"A", "Attach"}` is shift+A. `poBarKeyNames`
+  (`po_view_jde_test.go`) is the ONE table both purchasing sweeps read, and a
+  `Key` it does not know FAILS rather than being skipped — which is also what
+  keeps the convention true, because a screen displaying `A` for a key that is
+  really `a` would be spelling a keystroke nobody presses.
 - **A key the bar does not name must do nothing**, and a key it names must do
   something. Tests assert both — and a key absent from a sweep's VOCABULARY is
   pressed in neither direction, so it is untested rather than passing. That is
@@ -176,7 +182,7 @@ note, and is the authority):
   builds only a `PurchaseOrderCreateScreen`, so it never could have caught `N`,
   and saying otherwise was itself a false invariant.
   A bar-token TABLE is the other half of a key space, and it must transcribe
-  rather than interpret: `poPickerBarKeys`, the phase sweep's `buried` list and
+  rather than interpret: `poBarKeyNames` (every columnar purchasing bar) and
   `listBarKeyNames` map each token to the keys it SPELLS and to no synonyms.
   Credit for a synonym is the sweep making the claim on the bar's behalf — the
   defect it exists to report, sitting inside the check. `↑↓` used to be read as
@@ -184,7 +190,7 @@ note, and is the authority):
   `ctrl+u`/`ctrl+d` and `g/G` as naming `home`/`end`, so four bound-but-unnamed
   keys passed and any arm added behind them would have passed too. The bars now
   say what they bind (`j/k ↑↓ move`, `g/G home/end top/bottom`, and
-  `poBarAliasKeys` for the second token in a segment), and the four emacs chords
+  `listBarAliasKeys` for the second token in a footer segment), and the four emacs chords
   went the way the supplier picker's `tab` alias went: unbound, because a chord
   costs cells a 51-column bar does not have and names nothing an operator reads.
   `listKeySpace` replaced the last curated roster (`listAllBarKeys`), which was
@@ -197,11 +203,19 @@ note, and is the authority):
   phase sweep beside it: it earns its keep on the other axis — it walks the
   picker STATES (empty, failed, mid-flight) the phase sweep does not reach —
   while every PHASE it covers meets the whole key space there, so a key missing
-  from its vocabulary is still pressed, in both directions, one file over. Where a bar is prose rather than `key claim · key claim`, reshape the
-  bar: `poBarNamedKeys` reads single-letter keys only at a segment START,
-  because scanning prose for a bare `a` finds the article. That reshaping is how
-  `b` — bound on all three association pickers exactly as `esc` is, named by
-  none of them — was finally caught.
+  from its vocabulary is still pressed, in both directions, one file over.
+  A KEY-NAME TRANSLATOR is a third place the same omission hides, and it is the
+  one nobody thinks of: `poPickerKeyMsg` used to fall through to `KeyRunes` for
+  a name it had not been taught, so pressing `"pgup"` typed p-g-u-p into a
+  focused search box and the sweep reported the SCREEN as acting on a key its
+  bar does not name. `poNamedKeyTypes` is complete over `poKeySpace()` and
+  `TestPOCreate_EveryKeyNameTranslates` derives that from the space, so a key
+  added to the space fails until the translator knows it. Making the bars
+  `[]actionBarItem` retired the prose parser that used to be the fourth place —
+  it read single-letter keys only at a segment START, because scanning prose for
+  a bare `a` finds the article, and that reshaping is how `b` (bound on all
+  three association pickers exactly as `esc` is, named by none of them) was
+  finally caught.
   A DERIVED ROSTER IS ONE AXIS, AND A SWEEP HAS TWO. Walking an iota to its
   sentinel makes a PHASE impossible to forget and says nothing whatever about
   the STATES inside one, and it is the states a bar changes shape in — so a
@@ -232,6 +246,48 @@ note, and is the authority):
   them disagree with every other form in the program), and `poAddSilentKeys` (a
   NAMED key resting against an edge it cannot move past, where the highlight or
   the absent `↑ more above` marker has already answered the press).
+- **A FIELD form wraps; a LIST clamps, and the two are different keys reaching
+  different handlers.** A short form has no edge worth defending: clamped, Down
+  or Tab on the last of four fields blurs and re-focuses the same field — no
+  state change, no note, and the bar naming `UP/DN` at that moment, which is
+  rule 1. A LIST is the opposite: running off the bottom and reappearing at the
+  top would land the cursor on a row that CLEARS a field, so `jdeClampPick` and
+  `jdePageCursor` clamp on purpose. The shared cursor (`po_create.go`'s
+  `setCursorRow` / `moveCursor`) is a LIST cursor, so the line form answers
+  `up`/`down`/`tab`/`shift+tab` BEFORE `moveCursor` sees them and wraps modulo
+  `lineFields()` (`focusNextLine`); paging stays clamped. `po_add_line.go`'s
+  price rows wrap for the same reason, and the conversion routing the line form
+  through the shared clamp is what briefly made the two purchasing field forms
+  disagree — `TestPOLineForm_FieldNavigationWrapsAtBothEnds` is where that
+  fails now. The wrap must not leak into the other phases: a fix applied inside
+  `setCursorRow` would unclamp every list on the screen.
+  It follows that a field form SHORT ENOUGH for its wrapping cursor to reach
+  every row in a few presses is not OFFERED `PgUp`/`PgDn` at all: it has nothing
+  to page, and `jdePageCursor` clamps on purpose (a page that jumped from the
+  last row to the first would lose the operator's place), so leaving the pair on
+  the shared path named a key that blurred and re-focused the SAME field
+  wherever the fields outran the pane.
+  LENGTH is the whole of that test, and the boundary is written down here rather
+  than left to be inferred, because the over-general version of the sentence — "a
+  field form is not offered PgUp/PgDn" — sounds right and would march the next
+  reader, by rule 10, into STRIPPING a key a long form genuinely needs.
+  `inventory_item_form.go` is the case on the other side of the line: its cursor
+  WRAPS in exactly this sense (`moveCursor`: `(cursor + delta + n) % n`), and it
+  offers `PgUp`/`PgDn` gated on `bodyScrolls` and says so in its own header
+  comment, because it is roughly twenty rows and a wrapping cursor is no way to
+  cross that. `category_form.go`, `maintenance_item_form.go` and
+  `storage_slot_form.go` are the same shape. The New PO line form is three or
+  four rows, which is the only reason the pair buys nothing there. `bodyPagesFor` is the ONE predicate that answers
+  for both the bar and the arm, so the gate goes there and nowhere else;
+  `TestPOLineForm_TheBarDoesNotOfferPagingItCannotDo` sweeps every drawable
+  height, because the state only exists below 20 rows and `poPaneSizes` is
+  {24, 30}.
+  So the pair's reach on this screen is a QUALIFIED claim rather than a flat
+  one, and it is worth stating that way: `PgUp`/`PgDn` page a scrolling body on
+  the phases that draw a LIST, and are offered on the line form at NO height.
+  Nothing was taken from the operator by that — before the conversion this
+  screen bound neither key anywhere — so the pair is new on the phases that have
+  a list to page and simply never offered on the one that does not.
 - **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
   hint literal.** The footer and the handler read that one table; the previous
   shape appended the words to a hint string and left the key to a global
@@ -247,17 +303,22 @@ note, and is the authority):
   51 is the width that must HOLD, not the width to render as though we had, and
   which of the two a bound is depends on what it does when it bites. FOLDING
   narrow costs an extra line and loses nothing, so the folders (`pickerWrap` and
-  everything through it) stay on `pickerPaneWidth`. CLIPPING narrow DESTROYS the
-  tail, so every clip is measured against the pane the terminal really gives:
-  `PurchaseOrderCreateScreen.paneWidth()` — `screenBodyWidth` of the width
-  recorded from `WindowSizeMsg`, falling back to 51 unsized — and the picker
-  rows, the cart row, the supplier header and the association rows all read it.
-  Clipped to a fixed 51, a 120-column terminal drew every picker row abbreviated
-  with forty columns of pane left blank, on the rows an operator picks FROM.
+  everything through it, `pane_text.go`) stay on `pickerPaneWidth`. CLIPPING
+  narrow DESTROYS the tail, so every clip is measured against the pane the
+  terminal really gives: `jdeScreen.bodyWidth()`, or a screen's own `paneWidth()`
+  wrapper where an UNSIZED screen still has to clip against something
+  (`po_create.go`, `po_add_line.go`). Clipped to a fixed 51, a 120-column
+  terminal drew every picker row abbreviated with forty columns of pane left
+  blank, on the rows an operator picks FROM.
   `TestPOPickers_AWideTerminalDrawsTheWholeRow` holds both directions at 80, 100
   and 120: nothing overflows at the narrowest, and the same row draws WIDER at
   the widest. A test helper that hard-codes 80 cannot see the second half, which
   is why `poAssertFits` and `poPaneLinesAt` clip against `poFrameWidth(screen)`.
+  **A columnar fixture needs BOTH dimensions.** The frame pins its bar to the
+  bottom of the pane and draws the rule at the pane's WIDTH, so a fixture given
+  a height and no width draws a 72-column bar (the layer's unsized fallback)
+  into a 51-column pane. `s.Update(tea.WindowSizeMsg{...})`, never
+  `s.terminalHeight = h`.
 - **Check the CLIPPED render.** `clampToBox` truncates in `Root.View()`, not in
   the screen, so a test that reads `screen.View()` passes while the terminal
   shows a cut line. Assert against `Root.View()` at 80/100/120 —
@@ -433,7 +494,20 @@ note, and is the authority):
   natural layout, and `jdeFitHeader` gives ground BY RANK — most expendable
   first, within a rank from the END, output still in display order. Blank
   separators are forced decorative, which is the separator rule read from the
-  other side. A builder may mark at most as many rows essential as the smallest
+  other side.
+  **A RANK DOES NOT REMOVE THE SIGNIFICANCE OF ORDER WITHIN A RANK**: ground is
+  given from the END within each one, so two rows sharing a rank are still
+  separated by POSITION and whichever is emitted LAST goes first. Merging the
+  New PO chooser's attribution block and its cart-total block into one, to save
+  a separator row, quietly made position the tiebreak again — and at 80x20 the
+  review frame dropped `Total: at least $84.00` while `Agreement ..... (none)`
+  and `Committee ..... (none)` stayed: the money floor going off the surface an
+  order is COMMITTED from so two empty optionals could stay. The total is
+  emitted first now (`po_create.go`'s `headerLines`), and the position is
+  written down as a decision so it is not tidied back.
+  `TestPOReview_TheCartTotalOutlivesTheOptionalRows` sweeps every drawable
+  height rather than the two in `poPaneSizes`, because the defect lived below
+  both of them, which is why nothing caught it. A builder may mark at most as many rows essential as the smallest
   drawable budget keeps (one, on any screen with a header), because an
   "essential" row the geometry drops anyway is the same false claim in a new
   place. `TestJDEForm_EveryEssentialHeaderRowIsOnThePane` holds it over a roster
@@ -461,7 +535,11 @@ note, and is the authority):
   phase added to the iota brings its body with it.
   `po_edit.go` and `po_add_line.go` still open their bodies
   with `l.Add` headings; they are safe only while their cursor blocks stay short
-  of the pane, and the queued New PO conversion should not copy the shape.
+  of the pane. The New PO conversion took the other route and it is the one to
+  copy: everything that would have been a lead-in — the supplier row, the
+  optional attribution values, the screen's answer to the last keypress, the
+  review phase's PO-notes box — is a PINNED HEADER row with a rank, and the body
+  is nothing but navigable rows (`po_create.go`'s `headerLines` / `body`).
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
 
@@ -472,38 +550,46 @@ touching any screen an operator drives:
 
 - Any action that goes off the terminal reports **working** (naming the work and
   the subject — "Looking up the items Acme Supply sells…", not "Loading…"),
-  **succeeded**, and **failed**, and a failure frame names a key that still
-  works. An error string must be CLEARED on the next success: several renderers
-  show the error *instead of* the list, so a stale one hides a load that worked.
+  **succeeded**, and **failed**, and the bar still names a key that works. An
+  error string must be CLEARED on the next success: a body that draws its
+  "the lookup failed" line INSTEAD of the list will hide a load that worked.
+  On a columnar screen the working line and the failure HEADLINE both go through
+  `jdeScreen.statusRow`, which flattens a multi-line OMS body and bounds it in
+  one forward pass; the failure's unbounded DETAIL rides in the pinned header,
+  cut to a fixed row count before it is folded. `po_create.go`'s `workingLine`
+  and `failure` answer for the PHASE being drawn, not for the screen: a failed
+  agreement load is not a fact about the item picker, and reporting it there
+  puts a sentence nobody can act on over the one they came for.
 - Any key arm that declines to act — an empty list, a search that matched
   nothing, either edge of a pager — must say why. `return s, nil` there redraws
   a byte-for-byte identical screen, which reads as a wedged program; that was
   the whole of the "the item picker hangs after I press enter" report.
-- Notes go in the screen BODY as well as the status bar: `StatusBar.Flash`
-  expires after four seconds and the operator who saw nothing is still looking.
-  All FOUR pickers carry a `pickerNote` for this and every frame of each of them
-  draws it, the loaded LIST frames included — the reorder and supplier frames
-  answered into the flash alone for several rounds, two of their frames drew no
-  body at all, and the supplier list frame then went one more round returning
-  its rows with the note dropped, so the rule kept being documented wider than
-  the code honoured it.
-- **Do not hand-count a hint against 51 columns — fold it.** Every note, fixed
-  hint and prose ACTION BAR goes through `pickerWrap` / `pickerHint` /
-  `pickerFail` (`po_create_pickers.go`), which fold at the `·` joints and indent
+- Notes go on the PANE as well as the status bar: `StatusBar.Flash` expires
+  after four seconds and the operator who saw nothing is still looking. On the
+  New PO screen the note is the pinned header's ESSENTIAL row, so it is drawn on
+  every frame of every phase by construction — the previous shape wired each
+  picker's note into each of its own renderers, and the reorder and supplier
+  frames answered into the flash alone for several rounds because two of them
+  drew no body at all. A phase with nothing to ANSWER fills that row with a
+  standing FACT about the phase (`standingNote`) rather than leaving it blank,
+  so "nothing to say" and "the row scrolled away" are different states.
+- **Do not hand-count a hint against 51 columns — fold it.** Every note and
+  fixed hint goes through `pickerWrap` / `pickerHint` / `jdeCaveatLines`
+  (`pane_text.go`, `jde_form.go`), which fold at the `·` joints and indent
   continuations. EVERY one: the last sweep found seven still written straight to
   the pane with `StyleMuted.Render` — the association caveat (98 cells, cut
   mid-negation, and the negation is the whole point of the sentence), the
   `ctrl+t` cost-basis hint (110), the two line-form notes, the cart's
   catalog-pricing caveat, `Line source:` (a UUID puts it over), and an
   agreement's OMS-supplied notes. A styled literal on these screens that does
-  not go through the folder is the defect, not a style choice. That now
-  includes the SUBMIT-failure line and the supplier header's load error
-  (`renderFailLine`, `renderSupplierHeader`), which were the last two written
-  straight to the pane — and both carry an OMS response body, which
-  `omsapi.parseError` fills with the ENTIRE raw payload whenever the JSON
-  envelope has no code, so at submit the operator read
-  `✗ oms: http 502: <!DOCTYPE html><htm` and nothing else, on the one step where
-  losing the reason costs the whole order.
+  not go through the folder is the defect, not a style choice. The SUBMIT
+  failure and the supplier load error were the last two written straight to the
+  pane, and both carry an OMS response body, which `omsapi.parseError` fills
+  with the ENTIRE raw payload whenever the JSON envelope has no code — so at
+  submit the operator read `✗ oms: http 502: <!DOCTYPE html><htm` and nothing
+  else, on the one step where losing the reason costs the whole order. Both go
+  through the LAYER now: the headline on `statusRow`, the body in the pinned
+  header (`failLines`), cut to `poFailDetailRows` BEFORE it is folded.
   FIELD rows are the shape that does not FOLD, and they are bounded rather than
   exempt — the CART row included, which gives ground in its own STATED order
   because clipping its label alone was not enough: the LABEL first, then the
@@ -518,7 +604,7 @@ touching any screen an operator drives:
   two cells more, asked of `StyleSidebarItemActive.GetHorizontalPadding()`
   rather than counted.
   A PICKER row is the same shape and was the last one left unbounded — the rows
-  an operator picks FROM, on the screen the report is about. Every one now goes
+  an operator picks FROM, on the screen the report is about. Every one goes
   through `poFitRow` against `windowedListRoom()`: the NAME abbreviates, the
   FACTS never give, and the decorations behind them are dropped from the RIGHT
   so the columns that stay keep their places — reordering a columnar row costs
@@ -543,22 +629,39 @@ touching any screen an operator drives:
   `Widget 1` / `Lathe 1` / `Bolt 1`, seven cells, so no test had ever rendered a
   picker row at the length OMS actually carries — and the long name is on the
   FIRST row only, so a fixture list is mixed the way a real one is.
-  The source chooser's `g` / `w` / `c` rows and the `Supplier: … ·
-  agreement: …` header are `label: value` rows carrying OMS-supplied names, so
-  `renderAssocValue` and `renderSupplierHeader` clip each value to what the
-  labels leave (`pickerClip`, ellipsis included) and keep them one row each —
-  folding them would spend rows the 24-row chooser does not have, and the g/w/c
-  rows are the first ones it drops when it runs out. The header is bounded in
-  PRIORITY order, the agreement's label and floor reserved before the supplier
-  name takes the rest, because at 51 columns a long supplier name used to remove
-  the agreement and the `(#id)` with it — on the row that is drawn on every
-  phase, review included, where it is the last thing seen before submit.
-  The agreement row also lost the long form of its label:
-  `  g  Purchase / pricing agreement (optional): (none)` is 52 cells with an
-  EMPTY value, so the pane cut the value on every render.
-  That folder is deliberately pane-local, outside the JD Edwards layer, so the
-  list screens and the New PO help line can be legible at 80 columns without
-  joining the columnar layout. Hand-counting is what broke: each
+  **A FIXTURE THAT CANNOT REACH THE BOUND UNDER TEST MAKES THE ASSERTION VACUOUS
+  however precisely it is worded**, and that is rule 9 in its subtler form: not a
+  check that cannot fail, but one that passes for reasons unrelated to the
+  property it names. `TestPOSubmit_TheFrozenChooserHeaderDropsTheKeyColumn` is
+  the second instance — it asserted the attribution VALUE was byte-identical
+  across the freeze while the keyed and unkeyed rows are clipped to 30 and 32
+  cells, so the claim was only true of the `Annual 1` / `Shop 1` names the fake
+  generated. Whenever a check is about a bound, the fixture has to carry a value
+  that reaches it.
+  AN ASSERTION CHOSEN BECAUSE IT PASSES IS THE SAME FAILURE WITH THE FIXTURE
+  LEFT ALONE, and it is the third instance:
+  `TestPOSubmit_ADeclineDoesNotPushTheSubmitOffTheStatusRow` asserted the
+  21-cell `Creating the purchase` — a prefix the 25-cell clip happened to spare
+  — so it went green over `Creating the purchase or…` with the supplier gone,
+  certifying rule 6 on a row that inverted it. Assert the substring the RULE
+  requires, not one the truncation leaves.
+  The supplier, agreement, work-order and committee rows are columnar VALUE
+  rows carrying OMS-supplied names (`renderJDEField` with `jdeValue`), each
+  clipped to what the shared label column leaves (`poFieldValueRoom`, ellipsis
+  included) and kept to one row — folding them would spend rows the 24-row
+  chooser does not have. They used to be one row: `Supplier: Acme (#1) ·
+  agreement: Annual 2026 Steel Contract` is 67 cells, so a long supplier name
+  took the agreement and the `(#id)` with it, on the row drawn on every phase
+  including review, where it is the last thing seen before submit. A row of its
+  own per value is what removed the priority ordering that patched it.
+  A bound applied to one PART of a row and then appended to is not a bound: the
+  asset picker's `Showing` row clipped its query and then added `· page 2`,
+  which put it six cells past the pane. The page is a fact and never gives; the
+  query abbreviates; the fact is reserved BEFORE the identifier is clipped.
+  The folder (`pane_text.go`) is deliberately outside the JD Edwards layer, so
+  the list screens can be legible at 80 columns without joining the columnar
+  layout — and because `jde_form.go`'s own status bound calls into it
+  (`cellPrefix`). Hand-counting is what broke: each
   line read fine at the width its author had in mind and then grew a
   `search closed · ` prefix, a supplier name or an unbounded OMS error string,
   and `clampToBox` took the TAIL — which
@@ -567,15 +670,15 @@ touching any screen an operator drives:
   they read it. Assert it too: check `clampToBox(screen.View(), screenBodyWidth(80), n)`,
   never `strings.Contains(Root.View(), …)` — the 80-column status bar satisfies
   that substring while the body line is cut in half.
-- **A frame may only name keys that work in the state it is drawing** — and
-  that includes the WORDING of a note rendered in two states. With a search box
-  open, `b` is a letter going into the query and `esc` only closes the box; with
-  it shut, `esc` cancels the whole order. The picker frames used to print "b
-  picks another line source · esc cancels the order" while the box was open, and
-  the zero-match note used to keep its open-box tail after the box shut, so one
-  frame carried two claims about `esc` with the costly reading being the wrong
-  one. A note rendered in both states takes the state as an argument
-  (`itemFilterNote`).
+- **A frame may only name keys that work in the state it is drawing.** With a
+  search box open, `b` is a letter going into the query and `esc` only closes
+  the box; with it shut, `esc` cancels the whole order. The picker frames used
+  to print "b picks another line source · esc cancels the order" while the box
+  was open, so one frame carried two claims about `esc` with the costly reading
+  being the wrong one. That is structural now: `barItems` returns early on the
+  typing branch, so the keys the box swallows cannot be named at all, and
+  `TestPOSearchBoxes_TheBarNamesExactlyTheKeysThatWork` presses the whole key
+  space against every box state to prove it.
 - **Every width is CELLS, never runes — measured in ONE forward pass.**
   `lipgloss.Width` measures what the terminal draws; `len` over a string or a
   `[]rune` measures something else. A bound enforced in one unit while its
@@ -583,8 +686,7 @@ touching any screen an operator drives:
   alphabet: a CJK or emoji value clipped to `room` RUNES renders up to twice
   `room` cells, and clampToBox takes the tail the clip existed to protect.
   `pickerClip` and `pickerWords` both counted runes while every caller budgeted
-  cells (`renderCart`, `renderSupplierHeader`, `renderAssocValue`,
-  `pickerWrap`), and the ellipsis costs one cell of the budget.
+  cells, and the ellipsis costs one cell of the budget.
   The second half of the rule is what the first attempt at it cost: both were
   fixed by delegating to `truncateVisible` (layout.go), which drops ONE rune off
   the end and re-measures the whole remaining string, so a bound became O(n²) —
@@ -592,20 +694,20 @@ touching any screen an operator drives:
   fills with the entire raw payload whenever the JSON envelope carries no code.
   Measured on a 20 KB gateway page: 711ms for one clip, 1.5s to fold a fifth of
   it (unspaced, the shape DRF and a minified error page arrive in), and the
-  source chooser rebuilds the attribution row carrying one about ten times a
+  source chooser rebuilds the attribution rows carrying one about ten times a
   frame — 45 seconds for five renders, nine seconds of dead terminal per
   keystroke, which is the reported hang restored by its own fix. So every bound
-  on these screens goes through `cellPrefix` (po_create_pickers.go), which walks
+  on these screens goes through `cellPrefix` (pane_text.go), which walks
   FORWARD and stops when the budget is spent: its cost is the budget, not the
   length of what it was handed. `truncateVisible` is untouched — it belongs to
   the shared columnar layer — so a value that could be multi-KB should be
   bounded before it is handed to that layer rather than measured by it.
   And the input is bounded BEFORE a folder ever sees it, because at most `rows`
   lines of it can be drawn and folding the rest is work that is thrown away:
-  `pickerFail` cuts the detail to `rows × pickerPaneWidth` first (and stops
-  claiming an exact hidden-line count when it does, since that count would only
-  be true of the part it folded), and `poAssocOptions.handle` bounds the two
-  association load errors where they are RECORDED — one string, two renderers,
+  `po_create.go`'s `failLines` cuts the detail with `cellPrefix` to
+  `poFailDetailRows × width` before `pickerWrap` ever sees it, and
+  `poAssocOptions.handle` bounds the two association load errors where they are
+  RECORDED — one string, two renderers,
   the second of which is the edit screen's columnar field whose fitter is the
   shared one. `TestPOCreate_AHugeErrorBodyDoesNotFreezeTheFrame` drives a 20 KB
   whitespace-free body through both surfaces and fails on wall-clock;
@@ -643,12 +745,16 @@ touching any screen an operator drives:
   caret.** bubbles' `handleOverflow` returns early when `Width` is zero, so
   `View()` emits the whole value: past the column where the row fills the pane
   every further keystroke redrew it byte for byte — the reported hang, reached
-  by typing, in the PO-notes field the sacrifice order below spends rows
-  keeping on the pane vertically. Every typed row on these screens is measured
-  from the prefix it is drawn with (`poInputWidth` against `poNotesLabel`,
-  `poItemFilterLabel`, `poAssetSearchLabel` and `poLineRowPrefix`;
-  `listSearchInputWidth` against `listSearchPrompt`), so the value SCROLLS and
-  the caret is always the last thing on the row. The list box also RESERVES its
+  by typing, in the PO-notes field. On a COLUMNAR sheet this is the layer's:
+  hand it the BOX (`jdeField{Kind: jdeText, Input: &box}`) and `jdeFitRow` +
+  `jdeFitInputValue` size the row against the pane the terminal really gave and
+  keep the caret inside it. The New PO screen used to measure a hand-drawn
+  prefix against a fixed 51 columns instead (`poInputWidth`), which is a bound
+  computed against a width the terminal may not have — too narrow at 120
+  columns, and unbounded before that function existed at all. Off the columnar
+  layer the rule still has to be kept by hand: `listSearchInputWidth` against
+  `listSearchPrompt`, so the value SCROLLS and the caret is always the last
+  thing on the row. The list box also RESERVES its
   `  N match(es)` suffix, because a width makes bubbles pad a short value out
   to it and an unreserved suffix would then be pushed off the pane on every
   query rather than only on long ones. `TestPOTypedRows_EveryKeystrokeMovesTheRow`
@@ -659,248 +765,161 @@ touching any screen an operator drives:
   truncates on both axes, so a hint folded onto three lines to survive the
   51-column cut then falls off the BOTTOM instead — the same claim, a different
   edge. Any row reservation must be DERIVED from what will be drawn
-  (`ListScreen.footerRows` is `1 + len(pickerWrap(footerHint(), …))`;
-  `PurchaseOrderCreateScreen.frameRows` measures the folded help line AND the
-  failure line under the body), never a constant, and a growing top chunk must
-  window whatever the frame draws LAST —
-  on the PO review phase that is the focused notes input, and an operator typing
-  into a field that is off the pane is the worst form of this defect.
-  `frameRowsWith` reserved the failure line as ONE row for four rounds while an
-  OMS body carrying newlines rendered as a block of them, so every budget on the
-  screen was computed against a count that was wrong; it measures
-  `renderFailLine` now, and that line trims its own DETAIL to
-  `failRowBudget` — the pane, less the chrome, less the smallest body the phase
-  can honestly draw — so what a short terminal loses is the tail of the
-  gateway's HTML and never the sentence naming what failed.
-  That line is a HEADLINE PLUS A DETAIL and the two are written together
+  (`ListScreen.footerRows` is `1 + len(pickerWrap(footerHint(), …))`), never a
+  constant. On the columnar layer that derivation is `actionBarRowsFor`, and the
+  budget that follows from it is `bodyAvailForBar` — one pair, and the reason
+  the bar handed to those functions must be the bar that is about to be DRAWN.
+  Where the answer feeds the bar's own contents (naming the scroll keys costs
+  cells, which can fold the bar onto another row, which costs a body row, which
+  can change the answer) the caller passes the bar WITH those keys on it:
+  measuring against the tallest bar is the fixed point, so the answer cannot
+  oscillate between frames. `receive_form.go`'s `qtyPagesFor` / `qtyBarItems`
+  pair and `po_create.go`'s `bodyPagesFor` / `barItems` pair are the two worked
+  examples, and both take the pinned header's height as an ARGUMENT measured
+  before the arms ran, so a press is judged against the frame it was made on.
+  The failure line is a HEADLINE PLUS A DETAIL and the two are written together
   (`setErr`, the only writer of either field): a picker's decline that set the
   headline alone left the previous failure's detail standing, so
-  `nothing to add` was drawn with the 502's HTML folded underneath it, reading
-  as the gateway explaining a validation message. It also belongs to the
-  SUBMIT — a picker's decline goes in that picker's own note
-  (`reorderEmptyNote` and its siblings), never in this line.
-- **One budget, not one per block.** Nearly every scrolling block on the New PO
-  screen takes its height from `bodyRowBudget(otherRows)`, which measures the frame
-  chrome and whatever the phase draws around the block; `renderWindowedList`
-  takes that budget and counts its own `↑`/`↓` markers INSIDE it. The first pass
-  gave the list footer and the review cart their own answers and left the
-  pickers on a fixed ten rows, so a matched row could be highlighted and STAGED
-  while off the pane — a wrong purchase order, on the screen the report was
-  about. A block that cannot fit says how many rows it hid.
-  The one exception is measured, not assumed: `bodyRowBudget` FLOORS at three
-  rows, which is a lie when the phase chrome alone fills the pane, and on the
-  source chooser at 80x24 it is — the folded bar, the supplier header, the four
-  source rows and the `d` row leave the cart fewer rows than its own header and
-  total. `sourceCartSpace` therefore does that one sum itself (and both the
-  collapse decision and the render read it, because measuring with one budget
-  and drawing with another is how a block passes its own fit check and then
-  overflows). `reviewCartSpace` is the same sum for the review phase, where the
-  row that floor spends is the focused notes input. Do not "fix" the floor in
-  `bodyRowBudget`: it is shared with the queued columnar conversion.
-  The cart's own chrome is derived too (`cartChromeRows`), and was the last
-  hand-kept row count here: `poCartChromeRows = 5` counted one row per item
-  while the catalog-pricing caveat, once it went through the folder, took TWO
-  at 63 cells. `poCartCaveat` is the one wording both the renderer and the
-  reservation read, so they cannot disagree about how tall it is.
-- **When the pane runs out, sacrifice in a stated order — do not shave words.**
-  The New PO screen gives ground in this order, last named being last to go:
-  the optional ATTRIBUTION rows (`g` agreement, `w` work order, `c` committee,
-  and the review tail's repeat of them), then prose and caveats, then the TITLE,
-  then the `r`/`i`/`a`/`f` rows the screen is for, and never the cart's
-  existence — the `d` that opens it, its count and its total, in that order of
-  protection — or the focused PO-notes input. `sourceAttributionShown`,
-  `sourceTitleShown` and `reviewAttributionShown` are that order in code: three
-  header rows plus the bar they lengthen were enough on their own to
-  push the whole collapsed-cart sentence off an 18-row pane, so the frame drew
-  no cart at all while `j`/`k`/`x`/`ctrl+e` answered into a four-second flash;
-  on review the same rows plus a caveat folded onto two left the cart no line
-  and took the notes field with them.
-  Ask BOTH halves before dropping anything: does hiding actually free rows, and
-  does the frame overflow with them shown. Asking only the second is what the
-  first version did, and a supplier offering exactly ONE optional row spends the
-  same rows either way — the substitute notice is one row in the slot the row
-  occupied and the bar folds to the same height — so at 80x24 the frame replaced
-  a real committee row with "optional rows need more height", which was FALSE,
-  stopped naming `c`, and made `c` decline. Dropping a row that costs nothing to
-  keep is worse than the overflow it avoids.
-  The TITLE step is what makes the total half of that order true rather than
-  accidental, and it is the one place the order runs INSIDE a sentence.
-  `cartHiddenSentence` is ORDERED by sacrifice — the key, then the count, then
-  "not listed here", and the total LAST — so the total
-  is what a one-row overflow takes, and with one optional row offered the
-  chooser sits exactly on an 18-row pane with nothing spare. `sourceTitleShown`
-  gives up "Where should this line come from?" and its blank line first: two
-  rows that name no key and carry no value, with the four `r`/`i`/`a`/`f` rows
-  right under them still saying what the screen is. It is measured against the
-  same conservative reservation the attribution step uses (`sourceCartMinRows`, one
-  function so the two consecutive steps cannot reserve different carts), which
-  includes a row of slack for a declining key's lead, so the title goes while
-  the pane still has a row spare. That is the trade: the title costs nothing to
-  lose, and the spare row is what stops a keypress pushing the total off.
-  Two rules ride along. **The bar follows the cut**: `sourceHelpText` stops
-  naming `g`/`w`/`c` for exactly as long as their rows are off the pane and the
-  three arms decline (`attributionHiddenNote`) — a key naming a row the frame
-  has dropped is the same defect as a key acting on one. And **what is dropped
-  says so**, in one row that cannot fold: both notices are FIXED strings sized
-  so that even led by a decline (`g is off here · …`) they stay one rendered
-  row, since a second row appearing on a keypress would take back the row it was
-  dropped to free. The TITLE is the one exception to that second rule and says
-  why in its own decision: nothing stops working when it goes, so spending a row
-  to announce a row that cost the operator nothing would be the overflow it was
-  dropped to avoid.
-- **Measure a tail before you draw the list above it.** The asset pager and the
-  reorder summary are written after their list; a list sized without counting
-  them pushes exactly them off the bottom, taking the `]`/`[` keys with it. The
-  three picker FAILURE frames do the same with their way-out bar and verdict
-  note: both are built first and the unbounded error DETAIL is what `pickerFail`
-  trims to `bodyRowBudget` (saying how many rows it hid). An OMS error string is
-  the whole raw response body whenever the JSON envelope carries no code, so
-  roughly 380 characters used to push the verdict note off an 80x24 pane and
-  roughly 470 took `esc cancels the order` with it — folding had traded the
-  horizontal cut for a vertical one, for the third time in this file.
+  `nothing to add` was drawn with a 502's HTML folded underneath it, reading as
+  the gateway explaining a validation message. It also belongs to the SUBMIT —
+  a picker's decline goes in that picker's own note (`reorderEmptyNote` and its
+  siblings), never in this line.
+- **One budget, and it is the LAYER's.** `bodyAvailForBar` is the one answer to
+  "how many rows does the body get", `bodyScrollsForBar` the one answer to
+  whether it moves, and `windowRowsForBar` the one answer to what a page is
+  worth — each asked of the bar that is about to be DRAWN. A sheet that
+  computes any of the three itself will eventually compute it differently from
+  the frame; `TestJDEForm_NoSheetAnswersTheScrollQuestionItself` holds the door
+  shut by reading the package's own source, and it catches a bare
+  `jdeLines.Len()` in a comparison as well as the named helpers.
+  The New PO screen is the cautionary tale and the reason that sweep exists:
+  it carried SIX answers to that one question (`frameRows`, `frameRowsWith`,
+  `frameChromeRows`, `bodyRowBudget`, `cartRowBudget`, plus `sourceCartSpace`
+  and `reviewCartSpace` doing the sum by hand because the shared one floored at
+  three rows it might not have). All of them are gone.
 - **A key that acts on a row must ask whether the row is DRAWN.** All three
   pickers keep the rows they were showing while a reload is out and after one
-  fails — a failed refresh should not also destroy what was on screen — but
-  neither frame draws them. `itemListOnScreen` / `assetListOnScreen` /
-  `reorderListOnScreen` gate `j`/`k`/`enter` (and the reorder marks) so an
-  invisible cursor cannot be moved and an invisible row cannot be staged: an
-  item going onto a purchase order the operator cannot see is a wrong purchase
-  order, and the failure frame names `r`/`b`/`esc` and nothing else.
+  fails — a failed refresh should not also destroy what the operator was looking
+  at — but neither body draws them. `itemListOnScreen` / `assetListOnScreen` /
+  `reorderListOnScreen` gate the cursor keys and `enter` (and the reorder marks)
+  so an invisible cursor cannot be moved and an invisible row cannot be staged:
+  an item going onto a purchase order the operator cannot see is a wrong
+  purchase order. `rowCount()` reads the same three predicates, so the bar stops
+  naming `UP/DN` for exactly as long as the gate holds.
   A list that IS drawn and empty is the same question with a different answer,
-  and it is the state the report was filed about: past those gates, `j`/`k`
-  compared a cursor against `len-1`, did nothing and said nothing, which is the
-  hang exactly. Every such arm now answers — `reportItemFilterState`,
-  `assetEmptyNote`, `reorderEmptyNote` (which also takes the reorder mark key) —
-  with a lead saying what the key did, and that lead NAMES the key
-  (`m.String() + " moves nothing"`). Naming it is not decoration: two keys
-  sharing one lead answer with the same sentence, and on a frame drawing no
+  and it is the state the report was filed about: past those gates the cursor
+  arms compared against `len-1`, did nothing and said nothing, which is the hang
+  exactly. Every such arm answers — `reportItemFilterState`, `assetEmptyNote`,
+  `reorderEmptyNote` — with a lead saying what the key did, and that lead NAMES
+  the key (`m.String() + " moves nothing"`). Naming it is not decoration: two
+  keys sharing one lead answer with the same sentence, and on a frame drawing no
   rows, no highlight and no focused textinput the second press then redraws a
-  byte-for-byte identical pane — the reported hang, reached by pressing `j` then
-  `k`. Test it IN SEQUENCE with no state reset between presses; resetting the
-  lead before every key is what made the sweep structurally unable to see it.
+  byte-for-byte identical pane — the reported hang, reached by pressing Down
+  then Up. Test it IN SEQUENCE with no state reset between presses; resetting
+  the lead before every key is what made the sweep structurally unable to see
+  it.
   A frame that binds only a HANDFUL of keys is the same rule, not an exemption:
   the supplier-switch confirm binds `ctrl+x` and `esc` and answered every other
   press with `nil`, so a reflexive double-tap of the `enter` that OPENED it
   landed on a renderer that is a pure function of unchanged state and redrew the
-  pane byte for byte. It declines through `supplierSwitchNote` now, which reads
-  the two live keys off `supplierSwitchBar` — the sentence the frame already
-  prints — so a decline cannot name a key the confirm does not honour. `enter`
-  is still NOT bound to the destructive answer: `ctrl+x` is that key precisely
-  so a double-tap cannot empty a half-built cart, and declining to bind a key is
-  not licence to leave the press silent.
-  A key the SUBMIT has made inert is the same shape once more: while the POST is
-  out `helpText` drops `enter submit` from the review bar (the drop
-  `itemPickBar` and `assetPickBar` already make for a gated key) and the press
-  answers on the "Submitting…" line through `pendingLead`, because an operator
-  watching a slow gateway is exactly the operator who will have missed a
-  four-second flash.
-  **And the CART IS FROZEN for as long as the request is out**, which is the
-  same rule with something at stake: `finalize` copies the lines and the notes
-  into the payload, so a removal, an edit, a typed note or a supplier commit
-  after it is work the 201's navigation discards — and until then the pane is
-  describing a cart that is not the one being created. Dropping the LAST line
-  was the worst of it, because `removeLineAt` sends the phase back to the source
-  chooser: the operator told to add a line while their two-line order was
-  already going in. So while `pending` every arm that would touch the payload
-  declines through `pendingLead` and the bar stops naming it, on all THREE
-  phases the operator can be on — review, the source chooser (`r`/`i`/`a`/`f`,
-  `x`, `ctrl+e`, `g`/`w`/`c`) and the supplier picker (`enter` onto a DIFFERENT
-  supplier, which would re-target the request).
+  pane byte for byte. It declines through `supplierSwitchNote`, which says what
+  the KEY DID and names no key at all — the bar makes that claim, on every
+  frame, where it cannot be trimmed. `enter` is still NOT bound to the
+  destructive answer: `ctrl+x` is that key precisely so a double-tap cannot
+  empty a half-built cart, and declining to bind a key is not licence to leave
+  the press silent.
+  **The CART IS FROZEN for as long as the create POST is out.** `finalize`
+  copies the lines and the notes into the payload, so a removal, an edit, a
+  typed note or a supplier commit after it is work the 201's navigation
+  discards — and until then the pane is describing a cart that is not the one
+  being created. Dropping the LAST line was the worst of it, because
+  `removeLineAt` sends the phase back to the source chooser: the operator told
+  to add a line while their two-line order was already going in. So while
+  `pending` every arm that would touch the payload declines through
+  `pendingDecline` and the bar stops naming it, on all THREE phases the operator
+  can be on — review, the source chooser (`r`/`i`/`a`/`f`, `ctrl+x`, `ctrl+e`,
+  `g`/`w`/`c`) and the supplier picker (`enter` onto a DIFFERENT supplier, which
+  would re-target the request).
   Those two are reachable because `esc` is deliberately NOT gated — a frame with
   no way out while a slow gateway thinks is the worse defect — so freezing only
   the review arms would have left the identical defect one phase over. (Leaving
   the screen with `esc` does not CANCEL the request: the order may still be
   created with nobody watching. That gap is open and known; gating the last way
-  out to close it would trade it for a dead end.) What
-  stays live is what only READS or MOVES: `↑↓` / `j`/`k` move a highlight
-  through a windowed cart, `d` reviews it, `b` and `esc` leave — and on the
-  supplier picker `enter` on the row the order ALREADY carries, which commits
-  nothing (`commitSupplier` returns early on the same id) and only sets the
-  phase back to the source chooser. The line is what a key would CHANGE, not
-  which frame it sits on: freezing that enter outright cornered the one frame
-  that binds no `b` and no `d` and whose `esc` leaves the SCREEN, so the
-  operator who wandered there mid-flight could only wait or throw the answer
-  away. `supplierHighlightIsCommitted` is the one predicate the arm and
-  `supplierPickBar` both read, and the sweep now walks the rule rather than
-  trusting it: a frozen frame with no key that returns to another frozen frame
-  FAILS `TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork`. The notes input is BLURRED
-  by `finalize` and focused again by `poCreatedMsg` when the submit comes back
-  failed, so a caret is never left blinking in a field whose contents have
-  already gone — and `d`, which moves ONTO the notes frame, leaves it blurred
-  for the same reason.
+  out to close it would trade it for a dead end.) What stays live is what only
+  READS or MOVES: `UP/DN` move a highlight through a windowed cart, `d` reviews
+  it, `esc` leaves — and on the supplier picker `enter` on the row the order
+  ALREADY carries, which commits nothing (`commitSupplier` returns early on the
+  same id) and only sets the phase back to the source chooser. The line is what
+  a key would CHANGE, not which frame it sits on: freezing that enter outright
+  cornered the one frame that binds no way back and whose `esc` leaves the
+  SCREEN, so the operator who wandered there mid-flight could only wait or throw
+  the answer away. `supplierHighlightIsCommitted` is the one predicate the arm
+  and the bar both read, and the sweep walks the rule rather than trusting it: a
+  frozen frame with no key that returns to another frozen frame FAILS
+  `TestPOSubmit_TheFrozenPhasesNameExactlyTheKeysThatWork`. The notes input is
+  BLURRED by `finalize` and focused again by `poCreatedMsg` when the submit
+  comes back failed, so a caret is never left blinking in a field whose contents
+  have already gone — and `d`, which moves ONTO the review frame, leaves it
+  blurred for the same reason.
   The freeze is an ALLOW-LIST, not a list of frozen keys, and that is the whole
   lesson of it: written the other way round it froze the nine keys somebody
   thought of, and `d` — added to the chooser bar in the same round — was free by
   default and put the caret back into the field the submit had just blurred.
-  Every frozen phase now names what may act and declines everything else through
+  Every frozen phase names what may act and declines everything else through
   `pendingDecline`, including keys the phase does not bind at all. An arm added
   later is frozen until somebody says otherwise.
-  The frozen chooser SAYS which keys are off rather than merely dimming them:
-  the four line-source rows keep their letters and their places — that block is
-  the map of the screen — and each reads `Reorder queue — off while submitting`
-  (shorter wording, so a marked row still fits 51 columns), while the `g`/`w`/`c`
-  rows drop their key COLUMN and become the value-only lines the review phase
-  already draws. Colour alone could not carry it: lipgloss renders plain with no
-  terminal attached, so a dimmed row is a claim no test can check.
-  The cart-row keys are stated ONCE (`sourceCartKeyClaim`) and read by both
-  surfaces that make the claim — the action bar and the hint above the rows.
-  They were two sentences until the freeze dropped `ctrl+e` and `x` from the bar
-  and left the hint three rows below still naming them, so one pane advertised
-  and refused the same two keys.
-  Two derivations hold it: `poPhasesUnreachableWhilePending` classifies EVERY
-  phase of the iota as swept-frozen or unreachable-with-a-reason, and the sweep
-  fails when a key actually reaches a phase outside the frozen set, so the
+  **The frozen chooser says so on ONE surface: the bar.** It used to say it on
+  two — the four line-source rows each read `Reorder queue — off while
+  submitting`, and a hint above the cart rows repeated the cart chords the bar
+  had already dropped, so one pane advertised and refused the same two keys.
+  The rows spelled the same keys the bar spells, six rows of a twelve-row budget
+  spent on a second copy of it, and the conversion deleted them rather than
+  re-synchronising them.
+  The KEY COLUMN on the optional agreement / work-order / committee rows is the
+  same claim in two cells and it survived the deletion for a round, because the
+  check that replaced the old rows-say-so test only read the BAR. Those rows are
+  drawn `attributionRows(!s.pending)`: the letters go when the bar drops them,
+  the VALUES stay, because they are part of the order being created and only the
+  affordance is false. `TestPOSubmit_TheFrozenChooserHeaderDropsTheKeyColumn`
+  asserts both directions on the clipped PANE — the at-rest half is not
+  optional, or the absence check passes on a frame that never drew a letter.
+  Two derivations hold the freeze: `poPhasesUnreachableWhilePending` classifies
+  EVERY phase of the iota as swept-frozen or unreachable-with-a-reason, and the
+  sweep fails when a key actually reaches a phase outside the frozen set, so the
   reason is checked by walking rather than trusted. `pendingLead` is cleared
-  where the phase changes — once, in `Update`'s key dispatch, not in the three
-  arms that navigate — because a lead NAMES a key and "ctrl+x removes nothing"
-  on the source chooser advertises a key that frame does not bind.
+  where the phase changes — once, in `Update`'s key dispatch, not in the arms
+  that navigate — because a lead NAMES a key and "ctrl+x removes nothing" on the
+  source chooser advertises a key that frame does not bind.
   FOCUS is in the state fingerprint (`poPickerState`) for every input on the
   screen, and `poFocusFingerprinted` is derived by reflecting for
   `textinput.Model` fields, because a caret lives INSIDE the value rather than
   beside it: the field-name check could not see focus at all, which is why `d`
-  re-focusing the notes was invisible to every sweep. `TestPOSubmit_TheCartIsFrozenUntilItAnswers` walks all three
-  phases in sequence; `TestPOSubmit_AFailedSubmitHandsTheCartBack` is the other
-  half, because a freeze that outlived a 502 would hold the order hostage to a
+  re-focusing the notes was invisible to every sweep. So is the caret's BLINK,
+  from the other side — bubbles falls through to `Cursor.Update` for any key its
+  own switch does not handle and that returns a tick unconditionally, so
+  `poCmdActs` filters it (`poIsBlink`) or every key pressed inside a search box
+  reads as an act.
+  `TestPOSubmit_TheCartIsFrozenUntilItAnswers` walks all three phases in
+  sequence; `TestPOSubmit_AFailedSubmitHandsTheCartBack` is the other half,
+  because a freeze that outlived a 502 would hold the order hostage to a
   gateway.
-  The GATED frames (loading, failed) are the same rule and were the last
-  instance of it: `a`/`enter` on the reorder gate, `]`/`[` on the asset gate and
-  `j`/`k` on the supplier gate each shared one sentence between two keys, and
-  those frames draw no rows, no highlight and no focused input, so the second
-  press redrew the pane the first one left.
-  `TestPOPickers_NoTwoGatedKeysShareASentence` presses each such pair together,
-  in sequence, at both pane heights.
-  List EDGES stay silent on purpose: the
-  highlight is on the pane and visibly at the end, so the press has answered
-  itself. The CART on the source chooser is the same rule off the pickers:
-  `cartListedOnScreen` measures whether its rows fit, and when they do not the
-  block collapses to one sentence carrying the count, the total, that the lines
-  are not listed and the key that opens them, while `j`/`k`/`x`/`ctrl+e` decline
-  and `sourceHelpText` stops naming them.
-  That sentence is ORDERED by what may be sacrificed rather than shaved to fit,
-  because its length is data: `at least $…` (any line priced from the catalog at
-  save time) or a five-figure order takes it past one row whatever the wording.
-  So the key, the count and `not listed here` lead it and the TOTAL is what
-  folds onto a second row — and the row budget counts that fold instead of
-  assuming one row, which the first version claimed and was not. The declining
-  leads are short for the same reason — they fold onto the first line AHEAD of
-  the key rather than pushing it onto a second — and each one names the key it
-  answers (`j moves nothing`, `x removes nothing`, `ctrl+e edits nothing`), so
-  no two of them can redraw the same pane. `x` removing, and `ctrl+e` editing, a
-  line clampToBox had dropped is the worst instance of this rule this screen
-  has had. The way out has to be real: the review phase lists and highlights the
-  same cart at 80x24, which is why `d` is what the sentence names.
-  The SEARCH BOX is not an exception: enter inside it is gated too — on
-  `itemListOnScreen` for items (the filter is client-side, so a pick out of an
-  unanswered catalog is a pick out of nothing) and on `assetsLoading` for assets
-  (that search goes off the terminal). Gate a key and the bar must stop naming
-  it for exactly as long as the gate holds, in the typing arm as well as the
-  browsing one, and the note the box OPENS with must not promise it either.
+  The GATED frames (loading, failed) are the same rule: `a`/`enter` on the
+  reorder gate, `]`/`[` on the asset gate and the cursor keys on the supplier
+  gate each shared one sentence between two keys, and those frames draw no rows,
+  no highlight and no focused input, so the second press redrew the pane the
+  first one left. `TestPOPickers_NoTwoGatedKeysShareASentence` presses each such
+  pair together, in sequence, at both pane heights.
+  List EDGES stay silent on purpose: the highlight is on the pane and visibly at
+  the end, so the press has answered itself.
 - **Two loads for one picker is a wrong list, so guard EVERY load site.** A
   picker reply echoes the `supplierID` it was asked about (`pickerReplySupplier`)
   and nothing else, so two lookups for the same supplier cannot be told apart by
   it and whichever lands last wins.
   `b` is named on the working frame and has to keep working, so leaving
   mid-lookup and pressing the source key again is an ordinary sequence — and
+  (`b` there means the picker's "back to the line sources"; `esc` on the SOURCE
+  chooser is the one that goes back to the supplier picker, and the chooser's
+  own `b` was retired as a duplicate of it) —
   gating only the search box left `a` → `/`+search → `b` → `a` firing an
   unfiltered page 1 over a search still out, painting a FILTERED SUBSET as the
   supplier's whole asset list with an empty box and a green tick. Every site
@@ -921,54 +940,53 @@ touching any screen an operator drives:
   in `handlePickerLoaded`, the same shape as `ListScreen.searchSeq` in
   `list.go`. The item and reorder replies carry supplier-wide data, so a second
   one is redundant rather than wrong, and they keep the `supplierID` echo alone.
-- **One WAY-OUT line, both surfaces.** A picker's way out is stated once — by
-  `itemPickBar` / `assetPickBar` / `reorderPickBar` / `supplierPickBar` /
-  `supplierSwitchBar` — and BOTH the screen's action bar (`helpText`) and the
-  frame's own hint read it. Keeping the two in sync by hand is what put "enter
-  picks the match" in the bar four rows above a note saying enter closes the
-  search, with enter doing neither. Those bars are NOT the only place a picker
-  names a key: a note answers a specific press, so it can be narrower than the
-  bar, and the rule is the weaker one — whatever a bar names must act in the
-  state being drawn, and bar and note must not CONTRADICT each other about the
-  same key. Two gaps are known and DEFERRED to the queued columnar conversion,
-  with the reasoning at the "One statement of what works here" comment in
-  `po_create_pickers.go`: `itemPickBar`'s empty-list arm cannot tell "matched
-  nothing" from "sells nothing" by row count, so it says only `r reloads` while
-  the note says `/ edits the search`; and the two failure frames print the
-  way-out line twice, once as the bar and once as the tail of the verdict note
-  drawn under it. `po_create_picker_status_test.go`'s
-  `TestPOPickers_PaneNamesExactlyTheKeysThatWork` presses the whole vocabulary
-  against every non-typing picker state and fails a key the bar names that does
-  nothing AND a key it does not name that acts — "acts" meaning CHANGES
-  something, since a key that declines and says why has not acted.
-  A THIRD gap is deferred to the same conversion, and as a RULE rather than a
-  list: EVERY list surface should name and bind the same navigation set. The
-  bar-honesty work unbound four alias chords on the surfaces it swept —
-  `ctrl+u`/`ctrl+d` on `ListScreen`'s pager, `ctrl+p`/`ctrl+n` on its search
-  overlay and on the review cart — while the list-SHAPED screens outside those
-  sweeps (category, location, supplier, asset parts, storage slots, device
-  types, thermostats, e-paper panels and the rest) still bind them, so `ctrl+d`
-  pages the supplier list and does nothing on the inventory list the operator
-  reached it from. The asymmetry is deliberate for now: the ARROWS were kept and
-  NAMED (`j/k ↑↓ move`, `g/G home/end top/bottom`) because they cost three cells
-  and are what a non-vim operator reaches for, and the chords were dropped
-  because naming them costs cells a 51-column bar does not have. Aligning the
-  rest is a change to roughly twenty screens nobody reported, which is why it
-  waits — and why it is written here as one rule, since an enumeration of the
-  twenty is how the drift started.
-- **On a destructive confirm the KEYS go above the prose.** `clampToBox` drops
-  from the bottom, so whatever is last is what a short terminal eats; on
-  `poPhaseSupplierSwitch` that was the decline hint, which is the safe answer.
-  The keys carry no supplier name (a 20-cell `pickerClip` name is what pushed
-  the fold over), and the prose below them is trimmed to `bodyRowBudget`.
-- **A note is rendered in two states, so word BOTH.** `itemFilterNote` takes
-  `typing` and every arm whose keys DIFFER between the two consults it: with the
-  box open `j`/`k` are characters and `enter` only picks a lone match. The
-  one-match arm is the exception and says so in place — "enter picks it" holds
-  with the box open and shut alike. Gating one arm and leaving the rest is
-  how the ordinary search path — type three letters, see eleven matches — went
-  on naming three keys of which two did something else. Same gate on
-  `assetLoadedNote`, whose reply can land with the box still open.
+- **ONE surface names a key: the action bar.** The pickers used to state their
+  live keys TWICE — a prose bar at the top of the pane and a way-out line in the
+  frame beside the note — and keeping the two in sync by hand put "enter picks
+  the match" four rows above a note saying enter closes the search, with enter
+  doing neither. Three gaps between those surfaces were recorded here as
+  deferred; the conversion closed all three the same way, by deleting the second
+  surface. The NOTES name no keys at all now. What a note carries is the LEAD —
+  what the key just pressed DID — which is a statement about a press rather than
+  a claim about what works, and it is what stops two keys redrawing one pane.
+  `TestPOPickers_PaneNamesExactlyTheKeysThatWork` presses the picker vocabulary
+  against every non-typing picker state, and
+  `TestPOSearchBoxes_TheBarNamesExactlyTheKeysThatWork` presses the whole key
+  space against the TYPING states the first one excludes; both fail a key the
+  bar names that does nothing AND a key it does not name that acts — "acts"
+  meaning CHANGES something, since a key that declines and says why has not
+  acted. The search-box sweep also fails a BODY line that names a key, which is
+  how the second surface is kept from growing back.
+  ONE gap remains, and as a RULE rather than a list: EVERY list surface should
+  name and bind the same navigation set. The bar-honesty work unbound four alias
+  chords on the surfaces it swept — `ctrl+u`/`ctrl+d` on `ListScreen`'s pager,
+  `ctrl+p`/`ctrl+n` on its search overlay — while the list-SHAPED screens
+  outside those sweeps (category, location, supplier, asset parts, storage
+  slots, device types, thermostats, e-paper panels and the rest) still bind
+  them, so `ctrl+d` pages the supplier list and does nothing on the inventory
+  list the operator reached it from. Aligning the rest is a change to roughly
+  twenty screens nobody reported, which is why it waits — and why it is written
+  here as one rule, since an enumeration of the twenty is how the drift started.
+  The New PO flow is no longer part of that asymmetry: it moved to the columnar
+  set (`UP/DN`, `PgUp/PgDn` when the body moves) and `j`/`k` are unbound on it.
+- **On a destructive confirm the keys are on the BAR and the prose is the
+  body.** `clampToBox` drops from the bottom, so whatever a screen draws last is
+  what a short terminal eats; on `poPhaseSupplierSwitch` that used to be the
+  decline hint, which is the safe answer on a destructive confirm. The layer
+  settles it: the bar is pinned to the bottom of the pane and is drawn before
+  the body gets any rows, so the two keys cannot be cut. The prose is a
+  read-only body (`frameScrolled` + `switchScroll`), and `UP/DN` are named there
+  exactly when the layer says it moves.
+- **A BAR is rendered in two states, so word BOTH.** With the item picker's box
+  open every letter is a character in the query, so the bar names `Esc` and —
+  conditionally — `Enter`, whose LABEL says which of two things it is about to
+  do: `Pick it` on a lone match, `Close & choose` on several, and nothing at all
+  over a query that matched nothing, where it can only decline. A single label
+  for all three is what the prose bar had, promising "picks the match" over
+  eleven matches and over none. The notes no longer word this at all; the
+  `typing` argument that survives on `itemFilterNote` chooses between "N item(s)
+  · type to narrow" and a bare count, which is a fact about the state and not a
+  claim about a key.
 - **A keypress that changes nothing visible IS the reported bug.** Enter over an
   ambiguous search re-emitted the note already on screen, so only the caret
   moved — the original "it just kinda hangs there", surviving inside its own
@@ -1033,21 +1051,19 @@ touching any screen an operator drives:
   — found-nothing where could-not-tell is the fact — and let `]` page with a
   query nobody submitted. `assetsQuery` records what the last load actually
   CARRIED, and every surface that describes the rows reads it: the notes, the
-  pager, AND the `search:` LABEL above the list — that label is what an operator
+  pager, AND the `Showing` LABEL above the list — that label is what an operator
   reads first to know what a list IS, and leaving it on the live textinput for
   one round drew `search: hovercraft` over an unfiltered page with a green tick.
-  A box holding something else says so instead of concluding — `showing: …`
-  above the box in EVERY state, open or shut, plus `search (not run): …` once
-  it is shut. Drawing the box alone while it was being typed into was the same
+  A box holding something else says so instead of concluding: `assetScopeRows`
+  pins `Showing ..... "…"` in EVERY state, open or shut, plus a
+  `Not run ..... "…"` row once the box is shut and holds something nobody
+  submitted. Drawing the box alone while it was being typed into was the same
   mislabel one state over, and it survived a round because every label test
   asserted with the box closed.
-  The wording is for the state it is DRAWN in, twice over: the uncommitted-esc
-  note only ever appears with the box SHUT, where enter stages the highlighted
-  row, so it names `/ reopens the search` and never "enter runs it"; and it
-  asks whether any rows came BACK before saying what they answer, because on a
-  search that found nothing that note IS the body of the frame and "the rows
-  still answer X" would assert rows that are not there. "enter runs the search
-  AGAIN" is likewise conditional on a search having run.
+  The uncommitted-esc note asks whether any rows came BACK before saying what
+  they answer, because on a search that found nothing that note is what the
+  operator reads and "the rows still answer X" would assert rows that are not
+  there.
 
 ## Gotchas
 

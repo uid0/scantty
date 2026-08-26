@@ -77,6 +77,20 @@ var listBarKeyNames = map[string][]string{
 	"A":         {"A"},
 }
 
+// listBarAliasKeys is the tokens a footer segment carries AFTER its head to
+// name a second key that acts exactly as the head's does — "j/k ↑↓ move". Only
+// tokens that SPELL the keys they map to belong here: the whole point is that
+// the bar says the key, so the sweep may credit it.
+//
+// It lived in po_create_picker_status_test.go as poBarAliasKeys until the New
+// PO conversion retired that file's prose-bar parser — the columnar bar is
+// []actionBarItem, so there is no prose left to alias — leaving this sweep, the
+// last one over a footer STRING, as its only user.
+var listBarAliasKeys = map[string][]string{
+	"↑↓":       {"up", "down"},
+	"home/end": {"home", "end"},
+}
+
 // listKeySpace is every keystroke the sweep presses: printable ASCII, then the
 // named keys a terminal sends that are not runes. It is the KEY SPACE, not a
 // vocabulary, and that is the whole point — the roster it replaced was a
@@ -123,10 +137,9 @@ func listNamedKeys(t *testing.T, hint string) map[string]bool {
 			named[k] = true
 		}
 		// A segment can name a second key beside its head ("j/k ↑↓ move"), and
-		// only a token that SPELLS its keys may be read that way — poBarAliasKeys
-		// is the same rule on the other half of the app.
+		// only a token that SPELLS its keys may be read that way.
 		for _, f := range token[1:] {
-			for _, k := range poBarAliasKeys[f] {
+			for _, k := range listBarAliasKeys[f] {
 				named[k] = true
 			}
 		}
@@ -624,7 +637,11 @@ func TestList_NOnThePurchaseOrderListOpensTheNewOrderScreen(t *testing.T) {
 	if !strings.Contains(out, "New purchase order") {
 		t.Errorf("the 80-column render does not show the new-order screen:\n%s", out)
 	}
-	if !strings.Contains(out, "Pick a supplier") {
+	// The first phase is the supplier picker, and what says so is its own
+	// standing note plus the bar naming the one key that acts while the list is
+	// still on its way. "Pick a supplier" was the prose action bar's lead-in;
+	// the columnar bar names keys, not phases.
+	if !strings.Contains(out, "Every picker after this is scoped") {
 		t.Errorf("the new-order screen did not open on its first phase:\n%s", out)
 	}
 }
