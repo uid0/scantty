@@ -713,6 +713,63 @@ func TestReceiveFlow_ADeliveredDateThatIsNotADateIsRefused(t *testing.T) {
 	}
 }
 
+// TestReceiveFlow_ReceiveMoreDoesNotCarryTheLastDeliveryDate.
+//
+// `R` on the summary is "receive more against this order", and resetEntry is
+// what makes the form it lands on a fresh one. It walks allBoxes, and allBoxes
+// did not know about the Delivered box — so the operator who typed the day the
+// goods actually arrived (the case the field's own caveat exists for: goods in
+// Thursday, booked in Friday) got that date handed back to them on the NEXT
+// delivery, under a hint still reading "blank = today", and the receipt posted
+// it for goods that came in on a different day.
+//
+// It is the wire that is asserted, not the box: a box the operator can see is
+// half the defect, and the half that matters is the date that reached OMS.
+func TestReceiveFlow_ReceiveMoreDoesNotCarryTheLastDeliveryDate(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+
+	// A delivery booked in on a day of its own.
+	for s.focused != receiveRowDelivered {
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	r = receiveTypeInto(t, r, "2026-08-20")
+	r = receiveGoToLine(t, r, s, 0)
+	r = receiveTypeInto(t, r, "1")
+	r = receiveKey(t, r, enter) // -> review
+	r = receiveKey(t, r, enter) // the receipt goes
+	if s.phase != phaseDone {
+		t.Fatalf("the first receipt did not land on the summary: phase %v", s.phase)
+	}
+	if sent := fake.sent(); len(sent) != 1 || sent[0].DeliveryDate != "2026-08-20" {
+		t.Fatalf("the first receipt did not carry the date it was given: %+v", sent)
+	}
+
+	// "Receive more": a different box turns up on a different day.
+	r = receiveKey(t, r, poRuneKey("r"))
+	if s.phase != phaseQty {
+		t.Fatalf("R did not hand back the quantity form: phase %v", s.phase)
+	}
+	if got := s.delivered.Value(); got != "" {
+		t.Errorf("R handed back a form still holding the last delivery's date: %q", got)
+	}
+	r = receiveGoToLine(t, r, s, 1)
+	r = receiveTypeInto(t, r, "2")
+	r = receiveKey(t, r, enter) // -> review
+	r = receiveKey(t, r, enter) // the second receipt goes
+
+	sent := fake.sent()
+	if len(sent) != 2 {
+		t.Fatalf("want two receipts, got %d: %+v", len(sent), sent)
+	}
+	if sent[1].DeliveryDate != "" {
+		t.Errorf("the second receipt carried the FIRST delivery's date (%q) — blank means "+
+			"today, which is what the operator was shown", sent[1].DeliveryDate)
+	}
+	_ = r
+}
+
 // ---------------------------------------------------------------------------
 // Writing a balance off
 // ---------------------------------------------------------------------------

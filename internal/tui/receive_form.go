@@ -676,11 +676,29 @@ func (s *ReceiveFormScreen) blurAll() {
 	}
 }
 
-// allBoxes is every textinput on the screen, derived from one list so a box
-// added later cannot be left out of a blur.
+// allBoxes is every textinput on the screen, in ONE list so a box added later
+// cannot be left out of a blur or of a reset.
+//
+// It is a literal because it is on a render path, and a literal is exactly what
+// went wrong: `delivered` was added as a row after this list was written and the
+// list did not follow it, so for as long as that stood the screen had two
+// defects with one cause. `blurAll` never blurred it, which meant leaving the
+// quantity form from the Delivered row carried a live caret through the review,
+// the submit and the summary — two reverse-video fields on the pane at once,
+// the very thing blurAll's comment says it exists to stop. And `resetEntry`
+// never cleared it, so `R` on the summary ("Receive more") handed back a form
+// still holding the date the LAST delivery arrived on, under a hint reading
+// "blank = today", and the next receipt posted that date for goods that came in
+// on another day — wrong data on the wire with nothing on the pane saying so.
+//
+// So the LIST stays hand-written and the CLAIM is what is derived:
+// TestReceiveFormScreen_EveryBoxIsInAllBoxes reflects over the struct for every
+// textinput.Model field, looking THROUGH slices because the quantity boxes are
+// one per receivable line, and fails naming any box this list does not reach.
+// A tenth box added tomorrow fails the build rather than the operator.
 func (s *ReceiveFormScreen) allBoxes() []*textinput.Model {
 	out := []*textinput.Model{
-		&s.scan, &s.tracking, &s.carrier, &s.notes,
+		&s.scan, &s.tracking, &s.carrier, &s.delivered, &s.notes,
 		&s.serialInput, &s.lotInput, &s.expiryInput, &s.reason, &s.parked,
 	}
 	for i := range s.qty {
@@ -1454,7 +1472,15 @@ func (s *ReceiveFormScreen) moveRowCursor(k string, rows, headerRows int) tea.Cm
 	if rows < 2 {
 		return s.decline(k, headerRows)
 	}
-	if k == "up" || k == "shift+tab" {
+	// UP and nothing else. Shift-Tab used to be tested for here and could not
+	// be reached: both callers route only `case "up", "down"`, because the
+	// Tab/Shift-Tab alias belongs to sheets WITH FIELDS and these two frames are
+	// read-only lists (keyBlocked's arm carries the full note). A condition
+	// testing for a key its callers never deliver reads as a binding the frames
+	// honour and the bars do not name, which is the bar-honesty rule broken in
+	// the source rather than on the pane — and the next author would have
+	// believed it.
+	if k == "up" {
 		s.rowCursor = (s.rowCursor + rows - 1) % rows
 	} else {
 		s.rowCursor = (s.rowCursor + 1) % rows

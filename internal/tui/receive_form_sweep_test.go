@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -546,6 +547,137 @@ func TestReceiveFormScreen_EveryInputFocusIsFingerprinted(t *testing.T) {
 		if !found[name] {
 			t.Errorf("receiveFocusFingerprinted names %q, which is no longer a textinput", name)
 		}
+	}
+}
+
+// receiveEveryBox walks a LIVE screen for every textinput it holds, by name and
+// by address.
+//
+// The same reflection as the focus fingerprint above, over a built screen
+// instead of the type, because the question here is about the boxes that exist
+// at run time: the quantity boxes are one per receivable line, so the slice has
+// to be walked THROUGH rather than counted as one field. Addresses, because
+// what allBoxes hands back is pointers and the only honest way to ask "is this
+// box in that list" is to compare what they point AT.
+// The screen's fields are unexported, so reflect refuses to hand one back as an
+// interface — and it does NOT refuse an address. Taking the address and naming
+// its type is what turns the enumeration into usable boxes; the alternative is
+// a hand-written list of the fields, which is the thing that broke.
+func receiveEveryBox(t *testing.T, s *ReceiveFormScreen) map[*textinput.Model]string {
+	t.Helper()
+	v := reflect.ValueOf(s).Elem()
+	input := reflect.TypeOf(textinput.Model{})
+	out := map[*textinput.Model]string{}
+	at := func(f reflect.Value) *textinput.Model {
+		return (*textinput.Model)(f.Addr().UnsafePointer())
+	}
+	for i := 0; i < v.NumField(); i++ {
+		name := v.Type().Field(i).Name
+		switch f := v.Field(i); {
+		case f.Type() == input:
+			out[at(f)] = name
+		case f.Kind() == reflect.Slice && f.Type().Elem() == input:
+			for j := 0; j < f.Len(); j++ {
+				out[at(f.Index(j))] = fmt.Sprintf("%s[%d]", name, j)
+			}
+		}
+	}
+	return out
+}
+
+// TestReceiveFormScreen_EveryBoxIsInAllBoxes.
+//
+// allBoxes is the one list blurAll and resetEntry both walk, and it claimed in
+// its own doc comment to be every textinput on the screen while omitting
+// `delivered` — a real, drawn, typed-into box that inputAt returns and the
+// quantity form renders. Two defects came out of the one omission, in opposite
+// directions: a caret left armed in a field the frame was no longer about, and
+// a stale delivery date riding onto a later receipt. Both are driven below;
+// this is the guard that stops the NEXT box being added without the list
+// following it, which is how the first one happened.
+//
+// Derived from the struct rather than from a roster, and against a screen with
+// quantity boxes REALLY built, so the slice walk is exercised rather than
+// merely written.
+func TestReceiveFormScreen_EveryBoxIsInAllBoxes(t *testing.T) {
+	lines := receiveSweepLines()
+	s := NewReceiveFormScreen(Deps{}, receivePO(lines...))
+	s.Update(receiveSheetMsg{sheet: receiveWorksheet(lines...)})
+	if len(s.qty) == 0 {
+		t.Fatal("the fixture built no quantity boxes, so the slice half of the " +
+			"derivation is checking nothing")
+	}
+
+	want := receiveEveryBox(t, s)
+	if len(want) == 0 {
+		t.Fatal("the derivation found no textinput fields at all — it is broken, not the screen")
+	}
+	got := map[*textinput.Model]bool{}
+	for _, box := range s.allBoxes() {
+		got[box] = true
+	}
+	for box, name := range want {
+		if !got[box] {
+			t.Errorf("field %q holds a textinput that allBoxes() does not reach — blurAll "+
+				"will leave its caret armed and resetEntry will leave its value standing", name)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("allBoxes() hands back %d distinct boxes and the screen holds %d — it "+
+			"repeats one, or reaches something the struct does not own", len(got), len(want))
+	}
+}
+
+// receiveFocusedBoxes names every box on a live screen whose caret is armed.
+//
+// It walks the STRUCT and not allBoxes, which is the whole point: a box missing
+// from allBoxes is exactly the box blurAll cannot reach, so asking allBoxes
+// which carets are armed would be asking the broken list about its own defect.
+func receiveFocusedBoxes(t *testing.T, s *ReceiveFormScreen) []string {
+	t.Helper()
+	var out []string
+	for box, name := range receiveEveryBox(t, s) {
+		if box.Focused() {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestReceive_NoStateArmsTwoCarets is the blurAll half of the omission above,
+// swept over every state rather than over the one it was reported on.
+//
+// bubbles draws a focused box's cursor in reverse video, which is the layer's
+// strongest "you may type here" signal, so two focused boxes is two answers to
+// "who owns the keyboard" on one pane. It happened because blurAll walks
+// allBoxes and allBoxes did not know about `delivered`: leaving the quantity
+// form from the Delivered row left that caret armed through the review, the
+// submit and the summary, while the frame drew and focused something else.
+//
+// The states come from receivePhaseCases and the boxes from reflection, so
+// neither half is a list somebody has to remember to extend.
+func TestReceive_NoStateArmsTwoCarets(t *testing.T) {
+	for _, c := range receivePhaseCases() {
+		t.Run(c.name, func(t *testing.T) {
+			build := receiveHarness(t, c.fake, c.lines, 80, 24)
+			r, s := build(t)
+			// Into the Delivered box FIRST, which is the row the defect was
+			// reached through: a caret armed there and never blurred is the
+			// one the phase change carries with it.
+			for s.phase == phaseQty && s.focused != receiveRowDelivered {
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+			}
+			r = c.reach(t, r, s)
+			if s.phase != c.phase {
+				t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
+			}
+			if armed := receiveFocusedBoxes(t, s); len(armed) > 1 {
+				t.Errorf("%s draws %d armed carets at once (%v) — the pane says "+
+					"\"type here\" in two places", c.name, len(armed), armed)
+			}
+			_ = r
+		})
 	}
 }
 
