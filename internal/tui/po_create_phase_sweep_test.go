@@ -1219,3 +1219,62 @@ func TestPOLineForm_FieldNavigationWrapsAtBothEnds(t *testing.T) {
 		})
 	}
 }
+
+// TestPOAssetPicker_AnEscapeHeavyQueryKeepsThePageOnTheShowingRow.
+//
+// The `Showing` row is two things in one line: an IDENTIFIER that abbreviates
+// (the query) and a FACT that never gives (which page these rows come from).
+// The page is reserved BEFORE the query is clipped for exactly that reason —
+// the suffix used to be appended after the clip and pushed the row six cells
+// past the pane.
+//
+// Quoting the query AFTER clipping it puts the same defect back one expression
+// along. strconv.Quote escapes, so it can return far more cells than it was
+// handed: a query of backslashes doubles, a double quote becomes two cells and
+// a control rune up to six, while the budget reserved exactly two for the
+// quote marks. The row then runs past 51 and clampToBox takes the tail, which
+// is the page — the part that was never supposed to give.
+func TestPOAssetPicker_AnEscapeHeavyQueryKeepsThePageOnTheShowingRow(t *testing.T) {
+	// Backslashes DOUBLE and a double quote is escaped, so this is 25 runes
+	// that Quote renders as 52 cells. An asset query really can carry them: a
+	// pasted Windows path is the ordinary way it happens.
+	query := `\\\\\\\\\\\\\\\\\\\\\\\\"`
+
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			// Ten assets over a five-row page, and the search answers with all
+			// of them — OMS matches the tag and the serial too, so a query that
+			// matches no NAME still comes back with a next page. That pair is
+			// the state under test: a committed query AND a page to name.
+			fake := &poPickFake{assets: 10, pageSize: 5, suppliers: 1,
+				assetSearchServerSide: true}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			r = key(t, r, poPhaseKeyMsg("a"))
+			if screen.phase != poPhaseAssetPick {
+				t.Fatalf("'a' landed on phase %v, want the asset picker", screen.phase)
+			}
+			r = key(t, r, poPhaseKeyMsg("/"))
+			r = poType(t, r, query)
+			r = key(t, r, poPhaseKeyMsg("enter"))
+			if screen.assetsQuery != query {
+				t.Fatalf("the committed query is %q, want %q", screen.assetsQuery, query)
+			}
+			if !screen.assetsHasNext {
+				t.Fatalf("the fixture answered without a next page, so no page suffix is drawn")
+			}
+
+			// Onto page 2, so the suffix names a page the operator paged TO —
+			// the fact this row exists to carry.
+			r = key(t, r, poPhaseKeyMsg("]"))
+			if screen.assetsPage != 2 {
+				t.Fatalf("']' left the picker on page %d", screen.assetsPage)
+			}
+			if screen.assetsQuery != query {
+				t.Fatalf("paging changed the query to %q", screen.assetsQuery)
+			}
+
+			poWantPaneLine(t, screen, "· page 2")
+			poAssertFits(t, "asset picker showing an escape-heavy query", screen)
+		})
+	}
+}

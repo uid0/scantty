@@ -24,7 +24,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -348,77 +347,6 @@ func pickerHint(text string) string {
 	}
 	return strings.Join(lines, "\n")
 }
-
-// pickerFail renders a failed lookup as headline + detail. The detail goes on
-// its own folded continuation because an OMS error string is arbitrarily long:
-// on one line the label alone ("looking up this supplier's items failed:" is 40
-// of the 51 columns) leaves the operator reading a colon and nothing after it.
-// rows caps how many rendered rows the whole failure block may occupy, and the
-// DETAIL is what gets sacrificed to fit — never the way-out bar or the verdict
-// note the callers write under it.
-//
-// The detail is an OMS response body and it is unbounded: omsapi.parseError
-// puts the ENTIRE raw body in APIError.Message whenever the JSON envelope
-// carries no code, so a gateway page or a Django debug page is multi-KB, and
-// pickerWords folds an unspaced blob at one line per 47 cells. Before the cap,
-// roughly 380 characters pushed the verdict note off an 80x24 pane — a
-// declining key on the failure frame answering into the four-second flash
-// alone — and roughly 470 took "esc cancels the order" with it, stranding the
-// operator on an error frame naming no way out. Folding had traded the
-// horizontal cut for a vertical one, exactly as it did for the list footer.
-//
-// rows <= 0 means the caller has no height yet (terminalHeight unset); nothing
-// is TRIMMED then, because a guess would be worse than the clip clampToBox
-// already applies — but the detail is still bounded before it is folded.
-//
-// Bounding it first is the point: at most `rows` lines of it can ever be drawn,
-// so folding the whole body is work whose result is thrown away, and the body
-// has no size limit. Folding a 5 KB unspaced payload took 1.5 seconds, and this
-// block is rebuilt on every keystroke. Below the bound the hidden-row count is
-// exact; above it the marker stops counting rather than name a number that is
-// only true of the part that was folded.
-func pickerFail(what, detail string, rows int) string {
-	fold := rows
-	if fold <= 0 {
-		fold = pickerFailUnsizedRows
-	}
-	long := false
-	if detail != "" {
-		if head := cellPrefix(detail, fold*pickerPaneWidth); head != detail {
-			detail, long = head, true
-		}
-	}
-	text := what
-	if detail != "" {
-		text += "\n" + detail
-	}
-	out := pickerNote{text, StatusError}.render()
-	if rows <= 0 {
-		return out
-	}
-	lines := strings.Split(out, "\n")
-	if len(lines) <= rows {
-		return out
-	}
-	if rows == 1 {
-		return lines[0]
-	}
-	// A block that cannot fit says how many rows it hid, the same contract
-	// renderWindowedList's markers keep.
-	hid := fmt.Sprintf("  … %d more line(s) of the error", len(lines)-(rows-1))
-	if long {
-		hid = "  … more of the error than this pane can hold"
-	}
-	kept := append([]string{}, lines[:rows-1]...)
-	kept = append(kept, StyleMuted.Render(hid))
-	return strings.Join(kept, "\n")
-}
-
-// pickerFailUnsizedRows is how much of an error body a failure block folds when
-// the caller has no pane height yet. Nothing is trimmed in that state, so this
-// is only a ceiling on the WORK: deeper than any terminal this app is driven
-// at, and finite, which is what an OMS response body is not.
-const pickerFailUnsizedRows = 40
 
 // windowedListCaretCells is the fixed gutter every row carries — four cells,
 // highlighted ("  ▸ ") or not ("    ").

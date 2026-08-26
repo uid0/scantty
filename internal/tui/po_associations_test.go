@@ -618,8 +618,8 @@ func TestPOEditAssoc_NothingToPickIsRefusedNotOpened(t *testing.T) {
 }
 
 // TestPOAssocValueField_ThreeStates: the columnar row the detail sheet draws
-// keeps the three states renderAssocValue has always had. The middle one is the
-// point — a picker that could not be loaded must never render as an order with
+// keeps the three states an association row has always had. The middle one is
+// the point — a picker that could not be loaded must never render as an order with
 // nothing attached, because "we couldn't ask" and "there is none" lead an
 // operator to opposite conclusions.
 func TestPOAssocValueField_ThreeStates(t *testing.T) {

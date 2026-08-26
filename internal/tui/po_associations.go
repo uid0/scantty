@@ -20,7 +20,6 @@ import (
 	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -77,10 +76,11 @@ func (o *poAssocOptions) load(deps Deps) tea.Cmd {
 // where it is drawn. omsapi.parseError puts the entire raw response body into
 // APIError.Message whenever the JSON envelope carries no code, and these two
 // strings are read by two different renderers on two different screens — the
-// create screen's one-row renderAssocValue and the edit screen's columnar
-// field, whose fitter is the shared JD Edwards one. Four panes' worth is far
-// more than either can draw, so nothing visible changes; what changes is that
-// neither renderer is ever handed a multi-KB string to measure on every frame.
+// create screen's pinned header row (attributionRows) and the edit screen's
+// columnar field — and both of them fit through the shared JD Edwards layer.
+// Four panes' worth is far more than either can draw, so nothing visible
+// changes; what changes is that neither renderer is ever handed a multi-KB
+// string to measure on every frame.
 var poAssocErrCells = 4 * pickerPaneWidth
 
 // handle absorbs the two loaded messages, reporting whether msg was one of
@@ -285,13 +285,13 @@ func loadCommitteeOptionsCmd(deps Deps) tea.Cmd {
 // the PO detail sheet hangs off its shared leader column, beside the order's
 // identifiers and dates.
 //
-// It carries the same three states renderAssocValue does — attached, could not
-// ask, nothing attached — and for the same reason: a picker that failed to load
-// must never read as an order with nothing attached. What it does NOT do is
-// pre-style the value. The columnar renderer owns the styling (Dim renders an
-// absence muted), because a value arriving with its own colour sequence carries
-// its own reset, which would end a focused row's highlight partway across the
-// field — the rule po_edit.go's assocRowValue keeps for the very same rows on
+// It carries three states — attached, could not ask, nothing attached — which
+// the pre-columnar one-row renderer it replaced carried too, and for the same
+// reason: a picker that failed to load must never read as an order with nothing
+// attached. What it does NOT do is pre-style the value. The columnar renderer
+// owns the styling (Dim renders an absence muted), because a value arriving
+// with its own colour sequence carries its own reset, which would end a focused
+// row's highlight partway across the field — the rule po_edit.go's assocRowValue keeps for the very same rows on
 // the edit side.
 func poAssocValueField(label, attached, loadErr string) jdeField {
 	f := jdeField{Label: label, Kind: jdeValue}
@@ -304,37 +304,4 @@ func poAssocValueField(label, attached, loadErr string) jdeField {
 		f.Value, f.Dim = "(none)", true
 	}
 	return f
-}
-
-// renderAssocValue renders one "Label: value" association row for a read-only
-// or menu surface. attached is the attached target's label ("" when none);
-// loadErr turns the row into an explicit unavailable note, because a picker
-// that could not be loaded must never read as an order with nothing attached.
-//
-// This is the PRE-columnar form. Its last caller was the create screen, which
-// the JD Edwards conversion moved onto poAssocValueField above; nothing in the
-// package calls it now.
-// The VALUE is bounded to whatever the pane has left after the label, because
-// it is OMS-supplied: a work-order title or an unbounded error string pushed
-// the row past the cut, and clampToBox takes it silently and mid-word. One row,
-// clipped with an ellipsis that says a cut happened — folding would spend rows
-// the source chooser does not have at 24, where those rows are pinned header
-// rows ranked jdeHeadContext and the layer gives them ground by RANK
-// (jdeFitHeader).
-//
-// `pane` is the caller's real body width, not the 51-column floor: a clip is
-// the one bound that DESTROYS what it trims, so it may never be tighter than
-// the terminal the operator is on.
-func renderAssocValue(pane int, label, attached, loadErr string) string {
-	room := pane - lipgloss.Width(label) - 2
-	if room < 6 {
-		room = 6
-	}
-	switch {
-	case loadErr != "":
-		return label + ": " + StyleStatusWarn.Render(pickerClip("unavailable — "+loadErr, room))
-	case attached != "":
-		return label + ": " + StyleStatusOK.Render(pickerClip(attached, room))
-	}
-	return label + ": " + StyleMuted.Render("(none)")
 }

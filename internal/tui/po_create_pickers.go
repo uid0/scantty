@@ -1428,7 +1428,15 @@ func (s *PurchaseOrderCreateScreen) assetScopeRows() []string {
 	}
 	shown := "all of this supplier's assets"
 	if ran != "" {
-		shown = strconv.Quote(pickerClip(ran, room-2)) // the quotes are cells too
+		// The QUOTED string is what is bounded, never a bounded string that is
+		// then quoted: strconv.Quote ESCAPES, so a backslash or a double quote
+		// comes back two cells and a control rune up to six. Clipping first and
+		// quoting after budgets two cells for the quote marks and gets whatever
+		// the escaping costs on top — a query of two dozen backslashes doubled
+		// to fifty cells in a value area of twenty-six, and clampToBox took the
+		// tail, which is the page suffix reserved three lines above for exactly
+		// this reason.
+		shown = pickerClip(strconv.Quote(ran), room)
 	} else {
 		shown = pickerClip(shown, room)
 	}

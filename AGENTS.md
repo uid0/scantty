@@ -534,8 +534,8 @@ touching any screen an operator drives:
   standing FACT about the phase (`standingNote`) rather than leaving it blank,
   so "nothing to say" and "the row scrolled away" are different states.
 - **Do not hand-count a hint against 51 columns — fold it.** Every note and
-  fixed hint goes through `pickerWrap` / `pickerHint` / `pickerFail` /
-  `jdeCaveatLines` (`pane_text.go`, `jde_form.go`), which fold at the `·` joints and indent
+  fixed hint goes through `pickerWrap` / `pickerHint` / `jdeCaveatLines`
+  (`pane_text.go`, `jde_form.go`), which fold at the `·` joints and indent
   continuations. EVERY one: the last sweep found seven still written straight to
   the pane with `StyleMuted.Render` — the association caveat (98 cells, cut
   mid-negation, and the negation is the whole point of the sentence), the
@@ -648,10 +648,10 @@ touching any screen an operator drives:
   bounded before it is handed to that layer rather than measured by it.
   And the input is bounded BEFORE a folder ever sees it, because at most `rows`
   lines of it can be drawn and folding the rest is work that is thrown away:
-  `pickerFail` cuts the detail to `rows × pickerPaneWidth` first (and stops
-  claiming an exact hidden-line count when it does, since that count would only
-  be true of the part it folded), and `poAssocOptions.handle` bounds the two
-  association load errors where they are RECORDED — one string, two renderers,
+  `po_create.go`'s `failLines` cuts the detail with `cellPrefix` to
+  `poFailDetailRows × width` before `pickerWrap` ever sees it, and
+  `poAssocOptions.handle` bounds the two association load errors where they are
+  RECORDED — one string, two renderers,
   the second of which is the edit screen's columnar field whose fitter is the
   shared one. `TestPOCreate_AHugeErrorBodyDoesNotFreezeTheFrame` drives a 20 KB
   whitespace-free body through both surfaces and fails on wall-clock;

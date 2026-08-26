@@ -154,8 +154,9 @@ type PurchaseOrderCreateScreen struct {
 	// from a gateway or a Django debug page arrives here multi-KB — and the
 	// one line that used to carry it was neither folded nor budgeted, so at
 	// submit the operator read "✗ oms: http 502: <!DOCTYPE html><htm" and
-	// nothing else. Split, the headline is what pickerFail keeps and the body
-	// is what it sacrifices. Always set through setErr, never separately.
+	// nothing else. Split, the headline goes on the layer's status row and
+	// never gives; the body is what a short pane sacrifices (failLines).
+	// Always set through setErr, never separately.
 	errMsg    string
 	errDetail string
 
@@ -522,9 +523,10 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.pending = false
 		if m.err != nil {
 			// Headline + detail, because the detail is a whole OMS response
-			// body: pickerFail folds it and trims it to the rows the pane has
-			// left, so what the operator loses on a short terminal is the tail
-			// of the gateway's HTML and never the sentence naming what failed.
+			// body: failLines cuts it to poFailDetailRows before folding it, so
+			// what the operator loses on a short terminal is the tail of the
+			// gateway's HTML and never the sentence naming what failed — that
+			// one rides on the status row, which never gives.
 			s.setErr("submitting this purchase order failed", m.err.Error())
 			if s.phase == poPhaseReview {
 				// The freeze is over, so the field takes input again. Only on
@@ -2797,11 +2799,6 @@ func (s *PurchaseOrderCreateScreen) bodyPagesFor(headerRows int) bool {
 	}
 	body, _ := s.body()
 	return s.bodyScrollsForBar(body, headerRows, s.barItems(true))
-}
-
-// bodyPages is bodyPagesFor bound to the frame being drawn now.
-func (s *PurchaseOrderCreateScreen) bodyPages() bool {
-	return s.bodyPagesFor(len(s.headerLines()))
 }
 
 // pageStep is how many rows one page covers on the frame being drawn: measured

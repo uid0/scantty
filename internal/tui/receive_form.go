@@ -1400,7 +1400,8 @@ const receiveNoteRows = 3
 // receiveNoteDropMark is what the note leaves behind when it does not fit.
 //
 // Every other bound on these screens marks what it gave up — poRowDropMark on a
-// picker row, pickerFail's hidden-row count, fitCell's ellipsis — and this one
+// picker row, jdeLines.Window's hidden-row count, fitCell's ellipsis — and this
+// one
 // used to be the exception: it stopped at receiveNoteRows and drew nothing to
 // say so. What it drops is the TAIL, which on these sentences is where the key
 // that gets the operator out is named, and noteLines' own comment says a

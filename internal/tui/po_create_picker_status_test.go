@@ -78,6 +78,14 @@ type poPickFake struct {
 	itemSKU  string
 	assetTag string
 
+	// assetSearchServerSide makes the asset lookup answer a query with every
+	// asset rather than filtering on the generated NAME. OMS's asset search
+	// covers the tag, the serial and the description as well, so a query that
+	// matches nothing a fixture row draws can still come back with a full page
+	// — which is the only way to reach a committed query AND a next page at
+	// once, and that pair is where the `Showing` row's two bounds meet.
+	assetSearchServerSide bool
+
 	// The three OPTIONAL header lookups. Every source-chooser test ran with
 	// these at zero — the fake fell through to an empty envelope — so the g / w
 	// / c rows were never on the frame, and the four rows they cost were what
@@ -239,6 +247,9 @@ func (f *poPickFake) handler() http.HandlerFunc {
 				return
 			}
 			search := strings.ToLower(r.URL.Query().Get("search"))
+			if f.assetSearchServerSide {
+				search = ""
+			}
 			rows := []map[string]any{}
 			for i := 0; i < f.assets; i++ {
 				name := fmt.Sprintf("Lathe %d", i+1)
