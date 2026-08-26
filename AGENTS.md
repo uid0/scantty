@@ -111,6 +111,125 @@ note, and is the authority):
   lines outright. PO lines carry `is_kit_line` + `kit_components`, whose
   `quantity_per_kit` — not the pre-multiplied `quantity` — is what a PARTIAL
   receipt multiplies. `internal/tui/po_kit_lines.go` carries that note.
+- **Serialized items ARE allowed as kit components now**, and that is a
+  different fact from where a serial goes. The OMS ban was lifted deliberately
+  (`docs/PO_RECEIVING_API.md`): it blocked a legitimate configuration while the
+  hazard it named — stock credited with no serial recorded — was never unique to
+  kits, since `mark-delivered` has always done it to an ordinary serialized
+  line. What guards the identity rule now is the receipt itself (naming the kit
+  is a 400) plus **`serials_outstanding`**, which every receive path reports and
+  a client must surface. Receiving a kit WITH serial capture is a live path.
+
+## The receiving flow is driven off ONE fetch, and the server decides
+
+`internal/omsapi/po_receiving.go` carries the contract note and
+`internal/tui/receive_form.go` is the flow; OMS's `docs/PO_RECEIVING_API.md` is
+the specification and outranks both. What is worth knowing before touching
+either:
+
+- **`GET …/purchase-orders/{id}/receiving/` is the whole input.** It answers, in
+  one round trip, whether the order may be received against and why not, which
+  lines are outstanding and which settled, what a scanner will read off each
+  line (`scan_codes`) and which identities each line's serials may name
+  (`serial_targets`). There is NO fall-back to `po.Items`: a failed fetch is
+  COULD NOT TELL, and receiving off the order's own items would mean guessing at
+  exactly the two things that must not be guessed. `phaseBlocked` draws both
+  facts and keeps them apart.
+- **`can_receive` and `unavailable_reason` are a pair.** "You may not receive
+  against this, and here is why" is a different fact from "there is nothing left
+  to receive", and an operator at the bench with a box acts differently on each.
+- **A mismatch is recorded and flagged, never rounded.** `quantity_received`
+  goes as typed even when it exceeds the outstanding balance; the server flags
+  the line `over_received` with a positive `quantity_variance`. The review phase
+  raises it BEFORE the post because the contract asks a client to. SHORT is not
+  the same fact and is not flagged as one — receiving 8 of 10 leaves 2
+  outstanding, which may be a backorder; only an explicit close-short says the
+  balance is not coming.
+- **`receipt_state` / `is_settled` are the server's and are never re-derived.**
+  Asking "is received < ordered?" calls a line closed short a partial one, and
+  closed short is the one state that means somebody DECIDED. `is_settled` is not
+  `is_fully_received`: a line closed two short is settled and not fully
+  received, and both facts stay on the record.
+- **Serials ride INSIDE the receipt** (one transaction: a refused receipt writes
+  nothing), so capture is local until Enter on the review — which is what lets
+  the operator walk back to a unit and fix a typo. Every arm that moves the
+  cursor stores the boxes first. Fewer serials than units is allowed on purpose
+  and comes back as `serials_outstanding`.
+- **`serial_targets` is the ONLY thing consulted for "may this carry a serial".**
+  Never `item_details.is_serialized`, which on a kit line describes the KIT.
+  `TestReceiveKit_ASerialNeverNamesTheKitItself` asserts it ON THE WIRE rather
+  than through a predicate: the previous guard was a predicate call, a fix round
+  replaced its assertion with a substring over a frame the caveat is
+  structurally absent from, and the check could then fail in neither direction.
+- **The RECEIVED transition is the server's and it is conditional.** Closing the
+  last outstanding balance does not on its own make the order `received` — an
+  order nothing was ever received against does not advance — and that rule has
+  already changed once since this client was written. So nothing on this side
+  predicts it: the confirm says what the write DOES, and the summary reports the
+  `status_label` that came back. `is_settled` is an INPUT to the order's status,
+  never a synonym for it.
+- **Every receiving endpoint is authenticated, the worksheet included** — GET
+  though it is. `PurchaseOrderViewSet.get_permissions` returns `AllowAny` for
+  `list`/`retrieve` and `IsAuthenticated` for everything else, and all of these
+  are `@action`s. Do NOT read that off
+  `backend/config/api_permission_matrix.yaml`, which records `receiving` as
+  `IsAuthenticatedOrReadOnly`: the YAML is generated from the declared
+  `permission_classes` and cannot see a `get_permissions` override, so on this
+  viewset it is the default rather than what is enforced. Reading it as the
+  effective permission is a mistake this work already made once.
+  `Client.do` sends the bearer token and refreshes once, so the happy path needs
+  nothing; what matters is the FAILURE, which DRF renders as `{"detail": ...}` —
+  neither shape below. `receiveReason` names it ("no longer signed in") rather
+  than relaying it, and reaching it means the refresh failed too.
+- **An order can be receivable with nothing left to receive.** `can_receive:
+  true` alongside `outstanding_line_count: 0` is a real state, not a
+  contradiction: every line closed short or struck off without a single delivery
+  settles the order without it ever reaching `received`. The contract instructs
+  a client to say so AND point at voiding or cancelling the ORDER — `qtyBody`'s
+  empty branch and Ctrl+R's decline both do, because refusing without it is a
+  dead end.
+- **"Never silently discard" demands NON-SILENCE, not refusal — and a refusal
+  is only legitimate where the operator can satisfy it from the frame it is
+  drawn on.** If input is about to be dropped, SAY SO FIRST; blocking the key is
+  one way to be non-silent and it is the right one only when the operator,
+  standing on that frame, can clear what is in the way. Irreversibility argues
+  for making the consequence UNMISSABLE, never for blocking a key nobody can
+  unblock: a refusal that cannot be satisfied is a dead end, and a dead end is
+  its own defect. The failure that motivated it: the write-off gate
+  (`receive_form.go`, `writeOffDiscards` / `writeOffCaptureLoss`) counted
+  CAPTURED SERIALS, and `s.captures` is written only by `beginReceipt`,
+  `storeUnit` and `resetEntry` — none reachable from the quantity form once the
+  boxes are empty. Capture a serial, walk back, clear the quantity that opened
+  it, and both destructive keys went permanently unnamed answering "receive or
+  clear first", with receiving impossible (Enter refuses an empty form),
+  clearing impossible (no key on the phase touches `s.captures`) and the serial
+  not even sendable, since `buildReceipt` drops a line whose box is blank. So
+  the gate SPLITS by what the frame can act on: the quantity boxes and the
+  delivery/notes block REFUSE (a backspace away), and the captures are NAMED
+  BY COUNT on the confirm — the frame Ctrl+X is pressed on, rather than a note
+  the next keypress retires — and the write proceeds. **The bar follows the
+  gate in both directions**: a key that will proceed, warning and all, is named;
+  only a key that would refuse is unnamed, or the dead end moves onto the bar.
+- **`reopen-short/` exists and this client does not drive it.** A close-short
+  recorded in error is corrected there; the correction is stamped BESIDE the
+  write-off rather than erasing it, so a reopened line comes back outstanding
+  with `was_reopened` set and its `closed_short_reason` intact. Both are decoded
+  and the line's readings say `reopened`, because receiving against a line
+  somebody already got wrong once is worth knowing.
+- **The refusal body is NOT the standard envelope**, again. All four endpoints
+  write `{"error": "<prose>"}` by hand with no `code`, so `parseError` hands the
+  whole raw body over. `omsapi.AsReceivingRefusal` recovers the sentence and is
+  narrower than `AsLineEntryError` (which requires a code this shape has not):
+  it accepts only an object whose `error` is a non-blank JSON STRING, so a
+  gateway page, the DRF envelope and a field-validation body all keep the shape
+  they arrived in.
+- **A block taller than the window loses its TAIL and no key can fetch it.**
+  `jdeLines.Window` keeps a block's START and nothing scrolls inside one, so a
+  line block's contents are in a stated SACRIFICE ORDER (`addLineBlock`): what
+  the typed number means, then what a kit receipt credits, then the readings,
+  then the serial story. Measured at 80x30 with a kit, the window is eleven rows
+  — with the readings ahead of the credit the second component was off the pane,
+  on the block whose whole point is what a kit puts into stock.
 
 ## Conventions
 
@@ -463,7 +582,8 @@ note, and is the authority):
   ahead of the field push the FIELD off the pane instead (measured at 80x22 with
   one kit line, and `TestReceive_AShortPaneStillDrawsTheForm` fails on it). So
   what a row needs is drawn ON that row and AFTER its field
-  (`receive_form.go`'s `lineCaveats`), a separator travels with the block ABOVE
+  (`receive_form.go`'s `addLineBlock`, whose sacrifice order is above), a
+  separator travels with the block ABOVE
   it so a block never opens on a blank, and anything left over hangs off the
   last row. `TestReceive_NoBodyLineSitsWhereNoKeyCanReach` holds both halves —
   structurally, that no line falls outside a row, and behaviourally, that the

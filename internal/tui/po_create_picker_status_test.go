@@ -2589,7 +2589,20 @@ func poPickerKeyMsg(k string) tea.KeyMsg {
 	if t, ok := poNamedKeyTypes[k]; ok {
 		return tea.KeyMsg{Type: t}
 	}
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+	if r := []rune(k); len(r) == 1 {
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: r}
+	}
+	// A NAME this switch does not know is resolved against bubbletea's own key
+	// types rather than typed as text. The bare fallback below used to take
+	// every unknown name, so adding "ctrl+k" to poKeySpace would have pressed
+	// the six characters c-t-r-l-+-k into whatever box held the caret and the
+	// sweep would have gone on passing while testing nothing whatever — the
+	// silent degradation receiveNamedKeyMsg exists to stop, and the reason it
+	// is asked here too rather than only in the receiving sweeps.
+	if msg, ok := receiveNamedKeyMsg(k); ok {
+		return msg
+	}
+	panic("no key type is named " + k + " — a sweep would press it as literal text")
 }
 
 // poNamedKeyTypes is every key poKeySpace names that is not a printable rune.

@@ -2,12 +2,10 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -34,67 +32,37 @@ import (
 
 var receiveWidths = []int{80, 100, 120}
 
-// receiveFake is the OMS these drives run against. It COUNTS the receipts, so a
-// double-post is caught on the wire rather than inferred from the screen.
-type receiveFake struct {
-	mu        sync.Mutex
-	receipts  int
-	serials   int
-	failWith  int    // HTTP status for the receive, 0 = succeed
-	failBody  string // the body it fails with
-	serialErr bool
-}
-
-func (f *receiveFake) handler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/receive/"):
-			f.receipts++
-			if f.failWith != 0 {
-				w.WriteHeader(f.failWith)
-				_, _ = w.Write([]byte(f.failBody))
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": 5, "po_number": "PO-1001",
-				"total_received_quantity": 2, "total_quantity": 9,
-			})
-		case strings.HasSuffix(r.URL.Path, "/serialized-components/"):
-			f.serials++
-			if f.serialErr {
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(`{"detail":"serial SN-1 is already recorded against another unit"}`))
-				return
-			}
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "sc-1", "serial_number": "SN-1"})
-		default:
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "in_stock"})
-		}
-	}
-}
-
-func (f *receiveFake) count() (receipts, serials int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.receipts, f.serials
-}
-
-// receiveDrive opens the form against `fake` at a real size and hands back the
-// Root, the screen and the fake — everything a drive needs to read the pane AND
-// the wire.
-func receiveDrive(t *testing.T, fake *receiveFake, lines []omsapi.PurchaseOrderItem, w, h int) (Root, *ReceiveFormScreen) {
+// receiveDrive opens the form against `fake` at a real size, LETS THE WORKSHEET
+// LAND, and hands back the Root and the screen — everything a drive needs to
+// read the pane AND the wire.
+//
+// The fetch is pumped rather than skipped. Everything this screen draws comes
+// off the worksheet, so a drive that wrote the fields by hand would be
+// asserting about a state the endpoint cannot produce; and the loading frame is
+// itself one of the states the rules apply to, so it is reached the way an
+// operator reaches it.
+func receiveDrive(t *testing.T, fake *receiveFake, lines []omsapi.ReceivingLine, w, h int) (Root, *ReceiveFormScreen) {
 	t.Helper()
+	if fake.sheet == nil {
+		fake.sheet = receiveWorksheet(lines...)
+	}
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	s := NewReceiveFormScreen(deps, &omsapi.PurchaseOrder{ID: 5, Number: "PO-1001", Items: lines})
+	s := NewReceiveFormScreen(deps, receivePO(lines...))
 	r := newTestRoot(s)
 	r.deps = deps
 	next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
-	return next.(Root), s
+	r = next.(Root)
+	// receiveSettle rather than the shared pump: every drive here now fetches a
+	// worksheet before it can press anything, and pump abandons the cursor
+	// blink by WAITING IT OUT — 200ms of dead wall-clock per settle. Paid on
+	// every one of the several thousand drives these sweeps build, that is the
+	// difference between a package that finishes and one that hits the test
+	// timeout (AGENTS.md's note on receive_form_sweep_test.go). Nothing else
+	// changes: every message a drive really waits on is an in-process httptest
+	// round trip, and only the blink is recognised and dropped.
+	return receiveSettle(t, r, s.Init(), 0), s
 }
 
 // receivePaneLines is what the terminal really shows in the content pane: the
@@ -112,19 +80,113 @@ func receivePaneLines(s *ReceiveFormScreen, w, h int) []string {
 	return strings.Split(clampToBox(s.View(), screenBodyWidth(w), screenBodyHeight(h)), "\n")
 }
 
+// receiveOrder is the ordinary order these drives run against: one plain line,
+// one already part-received, and one serialized.
+func receiveOrder() []omsapi.ReceivingLine {
+	return []omsapi.ReceivingLine{
+		receiveWSLine(11, "Box of M3 bolts", 4, 0),
+		receiveWSLine(12, "Reel of 24AWG wire", 10, 3),
+		receiveWSSerialized(13, "Serialized controller board", 2, 0),
+	}
+}
+
 // receiveManyLines is an order long enough that the form cannot fit on a pane —
 // the state the conversion added windowing for. Each line's name carries its
 // own number so a test can say WHICH line it is looking at.
-func receiveManyLines(n int) []omsapi.PurchaseOrderItem {
-	out := make([]omsapi.PurchaseOrderItem, 0, n)
+func receiveManyLines(n int) []omsapi.ReceivingLine {
+	out := make([]omsapi.ReceivingLine, 0, n)
 	for i := 0; i < n; i++ {
-		out = append(out, omsapi.PurchaseOrderItem{
-			ID:              10 + i,
-			Description:     fmt.Sprintf("Line-%d hex bolt, zinc plated", i+1),
-			QuantityOrdered: 4 + i, QuantityPending: 4 + i,
-		})
+		out = append(out, receiveWSLine(10+i, fmt.Sprintf("Line-%d hex bolt, zinc plated", i+1), 4+i, 0))
 	}
 	return out
+}
+
+// receiveStruckOff is an order of n VOIDED lines with the scan code on the LAST
+// of them — so a scan lands on settled entry n, where the refusal's position
+// field is at its widest and its reason ("struck off the order") at its
+// longest.
+//
+// It keeps ONE receivable line, and that is not decoration: with nothing
+// receivable the quantity form has no boxes, so its bar loses Enter and UP/DN
+// and the way-out tail the refusal carries gets shorter — the probe would
+// measure an easier sentence than the one an operator meets.
+func receiveStruckOff(n int, code string) []omsapi.ReceivingLine {
+	out := []omsapi.ReceivingLine{receiveWSLine(59, "Box of M3 bolts", 4, 0)}
+	for i := 0; i < n; i++ {
+		l := receiveWSLine(60+i, fmt.Sprintf("Cancelled bracket, crate %d", i+1), 3, 0)
+		l.IsVoided, l.IsSettled = true, true
+		l.QuantityPending = 0
+		l.ScanCodes = nil
+		if i == n-1 {
+			l.ScanCodes = []omsapi.ScanCode{{Code: code, Kind: omsapi.ScanCodeItemSKU}}
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// receiveAllSettled is an order NOTHING can be received against: every line is
+// closed short, so applyWorksheet puts all of them in s.closed and s.lines is
+// empty.
+//
+// It is not a corner. `can_receive: true` alongside `outstanding_line_count: 0`
+// is a state the contract calls out as reachable — every line closed short or
+// struck off without a single delivery settles the order without it ever
+// reaching `received` — and qtyBody draws the scan row before its own empty
+// branch, so the operator lands on a scan box with no line behind it.
+//
+// `coded` decides which of the two nothing-branches the scan notes take: an
+// order carrying no scannable code at all is a different fact from one whose
+// only codes are on settled lines, and both used to point at a picker with
+// nothing in it.
+func receiveAllSettled(coded bool) []omsapi.ReceivingLine {
+	shut := func(id int, label string) omsapi.ReceivingLine {
+		l := receiveWSLine(id, label, 6, 2)
+		l.IsClosedShort, l.IsSettled = true, true
+		l.ReceiptState, l.ReceiptStateLabel = omsapi.ReceiptStateClosedShort, "Closed short"
+		l.QuantityPending = 0
+		if !coded {
+			l.ScanCodes = nil
+		}
+		return l
+	}
+	return []omsapi.ReceivingLine{shut(41, "Backordered gasket"), shut(42, "Cancelled bracket")}
+}
+
+// receiveSharedCode is an order of n lines that ALL carry one scan code — the
+// same part ordered n times, which is the shape a scan resolving to several
+// lines is really reached through. n is a parameter because the note that comes
+// back lists the other positions up to receiveScanListMax and counts them
+// after, and the two wordings are different lengths.
+func receiveSharedCode(n int) []omsapi.ReceivingLine {
+	out := make([]omsapi.ReceivingLine, 0, n)
+	for i := 0; i < n; i++ {
+		l := receiveWSLine(90+i, fmt.Sprintf("Box of M3 bolts, crate %d", i+1), 4, 0)
+		l.ScanCodes = []omsapi.ScanCode{{Code: "SKU-90", Kind: omsapi.ScanCodeItemSKU}}
+		out = append(out, l)
+	}
+	return out
+}
+
+// receiveTypeInto types a value into the box the cursor is on, a keystroke at a
+// time, the way an operator or a scanner delivers it.
+func receiveTypeInto(t *testing.T, r Root, value string) Root {
+	t.Helper()
+	for _, ch := range value {
+		next, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		r = next.(Root)
+	}
+	return r
+}
+
+// receiveGoToLine walks the cursor onto line i's quantity box.
+func receiveGoToLine(t *testing.T, r Root, s *ReceiveFormScreen, i int) Root {
+	t.Helper()
+	for s.focused != receiveRowFirstLine+i {
+		next, _ := r.Update(tea.KeyMsg{Type: tea.KeyDown})
+		r = next.(Root)
+	}
+	return r
 }
 
 // ---------------------------------------------------------------------------
@@ -165,10 +227,11 @@ func receivePaneText(s *ReceiveFormScreen, w, h int) string {
 // direction — it passes.
 func receiveCursorMarker(t *testing.T, s *ReceiveFormScreen) string {
 	t.Helper()
-	if s.focused >= len(s.lines) {
-		t.Fatalf("the cursor is on row %d, the notes row, which carries no line label", s.focused)
+	i, ok := s.lineAt(s.focused)
+	if !ok {
+		t.Fatalf("the cursor is on row %d, which carries no line label", s.focused)
 	}
-	fields := strings.Fields(s.lines[s.focused].DisplayLabel())
+	fields := strings.Fields(s.lines[i].sheet.Label)
 	if len(fields) == 0 {
 		t.Fatalf("line %d has no label to identify it by", s.focused)
 	}
@@ -252,22 +315,35 @@ func TestReceive_TheActionBarSurvivesTheClip(t *testing.T) {
 // fails on a line the terminal would truncate. 80 columns is the width that
 // must HOLD.
 func TestReceive_NothingOverflowsThePane(t *testing.T) {
-	long := poKitFixtureLine()
+	long := receiveWSKit(11, "Eufy printer maintenance kit (CMYK + cleaning)", 2, 0)
+	closedOnly := receiveWSLine(15, "Backordered gasket", 6, 2)
+	closedOnly.IsClosedShort, closedOnly.IsSettled = true, true
+	closedOnly.ReceiptState, closedOnly.ReceiptStateLabel = omsapi.ReceiptStateClosedShort, "Closed short"
+	closedOnly.QuantityPending = 0
 	states := []struct {
 		name  string
-		lines []omsapi.PurchaseOrderItem
+		lines []omsapi.ReceivingLine
 		drive func(*testing.T, Root, *ReceiveFormScreen) Root
 	}{
-		{"quantities", []omsapi.PurchaseOrderItem{long, poPlainLine()}, nil},
-		{"nothing receivable", nil, nil},
+		{"quantities", []omsapi.ReceivingLine{long, receiveWSLine(12, "Box of M3 bolts", 4, 0)}, nil},
+		{"nothing receivable", []omsapi.ReceivingLine{closedOnly}, nil},
 		{"serial capture", receiveSweepLines(), func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
 			s.qty[2].SetValue("1")
 			return receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 		}},
-		{"summary", receiveSweepLines(), func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+		{"review", receiveSweepLines(), func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
 			s.qty[2].SetValue("1")
 			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 			return receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+		}},
+		{"summary", receiveSweepLines(), func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+			s.qty[2].SetValue("1")
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // -> capture
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})   // -> review
+			return receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		}},
+		{"write-off", receiveSweepLines(), func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+			return receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR})
 		}},
 	}
 	for _, st := range states {
@@ -315,13 +391,15 @@ func (s *ReceiveFormScreen) qty0SetIfAny(v string) {
 // bounded against the pane the terminal REALLY gave, so the same order draws
 // more of it at 120 than at 80.
 func TestReceive_AWideTerminalDrawsTheWholeRow(t *testing.T) {
-	line := omsapi.PurchaseOrderItem{
-		ID: 21, QuantityOrdered: 2, QuantityPending: 2,
-		Description: "Stainless steel socket-head cap screw, M8 x 40mm, A4-80 marine grade, box of 100",
-	}
+	line := receiveWSLine(21,
+		"Stainless steel socket-head cap screw, M8 x 40mm, A4-80 marine grade, box of 100", 2, 0)
 	widthOf := func(term int) int {
 		fake := &receiveFake{}
-		_, scr := receiveDrive(t, fake, []omsapi.PurchaseOrderItem{line}, term, 30)
+		r, scr := receiveDrive(t, fake, []omsapi.ReceivingLine{line}, term, 30)
+		// The window anchors on the CURSOR's block, and a fresh form opens on
+		// the scan row — so the line has to be walked onto before its name row
+		// is drawn at all.
+		_ = receiveGoToLine(t, r, scr, 0)
 		for _, l := range receivePaneLines(scr, term, 30) {
 			if strings.Contains(l, "Stainless steel") {
 				return lipgloss.Width(l)
@@ -360,7 +438,7 @@ func TestReceive_EveryKeystrokeMovesTheNotesRow(t *testing.T) {
 		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
 			fake := &receiveFake{}
 			r, s := receiveDrive(t, fake, receiveManyLines(2), width, 30)
-			for s.focused != len(s.qty) {
+			for s.focused != s.notesRow() {
 				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
 			}
 			// The LABEL alone: with the colour profile forced the leader's
@@ -423,7 +501,8 @@ func TestReceive_AGatewayPageLeavesTheBarOnThePane(t *testing.T) {
 				fake := &receiveFake{failWith: http.StatusBadGateway, failBody: nginx502}
 				r, s := receiveDrive(t, fake, receiveManyLines(3), width, height)
 				s.qty[0].SetValue("1")
-				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // qty -> review
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // the receipt fails
 				if s.pending {
 					t.Fatal("the receipt is still in flight after the fake answered")
 				}
@@ -440,10 +519,14 @@ func TestReceive_AGatewayPageLeavesTheBarOnThePane(t *testing.T) {
 				if !strings.Contains(joined, "Receiving PO-1001 failed") {
 					t.Errorf("the failure does not say what failed:\n%s", joined)
 				}
-				// And the form came back LIVE: a failed receipt must not hold
-				// the operator's quantities hostage to a gateway.
-				if !s.qty[0].Focused() {
-					t.Error("the caret did not come back after a failed receipt")
+				// And the screen came back LIVE, on the frame the operator sent
+				// it from: the review names Enter again, so the receipt can be
+				// retried without retyping anything, and Esc goes back to the
+				// quantities — which still hold what was typed. A failed
+				// receipt must not hold the operator's counts hostage to a
+				// gateway.
+				if !receiveBarNames(s, "Enter") {
+					t.Errorf("the review did not come back live after a failed receipt: %+v", s.bar())
 				}
 				if got := s.qty[0].Value(); got != "1" {
 					t.Errorf("the typed quantity was lost on a failed receipt: %q", got)
@@ -491,19 +574,22 @@ func TestReceive_ASuccessfulReceiptCannotBePostedTwice(t *testing.T) {
 	fake := &receiveFake{}
 	r, s := receiveDrive(t, fake, receiveManyLines(2), 80, 24)
 	s.qty[0].SetValue("2")
-	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // qty -> review
+	if s.phase != phaseReview {
+		t.Fatalf("a receipt with nothing serialized did not reach the review (phase %v)", s.phase)
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // review -> the receipt goes
 	if s.phase != phaseDone {
-		t.Fatalf("a receipt with nothing serialized left the flow on phase %v", s.phase)
+		t.Fatalf("the receipt left the flow on phase %v", s.phase)
 	}
 	for _, k := range []string{"enter", "enter", "enter"} {
 		next, _ := r.Update(poPhaseKeyMsg(k))
 		r = next.(Root)
 	}
-	if got, _ := fake.count(); got != 1 {
+	if got := len(fake.sent()); got != 1 {
 		t.Errorf("the delivery was booked %d times; pressing enter again must not repost it", got)
 	}
-	if !strings.Contains(r.View(), "Receive complete") {
+	if !strings.Contains(r.View(), "Receiving complete") {
 		t.Errorf("the summary is not what the operator is left looking at:\n%s", r.View())
 	}
 }
@@ -512,20 +598,28 @@ func TestReceive_ASuccessfulReceiptCannotBePostedTwice(t *testing.T) {
 // Enter used to advance a field and submit only from the last one; every other
 // columnar sheet in purchasing commits from any row, and a screen that reserves
 // Enter for "next field" teaches a rule that is false one screen over.
+//
+// The SCAN row is the one exception and it is asserted separately
+// (TestReceive_EnterFindsTheLineAScanNames): with a code in the box Enter means
+// FIND, because a scanner fires a burst and then an Enter, and receiving on
+// that Enter would book a delivery instead of choosing a line. With the box
+// empty there is nothing to find and Enter means what it means everywhere else,
+// which is what this walks.
 func TestReceive_EnterReceivesFromAnyRow(t *testing.T) {
-	for _, row := range []int{0, 1, 2} {
+	for _, row := range []int{receiveRowScan, receiveRowTracking, receiveRowFirstLine} {
 		t.Run(fmt.Sprintf("from row %d", row), func(t *testing.T) {
 			fake := &receiveFake{}
 			r, s := receiveDrive(t, fake, receiveManyLines(2), 80, 24)
 			s.qty[0].SetValue("2")
-			for i := 0; i < row; i++ {
+			for s.focused != row {
 				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
 			}
-			if s.focused != row {
-				t.Fatalf("the cursor is on row %d, want %d", s.focused, row)
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // -> review
+			if s.phase != phaseReview {
+				t.Fatalf("enter on row %d did not reach the review (phase %v)", row, s.phase)
 			}
 			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-			if got, _ := fake.count(); got != 1 {
+			if got := len(fake.sent()); got != 1 {
 				t.Fatalf("enter on row %d booked %d receipts, want 1", row, got)
 			}
 		})
@@ -553,8 +647,8 @@ func TestReceive_RefusingAReceiptSaysWhyAndKeepsTheEntry(t *testing.T) {
 		name, typed, want string
 	}{
 		{"nothing entered", "", "nothing to receive"},
-		{"not a number", "two", "line 1: quantity must be a whole number"},
-		{"negative", "-3", "line 1: quantity must be a whole number"},
+		{"not a number", "two", "line 1: a quantity is a whole number"},
+		{"negative", "-3", "line 1: a quantity is a whole number"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -568,7 +662,7 @@ func TestReceive_RefusingAReceiptSaysWhyAndKeepsTheEntry(t *testing.T) {
 			if !strings.Contains(pane, tc.want) {
 				t.Errorf("the refusal does not say why:\nwant %q in\n%s", tc.want, pane)
 			}
-			if got, _ := fake.count(); got != 0 {
+			if got := len(fake.sent()); got != 0 {
 				t.Errorf("a refused receipt still reached the wire (%d times)", got)
 			}
 			if s.qty[0].Value() != tc.typed {
@@ -588,15 +682,18 @@ func TestReceive_RefusingAReceiptSaysWhyAndKeepsTheEntry(t *testing.T) {
 // Serial capture
 // ---------------------------------------------------------------------------
 
-// TestReceive_AFailedSerialKeepsTheUnitAndWhatWasTyped.
+// TestReceive_CaptureKeepsEveryUnitTheOperatorWalksOver.
 //
-// The capture used to advance past the unit whatever happened, so the error was
-// drawn under the NEXT unit's prompt — describing a unit that had not been
-// attempted — and the serial the operator had typed was discarded with no way
-// to enter it again. On the one screen whose entire job is capturing what they
-// typed.
-func TestReceive_AFailedSerialKeepsTheUnitAndWhatWasTyped(t *testing.T) {
-	fake := &receiveFake{serialErr: true}
+// Serials go INSIDE the receipt now — one transaction, so a refused receipt
+// writes nothing at all — which means capture is local until Enter on the
+// review. What that buys, and what this holds, is that the operator can walk
+// back to a unit and fix a typo: every arm that moves the cursor stores the
+// boxes first, so nothing they typed is thrown away by moving.
+//
+// It is the standing rule ("never silently discard what the operator typed") on
+// the one screen whose entire job is capturing what they typed.
+func TestReceive_CaptureKeepsEveryUnitTheOperatorWalksOver(t *testing.T) {
+	fake := &receiveFake{}
 	r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
 	s.qty[2].SetValue("2") // two units of the serialized line
 	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
@@ -604,46 +701,437 @@ func TestReceive_AFailedSerialKeepsTheUnitAndWhatWasTyped(t *testing.T) {
 		t.Fatalf("capture did not open: phase %v, %d units", s.phase, len(s.serialUnits))
 	}
 
-	before := s.serialCursor
+	// Unit 1: a serial, a lot and an expiry.
 	r = receiveType(t, r, poRuneKey("SN-1"))
-	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	r = receiveType(t, r, poRuneKey("LOT-42"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	r = receiveType(t, r, poRuneKey("2027-01-31"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // -> unit 2
+	if s.serialCursor != 1 {
+		t.Fatalf("enter did not advance to unit 2: cursor %d", s.serialCursor)
+	}
+	r = receiveType(t, r, poRuneKey("SN-2"))
 
-	if s.serialCursor != before {
-		t.Errorf("a failed capture advanced to unit %d — the error would be drawn under a "+
-			"unit that was never attempted", s.serialCursor+1)
+	// Walk BACK. Unit 1 has to come back holding all three values.
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyPgUp})
+	if s.serialCursor != 0 {
+		t.Fatalf("pgup did not walk back to unit 1: cursor %d", s.serialCursor)
 	}
 	if got := s.serialInput.Value(); got != "SN-1" {
-		t.Errorf("the serial the operator typed was discarded: %q", got)
+		t.Errorf("walking back lost the serial: %q", got)
 	}
-	pane := strings.Join(receivePaneLines(s, 80, 24), "\n")
-	if !strings.Contains(pane, "Serial capture failed") {
-		t.Errorf("the failure is not on the pane:\n%s", pane)
+	if got := s.lotInput.Value(); got != "LOT-42" {
+		t.Errorf("walking back lost the lot: %q", got)
 	}
-	if text := receivePaneText(s, 80, 24); !strings.Contains(text, "already recorded against another unit") {
-		t.Errorf("the server's own reason is not on the pane:\n%s", pane)
+	if got := s.expiryInput.Value(); got != "2027-01-31" {
+		t.Errorf("walking back lost the expiry: %q", got)
 	}
-	// And the bar offers the retry rather than claiming a save.
-	if !barHas(s.bar(), "Enter", "Retry serial") {
-		t.Errorf("the bar does not offer a retry after a failure: %+v", s.bar())
+	// And forward again: unit 2's serial survived the round trip too.
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyPgDown})
+	if got := s.serialInput.Value(); got != "SN-2" {
+		t.Errorf("walking forward lost unit 2's serial: %q", got)
 	}
 
-	// Retrying against a server that now accepts it captures the unit and moves on.
-	fake.mu.Lock()
-	fake.serialErr = false
-	fake.mu.Unlock()
+	// All the way through to the wire. The LAST unit's Enter lands on the
+	// review, which is what its bar says it does.
 	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	if s.serialCursor != before+1 {
-		t.Errorf("a successful retry did not advance: cursor %d", s.serialCursor)
+	if s.phase != phaseReview {
+		t.Fatalf("capture did not finish into the review: phase %v", s.phase)
 	}
-	if s.createdCount != 1 {
-		t.Errorf("the retry did not record the unit: created %d", s.createdCount)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	sent := fake.sent()
+	if len(sent) != 1 || len(sent[0].Items) != 1 {
+		t.Fatalf("want one receipt naming one line, got %+v", sent)
+	}
+	serials := sent[0].Items[0].Serials
+	if len(serials) != 2 {
+		t.Fatalf("want two serials on the wire, got %+v", serials)
+	}
+	if serials[0].SerialNumber != "SN-1" || serials[0].Lot != "LOT-42" ||
+		serials[0].ExpirationDate != "2027-01-31" {
+		t.Errorf("unit 1 did not reach the wire whole: %+v", serials[0])
+	}
+	if serials[1].SerialNumber != "SN-2" || serials[1].Lot != "" {
+		t.Errorf("unit 2 did not reach the wire as typed: %+v", serials[1])
 	}
 	_ = r
 }
 
-// TestReceive_TheSerialBarFollowsTheBox. With nothing typed, Enter SKIPS the
-// unit; saying "Save" there would name a key that does something else. The bar
-// is the only place that fact is stated, so it has to follow the box.
+// TestReceive_ALotWithNoSerialIsRefusedRatherThanDropped. Lot and expiry hang
+// off a serial on the wire and off nothing else, so recording a slot that has
+// one without the other would throw the operator's typing away in silence.
+func TestReceive_ALotWithNoSerialIsRefusedRatherThanDropped(t *testing.T) {
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
+	s.qty[2].SetValue("1")
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown}) // onto Lot
+	r = receiveType(t, r, poRuneKey("LOT-9"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if s.serialCursor != 0 {
+		t.Errorf("the refusal advanced anyway: cursor %d", s.serialCursor)
+	}
+	if got := s.lotInput.Value(); got != "LOT-9" {
+		t.Errorf("the refusal discarded the lot: %q", got)
+	}
+	if text := receivePaneText(s, 80, 24); !strings.Contains(text, "needs a serial before a lot") {
+		t.Errorf("the refusal does not say why:\n%s", text)
+	}
+	_ = r
+}
+
+// TestReceive_NoWayOutOfASlotRecordsWhatEnterWouldRefuse.
+//
+// The two checks on a capture slot lived in the ENTER arm alone, and Enter is
+// not the only way out of a slot: Esc goes forward to the review and PgUp/PgDn
+// walk between units, and both of those recorded whatever was in the boxes. So
+// the operator who typed a lot number and left with Esc had it recorded against
+// a blank serial, where buildReceipt drops it and nothing on the review says a
+// word; and the operator who typed "12/31/2026" into Expires and left with
+// PgDn sent it to the wire, where a 400 rolls back the WHOLE receipt over one
+// character in an optional field. Both are the exact outcomes the two checks
+// exist to stop, reached through the arms added after them.
+//
+// So the checks moved to storeUnit — the one place a slot is recorded — and
+// this walks every key that leaves a slot through both refusals. It is written
+// as a matrix rather than as the reported case for the reason the defect
+// happened: fixing the arm that was reported leaves the next arm free.
+func TestReceive_NoWayOutOfASlotRecordsWhatEnterWouldRefuse(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	down := tea.KeyMsg{Type: tea.KeyDown}
+
+	type slot struct {
+		name string
+		fill func(t *testing.T, r Root) Root
+		says string
+	}
+	slots := []slot{
+		{"a lot with no serial", func(t *testing.T, r Root) Root {
+			r = receiveKey(t, r, down) // onto Lot
+			return receiveType(t, r, poRuneKey("LOT-9"))
+		}, "needs a serial before a lot"},
+		{"an expiry that is not a date", func(t *testing.T, r Root) Root {
+			r = receiveType(t, r, poRuneKey("SN-1"))
+			r = receiveKey(t, r, down) // onto Lot
+			r = receiveKey(t, r, down) // onto Expires
+			return receiveType(t, r, poRuneKey("12/31/2026"))
+		}, "needs an expiry written YYYY-MM-DD"},
+	}
+	exits := []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{"enter", enter},
+		{"esc", tea.KeyMsg{Type: tea.KeyEsc}},
+		{"pgdown", tea.KeyMsg{Type: tea.KeyPgDown}},
+	}
+
+	for _, exit := range exits {
+		for _, sl := range slots {
+			t.Run(exit.name+" on "+sl.name, func(t *testing.T) {
+				fake := &receiveFake{}
+				r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
+				s.qty[2].SetValue("2") // two units, so PgDn has somewhere to go
+				r = receiveKey(t, r, enter)
+				if s.phase != phaseSerial || len(s.serialUnits) != 2 {
+					t.Fatalf("capture did not open: phase %v, %d units", s.phase, len(s.serialUnits))
+				}
+				r = sl.fill(t, r)
+				serial, lot, expiry := s.serialInput.Value(), s.lotInput.Value(), s.expiryInput.Value()
+
+				r = receiveKey(t, r, exit.key)
+
+				if s.phase != phaseSerial {
+					t.Errorf("%s left capture on phase %v, carrying a slot the receipt "+
+						"would be refused for", exit.name, s.phase)
+				}
+				if s.serialCursor != 0 {
+					t.Errorf("%s walked off the slot anyway: cursor %d", exit.name, s.serialCursor)
+				}
+				// What was typed stays in the boxes, so it can be fixed in place.
+				if got := s.serialInput.Value(); got != serial {
+					t.Errorf("%s discarded the serial: %q, want %q", exit.name, got, serial)
+				}
+				if got := s.lotInput.Value(); got != lot {
+					t.Errorf("%s discarded the lot: %q, want %q", exit.name, got, lot)
+				}
+				if got := s.expiryInput.Value(); got != expiry {
+					t.Errorf("%s discarded the expiry: %q, want %q", exit.name, got, expiry)
+				}
+				if got := s.captures[0]; got != (receiveCapture{}) {
+					t.Errorf("%s recorded the refused slot anyway: %+v", exit.name, got)
+				}
+				// The refusal NAMES the key that was pressed: three keys share
+				// one wording, so without the lead two of them would answer
+				// with the sentence the third had already drawn.
+				if text := receivePaneText(s, 80, 24); !strings.Contains(text, exit.name+" "+sl.says) {
+					t.Errorf("the refusal does not name %q and say why:\n%s", exit.name, text)
+				}
+				if got := fake.sent(); len(got) != 0 {
+					t.Errorf("a refused slot still reached the wire: %+v", got)
+				}
+				_ = r
+			})
+		}
+	}
+}
+
+// TestReceive_ACorrectedSlotStillReachesTheWire is the other half: the refusal
+// is a refusal to RECORD, not a dead end. Fixing the box and pressing the same
+// key must go through and carry the whole slot.
+func TestReceive_ACorrectedSlotStillReachesTheWire(t *testing.T) {
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
+	s.qty[2].SetValue("1")
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = receiveType(t, r, poRuneKey("SN-1"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown}) // Lot
+	r = receiveType(t, r, poRuneKey("LOT-9"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown}) // Expires
+	r = receiveType(t, r, poRuneKey("12/31/2026"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	if s.phase != phaseSerial {
+		t.Fatalf("the malformed expiry was not refused: phase %v", s.phase)
+	}
+	for range "12/31/2026" {
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	r = receiveType(t, r, poRuneKey("2026-12-31"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	if s.phase != phaseReview {
+		t.Fatalf("the corrected slot was still refused: phase %v", s.phase)
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	sent := fake.sent()
+	if len(sent) != 1 || len(sent[0].Items) != 1 {
+		t.Fatalf("want one receipt naming one line, got %+v", sent)
+	}
+	got := sent[0].Items[0].Serials
+	if len(got) != 1 || got[0].SerialNumber != "SN-1" || got[0].Lot != "LOT-9" ||
+		got[0].ExpirationDate != "2026-12-31" {
+		t.Errorf("the corrected slot did not reach the wire whole: %+v", got)
+	}
+	_ = r
+}
+
+// TestReceive_TheConfirmAnswersTheKeysTheOperatorArrivesUsing.
+//
+// keyWriteOff bound esc, ctrl+x and enter and handed everything else to the
+// reason box, and bubbles' textinput binds neither Up nor Down — so on the ONE
+// frame of this screen where the next key writes a balance off, the pair
+// redrew a byte-for-byte identical pane. It is the pair every route into the
+// confirm has just been using: keyQty, keySerial, keyBlocked and keyReview all
+// bind it and all four bars name UP/DN.
+//
+// They decline BY NAME here, and writeOffBar names neither, so the bar and the
+// keys still agree about what acts.
+func TestReceive_TheConfirmAnswersTheKeysTheOperatorArrivesUsing(t *testing.T) {
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveOrder(), 80, 24)
+	r = receiveGoToLine(t, r, s, 0)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlK})
+	if s.phase != phaseWriteOff {
+		t.Fatalf("ctrl+k did not open the confirm: phase %v", s.phase)
+	}
+	named := receiveNamedKeys(t, s.bar())
+	for _, k := range []string{"up", "down", "pgup", "pgdown"} {
+		if named[k] {
+			t.Fatalf("the confirm's bar names %q, so this test is checking the wrong "+
+				"direction: %+v", k, s.bar())
+		}
+	}
+	// In SEQUENCE, with no reset between presses: a decline that did not name
+	// its key would let the second press redraw the first one's pane.
+	before := receivePaneText(s, 80, 24)
+	for _, k := range []string{"up", "down", "pgup", "pgdown"} {
+		r = receiveKey(t, r, poPhaseKeyMsg(k))
+		text := receivePaneText(s, 80, 24)
+		if !strings.Contains(text, k+" does nothing here") {
+			t.Errorf("%q on the confirm does not say so:\n%s", k, text)
+		}
+		if text == before {
+			t.Errorf("%q on the confirm redrew a byte-for-byte identical pane", k)
+		}
+		before = text
+	}
+	if s.phase != phaseWriteOff {
+		t.Errorf("a declining key left the confirm: phase %v", s.phase)
+	}
+	if got := fake.closedShort(); len(got) != 0 {
+		t.Errorf("a declining key wrote a balance off: %+v", got)
+	}
+	_ = r
+}
+
+// TestReceive_ReEnteringCaptureCountsWhatIsLeft.
+//
+// The note that opens capture used to name len(serialUnits) — the QUEUE LENGTH
+// — which is right only until the operator walks back. enrol carries captured
+// serials across by identity, so a re-entry gets a queue the same length with
+// less work in it: capture one of three, Esc to the review, Esc to the
+// quantities to re-check a count, Enter, and the pinned note read "3 serialized
+// units to capture" over a body two rows down reading "capture 2 of 3 · 1
+// serial(s) so far". Two rows of one pane, two counts of one thing, on the
+// phase whose whole job is tracking exactly that.
+//
+// Round 5 reworded only the all-answered branch, which is why this drives the
+// PARTIAL one — one captured, two left — and why it checks the fresh entry in
+// the same walk: both branches read off one count now, so both are asserted
+// against a figure DERIVED from the screen's own captures rather than a literal
+// that could be made to agree with a wrong lead.
+func TestReceive_ReEnteringCaptureCountsWhatIsLeft(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	esc := tea.KeyMsg{Type: tea.KeyEsc}
+
+	// A serialized line ordered THREE, so the queue is long enough for
+	// "captured" and "left" to be different numbers.
+	lines := []omsapi.ReceivingLine{receiveWSSerialized(21, "Serialized controller board", 3, 0)}
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, lines, 80, 30)
+	s.qty[0].SetValue("3")
+	r = receiveKey(t, r, enter)
+	if s.phase != phaseSerial || len(s.serialUnits) != 3 {
+		t.Fatalf("capture did not open on three units: phase %v, %d units",
+			s.phase, len(s.serialUnits))
+	}
+
+	// A FRESH enrolment: nothing captured, so the whole queue is outstanding.
+	receiveAssertCaptureLead(t, s)
+
+	r = receiveType(t, r, poRuneKey("SN-1"))
+	r = receiveKey(t, r, enter) // records unit 1, moves to unit 2
+	r = receiveKey(t, r, esc)   // -> review
+	if s.phase != phaseReview {
+		t.Fatalf("esc did not reach the review: phase %v", s.phase)
+	}
+	r = receiveKey(t, r, esc) // -> quantities, re-checking a count
+	if s.phase != phaseQty {
+		t.Fatalf("esc did not hand back the quantity form: phase %v", s.phase)
+	}
+
+	r = receiveKey(t, r, enter) // re-enter capture with one already answered
+	if s.phase != phaseSerial {
+		t.Fatalf("the re-entry did not reach capture: phase %v", s.phase)
+	}
+	if left, total := receiveCapturesLeft(s), len(s.serialUnits); left == total {
+		t.Fatalf("the re-entry carried nothing across (%d of %d left), so this test is "+
+			"not on the partial path it names", left, total)
+	}
+	receiveAssertCaptureLead(t, s)
+	_ = r
+}
+
+// receiveCapturesLeft counts the capture slots still holding nothing, WITHOUT
+// asking the screen's own helper: the point of the assertion is that the note
+// agrees with what the operator can see, so the oracle is the same thing the
+// body counts — a slot with no serial in it.
+func receiveCapturesLeft(s *ReceiveFormScreen) int {
+	n := 0
+	for _, c := range s.captures {
+		if strings.TrimSpace(c.serial) == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// receiveAssertCaptureLead holds the note against the pane it is pinned over.
+//
+// Asserted on the CLIPPED render, and against a count derived from the screen
+// rather than written down: a literal would have to be edited in step with the
+// drive, and an edit that agreed with a wrong lead is how a count like this
+// stays wrong.
+func receiveAssertCaptureLead(t *testing.T, s *ReceiveFormScreen) {
+	t.Helper()
+	left, total := receiveCapturesLeft(s), len(s.serialUnits)
+	pane := receivePaneText(s, 80, 30)
+	if want := fmt.Sprintf("%d of %d serialized", left, total); !strings.Contains(pane, want) {
+		t.Errorf("the note does not say %q — it must count what is left, not the "+
+			"queue:\n%s", want, pane)
+	}
+	// And the body it is pinned over agrees: what is left plus what has been
+	// captured is the whole queue, so the two rows cannot give different counts
+	// of the same thing.
+	if want := fmt.Sprintf("%d serial(s) so far", total-left); !strings.Contains(pane, want) {
+		t.Errorf("the body does not say %q, so the note and the body disagree about "+
+			"the same queue:\n%s", want, pane)
+	}
+}
+
+// TestReceive_ReEnteringCaptureSaysWhichFrameItOpened.
+//
+// beginReceipt opens capture at firstUncaptured(), which answers len(captures)
+// when every slot already holds something — and toSerial on that index draws
+// serialBody's past-the-end branch, "Every unit has been answered." The note
+// above it announced "N serialized units to capture" regardless, so the screen
+// contradicted itself about the one thing the phase is for.
+//
+// The route is ordinary, not a corner: capture a serial, land on the review,
+// press Esc back to the quantities to re-check a count, press Enter again.
+// enrol carries the captures across by identity, so there is nothing left to
+// type.
+//
+// The second half is the caret. toSerial ends in focusCurrent, and currentInput
+// used to hand back s.serialInput on a frame that draws no field at all — an
+// armed caret in a box nobody renders, which is exactly what focusCurrent's own
+// comment says must not happen. It was harmless only because keySerial's
+// past-the-end block returns before anything routes a keystroke there, and
+// "harmless because of what another arm happens to do" is not a property.
+func TestReceive_ReEnteringCaptureSaysWhichFrameItOpened(t *testing.T) {
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 30)
+	s.qty[2].SetValue("1") // one unit of the serialized line
+	r = receiveKey(t, r, enter)
+	if s.phase != phaseSerial || len(s.serialUnits) != 1 {
+		t.Fatalf("capture did not open: phase %v, %d units", s.phase, len(s.serialUnits))
+	}
+	r = receiveType(t, r, poRuneKey("SN-1"))
+	r = receiveKey(t, r, enter) // the last unit lands on the review
+	if s.phase != phaseReview {
+		t.Fatalf("the last unit did not reach the review: phase %v", s.phase)
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc}) // back to the quantities
+	if s.phase != phaseQty {
+		t.Fatalf("esc did not hand back the quantity form: phase %v", s.phase)
+	}
+
+	r = receiveKey(t, r, enter) // re-enter capture with nothing left to type
+	if s.phase != phaseSerial {
+		t.Fatalf("the re-entry did not reach capture: phase %v", s.phase)
+	}
+	pane := receivePaneText(s, 80, 30)
+	if !strings.Contains(pane, "Every unit has been answered") {
+		t.Fatalf("the re-entry did not open the answered frame, so this test is not "+
+			"looking at the state it names:\n%s", pane)
+	}
+	if strings.Contains(pane, "to capture") {
+		t.Errorf("the note announces units to capture over a frame saying every unit "+
+			"is answered:\n%s", pane)
+	}
+	if !strings.Contains(pane, "already answered") {
+		t.Errorf("the note does not say which frame it opened:\n%s", pane)
+	}
+	// The way out it names is the bar's, so it cannot advertise a key this
+	// frame refuses.
+	for _, item := range s.bar() {
+		if !strings.Contains(pane, strings.ToLower(item.Key)) {
+			t.Errorf("the note does not name %q, which the bar does:\n%s", item.Key, pane)
+		}
+	}
+	if armed := receiveFocusedBoxes(t, s); len(armed) != 0 {
+		t.Errorf("the answered frame draws no field and armed %v", armed)
+	}
+	_ = r
+}
+
+// TestReceive_TheSerialBarFollowsTheBox. With nothing typed, Enter PASSES OVER
+// the unit; saying "Save" there would name a key that does something else. The
+// bar is the only place that fact is stated, so it has to follow the box.
 func TestReceive_TheSerialBarFollowsTheBox(t *testing.T) {
 	fake := &receiveFake{}
 	r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
@@ -656,52 +1144,72 @@ func TestReceive_TheSerialBarFollowsTheBox(t *testing.T) {
 		t.Errorf("an empty box does not offer the skip: %+v", s.bar())
 	}
 	r = receiveType(t, r, poRuneKey("SN-9"))
-	if !barHas(s.bar(), "Enter", "Save serial") {
+	if !barHas(s.bar(), "Enter", "Save & next") {
 		t.Errorf("a filled box does not offer the save: %+v", s.bar())
 	}
-	// Blank + enter skips, and the summary counts it.
-	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // saves SN-9
-	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // blank: skips unit 2
-	if s.phase != phaseDone {
-		t.Fatalf("the flow did not finish after the last unit: phase %v", s.phase)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // saves SN-9, onto unit 2
+	// The LAST unit says where enter goes, because "next" is a claim there is
+	// one and there is not.
+	if !barHas(s.bar(), "Enter", "Skip & review") {
+		t.Errorf("the last unit does not say where enter goes: %+v", s.bar())
 	}
-	if s.skippedCount != 1 || s.createdCount != 1 {
-		t.Errorf("want one saved and one skipped, got created=%d skipped=%d",
-			s.createdCount, s.skippedCount)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // blank: passes unit 2 over
+
+	if s.phase != phaseReview {
+		t.Fatalf("the last unit did not reach the review: phase %v", s.phase)
 	}
-	pane := strings.Join(receivePaneLines(s, 80, 24), "\n")
-	for _, want := range []string{"Receive complete", "1 created", "Skipped", "1 unit"} {
-		if !strings.Contains(pane, want) {
-			t.Errorf("the summary does not report %q:\n%s", want, pane)
-		}
+	if text := receivePaneText(s, 80, 24); !strings.Contains(text, "1 of 2 units captured") {
+		t.Errorf("the review does not report the gap capture left:\n%s", text)
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // send it
+
+	sent := fake.sent()
+	if len(sent) != 1 {
+		t.Fatalf("want one receipt, got %+v", sent)
+	}
+	if got := sent[0].Items[0].Serials; len(got) != 1 || got[0].SerialNumber != "SN-9" {
+		t.Errorf("a passed-over unit did not stay off the wire: %+v", got)
 	}
 }
 
-// TestReceive_TheSummaryReportsUncapturedUnits. Leaving capture early is a
-// legitimate answer — the serials may be recorded elsewhere — so the summary
-// has to say how many units it left, derived from where the cursor stopped
-// rather than counted alongside it.
-func TestReceive_TheSummaryReportsUncapturedUnits(t *testing.T) {
-	fake := &receiveFake{}
+// TestReceive_TheSummaryReportsOutstandingSerials.
+//
+// Receiving goods without every serial is allowed on purpose — the contract
+// says so, because goods that physically arrived must be recordable — and the
+// gap is what replaced the old ban on serialized kit components. It is
+// invisible unless a client draws it, so the summary draws the figure the
+// SERVER came back with rather than one counted on this side.
+func TestReceive_TheSummaryReportsOutstandingSerials(t *testing.T) {
+	fake := &receiveFake{replyWith: map[string]any{
+		"id": 5, "po_number": "PO-1001", "status": "partially_received",
+		"status_label": "Partially Received", "total_received_quantity": 1,
+		"total_quantity": 9, "outstanding_line_count": 2,
+		"has_receipt_variance": true, "variance_line_count": 1,
+		"serials_outstanding": 2,
+	}}
 	r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
-	s.qty[2].SetValue("3")
-	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	r = receiveType(t, r, poRuneKey("SN-1"))
-	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // one captured
-	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})   // two left
+	s.qty[2].SetValue("2")
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // -> capture
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})   // -> review, nothing captured
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // send it
 
 	if s.phase != phaseDone {
-		t.Fatalf("esc did not finish capture: phase %v", s.phase)
+		t.Fatalf("the receipt did not finish: phase %v", s.phase)
 	}
-	pane := strings.Join(receivePaneLines(s, 80, 24), "\n")
-	if !strings.Contains(pane, "Uncaptured") || !strings.Contains(pane, "2 units") {
-		t.Errorf("the summary does not report the units it left:\n%s", pane)
+	text := receivePaneText(s, 80, 24)
+	for _, want := range []string{
+		// A value row cannot fold, so these are as long as the 51-column pane
+		// lets them be — the sentence that explains the figure is the caveat
+		// under the block, which does fold.
+		"2 units with no serial",
+		"1 line short or over",
+		"2 outstanding",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the summary does not report %q:\n%s", want, text)
+		}
 	}
-	// A count of zero is not drawn at all: "Failed ..... 0" is a row that makes
-	// an operator look for a failure there was none of.
-	if strings.Contains(pane, "Failed") {
-		t.Errorf("the summary reports a failure count with no failures:\n%s", pane)
-	}
+	_ = r
 }
 
 // TestReceive_AKitOrderStillSaysWhatItCredits guards the kit contract through
@@ -712,8 +1220,14 @@ func TestReceive_AKitOrderStillSaysWhatItCredits(t *testing.T) {
 	for _, width := range receiveWidths {
 		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
 			fake := &receiveFake{}
-			_, s := receiveDrive(t, fake, []omsapi.PurchaseOrderItem{poKitFixtureLine()}, width, 30)
+			r, s := receiveDrive(t, fake,
+				[]omsapi.ReceivingLine{receiveWSKit(11,
+					"Eufy printer maintenance kit (CMYK + cleaning)", 2, 0)}, width, 30)
 			s.qty[0].SetValue("1")
+			// The window anchors on the cursor's block, so the kit's own block
+			// has to be the one the cursor is standing on for any of it to be
+			// drawn at all.
+			_ = receiveGoToLine(t, r, s, 0)
 			pane := strings.Join(receivePaneLines(s, width, 30), "\n")
 			// Read as the operator reads it, across the fold: the kit caveat
 			// travels with the line now and wraps inside the pane, so at 51
@@ -774,18 +1288,17 @@ func receiveInFlight(t *testing.T, r Root, msg tea.KeyMsg) (Root, tea.Cmd) {
 // between them is exactly what makes this class of defect invisible.
 func TestReceive_TheReplyRetiresTheNoteTheFreezeWrote(t *testing.T) {
 	// The sentence is read off the screen WHILE the request is out rather than
-	// written down here, because the two frozen states wait on different
-	// requests and a literal would pin this test to one of them: it did, and
-	// the capture freeze went on saying "the receipt answers" under a status
-	// row reading "Recording the serial…" until the wording was fixed.
+	// written down here, because the frozen states wait on different requests
+	// and a literal would pin this test to one of them.
 	frozenSays := func(s *ReceiveFormScreen) string {
 		return "frozen until " + s.inFlightSubject() + " answers"
 	}
 
-	t.Run("the receipt opens serial capture", func(t *testing.T) {
+	t.Run("the receipt lands", func(t *testing.T) {
 		fake := &receiveFake{}
 		r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
-		s.qty[2].SetValue("1") // the serialized line, so the reply moves phase
+		s.qty[1].SetValue("1")
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // qty -> review
 		r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 		if !s.pending {
 			t.Fatal("the receipt did not go out")
@@ -797,8 +1310,8 @@ func TestReceive_TheReplyRetiresTheNoteTheFreezeWrote(t *testing.T) {
 		}
 
 		r = receiveSettle(t, r, cmd, 0)
-		if s.phase != phaseSerial {
-			t.Fatalf("the receipt left the flow on phase %v, want serial", s.phase)
+		if s.phase != phaseDone {
+			t.Fatalf("the receipt left the flow on phase %v, want the summary", s.phase)
 		}
 		if got := receivePaneText(s, 80, 24); strings.Contains(got, frozen) {
 			t.Errorf("the freeze is over and the phase has moved, but the pane still "+
@@ -811,6 +1324,7 @@ func TestReceive_TheReplyRetiresTheNoteTheFreezeWrote(t *testing.T) {
 		fake := &receiveFake{failWith: http.StatusBadGateway, failBody: nginx502}
 		r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
 		s.qty[1].SetValue("1")
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // qty -> review
 		r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 		r, _ = receiveInFlight(t, r, poPhaseKeyMsg("j"))
 		frozen := frozenSays(s)
@@ -833,43 +1347,40 @@ func TestReceive_TheReplyRetiresTheNoteTheFreezeWrote(t *testing.T) {
 		}
 	})
 
-	t.Run("a captured serial", func(t *testing.T) {
+	t.Run("a write-off", func(t *testing.T) {
 		fake := &receiveFake{}
 		r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
-		s.qty[2].SetValue("2") // two units, so the reply lands mid-capture
-		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-		if s.phase != phaseSerial {
-			t.Fatalf("capture did not open: phase %v", s.phase)
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR}) // the confirm
+		if s.phase != phaseWriteOff {
+			t.Fatalf("ctrl+r did not open the confirm: phase %v", s.phase)
 		}
-		s.serialInput.SetValue("SN-1")
-		r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-		if !s.serialPending {
-			t.Fatal("the capture did not go out")
+		r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+		if !s.pending {
+			t.Fatal("the write-off did not go out")
 		}
 		r, _ = receiveInFlight(t, r, poPhaseKeyMsg("j"))
-		frozen := frozenSays(s)
 		pane := receivePaneText(s, 80, 24)
-		if !strings.Contains(pane, frozen) {
-			t.Fatalf("a key pressed under the capture freeze did not say so:\n%s", pane)
+		if !strings.Contains(pane, frozenSays(s)) {
+			t.Fatalf("a key pressed under the write-off freeze did not say so:\n%s", pane)
 		}
-		// And it names the SERIAL, not the receipt. The receipt answered
-		// already — that is what opened this phase — so a decline naming it sits
-		// directly under a status row saying the serial is what is being
-		// recorded, and the operator is told to wait on the one that has come
-		// back.
+		// And it names the WRITE-OFF, not the receipt. Naming the wrong request
+		// puts the decline directly under a status row saying something else is
+		// out, and tells the operator to wait on the one that is not.
 		if strings.Contains(pane, "frozen until the receipt answers") {
-			t.Errorf("the capture freeze says the receipt is out, under a status row that "+
-				"says the serial is:\n%s", pane)
+			t.Errorf("the write-off freeze says the receipt is out:\n%s", pane)
 		}
-		if !strings.Contains(pane, "Recording the serial") {
-			t.Fatalf("the status row does not say the serial is out, so the two lines "+
+		if !strings.Contains(pane, "Closing PO-1001 out") {
+			t.Fatalf("the status row does not say the write-off is out, so the two lines "+
 				"cannot be compared:\n%s", pane)
 		}
 
 		r = receiveSettle(t, r, cmd, 0)
-		if got := receivePaneText(s, 80, 24); strings.Contains(got, frozen) {
-			t.Errorf("the capture answered and the unit advanced, but the pane still "+
-				"claims a request is out:\n%s", got)
+		if got := receivePaneText(s, 80, 24); strings.Contains(got, "frozen until") {
+			t.Errorf("the write-off answered, but the pane still claims a request is "+
+				"out:\n%s", got)
+		}
+		if len(fake.marked()) != 1 {
+			t.Errorf("the order was marked received %d times", len(fake.marked()))
 		}
 	})
 }
@@ -878,11 +1389,13 @@ func TestReceive_TheReplyRetiresTheNoteTheFreezeWrote(t *testing.T) {
 //
 // jdeFieldArea draws a focused text row as a solid reverse-video field — the
 // layer's strongest "you are standing here and may type" signal — and while the
-// receipt is out every key but Esc declines. submit() blurs the box for exactly
-// that reason; drawing the row focused anyway put the invitation back on the
-// pane, which is the bar-honesty rule broken in its most visual form. serialBody
-// already answered the identical question with !s.serialPending one function
-// over, so the two halves of the same screen disagreed about it.
+// receipt is out every key but Esc declines. submit() blurs every box for
+// exactly that reason; drawing the row focused anyway put the invitation back on
+// the pane, which is the bar-honesty rule broken in its most visual form.
+//
+// The receipt leaves from the REVIEW, so what this walks is the round trip: a
+// row highlighted on the quantity form, the highlight gone while the request is
+// out, and the same row highlighted again when Esc brings the operator back.
 //
 // The profile has to be forced or this claim is unmeasurable: lipgloss strips
 // every sequence when stdout is not a TTY, so a lost highlight and a present one
@@ -896,14 +1409,18 @@ func TestReceive_TheFrozenFormOffersNoRowToTypeInto(t *testing.T) {
 			// The cursor is MOVED off row 0 on purpose, so the assertion below
 			// is aimed by s.focused rather than by an index that happens to be
 			// the one the screen opens on.
-			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
-			s.qty[s.focused].SetValue("1")
+			r = receiveGoToLine(t, r, s, 1)
+			s.qty[1].SetValue("1")
 			if receiveFocusedRow(s, width, 24) == "" {
 				t.Fatalf("no row is highlighted before the receipt goes out:\n%s",
 					strings.Join(receivePaneLines(s, width, 24), "\n"))
 			}
 			cursor := receiveCursorMarker(t, s)
 
+			// The receipt leaves from the REVIEW, so the freeze is the review's
+			// — and Esc from there comes back to a quantity form that must
+			// still say where the operator was standing.
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // qty -> review
 			r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 			if !s.pending {
 				t.Fatal("the receipt did not go out")
@@ -922,11 +1439,16 @@ func TestReceive_TheFrozenFormOffersNoRowToTypeInto(t *testing.T) {
 					cursor, strings.Join(receivePaneLines(s, width, 24), "\n"))
 			}
 
-			// And a failed receipt hands the keyboard back: the invitation
-			// returns with the keys it stands for.
+			// And a failed receipt hands the keyboard back: Esc returns to the
+			// quantity form, and the invitation returns with the row the
+			// operator was standing on.
 			r = receiveSettle(t, r, cmd, 0)
 			if s.pending {
 				t.Fatal("the receipt is still in flight after the fake answered")
+			}
+			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+			if s.phase != phaseQty {
+				t.Fatalf("esc after a failed receipt landed on phase %v", s.phase)
 			}
 			if receiveFocusedRow(s, width, 24) == "" {
 				t.Errorf("the form came back live but no row says where the caret is:\n%s",
@@ -936,42 +1458,49 @@ func TestReceive_TheFrozenFormOffersNoRowToTypeInto(t *testing.T) {
 	}
 }
 
-// TestReceive_LeavingCaptureMidSaveLeavesNoCaretBehind.
+// TestReceive_LeavingCaptureEarlyKeepsWhatWasCaptured.
 //
-// Esc is never gated on these screens, so it is pressed while a create is out
-// and finishSerial moves to the summary with the box blurred. The reply then
-// lands with units still enrolled, and advanceSerial's non-terminal branch used
-// to focus the box unconditionally — re-arming a caret in a field the summary
-// does not draw, one line after handleSerialUnit had asked the very question
-// that guard exists to answer.
-func TestReceive_LeavingCaptureMidSaveLeavesNoCaretBehind(t *testing.T) {
+// Esc finishes capture and goes FORWARD, to the review — not back to the
+// quantities and not out of the flow — so there is no arrangement of keys that
+// leaves the operator unable to reach the post. What they typed on the unit
+// they were standing on goes with them, and the units they never reached are
+// reported as the outstanding serials they will become.
+func TestReceive_LeavingCaptureEarlyKeepsWhatWasCaptured(t *testing.T) {
 	fake := &receiveFake{}
 	r, s := receiveDrive(t, fake, receiveSweepLines(), 80, 24)
-	s.qty[2].SetValue("3") // three units, so the reply leaves two unanswered
+	s.qty[2].SetValue("3") // three units, so esc leaves two unanswered
 	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	if s.phase != phaseSerial {
 		t.Fatalf("capture did not open: phase %v", s.phase)
 	}
 
-	s.serialInput.SetValue("SN-1")
-	r, cmd := receiveInFlight(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	if !s.serialPending {
-		t.Fatal("the capture did not go out")
-	}
+	r = receiveType(t, r, poRuneKey("SN-1"))
 	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
-	if s.phase != phaseDone {
-		t.Fatalf("esc under a capture left the flow on phase %v, want done", s.phase)
+	if s.phase != phaseReview {
+		t.Fatalf("esc left capture on phase %v, want the review", s.phase)
+	}
+	// The box the operator was standing IN when they pressed esc is stored:
+	// leaving is not the same as discarding, and this is the press the rule is
+	// easiest to break on.
+	if got := s.captures[0].serial; got != "SN-1" {
+		t.Errorf("esc discarded the serial in the box: %q", got)
+	}
+	for _, box := range s.allBoxes() {
+		if box.Focused() {
+			t.Error("the review is on screen with a caret armed in a box it does not draw")
+		}
+	}
+	if got := receivePaneText(s, 80, 24); !strings.Contains(got, "1 of 3 serials captured") {
+		t.Errorf("the review does not report the units capture left:\n%s", got)
 	}
 
-	r = receiveSettle(t, r, cmd, 0)
-	if s.phase != phaseDone {
-		t.Fatalf("the capture's reply dragged the operator back to phase %v", s.phase)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	sent := fake.sent()
+	if len(sent) != 1 {
+		t.Fatalf("want one receipt, got %+v", sent)
 	}
-	if s.serialInput.Focused() {
-		t.Error("the summary is on screen with a caret armed in a box it does not draw")
-	}
-	if got := receivePaneText(s, 80, 24); !strings.Contains(got, "Receive complete") {
-		t.Errorf("the summary is not what the operator is left looking at:\n%s", got)
+	if got := sent[0].Items[0].Serials; len(got) != 1 || got[0].SerialNumber != "SN-1" {
+		t.Errorf("the one captured serial did not reach the wire: %+v", got)
 	}
 	_ = r
 }
@@ -1082,8 +1611,8 @@ func TestReceive_EnterIsNamedForWhatSubmitWillAttempt(t *testing.T) {
 		{"every box empty", nil, false, "type a quantity against a line"},
 		{"one box holding a zero", map[int]string{1: "0"}, false, "every quantity entered is zero"},
 		{"zeroes in every box", map[int]string{0: "0", 1: "00", 2: " 0 "}, false, "every quantity entered is zero"},
-		{"a typo", map[int]string{1: "two"}, true, "line 2: quantity must be a whole number"},
-		{"a negative", map[int]string{1: "-3"}, true, "line 2: quantity must be a whole number"},
+		{"a typo", map[int]string{1: "two"}, true, "line 2: a quantity is a whole number"},
+		{"a negative", map[int]string{1: "-3"}, true, "line 2: a quantity is a whole number"},
 		{"a zero and a real quantity", map[int]string{0: "0", 1: "2"}, true, ""},
 	}
 	for _, tc := range cases {
@@ -1098,13 +1627,20 @@ func TestReceive_EnterIsNamedForWhatSubmitWillAttempt(t *testing.T) {
 			}
 
 			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-			receipts, _ := fake.count()
 			if tc.named && tc.wantSay == "" {
-				if receipts != 1 {
-					t.Fatalf("a named Enter posted %d receipts, want 1", receipts)
+				// Enter goes to the REVIEW, which is where the receipt leaves
+				// from: the last thing an operator sees before stock moves is
+				// what the server is about to be told.
+				if s.phase != phaseReview {
+					t.Fatalf("a named Enter left the flow on phase %v, want the review", s.phase)
+				}
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+				if receipts := len(fake.sent()); receipts != 1 {
+					t.Fatalf("the review posted %d receipts, want 1", receipts)
 				}
 				return
 			}
+			receipts := len(fake.sent())
 			if receipts != 0 {
 				t.Errorf("a receipt went out for %q: %d posted", tc.name, receipts)
 			}
@@ -1308,7 +1844,7 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 
 	type probe struct {
 		name  string
-		lines []omsapi.PurchaseOrderItem
+		lines []omsapi.ReceivingLine
 		typed map[int]string
 		keys  []tea.KeyMsg
 		bare  bool // fire the last key without settling, so a request is out
@@ -1318,17 +1854,27 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 	// box or moves the cursor and writes nothing, which is why the edge probes
 	// name their keys rather than looping the whole set.
 	down := tea.KeyMsg{Type: tea.KeyDown}
-	toLastRow := make([]tea.KeyMsg, 9)
+	// The last row of a nine-line order: the four fixed rows (scan, tracking,
+	// carrier, delivered), the nine lines, and the notes row — so thirteen
+	// presses from the top. Derived from the row model rather than written as a
+	// number, because a fixed count is one row-model change away from probing
+	// an edge that is not one, and it fails by passing.
+	toLastRow := make([]tea.KeyMsg, receiveRowFirstLine+9)
 	for i := range toLastRow {
 		toLastRow[i] = down
+	}
+	// The FIRST line row, derived the same way: the fixed rows and no further.
+	toFirstLine := make([]tea.KeyMsg, receiveRowFirstLine)
+	for i := range toFirstLine {
+		toFirstLine[i] = down
 	}
 	var probes []probe
 	for _, k := range long {
 		probes = append(probes,
 			probe{"summary decline " + k, receiveManyLines(3), map[int]string{0: "2"},
-				[]tea.KeyMsg{enter, poPhaseKeyMsg(k)}, false},
+				[]tea.KeyMsg{enter, enter, poPhaseKeyMsg(k)}, false},
 			probe{"frozen " + k, receiveManyLines(3), map[int]string{0: "2"},
-				[]tea.KeyMsg{enter, poPhaseKeyMsg(k)}, true},
+				[]tea.KeyMsg{enter, enter, poPhaseKeyMsg(k)}, true},
 		)
 	}
 	probes = append(probes,
@@ -1336,14 +1882,140 @@ func TestReceive_EveryNoteFitsItsReservation(t *testing.T) {
 			[]tea.KeyMsg{poPhaseKeyMsg("pgup")}, false},
 		probe{"qty page edge pgdown", receiveManyLines(9), map[int]string{0: "2"},
 			append(append([]tea.KeyMsg{}, toLastRow...), poPhaseKeyMsg("pgdown")), false},
-		probe{"qty decline with nothing receivable", nil, nil,
-			[]tea.KeyMsg{poPhaseKeyMsg("down")}, false},
+		// ctrl+k rather than a movement key: the form's fixed rows mean up and
+		// down always have somewhere to go now, so a movement key writes no
+		// note at all and the probe would prove nothing.
+		probe{"ctrl+k off a line", receiveManyLines(9), nil,
+			[]tea.KeyMsg{tea.KeyMsg{Type: tea.KeyCtrlK}}, false},
+		probe{"ctrl+r with nothing outstanding", nil, nil,
+			[]tea.KeyMsg{tea.KeyMsg{Type: tea.KeyCtrlR}}, false},
+		// The two write-off refusals, at their widest: ctrl+k quotes the box's
+		// whole eight characters, and ctrl+r counts every line of a long order.
+		probe{"ctrl+k over a typed quantity", receiveManyLines(9),
+			map[int]string{0: "88888888"},
+			append(append([]tea.KeyMsg{}, toFirstLine...), tea.KeyMsg{Type: tea.KeyCtrlK}), false},
+		probe{"ctrl+r over typed quantities", receiveManyLines(9),
+			map[int]string{0: "1", 1: "2", 2: "3", 3: "4", 4: "5", 5: "6", 6: "7", 7: "8", 8: "9"},
+			[]tea.KeyMsg{tea.KeyMsg{Type: tea.KeyCtrlR}}, false},
+		// The write-off refusal at its WIDEST: the sentence names the first
+		// thing and counts the rest, so this is a form holding a quantity, all
+		// four delivery-block fields and a captured serial at once.
+		probe{"ctrl+r over a form full of entry", receiveSweepLines(), map[int]string{2: "1"},
+			[]tea.KeyMsg{
+				enter, poRuneKey("SN-1"), enter, tea.KeyMsg{Type: tea.KeyEsc},
+				down, poRuneKey("1Z999AA10123456784"),
+				down, poRuneKey("United Parcel"),
+				down, poRuneKey("2026-08-20"),
+				tea.KeyMsg{Type: tea.KeyCtrlR},
+			}, false},
 		probe{"enter with nothing typed", receiveManyLines(9), nil, []tea.KeyMsg{enter}, false},
 		probe{"enter with every box zero", receiveManyLines(9), map[int]string{0: "0", 1: "0"},
 			[]tea.KeyMsg{enter}, false},
 		probe{"enter with nothing receivable", nil, nil, []tea.KeyMsg{enter}, false},
 		probe{"enter on an unparseable quantity", receiveManyLines(9),
 			map[int]string{8: "two"}, []tea.KeyMsg{enter}, false},
+		// The capture refusals, through the LONGEST key that can reach them:
+		// the key leads the sentence, so pgdown is the widest each one gets.
+		probe{"pgdown on a lot with no serial", receiveSweepLines(), map[int]string{2: "2"},
+			[]tea.KeyMsg{enter, down, poRuneKey("LOT-9"), poPhaseKeyMsg("pgdown")}, false},
+		probe{"pgdown on an expiry that is not a date", receiveSweepLines(), map[int]string{2: "2"},
+			[]tea.KeyMsg{enter, poRuneKey("SN-1"), down, down,
+				poRuneKey("12/31/2026"), poPhaseKeyMsg("pgdown")}, false},
+		// The scan note that names the OTHER lines a code resolved to. Listed
+		// at the maximum the note spells out, and counted one past it, because
+		// the two wordings are different lengths and the longer one is what a
+		// 51-column pane has to hold.
+		probe{"a code on receiveScanListMax+1 lines", receiveSharedCode(receiveScanListMax + 1), nil,
+			[]tea.KeyMsg{poRuneKey("SKU-90"), enter}, false},
+		probe{"a code on more lines than the note lists", receiveSharedCode(receiveScanListMax + 2), nil,
+			[]tea.KeyMsg{poRuneKey("SKU-90"), enter}, false},
+	)
+	// EVERY sentence findLine can answer with, driven with a code long enough
+	// to spend the whole note budget on its own. s.scan takes 120 characters
+	// and a GS1 string really is that long, so the operator-supplied half of
+	// these sentences is exactly the unbounded value the rule is about — and
+	// the half a cut takes is the tail, where the key that gets them out is
+	// named. The four rows below are findLine's four branches: nothing
+	// matched, nothing on the order is scannable at all, the code names a
+	// settled line, and the code names several live ones.
+	longCode := poRuneKey(strings.Repeat("0195012345678", 7)[:91])
+	unscannable := receiveWSLine(31, "Custom fabricated bracket", 1, 0)
+	unscannable.ScanCodes = nil
+	settled := receiveWSLine(32, "Backordered gasket", 6, 2)
+	settled.IsClosedShort, settled.IsSettled = true, true
+	settled.ReceiptState, settled.ReceiptStateLabel = omsapi.ReceiptStateClosedShort, "Closed short"
+	settled.QuantityPending = 0
+	settled.ScanCodes = []omsapi.ScanCode{{Code: longCode.String(), Kind: omsapi.ScanCodeItemSKU}}
+	shared := receiveSharedCode(2)
+	for i := range shared {
+		shared[i].ScanCodes = []omsapi.ScanCode{{Code: longCode.String(), Kind: omsapi.ScanCodeItemSKU}}
+	}
+	// An order of n plain lines every one of which is over-received, plus ONE
+	// serialized unit so the review is arrived at through commitUnit and the
+	// warning has to share the note with that key's own lead. The two sizes are
+	// the bound and one past it, derived from receiveScanListMax rather than
+	// written down, because the two wordings are different lengths and the
+	// wrong side of the bound is the one that used to overrun.
+	overOrder := func(n int) ([]omsapi.ReceivingLine, map[int]string) {
+		lines := receiveManyLines(n)
+		lines = append(lines, receiveWSSerialized(80, "Serialized controller board", 1, 0))
+		typed := map[int]string{n: "1"}
+		for i := 0; i < n; i++ {
+			typed[i] = "99"
+		}
+		return lines, typed
+	}
+	overListed, overListedQty := overOrder(receiveScanListMax)
+	overCounted, overCountedQty := overOrder(receiveScanListMax + 4)
+	overKeys := []tea.KeyMsg{enter, poRuneKey("SN-1"), enter}
+	probes = append(probes,
+		probe{"a long code that matches nothing", receiveOrder(), nil,
+			[]tea.KeyMsg{longCode, enter}, false},
+		probe{"a long code on an order with no codes at all",
+			[]omsapi.ReceivingLine{unscannable}, nil, []tea.KeyMsg{longCode, enter}, false},
+		probe{"a long code on a settled line",
+			[]omsapi.ReceivingLine{receiveWSLine(30, "Box of M3 bolts", 4, 0), settled}, nil,
+			[]tea.KeyMsg{longCode, enter}, false},
+		// The WORST case of that sentence and not the fixture case: the settled
+		// reason it names is "struck off the order" (twenty cells against
+		// "closed short"'s twelve) and the position it names is two digits, so
+		// this is the longest the settled refusal can be. It is the row that
+		// would fail first if the sentence grew a word.
+		probe{"a long code on the tenth struck-off line", receiveStruckOff(10, longCode.String()),
+			nil, []tea.KeyMsg{longCode, enter}, false},
+		probe{"a long code on several live lines", shared, nil,
+			[]tea.KeyMsg{longCode, enter}, false},
+		// findLine's fourth kind of nothing, and the one with the longest tail:
+		// on an order with no receivable line the way out is the ORDER's, which
+		// is a longer sentence than "pick a line with up/dn" and rides behind
+		// the same 91-character code.
+		probe{"a long code on an order with nothing receivable", receiveAllSettled(true), nil,
+			[]tea.KeyMsg{longCode, enter}, false},
+		// Re-entering capture with nothing left to type: the note names the
+		// answered frame AND carries that frame's whole way-out tail, so it is
+		// the longest sentence this transition can produce.
+		probe{"re-entering an answered capture", receiveSweepLines(), map[int]string{2: "1"},
+			[]tea.KeyMsg{enter, poRuneKey("SN-1"), enter,
+				tea.KeyMsg{Type: tea.KeyEsc}, enter}, false},
+		// The OVER-RECEIPT warning, in both of its wordings and at the widest
+		// LEAD it can carry. The run of "line N by M" entries was unbounded in
+		// the number of lines an order can have, and toReview folds it into the
+		// note with "enter sends it as typed" behind it — so seven over lines
+		// pushed the pre-send warning's own instruction off the pane, on the
+		// last frame before stock moves. It is reached through CAPTURE rather
+		// than straight off the quantity form because commitUnit's lead comes
+		// ahead of it, which is what makes the sentence overrun sooner.
+		probe{"an over-receipt on as many lines as the note lists", overListed,
+			overListedQty, overKeys, false},
+		probe{"an over-receipt on more lines than the note lists", overCounted,
+			overCountedQty, overKeys, false},
+		// The OTHER branch of that lead: a queue with work left in it, which is
+		// the longer of the two wordings ("N of M serialized units to capture").
+		probe{"re-entering a partly answered capture",
+			[]omsapi.ReceivingLine{receiveWSSerialized(21, "Serialized controller board", 3, 0)},
+			map[int]string{0: "3"},
+			[]tea.KeyMsg{enter, poRuneKey("SN-1"), enter,
+				tea.KeyMsg{Type: tea.KeyEsc}, tea.KeyMsg{Type: tea.KeyEsc}, enter}, false},
 	)
 
 	for _, p := range probes {
@@ -1437,9 +2109,21 @@ func TestReceive_AResizeRetiresTheNoteItInvalidates(t *testing.T) {
 	for _, width := range receiveWidths {
 		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
 			fake := &receiveFake{}
-			r, s := receiveDrive(t, fake, receiveManyLines(3), width, 40)
+			r, s := receiveDrive(t, fake, receiveManyLines(1), width, 40)
+			// The height the form STOPS paging at is derived rather than
+			// written down. It was 40, and 40 stopped being that height the
+			// moment the form grew its scan and delivery rows — so the test
+			// went on running over a state it was no longer in, and reported
+			// the fixture rather than the defect. Anything that changes the
+			// body's height moves this number, which is exactly why nothing
+			// should be holding a copy of it.
+			tall := 40
+			for ; tall <= 200 && s.qtyPages(); tall++ {
+				r = receiveResize(t, r, width, tall)
+			}
 			if s.qtyPages() {
-				t.Fatalf("the form already pages at %dx40, so shrinking proves nothing", width)
+				t.Fatalf("the form pages at every height up to %dx200, so shrinking proves "+
+					"nothing", width)
 			}
 
 			r = receiveKey(t, r, poPhaseKeyMsg("pgdown"))
@@ -1704,9 +2388,13 @@ func receiveCursorBoxDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) (drawn,
 	t.Helper()
 	line, _ := receiveCursorBox(t, s)
 	body, _ := s.body()
+	// How many lines of the cursor's block come BEFORE its box: the line's own
+	// name, and nothing else — everything a row has to say about itself is
+	// drawn after the field it is about (addLineBlock). On a body with one
+	// navigable row the field leads outright.
 	lead := 0
 	if body.rowsIn(0, body.Len()) > 1 {
-		lead = 2
+		lead = 1
 	}
 	avail := s.bodyAvailForBar(len(s.headerLines()), s.bar())
 	payable = body.Len() <= avail || avail-2 > lead
@@ -1751,6 +2439,13 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 				fake := &receiveFake{}
 				r, s := receiveDrive(t, fake, receiveManyLines(3), width, height)
 
+				if !receiveFrameDrawn(t, s, width, height) {
+					return
+				}
+				// Onto a LINE, because that is the row this asserts about: a
+				// fresh form opens on the scan row, which carries no line label
+				// for the identification below to find.
+				r = receiveGoToLine(t, r, s, 0)
 				if !receiveFrameDrawn(t, s, width, height) {
 					return
 				}
@@ -1804,10 +2499,19 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 				fake := &receiveFake{failWith: http.StatusBadGateway, failBody: nginx502}
 				r, s := receiveDrive(t, fake, receiveManyLines(3), width, height)
 				s.qty[0].SetValue("1")
-				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // qty -> review
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // the receipt fails
 				if s.failDetail == "" {
 					t.Fatalf("no failure detail is standing, so this height proves nothing")
 				}
+				// Back on the quantity form with the failure standing: that is
+				// the frame this height sweep is about, and the one the header
+				// allocator's failure arms are written for.
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+				if s.phase != phaseQty {
+					t.Fatalf("esc after a failed receipt landed on phase %v", s.phase)
+				}
+				r = receiveGoToLine(t, r, s, 0)
 				if !receiveFrameDrawn(t, s, width, height) {
 					return
 				}
@@ -1858,7 +2562,7 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 // predicate that is merely stricter would pass a test that only checked the
 // dead direction.
 func TestReceive_ThePagingPairIsNamedWhenAPageMovesTheCursor(t *testing.T) {
-	orders := map[string][]omsapi.PurchaseOrderItem{
+	orders := map[string][]omsapi.ReceivingLine{
 		"nothing receivable": nil,
 		"nine lines":         receiveManyLines(9),
 		"three lines":        receiveManyLines(3),
@@ -1926,12 +2630,14 @@ func receiveBodyLine(t *testing.T, body *jdeLines, i int) string {
 // is on the pane at rest and comes back after the cursor has been walked to the
 // far end and returned with the keys the bar names.
 func TestReceive_NoBodyLineSitsWhereNoKeyCanReach(t *testing.T) {
-	orders := map[string][]omsapi.PurchaseOrderItem{
+	kit := receiveWSKit(11, "Eufy printer maintenance kit (CMYK + cleaning)", 2, 0)
+	orders := map[string][]omsapi.ReceivingLine{
 		// The kit order is the one that reported this: its credit block makes
-		// row 0's own block nine lines, which is what pushes the lead out.
-		"one kit line":            {poKitFixtureLine()},
-		"a kit among plain lines": {poKitFixtureLine(), poPlainLine(), poPlainLine()},
-		"four plain lines":        receiveManyLines(4),
+		// its own block nine lines, which is what pushes a lead out.
+		"one kit line": {kit},
+		"a kit among plain lines": {kit, receiveWSLine(12, "Box of M3 bolts", 4, 0),
+			receiveWSLine(13, "Reel of wire", 4, 0)},
+		"four plain lines": receiveManyLines(4),
 		// The order whose body is nothing BUT lead: no quantity boxes, so the
 		// notes row is the only row there is and the screen's whole explanation
 		// of itself used to sit above it.
@@ -1988,18 +2694,26 @@ func TestReceive_NoBodyLineSitsWhereNoKeyCanReach(t *testing.T) {
 				for i := 1; i < s.totalInputs(); i++ {
 					r = receiveKey(t, r, down)
 				}
-				// The mirror at the far end: the last row's block ends at the
-				// body's last line, so standing there draws it. It is the
-				// FOCUSED notes field, and a separator tagged to the notes row
-				// instead of to the block above it makes the blank the first
-				// line of that block and the field the second — which on a
-				// one-row body draws the blank and leaves the operator typing
-				// into a field that is not on the pane.
+				// The mirror at the far end, and it asks about the block's
+				// FIRST line rather than the body's last.
+				//
+				// That is not a weakening. What must survive is the FOCUSED
+				// notes field, which leads its block: a separator tagged to the
+				// notes row instead of to the block above it makes the blank
+				// the first line of that block and the field the second, and a
+				// short window then draws the blank and leaves the operator
+				// typing into a field that is not on the pane. The block's TAIL
+				// is prose explaining the field, and a block that outruns the
+				// window loses its tail by design — the layer keeps a block's
+				// START. Asserting the last line would be asserting that this
+				// screen's longest block always fits, which is a claim about
+				// the pane rather than about the layout.
 				tail := s.qtyBody()
-				last := receiveBodyLine(t, tail, tail.Len()-1)
-				if pane := receivePaneText(s, 80, height); !strings.Contains(pane, last) {
-					t.Fatalf("standing on the last row does not draw the body's last line %q:\n%s",
-						last, receiveClippedPane(s, 80, height))
+				first, _ := tail.block(s.focused)
+				lead := receiveBodyLine(t, tail, first)
+				if pane := receivePaneText(s, 80, height); !strings.Contains(pane, lead) {
+					t.Fatalf("standing on the last row does not draw its block's first line %q, "+
+						"which is the focused field:\n%s", lead, receiveClippedPane(s, 80, height))
 				}
 				if strings.Contains(receivePaneText(s, 80, height), "more above") {
 					sawMarker = true
@@ -2050,9 +2764,9 @@ func TestReceive_NoBodyLineSitsWhereNoKeyCanReach(t *testing.T) {
 // there is no geometry to divide, so every ceiling is kept whole and the frame
 // draws entire for Root's clampToBox to cut.
 func TestReceive_AnUnsizedFrameKeepsEveryCeiling(t *testing.T) {
-	s := NewReceiveFormScreen(Deps{Ctx: context.Background()}, &omsapi.PurchaseOrder{
-		ID: 5, Number: "PO-1001", Items: receiveManyLines(3),
-	})
+	lines := receiveManyLines(3)
+	s := NewReceiveFormScreen(Deps{Ctx: context.Background()}, receivePO(lines...))
+	s.Update(receiveSheetMsg{sheet: receiveWorksheet(lines...)})
 	if s.terminalHeight != 0 {
 		t.Fatalf("the screen came up already sized (%d rows), so this proves nothing",
 			s.terminalHeight)
@@ -2087,10 +2801,12 @@ func TestReceive_AnUnsizedFrameKeepsEveryCeiling(t *testing.T) {
 // block ABOVE it, so a block never opens on a blank — was honoured for the last
 // separator and broken for every other one.
 func TestReceive_EveryRowDrawsTheBoxTheCursorIsOn(t *testing.T) {
-	orders := map[string][]omsapi.PurchaseOrderItem{
+	orders := map[string][]omsapi.ReceivingLine{
 		"three plain lines": receiveManyLines(3),
 		"a kit among plain lines": {
-			poKitFixtureLine(), poPlainLine(), poPlainLine(),
+			receiveWSKit(11, "Eufy printer maintenance kit (CMYK + cleaning)", 2, 0),
+			receiveWSLine(12, "Box of M3 bolts", 4, 0),
+			receiveWSLine(13, "Reel of wire", 4, 0),
 		},
 		// The order with NOTHING receivable belongs here for the same reason
 		// serial capture does: its notes row is the only navigable row, so no
@@ -2120,7 +2836,7 @@ func TestReceive_EveryRowDrawsTheBoxTheCursorIsOn(t *testing.T) {
 					if !receiveFrameDrawn(t, s, 80, height) {
 						return
 					}
-					if row < len(s.qty) && !receiveCursorRowIdentified(t, s, 80, height) {
+					if _, isLine := s.lineAt(row); isLine && !receiveCursorRowIdentified(t, s, 80, height) {
 						t.Fatalf("standing on row %d, the pane says nothing about which row "+
 							"that is:\n%s", row, receiveClippedPane(s, 80, height))
 					}
@@ -2170,14 +2886,21 @@ func TestReceive_AnUnnumberedOrderIsStillNamed(t *testing.T) {
 		po   *omsapi.PurchaseOrder
 		want string
 	}{
-		{"numbered", &omsapi.PurchaseOrder{ID: 5, Number: "PO-1001", Items: receiveManyLines(2)}, "PO-1001"},
-		{"unnumbered", &omsapi.PurchaseOrder{ID: 5, Items: receiveManyLines(2)}, "PO #5"},
+		{"numbered", receivePO(receiveManyLines(2)...), "PO-1001"},
+		{"unnumbered", &omsapi.PurchaseOrder{ID: 5, Items: receivePO(receiveManyLines(2)...).Items}, "PO #5"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			deps := Deps{Ctx: context.Background()}
 			s := NewReceiveFormScreen(deps, tc.po)
 			r := newTestRoot(s)
 			next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			r = next.(Root)
+			// The WORKSHEET is the fresher read of the order's number, so the
+			// unnumbered case has to arrive unnumbered from both sources or it
+			// is not the case it names.
+			sheet := receiveWorksheet(receiveManyLines(2)...)
+			sheet.Number = tc.po.Number
+			next, _ = r.Update(receiveSheetMsg{sheet: sheet})
 			r = next.(Root)
 
 			if got := s.orderName(); got != tc.want {

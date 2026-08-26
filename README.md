@@ -44,7 +44,7 @@ The first run will fail fast with a clear message if either URL is missing. The 
 | `SENTRY_ENVIRONMENT` | Sentry environment tag (`dev`, `staging`, `prod`). | `dev` |
 | `SENTRY_RELEASE` | Override the release identifier. Defaults to `scantty@<vcs.revision[:12]>` from the build's debug info when available. | derived |
 
-If `SCANTTY_OMS_TOKEN` is unset, scantty still works for the `AllowAny` endpoints — barcode lookup, scanning items/assets/fixtures, and creating reorder requests in kiosk mode all function unauthenticated. Receiving deliveries (`/api/reorders/receipts/`) and most other writes require a token.
+If `SCANTTY_OMS_TOKEN` is unset, scantty still works for the `AllowAny` endpoints — barcode lookup, scanning items/assets/fixtures, and creating reorder requests in kiosk mode all function unauthenticated. Receiving needs a token throughout: every endpoint the receiving flow drives is authenticated, the worksheet `GET` it opens on included, so without one the form can only report that the session is not signed in. Most other writes need a token too.
 
 ## Keys
 
@@ -62,7 +62,7 @@ menu, and every screen names the keys that apply to it along its foot.
 | `Enter` | Open what is selected · submit the form you are on |
 | `Esc` | Back one step · cancel the form you are on |
 | `Ctrl+E` | Edit / open the highlighted row |
-| `Ctrl+K` | Search palette (items, assets, orders, people) — works from anywhere |
+| `Ctrl+K` | Search palette (items, assets, orders, people) — from any screen that does not bind it itself (the receiving form uses it to close a line short) |
 | `Ctrl+C` / `Ctrl+Q` | Quit, from anywhere |
 
 On a **list** screen the letters in that foot carry case: lowercase acts on the
@@ -86,17 +86,14 @@ cannot see. The rest of the app is being converted screen by screen.
 
 The purchasing **entry** sheets in that same style — starting a new order,
 editing a line, adding one by scanning an identifier, and receiving a delivery
-— read the same way, with field navigation on top: `↑`/`↓` (or `Tab`/`Shift+Tab`)
-move between fields, `PgUp`/`PgDn` page a body taller than the pane, `Enter`
-fires the sheet's own action from whichever row the cursor is on — receive the
-delivery, save the line, add the one just scanned — and `Esc` backs out, the bar
+— read the same way, with field navigation on top: `↑`/`↓` — or `Tab`/`Shift+Tab`,
+on a sheet that has fields — move between them, `PgUp`/`PgDn` pages a body taller
+than the pane, `Enter` fires the sheet's own action from whichever row the cursor
+is on — save the line, add the one just scanned — and `Esc` backs out, the bar
 saying so when that discards what you typed. Each of those keys is named only
-while it will actually act: on the receiving form `Enter` appears once a quantity
-box holds a quantity to receive, and the bar drops it entirely while the receipt
-is in flight, when `Esc` is the one key that still acts. Receiving ends on a
-summary of what was booked, which `Enter` or `Esc` closes. Every purchasing
-screen now reads this way; New PO was the last one on a scheme of its own, so
-`j`/`k` no longer move anything there either.
+while it will actually act. Every purchasing screen now reads this way; New PO
+was the last one on a scheme of its own, so `j`/`k` no longer move anything
+there either.
 
 New PO is a multi-step entry rather than a single sheet, and each step — the
 supplier picker, the line-source chooser, the reorder/inventory/asset pickers,
@@ -108,6 +105,31 @@ that picker's search box open, where every letter goes into the query and `Esc`
 only closes the box; the bar names whichever pair is live. While the order is
 being submitted the bar drops every key that would change what has already been
 sent, so the cart on the pane is the cart going in.
+
+**Receiving** is a flow of its own on that layer, driven off the server's
+receiving worksheet — whether the order may be received against and why not,
+which lines are outstanding, and what a scanner will read off each one. The form
+opens on a `Scan` box so a scanner burst lands somewhere it means something:
+`Enter` there finds the line the code names, and the tracking barcode, carrier
+and delivery date follow it above the per-line quantity boxes. Type what
+actually arrived — short or over, as counted. The figure is recorded and the
+difference flagged, never rounded to the quantity ordered. `Enter` off the scan
+box commits the quantities into a **review**, and `Enter` on the review is what
+sends the receipt — while that receipt is in flight the bar drops every key but
+`Esc`.
+
+Lines whose units carry serials open a capture step on the way: a serial number
+plus optional lot and expiry per unit, where `Enter` records the unit and moves
+to the next (to the review on the last), `Esc` goes forward to the review,
+`PgUp`/`PgDn` walk the units while `↑`/`↓` walk the three fields, and `Ctrl+E`
+on the review comes back. Fewer serials than units is allowed, and the summary
+then says how many units are in stock with no serial naming them. Two settling
+keys sit behind a confirm of their own — `Ctrl+K` closes the focused line short,
+`Ctrl+R` marks the whole order received — where `Ctrl+X` commits and `Enter` is
+deliberately unbound, so a reflexive double-tap of the key that opened the
+confirm cannot write a balance off. Receiving ends on a summary of what the
+server booked, which `Enter` or `Esc` closes and `r` re-reads so the next
+delivery can be worked without leaving the screen.
 
 The sidebar lists the eleven workspaces; the workspace you are in also shows its
 own surfaces indented beneath it (Inventory › New item / Categories / Locations
@@ -163,7 +185,7 @@ The classifier in `internal/scanner` distinguishes two scan kinds:
 │       ├── inventory_detail.go   # item detail + supplier list
 │       ├── reorder_form.go       # reorder request form
 │       ├── po_detail.go          # purchase order detail + line items
-│       ├── receive_form.go       # per-line receipt entry
+│       ├── receive_form.go       # receiving flow: worksheet, scan, quantities, serials, review
 │       └── settings.go           # env-var inventory display
 └── go.mod
 ```
@@ -187,7 +209,7 @@ The classifier in `internal/scanner` distinguishes two scan kinds:
 Landed:
 - Foundation: clients, cache, scanner classifier, config, TUI shell with 11 workspaces.
 - End-to-end scanner flow: scan → lookup → inventory detail → reorder form → submit.
-- Receive deliveries: PO list → PO detail → line-by-line qty entry → submit.
+- Receive deliveries: PO list → PO detail → the receiving flow. The server's receiving worksheet is the whole input — whether the order may be received against and why not, which lines are outstanding and which are settled, and what a scanner reads off each one — so scanning a code finds its line. Tracking barcode, carrier and stated delivery date ride with the receipt (no transit duration is computed from them). What actually arrived is recorded as counted and any difference from the quantity ordered is flagged rather than rounded away; serialized units are captured one at a time with optional lot and expiry, and units credited to stock with no serial naming them are reported back. A line's outstanding balance can be closed short and the whole order marked received, each behind its own confirm. Whether the order then advances to `received` is the server's call, and the summary reports the status that came back.
 - Add a purchase-order line by scanning or typing an identifier: `n` on a draft order's detail sheet takes the supplier's SKU, the item's own SKU, a package or unit barcode, or a name; OMS resolves it against that order's supplier; the item is shown to confirm — naming the other vendor when the code came off a rival's box — and then quantity and unit cost are prompted with the OMS defaults prefilled and overtypable (on a repeat add, which grows the line already on the order, the price row starts blank so accepting it cannot reprice that line). Genuine ambiguity offers the candidates to pick from; a refusal (the supplier does not carry it, the order is not a draft) is shown as the server's own sentence. A successful add returns to the identifier box with a running tally, so a stack of boxes is one scan each.
 - Serialized components: per-unit instance tracking off the item detail (`i`) with inline install/remove/consume/retire/dispose + usage history, an asset's installed-components view, per-unit serial capture during receiving, and the consumption forecast (Reports workspace — days-until-stockout / reorder point / low-stock).
 - Kits: a kit is tagged as one on the item detail and shows its components with per-kit quantities, its bill of materials is editable from the item form (saved with the kit), and a kit PO line says which component items receiving it will credit instead of the kit's own stock. A kit's detail screen opens from its id the same way any other item's does; kits are absent from the inventory list and cannot be created from scantty (the item API excludes kits and exposes no `is_kit` flag, so a listed kit would be indistinguishable from an ordinary item — see `AGENTS.md`).

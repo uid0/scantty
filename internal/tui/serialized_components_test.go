@@ -169,32 +169,37 @@ func TestTrimFloat(t *testing.T) {
 	}
 }
 
-func TestPOLineSerialized(t *testing.T) {
-	serialized := omsapi.PurchaseOrderItem{
-		ItemDetails: map[string]any{"id": "item-uuid", "is_serialized": true},
+// TestSerialTargetUnits pins the scaling a receipt's capture list is built
+// from, which is what replaced poLineSerialized.
+//
+// That predicate asked the LINE's own item whether it was serialized, which on
+// a kit line describes the kit — the identity a serial may never name. The
+// question is the server's now (`serial_targets`), and the only arithmetic left
+// on this side is scaling a target to a PARTIAL receipt, which the contract
+// publishes precisely so a client can size its capture list without a round
+// trip per keystroke.
+func TestSerialTargetUnits(t *testing.T) {
+	target := omsapi.SerialTarget{Item: "itm-c", Quantity: 6} // 3 per kit × 2 ordered
+	cases := []struct {
+		name                        string
+		ordered, received, wantUnit int
+	}{
+		{"the whole order", 2, 2, 6},
+		{"half of it", 2, 1, 3},
+		{"an over-receipt credits what turned up", 2, 3, 9},
+		{"nothing received", 2, 0, 0},
+		{"nothing ordered cannot be scaled", 0, 2, 0},
 	}
-	if id, ok := poLineSerialized(serialized); !ok || id != "item-uuid" {
-		t.Errorf("serialized line = (%q, %v), want (item-uuid, true)", id, ok)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := target.Units(tc.ordered, tc.received); got != tc.wantUnit {
+				t.Errorf("Units(%d, %d) = %d, want %d",
+					tc.ordered, tc.received, got, tc.wantUnit)
+			}
+		})
 	}
-
-	notSerialized := omsapi.PurchaseOrderItem{
-		ItemDetails: map[string]any{"id": "item-uuid", "is_serialized": false},
-	}
-	if _, ok := poLineSerialized(notSerialized); ok {
-		t.Error("non-serialized line should return ok=false")
-	}
-
-	// Serialized but missing the item id — can't create units, so skip.
-	noID := omsapi.PurchaseOrderItem{
-		ItemDetails: map[string]any{"is_serialized": true},
-	}
-	if _, ok := poLineSerialized(noID); ok {
-		t.Error("serialized line without id should return ok=false")
-	}
-
-	// Freeform / asset line with no item_details must not panic.
-	freeform := omsapi.PurchaseOrderItem{Description: "custom bolts"}
-	if _, ok := poLineSerialized(freeform); ok {
-		t.Error("freeform line should return ok=false")
+	// A target with nothing behind it credits nothing, whatever arrives.
+	if got := (omsapi.SerialTarget{}).Units(4, 4); got != 0 {
+		t.Errorf("an empty target credits %d units, want 0", got)
 	}
 }

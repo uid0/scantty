@@ -21,13 +21,9 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -59,11 +55,67 @@ func poPlainLine() omsapi.PurchaseOrderItem {
 	}
 }
 
+// poKitWorksheet derives the receiving worksheet the server would render for an
+// order made of these lines.
+//
+// The SERIAL TARGETS are the point of it. On a kit line they are the kit's
+// serialized COMPONENTS — the kit's own id never appears, which is exactly how
+// build_receiving_worksheet renders it — so a screen that reached for the
+// line's own item instead of the targets would be visible here rather than
+// only on the wire.
+func poKitWorksheet(lines []omsapi.PurchaseOrderItem) *omsapi.ReceivingWorksheet {
+	w := &omsapi.ReceivingWorksheet{
+		PurchaseOrder: 5, Number: "PO-1001", Supplier: "Acme Supply",
+		Status: "sent", StatusLabel: "Sent", CanReceive: true,
+	}
+	for _, li := range lines {
+		l := omsapi.ReceivingLine{
+			PurchaseOrderItem: li.ID,
+			Label:             li.DisplayLabel(),
+			ItemType:          "inventory_item",
+			QuantityOrdered:   li.QuantityOrdered,
+			QuantityReceived:  li.QuantityReceived,
+			QuantityPending:   li.QuantityPending,
+			QuantityVariance:  li.QuantityReceived - li.QuantityOrdered,
+			ReceiptState:      omsapi.ReceiptStateNotReceived,
+			ReceiptStateLabel: "Not received",
+			IsKitLine:         li.IsKitLine,
+		}
+		if id, ok := li.ItemDetails["id"].(string); ok {
+			l.Item = id
+		}
+		if serialized, _ := li.ItemDetails["is_serialized"].(bool); serialized && !li.IsKitLine {
+			l.SerialTargets = []omsapi.SerialTarget{{
+				Item: l.Item, ItemName: l.Label, SerialTrackingMode: "unique",
+				Quantity: li.QuantityOrdered,
+			}}
+		}
+		w.OutstandingLineCount++
+		w.Lines = append(w.Lines, l)
+	}
+	return w
+}
+
+// poKitReceiveForm opens the receiving form on an order made of these lines,
+// with the worksheet already landed and the cursor on the FIRST LINE.
+//
+// The cursor placement is not decoration. jdeLines.Window anchors on the
+// cursor's block, and the form's first rows are the scan and delivery fields,
+// so a fixture left where a fresh form opens would window those and draw none
+// of the line block these tests are about — and every assertion would fail on
+// the fixture rather than on the screen.
 func poKitReceiveForm(t *testing.T, lines []omsapi.PurchaseOrderItem, width int) *ReceiveFormScreen {
 	t.Helper()
 	po := &omsapi.PurchaseOrder{ID: 5, Number: "PO-1001", Items: lines}
 	s := NewReceiveFormScreen(Deps{}, po)
 	s.Update(tea.WindowSizeMsg{Width: width, Height: jdeSweepHeight})
+	s.Update(receiveSheetMsg{sheet: poKitWorksheet(lines)})
+	if s.phase != phaseQty {
+		t.Fatalf("the fixture landed on phase %v, not the quantity form", s.phase)
+	}
+	s.currentInput().Blur()
+	s.focused = receiveRowFirstLine
+	s.currentInput().Focus()
 	return s
 }
 
@@ -417,84 +469,52 @@ func TestPODetailKit_TheUnorderedFallbackLeadIsTenseNeutralToo(t *testing.T) {
 // Serial capture on a kit line
 // ---------------------------------------------------------------------------
 
-// receiveSerialFake is the OMS the receiving drive runs against: it accepts the
-// quantity receipt and, crucially, RECORDS every serialized unit anyone tries
-// to create against it. A guard that only suppressed the phase-2 screen while
-// still posting units would pass a screen-level assertion and still corrupt the
-// data, so the evidence here is what reached the server.
-type receiveSerialFake struct {
-	mu       sync.Mutex
-	received []map[string]any
-	serials  []map[string]any
-	actions  []string
-}
-
-func (f *receiveSerialFake) handler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		body := map[string]any{}
-		if raw, _ := io.ReadAll(r.Body); len(raw) > 0 {
-			_ = json.Unmarshal(raw, &body)
-		}
-		switch {
-		case strings.Contains(r.URL.Path, "/purchase-orders/") && strings.HasSuffix(r.URL.Path, "/receive/"):
-			if items, ok := body["items"].([]any); ok {
-				for _, it := range items {
-					if line, ok := it.(map[string]any); ok {
-						f.received = append(f.received, line)
-					}
-				}
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": 5, "po_number": "PO-1001", "is_fully_received": true,
-			})
-		case strings.HasSuffix(r.URL.Path, "/serialized-components/"):
-			f.serials = append(f.serials, body)
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": fmt.Sprintf("sc-%d", len(f.serials)), "serial_number": body["serial_number"],
-			})
-		default:
-			// The lifecycle action that accessions a created unit into stock.
-			f.actions = append(f.actions, r.Method+" "+r.URL.Path)
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "in_stock"})
-		}
-	}
-}
-
-// receiveOneLine drives the receiving form the way an operator does — type a
-// quantity, Enter to receive — through Root.Update against the fake, and hands
-// back both so the test can read the screen AND the wire.
+// The two kit facts that are easy to conflate, and the guard that keeps them
+// apart.
 //
-// ONE Enter, from the quantity row itself. Enter used to advance a field and
-// submit only from the last one; the columnar conversion (sc-jde-recv) made it
-// commit from any row, which is what every other purchasing sheet does
-// (po_edit's Enter=Save, po_add_line's Enter=Add line).
-func receiveOneLine(t *testing.T, line omsapi.PurchaseOrderItem, qty string) (*receiveSerialFake, *ReceiveFormScreen, Root) {
+// Serialized items MAY now be kit components: the OMS prohibition was lifted
+// deliberately, because it blocked a legitimate configuration while the hazard
+// it named — stock credited with no serials recorded — was never unique to
+// kits. Receiving a kit WITH serial capture is therefore a live path.
+//
+// What has NOT changed, and what these tests exist for, is where a serial goes.
+// A kit is bought as one SKU and stocked as its PARTS: its own stock is
+// permanently zero, so a SerializedComponent against the kit's id names a unit
+// that can never be drawn down. The worksheet's `serial_targets` is the
+// server's own answer to "which identities may this line's serials name", the
+// kit never appears in it, and this screen reads that and nothing else.
+
+// receiveKitDrive opens the receiving form against a fake OMS for an order made
+// of these lines, with the worksheet landed and the cursor on the first line.
+func receiveKitDrive(t *testing.T, lines []omsapi.PurchaseOrderItem) (*receiveFake, *ReceiveFormScreen, Root) {
 	t.Helper()
-	fake := &receiveSerialFake{}
+	fake := &receiveFake{sheet: poKitWorksheet(lines)}
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	po := &omsapi.PurchaseOrder{ID: 5, Number: "PO-1001", Items: []omsapi.PurchaseOrderItem{line}}
+	po := &omsapi.PurchaseOrder{ID: 5, Number: "PO-1001", Items: lines}
 	screen := NewReceiveFormScreen(deps, po)
 	r := newTestRoot(screen)
 	r.deps = deps
 	r.Update(tea.WindowSizeMsg{Width: 120, Height: jdeSweepHeight})
-	r = pump(t, r, screen.Init(), 0)
-
-	r = key(t, r, woRuneKey(qty))
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // receive
+	r = receiveSettle(t, r, screen.Init(), 0)
+	if screen.phase != phaseQty {
+		t.Fatalf("the worksheet did not land: phase %v", screen.phase)
+	}
+	for screen.focused != receiveRowFirstLine {
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	}
 	return fake, screen, r
 }
 
-// poKitSerializedLine is the line the guard exists for: a kit whose item carries
-// a stray is_serialized=true. It should not exist — KitComponent.clean() refuses
-// a serialized component outright — but InventoryItem.save() never runs
-// full_clean(), so _clean_kit never fires on a direct write and the flag
-// persists.
+// poKitSerializedLine is a kit whose OWN item carries is_serialized=true.
+//
+// It should not exist and it does: InventoryItem.save() never runs
+// full_clean(), so a direct write leaves the flag on a kit. It is the fixture
+// this guard is about, because a screen that decided serializability from the
+// LINE's item would read that flag, enrol capture against `kit-1`, and post
+// serials against a SKU that is never stocked.
 func poKitSerializedLine() omsapi.PurchaseOrderItem {
 	line := poKitFixtureLine()
 	line.ItemDetails = map[string]any{"id": "kit-1", "is_serialized": true}
@@ -507,56 +527,146 @@ func poSerializedPlainLine() omsapi.PurchaseOrderItem {
 	return line
 }
 
-// TestReceiveKit_AKitLineEnrolsNoSerialCapture. Receiving a kit credits its
-// COMPONENT items and leaves the kit's own stock at zero, so a serial captured
-// here would be created against the KIT's id and accessioned into a figure
-// nothing can ever draw down. Unlike every other path into that corruption this
-// one fires on SUBMIT, with no keypress for the operator to catch it on.
-func TestReceiveKit_AKitLineEnrolsNoSerialCapture(t *testing.T) {
-	fake, screen, _ := receiveOneLine(t, poKitSerializedLine(), "2")
-
-	// The receipt itself still happens — the server explodes the kit into its
-	// components — so the guard must not have swallowed the quantity.
-	if len(fake.received) != 1 || fmt.Sprint(fake.received[0]["quantity_received"]) != "2" {
-		t.Fatalf("the kit quantity did not reach the receive endpoint: %+v", fake.received)
+// poKitComponentSerializedWorksheet is a kit line whose COMPONENTS are
+// serialized — the configuration the lifted ban used to forbid outright, and
+// the one a receipt must now be able to capture serials for.
+func poKitComponentSerializedWorksheet(lines []omsapi.PurchaseOrderItem) *omsapi.ReceivingWorksheet {
+	w := poKitWorksheet(lines)
+	for i := range w.Lines {
+		if !w.Lines[i].IsKitLine {
+			continue
+		}
+		w.Lines[i].SerialTargets = []omsapi.SerialTarget{
+			{Item: "itm-c", ItemName: "Cyan ink cartridge, high yield, wide-format",
+				ItemSKU: "CI-100-XL", SerialTrackingMode: "unique",
+				Quantity: w.Lines[i].QuantityOrdered},
+			{Item: "itm-k", ItemName: "Black ink", ItemSKU: "KI-100",
+				SerialTrackingMode: "unique", Quantity: 3 * w.Lines[i].QuantityOrdered},
+		}
 	}
+	return w
+}
+
+// TestReceiveKit_ASerialNeverNamesTheKitItself is the corruption guard, and it
+// is asserted ON THE WIRE.
+//
+// The kit's own item carries a stray is_serialized flag, and the worksheet —
+// which is the only thing this screen reads for the question — offers the
+// kit's COMPONENTS as the identities a serial may name. Every serial that
+// leaves the terminal must therefore name a component, and none of them may
+// name `kit-1`, whatever the line's own item_details say.
+//
+// It is checked against what was POSTED rather than against a predicate,
+// because a predicate is what this guard was made of last time and a fix round
+// replaced its assertion with a substring over a frame the caveat is
+// structurally absent from — leaving the check unable to fail in either
+// direction, on the one thing standing between a stray flag and serials
+// accessioned against a kit.
+func TestReceiveKit_ASerialNeverNamesTheKitItself(t *testing.T) {
+	lines := []omsapi.PurchaseOrderItem{poKitSerializedLine()}
+	fake := &receiveFake{sheet: poKitComponentSerializedWorksheet(lines)}
+	srv := httptest.NewServer(fake.handler())
+	t.Cleanup(srv.Close)
+	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+	screen := NewReceiveFormScreen(deps, &omsapi.PurchaseOrder{ID: 5, Number: "PO-1001", Items: lines})
+	r := newTestRoot(screen)
+	r.deps = deps
+	r.Update(tea.WindowSizeMsg{Width: 120, Height: jdeSweepHeight})
+	r = receiveSettle(t, r, screen.Init(), 0)
+	for screen.focused != receiveRowFirstLine {
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	}
+
+	r = receiveType(t, r, woRuneKey("1")) // one of the two ordered kits arrived
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.phase != phaseSerial {
+		t.Fatalf("a kit whose components are serialized opened no capture (phase %v):\n%s",
+			screen.phase, screen.View())
+	}
+	// One cyan and three black per kit, so one kit is four capture slots.
+	if len(screen.serialUnits) != 4 {
+		t.Fatalf("want 4 capture slots for one kit, got %d: %+v",
+			len(screen.serialUnits), screen.serialUnits)
+	}
+	for i, u := range screen.serialUnits {
+		if u.itemID == receiveKitItemID {
+			t.Fatalf("capture slot %d is against the KIT's own id %q — a serial written "+
+				"there names a unit that can never be drawn down", i, u.itemID)
+		}
+	}
+
+	for i := range screen.serialUnits {
+		r = receiveType(t, r, woRuneKey(fmt.Sprintf("SN-%d", i+1)))
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	if screen.phase != phaseReview {
+		t.Fatalf("capture did not finish into the review (phase %v)", screen.phase)
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // send it
+
+	sent := fake.sent()
+	if len(sent) != 1 || len(sent[0].Items) != 1 {
+		t.Fatalf("want one receipt naming one line, got %+v", sent)
+	}
+	serials := sent[0].Items[0].Serials
+	if len(serials) != 4 {
+		t.Fatalf("want four serials on the wire, got %+v", serials)
+	}
+	for _, sn := range serials {
+		if sn.Item == receiveKitItemID {
+			t.Errorf("a serial was posted against the kit's own id: %+v", sn)
+		}
+		if sn.Item != "itm-c" && sn.Item != "itm-k" {
+			t.Errorf("a serial names %q, which is not a component this line credits: %+v",
+				sn.Item, sn)
+		}
+	}
+}
+
+// TestReceiveKit_AKitWithNoSerializedComponentsOpensNoCapture is the other
+// direction: `serial_targets` empty means nothing here is serialized, and a
+// stray is_serialized on the KIT must not conjure a capture out of it.
+func TestReceiveKit_AKitWithNoSerializedComponentsOpensNoCapture(t *testing.T) {
+	fake, screen, r := receiveKitDrive(t, []omsapi.PurchaseOrderItem{poKitSerializedLine()})
+
+	r = receiveType(t, r, woRuneKey("2"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	if screen.phase == phaseSerial {
-		t.Errorf("a kit receipt opened serial capture:\n%s", screen.View())
+		t.Errorf("a kit with no serialized components opened capture:\n%s", screen.View())
 	}
 	if len(screen.serialUnits) != 0 {
-		t.Errorf("a kit receipt enrolled %d serial-capture slots: %+v", len(screen.serialUnits), screen.serialUnits)
+		t.Errorf("it enrolled %d capture slots: %+v", len(screen.serialUnits), screen.serialUnits)
 	}
-	if len(fake.serials) != 0 {
-		t.Errorf("a kit receipt created serialized components: %+v", fake.serials)
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // send it from the review
+
+	sent := fake.sent()
+	if len(sent) != 1 || len(sent[0].Items) != 1 {
+		t.Fatalf("the kit quantity did not reach the receive endpoint: %+v", sent)
 	}
-	// And phase 1 never promised capture either — the caveat under the quantity
-	// box reads off the same predicate the enrolment does, and a screen that
-	// promises what the flow will not do is its own defect.
+	if sent[0].Items[0].QuantityReceived != 2 {
+		t.Errorf("quantity_received = %d, want 2", sent[0].Items[0].QuantityReceived)
+	}
+	if len(sent[0].Items[0].Serials) != 0 {
+		t.Errorf("serials were posted for a line with no serialized identity: %+v",
+			sent[0].Items[0].Serials)
+	}
+
+	// And the quantity form never promised capture either: the caveat reads off
+	// the worksheet's serial_targets, which is the same thing the enrolment
+	// reads, so the form cannot advertise a phase that never arrives.
 	//
-	// Asserted on a form that is STILL ON THE QUANTITY PHASE, which is the
-	// whole of what went wrong with this check once already. It was a live
-	// predicate call; a fix round replaced it with a substring over
-	// `screen.View()` taken from the screen above — and that screen has
-	// submitted, a kit enrols no units, so handleReceived has moved it to the
-	// SUMMARY. lineCaveats draws the caveat on the quantity frame and nowhere
-	// else, so the substring was structurally absent from the frame being
-	// searched and the assertion could not fail in either direction, on the one
-	// guard standing between a stray is_serialized flag and SerializedComponents
-	// accessioned against a kit's own id.
-	//
-	// Both halves are asserted because they fail for different reasons: the
-	// predicate is the rule, and the frame is the rule reaching the operator.
-	if id, ok := poLineSerialized(poKitSerializedLine()); ok {
-		t.Errorf("poLineSerialized says a kit line is serialized (item %q), so submit would "+
-			"enrol capture slots against the kit's own id", id)
-	}
+	// Asserted on a form that is STILL ON THE QUANTITY PHASE, which is what
+	// went wrong with this check once already — the frame it was searching had
+	// already moved on, so the substring was structurally absent and the
+	// assertion could not fail in either direction.
 	form := poKitReceiveForm(t, []omsapi.PurchaseOrderItem{poKitSerializedLine()}, 120)
 	if form.phase != phaseQty {
 		t.Fatalf("the fixture form is on phase %v, not the quantity phase that draws the "+
 			"caveat — this assertion would be searching the wrong frame", form.phase)
 	}
-	if frame := strings.Join(strings.Fields(form.View()), " "); strings.Contains(frame, "is serialized") {
-		t.Errorf("the quantity form promised serial capture for a kit line:\n%s", form.View())
+	if frame := strings.Join(strings.Fields(form.View()), " "); strings.Contains(frame, "Serialized") {
+		t.Errorf("the quantity form promised serial capture for a kit line with no "+
+			"serialized component:\n%s", form.View())
 	}
 }
 
@@ -564,10 +674,12 @@ func TestReceiveKit_AKitLineEnrolsNoSerialCapture(t *testing.T) {
 // that matters on the other side: a guard written too broadly would silently
 // disable serial capture for every serialized item on every PO.
 func TestReceiveKit_AnOrdinarySerializedLineStillCapturesSerials(t *testing.T) {
-	fake, screen, r := receiveOneLine(t, poSerializedPlainLine(), "2")
+	fake, screen, r := receiveKitDrive(t, []omsapi.PurchaseOrderItem{poSerializedPlainLine()})
 
+	r = receiveType(t, r, woRuneKey("2"))
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	if screen.phase != phaseSerial {
-		t.Fatalf("an ordinary serialized receipt did not enter serial capture (phase %d):\n%s",
+		t.Fatalf("an ordinary serialized receipt did not enter serial capture (phase %v):\n%s",
 			screen.phase, screen.View())
 	}
 	if len(screen.serialUnits) != 2 {
@@ -576,25 +688,31 @@ func TestReceiveKit_AnOrdinarySerializedLineStillCapturesSerials(t *testing.T) {
 	}
 
 	for _, serial := range []string{"SN-1", "SN-2"} {
-		r = key(t, r, woRuneKey(serial))
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		r = receiveType(t, r, woRuneKey(serial))
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	}
+	if screen.phase != phaseReview {
+		t.Fatalf("the flow did not reach the review after the last serial (phase %v)", screen.phase)
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 
-	if len(fake.serials) != 2 {
-		t.Fatalf("want two serialized components created, got %+v", fake.serials)
+	sent := fake.sent()
+	if len(sent) != 1 {
+		t.Fatalf("want one receipt, got %+v", sent)
+	}
+	serials := sent[0].Items[0].Serials
+	if len(serials) != 2 {
+		t.Fatalf("want two serials on the wire, got %+v", serials)
 	}
 	for i, want := range []string{"SN-1", "SN-2"} {
-		if got := fmt.Sprint(fake.serials[i]["serial_number"]); got != want {
-			t.Errorf("serial %d = %q, want %q", i+1, got, want)
+		if serials[i].SerialNumber != want {
+			t.Errorf("serial %d = %q, want %q", i+1, serials[i].SerialNumber, want)
 		}
-		if got := fmt.Sprint(fake.serials[i]["item"]); got != "itm-b" {
-			t.Errorf("serial %d was created against %q, want the line's item", i+1, got)
+		if serials[i].Item != "itm-b" {
+			t.Errorf("serial %d names %q, want the line's own item", i+1, serials[i].Item)
 		}
-	}
-	if len(fake.actions) != 2 {
-		t.Errorf("the created units were not accessioned into stock: %+v", fake.actions)
 	}
 	if screen.phase != phaseDone {
-		t.Errorf("the flow did not finish after the last serial (phase %d)", screen.phase)
+		t.Errorf("the flow did not finish after the receipt (phase %v)", screen.phase)
 	}
 }
