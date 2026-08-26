@@ -1274,7 +1274,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg, headerRows i
 		// has at least one line (the backend rejects an empty PO), and the bar
 		// names D for exactly that long.
 		if len(s.lines) == 0 {
-			return s, s.sourceNote.say("Nothing staged yet.", StatusWarn)
+			return s, s.sourceNote.say("d reviews nothing · the cart is empty", StatusWarn)
 		}
 		s.phase = poPhaseReview
 		s.clampReviewCursor()
@@ -2073,15 +2073,11 @@ func (s *PurchaseOrderCreateScreen) failure() (head, detail string) {
 // pendingLead is what a key the submit has made inert just did, and it leads
 // this row rather than answering into a four-second flash — the operator
 // watching a slow gateway is exactly the operator who will have missed one.
-// The row is bounded and flattened by the layer, so a lead cannot push the
-// subject off it.
-func (s *PurchaseOrderCreateScreen) workingLine() string {
+// It is BOUNDED against what the subject needs (workingLine below), never the
+// reverse.
+func (s *PurchaseOrderCreateScreen) workingSubject() string {
 	if s.pending {
-		out := "Creating the purchase order for " + s.supplierLabel() + "…"
-		if s.pendingLead != "" {
-			out = s.pendingLead + " · " + out
-		}
-		return out
+		return "Creating the purchase order for " + s.supplierLabel() + "…"
 	}
 	switch s.phase {
 	case poPhaseSupplier, poPhaseSupplierSwitch:
@@ -2126,6 +2122,74 @@ func (s *PurchaseOrderCreateScreen) workingLine() string {
 	}
 	return ""
 }
+
+// workingLine is that sentence bounded to the row the layer will draw it on.
+//
+// The status row CANNOT FOLD — fitStatus flattens and clips it in one forward
+// pass — so both halves of this row have to be measured against it here. Two
+// things were wrong before, and the doc comment above denied the second:
+//
+//   - the SUBJECT could overflow on its own. "Creating the purchase order for "
+//     is 32 cells and supplierLabel clips at 20, so the worst case is 53 into
+//     the 51 a body has at 80 columns; "Looking up the assets bought from …"
+//     is worse at 55. Bounded HERE, at the one exit every one of these
+//     sentences leaves through, rather than by shortening them one at a time.
+//   - the LEAD was joined in front of it unbounded, so a decline pushed the
+//     subject off the row and, with the longest lead in this file (51 cells),
+//     off it entirely: nothing left saying a purchase order was being created,
+//     once pendingDecline's four-second flash expired.
+//
+// So both are bounded against the row, and what gives is chosen by rule 6: the
+// FACTS survive and the IDENTIFIERS abbreviate. The facts here are the fixed
+// words of the subject ("Creating the purchase order for …") and the KEY NAME
+// the lead opens with; what gives is the supplier name at the subject's tail
+// and the lead's own tail.
+//
+// The subject therefore RESERVES the lead's own fact before clipping, rather
+// than taking the row and leaving the remainder. Subject-takes-all was tried
+// and left the lead four cells at 80 columns — "en…", which names no key and
+// so tells two presses apart by nothing. A lead is written to the same ` · `
+// joints as everything else on this screen, and its FIRST CLAUSE is the part
+// that answers the press ("ctrl+x removes nothing"); the rest elaborates. So
+// the first clause is what the row keeps for it, capped at half the row so a
+// long one cannot crowd the subject out in turn.
+//
+// The lead also keeps its place at the FRONT when it is cut, because the key it
+// answers for is its first token; putting it after the subject would cut away
+// the one token that distinguishes the presses.
+//
+// At 80 columns the two sentences want about 66 cells of a 51-cell row, so the
+// SUPPLIER at the subject's tail is what goes — the identifier abbreviating
+// while the facts stay, which is rule 6. At 100 and 120 neither gives.
+func (s *PurchaseOrderCreateScreen) workingLine() string {
+	subject, room := s.workingSubject(), s.paneWidth()
+	if subject == "" {
+		return ""
+	}
+	if s.pendingLead == "" {
+		return pickerClip(subject, room)
+	}
+	answer, rest, more := strings.Cut(s.pendingLead, poLeadJoint)
+	floor := lipgloss.Width(answer)
+	if more && rest != "" {
+		// One cell for the ellipsis pickerClip adds, or the clause it is
+		// reserving room for comes back a character short of itself.
+		floor++
+	}
+	if half := room / 2; floor > half {
+		floor = half
+	}
+	subject = pickerClip(subject, room-floor-len(poLeadJoint))
+	lead := pickerClip(s.pendingLead, room-lipgloss.Width(subject)-len(poLeadJoint))
+	if lead == "" {
+		return subject
+	}
+	return lead + poLeadJoint + subject
+}
+
+// poLeadJoint is what separates a lead from the sentence it leads, and it is
+// the same ` · ` joint every note on this screen is written at.
+const poLeadJoint = " · "
 
 // ---------------------------------------------------------------------------
 // The pinned header, and what a short pane gives up

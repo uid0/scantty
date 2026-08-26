@@ -1658,15 +1658,7 @@ func poBodyKeyClaims(t *testing.T, s *PurchaseOrderCreateScreen, h int) []string
 				// notes this scan was written for did.
 				continue
 			}
-			fields := strings.Fields(segment)
-			if len(fields) == 0 {
-				continue
-			}
-			head := strings.Trim(fields[0], ",.;:!?()")
-			if head == "" || poBarKeysEnglishAlso[head] {
-				continue
-			}
-			if poBarSpellableTokens[strings.ToLower(head)] {
+			if poSegmentNamesAKey(segment) {
 				out = append(out, line)
 				break
 			}
@@ -1675,12 +1667,176 @@ func poBodyKeyClaims(t *testing.T, s *PurchaseOrderCreateScreen, h int) []string
 	return out
 }
 
-// poAssertBodyNamesNoKey is the one-surface rule read off the rendered pane.
+// poSegmentNamesAKey reports whether one ` · ` segment OPENS with a key the bar
+// can spell. Shared by both scans so the derivation from poBarKeyNames — and
+// the two exceptions above — are stated once and cannot drift apart.
+func poSegmentNamesAKey(segment string) bool {
+	fields := strings.Fields(segment)
+	if len(fields) == 0 {
+		return false
+	}
+	head := strings.Trim(fields[0], ",.;:!?()")
+	if head == "" || poBarKeysEnglishAlso[head] {
+		return false
+	}
+	return poBarSpellableTokens[strings.ToLower(head)]
+}
+
+// poNoteKeyClaims is the same rule read off the note's OWN TEXT, before the
+// fold, and it exists because the pane scan cannot see past one.
+//
+// pickerWrap DROPS the ` · ` at a fold (its own doc comment says so), so a note
+// wider than the fold width renders its later segments on continuation lines
+// carrying no separator at all. The pane scan splits each drawn LINE on `·`, so
+// such a line arrives as a single segment at index 0 and is skipped wholesale
+// as a lead — a blind spot with no bound on it, since any note long enough to
+// fold falls in. Reading the unfolded text removes the fold from the question
+// entirely rather than teaching the scan to recognise its debris.
+//
+// Both are kept, and they cover different things: this one sees every segment
+// of the phase's note however it folds, and the PANE scan sees everything else
+// the frame draws — picker rows, cart rows, the working line — which no note
+// text can reach.
+func poNoteKeyClaims(t *testing.T, s *PurchaseOrderCreateScreen) []string {
+	t.Helper()
+	text := s.phaseNote().text
+	if text == "" {
+		text = s.standingNote()
+	}
+	var out []string
+	for i, segment := range strings.Split(text, poLeadJoint) {
+		if i == 0 {
+			continue // the LEAD, for the reason the pane scan skips it
+		}
+		if poSegmentNamesAKey(segment) {
+			out = append(out, segment)
+		}
+	}
+	return out
+}
+
+// poAssertBodyNamesNoKey is the one-surface rule, read off the rendered pane AND
+// off the phase's unfolded note — the second because the first cannot see a
+// segment the fold has separated from its ` · `.
 func poAssertBodyNamesNoKey(t *testing.T, what string, s *PurchaseOrderCreateScreen, h int) {
 	t.Helper()
 	for _, line := range poBodyKeyClaims(t, s, h) {
 		t.Errorf("%s: a body line names a key the bar can spell — the bar is the one "+
 			"surface that names a key:\n\t%q\nwhole pane:\n%s",
 			what, line, strings.Join(poPaneLinesAt(t, s, h), "\n"))
+	}
+	for _, segment := range poNoteKeyClaims(t, s) {
+		t.Errorf("%s: the phase's note names a key the bar can spell in %q — the bar is "+
+			"the one surface that names a key (note: %q)",
+			what, strings.TrimSpace(segment), s.phaseNote().text)
+	}
+}
+
+// TestPOOneSurface_TheScanSeesPastAFold is the non-vacuity proof for the note
+// scan, and the reason it exists at all.
+//
+// pickerWrap drops the ` · ` at a fold, so a note wider than the fold width
+// renders its later segments on continuation lines carrying no separator. The
+// PANE scan splits each drawn line on `·`, so such a line arrives as one
+// segment at index 0 and is skipped as a lead — every note long enough to fold
+// fell in that hole. The note scan reads the text BEFORE the fold, so the fold
+// cannot hide anything from it.
+//
+// The note here is constructed rather than taken from the screen, because the
+// two notes this guard was written for were stripped in the round that added
+// it: nothing on the screen is long enough to fold any more, which is precisely
+// why the gap could sit unnoticed. The claim under test is the GUARD's, so the
+// guard is what is driven.
+func TestPOOneSurface_TheScanSeesPastAFold(t *testing.T) {
+	// Past the 49-cell fold width at 80 columns, with the key claim in the
+	// segment the fold pushes onto a continuation line.
+	const folded = "the reorder queue is empty for this supplier · r reloads it"
+
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			r, screen := poPickerAtSize(t, &poPickFake{catalog: 4, suppliers: 1}, 80, h)
+			_ = r
+			if screen.phase != poPhaseSource {
+				t.Fatalf("setup landed on phase %v, want the source chooser", screen.phase)
+			}
+			screen.sourceNote.say(folded, StatusWarn)
+
+			drawn := poPaneLinesAt(t, screen, h)
+			if !poPaneHasLine(t, screen, "r reloads it") {
+				t.Fatalf("the constructed note is not on the pane, so nothing here is "+
+					"under test:\n%s", strings.Join(drawn, "\n"))
+			}
+			// The fold really did separate the claim from its joint — without
+			// that, this test would be asserting about a note the pane scan
+			// could have seen all along.
+			for _, line := range drawn {
+				if strings.Contains(line, "r reloads it") && strings.Contains(line, "·") {
+					t.Fatalf("the note did not fold at the joint, so the blind spot this "+
+						"test is about is not reached:\n\t%q", line)
+				}
+			}
+
+			if got := poBodyKeyClaims(t, screen, h); len(got) != 0 {
+				t.Errorf("the PANE scan saw the folded claim after all (%q) — if it can, "+
+					"this test no longer proves what the note scan is for", got)
+			}
+			if got := poNoteKeyClaims(t, screen); len(got) == 0 {
+				t.Errorf("the NOTE scan missed a key claim on a folded continuation line, "+
+					"which is the whole reason it reads the unfolded text:\n\t%q", folded)
+			}
+		})
+	}
+}
+
+// TestPOSubmit_ADeclineDoesNotPushTheSubmitOffTheStatusRow.
+//
+// The status row cannot fold, and the lead was joined in front of the working
+// sentence unbounded. With the longest lead in this file — "enter commits
+// nothing · the committed row goes back", 51 cells, exactly the row's width at
+// 80 columns — the whole "a purchase order is being created" statement was
+// pushed off. pendingDecline's flash expires after four seconds and the frozen
+// bar names only Enter/UP-DN/Esc, so from then on nothing on the pane said a
+// submit was out.
+//
+// The lead is bounded against what the subject needs now. Both halves are
+// asserted: the subject because losing it is the defect, and the lead's KEY
+// NAME because a lead that no longer says which press it answers is the
+// identical-pane defect one row over.
+func TestPOSubmit_ADeclineDoesNotPushTheSubmitOffTheStatusRow(t *testing.T) {
+	for _, h := range poPaneSizes {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			// Two suppliers, so `enter` on a DIFFERENT one is reachable — that
+			// is the arm carrying the longest lead on the screen.
+			fake := &poPickFake{catalog: 4, suppliers: 3}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			for _, k := range []string{"i", "enter", "enter", "d"} {
+				r = key(t, r, poPhaseKeyMsg(k))
+			}
+			next, _ := r.Update(poPhaseKeyMsg("enter")) // POST out, un-pumped
+			r = next.(Root)
+			if !screen.pending {
+				t.Fatalf("setup did not leave a submit in flight")
+			}
+			for _, k := range []string{"esc", "esc", "down"} {
+				r = key(t, r, poPhaseKeyMsg(k))
+			}
+			if screen.phase != poPhaseSupplier {
+				t.Fatalf("setup landed on phase %v, want the supplier picker", screen.phase)
+			}
+			r = key(t, r, poPhaseKeyMsg("enter"))
+			if screen.pendingLead == "" {
+				t.Fatalf("enter on another supplier left no lead to crowd the row")
+			}
+
+			// The SUBJECT survives: the operator can still see an order is
+			// being created. Its TAIL — the supplier name — is what a
+			// 51-cell row takes, which is the identifier giving while the
+			// fact stays, so the assertion is on the fact.
+			poWantPaneLine(t, screen, "Creating the purchase")
+			// And the lead still carries its first clause, which is the part
+			// that answers the press.
+			poWantPaneLine(t, screen, "enter commits nothing")
+			poAssertFits(t, "a declined key while the submit is out", screen)
+		})
 	}
 }
