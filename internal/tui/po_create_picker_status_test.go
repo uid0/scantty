@@ -145,8 +145,14 @@ type poPickFake struct {
 	// which reorder_data reports from the same item_supplier columns.
 	// reorderQty overrides the suggestion so a fixture can land on a quantity
 	// that is NOT a whole number of those cases.
+	// reorderUnitCost overrides the per-base-unit price the row reports.
+	// reorder_data derives it server-side from package_cost by dividing and
+	// ROUNDING to two decimals, so a fixture pairing an inexact division with
+	// its rounded unit cost is the only way to tell which of the two a staged
+	// line was priced from.
 	reorderPack        int
 	reorderPackageCost string
+	reorderUnitCost    string
 	reorderQty         int
 
 	// createBody is the create POST's body, so a test can assert what actually
@@ -275,6 +281,9 @@ func (f *poPickFake) handler() http.HandlerFunc {
 					"sku":                fmt.Sprintf("BLT-%03d", i+1),
 					"suggested_quantity": qty,
 					"unit_cost":          "1.50",
+				}
+				if f.reorderUnitCost != "" {
+					row["unit_cost"] = f.reorderUnitCost
 				}
 				if f.reorderPack > 0 {
 					row["quantity_per_package"] = f.reorderPack

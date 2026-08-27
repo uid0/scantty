@@ -820,8 +820,9 @@ func (s *PurchaseOrderAddLineScreen) primePriceRows(c omsapi.POLineCandidate) {
 		// prefilling would silently reprice a line the operator only meant to
 		// add one more box to.
 		if s.caseBasis {
-			if v, err := strconv.ParseFloat(strings.TrimSpace(c.SuggestedUnitCost.String()), 64); err == nil {
-				cost.SetValue(poFormatCost(poCaseFromUnit(v, c.QuantityPerPackage)))
+			raw := strings.TrimSpace(c.SuggestedUnitCost.String())
+			if v, err := strconv.ParseFloat(raw, 64); err == nil {
+				cost.SetValue(poCaseCostFrom(raw, v, c.QuantityPerPackage))
 			}
 		} else {
 			cost.SetValue(c.SuggestedUnitCost.String())
@@ -888,11 +889,10 @@ func (s *PurchaseOrderAddLineScreen) toggleEntryBasis() tea.Cmd {
 	costRaw := strings.TrimSpace(s.costIn.Value())
 	if v, err := strconv.ParseFloat(costRaw, 64); err == nil && costRaw != "" {
 		if s.caseBasis {
-			v = poUnitFromCase(v, qpp)
+			s.costIn.SetValue(poFormatCost(poUnitFromCase(v, qpp)))
 		} else {
-			v = poCaseFromUnit(v, qpp)
+			s.costIn.SetValue(poCaseCostFrom(costRaw, v, qpp))
 		}
-		s.costIn.SetValue(poFormatCost(v))
 		s.costIn.CursorEnd()
 	}
 	s.caseBasis = !s.caseBasis
@@ -1011,7 +1011,7 @@ func (s *PurchaseOrderAddLineScreen) unitCostRow() (string, string) {
 		return raw, refusal
 	}
 	unit := new(big.Rat).Quo(cost, new(big.Rat).SetInt64(int64(s.packSize())))
-	return poAddTrimZeros(unit.FloatString(poAddUnitCostPlaces)), ""
+	return poTrimCostZeros(unit.FloatString(poAddUnitCostPlaces)), ""
 }
 
 // poAddUnitCostPlaces is how far a derived per-unit price is carried. OMS's
@@ -1019,18 +1019,6 @@ func (s *PurchaseOrderAddLineScreen) unitCostRow() (string, string) {
 // server-side; carrying fewer would be this client rounding a price it was not
 // asked to round.
 const poAddUnitCostPlaces = 4
-
-// poAddTrimZeros drops a derived price's trailing zeros (and a bare trailing
-// dot), so an exact 2.00 posts as "2" rather than "2.0000". The value is
-// unchanged — DRF parses both to the same Decimal — and the string is what the
-// frame ECHOES back, where four dead zeros read as precision nobody typed.
-func poAddTrimZeros(v string) string {
-	if !strings.Contains(v, ".") {
-		return v
-	}
-	v = strings.TrimRight(v, "0")
-	return strings.TrimSuffix(v, ".")
-}
 
 // submit posts the confirmed row. Quantity and cost are sent only when the box
 // holds something: an empty box means "let the server derive it", which for a
@@ -1721,14 +1709,21 @@ func (s *PurchaseOrderAddLineScreen) confirmBody() *jdeLines {
 // poAddOnOrderValue says what a repeat add will DO, not merely that the item is
 // already there. A voided line reports no outcome because the add is refused
 // outright rather than resurrecting it, and quoting one would be a lie.
+// The quantities NAME their unit, because both are BASE units and this row is
+// drawn directly under the one stating what a case holds: a bare 25 under
+// "Case ..... 1 case = 25 units" reads as one case, which is the reported
+// defect one surface earlier. quantityHint states the same fact in the same
+// unit for the same reason, and the two must not disagree about whether a
+// number beside a case size is loose or packed.
 func poAddOnOrderValue(r omsapi.POLineExisting) string {
 	if r.IsVoided {
-		return fmt.Sprintf("%d ordered on a VOIDED line", r.QuantityOrdered)
+		return fmt.Sprintf("%s ordered on a VOIDED line", poUnitCount(r.QuantityOrdered))
 	}
 	if r.RepeatIncrement == nil || r.QuantityOrderedAfter == nil {
-		return fmt.Sprintf("%d ordered", r.QuantityOrdered)
+		return fmt.Sprintf("%s ordered", poUnitCount(r.QuantityOrdered))
 	}
-	return fmt.Sprintf("%d ordered → %d", r.QuantityOrdered, *r.QuantityOrderedAfter)
+	return fmt.Sprintf("%s ordered → %s", poUnitCount(r.QuantityOrdered),
+		poUnitCount(*r.QuantityOrderedAfter))
 }
 
 // confirmCaveats are the things about THIS candidate the operator would not

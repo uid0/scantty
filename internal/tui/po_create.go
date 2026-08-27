@@ -1450,12 +1450,17 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 		// or unit_cost × qpp when package_cost is blank. Left blank when the
 		// catalog carries neither, in which case no unit_cost is submitted and
 		// the backend derives the line cost from the stored unit_cost (sc-5yr).
-		caseCost := packageCost
-		if caseCost <= 0 && unitCost > 0 {
-			caseCost = poCaseFromUnit(unitCost, qpp)
-		}
-		if caseCost > 0 {
-			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(caseCost))
+		//
+		// The fallback multiplies through poCaseCostFrom rather than in
+		// float64: 0.05 × 12 is 0.6000000000000001 in binary, which the box
+		// then shows at full precision, and this is the figure the operator is
+		// asked to confirm as what the vendor charges.
+		switch {
+		case packageCost > 0:
+			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(packageCost))
+		case unitCost > 0:
+			s.lineInputs[poLineFieldCost].SetValue(
+				poCaseCostFrom(poFormatCost(unitCost), unitCost, qpp))
 		}
 	default:
 		// Per-unit cost prefill. Asset / freeform lines start blank (nothing
@@ -1464,8 +1469,21 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 		// already staged on the line when re-opened with ctrl+e — so the
 		// operator can keep it, change it, or clear it back to catalog pricing
 		// (sc-gnzw).
-		if unitCost > 0 {
-			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(unitCost))
+		//
+		// package_cost wins here too, divided back down. It is the figure the
+		// vendor charges and the one OMS derives unit_cost FROM, rounding to
+		// two decimals as it goes (backend/inventory/models/core.py), so
+		// sourcing the per-unit price from unit_cost feeds that rounding back
+		// in: a 10.00 case of 3 comes back as 3.33, and three of them are 9.99.
+		// Doing it only on the case branch would leave the same queue row
+		// priced two ways depending on whether its suggestion happened to be a
+		// whole number of cases.
+		unit := unitCost
+		if packageCost > 0 {
+			unit = poUnitFromCase(packageCost, qpp)
+		}
+		if unit > 0 {
+			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(unit))
 		}
 	}
 	s.lineInputs[s.lineFocused].Focus()
@@ -1835,11 +1853,10 @@ func (s *PurchaseOrderCreateScreen) toggleEntryBasis() tea.Cmd {
 	costRaw := strings.TrimSpace(s.lineInputs[poLineFieldCost].Value())
 	if v, err := strconv.ParseFloat(costRaw, 64); err == nil && costRaw != "" {
 		if s.caseBasis {
-			v = poUnitFromCase(v, s.pickedQPP)
+			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(poUnitFromCase(v, s.pickedQPP)))
 		} else {
-			v = poCaseFromUnit(v, s.pickedQPP)
+			s.lineInputs[poLineFieldCost].SetValue(poCaseCostFrom(costRaw, v, s.pickedQPP))
 		}
-		s.lineInputs[poLineFieldCost].SetValue(poFormatCost(v))
 	}
 	s.caseBasis = !s.caseBasis
 	unit := "units"

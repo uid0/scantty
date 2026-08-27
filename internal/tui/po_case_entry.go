@@ -76,6 +76,7 @@ package tui
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 )
@@ -124,6 +125,81 @@ func poUnitFromCase(caseCost float64, qpp int) float64 {
 
 func poCaseFromUnit(unitCost float64, qpp int) float64 {
 	return unitCost * float64(poPackSize(qpp))
+}
+
+// poCaseCostFrom is what a case-cost BOX is filled with: the price of one case,
+// derived from a per-base-unit price the server or the operator stated as the
+// decimal string `raw` (with `unit` the same figure already parsed as a float).
+//
+// It multiplies in big.Rat rather than float64 because the product is the one
+// the operator is being asked to confirm as "what the vendor charges", and a
+// binary multiply of a decimal money value is inexact for ordinary prices: a
+// vendor shipping 12 to a case at a stored 0.0500 gives 0.05*12 =
+// 0.6000000000000001 in float, which the box then showed at full precision and
+// its CharLimit cut to "0.600000000000". Exactly the defect the review found in
+// the cart row one surface over, on the row this whole file exists for.
+//
+// The places come from the INPUT, because multiplying a decimal by an integer
+// cannot need more of them: the result is exact by construction, so nothing is
+// rounded here and a case size that genuinely needs four places keeps them.
+// Trailing zeros go the way poTrimCostZeros describes, which is what keeps a
+// 4.5000 unit price rendering as the "112.5" box the rows already carried.
+//
+// A string neither a plain decimal nor readable as a rational falls back to the
+// float multiply: an unreadable box is the submit's to refuse in its own words
+// (readCostRow), and declining to convert it here would leave a value standing
+// under a label that has already flipped.
+func poCaseCostFrom(raw string, unit float64, qpp int) string {
+	places := poDecimalPlaces(raw)
+	r, ok := new(big.Rat).SetString(strings.TrimSpace(raw))
+	if places < 0 || !ok {
+		return poFormatCost(poCaseFromUnit(unit, qpp))
+	}
+	cas := new(big.Rat).Mul(r, new(big.Rat).SetInt64(int64(poPackSize(qpp))))
+	return poTrimCostZeros(cas.FloatString(places))
+}
+
+// poDecimalPlaces counts the digits a PLAIN decimal string carries after the
+// point, and answers -1 for anything that is not one — an exponent, a fraction,
+// a sign, a stray letter.
+//
+// It is deliberately NOT the money rule readCostRow enforces on the typed row:
+// that reader keeps its own scan inside itself so no second, looser judge of
+// what may be SUBMITTED can grow beside it. This answers a narrower question —
+// how many decimal places an exact conversion has to render — and its "no"
+// costs nothing but the float fallback.
+func poDecimalPlaces(raw string) int {
+	raw = strings.TrimSpace(raw)
+	digits, places, dot := 0, 0, false
+	for _, r := range raw {
+		switch {
+		case r >= '0' && r <= '9':
+			digits++
+			if dot {
+				places++
+			}
+		case r == '.' && !dot:
+			dot = true
+		default:
+			return -1
+		}
+	}
+	if digits == 0 {
+		return -1
+	}
+	return places
+}
+
+// poTrimCostZeros drops a derived price's trailing zeros (and a bare trailing
+// dot), so an exact 2.00 posts as "2" rather than "2.0000". The value is
+// unchanged — DRF parses both to the same Decimal — and the string is what the
+// frame ECHOES back, where four dead zeros read as precision nobody typed.
+func poTrimCostZeros(v string) string {
+	if !strings.Contains(v, ".") {
+		return v
+	}
+	v = strings.TrimRight(v, "0")
+	return strings.TrimSuffix(v, ".")
 }
 
 // poOpensAtCaseBasis decides which basis a line form OPENS at, given the

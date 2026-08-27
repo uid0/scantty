@@ -633,7 +633,10 @@ func TestPOAddLine_ARepeatAddDoesNotSilentlyReprice(t *testing.T) {
 
 	r = key(t, r, poRuneKey("AF-99-12-ZP-LH-HEAVY"))
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	poAddWantPane(t, r, "5 ordered")
+	// In BASE units, named: the row sits under one stating the vendor ships 25
+	// to a case, and a bare 5 there is a quantity whose denominator the frame
+	// does not give.
+	poAddWantPane(t, r, "5 units ordered")
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 
 	// The server's repeat increment is ONE PACKAGE — 25 base units here — and

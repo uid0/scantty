@@ -701,3 +701,121 @@ func TestPOPickers_ACasePackedRowKeepsItsFactsAtEveryWidth(t *testing.T) {
 		}
 	}
 }
+
+// TestPOAddLine_TheOnOrderRowNamesItsUnit is the confirm frame's half of "a
+// bare number beside a stated case size is the reported ambiguity".
+//
+// The Case row and the On order row are drawn one under the other, so on a
+// vendor shipping 24 to a case a bare "24 ordered" sits directly beneath
+// "1 case = 24 units" and reads as one case. The sibling statement of the same
+// fact — quantityHint's "adds to the N on order" — already names its unit, and
+// two surfaces disagreeing about whether a quantity is loose or packed is the
+// defect this file exists to remove.
+func TestPOAddLine_TheOnOrderRowNamesItsUnit(t *testing.T) {
+	rows := poCaseRows()
+	rows[0].onOrder, rows[0].onOrderID, rows[0].linePrice = 24, "line-9", "2.0000"
+	fake := &poAddFake{rows: rows}
+	r, s := poAddAt(t, fake, 80, 24)
+
+	r = key(t, r, poRuneKey("AF-24-CASE"))
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if s.phase != poAddPhaseConfirm {
+		t.Fatalf("an exact supplier SKU landed on phase %v, want the confirm frame", s.phase)
+	}
+
+	// Both rows, on one frame: what a case holds, and what the order already
+	// carries — in the same unit.
+	poAddWantPane(t, r, "1 case = 24 units")
+	poAddWantPane(t, r, "24 units ordered")
+	// The repeat's outcome is the same quantity one step on, so it is named the
+	// same way: "→ 48" alone would be the bare number again, on the figure the
+	// operator is about to commit to.
+	poAddWantPane(t, r, "48 units")
+}
+
+// TestPOReorderQueue_BothEntryPointsPriceTheRowTheSameWay pins the ONE queue
+// row against the TWO keys that stage it: enter, through the line form, and
+// `a`, straight into the cart.
+//
+// package_cost 10.00 over a case of 3 does not divide evenly, and OMS derives
+// unit_cost from it by rounding to two decimals (3.33), so the row carries two
+// figures that disagree by a third of a penny per unit. Pricing the bulk add
+// from unit_cost while the form priced from package_cost made one row worth
+// 9.99 or 10.00 depending on which key was pressed — and Ctrl-E on the
+// bulk-staged line then showed a case cost the picker row disagreed with.
+func TestPOReorderQueue_BothEntryPointsPriceTheRowTheSameWay(t *testing.T) {
+	queue := func() *poPickFake {
+		return &poPickFake{reorder: 1, reorderPack: 3, reorderPackageCost: "10.00",
+			reorderUnitCost: "3.33", reorderQty: 3}
+	}
+
+	bulk := queue()
+	r, _ := poPickerAtSize(t, bulk, 80, 30)
+	r = key(t, r, poRuneKey("r"))
+	r = key(t, r, poRuneKey("a"))                 // the whole queue, no line form
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // submit from review
+	bulkLine := bulk.createdLine(t, 0)
+
+	single := queue()
+	r2, _ := poCaseLineForm(t, single, 80, "r")
+	r2 = key(t, r2, tea.KeyMsg{Type: tea.KeyEnter}) // stage as prefilled
+	r2 = key(t, r2, poRuneKey("d"))
+	r2 = key(t, r2, tea.KeyMsg{Type: tea.KeyEnter})
+	singleLine := single.createdLine(t, 0)
+
+	if bulkLine["unit_cost"] != singleLine["unit_cost"] {
+		t.Errorf("one queue row staged two prices: bulk %v, single-row enter %v",
+			bulkLine["unit_cost"], singleLine["unit_cost"])
+	}
+	// And the price both of them carry is the case price divided, not the
+	// server's rounded per-unit copy of it: three of 3.33 are 9.99.
+	if got := bulkLine["unit_cost"]; got != 10.0/3.0 {
+		t.Errorf("unit_cost = %v, want the 10.00 case over 3 rather than the rounded 3.33", got)
+	}
+}
+
+// TestPOCaseCost_ADerivedCasePriceIsNotBinaryNoise is the money-precision half
+// of "the operator confirms what the vendor charges".
+//
+// The case price is a per-unit figure multiplied by the case size, and a binary
+// multiply of a decimal is inexact for ordinary prices: 0.05 × 12 is
+// 0.6000000000000001 and 1.05 × 3 is 3.1500000000000004 in float64. Both were
+// rendered at full precision into the entry box, where the add-line row's
+// 14-character limit cut the first to "0.600000000000" — a price nobody typed,
+// on the row this whole file exists for.
+func TestPOCaseCost_ADerivedCasePriceIsNotBinaryNoise(t *testing.T) {
+	// The add-line prefill: the server's own suggestion, multiplied up.
+	fake := &poAddFake{rows: []poAddCatalogRow{
+		{itemSupplier: 31, name: "Washer, nylon", sku: "W-1", supplierSKU: "AF-12-PENNY",
+			perPackage: 12, suggestQty: 12, suggestCost: "0.0500"},
+	}}
+	r, s := poCaseAdd(t, fake, 80, 24, "AF-12-PENNY")
+	if got := s.costIn.Value(); got != "0.6" {
+		t.Errorf("case cost prefill = %q, want the 0.0500 unit price as a 0.60 case", got)
+	}
+	_ = r
+
+	// The create screen's prefill, same multiply, one screen over.
+	c := NewPurchaseOrderCreateScreen(Deps{})
+	id := 42
+	c.enterLinePhase(&id, nil, "Washer", 12, 0.05, 0, 12)
+	if got := c.lineInputs[poLineFieldCost].Value(); got != "0.6" {
+		t.Errorf("create-screen case cost prefill = %q, want %q", got, "0.6")
+	}
+
+	// And the Ctrl-T flip, which derives the same figure from what is typed.
+	c2 := NewPurchaseOrderCreateScreen(Deps{})
+	c2.enterLinePhase(&id, nil, "Bracket", 3, 0, 0, 3)
+	c2.updateLinePhase(tea.KeyMsg{Type: tea.KeyCtrlT}, 0) // → unit basis
+	if c2.caseBasis {
+		t.Fatal("ctrl+t on a case-basis form should reach unit basis")
+	}
+	c2.lineInputs[poLineFieldCost].SetValue("1.05")
+	c2.updateLinePhase(tea.KeyMsg{Type: tea.KeyCtrlT}, 0) // → back to cases
+	if !c2.caseBasis {
+		t.Fatal("ctrl+t on a whole case count should reach case basis")
+	}
+	if got := c2.lineInputs[poLineFieldCost].Value(); got != "3.15" {
+		t.Errorf("case cost after the flip = %q, want the 1.05 unit price as a 3.15 case", got)
+	}
+}

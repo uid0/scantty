@@ -575,23 +575,22 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg, headerR
 // reorderCartLine stages one reorder-queue row as a cart line without going
 // through the Phase-4 form, producing exactly what the single-row enter path
 // produces once the operator accepts the prefill: suggested_quantity (floored
-// at 1) and the item's name (SKU when unnamed) as the label.
+// at one package) and the item's name (SKU when unnamed) as the label.
 //
-// Cost follows the same rule the form does. The row's unit_cost is the
-// item-supplier's stored cost (reorder_data reads item_supplier.unit_cost), and
-// the line form now seeds its cost field with it on a catalog line, so a bulk
-// add carries it too — the operator sees the same price whether the line was
-// added one at a time or fifteen at once, and ctrl+e can change or clear it
+// Cost follows the same rule the form does, from the same source — the case
+// price where the row carries one, the item-supplier's stored unit cost
+// otherwise — so the operator sees the same price whether the line was added
+// one at a time or fifteen at once, and ctrl+e can change or clear it
 // (sc-gnzw). A row whose catalog cost is unset stays blank rather than pinning
 // an explicit $0, which leaves the backend pricing the line (sc-5yr). A row
 // without an item_supplier_id can only be created as a freeform line, and that
 // branch REQUIRES a cost, so its unit_cost is always sent (0 when the row
 // carries none — visible as "@ $0" in the cart, and fixable with ctrl+e).
 //
-// The staged line CARRIES the supplier's case size. Nothing here converts —
-// suggested_quantity is base units and unit_cost is per base unit, which is
-// exactly what the payload takes — but a cart line with qpp 0 reads back as a
-// singles line: the review row would state a case order in loose units, and
+// The staged line CARRIES the supplier's case size. The QUANTITY needs no
+// conversion — suggested_quantity is base units, which is exactly what the
+// payload takes — but a cart line with qpp 0 reads back as a singles line: the
+// review row would state a case order in loose units, and
 // Ctrl-E would re-open it in a per-unit form on an item the operator buys by
 // the case. Both of those are the reported defect, one surface further on.
 func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
@@ -612,8 +611,23 @@ func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
 		Quantity:       qty,
 		ItemSupplierID: it.ItemSupplierID,
 	}
+	// package_cost is the SOURCE, divided back down at full precision, with
+	// unit_cost the fallback for a row that carries no case price.
+	//
+	// It is what the vendor charges and what an operator reads off the invoice;
+	// OMS derives unit_cost FROM it by dividing and rounding to two decimals
+	// (backend/inventory/models/core.py), so staging unit_cost feeds that
+	// rounding error back in — a 10.00 case of 3 comes back as 3.33, and three
+	// of them are 9.99, not the 10.00 the row states. The single-row enter path
+	// beside this one already prices from package_cost through enterLinePhase,
+	// so leaving this one on unit_cost let ONE queue row produce two different
+	// prices depending on which key was pressed, with Ctrl-E on a bulk-staged
+	// line then showing a case cost the picker row disagreed with. Preserving
+	// today's price would have meant preserving today's error.
 	unitCost := 0.0
-	if v, err := strconv.ParseFloat(string(it.UnitCost), 64); err == nil {
+	if v, err := strconv.ParseFloat(string(it.PackageCost), 64); err == nil && v > 0 {
+		unitCost = poUnitFromCase(v, it.QuantityPerPackage)
+	} else if v, err := strconv.ParseFloat(string(it.UnitCost), 64); err == nil {
 		unitCost = v
 	}
 	if it.ItemSupplierID == nil || unitCost > 0 {
