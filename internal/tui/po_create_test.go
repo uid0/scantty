@@ -56,19 +56,24 @@ func TestPODeriveUnitCost(t *testing.T) {
 	}
 }
 
-// TestPODeriveUnitCost_FullPrecision guards the "don't round to cents" contract:
-// an odd case size must derive an exact quotient, not a cent-rounded value.
-func TestPODeriveUnitCost_FullPrecision(t *testing.T) {
+// TestPODeriveUnitCost_ExactAtTheStoredColumn guards the "don't round to cents"
+// contract and says where the derivation DOES stop: unit_cost_ordered is a
+// four-place decimal, so 10.00 over 3 is 3.3333 — the figure the order will
+// carry whatever this client sends, and the same figure the line form's box
+// shows after a Ctrl-T. It used to assert the raw binary quotient
+// 3.3333333333333335, which no surface can display and the column cannot hold,
+// and holding the payload to it is what left the boxes deriving in float64.
+func TestPODeriveUnitCost_ExactAtTheStoredColumn(t *testing.T) {
 	unit, prov, err := poDeriveUnitCost("10", true, 3)
 	if err != nil || !prov {
 		t.Fatalf("poDeriveUnitCost: err=%v prov=%v", err, prov)
 	}
-	if want := 10.0 / 3.0; math.Abs(unit-want) > 1e-12 {
-		t.Fatalf("unit = %v, want %v (full precision)", unit, want)
+	if math.Abs(unit-3.3333) > 1e-12 {
+		t.Fatalf("unit = %v, want 3.3333 (10.00 over 3 at the stored column)", unit)
 	}
-	// It must NOT be the cent-rounded 3.33.
+	// It must NOT be the cent-rounded 3.33 — three of those are 9.99.
 	if math.Abs(unit-3.33) < 1e-9 {
-		t.Fatalf("unit was rounded to cents (%v); derivation must keep full precision", unit)
+		t.Fatalf("unit was rounded to cents (%v); the column keeps four places", unit)
 	}
 }
 
@@ -113,13 +118,17 @@ func TestPODisplayMoney(t *testing.T) {
 func TestPOEnterLinePhase_CasePackedPrefillsPackageCost(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
-	s.enterLinePhase(&id, nil, "Widget", 3, 1.25, 15.00, 12)
+	// 36 base units — three whole cases of 12, so the form opens in cases.
+	s.enterLinePhase(&id, nil, "Widget", 36, 1.25, 15.00, 12)
 
-	if !s.costBasisCase {
+	if !s.caseBasis {
 		t.Errorf("case-packed line should default to case-cost basis")
 	}
 	if s.pickedQPP != 12 {
 		t.Errorf("pickedQPP = %d, want 12", s.pickedQPP)
+	}
+	if got := s.lineInputs[poLineFieldQty].Value(); got != "3" {
+		t.Errorf("quantity prefill = %q, want the 36 base units as 3 cases", got)
 	}
 	// package_cost (15.00) wins the prefill over unit_cost×qpp.
 	if got := s.lineInputs[poLineFieldCost].Value(); got != "15" {
@@ -134,7 +143,7 @@ func TestPOEnterLinePhase_CasePackedFallsBackToUnitTimesQPP(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 7
 	// No package_cost (0) → prefill from unit_cost × qpp = 1.25 × 12 = 15.
-	s.enterLinePhase(&id, nil, "Widget", 1, 1.25, 0, 12)
+	s.enterLinePhase(&id, nil, "Widget", 12, 1.25, 0, 12)
 	if got := s.lineInputs[poLineFieldCost].Value(); got != "15" {
 		t.Errorf("case cost fallback prefill = %q, want %q", got, "15")
 	}
@@ -143,7 +152,7 @@ func TestPOEnterLinePhase_CasePackedFallsBackToUnitTimesQPP(t *testing.T) {
 func TestPOEnterLinePhase_CasePackedNoCatalogCostLeavesBlank(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 7
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 0, 12)
 	if got := s.lineInputs[poLineFieldCost].Value(); got != "" {
 		t.Errorf("case cost prefill = %q, want empty when catalog has no cost", got)
 	}
@@ -158,7 +167,7 @@ func TestPOLineFields_CaseVsSinglePackVsAsset(t *testing.T) {
 	id := 1
 
 	// Case-packed inventory: cost field present.
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 0, 12)
 	if !hasField(s.lineFields(), poLineFieldCost) {
 		t.Errorf("case-packed inventory line should include the cost field")
 	}
@@ -203,7 +212,7 @@ func TestPOCatalogCost_TheRowSaysWhetherBlankMeansCatalog(t *testing.T) {
 	}
 
 	// Case-packed catalog line: same promise, in the case basis.
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 0, 12)
 	if got := s.costFieldLabel(); got != "Case cost" {
 		t.Errorf("case-packed label = %q, want the case basis", got)
 	}
@@ -228,12 +237,19 @@ func TestPOCatalogCost_TheRowSaysWhetherBlankMeansCatalog(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // addLine — the payload the cart carries (finalize copies s.lines verbatim).
+//
+// enterLinePhase takes its quantity in BASE units, and the basis the form opens
+// at is decided by that quantity and not by the case size alone: a prefill that
+// is not a whole number of the vendor's cases opens in UNITS, because rounding
+// it to a case count would enlarge an order nobody asked to enlarge
+// (poOpensAtCaseBasis). Every case-packed fixture below therefore hands it a
+// whole number of cases — 12 units of a 12-case item is one case.
 // ---------------------------------------------------------------------------
 
 func TestPOAddLine_CaseCostDerivesUnitCost(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
-	s.enterLinePhase(&id, nil, "Widget", 5, 1.25, 15.00, 12)
+	s.enterLinePhase(&id, nil, "Widget", 24, 1.25, 15.00, 12)
 	// Operator overrides the case cost to $30 → unit_cost = 30/12 = 2.5.
 	s.lineInputs[poLineFieldCost].SetValue("30")
 	s.addLine()
@@ -242,8 +258,10 @@ func TestPOAddLine_CaseCostDerivesUnitCost(t *testing.T) {
 	if line.ItemSupplierID == nil || *line.ItemSupplierID != 42 {
 		t.Fatalf("item_supplier_id = %v, want 42", line.ItemSupplierID)
 	}
-	if line.Quantity != 5 {
-		t.Errorf("quantity = %d, want 5", line.Quantity)
+	// TWO CASES of 12, which is what the form was opened on and what the
+	// operator left in the box: the payload carries base units.
+	if line.Quantity != 24 {
+		t.Errorf("quantity = %d, want the 24 base units two cases of 12 come to", line.Quantity)
 	}
 	if line.UnitCost == nil {
 		t.Fatalf("unit_cost should be sent for a case-packed line with a cost")
@@ -253,10 +271,12 @@ func TestPOAddLine_CaseCostDerivesUnitCost(t *testing.T) {
 	}
 }
 
-func TestPOAddLine_CaseCostFullPrecisionOddCase(t *testing.T) {
+// The staged line carries the same four-place figure the payload and the box
+// do, for the reason TestPODeriveUnitCost_ExactAtTheStoredColumn records.
+func TestPOAddLine_CaseCostOddCaseIsExactNotCentRounded(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 3)
+	s.enterLinePhase(&id, nil, "Widget", 3, 0, 0, 3)
 	s.lineInputs[poLineFieldCost].SetValue("10") // $10/case ÷ 3
 	s.addLine()
 
@@ -264,17 +284,20 @@ func TestPOAddLine_CaseCostFullPrecisionOddCase(t *testing.T) {
 	if line.UnitCost == nil {
 		t.Fatalf("unit_cost missing")
 	}
-	if want := 10.0 / 3.0; math.Abs(*line.UnitCost-want) > 1e-12 {
-		t.Errorf("unit_cost = %v, want %v (full precision, no cent-drift)", *line.UnitCost, want)
+	if math.Abs(*line.UnitCost-3.3333) > 1e-12 {
+		t.Errorf("unit_cost = %v, want 3.3333 (10.00 over 3 at the stored column)", *line.UnitCost)
+	}
+	if math.Abs(*line.UnitCost-3.33) < 1e-9 {
+		t.Errorf("unit_cost = %v was rounded to cents; the column keeps four places", *line.UnitCost)
 	}
 }
 
 func TestPOAddLine_UnitBasisAfterToggle(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
-	s.toggleCostBasis() // switch to per-unit entry
-	if s.costBasisCase {
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 0, 12)
+	s.toggleEntryBasis() // switch to per-unit entry
+	if s.caseBasis {
 		t.Fatalf("toggle should have switched to unit basis")
 	}
 	s.lineInputs[poLineFieldCost].SetValue("3.00")
@@ -289,7 +312,7 @@ func TestPOAddLine_UnitBasisAfterToggle(t *testing.T) {
 func TestPOAddLine_BlankCaseCostOmitsUnitCost(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 0, 12)
 	s.lineInputs[poLineFieldCost].SetValue("") // leave blank → backend derives
 	s.addLine()
 
@@ -388,7 +411,7 @@ func TestPOAddLine_AssetAndFreeformUnchanged(t *testing.T) {
 func TestPOAddLine_RejectsNegativeCaseCost(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 0, 12)
 	s.lineInputs[poLineFieldCost].SetValue("-5")
 	s.addLine()
 	if len(s.lines) != 0 {
@@ -406,18 +429,18 @@ func TestPOAddLine_RejectsNegativeCaseCost(t *testing.T) {
 func TestPOToggleCostBasis_ConvertsValueBothWays(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 15.00, 12) // case basis, "15"
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 15.00, 12) // one case, case basis, "15"
 
-	s.toggleCostBasis() // case → unit: 15 / 12 = 1.25
-	if s.costBasisCase {
+	s.toggleEntryBasis() // case → unit: 15 / 12 = 1.25
+	if s.caseBasis {
 		t.Fatalf("expected unit basis after first toggle")
 	}
 	if got := s.lineInputs[poLineFieldCost].Value(); got != "1.25" {
 		t.Errorf("unit value after toggle = %q, want %q", got, "1.25")
 	}
 
-	s.toggleCostBasis() // unit → case: 1.25 × 12 = 15
-	if !s.costBasisCase {
+	s.toggleEntryBasis() // unit → case: 1.25 × 12 = 15
+	if !s.caseBasis {
 		t.Fatalf("expected case basis after second toggle")
 	}
 	if got := s.lineInputs[poLineFieldCost].Value(); got != "15" {
@@ -430,15 +453,15 @@ func TestPOToggleCostBasis_NoOpForNonCaseLine(t *testing.T) {
 	id := 42
 	// Single-pack inventory: toggle must do nothing (basis stays unit).
 	s.enterLinePhase(&id, nil, "Bolt", 1, 0, 0, 1)
-	s.toggleCostBasis()
-	if s.costBasisCase {
+	s.toggleEntryBasis()
+	if s.caseBasis {
 		t.Errorf("single-pack line should not enter case basis")
 	}
 
 	// Freeform: toggle must do nothing.
 	s.enterLinePhase(nil, nil, "Rag", 1, 0, 0, 0)
-	s.toggleCostBasis()
-	if s.costBasisCase {
+	s.toggleEntryBasis()
+	if s.caseBasis {
 		t.Errorf("freeform line should not enter case basis")
 	}
 }
@@ -447,11 +470,16 @@ func TestPOToggleCostBasis_NoOpForNonCaseLine(t *testing.T) {
 func TestPOCostDerivationHint(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 0, 12)
 	s.lineInputs[poLineFieldCost].SetValue("30")
-	hint := s.costDerivationHint()
-	if !strings.Contains(hint, "$30.00 per case") || !strings.Contains(hint, "$2.50 per unit") {
-		t.Errorf("hint = %q, want it to show $30.00 per case and $2.50 per unit", hint)
+	hint := s.entryDerivation()
+	if !strings.Contains(hint, "$30.00/case ÷ 12 = $2.50/unit") {
+		t.Errorf("hint = %q, want it to show the case price and the unit price it derives", hint)
+	}
+	// And what the line COMES TO, which is the other half of "a wrong entry
+	// should be visible on the pane before it is committed".
+	if !strings.Contains(hint, "line $30.00") {
+		t.Errorf("hint = %q, want it to say what the line comes to", hint)
 	}
 	// It names no KEY: the bar says Ctrl-T and what basis the row is on, and one
 	// claim stated twice on one pane is how this screen came to advertise and
@@ -462,7 +490,7 @@ func TestPOCostDerivationHint(t *testing.T) {
 
 	// Non-case line: no hint.
 	s.enterLinePhase(nil, nil, "Rag", 1, 0, 0, 0)
-	if got := s.costDerivationHint(); got != "" {
+	if got := s.entryDerivation(); got != "" {
 		t.Errorf("non-case hint = %q, want empty", got)
 	}
 }
@@ -473,14 +501,14 @@ func TestPOCostDerivationHint(t *testing.T) {
 func TestPORenderLinePhase_CasePacked(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 30.00, 12)
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 30.00, 12)
 
 	s.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	out := s.View()
 	if !strings.Contains(out, "Case cost") {
 		t.Errorf("case-packed line should render the 'Case cost' label:\n%s", out)
 	}
-	if !strings.Contains(out, "per case") || !strings.Contains(out, "per unit") {
+	if !strings.Contains(out, "/case") || !strings.Contains(out, "/unit") {
 		t.Errorf("case-packed line should render the derivation hint:\n%s", out)
 	}
 	// A case-packed line is still a catalog line, so its cost row reads as
@@ -491,7 +519,7 @@ func TestPORenderLinePhase_CasePacked(t *testing.T) {
 		t.Errorf("case-packed catalog cost hint = %q, want optional", got)
 	}
 
-	s.toggleCostBasis()
+	s.toggleEntryBasis()
 	if out := s.View(); !strings.Contains(out, "Unit cost") {
 		t.Errorf("after toggle, line should render the 'Unit cost' label:\n%s", out)
 	}
@@ -627,7 +655,7 @@ func TestPOEditLine_EscCancelsUnchanged(t *testing.T) {
 func TestPOEditLine_CasePackedRoundTrips(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
-	s.enterLinePhase(&id, nil, "Widget", 5, 0, 0, 12)
+	s.enterLinePhase(&id, nil, "Widget", 60, 0, 0, 12)
 	s.lineInputs[poLineFieldCost].SetValue("30") // $30/case ÷ 12 = 2.5/unit
 	s.addLine()
 	if s.lines[0].qpp != 12 {
@@ -640,7 +668,7 @@ func TestPOEditLine_CasePackedRoundTrips(t *testing.T) {
 
 	enterReviewAt(s, 0)
 	s.updateReviewPhase(tea.KeyMsg{Type: tea.KeyCtrlE}, 0)
-	if !s.costBasisCase {
+	if !s.caseBasis {
 		t.Errorf("case-packed edit should default to case basis")
 	}
 	if got := s.lineInputs[poLineFieldCost].Value(); got != "30" {
@@ -648,7 +676,7 @@ func TestPOEditLine_CasePackedRoundTrips(t *testing.T) {
 	}
 	// ctrl+t → unit basis shows the derived unit cost; save still derives the same.
 	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyCtrlT}, 0)
-	if s.costBasisCase {
+	if s.caseBasis {
 		t.Errorf("ctrl+t should switch to unit basis")
 	}
 	if got := s.lineInputs[poLineFieldCost].Value(); got != "2.5" {
@@ -675,7 +703,7 @@ func TestPOEditLine_RestoresSourceFields(t *testing.T) {
 	id := 7
 	s.enterLinePhase(&id, nil, "Bolt", 3, 0, 0, 1) // single-pack inventory
 	s.addLine()
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12) // case-packed inventory
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 0, 12) // case-packed inventory
 	s.lineInputs[poLineFieldCost].SetValue("24")
 	s.addLine()
 	assetID := "asset-uuid"
@@ -691,7 +719,7 @@ func TestPOEditLine_RestoresSourceFields(t *testing.T) {
 	if !hasField(s.lineFields(), poLineFieldCost) {
 		t.Errorf("editing a single-pack inventory line should show the cost field")
 	}
-	if s.costBasisCase {
+	if s.caseBasis {
 		t.Errorf("a single-pack line has no case basis to enter")
 	}
 	if s.pickedItemSup == nil || *s.pickedItemSup != 7 {
@@ -705,7 +733,7 @@ func TestPOEditLine_RestoresSourceFields(t *testing.T) {
 	if !hasField(s.lineFields(), poLineFieldCost) {
 		t.Errorf("editing a case-packed line should show the cost field")
 	}
-	if !s.costBasisCase {
+	if !s.caseBasis {
 		t.Errorf("editing a case-packed line should default to case basis")
 	}
 	s.updateLinePhase(tea.KeyMsg{Type: tea.KeyEsc}, 0)
@@ -1133,7 +1161,7 @@ func TestPOLineDate_OfferedOnInventoryLinesOnly(t *testing.T) {
 		t.Errorf("inventory line should render the date input:\n%s", out)
 	}
 
-	s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12) // case-packed inventory
+	s.enterLinePhase(&id, nil, "Widget", 12, 0, 0, 12) // case-packed inventory
 	if !hasField(s.lineFields(), poLineFieldDate) {
 		t.Errorf("case-packed inventory line should offer the expected-date field")
 	}

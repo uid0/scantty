@@ -105,7 +105,21 @@ func poAddPhaseCases() []poAddPhaseCase {
 		{poAddPhaseLooking, "looking", false, typed("AF-77", inFlight(enter))},
 		{poAddPhaseChoose, "choose", false, typed("widget", pressed(enter))},
 		{poAddPhaseConfirm, "confirm", false, typed("AF-99-12-ZP-LH-HEAVY", pressed(enter))},
-		{poAddPhasePrice, "price", true, typed("AF-99-12-ZP-LH-HEAVY", pressed(enter, enter))},
+		// The price phase's bar CHANGES SHAPE with the candidate, so one case is
+		// not enough: Ctrl-T is named on a case-packed row whose quantity is a
+		// whole number of cases, and on nothing else. A phase's cases must span
+		// every state its bar changes shape in — that is where the honesty rule
+		// can break, and a derived phase roster says nothing whatever about it.
+		//
+		//	AF-99-12-ZP-LH-HEAVY — 25 per case, suggests 50: two whole cases.
+		//	AF-77                — sells singles: no basis to move between.
+		//	AF-13-ODD            — 12 per case, suggests 30: not a whole number
+		//	                       of them, so the rows open in units and the
+		//	                       key is not offered until one is typed.
+		{poAddPhasePrice, "price (case-packed)", true, typed("AF-99-12-ZP-LH-HEAVY", pressed(enter, enter))},
+		{poAddPhasePrice, "price (singles)", true, typed("AF-77", pressed(enter, enter))},
+		{poAddPhasePrice, "price (case-packed, unwhole suggestion)", true,
+			typed("AF-13-ODD", pressed(enter, enter))},
 		{poAddPhaseAdding, "adding", false, typed("AF-99-12-ZP-LH-HEAVY", inFlight(enter, enter, enter))},
 	}
 }
@@ -143,7 +157,7 @@ func TestPOAddLine_EveryPhaseIsSwept(t *testing.T) {
 func poAddState(s *PurchaseOrderAddLineScreen) string {
 	var b strings.Builder
 	fmt.Fprint(&b, s.phase, "|", s.pending, s.addSeq, s.lookupSeq,
-		"|", s.cursor, s.chosenFrom, s.scroll, s.priceFocus, s.priceEdited,
+		"|", s.cursor, s.chosenFrom, s.scroll, s.priceFocus, s.priceEdited, s.caseBasis,
 		"|", s.idIn.Value(), s.idIn.Focused(),
 		"|", s.qtyIn.Value(), s.qtyIn.Focused(),
 		"|", s.costIn.Value(), s.costIn.Focused(),
@@ -167,7 +181,7 @@ func poAddState(s *PurchaseOrderAddLineScreen) string {
 var poAddStateFingerprinted = map[string]bool{
 	"jdeScreen": true, "phase": true, "pending": true, "addSeq": true,
 	"lookupSeq": true, "cursor": true, "chosen": true, "chosenFrom": true,
-	"scroll": true, "priceFocus": true, "priceEdited": true,
+	"scroll": true, "priceFocus": true, "priceEdited": true, "caseBasis": true,
 	"idIn": true, "qtyIn": true, "costIn": true,
 	"lookup": true, "added": true, "po": true,
 }
@@ -264,6 +278,7 @@ var poAddBarKeyNames = map[string][]string{
 	"UP/DN":     {"up", "down"},
 	"PgUp/PgDn": {"pgup", "pgdown"},
 	"Home/End":  {"home", "end"},
+	"Ctrl-T":    {"ctrl+t"},
 }
 
 func poAddNamedKeys(t *testing.T, bar []actionBarItem) map[string]bool {

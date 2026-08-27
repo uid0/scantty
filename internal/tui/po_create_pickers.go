@@ -533,22 +533,36 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg, headerR
 			s.reorderCursor = 0
 		}
 		it := s.reorderItems[s.reorderCursor]
+		// The fallback is ONE PACKAGE in base units, matching pickItemSupplier:
+		// a flat 1 on a case-packed row is an order for a single loose item of
+		// something the vendor only ships by the case, and — since the basis is
+		// decided by the prefill (poOpensAtCaseBasis) — it would also open the
+		// form in UNITS on exactly the item the operator buys by the case. The
+		// catalogue picker was moved off the flat 1 and its two reorder
+		// siblings were left on it, which is the all-but-one-site shape.
 		qty := it.SuggestedQuantity
 		if qty <= 0 {
-			qty = 1
+			qty = poPackSize(it.QuantityPerPackage)
 		}
 		unitCost := 0.0
 		if v, err := strconv.ParseFloat(string(it.UnitCost), 64); err == nil {
 			unitCost = v
 		}
+		pkgCost := 0.0
+		if v, err := strconv.ParseFloat(string(it.PackageCost), 64); err == nil {
+			pkgCost = v
+		}
 		desc := it.ItemName
 		if desc == "" {
 			desc = it.SKU
 		}
-		// The reorder_data row carries no quantity_per_package, so a reorder
-		// line stays single-basis (qpp 0) — the case-cost toggle is offered from
-		// the inventory-items picker, which does expose qpp.
-		s.enterLinePhase(it.ItemSupplierID, nil, desc, qty, unitCost, 0, 0)
+		// The reorder_data row DOES carry the supplier's case size and case
+		// price, so a reorder line reaches the form on the same footing as one
+		// picked from the catalog. This used to pass 0 for both, under a comment
+		// asserting the row carried neither — it carries both, and the result
+		// was the captain's defect on the path the report did not name: a case
+		// price typed into a per-unit row on every line staged from the queue.
+		s.enterLinePhase(it.ItemSupplierID, nil, desc, qty, unitCost, pkgCost, it.QuantityPerPackage)
 		s.reorderNote.clear()
 		return s, tea.Batch(
 			Status("picked "+desc+" — set quantity and cost, enter adds the line", StatusOK),
@@ -561,22 +575,32 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg, headerR
 // reorderCartLine stages one reorder-queue row as a cart line without going
 // through the Phase-4 form, producing exactly what the single-row enter path
 // produces once the operator accepts the prefill: suggested_quantity (floored
-// at 1) and the item's name (SKU when unnamed) as the label.
+// at one package) and the item's name (SKU when unnamed) as the label.
 //
-// Cost follows the same rule the form does. The row's unit_cost is the
-// item-supplier's stored cost (reorder_data reads item_supplier.unit_cost), and
-// the line form now seeds its cost field with it on a catalog line, so a bulk
-// add carries it too — the operator sees the same price whether the line was
-// added one at a time or fifteen at once, and ctrl+e can change or clear it
+// Cost follows the same rule the form does, from the same source — the case
+// price where the row carries one, the item-supplier's stored unit cost
+// otherwise — so the operator sees the same price whether the line was added
+// one at a time or fifteen at once, and ctrl+e can change or clear it
 // (sc-gnzw). A row whose catalog cost is unset stays blank rather than pinning
 // an explicit $0, which leaves the backend pricing the line (sc-5yr). A row
 // without an item_supplier_id can only be created as a freeform line, and that
 // branch REQUIRES a cost, so its unit_cost is always sent (0 when the row
 // carries none — visible as "@ $0" in the cart, and fixable with ctrl+e).
+//
+// The staged line CARRIES the supplier's case size. The QUANTITY needs no
+// conversion — suggested_quantity is base units, which is exactly what the
+// payload takes — but a cart line with qpp 0 reads back as a singles line: the
+// review row would state a case order in loose units, and
+// Ctrl-E would re-open it in a per-unit form on an item the operator buys by
+// the case. Both of those are the reported defect, one surface further on.
 func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
+	// Floored at ONE PACKAGE rather than one unit, for the reason the
+	// single-row enter path above records: a bulk-added line that fell back to
+	// 1 would stage a loose unit of something the vendor only ships by the
+	// case, and re-open under Ctrl-E in a per-unit form.
 	qty := it.SuggestedQuantity
 	if qty <= 0 {
-		qty = 1
+		qty = poPackSize(it.QuantityPerPackage)
 	}
 	desc := it.ItemName
 	if desc == "" {
@@ -587,8 +611,37 @@ func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
 		Quantity:       qty,
 		ItemSupplierID: it.ItemSupplierID,
 	}
+	// package_cost is the SOURCE, divided back down through the shared exact
+	// helper, with unit_cost the fallback for a row that carries no case price.
+	//
+	// It is what the vendor charges and what an operator reads off the invoice;
+	// OMS derives unit_cost FROM it by dividing and rounding to two decimals
+	// (backend/inventory/models/core.py), so staging unit_cost feeds that
+	// rounding error back in — a 10.00 case of 3 comes back as 3.33, and three
+	// of them are 9.99, not the 10.00 the row states. The single-row enter path
+	// beside this one already prices from package_cost through enterLinePhase,
+	// so leaving this one on unit_cost let ONE queue row produce two different
+	// prices depending on which key was pressed, with Ctrl-E on a bulk-staged
+	// line then showing a case cost the picker row disagreed with. Preserving
+	// today's price would have meant preserving today's error.
+	//
+	// poUnitCostValue and not a float divide, for the reason po_case_entry.go
+	// records: the same row has to come out at the same price here, in the line
+	// form's box and in the create payload, and a binary quotient agrees with a
+	// decimal one only when the case size happens to divide evenly.
+	//
+	// The poCasePacked gate is a DEFENSIVE GUARD and fixes nothing observed —
+	// it simply refuses to divide by a denominator the row did not state, so a
+	// case price could never be staged as a per-unit one. reorder_data cannot
+	// produce that shape today (quantity_per_package is a non-null
+	// PositiveIntegerField, default 1, MinValueValidator(1), and the key is
+	// always emitted), and at qpp 1 package_cost and unit_cost are equal by
+	// construction.
 	unitCost := 0.0
-	if v, err := strconv.ParseFloat(string(it.UnitCost), 64); err == nil {
+	if v, err := strconv.ParseFloat(string(it.PackageCost), 64); err == nil && v > 0 &&
+		poCasePacked(it.QuantityPerPackage) {
+		unitCost = poUnitCostValue(string(it.PackageCost), v, it.QuantityPerPackage)
+	} else if v, err := strconv.ParseFloat(string(it.UnitCost), 64); err == nil {
 		unitCost = v
 	}
 	if it.ItemSupplierID == nil || unitCost > 0 {
@@ -598,7 +651,7 @@ func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
 	if label == "" {
 		label = "line"
 	}
-	return poCartLine{item: line, label: label}
+	return poCartLine{item: line, label: label, qpp: it.QuantityPerPackage}
 }
 
 // addReorderLines stages every supplied reorder row and drops the operator in
@@ -659,17 +712,32 @@ func (s *PurchaseOrderCreateScreen) reorderBody() *jdeLines {
 		if it.HasActiveReorderReq {
 			tag = " " + StyleStatusOK.Render(fmt.Sprintf("[reorder %s]", it.ReorderRequestStatus))
 		}
+		// The same "/unit" the catalogue row carries, gated on the same
+		// predicate. The quantity beside it is stated in CASES on a case-packed
+		// row (poQtyFact), so a bare "@ 1.50" next to "qty 2 cs" is a case
+		// count and a per-unit price on one row with nothing saying which
+		// denominator the price is in — which reads as $1.50 a case. That is
+		// the reported defect exactly, one screen over, and moving only the
+		// quantity onto cases is what created it here.
 		cost := ""
 		if it.UnitCost != "" {
-			cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s", it.UnitCost))
+			per := ""
+			if poCasePacked(it.QuantityPerPackage) {
+				per = "/unit"
+			}
+			cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s%s", it.UnitCost, per))
 		}
 		// The mark is the row's own state and never gives. What is being
 		// ORDERED — the suggested quantity — is the fact; the stock levels
 		// behind it, the price and the request flag are the decorations,
 		// dropped from the right so the columns that stay keep their places.
 		levels := fmt.Sprintf(" (current %d / min %d)", it.CurrentStock, it.MinimumStock)
+		// The suggestion is BASE units on the wire and is rendered in the unit
+		// the line is bought in (poQtyFact), so it reads as the same figure the
+		// line form will open on. A bare "qty 48" beside a supplier who ships
+		// 24 to a case is a number whose denominator the row does not state.
 		l.AddRow(i, poPickRow(i, cur, mark+poFitRow(room-lipgloss.Width(mark), it.ItemName,
-			fmt.Sprintf("  qty %d", it.SuggestedQuantity), levels, cost, tag)))
+			"  qty "+poQtyFact(it.SuggestedQuantity, it.QuantityPerPackage), levels, cost, tag)))
 	}
 	// Counts only, tagged onto the LAST row so a body that overflows loses it
 	// from the tail rather than stranding the first row behind it. The keys are
@@ -911,10 +979,18 @@ func (s *PurchaseOrderCreateScreen) pickItemSupplier(i int) tea.Cmd {
 	if desc == "" {
 		desc = row.SupplierSKU
 	}
-	// PackQuantity (quantity_per_package) drives the case-cost toggle: when
-	// > 1 the line form offers per-case entry prefilled from package_cost
-	// (deriving unit_cost = case_cost / qpp — op-7j8v).
-	s.enterLinePhase(&id, nil, desc, 1, unitCost, pkgCost, row.PackQuantity)
+	// PackQuantity (quantity_per_package) drives the entry basis: when > 1 the
+	// line form takes CASES and a CASE COST and derives the base quantity and
+	// per-unit price for the wire (po_case_entry.go).
+	//
+	// The prefill is ONE PACKAGE in base units, not one unit. It used to be a
+	// flat 1, which on a case-packed row is an order for a single loose item of
+	// something the vendor only ships by the case — and, once the form takes
+	// cases, it is also a quantity with no case count, so the line would open
+	// in units on the very item the operator buys by the case. The picker knows
+	// no better figure than "one of what they sell", which is exactly what a
+	// package is.
+	s.enterLinePhase(&id, nil, desc, poPackSize(row.PackQuantity), unitCost, pkgCost, row.PackQuantity)
 	s.itemSuppliersNote.clear() // the picker is behind us; the line form speaks now
 	label := desc
 	if label == "" {
@@ -1092,14 +1168,23 @@ func (s *PurchaseOrderCreateScreen) itemBody() *jdeLines {
 		if sku == "" {
 			sku = "—"
 		}
+		// The catalogue's unit_cost, and on a case-packed row it SAYS it is a
+		// unit cost: the row next to it reads "case ×24", and a bare "@ 3.50"
+		// beside that is exactly the two-denominators-one-row ambiguity the
+		// line form was fixed for. A singles row keeps the bare price it
+		// always had.
 		cost := ""
 		if it.UnitCost != "" {
-			cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s", it.UnitCost))
+			per := ""
+			if poCasePacked(it.PackQuantity) {
+				per = "/unit"
+			}
+			cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s%s", it.UnitCost, per))
 		}
-		// Flag case-packed items so the operator knows a case-cost entry will
-		// be offered on the line form.
+		// Flag case-packed items so the operator knows the line form will take
+		// cases and a case price.
 		pack := ""
-		if it.PackQuantity > 1 {
+		if poCasePacked(it.PackQuantity) {
 			pack = "  " + StyleStatusOK.Render(fmt.Sprintf("case ×%d", it.PackQuantity))
 		}
 		lead := ""

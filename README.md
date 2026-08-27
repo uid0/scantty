@@ -106,6 +106,17 @@ only closes the box; the bar names whichever pair is live. While the order is
 being submitted the bar drops every key that would change what has already been
 sent, so the cart on the pane is the cart going in.
 
+A purchase-order line is **entered at the packaging level the vendor sells it
+at**. Where the supplier ships an item by the case, both the New PO line form
+and the scan-to-add flow ask for **cases** and a **case cost**, say what one
+case holds and what the line comes to, and convert to the base quantity and
+per-unit price the order records — so a case of 24 at 48.00 is typed as one case
+at 48.00 and saved as 24 at 2.00, not as 24 at 48.00. `Ctrl-T` moves both rows
+to base units and back, because a broken case or an odd top-up is a legitimate
+order; it is named only while it can act, so a quantity that is not a whole
+number of cases stays in units until it is one, the pane saying which quantities
+would flip it. Items the vendor sells as singles are unchanged.
+
 **Receiving** is a flow of its own on that layer, driven off the server's
 receiving worksheet — whether the order may be received against and why not,
 which lines are outstanding, and what a scanner will read off each one. The form
@@ -210,7 +221,7 @@ Landed:
 - Foundation: clients, cache, scanner classifier, config, TUI shell with 11 workspaces.
 - End-to-end scanner flow: scan → lookup → inventory detail → reorder form → submit.
 - Receive deliveries: PO list → PO detail → the receiving flow. The server's receiving worksheet is the whole input — whether the order may be received against and why not, which lines are outstanding and which are settled, and what a scanner reads off each one — so scanning a code finds its line. Tracking barcode, carrier and stated delivery date ride with the receipt (no transit duration is computed from them). What actually arrived is recorded as counted and any difference from the quantity ordered is flagged rather than rounded away; serialized units are captured one at a time with optional lot and expiry, and units credited to stock with no serial naming them are reported back. A line's outstanding balance can be closed short and the whole order marked received, each behind its own confirm. Whether the order then advances to `received` is the server's call, and the summary reports the status that came back.
-- Add a purchase-order line by scanning or typing an identifier: `n` on a draft order's detail sheet takes the supplier's SKU, the item's own SKU, a package or unit barcode, or a name; OMS resolves it against that order's supplier; the item is shown to confirm — naming the other vendor when the code came off a rival's box — and then quantity and unit cost are prompted with the OMS defaults prefilled and overtypable (on a repeat add, which grows the line already on the order, the price row starts blank so accepting it cannot reprice that line). Genuine ambiguity offers the candidates to pick from; a refusal (the supplier does not carry it, the order is not a draft) is shown as the server's own sentence. A successful add returns to the identifier box with a running tally, so a stack of boxes is one scan each.
+- Add a purchase-order line by scanning or typing an identifier: `n` on a draft order's detail sheet takes the supplier's SKU, the item's own SKU, a package or unit barcode, or a name; OMS resolves it against that order's supplier; the item is shown to confirm — naming the other vendor when the code came off a rival's box — and then quantity and price are prompted with the OMS defaults prefilled and overtypable, in the vendor's cases where that item is case-packed (on a repeat add, which grows the line already on the order, the price row starts blank so accepting it cannot reprice that line). Genuine ambiguity offers the candidates to pick from; a refusal (the supplier does not carry it, the order is not a draft) is shown as the server's own sentence. A successful add returns to the identifier box with a running tally, so a stack of boxes is one scan each.
 - Serialized components: per-unit instance tracking off the item detail (`i`) with inline install/remove/consume/retire/dispose + usage history, an asset's installed-components view, per-unit serial capture during receiving, and the consumption forecast (Reports workspace — days-until-stockout / reorder point / low-stock).
 - Kits: a kit is tagged as one on the item detail and shows its components with per-kit quantities, its bill of materials is editable from the item form (saved with the kit), and a kit PO line says which component items receiving it will credit instead of the kit's own stock. A kit's detail screen opens from its id the same way any other item's does; kits are absent from the inventory list and cannot be created from scantty (the item API excludes kits and exposes no `is_kit` flag, so a listed kit would be indistinguishable from an ordinary item — see `AGENTS.md`).
 

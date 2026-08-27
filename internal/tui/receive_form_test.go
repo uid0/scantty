@@ -54,14 +54,14 @@ func receiveDrive(t *testing.T, fake *receiveFake, lines []omsapi.ReceivingLine,
 	r.deps = deps
 	next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	r = next.(Root)
-	// receiveSettle rather than the shared pump: every drive here now fetches a
-	// worksheet before it can press anything, and pump abandons the cursor
-	// blink by WAITING IT OUT — 200ms of dead wall-clock per settle. Paid on
-	// every one of the several thousand drives these sweeps build, that is the
-	// difference between a package that finishes and one that hits the test
-	// timeout (AGENTS.md's note on receive_form_sweep_test.go). Nothing else
-	// changes: every message a drive really waits on is an in-process httptest
-	// round trip, and only the blink is recognised and dropped.
+	// receiveSettle, which is this flow's `pump`: every drive here fetches a
+	// worksheet before it can press anything, and both settlers now abandon the
+	// cursor blink by RECOGNISING it rather than waiting out a 200ms budget on
+	// every one of the several thousand drives these sweeps build — the
+	// difference between a package that finishes and one that hits go test's
+	// default timeout (AGENTS.md's note on receive_form_sweep_test.go). Nothing
+	// else changes: every message a drive really waits on is an in-process
+	// httptest round trip, and only the blink is dropped.
 	return receiveSettle(t, r, s.Init(), 0), s
 }
 

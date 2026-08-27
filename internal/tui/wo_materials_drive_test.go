@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/uid0/scantty/internal/omsapi"
@@ -138,7 +139,18 @@ func pump(t *testing.T, r Root, cmd tea.Cmd, depth int) Root {
 	case <-time.After(200 * time.Millisecond):
 		return r
 	}
-	if msg == nil {
+	// The BLINK is abandoned one step earlier than that budget, because waiting
+	// it out is what the budget cost: `textinput.Blink` answers immediately with
+	// an initialBlinkMsg carrying nothing, and it is only FEEDING that message
+	// back to Update that makes bubbles start the 530ms tick nobody waits for —
+	// so every focused box on every rebuild spent a flat 200ms here. Recognising
+	// it changes no state a drive can see (cursor.Update's initialBlinkMsg arm
+	// returns the tick and touches nothing else) and it is what took this
+	// package from 600s, where `go test`'s default per-package timeout killed
+	// it, back to about a minute. The 200ms budget above is left alone: it is
+	// the backstop for a genuine timer, and shortening it would make ~30 drives
+	// racier on a loaded machine.
+	if msg == nil || driveIsBlink(msg) {
 		return r
 	}
 	if batch, ok := msg.(tea.BatchMsg); ok {
@@ -153,6 +165,27 @@ func pump(t *testing.T, r Root, cmd tea.Cmd, depth int) Root {
 		t.Fatalf("Root.Update returned %T, want Root", next)
 	}
 	return pump(t, after, nextCmd, depth+1)
+}
+
+// driveIsBlink reports a cursor-blink message — the one thing every drive in
+// this package skips. bubbles keeps those types unexported, so this matches on
+// the type NAME, which is checked rather than trusted: the test below fails if
+// the message textinput.Blink produces stops matching, so a bubbles upgrade
+// that renamed it could not silently turn the drives into ones that skip
+// nothing (or, worse, that skip a real message).
+func driveIsBlink(msg tea.Msg) bool {
+	return strings.Contains(strings.ToLower(fmt.Sprintf("%T", msg)), "blink")
+}
+
+func TestDrive_TheBlinkIsWhatTheDriveSkips(t *testing.T) {
+	if !driveIsBlink(textinput.Blink()) {
+		t.Fatalf("textinput.Blink now produces %T, which driveIsBlink does not match — "+
+			"the drives would be waiting out a tick again, or worse, skipping a real message",
+			textinput.Blink())
+	}
+	if driveIsBlink(StatusMsg{}) || driveIsBlink(receiveSubmittedMsg{}) {
+		t.Error("driveIsBlink matches a message the drive must not skip")
+	}
 }
 
 // key sends one key through Root.Update and pumps whatever it kicked off.

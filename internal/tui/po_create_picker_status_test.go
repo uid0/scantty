@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -129,6 +130,61 @@ type poPickFake struct {
 	// cut it was drawn past for a real supplier.
 	supplierName  string
 	agreementName string
+
+	// catalogPack / catalogPackageCost give the item-supplier rows a SUPPLIER
+	// CASE. Every fixture here used to report quantity_per_package 1, which is
+	// the singles path — so no drive test had ever taken a case-packed line
+	// through the line form, and the row that took a case price while meaning a
+	// unit price could not be reached by any of them. A fixture that cannot
+	// reach the bound under test makes the assertion vacuous however precisely
+	// it is worded.
+	catalogPack        int
+	catalogPackageCost string
+
+	// reorderPack / reorderPackageCost do the same for the reorder-queue rows,
+	// which reorder_data reports from the same item_supplier columns.
+	// reorderQty overrides the suggestion so a fixture can land on a quantity
+	// that is NOT a whole number of those cases.
+	// reorderUnitCost overrides the per-base-unit price the row reports.
+	// reorder_data derives it server-side from package_cost by dividing and
+	// ROUNDING to two decimals, so a fixture pairing an inexact division with
+	// its rounded unit cost is the only way to tell which of the two a staged
+	// line was priced from.
+	reorderPack        int
+	reorderPackageCost string
+	reorderUnitCost    string
+	reorderQty         int
+
+	// createBody is the create POST's body, so a test can assert what actually
+	// went on the wire rather than what the screen believed it staged.
+	createBody map[string]any
+}
+
+// created returns the create POST's body and whether one was made.
+func (f *poPickFake) created() (map[string]any, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.createBody, f.createBody != nil
+}
+
+// createdLine returns line i of the create POST, failing the test when the
+// request was never made or is short — an assertion over a nil map would
+// otherwise pass by reading zero values out of nothing.
+func (f *poPickFake) createdLine(t *testing.T, i int) map[string]any {
+	t.Helper()
+	body, ok := f.created()
+	if !ok {
+		t.Fatal("no purchase order was created")
+	}
+	items, _ := body["items"].([]any)
+	if i >= len(items) {
+		t.Fatalf("the create payload carries %d line(s), want line %d", len(items), i+1)
+	}
+	line, _ := items[i].(map[string]any)
+	if line == nil {
+		t.Fatalf("line %d of the create payload is not an object: %v", i+1, items[i])
+	}
+	return line
 }
 
 // poGatewayHTML is the shape of body a proxy, WAF or Django debug page returns:
@@ -215,13 +271,27 @@ func (f *poPickFake) handler() http.HandlerFunc {
 				if f.reorderName != "" && i == 0 {
 					name = f.reorderName
 				}
-				items = append(items, map[string]any{
+				qty := 2
+				if f.reorderQty > 0 {
+					qty = f.reorderQty
+				}
+				row := map[string]any{
 					"item_supplier_id":   i + 1,
 					"item_name":          name,
 					"sku":                fmt.Sprintf("BLT-%03d", i+1),
-					"suggested_quantity": 2,
+					"suggested_quantity": qty,
 					"unit_cost":          "1.50",
-				})
+				}
+				if f.reorderUnitCost != "" {
+					row["unit_cost"] = f.reorderUnitCost
+				}
+				if f.reorderPack > 0 {
+					row["quantity_per_package"] = f.reorderPack
+				}
+				if f.reorderPackageCost != "" {
+					row["package_cost"] = f.reorderPackageCost
+				}
+				items = append(items, row)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"suppliers": []map[string]any{{"id": 1, "name": "Acme Supply", "items": items}},
@@ -238,13 +308,21 @@ func (f *poPickFake) handler() http.HandlerFunc {
 			}
 			rows := []map[string]any{}
 			for i := (page - 1) * size; i < page*size && i < f.catalog; i++ {
-				rows = append(rows, map[string]any{
+				pack := 1
+				if f.catalogPack > 0 {
+					pack = f.catalogPack
+				}
+				row := map[string]any{
 					"id": i + 1, "item": fmt.Sprintf("it-%d", i+1),
 					"item_name":    f.catalogItemName(i + 1),
 					"supplier":     1,
 					"supplier_sku": f.catalogSKU(i + 1),
-					"unit_cost":    "3.50", "quantity_per_package": 1,
-				})
+					"unit_cost":    "3.50", "quantity_per_package": pack,
+				}
+				if f.catalogPackageCost != "" {
+					row["package_cost"] = f.catalogPackageCost
+				}
+				rows = append(rows, row)
 			}
 			envelope(rows, f.catalog)
 		case strings.Contains(r.URL.Path, "/assets/"):
@@ -318,6 +396,15 @@ func (f *poPickFake) handler() http.HandlerFunc {
 			}
 			envelope(rows, len(rows))
 		case strings.Contains(r.URL.Path, "/purchase-orders/"):
+			if r.Method == http.MethodPost {
+				body := map[string]any{}
+				if raw, _ := io.ReadAll(r.Body); len(raw) > 0 {
+					_ = json.Unmarshal(raw, &body)
+				}
+				f.mu.Lock()
+				f.createBody = body
+				f.mu.Unlock()
+			}
 			if f.failCreate {
 				body := poGatewayHTML
 				if f.createErrBody != "" {
@@ -2211,7 +2298,7 @@ func poPickerState(s *PurchaseOrderCreateScreen) string {
 		len(s.agreements), poDerefInt(s.agreementID),
 		"|", s.workOrderCursor, s.workOrderID, s.committeeCursor, s.committeeID,
 		s.assoc.workOrdersOffered(), s.assoc.committeesOffered(),
-		"|", s.lineFocused, s.pickedQPP, s.costBasisCase,
+		"|", s.lineFocused, s.pickedQPP, s.caseBasis,
 		poDerefInt(s.pickedItemSup), poDerefStr(s.pickedAssetID),
 		"|", len(s.lines), s.reviewCursor, s.poNotes.Value(),
 		s.editIndex, s.editReturn)
@@ -2352,7 +2439,7 @@ var poStateFingerprinted = map[string]bool{
 	"assetsCursor": true, "assetsSearch": true, "assetsTyping": true,
 	"assetsPage": true, "assetsHasNext": true, "assetsQuery": true,
 	"lineInputs": true, "lineFocused": true, "pickedItemSup": true,
-	"pickedAssetID": true, "pickedQPP": true, "costBasisCase": true,
+	"pickedAssetID": true, "pickedQPP": true, "caseBasis": true,
 	"lines": true, "reviewCursor": true, "poNotes": true,
 	"editIndex": true, "editReturn": true,
 }
@@ -3779,16 +3866,33 @@ func TestPOCreate_EveryFixedHintOnTheseScreensSurvivesTheClip(t *testing.T) {
 			s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 0)
 		}, []string{"optional", "supplier catalog"}},
 
-		// The basis-toggle KEY is on the bar, where it says which basis the row
-		// is on; the note under the row does the arithmetic. It used to name
-		// ctrl+t as well, which is the two-surfaces defect in miniature.
-		{"line form, case-packed cost basis", func(s *PurchaseOrderCreateScreen) {
-			s.enterLinePhase(&id, nil, "Widget", 1, 0, 0, 12)
-		}, []string{"Ctrl-T=Unit/case cost", "The CASE cost"}},
+		// The basis-toggle KEY is on the bar, where it says which basis the two
+		// typed rows are on; the note under the cost row does the arithmetic.
+		// It used to name ctrl+t as well, which is the two-surfaces defect in
+		// miniature.
+		{"line form, case-packed entry basis", func(s *PurchaseOrderCreateScreen) {
+			s.enterLinePhase(&id, nil, "Widget", 12, 0, 0, 12)
+		}, []string{"Ctrl-T=Cases/units", "1 case × 12 = 12 units"}},
+
+		// The same row with NOTHING typed into either box, which is the state
+		// with nothing to derive: what is left has to say what the rows are
+		// ASKING for, or the basis would be stated by the label alone.
+		{"line form, case-packed with both rows empty", func(s *PurchaseOrderCreateScreen) {
+			s.enterLinePhase(&id, nil, "Widget", 0, 0, 0, 12)
+		}, []string{"Ctrl-T=Cases/units", "The price of ONE case"}},
 
 		{"line form, freeform line has no date field", func(s *PurchaseOrderCreateScreen) {
 			s.enterLinePhase(nil, nil, "Shop rags", 1, 0, 0, 0)
 		}, []string{"send/receive"}},
+
+		// BOTH rows filled, which is the state the operator is in when they
+		// press enter — and the state the date caveat used to vanish in,
+		// because the line total answered non-empty and was returned INSTEAD of
+		// it. At quantity 1 with a blank cost there is no total, so the case
+		// above cannot see that at all.
+		{"line form, freeform line priced and counted", func(s *PurchaseOrderCreateScreen) {
+			s.enterLinePhase(nil, nil, "Shop rags", 2, 5, 0, 0)
+		}, []string{"send/receive", "2 units × $5.00 = line $10.00"}},
 	}
 
 	for _, tc := range cases {

@@ -36,6 +36,75 @@ partially received line's price by `quantity_received / quantity_ordered` on
 every trip. `unit_cost_actual` is written ONLY through that endpoint — receiving
 never sets it. `internal/tui/po_line_price.go` carries the full note.
 
+### A PO line is ENTERED in cases and STORED in base units
+
+`internal/tui/po_case_entry.go` carries the full note and is the authority; it
+is the one conversion every screen that takes a PO line's quantity or price runs.
+What is worth knowing before touching any of them:
+
+- **The wire is base units at a per-base-unit price.** `quantity_ordered` is
+  always base units "whichever pack size shaped it" and `unit_cost_ordered` is
+  per base unit; `order_in_packages` is DERIVED server-side by
+  `order_packages_for_line`. Nothing on this side sends it — `cases × qpp`
+  ceil-divided by `qpp` is `cases`, so posting it would be a second copy of a
+  number the server already gets right; `omsapi`'s
+  `TestCreatePurchaseOrder_InventoryLineCaseDerivedCost` pins its absence.
+- **The case is the SUPPLIER's**, `ItemSupplier.quantity_per_package`, not the
+  item's own packaging chain (`packaging.go`, which is how the shop COUNTS what
+  is on the shelf). The column DEFAULTS to 1, so `> 1` means "this vendor ships
+  by the case" and 1 leaves a singles line untouched — the same gate the web PO
+  form uses.
+- **One basis per line, not one row per denominator.** The reported defect was a
+  row labelled `Unit cost` taking a case price, and relabelling it alone would
+  have left `Quantity` asking for base units beside it. `caseBasis` moves both
+  typed rows and both labels together; Ctrl-T flips it, converting both values,
+  and base-unit entry stays reachable because a broken case is a legitimate
+  order.
+- **A prefill is not always a whole number of cases.** OMS rounds a suggestion
+  up to a whole supplier package only for items counted in BASE units
+  (`views.reorder_data` and `line_entry.default_quantity` both gate on
+  `counts_in_packs`), so a pack-counted item can suggest 30 against a case of
+  12. `poOpensAtCaseBasis` answers that once: whole cases (or no prefill) opens
+  in cases, anything else opens in units. Ctrl-T is then a BAR GATE
+  (`poFlipsToCases`) rather than a refusal — the key is not named while it could
+  only decline, and the derivation row says so standing, naming the two
+  quantities that bring it back (`poUnwholeCaseNote`).
+- **The derived SET is the four write endpoints, not the screen that was
+  reported.** `CreatePurchaseOrder` (`po_create.go`'s line form, reached from
+  the items picker, the reorder queue's single-row enter and Ctrl-E on the
+  cart), `AddPurchaseOrderLine` (`po_add_line.go`'s price phase — the
+  scan / supplier-SKU path), and the reorder queue's BULK add
+  (`reorderCartLine`), which stages a cart line without the form and must still
+  carry the case size or the review row and Ctrl-E describe a different order.
+  `UpdatePurchaseOrderLineItem`'s cost row is deliberately outside it: it takes
+  a TOTAL for the line, which no pack size changes, and its label already says
+  so. So is `ReceivePOItems`: receiving records what ARRIVED against a
+  server-stated balance that is base units throughout, and a case-only box could
+  not express a broken case.
+- **`ReorderDataItem` carries `quantity_per_package` and `package_cost`.**
+  `po_create_pickers.go` used to say in as many words that it carried neither
+  and the struct decoding it had no field for either, so every line staged from
+  the reorder queue reached the form as a singles line. A comment asserting what
+  the wire does NOT carry is worth checking against
+  `backend/reorder_queue/views.py` before trusting it.
+- **`package_cost` is the authoritative price and `unit_cost` its rounded
+  derivative**, so every entry point prices a case-packed line FROM the case
+  price. OMS derives `unit_cost = package_cost / quantity_per_package` rounded
+  to two decimals (`backend/inventory/models/core.py`), so sourcing the per-unit
+  figure from `unit_cost` feeds that rounding back in: a 10.00 case of 3 comes
+  back as 3.33 and three of them are 9.99. The reorder queue's BULK add
+  (`space`+`a`) was the last path still on `unit_cost` — it now stages up to
+  0.005 more or less per base unit than it used to, scaling with the case size.
+- **Money is decimal; do the arithmetic in `big.Rat`, not `float64`.**
+  `poUnitCostFrom` / `poCaseCostFrom` / `poUnitCostValue`
+  (`internal/tui/po_case_entry.go`) are the ONLY conversions allowed to reach a
+  typed box or a payload, quantised at `poUnitCostPlaces` — the four-place
+  column `unit_cost_ordered` really stores, so a screen cannot show a price the
+  record cannot hold. `poUnitFromCase` / `poCaseFromUnit` are float and are for
+  derived PROSE only. A float divide put 0.049999999999999996 in the add-line
+  cost box for an item priced 0.05, the row `CharLimit` of 14 cut it to
+  `0.049999999999`, and Enter posted that.
+
 ### A line goes onto a draft order by scanning an identifier
 
 `internal/omsapi/po_line_entry.go` carries the API note and
@@ -1193,19 +1262,28 @@ touching any screen an operator drives:
   test that only sets `XDG_CONFIG_HOME` therefore writes the developer's real
   prefs file and fails on its second run; set `HOME` as well. `internal/config/prefs_test.go`'s
   `setRequiredConfigEnv` does this and is what any new config test should call.
-- **A drive that settles a keystroke pays 200ms for the cursor blink.** `pump`
-  (`wo_materials_drive_test.go`) abandons the textinput blink tick by WAITING IT
-  OUT — 200ms of dead wall-clock per `key()` — and bubbles' tick is 530ms, so a
-  drive that runs the tick itself pays even more. It is invisible on a handful of
-  presses and ruinous on a sweep: the receiving key-space sweep took 292s through
-  `pump` and 242s through a settler that ran the tick, against 1s once neither
-  did. Two facts get you out, both in `receive_form_sweep_test.go`:
-  `textinput.Blink` returns its message IMMEDIATELY and it is only FEEDING that
-  message back to `Update` that starts the tick (so recognise it and stop —
-  `receiveIsBlink`, checked against `textinput.Blink()` by a test so a bubbles
-  rename cannot turn it into a drive that skips nothing); and TYPING is
-  synchronous, so a typed rune needs no settling at all (`receiveType`). Do not
-  shorten `pump`'s own budget to fix this — it is shared with ~30 drive tests and
+- **A drive that WAITS OUT the cursor blink pays 200ms a keystroke, and this
+  package has no room for it.** bubbles' tick is 530ms and `pump`'s budget is
+  200, so a settler that starts the blink and gives up on it burns a flat 200ms
+  per `key()` — invisible on a handful of presses and ruinous on a sweep, which
+  rebuilds a screen per key per probe per pane size. The receiving key-space
+  sweep took 292s that way (242s through a settler that ran the tick outright)
+  against 1s once neither did, and `internal/tui` as a whole sat at 573s against
+  `go test`'s **600s default per-package timeout**, which CI does not raise — so
+  adding two phase cases to one sweep was enough to make the package fail by
+  TIMING OUT, with a passing test named in the panic as the one that happened to
+  be running.
+  Two facts get you out. `textinput.Blink` returns its message IMMEDIATELY and it
+  is only FEEDING that message back to `Update` that starts the tick, so
+  recognise it and stop: `driveIsBlink` (`wo_materials_drive_test.go`), checked
+  against `textinput.Blink()` by `TestDrive_TheBlinkIsWhatTheDriveSkips` so a
+  bubbles rename cannot turn it into a drive that skips nothing. Both settlers
+  read it — the shared `pump` and receiving's `receiveSettle` — which is what
+  took the package to 133s. It skips no state a drive can see:
+  `cursor.Update`'s `initialBlinkMsg` arm returns the next tick and touches
+  nothing else. And TYPING is synchronous, so a typed rune needs no settling at
+  all (`receiveType`). Do NOT shorten `pump`'s 200ms budget instead — it is the
+  backstop for a genuine timer, shared with ~30 drive tests, and cutting it
   would make all of them racier on a loaded machine.
 - `gofmt -l` flags a few pre-existing files (doc-comment backtick rewrites).
   Format only what you touch.
