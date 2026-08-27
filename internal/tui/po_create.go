@@ -2246,15 +2246,24 @@ type poStatusPlan struct {
 // but that only buys room in the common case and is NOT the guarantee: this
 // branch is.
 //
-// THE RESIDUAL, stated rather than implied. With an order-level error standing,
-// the answer no longer fits on this row, so it falls back to answerRows — a
-// CONTEXT row of the pinned header, which jdeFitHeader trims first. At 80x11
-// through 80x13 that puts a picker's answer off the pane, which is the very
-// state this branch exists to remove. What keeps it survivable is that it is
-// MOMENTARY: an order-level error is retired the moment the operator navigates
-// (Update's key dispatch), so it stands only on the phase it happened on and
-// only until the next phase change. It is not removed, and this comment is
-// where that is admitted rather than in a claim that the heights are solved.
+// WHAT THAT WOULD COST, AND WHY NO KEY CAN SPEND IT. Taking the row alone means
+// that where a box is ALSO pinned the answer falls back to answerRows — a
+// CONTEXT row of the pinned header, which jdeFitHeader trims first, so at 80x11
+// through 80x13 it would be off the pane: the very state this branch exists to
+// remove. That state is NOT REACHABLE, and the argument is written down because
+// it is what a later change would break rather than notice. It needs a
+// box-pinning phase (essentialBoxRow) holding BOTH a standing errMsg and a
+// non-empty answer, and errMsg is retired at every phase change (Update's key
+// dispatch). No setErr writer fires on a picker phase; the pending freeze on the
+// source chooser's r/i/a/f stops a picker being ENTERED with a POST out; and on
+// review phaseNote is empty while poCreatedMsg clears pendingLead before it
+// calls setErr, so the answer there is always "".
+//
+// The MECHANISM is still here, and it reopens the moment a setErr writer becomes
+// reachable from a box-pinning phase or the phase-change clear is removed —
+// which is why that clear is a rule rather than a tidy-up, and why
+// TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow reaches the state by
+// writing setErr directly and says in as many words that no key sequence does.
 func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 	answer := s.answerNote()
 	lead := ""
@@ -2361,15 +2370,14 @@ func (s *PurchaseOrderCreateScreen) answerNote() pickerNote {
 // Which RANK it takes is headerLines': the essential row where no box has
 // claimed it, context where one has.
 //
-// THE RESIDUAL, and it is the context case: with a box pinned AND an
-// order-level error standing, the status row is the error alone (statusPlan
-// refuses to lead one), so the whole answer arrives here as a CONTEXT row —
-// the first rank jdeFitHeader gives ground in. At 80x11 through 80x13 it is off
-// the pane, which is the state this screen was reported for. What keeps it
-// survivable rather than solved is that an order-level error does not outlive
-// the phase it happened on: every phase change retires it. This is written down
-// rather than papered over, because the heights are not fixed in that one
-// state.
+// The CONTEXT case has one shape no key can reach, and it is recorded here so
+// nobody re-derives it as a live defect: with a box pinned AND an order-level
+// error standing, the status row is the error alone (statusPlan refuses to lead
+// one), so the WHOLE answer would arrive here as a context row and be trimmed
+// at 80x11 through 80x13. An order-level error does not outlive the phase it
+// happened on — every phase change retires it — and no setErr writer fires on a
+// box-pinning phase, so the pair cannot stand together. statusPlan carries the
+// closing argument and the note on what would reopen it.
 func (s *PurchaseOrderCreateScreen) answerRows() []string {
 	n := s.answerNote()
 	if n.text == "" {
@@ -2493,11 +2501,27 @@ func (s *PurchaseOrderCreateScreen) workingSubject() string {
 		}
 	case poPhaseAssetPick:
 		if s.assetsLoading {
+			// FIXED WORDS, then the QUERY, then the supplier — and that order is
+			// the whole of rule 6 read INSIDE one sentence rather than between
+			// two. This used to read `Searching ` + supplier + `'s assets for
+			// "zzz"…`, which put the one part that is NOT the identity of the
+			// work first: the supplier is the same on every phase of this screen
+			// and is pinned on a header row of its own, while the query is the
+			// only thing that says what this particular lookup is. Under a lead
+			// the subject is bounded to 23 cells at 80 columns (poSubmitWords
+			// carries the arithmetic), and the old order spent all of them on
+			// `Searching Acme Supply'…` — the query gone, the fact restated.
+			//
+			// So the fixed words are short enough that they and a recognisable
+			// query both fit that floor, and what the clip takes is the
+			// supplier at the tail. No ` · ` inside either sentence: that joint
+			// is the clause separator poLeadClause and pickerWrap read, and one
+			// here would make half a subject look like a second claim.
 			if q := strings.TrimSpace(s.assetsQuery); q != "" {
-				return "Searching " + s.supplierLabel() + "'s assets for " +
-					strconv.Quote(pickerClip(q, 20)) + "…"
+				return "Searching assets " + strconv.Quote(pickerClip(q, 20)) +
+					" from " + s.supplierLabel() + "…"
 			}
-			return "Looking up the assets bought from " + s.supplierLabel() + "…"
+			return "Loading assets from " + s.supplierLabel() + "…"
 		}
 	}
 	return ""
@@ -2548,20 +2572,23 @@ func (s *PurchaseOrderCreateScreen) workingLine(lead string) string {
 	return poLeadOnto(lead, subject, s.paneWidth())
 }
 
-// poLeadOnto is that arithmetic, with the SUBJECT and the room handed in, so
-// the working sentence and the order-level error share one implementation of
-// it rather than two that drift.
+// poLeadOnto is that arithmetic, split out from workingLine so the reservation
+// can be read on its own — the two bounds it applies are the whole of this
+// row's rule 6 and they are easier to check apart from the sentence-building.
 //
-// `room` is what the row leaves after whatever MARK it will be drawn behind:
-// the muted working line carries none, the error row carries jdeStatusErrMark's
-// two cells, and passing the remainder rather than the pane means the caller's
-// budget is measured from the string that really gets prepended.
+// ONE caller: workingLine. It used to have two, and the second was the
+// order-level error, which is now drawn alone (statusPlan) — an error sharing
+// the row with a picker hint is rule 6 inverted, because there the error IS the
+// fact. So `room` is simply the pane: the muted working line is drawn behind no
+// mark at all, and there is no longer a caller passing a mark-adjusted
+// remainder. A second caller that DOES sit behind a mark must subtract it
+// before calling, because nothing here can see what it will be drawn behind.
+//
+// The SUBJECT is never empty: workingLine returns early on an empty
+// workingSubject, which is the only thing that reaches this.
 func poLeadOnto(lead, subject string, room int) string {
 	if lead == "" {
 		return pickerClip(subject, room)
-	}
-	if subject == "" {
-		return pickerClip(lead, room)
 	}
 	answer, rest, more := strings.Cut(lead, poLeadJoint)
 	floor := lipgloss.Width(answer)

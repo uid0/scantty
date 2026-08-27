@@ -794,10 +794,11 @@ touching any screen an operator drives:
   prediction is a second implementation of the bound it predicts.
   `jdeScreen.statusAnswer` (`jde_form.go`) is the layer half, level-marked the
   same four ways `pickerNote.renderLines` marks a body note.
-  The answer LEADS a working sentence or an order-level error only where a box
-  has taken the essential row: leading unconditionally cost the working sentence
-  its tail on frames that had a header row going spare
-  (`nothing to pick · Looking up the items Acme Supply…`).
+  The answer LEADS the WORKING sentence, and only where a box has taken the
+  essential row: leading unconditionally cost the working sentence its tail on
+  frames that had a header row going spare
+  (`nothing to pick · Looking up the items Acme Supply…`). An ORDER-LEVEL error
+  is never led at all — see below.
   **THE ANSWER MAY NOT DISPLACE THE WORK IN FLIGHT**, which is the guard #152
   put on this row and which had to be re-proved once a SECOND writer could reach
   it. It holds, and by the CAP rather than by any wording: `poLeadOnto` reserves
@@ -807,7 +808,16 @@ touching any screen an operator drives:
   share the row at all — the submit's, the item picker's and the asset
   picker's — because a lead is applied only where a box is pinned, and each
   leads with its FACT ("Creating the PO for", "Reloading the items",
-  "Searching") so what the clip takes is the identifier at the tail. Because the
+  "Searching assets") so what the clip takes is the identifier at the tail.
+  ORDER WITHIN A SUBJECT IS THE OTHER HALF OF THAT, and the asset picker is the
+  worked example: it read `Searching ` + supplier + `'s assets for "zzz"…`, so
+  the one variable part that is NOT the identity of the work — the supplier, the
+  same on every phase and already pinned on a header row — sat AHEAD of the
+  query the search is actually running on, and the 23-cell floor took the query
+  and kept the supplier. Reordered to fixed words, then QUERY, then supplier
+  (`workingSubject`), so the tail the clip takes is the supplier again. Choosing
+  which SUBJECT survives is not enough; a subject whose parts are in the wrong
+  order inverts rule 6 inside one sentence. Because the
   cap makes every lead past it produce the identical reservation, an OVER-LONG
   lead is the provable worst case rather than a sample of one, which is what
   `TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight` drives — the
@@ -834,24 +844,36 @@ touching any screen an operator drives:
   from 32 cells to 20, `poSubmitFailWords` being 37 → 22 — but that is NOT the
   guarantee and the comment says so: the detail beside them is an OMS body of
   any length, and a bound expressed in an unbounded value is not a bound.
-  What it costs: while an errMsg stands the answer falls back to `answerRows`, a
-  CONTEXT row of the pinned header, so at 80x11–13 a picker's answer is off the
-  pane — the very state this work removed. That is survivable only because it is
-  MOMENTARY: a phase change RETIRES the order-level failure, at the one site
-  every phase change passes through (`Update`'s key dispatch, beside
-  `pendingLead` and `sourceNote`). Left standing it never cleared — `setErr`'s
-  other writers are `enterLinePhase`, `removeLineAt` and `addReorderLines` — so
+  WHAT THAT WOULD HAVE COST, AND WHY NO KEY CAN SPEND IT. Taking the row alone
+  means the answer falls back to `answerRows`, a CONTEXT row of the pinned
+  header, which at 80x11–13 is off the pane — the very state this work removed.
+  It is NOT REACHABLE, and the closing argument is worth keeping because it is
+  what a later change could break: it needs a box-pinning phase holding BOTH a
+  standing `errMsg` and a non-empty answer, and `errMsg` is retired at every
+  phase change (`Update`'s key dispatch, beside `pendingLead` and
+  `sourceNote`). No `setErr` writer fires on a picker phase; the pending freeze
+  on the chooser's `r`/`i`/`a`/`f` stops a picker being ENTERED with a POST
+  out; and on review `phaseNote()` is empty while `poCreatedMsg` clears
+  `pendingLead` before it calls `setErr`, so the answer there is always "".
+  The MECHANISM is still in `statusPlan` and would reopen the moment a `setErr`
+  writer becomes reachable from a box-pinning phase, or the phase-change clear
+  is removed — which is why the clear is a rule and not a tidy-up. Before it,
   ONE failed submit put the chooser, both pickers and the line form permanently
-  back into it. `TestPOCreate_AnOrderLevelFailureDoesNotOutliveThePhaseItHappenedOn`
-  drives it through the real submit and reports the answer going off the pane,
-  not just the field staying set. The failure belongs to the frame it happened
-  on; the chooser drawn UNDER one is still swept at every height by
-  `jde_pane_fit_test.go`, which builds that state directly.
-  `TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow` is the guard, and
-  its fixture is the vacuous-fixture rule caught in the act: driven on
-  `poSubmitFailWords` alone it went GREEN with the lead still composed, because
-  22 cells is exactly what the reservation leaves at 80 columns
-  (`poOrderErrorFixtures` carries a second error that reaches past it).
+  into that state: `setErr`'s other writers are `enterLinePhase`,
+  `removeLineAt` and `addReorderLines`, and none of them is on the way out of a
+  failed submit.
+  `TestPOCreate_AnOrderLevelFailureDoesNotOutliveThePhaseItHappenedOn` drives
+  the clear through the real submit and reports the answer going off the pane,
+  not just the field staying set. `TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow`
+  is the MECHANISM guard — it reaches the state by writing `setErr` directly,
+  because no key sequence produces it, and it says so in its own doc so a later
+  reader does not reason from a state the keys cannot reach. Its fixture is the
+  vacuous-fixture rule caught in the act: driven on `poSubmitFailWords` alone it
+  went GREEN with the lead still composed, because 22 cells is exactly what the
+  reservation leaves at 80 columns (`poOrderErrorFixtures` carries a second
+  error that reaches past it). The chooser drawn UNDER a failure — which IS
+  reachable, since `poCreatedMsg` can land there — is swept at every height by
+  `jde_pane_fit_test.go`.
   **A HEADLINE THE STATUS ROW IS DRAWING IS NOT REPEATED IN THE HEADER, and
   where the header does carry one the cut is MARKED.** `failLines` asked
   "is the head a substring of the row?", which also answered no when the row was

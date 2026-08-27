@@ -351,29 +351,6 @@ func TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight(t *testing.T) {
 // An order-level error is the fact; it shares the row with nothing
 // ---------------------------------------------------------------------------
 
-// TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow is rule 6 applied to
-// the one message on this screen that must never abbreviate.
-//
-// The status row is shared: a working sentence, an order-level error and the
-// screen's answer to the last keypress can all want it, and where a typed box
-// has taken the pinned header's one essential row the answer LEADS whatever is
-// there (statusPlan). Applied to the error as well, that reserved up to half
-// the row for a picker hint and cut the failure to what was left:
-// `✗ type to narrow the catalo… · creating the PO f…` on the surface an order
-// is committed from, which leaves the operator unable to tell what failed while
-// telling them something they can rediscover by pressing the key again.
-//
-// So the error takes the row alone. The LEAD is what gives, entirely — not its
-// tail — and the answer's own folded copy is still in the pinned header
-// (answerRows), which is the trade recorded in statusPlan's residual.
-//
-// Driven with a lead PAST poLeadOnto's cap, because every longer lead reserves
-// the identical cells: that makes it the provable worst case rather than a
-// sample, the same way TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight
-// reaches past the bound instead of hoping the longest sentence in the file
-// does. The phases are DISCOVERED by poBoxPhases — a lead is only ever composed
-// where a box is pinned — so a phase that grows a search box later is swept the
-// moment it does.
 // poOrderErrorFixtures are the order-level errors the sweep below drives, and
 // there are two of them for the reason this project keeps relearning: A FIXTURE
 // THAT CANNOT REACH THE BOUND UNDER TEST MAKES THE ASSERTION VACUOUS.
@@ -392,6 +369,39 @@ var poOrderErrorFixtures = []string{
 	"creating the PO failed: upstream refused",
 }
 
+// TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow is rule 6 applied to
+// the one message on this screen that must never abbreviate.
+//
+// IT IS A MECHANISM GUARD, NOT A REGRESSION TEST, and that has to be said out
+// loud: it writes setErr DIRECTLY onto a box-pinning phase because NO KEY
+// SEQUENCE reaches that pair. errMsg is retired at every phase change (Update's
+// key dispatch), no setErr writer fires on a picker phase, the pending freeze
+// stops a picker being entered with a POST out, and on review phaseNote is
+// empty while poCreatedMsg clears pendingLead before it calls setErr. What is
+// held here is statusPlan's composition rule, so that the state stays harmless
+// if a later change makes it reachable again. Do not read it as evidence of a
+// defect an operator can produce.
+//
+// The status row is shared: a working sentence, an order-level error and the
+// screen's answer to the last keypress can all want it, and where a typed box
+// has taken the pinned header's one essential row the answer LEADS whatever is
+// there (statusPlan). Applied to the error as well, that reserved up to half
+// the row for a picker hint and cut the failure to what was left:
+// `✗ type to narrow the catalo… · creating the PO f…` on the surface an order
+// is committed from, which leaves the operator unable to tell what failed while
+// telling them something they can rediscover by pressing the key again.
+//
+// So the error takes the row alone. The LEAD is what gives, entirely — not its
+// tail — and the answer's own folded copy is still in the pinned header
+// (answerRows).
+//
+// Driven with a lead PAST poLeadOnto's cap, because every longer lead reserves
+// the identical cells: that makes it the provable worst case rather than a
+// sample, the same way TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight
+// reaches past the bound instead of hoping the longest sentence in the file
+// does. The phases are DISCOVERED by poBoxPhases — a lead is only ever composed
+// where a box is pinned — so a phase that grows a search box later is swept the
+// moment it does.
 func TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow(t *testing.T) {
 	longLead := strings.Repeat("z", 200)
 
@@ -462,9 +472,11 @@ func TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow(t *testing.T) {
 // That state was PERMANENT: setErr's only other writers are enterLinePhase,
 // removeLineAt and addReorderLines, so one failed submit carried the error onto
 // the source chooser, both pickers and the line form for the rest of the
-// session. It is momentary now — every phase change retires it (Update's key
-// dispatch) — so the answer is back on the status row by the time the operator
-// has walked anywhere.
+// session. The clear at the phase-change site is what makes it UNREACHABLE —
+// not merely brief — because no setErr writer fires on a picker phase and the
+// pending freeze stops one being entered with a POST out. This test is the
+// guard on that clear: remove it and the state comes back, which is why the
+// composition rule in statusPlan is kept and guarded separately.
 //
 // Driven through the real submit and the real keys, and asserted on the clipped
 // pane at the three heights the report was filed about.
@@ -615,4 +627,78 @@ func TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline(t *testing.
 		}
 		poAssertFits(t, "item picker failing mid-reload at a narrow terminal", screen)
 	})
+}
+
+// TestPOAssetSearch_TheQuerySurvivesTheLeadOnTheStatusRow drives the sequence
+// the asset picker's working sentence is cut on, from the seat.
+//
+// `a`, `/`, type a query, Enter, `/` again — and that last press is ordinary,
+// not contrived: the bar names `/` on the working frame, so re-opening the box
+// while the server-side search is still out is what an operator does when they
+// realise they mistyped. openAssetSearch then writes a 26-cell opening clause,
+// which is over poLeadOnto's half-row cap, so the subject is bounded to the
+// 23-cell floor at 80 columns.
+//
+// The subject used to be `Searching ` + supplier + `'s assets for "zzz"…`, and
+// at that floor the row drew `Searching Acme Supply'…`: the SUPPLIER kept — the
+// same on every phase of this screen, and pinned on a header row of its own —
+// and the QUERY, the only thing saying what this lookup is, gone. Rule 6
+// inverted inside one sentence. The fixed words lead now, the query comes next
+// and the supplier is the tail.
+//
+// Asserted on the clipped pane at 80 columns, where the floor bites, and at
+// every drawable height: the header's own `Showing ..... "zzz"` row is a
+// trimmable CONTEXT row, so below 14 the status row is the only surface left
+// carrying the query at all.
+func TestPOAssetSearch_TheQuerySurvivesTheLeadOnTheStatusRow(t *testing.T) {
+	const query = "zzz"
+
+	for _, h := range poDrawableHeights() {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			r, screen := poPickerAtSize(t, &poPickFake{catalog: 2, assets: 3}, 80, h)
+			r = key(t, r, poPhaseKeyMsg("a"))
+			if screen.phase != poPhaseAssetPick {
+				t.Fatalf("a landed on phase %v, want the asset picker", screen.phase)
+			}
+			r = key(t, r, poPhaseKeyMsg("/"))
+			r = poType(t, r, query)
+
+			// Raw Update, not key(): the search must still be OUT when the row
+			// is read, and key() pumps the request to its reply.
+			next, _ := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			r = next.(Root)
+			if !screen.assetsLoading || strings.TrimSpace(screen.assetsQuery) != query {
+				t.Fatalf("enter left loading=%v query=%q, want a search out on %q",
+					screen.assetsLoading, screen.assetsQuery, query)
+			}
+
+			// Re-open the box over the lookup: this is what puts a lead on the
+			// row beside the working sentence.
+			next, _ = r.Update(poPickerKeyMsg("/"))
+			r = next.(Root)
+			_ = r
+			if screen.essentialBoxRow() == "" {
+				t.Fatalf("/ did not re-open the search box over the lookup")
+			}
+			if poNoteText(screen) == "" {
+				t.Fatalf("/ over a lookup answered with nothing, so no lead is composed")
+			}
+
+			if poFrameRefused(t, screen, h) {
+				t.Skip("the layer refuses this frame, which is jdeTooShort's rule")
+			}
+
+			row, _ := screen.statusPlan()
+			if !strings.Contains(row, query) {
+				t.Errorf("the lead pushed the query off the status row at 80x%d.\n"+
+					"\tsubject: %q\n\trow: %q", h, screen.workingSubject(), row)
+			}
+			// And on the pane the terminal really draws, not just the composed
+			// string: the header's `Showing ..... "zzz"` row is a trimmable
+			// CONTEXT row, so the status row is the only surface that carries
+			// the query at every height.
+			poWantPaneLine(t, screen, query)
+			poAssertFits(t, fmt.Sprintf("asset search mid-lookup at 80x%d", h), screen)
+		})
+	}
 }

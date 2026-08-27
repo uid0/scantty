@@ -748,7 +748,7 @@ func TestPOAssetPicker_SearchSaysItIsSearchingThenSaysWhatItFound(t *testing.T) 
 	// The WORK and the SUBJECT, on the layer's status row: which request is
 	// out, against whom, and — because this search really goes off the terminal
 	// — what it is searching for.
-	if out := r.View(); !strings.Contains(out, `Searching Acme Supply's assets for "Lathe 2"`) {
+	if out := r.View(); !strings.Contains(out, `Searching assets "Lathe 2" from Acme Supply`) {
 		t.Errorf("the in-flight frame does not name the work:\n%s", out)
 	}
 	r = pump(t, r, cmd, 0)
@@ -1214,7 +1214,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 
 		{"assets, working", func(s *PurchaseOrderCreateScreen) {
 			s.assetsLoading = true
-		}, poPhaseAssetPick, []string{"Looking up the assets"}},
+		}, poPhaseAssetPick, []string{"Loading assets from"}},
 
 		{"assets, failed", func(s *PurchaseOrderCreateScreen) {
 			s.assetsErr = long
@@ -3281,7 +3281,7 @@ func TestPOAssetPicker_ReenteringDoesNotPaintTheLastLookupOverThisOne(t *testing
 	// The WORK is on the layer's status row now, naming the request and the
 	// subject; the note is cleared by the arm that fires it, so the previous
 	// lookup's count cannot stand over a fresh one.
-	poWantPaneLine(t, screen, "Looking up the assets bought from")
+	poWantPaneLine(t, screen, "Loading assets from")
 	poRejectPaneLine(t, screen, "3 asset(s)")
 	poRejectPaneLine(t, screen, "Enter=Pick asset")
 	poAssertFits(t, "re-entered the asset picker", screen)
@@ -4519,6 +4519,13 @@ func TestPOSourceChooser_TheHeaderGivesGroundByRank(t *testing.T) {
 
 // TestPOReorder_AddAllDoesNotInheritTheLastFailuresDetail is the stale-detail
 // leak in the one arm that still wrote the screen-level failure line by hand.
+//
+// IT IS A MECHANISM GUARD, NOT A REGRESSION TEST. Since the phase-change clear
+// (Update's key dispatch) an order-level error cannot be NAVIGATED onto the
+// reorder picker at all, which is why the setup has to write it back by hand —
+// see the comment at that line. What is held is the ARM's own discipline: that
+// `a` answers in the picker's note and never writes the screen's failure
+// headline itself. Do not read the state it builds as one an operator reaches.
 //
 // The failure line is a headline plus an unbounded OMS body underneath it, and
 // the two are set together for exactly this reason: writing only the headline
