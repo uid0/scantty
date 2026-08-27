@@ -111,7 +111,10 @@ const (
 	poAddPhaseChoose
 	// poAddPhaseConfirm shows the resolved item with enough identity to say yes.
 	poAddPhaseConfirm
-	// poAddPhasePrice prompts for quantity and unit cost, prefilled.
+	// poAddPhasePrice prompts for quantity and price, prefilled — in the
+	// vendor's CASES at a CASE COST where the candidate declares a case
+	// size, converted to the base quantity and per-base-unit price the
+	// wire carries (po_case_entry.go).
 	poAddPhasePrice
 	// poAddPhaseAdding is the POST in flight. Frozen: what was confirmed has
 	// already gone, so nothing may change under it.

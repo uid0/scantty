@@ -53,9 +53,11 @@
 //	                    blank field omits unit_cost so the backend prices the
 //	                    line from the item-supplier's stored unit_cost, which
 //	                    is what the web create form does too (sc-gnzw).
-//	                    Case-packed inventory lines (qpp > 1) enter that cost
-//	                    per case or per unit (ctrl+t toggles the basis,
-//	                    deriving unit_cost = case_cost / qpp — op-7j8v).
+//	                    A case-packed inventory line (qpp > 1) is ENTERED in
+//	                    CASES at a CASE COST — one basis for both typed rows,
+//	                    ctrl+t flips it — and the payload carries the base
+//	                    quantity and per-base-unit cost derived from them
+//	                    (po_case_entry.go carries the whole note — op-7j8v).
 //	                    Only item-supplier-backed lines prompt for a per-line
 //	                    expected shipment date: the backend's create path reads
 //	                    expected_shipment_date on the item_supplier branch only

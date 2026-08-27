@@ -67,8 +67,8 @@ What is worth knowing before touching any of them:
   12. `poOpensAtCaseBasis` answers that once: whole cases (or no prefill) opens
   in cases, anything else opens in units. Ctrl-T is then a BAR GATE
   (`poFlipsToCases`) rather than a refusal — the key is not named while it could
-  only decline, and the derivation row says standing why, and which two
-  quantities bring it back.
+  only decline, and the derivation row says so standing, naming the two
+  quantities that bring it back (`poUnwholeCaseNote`).
 - **The derived SET is the four write endpoints, not the screen that was
   reported.** `CreatePurchaseOrder` (`po_create.go`'s line form, reached from
   the items picker, the reorder queue's single-row enter and Ctrl-E on the
