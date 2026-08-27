@@ -2007,8 +2007,14 @@ func actionBarRowsFor(width int, items []actionBarItem) int {
 	return 1 + len(actionBarKeyLines(width, items))
 }
 
-// renderActionBarWrapped is renderActionBar for a screen whose keys need more
-// than one line: the rule, then every key line.
+// renderActionBarWrapped is the program's ONE bar renderer: the rule, then every
+// key line actionBarKeyLines lays out.
+//
+// "Wrapped" names what it can do rather than what it always does, and there is
+// no non-wrapping sibling to reach for instead — actionBarKeyLines returns a
+// single line whenever the keys fit on one, by the same gutter tightening the
+// separate one-line renderer used before this absorbed it, so a bar that already
+// fitted draws byte for byte what it drew then.
 func renderActionBarWrapped(width int, items []actionBarItem) string {
 	if width < 8 {
 		width = 8

@@ -306,12 +306,36 @@ var jdeInertCases = map[string]string{
 
 	// The MINIMAL-list states, which are inert BY CONSTRUCTION and are here for
 	// a different sweep. Each has exactly one navigable row — the trailing add
-	// row, or the single file — so no movement key has anywhere to go and their
-	// bars rightly name none. They earn their keep in
+	// row, or the single file — so no movement key can move anything.
+	//
+	// They earn their keep in
 	// TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves, which is the sweep
 	// they were added for: that is where "the body overflows" and "a page has
 	// somewhere to land" come apart, and until these existed every list in
 	// jdeScreenStates carried several rows and the pair could not be told apart.
+	//
+	// WHAT THEIR BARS STILL CLAIM, said here because this is the one place a
+	// reader meets these states and could otherwise take the class for closed.
+	// Three of the four go on NAMING UP/DN with nothing to move: kitListBarItems,
+	// chainBarItems, levelsBarItems and maintenance's sublistBarItems append the
+	// pair unconditionally, so on a one-row list the bar advertises it while the
+	// clamping cursor stays put and writes no note. Only
+	// PurchaseOrderAttachmentsScreen/one file reads as this table's reason
+	// describes, because po_attachments gates its entry on listMoves().
+	//
+	// That is a live named-and-dead gap for UP/DN. It is PRE-EXISTING — the
+	// unconditional entry is older than the drawability conversion and unchanged
+	// by it — and it is ROUTED rather than fixed here. The convention it is
+	// missing is already written four times over: po_attachments' listMoves(),
+	// service_status_screen nesting the entry inside len(services) > 1,
+	// po_create's barItems on rowCount() > 1, receive_form's reviewBarItems on
+	// reviewRows() > 1. Each of the four sheets has its own navigable row count
+	// in hand where the bar is built (kitAddRow()+1, chainAddRow()+1,
+	// len(levels)+1, count+1), so the fix is the same shape as those.
+	//
+	// No sweep reports it today, which is why it is written down: the paging
+	// sweeps match "PgUp/PgDn=" alone, so the movement pair standing beside it on
+	// the same bar goes unasked.
 	"InventoryItemFormScreen/kit list empty":     "one navigable row (the add row), so nothing moves",
 	"InventoryItemFormScreen/chain list empty":   "one navigable row (the add row), so nothing moves",
 	"StorageSlotGenerateScreen/level list empty": "one navigable row (the add row), so nothing moves",
