@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // The answer surface: where the New PO screen's reply to a keypress is drawn,
@@ -187,6 +188,160 @@ func TestPOCreate_ABoxPhaseDrawsTheBoxAndItsAnswerAtOnce(t *testing.T) {
 					t.Errorf("%s at 80x%d: the answer to the key that opened the box "+
 						"(%q) is not on the pane:\n%s", b.c.name, h, answer, pane)
 				}
+			})
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The answer shares the status row; the work in flight does not give
+// ---------------------------------------------------------------------------
+
+// poBoxInFlight drives a box-pinning phase into a state with a REQUEST OUT, and
+// sets the screen's answer from that phase's own writer.
+//
+// A map keyed by phase rather than a slice, so poBoxPhases' discovery and this
+// table are checked against each other: a phase that grows a search box later
+// is discovered there and FAILS here until somebody says what "a request is
+// out" means on it. Absent and empty are different states, which is the shape
+// poPhasesWithoutKeys uses for the same reason.
+//
+// The LEAD is set directly rather than pressed, because what is under test is
+// the composer's bound and the longest lead any arm happens to carry today is
+// not the bound. Each entry writes the field that phase's own arms write.
+var poBoxInFlight = map[poPhase]struct {
+	// inFlight leaves a request genuinely out with the box open.
+	inFlight func(t *testing.T, r Root, s *PurchaseOrderCreateScreen) Root
+	// setLead writes the phase's answer, the way that phase's arms write it.
+	setLead func(s *PurchaseOrderCreateScreen, lead string)
+}{
+	poPhaseItemPick: {
+		inFlight: func(t *testing.T, r Root, s *PurchaseOrderCreateScreen) Root {
+			t.Helper()
+			s.itemSuppliersLoad, s.itemSuppliersAll, s.itemSuppliers = true, nil, nil
+			return r
+		},
+		setLead: func(s *PurchaseOrderCreateScreen, lead string) {
+			s.itemSuppliersNote = pickerNote{text: lead, level: StatusWarn}
+		},
+	},
+	poPhaseAssetPick: {
+		inFlight: func(t *testing.T, r Root, s *PurchaseOrderCreateScreen) Root {
+			t.Helper()
+			s.assetsLoading, s.assetsQuery = true, "zzz"
+			return r
+		},
+		setLead: func(s *PurchaseOrderCreateScreen, lead string) {
+			s.assetsNote = pickerNote{text: lead, level: StatusWarn}
+		},
+	},
+	poPhaseReview: {
+		inFlight: func(t *testing.T, r Root, s *PurchaseOrderCreateScreen) Root {
+			t.Helper()
+			s.pending = true
+			return r
+		},
+		setLead: func(s *PurchaseOrderCreateScreen, lead string) { s.pendingLead = lead },
+	},
+}
+
+// TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight is the guard PR #152 put on
+// this row, re-proved now that a SECOND writer can reach it.
+//
+// That defect: the lead was joined in front of the working sentence unbounded,
+// so with the longest lead on the screen "a purchase order is being created"
+// was pushed off a row that cannot fold — and the frozen bar names almost
+// nothing, so from then on the pane did not say a submit was out. It was fixed
+// by RESERVING the subject before the lead is allowed to expand, and by cutting
+// poSubmitWords from 32 cells to 20 so it fits what that reservation leaves.
+//
+// Until this change the only writer of that lead was pendingDecline, which
+// fires only while the submit is out. Now every phase's ANSWER can reach the
+// row, so the question has to be asked again of a lead of ANY length and of
+// every subject that can share the row with one.
+//
+// The answer is that they cannot collide, and the reason is the CAP rather than
+// the wording: poLeadOnto reserves the lead's opening clause at no more than
+// half the row, so at 80 columns the subject is bounded to at least
+// 51 - 25 - 3 = 23 cells whatever the lead says. An over-long lead is therefore
+// the provable worst case — every lead past the cap produces the identical
+// reservation — which is why the fixture uses one instead of the longest
+// sentence that happens to be in the file today. That is this project's
+// "a fixture that cannot reach the bound makes the assertion vacuous" rule
+// pointed the other way: reach PAST it, once, rather than hope.
+//
+// Two things are asserted of every subject that can share the row, both derived
+// from the composer's own arithmetic rather than transcribed:
+//
+//   - the subject keeps its guaranteed PREFIX, which is the FACT — the words
+//     that say what work is out — because that is what leads every one of these
+//     sentences. What gives is the tail, where the identifier is.
+//   - poSubmitWords survives WHOLE, which is the sentence PR #152 was about,
+//     and it is checked against the floor as well as against the drawn row, so
+//     lengthening it or narrowing the pane fails here rather than in the field.
+func TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight(t *testing.T) {
+	box := poBoxPhases(t)
+	for _, b := range box {
+		if _, ok := poBoxInFlight[b.c.phase]; !ok {
+			t.Errorf("phase %v pins a typed box, so a lead can reach its status row, "+
+				"but poBoxInFlight has no entry saying what a request in flight looks "+
+				"like there — the bound would be unchecked on it", b.c.phase)
+		}
+	}
+
+	// A lead past the cap. Every longer one reserves exactly the same cells, so
+	// this IS the worst case rather than a sample of it.
+	longLead := strings.Repeat("z", 200)
+
+	for _, b := range box {
+		spec, ok := poBoxInFlight[b.c.phase]
+		if !ok {
+			continue
+		}
+		for _, h := range poDrawableHeights() {
+			t.Run(fmt.Sprintf("%s/80x%d", b.c.name, h), func(t *testing.T) {
+				r, screen := b.reach(t, h)
+				r = spec.inFlight(t, r, screen)
+				spec.setLead(screen, longLead)
+				if poFrameRefused(t, screen, h) {
+					t.Skip("the layer refuses this frame, which is jdeTooShort's rule")
+				}
+				subject := screen.workingSubject()
+				if subject == "" {
+					t.Fatalf("%s: the setup left no request in flight, so this case "+
+						"asserts nothing about a row it never shares", b.c.name)
+				}
+				row, _ := screen.statusPlan()
+
+				// The floor the composer guarantees, derived from it rather
+				// than written down: the lead's clause is capped at half the
+				// row and the joint costs its own width.
+				pane := screen.paneWidth()
+				floor := pane - pane/2 - lipgloss.Width(poLeadJoint)
+				if floor < 1 {
+					t.Fatalf("the pane leaves the subject %d cells, which is not a floor", floor)
+				}
+				// pickerClip spends one cell of that on the ellipsis.
+				kept := cellPrefix(subject, floor-1)
+				if !strings.Contains(row, kept) {
+					t.Errorf("%s at 80x%d: a %d-cell lead pushed the work in flight off "+
+						"the status row.\n\tsubject: %q\n\tguaranteed prefix: %q\n\trow: %q",
+						b.c.name, h, lipgloss.Width(longLead), subject, kept, row)
+				}
+				// And the sentence PR #152 was about survives WHOLE, not as a
+				// prefix the clip happened to spare.
+				if strings.HasPrefix(subject, poSubmitWords) {
+					if w := lipgloss.Width(poSubmitWords); w > floor {
+						t.Errorf("poSubmitWords is %d cells and the subject's floor at "+
+							"80x%d is %d — the fixed words no longer fit what the "+
+							"reservation leaves", w, h, floor)
+					}
+					if !strings.Contains(row, poSubmitWords) {
+						t.Errorf("%s at 80x%d: the status row %q does not carry %q whole",
+							b.c.name, h, row, poSubmitWords)
+					}
+				}
+				poAssertFits(t, b.c.name+" under a long lead", screen)
 			})
 		}
 	}

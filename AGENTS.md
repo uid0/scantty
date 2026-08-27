@@ -798,7 +798,25 @@ touching any screen an operator drives:
   has taken the essential row: leading unconditionally cost the working sentence
   its tail on frames that had a header row going spare
   (`nothing to pick · Looking up the items Acme Supply…`).
-  Two derived sweeps hold it, both watched to fail first
+  **THE ANSWER MAY NOT DISPLACE THE WORK IN FLIGHT**, which is the guard #152
+  put on this row and which had to be re-proved once a SECOND writer could reach
+  it. It holds, and by the CAP rather than by any wording: `poLeadOnto` reserves
+  the lead's opening clause at no more than HALF the row, so at 80 columns the
+  subject keeps at least `51 - 25 - 3 = 23` cells whatever the lead says, and
+  `poSubmitWords` is 20 for exactly that reason. Only three subjects can ever
+  share the row at all — the submit's, the item picker's and the asset
+  picker's — because a lead is applied only where a box is pinned, and each
+  leads with its FACT ("Creating the PO for", "Reloading the items",
+  "Searching") so what the clip takes is the identifier at the tail. Because the
+  cap makes every lead past it produce the identical reservation, an OVER-LONG
+  lead is the provable worst case rather than a sample of one, which is what
+  `TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight` drives — the
+  vacuous-fixture rule pointed the other way: reach PAST the bound once rather
+  than hope the longest sentence in the file reaches it. Its `poBoxInFlight`
+  table is keyed by phase and checked against the discovered box set, so a phase
+  that grows a search box later fails until somebody says what "a request is
+  out" means on it.
+  Two derived sweeps hold the rest, both watched to fail first
   (`po_create_answer_surface_test.go`): the phases come from `poPhaseCases()`
   and which of them pin a box is DISCOVERED by asking `essentialBoxRow`, never
   listed. And a pane change is necessary and not sufficient — the second sweep
