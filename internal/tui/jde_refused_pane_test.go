@@ -316,26 +316,42 @@ var jdeInertCases = map[string]string{
 	//
 	// WHAT THEIR BARS STILL CLAIM, said here because this is the one place a
 	// reader meets these states and could otherwise take the class for closed.
-	// Three of the four go on NAMING UP/DN with nothing to move: kitListBarItems,
-	// chainBarItems, levelsBarItems and maintenance's sublistBarItems append the
-	// pair unconditionally, so on a one-row list the bar advertises it while the
-	// clamping cursor stays put and writes no note. Only
+	// Most of them go on NAMING UP/DN with nothing to move — only
 	// PurchaseOrderAttachmentsScreen/one file reads as this table's reason
-	// describes, because po_attachments gates its entry on listMoves().
+	// describes — and that is a live named-and-dead gap for UP/DN, PRE-EXISTING
+	// and ROUTED rather than fixed here.
 	//
-	// That is a live named-and-dead gap for UP/DN. It is PRE-EXISTING — the
-	// unconditional entry is older than the drawability conversion and unchanged
-	// by it — and it is ROUTED rather than fixed here. The convention it is
-	// missing is already written four times over: po_attachments' listMoves(),
-	// service_status_screen nesting the entry inside len(services) > 1,
-	// po_create's barItems on rowCount() > 1, receive_form's reviewBarItems on
-	// reviewRows() > 1. Each of the four sheets has its own navigable row count
-	// in hand where the bar is built (kitAddRow()+1, chainAddRow()+1,
-	// len(levels)+1, count+1), so the fix is the same shape as those.
+	// THE RULE, not a list of the sites, because a list is what keeps being
+	// wrong: a bar that appends the movement pair WITHOUT consulting its
+	// navigable row count names a key a CLAMPING list cursor cannot honour once
+	// the list is down to ONE navigable row. jdeClampPick returns the row it was
+	// handed, so the cursor stays, no note is written, and the pane redraws byte
+	// for byte under a bar saying UP/DN. A FIELD form is not an instance: its
+	// cursor WRAPS, so with two or more fields UP/DN always changes the row —
+	// the exemption AGENTS.md already records.
 	//
-	// No sweep reports it today, which is why it is written down: the paging
-	// sweeps match "PgUp/PgDn=" alone, so the movement pair standing beside it on
-	// the same bar goes unasked.
+	// HOW TO FIND EVERY INSTANCE, which is the thing that stays true as sheets
+	// are added: a bar builder that appends {"UP/DN", …} with no row-count
+	// condition on it. Counting them here would only be right until the next one.
+	//
+	// The LAYER is where most of the work is, and it changes the SHAPE of the
+	// work rather than its length: jdePickBarWith appends the pair
+	// unconditionally and is the bar every columnar picker draws, so that is ONE
+	// edit and not one per screen. It is reachable without any fixture — filter a
+	// single-select picker to a query nothing matches and the synthetic "(none)"
+	// row is left alone (it is prepended before the filter runs), so pickOptions
+	// is 1, the bar says UP/DN=Move, and Down clamps to the row it was already on.
+	//
+	// The convention is already kept wherever a builder consults its count, which
+	// is the model to copy: po_attachments' listMoves(), service_status_screen
+	// nesting the entry inside len(services) > 1, po_create's barItems on
+	// rowCount() > 1, receive_form's reviewBarItems on reviewRows() > 1.
+	//
+	// No sweep reports any of it today, which is why it is written down: the
+	// paging sweeps match "PgUp/PgDn=" alone, so the movement pair standing
+	// beside it on the same bar goes unasked. Whoever takes this should expect to
+	// add the UP/DN half of that biconditional first — then the sweep finds the
+	// instances instead of a roster having to name them.
 	"InventoryItemFormScreen/kit list empty":     "one navigable row (the add row), so nothing moves",
 	"InventoryItemFormScreen/chain list empty":   "one navigable row (the add row), so nothing moves",
 	"StorageSlotGenerateScreen/level list empty": "one navigable row (the add row), so nothing moves",
