@@ -1470,20 +1470,30 @@ func (s *PurchaseOrderCreateScreen) enterLinePhase(
 		// operator can keep it, change it, or clear it back to catalog pricing
 		// (sc-gnzw).
 		//
-		// package_cost wins here too, divided back down. It is the figure the
-		// vendor charges and the one OMS derives unit_cost FROM, rounding to
-		// two decimals as it goes (backend/inventory/models/core.py), so
-		// sourcing the per-unit price from unit_cost feeds that rounding back
-		// in: a 10.00 case of 3 comes back as 3.33, and three of them are 9.99.
-		// Doing it only on the case branch would leave the same queue row
-		// priced two ways depending on whether its suggestion happened to be a
-		// whole number of cases.
-		unit := unitCost
-		if packageCost > 0 {
-			unit = poUnitFromCase(packageCost, qpp)
-		}
-		if unit > 0 {
-			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(unit))
+		// package_cost wins here too, divided back down THROUGH THE EXACT
+		// HELPER. It is the figure the vendor charges and the one OMS derives
+		// unit_cost FROM, rounding to two decimals as it goes
+		// (backend/inventory/models/core.py), so sourcing the per-unit price
+		// from unit_cost feeds that rounding back in: a 10.00 case of 3 comes
+		// back as 3.33, and three of them are 9.99. Doing it only on the case
+		// branch would leave the same queue row priced two ways depending on
+		// whether its suggestion happened to be a whole number of cases.
+		//
+		// The poCasePacked gate is a DEFENSIVE GUARD, not a fix for anything
+		// observed: it fixes the denominator this division needs to a size the
+		// row actually STATED, so a package_cost arriving beside no case size
+		// could never be prefilled into a row labelled Unit cost — which is the
+		// captain's original defect. No wire shape reaches it today
+		// (ItemSupplier.quantity_per_package is a non-null PositiveIntegerField
+		// defaulting to 1 with MinValueValidator(1), and reorder_data always
+		// emits the key), and at qpp 1 the two figures are equal by
+		// construction, so the guard costs nothing and claims nothing.
+		switch {
+		case packageCost > 0 && poCasePacked(qpp):
+			s.lineInputs[poLineFieldCost].SetValue(
+				poUnitCostFrom(poFormatCost(packageCost), packageCost, qpp))
+		case unitCost > 0:
+			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(unitCost))
 		}
 	}
 	s.lineInputs[s.lineFocused].Focus()
@@ -1761,11 +1771,17 @@ var errInvalidCost = errors.New("cost must be a non-negative number")
 
 // poDeriveUnitCost converts a raw cost-field entry into the per-item unit_cost
 // carried by the payload. When basisCase is true the raw value is a per-CASE
-// cost and is divided by qpp (full precision — no cent rounding, so odd case
-// sizes such as $10 / 3 don't drift); otherwise it is already a per-unit cost.
-// provided is false (with a nil error) when the field is blank, signalling the
-// caller to omit unit_cost so the backend derives it from the stored catalog
-// cost. A non-numeric or negative entry returns errInvalidCost.
+// cost and is divided by qpp; otherwise it is already a per-unit cost. provided
+// is false (with a nil error) when the field is blank, signalling the caller to
+// omit unit_cost so the backend derives it from the stored catalog cost. A
+// non-numeric or negative entry returns errInvalidCost.
+//
+// The division goes through poUnitCostValue, so it is the SAME arithmetic the
+// box the operator is looking at was filled by: exact in decimal, quantised at
+// the four-place column OMS stores. Divided in float64 the payload and the row
+// could disagree — 10.00 over 3 posts 3.3333333333333335 while the box, after
+// a Ctrl-T, showed something else — and a screen that says one price while the
+// order records another is the defect this whole file exists to remove.
 func poDeriveUnitCost(raw string, basisCase bool, qpp int) (unit float64, provided bool, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1776,10 +1792,7 @@ func poDeriveUnitCost(raw string, basisCase bool, qpp int) (unit float64, provid
 		return 0, false, errInvalidCost
 	}
 	if basisCase {
-		if qpp < 1 {
-			qpp = 1
-		}
-		return v / float64(qpp), true, nil
+		return poUnitCostValue(raw, v, qpp), true, nil
 	}
 	return v, true, nil
 }
@@ -1823,9 +1836,11 @@ func (s *PurchaseOrderCreateScreen) caseFlipOffered() bool {
 // for a case-packed inventory line (a no-op for any other line), moving BOTH
 // typed rows and both labels together.
 //
-// Both values are converted so the order is preserved exactly: quantity by the
-// case size, price at full precision (case = unit × qpp) so an odd case size
-// cannot drift a fraction of a penny per flip. Nothing on this screen carries a
+// Both values are converted so the order is preserved: quantity by the case
+// size, price in exact DECIMAL arithmetic (po_case_entry.go's poUnitCostFrom /
+// poCaseCostFrom) quantised at the four-place column unit_cost_ordered stores,
+// so an odd case size settles on the figure the order will really carry rather
+// than drifting into binary noise the box then truncates. Nothing on this screen carries a
 // placeholder — a placeholder fills the columnar input area and hides the
 // underscored run that says the field is EMPTY — so what each row is asking for
 // is carried by its basis-aware LABEL (lineFieldLabel) and by the derivation
@@ -1853,7 +1868,7 @@ func (s *PurchaseOrderCreateScreen) toggleEntryBasis() tea.Cmd {
 	costRaw := strings.TrimSpace(s.lineInputs[poLineFieldCost].Value())
 	if v, err := strconv.ParseFloat(costRaw, 64); err == nil && costRaw != "" {
 		if s.caseBasis {
-			s.lineInputs[poLineFieldCost].SetValue(poFormatCost(poUnitFromCase(v, s.pickedQPP)))
+			s.lineInputs[poLineFieldCost].SetValue(poUnitCostFrom(costRaw, v, s.pickedQPP))
 		} else {
 			s.lineInputs[poLineFieldCost].SetValue(poCaseCostFrom(costRaw, v, s.pickedQPP))
 		}

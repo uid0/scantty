@@ -769,7 +769,12 @@ func TestPOReorderQueue_BothEntryPointsPriceTheRowTheSameWay(t *testing.T) {
 	}
 	// And the price both of them carry is the case price divided, not the
 	// server's rounded per-unit copy of it: three of 3.33 are 9.99.
-	if got := bulkLine["unit_cost"]; got != 10.0/3.0 {
+	//
+	// 3.3333 exactly, not 10.0/3.0: the division is decimal and quantised at
+	// the four-place column unit_cost_ordered stores, so the figure the payload
+	// carries is the one the line form's box showed. Asserting the binary
+	// quotient here would pin a number no surface displays.
+	if got := bulkLine["unit_cost"]; got != 3.3333 {
 		t.Errorf("unit_cost = %v, want the 10.00 case over 3 rather than the rounded 3.33", got)
 	}
 }
@@ -817,5 +822,82 @@ func TestPOCaseCost_ADerivedCasePriceIsNotBinaryNoise(t *testing.T) {
 	}
 	if got := c2.lineInputs[poLineFieldCost].Value(); got != "3.15" {
 		t.Errorf("case cost after the flip = %q, want the 1.05 unit price as a 3.15 case", got)
+	}
+}
+
+// TestPOAddLine_TheFlipIsExactOnACaseSizeThatDoesNotDivide is the same round
+// trip as the test above over a case size the arithmetic does NOT survive in
+// binary — which is why that one could not see this: 48.00 over 24 is exactly
+// 2, so a float64 divide and a decimal one agree.
+//
+// A vendor shipping 12 at a stored 0.0500 gives 0.6/12 = 0.049999999999999996
+// in float64, and the cost row's CharLimit of 14 then CUT it to
+// "0.049999999999" — a price the operator never typed, in the box they are
+// being asked to confirm, and posted verbatim by the next Enter.
+func TestPOAddLine_TheFlipIsExactOnACaseSizeThatDoesNotDivide(t *testing.T) {
+	fake := &poAddFake{rows: []poAddCatalogRow{
+		{itemSupplier: 31, name: "Washer, nylon", sku: "W-1", supplierSKU: "AF-12-PENNY",
+			perPackage: 12, suggestQty: 12, suggestCost: "0.0500"},
+	}}
+	r, s := poCaseAdd(t, fake, 80, 30, "AF-12-PENNY")
+	if got := s.costIn.Value(); got != "0.6" {
+		t.Fatalf("case cost prefill = %q, want the 0.0500 unit price as a 0.60 case", got)
+	}
+
+	r = key(t, r, poCtrlT())
+	if s.caseBasis {
+		t.Fatal("ctrl+t did not move the rows onto the unit basis")
+	}
+	if got := s.costIn.Value(); got != "0.05" {
+		t.Errorf("cost after the flip = %q, want the 0.05 the item is priced at", got)
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(fake.adds) != 1 {
+		t.Fatalf("the add posted %d time(s), want once", len(fake.adds))
+	}
+	if got := fake.adds[0]["quantity"]; got != float64(12) {
+		t.Errorf("quantity = %v, want the 12 units one case of 12 comes to", got)
+	}
+	if got := fake.adds[0]["unit_cost"]; got != "0.05" {
+		t.Errorf("unit_cost = %v, want the 0.05 the item is priced at", got)
+	}
+}
+
+// TestPOCreate_TheFlipIsExactOnACasePriceThatDoesNotDivide is the same fault on
+// the create screen, where the box holds 20 characters and so showed the whole
+// of it: a 10.00 case of 3 flipped to units drew "3.3333333333333335" and
+// posted that.
+//
+// 3.3333 is the honest answer rather than a rounded one: unit_cost_ordered is a
+// four-place decimal, so it is the figure the order will carry whatever this
+// screen displays, and showing more digits than the column keeps is a screen
+// stating a price the record cannot hold.
+func TestPOCreate_TheFlipIsExactOnACasePriceThatDoesNotDivide(t *testing.T) {
+	fake := &poPickFake{reorder: 1, reorderPack: 3, reorderPackageCost: "10.00",
+		reorderUnitCost: "3.33", reorderQty: 3}
+	r, s := poCaseLineForm(t, fake, 80, "r")
+	if got := s.lineInputs[poLineFieldCost].Value(); got != "10" {
+		t.Fatalf("case cost prefill = %q, want the queue row's 10.00 case price", got)
+	}
+
+	r = key(t, r, poCtrlT())
+	if s.caseBasis {
+		t.Fatal("ctrl+t did not move the rows onto the unit basis")
+	}
+	if got := s.lineInputs[poLineFieldCost].Value(); got != "3.3333" {
+		t.Errorf("cost after the flip = %q, want the 10.00 case over 3 at the column OMS stores", got)
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // stage the line
+	r = key(t, r, poRuneKey("d"))                 // review
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // submit
+
+	line := fake.createdLine(t, 0)
+	if got := line["quantity"]; got != float64(3) {
+		t.Errorf("quantity = %v, want the 3 base units one case of 3 comes to", got)
+	}
+	if got := line["unit_cost"]; got != 3.3333 {
+		t.Errorf("unit_cost = %v, want 3.3333 — the box's own figure, not a binary quotient", got)
 	}
 }

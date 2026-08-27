@@ -48,6 +48,15 @@
 // side by side. Hence one basis per line, flipped with Ctrl-T, governing both
 // rows and both labels together.
 //
+// The flip converts both values EXACTLY, in decimal (big.Rat), quantised at the
+// four-place column unit_cost_ordered actually stores — poUnitCostFrom and
+// poCaseCostFrom, never the float64 pair above. A case price that divides
+// evenly round-trips byte for byte; one that does not (10.00 over 3) settles on
+// the 3.3333 the order will really carry, so the box and the wire state the
+// same number. Done in float64 this drifted visibly: 0.60 flipped to units gave
+// 0.049999999999999996, which the cost row's CharLimit cut to
+// "0.049999999999", and Enter posted that for an item priced 0.05.
+//
 // Base-unit entry stays reachable on purpose. quantity_ordered is any positive
 // integer, so a broken case or an odd top-up is a legitimate order, and a form
 // that could only express whole cases would be a refusal the operator cannot
@@ -115,16 +124,69 @@ func poWholeCases(base, qpp int) (cases int, exact bool) {
 	return base / size, base%size == 0
 }
 
-// poUnitFromCase and poCaseFromUnit convert a price between the two bases at
-// FULL precision. No cent rounding: a case size that does not divide evenly
-// would otherwise drift a fraction of a penny per unit every time the basis
-// flipped, and the value that reaches the payload is the unrounded one.
+// poUnitFromCase and poCaseFromUnit convert a price between the two bases in
+// float64. They are for DERIVED PROSE only — the "$48.00/case ÷ 24 =
+// $2.00/unit" line, the cart's extended total, and the fallback for a box
+// holding something no decimal reader can take.
+//
+// Nothing that reaches a typed BOX or the PAYLOAD may come from them, and that
+// is not a style rule: money is decimal and float64 is binary, so 0.6/12 is
+// 0.049999999999999996 and 0.05*12 is 0.6000000000000001. Rendered into a box
+// those are a price the operator never typed — and the add-line cost row's
+// CharLimit of 14 then CUT one to "0.049999999999", which Enter posted. Use
+// poUnitCostFrom / poCaseCostFrom / poUnitCostValue, which convert the decimal
+// exactly.
 func poUnitFromCase(caseCost float64, qpp int) float64 {
 	return caseCost / float64(poPackSize(qpp))
 }
 
 func poCaseFromUnit(unitCost float64, qpp int) float64 {
 	return unitCost * float64(poPackSize(qpp))
+}
+
+// poUnitCostPlaces is how far a derived per-unit price is carried. OMS's
+// unit_cost_ordered is a 4-place decimal, so anything past that is thrown away
+// server-side; carrying fewer would be this client rounding a price it was not
+// asked to round.
+//
+// It is the QUANTISATION POINT and there is exactly one of it, because the
+// alternative is a screen showing one price and the order recording another.
+// A case price that does not divide evenly has no exact per-unit form at any
+// number of places — 10.00 over 3 is 3.333… forever — so the choice is not
+// between rounding and not rounding, it is between rounding HERE, where the
+// operator can see the figure, and rounding on the server after they have
+// committed.
+const poUnitCostPlaces = 4
+
+// poUnitCostFrom is what a UNIT-cost box is filled with: the per-base-unit
+// price derived from a case price the operator or the server stated as the
+// decimal string `raw` (with `cost` the same figure already parsed as a float,
+// for the fallback).
+//
+// It is poCaseCostFrom's other half and exists for the same reason: the divide
+// is on MONEY, and doing it in float64 put 0.049999999999 into the box for an
+// item priced 0.05 and posted it. The quotient is exact in big.Rat and is
+// quantised at poUnitCostPlaces — the column the value is going to land in
+// anyway — so what the box shows and what the wire records cannot disagree.
+func poUnitCostFrom(raw string, cost float64, qpp int) string {
+	r, ok := new(big.Rat).SetString(strings.TrimSpace(raw))
+	if poDecimalPlaces(raw) < 0 || !ok {
+		return poFormatCost(poUnitFromCase(cost, qpp))
+	}
+	unit := new(big.Rat).Quo(r, new(big.Rat).SetInt64(int64(poPackSize(qpp))))
+	return poTrimCostZeros(unit.FloatString(poUnitCostPlaces))
+}
+
+// poUnitCostValue is the same derivation for a caller that needs the NUMBER
+// rather than the box string — the create payload's unit_cost is a *float64 and
+// stays one, so the conversion is done exactly first and the wire's own type is
+// produced from the result, never the other way round.
+func poUnitCostValue(raw string, cost float64, qpp int) float64 {
+	v, err := strconv.ParseFloat(poUnitCostFrom(raw, cost, qpp), 64)
+	if err != nil {
+		return poUnitFromCase(cost, qpp)
+	}
+	return v
 }
 
 // poCaseCostFrom is what a case-cost BOX is filled with: the price of one case,

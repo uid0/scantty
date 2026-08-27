@@ -87,6 +87,23 @@ What is worth knowing before touching any of them:
   the reorder queue reached the form as a singles line. A comment asserting what
   the wire does NOT carry is worth checking against
   `backend/reorder_queue/views.py` before trusting it.
+- **`package_cost` is the authoritative price and `unit_cost` its rounded
+  derivative**, so every entry point prices a case-packed line FROM the case
+  price. OMS derives `unit_cost = package_cost / quantity_per_package` rounded
+  to two decimals (`backend/inventory/models/core.py`), so sourcing the per-unit
+  figure from `unit_cost` feeds that rounding back in: a 10.00 case of 3 comes
+  back as 3.33 and three of them are 9.99. The reorder queue's BULK add
+  (`space`+`a`) was the last path still on `unit_cost` — it now stages up to
+  0.005 more or less per base unit than it used to, scaling with the case size.
+- **Money is decimal; do the arithmetic in `big.Rat`, not `float64`.**
+  `poUnitCostFrom` / `poCaseCostFrom` / `poUnitCostValue`
+  (`internal/tui/po_case_entry.go`) are the ONLY conversions allowed to reach a
+  typed box or a payload, quantised at `poUnitCostPlaces` — the four-place
+  column `unit_cost_ordered` really stores, so a screen cannot show a price the
+  record cannot hold. `poUnitFromCase` / `poCaseFromUnit` are float and are for
+  derived PROSE only. A float divide put 0.049999999999999996 in the add-line
+  cost box for an item priced 0.05, the row `CharLimit` of 14 cut it to
+  `0.049999999999`, and Enter posted that.
 
 ### A line goes onto a draft order by scanning an identifier
 

@@ -611,8 +611,8 @@ func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
 		Quantity:       qty,
 		ItemSupplierID: it.ItemSupplierID,
 	}
-	// package_cost is the SOURCE, divided back down at full precision, with
-	// unit_cost the fallback for a row that carries no case price.
+	// package_cost is the SOURCE, divided back down through the shared exact
+	// helper, with unit_cost the fallback for a row that carries no case price.
 	//
 	// It is what the vendor charges and what an operator reads off the invoice;
 	// OMS derives unit_cost FROM it by dividing and rounding to two decimals
@@ -624,9 +624,23 @@ func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
 	// prices depending on which key was pressed, with Ctrl-E on a bulk-staged
 	// line then showing a case cost the picker row disagreed with. Preserving
 	// today's price would have meant preserving today's error.
+	//
+	// poUnitCostValue and not a float divide, for the reason po_case_entry.go
+	// records: the same row has to come out at the same price here, in the line
+	// form's box and in the create payload, and a binary quotient agrees with a
+	// decimal one only when the case size happens to divide evenly.
+	//
+	// The poCasePacked gate is a DEFENSIVE GUARD and fixes nothing observed —
+	// it simply refuses to divide by a denominator the row did not state, so a
+	// case price could never be staged as a per-unit one. reorder_data cannot
+	// produce that shape today (quantity_per_package is a non-null
+	// PositiveIntegerField, default 1, MinValueValidator(1), and the key is
+	// always emitted), and at qpp 1 package_cost and unit_cost are equal by
+	// construction.
 	unitCost := 0.0
-	if v, err := strconv.ParseFloat(string(it.PackageCost), 64); err == nil && v > 0 {
-		unitCost = poUnitFromCase(v, it.QuantityPerPackage)
+	if v, err := strconv.ParseFloat(string(it.PackageCost), 64); err == nil && v > 0 &&
+		poCasePacked(it.QuantityPerPackage) {
+		unitCost = poUnitCostValue(string(it.PackageCost), v, it.QuantityPerPackage)
 	} else if v, err := strconv.ParseFloat(string(it.UnitCost), 64); err == nil {
 		unitCost = v
 	}

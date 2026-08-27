@@ -56,19 +56,24 @@ func TestPODeriveUnitCost(t *testing.T) {
 	}
 }
 
-// TestPODeriveUnitCost_FullPrecision guards the "don't round to cents" contract:
-// an odd case size must derive an exact quotient, not a cent-rounded value.
-func TestPODeriveUnitCost_FullPrecision(t *testing.T) {
+// TestPODeriveUnitCost_ExactAtTheStoredColumn guards the "don't round to cents"
+// contract and says where the derivation DOES stop: unit_cost_ordered is a
+// four-place decimal, so 10.00 over 3 is 3.3333 — the figure the order will
+// carry whatever this client sends, and the same figure the line form's box
+// shows after a Ctrl-T. It used to assert the raw binary quotient
+// 3.3333333333333335, which no surface can display and the column cannot hold,
+// and holding the payload to it is what left the boxes deriving in float64.
+func TestPODeriveUnitCost_ExactAtTheStoredColumn(t *testing.T) {
 	unit, prov, err := poDeriveUnitCost("10", true, 3)
 	if err != nil || !prov {
 		t.Fatalf("poDeriveUnitCost: err=%v prov=%v", err, prov)
 	}
-	if want := 10.0 / 3.0; math.Abs(unit-want) > 1e-12 {
-		t.Fatalf("unit = %v, want %v (full precision)", unit, want)
+	if math.Abs(unit-3.3333) > 1e-12 {
+		t.Fatalf("unit = %v, want 3.3333 (10.00 over 3 at the stored column)", unit)
 	}
-	// It must NOT be the cent-rounded 3.33.
+	// It must NOT be the cent-rounded 3.33 — three of those are 9.99.
 	if math.Abs(unit-3.33) < 1e-9 {
-		t.Fatalf("unit was rounded to cents (%v); derivation must keep full precision", unit)
+		t.Fatalf("unit was rounded to cents (%v); the column keeps four places", unit)
 	}
 }
 
@@ -266,7 +271,9 @@ func TestPOAddLine_CaseCostDerivesUnitCost(t *testing.T) {
 	}
 }
 
-func TestPOAddLine_CaseCostFullPrecisionOddCase(t *testing.T) {
+// The staged line carries the same four-place figure the payload and the box
+// do, for the reason TestPODeriveUnitCost_ExactAtTheStoredColumn records.
+func TestPOAddLine_CaseCostOddCaseIsExactNotCentRounded(t *testing.T) {
 	s := NewPurchaseOrderCreateScreen(Deps{})
 	id := 42
 	s.enterLinePhase(&id, nil, "Widget", 3, 0, 0, 3)
@@ -277,8 +284,11 @@ func TestPOAddLine_CaseCostFullPrecisionOddCase(t *testing.T) {
 	if line.UnitCost == nil {
 		t.Fatalf("unit_cost missing")
 	}
-	if want := 10.0 / 3.0; math.Abs(*line.UnitCost-want) > 1e-12 {
-		t.Errorf("unit_cost = %v, want %v (full precision, no cent-drift)", *line.UnitCost, want)
+	if math.Abs(*line.UnitCost-3.3333) > 1e-12 {
+		t.Errorf("unit_cost = %v, want 3.3333 (10.00 over 3 at the stored column)", *line.UnitCost)
+	}
+	if math.Abs(*line.UnitCost-3.33) < 1e-9 {
+		t.Errorf("unit_cost = %v was rounded to cents; the column keeps four places", *line.UnitCost)
 	}
 }
 

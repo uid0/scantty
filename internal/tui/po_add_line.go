@@ -889,7 +889,7 @@ func (s *PurchaseOrderAddLineScreen) toggleEntryBasis() tea.Cmd {
 	costRaw := strings.TrimSpace(s.costIn.Value())
 	if v, err := strconv.ParseFloat(costRaw, 64); err == nil && costRaw != "" {
 		if s.caseBasis {
-			s.costIn.SetValue(poFormatCost(poUnitFromCase(v, qpp)))
+			s.costIn.SetValue(poUnitCostFrom(costRaw, v, qpp))
 		} else {
 			s.costIn.SetValue(poCaseCostFrom(costRaw, v, qpp))
 		}
@@ -1011,14 +1011,8 @@ func (s *PurchaseOrderAddLineScreen) unitCostRow() (string, string) {
 		return raw, refusal
 	}
 	unit := new(big.Rat).Quo(cost, new(big.Rat).SetInt64(int64(s.packSize())))
-	return poTrimCostZeros(unit.FloatString(poAddUnitCostPlaces)), ""
+	return poTrimCostZeros(unit.FloatString(poUnitCostPlaces)), ""
 }
-
-// poAddUnitCostPlaces is how far a derived per-unit price is carried. OMS's
-// unit_cost_ordered is a 4-place decimal, so anything past that is thrown away
-// server-side; carrying fewer would be this client rounding a price it was not
-// asked to round.
-const poAddUnitCostPlaces = 4
 
 // submit posts the confirmed row. Quantity and cost are sent only when the box
 // holds something: an empty box means "let the server derive it", which for a
