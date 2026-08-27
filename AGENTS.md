@@ -1262,19 +1262,28 @@ touching any screen an operator drives:
   test that only sets `XDG_CONFIG_HOME` therefore writes the developer's real
   prefs file and fails on its second run; set `HOME` as well. `internal/config/prefs_test.go`'s
   `setRequiredConfigEnv` does this and is what any new config test should call.
-- **A drive that settles a keystroke pays 200ms for the cursor blink.** `pump`
-  (`wo_materials_drive_test.go`) abandons the textinput blink tick by WAITING IT
-  OUT — 200ms of dead wall-clock per `key()` — and bubbles' tick is 530ms, so a
-  drive that runs the tick itself pays even more. It is invisible on a handful of
-  presses and ruinous on a sweep: the receiving key-space sweep took 292s through
-  `pump` and 242s through a settler that ran the tick, against 1s once neither
-  did. Two facts get you out, both in `receive_form_sweep_test.go`:
-  `textinput.Blink` returns its message IMMEDIATELY and it is only FEEDING that
-  message back to `Update` that starts the tick (so recognise it and stop —
-  `receiveIsBlink`, checked against `textinput.Blink()` by a test so a bubbles
-  rename cannot turn it into a drive that skips nothing); and TYPING is
-  synchronous, so a typed rune needs no settling at all (`receiveType`). Do not
-  shorten `pump`'s own budget to fix this — it is shared with ~30 drive tests and
+- **A drive that WAITS OUT the cursor blink pays 200ms a keystroke, and this
+  package has no room for it.** bubbles' tick is 530ms and `pump`'s budget is
+  200, so a settler that starts the blink and gives up on it burns a flat 200ms
+  per `key()` — invisible on a handful of presses and ruinous on a sweep, which
+  rebuilds a screen per key per probe per pane size. The receiving key-space
+  sweep took 292s that way (242s through a settler that ran the tick outright)
+  against 1s once neither did, and `internal/tui` as a whole sat at 573s against
+  `go test`'s **600s default per-package timeout**, which CI does not raise — so
+  adding two phase cases to one sweep was enough to make the package fail by
+  TIMING OUT, with a passing test named in the panic as the one that happened to
+  be running.
+  Two facts get you out. `textinput.Blink` returns its message IMMEDIATELY and it
+  is only FEEDING that message back to `Update` that starts the tick, so
+  recognise it and stop: `driveIsBlink` (`wo_materials_drive_test.go`), checked
+  against `textinput.Blink()` by `TestDrive_TheBlinkIsWhatTheDriveSkips` so a
+  bubbles rename cannot turn it into a drive that skips nothing. Both settlers
+  read it — the shared `pump` and receiving's `receiveSettle` — which is what
+  took the package to 133s. It skips no state a drive can see:
+  `cursor.Update`'s `initialBlinkMsg` arm returns the next tick and touches
+  nothing else. And TYPING is synchronous, so a typed rune needs no settling at
+  all (`receiveType`). Do NOT shorten `pump`'s 200ms budget instead — it is the
+  backstop for a genuine timer, shared with ~30 drive tests, and cutting it
   would make all of them racier on a loaded machine.
 - `gofmt -l` flags a few pre-existing files (doc-comment backtick rewrites).
   Format only what you touch.

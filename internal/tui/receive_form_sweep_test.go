@@ -80,26 +80,23 @@ func receiveSweepLines() []omsapi.ReceivingLine {
 }
 
 // receiveSettle runs a command chain the way the bubbletea runtime would, and
-// is this sweep's `key` — the shared pump (wo_materials_drive_test.go) with ONE
-// difference, which is worth its own function because of what it costs.
+// is this sweep's `key`.
 //
-// The shared pump abandons the textinput cursor-blink tick by WAITING IT OUT:
-// it starts the command, gives it 200ms, and gives up. That is correct and it
-// is what its own comment says it does. It is also 200ms of dead wall-clock per
-// drive, and this screen focuses an input after every async reply — so the
-// sweep paid it on every one of its several thousand rebuilds, and one
-// non-typing state alone took seventy seconds.
+// It abandons the cursor blink at `driveIsBlink` rather than waiting it out —
+// `textinput.Blink` returns its message immediately and cheaply, and it is only
+// FEEDING that message back to Update that makes bubbles start the 530ms tick
+// nobody waits for. This screen focuses an input after every async reply, so
+// waiting it out cost 200ms on every one of the sweep's several thousand
+// rebuilds and one non-typing state alone took seventy seconds. Nothing else
+// changes: every other message is fed back exactly as the runtime would feed
+// it, so the states these cases reach are the states an operator reaches.
 //
-// The blink is abandoned one step EARLIER here: `textinput.Blink` returns its
-// message immediately and cheaply, and it is only FEEDING that message back to
-// Update that makes bubbles start the 530ms tick nobody waits for. So the chain
-// stops at the blink instead of at a stopwatch. Nothing else changes: every
-// other message is fed back exactly as the runtime would feed it, so the states
-// these cases reach are the states an operator reaches.
-//
-// The shared pump is deliberately left alone. Shortening ITS budget would speed
-// this sweep up by making every other drive in the package racier on a loaded
-// machine, which is a bad trade for a test that is not about timing.
+// The shared pump (wo_materials_drive_test.go) skips the blink the same way
+// now — the whole package was within a few seconds of `go test`'s 600s default
+// per-package timeout, and then went past it — so the two behave identically.
+// What is still deliberately NOT done, here or there, is shortening the 200ms
+// budget itself: that is the backstop for a genuine timer, and cutting it would
+// make ~30 drives racier on a loaded machine.
 func receiveSettle(t *testing.T, r Root, cmd tea.Cmd, depth int) Root {
 	t.Helper()
 	if cmd == nil || depth > 24 {
@@ -114,7 +111,7 @@ func receiveSettle(t *testing.T, r Root, cmd tea.Cmd, depth int) Root {
 		// is an in-process httptest round trip.
 		return r
 	}
-	if msg == nil || receiveIsBlink(msg) {
+	if msg == nil || driveIsBlink(msg) {
 		return r
 	}
 	if batch, ok := msg.(tea.BatchMsg); ok {
@@ -161,26 +158,6 @@ func receiveType(t *testing.T, r Root, msg tea.KeyMsg) Root {
 		t.Fatalf("Root.Update returned %T, want Root", next)
 	}
 	return after
-}
-
-// receiveIsBlink reports a cursor-blink message. bubbles keeps those types
-// unexported, so this matches on the type NAME — which is checked rather than
-// trusted: TestReceive_TheBlinkIsWhatTheDriveSkips fails if the message
-// textinput.Blink produces stops matching, so a bubbles upgrade that renamed it
-// could not silently turn this into a drive that skips nothing.
-func receiveIsBlink(msg tea.Msg) bool {
-	return strings.Contains(strings.ToLower(fmt.Sprintf("%T", msg)), "blink")
-}
-
-func TestReceive_TheBlinkIsWhatTheDriveSkips(t *testing.T) {
-	if !receiveIsBlink(textinput.Blink()) {
-		t.Fatalf("textinput.Blink now produces %T, which receiveIsBlink does not match — "+
-			"the sweep would be waiting out a tick again, or worse, skipping a real message",
-			textinput.Blink())
-	}
-	if receiveIsBlink(StatusMsg{}) || receiveIsBlink(receiveSubmittedMsg{}) {
-		t.Error("receiveIsBlink matches a message the drive must not skip")
-	}
 }
 
 // receiveKey sends one key through Root.Update and settles whatever it kicked
