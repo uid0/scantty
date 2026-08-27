@@ -1152,7 +1152,9 @@ func (s *PurchaseOrderCreateScreen) itemBody() *jdeLines {
 		// whether the supplier sells nothing, the search missed, or the catalog
 		// failed to load, and only one of those is safe to act on.
 		//
-		// And never the NOTE either, which is what the pinned header carries.
+		// And never the NOTE either, which is what the answer surface carries —
+		// the status row, plus the pinned header for whatever the row could not
+		// print (statusPlan).
 		// The note answers the last keypress and names the query and the
 		// catalog size; this line says what the LIST is. Drawing one sentence
 		// in both places put the same words on two rows of a pane whose rows

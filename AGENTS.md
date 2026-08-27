@@ -737,9 +737,12 @@ either:
   with `l.Add` headings; they are safe only while their cursor blocks stay short
   of the pane. The New PO conversion took the other route and it is the one to
   copy: everything that would have been a lead-in — the supplier row, the
-  optional attribution values, the screen's answer to the last keypress, the
-  review phase's PO-notes box — is a PINNED HEADER row with a rank, and the body
-  is nothing but navigable rows (`po_create.go`'s `headerLines` / `body`).
+  optional attribution values, the review phase's PO-notes box — is a PINNED
+  HEADER row with a rank, and the body is nothing but navigable rows
+  (`po_create.go`'s `headerLines` / `body`). The screen's ANSWER to the last
+  keypress is the one thing that is NOT a header row of its own: its head rides
+  the layer's status row, which no budget can trim, and only the folded
+  remainder reaches the header — see the answer-surface rule below.
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
 
@@ -754,8 +757,10 @@ touching any screen an operator drives:
   error string must be CLEARED on the next success: a body that draws its
   "the lookup failed" line INSTEAD of the list will hide a load that worked.
   On a columnar screen the working line and the failure HEADLINE both go through
-  `jdeScreen.statusRow`, which flattens a multi-line OMS body and bounds it in
-  one forward pass; the failure's unbounded DETAIL rides in the pinned header,
+  the layer's status row — `jdeScreen.statusRow`, or `statusAnswer` where the
+  headline is an order-level `errMsg` — both bounded by the same `fitStatus`,
+  which flattens a multi-line OMS body in one forward pass; the failure's
+  unbounded DETAIL rides in the pinned header,
   cut to a fixed row count before it is folded. `po_create.go`'s `workingLine`
   and `failure` answer for the PHASE being drawn, not for the screen: a failed
   agreement load is not a fact about the item picker, and reporting it there
