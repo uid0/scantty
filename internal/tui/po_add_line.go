@@ -1231,14 +1231,15 @@ func (s *PurchaseOrderAddLineScreen) bar() []actionBarItem {
 // gets a decline note, because the operator pressed that key on a frame they can
 // see and rule 1 says something has to change.
 func (s *PurchaseOrderAddLineScreen) choosePages() bool {
-	return s.bodyScrollsForBar(s.chooseBody(), len(s.headerLines()), s.chooseBarItems(true))
+	return s.bodyPagesForBar(s.chooseBody(), len(s.candidates()),
+		len(s.headerLines()), s.chooseBarItems(true))
 }
 
 // chooseFrameRows is the lines the choose frame really windows its body into.
 // It is now a one-line call on the shared layer's bodyAvailForBar, and is kept
 // only so that the reason this screen asks the question at all stays written
 // down beside chooseStep, the one caller left that needs the number rather than
-// the yes/no (choosePages asks bodyScrollsForBar for that directly).
+// the yes/no (choosePages asks bodyPagesForBar for that directly).
 //
 // It exists because three things must agree about it and two of them had
 // already drifted: the RENDER (frameWrapped, which takes the bar's measured

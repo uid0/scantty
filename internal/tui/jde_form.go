@@ -1184,6 +1184,36 @@ func (g jdeScreen) bodyScrollsForBar(body *jdeLines, headerRows int, items []act
 	return body.Scrolls(g.bodyAvailForBar(headerRows, items))
 }
 
+// bodyPagesForBar is the paging pair's ONE question, asked by the BAR that
+// claims PgUp/PgDn and by the ARM behind them: the body must MOVE and there must
+// be another row to LAND on.
+//
+// TWO conditions, because the keys make two claims and both have to hold.
+// bodyScrollsForBar answers the first. The second is the one that kept being
+// left out: PgUp/PgDn do not scroll the body, they move the CURSOR
+// (jdePageCursor) and the window follows it, so a page can only do anything when
+// there is a second row to move to. The two agree in almost every state and come
+// apart in the state a list SPENDS MOST OF ITS LIFE IN — the empty one. An
+// unopened kit list is a heading, its guidance and the trailing "(add a
+// component)" row: at 80x11 through 80x17 the body outruns the window while the
+// add row is the only row a cursor can stand on, so the bar named the pair and a
+// page moved nothing, on the default state of a new inventory item. The
+// packaging chain and the storage level list did the same at their own heights.
+//
+// `count` is the NAVIGABLE ROW COUNT — what the paging arm passes pageRow —
+// rather than the body's line count, and the difference is the whole point: a
+// list's lines include its heading and its guidance, and a cursor cannot stand
+// on either.
+//
+// It is here rather than in the sheets because three of them had already worked
+// it out for themselves (po_create's bodyPagesFor, receive_form's qtyPagesFor,
+// service_status_screen nesting its paging entry inside `len(services) > 1`) and
+// thirty had not. Both readers ask THIS, so a bar's claim and the key behind it
+// cannot part company.
+func (g jdeScreen) bodyPagesForBar(body *jdeLines, count, headerRows int, items []actionBarItem) bool {
+	return count > 1 && g.bodyScrollsForBar(body, headerRows, items)
+}
+
 // windowRowsForBar is how many navigable rows the pane is currently showing —
 // computed from the same lines the frame draws, so a page moves by exactly what
 // the operator can see rather than by a guessed constant. headerRows is what a
@@ -1377,11 +1407,14 @@ func (g jdeScreen) pickRow(cursor, count, delta, headerRows int, items []actionB
 //     decline a key at a height where the frame is on the pane — a named key
 //     doing nothing on a pane the operator is looking at.
 //   - `ceiling` is the bar WITH the paging keys on it, and it answers whether
-//     the body MOVES. Naming the keys costs cells, cells fold the bar onto
-//     another row, and a folded bar leaves the body one row fewer, so the
-//     tallest bar is the fixed point and the answer cannot oscillate between
-//     frames. It is the same obligation bodyAvailForBar and bodyScrollsForBar
-//     already carry.
+//     a page DOES anything — bodyPagesForBar, which is the body moving AND
+//     there being another row to land on. Naming the keys costs cells, cells
+//     fold the bar onto another row, and a folded bar leaves the body one row
+//     fewer, so the tallest bar is the fixed point and the answer cannot
+//     oscillate between frames. It is the same obligation bodyAvailForBar and
+//     bodyScrollsForBar already carry. The `count` handed in is the same one
+//     the page steps through, so the bar's claim and this gate are the same
+//     expression over the same numbers.
 //
 // The ceiling is THREADED rather than synthesised here. Appending a generic
 // {"PgUp/PgDn", "Page"} to `drawn` would measure a bar no screen draws: the
@@ -1414,7 +1447,7 @@ func (g jdeScreen) pageRow(body *jdeLines, cursor, count, dir, headerRows int, d
 	if count <= 0 || !g.frameDrawn(headerRows, drawn) {
 		return cursor, false
 	}
-	if g.paneRows() > 0 && !g.bodyScrollsForBar(body, headerRows, ceiling) {
+	if g.paneRows() > 0 && !g.bodyPagesForBar(body, count, headerRows, ceiling) {
 		return cursor, false
 	}
 	return jdePageCursor(cursor, count, g.windowRowsForBar(body, cursor, headerRows, drawn), dir), true

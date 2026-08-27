@@ -1423,7 +1423,7 @@ func (s *AssetFormScreen) formLines() *jdeLines {
 // row, and a folded bar leaves the body one row fewer. The tallest bar is the
 // fixed point, so the answer cannot oscillate between frames.
 func (s *AssetFormScreen) formBar(body *jdeLines) []actionBarItem {
-	return s.formBarItems(s.bodyScrollsForBar(body, 0, s.formBarItems(true)))
+	return s.formBarItems(s.bodyPagesForBar(body, s.rowCount(), 0, s.formBarItems(true)))
 }
 
 // formBarItems is formBar for a given paging state, so the bar that is
@@ -1636,7 +1636,7 @@ func (s *AssetFormScreen) pickRowLabel(i int) string {
 // list moves under the bar about to be drawn — measured against the bar WITH
 // the pair on it, because the tallest bar is the fixed point.
 func (s *AssetFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return s.pickBarItems(s.bodyScrollsForBar(body, len(header), s.pickBarItems(true)))
+	return s.pickBarItems(s.bodyPagesForBar(body, len(s.pickOptions), len(header), s.pickBarItems(true)))
 }
 
 // pickBarItems is pickBar for a given paging state. The multi picker's esc is

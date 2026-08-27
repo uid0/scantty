@@ -592,7 +592,7 @@ func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 // Esc both mean done: the list is saved nested with the KIT, so leaving it
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) kitListBar(body *jdeLines) []actionBarItem {
-	return s.kitListBarItems(s.bodyScrollsForBar(body, 0, s.kitListBarItems(true)))
+	return s.kitListBarItems(s.bodyPagesForBar(body, s.kitAddRow()+1, 0, s.kitListBarItems(true)))
 }
 
 // kitListBarItems is kitListBar for a given paging state, so the bar that is
@@ -774,14 +774,14 @@ func kitNotesWidth(bodyWidth int) int {
 // itself is a VALUE row rather than a picker: which item a row points at is its
 // identity to the server (the upsert key), so changing it would be removing one
 // component and adding another — which is what the list's two rows already are.
-// viewKitRow draws the per-component editor. The frame it builds is split out
-// so the movement arm can ask the layer whether that frame is DRAWN before it
-// moves the caret — one builder, so the bar that is measured is the bar drawn.
 func (s *InventoryItemFormScreen) viewKitRow() string {
 	l, items := s.kitRowFrame()
 	return s.frame(l, s.kitRowFocus, s.statusRow(false, "", s.kitRowErr), items)
 }
 
+// kitRowFrame is the editor's body and bar, split out of viewKitRow so the
+// movement arm can ask the layer whether that frame is DRAWN before it moves the
+// caret — one builder, so the bar that is measured is the bar drawn.
 func (s *InventoryItemFormScreen) kitRowFrame() (*jdeLines, []actionBarItem) {
 	name := "(unknown)"
 	sku := ""
@@ -1113,7 +1113,7 @@ func kitPickLabel(opt kitPickOption, width int) string {
 // the list moves under the bar about to be drawn — measured against the bar
 // WITH the pair on it, because the tallest bar is the fixed point.
 func (s *InventoryItemFormScreen) kitPickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return jdePickBar("Add", s.bodyScrollsForBar(body, len(header), jdePickBar("Add", true)))
+	return jdePickBar("Add", s.bodyPagesForBar(body, len(s.kitPickOptions), len(header), jdePickBar("Add", true)))
 }
 
 func (s *InventoryItemFormScreen) viewKitPick() string {

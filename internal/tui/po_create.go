@@ -3521,24 +3521,24 @@ func (s *PurchaseOrderCreateScreen) barItems(paging bool) []actionBarItem {
 // bodyPagesFor reports whether PgUp/PgDn do anything on a frame whose pinned
 // header is headerRows tall.
 //
-// TWO conditions, because the keys make two claims and both have to hold. The
-// body must MOVE — bodyScrollsForBar's question, asked of the LAYER so a bar's
-// claim and the window that decides it cannot part company. And a page moves
-// the CURSOR (jdePageCursor) rather than the body, so there has to be another
-// row to land on. They agree in almost every state and come apart in the ones
-// this screen has by design: a picker drawing a working or failure frame has a
-// body that can overflow and no rows at all.
+// TWO conditions, because the keys make two claims and both have to hold — the
+// body must MOVE and a page must have another row to LAND on. Both are the
+// LAYER's now (bodyPagesForBar), so a bar's claim and the window that decides it
+// cannot part company, and this screen is not carrying a private copy of a rule
+// thirty others also need. They agree in almost every state and come apart in
+// the ones this screen has by design: a picker drawing a working or failure
+// frame has a body that can overflow and no rows at all.
 //
 // The bar passed to the layer is the bar WITH the paging keys on it, because
 // the tallest bar is the fixed point: a body that overflows the smallest budget
 // also overflows the larger one left when the keys are dropped, so the answer
 // cannot oscillate between frames.
 //
-// The second condition is what the layer's pageRow cannot express, and it is why
-// this screen asks the pair itself rather than handing pageRow the whole rule.
-// So is the way the answer is USED: moveCursor must tell "refused" from "nothing
-// to page" — the first is swallowed in silence, the second falls through to an
-// arm that declines out loud — and pageRow returns the same false for both.
+// What pageRow cannot express is the way this answer is USED: moveCursor must
+// tell "refused" from "nothing to page" — the first is swallowed in silence, the
+// second falls through to an arm that declines out loud — and pageRow returns
+// the same false for both. That, and the two phase-specific branches above, are
+// why the pair is asked here; the geometric half itself is not restated.
 func (s *PurchaseOrderCreateScreen) bodyPagesFor(headerRows int) bool {
 	if s.phase == poPhaseLine {
 		// A FIELD form has nothing to page. Its cursor WRAPS (focusNextLine),
@@ -3556,14 +3556,12 @@ func (s *PurchaseOrderCreateScreen) bodyPagesFor(headerRows int) bool {
 	if s.phase == poPhaseSupplierSwitch {
 		// The confirm has no cursor: its body is read-only and UP/DN scroll it,
 		// so the second condition — "is there another row to land on" — is not
-		// one it has. What is left is the layer's own question.
+		// one it has. What is left is the layer's scroll question ALONE, which
+		// is why this branch cannot ask bodyPagesForBar like the one below.
 		return s.bodyScrollsForBar(s.switchBody(), headerRows, s.barItems(true))
 	}
-	if s.rowCount() <= 1 {
-		return false
-	}
 	body, _ := s.body()
-	return s.bodyScrollsForBar(body, headerRows, s.barItems(true))
+	return s.bodyPagesForBar(body, s.rowCount(), headerRows, s.barItems(true))
 }
 
 // pageStep is how many rows one page covers on the frame being drawn: measured
@@ -3595,9 +3593,8 @@ func (s *PurchaseOrderCreateScreen) pageStep(headerRows int) int {
 // judgement one screen over).
 //
 // Paging is gated on the LAYER's answer, not on a second opinion about it:
-// bodyPagesFor asks bodyScrollsForBar, which is the same expression the window
-// itself short-circuits on, so a bar naming PgUp/PgDn and a body that moves
-// cannot part company. Without the gate the keys would still page the cursor
+// bodyPagesFor asks bodyPagesForBar, which is the same expression the bar itself
+// reads, so a bar naming PgUp/PgDn and a page that moves cannot part company. Without the gate the keys would still page the cursor
 // on a body that fits, which is a key acting where the bar does not name it.
 func (s *PurchaseOrderCreateScreen) moveCursor(m tea.KeyMsg, headerRows int) (bool, tea.Cmd) {
 	if s.rowCount() <= 1 {

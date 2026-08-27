@@ -450,7 +450,7 @@ func (s *InventoryItemFormScreen) chainListLines() *jdeLines {
 // both mean done: the chain is saved nested with the ITEM, so leaving the list
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) chainBar(body *jdeLines) []actionBarItem {
-	return s.chainBarItems(s.bodyScrollsForBar(body, 0, s.chainBarItems(true)))
+	return s.chainBarItems(s.bodyPagesForBar(body, s.chainAddRow()+1, 0, s.chainBarItems(true)))
 }
 
 // chainBarItems is chainBar for a given paging state, so the bar that is

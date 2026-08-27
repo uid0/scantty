@@ -550,7 +550,7 @@ func (s *PurchaseOrderAttachmentsScreen) listPages() bool {
 		return false
 	}
 	body, _ := s.listLines()
-	return s.bodyScrollsForBar(body, 0, s.listBarItems(true))
+	return s.bodyPagesForBar(body, len(s.attachments), 0, s.listBarItems(true))
 }
 
 func (s *PurchaseOrderAttachmentsScreen) viewList() string {

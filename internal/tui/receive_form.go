@@ -1583,10 +1583,11 @@ func (s *ReceiveFormScreen) pageRowCursor(k string, body *jdeLines, rows, header
 // almost every state and come apart in the one that is designed — a body of one
 // row that is still taller than the pane.
 //
-// That second half is the condition the layer's pageRow cannot express, and it
-// is why this screen asks the pair here instead of handing pageRow the job.
+// Both halves are the layer's (bodyPagesForBar). It is asked HERE rather than
+// left to pageRow because the arm behind it answers "nothing to page" out loud
+// and a refused pane in silence, and pageRow returns the same false for both.
 func (s *ReceiveFormScreen) rowsPageFor(body *jdeLines, rows, headerRows int) bool {
-	return rows > 1 && s.bodyScrollsForBar(body, headerRows, s.barCeiling())
+	return s.bodyPagesForBar(body, rows, headerRows, s.barCeiling())
 }
 
 // ---------------------------------------------------------------------------
@@ -3341,16 +3342,17 @@ func (s *ReceiveFormScreen) qtyPagesFor(headerRows int) bool {
 	// row it was handed while the bar printed PgUp/PgDn=Page over a key whose
 	// whole effect was to write "pgdown is already at the last row".
 	//
-	// That second half is what pageRow cannot express, which is why this screen
-	// asks the pair itself rather than handing the layer the whole rule — and
-	// pageRow's single false could not be told apart from a refused pane, which
-	// this frame answers differently (silence there, a decline note here).
+	// Both halves are the LAYER's (bodyPagesForBar), so this screen is not
+	// carrying a private copy of a rule thirty others also need. What pageRow
+	// cannot express is how the answer is USED: its single false could not be
+	// told apart from a refused pane, and this frame answers those two
+	// differently — silence on a pane the layer refuses, a decline note when the
+	// form simply has nothing to page.
 	//
-	// Both halves live here rather than in the arm so the bar and pageQty read
-	// ONE expression: two conditions that agree in most states are two
-	// conditions that will eventually disagree in one.
-	return s.totalInputs() > 1 &&
-		s.bodyScrollsForBar(s.qtyBody(), headerRows, s.qtyBarCeiling())
+	// It is asked here rather than in the arm so the bar and pageQty read ONE
+	// expression: two conditions that agree in most states are two conditions
+	// that will eventually disagree in one.
+	return s.bodyPagesForBar(s.qtyBody(), s.totalInputs(), headerRows, s.qtyBarCeiling())
 }
 
 // qtyPages is qtyPagesFor bound to the frame being drawn now, for View and for

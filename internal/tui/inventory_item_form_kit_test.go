@@ -693,6 +693,20 @@ func TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout(t *testing.T) {
 	}
 }
 
+// kitPickFillers are ordinary pickable items, enough of them to push the option
+// list past the pane. Named so nothing in the assertions can match them.
+func kitPickFillers(n int) []omsapi.Item {
+	out := make([]omsapi.Item, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, omsapi.Item{
+			ID:   fmt.Sprintf("itm-f%d", i),
+			Name: fmt.Sprintf("Filler stock %d", i),
+			SKU:  fmt.Sprintf("FS-%03d", i),
+		})
+	}
+	return out
+}
+
 // TestItemFormKit_ARefusalDiesWhenTheCursorLeavesItsRow. The refusal names
 // neither the item nor the reason — it says "that item", and "that item" is
 // whichever row the cursor is on. So moving off the refused row has to take the
@@ -710,20 +724,6 @@ func TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout(t *testing.T) {
 // (AGENTS.md), which is what they were doing while the pager was ungated. And
 // the refused row has to sit in the MIDDLE, or one of each opposed pair rests
 // against an edge it cannot move past and the same thing happens one key over.
-// kitPickFillers are ordinary pickable items, enough of them to push the option
-// list past the pane. Named so nothing in the assertions can match them.
-func kitPickFillers(n int) []omsapi.Item {
-	out := make([]omsapi.Item, 0, n)
-	for i := 0; i < n; i++ {
-		out = append(out, omsapi.Item{
-			ID:   fmt.Sprintf("itm-f%d", i),
-			Name: fmt.Sprintf("Filler stock %d", i),
-			SKU:  fmt.Sprintf("FS-%03d", i),
-		})
-	}
-	return out
-}
-
 func TestItemFormKit_ARefusalDiesWhenTheCursorLeavesItsRow(t *testing.T) {
 	for _, move := range []struct {
 		name string

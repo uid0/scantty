@@ -303,6 +303,19 @@ var jdeInertCases = map[string]string{
 	"PurchaseOrderCreateScreen/item search open": "the filter box owns the keyboard while it " +
 		"is open, so barItems returns early: the bar names Esc and Enter and nothing else, " +
 		"and the movement keys are swallowed by the textinput rather than moving the list.",
+
+	// The MINIMAL-list states, which are inert BY CONSTRUCTION and are here for
+	// a different sweep. Each has exactly one navigable row — the trailing add
+	// row, or the single file — so no movement key has anywhere to go and their
+	// bars rightly name none. They earn their keep in
+	// TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves, which is the sweep
+	// they were added for: that is where "the body overflows" and "a page has
+	// somewhere to land" come apart, and until these existed every list in
+	// jdeScreenStates carried several rows and the pair could not be told apart.
+	"InventoryItemFormScreen/kit list empty":     "one navigable row (the add row), so nothing moves",
+	"InventoryItemFormScreen/chain list empty":   "one navigable row (the add row), so nothing moves",
+	"StorageSlotGenerateScreen/level list empty": "one navigable row (the add row), so nothing moves",
+	"PurchaseOrderAttachmentsScreen/one file":    "one file, so listMoves is false and the cursor has nowhere to go",
 }
 
 // TestJDEForm_EveryRefusedPaneCaseCouldHaveMoved: at a height the screen DOES

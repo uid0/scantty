@@ -513,7 +513,7 @@ func (s *AuthorizationGrantScreen) formLines() *jdeLines {
 // row, and a folded bar leaves the body one row fewer. The tallest bar is the
 // fixed point, so the answer cannot oscillate between frames.
 func (s *AuthorizationGrantScreen) formBar(body *jdeLines) []actionBarItem {
-	return s.formBarItems(s.bodyScrollsForBar(body, 0, s.formBarItems(true)))
+	return s.formBarItems(s.bodyPagesForBar(body, len(s.fields), 0, s.formBarItems(true)))
 }
 
 // formBarItems is formBar for a given paging state, so the bar that is
@@ -583,7 +583,7 @@ func (s *AuthorizationGrantScreen) pickView() (jdeHeader, *jdeLines) {
 // list moves under the bar about to be drawn — measured against the bar WITH
 // the pair on it, because the tallest bar is the fixed point.
 func (s *AuthorizationGrantScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return jdePickBar("Select", s.bodyScrollsForBar(body, len(header), jdePickBar("Select", true)))
+	return jdePickBar("Select", s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBar("Select", true)))
 }
 
 func (s *AuthorizationGrantScreen) viewPick() string {

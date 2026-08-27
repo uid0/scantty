@@ -665,6 +665,24 @@ either:
   second on top: a page moves the CURSOR, so there must be another row to LAND
   on, which comes apart from "does the body overflow" in states they have by
   design.
+  **THAT SECOND QUESTION IS THE LAYER'S TOO** — `bodyPagesForBar`, which is
+  `count > 1 && bodyScrollsForBar`, where `count` is the NAVIGABLE ROW COUNT and
+  not the body's line count. Every `…Bar` wrapper that appends `PgUp/PgDn` asks
+  it and so does `pageRow`, so the bar's claim and the key behind it are one
+  expression. It was three sheets' private knowledge and thirty sheets' blind
+  spot, and the state it is about is the one a list SPENDS MOST OF ITS LIFE IN:
+  an unopened kit list is a heading, its guidance and the trailing "(add a
+  component)" row, so at 80x11–17 the body outran the window while the add row
+  was the only row a cursor could stand on — **the bar named the pair and a page
+  moved nothing, on the default state of a new inventory item**. The packaging
+  chain and the storage level list did the same at their own heights.
+  A SWEEP THAT DERIVES ITS SCREENS STILL HAND-PICKS ITS STATES, and that is the
+  axis this hid on: every list state in `jdeScreenStates` had been given several
+  rows to stop the movement sweeps being vacuous — correct, and it put the
+  one-row case out of reach of the sweep written to catch exactly this. The
+  minimal variants (empty kit list, empty chain, no levels, one attachment) are
+  there now, and they are INERT for the refused-pane sweep by construction, so
+  they are recorded in `jdeInertCases` with that reason.
   `pageRow` takes TWO bars: drawability of the bar really
   DRAWN (`tooShort` is monotone in bar height, so a taller bar would decline a
   key at a height the frame IS drawn at), scrolling of the CEILING bar (naming

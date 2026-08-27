@@ -726,6 +726,51 @@ func jdeScreenStates() map[string]func() Screen {
 			s.openKitRow(0)
 			return s
 		},
+		// The same four lists at their MINIMUM — the state a screen opens in
+		// before anything has been added to it, and the one the fixtures above
+		// put out of reach.
+		//
+		// They are the other axis of this file. Deriving the SCREENS makes a
+		// screen impossible to forget and says nothing about the states inside
+		// one, and the states above were all given several rows to stop the
+		// movement sweeps being vacuous — which is right, and which also meant
+		// no list here had ONE navigable row. That is the state where "the body
+		// overflows" and "a page has somewhere to land" come apart: an empty kit
+		// list is heading + guidance + the add row against a short pane, so the
+		// body scrolls while the only row a cursor can stand on is the add row.
+		// The bar named PgUp/PgDn there and a page moved nothing, on the DEFAULT
+		// state of a new inventory item.
+		"InventoryItemFormScreen/kit list empty": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.openKitList()
+			return s
+		},
+		"InventoryItemFormScreen/chain list empty": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.openChain()
+			return s
+		},
+		"StorageSlotGenerateScreen/level list empty": func() Screen {
+			s := NewStorageSlotGenerateScreen(Deps{}, 0)
+			s.openLevels()
+			return s
+		},
+		"PurchaseOrderAttachmentsScreen/one file": func() Screen {
+			// REPLACED rather than appended: poViewPO already carries one, and
+			// appending to it would build the two-row list the six-file fixture
+			// above already covers — which is exactly how the one-row case went
+			// missing in the first place.
+			po := poViewPO()
+			po.Attachments = []omsapi.PurchaseOrderAttachment{{
+				ID: 1, FileName: "quote-2026-01.pdf",
+				Description:    "Vendor quotation for the whole order, itemised by line",
+				UploadedByName: "shop.lead",
+			}}
+			return NewPurchaseOrderAttachmentsScreen(Deps{}, po)
+		},
+
 		"InventoryItemFormScreen/kitPickView": func() Screen {
 			s := NewInventoryItemFormScreen(Deps{}, "")
 			s.loading = false
