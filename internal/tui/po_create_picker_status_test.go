@@ -3875,6 +3875,15 @@ func TestPOCreate_EveryFixedHintOnTheseScreensSurvivesTheClip(t *testing.T) {
 		{"line form, freeform line has no date field", func(s *PurchaseOrderCreateScreen) {
 			s.enterLinePhase(nil, nil, "Shop rags", 1, 0, 0, 0)
 		}, []string{"send/receive"}},
+
+		// BOTH rows filled, which is the state the operator is in when they
+		// press enter — and the state the date caveat used to vanish in,
+		// because the line total answered non-empty and was returned INSTEAD of
+		// it. At quantity 1 with a blank cost there is no total, so the case
+		// above cannot see that at all.
+		{"line form, freeform line priced and counted", func(s *PurchaseOrderCreateScreen) {
+			s.enterLinePhase(nil, nil, "Shop rags", 2, 5, 0, 0)
+		}, []string{"send/receive", "2 units × $5.00 = line $10.00"}},
 	}
 
 	for _, tc := range cases {

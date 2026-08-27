@@ -1875,7 +1875,15 @@ func (s *PurchaseOrderCreateScreen) entryDerivation() string {
 	entered, _ := strconv.Atoi(strings.TrimSpace(s.lineInputs[poLineFieldQty].Value()))
 	raw := strings.TrimSpace(s.lineInputs[poLineFieldCost].Value())
 	cost, err := strconv.ParseFloat(raw, 64)
-	hasCost := raw != "" && err == nil
+	// A NEGATIVE cost is not a cost, and the guard is the same one
+	// plainLineTotal below already applies. Without it, typing "-5" into the
+	// cost row of a case-packed line drew "$-5.00/case ÷ 12 = $-0.4167/unit ·
+	// line $-10.00" — a derivation over an entry enter is about to REFUSE
+	// (poDeriveUnitCost returns errInvalidCost for v < 0), which is the one
+	// thing a check-before-you-commit row may not do. The row falls back to
+	// saying what it is ASKING for, exactly as it does over a blank box,
+	// because that is what an unusable value leaves it with.
+	hasCost := raw != "" && err == nil && cost >= 0
 	// withTotal TRUE: this form has no Line total row of its own, so the
 	// derivation is where "what the line comes to" is said.
 	if derivation := poEntryDerivation(entered, cost, hasCost, s.pickedQPP, s.caseBasis, true); derivation != "" {
@@ -3523,13 +3531,11 @@ func (s *PurchaseOrderCreateScreen) lineFieldHint(i int) string {
 func (s *PurchaseOrderCreateScreen) lineFieldCaveat(i int) string {
 	switch i {
 	case poLineFieldCost:
-		if hint := s.entryDerivation(); hint != "" {
-			if s.pickedItemSup != nil {
+		hint := s.entryDerivation()
+		if s.pickedItemSup != nil {
+			if hint != "" {
 				return hint + " · blank prices this line from the supplier catalog"
 			}
-			return hint
-		}
-		if s.pickedItemSup != nil {
 			return "Blank prices this line from the supplier catalog at save time."
 		}
 		// Asset / freeform lines carry no date field — say why, so its absence
@@ -3537,9 +3543,23 @@ func (s *PurchaseOrderCreateScreen) lineFieldCaveat(i int) string {
 		// those two shapes (lineFields), and the row the missing date field
 		// would have followed, so a caveat about an absent row can sit here
 		// without pretending to belong to one that is present. It cannot
-		// collide with the two notes above it: both of those are item-supplier
-		// notes and this branch is only reached with pickedItemSup nil.
-		return "Expected dates are stored on inventory lines only; set this line's dates at send/receive."
+		// collide with the note above it, which is an item-supplier note and
+		// this branch is only reached with pickedItemSup nil.
+		//
+		// The line total is APPENDED to it and never drawn INSTEAD of it. This
+		// used to return the derivation first, so the moment the operator
+		// filled BOTH rows — which is exactly the state they are in when they
+		// press enter — plainLineTotal answered non-empty and the standing
+		// sentence vanished from the last row of the form. Two true statements
+		// about one row are not a choice between them: both fold onto the
+		// row's own note block (jdeNoteLines → AddRow), so neither is stranded
+		// off a navigable row, and the caveat leads because it is the fact the
+		// operator cannot derive for themselves.
+		caveat := "Expected dates are stored on inventory lines only; set this line's dates at send/receive."
+		if hint != "" {
+			return caveat + " · " + hint
+		}
+		return caveat
 	case poLineFieldDate:
 		return ""
 	}
@@ -3705,7 +3725,14 @@ func poCartFacts(l poCartLine) string {
 		if strings.HasSuffix(qty, " cs") {
 			shown = poCaseFromUnit(shown, l.qpp)
 		}
-		facts += fmt.Sprintf(" @ $%s", strconv.FormatFloat(shown, 'f', -1, 64))
+		// Through poDisplayMoney, never FormatFloat at -1 precision. The case
+		// price is a float64 multiply of a value produced by a float64 divide,
+		// and that round trip is not exact for ordinary money: a case of 24
+		// entered at 12.01 stores 0.5004166666666667 per unit and came back
+		// here as "$12.009999999999998" — twenty cells of binary noise on the
+		// one surface whose purpose is checking the order against the vendor's
+		// quote, and on the part of the row that NEVER gives.
+		facts += fmt.Sprintf(" @ $%s", poDisplayMoney(shown))
 	}
 	return facts
 }

@@ -652,15 +652,25 @@ func TestPOPickers_ACasePackedRowKeepsItsFactsAtEveryWidth(t *testing.T) {
 			key   string
 			fake  *poPickFake
 			facts []string
+			// price is the row's per-unit price WITHOUT its denominator. On the
+			// catalogue row the price is a fact and never gives, so it is in
+			// facts as well; on the reorder row it is a decoration poFitRow
+			// drops from the right when the item name is long (it is gone at 80
+			// columns with the MRO name above). So the rule asserted here is
+			// the one that holds at every width: wherever the pane states the
+			// price AT ALL it states which denominator it is in, because a bare
+			// "@ 1.50" beside "qty 2 cs" reads as $1.50 a case — the reported
+			// defect, one screen over.
+			price string
 		}{
 			{"catalog", "i", &poPickFake{
 				catalog: 3, catalogPack: 24, catalogPackageCost: "84.00",
 				itemName: mro, itemSKU: partNumber,
-			}, []string{"@ 3.50/unit", "case ×24"}},
+			}, []string{"@ 3.50/unit", "case ×24"}, "@ 3.50"},
 			{"reorder queue", "r", &poPickFake{
 				reorder: 3, reorderPack: 24, reorderPackageCost: "84.00",
 				reorderQty: 48, reorderName: mro,
-			}, []string{"qty 2 cs"}},
+			}, []string{"qty 2 cs"}, "@ 1.50"},
 		} {
 			t.Run(fmt.Sprintf("%s at %d columns", tc.name, width), func(t *testing.T) {
 				r, s := poPickerAtSize(t, tc.fake, width, 30)
@@ -670,6 +680,22 @@ func TestPOPickers_ACasePackedRowKeepsItsFactsAtEveryWidth(t *testing.T) {
 					if !strings.Contains(pane, want) {
 						t.Errorf("the clipped pane lost the fact %q:\n%s", want, pane)
 					}
+				}
+				for rest := pane; ; {
+					i := strings.Index(rest, tc.price)
+					if i < 0 {
+						break
+					}
+					rest = rest[i+len(tc.price):]
+					if !strings.HasPrefix(rest, "/unit") {
+						t.Errorf("a case-packed row states %q with no denominator:\n%s", tc.price, pane)
+					}
+				}
+				// The widest pane draws every decoration, so the conditional
+				// check above cannot go vacuous on a row that simply lost its
+				// price everywhere.
+				if width == 120 && !strings.Contains(pane, tc.price+"/unit") {
+					t.Errorf("no denominated price on the widest pane, so nothing checked it:\n%s", pane)
 				}
 			})
 		}

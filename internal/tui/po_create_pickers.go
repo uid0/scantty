@@ -533,9 +533,16 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg, headerR
 			s.reorderCursor = 0
 		}
 		it := s.reorderItems[s.reorderCursor]
+		// The fallback is ONE PACKAGE in base units, matching pickItemSupplier:
+		// a flat 1 on a case-packed row is an order for a single loose item of
+		// something the vendor only ships by the case, and — since the basis is
+		// decided by the prefill (poOpensAtCaseBasis) — it would also open the
+		// form in UNITS on exactly the item the operator buys by the case. The
+		// catalogue picker was moved off the flat 1 and its two reorder
+		// siblings were left on it, which is the all-but-one-site shape.
 		qty := it.SuggestedQuantity
 		if qty <= 0 {
-			qty = 1
+			qty = poPackSize(it.QuantityPerPackage)
 		}
 		unitCost := 0.0
 		if v, err := strconv.ParseFloat(string(it.UnitCost), 64); err == nil {
@@ -588,9 +595,13 @@ func (s *PurchaseOrderCreateScreen) updateReorderPickPhase(m tea.KeyMsg, headerR
 // Ctrl-E would re-open it in a per-unit form on an item the operator buys by
 // the case. Both of those are the reported defect, one surface further on.
 func reorderCartLine(it omsapi.ReorderDataItem) poCartLine {
+	// Floored at ONE PACKAGE rather than one unit, for the reason the
+	// single-row enter path above records: a bulk-added line that fell back to
+	// 1 would stage a loose unit of something the vendor only ships by the
+	// case, and re-open under Ctrl-E in a per-unit form.
 	qty := it.SuggestedQuantity
 	if qty <= 0 {
-		qty = 1
+		qty = poPackSize(it.QuantityPerPackage)
 	}
 	desc := it.ItemName
 	if desc == "" {
@@ -673,9 +684,20 @@ func (s *PurchaseOrderCreateScreen) reorderBody() *jdeLines {
 		if it.HasActiveReorderReq {
 			tag = " " + StyleStatusOK.Render(fmt.Sprintf("[reorder %s]", it.ReorderRequestStatus))
 		}
+		// The same "/unit" the catalogue row carries, gated on the same
+		// predicate. The quantity beside it is stated in CASES on a case-packed
+		// row (poQtyFact), so a bare "@ 1.50" next to "qty 2 cs" is a case
+		// count and a per-unit price on one row with nothing saying which
+		// denominator the price is in — which reads as $1.50 a case. That is
+		// the reported defect exactly, one screen over, and moving only the
+		// quantity onto cases is what created it here.
 		cost := ""
 		if it.UnitCost != "" {
-			cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s", it.UnitCost))
+			per := ""
+			if poCasePacked(it.QuantityPerPackage) {
+				per = "/unit"
+			}
+			cost = "  " + StyleMuted.Render(fmt.Sprintf("@ %s%s", it.UnitCost, per))
 		}
 		// The mark is the row's own state and never gives. What is being
 		// ORDERED — the suggested quantity — is the fact; the stock levels
