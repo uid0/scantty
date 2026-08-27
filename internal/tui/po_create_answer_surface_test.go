@@ -923,3 +923,73 @@ func TestPOLineForm_ANonNumericCostSaysSoRatherThanNamingARange(t *testing.T) {
 		})
 	}
 }
+
+// TestPOAssetScope_APagedQueryKeepsItsTermBoundary is the same quoting rule one
+// file over, on the row that says what the list an operator is looking at IS.
+//
+// assetScopeRows appends its page suffix AFTER the clipped value, so the term
+// is only end-of-row while there is no other page. On page 1 of several it is
+// mid-sentence, and a clip that ate the closing quote drew
+// `Showing ..... "hydraulic pump seal k… · page 1` — the operator cannot tell
+// where what they typed stops and the screen's own words resume, which is
+// verbatim what poQuotedClip was added to remove on the status row.
+//
+// Whether a site is mid-sentence is a question about the ROW: the same function
+// answers both ways depending on the paging state, which is why the fixture has
+// to drive a real second page rather than assert the function in the abstract.
+//
+// At 80 columns the value area is 32 cells and the suffix reserves 9, so the
+// term gets 23 against a 25-cell quoted `hydraulic pump seal kit`: the clip
+// really bites, which is what makes the boundary visible or not.
+//
+// WATCHED TO FAIL against `pickerClip(strconv.Quote(ran), room)`.
+func TestPOAssetScope_APagedQueryKeepsItsTermBoundary(t *testing.T) {
+	// Past the room the suffix leaves, so the clip bites.
+	const query = "hydraulic pump seal kit"
+
+	// assetSearchServerSide: the fake answers the search with the whole list,
+	// which is what a real server-side search over many matches looks like and
+	// is what leaves a NEXT page to page onto.
+	fake := &poPickFake{assets: 12, pageSize: 5, assetSearchServerSide: true}
+	r, screen := poPickerAtSize(t, fake, 80, 30)
+	r = key(t, r, poPhaseKeyMsg("a"))
+	if screen.phase != poPhaseAssetPick {
+		t.Fatalf("a landed on phase %v, want the asset picker", screen.phase)
+	}
+	r = key(t, r, poPhaseKeyMsg("/"))
+	r = poType(t, r, query)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // pumped: the search comes back
+	_ = r
+
+	if screen.assetsTyping {
+		t.Fatalf("the box is still open, so the Showing row is not drawn")
+	}
+	if !screen.assetsHasNext && screen.assetsPage <= 1 {
+		t.Fatalf("setup: no page suffix, so the term is end-of-row and this "+
+			"asserts nothing (page=%d hasNext=%v rows=%d)",
+			screen.assetsPage, screen.assetsHasNext, len(screen.assets))
+	}
+
+	var shown string
+	for _, line := range poPaneLines(t, screen) {
+		if strings.Contains(line, "Showing") {
+			shown = line
+			break
+		}
+	}
+	if shown == "" {
+		t.Fatalf("no Showing row on the pane:\n%s",
+			strings.Join(poPaneLines(t, screen), "\n"))
+	}
+	if !strings.Contains(shown, "…") {
+		t.Fatalf("the term fits whole, so no clip is under test: %q", shown)
+	}
+	// The boundary, and the suffix that makes it necessary: the term's closing
+	// quote has to be between what the operator typed and the screen's own
+	// words.
+	if !strings.Contains(shown, `…" · page `) {
+		t.Errorf("the clipped term runs straight into the page suffix, so the "+
+			"operator cannot see where what they typed ends: %q", shown)
+	}
+	poAssertFits(t, "the asset scope row with a paged query", screen)
+}

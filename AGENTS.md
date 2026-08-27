@@ -832,10 +832,16 @@ touching any screen an operator drives:
   a label of the same word one row up. A working sentence stays PROGRESSIVE.
   And the QUOTED string is bounded, never a bounded string then quoted (the
   `assetScopeRows` rule: Quote escapes, and the expansion lands inside the
-  tightest budget on the screen) — but that convention is POSITIONAL, so a value
-  in the MIDDLE of a sentence re-appends its closing quote out of the room the
-  clip was given (`poQuotedClip`), or the operator cannot see where what they
-  typed stops and the fixed words start. Because the
+  tightest budget on the screen) — but the CLOSING QUOTE is POSITIONAL, so a
+  value in the MIDDLE of a sentence re-appends it out of the room the clip was
+  given (`poQuotedClip`), or the operator cannot see where what they typed stops
+  and the fixed words start; at the END of a row the ellipsis is the boundary
+  already and that cell buys another character of the term instead. WHICH a site
+  is, is a question about the ROW and not about the function: `assetScopeRows`
+  appends a page suffix after its value, so the same query is end-of-row on page
+  1 of 1 and mid-sentence the moment there is a next page — it drew
+  `Showing ..... "hydraulic pump seal k… · page 1` until it routed the paged
+  case through `poQuotedClip`. Because the
   cap makes every lead past it produce the identical reservation, an OVER-LONG
   lead is the provable worst case rather than a sample of one, which is what
   `TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight` drives — the

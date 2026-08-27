@@ -1522,7 +1522,21 @@ func (s *PurchaseOrderCreateScreen) assetScopeRows() []string {
 		// to fifty cells in a value area of twenty-six, and clampToBox took the
 		// tail, which is the page suffix reserved three lines above for exactly
 		// this reason.
-		shown = pickerClip(strconv.Quote(ran), room)
+		//
+		// WHETHER THE CLOSING QUOTE IS KEPT IS A QUESTION ABOUT POSITION, and
+		// this row answers it BOTH ways because the page suffix is appended
+		// after the value. With a suffix the term is mid-sentence, so a clip
+		// that ate the quote drew `"hydraulic pump seal k… · page 1` and left
+		// nothing saying where what the operator typed stopped — the very
+		// ambiguity poQuotedClip exists to remove, on the row that says what
+		// the list they are looking at IS. Without one the value ends the row:
+		// the ellipsis is the boundary already, and the cell a closing quote
+		// would take is better spent on one more character of their term.
+		if page != "" {
+			shown = poQuotedClip(ran, room)
+		} else {
+			shown = pickerClip(strconv.Quote(ran), room)
+		}
 	} else {
 		shown = pickerClip(shown, room)
 	}

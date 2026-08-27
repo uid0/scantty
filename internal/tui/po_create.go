@@ -2711,15 +2711,26 @@ const poAssetSearchWords = "Finding "
 // must be bounded, never a bounded string that is then quoted (assetScopeRows
 // carries the reason at length: strconv.Quote ESCAPES, so a backslash comes
 // back two cells and a control rune up to six, and clipping first budgets for
-// the quote marks and then pays the escaping on top). But that convention is
-// POSITIONAL — assetScopeRows' value ENDS its row, so a dropped closing quote
-// costs nothing, which is why the two MID-SENTENCE sites in po_create_pickers.go
-// clip-then-quote instead. Mid-sentence a bare `"hydraulic pump sea…` runs
-// straight on into the fixed words after it and the operator cannot see where
-// what they typed ends.
+// the quote marks and then pays the escaping on top). But whether the CLOSING
+// QUOTE is worth a cell is POSITIONAL: at the end of a row the ellipsis is
+// already the boundary and the cell is better spent on one more character of
+// the term, while mid-sentence a bare `"hydraulic pump sea…` runs straight on
+// into the fixed words after it and the operator cannot see where what they
+// typed ends.
 //
 // So: clip the QUOTED string, keeping the escape bound, and re-append the
 // closing quote out of the room the clip was given rather than past it.
+//
+// WHICH SITES ARE MID-SENTENCE IS ASKED OF THE ROW, NOT OF THE FILE, and this
+// doc got that wrong once: it said assetScopeRows' value ENDS its row, so the
+// question could not arise there. It appends a page suffix AFTER the value
+// (`Value: shown + page`), so whenever the operator is on page 2 or there is a
+// next page their term is mid-sentence and the row drew
+// `Showing ..... "hydraulic pump seal k… · page 1`. That site now routes here
+// for exactly the paged case and keeps pickerClip for the unpaged one — which
+// is rule 10 with the general rule in hand: derive the set of sites from what
+// the rule is ABOUT, and ask each ROW rather than assuming a whole function
+// answers one way.
 func poQuotedClip(q string, room int) string {
 	quoted := strconv.Quote(q)
 	if room < 3 || lipgloss.Width(quoted) <= room {
