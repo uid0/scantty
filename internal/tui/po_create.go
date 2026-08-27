@@ -868,7 +868,9 @@ func (s *PurchaseOrderCreateScreen) updateSupplierSwitchPhase(m tea.KeyMsg, head
 		// bar names doing nothing on every frame the confirm fits on.
 		if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
 			// Refused pane: no prose is drawn, so there is nothing to scroll
-			// and nothing to say about not scrolling it — see moveCursor.
+			// and — this arm's whole product being that scroll offset —
+			// nothing to say about not scrolling it either. See moveCursor,
+			// which carries why a declining arm that ANSWERS is not gated.
 			return s, nil
 		}
 		if s.bodyPagesFor(headerRows) {
@@ -3605,11 +3607,15 @@ func (s *PurchaseOrderCreateScreen) moveCursor(m tea.KeyMsg, headerRows int) (bo
 		// swallowed here rather than falling through to an arm that would read
 		// it as something else.
 		//
-		// It answers with NOTHING, deliberately: the refusal notice is the
-		// whole pane and is the standing answer to every key on it. A note set
-		// here would not be drawn now and WOULD be drawn when the terminal
-		// grows back, which is a stale reply to a press the operator made
-		// before the resize.
+		// It answers with NOTHING, deliberately, and that silence is a rule
+		// about this ARM rather than about the pane: a movement key's whole
+		// product is the position, so once the move is refused there is nothing
+		// left to report, and a note set here would not be drawn now and WOULD
+		// be drawn when the terminal grows back — a stale reply to a press the
+		// operator has moved on from. The arms ABOVE this gate, which decline
+		// and ANSWER (an empty list, a filter that matched nothing), are not
+		// gated and go on speaking: their answer is the visible change rule 1
+		// asks for, and it rides the surface #155 gave it.
 		switch m.String() {
 		case "up", "down", "pgup", "pgdown":
 			return true, nil

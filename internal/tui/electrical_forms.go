@@ -960,8 +960,6 @@ func (s *PowerPanelFormScreen) formLines() *jdeLines {
 	return l
 }
 
-// formBar names the keys that apply where the cursor is standing — and only
-// those, so the bar never teaches a key that does nothing here.
 // formBar names the keys that work on the form, with PgUp/PgDn on it exactly
 // when the body moves under the bar that is about to be drawn.
 //
@@ -975,6 +973,9 @@ func (s *PowerPanelFormScreen) formBar(body *jdeLines) []actionBarItem {
 
 // formBarItems is formBar for a given paging state, so the bar that is
 // MEASURED is the bar that is drawn.
+//
+// It names the keys that apply where the cursor is standing — and only those,
+// so the bar never teaches a key that does nothing here.
 func (s *PowerPanelFormScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok {
@@ -1929,8 +1930,6 @@ func (s *PowerBreakerFormScreen) formLines() *jdeLines {
 	return l
 }
 
-// formBar names the keys that apply where the cursor is standing — and only
-// those, so the bar never teaches a key that does nothing here.
 // formBar names the keys that work on the form, with PgUp/PgDn on it exactly
 // when the body moves under the bar that is about to be drawn.
 //
@@ -1944,6 +1943,9 @@ func (s *PowerBreakerFormScreen) formBar(body *jdeLines) []actionBarItem {
 
 // formBarItems is formBar for a given paging state, so the bar that is
 // MEASURED is the bar that is drawn.
+//
+// It names the keys that apply where the cursor is standing — and only those,
+// so the bar never teaches a key that does nothing here.
 func (s *PowerBreakerFormScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok {
@@ -2660,8 +2662,6 @@ func (s *PowerCircuitFormScreen) formLines() *jdeLines {
 	return l
 }
 
-// formBar names the keys that apply where the cursor is standing — and only
-// those, so the bar never teaches a key that does nothing here.
 // formBar names the keys that work on the form, with PgUp/PgDn on it exactly
 // when the body moves under the bar that is about to be drawn.
 //
@@ -2675,6 +2675,9 @@ func (s *PowerCircuitFormScreen) formBar(body *jdeLines) []actionBarItem {
 
 // formBarItems is formBar for a given paging state, so the bar that is
 // MEASURED is the bar that is drawn.
+//
+// It names the keys that apply where the cursor is standing — and only those,
+// so the bar never teaches a key that does nothing here.
 func (s *PowerCircuitFormScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok {

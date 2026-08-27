@@ -37,14 +37,16 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // jdeMoveTokens are the action-bar tokens that name a MOVEMENT key, and the
 // keystrokes each one spells.
 //
-// The three tokens are transcribed from poBarKeyNames (po_view_jde_test.go),
-// which is the one table both purchasing sweeps read, and the check below fails
-// on any drift between them — a token that spelled something different here
+// They are transcribed from the package's own bar tables — poBarKeyNames
+// (po_view_jde_test.go), which both purchasing sweeps read, and
+// receiveBarKeyNames beside it — and the check below fails on any drift between
+// them — a token that spelled something different here
 // would be this sweep making a claim on the bar's behalf, which is the defect
 // the bar tables exist to report.
 //
@@ -63,14 +65,20 @@ import (
 var jdeMoveTokens = map[string][]string{
 	"UP/DN":     {"up", "down"},
 	"PgUp/PgDn": {"pgup", "pgdown"},
+	"PgUp":      {"pgup"},
 	"Home/End":  {"home", "end"},
 }
 
-// TestJDEForm_TheMovementTokensMatchTheBarTable: the three tokens above spell
-// exactly what the shared bar table says they spell.
+// TestJDEForm_TheMovementTokensMatchTheBarTable: every token above spells
+// exactly what the shared bar table says it spells.
 //
 // Transcribing rather than interpreting is the rule (AGENTS.md): a sweep that
 // credited a token with a synonym would be making the claim it exists to check.
+//
+// This direction ALONE is not enough and never was — a token the bars draw and
+// this file has never heard of passes it in silence. That is what
+// TestJDEForm_EveryMovementTokenABarDrawsIsInTheTable is for, and "PgUp" is the
+// token it found.
 func TestJDEForm_TheMovementTokensMatchTheBarTable(t *testing.T) {
 	for token, want := range jdeMoveTokens {
 		got, ok := poBarKeyNames[token]
@@ -338,5 +346,185 @@ func TestJDEForm_EveryRefusedPaneCaseCouldHaveMoved(t *testing.T) {
 				"exercising the rule. Give the fixture a body it can move in, or record "+
 				"it in jdeInertCases with the reason", name)
 		}
+	}
+}
+
+// jdeMovementKeystrokes are the keystrokes this file's rule is about: the ones
+// whose whole product is where the operator is standing. Read off nothing — a
+// key is on this list because moving is all it does.
+var jdeMovementKeystrokes = map[string]bool{
+	"up": true, "down": true, "pgup": true, "pgdown": true, "home": true, "end": true,
+}
+
+// jdeBarTokens is every KEY token a drawn bar spells, read off the bar the
+// terminal really gets.
+//
+// A bar item renders as "Key=Label" and a key never carries a space while a
+// label routinely does, so the token is the run of non-space characters ending
+// at each "=" — which is what lets this walk a bar it was never told the shape
+// of. That is the point: the forward direction below has to enumerate what the
+// bar SAYS rather than what some table expects it to say.
+func jdeBarTokens(bar []string) []string {
+	var out []string
+	for _, line := range bar {
+		plain := stripANSI(line)
+		for i, r := range plain {
+			if r != '=' {
+				continue
+			}
+			start := i
+			for start > 0 {
+				prev := plain[:start]
+				last, size := utf8.DecodeLastRuneInString(prev)
+				if last == ' ' || last == '=' {
+					break
+				}
+				start -= size
+			}
+			if tok := plain[start:i]; tok != "" {
+				out = append(out, tok)
+			}
+		}
+	}
+	return out
+}
+
+// jdeUnresolvedBarTokens are the tokens the columnar bars draw that neither
+// transcription table has an entry for, each with the reason it cannot be
+// spelling a movement key.
+//
+// A token is recorded here rather than skipped, so "absent" and "allowed" stay
+// different states: the check below fails on a token that is in no table and no
+// entry here, which is what stops a bar token quietly meaning a movement key
+// nothing presses.
+var jdeUnresolvedBarTokens = map[string]string{
+	"←→": "the layer's arrow token for changing the VALUE on the row the cursor " +
+		"already stands on — a toggle, a select, a level's place in a chain. It " +
+		"moves nothing about where the operator is, which is the only thing this " +
+		"file gates, and neither purchasing nor receiving binds it at all",
+}
+
+// jdeResolveBarToken says which keystrokes a drawn bar token spells, reading the
+// two TRANSCRIPTION tables the package already keeps — poBarKeyNames for the
+// columnar purchasing screens and receiveBarKeyNames for the receiving form.
+//
+// Two tables and not one because that is what the package HAS: the receiving
+// flow brought its own sweep and its own table, and a third table written here
+// would be a third chance to credit a bar with a claim it never made. Where they
+// overlap they must agree, and the check below fails when they do not — a token
+// meaning two things is exactly the drift a transcription table exists to catch.
+func jdeResolveBarToken(token string) ([]string, bool) {
+	po, inPO := poBarKeyNames[token]
+	rc, inReceive := receiveBarKeyNames[token]
+	switch {
+	case inPO && inReceive:
+		if !reflect.DeepEqual(po, rc) {
+			return nil, false
+		}
+		return po, true
+	case inPO:
+		return po, true
+	case inReceive:
+		return rc, true
+	}
+	return nil, false
+}
+
+// TestJDEForm_TheTwoBarTablesAgreeWhereTheyOverlap: a token both transcription
+// tables know spells the same keystrokes in each.
+//
+// jdeResolveBarToken reads both, so a disagreement between them would make the
+// resolution depend on which table was consulted first — and it reports as an
+// UNRESOLVED token in the sweep below, which reads as a missing entry rather
+// than as the contradiction it is. This is where it says what it is.
+func TestJDEForm_TheTwoBarTablesAgreeWhereTheyOverlap(t *testing.T) {
+	shared := 0
+	for token, po := range poBarKeyNames {
+		rc, ok := receiveBarKeyNames[token]
+		if !ok {
+			continue
+		}
+		shared++
+		if !reflect.DeepEqual(po, rc) {
+			t.Errorf("the bar token %q spells %v in poBarKeyNames and %v in "+
+				"receiveBarKeyNames — one of them is interpreting rather than "+
+				"transcribing", token, po, rc)
+		}
+	}
+	if shared == 0 {
+		t.Error("the two bar tables share no token at all, so this check asserted " +
+			"nothing and jdeResolveBarToken's agreement rule is untested")
+	}
+}
+
+// TestJDEForm_EveryMovementTokenABarDrawsIsInTheTable is the OTHER direction of
+// TestJDEForm_TheMovementTokensMatchTheBarTable, and it is the direction that
+// matters.
+//
+// The first check proves the tokens jdeMoveTokens LISTS spell what poBarKeyNames
+// says they spell. That is safe in one direction only, and it is verbatim the
+// failure AGENTS.md records for listNamedKeys against listAllBarKeys: a bar
+// token this file has never heard of contributes no movement key, so
+// jdeMoveKeysFor returns nothing for that frame, the refused-pane sweep presses
+// nothing there, and the non-vacuity half then demands a jdeInertCases entry —
+// which dresses the hole up as a documented exclusion.
+//
+// That is not hypothetical. The receiving form's all-units-answered frame spells
+// its step-back key as the token "PgUp" ALONE, and while jdeMoveTokens held only
+// "PgUp/PgDn" that frame was swept for movement it could not report: PgUp moved
+// serialCursor on a pane the layer refuses and nothing in this file pressed it.
+//
+// So the roster is DERIVED from what the bars actually draw, over every case and
+// every pane the fixtures reach, and a token that resolves to a movement
+// keystroke and is missing from jdeMoveTokens FAILS.
+func TestJDEForm_EveryMovementTokenABarDrawsIsInTheTable(t *testing.T) {
+	seen := map[string]bool{}
+	for _, c := range jdePaneCases() {
+		name, mk := c.name, c.mk
+		for _, w := range jdePaneWidths {
+			for _, h := range jdePaneHeights() {
+				s := mk()
+				jdeRootAt(t, s, w, h)
+				bar := jdeBarOf(s.View())
+				if bar == nil {
+					continue // refused; it draws no bar to read
+				}
+				for _, token := range jdeBarTokens(bar) {
+					if seen[token] {
+						continue
+					}
+					seen[token] = true
+					keys, ok := jdeResolveBarToken(token)
+					if !ok {
+						if _, excused := jdeUnresolvedBarTokens[token]; !excused {
+							t.Errorf("%s at %dx%d draws the bar token %q, which neither bar "+
+								"table spells and jdeUnresolvedBarTokens does not excuse. An "+
+								"unresolved token contributes no movement key, so a frame "+
+								"spelling one is swept for a rule it can never report",
+								name, w, h, token)
+						}
+						continue
+					}
+					moves := false
+					for _, k := range keys {
+						if jdeMovementKeystrokes[k] {
+							moves = true
+						}
+					}
+					if !moves {
+						continue
+					}
+					if _, listed := jdeMoveTokens[token]; !listed {
+						t.Errorf("%s at %dx%d draws the bar token %q, which the bar tables say "+
+							"spells %v — a movement key — and jdeMoveTokens does not list it. "+
+							"Every sweep in this file would press nothing for that frame and "+
+							"report it as having nothing to move", name, w, h, token, keys)
+					}
+				}
+			}
+		}
+	}
+	if len(seen) == 0 {
+		t.Error("no columnar bar drew a single token, so this check asserted nothing")
 	}
 }

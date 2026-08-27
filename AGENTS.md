@@ -660,9 +660,19 @@ either:
     is to be MEASURED, so dropping its scroll keys shrinks it and
     `jdeTooShortRows` then names a height one row short of one that works. That
     defect has shipped once already (`jdeBodyAvail` carries it).
-  - **A refused pane answers with NOTHING — not even a decline note.** A note
-    written there is not drawn now and IS drawn when the terminal grows back,
-    answering a press the operator made before the resize.
+  - **A GATED MOVEMENT ARM answers with NOTHING — not even a decline note.**
+    Its whole product WAS the position, so once the move is refused there is
+    nothing left to report; and a note written there is not drawn now and IS
+    drawn when the terminal grows back, answering a press the operator has
+    moved on from. THE BOUNDARY IS WHAT THE KEY DID, NOT WHAT THE PANE IS: an
+    arm that DECLINES AND ANSWERS — an empty picker list, a filter that matched
+    nothing, `up` with one row to move through — is NOT gated and must not be.
+    Its answer is the visible change rule 1 requires and it rides the surface
+    #155 gave it, which the layer cannot trim; read after the pane grows back
+    it is later than ideal and far better than a key that never speaks. Gating
+    those would silence them at exactly the heights that work made them speak,
+    so the silence is the rule for arms whose only product is a POSITION and
+    for no others.
   - **TYPING is deliberately not gated**, and nor is `esc`. A movement key's
     whole effect is the position, so declining it PRESERVES what the operator
     had; a typed rune's effect is the value, and declining that would DISCARD

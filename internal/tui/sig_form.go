@@ -413,9 +413,6 @@ func (s *SIGFormScreen) formLines() *jdeLines {
 	return l
 }
 
-// formBar names the keys that apply where the cursor is standing — and only
-// those, so the bar never teaches a key that does nothing here. Every row of
-// this sheet is text, so there is never anything for ←→ or Ctrl-E to do.
 // formBar names the keys that work on the form, with PgUp/PgDn on it exactly
 // when the body moves under the bar that is about to be drawn.
 //
@@ -429,6 +426,10 @@ func (s *SIGFormScreen) formBar(body *jdeLines) []actionBarItem {
 
 // formBarItems is formBar for a given paging state, so the bar that is
 // MEASURED is the bar that is drawn.
+//
+// It names the keys that apply where the cursor is standing — and only those,
+// so the bar never teaches a key that does nothing here. Every row of this
+// sheet is text, so there is never anything for ←→ or Ctrl-E to do.
 func (s *SIGFormScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if paging {

@@ -89,8 +89,6 @@ func TestStorageAssignForm_TypeDrivesTheFields(t *testing.T) {
 	}
 }
 
-// The cursor stays on the same FIELD when the type cycles a row in or out —
-// otherwise changing the type teleports it.
 // assignWalkTo tabs the cursor onto `field`, and FAILS rather than spinning if
 // it never gets there.
 //
@@ -110,6 +108,8 @@ func assignWalkTo(t *testing.T, s *StorageAssignFormScreen, field int) *StorageA
 	return s
 }
 
+// The cursor stays on the same FIELD when the type cycles a row in or out —
+// otherwise changing the type teleports it.
 func TestStorageAssignForm_CursorKeepsItsFieldAcrossARebuild(t *testing.T) {
 	s := loadedAssignForm(t)
 	// Move to Occupant, which exists in both shapes.

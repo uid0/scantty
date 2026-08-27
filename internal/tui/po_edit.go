@@ -1506,9 +1506,6 @@ func poLineGridRow(num, item, qty, cost, ship, flag string, itemW int) string {
 	return jdeIndent + strings.TrimRight(strings.Join(cells, "  "), " ")
 }
 
-// formBar names the keys that apply where the cursor is standing — and only
-// those: a bar that advertised Ctrl-E on a row with nothing to open would be
-// teaching the operator a key that does nothing.
 // formBar names the keys that work on the form, with PgUp/PgDn on it exactly
 // when the body moves under the bar that is about to be drawn.
 //
@@ -1522,6 +1519,10 @@ func (s *PurchaseOrderEditScreen) formBar(body *jdeLines) []actionBarItem {
 
 // formBarItems is formBar for a given paging state, so the bar that is
 // MEASURED is the bar that is drawn.
+//
+// It names the keys that apply where the cursor is standing — and only those:
+// a bar that advertised Ctrl-E on a row with nothing to open would be teaching
+// the operator a key that does nothing.
 func (s *PurchaseOrderEditScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Exit"}, {"UP/DN", "Fields"}}
 	switch {

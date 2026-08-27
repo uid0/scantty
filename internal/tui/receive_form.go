@@ -2310,6 +2310,16 @@ func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg, headerRows int) (Screen, tea
 			// because of what some other arm happens to do" is the property
 			// currentInput's own comment refuses to rest on, and a refactor is
 			// exactly what makes it reachable.
+			//
+			// DRAWABILITY is asked first, before the queue is, for the reason
+			// pageUnit asks it: this key's whole effect is the position, so on
+			// a pane the layer refuses there is no unit on screen to step back
+			// to and nothing to say about not stepping — a note written here
+			// would be drawn when the terminal grows back, answering a press
+			// the operator has moved on from.
+			if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+				return s, nil // refused pane — see pageQty
+			}
 			if len(s.serialUnits) == 0 {
 				return s, s.decline(k, headerRows)
 			}

@@ -497,6 +497,9 @@ func (s *InventoryItemFormScreen) moveKitCursor(delta int) {
 
 func (s *InventoryItemFormScreen) pageKitCursor(dir int) {
 	body := s.kitListLines()
+	if !s.kitListPages(body) {
+		return
+	}
 	next, ok := s.pageRow(body, s.kitCursor, s.kitAddRow()+1, dir, 0, s.kitListBar(body))
 	if !ok {
 		return
@@ -586,7 +589,18 @@ func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 // Esc both mean done: the list is saved nested with the KIT, so leaving it
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) kitListBar(body *jdeLines) []actionBarItem {
-	return s.kitListBarItems(s.bodyScrollsForBar(body, 0, s.kitListBarItems(true)))
+	return s.kitListBarItems(s.kitListPages(body))
+}
+
+// kitListPages is the ONE answer to "does PgUp/PgDn do anything here", read by
+// the bar that names the pair and by the arm that answers it — the same single
+// predicate chainPages is for the sibling list, and it carries the reasoning.
+//
+// This list was bound-and-unnamed: pageRow asks only whether the frame is DRAWN,
+// so on a pane tall enough to hold every component the bar rightly said nothing
+// about paging and PgDn still walked the cursor to the last row.
+func (s *InventoryItemFormScreen) kitListPages(body *jdeLines) bool {
+	return s.bodyScrollsForBar(body, 0, s.kitListBarItems(true))
 }
 
 // kitListBarItems is kitListBar for a given paging state, so the bar that is

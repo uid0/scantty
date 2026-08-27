@@ -342,6 +342,71 @@ func receivePaneFixture(tweak func(*ReceiveFormScreen)) Screen {
 	return s
 }
 
+// receiveSerialPastEndFixture is the receiving screen on its ALL UNITS ANSWERED
+// frame: the serial phase with serialCursor standing past the end of the queue.
+//
+// It is reached the way an operator reaches it, through the real worksheet and
+// the real keys, because the state is a consequence of the flow rather than a
+// field somebody sets: enter a quantity for a serialized line, capture every
+// serial the line owes, land on the review, Esc back to the quantities to
+// double-check a count, and press Enter again. enrol carries the captures across
+// by identity, so firstUncaptured walks off the end and toSerial opens the phase
+// on the frame that has no box.
+//
+// That frame is the reason this fixture exists. It is the only one in the
+// program whose bar spells its step-back key as the bare token "PgUp", and its
+// PgUp arm was the last movement handler in the package still acting on a pane
+// the layer refuses — reachable, named, and swept by nothing.
+func receiveSerialPastEndFixture() Screen {
+	line := receiveWSSerialized(11, "Sensor module", 2, 0)
+	s := NewReceiveFormScreen(Deps{}, receivePO(line))
+	s.Update(receiveSheetMsg{sheet: receiveWorksheet(line)})
+
+	// Bounded, for the reason receiveWalkTo is: a declined key would turn an
+	// unbounded walk into a hung package rather than a failing fixture, and
+	// receiveSerialPastEndState is what reports a walk that did not arrive.
+	for n := 0; s.focused != receiveRowFirstLine && n <= 8; n++ {
+		s.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	s.Update(woRuneKey("2"))
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter}) // the quantity form -> serial capture
+	for i := 0; i < 2; i++ {
+		s.Update(woRuneKey(fmt.Sprintf("SN-%d", i+1)))
+		s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc})   // the review -> back to the quantities
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter}) // and in again, past the end this time
+	return s
+}
+
+// TestReceive_TheSerialPastTheEndFixtureIsOnThatFrame is the non-vacuity guard
+// on the fixture above.
+//
+// A fixture built by DRIVING can stop arriving without anyone noticing — a
+// changed row order, a refusal, one key renamed — and it would then be swept in
+// whatever state it did reach, which is the vacuous-fixture rule (AGENTS.md)
+// with the fixture rather than the assertion at fault. So the state it claims is
+// asserted: the serial phase, a queue with units in it, and a cursor past the
+// end of that queue.
+func TestReceive_TheSerialPastTheEndFixtureIsOnThatFrame(t *testing.T) {
+	s, ok := receiveSerialPastEndFixture().(*ReceiveFormScreen)
+	if !ok {
+		t.Fatalf("the fixture built a %T, want *ReceiveFormScreen", s)
+	}
+	if s.phase != phaseSerial {
+		t.Fatalf("the fixture is on phase %v, want the serial phase", s.phase)
+	}
+	if len(s.serialUnits) == 0 {
+		t.Fatal("the fixture reached the serial phase with an empty queue, so its bar " +
+			"names no PgUp and the frame under test is not the one it claims")
+	}
+	if s.serialCursor < len(s.serialUnits) {
+		t.Fatalf("the fixture is on unit %d of %d, want the cursor PAST the end — the "+
+			"all-units-answered frame is the one this fixture exists for",
+			s.serialCursor+1, len(s.serialUnits))
+	}
+}
+
 // jdeScreenStates are EXTRA states of screens jdeScreenFixtures already builds,
 // and they are the second axis of this file: DERIVING the set of screens makes
 // a screen impossible to forget and says nothing whatever about the states
@@ -390,6 +455,12 @@ func jdeScreenStates() map[string]func() Screen {
 			}
 			return s
 		},
+
+		// The receiving form's all-units-answered serial frame. Its bar is the
+		// only one in the program spelling a movement key as the bare token
+		// "PgUp", and the base ReceiveFormScreen fixture opens on the quantity
+		// form, which never reaches it.
+		"ReceiveFormScreen/serial past the end": receiveSerialPastEndFixture,
 
 		// The add-line flow's two CURSORED / SCROLLED phases. Its fixture opens
 		// on the identifier row, which is one text box with nothing to move

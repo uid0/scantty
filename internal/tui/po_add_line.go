@@ -494,9 +494,12 @@ func (s *PurchaseOrderAddLineScreen) keyChoose(m tea.KeyMsg) (Screen, tea.Cmd) {
 		if !s.frameDrawn(len(s.headerLines()), s.bar()) {
 			// The pane is too short for the layer to draw this frame, so there
 			// is no highlight on it to move — and nothing to SAY about not
-			// moving it either, because a note written here would not be drawn
-			// now and would be drawn when the terminal grows back, answering a
-			// press the operator made before the resize.
+			// moving it either, because this arm's whole product was that
+			// position: a note written here would not be drawn now and would be
+			// drawn when the terminal grows back, answering a press the
+			// operator made before the resize. An arm that DECLINES and answers
+			// is a different case and is not gated at all — jde_form.go's
+			// movement block carries the boundary.
 			return s, nil
 		}
 		next := s.cursor + 1
@@ -553,8 +556,10 @@ func (s *PurchaseOrderAddLineScreen) keyConfirm(m tea.KeyMsg) (Screen, tea.Cmd) 
 		if !s.frameDrawn(len(s.headerLines()), s.bar()) {
 			// Refused pane: the prose is not drawn, so scrolling it would move
 			// the operator's place invisibly — `end` on this frame is the same
-			// shape as `end` on the order pad. See keyChoose for why it says
-			// nothing rather than declining out loud.
+			// shape as `end` on the order pad. See keyChoose for why an arm
+			// whose whole product is a POSITION says nothing rather than
+			// declining out loud; an arm that declines and ANSWERS still
+			// answers.
 			return s, nil
 		}
 		if !s.confirmScrolls() {

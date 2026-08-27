@@ -627,8 +627,6 @@ func (s *MakerBoxFormScreen) formLines() *jdeLines {
 	return l
 }
 
-// formBar names the keys that apply where the cursor is standing — and only
-// those, so the bar never teaches a key that does nothing here.
 // formBar names the keys that work on the form, with PgUp/PgDn on it exactly
 // when the body moves under the bar that is about to be drawn.
 //
@@ -642,6 +640,9 @@ func (s *MakerBoxFormScreen) formBar(body *jdeLines) []actionBarItem {
 
 // formBarItems is formBar for a given paging state, so the bar that is
 // MEASURED is the bar that is drawn.
+//
+// It names the keys that apply where the cursor is standing — and only those,
+// so the bar never teaches a key that does nothing here.
 func (s *MakerBoxFormScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok {

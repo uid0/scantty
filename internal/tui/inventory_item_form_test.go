@@ -224,3 +224,96 @@ func TestInventoryItemForm_HydratesReorderAlerts(t *testing.T) {
 		t.Errorf("hydrate should honour reorder_alerts_enabled=false")
 	}
 }
+
+// TestItemFormSubLists_ThePagingPairIsNamedWhenAPageMovesTheCursor is the bar
+// honesty rule over the item form's two nested sub-lists, stated as the
+// BICONDITIONAL and swept over every pane the layer will draw the frame into.
+//
+// Both lists were half-wrong, in opposite directions, which is why they are
+// swept together rather than one being fixed where it was reported. The CHAIN
+// list named PgUp/PgDn the moment the rungs outgrew its window and
+// updateChainPhase bound neither key, so with a three-rung chain the bar
+// advertised a pair no handler answered from 80x11 to 80x16. The KIT list bound
+// both and gated them on pageRow alone, which only asks whether the frame is
+// DRAWN — so on a pane tall enough to hold every component the bar rightly said
+// nothing about paging and PgDn still walked the cursor to the last row.
+//
+// A check written for one of those catches neither of the other: named-and-dead
+// and bound-and-unnamed are the two ways one claim can fail, so the assertion is
+// the equality and the sweep insists on seeing BOTH sides of it before it will
+// pass. The heights the layer REFUSES are outside it: no bar is drawn there for
+// the operator to read, and the frame's own answer — no keys named at all — is
+// the notice. The bar is read off the RENDERED pane rather than off chainBar(),
+// because a method's return value is not what the operator reads (AGENTS.md).
+func TestItemFormSubLists_ThePagingPairIsNamedWhenAPageMovesTheCursor(t *testing.T) {
+	lists := map[string]struct {
+		open   func(*InventoryItemFormScreen)
+		cursor func(*InventoryItemFormScreen) int
+	}{
+		"packaging chain": {
+			open: func(s *InventoryItemFormScreen) {
+				s.packRows = itemChainFixtureRows()
+				s.openChain()
+			},
+			cursor: func(s *InventoryItemFormScreen) int { return s.chainCursor },
+		},
+		"kit components": {
+			open: func(s *InventoryItemFormScreen) {
+				s.kitRows = itemKitFixtureRows()
+				s.openKitList()
+			},
+			cursor: func(s *InventoryItemFormScreen) int { return s.kitCursor },
+		},
+	}
+	for name, list := range lists {
+		t.Run(name, func(t *testing.T) {
+			checked, named := 0, 0
+			for _, w := range jdePaneWidths {
+				for _, h := range jdePaneHeights() {
+					s := NewInventoryItemFormScreen(Deps{}, "")
+					s.loading = false
+					list.open(s)
+					jdeRootAt(t, s, w, h)
+
+					bar := jdeBarOf(s.View())
+					if bar == nil {
+						continue // refused: the notice replaces the bar, so it claims nothing
+					}
+					checked++
+					offers := strings.Contains(strings.Join(bar, " "), "PgUp/PgDn=")
+					if offers {
+						named++
+					}
+
+					// Both directions from the top: the pair is honest when
+					// EITHER key can move, and pgdown is the one with room from
+					// row 0.
+					before := list.cursor(s)
+					s.Update(poPhaseKeyMsg("pgdown"))
+					moved := list.cursor(s) != before
+					before = list.cursor(s)
+					s.Update(poPhaseKeyMsg("pgup"))
+					moved = moved || list.cursor(s) != before
+
+					if offers != moved {
+						t.Errorf("at %dx%d the bar names PgUp/PgDn = %v but a page moved "+
+							"the cursor = %v\n%s", w, h, offers, moved, strings.Join(bar, "\n"))
+					}
+				}
+			}
+			if checked == 0 {
+				t.Fatal("every pane refused the frame, so this sweep asserted nothing")
+			}
+			if named == 0 {
+				t.Fatalf("the list never offered PgUp/PgDn at any of the %d drawable panes, "+
+					"so the half of the rule that matters — a named key that acts — was "+
+					"never exercised. Give the fixture more rows than a pane holds", checked)
+			}
+			if named == checked {
+				t.Fatalf("the list offered PgUp/PgDn at every one of the %d drawable panes, "+
+					"so the other half — an unnamed key that stays inert — was never "+
+					"exercised", checked)
+			}
+		})
+	}
+}

@@ -1246,12 +1246,22 @@ func (g jdeScreen) windowRowsForBar(body *jdeLines, cursorRow, headerRows int, i
 // eventually restate it differently; TestJDEForm_ARefusedPaneKeepsTheOperatorsPlace
 // walks every columnar screen at every refused height to prove none of them has.
 //
-// A REFUSED PANE ANSWERS WITH NOTHING — not even a note saying the key
-// declined. A note is not drawn on a frame the layer refused, and it IS drawn
-// when the terminal grows back, so it arrives as a reply to a press the
-// operator made before the resize. The notice is the standing answer for the
-// whole pane and it is one the operator can act on, which is what makes the
-// silence legitimate.
+// A GATED MOVEMENT ARM ANSWERS WITH NOTHING — not even a note saying the key
+// declined. Its whole effect WAS the position, so once the move is refused
+// there is nothing left to report; and a note is not drawn on a frame the layer
+// refused while it IS drawn when the terminal grows back, so it would arrive as
+// a reply to a press the operator has moved on from. The notice is the standing
+// answer for the whole pane and it is one the operator can act on, which is
+// what makes that silence legitimate.
+//
+// THE BOUNDARY IS WHAT THE KEY DID, NOT WHAT THE PANE IS. A key that DECLINES
+// AND ANSWERS is not gated and must not be: an empty picker list, a search that
+// matched nothing, a page at either edge: its answer is the visible change rule
+// 1 requires and it belongs on the surface #155 gave it, which the layer cannot
+// trim. Read after the pane grows back it is later than ideal, and far better
+// than a key that never speaks — gating those arms would silence them at
+// exactly the heights that work made them speak. So the silence above is the
+// rule for arms whose only product is a POSITION, and for no others.
 //
 // TYPING is deliberately NOT gated, and the asymmetry is the point. A movement
 // key's whole effect IS the position, so declining it preserves what the
