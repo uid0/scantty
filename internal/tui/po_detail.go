@@ -547,7 +547,19 @@ func (s *PurchaseOrderDetailScreen) handleShipKey(m tea.KeyMsg) (Screen, tea.Cmd
 		// modal is not drawn into: moving the caret between two boxes nobody
 		// can see leaves the operator typing into the other one when the
 		// terminal grows back.
-		next, ok := s.moveRow(s.shipFocus, poShipFieldCount, +1, 0, poShipBar)
+		//
+		// The delta is COMPUTED rather than fixed at +1, even though this modal
+		// has exactly two rows and +1 ≡ -1 there: a hard-coded forward step is
+		// right by an accident of the field count, not by anything about the
+		// arm, so adding a third row — a note, a carrier — would silently send
+		// Shift-Tab and Up the wrong way. No sweep would report it either: they
+		// press keys and compare a position, which is a fact about where the
+		// cursor is and not about which way it went.
+		delta := +1
+		if m.String() == "shift+tab" || m.String() == "up" {
+			delta = -1
+		}
+		next, ok := s.moveRow(s.shipFocus, poShipFieldCount, delta, 0, poShipBar)
 		if !ok {
 			return s, nil
 		}

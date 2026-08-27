@@ -651,8 +651,21 @@ either:
   scroll one spell the conjunction themselves and name it
   (`po_detail`'s `sheetMoves` / `padMoves`).
   **THE RULE IS ONE STATEMENT, NOT TWO: a movement key acts when the frame is
-  DRAWN and — for a PAGE — when the body MOVES.** `pageRow` is the single place
-  both are asked, which is why it takes TWO bars: drawability of the bar really
+  DRAWN and — for a PAGE — when the body MOVES.** `pageRow` asks both, and it is
+  the DEFAULT: a screen with no further condition on its pager reaches for it and
+  gets the whole rule. A screen carrying a condition `pageRow` CANNOT EXPRESS
+  asks the two directly and SAYS WHY AT THAT SITE, so the exception is
+  self-evident where it occurs rather than tracked in a roster somewhere else —
+  and the next such screen documents itself by following the rule instead of by
+  being added to a list. The condition that recurs is a THIRD fact `pageRow`'s
+  single bool cannot carry: "refused" and "nothing to page" come back as the same
+  false, and several screens must answer them differently — silence on a refused
+  pane, a decline note when the body simply does not move on a frame the operator
+  can see. `po_create`'s `bodyPagesFor` and `receive_form`'s `qtyPagesFor` add a
+  second on top: a page moves the CURSOR, so there must be another row to LAND
+  on, which comes apart from "does the body overflow" in states they have by
+  design.
+  `pageRow` takes TWO bars: drawability of the bar really
   DRAWN (`tooShort` is monotone in bar height, so a taller bar would decline a
   key at a height the frame IS drawn at), scrolling of the CEILING bar (naming
   the keys costs cells, cells fold the bar onto another row, and a folded bar

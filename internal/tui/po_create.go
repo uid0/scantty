@@ -3533,6 +3533,12 @@ func (s *PurchaseOrderCreateScreen) barItems(paging bool) []actionBarItem {
 // the tallest bar is the fixed point: a body that overflows the smallest budget
 // also overflows the larger one left when the keys are dropped, so the answer
 // cannot oscillate between frames.
+//
+// The second condition is what the layer's pageRow cannot express, and it is why
+// this screen asks the pair itself rather than handing pageRow the whole rule.
+// So is the way the answer is USED: moveCursor must tell "refused" from "nothing
+// to page" — the first is swallowed in silence, the second falls through to an
+// arm that declines out loud — and pageRow returns the same false for both.
 func (s *PurchaseOrderCreateScreen) bodyPagesFor(headerRows int) bool {
 	if s.phase == poPhaseLine {
 		// A FIELD form has nothing to page. Its cursor WRAPS (focusNextLine),

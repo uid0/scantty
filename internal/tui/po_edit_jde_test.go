@@ -181,9 +181,6 @@ func TestPOEditJDE_FieldNavMovesAndWraps(t *testing.T) {
 // wrapped would lose the operator's place rather than save them keystrokes.
 func TestPOEditJDE_PagingClampsInsteadOfWrapping(t *testing.T) {
 	s := poJDEScreen(t, 18)
-	if step := s.pageStep(); step < 1 || step >= s.rowCount() {
-		t.Fatalf("a page is %d rows of %d — it should be a screenful, not everything", step, s.rowCount())
-	}
 
 	s.cursor = 0
 	s.updateForm(tea.KeyMsg{Type: tea.KeyPgDown})

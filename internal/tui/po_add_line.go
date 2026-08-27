@@ -1222,6 +1222,14 @@ func (s *PurchaseOrderAddLineScreen) bar() []actionBarItem {
 
 // choosePages reports whether the candidate list is longer than the pane shows,
 // which is the only state where PgUp/PgDn move anything.
+//
+// The candidate list is a CURSOR, so keyChoose would ordinarily hand the whole
+// rule to the layer's pageRow. It asks the two questions itself because it needs
+// to tell them APART, and pageRow's single false cannot: a refused pane is
+// answered with silence (a movement arm's whole product was the position, and a
+// note written there arrives after the resize), while a list that simply fits
+// gets a decline note, because the operator pressed that key on a frame they can
+// see and rule 1 says something has to change.
 func (s *PurchaseOrderAddLineScreen) choosePages() bool {
 	return s.bodyScrollsForBar(s.chooseBody(), len(s.headerLines()), s.chooseBarItems(true))
 }

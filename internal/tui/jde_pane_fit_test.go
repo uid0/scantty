@@ -1818,6 +1818,14 @@ func TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves(t *testing.T) {
 // the reason, so "absent" and "excused" stay different states — and a stale
 // entry fails as loudly as a missing one.
 //
+// All THREE directions fail rather than one, because a roster in a test is only
+// worth keeping if being wrong about it is loud: a case that declines when
+// unsized and is not listed fails; a listed case that pages when unsized fails;
+// and a listed case that does not page at any height fails too, since it is
+// excusing behaviour that no longer exists. Without that third one an entry
+// could outlive the screen it was written about and go on passing in silence,
+// which is the shape of hand-kept roster this project keeps being bitten by.
+//
 // They are one class rather than a list of accidents: the sheets that spell the
 // scroll conjunction THEMSELVES instead of getting it from pageRow. Two of them
 // scroll an OFFSET, which deliberately has no combined primitive because its two
@@ -1878,6 +1886,11 @@ func TestJDEForm_AnUnsizedTerminalPagesAsItAlwaysHas(t *testing.T) {
 
 		reason, excused := jdeUnsizedDeclineCases[name]
 		switch {
+		case excused && !sizedPages:
+			t.Errorf("%s is recorded in jdeUnsizedDeclineCases (%q) but it does not page "+
+				"at ANY height it draws at, so there is nothing here to excuse. An "+
+				"entry describing no behaviour is a stale exception that passes in "+
+				"silence", name, reason)
 		case sizedPages && !unsizedPages && !excused:
 			t.Errorf("%s: PgDn pages on an 80x%d pane and does nothing on an UNSIZED "+
 				"terminal. There is no pane there to be too short, so the geometric "+

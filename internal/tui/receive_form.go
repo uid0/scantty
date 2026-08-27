@@ -1582,6 +1582,9 @@ func (s *ReceiveFormScreen) pageRowCursor(k string, body *jdeLines, rows, header
 // and that a page has somewhere to land, because those two questions agree in
 // almost every state and come apart in the one that is designed — a body of one
 // row that is still taller than the pane.
+//
+// That second half is the condition the layer's pageRow cannot express, and it
+// is why this screen asks the pair here instead of handing pageRow the job.
 func (s *ReceiveFormScreen) rowsPageFor(body *jdeLines, rows, headerRows int) bool {
 	return rows > 1 && s.bodyScrollsForBar(body, headerRows, s.barCeiling())
 }
@@ -2365,6 +2368,11 @@ func (s *ReceiveFormScreen) moveSerialField(dir, headerRows int) {
 }
 
 // pageUnit walks between capture slots, keeping what is in the boxes.
+//
+// Not pageRow, and not because of the pane: PgUp/PgDn here step ONE UNIT rather
+// than one paneful, so there is no window question to ask — the bar names the
+// pair whenever there are two units to walk between, whatever the body is doing.
+// Drawability is still the layer's, asked exactly as everywhere else.
 func (s *ReceiveFormScreen) pageUnit(k string, headerRows int) tea.Cmd {
 	if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
 		return nil // refused pane — see pageQty
@@ -3332,6 +3340,11 @@ func (s *ReceiveFormScreen) qtyPagesFor(headerRows int) bool {
 	// still taller than the pane, where jdePageCursor clamps and returns the
 	// row it was handed while the bar printed PgUp/PgDn=Page over a key whose
 	// whole effect was to write "pgdown is already at the last row".
+	//
+	// That second half is what pageRow cannot express, which is why this screen
+	// asks the pair itself rather than handing the layer the whole rule — and
+	// pageRow's single false could not be told apart from a refused pane, which
+	// this frame answers differently (silence there, a decline note here).
 	//
 	// Both halves live here rather than in the arm so the bar and pageQty read
 	// ONE expression: two conditions that agree in most states are two

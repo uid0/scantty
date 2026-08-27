@@ -669,14 +669,6 @@ func (s *PurchaseOrderEditScreen) pageCursor(dir int) {
 	s.syncFocus()
 }
 
-// pageStep is how many navigable rows the pane is currently showing — computed
-// from the same lines View draws, so a page moves by exactly what the operator
-// can see rather than by a guessed constant.
-func (s *PurchaseOrderEditScreen) pageStep() int {
-	body := s.formLines()
-	return s.windowRowsForBar(body, s.cursor, 0, s.formBar(body))
-}
-
 func (s *PurchaseOrderEditScreen) syncFocus() {
 	for i := range s.meta {
 		s.meta[i].Blur()

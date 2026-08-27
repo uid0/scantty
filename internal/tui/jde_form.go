@@ -1249,8 +1249,25 @@ func (g jdeScreen) windowRowsForBar(body *jdeLines, cursorRow, headerRows int, i
 // THE RULE IS ONE STATEMENT, NOT TWO: a movement key acts when the frame is
 // DRAWN and — for a PAGE — when the body MOVES. Drawability is asked of the bar
 // really drawn, scrolling of the CEILING bar, and an unsized terminal answers as
-// it always has, which is that both are yes and clampToBox decides. pageRow is
-// the single place both are asked, and it takes both bars to do it.
+// it always has, which is that both are yes and clampToBox decides.
+//
+// WHERE THE PAIR IS ASKED. pageRow asks both, and it is the DEFAULT: a screen
+// with no further condition on its pager reaches for it and gets the whole rule,
+// which is what a new screen should do. A screen carrying a condition pageRow
+// CANNOT EXPRESS asks the two directly and SAYS WHY AT THAT SITE — so the
+// exception is self-evident where it occurs instead of being tracked in a roster
+// somewhere else, and the next such screen documents itself by following the
+// rule rather than by being added to a list.
+//
+// The condition that recurs is a THIRD fact pageRow's single bool cannot carry:
+// "refused" and "nothing to page" come back as the same false, and several
+// screens must answer those two differently — silence on a refused pane (a
+// movement arm's whole product was the position), a decline note when the body
+// simply does not move (a key the operator pressed on a frame they can see).
+// po_create's bodyPagesFor and receive_form's qtyPagesFor add a second one on
+// top: a page moves the CURSOR, so there must be another row to LAND on, which
+// is a different question from whether the body overflows and comes apart from
+// it in states those screens have by design.
 //
 // The scroll half lived in the SHEETS until it did not: they bound pgup/pgdown
 // unconditionally in their key switches while naming the pair only when the body
@@ -1316,10 +1333,13 @@ func (g jdeScreen) frameDrawn(headerRows int, items []actionBarItem) bool {
 // answer is measured against the CEILING bar (the one WITH the scroll keys on
 // it, because the tallest bar is the fixed point — bodyScrollsForBar), while
 // drawability must be asked of the bar the frame really DRAWS (frameDrawn). One
-// helper taking one `items` would have to get one of them wrong. The two
+// helper taking one `items` would have to get one of them wrong. The
 // offset-scrolling sheets therefore spell the conjunction themselves, once each
-// and named — po_detail's sheetMoves and padMoves, po_add_line's two arms — and
-// each names the pair it is the handler's half of.
+// and named — po_detail's sheetMoves and padMoves, po_add_line's confirmScrolls
+// — and each names the pair it is the handler's half of. (po_add_line's OTHER
+// pager, keyChoose, moves a CURSOR through the candidate list and belongs to the
+// paragraph above rather than to this one: it asks the two directly because it
+// answers "nothing to page" out loud, not because it scrolls an offset.)
 
 // moveRow steps a FIELD-form cursor by delta and WRAPS, and reports whether the
 // move happened at all.
@@ -1829,29 +1849,35 @@ type actionBarItem struct {
 // A bar with more keys than one line holds
 // ---------------------------------------------------------------------------
 //
-// renderActionBar above puts every item on ONE line and tightens the gutter
-// until they fit. That is the whole story for a form: the pilot's bar names
-// four or five keys and the widest of them still fits the 49 columns an
-// 80-column terminal leaves the pane.
+// A bar that puts every item on ONE line, tightening the gutter until they fit,
+// is the whole story for a form: the pilot's bar names four or five keys and the
+// widest of them still fits the 49 columns an 80-column terminal leaves the
+// pane. That is what every frame in the program used to draw.
 //
 // A VIEWING screen is the case it does not cover. A purchase order's detail
 // (po_detail.go) carries a dozen order-level commands at once — receive, edit,
 // attachments, ship, send, confirm, deliver, void, order pad, refresh, plus
 // scrolling — and no tightening puts twelve of them on one 49-column line. The
 // line simply ran off the end of the pane and clampToBox cut it, which is the
-// exact failure renderActionBar's gutter loop exists to prevent: "a key that
-// fell off the bar is a key the operator cannot discover".
+// exact failure the gutter loop exists to prevent: "a key that fell off the bar
+// is a key the operator cannot discover".
 //
 // So the bar WRAPS instead. That is also what the real thing does — a JD
 // Edwards World screen carries two or three rows of F-key legend under the
 // rule, not one — and it costs the body only the rows the keys actually need.
-// renderActionBar is left exactly as it was, so no form that already fits
-// changes by a single column.
+//
+// actionBarKeyLines below is now the ONE bar renderer in the program, and the
+// single-line renderer it replaced is gone rather than kept beside it: two
+// renderers is two answers to "how tall is the bar", and every budget in this
+// file is measured against that number. Nothing is lost by the merge, because
+// its first branch IS the old renderer — the same gutter tightening, returning
+// one line whenever the items fit on one — so a form whose bar already fitted
+// draws byte for byte what it drew before.
 
 // actionBarKeyLines lays the bar's items out over as many lines as it takes,
 // each already carrying jdeIndent. One line is returned whenever the items fit
-// on one, by the same tighten-the-gutter rule renderActionBar uses — so a
-// screen that swaps to this bar and has few enough keys renders identically.
+// on one, by the tighten-the-gutter rule the single-line renderer used before
+// this absorbed it — so a bar with few enough keys renders identically.
 //
 // Width accounting is done on the PLAIN "Key=Label" text and each item is
 // rendered whole afterwards, for the reason jdeWrapTokens does the same: a line
@@ -1884,8 +1910,9 @@ func actionBarKeyLines(width int, items []actionBarItem) []string {
 	if avail < 1 {
 		avail = 1
 	}
-	// One line if they fit on one, gutter tightening first — identical output to
-	// renderActionBar for every bar that was already legible.
+	// One line if they fit on one, gutter tightening first — byte-identical to
+	// what the single-line renderer drew for every bar that was already legible,
+	// which is what let it be deleted rather than kept beside this.
 	for _, gutter := range []string{"   ", "  ", " "} {
 		total := 0
 		for i, p := range parts {

@@ -475,15 +475,6 @@ func (s *InventoryItemFormScreen) updateKitPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 	return s, nil
 }
 
-// pageKitCursor moves a pane's worth of rows, clamping rather than wrapping —
-// the same move jdePageCursor makes on every other columnar list.
-//
-// It exists because kitListBar NAMES PgUp/PgDn once the list outgrows the pane,
-// and a key the bar names must do something. The step is measured off the lines
-// View actually draws, so a page covers exactly what the operator can see: a
-// component with a wrapped note costs more than one row, and a guessed constant
-// would skip over it. The count includes the trailing add row, which is the row
-// after the last component.
 // moveKitCursor walks the component list, clamping at both ends and DECLINING
 // on a pane the frame is not drawn into — see moveChainCursor.
 func (s *InventoryItemFormScreen) moveKitCursor(delta int) {
@@ -495,6 +486,20 @@ func (s *InventoryItemFormScreen) moveKitCursor(delta int) {
 	s.kitCursor = next
 }
 
+// pageKitCursor moves a pane's worth of rows, clamping rather than wrapping —
+// the same move jdePageCursor makes on every other columnar list, and the same
+// one pageChainCursor makes on the sibling list one file over.
+//
+// It exists because kitListBar NAMES PgUp/PgDn once the list outgrows the pane,
+// and a key the bar names must do something. The step is measured off the lines
+// View actually draws, so a page covers exactly what the operator can see: a
+// component with a wrapped note costs more than one row, and a guessed constant
+// would skip over it. The count includes the trailing add row, which is the row
+// after the last component.
+//
+// Both gates are the LAYER's: pageRow asks the bar really DRAWN whether the
+// frame is on the pane and the CEILING bar whether the list overflows it, and
+// declines in silence either way.
 func (s *InventoryItemFormScreen) pageKitCursor(dir int) {
 	body := s.kitListLines()
 	next, ok := s.pageRow(body, s.kitCursor, s.kitAddRow()+1, dir, 0,
