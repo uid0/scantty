@@ -30,16 +30,18 @@
 //	                             happened to end"). Scrolls() is that same
 //	                             short-circuit asked as a question, so a bar
 //	                             and a window cannot disagree about it.
-//	renderActionBar            — the bar itself.
+//	renderActionBarWrapped     — the bar itself, folded onto as many lines as
+//	                             its keys need.
 //	jdeScreen                  — the pane geometry and the framing that puts a
 //	                             body, a status line and the bar together.
-//	                             bodyAvail / bodyAvailForBar are the ONE answer
-//	                             to how many rows a body gets, bodyScrolls /
-//	                             bodyScrollsForBar the one answer to whether it
-//	                             moves, and statusRow the only way to draw the
-//	                             row above the bar — a sheet that could build
-//	                             any of the three itself would build it wrong
-//	                             eventually, and did (sc-jde-lift).
+//	                             bodyAvailForBar is the ONE answer to how many
+//	                             rows a body gets, bodyScrollsForBar the one
+//	                             answer to whether it moves, frameDrawn the one
+//	                             answer to whether it is on the pane at all, and
+//	                             statusRow the only way to draw the row above
+//	                             the bar — a sheet that could build any of them
+//	                             itself would build it wrong eventually, and did
+//	                             (sc-jde-lift).
 //	jdePickList                — the "filter and choose one" sub-phase every
 //	                             foreign-key row opens.
 package tui
@@ -909,7 +911,7 @@ func (g *jdeScreen) setSize(m tea.WindowSizeMsg) {
 // terminal height of 10. A frame built to an over-report is a frame clampToBox
 // cuts from the bottom, and the bottom is the bar.
 //
-// jde:layer-only — a sheet asks bodyAvail / bodyAvailForBar.
+// jde:layer-only — a sheet asks bodyAvailForBar.
 func (g jdeScreen) paneRows() int {
 	if g.terminalHeight <= 0 {
 		return 0
@@ -917,19 +919,9 @@ func (g jdeScreen) paneRows() int {
 	return screenBodyRows(g.terminalHeight)
 }
 
-// bodyRows is the height the scrollable body gets under a bar of the ordinary
-// fixed height (renderActionBar draws actionBarRows, always). Zero means the
-// same two things bodyRowsForBar's zero means, and the frames tell them apart
-// the same way.
-//
-// jde:layer-only — a sheet asks bodyAvail.
-func (g jdeScreen) bodyRows() int {
-	return g.bodyRowsForBar(actionBarRows)
-}
-
 // bodyWidth is the columns the body has, or 0 when the width is not known yet —
-// which callers read as "do not truncate", the same way bodyRows()==0 means "do
-// not window".
+// which callers read as "do not truncate", the same way bodyAvailForBar()==0
+// means "do not window".
 func (g jdeScreen) bodyWidth() int {
 	if g.terminalWidth <= 0 {
 		return 0
@@ -947,35 +939,10 @@ func (g jdeScreen) barWidth() int {
 	return screenBodyWidth(g.terminalWidth)
 }
 
-// bodyAvail is the number of lines frame / frameWithHeader will window a body
-// into, given a pinned header of headerRows lines.
+// jdeBodyAvail is the number of lines the frames window a body into, given a
+// pinned header of headerRows lines — see bodyAvailForBar for the one way a
+// sheet asks it.
 //
-// It exists so that the frame and every question ASKED about the frame read one
-// expression. frameWithHeader used to inline this, and each converted sheet then
-// restated it to decide whether its bar should name the scroll keys; the
-// restatements drifted (see bodyScrollsForBar).
-//
-// ZERO means "the body gets no rows on this pane", which is also "nothing can
-// scroll", and there is now exactly ONE cause of it: an UNSIZED terminal, where
-// the frame draws every line and Root's clampToBox decides. A pinned header
-// cannot be a cause, because jdeBodyAvail gives the body its row and
-// jdeFitHeader trims the header to pay for it; and a pane the frame is REFUSED
-// on is not one either, which is the correction that makes the refusal notice
-// honest — see jdeTooShortRows.
-//
-// It used to be able to. An earlier draft clamped to one row here, reasoning
-// that the frame still has to leave the cursor's row somewhere to be drawn, and
-// that draft was WRONG for the reason the answer is right now: it clamped the
-// body's share without moving the header's, so jdePadTo trimmed the assembled
-// frame back to the budget and took the windowed line with it — the body was
-// not on screen at all, and the order pad's bar named PgUp/PgDn at 80x12 over a
-// frame that does not move (TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves).
-// The two halves have to move TOGETHER, which is why they are one pair of
-// functions called with one budget rather than a clamp on either side.
-func (g jdeScreen) bodyAvail(headerRows int) int {
-	return jdeBodyAvail(g.paneRows(), g.bodyRows(), headerRows)
-}
-
 // jdeBodyAvail splits a frame's budget between the pinned header and the body,
 // and it is where the SACRIFICE ORDER of a short pane is written down:
 //
@@ -1017,7 +984,7 @@ func (g jdeScreen) bodyAvail(headerRows int) int {
 //
 // Zero comes back only when there is NO PANE at all: an unsized terminal, where
 // every screen in the app draws whole and clampToBox decides. That means
-// "nothing can scroll", which is what bodyScrolls reads it as.
+// "nothing can scroll", which is what bodyScrollsForBar reads it as.
 func jdeBodyAvail(pane, budget, headerRows int) int {
 	if pane <= 0 {
 		return 0
@@ -1177,9 +1144,9 @@ func jdeFitHeader(header jdeHeader, budget, avail int) []string {
 	return out
 }
 
-// bodyAvailForBar is bodyAvail for the WRAPPING frames — frameWrapped and
-// frameScrolled — whose bar may take several rows off the pane before the body
-// gets any. Zero means the same thing it does there.
+// bodyAvailForBar is how many lines a frame windows its body into, given a
+// pinned header of headerRows lines and the bar it is about to draw. Zero means
+// the terminal is UNSIZED — see jdeBodyAvail.
 //
 // `items` must be the bar that is about to be DRAWN. Where the answer feeds a
 // bar's own contents (naming the scroll keys costs cells, which can fold the bar
@@ -1192,18 +1159,8 @@ func (g jdeScreen) bodyAvailForBar(headerRows int, items []actionBarItem) int {
 	return jdeBodyAvail(g.paneRows(), g.bodyRowsForBar(actionBarRowsFor(g.barWidth(), items)), headerRows)
 }
 
-// bodyScrolls reports whether `body` actually MOVES in the frame that frame /
-// frameWithHeader is about to draw. It is the one condition a bar's claim that
-// UP/DN, PgUp/PgDn or Home/End do something, and the handler behind those keys,
-// both read — so the two cannot drift, and neither can drift from the window
-// itself.
-//
-// See bodyScrollsForBar for why this belongs here rather than on the sheets.
-func (g jdeScreen) bodyScrolls(body *jdeLines, headerRows int) bool {
-	return body.Scrolls(g.bodyAvail(headerRows))
-}
-
-// bodyScrollsForBar is bodyScrolls for the wrapping frames.
+// bodyScrollsForBar reports whether `body` actually MOVES in the frame that is
+// about to be drawn.
 //
 // This is where a screen asks "does this scroll?", and there is deliberately no
 // other way to ask: the arithmetic lived as ~50 per-sheet copies (sc-jde-lift),
@@ -1227,29 +1184,18 @@ func (g jdeScreen) bodyScrollsForBar(body *jdeLines, headerRows int, items []act
 	return body.Scrolls(g.bodyAvailForBar(headerRows, items))
 }
 
-// windowRows is how many navigable rows the pane is currently showing —
-// computed from the same lines View draws, so a page moves by exactly what the
-// operator can see rather than by a guessed constant. headerRows is what a
+// windowRowsForBar is how many navigable rows the pane is currently showing —
+// computed from the same lines the frame draws, so a page moves by exactly what
+// the operator can see rather than by a guessed constant. headerRows is what a
 // pinned header costs the body (0 when there is none). Never less than one.
-func (g jdeScreen) windowRows(body *jdeLines, cursorRow, headerRows int) int {
-	_, rows := body.Window(cursorRow, g.bodyAvail(headerRows))
-	if rows < 1 {
-		return 1
-	}
-	return rows
-}
-
-// windowRowsForBar is windowRows for the WRAPPING frames — frameWrapped and
-// frameScrolled — whose bar may take several rows off the pane before the body
-// gets any. It pairs with windowRows exactly as bodyAvailForBar pairs with
-// bodyAvail and bodyScrollsForBar with bodyScrolls, and `items` carries the
-// same obligation it does there: it must be the bar that is about to be DRAWN,
-// and where the answer feeds the bar's own contents the caller passes the bar
-// WITH the scroll keys on it, because the tallest bar is the fixed point.
+//
+// `items` carries the same obligation it does on bodyAvailForBar: it must be
+// the bar that is about to be DRAWN, and where the answer feeds the bar's own
+// contents the caller passes the bar WITH the scroll keys on it, because the
+// tallest bar is the fixed point.
 //
 // It exists because the first sheet framing with frameWrapped that needed a
-// page step had no layer variant to call and inlined windowRows' two lines
-// instead. That is how the ~50 copies sc-jde-lift had to unpick began — not
+// page step had no layer variant to call and inlined the two lines instead. That is how the ~50 copies sc-jde-lift had to unpick began — not
 // with fifty, but with one that was too small to be worth a shared function,
 // and each of the next forty-nine had the same argument available to it. Two of
 // those copies had drifted apart at the edges by the time anybody looked, and
@@ -1263,6 +1209,124 @@ func (g jdeScreen) windowRowsForBar(body *jdeLines, cursorRow, headerRows int, i
 		return 1
 	}
 	return rows
+}
+
+// ---------------------------------------------------------------------------
+// Movement: gated on DRAWABILITY, not on scrollability
+// ---------------------------------------------------------------------------
+//
+// A pane too short to carry the bar, the status row and one row of the screen's
+// own content is REFUSED: the frames draw jdeTooShort and nothing else. Nothing
+// about that refusal used to reach the sheets' key handlers, so every movement
+// key went on acting on a screen nobody was looking at — `end` on the
+// purchase-order detail's order pad set padScroll to the end of a forty-line
+// pad against a pane showing the notice, and Up/Down walked the cursor through
+// the fields of every form in the program. Growing the terminal back landed the
+// operator somewhere they never navigated to, which is standing rule 4: never
+// silently discard or overwrite where they were.
+//
+// The handlers used to read bodyScrollsForBar, which asks a DIFFERENT question
+// — is there more content than fits — and answers yes at a refused height as
+// readily as at any other. The two questions have to stay apart, and the reason
+// is the refusal NOTICE:
+//
+//   - the BAR goes on claiming the scroll keys at a refused height, because it
+//     is not drawn there and its only remaining job is to be MEASURED. Dropping
+//     the keys shrinks the bar, jdeTooShortRows then names a height one row
+//     short of one that works, and the operator resizes to precisely what the
+//     screen asked for and is refused again. That defect has been shipped once
+//     already (see jdeBodyAvail) and making bodyScrollsForBar answer false when
+//     refused would ship it a second time.
+//   - the HANDLERS stop, because a key whose whole effect is a position change
+//     has nothing to show for itself on a pane that is not being drawn.
+//
+// So drawability is asked separately, here, and every arm that moves the
+// operator's place goes through frameDrawn — directly, or through one of the
+// three cursor primitives under it. A sheet that restated the rule would
+// eventually restate it differently; TestJDEForm_ARefusedPaneKeepsTheOperatorsPlace
+// walks every columnar screen at every refused height to prove none of them has.
+//
+// A REFUSED PANE ANSWERS WITH NOTHING — not even a note saying the key
+// declined. A note is not drawn on a frame the layer refused, and it IS drawn
+// when the terminal grows back, so it arrives as a reply to a press the
+// operator made before the resize. The notice is the standing answer for the
+// whole pane and it is one the operator can act on, which is what makes the
+// silence legitimate.
+//
+// TYPING is deliberately NOT gated, and the asymmetry is the point. A movement
+// key's whole effect IS the position, so declining it preserves what the
+// operator had; a typed rune's effect is the VALUE, and declining that would
+// DISCARD input — the same rule broken in the direction it forbids most
+// strongly, and a barcode scanner firing into a short pane is exactly the case.
+// The notice tells the operator the pane is too short; it does not eat what
+// they type.
+
+// frameDrawn reports whether the frame this header and this bar describe is
+// DRAWN on the pane the terminal currently gives. It is the exact negation of
+// the refusal the frames make, asked of the same function they ask (tooShort),
+// so a handler and a frame cannot disagree about whether anything is on screen.
+//
+// An UNSIZED terminal answers TRUE: there is no pane to be too short, every
+// screen in the app draws whole and clampToBox decides. That is what keeps a
+// screen driven without a WindowSizeMsg behaving exactly as it always has.
+//
+// `items` must be the bar the frame will really draw — not the ceiling bar the
+// budget helpers are measured against. tooShort is monotone in the bar's
+// height, so gating on a TALLER bar than the frame draws would decline a key at
+// a height where the frame is drawn: a named key doing nothing on a visible
+// pane, which is rule 1 broken in the other direction.
+func (g jdeScreen) frameDrawn(headerRows int, items []actionBarItem) bool {
+	return !g.tooShort(actionBarRowsFor(g.barWidth(), items), headerRows)
+}
+
+// THERE IS DELIBERATELY NO COMBINED "does this move AND is it drawn" HELPER for
+// a SCROLL OFFSET, and the reason is worth keeping because it looks like an
+// obvious tidy-up. The two questions are asked of DIFFERENT bars: the scroll
+// answer is measured against the CEILING bar (the one WITH the scroll keys on
+// it, because the tallest bar is the fixed point — bodyScrollsForBar), while
+// drawability must be asked of the bar the frame really DRAWS (frameDrawn). One
+// helper taking one `items` would have to get one of them wrong. The two
+// offset-scrolling sheets therefore spell the conjunction themselves, once each
+// and named — po_detail's sheetMoves and padMoves, po_add_line's two arms — and
+// each names the pair it is the handler's half of.
+
+// moveRow steps a FIELD-form cursor by delta and WRAPS, and reports whether the
+// move happened at all.
+//
+// Wrapping is the field form's rule and clamping is the list's (see
+// jdeClampPick): a short form has no edge worth defending, and Down on the last
+// of four fields belongs on the first. The false return is the refusal — a pane
+// the frame is not drawn on, or a form with no rows — and a sheet must leave
+// EVERYTHING alone when it comes back, the focus included: re-focusing the same
+// field is not a no-op if it restarts a caret blink or clears a selection.
+func (g jdeScreen) moveRow(cursor, count, delta, headerRows int, items []actionBarItem) (int, bool) {
+	if count <= 0 || !g.frameDrawn(headerRows, items) {
+		return cursor, false
+	}
+	return (cursor + delta%count + count) % count, true
+}
+
+// pickRow steps a LIST cursor by delta and CLAMPS, and reports whether the move
+// happened at all. jdeClampPick carries why a picker may not wrap; frameDrawn
+// carries why it may not move at all on a refused pane.
+func (g jdeScreen) pickRow(cursor, count, delta, headerRows int, items []actionBarItem) (int, bool) {
+	if count <= 0 || !g.frameDrawn(headerRows, items) {
+		return cursor, false
+	}
+	return jdeClampPick(cursor+delta, count), true
+}
+
+// pageRow moves a cursor one PAGE through `body` and reports whether it moved.
+//
+// The step is the window's own row count (windowRowsForBar), measured against
+// the bar that is about to be drawn, so a page covers exactly what the operator
+// can see. On a refused pane that is nothing, so the key declines rather than
+// paging a cursor through a body nobody is looking at.
+func (g jdeScreen) pageRow(body *jdeLines, cursor, count, dir, headerRows int, items []actionBarItem) (int, bool) {
+	if count <= 0 || !g.frameDrawn(headerRows, items) {
+		return cursor, false
+	}
+	return jdePageCursor(cursor, count, g.windowRowsForBar(body, cursor, headerRows, items), dir), true
 }
 
 // jdePageCursor moves a cursor one page in `dir`. It CLAMPS where field nav
@@ -1489,26 +1553,23 @@ func (g jdeScreen) frame(body *jdeLines, cursorRow int, status string, items []a
 // picker's filter box, the record a sub-form is amending. They cost the body its
 // height and are drawn on every frame, so what the operator typed into the
 // filter cannot scroll away under a long list.
+//
+// It is frameWrapped, and the two used to differ in the ONE way that mattered:
+// this one drew renderActionBar, which puts every key on a single line,
+// tightens the gutter until they fit and then lets the line RUN PAST the pane.
+// At 80 columns the pane is 51 and eleven form screens name more than that —
+// MaintenanceItemFormScreen's bar is 63 cells — so clampToBox cut the tail and
+// the keys on it were unnamed while they went on working. That is the same
+// defect renderActionBar's gutter loop exists to prevent, arriving one step
+// later, and the fix is the bar that WRAPS: it costs the body only the rows the
+// keys really need, and bodyAvailForBar is measured against the wrapped height
+// so the frame still fills the pane exactly.
+//
+// Sheets keep calling frame / frameWithHeader because that is what they read as
+// — a form does not care that its bar could fold — and nothing else about the
+// two survives.
 func (g jdeScreen) frameWithHeader(header jdeHeader, body *jdeLines, cursorRow int, status string, items []actionBarItem) string {
-	if g.tooShort(actionBarRows, len(header)) {
-		return g.tooShortNotice(actionBarRows, len(header))
-	}
-	if budget := g.bodyRows(); budget > 0 {
-		// bodyAvail is the ONE answer to "how many rows does the body get", and
-		// jdeFitHeader is the same split seen from the header's side, so the
-		// two together are exactly the budget.
-		avail := g.bodyAvail(len(header))
-		out := jdeFitHeader(header, budget, avail)
-		lines, _ := body.Window(cursorRow, avail)
-		out = append(out, lines...)
-		out = jdePadTo(out, budget)
-		out = append(out, status)
-		return strings.Join(out, "\n") + "\n" + renderActionBar(g.barWidth(), items)
-	}
-	out := header.lines()
-	out = append(out, body.text...)
-	out = append(out, status)
-	return strings.Join(out, "\n") + "\n" + renderActionBar(g.barWidth(), items)
+	return g.frameWrapped(header, body, cursorRow, status, items)
 }
 
 // tooShortNotice draws jdeTooShort into the pane this screen actually has.
@@ -1691,34 +1752,6 @@ func jdePickBarWith(commit, cancel string, paging bool) []actionBarItem {
 type actionBarItem struct {
 	Key   string
 	Label string
-}
-
-// renderActionBar draws the rule and the key line — actionBarRows tall, always.
-// Items are joined with a wide gutter that tightens before anything is dropped,
-// because a key that fell off the bar is a key the operator cannot discover.
-func renderActionBar(width int, items []actionBarItem) string {
-	if width < 8 {
-		width = 8
-	}
-	parts := make([]string, 0, len(items))
-	for _, it := range items {
-		if it.Key == "" {
-			continue
-		}
-		part := StyleActionBarKey.Render(it.Key)
-		if it.Label != "" {
-			part += StyleActionBar.Render("=" + it.Label)
-		}
-		parts = append(parts, part)
-	}
-	keys := ""
-	for _, gutter := range []string{"   ", "  ", " "} {
-		keys = strings.Join(parts, gutter)
-		if lipgloss.Width(keys)+len(jdeIndent) <= width {
-			break
-		}
-	}
-	return StyleActionBarRule.Render(strings.Repeat("-", width)) + "\n" + jdeIndent + keys
 }
 
 // ---------------------------------------------------------------------------
@@ -1913,15 +1946,15 @@ func (l *jdeLines) WindowFrom(offset, avail int) []string {
 // them together — if that short-circuit ever changes, this line is in the same
 // field of view and changes with it. A copy on a sheet is not.
 //
-// `avail` is what bodyAvail / bodyAvailForBar answer, and zero from those has
-// exactly one meaning now: the terminal is UNSIZED, so there is no pane to
+// `avail` is what bodyAvailForBar answers, and zero from it has exactly one
+// meaning now: the terminal is UNSIZED, so there is no pane to
 // window against and nothing can scroll. A pinned header that fills the pane
-// used to be a second cause and is not — read bodyAvail for why, and for why a
+// used to be a second cause and is not — read jdeBodyAvail for why, and for why a
 // pane the frame is REFUSED on is not one either. That second correction is
 // what stops this answer flipping at the refusal boundary and shrinking the bar
 // the refusal notice is measured against.
 //
-// jde:layer-only — a sheet asks bodyScrolls / bodyScrollsForBar.
+// jde:layer-only — a sheet asks bodyScrollsForBar.
 func (l *jdeLines) Scrolls(avail int) bool {
 	return avail > 0 && len(l.text) > avail
 }
@@ -2101,44 +2134,47 @@ func jdeTooShortRows(barRows, headerRows int) int {
 // the bar hidden. So the frame gives up and says so: no keys named, and a
 // sentence saying what is wrong and what would fix it.
 //
-// THE SECOND SENTENCE USED TO REASSURE, and that was the wrong claim. It said
-// "They still work", which an operator reads as "so go ahead and press them" —
-// and pressing them is exactly what they must not do without knowing the cost.
-// Update is untouched, so every key DOES act; it acts on a screen that is not
-// being drawn, so nothing on the pane shows what it did, and what it did can be
-// destructive of the operator's place. `end` on the purchase-order detail's
-// order pad sets padScroll to the pad's length against a pane showing nothing
-// but this notice, and growing the terminal back lands them at the bottom of a
-// forty-line pad instead of where they left. The wording now says that, because
-// a warning an operator can act on beats a reassurance they cannot.
+// THE SECOND SENTENCE HAS BEEN WRONG TWICE, in opposite directions, and both
+// wordings are worth keeping because the next edit to it will be a third.
 //
-// WHY THE KEYS ARE NOT GATED HERE, so the next reader does not reopen it. Two
-// things were checked before the decision:
+// It first said "They still work", which an operator reads as "so go ahead and
+// press them" — and pressing them was exactly what they must not do, because
+// Update was untouched and every key acted on a screen that was not drawn.
+// It then said so in as many words: the keys act, invisibly, and `end` on the
+// order pad throws away where you had scrolled to. That was HONEST and it was
+// not a fix — it described a loss that was still happening.
 //
-//   - frameScrolled ALREADY hands the offset back untouched on this path. It is
-//     not enough: the drift happens in the SHEET's handler, before the frame is
-//     ever called, so the frame is faithfully preserving a value that has
-//     already been destroyed. (The UNSIZED path does the opposite and resets the
-//     offset to 0, so "hold it the way unsized does" would make this worse.)
-//   - a layer-only stash of the last DRAWN offset would fix this instance and
-//     leave the CLASS. The same thing happens to the CURSOR on every frame /
-//     frameWrapped screen: at a refused height Up/Down still move it, nothing is
-//     drawn, and the operator comes back on a different field. Fixing the two
-//     frameScrolled screens and leaving twenty-nine cursor screens is the
-//     "apply the rule to the site that was reported" failure this project keeps
-//     paying for.
+// The loss is gone now (see the movement block above: every arm that moves the
+// operator's place is gated on frameDrawn), so the sentence says what is true
+// NOW — the keys that move you are held, and where you are is kept — and no
+// longer describes a defect the code does not have. A notice claiming a loss
+// that cannot happen is the same kind of lie as one denying a loss that can.
 //
-// The class fix is to gate movement on DRAWABILITY rather than on
-// scrollability, which means giving bodyAvail and bodyScrolls the arguments
-// they do not take across ~30 sheets. That is the same signature change the
-// renderActionBar width fix needs, so the two are routed as ONE conversion
-// (AGENTS.md carries it).
+// It does NOT claim that nothing at all happens. TYPING is not gated, and nor
+// is esc: the way out of a pane too short to work in must stay open, or the
+// refusal is one an operator cannot act on. Esc is named for that reason and
+// it is the only key named here — a legend is what this notice exists to
+// withhold, and the one key that gets the operator out of the state is not a
+// legend.
+//
+// WHERE THE GATE IS, so the next reader does not go looking for it here. It is
+// on the MOVEMENT PRIMITIVES (frameDrawn / moveRow / pickRow / pageRow, above),
+// because the drift happens in the SHEET's handler before a frame is ever
+// called and there is nothing this function could preserve that has not already
+// been destroyed. Two narrower answers were tried and rejected:
+//
+//   - frameScrolled already hands the offset back untouched on this path, which
+//     faithfully preserves a value the handler overwrote a moment earlier.
+//   - a layer-side stash of the last DRAWN offset fixes the two frameScrolled
+//     screens and leaves the CLASS — the same drift hits the CURSOR on every
+//     frame / frameWrapped screen, which is thirty more of them.
 //
 // It is bounded in both axes by the layer, not by clampToBox: `rows` lines of
 // at most `width` cells. A notice that was itself cut would be the defect it
 // exists to report — and the HEIGHT FACT leads, because a one-row pane keeps
 // only the first line and the height is the one thing on here that can be acted
 // on.
+//
 // jde:layer-only — a sheet reaches it through the frames.
 func jdeTooShort(width, rows, terminalHeight, needRows int) string {
 	if rows <= 0 {
@@ -2157,10 +2193,18 @@ func jdeTooShort(width, rows, terminalHeight, needRows int) string {
 	lines := jdeWrapNote(fmt.Sprintf("Too short: needs %d rows, has %d.",
 		needRows+screenChromeRows, terminalHeight), width)
 	lines = append(lines, jdeWrapNote(
-		"No keys are named: the action bar would be cut. Keys still act, but on a "+
-			"screen that is not drawn, so you will not see what they do.", width)...)
+		"No keys are named: the action bar would be cut. Moving keys are held "+
+			"until it fits, so you come back where you were. Esc still leaves.", width)...)
 	if len(lines) > rows {
+		// MARK the cut. A pane of three rows keeps the height fact and two
+		// lines of the sentence under it, and a sentence cut clean reads as a
+		// finished one — the operator is told "Moving keys are held until it
+		// fits, so you come" and has no way to know a clause is missing. Every
+		// other bound on these screens carries its ellipsis; this one is the
+		// notice the operator can act on, so it carries one too.
 		lines = lines[:rows]
+		last := len(lines) - 1
+		lines[last] = cellPrefix(lines[last], width-1) + "…"
 	}
 	return strings.Join(lines, "\n")
 }

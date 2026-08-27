@@ -415,11 +415,12 @@ func (s *SiteSettingsFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 }
 
 func (s *SiteSettingsFormScreen) moveCursor(delta int) {
-	n := len(s.fields)
-	if n == 0 {
+	body := s.formLines()
+	next, ok := s.moveRow(s.cursor, len(s.fields), delta, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = (s.cursor + delta + n) % n
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -427,10 +428,12 @@ func (s *SiteSettingsFormScreen) moveCursor(delta int) {
 // wraps — a page is for covering ground, not for losing your place. This is the
 // longest sheet in the batch, so it is the one that needs it.
 func (s *SiteSettingsFormScreen) pageCursor(dir int) {
-	if len(s.fields) == 0 {
+	body := s.formLines()
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -648,12 +651,25 @@ func (s *SiteSettingsFormScreen) imageNote(id int) string {
 // formBar names the keys that apply where the cursor is standing — and only
 // those, so the bar never teaches a key that does nothing here. Nothing on this
 // sheet OPENS, so Ctrl-E is never offered.
+// formBar names the keys that work on the form, with PgUp/PgDn on it exactly
+// when the body moves under the bar that is about to be drawn.
+//
+// The paging claim is measured against formBarItems(true) — the bar WITH the
+// pair on it — because naming them costs cells, cells fold the bar onto another
+// row, and a folded bar leaves the body one row fewer. The tallest bar is the
+// fixed point, so the answer cannot oscillate between frames.
 func (s *SiteSettingsFormScreen) formBar(body *jdeLines) []actionBarItem {
+	return s.formBarItems(s.bodyScrollsForBar(body, 0, s.formBarItems(true)))
+}
+
+// formBarItems is formBar for a given paging state, so the bar that is
+// MEASURED is the bar that is drawn.
+func (s *SiteSettingsFormScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok && ssKind(id) == akToggle {
 		items = append(items, actionBarItem{"←→", "Change"})
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items

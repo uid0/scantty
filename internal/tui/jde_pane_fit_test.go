@@ -160,18 +160,33 @@ func jdeScreenFixtures() map[string]func() Screen {
 		// Past its loading state, on the supplier picker it opens on: a screen
 		// still fetching draws one muted line and no rows, and a fixture that
 		// renders nothing proves nothing.
-		"PurchaseOrderCreateScreen":      func() Screen { return poCreateFixture() },
-		"PurchaseOrderAttachmentsScreen": func() Screen { return NewPurchaseOrderAttachmentsScreen(Deps{}, poViewPO()) },
+		"PurchaseOrderCreateScreen": func() Screen { return poCreateFixture() },
+		// With FILES on it, for the same reason as ServiceStatusScreen: poViewPO
+		// carries no attachments, so the list has no rows and the cursor has
+		// nowhere to go.
+		"PurchaseOrderAttachmentsScreen": func() Screen {
+			po := poViewPO()
+			for i := 0; i < 6; i++ {
+				po.Attachments = append(po.Attachments, omsapi.PurchaseOrderAttachment{
+					ID: i + 1, FileName: fmt.Sprintf("quote-2026-%02d.pdf", i+1),
+					Description: "Vendor quotation", UploadedByName: "shop.lead",
+				})
+			}
+			return NewPurchaseOrderAttachmentsScreen(Deps{}, po)
+		},
 		"PurchaseOrderDetailScreen": func() Screen {
 			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
 			s.loading = false
 			s.po = poViewPO()
 			return s
 		},
-		"PurchaseOrderEditScreen":   func() Screen { return NewPurchaseOrderEditScreen(Deps{}, poViewPO()) },
-		"ReceiveFormScreen":         func() Screen { return receivePaneFixture(nil) },
-		"SIGFormScreen":             func() Screen { return NewSIGFormScreen(Deps{}, "") },
-		"ServiceStatusScreen":       func() Screen { return NewServiceStatusScreen(Deps{}) },
+		"PurchaseOrderEditScreen": func() Screen { return NewPurchaseOrderEditScreen(Deps{}, poViewPO()) },
+		"ReceiveFormScreen":       func() Screen { return receivePaneFixture(nil) },
+		"SIGFormScreen":           func() Screen { return NewSIGFormScreen(Deps{}, "") },
+		// With SERVICES on it. A bare Deps{} carries no health snapshot, so the
+		// screen draws a summary over an empty list: nothing to move a cursor
+		// through, and every sweep that presses a key at it proves nothing.
+		"ServiceStatusScreen":       func() Screen { return NewServiceStatusScreen(ssDegradedDeps(nil)) },
 		"SiteSettingsFormScreen":    func() Screen { s := NewSiteSettingsFormScreen(Deps{}); s.loading = false; return s },
 		"StorageAssignFormScreen":   func() Screen { return NewStorageAssignFormScreen(Deps{}, "R1-S1", nil) },
 		"StorageSlotFormScreen":     func() Screen { return NewStorageSlotFormScreen(Deps{}, "") },
@@ -219,6 +234,74 @@ func poCreateStaged() *PurchaseOrderCreateScreen {
 	}
 	s.phase = poPhaseSource
 	return s
+}
+
+// poAddLookupFixture is a lookup answer with enough candidates for the choose
+// list to have somewhere to move and enough prose on the confirm frame to
+// outrun a short pane.
+func poAddLookupFixture() *omsapi.POLineLookup {
+	l := &omsapi.POLineLookup{
+		Query:         "widget",
+		Supplier:      omsapi.POLineSupplierRef{ID: 1, Name: "Acme Fasteners & Industrial Supply"},
+		PurchaseOrder: omsapi.POLineLookupOrder{ID: "po-1", Number: "PO-2026-0042", Status: "draft", CanAddItems: true},
+		BestMatchKind: "name",
+	}
+	for i := 0; i < 6; i++ {
+		l.Candidates = append(l.Candidates, omsapi.POLineCandidate{
+			ItemSupplier: i + 1,
+			MatchKind:    "name",
+			MatchLabel:   "Name",
+			MatchedValue: fmt.Sprintf("Hex bolt M8x40 zinc plated grade 8.8 #%d", i+1),
+			Item: omsapi.POLineItemRef{
+				ID: fmt.Sprintf("i-%d", i), Name: fmt.Sprintf("Hex bolt M8x40 zinc plated grade 8.8 #%d", i+1),
+				SKU: fmt.Sprintf("HB-M8-40-%03d", i),
+			},
+			SupplierSKU:        fmt.Sprintf("AF-99-12-ZP-LH-%04d", i),
+			QuantityPerPackage: 25,
+			SuggestedQuantity:  50,
+			SuggestedUnitCost:  omsapi.DecimalString("0.42"),
+		})
+	}
+	l.TotalCandidates = len(l.Candidates)
+	l.BestMatchTotal = len(l.Candidates)
+	return l
+}
+
+// itemChainFixtureRows / itemKitFixtureRows are sub-list contents long enough
+// for the cursor to have somewhere to go — a one-row list makes every sweep
+// about movement vacuous.
+func itemChainFixtureRows() []packagingRow {
+	return []packagingRow{
+		{key: 1, id: 1, name: "Pallet", baseUnits: 1000},
+		{key: 2, id: 2, name: "Case", baseUnits: 100},
+		{key: 3, id: 3, name: "Ream", baseUnits: 1},
+	}
+}
+
+func itemKitFixtureRows() []kitComponentRow {
+	return []kitComponentRow{
+		{key: 1, component: "i-1", name: "Hex bolt M8x40 zinc plated grade 8.8", sku: "HB-1", quantity: 4},
+		{key: 2, component: "i-2", name: "Flat washer M8 stainless", sku: "FW-8", quantity: 4},
+		{key: 3, component: "i-3", name: "Nyloc nut M8", sku: "NN-8", quantity: 4, notes: "torque to 25Nm"},
+	}
+}
+
+// maintenanceTaskFixtureRows / storageGenFixtureLevels are sub-list contents
+// long enough for the cursor to have somewhere to go.
+func maintenanceTaskFixtureRows() []taskRow {
+	return []taskRow{
+		{id: "t-1", title: "Drain the sump and check the filter screen", isRequired: true},
+		{id: "t-2", title: "Grease the ways", description: "Way oil, not chain lube.", isRequired: true},
+		{id: "t-3", title: "Check belt tension"},
+	}
+}
+
+func storageGenFixtureLevels() []storageGenLevelRow {
+	return []storageGenLevelRow{
+		{level: "A", positions: 12},
+		{level: "B", positions: 12, palletJack: true},
+		{level: "C", positions: 8},
+	}
 }
 
 // receivePaneFixture is the receiving screen PAST its loading frame.
@@ -305,6 +388,110 @@ func jdeScreenStates() map[string]func() Screen {
 				Filename: "PO-2026-0042-order.csv", LineCount: len(rows),
 				MissingSku: []string{"Widget clamp", "Gear housing", "Bearing race"},
 			}
+			return s
+		},
+
+		// The add-line flow's two CURSORED / SCROLLED phases. Its fixture opens
+		// on the identifier row, which is one text box with nothing to move
+		// through, so without these the screen is swept in the one state where
+		// every sweep about movement is vacuous — and the confirm frame is one
+		// of only two read-only SCROLLED bodies in the program (the order pad is
+		// the other), which is the shape the refused-pane defect was reported
+		// on.
+		"PurchaseOrderAddLineScreen/choose": func() Screen {
+			s := NewPurchaseOrderAddLineScreen(Deps{}, poViewPO())
+			s.idIn.SetValue("widget")
+			s.lookup = poAddLookupFixture()
+			s.phase = poAddPhaseChoose
+			return s
+		},
+		"PurchaseOrderAddLineScreen/confirm": func() Screen {
+			s := NewPurchaseOrderAddLineScreen(Deps{}, poViewPO())
+			s.idIn.SetValue("AF-99-12-ZP-LH-HEAVY")
+			s.lookup = poAddLookupFixture()
+			c := s.lookup.Candidates[0]
+			s.chosen = &c
+			s.chosenFrom = poAddPhaseChoose
+			s.phase = poAddPhaseConfirm
+			return s
+		},
+
+		// The purchasing sub-forms and sub-lists. Each has a cursor or a focus
+		// of its own, and until they were swept the movement rule was checked
+		// only on the states somebody happened to list.
+		"PurchaseOrderEditScreen/line editor": func() Screen {
+			s := NewPurchaseOrderEditScreen(Deps{}, poViewPO())
+			s.openLineEditor(0)
+			return s
+		},
+		"PurchaseOrderDetailScreen/mark shipped": func() Screen {
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			s.openShipForm()
+			return s
+		},
+		"PurchaseOrderDetailScreen/mark delivered": func() Screen {
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			s.openDeliverForm()
+			return s
+		},
+		"PurchaseOrderEditScreen/association picker": func() Screen {
+			s := NewPurchaseOrderEditScreen(Deps{}, poViewPO())
+			s.assoc.workOrders = []omsapi.WorkOrder{
+				{ID: "wo-1", DisplayTitle: "Lathe teardown and spindle rebuild"},
+				{ID: "wo-2", DisplayTitle: "Mill way-cover replacement"},
+				{ID: "wo-3", DisplayTitle: "Compressor annual service"},
+			}
+			s.openAssocPick(poAssocFieldWorkOrder, -1)
+			return s
+		},
+		"PurchaseOrderAttachmentsScreen/upload": func() Screen {
+			s := NewPurchaseOrderAttachmentsScreen(Deps{}, poViewPO())
+			s.openUpload()
+			return s
+		},
+		"StorageSlotGenerateScreen/run report": func() Screen {
+			s := NewStorageSlotGenerateScreen(Deps{}, 0)
+			s.phase = genPhaseResult
+			res := &omsapi.GenerateRackResult{Rack: 4}
+			for i := 0; i < 9; i++ {
+				res.Created = append(res.Created, fmt.Sprintf("R4-A%02d", i+1))
+			}
+			res.Skipped = []string{"R4-B01", "R4-B02"}
+			res.WithoutTag = []string{"R4-C01"}
+			res.CreatedCount, res.SkippedCount = len(res.Created), len(res.Skipped)
+			s.result = res
+			return s
+		},
+		"MaintenanceItemFormScreen/task list": func() Screen {
+			s := NewMaintenanceItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.tasks = maintenanceTaskFixtureRows()
+			s.openSublist(mfTasks)
+			return s
+		},
+		"MaintenanceItemFormScreen/task editor": func() Screen {
+			s := NewMaintenanceItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.tasks = maintenanceTaskFixtureRows()
+			s.openSublist(mfTasks)
+			s.openTaskEditor(0)
+			return s
+		},
+		"StorageSlotGenerateScreen/level list": func() Screen {
+			s := NewStorageSlotGenerateScreen(Deps{}, 0)
+			s.levels = storageGenFixtureLevels()
+			s.openLevels()
+			return s
+		},
+		"StorageSlotGenerateScreen/level row": func() Screen {
+			s := NewStorageSlotGenerateScreen(Deps{}, 0)
+			s.levels = storageGenFixtureLevels()
+			s.openLevels()
+			s.openLevelRow(0)
 			return s
 		},
 
@@ -433,6 +620,40 @@ func jdeScreenStates() map[string]func() Screen {
 			s.openPicker(fCategory)
 			return s
 		},
+		// The nested sub-lists and their per-row editors. Each has its own
+		// cursor or focus, and until they were swept the movement rule was
+		// being applied to the states somebody happened to think of — which is
+		// the failure this project keeps paying for one level down.
+		"InventoryItemFormScreen/chain list": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.packRows = itemChainFixtureRows()
+			s.openChain()
+			return s
+		},
+		"InventoryItemFormScreen/chain row": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.packRows = itemChainFixtureRows()
+			s.openChain()
+			s.openChainRow(0)
+			return s
+		},
+		"InventoryItemFormScreen/kit list": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.kitRows = itemKitFixtureRows()
+			s.openKitList()
+			return s
+		},
+		"InventoryItemFormScreen/kit row": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.kitRows = itemKitFixtureRows()
+			s.openKitList()
+			s.openKitRow(0)
+			return s
+		},
 		"InventoryItemFormScreen/kitPickView": func() Screen {
 			s := NewInventoryItemFormScreen(Deps{}, "")
 			s.loading = false
@@ -464,7 +685,10 @@ func jdeScreenStates() map[string]func() Screen {
 		"PowerBreakerFormScreen/pickView": func() Screen {
 			s := NewPowerBreakerFormScreen(Deps{}, 0, 0)
 			s.loading = false
-			s.panels = []omsapi.PowerPanel{{ID: 1, Name: "P1", LocationName: "Shop", PhaseConfiguration: "split"}}
+			s.panels = []omsapi.PowerPanel{
+				{ID: 1, Name: "P1", LocationName: "Shop", PhaseConfiguration: "split"},
+				{ID: 2, Name: "P2", LocationName: "Mezzanine", PhaseConfiguration: "three"},
+			}
 			s.openPicker()
 			return s
 		},
@@ -670,18 +894,15 @@ func TestJDEForm_NoColumnarScreenOverflowsThePane(t *testing.T) {
 // screen's own output for the reason po_view_jde_test.go's whole header
 // explains: the screen's string is identical either side of this defect.
 //
-// It is about the VERTICAL clip only, and says so by comparing each bar line
-// against the same horizontal truncation the pane applies. That is not a
-// loophole, it is the honest boundary of this change: renderActionBar — the
-// ONE-line bar the non-wrapping frames draw — tightens its gutter and then
-// lets the line run past the pane, and eleven form screens name enough keys at
-// 80 columns to reach that (MaintenanceItemFormScreen's bar is 63 cells against
-// a pane of 51). That is a WIDTH defect, it predates this change and this
-// change reduces rather than causes it — 56 (screen, height) pairs before, 44
-// after, the same eleven screens — and its fix is to give those frames the
-// WRAPPING bar, which means giving bodyAvail and bodyScrolls the items they
-// currently do not take, on some thirty sheets. It is recorded and routed, not
-// smuggled in here.
+// It checks BOTH axes now, and the width half is the newer of the two. The
+// non-wrapping frames used to draw renderActionBar, which puts every key on one
+// line, tightens the gutter and then lets the line run past the pane: eleven
+// form screens name enough keys at 80 columns to reach that
+// (MaintenanceItemFormScreen's bar is 63 cells against a pane of 51), so
+// clampToBox cut the tail and the keys on it went unnamed while they went on
+// working. frame and frameWithHeader are frameWrapped now, so a bar that does
+// not fit gets another ROW instead of losing its tail — which is why the width
+// assertion below can be made at all.
 func TestJDEForm_TheActionBarSurvivesEveryHeight(t *testing.T) {
 	for _, c := range jdePaneCases() {
 		name, mk := c.name, c.mk
@@ -695,8 +916,15 @@ func TestJDEForm_TheActionBarSurvivesEveryHeight(t *testing.T) {
 				}
 				shown := r.View()
 				for _, line := range bar {
-					line = truncateVisible(strings.TrimRight(line, " "), screenBodyWidth(w))
+					line = strings.TrimRight(line, " ")
 					if line == "" {
+						continue
+					}
+					if got := lipgloss.Width(line); got > screenBodyWidth(w) {
+						t.Errorf("%s at %dx%d: the bar row %q is %d cells wide in a pane of "+
+							"%d, so clampToBox cuts its tail and the keys on it go unnamed "+
+							"while they go on working:\n%s", name, w, h, line, got,
+							screenBodyWidth(w), shown)
 						continue
 					}
 					if !strings.Contains(shown, line) {
@@ -808,8 +1036,9 @@ func TestJDEForm_AFrameThatIsDrawnShowsSomething(t *testing.T) {
 // bounded, in both axes, by the layer.
 //
 // A notice cut by clampToBox would be the defect it exists to report, and the
-// first line is the one carrying the fact — so a notice that overflows loses
-// the sentence saying the keys still work and keeps the one saying nothing.
+// first line is the one carrying the fact — the height to resize to — so a
+// notice that overflows loses the sentence about what the keys do and keeps the
+// one that can be acted on.
 func TestJDEForm_TheNoticeFitsThePaneItReplaces(t *testing.T) {
 	for _, w := range jdePaneWidths {
 		for _, h := range jdePaneHeights() {
@@ -839,6 +1068,59 @@ func TestJDEForm_TheNoticeFitsThePaneItReplaces(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestJDEForm_ANoticeThatWillNotFitSaysItWasCut: where the layer drops rows off
+// its own refusal notice, the last line it keeps carries the ellipsis that says
+// so.
+//
+// The notice is bounded in BOTH axes and the HEIGHT fact leads, so a pane of
+// three rows keeps the height and two lines of the sentence under it. Cut
+// clean, that sentence reads as a finished one — "Moving keys are held until it
+// fits, so you come" is advice an operator would act on without knowing a
+// clause is missing. Every other bound on these screens marks its cut; this is
+// the one the operator is being asked to act on.
+//
+// WATCHED TO FAIL against the unmarked trim.
+func TestJDEForm_ANoticeThatWillNotFitSaysItWasCut(t *testing.T) {
+	cut := 0
+	for _, w := range jdePaneWidths {
+		for _, h := range jdePaneHeights() {
+			for _, barRows := range []int{2, 3, 4, 5, 6} {
+				for _, headerRows := range []int{0, 1, 3} {
+					g := jdeScreen{terminalWidth: w, terminalHeight: h}
+					if !g.tooShort(barRows, headerRows) {
+						continue
+					}
+					// The notice the layer would draw with all the room it
+					// wants, against the one it really has.
+					full := jdeTooShort(screenBodyWidth(w), 99, h, jdeTooShortRows(barRows, headerRows))
+					drawn := g.tooShortNotice(barRows, headerRows)
+					if len(strings.Split(full, "\n")) <= len(strings.Split(drawn, "\n")) {
+						continue // nothing was dropped
+					}
+					cut++
+					lines := strings.Split(drawn, "\n")
+					if last := lines[len(lines)-1]; !strings.HasSuffix(last, "…") {
+						t.Errorf("at %dx%d (bar %d, header %d) the notice loses %d line(s) and "+
+							"its last row %q ends as a finished sentence:\n%s",
+							w, h, barRows, headerRows,
+							len(strings.Split(full, "\n"))-len(lines), last, drawn)
+					}
+					for _, line := range lines {
+						if got := lipgloss.Width(line); got > screenBodyWidth(w) {
+							t.Errorf("at %dx%d the marked notice line %q is %d cells in a pane of %d",
+								w, h, line, got, screenBodyWidth(w))
+						}
+					}
+				}
+			}
+		}
+	}
+	if cut == 0 {
+		t.Error("no notice was ever taller than the pane it replaces, so this sweep " +
+			"asserted nothing about the mark it is named for")
 	}
 }
 

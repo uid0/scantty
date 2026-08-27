@@ -78,13 +78,9 @@ func (s *InventoryItemFormScreen) updateChainPhase(m tea.KeyMsg) (Screen, tea.Cm
 		s.closeChain()
 		return s, nil
 	case "down", "tab":
-		if s.chainCursor < s.chainAddRow() {
-			s.chainCursor++
-		}
+		s.moveChainCursor(+1)
 	case "up", "shift+tab":
-		if s.chainCursor > 0 {
-			s.chainCursor--
-		}
+		s.moveChainCursor(-1)
 	case "ctrl+e":
 		if s.onChainAddRow() {
 			s.openChainRow(-1)
@@ -98,6 +94,19 @@ func (s *InventoryItemFormScreen) updateChainPhase(m tea.KeyMsg) (Screen, tea.Cm
 		s.moveChainRow(s.chainCursor, -1)
 	}
 	return s, nil
+}
+
+// moveChainCursor walks the rung list, clamping at both ends and DECLINING on a
+// pane the frame is not drawn into — the highlight it would move is not on
+// screen to be seen, and growing the terminal back would find it on a different
+// rung.
+func (s *InventoryItemFormScreen) moveChainCursor(delta int) {
+	l := s.chainListLines()
+	next, ok := s.pickRow(s.chainCursor, s.chainAddRow()+1, delta, 0, s.chainBar(l))
+	if !ok {
+		return
+	}
+	s.chainCursor = next
 }
 
 // removeChainRow drops a rung. A rung that was the counting level takes the pick
@@ -238,8 +247,12 @@ func (s *InventoryItemFormScreen) updateChainRowPhase(m tea.KeyMsg) (Screen, tea
 }
 
 func (s *InventoryItemFormScreen) moveChainRowFocus(delta int) {
-	n := s.chainRowCount()
-	s.chainRowFocus = (s.chainRowFocus + delta + n) % n
+	_, items := s.chainRowFrame()
+	next, ok := s.moveRow(s.chainRowFocus, s.chainRowCount(), delta, 0, items)
+	if !ok {
+		return
+	}
+	s.chainRowFocus = next
 	s.syncChainRowFocus()
 }
 
@@ -339,6 +352,13 @@ func chainHasNamedRow(rows []packagingRow) bool {
 // "1 case = 10 reams" ratio per row and the whole-chain validation messages
 // beneath — the same guidance the web editor puts under its table.
 func (s *InventoryItemFormScreen) viewChain() string {
+	l := s.chainListLines()
+	return s.frame(l, s.chainCursor, "", s.chainBar(l))
+}
+
+// chainListLines is the rung list, split out of viewChain so the movement arm
+// measures the same body and the same bar the frame draws.
+func (s *InventoryItemFormScreen) chainListLines() *jdeLines {
 	unit := s.baseUnitValue()
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Packaging chain"))
@@ -389,13 +409,19 @@ func (s *InventoryItemFormScreen) viewChain() string {
 		l.Add("")
 		l.Add(jdeIndent + StyleStatusError.Render("✗ "+s.chainRowErr))
 	}
-	return s.frame(l, s.chainCursor, "", s.chainBar(l))
+	return l
 }
 
 // chainBar names the keys that apply where the cursor is standing. Enter and Esc
 // both mean done: the chain is saved nested with the ITEM, so leaving the list
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) chainBar(body *jdeLines) []actionBarItem {
+	return s.chainBarItems(s.bodyScrollsForBar(body, 0, s.chainBarItems(true)))
+}
+
+// chainBarItems is chainBar for a given paging state, so the bar that is
+// MEASURED against the pane is the bar that is drawn on it.
+func (s *InventoryItemFormScreen) chainBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}, {"UP/DN", "Levels"}}
 	if s.onChainAddRow() {
 		items = append(items, actionBarItem{"Ctrl-E", "Add level"})
@@ -406,7 +432,7 @@ func (s *InventoryItemFormScreen) chainBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"←→", "Move level"})
 		}
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -423,7 +449,15 @@ func capitalizeFirst(s string) string {
 }
 
 // viewChainRow renders the per-rung editor as a columnar block.
+// viewChainRow draws the per-level editor. The frame it builds is split out so
+// the movement arm can ask the layer whether that frame is DRAWN before it
+// moves the caret — one builder, so the bar that is measured is the bar drawn.
 func (s *InventoryItemFormScreen) viewChainRow() string {
+	l, items := s.chainRowFrame()
+	return s.frame(l, s.chainRowFocus, s.statusRow(false, "", s.chainRowErr), items)
+}
+
+func (s *InventoryItemFormScreen) chainRowFrame() (*jdeLines, []actionBarItem) {
 	unit := s.baseUnitValue()
 	title := "Edit packaging level"
 	if s.chainRowEditing < 0 {
@@ -468,5 +502,5 @@ func (s *InventoryItemFormScreen) viewChainRow() string {
 	if s.chainRowFocus == chainRowFieldRemove {
 		items = append(items, actionBarItem{"Ctrl-E", "Remove"})
 	}
-	return s.frame(l, s.chainRowFocus, s.statusRow(false, "", s.chainRowErr), items)
+	return l, items
 }

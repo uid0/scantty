@@ -750,21 +750,24 @@ func (s *MaintenanceItemFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.C
 }
 
 func (s *MaintenanceItemFormScreen) moveCursor(delta int) {
-	n := len(s.fields)
-	if n == 0 {
+	body := s.formLines()
+	next, ok := s.moveRow(s.cursor, len(s.fields), delta, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = (s.cursor + delta + n) % n
+	s.cursor = next
 	s.syncFocus()
 }
 
 // pageCursor moves a whole pane's worth of rows, clamping where moveCursor
 // wraps — a page is for covering ground, not for losing your place.
 func (s *MaintenanceItemFormScreen) pageCursor(dir int) {
-	if len(s.fields) == 0 {
+	body := s.formLines()
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -851,7 +854,7 @@ func (s *MaintenanceItemFormScreen) updateAssetPick(m tea.KeyMsg) (Screen, tea.C
 		s.movePick(delta)
 	case jdePickPage:
 		header, body := s.pickView()
-		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+		s.movePick(delta * s.windowRowsForBar(body, s.pickCursor, len(header), s.pickBar(header, body)))
 	default:
 		// Anything else is filter text: the box is always live, so there is no
 		// mode to enter and no "/" to remember.
@@ -866,15 +869,10 @@ func (s *MaintenanceItemFormScreen) updateAssetPick(m tea.KeyMsg) (Screen, tea.C
 // movePick walks the option cursor, clamping at both ends — a picker list is a
 // set of choices, not a ring.
 func (s *MaintenanceItemFormScreen) movePick(delta int) {
-	next := s.pickCursor + delta
-	if next < 0 {
-		next = 0
-	}
-	if next > len(s.pickOptions)-1 {
-		next = len(s.pickOptions) - 1
-	}
-	if next < 0 {
-		next = 0
+	header, body := s.pickView()
+	next, ok := s.pickRow(s.pickCursor, len(s.pickOptions), delta, len(header), s.pickBar(header, body))
+	if !ok {
+		return
 	}
 	s.pickCursor = next
 }
@@ -902,13 +900,9 @@ func (s *MaintenanceItemFormScreen) updateSublist(m tea.KeyMsg, count int, open 
 	case "esc", "enter":
 		s.closeSublist()
 	case "down", "tab":
-		if s.rowCursor < count {
-			s.rowCursor++
-		}
+		s.moveSublist(count, +1)
 	case "up", "shift+tab":
-		if s.rowCursor > 0 {
-			s.rowCursor--
-		}
+		s.moveSublist(count, -1)
 	case "pgdown":
 		s.pageSublist(count, +1)
 	case "pgup":
@@ -924,11 +918,53 @@ func (s *MaintenanceItemFormScreen) updateSublist(m tea.KeyMsg, count int, open 
 	return s, nil
 }
 
+// moveSublist walks the sub-list cursor. It is a LIST cursor, so it clamps
+// rather than wrapping, and it DECLINES on a pane the frame is not drawn into —
+// the highlight it would move is not on screen to be seen. count excludes the
+// add row, which is always the row after the last one.
+func (s *MaintenanceItemFormScreen) moveSublist(count, delta int) {
+	body := s.sublistBody()
+	next, ok := s.pickRow(s.rowCursor, count+1, delta, 0, s.sublistBarNow(body))
+	if !ok {
+		return
+	}
+	s.rowCursor = next
+}
+
+// moveEditCursor walks a sub-editor's field cursor, WRAPPING (it is a short
+// field form, not a list) and declining on a pane the editor is not drawn into.
+// The bar it measures is the one drawn on the frame the key was pressed on.
+func (s *MaintenanceItemFormScreen) moveEditCursor(n, delta int, noun string, canRemove bool) bool {
+	next, ok := s.moveRow(s.editCursor, n, delta, 0, s.editorBar(noun, canRemove))
+	if !ok {
+		return false
+	}
+	s.editCursor = next
+	return true
+}
+
 // pageSublist moves a pane's worth of rows, clamping. count excludes the add
 // row, which is always reachable as the row after the last one.
 func (s *MaintenanceItemFormScreen) pageSublist(count, dir int) {
 	body := s.sublistBody()
-	s.rowCursor = jdePageCursor(s.rowCursor, count+1, s.windowRows(body, s.rowCursor, 0), dir)
+	next, ok := s.pageRow(body, s.rowCursor, count+1, dir, 0, s.sublistBarNow(body))
+	if !ok {
+		return
+	}
+	s.rowCursor = next
+}
+
+// sublistBarNow is the bar of whichever sub-list is open — the same bar the
+// view builds, chosen off the same phase sublistBody reads, so a page is
+// measured against the frame it is being made on.
+func (s *MaintenanceItemFormScreen) sublistBarNow(body *jdeLines) []actionBarItem {
+	switch s.phase {
+	case mFormPhaseMaterialList:
+		return s.sublistBar(body, len(s.materials), "Materials", "Add a material")
+	case mFormPhaseToolList:
+		return s.sublistBar(body, len(s.tools), "Tools", "Add a tool")
+	}
+	return s.sublistBar(body, len(s.tasks), "Steps", "Add a step")
 }
 
 func (s *MaintenanceItemFormScreen) closeSublist() {
@@ -998,12 +1034,14 @@ func (s *MaintenanceItemFormScreen) updateTaskEdit(m tea.KeyMsg) (Screen, tea.Cm
 	case "esc":
 		s.phase = mFormPhaseTaskList
 		return s, nil
-	case "tab", "down":
-		s.editCursor = (s.editCursor + 1) % n
-		s.syncTaskEditFocus()
-		return s, textinput.Blink
-	case "shift+tab", "up":
-		s.editCursor = (s.editCursor + n - 1) % n
+	case "tab", "down", "shift+tab", "up":
+		delta := +1
+		if m.String() == "shift+tab" || m.String() == "up" {
+			delta = -1
+		}
+		if !s.moveEditCursor(n, delta, "step", s.editCursor == taskEditRemove && s.editIndex >= 0) {
+			return s, nil
+		}
 		s.syncTaskEditFocus()
 		return s, textinput.Blink
 	case "enter":
@@ -1162,12 +1200,14 @@ func (s *MaintenanceItemFormScreen) updateMaterialEdit(m tea.KeyMsg) (Screen, te
 	case "esc":
 		s.phase = mFormPhaseMaterialList
 		return s, nil
-	case "tab", "down":
-		s.editCursor = (s.editCursor + 1) % n
-		s.syncMaterialEditFocus()
-		return s, textinput.Blink
-	case "shift+tab", "up":
-		s.editCursor = (s.editCursor + n - 1) % n
+	case "tab", "down", "shift+tab", "up":
+		delta := +1
+		if m.String() == "shift+tab" || m.String() == "up" {
+			delta = -1
+		}
+		if !s.moveEditCursor(n, delta, "material", s.editCursor == materialEditRemove && s.editIndex >= 0) {
+			return s, nil
+		}
 		s.syncMaterialEditFocus()
 		return s, textinput.Blink
 	case "enter":
@@ -1307,12 +1347,14 @@ func (s *MaintenanceItemFormScreen) updateToolEdit(m tea.KeyMsg) (Screen, tea.Cm
 	case "esc":
 		s.phase = mFormPhaseToolList
 		return s, nil
-	case "tab", "down":
-		s.editCursor = (s.editCursor + 1) % n
-		s.syncToolEditFocus()
-		return s, textinput.Blink
-	case "shift+tab", "up":
-		s.editCursor = (s.editCursor + n - 1) % n
+	case "tab", "down", "shift+tab", "up":
+		delta := +1
+		if m.String() == "shift+tab" || m.String() == "up" {
+			delta = -1
+		}
+		if !s.moveEditCursor(n, delta, "tool", s.editCursor == toolEditRemove && s.editIndex >= 0) {
+			return s, nil
+		}
 		s.syncToolEditFocus()
 		return s, textinput.Blink
 	case "enter":
@@ -1737,7 +1779,20 @@ func (s *MaintenanceItemFormScreen) formLines() *jdeLines {
 
 // formBar names the keys that apply where the cursor is standing — and only
 // those, so the bar never teaches a key that does nothing here.
+// formBar names the keys that work on the form, with PgUp/PgDn on it exactly
+// when the body moves under the bar that is about to be drawn.
+//
+// The paging claim is measured against formBarItems(true) — the bar WITH the
+// pair on it — because naming them costs cells, cells fold the bar onto another
+// row, and a folded bar leaves the body one row fewer. The tallest bar is the
+// fixed point, so the answer cannot oscillate between frames.
 func (s *MaintenanceItemFormScreen) formBar(body *jdeLines) []actionBarItem {
+	return s.formBarItems(s.bodyScrollsForBar(body, 0, s.formBarItems(true)))
+}
+
+// formBarItems is formBar for a given paging state, so the bar that is
+// MEASURED is the bar that is drawn.
+func (s *MaintenanceItemFormScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok {
 		switch mfKind(id) {
@@ -1749,7 +1804,7 @@ func (s *MaintenanceItemFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Manage"})
 		}
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -1808,14 +1863,17 @@ func (s *MaintenanceItemFormScreen) pickView() (jdeHeader, *jdeLines) {
 	}.render(s.bodyWidth())
 }
 
+// pickBar is the picker's bar, with PgUp/PgDn on it exactly when the option
+// list moves under the bar about to be drawn — measured against the bar WITH
+// the pair on it, because the tallest bar is the fixed point.
+func (s *MaintenanceItemFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
+	return jdePickBar("Select", s.bodyScrollsForBar(body, len(header), jdePickBar("Select", true)))
+}
+
 func (s *MaintenanceItemFormScreen) viewAssetPick() string {
 	header, body := s.pickView()
-	paging := false
-	if s.bodyScrolls(body, len(header)) {
-		paging = true
-	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		s.statusRow(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), s.pickBar(header, body))
 }
 
 // ---------------------------------------------------------------------------
@@ -1862,13 +1920,20 @@ func (s *MaintenanceItemFormScreen) sublistLines(heading, empty, addLabel string
 // sublistBar names the keys that apply. Enter and Esc are both done: the rows
 // are written with the ITEM, so leaving the list writes nothing either way.
 func (s *MaintenanceItemFormScreen) sublistBar(body *jdeLines, count int, noun, addVerb string) []actionBarItem {
+	return s.sublistBarItems(count, noun, addVerb,
+		s.bodyScrollsForBar(body, 0, s.sublistBarItems(count, noun, addVerb, true)))
+}
+
+// sublistBarItems is sublistBar for a given paging state, so the bar that is
+// MEASURED against the pane is the bar that is drawn on it.
+func (s *MaintenanceItemFormScreen) sublistBarItems(count int, noun, addVerb string, paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}, {"UP/DN", noun}}
 	if s.rowCursor >= count {
 		items = append(items, actionBarItem{"Ctrl-E", addVerb})
 	} else {
 		items = append(items, actionBarItem{"Ctrl-E", "Edit"})
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items

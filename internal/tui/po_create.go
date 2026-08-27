@@ -219,7 +219,7 @@ type PurchaseOrderCreateScreen struct {
 	itemSuppliersFor    int
 	itemSuppliersLoad   bool
 	itemSuppliersErr    string
-	itemSuppliersCur    int
+	itemSuppliersCursor int
 	itemSuppliersSearch textinput.Model
 	itemSuppliersTyping bool
 	// itemSuppliersNote is the picker's OWN answer to the last keypress: what
@@ -866,6 +866,11 @@ func (s *PurchaseOrderCreateScreen) updateSupplierSwitchPhase(m tea.KeyMsg, head
 		// a cursor — and they are named on the bar for exactly as long as the
 		// layer says the body moves. Without that gate they would be a key the
 		// bar names doing nothing on every frame the confirm fits on.
+		if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+			// Refused pane: no prose is drawn, so there is nothing to scroll
+			// and nothing to say about not scrolling it — see moveCursor.
+			return s, nil
+		}
 		if s.bodyPagesFor(headerRows) {
 			delta := 1
 			if m.String() == "up" {
@@ -963,7 +968,7 @@ func (s *PurchaseOrderCreateScreen) resetSupplierScopedPickers() {
 	s.itemSuppliersFor = 0
 	s.itemSuppliersLoad = false
 	s.itemSuppliersErr = ""
-	s.itemSuppliersCur = 0
+	s.itemSuppliersCursor = 0
 	s.itemSuppliersTyping = false
 	s.itemSuppliersSearch.SetValue("")
 	s.itemSuppliersSearch.Blur()
@@ -1239,7 +1244,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg, headerRows i
 		s.itemSuppliersSearch.SetValue("")
 		s.itemSuppliersSearch.Blur()
 		s.itemSuppliersTyping = false
-		s.itemSuppliersCur = 0
+		s.itemSuppliersCursor = 0
 		if s.catalogAnswered() {
 			// Already held for THIS supplier. Showing a working line here would
 			// be the same rule broken from the other side: that line is a claim
@@ -1535,10 +1540,10 @@ func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg, headerRows int
 		// that moment. A list is the other case and keeps the clamp: running
 		// off the bottom of one must not reappear at the row that CLEARS a
 		// field. po_add_line's price rows wrap for the same reason.
-		s.focusNextLine(1)
+		s.focusNextLine(1, headerRows)
 		return s, nil
 	case "shift+tab", "up":
-		s.focusNextLine(-1)
+		s.focusNextLine(-1, headerRows)
 		return s, nil
 	}
 	if moved, cmd := s.moveCursor(m, headerRows); moved {
@@ -1660,7 +1665,7 @@ func (s *PurchaseOrderCreateScreen) costFieldLabel() string {
 // the only thing that moves this form's focus — the shared setCursorRow carries
 // no line-form branch, because neither of the paths that used to reach it does
 // so any more.
-func (s *PurchaseOrderCreateScreen) focusNextLine(delta int) {
+func (s *PurchaseOrderCreateScreen) focusNextLine(delta, headerRows int) {
 	fields := s.lineFields()
 	cur := 0
 	for i, f := range fields {
@@ -1669,8 +1674,11 @@ func (s *PurchaseOrderCreateScreen) focusNextLine(delta int) {
 			break
 		}
 	}
+	next, ok := s.moveRow(cur, len(fields), delta, headerRows, s.barFor(headerRows))
+	if !ok {
+		return
+	}
 	s.lineInputs[s.lineFocused].Blur()
-	next := (cur + delta + len(fields)) % len(fields)
 	s.lineFocused = fields[next]
 	s.lineInputs[s.lineFocused].Focus()
 }
@@ -3590,6 +3598,24 @@ func (s *PurchaseOrderCreateScreen) moveCursor(m tea.KeyMsg, headerRows int) (bo
 		// through would be a key acting unnamed.
 		return false, nil
 	}
+	if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+		// The pane is too short for the layer to draw this frame at all, so
+		// there is no highlight on screen for a movement key to move. It still
+		// BELONGS to movement — which is what the true says — so the key is
+		// swallowed here rather than falling through to an arm that would read
+		// it as something else.
+		//
+		// It answers with NOTHING, deliberately: the refusal notice is the
+		// whole pane and is the standing answer to every key on it. A note set
+		// here would not be drawn now and WOULD be drawn when the terminal
+		// grows back, which is a stale reply to a press the operator made
+		// before the resize.
+		switch m.String() {
+		case "up", "down", "pgup", "pgdown":
+			return true, nil
+		}
+		return false, nil
+	}
 	switch m.String() {
 	case "up":
 		s.setCursorRow(s.cursorRow() - 1)
@@ -3671,7 +3697,7 @@ func (s *PurchaseOrderCreateScreen) cursorRow() int {
 	case poPhaseReorderPick:
 		cur = s.reorderCursor
 	case poPhaseItemPick:
-		cur = s.itemSuppliersCur
+		cur = s.itemSuppliersCursor
 	case poPhaseAssetPick:
 		cur = s.assetsCursor
 	case poPhaseLine:
@@ -3708,7 +3734,7 @@ func (s *PurchaseOrderCreateScreen) setCursorRow(n int) {
 	case poPhaseReorderPick:
 		s.reorderCursor = n
 	case poPhaseItemPick:
-		s.itemSuppliersCur = n
+		s.itemSuppliersCursor = n
 	case poPhaseAssetPick:
 		s.assetsCursor = n
 	}

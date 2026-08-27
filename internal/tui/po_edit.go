@@ -645,11 +645,12 @@ func (s *PurchaseOrderEditScreen) openFocusedRow() tea.Cmd {
 }
 
 func (s *PurchaseOrderEditScreen) moveCursor(delta int) {
-	n := s.rowCount()
-	if n == 0 {
+	body := s.formLines()
+	next, ok := s.moveRow(s.cursor, s.rowCount(), delta, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = (s.cursor + delta + n) % n
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -658,10 +659,12 @@ func (s *PurchaseOrderEditScreen) moveCursor(delta int) {
 // page that jumped from the last line back to the first would lose the
 // operator's place rather than save them keystrokes.
 func (s *PurchaseOrderEditScreen) pageCursor(dir int) {
-	if s.rowCount() == 0 {
+	body := s.formLines()
+	next, ok := s.pageRow(body, s.cursor, s.rowCount(), dir, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = jdePageCursor(s.cursor, s.rowCount(), s.pageStep(), dir)
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -669,7 +672,8 @@ func (s *PurchaseOrderEditScreen) pageCursor(dir int) {
 // from the same lines View draws, so a page moves by exactly what the operator
 // can see rather than by a guessed constant.
 func (s *PurchaseOrderEditScreen) pageStep() int {
-	return s.windowRows(s.formLines(), s.cursor, 0)
+	body := s.formLines()
+	return s.windowRowsForBar(body, s.cursor, 0, s.formBar(body))
 }
 
 func (s *PurchaseOrderEditScreen) syncFocus() {
@@ -833,12 +837,16 @@ func (s *PurchaseOrderEditScreen) updateLineEdit(m tea.KeyMsg) (Screen, tea.Cmd)
 		s.phase = poEditPhaseForm
 		s.syncFocus()
 		return s, nil
-	case "tab", "down":
-		s.lineFocus = (s.lineFocus + 1) % poLineEditCount
-		s.syncLineFocus()
-		return s, textinput.Blink
-	case "shift+tab", "up":
-		s.lineFocus = (s.lineFocus - 1 + poLineEditCount) % poLineEditCount
+	case "tab", "down", "shift+tab", "up":
+		delta := +1
+		if m.String() == "shift+tab" || m.String() == "up" {
+			delta = -1
+		}
+		next, ok := s.moveRow(s.lineFocus, poLineEditCount, delta, 0, s.lineBar())
+		if !ok {
+			return s, nil
+		}
+		s.lineFocus = next
 		s.syncLineFocus()
 		return s, textinput.Blink
 	case "enter":
@@ -1125,15 +1133,19 @@ func (s *PurchaseOrderEditScreen) updateAssocPick(m tea.KeyMsg) (Screen, tea.Cmd
 		// has to land back where the picker was opened from.
 		s.returnFromSub()
 		return s, nil
-	case "tab", "down":
-		if s.assocCursor < len(s.assocRows)-1 {
-			s.assocCursor++
+	case "tab", "down", "shift+tab", "up":
+		delta := +1
+		if m.String() == "shift+tab" || m.String() == "up" {
+			delta = -1
 		}
-		return s, nil
-	case "shift+tab", "up":
-		if s.assocCursor > 0 {
-			s.assocCursor--
+		// A LIST cursor: it clamps rather than wrapping (running off the bottom
+		// must not reappear on row 1, which DETACHES the association), and it
+		// declines outright on a pane the picker is not drawn into.
+		next, ok := s.pickRow(s.assocCursor, len(s.assocRows), delta, 0, poEditAssocBar)
+		if !ok {
+			return s, nil
 		}
+		s.assocCursor = next
 		return s, nil
 	case "enter":
 		if s.saving {
@@ -1497,7 +1509,20 @@ func poLineGridRow(num, item, qty, cost, ship, flag string, itemW int) string {
 // formBar names the keys that apply where the cursor is standing — and only
 // those: a bar that advertised Ctrl-E on a row with nothing to open would be
 // teaching the operator a key that does nothing.
+// formBar names the keys that work on the form, with PgUp/PgDn on it exactly
+// when the body moves under the bar that is about to be drawn.
+//
+// The paging claim is measured against formBarItems(true) — the bar WITH the
+// pair on it — because naming them costs cells, cells fold the bar onto another
+// row, and a folded bar leaves the body one row fewer. The tallest bar is the
+// fixed point, so the answer cannot oscillate between frames.
 func (s *PurchaseOrderEditScreen) formBar(body *jdeLines) []actionBarItem {
+	return s.formBarItems(s.bodyScrollsForBar(body, 0, s.formBarItems(true)))
+}
+
+// formBarItems is formBar for a given paging state, so the bar that is
+// MEASURED is the bar that is drawn.
+func (s *PurchaseOrderEditScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Exit"}, {"UP/DN", "Fields"}}
 	switch {
 	case s.isSelectRow(s.cursor):
@@ -1507,7 +1532,7 @@ func (s *PurchaseOrderEditScreen) formBar(body *jdeLines) []actionBarItem {
 	case s.cursorOnLine():
 		items = append(items, actionBarItem{"Ctrl-E", "Edit line"})
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -1802,10 +1827,14 @@ func (s *PurchaseOrderEditScreen) viewAssocPick() string {
 	}
 	body.Add("")
 	body.Add(jdeIndent + StyleMuted.Render("Row 1 is none — it detaches what is attached today."))
-	return s.frame(body, cursorLine, "Saving…", []actionBarItem{
-		{"Enter", "Select"}, {"Esc", "Cancel"}, {"UP/DN", "Move"},
-	})
+	return s.frame(body, cursorLine, "Saving…", poEditAssocBar)
 }
+
+// poEditAssocBar is the association picker's bar, said ONCE: the movement arm
+// needs it to ask the layer whether the frame is drawn before it moves the
+// highlight, and a second literal beside the view's would be a bar measured
+// that is not the bar drawn.
+var poEditAssocBar = []actionBarItem{{"Enter", "Select"}, {"Esc", "Cancel"}, {"UP/DN", "Move"}}
 
 // ---------------------------------------------------------------------------
 // Void prompt

@@ -239,20 +239,16 @@ func (s *PurchaseOrderAttachmentsScreen) updateList(m tea.KeyMsg) (Screen, tea.C
 	case "esc":
 		return s, SwitchTo(WSPurchasing, NewPurchaseOrderDetailScreen(s.deps, s.poID))
 	case "down":
-		if s.cursor < len(s.attachments)-1 {
-			s.cursor++
-		}
+		s.moveList(+1)
 	case "up":
-		if s.cursor > 0 {
-			s.cursor--
-		}
+		s.moveList(-1)
 	case "pgdown":
 		if s.listNames("PgUp/PgDn") {
-			s.cursor = jdePageCursor(s.cursor, len(s.attachments), s.pageStep(), +1)
+			s.pageList(+1)
 		}
 	case "pgup":
 		if s.listNames("PgUp/PgDn") {
-			s.cursor = jdePageCursor(s.cursor, len(s.attachments), s.pageStep(), -1)
+			s.pageList(-1)
 		}
 	case "r":
 		s.loading = true
@@ -279,21 +275,25 @@ func (s *PurchaseOrderAttachmentsScreen) openUpload() tea.Cmd {
 	return textinput.Blink
 }
 
-// pageStep is how many rows the grid is currently showing, computed from the
-// same lines View draws so a page moves by exactly what the operator can see.
-//
-// The header cost passed to bodyAvailForBar is zero because viewList passes
-// frameWrapped no header, so what comes back IS the frame's own avail. It used
-// to subtract one more for a header that is not there, and a page then advanced
-// by one navigable row fewer than the operator could see — the comment above
-// claiming the opposite.
-func (s *PurchaseOrderAttachmentsScreen) pageStep() int {
-	body, _ := s.listLines()
-	_, rows := body.Window(s.cursor, s.bodyAvailForBar(0, s.listBar()))
-	if rows < 1 {
-		return 1
+// moveList and pageList walk the grid's cursor. It is a LIST cursor, so it
+// clamps rather than wrapping, and both DECLINE on a pane the frame is not
+// drawn into — the highlight they would move is not on screen to be seen, and
+// growing the terminal back would find it on a different file.
+func (s *PurchaseOrderAttachmentsScreen) moveList(delta int) {
+	next, ok := s.pickRow(s.cursor, len(s.attachments), delta, 0, s.listBar())
+	if !ok {
+		return
 	}
-	return rows
+	s.cursor = next
+}
+
+func (s *PurchaseOrderAttachmentsScreen) pageList(dir int) {
+	body, _ := s.listLines()
+	next, ok := s.pageRow(body, s.cursor, len(s.attachments), dir, 0, s.listBar())
+	if !ok {
+		return
+	}
+	s.cursor = next
 }
 
 // updateConfirmDelete drives the y/n-free confirm: enter deletes, esc backs
@@ -324,20 +324,29 @@ func (s *PurchaseOrderAttachmentsScreen) updateConfirmDelete(m tea.KeyMsg) (Scre
 	return s, nil
 }
 
+// poAttachUploadBar is the upload form's bar, said ONCE: the movement arm needs
+// it to ask the layer whether the frame is drawn before it moves the caret, and
+// a second literal beside the view's would be a bar measured that is not the
+// bar drawn.
+var poAttachUploadBar = []actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+
 func (s *PurchaseOrderAttachmentsScreen) updateUpload(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
 	case "esc":
 		s.phase = poAttachPhaseList
 		s.errMsg = ""
 		return s, nil
-	case "tab", "down":
+	case "tab", "down", "shift+tab", "up":
+		delta := +1
+		if m.String() == "shift+tab" || m.String() == "up" {
+			delta = -1
+		}
+		next, ok := s.moveRow(s.uploadFocus, poAttachFieldCount, delta, 0, poAttachUploadBar)
+		if !ok {
+			return s, nil
+		}
 		s.uploadInputs[s.uploadFocus].Blur()
-		s.uploadFocus = (s.uploadFocus + 1) % poAttachFieldCount
-		s.uploadInputs[s.uploadFocus].Focus()
-		return s, textinput.Blink
-	case "shift+tab", "up":
-		s.uploadInputs[s.uploadFocus].Blur()
-		s.uploadFocus = (s.uploadFocus - 1 + poAttachFieldCount) % poAttachFieldCount
+		s.uploadFocus = next
 		s.uploadInputs[s.uploadFocus].Focus()
 		return s, textinput.Blink
 	case "enter":
@@ -605,6 +614,5 @@ func (s *PurchaseOrderAttachmentsScreen) viewUpload() string {
 	body.Add("")
 	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.uploadFocus,
-		s.statusRow(s.uploading, "Uploading…", s.errMsg),
-		[]actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
+		s.statusRow(s.uploading, "Uploading…", s.errMsg), poAttachUploadBar)
 }

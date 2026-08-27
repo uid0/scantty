@@ -182,8 +182,26 @@ func receiveTypeInto(t *testing.T, r Root, value string) Root {
 // receiveGoToLine walks the cursor onto line i's quantity box.
 func receiveGoToLine(t *testing.T, r Root, s *ReceiveFormScreen, i int) Root {
 	t.Helper()
-	for s.focused != receiveRowFirstLine+i {
-		next, _ := r.Update(tea.KeyMsg{Type: tea.KeyDown})
+	return receiveWalkTo(t, r, s, receiveRowFirstLine+i, tea.KeyMsg{Type: tea.KeyDown})
+}
+
+// receiveWalkTo presses `k` until the quantity form's cursor is on `row`, and
+// FAILS rather than spinning if it never gets there.
+//
+// The bound is not decoration. Down is refused outright on a pane the layer
+// will not draw (jde_form.go's movement block), so an unbounded walk at a
+// refused height is not a check that fails — it is a test binary that hangs,
+// with whichever test happened to be running named in the timeout panic
+// instead of the one that broke. AGENTS.md records the package sitting at 573s
+// against go test's 600s default for a much smaller reason.
+func receiveWalkTo(t *testing.T, r Root, s *ReceiveFormScreen, row int, k tea.KeyMsg) Root {
+	t.Helper()
+	for n := 0; s.focused != row; n++ {
+		if n > s.totalInputs() {
+			t.Fatalf("the cursor would not reach row %d in %d press(es) of %v (it is on %d)",
+				row, n, k, s.focused)
+		}
+		next, _ := r.Update(k)
 		r = next.(Root)
 	}
 	return r
@@ -438,9 +456,7 @@ func TestReceive_EveryKeystrokeMovesTheNotesRow(t *testing.T) {
 		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
 			fake := &receiveFake{}
 			r, s := receiveDrive(t, fake, receiveManyLines(2), width, 30)
-			for s.focused != s.notesRow() {
-				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
-			}
+			r = receiveWalkTo(t, r, s, s.notesRow(), tea.KeyMsg{Type: tea.KeyDown})
 			// The LABEL alone: with the colour profile forced the leader's
 			// dots carry their own escape sequence, so "Notes ....." is not a
 			// contiguous run in the rendered line even though it looks like one.
@@ -611,9 +627,7 @@ func TestReceive_EnterReceivesFromAnyRow(t *testing.T) {
 			fake := &receiveFake{}
 			r, s := receiveDrive(t, fake, receiveManyLines(2), 80, 24)
 			s.qty[0].SetValue("2")
-			for s.focused != row {
-				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
-			}
+			r = receiveWalkTo(t, r, s, row, tea.KeyMsg{Type: tea.KeyDown})
 			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // -> review
 			if s.phase != phaseReview {
 				t.Fatalf("enter on row %d did not reach the review (phase %v)", row, s.phase)
@@ -1716,6 +1730,17 @@ func TestReceive_ThePagingClaimHoldsWithANoteOnThePane(t *testing.T) {
 						"proves nothing:\n%s", receivePaneText(s, width, height))
 				}
 
+				// At a REFUSED height there is no bar on the pane to read — the
+				// notice replaces it — and the movement arms decline in silence
+				// (jde_form.go's movement block), so both assertions below are
+				// asked only where the frame is drawn. s.bar() still names the
+				// scroll keys there, deliberately: its only remaining job is to
+				// be MEASURED, and a bar that shed them would make the notice
+				// ask for a height that does not work (jdeTooShortRows).
+				if !receiveFrameDrawn(t, s, width, height) {
+					return
+				}
+
 				// What the operator reads, on the frame they are about to press
 				// against.
 				named := receiveBarNames(s, "PgUp/PgDn")
@@ -1794,6 +1819,16 @@ func TestReceive_WritingANoteNeverChangesThePagingClaim(t *testing.T) {
 
 				// And the claim is still true of the body: named exactly when
 				// pressing it moves.
+				//
+				// At a REFUSED height there is no bar on the pane to make a
+				// claim with — the notice replaces it — and the movement arms
+				// decline outright (jde_form.go's movement block), so the
+				// biconditional is asked only where the frame is drawn. The
+				// half above still holds at every height, because it is about
+				// the header the allocator hands out rather than about a key.
+				if !receiveFrameDrawn(t, s, width, height) {
+					return
+				}
 				named := receiveBarNames(s, "PgUp/PgDn")
 				pane := receiveClippedPane(s, width, height)
 				before := s.focused
@@ -2511,10 +2546,14 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 				if s.phase != phaseQty {
 					t.Fatalf("esc after a failed receipt landed on phase %v", s.phase)
 				}
-				r = receiveGoToLine(t, r, s, 0)
+				// Drawability FIRST: Down is refused on a pane the layer will
+				// not draw, so walking the cursor there reaches nothing and the
+				// bounded walk would report that as a failure of the form.
+				// There is nothing on the pane to assert about either.
 				if !receiveFrameDrawn(t, s, width, height) {
 					return
 				}
+				r = receiveGoToLine(t, r, s, 0)
 				if !receiveCursorRowIdentified(t, s, width, height) {
 					t.Fatalf("a failure blanked the row the cursor is on:\n%s",
 						receiveClippedPane(s, width, height))
@@ -2558,20 +2597,34 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 // overflowed, so the bar printed PgUp/PgDn=Page over a key whose whole effect
 // was to write "pgdown is already at the last row".
 //
-// Asserted as the biconditional at every height, on BOTH orders, because a
-// predicate that is merely stricter would pass a test that only checked the
-// dead direction.
+// Asserted as the biconditional at every height the frame is DRAWN at, on BOTH
+// orders, because a predicate that is merely stricter would pass a test that
+// only checked the dead direction.
+//
+// The heights the layer REFUSES are outside it, and the reason is the rule this
+// file's assertions are built on: the bar is what the operator READS, and on a
+// refused pane no bar is drawn at all — the notice replaces it. s.bar() still
+// names the scroll keys there, deliberately, because its only remaining job is
+// to be MEASURED and a bar that shed them would make the notice ask for a
+// height that does not work (jdeTooShortRows). Asserting over those heights
+// would be asserting on a method's return value rather than on the pane, which
+// is the trap AGENTS.md names.
 func TestReceive_ThePagingPairIsNamedWhenAPageMovesTheCursor(t *testing.T) {
 	orders := map[string][]omsapi.ReceivingLine{
 		"nothing receivable": nil,
 		"nine lines":         receiveManyLines(9),
 		"three lines":        receiveManyLines(3),
 	}
+	checked := 0
 	for name, lines := range orders {
 		for height := 10; height <= 30; height++ {
 			t.Run(fmt.Sprintf("%s at 80x%d", name, height), func(t *testing.T) {
 				fake := &receiveFake{}
 				r, s := receiveDrive(t, fake, lines, 80, height)
+				if !receiveFrameDrawn(t, s, 80, height) {
+					return
+				}
+				checked++
 				named := receiveBarNames(s, "PgUp/PgDn")
 
 				// Try BOTH directions from the top: the pair is named when
@@ -2590,6 +2643,10 @@ func TestReceive_ThePagingPairIsNamedWhenAPageMovesTheCursor(t *testing.T) {
 				}
 			})
 		}
+	}
+	if checked == 0 {
+		t.Error("every height was refused, so this sweep asserted nothing about the " +
+			"pair it is named for")
 	}
 }
 

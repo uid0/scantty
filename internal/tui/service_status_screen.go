@@ -70,36 +70,69 @@ func (s *ServiceStatusScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.setSize(m)
 		return s, nil
 	case tea.KeyMsg:
-		count := len(s.services())
 		switch m.String() {
 		case "enter":
 			return s, RefreshServiceStatus(s.deps)
 		case "down":
-			if count > 0 && s.cursor < count-1 {
-				s.cursor++
-			}
+			s.move(+1)
 			return s, nil
 		case "up":
-			if s.cursor > 0 {
-				s.cursor--
-			}
+			s.move(-1)
 			return s, nil
 		case "pgdown":
-			s.cursor = jdePageCursor(s.cursor, count, s.pageStep(), +1)
+			s.page(+1)
 			return s, nil
 		case "pgup":
-			s.cursor = jdePageCursor(s.cursor, count, s.pageStep(), -1)
+			s.page(-1)
 			return s, nil
 		}
 	}
 	return s, nil
 }
 
-// pageStep is how far a page moves: the rows the pane is actually showing, so
-// paging covers exactly what the operator can see.
-func (s *ServiceStatusScreen) pageStep() int {
-	_, body := s.render()
-	return s.windowRows(body, s.cursor, serviceStatusHeaderRows)
+// move and page walk the service cursor. It is a LIST cursor, so it clamps
+// rather than wrapping, and both DECLINE on a pane the frame is not drawn
+// into — nothing on the pane would change, and growing the terminal back would
+// find the highlight somewhere the operator never put it.
+func (s *ServiceStatusScreen) move(delta int) {
+	header, body := s.render()
+	next, ok := s.pickRow(s.cursor, len(s.services()), delta, serviceStatusHeaderRows, s.bar(header, body))
+	if !ok {
+		return
+	}
+	s.cursor = next
+}
+
+func (s *ServiceStatusScreen) page(dir int) {
+	header, body := s.render()
+	next, ok := s.pageRow(body, s.cursor, len(s.services()), dir, serviceStatusHeaderRows, s.bar(header, body))
+	if !ok {
+		return
+	}
+	s.cursor = next
+}
+
+// bar names the keys that work here, with PgUp/PgDn on it exactly when the list
+// moves under the bar about to be drawn — measured against the bar WITH the
+// pair on it, because the tallest bar is the fixed point.
+func (s *ServiceStatusScreen) bar(header jdeHeader, body *jdeLines) []actionBarItem {
+	return s.barItems(s.bodyScrollsForBar(body, serviceStatusHeaderRows, s.barItems(true)))
+}
+
+// barItems is bar for a given paging state, so the bar that is MEASURED against
+// the pane is the bar that is drawn on it.
+func (s *ServiceStatusScreen) barItems(paging bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Refresh"}, {"Esc", "Back"}}
+	if len(s.services()) > 1 {
+		items = append(items, actionBarItem{"UP/DN", "Move"})
+		// Paging only earns a slot on the bar when there is something off
+		// screen to page to — the bar's contract is that every key on it does
+		// something here.
+		if paging {
+			items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+		}
+	}
+	return items
 }
 
 // serviceStatusHeaderRows is what the pinned header costs the body: the summary
@@ -109,17 +142,7 @@ const serviceStatusHeaderRows = 2
 
 func (s *ServiceStatusScreen) View() string {
 	header, body := s.render()
-	items := []actionBarItem{{"Enter", "Refresh"}, {"Esc", "Back"}}
-	if count := len(s.services()); count > 1 {
-		items = append(items, actionBarItem{"UP/DN", "Move"})
-		// Paging only earns a slot on the bar when there is something off
-		// screen to page to — the bar's contract is that every key on it does
-		// something here.
-		if s.bodyScrolls(body, serviceStatusHeaderRows) {
-			items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
-		}
-	}
-	return s.frameWithHeader(header, body, s.cursor, "", items)
+	return s.frameWithHeader(header, body, s.cursor, "", s.bar(header, body))
 }
 
 // render builds the pinned header and the scrollable body. Split out of View so

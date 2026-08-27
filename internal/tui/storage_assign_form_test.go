@@ -72,9 +72,7 @@ func TestStorageAssignForm_TypeDrivesTheFields(t *testing.T) {
 	// Every option carries its grid letter, so the operator can see what the
 	// rack will read afterwards — and the option STRIP under the focused row
 	// puts all three on screen at once, so the set is never cycled blind.
-	for s.fields[s.cursor] != safType {
-		s = assignKey(t, s, "tab")
-	}
+	s = assignWalkTo(t, s, safType)
 	view := s.View()
 	for _, want := range []string{"(C)", "(L)", "(E)"} {
 		if !strings.Contains(view, want) {
@@ -93,12 +91,29 @@ func TestStorageAssignForm_TypeDrivesTheFields(t *testing.T) {
 
 // The cursor stays on the same FIELD when the type cycles a row in or out —
 // otherwise changing the type teleports it.
+// assignWalkTo tabs the cursor onto `field`, and FAILS rather than spinning if
+// it never gets there.
+//
+// Tab is refused outright on a pane the layer will not draw (jde_form.go's
+// movement block), so an unbounded walk is not a check that fails — it is a
+// test binary that hangs, with the timeout panic naming whichever test was
+// running rather than the one that broke.
+func assignWalkTo(t *testing.T, s *StorageAssignFormScreen, field int) *StorageAssignFormScreen {
+	t.Helper()
+	for n := 0; s.fields[s.cursor] != field; n++ {
+		if n > len(s.fields) {
+			t.Fatalf("tab would not reach field %d in %d press(es) (it is on %d)",
+				field, n, s.fields[s.cursor])
+		}
+		s = assignKey(t, s, "tab")
+	}
+	return s
+}
+
 func TestStorageAssignForm_CursorKeepsItsFieldAcrossARebuild(t *testing.T) {
 	s := loadedAssignForm(t)
 	// Move to Occupant, which exists in both shapes.
-	for s.fields[s.cursor] != safLabel {
-		s = assignKey(t, s, "tab")
-	}
+	s = assignWalkTo(t, s, safLabel)
 	s = assignKey(t, s, " ") // committee → logistics drops the SIG row
 	if s.fields[s.cursor] != safLabel {
 		t.Errorf("cursor moved to field %d, want it to stay on Occupant", s.fields[s.cursor])
@@ -167,9 +182,7 @@ func TestStorageAssignForm_NonCommitteeDropsTheGroup(t *testing.T) {
 // is always live, so a letter is filter text now.
 func TestStorageAssignForm_Picker(t *testing.T) {
 	s := loadedAssignForm(t)
-	for s.fields[s.cursor] != safGroup {
-		s = assignKey(t, s, "tab")
-	}
+	s = assignWalkTo(t, s, safGroup)
 	s = assignKey(t, s, "ctrl+e")
 	if s.phase != assignPhasePick {
 		t.Fatal("ctrl+e on the SIG row should open the picker")

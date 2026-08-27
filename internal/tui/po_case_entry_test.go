@@ -313,9 +313,7 @@ func poCaseLineForm(t *testing.T, fake *poPickFake, width int, source string) (R
 // into the inputs — the caret has to be where the value is going.
 func poCaseFillLine(t *testing.T, r Root, s *PurchaseOrderCreateScreen, qty, cost string) Root {
 	t.Helper()
-	for s.lineFocused != poLineFieldQty {
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
-	}
+	r = poReachLineField(t, r, s, poLineFieldQty)
 	s.lineInputs[poLineFieldQty].SetValue("")
 	r = poType(t, r, qty)
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})

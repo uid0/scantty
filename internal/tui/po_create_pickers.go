@@ -178,7 +178,7 @@ func (s *PurchaseOrderCreateScreen) handlePickerLoaded(msg tea.Msg) tea.Cmd {
 		s.itemSuppliersAll = m.rows
 		s.itemSuppliersFor = m.supplierID
 		s.applyItemSupplierFilter()
-		s.itemSuppliersCur = 0
+		s.itemSuppliersCursor = 0
 		if len(m.rows) == 0 {
 			// FOUND NOTHING and COULD NOT TELL are different facts, and only
 			// one of them is safe to act on. A green "✓ 0 catalog item(s)
@@ -773,8 +773,8 @@ func (s *PurchaseOrderCreateScreen) updateItemPickPhase(m tea.KeyMsg, headerRows
 		var cmd tea.Cmd
 		s.itemSuppliersSearch, cmd = s.itemSuppliersSearch.Update(m)
 		s.applyItemSupplierFilter()
-		if s.itemSuppliersCur >= len(s.itemSuppliers) {
-			s.itemSuppliersCur = 0
+		if s.itemSuppliersCursor >= len(s.itemSuppliers) {
+			s.itemSuppliersCursor = 0
 		}
 		// Live count as they type, so "nothing matches" is visible BEFORE the
 		// enter that used to answer it with silence — but only once the walk
@@ -923,18 +923,18 @@ func (s *PurchaseOrderCreateScreen) commitSearchedItem() tea.Cmd {
 		// The only moving thing on the pane was the caret, which is precisely
 		// what "it just kinda hangs there" describes. "searched again" is what
 		// the key DID; the clause after it is the outcome.
-		s.itemSuppliersCur = 0
+		s.itemSuppliersCursor = 0
 		return s.reportItemFilterState("searched again")
 	case len(s.itemSuppliers) == 1:
 		s.itemSuppliersTyping = false
 		s.itemSuppliersSearch.Blur()
-		s.itemSuppliersCur = 0
+		s.itemSuppliersCursor = 0
 		return s.pickItemSupplier(0)
 	default:
 		s.itemSuppliersTyping = false
 		s.itemSuppliersSearch.Blur()
-		if s.itemSuppliersCur < 0 || s.itemSuppliersCur >= len(s.itemSuppliers) {
-			s.itemSuppliersCur = 0
+		if s.itemSuppliersCursor < 0 || s.itemSuppliersCursor >= len(s.itemSuppliers) {
+			s.itemSuppliersCursor = 0
 		}
 		// The lead is the whole point. Without it this arm produced the note
 		// the screen was ALREADY showing — same count, same query, same keys —
@@ -955,10 +955,10 @@ func (s *PurchaseOrderCreateScreen) commitHighlightedItem() tea.Cmd {
 	if len(s.itemSuppliers) == 0 {
 		return s.reportItemFilterState("nothing to pick")
 	}
-	if s.itemSuppliersCur < 0 || s.itemSuppliersCur >= len(s.itemSuppliers) {
-		s.itemSuppliersCur = 0
+	if s.itemSuppliersCursor < 0 || s.itemSuppliersCursor >= len(s.itemSuppliers) {
+		s.itemSuppliersCursor = 0
 	}
-	return s.pickItemSupplier(s.itemSuppliersCur)
+	return s.pickItemSupplier(s.itemSuppliersCursor)
 }
 
 // pickItemSupplier stages row i as the line under construction and says which

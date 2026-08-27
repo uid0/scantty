@@ -638,12 +638,14 @@ func TestJDEScroll_TheAnswerMatchesTheFrameThatDrawsIt(t *testing.T) {
 							jdeHoldsBackWord(want), wrapped)
 					}
 
-					plain := g.frameWithHeader(header, body, 0, "", bar)
-					if got, want := g.bodyScrolls(body, headerRows), jdeFrameHoldsBack(plain, body); got != want {
-						t.Errorf("%dx%d, %d header row(s), %d body line(s): bodyScrolls says "+
-							"%v but frameWithHeader %s\n%s",
-							size.Width, size.Height, headerRows, n, got,
-							jdeHoldsBackWord(want), plain)
+					// frameWithHeader IS frameWrapped now (the non-wrapping bar was
+					// what let eleven form screens run their legend off a
+					// 51-column pane), so this half checks they have not drifted
+					// apart again rather than checking a second budget.
+					if plain := g.frameWithHeader(header, body, 0, "", bar); plain != wrapped {
+						t.Errorf("%dx%d, %d header row(s), %d body line(s): frameWithHeader and "+
+							"frameWrapped drew different frames\n--- frameWithHeader\n%s\n"+
+							"--- frameWrapped\n%s", size.Width, size.Height, headerRows, n, plain, wrapped)
 					}
 				}
 			}
@@ -656,7 +658,7 @@ func TestJDEScroll_TheAnswerMatchesTheFrameThatDrawsIt(t *testing.T) {
 func jdeLiftBodyLengths(g jdeScreen, headerRows int, bar []actionBarItem) []int {
 	seen := map[int]bool{}
 	var out []int
-	for _, mid := range []int{g.bodyAvail(headerRows), g.bodyAvailForBar(headerRows, bar)} {
+	for _, mid := range []int{g.bodyAvailForBar(headerRows, nil), g.bodyAvailForBar(headerRows, bar)} {
 		for _, n := range []int{mid - 2, mid - 1, mid, mid + 1, mid + 2} {
 			if n >= 1 && !seen[n] {
 				seen[n] = true

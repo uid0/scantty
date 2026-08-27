@@ -899,9 +899,7 @@ func TestPOLineForm_ANonNumericCostSaysSoRatherThanNamingARange(t *testing.T) {
 			if screen.phase != poPhaseLine {
 				t.Fatalf("setup landed on phase %v, want the line form", screen.phase)
 			}
-			for screen.lineFocused != poLineFieldCost {
-				r = key(t, r, tea.KeyMsg{Type: tea.KeyTab})
-			}
+			r = poReachLineField(t, r, screen, poLineFieldCost)
 			for i := 0; i < 12; i++ {
 				r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
 			}

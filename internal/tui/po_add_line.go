@@ -491,6 +491,14 @@ func (s *PurchaseOrderAddLineScreen) keyChoose(m tea.KeyMsg) (Screen, tea.Cmd) {
 		}
 		return s, s.chooseCandidate(list[s.cursor], poAddPhaseChoose)
 	case "up", "down":
+		if !s.frameDrawn(len(s.headerLines()), s.bar()) {
+			// The pane is too short for the layer to draw this frame, so there
+			// is no highlight on it to move — and nothing to SAY about not
+			// moving it either, because a note written here would not be drawn
+			// now and would be drawn when the terminal grows back, answering a
+			// press the operator made before the resize.
+			return s, nil
+		}
 		next := s.cursor + 1
 		if m.String() == "up" {
 			next = s.cursor - 1
@@ -503,6 +511,9 @@ func (s *PurchaseOrderAddLineScreen) keyChoose(m tea.KeyMsg) (Screen, tea.Cmd) {
 		s.cursor = next
 		return s, nil
 	case "pgup", "pgdown":
+		if !s.frameDrawn(len(s.headerLines()), s.bar()) {
+			return s, nil
+		}
 		if !s.choosePages() {
 			return s, s.decline(m.String())
 		}
@@ -539,6 +550,13 @@ func (s *PurchaseOrderAddLineScreen) keyConfirm(m tea.KeyMsg) (Screen, tea.Cmd) 
 		s.costIn.Blur()
 		return s, tea.Batch(textinput.Blink, s.say(s.priceEntryNote(), StatusInfo))
 	case "up", "down", "pgup", "pgdown", "home", "end":
+		if !s.frameDrawn(len(s.headerLines()), s.bar()) {
+			// Refused pane: the prose is not drawn, so scrolling it would move
+			// the operator's place invisibly — `end` on this frame is the same
+			// shape as `end` on the order pad. See keyChoose for why it says
+			// nothing rather than declining out loud.
+			return s, nil
+		}
 		if !s.confirmScrolls() {
 			return s, s.decline(m.String())
 		}
@@ -577,11 +595,15 @@ func (s *PurchaseOrderAddLineScreen) keyPrice(m tea.KeyMsg) (Screen, tea.Cmd) {
 		// item costs nothing.
 		return s, s.say("esc went back to the item · what you typed is still here", StatusInfo)
 	case "up", "down":
-		step := 1
+		delta := +1
 		if m.String() == "up" {
-			step = poAddFieldCount - 1
+			delta = -1
 		}
-		s.priceFocus = (s.priceFocus + step) % poAddFieldCount
+		next, ok := s.moveRow(s.priceFocus, poAddFieldCount, delta, len(s.headerLines()), s.bar())
+		if !ok {
+			return s, nil
+		}
+		s.priceFocus = next
 		s.focusPriceRow()
 		return s, textinput.Blink
 	case "ctrl+t":
