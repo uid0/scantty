@@ -1314,6 +1314,7 @@ func jdeClampPick(next, count int) int {
 const (
 	jdeStatusErrMark  = "✗ "
 	jdeStatusWarnMark = "! "
+	jdeStatusOKMark   = "✓ "
 )
 
 // statusRow is the one row above the bar: what is in flight, or what went
@@ -1334,6 +1335,54 @@ func (g jdeScreen) statusRow(saving bool, verb, errMsg string) string {
 		return StyleStatusError.Render(g.fitStatus(jdeStatusErrMark, errMsg))
 	}
 	return ""
+}
+
+// statusAnswer is the status row carrying a screen's ANSWER TO THE LAST
+// KEYPRESS — what the key just did, and why it declined — rather than what is
+// in flight or what failed.
+//
+// It exists because that answer had nowhere to live that the frame cannot take
+// away. A pinned header row is trimmed by jdeFitHeader the moment the pane is
+// short, and a header may mark only ONE row essential, so a screen with a typed
+// box and an answer to give was made to choose between them: the New PO
+// pickers gave the slot to the answer, which took the SEARCH BOX off the pane
+// at 80x11 through 80x13, and every rune typed into the asset search then
+// redrew a byte-identical frame — rule 1 broken by geometry. Trading which row
+// disappears cannot fix that in either direction; the answer needs a surface
+// outside the budget, and this row is one: the frames append it unconditionally
+// and it is reserved on every pane, blank included.
+//
+// The LEVEL carries its own mark and colour, the same four the body notes use
+// (pickerNote.renderLines), so an answer reads the same wherever it is drawn.
+// The message is bounded by fitStatus against the mark it will sit behind, so a
+// long answer is shortened with the mark's two cells already accounted for
+// rather than after the fact.
+//
+// One ROW, which is the whole point and also the whole cost: an answer longer
+// than the pane loses its TAIL, marked by fitCell. What survives is the head —
+// the clause that names the key and what it did — which is the half that tells
+// two presses apart.
+func (g jdeScreen) statusAnswer(level StatusLevel, msg string) string {
+	if msg == "" {
+		return ""
+	}
+	mark, style := jdeStatusMark(level)
+	return style.Render(g.fitStatus(mark, msg))
+}
+
+// jdeStatusMark is the mark and colour one status LEVEL is drawn in — the same
+// four pickerNote.renderLines uses in the body, said once so an answer cannot
+// read as a warning on one surface and a success on the other.
+func jdeStatusMark(level StatusLevel) (string, lipgloss.Style) {
+	switch level {
+	case StatusError:
+		return jdeStatusErrMark, StyleStatusError
+	case StatusWarn:
+		return jdeStatusWarnMark, StyleStatusWarn
+	case StatusOK:
+		return jdeStatusOKMark, StyleStatusOK
+	}
+	return "", StyleMuted
 }
 
 // fitStatus bounds one message to the status row and returns it behind `mark`

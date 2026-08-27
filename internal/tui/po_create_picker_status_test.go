@@ -748,7 +748,7 @@ func TestPOAssetPicker_SearchSaysItIsSearchingThenSaysWhatItFound(t *testing.T) 
 	// The WORK and the SUBJECT, on the layer's status row: which request is
 	// out, against whom, and — because this search really goes off the terminal
 	// — what it is searching for.
-	if out := r.View(); !strings.Contains(out, `Searching Acme Supply's assets for "Lathe 2"`) {
+	if out := r.View(); !strings.Contains(out, `Finding "Lathe 2" in Acme Supply's assets`) {
 		t.Errorf("the in-flight frame does not name the work:\n%s", out)
 	}
 	r = pump(t, r, cmd, 0)
@@ -1214,7 +1214,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 
 		{"assets, working", func(s *PurchaseOrderCreateScreen) {
 			s.assetsLoading = true
-		}, poPhaseAssetPick, []string{"Looking up the assets"}},
+		}, poPhaseAssetPick, []string{"Loading assets from"}},
 
 		{"assets, failed", func(s *PurchaseOrderCreateScreen) {
 			s.assetsErr = long
@@ -3281,7 +3281,7 @@ func TestPOAssetPicker_ReenteringDoesNotPaintTheLastLookupOverThisOne(t *testing
 	// The WORK is on the layer's status row now, naming the request and the
 	// subject; the note is cleared by the arm that fires it, so the previous
 	// lookup's count cannot stand over a fresh one.
-	poWantPaneLine(t, screen, "Looking up the assets bought from")
+	poWantPaneLine(t, screen, "Loading assets from")
 	poRejectPaneLine(t, screen, "3 asset(s)")
 	poRejectPaneLine(t, screen, "Enter=Pick asset")
 	poAssertFits(t, "re-entered the asset picker", screen)
@@ -4342,7 +4342,7 @@ func TestPOCreate_TheSupplierHeaderKeepsBothNamesOnThePane(t *testing.T) {
 // on the review phase where the failure happens AND on the source chooser the
 // operator reaches with esc, where the frame is tightest.
 func TestPOCreate_AFailedSubmitSaysWhyWithoutTakingTheCartWithIt(t *testing.T) {
-	const headline = "submitting this purchase order failed"
+	headline := poSubmitFailWords
 
 	for _, h := range poPaneSizes {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
@@ -4388,18 +4388,33 @@ func TestPOCreate_AFailedSubmitSaysWhyWithoutTakingTheCartWithIt(t *testing.T) {
 					h, strings.Join(poPaneLinesAt(t, screen, h), "\n"))
 			}
 
-			// esc carries the failure back to the source chooser, which is the
-			// tightest frame on this screen: four line sources, an optional
-			// committee row, the d row and a cart too long to list.
+			// esc RETIRES the failure, and that is the second half of "without
+			// taking the cart with it": what must survive the move is the cart,
+			// not the sentence about the submit that failed.
+			//
+			// It is retired because an order-level error takes the whole status
+			// row for as long as it stands (statusPlan refuses to lead one), so
+			// a picker's answer to a declining key falls back to a trimmable
+			// header row — off the pane at 80x11 through 80x13. Left standing
+			// it never cleared, so ONE failed submit put every later phase
+			// permanently into the byte-identical-frame state this branch
+			// exists to remove. The failure belongs to the frame it happened
+			// on. The source chooser drawn UNDER a failure is still swept at
+			// every height by jde_pane_fit_test.go, which builds that state
+			// directly instead of navigating into it.
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
 			_ = r
 			if screen.phase != poPhaseSource {
 				t.Fatalf("esc left the screen on phase %v, want the source chooser", screen.phase)
 			}
+			if screen.errMsg != "" || screen.errDetail != "" {
+				t.Errorf("esc carried the order-level failure onto the next phase: %q / %q",
+					screen.errMsg, screen.errDetail)
+			}
 
-			what = fmt.Sprintf("source chooser carrying a failed submit at 80x%d", h)
+			what = fmt.Sprintf("source chooser after a failed submit at 80x%d", h)
 			poAssertFits(t, what, screen)
-			poWantPaneLine(t, screen, headline)
+			poRejectPaneLine(t, screen, headline)
 			// The way to review is on the BAR, which is where every key on this
 			// screen is named now — the chooser's own "d  Done" row went with
 			// the rest of the block that spelled the bar a second time.
@@ -4505,6 +4520,13 @@ func TestPOSourceChooser_TheHeaderGivesGroundByRank(t *testing.T) {
 // TestPOReorder_AddAllDoesNotInheritTheLastFailuresDetail is the stale-detail
 // leak in the one arm that still wrote the screen-level failure line by hand.
 //
+// IT IS A MECHANISM GUARD, NOT A REGRESSION TEST. Since the phase-change clear
+// (Update's key dispatch) an order-level error cannot be NAVIGATED onto the
+// reorder picker at all, which is why the setup has to write it back by hand —
+// see the comment at that line. What is held is the ARM's own discipline: that
+// `a` answers in the picker's note and never writes the screen's failure
+// headline itself. Do not read the state it builds as one an operator reaches.
+//
 // The failure line is a headline plus an unbounded OMS body underneath it, and
 // the two are set together for exactly this reason: writing only the headline
 // leaves the previous failure's DETAIL standing, so "nothing to add" was drawn
@@ -4523,7 +4545,8 @@ func TestPOReorder_AddAllDoesNotInheritTheLastFailuresDetail(t *testing.T) {
 
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // submit → 502 HTML
-			if screen.errDetail == "" {
+			head, detail := screen.errMsg, screen.errDetail
+			if detail == "" {
 				t.Fatalf("setup: the failed submit recorded no detail to leak")
 			}
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc}) // → source chooser
@@ -4531,6 +4554,15 @@ func TestPOReorder_AddAllDoesNotInheritTheLastFailuresDetail(t *testing.T) {
 			if screen.phase != poPhaseReorderPick {
 				t.Fatalf("r left the screen on phase %v, want the reorder picker", screen.phase)
 			}
+			// Put the failure back ON the phase the decline happens on. A phase
+			// change retires an order-level error now (Update's key dispatch),
+			// so navigating one in leaves nothing to leak — and what is under
+			// test is the ARM, not how the failure got here: that `a` answers in
+			// the picker's own note and never writes the screen's failure
+			// headline by hand, which is what left the previous failure's DETAIL
+			// standing under a validation sentence. The headline and body are
+			// the ones OMS really returned, taken off the submit above.
+			screen.setErr(head, detail)
 			if len(screen.reorderItems) != 0 {
 				t.Fatalf("setup: the reorder queue is not empty (%d)", len(screen.reorderItems))
 			}
@@ -4551,7 +4583,7 @@ func TestPOReorder_AddAllDoesNotInheritTheLastFailuresDetail(t *testing.T) {
 			// The decline is on the pane, and the failure line still carries
 			// the headline its detail belongs to rather than this sentence.
 			poWantPaneLine(t, screen, "nothing to add")
-			poWantPaneLine(t, screen, "submitting this purchase order failed")
+			poWantPaneLine(t, screen, poSubmitFailWords)
 
 			lines := poPaneLinesAt(t, screen, h)
 			decline, gateway := -1, -1
@@ -4566,7 +4598,7 @@ func TestPOReorder_AddAllDoesNotInheritTheLastFailuresDetail(t *testing.T) {
 			if gateway >= 0 && gateway > decline {
 				submit := -1
 				for i, line := range lines {
-					if strings.Contains(line, "submitting this purchase order failed") {
+					if strings.Contains(line, poSubmitFailWords) {
 						submit = i
 					}
 				}

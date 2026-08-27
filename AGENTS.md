@@ -299,6 +299,17 @@ either:
   then the serial story. Measured at 80x30 with a kit, the window is eleven rows
   — with the readings ahead of the credit the second component was off the pane,
   on the block whose whole point is what a kit puts into stock.
+  KNOWN AND ROUTED, on the axis that order does NOT cover: the block's own
+  quantity BOX can be the thing off the pane. The block opens with the line's
+  label and `Window` keeps a block's START, so at 80x12, 80x13 and 80x15 the
+  pane draws `2  Box of M3 bolts` and not the field under it — while that field
+  has the focus. Every rune after the first then redraws a byte-identical pane
+  (the first only moves because the bar changes shape), which is rule 1 broken
+  by geometry, the same shape as the New PO pickers' box and a DIFFERENT
+  mechanism: the body window rather than the header budget, so the answer
+  surface above does not reach it. Fixing it means reopening `addLineBlock`'s
+  sacrifice order — a decision, not a patch — which is why it is written down
+  rather than done in passing.
 
 ## Conventions
 
@@ -726,9 +737,12 @@ either:
   with `l.Add` headings; they are safe only while their cursor blocks stay short
   of the pane. The New PO conversion took the other route and it is the one to
   copy: everything that would have been a lead-in — the supplier row, the
-  optional attribution values, the screen's answer to the last keypress, the
-  review phase's PO-notes box — is a PINNED HEADER row with a rank, and the body
-  is nothing but navigable rows (`po_create.go`'s `headerLines` / `body`).
+  optional attribution values, the review phase's PO-notes box — is a PINNED
+  HEADER row with a rank, and the body is nothing but navigable rows
+  (`po_create.go`'s `headerLines` / `body`). The screen's ANSWER to the last
+  keypress is the one thing that is NOT a header row of its own: its head rides
+  the layer's status row, which no budget can trim, and only the folded
+  remainder reaches the header — see the answer-surface rule below.
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
 
@@ -743,8 +757,10 @@ touching any screen an operator drives:
   error string must be CLEARED on the next success: a body that draws its
   "the lookup failed" line INSTEAD of the list will hide a load that worked.
   On a columnar screen the working line and the failure HEADLINE both go through
-  `jdeScreen.statusRow`, which flattens a multi-line OMS body and bounds it in
-  one forward pass; the failure's unbounded DETAIL rides in the pinned header,
+  the layer's status row — `jdeScreen.statusRow`, or `statusAnswer` where the
+  headline is an order-level `errMsg` — both bounded by the same `fitStatus`,
+  which flattens a multi-line OMS body in one forward pass; the failure's
+  unbounded DETAIL rides in the pinned header,
   cut to a fixed row count before it is folded. `po_create.go`'s `workingLine`
   and `failure` answer for the PHASE being drawn, not for the screen: a failed
   agreement load is not a fact about the item picker, and reporting it there
@@ -754,14 +770,148 @@ touching any screen an operator drives:
   a byte-for-byte identical screen, which reads as a wedged program; that was
   the whole of the "the item picker hangs after I press enter" report.
 - Notes go on the PANE as well as the status bar: `StatusBar.Flash` expires
-  after four seconds and the operator who saw nothing is still looking. On the
-  New PO screen the note is the pinned header's ESSENTIAL row, so it is drawn on
-  every frame of every phase by construction — the previous shape wired each
-  picker's note into each of its own renderers, and the reorder and supplier
-  frames answered into the flash alone for several rounds because two of them
-  drew no body at all. A phase with nothing to ANSWER fills that row with a
-  standing FACT about the phase (`standingNote`) rather than leaving it blank,
-  so "nothing to say" and "the row scrolled away" are different states.
+  after four seconds and the operator who saw nothing is still looking. A phase
+  with nothing to ANSWER fills its header row with a standing FACT about the
+  phase (`standingNote`) rather than leaving it blank, so "nothing to say" and
+  "the row scrolled away" are different states.
+- **AN ANSWER NEEDS TWO SURFACES, AND WHICH ONE IT IS ON IS NOT A RANK
+  DECISION.** A pinned header row is trimmed by `jdeFitHeader` and a header may
+  mark exactly ONE row essential (`jdeMinBudget`), so a phase pinning a typed
+  BOX and holding something to SAY can keep only one of them — and this project
+  has now shipped both choices as defects, each fixing the other:
+  box-essential left a declining key answering into a row a short pane trimmed
+  (byte-identical panes at 80x11/12 on the item filter, 80x11–13 on the asset
+  search); note-essential, the fix for that, took the BOX off the pane at
+  exactly those heights, so every rune typed into the asset search redrew a
+  byte-identical frame. (The item filter survived on an accident —
+  `itemFilterOrVerdict` rewrites its note per rune, so the row it got instead of
+  the box happened to move. The asset search is SERVER-side and runs on enter,
+  so nothing else on its frame moves at all.) Trading which row disappears
+  cannot fix it in either direction.
+  So the answer uses BOTH surfaces and each does what only it can:
+  the layer's STATUS ROW is the one the frames append unconditionally and
+  `jdeFitHeader` cannot reach, so the clause naming the KEY is reachable there
+  at every height; the pinned HEADER is the one that FOLDS, so the clauses
+  saying WHY are there whenever the row could not hold them. `po_create.go`'s
+  `statusPlan` is the single decision — it assembles the row AND reports what
+  that leaves for the header (`answerRows`, `failLines`) — and it reads those
+  flags off the row it just BUILT rather than predicting them, because a
+  prediction is a second implementation of the bound it predicts.
+  `jdeScreen.statusAnswer` (`jde_form.go`) is the layer half, level-marked the
+  same four ways `pickerNote.renderLines` marks a body note.
+  The answer LEADS the WORKING sentence, and only where a box has taken the
+  essential row: leading unconditionally cost the working sentence its tail on
+  frames that had a header row going spare
+  (`nothing to pick · Looking up the items Acme Supply…`). An ORDER-LEVEL error
+  is never led at all — see below.
+  **THE ANSWER MAY NOT DISPLACE THE WORK IN FLIGHT**, which is the guard #152
+  put on this row and which had to be re-proved once a SECOND writer could reach
+  it. It holds, and by the CAP rather than by any wording: `poLeadOnto` reserves
+  the lead's opening clause at no more than HALF the row, so at 80 columns the
+  subject keeps at least `51 - 25 - 3 = 23` cells whatever the lead says, and
+  `poSubmitWords` is 20 for exactly that reason. Only three subjects can ever
+  share the row at all — the submit's, the item picker's and the asset
+  picker's — because a lead is applied only where a box is pinned, and each
+  leads with its FACT ("Creating the PO for", "Reloading the items",
+  "Finding") so what the clip takes is the identifier at the tail.
+  ORDER WITHIN A SUBJECT IS THE OTHER HALF OF THAT, and the asset picker is the
+  worked example: it read `Searching ` + supplier + `'s assets for "zzz"…`, so
+  the one variable part that is NOT the identity of the work — the supplier, the
+  same on every phase and already pinned on a header row — sat AHEAD of the
+  query the search is actually running on, and the 23-cell floor took the query
+  and kept the supplier. Reordered to fixed words, then QUERY, then supplier
+  (`workingSubject`). Choosing which SUBJECT survives is not enough; a subject
+  whose parts are in the wrong order inverts rule 6 inside one sentence.
+  WHAT A REORDER BUYS IS AN ORDER OF DEGRADATION, NEVER A FIT, and saying
+  otherwise is the same defect one level down. The query is operator-supplied,
+  so no arrangement of fixed words makes it fit: an MRO part description runs to
+  forty cells against a floor of 23. The claim is only that the FIXED WORDS
+  survive whole, then as much of the QUERY as is left, then the query's tail
+  gives, then the supplier. The fixed words are what buys the query's head, so
+  they are cut to the bone the way `poSubmitWords` was — `Searching assets ` was
+  17 of the 23 and left FOUR characters of query, which reads as the reorder
+  having worked while the fact it was made to protect was still gone;
+  `poAssetSearchWords` is 8. Cut to the bone is not cut past it: `Search ` saved
+  three more cells by going IMPERATIVE, and on a muted row whose neighbours are
+  instructions that read as one more hint rather than as work in flight, beside
+  a label of the same word one row up. A working sentence stays PROGRESSIVE.
+  And the QUOTED string is bounded, never a bounded string then quoted (the
+  `assetScopeRows` rule: Quote escapes, and the expansion lands inside the
+  tightest budget on the screen) — but the CLOSING QUOTE is POSITIONAL, so a
+  value in the MIDDLE of a sentence re-appends it out of the room the clip was
+  given (`poQuotedClip`), or the operator cannot see where what they typed stops
+  and the fixed words start; at the END of a row the ellipsis is the boundary
+  already and that cell buys another character of the term instead. WHICH a site
+  is, is a question about the ROW and not about the function: `assetScopeRows`
+  appends a page suffix after its value, so the same query is end-of-row on page
+  1 of 1 and mid-sentence the moment there is a next page — it drew
+  `Showing ..... "hydraulic pump seal k… · page 1` until it routed the paged
+  case through `poQuotedClip`. Because the
+  cap makes every lead past it produce the identical reservation, an OVER-LONG
+  lead is the provable worst case rather than a sample of one, which is what
+  `TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight` drives — the
+  vacuous-fixture rule pointed the other way: reach PAST the bound once rather
+  than hope the longest sentence in the file reaches it. Its `poBoxInFlight`
+  table is keyed by phase and checked against the discovered box set, so a phase
+  that grows a search box later fails until somebody says what "a request is
+  out" means on it.
+  Two derived sweeps hold the rest, both watched to fail first
+  (`po_create_answer_surface_test.go`): the phases come from `poPhaseCases()`
+  and which of them pin a box is DISCOVERED by asking `essentialBoxRow`, never
+  listed. And a pane change is necessary and not sufficient — the second sweep
+  asserts the BOX and the ANSWER are both on the clipped pane at every drawable
+  height, because "something moved" is exactly what the previous arrangement
+  could say while the operator's box was gone.
+  **AN ORDER-LEVEL ERROR IS NEVER LED, AND THE RESIDUAL THAT LEAVES IS STATED
+  RATHER THAN IMPLIED.** The lead was applied to the error branch too, so a
+  picker hint reserved up to half the row and the failure came back
+  `✗ type to narrow the catalo… · creating the PO f…` — rule 6 inverted on the
+  surface an order is committed from, where the error IS the fact and the hint
+  is the thing an operator can rediscover by pressing the key again. The error
+  takes the row alone now (`statusPlan`); the LEAD is what gives, entirely. The
+  wordings were cut with it — `setErr`'s headlines the way `poSubmitWords` went
+  from 32 cells to 20, `poSubmitFailWords` being 37 → 22 — but that is NOT the
+  guarantee and the comment says so: the detail beside them is an OMS body of
+  any length, and a bound expressed in an unbounded value is not a bound.
+  WHAT THAT WOULD HAVE COST, AND WHY NO KEY CAN SPEND IT. Taking the row alone
+  means the answer falls back to `answerRows`, a CONTEXT row of the pinned
+  header, which at 80x11–13 is off the pane — the very state this work removed.
+  It is NOT REACHABLE, and the closing argument is worth keeping because it is
+  what a later change could break: it needs a box-pinning phase holding BOTH a
+  standing `errMsg` and a non-empty answer, and `errMsg` is retired at every
+  phase change (`Update`'s key dispatch, beside `pendingLead` and
+  `sourceNote`). No `setErr` writer fires on a picker phase; the pending freeze
+  on the chooser's `r`/`i`/`a`/`f` stops a picker being ENTERED with a POST
+  out; and on review `phaseNote()` is empty while `poCreatedMsg` clears
+  `pendingLead` before it calls `setErr`, so the answer there is always "".
+  The MECHANISM is still in `statusPlan` and would reopen the moment a `setErr`
+  writer becomes reachable from a box-pinning phase, or the phase-change clear
+  is removed — which is why the clear is a rule and not a tidy-up. Before it,
+  ONE failed submit put the chooser, both pickers and the line form permanently
+  into that state: `setErr`'s other writers are `enterLinePhase`,
+  `removeLineAt` and `addReorderLines`, and none of them is on the way out of a
+  failed submit.
+  `TestPOCreate_AnOrderLevelFailureDoesNotOutliveThePhaseItHappenedOn` drives
+  the clear through the real submit and reports the answer going off the pane,
+  not just the field staying set. `TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow`
+  is the MECHANISM guard — it reaches the state by writing `setErr` directly,
+  because no key sequence produces it, and it says so in its own doc so a later
+  reader does not reason from a state the keys cannot reach. Its fixture is the
+  vacuous-fixture rule caught in the act: driven on `poSubmitFailWords` alone it
+  went GREEN with the lead still composed, because 22 cells is exactly what the
+  reservation leaves at 80 columns (`poOrderErrorFixtures` carries a second
+  error that reaches past it). The chooser drawn UNDER a failure — which IS
+  reachable, since `poCreatedMsg` can land there — is swept at every height by
+  `jde_pane_fit_test.go`.
+  **A HEADLINE THE STATUS ROW IS DRAWING IS NOT REPEATED IN THE HEADER, and
+  where the header does carry one the cut is MARKED.** `failLines` asked
+  "is the head a substring of the row?", which also answered no when the row was
+  drawing the head and merely SHORTENED it, so a narrow pane spent a body row on
+  a second identically shortened copy. `poStatusPlan.drawsHead` asks which
+  content the row CHOSE — a fact about the assembly, not a re-implemented bound,
+  which is why it is the one flag not read back off the drawn row. The header's
+  own copy goes through `pickerClip` rather than `cellPrefix`: at 60 columns the
+  pane is 31 and a headline cut clean reads as a finished sentence.
 - **Do not hand-count a hint against 51 columns — fold it.** Every note and
   fixed hint goes through `pickerWrap` / `pickerHint` / `jdeCaveatLines`
   (`pane_text.go`, `jde_form.go`), which fold at the `·` joints and indent

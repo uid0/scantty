@@ -260,9 +260,10 @@ func (s *PurchaseOrderCreateScreen) supplierListOnScreen() bool {
 
 // supplierVerdictNote says which of the three off-screen states a declining key
 // is answering from. It is a pickerNote and not a bare Status for the reason
-// the other two pickers already are: a flash expires after four seconds, and
-// this note is what the pinned header draws as its ESSENTIAL row, so the answer
-// is still on the pane a minute later.
+// the other two pickers already are: a flash expires after four seconds, and a
+// note is drawn on the screen's ANSWER surface — the status row, plus the
+// pinned header wherever the row could not hold all of it (statusPlan) — so the
+// answer is still on the pane a minute later.
 func (s *PurchaseOrderCreateScreen) supplierVerdictNote(prefix string) tea.Cmd {
 	lead := ""
 	if prefix != "" {
@@ -1151,7 +1152,9 @@ func (s *PurchaseOrderCreateScreen) itemBody() *jdeLines {
 		// whether the supplier sells nothing, the search missed, or the catalog
 		// failed to load, and only one of those is safe to act on.
 		//
-		// And never the NOTE either, which is what the pinned header carries.
+		// And never the NOTE either, which is what the answer surface carries —
+		// the status row, plus the pinned header for whatever the row could not
+		// print (statusPlan).
 		// The note answers the last keypress and names the query and the
 		// catalog size; this line says what the LIST is. Drawing one sentence
 		// in both places put the same words on two rows of a pane whose rows
@@ -1521,7 +1524,21 @@ func (s *PurchaseOrderCreateScreen) assetScopeRows() []string {
 		// to fifty cells in a value area of twenty-six, and clampToBox took the
 		// tail, which is the page suffix reserved three lines above for exactly
 		// this reason.
-		shown = pickerClip(strconv.Quote(ran), room)
+		//
+		// WHETHER THE CLOSING QUOTE IS KEPT IS A QUESTION ABOUT POSITION, and
+		// this row answers it BOTH ways because the page suffix is appended
+		// after the value. With a suffix the term is mid-sentence, so a clip
+		// that ate the quote drew `"hydraulic pump seal k… · page 1` and left
+		// nothing saying where what the operator typed stopped — the very
+		// ambiguity poQuotedClip exists to remove, on the row that says what
+		// the list they are looking at IS. Without one the value ends the row:
+		// the ellipsis is the boundary already, and the cell a closing quote
+		// would take is better spent on one more character of their term.
+		if page != "" {
+			shown = poQuotedClip(ran, room)
+		} else {
+			shown = pickerClip(strconv.Quote(ran), room)
+		}
 	} else {
 		shown = pickerClip(shown, room)
 	}
