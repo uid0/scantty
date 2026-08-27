@@ -807,17 +807,28 @@ touching any screen an operator drives:
   `poSubmitWords` is 20 for exactly that reason. Only three subjects can ever
   share the row at all — the submit's, the item picker's and the asset
   picker's — because a lead is applied only where a box is pinned, and each
-  leads with its FACT ("Creating the PO for", "Reloading the items",
-  "Searching assets") so what the clip takes is the identifier at the tail.
+  leads with its FACT ("Creating the PO for", "Reloading the items", "Search")
+  so what the clip takes is the identifier at the tail.
   ORDER WITHIN A SUBJECT IS THE OTHER HALF OF THAT, and the asset picker is the
   worked example: it read `Searching ` + supplier + `'s assets for "zzz"…`, so
   the one variable part that is NOT the identity of the work — the supplier, the
   same on every phase and already pinned on a header row — sat AHEAD of the
   query the search is actually running on, and the 23-cell floor took the query
   and kept the supplier. Reordered to fixed words, then QUERY, then supplier
-  (`workingSubject`), so the tail the clip takes is the supplier again. Choosing
-  which SUBJECT survives is not enough; a subject whose parts are in the wrong
-  order inverts rule 6 inside one sentence. Because the
+  (`workingSubject`). Choosing which SUBJECT survives is not enough; a subject
+  whose parts are in the wrong order inverts rule 6 inside one sentence.
+  WHAT A REORDER BUYS IS AN ORDER OF DEGRADATION, NEVER A FIT, and saying
+  otherwise is the same defect one level down. The query is operator-supplied,
+  so no arrangement of fixed words makes it fit: an MRO part description runs to
+  forty cells against a floor of 23. The claim is only that the FIXED WORDS
+  survive whole, then as much of the QUERY as is left, then the query's tail
+  gives, then the supplier. The fixed words are what buys the query's head, so
+  they are cut to the bone the way `poSubmitWords` was — `Searching assets ` was
+  17 of the 23 and left FOUR characters of query, which reads as the reorder
+  having worked while the fact it was made to protect was still gone; `Search `
+  is 7. And the QUOTED string is bounded, never a bounded string then quoted
+  (the `assetScopeRows` rule: Quote escapes, and the expansion lands inside the
+  tightest budget on the screen). Because the
   cap makes every lead past it produce the identical reservation, an OVER-LONG
   lead is the provable worst case rather than a sample of one, which is what
   `TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight` drives — the

@@ -748,7 +748,7 @@ func TestPOAssetPicker_SearchSaysItIsSearchingThenSaysWhatItFound(t *testing.T) 
 	// The WORK and the SUBJECT, on the layer's status row: which request is
 	// out, against whom, and — because this search really goes off the terminal
 	// — what it is searching for.
-	if out := r.View(); !strings.Contains(out, `Searching assets "Lathe 2" from Acme Supply`) {
+	if out := r.View(); !strings.Contains(out, `Search "Lathe 2" in Acme Supply's assets`) {
 		t.Errorf("the in-flight frame does not name the work:\n%s", out)
 	}
 	r = pump(t, r, cmd, 0)

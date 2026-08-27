@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -629,6 +630,21 @@ func TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline(t *testing.
 	})
 }
 
+// poAssetQueryHeadCells is how much of an operator's search term the status
+// row has to keep for the row to be worth reading at all.
+//
+// TWELVE, and the number is argued rather than measured off the code. Ordinary
+// MRO search terms share their leading word — "hydraulic pump" and "hydraulic
+// hose" first differ at cell 11 — so a head that stops before there names
+// neither, and an operator watching a slow search cannot tell which of two
+// things they asked for is out. Twelve clears that with a cell to spare.
+//
+// It is NOT poLeadOnto's arithmetic restated. A test that recomputes the bound
+// it is checking is a second implementation of it, and the two drift; this is a
+// floor the ROW must clear, so shortening the fixed words passes it and
+// lengthening them fails it, whatever the reservation happens to be that day.
+const poAssetQueryHeadCells = 12
+
 // TestPOAssetSearch_TheQuerySurvivesTheLeadOnTheStatusRow drives the sequence
 // the asset picker's working sentence is cut on, from the seat.
 //
@@ -646,12 +662,25 @@ func TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline(t *testing.
 // inverted inside one sentence. The fixed words lead now, the query comes next
 // and the supplier is the tail.
 //
-// Asserted on the clipped pane at 80 columns, where the floor bites, and at
-// every drawable height: the header's own `Showing ..... "zzz"` row is a
-// trimmable CONTEXT row, so below 14 the status row is the only surface left
-// carrying the query at all.
+// WATCHED TO FAIL TWICE, and the second time is the point. Against the ORIGINAL
+// supplier-first subject it failed on the query being absent outright. Against
+// the FIRST reorder — fixed words `Searching assets `, 17 of the floor's 23 —
+// it failed on the head: five cells were left for the quote and the query, so
+// the row drew `Searching assets "hydr…` and a reorder that had moved the query
+// to the front still could not say which pump was being looked for. A fixture
+// sitting ON the limit hid that for a round: `zzz` is exactly the longest query
+// those 17 cells preserved whole, so the check passed for a reason unrelated to
+// the property it names. The fixture below is an ordinary MRO term PAST the
+// limit, which is this project's vacuous-fixture rule pointed the right way.
+//
+// Only the STATUS ROW is asserted. The header pins a `Showing ..... "…"` row
+// carrying the same query, so a bare "is the query on the pane" check is
+// answered by a different row entirely and stays green with the status row
+// empty; every assertion here is anchored on the fixed words, which only this
+// row draws.
 func TestPOAssetSearch_TheQuerySurvivesTheLeadOnTheStatusRow(t *testing.T) {
-	const query = "zzz"
+	// Past what the row can hold, so the bound under test really bites.
+	const query = "hydraulic pump seal"
 
 	for _, h := range poDrawableHeights() {
 		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
@@ -688,16 +717,21 @@ func TestPOAssetSearch_TheQuerySurvivesTheLeadOnTheStatusRow(t *testing.T) {
 				t.Skip("the layer refuses this frame, which is jdeTooShort's rule")
 			}
 
+			// The FIXED WORDS survive whole — they are what the operator reads
+			// to know a search is what is out — and the head of the query comes
+			// with them. Both anchored on the same substring, so neither can be
+			// satisfied by the header's Showing row.
+			head := poAssetSearchWords + strconv.Quote(query)
+			head = cellPrefix(head, lipgloss.Width(poAssetSearchWords)+1+poAssetQueryHeadCells)
 			row, _ := screen.statusPlan()
-			if !strings.Contains(row, query) {
-				t.Errorf("the lead pushed the query off the status row at 80x%d.\n"+
-					"\tsubject: %q\n\trow: %q", h, screen.workingSubject(), row)
+			if !strings.Contains(row, head) {
+				t.Errorf("the status row at 80x%d does not name the search and the term "+
+					"it is running on.\n\twant it to carry: %q\n\tsubject: %q\n\trow: %q",
+					h, head, screen.workingSubject(), row)
 			}
-			// And on the pane the terminal really draws, not just the composed
-			// string: the header's `Showing ..... "zzz"` row is a trimmable
-			// CONTEXT row, so the status row is the only surface that carries
-			// the query at every height.
-			poWantPaneLine(t, screen, query)
+			// And on the pane the terminal really draws, not just the string the
+			// composer returned.
+			poWantPaneLine(t, screen, head)
 			poAssertFits(t, fmt.Sprintf("asset search mid-lookup at 80x%d", h), screen)
 		})
 	}

@@ -2512,14 +2512,32 @@ func (s *PurchaseOrderCreateScreen) workingSubject() string {
 			// carries the arithmetic), and the old order spent all of them on
 			// `Searching Acme Supply'…` — the query gone, the fact restated.
 			//
-			// So the fixed words are short enough that they and a recognisable
-			// query both fit that floor, and what the clip takes is the
-			// supplier at the tail. No ` · ` inside either sentence: that joint
-			// is the clause separator poLeadClause and pickerWrap read, and one
-			// here would make half a subject look like a second claim.
+			// WHAT IS CLAIMED IS THE ORDER IT DEGRADES IN, NOT THAT IT FITS.
+			// The query is operator-supplied and a bound expressed in an
+			// unbounded value is not a bound, so this says only what is true at
+			// every width: the FIXED WORDS survive whole, then as much of the
+			// QUERY as the row has left, then the query's tail gives, then the
+			// supplier and the noun after it. Nothing here promises a whole
+			// query — an MRO part description runs to forty cells and the floor
+			// is 23. `Searching assets ` was 17 of those 23 and left four
+			// characters of query, which is the claim-that-fits written as
+			// though it were the order-it-degrades-in; `Search ` is 7 and leaves
+			// an ordinary term recognisable, which is as far as fixed words can
+			// get anyone.
+			//
+			// The QUOTED string is what is bounded, never a bounded string that
+			// is then quoted — assetScopeRows carries the reason at length:
+			// strconv.Quote ESCAPES, so a backslash comes back two cells and a
+			// control rune up to six, and clipping first budgets for the quote
+			// marks and then pays the escaping on top. On this row that expansion
+			// lands inside the tightest budget on the screen.
+			//
+			// No ` · ` inside either sentence: that joint is the clause
+			// separator poLeadClause and pickerWrap read, and one here would
+			// make half a subject look like a second claim.
 			if q := strings.TrimSpace(s.assetsQuery); q != "" {
-				return "Searching assets " + strconv.Quote(pickerClip(q, 20)) +
-					" from " + s.supplierLabel() + "…"
+				return poAssetSearchWords + pickerClip(strconv.Quote(q), 20) +
+					" in " + s.supplierLabel() + "'s assets…"
 			}
 			return "Loading assets from " + s.supplierLabel() + "…"
 		}
@@ -2634,6 +2652,24 @@ const poLeadJoint = " · "
 // altogether — the sentence cut mid-word AND the identifier lost, which is
 // rule 6 exactly inverted on the surface an order is committed from.
 const poSubmitWords = "Creating the PO for "
+
+// poAssetSearchWords is the FACT the asset picker's working row leads with, and
+// it is seven cells for the same reason poSubmitWords is twenty: it shares a row
+// that cannot fold with a lead, and every cell it spends is a cell of the
+// operator's search term that the clip takes instead.
+//
+// The arithmetic, at 80 columns: a lead reserves half the 51-cell row and the
+// joint costs 3, so the subject gets 23 and its head is 22. These 7 leave 15 for
+// the opening quote and the term — enough that two ordinary MRO searches that
+// share a leading word ("hydraulic pump", "hydraulic hose") are still told apart,
+// which is the floor po_create_answer_surface_test.go's poAssetQueryHeadCells
+// pins. "Searching assets " was 17 and left FOUR characters of the term: the
+// query had been moved to the front of the sentence and was still, in effect,
+// gone.
+//
+// It buys an ORDER OF DEGRADATION and not a fit — the term is operator-supplied
+// and no fixed words make forty cells fit 23. See workingSubject.
+const poAssetSearchWords = "Search "
 
 // poSubmitFailWords is what the same submit says when it comes back refused,
 // and it is cut for the same reason poSubmitWords is: it is the whole of the
