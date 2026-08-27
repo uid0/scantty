@@ -299,6 +299,17 @@ either:
   then the serial story. Measured at 80x30 with a kit, the window is eleven rows
   — with the readings ahead of the credit the second component was off the pane,
   on the block whose whole point is what a kit puts into stock.
+  KNOWN AND ROUTED, on the axis that order does NOT cover: the block's own
+  quantity BOX can be the thing off the pane. The block opens with the line's
+  label and `Window` keeps a block's START, so at 80x12, 80x13 and 80x15 the
+  pane draws `2  Box of M3 bolts` and not the field under it — while that field
+  has the focus. Every rune after the first then redraws a byte-identical pane
+  (the first only moves because the bar changes shape), which is rule 1 broken
+  by geometry, the same shape as the New PO pickers' box and a DIFFERENT
+  mechanism: the body window rather than the header budget, so the answer
+  surface above does not reach it. Fixing it means reopening `addLineBlock`'s
+  sacrifice order — a decision, not a patch — which is why it is written down
+  rather than done in passing.
 
 ## Conventions
 
@@ -754,14 +765,46 @@ touching any screen an operator drives:
   a byte-for-byte identical screen, which reads as a wedged program; that was
   the whole of the "the item picker hangs after I press enter" report.
 - Notes go on the PANE as well as the status bar: `StatusBar.Flash` expires
-  after four seconds and the operator who saw nothing is still looking. On the
-  New PO screen the note is the pinned header's ESSENTIAL row, so it is drawn on
-  every frame of every phase by construction — the previous shape wired each
-  picker's note into each of its own renderers, and the reorder and supplier
-  frames answered into the flash alone for several rounds because two of them
-  drew no body at all. A phase with nothing to ANSWER fills that row with a
-  standing FACT about the phase (`standingNote`) rather than leaving it blank,
-  so "nothing to say" and "the row scrolled away" are different states.
+  after four seconds and the operator who saw nothing is still looking. A phase
+  with nothing to ANSWER fills its header row with a standing FACT about the
+  phase (`standingNote`) rather than leaving it blank, so "nothing to say" and
+  "the row scrolled away" are different states.
+- **AN ANSWER NEEDS TWO SURFACES, AND WHICH ONE IT IS ON IS NOT A RANK
+  DECISION.** A pinned header row is trimmed by `jdeFitHeader` and a header may
+  mark exactly ONE row essential (`jdeMinBudget`), so a phase pinning a typed
+  BOX and holding something to SAY can keep only one of them — and this project
+  has now shipped both choices as defects, each fixing the other:
+  box-essential left a declining key answering into a row a short pane trimmed
+  (byte-identical panes at 80x11/12 on the item filter, 80x11–13 on the asset
+  search); note-essential, the fix for that, took the BOX off the pane at
+  exactly those heights, so every rune typed into the asset search redrew a
+  byte-identical frame. (The item filter survived on an accident —
+  `itemFilterOrVerdict` rewrites its note per rune, so the row it got instead of
+  the box happened to move. The asset search is SERVER-side and runs on enter,
+  so nothing else on its frame moves at all.) Trading which row disappears
+  cannot fix it in either direction.
+  So the answer uses BOTH surfaces and each does what only it can:
+  the layer's STATUS ROW is the one the frames append unconditionally and
+  `jdeFitHeader` cannot reach, so the clause naming the KEY is reachable there
+  at every height; the pinned HEADER is the one that FOLDS, so the clauses
+  saying WHY are there whenever the row could not hold them. `po_create.go`'s
+  `statusPlan` is the single decision — it assembles the row AND reports what
+  that leaves for the header (`answerRows`, `failLines`) — and it reads those
+  flags off the row it just BUILT rather than predicting them, because a
+  prediction is a second implementation of the bound it predicts.
+  `jdeScreen.statusAnswer` (`jde_form.go`) is the layer half, level-marked the
+  same four ways `pickerNote.renderLines` marks a body note.
+  The answer LEADS a working sentence or an order-level error only where a box
+  has taken the essential row: leading unconditionally cost the working sentence
+  its tail on frames that had a header row going spare
+  (`nothing to pick · Looking up the items Acme Supply…`).
+  Two derived sweeps hold it, both watched to fail first
+  (`po_create_answer_surface_test.go`): the phases come from `poPhaseCases()`
+  and which of them pin a box is DISCOVERED by asking `essentialBoxRow`, never
+  listed. And a pane change is necessary and not sufficient — the second sweep
+  asserts the BOX and the ANSWER are both on the clipped pane at every drawable
+  height, because "something moved" is exactly what the previous arrangement
+  could say while the operator's box was gone.
 - **Do not hand-count a hint against 51 columns — fold it.** Every note and
   fixed hint goes through `pickerWrap` / `pickerHint` / `jdeCaveatLines`
   (`pane_text.go`, `jde_form.go`), which fold at the `·` joints and indent

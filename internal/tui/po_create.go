@@ -311,8 +311,14 @@ type PurchaseOrderCreateScreen struct {
 	switchLead string
 	// pendingLead is what a key that the submit has made inert just did. The
 	// review bar drops `enter submit` while the POST is out, and the press
-	// itself answers on the "Submitting…" line rather than into a flash the
-	// operator watching a slow request will have missed.
+	// itself answers where the operator watching a slow request can still see
+	// it, rather than into a flash they will have missed.
+	//
+	// It is one of the two writers of the screen's ANSWER (answerNote), and it
+	// can be the FIRST of them because it is non-empty only while the POST is
+	// out: pendingDecline writes it, and finalize, poCreatedMsg and every phase
+	// change clear it. That is the one window in which the phase's own note is
+	// guaranteed stale, since every arm that could refresh it is frozen.
 	pendingLead string
 
 	// editIndex is the s.lines index being edited in place (ctrl+e re-opens the
@@ -2147,12 +2153,179 @@ func (s *PurchaseOrderCreateScreen) View() string {
 //
 // Only the HEADLINE is here. The unbounded half rides in the pinned header
 // (failLines), where it is cut to a fixed row count before it is folded.
+//
+// It is also where the screen's ANSWER TO THE LAST KEYPRESS goes, on every
+// phase — the surface jdeFitHeader cannot reach, which is why a box being typed
+// into can have the one essential header row. What competes for the row and in
+// what order is statusPlan's, and it is answered there because the same
+// decision says what the header must still carry.
 func (s *PurchaseOrderCreateScreen) statusLine() string {
-	if working := s.workingLine(); working != "" {
-		return s.statusRow(true, working, "")
+	row, _ := s.statusPlan()
+	return row
+}
+
+// poStatusPlan is the assembled status row AND what it leaves for the pinned
+// header to carry, answered together because they are one decision.
+//
+// Answered apart, they drift the way every duplicated bound in this file has
+// drifted: the header would repeat what the row already says, or — the worse
+// direction, and the one measured — drop the only copy of it. Both happened
+// inside one round. The failure HEADLINE was displaced off the row by an answer
+// that did not name it ("type a name, tag or serial" over a failed asset
+// lookup) and nothing in the header had been told to pick it up; and the whole
+// ANSWER was folded into the header on frames where the row had already drawn
+// every word of it.
+//
+// The ROW is returned beside it rather than inside it, and that is not a style
+// choice: TestJDEForm_EveryStatusRowComesFromTheLayer follows what a status
+// argument is built from, and it can follow a call and a local but not a field
+// selected off a struct a call returned. A row it cannot trace reads to that
+// sweep exactly like an unbounded one — and because `statusLine` is a method
+// name four other screens also declare, one untraceable return failed all of
+// them at once.
+type poStatusPlan struct {
+	// holdsAnswer is true when the row carries the WHOLE answer, so the header
+	// need not draw it at all.
+	holdsAnswer bool
+	// holdsHead is true when the row carries the failure HEADLINE, so failLines
+	// need not lead its detail with it.
+	holdsHead bool
+}
+
+// statusPlan decides what the one row above the bar draws.
+//
+// The order is the order of what an operator cannot reconstruct from anything
+// else on the pane. WORKING wins: a request being out is a fact nothing else
+// states, and the operator watching a slow gateway is exactly the one whose
+// four-second flash has already expired. The ORDER-level error is next — a
+// submit that came back failed, a validation refusal — because it belongs to
+// the whole order rather than to the list being drawn. Then the ANSWER, and
+// last the phase's failure HEADLINE.
+//
+// The answer LEADS the first two only when a typed box is pinned, and that
+// condition is the whole architecture of this change in one line. The answer's
+// home is the pinned header's essential row; a box being typed into takes that
+// row when there is one, and then — and only then — the answer has nowhere left
+// that jdeFitHeader cannot reach, so it rides here. Leading unconditionally was
+// tried and cost the working sentence its tail on frames that had a perfectly
+// good header row for the answer: `nothing to pick · Looking up the items Acme
+// Supply…`, which spends fifteen cells restating what the header already says
+// in full and cuts the one sentence naming the work.
+func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
+	answer := s.answerNote()
+	lead := ""
+	if s.essentialBoxRow() != "" {
+		lead = poLeadClause(answer.text)
 	}
 	head, _ := s.failure()
-	return s.statusRow(false, "", head)
+	var row string
+	switch {
+	case s.workingSubject() != "":
+		row = s.statusRow(true, s.workingLine(lead), "")
+	case s.errMsg != "":
+		mark, _ := jdeStatusMark(StatusError)
+		row = s.statusAnswer(StatusError,
+			poLeadOnto(lead, s.errMsg, s.paneWidth()-lipgloss.Width(mark)))
+	case answer.text != "":
+		row = s.statusAnswer(answer.level, answer.text)
+	default:
+		row = s.statusRow(false, "", head)
+	}
+	// Both flags are read off the row that was just ASSEMBLED rather than
+	// predicted from the branch that assembled it. A prediction is a second
+	// implementation of the bound it predicts, and this file has already
+	// shipped that pair disagreeing; asking the drawn row cannot. It is also
+	// what stops the header repeating a lead the row printed in full — the
+	// review cart's frozen keys draw `ctrl+x removes nothing` on the row and
+	// used to draw it again four lines up, adding nothing and spending a row of
+	// a body that is showing the operator their cart.
+	//
+	// Everything a screen puts on this row is styled as ONE run, so the text is
+	// contiguous inside it; a message fitStatus shortened carries the ellipsis
+	// and no longer matches, which is exactly when the header has to pick it up.
+	return row, poStatusPlan{
+		holdsAnswer: answer.text != "" && strings.Contains(row, answer.text),
+		holdsHead:   head != "" && strings.Contains(row, head),
+	}
+}
+
+// poLeadClause is an answer reduced to its OPENING CLAUSE — the part that names
+// the key and what it did.
+//
+// It is what the answer contributes when the row already has a subject. The
+// whole answer used to go in, and the reservation arithmetic then cut it to
+// fit: "down moves nothing · still looking up the suppliers…" beside "Looking
+// up the suppliers…" came back as `down moves nothing · s… · Looking up the
+// suppliers…`, which spends nine cells restating the subject badly and drops
+// the ellipsis in the middle of a word. The rest of the answer is in the pinned
+// header on exactly those frames (answerRows), so nothing is lost by leaving it
+// there — and the clause that tells two presses apart still rides the row that
+// cannot be trimmed.
+func poLeadClause(text string) string {
+	clause, _, _ := strings.Cut(text, poLeadJoint)
+	return clause
+}
+
+// answerNote is the screen's answer to the last keypress, as ONE line, from
+// whichever of its two writers owns the press.
+//
+// pendingLead first, and it can only be first: it is written by pendingDecline
+// and cleared by finalize, by poCreatedMsg and by every phase change, so it is
+// non-empty only while the create POST is out — the one window in which the
+// phase's own note is guaranteed stale, because every arm that could refresh it
+// is frozen.
+//
+// The note is flattened at its JOINTS rather than truncated at its first line
+// (pickerNote.statusText), because a forced break in a note separates two whole
+// claims: assetsSearchClosedNote's "what you typed was never run" and "what the
+// rows do answer" are two facts, and rule 3 says they are not interchangeable.
+// flash drops the second — the toast has no room and the body line behind it
+// carried the rest — and jdeStatusOneLine would run them together with a space.
+func (s *PurchaseOrderCreateScreen) answerNote() pickerNote {
+	if s.pendingLead != "" {
+		return pickerNote{text: s.pendingLead}
+	}
+	n := s.phaseNote()
+	n.text = n.statusText()
+	return n
+}
+
+// answerRows is the answer's home in the PINNED HEADER, drawn exactly when the
+// status row did not print the whole of it — because it is sharing the row with
+// a working sentence or an order-level error, or because the answer is wider
+// than one row of the pane.
+//
+// The two surfaces divide the work by what each can do, and NEITHER is
+// sufficient on its own. The status row is the only one jdeFitHeader cannot
+// reach, so the clause naming the key has to be reachable there at every
+// height; the header is the only one that FOLDS, so the clauses saying WHY have
+// to be there whenever the row could not hold them. Both halves have been
+// shipped alone and both were defects: the header alone is how a declining key
+// answered into a row a short pane trimmed (byte-identical panes at 80x11 and
+// 80x12), and the row alone is how `searched again · no match for "zzz" (12 in
+// catal…` lost the count that is the whole difference between "no such item"
+// and "I mistyped".
+//
+// Where BOTH would say the same thing the header stays out of it: holdsAnswer
+// is read off the row that was actually assembled, so a lead the row printed in
+// full is not repeated four lines up.
+//
+// Which RANK it takes is headerLines': the essential row where no box has
+// claimed it, context where one has.
+func (s *PurchaseOrderCreateScreen) answerRows() []string {
+	n := s.answerNote()
+	if n.text == "" {
+		return nil
+	}
+	if _, plan := s.statusPlan(); plan.holdsAnswer {
+		return nil
+	}
+	lines := n.renderLines(s.paneWidth() - len(jdeIndent))
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, jdeIndent+line)
+	}
+	return out
 }
 
 // failure is the headline and the unbounded detail of whatever has gone wrong
@@ -2309,15 +2482,30 @@ func (s *PurchaseOrderCreateScreen) workingSubject() string {
 // At 80 columns the two sentences want about 54 cells of a 51-cell row, so the
 // SUPPLIER at the subject's tail is what goes — the identifier abbreviating
 // while the facts stay, which is rule 6. At 100 and 120 neither gives.
-func (s *PurchaseOrderCreateScreen) workingLine() string {
-	subject, room := s.workingSubject(), s.paneWidth()
+func (s *PurchaseOrderCreateScreen) workingLine(lead string) string {
+	subject := s.workingSubject()
 	if subject == "" {
 		return ""
 	}
-	if s.pendingLead == "" {
+	return poLeadOnto(lead, subject, s.paneWidth())
+}
+
+// poLeadOnto is that arithmetic, with the SUBJECT and the room handed in, so
+// the working sentence and the order-level error share one implementation of
+// it rather than two that drift.
+//
+// `room` is what the row leaves after whatever MARK it will be drawn behind:
+// the muted working line carries none, the error row carries jdeStatusErrMark's
+// two cells, and passing the remainder rather than the pane means the caller's
+// budget is measured from the string that really gets prepended.
+func poLeadOnto(lead, subject string, room int) string {
+	if lead == "" {
 		return pickerClip(subject, room)
 	}
-	answer, rest, more := strings.Cut(s.pendingLead, poLeadJoint)
+	if subject == "" {
+		return pickerClip(lead, room)
+	}
+	answer, rest, more := strings.Cut(lead, poLeadJoint)
 	floor := lipgloss.Width(answer)
 	if more && rest != "" {
 		// One cell for the ellipsis pickerClip adds, or the clause it is
@@ -2329,7 +2517,7 @@ func (s *PurchaseOrderCreateScreen) workingLine() string {
 	}
 	joint := lipgloss.Width(poLeadJoint)
 	subject = pickerClip(subject, room-floor-joint)
-	lead := pickerClip(s.pendingLead, room-lipgloss.Width(subject)-joint)
+	lead = pickerClip(lead, room-lipgloss.Width(subject)-joint)
 	if lead == "" {
 		return subject
 	}
@@ -2457,80 +2645,50 @@ func (s *PurchaseOrderCreateScreen) headerLines() jdeHeader {
 	}
 
 	// The essential row, last, so it sits directly above the body it is about.
-	// Only the FIRST line of the note is essential: the fold's continuations
-	// carry the tail of a sentence whose head has already said what happened.
-	note := s.noteRows()
+	//
+	// It is the BOX the operator is typing into wherever a phase pins one, and
+	// the phase's standing FACT everywhere else. Neither is an ANSWER: the
+	// answer to the last keypress rides the status row now (statusLine), which
+	// the frames append unconditionally and jdeFitHeader cannot reach.
+	//
+	// That split is the whole point, and it is worth the paragraph because the
+	// obvious alternative has already been shipped and reverted. The note used
+	// to take this slot whenever it had something to say, so that a declining
+	// key had somewhere to answer that a short pane could not trim — and only
+	// one row may be essential, so what gave instead was the SEARCH BOX. It was
+	// gone at 80x11, 80x12 and 80x13, and the asset picker's typing branch
+	// changes nothing else on the pane (its search is server-side and runs on
+	// enter, so assetScopeRows still reads the COMMITTED query and the note is
+	// written once by openAssetSearch), which made every typed rune there redraw
+	// a byte-identical frame. Trading which row disappears cannot fix that in
+	// either direction; both rows have to be drawable at once, so the answer
+	// moved off this budget entirely.
+	//
+	// A phase that pins a box therefore draws no STANDING fact: the box is the
+	// essential row, and a fact repeated under a box the operator is typing
+	// into would spend a row of a body that is showing them the rows they are
+	// picking from. The ANSWER can still appear above it as CONTEXT, but only
+	// on the frames where the status row could not print the whole of it
+	// (answerRows) — which is the only case where the header adds anything.
+	answer := s.answerRows()
 	if box := s.essentialBoxRow(); box != "" {
-		if s.phase == poPhaseReview || len(note) == 0 {
-			// REVIEW, and any box phase with nothing to answer. The box takes
-			// the one essential slot and the note rides as context, which is
-			// honest here because review answers a declining key on the STATUS
-			// row (pendingDecline through workingLine), outside the budget and
-			// never given up — so a trimmed note there costs a repetition
-			// rather than the answer.
-			return h.addBlock(jdeHeadContext, note).add(jdeHeadDecorative, "").add(jdeHeadEssential, box)
-		}
-		// A PICKER's open search box is the other case, and the sentence above
-		// was written as though it covered this one. It does not: pendingDecline
-		// is reached from the supplier, source and review phases only, so a
-		// picker's declining key has nowhere to answer but this note — and with
-		// the note ranked context, jdeFitHeader trimmed the only answer the
-		// press had. Measured, at 80 columns: the item picker's `/`, a query
-		// matching nothing, enter, at 11 and 12 rows; the asset picker's second
-		// enter over a search still out, at 11, 12 and 13 — the pane was
-		// BYTE-IDENTICAL before and after the press, this screen's oldest
-		// report reached by geometry rather than by a missing arm.
-		//
-		// So the note's first line takes the slot while it has something to
-		// say. THE TRADE IS REAL AND IS NOT CLOSED BY THIS, and it is worth
-		// more written down than argued away:
-		//
-		//   - Only one row may be essential, so where the budget keeps exactly
-		//     one the BOX is what goes. Measured at 80 columns after the
-		//     change, on both pickers with a search box open: the box is drawn
-		//     from 14 rows up and is gone at 11, 12 and 13. An operator typing
-		//     into a box that is not on the pane is a defect of its own. It is
-		//     recorded here as a RESIDUAL rather than fixed: closing it means
-		//     giving a picker's declines a surface outside the budget, the way
-		//     review has one, which is a change to the status channel rather
-		//     than to a rank.
-		//   - The box loses the row to the note's CONTINUATION as well as to
-		//     its head, because within a rank the layer gives ground from the
-		//     END and the continuation is drawn above the box. That is why 13
-		//     is in the list and not just 11 and 12.
-		//   - What takes the slot is whatever the phase last SAID, and on a
-		//     freshly opened asset search that is an instruction ("type a name,
-		//     tag or serial") rather than an answer to anything.
-		//
-		// What is NOT traded ON THE ITEM PICKER: below those heights the query
-		// still narrows the body and itemFilterOrVerdict rewrites the note on
-		// every rune, so typing goes on changing the pane — while the declining
-		// key changed nothing at all.
-		//
-		// The ASSET picker does NOT have that, and this sentence claimed it for
-		// both for a round. Its search is SERVER-side and runs on enter, so the
-		// typing branch only updates the box: assetScopeRows reads the
-		// COMMITTED assetsQuery, the note is written once by openAssetSearch
-		// and never again while a rune is typed, and neither the body nor the
-		// working line moves. With the box trimmed off the pane at 11, 12 and
-		// 13 rows, every typed rune there redraws it BYTE FOR BYTE — rule 1
-		// broken by geometry rather than by a missing arm. It is the same
-		// residual as the first bullet above and closes with it; it is written
-		// down rather than left implied because "typing goes on changing the
-		// pane" is precisely the sentence a future reader would trust instead
-		// of measuring.
-		return h.add(jdeHeadDecorative, "").
-			add(jdeHeadEssential, note[0]).
-			add(jdeHeadContext, note[1:]...).
-			add(jdeHeadDecorative, "").
-			add(jdeHeadContext, box)
+		return h.addBlock(jdeHeadContext, answer).add(jdeHeadDecorative, "").add(jdeHeadEssential, box)
 	}
-	if len(note) == 0 {
+	// With no box to pin, the answer takes the slot when it has one to take —
+	// its head is on the status row either way, but a header that marked
+	// nothing essential is a header the layer may trim to whichever row
+	// happened to be first. The standing FACT fills it the rest of the time, so
+	// "nothing to say" and "the row scrolled away" stay different states.
+	rows := answer
+	if len(rows) == 0 {
+		rows = s.standingRows()
+	}
+	if len(rows) == 0 {
 		return h
 	}
 	return h.add(jdeHeadDecorative, "").
-		add(jdeHeadEssential, note[0]).
-		add(jdeHeadContext, note[1:]...)
+		add(jdeHeadEssential, rows[0]).
+		add(jdeHeadContext, rows[1:]...)
 }
 
 // supplierHeaderRows is the committed supplier, drawn as a columnar value row.
@@ -2714,41 +2872,31 @@ func (s *PurchaseOrderCreateScreen) essentialBoxRow() string {
 	return ""
 }
 
-// noteRows is the screen's answer to the last keypress, folded to the pane the
-// terminal really gave. Root.View TRUNCATES rather than wrapping, and the tail
-// of these sentences is where the key that gets the operator OUT is named — a
-// clipped hint is worse than none, because they believe they read it.
-func (s *PurchaseOrderCreateScreen) noteRows() []string {
-	note := s.phaseNote()
-	if note.text == "" && s.essentialBoxRow() != "" {
-		// A phase that pins a BOX has its essential row already, so there is
-		// nothing for a standing note to fill and drawing one spends two rows
-		// (itself and its separator) of a body that is showing the operator
-		// their cart. At 80x24 under three attribution rows those two were the
-		// difference between a two-row window — which jdeLines.Window draws no
-		// "N more below" marker in — and one that says how much of a 15-line
-		// cart is out of view.
+// standingRows is the pinned header's own row: the phase's standing FACT,
+// folded to the pane the terminal really gave.
+//
+// It used to be the screen's ANSWER to the last keypress, with the standing
+// fact as a fallback for a phase that had nothing to answer. The answer has its
+// own surface now — the status row, which the frames reserve on every pane and
+// jdeFitHeader cannot reach (statusLine) — so what is left here is the row that
+// is true whatever was last pressed, and the essential slot it fills is stable
+// rather than contended.
+//
+// A phase that pins a typed BOX draws none of it: the box is that phase's
+// essential row and nothing is gained by repeating a standing fact above it.
+//
+// Folded, never hand-counted. Root.View TRUNCATES rather than wrapping, and the
+// tail of one of these sentences is the half that says what the state IS.
+func (s *PurchaseOrderCreateScreen) standingRows() []string {
+	if s.essentialBoxRow() != "" {
 		return nil
 	}
-	if note.text == "" {
-		// A phase with nothing to ANSWER still pins a row, because "nothing to
-		// say" and "the row scrolled away" have to be different states — and
-		// because the essential slot has to be filled on every phase: a header
-		// that marks none is a header the layer may trim to whichever row
-		// happened to be first.
-		//
-		// What fills it is a FACT about the phase rather than a list of keys.
-		// The bar names the keys, on every frame, at the bottom of the pane
-		// where nothing can trim it; a standing note that repeated them would
-		// be the second statement of one claim that this screen's own history
-		// says will eventually contradict the first.
-		note = pickerNote{text: s.standingNote()}
-	}
-	// Folded, never hand-counted. Root.View TRUNCATES rather than wrapping, and
-	// the tail of one of these sentences is the half that says what the state
-	// IS — a clipped note is worse than none, because the operator believes
-	// they read it.
-	lines := note.renderLines(s.paneWidth() - len(jdeIndent))
+	// A FACT about the phase rather than a list of keys. The bar names the
+	// keys, on every frame, at the bottom of the pane where nothing can trim
+	// it; a standing note that repeated them would be the second statement of
+	// one claim that this screen's own history says will eventually contradict
+	// the first.
+	lines := pickerNote{text: s.standingNote()}.renderLines(s.paneWidth() - len(jdeIndent))
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		out = append(out, jdeIndent+line)
@@ -2756,7 +2904,7 @@ func (s *PurchaseOrderCreateScreen) noteRows() []string {
 	return out
 }
 
-// phaseNote is the pickerNote whose words this phase's essential row carries.
+// phaseNote is the pickerNote this phase ANSWERS a keypress into.
 // One switch, so a phase cannot answer a key into a note no frame draws — which
 // is what the four picker notes each had to be wired up for separately.
 func (s *PurchaseOrderCreateScreen) phaseNote() pickerNote {
@@ -2810,10 +2958,10 @@ func (s *PurchaseOrderCreateScreen) standingNote() string {
 		// entryDerivation and stated once.
 		return "Line source: " + s.lineSourceName()
 	case poPhaseReview:
-		// Never reached — review pins its notes box as the essential row and
-		// carries this one as context — but answered rather than left empty,
-		// because a phase that falls through to "" here would spend a header
-		// row on nothing.
+		// Never reached — review pins its notes box as the essential row, and
+		// standingRows draws nothing on a phase that pins one — but answered
+		// rather than left empty, because a phase that stopped pinning a box
+		// would otherwise fall through to "" and mark no essential row at all.
 		return "The whole cart is submitted in one request."
 	}
 	return ""
@@ -2850,13 +2998,27 @@ func (s *PurchaseOrderCreateScreen) lineSourceName() string {
 // count would be true of the prefix and not of the error — and naming a number
 // that is only true of a fraction is the same false claim as marking nothing.
 func (s *PurchaseOrderCreateScreen) failLines() []string {
-	_, detail := s.failure()
-	if detail == "" {
-		return nil
-	}
+	head, detail := s.failure()
 	width := s.paneWidth() - len(jdeIndent)
 	if width < 12 {
 		width = 12
+	}
+	var lead []string
+	if _, plan := s.statusPlan(); head != "" && !plan.holdsHead {
+		// The status row is drawing something it ranks above this headline —
+		// the ANSWER to a keypress, which is the only thing that outranks it —
+		// so the headline comes here rather than nowhere. It was nowhere for a
+		// round: `/` over a failed asset lookup answers "type a name, tag or
+		// serial", which took the row and does not name the failure, and the
+		// pane then said what had gone wrong only in the body's own empty line.
+		//
+		// Bounded like everything else in this block, and marked, so it cannot
+		// be read as one more line of the gateway's HTML underneath it.
+		lead = []string{jdeIndent + StyleStatusError.Render(
+			cellPrefix(jdeStatusErrMark+jdeStatusOneLine(head), width))}
+	}
+	if detail == "" {
+		return lead
 	}
 	trimmed := cellPrefix(detail, poFailDetailRows*width)
 	bounded := trimmed != detail
@@ -2872,7 +3034,8 @@ func (s *PurchaseOrderCreateScreen) failLines() []string {
 			mark = fmt.Sprintf("… %d more line(s) of the error", len(folded)-len(keep))
 		}
 	}
-	out := make([]string, 0, poFailDetailRows)
+	out := make([]string, 0, poFailDetailRows+len(lead))
+	out = append(out, lead...)
 	for _, line := range keep {
 		out = append(out, jdeIndent+StyleMuted.Render(line))
 	}

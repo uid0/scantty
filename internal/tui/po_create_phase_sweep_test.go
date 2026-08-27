@@ -1900,17 +1900,10 @@ func TestPOOneSurface_TheScanSeesPastAFold(t *testing.T) {
 // TestPOSubmit_ADeclineDoesNotPushTheSubmitOffTheStatusRow.
 //
 // The status row cannot fold, and the lead was joined in front of the working
-// sentence unbounded. With the longest lead in this file — "enter commits
-// nothing · the committed row goes back", 51 cells, exactly the row's width at
-// 80 columns — the whole "a purchase order is being created" statement was
-// pushed off. pendingDecline's flash expires after four seconds and the frozen
-// bar names only Enter/UP-DN/Esc, so from then on nothing on the pane said a
-// submit was out.
-//
-// The lead is bounded against what the subject needs now. Both halves are
-// asserted: the subject because losing it is the defect, and the lead's KEY
-// NAME because a lead that no longer says which press it answers is the
-// identical-pane defect one row over.
+// sentence unbounded. With the longest lead in this file the whole "a purchase
+// order is being created" statement was pushed off it; pendingDecline's flash
+// expires after four seconds and the frozen bar names only a handful of keys,
+// so from then on nothing on the pane said a submit was out.
 //
 // AN ASSERTION CHOSEN BECAUSE IT PASSES IS NOT EVIDENCE. This test asserted
 // "Creating the purchase" — 21 cells, which SURVIVED the 25-cell clip the
@@ -1918,24 +1911,83 @@ func TestPOOneSurface_TheScanSeesPastAFold(t *testing.T) {
 // or…" with the supplier gone: the fixed words cut mid-word and the identifier
 // lost, rule 6 inverted, certified by a passing check. The substring to assert
 // is the one the RULE requires (the fixed words in full), not one the
-// truncation happens to leave. It is the third of this shape in this run,
-// beside the two fixtures too short to reach the bound they asserted about
-// (AGENTS.md carries the general form).
+// truncation happens to leave.
+//
+// TWO cases now, because the answer surface decides which of them a phase is
+// in and the two guarantees are different (po_create.go's statusPlan):
+//
+//   - a phase that pins a typed BOX has given its one essential header row
+//     away, so the answer rides the status row and SHARES it with the working
+//     sentence. That is the original defect's ground and it keeps the original
+//     bound: the fixed words survive whole, the supplier abbreviates, and the
+//     lead keeps the key name that tells two presses apart.
+//   - a phase that pins none keeps the answer in the header, where it folds,
+//     and the working sentence then has the whole row — supplier included.
+//     Asserted rather than assumed, because "the lead is elsewhere" would be
+//     just as true of a lead that had been dropped altogether.
 func TestPOSubmit_ADeclineDoesNotPushTheSubmitOffTheStatusRow(t *testing.T) {
+	// submitting leaves a create POST genuinely in flight on the review cart,
+	// which is the phase that pins the PO-notes box.
+	submitting := func(t *testing.T, h int) (Root, *PurchaseOrderCreateScreen) {
+		t.Helper()
+		fake := &poPickFake{catalog: 4, suppliers: 3}
+		r, screen := poPickerAtSize(t, fake, 80, h)
+		for _, k := range []string{"i", "enter", "enter", "d"} {
+			r = key(t, r, poPhaseKeyMsg(k))
+		}
+		next, _ := r.Update(poPhaseKeyMsg("enter")) // POST out, un-pumped
+		r = next.(Root)
+		if !screen.pending {
+			t.Fatalf("setup did not leave a submit in flight")
+		}
+		return r, screen
+	}
+
 	for _, h := range poPaneSizes {
-		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
-			// Two suppliers, so `enter` on a DIFFERENT one is reachable — that
-			// is the arm carrying the longest lead on the screen.
-			fake := &poPickFake{catalog: 4, suppliers: 3}
-			r, screen := poPickerAtSize(t, fake, 80, h)
-			for _, k := range []string{"i", "enter", "enter", "d"} {
-				r = key(t, r, poPhaseKeyMsg(k))
+		t.Run(fmt.Sprintf("box pinned at 80x%d", h), func(t *testing.T) {
+			r, screen := submitting(t, h)
+			// shift+tab carries the longest lead this phase can produce, which
+			// is what makes the row's budget bite. A shorter one fits beside
+			// the subject and would assert the bound without reaching it.
+			r = key(t, r, poPhaseKeyMsg("shift+tab"))
+			if screen.pendingLead == "" {
+				t.Fatalf("shift+tab left no lead to crowd the row")
 			}
-			next, _ := r.Update(poPhaseKeyMsg("enter")) // POST out, un-pumped
-			r = next.(Root)
-			if !screen.pending {
-				t.Fatalf("setup did not leave a submit in flight")
+			var status string
+			for _, line := range poPaneLines(t, screen) {
+				if strings.Contains(line, poSubmitWords) {
+					status = strings.TrimRight(line, " ")
+				}
 			}
+			if status == "" {
+				t.Fatalf("no pane line carries the submit's fixed words:\n%s",
+					strings.Join(poPaneLines(t, screen), "\n"))
+			}
+			// The lead is on the SAME row, and it keeps the key name — a lead
+			// that no longer says which press it answers is the
+			// identical-pane defect one row over.
+			if !strings.Contains(status, "shift+tab") {
+				t.Fatalf("the status row %q dropped the key the lead answers for", status)
+			}
+			// And the IDENTIFIER is what gave, visibly marked. The fixture
+			// reaches that bound: "Acme Supply" is 11 cells into the handful
+			// the row has left for it under this lead.
+			if strings.Contains(status, "Acme Supply") {
+				t.Fatalf("the status row %q kept the whole supplier name, so the "+
+					"bound under test was never reached", status)
+			}
+			if !strings.HasSuffix(status, "…") {
+				t.Fatalf("the status row %q dropped the supplier without saying so", status)
+			}
+			poAssertFits(t, "a declined key while the submit is out", screen)
+		})
+
+		t.Run(fmt.Sprintf("no box at 80x%d", h), func(t *testing.T) {
+			r, screen := submitting(t, h)
+			// esc, esc walks off review to the source chooser and then to the
+			// supplier picker — both frozen, neither pinning a box — and
+			// `enter` on a DIFFERENT supplier is the arm carrying the longest
+			// lead on the screen.
 			for _, k := range []string{"esc", "esc", "down"} {
 				r = key(t, r, poPhaseKeyMsg(k))
 			}
@@ -1944,38 +1996,31 @@ func TestPOSubmit_ADeclineDoesNotPushTheSubmitOffTheStatusRow(t *testing.T) {
 			}
 			r = key(t, r, poPhaseKeyMsg("enter"))
 			if screen.pendingLead == "" {
-				t.Fatalf("enter on another supplier left no lead to crowd the row")
+				t.Fatalf("enter on another supplier left no lead")
 			}
-
-			// Both halves are read off the ONE row they now share, because
-			// the supplier this order is for is drawn in the pinned header
-			// and in the body's own list as well: a pane-wide substring
-			// would find "Acme Supply" there and prove nothing about the
-			// status row.
+			if screen.essentialBoxRow() != "" {
+				t.Fatalf("the supplier picker pins a box, so this case is the other one")
+			}
+			pane := poPaneLines(t, screen)
+			joined := strings.Join(pane, "\n")
+			// The working sentence has the whole row: the fixed words AND the
+			// supplier, neither abbreviated.
 			var status string
-			for _, line := range poPaneLines(t, screen) {
-				if strings.Contains(line, "enter commits nothing") {
+			for _, line := range pane {
+				if strings.Contains(line, poSubmitWords) {
 					status = strings.TrimRight(line, " ")
 				}
 			}
 			if status == "" {
-				t.Fatalf("no pane line carries the lead's key name:\n%s",
-					strings.Join(poPaneLines(t, screen), "\n"))
+				t.Fatalf("no pane line carries the submit's fixed words:\n%s", joined)
 			}
-			// The FACT survives whole — not a prefix of it that the clip
-			// happened to spare.
-			if !strings.Contains(status, poSubmitWords) {
-				t.Fatalf("the status row %q does not carry %q whole", status, poSubmitWords)
+			if !strings.Contains(status, "Acme Supply") {
+				t.Fatalf("the status row %q lost the supplier on a phase whose "+
+					"answer is in the header and costs the row nothing", status)
 			}
-			// And the IDENTIFIER is what gave, visibly marked. The fixture
-			// reaches that bound: "Acme Supply" is 11 cells into the 6 the
-			// row has left for it under this lead.
-			if strings.Contains(status, "Acme Supply") {
-				t.Fatalf("the status row %q kept the whole supplier name, so the "+
-					"bound under test was never reached", status)
-			}
-			if !strings.HasSuffix(status, "…") {
-				t.Fatalf("the status row %q dropped the supplier without saying so", status)
+			// And the answer is still on the pane, on the header row it kept.
+			if !strings.Contains(joined, "enter commits nothing") {
+				t.Fatalf("the decline answered nowhere the operator can see:\n%s", joined)
 			}
 			poAssertFits(t, "a declined key while the submit is out", screen)
 		})

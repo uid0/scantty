@@ -260,9 +260,10 @@ func (s *PurchaseOrderCreateScreen) supplierListOnScreen() bool {
 
 // supplierVerdictNote says which of the three off-screen states a declining key
 // is answering from. It is a pickerNote and not a bare Status for the reason
-// the other two pickers already are: a flash expires after four seconds, and
-// this note is what the pinned header draws as its ESSENTIAL row, so the answer
-// is still on the pane a minute later.
+// the other two pickers already are: a flash expires after four seconds, and a
+// note is drawn on the screen's ANSWER surface — the status row, plus the
+// pinned header wherever the row could not hold all of it (statusPlan) — so the
+// answer is still on the pane a minute later.
 func (s *PurchaseOrderCreateScreen) supplierVerdictNote(prefix string) tea.Cmd {
 	lead := ""
 	if prefix != "" {

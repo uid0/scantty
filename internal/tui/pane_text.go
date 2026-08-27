@@ -115,6 +115,23 @@ func (n pickerNote) renderLines(width int) []string {
 	return out
 }
 
+// statusText is the note as ONE line, for the pane's status row — every clause
+// kept, the forced breaks rejoined at the ` · ` joint the note was written to.
+//
+// It is NOT flash. flash drops everything after the first newline because the
+// four-second toast has no room for it and the BODY line behind it still
+// carried the rest; the status row is now where the whole answer lives, so
+// dropping a clause here would drop the only copy of it. jdeStatusOneLine
+// (which the layer applies to every status message) would rejoin with a space
+// instead, running two claims together as one sentence — "…was never run no
+// asset matches …" — where the joint says they are two.
+//
+// The result is still bounded by the layer, so a long answer loses its TAIL and
+// says so. The head is the clause naming the key and what it did.
+func (n pickerNote) statusText() string {
+	return strings.ReplaceAll(n.text, "\n", " · ")
+}
+
 // flash is the note reduced to ONE line for the status bar, which has no room
 // for the continuation.
 func (n pickerNote) flash() string {
