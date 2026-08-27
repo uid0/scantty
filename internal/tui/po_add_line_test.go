@@ -304,6 +304,13 @@ func poAddRows() []poAddCatalogRow {
 			perPackage: 1, suggestQty: 4, suggestCost: "1.2500"},
 		{itemSupplier: 14, name: "Bolt, hex M3", sku: "B-M3", supplierSKU: "AF-31",
 			perPackage: 100, suggestQty: 100, suggestCost: "0.0000"},
+		// A case-packed row whose suggestion is NOT a whole number of the
+		// vendor's cases — what a pack-counted item produces, because OMS
+		// rounds a suggestion up to a whole supplier package only for items
+		// counted in base units. The rows open in units on this one and the
+		// bar does not offer Ctrl-T until a whole case count is typed.
+		{itemSupplier: 15, name: "Rag, shop, red", sku: "RAG-1", supplierSKU: "AF-13-ODD",
+			perPackage: 12, suggestQty: 30, suggestCost: "0.7500"},
 	}
 }
 
@@ -375,11 +382,16 @@ func TestPOAddLine_ScanningASupplierSKUReachesAConfirmedLine(t *testing.T) {
 	if s.phase != poAddPhasePrice {
 		t.Fatalf("enter on the confirm frame landed on phase %v, want the price prompt", s.phase)
 	}
-	if got := s.qtyIn.Value(); got != "50" {
-		t.Errorf("quantity prefill = %q, want the server's own suggestion 50", got)
+	// The prefills are the server's own suggestion, IN THE UNIT THIS VENDOR
+	// SELLS: Acme ships this bracket 25 to a case, so the suggested 50 units at
+	// 4.5000 each is two cases at 112.50 a case. The rows say which they are in
+	// (po_case_entry.go), and the submit converts back — the wire still gets the
+	// 50 and the 4.50 below.
+	if got := s.qtyIn.Value(); got != "2" {
+		t.Errorf("quantity prefill = %q, want the suggested 50 units as 2 cases of 25", got)
 	}
-	if got := s.costIn.Value(); got != "4.5000" {
-		t.Errorf("unit cost prefill = %q, want the server's own suggestion 4.5000", got)
+	if got := s.costIn.Value(); got != "112.5" {
+		t.Errorf("case cost prefill = %q, want the 4.5000 unit price as a 112.50 case", got)
 	}
 	poAddWantPane(t, r, "Enter=Add line")
 
@@ -416,8 +428,16 @@ func TestPOAddLine_TypingOverTheDefaultsSendsWhatWasTyped(t *testing.T) {
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 
+	// This vendor ships 25 to a case, so both rows are in cases — put them back
+	// in base units first, which is what "what was typed" means on a row
+	// labelled Quantity and a row labelled Unit cost. The case path has its own
+	// end-to-end checks in po_case_entry_test.go.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlT})
+	if s.caseBasis {
+		t.Fatal("ctrl+t did not put the rows into base units")
+	}
 	// Clear the quantity and type another.
-	for range "50" {
+	for range s.qtyIn.Value() {
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
 	}
 	r = key(t, r, poRuneKey("7"))
@@ -426,7 +446,7 @@ func TestPOAddLine_TypingOverTheDefaultsSendsWhatWasTyped(t *testing.T) {
 	if s.priceFocus != poAddFieldCost {
 		t.Fatalf("down left the caret on row %d", s.priceFocus)
 	}
-	for range "4.5000" {
+	for range s.costIn.Value() {
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
 	}
 	r = key(t, r, poRuneKey("9.99"))
@@ -616,8 +636,12 @@ func TestPOAddLine_ARepeatAddDoesNotSilentlyReprice(t *testing.T) {
 	poAddWantPane(t, r, "5 ordered")
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 
-	if got := s.qtyIn.Value(); got != "25" {
-		t.Errorf("quantity prefill = %q, want the one-package repeat increment 25", got)
+	// The server's repeat increment is ONE PACKAGE — 25 base units here — and
+	// the row is in cases, so it reads as the 1 case the operator just picked
+	// up. Both say the same thing; only one of them is a number they can check
+	// against the box in their hand.
+	if got := s.qtyIn.Value(); got != "1" {
+		t.Errorf("quantity prefill = %q, want the one-package repeat increment as 1 case", got)
 	}
 	if got := s.costIn.Value(); got != "" {
 		t.Errorf("unit cost prefill = %q — a repeat must start blank so the line's price is kept", got)
@@ -628,6 +652,9 @@ func TestPOAddLine_ARepeatAddDoesNotSilentlyReprice(t *testing.T) {
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	if len(fake.adds) != 1 {
 		t.Fatalf("adds = %d", len(fake.adds))
+	}
+	if got := fake.adds[0]["quantity"]; got != float64(25) {
+		t.Errorf("quantity = %v, want the one case posted as its 25 base units", got)
 	}
 	if _, sent := fake.adds[0]["unit_cost"]; sent {
 		t.Errorf("the add sent a price it was never given: %v", fake.adds[0])
@@ -640,21 +667,29 @@ func TestPOAddLine_ARepeatAddDoesNotSilentlyReprice(t *testing.T) {
 
 // A price the operator DOES type on a repeat is sent — the row says it reprices
 // the whole line, and that has to be true.
+//
+// The row is a CASE cost here, because Acme ships this bracket 25 to a case, so
+// what reaches the wire is the per-unit price it derives. That is the point:
+// "the row reprices the whole line" has to hold in the unit the line is stored
+// in, not merely in the characters that were typed.
 func TestPOAddLine_ATypedRepeatPriceIsSent(t *testing.T) {
 	rows := poAddRows()
 	rows[0].onOrder = 5
 	rows[0].onOrderID = "line-12"
 	rows[0].linePrice = "3.1000"
 	fake := &poAddFake{rows: rows}
-	r, _ := poAddAt(t, fake, 80, 24)
+	r, s := poAddAt(t, fake, 80, 24)
 	r = key(t, r, poRuneKey("AF-99-12-ZP-LH-HEAVY"))
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
-	r = key(t, r, poRuneKey("2.75"))
+	r = key(t, r, poRuneKey("68.75"))
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if !s.caseBasis && len(fake.adds) > 0 {
+		t.Fatal("this fixture is meant to price a CASE-packed line")
+	}
 	if fake.adds[0]["unit_cost"] != "2.75" {
-		t.Errorf("posted %v, want the 2.75 the operator typed", fake.adds[0])
+		t.Errorf("posted %v, want the 68.75 case price as its 2.75 per unit", fake.adds[0])
 	}
 }
 
@@ -667,8 +702,11 @@ func TestPOAddLine_AZeroDefaultSaysThereIsNoPriceOnFile(t *testing.T) {
 	r = key(t, r, poRuneKey("AF-31"))
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-	if got := s.costIn.Value(); got != "0.0000" {
-		t.Errorf("unit cost prefill = %q, want the server's own default", got)
+	// The bolt is 100 to a case, so the row is a CASE cost — and 100 × 0.0000
+	// is still zero, which is the whole point: no arithmetic turns "no price on
+	// file" into a price.
+	if got := s.costIn.Value(); got != "0" {
+		t.Errorf("case cost prefill = %q, want the server's own zero default", got)
 	}
 	poAddWantPane(t, r, "no price on file")
 }
@@ -1024,7 +1062,14 @@ func TestPOAddLine_AMalformedPriceIsRefusedBeforeAnythingIsPosted(t *testing.T) 
 			if poAddPane(r) == before {
 				t.Error("enter redrew a byte-identical pane, which reads as a wedged program")
 			}
-			for _, want := range []string{"enter did not add it", "unit cost", "clear the row"} {
+			// The refusal names the row BY ITS LIVE LABEL. Acme ships this
+			// bracket 25 to a case, so the row is a "case cost" here, and a
+			// sentence hard-coding "unit cost" would be naming a row that is
+			// not on the pane — the same label-disagrees-with-meaning defect
+			// the case work exists to remove, moved into the refusal.
+			for _, want := range []string{
+				"enter did not add it", strings.ToLower(poCostRowLabel(s.caseBasis)), "clear the row",
+			} {
 				poAddWantPane(t, r, want)
 			}
 			// A row it cannot post is a row it must not price either.
@@ -1050,8 +1095,15 @@ func TestPOAddLine_AShortPaneKeepsBothTypedRowsOnThePricePrompt(t *testing.T) {
 		if s.phase != poAddPhasePrice {
 			t.Fatalf("at 80x%d the flow is on %v, not the price prompt", height, s.phase)
 		}
+		// BY THEIR LIVE LABELS: this vendor ships 25 to a case, so the two rows
+		// read "Cases" and "Case cost" here. Naming them literally would make
+		// this check about the singles wording rather than about the rows
+		// surviving a short pane, and it would then pass or fail on a fixture's
+		// case size.
 		pane := poAddPane(r)
-		for _, want := range []string{"Quantity", "Unit cost"} {
+		for _, want := range []string{
+			poQtyRowLabel(s.caseBasis), poCostRowLabel(s.caseBasis),
+		} {
 			if !strings.Contains(pane, want) {
 				t.Errorf("at 80x%d the price prompt drew no %q row:\n%s", height, want, pane)
 			}

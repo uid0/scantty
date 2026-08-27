@@ -36,6 +36,58 @@ partially received line's price by `quantity_received / quantity_ordered` on
 every trip. `unit_cost_actual` is written ONLY through that endpoint — receiving
 never sets it. `internal/tui/po_line_price.go` carries the full note.
 
+### A PO line is ENTERED in cases and STORED in base units
+
+`internal/tui/po_case_entry.go` carries the full note and is the authority; it
+is the one conversion every screen that takes a PO line's quantity or price runs.
+What is worth knowing before touching any of them:
+
+- **The wire is base units at a per-base-unit price.** `quantity_ordered` is
+  always base units "whichever pack size shaped it" and `unit_cost_ordered` is
+  per base unit; `order_in_packages` is DERIVED server-side by
+  `order_packages_for_line`. Nothing on this side sends it — `cases × qpp`
+  ceil-divided by `qpp` is `cases`, so posting it would be a second copy of a
+  number the server already gets right; `omsapi`'s
+  `TestCreatePurchaseOrder_InventoryLineCaseDerivedCost` pins its absence.
+- **The case is the SUPPLIER's**, `ItemSupplier.quantity_per_package`, not the
+  item's own packaging chain (`packaging.go`, which is how the shop COUNTS what
+  is on the shelf). The column DEFAULTS to 1, so `> 1` means "this vendor ships
+  by the case" and 1 leaves a singles line untouched — the same gate the web PO
+  form uses.
+- **One basis per line, not one row per denominator.** The reported defect was a
+  row labelled `Unit cost` taking a case price, and relabelling it alone would
+  have left `Quantity` asking for base units beside it. `caseBasis` moves both
+  typed rows and both labels together; Ctrl-T flips it, converting both values,
+  and base-unit entry stays reachable because a broken case is a legitimate
+  order.
+- **A prefill is not always a whole number of cases.** OMS rounds a suggestion
+  up to a whole supplier package only for items counted in BASE units
+  (`views.reorder_data` and `line_entry.default_quantity` both gate on
+  `counts_in_packs`), so a pack-counted item can suggest 30 against a case of
+  12. `poOpensAtCaseBasis` answers that once: whole cases (or no prefill) opens
+  in cases, anything else opens in units. Ctrl-T is then a BAR GATE
+  (`poFlipsToCases`) rather than a refusal — the key is not named while it could
+  only decline, and the derivation row says standing why, and which two
+  quantities bring it back.
+- **The derived SET is the four write endpoints, not the screen that was
+  reported.** `CreatePurchaseOrder` (`po_create.go`'s line form, reached from
+  the items picker, the reorder queue's single-row enter and Ctrl-E on the
+  cart), `AddPurchaseOrderLine` (`po_add_line.go`'s price phase — the
+  scan / supplier-SKU path), and the reorder queue's BULK add
+  (`reorderCartLine`), which stages a cart line without the form and must still
+  carry the case size or the review row and Ctrl-E describe a different order.
+  `UpdatePurchaseOrderLineItem`'s cost row is deliberately outside it: it takes
+  a TOTAL for the line, which no pack size changes, and its label already says
+  so. So is `ReceivePOItems`: receiving records what ARRIVED against a
+  server-stated balance that is base units throughout, and a case-only box could
+  not express a broken case.
+- **`ReorderDataItem` carries `quantity_per_package` and `package_cost`.**
+  `po_create_pickers.go` used to say in as many words that it carried neither
+  and the struct decoding it had no field for either, so every line staged from
+  the reorder queue reached the form as a singles line. A comment asserting what
+  the wire does NOT carry is worth checking against
+  `backend/reorder_queue/views.py` before trusting it.
+
 ### A line goes onto a draft order by scanning an identifier
 
 `internal/omsapi/po_line_entry.go` carries the API note and

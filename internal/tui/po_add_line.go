@@ -149,8 +149,12 @@ const (
 // when the frame changes under it.
 var poAddLabels = []string{
 	"Supplier", "Order", "Scan / type",
-	"Item", "Item SKU", "Supplier SKU", "Matched", "Pack", "On order",
-	"Quantity", "Unit cost", "Line total",
+	"Item", "Item SKU", "Supplier SKU", "Matched", "Case", "On order",
+	// BOTH spellings of the two typed rows, because the label they draw
+	// depends on the entry basis and the shared column has to be wide enough
+	// for whichever is live — a column that moved when Ctrl-T was pressed
+	// would slide every value on the pane sideways.
+	"Quantity", "Unit cost", "Cases", "Case cost", "Line total",
 }
 
 func poAddLabelWidth() int {
@@ -240,6 +244,13 @@ type PurchaseOrderAddLineScreen struct {
 	qtyIn, costIn textinput.Model
 	// priceFocus is which of the two price rows holds the caret.
 	priceFocus int
+	// caseBasis is the ENTRY BASIS of both typed rows: true means the operator
+	// is entering CASES and a CASE COST for a candidate whose supplier declares
+	// a case size, and the submit converts to the base quantity and per-base-unit
+	// price the wire carries (po_case_entry.go). One flag for both rows, because
+	// a form asking for cases beside a unit price is the reported defect with
+	// its halves swapped rather than the defect fixed.
+	caseBasis bool
 	// priceEdited records that the operator has typed into either price row, so
 	// a back-step that drops what they entered can say it did.
 	priceEdited bool
@@ -570,6 +581,14 @@ func (s *PurchaseOrderAddLineScreen) keyPrice(m tea.KeyMsg) (Screen, tea.Cmd) {
 		s.priceFocus = (s.priceFocus + step) % poAddFieldCount
 		s.focusPriceRow()
 		return s, textinput.Blink
+	case "ctrl+t":
+		// A chord, not a bare letter, so it can never collide with typing into
+		// a focused box — and named on the bar exactly when caseFlipOffered
+		// says it will act, which is the same predicate the arm guards on.
+		if !s.caseFlipOffered() {
+			return s, nil
+		}
+		return s, s.toggleEntryBasis()
 	case "enter":
 		return s, s.submit()
 	}
@@ -779,14 +798,109 @@ func (s *PurchaseOrderAddLineScreen) primePriceRows(c omsapi.POLineCandidate) {
 	cost.Prompt = ""
 	cost.CharLimit = 14
 
+	base := c.SuggestedQuantity
 	if repeat := c.AlreadyOnOrder; repeat != nil && repeat.RepeatIncrement != nil {
-		qty.SetValue(strconv.Itoa(*repeat.RepeatIncrement))
-	} else {
-		qty.SetValue(strconv.Itoa(c.SuggestedQuantity))
-		cost.SetValue(c.SuggestedUnitCost.String())
+		base = *repeat.RepeatIncrement
+	}
+	// The basis is decided by the prefill, not by the case size alone: a
+	// suggestion that is not a whole number of the vendor's cases has no case
+	// count, and rounding one would enlarge the order the server proposed. The
+	// derivation under the fields says so, standing, whenever that happens
+	// (entryDerivation → poUnwholeCaseNote), and the bar drops Ctrl-T with it.
+	s.caseBasis = poOpensAtCaseBasis(base, c.QuantityPerPackage)
+	shown := base
+	if s.caseBasis {
+		shown, _ = poWholeCases(base, c.QuantityPerPackage)
+	}
+	qty.SetValue(strconv.Itoa(shown))
+	if c.AlreadyOnOrder == nil || c.AlreadyOnOrder.RepeatIncrement == nil {
+		// A fresh line's price is the server's own default, shown in the basis
+		// the row is being entered at. A REPEAT starts blank on purpose: the
+		// server leaves the existing line's price alone unless one is sent, so
+		// prefilling would silently reprice a line the operator only meant to
+		// add one more box to.
+		if s.caseBasis {
+			if v, err := strconv.ParseFloat(strings.TrimSpace(c.SuggestedUnitCost.String()), 64); err == nil {
+				cost.SetValue(poFormatCost(poCaseFromUnit(v, c.QuantityPerPackage)))
+			}
+		} else {
+			cost.SetValue(c.SuggestedUnitCost.String())
+		}
 	}
 	s.qtyIn, s.costIn = qty, cost
 	s.priceFocus = poAddFieldQty
+}
+
+// packSize is the supplier case size of the candidate being priced, or 1 when
+// nothing is staged or the vendor sells singles. The ONE place this screen
+// answers "how big is a case here", so the labels, the conversions, the Ctrl-T
+// offer and the payload cannot disagree about it.
+func (s *PurchaseOrderAddLineScreen) packSize() int {
+	if s.chosen == nil {
+		return 1
+	}
+	return poPackSize(s.chosen.QuantityPerPackage)
+}
+
+// casePacked reports whether the staged candidate is bought by the case.
+func (s *PurchaseOrderAddLineScreen) casePacked() bool {
+	return s.chosen != nil && poCasePacked(s.chosen.QuantityPerPackage)
+}
+
+// caseFlipOffered is the ONE predicate the Ctrl-T arm and the bar both read, so
+// the key cannot be named over a state it would decline in nor act in a state
+// the bar left it out of.
+func (s *PurchaseOrderAddLineScreen) caseFlipOffered() bool {
+	if !s.casePacked() {
+		return false
+	}
+	if s.caseBasis {
+		return true // cases → units always converts exactly
+	}
+	return poFlipsToCases(s.qtyIn.Value(), s.packSize())
+}
+
+// toggleEntryBasis is Ctrl-T on the price phase: it moves BOTH typed rows
+// between cases and base units, converting each so the order is preserved
+// exactly. It is offered only where there are two bases to move between.
+//
+// Units → cases is not always available: a quantity that is not a whole number
+// of cases has no case count, and rounding one would change what is being
+// ordered. That is a BAR GATE (caseFlipOffered), not a refusal — the key is
+// simply not named while it could only decline, and the derivation row under
+// the fields says, standing, that the quantity is not a whole number of cases
+// and which two figures are.
+func (s *PurchaseOrderAddLineScreen) toggleEntryBasis() tea.Cmd {
+	if !s.caseFlipOffered() {
+		return nil
+	}
+	qpp := s.packSize()
+	qtyRaw := strings.TrimSpace(s.qtyIn.Value())
+	if n, err := strconv.Atoi(qtyRaw); err == nil && n > 0 {
+		if s.caseBasis {
+			n = poBaseQuantity(n, qpp, true)
+		} else {
+			n, _ = poWholeCases(n, qpp)
+		}
+		s.qtyIn.SetValue(strconv.Itoa(n))
+		s.qtyIn.CursorEnd()
+	}
+	costRaw := strings.TrimSpace(s.costIn.Value())
+	if v, err := strconv.ParseFloat(costRaw, 64); err == nil && costRaw != "" {
+		if s.caseBasis {
+			v = poUnitFromCase(v, qpp)
+		} else {
+			v = poCaseFromUnit(v, qpp)
+		}
+		s.costIn.SetValue(poFormatCost(v))
+		s.costIn.CursorEnd()
+	}
+	s.caseBasis = !s.caseBasis
+	noun := "units"
+	if s.caseBasis {
+		noun = "cases"
+	}
+	return s.say("ctrl+t put both rows in "+noun+" · "+poPackFact(qpp), StatusInfo)
 }
 
 // readQuantityRow and readCostRow are the ONE place each typed row is judged.
@@ -810,10 +924,26 @@ func (s *PurchaseOrderAddLineScreen) readQuantityRow() (int, string) {
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 1 {
-		return 0, fmt.Sprintf("quantity %q is not a whole number of 1 or more · "+
-			"clear the row to take %s's own suggestion", pickerClip(raw, 12), s.supplierName())
+		return 0, fmt.Sprintf("%s %q is not a whole number of 1 or more · "+
+			"clear the row to take %s's own suggestion",
+			strings.ToLower(poQtyRowLabel(s.caseBasis)), pickerClip(raw, 12), s.supplierName())
 	}
 	return n, ""
+}
+
+// baseQuantityRow is the quantity row converted to the BASE units the add
+// endpoint takes. It is the only thing that reaches the payload, and it is a
+// wrapper over readQuantityRow rather than a second reader for the same reason
+// readQuantityRow exists at all: one judge per row. add_line_item stores
+// quantity_ordered in base units and derives order_in_packages itself
+// (backend/reorder_queue/services/line_entry.py), so posting the case count
+// would order one twenty-fourth of what the operator asked for.
+func (s *PurchaseOrderAddLineScreen) baseQuantityRow() (int, string) {
+	n, refusal := s.readQuantityRow()
+	if refusal != "" || n == 0 {
+		return 0, refusal
+	}
+	return poBaseQuantity(n, s.packSize(), s.caseBasis), ""
 }
 
 // readCostRow judges the price row as MONEY, which big.Rat.SetString does not:
@@ -855,10 +985,51 @@ func (s *PurchaseOrderAddLineScreen) readCostRow() (string, string) {
 		return digits > 0
 	}
 	if !plainDecimal(raw) {
-		return "", fmt.Sprintf("unit cost %q is not a plain price like 4.50 · "+
-			"clear the row to take the price on file", pickerClip(raw, 12))
+		return "", fmt.Sprintf("%s %q is not a plain price like 4.50 · "+
+			"clear the row to take the price on file",
+			strings.ToLower(poCostRowLabel(s.caseBasis)), pickerClip(raw, 12))
 	}
 	return raw, ""
+}
+
+// unitCostRow is the cost row converted to the per-BASE-unit price
+// unit_cost_ordered stores. Like baseQuantityRow it wraps the single reader
+// rather than re-judging the row.
+//
+// The division is done in big.Rat and rendered at as many places as it takes,
+// because this is the figure the whole task turns on: a case of 24 at 48.00 is
+// exactly 2.00 a unit, and a case of 7 at 10.00 is 1.428571…, which must not be
+// rounded to a price the operator never agreed to. A blank row stays blank —
+// "the server decides" — on both bases.
+func (s *PurchaseOrderAddLineScreen) unitCostRow() (string, string) {
+	raw, refusal := s.readCostRow()
+	if refusal != "" || raw == "" || !s.caseBasis || !s.casePacked() {
+		return raw, refusal
+	}
+	cost, ok := new(big.Rat).SetString(raw)
+	if !ok {
+		return raw, refusal
+	}
+	unit := new(big.Rat).Quo(cost, new(big.Rat).SetInt64(int64(s.packSize())))
+	return poAddTrimZeros(unit.FloatString(poAddUnitCostPlaces)), ""
+}
+
+// poAddUnitCostPlaces is how far a derived per-unit price is carried. OMS's
+// unit_cost_ordered is a 4-place decimal, so anything past that is thrown away
+// server-side; carrying fewer would be this client rounding a price it was not
+// asked to round.
+const poAddUnitCostPlaces = 4
+
+// poAddTrimZeros drops a derived price's trailing zeros (and a bare trailing
+// dot), so an exact 2.00 posts as "2" rather than "2.0000". The value is
+// unchanged — DRF parses both to the same Decimal — and the string is what the
+// frame ECHOES back, where four dead zeros read as precision nobody typed.
+func poAddTrimZeros(v string) string {
+	if !strings.Contains(v, ".") {
+		return v
+	}
+	v = strings.TrimRight(v, "0")
+	return strings.TrimSuffix(v, ".")
 }
 
 // submit posts the confirmed row. Quantity and cost are sent only when the box
@@ -871,13 +1042,13 @@ func (s *PurchaseOrderAddLineScreen) submit() tea.Cmd {
 	}
 	req := omsapi.POLineAdd{ItemSupplier: s.chosen.ItemSupplier}
 
-	qty, refusal := s.readQuantityRow()
+	qty, refusal := s.baseQuantityRow()
 	if refusal != "" {
 		return s.say("enter did not add it — "+refusal, StatusWarn)
 	}
 	req.Quantity = qty
 
-	cost, refusal := s.readCostRow()
+	cost, refusal := s.unitCostRow()
 	if refusal != "" {
 		return s.say("enter did not add it — "+refusal, StatusWarn)
 	}
@@ -1026,7 +1197,11 @@ func (s *PurchaseOrderAddLineScreen) bar() []actionBarItem {
 		}
 		return items
 	case poAddPhasePrice:
-		return []actionBarItem{{"Enter", "Add line"}, {"Esc", "Back"}, {"UP/DN", "Fields"}}
+		items := []actionBarItem{{"Enter", "Add line"}, {"Esc", "Back"}, {"UP/DN", "Fields"}}
+		if s.caseFlipOffered() {
+			items = append(items, actionBarItem{"Ctrl-T", "Cases/units"})
+		}
+		return items
 	case poAddPhaseAdding:
 		return []actionBarItem{{"Esc", "Back to order"}}
 	}
@@ -1519,9 +1694,14 @@ func (s *PurchaseOrderAddLineScreen) confirmBody() *jdeLines {
 		{Label: "Supplier SKU", Kind: jdeValue, Value: pickerClip(orDash(c.SupplierSKU), room)},
 		{Label: "Matched", Kind: jdeValue, Value: poAddMatchedRow(c.MatchLabel, c.MatchedValue, room)},
 	}
-	if c.QuantityPerPackage > 1 {
-		fields = append(fields, jdeField{Label: "Pack", Kind: jdeValue,
-			Value: fmt.Sprintf("%d per package", c.QuantityPerPackage)})
+	if poCasePacked(c.QuantityPerPackage) {
+		// "1 case = 12 units", the same sentence the price phase's quantity row
+		// hints with. It used to read "12 per package", which says the same
+		// thing in a noun the entry rows do not use — and the whole point of
+		// this row is that the operator can check the case count they are about
+		// to type against what the vendor ships.
+		fields = append(fields, jdeField{Label: "Case", Kind: jdeValue,
+			Value: poPackFact(c.QuantityPerPackage)})
 	}
 	if r := c.AlreadyOnOrder; r != nil {
 		fields = append(fields, jdeField{Label: "On order", Kind: jdeValue,
@@ -1623,9 +1803,18 @@ func (s *PurchaseOrderAddLineScreen) confirmEntryNote(c omsapi.POLineCandidate, 
 // one does — which is the only way "blank keeps the price" can be an informed
 // choice rather than a trap.
 func (s *PurchaseOrderAddLineScreen) priceEntryNote() string {
+	price := "unit cost"
+	if s.caseBasis {
+		price = "case cost"
+	}
+	// Why a case-packed candidate opened in UNITS is deliberately NOT here.
+	// This note is the screen's answer to ONE keypress and is never rewritten
+	// as the boxes are typed into, so a sentence about the quantity would go
+	// stale on the next keystroke; the derivation under the fields carries it
+	// live instead.
 	if s.chosen != nil && s.chosen.AlreadyOnOrder != nil && !s.chosen.AlreadyOnOrder.IsVoided {
 		return "quantity is one package, as a repeat scan would add · " +
-			"leave the unit cost blank to keep the line's price, or type one to reprice the whole line"
+			"leave the " + price + " blank to keep the line's price, or type one to reprice the whole line"
 	}
 	if s.chosen != nil && poAddIsZeroMoney(s.chosen.SuggestedUnitCost.String()) {
 		return "both rows hold " + s.supplierName() + "'s own defaults · " +
@@ -1651,9 +1840,9 @@ func (s *PurchaseOrderAddLineScreen) priceBody() *jdeLines {
 		l.Add("")
 	}
 	l.AddFittedFields([]jdeField{
-		{Label: "Quantity", Kind: jdeText, Input: &s.qtyIn, Width: 9,
+		{Label: poQtyRowLabel(s.caseBasis), Kind: jdeText, Input: &s.qtyIn, Width: 9,
 			Hint: s.quantityHint(), Focused: s.priceFocus == poAddFieldQty},
-		{Label: "Unit cost", Kind: jdeText, Input: &s.costIn, Width: 12,
+		{Label: poCostRowLabel(s.caseBasis), Kind: jdeText, Input: &s.costIn, Width: 12,
 			Hint: s.costHint(), Focused: s.priceFocus == poAddFieldCost},
 	}, lw, pane, 0)
 	if total := s.lineTotal(); total != "" {
@@ -1661,13 +1850,59 @@ func (s *PurchaseOrderAddLineScreen) priceBody() *jdeLines {
 			{Label: "Line total", Kind: jdeValue, Value: total, Dim: true},
 		}, lw, pane, jdeNoRow)
 	}
+	// The derivation hangs off the LAST navigable row rather than being added
+	// with l.Add: a line that belongs to no row is a line no key can reach once
+	// the body overflows, because jdeLines.Window anchors on the cursor's block
+	// (AGENTS.md). Row poAddFieldCost is the cost field, which is what it is
+	// about.
+	for _, line := range jdeCaveatLines(s.entryDerivation(), pane) {
+		l.AddRow(poAddFieldCost, line)
+	}
 	return l
+}
+
+// entryDerivation is the line spelled out in both bases plus what it comes to —
+// the answer to "show enough for the operator to catch a mistake before it is
+// committed". Empty when neither row holds anything worth deriving from.
+func (s *PurchaseOrderAddLineScreen) entryDerivation() string {
+	entered, refusal := s.readQuantityRow()
+	if refusal != "" {
+		// Never over an entry Enter is about to refuse: the same rule lineTotal
+		// keeps, read through the same one judge per row.
+		entered = 0
+	}
+	raw, costRefusal := s.readCostRow()
+	cost, err := strconv.ParseFloat(raw, 64)
+	hasCost := costRefusal == "" && raw != "" && err == nil
+	// withTotal FALSE: the Line total row above already says what the line comes
+	// to, in the label column where the operator is reading the other figures.
+	return poEntryDerivation(entered, cost, hasCost, s.chosenPackSize(), s.caseBasis, false)
+}
+
+// chosenPackSize is the staged candidate's declared case size as poEntryDerivation
+// wants it — 0/1 for a vendor selling singles, which makes the derivation report
+// the line total alone.
+func (s *PurchaseOrderAddLineScreen) chosenPackSize() int {
+	if s.chosen == nil {
+		return 0
+	}
+	return s.chosen.QuantityPerPackage
 }
 
 // quantityHint says what this row's number will do — grow a line, or open one.
 func (s *PurchaseOrderAddLineScreen) quantityHint() string {
 	if c := s.chosen; c != nil && c.AlreadyOnOrder != nil && !c.AlreadyOnOrder.IsVoided {
-		return fmt.Sprintf("adds to the %d on order", c.AlreadyOnOrder.QuantityOrdered)
+		// The line's existing quantity is BASE units on the wire and is named
+		// as such, because that is the number the order's own detail screen
+		// shows: saying "adds to the 2 on order" against a stored 24 would be
+		// a figure the operator cannot reconcile with anything else.
+		return fmt.Sprintf("adds to the %s on order", poUnitCount(c.AlreadyOnOrder.QuantityOrdered))
+	}
+	if s.caseBasis {
+		return poPackFact(s.chosenPackSize())
+	}
+	if s.casePacked() {
+		return "whole units · " + poPackFact(s.chosenPackSize())
 	}
 	return "whole units"
 }
@@ -1683,6 +1918,9 @@ func (s *PurchaseOrderAddLineScreen) costHint() string {
 	}
 	if c := s.chosen; c != nil && poAddIsZeroMoney(c.SuggestedUnitCost.String()) {
 		return "no price on file"
+	}
+	if s.caseBasis {
+		return "per case"
 	}
 	return "per unit"
 }
@@ -1720,11 +1958,16 @@ func (s *PurchaseOrderAddLineScreen) existingLinePrice(lineID string) string {
 //
 // A rounding artefact would be worse than the row's absence, hence big.Rat.
 func (s *PurchaseOrderAddLineScreen) lineTotal() string {
-	qty, refusal := s.readQuantityRow()
+	// The BASE quantity and the derived per-unit price — the two figures the
+	// payload carries — so the total on the pane is the total the order will
+	// report. Multiplying the typed CASE count by the typed CASE price reaches
+	// the same number, but only while the case size divides evenly, and this
+	// row must not be right by coincidence.
+	qty, refusal := s.baseQuantityRow()
 	if refusal != "" || qty == 0 {
 		return ""
 	}
-	costRaw, refusal := s.readCostRow()
+	costRaw, refusal := s.unitCostRow()
 	if refusal != "" || costRaw == "" {
 		return ""
 	}
@@ -1748,8 +1991,11 @@ func (s *PurchaseOrderAddLineScreen) lineTotal() string {
 // true of one caller.
 func (s *PurchaseOrderAddLineScreen) addingSentence(room int) string {
 	lead := ""
-	if qty := strings.TrimSpace(s.qtyIn.Value()); qty != "" {
-		lead = qty + " × "
+	// BASE units, which is what went to the server: the sentence names the
+	// subject of a request already in flight, and quoting the case count would
+	// name a number no part of that request carries.
+	if qty, refusal := s.baseQuantityRow(); refusal == "" && qty > 0 {
+		lead = strconv.Itoa(qty) + " × "
 	}
 	return lead + pickerClip(s.chosenName(), poAddSubjectCells(room-lipgloss.Width(lead)))
 }

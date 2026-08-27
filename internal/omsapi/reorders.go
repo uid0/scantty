@@ -431,6 +431,20 @@ func (c *Client) CreatePurchaseOrder(ctx context.Context, req PurchaseOrderCreat
 // an inventory item that's either low-stock or has an active reorder
 // request, with everything the PO-create flow needs to prefill a line
 // (item_supplier_id when available, suggested_quantity, last unit cost).
+//
+// QuantityPerPackage and PackageCost are the SUPPLIER's case size and case
+// price, and they are on the wire — reorder_data writes both from the
+// item_supplier row (backend/reorder_queue/views.py). They were absent from
+// this struct, and po_create_pickers.go said in as many words that "the
+// reorder_data row carries no quantity_per_package", so every line staged from
+// the reorder queue reached the line form as a singles line: the operator typed
+// what the vendor charges for a case into a row meaning per-unit, which is the
+// captain's report reproduced on the path the report did not name.
+//
+// SuggestedQuantity is BASE units and is already rounded up to a whole supplier
+// package — but only for items counted in base units (the endpoint gates that
+// rounding on counts_in_packs), so a client must not assume it divides evenly
+// by QuantityPerPackage.
 type ReorderDataItem struct {
 	ItemID                 string        `json:"item_id"`
 	ItemName               string        `json:"item_name"`
@@ -439,6 +453,8 @@ type ReorderDataItem struct {
 	MinimumStock           int           `json:"minimum_stock"`
 	SuggestedQuantity      int           `json:"suggested_quantity"`
 	UnitCost               DecimalString `json:"unit_cost,omitempty"`
+	PackageCost            DecimalString `json:"package_cost,omitempty"`
+	QuantityPerPackage     int           `json:"quantity_per_package,omitempty"`
 	ItemSupplierID         *int          `json:"item_supplier_id,omitempty"`
 	HasActiveReorderReq    bool          `json:"has_active_reorder_request,omitempty"`
 	ReorderRequestStatus   string        `json:"reorder_request_status,omitempty"`
