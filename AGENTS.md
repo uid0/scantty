@@ -807,8 +807,8 @@ touching any screen an operator drives:
   `poSubmitWords` is 20 for exactly that reason. Only three subjects can ever
   share the row at all — the submit's, the item picker's and the asset
   picker's — because a lead is applied only where a box is pinned, and each
-  leads with its FACT ("Creating the PO for", "Reloading the items", "Search")
-  so what the clip takes is the identifier at the tail.
+  leads with its FACT ("Creating the PO for", "Reloading the items",
+  "Finding") so what the clip takes is the identifier at the tail.
   ORDER WITHIN A SUBJECT IS THE OTHER HALF OF THAT, and the asset picker is the
   worked example: it read `Searching ` + supplier + `'s assets for "zzz"…`, so
   the one variable part that is NOT the identity of the work — the supplier, the
@@ -825,10 +825,17 @@ touching any screen an operator drives:
   gives, then the supplier. The fixed words are what buys the query's head, so
   they are cut to the bone the way `poSubmitWords` was — `Searching assets ` was
   17 of the 23 and left FOUR characters of query, which reads as the reorder
-  having worked while the fact it was made to protect was still gone; `Search `
-  is 7. And the QUOTED string is bounded, never a bounded string then quoted
-  (the `assetScopeRows` rule: Quote escapes, and the expansion lands inside the
-  tightest budget on the screen). Because the
+  having worked while the fact it was made to protect was still gone;
+  `poAssetSearchWords` is 8. Cut to the bone is not cut past it: `Search ` saved
+  three more cells by going IMPERATIVE, and on a muted row whose neighbours are
+  instructions that read as one more hint rather than as work in flight, beside
+  a label of the same word one row up. A working sentence stays PROGRESSIVE.
+  And the QUOTED string is bounded, never a bounded string then quoted (the
+  `assetScopeRows` rule: Quote escapes, and the expansion lands inside the
+  tightest budget on the screen) — but that convention is POSITIONAL, so a value
+  in the MIDDLE of a sentence re-appends its closing quote out of the room the
+  clip was given (`poQuotedClip`), or the operator cannot see where what they
+  typed stops and the fixed words start. Because the
   cap makes every lead past it produce the identical reservation, an OVER-LONG
   lead is the provable worst case rather than a sample of one, which is what
   `TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight` drives — the

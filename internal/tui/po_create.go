@@ -1715,7 +1715,7 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 		s.lineInputs[poLineFieldCost].Value(), s.caseBasis, s.pickedQPP,
 	)
 	if err != nil {
-		s.setErr(strings.ToLower(s.costFieldLabel())+" must be 0 or more", "")
+		s.setErr(strings.ToLower(s.costFieldLabel())+" must be a non-negative number", "")
 		return Status(s.errMsg, StatusError)
 	}
 	if provided {
@@ -2268,7 +2268,7 @@ func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 	answer := s.answerNote()
 	lead := ""
 	if s.essentialBoxRow() != "" {
-		lead = poLeadClause(answer.text)
+		lead = answer.text
 	}
 	head, _ := s.failure()
 	var row string
@@ -2309,15 +2309,23 @@ func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 // poLeadClause is an answer reduced to its OPENING CLAUSE — the part that names
 // the key and what it did.
 //
-// It is what the answer contributes when the row already has a subject. The
-// whole answer used to go in, and the reservation arithmetic then cut it to
-// fit: "down moves nothing · still looking up the suppliers…" beside "Looking
-// up the suppliers…" came back as `down moves nothing · s… · Looking up the
-// suppliers…`, which spends nine cells restating the subject badly and drops
-// the ellipsis in the middle of a word. The rest of the answer is in the pinned
-// header on exactly those frames (answerRows), so nothing is lost by leaving it
-// there — and the clause that tells two presses apart still rides the row that
-// cannot be trimmed.
+// It is what the answer contributes when the row already has a subject AND
+// cannot hold both whole. The whole answer used to go in unreduced, and the
+// reservation arithmetic then cut it to fit: "down moves nothing · still
+// looking up the suppliers…" beside "Looking up the suppliers…" came back as
+// `down moves nothing · s… · Looking up the suppliers…`, which spends nine
+// cells restating the subject badly and drops the ellipsis in the middle of a
+// word. The rest of the answer is in the pinned header on exactly those frames
+// (answerRows), so nothing is lost by leaving it there — and the clause that
+// tells two presses apart still rides the row that cannot be trimmed.
+//
+// The CONDITION is the correction: this is a measurement, and it was made at 80
+// columns and then applied at every width. At 120 the pane is 91, the subject
+// wants 37 and the whole answer 50, so the row had 25 cells free and spent a
+// pinned-header row redrawing a 23-cell tail it could have carried itself —
+// "51 is the width that must HOLD, not the width to render as though we had"
+// pointed backwards. poLeadOnto asks the row first now, so the reduction fires
+// exactly when the row cannot hold both, which at 80 columns is still always.
 func poLeadClause(text string) string {
 	clause, _, _ := strings.Cut(text, poLeadJoint)
 	return clause
@@ -2521,22 +2529,22 @@ func (s *PurchaseOrderCreateScreen) workingSubject() string {
 			// query — an MRO part description runs to forty cells and the floor
 			// is 23. `Searching assets ` was 17 of those 23 and left four
 			// characters of query, which is the claim-that-fits written as
-			// though it were the order-it-degrades-in; `Search ` is 7 and leaves
-			// an ordinary term recognisable, which is as far as fixed words can
-			// get anyone.
+			// though it were the order-it-degrades-in; poAssetSearchWords is 8
+			// and leaves an ordinary term recognisable, which is as far as fixed
+			// words can get anyone.
 			//
-			// The QUOTED string is what is bounded, never a bounded string that
-			// is then quoted — assetScopeRows carries the reason at length:
-			// strconv.Quote ESCAPES, so a backslash comes back two cells and a
-			// control rune up to six, and clipping first budgets for the quote
-			// marks and then pays the escaping on top. On this row that expansion
-			// lands inside the tightest budget on the screen.
+			// It is PROGRESSIVE, like every other subject on this screen, and
+			// that is not a style note: this row is muted and this screen's
+			// other muted rows are instructions, so an imperative here
+			// ("Search …") sat beside a picker hint as `type a name, tag or
+			// seri… · Search "hydraulic pump…` — two hints joined by a ` · `,
+			// with nothing on the row saying a request was out.
 			//
 			// No ` · ` inside either sentence: that joint is the clause
 			// separator poLeadClause and pickerWrap read, and one here would
 			// make half a subject look like a second claim.
 			if q := strings.TrimSpace(s.assetsQuery); q != "" {
-				return poAssetSearchWords + pickerClip(strconv.Quote(q), 20) +
+				return poAssetSearchWords + poQuotedClip(q, 20) +
 					" in " + s.supplierLabel() + "'s assets…"
 			}
 			return "Loading assets from " + s.supplierLabel() + "…"
@@ -2552,9 +2560,13 @@ func (s *PurchaseOrderCreateScreen) workingSubject() string {
 // things were wrong before, and the doc comment above denied the second:
 //
 //   - the SUBJECT could overflow on its own. supplierLabel clips at 20, so
-//     "Looking up the assets bought from …" reaches 55 into the 51 a body has
-//     at 80 columns. Bounded HERE, at the one exit every one of these
+//     "Looking up what … has flagged for reorder…" reaches 58 into the 51 a
+//     body has at 80 columns. Bounded HERE, at the one exit every one of these
 //     sentences leaves through, rather than by shortening them one at a time.
+//     (The example used to be the asset picker's "Looking up the assets bought
+//     from …"; that sentence is "Loading assets from " now and comes to 41, so
+//     a reader checking the bound against it would have found it unnecessary.
+//     The reorder subject is the one that still overruns.)
 //   - the LEAD was joined in front of it unbounded, so a decline pushed the
 //     subject off the row and, with the longest lead in this file (51 cells),
 //     off it entirely: nothing left saying a purchase order was being created,
@@ -2604,10 +2616,21 @@ func (s *PurchaseOrderCreateScreen) workingLine(lead string) string {
 //
 // The SUBJECT is never empty: workingLine returns early on an empty
 // workingSubject, which is the only thing that reaches this.
+//
+// It takes the WHOLE answer and reduces it to its opening clause itself, rather
+// than being handed one already reduced. The reduction is a consequence of the
+// bound, so it belongs where the bound is measured: asked one caller earlier it
+// could only be unconditional, and a wide terminal then split an answer across
+// two surfaces that one row had room for. See poLeadClause.
 func poLeadOnto(lead, subject string, room int) string {
 	if lead == "" {
 		return pickerClip(subject, room)
 	}
+	joint := lipgloss.Width(poLeadJoint)
+	if lipgloss.Width(lead)+joint+lipgloss.Width(subject) <= room {
+		return lead + poLeadJoint + subject
+	}
+	lead = poLeadClause(lead)
 	answer, rest, more := strings.Cut(lead, poLeadJoint)
 	floor := lipgloss.Width(answer)
 	if more && rest != "" {
@@ -2618,7 +2641,6 @@ func poLeadOnto(lead, subject string, room int) string {
 	if half := room / 2; floor > half {
 		floor = half
 	}
-	joint := lipgloss.Width(poLeadJoint)
 	subject = pickerClip(subject, room-floor-joint)
 	lead = pickerClip(lead, room-lipgloss.Width(subject)-joint)
 	if lead == "" {
@@ -2654,22 +2676,57 @@ const poLeadJoint = " · "
 const poSubmitWords = "Creating the PO for "
 
 // poAssetSearchWords is the FACT the asset picker's working row leads with, and
-// it is seven cells for the same reason poSubmitWords is twenty: it shares a row
+// it is eight cells for the same reason poSubmitWords is twenty: it shares a row
 // that cannot fold with a lead, and every cell it spends is a cell of the
 // operator's search term that the clip takes instead.
 //
 // The arithmetic, at 80 columns: a lead reserves half the 51-cell row and the
-// joint costs 3, so the subject gets 23 and its head is 22. These 7 leave 15 for
+// joint costs 3, so the subject gets 23 and its head is 22. These 8 leave 14 for
 // the opening quote and the term — enough that two ordinary MRO searches that
 // share a leading word ("hydraulic pump", "hydraulic hose") are still told apart,
 // which is the floor po_create_answer_surface_test.go's poAssetQueryHeadCells
-// pins. "Searching assets " was 17 and left FOUR characters of the term: the
-// query had been moved to the front of the sentence and was still, in effect,
-// gone.
+// pins, with a cell over. "Searching assets " was 17 and left FOUR characters of
+// the term: the query had been moved to the front of the sentence and was still,
+// in effect, gone.
+//
+// PROGRESSIVE, and short enough to stay so. "Search " bought three cells by
+// going imperative and cost more than it bought: it was the only working
+// sentence on this screen not in the progressive, so on a muted row whose
+// neighbours are instructions it read as one more hint rather than as work in
+// flight, and it collided with poAssetSearchLabel — one word meaning a field
+// label on the header row and a request in flight on the row below it.
+// "Searching " reads best of the three and is 10, which leaves exactly the 11
+// cells that separate "hydraulic pump" from "hydraulic hose": right on the
+// floor, with nothing spare. Eight has the margin.
 //
 // It buys an ORDER OF DEGRADATION and not a fit — the term is operator-supplied
 // and no fixed words make forty cells fit 23. See workingSubject.
-const poAssetSearchWords = "Search "
+const poAssetSearchWords = "Finding "
+
+// poQuotedClip bounds an operator-supplied string that is about to be QUOTED
+// into the middle of a sentence, and keeps its closing quote when the bound
+// bites.
+//
+// Two rules meet here and each is right on its own. The QUOTED string is what
+// must be bounded, never a bounded string that is then quoted (assetScopeRows
+// carries the reason at length: strconv.Quote ESCAPES, so a backslash comes
+// back two cells and a control rune up to six, and clipping first budgets for
+// the quote marks and then pays the escaping on top). But that convention is
+// POSITIONAL — assetScopeRows' value ENDS its row, so a dropped closing quote
+// costs nothing, which is why the two MID-SENTENCE sites in po_create_pickers.go
+// clip-then-quote instead. Mid-sentence a bare `"hydraulic pump sea…` runs
+// straight on into the fixed words after it and the operator cannot see where
+// what they typed ends.
+//
+// So: clip the QUOTED string, keeping the escape bound, and re-append the
+// closing quote out of the room the clip was given rather than past it.
+func poQuotedClip(q string, room int) string {
+	quoted := strconv.Quote(q)
+	if room < 3 || lipgloss.Width(quoted) <= room {
+		return pickerClip(quoted, room)
+	}
+	return pickerClip(quoted, room-1) + `"`
+}
 
 // poSubmitFailWords is what the same submit says when it comes back refused,
 // and it is cut for the same reason poSubmitWords is: it is the whole of the
@@ -4184,6 +4241,13 @@ func poCartCaveat(noCost int) string {
 // line before submitting" was 38 and is 28). The quantity refusal is left as it
 // stands — "must be a positive integer" carries no filler to cut, and trading
 // "integer" for a shorter word that admits 1.5 would buy cells with meaning.
+// The COST refusal is the same rule learned the hard way: cut to "must be 0 or
+// more" it stopped naming the fault it fires on most, because poDeriveUnitCost
+// raises one error for a value it could not parse AND for one below zero, so
+// `abc` came back as a number out of range. It says "must be a non-negative
+// number" again, which is what errInvalidCost and po_line_price.go's
+// poCostRejectedReason say, so one validation has one wording. FILLER is what
+// may be cut; a word carrying one of the faults is not filler.
 //
 // SHORTENING IS NOT THE GUARANTEE, and recording that here is the point of this
 // paragraph. The detail beside these headlines is an OMS response body of any

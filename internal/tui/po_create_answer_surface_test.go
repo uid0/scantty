@@ -166,14 +166,21 @@ func TestPOCreate_ABoxPhaseDrawsTheBoxAndItsAnswerAtOnce(t *testing.T) {
 					t.Skip("the layer refuses this frame, which is jdeTooShort's rule")
 				}
 				pane := strings.Join(poPaneLinesAt(t, screen, h), "\n")
-				// The box is found by its LABEL, which renderJDEField draws in
-				// the shared label column: the value is what the operator has
-				// typed and is empty on a freshly opened box.
-				label := strings.TrimSpace(strings.SplitN(
-					strings.TrimSpace(screen.essentialBoxRow()), " ", 2)[0])
-				if label == "" {
-					t.Fatalf("%s pins a box with no label to look for", b.c.name)
+				// The box is found by its LABEL AND THE LEADER renderJDEField
+				// draws after it, not by the label alone: a bare word is prose
+				// that any other row can contain, and one of these labels
+				// ("Search") was for a while also the first word of this
+				// phase's working sentence, so the check could have been
+				// answered by the row saying a request was out rather than by
+				// the box. The value is not looked for — it is what the
+				// operator has typed and is empty on a freshly opened box.
+				row := screen.essentialBoxRow()
+				at := strings.Index(row, jdeLeader)
+				if at < 0 {
+					t.Fatalf("%s pins a box with no label leader to look for: %q",
+						b.c.name, row)
 				}
+				label := strings.TrimSpace(row[:at+len(jdeLeader)])
 				if !strings.Contains(pane, label) {
 					t.Errorf("%s at 80x%d: the box the operator is typing into (%q) "+
 						"is not on the pane:\n%s", b.c.name, h, label, pane)
@@ -733,6 +740,186 @@ func TestPOAssetSearch_TheQuerySurvivesTheLeadOnTheStatusRow(t *testing.T) {
 			// composer returned.
 			poWantPaneLine(t, screen, head)
 			poAssertFits(t, fmt.Sprintf("asset search mid-lookup at 80x%d", h), screen)
+		})
+	}
+}
+
+// TestPOAssetSearch_AClippedQueryStillClosesItsQuote is the mid-sentence half of
+// the quoting rule.
+//
+// The operator's term is QUOTED before it is bounded, because strconv.Quote
+// escapes and a bound applied first pays the expansion afterwards
+// (assetScopeRows carries that at length). But that convention is POSITIONAL:
+// there the value ENDS its row, so a clip that eats the closing quote costs
+// nothing. Here the sentence continues past it, and `Finding "hydraulic pump
+// sea… in Acme Supply's assets…` gives the operator no way to see where what
+// they typed stops and the fixed words start.
+//
+// Driven at 120, which is where the two clips can be told apart: the INNER
+// bound on the term bites (the quoted term is past it) while the row itself has
+// room to spare, so what is asserted is the term's own boundary rather than the
+// end of the row. No lead is composed — the box is left shut — for the same
+// reason.
+//
+// WATCHED TO FAIL against `pickerClip(strconv.Quote(q), 20)`, which drew the
+// clipped term with its opening quote and no closing one.
+func TestPOAssetSearch_AClippedQueryStillClosesItsQuote(t *testing.T) {
+	// Past the 20 cells the term is given, so the inner clip really bites.
+	const query = "hydraulic pump seal kit"
+
+	r, screen := poPickerAtSize(t, &poPickFake{catalog: 2, assets: 3}, 120, 30)
+	r = key(t, r, poPhaseKeyMsg("a"))
+	if screen.phase != poPhaseAssetPick {
+		t.Fatalf("a landed on phase %v, want the asset picker", screen.phase)
+	}
+	r = key(t, r, poPhaseKeyMsg("/"))
+	r = poType(t, r, query)
+
+	// Raw Update: the search has to still be OUT when the row is read.
+	next, _ := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	r = next.(Root)
+	_ = r
+	if !screen.assetsLoading {
+		t.Fatalf("enter left no search in flight")
+	}
+
+	subject := screen.workingSubject()
+	if !strings.Contains(subject, "…") {
+		t.Fatalf("the term fits whole at this width, so no clip is under test: %q", subject)
+	}
+	row, _ := screen.statusPlan()
+	if !strings.Contains(row, `…"`) {
+		t.Errorf("the clipped search term does not close its quote, so the operator "+
+			"cannot see where what they typed ends.\n\tsubject: %q\n\trow: %q", subject, row)
+	}
+	poAssertFits(t, "asset search mid-lookup at 120 columns", screen)
+}
+
+// TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork is the other half of
+// the lead's reduction: it must fire because the row is FULL, never because the
+// code measured 80 columns once and applied the answer everywhere.
+//
+// poLeadClause keeps an answer's opening clause and drops the rest, and at 80
+// columns that is right — the row cannot hold a picker's whole answer beside a
+// working sentence, and the tail is redrawn in the pinned header (answerRows).
+// Applied unconditionally it was wrong at 120: the pane is 91, the subject wants
+// 37 and the whole answer 50, so 25 cells sat free while a pinned-header row was
+// spent on a 23-cell tail the row had room for — the acceptance criterion that
+// the screen uses the space when wider, unmet.
+//
+// Both widths are driven together because the fix has to hold in BOTH
+// directions: relaxing at 120 is worth nothing if it also relaxed at 80, where
+// the whole point is that the subject keeps its floor.
+//
+// WATCHED TO FAIL at 120 with the reduction applied one caller earlier.
+func TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork(t *testing.T) {
+	reach := func(t *testing.T, width int) (Root, *PurchaseOrderCreateScreen) {
+		t.Helper()
+		r, screen := poPickerAtSize(t, &poPickFake{catalog: 2, assets: 3}, width, 30)
+		r = key(t, r, poPhaseKeyMsg("a"))
+		r = key(t, r, poPhaseKeyMsg("/"))
+		r = poType(t, r, "zzz")
+		next, _ := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		r = next.(Root)
+		// `/` over the in-flight search: the press that puts an answer on the
+		// row beside the working sentence.
+		next, _ = r.Update(poPickerKeyMsg("/"))
+		r = next.(Root)
+		if screen.essentialBoxRow() == "" || !screen.assetsLoading {
+			t.Fatalf("setup left box=%q loading=%v", screen.essentialBoxRow(), screen.assetsLoading)
+		}
+		return r, screen
+	}
+
+	t.Run("120 carries the whole answer", func(t *testing.T) {
+		_, screen := reach(t, 120)
+		answer := poNoteText(screen)
+		if !strings.Contains(answer, poLeadJoint) {
+			t.Fatalf("the answer has one clause, so nothing could be reduced: %q", answer)
+		}
+		row, plan := screen.statusPlan()
+		if !strings.Contains(row, answer) {
+			t.Errorf("the row had room for the whole answer and dropped its tail.\n"+
+				"\tanswer: %q\n\trow: %q", answer, row)
+		}
+		if !plan.holdsAnswer {
+			t.Errorf("the row is carrying the whole answer but the plan says it is not, " +
+				"so the header spends a row redrawing it")
+		}
+		if rows := screen.answerRows(); len(rows) != 0 {
+			t.Errorf("the header carries %d extra row(s) the status row already drew: %q",
+				len(rows), rows)
+		}
+		poAssertFits(t, "asset search answer at 120 columns", screen)
+	})
+
+	t.Run("80 still reduces", func(t *testing.T) {
+		_, screen := reach(t, 80)
+		answer := poNoteText(screen)
+		row, _ := screen.statusPlan()
+		if strings.Contains(row, answer) {
+			t.Errorf("the 51-cell row cannot hold the whole answer beside the work, "+
+				"so it must still be reduced.\n\tanswer: %q\n\trow: %q", answer, row)
+		}
+		// The HEAD of the opening clause, not the whole of it: the clause is
+		// itself capped at half the row, so asserting all of it would be
+		// restating poLeadOnto's arithmetic. Fifteen cells is enough to name
+		// the key and what it did, which is what the reduction exists to keep.
+		clause, _, _ := strings.Cut(answer, poLeadJoint)
+		head := cellPrefix(clause, 15)
+		if !strings.Contains(row, head) {
+			t.Errorf("the reduction dropped the clause that names the key.\n"+
+				"\tclause: %q\n\twant its head: %q\n\trow: %q", clause, head, row)
+		}
+		poAssertFits(t, "asset search answer at 80 columns", screen)
+	})
+}
+
+// TestPOLineForm_ANonNumericCostSaysSoRatherThanNamingARange is the wording rule
+// on the one branch of this screen that answers two different faults.
+//
+// poDeriveUnitCost returns the same error for a value it could not parse and a
+// value below zero, so the sentence the screen draws has to name both. Cut to
+// "… must be 0 or more" it named only the range, and an operator who typed
+// `abc`, `1.2.3` or `1,50` was told their number was too small against a box
+// holding no number at all — a refusal the operator cannot act on, which is
+// rule 11. The cut also bought nothing at the supported width: the row has 49
+// cells at 80 columns and the fuller sentence is 38.
+//
+// Driven through the real form and the real key, and against the fault that was
+// misreported rather than the one that was not: `abc` is not a range problem.
+//
+// WATCHED TO FAIL against "… must be 0 or more".
+func TestPOLineForm_ANonNumericCostSaysSoRatherThanNamingARange(t *testing.T) {
+	for _, typed := range []string{"abc", "1.2.3", "1,50"} {
+		t.Run(typed, func(t *testing.T) {
+			r, screen := poPickerAtSize(t, &poPickFake{catalog: 2}, 80, 30)
+			r = key(t, r, poPhaseKeyMsg("i"))
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // pick the highlighted item
+			if screen.phase != poPhaseLine {
+				t.Fatalf("setup landed on phase %v, want the line form", screen.phase)
+			}
+			for screen.lineFocused != poLineFieldCost {
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyTab})
+			}
+			for i := 0; i < 12; i++ {
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+			}
+			r = poType(t, r, typed)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			_ = r
+
+			if screen.errMsg == "" {
+				t.Fatalf("%q was accepted as a cost", typed)
+			}
+			// The refusal has to describe a value that is not a number, not
+			// only one that is too small.
+			if !strings.Contains(screen.errMsg, "number") {
+				t.Errorf("%q is not a number, and the refusal names only a range: %q",
+					typed, screen.errMsg)
+			}
+			poWantPaneLine(t, screen, screen.errMsg)
+			poAssertFits(t, "the line form refusing "+typed, screen)
 		})
 	}
 }
