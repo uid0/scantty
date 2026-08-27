@@ -763,7 +763,8 @@ func (s *MaintenanceItemFormScreen) moveCursor(delta int) {
 // wraps — a page is for covering ground, not for losing your place.
 func (s *MaintenanceItemFormScreen) pageCursor(dir int) {
 	body := s.formLines()
-	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0, s.formBar(body))
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
 	if !ok {
 		return
 	}
@@ -854,7 +855,10 @@ func (s *MaintenanceItemFormScreen) updateAssetPick(m tea.KeyMsg) (Screen, tea.C
 		s.movePick(delta)
 	case jdePickPage:
 		header, body := s.pickView()
-		s.movePick(delta * s.windowRowsForBar(body, s.pickCursor, len(header), s.pickBar(header, body)))
+		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickOptions), delta, len(header),
+			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickCursor = next
+		}
 	default:
 		// Anything else is filter text: the box is always live, so there is no
 		// mode to enter and no "/" to remember.
@@ -947,7 +951,8 @@ func (s *MaintenanceItemFormScreen) moveEditCursor(n, delta int, noun string, ca
 // row, which is always reachable as the row after the last one.
 func (s *MaintenanceItemFormScreen) pageSublist(count, dir int) {
 	body := s.sublistBody()
-	next, ok := s.pageRow(body, s.rowCursor, count+1, dir, 0, s.sublistBarNow(body))
+	next, ok := s.pageRow(body, s.rowCursor, count+1, dir, 0,
+		s.sublistBarNow(body), s.sublistBarNowCeiling())
 	if !ok {
 		return
 	}
@@ -958,13 +963,31 @@ func (s *MaintenanceItemFormScreen) pageSublist(count, dir int) {
 // view builds, chosen off the same phase sublistBody reads, so a page is
 // measured against the frame it is being made on.
 func (s *MaintenanceItemFormScreen) sublistBarNow(body *jdeLines) []actionBarItem {
+	count, noun, addVerb := s.sublistScope()
+	return s.sublistBar(body, count, noun, addVerb)
+}
+
+// sublistBarNowCeiling is that same bar WITH the paging pair on it — the fixed
+// point pageRow measures the scroll question against, for the reason its doc
+// gives: naming the keys costs cells, and cells can fold the bar onto another
+// row.
+func (s *MaintenanceItemFormScreen) sublistBarNowCeiling() []actionBarItem {
+	count, noun, addVerb := s.sublistScope()
+	return s.sublistBarItems(count, noun, addVerb, true)
+}
+
+// sublistScope is which sub-list is open, said ONCE: the row count and the two
+// words its bar is built from. Both bars above read it, so the bar that is DRAWN
+// and the ceiling it is measured against can never describe different sub-lists
+// — which two copies of this switch would eventually do.
+func (s *MaintenanceItemFormScreen) sublistScope() (int, string, string) {
 	switch s.phase {
 	case mFormPhaseMaterialList:
-		return s.sublistBar(body, len(s.materials), "Materials", "Add a material")
+		return len(s.materials), "Materials", "Add a material"
 	case mFormPhaseToolList:
-		return s.sublistBar(body, len(s.tools), "Tools", "Add a tool")
+		return len(s.tools), "Tools", "Add a tool"
 	}
-	return s.sublistBar(body, len(s.tasks), "Steps", "Add a step")
+	return len(s.tasks), "Steps", "Add a step"
 }
 
 func (s *MaintenanceItemFormScreen) closeSublist() {

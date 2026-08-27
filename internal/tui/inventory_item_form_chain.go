@@ -76,9 +76,7 @@ func (s *InventoryItemFormScreen) closeChain() {
 // The pager is bound because chainBarItems NAMES PgUp/PgDn the moment the rung
 // list outgrows the pane, and a key the bar names must do something. It was
 // named and unbound: a three-rung chain overflows from 80x11 to 80x16, so the
-// bar advertised a pair no handler on this phase answered. chainPages is what
-// keeps the binding honest in the OTHER direction, and it is not optional —
-// binding it without one traded a named dead key for an unnamed live one.
+// bar advertised a pair no handler on this phase answered.
 func (s *InventoryItemFormScreen) updateChainPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
 	case "esc", "enter":
@@ -129,18 +127,16 @@ func (s *InventoryItemFormScreen) moveChainCursor(delta int) {
 // one row and a guessed constant would skip over it. The count includes the
 // trailing add row, which is the row after the last rung.
 //
-// Two gates, asking two different questions of two different bars, which is the
-// pair jde_form.go's movement block keeps apart. chainPages asks the CEILING bar
-// whether there is anything to page — the same question the bar asks before it
-// names the keys — and pageRow asks the bar really DRAWN whether the frame is on
-// the pane at all. Either way it declines in silence, for the reason
-// moveChainCursor does: a movement key's whole product is the position.
+// Both gates are the LAYER's, which is why this reads like every other pager in
+// the program: pageRow asks the bar really DRAWN whether the frame is on the
+// pane and the CEILING bar whether the rungs overflow it, and declines in
+// silence either way — for the reason moveChainCursor does, that a movement
+// key's whole product is the position. This sheet briefly spelled the second
+// half itself; jde_form.go's pageRow carries why that had to move.
 func (s *InventoryItemFormScreen) pageChainCursor(dir int) {
 	l := s.chainListLines()
-	if !s.chainPages(l) {
-		return
-	}
-	next, ok := s.pageRow(l, s.chainCursor, s.chainAddRow()+1, dir, 0, s.chainBar(l))
+	next, ok := s.pageRow(l, s.chainCursor, s.chainAddRow()+1, dir, 0,
+		s.chainBar(l), s.chainBarItems(true))
 	if !ok {
 		return
 	}
@@ -454,27 +450,7 @@ func (s *InventoryItemFormScreen) chainListLines() *jdeLines {
 // both mean done: the chain is saved nested with the ITEM, so leaving the list
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) chainBar(body *jdeLines) []actionBarItem {
-	return s.chainBarItems(s.chainPages(body))
-}
-
-// chainPages is the ONE answer to "does PgUp/PgDn do anything here", read by the
-// bar that names the pair and by the arm that answers it — so the claim and the
-// key cannot part company in either direction.
-//
-// Both directions have been live at once on this list. Named-and-unbound was the
-// reported half: the pair appeared the moment the rungs outgrew the window and
-// no handler on the phase answered it. Bound-and-unnamed is the half binding it
-// created, because pageRow only asks whether the frame is DRAWN — on a tall pane
-// the window holds every rung, the bar rightly says nothing, and an ungated page
-// still walked the cursor to the last row on a key the operator was never
-// offered.
-//
-// It is measured against chainBarItems(true) — the bar WITH the pair on it —
-// because naming the keys costs cells, cells fold the bar onto another row, and
-// a folded bar leaves the window one row fewer. The tallest bar is the fixed
-// point, so the answer cannot oscillate between frames.
-func (s *InventoryItemFormScreen) chainPages(body *jdeLines) bool {
-	return s.bodyScrollsForBar(body, 0, s.chainBarItems(true))
+	return s.chainBarItems(s.bodyScrollsForBar(body, 0, s.chainBarItems(true)))
 }
 
 // chainBarItems is chainBar for a given paging state, so the bar that is

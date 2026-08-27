@@ -462,7 +462,8 @@ func (s *MakerBoxFormScreen) moveCursor(delta int) {
 // fields is more than a short terminal shows at once, so this sheet needs it.
 func (s *MakerBoxFormScreen) pageCursor(dir int) {
 	body := s.formLines()
-	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0, s.formBar(body))
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
 	if !ok {
 		return
 	}

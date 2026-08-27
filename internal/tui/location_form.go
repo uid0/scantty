@@ -378,7 +378,8 @@ func (s *LocationFormScreen) moveCursor(delta int) {
 // wraps — a page is for covering ground, not for losing your place.
 func (s *LocationFormScreen) pageCursor(dir int) {
 	body := s.formLines()
-	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0, s.formBar(body))
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
 	if !ok {
 		return
 	}
@@ -453,7 +454,10 @@ func (s *LocationFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 		s.movePick(delta)
 	case jdePickPage:
 		header, body := s.pickView()
-		s.movePick(delta * s.windowRowsForBar(body, s.pickCursor, len(header), s.pickBar(header, body)))
+		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickOptions), delta, len(header),
+			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickCursor = next
+		}
 	default:
 		// Anything else is filter text: the box is always live, so there is no
 		// mode to enter and no "/" to remember.

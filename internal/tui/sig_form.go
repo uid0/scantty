@@ -300,7 +300,8 @@ func (s *SIGFormScreen) moveCursor(delta int) {
 // wraps — a page is for covering ground, not for losing your place.
 func (s *SIGFormScreen) pageCursor(dir int) {
 	body := s.formLines()
-	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0, s.formBar(body))
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
 	if !ok {
 		return
 	}

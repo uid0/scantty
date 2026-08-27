@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -701,6 +702,28 @@ func TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout(t *testing.T) {
 //
 // Every movement key is driven, because the clear has to hold for the movement
 // paths as a class rather than for the one that was reported.
+//
+// The option list is padded on BOTH sides of the refused row, and both halves of
+// that are load-bearing. It has to OVERFLOW the pane or PgUp/PgDn name nothing
+// on the bar and correctly do nothing, so the two paging subtests would assert
+// the clear against a key that never moved — the vacuous-fixture rule
+// (AGENTS.md), which is what they were doing while the pager was ungated. And
+// the refused row has to sit in the MIDDLE, or one of each opposed pair rests
+// against an edge it cannot move past and the same thing happens one key over.
+// kitPickFillers are ordinary pickable items, enough of them to push the option
+// list past the pane. Named so nothing in the assertions can match them.
+func kitPickFillers(n int) []omsapi.Item {
+	out := make([]omsapi.Item, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, omsapi.Item{
+			ID:   fmt.Sprintf("itm-f%d", i),
+			Name: fmt.Sprintf("Filler stock %d", i),
+			SKU:  fmt.Sprintf("FS-%03d", i),
+		})
+	}
+	return out
+}
+
 func TestItemFormKit_ARefusalDiesWhenTheCursorLeavesItsRow(t *testing.T) {
 	for _, move := range []struct {
 		name string
@@ -715,10 +738,11 @@ func TestItemFormKit_ARefusalDiesWhenTheCursorLeavesItsRow(t *testing.T) {
 	} {
 		t.Run(move.name, func(t *testing.T) {
 			s := kitFormSheet(t, kitFormFixture(), 120)
-			s.kitItems = []omsapi.Item{
-				{ID: "itm-s", Name: "Serialized widget", IsSerialized: true},
-				{ID: "itm-y", Name: "Yellow ink", SKU: "YI-100"},
-			}
+			s.kitItems = kitPickFillers(20)
+			s.kitItems = append(s.kitItems,
+				omsapi.Item{ID: "itm-s", Name: "Serialized widget", IsSerialized: true},
+				omsapi.Item{ID: "itm-y", Name: "Yellow ink", SKU: "YI-100"})
+			s.kitItems = append(s.kitItems, kitPickFillers(20)...)
 			kitFormCursorTo(t, s, fKitComponents)
 			s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
 			s.kitCursor = s.kitAddRow()

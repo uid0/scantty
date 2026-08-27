@@ -650,6 +650,34 @@ either:
   the CEILING bar, drawability of the bar really DRAWN — so the two sheets that
   scroll one spell the conjunction themselves and name it
   (`po_detail`'s `sheetMoves` / `padMoves`).
+  **THE RULE IS ONE STATEMENT, NOT TWO: a movement key acts when the frame is
+  DRAWN and — for a PAGE — when the body MOVES.** `pageRow` is the single place
+  both are asked, which is why it takes TWO bars: drawability of the bar really
+  DRAWN (`tooShort` is monotone in bar height, so a taller bar would decline a
+  key at a height the frame IS drawn at), scrolling of the CEILING bar (naming
+  the keys costs cells, cells fold the bar onto another row, and a folded bar
+  leaves the body one row fewer, so the tallest bar is the fixed point). The
+  ceiling is THREADED from the sheet, never synthesised by appending a generic
+  `PgUp/PgDn` inside the layer: the label differs per screen — `Page`, `Unit`,
+  `Last unit` — so the measured fold would differ from the real ceiling, and an
+  approximate fixed point is not a fixed point. An UNSIZED terminal skips the
+  scroll half rather than failing it: there is no window to overflow, and the
+  layer's standing answer for no pane is "draw whole and let `clampToBox`
+  decide", which is the same reason `frameDrawn` answers true there.
+  The scroll half was the SHEETS' until it was the layer's, and the shape of
+  that is worth keeping: every columnar sheet bound `pgup`/`pgdown`
+  unconditionally in its key switch while naming the pair only when the body
+  overflowed, so on any pane tall enough to hold the whole body the bar rightly
+  said nothing and PgDn still walked the cursor to the last row — **3254 of 7102
+  drawn (screen, width, height) triples**, with not one violation the other way.
+  Two sheets then spelled the conjunction for themselves, which closed the class
+  at two of thirty-two sites and is exactly how the ~50 per-sheet scroll copies
+  sc-jde-lift had to unpick began: one that looked too small to be worth a shared
+  function, with the same argument available to the next forty-nine. Both were
+  deleted. `TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves` holds the
+  BICONDITIONAL over `jdePaneCases` at every drawable pane — derived, so site
+  thirty-three cannot reopen it — and it fails a bar that names the pair where a
+  page moves nothing just as readily.
   Read `jde_form.go`'s "Movement" block before touching any of them; what is
   worth knowing here:
   - **The BAR and the HANDLER ask different questions and must go on asking

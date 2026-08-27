@@ -497,10 +497,8 @@ func (s *InventoryItemFormScreen) moveKitCursor(delta int) {
 
 func (s *InventoryItemFormScreen) pageKitCursor(dir int) {
 	body := s.kitListLines()
-	if !s.kitListPages(body) {
-		return
-	}
-	next, ok := s.pageRow(body, s.kitCursor, s.kitAddRow()+1, dir, 0, s.kitListBar(body))
+	next, ok := s.pageRow(body, s.kitCursor, s.kitAddRow()+1, dir, 0,
+		s.kitListBar(body), s.kitListBarItems(true))
 	if !ok {
 		return
 	}
@@ -589,18 +587,7 @@ func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 // Esc both mean done: the list is saved nested with the KIT, so leaving it
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) kitListBar(body *jdeLines) []actionBarItem {
-	return s.kitListBarItems(s.kitListPages(body))
-}
-
-// kitListPages is the ONE answer to "does PgUp/PgDn do anything here", read by
-// the bar that names the pair and by the arm that answers it — the same single
-// predicate chainPages is for the sibling list, and it carries the reasoning.
-//
-// This list was bound-and-unnamed: pageRow asks only whether the frame is DRAWN,
-// so on a pane tall enough to hold every component the bar rightly said nothing
-// about paging and PgDn still walked the cursor to the last row.
-func (s *InventoryItemFormScreen) kitListPages(body *jdeLines) bool {
-	return s.bodyScrollsForBar(body, 0, s.kitListBarItems(true))
+	return s.kitListBarItems(s.bodyScrollsForBar(body, 0, s.kitListBarItems(true)))
 }
 
 // kitListBarItems is kitListBar for a given paging state, so the bar that is
@@ -955,8 +942,7 @@ func (s *InventoryItemFormScreen) updateKitPickPhase(m tea.KeyMsg) (Screen, tea.
 	case jdePickMove:
 		s.moveKitPick(delta)
 	case jdePickPage:
-		header, body := s.kitPickView()
-		s.moveKitPick(delta * s.windowRowsForBar(body, s.kitPickCursor, len(header), s.kitPickBar(header, body)))
+		s.pageKitPick(delta)
 	default:
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
@@ -966,11 +952,37 @@ func (s *InventoryItemFormScreen) updateKitPickPhase(m tea.KeyMsg) (Screen, tea.
 	return s, nil
 }
 
-// moveKitPick moves the highlight, and the refusal on screen dies with it.
+// moveKitPick steps the highlight one row, clamping at both ends.
+func (s *InventoryItemFormScreen) moveKitPick(delta int) {
+	header, body := s.kitPickView()
+	next, ok := s.pickRow(s.kitPickCursor, len(s.kitPickOptions), delta, len(header), s.kitPickBar(header, body))
+	if !ok {
+		return
+	}
+	s.toKitPick(next)
+}
+
+// pageKitPick steps it a pane's worth, through the layer's gate: PgUp/PgDn move
+// exactly when kitPickBar names them and the frame is on the pane.
+func (s *InventoryItemFormScreen) pageKitPick(dir int) {
+	header, body := s.kitPickView()
+	next, ok := s.pageRow(body, s.kitPickCursor, len(s.kitPickOptions), dir, len(header),
+		s.kitPickBar(header, body), jdePickBar("Add", true))
+	if !ok {
+		return
+	}
+	s.toKitPick(next)
+}
+
+// toKitPick is the ONE place the kit picker's highlight lands, and the refusal on
+// screen dies with it.
 //
-// The clear lives HERE, where the cursor moves, so every movement path —
+// The clear lives HERE, where the cursor arrives, so every movement path —
 // down/tab, up/shift+tab, pgup/pgdown, and any added later — is covered by
-// construction rather than by remembering to add each one.
+// construction rather than by remembering to add each one. It has already been
+// worth exactly that: routing the PAGE through the layer's pageRow took it
+// around a clear that used to live inside moveKitPick, and a refusal survived
+// pgup on the one screen in the program that carries this rule.
 //
 // It became necessary BECAUSE the message was shortened to drop the item name.
 // While it named the item, a stale refusal was self-evidently about a different
@@ -979,12 +991,7 @@ func (s *InventoryItemFormScreen) updateKitPickPhase(m tea.KeyMsg) (Screen, tea.
 // shortening was still right (see commitKitPick: it duplicated what the row
 // already shows and was the part the clip ate at every width), but a message
 // that refers to "that item" must die when "that item" changes.
-func (s *InventoryItemFormScreen) moveKitPick(delta int) {
-	header, body := s.kitPickView()
-	next, ok := s.pickRow(s.kitPickCursor, len(s.kitPickOptions), delta, len(header), s.kitPickBar(header, body))
-	if !ok {
-		return
-	}
+func (s *InventoryItemFormScreen) toKitPick(next int) {
 	s.kitPickErr = ""
 	s.kitPickCursor = next
 }

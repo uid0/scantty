@@ -289,7 +289,8 @@ func (s *PurchaseOrderAttachmentsScreen) moveList(delta int) {
 
 func (s *PurchaseOrderAttachmentsScreen) pageList(dir int) {
 	body, _ := s.listLines()
-	next, ok := s.pageRow(body, s.cursor, len(s.attachments), dir, 0, s.listBar())
+	next, ok := s.pageRow(body, s.cursor, len(s.attachments), dir, 0,
+		s.listBar(), s.listBarItems(true))
 	if !ok {
 		return
 	}

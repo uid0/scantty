@@ -366,7 +366,8 @@ func (s *SupplierFormScreen) moveCursor(delta int) {
 
 func (s *SupplierFormScreen) pageCursor(dir int) {
 	body := s.formLines()
-	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0, s.formBar(body))
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
 	if !ok {
 		return
 	}

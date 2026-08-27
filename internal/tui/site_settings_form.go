@@ -429,7 +429,8 @@ func (s *SiteSettingsFormScreen) moveCursor(delta int) {
 // longest sheet in the batch, so it is the one that needs it.
 func (s *SiteSettingsFormScreen) pageCursor(dir int) {
 	body := s.formLines()
-	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0, s.formBar(body))
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
 	if !ok {
 		return
 	}

@@ -660,7 +660,8 @@ func (s *PurchaseOrderEditScreen) moveCursor(delta int) {
 // operator's place rather than save them keystrokes.
 func (s *PurchaseOrderEditScreen) pageCursor(dir int) {
 	body := s.formLines()
-	next, ok := s.pageRow(body, s.cursor, s.rowCount(), dir, 0, s.formBar(body))
+	next, ok := s.pageRow(body, s.cursor, s.rowCount(), dir, 0,
+		s.formBar(body), s.formBarItems(true))
 	if !ok {
 		return
 	}

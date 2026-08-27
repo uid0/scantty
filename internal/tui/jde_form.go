@@ -1246,6 +1246,27 @@ func (g jdeScreen) windowRowsForBar(body *jdeLines, cursorRow, headerRows int, i
 // eventually restate it differently; TestJDEForm_ARefusedPaneKeepsTheOperatorsPlace
 // walks every columnar screen at every refused height to prove none of them has.
 //
+// THE RULE IS ONE STATEMENT, NOT TWO: a movement key acts when the frame is
+// DRAWN and — for a PAGE — when the body MOVES. Drawability is asked of the bar
+// really drawn, scrolling of the CEILING bar, and an unsized terminal answers as
+// it always has, which is that both are yes and clampToBox decides. pageRow is
+// the single place both are asked, and it takes both bars to do it.
+//
+// The scroll half lived in the SHEETS until it did not: they bound pgup/pgdown
+// unconditionally in their key switches while naming the pair only when the body
+// overflowed, so on any pane tall enough to hold the whole body the bar rightly
+// said nothing and PgDn still walked the cursor to the last row. Two sheets then
+// spelled the conjunction for themselves, which closed the class at two of
+// thirty-two sites and is how the ~50 per-sheet scroll copies sc-jde-lift had to
+// unpick began — one too small to be worth a shared function, with the same
+// argument available to the next forty-nine. It is the layer's now, and
+// TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves holds the biconditional
+// over every columnar screen so site thirty-three cannot reopen it.
+//
+// An OFFSET still has no combined helper and still must not get one — see the
+// paragraph above moveRow. A page is different because pageRow already had the
+// body and the header rows in hand: the only thing it lacked was the second bar.
+//
 // A GATED MOVEMENT ARM ANSWERS WITH NOTHING — not even a note saying the key
 // declined. Its whole effect WAS the position, so once the move is refused
 // there is nothing left to report; and a note is not drawn on a frame the layer
@@ -1328,15 +1349,55 @@ func (g jdeScreen) pickRow(cursor, count, delta, headerRows int, items []actionB
 
 // pageRow moves a cursor one PAGE through `body` and reports whether it moved.
 //
-// The step is the window's own row count (windowRowsForBar), measured against
-// the bar that is about to be drawn, so a page covers exactly what the operator
-// can see. On a refused pane that is nothing, so the key declines rather than
-// paging a cursor through a body nobody is looking at.
-func (g jdeScreen) pageRow(body *jdeLines, cursor, count, dir, headerRows int, items []actionBarItem) (int, bool) {
-	if count <= 0 || !g.frameDrawn(headerRows, items) {
+// It is the ONE place both halves of the paging rule are asked, and it takes TWO
+// bars because the two questions are asked of different ones:
+//
+//   - `drawn` is the bar the frame really DRAWS, and it answers DRAWABILITY.
+//     tooShort is monotone in bar height, so gating on a taller bar would
+//     decline a key at a height where the frame is on the pane — a named key
+//     doing nothing on a pane the operator is looking at.
+//   - `ceiling` is the bar WITH the paging keys on it, and it answers whether
+//     the body MOVES. Naming the keys costs cells, cells fold the bar onto
+//     another row, and a folded bar leaves the body one row fewer, so the
+//     tallest bar is the fixed point and the answer cannot oscillate between
+//     frames. It is the same obligation bodyAvailForBar and bodyScrollsForBar
+//     already carry.
+//
+// The ceiling is THREADED rather than synthesised here. Appending a generic
+// {"PgUp/PgDn", "Page"} to `drawn` would measure a bar no screen draws: the
+// label differs per sheet — "Page", "Unit", "Last unit" — so the width, and
+// therefore the fold, would differ from the real ceiling. An approximate fixed
+// point is not a fixed point.
+//
+// WHY THE SCROLL HALF IS HERE AND NOT IN THE SHEETS. It was in two of them, and
+// two is how the ~50 per-sheet copies sc-jde-lift had to unpick began: one that
+// looked too small to be worth a shared function, with the same argument
+// available to the next forty-nine. Before it moved here, every columnar sheet
+// bound pgup/pgdown unconditionally while naming the pair only when the body
+// overflowed, so on any pane tall enough to hold the whole body the bar rightly
+// said nothing and PgDn still walked the cursor to the last row — 3254 of 7102
+// drawn (screen, width, height) triples, which is what
+// TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves reports when the gate
+// below is removed.
+//
+// AN UNSIZED TERMINAL IS NOT A SHORT PANE. bodyScrollsForBar answers false when
+// there is no pane, because there is no window to overflow — but the layer's
+// standing answer for an unsized screen is "draw the whole thing and let
+// clampToBox decide", which is the same reason frameDrawn answers TRUE there. So
+// the scroll half is skipped rather than answered from geometry that does not
+// exist, and a screen driven without a WindowSizeMsg pages exactly as it always
+// has.
+//
+// The STEP is the window's own row count (windowRowsForBar) measured against the
+// bar really drawn, so a page covers exactly what the operator can see.
+func (g jdeScreen) pageRow(body *jdeLines, cursor, count, dir, headerRows int, drawn, ceiling []actionBarItem) (int, bool) {
+	if count <= 0 || !g.frameDrawn(headerRows, drawn) {
 		return cursor, false
 	}
-	return jdePageCursor(cursor, count, g.windowRowsForBar(body, cursor, headerRows, items), dir), true
+	if g.paneRows() > 0 && !g.bodyScrollsForBar(body, headerRows, ceiling) {
+		return cursor, false
+	}
+	return jdePageCursor(cursor, count, g.windowRowsForBar(body, cursor, headerRows, drawn), dir), true
 }
 
 // jdePageCursor moves a cursor one page in `dir`. It CLAMPS where field nav

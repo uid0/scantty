@@ -357,7 +357,8 @@ func (s *StorageSlotGenerateScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.C
 // wraps — a page is for covering ground, not for losing your place.
 func (s *StorageSlotGenerateScreen) pageCursor(dir int) {
 	body := s.formLines()
-	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0, s.formBar(body))
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
 	if !ok {
 		return
 	}
@@ -433,7 +434,8 @@ func (s *StorageSlotGenerateScreen) moveLevels(delta int) {
 // row, which is always reachable as the row after the last one.
 func (s *StorageSlotGenerateScreen) pageLevels(dir int) {
 	body := s.levelListLines()
-	next, ok := s.pageRow(body, s.levelCursor, len(s.levels)+1, dir, 0, s.levelsBar(body))
+	next, ok := s.pageRow(body, s.levelCursor, len(s.levels)+1, dir, 0,
+		s.levelsBar(body), s.levelsBarItems(true))
 	if !ok {
 		return
 	}
@@ -646,7 +648,10 @@ func (s *StorageSlotGenerateScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.C
 		s.movePick(delta)
 	case jdePickPage:
 		header, body := s.pickView()
-		s.movePick(delta * s.windowRowsForBar(body, s.pickCursor, len(header), s.pickBar(header, body)))
+		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickRows), delta, len(header),
+			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickCursor = next
+		}
 	default:
 		// Anything else is filter text: the box is always live, so there is no
 		// mode to enter and no "/" to remember.
@@ -724,7 +729,8 @@ func (s *StorageSlotGenerateScreen) moveResult(delta int) {
 
 func (s *StorageSlotGenerateScreen) pageResult(dir int) {
 	body := s.resultLines()
-	next, ok := s.pageRow(body, s.resultCursor, body.Len(), dir, 0, s.resultBar(body))
+	next, ok := s.pageRow(body, s.resultCursor, body.Len(), dir, 0,
+		s.resultBar(body), s.resultBarItems(true))
 	if !ok {
 		return
 	}

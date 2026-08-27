@@ -105,7 +105,8 @@ func (s *ServiceStatusScreen) move(delta int) {
 
 func (s *ServiceStatusScreen) page(dir int) {
 	header, body := s.render()
-	next, ok := s.pageRow(body, s.cursor, len(s.services()), dir, serviceStatusHeaderRows, s.bar(header, body))
+	next, ok := s.pageRow(body, s.cursor, len(s.services()), dir, serviceStatusHeaderRows,
+		s.bar(header, body), s.barItems(true))
 	if !ok {
 		return
 	}
