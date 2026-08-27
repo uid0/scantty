@@ -814,7 +814,7 @@ func TestPOSubmit_AFailedSubmitHandsTheCartBack(t *testing.T) {
 			if screen.pending {
 				t.Fatal("the submit is still pending after its reply")
 			}
-			poWantPaneLine(t, screen, "submitting this purchase order failed")
+			poWantPaneLine(t, screen, poSubmitFailWords)
 			poWantPaneLine(t, screen, "Enter=Submit order")
 			poAssertFits(t, "review after a failed submit", screen)
 

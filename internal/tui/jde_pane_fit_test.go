@@ -1125,7 +1125,7 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 				// keypress rather than its standing note, which is the sentence
 				// rule 1 depends on being drawn.
 				s.lines = nil
-				s.setErr("submitting this purchase order failed", nginx502)
+				s.setErr(poSubmitFailWords, nginx502)
 				return s
 			},
 			after: func(s Screen) {

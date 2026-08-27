@@ -346,3 +346,273 @@ func TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// An order-level error is the fact; it shares the row with nothing
+// ---------------------------------------------------------------------------
+
+// TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow is rule 6 applied to
+// the one message on this screen that must never abbreviate.
+//
+// The status row is shared: a working sentence, an order-level error and the
+// screen's answer to the last keypress can all want it, and where a typed box
+// has taken the pinned header's one essential row the answer LEADS whatever is
+// there (statusPlan). Applied to the error as well, that reserved up to half
+// the row for a picker hint and cut the failure to what was left:
+// `✗ type to narrow the catalo… · creating the PO f…` on the surface an order
+// is committed from, which leaves the operator unable to tell what failed while
+// telling them something they can rediscover by pressing the key again.
+//
+// So the error takes the row alone. The LEAD is what gives, entirely — not its
+// tail — and the answer's own folded copy is still in the pinned header
+// (answerRows), which is the trade recorded in statusPlan's residual.
+//
+// Driven with a lead PAST poLeadOnto's cap, because every longer lead reserves
+// the identical cells: that makes it the provable worst case rather than a
+// sample, the same way TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight
+// reaches past the bound instead of hoping the longest sentence in the file
+// does. The phases are DISCOVERED by poBoxPhases — a lead is only ever composed
+// where a box is pinned — so a phase that grows a search box later is swept the
+// moment it does.
+// poOrderErrorFixtures are the order-level errors the sweep below drives, and
+// there are two of them for the reason this project keeps relearning: A FIXTURE
+// THAT CANNOT REACH THE BOUND UNDER TEST MAKES THE ASSERTION VACUOUS.
+//
+// poSubmitFailWords is 22 cells and the reservation it had to survive leaves
+// exactly 22 at 80 columns (room 49, the lead's clause capped at 49/2 = 24, the
+// joint 3), so a sweep driving only the real wording went green with the lead
+// still composed — certifying the rule on the one string the truncation
+// happened to spare. The second fixture reaches PAST that, once, so the check
+// fails the moment an order-level error is led again.
+//
+// Both stay inside what the row can hold at 80 columns (51 less the mark's two
+// cells), because what is under test is the LEAD, not fitStatus.
+var poOrderErrorFixtures = []string{
+	poSubmitFailWords,
+	"creating the PO failed: upstream refused",
+}
+
+func TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow(t *testing.T) {
+	longLead := strings.Repeat("z", 200)
+
+	drove := 0
+	t.Cleanup(func() {
+		if drove == 0 {
+			t.Error("every box phase was skipped, so this sweep asserted nothing " +
+				"about the error branch it exists for")
+		}
+	})
+
+	for _, b := range poBoxPhases(t) {
+		spec, ok := poBoxInFlight[b.c.phase]
+		if !ok {
+			// poBoxInFlight is checked for completeness over poBoxPhases by
+			// TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight; this sweep
+			// only borrows its writers.
+			continue
+		}
+		for _, h := range poDrawableHeights() {
+			t.Run(fmt.Sprintf("%s/80x%d", b.c.name, h), func(t *testing.T) {
+				_, screen := b.reach(t, h)
+				if screen.workingSubject() != "" {
+					// The working sentence outranks the error and takes the row
+					// itself, which is a different branch — and the one
+					// TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight drives.
+					// poBoxPhases includes the review cart WITH a submit out, so
+					// this is a real case rather than a setup slip.
+					t.Skip("a request is out, so the row draws the working branch")
+				}
+				if poFrameRefused(t, screen, h) {
+					t.Skip("the layer refuses this frame, which is jdeTooShort's rule")
+				}
+				spec.setLead(screen, longLead)
+				for _, errMsg := range poOrderErrorFixtures {
+					screen.setErr(errMsg, "")
+					row, plan := screen.statusPlan()
+					if !strings.Contains(row, errMsg) {
+						t.Errorf("%s at 80x%d: a %d-cell answer pushed the order-level "+
+							"error off the status row.\n\terror: %q\n\trow: %q",
+							b.c.name, h, lipgloss.Width(longLead), errMsg, row)
+					}
+					if !plan.drawsHead {
+						t.Errorf("%s at 80x%d: the row is the failure headline but the "+
+							"plan says it is not, so failLines will draw a second copy",
+							b.c.name, h)
+					}
+					drove++
+					// And on the pane the terminal really shows, not just in
+					// the string the composer returned.
+					poWantPaneLine(t, screen, errMsg)
+					poAssertFits(t, b.c.name+" under an order-level error", screen)
+				}
+			})
+		}
+	}
+}
+
+// TestPOCreate_AnOrderLevelFailureDoesNotOutliveThePhaseItHappenedOn is what
+// makes the rule above SOUND rather than a trade in a new place.
+//
+// While an errMsg stands the status row is the error alone, so a picker's
+// answer falls back to answerRows — a CONTEXT row of the pinned header, and the
+// first rank jdeFitHeader gives ground in. At 80x11 through 80x13 that puts it
+// off the pane, which is exactly the byte-identical-frame state this branch
+// exists to remove.
+//
+// That state was PERMANENT: setErr's only other writers are enterLinePhase,
+// removeLineAt and addReorderLines, so one failed submit carried the error onto
+// the source chooser, both pickers and the line form for the rest of the
+// session. It is momentary now — every phase change retires it (Update's key
+// dispatch) — so the answer is back on the status row by the time the operator
+// has walked anywhere.
+//
+// Driven through the real submit and the real keys, and asserted on the clipped
+// pane at the three heights the report was filed about.
+func TestPOCreate_AnOrderLevelFailureDoesNotOutliveThePhaseItHappenedOn(t *testing.T) {
+	for _, h := range []int{11, 12, 13} {
+		t.Run(fmt.Sprintf("80x%d", h), func(t *testing.T) {
+			fake := &poPickFake{catalog: 2, assets: 1, failCreate: true}
+			r, screen := poPickerAtSize(t, fake, 80, h)
+			r = poStageCostlessLine(t, r, screen)
+			r = key(t, r, poPhaseKeyMsg("d"))
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // submit → 502
+			if screen.errMsg == "" {
+				t.Fatalf("setup: the submit came back without recording a failure")
+			}
+			if screen.phase != poPhaseReview {
+				t.Fatalf("setup landed on phase %v, want review", screen.phase)
+			}
+
+			// esc to the chooser, then into the item picker and open its filter
+			// — the box that takes the essential header row, so the answer has
+			// nowhere but the status row to go.
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+			if screen.errMsg != "" || screen.errDetail != "" {
+				// Errorf, not Fatalf: the pane assertions below are the ones
+				// that show what the operator loses, and they must still run.
+				t.Errorf("the failure outlived the phase it happened on: %q / %q",
+					screen.errMsg, screen.errDetail)
+			}
+			r = key(t, r, poPhaseKeyMsg("i"))
+			r = key(t, r, poPhaseKeyMsg("/"))
+			if screen.essentialBoxRow() == "" {
+				t.Fatalf("the item filter did not open at 80x%d", h)
+			}
+			_ = r
+			if poFrameRefused(t, screen, h) {
+				t.Skip("the layer refuses this frame, which is jdeTooShort's rule")
+			}
+
+			pane := strings.Join(poPaneLinesAt(t, screen, h), "\n")
+			if strings.Contains(pane, poSubmitFailWords) {
+				t.Errorf("the item picker at 80x%d still reports the submit that failed "+
+					"two phases ago:\n%s", h, pane)
+			}
+			// The answer to the key that opened the box is on the pane, which
+			// is the property the error was displacing.
+			answer, _, _ := strings.Cut(poNoteText(screen), poLeadJoint)
+			if answer == "" {
+				t.Fatalf("`/` was answered with nothing at 80x%d", h)
+			}
+			if !strings.Contains(pane, answer) {
+				t.Errorf("the item filter at 80x%d does not carry its answer %q:\n%s",
+					h, answer, pane)
+			}
+			poAssertFits(t, fmt.Sprintf("item filter after a failed submit at 80x%d", h), screen)
+		})
+	}
+}
+
+// TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline covers the two
+// halves of failLines' lead, on the narrowest terminal Root will draw.
+//
+// The header carries the failure HEADLINE only when the status row is drawing
+// something else — the work in flight, or an answer. Asked as a substring of
+// the assembled row, that question also answered "no" when the row WAS drawing
+// the headline and merely shortened it, so a narrow pane got a second,
+// identically shortened copy of one sentence and spent a body row on it.
+//
+// And where the header's own copy is cut, the cut is MARKED. Every other bound
+// on this screen carries its ellipsis; a headline cut clean reads as a finished
+// sentence, and at 45 columns — where contentWidth is exactly the 20 Root
+// refuses below — "looking up this supplier's items failed" ends mid-word
+// looking complete.
+func TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline(t *testing.T) {
+	// 60 columns leaves the pane 31, which is where the reported cut was
+	// measured. 80 is the width that must HOLD and every headline fits it; a
+	// terminal the operator has dragged narrow is where both halves bite.
+	const width = 60
+
+	reach := func(t *testing.T) (Root, *PurchaseOrderCreateScreen) {
+		t.Helper()
+		r, screen := poPickerAtSize(t, &poPickFake{catalog: 2}, width, 24)
+		r = key(t, r, poPhaseKeyMsg("i"))
+		if screen.phase != poPhaseItemPick {
+			t.Fatalf("setup landed on phase %v, want the item picker", screen.phase)
+		}
+		screen.itemSuppliersErr = "oms: http 502: upstream is not answering"
+		// The picker's own note would outrank the headline on the status row
+		// and put this on a third branch; what is under test is the headline.
+		screen.itemSuppliersNote.clear()
+		return r, screen
+	}
+
+	head, _ := func() (string, string) {
+		_, s := reach(t)
+		return s.failure()
+	}()
+	if head == "" {
+		t.Fatal("setup recorded no failure headline, so neither half is asserted")
+	}
+	// A probe short enough to survive the narrowest clip on either surface.
+	probe := cellPrefix(head, 20)
+
+	t.Run("the row is drawing it, so the header does not", func(t *testing.T) {
+		_, screen := reach(t)
+		if screen.workingSubject() != "" || poNoteText(screen) != "" {
+			t.Fatalf("something outranks the headline, so the row is not drawing it")
+		}
+		lines := poPaneLinesAt(t, screen, 24)
+		seen := 0
+		for _, line := range lines {
+			if strings.Contains(line, probe) {
+				seen++
+			}
+		}
+		if seen != 1 {
+			t.Errorf("the %d-column pane says %q on %d lines, want exactly 1 — "+
+				"the status row is drawing it and the header repeated it:\n%s",
+				width, probe, seen, strings.Join(lines, "\n"))
+		}
+		poAssertFits(t, "item picker failing at a narrow terminal", screen)
+	})
+
+	t.Run("the row is drawing something else, so the header marks its cut", func(t *testing.T) {
+		_, screen := reach(t)
+		// A request in flight outranks the headline, so the header picks it up.
+		screen.itemSuppliersLoad = true
+		if screen.workingSubject() == "" {
+			t.Fatal("nothing is in flight, so the row would draw the headline itself")
+		}
+		lines := poPaneLinesAt(t, screen, 24)
+		carried := ""
+		for _, line := range lines {
+			if strings.Contains(line, probe) {
+				carried = line
+			}
+		}
+		if carried == "" {
+			t.Fatalf("the header dropped the headline the status row is not drawing:\n%s",
+				strings.Join(lines, "\n"))
+		}
+		if strings.Contains(carried, head) {
+			t.Skipf("the headline fits the %d-column pane whole (%q), so there is no "+
+				"cut to mark", width, carried)
+		}
+		if !strings.Contains(carried, "…") {
+			t.Errorf("the header cut the headline at %d columns without marking it, so "+
+				"it reads as a finished sentence: %q", width, carried)
+		}
+		poAssertFits(t, "item picker failing mid-reload at a narrow terminal", screen)
+	})
+}

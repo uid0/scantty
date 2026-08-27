@@ -543,7 +543,7 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			// what the operator loses on a short terminal is the tail of the
 			// gateway's HTML and never the sentence naming what failed — that
 			// one rides on the status row, which never gives.
-			s.setErr("submitting this purchase order failed", m.err.Error())
+			s.setErr(poSubmitFailWords, m.err.Error())
 			if s.phase == poPhaseReview {
 				// The freeze is over, so the field takes input again. Only on
 				// review: the operator may have escaped to the source chooser
@@ -652,6 +652,19 @@ func (s *PurchaseOrderCreateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				// appeared.
 				s.pendingLead = ""
 				s.sourceNote.clear()
+				// The ORDER-LEVEL failure goes with it, and that is not
+				// tidiness: it is what keeps statusPlan's residual momentary.
+				// While an errMsg stands the status row is the error alone, so
+				// a picker's ANSWER falls back to a trimmable header row — off
+				// the pane at 80x11 through 80x13, which is the byte-identical
+				// frame this screen was reported for. Left standing it never
+				// cleared: setErr's only other writers are enterLinePhase,
+				// removeLineAt and addReorderLines, so one failed submit put
+				// every later phase — the chooser, both pickers, the line
+				// form — permanently back into that state. The failure belongs
+				// to the frame it happened on; the operator who walks away has
+				// read it or has not.
+				s.setErr("", "")
 			}
 			return next, cmd
 		}
@@ -1671,7 +1684,7 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 	// (backend will fall back to item/asset name), but when the line
 	// came from freeform we require one.
 	if desc == "" && s.pickedItemSup == nil && s.pickedAssetID == nil {
-		s.setErr("item description is required", "")
+		s.setErr("description is required", "")
 		return Status(s.errMsg, StatusError)
 	}
 	// The quantity row is read at the basis it was TYPED at and converted to
@@ -1702,7 +1715,7 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 		s.lineInputs[poLineFieldCost].Value(), s.caseBasis, s.pickedQPP,
 	)
 	if err != nil {
-		s.setErr(strings.ToLower(s.costFieldLabel())+" must be a non-negative number", "")
+		s.setErr(strings.ToLower(s.costFieldLabel())+" must be 0 or more", "")
 		return Status(s.errMsg, StatusError)
 	}
 	if provided {
@@ -1716,7 +1729,7 @@ func (s *PurchaseOrderCreateScreen) addLine() tea.Cmd {
 		raw := strings.TrimSpace(s.lineInputs[poLineFieldDate].Value())
 		if raw != "" {
 			if _, err := time.Parse("2006-01-02", raw); err != nil {
-				s.setErr("expected date must be YYYY-MM-DD (or blank)", "")
+				s.setErr("date must be YYYY-MM-DD or blank", "")
 				return Status(s.errMsg, StatusError)
 			}
 			line.ExpectedShipmentDate = raw
@@ -1961,11 +1974,11 @@ func (s *PurchaseOrderCreateScreen) plainLineTotal() string {
 // review phase; the PO-level notes come from the review notes input.
 func (s *PurchaseOrderCreateScreen) finalize() tea.Cmd {
 	if s.supplierID <= 0 {
-		s.setErr("supplier is required (return to supplier phase)", "")
+		s.setErr("pick a supplier before submitting", "")
 		return Status(s.errMsg, StatusError)
 	}
 	if len(s.lines) == 0 {
-		s.setErr("add at least one line before submitting", "")
+		s.setErr("add a line before submitting", "")
 		return Status(s.errMsg, StatusError)
 	}
 
@@ -2187,9 +2200,19 @@ type poStatusPlan struct {
 	// holdsAnswer is true when the row carries the WHOLE answer, so the header
 	// need not draw it at all.
 	holdsAnswer bool
-	// holdsHead is true when the row carries the failure HEADLINE, so failLines
-	// need not lead its detail with it.
-	holdsHead bool
+	// drawsHead is true when the row is DRAWING the failure headline, so
+	// failLines need not lead its detail with it.
+	//
+	// This one asks WHICH content the row chose rather than how much of it
+	// survived, and the difference is deliberate. Read as a substring the way
+	// holdsAnswer is, it also went true→false when the row was drawing the
+	// headline and merely SHORTENED it, so a narrow pane got a second,
+	// identically shortened copy of the same sentence four rows up — a body row
+	// spent on a near-duplicate that tells the operator nothing the row above
+	// it did not. Which branch built the row is a fact about the assembly, not
+	// a prediction of a bound, so nothing can drift here the way a
+	// re-implemented bound would.
+	drawsHead bool
 }
 
 // statusPlan decides what the one row above the bar draws.
@@ -2202,15 +2225,36 @@ type poStatusPlan struct {
 // the whole order rather than to the list being drawn. Then the ANSWER, and
 // last the phase's failure HEADLINE.
 //
-// The answer LEADS the first two only when a typed box is pinned, and that
-// condition is the whole architecture of this change in one line. The answer's
-// home is the pinned header's essential row; a box being typed into takes that
-// row when there is one, and then — and only then — the answer has nowhere left
-// that jdeFitHeader cannot reach, so it rides here. Leading unconditionally was
-// tried and cost the working sentence its tail on frames that had a perfectly
-// good header row for the answer: `nothing to pick · Looking up the items Acme
-// Supply…`, which spends fifteen cells restating what the header already says
-// in full and cuts the one sentence naming the work.
+// The answer LEADS the WORKING sentence, and only when a typed box is pinned.
+// That condition is the whole architecture of this change in one line: the
+// answer's home is the pinned header's essential row; a box being typed into
+// takes that row when there is one, and then — and only then — the answer has
+// nowhere left that jdeFitHeader cannot reach, so it rides here. Leading
+// unconditionally was tried and cost the working sentence its tail on frames
+// that had a perfectly good header row for the answer: `nothing to pick ·
+// Looking up the items Acme Supply…`, which spends fifteen cells restating what
+// the header already says in full and cuts the one sentence naming the work.
+//
+// AN ORDER-LEVEL ERROR IS NEVER LED. It shares this row with nothing, and that
+// is rule 6 decided in the one place it bites hardest: on a row that cannot
+// fold the FACT survives whole and the wording gives, and here the error IS the
+// fact. A picker's hint is the lesser thing beside a submit that came back
+// refused — `✗ type to narrow the catalo… · creating the PO f…` spends
+// half the row on an instruction the operator can rediscover by pressing the
+// key again, and leaves them unable to tell what failed on the surface an order
+// is committed from. The wordings are cut short as well (setErr's headlines),
+// but that only buys room in the common case and is NOT the guarantee: this
+// branch is.
+//
+// THE RESIDUAL, stated rather than implied. With an order-level error standing,
+// the answer no longer fits on this row, so it falls back to answerRows — a
+// CONTEXT row of the pinned header, which jdeFitHeader trims first. At 80x11
+// through 80x13 that puts a picker's answer off the pane, which is the very
+// state this branch exists to remove. What keeps it survivable is that it is
+// MOMENTARY: an order-level error is retired the moment the operator navigates
+// (Update's key dispatch), so it stands only on the phase it happened on and
+// only until the next phase change. It is not removed, and this comment is
+// where that is admitted rather than in a claim that the heights are solved.
 func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 	answer := s.answerNote()
 	lead := ""
@@ -2219,19 +2263,21 @@ func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 	}
 	head, _ := s.failure()
 	var row string
+	drawsHead := false
 	switch {
 	case s.workingSubject() != "":
 		row = s.statusRow(true, s.workingLine(lead), "")
 	case s.errMsg != "":
-		mark, _ := jdeStatusMark(StatusError)
-		row = s.statusAnswer(StatusError,
-			poLeadOnto(lead, s.errMsg, s.paneWidth()-lipgloss.Width(mark)))
+		// failure() answers errMsg first, so this row IS the headline.
+		row = s.statusAnswer(StatusError, s.errMsg)
+		drawsHead = true
 	case answer.text != "":
 		row = s.statusAnswer(answer.level, answer.text)
 	default:
 		row = s.statusRow(false, "", head)
+		drawsHead = head != ""
 	}
-	// Both flags are read off the row that was just ASSEMBLED rather than
+	// holdsAnswer is read off the row that was just ASSEMBLED rather than
 	// predicted from the branch that assembled it. A prediction is a second
 	// implementation of the bound it predicts, and this file has already
 	// shipped that pair disagreeing; asking the drawn row cannot. It is also
@@ -2243,9 +2289,11 @@ func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 	// Everything a screen puts on this row is styled as ONE run, so the text is
 	// contiguous inside it; a message fitStatus shortened carries the ellipsis
 	// and no longer matches, which is exactly when the header has to pick it up.
+	//
+	// drawsHead is the branch's own answer for the reason on the field.
 	return row, poStatusPlan{
 		holdsAnswer: answer.text != "" && strings.Contains(row, answer.text),
-		holdsHead:   head != "" && strings.Contains(row, head),
+		drawsHead:   drawsHead,
 	}
 }
 
@@ -2312,6 +2360,16 @@ func (s *PurchaseOrderCreateScreen) answerNote() pickerNote {
 //
 // Which RANK it takes is headerLines': the essential row where no box has
 // claimed it, context where one has.
+//
+// THE RESIDUAL, and it is the context case: with a box pinned AND an
+// order-level error standing, the status row is the error alone (statusPlan
+// refuses to lead one), so the whole answer arrives here as a CONTEXT row —
+// the first rank jdeFitHeader gives ground in. At 80x11 through 80x13 it is off
+// the pane, which is the state this screen was reported for. What keeps it
+// survivable rather than solved is that an order-level error does not outlive
+// the phase it happened on: every phase change retires it. This is written down
+// rather than papered over, because the heights are not fixed in that one
+// state.
 func (s *PurchaseOrderCreateScreen) answerRows() []string {
 	n := s.answerNote()
 	if n.text == "" {
@@ -2550,6 +2608,19 @@ const poLeadJoint = " · "
 // rule 6 exactly inverted on the surface an order is committed from.
 const poSubmitWords = "Creating the PO for "
 
+// poSubmitFailWords is what the same submit says when it comes back refused,
+// and it is cut for the same reason poSubmitWords is: it is the whole of the
+// status row on the frame it is drawn on, and it shares that row with nothing
+// (statusPlan refuses to lead an order-level error), so what a narrow pane
+// takes off it is the sentence naming what failed.
+//
+// "submitting this purchase order failed" was 37 cells and lost its tail on a
+// 60-column terminal, where the pane is 31; these 22 fit that with the mark's
+// two cells to spare. It echoes the working sentence deliberately — the
+// operator watched "Creating the PO for Acme…" and reads the same three words
+// back.
+const poSubmitFailWords = "creating the PO failed"
+
 // ---------------------------------------------------------------------------
 // The pinned header, and what a short pane gives up
 // ---------------------------------------------------------------------------
@@ -2576,14 +2647,19 @@ const poSubmitWords = "Creating the PO for "
 //	             then the optional agreement / work-order / committee values
 //	             and the "still looking up…" line under them.
 //	essential  — exactly one row per phase, and it is the row the operator
-//	             would ACT DIFFERENTLY without: the screen's answer to the last
-//	             keypress wherever there is one, the SEARCH BOX on a picker
-//	             whose box is open and whose note has nothing to say, and the
-//	             PO-NOTES BOX on review. A box being typed into is the layer's
-//	             own first example of the rank, and it is why review pins its
-//	             notes rather than hanging them off the bottom of the cart: an
-//	             operator typing into a field that is not on the pane is the
-//	             worst form of this screen's oldest defect.
+//	             would ACT DIFFERENTLY without. There is no contention for it:
+//	             a phase that pins a typed BOX gives it the slot, always
+//	             (essentialBoxRow — the item filter, the asset search, the
+//	             PO-notes box on review), and a phase that pins none gives it to
+//	             the screen's ANSWER to the last keypress where there is one and
+//	             to the phase's standing FACT otherwise. A box being typed into
+//	             is the layer's own first example of the rank, and it is why
+//	             review pins its notes rather than hanging them off the bottom
+//	             of the cart: an operator typing into a field that is not on the
+//	             pane is the worst form of this screen's oldest defect.
+//	             The answer used to compete for this slot and the box is what
+//	             lost; the answer's home is the layer's STATUS ROW now
+//	             (statusLine), which no rank can reach.
 //
 // A RANK DOES NOT REMOVE THE SIGNIFICANCE OF ORDER WITHIN A RANK, and that is
 // why the cart total is emitted BEFORE the optional values rather than after
@@ -2847,9 +2923,20 @@ func (s *PurchaseOrderCreateScreen) pendingLookupRows() []string {
 }
 
 // essentialBoxRow is the row a phase pins because the operator is TYPING into
-// it, or "" on a phase that pins none. Which of it and the note takes the one
-// essential slot is headerLines' answer, and it differs between review and the
-// two pickers — see there.
+// it, or "" on a phase that pins none.
+//
+// Where it answers, it TAKES the header's one essential slot, on every phase
+// and unconditionally — nothing competes with it any more. It used to share the
+// slot with the screen's answer to the last keypress, whichever of them had
+// something to say, and that trade is the defect this arrangement replaced:
+// with the answer winning, the box was off the pane at 80x11 through 80x13 and
+// every rune typed into the asset search redrew a byte-identical frame. The
+// answer rides the layer's status row now (statusPlan), which is outside the
+// header budget, so there is one row for each of them at every height.
+//
+// A phase that pins one therefore draws no standing fact (standingRows) and no
+// answer in the header except the folded TAIL the status row could not print
+// (answerRows).
 func (s *PurchaseOrderCreateScreen) essentialBoxRow() string {
 	lw, pane := poHeaderLabelWidth(), s.paneWidth()
 	switch {
@@ -3004,18 +3091,26 @@ func (s *PurchaseOrderCreateScreen) failLines() []string {
 		width = 12
 	}
 	var lead []string
-	if _, plan := s.statusPlan(); head != "" && !plan.holdsHead {
-		// The status row is drawing something it ranks above this headline —
-		// the ANSWER to a keypress, which is the only thing that outranks it —
-		// so the headline comes here rather than nowhere. It was nowhere for a
-		// round: `/` over a failed asset lookup answers "type a name, tag or
-		// serial", which took the row and does not name the failure, and the
-		// pane then said what had gone wrong only in the body's own empty line.
+	if _, plan := s.statusPlan(); head != "" && !plan.drawsHead {
+		// The status row is drawing something ELSE — the work in flight, or the
+		// ANSWER to a keypress — so the headline comes here rather than nowhere.
+		// It was nowhere for a round: `/` over a failed asset lookup answers
+		// "type a name, tag or serial", which took the row and does not name the
+		// failure, and the pane then said what had gone wrong only in the body's
+		// own empty line.
 		//
-		// Bounded like everything else in this block, and marked, so it cannot
-		// be read as one more line of the gateway's HTML underneath it.
+		// The question asked is which content the row CHOSE, not how much of it
+		// fit. A row that is drawing this headline and merely shortened it is
+		// answered by the shortening, and a second identically shortened copy
+		// here would spend a body row saying nothing new (poStatusPlan.drawsHead).
+		//
+		// Bounded like everything else in this block, and the bound CARRIES ITS
+		// ELLIPSIS: every other cut on this screen marks itself, and a headline
+		// cut clean reads as a whole sentence — at 45 columns the pane is 20 and
+		// "looking up this supplier's items failed" would end mid-word looking
+		// finished.
 		lead = []string{jdeIndent + StyleStatusError.Render(
-			cellPrefix(jdeStatusErrMark+jdeStatusOneLine(head), width))}
+			pickerClip(jdeStatusErrMark+jdeStatusOneLine(head), width))}
 	}
 	if detail == "" {
 		return lead
@@ -4015,6 +4110,24 @@ func poCartCaveat(noCost int) string {
 // the headline it belonged to — a 502's HTML body left standing under "quantity
 // must be a positive integer" would read as the gateway explaining the
 // validation, which is a worse lie than either sentence alone.
+//
+// Cleared by every phase change (Update's key dispatch) as well as by the three
+// arms that stage or retire a line, because an order-level error left standing
+// takes statusPlan's whole row on every later phase.
+//
+// The HEADLINES are written short, the way poSubmitWords was cut from 32 cells
+// to 20: they share a 51-cell row that cannot fold, and the filler goes first
+// ("submitting this purchase order failed" was 37 and is 22; "add at least one
+// line before submitting" was 38 and is 28). The quantity refusal is left as it
+// stands — "must be a positive integer" carries no filler to cut, and trading
+// "integer" for a shorter word that admits 1.5 would buy cells with meaning.
+//
+// SHORTENING IS NOT THE GUARANTEE, and recording that here is the point of this
+// paragraph. The detail beside these headlines is an OMS response body of any
+// length, and a bound expressed in terms of an unbounded value is not a bound;
+// what makes the row safe is statusPlan refusing to lead an order-level error
+// at all. These cuts only buy room for the headline and its neighbours in the
+// common case.
 func (s *PurchaseOrderCreateScreen) setErr(what, detail string) {
 	s.errMsg, s.errDetail = what, detail
 }
@@ -4026,10 +4139,15 @@ func (s *PurchaseOrderCreateScreen) setErr(what, detail string) {
 // because two keys sharing one sentence would redraw the pane the first press
 // left — is always set beside the status it goes with.
 //
-// The lead rides the STATUS ROW rather than a note in the body, which is what
-// lets the two phases that pin a typed box spend their one essential header row
-// on the box: the status row is outside the budget and never gives, so a
-// decline made there cannot be trimmed off a short pane.
+// WHERE the lead is drawn depends on the phase, and the two surfaces have
+// DIFFERENT survival arguments, so it is worth saying which is which. On REVIEW
+// — the one frozen phase that pins a typed box (the PO notes) — it leads the
+// working sentence on the layer's STATUS ROW, which is outside the header
+// budget and never gives. On the supplier picker and the source chooser nothing
+// is pinned, so the lead takes the pinned header's ESSENTIAL row instead
+// (headerLines), which survives because jdeFitHeader gives ground by rank and
+// keeps the essential one down to the smallest budget a frame is drawn at. Both
+// hold at every drawable height; neither argument covers the other's phases.
 func (s *PurchaseOrderCreateScreen) pendingDecline(lead string) tea.Cmd {
 	s.pendingLead = lead
 	return Status("the submit is already out", StatusInfo)

@@ -823,6 +823,44 @@ touching any screen an operator drives:
   asserts the BOX and the ANSWER are both on the clipped pane at every drawable
   height, because "something moved" is exactly what the previous arrangement
   could say while the operator's box was gone.
+  **AN ORDER-LEVEL ERROR IS NEVER LED, AND THE RESIDUAL THAT LEAVES IS STATED
+  RATHER THAN IMPLIED.** The lead was applied to the error branch too, so a
+  picker hint reserved up to half the row and the failure came back
+  `✗ type to narrow the catalo… · creating the PO f…` — rule 6 inverted on the
+  surface an order is committed from, where the error IS the fact and the hint
+  is the thing an operator can rediscover by pressing the key again. The error
+  takes the row alone now (`statusPlan`); the LEAD is what gives, entirely. The
+  wordings were cut with it — `setErr`'s headlines the way `poSubmitWords` went
+  from 32 cells to 20, `poSubmitFailWords` being 37 → 22 — but that is NOT the
+  guarantee and the comment says so: the detail beside them is an OMS body of
+  any length, and a bound expressed in an unbounded value is not a bound.
+  What it costs: while an errMsg stands the answer falls back to `answerRows`, a
+  CONTEXT row of the pinned header, so at 80x11–13 a picker's answer is off the
+  pane — the very state this work removed. That is survivable only because it is
+  MOMENTARY: a phase change RETIRES the order-level failure, at the one site
+  every phase change passes through (`Update`'s key dispatch, beside
+  `pendingLead` and `sourceNote`). Left standing it never cleared — `setErr`'s
+  other writers are `enterLinePhase`, `removeLineAt` and `addReorderLines` — so
+  ONE failed submit put the chooser, both pickers and the line form permanently
+  back into it. `TestPOCreate_AnOrderLevelFailureDoesNotOutliveThePhaseItHappenedOn`
+  drives it through the real submit and reports the answer going off the pane,
+  not just the field staying set. The failure belongs to the frame it happened
+  on; the chooser drawn UNDER one is still swept at every height by
+  `jde_pane_fit_test.go`, which builds that state directly.
+  `TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow` is the guard, and
+  its fixture is the vacuous-fixture rule caught in the act: driven on
+  `poSubmitFailWords` alone it went GREEN with the lead still composed, because
+  22 cells is exactly what the reservation leaves at 80 columns
+  (`poOrderErrorFixtures` carries a second error that reaches past it).
+  **A HEADLINE THE STATUS ROW IS DRAWING IS NOT REPEATED IN THE HEADER, and
+  where the header does carry one the cut is MARKED.** `failLines` asked
+  "is the head a substring of the row?", which also answered no when the row was
+  drawing the head and merely SHORTENED it, so a narrow pane spent a body row on
+  a second identically shortened copy. `poStatusPlan.drawsHead` asks which
+  content the row CHOSE — a fact about the assembly, not a re-implemented bound,
+  which is why it is the one flag not read back off the drawn row. The header's
+  own copy goes through `pickerClip` rather than `cellPrefix`: at 60 columns the
+  pane is 31 and a headline cut clean reads as a finished sentence.
 - **Do not hand-count a hint against 51 columns — fold it.** Every note and
   fixed hint goes through `pickerWrap` / `pickerHint` / `jdeCaveatLines`
   (`pane_text.go`, `jde_form.go`), which fold at the `·` joints and indent
