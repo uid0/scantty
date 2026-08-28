@@ -238,7 +238,17 @@ knowing before touching any of it:
   prose, BEHIND the clause that qualifies it (`voidSearchSentence`): the
   qualifier precedes the key so a trim can only ever take the key, never leave
   it standing bare. Both orders were tried and the wrong one was reported at
-  80x18 by the height sweep.
+  80x18 by the height sweep. That sentence also NAMES THE ORDER, because "search
+  by number" is not a remedy on a frame that withholds the number — the
+  essential row names the LINE and the order's number is two screens back on the
+  detail sheet.
+  WHAT IS PERMANENT AND WHAT IS NOT ARE DIFFERENT FACTS, and the wording keeps
+  them apart. Permanently lost: the order's place on every purchase-order list,
+  `all` included, since it can never regain an active line. Not lost: the ORDER,
+  which is not deleted — `get_queryset` filters only `if self.action == "list"`,
+  so detail retrieval still resolves, and `backend/search/views.py` carries no
+  emptiness filter, so ctrl+k reaches it by name from anywhere without a saved
+  link. Reachable by name, absent from every browsable list, for good.
   **A WARNING CUT BEFORE ITS WAY BACK IS A DEAD END, SO THE CLAIM IS ONE ROW.**
   The prompt's caveats ride the PINNED HEADER and not the body — the body holds
   the operator's Reason box, and `jdeLines` keeps a block's START, so a caveat

@@ -1160,6 +1160,10 @@ const (
 	// can only ever take the key, never leave it standing bare.
 	poVoidKeyClause = "Once you leave this screen, ctrl+k"
 
+	// The number the way back tells the operator to search for. The fake serves
+	// PO-2026-0042, so a frame that says "by number" and shows none fails.
+	poVoidOrderNumber = "PO-2026-0042"
+
 	// The prose behind it. poVoidLossClause is the fact the headline
 	// summarises, drawn only where there is room for the detail as well.
 	poVoidCondition    = "This is the order's only unvoided line"
@@ -1378,6 +1382,15 @@ func voidPaneSweep(t *testing.T, width int, heights []int) {
 		// it also carries the clause saying when it applies.
 		if strings.Contains(flat, "ctrl+k") && !strings.Contains(flat, poVoidKeyClause) {
 			t.Errorf("%dx%d: the pane names ctrl+k without saying it works only after leaving:\n%s",
+				width, height, flat)
+		}
+		// "Search by number" is only a remedy if the number is on the frame.
+		// Nothing else on this one carries it — the essential row names the
+		// LINE and the order's number is two screens back — so the sentence
+		// that names the route names the order too, or it is telling the
+		// operator to search for something they would have had to write down.
+		if strings.Contains(flat, "by number") && !strings.Contains(flat, poVoidOrderNumber) {
+			t.Errorf("%dx%d: the pane says to search by number and shows no number:\n%s",
 				width, height, flat)
 		}
 		// Rule 1: the box the operator types into is on the pane at every

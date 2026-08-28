@@ -2514,7 +2514,21 @@ var poEditAssocBar = []actionBarItem{{"Enter", "Select"}, {"Esc", "Cancel"}, {"U
 // this way round the cut can only ever take the key, never the condition on it.
 // TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning reported the
 // wrong order at 80x18 the moment it was written.
-const voidSearchSentence = "Once you leave this screen, ctrl+k search reaches it by number."
+//
+// IT NAMES THE ORDER, BECAUSE "BY NUMBER" IS USELESS WITHOUT THE NUMBER. Every
+// persisted order has one — PurchaseOrder.save() auto-assigns it — but nothing
+// on THIS frame showed it: the essential row names the LINE, and the order's
+// number is two screens back on the detail sheet. A remedy that tells the
+// operator to search for a token the frame withholds is a remedy they can only
+// use if they wrote it down first, which is the dead end one step removed. A
+// payload that carried no number falls back to the unqualified wording rather
+// than drawing an empty quote.
+func voidSearchSentence(po *omsapi.PurchaseOrder) string {
+	if po == nil || po.Number == "" {
+		return "Once you leave this screen, ctrl+k search still reaches it."
+	}
+	return "Once you leave this screen, ctrl+k search reaches it by number: " + po.Number + "."
+}
 
 // voidStandingNote is what voiding does on every order, true whatever else the
 // frame says. It is a CONTEXT row, and it is emitted after the vanishing
@@ -2579,12 +2593,12 @@ func (s *PurchaseOrderEditScreen) voidCaveats() []string {
 	case poRemovalVoid:
 		return []string{
 			"Voiding hides the order; only search finds it.",
-			"This is the order's only unvoided line, and the supplier holds this order, so voiding it leaves the order off every purchase-order list. Nothing puts it back: OMS will not add a line to an order past that point and has nothing that lifts a void. " + voidSearchSentence,
+			"This is the order's only unvoided line, and the supplier holds this order, so voiding it leaves the order off every purchase-order list. Nothing puts it back: OMS will not add a line to an order past that point and has nothing that lifts a void. " + voidSearchSentence(s.po),
 		}
 	case poRemovalUnknown:
 		return []string{
 			"Voiding may hide the order; only search finds it.",
-			"This is the order's only unvoided line. This server did not say whether the supplier already has the order (can_delete_items); if it does, voiding leaves it off every purchase-order list with nothing to put it back. " + voidSearchSentence,
+			"This is the order's only unvoided line. This server did not say whether the supplier already has the order (can_delete_items); if it does, voiding leaves it off every purchase-order list with nothing to put it back. " + voidSearchSentence(s.po),
 		}
 	}
 	// poRemovalDelete, which removalPhaseHolds has already closed this prompt
