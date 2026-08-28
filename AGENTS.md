@@ -212,6 +212,36 @@ knowing before touching any of it:
   search still finds it — `backend/search/views.py` applies no such filter).
   Filed against the web app separately; the terminal warns rather than shipping
   the trap unannounced.
+  THE WARNING IS EMITTED **FIRST** AND THAT IS A DECISION, not a layout
+  accident. The confirm's body has no navigable row, so `jdeLines` anchors its
+  window at the top and no key on the frame can fetch what falls off the
+  bottom — whichever caveat is emitted LAST is the one a short pane silently
+  drops. Irreversibility is the recoverable half, said twice already on the
+  same frame (the bar reads `Ctrl-X=Delete line`, the pinned essential header
+  row names what is being destroyed); the vanishing order is said here or
+  nowhere. Same reasoning as `jdeHeadRank`, one level down inside the body, and
+  `TestPOLineRemove_AShortPaneKeepsTheVanishingOrderWarning` sweeps every
+  drawable height rather than the two in `poPaneSizes`.
+- **A PER-LINE INDEX IS CARRIED ACROSS A RELOAD BY IDENTITY, NEVER BY
+  POSITION.** `editLineIdx` / `assocLineIdx` address `po.Items` positionally and
+  every line action fires `load()`, so a reload landing under an OPEN sub-phase
+  is ordinary rather than a corner. The clamp that used to hold the index in
+  range (`if editLineIdx >= lineCount() { editLineIdx = 0 }`) re-pointed it at
+  whatever now sat there: with two lines cut to one, the delete confirm went on
+  NAMING the line the operator had read and confirmed while `Ctrl-X` would have
+  destroyed the other one — and an EMPTIED `Items` list, which only DELETE makes
+  reachable, got a valid-looking index 0 into nothing that every reader then
+  indexed. `reseatLineIndexes` follows each index to its own line by
+  `poLineID` and CLOSES the sub-phase standing on one whose line is gone,
+  saying so on the status row; `addressedLine` is the one guarded read every
+  `po.Items[editLineIdx]` site goes through.
+- **A REMOVAL IS NOT OFFERED OVER A WRITE ALREADY IN FLIGHT.** `removalOffered`
+  is the single predicate the bar and the arm both read, so the gate goes there
+  and the legend loses `Ctrl-E` in the same breath the key stops acting.
+  Without it, Enter on the line editor followed by `Ctrl-E` on the status row
+  opened a delete confirm whose status row read `Deleting…` for a delete nobody
+  asked for, whose own `Ctrl-X` was dropped while the OTHER write was out, and
+  which then vanished by itself when that write answered.
 
 ### Kits are inventory items the item API refuses to admit exist
 

@@ -808,3 +808,270 @@ func TestPOLineRemove_TheConfirmNeverHidesWhatItWillDestroy(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// What a short pane keeps
+// ---------------------------------------------------------------------------
+
+// poRemoveVanishSentence / poRemoveUndoSentence are the confirm's two caveats,
+// verbatim. jdeCaveatLines FOLDS them to the pane, so the pane is flattened
+// before either is looked for — a marker chosen to survive an arbitrary fold
+// would be a marker chosen because it passes.
+const (
+	poRemoveVanishSentence = "This is the only line on the order that is not voided."
+	poRemoveUndoSentence   = "Deleting takes the line off the order for good."
+)
+
+// poRemoveFlatPane is the clipped pane with its line breaks and fold indents
+// collapsed, so a sentence the layer folded across three rows reads as the one
+// sentence it is. Everything else about it is poRemovePane's rule: the SCREEN's
+// own View, clipped to the pane the terminal really gives it.
+func poRemoveFlatPane(s Screen, width, height int) string {
+	pane := clampToBox(s.View(), screenBodyWidth(width), screenBodyHeight(height))
+	return strings.Join(strings.Fields(pane), " ")
+}
+
+// TestPOLineRemove_AShortPaneKeepsTheVanishingOrderWarning.
+//
+// The confirm's body has NO navigable row, so jdeLines anchors its window at the
+// top and nothing on the frame can fetch what falls off the bottom: whichever
+// caveat is emitted last is the one a short pane silently drops. That makes the
+// order between them a decision (deleteCaveats), and this is the check that
+// watches it.
+//
+// The vanishing-order warning is the half that must survive, because it is the
+// only fact on the frame nothing else carries — the bar reads
+// `Ctrl-X=Delete line` and the pinned essential header row names what is being
+// destroyed, so irreversibility is already said twice, while "the order drops
+// out of every purchase-order list, and ctrl+k is the way back" is said here or
+// nowhere.
+//
+// Watched to fail: with the sentences the other way round it reports every
+// height from the shortest drawable one up to about 22 rows.
+func TestPOLineRemove_AShortPaneKeepsTheVanishingOrderWarning(t *testing.T) {
+	fake := &fakeRemovePO{
+		status: "draft", canDelete: boolPtr(true),
+		lines: []*fakeRemoveLine{
+			{id: "line-bolts", label: "M3×12 hex bolt", ordered: 250, cost: "31.25"},
+		},
+	}
+	const width = 100
+
+	// The walk is made at a TALL pane and the terminal is dragged short
+	// afterwards, which is both the sequence an operator goes through and the
+	// only one that works: the movement keys are gated on the frame being drawn
+	// (AGENTS.md), so pressing Down on a pane the layer refuses would report a
+	// held key as a broken screen.
+	confirm := func(t *testing.T, height int) *PurchaseOrderEditScreen {
+		t.Helper()
+		srv := httptest.NewServer(fake.handler())
+		t.Cleanup(srv.Close)
+		deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+		detail := NewPurchaseOrderDetailScreen(deps, "po-1")
+		r := newTestRoot(detail)
+		r.deps = deps
+		next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+		r = pump(t, next.(Root), detail.Init(), 0)
+		r, s := poRemoveOnStatusRow(t, r, 0)
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+		if s.phase != poEditPhaseDeleteLine {
+			t.Fatalf("height %d: phase %v, want the delete confirm", height, s.phase)
+		}
+		next, _ = r.Update(tea.WindowSizeMsg{Width: width, Height: height})
+		if _, ok := next.(Root); !ok {
+			t.Fatalf("height %d: Root.Update returned %T", height, next)
+		}
+		return s
+	}
+
+	heights := jdePaneHeights()
+	if len(heights) == 0 {
+		t.Fatal("no drawable heights — the derivation is broken, not the screen")
+	}
+
+	// The fixture has to REACH the bound: on the tallest pane both sentences fit,
+	// so a run where the second one never appears anywhere would be a check
+	// passing for a reason unrelated to what it names.
+	tallest := heights[len(heights)-1]
+	if flat := poRemoveFlatPane(confirm(t, tallest), width, tallest); !strings.Contains(flat, poRemoveVanishSentence) ||
+		!strings.Contains(flat, poRemoveUndoSentence) {
+		t.Fatalf("height %d draws neither caveat in full, so the sacrifice this test is about never happens:\n%s",
+			tallest, flat)
+	}
+
+	for _, height := range heights {
+		flat := poRemoveFlatPane(confirm(t, height), width, height)
+		vanish := strings.Contains(flat, poRemoveVanishSentence)
+		undo := strings.Contains(flat, poRemoveUndoSentence)
+		if (vanish || undo) && !vanish {
+			t.Errorf("%dx%d: the confirm draws a caveat and it is the wrong one — "+
+				"the operator is told there is no undo and not that the order leaves every list:\n%s",
+				width, height, flat)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A reload landing under an open confirm
+// ---------------------------------------------------------------------------
+
+// poRemoveThreeLineOrder is a draft whose lines can be told apart by name, so a
+// confirm addressing the wrong one is visible rather than inferred.
+func poRemoveThreeLineOrder() *fakeRemovePO {
+	return &fakeRemovePO{
+		status: "draft", canDelete: boolPtr(true),
+		lines: []*fakeRemoveLine{
+			{id: "line-bolts", label: "M3×12 hex bolt", ordered: 250, cost: "31.25"},
+			{id: "line-washers", label: "M3 washer", ordered: 500, cost: "12.50"},
+			{id: "line-nuts", label: "M3 nyloc nut", ordered: 100, cost: "9.00"},
+		},
+	}
+}
+
+// TestPOLineRemove_AReloadNeverRepointsAnOpenConfirmAtAnotherLine.
+//
+// Every line action this screen takes fires a reload, and the confirm can be
+// reopened before that reload lands — so a reload arriving under an open,
+// IRREVERSIBLE confirm is an ordinary sequence rather than a corner. The index
+// it addresses is positional, and the clamp that used to hold it in range aimed
+// it at whatever now sat at that position: the frame went on naming the line
+// the operator had read and confirmed while Ctrl-X would have destroyed a
+// different one.
+//
+// Identity is what must be carried across. Here the confirmed line survives the
+// reload in a NEW position, so the confirm survives with it and the write goes
+// to the line that was confirmed.
+func TestPOLineRemove_AReloadNeverRepointsAnOpenConfirmAtAnotherLine(t *testing.T) {
+	fake := poRemoveThreeLineOrder()
+	r, _ := poRemoveRoot(t, fake, 100)
+	r, s := poRemoveOnStatusRow(t, r, 2)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poEditPhaseDeleteLine {
+		t.Fatalf("phase %v, want the delete confirm", s.phase)
+	}
+	if pane := poRemovePane(s, 100); !strings.Contains(pane, "nyloc") {
+		t.Fatalf("the confirm does not name the line it was opened on:\n%s", pane)
+	}
+
+	// A line goes off the order elsewhere and the screen's own reload lands.
+	fake.mu.Lock()
+	fake.drop("line-bolts")
+	fake.mu.Unlock()
+	r = pump(t, r, s.load(), 0)
+
+	if s.phase != poEditPhaseDeleteLine {
+		t.Fatalf("the confirm closed on a reload that still carries its line; phase %v", s.phase)
+	}
+	if pane := poRemovePane(s, 100); !strings.Contains(pane, "nyloc") {
+		t.Fatalf("the confirm now names another line:\n%s", pane)
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+	fake.mu.Lock()
+	got := append([]string(nil), fake.deletes...)
+	fake.mu.Unlock()
+	if len(got) != 1 || got[0] != "line-nuts" {
+		t.Fatalf("Ctrl-X destroyed %v, but the operator confirmed line-nuts", got)
+	}
+}
+
+// TestPOLineRemove_AConfirmWhoseLineIsGoneClosesAndSaysSo.
+//
+// The other half of the same reload: the confirmed line is no longer on the
+// order at all. Deleting is what makes an EMPTY Items list reachable — voiding
+// only struck a line through — and the clamp answered that with a valid-looking
+// index 0 into nothing, which every reader of the frame then indexed.
+//
+// A removal sub-phase cannot survive onto another line, and there is no line
+// left to survive onto, so it closes back to the form and the status row says
+// why. Nothing is written on the way.
+func TestPOLineRemove_AConfirmWhoseLineIsGoneClosesAndSaysSo(t *testing.T) {
+	fake := &fakeRemovePO{
+		status: "draft", canDelete: boolPtr(true),
+		lines: []*fakeRemoveLine{
+			{id: "line-bolts", label: "M3×12 hex bolt", ordered: 250, cost: "31.25"},
+		},
+	}
+	r, _ := poRemoveRoot(t, fake, 100)
+	r, s := poRemoveOnStatusRow(t, r, 0)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poEditPhaseDeleteLine {
+		t.Fatalf("phase %v, want the delete confirm", s.phase)
+	}
+
+	fake.mu.Lock()
+	fake.drop("line-bolts")
+	fake.mu.Unlock()
+	r = pump(t, r, s.load(), 0)
+
+	if s.phase != poEditPhaseForm {
+		t.Fatalf("the confirm outlived the line it names; phase %v", s.phase)
+	}
+	pane := poRemoveFlatPane(s, 100, 40)
+	if !strings.Contains(pane, "no longer on this order") {
+		t.Fatalf("the screen never says why the confirm went away:\n%s", pane)
+	}
+
+	// And the keys the confirm bound are the form's again — Ctrl-X on the form
+	// is not a destroy, and nothing has gone out.
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+	fake.mu.Lock()
+	got := len(fake.deletes)
+	fake.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("%d delete(s) went out for a line that is not on the order", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A removal offered over a write already in flight
+// ---------------------------------------------------------------------------
+
+// TestPOLineRemove_NoRemovalOpensOverAnInFlightLineSave.
+//
+// Enter on the line editor saves the line and leaves the request out; the
+// status row's Ctrl-E used to open a removal on top of it. The delete confirm
+// then drew `Deleting…` for a delete nobody had asked for, its own Ctrl-X was
+// dropped for as long as the OTHER write was in flight, and it vanished by
+// itself when that write answered — a frame reporting the wrong work that could
+// not be acted on.
+//
+// Both halves are asserted, because the rule is a biconditional: the bar must
+// not name Ctrl-E there while a write is out, and the key must not act.
+func TestPOLineRemove_NoRemovalOpensOverAnInFlightLineSave(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		canDelete *bool
+	}{
+		{"deletable order", boolPtr(true)},
+		{"voidable order", boolPtr(false)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := poRemoveOrder("draft", tc.canDelete)
+			r, _ := poRemoveRoot(t, fake, 100)
+			r, s := poRemoveOnStatusRow(t, r, 0)
+			if poRemoveBarLabel(s) == "" {
+				t.Fatal("the bar names no removal at rest, so this case cannot see one withdrawn")
+			}
+
+			// Enter saves the line. The command is deliberately NOT pumped: an
+			// in-flight save is the state under test.
+			next, _ := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			r = next.(Root)
+			if !s.saving {
+				t.Fatal("enter on the line editor did not put a save in flight")
+			}
+			if label := poRemoveBarLabel(s); label != "" {
+				t.Fatalf("the bar offers %q while a line save is in flight", label)
+			}
+
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+			if s.phase != poEditPhaseLine {
+				t.Fatalf("Ctrl-E opened phase %v over an in-flight save", s.phase)
+			}
+			if pane := poRemoveFlatPane(s, 100, 40); strings.Contains(pane, "Deleting…") {
+				t.Fatalf("the frame reports a delete nobody asked for:\n%s", pane)
+			}
+		})
+	}
+}
