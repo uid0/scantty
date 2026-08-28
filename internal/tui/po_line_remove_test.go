@@ -1008,7 +1008,7 @@ func TestPOLineRemove_AConfirmWhoseLineIsGoneClosesAndSaysSo(t *testing.T) {
 		t.Fatalf("the confirm outlived the line it names; phase %v", s.phase)
 	}
 	pane := poRemoveFlatPane(s, 100, 40)
-	if !strings.Contains(pane, "no longer on this order") {
+	if !strings.Contains(pane, poEditLineGoneNote) {
 		t.Fatalf("the screen never says why the confirm went away:\n%s", pane)
 	}
 
@@ -1073,5 +1073,145 @@ func TestPOLineRemove_NoRemovalOpensOverAnInFlightLineSave(t *testing.T) {
 				t.Fatalf("the frame reports a delete nobody asked for:\n%s", pane)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The flag is re-read, never cached across a refresh
+// ---------------------------------------------------------------------------
+
+// TestPOLineRemove_AnOpenConfirmDoesNotOutliveTheFlagThatOpenedIt.
+//
+// A reload landing under an open removal sub-phase is a supported, surviving
+// state: the sub-phase follows its own LINE across the refresh. The line
+// surviving says nothing about the ORDER, though, so the flag has to be read
+// AGAIN — `can_delete_items` is served from PRE_SUPPLIER_STATUSES and its
+// docstring forbids a client caching it across a refresh.
+//
+// Both directions are driven, not just the one that was reported: a delete
+// confirm open when the order goes to the supplier, and a void prompt open when
+// the order becomes the shop's own again. Neither may write, neither may
+// silently become the other, and both must say what changed.
+func TestPOLineRemove_AnOpenConfirmDoesNotOutliveTheFlagThatOpenedIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		opened  *bool
+		flipped *bool
+		phase   poEditPhase
+		want    string
+	}{
+		{"a draft that goes to the supplier", boolPtr(true), boolPtr(false),
+			poEditPhaseDeleteLine, poEditDeleteFlippedNote},
+		{"a sent order that becomes the shop's own", boolPtr(false), boolPtr(true),
+			poEditPhaseVoidLine, poEditVoidFlippedNote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := poRemoveOrder("draft", tc.opened)
+			r, _ := poRemoveRoot(t, fake, 80)
+			r, s := poRemoveOnStatusRow(t, r, 0)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+			if s.phase != tc.phase {
+				t.Fatalf("phase %v, want %v", s.phase, tc.phase)
+			}
+
+			fake.mu.Lock()
+			fake.canDelete = tc.flipped
+			fake.mu.Unlock()
+			r = pump(t, r, s.load(), 0)
+
+			if s.phase != poEditPhaseLine {
+				t.Fatalf("the removal frame outlived the flag that opened it; phase %v", s.phase)
+			}
+			pane := poRemoveFlatPane(s, 80, 40)
+			if !strings.Contains(pane, tc.want) {
+				t.Fatalf("the screen never says what changed (%q missing):\n%s", tc.want, pane)
+			}
+
+			// Neither key the closed frame bound may write now.
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+			fake.mu.Lock()
+			deletes, voids := len(fake.deletes), len(fake.voids)
+			fake.mu.Unlock()
+			if deletes != 0 || voids != 0 {
+				t.Fatalf("%d delete(s) and %d void(s) went out after the flag changed", deletes, voids)
+			}
+		})
+	}
+}
+
+// TestPOLineRemove_ARefusalKeepsItsFactOnTheStatusRowAt80Columns.
+//
+// `fitStatus` gives an error message bodyWidth-2 cells — 49 at 80 columns — and
+// the status row cannot fold, so a sentence that opens with its circumstance
+// loses the clause it exists for. The clause these carry is that NOTHING WAS
+// WRITTEN, and it is the one thing an operator whose confirm just vanished
+// needs; it leads, so 49 cells is enough for the whole of it.
+func TestPOLineRemove_ARefusalKeepsItsFactOnTheStatusRowAt80Columns(t *testing.T) {
+	fake := &fakeRemovePO{
+		status: "draft", canDelete: boolPtr(true),
+		lines: []*fakeRemoveLine{
+			{id: "line-bolts", label: "M3×12 hex bolt", ordered: 250, cost: "31.25"},
+		},
+	}
+	r, _ := poRemoveRoot(t, fake, 80)
+	r, s := poRemoveOnStatusRow(t, r, 0)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poEditPhaseDeleteLine {
+		t.Fatalf("phase %v, want the delete confirm", s.phase)
+	}
+
+	fake.mu.Lock()
+	fake.drop("line-bolts")
+	fake.mu.Unlock()
+	r = pump(t, r, s.load(), 0)
+
+	if pane := poRemoveFlatPane(s, 80, 40); !strings.Contains(pane, poEditLineGoneNote) {
+		t.Fatalf("the 80-column status row does not carry the whole refusal (%q):\n%s",
+			poEditLineGoneNote, pane)
+	}
+}
+
+// TestPOLineRemove_TheStandingNoteNeverNamesAKeyTheBarDropped.
+//
+// The status row's standing note and the action bar are two surfaces describing
+// one key, and they read one predicate (removalOffered) so they cannot come
+// apart. With a line save in flight the bar drops Ctrl-E; the note used to go on
+// saying "Ctrl-E asks you to confirm first" on a frame where the key did
+// nothing at all.
+//
+// What the note must NOT lose is the standing FACT about the row, so the
+// at-rest half is asserted too: gating the whole sentence rather than the clause
+// naming the key would pass the absence check while taking the row's own
+// explanation away with it.
+func TestPOLineRemove_TheStandingNoteNeverNamesAKeyTheBarDropped(t *testing.T) {
+	fake := poRemoveOrder("draft", boolPtr(true))
+	r, _ := poRemoveRoot(t, fake, 80)
+	r, s := poRemoveOnStatusRow(t, r, 0)
+
+	rest := poRemoveFlatPane(s, 80, 40)
+	if !strings.Contains(rest, "Ctrl-E") {
+		t.Fatalf("at rest the bar and the note both name Ctrl-E; this pane names it nowhere:\n%s", rest)
+	}
+	if !strings.Contains(rest, "can be DELETED outright") {
+		t.Fatalf("the row's standing fact is missing at rest:\n%s", rest)
+	}
+
+	// Enter puts a line save in flight; the command is deliberately not pumped.
+	next, _ := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	r = next.(Root)
+	if !s.saving {
+		t.Fatal("enter on the line editor did not put a save in flight")
+	}
+	if label := poRemoveBarLabel(s); label != "" {
+		t.Fatalf("the bar still offers %q while a save is in flight", label)
+	}
+
+	flight := poRemoveFlatPane(s, 80, 40)
+	if strings.Contains(flight, "Ctrl-E") {
+		t.Fatalf("the body names Ctrl-E on a frame whose bar has dropped it:\n%s", flight)
+	}
+	if !strings.Contains(flight, "can be DELETED outright") {
+		t.Fatalf("gating the key clause took the row's standing fact with it:\n%s", flight)
 	}
 }

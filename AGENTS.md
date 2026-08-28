@@ -235,6 +235,31 @@ knowing before touching any of it:
   `poLineID` and CLOSES the sub-phase standing on one whose line is gone,
   saying so on the status row; `addressedLine` is the one guarded read every
   `po.Items[editLineIdx]` site goes through.
+- **THE FLAG IS READ AGAIN ON EVERY REFRESH, INCLUDING UNDER AN OPEN CONFIRM.**
+  Carrying a sub-phase across a reload by identity means it follows its own
+  LINE, and the line surviving says nothing whatever about the ORDER: a delete
+  confirm opened on a draft outlived the order being sent from the web, with
+  the bar still reading `Ctrl-X=Delete line` — the flag read once and CACHED
+  ACROSS A REFRESH, the one thing its serializer docstring forbids.
+  `removalPhaseHolds` is the single predicate `deleteBar` / `voidBar`, the
+  destructive arms and both frames read; when it fails the frame closes back to
+  the LINE EDITOR (whose status row now offers whatever the refreshed flag
+  calls for) and says what changed. The mirror is held too — a void prompt open
+  when the order becomes the shop's own again offers the instrument that leaves
+  a ghost where the server now allows the typo to be erased.
+- **A BODY SENTENCE MAY NAME A KEY ONLY WHERE THE BAR DOES, AND THE CLAUSE IS
+  WHAT GIVES — NOT THE SENTENCE.** `removalNote`'s standing text carries a FACT
+  about the row (a line already voided, a server that did not answer) which is
+  true whether or not a key is on offer, so gating the whole note on
+  `removalOffered` would have taken the row's own explanation away with the
+  claim. Only the clause naming `Ctrl-E` follows the legend.
+- **A REFUSAL IS WORDED FOR A ROW THAT CANNOT FOLD.** `fitStatus` gives an
+  error `bodyWidth-2` cells — 49 at 80 columns — so every one of this screen's
+  local refusals leads with the load-bearing clause (`nothing written: …`,
+  `nothing deleted: …`) and lets the circumstance be what the cut takes. They
+  are constants (`poEditLineGoneNote` and its siblings) so the tests assert the
+  wording the screen draws, and the `poEditLoadedMsg` arm returns a `Status`
+  behind them: the row is one surface and a sentence needs two.
 - **A REMOVAL IS NOT OFFERED OVER A WRITE ALREADY IN FLIGHT.** `removalOffered`
   is the single predicate the bar and the arm both read, so the gate goes there
   and the legend loses `Ctrl-E` in the same breath the key stops acting.

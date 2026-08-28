@@ -542,25 +542,40 @@ func (s *PurchaseOrderEditScreen) closeLineSubPhase() {
 // index closes, because re-targeting an irreversible confirm is precisely what
 // must not happen; the operator is told, on the status row, rather than finding
 // the frame swapped under them.
-func (s *PurchaseOrderEditScreen) reseatLineIndexes(editID, assocID string) {
+// It hands its sentence BACK rather than only writing it to errMsg, because the
+// status row is one surface and this one needs two: the row cannot fold, so
+// what runs past 49 cells at 80 columns is gone, and the toast behind it is
+// where the tail survives. The caller is what has a command to return.
+func (s *PurchaseOrderEditScreen) reseatLineIndexes(editID, assocID string) string {
 	s.editLineIdx = s.lineIndexOf(editID)
 	if s.assocLineIdx != poAssocLineOrder {
 		if idx := s.lineIndexOf(assocID); idx >= 0 {
 			s.assocLineIdx = idx
 		} else if s.phase == poEditPhaseAssoc {
 			s.closeLineSubPhase()
-			s.errMsg = "that line is no longer on this order, so its picker closed — nothing was written"
-			return
+			s.errMsg = poEditLineGoneNote
+			return s.errMsg
 		}
 	}
-	if s.editLineIdx >= 0 {
-		return
+	if s.editLineIdx < 0 {
+		switch s.phase {
+		case poEditPhaseLine, poEditPhaseVoidLine, poEditPhaseDeleteLine:
+			s.closeLineSubPhase()
+			s.errMsg = poEditLineGoneNote
+			return s.errMsg
+		}
+		return ""
 	}
-	switch s.phase {
-	case poEditPhaseLine, poEditPhaseVoidLine, poEditPhaseDeleteLine:
-		s.closeLineSubPhase()
-		s.errMsg = "that line is no longer on this order, so its form closed — nothing was written"
+	// The line survived; the ORDER is the other half and it is READ AGAIN here
+	// rather than carried over from the moment the sub-phase opened. See
+	// removalPhaseHolds — this is the refresh the flag must never be cached
+	// across.
+	if note := s.removalFlipNote(); note != "" {
+		s.returnFromSub()
+		s.errMsg = note
+		return note
 	}
+	return ""
 }
 
 // poEditLineBase is the cursor position of the first line row.
@@ -617,8 +632,11 @@ func (s *PurchaseOrderEditScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if s.cursor >= s.rowCount() && s.rowCount() > 0 {
 			s.cursor = s.rowCount() - 1
 		}
-		s.reseatLineIndexes(editID, assocID)
+		note := s.reseatLineIndexes(editID, assocID)
 		s.syncFocus()
+		if note != "" {
+			return s, Status(note, StatusWarn)
+		}
 		return s, nil
 
 	case poEditSavedMsg:
@@ -1147,7 +1165,7 @@ func (s *PurchaseOrderEditScreen) saveLine() tea.Cmd {
 		// aimed at a position would write this form's cost and dates onto
 		// whatever now sits there.
 		s.closeLineSubPhase()
-		s.errMsg = "that line is no longer on this order — nothing was saved"
+		s.errMsg = poEditLineSaveGoneNote
 		s.syncFocus()
 		return Status(s.errMsg, StatusWarn)
 	}
@@ -1321,7 +1339,7 @@ func (s *PurchaseOrderEditScreen) saveAssoc() tea.Cmd {
 	// is refused rather than aimed at whatever now sits at that position.
 	if lineIdx != poAssocLineOrder && (s.po == nil || lineIdx < 0 || lineIdx >= s.lineCount()) {
 		s.closeLineSubPhase()
-		s.errMsg = "that line is no longer on this order, so nothing was written"
+		s.errMsg = poEditLineGoneNote
 		s.syncFocus()
 		return Status(s.errMsg, StatusWarn)
 	}
@@ -1496,7 +1514,18 @@ func (s *PurchaseOrderEditScreen) removalNote() string {
 	}
 	switch s.lineRemoval() {
 	case poRemovalDelete:
-		return "This order has not gone to the supplier, so a line put on it by mistake can be DELETED outright — no reason is asked for, and nothing is left behind. Ctrl-E asks you to confirm first; it cannot be undone."
+		note := "This order has not gone to the supplier, so a line put on it by mistake can be DELETED outright — no reason is asked for, and nothing is left behind."
+		// The KEY is named here only while the bar names it, off the one
+		// predicate both read. Gating the whole sentence would be the wrong
+		// fix — the other branches carry a standing FACT about the row (a line
+		// already voided, a server that did not answer) which is exactly what
+		// this note exists to hold, and which is true whether or not a key is
+		// on offer. Only the clause naming Ctrl-E is a claim about a key, so
+		// only that clause follows the legend.
+		if _, offered := s.removalOffered(); offered {
+			note += " Ctrl-E asks you to confirm first; it cannot be undone."
+		}
+		return note
 	case poRemovalVoid:
 		if li.IsVoided {
 			return "This line is already voided. The supplier holds this order, so its lines stay on the record — a voided line is struck off rather than removed."
@@ -1512,6 +1541,70 @@ func (s *PurchaseOrderEditScreen) removalNote() string {
 		return "This server did not report whether this order's lines may be deleted outright (can_delete_items), so only voiding is offered — the safe half. Voiding on a draft leaves a struck-off line where deleting would have left nothing."
 	}
 }
+
+// removalPhaseHolds reports that the removal sub-phase the screen is standing
+// on is still the one the ORDER's flag calls for. It is the single predicate
+// the confirm's bar, its destructive arm and its frame all read, so none of the
+// three can go on offering an action the last refresh has superseded.
+//
+// It exists because a reload landing under an OPEN removal sub-phase is a
+// supported, surviving state (reseatLineIndexes): the sub-phase follows its own
+// LINE across the refresh, and the line surviving says nothing whatever about
+// the ORDER. Open the delete confirm on a draft, have the order sent to the
+// supplier from the web, and the screen's own reload lands with
+// can_delete_items false — the line is still there, so the confirm stayed up,
+// the bar went on reading `Ctrl-X=Delete line` and the body went on saying
+// there is no undo, over an order the server now says the supplier holds. That
+// is the flag read once and CACHED ACROSS A REFRESH, which is the one thing its
+// serializer docstring forbids.
+//
+// The mirror is held too rather than only the direction that was reported: a
+// void prompt open when the order becomes the shop's own again is offering the
+// instrument that leaves a ghost where the server now allows the typo to be
+// erased.
+func (s *PurchaseOrderEditScreen) removalPhaseHolds() bool {
+	switch s.phase {
+	case poEditPhaseDeleteLine:
+		return s.lineRemoval() == poRemovalDelete
+	case poEditPhaseVoidLine:
+		// Void is what BOTH of the other answers land on, silence included —
+		// the same reading removalOffered makes, so the prompt does not close
+		// on an OMS that merely stopped answering.
+		return s.lineRemoval() != poRemovalDelete
+	}
+	return true
+}
+
+// removalFlipNote is what the operator is told when it does not hold, and ""
+// when it does. Nothing is destroyed and nothing is silently swapped to the
+// other instrument: the frame closes back to the line editor, whose status row
+// now offers whichever removal the refreshed flag calls for, and the sentence
+// names what CHANGED. Bounded to the status row's 49 cells at 80 columns with
+// the load-bearing clause first, because that row cannot fold.
+func (s *PurchaseOrderEditScreen) removalFlipNote() string {
+	if s.removalPhaseHolds() {
+		return ""
+	}
+	if s.phase == poEditPhaseDeleteLine {
+		return poEditDeleteFlippedNote
+	}
+	return poEditVoidFlippedNote
+}
+
+// The screen's refusals, worded for the surface that cannot fold and cannot
+// scroll. fitStatus gives an error message bodyWidth-2 cells — 49 at the 80
+// columns this interface is modelled on — so the clause each of these exists to
+// carry leads and the circumstance follows: cut at 49 the operator still reads
+// that NOTHING WAS WRITTEN, which is the fact, and loses only the part of the
+// reason the frame around them already shows.
+const (
+	poEditLineGoneNote      = "nothing written: that line has left this order"
+	poEditLineSaveGoneNote  = "nothing saved: that line has left this order"
+	poEditLineVoidGoneNote  = "nothing voided: that line has left this order"
+	poEditLineDelGoneNote   = "nothing deleted: that line has left this order"
+	poEditDeleteFlippedNote = "nothing deleted: the supplier holds this order"
+	poEditVoidFlippedNote   = "nothing voided: this order is the shop's own"
+)
 
 // poLastActiveLine reports that idx names the only line on the order that is
 // not voided — so destroying it leaves the order with none.
@@ -1576,6 +1669,11 @@ func (s *PurchaseOrderEditScreen) updateVoidLine(m tea.KeyMsg) (Screen, tea.Cmd)
 		if s.saving {
 			return s, nil
 		}
+		if note := s.removalFlipNote(); note != "" {
+			s.returnFromSub()
+			s.errMsg = note
+			return s, Status(note, StatusWarn)
+		}
 		reason := strings.TrimSpace(s.voidReason.Value())
 		if reason == "" {
 			s.errMsg = "a reason is required to void a line"
@@ -1586,7 +1684,7 @@ func (s *PurchaseOrderEditScreen) updateVoidLine(m tea.KeyMsg) (Screen, tea.Cmd)
 			// Same hazard as the delete confirm's: a void aimed at a position
 			// would strike off whatever now sits there.
 			s.closeLineSubPhase()
-			s.errMsg = "that line is no longer on this order — nothing was voided"
+			s.errMsg = poEditLineVoidGoneNote
 			s.syncFocus()
 			return s, Status(s.errMsg, StatusWarn)
 		}
@@ -1647,6 +1745,11 @@ func (s *PurchaseOrderEditScreen) updateDeleteLine(m tea.KeyMsg) (Screen, tea.Cm
 			// already and a second press has nothing to add.
 			return s, nil
 		}
+		if note := s.removalFlipNote(); note != "" {
+			s.returnFromSub()
+			s.errMsg = note
+			return s, Status(note, StatusWarn)
+		}
 		li, ok := s.addressedLine()
 		if !ok {
 			// The line went off the order while this frame was up. Nothing is
@@ -1654,7 +1757,7 @@ func (s *PurchaseOrderEditScreen) updateDeleteLine(m tea.KeyMsg) (Screen, tea.Cm
 			// confirmed line was is the one outcome an irreversible key must
 			// never have.
 			s.closeLineSubPhase()
-			s.errMsg = "that line is no longer on this order — nothing was deleted"
+			s.errMsg = poEditLineDelGoneNote
 			s.syncFocus()
 			return s, Status(s.errMsg, StatusWarn)
 		}
@@ -1686,7 +1789,7 @@ func (s *PurchaseOrderEditScreen) updateDeleteLine(m tea.KeyMsg) (Screen, tea.Cm
 // frame's status row is the answer and the key is not offered — see
 // updateDeleteLine.
 func (s *PurchaseOrderEditScreen) deleteBar() []actionBarItem {
-	if s.saving {
+	if s.saving || !s.removalPhaseHolds() {
 		return []actionBarItem{{"Esc", "Back"}}
 	}
 	return []actionBarItem{{"Ctrl-X", "Delete line"}, {"Esc", "Cancel"}}
@@ -1788,6 +1891,9 @@ func (s *PurchaseOrderEditScreen) viewDeleteLine() string {
 	li, ok := s.addressedLine()
 	if !ok {
 		return s.viewForm()
+	}
+	if !s.removalPhaseHolds() {
+		return s.viewLineEdit()
 	}
 	width := s.bodyWidth()
 
@@ -2097,8 +2203,7 @@ func poLineCostHint(li omsapi.PurchaseOrderItem) string {
 
 // lineFields describes the line editor: three typed rows, then the three the
 // action bar's Ctrl-E opens.
-func (s *PurchaseOrderEditScreen) lineFields() []jdeField {
-	li := s.po.Items[s.editLineIdx]
+func (s *PurchaseOrderEditScreen) lineFields(li omsapi.PurchaseOrderItem) []jdeField {
 	out := make([]jdeField, 0, poLineEditCount)
 	for i := 0; i < poLineEditInputCount; i++ {
 		width := 0
@@ -2207,7 +2312,7 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 	body.Add("")
 	// One block, so it finds its own label column — unlike the header form,
 	// whose two bands share one.
-	for i, line := range renderJDEFields(s.lineFields(), s.bodyWidth()) {
+	for i, line := range renderJDEFields(s.lineFields(li), s.bodyWidth()) {
 		body.AddRow(i, line)
 	}
 	body.Add("")
@@ -2373,6 +2478,9 @@ func (s *PurchaseOrderEditScreen) viewVoidLine() string {
 	if !ok {
 		return s.viewForm()
 	}
+	if !s.removalPhaseHolds() {
+		return s.viewLineEdit()
+	}
 	field := jdeField{
 		Label:   "Reason",
 		Kind:    jdeText,
@@ -2399,6 +2507,9 @@ func (s *PurchaseOrderEditScreen) viewVoidLine() string {
 // key added here would be judged against a stale copy and pass silently, which
 // is exactly the hand-kept-roster failure that sweep exists to prevent.
 func (s *PurchaseOrderEditScreen) voidBar() []actionBarItem {
+	if s.saving || !s.removalPhaseHolds() {
+		return []actionBarItem{{"Esc", "Back"}}
+	}
 	return []actionBarItem{{"Enter", "Void line"}, {"Esc", "Cancel"}}
 }
 
