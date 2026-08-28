@@ -2382,7 +2382,8 @@ func (g jdeScreen) frameScrolled(header jdeHeader, body *jdeLines, offset int, s
 		// answer 0 and throw away where the operator had scrolled to. A terminal
 		// dragged short and grown again comes back where it was. This is now the
 		// ONLY path that skips the clamp: past it the body always has at least
-		// one row (bodyAvail), so there is always something to clamp against.
+		// one row (bodyAvailForBar), so there is always something to clamp
+		// against.
 		return g.tooShortNotice(barRows, len(header)), offset
 	}
 	budget := g.bodyRowsForBar(barRows)

@@ -581,3 +581,54 @@ func TestJDEForm_EveryMovementTokenABarDrawsIsInTheTable(t *testing.T) {
 		t.Error("no columnar bar drew a single token, so this check asserted nothing")
 	}
 }
+
+// TestJDEForm_EscStillLeavesOnARefusedPane: the notice's own promise, kept.
+//
+// jdeTooShort tells the operator, on the pane it is replacing, that "Esc still
+// leaves" — which is the whole reason the silence above is legitimate. A
+// movement key answering with nothing is only acceptable while the notice is a
+// standing answer the operator can ACT on, and esc is the one key that acts on
+// it. A documented claim the code does not honour is a defect in either
+// direction, so it is asserted rather than assumed: the gate went into 107
+// handlers, and an esc arm that fell inside one by accident would leave a
+// terminal dragged short with no way out and a sentence saying there is.
+//
+// The comparison is against the SAME screen at a height that draws, so the
+// check needs no roster of what esc means per screen: some close a sub-phase,
+// some pop the stack, one opens a confirm. What it forbids is esc doing
+// something at a drawable height and NOTHING at a refused one.
+func TestJDEForm_EscStillLeavesOnARefusedPane(t *testing.T) {
+	const tall = 40
+	checked := 0
+	for _, c := range jdePaneCases() {
+		name, mk := c.name, c.mk
+		for _, w := range jdePaneWidths {
+			ref := mk()
+			jdeRootAt(t, ref, w, tall)
+			place := jdePlaceOf(ref)
+			nextRef, cmdRef := ref.Update(poPickerKeyMsg("esc"))
+			// A screen where esc does nothing even on a drawn pane makes no
+			// claim this check can hold; it is the bar sweeps' business.
+			if reflect.DeepEqual(place, jdePlaceOf(nextRef)) && cmdRef == nil {
+				continue
+			}
+			for _, h := range jdeRefusedHeights(t, mk, w) {
+				s := mk()
+				jdeRootAt(t, s, w, h)
+				place := jdePlaceOf(s)
+				next, cmd := s.Update(poPickerKeyMsg("esc"))
+				checked++
+				if reflect.DeepEqual(place, jdePlaceOf(next)) && cmd == nil {
+					t.Errorf("%s at %dx%d: the notice drawn on that pane says \"Esc still "+
+						"leaves\" and esc did nothing, while at %dx%d it acts. A terminal "+
+						"dragged short would have no way out and a sentence saying it has",
+						name, w, h, w, tall)
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("no columnar screen was refused at any supported size with an esc that " +
+			"acts, so this check asserted nothing")
+	}
+}

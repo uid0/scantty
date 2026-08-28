@@ -710,6 +710,14 @@ either:
   BICONDITIONAL over `jdePaneCases` at every drawable pane — derived, so site
   thirty-three cannot reopen it — and it fails a bar that names the pair where a
   page moves nothing just as readily.
+  THAT BICONDITIONAL COVERS `PgUp`/`PgDn` AND NOT `UP/DN`, so do not read the
+  class as closed: a bar builder that appends `{"UP/DN", …}` with no row-count
+  condition names a key a CLAMPING list cursor cannot honour once the list is
+  down to ONE navigable row (`jdeClampPick` returns the row it was handed, no
+  note is written, the pane redraws byte for byte). A FIELD form is not an
+  instance — its cursor WRAPS. The gap is live and the rule, the instances and
+  what closing it would take are recorded where a reader meets those states,
+  beside `jdeInertCases` in `jde_refused_pane_test.go`.
   Read `jde_form.go`'s "Movement" block before touching any of them; what is
   worth knowing here:
   - **The BAR and the HANDLER ask different questions and must go on asking
@@ -745,7 +753,7 @@ either:
     presses the movement keys THAT SCREEN'S BAR NAMES at any height, and asserts
     both the clipped frame and a position fingerprint reflected off the screen's
     own int fields (`cursor` / `scroll` / `focus` / `offset` in the name).
-    `jdeInertCases` records, with a reason, the two cases where nothing moves at
+    `jdeInertCases` records, with a reason, every case where nothing moves at
     any height — absent and empty are different states.
   - **A reach loop in a test must be BOUNDED.** `for s.focused != row { down }`
     was the ordinary idiom and it turns a declined key into a HANG: the package
