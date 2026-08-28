@@ -1164,6 +1164,14 @@ const (
 	// PO-2026-0042, so a frame that says "by number" and shows none fails.
 	poVoidOrderNumber = "PO-2026-0042"
 
+	// The number AND the phrase it must precede, in the one order a trim cannot
+	// break: the header gives ground from the END, so a cut that keeps
+	// "by number" keeps everything ahead of it. Asserted as one phrase because
+	// the two halves apart say nothing about their order, and the order is the
+	// whole guarantee — the tail-appended wording drew "…by number:" with the
+	// number trimmed off at 80x18.
+	poVoidNumberedPhrase = poVoidOrderNumber + " by number"
+
 	// The prose behind it. poVoidLossClause is the fact the headline
 	// summarises, drawn only where there is room for the detail as well.
 	poVoidCondition    = "This is the order's only unvoided line"
@@ -1392,6 +1400,15 @@ func poVoidBranches(t *testing.T) []poVoidBranch {
 // edit to either wording then fails here loudly instead of silently widening
 // the surface a short pane can trim. The headline is read back off voidCaveats
 // too, so the constants the sweep asserts cannot go stale against the screen.
+//
+// IT ALSO ASSERTS WHAT THAT ONE ROW HAS TO CARRY, because one row is only worth
+// having if it holds both halves. The loss and the way back are on the same row
+// so that a trim takes the claim whole or leaves it whole; a headline reworded
+// to state the loss alone would be the dead end this work removed, with the
+// remedy pushed into prose the header is free to drop. That used to be inferred
+// in the height sweep, from the accident that the remedy clause is a substring
+// of both headlines — an implication of two other checks reading as a property
+// of its own. Stated here it is a property.
 func TestPOLineRemove_TheVanishingWarningIsOneRowAtTheTightestPane(t *testing.T) {
 	for _, branch := range poVoidBranches(t) {
 		t.Run(branch.name, func(t *testing.T) {
@@ -1408,6 +1425,10 @@ func TestPOLineRemove_TheVanishingWarningIsOneRowAtTheTightestPane(t *testing.T)
 			if rows := jdeCaveatLines(caveats[0], s.bodyWidth()); len(rows) != 1 {
 				t.Errorf("the leading caveat folds onto %d rows at %d cells of pane, so a trim can cut the claim in half:\n%q",
 					len(rows), s.bodyWidth(), caveats[0])
+			}
+			if !strings.Contains(caveats[0], poVoidWayBack) {
+				t.Errorf("the one row states the loss and not the way back, so the remedy rides prose a trim may drop:\n%q",
+					caveats[0])
 			}
 		})
 	}
@@ -1480,6 +1501,27 @@ func voidPaneSweep(t *testing.T, branch poVoidBranch, width int, heights []int) 
 		if !strings.Contains(flat, poVoidLossClause) || !strings.Contains(flat, poVoidStandingNote) {
 			t.Fatalf("height %d draws neither caveat in full, so the sacrifice never happens:\n%s", tallest, flat)
 		}
+		// THE TWO WAY-BACK FACTS ARE ASSERTED POSITIVELY HERE, and that is not
+		// a duplicate of the conditional guards below — it is what stops them
+		// being vacuous. Each of those fires only once the pane ALREADY draws
+		// the token it qualifies: "ctrl+k without its clause" is silent on a
+		// pane with no ctrl+k, and "by number without the number" is silent on
+		// a pane that says neither. So a sentence that stopped naming them at
+		// all would satisfy both. That is a live shape rather than a
+		// hypothetical: po_number is nullable on the wire, and
+		// voidSearchSentence answers an empty one with a fallback carrying no
+		// number — every check in this file would have stayed green while the
+		// remedy quietly lost the fact it exists to deliver. The reach check is
+		// where the fixture is proved to reach the bound, so it is where these
+		// belong.
+		if !strings.Contains(flat, poVoidKeyClause) {
+			t.Fatalf("height %d never draws the qualifier-then-key clause %q, so the ctrl+k guard below is vacuous:\n%s",
+				tallest, poVoidKeyClause, flat)
+		}
+		if !strings.Contains(flat, poVoidNumberedPhrase) {
+			t.Fatalf("height %d never draws %q, so the by-number guard below is vacuous:\n%s",
+				tallest, poVoidNumberedPhrase, flat)
+		}
 	}
 
 	for _, height := range heights {
@@ -1503,15 +1545,28 @@ func voidPaneSweep(t *testing.T, branch poVoidBranch, width int, heights []int) 
 			t.Errorf("%dx%d: the prose survives and the headline it summarises does not:\n%s",
 				width, height, flat)
 		}
-		// A warning cut before its remedy is a dead end, which is its own
-		// defect: wherever the pane says a thing is about to be lost it also
-		// says how to get it back. This is what forced the headline down to ONE
-		// row (voidCaveats) — as a single long caveat the 80x14 pane read "…and
-		// nothing puts it back:" and stopped, and the two-row rewrite of it
-		// stopped at "…every purchase-order list;" on 80x13.
-		if (warned || detail) && !strings.Contains(flat, poVoidWayBack) {
-			t.Errorf("%dx%d: the pane warns and does not name the way back:\n%s", width, height, flat)
-		}
+		// "A WARNING CUT BEFORE ITS REMEDY IS A DEAD END" IS NOT CHECKED HERE,
+		// AND THIS IS WHERE A READER WOULD EXPECT IT TO BE — which is why the
+		// absence is written down rather than left to be noticed.
+		//
+		// It was checked here, as `(warned || detail) && !contains("search
+		// finds it.")`, and it could not fail on its own account: that clause
+		// is a literal substring of BOTH headlines, so `warned` already
+		// implies it, and the one remaining case — the prose drawn without the
+		// headline — is exactly what the check above reports. It read as an
+		// independent property and was an implication of two other checks, the
+		// same "coverage that is not coverage" this whole sweep exists over.
+		//
+		// The property is real and it holds one level down instead. The remedy
+		// is carried BY the one-row headline (voidCaveats' whole design: one
+		// row states the loss AND the way back, so a trim can take the claim
+		// whole or leave it whole, never split it), so what defends it is the
+		// pair that establishes those two facts directly rather than by
+		// inference — TestPOLineRemove_TheVanishingWarningIsOneRowAtTheTightestPane,
+		// which asserts the headline is one row and that the row contains the
+		// remedy clause, plus the reach check above, which proves the headline
+		// really reaches the pane. Do not weaken either believing this sweep
+		// covers the remedy separately; it never did.
 		// A key named on a frame that does not honour it is worse than no key
 		// at all. This screen takes raw input, so ctrl+k never reaches the
 		// root's search palette here — it reaches the focused Reason box, where
