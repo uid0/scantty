@@ -49,6 +49,41 @@ import (
 // so a fix cannot be tuned to 80.
 var jdePaneWidths = []int{80, 100, 120}
 
+// jdeDrawableWidths is every terminal WIDTH Root will draw a screen at, up to
+// the widest this project sweeps.
+//
+// It exists because jdePaneWidths above is a JUDGEMENT — three widths chosen so
+// a fix cannot be tuned to one — and a judgement cannot report a property that
+// fails at a width nobody listed. The void prompt's one-row warning is the
+// worked example: it held at 80, 100 and 120 and broke at 60, where the caveat
+// budget is 29 cells, and no sweep could see it because every sweep named its
+// own widths. Where a property must hold at EVERY pane the operator can reach,
+// walk this instead.
+//
+// The floor is Root.View's own gate (contentWidth < 20 refuses), asked rather
+// than written down, so a change to it moves this set with it. The ceiling is
+// 120 — the widest jdePaneWidths names — because a wider pane only folds less,
+// and an unbounded loop would be a slow sweep rather than a stronger one.
+func jdeDrawableWidths() []int {
+	var out []int
+	for w := 1; w <= 120; w++ {
+		if !jdeRootDrawsAtWidth(w) {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// jdeRootDrawsAtWidth reports whether Root.View() renders a screen at all at
+// this width, rather than its own "terminal too narrow" line. Asked of Root
+// instead of restated here, exactly as jdeRootDraws asks it of the height.
+func jdeRootDrawsAtWidth(width int) bool {
+	r := newTestRoot(NewServiceStatusScreen(Deps{}))
+	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+	return !strings.Contains(next.(Root).View(), "terminal too narrow")
+}
+
 // jdePaneHeights is every height Root will draw a screen at.
 //
 // The floor is Root.View's own gate: it refuses below a content height of 5,

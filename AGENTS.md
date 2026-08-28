@@ -250,10 +250,18 @@ knowing before touching any of it:
   poRemovalVoid wording right. Its sweep was single-branch and therefore green
   over the defect; it walks BOTH answers that reach the prompt now, derived from
   `poRemovalFor` over the flag's whole space, and the leading caveat's one-row
-  property is asserted against the layer's own fold at the tightest pane
-  (`TestPOLineRemove_TheVanishingWarningIsOneRowAtTheTightestPane`) because
+  property is asserted against the layer's own fold
+  (`TestPOLineRemove_TheVanishingWarningIsOneRowWhereverItIsDrawn`) because
   `poRemoveFlatPane` collapses whitespace and cannot see a headline lose its
   second row.
+  **ONE STRUCTURAL RULE, THREE INSTANCES: WHATEVER MUST SURVIVE MUST LEAD.**
+  `jdeCaveatLines` folds from the tail and `jdeFitHeader` trims from the tail,
+  so ordering is the only bound on this frame that holds by CONSTRUCTION. The
+  qualifier leads `ctrl+k`; the NUMBER leads "by number"; and the REMEDY leads
+  the LOSS in both headlines, so every prefix of a folded headline either makes
+  no loss claim or carries the way back with it. Read them as one rule — written
+  three times as three tricks, the next wording keeps two of them and loses the
+  third, which is exactly how each of these arrived.
   WHAT IS PERMANENT AND WHAT IS NOT ARE DIFFERENT FACTS, and the wording keeps
   them apart. Permanently lost: the order's place on every purchase-order list,
   `all` included, since it can never regain an active line. Not lost: the ORDER,
@@ -270,13 +278,34 @@ knowing before touching any of it:
   its tail — which is where a remedy naturally falls. Two wordings had that dead
   end and were caught by the height sweep rather than by reading (80x14, then
   80x13 after shortening); shortening only moves the height, because the budget
-  reaches zero one row at a time. So the first caveat is a SINGLE row at the 51
-  columns 80 leaves and carries the loss AND the remedy, and the prose
-  explaining it is a second caveat behind it — the headline-then-detail split
-  `setErr` makes on the status row, for the same reason.
+  reaches zero one row at a time. So the first caveat is a SINGLE row wherever it
+  is drawn and carries the loss AND the remedy, and the prose explaining it is a
+  second caveat behind it — the headline-then-detail split `setErr` makes on the
+  status row, for the same reason.
+  **THAT ONE-ROW CLAIM IS CONDITIONAL, AND THE CONDITION IS ENFORCED RATHER
+  THAN ASSUMED.** It used to be stated flat, and it was only ever true at 80
+  columns and up: Root draws from a terminal width of 45 (`app.go`'s
+  `contentWidth` gate), and at 60 `screenBodyWidth` is 31, which leaves
+  `jdeCaveatLines` 29 cells — the loss-first headline broke at exactly 29 and a
+  trim keeping the first row alone stated the loss with the remedy gone. So
+  `voidCaveats` now takes the pane width and withholds BOTH caveats — headline
+  and prose as a UNIT, since the prose states the loss too — wherever the
+  headline would not fold to one row. Refuse rather than mutilate, the stance
+  `jdeTooShort` takes one level up; it is NOT the silence rule 1 forbids, which
+  is about a keypress changing nothing visible. The gate reads `bodyWidth()` and
+  no named width ON PURPOSE: this file says 80 must HOLD while `app.go` draws
+  down to 45, and a gate computed from the real pane needs no answer to that.
+  Measured: both facts fit one row from about 74 columns up, and no wording
+  carrying both fits the 18 cells the narrowest drawable pane leaves.
   `TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning` sweeps every
-  drawable height at 80/100/120 and fails a pane that warns without naming the
-  way back.
+  drawable height at every drawable WIDTH — derived from Root's own gate
+  (`jdeDrawableWidths`), because three hand-picked widths is exactly how the
+  60-column hole survived — and fails a pane stating the loss without its
+  remedy. That check keys on the loss FRAGMENT, not on the headline: keyed on
+  the headline it could not fail, since the remedy leads and is therefore a
+  substring of it, and a SPLIT headline reads as absent once `poRemoveFlatPane`
+  has collapsed the pane. Verified by reverting both halves: it reports from
+  45x14 through 79x12, 60x12 among them, and at no width from 80 up.
   Pinning a header COSTS the prompt a row, so the layer now refuses to draw it
   one terminal row earlier than it used to (80x11 rather than 80x10). That is
   the layer's designed answer — a bounded notice naming the height it needs,

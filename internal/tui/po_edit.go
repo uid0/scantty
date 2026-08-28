@@ -2586,45 +2586,103 @@ const voidStandingNote = "This marks the line voided and the supplier link disco
 // list;" and stopped at 80x13. Shortening is not a fix, it only moves the
 // height, because the budget goes to zero one row at a time.
 //
-// So the FIRST caveat is a single row at the 51 columns 80 leaves, states the
-// loss AND the way back, and is emitted first so it is the last thing dropped:
-// wherever this frame warns at all, it warns completely. Everything that
-// EXPLAINS the warning — which line, why the order is past the boundary, what
-// "nothing puts it back" rests on — is the second caveat, where the pane takes
-// it first and takes it as prose the headline has already summarised. The same
+// So the FIRST caveat is a single row wherever it is drawn, states the loss AND
+// the way back, and is emitted first so it is the last thing dropped: wherever
+// this frame warns at all, it warns completely. Everything that EXPLAINS the
+// warning — which line, why the order is past the boundary, what "nothing puts
+// it back" rests on — is the second caveat, where the pane takes it first and
+// takes it as prose the headline has already summarised. The same
 // headline-then-detail split setErr makes on the status row, for the same
 // reason: one surface can be trimmed and the other cannot.
 //
 // Do not merge them back to save a row. Redraw the frame at 80x12, 80x13 and
 // 80x14 first; that is where every version of this sentence has failed.
 //
+// THE RULE THIS FRAME KEEPS: IT MUST NEVER STATE A LOSS WITHOUT ITS REMEDY.
+// A warning is only legitimate where the operator can act on it, so a pane
+// carrying "the order goes off every list" and not carrying "search still finds
+// it" is not a shortened warning, it is a dead end — the very thing this work
+// was opened to remove.
+//
+// AND THE MECHANISM THAT KEEPS IT IS ONE SENTENCE: jdeFitHeader and
+// jdeCaveatLines BOTH give ground from the TAIL, therefore WHATEVER MUST
+// SURVIVE MUST LEAD. That is one structural rule with three instances on this
+// one frame, and it is written here once rather than three times as three
+// tricks:
+//
+//   - the qualifier leads `ctrl+k`, so a cut takes the key and never the
+//     condition on it (voidSearchSentence);
+//   - the order NUMBER leads "by number", so a cut takes the phrase and never
+//     the token it tells the operator to search for (voidSearchSentence);
+//   - the REMEDY leads the LOSS, here, so every prefix of the folded headline
+//     either makes no loss claim at all or carries the remedy with it.
+//
+// A property that holds BY CONSTRUCTION at every width beats one that holds
+// above a threshold nothing enforces. The loss-first wording held only at >= 80
+// columns and nothing said so: Root draws from a terminal width of 45 up
+// (app.go's contentWidth gate), and at 60 columns screenBodyWidth is 31, which
+// leaves jdeCaveatLines 29 cells; "Voiding hides the order; only search finds
+// it." breaks at exactly 29 into "Voiding hides the order; only" and "search
+// finds it.", and a trim keeping the first row alone drew the loss with the
+// remedy gone.
+//
+// WHERE EVEN THAT IS NOT ENOUGH, NOTHING IS DRAWN — the headline AND the prose,
+// as a unit. Below roughly 74 columns no wording carrying both facts folds to
+// one row (the budget is 18 cells at the narrowest drawable pane), so the
+// caveats are gated on the width the terminal REALLY gave: refuse rather than
+// mutilate, which is the stance jdeTooShort already takes one level up. This is
+// NOT the silence rule 1 forbids — that rule is about a keypress changing
+// nothing visible, and nothing here is an answer to a key; it is the choice
+// between half a warning that strands the operator and none. The gate takes
+// BOTH caveats because the prose states the loss too, so dropping the headline
+// alone would reintroduce the dead end through the other half and break the
+// "prose never survives without the headline" property beside it.
+//
+// The gate reads s.bodyWidth() and no named width, deliberately: AGENTS.md says
+// 80 columns is the width that must HOLD while app.go draws down to 45, and
+// that is a question for somebody else. A gate computed from the real pane
+// needs no answer to it.
+//
 // THE UNKNOWN ANSWER CONCLUDES NOTHING. poRemovalUnknown lands on this prompt
 // too, and there the client does not know which side of the boundary the order
 // is on, so it does not know whether the void hides it. Found-nothing and
-// could-not-tell are different facts: the leading sentence is CONDITIONAL on
-// the answer the server withheld rather than asserting either outcome, and the
-// sentence that names the withholding is the expendable half — an operator who
-// loses it has read an "if", not a claim.
-func (s *PurchaseOrderEditScreen) voidCaveats() []string {
+// could-not-tell are different facts: the leading sentence hedges the LOSS
+// rather than asserting either outcome, and the sentence that names the
+// withholding is the expendable half — an operator who loses it has read a
+// "may", not a claim.
+//
+// WHICH IS ALSO WHY ONLY THE VOID WORDING SAYS "ONLY". On the void answer the
+// order is demonstrably past the boundary, so search really is the single way
+// back. On the unknown answer it may not be hidden at all, and there the lists
+// would still find it — so "only search finds the order" is a claim that
+// branch cannot make. The hedge belongs on the loss, and the remedy that leads
+// is the half that is true either way.
+func (s *PurchaseOrderEditScreen) voidCaveats(width int) []string {
 	if !poLastActiveLine(s.po, s.editLineIdx) {
 		return nil
 	}
+	var caveats []string
 	switch s.lineRemoval() {
 	case poRemovalVoid:
-		return []string{
-			"Voiding hides the order; only search finds it.",
+		caveats = []string{
+			"Only search finds the order; voiding hides it.",
 			"This is the order's only unvoided line, and the supplier holds this order, so voiding it leaves the order off every purchase-order list. Nothing puts it back: OMS will not add a line to an order past that point and has nothing that lifts a void. " + voidSearchSentence(s.po),
 		}
 	case poRemovalUnknown:
-		return []string{
-			"Voiding may hide the order; only search finds it.",
+		caveats = []string{
+			"Search finds the order; voiding may hide it.",
 			"This is the order's only unvoided line. This server did not say whether the supplier already has the order (can_delete_items); if it does, voiding leaves it off every purchase-order list with nothing to put it back. " + voidSearchSentence(s.po),
 		}
+	default:
+		// poRemovalDelete, which removalPhaseHolds has already closed this
+		// prompt on: the flag flipped under an open frame and the screen is on
+		// its way back to the line editor.
+		return nil
 	}
-	// poRemovalDelete, which removalPhaseHolds has already closed this prompt
-	// on: the flag flipped under an open frame and the screen is on its way
-	// back to the line editor.
-	return nil
+	if len(jdeCaveatLines(caveats[0], width)) != 1 {
+		return nil
+	}
+	return caveats
 }
 
 // voidHeader is the prompt's pinned block.
@@ -2651,7 +2709,7 @@ func (s *PurchaseOrderEditScreen) voidCaveats() []string {
 // and as jdeHeadRank makes one level up.
 func (s *PurchaseOrderEditScreen) voidHeader(li omsapi.PurchaseOrderItem, width int) jdeHeader {
 	h := jdeHeader(nil).add(jdeHeadEssential, removalHeadline("Void: ", StyleStatusWarn, li, width))
-	for _, caveat := range s.voidCaveats() {
+	for _, caveat := range s.voidCaveats(width) {
 		h = h.addBlock(jdeHeadContext, jdeCaveatLines(caveat, width))
 	}
 	h = h.addBlock(jdeHeadContext, jdeCaveatLines(voidStandingNote, width))
