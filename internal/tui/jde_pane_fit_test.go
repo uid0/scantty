@@ -1613,7 +1613,7 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 		// which line, and voiding has no undo either — plus the caveat rows the
 		// delete confirm no longer carries. Built in the state its header is
 		// TALLEST in: the order's only active line, on an order the server says
-		// the supplier holds, so voidVanishNote stands at its full length above
+		// the supplier holds, so voidCaveats stands at its full length above
 		// the standing note; and a name that REACHES the headline's bound.
 		"PurchaseOrderEditScreen/viewVoidLine": {
 			mk: func() Screen {

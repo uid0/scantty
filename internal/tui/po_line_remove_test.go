@@ -1309,6 +1309,110 @@ func TestPOLineRemove_TheDeleteConfirmDropsTheLossItCannotCause(t *testing.T) {
 	}
 }
 
+// poVoidBranch is one ANSWER about deletability together with the wording the
+// void prompt draws on it. The two differ — poRemovalVoid states the outcome,
+// poRemovalUnknown states it conditionally — so the sweep below has to select
+// its expected strings per branch rather than assert one wording over both.
+type poVoidBranch struct {
+	name      string
+	canDelete *bool
+	removal   poLineRemoval
+	headline  string
+	other     string
+}
+
+// poVoidBranches DERIVES the answers that reach the void prompt instead of
+// listing two cases and hoping they are the two.
+//
+// The whole space of the flag is three values — absent, false, true — and
+// poRemovalFor is asked which removal each one means, exactly as the screen
+// asks it. poRemovalDelete is filtered out because it cannot reach this frame
+// at all: removalPhaseHolds closes the prompt the moment the refreshed flag
+// says the line may be destroyed outright. Everything left MUST have a wording
+// asserted for it, so an answer added to the iota fails here rather than being
+// swept silently under whichever headline happened to be listed.
+//
+// This is the derivation that was missing. The sweep was built on
+// poVoidSentOrder(boolPtr(false)) alone, so it was structurally blind to the
+// poRemovalUnknown branch — which is how a caveat whose trailing row carried
+// the order number, and nothing else, shipped green.
+func poVoidBranches(t *testing.T) []poVoidBranch {
+	t.Helper()
+	headlines := map[poLineRemoval]string{
+		poRemovalVoid:    poVoidHeadline,
+		poRemovalUnknown: poVoidHeadlineUnknown,
+	}
+	answers := []struct {
+		name string
+		flag *bool
+	}{
+		{"the supplier holds it", boolPtr(false)},
+		{"the server never said", nil},
+		{"still the shop's own", boolPtr(true)},
+	}
+	var out []poVoidBranch
+	for _, a := range answers {
+		removal := poRemovalFor(&omsapi.PurchaseOrder{CanDeleteItems: a.flag})
+		if removal == poRemovalDelete {
+			continue
+		}
+		headline, ok := headlines[removal]
+		if !ok {
+			t.Fatalf("removal answer %v reaches the void prompt and no wording is asserted for it", removal)
+		}
+		out = append(out, poVoidBranch{name: a.name, canDelete: a.flag, removal: removal, headline: headline})
+	}
+	if len(out) < 2 {
+		t.Fatalf("the void prompt is reached by %d answer(s); a single-branch sweep is how the last defect here shipped green", len(out))
+	}
+	for i := range out {
+		for j := range out {
+			if i != j && out[j].headline != out[i].headline {
+				out[i].other = out[j].headline
+			}
+		}
+	}
+	return out
+}
+
+// TestPOLineRemove_TheVanishingWarningIsOneRowAtTheTightestPane.
+//
+// voidCaveats' whole sacrifice order rests on the leading caveat being ONE row:
+// a one-row claim can only be kept or dropped, never cut, which is what stops
+// the pane from stating the loss and losing the remedy. Nothing defended it.
+// poVoidHeadlineUnknown is 49 display cells and the caveat budget at 80 columns
+// is 49 — bodyWidth 51 less jdeIndent — so one more character folds it onto a
+// second row that jdeFitHeader is free to drop, and the sweep above cannot see
+// that happen: poRemoveFlatPane collapses the pane with strings.Fields before
+// matching, so a headline missing its tail simply reads as warned == false and
+// every assertion passes over it.
+//
+// So the fold is asked of the LAYER at the tightest pane the app supports, with
+// the width taken from the screen rather than written down: a one-character
+// edit to either wording then fails here loudly instead of silently widening
+// the surface a short pane can trim. The headline is read back off voidCaveats
+// too, so the constants the sweep asserts cannot go stale against the screen.
+func TestPOLineRemove_TheVanishingWarningIsOneRowAtTheTightestPane(t *testing.T) {
+	for _, branch := range poVoidBranches(t) {
+		t.Run(branch.name, func(t *testing.T) {
+			// 80 is the narrowest width this interface is modelled on and must
+			// HOLD, so it is where the fold is tightest.
+			_, s := poVoidPrompt(t, poVoidSentOrder(branch.canDelete), 80, 40, 0)
+			caveats := s.voidCaveats()
+			if len(caveats) < 2 {
+				t.Fatalf("the prompt drew %d caveat(s); the headline-then-detail split is what this is about", len(caveats))
+			}
+			if caveats[0] != branch.headline {
+				t.Fatalf("the sweep asserts %q and the screen draws %q", branch.headline, caveats[0])
+			}
+			if rows := jdeCaveatLines(caveats[0], s.bodyWidth()); len(rows) != 1 {
+				t.Errorf("the leading caveat folds onto %d rows at %d cells of pane, so a trim can cut the claim in half:\n%q",
+					len(rows), s.bodyWidth(), caveats[0])
+			}
+		})
+	}
+}
+
 // TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning.
 //
 // The same sacrifice-order decision the delete confirm made, one surface over.
@@ -1322,6 +1426,21 @@ func TestPOLineRemove_TheDeleteConfirmDropsTheLossItCannotCause(t *testing.T) {
 //
 // Watched to fail: with the two context rows the other way round it reports
 // across the short end of the range.
+//
+// IT SWEEPS BOTH ANSWERS THAT REACH THE PROMPT, and that is not a tidy-up. Run
+// on poRemovalVoid alone it went green over a real dead end one branch over:
+// with the order number appended at the TAIL of the way-back sentence,
+// jdeWrapNote broke the poRemovalUnknown wording so the number landed alone on
+// the last prose row, and jdeFitHeader — which gives ground from the END of a
+// rank — dropped exactly that row while keeping "…reaches it by number:". The
+// pane then told the operator to search for a token it had stopped showing.
+// Observed failing at 80x18 and at that pane alone — 100 and 120 held at every
+// drawable height, because a wider fold kept "by number" and the number on one
+// row. One reachable pane is the whole defect: 80 is the width this interface
+// is modelled on. The poRemovalVoid branch was never wrong, but it was only RIGHT by
+// accident of where its own words happened to break — a check green for a
+// reason unrelated to the property it names is the failure this project keeps
+// closing, so the guarantee is structural now (see voidSearchSentence).
 func TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning(t *testing.T) {
 	heights := jdePaneHeights()
 	if len(heights) == 0 {
@@ -1331,36 +1450,54 @@ func TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning(t *testing.T) 
 	// must HOLD, and it is where the fold is tightest — 51 cells of pane — so a
 	// sweep run only at 100 would measure the caveat at a width the operator
 	// may not have.
-	for _, width := range []int{80, 100, 120} {
-		t.Run(fmt.Sprintf("%dcols", width), func(t *testing.T) {
-			voidPaneSweep(t, width, heights)
-		})
+	for _, branch := range poVoidBranches(t) {
+		for _, width := range []int{80, 100, 120} {
+			t.Run(fmt.Sprintf("%s/%dcols", branch.name, width), func(t *testing.T) {
+				voidPaneSweep(t, branch, width, heights)
+			})
+		}
 	}
 }
 
-func voidPaneSweep(t *testing.T, width int, heights []int) {
+func voidPaneSweep(t *testing.T, branch poVoidBranch, width int, heights []int) {
 	t.Helper()
 
 	// The fixture has to REACH the bound: on the tallest pane both rows are
 	// drawn, so a run where the second never appears would pass for a reason
-	// unrelated to the sacrifice this test is about.
+	// unrelated to the sacrifice this test is about. It also has to reach THIS
+	// branch — a fixture whose flag drew the other wording would sweep one
+	// answer twice.
 	tallest := heights[len(heights)-1]
-	if _, s := poVoidPrompt(t, poVoidSentOrder(boolPtr(false)), width, tallest, 0); true {
+	if _, s := poVoidPrompt(t, poVoidSentOrder(branch.canDelete), width, tallest, 0); true {
 		flat := poRemoveFlatPane(s, width, tallest)
+		if !strings.Contains(flat, branch.headline) {
+			t.Fatalf("height %d does not draw this branch's headline %q, so the sweep is measuring the wrong wording:\n%s",
+				tallest, branch.headline, flat)
+		}
+		if branch.other != "" && strings.Contains(flat, branch.other) {
+			t.Fatalf("height %d draws the OTHER answer's headline:\n%s", tallest, flat)
+		}
 		if !strings.Contains(flat, poVoidLossClause) || !strings.Contains(flat, poVoidStandingNote) {
 			t.Fatalf("height %d draws neither caveat in full, so the sacrifice never happens:\n%s", tallest, flat)
 		}
 	}
 
 	for _, height := range heights {
-		_, s := poVoidPrompt(t, poVoidSentOrder(boolPtr(false)), width, height, 0)
+		_, s := poVoidPrompt(t, poVoidSentOrder(branch.canDelete), width, height, 0)
 		flat := poRemoveFlatPane(s, width, height)
-		warned := strings.Contains(flat, poVoidHeadline)
+		warned := strings.Contains(flat, branch.headline)
 		detail := strings.Contains(flat, poVoidLossClause)
 		standing := strings.Contains(flat, poVoidStandingNote)
 		if standing && !warned {
 			t.Errorf("%dx%d: the void prompt keeps the caveat said elsewhere and drops the one nothing else carries:\n%s",
 				width, height, flat)
+		}
+		// Could-not-tell and found-nothing stay apart at every height a trim
+		// can reach: a pane that has given ground must not have given up the
+		// hedge and left the flat claim standing, or the other way round.
+		if branch.other != "" && strings.Contains(flat, branch.other) {
+			t.Errorf("%dx%d: the pane draws the other answer's headline %q:\n%s",
+				width, height, branch.other, flat)
 		}
 		if detail && !warned {
 			t.Errorf("%dx%d: the prose survives and the headline it summarises does not:\n%s",

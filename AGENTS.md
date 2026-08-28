@@ -241,7 +241,19 @@ knowing before touching any of it:
   80x18 by the height sweep. That sentence also NAMES THE ORDER, because "search
   by number" is not a remedy on a frame that withholds the number — the
   essential row names the LINE and the order's number is two screens back on the
-  detail sheet.
+  detail sheet. THE NUMBER PRECEDES "BY NUMBER" for the same reason the
+  qualifier precedes the key: appended at the TAIL it was the first thing the
+  trim took, and at 80x18 the poRemovalUnknown wording drew "…reaches it by
+  number:" with the number gone. Ahead of the phrase the bound holds by
+  CONSTRUCTION — a trim keeping "by number" keeps everything before it — rather
+  than by where the words happen to break, which is all that had ever kept the
+  poRemovalVoid wording right. Its sweep was single-branch and therefore green
+  over the defect; it walks BOTH answers that reach the prompt now, derived from
+  `poRemovalFor` over the flag's whole space, and the leading caveat's one-row
+  property is asserted against the layer's own fold at the tightest pane
+  (`TestPOLineRemove_TheVanishingWarningIsOneRowAtTheTightestPane`) because
+  `poRemoveFlatPane` collapses whitespace and cannot see a headline lose its
+  second row.
   WHAT IS PERMANENT AND WHAT IS NOT ARE DIFFERENT FACTS, and the wording keeps
   them apart. Permanently lost: the order's place on every purchase-order list,
   `all` included, since it can never regain an active line. Not lost: the ORDER,

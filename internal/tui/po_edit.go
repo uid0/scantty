@@ -1634,7 +1634,7 @@ const (
 // order, and a confirm saying it will would be describing a loss that cannot
 // happen. VOID is offered on the other two answers, and on the one that is not
 // a silence the supplier demonstrably holds the order, which is outside the
-// set: there the arithmetic below IS the hide. See voidVanishNote for what the
+// set: there the arithmetic below IS the hide. See voidCaveats for what the
 // prompt says about it, and why the way back it names is the only one there is.
 func poLastActiveLine(po *omsapi.PurchaseOrder, idx int) bool {
 	if po == nil || idx < 0 || idx >= len(po.Items) {
@@ -1872,7 +1872,7 @@ func removalHeadline(lead string, style lipgloss.Style, li omsapi.PurchaseOrderI
 // from, so a delete this screen can reach cannot hide anything — see
 // poLastActiveLine. A warning describing a loss that cannot happen is as wrong
 // as silence about one that can, so it is gone from here and the void prompt
-// carries it instead (voidVanishNote), where the loss is real, permanent, and
+// carries it instead (voidCaveats), where the loss is real, permanent, and
 // has a different way back. Do not reinstate it: reaching this frame at all
 // means the server has put the order inside the pre-supplier set.
 //
@@ -2523,11 +2523,31 @@ var poEditAssocBar = []actionBarItem{{"Enter", "Select"}, {"Esc", "Cancel"}, {"U
 // use if they wrote it down first, which is the dead end one step removed. A
 // payload that carried no number falls back to the unqualified wording rather
 // than drawing an empty quote.
+//
+// THE NUMBER PRECEDES "BY NUMBER", AND THAT IS THE SAME GUARANTEE ONE CLAUSE
+// LATER. It was appended at the TAIL — "…reaches it by number: PO-2026-0042." —
+// which put the one word the sentence exists to deliver in the position the
+// trim takes first. jdeWrapNote broke the poRemovalUnknown wording so the
+// number landed alone on the last prose row, jdeFitHeader dropped exactly that
+// row at 80x18, and the pane went on telling the operator to search by a number
+// it had stopped showing: the dead end this whole caveat was rewritten to
+// remove, reintroduced by word order. Written this way round the bound holds BY
+// CONSTRUCTION rather than by luck — the header trims from the END, so any trim
+// that keeps "by number" necessarily keeps everything ahead of it, the number
+// included, and no re-wrapping at any width can separate them.
+//
+// The poRemovalVoid wording never drew that dead end, and it is worth saying
+// why it did not: its own words happened to break so that "by number" and the
+// number shared a row at 80, 100 and 120. A check green for a reason unrelated
+// to the property it names is the failure this project keeps closing, and the
+// sweep that certified it was single-branch — see
+// TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning, which walks
+// both answers now.
 func voidSearchSentence(po *omsapi.PurchaseOrder) string {
 	if po == nil || po.Number == "" {
 		return "Once you leave this screen, ctrl+k search still reaches it."
 	}
-	return "Once you leave this screen, ctrl+k search reaches it by number: " + po.Number + "."
+	return "Once you leave this screen, ctrl+k search reaches " + po.Number + " by number."
 }
 
 // voidStandingNote is what voiding does on every order, true whatever else the
