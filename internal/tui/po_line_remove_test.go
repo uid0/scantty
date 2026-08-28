@@ -553,52 +553,15 @@ func TestPOLineRemove_AVoidRefusalReachesTheOperatorToo(t *testing.T) {
 // The trap the web app shipped, answered rather than repeated
 // ---------------------------------------------------------------------------
 
-// TestPOLineRemove_DeletingTheLastActiveLineSaysWhereTheOrderGoes.
-//
-// OMS's purchase-order LIST hides an order with no active lines
-// (PurchaseOrderViewSet.get_queryset annotates _active_items_count and filters
-// on it), and ScanTTY's list is a straight pass-through of that endpoint
-// (list.go's purchaseOrderRows). So "delete the wrong line, then add the right
-// one" — the exact workflow this key exists for — drops a single-line draft out
-// of every list on the way through.
-//
-// The filter is the server's and this client cannot lift it without changing
-// the OMS API, so the answer is non-silence: the frame the key is pressed from
-// says what will happen and names the way back. A warning the operator cannot
-// act on would be a dead end, which is its own defect.
-func TestPOLineRemove_DeletingTheLastActiveLineSaysWhereTheOrderGoes(t *testing.T) {
-	fake := &fakeRemovePO{
-		status: "draft", canDelete: boolPtr(true),
-		lines: []*fakeRemoveLine{
-			{id: "line-bolts", label: "M3×12 hex bolt", ordered: 250, cost: "31.25"},
-		},
-	}
-	r, _ := poRemoveRoot(t, fake, 100)
-	r, s := poRemoveOnStatusRow(t, r, 0)
-	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
-	if s.phase != poEditPhaseDeleteLine {
-		t.Fatalf("phase %v, want the delete confirm", s.phase)
-	}
-	pane := poRemovePane(s, 100)
-	for _, want := range []string{"only line", "hides an order with no active lines", "ctrl+k"} {
-		if !strings.Contains(pane, want) {
-			t.Fatalf("the confirm does not warn about the list (%q missing):\n%s", want, pane)
-		}
-	}
-
-	// …and it is NOT drawn where it would be false: an order with a second
-	// active line does not vanish, so the warning does not appear.
-	fake2 := poRemoveOrder("draft", boolPtr(true))
-	r2, _ := poRemoveRoot(t, fake2, 100)
-	r2, s2 := poRemoveOnStatusRow(t, r2, 0)
-	r2 = key(t, r2, tea.KeyMsg{Type: tea.KeyCtrlE})
-	if s2.phase != poEditPhaseDeleteLine {
-		t.Fatalf("phase %v, want the delete confirm", s2.phase)
-	}
-	if pane := poRemovePane(s2, 100); strings.Contains(pane, "hides an order with no active lines") {
-		t.Fatalf("the list warning is drawn on an order that will still have a line:\n%s", pane)
-	}
-}
+// The delete confirm used to warn here that deleting the last active line
+// would drop the order out of every purchase-order list. oms-a8o narrowed that
+// filter to orders OUTSIDE PRE_SUPPLIER_STATUSES — the very set
+// `can_delete_items` is served from — so no delete this screen can reach hides
+// anything, and the check that asserted the warning was replaced by one that
+// asserts its ABSENCE (TestPOLineRemove_TheDeleteConfirmDropsTheLossItCannotCause,
+// below) rather than deleted. The warning itself moved to the void prompt,
+// where the loss survived: see the block beginning "Where the vanishing order
+// actually lives now".
 
 // ---------------------------------------------------------------------------
 // The frame itself
@@ -813,14 +776,11 @@ func TestPOLineRemove_TheConfirmNeverHidesWhatItWillDestroy(t *testing.T) {
 // What a short pane keeps
 // ---------------------------------------------------------------------------
 
-// poRemoveVanishSentence / poRemoveUndoSentence are the confirm's two caveats,
-// verbatim. jdeCaveatLines FOLDS them to the pane, so the pane is flattened
-// before either is looked for — a marker chosen to survive an arbitrary fold
-// would be a marker chosen because it passes.
-const (
-	poRemoveVanishSentence = "This is the only line on the order that is not voided."
-	poRemoveUndoSentence   = "Deleting takes the line off the order for good."
-)
+// poRemoveUndoSentence is the delete confirm's one remaining caveat, verbatim.
+// jdeCaveatLines FOLDS it to the pane, so the pane is flattened before it is
+// looked for — a marker chosen to survive an arbitrary fold would be a marker
+// chosen because it passes.
+const poRemoveUndoSentence = "Deleting takes the line off the order for good."
 
 // poRemoveFlatPane is the clipped pane with its line breaks and fold indents
 // collapsed, so a sentence the layer folded across three rows reads as the one
@@ -831,85 +791,24 @@ func poRemoveFlatPane(s Screen, width, height int) string {
 	return strings.Join(strings.Fields(pane), " ")
 }
 
-// TestPOLineRemove_AShortPaneKeepsTheVanishingOrderWarning.
+// THE DELETE CONFIRM'S CAVEAT ORDERING SWEEP LIVED HERE and is gone with the
+// caveat it ordered. It watched the two sentences of deleteCaveats and required
+// the vanishing-order one to outlive the irreversibility one at every drawable
+// height; with the first retired (oms-a8o) the confirm has one caveat and there
+// is no order left to hold, so a sweep kept here would pass on a body it no
+// longer describes — the vacuous-fixture failure with the fixture removed
+// instead of the assertion.
 //
-// The confirm's body has NO navigable row, so jdeLines anchors its window at the
-// top and nothing on the frame can fetch what falls off the bottom: whichever
-// caveat is emitted last is the one a short pane silently drops. That makes the
-// order between them a decision (deleteCaveats), and this is the check that
-// watches it.
+// The two properties it really carried both still have a home, and neither is
+// on this frame by accident:
 //
-// The vanishing-order warning is the half that must survive, because it is the
-// only fact on the frame nothing else carries — the bar reads
-// `Ctrl-X=Delete line` and the pinned essential header row names what is being
-// destroyed, so irreversibility is already said twice, while "the order drops
-// out of every purchase-order list, and ctrl+k is the way back" is said here or
-// nowhere.
-//
-// Watched to fail: with the sentences the other way round it reports every
-// height from the shortest drawable one up to about 22 rows.
-func TestPOLineRemove_AShortPaneKeepsTheVanishingOrderWarning(t *testing.T) {
-	fake := &fakeRemovePO{
-		status: "draft", canDelete: boolPtr(true),
-		lines: []*fakeRemoveLine{
-			{id: "line-bolts", label: "M3×12 hex bolt", ordered: 250, cost: "31.25"},
-		},
-	}
-	const width = 100
-
-	// The walk is made at a TALL pane and the terminal is dragged short
-	// afterwards, which is both the sequence an operator goes through and the
-	// only one that works: the movement keys are gated on the frame being drawn
-	// (AGENTS.md), so pressing Down on a pane the layer refuses would report a
-	// held key as a broken screen.
-	confirm := func(t *testing.T, height int) *PurchaseOrderEditScreen {
-		t.Helper()
-		srv := httptest.NewServer(fake.handler())
-		t.Cleanup(srv.Close)
-		deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-		detail := NewPurchaseOrderDetailScreen(deps, "po-1")
-		r := newTestRoot(detail)
-		r.deps = deps
-		next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: 40})
-		r = pump(t, next.(Root), detail.Init(), 0)
-		r, s := poRemoveOnStatusRow(t, r, 0)
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
-		if s.phase != poEditPhaseDeleteLine {
-			t.Fatalf("height %d: phase %v, want the delete confirm", height, s.phase)
-		}
-		next, _ = r.Update(tea.WindowSizeMsg{Width: width, Height: height})
-		if _, ok := next.(Root); !ok {
-			t.Fatalf("height %d: Root.Update returned %T", height, next)
-		}
-		return s
-	}
-
-	heights := jdePaneHeights()
-	if len(heights) == 0 {
-		t.Fatal("no drawable heights — the derivation is broken, not the screen")
-	}
-
-	// The fixture has to REACH the bound: on the tallest pane both sentences fit,
-	// so a run where the second one never appears anywhere would be a check
-	// passing for a reason unrelated to what it names.
-	tallest := heights[len(heights)-1]
-	if flat := poRemoveFlatPane(confirm(t, tallest), width, tallest); !strings.Contains(flat, poRemoveVanishSentence) ||
-		!strings.Contains(flat, poRemoveUndoSentence) {
-		t.Fatalf("height %d draws neither caveat in full, so the sacrifice this test is about never happens:\n%s",
-			tallest, flat)
-	}
-
-	for _, height := range heights {
-		flat := poRemoveFlatPane(confirm(t, height), width, height)
-		vanish := strings.Contains(flat, poRemoveVanishSentence)
-		undo := strings.Contains(flat, poRemoveUndoSentence)
-		if (vanish || undo) && !vanish {
-			t.Errorf("%dx%d: the confirm draws a caveat and it is the wrong one — "+
-				"the operator is told there is no undo and not that the order leaves every list:\n%s",
-				width, height, flat)
-		}
-	}
-}
+//   - "a short pane keeps the identity of what is about to be destroyed" is
+//     TestPOLineRemove_TheConfirmNeverHidesWhatItWillDestroy, above, which
+//     sweeps every height at three widths.
+//   - "whichever caveat is emitted last is the one a short pane drops, so the
+//     order between them is a decision" is
+//     TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning, which holds
+//     it on the frame that now carries two.
 
 // ---------------------------------------------------------------------------
 // A reload landing under an open confirm
@@ -1213,5 +1112,285 @@ func TestPOLineRemove_TheStandingNoteNeverNamesAKeyTheBarDropped(t *testing.T) {
 	}
 	if !strings.Contains(flight, "can be DELETED outright") {
 		t.Fatalf("gating the key clause took the row's standing fact with it:\n%s", flight)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Where the vanishing order actually lives now
+// ---------------------------------------------------------------------------
+
+// The purchase-order LIST hides an order only when ALL THREE hold: the order
+// HAS line items, none of them survives unvoided, and it is OUTSIDE
+// PurchaseOrder.PRE_SUPPLIER_STATUSES (OMS's PurchaseOrderViewSet.get_queryset,
+// oms-a8o). An order that never had lines is listed, and so is one still inside
+// the pre-supplier set — an order still being built is always findable.
+//
+// That splits the two removals cleanly, and it is why these tests come in a
+// matched pair:
+//
+//   - DELETE is offered only where can_delete_items is true, and that flag is
+//     served from PRE_SUPPLIER_STATUSES itself. So the third conjunct is FALSE
+//     on every order a delete can reach, and no delete this screen can perform
+//     can hide anything. A confirm warning that it will is a documented claim
+//     the code cannot honour.
+//   - VOID is offered on the other two answers, and on the one that is not a
+//     silence the supplier demonstrably holds the order — outside the
+//     pre-supplier set, so voiding the last active line hides it. Nothing puts
+//     it back either: OMS has no unvoid endpoint (is_voided is only ever set
+//     true) and assert_addable refuses a line on an order past the same
+//     boundary, so ctrl+k search is the way back and it is the only one.
+
+// The void prompt's caveats, verbatim and test-side, so what is asserted is the
+// wording the screen DRAWS rather than a constant both sides happen to share.
+//
+// They are split at the clause rather than the sentence because the two
+// properties held below are about clauses: that the LOSS is never drawn without
+// its WAY BACK (a warning cut before its remedy is a dead end), and that the
+// unanswered flag draws a CONDITIONAL rather than either conclusion.
+const (
+	// The one-row warning, which is what the sweep below is really about: it is
+	// short enough that jdeFitHeader can only keep it or drop it, never cut it.
+	poVoidHeadline        = "Voiding hides the order; only search finds it."
+	poVoidHeadlineUnknown = "Voiding may hide the order; only search finds it."
+	poVoidWayBack         = "search finds it."
+
+	// The key is named only in the prose, and only BEHIND the clause that says
+	// where it works — see voidSearchSentence. Asserting the pair rather than
+	// the whole sentence is the point: the qualifier PRECEDES the key, so a cut
+	// can only ever take the key, never leave it standing bare.
+	poVoidKeyClause = "Once you leave this screen, ctrl+k"
+
+	// The prose behind it. poVoidLossClause is the fact the headline
+	// summarises, drawn only where there is room for the detail as well.
+	poVoidCondition    = "This is the order's only unvoided line"
+	poVoidLossClause   = "every purchase-order list"
+	poVoidUnknownWhy   = "can_delete_items"
+	poVoidStandingNote = "This marks the line voided and the supplier link discontinued."
+)
+
+// poVoidPrompt drives the operator's own keys to the void prompt on the line at
+// lineIdx and hands back the live screen.
+func poVoidPrompt(t *testing.T, fake *fakeRemovePO, width, height, lineIdx int) (Root, *PurchaseOrderEditScreen) {
+	t.Helper()
+	srv := httptest.NewServer(fake.handler())
+	t.Cleanup(srv.Close)
+	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+	detail := NewPurchaseOrderDetailScreen(deps, "po-1")
+	r := newTestRoot(detail)
+	r.deps = deps
+	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+	r = pump(t, next.(Root), detail.Init(), 0)
+	r, s := poRemoveOnStatusRow(t, r, lineIdx)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poEditPhaseVoidLine {
+		t.Fatalf("Ctrl-E opened phase %v, want the void prompt", s.phase)
+	}
+	if height != 40 {
+		next, _ = r.Update(tea.WindowSizeMsg{Width: width, Height: height})
+		r = next.(Root)
+	}
+	return r, s
+}
+
+// poVoidSentOrder is an order the SUPPLIER holds, with one active line: voiding
+// it empties the order outside the pre-supplier set, which is the one route
+// into the vanishing order that survives oms-a8o.
+func poVoidSentOrder(canDelete *bool) *fakeRemovePO {
+	return &fakeRemovePO{
+		status: "sent", canDelete: canDelete,
+		lines: []*fakeRemoveLine{
+			{id: "line-bolts", label: "M3×12 hex bolt", ordered: 250, cost: "31.25"},
+		},
+	}
+}
+
+// TestPOLineRemove_VoidingTheLastActiveLineSaysWhereTheOrderGoes.
+//
+// The warning did not become obsolete when oms-a8o shipped; it MOVED. Deleting
+// can no longer hide an order, voiding the last active line of an order the
+// supplier holds still can, and this is the frame that key is pressed from.
+//
+// The way back is named because a warning the operator cannot act on is a dead
+// end — and here it is the ONLY way back, which the sentence has to say: past
+// the pre-supplier boundary OMS refuses to add a line (assert_addable) and has
+// no unvoid at all, so the delete confirm's old "until another line is added"
+// would have been a false remedy on this path.
+func TestPOLineRemove_VoidingTheLastActiveLineSaysWhereTheOrderGoes(t *testing.T) {
+	_, s := poVoidPrompt(t, poVoidSentOrder(boolPtr(false)), 100, 40, 0)
+	flat := poRemoveFlatPane(s, 100, 40)
+	for _, want := range []string{poVoidHeadline, poVoidCondition, poVoidLossClause} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("the void prompt does not warn about the list (%q missing):\n%s", want, flat)
+		}
+	}
+	// The server said the supplier holds it, so the prompt states the outcome
+	// rather than hedging it — could-not-tell has its own test.
+	if strings.Contains(flat, poVoidHeadlineUnknown) {
+		t.Errorf("the prompt hedges an outcome the flag settled:\n%s", flat)
+	}
+
+	// …and NOT where it would be false: a second active line survives the void,
+	// so the order keeps a live line and stays on every list.
+	_, two := poVoidPrompt(t, poRemoveOrder("sent", boolPtr(false)), 100, 40, 0)
+	if flat := poRemoveFlatPane(two, 100, 40); strings.Contains(flat, poVoidLossClause) {
+		t.Errorf("the list warning is drawn on an order that will still have a line:\n%s", flat)
+	}
+}
+
+// TestPOLineRemove_AnUnansweredFlagSaysItCouldNotTellRatherThanConcluding.
+//
+// poRemovalUnknown lands on the void prompt too, and there the client does not
+// know which side of the pre-supplier boundary the order is on — so it does not
+// know whether voiding hides it. Found-nothing and could-not-tell are different
+// facts: the frame says the server did not answer rather than asserting either
+// outcome, and it still names the way back, which is the same either way.
+func TestPOLineRemove_AnUnansweredFlagSaysItCouldNotTellRatherThanConcluding(t *testing.T) {
+	_, s := poVoidPrompt(t, poVoidSentOrder(nil), 100, 40, 0)
+	flat := poRemoveFlatPane(s, 100, 40)
+	for _, want := range []string{poVoidHeadlineUnknown, poVoidCondition, poVoidUnknownWhy} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("the void prompt concludes instead of saying it could not tell (%q missing):\n%s", want, flat)
+		}
+	}
+	if strings.Contains(flat, poVoidHeadline) {
+		t.Errorf("the frame states the outcome flatly on a server that never answered:\n%s", flat)
+	}
+}
+
+// TestPOLineRemove_TheDeleteConfirmDropsTheLossItCannotCause.
+//
+// The mirror of the two above, and the reason this file no longer has a test
+// asserting the delete confirm warns. can_delete_items is served from
+// PRE_SUPPLIER_STATUSES and the list's third disjunct reads the same frozenset,
+// so an order a delete can reach is listed whatever the delete leaves behind —
+// zero lines, or voided ghosts. A warning describing a loss that cannot happen
+// is as wrong as silence about one that can.
+//
+// Watched to fail: with the old caveat restored it reports on every one of
+// these fixtures.
+func TestPOLineRemove_TheDeleteConfirmDropsTheLossItCannotCause(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		lines []*fakeRemoveLine
+	}{
+		{"the order's only line", []*fakeRemoveLine{
+			{id: "line-bolts", label: "M3×12 hex bolt", ordered: 250, cost: "31.25"},
+		}},
+		{"the last ACTIVE line, over a voided ghost", []*fakeRemoveLine{
+			{id: "line-ghost", label: "M3 washer", ordered: 500, cost: "12.50", voided: true},
+			{id: "line-bolts", label: "M3×12 hex bolt", ordered: 250, cost: "31.25"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeRemovePO{status: "draft", canDelete: boolPtr(true), lines: tc.lines}
+			r, _ := poRemoveRoot(t, fake, 100)
+			idx := len(tc.lines) - 1
+			r, s := poRemoveOnStatusRow(t, r, idx)
+			r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+			if s.phase != poEditPhaseDeleteLine {
+				t.Fatalf("phase %v, want the delete confirm", s.phase)
+			}
+			flat := poRemoveFlatPane(s, 100, 40)
+			for _, gone := range []string{poVoidHeadline, poVoidCondition, poVoidLossClause, "hides an order with no active lines", "ctrl+k"} {
+				if strings.Contains(flat, gone) {
+					t.Errorf("the delete confirm still asserts a loss it cannot cause (%q present):\n%s", gone, flat)
+				}
+			}
+			// The caveat it DOES carry is untouched: deleting is still the
+			// irreversible half and the frame still says so.
+			if !strings.Contains(flat, poRemoveUndoSentence) {
+				t.Errorf("the confirm lost the caveat that is still true:\n%s", flat)
+			}
+		})
+	}
+}
+
+// TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning.
+//
+// The same sacrifice-order decision the delete confirm made, one surface over.
+// The void prompt's body holds the operator's REASON box, which must stay on
+// the pane or every rune typed redraws a byte-identical frame — so the caveats
+// ride the pinned header, where jdeFitHeader gives ground BY RANK and, within a
+// rank, from the END. The vanishing warning is therefore emitted FIRST among
+// the context rows: it is the one fact on the frame nothing else carries, while
+// "this marks the line voided" is restated by the bar's `Enter=Void line` and
+// by the header's own essential row.
+//
+// Watched to fail: with the two context rows the other way round it reports
+// across the short end of the range.
+func TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning(t *testing.T) {
+	heights := jdePaneHeights()
+	if len(heights) == 0 {
+		t.Fatal("no drawable heights — the derivation is broken, not the screen")
+	}
+	// Both axes. 80 is the width this interface is modelled on and the one that
+	// must HOLD, and it is where the fold is tightest — 51 cells of pane — so a
+	// sweep run only at 100 would measure the caveat at a width the operator
+	// may not have.
+	for _, width := range []int{80, 100, 120} {
+		t.Run(fmt.Sprintf("%dcols", width), func(t *testing.T) {
+			voidPaneSweep(t, width, heights)
+		})
+	}
+}
+
+func voidPaneSweep(t *testing.T, width int, heights []int) {
+	t.Helper()
+
+	// The fixture has to REACH the bound: on the tallest pane both rows are
+	// drawn, so a run where the second never appears would pass for a reason
+	// unrelated to the sacrifice this test is about.
+	tallest := heights[len(heights)-1]
+	if _, s := poVoidPrompt(t, poVoidSentOrder(boolPtr(false)), width, tallest, 0); true {
+		flat := poRemoveFlatPane(s, width, tallest)
+		if !strings.Contains(flat, poVoidLossClause) || !strings.Contains(flat, poVoidStandingNote) {
+			t.Fatalf("height %d draws neither caveat in full, so the sacrifice never happens:\n%s", tallest, flat)
+		}
+	}
+
+	for _, height := range heights {
+		_, s := poVoidPrompt(t, poVoidSentOrder(boolPtr(false)), width, height, 0)
+		flat := poRemoveFlatPane(s, width, height)
+		warned := strings.Contains(flat, poVoidHeadline)
+		detail := strings.Contains(flat, poVoidLossClause)
+		standing := strings.Contains(flat, poVoidStandingNote)
+		if standing && !warned {
+			t.Errorf("%dx%d: the void prompt keeps the caveat said elsewhere and drops the one nothing else carries:\n%s",
+				width, height, flat)
+		}
+		if detail && !warned {
+			t.Errorf("%dx%d: the prose survives and the headline it summarises does not:\n%s",
+				width, height, flat)
+		}
+		// A warning cut before its remedy is a dead end, which is its own
+		// defect: wherever the pane says a thing is about to be lost it also
+		// says how to get it back. This is what forced the headline down to ONE
+		// row (voidCaveats) — as a single long caveat the 80x14 pane read "…and
+		// nothing puts it back:" and stopped, and the two-row rewrite of it
+		// stopped at "…every purchase-order list;" on 80x13.
+		if (warned || detail) && !strings.Contains(flat, poVoidWayBack) {
+			t.Errorf("%dx%d: the pane warns and does not name the way back:\n%s", width, height, flat)
+		}
+		// A key named on a frame that does not honour it is worse than no key
+		// at all. This screen takes raw input, so ctrl+k never reaches the
+		// root's search palette here — it reaches the focused Reason box, where
+		// bubbles deletes to end of line. So wherever the pane spells the key
+		// it also carries the clause saying when it applies.
+		if strings.Contains(flat, "ctrl+k") && !strings.Contains(flat, poVoidKeyClause) {
+			t.Errorf("%dx%d: the pane names ctrl+k without saying it works only after leaving:\n%s",
+				width, height, flat)
+		}
+		// Rule 1: the box the operator types into is on the pane at every
+		// height the frame is DRAWN at, or a keystroke changes nothing visible.
+		// A pane the layer REFUSES is not one of them — it draws a bounded
+		// notice naming the height it needs and says the moving keys are held,
+		// which is the layer's designed answer and not this screen's to
+		// override (the same reading po_line_remove's other height sweeps make).
+		if strings.Contains(flat, "Too short:") {
+			continue
+		}
+		if !strings.Contains(flat, "Reason") {
+			t.Errorf("%dx%d: the reason box is off the pane:\n%s", width, height, flat)
+		}
 	}
 }

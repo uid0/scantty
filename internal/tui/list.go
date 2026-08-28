@@ -988,11 +988,17 @@ func assetRows(ctx context.Context, deps Deps, q url.Values) ([]listRow, error) 
 // is what resumes it — and until this cycle existed a draft was only findable
 // by scrolling the mixed list.
 //
-// cancelled/voided are deliberately absent, matching the web's option set. The
-// list endpoint drops an order with no ACTIVE lines whatever its status — not
-// just a voided one — so the `draft` filter below cannot find a draft whose
-// last line was deleted either; AGENTS.md's line-removal note carries that fact
-// and why the delete confirm names ctrl+k as the way back.
+// cancelled/voided are deliberately absent, matching the web's option set.
+//
+// The list endpoint hides an order only when ALL THREE hold: it HAS line items,
+// none of them survives unvoided, and it is OUTSIDE PRE_SUPPLIER_STATUSES
+// (PurchaseOrderViewSet.get_queryset, oms-a8o). So the `draft` filter below
+// finds a draft whose last line was deleted, and one whose lines are all voided
+// ghosts: an order still being built is always listed, whatever it holds. What
+// the filter still hides is an order EMPTIED BY VOIDING AFTER IT LEFT THE SHOP,
+// which no filter here can reach and which ctrl+k search can — AGENTS.md's
+// line-removal note carries that fact and why the VOID prompt, not the delete
+// confirm, is where the terminal warns about it.
 //
 // The backend shows drafts to AUTHENTICATED users only: PurchaseOrderViewSet
 // restricts an anonymous list to sent/confirmed/partially_received/received

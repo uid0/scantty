@@ -1608,6 +1608,34 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 				return v.deleteHeader(v.po.Items[v.editLineIdx], v.bodyWidth())
 			},
 		},
+		// The void prompt pins the same essential row for the same reason — a
+		// frame that takes a line off the order may not be drawn without naming
+		// which line, and voiding has no undo either — plus the caveat rows the
+		// delete confirm no longer carries. Built in the state its header is
+		// TALLEST in: the order's only active line, on an order the server says
+		// the supplier holds, so voidVanishNote stands at its full length above
+		// the standing note; and a name that REACHES the headline's bound.
+		"PurchaseOrderEditScreen/viewVoidLine": {
+			mk: func() Screen {
+				po := poViewPO()
+				po.CanDeleteItems = boolPtr(false)
+				po.Items = []omsapi.PurchaseOrderItem{{
+					ID:              "line-long",
+					Description:     "M3×12 hex-head cap screw, A2-70 stainless, DIN 933, bright finish",
+					QuantityOrdered: 250,
+					EstimatedCost:   omsapi.DecimalString("31.25"),
+				}}
+				s := NewPurchaseOrderEditScreen(Deps{}, po)
+				s.openLineEditor(0)
+				s.lineFocus = poLineRowStatus
+				s.openVoidLine(0)
+				return s
+			},
+			header: func(s Screen) jdeHeader {
+				v := s.(*PurchaseOrderEditScreen)
+				return v.voidHeader(v.po.Items[v.editLineIdx], v.bodyWidth())
+			},
+		},
 		"ServiceStatusScreen/View": {
 			mk:     func() Screen { return NewServiceStatusScreen(Deps{}) },
 			header: func(s Screen) jdeHeader { h, _ := s.(*ServiceStatusScreen).render(); return h },

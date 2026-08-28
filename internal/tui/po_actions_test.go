@@ -301,7 +301,10 @@ func TestPOEdit_RenderSmoke(t *testing.T) {
 		t.Errorf("line editor view = %q", out)
 	}
 	s.openVoidLine(1)
-	if out := s.View(); !strings.Contains(out, "Void line item") {
+	// The prompt PINS what it is about to strike off, the way the delete
+	// confirm does: a heading saying only "Void line item" is a row a short
+	// pane may drop, and it names no line.
+	if out := s.View(); !strings.Contains(out, "Void: ") {
 		t.Errorf("void line view = %q", out)
 	}
 }
