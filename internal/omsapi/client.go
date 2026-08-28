@@ -330,6 +330,25 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil, nil, true)
 }
 
+// DeleteInto is Delete for an endpoint that ANSWERS. Most of OMS's destroy
+// routes return 204 with nothing in them, which is what Delete above is for;
+// the PO line-delete action returns 200 with the account of what it destroyed
+// plus the refreshed order (OMS's docs/REACTIVE_MUTATIONS.md, in the
+// openmakersuite checkout — there is no docs/ tree on this side).
+//
+// What the caller wants out of that body is the SERVER's own account of what it
+// destroyed — by the time it is read, the row that named the line is gone and
+// the flash is the only record of it left on screen, so the words in it should
+// be the words the audit trail carries rather than the label this side happened
+// to be showing. The refreshed order riding beside it is deliberately NOT used
+// as the new view: the screen reloads instead, because a purchase order is
+// edited from more places than this one action and the reload is what picks up
+// everything else that moved. Decoding is what makes the first fact reachable
+// at all; discarding the body would leave nothing but a guess.
+func (c *Client) DeleteInto(ctx context.Context, path string, out any) error {
+	return c.do(ctx, http.MethodDelete, path, nil, nil, out, true)
+}
+
 // MultipartFile is one file part in a multipart/form-data upload. Data holds
 // the whole file in memory — fine for the photo/PDF uploads this serves, which
 // an operator picks one at a time from a local path.

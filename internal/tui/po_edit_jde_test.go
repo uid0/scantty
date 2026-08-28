@@ -332,21 +332,33 @@ func TestPOEditJDE_LineEditorCarriesTheOldLineKeys(t *testing.T) {
 		t.Errorf("esc from the void prompt should return to the line editor, phase=%v", s.phase)
 	}
 
-	// A line already voided says so rather than opening a second prompt.
+	// A line already voided offers nothing, and the key the bar has dropped does
+	// NOTHING — it used to answer with a Status warning, which is an unnamed key
+	// that acts: the honesty rule broken in the direction hardest to notice, and
+	// a flash that expires after four seconds standing in for a fact about the
+	// row. The fact is on the PANE now, standing, where the operator finds it by
+	// looking rather than by pressing a key nobody named.
 	s.openLineEditor(1)
 	s.lineFocus = poLineRowStatus
 	s.syncLineFocus()
-	if cmd := s.openLineRow(); cmd == nil {
-		t.Error("voiding an already-voided line should report why")
+	if cmd := s.openLineRow(); cmd != nil {
+		t.Error("ctrl+e is not named on a voided line's status row, so it must do nothing")
 	}
 	if s.phase != poEditPhaseLine {
 		t.Errorf("an already-voided line must not reopen the prompt, phase=%v", s.phase)
 	}
-	if out := s.viewLineEdit(); !strings.Contains(out, "voided") {
+	out := s.viewLineEdit()
+	if !strings.Contains(out, "voided") {
 		t.Errorf("the status row should show the line is voided:\n%s", out)
 	}
-	if bar := poJDEBarLine(s.viewLineEdit()); strings.Contains(bar, "Void line") {
+	if !strings.Contains(out, "already voided") {
+		t.Errorf("the pane should say WHY the row offers nothing:\n%s", out)
+	}
+	if bar := poJDEBarLine(out); strings.Contains(bar, "Void line") {
 		t.Errorf("the bar should not offer a void that would be refused: %q", bar)
+	}
+	if bar := poJDEBarLine(out); strings.Contains(bar, "Delete line") {
+		t.Errorf("the bar offers a destroy on an order whose flag never said so: %q", bar)
 	}
 }
 

@@ -2,9 +2,11 @@
 //
 // This is the TUI counterpart to the web PurchaseOrderPage's edit affordances
 // (frontend/src/pages/PurchaseOrderPage.tsx): the "Edit details" metadata modal
-// plus the per-line edit-cost / edit-ship-date / void-line controls. It mirrors
-// the FULL set so an operator at the workstation can amend a PO without the
-// browser ([[ship-complete-features]]).
+// plus the per-line edit-cost / edit-ship-date / remove-line controls — where
+// removing is DELETE on an order the supplier has not seen and VOID once it
+// has, the server saying which (see poRemovalFor). It mirrors the FULL set so
+// an operator at the workstation can amend a PO without the browser
+// ([[ship-complete-features]]).
 //
 // It is also the PILOT of the columnar "JD Edwards" redesign (sc-h412): it
 // renders through jde_form.go's shared layer rather than hand-rolling a
@@ -16,13 +18,17 @@
 //	PgUp/PgDn                page, when the body is taller than the pane
 //	Enter                    SAVE the record this phase is editing
 //	Ctrl-E                   OPEN what the highlighted row is (a picker, the
-//	                         line editor, the void prompt, the last price on file)
+//	                         line editor, the removal the server allows, the
+//	                         last price on file)
 //	←/→ or space             change a "< value >" choice row
 //	Esc                      back / cancel  (Ctrl-C always quits, app-wide)
 //
-// Nothing else is bound: the w / c / v accelerators that used to hide on the
-// line rows are now rows of the line editor, reached with Ctrl-E, and the bar
-// at the bottom names exactly the keys that apply where the cursor is standing.
+// One key sits outside that scheme, on one phase: Ctrl-X confirms the DELETE on
+// poEditPhaseDeleteLine, because Ctrl-E opened that frame and enter is the key
+// a hand reaches for next (see updateDeleteLine). Nothing else is bound: the
+// w / c / v accelerators that used to hide on the line rows are now rows of the
+// line editor, reached with Ctrl-E, and the bar at the bottom names exactly the
+// keys that apply where the cursor is standing.
 //
 // Layout (one cursor over three bands):
 //
@@ -46,12 +52,18 @@
 //	                       and its status. Enter saves ship/notes — and the cost
 //	                       ONLY if the operator changed it — via
 //	                       UpdatePurchaseOrderLineItem (PATCH); Ctrl-E on one of
-//	                       the last three rows opens the picker or the void
-//	                       prompt that owns it, and on the cost row takes the
+//	                       the last three rows opens the picker or the removal
+//	                       that owns it, and on the cost row takes the
 //	                       last price on file for a line that carries none. What a
 //	                       cost field may and may not send is po_line_price.go.
 //	poEditPhaseVoidLine  — reason input; enter voids the line via
 //	                       VoidPurchaseOrderLineItem.
+//	poEditPhaseDeleteLine— the irreversible counterpart, on an order the
+//	                       supplier has not seen: a confirmation naming the line
+//	                       and NO reason input, Ctrl-X destroys it via
+//	                       DeletePurchaseOrderLineItem. Which of the two the
+//	                       status row's Ctrl-E opens is the SERVER's answer
+//	                       (can_delete_items), read in one place — poRemovalFor.
 //	poEditPhaseAssoc     — one work-order / committee picker, serving BOTH the
 //	                       order-level rows and the line editor's; enter writes
 //	                       just that association (the PO PATCH or update_item).
@@ -69,6 +81,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -79,7 +92,12 @@ const (
 	poEditPhaseForm poEditPhase = iota
 	poEditPhaseLine
 	poEditPhaseVoidLine
+	poEditPhaseDeleteLine
 	poEditPhaseAssoc
+	// poEditPhaseCount is the sentinel the phase sweep walks to. A phase added
+	// above it is swept without anybody remembering to add it to a roster —
+	// which is the only kind of roster this package trusts (AGENTS.md).
+	poEditPhaseCount
 )
 
 // Metadata field indexes. The two association rows follow them, then the line
@@ -290,6 +308,13 @@ type PurchaseOrderEditScreen struct {
 	// Void-line reason (poEditPhaseVoidLine).
 	voidReason textinput.Model
 
+	// The delete confirm's answer to the last keypress (poEditPhaseDeleteLine).
+	// That frame binds two keys and has no input, so without this every other
+	// key redraws a pane that is a pure function of unchanged state — the
+	// byte-identical redraw this package reports as a hang. Cleared whenever
+	// the frame is opened or the write goes out.
+	deleteNote string
+
 	// Association pickers (op-shb9). The option lists load once when the screen
 	// opens; assocField / assocLineIdx / assocRows / assocCursor describe the
 	// picker currently open, whether it was opened from an order-level row or
@@ -320,6 +345,11 @@ type poEditSavedMsg struct {
 type poLineActionMsg struct {
 	err    error
 	action string
+	// done is the whole SUCCESS sentence where the verb alone does not say
+	// enough. A delete names the line it destroyed, because by the time this is
+	// read the row that named it is gone and this flash is the only account of
+	// it left on screen. Empty falls back to action.
+	done string
 }
 
 // NewPurchaseOrderEditScreen builds the edit form. The passed PO seeds instant
@@ -443,6 +473,117 @@ func (s *PurchaseOrderEditScreen) rowCount() int {
 	return poEditMetaCount + poEditAssocCount + s.lineCount()
 }
 
+// poLineID is a PO line's own identity as a string. The wire types the pk `any`
+// — OMS serves an int and the fakes a slug — so every writer on this screen
+// already spells it this way before it goes into a URL, and one helper keeps
+// them spelling it the same. A line with NO id has no identity: blank is
+// returned for it rather than a "<nil>" two such lines would compare equal on,
+// which is the confusion an identity exists to prevent.
+func poLineID(li omsapi.PurchaseOrderItem) string {
+	if li.ID == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", li.ID))
+}
+
+// lineIndexOf finds the line carrying id, or -1. A blank id never matches: see
+// poLineID.
+func (s *PurchaseOrderEditScreen) lineIndexOf(id string) int {
+	if id == "" || s.po == nil {
+		return -1
+	}
+	for i, li := range s.po.Items {
+		if poLineID(li) == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// addressedLine is the line editLineIdx names, or false when it names none.
+//
+// EVERY read of po.Items[editLineIdx] goes through it. The index is POSITIONAL
+// and a reload can invalidate it — a line voided from the web, an order
+// amended, or this screen's own delete, which takes the row away where voiding
+// only struck it through — so an unguarded index is a panic on a state this
+// change newly makes reachable. reseatLineIndexes is what keeps that state from
+// arising at all; this is what keeps it from crashing the terminal if it ever
+// does.
+func (s *PurchaseOrderEditScreen) addressedLine() (omsapi.PurchaseOrderItem, bool) {
+	if s.po == nil || s.editLineIdx < 0 || s.editLineIdx >= s.lineCount() {
+		return omsapi.PurchaseOrderItem{}, false
+	}
+	return s.po.Items[s.editLineIdx], true
+}
+
+// closeLineSubPhase drops whichever per-line sub-phase is open back onto the
+// form, unfocused and with nothing half-typed left behind. It is the answer
+// when the line a sub-phase stands on has gone off the order: the form is the
+// one frame that can show what IS on the order now. returnFromSub is the
+// ordinary way back (it returns to the line editor); this is the way back when
+// there is no line to return to.
+func (s *PurchaseOrderEditScreen) closeLineSubPhase() {
+	s.voidReason.Blur()
+	s.voidReason.SetValue("")
+	s.deleteNote = ""
+	s.phase = poEditPhaseForm
+}
+
+// reseatLineIndexes puts the per-line indexes — and any sub-phase standing on
+// one — back on a footing the freshly loaded order actually supports. It is
+// handed the ids those indexes named BEFORE the new order was stored.
+//
+// The clamp this replaces re-pointed a stale index at whatever now occupied
+// that position, which is the dangerous answer twice over. With two lines cut
+// to one, `editLineIdx = 0` left an OPEN delete confirm naming the line the
+// operator had read and confirmed while Ctrl-X would have destroyed the other
+// one — a destroy nobody agreed to, and the quieter half of the defect. And an
+// EMPTIED Items list is newly reachable, because deleting takes the row away
+// where voiding left it struck through, so the same clamp handed every reader
+// index 0 into nothing.
+//
+// So IDENTITY is carried across and never position: an index follows its own
+// line wherever the reload put it, and where that line is gone the index is
+// dropped rather than aimed somewhere else. A sub-phase standing on a dropped
+// index closes, because re-targeting an irreversible confirm is precisely what
+// must not happen; the operator is told, on the status row, rather than finding
+// the frame swapped under them.
+// It hands its sentence BACK rather than only writing it to errMsg, because the
+// status row is one surface and this one needs two: the row cannot fold, so
+// what runs past 49 cells at 80 columns is gone, and the toast behind it is
+// where the tail survives. The caller is what has a command to return.
+func (s *PurchaseOrderEditScreen) reseatLineIndexes(editID, assocID string) string {
+	s.editLineIdx = s.lineIndexOf(editID)
+	if s.assocLineIdx != poAssocLineOrder {
+		if idx := s.lineIndexOf(assocID); idx >= 0 {
+			s.assocLineIdx = idx
+		} else if s.phase == poEditPhaseAssoc {
+			s.closeLineSubPhase()
+			s.errMsg = poEditLineGoneNote
+			return s.errMsg
+		}
+	}
+	if s.editLineIdx < 0 {
+		switch s.phase {
+		case poEditPhaseLine, poEditPhaseVoidLine, poEditPhaseDeleteLine:
+			s.closeLineSubPhase()
+			s.errMsg = poEditLineGoneNote
+			return s.errMsg
+		}
+		return ""
+	}
+	// The line survived; the ORDER is the other half and it is READ AGAIN here
+	// rather than carried over from the moment the sub-phase opened. See
+	// removalPhaseHolds — this is the refresh the flag must never be cached
+	// across.
+	if note := s.removalFlipNote(); note != "" {
+		s.returnFromSub()
+		s.errMsg = note
+		return note
+	}
+	return ""
+}
+
 // poEditLineBase is the cursor position of the first line row.
 const poEditLineBase = poEditMetaCount + poEditAssocCount
 
@@ -483,18 +624,25 @@ func (s *PurchaseOrderEditScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loadErr = m.err.Error()
 			return s, Status("reload PO failed: "+m.err.Error(), StatusError)
 		}
+		// The ids the per-line indexes named a moment ago, read off the OLD
+		// order while it is still the stored one — reseatLineIndexes carries
+		// them across by identity rather than letting a position stand.
+		editID, assocID := "", ""
+		if li, ok := s.addressedLine(); ok {
+			editID = poLineID(li)
+		}
+		if s.po != nil && s.assocLineIdx >= 0 && s.assocLineIdx < s.lineCount() {
+			assocID = poLineID(s.po.Items[s.assocLineIdx])
+		}
 		s.po = m.po
 		if s.cursor >= s.rowCount() && s.rowCount() > 0 {
 			s.cursor = s.rowCount() - 1
 		}
-		// A reload can return fewer lines than the last one did (a line voided
-		// elsewhere, an order amended). editLineIdx addresses po.Items directly
-		// in the line editor and the void prompt, so it has to come back inside
-		// the slice with the cursor rather than panic the next time one opens.
-		if s.editLineIdx >= s.lineCount() {
-			s.editLineIdx = 0
-		}
+		note := s.reseatLineIndexes(editID, assocID)
 		s.syncFocus()
+		if note != "" {
+			return s, Status(note, StatusWarn)
+		}
 		return s, nil
 
 	case poEditSavedMsg:
@@ -517,7 +665,11 @@ func (s *PurchaseOrderEditScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.errMsg = ""
 		s.phase = poEditPhaseForm
 		s.loading = true
-		return s, tea.Batch(Status(m.action, StatusOK), s.load())
+		done := m.done
+		if done == "" {
+			done = m.action
+		}
+		return s, tea.Batch(Status(done, StatusOK), s.load())
 
 	case tea.KeyMsg:
 		switch s.phase {
@@ -525,6 +677,8 @@ func (s *PurchaseOrderEditScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s.updateLineEdit(m)
 		case poEditPhaseVoidLine:
 			return s.updateVoidLine(m)
+		case poEditPhaseDeleteLine:
+			return s.updateDeleteLine(m)
 		case poEditPhaseAssoc:
 			return s.updateAssocPick(m)
 		default:
@@ -553,6 +707,11 @@ func (s *PurchaseOrderEditScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		var cmd tea.Cmd
 		s.voidReason, cmd = s.voidReason.Update(msg)
 		return s, cmd
+	case poEditPhaseDeleteLine:
+		// Nothing on the confirm is typed into — deleting asks for no reason —
+		// so there is no caret for a blink to move, and the metadata inputs
+		// below must not be fed one while this frame is up.
+		return s, nil
 	default:
 		if s.cursor < poEditMetaCount && !s.isSelectRow(s.cursor) {
 			var cmd tea.Cmd
@@ -865,7 +1024,7 @@ func (s *PurchaseOrderEditScreen) updateLineEdit(m tea.KeyMsg) (Screen, tea.Cmd)
 // enter-save on purpose — re-tagging which job a line was bought for must not
 // carry along a cost or a ship date someone else set while this form was open.
 func (s *PurchaseOrderEditScreen) openLineRow() tea.Cmd {
-	if s.po == nil || s.editLineIdx < 0 || s.editLineIdx >= s.lineCount() {
+	if _, ok := s.addressedLine(); !ok {
 		return nil
 	}
 	switch s.lineFocus {
@@ -876,8 +1035,16 @@ func (s *PurchaseOrderEditScreen) openLineRow() tea.Cmd {
 	case poLineRowCommittee:
 		return s.openAssocPick(poAssocFieldCommittee, s.editLineIdx)
 	case poLineRowStatus:
-		if s.po.Items[s.editLineIdx].IsVoided {
-			return Status("line is already voided", StatusWarn)
+		// The bar's own predicate, so a key it did not name does nothing. It
+		// used to answer a voided line with a Status warning while the bar named
+		// no key at all — an unnamed key that acts, which is the honesty rule
+		// broken in the direction that is hardest to notice.
+		if _, ok := s.removalOffered(); !ok {
+			return nil
+		}
+		if s.lineRemoval() == poRemovalDelete {
+			s.openDeleteLine(s.editLineIdx)
+			return nil
 		}
 		s.openVoidLine(s.editLineIdx)
 		return textinput.Blink
@@ -900,13 +1067,13 @@ func (s *PurchaseOrderEditScreen) openLineRow() tea.Cmd {
 // is not a total. A key the bar names has to do something; one boundary
 // deciding is what keeps that true no matter which of them is read.
 func (s *PurchaseOrderEditScreen) lineOffer() (row *poLastPaid, total, note string) {
-	if s.po == nil || s.editLineIdx < 0 || s.editLineIdx >= s.lineCount() {
+	li, addressed := s.addressedLine()
+	if !addressed {
 		return nil, "", ""
 	}
 	if s.lineCostShown != "" {
 		return nil, "", ""
 	}
-	li := s.po.Items[s.editLineIdx]
 	row, note = s.lastPaid.offer(poLineItemID(li))
 	if row == nil {
 		return nil, "", note
@@ -958,7 +1125,10 @@ func (s *PurchaseOrderEditScreen) confirmShownCost() tea.Cmd {
 		s.lineInputs[poLineEditCost].CursorEnd()
 	}
 	s.lineCostConfirmed = true
-	li := s.po.Items[s.editLineIdx]
+	li, ok := s.addressedLine()
+	if !ok {
+		return nil
+	}
 	// Arming is unconditional — the operator has said "write what this row
 	// shows", and they may well fix the figure afterwards — but what the arm
 	// SAYS is not. The field takes any characters at all (no validator, only a
@@ -994,7 +1164,17 @@ func (s *PurchaseOrderEditScreen) takeLastPaid() tea.Cmd {
 }
 
 func (s *PurchaseOrderEditScreen) saveLine() tea.Cmd {
-	li := s.po.Items[s.editLineIdx]
+	li, ok := s.addressedLine()
+	if !ok {
+		// The line went off the order under the form (reseatLineIndexes closes
+		// this phase when that happens, so this is belt and braces): a PATCH
+		// aimed at a position would write this form's cost and dates onto
+		// whatever now sits there.
+		s.closeLineSubPhase()
+		s.errMsg = poEditLineSaveGoneNote
+		s.syncFocus()
+		return Status(s.errMsg, StatusWarn)
+	}
 	itemID := fmt.Sprintf("%v", li.ID)
 
 	req := omsapi.LineItemUpdate{}
@@ -1160,6 +1340,15 @@ func (s *PurchaseOrderEditScreen) saveAssoc() tea.Cmd {
 	}
 	value := s.assocRows[s.assocCursor].value
 	lineIdx := s.assocLineIdx
+	// A LINE's picker addresses po.Items positionally, so it is the same
+	// reload hazard the removal confirms carry (reseatLineIndexes): the write
+	// is refused rather than aimed at whatever now sits at that position.
+	if lineIdx != poAssocLineOrder && (s.po == nil || lineIdx < 0 || lineIdx >= s.lineCount()) {
+		s.closeLineSubPhase()
+		s.errMsg = poEditLineGoneNote
+		s.syncFocus()
+		return Status(s.errMsg, StatusWarn)
+	}
 
 	var (
 		workOrder *string
@@ -1234,6 +1423,223 @@ func (s *PurchaseOrderEditScreen) assocRowValue(row int) (string, bool) {
 }
 
 // ---------------------------------------------------------------------------
+// Which removal this order offers — the server's answer, read and not derived
+// ---------------------------------------------------------------------------
+
+// poLineRemoval is which of the two ways a line comes OFF an order applies
+// here. Exactly one is ever offered, and the operator is never asked to know
+// which: the answer is the server's.
+//
+// The boundary is not a status name — it is whether the supplier has seen the
+// document. OMS keeps that as PurchaseOrder.PRE_SUPPLIER_STATUSES and serves
+// the answer as `can_delete_items`, whose serializer docstring says in as many
+// words that a client must never keep its own copy of which statuses those
+// are: guess wrong and you offer an irreversible destroy on an order the
+// supplier already holds, or hide it on one where voiding leaves a meaningless
+// ghost. So nothing here reads po.Status, and adding a second pre-send state to
+// OMS costs this screen nothing.
+type poLineRemoval int
+
+const (
+	// poRemovalUnknown is the server not having ANSWERED — an OMS too old to
+	// serve the key, or a payload that lost it. It is a state of its own and
+	// not a no: reading absent as false would say "the supplier holds this
+	// order" about a draft the operator is still editing.
+	poRemovalUnknown poLineRemoval = iota
+	poRemovalDelete
+	poRemovalVoid
+)
+
+// poRemovalFor reads the flag. The ONE place it is read on this screen; the
+// bar, the key arm and the body note all come through here so they cannot come
+// to disagree about which action is on offer.
+func poRemovalFor(po *omsapi.PurchaseOrder) poLineRemoval {
+	if po == nil || po.CanDeleteItems == nil {
+		return poRemovalUnknown
+	}
+	if *po.CanDeleteItems {
+		return poRemovalDelete
+	}
+	return poRemovalVoid
+}
+
+// lineRemoval is poRemovalFor for the order this screen is editing.
+func (s *PurchaseOrderEditScreen) lineRemoval() poLineRemoval {
+	return poRemovalFor(s.po)
+}
+
+// removalOffered says whether the status row's Ctrl-E has anything to open for
+// the line being edited, and what the bar should call it. It is the single
+// predicate behind BOTH — the bar naming a key the arm declines is the defect
+// this screen's whole key scheme exists to prevent.
+//
+// A line that is already voided has nothing left to void; it can still be
+// DESTROYED while the order is pre-send, because a typo and the ghost of a typo
+// are both things a private document is better without, and OMS's _destroy_item
+// carries no is_voided guard. Where neither applies the key is not named and
+// does nothing — the bar has already said so, and a note answering a key the
+// bar declined to offer would be the second surface this package keeps deleting.
+func (s *PurchaseOrderEditScreen) removalOffered() (label string, ok bool) {
+	li, addressed := s.addressedLine()
+	if !addressed {
+		return "", false
+	}
+	// A write is already out against this line. Opening a removal on top of it
+	// gives the operator a confirm whose status row reads "Deleting…" for a
+	// delete nobody asked for, whose own Ctrl-X is dropped for as long as the
+	// other write is in flight, and which then vanishes on its own when that
+	// write answers — a frame that reports the wrong work and cannot be acted
+	// on. The gate lives HERE because this is the one predicate the bar and the
+	// arm both read, so the legend loses Ctrl-E in the same breath the key
+	// stops acting.
+	if s.saving {
+		return "", false
+	}
+	if s.lineRemoval() == poRemovalDelete {
+		return "Delete line", true
+	}
+	// Void is what the other two answers land on. On poRemovalUnknown that is
+	// deliberate and is NOT a guess at the flag: void is the answer that cannot
+	// destroy anything, it is what this screen has always offered, and the row
+	// says the server did not answer rather than presenting it as the rule
+	// (removalNote). The irreversible action is never offered on a silence.
+	if li.IsVoided {
+		return "", false
+	}
+	return "Void line", true
+}
+
+// removalNote is the standing sentence under the status row: what Ctrl-E will
+// open, and — when the server did not answer — that it did not. It is drawn
+// only while the cursor is ON that row, the same test the bar makes, so the
+// body never goes on describing a key the bar has dropped.
+func (s *PurchaseOrderEditScreen) removalNote() string {
+	li, ok := s.addressedLine()
+	if !ok {
+		return ""
+	}
+	switch s.lineRemoval() {
+	case poRemovalDelete:
+		note := "This order has not gone to the supplier, so a line put on it by mistake can be DELETED outright — no reason is asked for, and nothing is left behind."
+		// The KEY is named here only while the bar names it, off the one
+		// predicate both read. Gating the whole sentence would be the wrong
+		// fix — the other branches carry a standing FACT about the row (a line
+		// already voided, a server that did not answer) which is exactly what
+		// this note exists to hold, and which is true whether or not a key is
+		// on offer. Only the clause naming Ctrl-E is a claim about a key, so
+		// only that clause follows the legend.
+		if _, offered := s.removalOffered(); offered {
+			note += " Ctrl-E asks you to confirm first; it cannot be undone."
+		}
+		return note
+	case poRemovalVoid:
+		if li.IsVoided {
+			return "This line is already voided. The supplier holds this order, so its lines stay on the record — a voided line is struck off rather than removed."
+		}
+		return "The supplier already has this order, so a line can only be VOIDED: it is struck off and stays on the record, with the reason you give. Deleting it outright would be a lie about what was ordered."
+	default:
+		// poRemovalUnknown. Named rather than papered over: this is OMS not
+		// having answered, which is a different fact from "you may not delete",
+		// and an operator who cannot see the difference cannot report it.
+		if li.IsVoided {
+			return "This line is already voided. This server did not report whether this order's lines may be deleted outright, so nothing destructive is offered on it."
+		}
+		return "This server did not report whether this order's lines may be deleted outright (can_delete_items), so only voiding is offered — the safe half. Voiding on a draft leaves a struck-off line where deleting would have left nothing."
+	}
+}
+
+// removalPhaseHolds reports that the removal sub-phase the screen is standing
+// on is still the one the ORDER's flag calls for. It is the single predicate
+// the confirm's bar, its destructive arm and its frame all read, so none of the
+// three can go on offering an action the last refresh has superseded.
+//
+// It exists because a reload landing under an OPEN removal sub-phase is a
+// supported, surviving state (reseatLineIndexes): the sub-phase follows its own
+// LINE across the refresh, and the line surviving says nothing whatever about
+// the ORDER. Open the delete confirm on a draft, have the order sent to the
+// supplier from the web, and the screen's own reload lands with
+// can_delete_items false — the line is still there, so the confirm stayed up,
+// the bar went on reading `Ctrl-X=Delete line` and the body went on saying
+// there is no undo, over an order the server now says the supplier holds. That
+// is the flag read once and CACHED ACROSS A REFRESH, which is the one thing its
+// serializer docstring forbids.
+//
+// The mirror is held too rather than only the direction that was reported: a
+// void prompt open when the order becomes the shop's own again is offering the
+// instrument that leaves a ghost where the server now allows the typo to be
+// erased.
+func (s *PurchaseOrderEditScreen) removalPhaseHolds() bool {
+	switch s.phase {
+	case poEditPhaseDeleteLine:
+		return s.lineRemoval() == poRemovalDelete
+	case poEditPhaseVoidLine:
+		// Void is what BOTH of the other answers land on, silence included —
+		// the same reading removalOffered makes, so the prompt does not close
+		// on an OMS that merely stopped answering.
+		return s.lineRemoval() != poRemovalDelete
+	}
+	return true
+}
+
+// removalFlipNote is what the operator is told when it does not hold, and ""
+// when it does. Nothing is destroyed and nothing is silently swapped to the
+// other instrument: the frame closes back to the line editor, whose status row
+// now offers whichever removal the refreshed flag calls for, and the sentence
+// names what CHANGED. Bounded to the status row's 49 cells at 80 columns with
+// the load-bearing clause first, because that row cannot fold.
+func (s *PurchaseOrderEditScreen) removalFlipNote() string {
+	if s.removalPhaseHolds() {
+		return ""
+	}
+	if s.phase == poEditPhaseDeleteLine {
+		return poEditDeleteFlippedNote
+	}
+	return poEditVoidFlippedNote
+}
+
+// The screen's refusals, worded for the surface that cannot fold and cannot
+// scroll. fitStatus gives an error message bodyWidth-2 cells — 49 at the 80
+// columns this interface is modelled on — so the clause each of these exists to
+// carry leads and the circumstance follows: cut at 49 the operator still reads
+// that NOTHING WAS WRITTEN, which is the fact, and loses only the part of the
+// reason the frame around them already shows.
+const (
+	poEditLineGoneNote      = "nothing written: that line has left this order"
+	poEditLineSaveGoneNote  = "nothing saved: that line has left this order"
+	poEditLineVoidGoneNote  = "nothing voided: that line has left this order"
+	poEditLineDelGoneNote   = "nothing deleted: that line has left this order"
+	poEditDeleteFlippedNote = "nothing deleted: the supplier holds this order"
+	poEditVoidFlippedNote   = "nothing voided: this order is the shop's own"
+)
+
+// poLastActiveLine reports that idx names the only line on the order that is
+// not voided — so destroying it leaves the order with none.
+//
+// It matters because OMS's purchase-order LIST hides an order with no active
+// lines (PurchaseOrderViewSet.get_queryset annotates _active_items_count and
+// filters it), and ScanTTY's list is a straight pass-through of that endpoint
+// (list.go's purchaseOrderRows). "Delete the wrong line, then add the right
+// one" — the exact workflow this key exists for — therefore drops the order out
+// of every list on the way through. The filter is the server's and this client
+// cannot lift it, so the answer is to SAY SO on the frame the key is pressed
+// from and name the way back (deleteCaveats), which is what a warning has to do
+// to be worth more than the keystroke it costs.
+func poLastActiveLine(po *omsapi.PurchaseOrder, idx int) bool {
+	if po == nil || idx < 0 || idx >= len(po.Items) {
+		return false
+	}
+	if po.Items[idx].IsVoided {
+		return false
+	}
+	for i, li := range po.Items {
+		if i != idx && !li.IsVoided {
+			return false
+		}
+	}
+	return true
+}
+
+// ---------------------------------------------------------------------------
 // Void-line sub-phase
 // ---------------------------------------------------------------------------
 
@@ -1246,11 +1652,12 @@ func (s *PurchaseOrderEditScreen) openVoidLine(idx int) {
 	s.voidReason.Focus()
 }
 
-// returnFromSub closes a picker or the void prompt back onto whichever form
-// opened it, re-focusing that form's input.
+// returnFromSub closes a picker, the void prompt or the delete confirm back
+// onto whichever form opened it, re-focusing that form's input.
 func (s *PurchaseOrderEditScreen) returnFromSub() {
 	s.voidReason.Blur()
-	if s.subReturn == poEditPhaseLine && s.po != nil && s.editLineIdx >= 0 && s.editLineIdx < s.lineCount() {
+	s.deleteNote = ""
+	if _, addressed := s.addressedLine(); s.subReturn == poEditPhaseLine && addressed {
 		s.phase = poEditPhaseLine
 		s.syncLineFocus()
 		return
@@ -1268,12 +1675,25 @@ func (s *PurchaseOrderEditScreen) updateVoidLine(m tea.KeyMsg) (Screen, tea.Cmd)
 		if s.saving {
 			return s, nil
 		}
+		if note := s.removalFlipNote(); note != "" {
+			s.returnFromSub()
+			s.errMsg = note
+			return s, Status(note, StatusWarn)
+		}
 		reason := strings.TrimSpace(s.voidReason.Value())
 		if reason == "" {
 			s.errMsg = "a reason is required to void a line"
 			return s, Status(s.errMsg, StatusError)
 		}
-		li := s.po.Items[s.editLineIdx]
+		li, ok := s.addressedLine()
+		if !ok {
+			// Same hazard as the delete confirm's: a void aimed at a position
+			// would strike off whatever now sits there.
+			s.closeLineSubPhase()
+			s.errMsg = poEditLineVoidGoneNote
+			s.syncFocus()
+			return s, Status(s.errMsg, StatusWarn)
+		}
 		itemID := fmt.Sprintf("%v", li.ID)
 		s.saving = true
 		s.errMsg = ""
@@ -1288,6 +1708,216 @@ func (s *PurchaseOrderEditScreen) updateVoidLine(m tea.KeyMsg) (Screen, tea.Cmd)
 	var cmd tea.Cmd
 	s.voidReason, cmd = s.voidReason.Update(m)
 	return s, cmd
+}
+
+// ---------------------------------------------------------------------------
+// Delete-line sub-phase
+// ---------------------------------------------------------------------------
+
+// openDeleteLine opens the confirmation. Deleting takes NO reason — demanding
+// one is precisely the friction that made voiding the wrong instrument for a
+// typo — so this phase has no input and nothing to type into. What it owes the
+// operator instead is a frame that NAMES what is about to be destroyed, because
+// after the write the row it was on is gone.
+func (s *PurchaseOrderEditScreen) openDeleteLine(idx int) {
+	s.subReturn = s.phase
+	s.phase = poEditPhaseDeleteLine
+	s.editLineIdx = idx
+	s.errMsg = ""
+	s.deleteNote = ""
+}
+
+// updateDeleteLine is the confirm's key handler.
+//
+// Ctrl-X and not Enter, deliberately: Ctrl-E OPENS this frame and enter is the
+// key an operator's hand reaches for next, so binding the irreversible write to
+// it would make a reflex enough to destroy a line. It is the same choice the
+// New PO supplier-switch confirm makes for the same reason.
+//
+// Every other key ANSWERS. A frame that binds two keys and returns nil for the
+// rest redraws a pane that is a pure function of unchanged state — byte for
+// byte identical, which reads as a wedged program and is the reported hang this
+// package keeps finding. The note says what the KEY DID and names no key: the
+// bar makes that claim, on every frame, where no budget can trim it.
+func (s *PurchaseOrderEditScreen) updateDeleteLine(m tea.KeyMsg) (Screen, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		s.returnFromSub()
+		return s, nil
+	case "ctrl+x":
+		if s.saving {
+			// A delete is already out. The status row is drawing "Deleting…"
+			// and the bar has dropped the key, so the frame has answered
+			// already and a second press has nothing to add.
+			return s, nil
+		}
+		if note := s.removalFlipNote(); note != "" {
+			s.returnFromSub()
+			s.errMsg = note
+			return s, Status(note, StatusWarn)
+		}
+		li, ok := s.addressedLine()
+		if !ok {
+			// The line went off the order while this frame was up. Nothing is
+			// sent at a position: destroying whatever now sits where the
+			// confirmed line was is the one outcome an irreversible key must
+			// never have.
+			s.closeLineSubPhase()
+			s.errMsg = poEditLineDelGoneNote
+			s.syncFocus()
+			return s, Status(s.errMsg, StatusWarn)
+		}
+		itemID := fmt.Sprintf("%v", li.ID)
+		label := li.DisplayLabel()
+		s.saving = true
+		s.errMsg = ""
+		s.deleteNote = ""
+		deps := s.deps
+		ctx := s.ctx()
+		id := s.poID
+		return s, func() tea.Msg {
+			out, err := deps.OMS.DeletePurchaseOrderLineItem(ctx, id, itemID)
+			done := "line deleted: " + label
+			if err == nil && out != nil && strings.TrimSpace(out.Deleted.Label) != "" {
+				// The server's own account of what it destroyed, which is what
+				// the audit trail now carries. Preferred over the label this
+				// screen was showing so the flash and the trail say one thing.
+				done = "line deleted: " + strings.TrimSpace(out.Deleted.Label)
+			}
+			return poLineActionMsg{err: err, action: "line delete", done: done}
+		}
+	}
+	s.deleteNote = m.String() + " does nothing here — this frame only confirms or cancels."
+	return s, nil
+}
+
+// deleteBar names Ctrl-X only while it will act. While the write is out the
+// frame's status row is the answer and the key is not offered — see
+// updateDeleteLine.
+func (s *PurchaseOrderEditScreen) deleteBar() []actionBarItem {
+	if s.saving || !s.removalPhaseHolds() {
+		return []actionBarItem{{"Esc", "Back"}}
+	}
+	return []actionBarItem{{"Ctrl-X", "Delete line"}, {"Esc", "Cancel"}}
+}
+
+// deleteHeadline is the ONE thing the confirm may not be drawn without: what is
+// about to be destroyed, on a single bounded row.
+//
+// It is a PINNED, ESSENTIAL header row rather than a body line, and that is the
+// whole reason this frame has a header at all. jdeLines gives a body ground
+// first — down to nothing — so at 80x10 through 80x16 the body was two markers
+// and a title, and the frame read `Delete line item`, `↓ 13 more below`, and a
+// bar saying `Ctrl-X=Delete line`: an irreversible destroy confirmed on a frame
+// that named nothing it would destroy, with no key on it able to fetch the rest.
+// jdeFitHeader gives ground BY RANK and keeps the essential row last, so
+// wherever the frame is drawn at all, this row is on the pane.
+//
+// A row that cannot fold is a row where the FACT survives whole and the
+// IDENTIFIER abbreviates: the lead, the ordered quantity and the money are
+// fixed-width and never give, and the line's own name — OMS-supplied and
+// unbounded — is clipped to what they leave, with the ellipsis that says so.
+// The MONEY is deliberately not on it. Everything added to this row is taken
+// from the name, and the name is the answer to "what am I destroying" that
+// nothing else on the frame carries: ` · 5 ordered · $50.00` is 21 cells of a
+// 51-column pane and left the name eleven, drawn as `M3 hex bol…`. The ordered
+// quantity stays because it is what tells two otherwise similar lines apart;
+// the line total rides a CONTEXT row, where it survives every height that has a
+// second header row to give.
+func (s *PurchaseOrderEditScreen) deleteHeadline(li omsapi.PurchaseOrderItem, width int) string {
+	const lead = "Delete: "
+	facts := fmt.Sprintf(" · %d ordered", li.QuantityOrdered)
+	room := width - len(jdeIndent) - lipgloss.Width(lead) - lipgloss.Width(facts)
+	if room < 1 {
+		room = 1
+	}
+	return jdeIndent + StyleStatusError.Render(lead) + pickerClip(li.DisplayLabel(), room) + StyleMuted.Render(facts)
+}
+
+// deleteCaveats are the standing sentences of the confirm, folded by the layer
+// rather than hand-counted against 51 columns.
+//
+// They are CONTEXT and the headline above is essential, which is the sacrifice
+// order stated: on a pane too short for both, the operator keeps the identity of
+// what they are about to destroy and loses the prose about it — the bar still
+// reads `Ctrl-X=Delete line`, so the ACT is named even where its consequences
+// are not, and the identity is the half nothing else on the frame carries.
+//
+// THE ORDER BETWEEN THE TWO SENTENCES IS A DECISION, NOT A LAYOUT ACCIDENT, and
+// it is written down here so it is not tidied back. The confirm's body has no
+// navigable row, so jdeLines anchors its window at the top and NO key on the
+// frame can fetch what falls off the bottom — whichever sentence is emitted
+// last is the one a short pane silently drops. The LAST-ACTIVE-LINE warning is
+// therefore emitted FIRST: irreversibility is the recoverable half, restated by
+// two other surfaces on the same frame (the bar reads `Ctrl-X=Delete line`, and
+// the pinned essential header row names what is being destroyed), while the
+// order vanishing out of every purchase-order list — and ctrl+k as the way back
+// — is the one fact nothing else on the frame carries. That is the same
+// sacrifice-order reasoning jdeHeadRank applies to the pinned header, applied
+// one level down inside the body.
+//
+// The vanishing-order sentence is the trap this change would otherwise ship
+// into the terminal unannounced: see poLastActiveLine. It names the way back,
+// because a warning the operator cannot act on is a dead end, and ctrl+k
+// reaches the order by name from anywhere once this screen is closed.
+func (s *PurchaseOrderEditScreen) deleteCaveats() []string {
+	var out []string
+	if poLastActiveLine(s.po, s.editLineIdx) {
+		out = append(out,
+			"This is the only line on the order that is not voided. The purchase-order list hides an order with no active lines, so once you leave this screen the order is reachable only through search (ctrl+k) until another line is added.")
+	}
+	return append(out,
+		"Deleting takes the line off the order for good. It is not a void: nothing is struck off, no reason is recorded, and there is no undo.")
+}
+
+// deleteHeader is the confirm's pinned block: the essential headline above,
+// then what the line costs the order and — on a line already struck off — what
+// deleting it additionally removes. Said ONCE, because the frame draws it and
+// the pane sweeps measure it, and a second literal beside this one would be a
+// header measured that is not the header drawn.
+func (s *PurchaseOrderEditScreen) deleteHeader(li omsapi.PurchaseOrderItem, width int) jdeHeader {
+	h := jdeHeader(nil).add(jdeHeadEssential, s.deleteHeadline(li, width))
+	if total := formatMoney(li.EstimatedCost); total != "" {
+		h = h.add(jdeHeadContext, jdeIndent+StyleMuted.Render("Line total on the order: "+total))
+	}
+	if li.IsVoided {
+		// Worth knowing before the press and not worth the essential row: a
+		// voided line is already struck off, so this destroys the ghost too.
+		h = h.add(jdeHeadContext, jdeIndent+StyleMuted.Render(
+			"This line is already voided; deleting removes it and its void from the order."))
+	}
+	return h.add(jdeHeadDecorative, "")
+}
+
+// viewDeleteLine draws the confirmation. A frame whose whole job is to name
+// what will be destroyed cannot be drawn without a line to name, so where
+// editLineIdx addresses none it draws the FORM — which is the phase
+// reseatLineIndexes has already put the screen back on when that can happen.
+func (s *PurchaseOrderEditScreen) viewDeleteLine() string {
+	li, ok := s.addressedLine()
+	if !ok {
+		return s.viewForm()
+	}
+	if !s.removalPhaseHolds() {
+		return s.viewLineEdit()
+	}
+	width := s.bodyWidth()
+
+	body := &jdeLines{}
+	for _, caveat := range s.deleteCaveats() {
+		for _, line := range jdeCaveatLines(caveat, width) {
+			body.Add(line)
+		}
+		body.Add("")
+	}
+	if s.deleteNote != "" {
+		for _, line := range jdeCaveatLines(s.deleteNote, width) {
+			body.Add(line)
+		}
+	}
+	return s.jdeScreen.frameWithHeader(
+		s.deleteHeader(li, width), body, 0,
+		s.statusRow(s.saving, "Deleting…", s.errMsg), s.deleteBar())
 }
 
 // ---------------------------------------------------------------------------
@@ -1306,6 +1936,8 @@ func (s *PurchaseOrderEditScreen) View() string {
 		return s.viewLineEdit()
 	case poEditPhaseVoidLine:
 		return s.viewVoidLine()
+	case poEditPhaseDeleteLine:
+		return s.viewDeleteLine()
 	case poEditPhaseAssoc:
 		return s.viewAssocPick()
 	default:
@@ -1577,8 +2209,7 @@ func poLineCostHint(li omsapi.PurchaseOrderItem) string {
 
 // lineFields describes the line editor: three typed rows, then the three the
 // action bar's Ctrl-E opens.
-func (s *PurchaseOrderEditScreen) lineFields() []jdeField {
-	li := s.po.Items[s.editLineIdx]
+func (s *PurchaseOrderEditScreen) lineFields(li omsapi.PurchaseOrderItem) []jdeField {
 	out := make([]jdeField, 0, poLineEditCount)
 	for i := 0; i < poLineEditInputCount; i++ {
 		width := 0
@@ -1665,15 +2296,21 @@ func (s *PurchaseOrderEditScreen) lineBar() []actionBarItem {
 	case poLineRowWorkOrder, poLineRowCommittee:
 		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 	case poLineRowStatus:
-		if !s.po.Items[s.editLineIdx].IsVoided {
-			items = append(items, actionBarItem{"Ctrl-E", "Void line"})
+		// Which removal — if either — this ORDER offers. One predicate for the
+		// bar and for the arm behind it (removalOffered), so the legend and the
+		// key cannot come to disagree about what Ctrl-E opens.
+		if label, ok := s.removalOffered(); ok {
+			items = append(items, actionBarItem{"Ctrl-E", label})
 		}
 	}
 	return items
 }
 
 func (s *PurchaseOrderEditScreen) viewLineEdit() string {
-	li := s.po.Items[s.editLineIdx]
+	li, ok := s.addressedLine()
+	if !ok {
+		return s.viewForm()
+	}
 
 	body := &jdeLines{}
 	body.Add(StyleJDEHeading.Render("Edit line: ") + li.DisplayLabel())
@@ -1681,7 +2318,7 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 	body.Add("")
 	// One block, so it finds its own label column — unlike the header form,
 	// whose two bands share one.
-	for i, line := range renderJDEFields(s.lineFields(), s.bodyWidth()) {
+	for i, line := range renderJDEFields(s.lineFields(li), s.bodyWidth()) {
 		body.AddRow(i, line)
 	}
 	body.Add("")
@@ -1698,6 +2335,14 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 				total, li.QuantityOrdered)))
 		} else if note != "" {
 			body.Add(jdeIndent + StyleMuted.Render(note))
+		}
+	}
+	// The status row's own standing note, drawn on the same test the bar makes:
+	// what Ctrl-E opens there is decided by the ORDER, not by the line, so a row
+	// reading "open" says nothing about whether removal is delete or void.
+	if note := s.removalNote(); note != "" && s.lineFocus == poLineRowStatus {
+		for _, line := range jdeCaveatLines(note, s.bodyWidth()) {
+			body.Add(line)
 		}
 	}
 	body.Add(jdeIndent + StyleMuted.Render("Enter saves cost, ship date and notes together; the three rows under them write on their own."))
@@ -1835,7 +2480,13 @@ var poEditAssocBar = []actionBarItem{{"Enter", "Select"}, {"Esc", "Cancel"}, {"U
 // ---------------------------------------------------------------------------
 
 func (s *PurchaseOrderEditScreen) viewVoidLine() string {
-	li := s.po.Items[s.editLineIdx]
+	li, ok := s.addressedLine()
+	if !ok {
+		return s.viewForm()
+	}
+	if !s.removalPhaseHolds() {
+		return s.viewLineEdit()
+	}
 	field := jdeField{
 		Label:   "Reason",
 		Kind:    jdeText,
@@ -1852,9 +2503,20 @@ func (s *PurchaseOrderEditScreen) viewVoidLine() string {
 	body.Add(jdeIndent + StyleMuted.Render("This marks the line voided and the supplier link discontinued."))
 	body.Add("")
 	body.AddRow(0, renderJDEFields([]jdeField{field}, s.bodyWidth())[0])
-	return s.frame(body, 0, "Voiding…", []actionBarItem{
-		{"Enter", "Void line"}, {"Esc", "Cancel"},
-	})
+	return s.frame(body, 0, "Voiding…", s.voidBar())
+}
+
+// voidBar is the void prompt's legend, said ONCE — the same reason deleteBar
+// and poEditAssocBar are methods rather than literals. The phase sweep reads
+// the bar a phase DRAWS and presses the whole key space against it; a literal
+// restated in the sweep would be a bar measured that is not the bar drawn, so a
+// key added here would be judged against a stale copy and pass silently, which
+// is exactly the hand-kept-roster failure that sweep exists to prevent.
+func (s *PurchaseOrderEditScreen) voidBar() []actionBarItem {
+	if s.saving || !s.removalPhaseHolds() {
+		return []actionBarItem{{"Esc", "Back"}}
+	}
+	return []actionBarItem{{"Enter", "Void line"}, {"Esc", "Cancel"}}
 }
 
 // stringPtr returns a pointer to s. Used to send a metadata/line field even

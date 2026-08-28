@@ -510,6 +510,25 @@ func jdeScreenStates() map[string]func() Screen {
 			s.openDeliverForm()
 			return s
 		},
+		// The two removal sub-phases. The delete confirm is the DESTRUCTIVE one
+		// and it draws a block a short pane has to give ground in — the line's
+		// identity, its numbers, and two folded caveats — so it is swept at
+		// every height rather than trusted to be short. It is reached with the
+		// server's flag SET, because that flag is the only thing that opens it.
+		"PurchaseOrderEditScreen/delete confirm": func() Screen {
+			s := NewPurchaseOrderEditScreen(Deps{}, poDeletablePO())
+			s.openLineEditor(0)
+			s.lineFocus = poLineRowStatus
+			s.openDeleteLine(0)
+			return s
+		},
+		"PurchaseOrderEditScreen/void prompt": func() Screen {
+			s := NewPurchaseOrderEditScreen(Deps{}, poViewPO())
+			s.openLineEditor(0)
+			s.lineFocus = poLineRowStatus
+			s.openVoidLine(0)
+			return s
+		},
 		"PurchaseOrderEditScreen/association picker": func() Screen {
 			s := NewPurchaseOrderEditScreen(Deps{}, poViewPO())
 			s.assoc.workOrders = []omsapi.WorkOrder{
@@ -1555,6 +1574,39 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 				return s
 			},
 			header: func(s Screen) jdeHeader { return s.(*PurchaseOrderAddLineScreen).headerLines() },
+		},
+		// The delete confirm pins the ONE thing it may not be drawn without —
+		// what is about to be destroyed — and it is the reason that frame has a
+		// header at all: with the identity in the BODY, jdeLines gave it ground
+		// first and from 80x10 to 80x16 the frame named nothing it would
+		// destroy while the bar still read Ctrl-X=Delete line. Built on a line
+		// whose name REACHES the row's bound and with a voided line's extra
+		// context row standing, which is the state its header is tallest in.
+		"PurchaseOrderEditScreen/viewDeleteLine": {
+			mk: func() Screen {
+				po := poDeletablePO()
+				po.Items = append([]omsapi.PurchaseOrderItem{{
+					ID:              "line-long",
+					Description:     "M3×12 hex-head cap screw, A2-70 stainless, DIN 933, bright finish",
+					QuantityOrdered: 250,
+					EstimatedCost:   omsapi.DecimalString("31.25"),
+					IsVoided:        true,
+				}}, po.Items...)
+				s := NewPurchaseOrderEditScreen(Deps{}, po)
+				s.openLineEditor(0)
+				s.lineFocus = poLineRowStatus
+				s.openDeleteLine(0)
+				return s
+			},
+			after: func(s Screen) {
+				// A key the frame declines, so the note it answers with is
+				// standing under the header while the sweep measures it.
+				s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			},
+			header: func(s Screen) jdeHeader {
+				v := s.(*PurchaseOrderEditScreen)
+				return v.deleteHeader(v.po.Items[v.editLineIdx], v.bodyWidth())
+			},
 		},
 		"ServiceStatusScreen/View": {
 			mk:     func() Screen { return NewServiceStatusScreen(Deps{}) },

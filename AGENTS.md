@@ -144,6 +144,130 @@ knowing before touching either:
   what the prompt shows, because it is still what the server would apply, with
   the fact named beside it: a zero accepted by reflex is a zero-priced line.
 
+### A line comes OFF an order two ways, and the SERVER says which
+
+`internal/tui/po_edit.go` (`poRemovalFor`, `poEditPhaseDeleteLine`) is the flow
+and `internal/omsapi/reorders.go` (`DeletePurchaseOrderLineItem`) is the client;
+OMS's `services/line_entry.assert_deletable` and
+`PurchaseOrderSerializer.get_can_delete_items` are the contract. What is worth
+knowing before touching any of it:
+
+- **DELETE while the order is still the shop's own, VOID once the supplier has
+  it**, and that boundary is the captain's decision rather than an
+  implementation detail: while the document is private a line put on by mistake
+  is a typo and the honest record of a typo is no line at all, so deleting takes
+  NO reason; once the supplier holds a copy the line is part of a record someone
+  else also has, so it can only be struck off with one.
+- **`can_delete_items` is READ, never re-derived.** It is served from
+  `PurchaseOrder.PRE_SUPPLIER_STATUSES` and its serializer docstring says in as
+  many words that a client must never keep its own copy of which statuses those
+  are — guess wrong and you offer an irreversible destroy on an order the
+  supplier already holds, or hide it on one where voiding leaves a meaningless
+  ghost. Nothing on this side reads `po.Status` to answer it, so OMS adding a
+  second pre-send state costs ScanTTY nothing.
+  `TestPOLineRemove_TheOfferFollowsTheFlagAndNotTheStatus` is the guard and it
+  is the only test in the file a `status == "draft"` rule fails: its two rows
+  are the ones where the flag and the status DISAGREE.
+- **The flag is a `*bool`, because absent and false are different facts.** An
+  OMS too old to serve the key has not said the supplier holds the order — it
+  has said nothing — so a plain `bool` would decode a silence into a confident
+  "you may not delete" about a draft the operator is still editing. `nil` offers
+  the reversible half and the frame NAMES the silence (`removalNote`); the
+  irreversible action is never offered on a guess.
+- **`Ctrl-X` confirms the destroy, not `Enter`.** `Ctrl-E` OPENS the confirm and
+  enter is the key a hand reaches for next, so binding the write to it would
+  make a reflex enough to destroy a line — the same choice the New PO
+  supplier-switch confirm makes. Every other key on that frame ANSWERS
+  (`deleteNote`), or the second press redraws a pane that is a pure function of
+  unchanged state.
+- **Both refusal shapes are recovered.** `_destroy_item` writes
+  `{"error", "code"}` and `void_item` writes `{"error"}` alone; neither reaches
+  DRF's exception handler, so `parseError` hands the whole raw body over.
+  `asLineRefusal` tries the two narrow recognisers that already exist
+  (`AsLineEntryError`, then `AsReceivingRefusal`), so a gateway page and a DRF
+  envelope still arrive as the `APIError` they are.
+- **THE SITE IS THE EDIT SCREEN, and the set was derived.** Every screen that
+  displays persisted PO lines was checked: `po_edit.go` has the per-line cursor
+  and the per-line affordance rows, so removal is one more row-action there;
+  `po_detail.go` is a scrolled READ-ONLY sheet with an offset and no line
+  cursor, so it has no "the line you are on" for a removal to name and `E` is
+  one key away to the screen that does; `receive_form.go` is past the boundary
+  by construction (`PRE_SUPPLIER_STATUSES` and `RECEIVABLE_STATUSES` are
+  disjoint) and receiving records what ARRIVED; `po_add_line.go` reads
+  `po.Items` only for a price hint.
+  **The New PO staged cart is NOT order lines**, and conflating the two would be
+  a defect: those rows exist before the order does, carry no line id and no
+  flag, and `ctrl+x` already drops one with no server round trip.
+  (`po_create_pickers.go`'s `.Items` is a SUPPLIER's catalogue, a different
+  `Items` entirely.)
+- **THE ORDER LIST HIDES AN ORDER WITH NO ACTIVE LINES, and the filter is the
+  SERVER's.** `PurchaseOrderViewSet.get_queryset` annotates `_active_items_count`
+  and filters it when `action == "list"`; ScanTTY's list is a straight
+  pass-through of that endpoint (`list.go`'s `purchaseOrderRows`, no local
+  filter), so "delete the wrong line, then add the right one" — the exact
+  workflow this key exists for — drops a single-line draft out of every list,
+  the `draft` filter included. This client cannot lift it without changing the
+  OMS API, so the answer is non-silence rather than a refusal: the confirm says
+  so when the line is the last active one and names the way back (`ctrl+k`
+  search still finds it — `backend/search/views.py` applies no such filter).
+  Filed against the web app separately; the terminal warns rather than shipping
+  the trap unannounced.
+  THE WARNING IS EMITTED **FIRST** AND THAT IS A DECISION, not a layout
+  accident. The confirm's body has no navigable row, so `jdeLines` anchors its
+  window at the top and no key on the frame can fetch what falls off the
+  bottom — whichever caveat is emitted LAST is the one a short pane silently
+  drops. Irreversibility is the recoverable half, said twice already on the
+  same frame (the bar reads `Ctrl-X=Delete line`, the pinned essential header
+  row names what is being destroyed); the vanishing order is said here or
+  nowhere. Same reasoning as `jdeHeadRank`, one level down inside the body, and
+  `TestPOLineRemove_AShortPaneKeepsTheVanishingOrderWarning` sweeps every
+  drawable height rather than the two in `poPaneSizes`.
+- **A PER-LINE INDEX IS CARRIED ACROSS A RELOAD BY IDENTITY, NEVER BY
+  POSITION.** `editLineIdx` / `assocLineIdx` address `po.Items` positionally and
+  every line action fires `load()`, so a reload landing under an OPEN sub-phase
+  is ordinary rather than a corner. The clamp that used to hold the index in
+  range (`if editLineIdx >= lineCount() { editLineIdx = 0 }`) re-pointed it at
+  whatever now sat there: with two lines cut to one, the delete confirm went on
+  NAMING the line the operator had read and confirmed while `Ctrl-X` would have
+  destroyed the other one — and an EMPTIED `Items` list, which only DELETE makes
+  reachable, got a valid-looking index 0 into nothing that every reader then
+  indexed. `reseatLineIndexes` follows each index to its own line by
+  `poLineID` and CLOSES the sub-phase standing on one whose line is gone,
+  saying so on the status row; `addressedLine` is the one guarded read every
+  `po.Items[editLineIdx]` site goes through.
+- **THE FLAG IS READ AGAIN ON EVERY REFRESH, INCLUDING UNDER AN OPEN CONFIRM.**
+  Carrying a sub-phase across a reload by identity means it follows its own
+  LINE, and the line surviving says nothing whatever about the ORDER: a delete
+  confirm opened on a draft outlived the order being sent from the web, with
+  the bar still reading `Ctrl-X=Delete line` — the flag read once and CACHED
+  ACROSS A REFRESH, the one thing its serializer docstring forbids.
+  `removalPhaseHolds` is the single predicate `deleteBar` / `voidBar`, the
+  destructive arms and both frames read; when it fails the frame closes back to
+  the LINE EDITOR (whose status row now offers whatever the refreshed flag
+  calls for) and says what changed. The mirror is held too — a void prompt open
+  when the order becomes the shop's own again offers the instrument that leaves
+  a ghost where the server now allows the typo to be erased.
+- **A BODY SENTENCE MAY NAME A KEY ONLY WHERE THE BAR DOES, AND THE CLAUSE IS
+  WHAT GIVES — NOT THE SENTENCE.** `removalNote`'s standing text carries a FACT
+  about the row (a line already voided, a server that did not answer) which is
+  true whether or not a key is on offer, so gating the whole note on
+  `removalOffered` would have taken the row's own explanation away with the
+  claim. Only the clause naming `Ctrl-E` follows the legend.
+- **A REFUSAL IS WORDED FOR A ROW THAT CANNOT FOLD.** `fitStatus` gives an
+  error `bodyWidth-2` cells — 49 at 80 columns — so every one of this screen's
+  local refusals leads with the load-bearing clause (`nothing written: …`,
+  `nothing deleted: …`) and lets the circumstance be what the cut takes. They
+  are constants (`poEditLineGoneNote` and its siblings) so the tests assert the
+  wording the screen draws, and the `poEditLoadedMsg` arm returns a `Status`
+  behind them: the row is one surface and a sentence needs two.
+- **A REMOVAL IS NOT OFFERED OVER A WRITE ALREADY IN FLIGHT.** `removalOffered`
+  is the single predicate the bar and the arm both read, so the gate goes there
+  and the legend loses `Ctrl-E` in the same breath the key stops acting.
+  Without it, Enter on the line editor followed by `Ctrl-E` on the status row
+  opened a delete confirm whose status row read `Deleting…` for a delete nobody
+  asked for, whose own `Ctrl-X` was dropped while the OTHER write was out, and
+  which then vanished by itself when that write answered.
+
 ### Kits are inventory items the item API refuses to admit exist
 
 Before touching anything kit-shaped (`internal/omsapi/kits.go` carries the full
@@ -325,13 +449,30 @@ either:
   RECEIVING (`receive_form.go`) and the New PO ENTRY flow (`po_create.go` +
   `po_create_pickers.go`). A flow with PHASES of its own brings its own derived
   sweep rather than joining a shared one — `po_add_line_sweep_test.go`,
-  `receive_form_sweep_test.go` and `po_create_phase_sweep_test.go` are three
+  `receive_form_sweep_test.go`, `po_create_phase_sweep_test.go` and
+  `po_edit_sweep_test.go` are four
   copies of one file with the nouns changed: phases from the iota's sentinel,
   keys from `poKeySpace()`, state and focus from `reflect` over the screen
   struct.
+  The edit screen's copy is the newest and carries the one lesson the other
+  three did not have to learn: **PROBES ARE PER CASE ON A FIELD FORM.** The
+  shared `{nil, {"down"}, {"end"}}` exists so a clamped cursor at an edge is not
+  reported dead, and on a LIST that is free — but on a field form a probe moves
+  the cursor onto a row with DIFFERENT rules, and probing `down` off the line
+  editor's status row wraps onto the COST row, where every printable rune goes
+  into a focused box. The sweep then reported 96 keys as "acting" on a rule it
+  had never actually tested. Where the cursor WRAPS, the resting position
+  already reaches every named key; where it CLAMPS (a list, and the form's
+  paging pair) a second position is what proves the key is not dead.
+  And a state fingerprint MUST NOT RANGE A MAP: `poEditState` ranged `selects`,
+  and Go's randomised iteration made every key compare unequal to itself, so the
+  sweep went red for a reason unrelated to the property it names — the
+  vacuous-fixture rule with the sign flipped.
   **A bar entry's `Key` is the LITERAL keystroke.** `{"a", "Assets"}` is the
   letter `a`; `{"A", "Attach"}` is shift+A. `poBarKeyNames`
-  (`po_view_jde_test.go`) is the ONE table both purchasing sweeps read, and a
+  (`po_view_jde_test.go`) is the ONE table the columnar purchasing sweeps read
+  (the view, New PO phase and edit phase sweeps; `po_add_line_sweep_test.go`
+  keeps its own), and a
   `Key` it does not know FAILS rather than being skipped — which is also what
   keeps the convention true, because a screen displaying `A` for a key that is
   really `a` would be spelling a keystroke nobody presses.
