@@ -1836,6 +1836,11 @@ func (s *PurchaseOrderEditScreen) deleteBar() []actionBarItem {
 // quantity stays because it is what tells two otherwise similar lines apart;
 // the line total rides a CONTEXT row, where it survives every height that has a
 // second header row to give.
+//
+// "Never gives" is true of every pane this interface is modelled on and NOT of
+// the extreme: past the point where keeping the quantity would push the name
+// below its floor, the quantity is what gives and says so — removalHeadline
+// carries that decision and the reason for it.
 func (s *PurchaseOrderEditScreen) deleteHeadline(li omsapi.PurchaseOrderItem, width int) string {
 	return removalHeadline("Delete: ", StyleStatusError, li, width)
 }
@@ -1845,13 +1850,55 @@ func (s *PurchaseOrderEditScreen) deleteHeadline(li omsapi.PurchaseOrderItem, wi
 // a line off the order may not be drawn without naming which line — and voiding
 // has no undo either (OMS writes is_voided true and has no endpoint that clears
 // it), so getting the identity wrong is exactly as unrecoverable there.
+//
+// THE ASSEMBLED ROW IS BOUNDED, NOT THE NAME INSIDE IT. It used to clip the
+// name to `width - indent - lead - facts` FLOORED AT 1 and then append the
+// facts anyway, which is this project's own width rule broken verbatim: a floor
+// applied to one PART of a row that is afterwards added to is not a bound. With
+// " · 250 ordered" (14 cells) against the 20-cell pane screenBodyWidth floors
+// at, the delete row assembled to 2+8+1+14 = 25 cells and clampToBox cut it
+// from the right with no ellipsis — the pane drew ` Delete: M · 250 orde`, the
+// line's identity reduced to one character and the fact cut mid-word, on the
+// frame whose whole job is to name what it is about to destroy. Every terminal
+// width from 45 to 53 was in that state, and the guard that should have caught
+// it walked three hand-picked widths.
+//
+// THE GIVE-ORDER IS A DECISION AND NOT THE ARITHMETIC'S LEFTOVER. Where the
+// pane cannot hold both, the FACTS give and the NAME keeps the room. That
+// reverses what this row's doc above used to say flatly — that the ordered
+// quantity never gives, because it is what tells two otherwise similar lines
+// apart — and the qualification is the point: the quantity DISAMBIGUATES a
+// name, so it presupposes one. Beside a name cut to a character it separates
+// nothing, while the name alone still answers "what am I destroying". So the
+// quantity holds at every width where the name can keep poHeaderValueFloor
+// cells beside it, and gives only past that, which is the extreme this bound
+// exists for and not the pane the interface is modelled on. What it leaves is
+// poRowDropMark, because a row that gave something up may not read as a whole
+// one — the same convention poFitRow keeps on the picker rows.
 func removalHeadline(lead string, style lipgloss.Style, li omsapi.PurchaseOrderItem, width int) string {
+	name := li.DisplayLabel()
 	facts := fmt.Sprintf(" · %d ordered", li.QuantityOrdered)
-	room := width - len(jdeIndent) - lipgloss.Width(lead) - lipgloss.Width(facts)
-	if room < 1 {
-		room = 1
+	if width <= 0 {
+		// UNSIZED, which is the layer's standing "draw whole and let clampToBox
+		// decide" — there is no pane to measure against yet.
+		return jdeIndent + style.Render(lead) + name + StyleMuted.Render(facts)
 	}
-	return jdeIndent + style.Render(lead) + pickerClip(li.DisplayLabel(), room) + StyleMuted.Render(facts)
+	room := width - len(jdeIndent) - lipgloss.Width(lead)
+	if room < 0 {
+		room = 0
+	}
+	tail := facts
+	if room-lipgloss.Width(facts) < poHeaderValueFloor {
+		tail = poRowDropMark
+	}
+	space := room - lipgloss.Width(tail)
+	if space <= 0 {
+		// Narrower than the mark itself. Unreachable while screenBodyWidth
+		// floors at 20 and the longest lead is eight cells, and here so that
+		// the row is bounded by CONSTRUCTION rather than by that coincidence.
+		return jdeIndent + style.Render(lead) + pickerClip(name, room)
+	}
+	return jdeIndent + style.Render(lead) + pickerClip(name, space) + StyleMuted.Render(tail)
 }
 
 // deleteCaveats is the standing sentence of the confirm, folded by the layer
@@ -2661,28 +2708,65 @@ func (s *PurchaseOrderEditScreen) voidCaveats(width int) []string {
 	if !poLastActiveLine(s.po, s.editLineIdx) {
 		return nil
 	}
-	var caveats []string
-	switch s.lineRemoval() {
-	case poRemovalVoid:
-		caveats = []string{
-			"Only search finds the order; voiding hides it.",
-			"This is the order's only unvoided line, and the supplier holds this order, so voiding it leaves the order off every purchase-order list. Nothing puts it back: OMS will not add a line to an order past that point and has nothing that lifts a void. " + voidSearchSentence(s.po),
-		}
-	case poRemovalUnknown:
-		caveats = []string{
-			"Search finds the order; voiding may hide it.",
-			"This is the order's only unvoided line. This server did not say whether the supplier already has the order (can_delete_items); if it does, voiding leaves it off every purchase-order list with nothing to put it back. " + voidSearchSentence(s.po),
-		}
-	default:
+	headline, ok := voidHeadlines[s.lineRemoval()]
+	if !ok {
 		// poRemovalDelete, which removalPhaseHolds has already closed this
 		// prompt on: the flag flipped under an open frame and the screen is on
 		// its way back to the line editor.
 		return nil
 	}
-	if len(jdeCaveatLines(caveats[0], width)) != 1 {
+	if !voidCaveatsFit(width) {
 		return nil
 	}
-	return caveats
+	switch s.lineRemoval() {
+	case poRemovalVoid:
+		return []string{
+			headline,
+			"This is the order's only unvoided line, and the supplier holds this order, so voiding it leaves the order off every purchase-order list. Nothing puts it back: OMS will not add a line to an order past that point and has nothing that lifts a void. " + voidSearchSentence(s.po),
+		}
+	default:
+		return []string{
+			headline,
+			"This is the order's only unvoided line. This server did not say whether the supplier already has the order (can_delete_items); if it does, voiding leaves it off every purchase-order list with nothing to put it back. " + voidSearchSentence(s.po),
+		}
+	}
+}
+
+// voidHeadlines is every leading caveat voidCaveats can draw, one per answer
+// that reaches this prompt. It is a map rather than two literals inside the
+// switch because voidCaveatsFit has to measure the WHOLE SET, and a set that
+// lived in the switch could only be measured one branch at a time.
+var voidHeadlines = map[poLineRemoval]string{
+	poRemovalVoid:    "Only search finds the order; voiding hides it.",
+	poRemovalUnknown: "Search finds the order; voiding may hide it.",
+}
+
+// voidCaveatsFit is the width gate, and it answers for EVERY headline rather
+// than for the one about to be drawn.
+//
+// THE SET, NOT THE BRANCH, BECAUSE OTHERWISE THE THRESHOLD IS PER-WORDING AND
+// THE SEVERITIES INVERT. Asked of the branch alone, the gate opened at whatever
+// width that branch's sentence happened to fit: the CERTAIN-loss wording is two
+// cells longer than the hedged one, so across a band of widths the prompt went
+// silent about a loss the server had CONFIRMED while still warning about one it
+// had only left possible. A warning about what will happen must survive at
+// least as far as a warning about what might. Taking the maximum over the set
+// makes the threshold single BY CONSTRUCTION, so a later reword of one branch
+// moves both together instead of quietly reopening the inversion.
+//
+// The property is "both answers are withheld together or drawn together"; the
+// width it currently evaluates to is 77 columns and up, measured with the
+// layer's own functions (screenBodyWidth(77) = 48, which is jdeCaveatLines'
+// 46-cell budget for the longer headline plus the two-cell indent). That number
+// is an OUTPUT of the wordings and not a rule — reword them and it moves, and
+// the check that holds the property is written so that it moves with them.
+func voidCaveatsFit(width int) bool {
+	for _, headline := range voidHeadlines {
+		if len(jdeCaveatLines(headline, width)) != 1 {
+			return false
+		}
+	}
+	return true
 }
 
 // voidHeader is the prompt's pinned block.

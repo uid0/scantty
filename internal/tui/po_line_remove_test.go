@@ -1502,6 +1502,158 @@ func TestPOLineRemove_TheVanishingWarningIsOneRowWhereverItIsDrawn(t *testing.T)
 	}
 }
 
+// TestPOLineRemove_BothVoidAnswersAreWithheldOrDrawnTogether.
+//
+// THE PROPERTY IS THE SYMMETRY, AND THE WIDTH IS ONLY WHAT IT CURRENTLY
+// EVALUATES TO. The gate used to answer for the headline of the branch being
+// drawn, so each answer got the threshold its own sentence happened to earn —
+// and the CERTAIN-loss wording is two cells longer than the hedged one, so
+// across a band of widths the prompt went silent about a loss the server had
+// confirmed while still warning about one it had merely left possible. A
+// warning about what WILL happen must survive at least as far as a warning
+// about what MIGHT.
+//
+// voidCaveatsFit takes the maximum over the whole headline set, so the two move
+// together by construction. This asserts that rather than the number: reword
+// either branch and the width where the pair appears moves, and this test still
+// holds. The width it evaluates to today is reported by the test itself, so a
+// reader does not have to trust a number in a comment.
+func TestPOLineRemove_BothVoidAnswersAreWithheldOrDrawnTogether(t *testing.T) {
+	widths := jdeDrawableWidths()
+	if len(widths) == 0 {
+		t.Fatal("no drawable widths — the derivation is broken, not the screen")
+	}
+	branches := poVoidBranches(t)
+	drawnFrom, withheld, both := 0, 0, 0
+	for _, width := range widths {
+		seen := map[string]bool{}
+		for _, branch := range branches {
+			_, s := poVoidPrompt(t, poVoidSentOrder(branch.canDelete), width, 40, 0)
+			seen[branch.name] = len(s.voidCaveats(s.bodyWidth())) > 0
+		}
+		drew, held := 0, 0
+		for _, ok := range seen {
+			if ok {
+				drew++
+			} else {
+				held++
+			}
+		}
+		if drew > 0 && held > 0 {
+			t.Errorf("%d cols: %d answer(s) warn and %d are withheld, so the threshold is per-wording and the severities can invert: %v",
+				width, drew, held, seen)
+		}
+		if drew == len(branches) {
+			both++
+			if drawnFrom == 0 {
+				drawnFrom = width
+			}
+		}
+		if held == len(branches) {
+			withheld++
+		}
+	}
+	// Both sides of the disjunction have to be REACHED, or a gate that never
+	// fires — or one that never opens — would satisfy the symmetry vacuously.
+	if both == 0 || withheld == 0 {
+		t.Fatalf("the gate is drawn at %d widths and withheld at %d; one side is never exercised", both, withheld)
+	}
+	t.Logf("both answers warn from %d columns up (%d of %d drawable widths)", drawnFrom, both, len(widths))
+}
+
+// TestPOLineRemove_TheIdentityRowFitsThePaneOnBothConfirms.
+//
+// The row that names what is about to be removed is measured AS ASSEMBLED,
+// against the pane the terminal really gave, at every width Root will draw.
+//
+// It has to be measured off the screen's own View and not off the clipped pane,
+// which is the trap the older guard fell into: clampToBox has already truncated
+// an over-wide row by the time the pane is read, so a width assertion made
+// there can never fail. That guard also walked three hand-picked widths, and
+// the overflow lived at 45 through 53 — a floor of one cell applied to the NAME
+// and the facts appended after it, which is a bound expressed in terms of
+// something unbounded, this project's own width rule broken on the one row that
+// says what an irreversible action is about to destroy.
+//
+// Watched to fail: with the floored-room assembly restored it reports on both
+// confirms across the narrow end of the range, drawing rows several cells wider
+// than the pane.
+func TestPOLineRemove_TheIdentityRowFitsThePaneOnBothConfirms(t *testing.T) {
+	const long = "M3×12 hex-head cap screw, A2-70 stainless, DIN 933, bright finish"
+	widths := jdeDrawableWidths()
+	if len(widths) == 0 {
+		t.Fatal("no drawable widths — the derivation is broken, not the screen")
+	}
+	for _, confirm := range []struct {
+		name      string
+		canDelete *bool
+		phase     poEditPhase
+		lead      string
+	}{
+		{"delete", boolPtr(true), poEditPhaseDeleteLine, "Delete: "},
+		{"void", boolPtr(false), poEditPhaseVoidLine, "Void: "},
+	} {
+		t.Run(confirm.name, func(t *testing.T) {
+			clipped, abbreviated := 0, 0
+			for _, width := range widths {
+				fake := &fakeRemovePO{
+					status: "draft", canDelete: confirm.canDelete,
+					lines: []*fakeRemoveLine{
+						{id: "line-bolts", label: long, ordered: 250, cost: "31.25"},
+					},
+				}
+				if confirm.phase == poEditPhaseVoidLine {
+					fake.status = "sent"
+				}
+				r, _ := poRemoveRoot(t, fake, width)
+				r, s := poRemoveOnStatusRow(t, r, 0)
+				r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+				if s.phase != confirm.phase {
+					t.Fatalf("%d cols: phase %v, want %v", width, s.phase, confirm.phase)
+				}
+				head := ""
+				for _, line := range strings.Split(s.View(), "\n") {
+					if strings.Contains(line, confirm.lead) {
+						head = line
+					}
+				}
+				if head == "" {
+					t.Fatalf("%d cols: the confirm never names the line at all:\n%s", width, s.View())
+				}
+				pane := screenBodyWidth(width)
+				if got := lipgloss.Width(head); got > pane {
+					t.Errorf("%d cols: the identity row is %d cells against a %d-column pane, so clampToBox cuts it: %q",
+						width, got, pane, head)
+				}
+				// Whatever it shortened says so. The name keeps pickerClip's
+				// ellipsis; the ordered quantity, where the pane was too narrow
+				// to keep it beside a readable name, leaves poRowDropMark.
+				if !strings.Contains(head, "· 250 ordered") {
+					clipped++
+					if !strings.Contains(head, strings.TrimSpace(poRowDropMark)) {
+						t.Errorf("%d cols: the row gave the ordered quantity up and does not say so: %q", width, head)
+					}
+				}
+				if strings.Contains(head, "…") {
+					abbreviated++
+				}
+			}
+			// BOTH ENDS OF THE RANGE HAVE TO BE REACHED, counted rather than
+			// asserted per width: a wide pane draws this 64-cell name whole,
+			// which is the correct answer there, so a per-width demand for an
+			// ellipsis would report the widths that are working. What would
+			// make the sweep vacuous is a fixture that never reaches the clip
+			// at all, and that is what these count.
+			if abbreviated == 0 {
+				t.Errorf("the name is drawn whole at every drawable width, so nothing here exercises the clip")
+			}
+			if clipped == 0 {
+				t.Errorf("the ordered quantity survives at every drawable width, so the give-order is never exercised")
+			}
+		})
+	}
+}
+
 // TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning.
 //
 // The same sacrifice-order decision the delete confirm made, one surface over.
@@ -1579,32 +1731,26 @@ func voidPaneSweep(t *testing.T, branch poVoidBranch, width int, heights []int) 
 	}
 
 	// THE WARNING IS NOT DRAWN AT EVERY WIDTH, AND THAT IS THE DESIGN. Below the
-	// width where the headline stops folding to one row voidCaveats withholds
+	// width where the headlines stop folding to one row voidCaveats withholds
 	// BOTH caveats rather than let a trim halve the claim, so this sweep asks
 	// the screen which side of that gate it is on rather than assuming the
-	// warning is there. Where it is withheld the only property left is that
-	// nothing else states the loss in its place — the prose carries it too, and
-	// a gate that dropped the headline alone would move the dead end one row
-	// down instead of removing it.
-	if len(s.voidCaveats(s.bodyWidth())) == 0 {
-		for _, height := range heights {
-			flat := resize(height)
-			for _, gone := range []string{branch.headline, poVoidLossClause} {
-				if strings.Contains(flat, gone) {
-					t.Errorf("%dx%d: the caveats are withheld at this width and the pane still says %q:\n%s",
-						width, height, gone, flat)
-				}
-			}
-		}
-		return
-	}
+	// warning is there.
+	//
+	// THE GATE NARROWS WHAT IS ASSERTED, IT DOES NOT END THE SWEEP. This used
+	// to `return` here, which quietly took every remaining property off the
+	// whole narrow half of the width range — the half that had just been added
+	// — and with it the rule-1 guard that the Reason box the operator types
+	// into is on the pane. Only the assertions that are ABOUT A DRAWN CAVEAT
+	// belong behind the gate; everything else is about the frame and holds at
+	// every width.
+	drawn := len(s.voidCaveats(s.bodyWidth())) > 0
 
 	// The fixture has to REACH the bound: on the tallest pane both rows are
 	// drawn, so a run where the second never appears would pass for a reason
 	// unrelated to the sacrifice this test is about. It also has to reach THIS
 	// branch — a fixture whose flag drew the other wording would sweep one
 	// answer twice.
-	if flat := resize(tallest); true {
+	if flat := resize(tallest); drawn {
 		if !strings.Contains(flat, branch.headline) {
 			t.Fatalf("height %d does not draw this branch's headline %q, so the sweep is measuring the wrong wording:\n%s",
 				tallest, branch.headline, flat)
@@ -1643,9 +1789,23 @@ func voidPaneSweep(t *testing.T, branch poVoidBranch, width int, heights []int) 
 		warned := strings.Contains(flat, branch.headline)
 		detail := strings.Contains(flat, poVoidLossClause)
 		standing := strings.Contains(flat, poVoidStandingNote)
-		if standing && !warned {
+		if drawn && standing && !warned {
 			t.Errorf("%dx%d: the void prompt keeps the caveat said elsewhere and drops the one nothing else carries:\n%s",
 				width, height, flat)
+		}
+		// Where the gate withheld the pair, nothing else on the frame may state
+		// the loss in their place: the prose carries it too, so a gate that
+		// dropped the headline alone would move the dead end one row down
+		// instead of removing it. The standing note is NOT in this list — it is
+		// unconditional and says only what voiding does to the LINE, so the
+		// sacrifice-order check above is gated instead of this one widened.
+		if !drawn {
+			for _, gone := range []string{branch.headline, poVoidLossClause} {
+				if strings.Contains(flat, gone) {
+					t.Errorf("%dx%d: the caveats are withheld at this width and the pane still says %q:\n%s",
+						width, height, gone, flat)
+				}
+			}
 		}
 		// Could-not-tell and found-nothing stay apart at every height a trim
 		// can reach: a pane that has given ground must not have given up the

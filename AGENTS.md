@@ -295,8 +295,21 @@ knowing before touching any of it:
   is about a keypress changing nothing visible. The gate reads `bodyWidth()` and
   no named width ON PURPOSE: this file says 80 must HOLD while `app.go` draws
   down to 45, and a gate computed from the real pane needs no answer to that.
-  Measured: both facts fit one row from about 74 columns up, and no wording
-  carrying both fits the 18 cells the narrowest drawable pane leaves.
+  **THE GATE ANSWERS FOR THE WHOLE HEADLINE SET, NOT FOR THE BRANCH BEING
+  DRAWN** (`voidCaveatsFit`), and the property is that both answers are withheld
+  together or drawn together. Asked of one branch it gave each answer the
+  threshold its own sentence earned, and the CERTAIN-loss wording is two cells
+  longer than the hedged one — so at 75 and 76 columns the prompt went SILENT
+  about a loss the server had confirmed while still warning about one it had
+  only left possible, severities inverted by two cells of prose. The maximum
+  over the set makes the threshold single by CONSTRUCTION, so rewording one
+  branch moves both. Measured with the layer's own functions, it currently
+  evaluates to 77 columns and up (`screenBodyWidth(77)` = 48, which is the
+  46-cell longer headline plus `jdeIndent`); that number is an OUTPUT of the
+  wordings, and `TestPOLineRemove_BothVoidAnswersAreWithheldOrDrawnTogether`
+  asserts the symmetry rather than the number, reporting the width it comes to.
+  No wording carrying both facts fits the 18 cells the narrowest drawable pane
+  leaves.
   `TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning` sweeps every
   drawable height at every drawable WIDTH — derived from Root's own gate
   (`jdeDrawableWidths`), because three hand-picked widths is exactly how the
@@ -306,6 +319,25 @@ knowing before touching any of it:
   substring of it, and a SPLIT headline reads as absent once `poRemoveFlatPane`
   has collapsed the pane. Verified by reverting both halves: it reports from
   45x14 through 79x12, 60x12 among them, and at no width from 80 up.
+  **THE ESSENTIAL ROW IS BOUNDED AS ASSEMBLED, NOT PART BY PART.**
+  `removalHeadline` (shared by both confirms) clipped the line's NAME to what
+  the lead and the ` · N ordered` facts left, FLOORED AT 1, and then appended
+  the facts anyway — a bound applied to one part of a row that is afterwards
+  added to, which is the `assetScopeRows` rule broken on the one row that says
+  what an irreversible action is about to destroy. At the 20-cell pane
+  `screenBodyWidth` floors at, the delete row assembled to 25 cells and
+  `clampToBox` cut it with no ellipsis: ` Delete: M · 250 orde`. Reported at
+  every terminal width from 45 to 53 (delete) and 45 to 51 (void), by a sweep
+  reading the screen's OWN `View` — measured off the CLIPPED pane the check
+  cannot fail, because the truncation has already happened
+  (`TestPOLineRemove_TheIdentityRowFitsThePaneOnBothConfirms`).
+  THE GIVE-ORDER IS A DECISION: where the pane cannot hold both, the FACTS give
+  and the NAME keeps the room, leaving `poRowDropMark`. That qualifies
+  `deleteHeadline`'s standing "the ordered quantity never gives" — true of every
+  pane this interface is modelled on, and not of the extreme, because the
+  quantity DISAMBIGUATES a name and so presupposes one: beside a name cut to a
+  character it separates nothing. Both comments say so; do not let them drift
+  apart again.
   Pinning a header COSTS the prompt a row, so the layer now refuses to draw it
   one terminal row earlier than it used to (80x11 rather than 80x10). That is
   the layer's designed answer — a bounded notice naming the height it needs,
