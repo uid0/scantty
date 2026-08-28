@@ -1613,17 +1613,29 @@ const (
 )
 
 // poLastActiveLine reports that idx names the only line on the order that is
-// not voided — so destroying it leaves the order with none.
+// not voided — so taking it off, either way, leaves the order with no ACTIVE
+// line. It answers about the state the removal LEAVES and says nothing about
+// which instrument produced it, which is why one predicate serves both.
 //
-// It matters because OMS's purchase-order LIST hides an order with no active
-// lines (PurchaseOrderViewSet.get_queryset annotates _active_items_count and
-// filters it), and ScanTTY's list is a straight pass-through of that endpoint
-// (list.go's purchaseOrderRows). "Delete the wrong line, then add the right
-// one" — the exact workflow this key exists for — therefore drops the order out
-// of every list on the way through. The filter is the server's and this client
-// cannot lift it, so the answer is to SAY SO on the frame the key is pressed
-// from and name the way back (deleteCaveats), which is what a warning has to do
-// to be worth more than the keystroke it costs.
+// It matters because OMS's purchase-order LIST hides an order when ALL THREE of
+// these hold, and only then (PurchaseOrderViewSet.get_queryset, oms-a8o): the
+// order HAS line items, none of them survives unvoided, and it is OUTSIDE
+// PurchaseOrder.PRE_SUPPLIER_STATUSES. ScanTTY's list is a straight
+// pass-through of that endpoint (list.go's purchaseOrderRows), so it cannot
+// lift the filter and answers by SAYING SO on the frame the key is pressed
+// from — but only where the third conjunct can actually be true.
+//
+// THAT IS THE VOID PROMPT AND NOT THE DELETE CONFIRM, and the reason is the
+// frozenset rather than a judgement: `can_delete_items` is served from
+// PRE_SUPPLIER_STATUSES itself (PurchaseOrderSerializer.get_can_delete_items),
+// so an order this screen will DELETE from is inside the set by construction
+// and the third conjunct is false whatever the delete leaves behind — no line
+// at all, or voided ghosts. A delete this client can perform cannot hide an
+// order, and a confirm saying it will would be describing a loss that cannot
+// happen. VOID is offered on the other two answers, and on the one that is not
+// a silence the supplier demonstrably holds the order, which is outside the
+// set: there the arithmetic below IS the hide. See voidCaveats for what the
+// prompt says about it, and why the way back it names is the only one there is.
 func poLastActiveLine(po *omsapi.PurchaseOrder, idx int) bool {
 	if po == nil || idx < 0 || idx >= len(po.Items) {
 		return false
@@ -1824,50 +1836,100 @@ func (s *PurchaseOrderEditScreen) deleteBar() []actionBarItem {
 // quantity stays because it is what tells two otherwise similar lines apart;
 // the line total rides a CONTEXT row, where it survives every height that has a
 // second header row to give.
+//
+// "Never gives" is true of every pane this interface is modelled on and NOT of
+// the extreme: past the point where keeping the quantity would push the name
+// below its floor, the quantity is what gives and says so — removalHeadline
+// carries that decision and the reason for it.
 func (s *PurchaseOrderEditScreen) deleteHeadline(li omsapi.PurchaseOrderItem, width int) string {
-	const lead = "Delete: "
-	facts := fmt.Sprintf(" · %d ordered", li.QuantityOrdered)
-	room := width - len(jdeIndent) - lipgloss.Width(lead) - lipgloss.Width(facts)
-	if room < 1 {
-		room = 1
-	}
-	return jdeIndent + StyleStatusError.Render(lead) + pickerClip(li.DisplayLabel(), room) + StyleMuted.Render(facts)
+	return removalHeadline("Delete: ", StyleStatusError, li, width)
 }
 
-// deleteCaveats are the standing sentences of the confirm, folded by the layer
+// removalHeadline is that row, said ONCE for both removals. The void prompt
+// pins the same shape for the same reason — a frame whose whole job is to take
+// a line off the order may not be drawn without naming which line — and voiding
+// has no undo either (OMS writes is_voided true and has no endpoint that clears
+// it), so getting the identity wrong is exactly as unrecoverable there.
+//
+// THE ASSEMBLED ROW IS BOUNDED, NOT THE NAME INSIDE IT. It used to clip the
+// name to `width - indent - lead - facts` FLOORED AT 1 and then append the
+// facts anyway, which is this project's own width rule broken verbatim: a floor
+// applied to one PART of a row that is afterwards added to is not a bound. With
+// " · 250 ordered" (14 cells) against the 20-cell pane screenBodyWidth floors
+// at, the delete row assembled to 2+8+1+14 = 25 cells and clampToBox cut it
+// from the right with no ellipsis — the pane drew ` Delete: M · 250 orde`, the
+// line's identity reduced to one character and the fact cut mid-word, on the
+// frame whose whole job is to name what it is about to destroy. Every terminal
+// width from 45 to 53 was in that state, and the guard that should have caught
+// it walked three hand-picked widths.
+//
+// THE GIVE-ORDER IS A DECISION AND NOT THE ARITHMETIC'S LEFTOVER. Where the
+// pane cannot hold both, the FACTS give and the NAME keeps the room. That
+// reverses what this row's doc above used to say flatly — that the ordered
+// quantity never gives, because it is what tells two otherwise similar lines
+// apart — and the qualification is the point: the quantity DISAMBIGUATES a
+// name, so it presupposes one. Beside a name cut to a character it separates
+// nothing, while the name alone still answers "what am I destroying". So the
+// quantity holds at every width where the name can keep poHeaderValueFloor
+// cells beside it, and gives only past that, which is the extreme this bound
+// exists for and not the pane the interface is modelled on. What it leaves is
+// poRowDropMark, because a row that gave something up may not read as a whole
+// one — the same convention poFitRow keeps on the picker rows.
+func removalHeadline(lead string, style lipgloss.Style, li omsapi.PurchaseOrderItem, width int) string {
+	name := li.DisplayLabel()
+	facts := fmt.Sprintf(" · %d ordered", li.QuantityOrdered)
+	if width <= 0 {
+		// UNSIZED, which is the layer's standing "draw whole and let clampToBox
+		// decide" — there is no pane to measure against yet.
+		return jdeIndent + style.Render(lead) + name + StyleMuted.Render(facts)
+	}
+	room := width - len(jdeIndent) - lipgloss.Width(lead)
+	if room < 0 {
+		room = 0
+	}
+	tail := facts
+	if room-lipgloss.Width(facts) < poHeaderValueFloor {
+		tail = poRowDropMark
+	}
+	space := room - lipgloss.Width(tail)
+	if space <= 0 {
+		// Narrower than the mark itself. Unreachable while screenBodyWidth
+		// floors at 20 and the longest lead is eight cells, and here so that
+		// the row is bounded by CONSTRUCTION rather than by that coincidence.
+		return jdeIndent + style.Render(lead) + pickerClip(name, room)
+	}
+	return jdeIndent + style.Render(lead) + pickerClip(name, space) + StyleMuted.Render(tail)
+}
+
+// deleteCaveats is the standing sentence of the confirm, folded by the layer
 // rather than hand-counted against 51 columns.
 //
-// They are CONTEXT and the headline above is essential, which is the sacrifice
+// It is CONTEXT and the headline above is essential, which is the sacrifice
 // order stated: on a pane too short for both, the operator keeps the identity of
 // what they are about to destroy and loses the prose about it — the bar still
 // reads `Ctrl-X=Delete line`, so the ACT is named even where its consequences
 // are not, and the identity is the half nothing else on the frame carries.
 //
-// THE ORDER BETWEEN THE TWO SENTENCES IS A DECISION, NOT A LAYOUT ACCIDENT, and
-// it is written down here so it is not tidied back. The confirm's body has no
-// navigable row, so jdeLines anchors its window at the top and NO key on the
-// frame can fetch what falls off the bottom — whichever sentence is emitted
-// last is the one a short pane silently drops. The LAST-ACTIVE-LINE warning is
-// therefore emitted FIRST: irreversibility is the recoverable half, restated by
-// two other surfaces on the same frame (the bar reads `Ctrl-X=Delete line`, and
-// the pinned essential header row names what is being destroyed), while the
-// order vanishing out of every purchase-order list — and ctrl+k as the way back
-// — is the one fact nothing else on the frame carries. That is the same
-// sacrifice-order reasoning jdeHeadRank applies to the pinned header, applied
-// one level down inside the body.
+// IT USED TO BE TWO, AND THE SECOND ONE WAS RETIRED RATHER THAN SHORTENED. A
+// conditional caveat led this list, warning that deleting the last active line
+// would drop the order out of every purchase-order list and naming ctrl+k as
+// the way back "until another line is added". Both halves of that were true of
+// the filter as it stood; oms-a8o narrowed it to orders OUTSIDE
+// PRE_SUPPLIER_STATUSES, which is the very set `can_delete_items` is served
+// from, so a delete this screen can reach cannot hide anything — see
+// poLastActiveLine. A warning describing a loss that cannot happen is as wrong
+// as silence about one that can, so it is gone from here and the void prompt
+// carries it instead (voidCaveats), where the loss is real, permanent, and
+// has a different way back. Do not reinstate it: reaching this frame at all
+// means the server has put the order inside the pre-supplier set.
 //
-// The vanishing-order sentence is the trap this change would otherwise ship
-// into the terminal unannounced: see poLastActiveLine. It names the way back,
-// because a warning the operator cannot act on is a dead end, and ctrl+k
-// reaches the order by name from anywhere once this screen is closed.
+// The remaining sentence returns as a slice because the frame folds and spaces
+// each caveat as a unit, and because a conditional one belongs beside it the
+// moment a delete acquires a consequence the frame does not otherwise name.
 func (s *PurchaseOrderEditScreen) deleteCaveats() []string {
-	var out []string
-	if poLastActiveLine(s.po, s.editLineIdx) {
-		out = append(out,
-			"This is the only line on the order that is not voided. The purchase-order list hides an order with no active lines, so once you leave this screen the order is reachable only through search (ctrl+k) until another line is added.")
+	return []string{
+		"Deleting takes the line off the order for good. It is not a void: nothing is struck off, no reason is recorded, and there is no undo.",
 	}
-	return append(out,
-		"Deleting takes the line off the order for good. It is not a void: nothing is struck off, no reason is recorded, and there is no undo.")
 }
 
 // deleteHeader is the confirm's pinned block: the essential headline above,
@@ -2479,6 +2541,265 @@ var poEditAssocBar = []actionBarItem{{"Enter", "Select"}, {"Esc", "Cancel"}, {"U
 // Void prompt
 // ---------------------------------------------------------------------------
 
+// voidSearchSentence names the key, and it names WHERE the key works.
+//
+// The qualifier is load-bearing rather than throat-clearing: this screen
+// returns true from WantsRawInput, so the root never sees a keystroke and
+// `ctrl+k` does NOT open the search palette here — it reaches the focused
+// Reason box, where bubbles binds it to "delete to end of line". A sentence
+// reading "ctrl+k finds it" on this frame would name a key that, pressed where
+// it is named, silently eats what the operator has typed. That is why the
+// one-row headline names the REMEDY and not the key at all, and why the key is
+// named only in the prose that has room to say when it applies. The retired
+// delete caveat got this right ("once you leave this screen …"); the first
+// rewrite of it did not.
+//
+// THE QUALIFIER PRECEDES THE KEY, AND THAT ORDER IS THE GUARANTEE. This sits at
+// the tail of a caveat the header trims from the end, so it can be cut — and
+// with the key ahead of the qualifier a cut would leave "…ctrl+k" standing
+// alone, which is the bare invitation this sentence exists to avoid. Written
+// this way round the cut can only ever take the key, never the condition on it.
+// TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning reported the
+// wrong order at 80x18 the moment it was written.
+//
+// IT NAMES THE ORDER, BECAUSE "BY NUMBER" IS USELESS WITHOUT THE NUMBER. Every
+// persisted order has one — PurchaseOrder.save() auto-assigns it — but nothing
+// on THIS frame showed it: the essential row names the LINE, and the order's
+// number is two screens back on the detail sheet. A remedy that tells the
+// operator to search for a token the frame withholds is a remedy they can only
+// use if they wrote it down first, which is the dead end one step removed. A
+// payload that carried no number falls back to the unqualified wording rather
+// than drawing an empty quote.
+//
+// THE NUMBER PRECEDES "BY NUMBER", AND THAT IS THE SAME GUARANTEE ONE CLAUSE
+// LATER. It was appended at the TAIL — "…reaches it by number: PO-2026-0042." —
+// which put the one word the sentence exists to deliver in the position the
+// trim takes first. jdeWrapNote broke the poRemovalUnknown wording so the
+// number landed alone on the last prose row, jdeFitHeader dropped exactly that
+// row at 80x18, and the pane went on telling the operator to search by a number
+// it had stopped showing: the dead end this whole caveat was rewritten to
+// remove, reintroduced by word order. Written this way round the bound holds BY
+// CONSTRUCTION rather than by luck — the header trims from the END, so any trim
+// that keeps "by number" necessarily keeps everything ahead of it, the number
+// included, and no re-wrapping at any width can separate them.
+//
+// The poRemovalVoid wording never drew that dead end, and it is worth saying
+// why it did not: its own words happened to break so that "by number" and the
+// number shared a row at 80, 100 and 120. A check green for a reason unrelated
+// to the property it names is the failure this project keeps closing, and the
+// sweep that certified it was single-branch — see
+// TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning, which walks
+// both answers now.
+func voidSearchSentence(po *omsapi.PurchaseOrder) string {
+	if po == nil || po.Number == "" {
+		return "Once you leave this screen, ctrl+k search still reaches it."
+	}
+	return "Once you leave this screen, ctrl+k search reaches " + po.Number + " by number."
+}
+
+// voidStandingNote is what voiding does on every order, true whatever else the
+// frame says. It is a CONTEXT row, and it is emitted after the vanishing
+// warning on purpose — see voidHeader.
+const voidStandingNote = "This marks the line voided and the supplier link discontinued."
+
+// voidCaveats are the prompt's conditional sentences — what voiding THIS line
+// costs the operator's ability to find the order again — and nil where voiding
+// it costs them nothing.
+//
+// THIS IS THE WARNING THE DELETE CONFIRM USED TO CARRY, and it is here because
+// this is where the loss survived oms-a8o. The list hides an order only when it
+// has lines, none of them active, AND it is outside PRE_SUPPLIER_STATUSES; the
+// delete confirm is inside that set by construction (poLastActiveLine), and
+// this prompt on the poRemovalVoid answer is demonstrably outside it, because
+// `can_delete_items` came back FALSE off exactly that frozenset.
+//
+// THE WAY BACK IS DIFFERENT HERE, AND SAYING SO IS THE POINT. The old sentence
+// offered ctrl+k "until another line is added", which is a true remedy on a
+// draft and a false one here: past the pre-supplier boundary OMS refuses to add
+// a line (services.line_entry.assert_addable) and has no unvoid endpoint at all
+// — is_voided is only ever written true — so nothing on either side of the wire
+// undoes this. Search is not one way back among several, it is the only one,
+// and a warning naming a remedy the operator cannot reach would be worse than
+// the silence it replaced.
+//
+// IT IS A ONE-ROW HEADLINE AND A DETAIL BEHIND IT, BECAUSE A WARNING CUT BEFORE
+// ITS WAY BACK IS A DEAD END AND ONLY A ONE-ROW CLAIM CANNOT BE CUT.
+// jdeFitHeader drops header rows from the END of a rank, so a caveat spanning
+// several rows loses its tail first — and the tail is where a remedy naturally
+// falls. Both longer wordings tried here shipped that dead end and were caught
+// by the height sweep, not by reading: one caveat read "…takes the order off
+// every purchase-order list, and nothing puts it back:" and stopped at 80x14,
+// and the two-row rewrite of it read "…takes the order off every purchase-order
+// list;" and stopped at 80x13. Shortening is not a fix, it only moves the
+// height, because the budget goes to zero one row at a time.
+//
+// So the FIRST caveat is a single row wherever it is drawn, states the loss AND
+// the way back, and is emitted first so it is the last thing dropped: wherever
+// this frame warns at all, it warns completely. Everything that EXPLAINS the
+// warning — which line, why the order is past the boundary, what "nothing puts
+// it back" rests on — is the second caveat, where the pane takes it first and
+// takes it as prose the headline has already summarised. The same
+// headline-then-detail split setErr makes on the status row, for the same
+// reason: one surface can be trimmed and the other cannot.
+//
+// Do not merge them back to save a row. Redraw the frame at 80x12, 80x13 and
+// 80x14 first; that is where every version of this sentence has failed.
+//
+// THE RULE THIS FRAME KEEPS: IT MUST NEVER STATE A LOSS WITHOUT ITS REMEDY.
+// A warning is only legitimate where the operator can act on it, so a pane
+// carrying "the order goes off every list" and not carrying "search still finds
+// it" is not a shortened warning, it is a dead end — the very thing this work
+// was opened to remove.
+//
+// AND THE MECHANISM THAT KEEPS IT IS ONE SENTENCE: jdeFitHeader and
+// jdeCaveatLines BOTH give ground from the TAIL, therefore WHATEVER MUST
+// SURVIVE MUST LEAD. That is one structural rule with three instances on this
+// one frame, and it is written here once rather than three times as three
+// tricks:
+//
+//   - the qualifier leads `ctrl+k`, so a cut takes the key and never the
+//     condition on it (voidSearchSentence);
+//   - the order NUMBER leads "by number", so a cut takes the phrase and never
+//     the token it tells the operator to search for (voidSearchSentence);
+//   - the REMEDY leads the LOSS, here, so every prefix of the folded headline
+//     either makes no loss claim at all or carries the remedy with it.
+//
+// A property that holds BY CONSTRUCTION at every width beats one that holds
+// above a threshold nothing enforces. The loss-first wording held only at >= 80
+// columns and nothing said so: Root draws from a terminal width of 45 up
+// (app.go's contentWidth gate), and at 60 columns screenBodyWidth is 31, which
+// leaves jdeCaveatLines 29 cells; "Voiding hides the order; only search finds
+// it." breaks at exactly 29 into "Voiding hides the order; only" and "search
+// finds it.", and a trim keeping the first row alone drew the loss with the
+// remedy gone.
+//
+// WHERE EVEN THAT IS NOT ENOUGH, NOTHING IS DRAWN — the headline AND the prose,
+// as a unit. Below roughly 74 columns no wording carrying both facts folds to
+// one row (the budget is 18 cells at the narrowest drawable pane), so the
+// caveats are gated on the width the terminal REALLY gave: refuse rather than
+// mutilate, which is the stance jdeTooShort already takes one level up. This is
+// NOT the silence rule 1 forbids — that rule is about a keypress changing
+// nothing visible, and nothing here is an answer to a key; it is the choice
+// between half a warning that strands the operator and none. The gate takes
+// BOTH caveats because the prose states the loss too, so dropping the headline
+// alone would reintroduce the dead end through the other half and break the
+// "prose never survives without the headline" property beside it.
+//
+// The gate reads s.bodyWidth() and no named width, deliberately: AGENTS.md says
+// 80 columns is the width that must HOLD while app.go draws down to 45, and
+// that is a question for somebody else. A gate computed from the real pane
+// needs no answer to it.
+//
+// THE UNKNOWN ANSWER CONCLUDES NOTHING. poRemovalUnknown lands on this prompt
+// too, and there the client does not know which side of the boundary the order
+// is on, so it does not know whether the void hides it. Found-nothing and
+// could-not-tell are different facts: the leading sentence hedges the LOSS
+// rather than asserting either outcome, and the sentence that names the
+// withholding is the expendable half — an operator who loses it has read a
+// "may", not a claim.
+//
+// WHICH IS ALSO WHY ONLY THE VOID WORDING SAYS "ONLY". On the void answer the
+// order is demonstrably past the boundary, so search really is the single way
+// back. On the unknown answer it may not be hidden at all, and there the lists
+// would still find it — so "only search finds the order" is a claim that
+// branch cannot make. The hedge belongs on the loss, and the remedy that leads
+// is the half that is true either way.
+func (s *PurchaseOrderEditScreen) voidCaveats(width int) []string {
+	if !poLastActiveLine(s.po, s.editLineIdx) {
+		return nil
+	}
+	headline, ok := voidHeadlines[s.lineRemoval()]
+	if !ok {
+		// poRemovalDelete, which removalPhaseHolds has already closed this
+		// prompt on: the flag flipped under an open frame and the screen is on
+		// its way back to the line editor.
+		return nil
+	}
+	if !voidCaveatsFit(width) {
+		return nil
+	}
+	switch s.lineRemoval() {
+	case poRemovalVoid:
+		return []string{
+			headline,
+			"This is the order's only unvoided line, and the supplier holds this order, so voiding it leaves the order off every purchase-order list. Nothing puts it back: OMS will not add a line to an order past that point and has nothing that lifts a void. " + voidSearchSentence(s.po),
+		}
+	default:
+		return []string{
+			headline,
+			"This is the order's only unvoided line. This server did not say whether the supplier already has the order (can_delete_items); if it does, voiding leaves it off every purchase-order list with nothing to put it back. " + voidSearchSentence(s.po),
+		}
+	}
+}
+
+// voidHeadlines is every leading caveat voidCaveats can draw, one per answer
+// that reaches this prompt. It is a map rather than two literals inside the
+// switch because voidCaveatsFit has to measure the WHOLE SET, and a set that
+// lived in the switch could only be measured one branch at a time.
+var voidHeadlines = map[poLineRemoval]string{
+	poRemovalVoid:    "Only search finds the order; voiding hides it.",
+	poRemovalUnknown: "Search finds the order; voiding may hide it.",
+}
+
+// voidCaveatsFit is the width gate, and it answers for EVERY headline rather
+// than for the one about to be drawn.
+//
+// THE SET, NOT THE BRANCH, BECAUSE OTHERWISE THE THRESHOLD IS PER-WORDING AND
+// THE SEVERITIES INVERT. Asked of the branch alone, the gate opened at whatever
+// width that branch's sentence happened to fit: the CERTAIN-loss wording is two
+// cells longer than the hedged one, so across a band of widths the prompt went
+// silent about a loss the server had CONFIRMED while still warning about one it
+// had only left possible. A warning about what will happen must survive at
+// least as far as a warning about what might. Taking the maximum over the set
+// makes the threshold single BY CONSTRUCTION, so a later reword of one branch
+// moves both together instead of quietly reopening the inversion.
+//
+// The property is "both answers are withheld together or drawn together"; the
+// width it currently evaluates to is 77 columns and up, measured with the
+// layer's own functions (screenBodyWidth(77) = 48, which is jdeCaveatLines'
+// 46-cell budget for the longer headline plus the two-cell indent). That number
+// is an OUTPUT of the wordings and not a rule — reword them and it moves, and
+// the check that holds the property is written so that it moves with them.
+func voidCaveatsFit(width int) bool {
+	for _, headline := range voidHeadlines {
+		if len(jdeCaveatLines(headline, width)) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+// voidHeader is the prompt's pinned block.
+//
+// THE CAVEATS ARE PINNED AND THE FIELD IS THE BODY, and that split is forced
+// rather than chosen. jdeLines anchors its window on the cursor's block and
+// keeps the block's START, so a caveat written into the body ahead of the
+// Reason row pushes the ROW off a short pane — every rune then typed into a box
+// the operator cannot see redraws a byte-identical frame — while one written
+// after it is simply the tail a short window drops. A body with one navigable
+// row cannot hold both; the header can, because jdeFitHeader gives ground BY
+// RANK instead of by position.
+//
+// THE ORDER WITHIN THE CONTEXT RANK IS A DECISION, NOT A LAYOUT ACCIDENT.
+// jdeFitHeader drops rows of a rank from the END, so the last context row
+// emitted is the first a short pane loses, and these are emitted in rising
+// order of expendability: the one-row warning, then the prose explaining it
+// (voidCaveats), then the standing note. The vanishing warning leads
+// because it is the one fact on this frame nothing else carries — that voiding
+// is a striking-off is restated by the bar's `Enter=Void line`, by the
+// essential row's own `Void:` lead and by the reason the prompt asks for at
+// all, while "the order leaves every list and search is the only way back" is
+// said here or nowhere. Same reasoning as deleteCaveats made one surface over,
+// and as jdeHeadRank makes one level up.
+func (s *PurchaseOrderEditScreen) voidHeader(li omsapi.PurchaseOrderItem, width int) jdeHeader {
+	h := jdeHeader(nil).add(jdeHeadEssential, removalHeadline("Void: ", StyleStatusWarn, li, width))
+	for _, caveat := range s.voidCaveats(width) {
+		h = h.addBlock(jdeHeadContext, jdeCaveatLines(caveat, width))
+	}
+	h = h.addBlock(jdeHeadContext, jdeCaveatLines(voidStandingNote, width))
+	return h.add(jdeHeadDecorative, "")
+}
+
 func (s *PurchaseOrderEditScreen) viewVoidLine() string {
 	li, ok := s.addressedLine()
 	if !ok {
@@ -2487,6 +2808,7 @@ func (s *PurchaseOrderEditScreen) viewVoidLine() string {
 	if !s.removalPhaseHolds() {
 		return s.viewLineEdit()
 	}
+	width := s.bodyWidth()
 	field := jdeField{
 		Label:   "Reason",
 		Kind:    jdeText,
@@ -2497,13 +2819,10 @@ func (s *PurchaseOrderEditScreen) viewVoidLine() string {
 	}
 
 	body := &jdeLines{}
-	body.Add(StyleStatusWarn.Render("Void line item"))
-	body.Add("")
-	body.Add(jdeIndent + StyleMuted.Render("Line: ") + li.DisplayLabel())
-	body.Add(jdeIndent + StyleMuted.Render("This marks the line voided and the supplier link discontinued."))
-	body.Add("")
-	body.AddRow(0, renderJDEFields([]jdeField{field}, s.bodyWidth())[0])
-	return s.frame(body, 0, "Voiding…", s.voidBar())
+	body.AddRow(0, renderJDEFields([]jdeField{field}, width)[0])
+	return s.jdeScreen.frameWithHeader(
+		s.voidHeader(li, width), body, 0,
+		s.statusRow(s.saving, "Voiding…", s.errMsg), s.voidBar())
 }
 
 // voidBar is the void prompt's legend, said ONCE — the same reason deleteBar

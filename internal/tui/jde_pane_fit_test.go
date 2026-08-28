@@ -49,6 +49,41 @@ import (
 // so a fix cannot be tuned to 80.
 var jdePaneWidths = []int{80, 100, 120}
 
+// jdeDrawableWidths is every terminal WIDTH Root will draw a screen at, up to
+// the widest this project sweeps.
+//
+// It exists because jdePaneWidths above is a JUDGEMENT — three widths chosen so
+// a fix cannot be tuned to one — and a judgement cannot report a property that
+// fails at a width nobody listed. The void prompt's one-row warning is the
+// worked example: it held at 80, 100 and 120 and broke at 60, where the caveat
+// budget is 29 cells, and no sweep could see it because every sweep named its
+// own widths. Where a property must hold at EVERY pane the operator can reach,
+// walk this instead.
+//
+// The floor is Root.View's own gate (contentWidth < 20 refuses), asked rather
+// than written down, so a change to it moves this set with it. The ceiling is
+// 120 — the widest jdePaneWidths names — because a wider pane only folds less,
+// and an unbounded loop would be a slow sweep rather than a stronger one.
+func jdeDrawableWidths() []int {
+	var out []int
+	for w := 1; w <= 120; w++ {
+		if !jdeRootDrawsAtWidth(w) {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// jdeRootDrawsAtWidth reports whether Root.View() renders a screen at all at
+// this width, rather than its own "terminal too narrow" line. Asked of Root
+// instead of restated here, exactly as jdeRootDraws asks it of the height.
+func jdeRootDrawsAtWidth(width int) bool {
+	r := newTestRoot(NewServiceStatusScreen(Deps{}))
+	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+	return !strings.Contains(next.(Root).View(), "terminal too narrow")
+}
+
 // jdePaneHeights is every height Root will draw a screen at.
 //
 // The floor is Root.View's own gate: it refuses below a content height of 5,
@@ -1606,6 +1641,34 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 			header: func(s Screen) jdeHeader {
 				v := s.(*PurchaseOrderEditScreen)
 				return v.deleteHeader(v.po.Items[v.editLineIdx], v.bodyWidth())
+			},
+		},
+		// The void prompt pins the same essential row for the same reason — a
+		// frame that takes a line off the order may not be drawn without naming
+		// which line, and voiding has no undo either — plus the caveat rows the
+		// delete confirm no longer carries. Built in the state its header is
+		// TALLEST in: the order's only active line, on an order the server says
+		// the supplier holds, so voidCaveats stands at its full length above
+		// the standing note; and a name that REACHES the headline's bound.
+		"PurchaseOrderEditScreen/viewVoidLine": {
+			mk: func() Screen {
+				po := poViewPO()
+				po.CanDeleteItems = boolPtr(false)
+				po.Items = []omsapi.PurchaseOrderItem{{
+					ID:              "line-long",
+					Description:     "M3×12 hex-head cap screw, A2-70 stainless, DIN 933, bright finish",
+					QuantityOrdered: 250,
+					EstimatedCost:   omsapi.DecimalString("31.25"),
+				}}
+				s := NewPurchaseOrderEditScreen(Deps{}, po)
+				s.openLineEditor(0)
+				s.lineFocus = poLineRowStatus
+				s.openVoidLine(0)
+				return s
+			},
+			header: func(s Screen) jdeHeader {
+				v := s.(*PurchaseOrderEditScreen)
+				return v.voidHeader(v.po.Items[v.editLineIdx], v.bodyWidth())
 			},
 		},
 		"ServiceStatusScreen/View": {

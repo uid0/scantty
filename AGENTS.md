@@ -200,28 +200,157 @@ knowing before touching any of it:
   flag, and `ctrl+x` already drops one with no server round trip.
   (`po_create_pickers.go`'s `.Items` is a SUPPLIER's catalogue, a different
   `Items` entirely.)
-- **THE ORDER LIST HIDES AN ORDER WITH NO ACTIVE LINES, and the filter is the
-  SERVER's.** `PurchaseOrderViewSet.get_queryset` annotates `_active_items_count`
-  and filters it when `action == "list"`; ScanTTY's list is a straight
+- **THE ORDER LIST HIDES AN ORDER EMPTIED BY VOIDING AFTER IT LEFT THE SHOP,
+  and the filter is the SERVER's.** `PurchaseOrderViewSet.get_queryset` hides an
+  order on the `list` action when ALL THREE hold, and only then (oms-a8o): it
+  HAS line items, none of them survives unvoided, and it is OUTSIDE
+  `PurchaseOrder.PRE_SUPPLIER_STATUSES`. ScanTTY's list is a straight
   pass-through of that endpoint (`list.go`'s `purchaseOrderRows`, no local
-  filter), so "delete the wrong line, then add the right one" — the exact
-  workflow this key exists for — drops a single-line draft out of every list,
-  the `draft` filter included. This client cannot lift it without changing the
-  OMS API, so the answer is non-silence rather than a refusal: the confirm says
-  so when the line is the last active one and names the way back (`ctrl+k`
-  search still finds it — `backend/search/views.py` applies no such filter).
-  Filed against the web app separately; the terminal warns rather than shipping
-  the trap unannounced.
-  THE WARNING IS EMITTED **FIRST** AND THAT IS A DECISION, not a layout
-  accident. The confirm's body has no navigable row, so `jdeLines` anchors its
-  window at the top and no key on the frame can fetch what falls off the
-  bottom — whichever caveat is emitted LAST is the one a short pane silently
-  drops. Irreversibility is the recoverable half, said twice already on the
-  same frame (the bar reads `Ctrl-X=Delete line`, the pinned essential header
-  row names what is being destroyed); the vanishing order is said here or
-  nowhere. Same reasoning as `jdeHeadRank`, one level down inside the body, and
-  `TestPOLineRemove_AShortPaneKeepsTheVanishingOrderWarning` sweeps every
-  drawable height rather than the two in `poPaneSizes`.
+  filter), and it cannot lift the filter without changing the OMS API, so the
+  answer is non-silence rather than a refusal — but only on the path where the
+  loss is reachable, which is the half that keeps being got wrong.
+  **THE DELETE CONFIRM IS NOT THAT PATH, AND THE FROZENSET IS WHY.** Deletion is
+  offered only where `can_delete_items` is true, and that flag is served from
+  `PRE_SUPPLIER_STATUSES` itself, so the third conjunct is FALSE on every order
+  a delete can reach: whatever a delete leaves behind — no line at all, or
+  voided ghosts — the order stays listed, the `draft` filter included. The
+  confirm carried the warning until oms-a8o narrowed the filter and it became a
+  documented claim the code could not honour, which is a defect in exactly the
+  same way silence about a real loss is. It is gone from `deleteCaveats`; do not
+  reinstate it, and do not read PR #1033's own body as licence to (it names a
+  residual case — "a draft carrying voided ghosts" — that the shipped filter's
+  pre-supplier disjunct already lists).
+  **THE VOID PROMPT IS.** `voidCaveats` (`po_edit.go`) warns there, gated on
+  `poLastActiveLine`, and the wording differs from the retired one in the way
+  that matters: past the pre-supplier boundary OMS refuses to add a line
+  (`assert_addable`) and has no unvoid endpoint at all (`is_voided` is only ever
+  written true), so search is not one way back among several — it is the only
+  one, and "until another line is added" would have been a remedy the operator
+  cannot reach. `poRemovalUnknown` lands on the same prompt and states the
+  consequence CONDITIONALLY, because there the client does not know which side
+  of the boundary the order is on.
+  **THE HEADLINE NAMES THE REMEDY AND NOT THE KEY, BECAUSE THE KEY DOES NOT
+  WORK ON THAT FRAME.** `PurchaseOrderEditScreen.WantsRawInput` is true, so the
+  root never sees a keystroke and `ctrl+k` does not open the search palette
+  here — it reaches the focused Reason box, where bubbles binds it to "delete to
+  end of line", so a sentence reading "ctrl+k finds it" would name a key that
+  eats what the operator typed where it is named. The key is spelled only in the
+  prose, BEHIND the clause that qualifies it (`voidSearchSentence`): the
+  qualifier precedes the key so a trim can only ever take the key, never leave
+  it standing bare. Both orders were tried and the wrong one was reported at
+  80x18 by the height sweep. That sentence also NAMES THE ORDER, because "search
+  by number" is not a remedy on a frame that withholds the number — the
+  essential row names the LINE and the order's number is two screens back on the
+  detail sheet. THE NUMBER PRECEDES "BY NUMBER" for the same reason the
+  qualifier precedes the key: appended at the TAIL it was the first thing the
+  trim took, and at 80x18 the poRemovalUnknown wording drew "…reaches it by
+  number:" with the number gone. Ahead of the phrase the bound holds by
+  CONSTRUCTION — a trim keeping "by number" keeps everything before it — rather
+  than by where the words happen to break, which is all that had ever kept the
+  poRemovalVoid wording right. Its sweep was single-branch and therefore green
+  over the defect; it walks BOTH answers that reach the prompt now, derived from
+  `poRemovalFor` over the flag's whole space, and the leading caveat's one-row
+  property is asserted against the layer's own fold
+  (`TestPOLineRemove_TheVanishingWarningIsOneRowWhereverItIsDrawn`) because
+  `poRemoveFlatPane` collapses whitespace and cannot see a headline lose its
+  second row.
+  **ONE STRUCTURAL RULE, THREE INSTANCES: WHATEVER MUST SURVIVE MUST LEAD.**
+  `jdeCaveatLines` folds from the tail and `jdeFitHeader` trims from the tail,
+  so ordering is the only bound on this frame that holds by CONSTRUCTION. The
+  qualifier leads `ctrl+k`; the NUMBER leads "by number"; and the REMEDY leads
+  the LOSS in both headlines, so every prefix of a folded headline either makes
+  no loss claim or carries the way back with it. Read them as one rule — written
+  three times as three tricks, the next wording keeps two of them and loses the
+  third, which is exactly how each of these arrived.
+  WHAT IS PERMANENT AND WHAT IS NOT ARE DIFFERENT FACTS, and the wording keeps
+  them apart. Permanently lost: the order's place on every purchase-order list,
+  `all` included, since it can never regain an active line. Not lost: the ORDER,
+  which is not deleted — `get_queryset` filters only `if self.action == "list"`,
+  so detail retrieval still resolves, and `backend/search/views.py` carries no
+  emptiness filter, so ctrl+k reaches it by name from anywhere without a saved
+  link. Reachable by name, absent from every browsable list, for good.
+  **A WARNING CUT BEFORE ITS WAY BACK IS A DEAD END, SO THE CLAIM IS ONE ROW.**
+  The prompt's caveats ride the PINNED HEADER and not the body — the body holds
+  the operator's Reason box, and `jdeLines` keeps a block's START, so a caveat
+  written ahead of that row pushes the row off a short pane while one written
+  after it is simply the tail a short window drops. `jdeFitHeader` then gives
+  ground BY RANK and, within a rank, from the END, so a multi-row caveat loses
+  its tail — which is where a remedy naturally falls. Two wordings had that dead
+  end and were caught by the height sweep rather than by reading (80x14, then
+  80x13 after shortening); shortening only moves the height, because the budget
+  reaches zero one row at a time. So the first caveat is a SINGLE row wherever it
+  is drawn and carries the loss AND the remedy, and the prose explaining it is a
+  second caveat behind it — the headline-then-detail split `setErr` makes on the
+  status row, for the same reason.
+  **THAT ONE-ROW CLAIM IS CONDITIONAL, AND THE CONDITION IS ENFORCED RATHER
+  THAN ASSUMED.** It used to be stated flat, and it was only ever true at 80
+  columns and up: Root draws from a terminal width of 45 (`app.go`'s
+  `contentWidth` gate), and at 60 `screenBodyWidth` is 31, which leaves
+  `jdeCaveatLines` 29 cells — the loss-first headline broke at exactly 29 and a
+  trim keeping the first row alone stated the loss with the remedy gone. So
+  `voidCaveats` now takes the pane width and withholds BOTH caveats — headline
+  and prose as a UNIT, since the prose states the loss too — wherever the
+  headline would not fold to one row. Refuse rather than mutilate, the stance
+  `jdeTooShort` takes one level up; it is NOT the silence rule 1 forbids, which
+  is about a keypress changing nothing visible. The gate reads `bodyWidth()` and
+  no named width ON PURPOSE: this file says 80 must HOLD while `app.go` draws
+  down to 45, and a gate computed from the real pane needs no answer to that.
+  **THE GATE ANSWERS FOR THE WHOLE HEADLINE SET, NOT FOR THE BRANCH BEING
+  DRAWN** (`voidCaveatsFit`), and the property is that both answers are withheld
+  together or drawn together. Asked of one branch it gave each answer the
+  threshold its own sentence earned, and the CERTAIN-loss wording is two cells
+  longer than the hedged one — so at 75 and 76 columns the prompt went SILENT
+  about a loss the server had confirmed while still warning about one it had
+  only left possible, severities inverted by two cells of prose. The maximum
+  over the set makes the threshold single by CONSTRUCTION, so rewording one
+  branch moves both. Measured with the layer's own functions, it currently
+  evaluates to 77 columns and up (`screenBodyWidth(77)` = 48, which is the
+  46-cell longer headline plus `jdeIndent`); that number is an OUTPUT of the
+  wordings, and `TestPOLineRemove_BothVoidAnswersAreWithheldOrDrawnTogether`
+  asserts the symmetry rather than the number, reporting the width it comes to.
+  No wording carrying both facts fits the 18 cells the narrowest drawable pane
+  leaves.
+  `TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning` sweeps every
+  drawable height at every drawable WIDTH — derived from Root's own gate
+  (`jdeDrawableWidths`), because three hand-picked widths is exactly how the
+  60-column hole survived — and fails a pane stating the loss without its
+  remedy. That check keys on the loss FRAGMENT, not on the headline: keyed on
+  the headline it could not fail, since the remedy leads and is therefore a
+  substring of it, and a SPLIT headline reads as absent once `poRemoveFlatPane`
+  has collapsed the pane. Verified by reverting both halves: it reports from
+  45x14 through 79x12, 60x12 among them, and at no width from 80 up.
+  **THE ESSENTIAL ROW IS BOUNDED AS ASSEMBLED, NOT PART BY PART.**
+  `removalHeadline` (shared by both confirms) clipped the line's NAME to what
+  the lead and the ` · N ordered` facts left, FLOORED AT 1, and then appended
+  the facts anyway — a bound applied to one part of a row that is afterwards
+  added to, which is the `assetScopeRows` rule broken on the one row that says
+  what an irreversible action is about to destroy. At the 20-cell pane
+  `screenBodyWidth` floors at, the delete row assembled to 25 cells and
+  `clampToBox` cut it with no ellipsis: ` Delete: M · 250 orde`. Reported at
+  every terminal width from 45 to 53 (delete) and 45 to 51 (void), by a sweep
+  reading the screen's OWN `View` — measured off the CLIPPED pane the check
+  cannot fail, because the truncation has already happened
+  (`TestPOLineRemove_TheIdentityRowFitsThePaneOnBothConfirms`).
+  THE GIVE-ORDER IS A DECISION: where the pane cannot hold both, the FACTS give
+  and the NAME keeps the room, leaving `poRowDropMark`. That qualifies
+  `deleteHeadline`'s standing "the ordered quantity never gives" — true of every
+  pane this interface is modelled on, and not of the extreme, because the
+  quantity DISAMBIGUATES a name and so presupposes one: beside a name cut to a
+  character it separates nothing. Both comments say so; do not let them drift
+  apart again.
+  Pinning a header COSTS the prompt a row, so the layer now refuses to draw it
+  one terminal row earlier than it used to (80x11 rather than 80x10). That is
+  the layer's designed answer — a bounded notice naming the height it needs,
+  with `Esc` still leaving — and it is the same trade the delete confirm already
+  made, which is why it is accepted rather than worked around.
+  Two OMS behaviours are REPORTED there and deliberately unfixed, so do not
+  read either as a ScanTTY defect: `void_item` carries no status gate (voiding a
+  draft line leaves the meaningless ghost `get_can_delete_items` warns about),
+  and voiding a whole ORDER cascades to its lines, so a voided order that had
+  lines is hidden from every list including `all`. The latter is the operator's
+  own explicit act on the whole document rather than a side effect of a line
+  edit, which is why the terminal's order-void modal (`po_detail.go`) says
+  nothing about it.
 - **A PER-LINE INDEX IS CARRIED ACROSS A RELOAD BY IDENTITY, NEVER BY
   POSITION.** `editLineIdx` / `assocLineIdx` address `po.Items` positionally and
   every line action fires `load()`, so a reload landing under an OPEN sub-phase
