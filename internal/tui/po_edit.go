@@ -2,9 +2,11 @@
 //
 // This is the TUI counterpart to the web PurchaseOrderPage's edit affordances
 // (frontend/src/pages/PurchaseOrderPage.tsx): the "Edit details" metadata modal
-// plus the per-line edit-cost / edit-ship-date / void-line controls. It mirrors
-// the FULL set so an operator at the workstation can amend a PO without the
-// browser ([[ship-complete-features]]).
+// plus the per-line edit-cost / edit-ship-date / remove-line controls — where
+// removing is DELETE on an order the supplier has not seen and VOID once it
+// has, the server saying which (see poRemovalFor). It mirrors the FULL set so
+// an operator at the workstation can amend a PO without the browser
+// ([[ship-complete-features]]).
 //
 // It is also the PILOT of the columnar "JD Edwards" redesign (sc-h412): it
 // renders through jde_form.go's shared layer rather than hand-rolling a
@@ -16,13 +18,17 @@
 //	PgUp/PgDn                page, when the body is taller than the pane
 //	Enter                    SAVE the record this phase is editing
 //	Ctrl-E                   OPEN what the highlighted row is (a picker, the
-//	                         line editor, the void prompt, the last price on file)
+//	                         line editor, the removal the server allows, the
+//	                         last price on file)
 //	←/→ or space             change a "< value >" choice row
 //	Esc                      back / cancel  (Ctrl-C always quits, app-wide)
 //
-// Nothing else is bound: the w / c / v accelerators that used to hide on the
-// line rows are now rows of the line editor, reached with Ctrl-E, and the bar
-// at the bottom names exactly the keys that apply where the cursor is standing.
+// One key sits outside that scheme, on one phase: Ctrl-X confirms the DELETE on
+// poEditPhaseDeleteLine, because Ctrl-E opened that frame and enter is the key
+// a hand reaches for next (see updateDeleteLine). Nothing else is bound: the
+// w / c / v accelerators that used to hide on the line rows are now rows of the
+// line editor, reached with Ctrl-E, and the bar at the bottom names exactly the
+// keys that apply where the cursor is standing.
 //
 // Layout (one cursor over three bands):
 //
@@ -46,8 +52,8 @@
 //	                       and its status. Enter saves ship/notes — and the cost
 //	                       ONLY if the operator changed it — via
 //	                       UpdatePurchaseOrderLineItem (PATCH); Ctrl-E on one of
-//	                       the last three rows opens the picker or the void
-//	                       prompt that owns it, and on the cost row takes the
+//	                       the last three rows opens the picker or the removal
+//	                       that owns it, and on the cost row takes the
 //	                       last price on file for a line that carries none. What a
 //	                       cost field may and may not send is po_line_price.go.
 //	poEditPhaseVoidLine  — reason input; enter voids the line via
@@ -1646,8 +1652,8 @@ func (s *PurchaseOrderEditScreen) openVoidLine(idx int) {
 	s.voidReason.Focus()
 }
 
-// returnFromSub closes a picker or the void prompt back onto whichever form
-// opened it, re-focusing that form's input.
+// returnFromSub closes a picker, the void prompt or the delete confirm back
+// onto whichever form opened it, re-focusing that form's input.
 func (s *PurchaseOrderEditScreen) returnFromSub() {
 	s.voidReason.Blur()
 	s.deleteNote = ""

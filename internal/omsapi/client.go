@@ -333,7 +333,8 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 // DeleteInto is Delete for an endpoint that ANSWERS. Most of OMS's destroy
 // routes return 204 with nothing in them, which is what Delete above is for;
 // the PO line-delete action returns 200 with the account of what it destroyed
-// plus the refreshed order (docs/REACTIVE_MUTATIONS.md).
+// plus the refreshed order (OMS's docs/REACTIVE_MUTATIONS.md, in the
+// openmakersuite checkout — there is no docs/ tree on this side).
 //
 // What the caller wants out of that body is the SERVER's own account of what it
 // destroyed — by the time it is read, the row that named the line is gone and
