@@ -2,6 +2,7 @@ package omsapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -224,6 +225,25 @@ type PurchaseOrder struct {
 	OutstandingLineCount int  `json:"outstanding_line_count,omitempty"`
 	VarianceLineCount    int  `json:"variance_line_count,omitempty"`
 	CanReceive           bool `json:"can_receive,omitempty"`
+	// CanDeleteItems is the server's answer to "may this order's lines be
+	// DESTROYED rather than voided" — served from PurchaseOrder.PRE_SUPPLIER_-
+	// STATUSES the same way CanReceive is served from RECEIVABLE_STATUSES. Its
+	// serializer docstring is explicit that a client must never keep its own
+	// copy of which statuses those are: guessing wrong offers an irreversible
+	// destroy on an order the supplier already holds, or hides it on one where
+	// voiding leaves a meaningless ghost. So nothing on this side derives it
+	// from Status.
+	//
+	// It is a POINTER because absent and false are different facts and only one
+	// of them is safe to act on (AGENTS.md: never conflate "found nothing" with
+	// "could not tell"). A plain bool would decode an OMS too old to serve the
+	// key as a confident false — "the supplier holds this order" — about a draft
+	// the operator can still edit. nil means the server did not say, and a
+	// screen must handle that as its own state rather than as a no.
+	//
+	// No omitempty, so a fake or a re-encode round-trips nil as JSON null rather
+	// than dropping the key and turning "could not tell" into a second reading.
+	CanDeleteItems *bool `json:"can_delete_items"`
 	// SerialsOutstanding is units on this order sitting in stock with no serial
 	// recorded, summed across the lines. Non-zero means somebody received goods
 	// — through any path — without capturing the serials, and a client should
@@ -794,19 +814,115 @@ func (c *Client) UpdatePurchaseOrderLineItem(
 	return &out, nil
 }
 
+// POLineDeleted is what the delete endpoint hands back: the account of the line
+// that was destroyed, and the full refreshed order so a caller can patch its
+// view in place without a second fetch.
+//
+// The `deleted` block is the server's own record — it is written into the audit
+// trail before the row goes, because PurchaseOrderAuditEvent.line_item is
+// SET_NULL and this metadata is then the only remaining account of what was
+// there. Only the fields a terminal has any use for are decoded; the rest of
+// the block is the trail's business.
+type POLineDeleted struct {
+	Deleted       POLineDeletedLine `json:"deleted"`
+	PurchaseOrder *PurchaseOrder    `json:"purchase_order"`
+}
+
+// POLineDeletedLine names the destroyed line in the server's own words. Label
+// is what `_po_line_display_name` made of it — the same text the line was shown
+// under — so a confirmation and its aftermath name the same thing.
+type POLineDeletedLine struct {
+	LineItem        string `json:"line_item"`
+	LineShape       string `json:"line_shape"`
+	Label           string `json:"label"`
+	Description     string `json:"description"`
+	QuantityOrdered int    `json:"quantity_ordered"`
+	EstimatedCost   string `json:"estimated_cost"`
+}
+
+// asLineRefusal recovers a PO line endpoint's hand-built refusal so the
+// operator reads the SERVER'S SENTENCE rather than the raw body it arrived in.
+//
+// Both endpoints below write their refusals by hand and neither goes through
+// OMS's DRF exception handler, so parseError falls through and puts the ENTIRE
+// body into APIError.Message. They are not even the same hand-built shape:
+// `_destroy_item` writes {"error", "code"} and `void_item` writes {"error"}
+// alone. Rather than teach one recogniser both, this tries each of the two that
+// already exist — AsLineEntryError for the coded shape, AsReceivingRefusal for
+// the bare one — and both are deliberately narrow, so a gateway's HTML page, a
+// DRF validation envelope and a network failure all keep the shape they
+// arrived in.
+func asLineRefusal(err error) error {
+	if entry, ok := AsLineEntryError(err); ok {
+		return entry
+	}
+	if prose, ok := AsReceivingRefusal(err); ok {
+		return &POLineEntryError{Status: refusalStatus(err), Message: prose}
+	}
+	return err
+}
+
+// refusalStatus is the HTTP status the refusal arrived with, or 0 when the
+// error is not an APIError at all.
+func refusalStatus(err error) int {
+	var api *APIError
+	if errors.As(err, &api) {
+		return api.Status
+	}
+	return 0
+}
+
+// DeletePurchaseOrderLineItem DESTROYS one PO line via DELETE
+// /api/reorders/purchase-orders/{poID}/items/{itemID}/ — the same route that
+// serves PATCH, because DRF routes one url_path to one view function.
+//
+// This is the counterpart to VoidPurchaseOrderLineItem and NOT a variant of it.
+// While the order is still the shop's own document a line added by mistake is a
+// typo, and the honest record of a typo is no line at all; once the supplier
+// holds a copy the line is part of a record someone else also has, and only
+// voiding is truthful. WHICH of the two applies is the server's answer, read
+// off PurchaseOrder.CanDeleteItems — never re-derived from Status here or in
+// any screen.
+//
+// It takes NO reason. Demanding one is exactly the friction that made voiding
+// the wrong instrument for this case.
+//
+// The server refuses a line that records a receipt, and refuses on an order it
+// no longer considers pre-send with a reason that distinguishes "the supplier
+// already has this line" from "this order was closed and never went out". Both
+// come back as a *POLineEntryError carrying the server's own sentence.
+func (c *Client) DeletePurchaseOrderLineItem(
+	ctx context.Context, poID, itemID string,
+) (*POLineDeleted, error) {
+	var out POLineDeleted
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/items/%s/", poID, itemID)
+	if err := c.DeleteInto(ctx, path, &out); err != nil {
+		return nil, asLineRefusal(err)
+	}
+	return &out, nil
+}
+
 // VoidPurchaseOrderLineItem voids a single PO line via POST
 // /api/reorders/purchase-orders/{poID}/items/{itemID}/void/ and returns the
 // voided line. reason rides in the body ({"reason": …}); the backend defaults
 // it to "Item discontinued by supplier" when blank, and rejects (400) a line
 // that is already voided or has any received quantity. Voiding an
 // item_supplier-backed line also marks that supplier link discontinued.
+//
+// A refusal comes back as a *POLineEntryError carrying the server's own
+// sentence (asLineRefusal): void_item writes {"error": …} by hand with no
+// code, so without that the operator reads the raw payload.
+//
+// This is the counterpart to DeletePurchaseOrderLineItem, and WHICH of the two
+// applies to an order is the server's answer — PurchaseOrder.CanDeleteItems —
+// never a status comparison on this side.
 func (c *Client) VoidPurchaseOrderLineItem(
 	ctx context.Context, poID, itemID, reason string,
 ) (*PurchaseOrderItem, error) {
 	var out PurchaseOrderItem
 	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/items/%s/void/", poID, itemID)
 	if err := c.Post(ctx, path, map[string]string{"reason": reason}, &out); err != nil {
-		return nil, err
+		return nil, asLineRefusal(err)
 	}
 	return &out, nil
 }

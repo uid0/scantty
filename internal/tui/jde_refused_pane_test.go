@@ -304,6 +304,23 @@ var jdeInertCases = map[string]string{
 		"is open, so barItems returns early: the bar names Esc and Enter and nothing else, " +
 		"and the movement keys are swallowed by the textinput rather than moving the list.",
 
+	// The two ways a line comes OFF an order. Both are single-decision frames
+	// with no cursor and no scrolled body, so their bars name no movement key at
+	// any height and there is nothing for one to move — which is the point of
+	// them: an irreversible destroy and a written void are answered from where
+	// you stand, not navigated to.
+	//
+	// Neither is thereby exempt from the pane rules: they are in
+	// jdeScreenStates for TestJDEForm_EveryFrameFitsEveryPane, which is where
+	// the delete confirm's block — the line's identity, its numbers and two
+	// folded caveats — has to give ground in order at a short pane.
+	"PurchaseOrderEditScreen/delete confirm": "a confirmation, not a list: Ctrl-X and Esc " +
+		"are the only keys the bar names, there is no cursor and no body to scroll, so " +
+		"no movement key has anything to move.",
+	"PurchaseOrderEditScreen/void prompt": "one reason box owns the keyboard, so the bar " +
+		"names Enter and Esc alone and the movement keys belong to the textinput rather " +
+		"than to a cursor.",
+
 	// The MINIMAL-list states, which are inert BY CONSTRUCTION and are here for
 	// a different sweep. Each has exactly one navigable row — the trailing add
 	// row, or the single file — so no movement key can move anything.

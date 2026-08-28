@@ -330,6 +330,15 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil, nil, true)
 }
 
+// DeleteInto is Delete for an endpoint that ANSWERS. Most of OMS's destroy
+// routes return 204 with nothing in them, which is what Delete above is for;
+// the PO line-delete action returns 200 with the account of what it destroyed
+// plus the refreshed order (docs/REACTIVE_MUTATIONS.md), and throwing that away
+// would mean a second round trip to find out what just happened.
+func (c *Client) DeleteInto(ctx context.Context, path string, out any) error {
+	return c.do(ctx, http.MethodDelete, path, nil, nil, out, true)
+}
+
 // MultipartFile is one file part in a multipart/form-data upload. Data holds
 // the whole file in memory — fine for the photo/PDF uploads this serves, which
 // an operator picks one at a time from a local path.
