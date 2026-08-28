@@ -412,9 +412,7 @@ func TestReceiveFlow_AScanNamesTheLineByTheNumberTheFormDraws(t *testing.T) {
 		// carrying the label IN FULL — which is what makes it an identifier
 		// rather than a second index nobody can resolve. The list hangs off the
 		// notes row, so it is reached the way an operator reaches it.
-		for s.focused != s.notesRow() {
-			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
-		}
+		r = receiveWalkTo(t, r, s, s.notesRow(), tea.KeyMsg{Type: tea.KeyDown})
 		tail := receivePaneText(s, 80, 30)
 		if !strings.Contains(tail, "2 settled lines cannot take a receipt") {
 			t.Errorf("the settled list does not name itself, so \"settled line 2\" "+
@@ -595,9 +593,7 @@ func TestReceiveFlow_ThePartlyReceivedOrderIsUnambiguous(t *testing.T) {
 	}
 
 	// And the settled tail is reachable from the notes row, where it hangs.
-	for s.focused != s.notesRow() {
-		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
-	}
+	r = receiveWalkTo(t, r, s, s.notesRow(), tea.KeyMsg{Type: tea.KeyDown})
 	tail := receivePaneText(s, 80, 30)
 	if !strings.Contains(tail, "cannot take a receipt") {
 		t.Errorf("the lines a receipt may not name are not listed:\n%s", tail)
@@ -695,9 +691,7 @@ func TestReceiveFlow_ADeliveredDateThatIsNotADateIsRefused(t *testing.T) {
 	r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
 	r = receiveGoToLine(t, r, s, 0)
 	r = receiveTypeInto(t, r, "2")
-	for s.focused != receiveRowDelivered {
-		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyUp})
-	}
+	r = receiveWalkTo(t, r, s, receiveRowDelivered, tea.KeyMsg{Type: tea.KeyUp})
 	r = receiveTypeInto(t, r, "24081Z999")
 	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // -> review
 	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // refused before the post
@@ -731,9 +725,7 @@ func TestReceiveFlow_ReceiveMoreDoesNotCarryTheLastDeliveryDate(t *testing.T) {
 	r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
 
 	// A delivery booked in on a day of its own.
-	for s.focused != receiveRowDelivered {
-		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
-	}
+	r = receiveWalkTo(t, r, s, receiveRowDelivered, tea.KeyMsg{Type: tea.KeyDown})
 	r = receiveTypeInto(t, r, "2026-08-20")
 	r = receiveGoToLine(t, r, s, 0)
 	r = receiveTypeInto(t, r, "1")
@@ -899,9 +891,7 @@ func TestReceiveFlow_AWriteOffRefusesToDiscardEntryAnywhereOnTheForm(t *testing.
 			func(s *ReceiveFormScreen) string { return s.qty[0].Value() }, "4"},
 
 		{"a tracking number", func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
-			for s.focused != receiveRowTracking {
-				r = receiveKey(t, r, down)
-			}
+			r = receiveWalkTo(t, r, s, receiveRowTracking, down)
 			return receiveTypeInto(t, r, "1Z999AA10123456784")
 		}, "a tracking number",
 			func(s *ReceiveFormScreen) string { return s.tracking.Value() }, "1Z999AA10123456784"},
@@ -922,9 +912,7 @@ func TestReceiveFlow_AWriteOffRefusesToDiscardEntryAnywhereOnTheForm(t *testing.
 			r = receiveType(t, r, poRuneKey("SN-1"))
 			r = receiveKey(t, r, enter) // the last unit lands on the review
 			r = receiveKey(t, r, esc)
-			for s.focused != receiveRowCarrier {
-				r = receiveKey(t, r, down)
-			}
+			r = receiveWalkTo(t, r, s, receiveRowCarrier, down)
 			return receiveTypeInto(t, r, "United Parcel")
 		}, "a quantity on 1 line and 1 more",
 			func(s *ReceiveFormScreen) string { return s.captures[0].serial }, "SN-1"},
@@ -1594,9 +1582,7 @@ func TestReceiveFlow_AnOrderWithNothingLeftToReceiveNamesTheWayOut(t *testing.T)
 	if len(s.qty) != 0 {
 		t.Fatalf("want no receivable lines, got %d", len(s.qty))
 	}
-	for s.focused != s.notesRow() {
-		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
-	}
+	r = receiveWalkTo(t, r, s, s.notesRow(), tea.KeyMsg{Type: tea.KeyDown})
 	text := receivePaneText(s, 80, 30)
 	if !strings.Contains(text, "nothing to book against this order") {
 		t.Errorf("the form does not say there is nothing to receive:\n%s", text)

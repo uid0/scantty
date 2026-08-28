@@ -502,9 +502,7 @@ func receiveKitDrive(t *testing.T, lines []omsapi.PurchaseOrderItem) (*receiveFa
 	if screen.phase != phaseQty {
 		t.Fatalf("the worksheet did not land: phase %v", screen.phase)
 	}
-	for screen.focused != receiveRowFirstLine {
-		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
-	}
+	r = receiveWalkTo(t, r, screen, receiveRowFirstLine, tea.KeyMsg{Type: tea.KeyDown})
 	return fake, screen, r
 }
 
@@ -573,9 +571,7 @@ func TestReceiveKit_ASerialNeverNamesTheKitItself(t *testing.T) {
 	r.deps = deps
 	r.Update(tea.WindowSizeMsg{Width: 120, Height: jdeSweepHeight})
 	r = receiveSettle(t, r, screen.Init(), 0)
-	for screen.focused != receiveRowFirstLine {
-		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
-	}
+	r = receiveWalkTo(t, r, screen, receiveRowFirstLine, tea.KeyMsg{Type: tea.KeyDown})
 
 	r = receiveType(t, r, woRuneKey("1")) // one of the two ordered kits arrived
 	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})

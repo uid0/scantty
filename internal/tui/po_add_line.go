@@ -491,6 +491,17 @@ func (s *PurchaseOrderAddLineScreen) keyChoose(m tea.KeyMsg) (Screen, tea.Cmd) {
 		}
 		return s, s.chooseCandidate(list[s.cursor], poAddPhaseChoose)
 	case "up", "down":
+		if !s.frameDrawn(len(s.headerLines()), s.bar()) {
+			// The pane is too short for the layer to draw this frame, so there
+			// is no highlight on it to move — and nothing to SAY about not
+			// moving it either, because this arm's whole product was that
+			// position: a note written here would not be drawn now and would be
+			// drawn when the terminal grows back, answering a press the
+			// operator made before the resize. An arm that DECLINES and answers
+			// is a different case and is not gated at all — jde_form.go's
+			// movement block carries the boundary.
+			return s, nil
+		}
 		next := s.cursor + 1
 		if m.String() == "up" {
 			next = s.cursor - 1
@@ -503,6 +514,9 @@ func (s *PurchaseOrderAddLineScreen) keyChoose(m tea.KeyMsg) (Screen, tea.Cmd) {
 		s.cursor = next
 		return s, nil
 	case "pgup", "pgdown":
+		if !s.frameDrawn(len(s.headerLines()), s.bar()) {
+			return s, nil
+		}
 		if !s.choosePages() {
 			return s, s.decline(m.String())
 		}
@@ -539,6 +553,15 @@ func (s *PurchaseOrderAddLineScreen) keyConfirm(m tea.KeyMsg) (Screen, tea.Cmd) 
 		s.costIn.Blur()
 		return s, tea.Batch(textinput.Blink, s.say(s.priceEntryNote(), StatusInfo))
 	case "up", "down", "pgup", "pgdown", "home", "end":
+		if !s.frameDrawn(len(s.headerLines()), s.bar()) {
+			// Refused pane: the prose is not drawn, so scrolling it would move
+			// the operator's place invisibly — `end` on this frame is the same
+			// shape as `end` on the order pad. See keyChoose for why an arm
+			// whose whole product is a POSITION says nothing rather than
+			// declining out loud; an arm that declines and ANSWERS still
+			// answers.
+			return s, nil
+		}
 		if !s.confirmScrolls() {
 			return s, s.decline(m.String())
 		}
@@ -577,11 +600,15 @@ func (s *PurchaseOrderAddLineScreen) keyPrice(m tea.KeyMsg) (Screen, tea.Cmd) {
 		// item costs nothing.
 		return s, s.say("esc went back to the item · what you typed is still here", StatusInfo)
 	case "up", "down":
-		step := 1
+		delta := +1
 		if m.String() == "up" {
-			step = poAddFieldCount - 1
+			delta = -1
 		}
-		s.priceFocus = (s.priceFocus + step) % poAddFieldCount
+		next, ok := s.moveRow(s.priceFocus, poAddFieldCount, delta, len(s.headerLines()), s.bar())
+		if !ok {
+			return s, nil
+		}
+		s.priceFocus = next
 		s.focusPriceRow()
 		return s, textinput.Blink
 	case "ctrl+t":
@@ -1195,15 +1222,24 @@ func (s *PurchaseOrderAddLineScreen) bar() []actionBarItem {
 
 // choosePages reports whether the candidate list is longer than the pane shows,
 // which is the only state where PgUp/PgDn move anything.
+//
+// The candidate list is a CURSOR, so keyChoose would ordinarily hand the whole
+// rule to the layer's pageRow. It asks the two questions itself because it needs
+// to tell them APART, and pageRow's single false cannot: a refused pane is
+// answered with silence (a movement arm's whole product was the position, and a
+// note written there arrives after the resize), while a list that simply fits
+// gets a decline note, because the operator pressed that key on a frame they can
+// see and rule 1 says something has to change.
 func (s *PurchaseOrderAddLineScreen) choosePages() bool {
-	return s.bodyScrollsForBar(s.chooseBody(), len(s.headerLines()), s.chooseBarItems(true))
+	return s.bodyPagesForBar(s.chooseBody(), len(s.candidates()),
+		len(s.headerLines()), s.chooseBarItems(true))
 }
 
 // chooseFrameRows is the lines the choose frame really windows its body into.
 // It is now a one-line call on the shared layer's bodyAvailForBar, and is kept
 // only so that the reason this screen asks the question at all stays written
 // down beside chooseStep, the one caller left that needs the number rather than
-// the yes/no (choosePages asks bodyScrollsForBar for that directly).
+// the yes/no (choosePages asks bodyPagesForBar for that directly).
 //
 // It exists because three things must agree about it and two of them had
 // already drifted: the RENDER (frameWrapped, which takes the bar's measured

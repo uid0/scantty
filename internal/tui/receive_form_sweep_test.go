@@ -209,7 +209,6 @@ var receivePhasesWithoutKeys = map[receivePhase]string{}
 func receivePhaseCases() []receivePhaseCase {
 	enter := tea.KeyMsg{Type: tea.KeyEnter}
 	esc := tea.KeyMsg{Type: tea.KeyEsc}
-	down := tea.KeyMsg{Type: tea.KeyDown}
 	all := receiveSweepLines()
 
 	okFake := func() *receiveFake { return &receiveFake{sheet: receiveWorksheet(all...)} }
@@ -265,9 +264,7 @@ func receivePhaseCases() []receivePhaseCase {
 	// act, so a case that never leaves the scan row never reaches that bar.
 	onLine := func(i int, drive func(*testing.T, Root, *ReceiveFormScreen) Root) func(*testing.T, Root, *ReceiveFormScreen) Root {
 		return func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
-			for s.focused != receiveRowFirstLine+i {
-				r = receiveKey(t, r, down)
-			}
+			r = receiveReachRow(t, r, s, receiveRowFirstLine+i)
 			return drive(t, r, s)
 		}
 	}
@@ -987,6 +984,45 @@ func receiveHarness(t *testing.T, fake func() *receiveFake, lines []omsapi.Recei
 		return receiveSettle(t, r, s.Init(), 0), s
 	}
 }
+
+// receiveReachRow walks the quantity form's cursor onto `row` and leaves the
+// pane exactly as it found it.
+//
+// The DETOUR through a tall pane is the point, and it is what an operator does
+// anyway: Down is REFUSED on a pane the layer will not draw (jde_form.go's
+// movement block), so a sweep that walks the cursor at a refused height walks
+// it nowhere — the loop this replaced had no bound and simply span. Standing on
+// a line and THEN dragging the terminal short is the sequence that reaches this
+// state in the field, and it is the sequence the sweep should be pressing keys
+// against.
+//
+// The walk is bounded whatever happens: a reach loop with no bound is not a
+// check that fails, it is a test binary that hangs, and the failure then names
+// whichever test was running rather than the one that broke.
+func receiveReachRow(t *testing.T, r Root, s *ReceiveFormScreen, row int) Root {
+	t.Helper()
+	w, h := s.terminalWidth, s.terminalHeight
+	resize := func(w, h int) Root {
+		next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+		return next.(Root)
+	}
+	r = resize(receiveReachWidth, receiveReachHeight)
+	for n := 0; s.focused != row; n++ {
+		if n > s.totalInputs() {
+			t.Fatalf("the cursor would not reach row %d in %d presses (it is on %d)",
+				row, n, s.focused)
+		}
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	return resize(w, h)
+}
+
+// receiveReachWidth / receiveReachHeight are a pane every receiving frame is
+// drawn into, so the walk above is never the one being tested.
+const (
+	receiveReachWidth  = 120
+	receiveReachHeight = 40
+)
 
 // receiveClippedPane is what the operator can actually READ: the screen's frame
 // clipped on both axes exactly as Root clips it, joined back into one string.

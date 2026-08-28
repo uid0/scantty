@@ -1302,7 +1302,11 @@ func TestPOView_ShipFormStillValidates(t *testing.T) {
 // keystroke the operator does not press.
 //
 // A pair the bar writes as one entry — "UP/DN", "PgUp/PgDn", "Home/End" — maps
-// to both, and to no synonyms: crediting "UP/DN" with ctrl+p/ctrl+n would be
+// to both, and to no synonyms; a bar that spells HALF a pair maps to that half
+// alone, which is why "PgUp" is here beside "PgUp/PgDn" rather than folded into
+// it (the receiving form's all-units-answered frame has a unit to step BACK to
+// and none to step forward to, so it names one key and must be credited with
+// one): crediting "UP/DN" with ctrl+p/ctrl+n would be
 // the sweep making the claim on the bar's behalf, which is the defect it exists
 // to report. A Key absent from this table FAILS rather than being skipped.
 var poBarKeyNames = map[string][]string{
@@ -1310,6 +1314,7 @@ var poBarKeyNames = map[string][]string{
 	"Esc":       {"esc"},
 	"UP/DN":     {"up", "down"},
 	"PgUp/PgDn": {"pgup", "pgdown"},
+	"PgUp":      {"pgup"},
 	"Home/End":  {"home", "end"},
 	"Space":     {" "},
 	"Ctrl-E":    {"ctrl+e"},

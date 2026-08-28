@@ -1304,10 +1304,10 @@ func (s *ReceiveFormScreen) keyQty(m tea.KeyMsg, headerRows int) (Screen, tea.Cm
 		return s, s.say("enter has nothing to receive — "+s.entryRefusal()+" · "+
 			s.waysOut(headerRows), StatusWarn)
 	case "up", "shift+tab":
-		s.focusNext(true)
+		s.focusNext(true, headerRows)
 		return s, nil
 	case "down", "tab":
-		s.focusNext(false)
+		s.focusNext(false, headerRows)
 		return s, nil
 	case "pgup", "pgdown":
 		return s, s.pageQty(k, headerRows)
@@ -1459,17 +1459,25 @@ func (s *ReceiveFormScreen) anythingTyped() bool {
 	return false
 }
 
-// focusNext walks the quantity form's rows, wrapping at both ends.
-func (s *ReceiveFormScreen) focusNext(reverse bool) {
-	s.currentInput().Blur()
+// focusNext walks the quantity form's rows, wrapping at both ends — and
+// DECLINING outright on a pane the layer refuses to draw this frame into.
+//
+// headerRows is the pinned header of the frame the key was pressed ON, for the
+// reason pageQty's comment gives: the guard and the bar the operator read have
+// to be the same expression over the same frame. On a refused pane there is no
+// row on screen to move the caret to, and moving it anyway leaves the operator
+// typing into a different box when the terminal grows back.
+func (s *ReceiveFormScreen) focusNext(reverse bool, headerRows int) {
+	delta := +1
 	if reverse {
-		s.focused--
-		if s.focused < 0 {
-			s.focused = s.totalInputs() - 1
-		}
-	} else {
-		s.focused = (s.focused + 1) % s.totalInputs()
+		delta = -1
 	}
+	next, ok := s.moveRow(s.focused, s.totalInputs(), delta, headerRows, s.barFor(headerRows))
+	if !ok {
+		return
+	}
+	s.currentInput().Blur()
+	s.focused = next
 	s.focusCurrent()
 }
 
@@ -1485,6 +1493,14 @@ func (s *ReceiveFormScreen) focusNext(reverse bool) {
 // would leave the guard describing a taller window than the operator was
 // looking at (handleKey carries the reasoning).
 func (s *ReceiveFormScreen) pageQty(k string, headerRows int) tea.Cmd {
+	if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+		// The pane is too short for the layer to draw this frame at all: there
+		// is no window for a page to move through, and no row on which to say
+		// so. A note written here would not be drawn now and WOULD be drawn
+		// when the terminal grows back, answering a press the operator made
+		// before the resize.
+		return nil
+	}
 	if !s.qtyPagesFor(headerRows) {
 		return s.decline(k, headerRows)
 	}
@@ -1519,6 +1535,9 @@ func receiveEdge(dir int) string {
 // frame with no caret is the wedged-program reading this screen is written
 // against.
 func (s *ReceiveFormScreen) moveRowCursor(k string, rows, headerRows int) tea.Cmd {
+	if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+		return nil // refused pane — see pageQty
+	}
 	if rows < 2 {
 		return s.decline(k, headerRows)
 	}
@@ -1540,6 +1559,9 @@ func (s *ReceiveFormScreen) moveRowCursor(k string, rows, headerRows int) tea.Cm
 
 // pageRowCursor is pageQty for a read-only body.
 func (s *ReceiveFormScreen) pageRowCursor(k string, body *jdeLines, rows, headerRows int) tea.Cmd {
+	if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+		return nil // refused pane — see pageQty
+	}
 	if !s.rowsPageFor(body, rows, headerRows) {
 		return s.decline(k, headerRows)
 	}
@@ -1560,8 +1582,12 @@ func (s *ReceiveFormScreen) pageRowCursor(k string, body *jdeLines, rows, header
 // and that a page has somewhere to land, because those two questions agree in
 // almost every state and come apart in the one that is designed — a body of one
 // row that is still taller than the pane.
+//
+// Both halves are the layer's (bodyPagesForBar). It is asked HERE rather than
+// left to pageRow because the arm behind it answers "nothing to page" out loud
+// and a refused pane in silence, and pageRow returns the same false for both.
 func (s *ReceiveFormScreen) rowsPageFor(body *jdeLines, rows, headerRows int) bool {
-	return rows > 1 && s.bodyScrollsForBar(body, headerRows, s.barCeiling())
+	return s.bodyPagesForBar(body, rows, headerRows, s.barCeiling())
 }
 
 // ---------------------------------------------------------------------------
@@ -2288,6 +2314,16 @@ func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg, headerRows int) (Screen, tea
 			// because of what some other arm happens to do" is the property
 			// currentInput's own comment refuses to rest on, and a refactor is
 			// exactly what makes it reachable.
+			//
+			// DRAWABILITY is asked first, before the queue is, for the reason
+			// pageUnit asks it: this key's whole effect is the position, so on
+			// a pane the layer refuses there is no unit on screen to step back
+			// to and nothing to say about not stepping — a note written here
+			// would be drawn when the terminal grows back, answering a press
+			// the operator has moved on from.
+			if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+				return s, nil // refused pane — see pageQty
+			}
 			if len(s.serialUnits) == 0 {
 				return s, s.decline(k, headerRows)
 			}
@@ -2311,10 +2347,10 @@ func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg, headerRows int) (Screen, tea
 	case "enter":
 		return s.commitUnit(headerRows)
 	case "up", "shift+tab":
-		s.moveSerialField(-1)
+		s.moveSerialField(-1, headerRows)
 		return s, nil
 	case "down", "tab":
-		s.moveSerialField(+1)
+		s.moveSerialField(+1, headerRows)
 		return s, nil
 	case "pgup", "pgdown":
 		return s, s.pageUnit(k, headerRows)
@@ -2322,14 +2358,26 @@ func (s *ReceiveFormScreen) keySerial(m tea.KeyMsg, headerRows int) (Screen, tea
 	return s, s.typeInto(s.currentInput(), m, headerRows)
 }
 
-func (s *ReceiveFormScreen) moveSerialField(dir int) {
+func (s *ReceiveFormScreen) moveSerialField(dir, headerRows int) {
+	next, ok := s.moveRow(s.serialField, receiveSerialFields, dir, headerRows, s.barFor(headerRows))
+	if !ok {
+		return // refused pane — see focusNext
+	}
 	s.currentInput().Blur()
-	s.serialField = (s.serialField + dir + receiveSerialFields) % receiveSerialFields
+	s.serialField = next
 	s.focusCurrent()
 }
 
 // pageUnit walks between capture slots, keeping what is in the boxes.
+//
+// Not pageRow, and not because of the pane: PgUp/PgDn here step ONE UNIT rather
+// than one paneful, so there is no window question to ask — the bar names the
+// pair whenever there are two units to walk between, whatever the body is doing.
+// Drawability is still the layer's, asked exactly as everywhere else.
 func (s *ReceiveFormScreen) pageUnit(k string, headerRows int) tea.Cmd {
+	if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+		return nil // refused pane — see pageQty
+	}
 	if len(s.serialUnits) < 2 {
 		return s.decline(k, headerRows)
 	}
@@ -3294,11 +3342,17 @@ func (s *ReceiveFormScreen) qtyPagesFor(headerRows int) bool {
 	// row it was handed while the bar printed PgUp/PgDn=Page over a key whose
 	// whole effect was to write "pgdown is already at the last row".
 	//
-	// Both halves live here rather than in the arm so the bar and pageQty read
-	// ONE expression: two conditions that agree in most states are two
-	// conditions that will eventually disagree in one.
-	return s.totalInputs() > 1 &&
-		s.bodyScrollsForBar(s.qtyBody(), headerRows, s.qtyBarCeiling())
+	// Both halves are the LAYER's (bodyPagesForBar), so this screen is not
+	// carrying a private copy of a rule thirty others also need. What pageRow
+	// cannot express is how the answer is USED: its single false could not be
+	// told apart from a refused pane, and this frame answers those two
+	// differently — silence on a pane the layer refuses, a decline note when the
+	// form simply has nothing to page.
+	//
+	// It is asked here rather than in the arm so the bar and pageQty read ONE
+	// expression: two conditions that agree in most states are two conditions
+	// that will eventually disagree in one.
+	return s.bodyPagesForBar(s.qtyBody(), s.totalInputs(), headerRows, s.qtyBarCeiling())
 }
 
 // qtyPages is qtyPagesFor bound to the frame being drawn now, for View and for

@@ -458,13 +458,9 @@ func (s *InventoryItemFormScreen) updateKitPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 		s.closeKitList()
 		return s, nil
 	case "down", "tab":
-		if s.kitCursor < s.kitAddRow() {
-			s.kitCursor++
-		}
+		s.moveKitCursor(+1)
 	case "up", "shift+tab":
-		if s.kitCursor > 0 {
-			s.kitCursor--
-		}
+		s.moveKitCursor(-1)
 	case "pgdown":
 		s.pageKitCursor(+1)
 	case "pgup":
@@ -479,8 +475,20 @@ func (s *InventoryItemFormScreen) updateKitPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 	return s, nil
 }
 
+// moveKitCursor walks the component list, clamping at both ends and DECLINING
+// on a pane the frame is not drawn into — see moveChainCursor.
+func (s *InventoryItemFormScreen) moveKitCursor(delta int) {
+	body := s.kitListLines()
+	next, ok := s.pickRow(s.kitCursor, s.kitAddRow()+1, delta, 0, s.kitListBar(body))
+	if !ok {
+		return
+	}
+	s.kitCursor = next
+}
+
 // pageKitCursor moves a pane's worth of rows, clamping rather than wrapping —
-// the same move jdePageCursor makes on every other columnar list.
+// the same move jdePageCursor makes on every other columnar list, and the same
+// one pageChainCursor makes on the sibling list one file over.
 //
 // It exists because kitListBar NAMES PgUp/PgDn once the list outgrows the pane,
 // and a key the bar names must do something. The step is measured off the lines
@@ -488,9 +496,18 @@ func (s *InventoryItemFormScreen) updateKitPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 // component with a wrapped note costs more than one row, and a guessed constant
 // would skip over it. The count includes the trailing add row, which is the row
 // after the last component.
+//
+// Both gates are the LAYER's: pageRow asks the bar really DRAWN whether the
+// frame is on the pane and the CEILING bar whether the list overflows it, and
+// declines in silence either way.
 func (s *InventoryItemFormScreen) pageKitCursor(dir int) {
 	body := s.kitListLines()
-	s.kitCursor = jdePageCursor(s.kitCursor, s.kitAddRow()+1, s.windowRows(body, s.kitCursor, 0), dir)
+	next, ok := s.pageRow(body, s.kitCursor, s.kitAddRow()+1, dir, 0,
+		s.kitListBar(body), s.kitListBarItems(true))
+	if !ok {
+		return
+	}
+	s.kitCursor = next
 }
 
 // viewKitList renders the bill of materials as a columnar detail grid, with the
@@ -575,13 +592,19 @@ func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 // Esc both mean done: the list is saved nested with the KIT, so leaving it
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) kitListBar(body *jdeLines) []actionBarItem {
+	return s.kitListBarItems(s.bodyPagesForBar(body, s.kitAddRow()+1, 0, s.kitListBarItems(true)))
+}
+
+// kitListBarItems is kitListBar for a given paging state, so the bar that is
+// MEASURED against the pane is the bar that is drawn on it.
+func (s *InventoryItemFormScreen) kitListBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}, {"UP/DN", "Components"}}
 	if s.onKitAddRow() {
 		items = append(items, actionBarItem{"Ctrl-E", "Add component"})
 	} else {
 		items = append(items, actionBarItem{"Ctrl-E", "Edit component"})
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -670,8 +693,12 @@ func (s *InventoryItemFormScreen) updateKitRowPhase(m tea.KeyMsg) (Screen, tea.C
 }
 
 func (s *InventoryItemFormScreen) moveKitRowFocus(delta int) {
-	n := kitRowFieldCount
-	s.kitRowFocus = (s.kitRowFocus + delta + n) % n
+	_, items := s.kitRowFrame()
+	next, ok := s.moveRow(s.kitRowFocus, kitRowFieldCount, delta, 0, items)
+	if !ok {
+		return
+	}
+	s.kitRowFocus = next
 	s.syncKitRowFocus()
 }
 
@@ -748,6 +775,14 @@ func kitNotesWidth(bodyWidth int) int {
 // identity to the server (the upsert key), so changing it would be removing one
 // component and adding another — which is what the list's two rows already are.
 func (s *InventoryItemFormScreen) viewKitRow() string {
+	l, items := s.kitRowFrame()
+	return s.frame(l, s.kitRowFocus, s.statusRow(false, "", s.kitRowErr), items)
+}
+
+// kitRowFrame is the editor's body and bar, split out of viewKitRow so the
+// movement arm can ask the layer whether that frame is DRAWN before it moves the
+// caret — one builder, so the bar that is measured is the bar drawn.
+func (s *InventoryItemFormScreen) kitRowFrame() (*jdeLines, []actionBarItem) {
 	name := "(unknown)"
 	sku := ""
 	if s.kitRowEditing >= 0 && s.kitRowEditing < len(s.kitRows) {
@@ -817,7 +852,7 @@ func (s *InventoryItemFormScreen) viewKitRow() string {
 	if s.kitRowFocus == kitRowFieldRemove {
 		items = append(items, actionBarItem{"Ctrl-E", "Remove"})
 	}
-	return s.frame(l, s.kitRowFocus, s.statusRow(false, "", s.kitRowErr), items)
+	return l, items
 }
 
 // ---------------------------------------------------------------------------
@@ -912,8 +947,7 @@ func (s *InventoryItemFormScreen) updateKitPickPhase(m tea.KeyMsg) (Screen, tea.
 	case jdePickMove:
 		s.moveKitPick(delta)
 	case jdePickPage:
-		header, body := s.kitPickView()
-		s.moveKitPick(delta * s.windowRows(body, s.kitPickCursor, len(header)))
+		s.pageKitPick(delta)
 	default:
 		var cmd tea.Cmd
 		s.pickSearch, cmd = s.pickSearch.Update(m)
@@ -923,11 +957,37 @@ func (s *InventoryItemFormScreen) updateKitPickPhase(m tea.KeyMsg) (Screen, tea.
 	return s, nil
 }
 
-// moveKitPick moves the highlight, and the refusal on screen dies with it.
+// moveKitPick steps the highlight one row, clamping at both ends.
+func (s *InventoryItemFormScreen) moveKitPick(delta int) {
+	header, body := s.kitPickView()
+	next, ok := s.pickRow(s.kitPickCursor, len(s.kitPickOptions), delta, len(header), s.kitPickBar(header, body))
+	if !ok {
+		return
+	}
+	s.toKitPick(next)
+}
+
+// pageKitPick steps it a pane's worth, through the layer's gate: PgUp/PgDn move
+// exactly when kitPickBar names them and the frame is on the pane.
+func (s *InventoryItemFormScreen) pageKitPick(dir int) {
+	header, body := s.kitPickView()
+	next, ok := s.pageRow(body, s.kitPickCursor, len(s.kitPickOptions), dir, len(header),
+		s.kitPickBar(header, body), jdePickBar("Add", true))
+	if !ok {
+		return
+	}
+	s.toKitPick(next)
+}
+
+// toKitPick is the ONE place the kit picker's highlight lands, and the refusal on
+// screen dies with it.
 //
-// The clear lives HERE, where the cursor moves, so every movement path —
+// The clear lives HERE, where the cursor arrives, so every movement path —
 // down/tab, up/shift+tab, pgup/pgdown, and any added later — is covered by
-// construction rather than by remembering to add each one.
+// construction rather than by remembering to add each one. It has already been
+// worth exactly that: routing the PAGE through the layer's pageRow took it
+// around a clear that used to live inside moveKitPick, and a refusal survived
+// pgup on the one screen in the program that carries this rule.
 //
 // It became necessary BECAUSE the message was shortened to drop the item name.
 // While it named the item, a stale refusal was self-evidently about a different
@@ -936,9 +996,9 @@ func (s *InventoryItemFormScreen) updateKitPickPhase(m tea.KeyMsg) (Screen, tea.
 // shortening was still right (see commitKitPick: it duplicated what the row
 // already shows and was the part the clip ate at every width), but a message
 // that refers to "that item" must die when "that item" changes.
-func (s *InventoryItemFormScreen) moveKitPick(delta int) {
+func (s *InventoryItemFormScreen) toKitPick(next int) {
 	s.kitPickErr = ""
-	s.kitPickCursor = jdeClampPick(s.kitPickCursor+delta, len(s.kitPickOptions))
+	s.kitPickCursor = next
 }
 
 func (s *InventoryItemFormScreen) closeKitPick() {
@@ -1049,13 +1109,16 @@ func kitPickLabel(opt kitPickOption, width int) string {
 	return label
 }
 
+// kitPickBar is the component picker's bar, with PgUp/PgDn on it exactly when
+// the list moves under the bar about to be drawn — measured against the bar
+// WITH the pair on it, because the tallest bar is the fixed point.
+func (s *InventoryItemFormScreen) kitPickBar(header jdeHeader, body *jdeLines) []actionBarItem {
+	return jdePickBar("Add", s.bodyPagesForBar(body, len(s.kitPickOptions), len(header), jdePickBar("Add", true)))
+}
+
 func (s *InventoryItemFormScreen) viewKitPick() string {
 	header, body := s.kitPickView()
-	paging := false
-	if s.bodyScrolls(body, len(header)) {
-		paging = true
-	}
 	return s.frameWithHeader(header, body, s.kitPickCursor,
 		s.statusRow(s.kitItemsLoading, "Loading items…", s.kitPickErr),
-		jdePickBar("Add", paging))
+		s.kitPickBar(header, body))
 }

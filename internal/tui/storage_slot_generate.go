@@ -296,11 +296,12 @@ func (s *StorageSlotGenerateScreen) syncFocus() {
 }
 
 func (s *StorageSlotGenerateScreen) moveCursor(delta int) {
-	n := len(s.fields)
-	if n == 0 {
+	body := s.formLines()
+	next, ok := s.moveRow(s.cursor, len(s.fields), delta, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = (s.cursor + delta + n) % n
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -355,10 +356,13 @@ func (s *StorageSlotGenerateScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.C
 // pageCursor moves a whole pane's worth of rows, clamping where moveCursor
 // wraps — a page is for covering ground, not for losing your place.
 func (s *StorageSlotGenerateScreen) pageCursor(dir int) {
-	if len(s.fields) == 0 {
+	body := s.formLines()
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
+	if !ok {
 		return
 	}
-	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -396,13 +400,9 @@ func (s *StorageSlotGenerateScreen) updateLevelsPhase(m tea.KeyMsg) (Screen, tea
 		s.phase = genPhaseForm
 		s.syncFocus()
 	case "down", "tab":
-		if s.levelCursor < len(s.levels) {
-			s.levelCursor++
-		}
+		s.moveLevels(+1)
 	case "up", "shift+tab":
-		if s.levelCursor > 0 {
-			s.levelCursor--
-		}
+		s.moveLevels(-1)
 	case "pgdown":
 		s.pageLevels(+1)
 	case "pgup":
@@ -418,11 +418,28 @@ func (s *StorageSlotGenerateScreen) updateLevelsPhase(m tea.KeyMsg) (Screen, tea
 	return s, nil
 }
 
+// moveLevels walks the level list's cursor. It is a LIST cursor, so it clamps
+// rather than wrapping, and it DECLINES on a pane the frame is not drawn into.
+// The count includes the trailing add row.
+func (s *StorageSlotGenerateScreen) moveLevels(delta int) {
+	body := s.levelListLines()
+	next, ok := s.pickRow(s.levelCursor, len(s.levels)+1, delta, 0, s.levelsBar(body))
+	if !ok {
+		return
+	}
+	s.levelCursor = next
+}
+
 // pageLevels moves a pane's worth of rows, clamping. The count excludes the add
 // row, which is always reachable as the row after the last one.
 func (s *StorageSlotGenerateScreen) pageLevels(dir int) {
 	body := s.levelListLines()
-	s.levelCursor = jdePageCursor(s.levelCursor, len(s.levels)+1, s.windowRows(body, s.levelCursor, 0), dir)
+	next, ok := s.pageRow(body, s.levelCursor, len(s.levels)+1, dir, 0,
+		s.levelsBar(body), s.levelsBarItems(true))
+	if !ok {
+		return
+	}
+	s.levelCursor = next
 }
 
 // removeLevel drops a level. Removing is immediate, as it always was: nothing
@@ -472,12 +489,16 @@ func (s *StorageSlotGenerateScreen) updateLevelRowPhase(m tea.KeyMsg) (Screen, t
 		s.rowLevel.Blur()
 		s.rowPositions.Blur()
 		return s, nil
-	case "tab", "down":
-		s.rowCursor = (s.rowCursor + 1) % n
-		s.syncRowFocus()
-		return s, textinput.Blink
-	case "shift+tab", "up":
-		s.rowCursor = (s.rowCursor + n - 1) % n
+	case "tab", "down", "shift+tab", "up":
+		delta := +1
+		if m.String() == "shift+tab" || m.String() == "up" {
+			delta = -1
+		}
+		next, ok := s.moveRow(s.rowCursor, n, delta, 0, s.levelRowBar())
+		if !ok {
+			return s, nil
+		}
+		s.rowCursor = next
 		s.syncRowFocus()
 		return s, textinput.Blink
 	case "enter":
@@ -624,10 +645,13 @@ func (s *StorageSlotGenerateScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.C
 		}
 		s.closePicker()
 	case jdePickMove:
-		s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickRows))
+		s.movePick(delta)
 	case jdePickPage:
 		header, body := s.pickView()
-		s.pickCursor = jdeClampPick(s.pickCursor+delta*s.windowRows(body, s.pickCursor, len(header)), len(s.pickRows))
+		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickRows), delta, len(header),
+			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickCursor = next
+		}
 	default:
 		// Anything else is filter text: the box is always live, so there is no
 		// mode to enter and no "/" to remember.
@@ -637,6 +661,18 @@ func (s *StorageSlotGenerateScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.C
 		return s, cmd
 	}
 	return s, nil
+}
+
+// movePick walks the option cursor, clamping at both ends (a picker list is a
+// set of choices, not a ring) and DECLINING on a pane the frame is not drawn
+// into — where the highlight it would move is not on screen to be seen.
+func (s *StorageSlotGenerateScreen) movePick(delta int) {
+	header, body := s.pickView()
+	next, ok := s.pickRow(s.pickCursor, len(s.pickRows), delta, len(header), s.pickBar(header, body))
+	if !ok {
+		return
+	}
+	s.pickCursor = next
 }
 
 func (s *StorageSlotGenerateScreen) closePicker() {
@@ -654,7 +690,6 @@ func (s *StorageSlotGenerateScreen) closePicker() {
 // created/skipped/without-tag is the whole point of an idempotent bulk run and
 // a status-line flash would lose it.
 func (s *StorageSlotGenerateScreen) updateResultPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
-	body := s.resultLines()
 	switch m.String() {
 	case "esc", "enter":
 		rack := 0
@@ -667,15 +702,39 @@ func (s *StorageSlotGenerateScreen) updateResultPhase(m tea.KeyMsg) (Screen, tea
 		}
 		return s, SwitchTo(WSFacilities, list)
 	case "down", "tab":
-		s.resultCursor = jdeClampPick(s.resultCursor+1, body.Len())
+		s.moveResult(+1)
 	case "up", "shift+tab":
-		s.resultCursor = jdeClampPick(s.resultCursor-1, body.Len())
+		s.moveResult(-1)
 	case "pgdown":
-		s.resultCursor = jdePageCursor(s.resultCursor, body.Len(), s.windowRows(body, s.resultCursor, 0), +1)
+		s.pageResult(+1)
 	case "pgup":
-		s.resultCursor = jdePageCursor(s.resultCursor, body.Len(), s.windowRows(body, s.resultCursor, 0), -1)
+		s.pageResult(-1)
 	}
 	return s, nil
+}
+
+// moveResult and pageResult walk the run report's cursor. It is a LIST cursor,
+// so it clamps rather than wrapping, and both DECLINE on a pane the frame is
+// not drawn into — the report is the whole point of the run, and a cursor that
+// walked it while the pane showed the too-short notice would come back
+// somewhere the operator never scrolled to.
+func (s *StorageSlotGenerateScreen) moveResult(delta int) {
+	body := s.resultLines()
+	next, ok := s.pickRow(s.resultCursor, body.Len(), delta, 0, s.resultBar(body))
+	if !ok {
+		return
+	}
+	s.resultCursor = next
+}
+
+func (s *StorageSlotGenerateScreen) pageResult(dir int) {
+	body := s.resultLines()
+	next, ok := s.pageRow(body, s.resultCursor, body.Len(), dir, 0,
+		s.resultBar(body), s.resultBarItems(true))
+	if !ok {
+		return
+	}
+	s.resultCursor = next
 }
 
 // ---------------------------------------------------------------------------
@@ -811,10 +870,24 @@ func (s *StorageSlotGenerateScreen) formLines() *jdeLines {
 	return l
 }
 
-// formBar names the keys that apply where the cursor is standing. Enter is
-// GENERATE here, not Save — it is what the key does, and the bar is the only
-// place left to say so.
+// formBar names the keys that work on the form, with PgUp/PgDn on it exactly
+// when the body moves under the bar that is about to be drawn.
+//
+// The paging claim is measured against formBarItems(true) — the bar WITH the
+// pair on it — because naming them costs cells, cells fold the bar onto another
+// row, and a folded bar leaves the body one row fewer. The tallest bar is the
+// fixed point, so the answer cannot oscillate between frames.
 func (s *StorageSlotGenerateScreen) formBar(body *jdeLines) []actionBarItem {
+	return s.formBarItems(s.bodyPagesForBar(body, len(s.fields), 0, s.formBarItems(true)))
+}
+
+// formBarItems is formBar for a given paging state, so the bar that is
+// MEASURED is the bar that is drawn.
+//
+// It names the keys that apply where the cursor is standing. Enter is GENERATE
+// here, not Save — it is what the key does, and the bar is the only place left
+// to say so.
+func (s *StorageSlotGenerateScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Generate"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok {
 		switch id {
@@ -824,7 +897,7 @@ func (s *StorageSlotGenerateScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		}
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -915,8 +988,15 @@ func (s *StorageSlotGenerateScreen) levelListLines() *jdeLines {
 	return l
 }
 
-func (s *StorageSlotGenerateScreen) viewLevels() string {
-	body := s.levelListLines()
+// levelsBar names the keys that work on the level list, with PgUp/PgDn on it
+// exactly when the list moves under the bar about to be drawn — measured
+// against the bar WITH the pair on it, because the tallest bar is the fixed
+// point.
+func (s *StorageSlotGenerateScreen) levelsBar(body *jdeLines) []actionBarItem {
+	return s.levelsBarItems(s.bodyPagesForBar(body, len(s.levels)+1, 0, s.levelsBarItems(true)))
+}
+
+func (s *StorageSlotGenerateScreen) levelsBarItems(paging bool) []actionBarItem {
 	// Enter and Esc are both done: the levels are written with the RUN, so
 	// leaving the list writes nothing either way.
 	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}, {"UP/DN", "Levels"}}
@@ -925,10 +1005,15 @@ func (s *StorageSlotGenerateScreen) viewLevels() string {
 	} else {
 		items = append(items, actionBarItem{"Ctrl-E", "Edit"})
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
-	return s.frame(body, s.levelCursor, "", items)
+	return items
+}
+
+func (s *StorageSlotGenerateScreen) viewLevels() string {
+	body := s.levelListLines()
+	return s.frame(body, s.levelCursor, "", s.levelsBar(body))
 }
 
 func (s *StorageSlotGenerateScreen) viewLevelRow() string {
@@ -978,6 +1063,14 @@ func (s *StorageSlotGenerateScreen) viewLevelRow() string {
 	l.Add("")
 	l.AddFields(fields, storageLabelWidth, s.bodyWidth(), 0)
 
+	return s.frame(l, s.rowCursor, s.statusRow(false, "", s.rowErr), s.levelRowBar())
+}
+
+// levelRowBar names the keys that work on the level editor. It is a function so
+// the movement arm can ask the layer whether the frame it is drawn on is on the
+// pane before it moves the caret — one builder, so the bar that is MEASURED is
+// the bar that is drawn.
+func (s *StorageSlotGenerateScreen) levelRowBar() []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save level"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	switch {
 	case s.rowCursor == genRowPalletJack:
@@ -985,7 +1078,7 @@ func (s *StorageSlotGenerateScreen) viewLevelRow() string {
 	case s.rowCursor == genRowRemove && s.rowIndex >= 0:
 		items = append(items, actionBarItem{"Ctrl-E", "Remove"})
 	}
-	return s.frame(l, s.rowCursor, s.statusRow(false, "", s.rowErr), items)
+	return items
 }
 
 func (s *StorageSlotGenerateScreen) pickView() (jdeHeader, *jdeLines) {
@@ -1009,14 +1102,17 @@ func (s *StorageSlotGenerateScreen) pickView() (jdeHeader, *jdeLines) {
 	}.render(s.bodyWidth())
 }
 
+// pickBar is the picker's bar, with PgUp/PgDn on it exactly when the option
+// list moves under the bar about to be drawn — measured against the bar WITH
+// the pair on it, because the tallest bar is the fixed point.
+func (s *StorageSlotGenerateScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
+	return jdePickBar("Select", s.bodyPagesForBar(body, len(s.pickRows), len(header), jdePickBar("Select", true)))
+}
+
 func (s *StorageSlotGenerateScreen) viewPicker() string {
 	header, body := s.pickView()
-	paging := false
-	if s.bodyScrolls(body, len(header)) {
-		paging = true
-	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		s.statusRow(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), s.pickBar(header, body))
 }
 
 // resultLines is the run report. Every line is its own navigable row so the
@@ -1057,12 +1153,25 @@ func (s *StorageSlotGenerateScreen) resultLines() *jdeLines {
 	return l
 }
 
-func (s *StorageSlotGenerateScreen) viewResult() string {
-	body := s.resultLines()
+// resultBar names the keys that work on the run report, with PgUp/PgDn on it
+// exactly when the report moves under the bar about to be drawn — measured
+// against the bar WITH the pair on it, because the tallest bar is the fixed
+// point.
+func (s *StorageSlotGenerateScreen) resultBar(body *jdeLines) []actionBarItem {
+	return s.resultBarItems(s.bodyPagesForBar(body, body.Len(), 0, s.resultBarItems(true)))
+}
+
+func (s *StorageSlotGenerateScreen) resultBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Back to the rack"}, {"Esc", "Back"}, {"UP/DN", "Scroll"}}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
+	return items
+}
+
+func (s *StorageSlotGenerateScreen) viewResult() string {
+	body := s.resultLines()
+	items := s.resultBar(body)
 	// Not "press p": that key belongs to the slots list, and the bar's contract
 	// is that a key it shows works HERE.
 	//

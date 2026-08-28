@@ -234,8 +234,12 @@ func TestJDELines_WindowSaysWhatIsOffScreen(t *testing.T) {
 // The action bar
 // ---------------------------------------------------------------------------
 
+// A bar whose keys fit on one line is still actionBarRows tall — the rule plus
+// the key line — which is what layout.go's constant budgets for. The frames all
+// draw renderActionBarWrapped now, and this is the case where wrapping changes
+// nothing: it wraps only when the keys will not fit.
 func TestActionBar_IsTwoRowsAndNamesEveryKey(t *testing.T) {
-	out := renderActionBar(40, []actionBarItem{{"Enter", "Save"}, {"Esc", "Exit"}, {"Ctrl-E", "Edit line"}})
+	out := renderActionBarWrapped(40, []actionBarItem{{"Enter", "Save"}, {"Esc", "Exit"}, {"Ctrl-E", "Edit line"}})
 	lines := strings.Split(out, "\n")
 	if len(lines) != actionBarRows {
 		t.Fatalf("the bar is %d rows, want %d (layout.go budgets for it):\n%s", len(lines), actionBarRows, out)
@@ -251,19 +255,36 @@ func TestActionBar_IsTwoRowsAndNamesEveryKey(t *testing.T) {
 }
 
 // TestActionBar_TightensRatherThanDroppingAKey: the bar is the only place the
-// keys are discoverable now, so a narrow terminal has to squeeze the gutters
-// rather than quietly lose an entry.
+// keys are discoverable, so a narrow terminal squeezes the gutters and then
+// takes another ROW rather than quietly losing an entry.
+//
+// The FIRST key line is what tightens; the keys that will not fit on it go onto
+// the next one. Reading line 1 alone was enough while the non-wrapping bar was
+// the one the forms drew — it had only one key line, and its answer to a bar
+// that would not fit was to run past the pane and let clampToBox cut it, which
+// is the defect the wrap removed.
 func TestActionBar_TightensRatherThanDroppingAKey(t *testing.T) {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Exit"}, {"UP/DN", "Fields"}, {"Ctrl-E", "Edit line"}, {"PgUp/PgDn", "Page"}}
-	wide := strings.Split(renderActionBar(200, items), "\n")[1]
-	narrow := strings.Split(renderActionBar(60, items), "\n")[1]
+	wide := actionBarKeyLines(200, items)
+	narrow := actionBarKeyLines(60, items)
 
-	if lipgloss.Width(narrow) >= lipgloss.Width(wide) {
-		t.Errorf("a narrow bar should tighten its gutters:\n%q\n%q", wide, narrow)
+	if len(wide) != 1 {
+		t.Fatalf("200 columns should hold these five keys on one line, got %d:\n%s",
+			len(wide), strings.Join(wide, "\n"))
 	}
+	if lipgloss.Width(narrow[0]) >= lipgloss.Width(wide[0]) {
+		t.Errorf("a narrow bar should tighten its gutters:\n%q\n%q", wide[0], narrow[0])
+	}
+	joined := strings.Join(narrow, "\n")
 	for _, it := range items {
-		if !strings.Contains(narrow, it.Key+"="+it.Label) {
-			t.Errorf("the narrow bar dropped %q:\n%s", it.Key, narrow)
+		if !strings.Contains(joined, it.Key+"="+it.Label) {
+			t.Errorf("the narrow bar dropped %q:\n%s", it.Key, joined)
+		}
+	}
+	for _, line := range narrow {
+		if got := lipgloss.Width(line); got > 60 {
+			t.Errorf("the narrow bar row %q is %d cells wide in 60 — it ran past the pane "+
+				"instead of taking another row", line, got)
 		}
 	}
 }

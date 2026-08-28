@@ -354,9 +354,11 @@ func (s *PurchaseOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 func (s *PurchaseOrderDetailScreen) handleSheetKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch m.String() {
 	case "up", "down", "pgup", "pgdown", "home", "end":
-		// Gated on the SAME predicate the bar reads, so a scroll key cannot act
-		// on a frame that does not advertise it.
-		if !s.sheetScrolls() {
+		// Gated on the bar's own predicate AND on the frame being drawn at all.
+		// The two are different questions: sheetScrolls asks whether the body
+		// has more than fits, which stays true on a pane the layer refuses, and
+		// scrolling a body nobody can see loses the operator's place silently.
+		if !s.sheetMoves() {
 			return s, nil
 		}
 		switch m.String() {
@@ -541,14 +543,33 @@ func (s *PurchaseOrderDetailScreen) handleShipKey(m tea.KeyMsg) (Screen, tea.Cmd
 		s.shipErr = ""
 		return s, nil
 	case "tab", "down", "shift+tab", "up":
+		// A field form's cursor WRAPS, and it declines outright on a pane the
+		// modal is not drawn into: moving the caret between two boxes nobody
+		// can see leaves the operator typing into the other one when the
+		// terminal grows back.
+		//
+		// The delta is COMPUTED rather than fixed at +1, even though this modal
+		// has exactly two rows and +1 ≡ -1 there: a hard-coded forward step is
+		// right by an accident of the field count, not by anything about the
+		// arm, so adding a third row — a note, a carrier — would silently send
+		// Shift-Tab and Up the wrong way. No sweep would report it either: they
+		// press keys and compare a position, which is a fact about where the
+		// cursor is and not about which way it went.
+		delta := +1
+		if m.String() == "shift+tab" || m.String() == "up" {
+			delta = -1
+		}
+		next, ok := s.moveRow(s.shipFocus, poShipFieldCount, delta, 0, poShipBar)
+		if !ok {
+			return s, nil
+		}
+		s.shipFocus = next
 		if s.shipFocus == 0 {
-			s.shipIdxIn.Blur()
-			s.shipDateIn.Focus()
-			s.shipFocus = 1
-		} else {
 			s.shipDateIn.Blur()
 			s.shipIdxIn.Focus()
-			s.shipFocus = 0
+		} else {
+			s.shipIdxIn.Blur()
+			s.shipDateIn.Focus()
 		}
 		return s, textinput.Blink
 	case "enter":
@@ -684,14 +705,17 @@ func (s *PurchaseOrderDetailScreen) handleDeliverKey(m tea.KeyMsg) (Screen, tea.
 		s.delivering = false
 		s.deliverErr = ""
 		return s, nil
-	case "tab", "down":
+	case "tab", "down", "shift+tab", "up":
+		delta := +1
+		if m.String() == "shift+tab" || m.String() == "up" {
+			delta = -1
+		}
+		next, ok := s.moveRow(s.deliverFocus, poDeliverFieldCount, delta, 0, poDeliverBar)
+		if !ok {
+			return s, nil
+		}
 		s.deliverInputs[s.deliverFocus].Blur()
-		s.deliverFocus = (s.deliverFocus + 1) % poDeliverFieldCount
-		s.deliverInputs[s.deliverFocus].Focus()
-		return s, textinput.Blink
-	case "shift+tab", "up":
-		s.deliverInputs[s.deliverFocus].Blur()
-		s.deliverFocus = (s.deliverFocus - 1 + poDeliverFieldCount) % poDeliverFieldCount
+		s.deliverFocus = next
 		s.deliverInputs[s.deliverFocus].Focus()
 		return s, textinput.Blink
 	case "enter":
@@ -786,7 +810,7 @@ func (s *PurchaseOrderDetailScreen) handleOrderPadKey(m tea.KeyMsg) (Screen, tea
 		}
 		return s, nil
 	case "up", "down", "pgup", "pgdown", "home", "end":
-		if !s.padScrolls() {
+		if !s.padMoves() {
 			return s, nil
 		}
 		switch m.String() {
@@ -1026,6 +1050,18 @@ func (s *PurchaseOrderDetailScreen) sheetBar() []actionBarItem {
 // body row with it.
 func (s *PurchaseOrderDetailScreen) sheetScrolls() bool {
 	return s.bodyScrollsForBar(s.sheetBody(), 0, s.sheetBarItems(true))
+}
+
+// sheetMoves is the HANDLER's half where sheetScrolls is the BAR's: the body
+// must move AND the frame must be on the pane.
+//
+// The bar goes on naming the scroll keys at a refused height on purpose — it is
+// not drawn there, and its only remaining job is to be measured, so shrinking
+// it would make the refusal notice name a height that does not work
+// (jdeTooShortRows). The frame it is measured against is the one the sheet
+// really draws, which is why this asks sheetBar rather than sheetBarItems(true).
+func (s *PurchaseOrderDetailScreen) sheetMoves() bool {
+	return s.frameDrawn(0, s.sheetBar()) && s.sheetScrolls()
 }
 
 // sheetBarItems builds the bar for a given scroll state. sheetBar and
@@ -1893,6 +1929,18 @@ func fitCellIf(s string, w int) string {
 // Modals
 // ---------------------------------------------------------------------------
 
+// poShipFieldCount / poShipBar and poDeliverBar are the two modals' shapes said
+// ONCE: the handler needs the bar to ask the layer whether the frame is drawn
+// before it moves the caret, and a second literal beside the view's would be a
+// bar measured that is not the bar drawn.
+const poShipFieldCount = 2
+
+var (
+	poShipBar = []actionBarItem{{"Enter", "Mark shipped"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+
+	poDeliverBar = []actionBarItem{{"Enter", "Mark delivered"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
+)
+
 // viewShip is the mark-shipped prompt: which line, and when it went.
 func (s *PurchaseOrderDetailScreen) viewShip() string {
 	fields := []jdeField{
@@ -1921,8 +1969,7 @@ func (s *PurchaseOrderDetailScreen) viewShip() string {
 	body.Add("")
 	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.shipFocus,
-		s.statusRow(s.shipPending, "Submitting…", s.shipErr),
-		[]actionBarItem{{"Enter", "Mark shipped"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
+		s.statusRow(s.shipPending, "Submitting…", s.shipErr), poShipBar)
 }
 
 // viewVoid is the void-the-whole-order prompt. The reason is optional here —
@@ -1995,8 +2042,7 @@ func (s *PurchaseOrderDetailScreen) viewDeliver() string {
 	body.Add("")
 	body.AddFittedFields(fields, labelW, s.bodyWidth(), 0)
 	return s.frameWrapped(nil, body, s.deliverFocus,
-		s.statusRow(s.deliverPending, "Submitting…", s.deliverErr),
-		[]actionBarItem{{"Enter", "Mark delivered"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}})
+		s.statusRow(s.deliverPending, "Submitting…", s.deliverErr), poDeliverBar)
 }
 
 // ---------------------------------------------------------------------------
@@ -2040,6 +2086,15 @@ func (s *PurchaseOrderDetailScreen) padScrolls() bool {
 		return false
 	}
 	return s.bodyScrollsForBar(s.orderPadLines(), len(s.orderPadHeader()), s.orderPadBarItems(true))
+}
+
+// padMoves is the HANDLER's half where padScrolls is the BAR's — see
+// sheetMoves. This is the pair the whole refused-pane rule was reported on:
+// `end` set padScroll to the length of a forty-line pad while the pane drew
+// nothing but the too-short notice, and growing the terminal back landed the
+// operator at the bottom of the pad instead of where they left it.
+func (s *PurchaseOrderDetailScreen) padMoves() bool {
+	return s.frameDrawn(len(s.orderPadHeader()), s.orderPadBar()) && s.padScrolls()
 }
 
 // padHasText is the single condition the pad overlay's Enter turns on, and the

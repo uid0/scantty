@@ -328,11 +328,12 @@ func (s *StorageAssignFormScreen) currentFieldID() (int, bool) {
 }
 
 func (s *StorageAssignFormScreen) moveCursor(delta int) {
-	n := len(s.fields)
-	if n == 0 {
+	body := s.formLines()
+	next, ok := s.moveRow(s.cursor, len(s.fields), delta, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = (s.cursor + delta + n) % n
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -408,10 +409,13 @@ func (s *StorageAssignFormScreen) updateFormPhase(m tea.KeyMsg) (Screen, tea.Cmd
 // pageCursor moves a whole pane's worth of rows, clamping where moveCursor
 // wraps — a page is for covering ground, not for losing your place.
 func (s *StorageAssignFormScreen) pageCursor(dir int) {
-	if len(s.fields) == 0 {
+	body := s.formLines()
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
+	if !ok {
 		return
 	}
-	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -465,6 +469,18 @@ func storageAssignGroupRows(sigs []omsapi.SIG) []assetPickRow {
 	return rows
 }
 
+// movePick walks the option cursor, clamping at both ends (a picker list is a
+// set of choices, not a ring) and DECLINING on a pane the frame is not drawn
+// into — where the highlight it would move is not on screen to be seen.
+func (s *StorageAssignFormScreen) movePick(delta int) {
+	header, body := s.pickView()
+	next, ok := s.pickRow(s.pickCursor, len(s.pickRows), delta, len(header), s.pickBar(header, body))
+	if !ok {
+		return
+	}
+	s.pickCursor = next
+}
+
 func (s *StorageAssignFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	switch act, delta := jdePickKey(m); act {
 	case jdePickCancel:
@@ -477,10 +493,13 @@ func (s *StorageAssignFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd
 		}
 		s.closePicker()
 	case jdePickMove:
-		s.pickCursor = jdeClampPick(s.pickCursor+delta, len(s.pickRows))
+		s.movePick(delta)
 	case jdePickPage:
 		header, body := s.pickView()
-		s.pickCursor = jdeClampPick(s.pickCursor+delta*s.windowRows(body, s.pickCursor, len(header)), len(s.pickRows))
+		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickRows), delta, len(header),
+			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickCursor = next
+		}
 	default:
 		// Anything else is filter text: the box is always live, so there is no
 		// mode to enter and no "/" to remember.
@@ -638,9 +657,23 @@ func (s *StorageAssignFormScreen) formLines() *jdeLines {
 	return l
 }
 
-// formBar names the keys that apply where the cursor is standing. Enter is
-// ASSIGN here, not Save — it is what the key does.
+// formBar names the keys that work on the form, with PgUp/PgDn on it exactly
+// when the body moves under the bar that is about to be drawn.
+//
+// The paging claim is measured against formBarItems(true) — the bar WITH the
+// pair on it — because naming them costs cells, cells fold the bar onto another
+// row, and a folded bar leaves the body one row fewer. The tallest bar is the
+// fixed point, so the answer cannot oscillate between frames.
 func (s *StorageAssignFormScreen) formBar(body *jdeLines) []actionBarItem {
+	return s.formBarItems(s.bodyPagesForBar(body, len(s.fields), 0, s.formBarItems(true)))
+}
+
+// formBarItems is formBar for a given paging state, so the bar that is
+// MEASURED is the bar that is drawn.
+//
+// It names the keys that apply where the cursor is standing. Enter is ASSIGN
+// here, not Save — it is what the key does.
+func (s *StorageAssignFormScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Assign"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok {
 		switch storageAssignFieldKind(id) {
@@ -650,7 +683,7 @@ func (s *StorageAssignFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 		}
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -690,12 +723,15 @@ func (s *StorageAssignFormScreen) pickView() (jdeHeader, *jdeLines) {
 	}.render(s.bodyWidth())
 }
 
+// pickBar is the picker's bar, with PgUp/PgDn on it exactly when the option
+// list moves under the bar about to be drawn — measured against the bar WITH
+// the pair on it, because the tallest bar is the fixed point.
+func (s *StorageAssignFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
+	return jdePickBar("Select", s.bodyPagesForBar(body, len(s.pickRows), len(header), jdePickBar("Select", true)))
+}
+
 func (s *StorageAssignFormScreen) viewPicker() string {
 	header, body := s.pickView()
-	paging := false
-	if s.bodyScrolls(body, len(header)) {
-		paging = true
-	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		s.statusRow(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), s.pickBar(header, body))
 }

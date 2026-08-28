@@ -541,12 +541,12 @@ either:
   comment saying no test can catch it.
 - **Viewing screens** use the read-only half of the columnar layer:
   `jdeScreen.frameScrolled` (scroll offset, not a cursor) and
-  `renderActionBarWrapped` (a bar of a dozen order-level keys folds onto several
-  rows rather than losing its tail). `internal/tui/po_detail.go` is the pilot for
-  those, as `po_edit.go` is for forms.
-- **A sheet may not answer "how many rows?", "does this scroll?" or "what goes
-  on the status row?" itself.** All three are `jde_form.go`'s
-  (`bodyAvail` / `bodyAvailForBar`, `bodyScrolls` / `bodyScrollsForBar`,
+  the wrapping bar every frame draws (a bar of a dozen order-level keys folds
+  onto several rows rather than losing its tail). `internal/tui/po_detail.go` is
+  the pilot for those, as `po_edit.go` is for forms.
+- **A sheet may not answer "how many rows?", "does this scroll?", "is this
+  drawn at all?" or "what goes on the status row?" itself.** All four are
+  `jde_form.go`'s (`bodyAvailForBar`, `bodyScrollsForBar`, `frameDrawn`,
   `statusRow` / `fitStatus`), and the frames read the SAME functions, so a bar's
   claim that UP/DN or PgUp/PgDn move something cannot part company with the
   window that decides whether they do. Two of them lived as per-sheet copies
@@ -605,10 +605,15 @@ either:
   When even that will not fit, the frame is REFUSED rather than mutilated:
   `jdeTooShort` draws a bounded two-sentence notice naming how tall a terminal
   the screen needs — a height DERIVED at the fixed point, so resizing to it
-  really does draw the frame — and warning that the keys still ACT on a screen
-  nobody is drawing, so their effect cannot be seen. That second sentence used
-  to reassure ("They still work"), which is what made the offset drift routed
-  below a surprise. A bar with rows cut off it
+  really does draw the frame — and saying that the moving keys are HELD until it
+  fits, which is true because they are (see the movement rule below). It is
+  bounded in both axes, and where the HEIGHT bound bites the last row it keeps
+  carries the ellipsis that says so: cut clean, "Moving keys are held until it
+  fits, so you come" reads as finished advice.
+  That sentence has now been wrong twice in opposite directions and both
+  wordings are recorded in `jdeTooShort`: it first REASSURED ("they still
+  work"), then said the keys act invisibly, which was honest and described a
+  loss that was still happening. A bar with rows cut off it
   names some keys and hides the rest SILENTLY and the operator cannot tell
   which; naming none is the only honest alternative. Both floors are rule 1 — a
   keypress must change something the operator can see — and each covers a press
@@ -624,27 +629,139 @@ either:
   `jdeScreenFixtures` fails on an omission, on a stale entry, and on a fixture
   left in its loading state, which renders one line of "Loading…", fits every
   pane and proves nothing.
-  KNOWN AND ROUTED, on the other axis: `renderActionBar` — the one-line bar the
-  NON-wrapping frames draw — tightens its gutter and then lets the line run past
-  the pane, so eleven form screens (MaintenanceItemFormScreen's bar is 63 cells
-  against 51) lose the tail of their legend at 80 columns. It predates the floor
-  fix and the floor fix reduces it. The fix is to give those frames
-  `renderActionBarWrapped`, which means giving `bodyAvail` and `bodyScrolls` the
-  `items` they do not take, on some thirty sheets — a conversion, not a patch.
-  A SECOND routed item rides on the same signature change, so treat the two as
-  ONE conversion rather than two: movement is gated on SCROLLABILITY where it
-  should be gated on DRAWABILITY. On a pane the frame is REFUSED on the body
-  still gets its floor of one row (`jdeBodyAvail`, which is what makes the
-  refusal notice's height honest), so `bodyScrolls` answers true and the
-  movement arms act over a pane showing nothing but the notice — `end` on the
-  order pad sets `padScroll` to the pad's length and growing the terminal back
-  lands the operator at the bottom of a forty-line pad. `frameScrolled` cannot
-  fix it: the sheet's own handler destroys the offset before the frame is ever
-  called. Nor is a layer-side stash of the last DRAWN offset enough — the same
-  thing happens to the CURSOR on every `frame` / `frameWrapped` screen, so
-  fixing the two `frameScrolled` sheets would be the apply-it-where-it-was-
-  reported failure again. That is why its priority is not cosmetic: until it
-  lands, the too-short notice says so in as many words rather than reassuring.
+- **EVERY frame WRAPS its bar, and movement is gated on DRAWABILITY.** These
+  were one conversion (sc-refused-pane) because they are one signature change
+  across some thirty sheets, and doing them separately would have touched all
+  thirty twice.
+  `frame` / `frameWithHeader` ARE `frameWrapped` now. The one-line
+  `renderActionBar` they used to draw tightens its gutter and then lets the line
+  run past the pane, so eleven form screens (MaintenanceItemFormScreen's bar is
+  63 cells against 51) lost the tail of their legend at 80 columns — 95 (screen,
+  width, height, row) violations, which is what
+  `TestJDEForm_TheActionBarSurvivesEveryHeight` reports on both axes now.
+  `bodyAvail` / `bodyScrolls` / `windowRows` are GONE: every sheet asks the
+  `…ForBar` variant with the bar it is about to draw, and where that answer
+  feeds the bar's own contents it passes the bar WITH the scroll keys on it,
+  because the tallest bar is the fixed point.
+  The gate is `jdeScreen.frameDrawn`, and the three primitives that carry it for
+  a CURSOR are `moveRow` (a wrapping field cursor), `pickRow` (a clamping list
+  cursor) and `pageRow` (a page). A scroll OFFSET has no fourth primitive on
+  purpose: its two questions are asked of different bars — the scroll answer of
+  the CEILING bar, drawability of the bar really DRAWN — so the two sheets that
+  scroll one spell the conjunction themselves and name it
+  (`po_detail`'s `sheetMoves` / `padMoves`).
+  **THE RULE IS ONE STATEMENT, NOT TWO: a movement key acts when the frame is
+  DRAWN and — for a PAGE — when the body MOVES.** `pageRow` asks both, and it is
+  the DEFAULT: a screen with no further condition on its pager reaches for it and
+  gets the whole rule. A screen carrying a condition `pageRow` CANNOT EXPRESS
+  asks the two directly and SAYS WHY AT THAT SITE, so the exception is
+  self-evident where it occurs rather than tracked in a roster somewhere else —
+  and the next such screen documents itself by following the rule instead of by
+  being added to a list. The condition that recurs is a THIRD fact `pageRow`'s
+  single bool cannot carry: "refused" and "nothing to page" come back as the same
+  false, and several screens must answer them differently — silence on a refused
+  pane, a decline note when the body simply does not move on a frame the operator
+  can see. `po_create`'s `bodyPagesFor` and `receive_form`'s `qtyPagesFor` add a
+  second on top: a page moves the CURSOR, so there must be another row to LAND
+  on, which comes apart from "does the body overflow" in states they have by
+  design.
+  **THAT SECOND QUESTION IS THE LAYER'S TOO** — `bodyPagesForBar`, which is
+  `count > 1 && bodyScrollsForBar`, where `count` is the NAVIGABLE ROW COUNT and
+  not the body's line count. A `…Bar` wrapper that appends `PgUp/PgDn` asks it,
+  or spells the same two conditions where it already had the count in hand
+  (`service_status_screen` nests the entry inside `len(services) > 1`), and so
+  does `pageRow` — so the bar's claim and the key behind it are one expression. It was three sheets' private knowledge and thirty sheets' blind
+  spot, and the state it is about is the one a list SPENDS MOST OF ITS LIFE IN:
+  an unopened kit list is a heading, its guidance and the trailing "(add a
+  component)" row, so at 80x11–17 the body outran the window while the add row
+  was the only row a cursor could stand on — **the bar named the pair and a page
+  moved nothing, on the default state of a new inventory item**. The packaging
+  chain and the storage level list did the same at their own heights.
+  A SWEEP THAT DERIVES ITS SCREENS STILL HAND-PICKS ITS STATES, and that is the
+  axis this hid on: every list state in `jdeScreenStates` had been given several
+  rows to stop the movement sweeps being vacuous — correct, and it put the
+  one-row case out of reach of the sweep written to catch exactly this. The
+  minimal variants (empty kit list, empty chain, no levels, one attachment) are
+  there now, and they are INERT for the refused-pane sweep by construction, so
+  they are recorded in `jdeInertCases` with that reason.
+  `pageRow` takes TWO bars: drawability of the bar really
+  DRAWN (`tooShort` is monotone in bar height, so a taller bar would decline a
+  key at a height the frame IS drawn at), scrolling of the CEILING bar (naming
+  the keys costs cells, cells fold the bar onto another row, and a folded bar
+  leaves the body one row fewer, so the tallest bar is the fixed point). The
+  ceiling is THREADED from the sheet, never synthesised by appending a generic
+  `PgUp/PgDn` inside the layer: the label differs per screen — `Page`, `Unit`,
+  `Last unit` — so the measured fold would differ from the real ceiling, and an
+  approximate fixed point is not a fixed point. An UNSIZED terminal skips the
+  scroll half rather than failing it: there is no window to overflow, and the
+  layer's standing answer for no pane is "draw whole and let `clampToBox`
+  decide", which is the same reason `frameDrawn` answers true there.
+  The scroll half was the SHEETS' until it was the layer's, and the shape of
+  that is worth keeping: every columnar sheet bound `pgup`/`pgdown`
+  unconditionally in its key switch while naming the pair only when the body
+  overflowed, so on any pane tall enough to hold the whole body the bar rightly
+  said nothing and PgDn still walked the cursor to the last row — **3254 of 7102
+  drawn (screen, width, height) triples**, with not one violation the other way.
+  Two sheets then spelled the conjunction for themselves, which closed the class
+  at two of thirty-two sites and is exactly how the ~50 per-sheet scroll copies
+  sc-jde-lift had to unpick began: one that looked too small to be worth a shared
+  function, with the same argument available to the next forty-nine. Both were
+  deleted. `TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves` holds the
+  BICONDITIONAL over `jdePaneCases` at every drawable pane — derived, so site
+  thirty-three cannot reopen it — and it fails a bar that names the pair where a
+  page moves nothing just as readily.
+  THAT BICONDITIONAL COVERS `PgUp`/`PgDn` AND NOT `UP/DN`, so do not read the
+  class as closed: a bar builder that appends `{"UP/DN", …}` with no row-count
+  condition names a key a CLAMPING list cursor cannot honour once the list is
+  down to ONE navigable row (`jdeClampPick` returns the row it was handed, no
+  note is written, the pane redraws byte for byte). A FIELD form is not an
+  instance — its cursor WRAPS. The gap is live and the rule, the instances and
+  what closing it would take are recorded where a reader meets those states,
+  beside `jdeInertCases` in `jde_refused_pane_test.go`.
+  Read `jde_form.go`'s "Movement" block before touching any of them; what is
+  worth knowing here:
+  - **The BAR and the HANDLER ask different questions and must go on asking
+    different questions.** `bodyScrollsForBar` is "is there more than fits",
+    which stays TRUE on a refused pane; the handler also needs "is anything
+    drawn". Making `bodyScrollsForBar` answer false when refused looks like the
+    same fix and is not: the bar is not drawn there and its only remaining job
+    is to be MEASURED, so dropping its scroll keys shrinks it and
+    `jdeTooShortRows` then names a height one row short of one that works. That
+    defect has shipped once already (`jdeBodyAvail` carries it).
+  - **A GATED MOVEMENT ARM answers with NOTHING — not even a decline note.**
+    Its whole product WAS the position, so once the move is refused there is
+    nothing left to report; and a note written there is not drawn now and IS
+    drawn when the terminal grows back, answering a press the operator has
+    moved on from. THE BOUNDARY IS WHAT THE KEY DID, NOT WHAT THE PANE IS: an
+    arm that DECLINES AND ANSWERS — an empty picker list, a filter that matched
+    nothing, `up` with one row to move through — is NOT gated and must not be.
+    Its answer is the visible change rule 1 requires and it rides the surface
+    #155 gave it, which the layer cannot trim; read after the pane grows back
+    it is later than ideal and far better than a key that never speaks. Gating
+    those would silence them at exactly the heights that work made them speak,
+    so the silence is the rule for arms whose only product is a POSITION and
+    for no others.
+  - **TYPING is deliberately not gated**, and nor is `esc`. A movement key's
+    whole effect is the position, so declining it PRESERVES what the operator
+    had; a typed rune's effect is the value, and declining that would DISCARD
+    input — including a scanner burst. A focused text box therefore still owns
+    its own keys, its caret included, which is why the sweep reads the movement
+    keys off the BAR rather than off a fixed list.
+  - `TestJDEForm_ARefusedPaneKeepsTheOperatorsPlace` is the check and it is
+    stated the way an operator would: drag it short, press things, drag it back,
+    find what you left. It walks `jdePaneCases` (every columnar screen, derived),
+    presses the movement keys THAT SCREEN'S BAR NAMES at any height, and asserts
+    both the clipped frame and a position fingerprint reflected off the screen's
+    own int fields (`cursor` / `scroll` / `focus` / `offset` in the name).
+    `jdeInertCases` records, with a reason, every case where nothing moves at
+    any height — absent and empty are different states.
+  - **A reach loop in a test must be BOUNDED.** `for s.focused != row { down }`
+    was the ordinary idiom and it turns a declined key into a HANG: the package
+    then fails by timing out with whichever test was running named in the panic
+    rather than the one that broke. `receiveWalkTo`, `receiveReachRow`,
+    `poReachLineField` and `assignWalkTo` are the bounded replacements, and the
+    two that run at swept heights walk at a tall pane and put the size back —
+    which is the sequence an operator goes through anyway.
 - **A body line that belongs to no navigable ROW is a line no key can reach.**
   `jdeLines.Window` anchors the window on the CURSOR's block, and a columnar
   sheet's cursor cannot go above its first row — up WRAPS to the last row, which
@@ -1126,8 +1243,11 @@ touching any screen an operator drives:
 - **One budget, and it is the LAYER's.** `bodyAvailForBar` is the one answer to
   "how many rows does the body get", `bodyScrollsForBar` the one answer to
   whether it moves, and `windowRowsForBar` the one answer to what a page is
-  worth — each asked of the bar that is about to be DRAWN. A sheet that
-  computes any of the three itself will eventually compute it differently from
+  worth, and `frameDrawn` the one answer to whether the frame is on the pane at
+  all — each asked of the bar that is about to be DRAWN. The short forms
+  (`bodyAvail`, `bodyScrolls`, `windowRows`) are gone: they assumed a two-row
+  bar, which stopped being true when every frame started wrapping. A sheet that
+  computes any of them itself will eventually compute it differently from
   the frame; `TestJDEForm_NoSheetAnswersTheScrollQuestionItself` holds the door
   shut by reading the package's own source, and it catches a bare
   `jdeLines.Len()` in a comparison as well as the named helpers.

@@ -219,7 +219,7 @@ type PurchaseOrderCreateScreen struct {
 	itemSuppliersFor    int
 	itemSuppliersLoad   bool
 	itemSuppliersErr    string
-	itemSuppliersCur    int
+	itemSuppliersCursor int
 	itemSuppliersSearch textinput.Model
 	itemSuppliersTyping bool
 	// itemSuppliersNote is the picker's OWN answer to the last keypress: what
@@ -866,6 +866,13 @@ func (s *PurchaseOrderCreateScreen) updateSupplierSwitchPhase(m tea.KeyMsg, head
 		// a cursor — and they are named on the bar for exactly as long as the
 		// layer says the body moves. Without that gate they would be a key the
 		// bar names doing nothing on every frame the confirm fits on.
+		if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+			// Refused pane: no prose is drawn, so there is nothing to scroll
+			// and — this arm's whole product being that scroll offset —
+			// nothing to say about not scrolling it either. See moveCursor,
+			// which carries why a declining arm that ANSWERS is not gated.
+			return s, nil
+		}
 		if s.bodyPagesFor(headerRows) {
 			delta := 1
 			if m.String() == "up" {
@@ -963,7 +970,7 @@ func (s *PurchaseOrderCreateScreen) resetSupplierScopedPickers() {
 	s.itemSuppliersFor = 0
 	s.itemSuppliersLoad = false
 	s.itemSuppliersErr = ""
-	s.itemSuppliersCur = 0
+	s.itemSuppliersCursor = 0
 	s.itemSuppliersTyping = false
 	s.itemSuppliersSearch.SetValue("")
 	s.itemSuppliersSearch.Blur()
@@ -1239,7 +1246,7 @@ func (s *PurchaseOrderCreateScreen) updateSourcePhase(m tea.KeyMsg, headerRows i
 		s.itemSuppliersSearch.SetValue("")
 		s.itemSuppliersSearch.Blur()
 		s.itemSuppliersTyping = false
-		s.itemSuppliersCur = 0
+		s.itemSuppliersCursor = 0
 		if s.catalogAnswered() {
 			// Already held for THIS supplier. Showing a working line here would
 			// be the same rule broken from the other side: that line is a claim
@@ -1535,10 +1542,10 @@ func (s *PurchaseOrderCreateScreen) updateLinePhase(m tea.KeyMsg, headerRows int
 		// that moment. A list is the other case and keeps the clamp: running
 		// off the bottom of one must not reappear at the row that CLEARS a
 		// field. po_add_line's price rows wrap for the same reason.
-		s.focusNextLine(1)
+		s.focusNextLine(1, headerRows)
 		return s, nil
 	case "shift+tab", "up":
-		s.focusNextLine(-1)
+		s.focusNextLine(-1, headerRows)
 		return s, nil
 	}
 	if moved, cmd := s.moveCursor(m, headerRows); moved {
@@ -1660,7 +1667,7 @@ func (s *PurchaseOrderCreateScreen) costFieldLabel() string {
 // the only thing that moves this form's focus — the shared setCursorRow carries
 // no line-form branch, because neither of the paths that used to reach it does
 // so any more.
-func (s *PurchaseOrderCreateScreen) focusNextLine(delta int) {
+func (s *PurchaseOrderCreateScreen) focusNextLine(delta, headerRows int) {
 	fields := s.lineFields()
 	cur := 0
 	for i, f := range fields {
@@ -1669,8 +1676,11 @@ func (s *PurchaseOrderCreateScreen) focusNextLine(delta int) {
 			break
 		}
 	}
+	next, ok := s.moveRow(cur, len(fields), delta, headerRows, s.barFor(headerRows))
+	if !ok {
+		return
+	}
 	s.lineInputs[s.lineFocused].Blur()
-	next := (cur + delta + len(fields)) % len(fields)
 	s.lineFocused = fields[next]
 	s.lineInputs[s.lineFocused].Focus()
 }
@@ -3511,18 +3521,24 @@ func (s *PurchaseOrderCreateScreen) barItems(paging bool) []actionBarItem {
 // bodyPagesFor reports whether PgUp/PgDn do anything on a frame whose pinned
 // header is headerRows tall.
 //
-// TWO conditions, because the keys make two claims and both have to hold. The
-// body must MOVE — bodyScrollsForBar's question, asked of the LAYER so a bar's
-// claim and the window that decides it cannot part company. And a page moves
-// the CURSOR (jdePageCursor) rather than the body, so there has to be another
-// row to land on. They agree in almost every state and come apart in the ones
-// this screen has by design: a picker drawing a working or failure frame has a
-// body that can overflow and no rows at all.
+// TWO conditions, because the keys make two claims and both have to hold — the
+// body must MOVE and a page must have another row to LAND on. Both are the
+// LAYER's now (bodyPagesForBar), so a bar's claim and the window that decides it
+// cannot part company, and this screen is not carrying a private copy of a rule
+// thirty others also need. They agree in almost every state and come apart in
+// the ones this screen has by design: a picker drawing a working or failure
+// frame has a body that can overflow and no rows at all.
 //
 // The bar passed to the layer is the bar WITH the paging keys on it, because
 // the tallest bar is the fixed point: a body that overflows the smallest budget
 // also overflows the larger one left when the keys are dropped, so the answer
 // cannot oscillate between frames.
+//
+// What pageRow cannot express is the way this answer is USED: moveCursor must
+// tell "refused" from "nothing to page" — the first is swallowed in silence, the
+// second falls through to an arm that declines out loud — and pageRow returns
+// the same false for both. That, and the two phase-specific branches above, are
+// why the pair is asked here; the geometric half itself is not restated.
 func (s *PurchaseOrderCreateScreen) bodyPagesFor(headerRows int) bool {
 	if s.phase == poPhaseLine {
 		// A FIELD form has nothing to page. Its cursor WRAPS (focusNextLine),
@@ -3540,14 +3556,12 @@ func (s *PurchaseOrderCreateScreen) bodyPagesFor(headerRows int) bool {
 	if s.phase == poPhaseSupplierSwitch {
 		// The confirm has no cursor: its body is read-only and UP/DN scroll it,
 		// so the second condition — "is there another row to land on" — is not
-		// one it has. What is left is the layer's own question.
+		// one it has. What is left is the layer's scroll question ALONE, which
+		// is why this branch cannot ask bodyPagesForBar like the one below.
 		return s.bodyScrollsForBar(s.switchBody(), headerRows, s.barItems(true))
 	}
-	if s.rowCount() <= 1 {
-		return false
-	}
 	body, _ := s.body()
-	return s.bodyScrollsForBar(body, headerRows, s.barItems(true))
+	return s.bodyPagesForBar(body, s.rowCount(), headerRows, s.barItems(true))
 }
 
 // pageStep is how many rows one page covers on the frame being drawn: measured
@@ -3579,15 +3593,36 @@ func (s *PurchaseOrderCreateScreen) pageStep(headerRows int) int {
 // judgement one screen over).
 //
 // Paging is gated on the LAYER's answer, not on a second opinion about it:
-// bodyPagesFor asks bodyScrollsForBar, which is the same expression the window
-// itself short-circuits on, so a bar naming PgUp/PgDn and a body that moves
-// cannot part company. Without the gate the keys would still page the cursor
+// bodyPagesFor asks bodyPagesForBar, which is the same expression the bar itself
+// reads, so a bar naming PgUp/PgDn and a page that moves cannot part company. Without the gate the keys would still page the cursor
 // on a body that fits, which is a key acting where the bar does not name it.
 func (s *PurchaseOrderCreateScreen) moveCursor(m tea.KeyMsg, headerRows int) (bool, tea.Cmd) {
 	if s.rowCount() <= 1 {
 		// Nothing to move between. The bar names neither pair here, so both
 		// have to be inert — an arm that moved a cursor with one row to move it
 		// through would be a key acting unnamed.
+		return false, nil
+	}
+	if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+		// The pane is too short for the layer to draw this frame at all, so
+		// there is no highlight on screen for a movement key to move. It still
+		// BELONGS to movement — which is what the true says — so the key is
+		// swallowed here rather than falling through to an arm that would read
+		// it as something else.
+		//
+		// It answers with NOTHING, deliberately, and that silence is a rule
+		// about this ARM rather than about the pane: a movement key's whole
+		// product is the position, so once the move is refused there is nothing
+		// left to report, and a note set here would not be drawn now and WOULD
+		// be drawn when the terminal grows back — a stale reply to a press the
+		// operator has moved on from. The arms ABOVE this gate, which decline
+		// and ANSWER (an empty list, a filter that matched nothing), are not
+		// gated and go on speaking: their answer is the visible change rule 1
+		// asks for, and it rides the surface #155 gave it.
+		switch m.String() {
+		case "up", "down", "pgup", "pgdown":
+			return true, nil
+		}
 		return false, nil
 	}
 	switch m.String() {
@@ -3671,7 +3706,7 @@ func (s *PurchaseOrderCreateScreen) cursorRow() int {
 	case poPhaseReorderPick:
 		cur = s.reorderCursor
 	case poPhaseItemPick:
-		cur = s.itemSuppliersCur
+		cur = s.itemSuppliersCursor
 	case poPhaseAssetPick:
 		cur = s.assetsCursor
 	case poPhaseLine:
@@ -3708,7 +3743,7 @@ func (s *PurchaseOrderCreateScreen) setCursorRow(n int) {
 	case poPhaseReorderPick:
 		s.reorderCursor = n
 	case poPhaseItemPick:
-		s.itemSuppliersCur = n
+		s.itemSuppliersCursor = n
 	case poPhaseAssetPick:
 		s.assetsCursor = n
 	}

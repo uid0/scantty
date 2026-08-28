@@ -216,21 +216,25 @@ func (s *LocationProblemFormScreen) currentFieldID() (int, bool) {
 }
 
 func (s *LocationProblemFormScreen) moveCursor(delta int) {
-	n := len(s.fields)
-	if n == 0 {
+	body := s.formLines()
+	next, ok := s.moveRow(s.cursor, len(s.fields), delta, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = (s.cursor + delta + n) % n
+	s.cursor = next
 	s.syncFocus()
 }
 
 // pageCursor moves a whole pane's worth of rows, clamping where moveCursor
 // wraps — a page is for covering ground, not for losing your place.
 func (s *LocationProblemFormScreen) pageCursor(dir int) {
-	if len(s.fields) == 0 {
+	body := s.formLines()
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
+	if !ok {
 		return
 	}
-	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -337,14 +341,28 @@ func (s *LocationProblemFormScreen) formLines() *jdeLines {
 	return l
 }
 
-// formBar names the keys that apply where the cursor is standing — and only
-// those, so the bar never teaches a key that does nothing here.
+// formBar names the keys that work on the form, with PgUp/PgDn on it exactly
+// when the body moves under the bar that is about to be drawn.
+//
+// The paging claim is measured against formBarItems(true) — the bar WITH the
+// pair on it — because naming them costs cells, cells fold the bar onto another
+// row, and a folded bar leaves the body one row fewer. The tallest bar is the
+// fixed point, so the answer cannot oscillate between frames.
 func (s *LocationProblemFormScreen) formBar(body *jdeLines) []actionBarItem {
+	return s.formBarItems(s.bodyPagesForBar(body, len(s.fields), 0, s.formBarItems(true)))
+}
+
+// formBarItems is formBar for a given paging state, so the bar that is
+// MEASURED is the bar that is drawn.
+//
+// It names the keys that apply where the cursor is standing — and only those,
+// so the bar never teaches a key that does nothing here.
+func (s *LocationProblemFormScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Report"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok && id == lpfSeverity {
 		items = append(items, actionBarItem{"←→", "Change"})
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items

@@ -31,6 +31,7 @@ package tui
 import (
 	"fmt"
 	"go/ast"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -160,18 +161,33 @@ func jdeScreenFixtures() map[string]func() Screen {
 		// Past its loading state, on the supplier picker it opens on: a screen
 		// still fetching draws one muted line and no rows, and a fixture that
 		// renders nothing proves nothing.
-		"PurchaseOrderCreateScreen":      func() Screen { return poCreateFixture() },
-		"PurchaseOrderAttachmentsScreen": func() Screen { return NewPurchaseOrderAttachmentsScreen(Deps{}, poViewPO()) },
+		"PurchaseOrderCreateScreen": func() Screen { return poCreateFixture() },
+		// With FILES on it, for the same reason as ServiceStatusScreen: poViewPO
+		// carries no attachments, so the list has no rows and the cursor has
+		// nowhere to go.
+		"PurchaseOrderAttachmentsScreen": func() Screen {
+			po := poViewPO()
+			for i := 0; i < 6; i++ {
+				po.Attachments = append(po.Attachments, omsapi.PurchaseOrderAttachment{
+					ID: i + 1, FileName: fmt.Sprintf("quote-2026-%02d.pdf", i+1),
+					Description: "Vendor quotation", UploadedByName: "shop.lead",
+				})
+			}
+			return NewPurchaseOrderAttachmentsScreen(Deps{}, po)
+		},
 		"PurchaseOrderDetailScreen": func() Screen {
 			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
 			s.loading = false
 			s.po = poViewPO()
 			return s
 		},
-		"PurchaseOrderEditScreen":   func() Screen { return NewPurchaseOrderEditScreen(Deps{}, poViewPO()) },
-		"ReceiveFormScreen":         func() Screen { return receivePaneFixture(nil) },
-		"SIGFormScreen":             func() Screen { return NewSIGFormScreen(Deps{}, "") },
-		"ServiceStatusScreen":       func() Screen { return NewServiceStatusScreen(Deps{}) },
+		"PurchaseOrderEditScreen": func() Screen { return NewPurchaseOrderEditScreen(Deps{}, poViewPO()) },
+		"ReceiveFormScreen":       func() Screen { return receivePaneFixture(nil) },
+		"SIGFormScreen":           func() Screen { return NewSIGFormScreen(Deps{}, "") },
+		// With SERVICES on it. A bare Deps{} carries no health snapshot, so the
+		// screen draws a summary over an empty list: nothing to move a cursor
+		// through, and every sweep that presses a key at it proves nothing.
+		"ServiceStatusScreen":       func() Screen { return NewServiceStatusScreen(ssDegradedDeps(nil)) },
 		"SiteSettingsFormScreen":    func() Screen { s := NewSiteSettingsFormScreen(Deps{}); s.loading = false; return s },
 		"StorageAssignFormScreen":   func() Screen { return NewStorageAssignFormScreen(Deps{}, "R1-S1", nil) },
 		"StorageSlotFormScreen":     func() Screen { return NewStorageSlotFormScreen(Deps{}, "") },
@@ -221,6 +237,74 @@ func poCreateStaged() *PurchaseOrderCreateScreen {
 	return s
 }
 
+// poAddLookupFixture is a lookup answer with enough candidates for the choose
+// list to have somewhere to move and enough prose on the confirm frame to
+// outrun a short pane.
+func poAddLookupFixture() *omsapi.POLineLookup {
+	l := &omsapi.POLineLookup{
+		Query:         "widget",
+		Supplier:      omsapi.POLineSupplierRef{ID: 1, Name: "Acme Fasteners & Industrial Supply"},
+		PurchaseOrder: omsapi.POLineLookupOrder{ID: "po-1", Number: "PO-2026-0042", Status: "draft", CanAddItems: true},
+		BestMatchKind: "name",
+	}
+	for i := 0; i < 6; i++ {
+		l.Candidates = append(l.Candidates, omsapi.POLineCandidate{
+			ItemSupplier: i + 1,
+			MatchKind:    "name",
+			MatchLabel:   "Name",
+			MatchedValue: fmt.Sprintf("Hex bolt M8x40 zinc plated grade 8.8 #%d", i+1),
+			Item: omsapi.POLineItemRef{
+				ID: fmt.Sprintf("i-%d", i), Name: fmt.Sprintf("Hex bolt M8x40 zinc plated grade 8.8 #%d", i+1),
+				SKU: fmt.Sprintf("HB-M8-40-%03d", i),
+			},
+			SupplierSKU:        fmt.Sprintf("AF-99-12-ZP-LH-%04d", i),
+			QuantityPerPackage: 25,
+			SuggestedQuantity:  50,
+			SuggestedUnitCost:  omsapi.DecimalString("0.42"),
+		})
+	}
+	l.TotalCandidates = len(l.Candidates)
+	l.BestMatchTotal = len(l.Candidates)
+	return l
+}
+
+// itemChainFixtureRows / itemKitFixtureRows are sub-list contents long enough
+// for the cursor to have somewhere to go — a one-row list makes every sweep
+// about movement vacuous.
+func itemChainFixtureRows() []packagingRow {
+	return []packagingRow{
+		{key: 1, id: 1, name: "Pallet", baseUnits: 1000},
+		{key: 2, id: 2, name: "Case", baseUnits: 100},
+		{key: 3, id: 3, name: "Ream", baseUnits: 1},
+	}
+}
+
+func itemKitFixtureRows() []kitComponentRow {
+	return []kitComponentRow{
+		{key: 1, component: "i-1", name: "Hex bolt M8x40 zinc plated grade 8.8", sku: "HB-1", quantity: 4},
+		{key: 2, component: "i-2", name: "Flat washer M8 stainless", sku: "FW-8", quantity: 4},
+		{key: 3, component: "i-3", name: "Nyloc nut M8", sku: "NN-8", quantity: 4, notes: "torque to 25Nm"},
+	}
+}
+
+// maintenanceTaskFixtureRows / storageGenFixtureLevels are sub-list contents
+// long enough for the cursor to have somewhere to go.
+func maintenanceTaskFixtureRows() []taskRow {
+	return []taskRow{
+		{id: "t-1", title: "Drain the sump and check the filter screen", isRequired: true},
+		{id: "t-2", title: "Grease the ways", description: "Way oil, not chain lube.", isRequired: true},
+		{id: "t-3", title: "Check belt tension"},
+	}
+}
+
+func storageGenFixtureLevels() []storageGenLevelRow {
+	return []storageGenLevelRow{
+		{level: "A", positions: 12},
+		{level: "B", positions: 12, palletJack: true},
+		{level: "C", positions: 8},
+	}
+}
+
 // receivePaneFixture is the receiving screen PAST its loading frame.
 //
 // It has to be, and that is the rule this file already states rather than a
@@ -257,6 +341,71 @@ func receivePaneFixture(tweak func(*ReceiveFormScreen)) Screen {
 		tweak(s)
 	}
 	return s
+}
+
+// receiveSerialPastEndFixture is the receiving screen on its ALL UNITS ANSWERED
+// frame: the serial phase with serialCursor standing past the end of the queue.
+//
+// It is reached the way an operator reaches it, through the real worksheet and
+// the real keys, because the state is a consequence of the flow rather than a
+// field somebody sets: enter a quantity for a serialized line, capture every
+// serial the line owes, land on the review, Esc back to the quantities to
+// double-check a count, and press Enter again. enrol carries the captures across
+// by identity, so firstUncaptured walks off the end and toSerial opens the phase
+// on the frame that has no box.
+//
+// That frame is the reason this fixture exists. It is the only one in the
+// program whose bar spells its step-back key as the bare token "PgUp", and its
+// PgUp arm was the last movement handler in the package still acting on a pane
+// the layer refuses — reachable, named, and swept by nothing.
+func receiveSerialPastEndFixture() Screen {
+	line := receiveWSSerialized(11, "Sensor module", 2, 0)
+	s := NewReceiveFormScreen(Deps{}, receivePO(line))
+	s.Update(receiveSheetMsg{sheet: receiveWorksheet(line)})
+
+	// Bounded, for the reason receiveWalkTo is: a declined key would turn an
+	// unbounded walk into a hung package rather than a failing fixture, and
+	// receiveSerialPastEndState is what reports a walk that did not arrive.
+	for n := 0; s.focused != receiveRowFirstLine && n <= 8; n++ {
+		s.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	s.Update(woRuneKey("2"))
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter}) // the quantity form -> serial capture
+	for i := 0; i < 2; i++ {
+		s.Update(woRuneKey(fmt.Sprintf("SN-%d", i+1)))
+		s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc})   // the review -> back to the quantities
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter}) // and in again, past the end this time
+	return s
+}
+
+// TestReceive_TheSerialPastTheEndFixtureIsOnThatFrame is the non-vacuity guard
+// on the fixture above.
+//
+// A fixture built by DRIVING can stop arriving without anyone noticing — a
+// changed row order, a refusal, one key renamed — and it would then be swept in
+// whatever state it did reach, which is the vacuous-fixture rule (AGENTS.md)
+// with the fixture rather than the assertion at fault. So the state it claims is
+// asserted: the serial phase, a queue with units in it, and a cursor past the
+// end of that queue.
+func TestReceive_TheSerialPastTheEndFixtureIsOnThatFrame(t *testing.T) {
+	s, ok := receiveSerialPastEndFixture().(*ReceiveFormScreen)
+	if !ok {
+		t.Fatalf("the fixture built a %T, want *ReceiveFormScreen", s)
+	}
+	if s.phase != phaseSerial {
+		t.Fatalf("the fixture is on phase %v, want the serial phase", s.phase)
+	}
+	if len(s.serialUnits) == 0 {
+		t.Fatal("the fixture reached the serial phase with an empty queue, so its bar " +
+			"names no PgUp and the frame under test is not the one it claims")
+	}
+	if s.serialCursor < len(s.serialUnits) {
+		t.Fatalf("the fixture is on unit %d of %d, want the cursor PAST the end — the "+
+			"all-units-answered frame is the one this fixture exists for",
+			s.serialCursor+1, len(s.serialUnits))
+	}
 }
 
 // jdeScreenStates are EXTRA states of screens jdeScreenFixtures already builds,
@@ -305,6 +454,116 @@ func jdeScreenStates() map[string]func() Screen {
 				Filename: "PO-2026-0042-order.csv", LineCount: len(rows),
 				MissingSku: []string{"Widget clamp", "Gear housing", "Bearing race"},
 			}
+			return s
+		},
+
+		// The receiving form's all-units-answered serial frame. Its bar is the
+		// only one in the program spelling a movement key as the bare token
+		// "PgUp", and the base ReceiveFormScreen fixture opens on the quantity
+		// form, which never reaches it.
+		"ReceiveFormScreen/serial past the end": receiveSerialPastEndFixture,
+
+		// The add-line flow's two CURSORED / SCROLLED phases. Its fixture opens
+		// on the identifier row, which is one text box with nothing to move
+		// through, so without these the screen is swept in the one state where
+		// every sweep about movement is vacuous — and the confirm frame is one
+		// of only two read-only SCROLLED bodies in the program (the order pad is
+		// the other), which is the shape the refused-pane defect was reported
+		// on.
+		"PurchaseOrderAddLineScreen/choose": func() Screen {
+			s := NewPurchaseOrderAddLineScreen(Deps{}, poViewPO())
+			s.idIn.SetValue("widget")
+			s.lookup = poAddLookupFixture()
+			s.phase = poAddPhaseChoose
+			return s
+		},
+		"PurchaseOrderAddLineScreen/confirm": func() Screen {
+			s := NewPurchaseOrderAddLineScreen(Deps{}, poViewPO())
+			s.idIn.SetValue("AF-99-12-ZP-LH-HEAVY")
+			s.lookup = poAddLookupFixture()
+			c := s.lookup.Candidates[0]
+			s.chosen = &c
+			s.chosenFrom = poAddPhaseChoose
+			s.phase = poAddPhaseConfirm
+			return s
+		},
+
+		// The purchasing sub-forms and sub-lists. Each has a cursor or a focus
+		// of its own, and until they were swept the movement rule was checked
+		// only on the states somebody happened to list.
+		"PurchaseOrderEditScreen/line editor": func() Screen {
+			s := NewPurchaseOrderEditScreen(Deps{}, poViewPO())
+			s.openLineEditor(0)
+			return s
+		},
+		"PurchaseOrderDetailScreen/mark shipped": func() Screen {
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			s.openShipForm()
+			return s
+		},
+		"PurchaseOrderDetailScreen/mark delivered": func() Screen {
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			s.openDeliverForm()
+			return s
+		},
+		"PurchaseOrderEditScreen/association picker": func() Screen {
+			s := NewPurchaseOrderEditScreen(Deps{}, poViewPO())
+			s.assoc.workOrders = []omsapi.WorkOrder{
+				{ID: "wo-1", DisplayTitle: "Lathe teardown and spindle rebuild"},
+				{ID: "wo-2", DisplayTitle: "Mill way-cover replacement"},
+				{ID: "wo-3", DisplayTitle: "Compressor annual service"},
+			}
+			s.openAssocPick(poAssocFieldWorkOrder, -1)
+			return s
+		},
+		"PurchaseOrderAttachmentsScreen/upload": func() Screen {
+			s := NewPurchaseOrderAttachmentsScreen(Deps{}, poViewPO())
+			s.openUpload()
+			return s
+		},
+		"StorageSlotGenerateScreen/run report": func() Screen {
+			s := NewStorageSlotGenerateScreen(Deps{}, 0)
+			s.phase = genPhaseResult
+			res := &omsapi.GenerateRackResult{Rack: 4}
+			for i := 0; i < 9; i++ {
+				res.Created = append(res.Created, fmt.Sprintf("R4-A%02d", i+1))
+			}
+			res.Skipped = []string{"R4-B01", "R4-B02"}
+			res.WithoutTag = []string{"R4-C01"}
+			res.CreatedCount, res.SkippedCount = len(res.Created), len(res.Skipped)
+			s.result = res
+			return s
+		},
+		"MaintenanceItemFormScreen/task list": func() Screen {
+			s := NewMaintenanceItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.tasks = maintenanceTaskFixtureRows()
+			s.openSublist(mfTasks)
+			return s
+		},
+		"MaintenanceItemFormScreen/task editor": func() Screen {
+			s := NewMaintenanceItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.tasks = maintenanceTaskFixtureRows()
+			s.openSublist(mfTasks)
+			s.openTaskEditor(0)
+			return s
+		},
+		"StorageSlotGenerateScreen/level list": func() Screen {
+			s := NewStorageSlotGenerateScreen(Deps{}, 0)
+			s.levels = storageGenFixtureLevels()
+			s.openLevels()
+			return s
+		},
+		"StorageSlotGenerateScreen/level row": func() Screen {
+			s := NewStorageSlotGenerateScreen(Deps{}, 0)
+			s.levels = storageGenFixtureLevels()
+			s.openLevels()
+			s.openLevelRow(0)
 			return s
 		},
 
@@ -433,6 +692,85 @@ func jdeScreenStates() map[string]func() Screen {
 			s.openPicker(fCategory)
 			return s
 		},
+		// The nested sub-lists and their per-row editors. Each has its own
+		// cursor or focus, and until they were swept the movement rule was
+		// being applied to the states somebody happened to think of — which is
+		// the failure this project keeps paying for one level down.
+		"InventoryItemFormScreen/chain list": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.packRows = itemChainFixtureRows()
+			s.openChain()
+			return s
+		},
+		"InventoryItemFormScreen/chain row": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.packRows = itemChainFixtureRows()
+			s.openChain()
+			s.openChainRow(0)
+			return s
+		},
+		"InventoryItemFormScreen/kit list": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.kitRows = itemKitFixtureRows()
+			s.openKitList()
+			return s
+		},
+		"InventoryItemFormScreen/kit row": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.kitRows = itemKitFixtureRows()
+			s.openKitList()
+			s.openKitRow(0)
+			return s
+		},
+		// The same four lists at their MINIMUM — the state a screen opens in
+		// before anything has been added to it, and the one the fixtures above
+		// put out of reach.
+		//
+		// They are the other axis of this file. Deriving the SCREENS makes a
+		// screen impossible to forget and says nothing about the states inside
+		// one, and the states above were all given several rows to stop the
+		// movement sweeps being vacuous — which is right, and which also meant
+		// no list here had ONE navigable row. That is the state where "the body
+		// overflows" and "a page has somewhere to land" come apart: an empty kit
+		// list is heading + guidance + the add row against a short pane, so the
+		// body scrolls while the only row a cursor can stand on is the add row.
+		// The bar named PgUp/PgDn there and a page moved nothing, on the DEFAULT
+		// state of a new inventory item.
+		"InventoryItemFormScreen/kit list empty": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.openKitList()
+			return s
+		},
+		"InventoryItemFormScreen/chain list empty": func() Screen {
+			s := NewInventoryItemFormScreen(Deps{}, "")
+			s.loading = false
+			s.openChain()
+			return s
+		},
+		"StorageSlotGenerateScreen/level list empty": func() Screen {
+			s := NewStorageSlotGenerateScreen(Deps{}, 0)
+			s.openLevels()
+			return s
+		},
+		"PurchaseOrderAttachmentsScreen/one file": func() Screen {
+			// REPLACED rather than appended: poViewPO already carries one, and
+			// appending to it would build the two-row list the six-file fixture
+			// above already covers — which is exactly how the one-row case went
+			// missing in the first place.
+			po := poViewPO()
+			po.Attachments = []omsapi.PurchaseOrderAttachment{{
+				ID: 1, FileName: "quote-2026-01.pdf",
+				Description:    "Vendor quotation for the whole order, itemised by line",
+				UploadedByName: "shop.lead",
+			}}
+			return NewPurchaseOrderAttachmentsScreen(Deps{}, po)
+		},
+
 		"InventoryItemFormScreen/kitPickView": func() Screen {
 			s := NewInventoryItemFormScreen(Deps{}, "")
 			s.loading = false
@@ -464,7 +802,10 @@ func jdeScreenStates() map[string]func() Screen {
 		"PowerBreakerFormScreen/pickView": func() Screen {
 			s := NewPowerBreakerFormScreen(Deps{}, 0, 0)
 			s.loading = false
-			s.panels = []omsapi.PowerPanel{{ID: 1, Name: "P1", LocationName: "Shop", PhaseConfiguration: "split"}}
+			s.panels = []omsapi.PowerPanel{
+				{ID: 1, Name: "P1", LocationName: "Shop", PhaseConfiguration: "split"},
+				{ID: 2, Name: "P2", LocationName: "Mezzanine", PhaseConfiguration: "three"},
+			}
 			s.openPicker()
 			return s
 		},
@@ -670,18 +1011,15 @@ func TestJDEForm_NoColumnarScreenOverflowsThePane(t *testing.T) {
 // screen's own output for the reason po_view_jde_test.go's whole header
 // explains: the screen's string is identical either side of this defect.
 //
-// It is about the VERTICAL clip only, and says so by comparing each bar line
-// against the same horizontal truncation the pane applies. That is not a
-// loophole, it is the honest boundary of this change: renderActionBar — the
-// ONE-line bar the non-wrapping frames draw — tightens its gutter and then
-// lets the line run past the pane, and eleven form screens name enough keys at
-// 80 columns to reach that (MaintenanceItemFormScreen's bar is 63 cells against
-// a pane of 51). That is a WIDTH defect, it predates this change and this
-// change reduces rather than causes it — 56 (screen, height) pairs before, 44
-// after, the same eleven screens — and its fix is to give those frames the
-// WRAPPING bar, which means giving bodyAvail and bodyScrolls the items they
-// currently do not take, on some thirty sheets. It is recorded and routed, not
-// smuggled in here.
+// It checks BOTH axes now, and the width half is the newer of the two. The
+// non-wrapping frames used to draw renderActionBar, which puts every key on one
+// line, tightens the gutter and then lets the line run past the pane: eleven
+// form screens name enough keys at 80 columns to reach that
+// (MaintenanceItemFormScreen's bar is 63 cells against a pane of 51), so
+// clampToBox cut the tail and the keys on it went unnamed while they went on
+// working. frame and frameWithHeader are frameWrapped now, so a bar that does
+// not fit gets another ROW instead of losing its tail — which is why the width
+// assertion below can be made at all.
 func TestJDEForm_TheActionBarSurvivesEveryHeight(t *testing.T) {
 	for _, c := range jdePaneCases() {
 		name, mk := c.name, c.mk
@@ -695,8 +1033,15 @@ func TestJDEForm_TheActionBarSurvivesEveryHeight(t *testing.T) {
 				}
 				shown := r.View()
 				for _, line := range bar {
-					line = truncateVisible(strings.TrimRight(line, " "), screenBodyWidth(w))
+					line = strings.TrimRight(line, " ")
 					if line == "" {
+						continue
+					}
+					if got := lipgloss.Width(line); got > screenBodyWidth(w) {
+						t.Errorf("%s at %dx%d: the bar row %q is %d cells wide in a pane of "+
+							"%d, so clampToBox cuts its tail and the keys on it go unnamed "+
+							"while they go on working:\n%s", name, w, h, line, got,
+							screenBodyWidth(w), shown)
 						continue
 					}
 					if !strings.Contains(shown, line) {
@@ -808,8 +1153,9 @@ func TestJDEForm_AFrameThatIsDrawnShowsSomething(t *testing.T) {
 // bounded, in both axes, by the layer.
 //
 // A notice cut by clampToBox would be the defect it exists to report, and the
-// first line is the one carrying the fact — so a notice that overflows loses
-// the sentence saying the keys still work and keeps the one saying nothing.
+// first line is the one carrying the fact — the height to resize to — so a
+// notice that overflows loses the sentence about what the keys do and keeps the
+// one that can be acted on.
 func TestJDEForm_TheNoticeFitsThePaneItReplaces(t *testing.T) {
 	for _, w := range jdePaneWidths {
 		for _, h := range jdePaneHeights() {
@@ -839,6 +1185,59 @@ func TestJDEForm_TheNoticeFitsThePaneItReplaces(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestJDEForm_ANoticeThatWillNotFitSaysItWasCut: where the layer drops rows off
+// its own refusal notice, the last line it keeps carries the ellipsis that says
+// so.
+//
+// The notice is bounded in BOTH axes and the HEIGHT fact leads, so a pane of
+// three rows keeps the height and two lines of the sentence under it. Cut
+// clean, that sentence reads as a finished one — "Moving keys are held until it
+// fits, so you come" is advice an operator would act on without knowing a
+// clause is missing. Every other bound on these screens marks its cut; this is
+// the one the operator is being asked to act on.
+//
+// WATCHED TO FAIL against the unmarked trim.
+func TestJDEForm_ANoticeThatWillNotFitSaysItWasCut(t *testing.T) {
+	cut := 0
+	for _, w := range jdePaneWidths {
+		for _, h := range jdePaneHeights() {
+			for _, barRows := range []int{2, 3, 4, 5, 6} {
+				for _, headerRows := range []int{0, 1, 3} {
+					g := jdeScreen{terminalWidth: w, terminalHeight: h}
+					if !g.tooShort(barRows, headerRows) {
+						continue
+					}
+					// The notice the layer would draw with all the room it
+					// wants, against the one it really has.
+					full := jdeTooShort(screenBodyWidth(w), 99, h, jdeTooShortRows(barRows, headerRows))
+					drawn := g.tooShortNotice(barRows, headerRows)
+					if len(strings.Split(full, "\n")) <= len(strings.Split(drawn, "\n")) {
+						continue // nothing was dropped
+					}
+					cut++
+					lines := strings.Split(drawn, "\n")
+					if last := lines[len(lines)-1]; !strings.HasSuffix(last, "…") {
+						t.Errorf("at %dx%d (bar %d, header %d) the notice loses %d line(s) and "+
+							"its last row %q ends as a finished sentence:\n%s",
+							w, h, barRows, headerRows,
+							len(strings.Split(full, "\n"))-len(lines), last, drawn)
+					}
+					for _, line := range lines {
+						if got := lipgloss.Width(line); got > screenBodyWidth(w) {
+							t.Errorf("at %dx%d the marked notice line %q is %d cells in a pane of %d",
+								w, h, line, got, screenBodyWidth(w))
+						}
+					}
+				}
+			}
+		}
+	}
+	if cut == 0 {
+		t.Error("no notice was ever taller than the pane it replaces, so this sweep " +
+			"asserted nothing about the mark it is named for")
 	}
 }
 
@@ -1305,5 +1704,251 @@ func TestJDEForm_EveryEssentialHeaderRowIsOnThePane(t *testing.T) {
 			"sweep asserted nothing. Either every builder has stopped marking rows " +
 			"essential or every frame is being refused; both need this test rewritten " +
 			"rather than deleted")
+	}
+}
+
+// jdePagingTokens are the bar tokens that spell PAGING and nothing else,
+// derived from the package's own transcription tables rather than listed.
+//
+// Derived because the bars do not agree on how to spell the pair: most write
+// "PgUp/PgDn", and the receiving form's all-units-answered frame writes "PgUp"
+// alone, because it has a unit to step BACK to and none to step forward to. A
+// sweep that looked for the literal "PgUp/PgDn" would read that frame as naming
+// no pager while its PgUp moves the cursor, and report a screen that is honest
+// as a violation — which is how a sweep gets weakened to accommodate a site.
+//
+// "spells paging and nothing else" is the test: a token mapping to a keystroke
+// outside the pair is some other key that happens to share a name.
+func jdePagingTokens() map[string]bool {
+	out := map[string]bool{}
+	for token := range jdeMoveTokens {
+		keys, ok := jdeResolveBarToken(token)
+		if !ok || len(keys) == 0 {
+			continue
+		}
+		paging := true
+		for _, k := range keys {
+			if k != "pgup" && k != "pgdown" {
+				paging = false
+			}
+		}
+		if paging {
+			out[token] = true
+		}
+	}
+	return out
+}
+
+// jdeBarOffersPaging reports whether a DRAWN bar claims a paging key.
+func jdeBarOffersPaging(bar []string) bool {
+	paging := jdePagingTokens()
+	for _, token := range jdeBarTokens(bar) {
+		if paging[token] {
+			return true
+		}
+	}
+	return false
+}
+
+// TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves: on every columnar
+// screen, at every pane the layer draws a frame into, the bar names a paging key
+// IF AND ONLY IF pressing one moves the operator's place.
+//
+// This is the bar-honesty rule (AGENTS.md) over the one key pair the layer can
+// answer for, and it is stated as the BICONDITIONAL because the claim fails in
+// two directions and a check written for one catches neither of the other:
+//
+//   - NAMED AND DEAD. The packaging-chain list advertised PgUp/PgDn the moment
+//     its rungs outgrew the window and updateChainPhase bound neither key.
+//   - BOUND AND UNNAMED. Every other columnar sheet bound the pair
+//     unconditionally in its key switch while pageRow gated only on whether the
+//     frame was DRAWN — so on any pane tall enough to hold the whole body the
+//     bar rightly said nothing about paging and PgDn still walked the cursor.
+//     Measured before the gate moved into pageRow: 3254 of 7102 drawn
+//     (screen, width, height) triples, across 47 of the cases here — and not
+//     one violation in the other direction, so every bar that named the pair
+//     was telling the truth and every one that stayed silent was not.
+//
+// DERIVED, because thirty-two hand-edits do not keep a class closed and the next
+// sheet added reopens it: the cases come from jdePaneCases (every type embedding
+// jdeScreen, plus its extra states), the heights from jdePaneHeights, and what
+// counts as a paging token from the bar tables. No screen is named.
+//
+// The heights the layer REFUSES are outside it, for the reason the other sweeps
+// in this file give: no bar is drawn there to make a claim with, and the frame's
+// answer to every key is the notice.
+func TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves(t *testing.T) {
+	drawn, named, moves := 0, 0, 0
+	for _, c := range jdePaneCases() {
+		name, mk := c.name, c.mk
+		for _, w := range jdePaneWidths {
+			for _, h := range jdePaneHeights() {
+				s := mk()
+				jdeRootAt(t, s, w, h)
+				bar := jdeBarOf(s.View())
+				if bar == nil {
+					continue // refused: the notice replaces the bar
+				}
+				drawn++
+				offers := jdeBarOffersPaging(bar)
+				if offers {
+					named++
+				}
+
+				// Both keys, in sequence and with no reset: the claim is that
+				// SOME page moves, and pgdown is the one with room from a
+				// cursor resting at the top.
+				before := jdePlaceOf(s)
+				if next, _ := s.Update(poPickerKeyMsg("pgdown")); next != nil {
+					s = next
+				}
+				moved := !reflect.DeepEqual(before, jdePlaceOf(s))
+				before = jdePlaceOf(s)
+				if next, _ := s.Update(poPickerKeyMsg("pgup")); next != nil {
+					s = next
+				}
+				moved = moved || !reflect.DeepEqual(before, jdePlaceOf(s))
+				if moved {
+					moves++
+				}
+
+				if offers != moved {
+					t.Errorf("%s at %dx%d: the bar names a paging key = %v but a page "+
+						"moved the operator's place = %v\n%s",
+						name, w, h, offers, moved, strings.Join(bar, "\n"))
+				}
+			}
+		}
+	}
+	if drawn == 0 {
+		t.Fatal("no columnar screen drew a frame at any supported size, so this sweep " +
+			"asserted nothing")
+	}
+	// Both halves have to be REACHED or the biconditional is one implication
+	// with the other side never exercised — the vacuous-fixture rule at the
+	// level of the sweep rather than of a fixture.
+	if named == 0 {
+		t.Fatalf("no bar named a paging key at any of the %d drawn panes, so the "+
+			"named-and-acts half was never exercised", drawn)
+	}
+	if named == drawn {
+		t.Fatalf("every one of the %d drawn panes named a paging key, so the "+
+			"unnamed-and-inert half was never exercised", drawn)
+	}
+	if moves == 0 {
+		t.Fatalf("no page moved anything at any of the %d drawn panes — poPickerKeyMsg "+
+			"or Update stopped being reached, and this sweep would pass over a "+
+			"screen that pages when it says it does not", drawn)
+	}
+}
+
+// TestJDEForm_AnUnsizedTerminalPagesAsItAlwaysHas: a screen driven without a
+// WindowSizeMsg answers PgUp/PgDn exactly as it did before paging grew a scroll
+// gate.
+//
+// AN UNSIZED TERMINAL IS NOT A SHORT PANE, and the distinction is the whole of
+// this check. bodyScrollsForBar answers FALSE when there is no pane — not
+// because the body fits, but because there is no window for it to overflow — so
+// a gate that took that answer at face value would make every pager in the
+// program decline on an unsized screen. That would also falsify frameDrawn's
+// documented property, which is that an unsized terminal answers TRUE and keeps
+// such a screen behaving exactly as it always has: the layer's standing answer
+// for no pane is "draw the whole thing and let clampToBox decide".
+//
+// Stated as an IMPLICATION over the derived cases rather than against one
+// fixture: whatever pages on a real pane must still page with no pane at all.
+// Removing pageRow's paneRows() short-circuit fails it on every case that pages.
+//
+// jdeUnsizedDeclineCases are the cases this implication does NOT hold for, with
+// the reason, so "absent" and "excused" stay different states — and a stale
+// entry fails as loudly as a missing one.
+//
+// All THREE directions fail rather than one, because a roster in a test is only
+// worth keeping if being wrong about it is loud: a case that declines when
+// unsized and is not listed fails; a listed case that pages when unsized fails;
+// and a listed case that does not page at any height fails too, since it is
+// excusing behaviour that no longer exists. Without that third one an entry
+// could outlive the screen it was written about and go on passing in silence,
+// which is the shape of hand-kept roster this project keeps being bitten by.
+//
+// They are one class rather than a list of accidents: the sheets that spell the
+// scroll conjunction THEMSELVES instead of getting it from pageRow. Two of them
+// scroll an OFFSET, which deliberately has no combined primitive because its two
+// questions are asked of different bars; the rest feed the answer back into the
+// bar's own contents and so must measure the ceiling where they build it. All of
+// them asked bodyScrollsForBar directly before this work and still do, so their
+// unsized answer is exactly what it has always been — which is the property this
+// check is about. Nothing here is a pageRow site.
+var jdeUnsizedDeclineCases = map[string]string{
+	"PurchaseOrderDetailScreen":           "po_detail's sheetMoves — an OFFSET, not a cursor",
+	"PurchaseOrderDetailScreen/order pad": "po_detail's padMoves — an OFFSET, not a cursor",
+	"ReceiveFormScreen":                   "receive_form's qtyPagesFor",
+	"PurchaseOrderAddLineScreen/choose":   "po_add_line's choosePages",
+	"PurchaseOrderAddLineScreen/confirm":  "po_add_line's confirmScrolls — an OFFSET",
+	"PurchaseOrderAttachmentsScreen": "po_attachments guards on listNames(\"PgUp/PgDn\"), " +
+		"which reads the bar's own claim",
+	"PurchaseOrderCreateScreen":                "po_create's bodyPagesFor",
+	"PurchaseOrderCreateScreen/source chooser": "po_create's bodyPagesFor",
+	"PurchaseOrderCreateScreen/review":         "po_create's bodyPagesFor",
+	"PurchaseOrderCreateScreen/item picker":    "po_create's bodyPagesFor",
+	"PurchaseOrderCreateScreen/asset picker":   "po_create's bodyPagesFor",
+	"PurchaseOrderCreateScreen/reorder picker": "po_create's bodyPagesFor",
+}
+
+func TestJDEForm_AnUnsizedTerminalPagesAsItAlwaysHas(t *testing.T) {
+	pagesUnsized := 0
+	for _, c := range jdePaneCases() {
+		name, mk := c.name, c.mk
+
+		// The antecedent is the UNION over every height the frame is drawn at,
+		// not one height: most bodies fit a tall pane, so a single tall
+		// reading would leave the implication vacuous over nearly every case.
+		sizedPages, at := false, 0
+		for _, h := range jdePaneHeights() {
+			sized := mk()
+			jdeRootAt(t, sized, 80, h)
+			beforeSized := jdePlaceOf(sized)
+			if next, _ := sized.Update(poPickerKeyMsg("pgdown")); next != nil {
+				sized = next
+			}
+			if !reflect.DeepEqual(beforeSized, jdePlaceOf(sized)) {
+				sizedPages, at = true, h
+				break
+			}
+		}
+
+		// No WindowSizeMsg at all — the state every screen is in before the
+		// terminal has told the program how big it is.
+		unsized := mk()
+		before := jdePlaceOf(unsized)
+		if next, _ := unsized.Update(poPickerKeyMsg("pgdown")); next != nil {
+			unsized = next
+		}
+		unsizedPages := !reflect.DeepEqual(before, jdePlaceOf(unsized))
+		if unsizedPages {
+			pagesUnsized++
+		}
+
+		reason, excused := jdeUnsizedDeclineCases[name]
+		switch {
+		case excused && !sizedPages:
+			t.Errorf("%s is recorded in jdeUnsizedDeclineCases (%q) but it does not page "+
+				"at ANY height it draws at, so there is nothing here to excuse. An "+
+				"entry describing no behaviour is a stale exception that passes in "+
+				"silence", name, reason)
+		case sizedPages && !unsizedPages && !excused:
+			t.Errorf("%s: PgDn pages on an 80x%d pane and does nothing on an UNSIZED "+
+				"terminal. There is no pane there to be too short, so the geometric "+
+				"questions cannot be answered from geometry and the layer's standing "+
+				"answer is to act", name, at)
+		case excused && unsizedPages:
+			t.Errorf("%s is recorded in jdeUnsizedDeclineCases (%q) but it DOES page on "+
+				"an unsized terminal. A stale exception is a case excused from the "+
+				"check it passes", name, reason)
+		}
+	}
+	if pagesUnsized == 0 {
+		t.Fatal("no columnar screen pages at all on an unsized terminal, so this check " +
+			"asserted nothing about the state it is named for")
 	}
 }

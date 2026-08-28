@@ -125,8 +125,10 @@ func scrollerViewHeight(terminalHeight, footerRows int) int {
 }
 
 // actionBarRows is the height of the persistent action bar the columnar
-// (JD Edwards) screens pin to the bottom of the content pane: a rule plus the
-// key line — see renderActionBar. A screen that draws one has this many fewer
+// (JD Edwards) screens pin to the bottom of the content pane: a rule plus ONE
+// key line, which is the floor rather than the answer — a bar with more keys
+// than a line holds wraps onto further lines, and actionBarRowsFor
+// (jde_form.go) is what a screen budgets against. A screen that draws one has this many fewer
 // rows for its own body, and has to PAD its body out to that budget, or the
 // bar walks up and down the pane as the content changes length.
 const actionBarRows = 2

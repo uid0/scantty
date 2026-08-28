@@ -1092,19 +1092,23 @@ func (s *InventoryItemFormScreen) openFocusedRow() tea.Cmd {
 }
 
 func (s *InventoryItemFormScreen) moveCursor(delta int) {
-	n := s.rowCount()
-	if n == 0 {
+	body := s.formLines()
+	next, ok := s.moveRow(s.cursor, s.rowCount(), delta, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = (s.cursor + delta + n) % n
+	s.cursor = next
 	s.syncFocus()
 }
 
 func (s *InventoryItemFormScreen) pageCursor(dir int) {
-	if s.rowCount() == 0 {
+	body := s.formLines()
+	next, ok := s.pageRow(body, s.cursor, s.rowCount(), dir, 0,
+		s.formBar(body), s.formBarItems(true))
+	if !ok {
 		return
 	}
-	s.cursor = jdePageCursor(s.cursor, s.rowCount(), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -1343,7 +1347,10 @@ func (s *InventoryItemFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd
 		s.movePick(delta)
 	case jdePickPage:
 		header, body := s.pickView()
-		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickOptions), delta, len(header),
+			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickCursor = next
+		}
 	default:
 		// Anything else is filter text: the box is always live, so there is no
 		// mode to enter and no "/" to remember.
@@ -1359,15 +1366,10 @@ func (s *InventoryItemFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd
 // set of choices, not a ring, so running off the bottom must not reappear at the
 // "(none)" row that clears the field.
 func (s *InventoryItemFormScreen) movePick(delta int) {
-	next := s.pickCursor + delta
-	if next < 0 {
-		next = 0
-	}
-	if next > len(s.pickOptions)-1 {
-		next = len(s.pickOptions) - 1
-	}
-	if next < 0 {
-		next = 0
+	header, body := s.pickView()
+	next, ok := s.pickRow(s.pickCursor, len(s.pickOptions), delta, len(header), s.pickBar(header, body))
+	if !ok {
+		return
 	}
 	s.pickCursor = next
 }
@@ -1962,7 +1964,20 @@ func (s *InventoryItemFormScreen) formLines() *jdeLines {
 	return l
 }
 
+// formBar names the keys that work on the form, with PgUp/PgDn on it exactly
+// when the body moves under the bar that is about to be drawn.
+//
+// The paging claim is measured against formBarItems(true) — the bar WITH the
+// pair on it — because naming them costs cells, cells fold the bar onto another
+// row, and a folded bar leaves the body one row fewer. The tallest bar is the
+// fixed point, so the answer cannot oscillate between frames.
 func (s *InventoryItemFormScreen) formBar(body *jdeLines) []actionBarItem {
+	return s.formBarItems(s.bodyPagesForBar(body, s.rowCount(), 0, s.formBarItems(true)))
+}
+
+// formBarItems is formBar for a given paging state, so the bar that is
+// MEASURED is the bar that is drawn.
+func (s *InventoryItemFormScreen) formBarItems(paging bool) []actionBarItem {
 	if s.supplierWarn {
 		// The confirm owns the bar while it is up, because it owns the keyboard:
 		// naming Enter=Save beside a question about discarding the sheet would
@@ -1995,7 +2010,7 @@ func (s *InventoryItemFormScreen) formBar(body *jdeLines) []actionBarItem {
 			items = append(items, actionBarItem{"Ctrl-E", "Edit components"})
 		}
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -2113,12 +2128,15 @@ func (s *InventoryItemFormScreen) pickView() (jdeHeader, *jdeLines) {
 	}.render(s.bodyWidth())
 }
 
+// pickBar is the picker's bar, with PgUp/PgDn on it exactly when the option
+// list moves under the bar about to be drawn — measured against the bar WITH
+// the pair on it, because the tallest bar is the fixed point.
+func (s *InventoryItemFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
+	return jdePickBar("Select", s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBar("Select", true)))
+}
+
 func (s *InventoryItemFormScreen) viewPick() string {
 	header, body := s.pickView()
-	paging := false
-	if s.bodyScrolls(body, len(header)) {
-		paging = true
-	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		s.statusRow(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), s.pickBar(header, body))
 }

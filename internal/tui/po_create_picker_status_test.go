@@ -1237,7 +1237,7 @@ func TestPOPickerFrames_NeverLoseTheKeyTheyName(t *testing.T) {
 			s.itemSuppliersAll = poCatalog(400)
 			s.itemSuppliersFor = s.supplierID
 			s.applyItemSupplierFilter()
-			s.itemSuppliersCur = len(s.itemSuppliers) - 1
+			s.itemSuppliersCursor = len(s.itemSuppliers) - 1
 			s.itemSuppliersNote = itemFilterNote("", 400, 400, "search closed", false)
 		}, poPhaseItemPick,
 			[]string{"more above", "Widget 400"}},
@@ -1851,7 +1851,7 @@ func TestPOPickers_FitEveryPaneSizeAndNeverHideTheCursor(t *testing.T) {
 				for i := 0; i < len(screen.itemSuppliers)-1; i++ {
 					r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 					poAssertFits(t, "item picker, scrolling", screen)
-					want := screen.itemSuppliers[screen.itemSuppliersCur].ItemName
+					want := screen.itemSuppliers[screen.itemSuppliersCursor].ItemName
 					if !poPaneHasLine(t, screen, want) {
 						t.Fatalf("the highlighted row %q is not on the 80x%d pane:\n%s",
 							want, height, strings.Join(poPaneLines(t, screen), "\n"))
@@ -1861,7 +1861,7 @@ func TestPOPickers_FitEveryPaneSizeAndNeverHideTheCursor(t *testing.T) {
 				poWantPaneLine(t, screen, "more above")
 
 				// Enter stages the row the operator is looking at.
-				staged := screen.itemSuppliers[screen.itemSuppliersCur].ItemName
+				staged := screen.itemSuppliers[screen.itemSuppliersCursor].ItemName
 				r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
 				if got := screen.lineInputs[poLineFieldDesc].Value(); got != staged {
 					t.Errorf("staged %q, want the highlighted %q", got, staged)
@@ -2031,7 +2031,7 @@ func TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList(t *testing.T) {
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
-		wantCur := screen.itemSuppliersCur
+		wantCur := screen.itemSuppliersCursor
 
 		next, reload := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 		r = next.(Root)
@@ -2052,9 +2052,9 @@ func TestPOPickers_RowKeysDeclineWhenTheFrameDrawsNoList(t *testing.T) {
 			if screen.phase != poPhaseItemPick {
 				t.Fatalf("%v staged a row the frame is not drawing (phase %v)", k, screen.phase)
 			}
-			if screen.itemSuppliersCur != wantCur {
+			if screen.itemSuppliersCursor != wantCur {
 				t.Fatalf("%v moved a cursor the operator cannot see (%d -> %d)",
-					k, wantCur, screen.itemSuppliersCur)
+					k, wantCur, screen.itemSuppliersCursor)
 			}
 			if out := r.View(); !strings.Contains(out, "still looking up") {
 				t.Errorf("%v mid-reload said nothing about the walk:\n%s", k, out)
@@ -2284,7 +2284,7 @@ var poPickerVocabulary = []string{
 func poPickerState(s *PurchaseOrderCreateScreen) string {
 	var b strings.Builder
 	fmt.Fprint(&b, s.phase, "|", s.pending, s.paneForState(),
-		"|", s.itemSuppliersCur, s.itemSuppliersTyping, s.itemSuppliersLoad,
+		"|", s.itemSuppliersCursor, s.itemSuppliersTyping, s.itemSuppliersLoad,
 		s.itemSuppliersErr, s.itemSuppliersSearch.Value(),
 		len(s.itemSuppliers), len(s.itemSuppliersAll), s.itemSuppliersFor,
 		"|", s.assetsCursor, s.assetsTyping, s.assetsLoading, s.assetsErr,
@@ -2433,7 +2433,7 @@ var poStateFingerprinted = map[string]bool{
 	"reorderItems": true, "reorderLoading": true, "reorderLoadErr": true,
 	"reorderCursor": true, "reorderSelected": true,
 	"itemSuppliers": true, "itemSuppliersAll": true, "itemSuppliersFor": true,
-	"itemSuppliersLoad": true, "itemSuppliersErr": true, "itemSuppliersCur": true,
+	"itemSuppliersLoad": true, "itemSuppliersErr": true, "itemSuppliersCursor": true,
 	"itemSuppliersSearch": true, "itemSuppliersTyping": true,
 	"assets": true, "assetsLoading": true, "assetsSeq": true, "assetsErr": true,
 	"assetsCursor": true, "assetsSearch": true, "assetsTyping": true,
@@ -4086,9 +4086,7 @@ func poStageCostlessLine(t *testing.T, r Root, screen *PurchaseOrderCreateScreen
 	t.Helper()
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
 	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // pick the highlighted row
-	for screen.lineFocused != poLineFieldCost {
-		r = key(t, r, tea.KeyMsg{Type: tea.KeyTab})
-	}
+	r = poReachLineField(t, r, screen, poLineFieldCost)
 	for i := 0; i < 12; i++ {
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
 	}
@@ -4097,6 +4095,36 @@ func poStageCostlessLine(t *testing.T, r Root, screen *PurchaseOrderCreateScreen
 		t.Fatalf("setup: no staged line is priced from the catalog (%d lines)", len(screen.lines))
 	}
 	return r
+}
+
+// poReachLineField walks the line form's focus onto `field` and leaves the pane
+// exactly as it found it.
+//
+// The DETOUR through a tall pane is the point, and it is what an operator does
+// anyway: Tab is REFUSED on a pane the layer will not draw (jde_form.go's
+// movement block), so a helper that walks the focus at a refused height walks
+// it nowhere — the loop this replaced had no bound and simply span, and the
+// package then failed by TIMING OUT with whichever test happened to be running
+// named in the panic.
+//
+// The walk is bounded whatever happens: a reach loop with no bound is not a
+// check that fails, it is a test binary that hangs.
+func poReachLineField(t *testing.T, r Root, screen *PurchaseOrderCreateScreen, field int) Root {
+	t.Helper()
+	w, h := screen.terminalWidth, screen.terminalHeight
+	resize := func(w, h int) Root {
+		next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+		return next.(Root)
+	}
+	r = resize(120, 40)
+	for n := 0; screen.lineFocused != field; n++ {
+		if n > len(screen.lineFields()) {
+			t.Fatalf("the line form's focus would not reach field %d in %d presses (it is on %d)",
+				field, n, screen.lineFocused)
+		}
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyTab})
+	}
+	return resize(w, h)
 }
 
 // TestPOSourceChooser_AnOptionalKeyNeverStopsWorking.

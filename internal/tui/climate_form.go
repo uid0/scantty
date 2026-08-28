@@ -427,21 +427,25 @@ func (s *ThermostatFormScreen) isPickerField(id int) bool {
 }
 
 func (s *ThermostatFormScreen) moveCursor(delta int) {
-	n := len(s.fields)
-	if n == 0 {
+	body := s.formLines()
+	next, ok := s.moveRow(s.cursor, len(s.fields), delta, 0, s.formBar(body))
+	if !ok {
 		return
 	}
-	s.cursor = (s.cursor + delta + n) % n
+	s.cursor = next
 	s.syncFocus()
 }
 
 // pageCursor moves a whole pane's worth of rows, clamping where moveCursor
 // wraps — a page is for covering ground, not for losing your place.
 func (s *ThermostatFormScreen) pageCursor(dir int) {
-	if len(s.fields) == 0 {
+	body := s.formLines()
+	next, ok := s.pageRow(body, s.cursor, len(s.fields), dir, 0,
+		s.formBar(body), s.formBarItems(true))
+	if !ok {
 		return
 	}
-	s.cursor = jdePageCursor(s.cursor, len(s.fields), s.windowRows(s.formLines(), s.cursor, 0), dir)
+	s.cursor = next
 	s.syncFocus()
 }
 
@@ -525,7 +529,10 @@ func (s *ThermostatFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 		s.movePick(delta)
 	case jdePickPage:
 		header, body := s.pickView()
-		s.movePick(delta * s.windowRows(body, s.pickCursor, len(header)))
+		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickOptions), delta, len(header),
+			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickCursor = next
+		}
 	default:
 		// Anything else is filter text: the box is always live, so there is no
 		// mode to enter and no "/" to remember.
@@ -541,15 +548,10 @@ func (s *ThermostatFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 // set of choices, not a ring, so running off the bottom must not reappear at the
 // "(none)" row that clears the field.
 func (s *ThermostatFormScreen) movePick(delta int) {
-	next := s.pickCursor + delta
-	if next < 0 {
-		next = 0
-	}
-	if next > len(s.pickOptions)-1 {
-		next = len(s.pickOptions) - 1
-	}
-	if next < 0 {
-		next = 0
+	header, body := s.pickView()
+	next, ok := s.pickRow(s.pickCursor, len(s.pickOptions), delta, len(header), s.pickBar(header, body))
+	if !ok {
+		return
 	}
 	s.pickCursor = next
 }
@@ -686,14 +688,28 @@ func (s *ThermostatFormScreen) formLines() *jdeLines {
 	return l
 }
 
-// formBar names the keys that apply where the cursor is standing — and only
-// those, so the bar never teaches a key that does nothing here.
+// formBar names the keys that work on the form, with PgUp/PgDn on it exactly
+// when the body moves under the bar that is about to be drawn.
+//
+// The paging claim is measured against formBarItems(true) — the bar WITH the
+// pair on it — because naming them costs cells, cells fold the bar onto another
+// row, and a folded bar leaves the body one row fewer. The tallest bar is the
+// fixed point, so the answer cannot oscillate between frames.
 func (s *ThermostatFormScreen) formBar(body *jdeLines) []actionBarItem {
+	return s.formBarItems(s.bodyPagesForBar(body, len(s.fields), 0, s.formBarItems(true)))
+}
+
+// formBarItems is formBar for a given paging state, so the bar that is
+// MEASURED is the bar that is drawn.
+//
+// It names the keys that apply where the cursor is standing — and only those,
+// so the bar never teaches a key that does nothing here.
+func (s *ThermostatFormScreen) formBarItems(paging bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Save"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if id, ok := s.currentFieldID(); ok && s.isPickerField(id) {
 		items = append(items, actionBarItem{"Ctrl-E", "Pick"})
 	}
-	if s.bodyScrolls(body, 0) {
+	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
@@ -794,14 +810,17 @@ func (s *ThermostatFormScreen) pickView() (jdeHeader, *jdeLines) {
 	}.render(s.bodyWidth())
 }
 
+// pickBar is the picker's bar, with PgUp/PgDn on it exactly when the option
+// list moves under the bar about to be drawn — measured against the bar WITH
+// the pair on it, because the tallest bar is the fixed point.
+func (s *ThermostatFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
+	return jdePickBar("Select", s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBar("Select", true)))
+}
+
 func (s *ThermostatFormScreen) viewPick() string {
 	header, body := s.pickView()
-	paging := false
-	if s.bodyScrolls(body, len(header)) {
-		paging = true
-	}
 	return s.frameWithHeader(header, body, s.pickCursor,
-		s.statusRow(false, "", ""), jdePickBar("Select", paging))
+		s.statusRow(false, "", ""), s.pickBar(header, body))
 }
 
 // thermostatAssetKey renders an asset's UUID pk (Asset.ID is `any`) to the
