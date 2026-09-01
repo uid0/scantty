@@ -134,7 +134,18 @@ var listNavUnsweptReceivers = map[string]string{
 	"slotCardPrompt": "a two-row modal prompt inside the storage-slot list, not a list of " +
 		"rows: up/down move between a text field and a toggle and its cursor WRAPS, so the " +
 		"field-form exemption applies (AGENTS.md)",
-	"Root": "not a screen: app.go's root, which moves the NAV TREE cursor. The sidebar is its own surface with its own legend and is not a list of rows",
+	// The SEVEN that hold a TextScroller and spell no key of their own
+	// (listNavDelegatingReceivers). Their footers are the clearest instance of
+	// the prose-bar gap: one shared handler, and each sheet decides for itself
+	// which of its keys to name.
+	"AnalyticsPulseScreen":        "the staff analytics sheet; its footer names 'j/k scroll · pgup/pgdn page' and is silent about the arrows, g/G and home/end",
+	"NotificationsScreen":         "the notification sheet; names j/k, pgup/pgdn and g/G, silent about the arrows and home/end",
+	"SIGDetailScreen":             "the read-only SIG sheet; names 'j/k scroll · pgup/pgdn page'",
+	"ProjectStorageDetailScreen":  "the project storage sheet; names 'j/k scroll' alone while pgup/pgdn, the arrows, g/G and home/end all work",
+	"StorageSlotDetailScreen":     "the storage slot sheet; names 'j/k scroll' alone",
+	"ElectricalPanelDetailScreen": "the electrical panel sheet; names 'j/k scroll' alone",
+	"SupplierDetailScreen":        "the supplier sheet; names 'j/k scroll' alone",
+	"Root":                        "not a screen: app.go's root, which moves the NAV TREE cursor. The sidebar is its own surface with its own legend and is not a list of rows",
 }
 
 // listNavBindingSurfaces parses the package and returns, for every method that
@@ -210,6 +221,66 @@ func listNavReceiverName(e ast.Expr) string {
 	return ""
 }
 
+// listNavDelegatingReceivers is every type that HOLDS a TextScroller, and so
+// gets the whole movement vocabulary without spelling a single key of it.
+//
+// THE HOLE THIS CLOSES was in the derivation above, not in the app.
+// listNavBindingSurfaces finds a `case "j", "down":` and keys it by the receiver
+// whose method it sits in — which is exactly right for the fifty-odd screens
+// that switch on keys themselves, and blind to a screen that owns a
+// TextScroller and hands it the key. TextScroller.Handle binds j/k, the arrows,
+// pgup/pgdn and g/G/home/end, so those screens have every one of them; they were
+// classified only TRANSITIVELY, through the TextScroller entry, and a NEW one
+// could have joined the app without appearing in the classification at all.
+// That is the silence the whole file exists to prevent, one level of
+// indirection out.
+//
+// SEVEN were in that state — AnalyticsPulseScreen, NotificationsScreen,
+// SIGDetailScreen, ProjectStorageDetailScreen, StorageSlotDetailScreen,
+// ElectricalPanelDetailScreen and SupplierDetailScreen. The other TextScroller
+// holders (asset, inventory and work-order detail) bind keys of their own as
+// well and so were already found. The count is deliberately not load-bearing:
+// the check derives the set every run, so this sentence is a reader's orientation
+// and the map is the authority.
+//
+// A FIELD TYPE and not a call graph, because that is what go/parser can answer
+// without go/types: a screen with a TextScroller in it is a screen that scrolls,
+// and there is no way to hold one and not hand it the keyboard.
+func listNavDelegatingReceivers(t *testing.T) map[string]bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parsing the package: %v", err)
+	}
+	out := map[string]bool{}
+	for _, file := range pkgs["tui"].Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok {
+				return true
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				return true
+			}
+			for _, fld := range st.Fields.List {
+				if listNavReceiverName(fld.Type) == "TextScroller" {
+					out[ts.Name.Name] = true
+				}
+			}
+			return true
+		})
+	}
+	if len(out) < 5 {
+		t.Fatalf("only %d types hold a TextScroller by this scan, which contradicts the "+
+			"fifteen sheets that build one — the derivation is broken", len(out))
+	}
+	return out
+}
+
 // listNavColumnarReceivers is every type in the package that embeds jdeScreen,
 // read out of the source — the same derivation jdeEmbedders makes for the pane
 // sweeps, repeated here because this file must not depend on a test helper's
@@ -273,6 +344,14 @@ func listNavColumnarReceivers(t *testing.T) map[string]bool {
 func TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused(t *testing.T) {
 	binding := listNavBindingSurfaces(t)
 	columnar := listNavColumnarReceivers(t)
+	// A screen that HOLDS a TextScroller has the movement vocabulary without
+	// spelling any of it, so it is a navigation surface for this rule's purposes
+	// even though no `case` in it names a key.
+	for recv := range listNavDelegatingReceivers(t) {
+		if _, already := binding[recv]; !already {
+			binding[recv] = []string{"a TextScroller field (its Handle binds the whole vocabulary)"}
+		}
+	}
 
 	var unclassified []string
 	for recv, sites := range binding {

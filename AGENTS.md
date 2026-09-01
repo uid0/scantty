@@ -847,10 +847,10 @@ either:
   g/G home/end top/bottom` as an unconditional literal was only ever pressed
   where it was true.
   WHERE IT IS NOT PROVEN, said plainly because a claim no check delivers is
-  worse than no claim: fifty-two receivers (the count `listNavUnsweptReceivers`
+  worse than no claim: fifty-nine receivers (the count `listNavUnsweptReceivers`
   carries) write their bar as a muted literal
   straight into a `strings.Builder` inside `View`. `TextScroller` is the shape of
-  it at its clearest — one handler shared by fifteen detail sheets whose footers
+  it at its clearest — one handler shared by fourteen detail sheets whose footers
   disagree about which of its keys to name. There is no record to read,
   so no sweep can press keys against it, and a typical one reads `j/k move · n
   new · E/enter edit · x delete · r refresh · esc back` while binding the arrows,
@@ -868,6 +868,16 @@ either:
   `category_form.go` holds `CategoryFormScreen` (columnar, swept) beside
   `CategoryListScreen` (prose, not), and a file-level answer excuses the second
   on the strength of the first.
+  A `case "j", "down":` IS NOT THE ONLY WAY TO BIND ONE, and reading only for
+  those was a hole in the DERIVATION rather than in the app: a screen that holds
+  a `TextScroller` gets j/k, the arrows, pgup/pgdn and g/G/home/end from
+  `Handle` without spelling a key, so seven of them were classified only
+  transitively through the `TextScroller` entry and a new one could have joined
+  the app appearing in no class at all. `listNavDelegatingReceivers` reads the
+  STRUCT FIELDS for that — a field type is what `go/parser` can answer without
+  `go/types`, and there is no way to hold a scroller and not hand it the
+  keyboard. Whenever a shared handler grows that owns movement keys, the
+  derivation needs the same treatment or it goes quietly blind to its callers.
 - **An empty list is a STATE, and on `ListScreen` it used to be the one state
   that drew no bar at all.** `bodyView` returned `"No rows."` and nothing else
   while `s`, `r`, `n`, `f`, `/` and every sibling-surface letter worked — the
