@@ -46,8 +46,9 @@ type listNavMove struct {
 	Keys []string
 }
 
-// listNavSet is THE navigation set for a list surface with a cursor, in footer
-// order.
+// listNavSet is the navigation vocabulary a list surface draws from, in footer
+// order. It is the CEILING and not a floor: a surface binds no movement key
+// outside it, and how much of it a surface can bind is decided by the surface.
 //
 // It is a function rather than a var so a caller cannot append to it, and it is
 // read by ListScreen.footerHint — this is production vocabulary, not a test
@@ -57,6 +58,18 @@ type listNavMove struct {
 // query rather than a movement key; that difference is a fact about the surface
 // and each bar tells the truth about its own, which is why there is one
 // vocabulary and two spellings of it rather than two vocabularies.
+//
+// AN ALWAYS-LIVE QUERY BOX BINDS THE ARROWS ALONE, and that is the same fact
+// read off a surface that is not columnar: ListScreen's own search overlay
+// (updateSearch) answers esc/up/down/enter and hands every other keystroke to
+// the box, so j, k, g, G, home, end, pgup and pgdown are CHARACTERS there.
+// Binding them would eat what the operator typed, which no movement affordance
+// is worth, so it is a permanent property of such a surface rather than a gap
+// waiting to be closed — do not close it by binding letters into a search box.
+// What is checked is the negative (TestListNav_NoSurfaceBindsARetiredChord
+// presses every retired chord over its fixture sets) plus, on the surfaces
+// whose bar is a machine-readable record, the biconditional between what a bar
+// NAMES and what its keys do.
 func listNavSet() []listNavMove {
 	return []listNavMove{
 		{"j/k ↑↓ move", []string{"j", "k", "up", "down"}},
