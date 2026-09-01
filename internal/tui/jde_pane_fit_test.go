@@ -1822,49 +1822,6 @@ func TestJDEForm_EveryEssentialHeaderRowIsOnThePane(t *testing.T) {
 	}
 }
 
-// jdePagingTokens are the bar tokens that spell PAGING and nothing else,
-// derived from the package's own transcription tables rather than listed.
-//
-// Derived because the bars do not agree on how to spell the pair: most write
-// "PgUp/PgDn", and the receiving form's all-units-answered frame writes "PgUp"
-// alone, because it has a unit to step BACK to and none to step forward to. A
-// sweep that looked for the literal "PgUp/PgDn" would read that frame as naming
-// no pager while its PgUp moves the cursor, and report a screen that is honest
-// as a violation — which is how a sweep gets weakened to accommodate a site.
-//
-// "spells paging and nothing else" is the test: a token mapping to a keystroke
-// outside the pair is some other key that happens to share a name.
-func jdePagingTokens() map[string]bool {
-	out := map[string]bool{}
-	for token := range jdeMoveTokens {
-		keys, ok := jdeResolveBarToken(token)
-		if !ok || len(keys) == 0 {
-			continue
-		}
-		paging := true
-		for _, k := range keys {
-			if k != "pgup" && k != "pgdown" {
-				paging = false
-			}
-		}
-		if paging {
-			out[token] = true
-		}
-	}
-	return out
-}
-
-// jdeBarOffersPaging reports whether a DRAWN bar claims a paging key.
-func jdeBarOffersPaging(bar []string) bool {
-	paging := jdePagingTokens()
-	for _, token := range jdeBarTokens(bar) {
-		if paging[token] {
-			return true
-		}
-	}
-	return false
-}
-
 // TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves is the bar-honesty
 // rule (AGENTS.md) over the WHOLE movement vocabulary: on every columnar screen,
 // at every pane the layer draws a frame into, the bar names a movement token IF
