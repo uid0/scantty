@@ -71,6 +71,12 @@ func TestLocationProblems_Filter(t *testing.T) {
 
 // TestLocationProblems_EmptyFilterCursor keeps the cursor at 0 when paging down
 // an empty filtered list (no rows match the filter), preserving the invariant.
+//
+// PGDOWN and not ctrl+d, which was a synonym for this arm until sc-jde-listnav
+// retired the chord: after that the keystroke matched no case, the arm was never
+// entered, and the assertion passed for the reason it would have passed with the
+// arm deleted. The exact resting place is asserted rather than "not negative",
+// because "not negative" is equally true of a screen on which nothing ran.
 func TestLocationProblems_EmptyFilterCursor(t *testing.T) {
 	s := NewLocationProblemsScreen(Deps{}, 42, "Bay 3")
 	s.loading = false
@@ -82,13 +88,13 @@ func TestLocationProblems_EmptyFilterCursor(t *testing.T) {
 	if len(s.visible()) != 0 {
 		t.Fatalf("expected empty visible set")
 	}
-	s.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
-	if s.cursor < 0 {
-		t.Errorf("pgdown on empty list left cursor = %d, want >= 0", s.cursor)
+	s.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if s.cursor != 0 {
+		t.Errorf("pgdown on empty list left cursor = %d, want 0", s.cursor)
 	}
 	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
-	if s.cursor < 0 {
-		t.Errorf("end on empty list left cursor = %d, want >= 0", s.cursor)
+	if s.cursor != 0 {
+		t.Errorf("end on empty list left cursor = %d, want 0", s.cursor)
 	}
 	if _, ok := s.selected(); ok {
 		t.Errorf("no row should be selectable on an empty list")

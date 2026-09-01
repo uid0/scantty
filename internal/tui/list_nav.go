@@ -128,12 +128,28 @@ func listNavBinds(key string) bool {
 // "deliberately unbound" stay different states, and so the check that keeps them
 // unbound can say WHY rather than just failing.
 // TestListNav_NoSurfaceBindsARetiredChord PRESSES every key in this map on every
-// screen the two swept fixture sets can build — the columnar sheets and every
-// *ListScreen — so re-introducing one, on a screen that does not exist yet
-// included, fails the build rather than shipping a key nothing names. It is a
-// behavioural press and not a scan of this package's source: a chord bound
-// through a helper or a key-name map is invisible to a `case "ctrl+d":` regex
-// and is not invisible to a keystroke.
+// fixture THREE sets can build — the columnar sheets, every *ListScreen, and
+// TextScroller — so re-introducing one on any of them, a screen that does not
+// exist yet included, fails the build rather than shipping a key nothing names.
+// It is a behavioural press and not a scan of this package's source: a chord
+// bound through a helper or a key-name map is invisible to a `case "ctrl+d":`
+// regex and is not invisible to a keystroke.
+//
+// TextScroller is in that list because it is where two of these chords were
+// unbound and because it hands the whole movement vocabulary to every detail
+// sheet that holds one, so a binding restored there reaches fourteen screens
+// while embedding no jdeScreen and being no *ListScreen — invisible to the
+// other two sets, and invisible to jdePlaceOf as well, since a scroller's
+// offset is nested inside a value rather than an int field of the screen.
+//
+// WHAT IS NOT COVERED, said plainly rather than left to be assumed: a prose-bar
+// receiver that binds a chord in a `case` of its OWN, rather than by holding a
+// scroller, has no fixture here to press it against. Nothing in the app does
+// today — that is what the retirement removed — and
+// TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused is what stops the
+// set of such receivers growing in silence. It is a coverage classification and
+// not a behaviour claim, so it cannot see a retired chord: it collects only the
+// keys listNavBinds accepts, and a retired chord is by definition not one.
 var listNavRetiredChords = map[string]string{
 	"ctrl+u": "the emacs page-up chord. No bar in the program ever spelled it, and " +
 		"pgup is named on every list that pages. sc-po-create-hangs unbound it on " +

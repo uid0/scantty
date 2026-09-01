@@ -1865,42 +1865,41 @@ func jdeBarOffersPaging(bar []string) bool {
 	return false
 }
 
-// TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves: on every columnar
-// screen, at every pane the layer draws a frame into, the bar names a paging key
-// IF AND ONLY IF pressing one moves the operator's place.
+// TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves is the bar-honesty
+// rule (AGENTS.md) over the WHOLE movement vocabulary: on every columnar screen,
+// at every pane the layer draws a frame into, the bar names a movement token IF
+// AND ONLY IF pressing a key it spells moves the operator's place.
 //
-// This is the bar-honesty rule (AGENTS.md) over the one key pair the layer can
-// answer for, and it is stated as the BICONDITIONAL because the claim fails in
-// two directions and a check written for one catches neither of the other:
+// It is stated as the BICONDITIONAL because the claim fails in two directions
+// and a check written for one catches neither of the other:
 //
 //   - NAMED AND DEAD. The packaging-chain list advertised PgUp/PgDn the moment
-//     its rungs outgrew the window and updateChainPhase bound neither key.
-//   - BOUND AND UNNAMED. Every other columnar sheet bound the pair
-//     unconditionally in its key switch while pageRow gated only on whether the
-//     frame was DRAWN — so on any pane tall enough to hold the whole body the
-//     bar rightly said nothing about paging and PgDn still walked the cursor.
-//     Measured before the gate moved into pageRow: 3254 of 7102 drawn
-//     (screen, width, height) triples, across 47 of the cases here — and not
-//     one violation in the other direction, so every bar that named the pair
-//     was telling the truth and every one that stayed silent was not.
+//     its rungs outgrew the window and updateChainPhase bound neither key; and
+//     jdePickBarWith named UP/DN with no condition at all, so a picker filtered
+//     to one option named the pair while jdeClampPick handed the cursor back.
+//   - BOUND AND UNNAMED. Every columnar sheet bound pgup/pgdown unconditionally
+//     while naming the pair only when the body overflowed — 3254 of 7102 drawn
+//     (screen, width, height) triples across 47 cases, measured before the gate
+//     moved into pageRow, and not one violation the other way.
 //
 // DERIVED, because thirty-two hand-edits do not keep a class closed and the next
 // sheet added reopens it: the cases come from jdePaneCases (every type embedding
-// jdeScreen, plus its extra states), the heights from jdePaneHeights, and what
-// counts as a paging token from the bar tables. No screen is named.
+// jdeScreen, plus its extra states), the heights from jdePaneHeights, and the
+// vocabulary from jdeMoveTokens. No screen is named. The heights the layer
+// REFUSES are outside it, for the reason the other sweeps in this file give: no
+// bar is drawn there to make a claim with, and the frame's answer to every key
+// is the notice.
 //
-// The heights the layer REFUSES are outside it, for the reason the other sweeps
-// in this file give: no bar is drawn there to make a claim with, and the frame's
-// answer to every key is the notice.
-func TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves(t *testing.T) {
-	jdeSweepMovementToken(t, jdePagingTokens(), "a paging key")
-}
-
-// TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves is the SAME
-// biconditional over the WHOLE movement vocabulary rather than over the paging
-// pair alone, and it is the half AGENTS.md recorded as live and deferred.
+// THERE USED TO BE A SECOND, NARROWER RUN OF THIS — over the paging pair alone —
+// and it is gone because every claim it made is made here. Its forward half ran
+// over a subset of these tokens; its reverse half was identical, since PgUp/PgDn
+// and PgUp are the only tokens in jdeMoveTokens that spell pgup or pgdown; and
+// the two aggregate vacuity fatals that were genuinely its own are now asked PER
+// TOKEN above, which is strictly stronger. What it cost was a second walk of
+// every case at every width and every drawable height, in a package that has
+// already hit go test's 600s per-package timeout once.
 //
-// The paging sweep matched a paging token and nothing else, so UP/DN standing
+// The narrower run matched a paging token and nothing else, so UP/DN standing
 // beside PgUp/PgDn on the same bar went unasked — and that is where the defect
 // was. jdePickBarWith, the bar EVERY columnar picker draws, appended
 // {"UP/DN", "Move"} with no condition on it at all, so a picker filtered down to
@@ -1960,13 +1959,26 @@ func jdeSweepMovementToken(t *testing.T, tokens map[string]bool, what string) {
 		}
 	}
 
-	drawn, named, moves := 0, 0, 0
-	// unnamed counts, PER TOKEN, the drawn panes whose bar does NOT spell it.
-	// That is the reachability of the REVERSE implication: if every drawn pane
-	// named every token, `movedKey[key] && !namedKeys[key]` could not fire on
-	// any of them and the sweep would report a biconditional while only ever
-	// exercising one side of it.
-	unnamed := map[string]int{}
+	drawn := 0
+	// EVERY COUNTER IS PER TOKEN, and that is what let the separate paging sweep
+	// go: an aggregate "some bar named something" is satisfied by one popular
+	// token vouching for every other one in the vocabulary, so the paging pair
+	// needed a second walk of every case at every size to make the same claim
+	// about itself. Counted per token, this walk makes it for all of them at
+	// once and more strictly.
+	//
+	//	named   — panes whose bar DOES spell the token.
+	//	unnamed — panes whose bar does NOT. This is the reachability of the
+	//	          REVERSE implication: if every drawn pane named every token,
+	//	          `movedKey[key] && !namedKeys[key]` could not fire anywhere and
+	//	          the sweep would report a biconditional while only ever
+	//	          exercising one side of it.
+	//	moves   — panes where SOME key the token spells moved. Per TOKEN and not
+	//	          per key on purpose: `home` never moves from a cursor already at
+	//	          the top, which is correct behaviour and the granularity the
+	//	          forward half already uses (a token names a pair, and the claim
+	//	          is that some key it spells moves).
+	named, unnamed, moves := map[string]int{}, map[string]int{}, map[string]int{}
 	for _, c := range jdePaneCases() {
 		name, mk := c.name, c.mk
 		for _, w := range jdePaneWidths {
@@ -2004,8 +2016,13 @@ func jdeSweepMovementToken(t *testing.T, tokens map[string]bool, what string) {
 						probe = next
 					}
 					movedKey[key] = !reflect.DeepEqual(before, jdePlaceOf(probe))
-					if movedKey[key] {
-						moves++
+				}
+				for token := range tokens {
+					for _, k := range jdeMoveTokens[token] {
+						if movedKey[k] {
+							moves[token]++
+							break
+						}
 					}
 				}
 
@@ -2022,7 +2039,7 @@ func jdeSweepMovementToken(t *testing.T, tokens map[string]bool, what string) {
 						unnamed[token]++
 						continue
 					}
-					named++
+					named[token]++
 					probe := mk()
 					jdeRootAt(t, probe, w, h)
 					before := jdePlaceOf(probe)
@@ -2061,30 +2078,27 @@ func jdeSweepMovementToken(t *testing.T, tokens map[string]bool, what string) {
 			"for %s asserted nothing", what)
 	}
 	// Both halves have to be REACHED or the biconditional is one implication
-	// with the other side never exercised — the vacuous-fixture rule at the
-	// level of the sweep rather than of a fixture. There are THREE of them, one
-	// per way this can go quiet, and the third is stated PER TOKEN rather than
-	// in aggregate: aggregated, a single token that is sometimes absent would
-	// vouch for every other token in the vocabulary, which is the same
-	// borrowed-coverage mistake as a roster that is checked in one direction.
-	if named == 0 {
-		t.Fatalf("no bar named %s at any of the %d drawn panes, so the "+
-			"named-and-acts half was never exercised", what, drawn)
-	}
+	// with the other side never exercised — the vacuous-fixture rule at the level
+	// of the sweep rather than of a fixture. There are THREE ways it can go quiet
+	// and all three are asked PER TOKEN, so no token borrows another's coverage.
 	for token := range tokens {
-		if unnamed[token] == 0 {
+		switch {
+		case named[token] == 0:
+			t.Fatalf("no bar named %q at any of the %d drawn panes, so the "+
+				"named-and-acts half of %s was never exercised for it", token, drawn, what)
+		case unnamed[token] == 0:
 			t.Fatalf("every one of the %d drawn panes named %q, so no pane in this "+
 				"sweep is in the state where a key it spells could act UNNAMED — the "+
 				"reverse half of the biconditional for %s was never exercised. A bar "+
 				"builder that started appending %q unconditionally would look exactly "+
 				"like this and the forward half would still pass",
 				drawn, token, what, token)
+		case moves[token] == 0:
+			t.Fatalf("no key %q spells moved anything at any of the %d drawn panes — "+
+				"poPickerKeyMsg or Update stopped being reached for %v, and this sweep "+
+				"would pass over a screen that moves when it says it does not",
+				token, drawn, jdeMoveTokens[token])
 		}
-	}
-	if moves == 0 {
-		t.Fatalf("no movement key moved anything at any of the %d drawn panes — "+
-			"poPickerKeyMsg or Update stopped being reached, and this sweep would "+
-			"pass over a screen that moves when it says it does not", drawn)
 	}
 }
 

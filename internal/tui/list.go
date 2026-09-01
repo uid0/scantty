@@ -477,12 +477,20 @@ func (s *ListScreen) paneDrawn() bool {
 // The height is stated in TERMINAL rows, the only unit an operator can resize:
 // screenChromeRows is screenBodyRows' own inverse, so the two cannot drift.
 //
-// The last sentence is true because the gate in Update makes it true — the
-// navigation vocabulary AND `s` are held while this notice is drawn, so the
-// operator comes back to where they were rather than to wherever an invisible
-// cursor wandered or a sort nobody could see put them. It claims nothing more
-// than that: a notice denying a loss that can happen is the same kind of lie as
-// one claiming a loss that cannot.
+// The last sentence is scoped to WHILE THIS NOTICE IS UP, and the scope is the
+// whole of its truth rather than a hedge. The gate in Update holds the
+// navigation vocabulary and `s` exactly when paneDrawn is false, which is
+// exactly when this notice is what the pane draws — so the operator comes back
+// to where they were rather than to wherever an invisible cursor wandered or a
+// sort nobody could see put them.
+//
+// It said "until it fits" first, and that was a promise the gate does not keep:
+// paneDrawn also answers TRUE while a load is out, so `r` on a refused pane
+// replaces the notice with the working line and `G` then walks the cursor
+// against rows nobody can see. The keys-act-invisibly-during-a-load half is
+// pre-existing and belongs to every list state, not to the refusal; what was
+// new was a sentence claiming otherwise. A notice denying a loss that can happen
+// is the same kind of lie as one claiming a loss that cannot.
 func listTooShort(cells, rows, terminalHeight, needRows int) string {
 	if rows <= 0 || cells <= 0 {
 		return ""
@@ -490,8 +498,8 @@ func listTooShort(cells, rows, terminalHeight, needRows int) string {
 	lines := pickerWrap(fmt.Sprintf("Needs %d rows · has %d",
 		needRows+screenChromeRows, terminalHeight), cells)
 	lines = append(lines, pickerWrap("Too short for the action bar, so no keys are "+
-		"named. Moving and sorting are held until it fits, so you come back where "+
-		"you were.", cells)...)
+		"named. Moving and sorting do nothing while this notice is up, so you come "+
+		"back where you were.", cells)...)
 	cut := len(lines) > rows
 	if cut {
 		lines = lines[:rows]

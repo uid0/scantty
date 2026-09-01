@@ -1307,8 +1307,9 @@ func (g jdeScreen) windowRowsForBar(body *jdeLines, cursorRow, headerRows int, i
 // thirty-two sites and is how the ~50 per-sheet scroll copies sc-jde-lift had to
 // unpick began — one too small to be worth a shared function, with the same
 // argument available to the next forty-nine. It is the layer's now, and
-// TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves holds the biconditional
-// over every columnar screen so site thirty-three cannot reopen it.
+// TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves holds the
+// biconditional over every columnar screen so site thirty-three cannot reopen
+// it.
 //
 // An OFFSET still has no combined helper and still must not get one — see the
 // paragraph above moveRow. A page is different because pageRow already had the
@@ -1433,7 +1434,7 @@ func (g jdeScreen) pickRow(cursor, count, delta, headerRows int, items []actionB
 // overflowed, so on any pane tall enough to hold the whole body the bar rightly
 // said nothing and PgDn still walked the cursor to the last row — 3254 of 7102
 // drawn (screen, width, height) triples, which is what
-// TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves reports when the gate
+// TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves reports when the gate
 // below is removed.
 //
 // AN UNSIZED TERMINAL IS NOT A SHORT PANE. bodyScrollsForBar answers false when

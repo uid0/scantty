@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -130,11 +131,15 @@ func listNavPress(t *testing.T, s Screen, w, h int, probe []string, key string) 
 // it untouched. Pressing the key answers both directions, and answers them about
 // the thing the operator actually meets.
 //
-// TWO FIXTURE SETS, because the app draws two kinds of bar and each already has
-// a sweep that builds its screens: the columnar screens from jdePaneCases (every
-// type embedding jdeScreen, plus its extra states) and every *ListScreen from
-// listBarSurfaces, at every row count in listRowCases. The surfaces OUTSIDE both
-// — the prose-bar receivers — have no fixture to press, and that is exactly what
+// THREE FIXTURE SETS. Two of them draw a bar and already have a sweep that
+// builds their screens: the columnar screens from jdePaneCases (every type
+// embedding jdeScreen, plus its extra states) and every *ListScreen from
+// listBarSurfaces, at every row count in listRowCases. The third is
+// TextScroller, which draws no bar of its own and is here because it is where
+// two of these chords were unbound and because it hands the whole movement
+// vocabulary to every detail sheet that holds one — a binding restored there
+// reaches fourteen screens and neither of the other two sets can see it. The
+// surfaces outside all three have no fixture to press, and that is exactly what
 // TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused classifies rather
 // than hides.
 //
@@ -189,6 +194,60 @@ func TestListNav_NoSurfaceBindsARetiredChord(t *testing.T) {
 		}
 	})
 
+	// THE SCROLLER IS A THIRD FIXTURE SET, and it is the one that mattered most:
+	// scroll.go is where two of these four chords were actually unbound, and
+	// neither set above can reach it. No TextScroller holder embeds jdeScreen or
+	// is a *ListScreen — they are all prose-bar receivers — and even if one were,
+	// jdePlaceOf walks the int fields of the SCREEN struct, so an offset nested
+	// inside a TextScroller value is invisible to it. Restoring
+	// `case "ctrl+d", "pgdown":` in Handle therefore failed nothing at all: the
+	// behavioural conversion was weaker than the regex it replaced on the single
+	// file the retirement touched.
+	//
+	// What is asserted is the OFFSET (the scroller's whole visible product) and
+	// the bool Handle returns, which is its contract with the fourteen detail
+	// sheets that own one — a chord answered `true` is a keystroke the host
+	// swallows on behalf of a binding that no longer exists.
+	t.Run("scroller", func(t *testing.T) {
+		build := func() *TextScroller {
+			sc := NewTextScroller(10)
+			lines := make([]string, 60)
+			for i := range lines {
+				lines[i] = fmt.Sprintf("line %d", i+1)
+			}
+			sc.Set(strings.Join(lines, "\n"))
+			return sc
+		}
+		press := func(sc *TextScroller, keys ...string) {
+			for _, k := range keys {
+				sc.Handle(poPickerKeyMsg(k))
+			}
+		}
+		for chord, ctrl := range listNavChordControls {
+			control := build()
+			press(control, ctrl.probe...)
+			at := control.offset
+			if control.Handle(poPickerKeyMsg(ctrl.key)) && control.offset != at {
+				controlled["scroller/"+chord]++
+			}
+
+			sc := build()
+			press(sc, ctrl.probe...)
+			before := sc.offset
+			handled := sc.Handle(poPickerKeyMsg(chord))
+			why := listNavRetiredChords[chord]
+			switch {
+			case sc.offset != before:
+				t.Errorf("TextScroller acts on %q: it scrolled from offset %d to %d. That "+
+					"chord is retired: %s", chord, before, sc.offset, why)
+			case handled:
+				t.Errorf("TextScroller answers %q as handled without scrolling, so every "+
+					"sheet holding one swallows the key on behalf of a binding that is "+
+					"gone. That chord is retired: %s", chord, why)
+			}
+		}
+	})
+
 	t.Run("list", func(t *testing.T) {
 		for _, surface := range listBarSurfaces() {
 			for state, rows := range listRowCases {
@@ -215,7 +274,7 @@ func TestListNav_NoSurfaceBindsARetiredChord(t *testing.T) {
 	})
 
 	for chord, ctrl := range listNavChordControls {
-		for _, set := range []string{"columnar", "list"} {
+		for _, set := range []string{"columnar", "list", "scroller"} {
 			if controlled[set+"/"+chord] == 0 {
 				t.Errorf("no %s fixture was moved by %q, the key that spells the same "+
 					"affordance as %q — so every %q-does-nothing case above passed for a "+

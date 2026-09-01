@@ -827,8 +827,8 @@ either:
   pairs, forty-eight arms), so the same key paged the supplier list and did
   nothing on the inventory list the operator reached it from —
   `TestListNav_NoSurfaceBindsARetiredChord` PRESSES each chord on every fixture
-  the two swept sets can build (`jdePaneCases` and `listBarSurfaces` × every row
-  count) and fails on one that moves. It used to prove that from source SHAPE — a
+  THREE swept sets can build (`jdePaneCases`, `listBarSurfaces` × every row
+  count, and `TextScroller`) and fails on one that moves. It used to prove that from source SHAPE — a
   regex over `case "ctrl+d":` literals — which failed on a commented-out arm and
   passed a chord bound through a helper or a key-name map; behaviour answers both
   directions. It is POSITIVELY CONTROLLED (`listNavChordControls`): each case
@@ -841,10 +841,33 @@ either:
   and the claim there is over `jdePlaceOf` alone; a `ListScreen` in browse mode
   holds no caret, so the clipped PANE is asserted too — which is what catches a
   window that scrolled without the cursor leaving its row, since `windowStart` is
-  not in `jdePlaceOf`'s vocabulary. The prose-bar receivers have no fixture to
-  press and are classified rather than claimed about
+  not in `jdePlaceOf`'s vocabulary. THE SCROLLER IS THE THIRD SET AND WAS THE
+  HOLE the behavioural conversion opened: `scroll.go` is where two of the four
+  chords were actually unbound, and neither of the other sets can reach it — no
+  `TextScroller` holder embeds `jdeScreen` or is a `*ListScreen`, and
+  `jdePlaceOf` walks the int fields of the SCREEN, so an offset nested inside a
+  scroller value is invisible to it even if one did. Restoring
+  `case "ctrl+d", "pgdown":` in `Handle` failed nothing at all, which made the
+  conversion WEAKER than the regex it replaced on the one file the retirement
+  touched. It asserts the OFFSET and the bool `Handle` returns, since a chord
+  answered `true` is a keystroke every sheet holding one swallows on behalf of a
+  binding that is gone. The prose-bar receivers that bind a chord in a `case` of
+  their own have no fixture to press — nothing in the app does today, which is
+  what the retirement removed — and are classified rather than claimed about
   (`TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused`, which is a
-  COVERAGE guard over the source and asserts nothing about any key).
+  COVERAGE guard over the source, asserts nothing about any key, and cannot see
+  a retired chord at all since it collects only what `listNavBinds` accepts).
+  A TEST THAT DRIVES A RETIRED CHORD STOPS TESTING ANYTHING, and the retirement
+  left three behind: `TestStorageSlots_PagedownClampsOnEmpty`,
+  `TestAssetProblems_EmptyFilterCursor` and
+  `TestLocationProblems_EmptyFilterCursor` each pressed `ctrl+d` at a `pgdown`
+  arm, so after the retirement the arm they exist to enter was never entered and
+  `cursor >= 0` passed for the reason it would have passed with the arm deleted.
+  They press `pgdown` now and assert the cursor's exact resting place rather than
+  its sign, because "not negative" is equally true of a screen on which nothing
+  ran. Whenever a key is retired, grep the tests for it in BOTH spellings
+  (`"ctrl+d"` and `tea.KeyCtrlD`) — the vacuity is silent in exactly the way the
+  retirement is.
   THE COLUMNAR LAYER SPELLS THE SAME AFFORDANCES AS TOKENS (`UP/DN`,
   `PgUp/PgDn`, `Home/End`) AND BINDS NO LETTER, and that is a fact about the
   surface rather than drift: a columnar picker's filter box is always live, so a
@@ -973,6 +996,13 @@ either:
   else qualifies: `r` and `f` set `loading` and redraw as `Loading…`, and
   `enter`/`n`/the uppercase shortcuts LEAVE, which is the operator's way out of a
   pane too short to work in. Do not widen the gate to every key.
+  THE NOTICE'S PROMISE IS SCOPED TO WHILE THE NOTICE IS UP, and it has to be:
+  `paneDrawn` answers TRUE while a load is out, so `r` on a refused pane replaces
+  the notice with the working line and `G` then walks the cursor against rows
+  nobody can see. The first wording said the keys were held "until it fits",
+  which that sequence falsifies. The keys-act-invisibly-during-a-load half is
+  pre-existing and belongs to every list state rather than to the refusal — what
+  was new was a sentence claiming otherwise, and the sentence is what gave.
   THE NOTICE IS BOUNDED AGAINST THE LIVE PANE IN BOTH AXES, and the width half
   was got wrong first: it folded and marked against a fixed `pickerPaneWidth` on
   a screen that recorded only the terminal HEIGHT, so at 60 columns it drew
@@ -1226,10 +1256,12 @@ either:
   at two of thirty-two sites and is exactly how the ~50 per-sheet scroll copies
   sc-jde-lift had to unpick began: one that looked too small to be worth a shared
   function, with the same argument available to the next forty-nine. Both were
-  deleted. `TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves` holds the
+  deleted. `TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves` holds the
   BICONDITIONAL over `jdePaneCases` at every drawable pane — derived, so site
   thirty-three cannot reopen it — and it fails a bar that names the pair where a
-  page moves nothing just as readily.
+  page moves nothing just as readily. It used to be a narrower sweep of its own
+  over the paging pair alone; that run is gone because every claim it made this
+  one makes, per token and therefore more strictly.
   THAT BICONDITIONAL NOW COVERS THE WHOLE MOVEMENT VOCABULARY, not the paging
   pair alone: `TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves` is the
   same sweep over every token in `jdeMoveTokens`, and the paging one is a call
@@ -1241,18 +1273,31 @@ either:
   "a key that acts must be named" cannot be answered about a pair. Two tokens
   can also spell one key — `PgUp/PgDn` and receiving's `PgUp` — so "is this key
   named" is asked of the UNION of the drawn tokens.
-  BOTH SIDES ARE PROVED REACHABLE, and the third of those counters is the one the
+  BOTH SIDES ARE PROVED REACHABLE, and the `unnamed` counter is the one the
   generalisation dropped while its own comment went on claiming it — a vacuity
   guard that had itself gone vacuous, which is rule 8 in the most embarrassing
-  place available. `drawn`, `named` and `moves` say the sweep found panes, found
-  bars naming the vocabulary, and found keys that move; `unnamed` says it found
-  panes whose bar does NOT spell the token, which is the only state the REVERSE
-  implication can fire in. Without it a bar builder that started appending every
-  movement token unconditionally would leave `movedKey && !namedKeys`
-  unreachable, the forward half would still pass, and the sweep would report a
-  biconditional it had only ever tested one side of. It is counted PER TOKEN and
-  not in aggregate: aggregated, one sometimes-absent token vouches for every
-  other token in the vocabulary.
+  place available. `named` says the sweep found bars spelling the token, `moves`
+  that some key it spells moved, and `unnamed` that it found panes whose bar does
+  NOT spell it, which is the only state the REVERSE implication can fire in.
+  Without that last one a bar builder that started appending every movement token
+  unconditionally would leave `movedKey && !namedKeys` unreachable, the forward
+  half would still pass, and the sweep would report a biconditional it had only
+  ever tested one side of.
+  ALL THREE ARE COUNTED PER TOKEN, and that is what retired the separate paging
+  sweep rather than a judgement that it was redundant. Aggregated, one popular
+  token vouches for every other one — which is precisely why the paging pair used
+  to need a SECOND walk of every case at every width and every drawable height to
+  make the same claim about itself, in a package that has already hit `go test`'s
+  600s per-package timeout once. Per token, this walk makes it for all of them
+  and more strictly. Everything else the paging run asserted was already
+  identical: its forward half ran over a subset of these tokens, and its reverse
+  half was the same expression, since `PgUp/PgDn` and `PgUp` are the only tokens
+  in `jdeMoveTokens` that spell `pgup` or `pgdown`.
+  `moves` IS PER TOKEN AND NOT PER KEY, which is a fact about the vocabulary
+  rather than a weakening: `home` never moves a cursor already resting at the
+  top, so a per-key floor would fail on correct behaviour. A token names a PAIR
+  and the forward half already claims only that SOME key it spells moves, so the
+  counter is asked at the same granularity the assertion is.
   `UP/DN` IS CONDITIONAL NOW and `jdeRowMoves` (`count > 1`) is the one
   predicate: the BAR asks it through `jdePickBarWith` / `jdeMoveItem`, and the
   ARMS ask it in `pickRow` and `moveRow`, so the claim and the key behind it are

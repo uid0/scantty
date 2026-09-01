@@ -326,7 +326,7 @@ var jdeInertCases = map[string]string{
 	// row, or the single file — so no movement key can move anything.
 	//
 	// They earn their keep in
-	// TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves, which is the sweep
+	// TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves, which is the sweep
 	// they were added for: that is where "the body overflows" and "a page has
 	// somewhere to land" come apart, and until these existed every list in
 	// jdeScreenStates carried several rows and the pair could not be told apart.
