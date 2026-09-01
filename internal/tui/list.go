@@ -151,6 +151,7 @@ type ListScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	// filter indexes spec.filters — which server-side view the list is
 	// showing. Cycled with 'f'; 0 (the unfiltered view) on entry.
@@ -177,12 +178,11 @@ const (
 	// by the empty one (headerLine says why the empty one needs it too).
 	listHeaderRows = 1
 
-	// listIndicatorRows: the "↑ more above" / "↓ more below" pair. Reserved as
-	// a PAIR whenever either can appear — we would rather waste one row when
-	// only one shows than clip a row when the list overflows — but no longer
-	// reserved unconditionally, because on a short pane those two rows are the
-	// difference between a drawable frame and a refused one (listIndicatorRows
-	// is spent only when the rows really do outrun the body, listOverflows).
+	// listIndicatorRows: the "↑ more above" / "↓ more below" pair, each on the
+	// row its arrow points away from. Reserved only when the rows really do
+	// outrun the body (listOverflows) AND the pane can afford both — see
+	// markerRows, which spends ONE row instead where it cannot, and why that is
+	// a reservation rather than a mutilation.
 	listIndicatorRows = 2
 
 	// listMinBodyRows: the floor on an EMPTY list, where the body is the "no
@@ -335,12 +335,57 @@ func (s *ListScreen) minBodyLines() int {
 	return max
 }
 
-// indicatorRows is listIndicatorRows or nothing, per listOverflows.
-func (s *ListScreen) indicatorRows() int {
+// markerSlack is what the pane has left for the ↑/↓ markers once the header,
+// the bar and a whole ROW of body are paid for. It is the one number both the
+// reservation and the refusal are computed from, so they cannot disagree.
+func (s *ListScreen) markerSlack() int {
+	return s.listPaneRows() - listHeaderRows - s.barRows() - s.minBodyLines()
+}
+
+// markerRows is how many rows the ↑/↓ markers get: none when the rows fit, the
+// PAIR when the pane can afford one apiece, and ONE — shared, listMarkerLine —
+// when it cannot.
+//
+// THE SHARED ROW IS WHAT LETS THE REFUSAL COME DOWN A ROW, and reserving one
+// without it would be a defect rather than a saving. The tempting version is
+// "reserve one, because ↑ only appears once windowStart > 0 and the pane opens
+// at 0" — true about the OPENING state and false about the next keypress: at
+// the boundary the body is exactly one row, so the first `j` scrolls, both
+// markers apply, and there is nothing left for the second to come out of. The
+// assembled pane then overruns by a row and clampToBox takes it off the BOTTOM,
+// where the bar is, which is the whole defect this budget exists to close. (
+// Re-asking the refusal after the scroll is worse still: the frame would flip
+// to the notice mid-scroll with the movement keys held, which is a dead end.)
+// So the reservation is honoured by the RENDERER instead — at most one marker
+// ROW is ever drawn where only one is reserved, and it carries both facts.
+//
+// It is NON-DECREASING in terminal height, which the too-short notice depends
+// on, and the fixed point still holds: at a refused pane markerRows is 1, so
+// the height it names buys a slack of exactly 1, which is what markerRows asks
+// for there.
+func (s *ListScreen) markerRows() int {
 	if !s.listOverflows() {
 		return 0
 	}
-	return listIndicatorRows
+	if s.markerSlack() >= listIndicatorRows {
+		return listIndicatorRows
+	}
+	return 1
+}
+
+// listMarkerLine is the ↑/↓ markers on ONE row, for the pane that can only
+// spare one. Both facts or neither: a shared row that told half of them would
+// be the mutilation the refusal exists to avoid, one row further in.
+func listMarkerLine(above bool, below int) string {
+	switch {
+	case above && below > 0:
+		return fmt.Sprintf("  ↑ more above · ↓ %d more below", below)
+	case above:
+		return "  ↑ more above"
+	case below > 0:
+		return fmt.Sprintf("  ↓ %d more below", below)
+	}
+	return ""
 }
 
 // listBodyLines is how many LINES of list body the pane has left after the
@@ -353,7 +398,7 @@ func (s *ListScreen) indicatorRows() int {
 // distinction is the whole of this repair: the old floor of two handed the
 // renderer two rows it could not draw, and the renderer drew them.
 func (s *ListScreen) listBodyLines() int {
-	avail := s.listPaneRows() - listHeaderRows - s.indicatorRows() - s.barRows()
+	avail := s.listPaneRows() - listHeaderRows - s.markerRows() - s.barRows()
 	if floor := s.minBodyLines(); avail < floor {
 		avail = floor
 	}
@@ -368,17 +413,22 @@ func (s *ListScreen) listBodyLines() int {
 // folded lines — while the LOADED one has to keep room for its TALLEST ROW
 // (minBodyLines) and for the markers that say there are more.
 //
-// It is NON-INCREASING in terminal height, which is what makes the height the
-// notice names a height that actually works: footerRows and minBodyLines are
-// functions of the footer and the rows alone, and indicatorRows can only go
-// from the pair to nothing as the pane grows. That is the same monotonicity
-// argument jdeTooShortRows sets out, and it is why there is no loop to converge
-// here.
+// THE HEIGHT IT NAMES IS A HEIGHT THAT DRAWS, which is the only property that
+// matters about it, and it holds at the FIXED POINT rather than by needRows
+// being monotone (it is not: markerRows can grow from one row to two as the
+// pane does). A refused pane has a marker slack of 0 or less, so markerRows is
+// 1 there and the height named is header + 1 + minBodyLines + bar. At that
+// height the slack is exactly 1, which is exactly what markerRows still asks
+// for — so need equals the pane and the frame draws. footerRows and
+// minBodyLines are functions of the footer and the rows alone and do not move
+// with the pane at all; if the taller pane stops overflowing, markerRows falls
+// to nothing and need only gets smaller. Same fixed-point argument
+// jdeTooShortRows sets out, and the same reason there is no loop to converge.
 func (s *ListScreen) needRows() int {
 	if len(s.rows) == 0 {
 		return listHeaderRows + 2 + s.footerRows()
 	}
-	return listHeaderRows + s.indicatorRows() + s.minBodyLines() + s.footerRows()
+	return listHeaderRows + s.markerRows() + s.minBodyLines() + s.footerRows()
 }
 
 // paneDrawn is the ONE predicate for "is this list's frame on the pane at all",
@@ -406,38 +456,69 @@ func (s *ListScreen) paneDrawn() bool {
 // the bar entirely — which is what this pane did — is the same trade with all of
 // the bar hidden.
 //
-// The HEIGHT FACT leads because a one-row pane keeps only the first line and the
-// height is the one thing here that can be acted on, and it is stated in
-// TERMINAL rows, which is the only unit an operator can resize: screenChromeRows
-// is screenBodyRows' own inverse, so the two cannot drift.
+// WHATEVER MUST SURVIVE MUST LEAD, the structural rule AGENTS.md records three
+// instances of, and here there is one figure the whole notice exists to carry:
+// the height the operator must RESIZE TO. So it leads, in its own fold segment,
+// and the height they already HAVE — which their own window manager is showing
+// them — follows it. Every trim, on either axis, then takes the expendable tail
+// and can never leave a wrong number standing. It used to read
+// "Too short: needs 16 rows, has 12." as ONE segment, which at the narrowest
+// drawable pane (16 cells) folded on spaces into "Too short:" and scattered the
+// figure across lines a short pane drops — and, bounded against a fixed 51
+// cells on a screen that did not record the terminal width, was CLIPPED at 60
+// columns to "Too short: needs 16 rows, has 1", an operator asked to act on a
+// number that is not the one the code computed.
 //
-// The second sentence is true because the movement gate in Update makes it true
-// — every key of the navigation vocabulary is held while this notice is drawn,
-// so the operator comes back to where they were rather than to wherever an
-// invisible cursor wandered. It claims nothing more than that: a notice denying
-// a loss that can happen is the same kind of lie as one claiming a loss that
-// cannot.
-func listTooShort(rows, terminalHeight, needRows int) string {
-	if rows <= 0 {
+// Both bounds are the LIVE pane: `cells` comes from screenBodyCells, the
+// unfloored width, because screenBodyWidth's floor of 20 is four cells more
+// than Root really draws at width 45. The fold is pickerWrap and the mark is
+// cellPrefix, both single forward passes over cells rather than runes.
+//
+// The height is stated in TERMINAL rows, the only unit an operator can resize:
+// screenChromeRows is screenBodyRows' own inverse, so the two cannot drift.
+//
+// The last sentence is true because the gate in Update makes it true — the
+// navigation vocabulary AND `s` are held while this notice is drawn, so the
+// operator comes back to where they were rather than to wherever an invisible
+// cursor wandered or a sort nobody could see put them. It claims nothing more
+// than that: a notice denying a loss that can happen is the same kind of lie as
+// one claiming a loss that cannot.
+func listTooShort(cells, rows, terminalHeight, needRows int) string {
+	if rows <= 0 || cells <= 0 {
 		return ""
 	}
-	lines := pickerWrap(fmt.Sprintf("Too short: needs %d rows, has %d.",
-		needRows+screenChromeRows, terminalHeight), pickerPaneWidth)
-	lines = append(lines, pickerWrap("No keys are named: the action bar would be cut. "+
-		"Moving keys are held until it fits, so you come back where you were.",
-		pickerPaneWidth)...)
-	if len(lines) > rows {
-		// MARK the cut, for the reason jdeTooShort marks its own: a sentence cut
-		// clean reads as a finished one, and this is the notice the operator is
-		// meant to act on.
+	lines := pickerWrap(fmt.Sprintf("Needs %d rows · has %d",
+		needRows+screenChromeRows, terminalHeight), cells)
+	lines = append(lines, pickerWrap("Too short for the action bar, so no keys are "+
+		"named. Moving and sorting are held until it fits, so you come back where "+
+		"you were.", cells)...)
+	cut := len(lines) > rows
+	if cut {
 		lines = lines[:rows]
-		last := len(lines) - 1
-		lines[last] = cellPrefix(lines[last], pickerPaneWidth-1) + "…"
 	}
 	for i, line := range lines {
+		// MARK the cut, for the reason jdeTooShort marks its own: a sentence cut
+		// clean reads as a finished one, and this is the notice the operator is
+		// meant to act on. The width test is separate from the height one
+		// because pickerWrap floors its own budget at twelve cells, so a pane
+		// narrower than that would otherwise be overrun without a mark.
+		if lipgloss.Width(line) > cells || (cut && i == len(lines)-1) {
+			line = cellPrefix(line, cells-1) + "…"
+		}
 		lines[i] = StyleMuted.Render(line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// listPaneCells is how wide this screen's View() may really draw, in display
+// cells. pickerPaneWidth only while genuinely UNSIZED, which is the same
+// standing answer the columnar layer gives for no pane: draw to the width the
+// interface is modelled on and let clampToBox decide.
+func (s *ListScreen) listPaneCells() int {
+	if s.terminalWidth <= 0 {
+		return pickerPaneWidth
+	}
+	return screenBodyCells(s.terminalWidth)
 }
 
 // rowsFittingFrom returns how many rows starting at `start` fit in the body,
@@ -666,6 +747,12 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		// The WIDTH is kept for the same reason the height is: something on this
+		// screen has to be bounded against the pane the terminal really gives,
+		// and a bound computed against a width the terminal may not have is not
+		// a bound. listTooShort is the one that cannot be got wrong — it is the
+		// only surface here asking the operator to act on a NUMBER.
+		s.terminalWidth = m.Width
 		s.scrollIntoView()
 		return s, nil
 	case listLoadedMsg:
@@ -725,7 +812,23 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		// operator who drags the terminal back finds somewhere they never went.
 		// paneDrawn is the frame's own predicate, so the notice's promise that
 		// moving keys are held is the same expression that holds them.
-		if listNavBinds(m.String()) && (!listNavMoves(len(s.rows)) || !s.paneDrawn()) {
+		//
+		// THE HELD SET ON A REFUSED PANE IS {the navigation vocabulary, `s`},
+		// and it is that short because it is DERIVED from what each key's whole
+		// product is rather than from "a refused pane is risky". A movement
+		// key's product is the position; `s` re-orders locally and its only
+		// visible product is headerLine, which the refusal does not draw, and
+		// needRows is invariant under re-ordering — so the pane comes back byte
+		// for byte, which is standing rule 1 broken by the refusal itself.
+		// Nothing else qualifies: `r` and `f` set loading and redraw as
+		// "Loading…", and enter/n/the uppercase shortcuts leave the screen
+		// altogether. Do NOT widen this to every key — one of them navigating
+		// away is the operator's way OUT of a pane too short to work in, and a
+		// refusal nobody can act on is its own defect.
+		if !s.paneDrawn() && (listNavBinds(m.String()) || m.String() == "s") {
+			return s, nil
+		}
+		if listNavBinds(m.String()) && !listNavMoves(len(s.rows)) {
 			return s, nil
 		}
 		switch m.String() {
@@ -986,7 +1089,7 @@ func (s *ListScreen) bodyView() string {
 	// just brought out of. paneDrawn is the same predicate the movement gate in
 	// Update reads.
 	if !s.paneDrawn() {
-		return listTooShort(s.listPaneRows(), s.terminalHeight, s.needRows())
+		return listTooShort(s.listPaneCells(), s.listPaneRows(), s.terminalHeight, s.needRows())
 	}
 	if len(s.rows) == 0 {
 		if s.searching {
@@ -1035,13 +1138,25 @@ func (s *ListScreen) bodyView() string {
 
 	var b strings.Builder
 	b.WriteString(StyleMuted.Render(s.headerLine()) + "\n")
-	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
-	}
 
 	end := s.windowStart + s.windowSize
 	if end > len(s.rows) {
 		end = len(s.rows)
+	}
+	// The markers are drawn in their places where the pane reserved a row for
+	// each, and SHARED on one row where it could only reserve one — markerRows
+	// is the single expression the budget, the refusal and this both read, so a
+	// pane can never draw a marker row it did not pay for. The shared row rides
+	// above the list because that is where a reader meets it before the rows it
+	// is about, and because the ↓ half carries its own arrow.
+	shared := s.markerRows() == 1
+	above, below := s.windowStart > 0, len(s.rows)-end
+	if shared {
+		if line := listMarkerLine(above, below); line != "" {
+			b.WriteString(StyleMuted.Render(cellPrefix(line, s.listPaneCells())) + "\n")
+		}
+	} else if above {
+		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
 	}
 	for i := s.windowStart; i < end; i++ {
 		row := s.rows[i]
@@ -1077,8 +1192,8 @@ func (s *ListScreen) bodyView() string {
 		}
 	}
 
-	if end < len(s.rows) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
+	if !shared && below > 0 {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", below)) + "\n")
 	}
 
 	if s.searching {

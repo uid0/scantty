@@ -933,28 +933,80 @@ either:
   `· N new PO · Q pending reorders` at height 11 empty and 14 loaded, and by
   height 10 the whole footer was gone: the bar-less pane the empty-list work
   above exists to remove, restored by geometry. `paneRows` reads `screenBodyRows`
-  now, the indicator pair is reserved only where the rows really outrun the body
+  now, the marker rows are reserved only where the rows really outrun the body
   (`listOverflows`), and the body floors at the TALLEST ROW rather than at one
   line — `rowsFittingFrom` will not return an empty window, so a one-line floor
   hands back a two-line row and the overflow is exactly its extra line.
+  THE ↑/↓ MARKERS COST A PAIR OF ROWS OR ONE SHARED ROW, and `markerRows` is the
+  single expression the budget, the refusal and the renderer all read. Where the
+  pane can afford one apiece they are drawn in their places as they always were;
+  where it can only afford one, `listMarkerLine` puts both facts on that row and
+  the refusal comes down a terminal row with it (measured: 16 → 15 on the
+  purchasing and inventory lists, 15 → 14 on the rest; the numbers are an OUTPUT
+  of the footer's fold and the tallest row, so re-derive rather than trust them).
+  Reserving one WITHOUT the shared row is the version to not reach for, and its
+  reasoning sounds right: `↑ more above` needs `windowStart > 0`, which the pane
+  does not open in. It is true of the opening state and false of the next
+  keypress — at the boundary the body is exactly one row, so the first `j`
+  scrolls, both markers apply and there is nothing left for the second to come
+  out of, the pane overruns and `clampToBox` takes the bar off the bottom.
+  Re-asking the refusal after the scroll is worse: the frame flips to the notice
+  mid-scroll with the movement keys held, which is a dead end.
+  AN EMPTY LIST NEEDS FEWER ROWS THAN THE SAME LIST ONCE ROWS ARRIVE — no
+  markers, a shorter footer, a one-line floor — so a list can be drawn while
+  empty and refuse when the rows land at the same size. That asymmetry is
+  inherent (an empty pane genuinely is smaller) and is not papered over.
   WHERE EVEN THAT WILL NOT FIT THE PANE IS REFUSED, not mutilated: `paneDrawn` is
   the one predicate `bodyView` and the movement gate in `Update` both read, and
   `listTooShort` draws a bounded notice naming the height needed in TERMINAL rows
-  — a height that ACTUALLY DRAWS when the operator resizes to it, which holds by
-  the same monotonicity argument `jdeTooShortRows` sets out. The movement keys
-  are HELD while it is drawn, so the notice's promise is the same expression that
-  keeps it; `end` on a refused pane would otherwise walk the cursor to the bottom
-  of a list nobody can see.
+  — a height that ACTUALLY DRAWS when the operator resizes to it. That holds at
+  the FIXED POINT and NOT by `needRows` being monotone, which it is not once
+  `markerRows` can grow from one row to two: a refused pane has a marker slack of
+  zero or less, so it reserves one, and the height that buys is a slack of
+  exactly one, which is what it still reserves there.
+  THE HELD SET IS {THE NAVIGATION VOCABULARY, `s`} AND IS DERIVED FROM WHAT EACH
+  KEY'S PRODUCT IS. A movement key's product is the position, so `end` on a
+  refused pane would walk the cursor to the bottom of a list nobody can see.
+  `s` re-orders locally and its only visible product is `headerLine`, which the
+  refusal does not draw, and `needRows` is invariant under re-ordering — so it
+  came back byte for byte, standing rule 1 broken by the refusal itself. Nothing
+  else qualifies: `r` and `f` set `loading` and redraw as `Loading…`, and
+  `enter`/`n`/the uppercase shortcuts LEAVE, which is the operator's way out of a
+  pane too short to work in. Do not widen the gate to every key.
+  THE NOTICE IS BOUNDED AGAINST THE LIVE PANE IN BOTH AXES, and the width half
+  was got wrong first: it folded and marked against a fixed `pickerPaneWidth` on
+  a screen that recorded only the terminal HEIGHT, so at 60 columns it drew
+  `Too short: needs 16 rows, has 1` — the operator asked to act on a number that
+  is not the one the code computed, unmarked, with `StyleMuted`'s closing reset
+  clipped off the end. `ListScreen` keeps `terminalWidth` now and `listPaneCells`
+  reads `screenBodyCells` — the UNFLOORED width, added to `layout.go` for the
+  reason `screenBodyRows` was: `screenBodyWidth`'s floor of 20 is four cells more
+  than Root draws at width 45, and a bound that spends cells the pane does not
+  have is not a bound.
+  WHATEVER MUST SURVIVE MUST LEAD, once more, and here it decides the WORDING:
+  the height to RESIZE TO leads in its own fold segment (`Needs N rows`) and the
+  height the operator already HAS follows it, because no sentence carrying both
+  fits the 16 cells the narrowest drawable pane gives, and a trim must never be
+  able to leave a WRONG number standing. The single-segment version folded on
+  spaces into `Too short:` and scattered the figure across lines a short pane
+  drops.
   THE HEIGHTS ARE DERIVED FROM ROOT'S OWN GATE, and that is why nothing reported
   any of this: every legibility loop in `list_bar_honesty_test.go` walked the
   hand-picked pair {24, 30}, and every failing height was below both — two
   hand-picked heights being the same mistake on the vertical axis that three
   hand-picked widths was on the horizontal one. They walk `jdePaneHeights()` now,
   and `TestList_AShortPaneRefusesRatherThanCuttingTheFooter` /
-  `TestList_ARefusedPaneKeepsTheOperatorsPlace` hold the refusal's own honesty —
-  bounded in both axes, naming a height that works, movement held, with the
-  control asserted so a fixture that could not move for unrelated reasons fails
-  instead of passing.
+  `TestList_ARefusedPaneKeepsTheOperatorsPlace` /
+  `TestList_ARefusedPaneHoldsTheKeysThatCouldNotBeSeenToAct` hold the refusal's
+  own honesty — bounded in both axes, naming a height that works, movement and
+  sort held, with the control asserted so a fixture that could not move for
+  unrelated reasons fails instead of passing. The WIDTH axis has its own sweep
+  over Root's drawable widths for the same reason
+  (`TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip`), and it asserts two
+  things because the leading figure cannot speak for both: that the figure
+  reaches the clipped pane whole, and that no line of the notice overruns the
+  pane at all — a styled line `clampToBox` truncates loses its closing SGR reset
+  into everything drawn after it.
 - **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
   hint literal.** The footer and the handler read that one table; the previous
   shape appended the words to a hint string and left the key to a global
@@ -1189,6 +1241,18 @@ either:
   "a key that acts must be named" cannot be answered about a pair. Two tokens
   can also spell one key — `PgUp/PgDn` and receiving's `PgUp` — so "is this key
   named" is asked of the UNION of the drawn tokens.
+  BOTH SIDES ARE PROVED REACHABLE, and the third of those counters is the one the
+  generalisation dropped while its own comment went on claiming it — a vacuity
+  guard that had itself gone vacuous, which is rule 8 in the most embarrassing
+  place available. `drawn`, `named` and `moves` say the sweep found panes, found
+  bars naming the vocabulary, and found keys that move; `unnamed` says it found
+  panes whose bar does NOT spell the token, which is the only state the REVERSE
+  implication can fire in. Without it a bar builder that started appending every
+  movement token unconditionally would leave `movedKey && !namedKeys`
+  unreachable, the forward half would still pass, and the sweep would report a
+  biconditional it had only ever tested one side of. It is counted PER TOKEN and
+  not in aggregate: aggregated, one sometimes-absent token vouches for every
+  other token in the vocabulary.
   `UP/DN` IS CONDITIONAL NOW and `jdeRowMoves` (`count > 1`) is the one
   predicate: the BAR asks it through `jdePickBarWith` / `jdeMoveItem`, and the
   ARMS ask it in `pickRow` and `moveRow`, so the claim and the key behind it are

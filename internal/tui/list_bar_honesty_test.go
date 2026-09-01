@@ -591,7 +591,7 @@ func TestList_AShortPaneRefusesRatherThanCuttingTheFooter(t *testing.T) {
 					// The notice, and NOTHING of the bar: a refused pane that still
 					// drew a footer fragment would be the defect wearing the fix.
 					need := s.needRows() + screenChromeRows
-					want := fmt.Sprintf("Too short: needs %d rows, has %d.", need, termHeight)
+					want := fmt.Sprintf("Needs %d rows", need)
 					if !listFooterLegible(t, s, termHeight, want) {
 						t.Errorf("the %s pane at height %d (%s) draws no footer and does not say "+
 							"why — the operator is left on a bar-less pane:\n%s",
@@ -606,10 +606,10 @@ func TestList_AShortPaneRefusesRatherThanCuttingTheFooter(t *testing.T) {
 							surface.name, termHeight, state, len(raw), s.listPaneRows())
 					}
 					for _, line := range raw {
-						if lipgloss.Width(line) > screenBodyWidth(80) {
+						if lipgloss.Width(line) > screenBodyCells(80) {
 							t.Errorf("the %s refusal at height %d (%s) draws %d cells into a pane of %d: %q",
 								surface.name, termHeight, state, lipgloss.Width(line),
-								screenBodyWidth(80), line)
+								screenBodyCells(80), line)
 						}
 					}
 
@@ -700,6 +700,163 @@ func TestList_ARefusedPaneKeepsTheOperatorsPlace(t *testing.T) {
 	if moved == 0 || held == 0 {
 		t.Fatalf("the sweep saw %d moves and %d holds — one of the two states was never "+
 			"reached, so the control is missing", moved, held)
+	}
+}
+
+// listRootLines renders a list inside a real Root of this size and returns the
+// CLIPPED pane, which is the only render worth asserting a bound on: Root.View
+// clamps the joined content to the width the terminal really gives, and a
+// screen measured on its own cannot see what that takes.
+func listRootLines(t *testing.T, s *ListScreen, w, h int) []string {
+	t.Helper()
+	sized, _ := s.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	r := newTestRoot(sized)
+	next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	after, ok := next.(Root)
+	if !ok {
+		t.Fatalf("Root.Update returned %T, want Root", next)
+	}
+	return strings.Split(after.View(), "\n")
+}
+
+// TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip: at EVERY width Root
+// will draw a list at, the too-short notice's leading figure — the height the
+// operator must resize to — reaches the pane whole.
+//
+// THE DEFECT. The notice folded and marked itself against a hard-coded 51 cells
+// (screenBodyWidth(80)) on a screen that recorded only the terminal HEIGHT, so
+// below 80 columns Root clipped the sentence the screen had just refused the
+// pane in order to show. At width 60 the pane is 31 cells and
+// "Too short: needs 16 rows, has 12." is 33, so it drew as
+// "Too short: needs 16 rows, has 1" — the operator asked to act on a number
+// that is not the one the code computed, with nothing marking the cut, and
+// StyleMuted's closing reset dropped off the end into whatever came after. A
+// refusal naming a WRONG height is worse than the clipped footer it replaced.
+//
+// THE WIDTHS ARE DERIVED from Root's own gate (jdeDrawableWidths), not picked.
+// This property held at 80, 100 and 120 and failed at every width from 45 to
+// 79; three hand-picked widths is exactly how the 60-column hole survived an
+// earlier round of this work.
+//
+// WHAT IS ASSERTED IS THE LEADING FIGURE AND NOT THE WHOLE NOTICE, because no
+// wording carrying both numbers fits the 16 cells the narrowest drawable pane
+// gives. That is the "whatever must survive must lead" rule: the height NEEDED
+// leads, in its own fold segment, so a trim on either axis takes the tail — the
+// height the operator already HAS, then the prose — and can never leave a wrong
+// number standing.
+func TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip(t *testing.T) {
+	widths := jdeDrawableWidths()
+	if len(widths) == 0 {
+		t.Fatal("no drawable widths — the derivation is broken, not the app")
+	}
+	checked := 0
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			for state, rows := range listRowCases {
+				for _, w := range widths {
+					for _, h := range jdePaneHeights() {
+						probe := listWithRows(surface.build, rows)
+						sized, _ := probe.Update(tea.WindowSizeMsg{Width: w, Height: h})
+						probe = sized.(*ListScreen)
+						if probe.paneDrawn() {
+							continue
+						}
+						checked++
+						want := fmt.Sprintf("Needs %d rows", probe.needRows()+screenChromeRows)
+						lines := listRootLines(t, listWithRows(surface.build, rows), w, h)
+						found := false
+						for _, line := range lines {
+							if strings.Contains(line, want) {
+								found = true
+							}
+						}
+						if !found {
+							t.Errorf("the %s refusal at %dx%d (%s) does not put %q on the pane "+
+								"whole — the operator is asked to resize to a height the terminal "+
+								"cut:\n%s", surface.name, w, h, state, want, strings.Join(lines, "\n"))
+						}
+						// AND NOTHING OF IT OVERRUNS, which is the other half and the
+						// one the leading figure cannot speak for: a line wider than
+						// the pane is a line clampToBox truncates, and truncating a
+						// styled line drops StyleMuted's closing reset off the end and
+						// colours everything drawn after it. Measured on the SCREEN's
+						// own output against the pane it was given, because by the time
+						// Root has clipped it the overrun has already happened.
+						for _, line := range strings.Split(probe.View(), "\n") {
+							if lipgloss.Width(line) > probe.listPaneCells() {
+								t.Errorf("the %s refusal at %dx%d (%s) draws %d cells into a pane "+
+									"of %d, so clampToBox cuts it: %q", surface.name, w, h, state,
+									lipgloss.Width(line), probe.listPaneCells(), line)
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no list refused a pane at any drawable size, so this check asserted " +
+			"nothing about the notice it exists to bound")
+	}
+}
+
+// TestList_ARefusedPaneHoldsTheKeysThatCouldNotBeSeenToAct: on a pane too short
+// to draw the frame, `s` declines alongside the movement vocabulary.
+//
+// `s` re-orders locally and its ONLY visible product is headerLine, which the
+// refusal branch does not draw; needRows is invariant under re-ordering
+// (minBodyLines is a MAX over the rows and footerHint does not read the sort),
+// so pressing it returned the pane byte for byte — standing rule 1, introduced
+// by the refusal itself and closed with it.
+//
+// POSITIVELY CONTROLLED, because "pressing s changed nothing" is equally true of
+// a fixture that could not sort: the same list is driven at a height where the
+// pane IS drawn and `s` must change the rendered pane there, so a fixture that
+// was inert for unrelated reasons fails instead of passing. The sort MODE is
+// asserted too, since holding the key means the screen's own record of it must
+// not move either — that is what makes the operator "come back where they were"
+// when the terminal grows.
+func TestList_ARefusedPaneHoldsTheKeysThatCouldNotBeSeenToAct(t *testing.T) {
+	held, moved := 0, 0
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			for state, rows := range listRowCases {
+				for _, h := range jdePaneHeights() {
+					s := listWithRows(surface.build, rows)
+					sized, _ := s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
+					s = sized.(*ListScreen)
+					before, beforeSort := clampToBox(s.View(), screenBodyCells(80), s.listPaneRows()), s.sort
+					next, _ := s.Update(listRuneKey("s"))
+					s = next.(*ListScreen)
+					after := clampToBox(s.View(), screenBodyCells(80), s.listPaneRows())
+
+					if !s.paneDrawn() {
+						held++
+						if s.sort != beforeSort {
+							t.Errorf("the %s list is refused at height %d (%s) and drawing the "+
+								"too-short notice, but `s` moved the sort from %v to %v — a "+
+								"re-order nothing on the pane can show",
+								surface.name, h, state, beforeSort, s.sort)
+						}
+						if after != before {
+							t.Errorf("the %s refusal at height %d (%s) changed under `s`",
+								surface.name, h, state)
+						}
+						continue
+					}
+					if after != before {
+						moved++
+					}
+				}
+			}
+		})
+	}
+	if held == 0 {
+		t.Fatal("`s` was never pressed on a refused list pane, so the hold was not tested")
+	}
+	if moved == 0 {
+		t.Fatal("`s` changed no drawn list pane at any height, so the control is missing " +
+			"and every hold above passed for a reason unrelated to the refusal")
 	}
 }
 

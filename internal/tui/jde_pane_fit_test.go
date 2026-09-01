@@ -1961,6 +1961,12 @@ func jdeSweepMovementToken(t *testing.T, tokens map[string]bool, what string) {
 	}
 
 	drawn, named, moves := 0, 0, 0
+	// unnamed counts, PER TOKEN, the drawn panes whose bar does NOT spell it.
+	// That is the reachability of the REVERSE implication: if every drawn pane
+	// named every token, `movedKey[key] && !namedKeys[key]` could not fire on
+	// any of them and the sweep would report a biconditional while only ever
+	// exercising one side of it.
+	unnamed := map[string]int{}
 	for _, c := range jdePaneCases() {
 		name, mk := c.name, c.mk
 		for _, w := range jdePaneWidths {
@@ -2013,6 +2019,7 @@ func jdeSweepMovementToken(t *testing.T, tokens map[string]bool, what string) {
 				// and `up` the one with room once it has moved.
 				for token := range tokens {
 					if !on[token] {
+						unnamed[token]++
 						continue
 					}
 					named++
@@ -2055,10 +2062,24 @@ func jdeSweepMovementToken(t *testing.T, tokens map[string]bool, what string) {
 	}
 	// Both halves have to be REACHED or the biconditional is one implication
 	// with the other side never exercised — the vacuous-fixture rule at the
-	// level of the sweep rather than of a fixture.
+	// level of the sweep rather than of a fixture. There are THREE of them, one
+	// per way this can go quiet, and the third is stated PER TOKEN rather than
+	// in aggregate: aggregated, a single token that is sometimes absent would
+	// vouch for every other token in the vocabulary, which is the same
+	// borrowed-coverage mistake as a roster that is checked in one direction.
 	if named == 0 {
 		t.Fatalf("no bar named %s at any of the %d drawn panes, so the "+
 			"named-and-acts half was never exercised", what, drawn)
+	}
+	for token := range tokens {
+		if unnamed[token] == 0 {
+			t.Fatalf("every one of the %d drawn panes named %q, so no pane in this "+
+				"sweep is in the state where a key it spells could act UNNAMED — the "+
+				"reverse half of the biconditional for %s was never exercised. A bar "+
+				"builder that started appending %q unconditionally would look exactly "+
+				"like this and the forward half would still pass",
+				drawn, token, what, token)
+		}
 	}
 	if moves == 0 {
 		t.Fatalf("no movement key moved anything at any of the %d drawn panes — "+
