@@ -535,9 +535,27 @@ func (s *ListScreen) paneDrawn() bool {
 // every trim of the notice either keeps the clause whole or takes it entire;
 // there is no prefix of it that denies the key without naming it.
 //
+// THE DENIAL IS ABOUT THE LEGEND, NOT ABOUT WHAT ACTS, and that distinction is
+// the whole of why this wording survives where "No keys but Esc" did not. The
+// held set on a refused pane is deliberately just {the navigation vocabulary,
+// `s`} — `r` reloads, `f` cycles the filter, `n` opens the create form, `enter`
+// opens the row under the invisible cursor and every uppercase sibling shortcut
+// navigates away, all by design and all still live — so a lead claiming no key
+// but Esc WORKS is false about each of them. What is true, and true whatever
+// stays bound, is that the action BAR is not drawn: no key is NAMED here except
+// the way out. That is the claim jdeTooShort makes ("No keys are named: the
+// action bar would be cut. … Esc still leaves"), and a claim about the legend
+// cannot be falsified by a binding somewhere else.
+//
+// IT FITS THE NARROWEST DRAWABLE PANE, which is a constraint on the wording and
+// not a happy accident: width 45 gives 16 cells, and a longer phrasing ("No keys
+// named but Esc" is 21) folds on spaces into a first line that denies without
+// naming — which at a one-row pane is the whole notice. Any rewording has to be
+// checked against that budget, and the sweeps below check it.
+//
 // The prose beneath does not repeat the denial as a count — it says why the bar
 // is absent and what Esc does — so nothing below can contradict what leads.
-const listTooShortWayOut = "No keys but Esc"
+const listTooShortWayOut = "No bar but Esc"
 
 // listTooShort is what a list draws when the pane cannot hold its footer whole.
 //
@@ -571,7 +589,7 @@ const listTooShortWayOut = "No keys but Esc"
 // WHAT GIVES AND WHERE, said plainly because it is a real loss. A ONE-ROW pane
 // keeps only the first folded line — that is terminal height 7, since
 // screenBodyRows is height − 6 — and whether that line still carries the height
-// depends on the WIDTH: at 51 cells it reads `No keys but Esc · needs 15 rows ·
+// depends on the WIDTH: at 51 cells it reads `No bar but Esc · needs 15 rows ·
 // has 7…`, at 31 it keeps the figure, and at the 16 cells width 45 gives it
 // folds after the clause alone and the height is gone. So the loss is confined to a
 // one-row pane on a narrow terminal, and the way out survives every one of
@@ -607,15 +625,35 @@ const listTooShortWayOut = "No keys but Esc"
 // pre-existing and belongs to every list state, not to the refusal; what was
 // new was a sentence claiming otherwise. A notice denying a loss that can happen
 // is the same kind of lie as one claiming a loss that cannot.
-func listTooShort(cells, rows, terminalHeight, needRows int) string {
+// THE PROSE DIFFERS BY BRANCH BECAUSE THE HELD SET DOES. On a browse pane the
+// keys held are movement and `s`, and nothing on the frame takes typing. With
+// the search overlay open the runes still reach the box — declining a typed
+// rune DISCARDS the operator's value, scanner bursts included, which is the one
+// thing this program never does — so the searching wording names that instead of
+// repeating a sentence about sorting that is not what is happening there.
+//
+// THE BOX ITSELF IS NOT DRAWN BESIDE THE NOTICE, and that is a decision rather
+// than an omission. Drawing it costs a row, the notice's leading clause is the
+// one thing that must survive every trim, and a one-row pane showing an input
+// line and no way out is precisely the bar-less pane this refusal exists to
+// remove — the state reported at 80x7. So the way out keeps the pane, the typed
+// value is KEPT rather than shown (it is on the box the moment the terminal
+// grows), and the notice SAYS so rather than leaving the operator to guess: not
+// silence about a loss, because there is no loss, only a delay in seeing it.
+func listTooShort(cells, rows, terminalHeight, needRows int, searching bool) string {
 	if rows <= 0 || cells <= 0 {
 		return ""
+	}
+	held := "moving and sorting do nothing while this notice is up, " +
+		"so you come back where you were."
+	if searching {
+		held = "moving and opening do nothing while this notice is up, " +
+			"but what you type still reaches the search box."
 	}
 	lines := pickerWrap(fmt.Sprintf("%s · needs %d rows · has %d",
 		listTooShortWayOut, needRows+screenChromeRows, terminalHeight), cells)
 	lines = append(lines, pickerWrap("The action bar would be cut, so it is not "+
-		"drawn. Esc leaves; moving and sorting do nothing while this notice is up, "+
-		"so you come back where you were.", cells)...)
+		"drawn. Esc leaves; "+held, cells)...)
 	cut := len(lines) > rows
 	if cut {
 		lines = lines[:rows]
@@ -1076,11 +1114,45 @@ func (s *ListScreen) enterSearch() (Screen, tea.Cmd) {
 	return s, textinput.Blink
 }
 
+// listSearchHeldKey is the overlay's held set on a refused pane: the keys whose
+// whole product is a position, or a navigation chosen from one. One expression,
+// read by the gate in updateSearch, so the notice's claim and the keys behind it
+// cannot part company.
+func listSearchHeldKey(t tea.KeyType) bool {
+	return t == tea.KeyUp || t == tea.KeyDown || t == tea.KeyEnter
+}
+
 // updateSearch owns key handling while the search input is open. Arrow keys
 // move the result cursor and enter opens the highlighted row (mirroring the
 // search palette); esc closes search and restores the unfiltered list; every
 // other key edits the query and, on change, fires a fresh backend search.
 func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// THE REFUSAL'S PROMISE IS KEPT ON THIS SIDE OF THE DISPATCH TOO. Update
+	// hands every key to this function while the overlay is open, BEFORE the
+	// browse gate below it, so extending paneDrawn to the overlay without a
+	// gate here left the notice describing a hold nothing applied: `up`/`down`
+	// walked the cursor over rows nobody could see and `enter` opened whichever
+	// one it happened to land on, while the pane said moving does nothing.
+	//
+	// THE HELD SET IS DERIVED THE SAME WAY THE BROWSE ONE IS — from what each
+	// key's whole product is — and it is NOT the browse set, because the two
+	// frames differ in the way that matters. A movement key's product is the
+	// POSITION, so declining it preserves what the operator had; `enter`'s is a
+	// navigation chosen by an invisible cursor, which is worse than no
+	// navigation at all. Both are held, silently, for the reason the browse gate
+	// gives: once the move is refused there is nothing left to report.
+	//
+	// TYPING IS NOT HELD AND MUST NOT BE. A typed rune's product is the VALUE,
+	// so declining it DISCARDS input — a scanner burst arrives as a key burst
+	// and cannot be retyped. The runes keep reaching the box, the query survives
+	// the resize, and listTooShort's searching wording says exactly that.
+	//
+	// `esc` is not held either: it is the way out the notice names, and on a
+	// refused pane WantsRawInput is false, so it reaches Root's back step rather
+	// than this arm.
+	if !s.paneDrawn() && listSearchHeldKey(m.Type) {
+		return s, nil
+	}
 	switch m.Type {
 	case tea.KeyEsc:
 		s.searching = false
@@ -1185,7 +1257,8 @@ func (s *ListScreen) View() string {
 	// explanation stapled to it. The notice replaces the whole frame, so what
 	// the operator sees is the height they need and the key that leaves.
 	if !s.paneDrawn() {
-		return listTooShort(s.listPaneCells(), s.listPaneRows(), s.terminalHeight, s.needRows())
+		return listTooShort(s.listPaneCells(), s.listPaneRows(), s.terminalHeight,
+			s.needRows(), s.searching)
 	}
 	// The search overlay renders above whatever body state follows, so the
 	// operator can keep editing the query even when a search returns nothing.

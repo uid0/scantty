@@ -749,7 +749,7 @@ func listRootLines(t *testing.T, s *ListScreen, w, h int) []string {
 // never leave a wrong number standing.
 //
 // THE LEAD IS READ OFF THE RECORD, so the reordering that put the RULE in front
-// of the exception ("No keys but Esc" rather than "Esc leaves", the order
+// of the exception ("No bar but Esc" rather than "Esc leaves", the order
 // jdeTooShort states) had to keep this test passing rather than be traded
 // against it: both facts ride ONE clause, so the clause that must survive is
 // still the clause that leads and no prefix of the notice denies the key
@@ -862,9 +862,9 @@ var listWayOutKeyNames = map[string]listWayOutKey{
 // to know, and that is what lets an unknown KEY be told apart from an ordinary
 // one. The notice is built of " · " clauses and each is worded rule-then-
 // exception, so a clause ENDS on its key and everything before it is prose:
-// "No keys but Esc" names Esc. Scanning every word instead, an unrecognised key
-// was indistinguishable from the word "keys" and could only be skipped — so a
-// notice reworded to "No keys but Esc · nor Ctrl-C" would have pressed esc,
+// "No bar but Esc" names Esc. Scanning every word instead, an unrecognised key
+// was indistinguishable from the word "bar" and could only be skipped — so a
+// notice reworded to "No bar but Esc · nor Ctrl-C" would have pressed esc,
 // passed over Ctrl-C in silence and certified half the record. Now every clause
 // must yield a key the table knows, or the sweep fatals.
 func listWayOutKeys(t *testing.T) []listWayOutKey {
@@ -1956,3 +1956,93 @@ const listMarkerFixtureRows = 200
 // which is all this sweep needs the cursor for. The tallest drawable pane holds
 // far fewer rows than this.
 const listMarkerScrollPresses = 40
+
+// TestList_ARefusedSearchOverlayHoldsTheKeysItSaysItHolds: with the overlay
+// open on a pane too short to draw it, the keys whose product the operator
+// cannot see are held — and the keys that would DISCARD something are not.
+//
+// THE DEFECT. Extending the refusal to the overlay put the notice on the pane
+// while Update still dispatched every key to updateSearch BEFORE the browse
+// gate, so `up`/`down` walked the cursor over rows nobody could see and `enter`
+// opened whichever row it landed on, under a notice reading "moving and opening
+// do nothing while this notice is up". At 80x7 on the Assets list that is a
+// cursor the operator never moved and a screen they never chose.
+//
+// TYPING IS ASSERTED FROM THE OTHER SIDE, and it is the half a gate written as
+// "hold everything" would break: a rune's product is the VALUE, so declining it
+// discards input a scanner cannot resend. The query must still land in the box.
+//
+// POSITIVELY CONTROLLED, because "down changed nothing" is equally true of a
+// fixture that could not move: the same overlay is driven at a pane where it IS
+// drawn and `down` must move the cursor there, so a fixture inert for unrelated
+// reasons fails instead of passing.
+func TestList_ARefusedSearchOverlayHoldsTheKeysItSaysItHolds(t *testing.T) {
+	widths, heights := jdeDrawableWidths(), jdePaneHeights()
+	refused, controls := 0, 0
+	for _, surface := range listSearchSurfaces(t) {
+		t.Run(surface.name, func(t *testing.T) {
+			for _, w := range widths {
+				for _, h := range heights {
+					s := listSearchOpen(t, surface.build, 8, w, h)
+					if s.paneDrawn() {
+						before := s.cursor
+						next, _ := s.Update(tea.KeyMsg{Type: tea.KeyDown})
+						if next.(*ListScreen).cursor != before+1 {
+							t.Fatalf("%s: the control failed at %dx%d — down did not move the "+
+								"cursor on a DRAWN overlay, so the held-key assertions below "+
+								"would pass on a fixture that cannot move", surface.name, w, h)
+						}
+						controls++
+						continue
+					}
+					refused++
+
+					for _, key := range []tea.KeyMsg{
+						{Type: tea.KeyDown}, {Type: tea.KeyUp}, {Type: tea.KeyEnter},
+					} {
+						held := listSearchOpen(t, surface.build, 8, w, h)
+						r := newTestRoot(held)
+						sized, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+						r = sized.(Root)
+						pane := strings.Join(strings.Split(r.View(), "\n"), "\n")
+						cursor, start := held.cursor, held.windowStart
+
+						after, _ := r.Update(key)
+						if after.(Root).screen != Screen(held) {
+							t.Errorf("the %s refused overlay at %dx%d says opening does nothing, "+
+								"and %v navigated away from it", surface.name, w, h, key.Type)
+						}
+						if held.cursor != cursor || held.windowStart != start {
+							t.Errorf("the %s refused overlay at %dx%d says moving does nothing, and "+
+								"%v moved the place from (%d,%d) to (%d,%d)", surface.name, w, h,
+								key.Type, cursor, start, held.cursor, held.windowStart)
+						}
+						if got := after.(Root).View(); got != pane {
+							t.Errorf("the %s refused overlay at %dx%d redrew after %v, so the key "+
+								"was not held", surface.name, w, h, key.Type)
+						}
+					}
+
+					// The other half of the rule: a typed rune is never discarded,
+					// however short the pane is.
+					typed := listSearchOpen(t, surface.build, 8, w, h)
+					r := newTestRoot(typed)
+					sized, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+					next, _ := sized.(Root).Update(listRuneKey("q"))
+					if got := next.(Root); got.screen != Screen(typed) {
+						t.Fatalf("%s: typing at %dx%d left the list, so the query assertion "+
+							"below is about the wrong screen", surface.name, w, h)
+					}
+					if got := typed.searchInput.Value(); got != "q" {
+						t.Errorf("the %s refused overlay at %dx%d says what you type still reaches "+
+							"the search box, and the box holds %q", surface.name, w, h, got)
+					}
+				}
+			}
+		})
+	}
+	if refused == 0 || controls == 0 {
+		t.Fatalf("the overlay was refused at %d panes and drawn at %d — both are needed, "+
+			"or one half of this check asserted nothing", refused, controls)
+	}
+}
