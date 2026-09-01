@@ -902,7 +902,7 @@ func listWayOutKeys(t *testing.T) []listWayOutKey {
 // drawable pane the refusal is reachable at, and the screen has to change.
 //
 // It is a claim about LEAVING and not about the list: esc does not act on the
-// list (the gate holds movement and sort), it pops the back-stack, or falls
+// list (the gate holds listRefusedHoldsKey), it pops the back-stack, or falls
 // home from the bottom of it. Both count as leaving and both are exercised —
 // the stack is empty in one case and carries a screen in the other, because
 // "esc worked" for the wrong one of those two reasons is how a way out comes to
@@ -915,33 +915,33 @@ func listWayOutKeys(t *testing.T) []listWayOutKey {
 func TestList_ARefusedPaneNamesAKeyThatReallyLeaves(t *testing.T) {
 	wayOut := listWayOutKeys(t)
 	widths, heights := jdeDrawableWidths(), jdePaneHeights()
-	pressed := map[string]int{}
+	pressed := 0
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
-			for _, branch := range listRefusalBranches(t, surface) {
-				for state, rows := range listRowCases {
-					for _, w := range widths {
-						for _, h := range heights {
-							if branch.open(t, surface.build, rows, w, h).paneDrawn() {
-								continue
-							}
-							for _, key := range wayOut {
-								for _, withHistory := range []bool{false, true} {
-									list := branch.open(t, surface.build, rows, w, h)
-									r := newTestRoot(list)
-									if withHistory {
-										r.history = []navEntry{{screen: NewWelcomeScreen(), ws: WSScan}}
-									}
-									next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
-									r = next.(Root)
-									after, _ := r.Update(key.msg)
-									pressed[branch.name]++
-									if after.(Root).screen == Screen(list) {
-										t.Errorf("the %s %s refusal at %dx%d (%s, history %v) reads "+
-											"%q and pressing %q left the operator on the same screen",
-											surface.name, branch.name, w, h, state, withHistory,
-											listTooShortWayOut, key.name)
-									}
+			for state, rows := range listRowCases {
+				for _, w := range widths {
+					for _, h := range heights {
+						probe := listWithRows(surface.build, rows)
+						sized, _ := probe.Update(tea.WindowSizeMsg{Width: w, Height: h})
+						if sized.(*ListScreen).paneDrawn() {
+							continue
+						}
+						for _, key := range wayOut {
+							for _, withHistory := range []bool{false, true} {
+								list := listWithRows(surface.build, rows)
+								r := newTestRoot(list)
+								if withHistory {
+									r.history = []navEntry{{screen: NewWelcomeScreen(), ws: WSScan}}
+								}
+								next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+								r = next.(Root)
+								after, _ := r.Update(key.msg)
+								pressed++
+								if after.(Root).screen == Screen(list) {
+									t.Errorf("the %s refusal at %dx%d (%s, history %v) reads %q "+
+										"and pressing %q left the operator on the same screen",
+										surface.name, w, h, state, withHistory,
+										listTooShortWayOut, key.name)
 								}
 							}
 						}
@@ -950,11 +950,9 @@ func TestList_ARefusedPaneNamesAKeyThatReallyLeaves(t *testing.T) {
 			}
 		})
 	}
-	for _, branch := range listRefusalBranchNames {
-		if pressed[branch] == 0 {
-			t.Fatalf("no %s pane was refused at any drawable size, so the way out this "+
-				"notice names was never pressed in a state it claims it in", branch)
-		}
+	if pressed == 0 {
+		t.Fatal("no list was refused at any drawable size, so the way out this notice " +
+			"names was never pressed")
 	}
 }
 
@@ -1600,86 +1598,6 @@ func listSearchOpen(t *testing.T, build func() *ListScreen, rows, w, h int) *Lis
 	return next.(*ListScreen)
 }
 
-// TestList_TheSearchOverlayRefusesRatherThanCuttingItsBar: the overlay is
-// inside the refusal like every other state that draws a bar.
-//
-// IT USED TO BE EXEMPT, ON A PREMISE ABOUT A DIRECTION clampToBox DOES NOT CUT
-// IN. paneDrawn excused it because the overlay "pins its bar to the TOP of the
-// pane, where clampToBox cannot reach it" — but clampToBox drops from the
-// BOTTOM, and the overlay's bar is on the SECOND row of an assembly that then
-// draws a header, the markers and the rows beneath it. At 80x7 the pane got the
-// input line and nothing else: no bar, no rows, no notice, every key the
-// overlay names still live and nothing on the screen saying so. An exemption
-// has to hold at every drawable pane or it is not an exemption, so this walks
-// Root's own drawable widths and heights rather than a size somebody picked.
-//
-// Both halves are asserted, because either alone is satisfied by a screen that
-// is always refused or never refused: where the pane IS drawn every segment of
-// the overlay's own bar survives the clip whole, and where it is NOT the notice
-// is there instead, with no fragment of the bar left beside it.
-func TestList_TheSearchOverlayRefusesRatherThanCuttingItsBar(t *testing.T) {
-	widths, heights := jdeDrawableWidths(), jdePaneHeights()
-	drawn, refused := 0, 0
-	for _, surface := range listSearchSurfaces(t) {
-		t.Run(surface.name, func(t *testing.T) {
-			for state, rows := range listRowCases {
-				for _, w := range widths {
-					for _, h := range heights {
-						s := listSearchOpen(t, surface.build, rows, w, h)
-						if !s.searching {
-							t.Fatalf("%s: '/' did not open the overlay at %dx%d (%s)",
-								surface.name, w, h, state)
-						}
-						pane := listRootLines(t, s, w, h)
-						joined := strings.Join(pane, "\n")
-
-						if s.paneDrawn() {
-							drawn++
-							for _, segment := range strings.Split(s.searchBarHint(), " · ") {
-								if !listLineHolds(pane, segment) {
-									t.Errorf("the %s search overlay at %dx%d (%s) claims %q on a "+
-										"line the pane cuts off:\n%s",
-										surface.name, w, h, state, segment, joined)
-								}
-							}
-							continue
-						}
-						refused++
-						// The WAY OUT at every refused pane and the HEIGHT wherever the
-						// pane has more than one row, which is the scope the browse
-						// refusal already states: a one-row pane keeps only the first
-						// folded line and at the narrowest widths that line has room for
-						// the clause and not the figure. The height is what gives; the
-						// way out is not.
-						if !listLineHolds(pane, listTooShortWayOut) {
-							t.Errorf("the %s search overlay at %dx%d (%s) cannot draw its bar and "+
-								"does not name the way off it — the operator is left on a bar-less "+
-								"pane:\n%s", surface.name, w, h, state, joined)
-						}
-						want := fmt.Sprintf("needs %d rows", s.needRows()+screenChromeRows)
-						if s.listPaneRows() > 1 && !listLineHolds(pane, want) {
-							t.Errorf("the %s search overlay at %dx%d (%s) is refused and does not "+
-								"say how tall a terminal it needs:\n%s",
-								surface.name, w, h, state, joined)
-						}
-						for _, segment := range strings.Split(s.searchBarHint(), " · ") {
-							if listLineHolds(pane, segment) {
-								t.Errorf("the %s search overlay at %dx%d (%s) is refused but still "+
-									"draws %q beside the notice:\n%s",
-									surface.name, w, h, state, segment, joined)
-							}
-						}
-					}
-				}
-			}
-		})
-	}
-	if drawn == 0 || refused == 0 {
-		t.Fatalf("the overlay was drawn at %d panes and refused at %d — both halves of "+
-			"this check need a case, or one implication was never exercised", drawn, refused)
-	}
-}
-
 // listLineHolds reports whether one whole line of a clipped pane carries the
 // segment, which is the only way a claim is legible to an operator.
 func listLineHolds(pane []string, segment string) bool {
@@ -1689,58 +1607,6 @@ func listLineHolds(pane []string, segment string) bool {
 		}
 	}
 	return false
-}
-
-// TestList_ARefusedSearchOverlayNamesAKeyThatReallyLeaves is the way-out claim
-// in the state the refusal was just extended to.
-//
-// It is a SEPARATE press from the browse sweep because the key takes a
-// different road: while the overlay is open the screen used to claim raw input,
-// so `esc` reached updateSearch and merely CLOSED the overlay — and since the
-// browse footer folds to more lines than the overlay's bar, every height that
-// refuses the overlay refuses the browse pane too. The notice named a key that
-// redrew the notice. WantsRawInput now releases the keyboard on a refused pane,
-// and this presses the record's own keys through a real Root to prove it, with
-// the back-stack empty and loaded for the reason the browse sweep gives.
-func TestList_ARefusedSearchOverlayNamesAKeyThatReallyLeaves(t *testing.T) {
-	wayOut := listWayOutKeys(t)
-	widths, heights := jdeDrawableWidths(), jdePaneHeights()
-	checked := 0
-	for _, surface := range listSearchSurfaces(t) {
-		t.Run(surface.name, func(t *testing.T) {
-			for state, rows := range listRowCases {
-				for _, w := range widths {
-					for _, h := range heights {
-						if listSearchOpen(t, surface.build, rows, w, h).paneDrawn() {
-							continue
-						}
-						for _, key := range wayOut {
-							for _, withHistory := range []bool{false, true} {
-								list := listSearchOpen(t, surface.build, rows, w, h)
-								r := newTestRoot(list)
-								if withHistory {
-									r.history = []navEntry{{screen: NewWelcomeScreen(), ws: WSScan}}
-								}
-								sized, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
-								after, _ := sized.(Root).Update(key.msg)
-								checked++
-								if after.(Root).screen == Screen(list) {
-									t.Errorf("the %s search refusal at %dx%d (%s, history %v) reads "+
-										"%q and pressing %q left the operator on the same screen",
-										surface.name, w, h, state, withHistory,
-										listTooShortWayOut, key.name)
-								}
-							}
-						}
-					}
-				}
-			}
-		})
-	}
-	if checked == 0 {
-		t.Fatal("no search overlay was refused at any drawable size, so the way out " +
-			"this notice names was never pressed there")
-	}
 }
 
 // listMarkerCount reads the figure a drawn marker row states, and reports
@@ -1959,143 +1825,6 @@ const listMarkerFixtureRows = 200
 // far fewer rows than this.
 const listMarkerScrollPresses = 40
 
-// TestList_ARefusedSearchOverlayHoldsTheKeysItSaysItHolds: with the overlay
-// open on a pane too short to draw it, the keys whose product the operator
-// cannot see are held — and the keys that would DISCARD something are not.
-//
-// THE DEFECT. Extending the refusal to the overlay put the notice on the pane
-// while Update still dispatched every key to updateSearch BEFORE the browse
-// gate, so `up`/`down` walked the cursor over rows nobody could see and `enter`
-// opened whichever row it landed on, under a notice reading "moving and opening
-// do nothing while this notice is up". At 80x7 on the Assets list that is a
-// cursor the operator never moved and a screen they never chose.
-//
-// TYPING IS ASSERTED FROM THE OTHER SIDE, and it is the half a gate written as
-// "hold everything" would break: a rune's product is the VALUE, so declining it
-// discards input a scanner cannot resend. The query must still land in the box.
-//
-// POSITIVELY CONTROLLED, because "down changed nothing" is equally true of a
-// fixture that could not move: the same overlay is driven at a pane where it IS
-// drawn and `down` must move the cursor there, so a fixture inert for unrelated
-// reasons fails instead of passing.
-func TestList_ARefusedSearchOverlayHoldsTheKeysItSaysItHolds(t *testing.T) {
-	widths, heights := jdeDrawableWidths(), jdePaneHeights()
-	// THE CURSOR IS SEATED OFF THE TOP BEFORE THE PANE IS REFUSED, at the
-	// largest pane Root will draw. Opened at rest the cursor is on row 0, where
-	// `up` moves nothing whatever the gate says — so dropping the KeyUp arm left
-	// this loop green, the same could-not-fail shape as the discarded enter cmd.
-	// Seating needs a DRAWN pane (movement is what the gate holds), which is the
-	// operator's own sequence: work at a usable size, then drag the terminal short.
-	tallW, tallH := listMax(widths), listMax(heights)
-	refused, controls := 0, 0
-	for _, surface := range listSearchSurfaces(t) {
-		t.Run(surface.name, func(t *testing.T) {
-			for _, w := range widths {
-				for _, h := range heights {
-					s := listSearchOpen(t, surface.build, 8, w, h)
-					if s.paneDrawn() {
-						// ONE CONTROL PER HELD KEY, THROUGH THE SURFACE THAT KEY'S
-						// PRODUCT APPEARS ON. A movement key's product is the
-						// POSITION and enter's is a NAVIGATION COMMAND, so a control
-						// that only moves the cursor says nothing about enter — which
-						// is exactly how the enter assertion below came to be one that
-						// could not fail.
-						before := s.cursor
-						next, _ := s.Update(tea.KeyMsg{Type: tea.KeyDown})
-						if next.(*ListScreen).cursor != before+1 {
-							t.Fatalf("%s: the control failed at %dx%d — down did not move the "+
-								"cursor on a DRAWN overlay, so the held-key assertions below "+
-								"would pass on a fixture that cannot move", surface.name, w, h)
-						}
-						open := listSearchOpen(t, surface.build, 8, w, h)
-						if _, cmd := open.Update(tea.KeyMsg{Type: tea.KeyEnter}); !listNavigates(cmd) {
-							t.Fatalf("%s: the control failed at %dx%d — enter issued no navigation "+
-								"on a DRAWN overlay, so the no-navigation assertion below would "+
-								"pass on a fixture that cannot open anything", surface.name, w, h)
-						}
-						controls++
-						continue
-					}
-					refused++
-
-					for _, key := range []tea.KeyMsg{
-						{Type: tea.KeyDown}, {Type: tea.KeyUp}, {Type: tea.KeyEnter},
-					} {
-						held := listSearchOpen(t, surface.build, 8, tallW, tallH)
-						if !held.paneDrawn() {
-							t.Fatalf("%s: the overlay is refused even at %dx%d, the largest pane "+
-								"Root draws, so the cursor cannot be seated and every assertion "+
-								"below is about a cursor resting on row 0",
-								surface.name, tallW, tallH)
-						}
-						seat, _ := held.Update(tea.KeyMsg{Type: tea.KeyDown})
-						held = seat.(*ListScreen)
-						if held.cursor == 0 {
-							t.Fatalf("%s: the cursor would not leave row 0 at %dx%d, so `up` has "+
-								"nowhere to move from and its assertion cannot fail",
-								surface.name, tallW, tallH)
-						}
-						r := newTestRoot(held)
-						sized, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
-						r = sized.(Root)
-						if held.paneDrawn() {
-							t.Fatalf("%s: the overlay is drawn again at %dx%d after the resize, so "+
-								"these are not the refused pane's keys", surface.name, w, h)
-						}
-						pane := strings.Join(strings.Split(r.View(), "\n"), "\n")
-						cursor, start := held.cursor, held.windowStart
-
-						after, cmd := r.Update(key)
-						// ENTER'S WHOLE PRODUCT IS A COMMAND, and it is the only
-						// surface the gate shows on: openSelected returns the screen
-						// UNCHANGED beside a SwitchTo cmd, so the identity, the place
-						// and the pane are all identical whether the gate held or not.
-						// Discarding the cmd made this loop's enter third a check that
-						// could not fail, guarding an arm added in the same round.
-						if listNavigates(cmd) {
-							t.Errorf("the %s refused overlay at %dx%d says opening does nothing, "+
-								"and %v issued a navigation to a row nobody can see",
-								surface.name, w, h, key.Type)
-						}
-						if after.(Root).screen != Screen(held) {
-							t.Errorf("the %s refused overlay at %dx%d says opening does nothing, "+
-								"and %v navigated away from it", surface.name, w, h, key.Type)
-						}
-						if held.cursor != cursor || held.windowStart != start {
-							t.Errorf("the %s refused overlay at %dx%d says moving does nothing, and "+
-								"%v moved the place from (%d,%d) to (%d,%d)", surface.name, w, h,
-								key.Type, cursor, start, held.cursor, held.windowStart)
-						}
-						if got := after.(Root).View(); got != pane {
-							t.Errorf("the %s refused overlay at %dx%d redrew after %v, so the key "+
-								"was not held", surface.name, w, h, key.Type)
-						}
-					}
-
-					// The other half of the rule: a typed rune is never discarded,
-					// however short the pane is.
-					typed := listSearchOpen(t, surface.build, 8, w, h)
-					r := newTestRoot(typed)
-					sized, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
-					next, _ := sized.(Root).Update(listRuneKey("q"))
-					if got := next.(Root); got.screen != Screen(typed) {
-						t.Fatalf("%s: typing at %dx%d left the list, so the query assertion "+
-							"below is about the wrong screen", surface.name, w, h)
-					}
-					if got := typed.searchInput.Value(); got != "q" {
-						t.Errorf("the %s refused overlay at %dx%d says what you type still reaches "+
-							"the search box, and the box holds %q", surface.name, w, h, got)
-					}
-				}
-			}
-		})
-	}
-	if refused == 0 || controls == 0 {
-		t.Fatalf("the overlay was refused at %d panes and drawn at %d — both are needed, "+
-			"or one half of this check asserted nothing", refused, controls)
-	}
-}
-
 // listNavigates reports whether a command carries a screen switch, which is the
 // only surface a held `enter` can be judged on: openSelected leaves the screen,
 // the cursor and the pane exactly as it found them and hands the navigation back
@@ -2121,62 +1850,6 @@ func listNavigates(cmd tea.Cmd) bool {
 	return false
 }
 
-// listMax is the largest member of a derived size set, taken rather than
-// assumed to be last so the sweeps do not depend on the derivation's order.
-func listMax(sizes []int) int {
-	max := 0
-	for _, n := range sizes {
-		if n > max {
-			max = n
-		}
-	}
-	return max
-}
-
-// listRefusalBranch is one state listTooShort makes its claims in. The notice
-// takes a `searching` flag and words itself differently on each side of it, so
-// the branches are exactly the two values of that flag — a set complete by
-// construction rather than a roster somebody has to remember to extend.
-//
-// IT EXISTS BECAUSE THE WAY-OUT SWEEP ONLY EVER PRESSED ONE OF THEM. The notice
-// gained its searching branch and went on claiming "Esc leaves" there with no
-// press behind it, which is the claim-without-a-check this branch exists to
-// close, reached by adding a state rather than by changing a check.
-type listRefusalBranch struct {
-	name string
-	open func(t *testing.T, build func() *ListScreen, rows, w, h int) *ListScreen
-}
-
-// listRefusalBranchNames is what the vacuity guards check they reached, so a
-// branch that stops being reachable fails rather than being silently skipped.
-var listRefusalBranchNames = []string{"browse", "searching"}
-
-// listRefusalBranches is the branches this surface can actually be driven into:
-// every list has a browse pane, and only a list with a searchLoader has an
-// overlay to open.
-func listRefusalBranches(t *testing.T, surface listBarSurface) []listRefusalBranch {
-	t.Helper()
-	branches := []listRefusalBranch{{
-		name: "browse",
-		open: func(t *testing.T, build func() *ListScreen, rows, w, h int) *ListScreen {
-			t.Helper()
-			s := listWithRows(build, rows)
-			next, _ := s.Update(tea.WindowSizeMsg{Width: w, Height: h})
-			return next.(*ListScreen)
-		},
-	}}
-	if listWithRows(surface.build, 8).spec.searchLoader == nil {
-		return branches
-	}
-	return append(branches, listRefusalBranch{
-		name: "searching",
-		open: func(t *testing.T, build func() *ListScreen, rows, w, h int) *ListScreen {
-			t.Helper()
-			return listSearchOpen(t, build, rows, w, h)
-		},
-	})
-}
-
 // TestList_ARefusedPaneNeverOpensARowNobodyCanSee: `enter` is held on a refused
 // pane, on BOTH branches, and for one reason.
 //
@@ -2192,41 +1865,38 @@ func listRefusalBranches(t *testing.T, surface listBarSurface) []listRefusalBran
 // ASSERTED ON THE COMMAND, because that is the only surface enter's product
 // appears on: openSelected returns the screen, the cursor and the pane exactly
 // as it found them and hands the navigation back as a tea.Cmd. Positively
-// controlled on a drawn pane of each branch, so "no navigation" cannot pass on a
-// fixture that opens nothing.
+// controlled on a drawn pane, so "no navigation" cannot pass on a fixture that
+// opens nothing.
 func TestList_ARefusedPaneNeverOpensARowNobodyCanSee(t *testing.T) {
 	heights := jdePaneHeights()
-	refused, controls := map[string]int{}, map[string]int{}
+	refused, controls := 0, 0
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
-			for _, branch := range listRefusalBranches(t, surface) {
-				for _, h := range heights {
-					s := branch.open(t, surface.build, 8, 80, h)
-					_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-					if s.paneDrawn() {
-						if !listNavigates(cmd) {
-							t.Fatalf("%s: the %s control failed at 80x%d — enter opened nothing on "+
-								"a DRAWN pane, so the hold below would pass on a fixture that "+
-								"cannot navigate", surface.name, branch.name, h)
-						}
-						controls[branch.name]++
-						continue
+			for _, h := range heights {
+				probe := listWithRows(surface.build, 8)
+				sized, _ := probe.Update(tea.WindowSizeMsg{Width: 80, Height: h})
+				s := sized.(*ListScreen)
+				_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				if s.paneDrawn() {
+					if !listNavigates(cmd) {
+						t.Fatalf("%s: the control failed at 80x%d — enter opened nothing on a "+
+							"DRAWN pane, so the hold below would pass on a fixture that cannot "+
+							"navigate", surface.name, h)
 					}
-					refused[branch.name]++
-					if listNavigates(cmd) {
-						t.Errorf("the %s %s refusal at 80x%d says opening does nothing, and enter "+
-							"issued a navigation to a row nobody can see", surface.name, branch.name, h)
-					}
+					controls++
+					continue
+				}
+				refused++
+				if listNavigates(cmd) {
+					t.Errorf("the %s refusal at 80x%d says opening does nothing, and enter "+
+						"issued a navigation to a row nobody can see", surface.name, h)
 				}
 			}
 		})
 	}
-	for _, branch := range listRefusalBranchNames {
-		if refused[branch] == 0 || controls[branch] == 0 {
-			t.Fatalf("the %s branch was refused at %d heights and drawn at %d — both are "+
-				"needed, or one half of this check asserted nothing",
-				branch, refused[branch], controls[branch])
-		}
+	if refused == 0 || controls == 0 {
+		t.Fatalf("the list was refused at %d heights and drawn at %d — both are needed, "+
+			"or one half of this check asserted nothing", refused, controls)
 	}
 }
 
@@ -2242,8 +1912,13 @@ func TestList_ARefusedPaneNeverOpensARowNobodyCanSee(t *testing.T) {
 // "could not tell" collapsed into a number that is simply wrong.
 //
 // Driven through a real Root with the message the app really sends, and
-// POSITIVELY CONTROLLED: a list that is NOT searching must still be recorded, or
-// the assertion passes on a Root that records nothing at all.
+// POSITIVELY CONTROLLED twice: a list that is NOT searching must still be
+// recorded, or the assertion passes on a Root that records nothing at all; and
+// the heights must span the axis that used to move this answer — some where the
+// same list, NOT searching, would be refused, and some where it would be drawn.
+// The searching screen itself is never refused (the overlay is exempt from the
+// refusal), so classifying by ITS paneDrawn would count every height the same
+// way and prove nothing about the coupling this test exists to prevent.
 func TestList_ASearchingListIsNeverRecordedOnTheBackStack(t *testing.T) {
 	heights := jdePaneHeights()
 	refused, drawn, controls := 0, 0, 0
@@ -2257,7 +1932,9 @@ func TestList_ASearchingListIsNeverRecordedOnTheBackStack(t *testing.T) {
 					t.Fatalf("%s: the query did not reach the box at 80x%d, so the rows this "+
 						"check is about are not search results", surface.name, h)
 				}
-				if list.paneDrawn() {
+				browse := listWithRows(surface.build, 8)
+				bsized, _ := browse.Update(tea.WindowSizeMsg{Width: 80, Height: h})
+				if bsized.(*ListScreen).paneDrawn() {
 					drawn++
 				} else {
 					refused++
@@ -2289,12 +1966,153 @@ func TestList_ASearchingListIsNeverRecordedOnTheBackStack(t *testing.T) {
 		})
 	}
 	if refused == 0 || drawn == 0 {
-		t.Fatalf("the searching list was refused at %d heights and drawn at %d — the "+
-			"back-stack answer must not move with the refusal, so both are needed",
-			refused, drawn)
+		t.Fatalf("the browse shape of this list was refused at %d heights and drawn at "+
+			"%d — the back-stack answer must not move with the refusal, so both sides "+
+			"of that axis are needed", refused, drawn)
 	}
 	if controls == 0 {
 		t.Fatal("no browsing list was ever recorded on the back-stack, so the assertion " +
 			"above passed on a Root that records nothing")
+	}
+}
+
+// listOverlayKeys is every key the search overlay binds, plus a typed rune —
+// the keystrokes whose behaviour the invariant below pins. It is the vocabulary
+// updateSearch switches on, and a key missing from it is untested rather than
+// passing, so anything added to that switch belongs here.
+func listOverlayKeys() []tea.KeyMsg {
+	return []tea.KeyMsg{
+		{Type: tea.KeyDown},
+		{Type: tea.KeyUp},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyEsc},
+		listRuneKey("q"),
+	}
+}
+
+// listOverlayAnswer is what an overlay keystroke produced, in the terms the
+// operator meets: where the cursor went, whether the overlay is still open,
+// what the box holds, and whether a navigation was issued.
+//
+// windowStart is deliberately NOT in it. The window is a function of the pane,
+// so it legitimately differs between a tall terminal and a short one; comparing
+// it would report correct behaviour as a difference.
+type listOverlayAnswer struct {
+	cursor    int
+	searching bool
+	query     string
+	navigates bool
+}
+
+// listOverlayPress opens the overlay at one pane, seats the cursor off row 0 so
+// `up` has somewhere to move from, and presses one key.
+func listOverlayPress(t *testing.T, build func() *ListScreen, w, h int, key tea.KeyMsg) listOverlayAnswer {
+	t.Helper()
+	s := listSearchOpen(t, build, 8, w, h)
+	seated, _ := s.Update(tea.KeyMsg{Type: tea.KeyDown})
+	s = seated.(*ListScreen)
+	_, cmd := s.Update(key)
+	answer := listOverlayAnswer{
+		cursor:    s.cursor,
+		searching: s.searching,
+		query:     s.searchInput.Value(),
+	}
+	// THE COMMAND IS RUN ONLY WHERE IT CANNOT BE A LOAD. A typed rune's command
+	// is runSearch, and executing it here would drive the real OMS loader
+	// against a nil client — so a rune is judged on the VALUE it produced, which
+	// is its whole product anyway, and the navigation probe is kept for the keys
+	// whose product IS a navigation.
+	if key.Type != tea.KeyRunes {
+		answer.navigates = listNavigates(cmd)
+	}
+	return answer
+}
+
+// TestList_TheSearchOverlayBehavesTheSameAtEveryDrawablePane is the invariant
+// the search overlay is held to: its behaviour does not depend on how tall the
+// terminal is.
+//
+// THIS BRANCH TRIED THE OPPOSITE AND IT COST FOUR DEFECTS. Bringing the overlay
+// inside the list's too-short refusal meant a short pane drew a notice over it,
+// released the keyboard and held some of its keys — and because the overlay OWNS
+// the keyboard, every predicate about who owns which key had to be re-derived at
+// once. It was not, and the four collisions are recorded in AGENTS.md. The
+// overlay is exempt again, so what is asserted here is the property that was
+// true before the attempt and must stay true: at every pane Root will draw, the
+// overlay takes every keystroke (WantsRawInput), stays off the back-stack
+// (SkipsBackStack), draws no refusal, and answers each key exactly as it does at
+// the largest pane.
+//
+// POSITIVELY CONTROLLED in two directions, because "the same at every height"
+// is trivially true of a screen where nothing happens and of a repo where no
+// pane is ever short: every key must ACT at the reference pane, and some swept
+// pane must be one where the same list, NOT searching, would be refused — which
+// is exactly the pane the overlay is exempt at.
+func TestList_TheSearchOverlayBehavesTheSameAtEveryDrawablePane(t *testing.T) {
+	widths, heights := jdeDrawableWidths(), jdePaneHeights()
+	tallW, tallH := widths[len(widths)-1], heights[len(heights)-1]
+	for _, w := range widths {
+		if w > tallW {
+			tallW = w
+		}
+	}
+	for _, h := range heights {
+		if h > tallH {
+			tallH = h
+		}
+	}
+	exempted := 0
+	for _, surface := range listSearchSurfaces(t) {
+		t.Run(surface.name, func(t *testing.T) {
+			reference := map[tea.KeyType]listOverlayAnswer{}
+			rest := listOverlayPress(t, surface.build, tallW, tallH, tea.KeyMsg{Type: tea.KeyDown})
+			for _, key := range listOverlayKeys() {
+				answer := listOverlayPress(t, surface.build, tallW, tallH, key)
+				if answer == rest && key.Type != tea.KeyDown {
+					t.Fatalf("%s: %v changed nothing on the overlay at %dx%d, so holding it at a "+
+						"short pane would be indistinguishable and every comparison below is "+
+						"vacuous", surface.name, key.Type, tallW, tallH)
+				}
+				reference[key.Type] = answer
+			}
+
+			for _, w := range widths {
+				for _, h := range heights {
+					s := listSearchOpen(t, surface.build, 8, w, h)
+					if !s.WantsRawInput() {
+						t.Errorf("the %s overlay at %dx%d released the keyboard, so a key it binds "+
+							"reaches Root instead — ctrl+k stops being delete-to-end-of-line and "+
+							"leaves, taking the typed query with it", surface.name, w, h)
+					}
+					if !s.SkipsBackStack() {
+						t.Errorf("the %s overlay at %dx%d would be recorded on the back-stack, so "+
+							"esc can come back to it after a reload replaced its filtered rows "+
+							"with the whole catalogue", surface.name, w, h)
+					}
+					if listLineHolds(listRootLines(t, s, w, h), listTooShortWayOut) {
+						t.Errorf("the %s overlay at %dx%d is refused — the overlay owns the "+
+							"keyboard and is exempt from the refusal", surface.name, w, h)
+					}
+
+					browse := listWithRows(surface.build, 8)
+					sized, _ := browse.Update(tea.WindowSizeMsg{Width: w, Height: h})
+					if !sized.(*ListScreen).paneDrawn() {
+						exempted++
+					}
+
+					for _, key := range listOverlayKeys() {
+						if got := listOverlayPress(t, surface.build, w, h, key); got != reference[key.Type] {
+							t.Errorf("the %s overlay answers %v differently at %dx%d than at %dx%d: "+
+								"%+v against %+v", surface.name, key.Type, w, h, tallW, tallH,
+								got, reference[key.Type])
+						}
+					}
+				}
+			}
+		})
+	}
+	if exempted == 0 {
+		t.Fatal("no swept pane was one the browse list would refuse, so the exemption this " +
+			"check is about was never exercised")
 	}
 }

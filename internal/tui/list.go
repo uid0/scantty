@@ -470,22 +470,13 @@ func (s *ListScreen) listBodyLines() int {
 // with the pane at all; if the taller pane stops overflowing, markerRows falls
 // to nothing and need only gets smaller. Same fixed-point argument
 // jdeTooShortRows sets out, and the same reason there is no loop to converge.
-// IT IS ASKED OF barRows, NOT footerRows, AND THAT IS WHAT PUTS THE SEARCH
-// OVERLAY INSIDE THE RULE. The overlay's bar is a bar: it is drawn from the
-// input line down, so on a pane that cannot hold the whole assembly clampToBox
-// takes it off the bottom exactly as it takes the browse footer. Asked of
-// footerRows this function answered for a bar the searching pane does not draw,
-// which is why the exemption below it used to read as safe. barRows is the one
-// expression that answers for the bar the pane will really draw, and every other
-// budget on this screen (markerSlack, listBodyLines) already read it.
+// IT IS ONLY EVER ASKED OF A BROWSE PANE, because paneDrawn exempts the search
+// overlay before it gets here. It still reads barRows rather than footerRows —
+// the two are the same expression off the overlay, and every other budget on
+// this screen (markerSlack, listBodyLines) reads barRows, so asking anything
+// else would be a second answer to one question.
 func (s *ListScreen) needRows() int {
 	if len(s.rows) == 0 {
-		// The overlay's empty branch is "No matches." on its own — it draws
-		// neither the header row nor a footer, because the bar above it has
-		// already named the keys that work.
-		if s.searching {
-			return s.barRows() + 1
-		}
 		return listHeaderRows + 2 + s.barRows()
 	}
 	return listHeaderRows + s.markerRows() + s.minBodyLines() + s.barRows()
@@ -497,22 +488,22 @@ func (s *ListScreen) needRows() int {
 // expression, so the frame and the key cannot part company — the same shape
 // frameDrawn has on the columnar layer.
 //
-// The exempt states are the ones with NO BAR TO CUT: a loading pane is one
+// THE REFUSAL IS THE BROWSE PANE'S, AND THE SEARCH OVERLAY IS EXEMPT BY
+// DECISION. The overlay OWNS THE KEYBOARD — WantsRawInput is true whenever it is
+// open — and this refusal is built for a frame that owns nothing: it draws over
+// the screen, holds the keys whose product it would hide, and lets Root's global
+// layer answer the rest. Bringing a keyboard-owning surface inside it means
+// re-deriving every predicate about who owns which key at once, and this branch
+// tried that and produced four separate defects from the one root; the record
+// and the rule are in AGENTS.md. So the overlay behaves here exactly as it did
+// before this work: never refused, every key routed to it, nothing held.
+// TestList_TheSearchOverlayBehavesTheSameAtEveryDrawablePane pins that.
+//
+// The other exempt states are the ones with NO BAR TO CUT: a loading pane is one
 // muted line and an error pane is a sentence and a retry hint, neither of which
 // names a movement key, so there is nothing for a short pane to take.
-//
-// THE SEARCH OVERLAY IS NOT ONE OF THEM, and the sentence that said it was
-// claimed the overlay "pins its bar to the TOP of the pane, where clampToBox
-// cannot reach it". clampToBox drops from the BOTTOM: View draws the input
-// line, the folded overlay bar and a blank separator, and everything below that
-// is the body — so a pane too short for the assembly loses the body first and
-// then, one row further in, the bar itself. At 80x7 (one real row) the overlay
-// drew its input line alone: no bar, no rows, no notice, and every key it names
-// still live. That is the bar-less pane this whole refusal exists to remove,
-// reached through the one state that had been excused from it on a premise
-// about a direction clampToBox does not cut in.
 func (s *ListScreen) paneDrawn() bool {
-	if !s.paneSized() || s.loading || s.loadErr != "" {
+	if !s.paneSized() || s.searching || s.loading || s.loadErr != "" {
 		return true
 	}
 	return s.listPaneRows() >= s.needRows()
@@ -537,11 +528,12 @@ func (s *ListScreen) paneDrawn() bool {
 //
 // THE DENIAL IS ABOUT THE LEGEND, NOT ABOUT WHAT ACTS, and that distinction is
 // the whole of why this wording survives where "No keys but Esc" did not. The
-// held set on a refused pane is deliberately just {the navigation vocabulary,
-// `s`} — `r` reloads, `f` cycles the filter, `n` opens the create form, `enter`
-// opens the row under the invisible cursor and every uppercase sibling shortcut
-// navigates away, all by design and all still live — so a lead claiming no key
-// but Esc WORKS is false about each of them. What is true, and true whatever
+// held set is listRefusedHoldsKey and is deliberately short — read it there
+// rather than from a copy here, which is what has drifted every time it was
+// restated — so `r` still reloads, `f` still cycles the filter, `n` still opens
+// the create form and every uppercase sibling shortcut still navigates away,
+// all by design: a lead claiming no key but Esc WORKS is false about each of
+// them. What is true, and true whatever
 // stays bound, is that the action BAR is not drawn: no key is NAMED here except
 // the way out. That is the claim jdeTooShort makes ("No keys are named: the
 // action bar would be cut. … Esc still leaves"), and a claim about the legend
@@ -612,11 +604,11 @@ const listTooShortWayOut = "No bar but Esc"
 // screenChromeRows is screenBodyRows' own inverse, so the two cannot drift.
 //
 // The last sentence is scoped to WHILE THIS NOTICE IS UP, and the scope is the
-// whole of its truth rather than a hedge. The gate in Update holds the
-// navigation vocabulary and `s` exactly when paneDrawn is false, which is
-// exactly when this notice is what the pane draws — so the operator comes back
-// to where they were rather than to wherever an invisible cursor wandered or a
-// sort nobody could see put them.
+// whole of its truth rather than a hedge. The gate in Update holds
+// listRefusedHoldsKey exactly when paneDrawn is false, which is exactly when
+// this notice is what the pane draws — so the operator comes back to where they
+// were rather than to wherever an invisible cursor wandered, a sort nobody could
+// see put them, or a row nobody chose opened onto.
 //
 // It said "until it fits" first, and that was a promise the gate does not keep:
 // paneDrawn also answers TRUE while a load is out, so `r` on a refused pane
@@ -625,31 +617,16 @@ const listTooShortWayOut = "No bar but Esc"
 // pre-existing and belongs to every list state, not to the refusal; what was
 // new was a sentence claiming otherwise. A notice denying a loss that can happen
 // is the same kind of lie as one claiming a loss that cannot.
-// THE PROSE DIFFERS BY BRANCH BECAUSE THE HELD SET DOES. On a browse pane the
-// keys held are movement and `s`, and nothing on the frame takes typing. With
-// the search overlay open the runes still reach the box — declining a typed
-// rune DISCARDS the operator's value, scanner bursts included, which is the one
-// thing this program never does — so the searching wording names that instead of
-// repeating a sentence about sorting that is not what is happening there.
-//
-// THE BOX ITSELF IS NOT DRAWN BESIDE THE NOTICE, and that is a decision rather
-// than an omission. Drawing it costs a row, the notice's leading clause is the
-// one thing that must survive every trim, and a one-row pane showing an input
-// line and no way out is precisely the bar-less pane this refusal exists to
-// remove — the state reported at 80x7. So the way out keeps the pane, the typed
-// value is KEPT rather than shown (it is on the box the moment the terminal
-// grows), and the notice SAYS so rather than leaving the operator to guess: not
-// silence about a loss, because there is no loss, only a delay in seeing it.
-func listTooShort(cells, rows, terminalHeight, needRows int, searching bool) string {
+// THERE IS ONE WORDING BECAUSE THERE IS ONE STATE THAT DRAWS IT. The notice
+// briefly had a second branch for a refused SEARCH OVERLAY; the overlay is
+// exempt from the refusal again (paneDrawn), so the held set it describes is
+// listRefusedHoldsKey and nothing else.
+func listTooShort(cells, rows, terminalHeight, needRows int) string {
 	if rows <= 0 || cells <= 0 {
 		return ""
 	}
 	held := "moving, sorting and opening do nothing while this notice is up, " +
 		"so you come back where you were."
-	if searching {
-		held = "moving and opening do nothing while this notice is up, " +
-			"but what you type still reaches the search box."
-	}
 	lines := pickerWrap(fmt.Sprintf("%s · needs %d rows · has %d",
 		listTooShortWayOut, needRows+screenChromeRows, terminalHeight), cells)
 	lines = append(lines, pickerWrap("The action bar would be cut, so it is not "+
@@ -794,17 +771,16 @@ func (s *ListScreen) activeFilter() listFilter {
 // WantsRawInput routes every keypress to the screen while the search input is
 // open, so the global hotkey layer stops eating letters the operator is typing.
 //
-// A REFUSED PANE OWNS NO KEYBOARD, because it draws no overlay for the keyboard
-// to belong to. Claiming raw input there sent `esc` to updateSearch, which
-// closes the overlay — and the browse shape of this list needs MORE rows than
-// the searching one (footerHint folds to more lines than listSearchBarHint), so
-// every height that refuses the overlay refuses the browse pane too: the key
-// the notice names redrew the notice byte for byte and the operator was still
-// on it. Released, `esc` reaches Root's back step and leaves, which is the one
-// claim the notice makes, true in the searching state exactly as in the browse
-// one. The query itself is untouched, so a terminal dragged short and back
-// comes back to the search the operator was running.
-func (s *ListScreen) WantsRawInput() bool { return s.searching && s.paneDrawn() }
+// IT ASKS ONE QUESTION AND ONLY ONE: does this screen take every keystroke. It
+// briefly also asked whether the pane was drawn, so that a refused overlay would
+// release the keyboard — and that single narrowing gave `ctrl+k` a second
+// meaning by terminal height (delete-to-end-of-line on a drawn overlay, leave
+// for the search palette on a refused one, destroying the typed query on the way
+// out) and moved Root's back-stack behaviour with it, because recordHistory was
+// reading this predicate to answer a different question. Both are recorded in
+// AGENTS.md. The overlay is exempt from the refusal now (paneDrawn), so this is
+// `searching` alone, exactly as it was before this work.
+func (s *ListScreen) WantsRawInput() bool { return s.searching }
 
 // SkipsBackStack answers the BACK-STACK question, which is not the same question
 // WantsRawInput answers and must not move with it. An open search overlay is a
@@ -815,8 +791,10 @@ func (s *ListScreen) WantsRawInput() bool { return s.searching && s.paneDrawn() 
 // rows, which is "found nothing" and "could not tell" collapsed into a number
 // that is simply wrong.
 //
-// It reads `searching` alone. Root used to get this from WantsRawInput, and
-// narrowing that to exclude a refused pane opened exactly the sequence above.
+// It reads `searching` alone, which is what Root got from WantsRawInput before
+// that predicate was briefly narrowed and took this behaviour with it. Asking
+// the two questions separately is what stops the back-stack moving the next time
+// key routing changes for a reason of its own.
 func (s *ListScreen) SkipsBackStack() bool { return s.searching }
 
 // Init loads the CURRENT view: the filtered loader bound to the active
@@ -1130,31 +1108,23 @@ func (s *ListScreen) enterSearch() (Screen, tea.Cmd) {
 	return s, textinput.Blink
 }
 
-// listRefusedHoldsKey is the held set on a refused BROWSE pane, and it is the
-// site of the ONE reason `enter` is held on a refused pane of either kind.
+// listRefusedHoldsKey is the held set on a refused pane. There is one refused
+// pane — the BROWSE one — because the search overlay is exempt (paneDrawn).
+//
+// EVERY MEMBER IS HERE BECAUSE ITS WHOLE PRODUCT IS INVISIBLE ON THAT PANE, and
+// declining it therefore destroys nothing. A movement key's product is the
+// POSITION, and the refusal draws no cursor. `s` re-orders locally and its only
+// visible product is headerLine, which the refusal does not draw.
 //
 // ENTER'S PRODUCT IS A NAVIGATION CHOSEN BY AN INVISIBLE CURSOR. The refusal
 // draws no rows and no highlight, so the operator cannot see which row they are
 // on — and the row under the cursor MOVES while the pane is refused, because a
-// filter cycle and a search reply both reload and reseat it. Opening a row
-// nobody chose is worse than opening none, and declining destroys nothing: the
-// row is still there when the terminal grows back. It is NOT the way out and
-// never was — `esc` is what the notice names, and `n` and the uppercase
-// sibling-surface shortcuts still leave.
-//
-// The overlay's held set (listSearchHeldKey) is the same rule read through a
-// different alphabet: with a box focused the movement keys are the ARROWS
-// alone, since j/k/g/G are runes the operator is typing.
+// filter cycle reloads and reseats it. Opening a row nobody chose is worse than
+// opening none, and the row is still there when the terminal grows back. It is
+// NOT the way out and never was — `esc` is what the notice names, and `n` and
+// the uppercase sibling-surface shortcuts still leave.
 func listRefusedHoldsKey(key string) bool {
 	return listNavBinds(key) || key == "s" || key == "enter"
-}
-
-// listSearchHeldKey is the overlay's held set on a refused pane: the keys whose
-// whole product is a position, or a navigation chosen from one — the reason is
-// listRefusedHoldsKey's, stated once. One expression, read by the gate in
-// updateSearch, so the notice's claim and the keys behind it cannot part company.
-func listSearchHeldKey(t tea.KeyType) bool {
-	return t == tea.KeyUp || t == tea.KeyDown || t == tea.KeyEnter
 }
 
 // updateSearch owns key handling while the search input is open. Arrow keys
@@ -1162,33 +1132,10 @@ func listSearchHeldKey(t tea.KeyType) bool {
 // search palette); esc closes search and restores the unfiltered list; every
 // other key edits the query and, on change, fires a fresh backend search.
 func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
-	// THE REFUSAL'S PROMISE IS KEPT ON THIS SIDE OF THE DISPATCH TOO. Update
-	// hands every key to this function while the overlay is open, BEFORE the
-	// browse gate below it, so extending paneDrawn to the overlay without a
-	// gate here left the notice describing a hold nothing applied: `up`/`down`
-	// walked the cursor over rows nobody could see and `enter` opened whichever
-	// one it happened to land on, while the pane said moving does nothing.
-	//
-	// THE HELD SET IS DERIVED THE SAME WAY THE BROWSE ONE IS — from what each
-	// key's whole product is — and it is NOT the browse set, because the two
-	// frames differ in the way that matters. A movement key's product is the
-	// POSITION, so declining it preserves what the operator had; `enter`'s is a
-	// navigation chosen by an invisible cursor, for the reason stated once at
-	// listRefusedHoldsKey, which holds it on the browse pane too. Both are held,
-	// silently, for the reason the browse gate gives: once the move is refused
-	// there is nothing left to report.
-	//
-	// TYPING IS NOT HELD AND MUST NOT BE. A typed rune's product is the VALUE,
-	// so declining it DISCARDS input — a scanner burst arrives as a key burst
-	// and cannot be retyped. The runes keep reaching the box, the query survives
-	// the resize, and listTooShort's searching wording says exactly that.
-	//
-	// `esc` is not held either: it is the way out the notice names, and on a
-	// refused pane WantsRawInput is false, so it reaches Root's back step rather
-	// than this arm.
-	if !s.paneDrawn() && listSearchHeldKey(m.Type) {
-		return s, nil
-	}
+	// NO KEY IS HELD HERE, AT ANY PANE HEIGHT. The overlay owns the keyboard and
+	// is exempt from the refusal (paneDrawn), so every key it binds acts exactly
+	// as it does on a tall terminal — the invariant
+	// TestList_TheSearchOverlayBehavesTheSameAtEveryDrawablePane pins.
 	switch m.Type {
 	case tea.KeyEsc:
 		s.searching = false
@@ -1287,14 +1234,12 @@ func workspaceForKind(kind string) Workspace {
 
 func (s *ListScreen) View() string {
 	// REFUSED RATHER THAN MUTILATED, and the check is HERE rather than in
-	// bodyView because the overlay is drawn by this function: left one level
-	// down, a refused searching pane would draw the notice UNDERNEATH the very
-	// input line and bar the pane cannot hold, which is the mutilation with an
-	// explanation stapled to it. The notice replaces the whole frame, so what
-	// the operator sees is the height they need and the key that leaves.
+	// bodyView so the notice REPLACES the frame rather than being drawn beneath
+	// part of it. paneDrawn exempts the searching state, so the branch below is
+	// never reached through this return.
 	if !s.paneDrawn() {
 		return listTooShort(s.listPaneCells(), s.listPaneRows(), s.terminalHeight,
-			s.needRows(), s.searching)
+			s.needRows())
 	}
 	// The search overlay renders above whatever body state follows, so the
 	// operator can keep editing the query even when a search returns nothing.

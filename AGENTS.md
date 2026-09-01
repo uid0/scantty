@@ -1023,31 +1023,68 @@ either:
   the one predicate every reader asks — the frame, both key gates and
   `WantsRawInput` — so the notice's claims and the keys behind them are one
   expression; grep it rather than trusting a list of readers written here, which
-  has already gone stale once. It is asked in `View` and not in `bodyView`
-  because the search overlay is drawn one level up: left below it the notice was
-  drawn UNDERNEATH the very input line and bar the pane could not hold. And
+  has already gone stale once. It is asked in `View` and not in `bodyView` so the
+  notice REPLACES the frame rather than being drawn beneath part of it. And
   `listTooShort` draws a bounded notice naming the height needed in TERMINAL rows
   — a height that ACTUALLY DRAWS when the operator resizes to it. That holds at
   the FIXED POINT and NOT by `needRows` being monotone, which it is not once
   `markerRows` can grow from one row to two: a refused pane has a marker slack of
   zero or less, so it reserves one, and the height that buys is a slack of
   exactly one, which is what it still reserves there.
-  THE SEARCH OVERLAY IS INSIDE THE RULE, and the exemption it used to have was
-  false in the direction that mattered: it claimed the overlay "pins its bar to
-  the TOP of the pane, where clampToBox cannot reach it". clampToBox drops from
-  the BOTTOM — `View` draws the input line, the folded overlay bar and a blank,
-  and the body under them — so at 80x7 the pane kept the input line alone: no
-  bar, no rows, no notice, every key it names still live. `needRows` is asked of
-  `barRows` rather than `footerRows` for that reason, since `barRows` is the one
-  expression that answers for the bar the pane will really draw and every other
-  budget here already read it. The exempt states left are the ones with no bar
-  to cut. Both bars also fold at `listPaneCells` rather than the fixed 51: a
-  fold is safe at 51 only while the pane HAS 51 cells, and at width 45 it has 16.
-  THE HELD SET IS DERIVED FROM WHAT EACH KEY'S PRODUCT IS, and there is one per
-  BRANCH because the two branches differ in what a key can destroy. Read the
-  gates for the members — the browse one in `Update`, `listSearchHeldKey` for the
-  overlay — rather than a roster restated here; what is worth knowing is the
-  RULE that chooses them. A movement key's product is the POSITION, so `end` on
+  THE SEARCH OVERLAY IS EXEMPT, AND THAT IS A DECISION PAID FOR FOUR TIMES OVER.
+  Its first exemption rested on a false premise — that the overlay "pins its bar
+  to the TOP of the pane, where clampToBox cannot reach it", when clampToBox
+  drops from the BOTTOM, so at 80x7 the pane really did keep the input line
+  alone: no bar, no rows, no notice, every key it names still live. The premise
+  was false and the conclusion was right, and the reason is the one thing to
+  carry forward: **THE OVERLAY OWNS THE KEYBOARD** (`WantsRawInput` is true
+  whenever it is open) **AND THIS REFUSAL IS BUILT FOR A FRAME THAT OWNS
+  NOTHING** — it draws over the screen, holds the keys whose product it would
+  hide, and lets Root's global layer answer the rest. Bringing a keyboard-owning
+  surface inside it means re-deriving EVERY predicate about who owns which key,
+  at once, and the attempt produced FOUR separate defects from that one root,
+  in the order they surfaced:
+  (a) KEYS ACTING UNSEEN. `Update` dispatches to `updateSearch` BEFORE the
+  refusal's key gate, so the notice drew over the overlay while `up`/`down`
+  walked the cursor, `enter` opened an invisible row and every rune fired a
+  backend search — the pane saying moving does nothing while it did.
+  (b) THE BACK-STACK MISLABEL. Narrowing `WantsRawInput` to exclude a refused
+  pane moved `Root.recordHistory` with it, because ONE PREDICATE WAS ANSWERING
+  TWO QUESTIONS; a searching list got recorded, and `esc` brought it back with
+  its query and `N match(es)` drawn over a reloaded whole catalogue — rule 3
+  broken by a number rather than by a silence.
+  (c) THE EXEMPTION REASON FALSIFIED. What was left was justified as "the states
+  with no bar to cut", which stopped being true the moment a failed search left
+  `loadErr` set with `searching` still true: at height 7 the pane kept the input
+  line alone, bar-less, reached through the exemption rather than the budget.
+  (d) `ctrl+k`'S SECOND MEANING. With the screen no longer owning the keyboard on
+  a refused pane, `ctrl+k` stopped being bubbles' delete-to-end-of-line and
+  became "leave for the search palette" — and since a searching screen skips the
+  back-stack, the operator's typed query was gone unrecoverably. One keystroke
+  whose meaning depended on terminal height.
+  THE RULE, not four anecdotes: a surface that OWNS THE KEYBOARD cannot be
+  brought inside a refusal that assumes the frame owns nothing, because every
+  predicate about key ownership then has to be re-derived at once. And the reason
+  to REVERT rather than narrow a fifth time: four separate collisions from one
+  root is the signal that the root is wrong.
+  `TestList_TheSearchOverlayBehavesTheSameAtEveryDrawablePane` is the invariant
+  now — at every pane Root draws, the overlay takes every keystroke, stays off
+  the back-stack, draws no refusal, and answers each key exactly as it does at
+  the largest pane — so a fifth attempt fails rather than shipping.
+  What SURVIVED the revert, because it is behaviour-neutral or independently
+  justified: `searchBarHint` names the overlay's keys conditionally (a claim
+  about the LEGEND — no key routes or acts differently); `SkipsBackStack` reads
+  `searching` alone (identical to the pre-branch behaviour, and now a separate
+  predicate so the back-stack cannot move again with an unrelated change); and
+  the browse pane's own refusal, which is what this work is for. Both bars fold
+  at `listPaneCells` rather than the fixed 51: a fold is safe at 51 only while
+  the pane HAS 51 cells, and at width 45 it has 16.
+  THE HELD SET IS DERIVED FROM WHAT EACH KEY'S PRODUCT IS, and there is exactly
+  one because there is exactly one refused pane. Read `listRefusedHoldsKey` for
+  the members rather than a roster restated here — restating it is what has
+  drifted every time — and what is worth knowing is the RULE that chooses them:
+  a key is held when its whole product is INVISIBLE on that pane, so declining
+  destroys nothing. A movement key's product is the POSITION, so `end` on
   a refused pane would walk the cursor to the bottom of a list nobody can see
   and declining it destroys nothing. On BROWSE `s` qualifies too: it re-orders
   locally, its only visible product is `headerLine`, which the refusal does not
@@ -1056,21 +1093,12 @@ either:
   not: both set `loading` and redraw as `Loading…`. Nor do `n` and the uppercase
   shortcuts, which LEAVE — the operator's way out of a pane too short to work
   in, and the reason not to widen either gate to them.
-  `enter` IS HELD ON BOTH BRANCHES, FOR ONE REASON STATED ONCE
-  (`listRefusedHoldsKey`): the refusal draws no rows and no highlight, and the
-  row under the cursor MOVES while the pane is refused — a filter cycle and a
-  search reply both reload and reseat it — so enter opens a row nobody chose,
-  which is worse than opening none, and declining destroys nothing. It was
-  briefly held on the overlay and live on browse, with the two gates giving
-  OPPOSITE justifications for one key: the same keystroke doing different things
-  on sibling surfaces, which is the defect this whole area exists to close,
-  shipped inside the fix for it. Enter was never the way out; `esc` is what the
-  notice names.
-  TYPING IS NEVER HELD, and it is the one asymmetry that stays: a typed rune's
-  product is the VALUE, so declining it DISCARDS input a scanner cannot resend,
-  which is the one thing this program never does. The runes keep reaching the
-  box, the query survives the resize, and the notice's searching wording says so
-  instead of repeating a sentence about sorting.
+  `enter` IS HELD, and the reason is the same one: the refusal draws no rows and
+  no highlight, and the row under the cursor MOVES while the pane is refused —
+  a filter cycle reloads and reseats it — so enter opens a row nobody chose,
+  which is worse than opening none, and the row is still there when the terminal
+  grows back. Enter was never the way out; `esc` is what the notice names, and
+  `n` and the uppercase shortcuts still leave.
   THE BACK-STACK IS A DIFFERENT QUESTION FROM THE KEYBOARD, and asking one
   predicate both is how a wrong label reached an operator. `Root.recordHistory`
   read `WantsRawInput` as a proxy for "is this screen transient"; narrowing the
@@ -1119,15 +1147,10 @@ either:
   naming — check any rewording against that budget, which the sweeps do.
   ESC IS NAMED BECAUSE ESC WORKS THERE, and it is PRESSED rather than read off
   Root's switch (`TestList_ARefusedPaneNamesAKeyThatReallyLeaves`, through a real
-  Root, with the back-stack both empty and loaded): `WantsRawInput` is false on a
-  refused pane BY CONSTRUCTION — it reads `paneDrawn`, because a pane drawing no
-  overlay owns no keyboard — and `HandlesKey` never claims `esc`, so the key
-  reaches the global back step. A REFUSED LIST IS ROUTINELY `searching`, which
-  is why that is the reason rather than the exemption it used to be: claiming
-  raw input there sent `esc` to `updateSearch`, which only CLOSES the overlay,
-  and since the browse footer folds to more lines than the overlay's bar every
-  height that refuses the overlay refuses the browse pane too — so the key the
-  notice names redrew the notice byte for byte. It is the one key a frame that names
+  Root, with the back-stack both empty and loaded): a refused list is never
+  `searching` — the overlay is exempt — so `WantsRawInput` is false and
+  `HandlesKey` never claims `esc`, and the key reaches the global back step.
+  It is the one key a frame that names
   none may name, the trade `jdeTooShort` already makes — the way out of a pane
   too short to work in must stay open or the refusal is one nobody can act on —
   and it does not soften the held-keys sentence beside it, because esc does not
