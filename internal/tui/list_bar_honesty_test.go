@@ -1978,6 +1978,13 @@ const listMarkerScrollPresses = 40
 // reasons fails instead of passing.
 func TestList_ARefusedSearchOverlayHoldsTheKeysItSaysItHolds(t *testing.T) {
 	widths, heights := jdeDrawableWidths(), jdePaneHeights()
+	// THE CURSOR IS SEATED OFF THE TOP BEFORE THE PANE IS REFUSED, at the
+	// largest pane Root will draw. Opened at rest the cursor is on row 0, where
+	// `up` moves nothing whatever the gate says — so dropping the KeyUp arm left
+	// this loop green, the same could-not-fail shape as the discarded enter cmd.
+	// Seating needs a DRAWN pane (movement is what the gate holds), which is the
+	// operator's own sequence: work at a usable size, then drag the terminal short.
+	tallW, tallH := listMax(widths), listMax(heights)
 	refused, controls := 0, 0
 	for _, surface := range listSearchSurfaces(t) {
 		t.Run(surface.name, func(t *testing.T) {
@@ -1985,12 +1992,24 @@ func TestList_ARefusedSearchOverlayHoldsTheKeysItSaysItHolds(t *testing.T) {
 				for _, h := range heights {
 					s := listSearchOpen(t, surface.build, 8, w, h)
 					if s.paneDrawn() {
+						// ONE CONTROL PER HELD KEY, THROUGH THE SURFACE THAT KEY'S
+						// PRODUCT APPEARS ON. A movement key's product is the
+						// POSITION and enter's is a NAVIGATION COMMAND, so a control
+						// that only moves the cursor says nothing about enter — which
+						// is exactly how the enter assertion below came to be one that
+						// could not fail.
 						before := s.cursor
 						next, _ := s.Update(tea.KeyMsg{Type: tea.KeyDown})
 						if next.(*ListScreen).cursor != before+1 {
 							t.Fatalf("%s: the control failed at %dx%d — down did not move the "+
 								"cursor on a DRAWN overlay, so the held-key assertions below "+
 								"would pass on a fixture that cannot move", surface.name, w, h)
+						}
+						open := listSearchOpen(t, surface.build, 8, w, h)
+						if _, cmd := open.Update(tea.KeyMsg{Type: tea.KeyEnter}); !listNavigates(cmd) {
+							t.Fatalf("%s: the control failed at %dx%d — enter issued no navigation "+
+								"on a DRAWN overlay, so the no-navigation assertion below would "+
+								"pass on a fixture that cannot open anything", surface.name, w, h)
 						}
 						controls++
 						continue
@@ -2000,14 +2019,42 @@ func TestList_ARefusedSearchOverlayHoldsTheKeysItSaysItHolds(t *testing.T) {
 					for _, key := range []tea.KeyMsg{
 						{Type: tea.KeyDown}, {Type: tea.KeyUp}, {Type: tea.KeyEnter},
 					} {
-						held := listSearchOpen(t, surface.build, 8, w, h)
+						held := listSearchOpen(t, surface.build, 8, tallW, tallH)
+						if !held.paneDrawn() {
+							t.Fatalf("%s: the overlay is refused even at %dx%d, the largest pane "+
+								"Root draws, so the cursor cannot be seated and every assertion "+
+								"below is about a cursor resting on row 0",
+								surface.name, tallW, tallH)
+						}
+						seat, _ := held.Update(tea.KeyMsg{Type: tea.KeyDown})
+						held = seat.(*ListScreen)
+						if held.cursor == 0 {
+							t.Fatalf("%s: the cursor would not leave row 0 at %dx%d, so `up` has "+
+								"nowhere to move from and its assertion cannot fail",
+								surface.name, tallW, tallH)
+						}
 						r := newTestRoot(held)
 						sized, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
 						r = sized.(Root)
+						if held.paneDrawn() {
+							t.Fatalf("%s: the overlay is drawn again at %dx%d after the resize, so "+
+								"these are not the refused pane's keys", surface.name, w, h)
+						}
 						pane := strings.Join(strings.Split(r.View(), "\n"), "\n")
 						cursor, start := held.cursor, held.windowStart
 
-						after, _ := r.Update(key)
+						after, cmd := r.Update(key)
+						// ENTER'S WHOLE PRODUCT IS A COMMAND, and it is the only
+						// surface the gate shows on: openSelected returns the screen
+						// UNCHANGED beside a SwitchTo cmd, so the identity, the place
+						// and the pane are all identical whether the gate held or not.
+						// Discarding the cmd made this loop's enter third a check that
+						// could not fail, guarding an arm added in the same round.
+						if listNavigates(cmd) {
+							t.Errorf("the %s refused overlay at %dx%d says opening does nothing, "+
+								"and %v issued a navigation to a row nobody can see",
+								surface.name, w, h, key.Type)
+						}
 						if after.(Root).screen != Screen(held) {
 							t.Errorf("the %s refused overlay at %dx%d says opening does nothing, "+
 								"and %v navigated away from it", surface.name, w, h, key.Type)
@@ -2045,4 +2092,41 @@ func TestList_ARefusedSearchOverlayHoldsTheKeysItSaysItHolds(t *testing.T) {
 		t.Fatalf("the overlay was refused at %d panes and drawn at %d — both are needed, "+
 			"or one half of this check asserted nothing", refused, controls)
 	}
+}
+
+// listNavigates reports whether a command carries a screen switch, which is the
+// only surface a held `enter` can be judged on: openSelected leaves the screen,
+// the cursor and the pane exactly as it found them and hands the navigation back
+// as a tea.Cmd, so a check that never runs the command cannot tell a gate that
+// held from one that did not.
+//
+// It walks a batch because Root composes, and it runs a command only when there
+// is one — on a held key there is none, so nothing is executed at all.
+func listNavigates(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	switch msg := cmd().(type) {
+	case SwitchScreenMsg:
+		return true
+	case tea.BatchMsg:
+		for _, c := range msg {
+			if listNavigates(c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// listMax is the largest member of a derived size set, taken rather than
+// assumed to be last so the sweeps do not depend on the derivation's order.
+func listMax(sizes []int) int {
+	max := 0
+	for _, n := range sizes {
+		if n > max {
+			max = n
+		}
+	}
+	return max
 }

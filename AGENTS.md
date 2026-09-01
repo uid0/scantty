@@ -997,6 +997,16 @@ either:
   the refusal comes down a terminal row with it (measured: 16 → 15 on the
   purchasing and inventory lists, 15 → 14 on the rest; the numbers are an OUTPUT
   of the footer's fold and the tallest row, so re-derive rather than trust them).
+  ALL THREE MARKER ROWS ARE BOUNDED BY THAT ONE BUILDER, and it gives ground in
+  a stated order rather than being clipped: the PROSE shortens, the arrows and
+  the COUNT never do, and where even the shortest form will not fit the count is
+  DROPPED and the row marked. Assembled at full length and clipped, the row read
+  `  ↑ more above · ↓ 1` at width 49 over twelve rows below — a cut number does
+  not read as a shortened fact but as a different one, the price column's
+  `@ 3.50` drawn as `@ 3.` on the row whose whole job is to say how much of the
+  list is out of sight. The two per-marker sites used to write their own
+  unbounded literals beside the bounded shared one, so the sweep asserts every
+  drawn marker row is one `listMarkerLine` could have produced at that pane.
   Reserving one WITHOUT the shared row is the version to not reach for, and its
   reasoning sounds right: `↑ more above` needs `windowStart > 0`, which the pane
   does not open in. It is true of the opening state and false of the next
@@ -1010,22 +1020,51 @@ either:
   empty and refuse when the rows land at the same size. That asymmetry is
   inherent (an empty pane genuinely is smaller) and is not papered over.
   WHERE EVEN THAT WILL NOT FIT THE PANE IS REFUSED, not mutilated: `paneDrawn` is
-  the one predicate `bodyView` and the movement gate in `Update` both read, and
+  the one predicate every reader asks — the frame, both key gates and
+  `WantsRawInput` — so the notice's claims and the keys behind them are one
+  expression; grep it rather than trusting a list of readers written here, which
+  has already gone stale once. It is asked in `View` and not in `bodyView`
+  because the search overlay is drawn one level up: left below it the notice was
+  drawn UNDERNEATH the very input line and bar the pane could not hold. And
   `listTooShort` draws a bounded notice naming the height needed in TERMINAL rows
   — a height that ACTUALLY DRAWS when the operator resizes to it. That holds at
   the FIXED POINT and NOT by `needRows` being monotone, which it is not once
   `markerRows` can grow from one row to two: a refused pane has a marker slack of
   zero or less, so it reserves one, and the height that buys is a slack of
   exactly one, which is what it still reserves there.
-  THE HELD SET IS {THE NAVIGATION VOCABULARY, `s`} AND IS DERIVED FROM WHAT EACH
-  KEY'S PRODUCT IS. A movement key's product is the position, so `end` on a
-  refused pane would walk the cursor to the bottom of a list nobody can see.
-  `s` re-orders locally and its only visible product is `headerLine`, which the
-  refusal does not draw, and `needRows` is invariant under re-ordering — so it
-  came back byte for byte, standing rule 1 broken by the refusal itself. Nothing
-  else qualifies: `r` and `f` set `loading` and redraw as `Loading…`, and
-  `enter`/`n`/the uppercase shortcuts LEAVE, which is the operator's way out of a
-  pane too short to work in. Do not widen the gate to every key.
+  THE SEARCH OVERLAY IS INSIDE THE RULE, and the exemption it used to have was
+  false in the direction that mattered: it claimed the overlay "pins its bar to
+  the TOP of the pane, where clampToBox cannot reach it". clampToBox drops from
+  the BOTTOM — `View` draws the input line, the folded overlay bar and a blank,
+  and the body under them — so at 80x7 the pane kept the input line alone: no
+  bar, no rows, no notice, every key it names still live. `needRows` is asked of
+  `barRows` rather than `footerRows` for that reason, since `barRows` is the one
+  expression that answers for the bar the pane will really draw and every other
+  budget here already read it. The exempt states left are the ones with no bar
+  to cut. Both bars also fold at `listPaneCells` rather than the fixed 51: a
+  fold is safe at 51 only while the pane HAS 51 cells, and at width 45 it has 16.
+  THE HELD SET IS DERIVED FROM WHAT EACH KEY'S PRODUCT IS, and there is one per
+  BRANCH because the two branches differ in what a key can destroy. Read the
+  gates for the members — the browse one in `Update`, `listSearchHeldKey` for the
+  overlay — rather than a roster restated here; what is worth knowing is the
+  RULE that chooses them. A movement key's product is the POSITION, so `end` on
+  a refused pane would walk the cursor to the bottom of a list nobody can see
+  and declining it destroys nothing. On BROWSE `s` qualifies too: it re-orders
+  locally, its only visible product is `headerLine`, which the refusal does not
+  draw, and `needRows` is invariant under re-ordering — so the pane came back
+  byte for byte, standing rule 1 broken by the refusal itself. `r` and `f` do
+  not: both set `loading` and redraw as `Loading…`. Nor does `enter`, nor `n`,
+  nor the uppercase shortcuts, which LEAVE — the operator's way out of a pane
+  too short to work in, and the reason not to widen the browse gate to every key.
+  ON THE OVERLAY `enter` IS HELD AND TYPING NEVER IS, and both follow the same
+  rule from a different starting point: there `enter` does not leave, it OPENS a
+  row chosen by an invisible cursor that a search reply can move under the
+  operator (`listSearchedMsg` resets it to 0), which is worse than no navigation
+  at all; a typed rune's product is the VALUE, so declining it DISCARDS input a
+  scanner cannot resend, which is the one thing this program never does. The
+  runes therefore keep reaching the box, the query survives the resize, and the
+  notice's searching wording says so instead of repeating a sentence about
+  sorting.
   THE NOTICE'S PROMISE IS SCOPED TO WHILE THE NOTICE IS UP, and it has to be:
   `paneDrawn` answers TRUE while a load is out, so `r` on a refused pane replaces
   the notice with the working line and `G` then walks the cursor against rows
@@ -1044,16 +1083,33 @@ either:
   than Root draws at width 45, and a bound that spends cells the pane does not
   have is not a bound.
   WHATEVER MUST SURVIVE MUST LEAD, once more, and here it decides the WORDING.
-  On a REFUSAL the load-bearing clause is the WAY OUT, so `Esc leaves` leads in
-  its own fold segment, then the height to RESIZE TO, then the height the
-  operator already HAS — a trim on either axis takes the tail and can never
+  On a REFUSAL the load-bearing clause is the WAY OUT, so `listTooShortWayOut`
+  leads in its own fold segment, then the height to RESIZE TO, then the height
+  the operator already HAS — a trim on either axis takes the tail and can never
   leave a WRONG number standing. The single-segment version folded on spaces
   into `Too short:` and scattered the figure across lines a short pane drops.
+  THAT CLAUSE CARRIES THE RULE AND ITS EXCEPTION TOGETHER, and it is a claim
+  about the LEGEND rather than about what acts — the distinction `jdeTooShort`
+  already makes. Split across sentences, rule-first puts the denial on the line
+  that leads and the way out on the line a one-row pane drops; way-out-first
+  leaves a pane naming a key above a sentence denying that any key is named. In
+  one clause the order is rule then exception AND the way out still leads. A
+  wording asserting that no key WORKS would be false of `r`, `f`, `n`, `enter`
+  and every uppercase shortcut, all deliberately live; what is true whatever
+  stays bound is that the action bar is not drawn. It also has to fit the 16
+  cells width 45 gives, or it folds into a first line that denies without
+  naming — check any rewording against that budget, which the sweeps do.
   ESC IS NAMED BECAUSE ESC WORKS THERE, and it is PRESSED rather than read off
   Root's switch (`TestList_ARefusedPaneNamesAKeyThatReallyLeaves`, through a real
-  Root, with the back-stack both empty and loaded): a refused list is never
-  `searching`, so `WantsRawInput` is false and `HandlesKey` never claims `esc`,
-  and the key reaches the global back step. It is the one key a frame that names
+  Root, with the back-stack both empty and loaded): `WantsRawInput` is false on a
+  refused pane BY CONSTRUCTION — it reads `paneDrawn`, because a pane drawing no
+  overlay owns no keyboard — and `HandlesKey` never claims `esc`, so the key
+  reaches the global back step. A REFUSED LIST IS ROUTINELY `searching`, which
+  is why that is the reason rather than the exemption it used to be: claiming
+  raw input there sent `esc` to `updateSearch`, which only CLOSES the overlay,
+  and since the browse footer folds to more lines than the overlay's bar every
+  height that refuses the overlay refuses the browse pane too — so the key the
+  notice names redrew the notice byte for byte. It is the one key a frame that names
   none may name, the trade `jdeTooShort` already makes — the way out of a pane
   too short to work in must stay open or the refusal is one nobody can act on —
   and it does not soften the held-keys sentence beside it, because esc does not
@@ -1062,7 +1118,7 @@ either:
   ONE-ROW pane (terminal height 7, since `screenBodyRows` is height − 6) keeps
   only the first folded line, and whether that line still holds the figure
   depends on the width — 51 cells keeps it, the 16 that width 45 gives does not,
-  so only `Esc leaves…` is drawn there, marked. From two rows up both are on the
+  so only the way-out clause is drawn there, marked. From two rows up both are on the
   pane at every drawable width, which is why the sweep asks the two claims at
   different scopes: the way out at every drawable pane, the figure wherever
   `listPaneRows` is more than one.
