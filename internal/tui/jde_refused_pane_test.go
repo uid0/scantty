@@ -371,6 +371,7 @@ var jdeInertCases = map[string]string{
 	// service_status_screen nesting the entry inside len(services) > 1,
 	// po_create's barItems on rowCount() > 1, receive_form's reviewBarItems on
 	// reviewRows() > 1.
+	"CategoryFormScreen/empty picker":            "one navigable row (the synthetic \"(none)\" row), so nothing moves",
 	"InventoryItemFormScreen/kit list empty":     "one navigable row (the add row), so nothing moves",
 	"InventoryItemFormScreen/chain list empty":   "one navigable row (the add row), so nothing moves",
 	"StorageSlotGenerateScreen/level list empty": "one navigable row (the add row), so nothing moves",

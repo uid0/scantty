@@ -722,6 +722,24 @@ func jdeScreenStates() map[string]func() Screen {
 			s.openPicker(agAsset)
 			return s
 		},
+		// The same picker at its MINIMUM, which is the PICKER half of the
+		// minimal-list states below: with nothing loaded, the only navigable row
+		// is the synthetic "(none)" row jdePickList prepends, so the count
+		// jdePickBarWith is asked is ONE and there is nowhere for UP/DN to go.
+		//
+		// It is here because every picker state in this file carries two or more
+		// options — deliberately, so the movement claims are not vacuous — and
+		// that left jdePickBarWith's condition, which is the layer half of the
+		// UP/DN fix, unreached by any fixture: made unconditional again, the
+		// whole package went green. The state is an ordinary one, not a corner
+		// (a fresh install with no categories, or a filter that matched nothing,
+		// leaves exactly this row standing).
+		"CategoryFormScreen/empty picker": func() Screen {
+			s := NewCategoryFormScreen(Deps{}, "")
+			s.loading = false
+			s.openParentPicker()
+			return s
+		},
 		"CategoryFormScreen/pickView": func() Screen {
 			s := NewCategoryFormScreen(Deps{}, "")
 			s.loading = false
