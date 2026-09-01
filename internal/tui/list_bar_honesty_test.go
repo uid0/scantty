@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // list_bar_honesty_test.go — the bar-honesty rule for the LIST screens.
@@ -444,18 +445,32 @@ func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
-			loaded := listLoaded(surface.build)
-			named := listNamedKeys(t, loaded.footerHint())
-
-			// Legibility on a REAL pane, at both supported heights and in both
-			// scroll positions. A footer claim that survives the 51-column cut
-			// only to be dropped off the bottom by clampToBox is just as unread.
-			for _, termHeight := range []int{24, 30} {
+			// Legibility on a REAL pane, at EVERY height Root will draw one at
+			// and in both scroll positions. A footer claim that survives the
+			// 51-column cut only to be dropped off the bottom by clampToBox is
+			// just as unread.
+			//
+			// jdePaneHeights and not the pair {24, 30} this loop used to walk.
+			// Two hand-picked heights is the same mistake on the vertical axis
+			// that three hand-picked widths was on the horizontal one, and it
+			// cost the same thing: every height at which the folded footer ran
+			// past the bottom of the pane was below both of them, so nothing
+			// reported a bar that vanished on exactly the panes an operator
+			// running a split terminal has. The set is derived from Root's own
+			// drawable gate, so it moves when that gate moves.
+			//
+			// A pane the screen REFUSES is not a claim about the footer and is
+			// checked by TestList_AShortPaneRefusesRatherThanCuttingTheFooter,
+			// which is where the refusal's own honesty is asserted.
+			for _, termHeight := range jdePaneHeights() {
 				for _, scrolled := range []bool{false, true} {
 					sized := listSized(t, surface.build, termHeight)
 					if scrolled {
 						next, _ := sized.Update(listRuneKey("G"))
 						sized = next.(*ListScreen)
+					}
+					if !sized.paneDrawn() {
+						continue
 					}
 					for _, segment := range strings.Split(sized.footerHint(), " · ") {
 						if !listFooterLegible(t, sized, termHeight, segment) {
@@ -474,10 +489,13 @@ func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 			// "these bars only got shorter" is exactly the kind of claim that is
 			// true until the next segment is added behind the condition.
 			for state, rows := range listRowCases {
-				for _, termHeight := range []int{24, 30} {
+				for _, termHeight := range jdePaneHeights() {
 					sized := listWithRows(surface.build, rows)
 					next, _ := sized.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
 					sized = next.(*ListScreen)
+					if !sized.paneDrawn() {
+						continue
+					}
 					for _, segment := range strings.Split(sized.footerHint(), " · ") {
 						if !listFooterLegible(t, sized, termHeight, segment) {
 							t.Errorf("the %s footer claims %q on a line the pane cuts off "+
@@ -512,8 +530,176 @@ func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 					}
 				}
 			}
-			_ = named
 		})
+	}
+}
+
+// TestList_AShortPaneRefusesRatherThanCuttingTheFooter is the OTHER half of the
+// sweep above: what a list does at the heights where its folded footer will not
+// fit at all.
+//
+// THE DEFECT. The footer is pinned to the bottom of the pane and clampToBox
+// drops from the bottom, so a pane that cannot hold the whole assembly loses
+// the bar — some keys named, the rest hidden, and nothing on the pane to say a
+// fragment is what the operator is reading. Both branches did it, for the same
+// reason: they budgeted against screenBodyHeight, which floors at four and is
+// therefore a lie below a terminal height of ten, and listBodyLines then floored
+// its own answer at two rows the pane did not have. On the purchase-order list
+// at 80 columns the second folded footer row ("· N new PO · Q pending
+// reorders") went at height 11 empty and 14 loaded, and by height 10 the whole
+// bar was gone — the bar-less pane the empty-list work exists to remove,
+// restored by geometry.
+//
+// THE PROPERTY, at every height Root will draw a list at and every row count:
+// either the footer is on the pane WHOLE, or the screen has refused the pane and
+// says so — bounded in both axes, naming a height in TERMINAL rows, and naming a
+// height that ACTUALLY DRAWS when the operator resizes to it. A refusal the
+// operator cannot act on is its own defect (standing rule 11), and a notice that
+// names a height still too short is exactly that.
+//
+// The count of refusals is asserted rather than assumed: if no case in the whole
+// sweep reaches the refusal, this test is only checking legibility that the
+// sweep above already checks, and the notice path is untested while looking
+// covered.
+func TestList_AShortPaneRefusesRatherThanCuttingTheFooter(t *testing.T) {
+	heights := jdePaneHeights()
+	if len(heights) == 0 {
+		t.Fatal("no drawable heights — the derivation is broken, not the app")
+	}
+	refusals := 0
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			for state, rows := range listRowCases {
+				for _, termHeight := range heights {
+					s := listWithRows(surface.build, rows)
+					next, _ := s.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
+					s = next.(*ListScreen)
+					pane := listPaneLines(t, s, termHeight)
+
+					if s.paneDrawn() {
+						for _, segment := range strings.Split(s.footerHint(), " · ") {
+							if !listFooterLegible(t, s, termHeight, segment) {
+								t.Errorf("the %s pane is drawn at height %d (%s) but its footer "+
+									"claims %q on a line the pane cuts off:\n%s",
+									surface.name, termHeight, state, segment, strings.Join(pane, "\n"))
+							}
+						}
+						continue
+					}
+					refusals++
+
+					// The notice, and NOTHING of the bar: a refused pane that still
+					// drew a footer fragment would be the defect wearing the fix.
+					need := s.needRows() + screenChromeRows
+					want := fmt.Sprintf("Too short: needs %d rows, has %d.", need, termHeight)
+					if !listFooterLegible(t, s, termHeight, want) {
+						t.Errorf("the %s pane at height %d (%s) draws no footer and does not say "+
+							"why — the operator is left on a bar-less pane:\n%s",
+							surface.name, termHeight, state, strings.Join(pane, "\n"))
+					}
+
+					// Bounded in BOTH axes by the screen, not by clampToBox: a notice
+					// that was itself cut would be the defect it exists to report.
+					raw := strings.Split(s.View(), "\n")
+					if len(raw) > s.listPaneRows() {
+						t.Errorf("the %s refusal at height %d (%s) is %d rows into a pane of %d",
+							surface.name, termHeight, state, len(raw), s.listPaneRows())
+					}
+					for _, line := range raw {
+						if lipgloss.Width(line) > screenBodyWidth(80) {
+							t.Errorf("the %s refusal at height %d (%s) draws %d cells into a pane of %d: %q",
+								surface.name, termHeight, state, lipgloss.Width(line),
+								screenBodyWidth(80), line)
+						}
+					}
+
+					// THE HEIGHT IT NAMES HAS TO WORK. Resized to it, the same list
+					// draws its frame and its whole footer — otherwise the notice is a
+					// refusal the operator cannot satisfy.
+					at := listWithRows(surface.build, rows)
+					n2, _ := at.Update(tea.WindowSizeMsg{Width: 80, Height: need})
+					at = n2.(*ListScreen)
+					if !at.paneDrawn() {
+						t.Errorf("the %s refusal at height %d (%s) names %d rows, but the pane is "+
+							"still refused there", surface.name, termHeight, state, need)
+						continue
+					}
+					for _, segment := range strings.Split(at.footerHint(), " · ") {
+						if !listFooterLegible(t, at, need, segment) {
+							t.Errorf("the %s refusal at height %d (%s) names %d rows, but at that "+
+								"height the footer still claims %q on a line the pane cuts off:\n%s",
+								surface.name, termHeight, state, need, segment,
+								strings.Join(listPaneLines(t, at, need), "\n"))
+						}
+					}
+				}
+			}
+		})
+	}
+	if refusals == 0 {
+		t.Fatal("no list refused a pane at any drawable height, so the refusal half of " +
+			"this check asserted nothing — either the fixtures no longer reach a short " +
+			"pane or the gate has stopped answering")
+	}
+}
+
+// TestList_ARefusedPaneKeepsTheOperatorsPlace: while the pane is too short to
+// draw the footer, the movement keys are HELD.
+//
+// The notice promises it in as many words, and a notice claiming a hold that is
+// not applied is a documented claim the code does not honour — the same defect
+// in the other direction as a bar naming a dead key. It is also the loss itself:
+// `end` on a refused pane would walk the cursor to the bottom of a list nobody
+// can see, and the operator who drags the terminal back finds somewhere they
+// never went. paneDrawn is the one predicate the notice and the gate both read.
+//
+// POSITIVELY CONTROLLED, because "pressing G changed nothing" proves nothing on
+// its own: the same fixture is driven at a height where the pane IS drawn and
+// the key must MOVE there, so a fixture that could not move for unrelated
+// reasons fails instead of passing.
+func TestList_ARefusedPaneKeepsTheOperatorsPlace(t *testing.T) {
+	place := func(s *ListScreen) string { return fmt.Sprint(s.cursor, "+", s.windowStart) }
+	moved, held := 0, 0
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			for _, key := range []string{"j", "down", "pgdown", "G", "end"} {
+				var tall, short int
+				for _, termHeight := range jdePaneHeights() {
+					s := listSized(t, surface.build, termHeight)
+					before := place(s)
+					next, _ := s.Update(listRuneKey(key))
+					s = next.(*ListScreen)
+					if s.paneDrawn() {
+						if place(s) != before {
+							tall++
+						}
+						continue
+					}
+					short++
+					if place(s) != before {
+						t.Errorf("the %s list is refused at height %d and drawing the "+
+							"too-short notice, but %q moved the operator from %s to %s — the "+
+							"notice promises the moving keys are held",
+							surface.name, termHeight, key, before, place(s))
+					}
+				}
+				if short == 0 {
+					t.Errorf("%q was never pressed on a refused %s pane, so the hold was not "+
+						"tested for it", key, surface.name)
+				}
+				if tall == 0 {
+					t.Errorf("%q never moved the %s cursor at ANY drawable height, so the "+
+						"check above passes for a reason unrelated to the refusal",
+						key, surface.name)
+				}
+				moved += tall
+				held += short
+			}
+		})
+	}
+	if moved == 0 || held == 0 {
+		t.Fatalf("the sweep saw %d moves and %d holds — one of the two states was never "+
+			"reached, so the control is missing", moved, held)
 	}
 }
 
@@ -730,9 +916,12 @@ func listSearchBarTokens(t *testing.T, hint string) map[string][]string {
 func TestList_TheFooterSurvivesEveryScrollPosition(t *testing.T) {
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
-			for _, termHeight := range []int{24, 30} {
+			for _, termHeight := range jdePaneHeights() {
 				for _, key := range []string{"j", "pgdown"} {
 					s := listSized(t, surface.build, termHeight)
+					if !s.paneDrawn() {
+						continue
+					}
 					for step := 0; step < len(s.rows); step++ {
 						pane := listPaneLines(t, s, termHeight)
 						for _, segment := range strings.Split(s.footerHint(), " · ") {

@@ -54,8 +54,12 @@ import (
 // is why it is written down here rather than half-done in passing.
 //
 // THE ONE HALF THAT IS CLOSED FOR THEM is the vocabulary: they no longer bind
-// anything no bar in the program spells (list_nav.go, and
-// TestListNav_NoSurfaceBindsARetiredChord).
+// anything no bar in the program spells (list_nav.go). That half is held by
+// PRESSING the retired chords on the two fixture sets
+// (TestListNav_NoSurfaceBindsARetiredChord) — which reaches the columnar screens
+// and every *ListScreen and, like every other behavioural sweep, cannot reach
+// the prose-bar receivers. What reaches THEM is this file: not a claim about
+// their keys, but the guarantee that a new one cannot join the app unexamined.
 
 // listNavUnsweptReceivers are the receivers that bind a keystroke the navigation
 // vocabulary spells and that neither behavioural sweep can read a bar for.
@@ -114,12 +118,13 @@ var listNavUnsweptReceivers = map[string]string{
 	"StorageSlotsScreen":          "the storage slot list beside StorageSlotFormScreen",
 	"SupplierListScreen":          "the supplier list beside SupplierFormScreen",
 	"TextScroller": "not a list at all: a read-only text body with a scroll offset and " +
-		"no cursor, shared by fifteen detail sheets. It is here because Handle binds the " +
-		"same movement keys the vocabulary spells, and its callers' footers disagree about " +
-		"which of them to name — six say 'j/k scroll · pgup/pgdn page', the rest name " +
-		"'j/k scroll' alone while pgup/pgdn, the arrows, g/G and home/end all work. That is " +
-		"the prose-footer gap in its purest form: one handler, fifteen bars, no record to " +
-		"read",
+		"no cursor, shared by every detail sheet that holds one (listNavDelegatingReceivers " +
+		"derives that set every run, so no count is restated here to drift). It is here " +
+		"because Handle binds the same movement keys the vocabulary spells, and its callers' " +
+		"footers disagree about which of them to name — some say 'j/k scroll · pgup/pgdn " +
+		"page', the rest name 'j/k scroll' alone while pgup/pgdn, the arrows, g/G and " +
+		"home/end all work. That is the prose-footer gap in its purest form: one handler, " +
+		"one bar per sheet, no record to read",
 	"UsageScreen":                "the ForgeKey usage-session list",
 	"VendorsScreen":              "the maintenance vendor list",
 	"WebhookListScreen":          "the webhook list beside WebhookFormScreen",
@@ -238,10 +243,12 @@ func listNavReceiverName(e ast.Expr) string {
 // SEVEN were in that state — AnalyticsPulseScreen, NotificationsScreen,
 // SIGDetailScreen, ProjectStorageDetailScreen, StorageSlotDetailScreen,
 // ElectricalPanelDetailScreen and SupplierDetailScreen. The other TextScroller
-// holders (asset, inventory and work-order detail) bind keys of their own as
-// well and so were already found. The count is deliberately not load-bearing:
-// the check derives the set every run, so this sentence is a reader's orientation
-// and the map is the authority.
+// holders (asset, inventory and work-order detail among them) bind keys of their
+// own as well and so were already found. No count of the holders is written down
+// anywhere in this file: the check derives the set every run, and a number
+// restated beside a derivation is the one thing in it that can go stale — which
+// it did, saying fifteen where the package holds fourteen, in three places at
+// once.
 //
 // A FIELD TYPE and not a call graph, because that is what go/parser can answer
 // without go/types: a screen with a TextScroller in it is a screen that scrolls,
@@ -275,8 +282,8 @@ func listNavDelegatingReceivers(t *testing.T) map[string]bool {
 		})
 	}
 	if len(out) < 5 {
-		t.Fatalf("only %d types hold a TextScroller by this scan, which contradicts the "+
-			"fifteen sheets that build one — the derivation is broken", len(out))
+		t.Fatalf("only %d types hold a TextScroller by this scan, which is far fewer than "+
+			"the detail sheets that build one — the derivation is broken, not the app", len(out))
 	}
 	return out
 }
@@ -327,6 +334,18 @@ func listNavColumnarReceivers(t *testing.T) map[string]bool {
 // the package that binds a movement key is either covered by one of the two
 // behavioural sweeps or recorded, with a reason, in
 // listNavUnsweptReceivers.
+//
+// IT IS A COVERAGE CLASSIFICATION AND NOT A BEHAVIOUR CLAIM, and the difference
+// matters enough to say before anything else: it reads the package's source to
+// answer "which surfaces can a behavioural sweep reach, and which cannot", and
+// it asserts NOTHING about what any key does. The behaviour claims are pressed
+// on real screens — TestListNav_NoSurfaceBindsARetiredChord for the retired
+// chords, TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves and
+// TestList_FooterNamesExactlyTheKeysThatWork for the bar's honesty. A source
+// parse is legitimate HERE precisely because the question is about the shape of
+// the package rather than about behaviour: there is no fixture to press for the
+// prose-bar receivers, and the thing being guarded is that their set cannot grow
+// without somebody writing down what the new one is.
 //
 // THIS IS THE COMPLETENESS HALF, and it is deliberately weaker than the rule it
 // serves: it does not say the excused bars are honest, it says nothing can be

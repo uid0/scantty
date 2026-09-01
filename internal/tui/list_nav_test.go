@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"os"
-	"path/filepath"
-	"regexp"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -27,111 +25,202 @@ import (
 // records that as the standing exclusion.
 //
 // What CAN be held over all of them is the VOCABULARY — which keystrokes are
-// navigation at all — and that is what this file does, by reading the package's
-// own source. A key nothing anywhere spells cannot become bound on screen
-// thirty-one without failing the build here, whatever kind of bar that screen
-// draws.
+// navigation at all, and which ones move nothing anywhere. This file holds the
+// retired half of it by PRESSING the chords on every fixture the two sets can
+// build, positively controlled by the named key that spells the same
+// affordance. The surfaces outside both sets have no fixture to press, and
+// list_nav_surfaces_test.go classifies them rather than letting them pass by
+// nobody having looked.
 
-// listNavSourceFiles is every non-test Go file of this package, read once.
+// listNavChordControl is the POSITIVE CONTROL for one retired chord: the named
+// key that spells the same affordance, and the probe that puts a surface in a
+// state where that key has somewhere to go.
 //
-// Derived from the directory rather than listed, for the reason
-// TestJDEForm_NoSheetAnswersTheScrollQuestionItself derives its own set: a
-// roster of files to check is a file that can be added without being checked,
-// which is the omission this whole area keeps paying for.
-func listNavSourceFiles(t *testing.T) map[string]string {
+// WITHOUT IT THIS SWEEP WOULD BE STRICTLY WORSE THAN THE SOURCE SCAN IT
+// REPLACED. "Pressing ctrl+d changed nothing" proves nothing on its own: it is
+// equally true of an empty list, a one-row list, a refused pane and a form with
+// nothing to page, so a sweep that only pressed the chord would go green over
+// every fixture that cannot move for reasons of its own — the vacuous-fixture
+// rule (AGENTS.md) in the shape that is hardest to see, because the assertion
+// reads exactly right. So each case presses the CONTROL from the same state
+// first: only where the control moves is "the chord did not" a claim about the
+// chord.
+//
+// The probes are NAMED keys and never runes. A columnar picker's filter box is
+// always live, so probing with `G` would type a character into the query and
+// the pane would change for a reason that has nothing to do with movement.
+type listNavChordControl struct {
+	probe []string
+	key   string
+}
+
+var listNavChordControls = map[string]listNavChordControl{
+	"ctrl+u": {probe: []string{"end"}, key: "pgup"},
+	"ctrl+d": {key: "pgdown"},
+	"ctrl+p": {probe: []string{"end"}, key: "up"},
+	"ctrl+n": {key: "down"},
+}
+
+// TestListNav_TheControlsCoverTheRetiredSet: every retired chord has a control.
+//
+// Without this, retiring a fifth chord and forgetting its control would leave
+// the sweep below pressing it with nothing to compare against — and it would
+// pass, silently, for exactly the reason the controls exist to prevent.
+func TestListNav_TheControlsCoverTheRetiredSet(t *testing.T) {
+	if len(listNavRetiredChords) == 0 {
+		t.Fatal("listNavRetiredChords is empty, so the sweeps over it assert nothing")
+	}
+	for chord := range listNavRetiredChords {
+		if _, ok := listNavChordControls[chord]; !ok {
+			t.Errorf("%q is retired but listNavChordControls names no key that spells the "+
+				"same affordance, so the behavioural sweep would press it against no "+
+				"control and pass on any fixture that cannot move", chord)
+		}
+	}
+	for chord := range listNavChordControls {
+		if _, ok := listNavRetiredChords[chord]; !ok {
+			t.Errorf("listNavChordControls carries a control for %q, which is not retired — "+
+				"the entry has outlived the chord it was written about", chord)
+		}
+	}
+}
+
+// listNavPress presses a probe then one key, and reports the clipped pane and
+// the place fingerprint before and after that key.
+//
+// THE CLIPPED PANE is what an operator can distinguish (standing rule 1) and the
+// PLACE is what a pane cannot always show: a cursor moved onto a row that
+// renders identically, or an offset clamped straight back, changes where the
+// next key lands while the frame stays byte for byte. Both, for the reason
+// jdePlaceOf gives — and which of the two a set may ASSERT on differs, see
+// below.
+func listNavPress(t *testing.T, s Screen, w, h int, probe []string, key string) (paneBefore, paneAfter string, placeBefore, placeAfter []int64) {
 	t.Helper()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("reading the package directory: %v", err)
-	}
-	out := map[string]string{}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
+	r := jdeRootAt(t, s, w, h)
+	press := func(k string) {
+		next, _ := s.Update(poPickerKeyMsg(k))
+		if next != nil {
+			s = next
 		}
-		b, err := os.ReadFile(filepath.Clean(name))
-		if err != nil {
-			t.Fatalf("reading %s: %v", name, err)
-		}
-		out[name] = string(b)
 	}
-	if len(out) < 50 {
-		t.Fatalf("the package source scan found %d files, which is far fewer than this "+
-			"package has — the derivation is broken, not the app", len(out))
+	for _, p := range probe {
+		press(p)
 	}
-	return out
+	paneBefore, placeBefore = r.View(), jdePlaceOf(s)
+	press(key)
+	return paneBefore, r.View(), placeBefore, jdePlaceOf(s)
 }
 
-// listNavCaseKeys pulls the keystroke literals out of every `case "…":` clause
-// in a file, ignoring comments.
-//
-// A `case` over key STRINGS is how every screen in this package binds a key —
-// the handlers switch on tea.KeyMsg.String() — so it is where a binding is
-// visible in source. Comments are stripped first because list_nav.go's own
-// documentation quotes the retired arm it exists to explain, and a check that
-// failed on its own explanation would teach the next reader to delete the
-// explanation.
-func listNavCaseKeys(src string) map[string][]int {
-	out := map[string][]int{}
-	caseLine := regexp.MustCompile(`^\s*case\s+("(?:[^"\\]|\\.)*"\s*(?:,\s*"(?:[^"\\]|\\.)*"\s*)*):`)
-	lit := regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
-	inBlock := false
-	for i, line := range strings.Split(src, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if inBlock {
-			if strings.Contains(trimmed, "*/") {
-				inBlock = false
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "//") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "/*") {
-			inBlock = !strings.Contains(trimmed, "*/")
-			continue
-		}
-		m := caseLine.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		for _, k := range lit.FindAllStringSubmatch(m[1], -1) {
-			out[k[1]] = append(out[k[1]], i+1)
-		}
-	}
-	return out
-}
-
-// TestListNav_NoSurfaceBindsARetiredChord: no screen in the package binds a
-// keystroke that list_nav.go records as retired.
+// TestListNav_NoSurfaceBindsARetiredChord: no surface the app can build MOVES
+// on a keystroke list_nav.go records as retired.
 //
 // THIS IS HALF ONE OF THE RULE, and it is the half a bar cannot report on
 // itself: "the footer names a key that does nothing" is visible to anyone who
 // presses it, while "a key acts and no bar in the program spells it" is
 // discoverable only by pressing keys nothing told you about. It shipped for
 // exactly that reason — twenty-four `case "ctrl+d", "pgdown":` arms across
-// seventeen files, none of them named by any bar, after the four purchasing
+// twenty-one files, none of them named by any bar, after the four purchasing
 // surfaces had already been brought into line.
 //
-// DERIVED on both axes: the files come from the directory and the keys come from
-// listNavRetiredChords, so a screen added tomorrow is checked today and a chord
-// retired tomorrow is enforced by adding one line to the map. The failure names
-// the reason the map carries, because "ctrl+d is not allowed" without the reason
-// is how a rule gets worked around instead of understood.
+// IT IS A BEHAVIOURAL PRESS AND NOT A SOURCE SCAN, which is the repair this
+// check itself needed. It used to regex the package for `case "ctrl+d":`
+// literals, and a claim proved from source SHAPE is the defect this project
+// keeps closing: a commented-out or unreachable arm failed it, while a chord
+// bound through a helper, a key-name map or a strings.Contains dispatch passed
+// it untouched. Pressing the key answers both directions, and answers them about
+// the thing the operator actually meets.
+//
+// TWO FIXTURE SETS, because the app draws two kinds of bar and each already has
+// a sweep that builds its screens: the columnar screens from jdePaneCases (every
+// type embedding jdeScreen, plus its extra states) and every *ListScreen from
+// listBarSurfaces, at every row count in listRowCases. The surfaces OUTSIDE both
+// — the prose-bar receivers — have no fixture to press, and that is exactly what
+// TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused classifies rather
+// than hides.
+//
+// WHAT IS ASSERTED DIFFERS BETWEEN THE TWO SETS, and the difference is a fact
+// about the surfaces rather than a weakening chosen for convenience. All four
+// retired chords are ALSO bubbles' own textinput line-editing keys — ctrl+u
+// deletes to the start of the line, ctrl+d the character forward, ctrl+p/ctrl+n
+// walk the suggestion list — and AGENTS.md's standing rule is that a focused
+// text box owns its own keys, because declining a keystroke there would DISCARD
+// input rather than preserve a position. So on a columnar sheet with the caret
+// in a box the PANE legitimately changes, and asserting on it would report
+// correct behaviour as a defect (InventoryItemFormScreen's packaging-chain row
+// is the worked example: ctrl+u empties the "Units held" box). What must not
+// happen there is a MOVE, and jdePlaceOf is exactly the record of where the
+// operator is — every int field of the screen whose name says it holds a
+// position. A *ListScreen in browse mode has no box holding the caret, so both
+// halves are asserted, and the pane is what catches a window that scrolled
+// without the cursor leaving its row (windowStart is not in jdePlaceOf's
+// vocabulary).
+//
+// Both halves are POSITIVELY CONTROLLED per case (listNavChordControl), measured
+// by the SAME predicate the chord is judged by, and the controls are counted: a
+// set in which no fixture could be moved by the named key fails outright rather
+// than reporting coverage it does not have.
 func TestListNav_NoSurfaceBindsARetiredChord(t *testing.T) {
 	if len(listNavRetiredChords) == 0 {
 		t.Fatal("listNavRetiredChords is empty, so this check asserted nothing")
 	}
-	for file, src := range listNavSourceFiles(t) {
-		keys := listNavCaseKeys(src)
-		for chord, why := range listNavRetiredChords {
-			for _, line := range keys[chord] {
-				t.Errorf("%s:%d binds %q. That chord is retired: %s\n"+
-					"Every list surface in the app must bind the same navigation set, or "+
-					"the same key pages one list and does nothing on the next — and no bar "+
-					"in this program spells a chord, so a binding here is a key the "+
-					"operator can only find by guessing.", file, line, chord, why)
+
+	// A pane wide and tall enough that every fixture draws its frame, so a chord
+	// held by a refused-pane gate cannot be mistaken for a chord nothing binds.
+	const w, h = 120, 40
+
+	controlled := map[string]int{}
+
+	t.Run("columnar", func(t *testing.T) {
+		for _, c := range jdePaneCases() {
+			for chord, ctrl := range listNavChordControls {
+				_, _, cb, ca := listNavPress(t, c.mk(), w, h, ctrl.probe, ctrl.key)
+				if !reflect.DeepEqual(cb, ca) {
+					controlled["columnar/"+chord]++
+				}
+				_, _, before, after := listNavPress(t, c.mk(), w, h, ctrl.probe, chord)
+				if !reflect.DeepEqual(before, after) {
+					t.Errorf("%s acts on %q: it moved the operator's place from %v to %v. "+
+						"That chord is retired: %s\nNo bar in this program spells a chord, so "+
+						"a key that moves here is one the operator can only find by guessing — "+
+						"and the same key does nothing on the surface beside it.",
+						c.name, chord, before, after, listNavRetiredChords[chord])
+				}
+			}
+		}
+	})
+
+	t.Run("list", func(t *testing.T) {
+		for _, surface := range listBarSurfaces() {
+			for state, rows := range listRowCases {
+				for chord, ctrl := range listNavChordControls {
+					name := surface.name + " (" + state + ")"
+					cpb, cpa, cb, ca := listNavPress(t, listWithRows(surface.build, rows), w, h, ctrl.probe, ctrl.key)
+					if cpb != cpa || !reflect.DeepEqual(cb, ca) {
+						controlled["list/"+chord]++
+					}
+					pb, pa, before, after := listNavPress(t, listWithRows(surface.build, rows), w, h, ctrl.probe, chord)
+					why := listNavRetiredChords[chord]
+					switch {
+					case pb != pa:
+						t.Errorf("%s acts on %q: the pane changed. That chord is retired: %s\n"+
+							"--- before\n%s\n--- after\n%s", name, chord, why, pb, pa)
+					case !reflect.DeepEqual(before, after):
+						t.Errorf("%s acts on %q: it moved the operator's place from %v to %v "+
+							"while drawing the same pane. That chord is retired: %s",
+							name, chord, before, after, why)
+					}
+				}
+			}
+		}
+	})
+
+	for chord, ctrl := range listNavChordControls {
+		for _, set := range []string{"columnar", "list"} {
+			if controlled[set+"/"+chord] == 0 {
+				t.Errorf("no %s fixture was moved by %q, the key that spells the same "+
+					"affordance as %q — so every %q-does-nothing case above passed for a "+
+					"reason unrelated to the chord, and this half of the sweep is vacuous",
+					set, ctrl.key, chord, chord)
 			}
 		}
 	}

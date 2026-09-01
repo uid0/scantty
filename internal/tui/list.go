@@ -168,36 +168,276 @@ type ListScreen struct {
 	searchPending bool
 }
 
-// listBodyLines is how many LINES of list body the pane has left after the
-// chrome around it.
-//
-// Chrome accounted for here, in addition to the global screen body math
-// in layout.go:
-//
-//	1 row for the "Sort: … · N rows" header
-//	1 row each for ↑/↓ indicators when the list overflows the window
-//	1 blank separator above the hint
-//	however many rows the FOLDED hint actually occupies
-func (s *ListScreen) listBodyLines() int {
-	const listHeaderRows = 1
-	// Reserve both indicator slots up front; we'd rather waste one row
-	// when only one indicator shows than clip a row when the list
-	// overflows.
-	const listIndicatorRows = 2
+// The list pane's fixed chrome, named so the budget and the REFUSAL below can
+// be built out of the same numbers rather than each counting the rows for
+// itself. A budget that disagrees with what the renderer draws is how the bar
+// came to be cut off the bottom in the first place.
+const (
+	// listHeaderRows: the "Sort: … · N rows" line, drawn by the loaded pane and
+	// by the empty one (headerLine says why the empty one needs it too).
+	listHeaderRows = 1
 
-	avail := screenBodyHeight(s.terminalHeight) - listHeaderRows - listIndicatorRows
+	// listIndicatorRows: the "↑ more above" / "↓ more below" pair. Reserved as
+	// a PAIR whenever either can appear — we would rather waste one row when
+	// only one shows than clip a row when the list overflows — but no longer
+	// reserved unconditionally, because on a short pane those two rows are the
+	// difference between a drawable frame and a refused one (listIndicatorRows
+	// is spent only when the rows really do outrun the body, listOverflows).
+	listIndicatorRows = 2
+
+	// listMinBodyRows: the floor on an EMPTY list, where the body is the "no
+	// rows" sentence and nothing else. A loaded list's floor is bigger and is
+	// asked of the rows themselves (minBodyLines) — a ROW is what its body has
+	// to be able to draw, and a row is not one line.
+	//
+	// Below the floor there is nothing to draw a frame around and the pane is
+	// refused rather than mutilated — the stance jdeTooShort takes on the
+	// columnar layer, for the same reason: a footer with rows cut off the bottom
+	// names some keys and hides the rest, silently, and the operator cannot tell
+	// which.
+	listMinBodyRows = 1
+
+	// listMaxRowLines: the most lines ONE row can render to — its title, its
+	// Subtitle and its MetricsLine. Derived from rowLineCost rather than guessed
+	// at, and it exists only so minBodyLines can stop walking once it has found
+	// a row that cannot be beaten.
+	listMaxRowLines = 3
+)
+
+// listPaneRows is how many rows this screen's View() may really draw into.
+//
+// screenBodyRows and NOT screenBodyHeight, which floors at four and is
+// therefore a LIE below a terminal height of ten — and a caller that has to fit
+// a footer pinned to the bottom of the pane cannot budget against a lie
+// (layout.go says so in as many words). Budgeting against the floor is exactly
+// what put the folded footer past the bottom edge: at 80x14 the purchase-order
+// list assembled nine rows into a pane with eight, and clampToBox drops from
+// the BOTTOM, so what went was "· N new PO · Q pending reorders" — the same
+// claim off the same edge for the fourth time, horizontally, then vertically,
+// then by counting rows where the renderer counts lines, and now by budgeting
+// against a floored height.
+//
+// An UNSIZED screen has no pane to measure, and the standing answer for that is
+// the columnar layer's: draw whole and let clampToBox decide. So it keeps
+// screenBodyHeight's floor as something to size a window with, and paneSized
+// below is what stops it being REFUSED for a height nobody has told it yet.
+//
+// Named listPaneRows and not paneRows because jdeScreen.paneRows is marked
+// jde:layer-only: a list is not a columnar sheet and this is its own arithmetic,
+// but sharing the name is how the two would come to be read as one.
+func (s *ListScreen) listPaneRows() int {
+	if !s.paneSized() {
+		return screenBodyHeight(s.terminalHeight)
+	}
+	return screenBodyRows(s.terminalHeight)
+}
+
+func (s *ListScreen) paneSized() bool { return s.terminalHeight > 0 }
+
+// barRows is the rows the bar this pane will actually draw occupies, plus the
+// blank separator that travels with it.
+//
+// The searching branch measures listSearchBarHint — the CEILING — for the
+// reason that constant carries: the live overlay bar sheds keys as the result
+// count changes, and a body budget that moved with it would make the list jump
+// under the operator's hands while they type.
+func (s *ListScreen) barRows() int {
 	if s.searching {
 		// The overlay replaces the browse footer rather than sitting above it
 		// (bodyView drops the footer while searching), and adds an input line,
 		// its folded bar and a blank separator of its own.
-		avail -= 2 + len(pickerWrap(listSearchBarHint, pickerPaneWidth))
-	} else {
-		avail -= s.footerRows()
+		return 2 + len(pickerWrap(listSearchBarHint, pickerPaneWidth))
 	}
-	if avail < 2 {
-		avail = 2
+	return s.footerRows()
+}
+
+// listOverflows reports whether the rows outrun the body the pane can give them
+// once the header and the bar are paid for — which is exactly when an indicator
+// row can appear.
+//
+// Asked WITHOUT the indicator reservation on purpose, and that is what makes it
+// well founded rather than circular: if every row fits in the body that is left
+// when nothing is reserved, then the window holds all of them, windowStart
+// stays 0, end reaches len(rows), and NEITHER marker is drawn — so reserving
+// for them would be spending two rows on markers that cannot appear. If they do
+// not fit, the pair is reserved and at most both are drawn. Either way the
+// assembled pane is bounded by listPaneRows, which is the property the refusal
+// below depends on.
+func (s *ListScreen) listOverflows() bool {
+	if len(s.rows) == 0 {
+		return false
+	}
+	return s.rowsOutrun(s.listPaneRows() - listHeaderRows - s.barRows())
+}
+
+// rowLineCost is what ONE row renders to, counted the way bodyView draws it: a
+// title line, plus a line for a Subtitle and another for a MetricsLine.
+func rowLineCost(r listRow) int {
+	cost := 1
+	if r.Subtitle != "" {
+		cost++
+	}
+	if r.MetricsLine != "" {
+		cost++
+	}
+	return cost
+}
+
+// rowsOutrun reports whether the whole row set renders to more LINES than
+// `budget`. Rows are counted in lines because that is what the pane spends —
+// counting them as rows is what put twenty lines into an eighteen-line pane.
+//
+// It answers the comparison rather than the total, and stops as soon as the
+// answer is settled, so its cost is the BUDGET and not the length of the list.
+// scrollIntoView walks the window start in a loop and every step asks the body
+// budget, so a total computed over every row would make one keypress on a long
+// list quadratic — the shape of the truncateVisible hang this project has
+// already paid for once.
+func (s *ListScreen) rowsOutrun(budget int) bool {
+	total := 0
+	for _, r := range s.rows {
+		total += rowLineCost(r)
+		if total > budget {
+			return true
+		}
+	}
+	return false
+}
+
+// minBodyLines is the smallest body a LOADED list can honestly be drawn into:
+// enough lines for its TALLEST row.
+//
+// A row is not one line — purchaseOrderRows gives a PO with a supplier or a
+// total a Subtitle, loadInventoryItems gives an item with metrics a MetricsLine
+// — and rowsFittingFrom will not return an empty window, so it hands back a row
+// that costs more lines than the budget rather than nothing at all. Floored at
+// ONE line, that is the budget overflowing by whatever the row's extra lines
+// come to, and what the overflow pushes off the bottom is the footer: at 80x14
+// the maintenance list drew a two-line row into a one-line body and lost
+// "enter open · M PM items" off the end of its bar. Found by sweeping the
+// CURSOR through the list at every drawable height rather than at two — the
+// window is packed from wherever the cursor is, so the rows in it change as the
+// operator moves and only the TALLEST one bounds the answer.
+//
+// The maximum over the whole list rather than the cost of the row the cursor
+// happens to be on, because this feeds needRows and a refusal that flickered as
+// the cursor moved would be worse than either answer.
+func (s *ListScreen) minBodyLines() int {
+	max := listMinBodyRows
+	for _, r := range s.rows {
+		if cost := rowLineCost(r); cost > max {
+			max = cost
+			if max == listMaxRowLines {
+				break // nothing can be taller; the rest of the walk is dead work
+			}
+		}
+	}
+	return max
+}
+
+// indicatorRows is listIndicatorRows or nothing, per listOverflows.
+func (s *ListScreen) indicatorRows() int {
+	if !s.listOverflows() {
+		return 0
+	}
+	return listIndicatorRows
+}
+
+// listBodyLines is how many LINES of list body the pane has left after the
+// chrome around it: the header, the indicator pair where it can appear, and the
+// bar with its separator.
+//
+// It floors at listMinBodyRows rather than at two, and the floor is only ever
+// reached on a pane paneDrawn has already refused — so it is a guard against a
+// negative window size, not a claim about rows the pane does not have. That
+// distinction is the whole of this repair: the old floor of two handed the
+// renderer two rows it could not draw, and the renderer drew them.
+func (s *ListScreen) listBodyLines() int {
+	avail := s.listPaneRows() - listHeaderRows - s.indicatorRows() - s.barRows()
+	if floor := s.minBodyLines(); avail < floor {
+		avail = floor
 	}
 	return avail
+}
+
+// needRows is the shortest pane this list can draw its footer WHOLE into, in
+// screen-body rows.
+//
+// Two shapes, because the two panes are different: the EMPTY one is fixed —
+// header, blank, the "no rows" sentence, then the footer's own blank and its
+// folded lines — while the LOADED one has to keep room for its TALLEST ROW
+// (minBodyLines) and for the markers that say there are more.
+//
+// It is NON-INCREASING in terminal height, which is what makes the height the
+// notice names a height that actually works: footerRows and minBodyLines are
+// functions of the footer and the rows alone, and indicatorRows can only go
+// from the pair to nothing as the pane grows. That is the same monotonicity
+// argument jdeTooShortRows sets out, and it is why there is no loop to converge
+// here.
+func (s *ListScreen) needRows() int {
+	if len(s.rows) == 0 {
+		return listHeaderRows + 2 + s.footerRows()
+	}
+	return listHeaderRows + s.indicatorRows() + s.minBodyLines() + s.footerRows()
+}
+
+// paneDrawn is the ONE predicate for "is this list's frame on the pane at all",
+// read by bodyView (which draws the refusal when it is false) and by the
+// movement gate in Update (which holds the operator's place while it is). One
+// expression, so the frame and the key cannot part company — the same shape
+// frameDrawn has on the columnar layer.
+//
+// The three states that draw no footer are never refused: the search overlay
+// pins its bar to the TOP of the pane, where clampToBox cannot reach it, and
+// the loading and error panes name no movement key at all.
+func (s *ListScreen) paneDrawn() bool {
+	if !s.paneSized() || s.searching || s.loading || s.loadErr != "" {
+		return true
+	}
+	return s.listPaneRows() >= s.needRows()
+}
+
+// listTooShort is what a list draws when the pane cannot hold its footer whole.
+//
+// The stance is the columnar layer's (jdeTooShort) and so is the reasoning: the
+// footer is the only place an operator learns what works here, and a footer with
+// rows cut off the bottom names some keys and hides the rest with nothing on the
+// pane to say a fragment is what they are reading. Drawing the rows and losing
+// the bar entirely — which is what this pane did — is the same trade with all of
+// the bar hidden.
+//
+// The HEIGHT FACT leads because a one-row pane keeps only the first line and the
+// height is the one thing here that can be acted on, and it is stated in
+// TERMINAL rows, which is the only unit an operator can resize: screenChromeRows
+// is screenBodyRows' own inverse, so the two cannot drift.
+//
+// The second sentence is true because the movement gate in Update makes it true
+// — every key of the navigation vocabulary is held while this notice is drawn,
+// so the operator comes back to where they were rather than to wherever an
+// invisible cursor wandered. It claims nothing more than that: a notice denying
+// a loss that can happen is the same kind of lie as one claiming a loss that
+// cannot.
+func listTooShort(rows, terminalHeight, needRows int) string {
+	if rows <= 0 {
+		return ""
+	}
+	lines := pickerWrap(fmt.Sprintf("Too short: needs %d rows, has %d.",
+		needRows+screenChromeRows, terminalHeight), pickerPaneWidth)
+	lines = append(lines, pickerWrap("No keys are named: the action bar would be cut. "+
+		"Moving keys are held until it fits, so you come back where you were.",
+		pickerPaneWidth)...)
+	if len(lines) > rows {
+		// MARK the cut, for the reason jdeTooShort marks its own: a sentence cut
+		// clean reads as a finished one, and this is the notice the operator is
+		// meant to act on.
+		lines = lines[:rows]
+		last := len(lines) - 1
+		lines[last] = cellPrefix(lines[last], pickerPaneWidth-1) + "…"
+	}
+	for i, line := range lines {
+		lines[i] = StyleMuted.Render(line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // rowsFittingFrom returns how many rows starting at `start` fit in the body,
@@ -215,7 +455,17 @@ func (s *ListScreen) listBodyLines() int {
 // horizontally, then vertically, then by counting rows where the renderer
 // counts lines.
 func (s *ListScreen) rowsFittingFrom(start int) int {
-	avail := s.listBodyLines()
+	return s.rowsFittingIn(start, s.listBodyLines())
+}
+
+// rowsFittingIn is rowsFittingFrom against a budget the caller already has.
+//
+// scrollIntoView walks the window start and asks this at every step, and the
+// budget cannot change while it walks (it is a function of the pane and the
+// rows, neither of which the walk touches) — so asking for it once is exact as
+// well as cheap. Recomputing it per step made the walk quadratic in the row
+// count the moment the budget stopped being O(1).
+func (s *ListScreen) rowsFittingIn(start, avail int) int {
 	if len(s.rows) == 0 {
 		return avail
 	}
@@ -224,13 +474,7 @@ func (s *ListScreen) rowsFittingFrom(start int) int {
 	}
 	used, count := 0, 0
 	for i := start; i < len(s.rows); i++ {
-		cost := 1
-		if s.rows[i].Subtitle != "" {
-			cost++
-		}
-		if s.rows[i].MetricsLine != "" {
-			cost++
-		}
+		cost := rowLineCost(s.rows[i])
 		if used+cost > avail {
 			break
 		}
@@ -397,7 +641,8 @@ func (s *ListScreen) scrollIntoView() {
 	// can actually afford, re-packing at each step because moving the start
 	// changes which rows are counted. It terminates at windowStart == cursor,
 	// where a window of one row is enough.
-	for s.windowStart < s.cursor && s.cursor >= s.windowStart+s.rowsFittingFrom(s.windowStart) {
+	avail := s.listBodyLines()
+	for s.windowStart < s.cursor && s.cursor >= s.windowStart+s.rowsFittingIn(s.windowStart, avail) {
 		s.windowStart++
 	}
 	// Then back, while the rows below still reach the end of the list: a
@@ -408,13 +653,13 @@ func (s *ListScreen) scrollIntoView() {
 	// of a row count.
 	for s.windowStart > 0 {
 		prev := s.windowStart - 1
-		fits := s.rowsFittingFrom(prev)
+		fits := s.rowsFittingIn(prev, avail)
 		if prev+fits < len(s.rows) || prev+fits <= s.cursor {
 			break
 		}
 		s.windowStart = prev
 	}
-	s.windowSize = s.rowsFittingFrom(s.windowStart)
+	s.windowSize = s.rowsFittingIn(s.windowStart, avail)
 }
 
 func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -472,7 +717,15 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		// It also closes a state nothing could see: on an EMPTY list `pgdown`
 		// ran `s.cursor = len(s.rows) - 1` and left the cursor at -1, which no
 		// row index can be and which the next loaded page would have inherited.
-		if listNavBinds(m.String()) && !listNavMoves(len(s.rows)) {
+		//
+		// AND WHERE THE FRAME IS NOT DRAWN AT ALL. A movement arm's whole
+		// product is the position, so on a pane refused as too short there is
+		// nothing it could report and everything it could destroy: `end` would
+		// walk the cursor to the bottom of a list nobody can see, and the
+		// operator who drags the terminal back finds somewhere they never went.
+		// paneDrawn is the frame's own predicate, so the notice's promise that
+		// moving keys are held is the same expression that holds them.
+		if listNavBinds(m.String()) && (!listNavMoves(len(s.rows)) || !s.paneDrawn()) {
 			return s, nil
 		}
 		switch m.String() {
@@ -725,6 +978,15 @@ func (s *ListScreen) bodyView() string {
 	}
 	if s.loadErr != "" {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry")
+	}
+	// REFUSED RATHER THAN MUTILATED. Everything below this line assembles a
+	// pane with the folded footer pinned to the bottom of it, and clampToBox
+	// drops from the bottom — so on a pane that cannot hold the whole thing the
+	// footer is what goes, which is the dead end this screen's empty state was
+	// just brought out of. paneDrawn is the same predicate the movement gate in
+	// Update reads.
+	if !s.paneDrawn() {
+		return listTooShort(s.listPaneRows(), s.terminalHeight, s.needRows())
 	}
 	if len(s.rows) == 0 {
 		if s.searching {

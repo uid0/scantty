@@ -826,9 +826,25 @@ either:
   unmade on twenty-one sibling files (twenty-four `case "ctrl+d", "pgdown":`
   pairs, forty-eight arms), so the same key paged the supplier list and did
   nothing on the inventory list the operator reached it from —
-  `TestListNav_NoSurfaceBindsARetiredChord` reads the package's own source and
-  fails on a re-introduction anywhere, including on a screen that does not exist
-  yet.
+  `TestListNav_NoSurfaceBindsARetiredChord` PRESSES each chord on every fixture
+  the two swept sets can build (`jdePaneCases` and `listBarSurfaces` × every row
+  count) and fails on one that moves. It used to prove that from source SHAPE — a
+  regex over `case "ctrl+d":` literals — which failed on a commented-out arm and
+  passed a chord bound through a helper or a key-name map; behaviour answers both
+  directions. It is POSITIVELY CONTROLLED (`listNavChordControls`): each case
+  first presses the NAMED key spelling the same affordance and the sweep fails if
+  no fixture in a set could be moved by it, because "ctrl+d changed nothing" is
+  equally true of an empty list, a one-row list and a refused pane. What it
+  asserts differs by set ON PURPOSE, and that is a fact about the surfaces:
+  bubbles binds all four chords for LINE EDITING on a focused textinput, so on a
+  columnar sheet with the caret in a box `ctrl+u` legitimately empties the box
+  and the claim there is over `jdePlaceOf` alone; a `ListScreen` in browse mode
+  holds no caret, so the clipped PANE is asserted too — which is what catches a
+  window that scrolled without the cursor leaving its row, since `windowStart` is
+  not in `jdePlaceOf`'s vocabulary. The prose-bar receivers have no fixture to
+  press and are classified rather than claimed about
+  (`TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused`, which is a
+  COVERAGE guard over the source and asserts nothing about any key).
   THE COLUMNAR LAYER SPELLS THE SAME AFFORDANCES AS TOKENS (`UP/DN`,
   `PgUp/PgDn`, `Home/End`) AND BINDS NO LETTER, and that is a fact about the
   surface rather than drift: a columnar picker's filter box is always live, so a
@@ -908,6 +924,37 @@ either:
   so a key that moved a number nothing draws read as working. Standing rule 1 is
   about a change the OPERATOR can distinguish, and only the rendered pane can
   answer that.
+  A FOOTER DRAWN OUTSIDE THE ROW BUDGET IS A FOOTER `clampToBox` TAKES, and both
+  branches were doing it. They budgeted against `screenBodyHeight`, which floors
+  at four and is therefore a LIE below a terminal height of ten (`layout.go` says
+  so in as many words), and `listBodyLines` then floored its own answer at two
+  rows the pane did not have — so the assembled pane ran over and the drop is
+  from the BOTTOM, where the bar is. At 80 columns the purchase-order list lost
+  `· N new PO · Q pending reorders` at height 11 empty and 14 loaded, and by
+  height 10 the whole footer was gone: the bar-less pane the empty-list work
+  above exists to remove, restored by geometry. `paneRows` reads `screenBodyRows`
+  now, the indicator pair is reserved only where the rows really outrun the body
+  (`listOverflows`), and the body floors at the TALLEST ROW rather than at one
+  line — `rowsFittingFrom` will not return an empty window, so a one-line floor
+  hands back a two-line row and the overflow is exactly its extra line.
+  WHERE EVEN THAT WILL NOT FIT THE PANE IS REFUSED, not mutilated: `paneDrawn` is
+  the one predicate `bodyView` and the movement gate in `Update` both read, and
+  `listTooShort` draws a bounded notice naming the height needed in TERMINAL rows
+  — a height that ACTUALLY DRAWS when the operator resizes to it, which holds by
+  the same monotonicity argument `jdeTooShortRows` sets out. The movement keys
+  are HELD while it is drawn, so the notice's promise is the same expression that
+  keeps it; `end` on a refused pane would otherwise walk the cursor to the bottom
+  of a list nobody can see.
+  THE HEIGHTS ARE DERIVED FROM ROOT'S OWN GATE, and that is why nothing reported
+  any of this: every legibility loop in `list_bar_honesty_test.go` walked the
+  hand-picked pair {24, 30}, and every failing height was below both — two
+  hand-picked heights being the same mistake on the vertical axis that three
+  hand-picked widths was on the horizontal one. They walk `jdePaneHeights()` now,
+  and `TestList_AShortPaneRefusesRatherThanCuttingTheFooter` /
+  `TestList_ARefusedPaneKeepsTheOperatorsPlace` hold the refusal's own honesty —
+  bounded in both axes, naming a height that works, movement held, with the
+  control asserted so a fixture that could not move for unrelated reasons fails
+  instead of passing.
 - **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
   hint literal.** The footer and the handler read that one table; the previous
   shape appended the words to a hint string and left the key to a global
@@ -1853,11 +1900,14 @@ touching any screen an operator drives:
   meaning CHANGES something, since a key that declines and says why has not
   acted. The search-box sweep also fails a BODY line that names a key, which is
   how the second surface is kept from growing back.
-  EVERY list surface names and binds the SAME navigation set, and the set is
-  written down once in `internal/tui/list_nav.go` — see the navigation entry
-  below, which is where that asymmetry was closed. The New PO flow was never
-  part of it after its conversion: it is on the columnar set (`UP/DN`,
-  `PgUp/PgDn` when the body moves) and `j`/`k` are unbound on it.
+  EVERY list surface BINDS the same navigation set, and the set is written down
+  once in `internal/tui/list_nav.go`; it NAMES that set on the 33 surfaces whose
+  bar is a machine-readable record (the 32 columnar `jdeScreen` types and
+  `ListScreen`), and on those alone — see the navigation entry below for where
+  the naming half is proven and where it is not, because fifty-nine receivers
+  still name less than they bind. The New PO flow was never part of it after its
+  conversion: it is on the columnar set (`UP/DN`, `PgUp/PgDn` when the body
+  moves) and `j`/`k` are unbound on it.
 - **On a destructive confirm the keys are on the BAR and the prose is the
   body.** `clampToBox` drops from the bottom, so whatever a screen draws last is
   what a short terminal eats; on `poPhaseSupplierSwitch` that used to be the

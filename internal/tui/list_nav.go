@@ -126,10 +126,14 @@ func listNavBinds(key string) bool {
 //
 // A retired key is recorded rather than deleted so that "never bound" and
 // "deliberately unbound" stay different states, and so the check that keeps them
-// unbound can say WHY rather than just failing. TestListNav_NoSurfaceBindsA
-// RetiredChord reads this map and the package's own source, so re-introducing
-// one on any screen — a new one included — fails the build rather than shipping
-// a key nothing names.
+// unbound can say WHY rather than just failing.
+// TestListNav_NoSurfaceBindsARetiredChord PRESSES every key in this map on every
+// screen the two swept fixture sets can build — the columnar sheets and every
+// *ListScreen — so re-introducing one, on a screen that does not exist yet
+// included, fails the build rather than shipping a key nothing names. It is a
+// behavioural press and not a scan of this package's source: a chord bound
+// through a helper or a key-name map is invisible to a `case "ctrl+d":` regex
+// and is not invisible to a keystroke.
 var listNavRetiredChords = map[string]string{
 	"ctrl+u": "the emacs page-up chord. No bar in the program ever spelled it, and " +
 		"pgup is named on every list that pages. sc-po-create-hangs unbound it on " +
