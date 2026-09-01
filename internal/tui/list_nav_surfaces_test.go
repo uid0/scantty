@@ -55,25 +55,22 @@ import (
 // has (footerRows), which is a conversion of the same shape as sc-jde-lift and
 // is why it is written down here rather than half-done in passing.
 //
-// THE ONE HALF THAT IS CLOSED FOR THEM is the vocabulary: they no longer bind
+// THE HALF THAT IS CLOSED FOR THEM is the vocabulary: they no longer bind
 // anything no bar in the program spells (list_nav.go). That half is held by
-// PRESSING the retired chords on THREE fixture sets
-// (TestListNav_NoSurfaceBindsARetiredChord): the columnar screens, every
-// *ListScreen, and TextScroller.
+// PRESSING the retired chords on the fixture sets
+// TestListNav_NoSurfaceBindsARetiredChord builds — that test's subtests are the
+// authority on which and how many, and a count restated here is a number that
+// has drifted every time it has been written down.
 //
-// THE SCROLLER IS THE ONE PROSE-BAR RECEIVER A BEHAVIOURAL PRESS REACHES, and
-// the reason is what it is rather than what it draws: it is a VALUE the test can
-// construct and drive directly, where the others are screens whose bar is a
-// literal inside View with no record to read and no cheap way to stand one up.
-// It earns the exception because it is where two of the four chords were
-// actually unbound and because its Handle hands the whole movement vocabulary to
-// every detail sheet that holds one — so a chord restored there reaches all of
-// them at once, invisibly to the other two sets.
+// A PROSE-BAR SURFACE IS REACHED BY A PRESS WHEN A TEST CAN BUILD ONE, which is
+// a fact about the fixture and not about the bar: TextScroller and the cursor
+// pickers are VALUES the sweep constructs and drives directly, where the rest
+// are screens with no record to read and no cheap way to stand one up. Whichever
+// of them a press reaches, an entry here says so in the same words.
 //
-// EVERY OTHER PROSE-BAR RECEIVER IS STILL OUT OF REACH of a press, including the
-// sheets that hold a scroller: the sweep drives the scroller itself, not them.
-// What reaches them is this file — not a claim about their keys, but the
-// guarantee that a new one cannot join the app unexamined.
+// A SURFACE NO PRESS REACHES is not left silent either. What reaches it is this
+// file — not a claim about its keys, but the guarantee that a new one cannot
+// join the app unexamined.
 
 // listNavUnsweptReceivers are the receivers that bind a keystroke the navigation
 // vocabulary spells and that neither behavioural sweep can read a bar for.
@@ -89,40 +86,46 @@ import (
 // learned to read bubbletea's tea.Key* constants, a receiver that bound movement
 // as `case tea.KeyTab, tea.KeyDown:` was invisible here, so five appeared in no
 // class at all — the same silence the TextScroller delegation hole was, one
-// spelling further along. Four of them are field forms whose focus wraps
-// (slotCardPrompt's exemption); the fifth, SearchPalette, is a real cursor list
-// and is pressed rather than merely excused.
+// spelling further along. Those that are field forms whose focus wraps carry
+// slotCardPrompt's exemption; the cursor lists among them are pressed rather
+// than merely excused, and each entry says which it is.
 //
 // One entry per receiver, each saying what the surface is — not "excluded",
 // which is the fact the map already carries, but what a reader would need to
 // know to convert it. A stale entry fails as loudly as a missing one, so a
 // screen that joins a swept class must be taken OUT of here.
 var listNavUnsweptReceivers = map[string]string{
-	"AssetPartsScreen":            "the parts list on an asset; footer written in View, already past 51 cells",
-	"AssetProblemsScreen":         "the problem list on an asset, plus its vendor picker",
-	"AuthorizationsScreen":        "the ForgeKey authorization grid",
-	"LockoutsScreen":              "the ForgeKey lockout list",
-	"BadgeEnrollmentScreen":       "the ForgeKey badge enrolment list",
-	"CategoryListScreen":          "the category list beside CategoryFormScreen, which IS columnar and IS swept",
-	"ForgeKeyCertificatesScreen":  "the ForgeKey certificate list",
-	"ChecklistRunScreen":          "the step list of a checklist run",
-	"ChecklistsScreen":            "the checklist browse list",
-	"ThermostatListScreen":        "the thermostat list beside ClimateFormScreen, which is columnar and swept",
-	"DemandForecastScreen":        "the demand-forecast table",
-	"DeviceTypeListScreen":        "the device-type list beside DeviceTypeFormScreen",
-	"DonationsScreen":             "the donation list",
-	"EPaperPanelsScreen":          "the e-paper panel list",
-	"ElectricalPanelsScreen":      "the electrical panel list",
-	"PanelBreakersScreen":         "the electrical panel management list",
-	"BreakerCircuitsScreen":       "the electrical circuit management list",
-	"CircuitOutletsScreen":        "the electrical outlet management list",
-	"CircuitDisconnectsScreen":    "the electrical disconnect management list",
-	"FacilitiesScreen":            "the facilities hub, a cursor menu of surfaces",
-	"FirmwareScreen":              "the firmware rollout list",
-	"ForgeKeyDeviceFormScreen":    "its location picker; the form itself is columnar",
-	"InventoryDetailScreen":       "the item detail sheet and its three pick modals",
-	"ItemSuppliersScreen":         "the supplier list on an item beside ItemSupplierFormScreen",
-	"LocationCheckinsScreen":      "the check-in list for a location",
+	"AssetPartsScreen":           "the parts list on an asset; footer written in View, already past 51 cells",
+	"AssetProblemsScreen":        "the problem list on an asset, plus its vendor picker",
+	"AuthorizationsScreen":       "the ForgeKey authorization grid",
+	"LockoutsScreen":             "the ForgeKey lockout list",
+	"BadgeEnrollmentScreen":      "the ForgeKey badge enrolment list",
+	"CategoryListScreen":         "the category list beside CategoryFormScreen, which IS columnar and IS swept",
+	"ForgeKeyCertificatesScreen": "the ForgeKey certificate list",
+	"ChecklistRunScreen":         "the step list of a checklist run",
+	"ChecklistsScreen":           "the checklist browse list",
+	"ThermostatListScreen":       "the thermostat list beside ClimateFormScreen, which is columnar and swept",
+	"DemandForecastScreen":       "the demand-forecast table",
+	"DeviceTypeListScreen":       "the device-type list beside DeviceTypeFormScreen",
+	"DonationsScreen":            "the donation list",
+	"EPaperPanelsScreen": "the e-paper panel list; its bind picker is a cursor list " +
+		"whose bar is a muted literal inside View, so the honesty sweep cannot read it, " +
+		"but it IS pressed by the retired-chord sweep, which drives its cursor directly " +
+		"(listNavPickerCases)",
+	"ElectricalPanelsScreen":   "the electrical panel list",
+	"PanelBreakersScreen":      "the electrical panel management list",
+	"BreakerCircuitsScreen":    "the electrical circuit management list",
+	"CircuitOutletsScreen":     "the electrical outlet management list",
+	"CircuitDisconnectsScreen": "the electrical disconnect management list",
+	"FacilitiesScreen":         "the facilities hub, a cursor menu of surfaces",
+	"FirmwareScreen":           "the firmware rollout list",
+	"ForgeKeyDeviceFormScreen": "its location picker; the form itself is columnar",
+	"InventoryDetailScreen":    "the item detail sheet and its three pick modals",
+	"ItemSuppliersScreen":      "the supplier list on an item beside ItemSupplierFormScreen",
+	"LocationCheckinsScreen": "the check-in list for a location; its lookup picker is a " +
+		"cursor list whose bar is a muted literal inside View, so the honesty sweep cannot " +
+		"read it, but it IS pressed by the retired-chord sweep, which drives its cursor " +
+		"directly (listNavPickerCases)",
 	"LocationListScreen":          "the location list beside LocationFormScreen",
 	"LocationProblemsScreen":      "the problem list for a location",
 	"MaintenanceItemDetailScreen": "the PM item detail sheet",
@@ -160,9 +163,9 @@ var listNavUnsweptReceivers = map[string]string{
 		"and is recorded rather than silently filtered, since filtering it would need a " +
 		"rule that also hid a real one",
 	"SearchPalette": "the universal search palette's result list; its bar is a muted " +
-		"literal inside View (`↑/↓ move · enter open · esc close`). It is not a bar the " +
-		"honesty sweep can read, but it IS pressed by the retired-chord sweep, which " +
-		"drives its cursor directly (listNavPickerCases)",
+		"literal inside View (`↑/↓ move · enter open · esc close`), so the honesty sweep " +
+		"cannot read it, but it IS pressed by the retired-chord sweep, which drives its " +
+		"cursor directly (listNavPickerCases)",
 	"LoginScreen": "NOT a list: up/down are the field-form focus pair beside tab/" +
 		"shift+tab on a two-field login, and the focus WRAPS, so the field-form " +
 		"exemption applies exactly as it does to slotCardPrompt",

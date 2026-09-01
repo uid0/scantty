@@ -827,9 +827,10 @@ either:
   pairs, forty-eight arms), so the same key paged the supplier list and did
   nothing on the inventory list the operator reached it from —
   `TestListNav_NoSurfaceBindsARetiredChord` PRESSES each chord on every fixture
-  FOUR swept sets can build (`jdePaneCases`, `listBarSurfaces` × every row count,
-  `TextScroller`, and the three cursor pickers of `listNavPickerCases`) and fails
-  on one that moves.
+  its swept sets can build (`jdePaneCases`, `listBarSurfaces` × every row count,
+  `TextScroller`, and the cursor pickers of `listNavPickerCases`) and fails on
+  one that moves. Its subtests are the authority on which sets there are; do not
+  write the number down here, which is where it has drifted every time.
   A KEYSTROKE HAS TWO SPELLINGS IN THIS PACKAGE AND A DERIVATION OVER ONE OF THEM
   IS NOT A DERIVATION. `case "ctrl+n":` and `case tea.KeyCtrlN:` in a switch over
   `m.Type` bind the same key, and the first retirement, this sweep and the
@@ -842,7 +843,20 @@ either:
   so nothing was taken from the operator — and `listNavCaseKey` reads both
   spellings, asking bubbletea itself what a `tea.Key*` constant spells rather than
   transcribing a table (`listNavSpellingIndex`, with `KeySpace` the one recorded
-  exception, since its `String()` is the character and not the word). The lesson
+  exception, since its `String()` is the character and not the word).
+  **A COMMIT THAT UNBINDS A LIVE KEY LISTS IT, FILE BY FILE AND KEY BY KEY** —
+  the `BINDINGS CHANGED` record e1c1047 set the precedent for — because an
+  operator's hands are the only place a retired chord is recorded, and a captain
+  reading a subject line about a sweep cannot tell that a key they press every
+  day stopped working. The three that went, in the order they matter to somebody
+  who uses this program: `search.go` — the universal search palette (`ctrl+k`),
+  `ctrl+n` and `ctrl+p` off the result cursor, which is the surface the captain
+  actually drives and where those chords were muscle memory; `epaper_panels.go` —
+  the e-paper bind picker, `ctrl+n` and `ctrl+p`; `location_checkins.go` — the
+  location check-in lookup, `ctrl+n` and `ctrl+p`. Every one of those three
+  `case` clauses ALREADY bound — and its footer already NAMED — the arrow that
+  spells the same move (`↑/↓ move`), so nothing an operator was told about was
+  taken away; what went is a chord no bar in the program ever spelled. The lesson
   is the one this area keeps teaching: a roster is only as complete as the
   alphabet it is derived over. It used to prove that from source SHAPE — a
   regex over `case "ctrl+d":` literals — which failed on a commented-out arm and
@@ -867,9 +881,9 @@ either:
   conversion WEAKER than the regex it replaced on the one file the retirement
   touched. It asserts the OFFSET and the bool `Handle` returns, since a chord
   answered `true` is a keystroke every sheet holding one swallows on behalf of a
-  binding that is gone. The prose-bar receivers that bind a chord in a `case` of
-  their own have no fixture to press — nothing in the app does today, which is
-  what the retirement removed — and are classified rather than claimed about
+  binding that is gone. A prose-bar surface is PRESSED wherever a test can build
+  one — `TextScroller` and the cursor pickers are values the sweep constructs
+  directly — and a surface no press reaches is classified rather than claimed about
   (`TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused`, which is a
   COVERAGE guard over the source, asserts nothing about any key, and cannot see
   a retired chord at all since it collects only what `listNavBinds` accepts).

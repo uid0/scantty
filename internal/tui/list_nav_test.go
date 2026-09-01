@@ -225,19 +225,24 @@ func listNavPickerCases() []listNavPickerCase {
 // it untouched. Pressing the key answers both directions, and answers them about
 // the thing the operator actually meets.
 //
-// THREE FIXTURE SETS. Two of them draw a bar and already have a sweep that
-// builds their screens: the columnar screens from jdePaneCases (every type
-// embedding jdeScreen, plus its extra states) and every *ListScreen from
-// listBarSurfaces, at every row count in listRowCases. The third is
-// TextScroller, which draws no bar of its own and is here because it is where
-// two of these chords were unbound and because it hands the whole movement
-// vocabulary to every detail sheet that holds one — a binding restored there
-// reaches fourteen screens and neither of the other two sets can see it. The
-// surfaces outside all three have no fixture to press, and that is exactly what
-// TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused classifies rather
-// than hides.
+// THE FIXTURE SETS ARE NAMED BY WHAT THEY ARE, and the subtests below are the
+// authority on how many there are — a count written into prose is a number that
+// has now drifted from the code three times, so it is not written here.
 //
-// WHAT IS ASSERTED DIFFERS BETWEEN THE TWO SETS, and the difference is a fact
+// The sets that already draw a bar bring their own sweep's fixtures: the
+// columnar screens from jdePaneCases (every type embedding jdeScreen, plus its
+// extra states) and every *ListScreen from listBarSurfaces, at every row count
+// in listRowCases. TextScroller draws no bar of its own and is here because it
+// is where two of these chords were unbound and because it hands the whole
+// movement vocabulary to every detail sheet that holds one — a binding restored
+// there reaches every one of them and no other set can see it. The cursor
+// pickers (listNavPickerCases) are values a test can drive directly, so the
+// press reaches them even though their bar is a literal inside View. A surface
+// this file cannot build a fixture for is CLASSIFIED by
+// TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused rather than
+// hidden.
+//
+// WHAT IS ASSERTED DIFFERS BY SET, and the difference is a fact
 // about the surfaces rather than a weakening chosen for convenience. All four
 // retired chords are ALSO bubbles' own textinput line-editing keys — ctrl+u
 // deletes to the start of the line, ctrl+d the character forward, ctrl+p/ctrl+n

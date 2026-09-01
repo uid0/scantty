@@ -358,7 +358,15 @@ func pickerWords(text string, width int) []string {
 // screens and the New PO help line are not on the columnar layer and must not
 // have to join it just to be legible at 80 columns.
 func pickerHint(text string) string {
-	lines := pickerWrap(text, pickerPaneWidth)
+	return pickerHintAt(text, pickerPaneWidth)
+}
+
+// pickerHintAt is pickerHint folded at a caller-supplied pane rather than at
+// the fixed 51, for the surfaces that record the width the terminal really gave
+// them. A fold at 51 on a pane of 16 is not a fold, it is an overrun with the
+// tail clipped off by clampToBox.
+func pickerHintAt(text string, cells int) string {
+	lines := pickerWrap(text, cells)
 	for i, line := range lines {
 		lines[i] = StyleMuted.Render(line)
 	}

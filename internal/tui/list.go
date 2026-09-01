@@ -246,7 +246,7 @@ func (s *ListScreen) barRows() int {
 		// The overlay replaces the browse footer rather than sitting above it
 		// (bodyView drops the footer while searching), and adds an input line,
 		// its folded bar and a blank separator of its own.
-		return 2 + len(pickerWrap(listSearchBarHint, pickerPaneWidth))
+		return 2 + len(pickerWrap(listSearchBarHint, s.listPaneCells()))
 	}
 	return s.footerRows()
 }
@@ -376,19 +376,62 @@ func (s *ListScreen) markerRows() int {
 	return 1
 }
 
-// listMarkerLine is the ↑/↓ markers on ONE row, for the pane that can only
-// spare one. Both facts or neither: a shared row that told half of them would
-// be the mutilation the refusal exists to avoid, one row further in.
-func listMarkerLine(above bool, below int) string {
+// listMarkerLine is the ↑/↓ markers as ONE bounded row — the shared row on a
+// pane that can spare only one, and each marker on its own where the pane paid
+// for the pair. All three draw sites go through it so a bound applied to the
+// shared row cannot leave the other two unbounded beside it.
+//
+// BOTH FACTS OR NEITHER, and the give-order is what makes that true at a width
+// rather than only at 51 cells. The shared row was assembled at full length and
+// then clipped to the pane, so below the width it fits the operator read
+// "  ↑ more above · ↓ 1" (45 columns) or "  ↑ more above · ↓ 12 more b"
+// (60) — a row promising two facts and delivering one and a half, with the
+// truncation unmarked and, at 45, A COUNT CUT MID-NUMBER. A cut number reads as
+// a number: "↓ 1" over twelve rows below is not a shortened fact, it is a wrong
+// one, which is the price-column rule (@ 3.50 drawn as @ 3.) on a different row.
+//
+// So the PROSE gives, in order, and the ARROWS and the COUNT never do: the row
+// says "more above"/"more below", then "above"/"below", then nothing but the
+// arrows and the figure. Where even that will not fit, the COUNT is DROPPED
+// rather than cut and the row carries the ellipsis that says a fact was given
+// up — the arrows still say there is more in both directions, which is the half
+// an operator acts on, and no number is stated that the list does not have.
+func listMarkerLine(above bool, below, cells int) string {
+	var forms []string
+	var bare string
 	switch {
 	case above && below > 0:
-		return fmt.Sprintf("  ↑ more above · ↓ %d more below", below)
+		forms = []string{
+			fmt.Sprintf("  ↑ more above · ↓ %d more below", below),
+			fmt.Sprintf("  ↑ above · ↓ %d below", below),
+			fmt.Sprintf("  ↑ · ↓ %d", below),
+		}
+		bare = "  ↑ · ↓"
 	case above:
-		return "  ↑ more above"
+		forms = []string{"  ↑ more above", "  ↑ above", "  ↑"}
+		bare = "  ↑"
 	case below > 0:
-		return fmt.Sprintf("  ↓ %d more below", below)
+		forms = []string{
+			fmt.Sprintf("  ↓ %d more below", below),
+			fmt.Sprintf("  ↓ %d below", below),
+			fmt.Sprintf("  ↓ %d", below),
+		}
+		bare = "  ↓"
+	default:
+		return ""
 	}
-	return ""
+	if cells <= 0 {
+		return ""
+	}
+	for _, form := range forms {
+		if lipgloss.Width(form) <= cells {
+			return form
+		}
+	}
+	if cells == 1 {
+		return "…"
+	}
+	return cellPrefix(bare, cells-1) + "…"
 }
 
 // listBodyLines is how many LINES of list body the pane has left after the
@@ -427,11 +470,25 @@ func (s *ListScreen) listBodyLines() int {
 // with the pane at all; if the taller pane stops overflowing, markerRows falls
 // to nothing and need only gets smaller. Same fixed-point argument
 // jdeTooShortRows sets out, and the same reason there is no loop to converge.
+// IT IS ASKED OF barRows, NOT footerRows, AND THAT IS WHAT PUTS THE SEARCH
+// OVERLAY INSIDE THE RULE. The overlay's bar is a bar: it is drawn from the
+// input line down, so on a pane that cannot hold the whole assembly clampToBox
+// takes it off the bottom exactly as it takes the browse footer. Asked of
+// footerRows this function answered for a bar the searching pane does not draw,
+// which is why the exemption below it used to read as safe. barRows is the one
+// expression that answers for the bar the pane will really draw, and every other
+// budget on this screen (markerSlack, listBodyLines) already read it.
 func (s *ListScreen) needRows() int {
 	if len(s.rows) == 0 {
-		return listHeaderRows + 2 + s.footerRows()
+		// The overlay's empty branch is "No matches." on its own — it draws
+		// neither the header row nor a footer, because the bar above it has
+		// already named the keys that work.
+		if s.searching {
+			return s.barRows() + 1
+		}
+		return listHeaderRows + 2 + s.barRows()
 	}
-	return listHeaderRows + s.markerRows() + s.minBodyLines() + s.footerRows()
+	return listHeaderRows + s.markerRows() + s.minBodyLines() + s.barRows()
 }
 
 // paneDrawn is the ONE predicate for "is this list's frame on the pane at all",
@@ -440,20 +497,47 @@ func (s *ListScreen) needRows() int {
 // expression, so the frame and the key cannot part company — the same shape
 // frameDrawn has on the columnar layer.
 //
-// The three states that draw no footer are never refused: the search overlay
-// pins its bar to the TOP of the pane, where clampToBox cannot reach it, and
-// the loading and error panes name no movement key at all.
+// The exempt states are the ones with NO BAR TO CUT: a loading pane is one
+// muted line and an error pane is a sentence and a retry hint, neither of which
+// names a movement key, so there is nothing for a short pane to take.
+//
+// THE SEARCH OVERLAY IS NOT ONE OF THEM, and the sentence that said it was
+// claimed the overlay "pins its bar to the TOP of the pane, where clampToBox
+// cannot reach it". clampToBox drops from the BOTTOM: View draws the input
+// line, the folded overlay bar and a blank separator, and everything below that
+// is the body — so a pane too short for the assembly loses the body first and
+// then, one row further in, the bar itself. At 80x7 (one real row) the overlay
+// drew its input line alone: no bar, no rows, no notice, and every key it names
+// still live. That is the bar-less pane this whole refusal exists to remove,
+// reached through the one state that had been excused from it on a premise
+// about a direction clampToBox does not cut in.
 func (s *ListScreen) paneDrawn() bool {
-	if !s.paneSized() || s.searching || s.loading || s.loadErr != "" {
+	if !s.paneSized() || s.loading || s.loadErr != "" {
 		return true
 	}
 	return s.listPaneRows() >= s.needRows()
 }
 
-// listTooShortWayOut is the ONE key a refused list names, in the words it is
-// drawn in. A constant so the notice and the sweep that proves it survives every
-// trim read one record rather than two that can drift.
-const listTooShortWayOut = "Esc leaves"
+// listTooShortWayOut is the refusal's LEADING CLAUSE, in the words it is drawn
+// in — the rule and its one exception together. A constant so the notice and the
+// sweep that proves it survives every trim read one record rather than two that
+// can drift.
+//
+// IT IS WORDED RULE-FIRST, EXCEPTION-AFTER, the order jdeTooShort states ("No
+// keys are named: the action bar would be cut. … Esc still leaves."), and it
+// carries BOTH in one clause because the two constraints on this row point in
+// opposite directions. Split across sentences, rule-first puts the denial on the
+// line that leads and the way out on the line a one-row pane drops, which is a
+// refusal nobody can act on; way-out-first, which is what this said before,
+// leaves a pane reading "Esc leaves" above a sentence flatly denying that any
+// key is named — the notice contradicting itself about the only key on it. In
+// one clause the order is rule then exception AND the way out still leads, so
+// every trim of the notice either keeps the clause whole or takes it entire;
+// there is no prefix of it that denies the key without naming it.
+//
+// The prose beneath does not repeat the denial as a count — it says why the bar
+// is absent and what Esc does — so nothing below can contradict what leads.
+const listTooShortWayOut = "No keys but Esc"
 
 // listTooShort is what a list draws when the pane cannot hold its footer whole.
 //
@@ -466,27 +550,30 @@ const listTooShortWayOut = "Esc leaves"
 //
 // WHATEVER MUST SURVIVE MUST LEAD, the structural rule AGENTS.md records three
 // instances of, and on a REFUSAL the load-bearing clause is the WAY OUT. So
-// `Esc leaves` leads, in its own fold segment, then the height to RESIZE TO,
-// then the height the operator already HAS — which their own window manager is
-// showing them. Every trim, on either axis, then takes the expendable tail and
-// can never leave a wrong number standing.
+// listTooShortWayOut leads, in its own fold segment, then the height to RESIZE
+// TO, then the height the operator already HAS — which their own window manager
+// is showing them. Every trim, on either axis, then takes the expendable tail
+// and can never leave a wrong number standing. That clause carries the rule AND
+// its exception together for the reason its own comment gives, so leading with
+// the way out and leading with the rule are the same wording here rather than a
+// choice between them.
 //
 // ESC IS NAMED BECAUSE ESC WORKS HERE, and that is checked rather than assumed:
-// a refused list is never `searching`, so WantsRawInput is false and
-// HandlesKey never claims `esc`, which means the key reaches Root's global back
-// step and leaves the screen — popping the back-stack, or falling home from the
-// bottom of it. It is the ONE key named on a frame that names none, exactly as
-// jdeTooShort names it, and for the reason that function gives: the way out of
-// a pane too short to work in must stay open or the refusal is one the operator
-// cannot act on. It is not a legend and it does not soften the sentence below
-// it — esc does not act ON the list, it leaves the list.
+// WantsRawInput is false on a refused pane and HandlesKey never claims `esc`,
+// which means the key reaches Root's global back step and leaves the screen —
+// popping the back-stack, or falling home from the bottom of it. It is the ONE
+// key named on a frame that names none, exactly as jdeTooShort names it, and
+// for the reason that function gives: the way out of a pane too short to work
+// in must stay open or the refusal is one the operator cannot act on. It is not
+// a legend and it does not soften the sentence below it — esc does not act ON
+// the list, it leaves the list.
 //
 // WHAT GIVES AND WHERE, said plainly because it is a real loss. A ONE-ROW pane
 // keeps only the first folded line — that is terminal height 7, since
 // screenBodyRows is height − 6 — and whether that line still carries the height
-// depends on the WIDTH: at 51 cells it reads `Esc leaves · needs 15 rows · has
-// 7…`, at 31 it keeps the figure, and at the 16 cells width 45 gives it folds
-// after `Esc leaves…` and the height is gone. So the loss is confined to a
+// depends on the WIDTH: at 51 cells it reads `No keys but Esc · needs 15 rows ·
+// has 7…`, at 31 it keeps the figure, and at the 16 cells width 45 gives it
+// folds after the clause alone and the height is gone. So the loss is confined to a
 // one-row pane on a narrow terminal, and the way out survives every one of
 // them; from two rows up both facts are on the pane at every drawable width.
 //
@@ -526,9 +613,9 @@ func listTooShort(cells, rows, terminalHeight, needRows int) string {
 	}
 	lines := pickerWrap(fmt.Sprintf("%s · needs %d rows · has %d",
 		listTooShortWayOut, needRows+screenChromeRows, terminalHeight), cells)
-	lines = append(lines, pickerWrap("Too short for the action bar, so no keys are "+
-		"named. Moving and sorting do nothing while this notice is up, so you come "+
-		"back where you were.", cells)...)
+	lines = append(lines, pickerWrap("The action bar would be cut, so it is not "+
+		"drawn. Esc leaves; moving and sorting do nothing while this notice is up, "+
+		"so you come back where you were.", cells)...)
 	cut := len(lines) > rows
 	if cut {
 		lines = lines[:rows]
@@ -668,7 +755,18 @@ func (s *ListScreen) activeFilter() listFilter {
 
 // WantsRawInput routes every keypress to the screen while the search input is
 // open, so the global hotkey layer stops eating letters the operator is typing.
-func (s *ListScreen) WantsRawInput() bool { return s.searching }
+//
+// A REFUSED PANE OWNS NO KEYBOARD, because it draws no overlay for the keyboard
+// to belong to. Claiming raw input there sent `esc` to updateSearch, which
+// closes the overlay — and the browse shape of this list needs MORE rows than
+// the searching one (footerHint folds to more lines than listSearchBarHint), so
+// every height that refuses the overlay refuses the browse pane too: the key
+// the notice names redrew the notice byte for byte and the operator was still
+// on it. Released, `esc` reaches Root's back step and leaves, which is the one
+// claim the notice makes, true in the searching state exactly as in the browse
+// one. The query itself is untouched, so a terminal dragged short and back
+// comes back to the search the operator was running.
+func (s *ListScreen) WantsRawInput() bool { return s.searching && s.paneDrawn() }
 
 // Init loads the CURRENT view: the filtered loader bound to the active
 // filter's query when the list has a filter cycle, else the plain loader. It
@@ -1080,6 +1178,15 @@ func workspaceForKind(kind string) Workspace {
 }
 
 func (s *ListScreen) View() string {
+	// REFUSED RATHER THAN MUTILATED, and the check is HERE rather than in
+	// bodyView because the overlay is drawn by this function: left one level
+	// down, a refused searching pane would draw the notice UNDERNEATH the very
+	// input line and bar the pane cannot hold, which is the mutilation with an
+	// explanation stapled to it. The notice replaces the whole frame, so what
+	// the operator sees is the height they need and the key that leaves.
+	if !s.paneDrawn() {
+		return listTooShort(s.listPaneCells(), s.listPaneRows(), s.terminalHeight, s.needRows())
+	}
 	// The search overlay renders above whatever body state follows, so the
 	// operator can keep editing the query even when a search returns nothing.
 	if s.searching {
@@ -1092,7 +1199,7 @@ func (s *ListScreen) View() string {
 			head.WriteString("  " + StyleMuted.Render(fmt.Sprintf("%d match(es)", len(s.rows))))
 		}
 		head.WriteString("\n")
-		head.WriteString(pickerHint(s.searchBarHint()) + "\n\n")
+		head.WriteString(pickerHintAt(s.searchBarHint(), s.listPaneCells()) + "\n\n")
 		return head.String() + s.bodyView()
 	}
 	return s.bodyView()
@@ -1118,15 +1225,6 @@ func (s *ListScreen) bodyView() string {
 	}
 	if s.loadErr != "" {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry")
-	}
-	// REFUSED RATHER THAN MUTILATED. Everything below this line assembles a
-	// pane with the folded footer pinned to the bottom of it, and clampToBox
-	// drops from the bottom — so on a pane that cannot hold the whole thing the
-	// footer is what goes, which is the dead end this screen's empty state was
-	// just brought out of. paneDrawn is the same predicate the movement gate in
-	// Update reads.
-	if !s.paneDrawn() {
-		return listTooShort(s.listPaneCells(), s.listPaneRows(), s.terminalHeight, s.needRows())
 	}
 	if len(s.rows) == 0 {
 		if s.searching {
@@ -1169,7 +1267,7 @@ func (s *ListScreen) bodyView() string {
 			b.WriteString(StyleMuted.Render("No rows."))
 		}
 		b.WriteString("\n\n")
-		b.WriteString(pickerHint(s.footerHint()))
+		b.WriteString(pickerHintAt(s.footerHint(), s.listPaneCells()))
 		return b.String()
 	}
 
@@ -1189,11 +1287,11 @@ func (s *ListScreen) bodyView() string {
 	shared := s.markerRows() == 1
 	above, below := s.windowStart > 0, len(s.rows)-end
 	if shared {
-		if line := listMarkerLine(above, below); line != "" {
-			b.WriteString(StyleMuted.Render(cellPrefix(line, s.listPaneCells())) + "\n")
+		if line := listMarkerLine(above, below, s.listPaneCells()); line != "" {
+			b.WriteString(StyleMuted.Render(line) + "\n")
 		}
 	} else if above {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+		b.WriteString(StyleMuted.Render(listMarkerLine(true, 0, s.listPaneCells())) + "\n")
 	}
 	for i := s.windowStart; i < end; i++ {
 		row := s.rows[i]
@@ -1230,7 +1328,7 @@ func (s *ListScreen) bodyView() string {
 	}
 
 	if !shared && below > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", below)) + "\n")
+		b.WriteString(StyleMuted.Render(listMarkerLine(false, below, s.listPaneCells())) + "\n")
 	}
 
 	if s.searching {
@@ -1258,7 +1356,7 @@ func (s *ListScreen) bodyView() string {
 	// an honest bar, it is an absent one, and the report this came from opens
 	// "as the command line says". pickerWrap is pane-local (po_create_pickers.go)
 	// so this needs nothing from the shared JD Edwards layer.
-	b.WriteString(pickerHint(s.footerHint()))
+	b.WriteString(pickerHintAt(s.footerHint(), s.listPaneCells()))
 	return b.String()
 }
 
@@ -1302,8 +1400,17 @@ func (s *ListScreen) searchBarHint() string {
 // separator. Derived from the hint that will actually be drawn rather than
 // assumed: the hint grows a segment whenever a list gains a sibling surface,
 // and a constant here silently spends the extra row out of the pane's bottom.
+// MEASURED AT THE PANE THE TERMINAL REALLY GAVE, not at pickerPaneWidth. A fold
+// is normally safe at the fixed 51 — an extra line costs a row and loses no
+// words — but that is only true while the pane HAS 51 cells. Root draws from a
+// terminal width of 45, where the pane is 16, and a bar folded at 51 then runs
+// past it and clampToBox takes the tail: the same claim off the same edge the
+// horizontal fold exists to prevent. Both bars on this screen do it, so both
+// read listPaneCells; at 80 columns the two numbers are the same 51 and nothing
+// moves. It is a function of the footer and the pane's WIDTH, so it still does
+// not move with the HEIGHT, which is what needRows' fixed point rests on.
 func (s *ListScreen) footerRows() int {
-	return 1 + len(pickerWrap(s.footerHint(), pickerPaneWidth))
+	return 1 + len(pickerWrap(s.footerHint(), s.listPaneCells()))
 }
 
 // footerHint is the list's action bar: every key that works here, and nothing

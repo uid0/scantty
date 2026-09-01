@@ -743,10 +743,17 @@ func listRootLines(t *testing.T, s *ListScreen, w, h int) []string {
 // WHAT IS ASSERTED IS THE LEAD AND NOT THE WHOLE NOTICE, because no wording
 // carrying the way out and both numbers fits the 16 cells the narrowest drawable
 // pane gives. That is the "whatever must survive must lead" rule, and on a
-// refusal the load-bearing clause is the WAY OUT: `Esc leaves` leads in its own
-// fold segment, then the height NEEDED, then the height the operator already
-// HAS, then the prose — so a trim on either axis takes the tail and can never
-// leave a wrong number standing.
+// refusal the load-bearing clause is the WAY OUT: listTooShortWayOut leads in
+// its own fold segment, then the height NEEDED, then the height the operator
+// already HAS, then the prose — so a trim on either axis takes the tail and can
+// never leave a wrong number standing.
+//
+// THE LEAD IS READ OFF THE RECORD, so the reordering that put the RULE in front
+// of the exception ("No keys but Esc" rather than "Esc leaves", the order
+// jdeTooShort states) had to keep this test passing rather than be traded
+// against it: both facts ride ONE clause, so the clause that must survive is
+// still the clause that leads and no prefix of the notice denies the key
+// without naming it.
 //
 // SO THE TWO CLAIMS ARE ASKED AT DIFFERENT SCOPES, and the difference is the
 // one pane where they genuinely cannot both be met: the way out must be on
@@ -853,13 +860,13 @@ var listWayOutKeyNames = map[string]listWayOutKey{
 //
 // IT READS THE RECORD'S STRUCTURE rather than scanning it for words it happens
 // to know, and that is what lets an unknown KEY be told apart from an ordinary
-// one. The notice is built of " · " clauses and each names its key FIRST, so
-// the first word of a clause is a key token and the rest is prose: "Esc leaves"
-// names Esc. Scanning every word instead, an unrecognised key was
-// indistinguishable from the word "leaves" and could only be skipped — so a
-// notice reworded to "Esc leaves · Ctrl-C quits" would have pressed esc, passed
-// over Ctrl-C in silence and certified half the record. Now every clause must
-// yield a key the table knows, or the sweep fatals.
+// one. The notice is built of " · " clauses and each is worded rule-then-
+// exception, so a clause ENDS on its key and everything before it is prose:
+// "No keys but Esc" names Esc. Scanning every word instead, an unrecognised key
+// was indistinguishable from the word "keys" and could only be skipped — so a
+// notice reworded to "No keys but Esc · nor Ctrl-C" would have pressed esc,
+// passed over Ctrl-C in silence and certified half the record. Now every clause
+// must yield a key the table knows, or the sweep fatals.
 func listWayOutKeys(t *testing.T) []listWayOutKey {
 	t.Helper()
 	var out []listWayOutKey
@@ -868,7 +875,7 @@ func listWayOutKeys(t *testing.T) []listWayOutKey {
 		if len(words) == 0 {
 			continue
 		}
-		token := strings.Trim(words[0], ".,;:")
+		token := strings.Trim(words[len(words)-1], ".,;:")
 		key, ok := listWayOutKeyNames[token]
 		if !ok {
 			t.Fatalf("the refusal notice reads %q, whose clause %q names the key %q — "+
@@ -1559,3 +1566,393 @@ func TestList_SearchOverlayBarNamesExactlyTheKeysThatWork(t *testing.T) {
 		}
 	}
 }
+
+// listSearchSurfaces is every list that has a search overlay, DISCOVERED by
+// asking the spec rather than named here — the roster rule this package keeps
+// re-learning. It fatals on an empty answer, because a sweep over no surfaces
+// passes without pressing anything.
+func listSearchSurfaces(t *testing.T) []listBarSurface {
+	t.Helper()
+	var out []listBarSurface
+	for _, surface := range listBarSurfaces() {
+		if listWithRows(surface.build, 8).spec.searchLoader != nil {
+			out = append(out, surface)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("no list in the app has a searchLoader, so the overlay sweeps below " +
+			"press nothing — either the feature is gone or the discovery is broken")
+	}
+	return out
+}
+
+// listSearchOpen builds a sized list with the overlay open, in that order: the
+// size arrives first so scrollIntoView has a real pane to window against, and
+// '/' is PRESSED rather than the flag set, so the sweep drives the overlay the
+// way an operator reaches it.
+func listSearchOpen(t *testing.T, build func() *ListScreen, rows, w, h int) *ListScreen {
+	t.Helper()
+	s := listWithRows(build, rows)
+	sized, _ := s.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	next, _ := sized.(*ListScreen).Update(listRuneKey("/"))
+	return next.(*ListScreen)
+}
+
+// TestList_TheSearchOverlayRefusesRatherThanCuttingItsBar: the overlay is
+// inside the refusal like every other state that draws a bar.
+//
+// IT USED TO BE EXEMPT, ON A PREMISE ABOUT A DIRECTION clampToBox DOES NOT CUT
+// IN. paneDrawn excused it because the overlay "pins its bar to the TOP of the
+// pane, where clampToBox cannot reach it" — but clampToBox drops from the
+// BOTTOM, and the overlay's bar is on the SECOND row of an assembly that then
+// draws a header, the markers and the rows beneath it. At 80x7 the pane got the
+// input line and nothing else: no bar, no rows, no notice, every key the
+// overlay names still live and nothing on the screen saying so. An exemption
+// has to hold at every drawable pane or it is not an exemption, so this walks
+// Root's own drawable widths and heights rather than a size somebody picked.
+//
+// Both halves are asserted, because either alone is satisfied by a screen that
+// is always refused or never refused: where the pane IS drawn every segment of
+// the overlay's own bar survives the clip whole, and where it is NOT the notice
+// is there instead, with no fragment of the bar left beside it.
+func TestList_TheSearchOverlayRefusesRatherThanCuttingItsBar(t *testing.T) {
+	widths, heights := jdeDrawableWidths(), jdePaneHeights()
+	drawn, refused := 0, 0
+	for _, surface := range listSearchSurfaces(t) {
+		t.Run(surface.name, func(t *testing.T) {
+			for state, rows := range listRowCases {
+				for _, w := range widths {
+					for _, h := range heights {
+						s := listSearchOpen(t, surface.build, rows, w, h)
+						if !s.searching {
+							t.Fatalf("%s: '/' did not open the overlay at %dx%d (%s)",
+								surface.name, w, h, state)
+						}
+						pane := listRootLines(t, s, w, h)
+						joined := strings.Join(pane, "\n")
+
+						if s.paneDrawn() {
+							drawn++
+							for _, segment := range strings.Split(s.searchBarHint(), " · ") {
+								if !listLineHolds(pane, segment) {
+									t.Errorf("the %s search overlay at %dx%d (%s) claims %q on a "+
+										"line the pane cuts off:\n%s",
+										surface.name, w, h, state, segment, joined)
+								}
+							}
+							continue
+						}
+						refused++
+						// The WAY OUT at every refused pane and the HEIGHT wherever the
+						// pane has more than one row, which is the scope the browse
+						// refusal already states: a one-row pane keeps only the first
+						// folded line and at the narrowest widths that line has room for
+						// the clause and not the figure. The height is what gives; the
+						// way out is not.
+						if !listLineHolds(pane, listTooShortWayOut) {
+							t.Errorf("the %s search overlay at %dx%d (%s) cannot draw its bar and "+
+								"does not name the way off it — the operator is left on a bar-less "+
+								"pane:\n%s", surface.name, w, h, state, joined)
+						}
+						want := fmt.Sprintf("needs %d rows", s.needRows()+screenChromeRows)
+						if s.listPaneRows() > 1 && !listLineHolds(pane, want) {
+							t.Errorf("the %s search overlay at %dx%d (%s) is refused and does not "+
+								"say how tall a terminal it needs:\n%s",
+								surface.name, w, h, state, joined)
+						}
+						for _, segment := range strings.Split(s.searchBarHint(), " · ") {
+							if listLineHolds(pane, segment) {
+								t.Errorf("the %s search overlay at %dx%d (%s) is refused but still "+
+									"draws %q beside the notice:\n%s",
+									surface.name, w, h, state, segment, joined)
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+	if drawn == 0 || refused == 0 {
+		t.Fatalf("the overlay was drawn at %d panes and refused at %d — both halves of "+
+			"this check need a case, or one implication was never exercised", drawn, refused)
+	}
+}
+
+// listLineHolds reports whether one whole line of a clipped pane carries the
+// segment, which is the only way a claim is legible to an operator.
+func listLineHolds(pane []string, segment string) bool {
+	for _, line := range pane {
+		if strings.Contains(line, segment) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestList_ARefusedSearchOverlayNamesAKeyThatReallyLeaves is the way-out claim
+// in the state the refusal was just extended to.
+//
+// It is a SEPARATE press from the browse sweep because the key takes a
+// different road: while the overlay is open the screen used to claim raw input,
+// so `esc` reached updateSearch and merely CLOSED the overlay — and since the
+// browse footer folds to more lines than the overlay's bar, every height that
+// refuses the overlay refuses the browse pane too. The notice named a key that
+// redrew the notice. WantsRawInput now releases the keyboard on a refused pane,
+// and this presses the record's own keys through a real Root to prove it, with
+// the back-stack empty and loaded for the reason the browse sweep gives.
+func TestList_ARefusedSearchOverlayNamesAKeyThatReallyLeaves(t *testing.T) {
+	wayOut := listWayOutKeys(t)
+	widths, heights := jdeDrawableWidths(), jdePaneHeights()
+	checked := 0
+	for _, surface := range listSearchSurfaces(t) {
+		t.Run(surface.name, func(t *testing.T) {
+			for state, rows := range listRowCases {
+				for _, w := range widths {
+					for _, h := range heights {
+						if listSearchOpen(t, surface.build, rows, w, h).paneDrawn() {
+							continue
+						}
+						for _, key := range wayOut {
+							for _, withHistory := range []bool{false, true} {
+								list := listSearchOpen(t, surface.build, rows, w, h)
+								r := newTestRoot(list)
+								if withHistory {
+									r.history = []navEntry{{screen: NewWelcomeScreen(), ws: WSScan}}
+								}
+								sized, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+								after, _ := sized.(Root).Update(key.msg)
+								checked++
+								if after.(Root).screen == Screen(list) {
+									t.Errorf("the %s search refusal at %dx%d (%s, history %v) reads "+
+										"%q and pressing %q left the operator on the same screen",
+										surface.name, w, h, state, withHistory,
+										listTooShortWayOut, key.name)
+								}
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no search overlay was refused at any drawable size, so the way out " +
+			"this notice names was never pressed there")
+	}
+}
+
+// listMarkerCount reads the figure a drawn marker row states, and reports
+// whether it stated one at all. It takes the digits that FOLLOW the ↓, which is
+// exactly what an operator reads off the row — so a row cut mid-number hands
+// back the truncated figure rather than the real one, which is the whole point.
+func listMarkerCount(line string) (int, bool) {
+	i := strings.Index(line, "↓")
+	if i < 0 {
+		return 0, false
+	}
+	digits := ""
+	for _, r := range strings.TrimSpace(line[i+len("↓"):]) {
+		if r < '0' || r > '9' {
+			break
+		}
+		digits += string(r)
+	}
+	if digits == "" {
+		return 0, false
+	}
+	n := 0
+	for _, r := range digits {
+		n = n*10 + int(r-'0')
+	}
+	return n, true
+}
+
+// listMarkerLineCases are the marker states the row can be asked to draw, with
+// counts chosen so the figure is one, two and three digits wide — a one-digit
+// count cannot be truncated mid-number, so a sweep carrying only "1" would pass
+// over the defect this exists to report.
+var listMarkerLineCases = []struct {
+	name  string
+	above bool
+	below int
+}{
+	{"both", true, 12},
+	{"both, wide count", true, 999},
+	{"both, one digit", true, 1},
+	{"above only", true, 0},
+	{"below only", false, 12},
+	{"below only, wide count", false, 999},
+}
+
+// TestList_TheMarkerRowTellsBothFactsOrMarksTheCut: the ↑/↓ row states the
+// facts it promises, whole, or says it gave one up — and NEVER states a figure
+// the list does not have.
+//
+// The shared row was assembled at full length and clipped to the pane, so below
+// the width it fits the operator read "  ↑ more above · ↓ 1" at 45 columns and
+// "  ↑ more above · ↓ 12 more b" at 60: a row promising two facts, delivering
+// one and a half, with the truncation unmarked — and at 45 A COUNT CUT
+// MID-NUMBER, which does not read as a shortened fact but as a different one.
+// Twelve rows below reported as one is the price column drawing @ 3.50 as @ 3.,
+// on the row whose whole job is to say how much of the list is out of sight.
+//
+// Swept over Root's own drawable widths rather than a width somebody picked,
+// because 45 and 60 are both below the 80 every legibility loop in this file
+// used to walk, which is precisely why nothing reported it.
+func TestList_TheMarkerRowTellsBothFactsOrMarksTheCut(t *testing.T) {
+	widths := jdeDrawableWidths()
+	if len(widths) == 0 {
+		t.Fatal("no drawable widths — the derivation is broken, not the app")
+	}
+	degraded := 0
+	for _, tc := range listMarkerLineCases {
+		for _, w := range widths {
+			cells := screenBodyCells(w)
+			line := listMarkerLine(tc.above, tc.below, cells)
+			if line == "" {
+				t.Errorf("%s at width %d (%d cells): the row says nothing at all, so the "+
+					"operator is not told the list continues", tc.name, w, cells)
+				continue
+			}
+			if got := lipgloss.Width(line); got > cells {
+				t.Errorf("%s at width %d: the row draws %d cells into a pane of %d: %q",
+					tc.name, w, got, cells, line)
+			}
+			// The ladder was exercised at this width, which is what stops the
+			// sweep certifying a bound it never reached (the vacuous-fixture rule).
+			if lipgloss.Width(line) < lipgloss.Width(listMarkerLine(tc.above, tc.below, 999)) {
+				degraded++
+			}
+
+			marked := strings.Contains(line, "…")
+			if n, stated := listMarkerCount(line); stated && n != tc.below {
+				t.Errorf("%s at width %d states %d rows below, and the list has %d — a cut "+
+					"number reads as a number: %q", tc.name, w, n, tc.below, line)
+			} else if !stated && tc.below > 0 && !marked {
+				t.Errorf("%s at width %d drops the count of %d and does not mark the row, so "+
+					"the operator is not told a fact was given up: %q",
+					tc.name, w, tc.below, line)
+			}
+
+			// BOTH FACTS OR NEITHER: a row that tells one of two directions
+			// without marking is the mutilation the refusal exists to avoid,
+			// one row further in.
+			if tc.above && tc.below > 0 {
+				if !strings.Contains(line, "↑") || !strings.Contains(line, "↓") {
+					t.Errorf("%s at width %d names one direction of two and does not say it "+
+						"gave the other up: %q", tc.name, w, line)
+				}
+			}
+		}
+	}
+	if degraded == 0 {
+		t.Fatal("no width in Root's drawable range made the marker row give any ground, " +
+			"so this sweep only ever measured the full wording — either the widths are " +
+			"no longer derived or the row has stopped being bounded at all")
+	}
+}
+
+// TestList_EveryMarkerRowOnThePaneFitsIt is the behavioural half: the rows the
+// list really draws go through that bounded builder, at every drawable pane.
+//
+// Asserted on the CLIPPED pane, because the bound that matters is the one the
+// operator meets — a marker row measured off the screen's own View cannot fail,
+// since clampToBox has not run yet. It walks the cursor into a SCROLLED state
+// first, since a list resting at the top has no ↑ fact to lose.
+func TestList_EveryMarkerRowOnThePaneFitsIt(t *testing.T) {
+	widths, heights := jdeDrawableWidths(), jdePaneHeights()
+	scrolled, degraded := 0, 0
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			for _, w := range widths {
+				for _, h := range heights {
+					// A THREE-DIGIT REMAINDER, because the row's full wording fits the
+					// narrowest pane at a one-digit count: swept at eight rows this
+					// check could not fail, and passed with both per-marker sites
+					// writing their own unbounded literals. A fixture that cannot
+					// reach the bound makes the assertion vacuous however precisely
+					// it is worded.
+					s := listWithRows(surface.build, listMarkerFixtureRows)
+					sized, _ := s.Update(tea.WindowSizeMsg{Width: w, Height: h})
+					s = sized.(*ListScreen)
+					// BOUNDED, and generously: a page-worth of presses scrolls any pane
+					// Root will draw. An unbounded reach loop turns a declined key into
+					// a hang that fails the whole package by timing out.
+					for i := 0; i < listMarkerScrollPresses && s.windowStart == 0; i++ {
+						next, _ := s.Update(listRuneKey("j"))
+						s = next.(*ListScreen)
+					}
+					if s.windowStart > 0 {
+						scrolled++
+					}
+					below := len(s.rows) - (s.windowStart + s.windowSize)
+					if below < 0 {
+						below = 0
+					}
+					// EVERY marker row the pane draws is one the bounded builder could
+					// have produced at that pane. Equality rather than a fits-the-pane
+					// check, because the two per-marker sites drew their own literals
+					// and cellPrefix would have made either of them "fit" while still
+					// saying something the builder had already given up — which is how
+					// a bound applied to the shared row left the pair beside it
+					// unbounded.
+					cells := screenBodyCells(w)
+					want := map[string]bool{
+						listMarkerLine(true, 0, cells):      true,
+						listMarkerLine(false, below, cells): true,
+						listMarkerLine(true, below, cells):  true,
+					}
+					for form := range want {
+						if form != "" && lipgloss.Width(form) <
+							lipgloss.Width(listMarkerLine(true, below, 999)) {
+							degraded++
+						}
+					}
+					clipped := strings.Split(
+						clampToBox(s.View(), screenBodyCells(w), screenBodyRows(h)), "\n")
+					for _, line := range clipped {
+						// A MARKER ROW OPENS ON ITS ARROW, which is what tells it apart
+						// from the footer — whose movement segment spells "j/k ↑↓ move"
+						// and would otherwise be swept as a marker row that no builder
+						// produces.
+						head := strings.TrimSpace(line)
+						if !strings.HasPrefix(head, "↑") && !strings.HasPrefix(head, "↓") {
+							continue
+						}
+						drawn := strings.TrimRight(line, " ")
+						if !want[drawn] {
+							t.Errorf("the %s marker row at %dx%d draws %q, which the bounded "+
+								"builder does not produce at that pane (%d cells, %d below) — the "+
+								"site is writing its own row",
+								surface.name, w, h, drawn, cells, below)
+						}
+						if n, stated := listMarkerCount(drawn); stated && n != below {
+							t.Errorf("the %s marker row at %dx%d states %d rows below, and %d are "+
+								"out of sight: %q", surface.name, w, h, n, below, drawn)
+						}
+					}
+				}
+			}
+		})
+	}
+	if scrolled == 0 {
+		t.Fatal("no list ever scrolled at any drawable pane, so no ↑ marker was drawn and " +
+			"the shared row this sweep is about was never reached")
+	}
+	if degraded == 0 {
+		t.Fatal("no pane in Root's drawable range asked the marker row for less than its " +
+			"full wording, so a draw site writing that wording itself would pass — the " +
+			"fixture no longer reaches the bound")
+	}
+}
+
+// listMarkerFixtureRows is the row count the marker sweep builds, chosen so the
+// remainder below the window runs to three digits: the row's full wording fits
+// the narrowest drawable pane at a one-digit count, so a smaller fixture
+// measures a bound it never reaches.
+const listMarkerFixtureRows = 200
+
+// listMarkerScrollPresses bounds the walk that puts the cursor past the window,
+// which is all this sweep needs the cursor for. The tallest drawable pane holds
+// far fewer rows than this.
+const listMarkerScrollPresses = 40
