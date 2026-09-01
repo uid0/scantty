@@ -736,13 +736,13 @@ func (s *DeviceTypeListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor--
 				s.scrollIntoView()
 			}
-		case "ctrl+d", "pgdown":
+		case "pgdown":
 			s.cursor += s.windowSize
 			if s.cursor >= len(s.rows) {
 				s.cursor = len(s.rows) - 1
 			}
 			s.scrollIntoView()
-		case "ctrl+u", "pgup":
+		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
 				s.cursor = 0

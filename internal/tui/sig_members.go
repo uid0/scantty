@@ -264,13 +264,13 @@ func (s *SIGMembersScreen) updateList(m tea.KeyMsg) (Screen, tea.Cmd) {
 			s.cursor--
 			s.scrollIntoView()
 		}
-	case "ctrl+d", "pgdown":
+	case "pgdown":
 		s.cursor += s.windowSize
 		if s.cursor >= len(s.members) {
 			s.cursor = len(s.members) - 1
 		}
 		s.scrollIntoView()
-	case "ctrl+u", "pgup":
+	case "pgup":
 		s.cursor -= s.windowSize
 		if s.cursor < 0 {
 			s.cursor = 0

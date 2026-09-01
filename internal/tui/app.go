@@ -75,6 +75,9 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // recordHistory pushes an outgoing screen onto the back-stack. Transient
 // screens that own their own esc handling are deliberately NOT recorded — `esc`
 // must never navigate the user back INTO a view they already dismissed:
+//   - a screen that answers the question itself (a BackStackScreen), which is
+//     the only reader whose transience and whose keyboard ownership are allowed
+//     to be different states;
 //   - forms, pickers and confirm prompts (a RawInputScreen that currently
 //     WantsRawInput), which cancel themselves via their own esc; and
 //   - any screen that claims esc via HandlesKey (the Reports tables/pulse,
@@ -82,11 +85,20 @@ func (r Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 //
 // Those screens are also intercepted before the global esc handler ever runs,
 // so their local esc-cancel keeps working unchanged.
+//
+// THE RAW-INPUT TEST IS A FALLBACK, NOT THE QUESTION. It was the question once,
+// and a screen that narrowed WantsRawInput for reasons of its own moved this
+// behaviour with it — see BackStackScreen for what that cost. A screen that
+// implements BackStackScreen is asked THAT and nothing else.
 func (r *Root) recordHistory(screen Screen, ws Workspace) {
 	if screen == nil {
 		return
 	}
-	if rs, ok := screen.(RawInputScreen); ok && rs.WantsRawInput() {
+	if bs, ok := screen.(BackStackScreen); ok {
+		if bs.SkipsBackStack() {
+			return
+		}
+	} else if rs, ok := screen.(RawInputScreen); ok && rs.WantsRawInput() {
 		return
 	}
 	if lk, ok := screen.(LocalKeyScreen); ok && lk.HandlesKey("esc") {

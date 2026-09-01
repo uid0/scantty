@@ -136,7 +136,7 @@ func (s *InventoryItemFormScreen) moveChainCursor(delta int) {
 func (s *InventoryItemFormScreen) pageChainCursor(dir int) {
 	l := s.chainListLines()
 	next, ok := s.pageRow(l, s.chainCursor, s.chainAddRow()+1, dir, 0,
-		s.chainBar(l), s.chainBarItems(true))
+		s.chainBar(l), s.chainBarItems(jdeCeilingRows, true))
 	if !ok {
 		return
 	}
@@ -450,13 +450,15 @@ func (s *InventoryItemFormScreen) chainListLines() *jdeLines {
 // both mean done: the chain is saved nested with the ITEM, so leaving the list
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) chainBar(body *jdeLines) []actionBarItem {
-	return s.chainBarItems(s.bodyPagesForBar(body, s.chainAddRow()+1, 0, s.chainBarItems(true)))
+	n := s.chainAddRow() + 1
+	return s.chainBarItems(n, s.bodyPagesForBar(body, n, 0, s.chainBarItems(jdeCeilingRows, true)))
 }
 
 // chainBarItems is chainBar for a given paging state, so the bar that is
 // MEASURED against the pane is the bar that is drawn on it.
-func (s *InventoryItemFormScreen) chainBarItems(paging bool) []actionBarItem {
-	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}, {"UP/DN", "Levels"}}
+func (s *InventoryItemFormScreen) chainBarItems(count int, paging bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}}
+	items = append(items, jdeMoveItem("Levels", count)...)
 	if s.onChainAddRow() {
 		items = append(items, actionBarItem{"Ctrl-E", "Add level"})
 	} else {

@@ -73,12 +73,12 @@ func (s *SearchPalette) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s.runQuery(m.query)
 	case tea.KeyMsg:
 		switch m.Type {
-		case tea.KeyDown, tea.KeyCtrlN:
+		case tea.KeyDown:
 			if s.cursor < len(s.results)-1 {
 				s.cursor++
 			}
 			return s, nil
-		case tea.KeyUp, tea.KeyCtrlP:
+		case tea.KeyUp:
 			if s.cursor > 0 {
 				s.cursor--
 			}

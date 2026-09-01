@@ -64,14 +64,24 @@ func jdeSweepCCases(t *testing.T) []jdeSweepCCase {
 	panel.circuits = circuits
 	panel.Update(size)
 
+	// TWO options apiece. UP/DN is conditional on a second row to move to
+	// (jdeRowMoves), so a one-option picker cannot reach the claim the picker-bar
+	// assertion below makes — the vacuous-fixture rule in the form where the
+	// fixture stops an assertion being true rather than making it trivially so.
 	brk := NewPowerBreakerFormScreen(Deps{}, 0, 0)
 	brk.loading = false
-	brk.panels = []omsapi.PowerPanel{{ID: 9, Name: "Main", LocationName: "Wood shop", PhaseConfiguration: "three"}}
+	brk.panels = []omsapi.PowerPanel{
+		{ID: 9, Name: "Main", LocationName: "Wood shop", PhaseConfiguration: "three"},
+		{ID: 10, Name: "Sub A", LocationName: "Metal shop", PhaseConfiguration: "single"},
+	}
 	brk.Update(size)
 
 	cir := NewPowerCircuitFormScreen(Deps{}, 0, 0, 3)
 	cir.loading = false
-	cir.breakers = []omsapi.PowerBreakerDetail{{ID: 5, Position: "4", Amperage: 20, PoleCount: 1, Label: "north"}}
+	cir.breakers = []omsapi.PowerBreakerDetail{
+		{ID: 5, Position: "4", Amperage: 20, PoleCount: 1, Label: "north"},
+		{ID: 6, Position: "6", Amperage: 30, PoleCount: 2, Label: "east"},
+	}
 	cir.Update(size)
 
 	out := NewPowerOutletFormScreen(Deps{}, 0, 0, 0)

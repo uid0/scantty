@@ -545,7 +545,7 @@ func (s *StorageSlotFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) 
 	case jdePickPage:
 		header, body := s.pickView()
 		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickRows), delta, len(header),
-			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickBar(header, body), jdePickBarCeiling("Select", "Cancel")); ok {
 			s.pickCursor = next
 		}
 	default:
@@ -850,7 +850,7 @@ func (s *StorageSlotFormScreen) pickView() (jdeHeader, *jdeLines) {
 // list moves under the bar about to be drawn — measured against the bar WITH
 // the pair on it, because the tallest bar is the fixed point.
 func (s *StorageSlotFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return jdePickBar("Select", s.bodyPagesForBar(body, len(s.pickRows), len(header), jdePickBar("Select", true)))
+	return jdePickBar("Select", len(s.pickRows), s.bodyPagesForBar(body, len(s.pickRows), len(header), jdePickBarCeiling("Select", "Cancel")))
 }
 
 func (s *StorageSlotFormScreen) viewPicker() string {

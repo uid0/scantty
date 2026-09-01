@@ -247,7 +247,7 @@ func (s *LocationProblemsScreen) updateList(m tea.KeyMsg) (Screen, tea.Cmd) {
 			s.cursor--
 			s.scrollIntoView()
 		}
-	case "ctrl+d", "pgdown":
+	case "pgdown":
 		s.cursor += s.windowSize
 		if s.cursor >= len(vis) {
 			s.cursor = len(vis) - 1
@@ -256,7 +256,7 @@ func (s *LocationProblemsScreen) updateList(m tea.KeyMsg) (Screen, tea.Cmd) {
 			s.cursor = 0
 		}
 		s.scrollIntoView()
-	case "ctrl+u", "pgup":
+	case "pgup":
 		s.cursor -= s.windowSize
 		if s.cursor < 0 {
 			s.cursor = 0

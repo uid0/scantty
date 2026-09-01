@@ -159,13 +159,13 @@ func (s *PanelBreakersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor--
 				s.scrollIntoView()
 			}
-		case "ctrl+d", "pgdown":
+		case "pgdown":
 			s.cursor += s.windowSize
 			if s.cursor >= len(s.rows) {
 				s.cursor = len(s.rows) - 1
 			}
 			s.scrollIntoView()
-		case "ctrl+u", "pgup":
+		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
 				s.cursor = 0
@@ -466,13 +466,13 @@ func (s *BreakerCircuitsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor--
 				s.scrollIntoView()
 			}
-		case "ctrl+d", "pgdown":
+		case "pgdown":
 			s.cursor += s.windowSize
 			if s.cursor >= len(s.rows) {
 				s.cursor = len(s.rows) - 1
 			}
 			s.scrollIntoView()
-		case "ctrl+u", "pgup":
+		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
 				s.cursor = 0
@@ -790,13 +790,13 @@ func (s *CircuitOutletsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor--
 				s.scrollIntoView()
 			}
-		case "ctrl+d", "pgdown":
+		case "pgdown":
 			s.cursor += s.windowSize
 			if s.cursor >= len(s.rows) {
 				s.cursor = len(s.rows) - 1
 			}
 			s.scrollIntoView()
-		case "ctrl+u", "pgup":
+		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
 				s.cursor = 0
@@ -1089,13 +1089,13 @@ func (s *CircuitDisconnectsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor--
 				s.scrollIntoView()
 			}
-		case "ctrl+d", "pgdown":
+		case "pgdown":
 			s.cursor += s.windowSize
 			if s.cursor >= len(s.rows) {
 				s.cursor = len(s.rows) - 1
 			}
 			s.scrollIntoView()
-		case "ctrl+u", "pgup":
+		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
 				s.cursor = 0

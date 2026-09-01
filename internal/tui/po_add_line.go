@@ -1187,27 +1187,21 @@ func (s *PurchaseOrderAddLineScreen) bar() []actionBarItem {
 	case poAddPhaseLooking:
 		return []actionBarItem{{"Esc", "Stop waiting"}}
 	case poAddPhaseChoose:
-		items := []actionBarItem{{"Enter", "Choose"}, {"Esc", "Back"}, {"UP/DN", "Move"}}
-		if s.choosePages() {
-			items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
-		}
-		return items
+		// The SAME builder the budgets measure, not a second literal beside it.
+		// chooseBarItems' doc has always said "the bar that is MEASURED is the bar
+		// that is drawn" and this branch was a copy of it — harmless while both
+		// were unconditional, and a real disagreement the moment UP/DN grew a
+		// row-count condition (jdeRowMoves): the ceiling would have dropped the
+		// pair on a one-candidate list while this literal went on naming it.
+		return s.chooseBarItems(len(s.candidates()), s.choosePages())
 	case poAddPhaseConfirm:
 		// Same promise one phase on: backing out of a confirmed item throws away
 		// the quantity and price entered for it, and only the operator knows
 		// whether that mattered.
-		back := "Back"
-		if s.priceEdited {
-			back = "Back, drop entry"
-		}
-		items := []actionBarItem{{"Enter", "Quantity & price"}, {"Esc", back}}
-		if s.confirmScrolls() {
-			items = append(items,
-				actionBarItem{"UP/DN", "Scroll"},
-				actionBarItem{"PgUp/PgDn", "Page"},
-				actionBarItem{"Home/End", "Top/End"})
-		}
-		return items
+		// confirmBarItems, for the reason the choose branch above gives: one
+		// builder, so the bar measured and the bar drawn cannot part company. It
+		// picks the live Esc label itself.
+		return s.confirmBarItems(s.confirmScrolls())
 	case poAddPhasePrice:
 		items := []actionBarItem{{"Enter", "Add line"}, {"Esc", "Back"}, {"UP/DN", "Fields"}}
 		if s.caseFlipOffered() {
@@ -1232,7 +1226,7 @@ func (s *PurchaseOrderAddLineScreen) bar() []actionBarItem {
 // see and rule 1 says something has to change.
 func (s *PurchaseOrderAddLineScreen) choosePages() bool {
 	return s.bodyPagesForBar(s.chooseBody(), len(s.candidates()),
-		len(s.headerLines()), s.chooseBarItems(true))
+		len(s.headerLines()), s.chooseBarItems(jdeCeilingRows, true))
 }
 
 // chooseFrameRows is the lines the choose frame really windows its body into.
@@ -1256,7 +1250,7 @@ func (s *PurchaseOrderAddLineScreen) choosePages() bool {
 // The bar it measures is the PAGING bar, because a step is only ever taken when
 // paging is on and that is therefore the bar being drawn.
 func (s *PurchaseOrderAddLineScreen) chooseFrameRows() int {
-	return s.bodyAvailForBar(len(s.headerLines()), s.chooseBarItems(true))
+	return s.bodyAvailForBar(len(s.headerLines()), s.chooseBarItems(jdeCeilingRows, true))
 }
 
 // chooseStep is how many candidate rows one page covers — measured off the same
@@ -1271,8 +1265,9 @@ func (s *PurchaseOrderAddLineScreen) chooseStep() int {
 
 // chooseBarItems is the choose bar for a given paging state, so the bar that is
 // MEASURED is the bar that is drawn.
-func (s *PurchaseOrderAddLineScreen) chooseBarItems(paging bool) []actionBarItem {
-	items := []actionBarItem{{"Enter", "Choose"}, {"Esc", "Back"}, {"UP/DN", "Move"}}
+func (s *PurchaseOrderAddLineScreen) chooseBarItems(count int, paging bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Choose"}, {"Esc", "Back"}}
+	items = append(items, jdeMoveItem("Move", count)...)
 	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}

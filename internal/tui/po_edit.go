@@ -1314,7 +1314,7 @@ func (s *PurchaseOrderEditScreen) updateAssocPick(m tea.KeyMsg) (Screen, tea.Cmd
 		// A LIST cursor: it clamps rather than wrapping (running off the bottom
 		// must not reappear on row 1, which DETACHES the association), and it
 		// declines outright on a pane the picker is not drawn into.
-		next, ok := s.pickRow(s.assocCursor, len(s.assocRows), delta, 0, poEditAssocBar)
+		next, ok := s.pickRow(s.assocCursor, len(s.assocRows), delta, 0, poEditAssocBar(len(s.assocRows)))
 		if !ok {
 			return s, nil
 		}
@@ -2528,14 +2528,23 @@ func (s *PurchaseOrderEditScreen) viewAssocPick() string {
 	}
 	body.Add("")
 	body.Add(jdeIndent + StyleMuted.Render("Row 1 is none — it detaches what is attached today."))
-	return s.frame(body, cursorLine, "Saving…", poEditAssocBar)
+	return s.frame(body, cursorLine, "Saving…", poEditAssocBar(len(s.assocRows)))
 }
 
 // poEditAssocBar is the association picker's bar, said ONCE: the movement arm
 // needs it to ask the layer whether the frame is drawn before it moves the
 // highlight, and a second literal beside the view's would be a bar measured
 // that is not the bar drawn.
-var poEditAssocBar = []actionBarItem{{"Enter", "Select"}, {"Esc", "Cancel"}, {"UP/DN", "Move"}}
+//
+// It is a FUNCTION of the option count now rather than a package var, because
+// UP/DN is only true where there is a second row to move to (jdeRowMoves). The
+// list always carries the synthetic "none" row that DETACHES what is attached,
+// so an association nobody has any options for still counts one — and the bar
+// used to name UP/DN over it while jdeClampPick handed the cursor straight back.
+func poEditAssocBar(count int) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Select"}, {"Esc", "Cancel"}}
+	return append(items, jdeMoveItem("Move", count)...)
+}
 
 // ---------------------------------------------------------------------------
 // Void prompt

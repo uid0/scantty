@@ -363,7 +363,7 @@ func (s *AuthorizationGrantScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cm
 	case jdePickPage:
 		header, body := s.pickView()
 		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickOptions), delta, len(header),
-			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickBar(header, body), jdePickBarCeiling("Select", "Cancel")); ok {
 			s.pickCursor = next
 		}
 	default:
@@ -583,7 +583,7 @@ func (s *AuthorizationGrantScreen) pickView() (jdeHeader, *jdeLines) {
 // list moves under the bar about to be drawn — measured against the bar WITH
 // the pair on it, because the tallest bar is the fixed point.
 func (s *AuthorizationGrantScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return jdePickBar("Select", s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBar("Select", true)))
+	return jdePickBar("Select", len(s.pickOptions), s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBarCeiling("Select", "Cancel")))
 }
 
 func (s *AuthorizationGrantScreen) viewPick() string {

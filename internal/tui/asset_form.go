@@ -1079,7 +1079,7 @@ func (s *AssetFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case jdePickPage:
 		header, body := s.pickView()
 		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickOptions), delta, len(header),
-			s.pickBar(header, body), s.pickBarItems(true)); ok {
+			s.pickBar(header, body), s.pickBarItems(jdeCeilingRows, true)); ok {
 			s.pickCursor = next
 		}
 	default:
@@ -1636,16 +1636,17 @@ func (s *AssetFormScreen) pickRowLabel(i int) string {
 // list moves under the bar about to be drawn — measured against the bar WITH
 // the pair on it, because the tallest bar is the fixed point.
 func (s *AssetFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return s.pickBarItems(s.bodyPagesForBar(body, len(s.pickOptions), len(header), s.pickBarItems(true)))
+	n := len(s.pickOptions)
+	return s.pickBarItems(n, s.bodyPagesForBar(body, n, len(header), s.pickBarItems(jdeCeilingRows, true)))
 }
 
 // pickBarItems is pickBar for a given paging state. The multi picker's esc is
 // "done", not "cancel" — its toggles were applied as they were made.
-func (s *AssetFormScreen) pickBarItems(paging bool) []actionBarItem {
+func (s *AssetFormScreen) pickBarItems(count int, paging bool) []actionBarItem {
 	if s.pickField == afRequiredCerts {
-		return jdePickBarWith("Toggle", "Done", paging)
+		return jdePickBarWith("Toggle", "Done", count, paging)
 	}
-	return jdePickBar("Select", paging)
+	return jdePickBar("Select", count, paging)
 }
 
 func (s *AssetFormScreen) viewPick() string {

@@ -62,6 +62,32 @@ func screenBodyWidth(terminalWidth int) int {
 	return w
 }
 
+// screenBodyCells is how many COLUMNS a screen's View() really gets inside the
+// content pane: the terminal width less the nav column, its border and the
+// content padding, and NOTHING ELSE. Zero when the terminal is too narrow to
+// give it any.
+//
+// It is to screenBodyWidth what screenBodyRows is to screenBodyHeight, and it
+// exists for the same reason: the floor of 20 below is a LIE at small widths,
+// and a caller whose whole job is to keep a value ON the pane cannot budget
+// against a lie. Root.View clips to r.width - navColumnWidth - navBorderColumn
+// - contentHorizontalPadding, so at the narrowest terminal it draws (45, which
+// is where its own contentWidth < 20 gate bites) the pane is 16 cells while
+// screenBodyWidth answers 20 — four cells a caller would spend and clampToBox
+// would take back, off the RIGHT edge, where a bounded notice keeps the number
+// it is asking the operator to act on.
+//
+// Callers that only need "a sane number to lay a grid out with" should keep
+// using screenBodyWidth; callers that must not overrun the pane by a cell use
+// this one.
+func screenBodyCells(terminalWidth int) int {
+	w := terminalWidth - navColumnWidth - navBorderColumn - contentHorizontalPadding
+	if w < 0 {
+		return 0
+	}
+	return w
+}
+
 // screenBodyRows is how many rows a screen's View() really gets inside the
 // content pane: the terminal height less the status bar, the content padding
 // and the title+blank header, and NOTHING ELSE. Zero when the terminal is too

@@ -210,12 +210,12 @@ func (s *EPaperPanelsScreen) updateBind(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case tea.KeyEsc:
 		s.binding = false
 		return s, nil
-	case tea.KeyDown, tea.KeyCtrlN:
+	case tea.KeyDown:
 		if s.bindCursor < len(s.bindResults)-1 {
 			s.bindCursor++
 		}
 		return s, nil
-	case tea.KeyUp, tea.KeyCtrlP:
+	case tea.KeyUp:
 		if s.bindCursor > 0 {
 			s.bindCursor--
 		}

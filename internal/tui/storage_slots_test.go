@@ -422,17 +422,31 @@ func TestStorageSlots_RenderSmoke(t *testing.T) {
 	}
 }
 
-// TestStorageSlots_PagedownClampsOnEmpty guards the latent ctrl+d bug class
-// (cursor = len(rows)-1 is -1 for an empty list).
+// TestStorageSlots_PagedownClampsOnEmpty guards the bug class where
+// `cursor = len(rows)-1` is -1 on an empty list, which no row index can be and
+// which the next loaded page would inherit.
+//
+// IT PRESSES PGDOWN, and the key matters as much as the assertion. It used to
+// press ctrl+d, which was a synonym for the same arm until sc-jde-listnav
+// retired the emacs chords — after which the keystroke matched no case at all,
+// the arm this test exists to enter was never entered, and `cursor >= 0` passed
+// for exactly the reason it would have passed with the arm deleted. A test that
+// drives a key nothing binds is the vacuous-fixture rule (AGENTS.md) with the
+// fixture left alone and the KEY made inert.
+//
+// The assertion is the cursor's exact resting place and not merely a
+// non-negative one, for the same reason: "not negative" is true of a screen on
+// which nothing ran. Zero is where the clamp puts it, and scrollIntoView clamps
+// only windowStart, so neutering either arm's guard fails this.
 func TestStorageSlots_PagedownClampsOnEmpty(t *testing.T) {
 	s := NewStorageSlotsScreen(Deps{})
 	s.loading = false
-	s = slotKey(t, s, "ctrl+d")
-	if s.cursor < 0 {
-		t.Errorf("cursor = %d, want a non-negative clamp on an empty list", s.cursor)
+	s = slotKey(t, s, "pgdown")
+	if s.cursor != 0 {
+		t.Errorf("cursor = %d after pgdown on an empty list, want 0", s.cursor)
 	}
 	s = slotKey(t, s, "G")
-	if s.cursor < 0 {
-		t.Errorf("cursor = %d after G on an empty list", s.cursor)
+	if s.cursor != 0 {
+		t.Errorf("cursor = %d after G on an empty list, want 0", s.cursor)
 	}
 }

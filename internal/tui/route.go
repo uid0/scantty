@@ -157,6 +157,26 @@ type LocalKeyScreen interface {
 	HandlesKey(key string) bool
 }
 
+// BackStackScreen answers the BACK-STACK question directly: is this screen in a
+// transient state that must not be recorded, so `esc` never navigates back INTO
+// something the operator already dismissed?
+//
+// IT EXISTS BECAUSE recordHistory USED TO ASK WantsRawInput INSTEAD, and that is
+// a different question — "does this screen take every keystroke". The two gave
+// one answer for as long as every transient state also owned the keyboard, and
+// they came apart the moment ListScreen narrowed its key-routing half to
+// exclude a refused pane: the history half moved with it, silently, and a
+// searching list started being pushed onto the stack. Restored later, it drew
+// its query and match count over an unfiltered reload.
+//
+// So a screen that answers here owns the answer, and WantsRawInput is left
+// answering only about keys. Screens that do not implement it keep the
+// raw-input fallback, which is still the right proxy for a form or a confirm
+// whose transience and whose keyboard ownership really are the same state.
+type BackStackScreen interface {
+	SkipsBackStack() bool
+}
+
 type SwitchScreenMsg struct {
 	Workspace Workspace
 	Screen    Screen
