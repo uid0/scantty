@@ -435,12 +435,70 @@ note, and is the authority):
   receipt multiplies. `internal/tui/po_kit_lines.go` carries that note.
 - **Serialized items ARE allowed as kit components now**, and that is a
   different fact from where a serial goes. The OMS ban was lifted deliberately
-  (`docs/PO_RECEIVING_API.md`): it blocked a legitimate configuration while the
-  hazard it named — stock credited with no serial recorded — was never unique to
-  kits, since `mark-delivered` has always done it to an ordinary serialized
-  line. What guards the identity rule now is the receipt itself (naming the kit
-  is a 400) plus **`serials_outstanding`**, which every receive path reports and
-  a client must surface. Receiving a kit WITH serial capture is a live path.
+  (`docs/PO_RECEIVING_API.md`, and `KitComponent.clean()` carries the argument in
+  full): it blocked a legitimate configuration while the hazard it named — stock
+  credited with no serial recorded — was never unique to kits, since
+  `mark-delivered` has always done it to an ordinary serialized line. What guards
+  the identity rule now is the receipt itself (naming the kit is a 400) plus
+  **`serials_outstanding`**, which every receive path reports and a client must
+  surface. Receiving a kit WITH serial capture is a live path.
+  **THE TWO HALVES OF THAT SENTENCE SHIPPED A RELEASE APART, WHICH IS THE LESSON
+  WORTH KEEPING.** The receiving half honoured the lift and said so in three
+  places; the kit-components EDITOR
+  (`internal/tui/inventory_item_form_kit.go`) went on dimming every serialized
+  item and refusing the pick, quoting the reason OMS had abandoned. A screen
+  refusing what the server accepts is a documented claim the code does not
+  honour in exactly the same way as a screen permitting what the server refuses,
+  and it fails SILENTLY: nothing errors, an operator simply cannot build a
+  configuration and is told why by a sentence that is no longer true. When a
+  server-side rule is lifted, sweep for the CLIENT-side copies of it — the set is
+  derived by grepping the retired wording, not by remembering which screens
+  enforced it.
+  **LIFTING IT IS NOT LOOSENING WHERE A SERIAL GOES**, and the guard is in three
+  places that must stay in step. RECEIVING reads `serial_targets` and nothing
+  else, so a kit's own id is never a capture target
+  (`TestReceiveKit_ASerialNeverNamesTheKitItself`). The ITEM FORM freezes a kit's
+  `Track serial numbers` row (`fieldReadOnly`) and ASSERTS `is_serialized:false`
+  on every kit save (`buildPayload`) — asserting rather than omitting, because
+  `KitSerializer.validate` falls back to the STORED value for an absent key, so
+  omission is no guard at all against the stray flag `InventoryItem.save()`
+  leaves reachable. And the component PICKER still drops the kit's own id, which
+  used to be excluded twice for a stray-serialized kit and is now excluded once.
+  `TestItemFormKit_ASerializedComponentNeverSerializesTheKit` holds all three and
+  was watched failing against each.
+  **NOTHING IN THAT PICKER IS SHOWN-AND-REFUSED ANY MORE.** Every exclusion left
+  is a DROP (the kit itself, an item already listed) or an absence (`/items/`
+  excludes kits, so a nested kit is never offered), so `kitPickOption` carries no
+  reason, the list dims nothing, and every option commits
+  (`TestItemFormKit_EveryOptionOnThePickerCommits`). What that leaves is the one
+  refusal a picker cannot avoid — having nothing to pick — which used to return a
+  byte-identical pane and now ANSWERS in four wordings, because "could not tell"
+  (loading, load failed) and "found nothing" (filtered out, nothing left) are
+  never the same answer and their remedies differ. While a load is in flight that
+  answer LEADS the working line through `poLeadOnto` rather than replacing it:
+  `statusRow`'s `saving` branch wins outright, so an answer handed to its
+  `errMsg` argument is drawn by nothing at all.
+  **WHICH ITEMS ARE SERIALIZED IS A READING THE OPERATOR HAD, AND IT HAS TO
+  SURVIVE THE REFUSAL THAT CARRIED IT.** Lifting the ban first removed the fact
+  along with it, because the fact had only ever been visible AS the refusal's
+  reason. It is a two-cell FLAG COLUMN now (`kitPickSerialFlag`), and three things
+  about it are decisions rather than taste: it is TWO CELLS because at the
+  80-column floor a picker row has 45 and a realistic MRO name spends all of them,
+  so anything competing with the item's IDENTITY at that width is the wrong trade;
+  it LEADS, because `fitCell` clips from the right and a marker after the name is
+  eaten at exactly the width the fact matters most; and the blank gutter is the
+  SAME two cells, so names line up down the list. The legend rides the picker's
+  note and is drawn only where a flag is (`kitPickNote`, asked of the DRAWN
+  options rather than the catalogue), because that note is 49 cells against a
+  51-cell pane and the legend is paid for out of the kits sentence.
+  **ITS FIRST TEST WAS VACUOUS AND PASSED WITH THE FLAG COLUMN DELETED**: the
+  fixture was named `Serialized widget`, so the row began with `S` because the
+  ITEM did. A fixture for a check about a MARK must not begin with that mark, and
+  one for a check about a CLIP must be clipped at the WIDEST pane in the table —
+  the long-name fixture fitted at 100 and 120, so two widths of three proved
+  nothing until the assertion was made to FATAL on an unclipped row rather than
+  pass over it. Both are the vacuous-fixture rule, and both were found by deleting
+  the code the test names and watching it stay green.
 
 ## The receiving flow is driven off ONE fetch, and the server decides
 
@@ -1196,11 +1254,15 @@ touching any screen an operator drives:
   it. It holds, and by the CAP rather than by any wording: `poLeadOnto` reserves
   the lead's opening clause at no more than HALF the row, so at 80 columns the
   subject keeps at least `51 - 25 - 3 = 23` cells whatever the lead says, and
-  `poSubmitWords` is 20 for exactly that reason. Only three subjects can ever
-  share the row at all — the submit's, the item picker's and the asset
-  picker's — because a lead is applied only where a box is pinned, and each
+  `poSubmitWords` is 20 for exactly that reason. A subject shares the row only
+  where a phase pins a BOX, which DERIVES the set rather than listing it: on
+  this screen the submit's, the item picker's and the asset picker's, and each
   leads with its FACT ("Creating the PO for", "Reloading the items",
   "Finding") so what the clip takes is the identifier at the tail.
+  `poLeadOnto` is shared beyond this screen — the item form's kit-component
+  picker (`kitPickStatus`) pins a filter box for the same reason and reserves
+  its subject through the same function rather than copying the arithmetic — so
+  a change to the cap is a change to every such row, not to this one.
   ORDER WITHIN A SUBJECT IS THE OTHER HALF OF THAT, and the asset picker is the
   worked example: it read `Searching ` + supplier + `'s assets for "zzz"…`, so
   the one variable part that is NOT the identity of the work — the supplier, the

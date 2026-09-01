@@ -28,9 +28,35 @@
 //	nest a kit      — kits cannot contain kits upstream, so the component picker
 //	                  never offers one. /items/ already excludes kits by default,
 //	                  which is what makes that free.
-//	add a serialized— receiving a kit credits stock without recording serials, so
-//	   component      the serializer refuses it. The picker dims those rows and
-//	                  says why rather than letting the save fail at the end.
+//
+// What it USED to refuse and no longer does: a SERIALIZED component.
+//
+// OpenMakerSuite forbade one outright, on the grounds that receiving a kit would
+// credit stock without recording serial numbers. That ban was lifted deliberately
+// — KitComponent.clean() on the OMS default branch carries the argument — because
+// the hazard was never unique to kits (mark-delivered has always done it to an
+// ordinary serialized line) and a prohibition covering one path is worse than
+// visibility covering all of them. What replaced it is `serials_outstanding`,
+// which every receive path reports and which internal/tui/receive_form.go draws
+// on the line it belongs to and on the summary. Receiving a kit WITH serial
+// capture is a live path, and the serials go to the COMPONENTS.
+//
+// This editor enforced the retired rule for a release after the receiving side
+// stopped believing it, which is a documented claim the code did not honour in
+// the more expensive direction: an operator was refused a configuration the
+// server accepts, with a reason the server had abandoned.
+//
+// THE LINE THAT DID NOT MOVE. A serial belongs to the COMPONENT identity that
+// goes on the shelf and never to the kit's own id — a kit is bought as one SKU
+// and stocked as its parts, so its own stock is permanently zero and a serial
+// written against it names a unit nothing can ever draw down. This sheet's share
+// of that guard is unchanged and is two things: fieldReadOnly freezes a kit's
+// "Track serial numbers" row, and buildPayload ASSERTS is_serialized:false on
+// every kit save (asserting, not omitting, because KitSerializer.validate falls
+// back to the STORED value for an absent key). Receiving's share is that
+// `serial_targets` is the only thing it consults. Neither is loosened by
+// anything below, and
+// TestItemFormKit_ASerializedComponentNeverSerializesTheKit is the guard.
 package tui
 
 import (
@@ -886,27 +912,48 @@ func (s *InventoryItemFormScreen) openKitPick() tea.Cmd {
 	})
 }
 
-// kitPickOption is one row of the component picker: an inventory item, and — when
-// it cannot legally be a component — why not.
+// kitPickOption is one row of the component picker.
+//
+// It is a struct of one field rather than a bare omsapi.Item because it used to
+// carry a second — the reason a row could not be picked — and every option this
+// picker offers is now pickable, so there is no such reason left to carry. The
+// shape is kept because the LIST is what the filter, the label and the commit
+// all address, and a named row type is where a per-row fact would go if the
+// server ever grows one again.
 type kitPickOption struct {
 	item omsapi.Item
-	why  string // non-empty means "cannot be added", and says why
 }
 
 // applyKitPickFilter rebuilds the visible option list from the filter box.
 //
-// The three exclusions are the serializer's own rules, applied here so an
-// impossible pick is visible as impossible rather than surfacing as a 400 after
-// the whole kit save. A kit's own row and an already-listed component are
-// dropped outright — neither is a choice — while a serialized item is SHOWN and
-// dimmed, because "why can't I add this?" is a question an operator will
-// otherwise ask the screen and get no answer to.
+// The exclusions are the serializer's own rules, applied here so an impossible
+// pick is visible as impossible rather than surfacing as a 400 after the whole
+// kit save. They are DERIVED from what OMS still refuses rather than kept as a
+// list somebody remembers to prune, and today that is three rules covered by two
+// drops and one absence:
+//
+//	the kit itself      — "A kit cannot contain itself" (KitSerializer.validate,
+//	                      and a DB CheckConstraint under it). Dropped by id.
+//	an item already on  — "'X' is listed more than once — combine them into a
+//	the list              single row with a higher quantity". Dropped, because
+//	                      the row that already lists it is where its quantity is
+//	                      edited.
+//	another kit         — "kits cannot contain kits". Never listed at all:
+//	                      /api/inventory/items/ excludes kits from its queryset
+//	                      and ListAllItems does not send include_kits, so the
+//	                      absence costs this filter nothing.
+//
+// Both survivors are DROPS, and there is no longer any dimmed row: a SERIALIZED
+// item used to be shown-and-refused here and is now an ordinary option (see the
+// file comment). Nothing is left that the picker can offer and the save would
+// reject, which is why kitPickOption no longer carries a reason and the list no
+// longer dims anything.
 func (s *InventoryItemFormScreen) applyKitPickFilter() {
-	// The refusal on screen is about ONE option — "that item", the row the cursor
-	// was on — so it dies with the option list it was about: reopening the picker
-	// or typing a filter rebuilds that list, and a message about a row nobody can
-	// see any more reads as a refusal of whatever is now under the cursor. Every
-	// path that rebuilds the options comes through here.
+	// The answer on screen is about the LIST — why there was nothing to add —
+	// so it dies with the list it was about: reopening the picker, typing a
+	// filter, or the catalogue landing rebuilds the options, and a "no match"
+	// standing over a list that now has matches answers a keypress nobody made.
+	// Every path that rebuilds the options comes through here.
 	s.kitPickErr = ""
 	q := strings.ToLower(strings.TrimSpace(s.pickSearch.Value()))
 	listed := map[string]bool{}
@@ -926,11 +973,7 @@ func (s *InventoryItemFormScreen) applyKitPickFilter() {
 		if q != "" && !strings.Contains(strings.ToLower(label), q) {
 			continue
 		}
-		opt := kitPickOption{item: it}
-		if it.IsSerialized {
-			opt.why = "serialized — receiving a kit records no serials"
-		}
-		opts = append(opts, opt)
+		opts = append(opts, kitPickOption{item: it})
 	}
 	s.kitPickOptions = opts
 	if s.kitPickCursor >= len(s.kitPickOptions) {
@@ -979,23 +1022,24 @@ func (s *InventoryItemFormScreen) pageKitPick(dir int) {
 	s.toKitPick(next)
 }
 
-// toKitPick is the ONE place the kit picker's highlight lands, and the refusal on
+// toKitPick is the ONE place the kit picker's highlight lands, and the answer on
 // screen dies with it.
 //
 // The clear lives HERE, where the cursor arrives, so every movement path —
 // down/tab, up/shift+tab, pgup/pgdown, and any added later — is covered by
 // construction rather than by remembering to add each one. It has already been
 // worth exactly that: routing the PAGE through the layer's pageRow took it
-// around a clear that used to live inside moveKitPick, and a refusal survived
-// pgup on the one screen in the program that carries this rule.
+// around a clear that used to live inside moveKitPick, and a stale message
+// survived pgup on the one screen in the program that carries this rule.
 //
-// It became necessary BECAUSE the message was shortened to drop the item name.
-// While it named the item, a stale refusal was self-evidently about a different
-// row; "that item" silently re-points at whatever the cursor moved to, so a
-// refusal left standing describes — and defames — a perfectly pickable row. The
-// shortening was still right (see commitKitPick: it duplicated what the row
-// already shows and was the part the clip ate at every width), but a message
-// that refers to "that item" must die when "that item" changes.
+// It no longer FIRES, and that is a fact about the answer rather than about the
+// rule. While the picker could refuse one option the message was about "that
+// item", which silently re-points at whatever the cursor moved to, so a refusal
+// left standing described — and defamed — a perfectly pickable row. The only
+// message left is about the LIST being empty (kitPickEmptyNote), and pickRow
+// declines with a count of zero, so no cursor can move out from under one. The
+// clear stays because this is the single landing site: a per-row answer added
+// later inherits the rule by arriving here instead of by being remembered.
 func (s *InventoryItemFormScreen) toKitPick(next int) {
 	s.kitPickErr = ""
 	s.kitPickCursor = next
@@ -1011,25 +1055,24 @@ func (s *InventoryItemFormScreen) closeKitPick() {
 // opens its editor — because "1" is a guess and the quantity is the whole point
 // of the row, so the operator lands on the field that needs their answer.
 //
-// An option that cannot legally be a component does NOT commit: the picker stays
-// open with its reason on screen, rather than accepting a row the save would
-// reject.
+// EVERY option commits. It used to refuse a serialized one, which the server has
+// not refused since the ban was lifted (see the file comment); what is left is
+// the one refusal a picker cannot avoid, which is having nothing to pick, and it
+// ANSWERS rather than returning in silence. Silence there was the reported-hang
+// shape: with the catalogue still in flight, or a filter that matched nothing,
+// Enter redrew a byte-for-byte identical pane — and this phase is reached with a
+// scanner in hand, which fires a burst and an Enter at whatever is on screen.
 //
-// The message names NEITHER the item nor the reason, and that is not a loss: the
-// row the cursor is sitting on already carries both (kitPickLabel appends
-// "— <why>"), and it is FITTED to the pane while this row is cut by it. Built
-// from the name and the reason the sentence ran to 113 columns for a realistic
-// name — over the 49 an error has on the status line at the 80-column floor, so
-// the reason it duplicated was the very part the cut ate, at every width.
+// The out-of-range half of the guard cannot be reached — every path that moves
+// the cursor clamps (pickRow, pageRow) and every path that rebuilds the options
+// resets it (applyKitPickFilter) — and shares the answer because the answer is
+// about the LIST, which makes it true there too.
 func (s *InventoryItemFormScreen) commitKitPick() {
 	if s.kitPickCursor < 0 || s.kitPickCursor >= len(s.kitPickOptions) {
+		s.kitPickErr = s.kitPickEmptyNote()
 		return
 	}
 	opt := s.kitPickOptions[s.kitPickCursor]
-	if opt.why != "" {
-		s.kitPickErr = "that item cannot be a kit component"
-		return
-	}
 	s.kitNextKey++
 	s.kitRows = append(s.kitRows, kitComponentRow{
 		key:       s.kitNextKey,
@@ -1046,7 +1089,7 @@ func (s *InventoryItemFormScreen) commitKitPick() {
 }
 
 func (s *InventoryItemFormScreen) kitPickView() (jdeHeader, *jdeLines) {
-	note := "Kits cannot contain kits, so kits are not listed."
+	note := s.kitPickNote()
 	empty := "(no matching items)"
 	switch {
 	case s.kitItemsLoading:
@@ -1080,34 +1123,100 @@ func (s *InventoryItemFormScreen) kitPickView() (jdeHeader, *jdeLines) {
 		Filter: s.pickSearch,
 		Count:  len(s.kitPickOptions),
 		Label:  func(i int) string { return kitPickLabel(s.kitPickOptions[i], labelWidth) },
-		Dim:    func(i int) bool { return s.kitPickOptions[i].why != "" },
+		// Nothing is dimmed: jdePickList.Dim marks a row that is an empty state
+		// rather than a value, and every row here is a value now that no option
+		// is shown-and-refused.
 		Cursor: s.kitPickCursor,
 		Empty:  empty,
 	}.render(s.bodyWidth())
 }
 
-// kitPickLabel is one picker row: what the item is, its stock, and — for a row
-// that cannot be picked — why not, which is the reading worth the width.
+// kitPickSerialFlag / kitPickNoFlag are the picker's FLAG COLUMN: two cells in
+// front of every row, carrying an "S" on a serialized item and blank on anything
+// else.
+//
+// WHY THE READING SURVIVED THE REFUSAL. Which items are serialized is something
+// the operator could see before the ban was lifted, because it was the reason the
+// row could not be picked. Lifting the ban must not take the FACT away with the
+// prohibition — a serialized component is the one that opens a serial-capture
+// step when the kit is received, and an operator choosing between two equivalent
+// parts is entitled to know which of them signs them up for that.
+//
+// WHY TWO CELLS AND NOT A PHRASE. At the 80-column floor a picker row has 45
+// cells and a realistic MRO name spends all of them; the reason this used to
+// carry ran to 47 on its own. Anything that competes with the item's IDENTITY at
+// that width is the wrong trade, so this is the narrowest thing that can carry
+// the fact: one glyph and the space that separates it.
+//
+// WHY IT LEADS. fitCell clips a row from the RIGHT, so a marker written after the
+// name is the first thing a long name eats — exactly the width at which the fact
+// matters most — while one written in front of it survives by construction. Same
+// rule as the void prompt's headline: whatever must survive must lead. The blank
+// gutter is the same two cells, so the names still line up down the list, which
+// is what makes a flag column readable at a glance rather than something the eye
+// has to hunt for.
+//
+// It is UNSTYLED on purpose: the cursor row is rendered through
+// StyleSidebarItemActive as one run, so a styled flag would be overridden on the
+// one row the operator is looking hardest at, and a mark that changes colour when
+// selected reads as a different mark.
+const (
+	kitPickSerialFlag = "S "
+	kitPickNoFlag     = "  "
+)
+
+// kitPickLabel is one picker row: the serialized flag, what the item is, and how
+// much of it is on the shelf. ONE shape for every row, because every row is now
+// pickable — the second shape it used to have carried the reason a serialized
+// item could not be added, and there is no such reason left to draw.
 //
 // width is what the row has (0 = unknown, do not truncate). The label is fitted
 // rather than left to run: a picker list is drawn straight into the pane, and a
-// row cut by clampToBox loses its tail — which for an unpickable row is the
-// REASON it cannot be picked, the only part of that row worth reading.
+// row cut by clampToBox loses its tail with nothing to say it had.
 func kitPickLabel(opt kitPickOption, width int) string {
+	flag := kitPickNoFlag
+	if opt.item.IsSerialized {
+		flag = kitPickSerialFlag
+	}
 	label := opt.item.Name
 	if sku := strings.TrimSpace(opt.item.SKU); sku != "" {
 		label += " (" + sku + ")"
 	}
-	if opt.why != "" {
-		label += " — " + opt.why
-	} else {
-		label = fmt.Sprintf("%s · %d on hand", label, opt.item.Stock)
-	}
+	label = fmt.Sprintf("%s%s · %d on hand", flag, label, opt.item.Stock)
 	if width > 0 {
 		label = fitCell(label, width)
 	}
 	return label
 }
+
+// kitPickNote is the muted line under the picker's title, and it says one thing
+// or the other because it cannot say both.
+//
+// jdePickList draws Note as ONE unwrapped header row, and at the 80-column floor
+// the pane is 51 with jdeIndent taking two of it — which the standing wording,
+// at 49 cells, spends to the last column. So a legend for the serialized flag is
+// not free: it is paid for out of the kits sentence, and the clause that gives is
+// the CONSEQUENCE ("so kits are not listed"), because the rule above it implies
+// the absence while the absence does not imply the rule.
+//
+// It is worth paying only where there is a flag on screen to explain, so the
+// question is asked of the DRAWN options rather than of the catalogue: filtering
+// every serialized row away takes the legend with it, and a list with nothing
+// flagged reads exactly as it did before the flag existed. A legend for a mark
+// that is not on the pane explains nothing and spends a header row saying so.
+func (s *InventoryItemFormScreen) kitPickNote() string {
+	for _, opt := range s.kitPickOptions {
+		if opt.item.IsSerialized {
+			return kitPickNoteFlagged
+		}
+	}
+	return kitPickNoteBare
+}
+
+const (
+	kitPickNoteBare    = "Kits cannot contain kits, so kits are not listed."
+	kitPickNoteFlagged = "S = serialized. Kits cannot contain kits."
+)
 
 // kitPickBar is the component picker's bar, with PgUp/PgDn on it exactly when
 // the list moves under the bar about to be drawn — measured against the bar
@@ -1119,6 +1228,111 @@ func (s *InventoryItemFormScreen) kitPickBar(header jdeHeader, body *jdeLines) [
 func (s *InventoryItemFormScreen) viewKitPick() string {
 	header, body := s.kitPickView()
 	return s.frameWithHeader(header, body, s.kitPickCursor,
-		s.statusRow(s.kitItemsLoading, "Loading items…", s.kitPickErr),
-		s.kitPickBar(header, body))
+		s.kitPickStatus(), s.kitPickBar(header, body))
+}
+
+// kitPickStatus is the picker's status row: what is in flight, AND what the last
+// keypress did.
+//
+// Both, on the one row, because they cannot be separated here. The layer's
+// status row is the only surface a short pane cannot trim, and this picker pins
+// its FILTER BOX on the header's single essential row (jdePickList marks it
+// jdeHeadEssential, after a box written into a trimmable row took every rune the
+// operator typed off the pane) — so an answer put in the header is gone at
+// exactly the heights it is most needed. That is AGENTS.md's answer-surface
+// rule, and the picker is the shape it was written for.
+//
+// The row used to be `statusRow(loading, verb, err)`, whose `saving` branch wins
+// outright: Enter over a catalogue still in flight set the answer, the working
+// line drew instead of it, and the pane came back byte for byte — the reported
+// hang, inside the row that exists to prevent it.
+//
+// So the ANSWER LEADS and the WORK KEEPS THE ROOM, through poLeadOnto, which is
+// this package's ONE implementation of that reservation: the lead's opening
+// clause is capped at half the row, so the subject cannot be crowded out however
+// the answer is later reworded. Nothing is lost by leading here — the loading
+// answer is the bare "nothing added", because the subject beside it is already
+// the reason.
+func (s *InventoryItemFormScreen) kitPickStatus() string {
+	if !s.kitItemsLoading {
+		return s.statusRow(false, "", s.kitPickErr)
+	}
+	verb := kitPickLoadingVerb
+	switch room := s.bodyWidth(); {
+	case s.kitPickErr == "":
+	case room > 0:
+		verb = poLeadOnto(s.kitPickErr, verb, room)
+	default:
+		// An unsized pane means "do not truncate" everywhere in this layer, and
+		// fitStatus leaves the row alone there too — but poLeadOnto would read a
+		// room of 0 as no room at all and drop the subject entirely.
+		verb = s.kitPickErr + poLeadJoint + verb
+	}
+	return s.statusRow(true, verb, "")
+}
+
+// kitPickEmptyNote is what Enter answers when there is nothing under the cursor
+// to add. It is the ONLY refusal this picker has left, and until it existed the
+// key returned a byte-for-byte identical pane — the reported-hang shape rule 1
+// forbids, on the phase an operator reaches with a scanner in their hand.
+//
+// FOUR answers, because they are four different facts and the remedy differs:
+// the catalogue has not arrived yet, it did not arrive, the filter excluded
+// everything, or there is genuinely nothing left this kit can add. The first two
+// are COULD NOT TELL and the last two are FOUND NOTHING, which is the one
+// distinction a picker must never collapse (AGENTS.md).
+//
+// The remedies: wait, retry by leaving and reopening (openKitPick refetches
+// whenever the catalogue is nil, which a failed load leaves it), clear the
+// filter, or Esc — which the bar names on every frame.
+//
+// Each names what to do about it, because a refusal the operator cannot act on
+// is a dead end. The loading one is the exception that proves it: its remedy is
+// to wait, and the subject it shares the row with says what for, so it is the
+// bare lead rather than a sentence restating the working line beside it.
+//
+// The wordings lead with the load-bearing clause and let the circumstance be
+// what a cut takes, the shape every local refusal on the converted sheets uses —
+// the status row cannot fold, so at the 80-column floor an error has
+// screenBodyWidth(80) less its mark. That bound is checked by DRIVING the four
+// states through the real screen at every width
+// (TestItemFormKit_AnEmptyPickerAnswersEnter reads the drawn row and fails a
+// clipped one) rather than by measuring a roster of the constants: a roster is a
+// list somebody has to keep in step, and a fifth answer would be added to the
+// switch below and not to it.
+const (
+	// kitPickNothingAdded is the lead every one of them opens with: what the key
+	// DID. It is the whole answer while a load is in flight, because the working
+	// line beside it already says why — see kitPickStatus.
+	kitPickNothingAdded  = "nothing added"
+	kitPickLoadingNote   = kitPickNothingAdded
+	kitPickUnloadedNote  = kitPickNothingAdded + ": Esc then Ctrl-E retries the load"
+	kitPickNoMatchNote   = kitPickNothingAdded + ": no match — clear the filter"
+	kitPickNoOptionsNote = kitPickNothingAdded + ": nothing here is left to add"
+)
+
+// kitPickLoadingVerb is what the picker's status row says while the catalogue is
+// being fetched. It names the work and its subject rather than saying "Loading…",
+// and it is SHORT because it may have to share the row with the answer above.
+const kitPickLoadingVerb = "Loading items…"
+
+// kitPickEmptyNote picks the one that describes why there is nothing to add.
+//
+// The order is the order the facts REFUTE each other in: a list that is still
+// loading says nothing about a filter, and a filter says nothing about a load
+// that failed. It answers for the LIST rather than for a row, which is what lets
+// commitKitPick use it for its out-of-range guard too — a state no path can
+// reach, since every path that moves the cursor clamps and every path that
+// rebuilds the options resets it, and one the wording is true of anyway.
+func (s *InventoryItemFormScreen) kitPickEmptyNote() string {
+	switch {
+	case s.kitItemsLoading:
+		return kitPickLoadingNote
+	case s.kitItemsErr != "":
+		return kitPickUnloadedNote
+	case strings.TrimSpace(s.pickSearch.Value()) != "":
+		return kitPickNoMatchNote
+	default:
+		return kitPickNoOptionsNote
+	}
 }

@@ -115,6 +115,16 @@
 // path, and `SerialsOutstanding` covers all of them. Receiving a kit WITH
 // serial capture is a live path — the serials go to the COMPONENTS.
 //
+// The claim is one this repository has to KEEP, not just record. It stood here
+// for a release while `internal/tui/inventory_item_form_kit.go` went on refusing
+// a serialized component in the picker, quoting the very reason the server had
+// abandoned — a documented claim the code did not honour, in the direction that
+// costs an operator a configuration the server accepts. It is honoured now: that
+// picker offers every item, and
+// TestItemFormKit_ASerializedItemIsAPickableComponent drives it. Anything else
+// on this side that starts refusing a serialized component again is a defect
+// against this paragraph rather than a difference of opinion with it.
+//
 // # The refusal body is NOT the standard envelope
 //
 // Every refusal on these four endpoints is a hand-built `{"error": "<prose>"}`

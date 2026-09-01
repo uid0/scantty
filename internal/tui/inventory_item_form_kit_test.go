@@ -269,65 +269,68 @@ func TestItemFormKit_RemovingAComponentDropsIt(t *testing.T) {
 // which is the number the row exists for and the one "1" is only a guess at.
 func TestItemFormKit_AddingPicksAnItemAndLandsOnItsQuantity(t *testing.T) {
 	s := kitFormSheet(t, kitFormFixture(), 120)
-	s.kitItems = []omsapi.Item{
-		{ID: "itm-y", Name: "Yellow ink", SKU: "YI-100", Stock: 9},
-		{ID: "itm-m", Name: "Magenta ink", SKU: "MI-100"},            // already listed
-		{ID: "kit-1", Name: "Eufy printer maintenance kit"},          // the kit itself
-		{ID: "itm-s", Name: "Serialized widget", IsSerialized: true}, // cannot be a component
-	}
-	kitFormCursorTo(t, s, fKitComponents)
-	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
-	s.kitCursor = s.kitAddRow()
-	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // picker
+	s.kitItems = kitFormMixedCatalogue()
+	kitFormOpenPicker(t, s)
 
-	if s.phase != itemFormPhaseKitPick {
-		t.Fatalf("the add row did not open a picker (phase %d)", s.phase)
-	}
 	// A component already on the list, and the kit itself, are not choices — the
-	// serializer rejects both, so they are not offered at all.
+	// serializer rejects both, so they are not offered at all. They are the only
+	// two exclusions left: a serialized item is an ordinary option now, which
+	// TestItemFormKit_ASerializedItemIsAPickableComponent is about.
 	for _, opt := range s.kitPickOptions {
 		if opt.item.ID == "itm-m" || opt.item.ID == "kit-1" {
 			t.Errorf("the picker offered %q, which cannot be added", opt.item.Name)
 		}
 	}
-	// A serialized item IS offered, dimmed, with the reason — "why can't I add
-	// this?" is a question the screen has to answer.
-	var serialized *kitPickOption
-	for i := range s.kitPickOptions {
-		if s.kitPickOptions[i].item.ID == "itm-s" {
-			serialized = &s.kitPickOptions[i]
-		}
-	}
-	if serialized == nil || serialized.why == "" {
-		t.Fatalf("the serialized item is not shown as unpickable: %+v", s.kitPickOptions)
-	}
 
-	// Picking it does not commit, and says why.
-	for i, opt := range s.kitPickOptions {
-		if opt.item.ID == "itm-s" {
-			s.kitPickCursor = i
-		}
-	}
-	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if len(s.kitRows) != 2 {
-		t.Fatalf("an illegal component was added: %+v", s.kitRows)
-	}
-	if !strings.Contains(s.View(), "cannot be a kit component") {
-		t.Errorf("no reason was given for the refusal:\n%s", s.View())
-	}
-
-	// Picking a legal one adds it at quantity 1 and opens its editor.
-	for i, opt := range s.kitPickOptions {
-		if opt.item.ID == "itm-y" {
-			s.kitPickCursor = i
-		}
-	}
+	kitFormSelectPick(t, s, "itm-y")
 	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if len(s.kitRows) != 3 || s.kitRows[2].component != "itm-y" || s.kitRows[2].quantity != 1 {
 		t.Fatalf("add left %+v", s.kitRows)
 	}
 	if s.phase != itemFormPhaseKitRow {
 		t.Errorf("adding did not land on the new component's quantity (phase %d)", s.phase)
+	}
+}
+
+// TestItemFormKit_EveryOptionOnThePickerCommits is the structural half of the
+// lift, and it replaces a test that pinned a per-row refusal dying when the
+// cursor moved off it.
+//
+// That refusal was the only one the picker had, and the property it needed —
+// "an answer about THAT ITEM must not outlive that item being under the cursor"
+// — is now unreachable rather than merely unused: nothing left is about a row.
+// So what is pinned instead is why it is unreachable: EVERY option this picker
+// offers commits. Derived over the whole list rather than over the one row
+// somebody thought to check, so an exclusion re-introduced as a dim fails here
+// whichever row it lands on.
+func TestItemFormKit_EveryOptionOnThePickerCommits(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 120)
+	s.kitItems = append(kitFormMixedCatalogue(), kitPickFillers(6)...)
+	kitFormOpenPicker(t, s)
+	if len(s.kitPickOptions) < 2 {
+		t.Fatalf("the fixture offers nothing to sweep: %+v", s.kitPickOptions)
+	}
+
+	// Walked one at a time, each from a freshly opened picker, so a commit that
+	// changes the list cannot hide the row after it.
+	for i := range s.kitPickOptions {
+		fresh := kitFormSheet(t, kitFormFixture(), 120)
+		fresh.kitItems = append(kitFormMixedCatalogue(), kitPickFillers(6)...)
+		kitFormOpenPicker(t, fresh)
+		opt := fresh.kitPickOptions[i]
+		fresh.kitPickCursor = i
+		before := len(fresh.kitRows)
+		fresh.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if len(fresh.kitRows) != before+1 {
+			t.Errorf("Enter refused %q (%s): %+v", opt.item.Name, opt.item.ID, fresh.kitRows)
+			continue
+		}
+		if got := fresh.kitRows[before].component; got != opt.item.ID {
+			t.Errorf("Enter on %q added %q instead", opt.item.ID, got)
+		}
+		if fresh.phase != itemFormPhaseKitRow {
+			t.Errorf("Enter on %q did not open its editor (phase %d)", opt.item.ID, fresh.phase)
+		}
 	}
 }
 
@@ -525,7 +528,7 @@ func TestItemFormKit_EveryPhaseSurvivesTheClip(t *testing.T) {
 		s.kitCursor = s.kitAddRow()
 		s.kitItems = []omsapi.Item{
 			{ID: "itm-y", Name: "Yellow ink cartridge, high yield, wide-format", SKU: "YI-100-XL", Stock: 9},
-			{ID: "itm-s", Name: "Serialized calibration widget assembly", IsSerialized: true},
+			{ID: "itm-s", Name: "Torque wrench, calibrated, 3/8in drive", IsSerialized: true},
 		}
 		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 		_, pickBody := s.kitPickView()
@@ -633,63 +636,68 @@ func TestItemFormKit_AShortListDoesNotOfferPaging(t *testing.T) {
 	}
 }
 
-// TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout. The refusal is about one
-// option — "that item", the row the cursor was on — so it cannot outlive the
-// list that option was in: left standing over a rebuilt picker it reads as a
-// refusal of whatever is now under the cursor.
-func TestItemFormKit_ARefusalDiesWithTheOptionsItWasAbout(t *testing.T) {
+// TestItemFormKit_AnAnswerDiesWithTheOptionsItWasAbout. The picker's one
+// remaining answer is about the LIST — why there was nothing to add — so it
+// cannot outlive the list it was about: left standing over a rebuilt one it
+// answers a keypress nobody made, on a frame that now has rows.
+//
+// Every path that rebuilds the options is walked, because the clear lives in the
+// ONE function they all come through and that is the property worth pinning:
+// typing into the filter, backspacing back out of it, the catalogue landing, and
+// leaving and reopening the picker.
+func TestItemFormKit_AnAnswerDiesWithTheOptionsItWasAbout(t *testing.T) {
 	s := kitFormSheet(t, kitFormFixture(), 120)
-	s.kitItems = []omsapi.Item{
-		{ID: "itm-y", Name: "Yellow ink", SKU: "YI-100"},
-		{ID: "itm-s", Name: "Serialized widget", IsSerialized: true},
-	}
-	kitFormCursorTo(t, s, fKitComponents)
-	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
-	s.kitCursor = s.kitAddRow()
-	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // picker
+	s.kitItems = kitFormMixedCatalogue()
+	kitFormOpenPicker(t, s)
 
-	for i, opt := range s.kitPickOptions {
-		if opt.item.ID == "itm-s" {
-			s.kitPickCursor = i
-		}
+	// Filter it down to nothing, and ask.
+	for _, r := range "zzzz" {
+		s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !strings.Contains(s.View(), "cannot be a kit component") {
-		t.Fatalf("the refusal was not shown in the first place:\n%s", s.View())
+	if !strings.Contains(s.View(), kitPickNoMatchNote) {
+		t.Fatalf("the answer was not given in the first place:\n%s", s.View())
 	}
 
-	// Typing a filter rebuilds the option list, so the message about the old one
-	// goes with it.
-	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	if strings.Contains(s.View(), "cannot be a kit component") {
-		t.Errorf("a stale refusal survived a filter change:\n%s", s.View())
+	// Backspacing rebuilds the list, so the message about the old one goes.
+	s.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if strings.Contains(s.View(), kitPickNoMatchNote) {
+		t.Errorf("a stale answer survived a filter change:\n%s", s.View())
 	}
 
-	// And so does leaving the picker and opening it again.
-	for i, opt := range s.kitPickOptions {
-		if opt.item.ID == "itm-s" {
-			s.kitPickCursor = i
-		}
-	}
-	s.pickSearch.SetValue("")
-	s.applyKitPickFilter()
-	for i, opt := range s.kitPickOptions {
-		if opt.item.ID == "itm-s" {
-			s.kitPickCursor = i
-		}
-	}
+	// It comes back for a second ask, and leaving and reopening clears it.
+	s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
 	s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !strings.Contains(s.View(), "cannot be a kit component") {
-		t.Fatalf("the refusal did not come back for a second attempt:\n%s", s.View())
+	if !strings.Contains(s.View(), kitPickNoMatchNote) {
+		t.Fatalf("the answer did not come back for a second attempt:\n%s", s.View())
 	}
-	s.Update(tea.KeyMsg{Type: tea.KeyEsc}) // back to the list
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if s.phase != itemFormPhaseKit {
 		t.Fatalf("Esc did not leave the picker (phase %d)", s.phase)
 	}
-	s.kitCursor = s.kitAddRow()
-	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // reopen
-	if strings.Contains(s.View(), "cannot be a kit component") {
-		t.Errorf("a stale refusal was still on screen over a freshly opened picker:\n%s", s.View())
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // reopen on the add row
+	if strings.Contains(s.View(), kitPickNoMatchNote) {
+		t.Errorf("a stale answer was still on screen over a freshly opened picker:\n%s", s.View())
+	}
+
+	// And the catalogue ARRIVING is the fourth path: an operator who pressed
+	// Enter into a list that had not loaded must not be left reading "still
+	// loading" over the rows it landed with.
+	fresh := kitFormSheet(t, kitFormFixture(), 120)
+	kitFormOpenPicker(t, fresh)
+	fresh.kitItems = nil
+	fresh.kitItemsLoading = true
+	fresh.applyKitPickFilter()
+	fresh.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(fresh.View(), kitPickLoadingNote) {
+		t.Fatalf("Enter over a loading list said nothing:\n%s", fresh.View())
+	}
+	fresh.Update(itemFormKitItemsMsg{items: kitFormMixedCatalogue()})
+	if strings.Contains(fresh.View(), kitPickLoadingNote) {
+		t.Errorf("the answer outlived the load it was about:\n%s", fresh.View())
+	}
+	if len(fresh.kitPickOptions) == 0 {
+		t.Errorf("the arrived catalogue produced no options: %+v", fresh.kitPickOptions)
 	}
 }
 
@@ -707,77 +715,21 @@ func kitPickFillers(n int) []omsapi.Item {
 	return out
 }
 
-// TestItemFormKit_ARefusalDiesWhenTheCursorLeavesItsRow. The refusal names
-// neither the item nor the reason — it says "that item", and "that item" is
-// whichever row the cursor is on. So moving off the refused row has to take the
-// message with it: left standing, the status line asserts that the row now
-// highlighted cannot be a component when it can, and pressing Enter then
-// silently succeeds underneath a refusal that contradicts it.
+// TestItemFormKit_ARefusalDiesWhenTheCursorLeavesItsRow was here, and it is gone
+// rather than reworded.
 //
-// Every movement key is driven, because the clear has to hold for the movement
-// paths as a class rather than for the one that was reported.
+// It drove every movement key against a refusal that said "that item" — the row
+// the cursor was on — to prove the message could not be left describing, and
+// defaming, whatever the cursor moved to. The only refusal that produced it was
+// the serialized one, which the server retired, and there is no per-row message
+// left for a cursor to move out from under: pickRow declines with a count of
+// zero, so the empty-list answer has no row to go stale against.
 //
-// The option list is padded on BOTH sides of the refused row, and both halves of
-// that are load-bearing. It has to OVERFLOW the pane or PgUp/PgDn name nothing
-// on the bar and correctly do nothing, so the two paging subtests would assert
-// the clear against a key that never moved — the vacuous-fixture rule
-// (AGENTS.md), which is what they were doing while the pager was ungated. And
-// the refused row has to sit in the MIDDLE, or one of each opposed pair rests
-// against an edge it cannot move past and the same thing happens one key over.
-func TestItemFormKit_ARefusalDiesWhenTheCursorLeavesItsRow(t *testing.T) {
-	for _, move := range []struct {
-		name string
-		key  tea.KeyMsg
-	}{
-		{"down", tea.KeyMsg{Type: tea.KeyDown}},
-		{"tab", tea.KeyMsg{Type: tea.KeyTab}},
-		{"up", tea.KeyMsg{Type: tea.KeyUp}},
-		{"shift+tab", tea.KeyMsg{Type: tea.KeyShiftTab}},
-		{"pgdown", tea.KeyMsg{Type: tea.KeyPgDown}},
-		{"pgup", tea.KeyMsg{Type: tea.KeyPgUp}},
-	} {
-		t.Run(move.name, func(t *testing.T) {
-			s := kitFormSheet(t, kitFormFixture(), 120)
-			s.kitItems = kitPickFillers(20)
-			s.kitItems = append(s.kitItems,
-				omsapi.Item{ID: "itm-s", Name: "Serialized widget", IsSerialized: true},
-				omsapi.Item{ID: "itm-y", Name: "Yellow ink", SKU: "YI-100"})
-			s.kitItems = append(s.kitItems, kitPickFillers(20)...)
-			kitFormCursorTo(t, s, fKitComponents)
-			s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
-			s.kitCursor = s.kitAddRow()
-			s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // picker
-
-			for i, opt := range s.kitPickOptions {
-				if opt.item.ID == "itm-s" {
-					s.kitPickCursor = i
-				}
-			}
-			s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			if !strings.Contains(s.View(), "cannot be a kit component") {
-				t.Fatalf("the refusal was not shown in the first place:\n%s", s.View())
-			}
-
-			s.Update(move.key)
-			if strings.Contains(s.View(), "cannot be a kit component") {
-				t.Errorf("a refusal about the old row survived %s, and now describes the one under the cursor:\n%s",
-					move.name, s.View())
-			}
-			// The options themselves are untouched — the message died, not the
-			// picker — so the pickable row still commits.
-			for i, opt := range s.kitPickOptions {
-				if opt.item.ID == "itm-y" {
-					s.kitPickCursor = i
-				}
-			}
-			before := len(s.kitRows)
-			s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			if len(s.kitRows) != before+1 {
-				t.Errorf("the pickable row no longer commits after %s: %+v", move.name, s.kitRows)
-			}
-		})
-	}
-}
+// What replaced it is TestItemFormKit_EveryOptionOnThePickerCommits, which pins
+// the reason it is unreachable rather than the behaviour of a state that no
+// longer exists. toKitPick keeps the clear anyway, and says why in its own
+// comment: it is the ONE place the highlight lands, so a per-row answer added
+// later inherits the rule by arriving there.
 
 // ---------------------------------------------------------------------------
 // A kit's Current stock row
@@ -1372,73 +1324,104 @@ func TestItemFormKit_TheQuantityRefusalIsReadableAtTheFloor(t *testing.T) {
 	}
 }
 
-// TestItemFormKit_ThePickRefusalIsReadableAtTheFloor is the same rule on the
-// picker, where the message used to be built from the item's name and the reason
-// — 113 columns for a realistic name, so it was cut at 80, 100 AND 120, and at
-// the floor the reason never appeared at all.
+// TestItemFormKit_EveryPickerRowFitsThePaneAtEveryWidth is what is left of
+// TestItemFormKit_ThePickRefusalIsReadableAtTheFloor once the refusal it was
+// about was retired.
 //
-// Shortening it costs nothing because the picker ROW the cursor is sitting on
-// already carries both readings (kitPickLabel appends "— <why>"), which the
-// second half of this test pins: the status line was DUPLICATING the row and
-// losing the copy. The row is FITTED to the pane rather than cut by it, so it
-// carries both readings wherever the pane can hold them and ellipsizes visibly
-// where it cannot — which is why the fixture holds a long name and a short one.
-func TestItemFormKit_ThePickRefusalIsReadableAtTheFloor(t *testing.T) {
+// The half that survives is the half that was never about the refusal: a picker
+// list is drawn straight into the pane, so a row cut by clampToBox loses its
+// tail with nothing to say it had. kitPickLabel FITS each row instead, so it
+// carries what the pane can hold and ellipsizes visibly where it cannot — which
+// is why the fixture holds a name well past any affordable column beside a short
+// one, at every width the kit surfaces are measured at.
+//
+// Serialized items are in the fixture on purpose: they are ordinary rows now, and
+// this is where "ordinary" is checked to mean the same shape as everything else
+// rather than merely the same commit.
+func TestItemFormKit_EveryPickerRowFitsThePaneAtEveryWidth(t *testing.T) {
 	const (
-		longName  = "Serialized calibration widget assembly"
+		// Long enough to be CLIPPED at the widest terminal in the table, not
+		// merely at the floor: the label budget is the pane less six, which is 85
+		// at 120 columns. A fixture that fits there leaves the flag's survival
+		// untested at two of the three widths, which the Fatalf below reports
+		// rather than passing over.
+		longName  = "Torque wrench, calibrated, 3/8in drive, 20-100Nm, ratcheting head, boxed pair"
 		shortName = "Cal widget"
-		why       = "serialized — receiving a kit records no serials"
 	)
+	// The other direction of the same rule: 51 is the width that must HOLD, not
+	// the width to render as though we had. A row clipped to a fixed floor would
+	// draw abbreviated on a 120-column terminal with forty columns of pane going
+	// spare, on the rows an operator picks FROM.
+	seen := map[int]int{}
 	for _, width := range kitTestWidths {
 		s := kitFormSheet(t, kitFormFixture(), width)
 		s.kitItems = []omsapi.Item{
 			{ID: "itm-y", Name: "Yellow ink cartridge, high yield, wide-format", SKU: "YI-100-XL", Stock: 9},
-			{ID: "itm-s", Name: longName, IsSerialized: true},
-			{ID: "itm-t", Name: shortName, IsSerialized: true},
+			{ID: "itm-s", Name: longName, Stock: 3, IsSerialized: true},
+			{ID: "itm-t", Name: shortName, Stock: 0, IsSerialized: true},
 		}
-		kitFormCursorTo(t, s, fKitComponents)
-		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // list
-		s.kitCursor = s.kitAddRow()
-		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE}) // picker
+		kitFormOpenPicker(t, s)
+		seen[width] = lipgloss.Width(kitFormPickRow(t, s, longName))
 
-		// Refuse the one with the realistic long name: that is the case whose
-		// message used to run to 113 columns.
-		long := kitFormSelectPick(t, s, "itm-s")
-		if long.why == "" {
-			t.Fatalf("at %d columns the serialized item is not unpickable: %+v", width, s.kitPickOptions)
+		// Derived over every row the picker drew, so a shape added for one kind
+		// of item is measured without anyone remembering this test.
+		_, body := s.kitPickView()
+		if len(body.text) == 0 {
+			t.Fatalf("at %d columns the picker drew nothing", width)
 		}
-		s.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		if len(s.kitRows) != 2 {
-			t.Fatalf("at %d columns an illegal component was added: %+v", width, s.kitRows)
+		for _, line := range body.text {
+			if trimmed := clampToBox(line, screenBodyWidth(width), 1); trimmed != line {
+				t.Errorf("at %d columns a picker row is cut from %q to %q", width, line, trimmed)
+			}
 		}
-
-		raw, clipped := kitFormStatusRow(t, s, width)
-		if clipped != raw {
-			t.Errorf("at %d columns the pick refusal is cut from %q to %q", width, raw, clipped)
-		}
-		if !strings.Contains(clipped, "cannot be a kit component") {
-			t.Errorf("at %d columns the operator cannot read the refusal: %q", width, clipped)
-		}
-
-		// What the status line no longer says, the rows still do.
 		for _, name := range []string{longName, shortName} {
 			row := kitFormPickRow(t, s, name)
-			if trimmed := clampToBox(row, screenBodyWidth(width), 1); trimmed != row {
-				t.Errorf("at %d columns %q's row is cut from %q to %q", width, name, row, trimmed)
-			}
 			if !strings.Contains(row, name) && !strings.HasSuffix(row, "…") {
 				t.Errorf("at %d columns %q's row neither names it nor marks itself short: %q", width, name, row)
 			}
-			if lipgloss.Width(row) < lipgloss.Width(name+" — "+why) {
-				continue // the pane cannot hold the whole reading; the ellipsis says so
-			}
-			for _, want := range []string{name, why} {
-				if !strings.Contains(row, want) {
-					t.Errorf("at %d columns %q's row lost %q: %q", width, name, want, row)
-				}
-			}
+		}
+		// A short name leaves room for the reading beside it, at every width.
+		if row := kitFormPickRow(t, s, shortName); !strings.Contains(row, "0 on hand") {
+			t.Errorf("at %d columns a row with room to spare lost its stock reading: %q", width, row)
+		}
+		// The serialized flag LEADS, which is the whole reason it is where it is:
+		// this row is long enough to be clipped at every width in the table, and
+		// a marker written after the name would be the first thing to go.
+		long := kitFormPickRow(t, s, longName)
+		if !strings.HasSuffix(long, "…") {
+			t.Fatalf("at %d columns the long fixture is not clipped, so the flag's survival is untested: %q",
+				width, long)
+		}
+		if !strings.HasPrefix(long, kitPickSerialFlag) {
+			t.Errorf("at %d columns the clip took the serialized flag: %q", width, long)
 		}
 	}
+	if seen[120] <= seen[80] {
+		t.Errorf("a long row is %d cells at 120 columns and %d at 80 — the pane's extra width is going unused",
+			seen[120], seen[80])
+	}
+}
+
+// kitFormStatusLine is the phase's status row as the terminal draws it: the row
+// immediately above the action bar's rule, read off the CLIPPED render and
+// failed if the clamp cut it.
+//
+// kitFormStatusRow finds a row by its "✗" mark and cannot see this one: an
+// answer that rides the WORKING line is muted and carries no mark at all, which
+// is exactly the row the empty picker's loading answer lands on.
+func kitFormStatusLine(t *testing.T, s *InventoryItemFormScreen, width int) string {
+	t.Helper()
+	lines := strings.Split(s.View(), "\n")
+	// The bar is the last actionBarRows lines and opens with its rule, so the
+	// status row is the line before it.
+	if len(lines) <= actionBarRows {
+		t.Fatalf("at %d columns the frame has no status row:\n%s", width, s.View())
+	}
+	raw := lines[len(lines)-actionBarRows-1]
+	if clipped := clampToBox(raw, screenBodyWidth(width), 1); clipped != raw {
+		t.Errorf("at %d columns the status row is cut from %q to %q", width, raw, clipped)
+	}
+	return raw
 }
 
 // kitFormSelectPick puts the picker's cursor on one option and returns it.
@@ -1494,5 +1477,381 @@ func TestItemFormKit_TheUnansweredSaveRefusalIsReadableAtTheFloor(t *testing.T) 
 		if flat := strings.Join(strings.Fields(body), " "); !strings.Contains(flat, "Kit status unavailable") {
 			t.Errorf("at %d columns the reason is nowhere on screen:\n%s", width, body)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A serialized item is an ordinary component
+// ---------------------------------------------------------------------------
+//
+// The captain's decision, applied on the screen that was still enforcing the
+// rule it overturned.
+//
+// OpenMakerSuite lifted the ban on serialized kit components deliberately —
+// KitComponent.clean() on its default branch carries the whole argument — because
+// the hazard it named (stock credited with no serial recorded) was never unique
+// to kits, and what replaced it is `serials_outstanding`, which REPORTS the gap
+// on every receive path rather than forbidding one configuration.
+//
+// What did NOT change, and what the guard below exists for, is where a serial
+// goes: a kit is bought as one SKU and stocked as its PARTS, so its own stock is
+// permanently zero and a serial written against the kit's id names a unit nothing
+// can ever draw down. Lifting the ban must not loosen that by one inch.
+
+// kitFormMixedCatalogue is the picker's catalogue with a serialized item in it,
+// beside an ordinary one and the two rows that are still not choices: the kit's
+// own id, and an item the kit already lists.
+func kitFormMixedCatalogue() []omsapi.Item {
+	return []omsapi.Item{
+		{ID: "itm-y", Name: "Yellow ink", SKU: "YI-100", Stock: 9},
+		// NOT a name beginning with the flag's own letter. It was "Serialized
+		// widget", and TestItemFormKit_ThePickerFlagsASerializedItem then passed
+		// with the flag column deleted: the row it asserted began with "S"
+		// because the ITEM did. A fixture that cannot fail the check it is used
+		// for is the vacuous-fixture rule (AGENTS.md) caught in the act.
+		{ID: "itm-s", Name: "Torque wrench, calibrated", SKU: "TW-1", Stock: 4,
+			IsSerialized: true, SerialTrackingMode: "reusable"},
+		{ID: "itm-m", Name: "Magenta ink", SKU: "MI-100"},   // already a component
+		{ID: "kit-1", Name: "Eufy printer maintenance kit"}, // the kit itself
+	}
+}
+
+// kitFormOpenPicker walks the sheet to the component picker the way an operator
+// does — the components row, Ctrl-E to the list, DOWN to the trailing add row,
+// Ctrl-E again — so everything asserted afterwards was reached by keys rather
+// than by assignment. The walk is BOUNDED: a declined key would otherwise hang
+// the package and name whichever test happened to be running (AGENTS.md).
+func kitFormOpenPicker(t *testing.T, s *InventoryItemFormScreen) {
+	t.Helper()
+	kitFormCursorTo(t, s, fKitComponents)
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != itemFormPhaseKit {
+		t.Fatalf("the components row did not open the list (phase %d)", s.phase)
+	}
+	for i := 0; !s.onKitAddRow(); i++ {
+		if i > len(s.kitRows)+2 {
+			t.Fatalf("the cursor never reached the add row (%d of %d)", s.kitCursor, s.kitAddRow())
+		}
+		s.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != itemFormPhaseKitPick {
+		t.Fatalf("the add row did not open the picker (phase %d)", s.phase)
+	}
+}
+
+// kitFormClippedPane is the whole phase as the terminal really draws it: the
+// screen's own render put through the same clamp Root.View() applies, so a claim
+// about what an operator can read is measured on the pane and not on a frame the
+// screen was allowed to overrun.
+func kitFormClippedPane(s *InventoryItemFormScreen, width int) string {
+	lines := strings.Split(s.View(), "\n")
+	return clampToBox(s.View(), screenBodyWidth(width), len(lines))
+}
+
+// kitOldProhibition is every wording the retired rule was ever stated in on this
+// screen. Kept as one roster so the sweep below cannot check for the phrase
+// somebody happened to remember: a surface still implying the ban fails whichever
+// of its sentences it kept.
+var kitOldProhibition = []string{
+	"cannot be a kit component",
+	"records no serials",
+	"credits stock without recording serials",
+	"Serialized items cannot be kit components",
+}
+
+// TestItemFormKit_ASerializedItemIsAPickableComponent is the decision applied: a
+// serialized item is an ORDINARY option here — listed, undimmed, picked with
+// Enter like any other, landing on its quantity.
+//
+// Driven through the real screen at every width the kit surfaces are measured
+// at, and read off the CLIPPED render, because the claim is about what an
+// operator sees rather than about what a frame contains.
+func TestItemFormKit_ASerializedItemIsAPickableComponent(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormFixture(), width)
+		s.kitItems = kitFormMixedCatalogue()
+		kitFormOpenPicker(t, s)
+
+		// It is offered, and its row is not dimmed away as an impossible pick.
+		row := kitFormPickRow(t, s, "Torque wrench")
+		for _, gone := range kitOldProhibition {
+			if strings.Contains(row, gone) {
+				t.Errorf("at %d columns the picker row still states the retired rule: %q", width, row)
+			}
+		}
+
+		// Enter picks it, exactly as it picks anything else.
+		kitFormSelectPick(t, s, "itm-s")
+		before := len(s.kitRows)
+		s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if len(s.kitRows) != before+1 {
+			t.Fatalf("at %d columns Enter refused a serialized component: %+v", width, s.kitRows)
+		}
+		added := s.kitRows[before]
+		if added.component != "itm-s" || added.quantity != 1 {
+			t.Fatalf("at %d columns the wrong row was added: %+v", width, added)
+		}
+		if s.phase != itemFormPhaseKitRow {
+			t.Errorf("at %d columns picking did not land on the quantity (phase %d)", width, s.phase)
+		}
+
+		// And nothing anywhere on the pane still says it could not be done.
+		pane := kitFormClippedPane(s, width)
+		for _, gone := range kitOldProhibition {
+			if strings.Contains(pane, gone) {
+				t.Errorf("at %d columns the pane still states the retired rule (%q):\n%s", width, gone, pane)
+			}
+		}
+	}
+}
+
+// TestItemFormKit_ASerializedComponentNeverSerializesTheKit is the line the lift
+// must not cross.
+//
+// A serial belongs to the COMPONENT identity that goes on the shelf and never to
+// the kit's own id. The kit editor's share of that guard is a single fact: this
+// sheet can never write `is_serialized: true` on a kit, whatever its bill of
+// materials contains — so the toggle stays frozen and the save ASSERTS false
+// (KitSerializer.validate falls back to the STORED value when the key is absent,
+// so omitting it would be no guard at all).
+//
+// The second leg is that the kit's own id is never offered as a component of
+// itself. That used to be excluded TWICE for a stray-serialized kit — by its id
+// and by the serialized filter — and the filter is gone, so the fixture here is
+// the stray-serialized kit precisely because it is the case where only one
+// exclusion is left.
+func TestItemFormKit_ASerializedComponentNeverSerializesTheKit(t *testing.T) {
+	fake := &kitFormServer{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	s := kitFormSheet(t, kitFormSerializedKit(), 120)
+	s.deps = Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+	s.kitItems = kitFormMixedCatalogue()
+	kitFormOpenPicker(t, s)
+
+	// The kit itself is not a choice, even though the serialized filter that
+	// used to be a second gate on it is gone.
+	for _, opt := range s.kitPickOptions {
+		if opt.item.ID == "kit-1" {
+			t.Fatalf("the picker offered the kit its own id: %+v", opt.item)
+		}
+	}
+
+	kitFormSelectPick(t, s, "itm-s")
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter}) // adds it, lands on the quantity
+	s.Update(tea.KeyMsg{Type: tea.KeyEnter}) // saves the row, back to the list
+	if s.phase != itemFormPhaseKit {
+		t.Fatalf("the component editor did not commit (phase %d)", s.phase)
+	}
+
+	// With a serialized component on the list, the KIT's own serialized row is
+	// still frozen: no key on it flips the flag.
+	s.Update(tea.KeyMsg{Type: tea.KeyEsc}) // back to the sheet
+	kitFormCursorTo(t, s, fIsSerialized)
+	before := s.isSerialized
+	for _, key := range []tea.KeyMsg{
+		{Type: tea.KeyRight}, {Type: tea.KeyLeft}, {Type: tea.KeySpace},
+		{Type: tea.KeyRunes, Runes: []rune("y")}, {Type: tea.KeyEnter},
+	} {
+		s.Update(key)
+		if s.isSerialized != before {
+			t.Fatalf("%v serialized the KIT: %v -> %v", key, before, s.isSerialized)
+		}
+	}
+
+	// And the wire says so: the component rides in `components`, and the kit's
+	// own is_serialized goes as false whatever was stored.
+	_, cmd := s.submit()
+	if cmd == nil {
+		t.Fatal("submit produced no command")
+	}
+	if msg, ok := cmd().(itemFormSavedMsg); !ok || msg.err != nil {
+		t.Fatalf("save failed: %+v", msg)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.bodies) != 1 {
+		t.Fatalf("writes = %v, want a single PATCH", fake.writes)
+	}
+	body := fake.bodies[0]
+	if serialized, ok := body["is_serialized"].(bool); !ok || serialized {
+		t.Errorf("the kit went to the wire serialized: is_serialized = %v", body["is_serialized"])
+	}
+	rows, ok := body["components"].([]any)
+	if !ok {
+		t.Fatalf("the bill of materials did not reach the wire: %v", body)
+	}
+	found := false
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row["component"] == "itm-s" {
+			found = true
+		}
+		if row["component"] == "kit-1" {
+			t.Errorf("the kit was written as a component of itself: %v", row)
+		}
+	}
+	if !found {
+		t.Errorf("the serialized component did not reach the wire: %v", rows)
+	}
+}
+
+// TestItemFormKit_AnEmptyPickerAnswersEnter. With no option under the cursor
+// Enter used to return a byte-identical pane — the reported-hang shape rule 1
+// forbids, and after the lift the ONLY refusal this picker has left.
+//
+// The four answers are four different facts, because the remedy differs and
+// because "could not tell" and "found nothing" are never the same answer: the
+// catalogue has not arrived, it did not arrive, the filter excluded everything,
+// or there is genuinely nothing left to add. Each is read off the CLIPPED status
+// row, where an unwrapped sentence is cut from the tail — which is where the
+// remedy is.
+func TestItemFormKit_AnEmptyPickerAnswersEnter(t *testing.T) {
+	cases := []struct {
+		name  string
+		reach func(t *testing.T, s *InventoryItemFormScreen)
+		want  string
+	}{
+		{"loading", func(t *testing.T, s *InventoryItemFormScreen) {
+			s.kitItems = nil
+			s.kitItemsLoading = true
+		}, kitPickLoadingNote},
+		// The loading row is the one that has to carry TWO facts, so it is
+		// checked for both: see the second half of the loop.
+
+		{"unloaded", func(t *testing.T, s *InventoryItemFormScreen) {
+			s.kitItems = nil
+			s.kitItemsLoading = true
+			s.Update(itemFormKitItemsMsg{err: errors.New("oms: http 502: bad gateway")})
+		}, kitPickUnloadedNote},
+		{"no match", func(t *testing.T, s *InventoryItemFormScreen) {
+			s.Update(itemFormKitItemsMsg{items: kitFormMixedCatalogue()})
+			for _, r := range "zzzz" {
+				s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			}
+		}, kitPickNoMatchNote},
+		{"nothing left", func(t *testing.T, s *InventoryItemFormScreen) {
+			// Every item the catalogue holds is either the kit itself or already
+			// a component, so the drops leave nothing — with no filter typed.
+			s.Update(itemFormKitItemsMsg{items: []omsapi.Item{
+				{ID: "kit-1", Name: "Eufy printer maintenance kit"},
+				{ID: "itm-c", Name: "Cyan ink"},
+				{ID: "itm-m", Name: "Magenta ink"},
+			}})
+		}, kitPickNoOptionsNote},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, width := range kitTestWidths {
+				s := kitFormSheet(t, kitFormFixture(), width)
+				kitFormOpenPicker(t, s)
+				tc.reach(t, s)
+				s.applyKitPickFilter()
+				if len(s.kitPickOptions) != 0 {
+					t.Fatalf("at %d columns the fixture is not the empty state: %+v", width, s.kitPickOptions)
+				}
+
+				before := kitFormClippedPane(s, width)
+				s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				after := kitFormClippedPane(s, width)
+				if after == before {
+					t.Fatalf("at %d columns Enter redrew a byte-identical pane:\n%s", width, after)
+				}
+				row := kitFormStatusLine(t, s, width)
+				if !strings.Contains(row, tc.want) {
+					t.Errorf("at %d columns the answer is %q, want %q", width, row, tc.want)
+				}
+				// A load in flight keeps its own subject on the row: the answer
+				// LEADS it, it does not replace it.
+				if s.kitItemsLoading && !strings.Contains(row, kitPickLoadingVerb) {
+					t.Errorf("at %d columns the answer displaced the work in flight: %q", width, row)
+				}
+			}
+		})
+	}
+}
+
+// TestItemFormKit_EveryPickAnswerFitsTheFloor was here and is gone: it measured
+// a hand-kept roster of the answer constants against the status row's budget,
+// which is an enumeration where a derivation exists.
+//
+// TestItemFormKit_AnEmptyPickerAnswersEnter above drives all four states through
+// the real screen at every width and reads the DRAWN row, failing a clipped one
+// — so a fifth answer is measured by being reachable rather than by being added
+// to a list. The one thing the roster could see and the drive cannot is a
+// constant no state produces, which is not a property worth a test.
+
+// TestItemFormKit_ThePickerFlagsASerializedItem. Which items are serialized is a
+// reading the operator HAD — it was the refusal's reason — and lifting the ban
+// must not take it away with the refusal.
+//
+// It is a FLAG COLUMN of two cells rather than a phrase, and it LEADS: fitCell
+// clips a picker row from the right, so a marker written after the name is the
+// first thing a long name eats, and a marker written before it survives by
+// construction. That is the same rule the void prompt's headline follows —
+// whatever must survive must lead.
+//
+// Read off the CLIPPED pane at every width, with an ordinary row checked in the
+// same breath: a flag on every row marks nothing.
+func TestItemFormKit_ThePickerFlagsASerializedItem(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormFixture(), width)
+		s.kitItems = kitFormMixedCatalogue()
+		kitFormOpenPicker(t, s)
+
+		flagged := kitFormPickRow(t, s, "Torque wrench")
+		if !strings.HasPrefix(flagged, kitPickSerialFlag) {
+			t.Errorf("at %d columns a serialized row is not flagged: %q", width, flagged)
+		}
+		plain := kitFormPickRow(t, s, "Yellow ink")
+		if strings.HasPrefix(plain, kitPickSerialFlag) {
+			t.Errorf("at %d columns an ordinary row is flagged: %q", width, plain)
+		}
+
+		// The flag is worth two cells and no more.
+		if w := lipgloss.Width(kitPickSerialFlag); w > 2 {
+			t.Fatalf("the flag is %d cells, which is a column not a marker", w)
+		}
+		if lipgloss.Width(kitPickNoFlag) != lipgloss.Width(kitPickSerialFlag) {
+			t.Errorf("the flagged and unflagged gutters differ, so the names do not line up")
+		}
+
+		// And the pane says what it means, exactly where a flag is drawn.
+		pane := kitFormClippedPane(s, width)
+		if !strings.Contains(pane, kitPickNoteFlagged) {
+			t.Errorf("at %d columns a flag is drawn with no legend:\n%s", width, pane)
+		}
+	}
+}
+
+// TestItemFormKit_TheLegendIsDrawnOnlyWhereAFlagIs. A legend for a mark that is
+// not on screen explains nothing and spends a header row saying so, and this
+// picker's note row is 49 cells against a 51-cell pane at the floor — so the
+// fuller wording of the kits rule is what the legend costs, and it is only worth
+// paying where there is a flag to explain.
+//
+// Derived from the DRAWN options rather than from the catalogue, so filtering the
+// serialized rows away takes the legend with them.
+func TestItemFormKit_TheLegendIsDrawnOnlyWhereAFlagIs(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 80)
+	s.kitItems = kitFormMixedCatalogue()
+	kitFormOpenPicker(t, s)
+	if !strings.Contains(kitFormClippedPane(s, 80), kitPickNoteFlagged) {
+		t.Fatalf("a flagged list has no legend:\n%s", kitFormClippedPane(s, 80))
+	}
+
+	// Filter the serialized row away: nothing is flagged, so the note goes back
+	// to the wording that has room to say why kits are missing.
+	for _, r := range "Yellow" {
+		s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	pane := kitFormClippedPane(s, 80)
+	if strings.Contains(pane, kitPickNoteFlagged) {
+		t.Errorf("the legend outlived the flag it explains:\n%s", pane)
+	}
+	if !strings.Contains(pane, kitPickNoteBare) {
+		t.Errorf("an unflagged list lost the note entirely:\n%s", pane)
 	}
 }
