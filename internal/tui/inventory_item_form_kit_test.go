@@ -528,7 +528,7 @@ func TestItemFormKit_EveryPhaseSurvivesTheClip(t *testing.T) {
 		s.kitCursor = s.kitAddRow()
 		s.kitItems = []omsapi.Item{
 			{ID: "itm-y", Name: "Yellow ink cartridge, high yield, wide-format", SKU: "YI-100-XL", Stock: 9},
-			{ID: "itm-s", Name: "Serialized calibration widget assembly", IsSerialized: true},
+			{ID: "itm-s", Name: "Torque wrench, calibrated, 3/8in drive", IsSerialized: true},
 		}
 		s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 		_, pickBody := s.kitPickView()
@@ -1340,7 +1340,12 @@ func TestItemFormKit_TheQuantityRefusalIsReadableAtTheFloor(t *testing.T) {
 // rather than merely the same commit.
 func TestItemFormKit_EveryPickerRowFitsThePaneAtEveryWidth(t *testing.T) {
 	const (
-		longName  = "Serialized calibration widget assembly"
+		// Long enough to be CLIPPED at the widest terminal in the table, not
+		// merely at the floor: the label budget is the pane less six, which is 85
+		// at 120 columns. A fixture that fits there leaves the flag's survival
+		// untested at two of the three widths, which the Fatalf below reports
+		// rather than passing over.
+		longName  = "Torque wrench, calibrated, 3/8in drive, 20-100Nm, ratcheting head, boxed pair"
 		shortName = "Cal widget"
 	)
 	// The other direction of the same rule: 51 is the width that must HOLD, not
@@ -1378,6 +1383,17 @@ func TestItemFormKit_EveryPickerRowFitsThePaneAtEveryWidth(t *testing.T) {
 		// A short name leaves room for the reading beside it, at every width.
 		if row := kitFormPickRow(t, s, shortName); !strings.Contains(row, "0 on hand") {
 			t.Errorf("at %d columns a row with room to spare lost its stock reading: %q", width, row)
+		}
+		// The serialized flag LEADS, which is the whole reason it is where it is:
+		// this row is long enough to be clipped at every width in the table, and
+		// a marker written after the name would be the first thing to go.
+		long := kitFormPickRow(t, s, longName)
+		if !strings.HasSuffix(long, "…") {
+			t.Fatalf("at %d columns the long fixture is not clipped, so the flag's survival is untested: %q",
+				width, long)
+		}
+		if !strings.HasPrefix(long, kitPickSerialFlag) {
+			t.Errorf("at %d columns the clip took the serialized flag: %q", width, long)
 		}
 	}
 	if seen[120] <= seen[80] {
@@ -1488,7 +1504,12 @@ func TestItemFormKit_TheUnansweredSaveRefusalIsReadableAtTheFloor(t *testing.T) 
 func kitFormMixedCatalogue() []omsapi.Item {
 	return []omsapi.Item{
 		{ID: "itm-y", Name: "Yellow ink", SKU: "YI-100", Stock: 9},
-		{ID: "itm-s", Name: "Serialized widget", SKU: "SW-1", Stock: 4,
+		// NOT a name beginning with the flag's own letter. It was "Serialized
+		// widget", and TestItemFormKit_ThePickerFlagsASerializedItem then passed
+		// with the flag column deleted: the row it asserted began with "S"
+		// because the ITEM did. A fixture that cannot fail the check it is used
+		// for is the vacuous-fixture rule (AGENTS.md) caught in the act.
+		{ID: "itm-s", Name: "Torque wrench, calibrated", SKU: "TW-1", Stock: 4,
 			IsSerialized: true, SerialTrackingMode: "reusable"},
 		{ID: "itm-m", Name: "Magenta ink", SKU: "MI-100"},   // already a component
 		{ID: "kit-1", Name: "Eufy printer maintenance kit"}, // the kit itself
@@ -1553,7 +1574,7 @@ func TestItemFormKit_ASerializedItemIsAPickableComponent(t *testing.T) {
 		kitFormOpenPicker(t, s)
 
 		// It is offered, and its row is not dimmed away as an impossible pick.
-		row := kitFormPickRow(t, s, "Serialized widget")
+		row := kitFormPickRow(t, s, "Torque wrench")
 		for _, gone := range kitOldProhibition {
 			if strings.Contains(row, gone) {
 				t.Errorf("at %d columns the picker row still states the retired rule: %q", width, row)
@@ -1761,3 +1782,76 @@ func TestItemFormKit_AnEmptyPickerAnswersEnter(t *testing.T) {
 // — so a fifth answer is measured by being reachable rather than by being added
 // to a list. The one thing the roster could see and the drive cannot is a
 // constant no state produces, which is not a property worth a test.
+
+// TestItemFormKit_ThePickerFlagsASerializedItem. Which items are serialized is a
+// reading the operator HAD — it was the refusal's reason — and lifting the ban
+// must not take it away with the refusal.
+//
+// It is a FLAG COLUMN of two cells rather than a phrase, and it LEADS: fitCell
+// clips a picker row from the right, so a marker written after the name is the
+// first thing a long name eats, and a marker written before it survives by
+// construction. That is the same rule the void prompt's headline follows —
+// whatever must survive must lead.
+//
+// Read off the CLIPPED pane at every width, with an ordinary row checked in the
+// same breath: a flag on every row marks nothing.
+func TestItemFormKit_ThePickerFlagsASerializedItem(t *testing.T) {
+	for _, width := range kitTestWidths {
+		s := kitFormSheet(t, kitFormFixture(), width)
+		s.kitItems = kitFormMixedCatalogue()
+		kitFormOpenPicker(t, s)
+
+		flagged := kitFormPickRow(t, s, "Torque wrench")
+		if !strings.HasPrefix(flagged, kitPickSerialFlag) {
+			t.Errorf("at %d columns a serialized row is not flagged: %q", width, flagged)
+		}
+		plain := kitFormPickRow(t, s, "Yellow ink")
+		if strings.HasPrefix(plain, kitPickSerialFlag) {
+			t.Errorf("at %d columns an ordinary row is flagged: %q", width, plain)
+		}
+
+		// The flag is worth two cells and no more.
+		if w := lipgloss.Width(kitPickSerialFlag); w > 2 {
+			t.Fatalf("the flag is %d cells, which is a column not a marker", w)
+		}
+		if lipgloss.Width(kitPickNoFlag) != lipgloss.Width(kitPickSerialFlag) {
+			t.Errorf("the flagged and unflagged gutters differ, so the names do not line up")
+		}
+
+		// And the pane says what it means, exactly where a flag is drawn.
+		pane := kitFormClippedPane(s, width)
+		if !strings.Contains(pane, kitPickNoteFlagged) {
+			t.Errorf("at %d columns a flag is drawn with no legend:\n%s", width, pane)
+		}
+	}
+}
+
+// TestItemFormKit_TheLegendIsDrawnOnlyWhereAFlagIs. A legend for a mark that is
+// not on screen explains nothing and spends a header row saying so, and this
+// picker's note row is 49 cells against a 51-cell pane at the floor — so the
+// fuller wording of the kits rule is what the legend costs, and it is only worth
+// paying where there is a flag to explain.
+//
+// Derived from the DRAWN options rather than from the catalogue, so filtering the
+// serialized rows away takes the legend with them.
+func TestItemFormKit_TheLegendIsDrawnOnlyWhereAFlagIs(t *testing.T) {
+	s := kitFormSheet(t, kitFormFixture(), 80)
+	s.kitItems = kitFormMixedCatalogue()
+	kitFormOpenPicker(t, s)
+	if !strings.Contains(kitFormClippedPane(s, 80), kitPickNoteFlagged) {
+		t.Fatalf("a flagged list has no legend:\n%s", kitFormClippedPane(s, 80))
+	}
+
+	// Filter the serialized row away: nothing is flagged, so the note goes back
+	// to the wording that has room to say why kits are missing.
+	for _, r := range "Yellow" {
+		s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	pane := kitFormClippedPane(s, 80)
+	if strings.Contains(pane, kitPickNoteFlagged) {
+		t.Errorf("the legend outlived the flag it explains:\n%s", pane)
+	}
+	if !strings.Contains(pane, kitPickNoteBare) {
+		t.Errorf("an unflagged list lost the note entirely:\n%s", pane)
+	}
+}

@@ -1089,7 +1089,7 @@ func (s *InventoryItemFormScreen) commitKitPick() {
 }
 
 func (s *InventoryItemFormScreen) kitPickView() (jdeHeader, *jdeLines) {
-	note := "Kits cannot contain kits, so kits are not listed."
+	note := s.kitPickNote()
 	empty := "(no matching items)"
 	switch {
 	case s.kitItemsLoading:
@@ -1131,25 +1131,92 @@ func (s *InventoryItemFormScreen) kitPickView() (jdeHeader, *jdeLines) {
 	}.render(s.bodyWidth())
 }
 
-// kitPickLabel is one picker row: what the item is and how much of it is on the
-// shelf. ONE shape for every row, because every row is now pickable — the second
-// shape it used to have carried the reason a serialized item could not be added,
-// and there is no such reason left to draw.
+// kitPickSerialFlag / kitPickNoFlag are the picker's FLAG COLUMN: two cells in
+// front of every row, carrying an "S" on a serialized item and blank on anything
+// else.
+//
+// WHY THE READING SURVIVED THE REFUSAL. Which items are serialized is something
+// the operator could see before the ban was lifted, because it was the reason the
+// row could not be picked. Lifting the ban must not take the FACT away with the
+// prohibition — a serialized component is the one that opens a serial-capture
+// step when the kit is received, and an operator choosing between two equivalent
+// parts is entitled to know which of them signs them up for that.
+//
+// WHY TWO CELLS AND NOT A PHRASE. At the 80-column floor a picker row has 45
+// cells and a realistic MRO name spends all of them; the reason this used to
+// carry ran to 47 on its own. Anything that competes with the item's IDENTITY at
+// that width is the wrong trade, so this is the narrowest thing that can carry
+// the fact: one glyph and the space that separates it.
+//
+// WHY IT LEADS. fitCell clips a row from the RIGHT, so a marker written after the
+// name is the first thing a long name eats — exactly the width at which the fact
+// matters most — while one written in front of it survives by construction. Same
+// rule as the void prompt's headline: whatever must survive must lead. The blank
+// gutter is the same two cells, so the names still line up down the list, which
+// is what makes a flag column readable at a glance rather than something the eye
+// has to hunt for.
+//
+// It is UNSTYLED on purpose: the cursor row is rendered through
+// StyleSidebarItemActive as one run, so a styled flag would be overridden on the
+// one row the operator is looking hardest at, and a mark that changes colour when
+// selected reads as a different mark.
+const (
+	kitPickSerialFlag = "S "
+	kitPickNoFlag     = "  "
+)
+
+// kitPickLabel is one picker row: the serialized flag, what the item is, and how
+// much of it is on the shelf. ONE shape for every row, because every row is now
+// pickable — the second shape it used to have carried the reason a serialized
+// item could not be added, and there is no such reason left to draw.
 //
 // width is what the row has (0 = unknown, do not truncate). The label is fitted
 // rather than left to run: a picker list is drawn straight into the pane, and a
 // row cut by clampToBox loses its tail with nothing to say it had.
 func kitPickLabel(opt kitPickOption, width int) string {
+	flag := kitPickNoFlag
+	if opt.item.IsSerialized {
+		flag = kitPickSerialFlag
+	}
 	label := opt.item.Name
 	if sku := strings.TrimSpace(opt.item.SKU); sku != "" {
 		label += " (" + sku + ")"
 	}
-	label = fmt.Sprintf("%s · %d on hand", label, opt.item.Stock)
+	label = fmt.Sprintf("%s%s · %d on hand", flag, label, opt.item.Stock)
 	if width > 0 {
 		label = fitCell(label, width)
 	}
 	return label
 }
+
+// kitPickNote is the muted line under the picker's title, and it says one thing
+// or the other because it cannot say both.
+//
+// jdePickList draws Note as ONE unwrapped header row, and at the 80-column floor
+// the pane is 51 with jdeIndent taking two of it — which the standing wording,
+// at 49 cells, spends to the last column. So a legend for the serialized flag is
+// not free: it is paid for out of the kits sentence, and the clause that gives is
+// the CONSEQUENCE ("so kits are not listed"), because the rule above it implies
+// the absence while the absence does not imply the rule.
+//
+// It is worth paying only where there is a flag on screen to explain, so the
+// question is asked of the DRAWN options rather than of the catalogue: filtering
+// every serialized row away takes the legend with it, and a list with nothing
+// flagged reads exactly as it did before the flag existed. A legend for a mark
+// that is not on the pane explains nothing and spends a header row saying so.
+func (s *InventoryItemFormScreen) kitPickNote() string {
+	for _, opt := range s.kitPickOptions {
+		if opt.item.IsSerialized {
+			return kitPickNoteFlagged
+		}
+	}
+	return kitPickNoteBare
+}
+
+const (
+	kitPickNoteBare    = "Kits cannot contain kits, so kits are not listed."
+	kitPickNoteFlagged = "S = serialized. Kits cannot contain kits."
+)
 
 // kitPickBar is the component picker's bar, with PgUp/PgDn on it exactly when
 // the list moves under the bar about to be drawn — measured against the bar

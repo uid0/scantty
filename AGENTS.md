@@ -478,6 +478,27 @@ note, and is the authority):
   answer LEADS the working line through `poLeadOnto` rather than replacing it:
   `statusRow`'s `saving` branch wins outright, so an answer handed to its
   `errMsg` argument is drawn by nothing at all.
+  **WHICH ITEMS ARE SERIALIZED IS A READING THE OPERATOR HAD, AND IT HAS TO
+  SURVIVE THE REFUSAL THAT CARRIED IT.** Lifting the ban first removed the fact
+  along with it, because the fact had only ever been visible AS the refusal's
+  reason. It is a two-cell FLAG COLUMN now (`kitPickSerialFlag`), and three things
+  about it are decisions rather than taste: it is TWO CELLS because at the
+  80-column floor a picker row has 45 and a realistic MRO name spends all of them,
+  so anything competing with the item's IDENTITY at that width is the wrong trade;
+  it LEADS, because `fitCell` clips from the right and a marker after the name is
+  eaten at exactly the width the fact matters most; and the blank gutter is the
+  SAME two cells, so names line up down the list. The legend rides the picker's
+  note and is drawn only where a flag is (`kitPickNote`, asked of the DRAWN
+  options rather than the catalogue), because that note is 49 cells against a
+  51-cell pane and the legend is paid for out of the kits sentence.
+  **ITS FIRST TEST WAS VACUOUS AND PASSED WITH THE FLAG COLUMN DELETED**: the
+  fixture was named `Serialized widget`, so the row began with `S` because the
+  ITEM did. A fixture for a check about a MARK must not begin with that mark, and
+  one for a check about a CLIP must be clipped at the WIDEST pane in the table —
+  the long-name fixture fitted at 100 and 120, so two widths of three proved
+  nothing until the assertion was made to FATAL on an unclipped row rather than
+  pass over it. Both are the vacuous-fixture rule, and both were found by deleting
+  the code the test names and watching it stay green.
 
 ## The receiving flow is driven off ONE fetch, and the server decides
 
