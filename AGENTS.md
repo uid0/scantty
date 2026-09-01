@@ -435,12 +435,49 @@ note, and is the authority):
   receipt multiplies. `internal/tui/po_kit_lines.go` carries that note.
 - **Serialized items ARE allowed as kit components now**, and that is a
   different fact from where a serial goes. The OMS ban was lifted deliberately
-  (`docs/PO_RECEIVING_API.md`): it blocked a legitimate configuration while the
-  hazard it named — stock credited with no serial recorded — was never unique to
-  kits, since `mark-delivered` has always done it to an ordinary serialized
-  line. What guards the identity rule now is the receipt itself (naming the kit
-  is a 400) plus **`serials_outstanding`**, which every receive path reports and
-  a client must surface. Receiving a kit WITH serial capture is a live path.
+  (`docs/PO_RECEIVING_API.md`, and `KitComponent.clean()` carries the argument in
+  full): it blocked a legitimate configuration while the hazard it named — stock
+  credited with no serial recorded — was never unique to kits, since
+  `mark-delivered` has always done it to an ordinary serialized line. What guards
+  the identity rule now is the receipt itself (naming the kit is a 400) plus
+  **`serials_outstanding`**, which every receive path reports and a client must
+  surface. Receiving a kit WITH serial capture is a live path.
+  **THE TWO HALVES OF THAT SENTENCE SHIPPED A RELEASE APART, WHICH IS THE LESSON
+  WORTH KEEPING.** The receiving half honoured the lift and said so in three
+  places; the kit-components EDITOR
+  (`internal/tui/inventory_item_form_kit.go`) went on dimming every serialized
+  item and refusing the pick, quoting the reason OMS had abandoned. A screen
+  refusing what the server accepts is a documented claim the code does not
+  honour in exactly the same way as a screen permitting what the server refuses,
+  and it fails SILENTLY: nothing errors, an operator simply cannot build a
+  configuration and is told why by a sentence that is no longer true. When a
+  server-side rule is lifted, sweep for the CLIENT-side copies of it — the set is
+  derived by grepping the retired wording, not by remembering which screens
+  enforced it.
+  **LIFTING IT IS NOT LOOSENING WHERE A SERIAL GOES**, and the guard is in three
+  places that must stay in step. RECEIVING reads `serial_targets` and nothing
+  else, so a kit's own id is never a capture target
+  (`TestReceiveKit_ASerialNeverNamesTheKitItself`). The ITEM FORM freezes a kit's
+  `Track serial numbers` row (`fieldReadOnly`) and ASSERTS `is_serialized:false`
+  on every kit save (`buildPayload`) — asserting rather than omitting, because
+  `KitSerializer.validate` falls back to the STORED value for an absent key, so
+  omission is no guard at all against the stray flag `InventoryItem.save()`
+  leaves reachable. And the component PICKER still drops the kit's own id, which
+  used to be excluded twice for a stray-serialized kit and is now excluded once.
+  `TestItemFormKit_ASerializedComponentNeverSerializesTheKit` holds all three and
+  was watched failing against each.
+  **NOTHING IN THAT PICKER IS SHOWN-AND-REFUSED ANY MORE.** Every exclusion left
+  is a DROP (the kit itself, an item already listed) or an absence (`/items/`
+  excludes kits, so a nested kit is never offered), so `kitPickOption` carries no
+  reason, the list dims nothing, and every option commits
+  (`TestItemFormKit_EveryOptionOnThePickerCommits`). What that leaves is the one
+  refusal a picker cannot avoid — having nothing to pick — which used to return a
+  byte-identical pane and now ANSWERS in four wordings, because "could not tell"
+  (loading, load failed) and "found nothing" (filtered out, nothing left) are
+  never the same answer and their remedies differ. While a load is in flight that
+  answer LEADS the working line through `poLeadOnto` rather than replacing it:
+  `statusRow`'s `saving` branch wins outright, so an answer handed to its
+  `errMsg` argument is drawn by nothing at all.
 
 ## The receiving flow is driven off ONE fetch, and the server decides
 

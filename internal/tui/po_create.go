@@ -2616,13 +2616,20 @@ func (s *PurchaseOrderCreateScreen) workingLine(lead string) string {
 // can be read on its own — the two bounds it applies are the whole of this
 // row's rule 6 and they are easier to check apart from the sentence-building.
 //
-// ONE caller: workingLine. It used to have two, and the second was the
-// order-level error, which is now drawn alone (statusPlan) — an error sharing
-// the row with a picker hint is rule 6 inverted, because there the error IS the
-// fact. So `room` is simply the pane: the muted working line is drawn behind no
-// mark at all, and there is no longer a caller passing a mark-adjusted
-// remainder. A second caller that DOES sit behind a mark must subtract it
-// before calling, because nothing here can see what it will be drawn behind.
+// TWO callers, and neither sits behind a mark. workingLine is this screen's, and
+// the second is the item form's kit-component picker (kitPickStatus), which has
+// the identical problem for the identical reason: it pins a filter box on its
+// header's one essential row, so an answer it gives while a catalogue load is in
+// flight has nowhere but this row to go. It is shared rather than copied because
+// two implementations of one bound is how this file's history reads.
+//
+// The order-level error used to be a caller and is now drawn alone (statusPlan)
+// — an error sharing the row with a picker hint is rule 6 inverted, because there
+// the error IS the fact. So `room` is simply the pane: a muted working line is
+// drawn behind no mark at all. A caller that DOES sit behind a mark must subtract
+// it before calling, because nothing here can see what it will be drawn behind —
+// and one whose pane is UNSIZED must not call at all, since a room of 0 reads as
+// "no room" rather than the layer's "do not truncate" and drops the subject.
 //
 // The SUBJECT is never empty: workingLine returns early on an empty
 // workingSubject, which is the only thing that reaches this.

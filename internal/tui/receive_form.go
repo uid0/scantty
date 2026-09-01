@@ -94,6 +94,16 @@
 // replaced the ban is this identity rule plus `serials_outstanding`, which the
 // summary and the worksheet both surface.
 //
+// A KIT WITH SERIALIZED COMPONENTS IS NOW BUILDABLE FROM THIS TERMINAL, which is
+// what makes that live path reachable rather than theoretical: the kit-components
+// editor (`inventory_item_form_kit.go`) enforced the retired ban for a release
+// after this file stopped believing it, so the only serialized-component kits a
+// ScanTTY operator could receive were ones somebody had built on the web. The two
+// halves are one rule read from opposite ends — a serial belongs to the COMPONENT
+// identity and never to the kit's own id — and that editor's share of it (a kit's
+// serialized toggle frozen, `is_serialized:false` asserted on every kit save) is
+// untouched by the lift.
+//
 // # Every state answers every key
 //
 // The rules the purchasing screens are held to (AGENTS.md) apply here in full:
