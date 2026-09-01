@@ -915,33 +915,33 @@ func listWayOutKeys(t *testing.T) []listWayOutKey {
 func TestList_ARefusedPaneNamesAKeyThatReallyLeaves(t *testing.T) {
 	wayOut := listWayOutKeys(t)
 	widths, heights := jdeDrawableWidths(), jdePaneHeights()
-	checked := 0
+	pressed := map[string]int{}
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
-			for state, rows := range listRowCases {
-				for _, w := range widths {
-					for _, h := range heights {
-						probe := listWithRows(surface.build, rows)
-						sized, _ := probe.Update(tea.WindowSizeMsg{Width: w, Height: h})
-						if sized.(*ListScreen).paneDrawn() {
-							continue
-						}
-						for _, key := range wayOut {
-							for _, withHistory := range []bool{false, true} {
-								list := listWithRows(surface.build, rows)
-								r := newTestRoot(list)
-								if withHistory {
-									r.history = []navEntry{{screen: NewWelcomeScreen(), ws: WSScan}}
-								}
-								next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
-								r = next.(Root)
-								after, _ := r.Update(key.msg)
-								checked++
-								if after.(Root).screen == Screen(list) {
-									t.Errorf("the %s refusal at %dx%d (%s, history %v) reads %q "+
-										"and pressing %q left the operator on the same screen",
-										surface.name, w, h, state, withHistory,
-										listTooShortWayOut, key.name)
+			for _, branch := range listRefusalBranches(t, surface) {
+				for state, rows := range listRowCases {
+					for _, w := range widths {
+						for _, h := range heights {
+							if branch.open(t, surface.build, rows, w, h).paneDrawn() {
+								continue
+							}
+							for _, key := range wayOut {
+								for _, withHistory := range []bool{false, true} {
+									list := branch.open(t, surface.build, rows, w, h)
+									r := newTestRoot(list)
+									if withHistory {
+										r.history = []navEntry{{screen: NewWelcomeScreen(), ws: WSScan}}
+									}
+									next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+									r = next.(Root)
+									after, _ := r.Update(key.msg)
+									pressed[branch.name]++
+									if after.(Root).screen == Screen(list) {
+										t.Errorf("the %s %s refusal at %dx%d (%s, history %v) reads "+
+											"%q and pressing %q left the operator on the same screen",
+											surface.name, branch.name, w, h, state, withHistory,
+											listTooShortWayOut, key.name)
+									}
 								}
 							}
 						}
@@ -950,9 +950,11 @@ func TestList_ARefusedPaneNamesAKeyThatReallyLeaves(t *testing.T) {
 			}
 		})
 	}
-	if checked == 0 {
-		t.Fatal("no list was refused at any drawable size, so the way out this notice " +
-			"names was never pressed")
+	for _, branch := range listRefusalBranchNames {
+		if pressed[branch] == 0 {
+			t.Fatalf("no %s pane was refused at any drawable size, so the way out this "+
+				"notice names was never pressed in a state it claims it in", branch)
+		}
 	}
 }
 
@@ -2129,4 +2131,170 @@ func listMax(sizes []int) int {
 		}
 	}
 	return max
+}
+
+// listRefusalBranch is one state listTooShort makes its claims in. The notice
+// takes a `searching` flag and words itself differently on each side of it, so
+// the branches are exactly the two values of that flag — a set complete by
+// construction rather than a roster somebody has to remember to extend.
+//
+// IT EXISTS BECAUSE THE WAY-OUT SWEEP ONLY EVER PRESSED ONE OF THEM. The notice
+// gained its searching branch and went on claiming "Esc leaves" there with no
+// press behind it, which is the claim-without-a-check this branch exists to
+// close, reached by adding a state rather than by changing a check.
+type listRefusalBranch struct {
+	name string
+	open func(t *testing.T, build func() *ListScreen, rows, w, h int) *ListScreen
+}
+
+// listRefusalBranchNames is what the vacuity guards check they reached, so a
+// branch that stops being reachable fails rather than being silently skipped.
+var listRefusalBranchNames = []string{"browse", "searching"}
+
+// listRefusalBranches is the branches this surface can actually be driven into:
+// every list has a browse pane, and only a list with a searchLoader has an
+// overlay to open.
+func listRefusalBranches(t *testing.T, surface listBarSurface) []listRefusalBranch {
+	t.Helper()
+	branches := []listRefusalBranch{{
+		name: "browse",
+		open: func(t *testing.T, build func() *ListScreen, rows, w, h int) *ListScreen {
+			t.Helper()
+			s := listWithRows(build, rows)
+			next, _ := s.Update(tea.WindowSizeMsg{Width: w, Height: h})
+			return next.(*ListScreen)
+		},
+	}}
+	if listWithRows(surface.build, 8).spec.searchLoader == nil {
+		return branches
+	}
+	return append(branches, listRefusalBranch{
+		name: "searching",
+		open: func(t *testing.T, build func() *ListScreen, rows, w, h int) *ListScreen {
+			t.Helper()
+			return listSearchOpen(t, build, rows, w, h)
+		},
+	})
+}
+
+// TestList_ARefusedPaneNeverOpensARowNobodyCanSee: `enter` is held on a refused
+// pane, on BOTH branches, and for one reason.
+//
+// It used to be held on the searching pane and live on the browse one, with the
+// two gates giving opposite justifications for the same key — the same keystroke
+// doing different things on sibling surfaces, which is the defect this whole
+// branch exists to close, sitting inside the fix for it. The reason is stated
+// once at listRefusedHoldsKey: the refusal draws no rows and no highlight, the
+// row under the cursor moves while the pane is refused, and opening a row nobody
+// chose is worse than opening none. `enter` was never the way out — `esc` is
+// named, and `n` and the uppercase shortcuts still leave.
+//
+// ASSERTED ON THE COMMAND, because that is the only surface enter's product
+// appears on: openSelected returns the screen, the cursor and the pane exactly
+// as it found them and hands the navigation back as a tea.Cmd. Positively
+// controlled on a drawn pane of each branch, so "no navigation" cannot pass on a
+// fixture that opens nothing.
+func TestList_ARefusedPaneNeverOpensARowNobodyCanSee(t *testing.T) {
+	heights := jdePaneHeights()
+	refused, controls := map[string]int{}, map[string]int{}
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			for _, branch := range listRefusalBranches(t, surface) {
+				for _, h := range heights {
+					s := branch.open(t, surface.build, 8, 80, h)
+					_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+					if s.paneDrawn() {
+						if !listNavigates(cmd) {
+							t.Fatalf("%s: the %s control failed at 80x%d — enter opened nothing on "+
+								"a DRAWN pane, so the hold below would pass on a fixture that "+
+								"cannot navigate", surface.name, branch.name, h)
+						}
+						controls[branch.name]++
+						continue
+					}
+					refused[branch.name]++
+					if listNavigates(cmd) {
+						t.Errorf("the %s %s refusal at 80x%d says opening does nothing, and enter "+
+							"issued a navigation to a row nobody can see", surface.name, branch.name, h)
+					}
+				}
+			}
+		})
+	}
+	for _, branch := range listRefusalBranchNames {
+		if refused[branch] == 0 || controls[branch] == 0 {
+			t.Fatalf("the %s branch was refused at %d heights and drawn at %d — both are "+
+				"needed, or one half of this check asserted nothing",
+				branch, refused[branch], controls[branch])
+		}
+	}
+}
+
+// TestList_ASearchingListIsNeverRecordedOnTheBackStack: an open search overlay
+// keeps a list off the back-stack whether or not its pane is refused.
+//
+// THE DEFECT. Root asked WantsRawInput for this, and narrowing that predicate to
+// exclude a refused pane moved the back-stack behaviour with it: a searching
+// Assets list navigated away from at a short height WAS pushed, and `esc` later
+// popped it — popHistory re-Inits, the plain loader replaces the rows with the
+// whole catalogue, and the overlay went on drawing the query and an "N match(es)"
+// count over them. A filtered label on unfiltered rows is "found nothing" and
+// "could not tell" collapsed into a number that is simply wrong.
+//
+// Driven through a real Root with the message the app really sends, and
+// POSITIVELY CONTROLLED: a list that is NOT searching must still be recorded, or
+// the assertion passes on a Root that records nothing at all.
+func TestList_ASearchingListIsNeverRecordedOnTheBackStack(t *testing.T) {
+	heights := jdePaneHeights()
+	refused, drawn, controls := 0, 0, 0
+	for _, surface := range listSearchSurfaces(t) {
+		t.Run(surface.name, func(t *testing.T) {
+			for _, h := range heights {
+				list := listSearchOpen(t, surface.build, 8, 80, h)
+				typed, _ := list.Update(listRuneKey("q"))
+				list = typed.(*ListScreen)
+				if list.searchInput.Value() == "" {
+					t.Fatalf("%s: the query did not reach the box at 80x%d, so the rows this "+
+						"check is about are not search results", surface.name, h)
+				}
+				if list.paneDrawn() {
+					drawn++
+				} else {
+					refused++
+				}
+
+				r := newTestRoot(list)
+				sized, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: h})
+				away, _ := sized.(Root).Update(SwitchScreenMsg{
+					Workspace: WSScan, Screen: NewWelcomeScreen(),
+				})
+				back, _ := away.(Root).Update(tea.KeyMsg{Type: tea.KeyEsc})
+				if back.(Root).screen == Screen(list) {
+					t.Errorf("the %s list was searching at 80x%d and esc came back to it, so a "+
+						"filtered subset is about to be relabelled over an unfiltered reload",
+						surface.name, h)
+				}
+
+				plain := listWithRows(surface.build, 8)
+				pr := newTestRoot(plain)
+				psized, _ := pr.Update(tea.WindowSizeMsg{Width: 80, Height: h})
+				paway, _ := psized.(Root).Update(SwitchScreenMsg{
+					Workspace: WSScan, Screen: NewWelcomeScreen(),
+				})
+				pback, _ := paway.(Root).Update(tea.KeyMsg{Type: tea.KeyEsc})
+				if pback.(Root).screen == Screen(plain) {
+					controls++
+				}
+			}
+		})
+	}
+	if refused == 0 || drawn == 0 {
+		t.Fatalf("the searching list was refused at %d heights and drawn at %d — the "+
+			"back-stack answer must not move with the refusal, so both are needed",
+			refused, drawn)
+	}
+	if controls == 0 {
+		t.Fatal("no browsing list was ever recorded on the back-stack, so the assertion " +
+			"above passed on a Root that records nothing")
+	}
 }

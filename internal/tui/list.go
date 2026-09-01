@@ -644,7 +644,7 @@ func listTooShort(cells, rows, terminalHeight, needRows int, searching bool) str
 	if rows <= 0 || cells <= 0 {
 		return ""
 	}
-	held := "moving and sorting do nothing while this notice is up, " +
+	held := "moving, sorting and opening do nothing while this notice is up, " +
 		"so you come back where you were."
 	if searching {
 		held = "moving and opening do nothing while this notice is up, " +
@@ -805,6 +805,19 @@ func (s *ListScreen) activeFilter() listFilter {
 // one. The query itself is untouched, so a terminal dragged short and back
 // comes back to the search the operator was running.
 func (s *ListScreen) WantsRawInput() bool { return s.searching && s.paneDrawn() }
+
+// SkipsBackStack answers the BACK-STACK question, which is not the same question
+// WantsRawInput answers and must not move with it. An open search overlay is a
+// transient state whatever the pane's height: its rows are a filtered subset and
+// its input line labels them as one, so recording it means `esc` can come back
+// to a screen whose Init reloads the WHOLE catalogue while the overlay goes on
+// drawing the query and a match count over it — a filtered label on unfiltered
+// rows, which is "found nothing" and "could not tell" collapsed into a number
+// that is simply wrong.
+//
+// It reads `searching` alone. Root used to get this from WantsRawInput, and
+// narrowing that to exclude a refused pane opened exactly the sequence above.
+func (s *ListScreen) SkipsBackStack() bool { return s.searching }
 
 // Init loads the CURRENT view: the filtered loader bound to the active
 // filter's query when the list has a filter cycle, else the plain loader. It
@@ -986,19 +999,22 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		// paneDrawn is the frame's own predicate, so the notice's promise that
 		// moving keys are held is the same expression that holds them.
 		//
-		// THE HELD SET ON A REFUSED PANE IS {the navigation vocabulary, `s`},
-		// and it is that short because it is DERIVED from what each key's whole
-		// product is rather than from "a refused pane is risky". A movement
-		// key's product is the position; `s` re-orders locally and its only
-		// visible product is headerLine, which the refusal does not draw, and
-		// needRows is invariant under re-ordering — so the pane comes back byte
-		// for byte, which is standing rule 1 broken by the refusal itself.
+		// THE HELD SET IS listRefusedHoldsKey, and it is short because it is
+		// DERIVED from what each key's whole product is rather than from "a
+		// refused pane is risky". A movement key's product is the position;
+		// `s` re-orders locally and its only visible product is headerLine,
+		// which the refusal does not draw, and needRows is invariant under
+		// re-ordering — so the pane comes back byte for byte, which is standing
+		// rule 1 broken by the refusal itself; `enter`'s product is a
+		// navigation chosen by an invisible cursor, for the reason that
+		// predicate gives.
+		//
 		// Nothing else qualifies: `r` and `f` set loading and redraw as
-		// "Loading…", and enter/n/the uppercase shortcuts leave the screen
-		// altogether. Do NOT widen this to every key — one of them navigating
-		// away is the operator's way OUT of a pane too short to work in, and a
+		// "Loading…", and `n` and the uppercase shortcuts leave the screen
+		// altogether. Do NOT widen this to those — one of them navigating away
+		// is the operator's way OUT of a pane too short to work in, and a
 		// refusal nobody can act on is its own defect.
-		if !s.paneDrawn() && (listNavBinds(m.String()) || m.String() == "s") {
+		if !s.paneDrawn() && listRefusedHoldsKey(m.String()) {
 			return s, nil
 		}
 		if listNavBinds(m.String()) && !listNavMoves(len(s.rows)) {
@@ -1114,10 +1130,29 @@ func (s *ListScreen) enterSearch() (Screen, tea.Cmd) {
 	return s, textinput.Blink
 }
 
+// listRefusedHoldsKey is the held set on a refused BROWSE pane, and it is the
+// site of the ONE reason `enter` is held on a refused pane of either kind.
+//
+// ENTER'S PRODUCT IS A NAVIGATION CHOSEN BY AN INVISIBLE CURSOR. The refusal
+// draws no rows and no highlight, so the operator cannot see which row they are
+// on — and the row under the cursor MOVES while the pane is refused, because a
+// filter cycle and a search reply both reload and reseat it. Opening a row
+// nobody chose is worse than opening none, and declining destroys nothing: the
+// row is still there when the terminal grows back. It is NOT the way out and
+// never was — `esc` is what the notice names, and `n` and the uppercase
+// sibling-surface shortcuts still leave.
+//
+// The overlay's held set (listSearchHeldKey) is the same rule read through a
+// different alphabet: with a box focused the movement keys are the ARROWS
+// alone, since j/k/g/G are runes the operator is typing.
+func listRefusedHoldsKey(key string) bool {
+	return listNavBinds(key) || key == "s" || key == "enter"
+}
+
 // listSearchHeldKey is the overlay's held set on a refused pane: the keys whose
-// whole product is a position, or a navigation chosen from one. One expression,
-// read by the gate in updateSearch, so the notice's claim and the keys behind it
-// cannot part company.
+// whole product is a position, or a navigation chosen from one — the reason is
+// listRefusedHoldsKey's, stated once. One expression, read by the gate in
+// updateSearch, so the notice's claim and the keys behind it cannot part company.
 func listSearchHeldKey(t tea.KeyType) bool {
 	return t == tea.KeyUp || t == tea.KeyDown || t == tea.KeyEnter
 }
@@ -1138,9 +1173,10 @@ func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
 	// key's whole product is — and it is NOT the browse set, because the two
 	// frames differ in the way that matters. A movement key's product is the
 	// POSITION, so declining it preserves what the operator had; `enter`'s is a
-	// navigation chosen by an invisible cursor, which is worse than no
-	// navigation at all. Both are held, silently, for the reason the browse gate
-	// gives: once the move is refused there is nothing left to report.
+	// navigation chosen by an invisible cursor, for the reason stated once at
+	// listRefusedHoldsKey, which holds it on the browse pane too. Both are held,
+	// silently, for the reason the browse gate gives: once the move is refused
+	// there is nothing left to report.
 	//
 	// TYPING IS NOT HELD AND MUST NOT BE. A typed rune's product is the VALUE,
 	// so declining it DISCARDS input — a scanner burst arrives as a key burst

@@ -1053,18 +1053,36 @@ either:
   locally, its only visible product is `headerLine`, which the refusal does not
   draw, and `needRows` is invariant under re-ordering — so the pane came back
   byte for byte, standing rule 1 broken by the refusal itself. `r` and `f` do
-  not: both set `loading` and redraw as `Loading…`. Nor does `enter`, nor `n`,
-  nor the uppercase shortcuts, which LEAVE — the operator's way out of a pane
-  too short to work in, and the reason not to widen the browse gate to every key.
-  ON THE OVERLAY `enter` IS HELD AND TYPING NEVER IS, and both follow the same
-  rule from a different starting point: there `enter` does not leave, it OPENS a
-  row chosen by an invisible cursor that a search reply can move under the
-  operator (`listSearchedMsg` resets it to 0), which is worse than no navigation
-  at all; a typed rune's product is the VALUE, so declining it DISCARDS input a
-  scanner cannot resend, which is the one thing this program never does. The
-  runes therefore keep reaching the box, the query survives the resize, and the
-  notice's searching wording says so instead of repeating a sentence about
-  sorting.
+  not: both set `loading` and redraw as `Loading…`. Nor do `n` and the uppercase
+  shortcuts, which LEAVE — the operator's way out of a pane too short to work
+  in, and the reason not to widen either gate to them.
+  `enter` IS HELD ON BOTH BRANCHES, FOR ONE REASON STATED ONCE
+  (`listRefusedHoldsKey`): the refusal draws no rows and no highlight, and the
+  row under the cursor MOVES while the pane is refused — a filter cycle and a
+  search reply both reload and reseat it — so enter opens a row nobody chose,
+  which is worse than opening none, and declining destroys nothing. It was
+  briefly held on the overlay and live on browse, with the two gates giving
+  OPPOSITE justifications for one key: the same keystroke doing different things
+  on sibling surfaces, which is the defect this whole area exists to close,
+  shipped inside the fix for it. Enter was never the way out; `esc` is what the
+  notice names.
+  TYPING IS NEVER HELD, and it is the one asymmetry that stays: a typed rune's
+  product is the VALUE, so declining it DISCARDS input a scanner cannot resend,
+  which is the one thing this program never does. The runes keep reaching the
+  box, the query survives the resize, and the notice's searching wording says so
+  instead of repeating a sentence about sorting.
+  THE BACK-STACK IS A DIFFERENT QUESTION FROM THE KEYBOARD, and asking one
+  predicate both is how a wrong label reached an operator. `Root.recordHistory`
+  read `WantsRawInput` as a proxy for "is this screen transient"; narrowing the
+  key-routing half to exclude a refused pane moved the history half with it, so
+  a SEARCHING list navigated away from at a short height was pushed — and `esc`
+  popped it, `popHistory` re-Init'd, the plain loader replaced the rows with the
+  whole catalogue, and the overlay went on drawing the query and an `N match(es)`
+  count over them. A filtered label on unfiltered rows is rule 3 broken by a
+  number rather than by a silence. `BackStackScreen` (`route.go`) is the history
+  question asked directly and `ListScreen.SkipsBackStack` reads `searching`
+  alone; the raw-input test survives as the FALLBACK for the forms and confirms
+  whose transience and whose keyboard ownership really are one state.
   THE NOTICE'S PROMISE IS SCOPED TO WHILE THE NOTICE IS UP, and it has to be:
   `paneDrawn` answers TRUE while a load is out, so `r` on a refused pane replaces
   the notice with the working line and `G` then walks the cursor against rows
