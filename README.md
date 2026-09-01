@@ -72,6 +72,18 @@ purchase order from Purchasing, for example. Each list names its own along its
 foot; they are shortcuts to surfaces the sidebar tree already carries, never the
 only way there.
 
+That foot names only the keys that will act on the list as it stands: the moving
+keys need a second row to move to and `Enter` needs a row to open, so neither is
+named on a list with nothing in it and the moving keys drop off a list of one —
+while `s`, `r`, `f` and the uppercase letters stay named, so a list with nothing
+in it still says what to do next instead of drawing no foot at all. On a
+terminal too short to hold that foot whole, a list draws a notice naming the
+height it needs and the height it has instead of the rows, for the reason the
+columnar screens below refuse: a foot with rows cut off it names some keys and
+hides the rest with no way to tell which. `Esc` still leaves, and `r`, `f`, `n`
+and the uppercase letters still act; moving, sorting and opening are held while
+that notice is up, so you come back where you were.
+
 The purchasing **viewing** screens — a purchase order's detail sheet and its
 attachments, associations and terms — are drawn in the fixed columnar JD Edwards
 World style and follow its reduced key scheme instead: no `j`/`k` or `g`/`G`
