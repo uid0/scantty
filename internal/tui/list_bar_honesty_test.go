@@ -1050,7 +1050,7 @@ func listSearchOverlayKeys() []string {
 // different key set — and folding them together is how one of them ends up
 // pressed against the other's claim.
 func TestList_TheSearchOverlayNamesExactlyTheKeysThatWork(t *testing.T) {
-	searched := 0
+	searched, drawn, below := 0, 0, 0
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
 			if listWithRows(surface.build, 8).spec.searchLoader == nil {
@@ -1071,17 +1071,41 @@ func TestList_TheSearchOverlayNamesExactlyTheKeysThatWork(t *testing.T) {
 				// carries: a claim the operator cannot read is not a claim, and
 				// asserting a method's return value is exactly the blindness that
 				// let every list ship with its footer cut at 51 columns.
-				for _, termHeight := range []int{24, 30} {
+				//
+				// EVERY DRAWABLE HEIGHT, not a hand-picked pair. This loop walked
+				// {24, 30} — the same two-heights mistake the browse footer loop
+				// above was converted away from, and on the vertical axis what
+				// three hand-picked widths was on the horizontal one.
+				//
+				// AND THE CLAIM IS SCOPED TO WHERE THE BAR IS DRAWN, because the
+				// overlay is DELIBERATELY exempt from the too-short refusal: it
+				// owns the keyboard, and this branch's record (AGENTS.md) sets out
+				// the four defects that came of bringing a keyboard-owning surface
+				// inside a refusal built for a frame that owns nothing. The price
+				// of that exemption is a short pane that keeps the input line and
+				// no bar at all, and it is a KNOWN price rather than a defect to
+				// report — so the boundary is DERIVED from what the head really
+				// draws (listOverlayBarFits) rather than avoided by a height set
+				// that never reaches it. Short-pane behaviour is owned by
+				// TestList_TheSearchOverlayBehavesTheSameAtEveryDrawablePane.
+				for _, termHeight := range jdePaneHeights() {
 					sized := listWithRows(surface.build, rows)
 					next, _ := sized.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
 					sized = next.(*ListScreen)
 					next, _ = sized.Update(listRuneKey("/"))
 					sized = next.(*ListScreen)
+					if !listOverlayBarFits(sized) {
+						below++
+						continue
+					}
+					drawn++
 					for _, segment := range strings.Split(sized.searchBarHint(), " · ") {
-						if !listFooterLegible(t, sized, termHeight, segment) {
+						if !listLineHolds(listRootLines(t, sized, 80, termHeight), segment) {
 							t.Errorf("the %s search bar claims %q on a line the pane cuts off "+
-								"(%s, height %d):\n%s", surface.name, segment, state, termHeight,
-								strings.Join(listPaneLines(t, sized, termHeight), "\n"))
+								"(%s, height %d, %d pane rows against the %d its head needs):\n%s",
+								surface.name, segment, state, termHeight, sized.listPaneRows(),
+								listOverlayHeadRows(sized),
+								strings.Join(listRootLines(t, sized, 80, termHeight), "\n"))
 						}
 					}
 				}
@@ -1136,6 +1160,11 @@ func TestList_TheSearchOverlayNamesExactlyTheKeysThatWork(t *testing.T) {
 				}
 			}
 		})
+	}
+	if drawn == 0 || below == 0 {
+		t.Fatalf("the overlay's bar fitted at %d swept heights and did not at %d — both are "+
+			"needed: the first is the legibility claim, the second is the exempt short pane "+
+			"that claim is deliberately scoped away from", drawn, below)
 	}
 	if searched == 0 {
 		t.Fatal("no list surface has a search loader, so this sweep asserted nothing")
@@ -2004,6 +2033,22 @@ type listOverlayAnswer struct {
 	navigates bool
 }
 
+// listOverlayRest is listOverlayPress's baseline: the same fixture, the same
+// seating, and NO key after it. Comparing a key's answer against this is what
+// makes "the key acted" a question the control can answer — against any other
+// baseline a dead key still looks different from it.
+func listOverlayRest(t *testing.T, build func() *ListScreen, w, h int) listOverlayAnswer {
+	t.Helper()
+	s := listSearchOpen(t, build, 8, w, h)
+	seated, _ := s.Update(tea.KeyMsg{Type: tea.KeyDown})
+	s = seated.(*ListScreen)
+	return listOverlayAnswer{
+		cursor:    s.cursor,
+		searching: s.searching,
+		query:     s.searchInput.Value(),
+	}
+}
+
 // listOverlayPress opens the overlay at one pane, seats the cursor off row 0 so
 // `up` has somewhere to move from, and presses one key.
 func listOverlayPress(t *testing.T, build func() *ListScreen, w, h int, key tea.KeyMsg) listOverlayAnswer {
@@ -2065,10 +2110,16 @@ func TestList_TheSearchOverlayBehavesTheSameAtEveryDrawablePane(t *testing.T) {
 	for _, surface := range listSearchSurfaces(t) {
 		t.Run(surface.name, func(t *testing.T) {
 			reference := map[tea.KeyType]listOverlayAnswer{}
-			rest := listOverlayPress(t, surface.build, tallW, tallH, tea.KeyMsg{Type: tea.KeyDown})
+			// THE BASELINE IS THE SEATED STATE WITH NO KEY PRESSED, which is the
+			// only baseline this control can fire against. It used to be the
+			// seat-plus-`down` answer, and every other key leaves the cursor
+			// somewhere else, so `answer == rest` was false BY CONSTRUCTION and
+			// the guard could never report — an overlay whose keys had all gone
+			// inert would have passed both halves of this test.
+			rest := listOverlayRest(t, surface.build, tallW, tallH)
 			for _, key := range listOverlayKeys() {
 				answer := listOverlayPress(t, surface.build, tallW, tallH, key)
-				if answer == rest && key.Type != tea.KeyDown {
+				if answer == rest {
 					t.Fatalf("%s: %v changed nothing on the overlay at %dx%d, so holding it at a "+
 						"short pane would be indistinguishable and every comparison below is "+
 						"vacuous", surface.name, key.Type, tallW, tallH)
@@ -2115,4 +2166,19 @@ func TestList_TheSearchOverlayBehavesTheSameAtEveryDrawablePane(t *testing.T) {
 		t.Fatal("no swept pane was one the browse list would refuse, so the exemption this " +
 			"check is about was never exercised")
 	}
+}
+
+// listOverlayHeadRows is the rows the search overlay's head occupies before its
+// blank separator: the input line, then the bar folded against the pane the
+// terminal really gave (View builds it with exactly these two).
+func listOverlayHeadRows(s *ListScreen) int {
+	return 1 + len(pickerWrap(s.searchBarHint(), s.listPaneCells()))
+}
+
+// listOverlayBarFits reports whether the pane can hold that head whole, which is
+// the DERIVED boundary the legibility claim is scoped to. Below it the overlay
+// draws its input line and part of its bar or none of it — the known price of
+// exempting a keyboard-owning surface from the refusal, recorded in AGENTS.md.
+func listOverlayBarFits(s *ListScreen) bool {
+	return s.listPaneRows() >= listOverlayHeadRows(s)
 }

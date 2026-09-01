@@ -128,10 +128,13 @@ func listNavBinds(key string) bool {
 // "deliberately unbound" stay different states, and so the check that keeps them
 // unbound can say WHY rather than just failing.
 // TestListNav_NoSurfaceBindsARetiredChord PRESSES every key in this map on every
-// fixture FOUR sets can build — the columnar sheets, every *ListScreen,
-// TextScroller, and the three cursor pickers that used to bind these chords — so
+// fixture its swept sets can build — the columnar sheets, every *ListScreen,
+// TextScroller, and the cursor pickers that used to bind these chords — so
 // re-introducing one on any of them, a screen that does not exist yet included,
-// fails the build rather than shipping a key nothing names. It is a behavioural
+// fails the build rather than shipping a key nothing names. That test's subtests
+// are the authority on which sets there are and how many; a count restated here
+// is a number that has drifted from the code every time it has been written
+// down, so it is not written down. It is a behavioural
 // press and not a scan of this package's source: a chord bound through a helper
 // or a key-name map is invisible to a `case "ctrl+d":` regex and is not
 // invisible to a keystroke.
@@ -172,9 +175,9 @@ var listNavRetiredChords = map[string]string{
 		"bar segment teaching it.",
 	"ctrl+p": "the emacs previous-line chord, retired from ListScreen's search " +
 		"overlay by sc-po-create-hangs. Nothing binds it now and nothing should: " +
-		"up is named wherever a cursor moves. It outlived the first retirement on " +
-		"three cursor pickers that bound it as tea.KeyCtrlP rather than as a string, " +
+		"up is named wherever a cursor moves. It outlived the first retirement on the " +
+		"cursor pickers that bound it as tea.KeyCtrlP rather than as a string, " +
 		"which is why both spellings are read now.",
 	"ctrl+n": "the emacs next-line chord, retired beside ctrl+p, and bound beside it " +
-		"as tea.KeyCtrlN on the same three pickers.",
+		"as tea.KeyCtrlN on those same pickers.",
 }
