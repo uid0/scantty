@@ -128,12 +128,13 @@ func listNavBinds(key string) bool {
 // "deliberately unbound" stay different states, and so the check that keeps them
 // unbound can say WHY rather than just failing.
 // TestListNav_NoSurfaceBindsARetiredChord PRESSES every key in this map on every
-// fixture THREE sets can build — the columnar sheets, every *ListScreen, and
-// TextScroller — so re-introducing one on any of them, a screen that does not
-// exist yet included, fails the build rather than shipping a key nothing names.
-// It is a behavioural press and not a scan of this package's source: a chord
-// bound through a helper or a key-name map is invisible to a `case "ctrl+d":`
-// regex and is not invisible to a keystroke.
+// fixture FOUR sets can build — the columnar sheets, every *ListScreen,
+// TextScroller, and the three cursor pickers that used to bind these chords — so
+// re-introducing one on any of them, a screen that does not exist yet included,
+// fails the build rather than shipping a key nothing names. It is a behavioural
+// press and not a scan of this package's source: a chord bound through a helper
+// or a key-name map is invisible to a `case "ctrl+d":` regex and is not
+// invisible to a keystroke.
 //
 // TextScroller is in that list because it is where two of these chords were
 // unbound and because it hands the whole movement vocabulary to every detail
@@ -142,10 +143,20 @@ func listNavBinds(key string) bool {
 // other two sets, and invisible to jdePlaceOf as well, since a scroller's
 // offset is nested inside a value rather than an int field of the screen.
 //
+// THE CURSOR PICKERS ARE IN IT BECAUSE THE RETIREMENT WAS INCOMPLETE AND BOTH
+// RECORDS SAID OTHERWISE. bubbletea's KEY CONSTANTS are a second spelling —
+// `case tea.KeyDown, tea.KeyCtrlN:` in a switch over m.Type binds exactly what
+// `case "ctrl+n":` binds — and the first retirement, this sweep and the surface
+// classifier all read string literals only. Three surfaces went on moving a
+// cursor on ctrl+n/ctrl+p for two more rounds: the universal search palette, the
+// e-paper bind picker and the location check-in lookup. That is half one of the
+// rule verbatim, and it survived because the derivation was complete over the
+// wrong alphabet. Both spellings are read now (listNavCaseKey), and the
+// constants' keystrokes are asked of bubbletea rather than transcribed.
+//
 // WHAT IS NOT COVERED, said plainly rather than left to be assumed: a prose-bar
-// receiver that binds a chord in a `case` of its OWN, rather than by holding a
-// scroller, has no fixture here to press it against. Nothing in the app does
-// today — that is what the retirement removed — and
+// receiver that binds a chord in a `case` of its own and is in none of the four
+// fixture sets has nothing here to press it against.
 // TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused is what stops the
 // set of such receivers growing in silence. It is a coverage classification and
 // not a behaviour claim, so it cannot see a retired chord: it collects only the
@@ -161,6 +172,9 @@ var listNavRetiredChords = map[string]string{
 		"bar segment teaching it.",
 	"ctrl+p": "the emacs previous-line chord, retired from ListScreen's search " +
 		"overlay by sc-po-create-hangs. Nothing binds it now and nothing should: " +
-		"up is named wherever a cursor moves.",
-	"ctrl+n": "the emacs next-line chord, retired beside ctrl+p.",
+		"up is named wherever a cursor moves. It outlived the first retirement on " +
+		"three cursor pickers that bound it as tea.KeyCtrlP rather than as a string, " +
+		"which is why both spellings are read now.",
+	"ctrl+n": "the emacs next-line chord, retired beside ctrl+p, and bound beside it " +
+		"as tea.KeyCtrlN on the same three pickers.",
 }

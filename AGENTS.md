@@ -827,8 +827,24 @@ either:
   pairs, forty-eight arms), so the same key paged the supplier list and did
   nothing on the inventory list the operator reached it from —
   `TestListNav_NoSurfaceBindsARetiredChord` PRESSES each chord on every fixture
-  THREE swept sets can build (`jdePaneCases`, `listBarSurfaces` × every row
-  count, and `TextScroller`) and fails on one that moves. It used to prove that from source SHAPE — a
+  FOUR swept sets can build (`jdePaneCases`, `listBarSurfaces` × every row count,
+  `TextScroller`, and the three cursor pickers of `listNavPickerCases`) and fails
+  on one that moves.
+  A KEYSTROKE HAS TWO SPELLINGS IN THIS PACKAGE AND A DERIVATION OVER ONE OF THEM
+  IS NOT A DERIVATION. `case "ctrl+n":` and `case tea.KeyCtrlN:` in a switch over
+  `m.Type` bind the same key, and the first retirement, this sweep and the
+  surface classifier all read STRING LITERALS ONLY — so `ctrl+n`/`ctrl+p` went on
+  moving a cursor for two more rounds on the universal search palette
+  (`search.go`), the e-paper bind picker (`epaper_panels.go`) and the
+  location check-in lookup (`location_checkins.go`), while both this file and
+  `listNavRetiredChords` said the chords moved nothing anywhere. All three are
+  unbound now — the arrow each clause already bound is what their footers name,
+  so nothing was taken from the operator — and `listNavCaseKey` reads both
+  spellings, asking bubbletea itself what a `tea.Key*` constant spells rather than
+  transcribing a table (`listNavSpellingIndex`, with `KeySpace` the one recorded
+  exception, since its `String()` is the character and not the word). The lesson
+  is the one this area keeps teaching: a roster is only as complete as the
+  alphabet it is derived over. It used to prove that from source SHAPE — a
   regex over `case "ctrl+d":` literals — which failed on a commented-out arm and
   passed a chord bound through a helper or a key-name map; behaviour answers both
   directions. It is POSITIVELY CONTROLLED (`listNavChordControls`): each case

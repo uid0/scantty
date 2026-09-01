@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // list_nav_surfaces_test.go — WHICH surfaces the movement rule is PROVEN on, and
@@ -76,11 +78,20 @@ import (
 // listNavUnsweptReceivers are the receivers that bind a keystroke the navigation
 // vocabulary spells and that neither behavioural sweep can read a bar for.
 //
-// MOSTLY, that is because the bar is prose written straight into View. Two
+// MOSTLY, that is because the bar is prose written straight into View. Several
 // entries are not, and they are here rather than filtered out because the
 // derivation is a set of KEY NAMES and cannot tell a movement `g` from a `g`
-// that means generate — a filter clever enough to drop one would eventually drop
-// a real one, and this map is where that limit is visible instead of invisible.
+// that means generate, nor a list cursor from a FIELD-FORM focus pair — a filter
+// clever enough to drop one would eventually drop a real one, and this map is
+// where that limit is visible instead of invisible.
+//
+// THE FIELD-FORM ENTRIES ARRIVED WITH THE SECOND ALPHABET. Until listNavCaseKey
+// learned to read bubbletea's tea.Key* constants, a receiver that bound movement
+// as `case tea.KeyTab, tea.KeyDown:` was invisible here, so five appeared in no
+// class at all — the same silence the TextScroller delegation hole was, one
+// spelling further along. Four of them are field forms whose focus wraps
+// (slotCardPrompt's exemption); the fifth, SearchPalette, is a real cursor list
+// and is pressed rather than merely excused.
 //
 // One entry per receiver, each saying what the surface is — not "excluded",
 // which is the fact the map already carries, but what a reader would need to
@@ -148,6 +159,16 @@ var listNavUnsweptReceivers = map[string]string{
 		"movement `g` from a `g` that means generate — which is a limit of the derivation " +
 		"and is recorded rather than silently filtered, since filtering it would need a " +
 		"rule that also hid a real one",
+	"SearchPalette": "the universal search palette's result list; its bar is a muted " +
+		"literal inside View (`↑/↓ move · enter open · esc close`). It is not a bar the " +
+		"honesty sweep can read, but it IS pressed by the retired-chord sweep, which " +
+		"drives its cursor directly (listNavPickerCases)",
+	"LoginScreen": "NOT a list: up/down are the field-form focus pair beside tab/" +
+		"shift+tab on a two-field login, and the focus WRAPS, so the field-form " +
+		"exemption applies exactly as it does to slotCardPrompt",
+	"BatchScanSerialsScreen":     "NOT a list: up/down move between the two setup fields beside tab/shift+tab, and the focus wraps — the field-form exemption",
+	"ReorderFormScreen":          "NOT a list: up/down move between the reorder form's fields beside tab/shift+tab, and the focus wraps — the field-form exemption",
+	"ForgeKeyDeviceDetailScreen": "NOT a list: up/down move between the indicator-edit fields beside tab/shift+tab, and setIndicatorFocus wraps modulo the field count — the field-form exemption",
 	"slotCardPrompt": "a two-row modal prompt inside the storage-slot list, not a list of " +
 		"rows: up/down move between a text field and a toggle and its cursor WRAPS, so the " +
 		"field-form exemption applies (AGENTS.md)",
@@ -199,22 +220,30 @@ func listNavBindingSurfaces(t *testing.T) map[string][]string {
 				return true
 			}
 			ast.Inspect(fn.Body, func(inner ast.Node) bool {
-				cl, ok := inner.(*ast.CaseClause)
+				// A VALUE switch only. A TYPE switch's `case tea.KeyMsg:` names a
+				// message type rather than a keystroke, and reading the two as one
+				// alphabet would hand tea.KeyMsg to the resolver below and fail on
+				// a clause that binds nothing. Nested switches are reached as their
+				// own SwitchStmt nodes, so taking each one's immediate clauses is
+				// exact rather than approximate.
+				sw, ok := inner.(*ast.SwitchStmt)
 				if !ok {
 					return true
 				}
-				for _, expr := range cl.List {
-					lit, ok := expr.(*ast.BasicLit)
-					if !ok || lit.Kind != token.STRING {
+				for _, stmt := range sw.Body.List {
+					cl, ok := stmt.(*ast.CaseClause)
+					if !ok {
 						continue
 					}
-					key, err := strconv.Unquote(lit.Value)
-					if err != nil || !listNavBinds(key) {
-						continue
+					for _, expr := range cl.List {
+						key, spelled := listNavCaseKey(t, expr)
+						if !spelled || !listNavBinds(key) {
+							continue
+						}
+						pos := fset.Position(expr.Pos())
+						out[recv] = append(out[recv],
+							name+":"+strconv.Itoa(pos.Line)+" "+strconv.Quote(key))
 					}
-					pos := fset.Position(lit.Pos())
-					out[recv] = append(out[recv],
-						name+":"+strconv.Itoa(pos.Line)+" "+strconv.Quote(key))
 				}
 				return true
 			})
@@ -225,6 +254,198 @@ func listNavBindingSurfaces(t *testing.T) map[string][]string {
 		t.Fatalf("the AST scan found only %d receivers binding a navigation key, which "+
 			"is far fewer than this package has — the derivation is broken", len(out))
 	}
+	return out
+}
+
+// listNavCaseKey resolves ONE case expression to the keystroke it binds.
+//
+// TWO ALPHABETS, because a screen may spell a key either way and reading only
+// one is how this derivation went blind. Most of the package writes
+// `case "up", "k":` — a string literal, matched by Update's KeyMsg.String().
+// bubbletea's own constants are the other spelling: `case tea.KeyUp:` in a
+// switch over m.Type binds exactly the same keystroke and was invisible here,
+// so five receivers appeared in NO class and three surfaces went on moving a
+// cursor on chords list_nav.go records as retired, with both records saying
+// otherwise. A derivation is only as complete as its alphabet.
+//
+// THE CONSTANT'S SPELLING IS ASKED OF BUBBLETEA (listNavKeyTypeSpelling), never
+// transcribed here: a hand-kept table would be a third place for the same drift
+// to hide, and this file already carries the lesson about rosters that must be
+// edited in step with the code.
+func listNavCaseKey(t *testing.T, expr ast.Expr) (string, bool) {
+	t.Helper()
+	switch v := expr.(type) {
+	case *ast.BasicLit:
+		if v.Kind != token.STRING {
+			return "", false
+		}
+		key, err := strconv.Unquote(v.Value)
+		if err != nil {
+			return "", false
+		}
+		return key, true
+	case *ast.SelectorExpr:
+		pkg, ok := v.X.(*ast.Ident)
+		if !ok || pkg.Name != "tea" || !strings.HasPrefix(v.Sel.Name, "Key") {
+			return "", false
+		}
+		return listNavKeyTypeSpelling(t, v.Sel.Name)
+	}
+	return "", false
+}
+
+// listNavSpellingIndex maps a bubbletea KeyType CONSTANT NAME to the keystroke
+// that constant spells, derived by walking the KeyType space and asking each one
+// what it is called.
+//
+// The identifier and the spelling differ only in case and punctuation —
+// KeyCtrlN spells "ctrl+n", KeyShiftTab spells "shift+tab" — so normalising both
+// sides to lowercase alphanumerics matches them without anyone writing the pairs
+// down. The range is wide enough to cover bubbletea's negative control codes and
+// its positive named keys; a constant outside it simply does not resolve, and an
+// unresolved constant is a FATAL at the call site rather than a silent skip.
+func listNavSpellingIndex() map[string]string {
+	out := map[string]string{}
+	for i := -64; i <= 256; i++ {
+		spelling := tea.KeyType(i).String()
+		if norm := listNavNormaliseKey(spelling); norm != "" {
+			out[norm] = spelling
+		}
+	}
+	return out
+}
+
+func listNavNormaliseKey(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// listNavUnspellableKeyTypes are the KeyType constants whose own String() is not
+// a NAME, so the derivation above cannot reach them, each with the reason.
+//
+// Recorded rather than filtered, for the reason AGENTS.md gives about the two
+// exclusion entries in listNavUnsweptReceivers: a rule clever enough to drop
+// these silently would eventually drop a real one, so the limit of the
+// derivation is visible here instead of invisible. TestListNav_EveryKeyConstant
+// TheDerivationMeetsResolves fails in both directions — an unresolvable constant
+// that is not listed, and a listed one that has become resolvable.
+//
+// None of them can spell a navigation key: every keystroke in listNavSet() has
+// an alphanumeric name, and an entry is here precisely because its constant has
+// none.
+var listNavUnspellableKeyTypes = map[string]string{
+	"KeySpace": "its String() is the space character itself rather than the word " +
+		"\"space\", so there is nothing alphanumeric to match the identifier against",
+}
+
+// listNavKeyTypeSpelling is the keystroke a bubbletea KeyType constant name
+// spells, or a FATAL naming the constant it could not resolve.
+//
+// Fatal rather than skip: a constant this cannot read is a binding the
+// classifier would miss, which is the exact silence the whole file exists to
+// prevent — the same shape as poPickerKeyMsg falling through to KeyRunes for a
+// name it had not been taught.
+func listNavKeyTypeSpelling(t *testing.T, ident string) (string, bool) {
+	t.Helper()
+	if _, unspellable := listNavUnspellableKeyTypes[ident]; unspellable {
+		return "", false
+	}
+	spelling, ok := listNavSpellingIndex()[listNavNormaliseKey(strings.TrimPrefix(ident, "Key"))]
+	if !ok {
+		t.Fatalf("a case clause binds tea.%s and this derivation cannot say which "+
+			"keystroke that spells, so a binding through it would be invisible to the "+
+			"classifier. Either bubbletea renamed the constant or it is one whose "+
+			"String() is not a name — if the latter, record it in "+
+			"listNavUnspellableKeyTypes with the reason", ident)
+	}
+	return spelling, ok
+}
+
+// TestListNav_EveryKeyConstantTheDerivationMeetsResolves: every tea.Key*
+// constant the package binds in a value switch resolves to a keystroke, or is
+// recorded as unspellable WITH A REASON.
+//
+// BOTH DIRECTIONS FAIL, for the reason every roster in this file does: an
+// unresolvable constant that is not listed is a hole, and a listed one that has
+// become resolvable is a stale excuse. The set of constants is DERIVED from the
+// package rather than written down, so a screen binding a new one is checked the
+// day it lands.
+func TestListNav_EveryKeyConstantTheDerivationMeetsResolves(t *testing.T) {
+	index := listNavSpellingIndex()
+	met := map[string]bool{}
+	for _, ident := range listNavKeyConstantsBound(t) {
+		met[ident] = true
+		_, unspellable := listNavUnspellableKeyTypes[ident]
+		_, resolves := index[listNavNormaliseKey(strings.TrimPrefix(ident, "Key"))]
+		switch {
+		case !resolves && !unspellable:
+			t.Errorf("tea.%s is bound in a case clause and neither resolves to a "+
+				"keystroke nor is recorded in listNavUnspellableKeyTypes — a binding "+
+				"through it is invisible to the classifier", ident)
+		case resolves && unspellable:
+			t.Errorf("tea.%s is recorded as unspellable but the derivation resolves it "+
+				"now; the excuse has outlived the constant it was written about", ident)
+		}
+	}
+	if len(met) == 0 {
+		t.Fatal("the package binds no tea.Key* constant at all by this scan — the " +
+			"derivation is broken, not the app")
+	}
+	for ident := range listNavUnspellableKeyTypes {
+		if !met[ident] {
+			t.Errorf("listNavUnspellableKeyTypes records tea.%s, which no case clause "+
+				"binds any more", ident)
+		}
+	}
+}
+
+// listNavKeyConstantsBound is every tea.Key* constant name the package uses as a
+// VALUE case expression, derived from the source.
+func listNavKeyConstantsBound(t *testing.T) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parsing the package: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, file := range pkgs["tui"].Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			sw, ok := n.(*ast.SwitchStmt)
+			if !ok {
+				return true
+			}
+			for _, stmt := range sw.Body.List {
+				cl, ok := stmt.(*ast.CaseClause)
+				if !ok {
+					continue
+				}
+				for _, expr := range cl.List {
+					sel, ok := expr.(*ast.SelectorExpr)
+					if !ok {
+						continue
+					}
+					if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "tea" &&
+						strings.HasPrefix(sel.Sel.Name, "Key") {
+						seen[sel.Sel.Name] = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	out := make([]string, 0, len(seen))
+	for ident := range seen {
+		out = append(out, ident)
+	}
+	sort.Strings(out)
 	return out
 }
 

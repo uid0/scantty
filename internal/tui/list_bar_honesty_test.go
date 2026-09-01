@@ -850,19 +850,38 @@ var listWayOutKeyNames = map[string]listWayOutKey{
 // failure message leaves the drift open in the one direction that matters —
 // reword the notice and the test goes on pressing the old key, goes on passing,
 // and certifies a way out the pane no longer names.
+//
+// IT READS THE RECORD'S STRUCTURE rather than scanning it for words it happens
+// to know, and that is what lets an unknown KEY be told apart from an ordinary
+// one. The notice is built of " · " clauses and each names its key FIRST, so
+// the first word of a clause is a key token and the rest is prose: "Esc leaves"
+// names Esc. Scanning every word instead, an unrecognised key was
+// indistinguishable from the word "leaves" and could only be skipped — so a
+// notice reworded to "Esc leaves · Ctrl-C quits" would have pressed esc, passed
+// over Ctrl-C in silence and certified half the record. Now every clause must
+// yield a key the table knows, or the sweep fatals.
 func listWayOutKeys(t *testing.T) []listWayOutKey {
 	t.Helper()
 	var out []listWayOutKey
-	for _, word := range strings.Fields(listTooShortWayOut) {
-		if key, ok := listWayOutKeyNames[strings.Trim(word, ".,;:·")]; ok {
-			out = append(out, key)
+	for _, clause := range strings.Split(listTooShortWayOut, " · ") {
+		words := strings.Fields(clause)
+		if len(words) == 0 {
+			continue
 		}
+		token := strings.Trim(words[0], ".,;:")
+		key, ok := listWayOutKeyNames[token]
+		if !ok {
+			t.Fatalf("the refusal notice reads %q, whose clause %q names the key %q — "+
+				"and listWayOutKeyNames does not know it, so this sweep would skip that "+
+				"clause and certify only the rest of the record. Teach the table the key "+
+				"the notice now names: a way out nobody presses is a way out nobody proved",
+				listTooShortWayOut, clause, token)
+		}
+		out = append(out, key)
 	}
 	if len(out) == 0 {
-		t.Fatalf("the refusal notice reads %q and listWayOutKeyNames recognises no key "+
-			"in it, so this sweep would press nothing and pass. Teach the table the word "+
-			"the notice now uses — a way out nobody presses is a way out nobody proved",
-			listTooShortWayOut)
+		t.Fatalf("the refusal notice reads %q and names no key at all, so this sweep "+
+			"would press nothing and pass", listTooShortWayOut)
 	}
 	return out
 }

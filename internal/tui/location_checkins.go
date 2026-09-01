@@ -385,7 +385,7 @@ func (s *LocationCheckinsScreen) openLookup() (Screen, tea.Cmd) {
 	return s, tea.Batch(textinput.Blink, s.runLookup())
 }
 
-// updateLookup owns the picker step: arrow / ctrl+n/p move the cursor, enter
+// updateLookup owns the picker step: the arrows move the cursor, enter
 // selects the highlighted row (filling the id and jumping to confirm), esc
 // returns to the id field; every other key edits the query and fires a fresh
 // server-side search.
@@ -399,12 +399,12 @@ func (s *LocationCheckinsScreen) updateLookup(m tea.KeyMsg) (Screen, tea.Cmd) {
 			s.locInput.Focus()
 		}
 		return s, textinput.Blink
-	case tea.KeyUp, tea.KeyCtrlP:
+	case tea.KeyUp:
 		if s.pickCursor > 0 {
 			s.pickCursor--
 		}
 		return s, nil
-	case tea.KeyDown, tea.KeyCtrlN:
+	case tea.KeyDown:
 		if s.pickCursor < len(s.pickRows)-1 {
 			s.pickCursor++
 		}

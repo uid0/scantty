@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/uid0/scantty/internal/omsapi"
 )
 
 // list_nav_test.go — the rule that no BEHAVIOURAL sweep can hold for the whole
@@ -110,6 +112,98 @@ func listNavPress(t *testing.T, s Screen, w, h int, probe []string, key string) 
 	paneBefore, placeBefore = r.View(), jdePlaceOf(s)
 	press(key)
 	return paneBefore, r.View(), placeBefore, jdePlaceOf(s)
+}
+
+// listNavSetsWithoutControl records, per (fixture set, chord), the pairs where
+// the set cannot supply a positive control, with the reason.
+//
+// A control is the NAMED key spelling the same affordance, and a set that never
+// binds that key cannot be moved by it — so "the chord did not move anything"
+// there is true for a reason unrelated to the chord. Skipping such a pair
+// silently is the vacuity the controls exist to prevent, so it is written down
+// instead, and the check fails in BOTH directions: an uncontrolled pair that is
+// not recorded, and a recorded pair that has since become controllable.
+//
+// The chords are still PRESSED on those surfaces — pressing costs nothing and a
+// chord that moved would still be caught. What is missing is only the proof that
+// the fixture could have moved, and that is what this map is honest about.
+var listNavSetsWithoutControl = map[string]string{
+	"picker/ctrl+u": "the cursor pickers bind no pager at all — their footers name " +
+		"`↑/↓ move` and nothing else — so pgup cannot move one and cannot control " +
+		"the page-up chord here. The columnar and list sets carry that control.",
+	"picker/ctrl+d": "pgdown, for the reason pgup is: these pickers have no paging " +
+		"affordance to control the page-down chord with.",
+}
+
+// listNavPickerCase is one cursor picker the retired-chord sweep drives
+// directly: a way to build it, and a way to read and move the cursor it owns.
+//
+// These three are prose-bar receivers, so neither the columnar set nor the
+// ListScreen set can reach them — and unlike those two they are not screens with
+// a bar to read but plain values with a cursor over a slice, which is exactly
+// what makes a direct press cheap and a bar sweep impossible.
+type listNavPickerCase struct {
+	name string
+	mk   func() listNavPickerProbe
+}
+
+// listNavPickerProbe is a picker under test: where its cursor is, and whether a
+// keystroke moved it.
+type listNavPickerProbe struct {
+	at    func() int
+	press func(key string) bool
+}
+
+func listNavPickerCases() []listNavPickerCase {
+	return []listNavPickerCase{
+		{"SearchPalette", func() listNavPickerProbe {
+			s := NewSearchPalette(Deps{})
+			s.results = []omsapi.SearchResult{
+				{Type: "item", Title: "Row 1"}, {Type: "item", Title: "Row 2"},
+				{Type: "item", Title: "Row 3"},
+			}
+			return listNavPickerProbe{
+				at: func() int { return s.cursor },
+				press: func(key string) bool {
+					before := s.cursor
+					if next, _ := s.Update(poPickerKeyMsg(key)); next != nil {
+						s = next.(*SearchPalette)
+					}
+					return s.cursor != before
+				},
+			}
+		}},
+		{"EPaperPanelsScreen/bind picker", func() listNavPickerProbe {
+			s := NewEPaperPanelsScreen(Deps{})
+			s.binding = true
+			s.bindResults = []omsapi.Asset{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+			return listNavPickerProbe{
+				at: func() int { return s.bindCursor },
+				press: func(key string) bool {
+					before := s.bindCursor
+					if next, _ := s.Update(poPickerKeyMsg(key)); next != nil {
+						s = next.(*EPaperPanelsScreen)
+					}
+					return s.bindCursor != before
+				},
+			}
+		}},
+		{"LocationCheckinsScreen/lookup picker", func() listNavPickerProbe {
+			s := NewLocationCheckinsScreen(Deps{})
+			s.step = checkinLookup
+			s.pickRows = []omsapi.Location{{ID: 1}, {ID: 2}, {ID: 3}}
+			return listNavPickerProbe{
+				at: func() int { return s.pickCursor },
+				press: func(key string) bool {
+					before := s.pickCursor
+					if next, _ := s.Update(poPickerKeyMsg(key)); next != nil {
+						s = next.(*LocationCheckinsScreen)
+					}
+					return s.pickCursor != before
+				},
+			}
+		}},
+	}
 }
 
 // TestListNav_NoSurfaceBindsARetiredChord: no surface the app can build MOVES
@@ -248,6 +342,43 @@ func TestListNav_NoSurfaceBindsARetiredChord(t *testing.T) {
 		}
 	})
 
+	// THE CURSOR PICKERS THAT USED TO BIND THE CHORDS, pressed because the
+	// retirement was INCOMPLETE on exactly these three and nothing reported it.
+	// Each moved its cursor on ctrl+n / ctrl+p through bubbletea's KEY CONSTANTS
+	// (`case tea.KeyDown, tea.KeyCtrlN:`) rather than a string case, which the
+	// round-one retirement and the surface classifier were both blind to — so
+	// ctrl+n walked the search palette's highlight while doing nothing on every
+	// list beside it, which is half one of the rule verbatim.
+	//
+	// They are pressed rather than excused because each is directly
+	// constructible: a screen value with a cursor and a slice of rows, needing
+	// no Root and no server. The control is the arrow the same clause binds,
+	// which is also what their footers name.
+	t.Run("cursor pickers", func(t *testing.T) {
+		for _, c := range listNavPickerCases() {
+			for chord, ctrl := range listNavChordControls {
+				// SEATED IN THE MIDDLE first, so BOTH directions have somewhere to
+				// go: a cursor resting at 0 cannot be moved by `up`, and "up did
+				// not move" would then be true for a reason unrelated to the chord.
+				// `down` rather than the shared probe because these pickers bind
+				// only the arrows — their footers name `↑/↓ move` and nothing else.
+				control := c.mk()
+				control.press("down")
+				if control.press(ctrl.key) {
+					controlled["picker/"+chord]++
+				}
+				probe := c.mk()
+				probe.press("down")
+				before := probe.at()
+				if probe.press(chord) {
+					t.Errorf("%s acts on %q: it moved the cursor from %d to %d. That "+
+						"chord is retired: %s", c.name, chord, before, probe.at(),
+						listNavRetiredChords[chord])
+				}
+			}
+		}
+	})
+
 	t.Run("list", func(t *testing.T) {
 		for _, surface := range listBarSurfaces() {
 			for state, rows := range listRowCases {
@@ -274,12 +405,18 @@ func TestListNav_NoSurfaceBindsARetiredChord(t *testing.T) {
 	})
 
 	for chord, ctrl := range listNavChordControls {
-		for _, set := range []string{"columnar", "list", "scroller"} {
-			if controlled[set+"/"+chord] == 0 {
+		for _, set := range []string{"columnar", "list", "scroller", "picker"} {
+			why, excused := listNavSetsWithoutControl[set+"/"+chord]
+			switch {
+			case controlled[set+"/"+chord] == 0 && !excused:
 				t.Errorf("no %s fixture was moved by %q, the key that spells the same "+
 					"affordance as %q — so every %q-does-nothing case above passed for a "+
 					"reason unrelated to the chord, and this half of the sweep is vacuous",
 					set, ctrl.key, chord, chord)
+			case controlled[set+"/"+chord] > 0 && excused:
+				t.Errorf("listNavSetsWithoutControl excuses %s/%s (%q) but %q moved a "+
+					"fixture in that set — the excuse has outlived the surface it was "+
+					"written about", set, chord, why, ctrl.key)
 			}
 		}
 	}
