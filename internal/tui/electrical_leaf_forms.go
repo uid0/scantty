@@ -607,7 +607,7 @@ func (s *PowerOutletFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) 
 	case jdePickPage:
 		header, body := s.pickView()
 		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickOptions), delta, len(header),
-			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickBar(header, body), jdePickBarCeiling("Select", "Cancel")); ok {
 			s.pickCursor = next
 		}
 	default:
@@ -965,7 +965,7 @@ func (s *PowerOutletFormScreen) pickView() (jdeHeader, *jdeLines) {
 // list moves under the bar about to be drawn — measured against the bar WITH
 // the pair on it, because the tallest bar is the fixed point.
 func (s *PowerOutletFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return jdePickBar("Select", s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBar("Select", true)))
+	return jdePickBar("Select", len(s.pickOptions), s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBarCeiling("Select", "Cancel")))
 }
 
 func (s *PowerOutletFormScreen) viewPick() string {
@@ -1534,7 +1534,7 @@ func (s *DisconnectFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case jdePickPage:
 		header, body := s.pickView()
 		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickOptions), delta, len(header),
-			s.pickBar(header, body), s.pickBarItems(true)); ok {
+			s.pickBar(header, body), s.pickBarItems(jdeCeilingRows, true)); ok {
 			s.pickCursor = next
 		}
 	default:
@@ -1924,17 +1924,18 @@ func (s *DisconnectFormScreen) pickRowLabel(i int) string {
 // list moves under the bar about to be drawn — measured against the bar WITH
 // the pair on it, because the tallest bar is the fixed point.
 func (s *DisconnectFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return s.pickBarItems(s.bodyPagesForBar(body, len(s.pickOptions), len(header), s.pickBarItems(true)))
+	n := len(s.pickOptions)
+	return s.pickBarItems(n, s.bodyPagesForBar(body, n, len(header), s.pickBarItems(jdeCeilingRows, true)))
 }
 
 // pickBarItems is pickBar for a given paging state. The multi picker's esc is
 // "done", not "cancel" — its toggles were applied as they were made, so there
 // is nothing left to undo.
-func (s *DisconnectFormScreen) pickBarItems(paging bool) []actionBarItem {
+func (s *DisconnectFormScreen) pickBarItems(count int, paging bool) []actionBarItem {
 	if s.pickField == dcLOTODevices {
-		return jdePickBarWith("Toggle", "Done", paging)
+		return jdePickBarWith("Toggle", "Done", count, paging)
 	}
-	return jdePickBar("Select", paging)
+	return jdePickBar("Select", count, paging)
 }
 
 func (s *DisconnectFormScreen) viewPick() string {

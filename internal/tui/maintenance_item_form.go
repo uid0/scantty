@@ -856,7 +856,7 @@ func (s *MaintenanceItemFormScreen) updateAssetPick(m tea.KeyMsg) (Screen, tea.C
 	case jdePickPage:
 		header, body := s.pickView()
 		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickOptions), delta, len(header),
-			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickBar(header, body), jdePickBarCeiling("Select", "Cancel")); ok {
 			s.pickCursor = next
 		}
 	default:
@@ -967,13 +967,15 @@ func (s *MaintenanceItemFormScreen) sublistBarNow(body *jdeLines) []actionBarIte
 	return s.sublistBar(body, count, noun, addVerb)
 }
 
-// sublistBarNowCeiling is that same bar WITH the paging pair on it — the fixed
-// point pageRow measures the scroll question against, for the reason its doc
-// gives: naming the keys costs cells, and cells can fold the bar onto another
-// row.
+// sublistBarNowCeiling is that same bar WITH EVERY MOVEMENT KEY on it — the
+// fixed point pageRow measures the scroll question against, for the reason its
+// doc gives: naming the keys costs cells, and cells can fold the bar onto
+// another row. UP/DN can now come OFF a bar (jdeRowMoves), so the ceiling has to
+// name it back or a one-row sub-list would budget against a bar shorter than the
+// one a second row restores.
 func (s *MaintenanceItemFormScreen) sublistBarNowCeiling() []actionBarItem {
 	count, noun, addVerb := s.sublistScope()
-	return s.sublistBarItems(count, noun, addVerb, true)
+	return s.sublistBarItems(count, noun, addVerb, jdeCeilingRows, true)
 }
 
 // sublistScope is which sub-list is open, said ONCE: the row count and the two
@@ -1891,7 +1893,7 @@ func (s *MaintenanceItemFormScreen) pickView() (jdeHeader, *jdeLines) {
 // list moves under the bar about to be drawn — measured against the bar WITH
 // the pair on it, because the tallest bar is the fixed point.
 func (s *MaintenanceItemFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return jdePickBar("Select", s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBar("Select", true)))
+	return jdePickBar("Select", len(s.pickOptions), s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBarCeiling("Select", "Cancel")))
 }
 
 func (s *MaintenanceItemFormScreen) viewAssetPick() string {
@@ -1944,14 +1946,22 @@ func (s *MaintenanceItemFormScreen) sublistLines(heading, empty, addLabel string
 // sublistBar names the keys that apply. Enter and Esc are both done: the rows
 // are written with the ITEM, so leaving the list writes nothing either way.
 func (s *MaintenanceItemFormScreen) sublistBar(body *jdeLines, count int, noun, addVerb string) []actionBarItem {
-	return s.sublistBarItems(count, noun, addVerb,
-		s.bodyPagesForBar(body, count+1, 0, s.sublistBarItems(count, noun, addVerb, true)))
+	return s.sublistBarItems(count, noun, addVerb, count+1,
+		s.bodyPagesForBar(body, count+1, 0, s.sublistBarItems(count, noun, addVerb, jdeCeilingRows, true)))
 }
 
 // sublistBarItems is sublistBar for a given paging state, so the bar that is
 // MEASURED against the pane is the bar that is drawn on it.
-func (s *MaintenanceItemFormScreen) sublistBarItems(count int, noun, addVerb string, paging bool) []actionBarItem {
-	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}, {"UP/DN", noun}}
+// `moveRows` is the NAVIGABLE row count and `count` is the row count, and they
+// are two arguments because a ceiling bar has to force the movement pair on
+// without also flipping the Ctrl-E label from "Edit" to the add verb — the two
+// are different widths, and a ceiling measured with the wrong one is not the
+// tallest bar it claims to be. The cursor also stands on the trailing add row,
+// so the live caller passes count+1, the same +1 sublistBar hands
+// bodyPagesForBar.
+func (s *MaintenanceItemFormScreen) sublistBarItems(count int, noun, addVerb string, moveRows int, paging bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}}
+	items = append(items, jdeMoveItem(noun, moveRows)...)
 	if s.rowCursor >= count {
 		items = append(items, actionBarItem{"Ctrl-E", addVerb})
 	} else {

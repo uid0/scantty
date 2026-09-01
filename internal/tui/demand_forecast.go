@@ -191,7 +191,7 @@ func (s *DemandForecastScreen) updateList(m tea.KeyMsg) (Screen, tea.Cmd) {
 			s.cursor--
 			s.scrollIntoView()
 		}
-	case "ctrl+d", "pgdown":
+	case "pgdown":
 		s.cursor += s.windowSize
 		if s.cursor >= len(s.rows) {
 			s.cursor = len(s.rows) - 1
@@ -200,7 +200,7 @@ func (s *DemandForecastScreen) updateList(m tea.KeyMsg) (Screen, tea.Cmd) {
 			s.cursor = 0
 		}
 		s.scrollIntoView()
-	case "ctrl+u", "pgup":
+	case "pgup":
 		s.cursor -= s.windowSize
 		if s.cursor < 0 {
 			s.cursor = 0

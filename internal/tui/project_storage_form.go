@@ -445,7 +445,7 @@ func (s *ProjectStorageFormScreen) updateSlotPick(m tea.KeyMsg) (Screen, tea.Cmd
 	case jdePickPage:
 		header, body := s.pickView()
 		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickRows), delta, len(header),
-			s.pickBar(header, body), s.pickBarItems(true)); ok {
+			s.pickBar(header, body), s.pickBarItems(jdeCeilingRows, true)); ok {
 			s.pickCursor = next
 		}
 	default:
@@ -684,15 +684,16 @@ func (s *ProjectStorageFormScreen) pickView() (jdeHeader, *jdeLines) {
 // list moves under the bar about to be drawn — measured against the bar WITH
 // the pair on it, because the tallest bar is the fixed point.
 func (s *ProjectStorageFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return s.pickBarItems(s.bodyPagesForBar(body, len(s.pickRows), len(header), s.pickBarItems(true)))
+	n := len(s.pickRows)
+	return s.pickBarItems(n, s.bodyPagesForBar(body, n, len(header), s.pickBarItems(jdeCeilingRows, true)))
 }
 
 // pickBarItems is pickBar for a given paging state, so the bar that is MEASURED
 // is the bar that is drawn — Ctrl-R included, because a retry key costs cells
 // too and a bar that folded without it would leave the body a row it does not
 // have.
-func (s *ProjectStorageFormScreen) pickBarItems(paging bool) []actionBarItem {
-	items := jdePickBar("Claim", paging)
+func (s *ProjectStorageFormScreen) pickBarItems(count int, paging bool) []actionBarItem {
+	items := jdePickBar("Claim", count, paging)
 	if s.slotsErr != "" {
 		items = append(items, actionBarItem{"Ctrl-R", "Retry list"})
 	}

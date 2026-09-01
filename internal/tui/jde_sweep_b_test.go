@@ -49,14 +49,27 @@ func jdeSweepBCases(t *testing.T) []jdeSweepBCase {
 	asset.locations = []omsapi.Location{{ID: 2, Name: "Wood shop"}}
 	asset.Update(size)
 
+	// TWO options apiece, not one. UP/DN is conditional on there being a second
+	// row to move to (jdeRowMoves), so a one-option picker is a fixture that
+	// cannot reach the claim the picker-bar assertion below makes — the
+	// vacuous-fixture rule, in the form where the fixture stops the assertion
+	// being true rather than making it trivially so. The asset case already
+	// carried enough (its picker prepends a "(none)" row), which is why only
+	// these two were short.
 	pm := NewMaintenanceItemFormScreen(Deps{}, "")
 	pm.loading = false
-	pm.assets = []omsapi.Asset{{ID: "a1", Name: "Lathe", AssetTag: "LT-1"}}
+	pm.assets = []omsapi.Asset{
+		{ID: "a1", Name: "Lathe", AssetTag: "LT-1"},
+		{ID: "a2", Name: "Bandsaw", AssetTag: "BS-1"},
+	}
 	pm.Update(size)
 
 	therm := NewThermostatFormScreen(Deps{}, "")
 	therm.loading = false
-	therm.locations = []omsapi.Location{{ID: 2, Name: "Wood shop", Code: "WS"}}
+	therm.locations = []omsapi.Location{
+		{ID: 2, Name: "Wood shop", Code: "WS"},
+		{ID: 3, Name: "Metal shop", Code: "MS"},
+	}
 	therm.Update(size)
 
 	dtype := NewDeviceTypeFormScreen(Deps{}, 0)
@@ -471,10 +484,21 @@ func TestJDESweepB_SublistAddIsARowNotALetter(t *testing.T) {
 		t.Fatalf("the list should carry an add ROW:\n%s", out)
 	}
 	bar := jdeBarLine(out)
-	for _, want := range []string{"Enter=Done", "Esc=Done", "UP/DN=Steps", "Ctrl-E=Add a step"} {
+	for _, want := range []string{"Enter=Done", "Esc=Done", "Ctrl-E=Add a step"} {
 		if !strings.Contains(bar, want) {
 			t.Errorf("the empty list's bar should offer %q: %q", want, bar)
 		}
+	}
+	// AND NOT UP/DN. An empty sub-list has exactly ONE navigable row — the add
+	// row the assertion above just found — so there is nowhere for the pair to
+	// go: jdeClampPick hands the cursor back, no note is written, and the pane
+	// redraws byte for byte. This check used to require the pair here, which is
+	// the claim jdeRowMoves retired; it asserts the absence now rather than
+	// dropping the token, because "the bar stopped saying it" and "the bar was
+	// never asked" are different states.
+	if strings.Contains(bar, "UP/DN") {
+		t.Errorf("the empty list's bar names a movement pair with one navigable row "+
+			"(the add row) and nothing for it to move to: %q", bar)
 	}
 	// `a` does nothing now; Ctrl-E on the add row is what opens the editor.
 	s.Update(runeKey('a'))

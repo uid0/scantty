@@ -815,6 +815,89 @@ either:
   Nothing was taken from the operator by that — before the conversion this
   screen bound neither key anywhere — so the pair is new on the phases that have
   a list to page and simply never offered on the one that does not.
+- **One navigation vocabulary, three spellings of it, and only two of them are
+  PROVEN.** `internal/tui/list_nav.go` is the vocabulary and carries the full
+  note; read it before binding or naming a movement key anywhere.
+  The set is `j/k ↑↓` move, `pgup/pgdn` page, `g/G home/end` top/bottom. The
+  emacs chords are RETIRED — `ctrl+u`/`ctrl+d`/`ctrl+p`/`ctrl+n` move nothing
+  anywhere — because no bar in the program ever SPELLED one and a 51-column
+  footer cannot afford to teach a chord, which is the trade sc-po-create-hangs
+  already made on `ListScreen`'s pager and the purchasing surfaces. It stayed
+  unmade on twenty-one sibling files (twenty-four `case "ctrl+d", "pgdown":`
+  pairs, forty-eight arms), so the same key paged the supplier list and did
+  nothing on the inventory list the operator reached it from —
+  `TestListNav_NoSurfaceBindsARetiredChord` reads the package's own source and
+  fails on a re-introduction anywhere, including on a screen that does not exist
+  yet.
+  THE COLUMNAR LAYER SPELLS THE SAME AFFORDANCES AS TOKENS (`UP/DN`,
+  `PgUp/PgDn`, `Home/End`) AND BINDS NO LETTER, and that is a fact about the
+  surface rather than drift: a columnar picker's filter box is always live, so a
+  bare `j` is a character in the query. One vocabulary, two spellings, each bar
+  honest about its own.
+  WHERE THE RULE IS PROVEN is the part to keep straight, because the sentence
+  is easy to over-claim. Two behavioural sweeps hold it, each over the half of
+  the app whose bar is a machine-readable RECORD:
+  `TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves` over every type
+  embedding `jdeScreen`, at every width and drawable height; and
+  `TestList_FooterNamesExactlyTheKeysThatWork` plus
+  `TestList_TheSearchOverlayNamesExactlyTheKeysThatWork` over every `*ListScreen`
+  the nav tree reaches, at every count in `listRowCases` — EMPTY, ONE ROW and
+  MANY. The row counts are the axis those sweeps were blind on: every fixture
+  carried eight rows, so a footer that named `j/k ↑↓ move · pgup/pgdn page ·
+  g/G home/end top/bottom` as an unconditional literal was only ever pressed
+  where it was true.
+  WHERE IT IS NOT PROVEN, said plainly because a claim no check delivers is
+  worse than no claim: fifty-two receivers (the count `listNavUnsweptReceivers`
+  carries) write their bar as a muted literal
+  straight into a `strings.Builder` inside `View`. `TextScroller` is the shape of
+  it at its clearest — one handler shared by fifteen detail sheets whose footers
+  disagree about which of its keys to name. There is no record to read,
+  so no sweep can press keys against it, and a typical one reads `j/k move · n
+  new · E/enter edit · x delete · r refresh · esc back` while binding the arrows,
+  `g/G`, `home/end` and `pgup/pgdn` too — and it is ALREADY past the 51 cells the
+  pane gives, so naming the rest would make it less readable, not more ("a bar
+  the operator cannot read is not honest, it is absent"). Closing it means giving
+  each of those screens the folded footer and row budget `ListScreen` already has
+  (`footerRows`), a conversion of the same shape as sc-jde-lift.
+  WHAT IS GUARANTEED FOR THEM INSTEAD is that the SET cannot grow in silence:
+  `TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused` parses the
+  package, classifies EVERY receiver that binds a navigation keystroke as swept
+  columnar, swept `ListScreen`, or recorded in `listNavUnsweptReceivers` WITH A
+  REASON, and fails in all three directions — unclassified, stale, and excusing
+  something that binds nothing any more. Per RECEIVER and not per file, because
+  `category_form.go` holds `CategoryFormScreen` (columnar, swept) beside
+  `CategoryListScreen` (prose, not), and a file-level answer excuses the second
+  on the strength of the first.
+- **An empty list is a STATE, and on `ListScreen` it used to be the one state
+  that drew no bar at all.** `bodyView` returned `"No rows."` and nothing else
+  while `s`, `r`, `n`, `f`, `/` and every sibling-surface letter worked — the
+  bar's contract inverted on the state where "there is nothing here, now what?"
+  is the operator's actual question and the answer is a key, which is standing
+  rule 11's dead end on top of the omission. It draws `footerHint()` now, the
+  same method the loaded list draws, so what it names there is what is true
+  there. The empty FILTERED view keeps its fact ("no rows in the \"draft\"
+  view") and lost its `press f to cycle the filter` clause, because the footer
+  under it names `f filter` and ONE surface names a key.
+  TWO THRESHOLDS, not one, and `footerHint` keeps them apart: the movement
+  segments need a SECOND row (`listNavMoves`), `enter open` needs ONE — opening
+  the row you are on is not moving to another one. The search overlay's bar
+  (`searchBarHint`) keeps the same pair; its ceiling `listSearchBarHint` is what
+  `listBodyLines` budgets against, because a body budget that moved with the
+  live result count would make the list jump under the operator's hands while
+  they type.
+  DRAWING THE FOOTER THERE MOVED ONE VIOLATION RATHER THAN REMOVING IT, and
+  that is the half worth remembering: `s sort` re-orders locally and its ONLY
+  visible product is the `Sort: … · N rows` header, which the empty branch did
+  not draw — so the key went from "acts and is not named" to "is named and
+  cannot be seen to act", which is the same rule broken from the other side.
+  `headerLine` is drawn in BOTH branches now (`listBodyLines` had always
+  reserved the row), so an empty list states how it is sorted and how many rows
+  that comes to, and `s` has somewhere to show.
+  THE SWEEP MEASURES THE CLIPPED PANE, NOT A STATE FINGERPRINT, which is what
+  found it: `listKeyEffectAt` compared `listBarState` — which carries `s.sort` —
+  so a key that moved a number nothing draws read as working. Standing rule 1 is
+  about a change the OPERATOR can distinguish, and only the rendered pane can
+  answer that.
 - **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
   hint literal.** The footer and the handler read that one table; the previous
   shape appended the words to a hint string and left the key to a global
@@ -1038,14 +1121,26 @@ either:
   BICONDITIONAL over `jdePaneCases` at every drawable pane — derived, so site
   thirty-three cannot reopen it — and it fails a bar that names the pair where a
   page moves nothing just as readily.
-  THAT BICONDITIONAL COVERS `PgUp`/`PgDn` AND NOT `UP/DN`, so do not read the
-  class as closed: a bar builder that appends `{"UP/DN", …}` with no row-count
-  condition names a key a CLAMPING list cursor cannot honour once the list is
-  down to ONE navigable row (`jdeClampPick` returns the row it was handed, no
-  note is written, the pane redraws byte for byte). A FIELD form is not an
-  instance — its cursor WRAPS. The gap is live and the rule, the instances and
-  what closing it would take are recorded where a reader meets those states,
-  beside `jdeInertCases` in `jde_refused_pane_test.go`.
+  THAT BICONDITIONAL NOW COVERS THE WHOLE MOVEMENT VOCABULARY, not the paging
+  pair alone: `TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves` is the
+  same sweep over every token in `jdeMoveTokens`, and the paging one is a call
+  into it with the vocabulary narrowed. It is stated at TWO granularities on
+  purpose, and getting that wrong makes it report screens that are honest — a
+  token names a PAIR, so FORWARD it is asked per TOKEN (press both keys in
+  sequence; the claim is that SOME key it spells moves, which is why a list EDGE
+  stays silent), while REVERSE it is asked per KEY from the rest state, because
+  "a key that acts must be named" cannot be answered about a pair. Two tokens
+  can also spell one key — `PgUp/PgDn` and receiving's `PgUp` — so "is this key
+  named" is asked of the UNION of the drawn tokens.
+  `UP/DN` IS CONDITIONAL NOW and `jdeRowMoves` (`count > 1`) is the one
+  predicate: the BAR asks it through `jdePickBarWith` / `jdeMoveItem`, and the
+  ARMS ask it in `pickRow` and `moveRow`, so the claim and the key behind it are
+  one expression. It used to be unconditional in `jdePickBarWith` — the bar
+  EVERY columnar picker draws — so a picker filtered to one option, or to the
+  synthetic "(none)" row that survives a query nothing matches, named the pair
+  while `jdeClampPick` handed the cursor straight back. A FIELD form was never
+  an instance while it has two or more fields, because its cursor WRAPS; the
+  same predicate covers the one-field case for nothing.
   Read `jde_form.go`'s "Movement" block before touching any of them; what is
   worth knowing here:
   - **The BAR and the HANDLER ask different questions and must go on asking
@@ -1748,18 +1843,11 @@ touching any screen an operator drives:
   meaning CHANGES something, since a key that declines and says why has not
   acted. The search-box sweep also fails a BODY line that names a key, which is
   how the second surface is kept from growing back.
-  ONE gap remains, and as a RULE rather than a list: EVERY list surface should
-  name and bind the same navigation set. The bar-honesty work unbound four alias
-  chords on the surfaces it swept — `ctrl+u`/`ctrl+d` on `ListScreen`'s pager,
-  `ctrl+p`/`ctrl+n` on its search overlay — while the list-SHAPED screens
-  outside those sweeps (category, location, supplier, asset parts, storage
-  slots, device types, thermostats, e-paper panels and the rest) still bind
-  them, so `ctrl+d` pages the supplier list and does nothing on the inventory
-  list the operator reached it from. Aligning the rest is a change to roughly
-  twenty screens nobody reported, which is why it waits — and why it is written
-  here as one rule, since an enumeration of the twenty is how the drift started.
-  The New PO flow is no longer part of that asymmetry: it moved to the columnar
-  set (`UP/DN`, `PgUp/PgDn` when the body moves) and `j`/`k` are unbound on it.
+  EVERY list surface names and binds the SAME navigation set, and the set is
+  written down once in `internal/tui/list_nav.go` — see the navigation entry
+  below, which is where that asymmetry was closed. The New PO flow was never
+  part of it after its conversion: it is on the columnar set (`UP/DN`,
+  `PgUp/PgDn` when the body moves) and `j`/`k` are unbound on it.
 - **On a destructive confirm the keys are on the BAR and the prose is the
   body.** `clampToBox` drops from the bottom, so whatever a screen draws last is
   what a short terminal eats; on `poPhaseSupplierSwitch` that used to be the

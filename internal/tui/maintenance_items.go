@@ -97,13 +97,13 @@ func (s *MaintenanceItemsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor--
 				s.scrollIntoView()
 			}
-		case "ctrl+d", "pgdown":
+		case "pgdown":
 			s.cursor += s.windowSize
 			if s.cursor >= len(s.items) {
 				s.cursor = len(s.items) - 1
 			}
 			s.scrollIntoView()
-		case "ctrl+u", "pgup":
+		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
 				s.cursor = 0

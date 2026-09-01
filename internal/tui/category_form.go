@@ -481,7 +481,7 @@ func (s *CategoryFormScreen) updatePickPhase(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case jdePickPage:
 		header, body := s.pickView()
 		if next, ok := s.pageRow(body, s.pickCursor, len(s.pickOptions), delta, len(header),
-			s.pickBar(header, body), jdePickBar("Select", true)); ok {
+			s.pickBar(header, body), jdePickBarCeiling("Select", "Cancel")); ok {
 			s.pickCursor = next
 		}
 	default:
@@ -726,7 +726,7 @@ func (s *CategoryFormScreen) pickView() (jdeHeader, *jdeLines) {
 // list moves under the bar about to be drawn — measured against the bar WITH
 // the pair on it, because the tallest bar is the fixed point.
 func (s *CategoryFormScreen) pickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return jdePickBar("Select", s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBar("Select", true)))
+	return jdePickBar("Select", len(s.pickOptions), s.bodyPagesForBar(body, len(s.pickOptions), len(header), jdePickBarCeiling("Select", "Cancel")))
 }
 
 func (s *CategoryFormScreen) viewPick() string {
@@ -840,13 +840,13 @@ func (s *CategoryListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor--
 				s.scrollIntoView()
 			}
-		case "ctrl+d", "pgdown":
+		case "pgdown":
 			s.cursor += s.windowSize
 			if s.cursor >= len(s.rows) {
 				s.cursor = len(s.rows) - 1
 			}
 			s.scrollIntoView()
-		case "ctrl+u", "pgup":
+		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
 				s.cursor = 0

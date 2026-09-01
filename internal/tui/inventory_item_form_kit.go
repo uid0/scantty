@@ -529,7 +529,7 @@ func (s *InventoryItemFormScreen) moveKitCursor(delta int) {
 func (s *InventoryItemFormScreen) pageKitCursor(dir int) {
 	body := s.kitListLines()
 	next, ok := s.pageRow(body, s.kitCursor, s.kitAddRow()+1, dir, 0,
-		s.kitListBar(body), s.kitListBarItems(true))
+		s.kitListBar(body), s.kitListBarItems(jdeCeilingRows, true))
 	if !ok {
 		return
 	}
@@ -618,13 +618,15 @@ func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 // Esc both mean done: the list is saved nested with the KIT, so leaving it
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) kitListBar(body *jdeLines) []actionBarItem {
-	return s.kitListBarItems(s.bodyPagesForBar(body, s.kitAddRow()+1, 0, s.kitListBarItems(true)))
+	n := s.kitAddRow() + 1
+	return s.kitListBarItems(n, s.bodyPagesForBar(body, n, 0, s.kitListBarItems(jdeCeilingRows, true)))
 }
 
 // kitListBarItems is kitListBar for a given paging state, so the bar that is
 // MEASURED against the pane is the bar that is drawn on it.
-func (s *InventoryItemFormScreen) kitListBarItems(paging bool) []actionBarItem {
-	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}, {"UP/DN", "Components"}}
+func (s *InventoryItemFormScreen) kitListBarItems(count int, paging bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Done"}, {"Esc", "Done"}}
+	items = append(items, jdeMoveItem("Components", count)...)
 	if s.onKitAddRow() {
 		items = append(items, actionBarItem{"Ctrl-E", "Add component"})
 	} else {
@@ -1015,7 +1017,7 @@ func (s *InventoryItemFormScreen) moveKitPick(delta int) {
 func (s *InventoryItemFormScreen) pageKitPick(dir int) {
 	header, body := s.kitPickView()
 	next, ok := s.pageRow(body, s.kitPickCursor, len(s.kitPickOptions), dir, len(header),
-		s.kitPickBar(header, body), jdePickBar("Add", true))
+		s.kitPickBar(header, body), jdePickBarCeiling("Add", "Cancel"))
 	if !ok {
 		return
 	}
@@ -1222,7 +1224,7 @@ const (
 // the list moves under the bar about to be drawn — measured against the bar
 // WITH the pair on it, because the tallest bar is the fixed point.
 func (s *InventoryItemFormScreen) kitPickBar(header jdeHeader, body *jdeLines) []actionBarItem {
-	return jdePickBar("Add", s.bodyPagesForBar(body, len(s.kitPickOptions), len(header), jdePickBar("Add", true)))
+	return jdePickBar("Add", len(s.kitPickOptions), s.bodyPagesForBar(body, len(s.kitPickOptions), len(header), jdePickBarCeiling("Add", "Cancel")))
 }
 
 func (s *InventoryItemFormScreen) viewKitPick() string {

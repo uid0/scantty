@@ -331,44 +331,46 @@ var jdeInertCases = map[string]string{
 	// somewhere to land" come apart, and until these existed every list in
 	// jdeScreenStates carried several rows and the pair could not be told apart.
 	//
-	// WHAT THEIR BARS STILL CLAIM, said here because this is the one place a
-	// reader meets these states and could otherwise take the class for closed.
-	// Most of them go on NAMING UP/DN with nothing to move — only
-	// PurchaseOrderAttachmentsScreen/one file reads as this table's reason
-	// describes — and that is a live named-and-dead gap for UP/DN, PRE-EXISTING
-	// and ROUTED rather than fixed here.
+	// WHAT THEIR BARS CLAIM, said here because this is the one place a reader
+	// meets these states: NOTHING. They used to go on naming UP/DN with nothing
+	// to move — only PurchaseOrderAttachmentsScreen/one file read as this table's
+	// reason described — and that gap is CLOSED now, which is why this note reads
+	// as history rather than as a warning.
 	//
-	// THE RULE, not a list of the sites, because a list is what keeps being
-	// wrong: a bar that appends the movement pair WITHOUT consulting its
-	// navigable row count names a key a CLAMPING list cursor cannot honour once
-	// the list is down to ONE navigable row. jdeClampPick returns the row it was
-	// handed, so the cursor stays, no note is written, and the pane redraws byte
-	// for byte under a bar saying UP/DN. A FIELD form is not an instance: its
-	// cursor WRAPS, so with two or more fields UP/DN always changes the row —
-	// the exemption AGENTS.md already records.
+	// THE RULE, kept here because it is what stays true as sheets are added: a
+	// bar that appends the movement pair WITHOUT consulting its navigable row
+	// count names a key a CLAMPING list cursor cannot honour once the list is
+	// down to ONE navigable row. jdeClampPick returns the row it was handed, so
+	// the cursor stays, no note is written, and the pane redraws byte for byte
+	// under a bar saying UP/DN. A FIELD form is not an instance while it has two
+	// or more fields: its cursor WRAPS, so UP/DN always changes the row — the
+	// exemption AGENTS.md records, and jdeRowMoves covers the one-field case
+	// anyway.
 	//
-	// HOW TO FIND EVERY INSTANCE, which is the thing that stays true as sheets
-	// are added: a bar builder that appends {"UP/DN", …} with no row-count
-	// condition on it. Counting them here would only be right until the next one.
+	// HOW IT WAS CLOSED, in the shape AGENTS.md predicted. The LAYER carried most
+	// of it: jdePickBarWith is the bar every columnar picker draws and it takes
+	// the option count now, so that was ONE edit and not one per screen
+	// (jdeRowMoves is the predicate, asked by the bar AND by pickRow/moveRow, so
+	// the claim and the arm are one expression). jdeMoveItem is the same question
+	// for the builders that are not pickers. The state is reachable without any
+	// fixture — filter a single-select picker to a query nothing matches and the
+	// synthetic "(none)" row is left standing (it is prepended before the filter
+	// runs), so the count is 1.
 	//
-	// The LAYER is where most of the work is, and it changes the SHAPE of the
-	// work rather than its length: jdePickBarWith appends the pair
-	// unconditionally and is the bar every columnar picker draws, so that is ONE
-	// edit and not one per screen. It is reachable without any fixture — filter a
-	// single-select picker to a query nothing matches and the synthetic "(none)"
-	// row is left alone (it is prepended before the filter runs), so pickOptions
-	// is 1, the bar says UP/DN=Move, and Down clamps to the row it was already on.
+	// WHAT FOUND THE INSTANCES was not a roster:
+	// TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves generalised the
+	// paging biconditional to the whole movement vocabulary, and it reported the
+	// three that were live — the kit list, the packaging chain and the storage
+	// level list, all in their EMPTY state. The others (po_edit's association
+	// picker, po_add_line's choose phase, maintenance_item_form's sub-lists) came
+	// off the same grep the rule above describes and are gated by the same
+	// predicate, so no fixture has to reach them for them to be right.
 	//
-	// The convention is already kept wherever a builder consults its count, which
-	// is the model to copy: po_attachments' listMoves(), service_status_screen
-	// nesting the entry inside len(services) > 1, po_create's barItems on
-	// rowCount() > 1, receive_form's reviewBarItems on reviewRows() > 1.
-	//
-	// No sweep reports any of it today, which is why it is written down: the
-	// paging sweeps match "PgUp/PgDn=" alone, so the movement pair standing
-	// beside it on the same bar goes unasked. Whoever takes this should expect to
-	// add the UP/DN half of that biconditional first — then the sweep finds the
-	// instances instead of a roster having to name them.
+	// The convention was already kept wherever a builder consulted its count,
+	// which is what it was copied from: po_attachments' listMoves(),
+	// service_status_screen nesting the entry inside len(services) > 1,
+	// po_create's barItems on rowCount() > 1, receive_form's reviewBarItems on
+	// reviewRows() > 1.
 	"InventoryItemFormScreen/kit list empty":     "one navigable row (the add row), so nothing moves",
 	"InventoryItemFormScreen/chain list empty":   "one navigable row (the add row), so nothing moves",
 	"StorageSlotGenerateScreen/level list empty": "one navigable row (the add row), so nothing moves",

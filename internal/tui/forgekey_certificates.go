@@ -142,10 +142,10 @@ func (s *ForgeKeyCertificatesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		case "k", "up":
 			s.scroll--
 			s.clampScroll()
-		case "ctrl+d", "pgdown":
+		case "pgdown":
 			s.scroll += s.certWindow()
 			s.clampScroll()
-		case "ctrl+u", "pgup":
+		case "pgup":
 			s.scroll -= s.certWindow()
 			s.clampScroll()
 		case "g", "home":

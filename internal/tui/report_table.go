@@ -315,7 +315,7 @@ func (s *ReportTableScreen) updateKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 			st.cursor--
 			s.scrollIntoView()
 		}
-	case "ctrl+d", "pgdown":
+	case "pgdown":
 		st.cursor += s.windowSize()
 		if st.cursor >= len(st.rows) {
 			st.cursor = len(st.rows) - 1
@@ -324,7 +324,7 @@ func (s *ReportTableScreen) updateKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 			st.cursor = 0
 		}
 		s.scrollIntoView()
-	case "ctrl+u", "pgup":
+	case "pgup":
 		st.cursor -= s.windowSize()
 		if st.cursor < 0 {
 			st.cursor = 0

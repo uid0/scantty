@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -248,17 +249,63 @@ func listFixtureRows(n int) []listRow {
 // listLoaded is the state every named key is meaningful in: enough rows that
 // the cursor can move in both directions.
 func listLoaded(build func() *ListScreen) *ListScreen {
+	return listWithRows(build, 8)
+}
+
+// listWithRows is listLoaded at a chosen row count, which is the axis the sweep
+// was blind on.
+//
+// AN EMPTY LIST IS A STATE, NOT AN EXCEPTION, and it is the state a list spends
+// much of its life in — a fresh install, a filter that matched nothing, a load
+// that has not answered. Every fixture in this file used to carry eight rows, so
+// the footer's movement claims were only ever pressed where they were true:
+// "j/k ↑↓ move · pgup/pgdn page · g/G home/end top/bottom" was an unconditional
+// literal, and on an empty list all three segments named keys that clamped onto
+// the row the cursor was already on. Worse for `pgdown`, which ran
+// `s.cursor = len(s.rows) - 1` and left the cursor at -1.
+//
+// ONE row as well as none, because the two are different arithmetic and only one
+// of them was obviously wrong: with a single row `j` fails its `cursor < len-1`
+// guard while `G` assigns the index it is already on, so the second is a write
+// that changes nothing rather than a branch not taken. A fixture with none would
+// pass over a bar that had been fixed for the empty case alone.
+func listWithRows(build func() *ListScreen, rows int) *ListScreen {
 	s := build()
 	s.loading = false
 	s.windowSize = 3
-	s.rows = listFixtureRows(8)
+	s.rows = listFixtureRows(rows)
 	return s
+}
+
+// listRowCases are the row counts every list surface is swept at, with what each
+// one is FOR — so a count is not quietly dropped as redundant.
+var listRowCases = map[string]int{
+	"empty":     0,
+	"one row":   1,
+	"many rows": 8,
 }
 
 // listKeyEffect presses one key from a fresh screen (optionally after a probe
 // run) and reports whether it changed anything or issued a command.
 func listKeyEffect(build func() *ListScreen, probe []string, key string) (changed, issued bool) {
-	s := listLoaded(build)
+	return listKeyEffectAt(build, 8, probe, key)
+}
+
+// listKeyEffectAt is listKeyEffect at a chosen row count.
+//
+// `changed` is measured on the CLIPPED PANE and not on a state fingerprint, and
+// that is the difference between standing rule 1 and a weaker cousin of it: the
+// rule is that a keypress produces a distinguishable operator-VISIBLE change,
+// and a fingerprint over the screen's fields reports a key that moved a number
+// nothing draws as working. It was not hypothetical — with the footer restored
+// on an empty list, `s sort` was named while sorting nothing redrew a
+// byte-identical pane, and the fingerprint (which carries s.sort) passed it.
+// The screen is SIZED first so the pane is the one a terminal really gives.
+func listKeyEffectAt(build func() *ListScreen, rows int, probe []string, key string) (changed, issued bool) {
+	s := listWithRows(build, rows)
+	if next, _ := s.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); next != nil {
+		s = next.(*ListScreen)
+	}
 	press := func(k string) tea.Cmd {
 		next, cmd := s.Update(listRuneKey(k))
 		s = next.(*ListScreen)
@@ -267,9 +314,12 @@ func listKeyEffect(build func() *ListScreen, probe []string, key string) (change
 	for _, p := range probe {
 		press(p)
 	}
-	before := listBarState(s)
+	pane := func() string {
+		return clampToBox(s.View(), screenBodyWidth(80), screenBodyHeight(24))
+	}
+	before := pane()
 	cmd := press(key)
-	return listBarState(s) != before, cmd != nil
+	return pane() != before, cmd != nil
 }
 
 // listBarState is the fingerprint the rule reads. It deliberately spans every
@@ -417,22 +467,248 @@ func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 				}
 			}
 
-			for _, key := range listKeySpace() {
-				var changed, issued bool
-				for _, probe := range probes {
-					c, i := listKeyEffect(surface.build, probe, key)
-					changed = changed || c
-					issued = issued || i
+			// And at every ROW COUNT, because the footer's shape depends on one
+			// now: the movement segments come off it below two rows and `enter
+			// open` below one, so the string that has to survive the clip is a
+			// different string in each state. Proven rather than reasoned about —
+			// "these bars only got shorter" is exactly the kind of claim that is
+			// true until the next segment is added behind the condition.
+			for state, rows := range listRowCases {
+				for _, termHeight := range []int{24, 30} {
+					sized := listWithRows(surface.build, rows)
+					next, _ := sized.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
+					sized = next.(*ListScreen)
+					for _, segment := range strings.Split(sized.footerHint(), " · ") {
+						if !listFooterLegible(t, sized, termHeight, segment) {
+							t.Errorf("the %s footer claims %q on a line the pane cuts off "+
+								"(%s, height %d):\n%s", surface.name, segment, state, termHeight,
+								strings.Join(listPaneLines(t, sized, termHeight), "\n"))
+						}
+					}
 				}
-				switch {
-				case named[key] && !changed && !issued:
-					t.Errorf("the %s footer names %q but pressing it does nothing", surface.name, key)
-				case !named[key] && (changed || issued):
-					t.Errorf("the %s footer does not name %q, but pressing it acts", surface.name, key)
+			}
+
+			// EVERY ROW COUNT, not just the loaded one. The footer's movement
+			// segments are conditional on there being a second row to move to
+			// (listNavHint), so the state a claim can be false in is exactly the
+			// state no fixture here used to reach.
+			for state, rows := range listRowCases {
+				sized := listWithRows(surface.build, rows)
+				namedAt := listNamedKeys(t, sized.footerHint())
+				for _, key := range listKeySpace() {
+					var changed, issued bool
+					for _, probe := range probes {
+						c, i := listKeyEffectAt(surface.build, rows, probe, key)
+						changed = changed || c
+						issued = issued || i
+					}
+					switch {
+					case namedAt[key] && !changed && !issued:
+						t.Errorf("the %s footer names %q with %s but pressing it does nothing:\n%s",
+							surface.name, key, state, sized.footerHint())
+					case !namedAt[key] && (changed || issued):
+						t.Errorf("the %s footer does not name %q with %s, but pressing it acts:\n%s",
+							surface.name, key, state, sized.footerHint())
+					}
+				}
+			}
+			_ = named
+		})
+	}
+}
+
+// listSearchOverlayKeys are the keystrokes the search overlay's bar can be held
+// to, which is NOT the whole key space.
+//
+// A search box is a focused textinput and every printable rune belongs to it by
+// design: typing is what the surface is FOR, so "a key the bar does not name
+// must do nothing" cannot apply to a rune there (the same exemption
+// poFieldKeys records for the columnar forms, and the same reason
+// jde_form.go's movement gate deliberately leaves typing alone — declining a
+// rune would DISCARD input, including a scanner burst). What is left is the
+// keys the OVERLAY owns, and those are exactly what its bar claims.
+func listSearchOverlayKeys() []string {
+	return []string{
+		"up", "down", "enter", "esc", "home", "end", "pgup", "pgdown",
+		"tab", "shift+tab", "left", "right",
+	}
+}
+
+// TestList_TheSearchOverlayNamesExactlyTheKeysThatWork is the rule over the
+// SEARCH state of every list that has one, at every row count.
+//
+// A SEARCH THAT MATCHED NOTHING IS THE STATE THIS BAR SPENDS ITS LIFE IN: it is
+// what the operator sees for every prefix of every query while the answer is
+// still coming, and the overlay's bar was a CONSTANT — "↑/↓ move · enter open ·
+// esc cancel" — named over no rows at all. Both arms decline in silence there,
+// so the pane came back byte for byte under a bar promising three keys and
+// answering one.
+//
+// It is a separate test from the browse sweep rather than another loop inside
+// it because the two states answer to different bars, different handlers
+// (updateSearch switches on m.Type before Update's own switch is reached) and a
+// different key set — and folding them together is how one of them ends up
+// pressed against the other's claim.
+func TestList_TheSearchOverlayNamesExactlyTheKeysThatWork(t *testing.T) {
+	searched := 0
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			if listWithRows(surface.build, 8).spec.searchLoader == nil {
+				return // this list names no search key; nothing to open
+			}
+			searched++
+			for state, rows := range listRowCases {
+				open := func() *ListScreen {
+					s := listWithRows(surface.build, rows)
+					next, _ := s.Update(listRuneKey("/"))
+					return next.(*ListScreen)
+				}
+				bar := open()
+				if !bar.searching {
+					t.Fatalf("%s has a search loader but `/` did not open the overlay", surface.name)
+				}
+				// LEGIBILITY on a real pane, the same half the browse footer
+				// carries: a claim the operator cannot read is not a claim, and
+				// asserting a method's return value is exactly the blindness that
+				// let every list ship with its footer cut at 51 columns.
+				for _, termHeight := range []int{24, 30} {
+					sized := listWithRows(surface.build, rows)
+					next, _ := sized.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
+					sized = next.(*ListScreen)
+					next, _ = sized.Update(listRuneKey("/"))
+					sized = next.(*ListScreen)
+					for _, segment := range strings.Split(sized.searchBarHint(), " · ") {
+						if !listFooterLegible(t, sized, termHeight, segment) {
+							t.Errorf("the %s search bar claims %q on a line the pane cuts off "+
+								"(%s, height %d):\n%s", surface.name, segment, state, termHeight,
+								strings.Join(listPaneLines(t, sized, termHeight), "\n"))
+						}
+					}
+				}
+
+				tokens := listSearchBarTokens(t, bar.searchBarHint())
+				named := map[string]bool{}
+				for _, keys := range tokens {
+					for _, k := range keys {
+						named[k] = true
+					}
+				}
+
+				pane := func(x *ListScreen) string {
+					return clampToBox(x.View(), screenBodyWidth(80), screenBodyHeight(24))
+				}
+
+				// FORWARD, per TOKEN. "↑/↓" is one token for two opposed keys and
+				// the claim it makes is that SOME key it spells moves — which is
+				// the granularity every bar in this program spells a pair at, and
+				// why a list EDGE stays silent rather than declining out loud
+				// (AGENTS.md): the highlight is visibly at the end, so the press
+				// has answered itself. Pressed in SEQUENCE with no reset, since
+				// `down` is the one with room from a cursor resting at the top.
+				for token, keys := range tokens {
+					s := open()
+					acted := false
+					for _, k := range keys {
+						before := pane(s)
+						next, cmd := s.Update(listRuneKey(k))
+						s = next.(*ListScreen)
+						if pane(s) != before || listSearchActed(cmd) {
+							acted = true
+						}
+					}
+					if !acted {
+						t.Errorf("the %s search bar names %q with %s and none of %v does "+
+							"anything:\n%s", surface.name, token, state, keys, bar.searchBarHint())
+					}
+				}
+
+				// REVERSE, per KEY: a key that acts must be spelled by some token
+				// the bar drew.
+				for _, key := range listSearchOverlayKeys() {
+					s := open()
+					before := pane(s)
+					next, cmd := s.Update(listRuneKey(key))
+					s = next.(*ListScreen)
+					if (pane(s) != before || listSearchActed(cmd)) && !named[key] {
+						t.Errorf("the %s search bar does not name %q with %s, but pressing it acts:\n%s",
+							surface.name, key, state, bar.searchBarHint())
+					}
 				}
 			}
 		})
 	}
+	if searched == 0 {
+		t.Fatal("no list surface has a search loader, so this sweep asserted nothing")
+	}
+}
+
+// TestList_TheSearchBarCeilingIsTheTallestBarItDraws: listSearchBarHint, which
+// listBodyLines reserves rows against, really is every key searchBarHint can
+// draw.
+//
+// A budget measured against a bar the frame can EXCEED is a bar that gets cut —
+// the failure listSearchBarHint's own doc was written for, when the renderer and
+// the reservation read different literals. Splitting the constant into a ceiling
+// and a live builder reopened that door from the other side: the ceiling is now
+// a second spelling of the same three segments, and nothing but this check
+// stops a segment being added to one and not the other.
+func TestList_TheSearchBarCeilingIsTheTallestBarItDraws(t *testing.T) {
+	s := listLoaded(func() *ListScreen { return newScreenFor(WSAssets, Deps{}).(*ListScreen) })
+	if got := s.searchBarHint(); got != listSearchBarHint {
+		t.Errorf("with results and a detail screen the overlay draws %q, but "+
+			"listBodyLines budgets against %q — the ceiling is not the tallest bar "+
+			"this overlay can draw", got, listSearchBarHint)
+	}
+	for _, rows := range []int{0, 1, 8} {
+		x := listWithRows(func() *ListScreen { return newScreenFor(WSAssets, Deps{}).(*ListScreen) }, rows)
+		for _, segment := range strings.Split(x.searchBarHint(), " · ") {
+			if !strings.Contains(listSearchBarHint, segment) {
+				t.Errorf("at %d rows the overlay draws the segment %q, which the ceiling "+
+					"%q does not carry", rows, segment, listSearchBarHint)
+			}
+		}
+	}
+}
+
+// listSearchActed reports whether a command the overlay returned is work rather
+// than a caret tick.
+//
+// The blink is not an act: bubbles falls through to Cursor.Update for any key
+// its own switch does not handle and that returns a tick unconditionally, so an
+// unfiltered `cmd != nil` would read every key pressed inside a focused box as
+// working — the filter poCmdActs already applies on the purchasing side.
+func listSearchActed(cmd tea.Cmd) bool {
+	return cmd != nil && !poIsBlink(cmd())
+}
+
+// listSearchBarTokens parses the overlay's bar into the tokens it draws and the
+// keystrokes each one SPELLS.
+//
+// Its movement token is spelled "↑/↓" rather than the browse footer's "↑↓", so
+// it needs its own transcription — and an unknown token FAILS here exactly as it
+// does in listNamedKeys, because a token the sweep skips is a claim nobody
+// presses.
+func listSearchBarTokens(t *testing.T, hint string) map[string][]string {
+	t.Helper()
+	spelling := map[string][]string{
+		"↑/↓":   {"up", "down"},
+		"enter": {"enter"},
+		"esc":   {"esc"},
+	}
+	out := map[string][]string{}
+	for _, part := range strings.Split(hint, " · ") {
+		fields := strings.Fields(strings.TrimSpace(part))
+		if len(fields) == 0 {
+			continue
+		}
+		keys, ok := spelling[fields[0]]
+		if !ok {
+			t.Fatalf("search-bar token %q is not transcribed — add it so the rule covers it (hint: %q)",
+				fields[0], hint)
+		}
+		out[fields[0]] = keys
+	}
+	return out
 }
 
 // TestList_TheFooterSurvivesEveryScrollPosition walks the cursor through a
@@ -657,7 +933,11 @@ func TestList_SearchOverlayBarNamesExactlyTheKeysThatWork(t *testing.T) {
 		t.Fatal("/ did not open the search overlay on a list that names it")
 	}
 	out := s.View()
-	if !strings.Contains(out, listSearchBarHint) {
+	// The LIVE bar. With eight results this fixture draws every key the
+	// listSearchBarHint ceiling spells, so the two coincide here — but the
+	// constant is the BUDGET's fixed point, not a claim the frame always makes,
+	// and asserting it would go stale the first time this fixture lost a row.
+	if !strings.Contains(out, s.searchBarHint()) {
 		t.Fatalf("the search overlay does not render its bar:\n%s", out)
 	}
 
@@ -675,11 +955,16 @@ func TestList_SearchOverlayBarNamesExactlyTheKeysThatWork(t *testing.T) {
 			t.Fatal("/ did not open the search overlay")
 		}
 		pane := strings.Join(listPaneLines(t, sized, height), "\n")
-		if !strings.Contains(pane, listSearchBarHint) {
+		// The LIVE bar, not the listSearchBarHint ceiling: the constant is what
+		// listBodyLines budgets against, and reading it here would assert a claim
+		// the frame does not necessarily make (it drops `↑/↓ move` below two
+		// results and `enter open` below one).
+		drawn := sized.searchBarHint()
+		if !strings.Contains(pane, drawn) {
 			t.Errorf("the overlay bar is not on the 80x%d pane:\n%s", height, pane)
 		}
 		for _, segment := range strings.Split(sized.footerHint(), " · ") {
-			if strings.Contains(pane, segment) && !strings.Contains(listSearchBarHint, segment) {
+			if strings.Contains(pane, segment) && !strings.Contains(drawn, segment) {
 				t.Errorf("the browse footer still claims %q while the search box owns the keyboard (80x%d):\n%s",
 					segment, height, pane)
 			}
@@ -705,13 +990,24 @@ func TestList_SearchOverlayBarNamesExactlyTheKeysThatWork(t *testing.T) {
 	// screen's typing phases). Everything else is judged — a key bound in
 	// updateSearch that this bar does not name would be `N` all over again, on
 	// the one list state the browse footer has nothing to say about.
+	// DERIVED from the bar the overlay actually draws, not restated. It used to
+	// be a literal {up, down, enter, esc} — the old constant's claim, copied —
+	// which was safe only while that bar was a constant: now that it drops
+	// `↑/↓ move` below two results and `enter open` below one, a restated roster
+	// would be this check making a claim on the bar's behalf, which is the defect
+	// the transcription rule exists to report. (It also used to credit
+	// ctrl+p/ctrl+n, on the reasoning that "↑/↓" named the emacs pair as readily
+	// as it named the arrows — a synonym this bar never says. updateSearch binds
+	// the arrows alone now.)
 	overlayNamed := map[string]bool{}
-	// Exactly what listSearchBarHint spells. It used to carry ctrl+p/ctrl+n too,
-	// on the reasoning that "↑/↓" named the emacs pair as readily as it named
-	// the arrows — a synonym this bar never says, credited by the check rather
-	// than by the frame. updateSearch binds the arrows alone now.
-	for _, k := range []string{"up", "down", "enter", "esc"} {
-		overlayNamed[k] = true
+	opened := listLoaded(func() *ListScreen { return newScreenFor(WSAssets, Deps{}).(*ListScreen) })
+	if next, _ := opened.Update(listRuneKey("/")); next != nil {
+		opened = next.(*ListScreen)
+	}
+	for _, keys := range listSearchBarTokens(t, opened.searchBarHint()) {
+		for _, k := range keys {
+			overlayNamed[k] = true
+		}
 	}
 	for _, k := range listKeySpace() {
 		if r := []rune(k); len(r) == 1 && r[0] >= 0x20 && r[0] <= 0x7e {
@@ -741,7 +1037,12 @@ func TestList_SearchOverlayBarNamesExactlyTheKeysThatWork(t *testing.T) {
 
 	// Every key the overlay bar names must act there — probed from both ends,
 	// since ↑ does nothing at the top and ↓ nothing at the bottom.
-	for _, key := range []string{"up", "down", "enter", "esc"} {
+	named := make([]string, 0, len(overlayNamed))
+	for k := range overlayNamed {
+		named = append(named, k)
+	}
+	sort.Strings(named)
+	for _, key := range named {
 		acted := false
 		for _, probe := range [][]string{nil, {"down"}, {"down", "down"}} {
 			fresh := listLoaded(func() *ListScreen { return newScreenFor(WSAssets, Deps{}).(*ListScreen) })

@@ -112,10 +112,10 @@ func (s *TextScroller) Handle(msg tea.KeyMsg) bool {
 	case "k", "up":
 		s.ScrollUp(1)
 		return true
-	case "ctrl+d", "pgdown":
+	case "pgdown":
 		s.ScrollDown(s.pageStep())
 		return true
-	case "ctrl+u", "pgup":
+	case "pgup":
 		s.ScrollUp(s.pageStep())
 		return true
 	case "g", "home":

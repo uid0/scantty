@@ -1377,11 +1377,12 @@ func (g jdeScreen) frameDrawn(headerRows int, items []actionBarItem) bool {
 // Wrapping is the field form's rule and clamping is the list's (see
 // jdeClampPick): a short form has no edge worth defending, and Down on the last
 // of four fields belongs on the first. The false return is the refusal — a pane
-// the frame is not drawn on, or a form with no rows — and a sheet must leave
-// EVERYTHING alone when it comes back, the focus included: re-focusing the same
-// field is not a no-op if it restarts a caret blink or clears a selection.
+// the frame is not drawn on, or a form with FEWER THAN TWO rows (jdeRowMoves,
+// which is also what the bar asks before it names UP/DN) — and a sheet must
+// leave EVERYTHING alone when it comes back, the focus included: re-focusing the
+// same field is not a no-op if it restarts a caret blink or clears a selection.
 func (g jdeScreen) moveRow(cursor, count, delta, headerRows int, items []actionBarItem) (int, bool) {
-	if count <= 0 || !g.frameDrawn(headerRows, items) {
+	if !jdeRowMoves(count) || !g.frameDrawn(headerRows, items) {
 		return cursor, false
 	}
 	return (cursor + delta%count + count) % count, true
@@ -1389,9 +1390,11 @@ func (g jdeScreen) moveRow(cursor, count, delta, headerRows int, items []actionB
 
 // pickRow steps a LIST cursor by delta and CLAMPS, and reports whether the move
 // happened at all. jdeClampPick carries why a picker may not wrap; frameDrawn
-// carries why it may not move at all on a refused pane.
+// carries why it may not move at all on a refused pane; jdeRowMoves carries why
+// a list of ONE reports false rather than clamping back onto the row it was
+// already standing on — and why that is the same question the bar asks.
 func (g jdeScreen) pickRow(cursor, count, delta, headerRows int, items []actionBarItem) (int, bool) {
-	if count <= 0 || !g.frameDrawn(headerRows, items) {
+	if !jdeRowMoves(count) || !g.frameDrawn(headerRows, items) {
 		return cursor, false
 	}
 	return jdeClampPick(cursor+delta, count), true
@@ -1847,10 +1850,64 @@ func (p jdePickList) render(bodyWidth int) (jdeHeader, *jdeLines) {
 	return header, body
 }
 
-// jdePickBar is the bar every picker draws: the same four keys, plus paging when
-// the list is longer than the pane.
-func jdePickBar(verb string, paging bool) []actionBarItem {
-	return jdePickBarWith(verb, "Cancel", paging)
+// ---------------------------------------------------------------------------
+// The movement pair's one question
+// ---------------------------------------------------------------------------
+
+// jdeRowMoves is UP/DN's ONE question, asked by the BAR that claims the pair
+// and by the ARM behind it: there must be a SECOND row to move to.
+//
+// It is bodyPagesForBar's first conjunct, pulled out and named, and it is here
+// for the same reason that one is: three sheets had worked it out for
+// themselves (po_attachments' listMoves, service_status_screen nesting its
+// entry inside len(services) > 1, po_create's barItems on rowCount() > 1) and
+// thirty had not — while jdePickBarWith, the bar EVERY columnar picker draws,
+// appended {"UP/DN", "Move"} with no condition on it at all.
+//
+// WHY count > 1 AND NOT count > 0, which is what the arms used to ask. A LIST
+// cursor CLAMPS (jdeClampPick) and a FIELD cursor WRAPS (moveRow), and at a
+// count of one both land back on the row they started on: the clamp returns the
+// only index there is, the wrap is modulo one. So the arm returned ok, the sheet
+// stored a cursor identical to the one it had, no note was written, and the pane
+// redrew byte for byte under a bar saying UP/DN=Move — standing rule 1 broken by
+// arithmetic, on the state a list SPENDS MOST OF ITS LIFE IN. It is reachable
+// with no fixture at all: filter a single-select picker to a query nothing
+// matches and the synthetic "(none)" row is left standing (it is prepended
+// before the filter runs), so Count is 1 and Down clamps to where it was.
+//
+// COUNT ZERO IS THE SAME ANSWER FOR A DIFFERENT REASON and is deliberately not
+// spelled separately: a cursor with nothing to point at cannot move either.
+//
+// DRAWABILITY IS NOT PART OF IT. A refused pane draws no bar to make a claim
+// with (jdeTooShort replaces it), so the bar's question is about the ROWS alone;
+// the arms ask frameDrawn on top, as they always have.
+func jdeRowMoves(count int) bool { return count > 1 }
+
+// jdeCeilingRows is the row count that names every movement key: the count a
+// CEILING bar is measured at.
+//
+// A ceiling bar exists because naming keys costs cells, cells fold the bar onto
+// another row, and a folded bar leaves the body one row fewer — so every budget
+// is measured against the TALLEST bar the screen can draw, or the answer
+// oscillates between frames. UP/DN can now come OFF a bar, so the ceiling has to
+// put it back: measured at the live count, a picker filtered down to one row
+// would budget against a bar shorter than the one a second row restores.
+//
+// Two rather than a bool, so the ceiling goes through the same predicate the
+// live bar does and cannot drift from it.
+const jdeCeilingRows = 2
+
+// jdePickBar is the bar every picker draws: Enter and Esc always, plus the
+// movement keys the picker's CURRENT option count can honour.
+//
+// `count` is the option count the cursor is standing in, and it is an ARGUMENT
+// rather than something this file could work out, for the reason jdePickList
+// takes Count/Label/Dim: the layer does not know what is being picked. Every
+// caller has it in hand — it is the same len() it hands jdePickList.Count and
+// bodyPagesForBar — so passing it costs nothing and makes the bar's claim and
+// the arm behind it the same expression over the same number.
+func jdePickBar(verb string, count int, paging bool) []actionBarItem {
+	return jdePickBarWith(verb, "Cancel", count, paging)
 }
 
 // jdePickBarWith is jdePickBar for a picker whose Esc does not mean "cancel".
@@ -1858,12 +1915,61 @@ func jdePickBar(verb string, paging bool) []actionBarItem {
 // undo and leaving IS the commit — the bar has to say "Done" or it is lying
 // about what the key does. (Enter toggles there, because the always-live filter
 // owns space; sweep B's required-certifications row is the first of these.)
-func jdePickBarWith(commit, cancel string, paging bool) []actionBarItem {
-	items := []actionBarItem{{"Enter", commit}, {"Esc", cancel}, {"UP/DN", "Move"}}
+//
+// UP/DN IS CONDITIONAL NOW, and this is the site AGENTS.md recorded the gap at:
+// it appended the pair with no condition on it while being the bar EVERY
+// columnar picker draws, so one edit here is one edit and not one per screen.
+// jdeRowMoves carries why a count of one is the state it fails in.
+func jdePickBarWith(commit, cancel string, count int, paging bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", commit}, {"Esc", cancel}}
+	if jdeRowMoves(count) {
+		items = append(items, actionBarItem{"UP/DN", "Move"})
+	}
 	if paging {
 		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
+}
+
+// jdeMoveItem is the UP/DN entry for a CURSOR over `count` rows — and nothing
+// at all where a move cannot happen.
+//
+// It exists so a bar builder that is not a picker's asks the SAME question
+// jdePickBarWith does rather than appending the pair as a literal. The paging
+// pair already had that shape (bodyPagesForBar, asked by the bar and by
+// pageRow); UP/DN did not, and the sites that had worked the condition out for
+// themselves — po_attachments' listMoves, service_status_screen nesting its
+// entry inside len(services) > 1, po_create's barItems on rowCount() > 1 —
+// were three out of thirty.
+//
+// The LABEL is the caller's because it names what is being moved through
+// ("Levels", "Components", "Lines", the sub-list's own noun) and the layer does
+// not know; the CONDITION is not, for the reason jdeRowMoves gives.
+//
+// A SCROLL offset is not this: {"UP/DN", "Scroll"} moves a window over a
+// read-only body rather than a cursor over rows, so its question is
+// bodyScrollsForBar and the sheets that draw one ask it themselves (po_detail's
+// sheetMoves, po_add_line's confirmScrolls) because the two questions are asked
+// of different bars.
+func jdeMoveItem(label string, count int) []actionBarItem {
+	if !jdeRowMoves(count) {
+		return nil
+	}
+	return []actionBarItem{{"UP/DN", label}}
+}
+
+// jdePickBarCeiling is the TALLEST bar this picker can draw: every movement key
+// on it, whatever the live option count is.
+//
+// It is what a BUDGET is measured against — bodyAvailForBar, bodyScrollsForBar
+// and bodyPagesForBar all carry the obligation that the bar handed to them be
+// the tallest the screen can draw, because a bar that folds onto another row
+// leaves the body one row fewer and the answer must not oscillate between
+// frames. Before UP/DN could come off a bar the live bar WAS the ceiling for
+// everything but paging; now a picker filtered down to one row draws a shorter
+// bar than a second row restores, so the ceiling has to name the pair back.
+func jdePickBarCeiling(commit, cancel string) []actionBarItem {
+	return jdePickBarWith(commit, cancel, jdeCeilingRows, true)
 }
 
 // ---------------------------------------------------------------------------

@@ -1893,6 +1893,73 @@ func jdeBarOffersPaging(bar []string) bool {
 // in this file give: no bar is drawn there to make a claim with, and the frame's
 // answer to every key is the notice.
 func TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves(t *testing.T) {
+	jdeSweepMovementToken(t, jdePagingTokens(), "a paging key")
+}
+
+// TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves is the SAME
+// biconditional over the WHOLE movement vocabulary rather than over the paging
+// pair alone, and it is the half AGENTS.md recorded as live and deferred.
+//
+// The paging sweep matched a paging token and nothing else, so UP/DN standing
+// beside PgUp/PgDn on the same bar went unasked — and that is where the defect
+// was. jdePickBarWith, the bar EVERY columnar picker draws, appended
+// {"UP/DN", "Move"} with no condition on it at all, so a picker filtered down to
+// one option (or to the synthetic "(none)" row, which is prepended BEFORE the
+// filter runs and therefore survives a query nothing matches) named the pair
+// while jdeClampPick handed the cursor straight back. No note, no highlight
+// change, a pane redrawn byte for byte: standing rule 1, on the state a list
+// spends most of its life in.
+//
+// DERIVED on BOTH axes, which is what the paging sweep already got right and
+// what a roster of screens would not: the cases come from jdePaneCases (every
+// type embedding jdeScreen, plus its extra states), the heights and widths from
+// the layer's own drawable range, and the TOKENS from jdeMoveTokens — which is
+// itself checked against the bars' transcription tables in both directions
+// (TestJDEForm_TheMovementTokensMatchTheBarTable and
+// TestJDEForm_EveryMovementTokenABarDrawsIsInTheTable). So a sheet added
+// tomorrow is swept today, and a token a bar starts drawing fails until it is
+// transcribed.
+func TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves(t *testing.T) {
+	every := map[string]bool{}
+	for token := range jdeMoveTokens {
+		every[token] = true
+	}
+	jdeSweepMovementToken(t, every, "a movement key")
+}
+
+// jdeSweepMovementToken is the biconditional itself, over whichever slice of the
+// movement vocabulary it is handed.
+//
+// PER TOKEN and not per bar, because a bar carries several movement tokens whose
+// answers differ: the receiving form's line list names UP/DN over its lines and
+// PgUp/PgDn only once they outrun the pane, so "some movement key moved" would
+// pass a bar naming one of them dead. The claim under test is each token's own.
+//
+// The keys a token spells are pressed IN SEQUENCE with no reset, because a token
+// names a PAIR and the claim it makes is that SOME key it spells moves: `down`
+// is the one with room from a cursor resting at the top, `up` the one with room
+// once it has moved. That is the granularity the bars have always spelled these
+// at — one token for two opposed keys — and it is why a list EDGE stays silent
+// rather than declining out loud (AGENTS.md): the highlight is visibly at the
+// end, so the press has answered itself.
+func jdeSweepMovementToken(t *testing.T, tokens map[string]bool, what string) {
+	t.Helper()
+	if len(tokens) == 0 {
+		t.Fatal("no movement token to sweep — the vocabulary is derived from " +
+			"jdeMoveTokens and an empty one asserts nothing")
+	}
+	// The keystrokes this slice of the vocabulary is about, and the tokens that
+	// spell each one. TWO TOKENS CAN SPELL THE SAME KEY — "PgUp/PgDn" and the
+	// receiving form's "PgUp" both spell pgup — so the question "is this key
+	// named" is asked of the UNION and not of one token, or a frame drawing the
+	// honest one of the pair is reported for not drawing the other.
+	keyTokens := map[string][]string{}
+	for token := range tokens {
+		for _, k := range jdeMoveTokens[token] {
+			keyTokens[k] = append(keyTokens[k], token)
+		}
+	}
+
 	drawn, named, moves := 0, 0, 0
 	for _, c := range jdePaneCases() {
 		name, mk := c.name, c.mk
@@ -1905,55 +1972,98 @@ func TestJDEForm_ThePagingPairIsNamedExactlyWhereAPageMoves(t *testing.T) {
 					continue // refused: the notice replaces the bar
 				}
 				drawn++
-				offers := jdeBarOffersPaging(bar)
-				if offers {
+				on := map[string]bool{}
+				for _, tok := range jdeBarTokens(bar) {
+					on[tok] = true
+				}
+				// namedKeys is every keystroke SOME drawn token spells.
+				namedKeys := map[string]bool{}
+				for key, toks := range keyTokens {
+					for _, tok := range toks {
+						if on[tok] {
+							namedKeys[key] = true
+						}
+					}
+				}
+				// movedKey is measured one key at a time from the rest state,
+				// because the REVERSE direction is a claim about that key alone:
+				// pressing the pair in sequence and asking whether anything
+				// moved cannot say WHICH of them did.
+				movedKey := map[string]bool{}
+				for key := range keyTokens {
+					probe := mk()
+					jdeRootAt(t, probe, w, h)
+					before := jdePlaceOf(probe)
+					if next, _ := probe.Update(poPickerKeyMsg(key)); next != nil {
+						probe = next
+					}
+					movedKey[key] = !reflect.DeepEqual(before, jdePlaceOf(probe))
+					if movedKey[key] {
+						moves++
+					}
+				}
+
+				// FORWARD: a token the bar draws must have SOME key that moves.
+				// The pair is the granularity the bars have always spelled these
+				// at — one token for two opposed keys — and it is why a list EDGE
+				// stays silent rather than declining out loud (AGENTS.md): the
+				// highlight is visibly at the end, so the press has answered
+				// itself. Both keys are pressed IN SEQUENCE with no reset, since
+				// `down` is the one with room from a cursor resting at the top
+				// and `up` the one with room once it has moved.
+				for token := range tokens {
+					if !on[token] {
+						continue
+					}
 					named++
+					probe := mk()
+					jdeRootAt(t, probe, w, h)
+					before := jdePlaceOf(probe)
+					moved := false
+					for _, k := range jdeMoveTokens[token] {
+						if next, _ := probe.Update(poPickerKeyMsg(k)); next != nil {
+							probe = next
+						}
+						if !reflect.DeepEqual(before, jdePlaceOf(probe)) {
+							moved = true
+						}
+						before = jdePlaceOf(probe)
+					}
+					if !moved {
+						t.Errorf("%s at %dx%d: the bar names %q and neither of %v moves "+
+							"the operator's place, so every key it advertises is dead "+
+							"here\n%s", name, w, h, token, jdeMoveTokens[token],
+							strings.Join(bar, "\n"))
+					}
 				}
 
-				// Both keys, in sequence and with no reset: the claim is that
-				// SOME page moves, and pgdown is the one with room from a
-				// cursor resting at the top.
-				before := jdePlaceOf(s)
-				if next, _ := s.Update(poPickerKeyMsg("pgdown")); next != nil {
-					s = next
-				}
-				moved := !reflect.DeepEqual(before, jdePlaceOf(s))
-				before = jdePlaceOf(s)
-				if next, _ := s.Update(poPickerKeyMsg("pgup")); next != nil {
-					s = next
-				}
-				moved = moved || !reflect.DeepEqual(before, jdePlaceOf(s))
-				if moved {
-					moves++
-				}
-
-				if offers != moved {
-					t.Errorf("%s at %dx%d: the bar names a paging key = %v but a page "+
-						"moved the operator's place = %v\n%s",
-						name, w, h, offers, moved, strings.Join(bar, "\n"))
+				// REVERSE: a key that moves must be named by SOME drawn token.
+				for key := range keyTokens {
+					if movedKey[key] && !namedKeys[key] {
+						t.Errorf("%s at %dx%d: pressing %q moves the operator's place and "+
+							"no token on the bar spells it, so the key is discoverable "+
+							"only by guessing\n%s", name, w, h, key,
+							strings.Join(bar, "\n"))
+					}
 				}
 			}
 		}
 	}
 	if drawn == 0 {
-		t.Fatal("no columnar screen drew a frame at any supported size, so this sweep " +
-			"asserted nothing")
+		t.Fatalf("no columnar screen drew a frame at any supported size, so the sweep "+
+			"for %s asserted nothing", what)
 	}
 	// Both halves have to be REACHED or the biconditional is one implication
 	// with the other side never exercised — the vacuous-fixture rule at the
 	// level of the sweep rather than of a fixture.
 	if named == 0 {
-		t.Fatalf("no bar named a paging key at any of the %d drawn panes, so the "+
-			"named-and-acts half was never exercised", drawn)
-	}
-	if named == drawn {
-		t.Fatalf("every one of the %d drawn panes named a paging key, so the "+
-			"unnamed-and-inert half was never exercised", drawn)
+		t.Fatalf("no bar named %s at any of the %d drawn panes, so the "+
+			"named-and-acts half was never exercised", what, drawn)
 	}
 	if moves == 0 {
-		t.Fatalf("no page moved anything at any of the %d drawn panes — poPickerKeyMsg "+
-			"or Update stopped being reached, and this sweep would pass over a "+
-			"screen that pages when it says it does not", drawn)
+		t.Fatalf("no movement key moved anything at any of the %d drawn panes — "+
+			"poPickerKeyMsg or Update stopped being reached, and this sweep would "+
+			"pass over a screen that moves when it says it does not", drawn)
 	}
 }
 

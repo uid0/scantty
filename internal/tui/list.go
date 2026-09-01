@@ -457,6 +457,24 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if s.searching {
 			return s.updateSearch(m)
 		}
+		// THE MOVEMENT KEYS DECLINE WHERE THE FOOTER STOPS NAMING THEM, and the
+		// gate is here — one place, over the whole vocabulary — rather than a
+		// count condition repeated on six switch arms, which is how a condition
+		// comes to be applied to five of them.
+		//
+		// Silently, because a movement arm's whole product IS the position: with
+		// nowhere to move there is nothing left to report, and the footer has
+		// already stopped claiming otherwise (listNavHint). It is not the silence
+		// rule 1 forbids — the footer CHANGED when the rows went away, so the
+		// pane is not a byte-identical answer to the keypress; it is the same
+		// answer a list EDGE gives, where the highlight is visibly at the end.
+		//
+		// It also closes a state nothing could see: on an EMPTY list `pgdown`
+		// ran `s.cursor = len(s.rows) - 1` and left the cursor at -1, which no
+		// row index can be and which the next loaded page would have inherited.
+		if listNavBinds(m.String()) && !listNavMoves(len(s.rows)) {
+			return s, nil
+		}
 		switch m.String() {
 		case "j", "down":
 			if s.cursor < len(s.rows)-1 {
@@ -681,10 +699,24 @@ func (s *ListScreen) View() string {
 			head.WriteString("  " + StyleMuted.Render(fmt.Sprintf("%d match(es)", len(s.rows))))
 		}
 		head.WriteString("\n")
-		head.WriteString(pickerHint(listSearchBarHint) + "\n\n")
+		head.WriteString(pickerHint(s.searchBarHint()) + "\n\n")
 		return head.String() + s.bodyView()
 	}
 	return s.bodyView()
+}
+
+// headerLine is the list's standing status row: how it is sorted, which view it
+// is showing, and how many rows that comes to.
+//
+// A method, and drawn by the EMPTY branch as well as the loaded one, because it
+// is the only place `s sort` has a visible effect: a re-order of nothing looks
+// exactly like the nothing it started from.
+func (s *ListScreen) headerLine() string {
+	if s.hasFilters() {
+		return fmt.Sprintf("Sort: %s · Filter: %s · %d rows",
+			s.sort.label(), s.activeFilter().label, len(s.rows))
+	}
+	return fmt.Sprintf("Sort: %s · %d rows", s.sort.label(), len(s.rows))
 }
 
 func (s *ListScreen) bodyView() string {
@@ -696,25 +728,51 @@ func (s *ListScreen) bodyView() string {
 	}
 	if len(s.rows) == 0 {
 		if s.searching {
+			// The overlay above has already drawn its own bar (searchBarHint) and
+			// owns the keyboard, so the browse footer stays off for the reason the
+			// rows>0 branch gives below: two contradictory bars on one pane.
 			return StyleMuted.Render("No matches.")
 		}
-		// An empty FILTERED view is real information ("there are no drafts"),
-		// not an empty resource — name the view so it can't be misread, and
-		// point at the key that gets back out of it.
+		// AN EMPTY LIST IS A STATE, NOT AN ABSENCE OF ONE, and it used to be the
+		// one state on this screen that drew NO BAR AT ALL — an early return with
+		// "No rows." and nothing else, while `s`, `r`, `n`, `f`, `/` and every
+		// sibling-surface letter all worked. The bar's contract is that every key
+		// that works is on it; here it named none of them, on the state where
+		// "there is nothing here, now what?" is the operator's actual question and
+		// the answer is a key. That is a dead end, which is its own defect
+		// (standing rule 11) on top of the omission.
+		//
+		// The footer is the SAME method the loaded list draws, so what it names
+		// here is what is true here: footerHint already drops the movement
+		// segments below two rows and `enter open` below one, so an empty list's
+		// bar is exactly the keys that act on an empty list.
+		var b strings.Builder
+		// THE HEADER IS DRAWN HERE TOO, and that is what makes `s sort` honest
+		// rather than merely named: sorting is a local re-order whose ONLY
+		// visible product is this line, so on an empty list the key changed
+		// s.sort and redrew a byte-identical pane — standing rule 1, and drawing
+		// the footer without this would have moved the violation from "acts and
+		// is not named" to "is named and cannot be seen to act" rather than
+		// removing it. It also puts the row count where every other count on
+		// this screen is stated, and listBodyLines has always reserved a row for
+		// it (listHeaderRows), so nothing is spent that was not already budgeted.
+		b.WriteString(StyleMuted.Render(s.headerLine()) + "\n\n")
+		// An empty FILTERED view is real information ("there are no drafts"), not
+		// an empty resource — name the view so it cannot be misread. It used to
+		// point at the key out of it as well; that clause is gone because the
+		// footer under it now names `f filter`, and ONE surface names a key.
 		if f := s.activeFilter(); f.query != nil {
-			return StyleMuted.Render(fmt.Sprintf("No rows in the %q view.", f.label)) +
-				"\n\n" + StyleMuted.Render("press f to cycle the filter")
+			b.WriteString(StyleMuted.Render(fmt.Sprintf("No rows in the %q view.", f.label)))
+		} else {
+			b.WriteString(StyleMuted.Render("No rows."))
 		}
-		return StyleMuted.Render("No rows.")
+		b.WriteString("\n\n")
+		b.WriteString(pickerHint(s.footerHint()))
+		return b.String()
 	}
 
 	var b strings.Builder
-	header := fmt.Sprintf("Sort: %s · %d rows", s.sort.label(), len(s.rows))
-	if s.hasFilters() {
-		header = fmt.Sprintf("Sort: %s · Filter: %s · %d rows",
-			s.sort.label(), s.activeFilter().label, len(s.rows))
-	}
-	b.WriteString(StyleMuted.Render(header) + "\n")
+	b.WriteString(StyleMuted.Render(s.headerLine()) + "\n")
 	if s.windowStart > 0 {
 		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
 	}
@@ -790,10 +848,41 @@ func (s *ListScreen) bodyView() string {
 	return b.String()
 }
 
-// listSearchBarHint is the search overlay's action bar. A named constant so the
+// listSearchBarHint is the search overlay's action bar AT ITS TALLEST — every
+// key it can name, whatever the result count is. A named constant so the
 // renderer and listBodyLines's row reservation read the same string — a bar
 // whose rows are budgeted from a different literal is a bar that gets cut.
+//
+// The BUDGET measures against this ceiling and the RENDER draws searchBarHint,
+// which is the same trade the columnar layer makes for every bar that can lose a
+// key (jdePickBarCeiling): the live bar shrinks and grows with every keystroke
+// as the result count changes, and a body budget that moved with it would make
+// the list jump under the operator's hands while they type. The ceiling is a
+// fixed point; the live bar is what the operator reads.
 const listSearchBarHint = "↑/↓ move · enter open · esc cancel"
+
+// searchBarHint is the overlay's bar for the results actually on the pane.
+//
+// A SEARCH THAT MATCHED NOTHING IS THE STATE THIS BAR SPENDS ITS LIFE IN — it is
+// what the operator sees for every prefix of every query that has not landed
+// yet — and the constant above named `↑/↓ move` and `enter open` in it, over no
+// rows at all: both arms decline in silence (the cursor guards are `> 0` and
+// `< len-1`, and openSelected returns the screen it was handed on an
+// out-of-range cursor), so the pane came back byte for byte.
+//
+// `enter open` needs ONE row where the movement pair needs TWO, the same two
+// thresholds footerHint keeps apart, and for the same reason: opening the row
+// you are on is not moving to another one.
+func (s *ListScreen) searchBarHint() string {
+	var parts []string
+	if listNavMoves(len(s.rows)) {
+		parts = append(parts, "↑/↓ move")
+	}
+	if s.spec.detail != nil && len(s.rows) > 0 {
+		parts = append(parts, "enter open")
+	}
+	return strings.Join(append(parts, "esc cancel"), " · ")
+}
 
 // footerRows is how many rows the folded footer occupies, plus its blank
 // separator. Derived from the hint that will actually be drawn rather than
@@ -813,12 +902,27 @@ func (s *ListScreen) footerRows() int {
 // create form. Keep them paired: an arm added here without its guard in Update
 // is the exact defect this shape exists to prevent.
 func (s *ListScreen) footerHint() string {
-	hint := "j/k ↑↓ move · pgup/pgdn page · g/G home/end top/bottom · s sort"
+	// The movement segments come from the app's ONE navigation vocabulary
+	// (list_nav.go) rather than from a literal here, and they are CONDITIONAL:
+	// every one of them needs a second row to be true, and this footer used to
+	// promise all three over an empty list. listNavHint carries why an empty list
+	// is a state rather than an exception.
+	var hint string
+	if nav := listNavHint(len(s.rows)); nav != "" {
+		hint = nav + " · "
+	}
+	hint += "s sort"
 	if s.hasFilters() {
 		hint += " · f filter"
 	}
 	hint += " · r refresh"
-	if s.spec.detail != nil {
+	// `enter open` needs a ROW to open, which is a different threshold from the
+	// movement segments above (they need a SECOND row). openSelected already
+	// declines on an out-of-range cursor and does it silently, so on an empty
+	// list this segment named a key that returned the pane it was pressed on —
+	// found by sweeping the footer at every row count rather than at the eight
+	// every fixture used to carry.
+	if s.spec.detail != nil && len(s.rows) > 0 {
 		hint += " · enter open"
 	}
 	if s.spec.searchLoader != nil {

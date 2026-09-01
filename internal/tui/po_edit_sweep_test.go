@@ -151,7 +151,7 @@ func poEditPhaseCases() []poEditPhaseCase {
 	line := func(s *PurchaseOrderEditScreen) []actionBarItem { return s.lineBar() }
 	del := func(s *PurchaseOrderEditScreen) []actionBarItem { return s.deleteBar() }
 	void := func(s *PurchaseOrderEditScreen) []actionBarItem { return s.voidBar() }
-	assoc := func(s *PurchaseOrderEditScreen) []actionBarItem { return poEditAssocBar }
+	assoc := func(s *PurchaseOrderEditScreen) []actionBarItem { return poEditAssocBar(len(s.assocRows)) }
 	ctrlE := tea.KeyMsg{Type: tea.KeyCtrlE}
 	yes, no := boolPtr(true), boolPtr(false)
 
