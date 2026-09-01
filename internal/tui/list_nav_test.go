@@ -21,8 +21,9 @@ import (
 // every *ListScreen the nav tree reaches and parses a footer STRING. Between
 // them they cover the surfaces whose bar is a machine-readable RECORD.
 //
-// Some thirty screens are outside both, and it is not an oversight that can be
-// closed by adding them to a roster: their bar is a muted literal written
+// The receivers in listNavUnsweptReceivers are outside both, and it is not an
+// oversight that can be closed by adding them to a roster: their bar is a
+// muted literal written
 // straight into a strings.Builder inside View, so there is nothing to read
 // structurally and nothing to press it against. list_nav.go's package comment
 // records that as the standing exclusion.
@@ -304,8 +305,9 @@ func TestListNav_NoSurfaceBindsARetiredChord(t *testing.T) {
 	// file the retirement touched.
 	//
 	// What is asserted is the OFFSET (the scroller's whole visible product) and
-	// the bool Handle returns, which is its contract with the fourteen detail
-	// sheets that own one — a chord answered `true` is a keystroke the host
+	// the bool Handle returns, which is its contract with every detail sheet
+	// that owns one (listNavDelegatingReceivers derives them, and is the
+	// authority on how many) — a chord answered `true` is a keystroke the host
 	// swallows on behalf of a binding that no longer exists.
 	t.Run("scroller", func(t *testing.T) {
 		build := func() *TextScroller {

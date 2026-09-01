@@ -7,8 +7,9 @@ import "strings"
 // A LIST SURFACE is any screen state that presents rows the operator moves a
 // cursor through. There are three kinds in this program and they draw their
 // bars in three different ways — the columnar sheets build a []actionBarItem
-// (jde_form.go), ListScreen builds a footer STRING (list.go), and some thirty
-// screens write a muted literal straight into their View — so no single
+// (jde_form.go), ListScreen builds a footer STRING (list.go), and the rest
+// write a muted literal straight into their View (listNavUnsweptReceivers is
+// the roster of those and the authority on how many there are) — so no single
 // renderer can be made to answer for all of them. What CAN be made to answer
 // for all of them is the vocabulary itself: which keystrokes move a list
 // cursor, and which ones do not move anything anywhere.
@@ -141,10 +142,11 @@ func listNavBinds(key string) bool {
 //
 // TextScroller is in that list because it is where two of these chords were
 // unbound and because it hands the whole movement vocabulary to every detail
-// sheet that holds one, so a binding restored there reaches fourteen screens
-// while embedding no jdeScreen and being no *ListScreen — invisible to the
-// other two sets, and invisible to jdePlaceOf as well, since a scroller's
-// offset is nested inside a value rather than an int field of the screen.
+// sheet that holds one, so a binding restored there reaches every screen
+// listNavDelegatingReceivers finds, none of which embeds a jdeScreen or is a
+// *ListScreen — invisible to the other sets, and invisible to jdePlaceOf as
+// well, since a scroller's offset is nested inside a value rather than an int
+// field of the screen.
 //
 // THE CURSOR PICKERS ARE IN IT BECAUSE THE RETIREMENT WAS INCOMPLETE AND BOTH
 // RECORDS SAID OTHERWISE. bubbletea's KEY CONSTANTS are a second spelling —

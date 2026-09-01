@@ -29,8 +29,10 @@ import (
 //     STRING through a transcription table.
 //
 // A third kind of surface is outside both, and this file is where that is said
-// out loud rather than left to be discovered: some thirty screens write their
-// bar as a muted literal straight into a strings.Builder inside View. There is
+// out loud rather than left to be discovered: the receivers listed in
+// listNavUnsweptReceivers below — the roster the classifier checks, and so the
+// authority on how many there are — write their bar as a muted literal straight
+// into a strings.Builder inside View. There is
 // no record to read, so there is nothing for a sweep to press keys against —
 // adding them to a roster would not help, because the roster is not what is
 // missing.
@@ -44,7 +46,7 @@ import (
 // rather than in a pull request nobody re-reads.
 //
 // WHAT IT DOES NOT GUARANTEE, stated because a claim no check delivers is worse
-// than no claim: it does not say those thirty bars are honest. They are not. A
+// than no claim: it does not say those bars are honest. They are not. A
 // typical one reads "j/k move · n new · E/enter edit · x delete · r refresh ·
 // esc back" while binding the arrows, g/G, home/end and pgup/pgdn as well — and
 // at 80 columns the pane gives a list body 51 cells, which that footer is

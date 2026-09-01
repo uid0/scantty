@@ -916,10 +916,13 @@ either:
   g/G home/end top/bottom` as an unconditional literal was only ever pressed
   where it was true.
   WHERE IT IS NOT PROVEN, said plainly because a claim no check delivers is
-  worse than no claim: fifty-nine receivers (the count `listNavUnsweptReceivers`
-  carries) write their bar as a muted literal
+  worse than no claim: every receiver `listNavUnsweptReceivers` records — that
+  map is the roster and the authority on how many there are, and a count
+  restated here is the one part of the derivation that cannot be derived —
+  writes its bar as a muted literal
   straight into a `strings.Builder` inside `View`. `TextScroller` is the shape of
-  it at its clearest — one handler shared by fourteen detail sheets whose footers
+  it at its clearest — one handler shared by every detail sheet
+  `listNavDelegatingReceivers` finds, whose footers
   disagree about which of its keys to name. There is no record to read,
   so no sweep can press keys against it, and a typical one reads `j/k move · n
   new · E/enter edit · x delete · r refresh · esc back` while binding the arrows,
@@ -1164,11 +1167,26 @@ either:
   different scopes: the way out at every drawable pane, the figure wherever
   `listPaneRows` is more than one.
   THE HEIGHTS ARE DERIVED FROM ROOT'S OWN GATE, and that is why nothing reported
-  any of this: every legibility loop in `list_bar_honesty_test.go` walked the
+  any of this: the legibility loops in `list_bar_honesty_test.go` walked the
   hand-picked pair {24, 30}, and every failing height was below both — two
   hand-picked heights being the same mistake on the vertical axis that three
-  hand-picked widths was on the horizontal one. They walk `jdePaneHeights()` now,
-  and `TestList_AShortPaneRefusesRatherThanCuttingTheFooter` /
+  hand-picked widths was on the horizontal one. THE RULE THAT REPLACED THEM,
+  stated as a rule because a sentence claiming EVERY loop has been converted is
+  a universal over a set that grows whenever a loop is added, and no behavioural
+  check can deliver it: a legibility loop walks `jdePaneHeights()`, and it
+  measures through `listRootLines` rather than `screenBodyHeight`, which floors
+  at four rows and is therefore a LIE below a terminal height of 10. Where a
+  claim is a PRESENCE that a short pane genuinely defeats, the loop is scoped by
+  a boundary DERIVED from what the frame really draws — never by a height set
+  that avoids the state — and it counts BOTH sides of that boundary and fails if
+  either was never reached, or the scoping is a way of asserting nothing. The
+  search OVERLAY is the worked example and it carries both shapes: its BAR is
+  scoped, since the overlay is exempt from the refusal and a short pane keeps
+  part of it or none (`listOverlayBarFits`), while its BOX is not, since the box
+  is the head's FIRST row and `clampToBox` drops from the BOTTOM. A claim of
+  ABSENCE — the browse footer being gone while the box owns the keyboard — needs
+  no boundary at any height.
+  `TestList_AShortPaneRefusesRatherThanCuttingTheFooter` /
   `TestList_ARefusedPaneKeepsTheOperatorsPlace` /
   `TestList_ARefusedPaneHoldsTheKeysThatCouldNotBeSeenToAct` hold the refusal's
   own honesty — bounded in both axes, naming a height that works, movement and
@@ -2155,11 +2173,11 @@ touching any screen an operator drives:
   acted. The search-box sweep also fails a BODY line that names a key, which is
   how the second surface is kept from growing back.
   EVERY list surface BINDS the same navigation set, and the set is written down
-  once in `internal/tui/list_nav.go`; it NAMES that set on the 33 surfaces whose
-  bar is a machine-readable record (the 32 columnar `jdeScreen` types and
+  once in `internal/tui/list_nav.go`; it NAMES that set on the surfaces whose
+  bar is a machine-readable record (every type embedding `jdeScreen`, plus
   `ListScreen`), and on those alone — see the navigation entry below for where
-  the naming half is proven and where it is not, because fifty-nine receivers
-  still name less than they bind. The New PO flow was never part of it after its
+  the naming half is proven and where it is not, because every receiver in
+  `listNavUnsweptReceivers` still names less than it binds. The New PO flow was never part of it after its
   conversion: it is on the columnar set (`UP/DN`, `PgUp/PgDn` when the body
   moves) and `j`/`k` are unbound on it.
 - **On a destructive confirm the keys are on the BAR and the prose is the

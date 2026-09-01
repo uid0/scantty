@@ -1314,10 +1314,24 @@ func listCursorRowOnPane(t *testing.T, s *ListScreen, termHeight int) bool {
 //
 // Distinct runes, because a scrolling viewport full of one repeated character
 // looks the same however far it has scrolled.
+//
+// EVERY DRAWABLE HEIGHT, and UNCONDITIONALLY, which is the difference between
+// this loop and the overlay BAR one above. The bar is the second row of the
+// overlay's head and a short pane keeps only part of it — a known price, so
+// that claim is scoped to where the bar is drawn. The BOX is the FIRST row, and
+// clampToBox drops from the BOTTOM, so it survives at every pane Root will draw
+// at: there is no boundary to state and none is stated. It used to walk the
+// hand-picked pair {24, 30} — the same two-heights mistake on the vertical axis
+// that three hand-picked widths was on the horizontal one.
+//
+// Measured through Root (listRootLines) rather than screenBodyHeight, which
+// floors at four rows and is therefore a LIE about every terminal shorter than
+// ten (layout.go says so in as many words).
 func TestList_SearchBoxCaretStaysOnThePane(t *testing.T) {
+	heights := jdePaneHeights()
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
-			for _, termHeight := range []int{24, 30} {
+			for _, termHeight := range heights {
 				s := listSized(t, surface.build, termHeight)
 				next, _ := s.Update(listRuneKey("/"))
 				s = next.(*ListScreen)
@@ -1325,7 +1339,7 @@ func TestList_SearchBoxCaretStaysOnThePane(t *testing.T) {
 					return // this list names no search key
 				}
 				row := func() string {
-					for _, line := range listPaneLines(t, s, termHeight) {
+					for _, line := range listRootLines(t, s, 80, termHeight) {
 						if strings.Contains(line, listSearchPrompt) {
 							return line
 						}
@@ -1334,7 +1348,9 @@ func TestList_SearchBoxCaretStaysOnThePane(t *testing.T) {
 				}
 				before := row()
 				if before == "<not on the pane>" {
-					t.Fatalf("the search box is not on the 80x%d pane at all", termHeight)
+					t.Fatalf("the search box is not on the 80x%d pane at all — the box is the "+
+						"FIRST row of the overlay head and clampToBox drops from the bottom, so "+
+						"it is on every pane Root draws", termHeight)
 				}
 				for i := 0; i < 100; i++ {
 					next, _ := s.Update(listRuneKey(string(rune('a' + i%26))))
@@ -1480,21 +1496,49 @@ func TestList_SearchOverlayBarNamesExactlyTheKeysThatWork(t *testing.T) {
 	// eight of its sibling-surface claims legible in exactly this state, so the
 	// sweep has to say they are gone, not merely that the overlay's own four
 	// keys work.
-	for _, height := range []int{24, 30} {
+	// EVERY DRAWABLE HEIGHT, not the hand-picked pair {24, 30} this loop walked —
+	// the same two-heights mistake on the vertical axis that three hand-picked
+	// widths was on the horizontal one, and the one the overlay legibility loop
+	// in TestList_TheSearchOverlayNamesExactlyTheKeysThatWork was already
+	// converted away from.
+	//
+	// THE TWO CLAIMS ARE SCOPED DIFFERENTLY, because only one of them has a
+	// boundary. That the browse footer is GONE is an absence, true at every pane:
+	// View draws the overlay branch instead, so there is nothing for a short pane
+	// to make truer. That the overlay bar is ON the pane is a presence, and the
+	// overlay is DELIBERATELY exempt from the too-short refusal — it owns the
+	// keyboard, and AGENTS.md records the four defects that came of bringing a
+	// keyboard-owning surface inside a refusal built for a frame that owns
+	// nothing. The price of that exemption is a short pane keeping the input line
+	// and part of the bar or none of it, which is a KNOWN price rather than a
+	// defect to report, so the presence claim is scoped by the DERIVED boundary
+	// (listOverlayBarFits) rather than avoided by a height set that never reaches
+	// it. Both sides of that boundary must be reached or the scoping is a way of
+	// asserting nothing.
+	drawnPanes, belowBar := 0, 0
+	for _, height := range jdePaneHeights() {
 		sized := listSized(t, func() *ListScreen { return newScreenFor(WSAssets, Deps{}).(*ListScreen) }, height)
 		next, _ := sized.Update(listRuneKey("/"))
 		sized = next.(*ListScreen)
 		if !sized.searching {
 			t.Fatal("/ did not open the search overlay")
 		}
-		pane := strings.Join(listPaneLines(t, sized, height), "\n")
+		// Through Root, not screenBodyHeight, which floors at four rows and so
+		// lies about every terminal shorter than ten (layout.go).
+		pane := strings.Join(listRootLines(t, sized, 80, height), "\n")
 		// The LIVE bar, not the listSearchBarHint ceiling: the constant is what
 		// listBodyLines budgets against, and reading it here would assert a claim
 		// the frame does not necessarily make (it drops `↑/↓ move` below two
 		// results and `enter open` below one).
 		drawn := sized.searchBarHint()
-		if !strings.Contains(pane, drawn) {
-			t.Errorf("the overlay bar is not on the 80x%d pane:\n%s", height, pane)
+		if listOverlayBarFits(sized) {
+			drawnPanes++
+			if !strings.Contains(pane, drawn) {
+				t.Errorf("the overlay bar is not on the 80x%d pane, which has the %d rows its "+
+					"head needs:\n%s", height, listOverlayHeadRows(sized), pane)
+			}
+		} else {
+			belowBar++
 		}
 		for _, segment := range strings.Split(sized.footerHint(), " · ") {
 			if strings.Contains(pane, segment) && !strings.Contains(drawn, segment) {
@@ -1502,6 +1546,13 @@ func TestList_SearchOverlayBarNamesExactlyTheKeysThatWork(t *testing.T) {
 					segment, height, pane)
 			}
 		}
+	}
+	if drawnPanes == 0 {
+		t.Fatal("no swept height drew the overlay bar whole, so the presence half was never asserted")
+	}
+	if belowBar == 0 {
+		t.Fatal("every swept height drew the overlay bar whole, so the exemption's price — a pane " +
+			"too short for the head — was never reached and the scoping proves nothing")
 	}
 
 	// Every browse-footer key is inert here, which is why naming them would be
@@ -1879,13 +1930,16 @@ func listNavigates(cmd tea.Cmd) bool {
 	return false
 }
 
-// TestList_ARefusedPaneNeverOpensARowNobodyCanSee: `enter` is held on a refused
-// pane, on BOTH branches, and for one reason.
+// TestList_ARefusedPaneNeverOpensARowNobodyCanSee: `enter` is held on the
+// refused pane, and there is exactly one — the BROWSE pane, since the search
+// overlay owns the keyboard and is exempt from the refusal entirely.
 //
-// It used to be held on the searching pane and live on the browse one, with the
+// It was briefly held on a refused overlay and live on the browse one, with the
 // two gates giving opposite justifications for the same key — the same keystroke
 // doing different things on sibling surfaces, which is the defect this whole
-// branch exists to close, sitting inside the fix for it. The reason is stated
+// branch exists to close, sitting inside the fix for it. That asymmetry is what
+// this check was written for; the overlay half of the refusal was then reverted
+// wholesale, so the hold has one site and one reason, stated
 // once at listRefusedHoldsKey: the refusal draws no rows and no highlight, the
 // row under the cursor moves while the pane is refused, and opening a row nobody
 // chose is worse than opening none. `enter` was never the way out — `esc` is
