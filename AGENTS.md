@@ -2172,24 +2172,31 @@ touching any screen an operator drives:
   meaning CHANGES something, since a key that declines and says why has not
   acted. The search-box sweep also fails a BODY line that names a key, which is
   how the second surface is kept from growing back.
-  THE VOCABULARY IS WRITTEN DOWN ONCE in `internal/tui/list_nav.go`, and what
-  holds of it across the app is stated at the strength the checks deliver and no
-  higher — the flat universal that stood here (every list surface BINDS the same
-  set) was false, and it is the third correction this one sentence has needed.
-  WHAT HOLDS NEGATIVELY, over every fixture the retired-chord sweep can build:
-  no list surface binds a movement keystroke OUTSIDE the vocabulary
-  (`TestListNav_NoSurfaceBindsARetiredChord`, which PRESSES each retired chord
-  rather than reading for it).
-  WHAT HOLDS POSITIVELY IS QUALIFIED, and the qualifier is a fact about the
-  SURFACE rather than a gap: where a surface's query box is ALWAYS LIVE, a bare
-  `j` or `g` is a character the operator typed, so such a surface binds the
-  ARROWS ALONE and can never bind the letter half — binding it would eat what
-  was typed, which is standing rule 4. `ListScreen`'s own search overlay is the
-  instance and `TestList_TheSearchOverlayNamesExactlyTheKeysThatWork` pins it by
-  asserting the overlay names exactly the keys it binds; the columnar pickers
-  spell the same affordances as TOKENS (`UP/DN`, `PgUp/PgDn`, `Home/End`) and
-  bind no letter for the identical reason. Do NOT "close" that by binding
-  letters into a search box.
+  THE VOCABULARY IS WRITTEN DOWN ONCE in `internal/tui/list_nav.go`, and NO
+  UNIVERSAL IS ASSERTED OVER IT HERE. Four have been, and all four were false —
+  the last claimed no list surface binds a movement keystroke outside the
+  vocabulary, which `jdePickKey` falsifies by moving a columnar picker's cursor
+  on `tab`/`shift+tab` (recorded below as `poFormNavAliases`). The FORM was the
+  defect rather than the words: each version quantified over a set nobody
+  enumerates, so each rewrite bought one round. A claim here now states what a
+  NAMED check presses and stops there, or it is not written.
+  `TestListNav_NoSurfaceBindsARetiredChord` presses each keystroke in
+  `listNavRetiredChords`, and nothing else, over the fixtures its swept sets
+  build, and fails on one that moves the operator's place — controlled by first
+  showing the NAMED key moves in that same fixture, so a fixture nothing could
+  move fails too (`listNavChordControls`, whose coverage of the retired set is
+  itself checked). It says nothing about any other keystroke.
+  `TestList_TheSearchOverlayNamesExactlyTheKeysThatWork` asserts that on
+  `ListScreen`'s search overlay, at every row count in `listRowCases`, the bar
+  names exactly the keys that act. It is about that overlay and not about a
+  class of surfaces.
+  WHY A LIVE QUERY BOX ROUTES LETTERS TO ITSELF is a fact about the MECHANISM
+  and survives as prose because it is a reason rather than a census: every
+  keystroke such a surface's switch does not name falls through to the box, so a
+  bare `j` or `g` is a character the operator typed and binding it would eat
+  what they typed, which is standing rule 4. Do NOT "close" that by binding
+  letters into a search box, and do not restate it as a claim about which
+  surfaces bind what.
   THE NAMING HALF is proven on the surfaces whose bar is a machine-readable
   record (every type embedding `jdeScreen`, plus `ListScreen`), and on those
   alone — see the navigation entry below, because every receiver in

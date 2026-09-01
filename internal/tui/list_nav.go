@@ -46,30 +46,39 @@ type listNavMove struct {
 	Keys []string
 }
 
-// listNavSet is the navigation vocabulary a list surface draws from, in footer
-// order. It is the CEILING and not a floor: a surface binds no movement key
-// outside it, and how much of it a surface can bind is decided by the surface.
+// listNavSet is the vocabulary ListScreen's footer is built from, in footer
+// order.
 //
 // It is a function rather than a var so a caller cannot append to it, and it is
 // read by ListScreen.footerHint — this is production vocabulary, not a test
-// fixture. The columnar layer spells the same affordances as bar TOKENS
-// (UP/DN, PgUp/PgDn, Home/End) and binds no letter, because on a columnar
-// picker the filter box is always live and a bare `j` is a character in the
-// query rather than a movement key; that difference is a fact about the surface
-// and each bar tells the truth about its own, which is why there is one
-// vocabulary and two spellings of it rather than two vocabularies.
+// fixture.
 //
-// AN ALWAYS-LIVE QUERY BOX BINDS THE ARROWS ALONE, and that is the same fact
-// read off a surface that is not columnar: ListScreen's own search overlay
-// (updateSearch) answers esc/up/down/enter and hands every other keystroke to
-// the box, so j, k, g, G, home, end, pgup and pgdown are CHARACTERS there.
-// Binding them would eat what the operator typed, which no movement affordance
-// is worth, so it is a permanent property of such a surface rather than a gap
-// waiting to be closed — do not close it by binding letters into a search box.
-// What is checked is the negative (TestListNav_NoSurfaceBindsARetiredChord
-// presses every retired chord over its fixture sets) plus, on the surfaces
-// whose bar is a machine-readable record, the biconditional between what a bar
-// NAMES and what its keys do.
+// IT IS NOT A CENSUS OF EVERY KEYSTROKE THAT MOVES A CURSOR, and no sentence
+// here says it is. Four versions of that sentence have now been written and
+// falsified — the last one by jdePickKey, which moves a columnar picker's
+// cursor on tab/shift+tab as an alias of up/down (AGENTS.md records it as
+// poFormNavAliases). What holds is what a named check presses:
+// TestListNav_NoSurfaceBindsARetiredChord presses each keystroke in
+// listNavRetiredChords, and nothing else, over the fixtures its swept sets
+// build, and fails on one that moves the operator's place — controlled by first
+// showing the NAMED key moves in that same fixture, so a fixture nothing could
+// move fails too. Extend that check before extending a claim about it.
+//
+// WHY A COLUMNAR PICKER SPELLS TOKENS (UP/DN, PgUp/PgDn, Home/End) rather than
+// letters is a fact about the MECHANISM and not a claim about a set: every
+// keystroke jdePickKey's switch does not name falls through to the filter box,
+// which is always live, so a bare `j` is a character the operator typed and
+// binding it would eat what they typed (standing rule 4). Each bar tells the
+// truth about its own surface, which is why there is one vocabulary and two
+// spellings of it rather than two vocabularies.
+//
+// ListScreen's own search overlay (updateSearch) is that same mechanism off the
+// columnar layer: it answers esc/up/down/enter and hands every other keystroke
+// to the box. Do not "close" that by binding letters into a search box — the
+// keystroke the operator typed is worth more than the affordance.
+// TestList_TheSearchOverlayNamesExactlyTheKeysThatWork asserts that on that
+// overlay, at every row count in listRowCases, the bar names exactly the keys
+// that act; it is about that overlay and not about a class of surfaces.
 func listNavSet() []listNavMove {
 	return []listNavMove{
 		{"j/k ↑↓ move", []string{"j", "k", "up", "down"}},
