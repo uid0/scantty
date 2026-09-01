@@ -442,6 +442,7 @@ func listSized(t *testing.T, build func() *ListScreen, termHeight int) *ListScre
 // it fails this sweep rather than passing it.
 func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 	probes := [][]string{nil, {"G"}, {"pgdown"}}
+	heights := jdePaneHeights()
 
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
@@ -462,7 +463,7 @@ func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 			// A pane the screen REFUSES is not a claim about the footer and is
 			// checked by TestList_AShortPaneRefusesRatherThanCuttingTheFooter,
 			// which is where the refusal's own honesty is asserted.
-			for _, termHeight := range jdePaneHeights() {
+			for _, termHeight := range heights {
 				for _, scrolled := range []bool{false, true} {
 					sized := listSized(t, surface.build, termHeight)
 					if scrolled {
@@ -489,7 +490,7 @@ func TestList_FooterNamesExactlyTheKeysThatWork(t *testing.T) {
 			// "these bars only got shorter" is exactly the kind of claim that is
 			// true until the next segment is added behind the condition.
 			for state, rows := range listRowCases {
-				for _, termHeight := range jdePaneHeights() {
+				for _, termHeight := range heights {
 					sized := listWithRows(surface.build, rows)
 					next, _ := sized.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
 					sized = next.(*ListScreen)
@@ -658,13 +659,14 @@ func TestList_AShortPaneRefusesRatherThanCuttingTheFooter(t *testing.T) {
 // the key must MOVE there, so a fixture that could not move for unrelated
 // reasons fails instead of passing.
 func TestList_ARefusedPaneKeepsTheOperatorsPlace(t *testing.T) {
+	heights := jdePaneHeights()
 	place := func(s *ListScreen) string { return fmt.Sprint(s.cursor, "+", s.windowStart) }
 	moved, held := 0, 0
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
 			for _, key := range []string{"j", "down", "pgdown", "G", "end"} {
 				var tall, short int
-				for _, termHeight := range jdePaneHeights() {
+				for _, termHeight := range heights {
 					s := listSized(t, surface.build, termHeight)
 					before := place(s)
 					next, _ := s.Update(listRuneKey(key))
@@ -754,7 +756,7 @@ func listRootLines(t *testing.T, s *ListScreen, w, h int) []string {
 // deliberate choice recorded at listTooShort. The row threshold is asked of
 // the screen's own listPaneRows rather than written as a number.
 func TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip(t *testing.T) {
-	widths := jdeDrawableWidths()
+	widths, heights := jdeDrawableWidths(), jdePaneHeights()
 	if len(widths) == 0 {
 		t.Fatal("no drawable widths — the derivation is broken, not the app")
 	}
@@ -763,7 +765,7 @@ func TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip(t *testing.T) {
 		t.Run(surface.name, func(t *testing.T) {
 			for state, rows := range listRowCases {
 				for _, w := range widths {
-					for _, h := range jdePaneHeights() {
+					for _, h := range heights {
 						probe := listWithRows(surface.build, rows)
 						sized, _ := probe.Update(tea.WindowSizeMsg{Width: w, Height: h})
 						probe = sized.(*ListScreen)
@@ -820,6 +822,51 @@ func TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip(t *testing.T) {
 	}
 }
 
+// listWayOutKey is one keystroke a refusal notice can name: the WORD the notice
+// spells it with, and the message pressing it really sends.
+type listWayOutKey struct {
+	name string
+	msg  tea.KeyMsg
+}
+
+// listWayOutKeyNames transcribes the words a refusal notice may use for a key
+// into the keystroke each one spells, and nothing else.
+//
+// It is a TRANSCRIPTION and never a fallback, which is the whole reason it is a
+// table rather than a call into listRuneKey: that helper resolves a name it has
+// not been taught to KeyRunes, so a reworded notice would silently be "pressed"
+// as literal text and the sweep below would certify a way out nobody can use.
+// poPickerKeyMsg shipped exactly that hole once (AGENTS.md), which is why an
+// unknown word here is a FATAL rather than a guess.
+var listWayOutKeyNames = map[string]listWayOutKey{
+	"Esc": {"esc", tea.KeyMsg{Type: tea.KeyEsc}},
+}
+
+// listWayOutKeys is every keystroke the notice's own record NAMES, read out of
+// that record so the press and the wording cannot come apart.
+//
+// listTooShortWayOut exists so the notice and its sweeps read ONE record; a
+// sweep that hard-codes the keystroke and quotes the constant only in its
+// failure message leaves the drift open in the one direction that matters —
+// reword the notice and the test goes on pressing the old key, goes on passing,
+// and certifies a way out the pane no longer names.
+func listWayOutKeys(t *testing.T) []listWayOutKey {
+	t.Helper()
+	var out []listWayOutKey
+	for _, word := range strings.Fields(listTooShortWayOut) {
+		if key, ok := listWayOutKeyNames[strings.Trim(word, ".,;:·")]; ok {
+			out = append(out, key)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("the refusal notice reads %q and listWayOutKeyNames recognises no key "+
+			"in it, so this sweep would press nothing and pass. Teach the table the word "+
+			"the notice now uses — a way out nobody presses is a way out nobody proved",
+			listTooShortWayOut)
+	}
+	return out
+}
+
 // TestList_ARefusedPaneNamesAKeyThatReallyLeaves: the one key the too-short
 // notice names actually gets the operator off the refused pane.
 //
@@ -834,32 +881,42 @@ func TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip(t *testing.T) {
 // the stack is empty in one case and carries a screen in the other, because
 // "esc worked" for the wrong one of those two reasons is how a way out comes to
 // be named on a frame it does not really work on.
+//
+// THE KEY IT PRESSES IS READ OFF THE NOTICE (listWayOutKeys), not written here,
+// so rewording the notice changes what this sweep presses. Every key the record
+// names has to leave; a word the transcription does not know is a fatal rather
+// than a silent skip.
 func TestList_ARefusedPaneNamesAKeyThatReallyLeaves(t *testing.T) {
+	wayOut := listWayOutKeys(t)
+	widths, heights := jdeDrawableWidths(), jdePaneHeights()
 	checked := 0
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
 			for state, rows := range listRowCases {
-				for _, w := range jdeDrawableWidths() {
-					for _, h := range jdePaneHeights() {
+				for _, w := range widths {
+					for _, h := range heights {
 						probe := listWithRows(surface.build, rows)
 						sized, _ := probe.Update(tea.WindowSizeMsg{Width: w, Height: h})
 						if sized.(*ListScreen).paneDrawn() {
 							continue
 						}
-						for _, withHistory := range []bool{false, true} {
-							list := listWithRows(surface.build, rows)
-							r := newTestRoot(list)
-							if withHistory {
-								r.history = []navEntry{{screen: NewWelcomeScreen(), ws: WSScan}}
-							}
-							next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
-							r = next.(Root)
-							after, _ := r.Update(listRuneKey("esc"))
-							checked++
-							if after.(Root).screen == Screen(list) {
-								t.Errorf("the %s refusal at %dx%d (%s, history %v) names %q and "+
-									"esc left the operator on the same screen",
-									surface.name, w, h, state, withHistory, listTooShortWayOut)
+						for _, key := range wayOut {
+							for _, withHistory := range []bool{false, true} {
+								list := listWithRows(surface.build, rows)
+								r := newTestRoot(list)
+								if withHistory {
+									r.history = []navEntry{{screen: NewWelcomeScreen(), ws: WSScan}}
+								}
+								next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+								r = next.(Root)
+								after, _ := r.Update(key.msg)
+								checked++
+								if after.(Root).screen == Screen(list) {
+									t.Errorf("the %s refusal at %dx%d (%s, history %v) reads %q "+
+										"and pressing %q left the operator on the same screen",
+										surface.name, w, h, state, withHistory,
+										listTooShortWayOut, key.name)
+								}
 							}
 						}
 					}
@@ -890,11 +947,12 @@ func TestList_ARefusedPaneNamesAKeyThatReallyLeaves(t *testing.T) {
 // not move either — that is what makes the operator "come back where they were"
 // when the terminal grows.
 func TestList_ARefusedPaneHoldsTheKeysThatCouldNotBeSeenToAct(t *testing.T) {
+	heights := jdePaneHeights()
 	held, moved := 0, 0
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
 			for state, rows := range listRowCases {
-				for _, h := range jdePaneHeights() {
+				for _, h := range heights {
 					s := listWithRows(surface.build, rows)
 					sized, _ := s.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 					s = sized.(*ListScreen)
@@ -1144,9 +1202,10 @@ func listSearchBarTokens(t *testing.T, hint string) map[string][]string {
 // The cursor half matters for the same reason it does on the pickers: a
 // highlighted row the operator cannot see is a row they act on blind.
 func TestList_TheFooterSurvivesEveryScrollPosition(t *testing.T) {
+	heights := jdePaneHeights()
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
-			for _, termHeight := range jdePaneHeights() {
+			for _, termHeight := range heights {
 				for _, key := range []string{"j", "pgdown"} {
 					s := listSized(t, surface.build, termHeight)
 					if !s.paneDrawn() {
