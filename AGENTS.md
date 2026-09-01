@@ -1254,11 +1254,15 @@ touching any screen an operator drives:
   it. It holds, and by the CAP rather than by any wording: `poLeadOnto` reserves
   the lead's opening clause at no more than HALF the row, so at 80 columns the
   subject keeps at least `51 - 25 - 3 = 23` cells whatever the lead says, and
-  `poSubmitWords` is 20 for exactly that reason. Only three subjects can ever
-  share the row at all — the submit's, the item picker's and the asset
-  picker's — because a lead is applied only where a box is pinned, and each
+  `poSubmitWords` is 20 for exactly that reason. A subject shares the row only
+  where a phase pins a BOX, which DERIVES the set rather than listing it: on
+  this screen the submit's, the item picker's and the asset picker's, and each
   leads with its FACT ("Creating the PO for", "Reloading the items",
   "Finding") so what the clip takes is the identifier at the tail.
+  `poLeadOnto` is shared beyond this screen — the item form's kit-component
+  picker (`kitPickStatus`) pins a filter box for the same reason and reserves
+  its subject through the same function rather than copying the arithmetic — so
+  a change to the cap is a change to every such row, not to this one.
   ORDER WITHIN A SUBJECT IS THE OTHER HALF OF THAT, and the asset picker is the
   worked example: it read `Searching ` + supplier + `'s assets for "zzz"…`, so
   the one variable part that is NOT the identity of the work — the supplier, the
