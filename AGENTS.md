@@ -997,9 +997,9 @@ either:
   single expression the budget, the refusal and the renderer all read. Where the
   pane can afford one apiece they are drawn in their places as they always were;
   where it can only afford one, `listMarkerLine` puts both facts on that row and
-  the refusal comes down a terminal row with it (measured: 16 → 15 on the
-  purchasing and inventory lists, 15 → 14 on the rest; the numbers are an OUTPUT
-  of the footer's fold and the tallest row, so re-derive rather than trust them).
+  the refusal comes down a terminal row with it. The height that happens at is an
+  OUTPUT of the footer's fold and the tallest row, so derive it rather than
+  looking for it written down.
   ALL THREE MARKER ROWS ARE BOUNDED BY THAT ONE BUILDER, and it gives ground in
   a stated order rather than being clipped: the PROSE shortens, the arrows and
   the COUNT never do, and where even the shortest form will not fit the count is
@@ -1008,8 +1008,9 @@ either:
   not read as a shortened fact but as a different one, the price column's
   `@ 3.50` drawn as `@ 3.` on the row whose whole job is to say how much of the
   list is out of sight. The two per-marker sites used to write their own
-  unbounded literals beside the bounded shared one, so the sweep asserts every
-  drawn marker row is one `listMarkerLine` could have produced at that pane.
+  unbounded literals beside the bounded shared one, so
+  `TestList_EveryMarkerRowOnThePaneFitsIt` asserts every drawn marker row is one
+  `listMarkerLine` could have produced at that pane.
   Reserving one WITHOUT the shared row is the version to not reach for, and its
   reasoning sounds right: `↑ more above` needs `windowStart > 0`, which the pane
   does not open in. It is true of the opening state and false of the next
@@ -1023,10 +1024,10 @@ either:
   empty and refuse when the rows land at the same size. That asymmetry is
   inherent (an empty pane genuinely is smaller) and is not papered over.
   WHERE EVEN THAT WILL NOT FIT THE PANE IS REFUSED, not mutilated: `paneDrawn` is
-  the one predicate every reader asks — the frame, both key gates and
-  `WantsRawInput` — so the notice's claims and the keys behind them are one
-  expression; grep it rather than trusting a list of readers written here, which
-  has already gone stale once. It is asked in `View` and not in `bodyView` so the
+  the one predicate every reader asks, so the notice's claims and the keys behind
+  them are one expression; grep it rather than trusting a list of readers written
+  here, which has gone stale every time one has been written — including in the
+  commit that added this warning. It is asked in `View` and not in `bodyView` so the
   notice REPLACES the frame rather than being drawn beneath part of it. And
   `listTooShort` draws a bounded notice naming the height needed in TERMINAL rows
   — a height that ACTUALLY DRAWS when the operator resizes to it. That holds at
@@ -1074,14 +1075,21 @@ either:
   now — at every pane Root draws, the overlay takes every keystroke, stays off
   the back-stack, draws no refusal, and answers each key exactly as it does at
   the largest pane — so a fifth attempt fails rather than shipping.
-  What SURVIVED the revert, because it is behaviour-neutral or independently
-  justified: `searchBarHint` names the overlay's keys conditionally (a claim
-  about the LEGEND — no key routes or acts differently); `SkipsBackStack` reads
-  `searching` alone (identical to the pre-branch behaviour, and now a separate
-  predicate so the back-stack cannot move again with an unrelated change); and
-  the browse pane's own refusal, which is what this work is for. Both bars fold
-  at `listPaneCells` rather than the fixed 51: a fold is safe at 51 only while
-  the pane HAS 51 cells, and at width 45 it has 16.
+  WHAT THE REVERT RESTORED is KEY ROUTING and the refusal EXEMPTION, and that is
+  the claim the check above delivers — not a general "the overlay is untouched",
+  which would be a maintained list of differences against a base commit and is
+  the shape this section exists to remove. `git diff` against the base is the
+  authority on the rest; two things are worth knowing because a reader will
+  otherwise mistake them for oversights. `searchBarHint` names the overlay's keys
+  conditionally, which changes the LEGEND and routes no key differently. And the
+  overlay's BODY BUDGET moved with the shared helpers rather than with the
+  refusal — it reads `screenBodyRows` and `markerRows` now, where base read the
+  floored `screenBodyHeight` and reserved the marker PAIR unconditionally — so a
+  short-rowed result set can show more rows than base did, and where the pane can
+  afford only one marker row it draws the shared one. That is deliberate: base
+  budgeted against a height `layout.go` documents as a lie below a terminal
+  height of 10. Both bars fold at `listPaneCells` rather than the fixed 51: a
+  fold is safe at 51 only while the pane HAS 51 cells, and at width 45 it has 16.
   THE HELD SET IS DERIVED FROM WHAT EACH KEY'S PRODUCT IS, and there is exactly
   one because there is exactly one refused pane. Read `listRefusedHoldsKey` for
   the members rather than a roster restated here — restating it is what has
@@ -1143,9 +1151,10 @@ either:
   that leads and the way out on the line a one-row pane drops; way-out-first
   leaves a pane naming a key above a sentence denying that any key is named. In
   one clause the order is rule then exception AND the way out still leads. A
-  wording asserting that no key WORKS would be false of `r`, `f`, `n`, `enter`
-  and every uppercase shortcut, all deliberately live; what is true whatever
-  stays bound is that the action bar is not drawn. It also has to fit the 16
+  wording asserting that no key WORKS would be false of every key
+  `listRefusedHoldsKey` does NOT hold, which is why the claim is about the
+  LEGEND: what is true whatever stays bound is that the action bar is not drawn.
+  It also has to fit the 16
   cells width 45 gives, or it folds into a first line that denies without
   naming — check any rewording against that budget, which the sweeps do.
   ESC IS NAMED BECAUSE ESC WORKS THERE, and it is PRESSED rather than read off
