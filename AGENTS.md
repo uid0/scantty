@@ -1013,13 +1013,29 @@ either:
   reason `screenBodyRows` was: `screenBodyWidth`'s floor of 20 is four cells more
   than Root draws at width 45, and a bound that spends cells the pane does not
   have is not a bound.
-  WHATEVER MUST SURVIVE MUST LEAD, once more, and here it decides the WORDING:
-  the height to RESIZE TO leads in its own fold segment (`Needs N rows`) and the
-  height the operator already HAS follows it, because no sentence carrying both
-  fits the 16 cells the narrowest drawable pane gives, and a trim must never be
-  able to leave a WRONG number standing. The single-segment version folded on
-  spaces into `Too short:` and scattered the figure across lines a short pane
-  drops.
+  WHATEVER MUST SURVIVE MUST LEAD, once more, and here it decides the WORDING.
+  On a REFUSAL the load-bearing clause is the WAY OUT, so `Esc leaves` leads in
+  its own fold segment, then the height to RESIZE TO, then the height the
+  operator already HAS — a trim on either axis takes the tail and can never
+  leave a WRONG number standing. The single-segment version folded on spaces
+  into `Too short:` and scattered the figure across lines a short pane drops.
+  ESC IS NAMED BECAUSE ESC WORKS THERE, and it is PRESSED rather than read off
+  Root's switch (`TestList_ARefusedPaneNamesAKeyThatReallyLeaves`, through a real
+  Root, with the back-stack both empty and loaded): a refused list is never
+  `searching`, so `WantsRawInput` is false and `HandlesKey` never claims `esc`,
+  and the key reaches the global back step. It is the one key a frame that names
+  none may name, the trade `jdeTooShort` already makes — the way out of a pane
+  too short to work in must stay open or the refusal is one nobody can act on —
+  and it does not soften the held-keys sentence beside it, because esc does not
+  act ON the list, it leaves it.
+  WHERE BOTH WILL NOT FIT, THE HEIGHT IS WHAT GIVES, and the state is narrow: a
+  ONE-ROW pane (terminal height 7, since `screenBodyRows` is height − 6) keeps
+  only the first folded line, and whether that line still holds the figure
+  depends on the width — 51 cells keeps it, the 16 that width 45 gives does not,
+  so only `Esc leaves…` is drawn there, marked. From two rows up both are on the
+  pane at every drawable width, which is why the sweep asks the two claims at
+  different scopes: the way out at every drawable pane, the figure wherever
+  `listPaneRows` is more than one.
   THE HEIGHTS ARE DERIVED FROM ROOT'S OWN GATE, and that is why nothing reported
   any of this: every legibility loop in `list_bar_honesty_test.go` walked the
   hand-picked pair {24, 30}, and every failing height was below both — two
@@ -1032,9 +1048,11 @@ either:
   sort held, with the control asserted so a fixture that could not move for
   unrelated reasons fails instead of passing. The WIDTH axis has its own sweep
   over Root's drawable widths for the same reason
-  (`TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip`), and it asserts two
-  things because the leading figure cannot speak for both: that the figure
-  reaches the clipped pane whole, and that no line of the notice overruns the
+  (`TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip`), and it asserts
+  three things because the lead cannot speak for all of them: that the WAY OUT
+  reaches the clipped pane whole at every drawable pane, that the height figure
+  does wherever the pane has more than one row (the threshold asked of
+  `listPaneRows`, not written down), and that no line of the notice overruns the
   pane at all — a styled line `clampToBox` truncates loses its closing SGR reset
   into everything drawn after it.
 - **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a

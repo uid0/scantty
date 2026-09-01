@@ -55,11 +55,23 @@ import (
 //
 // THE ONE HALF THAT IS CLOSED FOR THEM is the vocabulary: they no longer bind
 // anything no bar in the program spells (list_nav.go). That half is held by
-// PRESSING the retired chords on the two fixture sets
-// (TestListNav_NoSurfaceBindsARetiredChord) — which reaches the columnar screens
-// and every *ListScreen and, like every other behavioural sweep, cannot reach
-// the prose-bar receivers. What reaches THEM is this file: not a claim about
-// their keys, but the guarantee that a new one cannot join the app unexamined.
+// PRESSING the retired chords on THREE fixture sets
+// (TestListNav_NoSurfaceBindsARetiredChord): the columnar screens, every
+// *ListScreen, and TextScroller.
+//
+// THE SCROLLER IS THE ONE PROSE-BAR RECEIVER A BEHAVIOURAL PRESS REACHES, and
+// the reason is what it is rather than what it draws: it is a VALUE the test can
+// construct and drive directly, where the others are screens whose bar is a
+// literal inside View with no record to read and no cheap way to stand one up.
+// It earns the exception because it is where two of the four chords were
+// actually unbound and because its Handle hands the whole movement vocabulary to
+// every detail sheet that holds one — so a chord restored there reaches all of
+// them at once, invisibly to the other two sets.
+//
+// EVERY OTHER PROSE-BAR RECEIVER IS STILL OUT OF REACH of a press, including the
+// sheets that hold a scroller: the sweep drives the scroller itself, not them.
+// What reaches them is this file — not a claim about their keys, but the
+// guarantee that a new one cannot join the app unexamined.
 
 // listNavUnsweptReceivers are the receivers that bind a keystroke the navigation
 // vocabulary spells and that neither behavioural sweep can read a bar for.

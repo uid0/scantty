@@ -591,7 +591,7 @@ func TestList_AShortPaneRefusesRatherThanCuttingTheFooter(t *testing.T) {
 					// The notice, and NOTHING of the bar: a refused pane that still
 					// drew a footer fragment would be the defect wearing the fix.
 					need := s.needRows() + screenChromeRows
-					want := fmt.Sprintf("Needs %d rows", need)
+					want := fmt.Sprintf("needs %d rows", need)
 					if !listFooterLegible(t, s, termHeight, want) {
 						t.Errorf("the %s pane at height %d (%s) draws no footer and does not say "+
 							"why — the operator is left on a bar-less pane:\n%s",
@@ -738,12 +738,21 @@ func listRootLines(t *testing.T, s *ListScreen, w, h int) []string {
 // 79; three hand-picked widths is exactly how the 60-column hole survived an
 // earlier round of this work.
 //
-// WHAT IS ASSERTED IS THE LEADING FIGURE AND NOT THE WHOLE NOTICE, because no
-// wording carrying both numbers fits the 16 cells the narrowest drawable pane
-// gives. That is the "whatever must survive must lead" rule: the height NEEDED
-// leads, in its own fold segment, so a trim on either axis takes the tail — the
-// height the operator already HAS, then the prose — and can never leave a wrong
-// number standing.
+// WHAT IS ASSERTED IS THE LEAD AND NOT THE WHOLE NOTICE, because no wording
+// carrying the way out and both numbers fits the 16 cells the narrowest drawable
+// pane gives. That is the "whatever must survive must lead" rule, and on a
+// refusal the load-bearing clause is the WAY OUT: `Esc leaves` leads in its own
+// fold segment, then the height NEEDED, then the height the operator already
+// HAS, then the prose — so a trim on either axis takes the tail and can never
+// leave a wrong number standing.
+//
+// SO THE TWO CLAIMS ARE ASKED AT DIFFERENT SCOPES, and the difference is the
+// one pane where they genuinely cannot both be met: the way out must be on
+// EVERY drawable pane, and the height figure on every pane of more than one
+// row. One row is terminal height 7 alone (screenBodyRows is height − 6), and
+// at 16 cells no line carries both — there the height gives, which is the
+// deliberate choice recorded at listTooShort. The row threshold is asked of
+// the screen's own listPaneRows rather than written as a number.
 func TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip(t *testing.T) {
 	widths := jdeDrawableWidths()
 	if len(widths) == 0 {
@@ -762,18 +771,29 @@ func TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip(t *testing.T) {
 							continue
 						}
 						checked++
-						want := fmt.Sprintf("Needs %d rows", probe.needRows()+screenChromeRows)
 						lines := listRootLines(t, listWithRows(surface.build, rows), w, h)
-						found := false
-						for _, line := range lines {
-							if strings.Contains(line, want) {
-								found = true
+						on := func(want string) bool {
+							for _, line := range lines {
+								if strings.Contains(line, want) {
+									return true
+								}
 							}
+							return false
 						}
-						if !found {
+						// THE WAY OUT, on every drawable pane. Esc is the one key this
+						// frame names, and a refusal whose way out the terminal cut is
+						// the refusal an operator cannot act on.
+						if !on(listTooShortWayOut) {
 							t.Errorf("the %s refusal at %dx%d (%s) does not put %q on the pane "+
-								"whole — the operator is asked to resize to a height the terminal "+
-								"cut:\n%s", surface.name, w, h, state, want, strings.Join(lines, "\n"))
+								"whole — the operator is left on a frame that names no way out:"+
+								"\n%s", surface.name, w, h, state, listTooShortWayOut,
+								strings.Join(lines, "\n"))
+						}
+						if want := fmt.Sprintf("needs %d rows", probe.needRows()+screenChromeRows); probe.listPaneRows() > 1 && !on(want) {
+							t.Errorf("the %s refusal at %dx%d (%s) has %d pane rows and does not "+
+								"put %q on the pane whole — the operator is asked to resize to a "+
+								"height the terminal cut:\n%s", surface.name, w, h, state,
+								probe.listPaneRows(), want, strings.Join(lines, "\n"))
 						}
 						// AND NOTHING OF IT OVERRUNS, which is the other half and the
 						// one the leading figure cannot speak for: a line wider than
@@ -797,6 +817,59 @@ func TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no list refused a pane at any drawable size, so this check asserted " +
 			"nothing about the notice it exists to bound")
+	}
+}
+
+// TestList_ARefusedPaneNamesAKeyThatReallyLeaves: the one key the too-short
+// notice names actually gets the operator off the refused pane.
+//
+// NAMING A KEY THAT DOES NOT ACT ON THE FRAME IT IS NAMED ON is the defect this
+// whole branch exists to close, so the way out cannot be added on the strength
+// of reading Root's switch — it is pressed, through a real Root, at every
+// drawable pane the refusal is reachable at, and the screen has to change.
+//
+// It is a claim about LEAVING and not about the list: esc does not act on the
+// list (the gate holds movement and sort), it pops the back-stack, or falls
+// home from the bottom of it. Both count as leaving and both are exercised —
+// the stack is empty in one case and carries a screen in the other, because
+// "esc worked" for the wrong one of those two reasons is how a way out comes to
+// be named on a frame it does not really work on.
+func TestList_ARefusedPaneNamesAKeyThatReallyLeaves(t *testing.T) {
+	checked := 0
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			for state, rows := range listRowCases {
+				for _, w := range jdeDrawableWidths() {
+					for _, h := range jdePaneHeights() {
+						probe := listWithRows(surface.build, rows)
+						sized, _ := probe.Update(tea.WindowSizeMsg{Width: w, Height: h})
+						if sized.(*ListScreen).paneDrawn() {
+							continue
+						}
+						for _, withHistory := range []bool{false, true} {
+							list := listWithRows(surface.build, rows)
+							r := newTestRoot(list)
+							if withHistory {
+								r.history = []navEntry{{screen: NewWelcomeScreen(), ws: WSScan}}
+							}
+							next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+							r = next.(Root)
+							after, _ := r.Update(listRuneKey("esc"))
+							checked++
+							if after.(Root).screen == Screen(list) {
+								t.Errorf("the %s refusal at %dx%d (%s, history %v) names %q and "+
+									"esc left the operator on the same screen",
+									surface.name, w, h, state, withHistory, listTooShortWayOut)
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no list was refused at any drawable size, so the way out this notice " +
+			"names was never pressed")
 	}
 }
 

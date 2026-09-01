@@ -359,10 +359,13 @@ func (s *ListScreen) markerSlack() int {
 // So the reservation is honoured by the RENDERER instead — at most one marker
 // ROW is ever drawn where only one is reserved, and it carries both facts.
 //
-// It is NON-DECREASING in terminal height, which the too-short notice depends
-// on, and the fixed point still holds: at a refused pane markerRows is 1, so
-// the height it names buys a slack of exactly 1, which is what markerRows asks
-// for there.
+// IT IS NOT MONOTONE IN TERMINAL HEIGHT, and nothing may be built on a claim
+// that it is: as the pane grows it runs 1 → 2 → 0, because a taller pane first
+// affords the second marker row and then stops overflowing at all. What the
+// too-short notice rests on is the FIXED POINT, and that argument is written
+// once, at needRows below — do not restate it here, or the two statements of a
+// subtle property drift apart, which is how this sentence came to say the
+// opposite of the one under it.
 func (s *ListScreen) markerRows() int {
 	if !s.listOverflows() {
 		return 0
@@ -447,6 +450,11 @@ func (s *ListScreen) paneDrawn() bool {
 	return s.listPaneRows() >= s.needRows()
 }
 
+// listTooShortWayOut is the ONE key a refused list names, in the words it is
+// drawn in. A constant so the notice and the sweep that proves it survives every
+// trim read one record rather than two that can drift.
+const listTooShortWayOut = "Esc leaves"
+
 // listTooShort is what a list draws when the pane cannot hold its footer whole.
 //
 // The stance is the columnar layer's (jdeTooShort) and so is the reasoning: the
@@ -457,17 +465,38 @@ func (s *ListScreen) paneDrawn() bool {
 // the bar hidden.
 //
 // WHATEVER MUST SURVIVE MUST LEAD, the structural rule AGENTS.md records three
-// instances of, and here there is one figure the whole notice exists to carry:
-// the height the operator must RESIZE TO. So it leads, in its own fold segment,
-// and the height they already HAVE — which their own window manager is showing
-// them — follows it. Every trim, on either axis, then takes the expendable tail
-// and can never leave a wrong number standing. It used to read
-// "Too short: needs 16 rows, has 12." as ONE segment, which at the narrowest
-// drawable pane (16 cells) folded on spaces into "Too short:" and scattered the
-// figure across lines a short pane drops — and, bounded against a fixed 51
-// cells on a screen that did not record the terminal width, was CLIPPED at 60
-// columns to "Too short: needs 16 rows, has 1", an operator asked to act on a
-// number that is not the one the code computed.
+// instances of, and on a REFUSAL the load-bearing clause is the WAY OUT. So
+// `Esc leaves` leads, in its own fold segment, then the height to RESIZE TO,
+// then the height the operator already HAS — which their own window manager is
+// showing them. Every trim, on either axis, then takes the expendable tail and
+// can never leave a wrong number standing.
+//
+// ESC IS NAMED BECAUSE ESC WORKS HERE, and that is checked rather than assumed:
+// a refused list is never `searching`, so WantsRawInput is false and
+// HandlesKey never claims `esc`, which means the key reaches Root's global back
+// step and leaves the screen — popping the back-stack, or falling home from the
+// bottom of it. It is the ONE key named on a frame that names none, exactly as
+// jdeTooShort names it, and for the reason that function gives: the way out of
+// a pane too short to work in must stay open or the refusal is one the operator
+// cannot act on. It is not a legend and it does not soften the sentence below
+// it — esc does not act ON the list, it leaves the list.
+//
+// WHAT GIVES AND WHERE, said plainly because it is a real loss. A ONE-ROW pane
+// keeps only the first folded line — that is terminal height 7, since
+// screenBodyRows is height − 6 — and whether that line still carries the height
+// depends on the WIDTH: at 51 cells it reads `Esc leaves · needs 15 rows · has
+// 7…`, at 31 it keeps the figure, and at the 16 cells width 45 gives it folds
+// after `Esc leaves…` and the height is gone. So the loss is confined to a
+// one-row pane on a narrow terminal, and the way out survives every one of
+// them; from two rows up both facts are on the pane at every drawable width.
+//
+// The height figure used to lead, and before that the whole thing read
+// "Too short: needs 16 rows, has 12." as ONE segment, which at 16 cells folded
+// on spaces into "Too short:" and scattered the figure across lines a short pane
+// drops — and, bounded against a fixed 51 cells on a screen that did not record
+// the terminal width, was CLIPPED at 60 columns to
+// "Too short: needs 16 rows, has 1", an operator asked to act on a number that
+// is not the one the code computed.
 //
 // Both bounds are the LIVE pane: `cells` comes from screenBodyCells, the
 // unfloored width, because screenBodyWidth's floor of 20 is four cells more
@@ -495,8 +524,8 @@ func listTooShort(cells, rows, terminalHeight, needRows int) string {
 	if rows <= 0 || cells <= 0 {
 		return ""
 	}
-	lines := pickerWrap(fmt.Sprintf("Needs %d rows · has %d",
-		needRows+screenChromeRows, terminalHeight), cells)
+	lines := pickerWrap(fmt.Sprintf("%s · needs %d rows · has %d",
+		listTooShortWayOut, needRows+screenChromeRows, terminalHeight), cells)
 	lines = append(lines, pickerWrap("Too short for the action bar, so no keys are "+
 		"named. Moving and sorting do nothing while this notice is up, so you come "+
 		"back where you were.", cells)...)
