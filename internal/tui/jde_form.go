@@ -2530,6 +2530,52 @@ func (g jdeScreen) scrollRows(headerRows int, items []actionBarItem) int {
 	return 1
 }
 
+// jdeScrollStep is what one movement key does to a read-only body's OFFSET: the
+// offset analogue of pickRow / moveRow / pageRow, which move a cursor.
+//
+// It exists because the switch it replaces had been written out by hand at every
+// sheet that scrolls one — the purchase-order detail's sheet, its order pad, the
+// add-line confirm, and the two removal confirms and the slot-generate run
+// report this change put on the same footing — and six copies of one mapping is
+// how the ~50 copies of the scroll ARITHMETIC that sc-jde-lift had to unpick
+// began. Whether a key acts at all is still the SHEET's question: the two gates
+// (is the frame drawn, does the body move) are asked of different bars and are
+// spelled at each site.
+//
+// The CLAMP is deliberately one-sided. Zero is the top and can be answered from
+// nothing; the bottom depends on the pane, which only the frame knows, so
+// frameScrolled clamps what it is about to draw and hands the offset back for
+// the sheet to store. `end` therefore asks for the WHOLE body and is brought
+// back by the frame — which is what makes "↓ 0 more below" impossible.
+//
+// It carries no layer-only marker, and the omission is deliberate rather than an
+// oversight: that marker names the BUDGET answers a sheet may not compute for
+// itself, and the sweep derived from it (TestJDEForm_NoSheetAnswersTheScroll-
+// QuestionItself) forbids a sheet from naming one at all. This is the opposite
+// kind of helper — a primitive the sheets are meant to reach for, like pickRow
+// and pageRow, neither of which is marked either. Do not add the marker to make
+// it look consistent with its neighbours; it would forbid every call site.
+func jdeScrollStep(key string, offset, lines, step int) int {
+	switch key {
+	case "up":
+		offset--
+	case "down":
+		offset++
+	case "pgup":
+		offset -= step
+	case "pgdown":
+		offset += step
+	case "home":
+		offset = 0
+	case "end":
+		offset = lines
+	}
+	if offset < 0 {
+		return 0
+	}
+	return offset
+}
+
 // jdePadTo pads (or trims) a frame's lines to exactly n rows. The bar underneath
 // has to sit on the same row every frame, and a body that grew and shrank with
 // its content would walk it up and down the pane.

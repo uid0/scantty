@@ -2417,6 +2417,89 @@ touching any screen an operator drives:
   operator reads and "the rows still answer X" would assert rows that are not
   there.
 
+### A pane that says there is more must name a key, and a key it names must move the PANE
+
+`internal/tui/jde_unreachable_body_test.go` carries the rule and both sweeps and
+is the authority; read it before adding a frame or wording a bar.
+
+- **The rule is two implications COMPOSED, and each was broken somewhere
+  different.** A frame drawing `↑ N more above` / `↓ N more below` must have a
+  bar that NAMES a movement token, and a named token must move what the operator
+  SEES. Together they get the operator to the next screenful, and by repetition
+  through the body. Separately, neither says anything useful: a marker over a bar
+  naming nothing is a dead end wearing an affordance, and a named key that moves
+  an int nobody can see is the same rule broken from the other side.
+- **A BODY THAT OWNS NO NAVIGABLE ROW IS PINNED, and a cursor-anchored frame can
+  never move it.** `jdeLines.block()` answers `(0,0)` for a row that owns no
+  line, so `frame` / `frameWithHeader` / `frameWrapped` window such a body at
+  line 0 for as long as the frame is up and everything past `avail-2` is
+  unreachable. It belongs on `frameScrolled` with an offset — the shape
+  `po_add_line`'s confirm and the order pad already use. The DERIVED set was the
+  four purchasing CONFIRMS: the line-DELETE confirm (`po_edit.go`, prose only —
+  deleting takes no reason, so there is nothing to type into) and the
+  attachment-DELETE confirm (`po_attachments.go`) now scroll; the order-VOID
+  prompt (`po_detail.go`) pins its caveat in the header instead, because its body
+  is a Reason box and the body's own floor keeps that; and the line-VOID prompt
+  already did it that way, which is why it was the one that was right. Measured
+  before the fix: the line-delete confirm hid its caveat at 80x15, 60x15 and
+  45x16; the attachment confirm at 80x14 drew the heading above the fold and the
+  whole "cannot be undone, staff only" warning below it, over `Enter=Delete`; the
+  order-void prompt hid the half of its sentence that says the void CASCADES TO
+  EVERY LINE.
+- **A BODY'S LEAD-IN BELONGS IN THE PINNED HEADER.** A heading, a guidance
+  sentence or a column header added with `l.Add` AHEAD of the first block is
+  stranded the moment the body overflows — the rule AGENTS.md already states, and
+  `jdeFitHeader` is the answer: it trims by RANK and claims nothing about what it
+  dropped, where a window promises a remainder. Five frames were converted, all
+  in the state where the list has exactly ONE navigable row so the bar honestly
+  named nothing: the add-line identify phase, the attachments grid, and the kit,
+  chain and level lists in the empty state each opens in. A per-row ERROR moved
+  with them onto the layer's STATUS ROW, which no budget can trim.
+  WHAT IS STILL OPEN, said plainly because a claim no check delivers is worse
+  than no claim: the same strand exists on some forty other (screen, state) pairs
+  whose list has TWO OR MORE rows. No sweep reports them — their bar names UP/DN
+  and the key really moves — and closing them is the same header conversion on
+  every columnar screen at once, the shape of sc-jde-lift rather than a patch.
+- **WHAT THE RULE DOES NOT PROMISE is a block taller than the window.**
+  `jdeLines.Window` keeps a block's START and nothing scrolls inside one, so a
+  single navigable row whose own block outruns a one-line body loses its tail
+  whatever is pressed — the stated sacrifice `addLineBlock` records, a fact about
+  the terminal's HEIGHT rather than a missing key. `jdeUnfetchableMarkerCases` is
+  the recorded residue and the sweep fails on a stale entry as loudly as on a
+  missing one.
+- **A MOVEMENT SWEEP MEASURED ON A STATE FINGERPRINT IS NOT MEASURING RULE 1.**
+  `jdePlaceOf` is the right instrument for the question it was written for — a
+  position that drifted and happened to redraw the same — and it called the
+  slot-generate RUN REPORT's `UP/DN=Scroll` alive at all 61 of the panes the
+  report FITS at 80, 100 and 120 columns, where the key moved `resultCursor` and
+  the pane came back byte for byte. `TestJDEForm_EveryMovementTokenMovesTheOperatorsPANE` is the
+  pane-measured half. Two mechanical traps in writing one: the COLOUR PROFILE
+  must be FORCED or a moving highlight is stripped and an honest form reads as
+  dead, and `jdeBarOf` must then be fed a STRIPPED view, because it anchors on
+  the bar's rule and that run of hyphens is styled — with colour on it finds no
+  bar anywhere and the sweep passes over the whole package. Its width axis is
+  `jdePaneWidths` and not every drawable width ON PURPOSE: at the 45-column floor
+  a picker row has sixteen cells and two different catalogue items both draw as
+  `▸ Hex b…  AF-`, so the key moves the cursor AND the window while the pane is
+  unchanged. That is rule 5's width form, not a bar naming a dead key.
+- **A FIXTURE WHOSE ROWS DIFFER ONLY PAST THE CLIP CANNOT REPORT MOVEMENT.** The
+  reorder picker's nine rows were `Hex bolt M8x40 zinc #1 … #9` with identical
+  quantities, and `poFitRow` clips the name from the RIGHT, so at 80 columns
+  every row drew as one string and a picker whose cursor was moving perfectly
+  read as dead. Rows a check tells apart must differ AT THE FRONT.
+- **The run report was a LIST CURSOR over `body.Len()`, which is two facts wrong
+  about a read-only body.** The count included the two lines the report opens
+  with, which belong to no row, so its last two cursor positions addressed rows
+  `block()` answers `(0,0)` for and pressing Down at the bottom threw the reader
+  back to the top. It is an offset now (`resultScroll`).
+- **`jdeScrollStep` (`jde_form.go`) is the ONE key-to-offset mapping**, the
+  offset analogue of `pickRow` / `moveRow` / `pageRow`. Six sheets had written
+  the same six-arm switch out by hand. Whether a key acts at all is still the
+  SHEET's question — the two gates are asked of different bars — and the clamp is
+  one-sided on purpose: `end` asks for the whole body and `frameScrolled` brings
+  it back against the pane it is about to draw into, which is what makes
+  `↓ 0 more below` impossible.
+
 ## Gotchas
 
 - **`XDG_CONFIG_HOME` does not isolate anything on macOS.** `defaultPrefsPath()`

@@ -361,22 +361,10 @@ func (s *PurchaseOrderDetailScreen) handleSheetKey(m tea.KeyMsg) (Screen, tea.Cm
 		if !s.sheetMoves() {
 			return s, nil
 		}
-		switch m.String() {
-		case "up":
-			s.scrollBy(-1)
-		case "down":
-			s.scrollBy(+1)
-		case "pgup":
-			s.scrollBy(-s.pageStep())
-		case "pgdown":
-			s.scrollBy(+s.pageStep())
-		case "home":
-			s.scroll = 0
-		case "end":
-			// The frame clamps whatever it is handed, so "past the end" is how
-			// the end is asked for.
-			s.scroll = s.sheetBody().Len()
-		}
+		// The frame clamps whatever it is handed, so "past the end" is how the
+		// end is asked for — see jdeScrollStep, which is the one mapping every
+		// scrolled body on the columnar layer goes through.
+		s.scroll = jdeScrollStep(m.String(), s.scroll, s.sheetBody().Len(), s.pageStep())
 		return s, nil
 
 	case "enter":
@@ -469,13 +457,6 @@ func (s *PurchaseOrderDetailScreen) handleSheetKey(m tea.KeyMsg) (Screen, tea.Cm
 		return s, textinput.Blink
 	}
 	return s, nil
-}
-
-func (s *PurchaseOrderDetailScreen) scrollBy(delta int) {
-	s.scroll += delta
-	if s.scroll < 0 {
-		s.scroll = 0
-	}
 }
 
 // pageStep is one paneful of body, computed from the bar the pane is currently
@@ -813,29 +794,10 @@ func (s *PurchaseOrderDetailScreen) handleOrderPadKey(m tea.KeyMsg) (Screen, tea
 		if !s.padMoves() {
 			return s, nil
 		}
-		switch m.String() {
-		case "up":
-			s.padScrollBy(-1)
-		case "down":
-			s.padScrollBy(+1)
-		case "pgup":
-			s.padScrollBy(-s.padPageStep())
-		case "pgdown":
-			s.padScrollBy(+s.padPageStep())
-		case "home":
-			s.padScroll = 0
-		case "end":
-			s.padScroll = s.orderPadLines().Len()
-		}
+		s.padScroll = jdeScrollStep(m.String(), s.padScroll,
+			s.orderPadLines().Len(), s.padPageStep())
 	}
 	return s, nil
-}
-
-func (s *PurchaseOrderDetailScreen) padScrollBy(delta int) {
-	s.padScroll += delta
-	if s.padScroll < 0 {
-		s.padScroll = 0
-	}
 }
 
 func (s *PurchaseOrderDetailScreen) padPageStep() int {
@@ -1985,18 +1947,37 @@ func (s *PurchaseOrderDetailScreen) viewVoid() string {
 	}
 	labelW := jdeLabelWidth([]jdeField{field})
 	body := &jdeLines{}
-	body.Add(StyleStatusWarn.Render("Void purchase order"))
-	body.Add("")
-	for _, line := range jdeCaveatLines(
-		"Voids the order and cascades to every line that is not already voided. This cannot be undone.",
-		s.bodyWidth()) {
-		body.Add(line)
-	}
-	body.Add("")
 	body.AddFittedFields([]jdeField{field}, labelW, s.bodyWidth(), 0)
-	return s.frameWrapped(nil, body, 0,
+	return s.frameWrapped(s.voidHeader(), body, 0,
 		s.statusRow(s.voidPending, "Voiding…", s.voidErr),
 		[]actionBarItem{{"Enter", "Void order"}, {"Esc", "Cancel"}})
+}
+
+// voidHeader is the prompt's heading and caveat, PINNED above the Reason box.
+//
+// They used to lead the BODY, and a body's lead-in belongs to no navigable row:
+// jdeLines.Window anchors on the cursor's block, the only block here is the
+// Reason field, and nothing on this frame moves a cursor — so at 80x14 the pane
+// opened `↑ 3 more above` with the sentence cut to "is not already voided. This
+// cannot be undone." and no key able to fetch the half that says the void
+// CASCADES TO EVERY LINE. That is the one fact this prompt exists to state, and
+// the frame was advertising its absence.
+//
+// Pinned, they are trimmed by jdeFitHeader instead — which gives ground BY RANK
+// and makes no claim about what it dropped, so a short pane loses the prose
+// rather than promising it. The heading is DECORATIVE and the caveat CONTEXT:
+// where only one may survive it is the consequence and not the title, for the
+// same reason the line-void prompt one screen over ranks its own rows that way.
+// The essential row is left to the layer's minimum — see jdeMinBudget — because
+// the Reason box is in the BODY here and the body's floor already keeps it.
+func (s *PurchaseOrderDetailScreen) voidHeader() jdeHeader {
+	h := jdeHeader(nil).add(jdeHeadDecorative, StyleStatusWarn.Render("Void purchase order"))
+	// addBlock brings the separator with it, so the heading does not add one of
+	// its own — two blanks is a row of the budget spent twice.
+	h = h.addBlock(jdeHeadContext, jdeCaveatLines(
+		"Voids the order and cascades to every line that is not already voided. This cannot be undone.",
+		s.bodyWidth()))
+	return h.add(jdeHeadDecorative, "")
 }
 
 var poDeliverLabels = map[int]string{

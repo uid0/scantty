@@ -268,7 +268,12 @@ var poEditStateFingerprinted = map[string]bool{
 	"lineInputs": true, "lineFocus": true, "editLineIdx": true,
 	"lineCostShown": true, "lineCostConfirmed": true,
 	"voidReason": true,
-	"assocField": true, "assocLineIdx": true, "assocRows": true, "assocCursor": true,
+	// The delete confirm's scroll offset. It is FINGERPRINTED and not declined:
+	// the confirm's body owns no navigable row, so the scroll keys the bar names
+	// there act by moving exactly this and nothing else, and a sweep that could
+	// not see it would judge those keys as dead.
+	"deleteScroll": true,
+	"assocField":   true, "assocLineIdx": true, "assocRows": true, "assocCursor": true,
 	"po": true, "loading": true, "loadErr": true, "saving": true, "errMsg": true,
 }
 

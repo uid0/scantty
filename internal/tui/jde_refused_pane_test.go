@@ -296,6 +296,10 @@ func TestJDEForm_ARefusedPaneKeepsTheOperatorsPlace(t *testing.T) {
 // assertion is that a movement key does not move anything, and a fixture where
 // no key moves anything at any height satisfies it without ever exercising it.
 var jdeInertCases = map[string]string{
+	"PurchaseOrderDetailScreen/void order": "a confirmation, not a list: Enter and Esc are " +
+		"the only keys the bar names. Its heading and cascade caveat are PINNED HEADER rows " +
+		"now and its body is the one Reason box, so there is no cursor to walk and no " +
+		"window to scroll — which is the point of the change that put them there.",
 	"PurchaseOrderAddLineScreen": "the base fixture opens on the identifier row — one text box, " +
 		"no cursor and no scrolled body — so its bar names no movement key at any height " +
 		"and there is nothing for one to move. The phases that HAVE one are swept as " +
@@ -314,9 +318,6 @@ var jdeInertCases = map[string]string{
 	// jdeScreenStates for TestJDEForm_EveryFrameFitsEveryPane, which is where
 	// the delete confirm's block — the line's identity, its numbers and two
 	// folded caveats — has to give ground in order at a short pane.
-	"PurchaseOrderEditScreen/delete confirm": "a confirmation, not a list: Ctrl-X and Esc " +
-		"are the only keys the bar names, there is no cursor and no body to scroll, so " +
-		"no movement key has anything to move.",
 	"PurchaseOrderEditScreen/void prompt": "one reason box owns the keyboard, so the bar " +
 		"names Enter and Esc alone and the movement keys belong to the textinput rather " +
 		"than to a cursor.",

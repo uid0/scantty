@@ -565,25 +565,8 @@ func (s *PurchaseOrderAddLineScreen) keyConfirm(m tea.KeyMsg) (Screen, tea.Cmd) 
 		if !s.confirmScrolls() {
 			return s, s.decline(m.String())
 		}
-		body := s.confirmBody()
-		step := s.scrollRows(len(s.headerLines()), s.bar())
-		switch m.String() {
-		case "up":
-			s.scroll--
-		case "down":
-			s.scroll++
-		case "pgup":
-			s.scroll -= step
-		case "pgdown":
-			s.scroll += step
-		case "home":
-			s.scroll = 0
-		case "end":
-			s.scroll = body.Len()
-		}
-		if s.scroll < 0 {
-			s.scroll = 0
-		}
+		s.scroll = jdeScrollStep(m.String(), s.scroll, s.confirmBody().Len(),
+			s.scrollRows(len(s.headerLines()), s.bar()))
 		return s, nil
 	}
 	return s, s.decline(m.String())
@@ -1346,10 +1329,17 @@ func (s *PurchaseOrderAddLineScreen) View() string {
 // its headline rides the status row, which never gives.
 func (s *PurchaseOrderAddLineScreen) headerLines() jdeHeader {
 	notes, fails := s.noteLines(), s.failLines()
+	// A header may mark exactly ONE row essential (jdeMinBudget), and where the
+	// screen has ANSWERED a keypress that answer is the row: an answer off the
+	// pane has not answered. With nothing to say, the essential row goes to the
+	// document the next scan will change.
+	out := s.identifyHeader(len(notes) == 0)
 	if len(notes)+len(fails) == 0 {
-		return nil
+		return out
 	}
-	out := jdeHeader(nil)
+	if len(out) > 0 {
+		out = out.add(jdeHeadDecorative, "")
+	}
 	for i, line := range notes {
 		rank := jdeHeadContext
 		if i == 0 {
@@ -1358,6 +1348,64 @@ func (s *PurchaseOrderAddLineScreen) headerLines() jdeHeader {
 		out = out.add(rank, line)
 	}
 	return out.add(jdeHeadContext, fails...).add(jdeHeadDecorative, "")
+}
+
+// identifyHeader is the identify phase's lead-in, PINNED rather than written
+// into the body.
+//
+// It used to open identifyBody with l.Add — the heading, then the Supplier and
+// Order rows added with a rowBase of jdeNoRow — and a body line that belongs to
+// no navigable row is a line no key can reach: jdeLines.Window anchors on the
+// cursor's block, this phase's only block is the scan box, and a columnar cursor
+// cannot go above its first row. So at 80x12 the pane opened `↑ 5 more above`
+// over WHICH SUPPLIER AND WHICH ORDER the line was about to go on, with the bar
+// naming no movement key at all, on the one screen an operator drives with a
+// barcode scanner. Pinned, the rows are trimmed by jdeFitHeader instead — which
+// gives ground by RANK and claims nothing about what it dropped.
+//
+// The ORDER row is essential and the supplier is context, which is the sacrifice
+// order stated: the supplier is a property OF the order and is named again on
+// the working line the moment a lookup goes out, while the order number is what
+// says which document a scan is about to change and is said here or nowhere.
+// The heading is decorative — the bar's `Enter=Look up` and the row's own
+// `Scan / type` label already say what the phase is for.
+//
+// Drawn on EVERY phase, not just this one: an operator on the choose or confirm
+// frame is deciding what to put on that same order, and the row that names it
+// used to vanish the moment they pressed Enter.
+func (s *PurchaseOrderAddLineScreen) identifyHeader(essential bool) jdeHeader {
+	if s.phase != poAddPhaseIdentify {
+		// The IDENTIFY phase only, which is where the strand was. The later
+		// phases carry their own bodies — the candidate list, the confirm sheet
+		// (which names the supplier and both SKUs on rows of its own), the price
+		// form — and each already has a movement key on its bar, so pinning
+		// these two rows there would spend two body rows to fix nothing and push
+		// the facts an operator is checking below the fold.
+		return nil
+	}
+	lw, pane := poAddLabelWidth(), s.paneWidth()
+	rows := renderJDEFields([]jdeField{
+		{Label: "Supplier", Kind: jdeValue, Value: pickerClip(s.supplierName(), poAddValueCells(pane, lw))},
+		{Label: "Order", Kind: jdeValue, Value: pickerClip(s.orderName(), poAddValueCells(pane, lw))},
+	}, pane)
+	out := jdeHeader(nil)
+	if s.phase == poAddPhaseIdentify {
+		// The heading belongs to the identify phase alone — the later phases
+		// ask their own question ("Which one?", "Is this the right item?") —
+		// and it is DECORATIVE, so jdeFitHeader drops it before either row that
+		// names the document. It is kept rather than deleted because losing it
+		// on a roomy pane would be removing content to fix a fit, which is the
+		// trade this whole change exists to avoid making.
+		out = out.add(jdeHeadDecorative, jdeIndent+StyleJDEHeading.Render(
+			"Add a line by scanning or typing"), "")
+	}
+	order := jdeHeadContext
+	if essential {
+		order = jdeHeadEssential
+	}
+	return out.
+		add(jdeHeadContext, rows[0]).
+		add(order, rows[1])
 }
 
 // workingLine names the work AND the subject: "Loading…" tells an operator
@@ -1473,13 +1521,6 @@ func (s *PurchaseOrderAddLineScreen) identifyBody() *jdeLines {
 	lw := poAddLabelWidth()
 	pane := s.paneWidth()
 
-	l.Add(jdeIndent + StyleJDEHeading.Render("Add a line by scanning or typing"))
-	l.Add("")
-	l.AddFittedFields([]jdeField{
-		{Label: "Supplier", Kind: jdeValue, Value: pickerClip(s.supplierName(), poAddValueCells(pane, lw))},
-		{Label: "Order", Kind: jdeValue, Value: pickerClip(s.orderName(), poAddValueCells(pane, lw))},
-	}, lw, pane, jdeNoRow)
-	l.Add("")
 	// Focused only on the phase the caret is really on: with a lookup out the
 	// row is still drawn (it holds the query, and esc comes back to it) but the
 	// keyboard belongs to that frame, and a row painted as focused while it

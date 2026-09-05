@@ -579,6 +579,29 @@ func jdeScreenStates() map[string]func() Screen {
 			s.openUpload()
 			return s
 		},
+		// The two destructive confirms whose body is PROSE — the class the
+		// line-delete confirm belongs to, and the reason this file now has all
+		// three. Each frames a warning the operator has to have read before the
+		// commit key, and each used to hand that warning to a cursor-anchored
+		// window over a body with nothing for a cursor to stand on: the pane
+		// said "more below" and no key on it could fetch the rest.
+		"PurchaseOrderAttachmentsScreen/delete confirm": func() Screen {
+			po := poViewPO()
+			po.Attachments = []omsapi.PurchaseOrderAttachment{{
+				ID: 1, FileName: "quote-2026-01.pdf",
+				Description: "Vendor quotation", UploadedByName: "shop.lead",
+			}}
+			s := NewPurchaseOrderAttachmentsScreen(Deps{}, po)
+			s.confirmingDelete = true
+			return s
+		},
+		"PurchaseOrderDetailScreen/void order": func() Screen {
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			s.openVoidForm()
+			return s
+		},
 		"StorageSlotGenerateScreen/run report": func() Screen {
 			s := NewStorageSlotGenerateScreen(Deps{}, 0)
 			s.phase = genPhaseResult
@@ -683,11 +706,35 @@ func jdeScreenStates() map[string]func() Screen {
 		"PurchaseOrderCreateScreen/reorder picker": func() Screen {
 			s := poCreateStaged()
 			s.phase = poPhaseReorderPick
-			for i := 0; i < 9; i++ {
+			// The rows differ AT THE FRONT and in their figures, which is what
+			// makes a movement claim about this picker mean anything. They used
+			// to be "Hex bolt M8x40 zinc #1" … "#9" with identical quantities:
+			// poFitRow clips the name from the RIGHT, so at 80 columns every one
+			// of them drew as `[ ] Hex bolt…  qty 25 (current 2 / min 10)` and
+			// two adjacent rows were the same string. A sweep that measures the
+			// PANE then reports a picker whose cursor is moving perfectly as
+			// dead — the vacuous-fixture rule (AGENTS.md) with the sign flipped,
+			// and it took a real defect's shape to find it.
+			for i, row := range []struct {
+				name string
+				qty  int
+				have int
+				min  int
+			}{
+				{"Hex bolt M8x40 zinc plated grade 8.8", 25, 2, 10},
+				{"Flat washer M8 stainless A2", 40, 6, 15},
+				{"Nyloc nut M8 zinc", 30, 1, 12},
+				{"Cutting fluid, semi-synthetic, 5L", 4, 0, 2},
+				{"Shop rag, 10kg bale", 3, 1, 2},
+				{"Abrasive flap disc 115mm 60g", 50, 8, 20},
+				{"Nitrile glove, blue, L", 12, 3, 6},
+				{"TIG filler rod ER70S-2 2.4mm", 5, 1, 3},
+				{"Bandsaw blade 2360x19 10/14T", 6, 0, 2},
+			} {
 				s.reorderItems = append(s.reorderItems, omsapi.ReorderDataItem{
-					ItemName:          fmt.Sprintf("Hex bolt M8x40 zinc #%d", i+1),
-					SuggestedQuantity: 25, CurrentStock: 2, MinimumStock: 10,
-					UnitCost: "3.50",
+					ItemName:          row.name,
+					SuggestedQuantity: row.qty, CurrentStock: row.have, MinimumStock: row.min,
+					UnitCost: omsapi.DecimalString(fmt.Sprintf("%d.50", i+1)),
 				})
 			}
 			return s
@@ -1582,6 +1629,27 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 		"PurchaseOrderDetailScreen/viewOrderPad": pick("PurchaseOrderDetailScreen/order pad",
 			func(s Screen) jdeHeader { return s.(*PurchaseOrderDetailScreen).orderPadHeader() }),
 
+		// The two destructive confirms whose warning moved OUT of the body.
+		// Both pin what a short pane may not lose — the file a delete names, the
+		// sentence saying a void CASCADES — where jdeFitHeader can trim by rank
+		// instead of a cursor-anchored window promising a remainder no key
+		// fetches.
+		"InventoryItemFormScreen/viewKitList": pick("InventoryItemFormScreen/kit list empty",
+			func(s Screen) jdeHeader { return s.(*InventoryItemFormScreen).kitListHeader() }),
+		"InventoryItemFormScreen/viewChain": pick("InventoryItemFormScreen/chain list empty",
+			func(s Screen) jdeHeader { return s.(*InventoryItemFormScreen).chainHeader() }),
+		"StorageSlotGenerateScreen/viewLevels": pick("StorageSlotGenerateScreen/level list empty",
+			func(s Screen) jdeHeader { return s.(*StorageSlotGenerateScreen).levelListHeader() }),
+		"PurchaseOrderAttachmentsScreen/viewList": pick("PurchaseOrderAttachmentsScreen/one file",
+			func(s Screen) jdeHeader { return s.(*PurchaseOrderAttachmentsScreen).listHeader() }),
+		"PurchaseOrderAttachmentsScreen/viewConfirmDelete": pick(
+			"PurchaseOrderAttachmentsScreen/delete confirm",
+			func(s Screen) jdeHeader {
+				return s.(*PurchaseOrderAttachmentsScreen).confirmDeleteHeader()
+			}),
+		"PurchaseOrderDetailScreen/viewVoid": pick("PurchaseOrderDetailScreen/void order",
+			func(s Screen) jdeHeader { return s.(*PurchaseOrderDetailScreen).voidHeader() }),
+
 		// The New PO screen pins the tallest header in the app: the supplier
 		// row, the failure's unbounded detail, three optional attribution
 		// values, and — on this phase — the screen's answer to the last
@@ -1706,6 +1774,12 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 // site that declares nothing essential has to be written down as such, and a
 // site written down here that LATER declares one fails as a stale entry.
 var jdeHeadersWithoutEssentials = map[string]string{
+	"PurchaseOrderDetailScreen/viewVoid": "the void-order prompt's header is its heading and " +
+		"the cascade caveat, and its BODY is the Reason box — which the body's own floor of " +
+		"one row keeps on the pane at every height the frame is drawn at. Marking a caveat " +
+		"row essential would spend the one essential row a header may have on prose while " +
+		"the box the operator types into is already safe, and jdeMinBudget would then refuse " +
+		"the frame a row earlier for nothing.",
 	"ServiceStatusScreen/View": "the header is a roll-up — service count, all-working or " +
 		"degraded count, checked-at — and the body under it lists every service and its " +
 		"own state, so an operator who loses the row loses a summary and no fact.",
@@ -2120,6 +2194,11 @@ var jdeUnsizedDeclineCases = map[string]string{
 	"ReceiveFormScreen":                   "receive_form's qtyPagesFor",
 	"PurchaseOrderAddLineScreen/choose":   "po_add_line's choosePages",
 	"PurchaseOrderAddLineScreen/confirm":  "po_add_line's confirmScrolls — an OFFSET",
+	"PurchaseOrderEditScreen/delete confirm": "po_edit's deleteScrolls — an OFFSET over a body " +
+		"that owns no navigable row",
+	"PurchaseOrderAttachmentsScreen/delete confirm": "po_attachments' confirmDeleteScrolls — " +
+		"an OFFSET over a body that owns no navigable row",
+	"StorageSlotGenerateScreen/run report": "storage_slot_generate's resultScrolls — an OFFSET",
 	"PurchaseOrderAttachmentsScreen": "po_attachments guards on listNames(\"PgUp/PgDn\"), " +
 		"which reads the bar's own claim",
 	"PurchaseOrderCreateScreen":                "po_create's bodyPagesFor",

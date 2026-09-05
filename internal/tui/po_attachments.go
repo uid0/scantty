@@ -77,6 +77,19 @@ type PurchaseOrderAttachmentsScreen struct {
 	// Delete confirm.
 	confirmingDelete bool
 	deleting         bool
+	// Where the delete confirm's caveat is scrolled to, and what the last key
+	// pressed on that frame did.
+	//
+	// The frame owns no navigable row: there is nothing to type into and nothing
+	// to choose, so jdeLines.block() answers (0,0) whatever cursor it is handed
+	// and a cursor-anchored window is PINNED at the top. At 80x14 the pane read
+	// `↑ 1 more above`, the File row, `↓ 3 more below` — an irreversible delete
+	// confirmed on a frame whose warning ("cannot be undone", "staff only") was
+	// off the pane in both directions with no key able to fetch it. An OFFSET is
+	// the layer's instrument for a body nothing navigates (frameScrolled), and
+	// the note is what stops a declined key redrawing the pane byte for byte.
+	deleteScroll int
+	deleteNote   string
 }
 
 type poAttachLoadedMsg struct {
@@ -259,6 +272,8 @@ func (s *PurchaseOrderAttachmentsScreen) updateList(m tea.KeyMsg) (Screen, tea.C
 	case "ctrl+x":
 		if len(s.attachments) > 0 {
 			s.confirmingDelete = true
+			s.deleteScroll = 0
+			s.deleteNote = ""
 		}
 		return s, nil
 	}
@@ -280,7 +295,7 @@ func (s *PurchaseOrderAttachmentsScreen) openUpload() tea.Cmd {
 // drawn into — the highlight they would move is not on screen to be seen, and
 // growing the terminal back would find it on a different file.
 func (s *PurchaseOrderAttachmentsScreen) moveList(delta int) {
-	next, ok := s.pickRow(s.cursor, len(s.attachments), delta, 0, s.listBar())
+	next, ok := s.pickRow(s.cursor, len(s.attachments), delta, len(s.listHeader()), s.listBar())
 	if !ok {
 		return
 	}
@@ -289,7 +304,7 @@ func (s *PurchaseOrderAttachmentsScreen) moveList(delta int) {
 
 func (s *PurchaseOrderAttachmentsScreen) pageList(dir int) {
 	body, _ := s.listLines()
-	next, ok := s.pageRow(body, s.cursor, len(s.attachments), dir, 0,
+	next, ok := s.pageRow(body, s.cursor, len(s.attachments), dir, len(s.listHeader()),
 		s.listBar(), s.listBarItems(true))
 	if !ok {
 		return
@@ -321,6 +336,29 @@ func (s *PurchaseOrderAttachmentsScreen) updateConfirmDelete(m tea.KeyMsg) (Scre
 		}
 	case "esc":
 		s.confirmingDelete = false
+	case "up", "down", "pgup", "pgdown", "home", "end":
+		if !s.frameDrawn(len(s.confirmDeleteHeader()), s.confirmDeleteBar()) {
+			// Refused pane: the caveat is not drawn, so scrolling it would move
+			// the operator's place invisibly and the terminal grown back would
+			// open a destroy confirm somewhere they never scrolled to. An arm
+			// whose whole product is a POSITION says nothing rather than
+			// declining out loud — see the layer's Movement block.
+			return s, nil
+		}
+		if !s.confirmDeleteScrolls() {
+			s.deleteNote = m.String() + " moves nothing — the whole warning is on the pane."
+			return s, nil
+		}
+		s.deleteScroll = jdeScrollStep(m.String(), s.deleteScroll,
+			s.confirmDeleteBody().Len(),
+			s.scrollRows(len(s.confirmDeleteHeader()), s.confirmDeleteBar()))
+	default:
+		// Every other key ANSWERS. This frame binds a handful of keys and holds
+		// no cursor and no caret, so a silent return redraws a pane that is a
+		// pure function of unchanged state — byte for byte identical, which
+		// reads as a wedged program. The note says what the KEY DID and names
+		// none: the bar makes that claim, where no budget can trim it.
+		s.deleteNote = m.String() + " does nothing here — this frame only confirms or cancels."
 	}
 	return s, nil
 }
@@ -454,18 +492,10 @@ func poAttachGridRow(num, name, uploaded string, nameW int) string {
 // screen rather than the first line of it.
 func (s *PurchaseOrderAttachmentsScreen) listLines() (*jdeLines, int) {
 	l := &jdeLines{}
-	if s.loadErr != "" {
-		l.Add(StyleStatusError.Render("Error: ") + fitCellIf(s.loadErr, s.bodyWidth()-poErrPrefixW))
-		l.Add("")
-	}
-	l.Add(StyleJDEHeading.Render(fmt.Sprintf("Attachments (%d)", len(s.attachments))))
 	if len(s.attachments) == 0 {
-		l.Add(jdeIndent + StyleMuted.Render("No attachments on this PO. Enter uploads one."))
 		return l, 0
 	}
-
 	nameW := s.attachNameWidth()
-	l.Add(StyleMuted.Render(poAttachGridRow("#", "File", "Uploaded", nameW)))
 	for i, att := range s.attachments {
 		name := att.FileName
 		if name == "" {
@@ -496,6 +526,39 @@ func (s *PurchaseOrderAttachmentsScreen) listLines() (*jdeLines, int) {
 		}
 	}
 	return l, len(s.attachments)
+}
+
+// listHeader is the grid's chrome, PINNED above the rows: the count, the failed
+// load, the empty state, and the column header the rows are drawn under.
+//
+// They used to lead the BODY, and a body line that belongs to no navigable row
+// is a line no key can reach: jdeLines.Window anchors on the cursor's block and
+// a columnar cursor cannot go above its first row, so with a SINGLE attachment
+// on the order — one navigable row, so the bar rightly drops UP/DN — the pane at
+// 80x12 read `↑ 2 more above`, the file's name, `↓ 2 more below`, and no key on
+// the frame could fetch any of it. Pinned, they are trimmed by jdeFitHeader,
+// which gives ground by RANK and claims nothing about what it dropped.
+//
+// The COLUMN HEADER is essential and the count is context: an operator reading a
+// grid needs to know which column is which, and the count is restated by the
+// row numbers themselves. The empty state takes the essential row when there are
+// no rows at all, because on that frame it is the only thing on the pane that
+// says what to do next.
+func (s *PurchaseOrderAttachmentsScreen) listHeader() jdeHeader {
+	h := jdeHeader(nil)
+	if s.loadErr != "" {
+		h = h.add(jdeHeadContext,
+			StyleStatusError.Render("Error: ")+fitCellIf(s.loadErr, s.bodyWidth()-poErrPrefixW), "")
+	}
+	if len(s.attachments) == 0 {
+		return h.add(jdeHeadContext, StyleJDEHeading.Render("Attachments (0)")).
+			add(jdeHeadEssential, jdeIndent+StyleMuted.Render(
+				"No attachments on this PO. Enter uploads one."))
+	}
+	return h.add(jdeHeadContext, StyleJDEHeading.Render(
+		fmt.Sprintf("Attachments (%d)", len(s.attachments)))).
+		add(jdeHeadEssential, StyleMuted.Render(
+			poAttachGridRow("#", "File", "Uploaded", s.attachNameWidth())))
 }
 
 // listBar names the keys that work on the grid — and only those: Ctrl-X is
@@ -550,12 +613,12 @@ func (s *PurchaseOrderAttachmentsScreen) listPages() bool {
 		return false
 	}
 	body, _ := s.listLines()
-	return s.bodyPagesForBar(body, len(s.attachments), 0, s.listBarItems(true))
+	return s.bodyPagesForBar(body, len(s.attachments), len(s.listHeader()), s.listBarItems(true))
 }
 
 func (s *PurchaseOrderAttachmentsScreen) viewList() string {
 	body, _ := s.listLines()
-	return s.frameWrapped(nil, body, s.cursor,
+	return s.frameWrapped(s.listHeader(), body, s.cursor,
 		s.statusRow(s.loading, "Loading…", ""), s.listBar())
 }
 
@@ -563,28 +626,84 @@ func (s *PurchaseOrderAttachmentsScreen) viewList() string {
 // deleting a file is not undoable, and the frame that asks about it should not
 // also be scrolling a grid behind the question.
 func (s *PurchaseOrderAttachmentsScreen) viewConfirmDelete() string {
-	name := ""
-	if s.cursor >= 0 && s.cursor < len(s.attachments) {
-		name = s.attachments[s.cursor].FileName
-		if name == "" {
-			name = s.attachments[s.cursor].File
-		}
+	frame, offset := s.frameScrolled(
+		s.confirmDeleteHeader(), s.confirmDeleteBody(), s.deleteScroll,
+		s.statusRow(s.deleting, "Deleting…", s.deleteNote), s.confirmDeleteBar())
+	// Stored back so the offset this screen holds is the one that was DRAWN:
+	// `end` asks for the whole body and the frame clamps it against the pane it
+	// has, which is what makes "↓ 0 more below" impossible.
+	s.deleteScroll = offset
+	return frame
+}
+
+// confirmDeleteName is the file about to be destroyed, empty where the cursor
+// addresses none.
+func (s *PurchaseOrderAttachmentsScreen) confirmDeleteName() string {
+	if s.cursor < 0 || s.cursor >= len(s.attachments) {
+		return ""
 	}
-	body := &jdeLines{}
-	body.Add(StyleStatusWarn.Render("Delete attachment"))
-	body.Add("")
-	body.AddRow(0, renderJDEField(jdeField{
-		Label: "File", Kind: jdeValue, Value: fitCellIf(name, jdeStripWidth(s.bodyWidth(), 4)), Focused: true,
+	if name := s.attachments[s.cursor].FileName; name != "" {
+		return name
+	}
+	return s.attachments[s.cursor].File
+}
+
+// confirmDeleteHeader is what the frame may not be drawn without: the heading
+// and the FILE it names.
+//
+// The file row is ESSENTIAL and pinned, for the reason the line-delete confirm's
+// headline is: jdeFitHeader gives ground by RANK and keeps the essential row
+// last, so wherever this frame is drawn at all it names what Enter will destroy.
+// It used to be a body row with the heading above it and the caveat below, and
+// on a short pane the layer window put the heading out of reach on one side and
+// the whole warning out of reach on the other.
+func (s *PurchaseOrderAttachmentsScreen) confirmDeleteHeader() jdeHeader {
+	h := jdeHeader(nil).add(jdeHeadDecorative, StyleStatusWarn.Render("Delete attachment"), "")
+	h = h.add(jdeHeadEssential, renderJDEField(jdeField{
+		Label: "File", Kind: jdeValue,
+		Value:   fitCellIf(s.confirmDeleteName(), jdeStripWidth(s.bodyWidth(), 4)),
+		Focused: true,
 	}, 4, s.bodyWidth()))
-	body.Add("")
+	return h.add(jdeHeadDecorative, "")
+}
+
+// confirmDeleteBody is the caveat, said ONCE so the lines the bar is measured
+// against are the lines the frame draws. It owns no navigable row on purpose:
+// there is nothing here to type into, and the window over it is positioned by an
+// OFFSET rather than by a cursor.
+func (s *PurchaseOrderAttachmentsScreen) confirmDeleteBody() *jdeLines {
+	body := &jdeLines{}
 	for _, line := range jdeCaveatLines(
 		"Removes the file from this purchase order. This cannot be undone, and the server allows it only for staff.",
 		s.bodyWidth()) {
 		body.Add(line)
 	}
-	return s.frameWrapped(nil, body, 0,
-		s.statusRow(s.deleting, "Deleting…", ""),
-		[]actionBarItem{{"Enter", "Delete"}, {"Esc", "Cancel"}})
+	return body
+}
+
+// confirmDeleteScrolls is the confirm's half of the bar-honesty rule: the scroll
+// keys are named when, and only when, the caveat outruns the window. Measured
+// against the bar WITH them on it, because the tallest bar is the fixed point.
+func (s *PurchaseOrderAttachmentsScreen) confirmDeleteScrolls() bool {
+	return s.bodyScrollsForBar(s.confirmDeleteBody(),
+		len(s.confirmDeleteHeader()), s.confirmDeleteBarItems(true))
+}
+
+func (s *PurchaseOrderAttachmentsScreen) confirmDeleteBar() []actionBarItem {
+	return s.confirmDeleteBarItems(s.confirmDeleteScrolls())
+}
+
+// confirmDeleteBarItems is confirmDeleteBar for a given scroll state, so the bar
+// that is MEASURED against the pane is the bar that is DRAWN on it.
+func (s *PurchaseOrderAttachmentsScreen) confirmDeleteBarItems(scroll bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Delete"}, {"Esc", "Cancel"}}
+	if scroll {
+		items = append(items,
+			actionBarItem{"UP/DN", "Scroll"},
+			actionBarItem{"PgUp/PgDn", "Page"},
+			actionBarItem{"Home/End", "Top/End"})
+	}
+	return items
 }
 
 var poAttachLabels = map[int]string{

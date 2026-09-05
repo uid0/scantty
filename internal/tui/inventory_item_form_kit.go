@@ -505,7 +505,7 @@ func (s *InventoryItemFormScreen) updateKitPhase(m tea.KeyMsg) (Screen, tea.Cmd)
 // on a pane the frame is not drawn into — see moveChainCursor.
 func (s *InventoryItemFormScreen) moveKitCursor(delta int) {
 	body := s.kitListLines()
-	next, ok := s.pickRow(s.kitCursor, s.kitAddRow()+1, delta, 0, s.kitListBar(body))
+	next, ok := s.pickRow(s.kitCursor, s.kitAddRow()+1, delta, len(s.kitListHeader()), s.kitListBar(body))
 	if !ok {
 		return
 	}
@@ -528,7 +528,7 @@ func (s *InventoryItemFormScreen) moveKitCursor(delta int) {
 // declines in silence either way.
 func (s *InventoryItemFormScreen) pageKitCursor(dir int) {
 	body := s.kitListLines()
-	next, ok := s.pageRow(body, s.kitCursor, s.kitAddRow()+1, dir, 0,
+	next, ok := s.pageRow(body, s.kitCursor, s.kitAddRow()+1, dir, len(s.kitListHeader()),
 		s.kitListBar(body), s.kitListBarItems(jdeCeilingRows, true))
 	if !ok {
 		return
@@ -541,7 +541,54 @@ func (s *InventoryItemFormScreen) pageKitCursor(dir int) {
 // before the save rather than after it.
 func (s *InventoryItemFormScreen) viewKitList() string {
 	l := s.kitListLines()
-	return s.frame(l, s.kitCursor, "", s.kitListBar(l))
+	return s.frameWithHeader(s.kitListHeader(), l, s.kitCursor,
+		s.statusRow(false, "", s.kitRowErr), s.kitListBar(l))
+}
+
+// kitListHeader is the list's chrome, PINNED above the rows: the heading, what a
+// kit IS, the grid's column header (or the empty state), and the standing
+// warning that a kit with nothing in it cannot be saved.
+//
+// They used to lead the BODY, and a body line that belongs to no navigable row
+// is a line no key can reach: jdeLines.Window anchors on the cursor's block and
+// a columnar cursor cannot go above its first row. On a NEW item — the state
+// this list opens in, where the only navigable row is the trailing "(add a
+// component)" and the bar therefore names no movement key at all — the pane at
+// 80x12 read `↑ 5 more above`, the add row, `↓ 2 more below`, with the heading
+// and the guidance out of reach above and the "! A kit needs at least one
+// component." warning out of reach below. Pinned, they are trimmed by
+// jdeFitHeader, which gives ground BY RANK and claims nothing about what it
+// dropped.
+//
+// The COLUMN HEADER takes the one essential row a header may have (jdeMinBudget)
+// because an operator reading a columnar grid needs to know which column is
+// which; with nothing listed there is no grid, and the row goes to the warning
+// that says why the save will be refused. The heading and the guidance are
+// context: an operator who has opened the kit list already knows they are in it.
+//
+// The per-row ERROR left the body entirely and rides the layer's STATUS ROW,
+// which no budget can trim — the answer-surface rule. It was the last two lines
+// of the body, so it was the first thing a short pane lost, and it is the
+// screen's answer to a keypress.
+func (s *InventoryItemFormScreen) kitListHeader() jdeHeader {
+	width := s.bodyWidth()
+	h := jdeHeader(nil).add(jdeHeadContext, StyleJDEHeading.Render("Kit components"))
+	for _, line := range jdeWrapNote(
+		"What one kit contains. Receiving a kit credits these items — the kit itself never carries stock.",
+		kitNoteWidth(width),
+	) {
+		h = h.add(jdeHeadContext, jdeIndent+StyleMuted.Render(line))
+	}
+	if len(s.kitRows) == 0 {
+		return h.add(jdeHeadContext, "", jdeIndent+StyleMuted.Render("No components yet.")).
+			add(jdeHeadEssential, jdeIndent+StyleStatusWarn.Render(
+				"! A kit needs at least one component.")).
+			add(jdeHeadDecorative, "")
+	}
+	return h.add(jdeHeadDecorative, "").
+		add(jdeHeadEssential, StyleMuted.Render(kitGridRow(
+			"#", "Component", "Per kit", "", kitNameWidth(width, kitNoLastCol), kitNoLastCol))).
+		add(jdeHeadDecorative, "")
 }
 
 // kitListLines builds the list's body. Split out of viewKitList so paging can
@@ -550,14 +597,6 @@ func (s *InventoryItemFormScreen) viewKitList() string {
 func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 	width := s.bodyWidth()
 	l := &jdeLines{}
-	l.Add(StyleJDEHeading.Render("Kit components"))
-	for _, line := range jdeWrapNote(
-		"What one kit contains. Receiving a kit credits these items — the kit itself never carries stock.",
-		kitNoteWidth(width),
-	) {
-		l.Add(jdeIndent + StyleMuted.Render(line))
-	}
-	l.Add("")
 
 	// ONE binding for the header and every row beneath it, so the two cannot be
 	// sized differently — a ragged grid is the one thing a columnar list must
@@ -569,11 +608,6 @@ func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 	// 80-column floor instead of the 34 the pane actually has spare.
 	nameW := kitNameWidth(width, kitNoLastCol)
 
-	if len(s.kitRows) == 0 {
-		l.Add(jdeIndent + StyleMuted.Render("No components yet."))
-	} else {
-		l.Add(StyleMuted.Render(kitGridRow("#", "Component", "Per kit", "", nameW, kitNoLastCol)))
-	}
 	for i, row := range s.kitRows {
 		line := kitGridRow(
 			strconv.Itoa(i+1),
@@ -603,14 +637,6 @@ func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 		l.AddRow(s.kitAddRow(), "    "+StyleMuted.Render(add))
 	}
 
-	if len(s.kitRows) == 0 {
-		l.Add("")
-		l.Add(jdeIndent + StyleStatusWarn.Render("! A kit needs at least one component."))
-	}
-	if s.kitRowErr != "" {
-		l.Add("")
-		l.Add(jdeIndent + StyleStatusError.Render("✗ "+s.kitRowErr))
-	}
 	return l
 }
 
@@ -619,7 +645,8 @@ func (s *InventoryItemFormScreen) kitListLines() *jdeLines {
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) kitListBar(body *jdeLines) []actionBarItem {
 	n := s.kitAddRow() + 1
-	return s.kitListBarItems(n, s.bodyPagesForBar(body, n, 0, s.kitListBarItems(jdeCeilingRows, true)))
+	return s.kitListBarItems(n, s.bodyPagesForBar(body, n, len(s.kitListHeader()),
+		s.kitListBarItems(jdeCeilingRows, true)))
 }
 
 // kitListBarItems is kitListBar for a given paging state, so the bar that is
