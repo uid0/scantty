@@ -134,7 +134,7 @@ func jdeMoveKeysFor(t *testing.T, mk func() Screen, w int) []string {
 // screen struct's own int fields, so the fingerprint below is derived from the
 // screen rather than listed per screen — which is the only way a sweep over
 // thirty-two of them can be trusted, since no two spell it the same way
-// (cursor, pickCursor, kitCursor, rowCursor, levelCursor, resultCursor,
+// (cursor, pickCursor, kitCursor, rowCursor, levelCursor, resultScroll,
 // padScroll, switchScroll, priceFocus, shipFocus, focused).
 var jdePlaceWords = []string{"cursor", "scroll", "focus", "offset"}
 

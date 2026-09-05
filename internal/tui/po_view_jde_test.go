@@ -1400,9 +1400,10 @@ type poBarPhase struct {
 //
 // The SCROLL OFFSETS are deliberately NOT named. A stored offset is not
 // observable state: WindowFrom ignores it outright when the body fits the window,
-// so padScrollBy can move s.padScroll while the frame stays byte-identical.
-// Counting it as a change is what let an inert scroll key read as "the key
-// works" and hid the boundary defect this file's boundary sweep now pins.
+// so the order pad's scroll arm can move s.padScroll while the frame stays
+// byte-identical. Counting it as a change is what let an inert scroll key read
+// as "the key works" and hid the boundary defect this file's boundary sweep now
+// pins.
 func poNavState(r Root, nav func() string) func() string {
 	return func() string {
 		return r.View() + "\x00" + nav()

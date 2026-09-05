@@ -1366,8 +1366,12 @@ func (g jdeScreen) frameDrawn(headerRows int, items []actionBarItem) bool {
 // drawability must be asked of the bar the frame really DRAWS (frameDrawn). One
 // helper taking one `items` would have to get one of them wrong. The
 // offset-scrolling sheets therefore spell the conjunction themselves, once each
-// and named — po_detail's sheetMoves and padMoves, po_add_line's confirmScrolls
-// — and each names the pair it is the handler's half of. (po_add_line's OTHER
+// and named — po_detail's sheetMoves and padMoves and po_add_line's
+// confirmScrolls are the shape, and every sheet that has grown an offset since
+// (the two removal confirms, the slot-generate run report) names its own pair
+// the same way — and each names the pair it is the handler's half of. What IS
+// shared once the two gates have answered is jdeScrollStep, the key-to-offset
+// mapping. (po_add_line's OTHER
 // pager, keyChoose, moves a CURSOR through the candidate list and belongs to the
 // paragraph above rather than to this one: it asks the two directly because it
 // answers "nothing to page" out loud, not because it scrolls an offset.)

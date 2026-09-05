@@ -177,9 +177,10 @@ knowing before touching any of it:
 - **`Ctrl-X` confirms the destroy, not `Enter`.** `Ctrl-E` OPENS the confirm and
   enter is the key a hand reaches for next, so binding the write to it would
   make a reflex enough to destroy a line — the same choice the New PO
-  supplier-switch confirm makes. Every other key on that frame ANSWERS
-  (`deleteNote`), or the second press redraws a pane that is a pure function of
-  unchanged state.
+  supplier-switch confirm makes. Every other key on that frame either ACTS — the
+  movement keys scroll the caveat where it outruns the pane, and the bar names
+  them exactly there — or ANSWERS (`deleteNote`), because a press that did
+  neither redraws a pane that is a pure function of unchanged state.
 - **Both refusal shapes are recovered.** `_destroy_item` writes
   `{"error", "code"}` and `void_item` writes `{"error"}` alone; neither reaches
   DRF's exception handler, so `parseError` hands the whole raw body over.
@@ -1476,11 +1477,12 @@ either:
   because the tallest bar is the fixed point.
   The gate is `jdeScreen.frameDrawn`, and the three primitives that carry it for
   a CURSOR are `moveRow` (a wrapping field cursor), `pickRow` (a clamping list
-  cursor) and `pageRow` (a page). A scroll OFFSET has no fourth primitive on
-  purpose: its two questions are asked of different bars — the scroll answer of
-  the CEILING bar, drawability of the bar really DRAWN — so the two sheets that
-  scroll one spell the conjunction themselves and name it
-  (`po_detail`'s `sheetMoves` / `padMoves`).
+  cursor) and `pageRow` (a page). A scroll OFFSET has no fourth GATED primitive
+  on purpose: its two questions are asked of different bars — the scroll answer
+  of the CEILING bar, drawability of the bar really DRAWN — so a sheet that
+  scrolls one spells the conjunction itself and names it (`po_detail`'s
+  `sheetMoves` / `padMoves`). What IS shared is the key-to-offset MAPPING,
+  `jdeScrollStep` — see the pane-that-says-there-is-more section below.
   **THE RULE IS ONE STATEMENT, NOT TWO: a movement key acts when the frame is
   DRAWN and — for a PAGE — when the body MOVES.** `pageRow` asks both, and it is
   the DEFAULT: a screen with no further condition on its pager reaches for it and
@@ -1503,9 +1505,10 @@ either:
   (`service_status_screen` nests the entry inside `len(services) > 1`), and so
   does `pageRow` — so the bar's claim and the key behind it are one expression. It was three sheets' private knowledge and thirty sheets' blind
   spot, and the state it is about is the one a list SPENDS MOST OF ITS LIFE IN:
-  an unopened kit list is a heading, its guidance and the trailing "(add a
-  component)" row, so at 80x11–17 the body outran the window while the add row
-  was the only row a cursor could stand on — **the bar named the pair and a page
+  an unopened kit list WAS a heading, its guidance and the trailing "(add a
+  component)" row (the chrome rides the pinned header now — see the
+  pane-that-says-there-is-more section), so at 80x11–17 the body outran the
+  window while the add row was the only row a cursor could stand on — **the bar named the pair and a page
   moved nothing, on the default state of a new inventory item**. The packaging
   chain and the storage level list did the same at their own heights.
   A SWEEP THAT DERIVES ITS SCREENS STILL HAND-PICKS ITS STATES, and that is the
@@ -1859,7 +1862,11 @@ touching any screen an operator drives:
   `✗ type to narrow the catalo… · creating the PO f…` — rule 6 inverted on the
   surface an order is committed from, where the error IS the fact and the hint
   is the thing an operator can rediscover by pressing the key again. The error
-  takes the row alone now (`statusPlan`); the LEAD is what gives, entirely. The
+  takes the row alone now (`statusPlan`); the LEAD is what gives, entirely.
+  ORDER-level is the whole of that scope: a failure belonging to the ONE line a
+  frame is about is ranked the other way round, below the answer to the key just
+  pressed, and hands the header the standing fact instead — `po_edit.go`'s
+  `deleteStatusCarriesFailure` carries the ranking and the reason. The
   wordings were cut with it — `setErr`'s headlines the way `poSubmitWords` went
   from 32 cells to 20, `poSubmitFailWords` being 37 → 22 — but that is NOT the
   guarantee and the comment says so: the detail beside them is an OMS body of
