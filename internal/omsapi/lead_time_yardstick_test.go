@@ -100,7 +100,12 @@ func TestLeadTimeYardstick_EveryLatenessPayloadCarriesIt(t *testing.T) {
 // while reorder_queue/views.py computes on_time_count/total*100 — the render
 // has always been right and only the comment was wrong, which is exactly the
 // kind of false claim that gets a correct render "fixed" into a 7500% rate.
-// This pins the direction so the comment cannot drift back.
+//
+// WHAT THIS PROVES is only that NOTHING ON THIS SIDE SCALES THE VALUE: a served
+// 75.0 arrives as 75. It does NOT pin the server's direction and could not —
+// reverting the struct comment leaves this green, because the fixture is what
+// declares what the wire carries. That direction is read from OMS's own source
+// and nowhere else, so no prose here may claim a check holds it.
 func TestPurchasingLeadTime_OnTimeRateIsAPercentage(t *testing.T) {
 	c, _ := reportSrv(t, `[{"supplier_id":2,"supplier_name":"Acme","item_name":"Bolt",
 		"total_orders":4,"avg_estimated_lead_time":5.0,"avg_actual_lead_time":6.5,

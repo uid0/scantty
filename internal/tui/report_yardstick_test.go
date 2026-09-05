@@ -873,3 +873,67 @@ func reportAssertAssembled(t *testing.T, s *ReportTableScreen, w int) {
 		}
 	}
 }
+
+// TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas is the HEIGHT
+// counterpart of TestReportTable_TheScreenAssemblesNothingThePaneCannotHold,
+// and the axis that sweep is blind on: it measures assembled WIDTH at a fixed
+// height of 40, so a frame one row too tall passed it at every width.
+//
+// The marker row used to be taken out of the BODY after the block below had
+// been clamped, and the body's floor at one row then handed it straight back —
+// so whenever the block below squeezed the body to a single row the frame came
+// to avail+1 rows, the marker was drawn anyway (View decides that for itself),
+// and clampToBox took the tail: the FOOTER, which layoutRows' own doc says
+// never gives. Watched failing at 80 columns on the reorders analytics
+// "Supplier perf" tab with 8 rows, at every terminal height from 19 to 22
+// inclusive — each one row over, each dropping the line carrying
+// `r refresh · esc back` and leaving no named way off the screen — and passing
+// at 23, where the block below no longer squeezes the body that far.
+//
+// Measured on what the screen HANDS OVER, before clampToBox, which is the only
+// way round that can fail — measured after, no frame can ever be too tall,
+// because the truncation has already happened. That is the trap the width sweep
+// records at its own site.
+//
+// SCOPED at rowBudget's own boundary and BOTH SIDES COUNTED, because below it
+// the overrun is the documented band rather than a defect: where the pane
+// cannot hold the legend, the header, one body row with its marker and the
+// folded footer, something has to give and the give-order says it is not the
+// legend and not the footer. A scoping nothing falls outside of would be a way
+// of asserting nothing, so a sweep that never reached one side fails.
+func TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas(t *testing.T) {
+	fits, tooShort := 0, 0
+	for name, build := range reportScreenFixtures {
+		probe := build()
+		for tab := range probe.tabs {
+			rows := reportSweepRows(probe.tabs[tab].columns, 8)
+			for _, w := range jdeDrawableWidths() {
+				for _, h := range jdePaneHeights() {
+					s := build()
+					reportSeed(s, tab, rows, omsapi.VarianceYardstickQuotedLeadTime)
+					s.Update(tea.WindowSizeMsg{Width: w, Height: h})
+					avail, floor := s.rowBudget()
+					if avail < floor {
+						tooShort++
+						continue
+					}
+					fits++
+					room := s.reportPaneRows()
+					if got := len(strings.Split(s.View(), "\n")); got > room {
+						body, below := s.layoutRows()
+						t.Fatalf("%s tab %q at %dx%d: the screen assembled %d rows into a "+
+							"%d-row pane (avail %d, floor %d, body %d, below %d), so clampToBox "+
+							"takes the tail — and what is drawn last is the footer:\n%s",
+							name, probe.tabs[tab].label, w, h, got, room, avail, floor,
+							body, below, s.View())
+					}
+				}
+			}
+		}
+	}
+	if fits == 0 || tooShort == 0 {
+		t.Fatalf("the sweep saw %d panes that could hold the give-order's floor and %d "+
+			"that could not — one side was never reached, so the scoping asserted nothing",
+			fits, tooShort)
+	}
+}

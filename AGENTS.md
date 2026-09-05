@@ -541,8 +541,12 @@ touching any report that shows a rate, a variance or a lateness:
   The struct comment used to call it "a fraction 0..1" while the render appends
   `%` without scaling; the render was always right and the comment was the
   defect, and its only possible effect was to invite somebody to "fix" the
-  render into 7500%. `TestPurchasingLeadTime_OnTimeRateNotDoubled` and
-  `TestPurchasingLeadTime_OnTimeRateIsAPercentage` hold both halves.
+  render into 7500%. What is HELD is that nothing on this side scales the
+  value: `TestPurchasingLeadTime_OnTimeRateIsAPercentage` asserts a served 75.0
+  arrives as 75, and `TestPurchasingLeadTime_OnTimeRateNotDoubled` that the
+  screen draws it without multiplying. Neither pins OMS's own
+  `on_time_count/total*100` and no client-side test can — that direction is read
+  from `reorder_queue/views.py` and nowhere else.
 - OMS PR #1046 also RENAMED six keys on `GET /api/inventory/suppliers/<id>/`
   and its `analytics` action, and three CSV headers. ScanTTY drives neither, so
   nothing here decodes them; the keys ScanTTY does decode were deliberately left
@@ -1279,11 +1283,23 @@ either:
   because a short pane takes the note first.
   Vertically, `layoutRows` gives ground in a stated order: the yardstick legend
   and the action bar never give, the body floors at one row, and the block under
-  the table gives from the END. Below about a sixteen-row terminal at 80 columns
-  — derive it, the figure moves with the wording — the frame runs over and
-  `clampToBox` takes the tail; that band is left as it is rather than
-  half-converted into a refusal, and it is safe because the legend LEADS, so a
-  figure is never drawn without it at any height.
+  the table gives from the END. THE MARKER ROW IS RESERVED WHERE THE BLOCK BELOW
+  IS CLAMPED (`rowBudget`), not taken out of the body afterwards: taken after,
+  the body's floor handed back a row already spent and the frame assembled one
+  row more than the pane had whenever the block below squeezed the body to one —
+  at 80x20 on the reorders Supplier perf tab what `clampToBox` then took was the
+  footer's last fold, `r refresh · esc back`, leaving no named way off the
+  screen. Where even that floor will not fit the frame still runs over; that
+  band is `rowBudget`'s own `avail < floor` and is left as it is rather than
+  half-converted into a refusal, safe because the legend LEADS, so a figure is
+  never drawn without it at any height. Do NOT write the band down as a height:
+  it moves with every wording on the frame and it grows TALLER as the terminal
+  gets NARROWER, because the legend, the notes and the footer then fold onto
+  more rows. `TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas` walks
+  both sides of it at every pane Root draws, and
+  `TestReportTable_TheScreenAssemblesNothingThePaneCannotHold` is its width
+  counterpart; both measure what the screen HANDS OVER, because after
+  `clampToBox` no frame can be too big — the truncation has already happened.
   What this replaced, measured at 80 columns: a 75% on-time rate drawn as `75`,
   a 33.3% late rate as `33.`, `$12,345.67` as `$12,3`, every numeric column off
   the pane under a header line reading `Or`, notes and the action bar cut

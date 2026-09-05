@@ -654,24 +654,26 @@ const reportFixedChromeRows = 4
 // more load-bearing of the two and is also the one whose fact the header's own
 // mark still carries once the words are gone.
 //
-// Where even legend + header + one row + footer will not fit, the frame runs
-// over and clampToBox takes the tail. That band is a terminal of fewer than
-// about sixteen rows at 80 columns — derive it rather than trusting the figure,
-// which moves with the wording — and it is left as it is rather than half-built
-// into a refusal: the legend LEADS, so a figure is never drawn without it at
-// any height, which is the property this screen has to keep.
+// Where even the FLOOR will not fit — legend, header, one body row with the
+// marker row it needs beside it, and the folded footer — the frame runs over
+// and clampToBox takes the tail. That band is `rowBudget`'s own answer
+// (`avail < floor`), so derive it from there rather than from a height written
+// down here: it moves with every wording on the frame and it is WIDTH-dependent
+// in the wrong direction — a narrow terminal folds the legend, the notes and
+// the footer onto more rows, so `avail` shrinks and the band gets TALLER as the
+// pane gets narrower. `TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas`
+// walks both sides of that boundary at every pane Root draws and is the check
+// this claim is made on. The band is left as it is rather than half-built into
+// a refusal: the legend LEADS, so a figure is never drawn without it at any
+// height, which is the property this screen has to keep.
 func (s *ReportTableScreen) layoutRows() (body, below int) {
 	if len(s.tabs) == 0 {
 		return listWindowSize, 0
 	}
-	tab, st := s.tabs[s.active], &s.states[s.active]
-	cells := s.reportPaneCells()
-	belowAll := len(s.belowLines(tab, st))
-	avail := s.reportPaneRows() - reportFixedChromeRows -
-		len(s.legendLines(tab, st)) -
-		len(pickerWrap(s.footerHint(len(st.rows)), cells))
-	below = belowAll
-	if short := 1 - (avail - below); short > 0 {
+	st := &s.states[s.active]
+	avail, floor := s.rowBudget()
+	below = len(s.belowLines(s.tabs[s.active], st))
+	if short := floor - (avail - below); short > 0 {
 		below -= short
 		if below < 0 {
 			below = 0
@@ -679,16 +681,48 @@ func (s *ReportTableScreen) layoutRows() (body, below int) {
 	}
 	body = avail - below
 	if len(st.rows) > body {
-		// The marker row is reserved whenever the rows outrun the body and NOT
-		// otherwise, and it is ONE row carrying both facts (listMarkerLine)
-		// rather than a row apiece — so the budget cannot change as the cursor
-		// moves, and the table does not jump under the operator's hands.
 		body--
 	}
 	if body < 1 {
 		body = 1
 	}
 	return body, below
+}
+
+// rowBudget is what the body, its marker row and the block under the table have
+// to share (`avail`), and the fewest of those rows the give-order promises
+// (`floor`). ONE expression, because the marker has to be reserved in the SAME
+// place the block below is clamped.
+//
+// It used to be taken out of the BODY afterwards — `body--` once the rows
+// outran it — and the floor at one row then handed that row straight back
+// without anything giving it up, so the frame assembled `avail + 1` rows
+// whenever the block below squeezed the body to one. The renderer draws the
+// marker on its own condition (View's listMarkerLine fires exactly when the
+// rows outrun the drawn window), so the row was real and clampToBox took the
+// tail: the FOOTER, which this doc and AGENTS.md both say never gives — the
+// operator left at 80x20 on the reorders Supplier perf tab with `r refresh ·
+// esc back` gone and no named way off the screen.
+//
+// The marker is ONE row carrying both facts (listMarkerLine) rather than a row
+// apiece, so the budget cannot change as the cursor moves and the table does
+// not jump under the operator's hands. Whether it is drawn depends on the body,
+// and the body depends on whether it was reserved, so the circle is settled at
+// the RESERVING case the way the columnar layer settles its action-bar height
+// against the tallest bar: more than one row means the marker is possible, so
+// it is paid for. Where the rows turn out to fit after all the reservation
+// costs nothing — `body + below` still comes to `avail`, the body simply has a
+// row it does not fill.
+func (s *ReportTableScreen) rowBudget() (avail, floor int) {
+	tab, st := s.tabs[s.active], &s.states[s.active]
+	avail = s.reportPaneRows() - reportFixedChromeRows -
+		len(s.legendLines(tab, st)) -
+		len(pickerWrap(s.footerHint(len(st.rows)), s.reportPaneCells()))
+	floor = 1
+	if len(st.rows) > 1 {
+		floor++
+	}
+	return avail, floor
 }
 
 // windowSize is how many table rows the pane can hold. See layoutRows.
