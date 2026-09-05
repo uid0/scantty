@@ -215,6 +215,42 @@ func reportFlatPane(lines []string) string {
 	return strings.Join(strings.Fields(strings.Join(reportPaneLines(lines), " ")), " ")
 }
 
+// The two ends of the dropped-columns note belowLines writes, as they survive
+// flattening. The names sit between them, joined with ", ". The tail joint is
+// matched WITHOUT its " · ", because pickerWrap drops the joint at a fold: the
+// note reads "… 2 columns off the pane: Var*, On-time* · widen the terminal…"
+// on one line and loses the "·" wherever it breaks there instead.
+const (
+	reportDropNoteLead = "off the pane: "
+	reportDropNoteTail = "widen the terminal"
+)
+
+// reportDroppedNames reads the dropped-columns note off the rendered pane and
+// returns the column headers it NAMES, whole.
+//
+// This is the only surface on which a column that did not fit is named — the
+// header row carries reportDropMark and says how many, not which — so it is
+// what "the pane accounts for this column" has to be asked of. Asking whether
+// the header appears anywhere on the pane answers yes for a column that is
+// simply DRAWN, which is how a clipped figure could pass for an accounted one.
+func reportDroppedNames(flat string) map[string]bool {
+	out := map[string]bool{}
+	i := strings.Index(flat, reportDropNoteLead)
+	if i < 0 {
+		return out
+	}
+	names := flat[i+len(reportDropNoteLead):]
+	if j := strings.Index(names, reportDropNoteTail); j >= 0 {
+		names = names[:j]
+	}
+	for _, n := range strings.Split(names, ", ") {
+		if n = strings.Trim(n, " ·"); n != "" {
+			out[n] = true
+		}
+	}
+	return out
+}
+
 // --- the yardstick reaches the pane with the figure -------------------------
 
 // TestReportTable_NoMarkedFigureReachesThePaneWithoutItsLegend is the rule this
@@ -319,6 +355,20 @@ func reportAnyMarked(cols []reportColumn) bool {
 // A TALL pane, because this is the WIDTH axis: the note naming the dropped
 // columns is the first thing a short pane gives up (layoutRows), and asking two
 // axes in one loop would report a height defect as a width one.
+//
+// THE TWO BRANCHES ARE MUTUALLY EXCLUSIVE, AND THE SECOND KEYS ON THE NOTE.
+// It used to accept "the header is somewhere on the flattened pane" as proof
+// the column had been dropped, which is true in one direction only: a column
+// that IS drawn carries its header on the pane too. So a fact whose header is
+// narrower than its widest cell — "Var*" is four cells over a "1234.5" value,
+// "Late*" five over "33.33%" — could have its VALUE clipped to "123…" while its
+// header still rendered whole, the first case would fail, the second would
+// match on the still-drawn column header, and the sweep would pass over exactly
+// the cut figure it exists to report. The dropped-columns note built in
+// belowLines is the ONLY place a column that did not fit is NAMED, so the
+// branch reads the names out of that note (reportDroppedNames) and matches them
+// whole. A fact that is both drawn and named, or neither, falls through and
+// FAILS.
 func TestReportTable_EveryFigureIsWholeOrNamedAsMissing(t *testing.T) {
 	widths := jdeDrawableWidths()
 	if len(widths) == 0 {
@@ -335,21 +385,22 @@ func TestReportTable_EveryFigureIsWholeOrNamedAsMissing(t *testing.T) {
 				reportSeed(s, tab, rows, omsapi.VarianceYardstickQuotedLeadTime)
 				lines := reportRootLines(t, s, w, 40)
 				pane, flat := reportPaneText(lines), reportFlatPane(lines)
+				missing := reportDroppedNames(flat)
 				for i, c := range cols {
 					if c.align != alignRight {
 						continue // an identifier abbreviates on purpose
 					}
+					onPane, named := strings.Contains(flat, rows[0][i]), missing[c.header]
 					switch {
-					case strings.Contains(flat, rows[0][i]):
+					case onPane && !named:
 						whole++
-					case strings.Contains(flat, c.header):
-						// The column is named in the dropped-columns note, and
-						// its header appears nowhere else once it is dropped.
+					case named && !onPane:
 						dropped++
 					default:
-						t.Fatalf("%s tab %q at width %d: the %q cell %q is neither on the "+
-							"pane whole nor named as off it:\n%s",
-							name, probe.tabs[tab].label, w, c.header, rows[0][i], pane)
+						t.Fatalf("%s tab %q at width %d: the %q cell %q is on the pane=%v and "+
+							"named in the dropped-columns note=%v — a fact is drawn WHOLE or it "+
+							"is absent and named as off the pane, never neither and never both:\n%s",
+							name, probe.tabs[tab].label, w, c.header, rows[0][i], onPane, named, pane)
 					}
 				}
 			}
@@ -593,8 +644,9 @@ func TestReportTable_TheYardstickReachesTheScreenEndToEnd(t *testing.T) {
 // out, and it reported a correctly abbreviated bar as a missing one.
 //
 // The three-character prefix is safe at every drawable pane by construction:
-// Root refuses below 16 cells, the markers cost at most four and the highlight
-// two, so the active label is never given fewer than ten.
+// Root refuses below 16 cells, the markers cost at most two (one apiece, and
+// only for a side that is drawn) and the highlight two, so the active label is
+// never given fewer than twelve.
 func TestReportTable_TheTabBarAlwaysNamesTheActiveTab(t *testing.T) {
 	const prefixLen = 3
 	fits, abbreviated := 0, 0

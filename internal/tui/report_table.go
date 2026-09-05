@@ -901,10 +901,28 @@ func reportDropPronoun(n int) string {
 	return "them"
 }
 
-// footerHint names exactly the keys that work, and is FOLDED by the caller: at
-// 80 columns it is 58 cells against a pane of 51, so drawn straight it lost
-// "esc back" — the way out of the screen — off the right edge with nothing
-// saying it had.
+// footerHint names every key that works in the state it is drawing, with ONE
+// recorded exception, and is FOLDED by the caller: at 80 columns it is 58 cells
+// against a pane of 51, so drawn straight it lost "esc back" — the way out of
+// the screen — off the right edge with nothing saying it had.
+//
+// THE EXCEPTION IS `backspace`, which updateKey binds alongside `esc` and this
+// bar deliberately does not spell. It is a universal esc alias across this app,
+// named by no other surface, so naming it here alone would make this one bar
+// disagree with every other one for two cells it would rather spend on a key an
+// operator has to be told about — the same trade poFormNavAliases records for
+// Tab / Shift-Tab on the columnar forms. Recorded rather than left implicit,
+// because an unqualified "exactly" is a documented claim the code does not
+// honour.
+//
+// NO BAR-HONESTY SWEEP COVERS THIS BAR, said plainly because a claim in prose
+// either states what a named check proves or should not be written:
+// ReportTableScreen is neither a *ListScreen nor a jdeScreen, so
+// list_bar_honesty_test.go (which walks the ListScreen footers) and the
+// columnar sweep in po_view_jde_test.go (which walks the []actionBarItem bars)
+// both miss it, and nothing presses the key space against this one. Giving it
+// that coverage means giving the screen a machine-readable bar; until then the
+// claim above is held by reading, which is exactly how the alias got lost.
 func (s *ReportTableScreen) footerHint(rowCount int) string {
 	if len(s.tabs) == 0 {
 		return "esc back"
@@ -1040,6 +1058,12 @@ func (s *ReportTableScreen) renderTabBar() string {
 	// given up, and at the narrowest pane Root draws (16 cells) a label like
 	// " Spend by supplier " does not fit whole. Unclipped it overran the pane and
 	// clampToBox took the "›" and part of the label with it.
+	//
+	// The marks are asked of the MINIMAL window [active, active] because that is
+	// the one this clip has to leave drawable: the window can only grow from
+	// there, and every growth step measures its own candidate window against the
+	// whole pane. So this reserves exactly the markers a bar showing the active
+	// tab alone would draw, not markers a wider window will not.
 	sep := "│"
 	activeRoom := cells - s.tabBarMarks(s.active, s.active) - pad
 	if lipgloss.Width(labels[s.active]) > activeRoom {
@@ -1101,16 +1125,24 @@ func (s *ReportTableScreen) renderTabBar() string {
 	return bar
 }
 
-// tabBarMarks is what the ‹ / › markers and their separators cost for a window
-// of [first, last]. Reserved BEFORE a tab is admitted, so admitting one can
-// never be what pushes the marker that says the rest exist off the pane.
+// tabBarMarks is what the ‹ / › markers cost for a window of [first, last].
+// Reserved BEFORE a tab is admitted, so admitting one can never be what pushes
+// the marker that says the rest exist off the pane.
+//
+// ONE cell per marker, and only for a side that will really be drawn. They sit
+// OUTSIDE the separator join (renderTabBar), so a marker costs the marker and
+// nothing else — the separators between labels are already counted by the
+// growth loop's own lipgloss.Width(sep). Charging two apiece made this the one
+// accounting on the screen that discarded room the terminal had: on the 6-tab
+// reorders report at 80 columns it could withhold a tab, or abbreviate the
+// active label, over cells that were never going to be spent (house rule 5).
 func (s *ReportTableScreen) tabBarMarks(first, last int) int {
 	n := 0
 	if first > 0 {
-		n += 2
+		n++
 	}
 	if last < len(s.tabs)-1 {
-		n += 2
+		n++
 	}
 	return n
 }
