@@ -901,10 +901,24 @@ func reportDropPronoun(n int) string {
 	return "them"
 }
 
-// footerHint names every key that works in the state it is drawing, with ONE
-// recorded exception, and is FOLDED by the caller: at 80 columns it is 58 cells
-// against a pane of 51, so drawn straight it lost "esc back" — the way out of
-// the screen — off the right edge with nothing saying it had.
+// footerHint names every key an operator can SEE act in the state it is
+// drawing, with ONE recorded exception, and is FOLDED by the caller: at 80
+// columns it is 58 cells against a pane of 51, so drawn straight it lost "esc
+// back" — the way out of the screen — off the right edge with nothing saying it
+// had.
+//
+// SEEN ACT is the whole of what the claim covers, and it is not a hedge: it is
+// the same reading of "acts" the rest of this package's bar-honesty sweeps use,
+// where a keypress that redraws the pane byte for byte has not acted. The state
+// that turns on it is the LOAD, where `r` is bound and fires a second identical
+// request whose only product is the "Loading …" line the pane is already
+// drawing — naming it there would advertise a key nothing on the frame can be
+// seen to answer. What is NOT covered by that reading is a key with a visible
+// product, and the loading branch used to omit ←/→ and [/] on exactly those
+// grounds while switchTab moved the highlight and replaced the body under it:
+// a false claim in the one state every operator lands in, the screen's own
+// first frame. They are named there now, in the words the error branch already
+// uses, so the two states cannot describe one affordance two ways.
 //
 // THE EXCEPTION IS `backspace`, which updateKey binds alongside `esc` and this
 // bar deliberately does not spell. It is a universal esc alias across this app,
@@ -930,7 +944,7 @@ func (s *ReportTableScreen) footerHint(rowCount int) string {
 	st := &s.states[s.active]
 	switch {
 	case st.loading || !st.loaded:
-		return "esc back"
+		return "←/→ [/] switch report · esc back"
 	case st.err != "":
 		return "r retry · ←/→ [/] switch report · esc back"
 	case rowCount == 0:

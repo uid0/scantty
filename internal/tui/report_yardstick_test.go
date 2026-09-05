@@ -719,3 +719,49 @@ func TestReportTable_TheFooterNamesMovementOnlyWhereItMoves(t *testing.T) {
 		t.Errorf("two rows: the footer must name the movement keys: %q", s.footerHint(2))
 	}
 }
+
+// TestReportTable_TheLoadingFooterNamesTheKeysThatSwitchReport is the state an
+// operator LANDS in — a report screen's very first frame is !loaded — and the
+// bar there named "esc back" alone while ←/→ and [/] switched report under it:
+// updateKey's arms are unguarded, so switchTab moved the tab-bar highlight and
+// replaced the body on a press the frame said nothing about.
+//
+// Asked of the RENDERED pane and of a real press through Root, in that order,
+// because either half alone proves nothing: the segment on the pane says the
+// bar makes the claim, the press says the claim is true. Swept over every
+// report screen with more than one tab, at every width Root draws, because a
+// footer that folds is a footer a narrow pane can lose the tail of.
+func TestReportTable_TheLoadingFooterNamesTheKeysThatSwitchReport(t *testing.T) {
+	const segment = "←/→ [/] switch report"
+	swept := 0
+	for name, build := range reportScreenFixtures {
+		if len(build().tabs) < 2 {
+			continue // nothing to switch to, so the bar rightly says nothing
+		}
+		for _, w := range jdeDrawableWidths() {
+			s := build()
+			lines := reportRootLines(t, s, w, 40)
+			if flat := reportFlatPane(lines); !strings.Contains(flat, segment) {
+				t.Fatalf("%s at width %d: the first frame is still loading and the bar does "+
+					"not name %q, which switches report from it:\n%s",
+					name, w, segment, reportPaneText(lines))
+			}
+			before := reportPaneText(lines)
+			r := newTestRoot(s)
+			next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: 40})
+			after, ok := next.(Root)
+			if !ok {
+				t.Fatalf("Root.Update returned %T, want Root", next)
+			}
+			moved := reportPaneText(strings.Split(press(t, after, "right").View(), "\n"))
+			if moved == before {
+				t.Fatalf("%s at width %d: the bar names %q while loading and pressing → "+
+					"redrew the pane byte for byte:\n%s", name, w, segment, before)
+			}
+			swept++
+		}
+	}
+	if swept == 0 {
+		t.Fatal("no multi-tab report screen was swept, so this proved nothing")
+	}
+}
