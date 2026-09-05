@@ -48,7 +48,7 @@ func TestReorderSupplierPerf_Loader(t *testing.T) {
 		t.Fatalf("rows = %d", len(rows))
 	}
 	joined := strings.Join(rows[0], "|")
-	// Supplier | Orders | Done | Avg lead d | On-time % | Late % | Damage % | Order value
+	// Supplier | Orders | Done | Lead d | On-time* | Late* | Damage | Order value
 	if rows[0][0] != "Acme" || rows[0][2] != "7" || rows[0][3] != "4.5" {
 		t.Errorf("supplier perf cells wrong: %q", joined)
 	}
