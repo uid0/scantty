@@ -1922,6 +1922,10 @@ func TestJDEForm_EveryHeaderSiteIsSwept(t *testing.T) {
 // reads.
 func TestJDEForm_EveryEssentialHeaderRowIsOnThePane(t *testing.T) {
 	asserted := 0
+	// What each state's widest essential row MEASURES, and at which panes it
+	// overruns, so the roster below is checked against what the sweep found
+	// rather than against what anyone remembers.
+	cellsOf, overAt := map[string]int{}, map[string][]int{}
 	for site, c := range jdeHeaderCases() {
 		for name, mk := range c.states(site) {
 			for _, w := range jdePaneWidths {
@@ -1939,8 +1943,24 @@ func TestJDEForm_EveryEssentialHeaderRowIsOnThePane(t *testing.T) {
 						if row.Rank != jdeHeadEssential {
 							continue
 						}
-						want := truncateVisible(strings.TrimRight(row.Text, " "), screenBodyWidth(w))
+						want := strings.TrimRight(row.Text, " ")
 						if want == "" {
+							continue
+						}
+						// THE ROW AS THE BUILDER WROTE IT, not truncateVisible'd
+						// to the pane first. Pre-truncating is what made this
+						// check unable to fail: clampToBox cuts an over-wide row
+						// to exactly that string, so Contains matched the very
+						// mutilation the check exists to report, and a class of
+						// over-wide essential rows hid behind it through two
+						// review rounds.
+						if cells := lipgloss.Width(want); cells > screenBodyWidth(w) {
+							if cells > cellsOf[name] {
+								cellsOf[name] = cells
+							}
+							if n := len(overAt[name]); n == 0 || overAt[name][n-1] != w {
+								overAt[name] = append(overAt[name], w)
+							}
 							continue
 						}
 						asserted++
@@ -1953,6 +1973,31 @@ func TestJDEForm_EveryEssentialHeaderRowIsOnThePane(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+	for name, widths := range overAt {
+		if _, excused := jdeOverWideEssentialRows[name]; excused {
+			continue
+		}
+		panes := make([]string, len(widths))
+		for i, w := range widths {
+			panes[i] = fmt.Sprintf("%d gives %d", w, screenBodyWidth(w))
+		}
+		t.Errorf("%s marks a header row essential that does not FIT the pane — %d cells, "+
+			"and a terminal width of %s. jdeFitHeader trims by ROW and does no width "+
+			"fitting, so clampToBox cuts it from the right with no ellipsis and takes the "+
+			"closing SGR reset with it. Either bound the row the way jdeCaveatLines bounds "+
+			"a caveat, or record it in jdeOverWideEssentialRows with the measured numbers",
+			name, cellsOf[name], strings.Join(panes, ", "))
+	}
+	for name, reason := range jdeOverWideEssentialRows {
+		if reason == "" {
+			t.Errorf("%s is excused from fitting the pane with no reason given", name)
+		}
+		if _, over := overAt[name]; !over {
+			t.Errorf("jdeOverWideEssentialRows excuses %s (%q), and every essential row it "+
+				"draws now fits the pane at every swept width. A stale exception is a case "+
+				"excused from the check it passes", name, reason)
 		}
 	}
 	if asserted == 0 {
@@ -2315,3 +2360,71 @@ func TestJDEForm_AnUnsizedTerminalPagesAsItAlwaysHas(t *testing.T) {
 			"asserted nothing about the state it is named for")
 	}
 }
+
+// jdeOverWideEssentialRows are the header sites whose ESSENTIAL row does not fit
+// the pane it is promised on, each with the measured numbers.
+//
+// It is the same shape as jdeHeadersWithoutEssentials and jdeUnfetchableMarker-
+// Cases and exists for the same reason: a real defect that is KNOWN has to be
+// written down, or it is indistinguishable from one nobody has found. It fails
+// in BOTH directions — an unlisted over-wide row fails as a new defect, and a
+// listed one that now fits fails as a stale exception — so bounding a row here
+// is a one-line deletion rather than a search.
+//
+// THE MECHANISM IS ONE, AND IT IS THE LAYER'S. jdeFitHeader gives ground by ROW
+// and does no width fitting at all, so an over-wide header row reaches
+// clampToBox, which cuts from the right with no ellipsis and takes the closing
+// SGR reset with it — leaving everything drawn afterwards in the cut row's
+// colour. The remedy is to bound essential header rows at the LAYER, the way
+// jdeCaveatLines bounds a caveat against the live pane; it is deferred to its
+// own task because it is a per-screen conversion of the shape sc-jde-lift was,
+// not a patch, and doing it from a review round is the scope growth that was
+// refused.
+//
+// THE NUMBERS ARE MEASURED BY THE SWEEP ABOVE, not estimated. Both entries hold
+// at every drawable HEIGHT; what varies is the width.
+var jdeOverWideEssentialRows = map[string]string{
+	// One row, nineteen sites: the columnar picker's `Filter .....` row, built
+	// by jdePickHeader at the layer's unsized fallback rather than against the
+	// live pane, so it is the same 70 cells everywhere. It fits from a terminal
+	// width of 100 (a pane of 71) up and is cut at 80, where the pane is 51 —
+	// the width this interface is modelled on and the one that must hold.
+	"AssetFormScreen/viewPick":                pickerFilterOverWide,
+	"AssetPartFormScreen/viewPick":            pickerFilterOverWide,
+	"AuthorizationGrantScreen/viewPick":       pickerFilterOverWide,
+	"CategoryFormScreen/viewPick":             pickerFilterOverWide,
+	"DisconnectFormScreen/viewPick":           pickerFilterOverWide,
+	"InventoryItemFormScreen/viewKitPick":     pickerFilterOverWide,
+	"InventoryItemFormScreen/viewPick":        pickerFilterOverWide,
+	"ItemSupplierFormScreen/viewPick":         pickerFilterOverWide,
+	"LocationFormScreen/viewPick":             pickerFilterOverWide,
+	"MaintenanceItemFormScreen/viewAssetPick": pickerFilterOverWide,
+	"PowerBreakerFormScreen/viewPick":         pickerFilterOverWide,
+	"PowerCircuitFormScreen/viewPick":         pickerFilterOverWide,
+	"PowerOutletFormScreen/viewPick":          pickerFilterOverWide,
+	"PowerPanelFormScreen/viewPick":           pickerFilterOverWide,
+	"ProjectStorageFormScreen/viewSlotPick":   pickerFilterOverWide,
+	"StorageAssignFormScreen/viewPicker":      pickerFilterOverWide,
+	"StorageSlotFormScreen/viewPicker":        pickerFilterOverWide,
+	"StorageSlotGenerateScreen/viewPicker":    pickerFilterOverWide,
+	"ThermostatFormScreen/viewPick":           pickerFilterOverWide,
+
+	// chainHeader promotes the LAST validatePackagingChain message, and those
+	// are composed unfolded from OMS-supplied level names, so no wording of them
+	// has a bound at all. Measured on the swept fixture — two rungs both
+	// claiming to be the base unit — the promoted row is 85 cells: cut at a
+	// terminal width of 80 (a pane of 51) AND at 100 (a pane of 71), fitting
+	// only from 120 (a pane of 91) up. It is the widest essential row in the
+	// package and the only one that overruns past 80 columns.
+	"InventoryItemFormScreen/viewChain (invalid chain)": "chainHeader's promoted " +
+		"validation message is 85 cells, cut at a terminal width of 80 (pane 51) and " +
+		"at 100 (pane 71), fitting only from 120 (pane 91). The messages are composed " +
+		"unfolded from OMS-supplied level names, so the bound has to come from the " +
+		"layer rather than from a wording",
+}
+
+// pickerFilterOverWide is the one reason the nineteen picker sites share, said
+// once so a re-measurement is a single edit rather than nineteen.
+const pickerFilterOverWide = "the columnar picker's `Filter .....` row is 70 cells, " +
+	"cut at a terminal width of 80, where screenBodyWidth gives 51; it fits from 100 " +
+	"(pane 71) up. Built at the layer's unsized fallback rather than against the live pane"

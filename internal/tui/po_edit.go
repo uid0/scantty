@@ -1836,7 +1836,9 @@ func (s *PurchaseOrderEditScreen) updateDeleteLine(m tea.KeyMsg) (Screen, tea.Cm
 			// The whole caveat is on the pane, so there is nothing to fetch and
 			// the bar has already dropped the keys. It still ANSWERS, because
 			// this frame draws no cursor and no caret: a silent return here is
-			// the byte-identical redraw the note below exists to prevent.
+			// the byte-identical redraw the note exists to prevent. The note
+			// goes to the STATUS ROW rather than the body, or writing it would
+			// push the caveat past the window and make it false — deleteStatus.
 			s.deleteNote = m.String() + " moves nothing — the whole warning is on the pane."
 			return s, nil
 		}
@@ -2091,7 +2093,7 @@ func (s *PurchaseOrderEditScreen) viewDeleteLine() string {
 	width := s.bodyWidth()
 	frame, offset := s.jdeScreen.frameScrolled(
 		s.deleteHeader(li, width), s.deleteBody(), s.deleteScroll,
-		s.statusRow(s.saving, "Deleting…", s.errMsg), s.deleteBar())
+		s.deleteStatus(), s.deleteBar())
 	// Stored back so the offset this screen holds is the one that was DRAWN:
 	// `end` asks for the whole body and the frame clamps it against the pane it
 	// has, which is what makes "↓ 0 more below" impossible.
@@ -2103,6 +2105,11 @@ func (s *PurchaseOrderEditScreen) viewDeleteLine() string {
 // is measured against are the lines the frame draws. It owns no navigable row
 // on purpose: deleting takes no reason, so there is nothing to type into, and
 // the window over it is positioned by an OFFSET rather than by a cursor.
+//
+// It is THE CAVEATS AND NOTHING ELSE. The screen's answer to a keypress rides
+// deleteStatus, because a body the bar is measured against is a body an answer
+// written into it can change the bar's mind about — see deleteStatus for the
+// self-falsifying note that came of it.
 func (s *PurchaseOrderEditScreen) deleteBody() *jdeLines {
 	width := s.bodyWidth()
 	body := &jdeLines{}
@@ -2127,10 +2134,59 @@ func (s *PurchaseOrderEditScreen) deleteBody() *jdeLines {
 	for _, caveat := range s.deleteCaveats() {
 		block(caveat)
 	}
-	if s.deleteNote != "" {
-		block(s.deleteNote)
-	}
 	return body
+}
+
+// deleteStatus is the confirm's one status row: what is in flight, what failed,
+// and what the last keypress DID — the sibling attachment confirm's
+// confirmDeleteStatus, said the same way so the two confirms cannot drift.
+//
+// THE ANSWER MAY NOT LIVE IN THE BODY THE BAR IS MEASURED AGAINST. deleteNote
+// used to be a final block of deleteBody, and deleteScrolls measures
+// deleteBody, so the note FALSIFIED ITSELF by existing: at 80 columns, wherever
+// the caveat folded to about three lines and the pane gave the body three to
+// five rows, deleteScrolls was false, the bar named no movement token, and Down
+// answered "down moves nothing — the whole warning is on the pane." That note
+// folds to two lines plus its separator, which took the body past the window —
+// and past it twice over, because naming UP/DN, PgUp/PgDn and Home/End folds
+// the 49-cell bar onto another row and costs the body one more. So the next
+// frame drew `↓ N more below`, sprouted three movement tokens, and put the
+// sentence denying all of it below the fold, where the operator has to scroll
+// to read the claim that there is nothing to scroll to.
+//
+// The status row is a surface no budget can trim: the frames append it
+// unconditionally and it is reserved on every pane. Writing the answer there
+// cannot change whether the body scrolls, so the bar's claim and the frame's
+// answer stop depending on each other.
+//
+// The ORDER of the three is the layer's own. An in-flight write wins, with the
+// answer LEADING it through poLeadOnto rather than being swallowed — every key
+// this frame declines is still pressable while the delete is out, which is
+// exactly when a swallowed answer reads as a wedged program. A FAILURE takes
+// the row alone: an order-level error is never led (po_create's statusPlan
+// carries that decision and the reason for it). Otherwise the answer has the
+// row to itself, at StatusInfo — the muted, unmarked level, because a benign
+// decline is not a failure and drawing one behind ✗ on a destructive confirm
+// tells the operator something went wrong when nothing did.
+func (s *PurchaseOrderEditScreen) deleteStatus() string {
+	switch {
+	case s.saving:
+		verb := "Deleting…"
+		switch room := s.bodyWidth(); {
+		case s.deleteNote == "":
+		case room > 0:
+			verb = poLeadOnto(s.deleteNote, verb, room)
+		default:
+			// An unsized pane means "do not truncate" everywhere in this layer,
+			// and fitStatus leaves the row alone there too — but poLeadOnto
+			// would read a room of 0 as no room at all and drop the subject.
+			verb = s.deleteNote + poLeadJoint + verb
+		}
+		return s.statusRow(true, verb, "")
+	case s.errMsg != "":
+		return s.statusRow(false, "", s.errMsg)
+	}
+	return s.statusAnswer(StatusInfo, s.deleteNote)
 }
 
 // ---------------------------------------------------------------------------

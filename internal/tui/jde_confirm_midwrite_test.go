@@ -257,3 +257,108 @@ func poStyleOpener(style lipgloss.Style) string {
 	}
 	return ""
 }
+
+// TestJDEConfirm_ADeclineDoesNotMakeTheBodyScroll: on a destructive confirm, the
+// answer to a key that moves nothing may not itself be what makes the body move.
+//
+// The line-delete confirm's note used to be a final block of deleteBody, and
+// deleteScrolls measures deleteBody, so the note FALSIFIED ITSELF by existing.
+// At 80 columns, wherever the pane left the body about three to five rows, the
+// caveat fitted, the bar named no movement token, and Down answered "down moves
+// nothing — the whole warning is on the pane" — a note that folds to two lines
+// plus its separator, which put the body past the window, sprouted UP/DN,
+// PgUp/PgDn and Home/End onto the bar, drew `↓ N more below`, and left the
+// sentence denying all of it below the fold.
+//
+// Stated as the operator would: press a key the bar does not name on a frame
+// that says there is nothing more, and the frame must still say there is nothing
+// more. Both confirms are walked because the fix is that they share a shape —
+// "the two confirms disagree" is what produced this finding and its neighbour.
+func TestJDEConfirm_ADeclineDoesNotMakeTheBodyScroll(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+	settled, flipped := 0, map[string][]string{}
+	for _, c := range poIdleConfirms() {
+		for _, w := range jdePaneWidths {
+			for _, h := range jdePaneHeights() {
+				s := c.mk()
+				before := jdeClippedPane(s, w, h)
+				if jdeBarOfStripped(s.View()) == nil {
+					continue // refused: the notice replaces the bar
+				}
+				// Only the state the defect lives in: a frame already claiming
+				// there is more has a marker and a key, and nothing to falsify.
+				if jdeDrawsMoreMarker(before) || jdeBarNamesAMovementKey(s.View()) {
+					continue
+				}
+				settled++
+				if next, _ := s.Update(poPickerKeyMsg("down")); next != nil {
+					s = next
+				}
+				after := jdeClippedPane(s, w, h)
+				if after == before {
+					t.Errorf("%s at %dx%d redrew a byte-identical pane for a key it "+
+						"declines, which is the wedged-program shape the note exists to "+
+						"prevent", c.name, w, h)
+					continue
+				}
+				if jdeDrawsMoreMarker(after) || jdeBarNamesAMovementKey(s.View()) {
+					flipped[c.name] = append(flipped[c.name], fmt.Sprintf("%dx%d", w, h))
+				}
+			}
+		}
+	}
+	if settled == 0 {
+		t.Fatal("no confirm drew a settled frame — one whose whole body is on the pane " +
+			"and whose bar names no movement key — at any pane, so this check asserted " +
+			"nothing about the note that answers there")
+	}
+	var names []string
+	for k := range flipped {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		panes := flipped[k]
+		t.Errorf("%s answered a declined key with a note that then made its own body "+
+			"scroll, at %d pane(s) including %v. The note says the whole warning is on "+
+			"the pane and by existing it pushes the warning off the pane, so the frame's "+
+			"answer to the keypress is itself below the fold", k, len(panes), panes[:min(4, len(panes))])
+	}
+}
+
+// poIdleConfirms are the two destructive confirms freshly opened, with no write
+// out — the state the note above is written in.
+func poIdleConfirms() []struct {
+	name string
+	mk   func() Screen
+} {
+	return []struct {
+		name string
+		mk   func() Screen
+	}{
+		{
+			name: "PurchaseOrderEditScreen/delete confirm",
+			mk: func() Screen {
+				s := NewPurchaseOrderEditScreen(Deps{}, poDeletablePO())
+				s.openLineEditor(0)
+				s.lineFocus = poLineRowStatus
+				s.openDeleteLine(0)
+				return s
+			},
+		},
+		{
+			name: "PurchaseOrderAttachmentsScreen/delete confirm",
+			mk: func() Screen {
+				po := poViewPO()
+				po.Attachments = []omsapi.PurchaseOrderAttachment{{
+					ID: 1, FileName: "quote-2026-01.pdf",
+					Description:    "Vendor quotation for the whole order, itemised by line",
+					UploadedByName: "shop.lead",
+				}}
+				s := NewPurchaseOrderAttachmentsScreen(Deps{}, po)
+				s.confirmingDelete = true
+				return s
+			},
+		},
+	}
+}

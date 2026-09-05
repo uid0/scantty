@@ -2508,14 +2508,33 @@ is the authority; read it before adding a frame or wording a bar.
   which is rules 5 and 6 broken inside the fix for rule 11. The shape that works
   is `chainHeader`'s: a short fixed FACT leads and takes the row, the unbounded
   remainder folds behind it as context through `jdeCaveatLines` against the LIVE
-  pane. `TestJDEForm_EveryEssentialHeaderRowIsOnThePane` could not report it —
-  it compares against the row ALREADY truncated to the pane, so `Contains`
-  passes over exactly the defect.
-  KNOWN AND NOT FIXED, so it is not mistaken for closed: the columnar pickers'
-  `Filter .....` row is 70 cells against 51 and is drawn CUT at 80 columns on
-  twenty sites (`AssetFormScreen/viewPick` and its siblings), and
-  `chainHeader`'s validation messages are unfolded and run to 85. Both predate
-  this rule and closing them is a per-screen conversion rather than a patch.
+  pane. `TestJDEForm_EveryEssentialHeaderRowIsOnThePane` could not report ANY of
+  this: it compared against the row already `truncateVisible`'d to the pane, so
+  `Contains` matched the very mutilation the check exists to find, and the check
+  could not fail in this direction at all. It compares the row AS THE BUILDER
+  WROTE IT now, and the class it had been hiding is recorded rather than closed.
+  KNOWN AND UNFIXED, with the MEASURED extent, so the next agent inherits the
+  numbers instead of rediscovering them. `jdeOverWideEssentialRows` is the
+  roster and it fails in both directions — an unlisted over-wide row is a new
+  defect, a listed one that now fits is a stale exception — and the numbers in
+  it are what the sweep measures rather than what anyone remembered. Twenty
+  entries, one mechanism apiece:
+  the columnar picker's `Filter .....` row on NINETEEN sites
+  (`AssetFormScreen/viewPick` and its siblings), **70 cells** — cut at a
+  terminal width of 80, where `screenBodyWidth` gives 51, and fitting from 100
+  (pane 71) up, because `jdePickHeader` builds it at the layer's unsized
+  fallback rather than against the live pane; and `chainHeader`'s promoted
+  validation message, **85 cells** — cut at 80 (pane 51) AND at 100 (pane 71),
+  fitting only from 120 (pane 91), which makes it the widest essential row in
+  the package and the only one that overruns past 80 columns. Those messages are
+  composed unfolded from OMS-supplied level names, so no WORDING of them can be
+  a bound.
+  THE REMEDY IS THE LAYER'S, which is why neither was fixed where it was found:
+  bound an essential header row where it is emitted, the way `jdeCaveatLines`
+  bounds a caveat against the live pane. That is a per-screen conversion of the
+  shape sc-jde-lift was, on twenty sites at once, and doing four of twenty from
+  a review round is "applying the rule where it was reported" — the failure mode
+  this file exists to record.
 - **WHAT THE RULE DOES NOT PROMISE is a block taller than the window.**
   `jdeLines.Window` keeps a block's START and nothing scrolls inside one, so a
   single navigable row whose own block outruns a one-line body loses its tail

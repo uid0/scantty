@@ -633,8 +633,31 @@ func (s *PurchaseOrderAttachmentsScreen) listPages() bool {
 
 func (s *PurchaseOrderAttachmentsScreen) viewList() string {
 	body, _ := s.listLines()
-	return s.frameWrapped(s.listHeader(), body, s.cursor,
-		s.statusRow(s.loading, "Loading…", ""), s.listBar())
+	return s.frameWrapped(s.listHeader(), body, s.cursor, s.listStatus(), s.listBar())
+}
+
+// listStatus is the grid's status row, and it reports a DELETE still in flight
+// as readily as a load.
+//
+// Esc leaves the confirm while the write is out — deliberately, because a frame
+// with no way off it while a slow gateway thinks is the worse defect, and it is
+// what the sibling line-delete confirm does. That made this row reachable in a
+// state it could not describe: the grid drew "Loading…" or nothing at all, the
+// file being destroyed was still listed as though nothing were happening, and
+// ctrl+x on any row reopened a confirm the reply then closed out from under the
+// operator. Nothing is written to the wrong target — the request closed over
+// its attachment before esc — but a screen silent about an irreversible write
+// it is running is a screen showing the operator less than it knows.
+//
+// The DELETE wins over the load when both are out. They do not overlap on the
+// ordinary path (poAttachDeletedMsg clears deleting in the same breath it sets
+// loading), but `r` on the grid mid-delete puts both up, and of the two facts
+// the one an operator would act on is the one that cannot be undone.
+func (s *PurchaseOrderAttachmentsScreen) listStatus() string {
+	if s.deleting {
+		return s.statusRow(true, "Deleting…", "")
+	}
+	return s.statusRow(s.loading, "Loading…", "")
 }
 
 // viewConfirmDelete is its own phase rather than a line appended to the list:

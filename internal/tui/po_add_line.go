@@ -1381,10 +1381,26 @@ func (s *PurchaseOrderAddLineScreen) identifyHeader(essential bool) jdeHeader {
 		return nil
 	}
 	lw, pane := poAddLabelWidth(), s.paneWidth()
-	rows := renderJDEFields([]jdeField{
-		{Label: "Supplier", Kind: jdeValue, Value: pickerClip(s.supplierName(), poAddValueCells(pane, lw))},
-		{Label: "Order", Kind: jdeValue, Value: pickerClip(s.orderName(), poAddValueCells(pane, lw))},
-	}, pane)
+	// renderJDEField with the SHARED column, never renderJDEFields, which
+	// recomputes jdeLabelWidth over only the fields it is handed — "Supplier",
+	// eight cells against poAddLabelWidth()'s twelve. The label is right-aligned
+	// into that width, so these two pinned rows and their dotted leaders drew
+	// four cells to the LEFT of the `Scan / type` row directly beneath them: the
+	// one shared label column the columnar convention rests on, broken on the
+	// phase an operator drives with a scanner. It also cost the VALUES four
+	// cells they had — poAddValueCells is computed against the shared twelve, so
+	// each was clipped to less than the row it was drawn in really held, which
+	// is discarding data the terminal had room to show.
+	rows := []string{
+		renderJDEField(jdeField{
+			Label: "Supplier", Kind: jdeValue,
+			Value: pickerClip(s.supplierName(), poAddValueCells(pane, lw)),
+		}, lw, pane),
+		renderJDEField(jdeField{
+			Label: "Order", Kind: jdeValue,
+			Value: pickerClip(s.orderName(), poAddValueCells(pane, lw)),
+		}, lw, pane),
+	}
 	// The heading is DECORATIVE, so jdeFitHeader drops it before either row that
 	// names the document. It is kept rather than deleted because losing it on a
 	// roomy pane would be removing content to fix a fit, which is the trade this
