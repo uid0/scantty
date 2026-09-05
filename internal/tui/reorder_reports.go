@@ -62,7 +62,14 @@ func NewReorderAnalyticsReportScreen(deps Deps) *ReportTableScreen {
 				{"Late" + reportYardstickMark, alignRight},
 				{"Damage", alignRight}, {"Order value", alignRight},
 			},
-			note: "Rates are percentages · lead time in days · Order value = Σ estimated PO total · sorted by value desc.",
+			// "average lead time in days" and not "lead time in days": Lead d is
+			// average_lead_time_days, a MEAN over the supplier's deliveries, and
+			// the header lost the word to buy the cells the marks cost. The note
+			// is the surface that already carries the units, so it is where the
+			// mean is named — and the sibling Lead-time trends tab says
+			// "Monthly averages in days" for the same figure, so leaving it out
+			// here had two tabs describing one kind of figure differently.
+			note: "Rates are percentages · average lead time in days · Order value = Σ estimated PO total · sorted by value desc.",
 			loader: func(ctx context.Context, deps Deps) (reportBody, error) {
 				rows, err := deps.OMS.ReorderSupplierPerformance(ctx)
 				if err != nil {

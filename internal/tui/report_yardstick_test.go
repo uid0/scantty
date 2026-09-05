@@ -736,7 +736,13 @@ func TestReportTable_TheLoadingFooterNamesTheKeysThatSwitchReport(t *testing.T) 
 	swept := 0
 	for name, build := range reportScreenFixtures {
 		if len(build().tabs) < 2 {
-			continue // nothing to switch to, so the bar rightly says nothing
+			// Skipped because the PRESS half would be vacuous, not because the
+			// bar says anything different: footerHint names the switch segment
+			// on every branch but the no-tabs one, so a one-tab screen would
+			// name it too, over a switchTab((0+1)%1) that lands where it stood.
+			// No report screen has one tab today — every fixture here has at
+			// least two — so this skip is reached by nothing.
+			continue
 		}
 		for _, w := range jdeDrawableWidths() {
 			s := build()
@@ -763,5 +769,107 @@ func TestReportTable_TheLoadingFooterNamesTheKeysThatSwitchReport(t *testing.T) 
 	}
 	if swept == 0 {
 		t.Fatal("no multi-tab report screen was swept, so this proved nothing")
+	}
+}
+
+// --- a cut error body says it was cut ---------------------------------------
+
+// TestReportTable_AFailedLoadMarksWhatItCutOff. A report error is an OMS
+// response body, and omsapi.parseError puts the ENTIRE raw payload into
+// APIError.Message whenever the envelope carries no code — so this pane can be
+// handed a 20 KB gateway page. It is bounded twice (cellPrefix before the fold,
+// then the fold's own row cap) and neither cut used to be MARKED: the operator
+// read six folded lines of HTML with nothing saying the sentence naming what
+// actually failed was among what went.
+//
+// THE TWO CUTS KNOW DIFFERENT THINGS and the wordings differ accordingly, so
+// both are driven, each by a fixture that can reach it:
+//
+//   - a MANY-LINE body inside the cellPrefix budget, where the fold knows how
+//     many lines it left and names the number. It is never bounded at any
+//     drawable width, so the counted wording is the only one it can produce,
+//     and at the widths where it fits whole the pane must carry NO mark and the
+//     body's own tail instead — the biconditional, not half of it.
+//   - a multi-KB UNSPACED body, which is bounded at every drawable width. There
+//     the count would be a count of the PREFIX, a figure about nothing, so the
+//     row may only say that more exists than the pane can hold.
+//
+// Asserted on the CLIPPED Root pane, plus the assembled width of every line,
+// because the row that says something was cut may itself be the row that runs
+// off the pane.
+func TestReportTable_AFailedLoadMarksWhatItCutOff(t *testing.T) {
+	const (
+		countedMark = "more line"
+		boundedMark = "more of the"
+		tail        = "TAILWORD"
+	)
+	manyLines := strings.TrimSpace(strings.Repeat("abcdefghi ", 8)) + " " + tail
+	unspaced := strings.Repeat("x", 20000)
+
+	counted, whole, bounded := 0, 0, 0
+	for _, w := range jdeDrawableWidths() {
+		s := NewReorderAnalyticsReportScreen(Deps{})
+		reportSeedErr(s, 0, manyLines)
+		lines := reportRootLines(t, s, w, 40)
+		flat := reportPaneText(lines)
+		switch {
+		case strings.Contains(flat, countedMark) && !strings.Contains(flat, tail):
+			counted++
+		case strings.Contains(flat, tail) && !strings.Contains(flat, countedMark):
+			whole++
+		default:
+			t.Fatalf("width %d: a folded error body is either drawn whole or cut and "+
+				"counted, never neither and never both:\n%s", w, flat)
+		}
+		if strings.Contains(flat, boundedMark) {
+			t.Fatalf("width %d: the body is inside the cellPrefix budget, so the pane "+
+				"must not claim more of it was thrown away than the fold left:\n%s", w, flat)
+		}
+		reportAssertAssembled(t, s, w)
+
+		big := NewReorderAnalyticsReportScreen(Deps{})
+		reportSeedErr(big, 0, unspaced)
+		bigFlat := reportPaneText(reportRootLines(t, big, w, 40))
+		if !strings.Contains(bigFlat, boundedMark) {
+			t.Fatalf("width %d: a 20 KB error body reached the pane with nothing saying "+
+				"a tail was dropped:\n%s", w, bigFlat)
+		}
+		if strings.Contains(bigFlat, countedMark) {
+			t.Fatalf("width %d: the cellPrefix bound threw the rest away, so any line "+
+				"count it named would be a count of the prefix:\n%s", w, bigFlat)
+		}
+		bounded++
+		reportAssertAssembled(t, big, w)
+	}
+	if counted == 0 || whole == 0 || bounded == 0 {
+		t.Fatalf("the sweep saw %d counted cuts, %d bodies drawn whole and %d bounded "+
+			"bodies — a fixture that cannot reach the bound it names asserts nothing",
+			counted, whole, bounded)
+	}
+}
+
+// reportSeedErr puts a FAILED load in front of the sweep. The loaders are driven
+// by their own targeted tests; what this is about is what the pane does with a
+// body of any length.
+func reportSeedErr(s *ReportTableScreen, tab int, err string) {
+	s.active = tab
+	st := &s.states[tab]
+	st.rows = nil
+	st.loaded = true
+	st.loading = false
+	st.err = err
+}
+
+// reportAssertAssembled fails on a line the screen HANDS OVER wider than the
+// pane. Measured before clampToBox, which is the only way round that can fail:
+// after it no line can be too wide, because the truncation has already happened.
+func reportAssertAssembled(t *testing.T, s *ReportTableScreen, w int) {
+	t.Helper()
+	room := screenBodyCells(w)
+	for _, line := range strings.Split(s.View(), "\n") {
+		if got := lipgloss.Width(line); got > room {
+			t.Fatalf("width %d: the screen assembled a %d-cell line into a %d-cell pane, "+
+				"so clampToBox takes the tail: %q", w, got, room, line)
+		}
 	}
 }

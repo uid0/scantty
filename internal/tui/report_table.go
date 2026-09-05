@@ -628,6 +628,9 @@ func (s *ReportTableScreen) reportPaneRows() int {
 // reportErrRows caps how much of a failed load's body reaches the pane. A
 // report error is an OMS response and can be a whole HTML error page; the cap
 // is what lets the detail be bounded before it is folded rather than after.
+// The LAST of these rows says so whenever either cut bit — same bound, same
+// mark, same reason as po_create.go's poFailDetailRows, which is where the
+// wordings and the spend-a-row-rather-than-add-one trade come from.
 const reportErrRows = 6
 
 // reportFixedChromeRows is what View spends around the body whatever the tab:
@@ -997,12 +1000,40 @@ func (s *ReportTableScreen) View() string {
 		// envelope carries no code, so this string can be a 20 KB gateway page —
 		// and at most reportErrRows lines of it can ever be drawn, so folding
 		// the rest is work thrown away on a frame the operator is waiting for.
-		lines := pickerWrap(cellPrefix("Error: "+st.err, reportErrRows*cells), cells)
-		if len(lines) > reportErrRows {
-			lines = lines[:reportErrRows]
+		//
+		// WHAT A ROW GIVES UP IT MARKS, and an error body is the worst place in
+		// the program to break that: an operator reading six folded lines of a
+		// gateway page with nothing saying a tail went cannot tell they are
+		// missing the sentence that says what actually failed. This is
+		// po_create.go's failLines / poFailDetailRows, copied rather than
+		// reinvented, and its three decisions come with it. The mark spends the
+		// LAST of the block's OWN rows instead of growing the block, so the
+		// height does not move. The TWO wordings stay, because the two cuts know
+		// different things: the FOLD knows how many lines it left and names the
+		// number, while the cellPrefix bound has already thrown the rest away
+		// and can only say more exists than the pane can hold — a count there
+		// would be a count of the PREFIX, which is a figure about nothing. And
+		// the mark row is itself bounded, because the row saying something was
+		// cut may not be the row that runs off the pane.
+		detail := "Error: " + st.err
+		trimmed := cellPrefix(detail, reportErrRows*cells)
+		bounded := trimmed != detail
+		folded := pickerWrap(trimmed, cells)
+		keep, mark := folded, ""
+		if bounded || len(folded) > reportErrRows {
+			if len(keep) > reportErrRows-1 {
+				keep = keep[:reportErrRows-1]
+			}
+			mark = "… more of the error than this pane can hold"
+			if !bounded {
+				mark = fmt.Sprintf("… %d more line(s) of the error", len(folded)-len(keep))
+			}
 		}
-		b.WriteString(StyleStatusError.Render(lines[0]) + "\n")
-		writeMuted(lines[1:])
+		b.WriteString(StyleStatusError.Render(keep[0]) + "\n")
+		writeMuted(keep[1:])
+		if mark != "" {
+			writeMuted([]string{cellPrefix(mark, cells)})
+		}
 		writeFooter(0)
 		return strings.TrimRight(b.String(), "\n")
 	}
