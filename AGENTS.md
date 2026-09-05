@@ -2630,6 +2630,21 @@ is the authority; read it before adding a frame or wording a bar.
   all (`receiveType`). Do NOT shorten `pump`'s 200ms budget instead — it is the
   backstop for a genuine timer, shared with ~30 drive tests, and cutting it
   would make all of them racier on a loaded machine.
+- **A DERIVED SET IS CHEAP TO WRITE AND EXPENSIVE TO ASK, so ask it once — a
+  `for _, h := range jdePaneHeights()` in an inner loop is the second way this
+  package has blown the 600s timeout.** `jdeDrawableWidths` / `jdePaneHeights`
+  (`jde_pane_fit_test.go`) answer by BUILDING A ROOT AND RENDERING IT per
+  candidate size, which is the whole point of them — Root's own gate is the
+  authority on which panes exist — and it makes each call cost about what one
+  sweep iteration costs. The report-table height sweep nested `jdePaneHeights()`
+  inside its WIDTH loop, so it re-derived the set once per width per state per
+  tab per fixture: a quarter of a million Root renders re-answering a question
+  whose inputs never change, 200s against 59s for that one test. Both are
+  `sync.OnceValue` now and hand out a COPY, so a nested call is free and no
+  caller can reshape another sweep's axis;
+  `TestJDEForm_TheDerivedPaneSetsStayTheOnesRootDraws` holds both halves against
+  asking Root afresh. The rule generalises past those two: derive at the top of
+  the test, not in the loop.
 - `gofmt -l` flags a few pre-existing files (doc-comment backtick rewrites).
   Format only what you touch.
 

@@ -36,6 +36,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -64,7 +65,27 @@ var jdePaneWidths = []int{80, 100, 120}
 // than written down, so a change to it moves this set with it. The ceiling is
 // 120 — the widest jdePaneWidths names — because a wider pane only folds less,
 // and an unbounded loop would be a slow sweep rather than a stronger one.
+//
+// IT IS DERIVED ONCE AND HANDED OUT AS A COPY. Asking Root means building a
+// Root and rendering it per candidate size, and these two sets are walked by
+// sweeps that nest them inside a loop over fixtures, tabs and states — where
+// the derivation costs more than the property being checked. The report-table
+// height sweep re-derived jdePaneHeights once per WIDTH per state per tab per
+// fixture: a quarter of a million Root renders spent re-answering a question
+// whose inputs never change, and it alone measured 200s against 59s memoised.
+// internal/tui went past go test's 600s per-package timeout with that sweep
+// named in the panic, which is the second time this package has hit that limit
+// (AGENTS.md records the first). The answer really is invariant — Root's two
+// gates are plain unstyled early returns off the width and the height alone, so
+// nothing a test does between calls, a forced colour profile included, can move
+// them — so this is the same derivation asked once, not a cached guess at one.
+// The copy is so a caller that sorts or truncates its own slice cannot reach
+// the shared one.
 func jdeDrawableWidths() []int {
+	return append([]int(nil), jdeDrawableWidthsOnce()...)
+}
+
+var jdeDrawableWidthsOnce = sync.OnceValue(func() []int {
 	var out []int
 	for w := 1; w <= 120; w++ {
 		if !jdeRootDrawsAtWidth(w) {
@@ -73,7 +94,7 @@ func jdeDrawableWidths() []int {
 		out = append(out, w)
 	}
 	return out
-}
+})
 
 // jdeRootDrawsAtWidth reports whether Root.View() renders a screen at all at
 // this width, rather than its own "terminal too narrow" line. Asked of Root
@@ -91,7 +112,14 @@ func jdeRootDrawsAtWidth(width int) bool {
 // supports and the shortest one the layer has to have an answer for. Deriving
 // it rather than writing 7 is the point — if that gate moves, this sweep moves
 // with it instead of leaving the new heights untested.
+//
+// Derived once and handed out as a copy, for the reason jdeDrawableWidths
+// above records at length.
 func jdePaneHeights() []int {
+	return append([]int(nil), jdePaneHeightsOnce()...)
+}
+
+var jdePaneHeightsOnce = sync.OnceValue(func() []int {
 	var out []int
 	for h := 1; h <= 40; h++ {
 		if !jdeRootDraws(h) {
@@ -100,7 +128,7 @@ func jdePaneHeights() []int {
 		out = append(out, h)
 	}
 	return out
-}
+})
 
 // jdeRootDraws reports whether Root.View() renders a screen at all at this
 // height, rather than its own "terminal too short" line. Asked of Root instead
@@ -109,6 +137,58 @@ func jdeRootDraws(height int) bool {
 	r := newTestRoot(NewServiceStatusScreen(Deps{}))
 	next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: height})
 	return !strings.Contains(next.(Root).View(), "terminal too short")
+}
+
+// TestJDEForm_TheDerivedPaneSetsStayTheOnesRootDraws: memoising the two derived
+// pane sets did not turn either of them into a roster.
+//
+// Both halves of that are real risks and neither is visible in a sweep's own
+// result: a memoised answer is still the derivation only while it AGREES with
+// asking Root afresh, and a shared backing array is one caller's sort or
+// truncate away from silently reshaping every other sweep's axis — a whole
+// class of pane going unwalked while every sweep still reports green. Asking
+// Root directly here is the same question the two OnceValues ask, so this fails
+// if the memoised answer ever parts company with the live gate.
+func TestJDEForm_TheDerivedPaneSetsStayTheOnesRootDraws(t *testing.T) {
+	var wantWidths []int
+	for w := 1; w <= 120; w++ {
+		if jdeRootDrawsAtWidth(w) {
+			wantWidths = append(wantWidths, w)
+		}
+	}
+	var wantHeights []int
+	for h := 1; h <= 40; h++ {
+		if jdeRootDraws(h) {
+			wantHeights = append(wantHeights, h)
+		}
+	}
+	if got := jdeDrawableWidths(); !reflect.DeepEqual(got, wantWidths) {
+		t.Errorf("jdeDrawableWidths answered %v; asking Root itself gives %v. Every "+
+			"width sweep in this package walks that set, so a stale answer is panes "+
+			"nobody checks with nothing to say so", got, wantWidths)
+	}
+	if got := jdePaneHeights(); !reflect.DeepEqual(got, wantHeights) {
+		t.Errorf("jdePaneHeights answered %v; asking Root itself gives %v", got, wantHeights)
+	}
+
+	// The caller's copy is the caller's: scribbling on one must not reach the
+	// next caller, or one sweep's convenience becomes another sweep's blind spot.
+	scribbled := jdeDrawableWidths()
+	for i := range scribbled {
+		scribbled[i] = -1
+	}
+	scribbledH := jdePaneHeights()
+	for i := range scribbledH {
+		scribbledH[i] = -1
+	}
+	if got := jdeDrawableWidths(); !reflect.DeepEqual(got, wantWidths) {
+		t.Errorf("a caller that overwrote its own jdeDrawableWidths slice changed what "+
+			"the next caller gets: %v", got)
+	}
+	if got := jdePaneHeights(); !reflect.DeepEqual(got, wantHeights) {
+		t.Errorf("a caller that overwrote its own jdePaneHeights slice changed what "+
+			"the next caller gets: %v", got)
+	}
 }
 
 // ---------------------------------------------------------------------------

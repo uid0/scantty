@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -92,17 +93,26 @@ func TestJDEForm_TheMoreMarkersAreTheOnesTheLayerDraws(t *testing.T) {
 // WIDTH — which is the axis the fifth stranded case was found on, so it is not
 // an axis to give up. Building the pane directly is the same string for the
 // screen's rows and leaves the package inside go test's per-package timeout,
-// which internal/tui has already hit once (AGENTS.md).
+// which internal/tui has now hit twice (AGENTS.md).
 //
 // The two numbers are Root's own, not screenBodyWidth / screenBodyHeight: both
 // of those floor, and a floor is a LIE at small panes — screenBodyWidth answers
 // 20 where Root gives 16, which would leave four cells of a marker on a pane
 // that never had them.
 func jdeClippedPane(s Screen, w, h int) string {
+	s = jdeAtPane(s, w, h)
+	return clampToBox(s.View(), screenBodyCells(w), screenBodyRows(h))
+}
+
+// jdeAtPane hands the screen the terminal size and returns whatever it becomes,
+// for a caller that wants the screen rather than the pane — reading the BAR off
+// s.View() through jdeClippedPane would render the frame a second time and
+// throw the first one away, on a walk where the render IS the cost.
+func jdeAtPane(s Screen, w, h int) Screen {
 	if next, _ := s.Update(tea.WindowSizeMsg{Width: w, Height: h}); next != nil {
 		s = next
 	}
-	return clampToBox(s.View(), screenBodyCells(w), screenBodyRows(h))
+	return s
 }
 
 // jdeDrawsMoreMarker reports whether this clipped pane admits it is hiding part
@@ -151,6 +161,49 @@ func jdeBarNamesAMovementKey(view string) bool {
 	}
 	return false
 }
+
+// jdeMarkerPane is one (screen state, pane) at which a columnar frame admits it
+// is hiding part of its body.
+type jdeMarkerPane struct {
+	name string
+	mk   func() Screen
+	w, h int
+	// below records which claim it is. Both sweeps below want the marker at all;
+	// only the End one wants the claim that there is more AFTER the window, since
+	// that is the end End has to reach.
+	below bool
+}
+
+// jdeMarkerPanes is the walk both promise sweeps are built on, taken ONCE.
+//
+// The two of them ask different questions of the same (case, width, height)
+// space — "is a movement key named here" and "does End really get there" — and
+// that space is every columnar case at every pane Root draws: a quarter of a
+// million renders each time it is walked. Walked twice it cost the package a
+// minute for nothing, in a package that has hit go test's 600s per-package
+// timeout twice (AGENTS.md). Neither sweep gives up an axis for it: what they
+// share is the DERIVED set, and each still re-builds and re-drives the screens
+// IT needs, so nothing is carried between them but the list of panes worth
+// looking at.
+var jdeMarkerPanes = sync.OnceValue(func() []jdeMarkerPane {
+	var out []jdeMarkerPane
+	widths, heights := jdeDrawableWidths(), jdePaneHeights()
+	for _, c := range jdePaneCases() {
+		for _, w := range widths {
+			for _, h := range heights {
+				pane := stripANSI(jdeClippedPane(c.mk(), w, h))
+				if !jdeDrawsMoreMarker(pane) {
+					continue
+				}
+				out = append(out, jdeMarkerPane{
+					name: c.name, mk: c.mk, w: w, h: h,
+					below: strings.Contains(pane, "more below"),
+				})
+			}
+		}
+	}
+	return out
+})
 
 // jdeUnfetchableMarkerCases are the (screen, state) pairs that still draw a
 // marker with no movement key named, WITH THE REASON — so "absent" and "excused"
@@ -211,27 +264,13 @@ var jdeUnfetchableMarkerCases = map[string]string{
 func TestJDEForm_NoFrameClaimsContentWithoutNamingAKeyToFetchIt(t *testing.T) {
 	claimed, silent := 0, map[string][]string{}
 	drew := map[string]bool{}
-	// HOISTED, because each of these builds a Root per candidate size to ask
-	// Root's own gate: left in the inner loop they were re-derived once per
-	// (case, width) and cost more than the sweep itself.
-	widths, heights := jdeDrawableWidths(), jdePaneHeights()
-	for _, c := range jdePaneCases() {
-		name, mk := c.name, c.mk
-		for _, w := range widths {
-			for _, h := range heights {
-				s := mk()
-				pane := jdeClippedPane(s, w, h)
-				if !jdeDrawsMoreMarker(pane) {
-					continue
-				}
-				drew[name] = true
-				claimed++
-				if jdeBarNamesAMovementKey(s.View()) {
-					continue
-				}
-				silent[name] = append(silent[name], fmt.Sprintf("%dx%d", w, h))
-			}
+	for _, mp := range jdeMarkerPanes() {
+		drew[mp.name] = true
+		claimed++
+		if jdeBarNamesAMovementKey(jdeAtPane(mp.mk(), mp.w, mp.h).View()) {
+			continue
 		}
+		silent[mp.name] = append(silent[mp.name], fmt.Sprintf("%dx%d", mp.w, mp.h))
 	}
 	if claimed == 0 {
 		t.Fatal("no columnar frame drew a more-above / more-below marker at any pane " +
@@ -289,41 +328,34 @@ func TestJDEForm_NoFrameClaimsContentWithoutNamingAKeyToFetchIt(t *testing.T) {
 // alongside the order pad, the detail sheet and the add-line confirm that
 // already spelled it.
 func TestJDEForm_AScrolledBodyReallyReachesItsLastLine(t *testing.T) {
-	widths, heights := jdeDrawableWidths(), jdePaneHeights()
 	reached := 0
-	for _, c := range jdePaneCases() {
-		name, mk := c.name, c.mk
-		for _, w := range widths {
-			for _, h := range heights {
-				s := mk()
-				pane := jdeClippedPane(s, w, h)
-				if !strings.Contains(stripANSI(pane), "more below") {
-					continue
-				}
-				bar := jdeBarOfStripped(s.View())
-				if bar == nil {
-					continue
-				}
-				named := false
-				for _, tok := range jdeBarTokens(bar) {
-					if tok == "Home/End" {
-						named = true
-					}
-				}
-				if !named {
-					continue
-				}
-				if next, _ := s.Update(poPickerKeyMsg("end")); next != nil {
-					s = next
-				}
-				after := stripANSI(jdeClippedPane(s, w, h))
-				reached++
-				if strings.Contains(after, "more below") {
-					t.Errorf("%s at %dx%d names Home/End over a body it says it is hiding, "+
-						"and End does not reach the end of it — the pane still reads "+
-						"\"more below\":\n%s", name, w, h, after)
-				}
+	for _, mp := range jdeMarkerPanes() {
+		if !mp.below {
+			continue
+		}
+		s := jdeAtPane(mp.mk(), mp.w, mp.h)
+		bar := jdeBarOfStripped(s.View())
+		if bar == nil {
+			continue
+		}
+		named := false
+		for _, tok := range jdeBarTokens(bar) {
+			if tok == "Home/End" {
+				named = true
 			}
+		}
+		if !named {
+			continue
+		}
+		if next, _ := s.Update(poPickerKeyMsg("end")); next != nil {
+			s = next
+		}
+		after := stripANSI(jdeClippedPane(s, mp.w, mp.h))
+		reached++
+		if strings.Contains(after, "more below") {
+			t.Errorf("%s at %dx%d names Home/End over a body it says it is hiding, "+
+				"and End does not reach the end of it — the pane still reads "+
+				"\"more below\":\n%s", mp.name, mp.w, mp.h, after)
 		}
 	}
 	if reached == 0 {
