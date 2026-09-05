@@ -895,37 +895,67 @@ func reportAssertAssembled(t *testing.T, s *ReportTableScreen, w int) {
 // because the truncation has already happened. That is the trap the width sweep
 // records at its own site.
 //
-// SCOPED at rowBudget's own boundary and BOTH SIDES COUNTED, because below it
-// the overrun is the documented band rather than a defect: where the pane
-// cannot hold the legend, the header, one body row with its marker and the
-// folded footer, something has to give and the give-order says it is not the
-// legend and not the footer. A scoping nothing falls outside of would be a way
-// of asserting nothing, so a sweep that never reached one side fails.
+// EVERY BRANCH, because seeding only loaded 8-row tabs is how the SECOND
+// instance of this got through: the failed-load frame consulted no budget at
+// all and was laid out against a flat six-row constant, so at 80 columns it
+// needed a sixteen-row terminal where the frame it replaced needed eleven.
+// Watched failing at 80 columns in the ERROR state at every terminal height
+// from 12 to 15 inclusive — a ten-row frame handed to a six-to-nine-row pane,
+// dropping the footer that carries `esc back` off a frame an operator had
+// reached by a load FAILING, and at 12 and 13 the row saying the error was cut
+// with it. (10 and 11 are the band on both sides of the fix: the pane cannot
+// hold the first error line, its mark and the footer, which is the floor the
+// give-order will not go below.) A guard that
+// cannot fail is not a guard, so the loading, failed and empty states are swept
+// beside the loaded one and the failed fixture carries a multi-KB unspaced body
+// — the shape omsapi.parseError really produces — which reaches the bound at
+// every drawable pane rather than only at narrow ones.
+//
+// BOTH HALVES ARE ASSERTED so neither can later be traded for the other: the
+// footer reaches the CLIPPED pane whole, and a cut error body still carries the
+// row that says it was cut. Buying a line of error text with the mark, or with
+// the way out, is the defect in each direction.
+//
+// SCOPED at frameFits, the screen's own answer for the branch it is drawing,
+// and BOTH SIDES COUNTED, because below it the overrun is the documented band
+// rather than a defect. A scoping nothing falls outside of would be a way of
+// asserting nothing, so a sweep that never reached one side fails.
 func TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas(t *testing.T) {
 	fits, tooShort := 0, 0
 	for name, build := range reportScreenFixtures {
 		probe := build()
 		for tab := range probe.tabs {
 			rows := reportSweepRows(probe.tabs[tab].columns, 8)
-			for _, w := range jdeDrawableWidths() {
-				for _, h := range jdePaneHeights() {
-					s := build()
-					reportSeed(s, tab, rows, omsapi.VarianceYardstickQuotedLeadTime)
-					s.Update(tea.WindowSizeMsg{Width: w, Height: h})
-					avail, floor := s.rowBudget()
-					if avail < floor {
-						tooShort++
-						continue
-					}
-					fits++
-					room := s.reportPaneRows()
-					if got := len(strings.Split(s.View(), "\n")); got > room {
-						body, below := s.layoutRows()
-						t.Fatalf("%s tab %q at %dx%d: the screen assembled %d rows into a "+
-							"%d-row pane (avail %d, floor %d, body %d, below %d), so clampToBox "+
-							"takes the tail — and what is drawn last is the footer:\n%s",
-							name, probe.tabs[tab].label, w, h, got, room, avail, floor,
-							body, below, s.View())
+			for _, state := range reportFrameStates(rows) {
+				for _, w := range jdeDrawableWidths() {
+					for _, h := range jdePaneHeights() {
+						s := build()
+						state.seed(s, tab)
+						s.Update(tea.WindowSizeMsg{Width: w, Height: h})
+						if !s.frameFits() {
+							tooShort++
+							continue
+						}
+						fits++
+						room, got := s.reportPaneRows(), strings.Split(s.View(), "\n")
+						if len(got) > room {
+							t.Fatalf("%s tab %q %s at %dx%d: the screen assembled %d rows into "+
+								"a %d-row pane, so clampToBox takes the tail — and what is drawn "+
+								"last is the footer:\n%s",
+								name, probe.tabs[tab].label, state.label, w, h, len(got), room,
+								s.View())
+						}
+						flat := reportFlatPane(reportRootLines(t, s, w, h))
+						if !strings.Contains(flat, "esc back") {
+							t.Fatalf("%s tab %q %s at %dx%d: the footer names no way off the "+
+								"screen:\n%s", name, probe.tabs[tab].label, state.label, w, h,
+								reportPaneText(reportRootLines(t, s, w, h)))
+						}
+						if state.cutMark != "" && !strings.Contains(flat, state.cutMark) {
+							t.Fatalf("%s tab %q %s at %dx%d: the error body was cut with nothing "+
+								"saying so:\n%s", name, probe.tabs[tab].label, state.label, w, h,
+								reportPaneText(reportRootLines(t, s, w, h)))
+						}
 					}
 				}
 			}
@@ -935,5 +965,38 @@ func TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas(t *testing.T) {
 		t.Fatalf("the sweep saw %d panes that could hold the give-order's floor and %d "+
 			"that could not — one side was never reached, so the scoping asserted nothing",
 			fits, tooShort)
+	}
+}
+
+// reportFrameState is one of the frames View can draw, with what the pane must
+// still carry once it has been drawn.
+type reportFrameState struct {
+	label string
+	seed  func(s *ReportTableScreen, tab int)
+	// cutMark is a fragment the pane must carry because this state's body is
+	// always cut. Empty where nothing is cut.
+	cutMark string
+}
+
+// reportFrameStates is every branch View can reach on a screen that HAS tabs.
+// The tab-less branch is not among them because no report screen in the program
+// is built without tabs and its frame is a single fixed line with nothing under
+// it to give.
+func reportFrameStates(rows [][]string) []reportFrameState {
+	return []reportFrameState{
+		{label: "loading", seed: func(s *ReportTableScreen, tab int) {
+			s.active = tab
+			st := &s.states[tab]
+			st.loading, st.loaded, st.rows, st.err = true, false, nil, ""
+		}},
+		{label: "failed", seed: func(s *ReportTableScreen, tab int) {
+			reportSeedErr(s, tab, strings.Repeat("x", 20000))
+		}, cutMark: "more of the"},
+		{label: "empty", seed: func(s *ReportTableScreen, tab int) {
+			reportSeed(s, tab, nil, omsapi.VarianceYardstickQuotedLeadTime)
+		}},
+		{label: "loaded", seed: func(s *ReportTableScreen, tab int) {
+			reportSeed(s, tab, rows, omsapi.VarianceYardstickQuotedLeadTime)
+		}},
 	}
 }

@@ -189,7 +189,7 @@ func reportShrinkNames(cols []reportColumn, w []int, budget int) bool {
 }
 
 // reportHeaderNames is the header text of each column, in order — what the note
-// names when a column is dropped, and what yardstickCols are matched against.
+// names when a column is dropped, and what the yardstick mark is looked for on.
 func reportHeaderNames(cols []reportColumn) []string {
 	if len(cols) == 0 {
 		return nil
@@ -359,8 +359,9 @@ func dateOnly(s string) string {
 // later has somewhere to put it instead of inventing a second loader kind.
 type reportBody struct {
 	rows [][]string
-	// yardstick is what the payload said its yardstickCols are measured
-	// against — OMS's variance_measured_against, agreed across every row.
+	// yardstick is what the payload said the figures scored against a promise
+	// are measured against — OMS's variance_measured_against, agreed across
+	// every row.
 	//
 	// "" means the payload did not say, which is NOT a shorthand for the
 	// current answer: an OMS too old to serve the key has said nothing, and a
@@ -625,20 +626,105 @@ func (s *ReportTableScreen) reportPaneRows() int {
 	return screenBodyRows(s.terminalHeight)
 }
 
-// reportErrRows caps how much of a failed load's body reaches the pane. A
-// report error is an OMS response and can be a whole HTML error page; the cap
-// is what lets the detail be bounded before it is folded rather than after.
-// The LAST of these rows says so whenever either cut bit — same bound, same
-// mark, same reason as po_create.go's poFailDetailRows, which is where the
-// wordings and the spend-a-row-rather-than-add-one trade come from.
+// reportErrRows is the CEILING on how much of a failed load's body reaches the
+// pane, and the pane itself can lower it (frameRows). A report error is an OMS
+// response and can be a whole HTML error page; the ceiling is what lets the
+// detail be bounded before it is folded rather than after. The LAST of the rows
+// it keeps says so whenever either cut bit — same bound, same mark, same reason
+// as po_create.go's poFailDetailRows, which is where the wordings and the
+// spend-a-row-rather-than-add-one trade come from.
+//
+// It is a ceiling and NOT a budget, which is the distinction that was got wrong:
+// read as a budget it claimed six rows of a pane that might have three, and
+// clampToBox then took the footer — the only place esc is named — off a frame
+// an operator had reached by a load FAILING.
 const reportErrRows = 6
 
-// reportFixedChromeRows is what View spends around the body whatever the tab:
-// the tab bar, the blank under it, the column header, the blank above the
-// footer. Everything else — the legend, the notes, the footer's own fold, the
-// marker row — is DERIVED from what is really assembled, because a constant is
-// exactly how the previous budget came to claim rows the pane did not have.
-const reportFixedChromeRows = 4
+// reportErrMinRows is the give-order's floor on that block: the first line of
+// the error and the row saying the rest of it was cut. The mark never gives —
+// an error body trimmed with nothing saying so leaves the operator unable to
+// tell they are missing the sentence that says what failed — so where the pane
+// cannot hold two rows the frame runs over rather than dropping it.
+const reportErrMinRows = 2
+
+const (
+	// reportFrameChromeRows is what EVERY frame spends: the tab bar, the blank
+	// under it, and the blank above the footer.
+	reportFrameChromeRows = 3
+
+	// reportFixedChromeRows is that plus the column header, which only the
+	// TABLE frame draws. Everything else — the legend, the notes, the footer's
+	// own fold, the marker row — is DERIVED from what is really assembled,
+	// because a constant is exactly how the previous budget came to claim rows
+	// the pane did not have.
+	reportFixedChromeRows = reportFrameChromeRows + 1
+)
+
+// frameRows is how many rows the frame's OWN block gets, whichever branch View
+// is about to draw: the pane less the chrome every frame spends and less the
+// FOLDED footer.
+//
+// ONE budget for five branches. Only the table branch used to consult one, so
+// the loading, failed and empty frames were drawn against nothing at all and
+// the failed one against a flat six-row constant — at 80 columns it assembled
+// about ten rows and needed a terminal of sixteen, where the frame it replaced
+// needed eleven. An operator on an 11-to-15-row terminal whose load had just
+// FAILED got six lines of gateway HTML and no named way off the screen.
+//
+// THE FOOTER NEVER GIVES, on any branch, because it is the only place `esc` is
+// named and a frame nobody can leave is worse than a frame that says less. What
+// gives is the frame's own block, from the END.
+// TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas walks every branch
+// at every pane Root draws and is the check that claim is made on.
+func (s *ReportTableScreen) frameRows() int {
+	if len(s.tabs) == 0 {
+		return s.reportPaneRows() - reportFrameChromeRows - 1
+	}
+	st := &s.states[s.active]
+	return s.reportPaneRows() - reportFrameChromeRows -
+		len(pickerWrap(s.footerHint(len(st.rows)), s.reportPaneCells()))
+}
+
+// frameFits reports whether the pane can hold the FLOOR of the frame View is
+// about to draw — what the give-order promises whatever else it gives up. Below
+// it the frame runs over and clampToBox takes the tail; that band is this
+// predicate's own answer rather than a height written down anywhere, because it
+// moves with every wording on the frame and it grows TALLER as the terminal
+// gets NARROWER, the legend, the notes and the footer folding onto more rows.
+//
+// One expression, asked of the same branches View draws, so the residual band
+// cannot be one thing in the code and another in a comment.
+func (s *ReportTableScreen) frameFits() bool {
+	if len(s.tabs) == 0 {
+		// A fixed line with nothing under it to give. There is no report screen
+		// in the program with no tabs, and no budget could buy anything here.
+		return true
+	}
+	st := &s.states[s.active]
+	switch {
+	case st.loading || !st.loaded:
+		return s.frameRows() >= 1
+	case st.err != "":
+		return s.frameRows() >= reportErrMinRows
+	case len(st.rows) == 0:
+		return s.frameRows() >= 1
+	}
+	avail, floor := s.rowBudget()
+	return avail >= floor
+}
+
+// reportBlockRows clamps a frame's own block to the rows it has, giving from
+// the END and never returning fewer than one line — the give-order every
+// non-table branch follows.
+func reportBlockRows(lines []string, rows int) []string {
+	if rows < 1 {
+		rows = 1
+	}
+	if len(lines) > rows {
+		return lines[:rows]
+	}
+	return lines
+}
 
 // layoutRows shares the pane out between the table body and the block under it,
 // and it is the ONE answer both View and the key arms read — a budget the
@@ -654,18 +740,23 @@ const reportFixedChromeRows = 4
 // more load-bearing of the two and is also the one whose fact the header's own
 // mark still carries once the words are gone.
 //
+// This is the TABLE frame's half of the order; the footer half of it holds on
+// every branch View draws and `frameRows` is where that is spent, so the
+// loading, failed and empty frames give up their own block rather than the way
+// off the screen.
+//
 // Where even the FLOOR will not fit — legend, header, one body row with the
 // marker row it needs beside it, and the folded footer — the frame runs over
-// and clampToBox takes the tail. That band is `rowBudget`'s own answer
-// (`avail < floor`), so derive it from there rather than from a height written
-// down here: it moves with every wording on the frame and it is WIDTH-dependent
-// in the wrong direction — a narrow terminal folds the legend, the notes and
-// the footer onto more rows, so `avail` shrinks and the band gets TALLER as the
-// pane gets narrower. `TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas`
-// walks both sides of that boundary at every pane Root draws and is the check
-// this claim is made on. The band is left as it is rather than half-built into
-// a refusal: the legend LEADS, so a figure is never drawn without it at any
-// height, which is the property this screen has to keep.
+// and clampToBox takes the tail. That band is `frameFits`'s own answer, so
+// derive it from there rather than from a height written down here: it moves
+// with every wording on the frame and it is WIDTH-dependent in the wrong
+// direction — a narrow terminal folds the legend, the notes and the footer onto
+// more rows, so the budget shrinks and the band gets TALLER as the pane gets
+// narrower. `TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas` walks
+// both sides of that boundary on every branch at every pane Root draws and is
+// the check this claim is made on. The band is left as it is rather than
+// half-built into a refusal: the legend LEADS, so a figure is never drawn
+// without it at any height, which is the property this screen has to keep.
 func (s *ReportTableScreen) layoutRows() (body, below int) {
 	if len(s.tabs) == 0 {
 		return listWindowSize, 0
@@ -715,9 +806,8 @@ func (s *ReportTableScreen) layoutRows() (body, below int) {
 // row it does not fill.
 func (s *ReportTableScreen) rowBudget() (avail, floor int) {
 	tab, st := s.tabs[s.active], &s.states[s.active]
-	avail = s.reportPaneRows() - reportFixedChromeRows -
-		len(s.legendLines(tab, st)) -
-		len(pickerWrap(s.footerHint(len(st.rows)), s.reportPaneCells()))
+	avail = s.frameRows() - (reportFixedChromeRows - reportFrameChromeRows) -
+		len(s.legendLines(tab, st))
 	floor = 1
 	if len(st.rows) > 1 {
 		floor++
@@ -796,7 +886,10 @@ func (s *ReportTableScreen) legendLines(tab reportTab, st *reportTabState) []str
 	return pickerWrap(reportYardstickLegend(marked, st.yardstick), s.reportPaneCells())
 }
 
-// markedColumnsDrawn is the tab's yardstickCols that the pane actually drew.
+// markedColumnsDrawn is the headers the pane actually DREW that end in
+// reportYardstickMark. There is no roster anywhere of which columns are scored
+// against a promise — the mark on the header is the only declaration — so this
+// reads the drawn headers rather than consulting one.
 //
 // Asked of the DRAWN columns and not of the declared ones, because a legend for
 // a column the fit dropped is a claim about a mark that is not on the pane —
@@ -1024,7 +1117,7 @@ func (s *ReportTableScreen) View() string {
 	}
 
 	if st.loading || !st.loaded {
-		writeMuted(pickerWrap("Loading "+tab.label+"…", cells))
+		writeMuted(reportBlockRows(pickerWrap("Loading "+tab.label+"…", cells), s.frameRows()))
 		writeFooter(0)
 		return strings.TrimRight(b.String(), "\n")
 	}
@@ -1053,10 +1146,19 @@ func (s *ReportTableScreen) View() string {
 		trimmed := cellPrefix(detail, reportErrRows*cells)
 		bounded := trimmed != detail
 		folded := pickerWrap(trimmed, cells)
+		// The ceiling is reportErrRows and the PANE can lower it (frameRows),
+		// never below the floor that keeps the first line and its mark.
+		room := reportErrRows
+		if r := s.frameRows(); r < room {
+			room = r
+		}
+		if room < reportErrMinRows {
+			room = reportErrMinRows
+		}
 		keep, mark := folded, ""
-		if bounded || len(folded) > reportErrRows {
-			if len(keep) > reportErrRows-1 {
-				keep = keep[:reportErrRows-1]
+		if bounded || len(folded) > room {
+			if len(keep) > room-1 {
+				keep = keep[:room-1]
 			}
 			mark = "… more of the error than this pane can hold"
 			if !bounded {
@@ -1072,8 +1174,19 @@ func (s *ReportTableScreen) View() string {
 		return strings.TrimRight(b.String(), "\n")
 	}
 	if len(st.rows) == 0 {
-		writeMuted(pickerWrap("No rows for "+tab.label+".", cells))
-		writeMuted(s.belowLines(tab, st))
+		// The block under the table gives FIRST and the fact that there are no
+		// rows gives last, the same order layoutRows uses on a drawn table.
+		rows := s.frameRows()
+		lines := reportBlockRows(pickerWrap("No rows for "+tab.label+".", cells), rows)
+		below := s.belowLines(tab, st)
+		if left := rows - len(lines); left < len(below) {
+			if left < 0 {
+				left = 0
+			}
+			below = below[:left]
+		}
+		writeMuted(lines)
+		writeMuted(below)
 		writeFooter(0)
 		return strings.TrimRight(b.String(), "\n")
 	}

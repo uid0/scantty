@@ -1283,20 +1283,33 @@ either:
   because a short pane takes the note first.
   Vertically, `layoutRows` gives ground in a stated order: the yardstick legend
   and the action bar never give, the body floors at one row, and the block under
-  the table gives from the END. THE MARKER ROW IS RESERVED WHERE THE BLOCK BELOW
+  the table gives from the END. THE ACTION BAR HALF OF THAT HOLDS ON EVERY
+  BRANCH `View` DRAWS, and it is `frameRows` that spends it: only the TABLE
+  branch used to consult a budget at all, so the loading, failed and empty
+  frames were laid out against nothing — the failed one against a flat six-row
+  constant, which at 80 columns needed a sixteen-row terminal where the frame it
+  replaced needed eleven. An operator whose load had just FAILED, on an
+  11-to-15-row terminal, read six lines of gateway HTML with no named way off
+  the screen. Those frames give up their OWN BLOCK now, from the end; on the
+  failed one what a cut leaves is always the first line of the error AND the row
+  saying the rest went (`reportErrMinRows`), because the mark is what tells an
+  operator they are not reading the whole failure.
+  THE MARKER ROW IS RESERVED WHERE THE BLOCK BELOW
   IS CLAMPED (`rowBudget`), not taken out of the body afterwards: taken after,
   the body's floor handed back a row already spent and the frame assembled one
   row more than the pane had whenever the block below squeezed the body to one —
   at 80x20 on the reorders Supplier perf tab what `clampToBox` then took was the
   footer's last fold, `r refresh · esc back`, leaving no named way off the
-  screen. Where even that floor will not fit the frame still runs over; that
-  band is `rowBudget`'s own `avail < floor` and is left as it is rather than
-  half-converted into a refusal, safe because the legend LEADS, so a figure is
-  never drawn without it at any height. Do NOT write the band down as a height:
+  screen. Where even the floor will not fit the frame still runs over; that
+  band is `frameFits`'s own answer, asked per branch, and is left as it is
+  rather than half-converted into a refusal, safe because the legend LEADS, so a
+  figure is never drawn without it at any height. Do NOT write the band down as
+  a height:
   it moves with every wording on the frame and it grows TALLER as the terminal
   gets NARROWER, because the legend, the notes and the footer then fold onto
   more rows. `TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas` walks
-  both sides of it at every pane Root draws, and
+  both sides of it on EVERY branch — loading, failed, empty and loaded — at
+  every pane Root draws, and
   `TestReportTable_TheScreenAssemblesNothingThePaneCannotHold` is its width
   counterpart; both measure what the screen HANDS OVER, because after
   `clampToBox` no frame can be too big — the truncation has already happened.
