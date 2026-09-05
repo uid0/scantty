@@ -1366,8 +1366,12 @@ func (g jdeScreen) frameDrawn(headerRows int, items []actionBarItem) bool {
 // drawability must be asked of the bar the frame really DRAWS (frameDrawn). One
 // helper taking one `items` would have to get one of them wrong. The
 // offset-scrolling sheets therefore spell the conjunction themselves, once each
-// and named — po_detail's sheetMoves and padMoves, po_add_line's confirmScrolls
-// — and each names the pair it is the handler's half of. (po_add_line's OTHER
+// and named — po_detail's sheetMoves and padMoves and po_add_line's
+// confirmScrolls are the shape, and every sheet that has grown an offset since
+// (the two removal confirms, the slot-generate run report) names its own pair
+// the same way — and each names the pair it is the handler's half of. What IS
+// shared once the two gates have answered is jdeScrollStep, the key-to-offset
+// mapping. (po_add_line's OTHER
 // pager, keyChoose, moves a CURSOR through the candidate list and belongs to the
 // paragraph above rather than to this one: it asks the two directly because it
 // answers "nothing to page" out loud, not because it scrolls an offset.)
@@ -2528,6 +2532,56 @@ func (g jdeScreen) scrollRows(headerRows int, items []actionBarItem) int {
 		return step
 	}
 	return 1
+}
+
+// jdeScrollStep is what one movement key does to a read-only body's OFFSET: the
+// offset analogue of pickRow / moveRow / pageRow, which move a cursor.
+//
+// It exists because the switch it replaces had already been written out by hand
+// THREE times across TWO files — po_detail's handleSheetKey and its order pad's
+// handleOrderPadKey, and po_add_line's keyConfirm — and this change puts three
+// more sites on the same footing: the two removal confirms and the slot-generate
+// run report, none of which had an offset to map a key onto before it. Three
+// copies of one mapping with three more arriving is how the ~50 copies of the
+// scroll ARITHMETIC that sc-jde-lift had to unpick began, and a count is the
+// kind of recorded history a later reader greps: six pre-existing copies is not
+// what they would find. Whether a key acts at all is still the SHEET's question:
+// the two gates
+// (is the frame drawn, does the body move) are asked of different bars and are
+// spelled at each site.
+//
+// The CLAMP is deliberately one-sided. Zero is the top and can be answered from
+// nothing; the bottom depends on the pane, which only the frame knows, so
+// frameScrolled clamps what it is about to draw and hands the offset back for
+// the sheet to store. `end` therefore asks for the WHOLE body and is brought
+// back by the frame — which is what makes "↓ 0 more below" impossible.
+//
+// It carries no layer-only marker, and the omission is deliberate rather than an
+// oversight: that marker names the BUDGET answers a sheet may not compute for
+// itself, and the sweep derived from it (TestJDEForm_NoSheetAnswersTheScroll-
+// QuestionItself) forbids a sheet from naming one at all. This is the opposite
+// kind of helper — a primitive the sheets are meant to reach for, like pickRow
+// and pageRow, neither of which is marked either. Do not add the marker to make
+// it look consistent with its neighbours; it would forbid every call site.
+func jdeScrollStep(key string, offset, lines, step int) int {
+	switch key {
+	case "up":
+		offset--
+	case "down":
+		offset++
+	case "pgup":
+		offset -= step
+	case "pgdown":
+		offset += step
+	case "home":
+		offset = 0
+	case "end":
+		offset = lines
+	}
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }
 
 // jdePadTo pads (or trims) a frame's lines to exactly n rows. The bar underneath

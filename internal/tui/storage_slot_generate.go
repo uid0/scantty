@@ -130,10 +130,23 @@ type StorageSlotGenerateScreen struct {
 	pickSearch textinput.Model
 
 	result *omsapi.GenerateRackResult
-	// resultCursor scrolls the run report: an idempotent bulk run's
-	// created/skipped/without-tag lists are the whole point of the screen, and a
-	// 200-slot rack has more of them than the pane is tall.
-	resultCursor int
+	// resultScroll is where the run report is scrolled to: an idempotent bulk
+	// run's created/skipped/without-tag lists are the whole point of the screen,
+	// and a 200-slot rack has more of them than the pane is tall.
+	//
+	// An OFFSET and not a cursor. It used to be a LIST CURSOR over body.Len(),
+	// which is two facts wrong about a read-only report. The bar named
+	// UP/DN=Scroll unconditionally, so at every pane the report FITS — 61 of
+	// them at 80, 100 and 120 columns, 80x24 among them — the key moved an int
+	// and redrew the pane byte for
+	// byte, which is the bar-honesty rule broken by a key whose only product is
+	// a window that was not moving. And the count included the two lines the
+	// report opens with, which belong to no row, so the last two positions
+	// addressed rows jdeLines.block() answers (0,0) for: pressing Down at the
+	// bottom threw the reader back to the top of the report. frameScrolled is
+	// the layer's instrument for a body nothing navigates, and bodyScrollsForBar
+	// is the one question the bar and the arms both ask.
+	resultScroll int
 
 	jdeScreen
 }
@@ -226,7 +239,7 @@ func (s *StorageSlotGenerateScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		s.result = m.result
 		s.phase = genPhaseResult
-		s.resultCursor = 0
+		s.resultScroll = 0
 		return s, Status(storageGenSummary(m.result), StatusOK)
 
 	case tea.KeyMsg:
@@ -423,7 +436,7 @@ func (s *StorageSlotGenerateScreen) updateLevelsPhase(m tea.KeyMsg) (Screen, tea
 // The count includes the trailing add row.
 func (s *StorageSlotGenerateScreen) moveLevels(delta int) {
 	body := s.levelListLines()
-	next, ok := s.pickRow(s.levelCursor, len(s.levels)+1, delta, 0, s.levelsBar(body))
+	next, ok := s.pickRow(s.levelCursor, len(s.levels)+1, delta, len(s.levelListHeader()), s.levelsBar(body))
 	if !ok {
 		return
 	}
@@ -434,7 +447,7 @@ func (s *StorageSlotGenerateScreen) moveLevels(delta int) {
 // row, which is always reachable as the row after the last one.
 func (s *StorageSlotGenerateScreen) pageLevels(dir int) {
 	body := s.levelListLines()
-	next, ok := s.pageRow(body, s.levelCursor, len(s.levels)+1, dir, 0,
+	next, ok := s.pageRow(body, s.levelCursor, len(s.levels)+1, dir, len(s.levelListHeader()),
 		s.levelsBar(body), s.levelsBarItems(jdeCeilingRows, true))
 	if !ok {
 		return
@@ -701,40 +714,39 @@ func (s *StorageSlotGenerateScreen) updateResultPhase(m tea.KeyMsg) (Screen, tea
 			list.scopeRack = rack
 		}
 		return s, SwitchTo(WSFacilities, list)
-	case "down", "tab":
-		s.moveResult(+1)
-	case "up", "shift+tab":
-		s.moveResult(-1)
-	case "pgdown":
-		s.pageResult(+1)
-	case "pgup":
-		s.pageResult(-1)
+	case "down", "up", "pgdown", "pgup":
+		// TAB AND SHIFT-TAB ARE GONE FROM THIS ARM, and that is a binding
+		// change rather than a tidy-up, so it is written down here as well as in
+		// the commit. They used to alias Down and Up, and this screen returns
+		// true from WantsRawInput, so they really did reach it — bound, and
+		// named by no bar, which is the honesty rule broken in the direction
+		// nothing here could report (the run report is not one of poBarPhases).
+		// The alias is RECORDED elsewhere as belonging to a SHEET WITH FIELDS,
+		// where roughly twenty columnar forms spell the pair as `UP/DN=Fields`
+		// (poFormNavAliases); this is a read-only report whose bar says
+		// `UP/DN=Scroll`, no other scrolled body in the program binds tab, and
+		// the arrows it aliased are named right there on the bar.
+		s.scrollResult(m.String())
 	}
 	return s, nil
 }
 
-// moveResult and pageResult walk the run report's cursor. It is a LIST cursor,
-// so it clamps rather than wrapping, and both DECLINE on a pane the frame is
-// not drawn into — the report is the whole point of the run, and a cursor that
-// walked it while the pane showed the too-short notice would come back
-// somewhere the operator never scrolled to.
-func (s *StorageSlotGenerateScreen) moveResult(delta int) {
+// scrollResult walks the run report's window.
+//
+// It DECLINES in silence on a pane the frame is not drawn into — the report is
+// the whole point of the run, and an offset that moved while the pane showed the
+// too-short notice would come back somewhere the operator never scrolled to —
+// and it declines just as silently where the whole report is on the pane, which
+// is where the bar has already dropped the keys. Both gates are asked of the
+// SAME expressions the bar reads (frameDrawn, resultScrolls), so the claim and
+// the key cannot part company.
+func (s *StorageSlotGenerateScreen) scrollResult(key string) {
 	body := s.resultLines()
-	next, ok := s.pickRow(s.resultCursor, body.Len(), delta, 0, s.resultBar(body))
-	if !ok {
+	if !s.frameDrawn(0, s.resultBar(body)) || !s.resultScrolls(body) {
 		return
 	}
-	s.resultCursor = next
-}
-
-func (s *StorageSlotGenerateScreen) pageResult(dir int) {
-	body := s.resultLines()
-	next, ok := s.pageRow(body, s.resultCursor, body.Len(), dir, 0,
-		s.resultBar(body), s.resultBarItems(true))
-	if !ok {
-		return
-	}
-	s.resultCursor = next
+	s.resultScroll = jdeScrollStep(key, s.resultScroll, body.Len(),
+		s.scrollRows(0, s.resultBar(body)))
 }
 
 // ---------------------------------------------------------------------------
@@ -958,14 +970,62 @@ func (s *StorageSlotGenerateScreen) previewLine() string {
 // The level list + its row editor
 // ---------------------------------------------------------------------------
 
+// levelListHeader is the list's chrome, PINNED above the rows: the heading, what
+// the letters MEAN, and the empty state.
+//
+// They used to lead the BODY, and a body line that belongs to no navigable row
+// is a line no key can reach: jdeLines.Window anchors on the cursor's block and
+// a columnar cursor cannot go above its first row. With no levels on the rack —
+// the state this list opens in, where the only navigable row is the trailing
+// "(add a level)" and the bar therefore names no movement key at all — the pane
+// at 80x12 read `↑ N more above` over the sentence that says which end of the
+// alphabet is on the floor. Pinned, they are trimmed by jdeFitHeader, which
+// gives ground BY RANK and claims nothing about what it dropped.
+//
+// The GUIDANCE takes the one essential row a header may have (jdeMinBudget):
+// it is the only thing on the frame that says what a level letter means, and
+// the heading merely repeats the list the operator opened.
+//
+// SPLIT IN TWO, for the reason chainHeader's "no packaging levels" sentence is.
+// It was one line — "Early letters are ground-reachable, late letters are up
+// high." — written unfolded, and that is 61 cells plus jdeIndent's two against
+// the 51 screenBodyWidth gives at the 80-column floor, so clampToBox cut it
+// mid-word and took StyleMuted's closing SGR reset with it, leaving everything
+// drawn after it muted. Promoting it to the ESSENTIAL row made that the one row
+// the header promises to keep, which is standing rules 5 and 6 broken inside the
+// fix for rule 11.
+//
+// Folding alone cannot fix it, because a header may mark exactly ONE row
+// essential (jdeMinBudget) and a fold's first line alone would read "Early
+// letters are ground-reachable, late letters are" — a claim cut into something
+// that reads finished. So the FACT is a fixed sentence short enough to stand as
+// one row, and the rest rides behind it as context that folds. Whatever must
+// survive must lead.
+//
+// The DETAIL is folded against the LIVE pane (bodyWidth) rather than hand-counted
+// against 51, because a bound expressed against a width the terminal may not
+// have is not a bound: Root draws down to a terminal width of 45, where the pane
+// is sixteen cells. The FACT is fixed and 43 cells with its indent, so it stands
+// as one row wherever the frame is drawn at 80 columns and up — the width this
+// interface is modelled on and the one that must HOLD.
+func (s *StorageSlotGenerateScreen) levelListHeader() jdeHeader {
+	h := jdeHeader(nil).
+		add(jdeHeadContext, StyleJDEHeading.Render("Levels on this rack")).
+		add(jdeHeadEssential, jdeIndent+StyleMuted.Render(
+			"Early letters are low, late letters high."))
+	for _, line := range jdeCaveatLines(
+		"The early ones can be reached from the ground; the late ones need a lift.",
+		s.bodyWidth()) {
+		h = h.add(jdeHeadContext, line)
+	}
+	if len(s.levels) == 0 {
+		h = h.add(jdeHeadContext, "", jdeIndent+StyleMuted.Render("(no levels yet)"))
+	}
+	return h.add(jdeHeadDecorative, "")
+}
+
 func (s *StorageSlotGenerateScreen) levelListLines() *jdeLines {
 	l := &jdeLines{}
-	l.Add(StyleJDEHeading.Render("Levels on this rack"))
-	l.Add(jdeIndent + StyleMuted.Render("Early letters are ground-reachable, late letters are up high."))
-	l.Add("")
-	if len(s.levels) == 0 {
-		l.Add(jdeIndent + StyleMuted.Render("(no levels yet)"))
-	}
 	for i, row := range s.levels {
 		text := fmt.Sprintf("%s — %d position(s)", row.level, row.positions)
 		if row.palletJack {
@@ -994,7 +1054,8 @@ func (s *StorageSlotGenerateScreen) levelListLines() *jdeLines {
 // point.
 func (s *StorageSlotGenerateScreen) levelsBar(body *jdeLines) []actionBarItem {
 	n := len(s.levels) + 1
-	return s.levelsBarItems(n, s.bodyPagesForBar(body, n, 0, s.levelsBarItems(jdeCeilingRows, true)))
+	return s.levelsBarItems(n, s.bodyPagesForBar(body, n, len(s.levelListHeader()),
+		s.levelsBarItems(jdeCeilingRows, true)))
 }
 
 func (s *StorageSlotGenerateScreen) levelsBarItems(count int, paging bool) []actionBarItem {
@@ -1015,7 +1076,7 @@ func (s *StorageSlotGenerateScreen) levelsBarItems(count int, paging bool) []act
 
 func (s *StorageSlotGenerateScreen) viewLevels() string {
 	body := s.levelListLines()
-	return s.frame(body, s.levelCursor, "", s.levelsBar(body))
+	return s.frameWithHeader(s.levelListHeader(), body, s.levelCursor, "", s.levelsBar(body))
 }
 
 func (s *StorageSlotGenerateScreen) viewLevelRow() string {
@@ -1117,22 +1178,26 @@ func (s *StorageSlotGenerateScreen) viewPicker() string {
 		s.statusRow(false, "", ""), s.pickBar(header, body))
 }
 
-// resultLines is the run report. Every line is its own navigable row so the
-// arrows scroll it: an idempotent run's point is what it created, skipped and
-// could not tag, and a 200-slot rack has more of that than the pane is tall.
+// resultLines is the run report, and every line in it belongs to NO navigable
+// row: this report is read-only and its window is positioned by an OFFSET
+// (resultScroll) rather than dragged along by a list cursor. An idempotent
+// run's point is what it created, skipped and could not tag, and a 200-slot
+// rack has more of that than the pane is tall, so the arrows move the window.
+//
+// It used to tag each line with a row of its own, which put the two untagged
+// lines at the top inside the count the cursor clamped against — so Down at the
+// bottom threw the reader back to the top of the report. The doc went on saying
+// "every line is its own navigable row" for a release after that stopped being
+// true, which is rule 8 in the direction that costs the next reader an hour.
 func (s *StorageSlotGenerateScreen) resultLines() *jdeLines {
 	l := &jdeLines{}
 	res := s.result
 	if res == nil {
 		return l
 	}
-	row := 0
-	add := func(text string) {
-		l.AddRow(row, text)
-		row++
-	}
-	l.Add(StyleJDEHeading.Render(fmt.Sprintf("Rack %d generated", res.Rack)))
-	l.Add("")
+	add := l.Add
+	add(StyleJDEHeading.Render(fmt.Sprintf("Rack %d generated", res.Rack)))
+	add("")
 	add(jdeIndent + StyleStatusOK.Render(fmt.Sprintf("Created %d", res.CreatedCount)))
 	for _, line := range storageGenCodeList(res.Created, s.bodyWidth()) {
 		add(line)
@@ -1160,13 +1225,31 @@ func (s *StorageSlotGenerateScreen) resultLines() *jdeLines {
 // against the bar WITH the pair on it, because the tallest bar is the fixed
 // point.
 func (s *StorageSlotGenerateScreen) resultBar(body *jdeLines) []actionBarItem {
-	return s.resultBarItems(s.bodyPagesForBar(body, body.Len(), 0, s.resultBarItems(true)))
+	return s.resultBarItems(s.resultScrolls(body))
 }
 
-func (s *StorageSlotGenerateScreen) resultBarItems(paging bool) []actionBarItem {
-	items := []actionBarItem{{"Enter", "Back to the rack"}, {"Esc", "Back"}, {"UP/DN", "Scroll"}}
-	if paging {
-		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+// resultScrolls is the report's half of the bar-honesty rule: the scroll keys
+// are named when, and only when, the report outruns its window.
+//
+// ONE question for both keys, because a read-only body has only one — "is there
+// more than fits" — where a LIST cursor has two (bodyPagesForBar also asks
+// whether a page has another ROW to land on). Asking the list question of a
+// report was how UP/DN came to be named unconditionally beside a PgUp/PgDn that
+// was gated: two keys doing the identical thing, judged by different rules.
+//
+// Measured against the bar WITH the keys on it, because the tallest bar is the
+// fixed point: naming them costs cells, cells fold the bar onto another row, and
+// a folded bar leaves the body one row fewer.
+func (s *StorageSlotGenerateScreen) resultScrolls(body *jdeLines) bool {
+	return s.bodyScrollsForBar(body, 0, s.resultBarItems(true))
+}
+
+func (s *StorageSlotGenerateScreen) resultBarItems(scroll bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Back to the rack"}, {"Esc", "Back"}}
+	if scroll {
+		items = append(items,
+			actionBarItem{"UP/DN", "Scroll"},
+			actionBarItem{"PgUp/PgDn", "Page"})
 	}
 	return items
 }
@@ -1189,9 +1272,14 @@ func (s *StorageSlotGenerateScreen) viewResult() string {
 	// It was shortened by a word while that bound reserved a flat two columns
 	// for a "✗ " nothing here prints — two columns the terminal had room to
 	// show, which is the rule this row exists to keep, backwards.
-	return s.frame(body, s.resultCursor,
+	frame, offset := s.frameScrolled(nil, body, s.resultScroll,
 		storageSlotStatusLine(s.jdeScreen, false, "", "", "",
 			"the cards for these slots print from the slots list"), items)
+	// Stored back so the offset this screen holds is the one that was DRAWN —
+	// the frame clamps against the pane it has, which is the only place the
+	// pane's height is known.
+	s.resultScroll = offset
+	return frame
 }
 
 // storageGenCodeList prints the codes a run touched, WRAPPED to the pane and

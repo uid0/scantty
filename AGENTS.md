@@ -177,9 +177,10 @@ knowing before touching any of it:
 - **`Ctrl-X` confirms the destroy, not `Enter`.** `Ctrl-E` OPENS the confirm and
   enter is the key a hand reaches for next, so binding the write to it would
   make a reflex enough to destroy a line — the same choice the New PO
-  supplier-switch confirm makes. Every other key on that frame ANSWERS
-  (`deleteNote`), or the second press redraws a pane that is a pure function of
-  unchanged state.
+  supplier-switch confirm makes. Every other key on that frame either ACTS — the
+  movement keys scroll the caveat where it outruns the pane, and the bar names
+  them exactly there — or ANSWERS (`deleteNote`), because a press that did
+  neither redraws a pane that is a pure function of unchanged state.
 - **Both refusal shapes are recovered.** `_destroy_item` writes
   `{"error", "code"}` and `void_item` writes `{"error"}` alone; neither reaches
   DRF's exception handler, so `parseError` hands the whole raw body over.
@@ -1476,11 +1477,12 @@ either:
   because the tallest bar is the fixed point.
   The gate is `jdeScreen.frameDrawn`, and the three primitives that carry it for
   a CURSOR are `moveRow` (a wrapping field cursor), `pickRow` (a clamping list
-  cursor) and `pageRow` (a page). A scroll OFFSET has no fourth primitive on
-  purpose: its two questions are asked of different bars — the scroll answer of
-  the CEILING bar, drawability of the bar really DRAWN — so the two sheets that
-  scroll one spell the conjunction themselves and name it
-  (`po_detail`'s `sheetMoves` / `padMoves`).
+  cursor) and `pageRow` (a page). A scroll OFFSET has no fourth GATED primitive
+  on purpose: its two questions are asked of different bars — the scroll answer
+  of the CEILING bar, drawability of the bar really DRAWN — so a sheet that
+  scrolls one spells the conjunction itself and names it (`po_detail`'s
+  `sheetMoves` / `padMoves`). What IS shared is the key-to-offset MAPPING,
+  `jdeScrollStep` — see the pane-that-says-there-is-more section below.
   **THE RULE IS ONE STATEMENT, NOT TWO: a movement key acts when the frame is
   DRAWN and — for a PAGE — when the body MOVES.** `pageRow` asks both, and it is
   the DEFAULT: a screen with no further condition on its pager reaches for it and
@@ -1503,9 +1505,10 @@ either:
   (`service_status_screen` nests the entry inside `len(services) > 1`), and so
   does `pageRow` — so the bar's claim and the key behind it are one expression. It was three sheets' private knowledge and thirty sheets' blind
   spot, and the state it is about is the one a list SPENDS MOST OF ITS LIFE IN:
-  an unopened kit list is a heading, its guidance and the trailing "(add a
-  component)" row, so at 80x11–17 the body outran the window while the add row
-  was the only row a cursor could stand on — **the bar named the pair and a page
+  an unopened kit list WAS a heading, its guidance and the trailing "(add a
+  component)" row (the chrome rides the pinned header now — see the
+  pane-that-says-there-is-more section), so at 80x11–17 the body outran the
+  window while the add row was the only row a cursor could stand on — **the bar named the pair and a page
   moved nothing, on the default state of a new inventory item**. The packaging
   chain and the storage level list did the same at their own heights.
   A SWEEP THAT DERIVES ITS SCREENS STILL HAND-PICKS ITS STATES, and that is the
@@ -1859,7 +1862,11 @@ touching any screen an operator drives:
   `✗ type to narrow the catalo… · creating the PO f…` — rule 6 inverted on the
   surface an order is committed from, where the error IS the fact and the hint
   is the thing an operator can rediscover by pressing the key again. The error
-  takes the row alone now (`statusPlan`); the LEAD is what gives, entirely. The
+  takes the row alone now (`statusPlan`); the LEAD is what gives, entirely.
+  ORDER-level is the whole of that scope: a failure belonging to the ONE line a
+  frame is about is ranked the other way round, below the answer to the key just
+  pressed, and hands the header the standing fact instead — `po_edit.go`'s
+  `deleteStatusCarriesFailure` carries the ranking and the reason. The
   wordings were cut with it — `setErr`'s headlines the way `poSubmitWords` went
   from 32 cells to 20, `poSubmitFailWords` being 37 → 22 — but that is NOT the
   guarantee and the comment says so: the detail beside them is an OMS body of
@@ -2417,6 +2424,181 @@ touching any screen an operator drives:
   operator reads and "the rows still answer X" would assert rows that are not
   there.
 
+### A pane that says there is more must name a key, and a key it names must move the PANE
+
+`internal/tui/jde_unreachable_body_test.go` carries the rule and both sweeps and
+is the authority; read it before adding a frame or wording a bar.
+
+- **The rule is two implications COMPOSED, and each was broken somewhere
+  different.** A frame drawing `↑ N more above` / `↓ N more below` must have a
+  bar that NAMES a movement token, and a named token must move what the operator
+  SEES. Together they get the operator to the next screenful, and by repetition
+  through the body. Separately, neither says anything useful: a marker over a bar
+  naming nothing is a dead end wearing an affordance, and a named key that moves
+  an int nobody can see is the same rule broken from the other side.
+- **A BODY THAT OWNS NO NAVIGABLE ROW IS PINNED, and a cursor-anchored frame can
+  never move it.** `jdeLines.block()` answers `(0,0)` for a row that owns no
+  line, so `frame` / `frameWithHeader` / `frameWrapped` window such a body at
+  line 0 for as long as the frame is up and everything past `avail-2` is
+  unreachable. It belongs on `frameScrolled` with an offset — the shape
+  `po_add_line`'s confirm and the order pad already use. The DERIVED set was the
+  four purchasing CONFIRMS: the line-DELETE confirm (`po_edit.go`, prose only —
+  deleting takes no reason, so there is nothing to type into) and the
+  attachment-DELETE confirm (`po_attachments.go`) now scroll; the order-VOID
+  prompt (`po_detail.go`) pins its caveat in the header instead, because its body
+  is a Reason box and the body's own floor keeps that; and the line-VOID prompt
+  already did it that way, which is why it was the one that was right. Measured
+  before the fix: the line-delete confirm hid its caveat at 80x15, 60x15 and
+  45x16; the attachment confirm at 80x14 drew the heading above the fold and the
+  whole "cannot be undone, staff only" warning below it, over `Enter=Delete`; the
+  order-void prompt hid the half of its sentence that says the void CASCADES TO
+  EVERY LINE.
+- **A BODY'S LEAD-IN BELONGS IN THE PINNED HEADER.** A heading, a guidance
+  sentence or a column header added with `l.Add` AHEAD of the first block is
+  stranded the moment the body overflows — the rule AGENTS.md already states, and
+  `jdeFitHeader` is the answer: it trims by RANK and claims nothing about what it
+  dropped, where a window promises a remainder. Five frames were converted, all
+  in the state where the list has exactly ONE navigable row so the bar honestly
+  named nothing: the add-line identify phase, the attachments grid, and the kit,
+  chain and level lists in the empty state each opens in. A per-row ERROR moved
+  with them onto the layer's STATUS ROW, which no budget can trim.
+  WHAT IS STILL OPEN, said plainly because a claim no check delivers is worse
+  than no claim: the same strand exists on some forty other (screen, state) pairs
+  whose list has TWO OR MORE rows. No sweep reports them — their bar names UP/DN
+  and the key really moves — and closing them is the same header conversion on
+  every columnar screen at once, the shape of sc-jde-lift rather than a patch.
+- **A DESTRUCTIVE CONFIRM MID-WRITE IS A STATE OF ITS OWN, AND NO DERIVED SWEEP
+  REACHED IT.** `jdeScreenStates` builds each confirm freshly OPENED, so every
+  bar-honesty sweep measured the frame before the operator pressed the destroy
+  key — and that is the half of its life the bar changes shape in. Both confirms
+  got the rule wrong there, in opposite directions. `deleteBar` (`po_edit.go`)
+  collapsed to `{Esc=Back}` while the delete was out and RETURNED, taking the
+  movement tokens off the bar, while `deleteScrolls` never mirrored the branch
+  and the arm went on scrolling: a key ACTING while the bar names nothing, which
+  is standing rule 2 in the direction an operator cannot see to complain about.
+  `updateConfirmDelete` (`po_attachments.go`) had the mirror — a blanket
+  `if s.deleting { return s, nil }` over the WHOLE handler while the bar went on
+  naming `Enter`, `Esc` and three movement tokens, all inert. The answer is one
+  predicate per question, read by the bar AND the arm (`deleteDestroys` /
+  `confirmDeleteDestroys`), and the scroll question measured against the bar that
+  will really be DRAWN with the scroll keys added — measured against an
+  unconditional tallest bar, a body that FITS under the shorter drawn bar answers
+  "it scrolls", the arm bumps the offset, `ClampScroll` puts it back and the pane
+  returns byte-identical with no note. Only the WRITE waits: `Esc` still leaves
+  and the caveat still scrolls, because reading the warning while the server
+  thinks is exactly what somebody does there, and withholding the scroll keys
+  would leave `↓ N more below` over a bar offering nothing to press.
+  `TestJDEConfirm_AWriteInFlightLeavesTheBarHonest` presses the keys with the
+  write really in flight — reached by pressing the destroy key, not by setting
+  the flag — and it asks its two halves with DIFFERENT instruments, which is the
+  part to keep: FORWARD (a named token must move what is SEEN) on the clipped
+  PANE, REVERSE (a key that acts must be named) on `jdePlaceOf`, because an arm
+  that DECLINES AND ANSWERS changes the pane by design and a key that declines
+  and says why has not ACTED. Measured on the pane, the reverse half reported
+  both confirms at every height their caveat fits.
+- **A HEADER SITE'S RANK CLAIM IS PER BRANCH, AND A FIXTURE REACHES ONE.**
+  `jdeHeaderCases` built `chainHeader` on an item with NO packaging rows, so
+  `TestJDEForm_EveryHeaderSiteIsSwept` measured the branch that DOES mark an
+  essential row while the common one — a populated item whose chain validates —
+  marked none at all, with the function's own doc saying in as many words that
+  the row "goes to the heading". A claim the code did not honour, sitting inside
+  the sweep's own vacuity guard. The rank is decided from what else the header
+  will carry now, and `jdeHeaderCase.alsoIn` names FURTHER states of the same
+  site so a builder with three branches is swept in three. The cheapest state to
+  construct is the empty, freshly-opened one, which is why this is the shape the
+  next site will get wrong.
+- **AN ESSENTIAL ROW IS A PROMISE ABOUT THE ROW, NOT ABOUT ITS WIDTH.**
+  `jdeFitHeader` trims by ROW and does no width fitting at all, so `clampToBox`
+  is what cuts an over-wide header row — from the right, no ellipsis, closing SGR
+  reset gone with it. `levelListHeader` (`storage_slot_generate.go`) promoted a
+  63-cell sentence to the essential row against the 51 an 80-column pane gives,
+  which is rules 5 and 6 broken inside the fix for rule 11. The shape that works
+  is `chainHeader`'s: a short fixed FACT leads and takes the row, the unbounded
+  remainder folds behind it as context through `jdeCaveatLines` against the LIVE
+  pane. `TestJDEForm_EveryEssentialHeaderRowIsOnThePane` could not report ANY of
+  this: it compared against the row already `truncateVisible`'d to the pane, so
+  `Contains` matched the very mutilation the check exists to find, and the check
+  could not fail in this direction at all. It compares the row AS THE BUILDER
+  WROTE IT now, and the class it had been hiding is recorded rather than closed.
+  KNOWN AND UNFIXED, with the MEASURED extent, so the next agent inherits the
+  numbers instead of rediscovering them. `jdeOverWideEssentialRows` is the
+  roster and it fails in both directions — an unlisted over-wide row is a new
+  defect, a listed one that now fits is a stale exception — and the numbers in
+  it are what the sweep measures rather than what anyone remembered. Twenty
+  entries, one mechanism apiece:
+  the columnar picker's `Filter .....` row on NINETEEN sites
+  (`AssetFormScreen/viewPick` and its siblings), **70 cells** — cut at a
+  terminal width of 80, where `screenBodyWidth` gives 51, and fitting from 100
+  (pane 71) up. THE MECHANISM IS THE HINT PAST THE CAP, and the first wording of
+  this entry got it wrong in a way worth recording: it blamed the layer's
+  unsized fallback and named a `jdePickHeader` that does not exist, when
+  `jdePickList.render` is the builder and all nineteen sites call it with the
+  LIVE pane. The row is 70 cells at every width because nothing in it is derived
+  from the pane at all — the field is declared at a flat `Width: 30`,
+  `jdePaneFieldWidth` caps a text row at `bodyWidth - (indent + label + leader)`
+  = 36 at an 80-column pane so 30 survives untouched, and `renderJDEField` then
+  appends `"  "` plus the 23-cell hint AFTER that cap: 2 + 6 + 7 + 30 + 2 + 23.
+  `jdePaneFieldWidth`'s own doc says so — "a hint sitting past the fill is still
+  past the pane afterwards — which is exactly why the fold is `jdeFitRow`'s job
+  and not this one's" — so the remedy for these nineteen is routing the filter
+  row through `jdeFitRow`, which already trades the field against the hint and
+  folds the hint underneath. A RECORDED REASON IS READ AS A DIAGNOSIS AND WORK
+  IS FILED FROM IT, so a wrong one costs more than none. And `chainHeader`'s promoted
+  validation message, **85 cells** — cut at 80 (pane 51) AND at 100 (pane 71),
+  fitting only from 120 (pane 91), which makes it the widest essential row in
+  the package and the only one that overruns past 80 columns. Those messages are
+  composed unfolded from OMS-supplied level names, so no WORDING of them can be
+  a bound.
+  THE REMEDY IS THE LAYER'S, which is why neither was fixed where it was found:
+  bound an essential header row where it is emitted, the way `jdeCaveatLines`
+  bounds a caveat against the live pane. That is a per-screen conversion of the
+  shape sc-jde-lift was, on twenty sites at once, and doing four of twenty from
+  a review round is "applying the rule where it was reported" — the failure mode
+  this file exists to record.
+- **WHAT THE RULE DOES NOT PROMISE is a block taller than the window.**
+  `jdeLines.Window` keeps a block's START and nothing scrolls inside one, so a
+  single navigable row whose own block outruns a one-line body loses its tail
+  whatever is pressed — the stated sacrifice `addLineBlock` records, a fact about
+  the terminal's HEIGHT rather than a missing key. `jdeUnfetchableMarkerCases` is
+  the recorded residue and the sweep fails on a stale entry as loudly as on a
+  missing one.
+- **A MOVEMENT SWEEP MEASURED ON A STATE FINGERPRINT IS NOT MEASURING RULE 1.**
+  `jdePlaceOf` is the right instrument for the question it was written for — a
+  position that drifted and happened to redraw the same — and it called the
+  slot-generate RUN REPORT's `UP/DN=Scroll` alive at all 61 of the panes the
+  report FITS at 80, 100 and 120 columns, where the key moved `resultCursor` and
+  the pane came back byte for byte. `TestJDEForm_EveryMovementTokenMovesTheOperatorsPANE` is the
+  pane-measured half. Two mechanical traps in writing one: the COLOUR PROFILE
+  must be FORCED or a moving highlight is stripped and an honest form reads as
+  dead, and `jdeBarOf` must then be fed a STRIPPED view, because it anchors on
+  the bar's rule and that run of hyphens is styled — with colour on it finds no
+  bar anywhere and the sweep passes over the whole package. Its width axis is
+  `jdePaneWidths` and not every drawable width ON PURPOSE: at the 45-column floor
+  a picker row has sixteen cells and two different catalogue items both draw as
+  `▸ Hex b…  AF-`, so the key moves the cursor AND the window while the pane is
+  unchanged. That is rule 5's width form, not a bar naming a dead key.
+- **A FIXTURE WHOSE ROWS DIFFER ONLY PAST THE CLIP CANNOT REPORT MOVEMENT.** The
+  reorder picker's nine rows were `Hex bolt M8x40 zinc #1 … #9` with identical
+  quantities, and `poFitRow` clips the name from the RIGHT, so at 80 columns
+  every row drew as one string and a picker whose cursor was moving perfectly
+  read as dead. Rows a check tells apart must differ AT THE FRONT.
+- **The run report was a LIST CURSOR over `body.Len()`, which is two facts wrong
+  about a read-only body.** The count included the two lines the report opens
+  with, which belong to no row, so its last two cursor positions addressed rows
+  `block()` answers `(0,0)` for and pressing Down at the bottom threw the reader
+  back to the top. It is an offset now (`resultScroll`).
+- **`jdeScrollStep` (`jde_form.go`) is the ONE key-to-offset mapping**, the
+  offset analogue of `pickRow` / `moveRow` / `pageRow`. THREE copies of the same
+  six-arm switch had been written out by hand across TWO files — `po_detail`'s
+  `handleSheetKey` and `handleOrderPadKey`, and `po_add_line`'s `keyConfirm` —
+  and this change puts three more sites on that footing (the two removal
+  confirms and the slot-generate run report, none of which had an offset
+  before). Whether a key acts at all is still the
+  SHEET's question — the two gates are asked of different bars — and the clamp is
+  one-sided on purpose: `end` asks for the whole body and `frameScrolled` brings
+  it back against the pane it is about to draw into, which is what makes
+  `↓ 0 more below` impossible.
+
 ## Gotchas
 
 - **`XDG_CONFIG_HOME` does not isolate anything on macOS.** `defaultPrefsPath()`
@@ -2448,6 +2630,21 @@ touching any screen an operator drives:
   all (`receiveType`). Do NOT shorten `pump`'s 200ms budget instead — it is the
   backstop for a genuine timer, shared with ~30 drive tests, and cutting it
   would make all of them racier on a loaded machine.
+- **A DERIVED SET IS CHEAP TO WRITE AND EXPENSIVE TO ASK, so ask it once — a
+  `for _, h := range jdePaneHeights()` in an inner loop is the second way this
+  package has blown the 600s timeout.** `jdeDrawableWidths` / `jdePaneHeights`
+  (`jde_pane_fit_test.go`) answer by BUILDING A ROOT AND RENDERING IT per
+  candidate size, which is the whole point of them — Root's own gate is the
+  authority on which panes exist — and it makes each call cost about what one
+  sweep iteration costs. The report-table height sweep nested `jdePaneHeights()`
+  inside its WIDTH loop, so it re-derived the set once per width per state per
+  tab per fixture: a quarter of a million Root renders re-answering a question
+  whose inputs never change, 200s against 59s for that one test. Both are
+  `sync.OnceValue` now and hand out a COPY, so a nested call is free and no
+  caller can reshape another sweep's axis;
+  `TestJDEForm_TheDerivedPaneSetsStayTheOnesRootDraws` holds both halves against
+  asking Root afresh. The rule generalises past those two: derive at the top of
+  the test, not in the loop.
 - `gofmt -l` flags a few pre-existing files (doc-comment backtick rewrites).
   Format only what you touch.
 

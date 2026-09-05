@@ -36,6 +36,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -64,7 +65,27 @@ var jdePaneWidths = []int{80, 100, 120}
 // than written down, so a change to it moves this set with it. The ceiling is
 // 120 — the widest jdePaneWidths names — because a wider pane only folds less,
 // and an unbounded loop would be a slow sweep rather than a stronger one.
+//
+// IT IS DERIVED ONCE AND HANDED OUT AS A COPY. Asking Root means building a
+// Root and rendering it per candidate size, and these two sets are walked by
+// sweeps that nest them inside a loop over fixtures, tabs and states — where
+// the derivation costs more than the property being checked. The report-table
+// height sweep re-derived jdePaneHeights once per WIDTH per state per tab per
+// fixture: a quarter of a million Root renders spent re-answering a question
+// whose inputs never change, and it alone measured 200s against 59s memoised.
+// internal/tui went past go test's 600s per-package timeout with that sweep
+// named in the panic, which is the second time this package has hit that limit
+// (AGENTS.md records the first). The answer really is invariant — Root's two
+// gates are plain unstyled early returns off the width and the height alone, so
+// nothing a test does between calls, a forced colour profile included, can move
+// them — so this is the same derivation asked once, not a cached guess at one.
+// The copy is so a caller that sorts or truncates its own slice cannot reach
+// the shared one.
 func jdeDrawableWidths() []int {
+	return append([]int(nil), jdeDrawableWidthsOnce()...)
+}
+
+var jdeDrawableWidthsOnce = sync.OnceValue(func() []int {
 	var out []int
 	for w := 1; w <= 120; w++ {
 		if !jdeRootDrawsAtWidth(w) {
@@ -73,7 +94,7 @@ func jdeDrawableWidths() []int {
 		out = append(out, w)
 	}
 	return out
-}
+})
 
 // jdeRootDrawsAtWidth reports whether Root.View() renders a screen at all at
 // this width, rather than its own "terminal too narrow" line. Asked of Root
@@ -91,7 +112,14 @@ func jdeRootDrawsAtWidth(width int) bool {
 // supports and the shortest one the layer has to have an answer for. Deriving
 // it rather than writing 7 is the point — if that gate moves, this sweep moves
 // with it instead of leaving the new heights untested.
+//
+// Derived once and handed out as a copy, for the reason jdeDrawableWidths
+// above records at length.
 func jdePaneHeights() []int {
+	return append([]int(nil), jdePaneHeightsOnce()...)
+}
+
+var jdePaneHeightsOnce = sync.OnceValue(func() []int {
 	var out []int
 	for h := 1; h <= 40; h++ {
 		if !jdeRootDraws(h) {
@@ -100,7 +128,7 @@ func jdePaneHeights() []int {
 		out = append(out, h)
 	}
 	return out
-}
+})
 
 // jdeRootDraws reports whether Root.View() renders a screen at all at this
 // height, rather than its own "terminal too short" line. Asked of Root instead
@@ -109,6 +137,58 @@ func jdeRootDraws(height int) bool {
 	r := newTestRoot(NewServiceStatusScreen(Deps{}))
 	next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: height})
 	return !strings.Contains(next.(Root).View(), "terminal too short")
+}
+
+// TestJDEForm_TheDerivedPaneSetsStayTheOnesRootDraws: memoising the two derived
+// pane sets did not turn either of them into a roster.
+//
+// Both halves of that are real risks and neither is visible in a sweep's own
+// result: a memoised answer is still the derivation only while it AGREES with
+// asking Root afresh, and a shared backing array is one caller's sort or
+// truncate away from silently reshaping every other sweep's axis — a whole
+// class of pane going unwalked while every sweep still reports green. Asking
+// Root directly here is the same question the two OnceValues ask, so this fails
+// if the memoised answer ever parts company with the live gate.
+func TestJDEForm_TheDerivedPaneSetsStayTheOnesRootDraws(t *testing.T) {
+	var wantWidths []int
+	for w := 1; w <= 120; w++ {
+		if jdeRootDrawsAtWidth(w) {
+			wantWidths = append(wantWidths, w)
+		}
+	}
+	var wantHeights []int
+	for h := 1; h <= 40; h++ {
+		if jdeRootDraws(h) {
+			wantHeights = append(wantHeights, h)
+		}
+	}
+	if got := jdeDrawableWidths(); !reflect.DeepEqual(got, wantWidths) {
+		t.Errorf("jdeDrawableWidths answered %v; asking Root itself gives %v. Every "+
+			"width sweep in this package walks that set, so a stale answer is panes "+
+			"nobody checks with nothing to say so", got, wantWidths)
+	}
+	if got := jdePaneHeights(); !reflect.DeepEqual(got, wantHeights) {
+		t.Errorf("jdePaneHeights answered %v; asking Root itself gives %v", got, wantHeights)
+	}
+
+	// The caller's copy is the caller's: scribbling on one must not reach the
+	// next caller, or one sweep's convenience becomes another sweep's blind spot.
+	scribbled := jdeDrawableWidths()
+	for i := range scribbled {
+		scribbled[i] = -1
+	}
+	scribbledH := jdePaneHeights()
+	for i := range scribbledH {
+		scribbledH[i] = -1
+	}
+	if got := jdeDrawableWidths(); !reflect.DeepEqual(got, wantWidths) {
+		t.Errorf("a caller that overwrote its own jdeDrawableWidths slice changed what "+
+			"the next caller gets: %v", got)
+	}
+	if got := jdePaneHeights(); !reflect.DeepEqual(got, wantHeights) {
+		t.Errorf("a caller that overwrote its own jdePaneHeights slice changed what "+
+			"the next caller gets: %v", got)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -579,6 +659,29 @@ func jdeScreenStates() map[string]func() Screen {
 			s.openUpload()
 			return s
 		},
+		// The two destructive confirms whose body is PROSE — the class the
+		// line-delete confirm belongs to, and the reason this file now has all
+		// three. Each frames a warning the operator has to have read before the
+		// commit key, and each used to hand that warning to a cursor-anchored
+		// window over a body with nothing for a cursor to stand on: the pane
+		// said "more below" and no key on it could fetch the rest.
+		"PurchaseOrderAttachmentsScreen/delete confirm": func() Screen {
+			po := poViewPO()
+			po.Attachments = []omsapi.PurchaseOrderAttachment{{
+				ID: 1, FileName: "quote-2026-01.pdf",
+				Description: "Vendor quotation", UploadedByName: "shop.lead",
+			}}
+			s := NewPurchaseOrderAttachmentsScreen(Deps{}, po)
+			s.confirmingDelete = true
+			return s
+		},
+		"PurchaseOrderDetailScreen/void order": func() Screen {
+			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s.loading = false
+			s.po = poViewPO()
+			s.openVoidForm()
+			return s
+		},
 		"StorageSlotGenerateScreen/run report": func() Screen {
 			s := NewStorageSlotGenerateScreen(Deps{}, 0)
 			s.phase = genPhaseResult
@@ -683,11 +786,35 @@ func jdeScreenStates() map[string]func() Screen {
 		"PurchaseOrderCreateScreen/reorder picker": func() Screen {
 			s := poCreateStaged()
 			s.phase = poPhaseReorderPick
-			for i := 0; i < 9; i++ {
+			// The rows differ AT THE FRONT and in their figures, which is what
+			// makes a movement claim about this picker mean anything. They used
+			// to be "Hex bolt M8x40 zinc #1" … "#9" with identical quantities:
+			// poFitRow clips the name from the RIGHT, so at 80 columns every one
+			// of them drew as `[ ] Hex bolt…  qty 25 (current 2 / min 10)` and
+			// two adjacent rows were the same string. A sweep that measures the
+			// PANE then reports a picker whose cursor is moving perfectly as
+			// dead — the vacuous-fixture rule (AGENTS.md) with the sign flipped,
+			// and it took a real defect's shape to find it.
+			for i, row := range []struct {
+				name string
+				qty  int
+				have int
+				min  int
+			}{
+				{"Hex bolt M8x40 zinc plated grade 8.8", 25, 2, 10},
+				{"Flat washer M8 stainless A2", 40, 6, 15},
+				{"Nyloc nut M8 zinc", 30, 1, 12},
+				{"Cutting fluid, semi-synthetic, 5L", 4, 0, 2},
+				{"Shop rag, 10kg bale", 3, 1, 2},
+				{"Abrasive flap disc 115mm 60g", 50, 8, 20},
+				{"Nitrile glove, blue, L", 12, 3, 6},
+				{"TIG filler rod ER70S-2 2.4mm", 5, 1, 3},
+				{"Bandsaw blade 2360x19 10/14T", 6, 0, 2},
+			} {
 				s.reorderItems = append(s.reorderItems, omsapi.ReorderDataItem{
-					ItemName:          fmt.Sprintf("Hex bolt M8x40 zinc #%d", i+1),
-					SuggestedQuantity: 25, CurrentStock: 2, MinimumStock: 10,
-					UnitCost: "3.50",
+					ItemName:          row.name,
+					SuggestedQuantity: row.qty, CurrentStock: row.have, MinimumStock: row.min,
+					UnitCost: omsapi.DecimalString(fmt.Sprintf("%d.50", i+1)),
 				})
 			}
 			return s
@@ -1520,6 +1647,18 @@ func jdeRecvName(fn *ast.FuncDecl) string {
 // TestJDEForm_EveryHeaderSiteIsSwept compares against.
 type jdeHeaderCase struct {
 	mk func() Screen
+	// alsoIn are FURTHER states of the SAME site, named by what makes them
+	// different, each swept exactly as mk is.
+	//
+	// A site is one builder and its rank claim is made per BRANCH, so a case
+	// that reaches one branch says nothing whatever about the others — and the
+	// branch a fixture happens to take is the empty, freshly-opened one far
+	// more often than not, because that is the cheapest state to construct.
+	// chainHeader is the worked example: built only on an item with no
+	// packaging rows, the sweep measured the branch that DOES mark an essential
+	// row while the common one — a populated item whose chain validates —
+	// marked none at all and went unreported for a release.
+	alsoIn map[string]func() Screen
 	// after runs once the screen has been SIZED, for a state a resize destroys.
 	// The receiving form clears its note on every WindowSizeMsg on purpose — a
 	// note is an answer about a frame and a resize destroys the frame it was an
@@ -1528,6 +1667,16 @@ type jdeHeaderCase struct {
 	// also the only way an operator ever sees one.
 	after  func(Screen)
 	header func(Screen) jdeHeader
+}
+
+// states is every state this case is swept in: mk, plus each of alsoIn under the
+// site name qualified by what makes it different, so a failure names the branch.
+func (c jdeHeaderCase) states(site string) map[string]func() Screen {
+	out := map[string]func() Screen{site: c.mk}
+	for what, mk := range c.alsoIn {
+		out[site+" ("+what+")"] = mk
+	}
+	return out
 }
 
 // jdeHeaderCases builds every header site in a state that reaches its frame.
@@ -1581,6 +1730,50 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 
 		"PurchaseOrderDetailScreen/viewOrderPad": pick("PurchaseOrderDetailScreen/order pad",
 			func(s Screen) jdeHeader { return s.(*PurchaseOrderDetailScreen).orderPadHeader() }),
+
+		// The two destructive confirms whose warning moved OUT of the body.
+		// Both pin what a short pane may not lose — the file a delete names, the
+		// sentence saying a void CASCADES — where jdeFitHeader can trim by rank
+		// instead of a cursor-anchored window promising a remainder no key
+		// fetches.
+		"InventoryItemFormScreen/viewKitList": pick("InventoryItemFormScreen/kit list empty",
+			func(s Screen) jdeHeader { return s.(*InventoryItemFormScreen).kitListHeader() }),
+		"InventoryItemFormScreen/viewChain": {
+			mk: states["InventoryItemFormScreen/chain list empty"],
+			// The chain builder has three branches and they rank different rows,
+			// so the empty state alone measured one third of the claim. The
+			// POPULATED, VALID state is the one an operator is in nearly all the
+			// time and the one that marked nothing essential; the INVALID state
+			// is where the validation messages take the row.
+			alsoIn: map[string]func() Screen{
+				"valid chain": states["InventoryItemFormScreen/chain list"],
+				"invalid chain": func() Screen {
+					s := NewInventoryItemFormScreen(Deps{}, "")
+					s.loading = false
+					// Two rungs both claiming to be the base unit: the ordering
+					// rules then have something to say, so warn is non-empty and
+					// its LAST message is what the header promises to keep.
+					s.packRows = []packagingRow{
+						{key: 1, id: 1, name: "Pallet", baseUnits: 1},
+						{key: 2, id: 2, name: "Case", baseUnits: 1},
+					}
+					s.openChain()
+					return s
+				},
+			},
+			header: func(s Screen) jdeHeader { return s.(*InventoryItemFormScreen).chainHeader() },
+		},
+		"StorageSlotGenerateScreen/viewLevels": pick("StorageSlotGenerateScreen/level list empty",
+			func(s Screen) jdeHeader { return s.(*StorageSlotGenerateScreen).levelListHeader() }),
+		"PurchaseOrderAttachmentsScreen/viewList": pick("PurchaseOrderAttachmentsScreen/one file",
+			func(s Screen) jdeHeader { return s.(*PurchaseOrderAttachmentsScreen).listHeader() }),
+		"PurchaseOrderAttachmentsScreen/viewConfirmDelete": pick(
+			"PurchaseOrderAttachmentsScreen/delete confirm",
+			func(s Screen) jdeHeader {
+				return s.(*PurchaseOrderAttachmentsScreen).confirmDeleteHeader()
+			}),
+		"PurchaseOrderDetailScreen/viewVoid": pick("PurchaseOrderDetailScreen/void order",
+			func(s Screen) jdeHeader { return s.(*PurchaseOrderDetailScreen).voidHeader() }),
 
 		// The New PO screen pins the tallest header in the app: the supplier
 		// row, the failure's unbounded detail, three optional attribution
@@ -1706,6 +1899,12 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 // site that declares nothing essential has to be written down as such, and a
 // site written down here that LATER declares one fails as a stale entry.
 var jdeHeadersWithoutEssentials = map[string]string{
+	"PurchaseOrderDetailScreen/viewVoid": "the void-order prompt's header is its heading and " +
+		"the cascade caveat, and its BODY is the Reason box — which the body's own floor of " +
+		"one row keeps on the pane at every height the frame is drawn at. Marking a caveat " +
+		"row essential would spend the one essential row a header may have on prose while " +
+		"the box the operator types into is already safe, and jdeMinBudget would then refuse " +
+		"the frame a row earlier for nothing.",
 	"ServiceStatusScreen/View": "the header is a roll-up — service count, all-working or " +
 		"degraded count, checked-at — and the body under it lists every service and its " +
 		"own state, so an operator who loses the row loses a summary and no fact.",
@@ -1742,44 +1941,60 @@ func TestJDEForm_EveryHeaderSiteIsSwept(t *testing.T) {
 	}
 
 	for site, c := range cases {
-		if c.mk == nil {
-			t.Errorf("the %s case has no builder, so every assertion about it is "+
-				"vacuous — most likely it names a jdeScreenStates key that has moved", site)
-			continue
-		}
-		s := c.mk()
-		jdeRootAt(t, s, 80, 40)
-		if c.after != nil {
-			c.after(s)
-		}
-		header := c.header(s)
-		if len(header) == 0 {
-			t.Errorf("the %s case builds an empty header at 80x40, so the sweep would "+
-				"assert nothing about it — the state it is built in does not reach the "+
-				"frame that pins one", site)
-			continue
-		}
-		essential := 0
-		for _, row := range header {
-			if row.Rank == jdeHeadEssential {
-				essential++
+		_, excused := jdeHeadersWithoutEssentials[site]
+		for name, mk := range c.states(site) {
+			if mk == nil {
+				t.Errorf("the %s case has no builder, so every assertion about it is "+
+					"vacuous — most likely it names a jdeScreenStates key that has moved", name)
+				continue
+			}
+			s := mk()
+			jdeRootAt(t, s, 80, 40)
+			if c.after != nil {
+				c.after(s)
+			}
+			header := c.header(s)
+			if len(header) == 0 {
+				t.Errorf("the %s case builds an empty header at 80x40, so the sweep would "+
+					"assert nothing about it — the state it is built in does not reach the "+
+					"frame that pins one", name)
+				continue
+			}
+			essential := 0
+			for _, row := range header {
+				if row.Rank == jdeHeadEssential {
+					essential++
+				}
+			}
+			if essential == 0 && !excused {
+				t.Errorf("%s marks none of its %d header rows essential. Either one of them "+
+					"IS the row the operator cannot act without — say so with "+
+					"jdeHeadEssential — or none is, and that belongs in "+
+					"jdeHeadersWithoutEssentials with the reason. Everything expendable is "+
+					"how a header passes this sweep while dropping the row that mattered",
+					name, len(header))
+			}
+			if essential > 0 && excused {
+				t.Errorf("%s is listed in jdeHeadersWithoutEssentials and marks %d row(s) "+
+					"essential. The excuse is stale, and while it stands the sweep's own "+
+					"vacuity guard is switched off for this site", name, essential)
 			}
 		}
-		_, excused := jdeHeadersWithoutEssentials[site]
-		if essential == 0 && !excused {
-			t.Errorf("%s marks none of its %d header rows essential. Either one of them "+
-				"IS the row the operator cannot act without — say so with "+
-				"jdeHeadEssential — or none is, and that belongs in "+
-				"jdeHeadersWithoutEssentials with the reason. Everything expendable is "+
-				"how a header passes this sweep while dropping the row that mattered",
-				site, len(header))
-		}
-		if essential > 0 && excused {
-			t.Errorf("%s is listed in jdeHeadersWithoutEssentials and marks %d row(s) "+
-				"essential. The excuse is stale, and while it stands the sweep's own "+
-				"vacuity guard is switched off for this site", site, essential)
-		}
 	}
+}
+
+// jdeEssentialRowText is the header row AS THE BUILDER WROTE IT — trailing pad
+// dropped, nothing else.
+//
+// It is a function rather than an inline TrimRight so the rule has somewhere to
+// be written down: the width claim below must be measured against this, never
+// against truncateVisible(row, pane) first. Pre-truncating is what made this
+// check unable to fail in that direction at all — clampToBox cuts an over-wide
+// row to exactly that string, so Contains matched the very mutilation the check
+// exists to report, and a class of over-wide essential rows hid behind it
+// through two review rounds.
+func jdeEssentialRowText(row jdeHeadRow) string {
+	return strings.TrimRight(row.Text, " ")
 }
 
 // TestJDEForm_EveryEssentialHeaderRowIsOnThePane: the rows a builder said the
@@ -1801,35 +2016,89 @@ func TestJDEForm_EveryHeaderSiteIsSwept(t *testing.T) {
 // reads.
 func TestJDEForm_EveryEssentialHeaderRowIsOnThePane(t *testing.T) {
 	asserted := 0
+	// What each state's widest essential row MEASURES, and at which panes it
+	// overruns, so the roster below is checked against what the sweep found
+	// rather than against what anyone remembers.
+	cellsOf, overAt := map[string]int{}, map[string][]int{}
 	for site, c := range jdeHeaderCases() {
-		for _, w := range jdePaneWidths {
-			for _, h := range jdePaneHeights() {
-				s := c.mk()
-				r := jdeRootAt(t, s, w, h)
-				if c.after != nil {
-					c.after(s)
-				}
-				if jdeBarOf(s.View()) == nil {
-					continue // a frame the layer refused; it draws no header rows at all
-				}
-				shown := r.View()
-				for _, row := range c.header(s) {
-					if row.Rank != jdeHeadEssential {
-						continue
+		for name, mk := range c.states(site) {
+			for _, w := range jdePaneWidths {
+				for _, h := range jdePaneHeights() {
+					s := mk()
+					r := jdeRootAt(t, s, w, h)
+					if c.after != nil {
+						c.after(s)
 					}
-					want := truncateVisible(strings.TrimRight(row.Text, " "), screenBodyWidth(w))
-					if want == "" {
-						continue
+					if jdeBarOf(s.View()) == nil {
+						continue // a frame the layer refused; it draws no header rows at all
 					}
-					asserted++
-					if !strings.Contains(shown, want) {
-						t.Errorf("%s at %dx%d drops the header row it marked essential — "+
-							"%q is not on the pane, so the operator is acting on a screen "+
-							"that is not telling them what it said it could not do "+
-							"without:\n%s", site, w, h, row.Text, shown)
+					shown := r.View()
+					for _, row := range c.header(s) {
+						if row.Rank != jdeHeadEssential {
+							continue
+						}
+						// TWO CLAIMS, AND ONLY ONE OF THEM IS EXCUSABLE. That the
+						// row FITS the pane's width is what jdeOverWideEssentialRows
+						// defers; that jdeFitHeader kept it ON the pane at all is
+						// not, and must go on being asked everywhere — jdeFitHeader
+						// trims by ROW and the row COUNT moves with the width (the
+						// picker's own note folds differently at 80 than at 100), so
+						// passing at 100 and 120 says nothing about 80, the width
+						// that must hold. Recording the overflow and skipping left
+						// the twenty excused sites asserted about in no way at all
+						// at 80, which is a weakening of the check dressed as an
+						// exclusion.
+						want := jdeEssentialRowText(row)
+						if want == "" {
+							continue
+						}
+						probe := want
+						if cells := lipgloss.Width(want); cells > screenBodyWidth(w) {
+							if cells > cellsOf[name] {
+								cellsOf[name] = cells
+							}
+							if n := len(overAt[name]); n == 0 || overAt[name][n-1] != w {
+								overAt[name] = append(overAt[name], w)
+							}
+							// An over-wide row can only be PRESENT as the pane
+							// clipped it, so that is what presence is asked about.
+							probe = truncateVisible(want, screenBodyWidth(w))
+						}
+						asserted++
+						if !strings.Contains(shown, probe) {
+							t.Errorf("%s at %dx%d drops the header row it marked essential — "+
+								"%q is not on the pane, so the operator is acting on a screen "+
+								"that is not telling them what it said it could not do "+
+								"without:\n%s", name, w, h, row.Text, shown)
+						}
 					}
 				}
 			}
+		}
+	}
+	for name, widths := range overAt {
+		if _, excused := jdeOverWideEssentialRows[name]; excused {
+			continue
+		}
+		panes := make([]string, len(widths))
+		for i, w := range widths {
+			panes[i] = fmt.Sprintf("%d gives %d", w, screenBodyWidth(w))
+		}
+		t.Errorf("%s marks a header row essential that does not FIT the pane — %d cells, "+
+			"and a terminal width of %s. jdeFitHeader trims by ROW and does no width "+
+			"fitting, so clampToBox cuts it from the right with no ellipsis and takes the "+
+			"closing SGR reset with it. Either bound the row the way jdeCaveatLines bounds "+
+			"a caveat, or record it in jdeOverWideEssentialRows with the measured numbers",
+			name, cellsOf[name], strings.Join(panes, ", "))
+	}
+	for name, reason := range jdeOverWideEssentialRows {
+		if reason == "" {
+			t.Errorf("%s is excused from fitting the pane with no reason given", name)
+		}
+		if _, over := overAt[name]; !over {
+			t.Errorf("jdeOverWideEssentialRows excuses %s (%q), and every essential row it "+
+				"draws now fits the pane at every swept width. A stale exception is a case "+
+				"excused from the check it passes", name, reason)
 		}
 	}
 	if asserted == 0 {
@@ -2120,6 +2389,11 @@ var jdeUnsizedDeclineCases = map[string]string{
 	"ReceiveFormScreen":                   "receive_form's qtyPagesFor",
 	"PurchaseOrderAddLineScreen/choose":   "po_add_line's choosePages",
 	"PurchaseOrderAddLineScreen/confirm":  "po_add_line's confirmScrolls — an OFFSET",
+	"PurchaseOrderEditScreen/delete confirm": "po_edit's deleteScrolls — an OFFSET over a body " +
+		"that owns no navigable row",
+	"PurchaseOrderAttachmentsScreen/delete confirm": "po_attachments' confirmDeleteScrolls — " +
+		"an OFFSET over a body that owns no navigable row",
+	"StorageSlotGenerateScreen/run report": "storage_slot_generate's resultScrolls — an OFFSET",
 	"PurchaseOrderAttachmentsScreen": "po_attachments guards on listNames(\"PgUp/PgDn\"), " +
 		"which reads the bar's own claim",
 	"PurchaseOrderCreateScreen":                "po_create's bodyPagesFor",
@@ -2187,3 +2461,89 @@ func TestJDEForm_AnUnsizedTerminalPagesAsItAlwaysHas(t *testing.T) {
 			"asserted nothing about the state it is named for")
 	}
 }
+
+// jdeOverWideEssentialRows are the header sites whose ESSENTIAL row does not fit
+// the pane it is promised on, each with the measured numbers.
+//
+// It is the same shape as jdeHeadersWithoutEssentials and jdeUnfetchableMarker-
+// Cases and exists for the same reason: a real defect that is KNOWN has to be
+// written down, or it is indistinguishable from one nobody has found. It fails
+// in BOTH directions — an unlisted over-wide row fails as a new defect, and a
+// listed one that now fits fails as a stale exception — so bounding a row here
+// is a one-line deletion rather than a search.
+//
+// THE MECHANISM IS ONE, AND IT IS THE LAYER'S. jdeFitHeader gives ground by ROW
+// and does no width fitting at all, so an over-wide header row reaches
+// clampToBox, which cuts from the right with no ellipsis and takes the closing
+// SGR reset with it — leaving everything drawn afterwards in the cut row's
+// colour. The remedy is to bound essential header rows at the LAYER, the way
+// jdeCaveatLines bounds a caveat against the live pane; it is deferred to its
+// own task because it is a per-screen conversion of the shape sc-jde-lift was,
+// not a patch, and doing it from a review round is the scope growth that was
+// refused.
+//
+// THE NUMBERS ARE MEASURED BY THE SWEEP ABOVE, not estimated. Both entries hold
+// at every drawable HEIGHT; what varies is the width.
+var jdeOverWideEssentialRows = map[string]string{
+	// One row, nineteen sites: the columnar picker's `Filter .....` row, built
+	// by jdePickList.render — which every one of the nineteen calls with the
+	// LIVE pane. It is 70 cells at every width because nothing in that row is
+	// derived from the pane at all, so it fits from a terminal width of 100
+	// (a pane of 71) up and is cut at 80, where the pane is 51 — the width this
+	// interface is modelled on and the one that must hold.
+	"AssetFormScreen/viewPick":                pickerFilterOverWide,
+	"AssetPartFormScreen/viewPick":            pickerFilterOverWide,
+	"AuthorizationGrantScreen/viewPick":       pickerFilterOverWide,
+	"CategoryFormScreen/viewPick":             pickerFilterOverWide,
+	"DisconnectFormScreen/viewPick":           pickerFilterOverWide,
+	"InventoryItemFormScreen/viewKitPick":     pickerFilterOverWide,
+	"InventoryItemFormScreen/viewPick":        pickerFilterOverWide,
+	"ItemSupplierFormScreen/viewPick":         pickerFilterOverWide,
+	"LocationFormScreen/viewPick":             pickerFilterOverWide,
+	"MaintenanceItemFormScreen/viewAssetPick": pickerFilterOverWide,
+	"PowerBreakerFormScreen/viewPick":         pickerFilterOverWide,
+	"PowerCircuitFormScreen/viewPick":         pickerFilterOverWide,
+	"PowerOutletFormScreen/viewPick":          pickerFilterOverWide,
+	"PowerPanelFormScreen/viewPick":           pickerFilterOverWide,
+	"ProjectStorageFormScreen/viewSlotPick":   pickerFilterOverWide,
+	"StorageAssignFormScreen/viewPicker":      pickerFilterOverWide,
+	"StorageSlotFormScreen/viewPicker":        pickerFilterOverWide,
+	"StorageSlotGenerateScreen/viewPicker":    pickerFilterOverWide,
+	"ThermostatFormScreen/viewPick":           pickerFilterOverWide,
+
+	// chainHeader promotes the LAST validatePackagingChain message, and those
+	// are composed unfolded from OMS-supplied level names, so no wording of them
+	// has a bound at all. Measured on the swept fixture — two rungs both
+	// claiming to be the base unit — the promoted row is 85 cells: cut at a
+	// terminal width of 80 (a pane of 51) AND at 100 (a pane of 71), fitting
+	// only from 120 (a pane of 91) up. It is the widest essential row in the
+	// package and the only one that overruns past 80 columns.
+	"InventoryItemFormScreen/viewChain (invalid chain)": "chainHeader's promoted " +
+		"validation message is 85 cells, cut at a terminal width of 80 (pane 51) and " +
+		"at 100 (pane 71), fitting only from 120 (pane 91). The messages are composed " +
+		"unfolded from OMS-supplied level names, so the bound has to come from the " +
+		"layer rather than from a wording",
+}
+
+// pickerFilterOverWide is the one reason the nineteen picker sites share, said
+// once so a re-measurement is a single edit rather than nineteen.
+//
+// THE MECHANISM IS THE HINT PAST THE CAP, and getting it wrong here is
+// expensive: this roster is the input the deferred bounding task is filed from,
+// and the first wording blamed an unsized pane and a jdePickHeader that does not
+// exist, which would send the next agent hunting a bug that is not there.
+// jdePickList.render declares the filter field at a flat `Width: 30`;
+// jdePaneFieldWidth caps a text row's input area at
+// bodyWidth - (indent + label + leader) = 51 - (2 + 6 + 7) = 36 at an
+// 80-column pane, so 30 is under the cap and survives untouched — and then
+// renderJDEField appends "  " + the 23-cell hint AFTER that cap. 2 + 6 + 7 + 30
+// + 2 + 23 = 70. jdePaneFieldWidth's own doc says so in as many words: "a hint
+// sitting past the fill is still past the pane afterwards — which is exactly
+// why the fold is jdeFitRow's job and not this one's." So the remedy for these
+// nineteen is routing the filter row through jdeFitRow, which already trades the
+// field against the hint and folds the hint underneath.
+const pickerFilterOverWide = "the columnar picker's `Filter .....` row is 70 cells, " +
+	"cut at a terminal width of 80, where screenBodyWidth gives 51; it fits from 100 " +
+	"(pane 71) up. jdePickList.render declares the field at a flat Width: 30 and " +
+	"renderJDEField appends the 23-cell hint AFTER jdePaneFieldWidth's cap, which that " +
+	"function's doc names as jdeFitRow's job rather than its own"

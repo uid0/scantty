@@ -1868,3 +1868,123 @@ func voidPaneSweep(t *testing.T, branch poVoidBranch, width int, heights []int) 
 		}
 	}
 }
+
+// TestPOLineRemove_ADeclinedKeyAnswersAfterTheDeleteFailed: on the confirm a
+// refused DELETE leaves standing, every key the frame declines still changes
+// what the operator sees.
+//
+// poLineActionMsg with an error sets saving false and errMsg WITHOUT changing
+// the phase, so a 502 leaves this frame up with the failure on its status row
+// and the bar naming Ctrl-X and Esc again. The status row holds ONE fact, and
+// until the ANSWER was ranked above the standing failure on it — a refused
+// per-line delete is scoped to the line this frame is about, so it takes the
+// pinned header while the answer takes the row nothing can trim — every later
+// declined key wrote a note nothing drew and the pane came back byte for byte
+// identical: standing rule 1, on a destructive confirm, after a destroy that
+// failed.
+//
+// Driven through the real message rather than by setting the field, so a change
+// that stopped a failed delete leaving the confirm open fails here instead of
+// leaving the check measuring a state nothing reaches. Pressed IN SEQUENCE with
+// no reset between, because two keys sharing one wording is how this class comes
+// back.
+func TestPOLineRemove_ADeclinedKeyAnswersAfterTheDeleteFailed(t *testing.T) {
+	fake := poRemoveOrder("draft", boolPtr(true))
+	r, _ := poRemoveRoot(t, fake, 80)
+	r, s := poRemoveOnStatusRow(t, r, 0)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poEditPhaseDeleteLine {
+		t.Fatalf("phase %v, want the delete confirm", s.phase)
+	}
+
+	next, _ := r.Update(poLineActionMsg{
+		err:    fmt.Errorf("oms: http 502: <!DOCTYPE html><html><head><title>502</title>"),
+		action: "line delete",
+	})
+	r = next.(Root)
+	if s.phase != poEditPhaseDeleteLine {
+		t.Fatalf("the refused delete closed the confirm (phase %v), so the state this "+
+			"check is about is not reached", s.phase)
+	}
+	if s.errMsg == "" {
+		t.Fatal("the refused delete left no error standing, so the status row is free " +
+			"for the answer and this check asserts nothing")
+	}
+
+	prev := poRemovePane(s, 80)
+	for _, k := range []string{"j", "down", "y", "up"} {
+		next, _ := r.Update(poPhaseKeyMsg(k))
+		r = next.(Root)
+		pane := poRemovePane(s, 80)
+		if pane == prev {
+			t.Fatalf("with the failed delete standing, pressing %q redrew a byte-identical "+
+				"pane — the frame wrote an answer nothing draws:\n%s", k, pane)
+		}
+		prev = pane
+	}
+	if !strings.Contains(stripANSI(prev), "up moves nothing") &&
+		!strings.Contains(stripANSI(prev), "up does nothing") {
+		t.Errorf("the last declined key's answer is not on the pane, so what changed was "+
+			"something other than the frame answering:\n%s", prev)
+	}
+}
+
+// TestPOLineRemove_ADeclinedKeyAnswersAtEveryDrawableHeight is the check above
+// asked at every pane Root draws, which is where both previous placements of
+// this answer broke and where neither was tested.
+//
+// The answer has been sited three times — inside the body the bar is measured
+// against, on statusAnswer, and in a jdeHeadContext header row — and each
+// placement was correct at the pane it was written against and wrong somewhere
+// else. A header CONTEXT row is the one jdeFitHeader gives ground with first,
+// so at the minimum drawable budget it is trimmed and the declined key wrote a
+// note nothing drew again, one height band down from the last fix.
+//
+// Stated the way an operator would: with a destroy that the server refused
+// still on the frame, press a key the frame declines, at any size of terminal,
+// and something must change. Measured on the CLIPPED pane, because the screen's
+// own string is not what the operator reads, and driven through the real
+// poLineActionMsg so a change that stopped a failed delete leaving the confirm
+// open fails here rather than leaving this measuring a state nothing reaches.
+//
+// One case over the height axis rather than a walk of every case at every pane:
+// the class is a per-screen geometry hole, and the package is already inside
+// sight of go test's per-package timeout.
+func TestPOLineRemove_ADeclinedKeyAnswersAtEveryDrawableHeight(t *testing.T) {
+	drawn := 0
+	for _, h := range jdePaneHeights() {
+		fake := poRemoveOrder("draft", boolPtr(true))
+		r, _ := poRemoveRoot(t, fake, 80)
+		r, s := poRemoveOnStatusRow(t, r, 0)
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+		if s.phase != poEditPhaseDeleteLine {
+			t.Fatalf("phase %v, want the delete confirm", s.phase)
+		}
+		next, _ := r.Update(poLineActionMsg{
+			err:    fmt.Errorf("oms: http 502: <!DOCTYPE html><html><head><title>502</title>"),
+			action: "line delete",
+		})
+		r = next.(Root)
+		if s.errMsg == "" {
+			t.Fatal("the refused delete left no error standing, so this check asserts nothing")
+		}
+
+		before := jdeClippedPane(s, 80, h)
+		if jdeBarOf(s.View()) == nil {
+			continue // a pane the layer refused; the notice replaces the frame
+		}
+		drawn++
+		if nx, _ := r.Update(poPhaseKeyMsg("j")); nx != nil {
+			r = nx.(Root)
+		}
+		if after := jdeClippedPane(s, 80, h); after == before {
+			t.Errorf("at 80x%d, with the failed delete standing, a declined key redrew a "+
+				"byte-identical pane — the frame's answer is on a surface this pane "+
+				"trimmed:\n%s", h, after)
+		}
+	}
+	if drawn == 0 {
+		t.Fatal("the confirm was refused at every height, so this check asserted nothing " +
+			"about the answer surface")
+	}
+}

@@ -1400,9 +1400,10 @@ type poBarPhase struct {
 //
 // The SCROLL OFFSETS are deliberately NOT named. A stored offset is not
 // observable state: WindowFrom ignores it outright when the body fits the window,
-// so padScrollBy can move s.padScroll while the frame stays byte-identical.
-// Counting it as a change is what let an inert scroll key read as "the key
-// works" and hid the boundary defect this file's boundary sweep now pins.
+// so the order pad's scroll arm can move s.padScroll while the frame stays
+// byte-identical. Counting it as a change is what let an inert scroll key read
+// as "the key works" and hid the boundary defect this file's boundary sweep now
+// pins.
 func poNavState(r Root, nav func() string) func() string {
 	return func() string {
 		return r.View() + "\x00" + nav()
@@ -1628,13 +1629,29 @@ func poBarPhases() []poBarPhase {
 			mut(s)
 			bar := s.listBar()
 			if s.confirmingDelete {
-				bar = []actionBarItem{{"Enter", "Delete"}, {"Esc", "Cancel"}}
+				bar = s.confirmDeleteBar()
 			} else if s.phase == poAttachPhaseUpload {
 				bar = []actionBarItem{{"Enter", "Upload"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 			}
-			return s, poNavState(r, func() string {
-				return fmt.Sprint(s.cursor, s.phase, s.confirmingDelete, s.uploadFocus)
-			}), bar
+			// The delete confirm's ANSWER to the last keypress is blanked before
+			// the render is fingerprinted, and that is the same carve-out
+			// po_edit's sweep makes for its own delete confirm's deleteNote
+			// (poEditStateDeclined): a key that declines AND SAYS WHY has not
+			// acted, and this sweep's unnamed half reads the whole pane, so
+			// without this every key on the frame would count as working the
+			// moment the frame started answering them. What it does NOT blank is
+			// deleteScroll — the offset the scroll keys really move — so the
+			// NAMED half still has something to see.
+			state := poNavState(r, func() string {
+				return fmt.Sprint(s.cursor, s.phase, s.confirmingDelete, s.uploadFocus, s.deleteScroll)
+			})
+			return s, func() string {
+				note := s.deleteNote
+				s.deleteNote = ""
+				out := state()
+				s.deleteNote = note
+				return out
+			}, bar
 		}
 	}
 

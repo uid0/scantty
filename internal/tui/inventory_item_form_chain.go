@@ -111,7 +111,7 @@ func (s *InventoryItemFormScreen) updateChainPhase(m tea.KeyMsg) (Screen, tea.Cm
 // rung.
 func (s *InventoryItemFormScreen) moveChainCursor(delta int) {
 	l := s.chainListLines()
-	next, ok := s.pickRow(s.chainCursor, s.chainAddRow()+1, delta, 0, s.chainBar(l))
+	next, ok := s.pickRow(s.chainCursor, s.chainAddRow()+1, delta, len(s.chainHeader()), s.chainBar(l))
 	if !ok {
 		return
 	}
@@ -135,7 +135,7 @@ func (s *InventoryItemFormScreen) moveChainCursor(delta int) {
 // half itself; jde_form.go's pageRow carries why that had to move.
 func (s *InventoryItemFormScreen) pageChainCursor(dir int) {
 	l := s.chainListLines()
-	next, ok := s.pageRow(l, s.chainCursor, s.chainAddRow()+1, dir, 0,
+	next, ok := s.pageRow(l, s.chainCursor, s.chainAddRow()+1, dir, len(s.chainHeader()),
 		s.chainBar(l), s.chainBarItems(jdeCeilingRows, true))
 	if !ok {
 		return
@@ -387,7 +387,110 @@ func chainHasNamedRow(rows []packagingRow) bool {
 // beneath — the same guidance the web editor puts under its table.
 func (s *InventoryItemFormScreen) viewChain() string {
 	l := s.chainListLines()
-	return s.frame(l, s.chainCursor, "", s.chainBar(l))
+	return s.frameWithHeader(s.chainHeader(), l, s.chainCursor,
+		s.statusRow(false, "", s.chainRowErr), s.chainBar(l))
+}
+
+// chainHeader is the rung list's chrome, PINNED above the rows: the heading, how
+// a chain is read, the "no levels" state, and whatever validatePackagingChain
+// has to say about the chain as a whole.
+//
+// They used to lead and trail the BODY, and a body line that belongs to no
+// navigable row is a line no key can reach: jdeLines.Window anchors on the
+// cursor's block and a columnar cursor cannot go above its first row. On a NEW
+// item — the state this list opens in, where the only navigable row is the
+// trailing "(add a level)" and the bar therefore names no movement key at all —
+// the pane read `↑ N more above` over the heading and the sentence that explains
+// what the numbers in the list MEAN, at every pane from 45x14 up. Pinned, they
+// are trimmed by jdeFitHeader, which gives ground BY RANK and claims nothing
+// about what it dropped.
+//
+// The VALIDATION messages take the one essential row a header may have
+// (jdeMinBudget): they are the reason the item will not save, and the rest of
+// this header is standing explanation. With the chain valid there is nothing to
+// say, and the row goes to the "no levels" state or, failing that, to the
+// HEADING — a header that marks nothing essential would have to be written down
+// as such, and there is always something here worth the row.
+//
+// That last clause was true of the prose and false of the code for a release:
+// the default branch — a populated item whose chain validates, which is the
+// state an operator spends nearly all their time in — promoted nothing, and the
+// heading sat at jdeHeadContext where jdeFitHeader gives ground from the END
+// within a rank. It went unreported because the header sweep built this site in
+// the EMPTY state alone, so the branch that marked nothing was never the branch
+// measured; jdeHeaderCases walks both now.
+//
+// The per-row ERROR left the body entirely and rides the layer's STATUS ROW,
+// which no budget can trim — the answer-surface rule. It was the last two lines
+// of the body, so it was the first thing a short pane lost, and it is the
+// screen's answer to a keypress.
+func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
+	unit := s.baseUnitValue()
+	// The heading's RANK is decided by what else the header will carry, so the
+	// two facts it depends on are computed before the header is built. With a
+	// valid chain on a populated item — the COMMON state, and the one the
+	// swept fixture used not to reach — there is no warning and no empty-state
+	// fact, and the heading is then the only row left to be the one the
+	// operator cannot act without. It said so in prose above while marking
+	// nothing at all, which is rule 8 in the quiet direction: a claim the code
+	// does not honour, on the sweep's own vacuity guard.
+	msgs := validatePackagingChain(s.packRows)
+	var warn []string
+	for _, msg := range msgs {
+		warn = append(warn, jdeIndent+StyleStatusWarn.Render("! "+msg))
+	}
+	headingRank := jdeHeadContext
+	if len(warn) == 0 && len(s.packRows) > 0 {
+		headingRank = jdeHeadEssential
+	}
+	h := jdeHeader(nil).add(headingRank, StyleJDEHeading.Render("Packaging chain"))
+	for _, line := range jdeCaveatLines(fmt.Sprintf(
+		"Largest package first, ending with the base unit. Each level says how many %s it holds — a case of 10 reams of 100 sheets is 1000, 100, 1.",
+		pluralizeUnit(unit, 2)), s.bodyWidth()) {
+		h = h.add(jdeHeadContext, line)
+	}
+	// SPLIT IN TWO, and the split is what makes an essential row possible here.
+	//
+	// It was one sentence — "No packaging levels — this item is counted in
+	// <unit>." — written straight to the pane, and at the 80-column floor that is
+	// 52 cells against 51, so clampToBox cut it to "…counted in uni": a value
+	// truncated into something that reads finished, standing rule 6. Folding it
+	// fixes the cut and cannot fix the RANK, because a header may mark exactly
+	// one row essential (jdeMinBudget) and a fold's last line alone reads
+	// "units." — the row a short pane keeps would say nothing at all.
+	//
+	// So the FACT is a fixed sentence that fits one row at 80 columns, and the
+	// UNIT — which is OMS-supplied and therefore unbounded, so no wording
+	// containing it can promise to fit — rides behind it as context that folds.
+	// Whatever must survive must lead, one level down from the caveat rows.
+	var emptyFact string
+	var emptyDetail []string
+	if len(s.packRows) == 0 {
+		emptyFact = jdeIndent + StyleMuted.Render("No packaging levels on this item.")
+		emptyDetail = jdeCaveatLines(fmt.Sprintf(
+			"It is counted in %s.", pluralizeUnit(unit, 2)), s.bodyWidth())
+	}
+	switch {
+	case len(warn) > 0:
+		if emptyFact != "" {
+			h = h.add(jdeHeadDecorative, "").add(jdeHeadContext, emptyFact).
+				add(jdeHeadContext, emptyDetail...)
+		}
+		h = h.add(jdeHeadDecorative, "")
+		// The LAST message is the essential one: jdeFitHeader gives ground from
+		// the END within a rank, so anything marked essential has to be the row
+		// that survives, and marking more than one is a claim the geometry
+		// cannot honour.
+		h = h.add(jdeHeadContext, warn[:len(warn)-1]...).
+			add(jdeHeadEssential, warn[len(warn)-1])
+	case emptyFact != "":
+		h = h.add(jdeHeadDecorative, "").
+			add(jdeHeadEssential, emptyFact).
+			add(jdeHeadContext, emptyDetail...)
+	default:
+		h = h.add(jdeHeadDecorative, "")
+	}
+	return h.add(jdeHeadDecorative, "")
 }
 
 // chainListLines is the rung list, split out of viewChain so the movement arm
@@ -395,16 +498,6 @@ func (s *InventoryItemFormScreen) viewChain() string {
 func (s *InventoryItemFormScreen) chainListLines() *jdeLines {
 	unit := s.baseUnitValue()
 	l := &jdeLines{}
-	l.Add(StyleJDEHeading.Render("Packaging chain"))
-	l.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf(
-		"Largest package first, ending with the base unit. Each level says how many %s it holds — a case of 10 reams of 100 sheets is 1000, 100, 1.",
-		pluralizeUnit(unit, 2))))
-	l.Add("")
-
-	if len(s.packRows) == 0 {
-		l.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf(
-			"No packaging levels — this item is counted in %s.", pluralizeUnit(unit, 2))))
-	}
 	for i, row := range s.packRows {
 		name := strings.TrimSpace(row.name)
 		if name == "" {
@@ -435,14 +528,6 @@ func (s *InventoryItemFormScreen) chainListLines() *jdeLines {
 		l.AddRow(s.chainAddRow(), "    "+StyleMuted.Render(add))
 	}
 
-	for _, msg := range validatePackagingChain(s.packRows) {
-		l.Add("")
-		l.Add(jdeIndent + StyleStatusWarn.Render("! "+msg))
-	}
-	if s.chainRowErr != "" {
-		l.Add("")
-		l.Add(jdeIndent + StyleStatusError.Render("✗ "+s.chainRowErr))
-	}
 	return l
 }
 
@@ -451,7 +536,8 @@ func (s *InventoryItemFormScreen) chainListLines() *jdeLines {
 // writes nothing either way and there is nothing to cancel.
 func (s *InventoryItemFormScreen) chainBar(body *jdeLines) []actionBarItem {
 	n := s.chainAddRow() + 1
-	return s.chainBarItems(n, s.bodyPagesForBar(body, n, 0, s.chainBarItems(jdeCeilingRows, true)))
+	return s.chainBarItems(n, s.bodyPagesForBar(body, n, len(s.chainHeader()),
+		s.chainBarItems(jdeCeilingRows, true)))
 }
 
 // chainBarItems is chainBar for a given paging state, so the bar that is

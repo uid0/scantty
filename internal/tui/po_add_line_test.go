@@ -1613,3 +1613,52 @@ func poAddLongestPrefixOf(line, whole string) int {
 	}
 	return 0
 }
+
+// TestPOAddLine_ThePinnedRowsShareTheScreensLabelColumn: the Supplier and Order
+// rows pinned above the scan box sit in the SAME label column as the box.
+//
+// One shared label column is what the whole columnar convention rests on, and
+// this is the phase an operator drives with a barcode scanner — the one place a
+// row that does not line up is read at a glance rather than studied.
+//
+// It broke because renderJDEFields computes jdeLabelWidth over ONLY the fields
+// it is handed. Handed "Supplier" and "Order" it answers 8, where the rest of
+// the screen renders against poAddLabelWidth()'s 12 ("Supplier SKU" is the
+// widest of poAddLabels), and renderJDEField RIGHT-ALIGNS the label into that
+// width — so the two pinned rows and their dotted leaders drew four cells to
+// the left of the `Scan / type` row directly beneath them.
+//
+// Asserted through the LEADER's column on the clipped pane rather than through
+// the builder: the leader is what an operator's eye follows down the sheet, and
+// the screen's own string is not what they read.
+func TestPOAddLine_ThePinnedRowsShareTheScreensLabelColumn(t *testing.T) {
+	for _, w := range []int{80, 100, 120} {
+		s := NewPurchaseOrderAddLineScreen(Deps{}, poViewPO())
+		pane := jdeClippedPane(s, w, 40)
+
+		cols := map[string]int{}
+		for _, line := range strings.Split(pane, "\n") {
+			plain := stripANSI(line)
+			at := strings.Index(plain, strings.TrimRight(jdeLeader, " "))
+			if at < 0 {
+				continue
+			}
+			label := strings.TrimSpace(plain[:at])
+			switch label {
+			case "Supplier", "Order", "Scan / type":
+				cols[label] = at
+			}
+		}
+		for _, want := range []string{"Supplier", "Order", "Scan / type"} {
+			if _, ok := cols[want]; !ok {
+				t.Fatalf("at %d columns the identify frame drew no %q row, so this check "+
+					"compares nothing:\n%s", w, want, pane)
+			}
+		}
+		if cols["Supplier"] != cols["Scan / type"] || cols["Order"] != cols["Scan / type"] {
+			t.Errorf("at %d columns the pinned rows do not share the scan box's label "+
+				"column — Supplier at %d, Order at %d, Scan / type at %d:\n%s",
+				w, cols["Supplier"], cols["Order"], cols["Scan / type"], pane)
+		}
+	}
+}

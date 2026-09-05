@@ -315,6 +315,22 @@ type PurchaseOrderEditScreen struct {
 	// the frame is opened or the write goes out.
 	deleteNote string
 
+	// Where the delete confirm's prose is scrolled to.
+	//
+	// It exists because that frame's body owns no navigable row — deleting takes
+	// no reason, so there is nothing to type into and nothing for a cursor to
+	// stand on — and jdeLines.block() answers (0,0) for a row that owns no line,
+	// so a cursor-anchored window is PINNED at the top of the body for as long
+	// as the frame is up. The caveat folds to three lines at 80 columns and to
+	// nine at 45, and the operator's own declining keypress adds two more, so at
+	// 80x15, 60x15 and 45x16 the pane drew `↓ N more below` over prose no key
+	// could fetch: the frame promising content on a surface where the next
+	// keystroke destroys a line. An OFFSET is the layer's instrument for a
+	// read-only body (frameScrolled), the same one po_add_line's confirm and the
+	// order pad use, and the bar names its keys through bodyScrollsForBar so the
+	// claim and the key are one expression.
+	deleteScroll int
+
 	// Association pickers (op-shb9). The option lists load once when the screen
 	// opens; assocField / assocLineIdx / assocRows / assocCursor describe the
 	// picker currently open, whether it was opened from an order-level row or
@@ -1604,7 +1620,18 @@ func (s *PurchaseOrderEditScreen) removalFlipNote() string {
 // that NOTHING WAS WRITTEN, which is the fact, and loses only the part of the
 // reason the frame around them already shows.
 const (
-	poEditLineGoneNote      = "nothing written: that line has left this order"
+	poEditLineGoneNote = "nothing written: that line has left this order"
+	// poEditDeleteStoodNote is the CONSEQUENCE the header carries while the
+	// status row is drawing the server's own account of a refused delete. The
+	// server says what went wrong; this says what that means for the order, and
+	// nothing else on the frame does.
+	//
+	// It fits the pane it is promised on: 45 display cells against the 49
+	// pickerClip is given at 80 columns, where screenBodyWidth is 51 and
+	// jdeIndent takes two. The first wording was 53 and was therefore ALWAYS
+	// ellipsized at the width that must hold — a fixed sentence under this
+	// file's own control that no operator could ever read whole.
+	poEditDeleteStoodNote   = "Nothing was deleted; the line is still there."
 	poEditLineSaveGoneNote  = "nothing saved: that line has left this order"
 	poEditLineVoidGoneNote  = "nothing voided: that line has left this order"
 	poEditLineDelGoneNote   = "nothing deleted: that line has left this order"
@@ -1737,6 +1764,10 @@ func (s *PurchaseOrderEditScreen) openDeleteLine(idx int) {
 	s.editLineIdx = idx
 	s.errMsg = ""
 	s.deleteNote = ""
+	// The prose starts at the top on every opening: this frame is reached from
+	// a different line each time, and inheriting the last one's offset would
+	// open a destroy confirm part-way down its own warning.
+	s.deleteScroll = 0
 }
 
 // updateDeleteLine is the confirm's key handler.
@@ -1757,6 +1788,11 @@ func (s *PurchaseOrderEditScreen) updateDeleteLine(m tea.KeyMsg) (Screen, tea.Cm
 		s.returnFromSub()
 		return s, nil
 	case "ctrl+x":
+		// The two arms below are the two halves of !deleteDestroys, kept apart
+		// because they are different facts and the operator acts differently on
+		// each: a write already out, and a server that has taken the instrument
+		// away under an open confirm. The BAR asks deleteDestroys once and drops
+		// the key for either.
 		if s.saving {
 			// A delete is already out. The status row is drawing "Deleting…"
 			// and the bar has dropped the key, so the frame has answered
@@ -1798,6 +1834,28 @@ func (s *PurchaseOrderEditScreen) updateDeleteLine(m tea.KeyMsg) (Screen, tea.Cm
 			}
 			return poLineActionMsg{err: err, action: "line delete", done: done}
 		}
+	case "up", "down", "pgup", "pgdown", "home", "end":
+		if !s.frameDrawn(s.deleteHeaderRows(), s.deleteBar()) {
+			// Refused pane: the prose is not drawn, so scrolling it would move
+			// the operator's place invisibly and the terminal grown back would
+			// open the confirm somewhere they never scrolled to. An arm whose
+			// whole product is a POSITION says nothing rather than declining
+			// out loud — see the layer's Movement block.
+			return s, nil
+		}
+		if !s.deleteScrolls() {
+			// The whole caveat is on the pane, so there is nothing to fetch and
+			// the bar has already dropped the keys. It still ANSWERS, because
+			// this frame draws no cursor and no caret: a silent return here is
+			// the byte-identical redraw the note exists to prevent. The note
+			// goes to the STATUS ROW rather than the body, or writing it would
+			// push the caveat past the window and make it false — deleteStatus.
+			s.deleteNote = m.String() + " moves nothing — the whole warning is on the pane."
+			return s, nil
+		}
+		s.deleteScroll = jdeScrollStep(m.String(), s.deleteScroll,
+			s.deleteBody().Len(), s.scrollRows(s.deleteHeaderRows(), s.deleteBar()))
+		return s, nil
 	}
 	s.deleteNote = m.String() + " does nothing here — this frame only confirms or cancels."
 	return s, nil
@@ -1806,11 +1864,91 @@ func (s *PurchaseOrderEditScreen) updateDeleteLine(m tea.KeyMsg) (Screen, tea.Cm
 // deleteBar names Ctrl-X only while it will act. While the write is out the
 // frame's status row is the answer and the key is not offered — see
 // updateDeleteLine.
+//
+// THE DESTROY KEY AND THE SCROLL KEYS ARE TWO QUESTIONS AND ARE ASKED
+// SEPARATELY. They used to be one: the saving branch returned the bare
+// {Esc=Back} and RETURNED, so a delete in flight took the movement tokens off
+// the bar while deleteScrolls — which never mirrored the branch — went on
+// answering true and the arm went on scrolling. Rule 2 in the direction that is
+// easy to miss, a key that ACTS while the bar names nothing, on the frame an
+// operator is watching an irreversible write from. Reading the warning while
+// the server thinks is exactly what somebody does there, so the answer is to
+// go on NAMING the scroll keys rather than to freeze them: withholding them
+// would leave the caveat's `↓ N more below` marker standing over a bar offering
+// nothing to press, which is the dead end this whole change exists to remove.
 func (s *PurchaseOrderEditScreen) deleteBar() []actionBarItem {
-	if s.saving || !s.removalPhaseHolds() {
-		return []actionBarItem{{"Esc", "Back"}}
+	return s.deleteBarItems(s.deleteDestroys(), s.deleteScrolls())
+}
+
+// deleteDestroys is the ONE expression behind "may Ctrl-X write". The bar reads
+// it to decide whether to name the key and the arm reads it to decide whether
+// to act, because two copies of a condition is precisely how the bar and the
+// arm came apart above.
+func (s *PurchaseOrderEditScreen) deleteDestroys() bool {
+	return !s.saving && s.removalPhaseHolds()
+}
+
+// deleteBarItems is deleteBar for a given destroy and scroll state, so the bar
+// that is MEASURED against the pane is the bar that is DRAWN on it — the pair
+// every other columnar sheet keeps for the same reason.
+//
+// The scroll keys are named when, and only when, the caveat outruns the window.
+// Naming them unconditionally would put three tokens on a 49-cell bar to
+// advertise an offset ClampScroll writes straight back; withholding them where
+// the caveat DOES outrun the window is the defect this pair exists to close.
+func (s *PurchaseOrderEditScreen) deleteBarItems(destroy, scroll bool) []actionBarItem {
+	items := []actionBarItem{{"Ctrl-X", "Delete line"}, {"Esc", "Cancel"}}
+	if !destroy {
+		// Esc still LEAVES while the write is out — a frame with no way off it
+		// is the worse defect — so the bar keeps one key and drops the one that
+		// would not act.
+		items = []actionBarItem{{"Esc", "Back"}}
 	}
-	return []actionBarItem{{"Ctrl-X", "Delete line"}, {"Esc", "Cancel"}}
+	if scroll {
+		items = append(items,
+			actionBarItem{"UP/DN", "Scroll"},
+			actionBarItem{"PgUp/PgDn", "Page"},
+			actionBarItem{"Home/End", "Top/End"})
+	}
+	return items
+}
+
+// deleteScrolls is the confirm's half of the bar-honesty rule: the scroll keys
+// are named when, and only when, the body actually moves.
+//
+// It answers false where the frame draws no body at all (no line addressed, or
+// the server's flag has flipped under an open confirm), because those frames are
+// not this one — viewDeleteLine hands them back to the form and the line editor,
+// whose own bars make their own claims.
+//
+// The bar it measures against is the one WITH the scroll keys on it: naming them
+// costs cells, cells fold the bar onto another row, and a folded bar leaves the
+// body one row fewer, so the tallest bar is the fixed point and the answer
+// cannot oscillate between frames.
+func (s *PurchaseOrderEditScreen) deleteScrolls() bool {
+	if _, ok := s.addressedLine(); !ok || !s.removalPhaseHolds() {
+		return false
+	}
+	// The bar it measures against is the one that will really be DRAWN with the
+	// scroll keys added — not an unconditional deleteBarItems(true, true).
+	// While the write is out the drawn bar has lost Ctrl-X and is a row shorter,
+	// so a body measured against the taller bar can answer "it scrolls" for a
+	// body that fits: the arm would then bump the offset, ClampScroll would put
+	// it straight back, and the pane would come back byte-identical with no note
+	// — rule 1 broken by an arithmetic that measured a bar nobody draws.
+	return s.bodyScrollsForBar(s.deleteBody(), s.deleteHeaderRows(),
+		s.deleteBarItems(s.deleteDestroys(), true))
+}
+
+// deleteHeaderRows is what the confirm's pinned header costs the body, asked of
+// the header the frame really builds rather than counted by hand. Zero where no
+// line is addressed, which is a frame viewDeleteLine hands back to the form.
+func (s *PurchaseOrderEditScreen) deleteHeaderRows() int {
+	li, ok := s.addressedLine()
+	if !ok {
+		return 0
+	}
+	return len(s.deleteHeader(li, s.bodyWidth()))
 }
 
 // deleteHeadline is the ONE thing the confirm may not be drawn without: what is
@@ -1939,6 +2077,13 @@ func (s *PurchaseOrderEditScreen) deleteCaveats() []string {
 // header measured that is not the header drawn.
 func (s *PurchaseOrderEditScreen) deleteHeader(li omsapi.PurchaseOrderItem, width int) jdeHeader {
 	h := jdeHeader(nil).add(jdeHeadEssential, s.deleteHeadline(li, width))
+	// FIRST among the context rows, because jdeFitHeader gives ground from the
+	// END within a rank: a refused delete is why this frame is still standing,
+	// and the two rows below it are facts an operator can still read off the
+	// line editor behind it.
+	if row := s.deleteStandingRow(width); row != "" {
+		h = h.add(jdeHeadContext, row)
+	}
 	if total := formatMoney(li.EstimatedCost); total != "" {
 		h = h.add(jdeHeadContext, jdeIndent+StyleMuted.Render("Line total on the order: "+total))
 	}
@@ -1964,22 +2109,161 @@ func (s *PurchaseOrderEditScreen) viewDeleteLine() string {
 		return s.viewLineEdit()
 	}
 	width := s.bodyWidth()
+	frame, offset := s.jdeScreen.frameScrolled(
+		s.deleteHeader(li, width), s.deleteBody(), s.deleteScroll,
+		s.deleteStatus(), s.deleteBar())
+	// Stored back so the offset this screen holds is the one that was DRAWN:
+	// `end` asks for the whole body and the frame clamps it against the pane it
+	// has, which is what makes "↓ 0 more below" impossible.
+	s.deleteScroll = offset
+	return frame
+}
 
+// deleteBody is the confirm's scrollable prose, said ONCE so the lines the bar
+// is measured against are the lines the frame draws. It owns no navigable row
+// on purpose: deleting takes no reason, so there is nothing to type into, and
+// the window over it is positioned by an OFFSET rather than by a cursor.
+//
+// It is THE CAVEATS AND NOTHING ELSE. The screen's answer to a keypress rides
+// deleteStatus, because a body the bar is measured against is a body an answer
+// written into it can change the bar's mind about — see deleteStatus for the
+// self-falsifying note that came of it.
+func (s *PurchaseOrderEditScreen) deleteBody() *jdeLines {
+	width := s.bodyWidth()
 	body := &jdeLines{}
+	// A separator CLOSES the block above it and never opens the one below, and
+	// on a scrolled body that is not a layout preference: `end` asks for the
+	// last line, so a trailing blank is a frame that answers Home/End with an
+	// empty pane. It is emitted before the next block instead.
+	// The flag rather than body.Len(): a jdeLines' Len() in a comparison IS the
+	// scroll question wherever it appears, and the layer owns that
+	// (TestJDEForm_NoSheetAnswersTheScrollQuestionItself). This one is only
+	// asking whether anything has been emitted yet.
+	first := true
+	block := func(text string) {
+		if !first {
+			body.Add("")
+		}
+		first = false
+		for _, line := range jdeCaveatLines(text, width) {
+			body.Add(line)
+		}
+	}
 	for _, caveat := range s.deleteCaveats() {
-		for _, line := range jdeCaveatLines(caveat, width) {
-			body.Add(line)
-		}
-		body.Add("")
+		block(caveat)
 	}
-	if s.deleteNote != "" {
-		for _, line := range jdeCaveatLines(s.deleteNote, width) {
-			body.Add(line)
+	return body
+}
+
+// deleteStatus is the confirm's one status row: what is in flight, what failed,
+// and what the last keypress DID — the sibling attachment confirm's
+// confirmDeleteStatus, said the same way so the two confirms cannot drift.
+//
+// THE ANSWER MAY NOT LIVE IN THE BODY THE BAR IS MEASURED AGAINST. deleteNote
+// used to be a final block of deleteBody, and deleteScrolls measures
+// deleteBody, so the note FALSIFIED ITSELF by existing: at 80 columns, wherever
+// the caveat folded to about three lines and the pane gave the body three to
+// five rows, deleteScrolls was false, the bar named no movement token, and Down
+// answered "down moves nothing — the whole warning is on the pane." That note
+// folds to two lines plus its separator, which took the body past the window —
+// and past it twice over, because naming UP/DN, PgUp/PgDn and Home/End folds
+// the 49-cell bar onto another row and costs the body one more. So the next
+// frame drew `↓ N more below`, sprouted three movement tokens, and put the
+// sentence denying all of it below the fold, where the operator has to scroll
+// to read the claim that there is nothing to scroll to.
+//
+// The status row is a surface no budget can trim: the frames append it
+// unconditionally and it is reserved on every pane. Writing the answer there
+// cannot change whether the body scrolls, so the bar's claim and the frame's
+// answer stop depending on each other.
+//
+// The ORDER of the three is the layer's own. An in-flight write wins, with the
+// answer LEADING it through poLeadOnto rather than being swallowed — every key
+// this frame declines is still pressable while the delete is out, which is
+// exactly when a swallowed answer reads as a wedged program. A FAILURE takes
+// the row alone: an order-level error is never led (po_create's statusPlan
+// carries that decision and the reason for it). Otherwise the answer has the
+// row to itself, at StatusInfo — the muted, unmarked level, because a benign
+// decline is not a failure and drawing one behind ✗ on a destructive confirm
+// tells the operator something went wrong when nothing did.
+func (s *PurchaseOrderEditScreen) deleteStatus() string {
+	switch {
+	case s.saving:
+		verb := "Deleting…"
+		switch room := s.bodyWidth(); {
+		case s.deleteNote == "":
+		case room > 0:
+			verb = poLeadOnto(s.deleteNote, verb, room)
+		default:
+			// An unsized pane means "do not truncate" everywhere in this layer,
+			// and fitStatus leaves the row alone there too — but poLeadOnto
+			// would read a room of 0 as no room at all and drop the subject.
+			verb = s.deleteNote + poLeadJoint + verb
 		}
+		return s.statusRow(true, verb, "")
+	case s.deleteNote != "":
+		return s.statusAnswer(StatusInfo, s.deleteNote)
 	}
-	return s.jdeScreen.frameWithHeader(
-		s.deleteHeader(li, width), body, 0,
-		s.statusRow(s.saving, "Deleting…", s.errMsg), s.deleteBar())
+	return s.statusRow(false, "", s.errMsg)
+}
+
+// deleteStatusCarriesFailure is the ONE expression behind "is the standing
+// failure on the status row" — it IS the branch order above read back, so the
+// row and the header cannot come to different conclusions about which surface
+// each fact is on.
+//
+// THE ANSWER OUTRANKS THE FAILURE HERE, and that is a ranking decision rather
+// than a reversal of AGENTS.md's "AN ORDER-LEVEL ERROR IS NEVER LED". That rule
+// is about po_create's errMsg, which belongs to the WHOLE ORDER — a submit that
+// came back refused, on the surface an order is committed from — and it takes
+// that row from an answer because the error is the fact and a picker hint is
+// the lesser thing beside it. statusPlan ranks the PHASE's failure headline the
+// other way round, BELOW the answer, and hands the headline to the pinned
+// header when the answer takes the row. A refused per-line DELETE is that
+// second kind: it is scoped to the one line this whole frame is about, not to
+// the order, so it takes the header and the answer takes the row.
+//
+// The answer has to be the one on the STATUS ROW because that is the only
+// surface no budget can trim. It was in the measured body first (where writing
+// it flipped the bar's own scroll answer), then on this row but only while no
+// failure stood, then in a header CONTEXT row — which jdeFitHeader gives ground
+// with first, so at the minimum drawable budget the declined key wrote a note
+// nothing drew and the pane came back byte for byte identical at 80x12. Rule 1,
+// on a destructive confirm, after a destroy that failed.
+func (s *PurchaseOrderEditScreen) deleteStatusCarriesFailure() bool {
+	return !s.saving && s.deleteNote == "" && s.errMsg != ""
+}
+
+// deleteStandingRow is what the pinned header carries while a refused delete
+// stands: the REMAINDER of the pair the status row could not hold.
+//
+// It is ONE CLIPPED ROW AND IT IS PRESENT IN BOTH STATES, which is what keeps
+// the two facts from trading places invisibly:
+//
+//   - while the row draws the FAILURE (no key declined yet) this carries the
+//     consequence, which is the half of the news an operator acts on and which
+//     the server's own sentence never states — nothing was destroyed;
+//   - once a declined key takes the row, this carries the FAILURE, so the
+//     reason the confirm is still standing does not vanish with the keypress
+//     that answered.
+//
+// THE HEIGHT MAY NOT MOVE WITH THE NOTE. deleteHeaderRows feeds deleteScrolls,
+// so a header that grew by a row when a note was written would shrink the body
+// by one and could flip "the whole warning is on the pane" from true to false —
+// the note falsifying itself, which is the defect that took the note off the
+// body in the first place. One row in both states cannot.
+//
+// A short pane still trims this, as it trims every context row; what it may not
+// trim is the operator's answer, and that is on the row above the bar.
+func (s *PurchaseOrderEditScreen) deleteStandingRow(width int) string {
+	if s.saving || s.errMsg == "" {
+		return ""
+	}
+	room := width - len(jdeIndent)
+	if s.deleteStatusCarriesFailure() {
+		return jdeIndent + StyleMuted.Render(pickerClip(poEditDeleteStoodNote, room))
+	}
+	return jdeIndent + StyleStatusError.Render(pickerClip(jdeStatusErrMark+s.errMsg, room))
 }
 
 // ---------------------------------------------------------------------------

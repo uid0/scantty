@@ -688,20 +688,33 @@ func TestJDESweepD_GenerateResultScrolls(t *testing.T) {
 			t.Errorf("the report bar should offer %q: %q", want, bar)
 		}
 	}
-	// Scrolling clamps at both ends rather than wrapping.
+	// Scrolling clamps at both ends rather than wrapping, and it is asserted on
+	// the offset the frame DREW rather than on the one a press asked for: the
+	// bottom clamp is the layer's (frameScrolled clamps against the pane it has
+	// and hands the offset back), so a press-only loop would read the raw
+	// request and report a clamp that is working as broken.
+	draw := func() { s.View() }
 	for i := 0; i < 60; i++ {
 		s.Update(tea.KeyMsg{Type: tea.KeyDown})
+		draw()
 	}
-	atEnd := s.resultCursor
+	atEnd := s.resultScroll
 	s.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if s.resultCursor != atEnd {
-		t.Errorf("scrolling past the end should clamp, %d → %d", atEnd, s.resultCursor)
+	draw()
+	if s.resultScroll != atEnd {
+		t.Errorf("scrolling past the end should clamp, %d → %d", atEnd, s.resultScroll)
+	}
+	if atEnd == 0 {
+		t.Fatal("the report never scrolled, so the clamp assertions above hold for a " +
+			"reason unrelated to the property they name — the fixture is meant to " +
+			"outrun the pane")
 	}
 	for i := 0; i < 60; i++ {
 		s.Update(tea.KeyMsg{Type: tea.KeyUp})
+		draw()
 	}
-	if s.resultCursor != 0 {
-		t.Errorf("scrolling past the top should clamp at 0, got %d", s.resultCursor)
+	if s.resultScroll != 0 {
+		t.Errorf("scrolling past the top should clamp at 0, got %d", s.resultScroll)
 	}
 }
 
