@@ -2581,8 +2581,12 @@ is the authority; read it before adding a frame or wording a bar.
   `block()` answers `(0,0)` for and pressing Down at the bottom threw the reader
   back to the top. It is an offset now (`resultScroll`).
 - **`jdeScrollStep` (`jde_form.go`) is the ONE key-to-offset mapping**, the
-  offset analogue of `pickRow` / `moveRow` / `pageRow`. Six sheets had written
-  the same six-arm switch out by hand. Whether a key acts at all is still the
+  offset analogue of `pickRow` / `moveRow` / `pageRow`. THREE copies of the same
+  six-arm switch had been written out by hand across TWO files — `po_detail`'s
+  `handleSheetKey` and `handleOrderPadKey`, and `po_add_line`'s `keyConfirm` —
+  and this change puts three more sites on that footing (the two removal
+  confirms and the slot-generate run report, none of which had an offset
+  before). Whether a key acts at all is still the
   SHEET's question — the two gates are asked of different bars — and the clamp is
   one-sided on purpose: `end` asks for the whole body and `frameScrolled` brings
   it back against the pane it is about to draw into, which is what makes

@@ -2533,12 +2533,16 @@ func (g jdeScreen) scrollRows(headerRows int, items []actionBarItem) int {
 // jdeScrollStep is what one movement key does to a read-only body's OFFSET: the
 // offset analogue of pickRow / moveRow / pageRow, which move a cursor.
 //
-// It exists because the switch it replaces had been written out by hand at every
-// sheet that scrolls one — the purchase-order detail's sheet, its order pad, the
-// add-line confirm, and the two removal confirms and the slot-generate run
-// report this change put on the same footing — and six copies of one mapping is
-// how the ~50 copies of the scroll ARITHMETIC that sc-jde-lift had to unpick
-// began. Whether a key acts at all is still the SHEET's question: the two gates
+// It exists because the switch it replaces had already been written out by hand
+// THREE times across TWO files — po_detail's handleSheetKey and its order pad's
+// handleOrderPadKey, and po_add_line's keyConfirm — and this change puts three
+// more sites on the same footing: the two removal confirms and the slot-generate
+// run report, none of which had an offset to map a key onto before it. Three
+// copies of one mapping with three more arriving is how the ~50 copies of the
+// scroll ARITHMETIC that sc-jde-lift had to unpick began, and a count is the
+// kind of recorded history a later reader greps: six pre-existing copies is not
+// what they would find. Whether a key acts at all is still the SHEET's question:
+// the two gates
 // (is the frame drawn, does the body move) are asked of different bars and are
 // spelled at each site.
 //

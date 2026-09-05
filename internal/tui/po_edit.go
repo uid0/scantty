@@ -1621,11 +1621,17 @@ func (s *PurchaseOrderEditScreen) removalFlipNote() string {
 // reason the frame around them already shows.
 const (
 	poEditLineGoneNote = "nothing written: that line has left this order"
-	// poEditDeleteStoodNote is what the delete confirm's answer row says while
-	// the failure on the status row is the newest thing that happened. The
-	// delete did not go through, so the fact worth the row is that nothing was
-	// destroyed.
-	poEditDeleteStoodNote   = "The delete failed, so the line is still on the order."
+	// poEditDeleteStoodNote is the CONSEQUENCE the header carries while the
+	// status row is drawing the server's own account of a refused delete. The
+	// server says what went wrong; this says what that means for the order, and
+	// nothing else on the frame does.
+	//
+	// It fits the pane it is promised on: 45 display cells against the 49
+	// pickerClip is given at 80 columns, where screenBodyWidth is 51 and
+	// jdeIndent takes two. The first wording was 53 and was therefore ALWAYS
+	// ellipsized at the width that must hold — a fixed sentence under this
+	// file's own control that no operator could ever read whole.
+	poEditDeleteStoodNote   = "Nothing was deleted; the line is still there."
 	poEditLineSaveGoneNote  = "nothing saved: that line has left this order"
 	poEditLineVoidGoneNote  = "nothing voided: that line has left this order"
 	poEditLineDelGoneNote   = "nothing deleted: that line has left this order"
@@ -2072,10 +2078,10 @@ func (s *PurchaseOrderEditScreen) deleteCaveats() []string {
 func (s *PurchaseOrderEditScreen) deleteHeader(li omsapi.PurchaseOrderItem, width int) jdeHeader {
 	h := jdeHeader(nil).add(jdeHeadEssential, s.deleteHeadline(li, width))
 	// FIRST among the context rows, because jdeFitHeader gives ground from the
-	// END within a rank: the answer to the key just pressed is the row rule 1
-	// depends on, and the two below it are standing facts an operator can still
-	// read off the line editor behind this frame.
-	if row := s.deleteAnswerRow(width); row != "" {
+	// END within a rank: a refused delete is why this frame is still standing,
+	// and the two rows below it are facts an operator can still read off the
+	// line editor behind it.
+	if row := s.deleteStandingRow(width); row != "" {
 		h = h.add(jdeHeadContext, row)
 	}
 	if total := formatMoney(li.EstimatedCost); total != "" {
@@ -2195,60 +2201,69 @@ func (s *PurchaseOrderEditScreen) deleteStatus() string {
 			verb = s.deleteNote + poLeadJoint + verb
 		}
 		return s.statusRow(true, verb, "")
-	case !s.deleteStatusCarriesAnswer():
-		return s.statusRow(false, "", s.errMsg)
+	case s.deleteNote != "":
+		return s.statusAnswer(StatusInfo, s.deleteNote)
 	}
-	return s.statusAnswer(StatusInfo, s.deleteNote)
+	return s.statusRow(false, "", s.errMsg)
 }
 
-// deleteStatusCarriesAnswer is the ONE expression behind "is the answer to the
-// last keypress on the status row" — it IS the branch condition above, so the
+// deleteStatusCarriesFailure is the ONE expression behind "is the standing
+// failure on the status row" — it IS the branch order above read back, so the
 // row and the header cannot come to different conclusions about which surface
-// the answer is on.
+// each fact is on.
 //
-// It is false in exactly one state, and that state is reachable: poLineActionMsg
-// with an error sets saving false and errMsg WITHOUT changing the phase, so a
-// DELETE that the server refused leaves this confirm standing with the failure
-// on the status row. The failure takes that row alone — an order-level error is
-// never led (po_create's statusPlan carries the decision and the reason) — so
-// every key the frame declines afterwards wrote a note nothing drew, and the
-// pane came back byte for byte identical. Rule 1, on a destructive confirm,
-// after a destroy that failed: the worst place in the program to look wedged.
-func (s *PurchaseOrderEditScreen) deleteStatusCarriesAnswer() bool {
-	return s.saving || s.errMsg == ""
+// THE ANSWER OUTRANKS THE FAILURE HERE, and that is a ranking decision rather
+// than a reversal of AGENTS.md's "AN ORDER-LEVEL ERROR IS NEVER LED". That rule
+// is about po_create's errMsg, which belongs to the WHOLE ORDER — a submit that
+// came back refused, on the surface an order is committed from — and it takes
+// that row from an answer because the error is the fact and a picker hint is
+// the lesser thing beside it. statusPlan ranks the PHASE's failure headline the
+// other way round, BELOW the answer, and hands the headline to the pinned
+// header when the answer takes the row. A refused per-line DELETE is that
+// second kind: it is scoped to the one line this whole frame is about, not to
+// the order, so it takes the header and the answer takes the row.
+//
+// The answer has to be the one on the STATUS ROW because that is the only
+// surface no budget can trim. It was in the measured body first (where writing
+// it flipped the bar's own scroll answer), then on this row but only while no
+// failure stood, then in a header CONTEXT row — which jdeFitHeader gives ground
+// with first, so at the minimum drawable budget the declined key wrote a note
+// nothing drew and the pane came back byte for byte identical at 80x12. Rule 1,
+// on a destructive confirm, after a destroy that failed.
+func (s *PurchaseOrderEditScreen) deleteStatusCarriesFailure() bool {
+	return !s.saving && s.deleteNote == "" && s.errMsg != ""
 }
 
-// deleteAnswerRow is the answer's SECOND surface, and it is the shape
-// po_create's answerRows already uses: the status row holds ONE fact, so a
-// frame with a standing failure AND an answer to the last keypress puts the
-// answer in the pinned header.
+// deleteStandingRow is what the pinned header carries while a refused delete
+// stands: the REMAINDER of the pair the status row could not hold.
 //
-// IT IS ONE ROW, CLIPPED, AND IT IS DRAWN WHENEVER THE FAILURE IS STANDING —
-// with a standing fact in it when there is no answer yet. Both halves are
-// load-bearing and neither is taste:
+// It is ONE CLIPPED ROW AND IT IS PRESENT IN BOTH STATES, which is what keeps
+// the two facts from trading places invisibly:
 //
-// The height may not move with the note, or this reintroduces the defect the
-// note was moved OFF the body to fix. deleteHeaderRows feeds deleteScrolls, so
-// a header that grows by a row when a note is written shrinks the body by one,
-// which can flip "the whole warning is on the pane" from true to false — the
-// note falsifying itself again, one surface over. Clipped to a single row and
-// present in both states, the header is the same height whatever the note says.
+//   - while the row draws the FAILURE (no key declined yet) this carries the
+//     consequence, which is the half of the news an operator acts on and which
+//     the server's own sentence never states — nothing was destroyed;
+//   - once a declined key takes the row, this carries the FAILURE, so the
+//     reason the confirm is still standing does not vanish with the keypress
+//     that answered.
 //
-// A STANDING FACT rather than a blank, for the reason every phase on the New PO
-// screen fills this row: "nothing to say" and "the row scrolled away" are
-// different states and a blank cannot tell them apart. The fact chosen is the
-// one an operator needs after a destroy that failed and which nothing else on
-// the frame states — the line is still there — and it names no key, because the
-// bar makes that claim where no budget can trim it.
-func (s *PurchaseOrderEditScreen) deleteAnswerRow(width int) string {
-	if s.deleteStatusCarriesAnswer() {
+// THE HEIGHT MAY NOT MOVE WITH THE NOTE. deleteHeaderRows feeds deleteScrolls,
+// so a header that grew by a row when a note was written would shrink the body
+// by one and could flip "the whole warning is on the pane" from true to false —
+// the note falsifying itself, which is the defect that took the note off the
+// body in the first place. One row in both states cannot.
+//
+// A short pane still trims this, as it trims every context row; what it may not
+// trim is the operator's answer, and that is on the row above the bar.
+func (s *PurchaseOrderEditScreen) deleteStandingRow(width int) string {
+	if s.saving || s.errMsg == "" {
 		return ""
 	}
-	text := s.deleteNote
-	if text == "" {
-		text = poEditDeleteStoodNote
+	room := width - len(jdeIndent)
+	if s.deleteStatusCarriesFailure() {
+		return jdeIndent + StyleMuted.Render(pickerClip(poEditDeleteStoodNote, room))
 	}
-	return jdeIndent + StyleMuted.Render(pickerClip(text, width-len(jdeIndent)))
+	return jdeIndent + StyleStatusError.Render(pickerClip(jdeStatusErrMark+s.errMsg, room))
 }
 
 // ---------------------------------------------------------------------------
