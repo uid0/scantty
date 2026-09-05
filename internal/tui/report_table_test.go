@@ -42,7 +42,7 @@ func TestReportFormatters(t *testing.T) {
 func TestReportTableLines_Alignment(t *testing.T) {
 	cols := []reportColumn{{"Name", alignLeft}, {"Qty", alignRight}}
 	rows := [][]string{{"A", "5"}, {"Bravo", "100"}}
-	header, body := reportTableLines(cols, rows)
+	header, body, _ := reportTableLines(cols, rows, 0)
 	if !strings.Contains(header, "Name") || !strings.Contains(header, "Qty") {
 		t.Errorf("header missing column names: %q", header)
 	}
@@ -64,8 +64,8 @@ func cannedTab(label string, rows [][]string) reportTab {
 	return reportTab{
 		label:   label,
 		columns: []reportColumn{{"Col", alignLeft}, {"N", alignRight}},
-		loader: func(ctx context.Context, deps Deps) ([][]string, error) {
-			return rows, nil
+		loader: func(ctx context.Context, deps Deps) (reportBody, error) {
+			return reportBody{rows: rows}, nil
 		},
 	}
 }
@@ -197,10 +197,11 @@ func TestInventoryReportScreen_LoaderFormatsMoney(t *testing.T) {
 	if len(s.tabs) != 3 {
 		t.Fatalf("inventory report should have 3 tabs, got %d", len(s.tabs))
 	}
-	rows, err := s.tabs[0].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[0].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	if *path != "/api/inventory/reports/inventory/stock_by_category/" {
 		t.Fatalf("path = %q", *path)
 	}
@@ -222,10 +223,11 @@ func TestAssetReportScreen_TCOFormatsDecimalString(t *testing.T) {
 		t.Fatalf("asset report should have 5 tabs, got %d", len(s.tabs))
 	}
 	// TCO is tab index 3 (Supplies used is the 5th tab, index 4).
-	rows, err := s.tabs[3].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[3].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("tco loader: %v", err)
 	}
+	rows := body.rows
 	if *path != "/api/inventory/reports/assets/tco/" {
 		t.Fatalf("path = %q", *path)
 	}
@@ -252,10 +254,11 @@ func TestAssetSuppliesUsed_FoldsSourceShapes(t *testing.T) {
 		 "used_at":"2026-07-03T12:00:00+00:00"}]`)
 	s := NewAssetReportScreen(Deps{OMS: c})
 	// Supplies used is the 5th tab (index 4).
-	rows, err := s.tabs[4].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[4].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("supplies_used loader: %v", err)
 	}
+	rows := body.rows
 	if *path != "/api/inventory/reports/assets/supplies_used/" {
 		t.Fatalf("path = %q", *path)
 	}
@@ -290,10 +293,11 @@ func TestPurchasingLeadTime_OnTimeRateNotDoubled(t *testing.T) {
 		"avg_variance":1.5,"on_time_rate":75.0}]`)
 	s := NewPurchasingReportScreen(Deps{OMS: c})
 	// Lead time is the 3rd tab (index 2).
-	rows, err := s.tabs[2].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[2].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("lead_time loader: %v", err)
 	}
+	rows := body.rows
 	if *path != "/api/reorders/reports/purchasing/lead_time_analysis/" {
 		t.Fatalf("path = %q", *path)
 	}
@@ -311,10 +315,11 @@ func TestAssetMaintenanceDue_IncludesSKUAndLastReplaced(t *testing.T) {
 		"days_since_replacement":120,"days_overdue":30,"last_replaced_at":"2026-03-01T00:00:00Z"}]`)
 	s := NewAssetReportScreen(Deps{OMS: c})
 	// Maintenance due is tab index 1.
-	rows, err := s.tabs[1].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[1].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("maintenance_due loader: %v", err)
 	}
+	rows := body.rows
 	if *path != "/api/inventory/reports/assets/maintenance_due/" {
 		t.Fatalf("path = %q", *path)
 	}

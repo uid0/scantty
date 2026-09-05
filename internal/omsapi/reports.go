@@ -114,7 +114,19 @@ type PurchasingSpendByCategory struct {
 }
 
 // PurchasingLeadTime is one row of lead_time_analysis (default trailing 6mo).
-// on_time_rate is a fraction 0..1.
+//
+// on_time_rate is a PERCENTAGE 0..100, not a fraction: the view computes
+// `on_time_count / total * 100` (reorder_queue/views.py) exactly as the other
+// two lead-time payloads do. It used to be documented here as "a fraction
+// 0..1", which the render at internal/tui/report_table.go has never believed —
+// it appends "%" without scaling — so the comment alone was false and its only
+// effect was to invite a reader to "correct" a render that is right and put
+// 7500% on the screen. TestPurchasingLeadTime_OnTimeRateNotDoubled is what
+// holds that render; this comment now agrees with it.
+//
+// avg_variance and on_time_rate are both measured against the supplier link's
+// standing quoted lead time — see LeadTimeYardstick, whose
+// variance_measured_against says so on the wire.
 type PurchasingLeadTime struct {
 	SupplierID           int     `json:"supplier_id"`
 	SupplierName         string  `json:"supplier_name"`
@@ -124,6 +136,7 @@ type PurchasingLeadTime struct {
 	AvgActualLeadTime    float64 `json:"avg_actual_lead_time"`
 	AvgVariance          float64 `json:"avg_variance"`
 	OnTimeRate           float64 `json:"on_time_rate"`
+	LeadTimeYardstick
 }
 
 // PurchasingPriceTrend is one row of price_trends (default trailing 12mo).

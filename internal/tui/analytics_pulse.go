@@ -206,7 +206,11 @@ func (s *AnalyticsPulseScreen) section(title string, cols []reportColumn, rows [
 		b.WriteString(StyleMuted.Render("  (none)") + "\n\n")
 		return b.String()
 	}
-	header, body := reportTableLines(cols, rows)
+	// room 0: this screen renders its tables ONCE into a TextScroller at load
+	// time and records no terminal width, so there is no live pane to fit them
+	// to — see fitReportTable. Its tables carry no lateness or variance figure,
+	// so nothing the yardstick rule protects rides on them.
+	header, body, _ := reportTableLines(cols, rows, 0)
 	b.WriteString("  " + header + "\n")
 	for _, line := range body {
 		b.WriteString("  " + line + "\n")

@@ -82,10 +82,11 @@ func TestForgeKeyFleetReport_Tabs(t *testing.T) {
 func TestForgeKeyFleetOverview_Loader(t *testing.T) {
 	c, path := fkFixedBodyClient(t, fleetBody)
 	s := NewForgeKeyFleetReportScreen(Deps{ForgeKey: c})
-	rows, err := s.tabs[0].loader(context.Background(), Deps{ForgeKey: c})
+	body, err := s.tabs[0].loader(context.Background(), Deps{ForgeKey: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	if *path != "/api/forgekey/devices/fleet-summary/" {
 		t.Fatalf("path = %q", *path)
 	}
@@ -108,10 +109,11 @@ func TestForgeKeyFleetOverview_Loader(t *testing.T) {
 func TestForgeKeyFleetByType_Loader(t *testing.T) {
 	c, _ := fkFixedBodyClient(t, fleetBody)
 	s := NewForgeKeyFleetReportScreen(Deps{ForgeKey: c})
-	rows, err := s.tabs[1].loader(context.Background(), Deps{ForgeKey: c})
+	body, err := s.tabs[1].loader(context.Background(), Deps{ForgeKey: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	if len(rows) != 2 {
 		t.Fatalf("rows = %d, want 2", len(rows))
 	}
@@ -127,10 +129,11 @@ func TestForgeKeyFleetByType_Loader(t *testing.T) {
 func TestForgeKeyFleetAttention_Loader(t *testing.T) {
 	c, _ := fkFixedBodyClient(t, fleetBody)
 	s := NewForgeKeyFleetReportScreen(Deps{ForgeKey: c})
-	rows, err := s.tabs[4].loader(context.Background(), Deps{ForgeKey: c})
+	body, err := s.tabs[4].loader(context.Background(), Deps{ForgeKey: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	if len(rows) != 3 {
 		t.Fatalf("rows = %d, want 3 (1 offline + 1 low battery + 1 OTA)", len(rows))
 	}
@@ -154,10 +157,11 @@ func TestForgeKeyFleetAttention_Loader(t *testing.T) {
 func TestForgeKeyFleetRecentUpdates_Loader(t *testing.T) {
 	c, _ := fkFixedBodyClient(t, fleetBody)
 	s := NewForgeKeyFleetReportScreen(Deps{ForgeKey: c})
-	rows, err := s.tabs[6].loader(context.Background(), Deps{ForgeKey: c})
+	body, err := s.tabs[6].loader(context.Background(), Deps{ForgeKey: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}

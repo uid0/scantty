@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestReorderAnalyticsReport_Tabs locks the tab set + labels so the six
@@ -34,10 +36,11 @@ func TestReorderSupplierPerf_Loader(t *testing.T) {
 		"total_order_value":"4200.75","damage_rate":2.5,"last_order_date":"2026-06-01T12:00:00Z",
 		"days_since_last_order":36}]`)
 	s := NewReorderAnalyticsReportScreen(Deps{OMS: c})
-	rows, err := s.tabs[0].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[0].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	if *path != "/api/reorders/analytics/supplier_performance/" {
 		t.Fatalf("path = %q", *path)
 	}
@@ -45,7 +48,7 @@ func TestReorderSupplierPerf_Loader(t *testing.T) {
 		t.Fatalf("rows = %d", len(rows))
 	}
 	joined := strings.Join(rows[0], "|")
-	// Supplier | Orders | Done | Avg lead d | On-time % | Late % | Damage % | Order value
+	// Supplier | Orders | Done | Lead d | On-time* | Late* | Damage | Order value
 	if rows[0][0] != "Acme" || rows[0][2] != "7" || rows[0][3] != "4.5" {
 		t.Errorf("supplier perf cells wrong: %q", joined)
 	}
@@ -64,10 +67,11 @@ func TestReorderLeadTimeTrends_Loader(t *testing.T) {
 	c, path := fixedBodyClient(t, `[{"month":"2026-05","average_lead_time_days":5.2,
 		"average_variance_days":-0.3,"total_deliveries":12,"on_time_delivery_rate":91.7}]`)
 	s := NewReorderAnalyticsReportScreen(Deps{OMS: c})
-	rows, err := s.tabs[1].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[1].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	if *path != "/api/reorders/analytics/lead_time_trends/" {
 		t.Fatalf("path = %q", *path)
 	}
@@ -100,10 +104,11 @@ const transparencyBody = `{
 func TestReorderTransparencySummary_Loader(t *testing.T) {
 	c, path := fixedBodyClient(t, transparencyBody)
 	s := NewReorderAnalyticsReportScreen(Deps{OMS: c})
-	rows, err := s.tabs[2].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[2].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	if *path != "/api/reorders/analytics/transparency/" {
 		t.Fatalf("path = %q", *path)
 	}
@@ -130,10 +135,11 @@ func TestReorderTransparencySummary_Loader(t *testing.T) {
 func TestReorderTransparencyOrders_Loader(t *testing.T) {
 	c, _ := fixedBodyClient(t, transparencyBody)
 	s := NewReorderAnalyticsReportScreen(Deps{OMS: c})
-	rows, err := s.tabs[3].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[3].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d", len(rows))
 	}
@@ -154,10 +160,11 @@ func TestReorderTransparencyOrders_Loader(t *testing.T) {
 func TestReorderTransparencyPOs_Loader(t *testing.T) {
 	c, _ := fixedBodyClient(t, transparencyBody)
 	s := NewReorderAnalyticsReportScreen(Deps{OMS: c})
-	rows, err := s.tabs[4].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[4].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	// PO # | Supplier | Status | Ordered | Expected | Est total | Actual total | Recv
 	r := rows[0]
 	if r[0] != "PO-1" || r[2] != "Received" || r[3] != "2026-05-01" {
@@ -182,10 +189,11 @@ func TestReorderLogistics_Loader(t *testing.T) {
 		"qr_scans_by_day":[{"date":"2026-07-01","count":6},{"date":"2026-07-02","count":8}],
 		"last_updated":"2026-07-07T00:00:00Z"}`)
 	s := NewReorderAnalyticsReportScreen(Deps{OMS: c})
-	rows, err := s.tabs[5].loader(context.Background(), Deps{OMS: c})
+	body, err := s.tabs[5].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
+	rows := body.rows
 	if *path != "/api/reorders/analytics/logistics_dashboard/" {
 		t.Fatalf("path = %q", *path)
 	}
@@ -212,7 +220,12 @@ func TestReorderAnalyticsReport_RenderSmokeAndEmpty(t *testing.T) {
 		"total_order_value":"99.00","damage_rate":0.0,"last_order_date":null,
 		"days_since_last_order":null}]`)
 	s := NewReorderAnalyticsReportScreen(Deps{OMS: c})
-	s.terminalHeight = 40
+	// BOTH dimensions. This screen lays its table out against the width the
+	// terminal really gives, so a fixture that sets only the height is laid out
+	// for the narrowest supported pane (51 cells) — where an eight-column
+	// supplier-performance table legitimately cannot show its order value, and
+	// says so instead. 120 is a terminal that HAS the room for every column.
+	s.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	s.Update(s.Init()()) // load tab 0
 	out := s.View()
 	for _, want := range []string{"Supplier perf", "Acme", "$99.00"} {
@@ -223,7 +236,7 @@ func TestReorderAnalyticsReport_RenderSmokeAndEmpty(t *testing.T) {
 
 	empty, _ := fixedBodyClient(t, `[]`)
 	se := NewReorderAnalyticsReportScreen(Deps{OMS: empty})
-	se.terminalHeight = 40
+	se.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	se.Update(se.Init()())
 	if outE := se.View(); !strings.Contains(outE, "No rows") {
 		t.Errorf("empty supplier_performance should say No rows:\n%s", outE)
