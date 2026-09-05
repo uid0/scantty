@@ -1567,6 +1567,18 @@ func jdeRecvName(fn *ast.FuncDecl) string {
 // TestJDEForm_EveryHeaderSiteIsSwept compares against.
 type jdeHeaderCase struct {
 	mk func() Screen
+	// alsoIn are FURTHER states of the SAME site, named by what makes them
+	// different, each swept exactly as mk is.
+	//
+	// A site is one builder and its rank claim is made per BRANCH, so a case
+	// that reaches one branch says nothing whatever about the others — and the
+	// branch a fixture happens to take is the empty, freshly-opened one far
+	// more often than not, because that is the cheapest state to construct.
+	// chainHeader is the worked example: built only on an item with no
+	// packaging rows, the sweep measured the branch that DOES mark an essential
+	// row while the common one — a populated item whose chain validates —
+	// marked none at all and went unreported for a release.
+	alsoIn map[string]func() Screen
 	// after runs once the screen has been SIZED, for a state a resize destroys.
 	// The receiving form clears its note on every WindowSizeMsg on purpose — a
 	// note is an answer about a frame and a resize destroys the frame it was an
@@ -1575,6 +1587,16 @@ type jdeHeaderCase struct {
 	// also the only way an operator ever sees one.
 	after  func(Screen)
 	header func(Screen) jdeHeader
+}
+
+// states is every state this case is swept in: mk, plus each of alsoIn under the
+// site name qualified by what makes it different, so a failure names the branch.
+func (c jdeHeaderCase) states(site string) map[string]func() Screen {
+	out := map[string]func() Screen{site: c.mk}
+	for what, mk := range c.alsoIn {
+		out[site+" ("+what+")"] = mk
+	}
+	return out
 }
 
 // jdeHeaderCases builds every header site in a state that reaches its frame.
@@ -1636,8 +1658,31 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 		// fetches.
 		"InventoryItemFormScreen/viewKitList": pick("InventoryItemFormScreen/kit list empty",
 			func(s Screen) jdeHeader { return s.(*InventoryItemFormScreen).kitListHeader() }),
-		"InventoryItemFormScreen/viewChain": pick("InventoryItemFormScreen/chain list empty",
-			func(s Screen) jdeHeader { return s.(*InventoryItemFormScreen).chainHeader() }),
+		"InventoryItemFormScreen/viewChain": {
+			mk: states["InventoryItemFormScreen/chain list empty"],
+			// The chain builder has three branches and they rank different rows,
+			// so the empty state alone measured one third of the claim. The
+			// POPULATED, VALID state is the one an operator is in nearly all the
+			// time and the one that marked nothing essential; the INVALID state
+			// is where the validation messages take the row.
+			alsoIn: map[string]func() Screen{
+				"valid chain": states["InventoryItemFormScreen/chain list"],
+				"invalid chain": func() Screen {
+					s := NewInventoryItemFormScreen(Deps{}, "")
+					s.loading = false
+					// Two rungs both claiming to be the base unit: the ordering
+					// rules then have something to say, so warn is non-empty and
+					// its LAST message is what the header promises to keep.
+					s.packRows = []packagingRow{
+						{key: 1, id: 1, name: "Pallet", baseUnits: 1},
+						{key: 2, id: 2, name: "Case", baseUnits: 1},
+					}
+					s.openChain()
+					return s
+				},
+			},
+			header: func(s Screen) jdeHeader { return s.(*InventoryItemFormScreen).chainHeader() },
+		},
 		"StorageSlotGenerateScreen/viewLevels": pick("StorageSlotGenerateScreen/level list empty",
 			func(s Screen) jdeHeader { return s.(*StorageSlotGenerateScreen).levelListHeader() }),
 		"PurchaseOrderAttachmentsScreen/viewList": pick("PurchaseOrderAttachmentsScreen/one file",
@@ -1816,42 +1861,44 @@ func TestJDEForm_EveryHeaderSiteIsSwept(t *testing.T) {
 	}
 
 	for site, c := range cases {
-		if c.mk == nil {
-			t.Errorf("the %s case has no builder, so every assertion about it is "+
-				"vacuous — most likely it names a jdeScreenStates key that has moved", site)
-			continue
-		}
-		s := c.mk()
-		jdeRootAt(t, s, 80, 40)
-		if c.after != nil {
-			c.after(s)
-		}
-		header := c.header(s)
-		if len(header) == 0 {
-			t.Errorf("the %s case builds an empty header at 80x40, so the sweep would "+
-				"assert nothing about it — the state it is built in does not reach the "+
-				"frame that pins one", site)
-			continue
-		}
-		essential := 0
-		for _, row := range header {
-			if row.Rank == jdeHeadEssential {
-				essential++
-			}
-		}
 		_, excused := jdeHeadersWithoutEssentials[site]
-		if essential == 0 && !excused {
-			t.Errorf("%s marks none of its %d header rows essential. Either one of them "+
-				"IS the row the operator cannot act without — say so with "+
-				"jdeHeadEssential — or none is, and that belongs in "+
-				"jdeHeadersWithoutEssentials with the reason. Everything expendable is "+
-				"how a header passes this sweep while dropping the row that mattered",
-				site, len(header))
-		}
-		if essential > 0 && excused {
-			t.Errorf("%s is listed in jdeHeadersWithoutEssentials and marks %d row(s) "+
-				"essential. The excuse is stale, and while it stands the sweep's own "+
-				"vacuity guard is switched off for this site", site, essential)
+		for name, mk := range c.states(site) {
+			if mk == nil {
+				t.Errorf("the %s case has no builder, so every assertion about it is "+
+					"vacuous — most likely it names a jdeScreenStates key that has moved", name)
+				continue
+			}
+			s := mk()
+			jdeRootAt(t, s, 80, 40)
+			if c.after != nil {
+				c.after(s)
+			}
+			header := c.header(s)
+			if len(header) == 0 {
+				t.Errorf("the %s case builds an empty header at 80x40, so the sweep would "+
+					"assert nothing about it — the state it is built in does not reach the "+
+					"frame that pins one", name)
+				continue
+			}
+			essential := 0
+			for _, row := range header {
+				if row.Rank == jdeHeadEssential {
+					essential++
+				}
+			}
+			if essential == 0 && !excused {
+				t.Errorf("%s marks none of its %d header rows essential. Either one of them "+
+					"IS the row the operator cannot act without — say so with "+
+					"jdeHeadEssential — or none is, and that belongs in "+
+					"jdeHeadersWithoutEssentials with the reason. Everything expendable is "+
+					"how a header passes this sweep while dropping the row that mattered",
+					name, len(header))
+			}
+			if essential > 0 && excused {
+				t.Errorf("%s is listed in jdeHeadersWithoutEssentials and marks %d row(s) "+
+					"essential. The excuse is stale, and while it stands the sweep's own "+
+					"vacuity guard is switched off for this site", name, essential)
+			}
 		}
 	}
 }
@@ -1876,31 +1923,33 @@ func TestJDEForm_EveryHeaderSiteIsSwept(t *testing.T) {
 func TestJDEForm_EveryEssentialHeaderRowIsOnThePane(t *testing.T) {
 	asserted := 0
 	for site, c := range jdeHeaderCases() {
-		for _, w := range jdePaneWidths {
-			for _, h := range jdePaneHeights() {
-				s := c.mk()
-				r := jdeRootAt(t, s, w, h)
-				if c.after != nil {
-					c.after(s)
-				}
-				if jdeBarOf(s.View()) == nil {
-					continue // a frame the layer refused; it draws no header rows at all
-				}
-				shown := r.View()
-				for _, row := range c.header(s) {
-					if row.Rank != jdeHeadEssential {
-						continue
+		for name, mk := range c.states(site) {
+			for _, w := range jdePaneWidths {
+				for _, h := range jdePaneHeights() {
+					s := mk()
+					r := jdeRootAt(t, s, w, h)
+					if c.after != nil {
+						c.after(s)
 					}
-					want := truncateVisible(strings.TrimRight(row.Text, " "), screenBodyWidth(w))
-					if want == "" {
-						continue
+					if jdeBarOf(s.View()) == nil {
+						continue // a frame the layer refused; it draws no header rows at all
 					}
-					asserted++
-					if !strings.Contains(shown, want) {
-						t.Errorf("%s at %dx%d drops the header row it marked essential — "+
-							"%q is not on the pane, so the operator is acting on a screen "+
-							"that is not telling them what it said it could not do "+
-							"without:\n%s", site, w, h, row.Text, shown)
+					shown := r.View()
+					for _, row := range c.header(s) {
+						if row.Rank != jdeHeadEssential {
+							continue
+						}
+						want := truncateVisible(strings.TrimRight(row.Text, " "), screenBodyWidth(w))
+						if want == "" {
+							continue
+						}
+						asserted++
+						if !strings.Contains(shown, want) {
+							t.Errorf("%s at %dx%d drops the header row it marked essential — "+
+								"%q is not on the pane, so the operator is acting on a screen "+
+								"that is not telling them what it said it could not do "+
+								"without:\n%s", name, w, h, row.Text, shown)
+						}
 					}
 				}
 			}

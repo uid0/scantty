@@ -1777,6 +1777,11 @@ func (s *PurchaseOrderEditScreen) updateDeleteLine(m tea.KeyMsg) (Screen, tea.Cm
 		s.returnFromSub()
 		return s, nil
 	case "ctrl+x":
+		// The two arms below are the two halves of !deleteDestroys, kept apart
+		// because they are different facts and the operator acts differently on
+		// each: a write already out, and a server that has taken the instrument
+		// away under an open confirm. The BAR asks deleteDestroys once and drops
+		// the key for either.
 		if s.saving {
 			// A delete is already out. The status row is drawing "Deleting…"
 			// and the bar has dropped the key, so the frame has answered
@@ -1846,23 +1851,46 @@ func (s *PurchaseOrderEditScreen) updateDeleteLine(m tea.KeyMsg) (Screen, tea.Cm
 // deleteBar names Ctrl-X only while it will act. While the write is out the
 // frame's status row is the answer and the key is not offered — see
 // updateDeleteLine.
+//
+// THE DESTROY KEY AND THE SCROLL KEYS ARE TWO QUESTIONS AND ARE ASKED
+// SEPARATELY. They used to be one: the saving branch returned the bare
+// {Esc=Back} and RETURNED, so a delete in flight took the movement tokens off
+// the bar while deleteScrolls — which never mirrored the branch — went on
+// answering true and the arm went on scrolling. Rule 2 in the direction that is
+// easy to miss, a key that ACTS while the bar names nothing, on the frame an
+// operator is watching an irreversible write from. Reading the warning while
+// the server thinks is exactly what somebody does there, so the answer is to
+// go on NAMING the scroll keys rather than to freeze them: withholding them
+// would leave the caveat's `↓ N more below` marker standing over a bar offering
+// nothing to press, which is the dead end this whole change exists to remove.
 func (s *PurchaseOrderEditScreen) deleteBar() []actionBarItem {
-	if s.saving || !s.removalPhaseHolds() {
-		return []actionBarItem{{"Esc", "Back"}}
-	}
-	return s.deleteBarItems(s.deleteScrolls())
+	return s.deleteBarItems(s.deleteDestroys(), s.deleteScrolls())
 }
 
-// deleteBarItems is deleteBar for a given scroll state, so the bar that is
-// MEASURED against the pane is the bar that is DRAWN on it — the pair every
-// other columnar sheet keeps for the same reason.
+// deleteDestroys is the ONE expression behind "may Ctrl-X write". The bar reads
+// it to decide whether to name the key and the arm reads it to decide whether
+// to act, because two copies of a condition is precisely how the bar and the
+// arm came apart above.
+func (s *PurchaseOrderEditScreen) deleteDestroys() bool {
+	return !s.saving && s.removalPhaseHolds()
+}
+
+// deleteBarItems is deleteBar for a given destroy and scroll state, so the bar
+// that is MEASURED against the pane is the bar that is DRAWN on it — the pair
+// every other columnar sheet keeps for the same reason.
 //
 // The scroll keys are named when, and only when, the caveat outruns the window.
 // Naming them unconditionally would put three tokens on a 49-cell bar to
 // advertise an offset ClampScroll writes straight back; withholding them where
 // the caveat DOES outrun the window is the defect this pair exists to close.
-func (s *PurchaseOrderEditScreen) deleteBarItems(scroll bool) []actionBarItem {
+func (s *PurchaseOrderEditScreen) deleteBarItems(destroy, scroll bool) []actionBarItem {
 	items := []actionBarItem{{"Ctrl-X", "Delete line"}, {"Esc", "Cancel"}}
+	if !destroy {
+		// Esc still LEAVES while the write is out — a frame with no way off it
+		// is the worse defect — so the bar keeps one key and drops the one that
+		// would not act.
+		items = []actionBarItem{{"Esc", "Back"}}
+	}
 	if scroll {
 		items = append(items,
 			actionBarItem{"UP/DN", "Scroll"},
@@ -1888,7 +1916,15 @@ func (s *PurchaseOrderEditScreen) deleteScrolls() bool {
 	if _, ok := s.addressedLine(); !ok || !s.removalPhaseHolds() {
 		return false
 	}
-	return s.bodyScrollsForBar(s.deleteBody(), s.deleteHeaderRows(), s.deleteBarItems(true))
+	// The bar it measures against is the one that will really be DRAWN with the
+	// scroll keys added — not an unconditional deleteBarItems(true, true).
+	// While the write is out the drawn bar has lost Ctrl-X and is a row shorter,
+	// so a body measured against the taller bar can answer "it scrolls" for a
+	// body that fits: the arm would then bump the offset, ClampScroll would put
+	// it straight back, and the pane would come back byte-identical with no note
+	// — rule 1 broken by an arithmetic that measured a bar nobody draws.
+	return s.bodyScrollsForBar(s.deleteBody(), s.deleteHeaderRows(),
+		s.deleteBarItems(s.deleteDestroys(), true))
 }
 
 // deleteHeaderRows is what the confirm's pinned header costs the body, asked of

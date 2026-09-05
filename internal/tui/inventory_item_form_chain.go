@@ -409,8 +409,16 @@ func (s *InventoryItemFormScreen) viewChain() string {
 // (jdeMinBudget): they are the reason the item will not save, and the rest of
 // this header is standing explanation. With the chain valid there is nothing to
 // say, and the row goes to the "no levels" state or, failing that, to the
-// heading — a header that marks nothing essential would have to be written down
+// HEADING — a header that marks nothing essential would have to be written down
 // as such, and there is always something here worth the row.
+//
+// That last clause was true of the prose and false of the code for a release:
+// the default branch — a populated item whose chain validates, which is the
+// state an operator spends nearly all their time in — promoted nothing, and the
+// heading sat at jdeHeadContext where jdeFitHeader gives ground from the END
+// within a rank. It went unreported because the header sweep built this site in
+// the EMPTY state alone, so the branch that marked nothing was never the branch
+// measured; jdeHeaderCases walks both now.
 //
 // The per-row ERROR left the body entirely and rides the layer's STATUS ROW,
 // which no budget can trim — the answer-surface rule. It was the last two lines
@@ -418,7 +426,24 @@ func (s *InventoryItemFormScreen) viewChain() string {
 // screen's answer to a keypress.
 func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 	unit := s.baseUnitValue()
-	h := jdeHeader(nil).add(jdeHeadContext, StyleJDEHeading.Render("Packaging chain"))
+	// The heading's RANK is decided by what else the header will carry, so the
+	// two facts it depends on are computed before the header is built. With a
+	// valid chain on a populated item — the COMMON state, and the one the
+	// swept fixture used not to reach — there is no warning and no empty-state
+	// fact, and the heading is then the only row left to be the one the
+	// operator cannot act without. It said so in prose above while marking
+	// nothing at all, which is rule 8 in the quiet direction: a claim the code
+	// does not honour, on the sweep's own vacuity guard.
+	msgs := validatePackagingChain(s.packRows)
+	var warn []string
+	for _, msg := range msgs {
+		warn = append(warn, jdeIndent+StyleStatusWarn.Render("! "+msg))
+	}
+	headingRank := jdeHeadContext
+	if len(warn) == 0 && len(s.packRows) > 0 {
+		headingRank = jdeHeadEssential
+	}
+	h := jdeHeader(nil).add(headingRank, StyleJDEHeading.Render("Packaging chain"))
 	for _, line := range jdeCaveatLines(fmt.Sprintf(
 		"Largest package first, ending with the base unit. Each level says how many %s it holds — a case of 10 reams of 100 sheets is 1000, 100, 1.",
 		pluralizeUnit(unit, 2)), s.bodyWidth()) {
@@ -444,11 +469,6 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 		emptyFact = jdeIndent + StyleMuted.Render("No packaging levels on this item.")
 		emptyDetail = jdeCaveatLines(fmt.Sprintf(
 			"It is counted in %s.", pluralizeUnit(unit, 2)), s.bodyWidth())
-	}
-	msgs := validatePackagingChain(s.packRows)
-	var warn []string
-	for _, msg := range msgs {
-		warn = append(warn, jdeIndent+StyleStatusWarn.Render("! "+msg))
 	}
 	switch {
 	case len(warn) > 0:

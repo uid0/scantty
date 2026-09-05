@@ -317,17 +317,32 @@ func (s *PurchaseOrderAttachmentsScreen) pageList(dir int) {
 // a scanner burst is a run of letters, and "y" landing on a delete prompt is
 // exactly the accident the reduced scheme exists to rule out.
 func (s *PurchaseOrderAttachmentsScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.Cmd) {
-	if s.deleting {
-		return s, nil
-	}
 	switch m.String() {
 	case "enter":
+		if s.deleting {
+			// A delete is already out. The status row draws "Deleting…" and the
+			// bar has dropped the key (confirmDeleteDestroys, the one
+			// expression both read), so the frame has answered already.
+			//
+			// This arm used to be a blanket `if s.deleting { return s, nil }`
+			// over the WHOLE handler, which made every key on the frame inert
+			// while the bar went on naming Enter, Esc and — once the scroll keys
+			// arrived — three movement tokens too: rule 2 in the naming
+			// direction, the mirror of the defect the line-delete confirm had.
+			// Only the WRITE waits; Esc still leaves and the caveat still
+			// scrolls, which is what the sibling confirm does.
+			return s, nil
+		}
 		if s.cursor < 0 || s.cursor >= len(s.attachments) {
 			s.confirmingDelete = false
 			return s, nil
 		}
 		att := s.attachments[s.cursor]
 		s.deleting = true
+		// The last decline is retired with the press that answers: a stale note
+		// leading "Deleting…" would be the answer to a keypress the operator has
+		// already moved past.
+		s.deleteNote = ""
 		deps := s.deps
 		ctx := s.ctx()
 		id := s.poID
@@ -628,12 +643,49 @@ func (s *PurchaseOrderAttachmentsScreen) viewList() string {
 func (s *PurchaseOrderAttachmentsScreen) viewConfirmDelete() string {
 	frame, offset := s.frameScrolled(
 		s.confirmDeleteHeader(), s.confirmDeleteBody(), s.deleteScroll,
-		s.statusRow(s.deleting, "Deleting…", s.deleteNote), s.confirmDeleteBar())
+		s.confirmDeleteStatus(), s.confirmDeleteBar())
 	// Stored back so the offset this screen holds is the one that was DRAWN:
 	// `end` asks for the whole body and the frame clamps it against the pane it
 	// has, which is what makes "↓ 0 more below" impossible.
 	s.deleteScroll = offset
 	return frame
+}
+
+// confirmDeleteStatus is the confirm's one status row: what is in flight, and
+// what the last keypress DID.
+//
+// deleteNote used to be handed to statusRow's THIRD argument, which is the
+// FAILURE slot — jdeStatusErrMark behind StyleStatusError. So "j does nothing
+// here — this frame only confirms or cancels", a perfectly benign answer to an
+// inert key, was drawn to the operator as a red ✗ on a destructive confirm:
+// "this key is inert here" and "something went wrong" told apart by nothing,
+// on the frame where the difference decides whether they press Enter.
+// statusAnswer is the surface built for it — the screen's answer to the last
+// keypress, at its own level, bounded by the same fitStatus — and StatusInfo is
+// the muted, unmarked one.
+//
+// The ANSWER LEADS the working line rather than replacing it, through the same
+// poLeadOnto the kit picker's status row uses. statusRow's saving branch wins
+// outright, so a note handed to it while a delete is out would be drawn by
+// nothing at all — and every key this frame declines is still pressable while
+// the write is in flight, which is exactly when a swallowed answer reads as a
+// wedged program.
+func (s *PurchaseOrderAttachmentsScreen) confirmDeleteStatus() string {
+	if !s.deleting {
+		return s.statusAnswer(StatusInfo, s.deleteNote)
+	}
+	verb := "Deleting…"
+	switch room := s.bodyWidth(); {
+	case s.deleteNote == "":
+	case room > 0:
+		verb = poLeadOnto(s.deleteNote, verb, room)
+	default:
+		// An unsized pane means "do not truncate" everywhere in this layer, and
+		// fitStatus leaves the row alone there too — but poLeadOnto would read a
+		// room of 0 as no room at all and drop the subject entirely.
+		verb = s.deleteNote + poLeadJoint + verb
+	}
+	return s.statusRow(true, verb, "")
 }
 
 // confirmDeleteName is the file about to be destroyed, empty where the cursor
@@ -682,21 +734,43 @@ func (s *PurchaseOrderAttachmentsScreen) confirmDeleteBody() *jdeLines {
 }
 
 // confirmDeleteScrolls is the confirm's half of the bar-honesty rule: the scroll
-// keys are named when, and only when, the caveat outruns the window. Measured
-// against the bar WITH them on it, because the tallest bar is the fixed point.
+// keys are named when, and only when, the caveat outruns the window.
+//
+// Measured against the bar that will really be DRAWN with the scroll keys added,
+// because THAT is the fixed point — not an unconditional
+// confirmDeleteBarItems(true, true). While the write is out the drawn bar has
+// lost Enter and can be a row shorter, so a body measured against the taller bar
+// can answer "it scrolls" for a body that fits: the arm would bump the offset,
+// ClampScroll would put it straight back, and the pane would come back
+// byte-identical with no note.
 func (s *PurchaseOrderAttachmentsScreen) confirmDeleteScrolls() bool {
 	return s.bodyScrollsForBar(s.confirmDeleteBody(),
-		len(s.confirmDeleteHeader()), s.confirmDeleteBarItems(true))
+		len(s.confirmDeleteHeader()), s.confirmDeleteBarItems(s.confirmDeleteDestroys(), true))
+}
+
+// confirmDeleteDestroys is the ONE expression behind "may Enter write". The bar
+// reads it to decide whether to name the key and the arm reads it to decide
+// whether to act — two copies of that condition is how the sibling line-delete
+// confirm's bar and arm came apart.
+func (s *PurchaseOrderAttachmentsScreen) confirmDeleteDestroys() bool {
+	return !s.deleting
 }
 
 func (s *PurchaseOrderAttachmentsScreen) confirmDeleteBar() []actionBarItem {
-	return s.confirmDeleteBarItems(s.confirmDeleteScrolls())
+	return s.confirmDeleteBarItems(s.confirmDeleteDestroys(), s.confirmDeleteScrolls())
 }
 
-// confirmDeleteBarItems is confirmDeleteBar for a given scroll state, so the bar
-// that is MEASURED against the pane is the bar that is DRAWN on it.
-func (s *PurchaseOrderAttachmentsScreen) confirmDeleteBarItems(scroll bool) []actionBarItem {
+// confirmDeleteBarItems is confirmDeleteBar for a given destroy and scroll
+// state, so the bar that is MEASURED against the pane is the bar that is DRAWN
+// on it.
+func (s *PurchaseOrderAttachmentsScreen) confirmDeleteBarItems(destroy, scroll bool) []actionBarItem {
 	items := []actionBarItem{{"Enter", "Delete"}, {"Esc", "Cancel"}}
+	if !destroy {
+		// Esc still LEAVES while the write is out — a frame with no way off it
+		// is the worse defect — so the bar keeps one key and drops the one that
+		// would not act.
+		items = []actionBarItem{{"Esc", "Back"}}
+	}
 	if scroll {
 		items = append(items,
 			actionBarItem{"UP/DN", "Scroll"},

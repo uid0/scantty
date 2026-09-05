@@ -423,10 +423,3 @@ func TestJDEForm_EveryMovementTokenMovesTheOperatorsPANE(t *testing.T) {
 			"program", k, len(panes), panes[:min(4, len(panes))])
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

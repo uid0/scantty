@@ -257,3 +257,72 @@ func TestStorageSlotGenerate_LevelListEditing(t *testing.T) {
 		t.Errorf("the Levels row should say it is empty:\n%s", s.View())
 	}
 }
+
+// TestStorageGen_TheLevelGuidanceRowFitsThePaneItIsPromisedOn: the one header
+// row the level list marks essential is drawn WHOLE at every width Root draws.
+//
+// jdeFitHeader gives ground by RANK and keeps the essential row last, so marking
+// a row essential is a promise that whenever the frame is drawn at all, THAT row
+// is on the pane. It says nothing about the row's WIDTH, and nothing else does
+// either: clampToBox is what cuts an over-wide row, from the right, with no
+// ellipsis and taking the closing SGR reset with it — so everything drawn after
+// it comes out in the cut row's colour.
+//
+// This is what the row was: "Early letters are ground-reachable, late letters
+// are up high." is 61 cells and jdeIndent two more, against the 51 an 80-column
+// pane gives, so promoting it to the essential row made the one row the header
+// promises to keep the one row that did not fit. The fix is the split
+// chainHeader already uses one file over — a short fixed FACT leads and takes
+// the row, the rest folds behind it as context.
+//
+// Asserted on the CLIPPED pane, because the screen's own string is identical
+// either side of this defect.
+//
+// THE WIDTHS ARE jdePaneWidths AND NOT EVERY DRAWABLE ONE, which is a narrowing
+// and is recorded as one. Root draws down to a terminal width of 45, where the
+// pane is sixteen cells, and NO fixed sentence saying what a level letter means
+// fits that — the same bound chainHeader's "No packaging levels on this item."
+// is under one file over. 80 is the width that must HOLD, and the row holds
+// from a pane of 43 cells up.
+func TestStorageGen_TheLevelGuidanceRowFitsThePaneItIsPromisedOn(t *testing.T) {
+	asserted := 0
+	for _, w := range jdePaneWidths {
+		for _, h := range jdePaneHeights() {
+			s := NewStorageSlotGenerateScreen(Deps{}, 0)
+			s.openLevels()
+			pane := jdeClippedPane(s, w, h)
+			for _, row := range s.levelListHeader() {
+				if row.Rank != jdeHeadEssential {
+					continue
+				}
+				text := strings.TrimRight(stripANSI(row.Text), " ")
+				if strings.TrimSpace(text) == "" {
+					continue
+				}
+				if lipgloss.Width(row.Text) > screenBodyWidth(w) {
+					t.Errorf("the level list marks a header row essential that is %d cells "+
+						"wide against the %d an %d-column pane gives, so what survives is "+
+						"whatever clampToBox leaves of it: %q",
+						lipgloss.Width(row.Text), screenBodyWidth(w), w, text)
+					continue
+				}
+				if !strings.Contains(stripANSI(pane), text) {
+					// Only meaningful where the frame is drawn; a refused pane
+					// replaces the whole frame with the notice.
+					if jdeBarOf(s.View()) == nil {
+						continue
+					}
+					t.Errorf("the level list's essential header row is not on the %dx%d "+
+						"pane whole: %q\n%s", w, h, text, pane)
+					continue
+				}
+				asserted++
+			}
+		}
+	}
+	if asserted == 0 {
+		t.Fatal("the level list marked no header row essential at any pane, so this " +
+			"check asserted nothing — jdeHeadersWithoutEssentials is where a header " +
+			"that means to mark none says so")
+	}
+}

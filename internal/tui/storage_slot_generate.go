@@ -985,11 +985,39 @@ func (s *StorageSlotGenerateScreen) previewLine() string {
 // The GUIDANCE takes the one essential row a header may have (jdeMinBudget):
 // it is the only thing on the frame that says what a level letter means, and
 // the heading merely repeats the list the operator opened.
+//
+// SPLIT IN TWO, for the reason chainHeader's "no packaging levels" sentence is.
+// It was one line — "Early letters are ground-reachable, late letters are up
+// high." — written unfolded, and that is 61 cells plus jdeIndent's two against
+// the 51 screenBodyWidth gives at the 80-column floor, so clampToBox cut it
+// mid-word and took StyleMuted's closing SGR reset with it, leaving everything
+// drawn after it muted. Promoting it to the ESSENTIAL row made that the one row
+// the header promises to keep, which is standing rules 5 and 6 broken inside the
+// fix for rule 11.
+//
+// Folding alone cannot fix it, because a header may mark exactly ONE row
+// essential (jdeMinBudget) and a fold's first line alone would read "Early
+// letters are ground-reachable, late letters are" — a claim cut into something
+// that reads finished. So the FACT is a fixed sentence short enough to stand as
+// one row, and the rest rides behind it as context that folds. Whatever must
+// survive must lead.
+//
+// The DETAIL is folded against the LIVE pane (bodyWidth) rather than hand-counted
+// against 51, because a bound expressed against a width the terminal may not
+// have is not a bound: Root draws down to a terminal width of 45, where the pane
+// is sixteen cells. The FACT is fixed and 43 cells with its indent, so it stands
+// as one row wherever the frame is drawn at 80 columns and up — the width this
+// interface is modelled on and the one that must HOLD.
 func (s *StorageSlotGenerateScreen) levelListHeader() jdeHeader {
 	h := jdeHeader(nil).
 		add(jdeHeadContext, StyleJDEHeading.Render("Levels on this rack")).
 		add(jdeHeadEssential, jdeIndent+StyleMuted.Render(
-			"Early letters are ground-reachable, late letters are up high."))
+			"Early letters are low, late letters high."))
+	for _, line := range jdeCaveatLines(
+		"The early ones can be reached from the ground; the late ones need a lift.",
+		s.bodyWidth()) {
+		h = h.add(jdeHeadContext, line)
+	}
 	if len(s.levels) == 0 {
 		h = h.add(jdeHeadContext, "", jdeIndent+StyleMuted.Render("(no levels yet)"))
 	}

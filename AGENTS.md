@@ -2460,6 +2460,62 @@ is the authority; read it before adding a frame or wording a bar.
   whose list has TWO OR MORE rows. No sweep reports them — their bar names UP/DN
   and the key really moves — and closing them is the same header conversion on
   every columnar screen at once, the shape of sc-jde-lift rather than a patch.
+- **A DESTRUCTIVE CONFIRM MID-WRITE IS A STATE OF ITS OWN, AND NO DERIVED SWEEP
+  REACHED IT.** `jdeScreenStates` builds each confirm freshly OPENED, so every
+  bar-honesty sweep measured the frame before the operator pressed the destroy
+  key — and that is the half of its life the bar changes shape in. Both confirms
+  got the rule wrong there, in opposite directions. `deleteBar` (`po_edit.go`)
+  collapsed to `{Esc=Back}` while the delete was out and RETURNED, taking the
+  movement tokens off the bar, while `deleteScrolls` never mirrored the branch
+  and the arm went on scrolling: a key ACTING while the bar names nothing, which
+  is standing rule 2 in the direction an operator cannot see to complain about.
+  `updateConfirmDelete` (`po_attachments.go`) had the mirror — a blanket
+  `if s.deleting { return s, nil }` over the WHOLE handler while the bar went on
+  naming `Enter`, `Esc` and three movement tokens, all inert. The answer is one
+  predicate per question, read by the bar AND the arm (`deleteDestroys` /
+  `confirmDeleteDestroys`), and the scroll question measured against the bar that
+  will really be DRAWN with the scroll keys added — measured against an
+  unconditional tallest bar, a body that FITS under the shorter drawn bar answers
+  "it scrolls", the arm bumps the offset, `ClampScroll` puts it back and the pane
+  returns byte-identical with no note. Only the WRITE waits: `Esc` still leaves
+  and the caveat still scrolls, because reading the warning while the server
+  thinks is exactly what somebody does there, and withholding the scroll keys
+  would leave `↓ N more below` over a bar offering nothing to press.
+  `TestJDEConfirm_AWriteInFlightLeavesTheBarHonest` presses the keys with the
+  write really in flight — reached by pressing the destroy key, not by setting
+  the flag — and it asks its two halves with DIFFERENT instruments, which is the
+  part to keep: FORWARD (a named token must move what is SEEN) on the clipped
+  PANE, REVERSE (a key that acts must be named) on `jdePlaceOf`, because an arm
+  that DECLINES AND ANSWERS changes the pane by design and a key that declines
+  and says why has not ACTED. Measured on the pane, the reverse half reported
+  both confirms at every height their caveat fits.
+- **A HEADER SITE'S RANK CLAIM IS PER BRANCH, AND A FIXTURE REACHES ONE.**
+  `jdeHeaderCases` built `chainHeader` on an item with NO packaging rows, so
+  `TestJDEForm_EveryHeaderSiteIsSwept` measured the branch that DOES mark an
+  essential row while the common one — a populated item whose chain validates —
+  marked none at all, with the function's own doc saying in as many words that
+  the row "goes to the heading". A claim the code did not honour, sitting inside
+  the sweep's own vacuity guard. The rank is decided from what else the header
+  will carry now, and `jdeHeaderCase.alsoIn` names FURTHER states of the same
+  site so a builder with three branches is swept in three. The cheapest state to
+  construct is the empty, freshly-opened one, which is why this is the shape the
+  next site will get wrong.
+- **AN ESSENTIAL ROW IS A PROMISE ABOUT THE ROW, NOT ABOUT ITS WIDTH.**
+  `jdeFitHeader` trims by ROW and does no width fitting at all, so `clampToBox`
+  is what cuts an over-wide header row — from the right, no ellipsis, closing SGR
+  reset gone with it. `levelListHeader` (`storage_slot_generate.go`) promoted a
+  63-cell sentence to the essential row against the 51 an 80-column pane gives,
+  which is rules 5 and 6 broken inside the fix for rule 11. The shape that works
+  is `chainHeader`'s: a short fixed FACT leads and takes the row, the unbounded
+  remainder folds behind it as context through `jdeCaveatLines` against the LIVE
+  pane. `TestJDEForm_EveryEssentialHeaderRowIsOnThePane` could not report it —
+  it compares against the row ALREADY truncated to the pane, so `Contains`
+  passes over exactly the defect.
+  KNOWN AND NOT FIXED, so it is not mistaken for closed: the columnar pickers'
+  `Filter .....` row is 70 cells against 51 and is drawn CUT at 80 columns on
+  twenty sites (`AssetFormScreen/viewPick` and its siblings), and
+  `chainHeader`'s validation messages are unfolded and run to 85. Both predate
+  this rule and closing them is a per-screen conversion rather than a patch.
 - **WHAT THE RULE DOES NOT PROMISE is a block taller than the window.**
   `jdeLines.Window` keeps a block's START and nothing scrolls inside one, so a
   single navigable row whose own block outruns a one-line body loses its tail

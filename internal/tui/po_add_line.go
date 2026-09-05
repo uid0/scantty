@@ -1370,17 +1370,14 @@ func (s *PurchaseOrderAddLineScreen) headerLines() jdeHeader {
 // The heading is decorative — the bar's `Enter=Look up` and the row's own
 // `Scan / type` label already say what the phase is for.
 //
-// Drawn on EVERY phase, not just this one: an operator on the choose or confirm
-// frame is deciding what to put on that same order, and the row that names it
-// used to vanish the moment they pressed Enter.
+// Drawn on the IDENTIFY phase and nowhere else, which is where the strand was.
+// The later phases carry bodies of their own — the candidate list, the confirm
+// sheet (which names the supplier and both SKUs on rows of its own), the price
+// form — and each already has a movement key on its bar, so pinning these two
+// rows there would spend two body rows to fix nothing and push the facts an
+// operator is checking below the fold.
 func (s *PurchaseOrderAddLineScreen) identifyHeader(essential bool) jdeHeader {
 	if s.phase != poAddPhaseIdentify {
-		// The IDENTIFY phase only, which is where the strand was. The later
-		// phases carry their own bodies — the candidate list, the confirm sheet
-		// (which names the supplier and both SKUs on rows of its own), the price
-		// form — and each already has a movement key on its bar, so pinning
-		// these two rows there would spend two body rows to fix nothing and push
-		// the facts an operator is checking below the fold.
 		return nil
 	}
 	lw, pane := poAddLabelWidth(), s.paneWidth()
@@ -1388,17 +1385,12 @@ func (s *PurchaseOrderAddLineScreen) identifyHeader(essential bool) jdeHeader {
 		{Label: "Supplier", Kind: jdeValue, Value: pickerClip(s.supplierName(), poAddValueCells(pane, lw))},
 		{Label: "Order", Kind: jdeValue, Value: pickerClip(s.orderName(), poAddValueCells(pane, lw))},
 	}, pane)
-	out := jdeHeader(nil)
-	if s.phase == poAddPhaseIdentify {
-		// The heading belongs to the identify phase alone — the later phases
-		// ask their own question ("Which one?", "Is this the right item?") —
-		// and it is DECORATIVE, so jdeFitHeader drops it before either row that
-		// names the document. It is kept rather than deleted because losing it
-		// on a roomy pane would be removing content to fix a fit, which is the
-		// trade this whole change exists to avoid making.
-		out = out.add(jdeHeadDecorative, jdeIndent+StyleJDEHeading.Render(
-			"Add a line by scanning or typing"), "")
-	}
+	// The heading is DECORATIVE, so jdeFitHeader drops it before either row that
+	// names the document. It is kept rather than deleted because losing it on a
+	// roomy pane would be removing content to fix a fit, which is the trade this
+	// whole change exists to avoid making.
+	out := jdeHeader(nil).add(jdeHeadDecorative, jdeIndent+StyleJDEHeading.Render(
+		"Add a line by scanning or typing"), "")
 	order := jdeHeadContext
 	if essential {
 		order = jdeHeadEssential
