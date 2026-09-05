@@ -1620,7 +1620,12 @@ func (s *PurchaseOrderEditScreen) removalFlipNote() string {
 // that NOTHING WAS WRITTEN, which is the fact, and loses only the part of the
 // reason the frame around them already shows.
 const (
-	poEditLineGoneNote      = "nothing written: that line has left this order"
+	poEditLineGoneNote = "nothing written: that line has left this order"
+	// poEditDeleteStoodNote is what the delete confirm's answer row says while
+	// the failure on the status row is the newest thing that happened. The
+	// delete did not go through, so the fact worth the row is that nothing was
+	// destroyed.
+	poEditDeleteStoodNote   = "The delete failed, so the line is still on the order."
 	poEditLineSaveGoneNote  = "nothing saved: that line has left this order"
 	poEditLineVoidGoneNote  = "nothing voided: that line has left this order"
 	poEditLineDelGoneNote   = "nothing deleted: that line has left this order"
@@ -2066,6 +2071,13 @@ func (s *PurchaseOrderEditScreen) deleteCaveats() []string {
 // header measured that is not the header drawn.
 func (s *PurchaseOrderEditScreen) deleteHeader(li omsapi.PurchaseOrderItem, width int) jdeHeader {
 	h := jdeHeader(nil).add(jdeHeadEssential, s.deleteHeadline(li, width))
+	// FIRST among the context rows, because jdeFitHeader gives ground from the
+	// END within a rank: the answer to the key just pressed is the row rule 1
+	// depends on, and the two below it are standing facts an operator can still
+	// read off the line editor behind this frame.
+	if row := s.deleteAnswerRow(width); row != "" {
+		h = h.add(jdeHeadContext, row)
+	}
 	if total := formatMoney(li.EstimatedCost); total != "" {
 		h = h.add(jdeHeadContext, jdeIndent+StyleMuted.Render("Line total on the order: "+total))
 	}
@@ -2183,10 +2195,60 @@ func (s *PurchaseOrderEditScreen) deleteStatus() string {
 			verb = s.deleteNote + poLeadJoint + verb
 		}
 		return s.statusRow(true, verb, "")
-	case s.errMsg != "":
+	case !s.deleteStatusCarriesAnswer():
 		return s.statusRow(false, "", s.errMsg)
 	}
 	return s.statusAnswer(StatusInfo, s.deleteNote)
+}
+
+// deleteStatusCarriesAnswer is the ONE expression behind "is the answer to the
+// last keypress on the status row" — it IS the branch condition above, so the
+// row and the header cannot come to different conclusions about which surface
+// the answer is on.
+//
+// It is false in exactly one state, and that state is reachable: poLineActionMsg
+// with an error sets saving false and errMsg WITHOUT changing the phase, so a
+// DELETE that the server refused leaves this confirm standing with the failure
+// on the status row. The failure takes that row alone — an order-level error is
+// never led (po_create's statusPlan carries the decision and the reason) — so
+// every key the frame declines afterwards wrote a note nothing drew, and the
+// pane came back byte for byte identical. Rule 1, on a destructive confirm,
+// after a destroy that failed: the worst place in the program to look wedged.
+func (s *PurchaseOrderEditScreen) deleteStatusCarriesAnswer() bool {
+	return s.saving || s.errMsg == ""
+}
+
+// deleteAnswerRow is the answer's SECOND surface, and it is the shape
+// po_create's answerRows already uses: the status row holds ONE fact, so a
+// frame with a standing failure AND an answer to the last keypress puts the
+// answer in the pinned header.
+//
+// IT IS ONE ROW, CLIPPED, AND IT IS DRAWN WHENEVER THE FAILURE IS STANDING —
+// with a standing fact in it when there is no answer yet. Both halves are
+// load-bearing and neither is taste:
+//
+// The height may not move with the note, or this reintroduces the defect the
+// note was moved OFF the body to fix. deleteHeaderRows feeds deleteScrolls, so
+// a header that grows by a row when a note is written shrinks the body by one,
+// which can flip "the whole warning is on the pane" from true to false — the
+// note falsifying itself again, one surface over. Clipped to a single row and
+// present in both states, the header is the same height whatever the note says.
+//
+// A STANDING FACT rather than a blank, for the reason every phase on the New PO
+// screen fills this row: "nothing to say" and "the row scrolled away" are
+// different states and a blank cannot tell them apart. The fact chosen is the
+// one an operator needs after a destroy that failed and which nothing else on
+// the frame states — the line is still there — and it names no key, because the
+// bar makes that claim where no budget can trim it.
+func (s *PurchaseOrderEditScreen) deleteAnswerRow(width int) string {
+	if s.deleteStatusCarriesAnswer() {
+		return ""
+	}
+	text := s.deleteNote
+	if text == "" {
+		text = poEditDeleteStoodNote
+	}
+	return jdeIndent + StyleMuted.Render(pickerClip(text, width-len(jdeIndent)))
 }
 
 // ---------------------------------------------------------------------------

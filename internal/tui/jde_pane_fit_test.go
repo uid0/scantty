@@ -1903,6 +1903,20 @@ func TestJDEForm_EveryHeaderSiteIsSwept(t *testing.T) {
 	}
 }
 
+// jdeEssentialRowText is the header row AS THE BUILDER WROTE IT — trailing pad
+// dropped, nothing else.
+//
+// It is a function rather than an inline TrimRight so the rule has somewhere to
+// be written down: the width claim below must be measured against this, never
+// against truncateVisible(row, pane) first. Pre-truncating is what made this
+// check unable to fail in that direction at all — clampToBox cuts an over-wide
+// row to exactly that string, so Contains matched the very mutilation the check
+// exists to report, and a class of over-wide essential rows hid behind it
+// through two review rounds.
+func jdeEssentialRowText(row jdeHeadRow) string {
+	return strings.TrimRight(row.Text, " ")
+}
+
 // TestJDEForm_EveryEssentialHeaderRowIsOnThePane: the rows a builder said the
 // operator cannot act without are drawn at every size the frame is drawn at.
 //
@@ -1943,17 +1957,22 @@ func TestJDEForm_EveryEssentialHeaderRowIsOnThePane(t *testing.T) {
 						if row.Rank != jdeHeadEssential {
 							continue
 						}
-						want := strings.TrimRight(row.Text, " ")
+						// TWO CLAIMS, AND ONLY ONE OF THEM IS EXCUSABLE. That the
+						// row FITS the pane's width is what jdeOverWideEssentialRows
+						// defers; that jdeFitHeader kept it ON the pane at all is
+						// not, and must go on being asked everywhere — jdeFitHeader
+						// trims by ROW and the row COUNT moves with the width (the
+						// picker's own note folds differently at 80 than at 100), so
+						// passing at 100 and 120 says nothing about 80, the width
+						// that must hold. Recording the overflow and skipping left
+						// the twenty excused sites asserted about in no way at all
+						// at 80, which is a weakening of the check dressed as an
+						// exclusion.
+						want := jdeEssentialRowText(row)
 						if want == "" {
 							continue
 						}
-						// THE ROW AS THE BUILDER WROTE IT, not truncateVisible'd
-						// to the pane first. Pre-truncating is what made this
-						// check unable to fail: clampToBox cuts an over-wide row
-						// to exactly that string, so Contains matched the very
-						// mutilation the check exists to report, and a class of
-						// over-wide essential rows hid behind it through two
-						// review rounds.
+						probe := want
 						if cells := lipgloss.Width(want); cells > screenBodyWidth(w) {
 							if cells > cellsOf[name] {
 								cellsOf[name] = cells
@@ -1961,10 +1980,12 @@ func TestJDEForm_EveryEssentialHeaderRowIsOnThePane(t *testing.T) {
 							if n := len(overAt[name]); n == 0 || overAt[name][n-1] != w {
 								overAt[name] = append(overAt[name], w)
 							}
-							continue
+							// An over-wide row can only be PRESENT as the pane
+							// clipped it, so that is what presence is asked about.
+							probe = truncateVisible(want, screenBodyWidth(w))
 						}
 						asserted++
-						if !strings.Contains(shown, want) {
+						if !strings.Contains(shown, probe) {
 							t.Errorf("%s at %dx%d drops the header row it marked essential — "+
 								"%q is not on the pane, so the operator is acting on a screen "+
 								"that is not telling them what it said it could not do "+
@@ -2385,10 +2406,11 @@ func TestJDEForm_AnUnsizedTerminalPagesAsItAlwaysHas(t *testing.T) {
 // at every drawable HEIGHT; what varies is the width.
 var jdeOverWideEssentialRows = map[string]string{
 	// One row, nineteen sites: the columnar picker's `Filter .....` row, built
-	// by jdePickHeader at the layer's unsized fallback rather than against the
-	// live pane, so it is the same 70 cells everywhere. It fits from a terminal
-	// width of 100 (a pane of 71) up and is cut at 80, where the pane is 51 —
-	// the width this interface is modelled on and the one that must hold.
+	// by jdePickList.render — which every one of the nineteen calls with the
+	// LIVE pane. It is 70 cells at every width because nothing in that row is
+	// derived from the pane at all, so it fits from a terminal width of 100
+	// (a pane of 71) up and is cut at 80, where the pane is 51 — the width this
+	// interface is modelled on and the one that must hold.
 	"AssetFormScreen/viewPick":                pickerFilterOverWide,
 	"AssetPartFormScreen/viewPick":            pickerFilterOverWide,
 	"AuthorizationGrantScreen/viewPick":       pickerFilterOverWide,
@@ -2425,6 +2447,23 @@ var jdeOverWideEssentialRows = map[string]string{
 
 // pickerFilterOverWide is the one reason the nineteen picker sites share, said
 // once so a re-measurement is a single edit rather than nineteen.
+//
+// THE MECHANISM IS THE HINT PAST THE CAP, and getting it wrong here is
+// expensive: this roster is the input the deferred bounding task is filed from,
+// and the first wording blamed an unsized pane and a jdePickHeader that does not
+// exist, which would send the next agent hunting a bug that is not there.
+// jdePickList.render declares the filter field at a flat `Width: 30`;
+// jdePaneFieldWidth caps a text row's input area at
+// bodyWidth - (indent + label + leader) = 51 - (2 + 6 + 7) = 36 at an
+// 80-column pane, so 30 is under the cap and survives untouched — and then
+// renderJDEField appends "  " + the 23-cell hint AFTER that cap. 2 + 6 + 7 + 30
+// + 2 + 23 = 70. jdePaneFieldWidth's own doc says so in as many words: "a hint
+// sitting past the fill is still past the pane afterwards — which is exactly
+// why the fold is jdeFitRow's job and not this one's." So the remedy for these
+// nineteen is routing the filter row through jdeFitRow, which already trades the
+// field against the hint and folds the hint underneath.
 const pickerFilterOverWide = "the columnar picker's `Filter .....` row is 70 cells, " +
 	"cut at a terminal width of 80, where screenBodyWidth gives 51; it fits from 100 " +
-	"(pane 71) up. Built at the layer's unsized fallback rather than against the live pane"
+	"(pane 71) up. jdePickList.render declares the field at a flat Width: 30 and " +
+	"renderJDEField appends the 23-cell hint AFTER jdePaneFieldWidth's cap, which that " +
+	"function's doc names as jdeFitRow's job rather than its own"

@@ -1178,23 +1178,26 @@ func (s *StorageSlotGenerateScreen) viewPicker() string {
 		s.statusRow(false, "", ""), s.pickBar(header, body))
 }
 
-// resultLines is the run report. Every line is its own navigable row so the
-// arrows scroll it: an idempotent run's point is what it created, skipped and
-// could not tag, and a 200-slot rack has more of that than the pane is tall.
+// resultLines is the run report, and every line in it belongs to NO navigable
+// row: this report is read-only and its window is positioned by an OFFSET
+// (resultScroll) rather than dragged along by a list cursor. An idempotent
+// run's point is what it created, skipped and could not tag, and a 200-slot
+// rack has more of that than the pane is tall, so the arrows move the window.
+//
+// It used to tag each line with a row of its own, which put the two untagged
+// lines at the top inside the count the cursor clamped against — so Down at the
+// bottom threw the reader back to the top of the report. The doc went on saying
+// "every line is its own navigable row" for a release after that stopped being
+// true, which is rule 8 in the direction that costs the next reader an hour.
 func (s *StorageSlotGenerateScreen) resultLines() *jdeLines {
 	l := &jdeLines{}
 	res := s.result
 	if res == nil {
 		return l
 	}
-	// Every line belongs to NO navigable row: this report is read-only and its
-	// window is positioned by an offset. It used to tag each line with a row of
-	// its own so a list cursor could drag the window along, which put two
-	// untagged lines at the top inside the count the cursor clamped against —
-	// see resultScroll.
 	add := l.Add
-	l.Add(StyleJDEHeading.Render(fmt.Sprintf("Rack %d generated", res.Rack)))
-	l.Add("")
+	add(StyleJDEHeading.Render(fmt.Sprintf("Rack %d generated", res.Rack)))
+	add("")
 	add(jdeIndent + StyleStatusOK.Render(fmt.Sprintf("Created %d", res.CreatedCount)))
 	for _, line := range storageGenCodeList(res.Created, s.bodyWidth()) {
 		add(line)

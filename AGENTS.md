@@ -2522,8 +2522,21 @@ is the authority; read it before adding a frame or wording a bar.
   the columnar picker's `Filter .....` row on NINETEEN sites
   (`AssetFormScreen/viewPick` and its siblings), **70 cells** — cut at a
   terminal width of 80, where `screenBodyWidth` gives 51, and fitting from 100
-  (pane 71) up, because `jdePickHeader` builds it at the layer's unsized
-  fallback rather than against the live pane; and `chainHeader`'s promoted
+  (pane 71) up. THE MECHANISM IS THE HINT PAST THE CAP, and the first wording of
+  this entry got it wrong in a way worth recording: it blamed the layer's
+  unsized fallback and named a `jdePickHeader` that does not exist, when
+  `jdePickList.render` is the builder and all nineteen sites call it with the
+  LIVE pane. The row is 70 cells at every width because nothing in it is derived
+  from the pane at all — the field is declared at a flat `Width: 30`,
+  `jdePaneFieldWidth` caps a text row at `bodyWidth - (indent + label + leader)`
+  = 36 at an 80-column pane so 30 survives untouched, and `renderJDEField` then
+  appends `"  "` plus the 23-cell hint AFTER that cap: 2 + 6 + 7 + 30 + 2 + 23.
+  `jdePaneFieldWidth`'s own doc says so — "a hint sitting past the fill is still
+  past the pane afterwards — which is exactly why the fold is `jdeFitRow`'s job
+  and not this one's" — so the remedy for these nineteen is routing the filter
+  row through `jdeFitRow`, which already trades the field against the hint and
+  folds the hint underneath. A RECORDED REASON IS READ AS A DIAGNOSIS AND WORK
+  IS FILED FROM IT, so a wrong one costs more than none. And `chainHeader`'s promoted
   validation message, **85 cells** — cut at 80 (pane 51) AND at 100 (pane 71),
   fitting only from 120 (pane 91), which makes it the widest essential row in
   the package and the only one that overruns past 80 columns. Those messages are

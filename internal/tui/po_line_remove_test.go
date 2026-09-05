@@ -1868,3 +1868,62 @@ func voidPaneSweep(t *testing.T, branch poVoidBranch, width int, heights []int) 
 		}
 	}
 }
+
+// TestPOLineRemove_ADeclinedKeyAnswersAfterTheDeleteFailed: on the confirm a
+// refused DELETE leaves standing, every key the frame declines still changes
+// what the operator sees.
+//
+// poLineActionMsg with an error sets saving false and errMsg WITHOUT changing
+// the phase, so a 502 leaves this frame up with the failure on its status row
+// and the bar naming Ctrl-X and Esc again. The status row holds ONE fact and
+// the failure takes it alone — an order-level error is never led — so until
+// deleteAnswerRow gave the answer a second surface in the pinned header, every
+// later declined key wrote a note nothing drew and the pane came back byte for
+// byte identical: standing rule 1, on a destructive confirm, after a destroy
+// that failed.
+//
+// Driven through the real message rather than by setting the field, so a change
+// that stopped a failed delete leaving the confirm open fails here instead of
+// leaving the check measuring a state nothing reaches. Pressed IN SEQUENCE with
+// no reset between, because two keys sharing one wording is how this class comes
+// back.
+func TestPOLineRemove_ADeclinedKeyAnswersAfterTheDeleteFailed(t *testing.T) {
+	fake := poRemoveOrder("draft", boolPtr(true))
+	r, _ := poRemoveRoot(t, fake, 80)
+	r, s := poRemoveOnStatusRow(t, r, 0)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if s.phase != poEditPhaseDeleteLine {
+		t.Fatalf("phase %v, want the delete confirm", s.phase)
+	}
+
+	next, _ := r.Update(poLineActionMsg{
+		err:    fmt.Errorf("oms: http 502: <!DOCTYPE html><html><head><title>502</title>"),
+		action: "line delete",
+	})
+	r = next.(Root)
+	if s.phase != poEditPhaseDeleteLine {
+		t.Fatalf("the refused delete closed the confirm (phase %v), so the state this "+
+			"check is about is not reached", s.phase)
+	}
+	if s.errMsg == "" {
+		t.Fatal("the refused delete left no error standing, so the status row is free " +
+			"for the answer and this check asserts nothing")
+	}
+
+	prev := poRemovePane(s, 80)
+	for _, k := range []string{"j", "down", "y", "up"} {
+		next, _ := r.Update(poPhaseKeyMsg(k))
+		r = next.(Root)
+		pane := poRemovePane(s, 80)
+		if pane == prev {
+			t.Fatalf("with the failed delete standing, pressing %q redrew a byte-identical "+
+				"pane — the frame wrote an answer nothing draws:\n%s", k, pane)
+		}
+		prev = pane
+	}
+	if !strings.Contains(stripANSI(prev), "up moves nothing") &&
+		!strings.Contains(stripANSI(prev), "up does nothing") {
+		t.Errorf("the last declined key's answer is not on the pane, so what changed was "+
+			"something other than the frame answering:\n%s", prev)
+	}
+}
