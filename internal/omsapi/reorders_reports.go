@@ -41,6 +41,12 @@ const reorderAnalyticsBase = "/api/reorders/analytics/"
 // percentages (0..100). TotalOrderValue is a Decimal-as-string; the rate + lead
 // fields are floats. LastOrderDate is an ISO datetime or "" (null);
 // DaysSinceLastOrder is a nullable int.
+//
+// OnTimeDeliveryRate / EarlyDeliveryRate / LateDeliveryRate are all counted off
+// variance_days, so all three are measured against the standing quote rather
+// than against the dates confirmed on the orders — see LeadTimeYardstick.
+// AverageLeadTimeDays is not: it is what the deliveries actually took, with no
+// promise in it.
 type ReorderSupplierPerformance struct {
 	SupplierID          int     `json:"supplier_id"`
 	SupplierName        string  `json:"supplier_name"`
@@ -55,6 +61,7 @@ type ReorderSupplierPerformance struct {
 	DamageRate          float64 `json:"damage_rate"`
 	LastOrderDate       string  `json:"last_order_date"`
 	DaysSinceLastOrder  *int    `json:"days_since_last_order"`
+	LeadTimeYardstick
 }
 
 // ReorderSupplierPerformance fetches the supplier_performance report (bare
@@ -73,12 +80,16 @@ func (c *Client) ReorderSupplierPerformance(ctx context.Context) ([]ReorderSuppl
 
 // ReorderLeadTimeTrend is one row of lead_time_trends. Month is "YYYY-MM"; lead
 // / variance are rounded-to-0.1 floats; OnTimeDeliveryRate is a percentage.
+//
+// AverageVarianceDays and OnTimeDeliveryRate are both measured against the
+// standing quote — see LeadTimeYardstick. AverageLeadTimeDays is not.
 type ReorderLeadTimeTrend struct {
 	Month               string  `json:"month"`
 	AverageLeadTimeDays float64 `json:"average_lead_time_days"`
 	AverageVarianceDays float64 `json:"average_variance_days"`
 	TotalDeliveries     int     `json:"total_deliveries"`
 	OnTimeDeliveryRate  float64 `json:"on_time_delivery_rate"`
+	LeadTimeYardstick
 }
 
 // ReorderLeadTimeTrends fetches the lead_time_trends report (bare array,

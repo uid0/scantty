@@ -48,13 +48,13 @@ func NewForgeKeyFleetReportScreen(deps Deps) *ReportTableScreen {
 			label:   "Overview",
 			columns: []reportColumn{{"Metric", alignLeft}, {"Value", alignRight}},
 			note:    "Fleet health roll-up · counts are live at the generated time.",
-			loader: func(ctx context.Context, deps Deps) ([][]string, error) {
+			loader: func(ctx context.Context, deps Deps) (reportBody, error) {
 				fs, err := deps.ForgeKey.FleetSummary(ctx)
 				if err != nil {
-					return nil, err
+					return reportBody{}, err
 				}
 				d := fs.Devices
-				return [][]string{
+				return reportBody{rows: [][]string{
 					{"Generated", fkFleetWhen(fs.GeneratedAt)},
 					{"Devices total", itoa(d.Total)},
 					{"Active", itoa(d.Active)},
@@ -67,63 +67,63 @@ func NewForgeKeyFleetReportScreen(deps Deps) *ReportTableScreen {
 					{"e-Paper low battery", itoa(fs.EPaper.LowBattery)},
 					{"Firmware updates in flight", itoa(fs.Firmware.UpdatesInFlight)},
 					{"Firmware recent failures", itoa(fs.Firmware.RecentFailures)},
-				}, nil
+				}}, nil
 			},
 		},
 		{
 			label:   "By type",
 			columns: []reportColumn{{"Code", alignLeft}, {"Type", alignLeft}, {"Devices", alignRight}, {"Online", alignRight}},
-			loader: func(ctx context.Context, deps Deps) ([][]string, error) {
+			loader: func(ctx context.Context, deps Deps) (reportBody, error) {
 				fs, err := deps.ForgeKey.FleetSummary(ctx)
 				if err != nil {
-					return nil, err
+					return reportBody{}, err
 				}
 				out := make([][]string, len(fs.Devices.ByType))
 				for i, t := range fs.Devices.ByType {
 					out[i] = []string{orDash(t.Code), orDash(t.Name), itoa(t.Count), itoa(t.Online)}
 				}
-				return out, nil
+				return reportBody{rows: out}, nil
 			},
 		},
 		{
 			label:   "By capability",
 			columns: []reportColumn{{"Capability", alignLeft}, {"Devices", alignRight}},
-			loader: func(ctx context.Context, deps Deps) ([][]string, error) {
+			loader: func(ctx context.Context, deps Deps) (reportBody, error) {
 				fs, err := deps.ForgeKey.FleetSummary(ctx)
 				if err != nil {
-					return nil, err
+					return reportBody{}, err
 				}
 				out := make([][]string, len(fs.Devices.ByCapability))
 				for i, c := range fs.Devices.ByCapability {
 					out[i] = []string{orDash(c.Capability), itoa(c.Count)}
 				}
-				return out, nil
+				return reportBody{rows: out}, nil
 			},
 		},
 		{
 			label:   "By firmware",
 			columns: []reportColumn{{"Version", alignLeft}, {"Devices", alignRight}},
 			note:    "\"unknown\" = devices that never reported a firmware version.",
-			loader: func(ctx context.Context, deps Deps) ([][]string, error) {
+			loader: func(ctx context.Context, deps Deps) (reportBody, error) {
 				fs, err := deps.ForgeKey.FleetSummary(ctx)
 				if err != nil {
-					return nil, err
+					return reportBody{}, err
 				}
 				out := make([][]string, len(fs.Devices.ByFirmware))
 				for i, f := range fs.Devices.ByFirmware {
 					out[i] = []string{orDash(f.Version), itoa(f.Count)}
 				}
-				return out, nil
+				return reportBody{rows: out}, nil
 			},
 		},
 		{
 			label:   "Attention",
 			columns: []reportColumn{{"Kind", alignLeft}, {"Device / panel", alignLeft}, {"Detail", alignLeft}, {"When", alignLeft}},
 			note:    "Offline: MAC · last seen. Low battery: charge% · last report. OTA failed: version · requested. Ordered by priority.",
-			loader: func(ctx context.Context, deps Deps) ([][]string, error) {
+			loader: func(ctx context.Context, deps Deps) (reportBody, error) {
 				fs, err := deps.ForgeKey.FleetSummary(ctx)
 				if err != nil {
-					return nil, err
+					return reportBody{}, err
 				}
 				a := fs.Attention
 				out := make([][]string, 0, len(a.Offline)+len(a.LowBattery)+len(a.OTAFailed))
@@ -144,39 +144,39 @@ func NewForgeKeyFleetReportScreen(deps Deps) *ReportTableScreen {
 				for _, u := range a.OTAFailed {
 					out = append(out, []string{"OTA failed", orDash(u.Name), orDash(u.Version), fkFleetWhen(u.RequestedAt)})
 				}
-				return out, nil
+				return reportBody{rows: out}, nil
 			},
 		},
 		{
 			label:   "Recent cmds",
 			columns: []reportColumn{{"Device", alignLeft}, {"Command", alignLeft}, {"Ack", alignLeft}, {"Sent", alignLeft}, {"By", alignLeft}},
 			note:    "Last 10 device commands.",
-			loader: func(ctx context.Context, deps Deps) ([][]string, error) {
+			loader: func(ctx context.Context, deps Deps) (reportBody, error) {
 				fs, err := deps.ForgeKey.FleetSummary(ctx)
 				if err != nil {
-					return nil, err
+					return reportBody{}, err
 				}
 				out := make([][]string, len(fs.RecentCommands))
 				for i, c := range fs.RecentCommands {
 					out[i] = []string{orDash(c.DeviceName), orDash(c.Command), orDash(c.AckStatus), fkFleetWhen(c.SentAt), orDash(c.SentBy)}
 				}
-				return out, nil
+				return reportBody{rows: out}, nil
 			},
 		},
 		{
 			label:   "Recent updates",
 			columns: []reportColumn{{"Device", alignLeft}, {"Version", alignLeft}, {"Status", alignLeft}, {"Requested", alignLeft}, {"By", alignLeft}},
 			note:    "Last 10 firmware updates.",
-			loader: func(ctx context.Context, deps Deps) ([][]string, error) {
+			loader: func(ctx context.Context, deps Deps) (reportBody, error) {
 				fs, err := deps.ForgeKey.FleetSummary(ctx)
 				if err != nil {
-					return nil, err
+					return reportBody{}, err
 				}
 				out := make([][]string, len(fs.RecentUpdates))
 				for i, u := range fs.RecentUpdates {
 					out[i] = []string{orDash(u.DeviceName), orDash(u.Version), orDash(u.Status), fkFleetWhen(u.RequestedAt), orDash(u.RequestedBy)}
 				}
-				return out, nil
+				return reportBody{rows: out}, nil
 			},
 		},
 	})

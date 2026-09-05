@@ -500,6 +500,54 @@ note, and is the authority):
   pass over it. Both are the vacuous-fixture rule, and both were found by deleting
   the code the test names and watching it stay green.
 
+### A lateness or variance figure names what it is measured against
+
+`internal/omsapi/lead_time_yardstick.go` carries the contract note and
+`internal/tui/report_table.go` is the layer that draws it; both are the
+authority, and the DERIVED SET with its deliberate exclusions is recorded at the
+top of `internal/tui/report_yardstick_test.go`. What is worth knowing before
+touching any report that shows a rate, a variance or a lateness:
+
+- **An OMS `LeadTimeLog` row holds TWO promises and scores only one.**
+  `variance_days` — and every rate counted off it — measures the supplier link's
+  STANDING QUOTE (`ItemSupplier.average_lead_time`, read at receipt time), never
+  the `expected_delivery_date` the operator confirmed on the order. A vendor that
+  hit the date it agreed can still sit in "Late %". That is DELIBERATE
+  (`inventory.services.supplier_selection` scores the quote and discounts it by
+  how often the vendor broke it; scoring a per-order date would let a vendor
+  quote three, confirm ten, deliver ten and win on both axes) and is not ours to
+  reopen. What was wrong was the SCREEN saying "Late %" and nothing else.
+- **The yardstick is READ, never assumed.** OMS serves `variance_measured_against`
+  on `supplier_performance`, `lead_time_trends` and `lead_time_analysis`
+  (PR #1046); `omsapi.LeadTimeYardstick` is the one embedded decode for all
+  three. `""` means the server said NOTHING, and the legend says so rather than
+  naming the quote — an OMS too old to serve the key has not told us these are
+  quote-scored, and filling that silence in asserts a promise nobody made.
+  AGREEMENT across rows is required (`reportYardstickOf`): one silent row
+  silences the whole legend, because a legend is a claim about every figure
+  under it.
+- **The declaration is the HEADER.** A column whose figure is scored against a
+  promise ends its header in `reportYardstickMark` (`*`), and the legend is
+  DERIVED from the marked columns the pane actually DREW. One string, so there
+  is no roster to keep in step: a marked column the fit dropped cannot be
+  explained by a legend that mentions it, and a new marked column cannot be
+  missed. Nothing else in these reports ends a header in `*`.
+- **The legend LEADS the table.** `clampToBox` drops from the BOTTOM, so a
+  legend under the rows is the first thing a short pane takes — and a figure
+  whose yardstick has been trimmed off the pane is exactly the bare lateness
+  this exists to stop. ROWS are what give instead, which is the safe direction:
+  fewer figures, each still explained.
+- **`on_time_rate` is a PERCENTAGE 0..100 on every one of the three payloads.**
+  The struct comment used to call it "a fraction 0..1" while the render appends
+  `%` without scaling; the render was always right and the comment was the
+  defect, and its only possible effect was to invite somebody to "fix" the
+  render into 7500%. `TestPurchasingLeadTime_OnTimeRateNotDoubled` and
+  `TestPurchasingLeadTime_OnTimeRateIsAPercentage` hold both halves.
+- OMS PR #1046 also RENAMED six keys on `GET /api/inventory/suppliers/<id>/`
+  and its `analytics` action, and three CSV headers. ScanTTY drives neither, so
+  nothing here decodes them; the keys ScanTTY does decode were deliberately left
+  alone and only GAINED the sibling above.
+
 ## The receiving flow is driven off ONE fetch, and the server decides
 
 `internal/omsapi/po_receiving.go` carries the contract note and
@@ -1215,6 +1263,38 @@ either:
   accelerator in `app.go` that phase 3 had deleted. Lowercase acts on the list,
   uppercase opens a sibling surface of the same workspace (which is also a
   `workspaceSurfaces` row in `route.go`).
+- **A REPORT TABLE fits its pane, and the give-order is written down.**
+  `internal/tui/report_table.go` (`fitReportTable`, `layoutRows`) is the layer
+  behind every tabbed report — inventory, purchasing, assets, reorders
+  analytics, ForgeKey fleet — and it is NOT on the columnar `jde_form.go` layer,
+  which is why its pane accessors are `reportPaneRows` / `reportPaneCells`:
+  `paneRows` is the columnar layer's own and marked `jde:layer-only`, exactly as
+  `ListScreen` names its pair `listPaneRows` / `listPaneCells`.
+  Horizontally, every part of a row is one of two things — an IDENTIFIER (a
+  left-aligned column) that abbreviates down to `reportNameFloor` with an
+  ellipsis, or a FACT (a right-aligned column) that NEVER gives, header
+  included, so no figure is ever cut. Where even that will not fit, whole
+  columns are DROPPED from the right: the header carries `reportDropMark` and
+  the note under the table NAMES them, the mark leading and the names following
+  because a short pane takes the note first.
+  Vertically, `layoutRows` gives ground in a stated order: the yardstick legend
+  and the action bar never give, the body floors at one row, and the block under
+  the table gives from the END. Below about a sixteen-row terminal at 80 columns
+  — derive it, the figure moves with the wording — the frame runs over and
+  `clampToBox` takes the tail; that band is left as it is rather than
+  half-converted into a refusal, and it is safe because the legend LEADS, so a
+  figure is never drawn without it at any height.
+  What this replaced, measured at 80 columns: a 75% on-time rate drawn as `75`,
+  a 33.3% late rate as `33.`, `$12,345.67` as `$12,3`, every numeric column off
+  the pane under a header line reading `Or`, notes and the action bar cut
+  mid-word, and a tab bar that showed the first three tabs and no highlight at
+  all while the operator stood on the sixth.
+  `internal/tui/report_yardstick_test.go` sweeps every report screen — the
+  roster DERIVED from the package source — at every width and height Root draws.
+  Its fixtures carry a full-length OMS supplier name and a distinct wide figure
+  per column ON PURPOSE: every report fixture in this package used to write
+  `Acme` and `Bolt`, so no test had ever rendered a report row at the length OMS
+  really serves, which is how the whole class survived.
 - **80 columns leaves the pane 51.** `screenBodyWidth(80)` is
   `80 - navColumnWidth(24) - 1 - padding(4)` = **51**, and the action bar gets 49
   of them. That is the number every columnar layout has to be checked against,
