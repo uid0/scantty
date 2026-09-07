@@ -419,7 +419,38 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
+	if err := decodeBody(resp.Body, out); err != nil {
+		return err
+	}
+	return nil
+}
+
+// decodeBody is the ONE place a response body becomes Go values, so what an
+// `any` holds is decided here rather than per endpoint.
+//
+// UseNumber is the whole point of it. Several ids on these payloads are typed
+// `any` because the client carries whatever the serializer echoed — a UUID
+// string on some models, a BigAutoField NUMBER on others — and the callers turn
+// that back into a path segment with fmt. Decoded the default way a JSON number
+// lands in an `any` as a float64, and `%v` formats a float64 with `%g`: a
+// seven-digit purchase-order id renders "1e+06". That string is spent on the
+// wire — po_add_line.go builds `/purchase-orders/<id>/item-lookup/` from it and
+// po_edit.go builds the line paths the same way — so against a real OMS the
+// order that answers 200 at `.../1000000/` answers 404 at `.../1e+06/`.
+//
+// json.Number keeps the server's own digits, so `%v` gives them back exactly.
+// It is set at the decoder rather than fixed at each fmt call because the id
+// sites are not a list anyone can keep: `any` fields are decoded all over this
+// package and stringified all over internal/tui.
+//
+// Nothing in the package reads a decoded `any` as a float64 — a json.Number is
+// a string underneath and arithmetic on one has to go through Float64()/Int64()
+// — so this narrows what an `any` can hold without changing any other reader.
+// TestAnyID_ANumericIDKeepsItsDigits is the guard.
+func decodeBody(r io.Reader, out any) error {
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	if err := dec.Decode(out); err != nil && err != io.EOF {
 		return fmt.Errorf("oms: decode response: %w", err)
 	}
 	return nil
@@ -485,8 +516,8 @@ func (c *Client) doMultipart(ctx context.Context, method, path string, fields ma
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
-		return fmt.Errorf("oms: decode response: %w", err)
+	if err := decodeBody(resp.Body, out); err != nil {
+		return err
 	}
 	return nil
 }
