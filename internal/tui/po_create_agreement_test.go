@@ -41,7 +41,7 @@ func poAgreementSrv(t *testing.T, results string) (*httptest.Server, *map[string
 		}
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0009"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0009"}`))
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &body
@@ -332,7 +332,7 @@ func TestPOAgreement_FailedLoadSaysUnavailableAndStillSubmits(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0009"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0009"}`))
 	}))
 	defer srv.Close()
 

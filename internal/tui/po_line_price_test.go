@@ -240,7 +240,7 @@ func (f *fakePOServer) handler(t *testing.T) http.HandlerFunc {
 				items = append(items, l.payload())
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": "po-1", "po_number": "PO-2026-0042", "status": "partially_received",
+				"id": 1, "po_number": "PO-2026-0042", "status": "partially_received",
 				"supplier_name": "Acme Bolt Co.", "order_date": "2026-08-01T00:00:00Z",
 				"items": items,
 			})
@@ -385,7 +385,7 @@ func poPriceRoot(t *testing.T, fake *fakePOServer) (Root, *PurchaseOrderDetailSc
 	t.Cleanup(srv.Close)
 
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	detail := NewPurchaseOrderDetailScreen(deps, "po-1")
+	detail := NewPurchaseOrderDetailScreen(deps, "1")
 	r := newTestRoot(detail)
 	r.deps = deps
 	next, _ := r.Update(tea.WindowSizeMsg{Width: 120, Height: 40})

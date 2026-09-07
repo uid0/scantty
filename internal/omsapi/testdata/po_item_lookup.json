@@ -1,0 +1,79 @@
+{
+    "query": "Hex bolt",
+    "supplier": {
+        "id": 1,
+        "name": "Acme Fasteners"
+    },
+    "purchase_order": {
+        "id": 2,
+        "po_number": "PO-LAB-0001",
+        "status": "draft",
+        "can_add_items": true
+    },
+    "best_match_kind": "partial_item_name",
+    "resolves": false,
+    "candidates": [
+        {
+            "item_supplier": 1,
+            "match_kind": "partial_item_name",
+            "match_label": "item name (partial)",
+            "matched_value": "Hex bolt M8x40 zinc",
+            "is_exact": false,
+            "item": {
+                "id": "a1c5d7ad-4115-463d-bce2-47db6fd9eab5",
+                "name": "Hex bolt M8x40 zinc",
+                "sku": "HEX-M8-40",
+                "is_kit": false
+            },
+            "supplier_sku": "AF-8840",
+            "package_upc": "",
+            "unit_upc": "",
+            "quantity_per_package": 50,
+            "suggested_quantity": 100,
+            "suggested_unit_cost": "0.35",
+            "already_on_order": {
+                "line_item": "1",
+                "quantity_ordered": 100,
+                "is_voided": false,
+                "repeat_increment": 50,
+                "quantity_ordered_after": 150
+            }
+        },
+        {
+            "item_supplier": 2,
+            "match_kind": "partial_item_name",
+            "match_label": "item name (partial)",
+            "matched_value": "Hex bolt M8x60 zinc",
+            "is_exact": false,
+            "item": {
+                "id": "65b5df3c-d0de-4eb0-ad98-df48cf37d3fd",
+                "name": "Hex bolt M8x60 zinc",
+                "sku": "HEX-M8-60",
+                "is_kit": false
+            },
+            "supplier_sku": "AF-8860",
+            "package_upc": "",
+            "unit_upc": "",
+            "quantity_per_package": 50,
+            "suggested_quantity": 100,
+            "suggested_unit_cost": "0.42",
+            "already_on_order": null
+        }
+    ],
+    "total_candidates": 2,
+    "best_match_total": 2,
+    "truncated": false,
+    "unavailable": [
+        {
+            "item": {
+                "id": "5f2f230c-69ef-4aac-b47c-23d8d3e5dee4",
+                "name": "Hex bolt M8x80 zinc",
+                "sku": "HEX-M8-80"
+            },
+            "reason": "discontinued",
+            "message": "Acme Fasteners no longer supplies Hex bolt M8x80 zinc (marked discontinued)."
+        }
+    ],
+    "total_unavailable": 1,
+    "unavailable_truncated": false
+}

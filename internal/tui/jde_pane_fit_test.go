@@ -291,7 +291,7 @@ func jdeScreenFixtures() map[string]func() Screen {
 			return NewPurchaseOrderAttachmentsScreen(Deps{}, po)
 		},
 		"PurchaseOrderDetailScreen": func() Screen {
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			s.loading = false
 			s.po = poViewPO()
 			return s
@@ -359,7 +359,7 @@ func poAddLookupFixture() *omsapi.POLineLookup {
 	l := &omsapi.POLineLookup{
 		Query:         "widget",
 		Supplier:      omsapi.POLineSupplierRef{ID: 1, Name: "Acme Fasteners & Industrial Supply"},
-		PurchaseOrder: omsapi.POLineLookupOrder{ID: "po-1", Number: "PO-2026-0042", Status: "draft", CanAddItems: true},
+		PurchaseOrder: omsapi.POLineLookupOrder{ID: 1, Number: "PO-2026-0042", Status: "draft", CanAddItems: true},
 		BestMatchKind: "name",
 	}
 	for i := 0; i < 6; i++ {
@@ -556,7 +556,7 @@ func jdeScreenStates() map[string]func() Screen {
 		// defect was measured in. The bar names PgUp/PgDn exactly while the pad
 		// overflows, which is what makes its height vary with the pane.
 		"PurchaseOrderDetailScreen/order pad": func() Screen {
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			s.loading = false
 			s.po = poViewPO()
 			var rows []string
@@ -612,14 +612,14 @@ func jdeScreenStates() map[string]func() Screen {
 			return s
 		},
 		"PurchaseOrderDetailScreen/mark shipped": func() Screen {
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			s.loading = false
 			s.po = poViewPO()
 			s.openShipForm()
 			return s
 		},
 		"PurchaseOrderDetailScreen/mark delivered": func() Screen {
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			s.loading = false
 			s.po = poViewPO()
 			s.openDeliverForm()
@@ -676,7 +676,7 @@ func jdeScreenStates() map[string]func() Screen {
 			return s
 		},
 		"PurchaseOrderDetailScreen/void order": func() Screen {
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			s.loading = false
 			s.po = poViewPO()
 			s.openVoidForm()

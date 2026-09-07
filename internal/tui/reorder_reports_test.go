@@ -94,7 +94,7 @@ const transparencyBody = `{
 	 "invoice_number":"","invoice_url":"","purchase_order_url":"","delivery_tracking_url":"",
 	 "supplier_url":"","public_notes":"","supplier_name":"Acme"}],
 	"ledger":[{"id":11,"item_name":"PLA"}],
-	"purchase_orders":[{"id":"po-1","po_number":"PO-1","supplier_name":"Acme","status":"received",
+	"purchase_orders":[{"id":"1","po_number":"PO-1","supplier_name":"Acme","status":"received",
 	 "status_label":"Received","order_date":"2026-05-01T00:00:00Z","expected_delivery_date":null,
 	 "estimated_total":300.0,"actual_total":null,"total_items":2,"total_quantity":5,
 	 "is_fully_received":true}]

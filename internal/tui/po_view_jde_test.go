@@ -64,7 +64,7 @@ func poViewPO() *omsapi.PurchaseOrder {
 	days := 12
 	group := 3
 	return &omsapi.PurchaseOrder{
-		ID:                    "po-1",
+		ID:                    1,
 		Number:                "PO-2026-0042",
 		Status:                "confirmed",
 		StatusLabel:           "Confirmed",
@@ -96,7 +96,7 @@ func poViewPO() *omsapi.PurchaseOrder {
 		OwningGroupRef:        &omsapi.OwningGroupRef{ID: 3, Name: "Woodshop"},
 		Items: []omsapi.PurchaseOrderItem{
 			{
-				ID: "line-1", Description: "M3 hex bolt, stainless",
+				ID: 1, Description: "M3 hex bolt, stainless",
 				ItemType: "item_supplier", ItemDetails: map[string]any{"sku": "M3-HEX-BOLT-SS", "name": "M3 hex bolt"},
 				QuantityOrdered: 5, QuantityPending: 5,
 				UnitCostOrdered:      omsapi.DecimalString("10.0000"),
@@ -106,7 +106,7 @@ func poViewPO() *omsapi.PurchaseOrder {
 				Notes:                "substitute A2 only with approval",
 			},
 			{
-				ID: "line-2", Description: "Gadget",
+				ID: 2, Description: "Gadget",
 				QuantityOrdered: 2, QuantityReceived: 2, IsFullyReceived: true,
 				UnitCostOrdered:    omsapi.DecimalString("10.0000"),
 				UnitCostActual:     omsapi.DecimalString("12.0000"),
@@ -150,7 +150,7 @@ func poViewRoot(t *testing.T, screen Screen, width int) Root {
 // poDetailAt builds a loaded detail screen sized for `width`.
 func poDetailAt(t *testing.T, width int) (*PurchaseOrderDetailScreen, Root) {
 	t.Helper()
-	s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+	s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 	s.loading = false
 	s.po = poViewPO()
 	return s, poViewRoot(t, s, width)
@@ -1166,9 +1166,9 @@ func TestPOView_OneLeaderColumn(t *testing.T) {
 // order that grows a Voided row on the next reload does not shift every other
 // value one column right under the operator's eye.
 func TestPOView_LabelColumnIsStableAcrossOrders(t *testing.T) {
-	bare := NewPurchaseOrderDetailScreen(Deps{}, "po-2")
+	bare := NewPurchaseOrderDetailScreen(Deps{}, "2")
 	bare.loading = false
-	bare.po = &omsapi.PurchaseOrder{ID: "po-2", Number: "PO-2", Status: "draft"}
+	bare.po = &omsapi.PurchaseOrder{ID: 2, Number: "PO-2", Status: "draft"}
 
 	leaderOf := func(body string) int {
 		for _, line := range strings.Split(body, "\n") {
@@ -1536,7 +1536,7 @@ var poFormNavAliases = map[string]bool{"tab": true, "shift+tab": true}
 // sheet fits the pane, so its scroll keys must not be named.
 func poShortPO() *omsapi.PurchaseOrder {
 	return &omsapi.PurchaseOrder{
-		ID: "po-2", Number: "PO-2026-0043",
+		ID: 2, Number: "PO-2026-0043",
 		Status: "draft", StatusLabel: "Draft",
 		SupplierDetails: "Acme",
 		OrderDate:       time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
@@ -1549,7 +1549,7 @@ func poBarPhases() []poBarPhase {
 	detail := func(po func() *omsapi.PurchaseOrder) func(*testing.T, int) (Screen, func() string, []actionBarItem) {
 		return func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
 			t.Helper()
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			s.loading = false
 			s.po = po()
 			r := poViewRoot(t, s, width)
@@ -1588,7 +1588,7 @@ func poBarPhases() []poBarPhase {
 	detailIn := func(mut func(*PurchaseOrderDetailScreen)) func(*testing.T, int) (Screen, func() string, []actionBarItem) {
 		return func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
 			t.Helper()
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			s.loading = false
 			s.po = poViewPO()
 			r := poViewRoot(t, s, width)
@@ -1669,7 +1669,7 @@ func poBarPhases() []poBarPhase {
 		{name: "detail sheet (body fits)", build: detail(poShortPO)},
 		{name: "detail loading (no order yet)", build: func(t *testing.T, width int) (Screen, func() string, []actionBarItem) {
 			t.Helper()
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			r := poViewRoot(t, s, width)
 			return s, poNavState(r, func() string { return fmt.Sprint(s.loading) }), s.sheetBar()
 		}},
@@ -1754,14 +1754,14 @@ func TestPOView_ScrollKeysNamedExactlyWhenTheBodyMoves(t *testing.T) {
 	}{
 		{name: "detail sheet", build: func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
 			t.Helper()
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			s.loading = false
 			s.po = poViewPO()
 			return s, poViewRootSized(t, s, width, height), s.sheetBar()
 		}},
 		{name: "order pad", build: func(t *testing.T, width, height int) (Screen, Root, []actionBarItem) {
 			t.Helper()
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			s.loading = false
 			s.po = poViewPO()
 			r := poViewRootSized(t, s, width, height)
@@ -1889,7 +1889,7 @@ func TestPOView_ReloadThatLosesTheOrderUnderASheet(t *testing.T) {
 func TestPOView_RefreshKeepsTheReadingPosition(t *testing.T) {
 	for _, width := range poViewWidths {
 		t.Run(widthName(width), func(t *testing.T) {
-			s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+			s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 			s.loading = false
 			s.po = poViewPO()
 			r := poViewRootSized(t, s, width, 24)

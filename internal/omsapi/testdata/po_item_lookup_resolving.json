@@ -1,0 +1,43 @@
+{
+    "query": "HEX-M8-40",
+    "supplier": {
+        "id": 1,
+        "name": "Acme Fasteners"
+    },
+    "purchase_order": {
+        "id": 2,
+        "po_number": "PO-LAB-0001",
+        "status": "draft",
+        "can_add_items": true
+    },
+    "best_match_kind": "item_sku",
+    "resolves": true,
+    "candidates": [
+        {
+            "item_supplier": 1,
+            "match_kind": "item_sku",
+            "match_label": "item SKU",
+            "matched_value": "HEX-M8-40",
+            "is_exact": true,
+            "item": {
+                "id": "a1c5d7ad-4115-463d-bce2-47db6fd9eab5",
+                "name": "Hex bolt M8x40 zinc",
+                "sku": "HEX-M8-40",
+                "is_kit": false
+            },
+            "supplier_sku": "AF-8840",
+            "package_upc": "",
+            "unit_upc": "",
+            "quantity_per_package": 50,
+            "suggested_quantity": 100,
+            "suggested_unit_cost": "0.35",
+            "already_on_order": null
+        }
+    ],
+    "total_candidates": 1,
+    "best_match_total": 1,
+    "truncated": false,
+    "unavailable": [],
+    "total_unavailable": 0,
+    "unavailable_truncated": false
+}

@@ -104,7 +104,7 @@ func (f *poAddFake) order() map[string]any {
 		status = "draft"
 	}
 	return map[string]any{
-		"id": "po-1", "po_number": "PO-2026-0042", "status": status,
+		"id": 1, "po_number": "PO-2026-0042", "status": status,
 		"status_label":     strings.ToUpper(status[:1]) + status[1:],
 		"supplier_details": "Acme Fasteners & Industrial Supply Co.",
 		"items":            items,
@@ -209,7 +209,15 @@ func (f *poAddFake) handler() http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"query":    q,
 				"supplier": map[string]any{"id": 3, "name": "Acme Fasteners & Industrial Supply Co."},
-				"purchase_order": map[string]any{"id": "po-1", "po_number": "PO-2026-0042",
+				// A NUMBER, because that is what serialize_lookup writes:
+				// `"id": purchase_order.pk`, and PurchaseOrder's pk is a
+				// BigAutoField. This fake said `"id": "po-1"` and so fed the
+				// whole add-line drive suite a shape OMS has never sent — every
+				// test here passed while a real reply could not be decoded at
+				// all and adding a line by SKU was impossible.
+				// internal/omsapi/testdata/po_item_lookup.json is a recorded
+				// reply and is the authority for this payload.
+				"purchase_order": map[string]any{"id": 2, "po_number": "PO-2026-0042",
 					"status": status, "can_add_items": status == "draft"},
 				"best_match_kind":       "vendor_sku",
 				"resolves":              bestTotal == 1,
@@ -322,7 +330,7 @@ func poAddAt(t *testing.T, fake *poAddFake, width, height int) (Root, *PurchaseO
 	t.Cleanup(srv.Close)
 
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	detail := NewPurchaseOrderDetailScreen(deps, "po-1")
+	detail := NewPurchaseOrderDetailScreen(deps, "1")
 	r := newTestRoot(detail)
 	r.deps = deps
 	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: height})
@@ -721,7 +729,7 @@ func TestPOAddLine_ANonDraftOrderSaysSo(t *testing.T) {
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	po := &omsapi.PurchaseOrder{ID: "po-1", Number: "PO-2026-0042", Status: "draft",
+	po := &omsapi.PurchaseOrder{ID: 1, Number: "PO-2026-0042", Status: "draft",
 		SupplierDetails: "Acme Fasteners & Industrial Supply Co."}
 	s := NewPurchaseOrderAddLineScreen(deps, po)
 	r := newTestRoot(s)
@@ -738,14 +746,14 @@ func TestPOAddLine_ANonDraftOrderSaysSo(t *testing.T) {
 // The sheet names `n` only where it works, and a press in the wrong status
 // still answers rather than redrawing the same pane.
 func TestPOAddLine_TheSheetOffersItOnlyOnADraft(t *testing.T) {
-	draft := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+	draft := NewPurchaseOrderDetailScreen(Deps{}, "1")
 	draft.loading = false
 	draft.po = poShortPO()
 	if !barHas(draft.sheetBar(), "n", "Add line") {
 		t.Errorf("a draft PO's bar does not name `n`: %+v", draft.sheetBar())
 	}
 
-	sent := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+	sent := NewPurchaseOrderDetailScreen(Deps{}, "1")
 	sent.loading = false
 	sent.po = poShortPO()
 	sent.po.Status = "sent"

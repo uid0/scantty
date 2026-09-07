@@ -24,7 +24,7 @@ func TestCreatePurchaseOrder_FreeformLine(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"po-uuid","po_number":"PO-2026-0042"}`))
+		_, _ = w.Write([]byte(`{"id":7,"po_number":"PO-2026-0042"}`))
 	}))
 	defer srv.Close()
 
@@ -88,7 +88,7 @@ func TestCreatePurchaseOrder_InventoryLine(t *testing.T) {
 		_ = json.Unmarshal(raw, &bodyJSON)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"po-uuid","po_number":"PO-2026-0043"}`))
+		_, _ = w.Write([]byte(`{"id":7,"po_number":"PO-2026-0043"}`))
 	}))
 	defer srv.Close()
 
@@ -126,7 +126,7 @@ func TestCreatePurchaseOrder_InventoryLineCaseDerivedCost(t *testing.T) {
 		_ = json.Unmarshal(raw, &bodyJSON)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"po-uuid","po_number":"PO-2026-0044"}`))
+		_, _ = w.Write([]byte(`{"id":7,"po_number":"PO-2026-0044"}`))
 	}))
 	defer srv.Close()
 
@@ -201,12 +201,12 @@ func TestReceivePOItems_Contract(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"po-uuid","po_number":"PO-2026-0044","is_fully_received":true,"total_received_quantity":5,"total_quantity":5}`))
+		_, _ = w.Write([]byte(`{"id":7,"po_number":"PO-2026-0044","is_fully_received":true,"total_received_quantity":5,"total_quantity":5}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	po, err := c.ReceivePOItems(context.Background(), "po-uuid", ReceiveRequest{
+	po, err := c.ReceivePOItems(context.Background(), "7", ReceiveRequest{
 		Items: []ReceiptLine{
 			{PurchaseOrderItem: "item-1", QuantityReceived: 3},
 			{PurchaseOrderItem: "item-2", QuantityReceived: 2},
@@ -225,7 +225,7 @@ func TestReceivePOItems_Contract(t *testing.T) {
 	if captured.method != "POST" {
 		t.Fatalf("method = %q, want POST", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-uuid/receive/" {
+	if captured.path != "/api/reorders/purchase-orders/7/receive/" {
 		t.Fatalf("path = %q", captured.path)
 	}
 	// po id rides in the URL, never in the body.
@@ -274,12 +274,12 @@ func TestReceivePOItems_OmitsOptional(t *testing.T) {
 		_ = json.Unmarshal(raw, &body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"po-uuid","po_number":"PO-2026-0045"}`))
+		_, _ = w.Write([]byte(`{"id":7,"po_number":"PO-2026-0045"}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	_, err := c.ReceivePOItems(context.Background(), "po-uuid", ReceiveRequest{
+	_, err := c.ReceivePOItems(context.Background(), "7", ReceiveRequest{
 		Items: []ReceiptLine{{PurchaseOrderItem: 7, QuantityReceived: 1}},
 	})
 	if err != nil {
@@ -302,7 +302,7 @@ func TestReceivePOItems_BackendError(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	_, err := c.ReceivePOItems(context.Background(), "po-uuid", ReceiveRequest{
+	_, err := c.ReceivePOItems(context.Background(), "7", ReceiveRequest{
 		Items: []ReceiptLine{{PurchaseOrderItem: 1, QuantityReceived: 1}},
 	})
 	if err == nil {
@@ -326,18 +326,18 @@ func TestSendToSupplier(t *testing.T) {
 		captured.bodyLen = len(raw)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0046","status":"sent"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0046","status":"sent"}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.SendToSupplier(context.Background(), "po-1"); err != nil {
+	if err := c.SendToSupplier(context.Background(), "1"); err != nil {
 		t.Fatalf("SendToSupplier: %v", err)
 	}
 	if captured.method != "POST" {
 		t.Fatalf("method = %q, want POST", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-1/send_to_supplier/" {
+	if captured.path != "/api/reorders/purchase-orders/1/send_to_supplier/" {
 		t.Fatalf("path = %q", captured.path)
 	}
 	if captured.bodyLen != 0 {
@@ -354,7 +354,7 @@ func TestSendToSupplier_BackendError(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.SendToSupplier(context.Background(), "po-1"); err == nil {
+	if err := c.SendToSupplier(context.Background(), "1"); err == nil {
 		t.Fatal("expected error on 400, got nil")
 	}
 }
@@ -375,18 +375,18 @@ func TestConfirmOrder_NoDate(t *testing.T) {
 		captured.bodyLen = len(raw)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0047","status":"confirmed"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0047","status":"confirmed"}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.ConfirmOrder(context.Background(), "po-1", ""); err != nil {
+	if err := c.ConfirmOrder(context.Background(), "1", ""); err != nil {
 		t.Fatalf("ConfirmOrder: %v", err)
 	}
 	if captured.method != "POST" {
 		t.Fatalf("method = %q, want POST", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-1/confirm_order/" {
+	if captured.path != "/api/reorders/purchase-orders/1/confirm_order/" {
 		t.Fatalf("path = %q", captured.path)
 	}
 	if captured.bodyLen != 0 {
@@ -403,12 +403,12 @@ func TestConfirmOrder_WithDate(t *testing.T) {
 		_ = json.Unmarshal(raw, &body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0048","status":"confirmed"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0048","status":"confirmed"}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.ConfirmOrder(context.Background(), "po-1", "2026-08-01"); err != nil {
+	if err := c.ConfirmOrder(context.Background(), "1", "2026-08-01"); err != nil {
 		t.Fatalf("ConfirmOrder: %v", err)
 	}
 	if got := body["expected_delivery_date"]; got != "2026-08-01" {
@@ -425,7 +425,7 @@ func TestConfirmOrder_BackendError(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.ConfirmOrder(context.Background(), "po-1", ""); err == nil {
+	if err := c.ConfirmOrder(context.Background(), "1", ""); err == nil {
 		t.Fatal("expected error on 400, got nil")
 	}
 }
@@ -457,14 +457,14 @@ func TestExportOrderPad_Contract(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	pad, err := c.ExportOrderPad(context.Background(), "po-9")
+	pad, err := c.ExportOrderPad(context.Background(), "9")
 	if err != nil {
 		t.Fatalf("ExportOrderPad: %v", err)
 	}
 	if captured.method != "GET" {
 		t.Fatalf("method = %q, want GET", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-9/export-order/" {
+	if captured.path != "/api/reorders/purchase-orders/9/export-order/" {
 		t.Fatalf("path = %q, want .../po-9/export-order/ (trailing slash)", captured.path)
 	}
 	if pad == nil {
@@ -499,7 +499,7 @@ func TestExportOrderPad_BackendError(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if _, err := c.ExportOrderPad(context.Background(), "po-9"); err == nil {
+	if _, err := c.ExportOrderPad(context.Background(), "9"); err == nil {
 		t.Fatal("expected error on 404, got nil")
 	}
 }
@@ -524,12 +524,12 @@ func TestUpdatePurchaseOrder_Contract(t *testing.T) {
 		_ = json.Unmarshal(captured.raw, &captured.body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0050","status":"draft"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0050","status":"draft"}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	po, err := c.UpdatePurchaseOrder(context.Background(), "po-1", PurchaseOrderUpdate{
+	po, err := c.UpdatePurchaseOrder(context.Background(), "1", PurchaseOrderUpdate{
 		SupplierOrderNumber:  strptr("SUP-123"),
 		SalesOrderNumber:     strptr("SO-9"),
 		ExpectedDeliveryDate: strptr(""), // clear
@@ -544,7 +544,7 @@ func TestUpdatePurchaseOrder_Contract(t *testing.T) {
 	if captured.method != "PATCH" {
 		t.Fatalf("method = %q, want PATCH", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-1/" {
+	if captured.path != "/api/reorders/purchase-orders/1/" {
 		t.Fatalf("path = %q", captured.path)
 	}
 	if captured.body["supplier_order_number"] != "SUP-123" {
@@ -575,12 +575,12 @@ func TestUpdatePurchaseOrder_OmitsNil(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0051"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0051"}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	_, err := c.UpdatePurchaseOrder(context.Background(), "po-1", PurchaseOrderUpdate{
+	_, err := c.UpdatePurchaseOrder(context.Background(), "1", PurchaseOrderUpdate{
 		ExpectedDeliveryDate: strptr("2026-09-01"),
 	})
 	if err != nil {
@@ -615,7 +615,7 @@ func TestUpdatePurchaseOrderLineItem_Contract(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	item, err := c.UpdatePurchaseOrderLineItem(context.Background(), "po-1", "5", LineItemUpdate{
+	item, err := c.UpdatePurchaseOrderLineItem(context.Background(), "1", "5", LineItemUpdate{
 		LineCost:             fptr(125.50),
 		ExpectedShipmentDate: strptr("2026-07-20"),
 		Notes:                strptr("backordered"),
@@ -629,7 +629,7 @@ func TestUpdatePurchaseOrderLineItem_Contract(t *testing.T) {
 	if captured.method != "PATCH" {
 		t.Fatalf("method = %q, want PATCH", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-1/items/5/" {
+	if captured.path != "/api/reorders/purchase-orders/1/items/5/" {
 		t.Fatalf("path = %q", captured.path)
 	}
 	if captured.body["line_cost"].(float64) != 125.50 {
@@ -661,7 +661,7 @@ func TestUpdatePurchaseOrderLineItem_ClearShipDate(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	_, err := c.UpdatePurchaseOrderLineItem(context.Background(), "po-1", "5", LineItemUpdate{
+	_, err := c.UpdatePurchaseOrderLineItem(context.Background(), "1", "5", LineItemUpdate{
 		ExpectedShipmentDate: strptr(""),
 	})
 	if err != nil {
@@ -692,7 +692,7 @@ func TestVoidPurchaseOrderLineItem(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	item, err := c.VoidPurchaseOrderLineItem(context.Background(), "po-1", "5", "discontinued")
+	item, err := c.VoidPurchaseOrderLineItem(context.Background(), "1", "5", "discontinued")
 	if err != nil {
 		t.Fatalf("VoidPurchaseOrderLineItem: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestVoidPurchaseOrderLineItem(t *testing.T) {
 	if captured.method != "POST" {
 		t.Fatalf("method = %q, want POST", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-1/items/5/void/" {
+	if captured.path != "/api/reorders/purchase-orders/1/items/5/void/" {
 		t.Fatalf("path = %q", captured.path)
 	}
 	if captured.body["reason"] != "discontinued" {
@@ -724,12 +724,12 @@ func TestVoidPurchaseOrder(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &captured.body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0052","status":"voided"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0052","status":"voided"}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	po, err := c.VoidPurchaseOrder(context.Background(), "po-1", "supplier rejected")
+	po, err := c.VoidPurchaseOrder(context.Background(), "1", "supplier rejected")
 	if err != nil {
 		t.Fatalf("VoidPurchaseOrder: %v", err)
 	}
@@ -739,7 +739,7 @@ func TestVoidPurchaseOrder(t *testing.T) {
 	if captured.method != "POST" {
 		t.Fatalf("method = %q, want POST", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-1/void/" {
+	if captured.path != "/api/reorders/purchase-orders/1/void/" {
 		t.Fatalf("path = %q", captured.path)
 	}
 	if captured.body["reason"] != "supplier rejected" {
@@ -756,7 +756,7 @@ func TestVoidPurchaseOrder_BackendError(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if _, err := c.VoidPurchaseOrder(context.Background(), "po-1", "x"); err == nil {
+	if _, err := c.VoidPurchaseOrder(context.Background(), "1", "x"); err == nil {
 		t.Fatal("expected error on 403, got nil")
 	}
 }
@@ -776,12 +776,12 @@ func TestMarkPurchaseOrderDelivered_Contract(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &captured.body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0053","status":"received","is_fully_received":true}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0053","status":"received","is_fully_received":true}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	po, err := c.MarkPurchaseOrderDelivered(context.Background(), "po-1", MarkDeliveredRequest{
+	po, err := c.MarkPurchaseOrderDelivered(context.Background(), "1", MarkDeliveredRequest{
 		DeliveryDate:   "2026-07-03",
 		TrackingNumber: "1Z999",
 		Carrier:        "UPS",
@@ -796,7 +796,7 @@ func TestMarkPurchaseOrderDelivered_Contract(t *testing.T) {
 	if captured.method != "POST" {
 		t.Fatalf("method = %q, want POST", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-1/mark-delivered/" {
+	if captured.path != "/api/reorders/purchase-orders/1/mark-delivered/" {
 		t.Fatalf("path = %q", captured.path)
 	}
 	if captured.body["delivery_date"] != "2026-07-03" {
@@ -822,12 +822,12 @@ func TestMarkPurchaseOrderDelivered_OmitsOptional(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0054"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0054"}`))
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	_, err := c.MarkPurchaseOrderDelivered(context.Background(), "po-1", MarkDeliveredRequest{
+	_, err := c.MarkPurchaseOrderDelivered(context.Background(), "1", MarkDeliveredRequest{
 		DeliveryDate: "2026-07-03",
 	})
 	if err != nil {
@@ -882,7 +882,7 @@ func TestUploadPurchaseOrderAttachment_Multipart(t *testing.T) {
 
 	c := New(srv.URL)
 	att, err := c.UploadPurchaseOrderAttachment(
-		context.Background(), "po-1", "po.pdf", strings.NewReader("%PDF-1.4 fake"), "sales order",
+		context.Background(), "1", "po.pdf", strings.NewReader("%PDF-1.4 fake"), "sales order",
 	)
 	if err != nil {
 		t.Fatalf("UploadPurchaseOrderAttachment: %v", err)
@@ -893,7 +893,7 @@ func TestUploadPurchaseOrderAttachment_Multipart(t *testing.T) {
 	if captured.method != "POST" {
 		t.Fatalf("method = %q, want POST", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-1/upload-attachment/" {
+	if captured.path != "/api/reorders/purchase-orders/1/upload-attachment/" {
 		t.Fatalf("path = %q", captured.path)
 	}
 	if !strings.HasPrefix(captured.ctype, "multipart/form-data") {
@@ -928,7 +928,7 @@ func TestUploadPurchaseOrderAttachment_OmitsBlankDescription(t *testing.T) {
 
 	c := New(srv.URL)
 	_, err := c.UploadPurchaseOrderAttachment(
-		context.Background(), "po-1", "x.pdf", strings.NewReader("data"), "",
+		context.Background(), "1", "x.pdf", strings.NewReader("data"), "",
 	)
 	if err != nil {
 		t.Fatalf("UploadPurchaseOrderAttachment: %v", err)
@@ -953,13 +953,13 @@ func TestDeletePurchaseOrderAttachment(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.DeletePurchaseOrderAttachment(context.Background(), "po-1", 11); err != nil {
+	if err := c.DeletePurchaseOrderAttachment(context.Background(), "1", 11); err != nil {
 		t.Fatalf("DeletePurchaseOrderAttachment: %v", err)
 	}
 	if captured.method != "DELETE" {
 		t.Fatalf("method = %q, want DELETE", captured.method)
 	}
-	if captured.path != "/api/reorders/purchase-orders/po-1/attachments/11/" {
+	if captured.path != "/api/reorders/purchase-orders/1/attachments/11/" {
 		t.Fatalf("path = %q", captured.path)
 	}
 }
@@ -973,7 +973,7 @@ func TestDeletePurchaseOrderAttachment_Forbidden(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.DeletePurchaseOrderAttachment(context.Background(), "po-1", 11); err == nil {
+	if err := c.DeletePurchaseOrderAttachment(context.Background(), "1", 11); err == nil {
 		t.Fatal("expected error on 403, got nil")
 	}
 }

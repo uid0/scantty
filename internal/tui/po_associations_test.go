@@ -55,7 +55,7 @@ func poAssocSrv(t *testing.T, woResults, sigResults string) (*httptest.Server, *
 				delete(body, k)
 			}
 			_ = json.Unmarshal(raw, &body)
-			_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0009"}`))
+			_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0009"}`))
 		}
 	}))
 	t.Cleanup(srv.Close)
@@ -255,7 +255,7 @@ func TestPOAssoc_FailedLoadSaysUnavailableAndStillSubmits(t *testing.T) {
 		}
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0009"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0009"}`))
 	}))
 	defer srv.Close()
 
@@ -378,7 +378,7 @@ func poAssociatedPO() *omsapi.PurchaseOrder {
 // committee the order was placed for, and a line that was bought for a
 // different one says so on its own row.
 func TestPODetail_RendersBothLevelsOfAssociation(t *testing.T) {
-	s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+	s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 	s.po = poAssociatedPO()
 	s.loading = false
 	out := s.renderBody()
@@ -405,7 +405,7 @@ func TestPODetail_RendersBothLevelsOfAssociation(t *testing.T) {
 // optional on every order, so an untagged one draws nothing about them rather
 // than a pair of empty rows on every PO in the shop.
 func TestPODetail_UnassociatedOrderShowsNoAssociationRows(t *testing.T) {
-	s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+	s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 	s.po = samplePO()
 	s.loading = false
 	out := s.renderBody()
@@ -516,7 +516,7 @@ func TestPOEditAssoc_LineLevelPickWritesThroughUpdateItem(t *testing.T) {
 			patched = r.URL.Path
 			raw, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(raw, &body)
-			_, _ = w.Write([]byte(`{"id":"line-1"}`))
+			_, _ = w.Write([]byte(`{"id":1}`))
 		}
 	}))
 	defer srv.Close()
@@ -545,7 +545,7 @@ func TestPOEditAssoc_LineLevelPickWritesThroughUpdateItem(t *testing.T) {
 		t.Fatalf("saving the line association failed: %v", msg.(poLineActionMsg).err)
 	}
 
-	if !strings.HasSuffix(patched, "/items/line-1/") {
+	if !strings.HasSuffix(patched, "/items/1/") {
 		t.Errorf("line associations must go through update_item, patched %q", patched)
 	}
 	v, present := body["work_order"]

@@ -17,7 +17,7 @@ func runeKey(r rune) tea.KeyMsg {
 
 func samplePO() *omsapi.PurchaseOrder {
 	return &omsapi.PurchaseOrder{
-		ID:                   "po-1",
+		ID:                   1,
 		Number:               "PO-2026-0001",
 		Status:               "confirmed",
 		SupplierOrderNumber:  "SUP-1",
@@ -31,12 +31,12 @@ func samplePO() *omsapi.PurchaseOrder {
 		// the API cannot produce.
 		Items: []omsapi.PurchaseOrderItem{
 			{
-				ID: "line-1", Description: "Widget",
+				ID: 1, Description: "Widget",
 				QuantityOrdered: 5, UnitCostOrdered: omsapi.DecimalString("10.0000"),
 				EstimatedCost: omsapi.DecimalString("50.00"),
 			},
 			{
-				ID: "line-2", Description: "Gadget",
+				ID: 2, Description: "Gadget",
 				QuantityOrdered: 2, QuantityReceived: 2,
 				UnitCostOrdered:      omsapi.DecimalString("10.0000"),
 				UnitCostActual:       omsapi.DecimalString("10.0000"),
@@ -382,8 +382,8 @@ func TestPODetail_MarkDeliveredGating(t *testing.T) {
 // where the backend would accept it — the bar is the operator's only source of
 // what works here, so a key it names must do something.
 func TestPODetail_BarStatusGating(t *testing.T) {
-	s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
-	s.po = &omsapi.PurchaseOrder{ID: "po-1", Status: "confirmed"}
+	s := NewPurchaseOrderDetailScreen(Deps{}, "1")
+	s.po = &omsapi.PurchaseOrder{ID: 1, Status: "confirmed"}
 	bar := s.sheetBar()
 	for _, want := range [][2]string{{"E", "Edit"}, {"A", "Files"}, {"d", "Delivered"}, {"v", "Void"}} {
 		if !barHas(bar, want[0], want[1]) {
@@ -392,7 +392,7 @@ func TestPODetail_BarStatusGating(t *testing.T) {
 	}
 
 	// A received PO can't be voided or delivered.
-	s.po = &omsapi.PurchaseOrder{ID: "po-1", Status: "received", IsFullyReceived: true}
+	s.po = &omsapi.PurchaseOrder{ID: 1, Status: "received", IsFullyReceived: true}
 	bar = s.sheetBar()
 	if barHas(bar, "v", "Void") {
 		t.Errorf("received PO should not offer void: %+v", bar)
@@ -403,9 +403,9 @@ func TestPODetail_BarStatusGating(t *testing.T) {
 }
 
 func TestPODetail_VoidAndDeliverModalsRender(t *testing.T) {
-	s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+	s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 	s.loading = false
-	s.po = &omsapi.PurchaseOrder{ID: "po-1", Number: "PO-2026-0001", Status: "confirmed"}
+	s.po = &omsapi.PurchaseOrder{ID: 1, Number: "PO-2026-0001", Status: "confirmed"}
 
 	s.openVoidForm()
 	if !s.WantsRawInput() {

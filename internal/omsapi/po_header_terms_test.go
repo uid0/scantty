@@ -19,7 +19,7 @@ import (
 // association fields use to detach, because blank is a value this column stores.
 
 const poHeaderTermsPayload = `{
-	"id": "po-1", "po_number": "PO-2026-0042", "status": "sent",
+	"id": 1, "po_number": "PO-2026-0042", "status": "sent",
 	"priority": "urgent",
 	"payment_terms": "net_30",
 	"freight_terms": "fob_destination",
@@ -61,7 +61,7 @@ func TestPurchaseOrder_DecodesHeaderTermsAndSchedule(t *testing.T) {
 func TestPurchaseOrder_ScheduleWithNoDueDateDecodesAsUnscheduled(t *testing.T) {
 	var po PurchaseOrder
 	if err := json.Unmarshal([]byte(`{
-		"id": "po-2", "status": "draft", "priority": "normal",
+		"id": 2, "status": "draft", "priority": "normal",
 		"payment_terms": "cod", "freight_terms": "",
 		"payment_schedule": {"due_date": null, "amount": "40.00", "basis": "On delivery"}
 	}`), &po); err != nil {
@@ -86,7 +86,7 @@ func TestPurchaseOrder_ScheduleWithNoDueDateDecodesAsUnscheduled(t *testing.T) {
 // a reader must be able to tell apart from an order whose terms are unset.
 func TestPurchaseOrder_OrderWithoutTermsDecodesEmpty(t *testing.T) {
 	var po PurchaseOrder
-	if err := json.Unmarshal([]byte(`{"id": "po-3", "status": "draft"}`), &po); err != nil {
+	if err := json.Unmarshal([]byte(`{"id": 3, "status": "draft"}`), &po); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if po.Priority != "" || po.PaymentTerms != "" || po.FreightTerms != "" {
@@ -111,11 +111,11 @@ func patchPOBody(t *testing.T, req PurchaseOrderUpdate) map[string]any {
 			t.Errorf("request body: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"po-1"}`))
+		_, _ = w.Write([]byte(`{"id":1}`))
 	}))
 	defer srv.Close()
 
-	if _, err := New(srv.URL).UpdatePurchaseOrder(context.Background(), "po-1", req); err != nil {
+	if _, err := New(srv.URL).UpdatePurchaseOrder(context.Background(), "1", req); err != nil {
 		t.Fatalf("UpdatePurchaseOrder: %v", err)
 	}
 	return body

@@ -220,9 +220,9 @@ func TestPODetail_OrderPadKeyOpensAndFetches(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewPurchaseOrderDetailScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "po-9")
+	s := NewPurchaseOrderDetailScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "9")
 	s.loading = false
-	s.po = &omsapi.PurchaseOrder{ID: "po-9", Status: "sent"}
+	s.po = &omsapi.PurchaseOrder{ID: 9, Status: "sent"}
 
 	_, cmd := s.Update(poRuneKey("x"))
 	if !s.orderPad || !s.orderPadLoading {
@@ -236,7 +236,7 @@ func TestPODetail_OrderPadKeyOpensAndFetches(t *testing.T) {
 	if !ok || pm.err != nil {
 		t.Fatalf("expected a successful poOrderPadMsg, got %#v", msg)
 	}
-	if gotMethod != "GET" || gotPath != "/api/reorders/purchase-orders/po-9/export-order/" {
+	if gotMethod != "GET" || gotPath != "/api/reorders/purchase-orders/9/export-order/" {
 		t.Fatalf("request = %s %s, want GET .../po-9/export-order/", gotMethod, gotPath)
 	}
 
@@ -273,9 +273,9 @@ func TestPODetail_OrderPadBackendErrorKeepsOverlay(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewPurchaseOrderDetailScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "po-9")
+	s := NewPurchaseOrderDetailScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "9")
 	s.loading = false
-	s.po = &omsapi.PurchaseOrder{ID: "po-9", Status: "sent"}
+	s.po = &omsapi.PurchaseOrder{ID: 9, Status: "sent"}
 
 	_, cmd := s.Update(poRuneKey("x"))
 	pm, ok := cmd().(poOrderPadMsg)
