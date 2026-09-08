@@ -7,16 +7,26 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ScanTTY is a client of the OpenMakerSuite HTTP API and of ForgeKey; `README.md`
 has the env vars and the package map.
 
-- **No live OMS is reachable from a task worktree.** `SCANTTY_OMS_URL` is unset
-  and nothing answers locally, so behaviour is verified by driving the real
-  screens through `Root.Update` against a stateful `httptest` fake. See
-  `internal/tui/wo_materials_drive_test.go` (the `pump` / `key` helpers, reused
-  across drive tests) and `internal/tui/po_line_price_test.go`.
+- **No SHARED OMS is reachable from a task worktree.** `SCANTTY_OMS_URL` is
+  unset and nothing answers on the usual host, so ordinary behaviour is verified
+  by driving the real screens through `Root.Update` against a stateful
+  `httptest` fake. See `internal/tui/wo_materials_drive_test.go` (the `pump` /
+  `key` helpers, reused across drive tests) and
+  `internal/tui/po_line_price_test.go`.
+- **A LOCAL one can be brought up, and on a ScanTTY/OMS SEAM bug it is worth
+  it.** A fake only ever proves ScanTTY's half of the contract, and a fake built
+  from ScanTTY's own structs cannot disagree with them at all — which is exactly
+  how the `POLineLookupOrder.ID` mismatch below survived three fixtures. See
+  "Verifying against a REAL OMS" below.
 - **The OMS source is the contract.** A read-only checkout normally sits beside
   this one at `../openmakersuite`; `backend/<app>/serializers.py` and `views.py`
   are authoritative for wire shapes, and `frontend/src/pages/*.tsx` is
   authoritative for what parity means. Read it before guessing at a payload —
-  and never modify it from a ScanTTY task.
+  and never modify it from a ScanTTY task. **Check that checkout is at the
+  REMOTE default branch before trusting it**: `git rev-parse HEAD^{tree}` there
+  against the remote commit's tree sha (`gh-axi api repos/uid0/openmakersuite/commits/main`)
+  settles it in one step, and a match means reading the local files IS reading
+  remote `main`.
 - **Money comes over as strings OR numbers**, hence `omsapi.DecimalString`.
   `Empty()` means "null/unset" and NOT "zero": several OMS money properties
   return a real `0.00` for "no price recorded", so treat zero as an absence
@@ -104,6 +114,68 @@ What is worth knowing before touching any of them:
   derived PROSE only. A float divide put 0.049999999999999996 in the add-line
   cost box for an item priced 0.05, the row `CharLimit` of 14 cut it to
   `0.049999999999`, and Enter posted that.
+
+### A WIRE TYPE IS THE BUILDER'S DECISION, NEVER THE MODEL'S
+
+`internal/omsapi/po_line_entry.go` carries the worked example and
+`internal/omsapi/testdata/README.md` the fixture rule. What is worth knowing
+before declaring or changing any field that crosses this boundary:
+
+- **The reported failure.** `POLineLookupOrder.ID` was `string`; `serialize_lookup`
+  writes `"id": purchase_order.pk` and `PurchaseOrder` declares no primary key, so
+  it is `settings.DEFAULT_AUTO_FIELD` (`BigAutoField`) — a number, always. Every
+  reply was refused by the decoder, so adding a PO line by SKU was IMPOSSIBLE and
+  the operator read `json: cannot unmarshal number into…`.
+- **THE SAME PAYLOAD MIXES BOTH, WHICH IS THE WHOLE LESSON.** In
+  `serialize_lookup` the item ids ARE `str()`-wrapped and so is
+  `already_on_order.line_item` — whose model pk is an INTEGER — while the order's
+  own id is bare. So "what pk does the model have?" does not answer "what type is
+  on the wire"; only the line of Python that builds the dict does. `POLineSupplierRef.ID`
+  beside it was right for the same reason it could have been wrong: nobody checked
+  the builder, it just happened to match.
+- **drf-spectacular's schema is authoritative for a serializer field and NOT for a
+  `SerializerMethodField`** — an un-annotated one is typed `string` by default, so
+  the schema calls `can_receive` a string when it is a bool. 41 of the 50 candidates
+  the schema net produced were that artefact. And spectacular cannot see a
+  hand-built dict AT ALL, which is where this defect lived and where the next one
+  will.
+- **AN `any` ID IS NOT A FREE PASS.** It always decodes, and then a caller renders
+  it. `encoding/json` puts a JSON number into an `any` as a `float64` and `%v`
+  formats that with `%g`, so a seven-digit id becomes `"1e+06"` — spent on the wire
+  as a path segment. `Client.decodeBody` sets `UseNumber` so an `any` keeps the
+  server's own digits; that is the ONE place it is decided, because the id sites
+  are not a list anyone maintains. `asset_parts.go`'s `IDString` had already
+  written that reasoning down and applied it to exactly one struct.
+- **A FIXTURE WRITTEN FROM THE STRUCT CANNOT CONTRADICT THE STRUCT.** All three
+  fixtures for this endpoint said `{"id": "po-1"}` and all three passed. Fixtures
+  for a wire shape are RECORDED from a real backend (`internal/omsapi/testdata/`,
+  with provenance) and guarded by a check that the recorded body still carries the
+  server's types, so a later "fix" to the fixture cannot quietly restore the
+  defect.
+
+### Verifying against a REAL OMS
+
+Worth ~15 minutes whenever a bug sits on the ScanTTY/OMS seam. No Docker daemon
+here; Homebrew PostgreSQL listens on `127.0.0.1:5432`. **sqlite will not work** —
+`backend/accounting/checks.py` needs PostgreSQL for hordak, so `quick-start.sh`'s
+sqlite default is a dead end.
+
+Clone OMS into a scratch dir (never the shared checkout — `backend/.env` and the
+DB would land in someone else's clone), `uv venv` + `uv pip install -r
+backend/requirements.txt`, create a database, and write `backend/.env` with
+`DEBUG=0`, a `DATABASE_URL`, an empty `SENTRY_DSN`, and **`SECURE_SSL_REDIRECT=0`
+plus `SECURE_HSTS_SECONDS=0`** — `DEBUG=0` turns the redirect on and it 301s every
+plain-HTTP request. Then `manage.py migrate` and `runserver`. Auth is JWT:
+`POST /api/auth/login/` → `access` → `omsapi.New(url, omsapi.WithToken(access, ""))`.
+
+Two endpoints need Redis (`GetResilienceStatus`, `ListProjectStoragePrintQueue`)
+and 500 without it; nothing else does.
+
+`internal/omsapi/lab_sweep_test.go` (build tag `omslab`) is the harness: it
+reflects over `*Client`, drives every read method taking only a context, and
+reports which calls carried ROWS and which came back EMPTY — because an empty
+list decodes into any element type and proves nothing about it. Use
+`go test -count=1`; the cache keys on env vars and will replay a stale PASS.
 
 ### A line goes onto a draft order by scanning an identifier
 
