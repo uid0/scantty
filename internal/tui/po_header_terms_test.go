@@ -26,7 +26,7 @@ import (
 
 func poTermsPO() *omsapi.PurchaseOrder {
 	return &omsapi.PurchaseOrder{
-		ID:                   "po-1",
+		ID:                   1,
 		Number:               "PO-2026-0042",
 		Status:               "sent",
 		SupplierDetails:      "Acme Supply",
@@ -45,7 +45,7 @@ func poTermsPO() *omsapi.PurchaseOrder {
 			Basis:   "Net 30 from order date",
 		},
 		Items: []omsapi.PurchaseOrderItem{
-			{ID: "line-1", Description: "Widget", QuantityOrdered: 5},
+			{ID: 1, Description: "Widget", QuantityOrdered: 5},
 		},
 	}
 }
@@ -61,7 +61,7 @@ func poTermsEditScreen(t *testing.T, po *omsapi.PurchaseOrder) (*PurchaseOrderEd
 			delete(body, k)
 		}
 		_ = json.Unmarshal(raw, &body)
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0042"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0042"}`))
 	}))
 	t.Cleanup(srv.Close)
 	return NewPurchaseOrderEditScreen(Deps{OMS: omsapi.New(srv.URL)}, po), &body

@@ -22,7 +22,7 @@ import (
 func TestPurchaseOrder_DecodesOrderLevelAssociations(t *testing.T) {
 	var po PurchaseOrder
 	if err := json.Unmarshal([]byte(`{
-		"id": "po-1", "po_number": "PO-2026-0042", "status": "draft",
+		"id": 1, "po_number": "PO-2026-0042", "status": "draft",
 		"work_order": "3f1c0e58-0000-4000-8000-000000000001",
 		"work_order_details": {
 			"id": "3f1c0e58-0000-4000-8000-000000000001", "short_id": "WO-1A2B",
@@ -58,10 +58,10 @@ func TestPurchaseOrder_DecodesOrderLevelAssociations(t *testing.T) {
 func TestPurchaseOrder_UnassociatedOrderDecodesEmpty(t *testing.T) {
 	var po PurchaseOrder
 	if err := json.Unmarshal([]byte(`{
-		"id": "po-2", "status": "draft",
+		"id": 2, "status": "draft",
 		"work_order": null, "work_order_details": null,
 		"owning_group": null, "owning_group_details": null,
-		"items": [{"id": "li-1", "work_order": null, "work_order_details": null,
+		"items": [{"id": 1, "work_order": null, "work_order_details": null,
 		           "owning_group": null, "owning_group_details": null}]
 	}`), &po); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -86,7 +86,7 @@ func TestPurchaseOrder_UnassociatedOrderDecodesEmpty(t *testing.T) {
 func TestPurchaseOrderItem_DecodesLineLevelAssociations(t *testing.T) {
 	var li PurchaseOrderItem
 	if err := json.Unmarshal([]byte(`{
-		"id": "li-9", "description": "V-belt",
+		"id": 9, "description": "V-belt",
 		"work_order": "3f1c0e58-0000-4000-8000-000000000002",
 		"work_order_details": {
 			"id": "3f1c0e58-0000-4000-8000-000000000002", "short_id": "WO-9Z8Y",
@@ -175,11 +175,11 @@ func TestCreatePurchaseOrder_AssociationsSentWhenPicked(t *testing.T) {
 // line must not silently detach the job it was bought for, while an operator
 // who chose "none" must actually see it detached. nil omits, zero sends null.
 func TestUpdateLineItem_AssociationsClearVsUntouched(t *testing.T) {
-	srv, body := capturePatch(t, `{"id":"li-1"}`)
+	srv, body := capturePatch(t, `{"id":1}`)
 	c := New(srv.URL)
 
 	cost := 12.5
-	if _, err := c.UpdatePurchaseOrderLineItem(context.Background(), "po-1", "li-1", LineItemUpdate{
+	if _, err := c.UpdatePurchaseOrderLineItem(context.Background(), "1", "1", LineItemUpdate{
 		LineCost: &cost,
 	}); err != nil {
 		t.Fatalf("UpdatePurchaseOrderLineItem: %v", err)
@@ -191,7 +191,7 @@ func TestUpdateLineItem_AssociationsClearVsUntouched(t *testing.T) {
 	}
 
 	wo, group := "", 0
-	if _, err := c.UpdatePurchaseOrderLineItem(context.Background(), "po-1", "li-1", LineItemUpdate{
+	if _, err := c.UpdatePurchaseOrderLineItem(context.Background(), "1", "1", LineItemUpdate{
 		WorkOrder: &wo, OwningGroup: &group,
 	}); err != nil {
 		t.Fatalf("UpdatePurchaseOrderLineItem: %v", err)
@@ -207,7 +207,7 @@ func TestUpdateLineItem_AssociationsClearVsUntouched(t *testing.T) {
 	}
 
 	wo, group = "3f1c0e58-0000-4000-8000-000000000001", 3
-	if _, err := c.UpdatePurchaseOrderLineItem(context.Background(), "po-1", "li-1", LineItemUpdate{
+	if _, err := c.UpdatePurchaseOrderLineItem(context.Background(), "1", "1", LineItemUpdate{
 		WorkOrder: &wo, OwningGroup: &group,
 	}); err != nil {
 		t.Fatalf("UpdatePurchaseOrderLineItem: %v", err)
@@ -224,11 +224,11 @@ func TestUpdateLineItem_AssociationsClearVsUntouched(t *testing.T) {
 // the same three-way switch, so re-tagging an order can't behave differently
 // from re-tagging one of its lines.
 func TestUpdatePurchaseOrder_AssociationsUseTheSameRule(t *testing.T) {
-	srv, body := capturePatch(t, `{"id":"po-1"}`)
+	srv, body := capturePatch(t, `{"id":1}`)
 	c := New(srv.URL)
 
 	notes := "reprint"
-	if _, err := c.UpdatePurchaseOrder(context.Background(), "po-1", PurchaseOrderUpdate{
+	if _, err := c.UpdatePurchaseOrder(context.Background(), "1", PurchaseOrderUpdate{
 		Notes: &notes,
 	}); err != nil {
 		t.Fatalf("UpdatePurchaseOrder: %v", err)
@@ -240,7 +240,7 @@ func TestUpdatePurchaseOrder_AssociationsUseTheSameRule(t *testing.T) {
 	}
 
 	wo, group := "", 0
-	if _, err := c.UpdatePurchaseOrder(context.Background(), "po-1", PurchaseOrderUpdate{
+	if _, err := c.UpdatePurchaseOrder(context.Background(), "1", PurchaseOrderUpdate{
 		WorkOrder: &wo, OwningGroup: &group,
 	}); err != nil {
 		t.Fatalf("UpdatePurchaseOrder: %v", err)

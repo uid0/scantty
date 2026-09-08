@@ -994,7 +994,7 @@ func TestJDEStatus_AnUnmarkedRowKeepsWhatNoMarkTakes(t *testing.T) {
 			// The WORKING LINE branch: data-driven, so it grows to whatever the
 			// pane gives and shows how much that is.
 			a := NewPurchaseOrderAddLineScreen(Deps{}, &omsapi.PurchaseOrder{
-				ID: "po-1", Number: "PO-2026-0042", Status: "draft",
+				ID: 1, Number: "PO-2026-0042", Status: "draft",
 				SupplierDetails: "Consolidated Fastener & Industrial Supply Company of Ohio",
 			})
 			ar := newTestRoot(a)
@@ -1058,7 +1058,7 @@ func TestJDEStatus_AnUnmarkedRowKeepsWhatNoMarkTakes(t *testing.T) {
 func TestJDEScroll_APaneTooShortToDrawTheBodyKeepsTheOperatorsPlace(t *testing.T) {
 	build := func(t *testing.T) (*PurchaseOrderDetailScreen, Root) {
 		t.Helper()
-		s := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+		s := NewPurchaseOrderDetailScreen(Deps{}, "1")
 		s.loading = false
 		s.po = poViewPO()
 		r := poViewRootSized(t, s, 80, 40)

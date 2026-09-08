@@ -26,7 +26,11 @@ func loadAssetDetail(t *testing.T, deps Deps, asset *omsapi.Asset) *AssetDetailS
 // TestReportProblem_PartsChecklistFlow drives the full report-problem flow on
 // an asset that has parts: describe → the "which components?" checklist opens →
 // toggle two parts → submit posts to report_problem with the flagged part_ids.
-// Part ids are float64 here to mirror the JSON-number shape they arrive in.
+// The part ids are built here rather than decoded, so they mirror no arrival
+// shape — assetPartKey uses %v and is indifferent to the representation, which
+// is why this fixture can hold a plain float64 while the client's own decoder
+// produces a json.Number. Anything asserting WHICH shape arrives belongs in a
+// check that goes through the real client, not here.
 func TestReportProblem_PartsChecklistFlow(t *testing.T) {
 	var captured struct {
 		method, path string

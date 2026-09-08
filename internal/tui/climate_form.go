@@ -824,9 +824,17 @@ func (s *ThermostatFormScreen) viewPick() string {
 }
 
 // thermostatAssetKey renders an asset's UUID pk (Asset.ID is `any`) to the
-// string the controlled_asset FK wants. Asset pks are UUIDs, so the JSON value
-// decodes as a Go string; the fallback covers any non-string encoding without
-// tripping the float64 scientific-notation trap that bites int pks.
+// string the controlled_asset FK wants. Asset pks are UUIDs on the SERVER, so
+// the value is a Go string and the first arm is the live one; the fallback is
+// there only so a shape nobody expected still produces something rather than
+// the empty string.
+//
+// The fallback used to be justified by its avoiding "the float64
+// scientific-notation trap that bites int pks". That trap is closed at the
+// decoder now (omsapi's jsonDecoder sets UseNumber), so the sentence was
+// defending against something that no longer exists — and a fallback whose
+// stated reason has evaporated is one somebody deletes. The reason it stays is
+// the one above: an unexpected shape must not silently become "".
 func thermostatAssetKey(a omsapi.Asset) string {
 	if s, ok := a.ID.(string); ok {
 		return s

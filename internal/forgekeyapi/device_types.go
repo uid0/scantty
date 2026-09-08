@@ -14,8 +14,16 @@ import (
 // flat 4-field model, so the whole read shape is id/name/code/description/
 // is_active with no FKs, JSON blobs or timestamps.
 //
-// ID is `any` because the JSON pk decodes as a float64; use IntID for the
-// integer value the detail/update/delete URLs need.
+// ID is `any` because the client carries whatever the serializer echoed; use
+// IntID for the integer value the detail/update/delete URLs need.
+//
+// This sentence used to say the pk "decodes as a float64". That was a claim
+// about the DECODER dressed as a claim about the wire, and it was cited in a
+// review as evidence that ForgeKey pks are numbers — which is exactly the
+// mistake this branch is about. What the SERVER says is that DeviceType takes
+// Django's implicit BigAutoField, so the pk is an integer; what the DECODER does
+// is client.go's jsonDecoder, which sets UseNumber, so it arrives as a
+// json.Number and never as a float64. IntID reads both.
 type DeviceType struct {
 	ID          any    `json:"id"`
 	Name        string `json:"name"`
@@ -24,9 +32,14 @@ type DeviceType struct {
 	IsActive    bool   `json:"is_active"`
 }
 
-// IntID coerces the `any`-typed pk (float64 from JSON, or int/int64/string/
-// json.Number depending on the decoder) to the integer the API paths use. It
-// returns 0 when the value can't be read as an integer.
+// IntID coerces the `any`-typed pk to the integer the API paths use, whatever
+// representation the decoder produced. It returns 0 when the value can't be
+// read as an integer.
+//
+// The arms are deliberately not ranked here. This comment used to lead with
+// "float64 from JSON", which client.go's jsonDecoder falsified the moment it set
+// UseNumber — read the representation there, where it is decided, rather than
+// from a list in a coercer that exists precisely so no caller has to care.
 func (d DeviceType) IntID() int {
 	switch v := d.ID.(type) {
 	case float64:

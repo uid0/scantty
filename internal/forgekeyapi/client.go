@@ -180,10 +180,100 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
+	if err := jsonDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
 		return fmt.Errorf("forgekey: decode: %w", err)
 	}
 	return nil
+}
+
+// jsonDecoder is the ONE place this package chooses a decoder's options, the
+// mirror of omsapi.jsonDecoder and for the same reason.
+//
+// THESE ENDPOINTS ARE SERVED BY OPENMAKERSUITE'S OWN CODE. `/api/forgekey/...`
+// is `backend/forgekey`, an OMS Django app, with OMS models behind it — so this
+// client crosses exactly the boundary omsapi crosses and its wire types are
+// decided by the same serializers. uid0/ForgeKey is the C++ operating system
+// that runs ON the devices; it is firmware, not the HTTP API, and confusing the
+// two is what put this package out of scope on the strength of it "being a
+// different server" — which is why the class stayed open here for a release
+// after it was closed next door.
+//
+// What is NOT established, and is not needed for any of the above: whether the
+// deployed SCANTTY_FORGEKEY_URL host is the same process as SCANTTY_OMS_URL.
+// The claim that matters is about whose SERIALIZERS decide these types, and that
+// one is checkable by reading the app.
+//
+// UseNumber is the whole point. Several ids on these payloads are typed `any`
+// because the client carries whatever the serializer echoed, and the callers
+// turn that back into a URL path segment with fmt. Decoded the default way a
+// JSON number lands in an `any` as a float64 and `%v` formats a float64 with
+// `%g`, so a seven-digit pk renders "1e+06" and is spent on the wire. Measured
+// against a live backend, with the correct id as the control:
+//
+//	POST /api/forgekey/operational-modes/1000000/enable_classroom_mode/  -> 200
+//	POST /api/forgekey/operational-modes/1e+06/enable_classroom_mode/    -> 404
+//	POST /api/forgekey/authorizations/1000001/revoke/                    -> 200
+//	POST /api/forgekey/authorizations/1.000001e+06/revoke/               -> 404
+//
+// WHAT BITES IS A CONJUNCTION, and stating it as a list of models is what has
+// made every version of this roster wrong. It takes an INTEGER pk AND a
+// fmt.Sprint over an `any` to lose digits. Either half alone is harmless:
+//
+//	integer pk, no `any`   DeviceType is a BigAutoField and IS spent as a path
+//	                       segment (device_types.go's get/update/delete), and it
+//	                       was never affected — it goes through IntID(), which
+//	                       returns an int, and the paths format with %d. An int
+//	                       through %d is its digits at any magnitude.
+//	`any`, no integer pk   ESP32Device, DeviceLockout, DeviceUsage, EPaperDisplay
+//	                       and FirmwareRollout all declare
+//	                       `id = models.UUIDField(primary_key=True)`, so the id is
+//	                       a STRING on the wire and fmt.Sprint never had anything
+//	                       to mangle.
+//
+// Both halves together is internal/tui/op_modes.go's classroom-mode toggle
+// (OperationalMode) and internal/tui/auth_lockout.go's revoke
+// (AssetAuthorization) — the spend sites are in the TUI, not in this package,
+// which is why they are named with their paths — and those are the two the live
+// measurements above were taken against.
+//
+// THE MODEL SIDE, derived from backend/forgekey/models.py by reading each class
+// WHOLE: the `models.Model` subclasses taking Django's implicit BigAutoField are
+// AssetAuthorization, AssetDevice, DeviceType, OperationalMode and
+// RoomOperationalMode. Everything else is an explicit UUIDField.
+//
+// THIS IS THE ONE PLACE THAT ROSTER IS WRITTEN DOWN, and AGENTS.md and
+// any_id_test.go point here rather than repeating it. They used to repeat it,
+// which is how the branch ended up with four copies and corrected them one round
+// at a time as each was reported — the test's copy still said "only
+// AssetAuthorization and OperationalMode" after the other three had been fixed,
+// so a reader deriving scope from it would have reached the retired answer. A
+// roster costs nothing to copy and cannot be kept in step by hand.
+//
+// AND IT HAS BEEN GOT WRONG FOUR TIMES IN ONE BRANCH, ALWAYS BY MATCHING
+// ONE SPELLING OF THE THING BEING LOOKED FOR — the lesson AGENTS.md already
+// records about retired key chords having two spellings, arrived at again here:
+//
+//   - grepping `fmt.Sprintf("%v")` missed the `fmt.Sprint(` form;
+//   - grepping `fmt.Sprint(` then missed `IntID()`, so DeviceType was left out
+//     of the roster entirely and a reader would have concluded it was a UUID;
+//   - grepping `^class \w+` for the pk scan swept in `IndicatorStatus` (a plain
+//     class) and `LockoutLevel` (a models.TextChoices enum) as though they were
+//     tables with primary keys. Neither has a pk at all.
+//
+// So derive this by asking what a value IS and how it is SPENT, not by grepping
+// for the spelling you happen to have in mind. And ScanTTY's OWN comments are
+// not evidence about any of it: device_types.go said the pk "decodes as a
+// float64", which records what an author believed and was then cited as a fact
+// about the wire — the mistake this whole branch is about.
+//
+// The option is set at the DECODER rather than at each fmt call because the id
+// sites are not a list anyone maintains, and because a UUID is a string either
+// way: the narrow derivation above decides what the TESTS can prove, not what
+// the code has to cover.
+func jsonDecoder(r io.Reader) *json.Decoder {
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	return dec
 }
 
 func (c *Client) Get(ctx context.Context, path string, q url.Values, out any) error {
@@ -212,10 +302,22 @@ type MaybeList[T any] struct {
 	Count int
 }
 
+// UnmarshalJSON tries the bare array first and falls back to the envelope, and
+// BOTH branches decode through jsonDecoder rather than json.Unmarshal.
+//
+// encoding/json hands a custom Unmarshaler the RAW BYTES and steps out of the
+// way, so an outer decoder's UseNumber does not reach in here and json.Unmarshal
+// cannot be configured at all — this method is the hole the option escapes
+// through, and it is on the path of both live sites: ListAuthorizations and
+// ListOperationalModes each decode a MaybeList of a struct whose ID is `any`,
+// and internal/tui/op_modes.go / internal/tui/auth_lockout.go render that id
+// with fmt.Sprint straight into an enable_classroom_mode / revoke URL. Fixing
+// only do() above would have left every list-fed id still arriving as a
+// float64.
 func (m *MaybeList[T]) UnmarshalJSON(data []byte) error {
 	// Try bare array first — the more common shape and the cheaper parse.
 	var arr []T
-	if err := json.Unmarshal(data, &arr); err == nil {
+	if err := jsonDecoder(bytes.NewReader(data)).Decode(&arr); err == nil {
 		m.Items = arr
 		m.Count = len(arr)
 		return nil
@@ -224,7 +326,7 @@ func (m *MaybeList[T]) UnmarshalJSON(data []byte) error {
 		Count   int `json:"count"`
 		Results []T `json:"results"`
 	}
-	if err := json.Unmarshal(data, &env); err != nil {
+	if err := jsonDecoder(bytes.NewReader(data)).Decode(&env); err != nil {
 		return err
 	}
 	m.Items = env.Results

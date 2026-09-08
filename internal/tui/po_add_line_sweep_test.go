@@ -314,7 +314,7 @@ func poAddHarness(t *testing.T, width, height int) func(*testing.T) (Root, *Purc
 	return func(t *testing.T) (Root, *PurchaseOrderAddLineScreen) {
 		t.Helper()
 		s := NewPurchaseOrderAddLineScreen(deps, &omsapi.PurchaseOrder{
-			ID: "po-1", Number: "PO-2026-0042", Status: "draft",
+			ID: 1, Number: "PO-2026-0042", Status: "draft",
 			SupplierDetails: "Acme Fasteners & Industrial Supply Co.",
 		})
 		r := newTestRoot(s)

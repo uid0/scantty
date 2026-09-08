@@ -583,8 +583,14 @@ func (s *ReportTableScreen) reportPaneCells() int {
 	}
 	// Floored at one cell, not because Root ever draws such a pane — it refuses
 	// below a content width of 20 — but because every bound below divides or
-	// clips by this, and a zero would make a folder return no lines at all on a
-	// frame that then indexes the first one.
+	// clips by this, and a zero would silently empty each of them.
+	//
+	// The clause that used to follow named the failed-load frame as one that
+	// "indexes the first line" a folder returned. That frame iterates now
+	// (see the loop below), precisely so no caller depends on getting a first
+	// line — so the old justification described code that no longer exists and
+	// flatly contradicted the comment at that call site. The floor stays for the
+	// dividing-and-clipping reason alone, which never depended on it.
 	if n := screenBodyCells(s.terminalWidth); n > 0 {
 		return n
 	}
@@ -1131,23 +1137,19 @@ func (s *ReportTableScreen) View() string {
 		// WHAT A ROW GIVES UP IT MARKS, and an error body is the worst place in
 		// the program to break that: an operator reading six folded lines of a
 		// gateway page with nothing saying a tail went cannot tell they are
-		// missing the sentence that says what actually failed. This is
-		// po_create.go's failLines / poFailDetailRows, copied rather than
-		// reinvented, and its three decisions come with it. The mark spends the
-		// LAST of the block's OWN rows instead of growing the block, so the
-		// height does not move. The TWO wordings stay, because the two cuts know
-		// different things: the FOLD knows how many lines it left and names the
-		// number, while the cellPrefix bound has already thrown the rest away
-		// and can only say more exists than the pane can hold — a count there
-		// would be a count of the PREFIX, which is a figure about nothing. And
-		// the mark row is itself bounded, because the row saying something was
-		// cut may not be the row that runs off the pane.
+		// missing the sentence that says what actually failed. This site used to
+		// carry its own copy of po_create.go's failLines to get that; it calls the
+		// shared failDetailLines below instead, and that function's doc owns the
+		// three decisions the copy carried — the mark spending the LAST of the
+		// block's OWN rows rather than growing it, the TWO wordings the two cuts
+		// need, and the mark row being bounded itself.
 		detail := "Error: " + st.err
-		trimmed := cellPrefix(detail, reportErrRows*cells)
-		bounded := trimmed != detail
-		folded := pickerWrap(trimmed, cells)
 		// The ceiling is reportErrRows and the PANE can lower it (frameRows),
-		// never below the floor that keeps the first line and its mark.
+		// never below the floor that keeps the first line and its mark. The
+		// fold-cut-and-mark itself is failDetailLines (pane_text.go), whose doc
+		// carries the rule and the roster of screens that share it — this site
+		// deliberately does not restate that roster, having previously named two
+		// of the four and gone stale the moment a fourth was converted.
 		room := reportErrRows
 		if r := s.frameRows(); r < room {
 			room = r
@@ -1155,20 +1157,32 @@ func (s *ReportTableScreen) View() string {
 		if room < reportErrMinRows {
 			room = reportErrMinRows
 		}
-		keep, mark := folded, ""
-		if bounded || len(folded) > room {
-			if len(keep) > room-1 {
-				keep = keep[:room-1]
+		// ITERATED, NOT INDEXED, and that is the whole of why this loop is not
+		// `lines[0]` plus `writeMuted(lines[1:])`. failDetailLines returns
+		// NOTHING for a detail it cannot draw a single line of — an empty
+		// detail, a row budget below one, a width below one, or a fold that
+		// yields no drawable line — so an indexed read is a panic in View(),
+		// which takes the whole terminal down rather than drawing a wrong pane.
+		// Of the four sites that call the shared helper this was the only one
+		// that indexed; the other three range over it, and that divergence is
+		// what put a panic path on exactly one frame.
+		//
+		// It is not reachable today, and the reason it is not is precisely why
+		// the site may not rely on it: it holds only because `detail` always
+		// begins "Error: ", because `room` is floored at reportErrMinRows, and
+		// because reportPaneCells floors at 1 — three invariants owned by three
+		// different places, none of them visible from here, any one of which
+		// could move without anybody thinking about this line. The loop costs
+		// nothing and depends on none of them.
+		//
+		// The first line keeps StyleStatusError because it carries the sentence
+		// naming what failed; the rest are muted continuations.
+		for i, line := range failDetailLines(detail, cells, room) {
+			style := StyleMuted
+			if i == 0 {
+				style = StyleStatusError
 			}
-			mark = "… more of the error than this pane can hold"
-			if !bounded {
-				mark = fmt.Sprintf("… %d more line(s) of the error", len(folded)-len(keep))
-			}
-		}
-		b.WriteString(StyleStatusError.Render(keep[0]) + "\n")
-		writeMuted(keep[1:])
-		if mark != "" {
-			writeMuted([]string{cellPrefix(mark, cells)})
+			b.WriteString(style.Render(line) + "\n")
 		}
 		writeFooter(0)
 		return strings.TrimRight(b.String(), "\n")

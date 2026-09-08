@@ -47,11 +47,21 @@ type AssetPartWrite struct {
 }
 
 // IDString renders the AssetPart's primary key as the decimal string the
-// detail/action URLs need. The pk is a Django BigAutoField (integer), which
-// JSON-decodes into the any-typed ID field as a float64; going through int64
-// avoids fmt's %v switching a larger pk into scientific notation (e.g. 1234567
-// → "1.234567e+06"), which would build a 404 URL. Falls back gracefully for the
-// string / json.Number shapes a differently-configured serializer might emit.
+// detail/action URLs need. The pk is a Django BigAutoField, so the wire carries
+// a number, and a bare %v over the `any` would switch a larger one into
+// scientific notation (1234567 → "1.234567e+06") and build a 404 URL.
+//
+// WHICH ARM IS LIVE IS THE DECODER'S ANSWER, NOT THIS FUNCTION'S, and it is
+// jsonDecoder (client.go) that gives it — read the representation there rather
+// than here. This comment used to rank the arms itself: it called float64 the
+// shape the pk "JSON-decodes into" and json.Number one "a differently-configured
+// serializer might emit". Setting UseNumber inverted both halves and left the
+// sentence pointing a reader at the dead branch as the load-bearing one, which
+// is worse than saying nothing — and this doc is cited by AGENTS.md and by
+// po_numeric_id_test.go as the place the class was first written down, so a
+// reader arrives here on purpose. Every arm stays because the function's job is
+// to be indifferent to which one fires; that is what makes it survive a decoder
+// change instead of needing one comment per representation.
 func (p AssetPart) IDString() string {
 	switch v := p.ID.(type) {
 	case string:

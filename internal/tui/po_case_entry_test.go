@@ -711,7 +711,7 @@ func TestPOPickers_ACasePackedRowKeepsItsFactsAtEveryWidth(t *testing.T) {
 // defect this file exists to remove.
 func TestPOAddLine_TheOnOrderRowNamesItsUnit(t *testing.T) {
 	rows := poCaseRows()
-	rows[0].onOrder, rows[0].onOrderID, rows[0].linePrice = 24, "line-9", "2.0000"
+	rows[0].onOrder, rows[0].onOrderLineID, rows[0].linePrice = 24, 9, "2.0000"
 	fake := &poAddFake{rows: rows}
 	r, s := poAddAt(t, fake, 80, 24)
 

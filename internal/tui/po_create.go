@@ -3263,37 +3263,40 @@ func (s *PurchaseOrderCreateScreen) failLines() []string {
 	if detail == "" {
 		return lead
 	}
-	trimmed := cellPrefix(detail, poFailDetailRows*width)
-	bounded := trimmed != detail
-	folded := pickerWrap(trimmed, width)
-
-	keep, mark := folded, ""
-	if bounded || len(folded) > poFailDetailRows {
-		if len(keep) > poFailDetailRows-1 {
-			keep = keep[:poFailDetailRows-1]
-		}
-		mark = "… more of the error than this pane can hold"
-		if !bounded {
-			mark = fmt.Sprintf("… %d more line(s) of the error", len(folded)-len(keep))
-		}
-	}
+	// failDetailLines (pane_text.go) is the shared bound: it folds, cuts and
+	// MARKS, and the mark is the last line it returns, so the block never grows.
+	// This wording and the spend-a-row-rather-than-add-one trade came from here
+	// originally; they moved with the function when po_add_line.go turned out to
+	// have a copy that had lost the mark.
+	lines := failDetailLines(detail, width, poFailDetailRows)
 	out := make([]string, 0, poFailDetailRows+len(lead))
 	out = append(out, lead...)
-	for _, line := range keep {
+	for _, line := range lines {
 		out = append(out, jdeIndent+StyleMuted.Render(line))
-	}
-	if mark != "" {
-		// Bounded like every other line here: the row that says something was
-		// cut may not be the row that runs off the pane.
-		out = append(out, jdeIndent+StyleMuted.Render(cellPrefix(mark, width)))
 	}
 	return out
 }
 
 // poFailDetailRows caps that detail. The sentence naming WHAT failed is on the
 // status row and never gives; what a short terminal loses is the tail of the
-// gateway's HTML, and the last of these rows says so. Same bound, same reason,
-// as po_add_line's — whose own failLines does not yet carry the mark.
+// gateway's HTML, and the last of these rows says so.
+//
+// Same bound, same reason, as po_add_line's poAddFailDetailRows: both are FIXED
+// budgets of three handed straight to pane_text.go's shared failDetailLines, so
+// both really do spend their last row on the mark whenever a cut is made.
+//
+// receive_form is the site that does NOT work this way, and saying it did sent
+// a reader to the one place the sentence was wrong about. Its budget is the
+// PANE's, not a constant: it passes s.failDetailRows(), which is
+// headerSplit().detail — receiveFailDetailRows is only the CEILING that split
+// fills up to, and the value actually handed over is 1 on a short pane and 0
+// where the four floors headerSplit pays cannot all be met. At 1 the shared
+// helper deliberately does not spend the row on a mark at all: it keeps the
+// CONTENT and carries the ellipsis instead, because a mark with nothing beneath
+// it inverts the rule the helper exists to enforce (failDetailLines' own doc
+// carries that reasoning, and cites receive_form's one-row floor as why the
+// branch is there). At 0 it draws nothing. So the uniformity is two sites, not
+// three, and the third is the reason the helper has a one-row form.
 const poFailDetailRows = 3
 
 // ---------------------------------------------------------------------------

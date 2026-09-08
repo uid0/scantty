@@ -17,7 +17,7 @@ import (
 // create leaves behind, which before op-nr6h parity was only findable by
 // scrolling the mixed list.
 const draftPOJSON = `{"count":1,"next":null,"previous":null,"results":[` +
-	`{"id":"po-draft-1","po_number":"PO-2026-009","supplier_details":"Acme Supplies",` +
+	`{"id":11,"po_number":"PO-2026-009","supplier_details":"Acme Supplies",` +
 	`"status":"draft","estimated_total":"75.00","total_items":2,"total_quantity":4}]}`
 
 // newPurchasingListScreen builds the Purchasing list through the REAL app
@@ -57,7 +57,7 @@ func TestPurchaseOrderRows_ForwardsStatusFilter(t *testing.T) {
 	if gotStatus != "draft" {
 		t.Fatalf("status param = %q, want draft forwarded to the backend", gotStatus)
 	}
-	if len(rows) != 1 || rows[0].ID != "po-draft-1" || rows[0].Title != "PO-2026-009" {
+	if len(rows) != 1 || rows[0].ID != "11" || rows[0].Title != "PO-2026-009" {
 		t.Fatalf("rows = %+v, want the saved draft", rows)
 	}
 	// The draft indicator: the row's Tag is the status, rendered as "(draft)".
@@ -130,8 +130,8 @@ func TestListScreen_POFilterCycleFindsDraft(t *testing.T) {
 			return
 		}
 		_, _ = w.Write([]byte(`{"count":2,"next":null,"previous":null,"results":[` +
-			`{"id":"po-1","po_number":"PO-2026-001","status":"sent"},` +
-			`{"id":"po-2","po_number":"PO-2026-002","status":"received"}]}`))
+			`{"id":1,"po_number":"PO-2026-001","status":"sent"},` +
+			`{"id":2,"po_number":"PO-2026-002","status":"received"}]}`))
 	}))
 	defer srv.Close()
 
@@ -179,7 +179,7 @@ func TestListScreen_POFilterCycleFindsDraft(t *testing.T) {
 	if lastStatus != "draft" {
 		t.Fatalf("backend received status=%q, want draft", lastStatus)
 	}
-	if len(s.rows) != 1 || s.rows[0].ID != "po-draft-1" {
+	if len(s.rows) != 1 || s.rows[0].ID != "11" {
 		t.Fatalf("rows = %+v, want just the saved draft", s.rows)
 	}
 

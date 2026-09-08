@@ -23,7 +23,7 @@ func TestAddPurchaseOrderLine_RefusalKeepsTheServersSentence(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "po-1", POLineAdd{ItemSupplier: 7})
+	_, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "2", POLineAdd{ItemSupplier: 7})
 	if err == nil {
 		t.Fatal("a 400 came back as success")
 	}
@@ -50,12 +50,12 @@ func TestAddPurchaseOrderLine_AmbiguityCarriesItsCandidates(t *testing.T) {
 		w.WriteHeader(http.StatusConflict)
 		_, _ = io.WriteString(w, `{"error": "\"bolt\" matches 2 items Acme supplies. Choose which one to add.",
 			"code": "ambiguous",
-			"candidates": [{"item_supplier": 4, "item": {"id": "i1", "name": "Bolt A"}},
-			               {"item_supplier": 5, "item": {"id": "i2", "name": "Bolt B"}}]}`)
+			"candidates": [{"item_supplier": 4, "item": {"id": "a1c5d7ad-4115-463d-bce2-47db6fd9eab5", "name": "Bolt A"}},
+			               {"item_supplier": 5, "item": {"id": "65b5df3c-d0de-4eb0-ad98-df48cf37d3fd", "name": "Bolt B"}}]}`)
 	}))
 	defer srv.Close()
 
-	_, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "po-1", POLineAdd{Identifier: "bolt"})
+	_, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "2", POLineAdd{Identifier: "bolt"})
 	entry, ok := AsLineEntryError(err)
 	if !ok {
 		t.Fatalf("the 409 did not survive as a POLineEntryError: %v", err)
@@ -87,7 +87,7 @@ func TestAsLineEntryError_LeavesEverythingElseAlone(t *testing.T) {
 				_, _ = io.WriteString(w, tc.body)
 			}))
 			defer srv.Close()
-			_, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "po-1", POLineAdd{ItemSupplier: 1})
+			_, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "2", POLineAdd{ItemSupplier: 1})
 			if _, ok := AsLineEntryError(err); ok {
 				t.Errorf("%s was coerced into a line-entry refusal: %v", tc.name, err)
 			}
@@ -103,21 +103,28 @@ func TestLookupPurchaseOrderLine_DecodesTheWholeAnswer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotQuery = r.URL.Path, r.URL.Query().Get("q")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"query":           "AF-99",
+			"query": "AF-99",
+			// The ids are the SERVER's own types: Supplier and PurchaseOrder
+			// declare no primary key, so both are integers, while the item ids
+			// below are str()-wrapped UUIDs. testdata/po_item_lookup.json is a
+			// recorded reply and is the authority; this map is the one that
+			// used to say `"id": "po-1"` and so agreed with a struct the server
+			// could not feed.
 			"supplier":        map[string]any{"id": 3, "name": "Acme Fasteners"},
-			"purchase_order":  map[string]any{"id": "po-1", "po_number": "PO-2026-0042", "status": "draft", "can_add_items": true},
+			"purchase_order":  map[string]any{"id": 2, "po_number": "PO-2026-0042", "status": "draft", "can_add_items": true},
 			"best_match_kind": "vendor_sku",
 			"resolves":        true,
 			"candidates": []any{map[string]any{
 				"item_supplier": 12, "match_kind": "vendor_sku", "match_label": "supplier SKU",
 				"matched_value": "AF-99", "is_exact": true,
-				"item":                 map[string]any{"id": "i1", "name": "Widget bracket", "sku": "WB-1200", "is_kit": false},
+				"item": map[string]any{"id": "a1c5d7ad-4115-463d-bce2-47db6fd9eab5",
+					"name": "Widget bracket", "sku": "WB-1200", "is_kit": false},
 				"supplier_sku":         "AF-99",
 				"quantity_per_package": 25,
 				"suggested_quantity":   50,
 				"suggested_unit_cost":  "4.5000",
 				"already_on_order": map[string]any{
-					"line_item": "line-7", "quantity_ordered": 5, "is_voided": false,
+					"line_item": "7", "quantity_ordered": 5, "is_voided": false,
 					"repeat_increment": 25, "quantity_ordered_after": 30,
 				},
 			}},
@@ -131,11 +138,11 @@ func TestLookupPurchaseOrderLine_DecodesTheWholeAnswer(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := New(srv.URL).LookupPurchaseOrderLine(context.Background(), "po-1", "AF-99")
+	res, err := New(srv.URL).LookupPurchaseOrderLine(context.Background(), "2", "AF-99")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	if gotPath != "/api/reorders/purchase-orders/po-1/item-lookup/" {
+	if gotPath != "/api/reorders/purchase-orders/2/item-lookup/" {
 		t.Errorf("path = %q", gotPath)
 	}
 	if gotQuery != "AF-99" {
@@ -165,7 +172,7 @@ func TestLookupPurchaseOrderLine_VoidedLineQuotesNoOutcome(t *testing.T) {
 			"candidates": []any{map[string]any{
 				"item_supplier": 12,
 				"already_on_order": map[string]any{
-					"line_item": "line-7", "quantity_ordered": 5, "is_voided": true,
+					"line_item": "7", "quantity_ordered": 5, "is_voided": true,
 					"repeat_increment": nil, "quantity_ordered_after": nil,
 				},
 			}},
@@ -173,7 +180,7 @@ func TestLookupPurchaseOrderLine_VoidedLineQuotesNoOutcome(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := New(srv.URL).LookupPurchaseOrderLine(context.Background(), "po-1", "x")
+	res, err := New(srv.URL).LookupPurchaseOrderLine(context.Background(), "2", "x")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
@@ -197,15 +204,15 @@ func TestAddPurchaseOrderLine_OmitsWhatItWantsDefaulted(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"created":   true,
-			"line_item": map[string]any{"id": "l1", "quantity_ordered": 50, "unit_cost_ordered": "4.5000"},
+			"line_item": map[string]any{"id": 2, "quantity_ordered": 50, "unit_cost_ordered": "4.5000"},
 			"purchase_order": map[string]any{
-				"id": "po-1", "po_number": "PO-2026-0042", "status": "draft",
+				"id": 2, "po_number": "PO-2026-0042", "status": "draft",
 			},
 		})
 	}))
 	defer srv.Close()
 
-	res, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "po-1", POLineAdd{ItemSupplier: 12})
+	res, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "2", POLineAdd{ItemSupplier: 12})
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -238,7 +245,7 @@ func TestAddPurchaseOrderLine_SendsADeliberateZeroPrice(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "po-1",
+	if _, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "2",
 		POLineAdd{ItemSupplier: 12, Quantity: 3, UnitCost: "0.00"}); err != nil {
 		t.Fatalf("add: %v", err)
 	}

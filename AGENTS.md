@@ -7,16 +7,56 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ScanTTY is a client of the OpenMakerSuite HTTP API and of ForgeKey; `README.md`
 has the env vars and the package map.
 
-- **No live OMS is reachable from a task worktree.** `SCANTTY_OMS_URL` is unset
-  and nothing answers locally, so behaviour is verified by driving the real
-  screens through `Root.Update` against a stateful `httptest` fake. See
-  `internal/tui/wo_materials_drive_test.go` (the `pump` / `key` helpers, reused
-  across drive tests) and `internal/tui/po_line_price_test.go`.
+**"FORGEKEY" NAMES THREE DIFFERENT THINGS, AND THE COLLISION IS WHY A WHOLE
+CLASS OF BUG STAYED OPEN IN `internal/forgekeyapi` FOR A RELEASE.** Say which
+one you mean:
+
+1. **ForgeKey the SYSTEM** — the device-access half of the makerspace: badge
+   readers, locks, e-paper panels. This is `README.md`'s sense when it calls
+   ScanTTY a TUI "for OpenMakerSuite and ForgeKey", and it is correct.
+2. **The ForgeKey HTTP API** — the `/api/forgekey/...` routes `internal/forgekeyapi`
+   drives, reached through `SCANTTY_FORGEKEY_URL`, which has its own base URL and
+   mTLS story (`README.md`). ScanTTY very much talks to this.
+3. **uid0/ForgeKey the REPO** — a C++ operating system that runs ON the ESP32
+   devices. ScanTTY does not talk to THAT: it is firmware, not a server.
+
+**WHAT IS ESTABLISHED, AND WHAT IS NOT.** VERIFIED: OpenMakerSuite's own
+`backend/forgekey` Django app serves those exact routes with those exact models,
+and OMS runs `forgekey.tasks.*` (firmware builds, rollout advancement,
+stale-device sweeps) — so the ForgeKey server side lives in the OMS codebase and
+its wire types are decided by OMS serializers. NOT VERIFIED: whether the
+production `SCANTTY_FORGEKEY_URL` host is that same deployment or a separate
+one. Nothing on this branch establishes that, and the pk derivation was done
+against OMS's app. Both halves are stated because the sentence this replaced
+over-claimed in the other direction ("ScanTTY does not talk to it", true only of
+sense 3 and written as though it were true of all three), and swapping one
+over-claim for another is the same defect wearing a new coat.
+
+The operative consequence is the part that IS established: everything below —
+the OMS source being authoritative, the local-backend recipe, the wire-type
+rule — applies to `forgekeyapi` verbatim, and "ForgeKey is a different server"
+is not a reason to scope it out of a sweep. It has been used as one.
+
+- **No SHARED OMS is reachable from a task worktree.** `SCANTTY_OMS_URL` is
+  unset and nothing answers on the usual host, so ordinary behaviour is verified
+  by driving the real screens through `Root.Update` against a stateful
+  `httptest` fake. See `internal/tui/wo_materials_drive_test.go` (the `pump` /
+  `key` helpers, reused across drive tests) and
+  `internal/tui/po_line_price_test.go`.
+- **A LOCAL one can be brought up, and on a ScanTTY/OMS SEAM bug it is worth
+  it.** A fake only ever proves ScanTTY's half of the contract, and a fake built
+  from ScanTTY's own structs cannot disagree with them at all — which is exactly
+  how the `POLineLookupOrder.ID` mismatch below survived three fixtures. See
+  "Verifying against a REAL OMS" below.
 - **The OMS source is the contract.** A read-only checkout normally sits beside
   this one at `../openmakersuite`; `backend/<app>/serializers.py` and `views.py`
   are authoritative for wire shapes, and `frontend/src/pages/*.tsx` is
   authoritative for what parity means. Read it before guessing at a payload —
-  and never modify it from a ScanTTY task.
+  and never modify it from a ScanTTY task. **Check that checkout is at the
+  REMOTE default branch before trusting it**: `git rev-parse HEAD^{tree}` there
+  against the remote commit's tree sha (`gh-axi api repos/uid0/openmakersuite/commits/main`)
+  settles it in one step, and a match means reading the local files IS reading
+  remote `main`.
 - **Money comes over as strings OR numbers**, hence `omsapi.DecimalString`.
   `Empty()` means "null/unset" and NOT "zero": several OMS money properties
   return a real `0.00` for "no price recorded", so treat zero as an absence
@@ -104,6 +144,144 @@ What is worth knowing before touching any of them:
   derived PROSE only. A float divide put 0.049999999999999996 in the add-line
   cost box for an item priced 0.05, the row `CharLimit` of 14 cut it to
   `0.049999999999`, and Enter posted that.
+
+### A WIRE TYPE IS THE BUILDER'S DECISION, NEVER THE MODEL'S
+
+`internal/omsapi/po_line_entry.go` carries the worked example and
+`internal/omsapi/testdata/README.md` the fixture rule. What is worth knowing
+before declaring or changing any field that crosses this boundary:
+
+- **The reported failure.** `POLineLookupOrder.ID` was `string`; `serialize_lookup`
+  writes `"id": purchase_order.pk` and `PurchaseOrder` declares no primary key, so
+  it is `settings.DEFAULT_AUTO_FIELD` (`BigAutoField`) — a number, always. Every
+  reply was refused by the decoder, so adding a PO line by SKU was IMPOSSIBLE and
+  the operator read `json: cannot unmarshal number into…`.
+- **THE SAME PAYLOAD MIXES BOTH, WHICH IS THE WHOLE LESSON.** In
+  `serialize_lookup` the item ids ARE `str()`-wrapped and so is
+  `already_on_order.line_item` — whose model pk is an INTEGER — while the order's
+  own id is bare. So "what pk does the model have?" does not answer "what type is
+  on the wire"; only the line of Python that builds the dict does. `POLineSupplierRef.ID`
+  beside it was right for the same reason it could have been wrong: nobody checked
+  the builder, it just happened to match.
+- **drf-spectacular's schema is authoritative for a serializer field and NOT for a
+  `SerializerMethodField`** — an un-annotated one is typed `string` by default, so
+  the schema calls `can_receive` a string when it is a bool. 41 of the 50 candidates
+  the schema net produced were that artefact. And spectacular cannot see a
+  hand-built dict AT ALL, which is where this defect lived and where the next one
+  will.
+- **AN `any` ID IS NOT A FREE PASS.** It always decodes, and then a caller renders
+  it. `encoding/json` puts a JSON number into an `any` as a `float64` and `%v`
+  formats that with `%g`, so a seven-digit id becomes `"1e+06"` — spent on the wire
+  as a path segment. `omsapi.jsonDecoder` sets `UseNumber` so an `any` keeps the
+  server's own digits; that is the ONE place it is decided, because the id sites
+  are not a list anyone maintains. `asset_parts.go`'s `IDString` had already
+  written that reasoning down and applied it to exactly one struct.
+  **A CUSTOM `UnmarshalJSON` IS A HOLE IN THAT "ONE PLACE" UNLESS IT ASKS FOR THE
+  DECODER TOO**, which is why the option lives in a decoder FACTORY rather than
+  in `decodeBody` alone. `encoding/json` hands a `json.Unmarshaler` the RAW BYTES
+  and steps out of the way, so an outer decoder's settings do not reach inside
+  one, and `json.Unmarshal` cannot be configured at all. `MaybeList[T]` is such a
+  type and is on live read paths: `ListPendingReorders` decodes
+  `MaybeList[ReorderRequest]`, whose `ID` is `any`, and
+  `internal/tui/reorder_queue.go` spends it with `%v` as the path segment of
+  `/api/reorders/requests/<id>/approve/` — so with the option set only on
+  `decodeBody` a seven-digit reorder pk approved `1e+06`, the same 404 the
+  item-lookup fix had just been measured against. THE RULE IS ABOUT UNTYPED
+  VALUES AND NOT ABOUT DECODERS, because `UseNumber` changes exactly one thing —
+  the Go type a JSON NUMBER takes where nothing declares one: **nothing that can
+  produce an untyped value (`any`, `map[string]any`) may be decoded by a decoder
+  that is not `jsonDecoder`.** Two flatter wordings were tried first and both
+  were falsified by one grep, which is why it is stated this way: "every decoder
+  in the package" is false of five `json.Unmarshal` sites (`DecodeJWTClaims`,
+  `parseError`, `AsLineEntryError`, `AsReceivingRefusal`,
+  `StorageSlotErrorDetail`), and "every decoder of a RESPONSE PAYLOAD" is still
+  false of `DecimalString` and `DateOnly`, which ARE `json.Unmarshaler`s on
+  payload types. All seven are safe for one reason: each parses into a FULLY
+  TYPED target with no `any` in it — the five decode error envelopes,
+  `DecimalString` and `DateOnly` parse a SCALAR into a `string` and a `time.Time`
+  and decide their own representation from the raw bytes — so there is no
+  untyped landing spot for a number and nothing they produce is spent as a path
+  segment. Give any of them an `any` and it joins the rule.
+  **THE SAME FIX WAS OWED NEXT DOOR, AND "A DIFFERENT SERVER" IS WHY IT WAS
+  NOT.** `internal/forgekeyapi` decoded every response with a bare
+  `json.NewDecoder` and had the identical `MaybeList` hole, because ForgeKey was
+  recorded as out of scope on the strength of being another system. It is not:
+  `/api/forgekey/...` is served by **OpenMakerSuite's own `backend/forgekey`
+  Django app** — uid0/ForgeKey is the C++ device operating system, not the HTTP
+  API — so it crosses this boundary and is checkable against a real backend like
+  everything else. It has its own `jsonDecoder` now.
+  **WHAT BITES IS A CONJUNCTION — an INTEGER pk AND a `fmt.Sprint` over an
+  `any`** — and writing it down as a list of models is what made every earlier
+  version of this roster wrong. Either half alone is harmless: `DeviceType` is a
+  `BigAutoField` that IS spent as a path segment and was never affected, because
+  it goes through `IntID()` and the paths format with `%d`, and an int through
+  `%d` is its digits at any magnitude. The mirror case is a model reached by
+  `fmt.Sprint` over an `any` whose pk is an explicit `UUIDField`: the id is a
+  STRING on the wire, so there was never anything to mangle, and asserting a
+  numeric id for one would be testing a payload the server cannot send.
+  Both halves together is `internal/tui/op_modes.go` (`OperationalMode`)
+  and `internal/tui/auth_lockout.go` (`AssetAuthorization`) — the ids are
+  DECODED in `forgekeyapi` and SPENT in the TUI — the two live sites, measured
+  `.../operational-modes/1000000/…` 200 against `.../1e+06/…` 404 with the revoke
+  path the same. THE MODEL-BY-MODEL ROSTER LIVES IN ONE PLACE — `jsonDecoder`'s
+  doc comment in `internal/forgekeyapi/client.go`, which is where the decision it
+  justifies is made — and is deliberately not copied here or into the tests. It
+  was carried in four places on this branch, each round corrected only the copy
+  it was pointed at, and the last stale copy outlived the others by a round; a
+  list repeated is a list that drifts, so read it where it is derived.
+  **THAT ROSTER WAS GOT WRONG FOUR TIMES IN ONE BRANCH, ALWAYS BY MATCHING ONE
+  SPELLING** — the same lesson `list_nav.go`'s retired chords teach about a
+  keystroke having two spellings, arrived at independently here. Grepping
+  `fmt.Sprintf("%v")` missed the `fmt.Sprint(` form; grepping `fmt.Sprint(` then
+  missed `IntID()`, so `DeviceType` was left out entirely and a reader would have
+  concluded it was a UUID; and grepping `^class \w+` for the pk scan swept in
+  `IndicatorStatus` (a plain class) and `LockoutLevel` (a `models.TextChoices`
+  enum) as though they were tables, when neither has a pk at all. Derive this by
+  asking what a value IS and how it is SPENT, never by grepping for the spelling
+  you happen to have in mind.
+  **DERIVE A PK TYPE BY READING THE WHOLE MODEL CLASS** — `FirmwareRollout`'s
+  `id =` line sits 26 lines into its class, so a fixed grep window reads it as an
+  integer — and never from ScanTTY's own comments: `device_types.go` said the pk
+  "decodes as a float64", which records what an author believed about a decoder
+  and was then cited as a fact about the wire.
+  **AND A COERCER WRITTEN BEFORE `UseNumber` CAN HAVE A DEAD ARM.** A numeric pk
+  is a `json.Number` now and never a `float64`, so a type switch offering only
+  `string` and `float64` falls through to its zero answer. There are three `any`
+  coercers in the package — `loto.go`'s `anyToInt`, `asset_parts.go`'s `IDString`
+  and `inventory.go`'s `Asset.InventoryItemID` — and the last was the one that
+  had not been brought along, where the fall-through reads as "this asset has no
+  linked inventory item" in the middle of hydrating an edit form. Derive that set
+  by grepping for `.(type)` over `any` fields rather than trusting this list.
+- **A FIXTURE WRITTEN FROM THE STRUCT CANNOT CONTRADICT THE STRUCT.** All three
+  fixtures for this endpoint said `{"id": "po-1"}` and all three passed. Fixtures
+  for a wire shape are RECORDED from a real backend (`internal/omsapi/testdata/`,
+  with provenance) and guarded by a check that the recorded body still carries the
+  server's types, so a later "fix" to the fixture cannot quietly restore the
+  defect.
+
+### Verifying against a REAL OMS
+
+Worth ~15 minutes whenever a bug sits on the ScanTTY/OMS seam. No Docker daemon
+here; Homebrew PostgreSQL listens on `127.0.0.1:5432`. **sqlite will not work** —
+`backend/accounting/checks.py` needs PostgreSQL for hordak, so `quick-start.sh`'s
+sqlite default is a dead end.
+
+Clone OMS into a scratch dir (never the shared checkout — `backend/.env` and the
+DB would land in someone else's clone), `uv venv` + `uv pip install -r
+backend/requirements.txt`, create a database, and write `backend/.env` with
+`DEBUG=0`, a `DATABASE_URL`, an empty `SENTRY_DSN`, and **`SECURE_SSL_REDIRECT=0`
+plus `SECURE_HSTS_SECONDS=0`** — `DEBUG=0` turns the redirect on and it 301s every
+plain-HTTP request. Then `manage.py migrate` and `runserver`. Auth is JWT:
+`POST /api/auth/login/` → `access` → `omsapi.New(url, omsapi.WithToken(access, ""))`.
+
+Two endpoints need Redis (`GetResilienceStatus`, `ListProjectStoragePrintQueue`)
+and 500 without it; nothing else does.
+
+`internal/omsapi/lab_sweep_test.go` (build tag `omslab`) is the harness: it
+reflects over `*Client`, drives every read method taking only a context, and
+reports which calls carried ROWS and which came back EMPTY — because an empty
+list decodes into any element type and proves nothing about it. Use
+`go test -count=1`; the cache keys on env vars and will replay a stale PASS.
 
 ### A line goes onto a draft order by scanning an identifier
 
@@ -1927,6 +2105,21 @@ touching any screen an operator drives:
   else, on the one step where losing the reason costs the whole order. Both go
   through the LAYER now: the headline on `statusRow`, the body in the pinned
   header (`failLines`), cut to `poFailDetailRows` BEFORE it is folded.
+  **THE FOLD-CUT-AND-MARK IS `pane_text.go`'s `failDetailLines` AND THERE IS ONE
+  OF IT.** Four screens fold a failure body into a fixed row budget — the New PO
+  submit, the report table's failed-load frame, the add-line price phase and the
+  RECEIVING form — and each hand-written copy of that shape has lost the MARK,
+  which is the only thing telling an operator that the sentence naming what
+  failed is one they never got to read. The add-line copy shipped the reported
+  decode error cut one word short of the field name; the receiving copy survived
+  the round that fixed the other three, while the helper's own comment claimed
+  there were three of them. Callers pass the width, the rows and the raw detail
+  and then indent and style what comes back, and nothing else. The MARK spends
+  the LAST of the rows the block already had, so converting a site cannot move a
+  pinned header by a row or change what the bar under it names; at a one-row
+  budget — which `receive_form.go`'s `headerSplit` really pays on a short pane —
+  the content is kept and the cut is marked with the ellipsis instead, because a
+  mark with no content beneath it is the rule inverted rather than obeyed.
   FIELD rows are the shape that does not FOLD, and they are bounded rather than
   exempt — the CART row included, which gives ground in its own STATED order
   because clipping its label alone was not enough: the LABEL first, then the

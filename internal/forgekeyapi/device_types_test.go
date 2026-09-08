@@ -10,7 +10,15 @@ import (
 
 // TestGetDeviceTypeDecodesFullShape confirms the read struct decodes every field
 // the `fields = "__all__"` serializer emits: id, name, code, description,
-// is_active — and that IntID coerces the float64 pk.
+// is_active — and that IntID coerces the numeric pk to an int.
+//
+// It used to say "the float64 pk", which stopped being what this test exercises
+// the moment client.go's jsonDecoder set UseNumber: the number now arrives as a
+// json.Number, so the assertion silently moved off the float64 arm it named onto
+// the json.Number one. The wording is about the SERVER's shape now (a number) so
+// it cannot go stale again the next time the decoder's representation changes,
+// which is the whole reason a comment naming a Go type here was a liability —
+// what the wire carries and what a decoder makes of it are different facts.
 func TestGetDeviceTypeDecodesFullShape(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if want := "/api/forgekey/device-types/3/"; r.URL.Path != want {

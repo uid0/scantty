@@ -419,7 +419,91 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
+	if err := decodeBody(resp.Body, out); err != nil {
+		return err
+	}
+	return nil
+}
+
+// jsonDecoder is the ONE place this package chooses a JSON decoder's options,
+// so what an `any` holds is decided here rather than per endpoint.
+//
+// UseNumber is the whole point of it. Several ids on these payloads are typed
+// `any` because the client carries whatever the serializer echoed — a UUID
+// string on some models, a BigAutoField NUMBER on others — and the callers turn
+// that back into a path segment with fmt. Decoded the default way a JSON number
+// lands in an `any` as a float64, and `%v` formats a float64 with `%g`: a
+// seven-digit purchase-order id renders "1e+06". That string is spent on the
+// wire — internal/tui/po_add_line.go builds `/purchase-orders/<id>/item-lookup/`
+// from it and internal/tui/po_edit.go builds the line paths the same way — so
+// against a real OMS the order that answers 200 at `.../1000000/` answers 404
+// at `.../1e+06/`.
+//
+// json.Number keeps the server's own digits, so `%v` gives them back exactly.
+// It is set at the decoder rather than fixed at each fmt call because the id
+// sites are not a list anyone can keep: `any` fields are decoded all over this
+// package and stringified all over internal/tui.
+//
+// Nothing in the package reads a decoded `any` as a float64 — a json.Number is
+// a string underneath and arithmetic on one has to go through Float64()/Int64()
+// — so this narrows what an `any` can hold without changing any other reader.
+// TestAnyID_ANumericIDKeepsItsDigits is the guard.
+//
+// WHY THIS IS A DECODER FACTORY AND NOT JUST decodeBody, which is the correction
+// a review had to make to the first version of the sentence above: a custom
+// json.Unmarshaler is handed the RAW BYTES of its value and decodes them itself,
+// so nothing an outer decoder was configured with reaches inside one.
+// MaybeList[T].UnmarshalJSON is such a type and it is on the read path of real
+// endpoints — ListPendingReorders decodes MaybeList[ReorderRequest], whose ID is
+// `any`, and internal/tui/reorder_queue.go spends that id with %v as the path
+// segment of `/api/reorders/requests/<id>/approve/`. Written as one function
+// setting UseNumber on its own decoder, the option stopped at the envelope and a
+// seven-digit reorder pk approved "1e+06", exactly the 404 this comment already
+// described for item-lookup.
+//
+// WHAT THAT MAKES TRUE is a claim about UNTYPED values, not about decoders, and
+// the difference is what two earlier wordings here got wrong. UseNumber changes
+// exactly one thing: the Go type a JSON NUMBER takes when it lands somewhere
+// with no declared type — an `any`, or a map[string]any value. So the rule is
+//
+//	NOTHING THAT CAN PRODUCE AN UNTYPED VALUE MAY BE DECODED BY A DECODER THAT
+//	IS NOT jsonDecoder.
+//
+// A new json.Unmarshaler on a payload type that yields an `any` or a
+// map[string]any must therefore call jsonDecoder rather than reach for
+// json.Unmarshal, which cannot be configured at all. MaybeList is exactly that
+// case and is why this function exists.
+//
+// TWO OTHER json.Unmarshalers ON PAYLOAD TYPES DO NOT CALL IT, and they are not
+// holes — a reader grepping UnmarshalJSON to check this sentence will find them,
+// so they are named here rather than left to look like counterexamples.
+// DecimalString (decimal.go) and DateOnly (dateonly.go) each parse a SCALAR
+// straight into a fully typed Go value — a string and a time.Time — deciding
+// their own representation from the raw bytes. There is no untyped landing spot
+// in either, so UseNumber has nothing to change about them; DecimalString in
+// particular keeps the server's literal digits verbatim precisely because it
+// never goes through a float.
+//
+// The plain json.Unmarshal sites are safe for the same reason, one level up:
+// DecodeJWTClaims above, parseError's envelope (errors.go), AsLineEntryError
+// (po_line_entry.go), AsReceivingRefusal (po_receiving.go) and
+// StorageSlotErrorDetail (storage_slots.go) each decode into a FULLY TYPED
+// struct with no `any` anywhere in it — POLineEntryError's Candidates are
+// POLineCandidate, which has none either — so there is no field for a number to
+// land in as a float64 and nothing they decode is ever spent as a path segment.
+// Give any one of them an `any` and it joins the rule.
+func jsonDecoder(r io.Reader) *json.Decoder {
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	return dec
+}
+
+// decodeBody is the ONE place a RESPONSE body becomes Go values: it reads a
+// jsonDecoder so the whole reply, nested `any` ids included, is decoded on the
+// package's own terms, and it wraps the failure in the sentence the operator
+// reads on the pane.
+func decodeBody(r io.Reader, out any) error {
+	if err := jsonDecoder(r).Decode(out); err != nil && err != io.EOF {
 		return fmt.Errorf("oms: decode response: %w", err)
 	}
 	return nil
@@ -485,8 +569,8 @@ func (c *Client) doMultipart(ctx context.Context, method, path string, fields ma
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
-		return fmt.Errorf("oms: decode response: %w", err)
+	if err := decodeBody(resp.Body, out); err != nil {
+		return err
 	}
 	return nil
 }
@@ -508,15 +592,27 @@ type MaybeList[T any] struct {
 	Count int
 }
 
+// UnmarshalJSON tries the bare array first and falls back to the envelope, and
+// BOTH branches decode through jsonDecoder rather than json.Unmarshal.
+//
+// encoding/json hands a custom Unmarshaler the raw bytes and steps out of the
+// way, so an outer decoder's UseNumber does not reach in here — this method is
+// the boundary the option was escaping through. json.Unmarshal cannot be
+// configured at all, so an `any` id inside T landed as a float64 and %v rendered
+// it with %g: ListPendingReorders returns MaybeList[ReorderRequest].Items, and a
+// seven-digit request pk reached ApproveReorderRequest as "1e+06", posting to a
+// request that does not exist. jsonDecoder's own comment carries the reasoning;
+// what matters at this site is that a fallback chain is exactly where a decoding
+// decision gets quietly re-made, so neither branch may make its own.
 func (m *MaybeList[T]) UnmarshalJSON(data []byte) error {
 	var arr []T
-	if err := json.Unmarshal(data, &arr); err == nil {
+	if err := jsonDecoder(bytes.NewReader(data)).Decode(&arr); err == nil {
 		m.Items = arr
 		m.Count = len(arr)
 		return nil
 	}
 	var env Page[T]
-	if err := json.Unmarshal(data, &env); err != nil {
+	if err := jsonDecoder(bytes.NewReader(data)).Decode(&env); err != nil {
 		return err
 	}
 	m.Items = env.Results

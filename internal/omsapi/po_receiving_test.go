@@ -107,11 +107,11 @@ func TestGetReceivingWorksheet_ANullIsAnAbsence(t *testing.T) {
 	var seen []*http.Request
 	c := receivingServer(t, 0, receivingWorksheetBody, &seen, nil)
 
-	w, err := c.GetReceivingWorksheet(context.Background(), "po-1")
+	w, err := c.GetReceivingWorksheet(context.Background(), "1")
 	if err != nil {
 		t.Fatalf("GetReceivingWorksheet: %v", err)
 	}
-	if len(seen) != 1 || seen[0].URL.Path != "/api/reorders/purchase-orders/po-1/receiving/" {
+	if len(seen) != 1 || seen[0].URL.Path != "/api/reorders/purchase-orders/1/receiving/" {
 		t.Fatalf("the worksheet was fetched from %v", seen)
 	}
 	if !w.CanReceive || w.UnavailableReason != "" {
@@ -168,7 +168,7 @@ func TestGetReceivingWorksheet_ANullIsAnAbsence(t *testing.T) {
 // stock.
 func TestGetReceivingWorksheet_TheKitLineOffersItsComponents(t *testing.T) {
 	w, err := receivingServer(t, 0, receivingWorksheetBody, nil, nil).
-		GetReceivingWorksheet(context.Background(), "po-1")
+		GetReceivingWorksheet(context.Background(), "1")
 	if err != nil {
 		t.Fatalf("GetReceivingWorksheet: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestGetReceivingWorksheet_ASettledLineIsNotAFullyReceivedOne(t *testing.T) 
 	    "receipt_state_label": "Closed short", "is_settled": true,
 	    "is_closed_short": true, "closed_short_reason": "backorder cancelled"}]}`
 	w, err := receivingServer(t, 0, body, nil, nil).
-		GetReceivingWorksheet(context.Background(), "po-1")
+		GetReceivingWorksheet(context.Background(), "1")
 	if err != nil {
 		t.Fatalf("GetReceivingWorksheet: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestReceivePOItems_EverythingTypedReachesTheWire(t *testing.T) {
 	var seen []*http.Request
 	c := receivingServer(t, 0, `{"id": 5, "po_number": "PO-1001"}`, &seen, &bodies)
 
-	_, err := c.ReceivePOItems(context.Background(), "po-1", ReceiveRequest{
+	_, err := c.ReceivePOItems(context.Background(), "1", ReceiveRequest{
 		Items: []ReceiptLine{{
 			PurchaseOrderItem: 301,
 			QuantityReceived:  12, // MORE than was ordered: sent as typed
@@ -302,7 +302,7 @@ func TestReceivePOItems_EverythingTypedReachesTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReceivePOItems: %v", err)
 	}
-	if len(seen) != 1 || seen[0].URL.Path != "/api/reorders/purchase-orders/po-1/receive/" {
+	if len(seen) != 1 || seen[0].URL.Path != "/api/reorders/purchase-orders/1/receive/" {
 		t.Fatalf("the receipt went to %v", seen)
 	}
 
@@ -364,12 +364,12 @@ func TestCloseShortAndMarkReceived_AddressTheirOwnEndpoints(t *testing.T) {
 	var bodies []string
 	c := receivingServer(t, 0, `{"id": 5}`, &seen, &bodies)
 
-	if _, err := c.CloseShortPOLines(context.Background(), "po-1", CloseShortRequest{
+	if _, err := c.CloseShortPOLines(context.Background(), "1", CloseShortRequest{
 		Items: []CloseShortLine{{PurchaseOrderItem: 301, Reason: "backorder cancelled"}},
 	}); err != nil {
 		t.Fatalf("CloseShortPOLines: %v", err)
 	}
-	if _, err := c.MarkPurchaseOrderReceived(context.Background(), "po-1",
+	if _, err := c.MarkPurchaseOrderReceived(context.Background(), "1",
 		"vendor closed the order"); err != nil {
 		t.Fatalf("MarkPurchaseOrderReceived: %v", err)
 	}
@@ -377,10 +377,10 @@ func TestCloseShortAndMarkReceived_AddressTheirOwnEndpoints(t *testing.T) {
 	if len(seen) != 2 {
 		t.Fatalf("want two writes, got %d", len(seen))
 	}
-	if seen[0].URL.Path != "/api/reorders/purchase-orders/po-1/close-short/" {
+	if seen[0].URL.Path != "/api/reorders/purchase-orders/1/close-short/" {
 		t.Errorf("close-short went to %q", seen[0].URL.Path)
 	}
-	if seen[1].URL.Path != "/api/reorders/purchase-orders/po-1/mark-received/" {
+	if seen[1].URL.Path != "/api/reorders/purchase-orders/1/mark-received/" {
 		t.Errorf("mark-received went to %q", seen[1].URL.Path)
 	}
 	if !strings.Contains(bodies[0], `"backorder cancelled"`) ||
@@ -407,7 +407,7 @@ func TestAsReceivingRefusal_RecoversTheSentenceAndNothingElse(t *testing.T) {
 	c := receivingServer(t, http.StatusBadRequest,
 		`{"error": "Line item 301 was closed short; reopen it before receiving more against it"}`,
 		nil, nil)
-	_, err := c.ReceivePOItems(context.Background(), "po-1", ReceiveRequest{})
+	_, err := c.ReceivePOItems(context.Background(), "1", ReceiveRequest{})
 	if err == nil {
 		t.Fatal("a 400 came back as success")
 	}
@@ -434,7 +434,7 @@ func TestAsReceivingRefusal_RecoversTheSentenceAndNothingElse(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := receivingServer(t, http.StatusBadGateway, tc.body, nil, nil)
-			_, err := c.MarkPurchaseOrderReceived(context.Background(), "po-1", "")
+			_, err := c.MarkPurchaseOrderReceived(context.Background(), "1", "")
 			if err == nil {
 				t.Fatal("the fake answered success")
 			}

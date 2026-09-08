@@ -112,7 +112,7 @@ func (f *fakeRemovePO) orderPayload() map[string]any {
 		items = append(items, l.payload())
 	}
 	out := map[string]any{
-		"id": "po-1", "po_number": "PO-2026-0042",
+		"id": 1, "po_number": "PO-2026-0042",
 		"status": f.status, "status_label": strings.ToTitle(f.status),
 		"supplier_name": "Acme Bolt Co.",
 		"order_date":    "2026-08-01T00:00:00Z",
@@ -222,7 +222,7 @@ func poRemoveRoot(t *testing.T, fake *fakeRemovePO, width int) (Root, *PurchaseO
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	detail := NewPurchaseOrderDetailScreen(deps, "po-1")
+	detail := NewPurchaseOrderDetailScreen(deps, "1")
 	r := newTestRoot(detail)
 	r.deps = deps
 	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: 40})
@@ -533,7 +533,7 @@ func TestPOLineRemove_AVoidRefusalReachesTheOperatorToo(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	detail := NewPurchaseOrderDetailScreen(deps, "po-1")
+	detail := NewPurchaseOrderDetailScreen(deps, "1")
 	r := newTestRoot(detail)
 	r.deps = deps
 	next, _ := r.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -582,7 +582,7 @@ func TestPOLineRemove_TheConfirmNamesExactlyTheKeysThatWork(t *testing.T) {
 				srv := httptest.NewServer(fake.handler())
 				t.Cleanup(srv.Close)
 				deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-				detail := NewPurchaseOrderDetailScreen(deps, "po-1")
+				detail := NewPurchaseOrderDetailScreen(deps, "1")
 				r := newTestRoot(detail)
 				r.deps = deps
 				next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: height})
@@ -1213,7 +1213,7 @@ func poVoidPrompt(t *testing.T, fake *fakeRemovePO, width, height, lineIdx int) 
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	detail := NewPurchaseOrderDetailScreen(deps, "po-1")
+	detail := NewPurchaseOrderDetailScreen(deps, "1")
 	r := newTestRoot(detail)
 	r.deps = deps
 	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: 40})

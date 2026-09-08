@@ -371,7 +371,7 @@ func poEditHarness(t *testing.T, canDelete *bool, width, height int) func(*testi
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
 	return func(t *testing.T) (Root, *PurchaseOrderEditScreen) {
 		t.Helper()
-		po, err := deps.OMS.GetPurchaseOrder(context.Background(), "po-1")
+		po, err := deps.OMS.GetPurchaseOrder(context.Background(), "1")
 		if err != nil {
 			t.Fatalf("fixture load: %v", err)
 		}

@@ -2,6 +2,7 @@ package omsapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -988,14 +989,32 @@ func (c *Client) ScanAsset(ctx context.Context, id string) (*Asset, error) {
 }
 
 // InventoryItemID coerces the polymorphic InventoryItem field to the linked
-// item's pk string for edit-mode form hydration. InventoryItem's primary key
-// is a UUID (models.UUIDField), so the value comes over as a string; the
-// float64 branch is defensive for any numeric-pk serializer shape. ok is false
-// when the asset has no linked inventory-item type.
+// item's pk string for edit-mode form hydration. ok is false when the asset has
+// no linked inventory-item type.
+//
+// WHAT ACTUALLY ARRIVES TODAY is a string: InventoryItem's primary key is a
+// models.UUIDField, so the serializer echoes a UUID and the string arm is the
+// live one. The numeric arms are defensive against a future numeric-pk shape,
+// and they are TWO arms rather than one because Client.decodeBody sets UseNumber
+// — a JSON number in an `any` is a json.Number here, never a float64.
+//
+// The float64 arm alone was a documented claim the code could not honour: its
+// comment promised the branch was "defensive for any numeric-pk serializer
+// shape" while UseNumber had already made it unreachable, so a numeric pk would
+// have matched neither case and this would have returned ("", false) — which
+// every caller reads as "this asset has no linked inventory item", silently, in
+// the middle of hydrating an edit form the operator is about to save. A dead
+// defensive branch is worse than none, because its comment stops anybody looking.
+// Both arms are kept: an `any` that some other decoder filled can still hold a
+// float64, and losing the link is the same silent wrong answer either way.
 func (a *Asset) InventoryItemID() (string, bool) {
 	switch v := a.InventoryItem.(type) {
 	case string:
 		if s := strings.TrimSpace(v); s != "" {
+			return s, true
+		}
+	case json.Number:
+		if s := strings.TrimSpace(v.String()); s != "" {
 			return s, true
 		}
 	case float64:

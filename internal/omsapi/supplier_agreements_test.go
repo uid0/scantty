@@ -149,7 +149,7 @@ func TestCreatePurchaseOrder_SupplierAgreementSentWhenPicked(t *testing.T) {
 func TestPurchaseOrder_DecodesAgreementDetails(t *testing.T) {
 	var withAgreement PurchaseOrder
 	if err := json.Unmarshal([]byte(`{
-		"id": "po-1", "po_number": "PO-2026-0042", "status": "draft",
+		"id": 1, "po_number": "PO-2026-0042", "status": "draft",
 		"supplier_agreement": 4,
 		"supplier_agreement_details": {"id": 4, "name": "2026 nonprofit pricing"}
 	}`), &withAgreement); err != nil {
@@ -165,7 +165,7 @@ func TestPurchaseOrder_DecodesAgreementDetails(t *testing.T) {
 
 	var without PurchaseOrder
 	if err := json.Unmarshal([]byte(`{
-		"id": "po-2", "po_number": "PO-2026-0043", "status": "draft",
+		"id": 2, "po_number": "PO-2026-0043", "status": "draft",
 		"supplier_agreement": null, "supplier_agreement_details": null
 	}`), &without); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -185,7 +185,7 @@ func captureCreatePO(t *testing.T) (*httptest.Server, *map[string]any) {
 		_ = json.Unmarshal(raw, &body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"po-uuid","po_number":"PO-2026-0042"}`))
+		_, _ = w.Write([]byte(`{"id":7,"po_number":"PO-2026-0042"}`))
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &body

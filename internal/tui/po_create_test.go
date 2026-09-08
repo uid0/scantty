@@ -1241,7 +1241,7 @@ func TestPOLineDate_RoundTripsThroughSubmit(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0009"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0009"}`))
 	}))
 	defer srv.Close()
 
@@ -1357,7 +1357,7 @@ func capturePOBody(t *testing.T) (*httptest.Server, *map[string]any) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"po-1","po_number":"PO-2026-0009"}`))
+		_, _ = w.Write([]byte(`{"id":1,"po_number":"PO-2026-0009"}`))
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &body

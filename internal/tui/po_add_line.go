@@ -1501,13 +1501,9 @@ func (s *PurchaseOrderAddLineScreen) failLines() []string {
 	if width < 12 {
 		width = 12
 	}
-	rows := poAddFailDetailRows
-	trimmed := cellPrefix(s.failDetail, rows*width)
-	out := make([]string, 0, rows)
-	for i, line := range pickerWrap(trimmed, width) {
-		if i >= rows {
-			break
-		}
+	lines := failDetailLines(s.failDetail, width, poAddFailDetailRows)
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
 		out = append(out, jdeIndent+StyleMuted.Render(line))
 	}
 	return out
@@ -1515,7 +1511,15 @@ func (s *PurchaseOrderAddLineScreen) failLines() []string {
 
 // poAddFailDetailRows caps the failure detail. The sentence naming what failed
 // is on the status row above it and never gives; what a short terminal loses is
-// the tail of the gateway's HTML.
+// the tail of the gateway's HTML, and the LAST of these rows says so.
+//
+// It did not, and this was the copy that had drifted: it folded the detail and
+// broke at the row limit, so the cut was silent. On the reported failure at 80
+// columns the screen drew "…POLineLookupOrder.purchase_order.id of type" and
+// stopped — one word short of the word that names the type, reading as a
+// finished sentence. failDetailLines is the shared bound now and carries the
+// reasoning; the mark spends the last of these three rows rather than adding a
+// fourth, so the block's height is unchanged.
 const poAddFailDetailRows = 3
 
 // poAddServerSentenceCells bounds a server-supplied sentence before it is

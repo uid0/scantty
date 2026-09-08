@@ -190,14 +190,33 @@ type POLineUnavailable struct {
 // server's own draft check, reported rather than re-derived: a client that
 // compared Status to "draft" itself would be a second copy of a rule that lives
 // in assert_addable.
+//
+// ID IS A NUMBER, and declaring it a string broke the whole endpoint. The
+// payload is hand-built by serialize_lookup, which writes `"id":
+// purchase_order.pk` — no str() — and PurchaseOrder declares no primary key, so
+// it is settings.DEFAULT_AUTO_FIELD (BigAutoField), an integer. Declared
+// `string`, encoding/json refused the reply outright:
+//
+//	oms: decode response: json: cannot unmarshal number into Go struct field
+//	POLineLookupOrder.purchase_order.id of type string
+//
+// — so scanning or typing an identifier could not add a line at all, and the
+// operator read the decoder's own sentence. Note which fields of this same
+// payload the server DOES str(): the item ids in serialize_candidate and
+// serialize_unavailable, and POLineExisting.LineItem, because those are
+// str(...)-wrapped at the builder. Nothing wraps the order's. The rule is the
+// BUILDER's, not the model's, which is why POLineItemRef.ID beside this one is
+// correctly a string while this one was not.
 type POLineLookupOrder struct {
-	ID          string `json:"id"`
+	ID          int    `json:"id"`
 	Number      string `json:"po_number"`
 	Status      string `json:"status"`
 	CanAddItems bool   `json:"can_add_items"`
 }
 
-// POLineSupplierRef is the supplier the lookup was scoped to.
+// POLineSupplierRef is the supplier the lookup was scoped to. ID is
+// `purchase_order.supplier_id` — Supplier declares no primary key either, so it
+// is the same integer AutoField the order's id is.
 type POLineSupplierRef struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`

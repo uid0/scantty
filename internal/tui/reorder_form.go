@@ -104,9 +104,12 @@ func (s *ReorderFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.resultLvl = StatusError
 			return s, Status(s.resultMsg, StatusError)
 		}
-		// ID is `any` (JSON number → float64); %d would print
-		// "%!d(float64=80)". %v renders it cleanly and stays correct if the
-		// API ever returns the id as a string.
+		// ID is `any`, so %d cannot be used: it has no verb for whatever
+		// concrete type the decoder chose and would print a %!d(...) mess into
+		// a line the operator reads. %v renders every representation cleanly
+		// and stays correct whichever one arrives — which is the point, since
+		// this comment used to name float64 as that type and omsapi's
+		// jsonDecoder (UseNumber) has since made it json.Number.
 		s.resultMsg = fmt.Sprintf("reorder #%v created", m.result.ID)
 		s.resultLvl = StatusOK
 		return s, Status(s.resultMsg, StatusOK)

@@ -54,10 +54,10 @@ type poAddCatalogRow struct {
 	crossVendor string
 	// onOrder, when non-zero, is the quantity this order already carries for the
 	// row, which turns an add into a grow.
-	onOrder     int
-	onOrderID   string
-	onOrderVoid bool
-	linePrice   string
+	onOrder       int
+	onOrderLineID int
+	onOrderVoid   bool
+	linePrice     string
 }
 
 type poAddFake struct {
@@ -94,7 +94,7 @@ func (f *poAddFake) order() map[string]any {
 			continue
 		}
 		items = append(items, map[string]any{
-			"id": r.onOrderID, "quantity_ordered": r.onOrder,
+			"id": r.onOrderLineID, "quantity_ordered": r.onOrder,
 			"unit_cost_ordered": r.linePrice, "is_voided": r.onOrderVoid,
 			"item_details": map[string]any{"name": r.name},
 		})
@@ -104,7 +104,7 @@ func (f *poAddFake) order() map[string]any {
 		status = "draft"
 	}
 	return map[string]any{
-		"id": "po-1", "po_number": "PO-2026-0042", "status": status,
+		"id": 1, "po_number": "PO-2026-0042", "status": status,
 		"status_label":     strings.ToUpper(status[:1]) + status[1:],
 		"supplier_details": "Acme Fasteners & Industrial Supply Co.",
 		"items":            items,
@@ -147,7 +147,7 @@ func (f *poAddFake) candidate(r poAddCatalogRow, tier int) map[string]any {
 	}
 	if r.onOrder > 0 {
 		existing := map[string]any{
-			"line_item": r.onOrderID, "quantity_ordered": r.onOrder, "is_voided": r.onOrderVoid,
+			"line_item": fmt.Sprint(r.onOrderLineID), "quantity_ordered": r.onOrder, "is_voided": r.onOrderVoid,
 		}
 		if r.onOrderVoid {
 			existing["repeat_increment"] = nil
@@ -209,7 +209,24 @@ func (f *poAddFake) handler() http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"query":    q,
 				"supplier": map[string]any{"id": 3, "name": "Acme Fasteners & Industrial Supply Co."},
-				"purchase_order": map[string]any{"id": "po-1", "po_number": "PO-2026-0042",
+				// A NUMBER, because that is what serialize_lookup writes:
+				// `"id": purchase_order.pk`, and PurchaseOrder's pk is a
+				// BigAutoField. This fake said `"id": "po-1"` and so fed the
+				// whole add-line drive suite a shape OMS has never sent — every
+				// test here passed while a real reply could not be decoded at
+				// all and adding a line by SKU was impossible.
+				// internal/omsapi/testdata/po_item_lookup.json is a recorded
+				// reply and is the authority for this payload's SHAPE. Its id is
+				// 2 because the lab order it was recorded against was PO-LAB-0001;
+				// this fake serves order 1, and copying the recording's id across
+				// left the fake answering a lookup scoped to order 1 with order
+				// 2's pk under order 1's po_number — one order with two ids, which
+				// is not a reply OMS could produce. Nothing cross-checked it, so
+				// nothing failed: a fixture wrong in this direction is exactly as
+				// invisible as the `"id": "po-1"` one was, and this whole branch
+				// exists because a fixture the server could never send passed.
+				// The id below must stay f.order()'s.
+				"purchase_order": map[string]any{"id": 1, "po_number": "PO-2026-0042",
 					"status": status, "can_add_items": status == "draft"},
 				"best_match_kind":       "vendor_sku",
 				"resolves":              bestTotal == 1,
@@ -265,7 +282,7 @@ func (f *poAddFake) handler() http.HandlerFunc {
 					row.linePrice = cost
 				} else {
 					row.onOrder = qty
-					row.onOrderID = fmt.Sprintf("line-%d", row.itemSupplier)
+					row.onOrderLineID = row.itemSupplier
 					row.linePrice = cost
 				}
 			}
@@ -280,7 +297,7 @@ func (f *poAddFake) handler() http.HandlerFunc {
 			w.WriteHeader(status)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"created": created,
-				"line_item": map[string]any{"id": fmt.Sprintf("line-%d", id),
+				"line_item": map[string]any{"id": id,
 					"quantity_ordered": qty, "unit_cost_ordered": cost},
 				"purchase_order": f.order(),
 			})
@@ -322,7 +339,7 @@ func poAddAt(t *testing.T, fake *poAddFake, width, height int) (Root, *PurchaseO
 	t.Cleanup(srv.Close)
 
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	detail := NewPurchaseOrderDetailScreen(deps, "po-1")
+	detail := NewPurchaseOrderDetailScreen(deps, "1")
 	r := newTestRoot(detail)
 	r.deps = deps
 	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: height})
@@ -626,7 +643,7 @@ func TestPOAddLine_AnUnavailableItemIsExplained(t *testing.T) {
 func TestPOAddLine_ARepeatAddDoesNotSilentlyReprice(t *testing.T) {
 	rows := poAddRows()
 	rows[0].onOrder = 5
-	rows[0].onOrderID = "line-12"
+	rows[0].onOrderLineID = 12
 	rows[0].linePrice = "3.1000"
 	fake := &poAddFake{rows: rows}
 	r, s := poAddAt(t, fake, 80, 24)
@@ -678,7 +695,7 @@ func TestPOAddLine_ARepeatAddDoesNotSilentlyReprice(t *testing.T) {
 func TestPOAddLine_ATypedRepeatPriceIsSent(t *testing.T) {
 	rows := poAddRows()
 	rows[0].onOrder = 5
-	rows[0].onOrderID = "line-12"
+	rows[0].onOrderLineID = 12
 	rows[0].linePrice = "3.1000"
 	fake := &poAddFake{rows: rows}
 	r, s := poAddAt(t, fake, 80, 24)
@@ -721,7 +738,7 @@ func TestPOAddLine_ANonDraftOrderSaysSo(t *testing.T) {
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	po := &omsapi.PurchaseOrder{ID: "po-1", Number: "PO-2026-0042", Status: "draft",
+	po := &omsapi.PurchaseOrder{ID: 1, Number: "PO-2026-0042", Status: "draft",
 		SupplierDetails: "Acme Fasteners & Industrial Supply Co."}
 	s := NewPurchaseOrderAddLineScreen(deps, po)
 	r := newTestRoot(s)
@@ -738,14 +755,14 @@ func TestPOAddLine_ANonDraftOrderSaysSo(t *testing.T) {
 // The sheet names `n` only where it works, and a press in the wrong status
 // still answers rather than redrawing the same pane.
 func TestPOAddLine_TheSheetOffersItOnlyOnADraft(t *testing.T) {
-	draft := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+	draft := NewPurchaseOrderDetailScreen(Deps{}, "1")
 	draft.loading = false
 	draft.po = poShortPO()
 	if !barHas(draft.sheetBar(), "n", "Add line") {
 		t.Errorf("a draft PO's bar does not name `n`: %+v", draft.sheetBar())
 	}
 
-	sent := NewPurchaseOrderDetailScreen(Deps{}, "po-1")
+	sent := NewPurchaseOrderDetailScreen(Deps{}, "1")
 	sent.loading = false
 	sent.po = poShortPO()
 	sent.po.Status = "sent"
@@ -1126,7 +1143,7 @@ func TestPOAddLine_ACandidateRowKeepsItsFactsBehindALongMatchLabel(t *testing.T)
 		{itemSupplier: 21, name: "Widget bracket, zinc-plated, heavy duty, 12-hole, left-hand",
 			sku: "WB-1200", supplierSKU: "XV-1", perPackage: 25, suggestQty: 50,
 			suggestCost: "4.5000", crossVendor: "Globex Industrial",
-			onOrder: 5, onOrderID: "line-21", linePrice: "4.5000"},
+			onOrder: 5, onOrderLineID: 21, linePrice: "4.5000"},
 		{itemSupplier: 22, name: "Widget clamp", sku: "WC-1", supplierSKU: "XV-1",
 			perPackage: 1, suggestQty: 4, suggestCost: "9.9900",
 			crossVendor: "Globex Industrial"},
@@ -1206,7 +1223,7 @@ func TestPOAddLine_TheLineTotalAppearsExactlyWhenBothRowsAreAccepted(t *testing.
 func TestPOAddLine_ARepeatAddDrawsNoTotalUntilAPriceIsTyped(t *testing.T) {
 	rows := func() []poAddCatalogRow {
 		out := poAddRows()
-		out[0].onOrder, out[0].onOrderID, out[0].linePrice = 25, "line-12", "4.5000"
+		out[0].onOrder, out[0].onOrderLineID, out[0].linePrice = 25, 12, "4.5000"
 		return out
 	}
 	reach := func(t *testing.T) (Root, *poAddFake, *PurchaseOrderAddLineScreen) {

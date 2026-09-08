@@ -32,11 +32,14 @@ type LOTODevice struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
-// IntID coerces the device's `any`-typed PK to an int. JSON decodes an integer
-// PK into a float64 through an `any`, so callers that need the numeric id (the
-// disconnect required_loto_device_ids multi-picker sends []int) go through here
-// rather than type-asserting at each call site. Returns ok=false for a nil /
-// non-numeric id.
+// IntID coerces the device's `any`-typed PK to an int. Callers that need the
+// numeric id (the disconnect required_loto_device_ids multi-picker sends []int)
+// go through here rather than type-asserting at each call site, precisely so
+// they do not have to know WHICH numeric representation the decoder produced —
+// that is jsonDecoder's decision (client.go) and this comment deliberately does
+// not restate it, because it used to say "JSON decodes an integer PK into a
+// float64" and UseNumber made that false everywhere at once. Returns ok=false
+// for a nil / non-numeric id.
 func (d LOTODevice) IntID() (int, bool) { return anyToInt(d.ID) }
 
 // anyToInt coerces a JSON-decoded scalar (float64 / int / int64 / json.Number /

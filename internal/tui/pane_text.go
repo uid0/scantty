@@ -24,6 +24,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -455,4 +456,110 @@ func poFitRow(room int, name, facts string, trailers ...string) string {
 		space = need
 	}
 	return pickerClip(name, space) + suffix
+}
+
+// failDetailLines folds an OMS failure body to at most rows lines and MARKS the
+// cut whenever one was made. The mark is the last line of what it returns, so
+// the block never grows: a cut spends one of its OWN rows saying so.
+//
+// WHAT A ROW GIVES UP IT MARKS, and an error body is the worst place in the
+// program to break that — an operator reading folded lines of a gateway page
+// with nothing saying a tail went cannot tell they are missing the sentence
+// that says what actually failed. This existed FOUR times: po_create.go's
+// failLines, report_table.go's failed-load frame (whose comment said in as many
+// words that it was po_create's "copied rather than reinvented"),
+// po_add_line.go's failLines — which was the copy that had LOST the mark and
+// silently broke at the row limit — and receive_form.go's failDetailLines,
+// which a review found still unmarked after the other three were converted and
+// after this comment had already claimed there were three. On an 80-column pane
+// the add-line screen drew
+//
+//	oms: http 0: decode response: json: cannot unmarshal number into Go
+//	  struct field POLineLookupOrder.purchase_order.id of type
+//
+// — the reported failure, cut one word before the word that identifies it, with
+// nothing saying so. All four are this now, and a fifth copy is the next one to
+// drift: the count is written here because a claim about how many copies exist
+// is exactly the kind of documented claim that goes stale, and it went stale
+// once already.
+//
+// THE MARK IS A ROW OF ITS OWN ONLY WHERE THE BLOCK HAS TWO. At rows == 1 the
+// arithmetic below would slice the content to keep[:0] and return the mark
+// ALONE — a block telling the operator a tail went while showing none of the
+// head, which inverts the rule this function exists to enforce, and it is
+// reachable: receive_form.go's headerSplit deliberately pays the failure detail
+// a floor of ONE row on a short pane, because on that screen the reason is what
+// decides whether the operator retypes a quantity or goes and fetches somebody.
+// So a single row keeps the CONTENT and carries the ellipsis instead — the same
+// mark pickerClip uses everywhere else in this package, and enough to satisfy
+// "never leave a truncated value looking complete" without spending the only
+// row there is on saying so. Returning nil below a floor of two was the other
+// candidate and it is the wrong trade here: it would take the whole reason away
+// at exactly the pane the reason is hardest to come by.
+//
+// The TWO wordings stay, because the two cuts know different things: the FOLD
+// knows how many lines it left and names the number, while the cellPrefix bound
+// has already thrown the rest away and can only say more exists than the pane
+// can hold — a count there would be a count of the PREFIX, a figure about
+// nothing. The detail is bounded BEFORE the folder sees it because
+// omsapi.parseError puts the ENTIRE raw payload into APIError.Message whenever
+// the envelope carries no code, and at most rows lines of a 20 KB gateway page
+// can ever be drawn. The mark row is itself bounded, because the row saying
+// something was cut may not be the row that runs off the pane.
+//
+// Returns unstyled lines; callers indent and style them, which is the only part
+// the four sites do differently.
+//
+// IT MAY RETURN NOTHING, AND EVERY CALLER MUST RANGE OVER THE RESULT RATHER THAN
+// INDEX IT. That is the contract, stated here because leaving it implicit is
+// what let one of the four sites diverge: report_table.go read `lines[0]` and
+// `lines[1:]` while its three siblings ranged, so the frame an operator sees
+// when a load has just FAILED was the one frame carrying a panic in View() — and
+// a panic there takes the whole terminal down rather than drawing a wrong pane.
+//
+// Nothing is the honest answer in the cases that produce it, which is why the
+// contract is not "at least one line whenever detail is non-empty": at a row
+// budget below one or a width below one there is no line to give, and at a
+// budget that cannot hold even one drawable cell of the fold there is no head to
+// keep — and a mark with no content beneath it is the state the paragraphs above
+// exist to forbid. Manufacturing a line to satisfy a caller would put that state
+// back. So the emptiness is real, and the callers absorb it by iterating, which
+// costs them nothing: a range over an empty slice draws nothing and falls
+// through to whatever the frame draws next.
+func failDetailLines(detail string, width, rows int) []string {
+	if detail == "" || rows < 1 || width < 1 {
+		return nil
+	}
+	trimmed := cellPrefix(detail, rows*width)
+	bounded := trimmed != detail
+	folded := pickerWrap(trimmed, width)
+	if len(folded) == 0 {
+		// The bound spent every cell it had on nothing drawable — one wide rune
+		// against a one-cell budget is enough. There is no head to keep, so
+		// there is nothing to mark either: a mark alone is the state this
+		// function refuses to produce.
+		return nil
+	}
+
+	cut := bounded || len(folded) > rows
+	if cut && rows == 1 {
+		return []string{pickerClip(folded[0]+"…", width)}
+	}
+
+	keep, mark := folded, ""
+	if cut {
+		if len(keep) > rows-1 {
+			keep = keep[:rows-1]
+		}
+		mark = "… more of the error than this pane can hold"
+		if !bounded {
+			mark = fmt.Sprintf("… %d more line(s) of the error", len(folded)-len(keep))
+		}
+	}
+	out := make([]string, 0, rows)
+	out = append(out, keep...)
+	if mark != "" {
+		out = append(out, cellPrefix(mark, width))
+	}
+	return out
 }
