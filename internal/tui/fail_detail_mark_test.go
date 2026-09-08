@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -118,4 +119,93 @@ func TestPOAddLine_ACutFailureBodySaysSoOnThePane(t *testing.T) {
 	poAddWantPane(t, r, "enter tries again")
 	// And the body they are shown says it is not all of it.
 	poAddWantPane(t, r, "more of the error")
+}
+
+// A ONE-ROW block keeps the head of the error and marks the cut in it.
+//
+// The arithmetic above spends the LAST of the block's rows on the mark, and at
+// rows == 1 that left `keep[:0]` — the mark ALONE, a block telling the operator
+// a tail went while showing none of the head, which is the rule this function
+// exists to enforce read backwards. It is not a corner: receive_form.go's
+// headerSplit deliberately pays the failure detail a floor of exactly one row on
+// a short pane, because the reason is what decides whether the operator retypes
+// a quantity or goes and fetches somebody.
+func TestFailDetail_AOneRowBlockKeepsTheHeadAndMarksTheCut(t *testing.T) {
+	const width = 40
+	// Both cuts, because they take different branches above: the unspaced body
+	// is stopped by cellPrefix, the spaced one folds past the row limit.
+	for _, c := range []struct{ name, body string }{
+		{"cut by the prefix bound", strings.Repeat("x", width*8)},
+		{"cut by the fold", strings.Join([]string{
+			strings.Repeat("a", 25), strings.Repeat("b", 25)}, " ")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := failDetailLines(c.body, width, 1)
+			if len(got) != 1 {
+				t.Fatalf("rows = %d, want 1 — the block may not grow past what it "+
+					"was budgeted: %q", len(got), got)
+			}
+			if strings.HasPrefix(got[0], "…") {
+				t.Errorf("the only row is the mark: %q — the operator is told a tail "+
+					"went and shown none of the head", got[0])
+			}
+			if !strings.HasPrefix(got[0], c.body[:4]) {
+				t.Errorf("the row does not lead with the error: %q, want the head of %q",
+					got[0], c.body[:20])
+			}
+			if !strings.HasSuffix(got[0], "…") {
+				t.Errorf("the row reads as a finished sentence: %q — a truncated value "+
+					"that does not say so is the whole of rule 6", got[0])
+			}
+			if c := lipgloss.Width(got[0]); c > width {
+				t.Errorf("the row is %d cells against a pane of %d: %q", c, width, got[0])
+			}
+		})
+	}
+
+	t.Run("uncut at one row", func(t *testing.T) {
+		got := failDetailLines("short", width, 1)
+		if len(got) != 1 || got[0] != "short" {
+			t.Errorf("an uncut body was marked or dropped: %q", got)
+		}
+	})
+}
+
+// And on the RECEIVING frame, driven through the real screen. This was the
+// fourth copy of the fold-cut-and-mark and it was still unmarked after the other
+// three had been converted — while the shared helper's own comment claimed there
+// were three of them.
+//
+// All four receiving endpoints hand-write {"error": ...} and so miss DRF's
+// exception handler, which is why omsapi.parseError puts the ENTIRE raw payload
+// into APIError.Message: the body below is the gateway page that arrives when
+// the receipt never reaches OMS at all.
+func TestReceive_ACutFailureBodySaysSoOnThePane(t *testing.T) {
+	fake := &receiveFake{
+		sheet:    receiveWorksheet(receiveOrder()...),
+		failWith: http.StatusBadGateway,
+		failBody: "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head>" +
+			"<body><center><h1>502 Bad Gateway</h1></center><hr>" +
+			"<center>nginx/1.24.0</center><p>The upstream server did not answer in " +
+			"time. The receipt was not recorded and no stock was credited.</p></body></html>",
+	}
+	r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+	r = receiveGoToLine(t, r, s, 0)
+	r = receiveTypeInto(t, r, "1")
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // -> review
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // post, which 502s
+	_ = r
+
+	if s.failDetail == "" {
+		t.Fatalf("no failure detail is standing, so this checks nothing")
+	}
+	if len(s.failDetail) <= s.failDetailRows()*(s.paneWidth()-len(jdeIndent)) {
+		t.Fatalf("the fixture body is %d chars and fits the block, so no cut is made "+
+			"and the assertion below is vacuous", len(s.failDetail))
+	}
+	pane := receivePaneText(s, 80, 30)
+	if !strings.Contains(pane, "more of the error") && !strings.Contains(pane, "…") {
+		t.Errorf("the cut failure body carries no mark, so it reads as a finished "+
+			"sentence:\n%s", pane)
+	}
 }

@@ -55,3 +55,101 @@ func TestAnyID_ANumericIDKeepsItsDigits(t *testing.T) {
 		})
 	}
 }
+
+// The same property THROUGH A CUSTOM UNMARSHALER, which is where the decoder's
+// option stopped.
+//
+// encoding/json hands a json.Unmarshaler the raw bytes and steps out of the way,
+// so nothing the outer decoder was configured with reaches inside one:
+// MaybeList[T].UnmarshalJSON decoded both of its branches with json.Unmarshal,
+// which cannot be configured at all. ListPendingReorders decodes
+// MaybeList[ReorderRequest], whose ID is `any`, and
+// internal/tui/reorder_queue.go's actOnCursor renders it with %v straight into
+// the path of `/api/reorders/requests/<id>/approve/` — so a seven-digit request
+// pk approved "1e+06", a request that does not exist, on a queue whose whole
+// purpose is approving and cancelling.
+//
+// BOTH SHAPES ARE DRIVEN because MaybeList exists to accept either, and a
+// fallback chain is exactly where a decoding decision gets quietly re-made: the
+// /pending/ action returns a bare array today and DRF pagination on the same
+// route would return the envelope tomorrow.
+func TestAnyID_ANumericIDKeepsItsDigitsThroughAMaybeList(t *testing.T) {
+	shapes := map[string]string{
+		"bare array": `[{"id": %d, "item": "itm-1", "quantity": 3}]`,
+		"envelope": `{"count": 1, "next": null, "previous": null,
+			"results": [{"id": %d, "item": "itm-1", "quantity": 3}]}`,
+	}
+	for shape, body := range shapes {
+		t.Run(shape, func(t *testing.T) {
+			for _, id := range []int64{1, 42, 999999, 1000000, 1234567, 21000000, 900719925474099} {
+				t.Run(fmt.Sprint(id), func(t *testing.T) {
+					srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						w.Header().Set("Content-Type", "application/json")
+						fmt.Fprintf(w, body, id)
+					}))
+					defer srv.Close()
+
+					rows, err := New(srv.URL).ListPendingReorders(context.Background(), nil)
+					if err != nil {
+						t.Fatalf("list: %v", err)
+					}
+					if len(rows) != 1 {
+						t.Fatalf("rows = %d — the %s branch did not decode", len(rows), shape)
+					}
+					want := fmt.Sprint(id)
+					if got := fmt.Sprintf("%v", rows[0].ID); got != want {
+						t.Errorf("reorder request id rendered %q, want %q — this is the "+
+							"path segment reorder_queue.go builds the approve and cancel "+
+							"URLs from", got, want)
+					}
+				})
+			}
+		})
+	}
+}
+
+// An asset's polymorphic inventory-item pk keeps its digits too.
+//
+// Asset.InventoryItemID is one of the three `any` coercers in this package and
+// it was the one not brought along when UseNumber went in: its switch offered
+// `string` and `float64`, and under UseNumber a numeric pk is a json.Number, so
+// it matched neither and returned ("", false) — which every caller reads as
+// "this asset has no linked inventory item", silently, while hydrating an edit
+// form the operator is about to save.
+//
+// InventoryItem's pk is a models.UUIDField today, so the string arm is the live
+// one and is asserted here as the case that must not regress; the numeric case
+// is the defensive branch its comment promises, tested so the promise is one the
+// code honours.
+func TestAnyID_AnAssetsInventoryItemIDSurvivesEveryPKShape(t *testing.T) {
+	cases := []struct {
+		name, field, want string
+		ok                bool
+	}{
+		{"uuid string", `"3f2b1c60-0000-4000-8000-000000000001"`,
+			"3f2b1c60-0000-4000-8000-000000000001", true},
+		{"numeric pk", `1234567`, "1234567", true},
+		{"large numeric pk", `900719925474099`, "900719925474099", true},
+		{"absent", `null`, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"id": "a-1", "name": "Lathe", "inventory_item": %s}`, c.field)
+			}))
+			defer srv.Close()
+
+			asset, err := New(srv.URL).GetAsset(context.Background(), "a-1")
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			got, ok := asset.InventoryItemID()
+			if ok != c.ok || got != c.want {
+				t.Errorf("InventoryItemID() = (%q, %v), want (%q, %v) — a false here is "+
+					"read as \"no linked inventory item\" by the edit form",
+					got, ok, c.want, c.ok)
+			}
+		})
+	}
+}

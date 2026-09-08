@@ -5223,6 +5223,24 @@ const receiveFailDetailRows = 3
 // folding a multi-KB gateway page is work whose result is thrown away, on a
 // block redrawn every keystroke (cellPrefix walks forward and stops when the
 // budget is spent; truncateVisible would be O(n²) here).
+//
+// The fold-cut-and-MARK is pane_text.go's failDetailLines, shared with the three
+// other screens that fold a failure body, and this site was the FOURTH copy —
+// found by a review after the other three had been converted and after that
+// helper's comment had already claimed there were only three. Its own break at
+// the row limit was silent, so all four receiving endpoints (each hand-writes
+// {"error": ...} and misses DRF's exception handler, which is why
+// omsapi.parseError puts the ENTIRE raw payload into APIError.Message) could cut
+// a gateway page mid-sentence and leave it reading as finished — on the screen
+// where the reason decides whether the operator retypes a quantity or goes and
+// fetches somebody.
+//
+// The block does NOT grow: the mark spends the LAST of the rows headerSplit
+// already gave the detail, exactly as it does on the other three sites, so
+// nothing here can move the pinned header by a row and nothing can change what
+// the bar under it names. At the one-row budget headerSplit pays on a short
+// pane, the shared helper keeps the content and marks the cut with the ellipsis
+// rather than spending that row on the mark; its comment carries why.
 func (s *ReceiveFormScreen) failDetailLines() []string {
 	detail := s.failDetailText()
 	if detail == "" {
@@ -5232,16 +5250,8 @@ func (s *ReceiveFormScreen) failDetailLines() []string {
 	if width < 12 {
 		width = 12
 	}
-	rows := s.failDetailRows()
-	if rows <= 0 {
-		return nil
-	}
-	trimmed := cellPrefix(detail, rows*width)
-	out := make([]string, 0, rows)
-	for i, line := range pickerWrap(trimmed, width) {
-		if i >= rows {
-			break
-		}
+	var out []string
+	for _, line := range failDetailLines(detail, width, s.failDetailRows()) {
 		out = append(out, jdeIndent+StyleMuted.Render(line))
 	}
 	return out

@@ -142,10 +142,31 @@ before declaring or changing any field that crosses this boundary:
 - **AN `any` ID IS NOT A FREE PASS.** It always decodes, and then a caller renders
   it. `encoding/json` puts a JSON number into an `any` as a `float64` and `%v`
   formats that with `%g`, so a seven-digit id becomes `"1e+06"` — spent on the wire
-  as a path segment. `Client.decodeBody` sets `UseNumber` so an `any` keeps the
+  as a path segment. `omsapi.jsonDecoder` sets `UseNumber` so an `any` keeps the
   server's own digits; that is the ONE place it is decided, because the id sites
   are not a list anyone maintains. `asset_parts.go`'s `IDString` had already
   written that reasoning down and applied it to exactly one struct.
+  **A CUSTOM `UnmarshalJSON` IS A HOLE IN THAT "ONE PLACE" UNLESS IT ASKS FOR THE
+  DECODER TOO**, which is why the option lives in a decoder FACTORY rather than
+  in `decodeBody` alone. `encoding/json` hands a `json.Unmarshaler` the RAW BYTES
+  and steps out of the way, so an outer decoder's settings do not reach inside
+  one, and `json.Unmarshal` cannot be configured at all. `MaybeList[T]` is such a
+  type and is on live read paths: `ListPendingReorders` decodes
+  `MaybeList[ReorderRequest]`, whose `ID` is `any`, and
+  `internal/tui/reorder_queue.go` spends it with `%v` as the path segment of
+  `/api/reorders/requests/<id>/approve/` — so with the option set only on
+  `decodeBody` a seven-digit reorder pk approved `1e+06`, the same 404 the
+  item-lookup fix had just been measured against. Every decoder in the package
+  comes from `jsonDecoder`; a new `UnmarshalJSON` must call it rather than reach
+  for `json.Unmarshal`.
+  **AND A COERCER WRITTEN BEFORE `UseNumber` CAN HAVE A DEAD ARM.** A numeric pk
+  is a `json.Number` now and never a `float64`, so a type switch offering only
+  `string` and `float64` falls through to its zero answer. There are three `any`
+  coercers in the package — `loto.go`'s `anyToInt`, `asset_parts.go`'s `IDString`
+  and `inventory.go`'s `Asset.InventoryItemID` — and the last was the one that
+  had not been brought along, where the fall-through reads as "this asset has no
+  linked inventory item" in the middle of hydrating an edit form. Derive that set
+  by grepping for `.(type)` over `any` fields rather than trusting this list.
 - **A FIXTURE WRITTEN FROM THE STRUCT CANNOT CONTRADICT THE STRUCT.** All three
   fixtures for this endpoint said `{"id": "po-1"}` and all three passed. Fixtures
   for a wire shape are RECORDED from a real backend (`internal/omsapi/testdata/`,
@@ -1999,6 +2020,21 @@ touching any screen an operator drives:
   else, on the one step where losing the reason costs the whole order. Both go
   through the LAYER now: the headline on `statusRow`, the body in the pinned
   header (`failLines`), cut to `poFailDetailRows` BEFORE it is folded.
+  **THE FOLD-CUT-AND-MARK IS `pane_text.go`'s `failDetailLines` AND THERE IS ONE
+  OF IT.** Four screens fold a failure body into a fixed row budget — the New PO
+  submit, the report table's failed-load frame, the add-line price phase and the
+  RECEIVING form — and each hand-written copy of that shape has lost the MARK,
+  which is the only thing telling an operator that the sentence naming what
+  failed is one they never got to read. The add-line copy shipped the reported
+  decode error cut one word short of the field name; the receiving copy survived
+  the round that fixed the other three, while the helper's own comment claimed
+  there were three of them. Callers pass the width, the rows and the raw detail
+  and then indent and style what comes back, and nothing else. The MARK spends
+  the LAST of the rows the block already had, so converting a site cannot move a
+  pinned header by a row or change what the bar under it names; at a one-row
+  budget — which `receive_form.go`'s `headerSplit` really pays on a short pane —
+  the content is kept and the cut is marked with the ellipsis instead, because a
+  mark with no content beneath it is the rule inverted rather than obeyed.
   FIELD rows are the shape that does not FOLD, and they are bounded rather than
   exempt — the CART row included, which gives ground in its own STATED order
   because clipping its label alone was not enough: the LABEL first, then the
