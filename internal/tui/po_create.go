@@ -3280,7 +3280,9 @@ func (s *PurchaseOrderCreateScreen) failLines() []string {
 // poFailDetailRows caps that detail. The sentence naming WHAT failed is on the
 // status row and never gives; what a short terminal loses is the tail of the
 // gateway's HTML, and the last of these rows says so. Same bound, same reason,
-// as po_add_line's — whose own failLines does not yet carry the mark.
+// as po_add_line's poAddFailDetailRows and receive_form's
+// receiveFailDetailRows, all three of which spend their last row on the mark
+// through pane_text.go's shared failDetailLines.
 const poFailDetailRows = 3
 
 // ---------------------------------------------------------------------------

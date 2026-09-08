@@ -458,9 +458,20 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 // segment of `/api/reorders/requests/<id>/approve/`. Written as one function
 // setting UseNumber on its own decoder, the option stopped at the envelope and a
 // seven-digit reorder pk approved "1e+06", exactly the 404 this comment already
-// described for item-lookup. Every decoder in this package therefore comes from
-// here, and a new json.Unmarshaler must call it too rather than reaching for
-// json.Unmarshal, which cannot be configured at all.
+// described for item-lookup.
+//
+// WHAT THAT MAKES TRUE, said at the scope it holds at rather than as a universal
+// a reader would falsify with one grep: every decoder of a RESPONSE PAYLOAD
+// comes from here, so a new json.Unmarshaler on a payload type must call it too
+// rather than reaching for json.Unmarshal, which cannot be configured at all.
+// The remaining json.Unmarshal sites in this package are NOT payloads and are
+// safe for a reason worth stating: DecodeJWTClaims above, parseError's envelope
+// (errors.go), AsLineEntryError (po_line_entry.go), AsReceivingRefusal
+// (po_receiving.go) and StorageSlotErrorDetail (storage_slots.go) each decode
+// into a FULLY TYPED struct with no `any` anywhere in it — POLineEntryError's
+// Candidates are POLineCandidate, which has none either — so there is no field
+// for a number to land in as a float64 and nothing they decode is ever spent as
+// a path segment. Give one of them an `any` and it joins the rule.
 func jsonDecoder(r io.Reader) *json.Decoder {
 	dec := json.NewDecoder(r)
 	dec.UseNumber()

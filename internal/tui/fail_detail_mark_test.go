@@ -203,8 +203,19 @@ func TestReceive_ACutFailureBodySaysSoOnThePane(t *testing.T) {
 		t.Fatalf("the fixture body is %d chars and fits the block, so no cut is made "+
 			"and the assertion below is vacuous", len(s.failDetail))
 	}
+	// The multi-row mark, and ONLY it. An earlier version accepted an ellipsis
+	// anywhere on the flattened pane as evidence, which any clipped label, a
+	// fittedNote that gave up words or a shortened status row satisfies — it
+	// failed correctly then only because this fixture's labels happen to fit at
+	// 80x30, so a longer name would have made it pass with the mark deleted.
+	// The one-row ellipsis form is the unit test's above; at this budget the
+	// block gets more than one row, so the counted wording is the one under test.
+	if rows := s.failDetailRows(); rows < 2 {
+		t.Fatalf("the block has %d row(s) here, which is the one-row ellipsis form "+
+			"rather than the mark this asserts", rows)
+	}
 	pane := receivePaneText(s, 80, 30)
-	if !strings.Contains(pane, "more of the error") && !strings.Contains(pane, "…") {
+	if !strings.Contains(pane, "more of the error") {
 		t.Errorf("the cut failure body carries no mark, so it reads as a finished "+
 			"sentence:\n%s", pane)
 	}

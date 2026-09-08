@@ -14,8 +14,16 @@ import (
 // flat 4-field model, so the whole read shape is id/name/code/description/
 // is_active with no FKs, JSON blobs or timestamps.
 //
-// ID is `any` because the JSON pk decodes as a float64; use IntID for the
-// integer value the detail/update/delete URLs need.
+// ID is `any` because the client carries whatever the serializer echoed; use
+// IntID for the integer value the detail/update/delete URLs need.
+//
+// This sentence used to say the pk "decodes as a float64". That was a claim
+// about the DECODER dressed as a claim about the wire, and it was cited in a
+// review as evidence that ForgeKey pks are numbers — which is exactly the
+// mistake this branch is about. What the SERVER says is that DeviceType takes
+// Django's implicit BigAutoField, so the pk is an integer; what the DECODER does
+// is client.go's jsonDecoder, which sets UseNumber, so it arrives as a
+// json.Number and never as a float64. IntID reads both.
 type DeviceType struct {
 	ID          any    `json:"id"`
 	Name        string `json:"name"`

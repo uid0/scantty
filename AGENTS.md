@@ -7,6 +7,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ScanTTY is a client of the OpenMakerSuite HTTP API and of ForgeKey; `README.md`
 has the env vars and the package map.
 
+**BOTH OF THOSE ARE THE SAME SERVER.** `internal/forgekeyapi` points at
+`/api/forgekey/...`, which is served by OMS's own `backend/forgekey` Django app;
+uid0/ForgeKey is the C++ device operating system, and ScanTTY does not talk to
+it. The two clients exist because ForgeKey has its own base URL and mTLS story
+(`README.md`), not because there are two contracts. So everything below — the
+OMS source being authoritative, the local-backend recipe, the wire-type
+rule — applies to `forgekeyapi` verbatim, and "ForgeKey is a different server"
+is not a reason to scope it out of a sweep. It has been used as one.
+
 - **No SHARED OMS is reachable from a task worktree.** `SCANTTY_OMS_URL` is
   unset and nothing answers on the usual host, so ordinary behaviour is verified
   by driving the real screens through `Root.Update` against a stateful
@@ -156,9 +165,34 @@ before declaring or changing any field that crosses this boundary:
   `internal/tui/reorder_queue.go` spends it with `%v` as the path segment of
   `/api/reorders/requests/<id>/approve/` — so with the option set only on
   `decodeBody` a seven-digit reorder pk approved `1e+06`, the same 404 the
-  item-lookup fix had just been measured against. Every decoder in the package
-  comes from `jsonDecoder`; a new `UnmarshalJSON` must call it rather than reach
-  for `json.Unmarshal`.
+  item-lookup fix had just been measured against. Every decoder of a RESPONSE
+  PAYLOAD comes from `jsonDecoder`; a new `UnmarshalJSON` on a payload type must
+  call it rather than reach for `json.Unmarshal`. That is the scope the claim
+  holds at, and it is stated that way because the flat universal it replaced is
+  falsified by one grep: five `json.Unmarshal` sites remain (`DecodeJWTClaims`,
+  `parseError`, `AsLineEntryError`, `AsReceivingRefusal`,
+  `StorageSlotErrorDetail`) and every one decodes a FULLY TYPED error envelope
+  with no `any` in it, so there is no field for a number to land in and nothing
+  they produce is spent as a path segment.
+  **THE SAME FIX WAS OWED NEXT DOOR, AND "A DIFFERENT SERVER" IS WHY IT WAS
+  NOT.** `internal/forgekeyapi` decoded every response with a bare
+  `json.NewDecoder` and had the identical `MaybeList` hole, because ForgeKey was
+  recorded as out of scope on the strength of being another system. It is not:
+  `/api/forgekey/...` is served by **OpenMakerSuite's own `backend/forgekey`
+  Django app** — uid0/ForgeKey is the C++ device operating system, not the HTTP
+  API — so it crosses this boundary and is checkable against a real backend like
+  everything else. It has its own `jsonDecoder` now. Of the models ScanTTY spends
+  as a URL path segment only `AssetAuthorization` and `OperationalMode` carry the
+  implicit `BigAutoField`; `ESP32Device`, `DeviceLockout`, `DeviceUsage`,
+  `EPaperDisplay` and `FirmwareRollout` are explicit `UUIDField`s, so
+  `op_modes.go` and `auth_lockout.go` are the two live sites and the measured
+  evidence is `.../operational-modes/1000000/…` 200 against
+  `.../1e+06/…` 404, with the revoke path the same. **DERIVE A PK TYPE BY READING
+  THE WHOLE MODEL CLASS** — `FirmwareRollout`'s `id =` line sits 26 lines into
+  its class, so a fixed grep window reads it as an integer — and never from
+  ScanTTY's own comments: `device_types.go` said the pk "decodes as a float64",
+  which records what an author believed about a decoder and was then cited as a
+  fact about the wire.
   **AND A COERCER WRITTEN BEFORE `UseNumber` CAN HAVE A DEAD ARM.** A numeric pk
   is a `json.Number` now and never a `float64`, so a type switch offering only
   `string` and `float64` falls through to its zero answer. There are three `any`

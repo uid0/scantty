@@ -180,10 +180,56 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
+	if err := jsonDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
 		return fmt.Errorf("forgekey: decode: %w", err)
 	}
 	return nil
+}
+
+// jsonDecoder is the ONE place this package chooses a decoder's options, the
+// mirror of omsapi.jsonDecoder and for the same reason.
+//
+// THESE ENDPOINTS ARE NOT A DIFFERENT SERVER. `/api/forgekey/...` is served by
+// OpenMakerSuite's own `backend/forgekey` Django app — uid0/ForgeKey is the C++
+// device operating system, not the HTTP API — so this client crosses exactly the
+// boundary omsapi crosses and the wire types are decided by the same
+// serializers. It was once written down as out of scope on the strength of it
+// being "a different server", which is why the class stayed open here for a
+// release after it was closed next door.
+//
+// UseNumber is the whole point. Several ids on these payloads are typed `any`
+// because the client carries whatever the serializer echoed, and the callers
+// turn that back into a URL path segment with fmt. Decoded the default way a
+// JSON number lands in an `any` as a float64 and `%v` formats a float64 with
+// `%g`, so a seven-digit pk renders "1e+06" and is spent on the wire. Measured
+// against a live backend, with the correct id as the control:
+//
+//	POST /api/forgekey/operational-modes/1000000/enable_classroom_mode/  -> 200
+//	POST /api/forgekey/operational-modes/1e+06/enable_classroom_mode/    -> 404
+//	POST /api/forgekey/authorizations/1000001/revoke/                    -> 200
+//	POST /api/forgekey/authorizations/1.000001e+06/revoke/               -> 404
+//
+// WHICH IDS CAN REACH THAT is derived from the SERVER's models, by reading the
+// whole of each class rather than a window around its name — FirmwareRollout's
+// `id = models.UUIDField(primary_key=True)` sits 26 lines into its class, and a
+// fixed grep window is exactly how it gets read as an integer. Of the models
+// ScanTTY spends as a path segment, only AssetAuthorization and OperationalMode
+// carry Django's implicit BigAutoField; ESP32Device, DeviceLockout,
+// DeviceUsage, EPaperDisplay and FirmwareRollout are all explicit UUIDs, so
+// op_modes.go's `c` and auth_lockout.go's revoke are the two live sites.
+// ScanTTY's OWN comments are not evidence about any of this: device_types.go
+// says the pk "decodes as a float64", which records what an author believed and
+// was read as a fact about the wire — the same mistake this whole branch is
+// about.
+//
+// The option is set at the DECODER rather than at each fmt call because the id
+// sites are not a list anyone maintains, and because a UUID is a string either
+// way: the narrow derivation above decides what the TESTS can prove, not what
+// the code has to cover.
+func jsonDecoder(r io.Reader) *json.Decoder {
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	return dec
 }
 
 func (c *Client) Get(ctx context.Context, path string, q url.Values, out any) error {
@@ -212,10 +258,21 @@ type MaybeList[T any] struct {
 	Count int
 }
 
+// UnmarshalJSON tries the bare array first and falls back to the envelope, and
+// BOTH branches decode through jsonDecoder rather than json.Unmarshal.
+//
+// encoding/json hands a custom Unmarshaler the RAW BYTES and steps out of the
+// way, so an outer decoder's UseNumber does not reach in here and json.Unmarshal
+// cannot be configured at all — this method is the hole the option escapes
+// through, and it is on the path of both live sites: ListAuthorizations and
+// ListOperationalModes each decode a MaybeList of a struct whose ID is `any`,
+// and op_modes.go / auth_lockout.go render that id with fmt.Sprint straight into
+// an enable_classroom_mode / revoke URL. Fixing only do() above would have left
+// every list-fed id still arriving as a float64.
 func (m *MaybeList[T]) UnmarshalJSON(data []byte) error {
 	// Try bare array first — the more common shape and the cheaper parse.
 	var arr []T
-	if err := json.Unmarshal(data, &arr); err == nil {
+	if err := jsonDecoder(bytes.NewReader(data)).Decode(&arr); err == nil {
 		m.Items = arr
 		m.Count = len(arr)
 		return nil
@@ -224,7 +281,7 @@ func (m *MaybeList[T]) UnmarshalJSON(data []byte) error {
 		Count   int `json:"count"`
 		Results []T `json:"results"`
 	}
-	if err := json.Unmarshal(data, &env); err != nil {
+	if err := jsonDecoder(bytes.NewReader(data)).Decode(&env); err != nil {
 		return err
 	}
 	m.Items = env.Results
