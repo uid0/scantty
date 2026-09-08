@@ -27,16 +27,24 @@ import (
 // a row that exists, aimed at one that does not, with nothing on the pane saying
 // the id was mangled.
 //
-// WHY THESE TWO AND NOT THE OTHERS. Of the ForgeKey models ScanTTY spends as a
-// path segment, only AssetAuthorization and OperationalMode carry Django's
-// implicit BigAutoField. ESP32Device, DeviceLockout, DeviceUsage, EPaperDisplay
-// and FirmwareRollout all declare `id = models.UUIDField(primary_key=True)`, so
-// their ids are strings on the wire and fmt.Sprint was never able to mangle one
-// — asserting a numeric id for a rollout would be testing a payload the server
-// cannot send. That derivation comes from reading each model class WHOLE:
-// FirmwareRollout's `id =` line sits 26 lines into its class, so a grep window
-// around the class name reports it as an integer pk and produces exactly the
-// wrong set.
+// WHY THESE TWO AND NOT THE OTHERS. What bites is a CONJUNCTION — an integer pk
+// AND a fmt.Sprint over an `any` — and OperationalMode and AssetAuthorization are
+// where both halves meet. Either half alone is harmless, which is why a case
+// cannot be chosen off a list of integer-pk models: DeviceType is an integer pk
+// that IS spent as a path segment and was never affected, because it goes through
+// IntID() and its paths format with %d, and an int through %d is its digits at
+// any magnitude. Asserting a numeric id for a UUID-pk model would be worse still
+// — a payload the server cannot send, which is the vacuous fixture this whole
+// branch exists to remove.
+//
+// THE MODEL ROSTER IS NOT RESTATED HERE, ON PURPOSE. client.go's jsonDecoder doc
+// is its single authority; this comment names only the conjunction it needed to
+// choose two cases by. That roster has been wrong in four separate places on this
+// branch and every round corrected only the copy it was pointed at — including
+// this comment, which was left encoding the retired "only AssetAuthorization and
+// OperationalMode" version for a round after the others were fixed. A fact copied
+// into a fifth place is a fifth place for it to drift; read it where it is
+// derived.
 //
 // BOTH LIST SHAPES ARE DRIVEN because both endpoints decode through MaybeList,
 // whose UnmarshalJSON is handed raw bytes and so bypasses any outer decoder —

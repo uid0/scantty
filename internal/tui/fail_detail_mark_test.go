@@ -220,3 +220,41 @@ func TestReceive_ACutFailureBodySaysSoOnThePane(t *testing.T) {
 			"sentence:\n%s", pane)
 	}
 }
+
+// The helper's EMPTY contract, which the four call sites depend on.
+//
+// failDetailLines returns NOTHING for a detail it cannot draw a single line of,
+// and every caller ranges over the result rather than indexing it. That was left
+// implicit once and one of the four sites diverged: report_table.go read
+// lines[0] and lines[1:], so the frame drawn when a report load has FAILED was
+// the one frame in the package carrying a panic in View() — which takes the
+// terminal down rather than drawing a wrong pane. It was unreachable only
+// because of three floors owned by three other places, none visible from that
+// call site.
+//
+// This pins the empty answer so the contract cannot be "fixed" into
+// manufacturing a line: a mark with no content beneath it is exactly the state
+// the helper exists to forbid, so inventing a row here would put it back.
+func TestFailDetail_ADetailItCannotDrawReturnsNothing(t *testing.T) {
+	cases := []struct {
+		name        string
+		detail      string
+		width, rows int
+	}{
+		{"no detail", "", 40, 3},
+		{"no rows", "something failed", 40, 0},
+		{"negative rows", "something failed", 40, -1},
+		{"no width", "something failed", 0, 3},
+		{"negative width", "something failed", -1, 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := failDetailLines(c.detail, c.width, c.rows); len(got) != 0 {
+				t.Errorf("failDetailLines(%q, %d, %d) = %q, want nothing — a caller "+
+					"that ranges draws nothing here, and a manufactured line would be "+
+					"a mark with no content under it",
+					c.detail, c.width, c.rows, got)
+			}
+		})
+	}
+}

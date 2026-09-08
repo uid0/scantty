@@ -1156,9 +1156,33 @@ func (s *ReportTableScreen) View() string {
 		if room < reportErrMinRows {
 			room = reportErrMinRows
 		}
-		lines := failDetailLines(detail, cells, room)
-		b.WriteString(StyleStatusError.Render(lines[0]) + "\n")
-		writeMuted(lines[1:])
+		// ITERATED, NOT INDEXED, and that is the whole of why this loop is not
+		// `lines[0]` plus `writeMuted(lines[1:])`. failDetailLines returns
+		// NOTHING for a detail it cannot draw a single line of — an empty
+		// detail, a row budget below one, a width below one, or a fold that
+		// yields no drawable line — so an indexed read is a panic in View(),
+		// which takes the whole terminal down rather than drawing a wrong pane.
+		// Of the four sites that call the shared helper this was the only one
+		// that indexed; the other three range over it, and that divergence is
+		// what put a panic path on exactly one frame.
+		//
+		// It is not reachable today, and the reason it is not is precisely why
+		// the site may not rely on it: it holds only because `detail` always
+		// begins "Error: ", because `room` is floored at reportErrMinRows, and
+		// because reportPaneCells floors at 1 — three invariants owned by three
+		// different places, none of them visible from here, any one of which
+		// could move without anybody thinking about this line. The loop costs
+		// nothing and depends on none of them.
+		//
+		// The first line keeps StyleStatusError because it carries the sentence
+		// naming what failed; the rest are muted continuations.
+		for i, line := range failDetailLines(detail, cells, room) {
+			style := StyleMuted
+			if i == 0 {
+				style = StyleStatusError
+			}
+			b.WriteString(style.Render(line) + "\n")
+		}
 		writeFooter(0)
 		return strings.TrimRight(b.String(), "\n")
 	}

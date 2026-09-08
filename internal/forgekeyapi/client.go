@@ -233,7 +233,15 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 // AssetAuthorization, AssetDevice, DeviceType, OperationalMode and
 // RoomOperationalMode. Everything else is an explicit UUIDField.
 //
-// THIS ROSTER HAS BEEN GOT WRONG THREE TIMES IN ONE BRANCH, ALWAYS BY MATCHING
+// THIS IS THE ONE PLACE THAT ROSTER IS WRITTEN DOWN, and AGENTS.md and
+// any_id_test.go point here rather than repeating it. They used to repeat it,
+// which is how the branch ended up with four copies and corrected them one round
+// at a time as each was reported — the test's copy still said "only
+// AssetAuthorization and OperationalMode" after the other three had been fixed,
+// so a reader deriving scope from it would have reached the retired answer. A
+// roster costs nothing to copy and cannot be kept in step by hand.
+//
+// AND IT HAS BEEN GOT WRONG FOUR TIMES IN ONE BRANCH, ALWAYS BY MATCHING
 // ONE SPELLING OF THE THING BEING LOOKED FOR — the lesson AGENTS.md already
 // records about retired key chords having two spellings, arrived at again here:
 //

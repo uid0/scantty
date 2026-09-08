@@ -508,7 +508,24 @@ func poFitRow(room int, name, facts string, trailers ...string) string {
 // something was cut may not be the row that runs off the pane.
 //
 // Returns unstyled lines; callers indent and style them, which is the only part
-// the three sites did differently.
+// the four sites do differently.
+//
+// IT MAY RETURN NOTHING, AND EVERY CALLER MUST RANGE OVER THE RESULT RATHER THAN
+// INDEX IT. That is the contract, stated here because leaving it implicit is
+// what let one of the four sites diverge: report_table.go read `lines[0]` and
+// `lines[1:]` while its three siblings ranged, so the frame an operator sees
+// when a load has just FAILED was the one frame carrying a panic in View() — and
+// a panic there takes the whole terminal down rather than drawing a wrong pane.
+//
+// Nothing is the honest answer in the cases that produce it, which is why the
+// contract is not "at least one line whenever detail is non-empty": at a row
+// budget below one or a width below one there is no line to give, and at a
+// budget that cannot hold even one drawable cell of the fold there is no head to
+// keep — and a mark with no content beneath it is the state the paragraphs above
+// exist to forbid. Manufacturing a line to satisfy a caller would put that state
+// back. So the emptiness is real, and the callers absorb it by iterating, which
+// costs them nothing: a range over an empty slice draws nothing and falls
+// through to whatever the frame draws next.
 func failDetailLines(detail string, width, rows int) []string {
 	if detail == "" || rows < 1 || width < 1 {
 		return nil

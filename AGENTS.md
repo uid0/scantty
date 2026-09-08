@@ -194,17 +194,20 @@ before declaring or changing any field that crosses this boundary:
   version of this roster wrong. Either half alone is harmless: `DeviceType` is a
   `BigAutoField` that IS spent as a path segment and was never affected, because
   it goes through `IntID()` and the paths format with `%d`, and an int through
-  `%d` is its digits at any magnitude; `ESP32Device`, `DeviceLockout`,
-  `DeviceUsage`, `EPaperDisplay` and `FirmwareRollout` are reached by
-  `fmt.Sprint` over an `any` but are explicit `UUIDField`s, so there was never
-  anything to mangle. Both halves together is `op_modes.go` (`OperationalMode`)
+  `%d` is its digits at any magnitude. The mirror case is a model reached by
+  `fmt.Sprint` over an `any` whose pk is an explicit `UUIDField`: the id is a
+  STRING on the wire, so there was never anything to mangle, and asserting a
+  numeric id for one would be testing a payload the server cannot send.
+  Both halves together is `op_modes.go` (`OperationalMode`)
   and `auth_lockout.go` (`AssetAuthorization`), the two live sites, measured
   `.../operational-modes/1000000/…` 200 against `.../1e+06/…` 404 with the revoke
-  path the same. On the MODEL side, the `models.Model` subclasses taking the
-  implicit `BigAutoField` are `AssetAuthorization`, `AssetDevice`, `DeviceType`,
-  `OperationalMode` and `RoomOperationalMode`; everything else is an explicit
-  `UUIDField`.
-  **THAT ROSTER WAS GOT WRONG THREE TIMES IN ONE BRANCH, ALWAYS BY MATCHING ONE
+  path the same. THE MODEL-BY-MODEL ROSTER LIVES IN ONE PLACE — `jsonDecoder`'s
+  doc comment in `internal/forgekeyapi/client.go`, which is where the decision it
+  justifies is made — and is deliberately not copied here or into the tests. It
+  was carried in four places on this branch, each round corrected only the copy
+  it was pointed at, and the last stale copy outlived the others by a round; a
+  list repeated is a list that drifts, so read it where it is derived.
+  **THAT ROSTER WAS GOT WRONG FOUR TIMES IN ONE BRANCH, ALWAYS BY MATCHING ONE
   SPELLING** — the same lesson `list_nav.go`'s retired chords teach about a
   keystroke having two spellings, arrived at independently here. Grepping
   `fmt.Sprintf("%v")` missed the `fmt.Sprint(` form; grepping `fmt.Sprint(` then
