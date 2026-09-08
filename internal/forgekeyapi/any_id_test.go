@@ -11,12 +11,13 @@ import (
 // An `any`-typed ForgeKey id must survive as the DIGITS the server sent, all the
 // way to the URL path segment an action is spent on.
 //
-// THIS PACKAGE TALKS TO OPENMAKERSUITE. `/api/forgekey/...` is served by OMS's
-// own `backend/forgekey` Django app — uid0/ForgeKey is the C++ device operating
-// system, not the HTTP API — so these ids are decided by the same serializers
-// every other ScanTTY wire type is, and the class closed for `internal/omsapi`
-// was open here for exactly as long as "a different server" stood as the reason
-// to skip it.
+// THESE IDS ARE OPENMAKERSUITE'S. `/api/forgekey/...` is served by OMS's own
+// `backend/forgekey` Django app, so they are decided by the same serializers
+// every other ScanTTY wire type is — which is what makes this test's fixtures
+// derivable from OMS's models at all. uid0/ForgeKey is the C++ operating system
+// running ON the devices, firmware rather than the HTTP API, and the class
+// closed for `internal/omsapi` was open here for exactly as long as that
+// confusion stood as the reason to skip the package.
 //
 // The failure: several ids are typed `any` so the client carries whatever the
 // serializer echoed, and the screens render them with fmt.Sprint. Decoded the

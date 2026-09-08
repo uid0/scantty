@@ -54,10 +54,10 @@ type poAddCatalogRow struct {
 	crossVendor string
 	// onOrder, when non-zero, is the quantity this order already carries for the
 	// row, which turns an add into a grow.
-	onOrder     int
-	onOrderID   string
-	onOrderVoid bool
-	linePrice   string
+	onOrder       int
+	onOrderLineID int
+	onOrderVoid   bool
+	linePrice     string
 }
 
 type poAddFake struct {
@@ -94,7 +94,7 @@ func (f *poAddFake) order() map[string]any {
 			continue
 		}
 		items = append(items, map[string]any{
-			"id": r.onOrderID, "quantity_ordered": r.onOrder,
+			"id": r.onOrderLineID, "quantity_ordered": r.onOrder,
 			"unit_cost_ordered": r.linePrice, "is_voided": r.onOrderVoid,
 			"item_details": map[string]any{"name": r.name},
 		})
@@ -147,7 +147,7 @@ func (f *poAddFake) candidate(r poAddCatalogRow, tier int) map[string]any {
 	}
 	if r.onOrder > 0 {
 		existing := map[string]any{
-			"line_item": r.onOrderID, "quantity_ordered": r.onOrder, "is_voided": r.onOrderVoid,
+			"line_item": fmt.Sprint(r.onOrderLineID), "quantity_ordered": r.onOrder, "is_voided": r.onOrderVoid,
 		}
 		if r.onOrderVoid {
 			existing["repeat_increment"] = nil
@@ -282,7 +282,7 @@ func (f *poAddFake) handler() http.HandlerFunc {
 					row.linePrice = cost
 				} else {
 					row.onOrder = qty
-					row.onOrderID = fmt.Sprintf("line-%d", row.itemSupplier)
+					row.onOrderLineID = row.itemSupplier
 					row.linePrice = cost
 				}
 			}
@@ -297,7 +297,7 @@ func (f *poAddFake) handler() http.HandlerFunc {
 			w.WriteHeader(status)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"created": created,
-				"line_item": map[string]any{"id": fmt.Sprintf("line-%d", id),
+				"line_item": map[string]any{"id": id,
 					"quantity_ordered": qty, "unit_cost_ordered": cost},
 				"purchase_order": f.order(),
 			})
@@ -643,7 +643,7 @@ func TestPOAddLine_AnUnavailableItemIsExplained(t *testing.T) {
 func TestPOAddLine_ARepeatAddDoesNotSilentlyReprice(t *testing.T) {
 	rows := poAddRows()
 	rows[0].onOrder = 5
-	rows[0].onOrderID = "line-12"
+	rows[0].onOrderLineID = 12
 	rows[0].linePrice = "3.1000"
 	fake := &poAddFake{rows: rows}
 	r, s := poAddAt(t, fake, 80, 24)
@@ -695,7 +695,7 @@ func TestPOAddLine_ARepeatAddDoesNotSilentlyReprice(t *testing.T) {
 func TestPOAddLine_ATypedRepeatPriceIsSent(t *testing.T) {
 	rows := poAddRows()
 	rows[0].onOrder = 5
-	rows[0].onOrderID = "line-12"
+	rows[0].onOrderLineID = 12
 	rows[0].linePrice = "3.1000"
 	fake := &poAddFake{rows: rows}
 	r, s := poAddAt(t, fake, 80, 24)
@@ -1143,7 +1143,7 @@ func TestPOAddLine_ACandidateRowKeepsItsFactsBehindALongMatchLabel(t *testing.T)
 		{itemSupplier: 21, name: "Widget bracket, zinc-plated, heavy duty, 12-hole, left-hand",
 			sku: "WB-1200", supplierSKU: "XV-1", perPackage: 25, suggestQty: 50,
 			suggestCost: "4.5000", crossVendor: "Globex Industrial",
-			onOrder: 5, onOrderID: "line-21", linePrice: "4.5000"},
+			onOrder: 5, onOrderLineID: 21, linePrice: "4.5000"},
 		{itemSupplier: 22, name: "Widget clamp", sku: "WC-1", supplierSKU: "XV-1",
 			perPackage: 1, suggestQty: 4, suggestCost: "9.9900",
 			crossVendor: "Globex Industrial"},
@@ -1223,7 +1223,7 @@ func TestPOAddLine_TheLineTotalAppearsExactlyWhenBothRowsAreAccepted(t *testing.
 func TestPOAddLine_ARepeatAddDrawsNoTotalUntilAPriceIsTyped(t *testing.T) {
 	rows := func() []poAddCatalogRow {
 		out := poAddRows()
-		out[0].onOrder, out[0].onOrderID, out[0].linePrice = 25, "line-12", "4.5000"
+		out[0].onOrder, out[0].onOrderLineID, out[0].linePrice = 25, 12, "4.5000"
 		return out
 	}
 	reach := func(t *testing.T) (Root, *poAddFake, *PurchaseOrderAddLineScreen) {

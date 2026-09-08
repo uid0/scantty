@@ -116,7 +116,7 @@ func poViewPO() *omsapi.PurchaseOrder {
 				IsVoided:           true, VoidReason: "supplier discontinued the part",
 			},
 			{
-				ID: "line-3", Description: "Bracket",
+				ID: 3, Description: "Bracket",
 				QuantityOrdered: 4, QuantityReceived: 4, IsFullyReceived: true,
 				UnitCostOrdered:      omsapi.DecimalString("2.5000"),
 				EstimatedCost:        omsapi.DecimalString("10.00"),
@@ -342,7 +342,7 @@ func assertClipped(t *testing.T, out string, width int, name string, want ...str
 func poWideCellPO() *omsapi.PurchaseOrder {
 	po := poViewPO()
 	po.Items = []omsapi.PurchaseOrderItem{{
-		ID: "line-wide", Description: "M3 hex bolt, stainless",
+		ID: 3, Description: "M3 hex bolt, stainless",
 		ItemDetails:      map[string]any{"sku": "M3-HEX-BOLT-SS"},
 		QuantityOrdered:  10000,
 		QuantityReceived: 10000,

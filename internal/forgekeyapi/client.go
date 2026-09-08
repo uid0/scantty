@@ -189,13 +189,19 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 // jsonDecoder is the ONE place this package chooses a decoder's options, the
 // mirror of omsapi.jsonDecoder and for the same reason.
 //
-// THESE ENDPOINTS ARE NOT A DIFFERENT SERVER. `/api/forgekey/...` is served by
-// OpenMakerSuite's own `backend/forgekey` Django app — uid0/ForgeKey is the C++
-// device operating system, not the HTTP API — so this client crosses exactly the
-// boundary omsapi crosses and the wire types are decided by the same
-// serializers. It was once written down as out of scope on the strength of it
-// being "a different server", which is why the class stayed open here for a
-// release after it was closed next door.
+// THESE ENDPOINTS ARE SERVED BY OPENMAKERSUITE'S OWN CODE. `/api/forgekey/...`
+// is `backend/forgekey`, an OMS Django app, with OMS models behind it — so this
+// client crosses exactly the boundary omsapi crosses and its wire types are
+// decided by the same serializers. uid0/ForgeKey is the C++ operating system
+// that runs ON the devices; it is firmware, not the HTTP API, and confusing the
+// two is what put this package out of scope on the strength of it "being a
+// different server" — which is why the class stayed open here for a release
+// after it was closed next door.
+//
+// What is NOT established, and is not needed for any of the above: whether the
+// deployed SCANTTY_FORGEKEY_URL host is the same process as SCANTTY_OMS_URL.
+// The claim that matters is about whose SERIALIZERS decide these types, and that
+// one is checkable by reading the app.
 //
 // UseNumber is the whole point. Several ids on these payloads are typed `any`
 // because the client carries whatever the serializer echoed, and the callers

@@ -7,12 +7,33 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ScanTTY is a client of the OpenMakerSuite HTTP API and of ForgeKey; `README.md`
 has the env vars and the package map.
 
-**BOTH OF THOSE ARE THE SAME SERVER.** `internal/forgekeyapi` points at
-`/api/forgekey/...`, which is served by OMS's own `backend/forgekey` Django app;
-uid0/ForgeKey is the C++ device operating system, and ScanTTY does not talk to
-it. The two clients exist because ForgeKey has its own base URL and mTLS story
-(`README.md`), not because there are two contracts. So everything below — the
-OMS source being authoritative, the local-backend recipe, the wire-type
+**"FORGEKEY" NAMES THREE DIFFERENT THINGS, AND THE COLLISION IS WHY A WHOLE
+CLASS OF BUG STAYED OPEN IN `internal/forgekeyapi` FOR A RELEASE.** Say which
+one you mean:
+
+1. **ForgeKey the SYSTEM** — the device-access half of the makerspace: badge
+   readers, locks, e-paper panels. This is `README.md`'s sense when it calls
+   ScanTTY a TUI "for OpenMakerSuite and ForgeKey", and it is correct.
+2. **The ForgeKey HTTP API** — the `/api/forgekey/...` routes `internal/forgekeyapi`
+   drives, reached through `SCANTTY_FORGEKEY_URL`, which has its own base URL and
+   mTLS story (`README.md`). ScanTTY very much talks to this.
+3. **uid0/ForgeKey the REPO** — a C++ operating system that runs ON the ESP32
+   devices. ScanTTY does not talk to THAT: it is firmware, not a server.
+
+**WHAT IS ESTABLISHED, AND WHAT IS NOT.** VERIFIED: OpenMakerSuite's own
+`backend/forgekey` Django app serves those exact routes with those exact models,
+and OMS runs `forgekey.tasks.*` (firmware builds, rollout advancement,
+stale-device sweeps) — so the ForgeKey server side lives in the OMS codebase and
+its wire types are decided by OMS serializers. NOT VERIFIED: whether the
+production `SCANTTY_FORGEKEY_URL` host is that same deployment or a separate
+one. Nothing on this branch establishes that, and the pk derivation was done
+against OMS's app. Both halves are stated because the sentence this replaced
+over-claimed in the other direction ("ScanTTY does not talk to it", true only of
+sense 3 and written as though it were true of all three), and swapping one
+over-claim for another is the same defect wearing a new coat.
+
+The operative consequence is the part that IS established: everything below —
+the OMS source being authoritative, the local-backend recipe, the wire-type
 rule — applies to `forgekeyapi` verbatim, and "ForgeKey is a different server"
 is not a reason to scope it out of a sweep. It has been used as one.
 

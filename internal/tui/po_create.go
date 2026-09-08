@@ -3279,10 +3279,24 @@ func (s *PurchaseOrderCreateScreen) failLines() []string {
 
 // poFailDetailRows caps that detail. The sentence naming WHAT failed is on the
 // status row and never gives; what a short terminal loses is the tail of the
-// gateway's HTML, and the last of these rows says so. Same bound, same reason,
-// as po_add_line's poAddFailDetailRows and receive_form's
-// receiveFailDetailRows, all three of which spend their last row on the mark
-// through pane_text.go's shared failDetailLines.
+// gateway's HTML, and the last of these rows says so.
+//
+// Same bound, same reason, as po_add_line's poAddFailDetailRows: both are FIXED
+// budgets of three handed straight to pane_text.go's shared failDetailLines, so
+// both really do spend their last row on the mark whenever a cut is made.
+//
+// receive_form is the site that does NOT work this way, and saying it did sent
+// a reader to the one place the sentence was wrong about. Its budget is the
+// PANE's, not a constant: it passes s.failDetailRows(), which is
+// headerSplit().detail — receiveFailDetailRows is only the CEILING that split
+// fills up to, and the value actually handed over is 1 on a short pane and 0
+// where the four floors headerSplit pays cannot all be met. At 1 the shared
+// helper deliberately does not spend the row on a mark at all: it keeps the
+// CONTENT and carries the ellipsis instead, because a mark with nothing beneath
+// it inverts the rule the helper exists to enforce (failDetailLines' own doc
+// carries that reasoning, and cites receive_form's one-row floor as why the
+// branch is there). At 0 it draws nothing. So the uniformity is two sites, not
+// three, and the third is the reason the helper has a one-row form.
 const poFailDetailRows = 3
 
 // ---------------------------------------------------------------------------

@@ -1832,7 +1832,7 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 			mk: func() Screen {
 				po := poDeletablePO()
 				po.Items = append([]omsapi.PurchaseOrderItem{{
-					ID:              "line-long",
+					ID:              9,
 					Description:     "M3×12 hex-head cap screw, A2-70 stainless, DIN 933, bright finish",
 					QuantityOrdered: 250,
 					EstimatedCost:   omsapi.DecimalString("31.25"),
@@ -1866,7 +1866,7 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 				po := poViewPO()
 				po.CanDeleteItems = boolPtr(false)
 				po.Items = []omsapi.PurchaseOrderItem{{
-					ID:              "line-long",
+					ID:              9,
 					Description:     "M3×12 hex-head cap screw, A2-70 stainless, DIN 933, bright finish",
 					QuantityOrdered: 250,
 					EstimatedCost:   omsapi.DecimalString("31.25"),
