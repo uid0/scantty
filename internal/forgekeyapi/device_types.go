@@ -32,9 +32,14 @@ type DeviceType struct {
 	IsActive    bool   `json:"is_active"`
 }
 
-// IntID coerces the `any`-typed pk (float64 from JSON, or int/int64/string/
-// json.Number depending on the decoder) to the integer the API paths use. It
-// returns 0 when the value can't be read as an integer.
+// IntID coerces the `any`-typed pk to the integer the API paths use, whatever
+// representation the decoder produced. It returns 0 when the value can't be
+// read as an integer.
+//
+// The arms are deliberately not ranked here. This comment used to lead with
+// "float64 from JSON", which client.go's jsonDecoder falsified the moment it set
+// UseNumber — read the representation there, where it is decided, rather than
+// from a list in a coercer that exists precisely so no caller has to care.
 func (d DeviceType) IntID() int {
 	switch v := d.ID.(type) {
 	case float64:

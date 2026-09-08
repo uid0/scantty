@@ -583,8 +583,14 @@ func (s *ReportTableScreen) reportPaneCells() int {
 	}
 	// Floored at one cell, not because Root ever draws such a pane — it refuses
 	// below a content width of 20 — but because every bound below divides or
-	// clips by this, and a zero would make a folder return no lines at all on a
-	// frame that then indexes the first one.
+	// clips by this, and a zero would silently empty each of them.
+	//
+	// The clause that used to follow named the failed-load frame as one that
+	// "indexes the first line" a folder returned. That frame iterates now
+	// (see the loop below), precisely so no caller depends on getting a first
+	// line — so the old justification described code that no longer exists and
+	// flatly contradicted the comment at that call site. The floor stays for the
+	// dividing-and-clipping reason alone, which never depended on it.
 	if n := screenBodyCells(s.terminalWidth); n > 0 {
 		return n
 	}
@@ -1145,10 +1151,10 @@ func (s *ReportTableScreen) View() string {
 		detail := "Error: " + st.err
 		// The ceiling is reportErrRows and the PANE can lower it (frameRows),
 		// never below the floor that keeps the first line and its mark. The
-		// fold-cut-and-mark itself is failDetailLines (pane_text.go), shared
-		// with po_create.go and po_add_line.go — this block's own comment
-		// already said it was po_create's "copied rather than reinvented", and
-		// the third copy had by then lost the mark.
+		// fold-cut-and-mark itself is failDetailLines (pane_text.go), whose doc
+		// carries the rule and the roster of screens that share it — this site
+		// deliberately does not restate that roster, having previously named two
+		// of the four and gone stale the moment a fourth was converted.
 		room := reportErrRows
 		if r := s.frameRows(); r < room {
 			room = r

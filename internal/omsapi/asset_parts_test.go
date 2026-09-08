@@ -2,6 +2,7 @@ package omsapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -264,7 +265,11 @@ func TestAssetPart_PartDetailsSerialized(t *testing.T) {
 // TestGetAssetPart_Decode covers the read struct round-trip, including the
 // nullable pointers left absent (maintenance_interval_days / last_replaced_at /
 // days_since_replacement all null) and the integer pk landing in the any-typed
-// ID as a float64.
+// ID as whatever the client's decoder makes of a JSON number — which is what
+// makes the IDString assertion below worth having, since it goes through the
+// REAL client and so through jsonDecoder rather than through a hand-built value.
+// It used to say "as a float64"; UseNumber changed that to json.Number and the
+// assertion silently moved onto a different arm than the one it named.
 func TestGetAssetPart_Decode(t *testing.T) {
 	var cap capture
 	srv := captureServer(t, http.StatusOK,
@@ -292,13 +297,24 @@ func TestGetAssetPart_Decode(t *testing.T) {
 }
 
 // TestAssetPartIDString covers the pk coercion the detail/action URLs depend on:
-// a large integer pk (arriving as float64) must render as a plain decimal, not
-// scientific notation, and the string / nil shapes degrade gracefully.
+// a large integer pk must render as a plain decimal, not scientific notation,
+// and the string / nil shapes degrade gracefully.
+//
+// The values are constructed here rather than decoded, so none of them "arrives"
+// as anything — the table's job is that EVERY arm produces plain digits, which
+// is what lets the function outlive a decoder change. The json.Number rows were
+// missing until UseNumber made that arm the live one, so the table was covering
+// five shapes the client no longer produces and not the one it does;
+// TestGetAssetPart_Decode above is the check that goes through the real decoder
+// and so pins which arm that is.
 func TestAssetPartIDString(t *testing.T) {
 	cases := []struct {
 		id   any
 		want string
 	}{
+		{json.Number("12"), "12"},
+		{json.Number("1234567"), "1234567"},
+		{json.Number("987654321"), "987654321"},
 		{float64(12), "12"},
 		{float64(1234567), "1234567"},
 		{float64(987654321), "987654321"},

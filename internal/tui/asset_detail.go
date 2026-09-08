@@ -494,10 +494,17 @@ func (s *AssetDetailScreen) sendProblem(desc string, partIDs []string) tea.Cmd {
 	}
 }
 
-// assetPartKey stringifies an AssetPart's polymorphic id (an integer pk arrives
-// as a JSON number → float64) for use as a selection-map key and as the
-// part_ids value the backend coerces back to an int. Mirrors the wo_detail
-// task/material toggle idiom.
+// assetPartKey stringifies an AssetPart's polymorphic id for use as a
+// selection-map key and as the part_ids value the backend coerces back to an
+// int. Mirrors the wo_detail task/material toggle idiom.
+//
+// %v over the `any` rather than a type switch, because the key only has to be
+// STABLE within a frame and round-trip to something the backend can coerce —
+// which it is for any representation the decoder picks. This comment named
+// float64 as that representation until omsapi's jsonDecoder set UseNumber; the
+// site got quietly BETTER rather than worse, since %v on a json.Number is the
+// server's own digits where %v on a float64 would have given "1.234567e+06" for
+// a seven-digit part pk and posted a part_ids value naming no part.
 func assetPartKey(p omsapi.AssetPart) string {
 	return fmt.Sprintf("%v", p.ID)
 }
