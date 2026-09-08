@@ -219,8 +219,9 @@ before declaring or changing any field that crosses this boundary:
   `fmt.Sprint` over an `any` whose pk is an explicit `UUIDField`: the id is a
   STRING on the wire, so there was never anything to mangle, and asserting a
   numeric id for one would be testing a payload the server cannot send.
-  Both halves together is `op_modes.go` (`OperationalMode`)
-  and `auth_lockout.go` (`AssetAuthorization`), the two live sites, measured
+  Both halves together is `internal/tui/op_modes.go` (`OperationalMode`)
+  and `internal/tui/auth_lockout.go` (`AssetAuthorization`) — the ids are
+  DECODED in `forgekeyapi` and SPENT in the TUI — the two live sites, measured
   `.../operational-modes/1000000/…` 200 against `.../1e+06/…` 404 with the revoke
   path the same. THE MODEL-BY-MODEL ROSTER LIVES IN ONE PLACE — `jsonDecoder`'s
   doc comment in `internal/forgekeyapi/client.go`, which is where the decision it

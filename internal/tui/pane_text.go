@@ -466,8 +466,8 @@ func poFitRow(room int, name, facts string, trailers ...string) string {
 // program to break that — an operator reading folded lines of a gateway page
 // with nothing saying a tail went cannot tell they are missing the sentence
 // that says what actually failed. This existed FOUR times: po_create.go's
-// failLines, report_table.go's failed-load frame (whose comment says in as many
-// words that it is po_create's "copied rather than reinvented"),
+// failLines, report_table.go's failed-load frame (whose comment said in as many
+// words that it was po_create's "copied rather than reinvented"),
 // po_add_line.go's failLines — which was the copy that had LOST the mark and
 // silently broke at the row limit — and receive_form.go's failDetailLines,
 // which a review found still unmarked after the other three were converted and

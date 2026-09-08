@@ -262,9 +262,11 @@ go run ./cmd/scantty             # build + run in one step (good for iteration)
 ```
 
 `go test ./...` runs the suite; CI (`.github/workflows/ci.yml`) runs build,
-vet and test on every pull request. No live OMS is reachable from a checkout,
-so screen behaviour is verified by driving the real screens against an
-`httptest` fake — see `AGENTS.md`.
+vet and test on every pull request. The suite needs no server: screen behaviour
+is verified by driving the real screens against an `httptest` fake, and the two
+`omslab`-tagged tests that do want a real backend are inert without one. A
+local OpenMakerSuite can be brought up and is worth it on a bug that sits on the
+ScanTTY/OMS seam — the recipe and its traps are in `AGENTS.md`.
 
 ## oms-claim-print — Pi-side claim-tag print daemon
 

@@ -434,9 +434,10 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 // that back into a path segment with fmt. Decoded the default way a JSON number
 // lands in an `any` as a float64, and `%v` formats a float64 with `%g`: a
 // seven-digit purchase-order id renders "1e+06". That string is spent on the
-// wire — po_add_line.go builds `/purchase-orders/<id>/item-lookup/` from it and
-// po_edit.go builds the line paths the same way — so against a real OMS the
-// order that answers 200 at `.../1000000/` answers 404 at `.../1e+06/`.
+// wire — internal/tui/po_add_line.go builds `/purchase-orders/<id>/item-lookup/`
+// from it and internal/tui/po_edit.go builds the line paths the same way — so
+// against a real OMS the order that answers 200 at `.../1000000/` answers 404
+// at `.../1e+06/`.
 //
 // json.Number keeps the server's own digits, so `%v` gives them back exactly.
 // It is set at the decoder rather than fixed at each fmt call because the id

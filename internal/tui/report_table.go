@@ -1137,17 +1137,12 @@ func (s *ReportTableScreen) View() string {
 		// WHAT A ROW GIVES UP IT MARKS, and an error body is the worst place in
 		// the program to break that: an operator reading six folded lines of a
 		// gateway page with nothing saying a tail went cannot tell they are
-		// missing the sentence that says what actually failed. This is
-		// po_create.go's failLines / poFailDetailRows, copied rather than
-		// reinvented, and its three decisions come with it. The mark spends the
-		// LAST of the block's OWN rows instead of growing the block, so the
-		// height does not move. The TWO wordings stay, because the two cuts know
-		// different things: the FOLD knows how many lines it left and names the
-		// number, while the cellPrefix bound has already thrown the rest away
-		// and can only say more exists than the pane can hold — a count there
-		// would be a count of the PREFIX, which is a figure about nothing. And
-		// the mark row is itself bounded, because the row saying something was
-		// cut may not be the row that runs off the pane.
+		// missing the sentence that says what actually failed. This site used to
+		// carry its own copy of po_create.go's failLines to get that; it calls the
+		// shared failDetailLines below instead, and that function's doc owns the
+		// three decisions the copy carried — the mark spending the LAST of the
+		// block's OWN rows rather than growing it, the TWO wordings the two cuts
+		// need, and the mark row being bounded itself.
 		detail := "Error: " + st.err
 		// The ceiling is reportErrRows and the PANE can lower it (frameRows),
 		// never below the floor that keeps the first line and its mark. The

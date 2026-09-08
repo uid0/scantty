@@ -230,8 +230,10 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 //	                       a STRING on the wire and fmt.Sprint never had anything
 //	                       to mangle.
 //
-// Both halves together is op_modes.go's `c` (OperationalMode) and
-// auth_lockout.go's revoke (AssetAuthorization), and those are the two the live
+// Both halves together is internal/tui/op_modes.go's classroom-mode toggle
+// (OperationalMode) and internal/tui/auth_lockout.go's revoke
+// (AssetAuthorization) — the spend sites are in the TUI, not in this package,
+// which is why they are named with their paths — and those are the two the live
 // measurements above were taken against.
 //
 // THE MODEL SIDE, derived from backend/forgekey/models.py by reading each class
@@ -308,9 +310,10 @@ type MaybeList[T any] struct {
 // cannot be configured at all — this method is the hole the option escapes
 // through, and it is on the path of both live sites: ListAuthorizations and
 // ListOperationalModes each decode a MaybeList of a struct whose ID is `any`,
-// and op_modes.go / auth_lockout.go render that id with fmt.Sprint straight into
-// an enable_classroom_mode / revoke URL. Fixing only do() above would have left
-// every list-fed id still arriving as a float64.
+// and internal/tui/op_modes.go / internal/tui/auth_lockout.go render that id
+// with fmt.Sprint straight into an enable_classroom_mode / revoke URL. Fixing
+// only do() above would have left every list-fed id still arriving as a
+// float64.
 func (m *MaybeList[T]) UnmarshalJSON(data []byte) error {
 	// Try bare array first — the more common shape and the cheaper parse.
 	var arr []T
