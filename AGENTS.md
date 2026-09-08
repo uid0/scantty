@@ -165,15 +165,22 @@ before declaring or changing any field that crosses this boundary:
   `internal/tui/reorder_queue.go` spends it with `%v` as the path segment of
   `/api/reorders/requests/<id>/approve/` — so with the option set only on
   `decodeBody` a seven-digit reorder pk approved `1e+06`, the same 404 the
-  item-lookup fix had just been measured against. Every decoder of a RESPONSE
-  PAYLOAD comes from `jsonDecoder`; a new `UnmarshalJSON` on a payload type must
-  call it rather than reach for `json.Unmarshal`. That is the scope the claim
-  holds at, and it is stated that way because the flat universal it replaced is
-  falsified by one grep: five `json.Unmarshal` sites remain (`DecodeJWTClaims`,
+  item-lookup fix had just been measured against. THE RULE IS ABOUT UNTYPED
+  VALUES AND NOT ABOUT DECODERS, because `UseNumber` changes exactly one thing —
+  the Go type a JSON NUMBER takes where nothing declares one: **nothing that can
+  produce an untyped value (`any`, `map[string]any`) may be decoded by a decoder
+  that is not `jsonDecoder`.** Two flatter wordings were tried first and both
+  were falsified by one grep, which is why it is stated this way: "every decoder
+  in the package" is false of five `json.Unmarshal` sites (`DecodeJWTClaims`,
   `parseError`, `AsLineEntryError`, `AsReceivingRefusal`,
-  `StorageSlotErrorDetail`) and every one decodes a FULLY TYPED error envelope
-  with no `any` in it, so there is no field for a number to land in and nothing
-  they produce is spent as a path segment.
+  `StorageSlotErrorDetail`), and "every decoder of a RESPONSE PAYLOAD" is still
+  false of `DecimalString` and `DateOnly`, which ARE `json.Unmarshaler`s on
+  payload types. All seven are safe for one reason: each parses into a FULLY
+  TYPED target with no `any` in it — the five decode error envelopes,
+  `DecimalString` and `DateOnly` parse a SCALAR into a `string` and a `time.Time`
+  and decide their own representation from the raw bytes — so there is no
+  untyped landing spot for a number and nothing they produce is spent as a path
+  segment. Give any of them an `any` and it joins the rule.
   **THE SAME FIX WAS OWED NEXT DOOR, AND "A DIFFERENT SERVER" IS WHY IT WAS
   NOT.** `internal/forgekeyapi` decoded every response with a bare
   `json.NewDecoder` and had the identical `MaybeList` hole, because ForgeKey was
@@ -181,18 +188,37 @@ before declaring or changing any field that crosses this boundary:
   `/api/forgekey/...` is served by **OpenMakerSuite's own `backend/forgekey`
   Django app** — uid0/ForgeKey is the C++ device operating system, not the HTTP
   API — so it crosses this boundary and is checkable against a real backend like
-  everything else. It has its own `jsonDecoder` now. Of the models ScanTTY spends
-  as a URL path segment only `AssetAuthorization` and `OperationalMode` carry the
-  implicit `BigAutoField`; `ESP32Device`, `DeviceLockout`, `DeviceUsage`,
-  `EPaperDisplay` and `FirmwareRollout` are explicit `UUIDField`s, so
-  `op_modes.go` and `auth_lockout.go` are the two live sites and the measured
-  evidence is `.../operational-modes/1000000/…` 200 against
-  `.../1e+06/…` 404, with the revoke path the same. **DERIVE A PK TYPE BY READING
-  THE WHOLE MODEL CLASS** — `FirmwareRollout`'s `id =` line sits 26 lines into
-  its class, so a fixed grep window reads it as an integer — and never from
-  ScanTTY's own comments: `device_types.go` said the pk "decodes as a float64",
-  which records what an author believed about a decoder and was then cited as a
-  fact about the wire.
+  everything else. It has its own `jsonDecoder` now.
+  **WHAT BITES IS A CONJUNCTION — an INTEGER pk AND a `fmt.Sprint` over an
+  `any`** — and writing it down as a list of models is what made every earlier
+  version of this roster wrong. Either half alone is harmless: `DeviceType` is a
+  `BigAutoField` that IS spent as a path segment and was never affected, because
+  it goes through `IntID()` and the paths format with `%d`, and an int through
+  `%d` is its digits at any magnitude; `ESP32Device`, `DeviceLockout`,
+  `DeviceUsage`, `EPaperDisplay` and `FirmwareRollout` are reached by
+  `fmt.Sprint` over an `any` but are explicit `UUIDField`s, so there was never
+  anything to mangle. Both halves together is `op_modes.go` (`OperationalMode`)
+  and `auth_lockout.go` (`AssetAuthorization`), the two live sites, measured
+  `.../operational-modes/1000000/…` 200 against `.../1e+06/…` 404 with the revoke
+  path the same. On the MODEL side, the `models.Model` subclasses taking the
+  implicit `BigAutoField` are `AssetAuthorization`, `AssetDevice`, `DeviceType`,
+  `OperationalMode` and `RoomOperationalMode`; everything else is an explicit
+  `UUIDField`.
+  **THAT ROSTER WAS GOT WRONG THREE TIMES IN ONE BRANCH, ALWAYS BY MATCHING ONE
+  SPELLING** — the same lesson `list_nav.go`'s retired chords teach about a
+  keystroke having two spellings, arrived at independently here. Grepping
+  `fmt.Sprintf("%v")` missed the `fmt.Sprint(` form; grepping `fmt.Sprint(` then
+  missed `IntID()`, so `DeviceType` was left out entirely and a reader would have
+  concluded it was a UUID; and grepping `^class \w+` for the pk scan swept in
+  `IndicatorStatus` (a plain class) and `LockoutLevel` (a `models.TextChoices`
+  enum) as though they were tables, when neither has a pk at all. Derive this by
+  asking what a value IS and how it is SPENT, never by grepping for the spelling
+  you happen to have in mind.
+  **DERIVE A PK TYPE BY READING THE WHOLE MODEL CLASS** — `FirmwareRollout`'s
+  `id =` line sits 26 lines into its class, so a fixed grep window reads it as an
+  integer — and never from ScanTTY's own comments: `device_types.go` said the pk
+  "decodes as a float64", which records what an author believed about a decoder
+  and was then cited as a fact about the wire.
   **AND A COERCER WRITTEN BEFORE `UseNumber` CAN HAVE A DEAD ARM.** A numeric pk
   is a `json.Number` now and never a `float64`, so a type switch offering only
   `string` and `float64` falls through to its zero answer. There are three `any`

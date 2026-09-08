@@ -209,18 +209,46 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 //	POST /api/forgekey/authorizations/1000001/revoke/                    -> 200
 //	POST /api/forgekey/authorizations/1.000001e+06/revoke/               -> 404
 //
-// WHICH IDS CAN REACH THAT is derived from the SERVER's models, by reading the
-// whole of each class rather than a window around its name — FirmwareRollout's
-// `id = models.UUIDField(primary_key=True)` sits 26 lines into its class, and a
-// fixed grep window is exactly how it gets read as an integer. Of the models
-// ScanTTY spends as a path segment, only AssetAuthorization and OperationalMode
-// carry Django's implicit BigAutoField; ESP32Device, DeviceLockout,
-// DeviceUsage, EPaperDisplay and FirmwareRollout are all explicit UUIDs, so
-// op_modes.go's `c` and auth_lockout.go's revoke are the two live sites.
-// ScanTTY's OWN comments are not evidence about any of this: device_types.go
-// says the pk "decodes as a float64", which records what an author believed and
-// was read as a fact about the wire — the same mistake this whole branch is
-// about.
+// WHAT BITES IS A CONJUNCTION, and stating it as a list of models is what has
+// made every version of this roster wrong. It takes an INTEGER pk AND a
+// fmt.Sprint over an `any` to lose digits. Either half alone is harmless:
+//
+//	integer pk, no `any`   DeviceType is a BigAutoField and IS spent as a path
+//	                       segment (device_types.go's get/update/delete), and it
+//	                       was never affected — it goes through IntID(), which
+//	                       returns an int, and the paths format with %d. An int
+//	                       through %d is its digits at any magnitude.
+//	`any`, no integer pk   ESP32Device, DeviceLockout, DeviceUsage, EPaperDisplay
+//	                       and FirmwareRollout all declare
+//	                       `id = models.UUIDField(primary_key=True)`, so the id is
+//	                       a STRING on the wire and fmt.Sprint never had anything
+//	                       to mangle.
+//
+// Both halves together is op_modes.go's `c` (OperationalMode) and
+// auth_lockout.go's revoke (AssetAuthorization), and those are the two the live
+// measurements above were taken against.
+//
+// THE MODEL SIDE, derived from backend/forgekey/models.py by reading each class
+// WHOLE: the `models.Model` subclasses taking Django's implicit BigAutoField are
+// AssetAuthorization, AssetDevice, DeviceType, OperationalMode and
+// RoomOperationalMode. Everything else is an explicit UUIDField.
+//
+// THIS ROSTER HAS BEEN GOT WRONG THREE TIMES IN ONE BRANCH, ALWAYS BY MATCHING
+// ONE SPELLING OF THE THING BEING LOOKED FOR — the lesson AGENTS.md already
+// records about retired key chords having two spellings, arrived at again here:
+//
+//   - grepping `fmt.Sprintf("%v")` missed the `fmt.Sprint(` form;
+//   - grepping `fmt.Sprint(` then missed `IntID()`, so DeviceType was left out
+//     of the roster entirely and a reader would have concluded it was a UUID;
+//   - grepping `^class \w+` for the pk scan swept in `IndicatorStatus` (a plain
+//     class) and `LockoutLevel` (a models.TextChoices enum) as though they were
+//     tables with primary keys. Neither has a pk at all.
+//
+// So derive this by asking what a value IS and how it is SPENT, not by grepping
+// for the spelling you happen to have in mind. And ScanTTY's OWN comments are
+// not evidence about any of it: device_types.go said the pk "decodes as a
+// float64", which records what an author believed and was then cited as a fact
+// about the wire — the mistake this whole branch is about.
 //
 // The option is set at the DECODER rather than at each fmt call because the id
 // sites are not a list anyone maintains, and because a UUID is a string either

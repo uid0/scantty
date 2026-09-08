@@ -216,8 +216,17 @@ func (f *poAddFake) handler() http.HandlerFunc {
 				// test here passed while a real reply could not be decoded at
 				// all and adding a line by SKU was impossible.
 				// internal/omsapi/testdata/po_item_lookup.json is a recorded
-				// reply and is the authority for this payload.
-				"purchase_order": map[string]any{"id": 2, "po_number": "PO-2026-0042",
+				// reply and is the authority for this payload's SHAPE. Its id is
+				// 2 because the lab order it was recorded against was PO-LAB-0001;
+				// this fake serves order 1, and copying the recording's id across
+				// left the fake answering a lookup scoped to order 1 with order
+				// 2's pk under order 1's po_number — one order with two ids, which
+				// is not a reply OMS could produce. Nothing cross-checked it, so
+				// nothing failed: a fixture wrong in this direction is exactly as
+				// invisible as the `"id": "po-1"` one was, and this whole branch
+				// exists because a fixture the server could never send passed.
+				// The id below must stay f.order()'s.
+				"purchase_order": map[string]any{"id": 1, "po_number": "PO-2026-0042",
 					"status": status, "can_add_items": status == "draft"},
 				"best_match_kind":       "vendor_sku",
 				"resolves":              bestTotal == 1,

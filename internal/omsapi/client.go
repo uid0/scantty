@@ -460,18 +460,37 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 // seven-digit reorder pk approved "1e+06", exactly the 404 this comment already
 // described for item-lookup.
 //
-// WHAT THAT MAKES TRUE, said at the scope it holds at rather than as a universal
-// a reader would falsify with one grep: every decoder of a RESPONSE PAYLOAD
-// comes from here, so a new json.Unmarshaler on a payload type must call it too
-// rather than reaching for json.Unmarshal, which cannot be configured at all.
-// The remaining json.Unmarshal sites in this package are NOT payloads and are
-// safe for a reason worth stating: DecodeJWTClaims above, parseError's envelope
-// (errors.go), AsLineEntryError (po_line_entry.go), AsReceivingRefusal
-// (po_receiving.go) and StorageSlotErrorDetail (storage_slots.go) each decode
-// into a FULLY TYPED struct with no `any` anywhere in it — POLineEntryError's
-// Candidates are POLineCandidate, which has none either — so there is no field
-// for a number to land in as a float64 and nothing they decode is ever spent as
-// a path segment. Give one of them an `any` and it joins the rule.
+// WHAT THAT MAKES TRUE is a claim about UNTYPED values, not about decoders, and
+// the difference is what two earlier wordings here got wrong. UseNumber changes
+// exactly one thing: the Go type a JSON NUMBER takes when it lands somewhere
+// with no declared type — an `any`, or a map[string]any value. So the rule is
+//
+//	NOTHING THAT CAN PRODUCE AN UNTYPED VALUE MAY BE DECODED BY A DECODER THAT
+//	IS NOT jsonDecoder.
+//
+// A new json.Unmarshaler on a payload type that yields an `any` or a
+// map[string]any must therefore call jsonDecoder rather than reach for
+// json.Unmarshal, which cannot be configured at all. MaybeList is exactly that
+// case and is why this function exists.
+//
+// TWO OTHER json.Unmarshalers ON PAYLOAD TYPES DO NOT CALL IT, and they are not
+// holes — a reader grepping UnmarshalJSON to check this sentence will find them,
+// so they are named here rather than left to look like counterexamples.
+// DecimalString (decimal.go) and DateOnly (dateonly.go) each parse a SCALAR
+// straight into a fully typed Go value — a string and a time.Time — deciding
+// their own representation from the raw bytes. There is no untyped landing spot
+// in either, so UseNumber has nothing to change about them; DecimalString in
+// particular keeps the server's literal digits verbatim precisely because it
+// never goes through a float.
+//
+// The plain json.Unmarshal sites are safe for the same reason, one level up:
+// DecodeJWTClaims above, parseError's envelope (errors.go), AsLineEntryError
+// (po_line_entry.go), AsReceivingRefusal (po_receiving.go) and
+// StorageSlotErrorDetail (storage_slots.go) each decode into a FULLY TYPED
+// struct with no `any` anywhere in it — POLineEntryError's Candidates are
+// POLineCandidate, which has none either — so there is no field for a number to
+// land in as a float64 and nothing they decode is ever spent as a path segment.
+// Give any one of them an `any` and it joins the rule.
 func jsonDecoder(r io.Reader) *json.Decoder {
 	dec := json.NewDecoder(r)
 	dec.UseNumber()
