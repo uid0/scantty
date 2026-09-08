@@ -1143,11 +1143,12 @@ func (s *ReportTableScreen) View() string {
 		// the mark row is itself bounded, because the row saying something was
 		// cut may not be the row that runs off the pane.
 		detail := "Error: " + st.err
-		trimmed := cellPrefix(detail, reportErrRows*cells)
-		bounded := trimmed != detail
-		folded := pickerWrap(trimmed, cells)
 		// The ceiling is reportErrRows and the PANE can lower it (frameRows),
-		// never below the floor that keeps the first line and its mark.
+		// never below the floor that keeps the first line and its mark. The
+		// fold-cut-and-mark itself is failDetailLines (pane_text.go), shared
+		// with po_create.go and po_add_line.go — this block's own comment
+		// already said it was po_create's "copied rather than reinvented", and
+		// the third copy had by then lost the mark.
 		room := reportErrRows
 		if r := s.frameRows(); r < room {
 			room = r
@@ -1155,21 +1156,9 @@ func (s *ReportTableScreen) View() string {
 		if room < reportErrMinRows {
 			room = reportErrMinRows
 		}
-		keep, mark := folded, ""
-		if bounded || len(folded) > room {
-			if len(keep) > room-1 {
-				keep = keep[:room-1]
-			}
-			mark = "… more of the error than this pane can hold"
-			if !bounded {
-				mark = fmt.Sprintf("… %d more line(s) of the error", len(folded)-len(keep))
-			}
-		}
-		b.WriteString(StyleStatusError.Render(keep[0]) + "\n")
-		writeMuted(keep[1:])
-		if mark != "" {
-			writeMuted([]string{cellPrefix(mark, cells)})
-		}
+		lines := failDetailLines(detail, cells, room)
+		b.WriteString(StyleStatusError.Render(lines[0]) + "\n")
+		writeMuted(lines[1:])
 		writeFooter(0)
 		return strings.TrimRight(b.String(), "\n")
 	}

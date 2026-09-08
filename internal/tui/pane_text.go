@@ -24,6 +24,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -455,4 +456,62 @@ func poFitRow(room int, name, facts string, trailers ...string) string {
 		space = need
 	}
 	return pickerClip(name, space) + suffix
+}
+
+// failDetailLines folds an OMS failure body to at most rows lines and MARKS the
+// cut whenever one was made. The mark is the last line of what it returns, so
+// the block never grows: a cut spends one of its OWN rows saying so.
+//
+// WHAT A ROW GIVES UP IT MARKS, and an error body is the worst place in the
+// program to break that — an operator reading folded lines of a gateway page
+// with nothing saying a tail went cannot tell they are missing the sentence
+// that says what actually failed. This existed three times: po_create.go's
+// failLines, report_table.go's failed-load frame (whose comment says in as many
+// words that it is po_create's "copied rather than reinvented"), and
+// po_add_line.go's failLines — which was the copy that had LOST the mark and
+// silently broke at the row limit. On an 80-column pane that screen drew
+//
+//	oms: http 0: decode response: json: cannot unmarshal number into Go
+//	  struct field POLineLookupOrder.purchase_order.id of type
+//
+// — the reported failure, cut one word before the word that identifies it, with
+// nothing saying so. A fourth copy would have been the next one to drift, so
+// the three are this.
+//
+// The TWO wordings stay, because the two cuts know different things: the FOLD
+// knows how many lines it left and names the number, while the cellPrefix bound
+// has already thrown the rest away and can only say more exists than the pane
+// can hold — a count there would be a count of the PREFIX, a figure about
+// nothing. The detail is bounded BEFORE the folder sees it because
+// omsapi.parseError puts the ENTIRE raw payload into APIError.Message whenever
+// the envelope carries no code, and at most rows lines of a 20 KB gateway page
+// can ever be drawn. The mark row is itself bounded, because the row saying
+// something was cut may not be the row that runs off the pane.
+//
+// Returns unstyled lines; callers indent and style them, which is the only part
+// the three sites did differently.
+func failDetailLines(detail string, width, rows int) []string {
+	if detail == "" || rows < 1 || width < 1 {
+		return nil
+	}
+	trimmed := cellPrefix(detail, rows*width)
+	bounded := trimmed != detail
+	folded := pickerWrap(trimmed, width)
+
+	keep, mark := folded, ""
+	if bounded || len(folded) > rows {
+		if len(keep) > rows-1 {
+			keep = keep[:rows-1]
+		}
+		mark = "… more of the error than this pane can hold"
+		if !bounded {
+			mark = fmt.Sprintf("… %d more line(s) of the error", len(folded)-len(keep))
+		}
+	}
+	out := make([]string, 0, rows)
+	out = append(out, keep...)
+	if mark != "" {
+		out = append(out, cellPrefix(mark, width))
+	}
+	return out
 }

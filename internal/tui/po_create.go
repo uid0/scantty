@@ -3263,29 +3263,16 @@ func (s *PurchaseOrderCreateScreen) failLines() []string {
 	if detail == "" {
 		return lead
 	}
-	trimmed := cellPrefix(detail, poFailDetailRows*width)
-	bounded := trimmed != detail
-	folded := pickerWrap(trimmed, width)
-
-	keep, mark := folded, ""
-	if bounded || len(folded) > poFailDetailRows {
-		if len(keep) > poFailDetailRows-1 {
-			keep = keep[:poFailDetailRows-1]
-		}
-		mark = "… more of the error than this pane can hold"
-		if !bounded {
-			mark = fmt.Sprintf("… %d more line(s) of the error", len(folded)-len(keep))
-		}
-	}
+	// failDetailLines (pane_text.go) is the shared bound: it folds, cuts and
+	// MARKS, and the mark is the last line it returns, so the block never grows.
+	// This wording and the spend-a-row-rather-than-add-one trade came from here
+	// originally; they moved with the function when po_add_line.go turned out to
+	// have a copy that had lost the mark.
+	lines := failDetailLines(detail, width, poFailDetailRows)
 	out := make([]string, 0, poFailDetailRows+len(lead))
 	out = append(out, lead...)
-	for _, line := range keep {
+	for _, line := range lines {
 		out = append(out, jdeIndent+StyleMuted.Render(line))
-	}
-	if mark != "" {
-		// Bounded like every other line here: the row that says something was
-		// cut may not be the row that runs off the pane.
-		out = append(out, jdeIndent+StyleMuted.Render(cellPrefix(mark, width)))
 	}
 	return out
 }
