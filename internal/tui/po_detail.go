@@ -1459,6 +1459,22 @@ func poDetailGridRow(fit poLineGridFit, num, item, qty, cost, ship, flag string)
 // Grid arithmetic: six cells joined by a two-column gutter, behind jdeIndent.
 const poGridGutter = 2
 
+// The item column's floor and its ceiling, shared by BOTH forms of this grid —
+// the block form below and the one-line form (poBuildOneLineGrid). A narrow
+// pane shortens the description rather than collapsing the column; a wide one
+// does not strand the figures out at the far right of an otherwise empty row.
+//
+// They are package constants rather than two locals because the one-line form
+// has to shorten a description on exactly the same terms the block form does:
+// a name that reads one way on a 100-column pane and another way on a 140-column
+// one would be the two forms disagreeing about the same line, which is the thing
+// this grid is built not to do. po_edit.go keeps its own pair on purpose — the
+// entry screens are a separate slice, the same reason poGridFlagW is left alone.
+const (
+	poGridItemMinW = 12
+	poGridItemMaxW = 44
+)
+
 // coreW is number + quantity + cost and the gutters between them, at the widths
 // this order's own values need.
 func (fit poLineGridFit) coreW() int {
@@ -1498,16 +1514,15 @@ var poFlagBudget = func() int {
 // quantity rather than a shortened one, so the column grows and the item column
 // gives up the room.
 func poFitLineGrid(bodyWidth int, items []omsapi.PurchaseOrderItem) poLineGridFit {
-	const minItemW, maxItemW = 12, 44
 	if bodyWidth <= 0 {
 		bodyWidth = 76
 	}
 	clamp := func(w int) int {
 		switch {
-		case w < minItemW:
-			return minItemW
-		case w > maxItemW:
-			return maxItemW
+		case w < poGridItemMinW:
+			return poGridItemMinW
+		case w > poGridItemMaxW:
+			return poGridItemMaxW
 		}
 		return w
 	}
@@ -1534,17 +1549,399 @@ func poFitLineGrid(bodyWidth int, items []omsapi.PurchaseOrderItem) poLineGridFi
 	}
 
 	full := fit.coreW() + poGridGutter + fit.shipW + poGridGutter + fit.flagW
-	if w := bodyWidth - full; w >= minItemW {
+	if w := bodyWidth - full; w >= poGridItemMinW {
 		fit.itemW, fit.ship, fit.flag = clamp(w), true, true
 		return fit
 	}
 	withShip := fit.coreW() + poGridGutter + fit.shipW
-	if w := bodyWidth - withShip; w >= minItemW {
+	if w := bodyWidth - withShip; w >= poGridItemMinW {
 		fit.itemW, fit.ship = clamp(w), true
 		return fit
 	}
 	fit.itemW = clamp(bodyWidth - fit.coreW())
 	return fit
+}
+
+// ---------------------------------------------------------------------------
+// The one-line form of the line grid
+// ---------------------------------------------------------------------------
+
+// A purchase order line normally reads as a BLOCK: the grid row, then the
+// readings the grid has no column for, then the free-text rows that deserve one
+// of their own (poLineBlock). At 80 columns — the width this interface is
+// modelled on — that is the only way it fits, and it is not changing.
+//
+// Give the pane enough cells and the whole block goes on ONE row, with three
+// facts the block form never showed at all: the SUPPLIER's part number, the
+// part's full internal UUID, and what the supplier is charging for the line.
+// That is what poBuildOneLineGrid decides and builds.
+//
+// THE THRESHOLD IS THE CONTENT'S, NOT A NUMBER. Nothing here compares the pane
+// against a width somebody chose; the rows are ASSEMBLED, measured in display
+// cells, and the widest one is the threshold. So a spare order of short-named
+// parts collapses on a pane a busier one will not, and a field added to the row
+// later moves the threshold by exactly what it costs — where a constant would
+// have gone on claiming a fit the row had stopped having.
+//
+// IT ANSWERS FOR THE WHOLE ORDER, NOT FOR THE ROW BEING DRAWN. The maximum over
+// every line is what decides, so the lines collapse together or not at all —
+// which makes the threshold single BY CONSTRUCTION rather than by every line
+// happening to earn the same one. Asked per line, an order would draw line 1 as
+// a row and line 2 as a five-row block, in a COLUMNAR grid whose columns are
+// budgeted from the set: the two would not even line up. (voidCaveatsFit takes
+// the same maximum, for the same reason.)
+//
+// AND IT REFUSES RATHER THAN MUTILATES. There is no shortened form: a row that
+// will not fit is not drawn narrower, it is not drawn at all, and the block form
+// stands. That is what lets this be a pure ADDITION — at every width where the
+// one-line form is withheld, including 80, the pane is byte for byte what it was
+// before this existed, and at every width where it is drawn nothing the block
+// form said has been dropped. The two facts a wide pane gains are the SKU and
+// the UUID; the third, the supplier's line cost, is the Cost column relabelled
+// to what it is now carrying, with the money actually spent moved to a reading
+// beside it so that figure survives too.
+
+// The one-line grid's column headings, in order. They are measured into the
+// column budget alongside the values, so a heading is never the thing an
+// ellipsis eats — a column budgeted at what its VALUES need would draw
+// "Supplier cos…" over a perfectly ordinary price.
+const (
+	poOneLineNumHead  = "#"
+	poOneLineItemHead = "Item"
+	poOneLineQtyHead  = "Qty"
+	poOneLineSKUHead  = "Supplier SKU"
+	poOneLineUUIDHead = "Part UUID"
+	poOneLineCostHead = "Supplier cost"
+	poOneLineShipHead = "Ship date"
+)
+
+// poOneLineFit is the one-line grid's column budget. Every width in it is
+// MEASURED off the order's own values and headings; none is a constant, which
+// is why there is no minimum and no ceiling anywhere in it. A column too wide
+// for the pane does not shorten a value — it makes the whole row not fit, and
+// the grid falls back to the block form, where that value has always had room.
+//
+// The UUID column is the reason that stance is not merely tidy. A part's id is
+// 36 cells and the captain's instruction is that it is never abbreviated, so a
+// ceiling on it would be a promise to cut the one value that must not be cut.
+// The supplier SKU is the same shape from the other end: OMS allows 100
+// characters, and an order carrying one of those simply does not collapse.
+type poOneLineFit struct {
+	numW, itemW, qtyW, skuW, uuidW, costW, shipW, flagW int
+}
+
+// row lays one row out in those columns. Numbers right-align under their
+// headings the way poLineGridRow does, and the flag rides at the end unpadded
+// so a row without one ends at its ship date.
+//
+// Every cell still goes through fitCell even though the budget was measured
+// from these very values: a column that has been under-derived then shows an
+// ELLIPSIS rather than shunting every column to its right out of alignment, and
+// an ellipsis is a defect a reader can see.
+func (f poOneLineFit) row(num, item, qty, sku, uuid, cost, ship, flag string) string {
+	cells := []string{
+		padCell(fitCell(num, f.numW), f.numW, alignRight),
+		padCell(fitCell(item, f.itemW), f.itemW, alignLeft),
+		padCell(fitCell(qty, f.qtyW), f.qtyW, alignRight),
+		padCell(fitCell(sku, f.skuW), f.skuW, alignLeft),
+		padCell(fitCell(uuid, f.uuidW), f.uuidW, alignLeft),
+		padCell(fitCell(cost, f.costW), f.costW, alignRight),
+		padCell(fitCell(ship, f.shipW), f.shipW, alignLeft),
+		flag,
+	}
+	return jdeIndent + strings.TrimRight(strings.Join(cells, "  "), " ")
+}
+
+// poOneLineGrid is a built one-line grid: the heading row and one row per line,
+// styled and ready to add. It is returned already built rather than as a
+// decision to build later, because the DECISION is the measurement of the built
+// rows — handing back a "yes" and assembling them again afterwards would be two
+// implementations of one bound, which is how a bound and its predictor drift.
+type poOneLineGrid struct {
+	header string
+	rows   []string
+}
+
+// poOneLineNone is what a column draws for a line that has nothing for it to
+// show, and poOneLineUnknown for a line that HAS the thing the column is about
+// where the server did not say what it is.
+//
+// THEY ARE DIFFERENT ANSWERS AND THE COLUMN MAY NOT MERGE THEM. "This line
+// names no part" is a fact about the order — a freeform line for shop rags has
+// no vendor part number and never will — while "we were not told which part
+// this line names" is a fact about the reply, and the operator does different
+// things about them: the first is the order as written, the second is a lookup
+// to go and do. An em dash covering both would report a payload that arrived
+// without the block as an order somebody typed by hand.
+//
+// The state is reachable rather than theoretical: item_supplier_details is a
+// nested block on PurchaseOrderItemSerializer, so an OMS predating it answers
+// every line with the relationship id and no block, and a column reading only
+// the block would then draw "no SKU" down a whole order of catalogue lines.
+const (
+	poOneLineNone    = "—"
+	poOneLineUnknown = "(not sent)"
+)
+
+// poLineNamesAPart reports whether this line points at something that HAS an
+// internal id — a catalogue line's item-supplier relationship or an asset
+// line's asset. A freeform line points at neither, which is why its empty
+// columns are an absence and not a silence.
+func poLineNamesAPart(li omsapi.PurchaseOrderItem) bool {
+	return li.ItemSupplier != nil || li.Asset != nil
+}
+
+// poLineSupplierSKUCell is the one-line grid's Supplier SKU column, told apart
+// three ways: the SKU, "no supplier part number on this line" (which covers
+// both a line with no relationship at all and a relationship whose SKU is
+// blank — OMS's own export_order treats those the same, reporting each in
+// missing_sku), and "the reply did not carry the block".
+func poLineSupplierSKUCell(li omsapi.PurchaseOrderItem) string {
+	if li.ItemSupplierDetails != nil {
+		if sku := poLineSupplierSKU(li); sku != "" {
+			return sku
+		}
+		return poOneLineNone
+	}
+	if li.ItemSupplier != nil {
+		return poOneLineUnknown
+	}
+	return poOneLineNone
+}
+
+// poLinePartUUIDCell is the Part UUID column, told apart the same three ways.
+func poLinePartUUIDCell(li omsapi.PurchaseOrderItem) string {
+	if id := poLinePartUUID(li); id != "" {
+		return id
+	}
+	if poLineNamesAPart(li) {
+		return poOneLineUnknown
+	}
+	return poOneLineNone
+}
+
+// poLineSupplierSKU is the part number the SUPPLIER knows this line by: the
+// string a buyer quotes when placing the order.
+//
+// It is NOT poLinePartNumber, which is the makerspace's own internal SKU, and
+// it is not item_details.supplier_sku either — that key is a flat accessor for
+// the item's PRIMARY supplier, which is the wrong vendor's part number on any
+// order placed with anyone else. OpenMakerSuite settles which is which on its
+// own order-pad export: every row of it is built from
+// po_item.item_supplier.supplier_sku (backend/reorder_queue/views.py,
+// export_order), and a blank one is reported in missing_sku rather than
+// dropped.
+//
+// "" for an asset line and a freeform one, neither of which names an
+// ItemSupplier at all.
+func poLineSupplierSKU(li omsapi.PurchaseOrderItem) string {
+	if li.ItemSupplierDetails == nil {
+		return ""
+	}
+	return strings.TrimSpace(li.ItemSupplierDetails.SupplierSKU)
+}
+
+// poLinePartUUID is the internal id of the thing this line buys — an
+// InventoryItem's, else an Asset's. Both are UUIDField primary keys in OMS
+// (inventory/models/core.py, inventory/models/asset.py), so both arrive as
+// strings and neither can be mangled by a number's decoding.
+//
+// It falls through item then asset for the reason poLinePartNumber does: a line
+// that has both is a catalogue line and the item is what it was placed against.
+// "" for a freeform line, which names neither.
+func poLinePartUUID(li omsapi.PurchaseOrderItem) string {
+	for _, details := range []map[string]any{li.ItemDetails, li.AssetDetails} {
+		if id, ok := details["id"].(string); ok {
+			if id = strings.TrimSpace(id); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// poLineSupplierCost is what the SUPPLIER is charging for this line: OMS's
+// estimated_cost, which is quantity_ORDERED × unit_cost_ordered
+// (reorder_queue/models.py). It is the line's own total and not a per-unit or
+// per-case figure, and it is the price the order was PLACED at rather than the
+// money that has since been spent — actual_cost is quantity_RECEIVED ×
+// unit_cost_actual, which is null on every line of an order nobody has received
+// against yet, and that is most of the lines an operator is ever looking at.
+//
+// "—" and not "$0.00" when the field is absent, exactly as poLineCostCell has
+// it: unknown is not free. A served 0.00 IS a price and prints as one — OMS
+// returns a real zero for a line with nothing on the supplier relationship — so
+// this asks Empty(), never whether the value is zero.
+func poLineSupplierCost(li omsapi.PurchaseOrderItem) string {
+	if li.EstimatedCost.Empty() {
+		return poOneLineNone
+	}
+	return "$" + string(li.EstimatedCost)
+}
+
+// poOneLineTokens is everything about a line that the one-line grid has no
+// COLUMN for: the block form's readings and its free-text rows, as one flat
+// list of tokens to ride the tail of the row.
+//
+// It is poLineBlock's own content, in poLineBlock's own order, and that is the
+// point — the one-line form owes the operator every fact the block form draws,
+// so this is derived from that function rather than chosen afresh. What it adds
+// is the money actually SPENT: the Cost column now carries the supplier's price
+// for the line, so actual_cost would otherwise be the one thing a collapse lost.
+func poOneLineTokens(li omsapi.PurchaseOrderItem, poSupplier string, fit poLineGridFit) []jdeToken {
+	out := poLineTokens(li, poSupplier, fit)
+	if !li.ActualCost.Empty() {
+		out = append(out, jdeToken{text: "actual $" + string(li.ActualCost), style: StyleMuted})
+	}
+	for _, row := range []struct {
+		text  string
+		style lipgloss.Style
+	}{
+		{poLineOrderedForToken(li), StyleMuted},
+		{poLineInventoryNote(li), StyleMuted},
+		{poLineAssetNote(li), StyleMuted},
+		{poLineVoidReasonToken(li), StyleStatusWarn},
+		{li.Notes, StyleMuted},
+	} {
+		if row.text != "" {
+			out = append(out, jdeToken{text: row.text, style: row.style})
+		}
+	}
+	return out
+}
+
+// poLineOrderedForToken and poLineVoidReasonToken are the two block-form rows
+// whose text is a LEAD plus a value, spelled once so the row form and the block
+// form cannot word them differently.
+func poLineOrderedForToken(li omsapi.PurchaseOrderItem) string {
+	if v := poLineOrderedFor(li); v != "" {
+		return "ordered for: " + v
+	}
+	return ""
+}
+
+func poLineVoidReasonToken(li omsapi.PurchaseOrderItem) string {
+	if li.IsVoided && li.VoidReason != "" {
+		return "void reason: " + li.VoidReason
+	}
+	return ""
+}
+
+// poBuildOneLineGrid builds the one-line grid for an order and reports whether
+// this pane is wide enough to draw it.
+//
+// false means the block form stands, and it is the answer in four cases, each
+// of which is a fact about the CONTENT rather than a refusal to try:
+//
+//   - the pane is unsized (bodyWidth <= 0), so there is no width to be
+//     sufficient. Guessing one and collapsing on it would settle a layout
+//     against a terminal nobody has measured;
+//   - the order carries no lines, so there is nothing to collapse;
+//   - a KIT line is on it. A kit's credit block is prose naming several OTHER
+//     items and how many of each one kit puts on the shelf — poKitCreditBlock
+//     wraps it precisely because an ellipsis eats the trailing components — so
+//     there is no row for it to ride and nowhere for it to go. One kit line and
+//     the whole order keeps the block form, because the grid answers for the
+//     order;
+//   - the widest assembled row is wider than the pane.
+//
+// The rows are built ONCE. Their widths are measured on the PLAIN text, in
+// display cells, as they are assembled — a single forward pass with no value
+// measured twice and nothing re-fitted afterwards.
+func poBuildOneLineGrid(bodyWidth int, items []omsapi.PurchaseOrderItem, supplier string) (poOneLineGrid, bool) {
+	if bodyWidth <= 0 || len(items) == 0 {
+		return poOneLineGrid{}, false
+	}
+	for _, li := range items {
+		if li.IsKitLine {
+			return poOneLineGrid{}, false
+		}
+	}
+
+	// The block form's fit, with both optional columns present: the one-line
+	// row has room for the flag and the ship date by construction, and
+	// poLineTokens reads those two flags to decide which readings the columns
+	// have already made redundant.
+	tokenFit := poLineGridFit{ship: true, flag: true}
+
+	fit := poOneLineFit{flagW: poFlagBudget}
+	widen := func(at *int, s string) {
+		if w := lipgloss.Width(s); w > *at {
+			*at = w
+		}
+	}
+	widen(&fit.numW, poOneLineNumHead)
+	widen(&fit.itemW, poOneLineItemHead)
+	widen(&fit.qtyW, poOneLineQtyHead)
+	widen(&fit.skuW, poOneLineSKUHead)
+	widen(&fit.uuidW, poOneLineUUIDHead)
+	widen(&fit.costW, poOneLineCostHead)
+	widen(&fit.shipW, poOneLineShipHead)
+
+	type builtRow struct {
+		num, item, qty, sku, uuid, cost, ship, flag string
+		tokens                                      []jdeToken
+	}
+	built := make([]builtRow, 0, len(items))
+	for i, li := range items {
+		item := li.DisplayLabel()
+		r := builtRow{
+			num:  strconv.Itoa(i + 1),
+			item: item,
+			qty:  strconv.Itoa(li.QuantityOrdered),
+			sku:  poLineSupplierSKUCell(li),
+			uuid: poLinePartUUIDCell(li),
+			cost: poLineSupplierCost(li),
+			ship: firstNonEmpty(li.ExpectedShipmentDate, "—"),
+			flag: poLineFlag(li),
+		}
+		r.tokens = poOneLineTokens(li, supplier, tokenFit)
+		built = append(built, r)
+
+		widen(&fit.numW, r.num)
+		widen(&fit.qtyW, r.qty)
+		widen(&fit.skuW, r.sku)
+		widen(&fit.uuidW, r.uuid)
+		widen(&fit.costW, r.cost)
+		widen(&fit.shipW, r.ship)
+		// The item column is the ONE that is clamped, and it is clamped to the
+		// bounds the block form already uses — so a description reads the same
+		// on both forms and neither can shorten one the other keeps whole.
+		if w := lipgloss.Width(item); w > fit.itemW {
+			if w > poGridItemMaxW {
+				w = poGridItemMaxW
+			}
+			fit.itemW = w
+		}
+	}
+	if fit.itemW < poGridItemMinW {
+		fit.itemW = poGridItemMinW
+	}
+
+	grid := poOneLineGrid{
+		header: fit.row(poOneLineNumHead, poOneLineItemHead, poOneLineQtyHead,
+			poOneLineSKUHead, poOneLineUUIDHead, poOneLineCostHead, poOneLineShipHead, ""),
+	}
+	if lipgloss.Width(grid.header) > bodyWidth {
+		return poOneLineGrid{}, false
+	}
+	sepW := lipgloss.Width(jdeTokenSep)
+	for _, r := range built {
+		row := fit.row(r.num, r.item, r.qty, r.sku, r.uuid, r.cost, r.ship, r.flag)
+		width := lipgloss.Width(row)
+		for _, tok := range r.tokens {
+			width += sepW + lipgloss.Width(tok.text)
+			if width > bodyWidth {
+				return poOneLineGrid{}, false
+			}
+			row += StyleMuted.Render(jdeTokenSep) + tok.render()
+		}
+		if width > bodyWidth {
+			return poOneLineGrid{}, false
+		}
+		grid.rows = append(grid.rows, row)
+	}
+	return grid, true
 }
 
 // addLineItems draws the lines as the JD Edwards detail grid po_edit.go picks
@@ -1568,6 +1965,17 @@ func (s *PurchaseOrderDetailScreen) addLineItems(l *jdeLines, supplier string) {
 		return
 	}
 	l.Add(StyleJDEHeading.Render(fmt.Sprintf("Line items (%d)", len(po.Items))))
+	// Wide enough and the whole of every block goes on its own row, carrying
+	// three facts no width of the block form shows. Narrower — 80 columns
+	// included — this is not reached and nothing below it changed.
+	if grid, ok := poBuildOneLineGrid(s.bodyWidth(), po.Items, supplier); ok {
+		l.Add(StyleMuted.Render(grid.header))
+		for _, row := range grid.rows {
+			l.Add(row)
+		}
+		l.Add("")
+		return
+	}
 	fit := poFitLineGrid(s.bodyWidth(), po.Items)
 	ship := ""
 	if fit.ship {
@@ -1619,18 +2027,18 @@ func poLineBlock(lineNum int, li omsapi.PurchaseOrderItem, poSupplier string, fi
 	// (op-bu80 / op-shb9). A line's own association overrides nothing at the
 	// order level; a mixed order is exactly why lines carry their own. Drawn
 	// only when the line has one, so a plain restock line stays a plain row.
-	for _, row := range []struct{ label, value string }{
-		{"ordered for: ", poLineOrderedFor(li)},
-		{"", poLineInventoryNote(li)},
-		{"", poLineAssetNote(li)},
+	for _, text := range []string{
+		poLineOrderedForToken(li),
+		poLineInventoryNote(li),
+		poLineAssetNote(li),
 	} {
-		if row.value == "" {
+		if text == "" {
 			continue
 		}
-		out = append(out, poLineContinuation(StyleMuted, row.label+row.value, bodyWidth))
+		out = append(out, poLineContinuation(StyleMuted, text, bodyWidth))
 	}
-	if li.IsVoided && li.VoidReason != "" {
-		out = append(out, poLineContinuation(StyleStatusWarn, "void reason: "+li.VoidReason, bodyWidth))
+	if reason := poLineVoidReasonToken(li); reason != "" {
+		out = append(out, poLineContinuation(StyleStatusWarn, reason, bodyWidth))
 	}
 	if li.Notes != "" {
 		out = append(out, poLineContinuation(StyleMuted, li.Notes, bodyWidth))
@@ -1692,10 +2100,18 @@ func poLineCostCell(li omsapi.PurchaseOrderItem) string {
 	return "—"
 }
 
-// poLinePartNumber is the identifier a buyer quotes at the supplier: the
+// poLinePartNumber is the makerspace's OWN identifier for what a line buys: the
 // inventory SKU when the line has one, else the asset tag, else nothing. The
 // SKU wins because a line that has both is a catalog line and the SKU is what
 // the order was placed against.
+//
+// IT IS NOT WHAT A BUYER QUOTES AT THE SUPPLIER, which is what this comment
+// used to claim. item_details.sku is generated by OMS when nobody supplies one
+// and means nothing to a vendor; the string a vendor knows the part by is
+// ItemSupplier.supplier_sku, which is what OMS builds every row of its own
+// order-pad export from (poLineSupplierSKU carries the reference). The two are
+// different values and the block form draws only this one, under the label
+// PART — a reading of the shop's own catalogue, not of the vendor's.
 func poLinePartNumber(li omsapi.PurchaseOrderItem) string {
 	if sku, ok := li.ItemDetails["sku"].(string); ok && sku != "" {
 		return sku
