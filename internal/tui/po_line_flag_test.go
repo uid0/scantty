@@ -1,11 +1,19 @@
-// A voided purchase-order line is never drawn without saying so.
+// A purchase-order line is never drawn without saying what state it is in:
+// voided wherever it is voided, and — on the grid that flags a receipt —
+// received wherever it is fully received.
 //
-// The order detail sheet used to draw one that way. Where the line grid could
+// The order detail sheet used to draw a voided one that way. Where the line grid could
 // not keep its flag column, `[voided]` moved to a reading line UNDER the row,
 // and a scrolled pane can end on the row itself: the row then read
 // `2  Gadget  2  $24.00` over `↓ N more below`, which is a live line on the
 // screen an operator decides what is still on order from. No check asked, so
-// every drawable width from 45 to 89 columns shipped it.
+// every drawable width from 45 to 89 columns shipped it. A received line's
+// `✓ received` rode the same reading line, so the same pane read a received
+// line as an outstanding one; the grid's give-order now keeps the flag's column
+// before the ship date's and leads the item cell with either flag below that
+// (poFitLineGrid), and the receipt is swept on both of the detail sheet's grid
+// forms beside the void. It is the only surface that flags a receipt: the edit
+// grid's flag cell is void-only by design (poEditLineFlag), at every width.
 //
 // THE SET IS DERIVED FROM THE QUESTION, NOT FROM THAT GRID: where can a voided
 // line be drawn without saying it is voided? Every wire shape that says a line
@@ -61,6 +69,7 @@ package tui
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,16 +77,19 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
-// poVoidSays reports whether any of these pane lines tells the operator a line
-// is voided. Case-folded, because the surfaces spell the fact `[voided]`,
-// `voided` and `VOIDED` and each of those IS the fact; the fixtures carry no
-// name with "void" in it, so nothing else on the pane can answer for it.
-func poVoidSays(lines []string) bool {
+// poLineSays reports whether any of these pane lines tells the operator the
+// FACT ("void" or "received"). Case-folded, because the surfaces spell a void
+// `[voided]`, `voided` and `VOIDED` and each of those IS the fact; the fixtures
+// carry no name with either word in it, so nothing else on the pane can answer
+// for it.
+func poLineSays(lines []string, fact string) bool {
 	for _, line := range lines {
-		if strings.Contains(strings.ToLower(line), "void") {
+		if strings.Contains(strings.ToLower(line), fact) {
 			return true
 		}
 	}
@@ -88,8 +100,19 @@ func poVoidSays(lines []string) bool {
 // pane lines that belong to it — the lines the operator reads as being about
 // that line, in which the fact has to be.
 type poVoidDrawn struct {
-	what  string
+	what string
+	// fact is what the lines must say: "void", or "received" for a fully
+	// received line on the grid that flags one.
+	fact  string
 	lines []string
+	// edgeCut is true when the row's item cell is a PREFIX of the line's flag
+	// that runs to the pane's right edge: the flag leads the cell and only the
+	// pane cut it. That is the one case accepted in place of the whole word,
+	// and ONLY where the layer's floored width lies about the pane
+	// (screenBodyWidth answers more cells than screenBodyCells gives, below 49
+	// columns), which is where every columnar row overruns. In practice that is
+	// 45 columns alone: the pane is 16 cells and `✓ received` would end at 17.
+	edgeCut bool
 	// last is true when the identity is the last body line above the
 	// `↓ N more below` marker: the window ENDS on it. That is the state the
 	// detail sheet's defect lived in, and the sweep requires reaching it.
@@ -107,14 +130,18 @@ type poVoidSurface struct {
 	at func(Screen) string
 	// step moves to the next position the operator can reach.
 	step func(Screen)
-	// drawn reads every voided line's identity off one clipped pane.
-	drawn func(pane []string) []poVoidDrawn
+	// drawn reads every flagged line's identity off one clipped pane, drawn
+	// at terminal width w.
+	drawn func(pane []string, w int) []poVoidDrawn
 	// needLast requires the sweep to have reached a pane whose window ends on
 	// the voided line's identity, at every width where it was drawn at all.
 	needLast bool
 	// widths narrows the widths this surface is walked at. Nil walks every
 	// drawable width.
 	widths func(t *testing.T) []int
+	// facts is every state this surface's fixture must have drawn at least
+	// once, so a fixture that lost a state fails instead of passing over it.
+	facts []string
 }
 
 // The walk is a large one — every width, every height, every offset — and this
@@ -123,7 +150,7 @@ type poVoidSurface struct {
 // screens and nothing on the render path is shared mutable state; the sweep is
 // clean under -race. The tallies are pooled behind a mutex and judged once
 // every width has reported, which is what the "walk" group waits for.
-func TestPOLines_AVoidedLineSaysSoWhereverItIsDrawn(t *testing.T) {
+func TestPOLines_ALineSaysItsStateWhereverItIsDrawn(t *testing.T) {
 	widths, heights := jdeDrawableWidths(), jdePaneHeights()
 	for _, sf := range poVoidSurfaces() {
 		t.Run(sf.name, func(t *testing.T) {
@@ -133,9 +160,10 @@ func TestPOLines_AVoidedLineSaysSoWhereverItIsDrawn(t *testing.T) {
 				ws = sf.widths(t)
 			}
 			var (
-				mu              sync.Mutex
-				drawn, bare     int
-				lastAt, drawnAt = map[int]int{}, map[int]int{}
+				mu                sync.Mutex
+				drawn, bare, cuts int
+				lastAt, drawnAt   = map[string]int{}, map[string]int{}
+				cutAt             = map[int]bool{}
 			)
 			t.Run("walk", func(t *testing.T) {
 				for _, w := range ws {
@@ -151,22 +179,29 @@ func TestPOLines_AVoidedLineSaysSoWhereverItIsDrawn(t *testing.T) {
 									break
 								}
 								seen[pos] = true
-								for _, d := range sf.drawn(pane) {
+								for _, d := range sf.drawn(pane, w) {
+									key := fmt.Sprintf("%s@%d", d.fact, w)
+									says := poLineSays(d.lines, d.fact)
 									mu.Lock()
 									drawn++
-									drawnAt[w]++
+									drawnAt[key]++
 									if d.last {
-										lastAt[w]++
+										lastAt[key]++
 									}
 									report := false
-									if !poVoidSays(d.lines) {
+									switch {
+									case says:
+									case d.edgeCut:
+										cuts++
+										cutAt[w] = true
+									default:
 										bare++
 										report = bare <= 3
 									}
 									mu.Unlock()
 									if report {
-										t.Errorf("at %dx%d (%s) %s is drawn with nothing saying it is voided:\n%s",
-											w, h, pos, d.what, strings.Join(pane, "\n"))
+										t.Errorf("at %dx%d (%s) %s is drawn with nothing saying %q:\n%s",
+											w, h, pos, d.what, d.fact, strings.Join(pane, "\n"))
 									}
 								}
 								sf.step(s)
@@ -179,17 +214,32 @@ func TestPOLines_AVoidedLineSaysSoWhereverItIsDrawn(t *testing.T) {
 				t.Errorf("…and %d more panes like it", bare-3)
 			}
 			if drawn == 0 {
-				t.Fatalf("no pane drew a voided line at all, so nothing was checked")
+				t.Fatalf("no pane drew a flagged line at all, so nothing was checked")
 			}
 			if sf.needLast {
-				for w, n := range drawnAt {
-					if n > 0 && lastAt[w] == 0 {
-						t.Errorf("at %d columns no pane ended on a voided line, which is the "+
-							"state this sweep exists for", w)
+				for key, n := range drawnAt {
+					if n > 0 && lastAt[key] == 0 {
+						t.Errorf("%s: no pane ended on such a line, which is the state this "+
+							"sweep exists for", key)
 					}
 				}
 			}
-			t.Logf("%d voided identities drawn across %d widths, %d of them bare", drawn, len(drawnAt), bare)
+			for _, fact := range sf.facts {
+				seen := false
+				for key := range drawnAt {
+					seen = seen || strings.HasPrefix(key, fact+"@")
+				}
+				if !seen {
+					t.Errorf("no pane drew a line whose state is %q, so that state was not checked", fact)
+				}
+			}
+			var cutWidths []int
+			for w := range cutAt {
+				cutWidths = append(cutWidths, w)
+			}
+			sort.Ints(cutWidths)
+			t.Logf("%d flagged identities drawn, %d cut by the pane edge alone (at widths %v), %d bare",
+				drawn, cuts, cutWidths, bare)
 		})
 	}
 }
@@ -199,11 +249,14 @@ func TestPOLines_AVoidedLineSaysSoWhereverItIsDrawn(t *testing.T) {
 // indented past the number cell, so they never match.
 var poVoidGridRowRe = regexp.MustCompile(`^( +)(\d+)  \S`)
 
-// poVoidGridDrawn finds the grid rows of voided lines on a pane, each with the
-// continuation lines under it that are on the pane too — the flag counts
-// wherever the operator can read it as belonging to that row.
-func poVoidGridDrawn(items []omsapi.PurchaseOrderItem) func([]string) []poVoidDrawn {
-	return func(pane []string) []poVoidDrawn {
+// poVoidGridDrawn finds the grid rows of flagged lines on a pane — voided, and
+// fully received — each with the continuation lines under it that are on the
+// pane too: the flag counts wherever the operator can read it as belonging to
+// that row.
+func poVoidGridDrawn(items []omsapi.PurchaseOrderItem) func([]string, int) []poVoidDrawn {
+	return func(pane []string, w int) []poVoidDrawn {
+		cells := screenBodyCells(w)
+		lying := cells < screenBodyWidth(w)
 		var out []poVoidDrawn
 		for i, line := range pane {
 			m := poVoidGridRowRe.FindStringSubmatch(line)
@@ -211,10 +264,23 @@ func poVoidGridDrawn(items []omsapi.PurchaseOrderItem) func([]string) []poVoidDr
 				continue
 			}
 			n, _ := strconv.Atoi(m[2])
-			if n < 1 || n > len(items) || !items[n-1].IsVoided {
+			if n < 1 || n > len(items) {
 				continue
 			}
-			d := poVoidDrawn{what: fmt.Sprintf("line %d's grid row", n), lines: []string{line}}
+			li := items[n-1]
+			fact := ""
+			switch {
+			case li.IsVoided:
+				fact = "void"
+			case li.IsFullyReceived:
+				fact = "received"
+			default:
+				continue
+			}
+			d := poVoidDrawn{what: fmt.Sprintf("line %d's grid row", n), fact: fact, lines: []string{line}}
+			if cell := line[len(m[1])+len(m[2])+poGridGutter:]; lying && lipgloss.Width(line) == cells {
+				d.edgeCut = strings.HasPrefix(poLineFlag(li), cell)
+			}
 			j := i + 1
 			for ; j < len(pane); j++ {
 				next := pane[j]
@@ -232,11 +298,11 @@ func poVoidGridDrawn(items []omsapi.PurchaseOrderItem) func([]string) []poVoidDr
 
 // poVoidPaneDrawn is the identity of a frame that is ABOUT one line: the whole
 // pane belongs to that line, so the fact counts anywhere on it.
-func poVoidPaneDrawn(what, marker string) func([]string) []poVoidDrawn {
-	return func(pane []string) []poVoidDrawn {
+func poVoidPaneDrawn(what, marker string) func([]string, int) []poVoidDrawn {
+	return func(pane []string, _ int) []poVoidDrawn {
 		for _, line := range pane {
 			if strings.Contains(line, marker) {
-				return []poVoidDrawn{{what: what, lines: pane}}
+				return []poVoidDrawn{{what: what, fact: "void", lines: pane}}
 			}
 		}
 		return nil
@@ -245,12 +311,12 @@ func poVoidPaneDrawn(what, marker string) func([]string) []poVoidDrawn {
 
 // poVoidRowDrawn is the identity of one row that describes a voided line: the
 // fact has to be on that row, because the rows around it describe other things.
-func poVoidRowDrawn(what string, match func(string) bool) func([]string) []poVoidDrawn {
-	return func(pane []string) []poVoidDrawn {
+func poVoidRowDrawn(what string, match func(string) bool) func([]string, int) []poVoidDrawn {
+	return func(pane []string, _ int) []poVoidDrawn {
 		var out []poVoidDrawn
 		for _, line := range pane {
 			if match(line) {
-				out = append(out, poVoidDrawn{what: what, lines: []string{line}})
+				out = append(out, poVoidDrawn{what: what, fact: "void", lines: []string{line}})
 			}
 		}
 		return out
@@ -348,15 +414,18 @@ func poVoidDetailWalk() (func(Screen) string, func(Screen)) {
 
 // poVoidOneLinePO is an order the one-line grid can hold: that form collapses
 // only where every row, readings and all, fits the pane, and the main fixture's
-// readings put its rows past any pane Root draws. Short names and no readings,
-// with voided lines in the middle and at the end.
+// readings put its rows past any pane Root draws. Short names and the fewest
+// readings, with voided lines in the middle and at the end and one received
+// line, whose `received 1` reading is the one that decides how wide a pane
+// has to be.
 func poVoidOneLinePO() *omsapi.PurchaseOrder {
 	po := poVoidFixturePO(false)
 	po.Items = []omsapi.PurchaseOrderItem{
-		{ID: 1, Description: "Hex bolt", QuantityOrdered: 40, EstimatedCost: omsapi.DecimalString("36.00")},
-		{ID: 2, Description: "Washer M3", QuantityOrdered: 250, EstimatedCost: omsapi.DecimalString("31.25"), IsVoided: true},
-		{ID: 3, Description: "Bearing", QuantityOrdered: 10, EstimatedCost: omsapi.DecimalString("42.00")},
-		{ID: 4, Description: "Cable tie", QuantityOrdered: 100, EstimatedCost: omsapi.DecimalString("6.00"), IsVoided: true},
+		{ID: 1, Description: "Bolt", QuantityOrdered: 40, EstimatedCost: omsapi.DecimalString("36.00")},
+		{ID: 2, Description: "Nut", QuantityOrdered: 250, EstimatedCost: omsapi.DecimalString("31.25"), IsVoided: true},
+		{ID: 3, Description: "Gear", QuantityOrdered: 1, QuantityReceived: 1, IsFullyReceived: true,
+			EstimatedCost: omsapi.DecimalString("42.00")},
+		{ID: 4, Description: "Tie", QuantityOrdered: 100, EstimatedCost: omsapi.DecimalString("6.00"), IsVoided: true},
 	}
 	return po
 }
@@ -371,9 +440,22 @@ func poVoidOneLineDetail() Screen {
 // poVoidOneLineWidths is every drawable width at which the one-line fixture's
 // grid collapses to one row per line, read off the pane: the one-line grid's
 // heading carries a Supplier SKU column the block form never draws.
+//
+// It walks PAST the 120 columns jdeDrawableWidths stops at, and on purpose. A
+// received line's `received N` reading rides its row in this form, and with the
+// item column at its floor that row is 98 cells — a 127-column terminal — so
+// the one-line form of any order carrying a receipt is drawn only on panes the
+// shared set never reaches. That ceiling is sound where a wider pane only folds
+// less; here a wider pane is the only place the form exists at all.
 func poVoidOneLineWidths() []int {
+	widths := jdeDrawableWidths()
+	for w := widths[len(widths)-1] + 1; w <= poVoidOneLineMaxWidth; w++ {
+		if jdeRootDrawsAtWidth(w) {
+			widths = append(widths, w)
+		}
+	}
 	var out []int
-	for _, w := range jdeDrawableWidths() {
+	for _, w := range widths {
 		s := jdeAtPane(poVoidOneLineDetail(), w, 40)
 		s.(*PurchaseOrderDetailScreen).scroll = 1 << 20
 		if strings.Contains(stripANSI(s.View()), poOneLineSKUHead) {
@@ -382,6 +464,10 @@ func poVoidOneLineWidths() []int {
 	}
 	return out
 }
+
+// poVoidOneLineMaxWidth bounds that walk: wide enough for the fixture's widest
+// row with room to spare, so the collapse is walked from where it starts.
+const poVoidOneLineMaxWidth = 160
 
 // poVoidEditOn is the edit screen opened on the fixture's voided line 2.
 func poVoidEditOn(open func(*PurchaseOrderEditScreen)) func() Screen {
@@ -470,6 +556,7 @@ func poVoidSurfaces() []poVoidSurface {
 			step:     detailStep,
 			drawn:    poVoidGridDrawn(poVoidFixturePO(true).Items),
 			needLast: true,
+			facts:    []string{"void", "received"},
 		},
 		{
 			name:   "detail sheet/one-line grid",
@@ -477,6 +564,7 @@ func poVoidSurfaces() []poVoidSurface {
 			at:     detailAt,
 			step:   detailStep,
 			drawn:  poVoidGridDrawn(poVoidOneLinePO().Items),
+			facts:  []string{"void", "received"},
 			widths: func(t *testing.T) []int {
 				ws := poVoidOneLineWidths()
 				if len(ws) == 0 {
@@ -504,8 +592,8 @@ func poVoidSurfaces() []poVoidSurface {
 				s.openLineEditor(voidedIdx)
 				s.openDeleteLine(voidedIdx)
 			}),
-			at:   func(sc Screen) string { return "offset " + strconv.Itoa(edit(sc).deleteScroll) },
-			step: func(sc Screen) { sc.Update(tea.KeyMsg{Type: tea.KeyDown}) },
+			at:    func(sc Screen) string { return "offset " + strconv.Itoa(edit(sc).deleteScroll) },
+			step:  func(sc Screen) { sc.Update(tea.KeyMsg{Type: tea.KeyDown}) },
 			drawn: poVoidPaneDrawn("the delete confirm on line 2", "Delete:"),
 		},
 		{
@@ -577,5 +665,105 @@ func poVoidSurfaces() []poVoidSurface {
 					strings.Contains(line, strconv.Itoa(poVoidOnOrderQty))
 			}),
 		},
+	}
+}
+
+// TestPOLines_TheFlagColumnCostsTheItemColumnNothing: the grid's give-order
+// keeps the flag's column before the ship date's (poFitLineGrid), and that
+// trade is FREE — measured on the rendered grid, not on the fit's arithmetic.
+//
+// Two halves. At every drawable width where the grid draws a ship-date column
+// it draws the flag column too, and there the flag column is no wider than the
+// ship-date column: the widest flag drawn ends inside the room the ship date's
+// column gave it. That inequality is what makes swapping one column for the
+// other cost the item column nothing wherever only one of them fits.
+//
+// And 80 columns is PINNED, because it is the width this interface is modelled
+// on and the width the give-order change moved. Before it (5f52438, and #168's
+// base d9f345a before that), the same order drew these same 14-cell item cells
+// beside a Ship date column, with a void pushed into the item cell as
+// `[voided] Flat…` and no receipt on the row at all; now the item cells are
+// unchanged and both flags stand in their own column.
+func TestPOLines_TheFlagColumnCostsTheItemColumnNothing(t *testing.T) {
+	// The flags as the grid spells them for this order's own lines, so a flag
+	// reworded or widened is measured as it is drawn.
+	var flags []string
+	for _, li := range poVoidFixturePO(false).Items {
+		if f := poLineFlag(li); f != "" {
+			flags = append(flags, f)
+		}
+	}
+	both := 0
+	for _, w := range jdeDrawableWidths() {
+		s := jdeAtPane(poVoidDetail(false)(), w, 200)
+		pane := strings.Split(stripANSI(clampToBox(s.View(), screenBodyCells(w), screenBodyRows(200))), "\n")
+		head, shipAt := "", -1
+		for _, line := range pane {
+			if strings.Contains(line, "#  Item") {
+				head, shipAt = line, strings.Index(line, "Ship date")
+			}
+		}
+		if head == "" {
+			t.Fatalf("at %d columns the grid's heading is not on the pane", w)
+		}
+		if shipAt < 0 {
+			continue
+		}
+		both++
+		// A flag counts as the COLUMN only where it stands past the ship date's
+		// heading; one leading the item cell is the fallback for a pane with no
+		// flag column at all.
+		shipCells := lipgloss.Width(head[:shipAt])
+		flagAt, widest := -1, 0
+		for _, line := range pane {
+			if !poVoidGridRowRe.MatchString(line) {
+				continue
+			}
+			for _, flag := range flags {
+				i := strings.Index(line, flag)
+				if i < 0 || lipgloss.Width(line[:i]) <= shipCells {
+					continue
+				}
+				if flagAt >= 0 && lipgloss.Width(line[:i]) != flagAt {
+					t.Errorf("at %d columns the flags do not stand in one column:\n%s", w, strings.Join(pane, "\n"))
+				}
+				flagAt = lipgloss.Width(line[:i])
+				if fw := lipgloss.Width(flag); fw > widest {
+					widest = fw
+				}
+			}
+		}
+		if flagAt < 0 {
+			t.Errorf("at %d columns the grid draws a Ship date column and no flag column:\n%s",
+				w, strings.Join(pane, "\n"))
+			continue
+		}
+		if shipCol := flagAt - poGridGutter - shipCells; widest > shipCol {
+			t.Errorf("at %d columns the widest flag is %d cells against a %d-cell ship-date "+
+				"column, so keeping the flag instead would cost the item column", w, widest, shipCol)
+		}
+	}
+	if both == 0 {
+		t.Fatal("no drawable width drew both columns, so the widths were never compared")
+	}
+
+	s := jdeAtPane(poVoidDetail(false)(), 80, 200)
+	pane := stripANSI(clampToBox(s.View(), screenBodyCells(80), screenBodyRows(200)))
+	var at80 []string
+	for _, line := range strings.Split(pane, "\n") {
+		if poVoidGridRowRe.MatchString(line) || strings.Contains(line, "#  Item") {
+			at80 = append(at80, line)
+		}
+	}
+	want := []string{
+		"    #  Item             Qty        Cost",
+		"    1  Hex bolt M8x4…    40      $36.00",
+		"    2  Flat washer M…   250      $31.25  [voided]",
+		"    3  Gasket, nitri…     4       $8.00  [voided]",
+		"    4  Bearing 6204-…    10      $42.00  ✓ received",
+		"    5  Cable tie 200…   100       $6.00  [voided]",
+	}
+	if strings.Join(at80, "\n") != strings.Join(want, "\n") {
+		t.Errorf("at 80 columns the grid drew:\n%s\nwant:\n%s", strings.Join(at80, "\n"), strings.Join(want, "\n"))
 	}
 }
