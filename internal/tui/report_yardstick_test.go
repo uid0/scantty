@@ -161,20 +161,48 @@ func reportSeed(s *ReportTableScreen, tab int, rows [][]string, yardstick string
 	s.scrollIntoView()
 }
 
-// reportRootLines renders a report inside a real Root of this size and returns
-// the CLIPPED pane. It is the only render worth asserting a bound on: Root.View
-// clamps to the width the terminal really gives, and every defect this file is
-// about is invisible to a screen measured on its own.
-func reportRootLines(t *testing.T, s *ReportTableScreen, w, h int) []string {
+// reportViewCapture records the exact screen value Root rendered, so the height
+// sweep can assert both sides of the boundary with one render: what the screen
+// assembled and what Root clipped for the terminal.
+type reportViewCapture struct {
+	s        *ReportTableScreen
+	rendered string
+}
+
+func (c *reportViewCapture) Init() tea.Cmd { return c.s.Init() }
+func (c *reportViewCapture) Update(msg tea.Msg) (Screen, tea.Cmd) {
+	next, cmd := c.s.Update(msg)
+	c.s = next.(*ReportTableScreen)
+	return c, cmd
+}
+func (c *reportViewCapture) Title() string { return c.s.Title() }
+func (c *reportViewCapture) View() string {
+	c.rendered = c.s.View()
+	return c.rendered
+}
+
+// reportRootView renders a report inside a real Root of this size and returns
+// both the screen's assembled value and the CLIPPED pane. Root.View is the only
+// render worth asserting the latter on: it clamps to the width the terminal
+// really gives, and every defect this file is about is invisible to a screen
+// measured on its own.
+func reportRootView(t *testing.T, s *ReportTableScreen, w, h int) (string, []string) {
 	t.Helper()
-	s.Update(tea.WindowSizeMsg{Width: w, Height: h})
-	r := newTestRoot(s)
+	capture := &reportViewCapture{s: s}
+	r := newTestRoot(capture)
 	next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	after, ok := next.(Root)
 	if !ok {
 		t.Fatalf("Root.Update returned %T, want Root", next)
 	}
-	return strings.Split(after.View(), "\n")
+	lines := strings.Split(after.View(), "\n")
+	return capture.rendered, lines
+}
+
+func reportRootLines(t *testing.T, s *ReportTableScreen, w, h int) []string {
+	t.Helper()
+	_, lines := reportRootView(t, s, w, h)
+	return lines
 }
 
 // reportPaneLines strips Root's left nav column off each rendered row, leaving
@@ -935,24 +963,23 @@ func TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas(t *testing.T) {
 					for _, w := range jdeDrawableWidths() {
 						t.Run(fmt.Sprintf("%s/%s/%s/%d", name, probe.tabs[tab].label, state.label, w), func(t *testing.T) {
 							t.Parallel()
+							s := build()
+							state.seed(s, tab)
 							for _, h := range jdePaneHeights() {
-								s := build()
-								state.seed(s, tab)
-								s.Update(tea.WindowSizeMsg{Width: w, Height: h})
+								view, lines := reportRootView(t, s, w, h)
 								if !s.frameFits() {
 									tooShort.Add(1)
 									continue
 								}
 								fits.Add(1)
-								room, got := s.reportPaneRows(), strings.Split(s.View(), "\n")
+								room, got := s.reportPaneRows(), strings.Split(view, "\n")
 								if len(got) > room {
 									t.Fatalf("%s tab %q %s at %dx%d: the screen assembled %d rows into "+
 										"a %d-row pane, so clampToBox takes the tail — and what is drawn "+
 										"last is the footer:\n%s",
 										name, probe.tabs[tab].label, state.label, w, h, len(got), room,
-										s.View())
+										view)
 								}
-								lines := reportRootLines(t, s, w, h)
 								flat := reportFlatPane(lines)
 								if !strings.Contains(flat, "esc back") {
 									t.Fatalf("%s tab %q %s at %dx%d: the footer names no way off the "+
