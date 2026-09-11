@@ -25,11 +25,11 @@ func fmtMoneyPtr(p *float64) string {
 	return fmtMoney(*p)
 }
 
-// reportWithheld is what a transparency cell says where OMS withheld the value
-// from this reader. A word and not "—", because "—" in these columns already
-// means "nothing recorded", and a withheld figure is one that WAS recorded:
-// the two send an operator in opposite directions — one to go and record it,
-// the other to sign in as somebody allowed to read it.
+// reportWithheld is what a transparency cell says where OMS did not disclose
+// whether a value was recorded. A word and not "—", because "—" in these
+// columns means OMS disclosed that none was recorded. The two send an operator
+// in different directions — a gap is for somebody to fill; withheld is a
+// question only a reader allowed to see vendor data can answer.
 const reportWithheld = "withheld"
 
 // vendorMoney is a transparency money cell on a row whose vendor block the

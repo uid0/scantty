@@ -17,12 +17,11 @@ import (
 
 // Where does ScanTTY present transparency ORDER data?
 //
-// THE DERIVED SET, from the one client method that fetches the feed —
-// omsapi.Client.ReorderTransparency — and every caller of it, which is the
-// three transparency tabs of NewReorderAnalyticsReportScreen among every tab
-// of every report screen in reportScreenFixtures
-// (TestTransparency_TheDerivedSetIsTheSetSwept derives it by running every
-// report tab's loader):
+// THE DERIVED SET among every tab of every report screen in
+// reportScreenFixtures is the three transparency tabs of
+// NewReorderAnalyticsReportScreen. TestTransparency_TheDerivedSetIsTheSetSwept
+// derives it by running every report tab's loader. A caller outside those
+// report screens is not covered by that check:
 //
 //   - "Trans. orders" renders `orders[]`, one row per ReorderRequest. This is
 //     where OMS #1057 withdrew `supplier_name` and `estimated_cost`: a
@@ -240,8 +239,8 @@ func TestTransOrders_AnItemsSubstitutedSupplierNeverReachesThePane(t *testing.T)
 // a cost was recorded (a figure, a donation's $0.00 among them), no cost was
 // recorded (`actual_cost: null`), and the server declined to tell THIS reader
 // (the key omitted, `vendor_data_withheld: true` on the row). The pre-change
-// screen drew the last two as the same "—", so a withheld figure read as one
-// nobody recorded. Checked on the pane, per row, by reading the Actual column
+// screen drew the last two as the same "—", so an undisclosed value read as a
+// disclosed absence. Checked on the pane, per row, by reading the Actual column
 // wherever its header puts it.
 func TestTransOrders_ActualSaysRecordedNoneOrWithheldApart(t *testing.T) {
 	type want struct{ lead, cell string }
