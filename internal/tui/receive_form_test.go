@@ -329,69 +329,69 @@ func TestReceive_TheActionBarSurvivesTheClip(t *testing.T) {
 	}
 }
 
-// TestReceive_NothingOverflowsThePane walks every state at every width and
-// fails on a line the terminal would truncate. 80 columns is the width that
-// must HOLD.
+// TestReceive_NothingOverflowsThePane walks every state at every pane Root
+// draws and fails on a frame the terminal would truncate — a row past the pane's
+// last, or a cell past its edge. 80 columns is the width that must HOLD, and it
+// is not the only one that must.
+//
+// This doc used to say "every state at every width" over a table of six states
+// written out by hand at 80, 100 and 120 columns and two heights. Neither half
+// was true, and the gap was where the defects were: at widths from 49 to 67 the
+// blocked frame's "What the order's lines say:", the settled-lines heading, the
+// review's "receiving N · N of N ordered once it lands" and serial capture's
+// unit counters were all handed to clampToBox unfitted and lost their tails with
+// no mark. So the STATES are receivePhaseCases (the phase iota's sweep) and the
+// PANES are every drawable height at every width receiveHonestWidths keeps.
+//
+// The ACTION BAR's own lines are outside the width half, and that is recorded
+// rather than quiet: a bar item wider than the pane — "Enter/Esc=Back to order"
+// against the 20 cells a 49-column terminal leaves — is cut by clampToBox
+// because renderActionBarWrapped folds BETWEEN items and never inside one. That
+// is the layer's, on every columnar screen at once. Its HEIGHT is inside: the
+// frame's row count includes every bar row.
 func TestReceive_NothingOverflowsThePane(t *testing.T) {
-	long := receiveWSKit(11, "Eufy printer maintenance kit (CMYK + cleaning)", 2, 0)
-	closedOnly := receiveWSLine(15, "Backordered gasket", 6, 2)
-	closedOnly.IsClosedShort, closedOnly.IsSettled = true, true
-	closedOnly.ReceiptState, closedOnly.ReceiptStateLabel = omsapi.ReceiptStateClosedShort, "Closed short"
-	closedOnly.QuantityPending = 0
-	states := []struct {
-		name  string
-		lines []omsapi.ReceivingLine
-		drive func(*testing.T, Root, *ReceiveFormScreen) Root
-	}{
-		{"quantities", []omsapi.ReceivingLine{long, receiveWSLine(12, "Box of M3 bolts", 4, 0)}, nil},
-		{"nothing receivable", []omsapi.ReceivingLine{closedOnly}, nil},
-		{"serial capture", receiveSweepLines(), func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
-			s.qty[2].SetValue("1")
-			return receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-		}},
-		{"review", receiveSweepLines(), func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
-			s.qty[2].SetValue("1")
-			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-			return receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
-		}},
-		{"summary", receiveSweepLines(), func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
-			s.qty[2].SetValue("1")
-			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // -> capture
-			r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})   // -> review
-			return receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
-		}},
-		{"write-off", receiveSweepLines(), func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
-			return receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlR})
-		}},
-	}
-	for _, st := range states {
-		for _, width := range receiveWidths {
-			for _, height := range []int{24, 30} {
-				t.Run(fmt.Sprintf("%s/%dx%d", st.name, width, height), func(t *testing.T) {
-					fake := &receiveFake{}
-					r, s := receiveDrive(t, fake, st.lines, width, height)
-					if st.drive != nil {
-						r = st.drive(t, r, s)
+	widths, heights := receiveHonestWidths(), jdePaneHeights()
+	for _, st := range receiveBodyStates(t) {
+		s := st.s
+		var tall, wide []string
+		var firstWide string
+		for _, w := range widths {
+			for _, h := range heights {
+				jdeAtPane(s, w, h)
+				lines := strings.Split(s.View(), "\n")
+				if rows := screenBodyRows(h); len(lines) > rows {
+					tall = append(tall, fmt.Sprintf("%dx%d (%d rows, pane %d)", w, h, len(lines), rows))
+				}
+				// Everything above the bar's rule. A refused pane draws no bar and
+				// so no rule, and every line of its notice is judged.
+				end := len(lines)
+				for i := len(lines) - 1; i >= 0; i-- {
+					if plain := stripANSI(lines[i]); plain != "" && strings.Trim(plain, "-") == "" {
+						end = i
+						break
 					}
-					s.qty0SetIfAny("2")
-					// The SCREEN's frame, on both axes — which is what Root
-					// clips. Measuring Root.View() against the pane's width
-					// would be comparing the whole terminal (nav column and
-					// border included) with the content pane.
-					lines := strings.Split(strings.TrimSuffix(s.View(), "\n"), "\n")
-					budget := screenBodyWidth(width)
-					for i, line := range lines {
-						if w := lipgloss.Width(line); w > budget {
-							t.Errorf("line %d is %d cells and is cut at %d, losing %q",
-								i+1, w, budget, string([]rune(line)[budget:]))
+				}
+				for _, line := range lines[:end] {
+					if lipgloss.Width(line) > screenBodyCells(w) {
+						wide = append(wide, fmt.Sprintf("%dx%d", w, h))
+						if firstWide == "" {
+							firstWide = fmt.Sprintf("at %dx%d %q is %d cells against %d",
+								w, h, stripANSI(line), lipgloss.Width(line), screenBodyCells(w))
 						}
+						break
 					}
-					if rows := screenBodyHeight(height); len(lines) > rows {
-						t.Errorf("the frame is %d rows and the pane at %dx%d keeps %d, dropping %q",
-							len(lines), width, height, rows, strings.Join(lines[rows:], " / "))
-					}
-				})
+				}
 			}
+		}
+		if len(tall) > 0 {
+			t.Errorf("%s: the frame is taller than the pane at %d pane(s), including %v — "+
+				"clampToBox drops from the BOTTOM, which is where the bar is",
+				st.name, len(tall), tall[:min(4, len(tall))])
+		}
+		if len(wide) > 0 {
+			t.Errorf("%s: a line runs past the pane's edge at %d pane(s), including %v — "+
+				"clampToBox takes the tail with no mark; %s",
+				st.name, len(wide), wide[:min(4, len(wide))], firstWide)
 		}
 	}
 }
@@ -605,8 +605,50 @@ func TestReceive_ASuccessfulReceiptCannotBePostedTwice(t *testing.T) {
 	if got := len(fake.sent()); got != 1 {
 		t.Errorf("the delivery was booked %d times; pressing enter again must not repost it", got)
 	}
-	if !strings.Contains(r.View(), "Receiving complete") {
-		t.Errorf("the summary is not what the operator is left looking at:\n%s", r.View())
+	// What the operator is left looking at is the RECEIPT — the one record of what
+	// the write did — and it is asserted on the pane they read, at every pane Root
+	// draws. This used to be `strings.Contains(r.View(), "Receiving complete")`:
+	// the whole terminal, at one height, looking for a heading. It passed while
+	// every terminal from 80x11 to 80x18 drew that heading — from 80x14 over a
+	// "↓ 5 more below" — on a bar with no key to fetch the receipt beneath it.
+	var missing []string
+	var firstMissing string
+	drawn := 0
+	for _, w := range receiveHonestWidths() {
+		for _, h := range jdePaneHeights() {
+			next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+			r = next.(Root)
+			if !receiveDrawn(s) {
+				continue
+			}
+			drawn++
+			// The row as the summary built it for this pane, found by its label
+			// rather than by position: WHERE it sits is the pinned-body sweep's
+			// claim, and this one is only about whether the operator can see it.
+			body, _ := s.body()
+			row := ""
+			for _, line := range body.text {
+				if flat := receiveFlat(line); strings.HasPrefix(flat, "Receipt ") {
+					row = flat
+				}
+			}
+			if row == "" {
+				t.Fatalf("at %dx%d the summary builds no Receipt row", w, h)
+			}
+			if !strings.Contains(receiveFlat(receivePaneAt(s, w, h)), row) {
+				missing = append(missing, fmt.Sprintf("%dx%d", w, h))
+				if firstMissing == "" {
+					firstMissing = fmt.Sprintf("at %dx%d:\n%s", w, h, stripANSI(receivePaneAt(s, w, h)))
+				}
+			}
+		}
+	}
+	if drawn == 0 {
+		t.Fatal("the summary was drawn at no pane, so this judged nothing")
+	}
+	if len(missing) > 0 {
+		t.Errorf("the receipt is not on the pane at %d of %d panes, including %v; %s",
+			len(missing), drawn, missing[:min(6, len(missing))], firstMissing)
 	}
 }
 
@@ -2413,23 +2455,24 @@ func receiveCursorBox(t *testing.T, s *ReceiveFormScreen) (line string, depth in
 // two of the window's rows on the "more above / more below" markers, leaving
 // avail-2, and the box has to be inside those. Where the cursor can move, a
 // receivable line's block is its name, its readings and then the box, so the
-// box sits two lines in. Where NOTHING can move the window — one navigable row,
-// the state serial capture and an order with nothing receivable are always in —
-// the box LEADS its block, because a block whose start is all a short pane
-// keeps must start with the thing the operator types into. Those two numbers
-// are the builder's promise; measuring the block as built is what let a
-// regression widen its own gate.
+// box sits two lines in. Where NOTHING can move the window — a PINNED body
+// (receivePinned), the write-off confirm's shape — the box LEADS its block,
+// because a block whose start is all a short pane keeps must start with the
+// thing the operator types into. The quantity form is never pinned, an order
+// with nothing receivable included: that one keeps its scan, delivery and notes
+// rows, five in all. Those two numbers are the builder's promise; measuring the
+// block as built is what let a regression widen its own gate.
 func receiveCursorBoxDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) (drawn, payable bool) {
 	t.Helper()
 	line, _ := receiveCursorBox(t, s)
-	body, _ := s.body()
 	// How many lines of the cursor's block come BEFORE its box: the line's own
 	// name, and nothing else — everything a row has to say about itself is
-	// drawn after the field it is about (addLineBlock). On a body with one
-	// navigable row the field leads outright.
-	lead := 0
-	if body.rowsIn(0, body.Len()) > 1 {
-		lead = 1
+	// drawn after the field it is about (addLineBlock). On a pinned body the
+	// field leads outright.
+	body, cursor := s.body()
+	lead := 1
+	if receivePinned(body, cursor) {
+		lead = 0
 	}
 	avail := s.bodyAvailForBar(len(s.headerLines()), s.bar())
 	payable = body.Len() <= avail || avail-2 > lead
@@ -2591,11 +2634,14 @@ func TestReceive_AShortPaneStillDrawsTheForm(t *testing.T) {
 //
 // qtyPagesFor used to ask only bodyScrollsForBar — "is the body taller than the
 // window" — but PgUp/PgDn move the CURSOR and the window follows it. The two
-// questions come apart in a DESIGNED state: an order whose lines are all voided
-// or already received leaves no quantity boxes, so the notes row is the only
-// navigable row and jdePageCursor clamps to it. At 80x18 the body still
-// overflowed, so the bar printed PgUp/PgDn=Page over a key whose whole effect
-// was to write "pgdown is already at the last row".
+// questions came apart in a state that was DESIGNED at the time: an order whose
+// lines are all voided or closed short leaves no quantity boxes, and while the
+// notes row was then the only navigable row jdePageCursor clamped to it. At
+// 80x18 the body still overflowed, so the bar printed PgUp/PgDn=Page over a key
+// whose whole effect was to write "pgdown is already at the last row". That
+// order has had its scan and delivery rows since — five rows — so the state
+// cannot be built today, and the biconditional below is what keeps it honest if
+// it ever can be again.
 //
 // Asserted as the biconditional at every height the frame is DRAWN at, on BOTH
 // orders, because a predicate that is merely stricter would pass a test that
@@ -2695,9 +2741,10 @@ func TestReceive_NoBodyLineSitsWhereNoKeyCanReach(t *testing.T) {
 		"a kit among plain lines": {kit, receiveWSLine(12, "Box of M3 bolts", 4, 0),
 			receiveWSLine(13, "Reel of wire", 4, 0)},
 		"four plain lines": receiveManyLines(4),
-		// The order whose body is nothing BUT lead: no quantity boxes, so the
-		// notes row is the only row there is and the screen's whole explanation
-		// of itself used to sit above it.
+		// The order with no quantity boxes: its scan, delivery and notes rows
+		// are all the rows there are, and the screen's whole explanation of
+		// itself used to sit above them — then, for a while, under the last of
+		// them (it is pinned in the header now, standingNote).
 		"nothing receivable": nil,
 	}
 	for name, lines := range orders {
@@ -2760,7 +2807,7 @@ func TestReceive_NoBodyLineSitsWhereNoKeyCanReach(t *testing.T) {
 				// the first line of that block and the field the second, and a
 				// short window then draws the blank and leaves the operator
 				// typing into a field that is not on the pane. The block's TAIL
-				// is prose explaining the field, and a block that outruns the
+				// is the settled-lines list, and a block that outruns the
 				// window loses its tail by design — the layer keeps a block's
 				// START. Asserting the last line would be asserting that this
 				// screen's longest block always fits, which is a claim about
@@ -2865,14 +2912,13 @@ func TestReceive_EveryRowDrawsTheBoxTheCursorIsOn(t *testing.T) {
 			receiveWSLine(12, "Box of M3 bolts", 4, 0),
 			receiveWSLine(13, "Reel of wire", 4, 0),
 		},
-		// The order with NOTHING receivable belongs here for the same reason
-		// serial capture does: its notes row is the only navigable row, so no
-		// key moves the window and whatever leads that block is the whole of
-		// what a short pane keeps, permanently. Drawn prose-first it kept the
-		// sentence and lost the FOCUSED box — an operator typing into a field
-		// off the pane, every keystroke redrawing it byte for byte — and the
-		// sweep could not see it, because it only ever built orders that had
-		// lines.
+		// The order with NOTHING receivable, because its notes row's block used
+		// to carry the whole form's explanation as its tail, and a block that
+		// will not fit keeps its START. Drawn prose-first it kept the sentence
+		// and lost the FOCUSED box — an operator typing into a field off the
+		// pane, every keystroke redrawing it byte for byte — and the sweep could
+		// not see it, because it only ever built orders that had lines. (It is
+		// five rows, not one: scan, the three delivery rows and notes.)
 		"nothing receivable": nil,
 	}
 	for name, lines := range orders {

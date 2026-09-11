@@ -804,9 +804,20 @@ either:
   true` alongside `outstanding_line_count: 0` is a real state, not a
   contradiction: every line closed short or struck off without a single delivery
   settles the order without it ever reaching `received`. The contract instructs
-  a client to say so AND point at voiding or cancelling the ORDER — `qtyBody`'s
-  empty branch and Ctrl+R's decline both do, because refusing without it is a
+  a client to say so AND point at voiding or cancelling the ORDER — the form's
+  standing fact and Ctrl+R's decline both do, because refusing without it is a
   dead end.
+- **A refusal of the whole form is a standing fact in the NOTE BLOCK, never the
+  tail of a block.** This one and the server's `unavailable_reason` are the
+  two, and each used to hang off a row — a block that will not fit keeps its
+  START, and no key fetches a tail — so the operator was refused and could not
+  see why (80x12–19 on the blocked frame; at rest, every height up to 80x30 on
+  the empty one). `standingNote` draws the why in the note block whenever no
+  keypress has an answer standing there; that block's first row is on the pane
+  at every drawable height from every row, and its height is reserved either
+  way, so it moves nothing. `TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs`
+  derives the refusing states off the WORKSHEET and walks every row at every
+  pane.
 - **"Never silently discard" demands NON-SILENCE, not refusal — and a refusal
   is only legitimate where the operator can satisfy it from the frame it is
   drawn on.** If input is about to be dropped, SAY SO FIRST; blocking the key is
@@ -1850,13 +1861,26 @@ either:
   because Window keeps a block's START and a blank at the front is then the one
   line a short window draws — at 80x17 pressing Down drew a pane of two markers
   and a blank, naming nothing about the row the cursor had just reached.
-  Where NO key moves a cursor the block has only one end to protect and the
-  order inverts: `serialBody` draws the FIELD first and what identifies it
-  after, and `qtyBody`'s nothing-receivable branch does the same, since a
-  scanner firing into a box the operator cannot see is worse than a label they
-  have to press nothing to lose. It is a RULE and not two cases: whichever body
-  has one navigable row is in it, so applying it to the one that was reported
-  leaves the other stranding its field a round later. A PINNED HEADER is the
+  Where NO key moves the window the block has only one end to protect and the
+  order inverts. Such a body is PINNED — the block `body()` anchors on is the
+  whole body (`receivePinned`), so Window can only ever draw it from line 0 —
+  and the line the operator cannot do without must BE line 0: the box a scanner
+  fires into, the fact a summary exists for. The builder names it
+  (`jdeLines.DeclareLead`) and
+  `TestReceive_ABodyNoKeyCanMoveLeadsWithWhatTheOperatorNeeds` holds it whole on
+  the clipped pane at every drawable pane, over a set DERIVED from the built
+  body and its anchor rather than listed; `TestReceive_EveryLeadDeclarationIsJudgedOnAPinnedBody`
+  collects every declaration from the SOURCE and fails one no swept state
+  reaches pinned. It is derived because it was applied by hand three times and
+  reached N-1 of N each time — the summary led with a heading, so from 80x11 to
+  80x18 its Receipt row sat below the one block nothing moves. Membership is the
+  ANCHOR, not the row count: serial capture has three rows and was pinned all the
+  same, because `body()` anchored row 0 whichever box held the caret, so a
+  character typed into Lot redrew the pane byte for byte at 80x11, 12 and 14
+  (the window follows `serialField` now). The nothing-receivable quantity form is
+  NOT pinned — five rows — and its explanation is a fact about the whole FORM, so
+  it is the note block's standing fact (`standingNote`), on the pane from every
+  row, rather than the tail of the last row's block. A PINNED HEADER is the
   same rule with a DIFFERENT LEVER, and getting the lever wrong cost a round:
   nothing an operator presses brings back a row `jdeFitHeader` has trimmed, so a
   header does have one end to protect — but the end that must SURVIVE and the
@@ -1892,17 +1916,14 @@ either:
   `jdePickList` literals, which is exactly why the order pad's warning went
   missing at 80x12 and 80x13 with nothing to report it. A site that marks
   nothing essential must say so in `jdeHeadersWithoutEssentials` WITH A REASON,
-  so absent and empty are different states. On such a body NEITHER marker can
-  be acted on, and only one of them is the sheet's to prevent: `↑ more above`
-  appears when the window starts past line 0, which is a consequence of where
-  the sheet puts its lines, so
-  `TestReceive_ABodyWithOneRowNeverHidesLinesAboveTheWindow` sweeps the pane
-  height and fails on any of it, with the set of one-row states read off the
-  built body rather than listed. `↓ more below` appears when the block outruns
-  the pane, which no arrangement of ONE block can avoid — it is drawn from
-  80x14 to 80x18 on the receiving screen — so the TAIL is the accepted loss and
-  the block is ordered so that what a short pane keeps is what the operator
-  cannot do without. Do not read the sweep as holding both directions.
+  so absent and empty are different states. On a pinned body NEITHER marker
+  can be acted on, and only one of them is the sheet's to prevent: `↑ more
+  above` appears when the window starts past line 0, which is a consequence of
+  where the sheet puts its lines, so the pinned-body sweep above fails on any of
+  it. `↓ more below` appears when the block outruns the pane, which no
+  arrangement of ONE cursor-anchored block can avoid, so the TAIL is the
+  accepted loss and the declared lead is what a short pane keeps. Do not read
+  the sweep as holding both directions.
   Apply it to every body of a screen at once and DERIVE the check, or it is
   applied to the one that was reported: the receiving conversion fixed its
   quantity form and left the other two stranding their leads for a round.
