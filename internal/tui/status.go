@@ -145,9 +145,7 @@ func (s StatusBar) View() string {
 	// the failed-write flashes across the package ("save failed: ", "delete
 	// failed: ", the New PO submit's "create PO failed: ") append err.Error()
 	// to their words — so a gateway page arrives here whole, newlines and all.
-	// Every Status() in the package reaches the operator through this one
-	// function: route.go's Status is the only place a StatusMsg is built and
-	// Root's dispatch the only place one is flashed. The captain's decision for that case is ONE MARKED LINE: the message
+	// The captain's decision for that case is ONE MARKED LINE: the message
 	// is flattened onto one line and, where the row cannot hold it, cut with an
 	// ellipsis. The mark is what keeps the rule's point — an operator can
 	// always tell that what they are reading is not all there was — where a
