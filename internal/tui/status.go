@@ -113,8 +113,10 @@ func (s StatusBar) contextLadder() []string {
 // reading, gone for as long as the flash lasts. A 502 gateway page flashed by
 // the New PO submit made the frame 26 rows on a 24-row terminal.
 // TestRoot_TheFrameIsNeverTallerThanTheTerminal holds the frame to the
-// terminal at every size up to 120x40, with every field of this struct driven
-// (TestRoot_EveryStatusBarFieldIsDrivenByTheFrameSweep).
+// terminal at every size up to 120x40. TestRoot_TheFrameSweepStatusInputsReachTheRenderedBar
+// proves each public input driven by that sweep changes the rendered row, and
+// TestStatusBar_AStatusCommandDispatchedThroughRootIsOneMarkedRow proves a
+// Status command dispatched through Root is drawn here, flattened and marked.
 //
 // Every width here is CELLS, measured with lipgloss.Width — never runes. A
 // double-width rune is one rune and two cells, so a bound counted in runes calls

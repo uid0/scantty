@@ -1574,9 +1574,9 @@ either:
   while the frame around it grew: a 502 page flashed on the status bar drew 26
   rows on 24, and one unread notification drew 25 at every width from 76 up
   (`📬` is one rune and two cells). `TestRoot_TheFrameIsNeverTallerThanTheTerminal`
-  (`root_frame_fit_test.go`) is the guard, and a new `StatusBar` field fails
-  `TestRoot_EveryStatusBarFieldIsDrivenByTheFrameSweep` until the sweep drives
-  it. The bar is ONE MARKED ROW, which is the captain's decision for a message it
+  (`root_frame_fit_test.go`) is the guard, and
+  `TestRoot_TheFrameSweepStatusInputsReachTheRenderedBar` proves each public
+  status-bar input driven by the sweep changes the rendered row. The bar is ONE MARKED ROW, which is the captain's decision for a message it
   cannot hold: `jdeStatusOneLine` then `pickerClip`, the columnar status row's
   convention. `lipgloss.Width` counts a TAB as zero cells while every `Render`
   draws four, which is why `jdeStatusOneLine` and `clampToBox` both handle it;

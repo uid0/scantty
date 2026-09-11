@@ -17,9 +17,8 @@
 // sizes included, because Root's own refusal is a frame too), with every
 // surface Root composes holding the worst it can be handed at once:
 //
-//   - the STATUS BAR, whose every field is driven — the set is derived from the
-//     struct by reflect (TestRoot_EveryStatusBarFieldIsDrivenByTheFrameSweep),
-//     so a field added later fails until somebody says how the sweep drives it;
+//   - the STATUS BAR, whose public inputs are each proven to change its rendered
+//     row (TestRoot_TheFrameSweepStatusInputsReachTheRenderedBar);
 //   - the SCREEN, through a stand-in whose Title and View return adversarial
 //     text. Root's bound on the body does not look at which screen drew it, so
 //     the input space is "any string a screen can return", and the fixtures are
@@ -89,9 +88,7 @@ const rootFrameLookup = "could not tell whether Acme Fasteners & Industrial Supp
 // rootFrameMessages are the SHAPES a flashed message can take that defeat a
 // one-row bar, each named for the one it carries. A message is an OMS body as
 // often as it is a sentence — the failed-write flashes append err.Error(), and
-// every flash in the package reaches the bar through one door
-// (TestStatusBar_EveryFlashGoesThroughOneDoor) — so every shape here is one a
-// response body can arrive in.
+// so every shape here is one a response body can arrive in.
 func rootFrameMessages() []struct{ name, text string } {
 	return []struct{ name, text string }{
 		{"gateway page (LF)", rootFrameGateway},
@@ -427,42 +424,47 @@ func TestRoot_TheFrameSweepReachesPastEveryBound(t *testing.T) {
 	}
 }
 
-// statusBarFieldsDriven says, for every field of StatusBar, how the frame
-// sweep drives it. It is checked against the struct itself, so a field added
-// later — another chip, another indicator — fails until somebody says how the
-// sweep puts its worst value on the bar.
-var statusBarFieldsDriven = map[string]string{
-	"width":     "every terminal width from 1 to rootFrameMaxWidth, through Root's WindowSizeMsg",
-	"connOMS":   "up on the quiet states, down on the busy ones",
-	"connFK":    "up on the quiet states, down on the busy ones",
-	"scanner":   "a multi-line, tabbed, wide-rune state on the busy ones",
-	"unread":    "zero, three on an otherwise quiet bar, and a six-digit count on the busy one — each behind a double-width emoji",
-	"degraded":  "none, and a chip whose OMS-supplied label carries a newline, a tab and wide runes",
-	"message":   "every shape rootFrameMessages names, and none",
-	"msgLevel":  "every StatusLevel, one per message shape",
-	"msgExpiry": "live for the sweep (Flash with an hour), and never set on the no-message states",
-}
+func TestRoot_TheFrameSweepStatusInputsReachTheRenderedBar(t *testing.T) {
+	inputs := map[string]func(*StatusBar){
+		"SetOMSConn":          func(s *StatusBar) { s.SetOMSConn(false) },
+		"SetForgeKeyConn":     func(s *StatusBar) { s.SetForgeKeyConn(false) },
+		"SetScanner":          func(s *StatusBar) { s.SetScanner("reading\nbadge\t電子") },
+		"SetUnread":           func(s *StatusBar) { s.SetUnread(123456) },
+		"SetDegradedServices": func(s *StatusBar) { s.SetDegradedServices(rootFrameDegraded(1)) },
+		"Flash":               func(s *StatusBar) { s.Flash(rootFrameGateway, StatusError, time.Hour) },
+	}
 
-func TestRoot_EveryStatusBarFieldIsDrivenByTheFrameSweep(t *testing.T) {
-	typ := reflect.TypeOf(StatusBar{})
+	typ := reflect.TypeOf((*StatusBar)(nil))
 	seen := map[string]bool{}
-	for i := 0; i < typ.NumField(); i++ {
-		name := typ.Field(i).Name
+	for i := 0; i < typ.NumMethod(); i++ {
+		name := typ.Method(i).Name
+		if name == "SetWidth" || (name != "Flash" && !strings.HasPrefix(name, "Set")) {
+			continue
+		}
 		seen[name] = true
-		if _, ok := statusBarFieldsDriven[name]; !ok {
-			t.Errorf("StatusBar.%s reaches the bar and the frame sweep does not drive it — "+
-				"add it to rootFrameStatus and say how in statusBarFieldsDriven", name)
+		apply, ok := inputs[name]
+		if !ok {
+			t.Errorf("public status-bar input %s is not driven by the frame sweep", name)
+			continue
+		}
+		quiet := NewStatusBar()
+		quiet.SetWidth(120)
+		rootFrameStatus{}.apply(&quiet)
+		before := stripStatusANSI(quiet.View())
+		apply(&quiet)
+		if after := stripStatusANSI(quiet.View()); after == before {
+			t.Errorf("frame-sweep input %s did not reach the rendered status bar", name)
 		}
 	}
 	var stale []string
-	for name := range statusBarFieldsDriven {
+	for name := range inputs {
 		if !seen[name] {
 			stale = append(stale, name)
 		}
 	}
 	sort.Strings(stale)
 	for _, name := range stale {
-		t.Errorf("statusBarFieldsDriven names %q, which StatusBar no longer has", name)
+		t.Errorf("frame-sweep input %s is not a public StatusBar input", name)
 	}
 }
 

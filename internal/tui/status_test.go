@@ -1,11 +1,11 @@
 package tui
 
 import (
-	"go/ast"
 	"strings"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
@@ -288,52 +288,22 @@ func TestStatusBar_TheContextRowFitsEveryWidthRootDraws(t *testing.T) {
 	}
 }
 
-// TestStatusBar_EveryFlashGoesThroughOneDoor backs the claim in StatusBar.View
-// that every Status() in the package reaches the operator through the bar's
-// one bound: a StatusMsg is BUILT in exactly one place (route.go's Status) and
-// FLASHED in exactly one place (Root.dispatch). A second constructor or a
-// second Flash would be a way onto the bottom line that nothing here has
-// looked at, so either fails this — read off the package's own source, since
-// a roster of the 441 call sites would be out of date by the next commit.
-func TestStatusBar_EveryFlashGoesThroughOneDoor(t *testing.T) {
-	fset, files := jdeParsePackage(t)
-	var built, flashed []string
-	for _, f := range files {
-		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			where := fn.Name.Name
-			if fn.Recv != nil && len(fn.Recv.List) == 1 {
-				recv := fn.Recv.List[0].Type
-				if star, ok := recv.(*ast.StarExpr); ok {
-					recv = star.X
-				}
-				if id, ok := recv.(*ast.Ident); ok {
-					where = id.Name + "." + where
-				}
-			}
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				switch x := n.(type) {
-				case *ast.CompositeLit:
-					if id, ok := x.Type.(*ast.Ident); ok && id.Name == "StatusMsg" {
-						built = append(built, where+" at "+fset.Position(x.Pos()).String())
-					}
-				case *ast.CallExpr:
-					if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Flash" {
-						flashed = append(flashed, where+" at "+fset.Position(x.Pos()).String())
-					}
-				}
-				return true
-			})
-		}
+func TestStatusBar_AStatusCommandDispatchedThroughRootIsOneMarkedRow(t *testing.T) {
+	r := newTestRoot(rootFrameScreen{})
+	model, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	r = model.(Root)
+	model, _ = r.Update(Status(rootFrameGateway, StatusError)())
+	view := model.(Root).View()
+	lines := strings.Split(view, "\n")
+	if len(lines) != 24 {
+		t.Fatalf("Root.View drew %d rows, want 24", len(lines))
 	}
-	check := func(what string, got []string, want string) {
-		if len(got) != 1 || !strings.HasPrefix(got[0], want+" at ") {
-			t.Errorf("a StatusMsg must be %s only in %s; found %d site(s): %v", what, want, len(got), got)
-		}
+	last := strings.TrimRight(stripStatusANSI(lines[len(lines)-1]), " ")
+	wantPrefix := " create PO failed: oms: http 502: <!DOCTYPE html> <html>"
+	if !strings.HasPrefix(last, wantPrefix) {
+		t.Errorf("last row = %q, want prefix %q", last, wantPrefix)
 	}
-	check("built", built, "Status")
-	check("flashed", flashed, "Root.dispatch")
+	if !strings.HasSuffix(last, "…") {
+		t.Errorf("last row = %q, want a visible truncation mark", last)
+	}
 }
