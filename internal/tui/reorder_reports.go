@@ -25,6 +25,31 @@ func fmtMoneyPtr(p *float64) string {
 	return fmtMoney(*p)
 }
 
+// reportWithheld is what a transparency cell says where OMS did not disclose
+// whether a value was recorded. A word and not "—", because "—" in these
+// columns means OMS disclosed that none was recorded. The two send an operator
+// in different directions — a gap is for somebody to fill; withheld is a
+// question only a reader allowed to see vendor data can answer.
+const reportWithheld = "withheld"
+
+// vendorMoney is a transparency money cell on a row whose vendor block the
+// server may have withheld. The marker decides it, never the nil: an omitted
+// key and a null one both decode to nil, and only the marker says which.
+func vendorMoney(withheld bool, p *float64) string {
+	if withheld {
+		return reportWithheld
+	}
+	return fmtMoneyPtr(p)
+}
+
+// vendorText is vendorMoney for a vendor NAME.
+func vendorText(withheld bool, s string) string {
+	if withheld {
+		return reportWithheld
+	}
+	return orDash(s)
+}
+
 // fmtPct renders an already-computed percentage (the backend multiplies by 100
 // itself — do NOT scale again) as e.g. "88.9%".
 func fmtPct(f float64) string {
@@ -142,12 +167,35 @@ func NewReorderAnalyticsReportScreen(deps Deps) *ReportTableScreen {
 		},
 		{
 			label: "Trans. orders",
+			// NO SUPPLIER AND NO ESTIMATE COLUMN, because a reorder request
+			// records neither. The Est and Supplier this tab used to draw were
+			// the ITEM's current best supplier and a live quote at its current
+			// price, published under the order's name until OMS #1057 withdrew
+			// them — a fabricated attribution rather than a wrong one. Both went
+			// with it, not onto another field: what #1057 publishes instead
+			// (item_supplier_choice, item_estimated_cost_today) is true of the
+			// ITEM as of this response, and on a row per ORDER a supplier name
+			// beside the Actual figure reads as who was paid, and a price beside
+			// it as the order's budget — the two claims #1057 removed. The web's
+			// signed-in ledger keeps the item's supplier under a full-width
+			// "Item supplier today", but here that header would head an
+			// identifier column, which is what fitReportTable abbreviates — from
+			// the right — whenever the pane is short, and "today", the one word
+			// that stops it reading as this order's supplier, is the tail the
+			// abbreviation takes first. The note states the FACT — a request
+			// records neither — rather than naming columns that are no longer
+			// drawn, so an operator who remembers them learns why they went.
+			//
+			// Actual keeps three states apart (vendorMoney): a recorded figure
+			// ($0.00 for a donation among them), "—" where nothing was recorded,
+			// and "withheld" where the server did not tell this reader.
 			columns: []reportColumn{
 				{"Item", alignLeft}, {"Category", alignLeft}, {"Qty", alignRight},
-				{"Status", alignLeft}, {"Ordered", alignLeft}, {"Est", alignRight},
-				{"Actual", alignRight}, {"Supplier", alignLeft},
+				{"Status", alignLeft}, {"Ordered", alignLeft}, {"Actual", alignRight},
 			},
-			note: "Public order ledger · last 100 reorder requests with financial data.",
+			note: "Public order ledger · last 100 reorder requests with financial data · " +
+				"— under Actual: no cost recorded · " +
+				"a request records no supplier and no estimate.",
 			loader: func(ctx context.Context, deps Deps) (reportBody, error) {
 				tr, err := deps.OMS.ReorderTransparency(ctx)
 				if err != nil {
@@ -158,8 +206,7 @@ func NewReorderAnalyticsReportScreen(deps Deps) *ReportTableScreen {
 					out[i] = []string{
 						orDash(o.ItemName), orDash(o.ItemCategory), itoa(o.QuantityOrdered),
 						orDash(o.Status), orDash(dateOnly(o.OrderedAt)),
-						fmtMoneyPtr(o.EstimatedCost), fmtMoneyPtr(o.ActualCost),
-						orDash(o.SupplierName),
+						vendorMoney(o.VendorDataWithheld, o.ActualCost),
 					}
 				}
 				return reportBody{rows: out}, nil
@@ -167,6 +214,10 @@ func NewReorderAnalyticsReportScreen(deps Deps) *ReportTableScreen {
 		},
 		{
 			label: "Trans. POs",
+			// Every column stays: a purchase order HAS a supplier FK and records
+			// its own totals, so these are the order's facts. What changes is
+			// the three the server withholds from a reader not shown vendor data,
+			// which say so rather than drawing the "—" that means none recorded.
 			columns: []reportColumn{
 				{"PO #", alignLeft}, {"Supplier", alignLeft}, {"Status", alignLeft},
 				{"Ordered", alignLeft}, {"Expected", alignLeft}, {"Est total", alignRight},
@@ -181,9 +232,11 @@ func NewReorderAnalyticsReportScreen(deps Deps) *ReportTableScreen {
 				out := make([][]string, len(tr.PurchaseOrders))
 				for i, p := range tr.PurchaseOrders {
 					out[i] = []string{
-						orDash(p.PONumber), orDash(p.SupplierName), orDash(p.StatusLabel),
+						orDash(p.PONumber), vendorText(p.VendorDataWithheld, p.SupplierName),
+						orDash(p.StatusLabel),
 						orDash(dateOnly(p.OrderDate)), orDash(dateOnly(p.ExpectedDeliveryDate)),
-						fmtMoneyPtr(p.EstimatedTotal), fmtMoneyPtr(p.ActualTotal),
+						vendorMoney(p.VendorDataWithheld, p.EstimatedTotal),
+						vendorMoney(p.VendorDataWithheld, p.ActualTotal),
 						fmtYesNo(p.IsFullyReceived),
 					}
 				}

@@ -2,10 +2,13 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/uid0/scantty/internal/omsapi"
 )
 
 // TestReorderAnalyticsReport_Tabs locks the tab set + labels so the six
@@ -81,103 +84,137 @@ func TestReorderLeadTimeTrends_Loader(t *testing.T) {
 	}
 }
 
-// transparencyBody is the shared transparency envelope for the summary / orders
-// / POs tab tests (they all hit the same endpoint).
-const transparencyBody = `{
-	"summary":{"total_orders_with_financial_data":2,"total_amount_spent":150.25,
-	 "total_purchase_orders":1,"total_po_amount_spent":300.00,
-	 "last_updated":"2026-07-01T00:00:00Z","transparency_note":"open books"},
-	"orders":[{"id":11,"item_id":"i-1","item_name":"PLA","item_category":"Filament",
-	 "quantity_ordered":3,"status":"ordered","requested_at":"2026-06-01T00:00:00Z",
-	 "ordered_at":"2026-06-02T00:00:00Z","delivered_at":null,"estimated_cost":50.0,
-	 "actual_cost":null,"cost_per_unit":16.67,"cost_variance":null,"order_number":"ON-1",
-	 "invoice_number":"","invoice_url":"","purchase_order_url":"","delivery_tracking_url":"",
-	 "supplier_url":"","public_notes":"","supplier_name":"Acme"}],
-	"ledger":[{"id":11,"item_name":"PLA"}],
-	"purchase_orders":[{"id":"1","po_number":"PO-1","supplier_name":"Acme","status":"received",
-	 "status_label":"Received","order_date":"2026-05-01T00:00:00Z","expected_delivery_date":null,
-	 "estimated_total":300.0,"actual_total":null,"total_items":2,"total_quantity":5,
-	 "is_fully_received":true}]
-}`
+// The three transparency tabs share one endpoint, and every body they are
+// driven with here is RECORDED from a real OMS (internal/omsapi/testdata, with
+// provenance in its README) rather than written beside the assertions: the
+// hand-written envelope these tests used to share carried `supplier_name` and
+// `estimated_cost` on each order — the shape the Go struct assumed, and one OMS
+// main no longer sends — so it agreed with the defect it should have caught.
+// reorder_transparency_test.go drives the same bodies through the rendered pane.
 
-// TestReorderTransparencySummary_Loader covers tab 2: object → Metric/Value rows.
+// transparencyColumn is the index of the column headed `header` on tab `tab`,
+// read off the tab's own declaration so a cell check follows the column
+// wherever the table puts it.
+func transparencyColumn(t *testing.T, s *ReportTableScreen, tab int, header string) int {
+	t.Helper()
+	for i, c := range s.tabs[tab].columns {
+		if c.header == header {
+			return i
+		}
+	}
+	t.Fatalf("tab %q has no %q column", s.tabs[tab].label, header)
+	return -1
+}
+
+// TestReorderTransparencySummary_Loader covers the summary tab: object →
+// Metric/Value rows, every figure read off the recorded body.
 func TestReorderTransparencySummary_Loader(t *testing.T) {
-	c, path := fixedBodyClient(t, transparencyBody)
+	body := transparencyWire(t, "transparency_signed_in.json")
+	var raw struct {
+		Summary omsapi.ReorderTransparencySummary `json:"summary"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("recorded body: %v", err)
+	}
+	c, path := fixedBodyClient(t, string(body))
 	s := NewReorderAnalyticsReportScreen(Deps{OMS: c})
-	body, err := s.tabs[2].loader(context.Background(), Deps{OMS: c})
+	got, err := s.tabs[transparencyTab(t, "Transparency")].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
-	rows := body.rows
 	if *path != "/api/reorders/analytics/transparency/" {
 		t.Fatalf("path = %q", *path)
 	}
-	got := map[string]string{}
-	for _, r := range rows {
-		got[r[0]] = r[1]
+	cells := map[string]string{}
+	for _, r := range got.rows {
+		cells[r[0]] = r[1]
 	}
-	if got["Total amount spent"] != "$150.25" {
-		t.Errorf("total amount spent = %q, want $150.25", got["Total amount spent"])
+	want := map[string]string{
+		"Orders with financial data": itoa(raw.Summary.TotalOrdersWithFinancialData),
+		"Total amount spent":         fmtMoney(raw.Summary.TotalAmountSpent),
+		"Purchase orders":            itoa(raw.Summary.TotalPurchaseOrders),
+		"Total PO amount spent":      fmtMoney(raw.Summary.TotalPOAmountSpent),
+		"Last updated":               raw.Summary.LastUpdated[:10],
 	}
-	if got["Total PO amount spent"] != "$300.00" {
-		t.Errorf("total PO amount spent = %q, want $300.00", got["Total PO amount spent"])
-	}
-	if got["Orders with financial data"] != "2" || got["Purchase orders"] != "1" {
-		t.Errorf("summary counts wrong: %+v", got)
-	}
-	if got["Last updated"] != "2026-07-01" {
-		t.Errorf("last updated = %q, want date-only", got["Last updated"])
+	for k, v := range want {
+		if cells[k] != v {
+			t.Errorf("%s = %q, want %q", k, cells[k], v)
+		}
 	}
 }
 
-// TestReorderTransparencyOrders_Loader covers tab 3: null actual_cost → "—",
-// non-null estimated_cost → "$".
+// TestReorderTransparencyOrders_Loader covers the order ledger's loader: one
+// cell per declared column, the recorded $0.00 kept a figure and the null kept
+// "—". The withheld state and the withdrawn columns are asked of the rendered
+// pane in reorder_transparency_test.go.
 func TestReorderTransparencyOrders_Loader(t *testing.T) {
-	c, _ := fixedBodyClient(t, transparencyBody)
+	body := transparencyWire(t, "transparency_signed_in.json")
+	c, _ := fixedBodyClient(t, string(body))
 	s := NewReorderAnalyticsReportScreen(Deps{OMS: c})
-	body, err := s.tabs[3].loader(context.Background(), Deps{OMS: c})
+	tab := transparencyTab(t, "Trans. orders")
+	got, err := s.tabs[tab].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
-	rows := body.rows
-	if len(rows) != 1 {
-		t.Fatalf("rows = %d", len(rows))
+	orders := rawOrders(t, body)
+	if len(got.rows) != len(orders) {
+		t.Fatalf("rows = %d, want one per recorded order (%d)", len(got.rows), len(orders))
 	}
-	// Item | Category | Qty | Status | Ordered | Est | Actual | Supplier
-	r := rows[0]
-	if r[0] != "PLA" || r[1] != "Filament" || r[2] != "3" || r[4] != "2026-06-02" || r[7] != "Acme" {
-		t.Errorf("order cells wrong: %q", strings.Join(r, "|"))
-	}
-	if r[5] != "$50.00" {
-		t.Errorf("est cost cell = %q, want $50.00", r[5])
-	}
-	if r[6] != "—" {
-		t.Errorf("null actual cost cell = %q, want — (em dash)", r[6])
+	item, actual := transparencyColumn(t, s, tab, "Item"), transparencyColumn(t, s, tab, "Actual")
+	for i, o := range orders {
+		if n := len(got.rows[i]); n != len(s.tabs[tab].columns) {
+			t.Fatalf("row %d has %d cells for %d columns", i, n, len(s.tabs[tab].columns))
+		}
+		if got.rows[i][item] != o["item_name"] {
+			t.Errorf("row %d item = %q, want %q", i, got.rows[i][item], o["item_name"])
+		}
+		want := "—"
+		if v, ok := o["actual_cost"].(float64); ok {
+			want = fmtMoney(v)
+		}
+		if got.rows[i][actual] != want {
+			t.Errorf("row %d actual = %q, want %q", i, got.rows[i][actual], want)
+		}
 	}
 }
 
-// TestReorderTransparencyPOs_Loader covers tab 4: yes/no receipt + null totals.
+// TestReorderTransparencyPOs_Loader covers the PO ledger: yes/no receipt, null
+// dates and totals as "—", every value read off the recorded body.
 func TestReorderTransparencyPOs_Loader(t *testing.T) {
-	c, _ := fixedBodyClient(t, transparencyBody)
+	body := transparencyWire(t, "transparency_signed_in.json")
+	var raw struct {
+		POs []omsapi.ReorderTransparencyPO `json:"purchase_orders"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil || len(raw.POs) == 0 {
+		t.Fatalf("recorded body has no purchase orders (%v)", err)
+	}
+	p := raw.POs[0]
+	if p.ExpectedDeliveryDate != "" || p.ActualTotal != nil || p.EstimatedTotal == nil {
+		t.Fatal("the recording no longer carries a null expected date, a null actual total and " +
+			"an estimated total, so the \"—\" and money checks below would be vacuous")
+	}
+	c, _ := fixedBodyClient(t, string(body))
 	s := NewReorderAnalyticsReportScreen(Deps{OMS: c})
-	body, err := s.tabs[4].loader(context.Background(), Deps{OMS: c})
+	tab := transparencyTab(t, "Trans. POs")
+	got, err := s.tabs[tab].loader(context.Background(), Deps{OMS: c})
 	if err != nil {
 		t.Fatalf("loader: %v", err)
 	}
-	rows := body.rows
-	// PO # | Supplier | Status | Ordered | Expected | Est total | Actual total | Recv
-	r := rows[0]
-	if r[0] != "PO-1" || r[2] != "Received" || r[3] != "2026-05-01" {
-		t.Errorf("PO cells wrong: %q", strings.Join(r, "|"))
-	}
-	if r[4] != "—" {
-		t.Errorf("null expected date cell = %q, want —", r[4])
-	}
-	if r[5] != "$300.00" || r[6] != "—" {
-		t.Errorf("PO totals wrong: est=%q actual=%q", r[5], r[6])
-	}
-	if r[7] != "yes" {
-		t.Errorf("fully received cell = %q, want yes", r[7])
+	r := got.rows[0]
+	cell := func(h string) string { return r[transparencyColumn(t, s, tab, h)] }
+	for h, want := range map[string]string{
+		"PO #":         p.PONumber,
+		"Supplier":     p.SupplierName,
+		"Status":       p.StatusLabel,
+		"Ordered":      p.OrderDate[:10],
+		"Expected":     "—",
+		"Est total":    fmtMoney(*p.EstimatedTotal),
+		"Actual total": "—",
+		"Recv":         fmtYesNo(p.IsFullyReceived),
+	} {
+		if cell(h) != want {
+			t.Errorf("%s = %q, want %q", h, cell(h), want)
+		}
 	}
 }
 

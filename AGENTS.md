@@ -61,6 +61,14 @@ is not a reason to scope it out of a sweep. It has been used as one.
   `Empty()` means "null/unset" and NOT "zero": several OMS money properties
   return a real `0.00` for "no price recorded", so treat zero as an absence
   wherever a price is being carried forward (`internal/tui/po_line_price.go`).
+- **`vendor_data_withheld: true` and `null` are different facts.** Omitted vendor
+  keys mean the reader was not shown the fact; `null` means no figure was
+  recorded. Read the marker rather than inferring either state from a nil. The
+  owner is `vendorMoney` in `internal/tui/reorder_reports.go`.
+- **A transparency ORDER row has no supplier or estimate of its own.** Do not
+  present item-scoped replacements as order facts. `ReorderTransparencyOrder`'s
+  doc owns the wire rationale; `internal/tui/reorder_transparency_test.go` owns
+  the derived set of transparency surfaces.
 
 ### Purchase-order line money has two denominators
 
