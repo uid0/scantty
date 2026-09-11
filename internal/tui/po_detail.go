@@ -1501,10 +1501,20 @@ var poFlagBudget = func() int {
 	return widest
 }()
 
-// poFitLineGrid drops the flag column first and the ship-date column second,
-// because that is the order of how much a narrow pane loses by it: the flag is
-// one word that reads fine as a reading, the ship date is a whole reading of its
-// own, and the item name is the row's subject and never goes.
+// poFitLineGrid drops the flag column first and the ship-date column second;
+// the item name is the row's subject and never goes.
+//
+// DROPPING THE FLAG COLUMN IS NOT DROPPING THE FLAG, and that half of the
+// give-order belongs to the callers. This comment used to justify the order by
+// saying the flag "reads fine as a reading", and that was false: a reading is a
+// separate line UNDER the row, and a scrolled pane can end on the row itself,
+// so wherever this fit dropped the column a voided line drawn as the last row
+// above `↓ N more below` read as a live line on the order. So where the column
+// is gone, a VOID leads the row's own item cell on both grids (poLineBlock
+// here, po_edit.go's lineGrid there), where no window can separate it from the
+// row; TestPOLines_AVoidedLineSaysSoWhereverItIsDrawn holds that on the clipped
+// pane at every drawable pane and scroll position. A received line's
+// `✓ received` still moves to the readings (poLineTokens).
 //
 // It is handed the lines so that the fixed columns can be budgeted at what they
 // will actually hold. A number cell is not a description: "1000…" is a WRONG
@@ -1945,15 +1955,14 @@ func poBuildOneLineGrid(bodyWidth int, items []omsapi.PurchaseOrderItem, supplie
 // from: the same cells in the same order, off the same poGrid* widths and
 // through the same poLineGridRow, so a line reads the same on the screen that
 // shows it as on the screen that edits it. Both shed the cells they cannot fit
-// (poFitLineGrid) rather than letting the pane cut them; what differs is where a
-// dropped FLAG goes — onto the readings here, onto the row's own item cell on
-// the edit grid, whose window is anchored on a cursor (po_edit.go's lineGrid
-// says why).
+// (poFitLineGrid) rather than letting the pane cut them, and both put a dropped
+// VOID in the same place: at the front of the row's own item cell
+// (poLineBlock says why that and not the readings).
 //
-// Everything the grid has no column for rides underneath it as wrapped
+// Everything else the grid has no column for rides underneath it as wrapped
 // readings (jdeWrapTokens), which is what lets the row itself stay inside a
 // 51-column pane. The readings WRAP rather than being trimmed because the piece
-// an ellipsis eats is the last one, and the last one is where "voided" sits.
+// an ellipsis eats is the last one.
 func (s *PurchaseOrderDetailScreen) addLineItems(l *jdeLines, supplier string) {
 	po := s.po
 	if len(po.Items) == 0 {
@@ -1995,20 +2004,43 @@ func poLineBlock(lineNum int, li omsapi.PurchaseOrderItem, poSupplier string, fi
 	if fit.ship {
 		ship = firstNonEmpty(li.ExpectedShipmentDate, "—")
 	}
-	if fit.flag {
-		flag = poLineFlag(li)
-	}
 	// A kit line is not what its label says it is: it buys one SKU and credits
 	// several other items on receipt, so it is marked where the name is read —
 	// AHEAD of the name, inside the Item cell, which is the part a narrow pane
 	// truncates. The tag rides in the cell rather than in the flag column
 	// because that column is the first one poFitLineGrid sheds, and it is
 	// already spoken for by "[voided]" / "✓ received"; it goes in PLAIN, like
-	// every other cell of this grid, because poGridCell fits by runes and would
-	// cut a style's escape sequence in half.
+	// every other cell of this grid, because poGridCell fits by display cells
+	// and would cut a style's escape sequence in half.
 	item := li.DisplayLabel()
 	if li.IsKitLine {
 		item = poKitTag + " " + item
+	}
+	// A VOID THE FIT HAS NO COLUMN FOR LEADS THE ITEM CELL, ahead of the kit
+	// tag. It used to ride the readings under the row, and a scrolled pane can
+	// end on the row: the row then drew `2  Gadget  2  $24.00` over
+	// `↓ N more below`, a voided line reading as a live one on the screen the
+	// operator decides what is still on order from. On the row no window can
+	// separate them.
+	//
+	// That is po_edit.go's lineGrid shape, and it was checked against THIS
+	// grid's geometry rather than assumed, because the two cells differ: this
+	// one already carries the kit tag, so a voided kit line needs 15 cells for
+	// `[voided] [kit]` where the item column's floor is 12. The void leads, so
+	// it is the tag and then the name that give, cut from the right with an
+	// ellipsis — the right order here, because a voided line is refused on
+	// receipt and the kit tag's whole point is what a receipt credits (the
+	// credit block under the row still says it is a kit). And the item cell
+	// starts seven cells in, so `[voided]` is whole even where the row itself
+	// overruns the pane: at 45 columns the pane is 16 and the flag ends at 15.
+	//
+	// Only the VOID moves. A received line's `✓ received` still rides the
+	// readings when its column is gone (poLineTokens).
+	switch f := poLineFlag(li); {
+	case fit.flag:
+		flag = f
+	case li.IsVoided:
+		item = f + " " + item
 	}
 	out := []string{poDetailGridRow(
 		fit,
@@ -2129,16 +2161,14 @@ func poLineTokens(li omsapi.PurchaseOrderItem, poSupplier string, fit poLineGrid
 	add := func(style lipgloss.Style, format string, args ...any) {
 		out = append(out, jdeToken{text: fmt.Sprintf(format, args...), style: style})
 	}
-	// The flag leads when the grid could not keep its column: it is the one
-	// reading that changes what the whole row MEANS, and jdeWrapTokens trims
-	// only the last token on an over-long line.
-	if !fit.flag {
+	// A received mark leads the readings when the grid could not keep its
+	// column: it changes what the whole row MEANS, and jdeWrapTokens trims only
+	// the last token on an over-long line. A VOID is not here — it leads the
+	// row's own item cell instead (poLineBlock says why), and a second copy
+	// under the row would only repeat it.
+	if !fit.flag && !li.IsVoided {
 		if flag := poLineFlag(li); flag != "" {
-			style := StyleStatusOK
-			if li.IsVoided {
-				style = StyleStatusWarn
-			}
-			add(style, "%s", flag)
+			add(StyleStatusOK, "%s", flag)
 		}
 	}
 	if part := poLinePartNumber(li); part != "" {
@@ -2171,11 +2201,32 @@ func poLineTokens(li omsapi.PurchaseOrderItem, poSupplier string, fit poLineGrid
 func poLineFlag(li omsapi.PurchaseOrderItem) string {
 	switch {
 	case li.IsVoided:
-		return "[voided]"
+		return poVoidFlag
 	case li.IsFullyReceived:
 		return "✓ received"
 	}
 	return ""
+}
+
+// poVoidFlag is how every purchasing surface spells a voided line.
+const poVoidFlag = "[voided]"
+
+// poVoidLead puts poVoidFlag AHEAD of whatever names a voided line, and hands a
+// live line's name back untouched.
+//
+// It is for the frames that name ONE line rather than drawing it in a grid —
+// the edit screen's line editor, its delete confirm and its association
+// picker — and it LEADS for the reason the grids lead with it: every one of
+// those names is clipped to the pane from the right, and a clip that kept the
+// name and took a flag written after it would leave a voided line reading as a
+// live one. Written first, any prefix that still names the line carries the
+// fact with it. TestPOLines_AVoidedLineSaysSoWhereverItIsDrawn holds each of
+// those frames to that at every drawable pane and position.
+func poVoidLead(li omsapi.PurchaseOrderItem, name string) string {
+	if !li.IsVoided {
+		return name
+	}
+	return poVoidFlag + " " + name
 }
 
 // poShipTokens carry what the grid's plain Ship-date column cannot: that the

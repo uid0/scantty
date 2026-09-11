@@ -152,7 +152,7 @@ const (
 // when the frame changes under it.
 var poAddLabels = []string{
 	"Supplier", "Order", "Scan / type",
-	"Item", "Item SKU", "Supplier SKU", "Matched", "Case", "On order",
+	"Item", "Item SKU", "Supplier SKU", "Matched", "Case", "On order", "Voided line",
 	// BOTH spellings of the two typed rows, because the label they draw
 	// depends on the entry basis and the shared column has to be wide enough
 	// for whichever is live — a column that moved when Ctrl-T was pressed
@@ -1683,9 +1683,20 @@ func poAddSKUCells(room int) int {
 // behind an unbounded label is not a bound at all: at 51 columns that label
 // plus an on-order count pushed the price off the row entirely.
 func (s *PurchaseOrderAddLineScreen) candidateFacts(c omsapi.POLineCandidate, room int) string {
-	facts := []string{fmt.Sprintf("%d @ %s", c.SuggestedQuantity, poAddMoney(c.SuggestedUnitCost.String()))}
-	if c.AlreadyOnOrder != nil {
-		facts = append(facts, fmt.Sprintf("on order: %d", c.AlreadyOnOrder.QuantityOrdered))
+	var facts []string
+	// A line the order carries that is VOIDED is not on order, and it changes
+	// what picking this candidate does: the add is refused rather than growing
+	// the line. This row used to say "on order: 250" for it all the same — a
+	// voided line reading as a live one on the list the operator picks from —
+	// so it says VOIDED, and it LEADS the facts, ahead of the suggested
+	// quantity and price a refused add will never use, because the facts can
+	// still run past a narrow pane and what runs past is the tail.
+	if r := c.AlreadyOnOrder; r != nil && r.IsVoided {
+		facts = append(facts, fmt.Sprintf("VOIDED line: %d", r.QuantityOrdered))
+	}
+	facts = append(facts, fmt.Sprintf("%d @ %s", c.SuggestedQuantity, poAddMoney(c.SuggestedUnitCost.String())))
+	if r := c.AlreadyOnOrder; r != nil && !r.IsVoided {
+		facts = append(facts, fmt.Sprintf("on order: %d", r.QuantityOrdered))
 	}
 	if c.Item.IsKit {
 		facts = append(facts, "kit")
@@ -1791,7 +1802,16 @@ func (s *PurchaseOrderAddLineScreen) confirmBody() *jdeLines {
 			Value: poPackFact(c.QuantityPerPackage)})
 	}
 	if r := c.AlreadyOnOrder; r != nil {
-		fields = append(fields, jdeField{Label: "On order", Kind: jdeValue,
+		// A VOIDED line is named by the LABEL, not the value. The label is the
+		// front of the row and no pane clips it, while the value is clipped from
+		// the right and, below 54 columns, not drawn at all — so the row read
+		// "On order ....." over a line that is not on order and cannot be
+		// grown, with the one word that says so off the pane.
+		label := "On order"
+		if r.IsVoided {
+			label = "Voided line"
+		}
+		fields = append(fields, jdeField{Label: label, Kind: jdeValue,
 			Value: pickerClip(poAddOnOrderValue(*r), room)})
 	}
 	l.AddFittedFields(fields, lw, pane, jdeNoRow)
@@ -1807,7 +1827,11 @@ func (s *PurchaseOrderAddLineScreen) confirmBody() *jdeLines {
 
 // poAddOnOrderValue says what a repeat add will DO, not merely that the item is
 // already there. A voided line reports no outcome because the add is refused
-// outright rather than resurrecting it, and quoting one would be a lie.
+// outright rather than resurrecting it, and quoting one would be a lie. Its
+// row's LABEL says it is voided (confirmBody), so the value says only what was
+// ordered on it — the row used to say VOIDED at the END of the value, and a
+// narrow pane cut "25 units ordered on a VOIDED line" to "25 units ordered on…",
+// a live line the add would grow.
 // The quantities NAME their unit, because both are BASE units and this row is
 // drawn directly under the one stating what a case holds: a bare 25 under
 // "Case ..... 1 case = 25 units" reads as one case, which is the reported
@@ -1816,7 +1840,7 @@ func (s *PurchaseOrderAddLineScreen) confirmBody() *jdeLines {
 // number beside a case size is loose or packed.
 func poAddOnOrderValue(r omsapi.POLineExisting) string {
 	if r.IsVoided {
-		return fmt.Sprintf("%s ordered on a VOIDED line", poUnitCount(r.QuantityOrdered))
+		return fmt.Sprintf("%s ordered on it", poUnitCount(r.QuantityOrdered))
 	}
 	if r.RepeatIncrement == nil || r.QuantityOrderedAfter == nil {
 		return fmt.Sprintf("%s ordered", poUnitCount(r.QuantityOrdered))

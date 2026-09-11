@@ -418,7 +418,10 @@ func TestReceiveFlow_AScanNamesTheLineByTheNumberTheFormDraws(t *testing.T) {
 			t.Errorf("the settled list does not name itself, so \"settled line 2\" "+
 				"resolves to nothing:\n%s", tail)
 		}
-		if !strings.Contains(tail, "2. "+second.Label) {
+		// The entry leads with the line's STATE and then the label, because a
+		// clip takes the tail and the state is what put it on this list
+		// (addClosedLines).
+		if !strings.Contains(tail, "2. "+second.ReceiptStateLabel+" — "+second.Label) {
 			t.Errorf("the settled list's entry 2 is not the line the note named:\n%s", tail)
 		}
 		_ = r
