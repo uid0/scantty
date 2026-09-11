@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,6 +80,8 @@ func TestFailDetail_ACutBodyAlwaysCarriesItsMark(t *testing.T) {
 	})
 
 	t.Run("the mark itself fits the pane", func(t *testing.T) {
+		const whole = "… more of the error than this pane can hold"
+		cut := 0
 		for _, w := range []int{12, 20, 40, 51} {
 			got := failDetailLines(strings.Repeat("y", 4000), w, rows)
 			for i, line := range got {
@@ -88,6 +91,20 @@ func TestFailDetail_ACutBodyAlwaysCarriesItsMark(t *testing.T) {
 						w, i, c, line)
 				}
 			}
+			// And where that bound bites, it says so like every other bound:
+			// cellPrefix alone drew `… more of the erro` below a 43-cell block.
+			last := got[len(got)-1]
+			if lipgloss.Width(whole) > w {
+				cut++
+				if !strings.HasSuffix(last, "…") {
+					t.Errorf("at width %d the mark row is %q — clipped, and not saying so", w, last)
+				}
+			} else if last != whole {
+				t.Errorf("at width %d the mark row is %q, want it whole: %q", w, last, whole)
+			}
+		}
+		if cut == 0 {
+			t.Fatalf("no width in the table is narrower than the mark, so its clip is untested")
 		}
 	})
 }
@@ -257,4 +274,172 @@ func TestFailDetail_ADetailItCannotDrawReturnsNothing(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A short pane RE-DRAWS the failure block rather than cutting its mark off.
+//
+// failDetailLines spends the LAST of the block's rows on the mark, and the
+// block is a context row of a pinned header — where jdeFitHeader gives ground
+// from the END. So a pane too short for all three rows took the MARK first and
+// kept the head of the gateway page above it: the add-line screen drew
+// `oms: http 502: <!DOCTYPE` alone under the failure headline at 80x17, and the
+// New PO review drew `oms: http 502: <!DOCTYPE html>` at 80x14, each reading as
+// the complete reason. Both sites already called the shared helper and both
+// unit tests of it passed — the helper marked the cut, and the layer then cut
+// the mark. Only the rendered pane at a height below the block's full budget
+// could see it, and every existing check measured 80x24 and 80x30.
+//
+// Measured at every drawable height and at every width the columnar layer is
+// honest about (receiveHonestWidths records the 45–48 band, where the layer's
+// floored bodyWidth lets clampToBox cut every row of every columnar screen, as
+// the layer's own defect rather than this one's).
+func TestFailDetail_AShortPaneRedrawsTheBlockRatherThanCuttingItsMark(t *testing.T) {
+	t.Run("add a line", func(t *testing.T) {
+		fake := &poAddFake{rows: poAddRows(), fail: true}
+		srv := httptest.NewServer(fake.handler())
+		defer srv.Close()
+		deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
+		po := &omsapi.PurchaseOrder{ID: 1, Number: "PO-2026-0042", Status: "draft",
+			SupplierDetails: "Acme Fasteners & Industrial Supply Co."}
+		s := NewPurchaseOrderAddLineScreen(deps, po)
+		r := newTestRoot(s)
+		r.deps = deps
+		next, _ := r.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+		r = next.(Root)
+		r = key(t, r, poRuneKey("AF-77"))
+		r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+		_ = r
+		if s.failDetail == "" {
+			t.Fatalf("the lookup did not fail, so there is no block to measure")
+		}
+		failBlockKeepsItsMark(t, s, s.failLines)
+	})
+
+	t.Run("new purchase order", func(t *testing.T) {
+		_, s := poSubmitFailure(t, poGatewayHTML, 30)
+		failBlockKeepsItsMark(t, s, func() []string { return s.failDetailIn(poFailDetailRows) })
+	})
+
+	// The third caller that pins the block in a header. It never used the
+	// fixed budget the other two did — headerSplit asks the pane first — so it
+	// is here to hold that the other route reaches the same answer, not because
+	// it was reported. Its block as BUILT is already the pane's, so the header
+	// never cuts into it and the trim guard does not apply.
+	t.Run("receiving", func(t *testing.T) {
+		fake := &receiveFake{
+			sheet:    receiveWorksheet(receiveOrder()...),
+			failWith: http.StatusBadGateway,
+			failBody: poGatewayHTML,
+		}
+		r, s := receiveDrive(t, fake, receiveOrder(), 120, 40)
+		r = receiveGoToLine(t, r, s, 0)
+		r = receiveTypeInto(t, r, "1")
+		r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // -> review
+		_ = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter}) // post, which 502s
+		if s.failDetail == "" {
+			t.Fatalf("the receipt did not fail, so there is no block to measure")
+		}
+		failBlockKeepsItsMarkOn(t, s, s.failDetailLines, false)
+	})
+}
+
+// failBlockKeepsItsMark resizes s through every honest pane and fails wherever
+// the head of the failure body is drawn with no mark beside it. `built` is the
+// block as the screen BUILDS it at the current size, before any header trim.
+//
+// The fixture body must be cut at every pane or "no mark" is not a defect, so
+// that is checked rather than assumed; and the sweep must reach panes where the
+// header really did cut into the block, or it proved nothing about the trim —
+// counted, and fatal when zero.
+func failBlockKeepsItsMark(t *testing.T, s Screen, built func() []string) {
+	t.Helper()
+	failBlockKeepsItsMarkOn(t, s, built, true)
+}
+
+// failBlockKeepsItsMarkOn is failBlockKeepsItsMark with the trim guard optional,
+// for a caller whose block as built is already sized to the pane.
+func failBlockKeepsItsMarkOn(t *testing.T, s Screen, built func() []string, wantTrim bool) {
+	t.Helper()
+	var drawn, trimmed int
+	var bad []string
+	for _, w := range receiveHonestWidths() {
+		for _, h := range jdePaneHeights() {
+			s = jdeAtPane(s, w, h)
+			whole := stripANSI(strings.Join(built(), "\n"))
+			if whole == "" {
+				// A caller that sizes the block to the pane can give it nothing
+				// (receiving's headerSplit, on the shortest panes): nothing is
+				// drawn, so there is no fragment to mark.
+				continue
+			}
+			if !failBlockCarriesAMark(whole) {
+				t.Fatalf("at %dx%d the block as built is not cut, so a pane drawing it "+
+					"unmarked would be right and this sweep could not fail:\n%s", w, h, whole)
+			}
+			lines := strings.Split(stripANSI(clampToBox(s.View(), screenBodyCells(w), screenBodyRows(h))), "\n")
+			head := -1
+			for i, line := range lines {
+				if strings.HasPrefix(strings.TrimSpace(line), "oms: http 502:") {
+					head = i
+					break
+				}
+			}
+			if head < 0 {
+				continue
+			}
+			drawn++
+			// The block's rows on the pane: the head, then every row that is a
+			// fold continuation of it (pickerWrap's two-cell indent under the
+			// block's own) or its mark row. Matched EXACTLY, because a field row
+			// below the block is right-aligned into the label column and so also
+			// opens with spaces — counted as the block, it would hide a trim.
+			rows := 1
+			for _, line := range lines[head+1:] {
+				cont := strings.HasPrefix(line, jdeIndent+"  ") &&
+					!strings.HasPrefix(line, jdeIndent+"   ")
+				if !cont && !strings.HasPrefix(line, jdeIndent+"…") {
+					break
+				}
+				rows++
+			}
+			if rows < len(built()) {
+				trimmed++
+			}
+			block := strings.Join(lines[head:head+rows], "\n")
+			if !failBlockCarriesAMark(block) {
+				bad = append(bad, fmt.Sprintf("%dx%d:\n%s", w, h, block))
+			}
+		}
+	}
+	if drawn == 0 {
+		t.Fatalf("the failure body was never on the pane, so nothing was measured")
+	}
+	if wantTrim && trimmed == 0 {
+		t.Fatalf("no pane drew the block at fewer rows than it was built with, so the " +
+			"header never cut into it and the sweep says nothing about the trim")
+	}
+	t.Logf("the body was on %d pane(s), %d of them drawing the block cut by the header", drawn, trimmed)
+	if len(bad) > 0 {
+		t.Errorf("%d of %d pane(s) draw the head of a cut error body with nothing saying "+
+			"more of it exists, e.g. %s", len(bad), drawn, bad[0])
+	}
+}
+
+// failBlockCarriesAMark reports whether a failure block, as drawn, says it is
+// not the whole error: the multi-row form's MARK ROW, which leads with the
+// ellipsis in both of its wordings, or the one-row form's ellipsis on the head.
+// Matched on the ellipsis rather than on the mark's words because at a narrow
+// pane the mark row is itself clipped, and a check keyed on "more of the error"
+// would report that clip as a missing mark. Nothing else in the block carries
+// one: pickerWords breaks an over-long token without marking it, because the
+// rest of it is the next row down.
+func failBlockCarriesAMark(block string) bool {
+	lines := strings.Split(block, "\n")
+	for i, line := range lines {
+		tr := strings.TrimSpace(line)
+		if strings.HasPrefix(tr, "…") || (i == 0 && strings.HasSuffix(tr, "…")) {
+			return true
+		}
+	}
+	return false
 }

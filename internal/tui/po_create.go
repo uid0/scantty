@@ -2397,6 +2397,12 @@ func (s *PurchaseOrderCreateScreen) answerNote() pickerNote {
 // box-pinning phase, so the pair cannot stand together. statusPlan carries the
 // closing argument and the note on what would reopen it.
 func (s *PurchaseOrderCreateScreen) answerRows() []string {
+	return s.answerRowsIn(0)
+}
+
+// answerRowsIn is answerRows drawn into at most `rows` rows, the cut marked;
+// zero is "no limit". It is the answer's refit in the pinned header.
+func (s *PurchaseOrderCreateScreen) answerRowsIn(rows int) []string {
 	n := s.answerNote()
 	if n.text == "" {
 		return nil
@@ -2404,7 +2410,7 @@ func (s *PurchaseOrderCreateScreen) answerRows() []string {
 	if _, plan := s.statusPlan(); plan.holdsAnswer {
 		return nil
 	}
-	lines := n.renderLines(s.paneWidth() - len(jdeIndent))
+	lines := n.renderLinesIn(s.paneWidth()-len(jdeIndent), rows)
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		out = append(out, jdeIndent+line)
@@ -2826,7 +2832,12 @@ const poSubmitFailWords = "creating the PO failed"
 // TestJDEForm_EveryEssentialHeaderRowIsOnThePane is where it fails.
 func (s *PurchaseOrderCreateScreen) headerLines() jdeHeader {
 	h := jdeHeader(nil).add(jdeHeadContext, s.supplierHeaderRows()...)
-	h = h.add(jdeHeadContext, s.failLines()...)
+	// The detail is FITTED rather than added: given ground row by row from the
+	// end, a short pane took the block's own cut mark first and drew
+	// `oms: http 502: <!DOCTYPE html>` under the supplier at 80x14, reading as
+	// the whole reason the order was refused (jdeHeader.addFitted).
+	h = h.add(jdeHeadContext, s.failLead()...)
+	h = h.addFitted(jdeHeadContext, jdeHeadContext, s.failDetailIn(poFailDetailRows), s.failDetailIn)
 
 	switch s.phase {
 	case poPhaseSource:
@@ -2894,25 +2905,29 @@ func (s *PurchaseOrderCreateScreen) headerLines() jdeHeader {
 	// picking from. The ANSWER can still appear above it as CONTEXT, but only
 	// on the frames where the status row could not print the whole of it
 	// (answerRows) — which is the only case where the header adds anything.
+	//
+	// The answer and the standing fact are each ONE sentence folded across
+	// rows, so they are FITTED: given ground row by row from the end, a fold is
+	// cut to a fragment that reads as the whole (jdeHeader.addFitted).
 	answer := s.answerRows()
 	if box := s.essentialBoxRow(); box != "" {
-		return h.addBlock(jdeHeadContext, answer).add(jdeHeadDecorative, "").add(jdeHeadEssential, box)
+		return h.addFittedBlock(jdeHeadContext, answer, s.answerRowsIn).
+			add(jdeHeadDecorative, "").add(jdeHeadEssential, box)
 	}
 	// With no box to pin, the answer takes the slot when it has one to take —
 	// its head is on the status row either way, but a header that marked
 	// nothing essential is a header the layer may trim to whichever row
 	// happened to be first. The standing FACT fills it the rest of the time, so
 	// "nothing to say" and "the row scrolled away" stay different states.
-	rows := answer
+	rows, refit := answer, s.answerRowsIn
 	if len(rows) == 0 {
-		rows = s.standingRows()
+		rows, refit = s.standingRows(), s.standingRowsIn
 	}
 	if len(rows) == 0 {
 		return h
 	}
 	return h.add(jdeHeadDecorative, "").
-		add(jdeHeadEssential, rows[0]).
-		add(jdeHeadContext, rows[1:]...)
+		addFitted(jdeHeadEssential, jdeHeadContext, rows, refit)
 }
 
 // supplierHeaderRows is the committed supplier, drawn as a columnar value row.
@@ -3123,6 +3138,12 @@ func (s *PurchaseOrderCreateScreen) essentialBoxRow() string {
 // Folded, never hand-counted. Root.View TRUNCATES rather than wrapping, and the
 // tail of one of these sentences is the half that says what the state IS.
 func (s *PurchaseOrderCreateScreen) standingRows() []string {
+	return s.standingRowsIn(0)
+}
+
+// standingRowsIn is standingRows drawn into at most `rows` rows, the cut
+// marked; zero is "no limit". It is the standing fact's refit in the header.
+func (s *PurchaseOrderCreateScreen) standingRowsIn(rows int) []string {
 	if s.essentialBoxRow() != "" {
 		return nil
 	}
@@ -3131,7 +3152,7 @@ func (s *PurchaseOrderCreateScreen) standingRows() []string {
 	// it; a standing note that repeated them would be the second statement of
 	// one claim that this screen's own history says will eventually contradict
 	// the first.
-	lines := pickerNote{text: s.standingNote()}.renderLines(s.paneWidth() - len(jdeIndent))
+	lines := pickerNote{text: s.standingNote()}.renderLinesIn(s.paneWidth()-len(jdeIndent), rows)
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		out = append(out, jdeIndent+line)
@@ -3232,12 +3253,20 @@ func (s *PurchaseOrderCreateScreen) lineSourceName() string {
 // cellPrefix bound does not: past it the fold only ever saw a PREFIX, so a
 // count would be true of the prefix and not of the error — and naming a number
 // that is only true of a fraction is the same false claim as marking nothing.
+//
+// It is the lead and the detail at the detail's FULL budget. headerLines pins
+// the two apart — failLead, then the detail FITTED through failDetailIn — so a
+// short pane re-draws the detail at the rows it really has instead of cutting
+// the mark off its bottom (jdeHeader.addFitted).
 func (s *PurchaseOrderCreateScreen) failLines() []string {
-	head, detail := s.failure()
-	width := s.paneWidth() - len(jdeIndent)
-	if width < 12 {
-		width = 12
-	}
+	return append(s.failLead(), s.failDetailIn(poFailDetailRows)...)
+}
+
+// failLead is the failure HEADLINE, drawn in the header only when the status
+// row is drawing something else.
+func (s *PurchaseOrderCreateScreen) failLead() []string {
+	head, _ := s.failure()
+	width := s.failWidth()
 	var lead []string
 	if _, plan := s.statusPlan(); head != "" && !plan.drawsHead {
 		// The status row is drawing something ELSE — the work in flight, or the
@@ -3260,21 +3289,35 @@ func (s *PurchaseOrderCreateScreen) failLines() []string {
 		lead = []string{jdeIndent + StyleStatusError.Render(
 			pickerClip(jdeStatusErrMark+jdeStatusOneLine(head), width))}
 	}
+	return lead
+}
+
+// failDetailIn is the failure's unbounded DETAIL drawn into at most rows rows.
+func (s *PurchaseOrderCreateScreen) failDetailIn(rows int) []string {
+	_, detail := s.failure()
 	if detail == "" {
-		return lead
+		return nil
 	}
 	// failDetailLines (pane_text.go) is the shared bound: it folds, cuts and
 	// MARKS, and the mark is the last line it returns, so the block never grows.
 	// This wording and the spend-a-row-rather-than-add-one trade came from here
 	// originally; they moved with the function when po_add_line.go turned out to
 	// have a copy that had lost the mark.
-	lines := failDetailLines(detail, width, poFailDetailRows)
-	out := make([]string, 0, poFailDetailRows+len(lead))
-	out = append(out, lead...)
+	lines := failDetailLines(detail, s.failWidth(), rows)
+	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		out = append(out, jdeIndent+StyleMuted.Render(line))
 	}
 	return out
+}
+
+// failWidth is the cells the failure block folds and clips against.
+func (s *PurchaseOrderCreateScreen) failWidth() int {
+	width := s.paneWidth() - len(jdeIndent)
+	if width < 12 {
+		width = 12
+	}
+	return width
 }
 
 // poFailDetailRows caps that detail. The sentence naming WHAT failed is on the

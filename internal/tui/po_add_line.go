@@ -1340,14 +1340,17 @@ func (s *PurchaseOrderAddLineScreen) headerLines() jdeHeader {
 	if len(out) > 0 {
 		out = out.add(jdeHeadDecorative, "")
 	}
-	for i, line := range notes {
-		rank := jdeHeadContext
-		if i == 0 {
-			rank = jdeHeadEssential
-		}
-		out = out.add(rank, line)
-	}
-	return out.add(jdeHeadContext, fails...).add(jdeHeadDecorative, "")
+	// The note's first row is the essential one and its fold is context — and
+	// it is FITTED rather than added row by row, because given ground from the
+	// end a fold is cut to a fragment that reads as the whole sentence: at 80x11
+	// this frame answered a failed lookup "✗ could not tell whether Acme
+	// Fasteners &" and stopped (jdeHeader.addFitted).
+	out = out.addFitted(jdeHeadEssential, jdeHeadContext, notes, s.noteLinesIn)
+	// FITTED, not added: the detail is the LAST context block, so it is the
+	// first thing a short pane gives, and given row by row from the end it lost
+	// its own cut mark first — `oms: http 502: <!DOCTYPE` drawn alone at 80x17,
+	// reading as the whole reason (jdeHeader.addFitted).
+	return out.addFitted(jdeHeadContext, jdeHeadContext, fails, s.failLinesIn).add(jdeHeadDecorative, "")
 }
 
 // identifyHeader is the identify phase's lead-in, PINNED rather than written
@@ -1481,7 +1484,13 @@ func poAddShareRow(room int, first, second string) (string, string) {
 // the tail of these sentences is where the key that gets the operator OUT is
 // named — a clipped hint is worse than none, because they believe they read it.
 func (s *PurchaseOrderAddLineScreen) noteLines() []string {
-	lines := s.note.renderLines(s.paneWidth() - len(jdeIndent))
+	return s.noteLinesIn(0)
+}
+
+// noteLinesIn is noteLines drawn into at most `rows` rows, the cut marked; zero
+// is "no limit". It is the note's refit in the pinned header.
+func (s *PurchaseOrderAddLineScreen) noteLinesIn(rows int) []string {
+	lines := s.note.renderLinesIn(s.paneWidth()-len(jdeIndent), rows)
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		out = append(out, jdeIndent+line)
@@ -1493,7 +1502,16 @@ func (s *PurchaseOrderAddLineScreen) noteLines() []string {
 // carries. The detail is an OMS response body and is unbounded, so it is CUT to
 // what the pane can hold before it is folded — folding a multi-KB gateway page
 // is work whose result is thrown away, on a block redrawn every keystroke.
+//
+// It is the block as BUILT, at its full budget; failLinesIn is the same block
+// at however many rows the pinned header can really give it, which is what
+// headerLines hands jdeFitHeader so a short pane re-draws the block rather than
+// cutting its mark off the bottom (jdeHeader.addFitted).
 func (s *PurchaseOrderAddLineScreen) failLines() []string {
+	return s.failLinesIn(poAddFailDetailRows)
+}
+
+func (s *PurchaseOrderAddLineScreen) failLinesIn(rows int) []string {
 	if s.failDetail == "" {
 		return nil
 	}
@@ -1501,7 +1519,7 @@ func (s *PurchaseOrderAddLineScreen) failLines() []string {
 	if width < 12 {
 		width = 12
 	}
-	lines := failDetailLines(s.failDetail, width, poAddFailDetailRows)
+	lines := failDetailLines(s.failDetail, width, rows)
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		out = append(out, jdeIndent+StyleMuted.Render(line))

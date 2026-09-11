@@ -1085,9 +1085,21 @@ const (
 )
 
 // jdeHeadRow is one line of a pinned header and how expendable it is.
+//
+// block is set on every row of a block added with addFitted, and it is the
+// same pointer across them: that identity is how jdeFitHeader knows which rows
+// are one value to be re-drawn together rather than independent facts to be
+// dropped one at a time.
 type jdeHeadRow struct {
-	Text string
-	Rank jdeHeadRank
+	Text  string
+	Rank  jdeHeadRank
+	block *jdeHeadBlock
+}
+
+// jdeHeadBlock is what a fitted block hands the layer: the means to draw itself
+// again at fewer rows. See addFitted.
+type jdeHeadBlock struct {
+	refit func(rows int) []string
 }
 
 // jdeHeader is a pinned header: the rows in DISPLAY order, each carrying the
@@ -1132,6 +1144,69 @@ func (h jdeHeader) addBlock(rank jdeHeadRank, lines []string) jdeHeader {
 	return h.add(jdeHeadDecorative, "").add(rank, lines...)
 }
 
+// addFitted appends a block that is ONE VALUE folded across rows — an error
+// body, a note, a caveat — and hands the layer the means to draw it again at
+// fewer rows: refit(n) is that value rendered into at most n rows, with the cut
+// it now makes marked.
+//
+// jdeFitHeader gives ground from the END within a rank, which is right for a
+// run of independent facts — dropping the order row claims nothing about the
+// supplier row above it — and wrong for rows that are one value, because what
+// it leaves is a FRAGMENT that reads as the whole. Two shapes of that were on
+// the add-line screen's failure frame at once. failDetailLines spends the last
+// of an error body's rows on "… more of the error than this pane can hold", so
+// the trim took the MARK first and left `oms: http 502: <!DOCTYPE` at 80x17,
+// reading as the complete reason: the helper had marked the cut, and the layer
+// then cut the mark. And the note above it folds to four rows, so at 80x11 it
+// was cut to "✗ could not tell whether Acme Fasteners &" with nothing saying
+// the rest of the sentence existed. Every call site already went through a
+// bounded renderer; the loss lived HERE, in the one function that decides how
+// many of a block's rows are drawn, and here is the only place it is put right
+// once rather than per screen.
+//
+// So a fitted block is never trimmed row by row. When jdeFitHeader keeps SOME
+// of its rows it asks refit for exactly that many and draws what comes back in
+// their place, and the block marks its cut the way its own renderer already
+// marks one (foldKeepRows, failDetailLines) — not with a second mark invented by
+// the layer. Kept whole, it is drawn as built; kept not at all, it is absent
+// rather than a fragment, which is the same claim a dropped independent row
+// makes.
+//
+// `lead` ranks the first row and `rest` every row after it, because a note's
+// first line is often the one row the builder marks essential and its fold is
+// context: trimmed from the end, the kept rows of a block are still its HEAD.
+// The block's height as BUILT is what feeds the budget, so fitting one moves
+// nothing about how many rows the header claims — refit is only ever asked for
+// fewer. It must return at most n rows; a longer answer is cut to n and a
+// shorter one padded, because header + body must still be EXACTLY the budget.
+func (h jdeHeader) addFitted(lead, rest jdeHeadRank, lines []string, refit func(rows int) []string) jdeHeader {
+	if len(lines) == 0 {
+		return h
+	}
+	if refit == nil || len(lines) == 1 {
+		// One row has no fragment to leave: it is drawn whole or not at all.
+		return h.add(lead, lines[0]).add(rest, lines[1:]...)
+	}
+	b := &jdeHeadBlock{refit: refit}
+	for i, line := range lines {
+		rank := rest
+		if i == 0 {
+			rank = lead
+		}
+		h = append(h, jdeHeadRow{Text: line, Rank: rank, block: b})
+	}
+	return h
+}
+
+// addFittedBlock is addBlock for a fitted block: the separator comes with it,
+// and nothing at all is appended when the block is empty.
+func (h jdeHeader) addFittedBlock(rank jdeHeadRank, lines []string, refit func(rows int) []string) jdeHeader {
+	if len(lines) == 0 {
+		return h
+	}
+	return h.add(jdeHeadDecorative, "").addFitted(rank, rank, lines, refit)
+}
+
 // lines is the header as the frame draws it when nothing has to give.
 func (h jdeHeader) lines() []string {
 	out := make([]string, 0, len(h))
@@ -1154,6 +1229,12 @@ func (h jdeHeader) lines() []string {
 // is in DISPLAY order whatever was dropped out of the middle of it: a header
 // that reordered itself as the terminal shrank would be a second layout to
 // learn at exactly the sizes nobody looks at.
+//
+// A dropped row is claimed about by nothing — a window promises a remainder
+// and a header does not — so a trim that takes WHOLE values leaves nothing
+// looking complete that is not. A block added with addFitted is the one shape
+// where a trim would take PART of a value, and it is re-drawn at the rows it
+// kept rather than cut, so its own mark says what went (addFitted).
 func jdeFitHeader(header jdeHeader, budget, avail int) []string {
 	keep := budget - avail
 	if keep < 0 {
@@ -1176,12 +1257,45 @@ func jdeFitHeader(header jdeHeader, budget, avail int) []string {
 		}
 	}
 	out := make([]string, 0, keep)
-	for i, row := range header {
-		if kept[i] {
-			out = append(out, row.Text)
+	for i := 0; i < len(header); {
+		b := header[i].block
+		if b == nil {
+			if kept[i] {
+				out = append(out, header[i].Text)
+			}
+			i++
+			continue
 		}
+		end, n := i, 0
+		for ; end < len(header) && header[end].block == b; end++ {
+			if kept[end] {
+				n++
+			}
+		}
+		switch {
+		case n == end-i:
+			for _, row := range header[i:end] {
+				out = append(out, row.Text)
+			}
+		case n > 0:
+			out = append(out, jdeRefitRows(b.refit, n)...)
+		}
+		i = end
 	}
 	return out
+}
+
+// jdeRefitRows asks a fitted block for n rows and holds it to exactly n, so the
+// header still comes to the budget jdeBodyAvail windowed the body against.
+func jdeRefitRows(refit func(rows int) []string, n int) []string {
+	rows := refit(n)
+	if len(rows) > n {
+		rows = rows[:n]
+	}
+	for len(rows) < n {
+		rows = append(rows, "")
+	}
+	return rows
 }
 
 // bodyAvailForBar is how many lines a frame windows its body into, given a
@@ -2490,9 +2604,7 @@ func jdeTooShort(width, rows, terminalHeight, needRows int) string {
 		// fits, so you come" and has no way to know a clause is missing. Every
 		// other bound on these screens carries its ellipsis; this one is the
 		// notice the operator can act on, so it carries one too.
-		lines = lines[:rows]
-		last := len(lines) - 1
-		lines[last] = cellPrefix(lines[last], width-1) + "…"
+		lines = foldKeepRows(lines, rows, width)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -2733,6 +2845,15 @@ func (l *jdeLines) AddFittedFields(fields []jdeField, labelWidth, bodyWidth, row
 // bodyWidth of 0 means the pane is not sized yet, which — as everywhere in this
 // file — means "do not truncate".
 func jdeCaveatLines(note string, bodyWidth int) []string {
+	return jdeCaveatLinesIn(note, bodyWidth, 0)
+}
+
+// jdeCaveatLinesIn is jdeCaveatLines drawn into at most `rows` lines, the last
+// of them marked where that drops any (foldKeepRows); zero or less is "no
+// limit". It is the refit a pinned header re-draws a caveat with when the pane
+// cannot give it every row (jdeHeader.addFitted): the header used to drop the
+// caveat's tail rows, and a caveat's tail is where the remedy falls.
+func jdeCaveatLinesIn(note string, bodyWidth, rows int) []string {
 	width := 0
 	if bodyWidth > 0 {
 		if width = bodyWidth - len(jdeIndent); width < 1 {
@@ -2740,6 +2861,9 @@ func jdeCaveatLines(note string, bodyWidth int) []string {
 		}
 	}
 	wrapped := jdeWrapNote(note, width)
+	if rows > 0 && len(wrapped) > rows {
+		wrapped = foldKeepRows(wrapped, rows, width)
+	}
 	out := make([]string, 0, len(wrapped))
 	for _, line := range wrapped {
 		out = append(out, jdeIndent+StyleMuted.Render(line))

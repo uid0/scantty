@@ -1008,16 +1008,19 @@ func (s *StorageSlotGenerateScreen) previewLine() string {
 // is sixteen cells. The FACT is fixed and 43 cells with its indent, so it stands
 // as one row wherever the frame is drawn at 80 columns and up — the width this
 // interface is modelled on and the one that must HOLD.
+// levelListDetail is the level list's detail behind its fixed fact.
+const levelListDetail = "The early ones can be reached from the ground; the late ones need a lift."
+
 func (s *StorageSlotGenerateScreen) levelListHeader() jdeHeader {
 	h := jdeHeader(nil).
 		add(jdeHeadContext, StyleJDEHeading.Render("Levels on this rack")).
 		add(jdeHeadEssential, jdeIndent+StyleMuted.Render(
 			"Early letters are low, late letters high."))
-	for _, line := range jdeCaveatLines(
-		"The early ones can be reached from the ground; the late ones need a lift.",
-		s.bodyWidth()) {
-		h = h.add(jdeHeadContext, line)
-	}
+	// FITTED, so a short pane re-draws the detail with its cut marked rather
+	// than dropping its tail rows (jdeHeader.addFitted).
+	width := s.bodyWidth()
+	h = h.addFitted(jdeHeadContext, jdeHeadContext, jdeCaveatLines(levelListDetail, width),
+		func(rows int) []string { return jdeCaveatLinesIn(levelListDetail, width, rows) })
 	if len(s.levels) == 0 {
 		h = h.add(jdeHeadContext, "", jdeIndent+StyleMuted.Render("(no levels yet)"))
 	}

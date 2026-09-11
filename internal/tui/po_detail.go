@@ -2380,19 +2380,28 @@ func (s *PurchaseOrderDetailScreen) viewVoid() string {
 // the frame was advertising its absence.
 //
 // Pinned, they are trimmed by jdeFitHeader instead — which gives ground BY RANK
-// and makes no claim about what it dropped, so a short pane loses the prose
-// rather than promising it. The heading is DECORATIVE and the caveat CONTEXT:
+// and promises no remainder a key could fetch. The caveat is FITTED, so what a
+// short pane loses is marked: trimmed row by row it read "…every line that is
+// not already voided. This cannot be" at 49x12, one word short of the clause
+// that says there is no undo. The heading is DECORATIVE and the caveat CONTEXT:
 // where only one may survive it is the consequence and not the title, for the
 // same reason the line-void prompt one screen over ranks its own rows that way.
 // The essential row is left to the layer's minimum — see jdeMinBudget — because
 // the Reason box is in the BODY here and the body's floor already keeps it.
+// poVoidOrderCaveat is the order-void prompt's caveat, said once so the header
+// and its refit cannot word it differently.
+const poVoidOrderCaveat = "Voids the order and cascades to every line that is not already voided. This cannot be undone."
+
 func (s *PurchaseOrderDetailScreen) voidHeader() jdeHeader {
 	h := jdeHeader(nil).add(jdeHeadDecorative, StyleStatusWarn.Render("Void purchase order"))
 	// addBlock brings the separator with it, so the heading does not add one of
 	// its own — two blanks is a row of the budget spent twice.
-	h = h.addBlock(jdeHeadContext, jdeCaveatLines(
-		"Voids the order and cascades to every line that is not already voided. This cannot be undone.",
-		s.bodyWidth()))
+	// FITTED, so a pane too short for all of it re-draws the caveat with its
+	// cut marked rather than dropping its tail: the tail is "This cannot be
+	// undone", and a caveat cut clean before it reads as the whole warning.
+	width := s.bodyWidth()
+	h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(poVoidOrderCaveat, width),
+		func(rows int) []string { return jdeCaveatLinesIn(poVoidOrderCaveat, width, rows) })
 	return h.add(jdeHeadDecorative, "")
 }
 

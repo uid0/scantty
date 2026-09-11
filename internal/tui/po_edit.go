@@ -2926,6 +2926,11 @@ const voidStandingNote = "This marks the line voided and the supplier link disco
 // list;" and stopped at 80x13. Shortening is not a fix, it only moves the
 // height, because the budget goes to zero one row at a time.
 //
+// The header now MARKS such a cut — a fitted block is re-drawn into the rows it
+// kept with an ellipsis (jdeHeader.addFitted), which voidHeader uses — and that
+// changes nothing here: a warning that says it was cut before its way back is
+// still a warning without its way back.
+//
 // So the FIRST caveat is a single row wherever it is drawn, states the loss AND
 // the way back, and is emitted first so it is the last thing dropped: wherever
 // this frame warns at all, it warns completely. Everything that EXPLAINS the
@@ -3086,10 +3091,15 @@ func voidCaveatsFit(width int) bool {
 // and as jdeHeadRank makes one level up.
 func (s *PurchaseOrderEditScreen) voidHeader(li omsapi.PurchaseOrderItem, width int) jdeHeader {
 	h := jdeHeader(nil).add(jdeHeadEssential, removalHeadline("Void: ", StyleStatusWarn, li, width))
-	for _, caveat := range s.voidCaveats(width) {
-		h = h.addBlock(jdeHeadContext, jdeCaveatLines(caveat, width))
+	// Each caveat is FITTED: a short pane re-draws it with its cut marked
+	// rather than dropping its tail rows, which read as a finished sentence
+	// (jdeHeader.addFitted). The headline is one row wherever it is drawn
+	// (voidCaveatsFit), so it has no fragment to leave; the prose and the
+	// standing note are the rows this changes.
+	for _, caveat := range append(s.voidCaveats(width), voidStandingNote) {
+		h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(caveat, width),
+			func(rows int) []string { return jdeCaveatLinesIn(caveat, width, rows) })
 	}
-	h = h.addBlock(jdeHeadContext, jdeCaveatLines(voidStandingNote, width))
 	return h.add(jdeHeadDecorative, "")
 }
 

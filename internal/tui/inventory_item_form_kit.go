@@ -570,15 +570,28 @@ func (s *InventoryItemFormScreen) viewKitList() string {
 // which no budget can trim — the answer-surface rule. It was the last two lines
 // of the body, so it was the first thing a short pane lost, and it is the
 // screen's answer to a keypress.
+// kitListGuidance is the kit list's standing guidance.
+const kitListGuidance = "What one kit contains. Receiving a kit credits these items — the kit itself never carries stock."
+
 func (s *InventoryItemFormScreen) kitListHeader() jdeHeader {
 	width := s.bodyWidth()
 	h := jdeHeader(nil).add(jdeHeadContext, StyleJDEHeading.Render("Kit components"))
-	for _, line := range jdeWrapNote(
-		"What one kit contains. Receiving a kit credits these items — the kit itself never carries stock.",
-		kitNoteWidth(width),
-	) {
-		h = h.add(jdeHeadContext, jdeIndent+StyleMuted.Render(line))
+	// FITTED, so a short pane re-draws the guidance with its cut marked rather
+	// than dropping its tail — which is "the kit itself never carries stock",
+	// the half of the sentence that matters (jdeHeader.addFitted).
+	guide := func(rows int) []string {
+		w := kitNoteWidth(width)
+		lines := jdeWrapNote(kitListGuidance, w)
+		if rows > 0 {
+			lines = foldKeepRows(lines, rows, w)
+		}
+		out := make([]string, 0, len(lines))
+		for _, line := range lines {
+			out = append(out, jdeIndent+StyleMuted.Render(line))
+		}
+		return out
 	}
+	h = h.addFitted(jdeHeadContext, jdeHeadContext, guide(0), guide)
 	if len(s.kitRows) == 0 {
 		return h.add(jdeHeadContext, "", jdeIndent+StyleMuted.Render("No components yet.")).
 			add(jdeHeadEssential, jdeIndent+StyleStatusWarn.Render(
