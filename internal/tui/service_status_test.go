@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -276,8 +277,8 @@ func TestStatusBar_DegradedChipNeverWrapsTheBar(t *testing.T) {
 		t.Errorf("narrow bar dropped the fact along with the label:\n%s", out)
 	}
 	for _, line := range strings.Split(narrow.View(), "\n") {
-		if lenVis(line) > 56 {
-			t.Errorf("bar line is %d cols wide, terminal is 56 — it will wrap:\n%q", lenVis(line), line)
+		if lipgloss.Width(line) > 56 {
+			t.Errorf("bar line is %d cols wide, terminal is 56 — it will wrap:\n%q", lipgloss.Width(line), line)
 		}
 	}
 
@@ -306,9 +307,9 @@ func TestStatusBar_StaysOneLineWhenTheChipCannotShrink(t *testing.T) {
 		bar.SetDegradedServices(two)
 		out := bar.View()
 		for _, line := range strings.Split(out, "\n") {
-			if lenVis(line) > width {
+			if lipgloss.Width(line) > width {
 				t.Errorf("at %d cols a bar line is %d wide — the frame grows a row:\n%q",
-					width, lenVis(line), line)
+					width, lipgloss.Width(line), line)
 			}
 		}
 		// Whatever else goes, the operator must still be told.

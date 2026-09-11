@@ -36,8 +36,16 @@ jobs:
         run: go build ./...
       - name: go vet
         run: go vet ./...
+      # 20m rather than go test's 600s default, because internal/tui's derived
+      # sweeps (every screen at every drawable size) are real coverage that grew
+      # past the old bound: 357s on this runner at #168, then 494s and a 600.0s
+      # timeout on #169's own runs, and main timing out at 600.3s after it
+      # merged. A bound that no longer matches the work is a stale bound. The
+      # cost is that a genuinely HUNG test now takes 20 minutes to fail instead
+      # of 10; splitting the heavy sweeps into a job of their own is the
+      # settled fix and is filed as follow-up issue #171.
       - name: go test
-        run: go test ./...
+        run: go test -timeout 20m ./...
 
   release:
     name: release prebuilt binaries

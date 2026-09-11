@@ -1567,6 +1567,11 @@ either:
   shows a cut line. Assert against `Root.View()` at 80/100/120 —
   `internal/tui/po_view_jde_test.go` is the pattern (and `poSeenWhileScrolling`
   for a body taller than the pane).
+- **The FRAME must fit the terminal's HEIGHT; pane-only checks cannot prove
+  that.** `TestRoot_TheFrameIsNeverTallerThanTheTerminal`
+  (`root_frame_fit_test.go`) owns the whole-frame guard. `StatusBar.View` owns
+  the one-marked-row rule and its cell-width rationale; `jdeStatusOneLine` and
+  `clampToBox` own the tab-handling constraints at their respective bounds.
 - **A typed row is handed to the layer as a BOX, never as a string.** Build it
   with `jdeField{Kind: jdeText, Input: &box}` and pass the pane to
   `renderJDEField` / `AddFields`; `jdeFitInputValue` then bounds the box, keeps
@@ -2859,10 +2864,12 @@ is the authority; read it before adding a frame or wording a bar.
   rebuilds a screen per key per probe per pane size. The receiving key-space
   sweep took 292s that way (242s through a settler that ran the tick outright)
   against 1s once neither did, and `internal/tui` as a whole sat at 573s against
-  `go test`'s **600s default per-package timeout**, which CI does not raise — so
-  adding two phase cases to one sweep was enough to make the package fail by
-  TIMING OUT, with a passing test named in the panic as the one that happened to
-  be running.
+  `go test`'s **600s default per-package timeout** — so adding two phase cases
+  to one sweep was enough to make the package fail by TIMING OUT, with a passing
+  test named in the panic as the one that happened to be running. CI has since
+  raised its own bound to 20m (`.github/workflows/ci.yml`, which says why), but a
+  local `go test` still stops at 600s, and a HUNG test now costs CI 20 minutes
+  to report.
   Two facts get you out. `textinput.Blink` returns its message IMMEDIATELY and it
   is only FEEDING that message back to `Update` that starts the tick, so
   recognise it and stop: `driveIsBlink` (`wo_materials_drive_test.go`), checked
