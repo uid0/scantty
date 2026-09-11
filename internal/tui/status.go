@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
@@ -79,7 +81,10 @@ func (s StatusBar) contextLine(short, minimal bool) string {
 	if chip != "" {
 		parts = append(parts, StyleStatusWarn.Render(chip))
 	}
-	return strings.Join(parts, "  ")
+	// Flattened, because the run rides the same one-row bar the message does
+	// and two of its parts are strings nobody bounded: the chip's label comes
+	// off the wire from OMS, and the scanner state is whatever it was set to.
+	return jdeStatusOneLine(strings.Join(parts, "  "))
 }
 
 // contextLadder is the left-hand run in decreasing order of detail. View walks
@@ -97,13 +102,31 @@ func (s StatusBar) contextLadder() []string {
 	return out
 }
 
+// View draws the bar: a rule and exactly ONE content row, whatever the bar has
+// been handed.
+//
+// One row is not a style choice. Root stacks the bar under a pane sized to
+// fill the rest of the terminal, so every extra row the bar draws makes the
+// frame one row taller than the terminal — and bubbletea keeps the BOTTOM
+// rows of a frame that is too tall, so the rows lost are the TOP ones: the
+// sidebar's title, the screen's title, the head of whatever the operator was
+// reading, gone for as long as the flash lasts. A 502 gateway page flashed by
+// the New PO submit made the frame 26 rows on a 24-row terminal.
+// TestRoot_TheFrameIsNeverTallerThanTheTerminal holds the frame to the
+// terminal at every size up to 120x40, with every field of this struct driven
+// (TestRoot_EveryStatusBarFieldIsDrivenByTheFrameSweep).
+//
+// Every width here is CELLS, measured with lipgloss.Width — never runes. A
+// double-width rune is one rune and two cells, so a bound counted in runes calls
+// a line of them a fit, and lipgloss WRAPS the line it was told would fit: the
+// same extra row, reached with a different alphabet. The unread chip's 📬 is
+// one, and that is how waiting mail alone used to make the idle frame a row
+// taller than the terminal (contextRow).
 func (s StatusBar) View() string {
-	context := s.contextLine(false, false)
-
 	// avail is the usable width for a single content line inside
-	// StyleStatusBar's Padding(0, 1); content wider than this wraps (and its
-	// tail scrolls off the bottom of the frame), so everything below is kept
-	// within avail.
+	// StyleStatusBar's Padding(0, 1); content wider than this wraps onto a
+	// second row, which makes the frame taller than the terminal (see above),
+	// so everything below is kept within avail.
 	avail := s.width - 2
 	if avail < 1 {
 		avail = 1
@@ -113,31 +136,71 @@ func (s StatusBar) View() string {
 	// line, LEFT-justified, and COMPLETE — never clipped. So the message owns
 	// the line; the connection/scanner context only rides along on the right
 	// when the whole message still leaves room for it.
+	//
+	// "Complete" meets a one-row bar on every error that carries an OMS
+	// response body, and that is not rare: omsapi.parseError puts the ENTIRE
+	// raw body into APIError.Message whenever the envelope carries no code, and
+	// the failed-write flashes across the package ("save failed: ", "delete
+	// failed: ", the New PO submit's "create PO failed: ") append err.Error()
+	// to their words — so a gateway page arrives here whole, newlines and all.
+	// Every Status() in the package reaches the operator through this one
+	// function: route.go's Status is the only place a StatusMsg is built and
+	// Root's dispatch the only place one is flashed. The captain's decision for that case is ONE MARKED LINE: the message
+	// is flattened onto one line and, where the row cannot hold it, cut with an
+	// ellipsis. The mark is what keeps the rule's point — an operator can
+	// always tell that what they are reading is not all there was — where a
+	// clean cut would read as the whole message.
+	//
+	// It is the columnar status row's convention, not a second one:
+	// jdeStatusOneLine flattens BEFORE anything is measured (the other way
+	// round, a line is bounded and then re-expanded), and pickerClip bounds it
+	// in one forward pass, so a 20 KB body costs what the row's width costs.
 	if s.message != "" && time.Now().Before(s.msgExpiry) {
-		msg := RenderStatus(s.message, s.msgLevel)
-		msgLen := lenVis(msg)
-		if gap := avail - msgLen - lenVis(context); gap >= 2 {
+		text := pickerClip(jdeStatusOneLine(s.message), avail)
+		msg := RenderStatus(text, s.msgLevel)
+		context := s.contextLine(false, false)
+		if gap := avail - lipgloss.Width(text) - lipgloss.Width(context); gap >= 2 {
 			body := msg + strings.Repeat(" ", gap) + context
 			return StyleStatusBar.Width(s.width).Render(body)
 		}
-		if msgLen > avail {
-			// Genuinely wider than the terminal (rare): clip at the true edge
-			// so the bar stays a single line instead of wrapping the tail out
-			// of view. Width() would word-wrap and hide the remainder.
-			return StyleStatusBar.MaxWidth(s.width).Render(msg)
-		}
-		// Message fits on its own; Width() left-justifies and pads it out.
+		// The message alone; Width() left-justifies and pads it out. A cut
+		// message is already inside avail, so this never wraps.
 		return StyleStatusBar.Width(s.width).Render(msg)
 	}
 
 	// No active message: connection/scanner context on the left, key hints on
 	// the right.
-	//
-	// A body wider than the bar does not clip — lipgloss WRAPS it, which grows
-	// the frame by a row and scrolls the nav off the top — so this walks down a
-	// ladder until something fits. The hints go first (static help, also on the
-	// welcome screen), then the chip's label, then the scanner/unread run. The
-	// degraded chip itself is what everything else is sacrificed for.
+	body := s.contextRow(avail)
+	if lipgloss.Width(body) > avail {
+		// Even the last rung is too wide: clip at the true edge rather than
+		// let Width() wrap the tail onto a second row. Root never draws this:
+		// at every width it draws a frame at all, contextRow finds a rung that
+		// fits (TestStatusBar_TheContextRowFitsEveryWidthRootDraws), so the
+		// clip exists only for a bar drawn on its own — which is why it is
+		// left unmarked rather than cut through the rung's styling.
+		return StyleStatusBar.MaxWidth(s.width).Render(body)
+	}
+	return StyleStatusBar.Width(s.width).Render(body)
+}
+
+// contextRow is the bar's row when no message is up: the context run on the
+// left, the key hints on the right, both chosen to fit `avail` cells.
+//
+// A body wider than the bar does not clip — lipgloss WRAPS it, which grows the
+// frame by a row and scrolls the nav off the top — so this walks down a ladder
+// until something fits. The hints go first (static help, also on the welcome
+// screen), then the chip's label, then the scanner/unread run. The degraded
+// chip itself is what everything else is sacrificed for.
+//
+// Measured in cells (see View). Counted in runes, the gap below padded the row
+// out to the bar's full width BY RUNE COUNT, and the unread chip's 📬 is one
+// rune and two cells: with any mail waiting, every row that chose the key hints
+// came out one cell past the bar and lipgloss wrapped it — the idle frame a row
+// taller than the terminal at every width from 76 up, for as long as the mail
+// sat there. TestStatusBar_TheContextRowFitsEveryWidthRootDraws asks this
+// function directly, because View's clip keeps the bar one row whatever it is
+// handed and so hides the overrun from any count of rows.
+func (s StatusBar) contextRow(avail int) string {
 	// The standing three: the menu, search, and back. `q quit` is gone with the
 	// rest of the letters — ctrl+c still quits from anywhere and is on the
 	// welcome screen; a bar this narrow spends its room on the keys an operator
@@ -145,7 +208,7 @@ func (s StatusBar) View() string {
 	hints := StyleMuted.Render("tab menu · ctrl+k search · esc back")
 	ladder := s.contextLadder()
 	context, right := ladder[0], hints
-	fits := func(left, r string) bool { return lenVis(left)+lenVis(r)+1 <= avail }
+	fits := func(left, r string) bool { return lipgloss.Width(left)+lipgloss.Width(r)+1 <= avail }
 	if !fits(context, right) {
 		right = ""
 		for _, candidate := range ladder {
@@ -156,32 +219,9 @@ func (s StatusBar) View() string {
 		}
 	}
 
-	gap := avail - lenVis(context) - lenVis(right)
+	gap := avail - lipgloss.Width(context) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
-	body := context + strings.Repeat(" ", gap) + right
-	if lenVis(body) > avail {
-		// Even the last rung is too wide (a very narrow terminal): clip at the
-		// true edge rather than let Width() wrap the tail onto a second row —
-		// the same treatment an over-long message gets above.
-		return StyleStatusBar.MaxWidth(s.width).Render(body)
-	}
-	return StyleStatusBar.Width(s.width).Render(body)
-}
-
-func lenVis(s string) int {
-	n := 0
-	skip := false
-	for _, r := range s {
-		switch {
-		case r == 0x1b:
-			skip = true
-		case skip && r == 'm':
-			skip = false
-		case !skip:
-			n++
-		}
-	}
-	return n
+	return context + strings.Repeat(" ", gap) + right
 }

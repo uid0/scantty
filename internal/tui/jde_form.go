@@ -1825,14 +1825,31 @@ func (g jdeScreen) fitStatus(mark, msg string) string {
 // It runs BEFORE the width is measured. The other way round, a long single line
 // is bounded and then re-expanded by the flattening, which is the same defect
 // with an extra step.
+//
+// Every character that would put the row on a second line becomes one space:
+// the line breaks — "\r\n", "\n" and a bare "\r", and the vertical tab and form
+// feed a terminal also moves the cursor down for — and the TAB. A tab breaks
+// nothing, but lipgloss.Width measures it as NO cells while every lipgloss
+// Render draws it as four, so a row the bound measured as fitting is drawn
+// wider than the pane and wraps onto the next line anyway. Root's status bar
+// flattens with this too (StatusBar.View), so both status surfaces keep one
+// convention; TestRoot_TheFrameIsNeverTallerThanTheTerminal is where a shape
+// this misses makes the frame grow.
 func jdeStatusOneLine(s string) string {
-	if !strings.ContainsAny(s, "\r\n") {
+	if !strings.ContainsAny(s, jdeStatusBreaks) {
 		return s
 	}
 	s = strings.ReplaceAll(s, "\r\n", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	return strings.ReplaceAll(s, "\r", " ")
+	return strings.Map(func(r rune) rune {
+		if strings.ContainsRune(jdeStatusBreaks, r) {
+			return ' '
+		}
+		return r
+	}, s)
 }
+
+// jdeStatusBreaks is every character jdeStatusOneLine turns into a space.
+const jdeStatusBreaks = "\r\n\v\f\t"
 
 // frame assembles a phase: the windowed body, padded out to the pane's budget,
 // then the status line, then the persistent action bar at the bottom.

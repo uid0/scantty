@@ -185,6 +185,15 @@ const detailFooterRowsWithAction = 3
 // drop any tail bytes that exceed “width“ — naive byte slicing
 // would chop an ANSI sequence in half and bleed escape codes into the
 // next column.
+//
+// A TAB is expanded before anything is measured, to exactly what lipgloss
+// will draw it as. lipgloss.Width counts a tab as NO cells while the Render
+// the pane goes through next draws it as four spaces, so a line with tabs in
+// it passed this bound as fitting and was then drawn wider than the pane,
+// where lipgloss WRAPS it — the frame grew a row per wrap and the top of it
+// went off the terminal, which is the one thing this function exists to stop
+// (TestRoot_TheFrameIsNeverTallerThanTheTerminal). Tabs only arrive in data —
+// an OMS note or error body — but data is most of what these panes draw.
 func clampToBox(content string, width, height int) string {
 	if width <= 0 || height <= 0 {
 		return ""
@@ -195,6 +204,7 @@ func clampToBox(content string, width, height int) string {
 	}
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
+		line = strings.ReplaceAll(line, "\t", paneTab)
 		if lipgloss.Width(line) <= width {
 			out = append(out, line)
 			continue
@@ -203,6 +213,12 @@ func clampToBox(content string, width, height int) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// paneTab is what a tab is drawn as by a style that sets no tab width, which
+// is every style Root renders the pane through. Asked of lipgloss rather than
+// written down as four spaces, so a lipgloss that changes its default moves
+// this with it.
+var paneTab = lipgloss.NewStyle().Render("\t")
 
 // truncateVisible drops runes from the end until the visible width
 // (ANSI-aware, via lipgloss.Width) fits within “width“. Naive byte
