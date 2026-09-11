@@ -2150,18 +2150,13 @@ touching any screen an operator drives:
   the content is kept and the cut is marked with the ellipsis instead, because a
   mark with no content beneath it is the rule inverted rather than obeyed.
   **A VALUE FOLDED INTO A PINNED HEADER GOES IN THROUGH `jdeHeader.addFitted`**,
-  and that is a rule about the LAYER rather than the helper. `jdeFitHeader`
-  gives ground from the END of a rank, which is exactly where a fold's mark and
-  its last clause sit, so a helper that marked its own cut still reached the
-  pane as a fragment reading whole: the add-line and New PO failure blocks lost
-  the mark row first on every short pane, and the notes and void caveats around
-  them were cut to a whole-word ending ("…This cannot be", one word before
-  "undone"). A fitted block is re-drawn at the rows the trim leaves it by its
-  own refit (`failDetailLines`, `pickerNote.renderLinesIn`,
-  `jdeCaveatLinesIn` — all marking through `foldKeepRows`'s ellipsis), and a
-  block of INDEPENDENT rows keeps `add`, because dropping one of those leaves
-  nothing looking whole. `header_fold_mark_test.go` and
-  `fail_detail_mark_test.go` sweep the purchasing frames at every honest pane.
+  because `jdeFitHeader` gives ground from the END of a rank, where a fold's
+  cut mark sits. A fitted block is re-drawn at the rows the trim leaves it by
+  its own refit (`failDetailLines`, `pickerNote.renderLinesIn`, or
+  `jdeCaveatLinesIn`, all marking through `foldKeepRows`); a block of
+  INDEPENDENT rows keeps `add`, because dropping one leaves no fragment that
+  can read as complete. `header_fold_mark_test.go` and
+  `fail_detail_mark_test.go` hold the invariant through rendered panes.
   FIELD rows are the shape that does not FOLD, and they are bounded rather than
   exempt — the CART row included, which gives ground in its own STATED order
   because clipping its label alone was not enough: the LABEL first, then the
