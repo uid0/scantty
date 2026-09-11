@@ -29,7 +29,8 @@ import "context"
 // + logistics_dashboard are AllowAny (public). Neither of the latter two has a
 // dedicated web report page — the web renders them on the standalone
 // TransparencyPage / LogisticsDashboard surfaces — so scantty is the first
-// place their data appears as report tables.
+// place their data appears as report tables. "Public" is not "the same for
+// everyone" on transparency: see ReorderTransparencyOrder.VendorDataWithheld.
 
 const reorderAnalyticsBase = "/api/reorders/analytics/"
 
@@ -127,6 +128,32 @@ type ReorderTransparencySummary struct {
 
 // ReorderTransparencyOrder is one reorder request in the public ledger (last
 // 100 with financial data). All cost fields are nullable floats.
+//
+// NOTHING HERE IS THE ORDER'S UNLESS THE ORDER RECORDS IT, and three keys this
+// struct used to carry did not pass that test. A ReorderRequest has an item, a
+// quantity, a timeline, actual_cost and paperwork strings — and NO supplier
+// relationship and NO recorded estimate. Before OMS #1057 the feed filled that
+// gap from the ITEM at request time: `supplier_name` was the item's current
+// best supplier (flag a new primary today and last year's delivered order
+// named a vendor it could not have bought from), `estimated_cost` was a live
+// quote at that supplier's current price, and `cost_variance` was actual_cost
+// minus that quote. #1057 withdrew all three and publishes the item's answers
+// under item-scoped names instead — `item_supplier_choice` and
+// `item_estimated_cost_today` — to a signed-in reader.
+//
+// NEITHER REPLACEMENT IS DECODED, on purpose. They are true about the ITEM as
+// of this response, and the one place this struct is drawn is a row per ORDER,
+// where a supplier name beside a paid figure reads as who was paid; the
+// "Trans. orders" tab (internal/tui/reorder_reports.go) records the decision
+// and the reason. The withdrawn keys are not decoded either, which is what
+// keeps an OMS that has not taken #1057 — and still sends the substituted
+// values — from getting them onto a screen.
+//
+// ActualCost has THREE states and they are different facts: a figure (a
+// recorded 0.00 among them — a donation — which OMS publishes as 0.0 and not
+// null since #1057), nil because OMS sent null ("no figure recorded"), and nil
+// because the key was OMITTED for a reader not shown vendor data. Only
+// VendorDataWithheld tells the last two apart.
 type ReorderTransparencyOrder struct {
 	ID                  int      `json:"id"`
 	ItemID              string   `json:"item_id"`
@@ -137,10 +164,8 @@ type ReorderTransparencyOrder struct {
 	RequestedAt         string   `json:"requested_at"`
 	OrderedAt           string   `json:"ordered_at"`
 	DeliveredAt         string   `json:"delivered_at"`
-	EstimatedCost       *float64 `json:"estimated_cost"`
 	ActualCost          *float64 `json:"actual_cost"`
 	CostPerUnit         *float64 `json:"cost_per_unit"`
-	CostVariance        *float64 `json:"cost_variance"`
 	OrderNumber         string   `json:"order_number"`
 	InvoiceNumber       string   `json:"invoice_number"`
 	InvoiceURL          string   `json:"invoice_url"`
@@ -148,11 +173,27 @@ type ReorderTransparencyOrder struct {
 	DeliveryTrackingURL string   `json:"delivery_tracking_url"`
 	SupplierURL         string   `json:"supplier_url"`
 	PublicNotes         string   `json:"public_notes"`
-	SupplierName        string   `json:"supplier_name"`
+	// VendorDataWithheld is OMS's `vendor_data_withheld` marker
+	// (inventory.services.vendor_visibility.VENDOR_WITHHELD_KEY): true when the
+	// server OMITTED this row's vendor keys — actual_cost and cost_per_unit
+	// among them — because the caller may not see vendor data. The keys are
+	// omitted rather than nulled precisely because null already means "no
+	// figure recorded" in this payload, so this flag is the only way to tell
+	// POLICY from ABSENCE. OMS decides it with `may_see_vendor_data`, which is
+	// `is_authenticated` today, so a signed-in ScanTTY is not sent it by OMS
+	// main — it is read because the server states it, not because this client
+	// predicts when it will.
+	VendorDataWithheld bool `json:"vendor_data_withheld"`
 }
 
 // ReorderTransparencyPO is one purchase order in the public ledger (last 50 in
 // a sent/received-ish status). Totals are nullable floats.
+//
+// Unlike an order row, a PurchaseOrder HAS a supplier FK and records its own
+// totals, so SupplierName and both totals are the order's own facts — which is
+// why #1057 left them alone. They are the three keys withheld from a reader
+// not shown vendor data (PO_VENDOR_KEYS), and VendorDataWithheld is what says
+// an empty SupplierName or a nil total is withheld rather than absent.
 type ReorderTransparencyPO struct {
 	ID                   string   `json:"id"`
 	PONumber             string   `json:"po_number"`
@@ -166,6 +207,7 @@ type ReorderTransparencyPO struct {
 	TotalItems           int      `json:"total_items"`
 	TotalQuantity        int      `json:"total_quantity"`
 	IsFullyReceived      bool     `json:"is_fully_received"`
+	VendorDataWithheld   bool     `json:"vendor_data_withheld"`
 }
 
 // ReorderTransparency fetches the public transparency envelope.

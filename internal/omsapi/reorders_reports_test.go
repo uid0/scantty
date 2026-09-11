@@ -2,6 +2,7 @@ package omsapi
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -82,67 +83,160 @@ func TestReorderLeadTimeTrends_Decode(t *testing.T) {
 	}
 }
 
-// TestReorderTransparency_Decode covers the object envelope: summary + orders +
-// purchase_orders, with nullable float costs (null stays distinct from 0).
-func TestReorderTransparency_Decode(t *testing.T) {
-	c, path := reportSrv(t, `{
-		"summary":{"total_orders_with_financial_data":2,"total_amount_spent":150.25,
-		 "total_purchase_orders":1,"total_po_amount_spent":300.00,
-		 "last_updated":"2026-07-01T00:00:00Z","transparency_note":"open books"},
-		"orders":[
-		 {"id":11,"item_id":"i-1","item_name":"PLA","item_category":"Filament",
-		  "quantity_ordered":3,"status":"ordered","requested_at":"2026-06-01T00:00:00Z",
-		  "ordered_at":"2026-06-02T00:00:00Z","delivered_at":null,"estimated_cost":50.0,
-		  "actual_cost":null,"cost_per_unit":16.67,"cost_variance":null,"order_number":"ON-1",
-		  "invoice_number":"","invoice_url":"","purchase_order_url":"","delivery_tracking_url":"",
-		  "supplier_url":"","public_notes":"","supplier_name":"Acme"}
-		],
-		"ledger":[{"id":11,"item_name":"PLA"}],
-		"purchase_orders":[
-		 {"id":"1","po_number":"PO-1","supplier_name":"Acme","status":"received",
-		  "status_label":"Received","order_date":"2026-05-01T00:00:00Z",
-		  "expected_delivery_date":null,"estimated_total":300.0,"actual_total":null,
-		  "total_items":2,"total_quantity":5,"is_fully_received":true}
-		]
-	}`)
-	tr, err := c.ReorderTransparency(context.Background())
+// The transparency decode tests are built from RECORDED responses
+// (testdata/transparency_*.json, provenance in testdata/README.md). The
+// hand-written envelope they replace carried `supplier_name`, `estimated_cost`
+// and `cost_variance` on each order — the keys the struct declared, which OMS
+// #1057 withdrew because they were the ITEM's, published under the order's name
+// — so it could only ever confirm the struct.
+
+// transparencyRawOrders is a recording's orders[] as the server sent them.
+func transparencyRawOrders(t *testing.T, name string) []map[string]any {
+	t.Helper()
+	var raw struct {
+		Orders []map[string]any `json:"orders"`
+	}
+	if err := json.Unmarshal(wireBody(t, name), &raw); err != nil {
+		t.Fatalf("%s is not JSON: %v", name, err)
+	}
+	if len(raw.Orders) == 0 {
+		t.Fatalf("%s has no orders, so every check over it is vacuous", name)
+	}
+	return raw.Orders
+}
+
+// TestReorderTransparency_DecodesTheRecordedFeed: served the bytes OMS main
+// really sends, each order's actual_cost keeps its three states apart — a
+// figure (a recorded 0.00 among them), nil for null, and nil-with-the-marker
+// for a reader the vendor block was withheld from.
+func TestReorderTransparency_DecodesTheRecordedFeed(t *testing.T) {
+	signed, err := serveWire(t, wireBody(t, "transparency_signed_in.json")).ReorderTransparency(context.Background())
 	if err != nil {
-		t.Fatalf("ReorderTransparency: %v", err)
+		t.Fatalf("a recorded signed-in reply did not decode: %v", err)
 	}
-	if *path != "/api/reorders/analytics/transparency/" {
-		t.Fatalf("path = %q", *path)
+	raw := transparencyRawOrders(t, "transparency_signed_in.json")
+	if len(signed.Orders) != len(raw) {
+		t.Fatalf("orders = %d, want %d", len(signed.Orders), len(raw))
 	}
-	if tr.Summary.TotalOrdersWithFinancialData != 2 || tr.Summary.TotalAmountSpent != 150.25 ||
-		tr.Summary.TotalPurchaseOrders != 1 || tr.Summary.TotalPOAmountSpent != 300.00 {
-		t.Errorf("summary decode wrong: %+v", tr.Summary)
+	for i, o := range signed.Orders {
+		if o.VendorDataWithheld {
+			t.Errorf("order %d: marked withheld on the signed-in reply", i)
+		}
+		switch v := raw[i]["actual_cost"].(type) {
+		case nil:
+			if o.ActualCost != nil {
+				t.Errorf("order %d: null actual_cost decoded to %v", i, *o.ActualCost)
+			}
+		case float64:
+			if o.ActualCost == nil || *o.ActualCost != v {
+				t.Errorf("order %d: actual_cost %v decoded to %v", i, v, o.ActualCost)
+			}
+		}
 	}
-	if len(tr.Orders) != 1 {
-		t.Fatalf("want 1 order, got %d", len(tr.Orders))
+	if len(signed.PurchaseOrders) == 0 || signed.PurchaseOrders[0].VendorDataWithheld ||
+		signed.PurchaseOrders[0].SupplierName == "" {
+		t.Errorf("signed-in PO decode wrong: %+v", signed.PurchaseOrders)
 	}
-	o := tr.Orders[0]
-	if o.ItemName != "PLA" || o.ItemCategory != "Filament" || o.QuantityOrdered != 3 || o.SupplierName != "Acme" {
-		t.Errorf("order decode wrong: %+v", o)
+
+	anon, err := serveWire(t, wireBody(t, "transparency_anonymous.json")).ReorderTransparency(context.Background())
+	if err != nil {
+		t.Fatalf("a recorded anonymous reply did not decode: %v", err)
 	}
-	if o.EstimatedCost == nil || *o.EstimatedCost != 50.0 {
-		t.Errorf("estimated_cost = %v, want 50.0", o.EstimatedCost)
+	for i, o := range anon.Orders {
+		if !o.VendorDataWithheld || o.ActualCost != nil {
+			t.Errorf("anonymous order %d: withheld=%v actual=%v — the marker is the only thing "+
+				"telling an omitted cost from a null one", i, o.VendorDataWithheld, o.ActualCost)
+		}
 	}
-	// null cost must stay nil, not decode to 0.0.
-	if o.ActualCost != nil {
-		t.Errorf("actual_cost should be nil, got %v", *o.ActualCost)
+	for i, p := range anon.PurchaseOrders {
+		if !p.VendorDataWithheld || p.SupplierName != "" || p.EstimatedTotal != nil || p.ActualTotal != nil {
+			t.Errorf("anonymous PO %d decode wrong: %+v", i, p)
+		}
 	}
-	if len(tr.PurchaseOrders) != 1 {
-		t.Fatalf("want 1 PO, got %d", len(tr.PurchaseOrders))
+}
+
+// The recordings still carry the SERVER's shape, so the tests above and the
+// screen tests in internal/tui are not passing because a fixture drifted to the
+// one the code assumes. Each clause names the check that goes vacuous without
+// it.
+func TestTransparencyFixtures_CarryTheServersOwnShape(t *testing.T) {
+	withdrawn := []string{"supplier_name", "estimated_cost", "cost_variance"}
+	signed := transparencyRawOrders(t, "transparency_signed_in.json")
+	zero, null := false, false
+	for i, o := range signed {
+		for _, k := range withdrawn {
+			if _, ok := o[k]; ok {
+				t.Errorf("signed-in order %d carries %q, which OMS #1057 withdrew — the fixture "+
+					"was re-shaped toward the old struct", i, k)
+			}
+		}
+		if _, ok := o["item_supplier_choice"].(map[string]any); !ok {
+			t.Errorf("signed-in order %d has no item_supplier_choice object", i)
+		}
+		v, ok := o["actual_cost"]
+		if !ok {
+			t.Fatalf("signed-in order %d omits actual_cost; a signed-in reply carries it", i)
+		}
+		zero = zero || v == 0.0
+		null = null || v == nil
 	}
-	po := tr.PurchaseOrders[0]
-	if po.PONumber != "PO-1" || po.StatusLabel != "Received" || !po.IsFullyReceived ||
-		po.TotalItems != 2 || po.TotalQuantity != 5 {
-		t.Errorf("PO decode wrong: %+v", po)
+	if !zero || !null {
+		t.Errorf("the signed-in recording must hold a recorded 0.0 and a null actual_cost "+
+			"(zero=%v null=%v), or the three-state checks cannot tell them apart", zero, null)
 	}
-	if po.EstimatedTotal == nil || *po.EstimatedTotal != 300.0 {
-		t.Errorf("estimated_total = %v, want 300.0", po.EstimatedTotal)
+	for i, o := range transparencyRawOrders(t, "transparency_anonymous.json") {
+		if o["vendor_data_withheld"] != true {
+			t.Errorf("anonymous order %d is not marked vendor_data_withheld", i)
+		}
+		if _, ok := o["actual_cost"]; ok {
+			t.Errorf("anonymous order %d carries actual_cost; OMS OMITS withheld keys", i)
+		}
 	}
-	if po.ActualTotal != nil {
-		t.Errorf("actual_total should be nil, got %v", *po.ActualTotal)
+	var anon struct {
+		Summary map[string]any   `json:"summary"`
+		POs     []map[string]any `json:"purchase_orders"`
+	}
+	if err := json.Unmarshal(wireBody(t, "transparency_anonymous.json"), &anon); err != nil {
+		t.Fatalf("anonymous recording: %v", err)
+	}
+	if anon.Summary["vendor_data_withheld"] != true || len(anon.POs) == 0 {
+		t.Error("the anonymous recording must mark its summary and carry a purchase order")
+	}
+	for i, p := range anon.POs {
+		_, named := p["supplier_name"]
+		if p["vendor_data_withheld"] != true || named {
+			t.Errorf("anonymous PO %d is not a withheld row: %v", i, p)
+		}
+	}
+	// The pre-#1057 recording is the one the substituted-supplier screen check
+	// is asked of, so it must still carry what that check looks for.
+	legacy := transparencyRawOrders(t, "transparency_pre1057_signed_in.json")
+	carried := 0
+	for _, o := range legacy {
+		if n, _ := o["supplier_name"].(string); n != "" {
+			if _, ok := o["estimated_cost"].(float64); ok {
+				carried++
+			}
+		}
+	}
+	if carried == 0 {
+		t.Error("the pre-#1057 recording has no row carrying both a supplier_name and an " +
+			"estimated_cost, so the check that keeps them off the screen could not fail")
+	}
+	// Same rows, two servers: the donation #1057 publishes as a recorded 0.0 is
+	// the one its parent published as null, which is the README's account of
+	// why the recorded zero is a state of its own.
+	byID := map[float64]map[string]any{}
+	for _, o := range legacy {
+		byID[o["id"].(float64)] = o
+	}
+	for _, o := range signed {
+		if o["actual_cost"] == 0.0 {
+			if old, ok := byID[o["id"].(float64)]; !ok || old["actual_cost"] != nil {
+				t.Errorf("order %v: recorded 0.0 now, and the pre-#1057 recording has %v for it, "+
+					"not the null the README describes", o["id"], old["actual_cost"])
+			}
+		}
 	}
 }
 

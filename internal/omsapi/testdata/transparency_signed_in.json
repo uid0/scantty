@@ -1,0 +1,220 @@
+{
+    "summary": {
+        "total_orders_with_financial_data": 3,
+        "total_amount_spent": 1243.7,
+        "total_purchase_orders": 1,
+        "total_po_amount_spent": 0.0,
+        "last_updated": "2026-09-11T02:28:58.386204+00:00",
+        "transparency_note": "Dallas Makerspace publishes what it spends. You are signed in, so supplier names and per-order costs are shown here as well; they are withheld from readers who are not."
+    },
+    "orders": [
+        {
+            "id": 7,
+            "item_id": "4f32f007-6bab-4ab8-8c01-f9d0573b1215",
+            "item_name": "Wood glue, Titebond III, 16 oz",
+            "item_category": null,
+            "quantity_ordered": 2,
+            "status": "ordered",
+            "requested_at": "2026-09-11T02:28:36.522108+00:00",
+            "ordered_at": "2026-09-10T02:28:36.450329+00:00",
+            "delivered_at": null,
+            "actual_cost": null,
+            "cost_per_unit": null,
+            "order_number": "ORD-2026-0044",
+            "invoice_number": "",
+            "invoice_url": "",
+            "purchase_order_url": "",
+            "delivery_tracking_url": "",
+            "supplier_url": "",
+            "public_notes": "",
+            "item_supplier_choice": {
+                "item_supplier_id": null,
+                "supplier_name": null,
+                "basis": null,
+                "reason": "no_suppliers",
+                "flagged_primary_unorderable": false,
+                "scored_without_price": false,
+                "scored_without_history": false,
+                "alternatives": []
+            },
+            "item_estimated_cost_today": null
+        },
+        {
+            "id": 6,
+            "item_id": "8aa401d2-e311-4e2f-ab60-9f9041b31bd5",
+            "item_name": "PLA filament 1.75mm black, 1 kg spool",
+            "item_category": null,
+            "quantity_ordered": 4,
+            "status": "received",
+            "requested_at": "2026-09-11T02:28:36.517877+00:00",
+            "ordered_at": "2026-09-05T02:28:36.450329+00:00",
+            "delivered_at": null,
+            "actual_cost": 0.0,
+            "cost_per_unit": 0.0,
+            "order_number": "ORD-2026-0043",
+            "invoice_number": "",
+            "invoice_url": "",
+            "purchase_order_url": "",
+            "delivery_tracking_url": "",
+            "supplier_url": "",
+            "public_notes": "Donated by a member.",
+            "item_supplier_choice": {
+                "item_supplier_id": 17,
+                "supplier_name": "Grainger Industrial Supply",
+                "basis": "flagged_primary",
+                "reason": null,
+                "flagged_primary_unorderable": false,
+                "scored_without_price": false,
+                "scored_without_history": false,
+                "alternatives": [
+                    {
+                        "id": 16,
+                        "supplier_name": "supplier-3"
+                    }
+                ]
+            },
+            "item_estimated_cost_today": 87.96
+        },
+        {
+            "id": 5,
+            "item_id": "a2d9330a-2b6d-4e38-ab31-c788ab636c4e",
+            "item_name": "Hex bolt M8x40 zinc plated, box of 100",
+            "item_category": "Fasteners",
+            "quantity_ordered": 100,
+            "status": "received",
+            "requested_at": "2026-09-11T02:28:36.498687+00:00",
+            "ordered_at": "2026-09-02T02:28:36.450329+00:00",
+            "delivered_at": "2026-09-08",
+            "actual_cost": 1243.7,
+            "cost_per_unit": 12.437,
+            "order_number": "ORD-2026-0042",
+            "invoice_number": "INV-2026-0042",
+            "invoice_url": "",
+            "purchase_order_url": "",
+            "delivery_tracking_url": "",
+            "supplier_url": "",
+            "public_notes": "Restocked the fastener wall.",
+            "item_supplier_choice": {
+                "item_supplier_id": 14,
+                "supplier_name": "McMaster-Carr Supply Company",
+                "basis": "flagged_primary",
+                "reason": null,
+                "flagged_primary_unorderable": false,
+                "scored_without_price": false,
+                "scored_without_history": false,
+                "alternatives": [
+                    {
+                        "id": 15,
+                        "supplier_name": "Grainger Industrial Supply"
+                    },
+                    {
+                        "id": 13,
+                        "supplier_name": "supplier-2"
+                    }
+                ]
+            },
+            "item_estimated_cost_today": 1244.0
+        }
+    ],
+    "ledger": [
+        {
+            "id": 7,
+            "item_id": "4f32f007-6bab-4ab8-8c01-f9d0573b1215",
+            "item_name": "Wood glue, Titebond III, 16 oz",
+            "quantity": 2,
+            "requested_at": "2026-09-11T02:28:36.522108+00:00",
+            "ordered_at": "2026-09-10T02:28:36.450329+00:00",
+            "delivered_at": null,
+            "actual_cost": null,
+            "status": "ordered",
+            "order_number": "ORD-2026-0044",
+            "invoice_number": "",
+            "item_supplier_choice": {
+                "item_supplier_id": null,
+                "supplier_name": null,
+                "basis": null,
+                "reason": "no_suppliers",
+                "flagged_primary_unorderable": false,
+                "scored_without_price": false,
+                "scored_without_history": false,
+                "alternatives": []
+            }
+        },
+        {
+            "id": 6,
+            "item_id": "8aa401d2-e311-4e2f-ab60-9f9041b31bd5",
+            "item_name": "PLA filament 1.75mm black, 1 kg spool",
+            "quantity": 4,
+            "requested_at": "2026-09-11T02:28:36.517877+00:00",
+            "ordered_at": "2026-09-05T02:28:36.450329+00:00",
+            "delivered_at": null,
+            "actual_cost": 0.0,
+            "status": "received",
+            "order_number": "ORD-2026-0043",
+            "invoice_number": "",
+            "item_supplier_choice": {
+                "item_supplier_id": 17,
+                "supplier_name": "Grainger Industrial Supply",
+                "basis": "flagged_primary",
+                "reason": null,
+                "flagged_primary_unorderable": false,
+                "scored_without_price": false,
+                "scored_without_history": false,
+                "alternatives": [
+                    {
+                        "id": 16,
+                        "supplier_name": "supplier-3"
+                    }
+                ]
+            }
+        },
+        {
+            "id": 5,
+            "item_id": "a2d9330a-2b6d-4e38-ab31-c788ab636c4e",
+            "item_name": "Hex bolt M8x40 zinc plated, box of 100",
+            "quantity": 100,
+            "requested_at": "2026-09-11T02:28:36.498687+00:00",
+            "ordered_at": "2026-09-02T02:28:36.450329+00:00",
+            "delivered_at": "2026-09-08",
+            "actual_cost": 1243.7,
+            "status": "received",
+            "order_number": "ORD-2026-0042",
+            "invoice_number": "INV-2026-0042",
+            "item_supplier_choice": {
+                "item_supplier_id": 14,
+                "supplier_name": "McMaster-Carr Supply Company",
+                "basis": "flagged_primary",
+                "reason": null,
+                "flagged_primary_unorderable": false,
+                "scored_without_price": false,
+                "scored_without_history": false,
+                "alternatives": [
+                    {
+                        "id": 15,
+                        "supplier_name": "Grainger Industrial Supply"
+                    },
+                    {
+                        "id": 13,
+                        "supplier_name": "supplier-2"
+                    }
+                ]
+            }
+        }
+    ],
+    "purchase_orders": [
+        {
+            "id": "6",
+            "po_number": "PO-2026-0001",
+            "supplier_name": "McMaster-Carr Supply Company",
+            "status": "sent",
+            "status_label": "Sent to Supplier",
+            "order_date": "2026-09-09T02:28:36.450329+00:00",
+            "expected_delivery_date": null,
+            "estimated_total": 248.74,
+            "actual_total": null,
+            "total_items": 0,
+            "total_quantity": 0,
+            "is_fully_received": false
+        }
+    ]
+}

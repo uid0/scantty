@@ -30,8 +30,11 @@ import (
 // THE DELIBERATE EXCLUSIONS, each because it is a different fact rather than
 // because it was awkward:
 //
-//   - EarlyDeliveryRate is decoded and never rendered, and CostVariance the
-//     same. A figure that reaches no person cannot mislead one.
+//   - EarlyDeliveryRate is decoded and never rendered. A figure that reaches
+//     no person cannot mislead one. (The transparency feed's cost_variance used
+//     to be the same, and is no longer decoded at all: OMS #1057 withdrew it,
+//     because it was actual_cost minus a live re-quote of the ITEM and there
+//     was never a budget under it — see ReorderTransparencyOrder.)
 //   - Receiving's quantity variance (receive_form.go's "2 over" / "3 short",
 //     the PO sheet's "Variance ..... ! N lines short or over"). A QUANTITY
 //     against the quantity ordered, which is on the same row — one promise, and

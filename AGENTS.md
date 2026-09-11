@@ -61,6 +61,20 @@ is not a reason to scope it out of a sweep. It has been used as one.
   `Empty()` means "null/unset" and NOT "zero": several OMS money properties
   return a real `0.00` for "no price recorded", so treat zero as an absence
   wherever a price is being carried forward (`internal/tui/po_line_price.go`).
+- **`vendor_data_withheld: true` and `null` are different facts.** On a
+  field-gated OMS payload the vendor keys are OMITTED (not nulled) for a reader
+  not shown vendor data, and the row carries that marker; `null` there means "no
+  figure recorded". Both decode to the same nil/`""`, so only the marker tells
+  them apart — read it, never infer it from a nil. OMS decides it with
+  `may_see_vendor_data` (`is_authenticated` today) and ScanTTY is signed in on
+  every screen, so OMS `main` does not send it the marker; the transparency tabs
+  read it anyway (`vendorMoney` in `internal/tui/reorder_reports.go`).
+- **A transparency ORDER row has no supplier and no estimate of its own.**
+  `ReorderRequest` has neither; OMS #1057 withdrew the item-derived
+  `supplier_name` / `estimated_cost` it used to publish under the order's name
+  and serves item-scoped keys instead. `ReorderTransparencyOrder`'s doc and the
+  "Trans. orders" tab carry why neither is drawn; `internal/tui/reorder_transparency_test.go`
+  holds the derived set of transparency surfaces.
 
 ### Purchase-order line money has two denominators
 
