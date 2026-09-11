@@ -2864,10 +2864,12 @@ is the authority; read it before adding a frame or wording a bar.
   rebuilds a screen per key per probe per pane size. The receiving key-space
   sweep took 292s that way (242s through a settler that ran the tick outright)
   against 1s once neither did, and `internal/tui` as a whole sat at 573s against
-  `go test`'s **600s default per-package timeout**, which CI does not raise — so
-  adding two phase cases to one sweep was enough to make the package fail by
-  TIMING OUT, with a passing test named in the panic as the one that happened to
-  be running.
+  `go test`'s **600s default per-package timeout** — so adding two phase cases
+  to one sweep was enough to make the package fail by TIMING OUT, with a passing
+  test named in the panic as the one that happened to be running. CI has since
+  raised its own bound to 20m (`.github/workflows/ci.yml`, which says why), but a
+  local `go test` still stops at 600s, and a HUNG test now costs CI 20 minutes
+  to report.
   Two facts get you out. `textinput.Blink` returns its message IMMEDIATELY and it
   is only FEEDING that message back to `Update` that starts the tick, so
   recognise it and stop: `driveIsBlink` (`wo_materials_drive_test.go`), checked
