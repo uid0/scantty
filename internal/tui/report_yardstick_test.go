@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/ast"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -924,50 +925,56 @@ func reportAssertAssembled(t *testing.T, s *ReportTableScreen, w int) {
 // rather than a defect. A scoping nothing falls outside of would be a way of
 // asserting nothing, so a sweep that never reached one side fails.
 func TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas(t *testing.T) {
-	fits, tooShort := 0, 0
-	for name, build := range reportScreenFixtures {
-		probe := build()
-		for tab := range probe.tabs {
-			rows := reportSweepRows(probe.tabs[tab].columns, 8)
-			for _, state := range reportFrameStates(rows) {
-				for _, w := range jdeDrawableWidths() {
-					for _, h := range jdePaneHeights() {
-						s := build()
-						state.seed(s, tab)
-						s.Update(tea.WindowSizeMsg{Width: w, Height: h})
-						if !s.frameFits() {
-							tooShort++
-							continue
-						}
-						fits++
-						room, got := s.reportPaneRows(), strings.Split(s.View(), "\n")
-						if len(got) > room {
-							t.Fatalf("%s tab %q %s at %dx%d: the screen assembled %d rows into "+
-								"a %d-row pane, so clampToBox takes the tail — and what is drawn "+
-								"last is the footer:\n%s",
-								name, probe.tabs[tab].label, state.label, w, h, len(got), room,
-								s.View())
-						}
-						flat := reportFlatPane(reportRootLines(t, s, w, h))
-						if !strings.Contains(flat, "esc back") {
-							t.Fatalf("%s tab %q %s at %dx%d: the footer names no way off the "+
-								"screen:\n%s", name, probe.tabs[tab].label, state.label, w, h,
-								reportPaneText(reportRootLines(t, s, w, h)))
-						}
-						if state.cutMark != "" && !strings.Contains(flat, state.cutMark) {
-							t.Fatalf("%s tab %q %s at %dx%d: the error body was cut with nothing "+
-								"saying so:\n%s", name, probe.tabs[tab].label, state.label, w, h,
-								reportPaneText(reportRootLines(t, s, w, h)))
-						}
+	var fits, tooShort atomic.Int64
+	t.Run("sweep", func(t *testing.T) {
+		for name, build := range reportScreenFixtures {
+			probe := build()
+			for tab := range probe.tabs {
+				rows := reportSweepRows(probe.tabs[tab].columns, 8)
+				for _, state := range reportFrameStates(rows) {
+					for _, w := range jdeDrawableWidths() {
+						t.Run(fmt.Sprintf("%s/%s/%s/%d", name, probe.tabs[tab].label, state.label, w), func(t *testing.T) {
+							t.Parallel()
+							for _, h := range jdePaneHeights() {
+								s := build()
+								state.seed(s, tab)
+								s.Update(tea.WindowSizeMsg{Width: w, Height: h})
+								if !s.frameFits() {
+									tooShort.Add(1)
+									continue
+								}
+								fits.Add(1)
+								room, got := s.reportPaneRows(), strings.Split(s.View(), "\n")
+								if len(got) > room {
+									t.Fatalf("%s tab %q %s at %dx%d: the screen assembled %d rows into "+
+										"a %d-row pane, so clampToBox takes the tail — and what is drawn "+
+										"last is the footer:\n%s",
+										name, probe.tabs[tab].label, state.label, w, h, len(got), room,
+										s.View())
+								}
+								lines := reportRootLines(t, s, w, h)
+								flat := reportFlatPane(lines)
+								if !strings.Contains(flat, "esc back") {
+									t.Fatalf("%s tab %q %s at %dx%d: the footer names no way off the "+
+										"screen:\n%s", name, probe.tabs[tab].label, state.label, w, h,
+										reportPaneText(lines))
+								}
+								if state.cutMark != "" && !strings.Contains(flat, state.cutMark) {
+									t.Fatalf("%s tab %q %s at %dx%d: the error body was cut with nothing "+
+										"saying so:\n%s", name, probe.tabs[tab].label, state.label, w, h,
+										reportPaneText(lines))
+								}
+							}
+						})
 					}
 				}
 			}
 		}
-	}
-	if fits == 0 || tooShort == 0 {
+	})
+	if fits.Load() == 0 || tooShort.Load() == 0 {
 		t.Fatalf("the sweep saw %d panes that could hold the give-order's floor and %d "+
 			"that could not — one side was never reached, so the scoping asserted nothing",
-			fits, tooShort)
+			fits.Load(), tooShort.Load())
 	}
 }
 

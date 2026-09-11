@@ -480,8 +480,14 @@ func TestPOEditJDE_CostRowNamesItsBasis(t *testing.T) {
 //     editor's cost and ship-date rows.
 //   - The association band's heading draws its aside on the next line when the
 //     two will not share one.
-//   - The line grid is the detail sheet's fitted grid; where it cannot keep the
-//     flag column, `[voided]` leads the item cell instead.
+//   - The line grid is the detail sheet's fitted grid, and at 80 columns it
+//     keeps the FLAG column and gives up the ship date's: `Gadget … [voided]`
+//     where #168 drew `[voided] Gadg…` beside a Ship date column. The give-order
+//     changed so neither grid can lose a line's state while it keeps a ship
+//     date (poFitLineGrid), and it cost the item column nothing — the same 14
+//     cells either way (TestPOLines_TheFlagColumnCostsTheItemColumnNothing). The
+//     ship date moves to the SHIP BY reading under the row; below 78 columns,
+//     where even the flag column will not fit, `[voided]` leads the item cell.
 //   - The cost row's LABEL names the quantity its figure is a total for.
 //   - The line editor's prose is folded and hangs off the row it is about: what
 //     Ctrl-E and Enter will do with the cost under the cost box, the sheet's own
@@ -527,8 +533,8 @@ func TestPOEditJDE_ThePinnedLayoutAt80Columns(t *testing.T) {
 			"Ordered for",
 			"  (attribution only — moves no stock, bills nobody)",
 			"         Work order ..... WO-1A2B — Replace drive …",
-			"    #  Item             Qty        Cost  Ship date",
-			"    2  [voided] Gadg…     2      $24.00  —",
+			"    #  Item             Qty        Cost",
+			"    2  Gadget             2      $24.00  [voided]",
 		)
 	})
 	t.Run("line editor", func(t *testing.T) {

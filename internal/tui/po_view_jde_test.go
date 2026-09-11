@@ -376,7 +376,7 @@ func poScrollToLineGrid(s *PurchaseOrderDetailScreen, want string) {
 // TestPOView_WideGridCellDoesNotCutTheCellsBesideIt: a cell wider than its
 // budgeted column must widen nothing.
 //
-// poLineGridRow pads each fixed cell to its poGrid* constant and padCell never
+// The row used to pad each fixed cell to its poGrid* constant, and padCell never
 // truncates, so an over-wide value used to push the whole ROW past the pane and
 // clampToBox ate whatever was on the right of it — at 80 columns the ship date
 // reached the terminal as "2026-08-1", a date silently missing a digit, and at

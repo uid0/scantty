@@ -3949,10 +3949,16 @@ func (s *ReceiveFormScreen) addClosedLines(l *jdeLines, row, width int) {
 		len(s.closed), plural("line", len(s.closed))), width) {
 		l.AddRow(row, line)
 	}
+	// The STATE leads and the label follows. receiveFit clips from the right,
+	// and written label-first a long label took the state with it — `1. Flat
+	// washer M3, A2 stainless…` on a voided line, which says neither that it
+	// was voided nor that it was closed short, the two facts that put it on
+	// this list and that an operator acts on differently. Whatever must
+	// survive must lead, as lineHeading's tags already do on the live lines.
 	for i, line := range s.closed {
 		l.AddRow(row, receiveMetaIndent+StyleMuted.Render(
-			receiveFit(fmt.Sprintf("%d. %s — %s", i+1, line.sheet.Label,
-				receiveStateLabel(line.sheet)), width, len(receiveMetaIndent))))
+			receiveFit(fmt.Sprintf("%d. %s — %s", i+1, receiveStateLabel(line.sheet),
+				line.sheet.Label), width, len(receiveMetaIndent))))
 	}
 }
 

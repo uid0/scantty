@@ -2013,8 +2013,15 @@ func (s *PurchaseOrderEditScreen) deleteHeadline(li omsapi.PurchaseOrderItem, wi
 // exists for and not the pane the interface is modelled on. What it leaves is
 // poRowDropMark, because a row that gave something up may not read as a whole
 // one — the same convention poFitRow keeps on the picker rows.
+//
+// A VOIDED LINE'S NAME CARRIES ITS FLAG AHEAD OF IT (poVoidLead), inside the
+// part that is clipped, so a narrow pane shortens the name and never the fact.
+// Only the delete confirm can reach one — the void prompt is not offered on a
+// line already voided — and there the void note is a CONTEXT row the header
+// trims on a short pane, which left `Delete: Flat washer… · 250 ordered` on a
+// voided line with nothing saying it was one.
 func removalHeadline(lead string, style lipgloss.Style, li omsapi.PurchaseOrderItem, width int) string {
-	name := li.DisplayLabel()
+	name := poVoidLead(li, li.DisplayLabel())
 	facts := fmt.Sprintf(" · %d ordered", li.QuantityOrdered)
 	if width <= 0 {
 		// UNSIZED, which is the layer's standing "draw whole and let clampToBox
@@ -2521,7 +2528,8 @@ func poEditProse(style lipgloss.Style, text string, width int) []string {
 // It is the DETAIL sheet's grid, fitted the same way (poFitLineGrid): the
 // fixed columns are budgeted from the values this order carries, the item
 // column takes what is left, and where the pane cannot hold every column the
-// FLAG goes first and the ship date second. It used to size only the item
+// SHIP DATE goes first and the flag second (poFitLineGrid says why, and why
+// that costs the item column nothing). It used to size only the item
 // column and draw the rest unbounded, so at 80 columns the flag cell ran off the
 // pane and a voided line read as a live one — and the item name was clipped by
 // truncateOneLine, which counts runes and returns one cell more than it was
@@ -2531,17 +2539,19 @@ func poEditProse(style lipgloss.Style, text string, width int) []string {
 // Reusing the fit without that would have been the defect this conversion
 // removes, moved from the pane edge into the column budget.
 //
-//   - The FLAG rides at the FRONT OF THE ITEM CELL, the way the detail sheet
+//   - The FLAG, where even its column will not fit (below 78 columns), rides
+//     at the FRONT OF THE ITEM CELL, the way the detail sheet
 //     carries a kit's tag (poKitTag) and for the reason that tag's own doc gives:
 //     a line that is not what it appears to be is marked on the line an operator
 //     reads to decide what it is, ahead of the name, because the name is the
-//     part that gives. The detail sheet puts a dropped flag on the READING line
-//     under the row instead, and that is not safe on a windowed body: a window
-//     can end between a row and the line under it, and a pane that ends on the
-//     voided row draws `2  Gadget  2  $24.00` over `↓ N more below` — a voided
-//     line reading as a live one. On the row itself no window can separate them
-//     (TestPOEditRows_AVoidedLineSaysSoOnItsOwnRow). The name gives the cells,
-//     and a voided line's name is the least of what the operator needs off it.
+//     part that gives. Not on a READING line under the row: a window can end
+//     between a row and the line under it, and a pane that ends on the voided
+//     row draws `2  Gadget  2  $24.00` over `↓ N more below` — a voided line
+//     reading as a live one. The detail sheet did exactly that until it took
+//     this shape too (poLineBlock). On the row itself no window can separate
+//     them (TestPOEditRows_AVoidedLineSaysSoOnItsOwnRow). The name gives the
+//     cells, and a voided line's name is the least of what the operator needs
+//     off it.
 //   - The SHIP DATE, a whole reading of its own, goes on the line's
 //     continuation row (poEditLineReadings) in the words the detail sheet uses.
 func (s *PurchaseOrderEditScreen) lineGrid(l *jdeLines) {
@@ -2595,7 +2605,7 @@ func (s *PurchaseOrderEditScreen) lineGrid(l *jdeLines) {
 // widths is not the place to start.
 func poEditLineFlag(li omsapi.PurchaseOrderItem) string {
 	if li.IsVoided {
-		return "[voided]"
+		return poVoidFlag
 	}
 	return ""
 }
@@ -2628,20 +2638,6 @@ const (
 
 // poLineGridItemIndent puts a continuation line under the item column.
 var poLineGridItemIndent = strings.Repeat(" ", len(jdeIndent)+poGridNumW+2)
-
-// poLineGridRow lays one detail row out in its columns. Numbers right-align
-// under their headers the way a printed order pad does.
-func poLineGridRow(num, item, qty, cost, ship, flag string, itemW int) string {
-	cells := []string{
-		padCell(num, poGridNumW, alignRight),
-		padCell(item, itemW, alignLeft),
-		padCell(qty, poGridQtyW, alignRight),
-		padCell(cost, poGridCostW, alignRight),
-		padCell(ship, poGridShipW, alignLeft),
-		flag,
-	}
-	return jdeIndent + strings.TrimRight(strings.Join(cells, "  "), " ")
-}
 
 // formBar names the keys that work on the form, with PgUp/PgDn on it exactly
 // when the body moves under the bar that is about to be drawn.
@@ -2892,7 +2888,11 @@ const poLineEditHeading = "Edit line: "
 func (s *PurchaseOrderEditScreen) lineEditLines(li omsapi.PurchaseOrderItem) *jdeLines {
 	width := s.bodyWidth()
 	body := &jdeLines{}
-	name := li.DisplayLabel()
+	// A voided line says so in the heading, AHEAD of its name. The editor's
+	// only other word for it is the Line status row, the last row of the form,
+	// so on a short pane standing on the cost row the editor named the line,
+	// offered to write its cost and said nothing about the void.
+	name := poVoidLead(li, li.DisplayLabel())
 	if width > 0 {
 		name = pickerClip(name, width-lipgloss.Width(poLineEditHeading))
 	}
@@ -3057,7 +3057,12 @@ func (s *PurchaseOrderEditScreen) viewAssocPick() string {
 	}
 	target := "this purchase order"
 	if s.assocLineIdx >= 0 && s.assocLineIdx < s.lineCount() {
-		target = fmt.Sprintf("line %d: %s", s.assocLineIdx+1, s.po.Items[s.assocLineIdx].DisplayLabel())
+		// A voided line's flag leads the WHOLE target, number included: the
+		// heading is clipped from the right, and on a narrow pane "line 2" is
+		// all of the target that survives — so a flag after the number would be
+		// gone wherever the line is still named (poVoidLead).
+		li := s.po.Items[s.assocLineIdx]
+		target = poVoidLead(li, fmt.Sprintf("line %d: %s", s.assocLineIdx+1, li.DisplayLabel()))
 	}
 	width := s.bodyWidth()
 	heading := field + " for "
