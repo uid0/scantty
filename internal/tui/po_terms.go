@@ -16,8 +16,6 @@
 package tui
 
 import (
-	"strings"
-
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
@@ -153,18 +151,4 @@ func poPaymentScheduleValue(sched *omsapi.POPaymentSchedule) string {
 		value += " · " + sched.Basis
 	}
 	return value
-}
-
-// poSelectStrip lists a choice row's whole option set with the current one
-// bracketed, for the line the edit form draws under the focused row.
-func poSelectStrip(sel *poHeaderSelect) string {
-	parts := make([]string, 0, len(sel.opts))
-	for i, o := range sel.opts {
-		if i == sel.idx {
-			parts = append(parts, "["+o.label+"]")
-			continue
-		}
-		parts = append(parts, o.label)
-	}
-	return strings.Join(parts, " · ")
 }

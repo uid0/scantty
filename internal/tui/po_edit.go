@@ -2077,24 +2077,43 @@ func (s *PurchaseOrderEditScreen) deleteCaveats() []string {
 // header measured that is not the header drawn.
 func (s *PurchaseOrderEditScreen) deleteHeader(li omsapi.PurchaseOrderItem, width int) jdeHeader {
 	h := jdeHeader(nil).add(jdeHeadEssential, s.deleteHeadline(li, width))
-	// FIRST among the context rows, because jdeFitHeader gives ground from the
-	// END within a rank: a refused delete is why this frame is still standing,
-	// and the two rows below it are facts an operator can still read off the
-	// line editor behind it.
+	// The context rows are in RISING order of expendability, because
+	// jdeFitHeader gives ground from the END within a rank. A refused delete
+	// leads: it is why this frame is still standing. What deleting a voided line
+	// ALSO destroys comes next, because nothing else on the frame — and nothing
+	// on the line editor behind it — says so. The line total goes first: it is
+	// the one fact here the operator can still read off the line editor.
 	if row := s.deleteStandingRow(width); row != "" {
 		h = h.add(jdeHeadContext, row)
-	}
-	if total := formatMoney(li.EstimatedCost); total != "" {
-		h = h.add(jdeHeadContext, jdeIndent+StyleMuted.Render("Line total on the order: "+total))
 	}
 	if li.IsVoided {
 		// Worth knowing before the press and not worth the essential row: a
 		// voided line is already struck off, so this destroys the ghost too.
-		h = h.add(jdeHeadContext, jdeIndent+StyleMuted.Render(
-			"This line is already voided; deleting removes it and its void from the order."))
+		h = h.addFitted(jdeHeadContext, jdeHeadContext, jdeCaveatLines(poDeleteVoidedNote, width),
+			func(rows int) []string { return jdeCaveatLinesIn(poDeleteVoidedNote, width, rows) })
+	}
+	if total := formatMoney(li.EstimatedCost); total != "" {
+		h = h.add(jdeHeadContext, jdeIndent+StyleMuted.Render("Line total on the order: "+total))
 	}
 	return h.add(jdeHeadDecorative, "")
 }
+
+// poDeleteVoidedNote is what the delete confirm adds on a line already struck
+// off: that the destroy takes the VOID with it, which is the one consequence of
+// this press nothing else on the frame names.
+//
+// THE CONSEQUENCE LEADS, AND THE SENTENCE FITS ONE ROW AT 80 COLUMNS. The words
+// it replaced — "This line is already voided; deleting removes it and its void
+// from the order." — were 79 cells written to the header unfolded, so the pane
+// cut them at 51 to "This line is already voided; deleting removes it": a
+// complete-looking sentence that had lost the half saying the void record is
+// destroyed too, on the frame whose next keystroke destroys it. Folded, the tail
+// would still be the row a short pane drops first; so the fact that must
+// survive comes first, and at 45 cells it is a single row wherever a caveat gets
+// the 49 an 80-column pane gives — drawn whole or not at all, never a fragment.
+// On a narrower pane it folds, and the header re-draws what it keeps with the
+// cut marked (jdeHeader.addFitted).
+const poDeleteVoidedNote = "Deleting also erases this line's void record."
 
 // viewDeleteLine draws the confirmation. A frame whose whole job is to name
 // what will be destroyed cannot be drawn without a line to name, so where
@@ -2353,31 +2372,54 @@ func (s *PurchaseOrderEditScreen) assocFields() []jdeField {
 // formLines builds the header form body, tagging each line with the navigable
 // row it belongs to so the window can keep a whole row on screen — a focused
 // choice row owns its option strip, a line owns what it was ordered for.
+//
+// EVERY LINE OF IT IS BOUNDED BY THE PANE IT IS DRAWN INTO, and that is the
+// conversion this body went through rather than a style. It used to hand
+// renderJDEField its rows and let the hints ride past the fill, so at 80
+// columns — where the pane is 51 — `Date ordered` lost "when the order was
+// actually placed" and `Expected delivery` lost "blank clears", both cut at a
+// joint by clampToBox and reading as finished; the order-level work order was
+// cut mid-word with no mark; and the line grid drew a voided line with its
+// `[voided]` flag off the edge, so it read as a live line on the order. The
+// rows now go through poEditFieldLines, the grid through the same fit the
+// detail sheet uses, and the prose through the layer's fold.
 func (s *PurchaseOrderEditScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	if s.po == nil {
 		return l
 	}
+	width := s.bodyWidth()
 	meta, assoc := s.metaFields(), s.assocFields()
 	labelWidth := jdeLabelWidth(meta, assoc)
-	strip := strings.Repeat(" ", len(jdeIndent)+labelWidth+len(jdeLeader))
 
 	l.Add(StyleJDEHeading.Render("Order details"))
 	for i := 0; i < poEditMetaCount; i++ {
-		l.AddRow(i, renderJDEField(meta[i], labelWidth, s.bodyWidth()))
+		for _, line := range poEditFieldLines(meta[i], labelWidth, width) {
+			l.AddRow(i, line)
+		}
 		if sel, ok := s.selects[i]; ok && s.cursor == i {
 			// The whole set under the focused row: these are short fixed lists,
 			// so showing every label beats cycling blind through six terms to
-			// find out what is even on offer.
-			l.AddRow(i, strip+StyleMuted.Render(poSelectStrip(sel)))
+			// find out what is even on offer. The layer's strip, because it is
+			// WINDOWED around the current entry when the set is wider than what
+			// the row leaves: payment terms run to eighty cells, and cut at the
+			// tail the bracketed entry — where you ARE — is the part that goes.
+			labels := make([]string, len(sel.opts))
+			for j, o := range sel.opts {
+				labels[j] = o.label
+			}
+			if strip := jdeOptionStrip(labels, sel.idx, jdeStripWidth(width, labelWidth)); strip != "" {
+				l.AddRow(i, jdeStripIndent(labelWidth)+StyleMuted.Render(strip))
+			}
 		}
 	}
 
 	l.Add("")
-	l.Add(StyleJDEHeading.Render("Ordered for") + "  " +
-		StyleMuted.Render("(attribution only — moves no stock, bills nobody)"))
+	s.addOrderedForHeading(l, width)
 	for i := 0; i < poEditAssocCount; i++ {
-		l.AddRow(poEditMetaCount+i, renderJDEField(assoc[i], labelWidth, s.bodyWidth()))
+		for _, line := range poEditFieldLines(assoc[i], labelWidth, width) {
+			l.AddRow(poEditMetaCount+i, line)
+		}
 	}
 
 	l.Add("")
@@ -2386,15 +2428,134 @@ func (s *PurchaseOrderEditScreen) formLines() *jdeLines {
 	return l
 }
 
+// poOrderedForAside is what the association band's heading says about itself.
+// Its second half is a NEGATION — nothing is billed — and a negation cut before
+// its object is the opposite claim, which is why it is folded rather than
+// clipped and never cut at the pane edge: at 80 columns the one-line form read
+// "…moves no stock, bi".
+const poOrderedForAside = "(attribution only — moves no stock, bills nobody)"
+
+// addOrderedForHeading draws the association band's heading: on one line where
+// the pane holds it, and as the heading over the aside folded beneath it where
+// it does not. The one-line form is kept wherever it fits because it is what
+// the band has always looked like; the fold is what a narrow pane gets instead
+// of losing the tail.
+func (s *PurchaseOrderEditScreen) addOrderedForHeading(l *jdeLines, width int) {
+	const heading = "Ordered for"
+	if width <= 0 || lipgloss.Width(heading)+2+lipgloss.Width(poOrderedForAside) <= width {
+		l.Add(StyleJDEHeading.Render(heading) + "  " + StyleMuted.Render(poOrderedForAside))
+		return
+	}
+	l.Add(StyleJDEHeading.Render(heading))
+	for _, line := range jdeCaveatLines(poOrderedForAside, width) {
+		l.Add(line)
+	}
+}
+
+// poEditFieldLines draws one columnar row of this screen as the lines it really
+// takes on a pane `width` cells wide: the row, then whatever of it had to fold
+// underneath. It is the ONE place this screen's field rows are fitted, so the
+// header band, the association band, the line editor and the void prompt cannot
+// come to fit their rows differently.
+//
+// A TEXT row is jdeFitRow's, unchanged: the field gives cells first, down to the
+// layer's floor, and then the hint moves under it as a note indented to the
+// input area. That is the fold the layer already owns, and this screen used to
+// bypass it — which is the whole of how `Total line cost ..... 50.00` came to be
+// drawn at 80 columns with the hint naming its denominator gone.
+//
+// A VALUE or CHOICE row carries no box for the layer to size, and its value is
+// OMS-supplied or picked from a set that can graft an unrecognised token onto
+// itself, so it is bounded here: the value is clipped to what the label column
+// leaves, with the ellipsis that says so, and a hint rides beside it only while
+// the whole value still fits — otherwise the hint folds underneath the way a text
+// row's does. The VALUE keeps the room because it is the row's identity; the
+// hint is guidance that loses nothing by moving down a line. An unsized pane
+// (width 0) draws the row whole, the layer's standing "do not truncate".
+func poEditFieldLines(f jdeField, labelWidth, width int) []string {
+	if width <= 0 {
+		return []string{renderJDEField(f, labelWidth, width)}
+	}
+	if f.Kind == jdeText {
+		fitted, notes := jdeFitRow(f, labelWidth, width)
+		return append([]string{renderJDEField(fitted, labelWidth, width)}, notes...)
+	}
+	room := poFieldValueRoom(width, labelWidth, false)
+	if f.Kind == jdeChoice {
+		// "< " and " >" are drawn around the value and spent out of the same room.
+		room -= lipgloss.Width("<  >")
+	}
+	var notes []string
+	if f.Hint != "" && lipgloss.Width(f.Value)+2+lipgloss.Width(f.Hint) > room {
+		notes = jdeNoteLines(f.Hint, labelWidth, width)
+		f.Hint = ""
+	}
+	f.Value = pickerClip(f.Value, room)
+	return append([]string{renderJDEField(f, labelWidth, width)}, notes...)
+}
+
+// poEditProse folds one sentence of this screen's prose to the pane at the
+// sheet's indent, in the style it is drawn in. It is jdeCaveatLines with the
+// style left to the caller — the same wrap (jdeWrapNote) at the same width —
+// because some of the line editor's sentences are warnings (an armed write, a
+// price nobody has confirmed) and read in the warn colour; a muted sentence
+// goes through jdeCaveatLines itself.
+func poEditProse(style lipgloss.Style, text string, width int) []string {
+	wrap := 0
+	if width > 0 {
+		if wrap = width - len(jdeIndent); wrap < 1 {
+			wrap = 1
+		}
+	}
+	lines := jdeWrapNote(text, wrap)
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, jdeIndent+style.Render(line))
+	}
+	return out
+}
+
 // lineGrid draws the lines as a JD Edwards detail grid: a column header, then
 // one dense row per line with the focused row picked out end to end.
+//
+// It is the DETAIL sheet's grid, fitted the same way (poFitLineGrid): the
+// fixed columns are budgeted from the values this order carries, the item
+// column takes what is left, and where the pane cannot hold every column the
+// FLAG goes first and the ship date second. It used to size only the item
+// column and draw the rest unbounded, so at 80 columns the flag cell ran off the
+// pane and a voided line read as a live one — and the item name was clipped by
+// truncateOneLine, which counts runes and returns one cell more than it was
+// given, so a clipped name also ran a cell into the quantity.
+//
+// WHAT THE GRID DROPS IT STILL SAYS, and not in the same place for both columns.
+// Reusing the fit without that would have been the defect this conversion
+// removes, moved from the pane edge into the column budget.
+//
+//   - The FLAG rides at the FRONT OF THE ITEM CELL, the way the detail sheet
+//     carries a kit's tag (poKitTag) and for the reason that tag's own doc gives:
+//     a line that is not what it appears to be is marked on the line an operator
+//     reads to decide what it is, ahead of the name, because the name is the
+//     part that gives. The detail sheet puts a dropped flag on the READING line
+//     under the row instead, and that is not safe on a windowed body: a window
+//     can end between a row and the line under it, and a pane that ends on the
+//     voided row draws `2  Gadget  2  $24.00` over `↓ N more below` — a voided
+//     line reading as a live one. On the row itself no window can separate them
+//     (TestPOEditRows_AVoidedLineSaysSoOnItsOwnRow). The name gives the cells,
+//     and a voided line's name is the least of what the operator needs off it.
+//   - The SHIP DATE, a whole reading of its own, goes on the line's
+//     continuation row (poEditLineReadings) in the words the detail sheet uses.
 func (s *PurchaseOrderEditScreen) lineGrid(l *jdeLines) {
 	if s.lineCount() == 0 {
 		l.Add(jdeIndent + StyleMuted.Render("(no lines)"))
 		return
 	}
-	itemW := s.lineItemWidth()
-	l.Add(StyleMuted.Render(poLineGridRow("#", "Item", "Qty", "Cost", "Ship date", "", itemW)))
+	width := s.bodyWidth()
+	fit := poFitLineGrid(width, s.po.Items)
+	shipHead := ""
+	if fit.ship {
+		shipHead = "Ship date"
+	}
+	l.Add(StyleMuted.Render(poDetailGridRow(fit, "#", "Item", "Qty", "Cost", shipHead, "")))
 	focused, onLine := s.onLineRow()
 	for i, li := range s.po.Items {
 		cost := ""
@@ -2403,65 +2564,70 @@ func (s *PurchaseOrderEditScreen) lineGrid(l *jdeLines) {
 		} else if !li.EstimatedCost.Empty() {
 			cost = "$" + string(li.EstimatedCost)
 		}
-		flag := ""
-		if li.IsVoided {
-			flag = "[voided]"
+		ship, flag, item := "", "", li.DisplayLabel()
+		if fit.ship {
+			ship = firstNonEmpty(li.ExpectedShipmentDate, "—")
 		}
-		row := poLineGridRow(
-			strconv.Itoa(i+1),
-			truncateOneLine(li.DisplayLabel(), itemW),
-			strconv.Itoa(li.QuantityOrdered),
-			cost,
-			firstNonEmpty(li.ExpectedShipmentDate, "—"),
-			flag,
-			itemW,
-		)
+		switch f := poEditLineFlag(li); {
+		case fit.flag:
+			flag = f
+		case f != "":
+			// In PLAIN, like every other cell: poGridCell fits by display cells
+			// and would cut a style's escape sequence in half.
+			item = f + " " + item
+		}
+		row := poDetailGridRow(fit, strconv.Itoa(i+1), item,
+			strconv.Itoa(li.QuantityOrdered), cost, ship, flag)
 		if onLine && focused == i {
 			row = StyleJDEFieldFocused.Render(row)
 		}
 		l.AddRow(poEditLineBase+i, row)
-		// The line's own "ordered for", indented under it — a mixed order is
-		// the whole reason lines carry associations of their own.
-		if orderedFor := poLineOrderedFor(li); orderedFor != "" {
-			// Indented to the item column, so it reads as a continuation of the
-			// row above rather than as a row of its own.
-			l.AddRow(poEditLineBase+i, poLineGridItemIndent+StyleMuted.Render("ordered for: "+orderedFor))
+		// Indented to the item column, so it reads as a continuation of the row
+		// above rather than as a row of its own.
+		for _, line := range jdeWrapTokens(poEditLineReadings(li, fit), poLineGridItemIndent, width) {
+			l.AddRow(poEditLineBase+i, line)
 		}
 	}
 }
 
-// Detail-grid column widths. The item column takes whatever the pane has left.
+// poEditLineFlag is the one word this grid's flag column carries. Only a void:
+// the edit grid has never flagged a received line, and a conversion about
+// widths is not the place to start.
+func poEditLineFlag(li omsapi.PurchaseOrderItem) string {
+	if li.IsVoided {
+		return "[voided]"
+	}
+	return ""
+}
+
+// poEditLineReadings are what a line row carries on the line under it: the ship
+// date when the fit could not keep its column, then the line's own "ordered
+// for" — a mixed order is the whole reason lines carry associations of their
+// own. Wrapped by jdeWrapTokens, which folds between readings and trims only a
+// single reading too long for the whole line, visibly. A dropped FLAG is not
+// here: it is on the row itself (lineGrid says why).
+func poEditLineReadings(li omsapi.PurchaseOrderItem, fit poLineGridFit) []jdeToken {
+	var out []jdeToken
+	if !fit.ship && li.ExpectedShipmentDate != "" {
+		out = append(out, jdeToken{text: "SHIP BY " + li.ExpectedShipmentDate, style: StyleMuted})
+	}
+	if orderedFor := poLineOrderedFor(li); orderedFor != "" {
+		out = append(out, jdeToken{text: "ordered for: " + orderedFor, style: StyleMuted})
+	}
+	return out
+}
+
+// Detail-grid column widths: the floors poFitLineGrid budgets each fixed
+// column from before it measures the order's own values.
 const (
 	poGridNumW  = 3
 	poGridQtyW  = 4
 	poGridCostW = 10
 	poGridShipW = 10
-	poGridFlagW = 8
 )
 
 // poLineGridItemIndent puts a continuation line under the item column.
 var poLineGridItemIndent = strings.Repeat(" ", len(jdeIndent)+poGridNumW+2)
-
-// lineItemWidth sizes the item column from the pane: a floor so a narrow
-// terminal shortens the description rather than collapsing the column, and a
-// ceiling so a wide one doesn't strand the quantities and costs out at the far
-// right of an otherwise empty row.
-func (s *PurchaseOrderEditScreen) lineItemWidth() int {
-	const minItemW, maxItemW = 12, 44
-	width := 76
-	if s.terminalWidth > 0 {
-		width = screenBodyWidth(s.terminalWidth)
-	}
-	fixed := len(jdeIndent) + poGridNumW + 2 + 2 + poGridQtyW + 2 + poGridCostW + 2 + poGridShipW + 2 + poGridFlagW
-	switch w := width - fixed; {
-	case w < minItemW:
-		return minItemW
-	case w > maxItemW:
-		return maxItemW
-	default:
-		return w
-	}
-}
 
 // poLineGridRow lays one detail row out in its columns. Numbers right-align
 // under their headers the way a printed order pad does.
@@ -2542,15 +2708,50 @@ var poLineEditHints = map[int]string{
 	poLineEditShipDate: "YYYY-MM-DD · '-' or blank clears",
 }
 
-// poLineCostHint says which quantity the cost field is a total FOR. The endpoint
-// divides it by the ORDERED quantity, and on a partly delivered line that is not
-// the quantity the grid's Cost column is counting — so the row names it rather
-// than leaving the operator to infer it.
-func poLineCostHint(li omsapi.PurchaseOrderItem) string {
-	if li.QuantityOrdered <= 0 {
-		return "$ total for the line, e.g. 125.00"
+// poLineCostLabel is the cost row's LABEL, and it names the quantity the figure
+// is a total FOR — the denominator.
+//
+// THE DENOMINATOR IS ON THE LABEL BECAUSE THE LABEL IS THE ONE PART OF A ROW NO
+// GEOMETRY CAN SEPARATE FROM THE BOX. It used to ride the hint alone, and at 80
+// columns — where the pane is 51 — the hint was cut off the pane entirely, so the
+// row read `Total line cost ..... 50.00`: a box that looks like a unit price on
+// a screen that sends what is typed as the line TOTAL. OMS stores
+// unit_cost_actual = line_cost / quantity_ordered (po_line_price.go), so a unit
+// price of 10.00 typed on a five-line records 2.00 a unit — a wrong write, not a
+// cosmetic one. Folding the hint under the field keeps it on a wide enough pane;
+// the label keeps it on EVERY pane the field is drawn on at all, because a
+// window that keeps one line of a row keeps the line the label is on.
+//
+// A line with nothing ordered has no quantity to name and keeps the plain
+// label; its hint says what the figure is instead. So does a quantity too long
+// for the label column: renderJDEField cuts a label past jdeLabelMaxWidth with
+// no mark, and "Total for 2147483647 order" would read as a different word, so
+// past the cap the denominator goes back to the hint (poLineCostHint) — nine
+// digits of units on one purchase-order line is where that starts.
+func poLineCostLabel(li omsapi.PurchaseOrderItem) string {
+	if li.QuantityOrdered > 0 {
+		if label := fmt.Sprintf("Total for %d ordered", li.QuantityOrdered); lipgloss.Width(label) <= jdeLabelMaxWidth {
+			return label
+		}
 	}
-	return fmt.Sprintf("$ total for all %d ordered, e.g. 125.00", li.QuantityOrdered)
+	return poLineEditLabels[poLineEditCost]
+}
+
+// poLineCostHint is the misreading the cost row exists to prevent, said beside
+// the box: the figure is a TOTAL and not a per-unit price, and how it is typed.
+// The ORDERED quantity it is a total for is on the label (poLineCostLabel),
+// which is also why the hint does not repeat it — on a partly delivered line
+// that is not the quantity the grid's Cost column is counting, and the label is
+// where the operator cannot miss which one it is. Where the label cannot carry
+// the quantity, the hint does.
+func poLineCostHint(li omsapi.PurchaseOrderItem) string {
+	switch {
+	case li.QuantityOrdered <= 0:
+		return "$ total for the line, e.g. 125.00"
+	case poLineCostLabel(li) == poLineEditLabels[poLineEditCost]:
+		return fmt.Sprintf("$ total for all %d ordered, e.g. 125.00", li.QuantityOrdered)
+	}
+	return "$ total, not per unit · e.g. 125.00"
 }
 
 // lineFields describes the line editor: three typed rows, then the three the
@@ -2562,13 +2763,13 @@ func (s *PurchaseOrderEditScreen) lineFields(li omsapi.PurchaseOrderItem) []jdeF
 		if i == poLineEditNotes {
 			width = 40
 		}
-		hint := poLineEditHints[i]
+		label, hint := poLineEditLabels[i], poLineEditHints[i]
 		if i == poLineEditCost {
-			hint = poLineCostHint(li)
+			label, hint = poLineCostLabel(li), poLineCostHint(li)
 		}
 		focused := s.lineFocus == i
 		out = append(out, jdeField{
-			Label:   poLineEditLabels[i],
+			Label:   label,
 			Kind:    jdeText,
 			Input:   &s.lineInputs[i],
 			Hint:    hint,
@@ -2625,15 +2826,17 @@ func (s *PurchaseOrderEditScreen) lineBar() []actionBarItem {
 		// is: a key the bar names has to do something, and one it does not name
 		// has to do nothing. costRowAction is the other side of this.
 		//
-		// One word each, because the bar is clipped and not wrapped. At 80
-		// columns — the width this interface is modelled on — the pane leaves
-		// this bar 49 columns and the three standing entries spend 38 of them,
-		// so a label longer than four characters loses its tail. "Use last
-		// price" came out as "Ctrl-E=Use" and "Confirm price" as "Ctrl-E=Conf":
-		// the first is worse than the second, because it still reads as a whole
-		// instruction while no longer saying WHICH price. A short label that is
-		// true at every width beats a long one that is true at 140. What the key
-		// does in full is on the body line above it, which has room for it.
+		// One word each. At 80 columns — the width this interface is modelled
+		// on — the pane leaves this bar 49 columns and the three standing
+		// entries spend 38 of them. The bar was CLIPPED when these were chosen,
+		// and a longer label lost its tail: "Use last price" came out as
+		// "Ctrl-E=Use" and "Confirm price" as "Ctrl-E=Conf", the first worse
+		// because it still read as a whole instruction while no longer saying
+		// WHICH price. Every frame wraps its bar now (frameWrapped), so a long
+		// label would cost a whole bar row — one body row fewer, on the screen
+		// whose cost-row block is the tallest on it — instead of its tail. A
+		// short label that is true at every width is still the better trade.
+		// What the key does in full is under the cost box, which has room.
 		if row, _, _ := s.lineOffer(); row != nil {
 			items = append(items, actionBarItem{"Ctrl-E", "Take"})
 		} else if s.lineCostShown != "" {
@@ -2658,57 +2861,123 @@ func (s *PurchaseOrderEditScreen) viewLineEdit() string {
 		return s.viewForm()
 	}
 
+	return s.frame(s.lineEditLines(li), s.lineFocus, "Saving…", s.lineBar())
+}
+
+// poLineEditHeading is the literal the line editor's heading opens with; the
+// line's own name follows it, clipped to what the pane leaves.
+const poLineEditHeading = "Edit line: "
+
+// lineEditLines builds the line editor's body.
+//
+// EVERY SENTENCE IN IT IS FOLDED TO THE PANE AND HANGS OFF THE ROW IT IS ABOUT,
+// and those two are one decision rather than two. The prose used to be written
+// unfolded under the last row, so at 80 columns every sentence of it was cut —
+// "Ctrl-E writes $50.00 as the total for the 5 order", "Enter saves cost, ship
+// date and notes together; t" — the key's CONDITION and the rows' independence
+// both gone. Folding alone would have traded that for a height defect: the
+// sentences about the COST row were drawn below the last row, so once each took
+// two or three lines they fell outside the window the cursor on the cost row
+// keeps, and the operator standing on the row they explain could no longer see
+// them. So what a row needs is drawn ON that row, after its field — the cost
+// row's offer and pending write under the cost box, the removal note under the
+// status row — and what belongs to the whole sheet hangs off the LAST row, where
+// the cursor on that row brings it into the window (AGENTS.md's rule for a
+// line block, the receiving form's addLineBlock being the worked example).
+//
+// Within the cost row's block the order is the sacrifice order: the field (with
+// the denominator on its label), then the hint, then what Ctrl-E and Enter will
+// do. jdeLines.Window keeps a block's START, so a pane too short for the whole
+// block loses its tail, never the box.
+func (s *PurchaseOrderEditScreen) lineEditLines(li omsapi.PurchaseOrderItem) *jdeLines {
+	width := s.bodyWidth()
 	body := &jdeLines{}
-	body.Add(StyleJDEHeading.Render("Edit line: ") + li.DisplayLabel())
-	body.Add(jdeIndent + StyleMuted.Render(poLineEditSubtitle(li)))
+	name := li.DisplayLabel()
+	if width > 0 {
+		name = pickerClip(name, width-lipgloss.Width(poLineEditHeading))
+	}
+	body.Add(StyleJDEHeading.Render(poLineEditHeading) + name)
+	for _, line := range jdeCaveatLines(poLineEditSubtitle(li), width) {
+		body.Add(line)
+	}
 	body.Add("")
 	// One block, so it finds its own label column — unlike the header form,
 	// whose two bands share one.
-	for i, line := range renderJDEFields(s.lineFields(li), s.bodyWidth()) {
-		body.AddRow(i, line)
+	fields := s.lineFields(li)
+	labelWidth := jdeLabelWidth(fields)
+	for i, f := range fields {
+		for _, line := range poEditFieldLines(f, labelWidth, width) {
+			body.AddRow(i, line)
+		}
+		for _, line := range s.lineRowNotes(i, li, width) {
+			body.AddRow(i, line)
+		}
 	}
-	body.Add("")
-	// Everything about the cost row's Ctrl-E is drawn only while the cursor is
-	// ON the cost row, the same test lineBar makes. The operator learns the keys
-	// from a bar naming exactly what works where they are standing; a body that
-	// went on naming Ctrl-E from the notes row — where the bar has dropped it
-	// and the key does nothing — teaches the opposite of that rule.
-	if s.lineFocus == poLineEditCost {
-		if row, total, note := s.lineOffer(); row != nil {
-			body.Add(jdeIndent + StyleStatusWarn.Render(row.describe()))
-			body.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf(
+	return body
+}
+
+// lineRowNotes is what the line editor draws under row `row`, after its field.
+func (s *PurchaseOrderEditScreen) lineRowNotes(row int, li omsapi.PurchaseOrderItem, width int) []string {
+	var out []string
+	switch row {
+	case poLineEditCost:
+		// Everything about the cost row's Ctrl-E is drawn only while the cursor
+		// is ON the cost row, the same test lineBar makes. The operator learns
+		// the keys from a bar naming exactly what works where they are standing;
+		// a body that went on naming Ctrl-E from the notes row — where the bar
+		// has dropped it and the key does nothing — teaches the opposite of that
+		// rule.
+		if s.lineFocus != poLineEditCost {
+			return nil
+		}
+		if offer, total, note := s.lineOffer(); offer != nil {
+			out = append(out, poEditProse(StyleStatusWarn, offer.describe(), width)...)
+			out = append(out, jdeCaveatLines(fmt.Sprintf(
 				"Ctrl-E offers $%s for the %d ordered; leave the field blank to save no price.",
-				total, li.QuantityOrdered)))
+				total, li.QuantityOrdered), width)...)
 		} else if note != "" {
-			body.Add(jdeIndent + StyleMuted.Render(note))
+			out = append(out, jdeCaveatLines(note, width)...)
+		}
+		// What that key will do is drawn rather than left to a status line the
+		// operator may already have scrolled past. A line reading $0.00 in the
+		// grid is recovered from right here.
+		if note, pending := s.costPendingNote(li.QuantityOrdered); note != "" {
+			style := StyleMuted
+			if pending {
+				// The next enter's outcome is already decided — a write armed,
+				// or an entry that will be refused — which is not a hint about a
+				// key: it is the same class of thing as the historical offer
+				// above, and reads in the same colour.
+				style = StyleStatusWarn
+			}
+			out = append(out, poEditProse(style, note, width)...)
+		}
+	case poLineRowStatus:
+		// The status row's own standing note, drawn on the same test the bar
+		// makes: what Ctrl-E opens there is decided by the ORDER, not by the
+		// line, so a row reading "open" says nothing about whether removal is
+		// delete or void.
+		if note := s.removalNote(); note != "" && s.lineFocus == poLineRowStatus {
+			out = append(out, jdeCaveatLines(note, width)...)
+		}
+		// The sheet's own sentences, on the LAST row so a cursor can bring them
+		// into the window; the separator rides with them, closing the block
+		// above rather than opening one.
+		out = append(out, "")
+		for _, caveat := range poLineEditCaveats {
+			out = append(out, jdeCaveatLines(caveat, width)...)
 		}
 	}
-	// The status row's own standing note, drawn on the same test the bar makes:
-	// what Ctrl-E opens there is decided by the ORDER, not by the line, so a row
-	// reading "open" says nothing about whether removal is delete or void.
-	if note := s.removalNote(); note != "" && s.lineFocus == poLineRowStatus {
-		for _, line := range jdeCaveatLines(note, s.bodyWidth()) {
-			body.Add(line)
-		}
-	}
-	body.Add(jdeIndent + StyleMuted.Render("Enter saves cost, ship date and notes together; the three rows under them write on their own."))
-	body.Add(jdeIndent + StyleMuted.Render("A cost you do not change is not re-sent — the price stays as it is."))
-	// …which is why the row needs a way to say "send it anyway", and why what
-	// that key will do is drawn rather than left to a status line the operator
-	// may already have scrolled past. A line reading $0.00 in the grid is
-	// recovered from right here.
-	if note, pending := s.costPendingNote(li.QuantityOrdered); note != "" && s.lineFocus == poLineEditCost {
-		style := StyleMuted
-		if pending {
-			// The next enter's outcome is already decided — a write armed, or
-			// an entry that will be refused — which is not a hint about a key:
-			// it is the same class of thing as the historical offer above, and
-			// reads in the same colour.
-			style = StyleStatusWarn
-		}
-		body.Add(jdeIndent + style.Render(note))
-	}
-	return s.frame(body, s.lineFocus, "Saving…", s.lineBar())
+	return out
+}
+
+// poLineEditCaveats are what the line editor says about the whole sheet: which
+// rows Enter saves, and why a cost left alone is not re-sent. The second is why
+// the cost row needs a way to say "send it anyway" (Ctrl-E, and the pending note
+// under the cost box that says what it will do).
+var poLineEditCaveats = []string{
+	"Enter saves cost, ship date and notes together; the three rows under them write on their own.",
+	"A cost you do not change is not re-sent — the price stays as it is.",
 }
 
 // costPendingNote is the line under the form that says what enter will do with
@@ -2757,11 +3026,12 @@ func (s *PurchaseOrderEditScreen) costPendingNote(quantityOrdered int) (string, 
 		// refuse outright. The refusal is drawn in saveLine's own words.
 		//
 		// The REASON leads and the entry follows, for the same reason the
-		// offer's caveat leads (poLastPaid.describe): the pane clips this line
-		// at 80 columns, the entry is still legible in the field two rows above,
-		// and the rule it broke is not recoverable from anywhere else on the
-		// screen. Capitalised only because it opens a sentence here while
-		// saveLine's status line puts it mid-line.
+		// offer's caveat leads (poLastPaid.describe): this note is the tail of
+		// the cost row's block, a pane too short for the whole block loses its
+		// tail, the entry is still legible in the field above, and the rule it
+		// broke is not recoverable from anywhere else on the screen.
+		// Capitalised only because it opens a sentence here while saveLine's
+		// status line puts it mid-line.
 		reason := strings.ToUpper(poCostRejectedReason[:1]) + poCostRejectedReason[1:]
 		return fmt.Sprintf("%s, so enter will not save %q.", reason, cur), true
 	case s.lineCostConfirmed:
@@ -2789,20 +3059,36 @@ func (s *PurchaseOrderEditScreen) viewAssocPick() string {
 	if s.assocLineIdx >= 0 && s.assocLineIdx < s.lineCount() {
 		target = fmt.Sprintf("line %d: %s", s.assocLineIdx+1, s.po.Items[s.assocLineIdx].DisplayLabel())
 	}
+	width := s.bodyWidth()
+	heading := field + " for "
+	if width > 0 {
+		target = pickerClip(target, width-lipgloss.Width(heading))
+	}
 
 	body := &jdeLines{}
-	body.Add(StyleJDEHeading.Render(field+" for ") + target)
-	body.Add(jdeIndent + StyleMuted.Render("Attribution only — it moves no stock and bills no committee."))
+	body.Add(StyleJDEHeading.Render(heading) + target)
+	for _, line := range jdeCaveatLines(poAssocPickAside, width) {
+		body.Add(line)
+	}
 	body.Add("")
 
 	// The list windows around its OWN cursor before the frame ever sees it, so
 	// the line to keep on screen is wherever that render put the marker — not
 	// assocCursor, which indexes the options rather than the drawn lines.
-	rows := strings.Split(strings.TrimRight(renderWindowedList(len(s.assocRows), s.assocCursor, 0, pickerPaneWidth,
-		// The room the pane-local renderer offers is ignored here: these rows go
-		// on to jdeLines, which fits them against the columnar layer's own
-		// width rather than the picker pane's.
-		func(i int, _ int) string { return s.assocRows[i].label }), "\n"), "\n")
+	//
+	// Each option is clipped to the room the renderer measures off the pane
+	// this frame is really drawn into. It used to ignore that room, on the
+	// theory that jdeLines would fit the rows against the layer's width — and
+	// jdeLines fits nothing: a work order's title is OMS-supplied and unbounded,
+	// and the pane cut it clean at the edge, where a shortened title reads as a
+	// different work order. Unsized, the title is drawn whole.
+	rows := strings.Split(strings.TrimRight(renderWindowedList(len(s.assocRows), s.assocCursor, 0, width,
+		func(i int, room int) string {
+			if width <= 0 {
+				return s.assocRows[i].label
+			}
+			return pickerClip(s.assocRows[i].label, room)
+		}), "\n"), "\n")
 	cursorLine := 0
 	for i, line := range rows {
 		if strings.Contains(line, "▸ ") {
@@ -2811,9 +3097,27 @@ func (s *PurchaseOrderEditScreen) viewAssocPick() string {
 		body.AddRow(i, line)
 	}
 	body.Add("")
-	body.Add(jdeIndent + StyleMuted.Render("Row 1 is none — it detaches what is attached today."))
+	for _, line := range jdeCaveatLines(poAssocPickNoneNote, width) {
+		body.Add(line)
+	}
 	return s.frame(body, cursorLine, "Saving…", poEditAssocBar(len(s.assocRows)))
 }
+
+// The association picker's two sentences, folded to the pane by the layer.
+//
+// Each is worded to hold ONE row of the 49 cells an 80-column pane gives a
+// caveat, and that is a height decision as much as a width one: the first sits
+// ahead of the list, and a lead-in that grew a second row at 80 columns would be
+// one more line a short pane strands above a cursor that cannot go higher than
+// the list's first row. The words they replaced ran to 61 and 52 cells and were
+// cut mid-word — "…and bills no", "…attached toda" — the negation's object gone
+// from the first. The first now says what the order form's association band
+// heading says (poOrderedForAside), and the second drops the row's name for the
+// fact about it: row 1 names itself ("— no work order —") on the list above.
+const (
+	poAssocPickAside    = "Attribution only — moves no stock, bills nobody."
+	poAssocPickNoneNote = "Row 1 detaches whatever is attached today."
+)
 
 // poEditAssocBar is the association picker's bar, said ONCE: the movement arm
 // needs it to ask the layer whether the frame is drawn before it moves the
@@ -3121,8 +3425,14 @@ func (s *PurchaseOrderEditScreen) viewVoidLine() string {
 		Focused: true,
 	}
 
+	// Fitted, so "required" is on the row the operator types into rather than off
+	// the pane: the box used to keep its declared forty cells and push the hint
+	// past the edge, and the first the operator heard of the rule was Enter
+	// refusing the empty box.
 	body := &jdeLines{}
-	body.AddRow(0, renderJDEFields([]jdeField{field}, width)[0])
+	for _, line := range poEditFieldLines(field, jdeLabelWidth([]jdeField{field}), width) {
+		body.AddRow(0, line)
+	}
 	return s.jdeScreen.frameWithHeader(
 		s.voidHeader(li, width), body, 0,
 		s.statusRow(s.saving, "Voiding…", s.errMsg), s.voidBar())

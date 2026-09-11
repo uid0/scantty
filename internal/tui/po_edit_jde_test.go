@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // poJDEScreen is a sized edit screen: the columnar layer only windows and pins
@@ -418,26 +419,144 @@ func TestPOEditJDE_ChoiceRowsCycleInPlace(t *testing.T) {
 // ORDERED — that is what update_item divides by — while the grid's Cost column
 // counts what has arrived. On a partly delivered line the two are different
 // numbers, so the row says which one it is and the sub-heading names the other.
-// A columnar form has no room to explain itself twice, so both live where the
-// convention already puts that kind of note: the hint after the input area, and
-// the muted line under the title.
+//
+// The denominator is on the LABEL now, not only in the hint: a hint can be
+// folded or windowed away from its box, and at 80 columns it used to be cut off
+// the pane entirely, leaving a box that read as a unit price on a row that sends
+// a line total (poLineCostLabel). The hint says the other half of the same
+// warning — a total, not a per-unit price — and the muted line under the title
+// still names what has arrived.
 func TestPOEditJDE_CostRowNamesItsBasis(t *testing.T) {
 	s := poJDEScreen(t, 40)
 	s.openLineEditor(1) // Gadget: ordered 2, received 2, $20.00 spent
 	out := s.viewLineEdit()
 
-	if !strings.Contains(out, "Total line cost"+jdeLeader) {
-		t.Errorf("the cost row should hang off the shared leader column:\n%s", out)
+	if !strings.Contains(out, "Total for 2 ordered"+jdeLeader) {
+		t.Errorf("the cost row should name its denominator on the label, off the shared "+
+			"leader column:\n%s", out)
 	}
+	flat := receiveFlat(out)
 	for _, want := range []string{
-		"$ total for all 2 ordered",
+		"$ total, not per unit",
 		"ordered 2 · received 2 · $20.00 spent so far",
 		"A cost you do not change is not re-sent",
 	} {
-		if !strings.Contains(out, want) {
+		if !strings.Contains(flat, want) {
 			t.Errorf("line editor missing %q:\n%s", want, out)
 		}
 	}
+	// A line with nothing ordered has no quantity to name, and keeps the plain
+	// label rather than claiming a total "for 0".
+	s.po.Items[1].QuantityOrdered = 0
+	s.openLineEditor(1)
+	if out := s.viewLineEdit(); !strings.Contains(out, "Total line cost"+jdeLeader) ||
+		strings.Contains(out, "for 0 ordered") {
+		t.Errorf("a line with nothing ordered should keep the plain label:\n%s", out)
+	}
+	// A quantity too long for the label column would be cut there with no mark,
+	// so past the cap the denominator rides the hint instead — never nowhere.
+	s.po.Items[1].QuantityOrdered = 123456789
+	s.openLineEditor(1)
+	out = s.viewLineEdit()
+	if !strings.Contains(out, "Total line cost"+jdeLeader) {
+		t.Errorf("a label past jdeLabelMaxWidth should fall back to the plain one:\n%s", out)
+	}
+	if !strings.Contains(receiveFlat(out), "$ total for all 123456789 ordered") {
+		t.Errorf("with the label unable to carry it, the hint must name the denominator:\n%s", out)
+	}
+}
+
+// TestPOEditJDE_ThePinnedLayoutAt80Columns pins the shape the pilot takes at the
+// width that must HOLD, which is the shape the rows-past-the-pane conversion
+// gave it. Before it, every row below was drawn wider than the 51-cell pane and
+// cut by clampToBox with no mark; the rows are listed in the order they are
+// drawn, and each is compared WHOLE, so a row that grows back past the pane or
+// loses the fold that keeps it inside fails here by name.
+//
+// What changed, stated as the pinned shape rather than as a diff:
+//
+//   - A text row's hint that does not fit beside its box FOLDS under it,
+//     indented to the input area (jdeFitRow): both header dates, and the line
+//     editor's cost and ship-date rows.
+//   - The association band's heading draws its aside on the next line when the
+//     two will not share one.
+//   - The line grid is the detail sheet's fitted grid; where it cannot keep the
+//     flag column, `[voided]` leads the item cell instead.
+//   - The cost row's LABEL names the quantity its figure is a total for.
+//   - The line editor's prose is folded and hangs off the row it is about: what
+//     Ctrl-E and Enter will do with the cost under the cost box, the sheet's own
+//     sentences under the last row.
+func TestPOEditJDE_ThePinnedLayoutAt80Columns(t *testing.T) {
+	rows := func(s Screen) []string {
+		var out []string
+		for _, ln := range strings.Split(stripANSI(jdeClippedPane(s, 80, 40)), "\n") {
+			out = append(out, strings.TrimRight(ln, " "))
+		}
+		return out
+	}
+	inOrder := func(t *testing.T, got []string, want ...string) {
+		t.Helper()
+		at := 0
+		for _, w := range want {
+			found := false
+			for ; at < len(got); at++ {
+				if got[at] == w {
+					found, at = true, at+1
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("the pinned row %q is not drawn (in order) at 80x40:\n%s",
+					w, strings.Join(got, "\n"))
+			}
+		}
+		for _, ln := range got {
+			if lipgloss.Width(ln) > screenBodyCells(80) {
+				t.Errorf("%q is %d cells against the 51-cell pane", ln, lipgloss.Width(ln))
+			}
+		}
+	}
+
+	t.Run("form", func(t *testing.T) {
+		inOrder(t, rows(NewPurchaseOrderEditScreen(Deps{}, poViewPO())),
+			"       Date ordered ..... 2026-08-01__",
+			"                          YYYY-MM-DD · when the",
+			"                          order was actually placed",
+			"  Expected delivery ..... 2026-08-20__",
+			"                          YYYY-MM-DD · blank clears",
+			"Ordered for",
+			"  (attribution only — moves no stock, bills nobody)",
+			"         Work order ..... WO-1A2B — Replace drive …",
+			"    #  Item             Qty        Cost  Ship date",
+			"    2  [voided] Gadg…     2      $24.00  —",
+		)
+	})
+	t.Run("line editor", func(t *testing.T) {
+		s := NewPurchaseOrderEditScreen(Deps{}, poViewPO())
+		s.openLineEditor(0)
+		inOrder(t, rows(s),
+			"Edit line: M3 hex bolt, stainless",
+			"  Total for 5 ordered ..... 50.00",
+			"                            $ total, not per unit ·",
+			"                            e.g. 125.00",
+			"  Ctrl-E writes $50.00 as the total for the 5",
+			"  ordered, even where it matches the price the line",
+			"  already carries.",
+			"   Expected ship date ..... 2026-08-10____________",
+			"                            YYYY-MM-DD · '-' or",
+			"                            blank clears",
+			"          Line status ..... open",
+			"  Enter saves cost, ship date and notes together;",
+			"  the three rows under them write on their own.",
+		)
+	})
+	t.Run("void prompt", func(t *testing.T) {
+		s := NewPurchaseOrderEditScreen(Deps{}, poViewPO())
+		s.openLineEditor(0)
+		s.lineFocus = poLineRowStatus
+		s.openVoidLine(0)
+		inOrder(t, rows(s), "  Reason .....                             required")
+	})
 }
 
 // TestPOEditJDE_CostRowNamesOnlyTheKeyThatWorks: the bar is the only place the

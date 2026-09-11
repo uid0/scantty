@@ -313,17 +313,19 @@ func (p *poLastPaid) total(quantityOrdered int) string {
 // history rather than a figure anybody has agreed to for THIS order, and then
 // the price, per unit, on which order, in what state that order is.
 //
-// The caveat LEADS, and that order is the whole point. A screen row is one
-// line — every other row here is, and this one stays that way — and the content
-// pane clips whatever runs past it. At 80 columns, the canonical width of the
-// terminal this interface is modelled on, the pane gives a body line 49
-// columns; the provenance alone spends more than that. With the caveat trailing
-// it was the caveat that fell off the end, leaving "Last priced at $3.75/unit
-// on PO-2026-0007 (2026-0" — a bare dollar figure that reads as this order's
-// price, which is the exact reading the offer exists to prevent. Clipping now
-// costs the PO number and the date, which the operator can still get by opening
-// the item; the warning is the part that cannot be reconstructed from anywhere
-// else on the screen, so it is the part that survives.
+// The caveat LEADS, and that order is the whole point. At 80 columns, the
+// canonical width of the terminal this interface is modelled on, the pane gives
+// a body line 49 columns and the provenance alone spends more than that. The
+// sentence used to be one unfolded row, and with the caveat trailing it was the
+// caveat the pane cut off, leaving "Last priced at $3.75/unit on PO-2026-0007
+// (2026-0" — a bare dollar figure that reads as this order's price, which is the
+// exact reading the offer exists to prevent. It is folded to the pane now
+// (po_edit.go's lineRowNotes), so both halves are drawn wherever the row is; the
+// order still decides what a SHORT pane keeps, because the offer is the tail of
+// the cost row's block and a window too short for the whole block loses its
+// tail. The warning is the part that cannot be reconstructed from anywhere else
+// on the screen — the PO number and date can, by opening the item — so it is the
+// part that leads.
 //
 // It says "priced at" and never "paid". The row it comes from proves only that
 // a price was recorded against a line; the history endpoint returns voided

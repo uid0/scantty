@@ -1436,8 +1436,7 @@ const (
 // poGridCell fits a cell to the width its column was budgeted at and pads it
 // there, so no value can widen the row and every row's columns start in the
 // same screen position. poLineGridRow pads to the poGrid* CONSTANTS, which is
-// both too narrow for a measured column and left alone here on purpose:
-// po_edit.go owns that function and is a separate slice.
+// too narrow for a measured column, so every cell reaches it already padded.
 func poGridCell(s string, w int, align colAlign) string {
 	return padCell(fitCell(s, w), w, align)
 }
@@ -1468,8 +1467,8 @@ const poGridGutter = 2
 // has to shorten a description on exactly the same terms the block form does:
 // a name that reads one way on a 100-column pane and another way on a 140-column
 // one would be the two forms disagreeing about the same line, which is the thing
-// this grid is built not to do. po_edit.go keeps its own pair on purpose — the
-// entry screens are a separate slice, the same reason poGridFlagW is left alone.
+// this grid is built not to do. The edit screen's grid is fitted by the same
+// function (po_edit.go's lineGrid), so it shortens on the same terms too.
 const (
 	poGridItemMinW = 12
 	poGridItemMaxW = 44
@@ -1484,16 +1483,14 @@ func (fit poLineGridFit) coreW() int {
 // poFlagBudget is how wide the flag cell has to be RESERVED: the widest string
 // poLineFlag can actually return, in display columns.
 //
-// It is measured off poLineFlag rather than taken from poGridFlagW because the
-// two disagree and poGridFlagW is the one that is wrong. poGridFlagW is 8 —
-// exactly "[voided]" — but a received line's flag is "✓ received", which is 10,
-// so budgeting 8 let the full-grid row measure two columns wider than the pane
-// and clampToBox ate the tail: "✓ receiv". That is the same silent truncation
-// this grid sheds cells to avoid, and the tests missed it only because the
-// fixture's received line was ALSO voided, which takes the 8-wide branch.
-//
-// poGridFlagW itself is left alone: po_edit.go shares it, and the entry screens
-// are a separate slice.
+// It is measured off poLineFlag rather than taken from a constant because the
+// constant this used to share with the edit grid was 8 — exactly "[voided]" —
+// while a received line's flag is "✓ received", which is 10, so budgeting 8 let
+// the full-grid row measure two columns wider than the pane and clampToBox ate
+// the tail: "✓ receiv". That is the same silent truncation this grid sheds cells
+// to avoid, and the tests missed it only because the fixture's received line was
+// ALSO voided, which takes the 8-wide branch. (The edit grid, which flags only a
+// void, is fitted by this same budget now and so reserves the two cells too.)
 var poFlagBudget = func() int {
 	widest := 0
 	for _, li := range []omsapi.PurchaseOrderItem{{IsVoided: true}, {IsFullyReceived: true}} {
@@ -1947,10 +1944,11 @@ func poBuildOneLineGrid(bodyWidth int, items []omsapi.PurchaseOrderItem, supplie
 // addLineItems draws the lines as the JD Edwards detail grid po_edit.go picks
 // from: the same cells in the same order, off the same poGrid* widths and
 // through the same poLineGridRow, so a line reads the same on the screen that
-// shows it as on the screen that edits it. What differs is that the DETAIL grid
-// sheds cells it cannot fit (poFitLineGrid) instead of letting the pane cut
-// them — a read-only sheet has readings to fall back on and an edit grid has a
-// cursor that must not move under the operator.
+// shows it as on the screen that edits it. Both shed the cells they cannot fit
+// (poFitLineGrid) rather than letting the pane cut them; what differs is where a
+// dropped FLAG goes — onto the readings here, onto the row's own item cell on
+// the edit grid, whose window is anchored on a cursor (po_edit.go's lineGrid
+// says why).
 //
 // Everything the grid has no column for rides underneath it as wrapped
 // readings (jdeWrapTokens), which is what lets the row itself stay inside a
