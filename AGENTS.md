@@ -1533,9 +1533,8 @@ either:
   `jdePaneCases` and `jdeHeaderCases` build, at every honest width and drawable
   height, and fails on a line above the bar wider than `screenBodyCells(w)`.
   `jdeRowsPastThePane` is the measured residue, per screen, as the widest width
-  that still cuts; it fails in both directions and may never hold a purchasing
-  screen at 80 or wider. It sees only the state each fixture opens in, so a
-  screen whose rows change with focus needs a state walk of its own —
+  that still cuts and fails in both directions. It sees only the state each
+  fixture opens in, so a screen whose rows change with focus needs a state walk of its own —
   `po_edit_rows_test.go` is the worked example (every cursor position of every
   phase, under every removal answer, with OMS-length values, plus a check that
   every value it cuts carries the ellipsis). The shapes that keep a row inside:

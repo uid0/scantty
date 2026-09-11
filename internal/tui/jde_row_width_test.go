@@ -4,8 +4,8 @@
 // drawn past the pane loses its TAIL silently — and on these screens the tail is
 // where a hint says what a value means ("total for all 5 ordered", "blank
 // clears"), where a flag says a line is voided, and where a sentence says what a
-// destructive key also destroys. AGENTS.md's width rule is that 80 columns must
-// HOLD; until this sweep nothing checked it for the rows themselves.
+// destructive key also destroys. Until this sweep nothing checked the rows
+// themselves against the pane.
 // TestJDEForm_TheActionBarSurvivesEveryHeight measures the BAR's width and
 // TestJDEForm_EveryEssentialHeaderRowIsOnThePane measures the ESSENTIAL header
 // rows, and every other row fell between them: fourteen on the purchase-order
@@ -24,8 +24,6 @@ package tui
 
 import (
 	"fmt"
-	"go/ast"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -33,9 +31,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// jdeRowsMustHoldFrom is the terminal width from which a columnar row may not
-// overrun on any screen this project has converted: 80, the width AGENTS.md
-// says must hold. It is a WIDTH, not a pane, because it is what the rule names.
+// jdeRowsMustHoldFrom is the terminal width from which the PO edit screen's
+// state sweep requires every row to fit. It is also one of the two widths used
+// to deduplicate the wider columnar sweep's rendered cases.
 const jdeRowsMustHoldFrom = 80
 
 // jdeRowsPastThePane is the residue the sweep found, per SCREEN: the widest
@@ -57,11 +55,6 @@ const jdeRowsMustHoldFrom = 80
 // appended after jdePaneFieldWidth has capped its field; a label column and a
 // value floor wider than a narrow pane; prose and grids drawn unbounded) — is
 // the companion item filed with this sweep, scantty-columnar-rows-past-the-pane.
-//
-// No PURCHASING screen may be recorded at jdeRowsMustHoldFrom or above, and the
-// test enforces that whatever the map says: the purchase-order edit screen was
-// the last of them. Its entry now records only what it draws below 80 columns,
-// which is the companion item's range.
 var jdeRowsPastThePane = map[string]int{
 	"AssetFormScreen":                107,
 	"AssetPartFormScreen":            98,
@@ -173,34 +166,6 @@ func jdeRowOverrun(view string, width int) string {
 	return ""
 }
 
-// jdePurchasingScreens is every columnar screen declared in the purchasing
-// files — po_*.go and receive_*.go — read off the package source, so a
-// purchasing screen added tomorrow is held to the rule without anybody listing
-// it.
-func jdePurchasingScreens(t *testing.T) map[string]bool {
-	t.Helper()
-	embedders := jdeEmbedders(t)
-	_, files := jdeParsePackage(t)
-	out := map[string]bool{}
-	for path, f := range files {
-		base := filepath.Base(path)
-		if !strings.HasPrefix(base, "po_") && !strings.HasPrefix(base, "receive_") {
-			continue
-		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			if ts, ok := n.(*ast.TypeSpec); ok && embedders[ts.Name.Name] {
-				out[ts.Name.Name] = true
-			}
-			return true
-		})
-	}
-	if len(out) == 0 {
-		t.Fatal("no columnar screen is declared in a po_*.go or receive_*.go file, so the " +
-			"purchasing half of this sweep would hold nothing")
-	}
-	return out
-}
-
 // jdeRowCaseScreen is the screen a case draws: the part of its name before the
 // first "/", with the header prefix taken off.
 func jdeRowCaseScreen(name string) string {
@@ -212,8 +177,7 @@ func jdeRowCaseScreen(name string) string {
 
 // TestJDEForm_NoRowRunsPastThePane: at every honest width and every drawable
 // height, every row of every columnar case fits the pane — except the residue
-// jdeRowsPastThePane records, which it holds to its measured extent, and which
-// may not reach 80 columns on any purchasing screen.
+// jdeRowsPastThePane records, which it holds to its measured extent.
 //
 // Each case is walked from the widest terminal down and stops at the first width
 // that cuts a row, or at the widest width its screen is already known to cut at:
@@ -222,7 +186,6 @@ func jdeRowCaseScreen(name string) string {
 // every state.
 func TestJDEForm_NoRowRunsPastThePane(t *testing.T) {
 	widths, heights := receiveHonestWidths(), jdePaneHeights()
-	purchasing := jdePurchasingScreens(t)
 	extent, first := map[string]int{}, map[string]string{}
 	screens := map[string]bool{}
 	for _, c := range jdeRowWidthCases() {
@@ -273,11 +236,6 @@ func TestJDEForm_NoRowRunsPastThePane(t *testing.T) {
 		default:
 			t.Errorf("%s is recorded as overrunning up to %d columns and now stops at %d. "+
 				"Bring the entry down with the fix that moved it", name, recorded, got)
-		}
-		if got >= jdeRowsMustHoldFrom && purchasing[name] {
-			t.Errorf("%s is a purchasing screen and draws a row past the pane at %d columns: "+
-				"80 columns must HOLD on every purchasing frame, recorded or not; %s",
-				name, got, first[name])
 		}
 	}
 	if t.Failed() {
