@@ -194,6 +194,10 @@ const detailFooterRowsWithAction = 3
 // went off the terminal, which is the one thing this function exists to stop
 // (TestRoot_TheFrameIsNeverTallerThanTheTerminal). Tabs only arrive in data —
 // an OMS note or error body — but data is most of what these panes draw.
+// A vertical tab or form feed is likewise changed to one space before it is
+// measured: a terminal moves its cursor DOWN for both, adding rows that a count
+// over "\n" cannot see. They are normalised here, at the one bound every pane
+// goes through, with the same mapping jdeStatusOneLine uses.
 func clampToBox(content string, width, height int) string {
 	if width <= 0 || height <= 0 {
 		return ""
@@ -205,6 +209,12 @@ func clampToBox(content string, width, height int) string {
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		line = strings.ReplaceAll(line, "\t", paneTab)
+		line = strings.Map(func(r rune) rune {
+			if strings.ContainsRune(paneVerticalBreaks, r) {
+				return ' '
+			}
+			return r
+		}, line)
 		if lipgloss.Width(line) <= width {
 			out = append(out, line)
 			continue
@@ -219,6 +229,8 @@ func clampToBox(content string, width, height int) string {
 // written down as four spaces, so a lipgloss that changes its default moves
 // this with it.
 var paneTab = lipgloss.NewStyle().Render("\t")
+
+const paneVerticalBreaks = "\v\f"
 
 // truncateVisible drops runes from the end until the visible width
 // (ANSI-aware, via lipgloss.Width) fits within “width“. Naive byte

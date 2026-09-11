@@ -1849,7 +1849,7 @@ func jdeStatusOneLine(s string) string {
 }
 
 // jdeStatusBreaks is every character jdeStatusOneLine turns into a space.
-const jdeStatusBreaks = "\r\n\v\f\t"
+const jdeStatusBreaks = "\r\n\t" + paneVerticalBreaks
 
 // frame assembles a phase: the windowed body, padded out to the pane's budget,
 // then the status line, then the persistent action bar at the bottom.

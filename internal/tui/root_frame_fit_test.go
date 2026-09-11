@@ -24,7 +24,7 @@
 //     the input space is "any string a screen can return", and the fixtures are
 //     the SHAPES that defeat a height bound: more lines than the pane, lines
 //     wider than it, and characters lipgloss measures as one width and draws
-//     as another;
+//     as another or that move a terminal cursor down without a newline;
 //   - the SIDEBAR, at the longest tree the workspace list can expand into
 //     (derived, not named) with the cursor mid-list and at the end.
 package tui
@@ -198,6 +198,7 @@ func rootFrameBodies() []struct {
 	name         string
 	scr          rootFrameScreen
 	attacksWidth bool
+	attacksRows  bool
 } {
 	filler := strings.TrimSuffix(strings.Repeat("row\n", rootFrameMaxHeight), "\n")
 	shaped := func(first string) string { return first + "\n" + filler }
@@ -205,16 +206,18 @@ func rootFrameBodies() []struct {
 		name         string
 		scr          rootFrameScreen
 		attacksWidth bool
+		attacksRows  bool
 	}{
-		{"ordinary", rootFrameScreen{title: "Purchasing", view: "one\ntwo\nthree"}, false},
-		{"taller than any pane", rootFrameScreen{title: "Tall", view: filler}, false},
-		{"a cell wider than the pane", rootFrameScreen{title: "Wide", view: filler, wide: 'x'}, true},
+		{"ordinary", rootFrameScreen{title: "Purchasing", view: "one\ntwo\nthree"}, false, false},
+		{"taller than any pane", rootFrameScreen{title: "Tall", view: filler}, false, false},
+		{"a cell wider than the pane", rootFrameScreen{title: "Wide", view: filler, wide: 'x'}, true, false},
 		{"double-width runes a cell wider than the pane",
-			rootFrameScreen{title: "Wide runes", view: filler, wide: '界'}, true},
+			rootFrameScreen{title: "Wide runes", view: filler, wide: '界'}, true, false},
 		// Measured at 20 cells and drawn at 100 — past the widest pane swept
 		// (TestRoot_TheFrameSweepReachesPastEveryBound holds that).
-		{"tabs", rootFrameScreen{title: "Tabs\there", view: shaped(strings.Repeat("a\tb\t", 10))}, true},
-		{"multi-line title", rootFrameScreen{title: "one\ntwo\nthree\nfour", view: filler}, false},
+		{"tabs", rootFrameScreen{title: "Tabs\there", view: shaped(strings.Repeat("a\tb\t", 10))}, true, false},
+		{"cursor-down controls", rootFrameScreen{title: "Controls", view: shaped("a\vb\fc\vd")}, false, true},
+		{"multi-line title", rootFrameScreen{title: "one\ntwo\nthree\nfour", view: filler}, false, false},
 	}
 }
 
@@ -326,9 +329,17 @@ func TestRoot_TheFrameIsNeverTallerThanTheTerminal(t *testing.T) {
 			t.Parallel()
 			first := ""
 			over := 0
+			firstControl := ""
+			controls := 0
 			for w := 1; w <= rootFrameMaxWidth; w++ {
 				for h := 1; h <= rootFrameMaxHeight; h++ {
 					view := rootFrameRender(c.scr, c.nav, c.st, w, h)
+					if strings.ContainsAny(view, paneVerticalBreaks) {
+						controls++
+						if firstControl == "" {
+							firstControl = fmt.Sprintf("%dx%d", w, h)
+						}
+					}
 					rows := strings.Count(view, "\n") + 1
 					if rows <= h {
 						continue
@@ -342,6 +353,9 @@ func TestRoot_TheFrameIsNeverTallerThanTheTerminal(t *testing.T) {
 			}
 			if over > 0 {
 				t.Errorf("the frame is taller than the terminal at %d size(s); first at %s", over, first)
+			}
+			if controls > 0 {
+				t.Errorf("the frame contains a vertical tab or form feed at %d size(s); first at %s", controls, firstControl)
 			}
 		})
 	}
@@ -403,6 +417,12 @@ func TestRoot_TheFrameSweepReachesPastEveryBound(t *testing.T) {
 			innerHeight := contentHeight - 2
 			sized, _ := b.scr.Update(tea.WindowSizeMsg{Width: w, Height: h})
 			content := lipgloss.JoinVertical(lipgloss.Left, StyleTitle.Render(b.scr.title), "", sized.View())
+			if b.attacksRows {
+				if !strings.Contains(content, "\v") || !strings.Contains(content, "\f") {
+					t.Errorf("screen fixture %q does not carry both cursor-down controls into Root's pane boundary at %dx%d", b.name, w, h)
+				}
+				continue
+			}
 			lines := strings.Split(content, "\n")
 			if !b.attacksWidth {
 				if len(lines) <= innerHeight {
