@@ -448,6 +448,15 @@ func poTypeRunes(t *testing.T, r Root, text string) Root {
 	return r
 }
 
+// poEditGlass is the edit screen's pane as Root clips it — the unfloored pair,
+// the way Root.View measures it — with the styling gone and every run of
+// whitespace one space, so a sentence the layer folded across rows is found
+// whole. It reads the screen's own size, so it is the pane of whatever terminal
+// the test last gave Root.
+func poEditGlass(s *PurchaseOrderEditScreen) string {
+	return receiveFlat(clampToBox(s.View(), screenBodyCells(s.terminalWidth), screenBodyRows(s.terminalHeight)))
+}
+
 // TestPOLineEdit_ShipDateEditKeepsThePrice is the reproduction, and the
 // regression guard it became.
 //
@@ -601,7 +610,10 @@ func TestPOLineEdit_UnpricedLineOffersTheLastPricePaid(t *testing.T) {
 		t.Errorf("a line with no price must open with an EMPTY cost field, got %q", got)
 	}
 
-	out := s.View()
+	// Flattened, because the offer is FOLDED to the pane: a sentence the layer
+	// folded across rows is one sentence to the operator, and a substring
+	// check over the raw view would be a check on where the fold fell.
+	out := receiveFlat(s.View())
 	for _, want := range []string{
 		// "priced at", not "paid": the history endpoint filters neither voided
 		// lines nor order status, so the order's own status rides the offer and
@@ -1220,11 +1232,13 @@ func TestPOLineEdit_CostRowSurvivesTheTerminalWidth(t *testing.T) {
 				fake := poPriceOrder()
 				r, _ := poPriceRoot(t, fake)
 				r = poResize(t, r, width)
-				r, _ = poOpenLineEditor(t, r, tc.idx)
+				r, s := poOpenLineEditor(t, r, tc.idx)
 
-				// Root.View, not the screen's: this is the frame the terminal
-				// draws, clipping and all.
-				out := stripANSI(r.View())
+				// The pane as Root clips it, not the screen's own View: this is
+				// the frame the terminal draws, clipping and all — flattened,
+				// because the offer is folded to the pane and a sentence folded
+				// across rows is still one sentence to the operator.
+				out := poEditGlass(s)
 				for _, want := range tc.want {
 					if !strings.Contains(out, want) {
 						t.Errorf("%q does not survive to the glass at %d columns:\n%s", want, width, out)
@@ -1235,30 +1249,38 @@ func TestPOLineEdit_CostRowSurvivesTheTerminalWidth(t *testing.T) {
 	}
 }
 
-// TestPOLineEdit_ClippingCostsTheProvenanceAndNotTheCaveat pins WHY the offer
-// reads in the order it does. Both halves matter — the caveat is the safeguard,
-// the PO number and date are what let the operator judge whose price it is — but
-// only one of them fits at 80 columns, so the order decides which. It is the
-// caveat, because the provenance can be recovered by opening the item and the
-// warning cannot be recovered from anywhere.
-func TestPOLineEdit_ClippingCostsTheProvenanceAndNotTheCaveat(t *testing.T) {
+// TestPOLineEdit_TheOfferKeepsItsCaveatAndItsProvenanceAt80 pins what the offer
+// owes the operator at the width that must hold: BOTH halves — the caveat that
+// says the figure is history, and the PO number and date that let the operator
+// judge whose price it is — with the caveat FIRST.
+//
+// It used to pin a trade instead. The offer was one unfolded line, the pane cut
+// it at 51 cells, and the caveat led so that what the cut took was the
+// provenance rather than the warning; this test asserted the provenance was OFF
+// the glass at 80 columns and called itself stale if it ever arrived. The line
+// is folded to the pane now (lineRowNotes), so both halves reach the glass and
+// that trade is no longer made. The caveat still leads, for the reason it always
+// did one axis over: the offer is the tail of the cost row's block, a pane too
+// short for the whole block loses its tail first, and the warning is the half
+// that cannot be reconstructed from anywhere else on the screen.
+func TestPOLineEdit_TheOfferKeepsItsCaveatAndItsProvenanceAt80(t *testing.T) {
 	fake := poPriceOrder()
 	r, _ := poPriceRoot(t, fake)
 	r = poResize(t, r, 80)
-	r, s := poOpenLineEditor(t, r, 3)
+	_, s := poOpenLineEditor(t, r, 3)
 
-	// The screen composes both halves…
-	if full := s.View(); !strings.Contains(full, "last priced at $3.75/unit on PO-2026-0007 (2026-06-02 · received)") {
-		t.Fatalf("the offer should still carry its provenance:\n%s", full)
-	}
-	// …and at 80 columns it is the provenance that falls off the end, which is
-	// the trade this ordering makes on purpose.
-	out := stripANSI(r.View())
-	if !strings.Contains(out, "Historical price, not confirmed for this order") {
-		t.Errorf("the caveat must survive 80 columns:\n%s", out)
-	}
-	if strings.Contains(out, "PO-2026-0007 (2026-06-02 · received)") {
-		t.Errorf("80 columns cannot hold both halves; if it now does, this test is stale:\n%s", out)
+	out := poEditGlass(s)
+	caveat := strings.Index(out, "Historical price, not confirmed for this order")
+	provenance := strings.Index(out, "last priced at $3.75/unit on PO-2026-0007 (2026-06-02 · received)")
+	switch {
+	case caveat < 0:
+		t.Errorf("the caveat must reach the glass at 80 columns:\n%s", out)
+	case provenance < 0:
+		t.Errorf("the provenance must reach the glass at 80 columns — the offer is folded "+
+			"to the pane, so nothing forces a choice between the halves any more:\n%s", out)
+	case provenance < caveat:
+		t.Errorf("the caveat must LEAD the provenance, so a short pane that keeps only the "+
+			"head of the cost row's block keeps the warning:\n%s", out)
 	}
 }
 
@@ -1285,8 +1307,9 @@ func TestPOLineEdit_RejectedCostIsNeverAnnouncedAsAWrite(t *testing.T) {
 			}
 			r = poTypeRunes(t, r, typed)
 
-			// The hint before any key is pressed: no offer of a write.
-			out := s.View()
+			// The hint before any key is pressed: no offer of a write. Flattened,
+			// because the note is folded to the pane.
+			out := receiveFlat(s.View())
 			if strings.Contains(out, "$"+typed) {
 				t.Errorf("an entry enter will refuse must not be quoted as money:\n%s", out)
 			}
@@ -1296,14 +1319,14 @@ func TestPOLineEdit_RejectedCostIsNeverAnnouncedAsAWrite(t *testing.T) {
 			}
 			// And it reaches the glass at 80 columns rather than being clipped
 			// down to a sentence with the rule missing.
-			if seen := stripANSI(r.View()); !strings.Contains(seen, "Line cost must be a non-negative number") {
+			if seen := poEditGlass(s); !strings.Contains(seen, "Line cost must be a non-negative number") {
 				t.Errorf("the refusal is clipped off the pane at 80 columns:\n%s", seen)
 			}
 
 			// And after Ctrl-E, which arms the save: the arm is real (the
 			// operator may still fix the figure) but it must not claim a write.
 			r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
-			out = s.View()
+			out = receiveFlat(s.View())
 			if strings.Contains(out, "Price confirmed") || strings.Contains(out, "enter writes $"+typed) {
 				t.Errorf("the armed note promises a write saveLine will reject:\n%s", out)
 			}
