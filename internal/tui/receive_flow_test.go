@@ -1582,9 +1582,11 @@ func TestReceiveFlow_AnOrderWithNothingLeftToReceiveNamesTheWayOut(t *testing.T)
 	if len(s.qty) != 0 {
 		t.Fatalf("want no receivable lines, got %d", len(s.qty))
 	}
-	r = receiveWalkTo(t, r, s, s.notesRow(), tea.KeyMsg{Type: tea.KeyDown})
+	// At REST — the cursor on Scan, the frame the form opens on. The operator
+	// used to have to walk to the last row to be told this at all
+	// (TestReceiveFlow_NothingReceivableSaysWhyWhereverTheCursorIs).
 	text := receivePaneText(s, 80, 30)
-	if !strings.Contains(text, "nothing to book against this order") {
+	if !strings.Contains(text, "nothing here can take a receipt") {
 		t.Errorf("the form does not say there is nothing to receive:\n%s", text)
 	}
 	if !strings.Contains(text, "Void or cancel the ORDER") {

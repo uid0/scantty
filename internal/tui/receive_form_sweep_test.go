@@ -3,10 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/token"
 	"net/http/httptest"
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -225,6 +228,21 @@ func receivePhaseCases() []receivePhaseCase {
 			"receiving against it."
 		return &receiveFake{sheet: w}
 	}
+	// An EMPTY draft: refused, with no line list under the reason, so the
+	// blocked frame's body is one row and nothing moves its window.
+	unavailableEmpty := func() *receiveFake {
+		w := receiveWorksheet()
+		w.CanReceive, w.Status, w.StatusLabel = false, "draft", "Draft"
+		w.UnavailableReason = "This order is still a draft. Send it to the supplier before " +
+			"receiving against it."
+		return &receiveFake{sheet: w}
+	}
+	// Every line voided or closed short: `can_receive: true` with nothing left
+	// to receive, which the receiving contract calls out as reachable. Its bar is
+	// a different bar — no Enter, no Ctrl+K, no Ctrl+R — so it is a state the
+	// bar changes shape in, and it was reached by no case at all.
+	settled := receiveAllSettled(true)
+	settledFake := func() *receiveFake { return &receiveFake{sheet: receiveWorksheet(settled...)} }
 
 	// pressed drives with the pump, so every request is resolved.
 	pressed := func(keys ...tea.KeyMsg) func(*testing.T, Root, *ReceiveFormScreen) Root {
@@ -290,6 +308,7 @@ func receivePhaseCases() []receivePhaseCase {
 		{phaseBlocked, "worksheet unreadable", false, all, sheetFails, nil, pressed()},
 		// The fetch SUCCEEDED and said no. A different fact, a different frame.
 		{phaseBlocked, "cannot receive", false, all, unavailable, nil, pressed()},
+		{phaseBlocked, "cannot receive, no lines", false, nil, unavailableEmpty, nil, pressed()},
 
 		{phaseQty, "qty", true, all, okFake, nil, pressed()},
 		// The same phase with something typed: the Esc label changes to
@@ -310,6 +329,13 @@ func receivePhaseCases() []receivePhaseCase {
 			func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
 				s.scan.SetValue("SKU-12")
 				return r
+			}},
+		// Nothing receivable, at rest on the scan row and standing on the notes
+		// row: the explanation of the whole form has to be readable from both.
+		{phaseQty, "qty nothing receivable", true, settled, settledFake, nil, pressed()},
+		{phaseQty, "qty nothing receivable on notes", true, settled, settledFake, nil,
+			func(t *testing.T, r Root, s *ReceiveFormScreen) Root {
+				return receiveReachRow(t, r, s, s.notesRow())
 			}},
 
 		{phaseSerial, "serial", true, all, okFake, nil, typedQty(receiveOne, pressed(enter))},
@@ -1726,13 +1752,59 @@ func TestReceive_TheFreezeIsAnAllowList(t *testing.T) {
 	}
 	// And a frozen key said WHY rather than "does nothing": it works one second
 	// from now, and an operator watching a slow gateway will press it again.
-	next, cmd := r.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	r = next.(Root)
-	if !strings.Contains(r.View(), "frozen until the receipt answers") {
-		t.Errorf("a frozen key did not say so:\n%s", r.View())
+	//
+	// Said ON THE PANE THE OPERATOR READS, at every pane the frame is drawn at.
+	// This was `strings.Contains(r.View(), …)` — the whole terminal, the pattern
+	// AGENTS.md names as the trap — left behind when the rest of this file moved
+	// to the clipped pane. It passed only because at 80x24 the sentence happens
+	// to sit on one row inside the pane, and it measured one height where the
+	// note block's size is a function of the height: a check that cannot see a
+	// short pane cannot see the class of defect this file keeps finding there.
+	//
+	// The claim is scoped by what the note block can HOLD, derived from the fold
+	// it is drawn with at its own size on this pane: where it can hold the lead
+	// clause with its drop mark, the clause is on the pane whole; where it cannot,
+	// the key the note answers is still named — fittedNote's last resort — so the
+	// press is never answered by nothing. Both sides must be reached.
+	lead := "enter is frozen until the receipt answers"
+	held, unheld := 0, 0
+	var cmd tea.Cmd
+	for _, w := range receiveHonestWidths() {
+		for _, h := range jdePaneHeights() {
+			next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h}) // retires the note
+			r = next.(Root)
+			if !receiveDrawn(s) {
+				continue
+			}
+			next, cmd = r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			r = next.(Root)
+			if cmd == nil {
+				t.Fatalf("at %dx%d a frozen key answered with nothing at all", w, h)
+			}
+			pane := receiveFlat(receivePaneAt(s, w, h))
+			probe := pickerNote{text: lead + receiveNoteDropMark, level: StatusWarn}
+			if len(probe.renderLines(s.paneWidth()-len(jdeIndent))) <= s.noteRows() {
+				held++
+				if !strings.Contains(pane, lead) {
+					t.Fatalf("at %dx%d the note block can hold %q and the pane does not "+
+						"carry it:\n%s", w, h, lead, stripANSI(receivePaneAt(s, w, h)))
+				}
+				continue
+			}
+			unheld++
+			if !strings.Contains(pane, "enter") {
+				t.Fatalf("at %dx%d the frozen enter is answered by a note that does not name "+
+					"it:\n%s", w, h, stripANSI(receivePaneAt(s, w, h)))
+			}
+		}
 	}
-	if cmd == nil {
-		t.Error("a frozen key answered with nothing at all")
+	if held == 0 || unheld == 0 {
+		t.Errorf("the freeze's answer was judged at %d pane(s) that hold its lead and %d that "+
+			"cannot; both sides have to be reached or the scoping asserts nothing", held, unheld)
+	}
+	if !s.pending {
+		t.Fatal("the receipt stopped being in flight during the sweep, so the answers above " +
+			"were not the freeze's")
 	}
 }
 
@@ -1862,63 +1934,518 @@ func TestReceive_EveryBodyLineBelongsToANavigableRow(t *testing.T) {
 	}
 }
 
-// TestReceive_ABodyWithOneRowNeverHidesLinesAboveTheWindow is the behavioural
-// half of the rule above, on the states where getting it wrong is permanent.
+// ---------------------------------------------------------------------------
+// The pinned-window lead rule, over a set the built body derives
+// ---------------------------------------------------------------------------
+
+// THE RULE. jdeLines.Window anchors the window on the cursor's block and, when
+// that block will not fit, keeps its START; nothing scrolls inside a block. On a
+// body whose anchored block spans the whole body, no key can move the window off
+// that block, so the body's first line is the only line every drawable pane keeps
+// — the shortest pane the layer draws leaves the body one row. So the line the
+// operator cannot do without has to BE that first line, and the builder says
+// which line that is (jdeLines.DeclareLead).
 //
-// jdeLines.Window draws "↑ N more above" whenever it starts past the body's
-// first line, and that marker is a claim: there is content up there, fetch it.
-// On a body with exactly ONE navigable row there is nowhere for a cursor to go
-// — not one key on the screen can change which lines the window holds — so a
-// marker drawn there can never be acted on, whatever the bar names. That is the
-// state serial capture is always in (keySerial binds Enter and Esc, body()
-// anchors on row 0), the state the summary is always in, and the state an order
-// with nothing receivable is in.
+// THE SET is derived, twice over, and never listed. The STATES are
+// receivePhaseCases, whose phases TestReceive_EveryPhaseIsSwept walks against the
+// receivePhase iota; the BODY is body(), the one switch View draws through; and
+// membership is the built body's own answer to "does body() anchor on a block
+// that spans the whole body?". A body builder that grows a pinned branch tomorrow
+// is in the set the first time any state reaches it, and it fails until it
+// declares a lead.
 //
-// It is the ABOVE marker this holds, and the narrowing is deliberate rather
-// than an oversight to widen later. Window draws BOTH, and on a one-row body
-// neither can be acted on — but only one of them is this sheet's to prevent.
-// The above-marker appears when the window starts past line 0, which is a
-// consequence of where the sheet puts its lines, and pinning every line to the
-// one block is what makes it impossible. The below-marker appears when the
-// block outruns the pane, which no arrangement of one block can avoid: measured
-// across the swept phases it is drawn from 80x14 to 80x18 on serial capture,
-// the summary and the nothing-receivable order. Suppressing it would mean
-// changing what jdeLines.Window emits, which is the shared layer forty screens
-// read, and the block is ordered precisely so that what a short pane keeps is
-// what the operator cannot do without — the box a scanner fires into, the
-// sentence explaining an order with nothing on it. So the TAIL is the accepted
-// loss, and the residual — that the frame counts lines it cannot fetch — is a
-// property of the layer's marker rather than of this body, recorded rather than
-// asserted away.
+// It was applied by hand three times and reached N-1 of N sites each time. The
+// summary is the site the hand missed: it led with a "Receiving complete" heading
+// and a blank, so at every terminal from 80x11 to 80x18 the RECEIPT row — the one
+// record of what the write actually did — was below the one block no key could
+// move, behind a "↓ 5 more below" marker that nothing on its bar could act on.
+// The check that existed for this set asserted only that nothing sat ABOVE the
+// window, which the summary satisfied while losing the one fact it is for.
+
+// receiveHonestWidths are the drawable terminal widths at which the columnar
+// layer's own idea of the pane's width is the width the pane really has.
 //
-// The set is derived from the body rather than listed: "how many rows does this
-// body have?" is a question the built body answers, and a roster of phases
-// would be one more list to forget to extend — which is how the serial and
-// summary bodies kept their unreachable leads for a round after the quantity
-// form lost its own.
-func TestReceive_ABodyWithOneRowNeverHidesLinesAboveTheWindow(t *testing.T) {
+// It is jdeDrawableWidths less the band where the two disagree, and the band is
+// DERIVED rather than written down: jdeScreen.bodyWidth reads screenBodyWidth,
+// which floors at 20, while Root clips to screenBodyCells, which does not. Where
+// they differ every columnar row is laid out a few cells wider than the pane and
+// clampToBox takes the excess off the right edge with no mark — measured on this
+// screen as the frozen note drawing "enter is fro" at 45 columns. That is the
+// LAYER's arithmetic, on every columnar screen at once, and not the property
+// these sweeps are about, so the band is excluded BY NAME here rather than
+// quietly: a sweep that stepped over it without saying so would read as coverage.
+func receiveHonestWidths() []int {
+	var out []int
+	for _, w := range jdeDrawableWidths() {
+		if screenBodyWidth(w) == screenBodyCells(w) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// receivePaneAt is the pane the operator reads at this terminal size, clipped
+// exactly as Root clips it — the UNFLOORED pair, because screenBodyWidth and
+// screenBodyHeight both floor and a floor is a lie at the small panes these
+// sweeps exist to reach. It does not resize: a resize retires the note, and the
+// freeze sweep has to read the note a keypress wrote AFTER the resize.
+func receivePaneAt(s *ReceiveFormScreen, w, h int) string {
+	return clampToBox(s.View(), screenBodyCells(w), screenBodyRows(h))
+}
+
+// receiveFlat is text as the operator reads it: styling gone and every run of
+// whitespace one space, so a sentence the layer folded across rows is found
+// whole and a comparison is not a fight about indentation.
+func receiveFlat(text string) string {
+	return strings.Join(strings.Fields(stripANSI(text)), " ")
+}
+
+// receiveDrawn reports whether the frame is on the pane at all at the size the
+// screen was last given, rather than the layer's "too short" notice.
+func receiveDrawn(s *ReceiveFormScreen) bool {
+	return !s.tooShort(actionBarRowsFor(s.barWidth(), s.bar()), len(s.headerLines()))
+}
+
+// receiveBodyState is one reached state, and whether the window its body is
+// drawn through is PINNED.
+type receiveBodyState struct {
+	name   string
+	s      *ReceiveFormScreen
+	pinned bool
+}
+
+// receivePinned is the rule's membership test, asked of the body View draws and
+// the row body() anchors its window on: is the anchored block the WHOLE body?
+//
+// That — and not "does the body have one navigable row?" — is the premise the
+// rule rests on, and the difference is a site. Window keeps the anchored block's
+// START when it will not fit, so a block that begins at line 0 and ends at the
+// body's last line can only ever be drawn from line 0, whatever the pane. Serial
+// capture has THREE navigable rows (Serial, Lot, Expires) and was pinned all the
+// same, because body() anchored it on row 0 whichever box held the caret; a
+// row-count test calls it a body the cursor can move, and it was exactly the
+// body where moving the cursor moved nothing on the pane.
+func receivePinned(body *jdeLines, cursor int) bool {
+	first, last := body.block(cursor)
+	return body.Len() > 0 && first == 0 && last == body.Len()-1
+}
+
+// receiveBodyStates reaches every state receivePhaseCases names, at a pane
+// every frame draws, and says of each whether its window is pinned. Reaching at
+// a TALL pane and resizing afterwards is the sequence an operator goes through,
+// and the only one that works: a movement key is held on a pane the layer
+// refuses, so a reach attempted there would reach nothing.
+func receiveBodyStates(t *testing.T) []receiveBodyState {
+	t.Helper()
+	var out []receiveBodyState
+	for _, c := range receivePhaseCases() {
+		r, s := receiveHarness(t, c.fake, c.lines, receiveReachWidth, receiveReachHeight)(t)
+		_ = c.reach(t, r, s)
+		if s.phase != c.phase {
+			t.Fatalf("%s: reach landed on phase %v, want %v", c.name, s.phase, c.phase)
+		}
+		body, cursor := s.body()
+		out = append(out, receiveBodyState{c.name, s, receivePinned(body, cursor)})
+	}
+	return out
+}
+
+// TestReceive_ABodyNoKeyCanMoveLeadsWithWhatTheOperatorNeeds is the rule above,
+// held over the derived set at every pane Root draws.
+//
+// Four claims, each of which a site has already broken or could:
+//
+//	DECLARED   a pinned body names its lead, so a new branch cannot join the set
+//	           without somebody deciding what it must keep
+//	FIRST      the lead is the body's first line — what Window keeps — and not a
+//	           line under a heading, which is the summary's defect exactly
+//	ON THE PANE the lead, as built for this pane, is on the clipped pane whole:
+//	           asserted through the rendered screen, because a structural claim
+//	           about line indexes says nothing about what the terminal shows —
+//	           and "whole" is what caught three headlines cut mid-word, unmarked,
+//	           on every pane narrower than they are
+//	NOTHING ABOVE no "↑ more above" marker, which no key here can act on
+//
+// The pane set is every drawable HEIGHT and every width receiveHonestWidths
+// keeps (its doc says which band it drops and why).
+func TestReceive_ABodyNoKeyCanMoveLeadsWithWhatTheOperatorNeeds(t *testing.T) {
+	widths, heights := receiveHonestWidths(), jdePaneHeights()
+	members := 0
+	for _, st := range receiveBodyStates(t) {
+		if !st.pinned {
+			continue
+		}
+		members++
+		st := st
+		t.Run(st.name, func(t *testing.T) {
+			s := st.s
+			body, _ := s.body()
+			lead, site, ok := body.Lead()
+			if !ok {
+				t.Fatalf("%s is drawn through a PINNED window and declares no lead, so nothing says "+
+					"which of its %d lines a short pane must keep — and Window keeps only the first:\n%s",
+					st.name, body.Len(), strings.Join(body.text, "\n"))
+			}
+			if lead != 0 {
+				t.Errorf("%s declares %q's lead at line %d of its body, not line 0. Window keeps "+
+					"a block's START and no key moves this one, so on a one-row body the lead "+
+					"is exactly the line that is not drawn; what sits above it is:\n%s",
+					st.name, site, lead, strings.Join(body.text[:min(lead, body.Len())], "\n"))
+			}
+			drawn, overflowed := 0, 0
+			var missing, above []string
+			var firstMissing string
+			for _, w := range widths {
+				for _, h := range heights {
+					jdeAtPane(s, w, h)
+					if !receiveDrawn(s) {
+						continue
+					}
+					drawn++
+					body, _ := s.body()
+					if body.Len() > s.bodyAvailForBar(len(s.headerLines()), s.bar()) {
+						overflowed++
+					}
+					idx, _, _ := body.Lead()
+					if idx < 0 || idx >= body.Len() {
+						t.Fatalf("%s at %dx%d declares line %d of a %d-line body", st.name, w, h,
+							idx, body.Len())
+					}
+					want := receiveFlat(body.text[idx])
+					pane := receivePaneAt(s, w, h)
+					if !strings.Contains(receiveFlat(pane), want) {
+						if firstMissing == "" {
+							firstMissing = fmt.Sprintf("at %dx%d the lead %q is not on the pane:\n%s",
+								w, h, want, stripANSI(pane))
+						}
+						missing = append(missing, fmt.Sprintf("%dx%d", w, h))
+					}
+					if strings.Contains(stripANSI(pane), "more above") {
+						above = append(above, fmt.Sprintf("%dx%d", w, h))
+					}
+				}
+			}
+			if len(missing) > 0 {
+				t.Errorf("%s: the declared lead is off the pane at %d of %d drawn panes, including "+
+					"%v — a fact the operator cannot read is one they do not have; %s",
+					st.name, len(missing), drawn, missing[:min(6, len(missing))], firstMissing)
+			}
+			if len(above) > 0 {
+				t.Errorf("%s: a pinned window and a \"more above\" marker at %d pane(s), including "+
+					"%v — a claim no key on this frame can act on", st.name, len(above),
+					above[:min(6, len(above))])
+			}
+			// Non-vacuity, on the axis the rule is about: a body that fits every
+			// pane it is drawn in never makes WHICH line leads matter, and a state
+			// never drawn was judged by nothing.
+			if drawn == 0 {
+				t.Errorf("%s was refused at every pane, so nothing here judged it", st.name)
+			}
+			// A body of one LINE has no order to get wrong; its lead is still
+			// judged above, for fitting the pane.
+			if overflowed == 0 && body.Len() > 1 {
+				t.Errorf("%s fits every pane it is drawn in, so its lead was never at stake and "+
+					"this case proves nothing about the order its lines are in", st.name)
+			}
+		})
+	}
+	if members == 0 {
+		t.Fatal("no reached state is drawn through a pinned window, so the rule judged nothing")
+	}
+}
+
+// TestReceive_EveryLeadDeclarationIsJudgedOnAPinnedBody closes the one hole the
+// derivation above leaves by itself, in both directions. Membership is read off
+// the BUILT body, so a pinned branch no state in receivePhaseCases reaches is
+// judged by nothing — "absent" and "passing" looking alike, which is the shape
+// every roster in this file is derived to avoid. The declarations are therefore
+// collected from the package SOURCE (every DeclareLead call, by its site name)
+// and each one has to turn up on a PINNED body some swept state really built.
+//
+// "Pinned" is half of it. A declaration only ever seen on a body the cursor
+// moves asserts something false about that body — that no key moves its window —
+// and would be a stale exception wearing the rule's name; one never seen at all
+// is a branch the sweep has not judged. Both fail here. A site name that is not
+// a string literal, or one used twice, fails too: either would let two branches
+// answer to one name and one of them go unswept.
+func TestReceive_EveryLeadDeclarationIsJudgedOnAPinnedBody(t *testing.T) {
+	fset, files := jdeParsePackage(t)
+	declared := map[string]string{}
+	for name, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "DeclareLead" {
+				return true
+			}
+			pos := fset.Position(call.Pos())
+			where := fmt.Sprintf("%s:%d", name, pos.Line)
+			lit, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				t.Errorf("%s declares a lead under a site name that is not a string literal, "+
+					"so no sweep can tell which branch it names", where)
+				return true
+			}
+			site, _ := strconv.Unquote(lit.Value)
+			if prev, dup := declared[site]; dup {
+				t.Errorf("%s and %s both declare a lead as %q, so reaching one would pass for "+
+					"reaching the other", prev, where, site)
+			}
+			declared[site] = where
+			return true
+		})
+	}
+	if len(declared) == 0 {
+		t.Fatal("no DeclareLead call in the package source, so this judged nothing — the " +
+			"method has been renamed, or every declaration has gone")
+	}
+	pinned, unpinned := map[string]bool{}, map[string]string{}
+	for _, st := range receiveBodyStates(t) {
+		body, _ := st.s.body()
+		if _, site, ok := body.Lead(); ok {
+			if st.pinned {
+				pinned[site] = true
+			} else {
+				unpinned[site] = st.name
+			}
+		}
+	}
+	var sites []string
+	for site := range declared {
+		sites = append(sites, site)
+	}
+	sort.Strings(sites)
+	for _, site := range sites {
+		switch {
+		case pinned[site]:
+		case unpinned[site] != "":
+			t.Errorf("the lead declared at %s (%q) is only ever seen on a body the cursor MOVES "+
+				"(%s), where the reasoning a declaration records is false", declared[site], site,
+				unpinned[site])
+		default:
+			t.Errorf("the lead declared at %s (%q) is on no body any state in receivePhaseCases "+
+				"builds, so the pinned-body sweep has never judged it. Add the state that "+
+				"reaches it", declared[site], site)
+		}
+	}
+}
+
+// TestReceive_TheSerialBoxHoldingTheCaretIsOnThePane is the pinned-window rule's
+// finding on serial capture, held through the keyboard at every pane Root draws.
+//
+// Capture draws THREE boxes — Serial, Lot, Expires — and UP/DN walks the caret
+// between them, but body() anchored the window on row 0 whichever box held it.
+// Row 0's block is the whole body, so the window could only ever be drawn from
+// the Serial line: at 80x11, 80x12 and 80x14 the Lot box was below the one row
+// the body had, and every character typed into it redrew the pane byte for
+// byte — standing rule 1, on the frame a scanner is firing lot codes into. The
+// Expires box was off the pane at every height below 80x20.
+//
+// So the claim is the operator's: with the caret in any of the three boxes, a
+// typed character CHANGES THE PANE, wherever the frame is drawn. Each case is
+// walked onto its box at a tall pane and then dragged to every size, which is
+// the order an operator does it in.
+func TestReceive_TheSerialBoxHoldingTheCaretIsOnThePane(t *testing.T) {
+	widths, heights := receiveHonestWidths(), jdePaneHeights()
 	judged := 0
 	for _, c := range receivePhaseCases() {
-		for height := 10; height <= 30; height++ {
-			t.Run(fmt.Sprintf("%s at 80x%d", c.name, height), func(t *testing.T) {
-				r, s := receiveHarness(t, c.fake, c.lines, 80, height)(t)
+		if c.phase != phaseSerial || !c.typing {
+			continue // the capture frames; "serial answered" draws no box
+		}
+		for field := 0; field < receiveSerialFields; field++ {
+			c, field := c, field
+			t.Run(fmt.Sprintf("%s, box %d", c.name, field), func(t *testing.T) {
+				r, s := receiveHarness(t, c.fake, c.lines, receiveReachWidth, receiveReachHeight)(t)
 				r = c.reach(t, r, s)
-				if s.phase != c.phase {
-					t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
+				for n := 0; s.serialField != field; n++ {
+					if n > receiveSerialFields {
+						t.Fatalf("the caret would not reach box %d (it is on %d)", field, s.serialField)
+					}
+					r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
 				}
-				body, _ := s.body()
-				if rows := body.rowsIn(0, body.Len()); rows != 1 {
-					return // the cursor has somewhere to go; a marker there is actionable
+				var dead []string
+				var firstDead string
+				for _, w := range widths {
+					for _, h := range heights {
+						next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+						r = next.(Root)
+						if !receiveDrawn(s) {
+							continue
+						}
+						judged++
+						before := receivePaneAt(s, w, h)
+						r = receiveType(t, r, poRuneKey("7"))
+						after := receivePaneAt(s, w, h)
+						r = receiveType(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+						if before == after {
+							if firstDead == "" {
+								firstDead = fmt.Sprintf("at %dx%d:\n%s", w, h, stripANSI(after))
+							}
+							dead = append(dead, fmt.Sprintf("%dx%d", w, h))
+						}
+					}
 				}
-				judged++
-				if pane := receiveClippedPane(s, 80, height); strings.Contains(pane, "more above") {
-					t.Errorf("%s has one navigable row and hides lines above the window, "+
-						"behind a marker no key on this screen can act on:\n%s", c.name, pane)
+				if len(dead) > 0 {
+					t.Errorf("with the caret in box %d a typed character changes nothing on the pane "+
+						"at %d pane(s), including %v — the box it went into is not drawn; %s",
+						field, len(dead), dead[:min(6, len(dead))], firstDead)
 				}
 			})
 		}
 	}
 	if judged == 0 {
-		t.Error("no swept state had a single navigable row, so this property judged nothing")
+		t.Fatal("no capture frame was drawn at any pane, so this judged nothing")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A refusal of the whole form says why, from every row, on every pane
+// ---------------------------------------------------------------------------
+
+// receiveRefusesWholeForm reports, off the WORKSHEET, whether this state is one
+// where nothing at all can be received: the server said the order may not be
+// received against, or every line on it is voided or closed short. Read off the
+// wire facts rather than off the screen's own predicate, so a screen that
+// stopped recognising one of them would fail here instead of dropping out of
+// the set.
+func receiveRefusesWholeForm(s *ReceiveFormScreen) bool {
+	if s.sheet == nil {
+		return false
+	}
+	if !s.sheet.CanReceive {
+		return true
+	}
+	for _, l := range s.sheet.Lines {
+		if !l.IsVoided && !l.IsClosedShort {
+			return false
+		}
+	}
+	return true
+}
+
+// receiveFirstClause is a sentence up to its first clause or sentence break,
+// PUNCTUATION INCLUDED — the word prefix a note block that gives ground from the
+// end keeps, spelled exactly as fittedNote would keep it. The comma or full stop
+// is part of the last word it keeps, so a probe without it measures a string one
+// cell shorter than the one the block has to hold.
+func receiveFirstClause(text string) string {
+	cut := len(text)
+	for _, sep := range []string{", ", ". "} {
+		if i := strings.Index(text, sep); i >= 0 && i+1 < cut {
+			cut = i + 1
+		}
+	}
+	return text[:cut]
+}
+
+// TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs.
+//
+// Two frames refuse the whole form on a worksheet that landed: the server's "you
+// may not receive against this" (a draft, say), and an order every line of which
+// is voided or closed short. A refusal is only one an operator can act on if they
+// can see WHY — standing rule 11 — and in both the why used to be the TAIL of a
+// block: row 0's on the blocked frame, where Down walks to the line list rather
+// than into the tail, so from 80x12 to 80x19 the pane read "PO-1001 · Draft"
+// over a list of lines and never "Send it to the supplier"; and the notes row's
+// on the quantity form, the last of five rows, so the frame the form opens on
+// drew it nowhere up to 80x30 and a short pane standing on notes kept "Notes
+// ..... optional" and nothing else, on a form whose Notes can never be sent.
+//
+// The SET is every state receivePhaseCases reaches whose worksheet says nothing
+// can be received (receiveRefusesWholeForm, read off the wire), so a third such
+// state is swept the day a case reaches it. Each is walked over EVERY row its
+// body has and dragged to every pane, and asserted through the clipped pane in
+// a stated order of degradation, each step scoped by what the note block can
+// HOLD — asked of the fold it is drawn with, at its own size:
+//
+//	the whole reason   wherever the block can hold all of it
+//	its first clause   wherever it can hold that much, marked as cut
+//	its first word     everywhere else, so the block never says nothing
+//
+// All three tiers must be reached, or the scoping asserts nothing.
+func TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs(t *testing.T) {
+	widths, heights := receiveHonestWidths(), jdePaneHeights()
+	tiers := map[string]int{}
+	members := 0
+	// Two cases can reach one frame from different rows ("qty nothing
+	// receivable" and the same order standing on notes). Every row is walked
+	// from wherever a case opens, so the second visit is the first again; it is
+	// skipped rather than paid for, on a sweep that renders thousands of panes.
+	walked := map[string]bool{}
+	for _, c := range receivePhaseCases() {
+		r, s := receiveHarness(t, c.fake, c.lines, receiveReachWidth, receiveReachHeight)(t)
+		r = c.reach(t, r, s)
+		if !receiveRefusesWholeForm(s) {
+			continue
+		}
+		members++
+		frame := fmt.Sprint(s.phase, s.sheet.CanReceive, len(s.sheet.Lines), s.pending)
+		if walked[frame] {
+			continue
+		}
+		walked[frame] = true
+		reason := receiveNothingReceivable
+		if !s.sheet.CanReceive {
+			reason = s.sheet.UnavailableReason
+		}
+		clause := receiveFirstClause(reason)
+		word := strings.Fields(reason)[0]
+		body, _ := s.body()
+		rows := max(1, body.rowsIn(0, body.Len()))
+		for press := 0; press < rows; press++ {
+			if press > 0 {
+				next, _ := r.Update(tea.WindowSizeMsg{Width: receiveReachWidth, Height: receiveReachHeight})
+				r = next.(Root)
+				r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
+			}
+			var missing []string
+			var firstMissing string
+			for _, w := range widths {
+				for _, h := range heights {
+					next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+					r = next.(Root)
+					if !receiveDrawn(s) {
+						continue
+					}
+					room, fold := s.noteRows(), s.paneWidth()-len(jdeIndent)
+					holds := func(text string) bool {
+						return len(pickerNote{text: text, level: StatusWarn}.renderLines(fold)) <= room
+					}
+					want, tier := word, "first word"
+					switch {
+					case holds(reason):
+						want, tier = reason, "whole reason"
+					case holds(clause + receiveNoteDropMark):
+						want, tier = strings.TrimRight(clause, ",."), "first clause"
+					}
+					tiers[tier]++
+					if pane := receiveFlat(receivePaneAt(s, w, h)); !strings.Contains(pane, want) {
+						missing = append(missing, fmt.Sprintf("%dx%d (%s)", w, h, tier))
+						if firstMissing == "" {
+							firstMissing = fmt.Sprintf("at %dx%d the block can hold the %s %q "+
+								"and the pane does not carry it:\n%s", w, h, tier, want,
+								stripANSI(receivePaneAt(s, w, h)))
+						}
+					}
+				}
+			}
+			if len(missing) > 0 {
+				t.Errorf("%s, %d press(es) of Down from where it opens: the reason is not on "+
+					"the pane at %d pane(s), including %v; %s", c.name, press, len(missing),
+					missing[:min(6, len(missing))], firstMissing)
+			}
+		}
+	}
+	if members == 0 {
+		t.Fatal("no reached state refuses the whole form, so this judged nothing")
+	}
+	for _, tier := range []string{"whole reason", "first clause", "first word"} {
+		if tiers[tier] == 0 {
+			t.Errorf("no pane was judged at the %q tier, so the scoping above asserted nothing "+
+				"there (tiers reached: %v)", tier, tiers)
+		}
 	}
 }

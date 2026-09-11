@@ -737,10 +737,50 @@ const jdeNoRow = -1
 type jdeLines struct {
 	text []string
 	row  []int
+	// lead is 1 + the index of the line DeclareLead named, so the zero value
+	// means "nothing declared"; leadSite is the name the declaration was made
+	// under. Both are read by the sweeps and by nothing that draws.
+	lead     int
+	leadSite string
 }
 
 // Add appends a line that belongs to no row.
 func (l *jdeLines) Add(text string) { l.AddRow(jdeNoRow, text) }
+
+// DeclareLead names the NEXT line appended as the one this body must keep on
+// every pane it is drawn in, under a site name unique to the call.
+//
+// It is for a body drawn through a PINNED window — one whose cursor's block is
+// the whole body, the shape of every body with one navigable row — and the
+// reason is Window's own arithmetic rather than a style. Window anchors on the
+// cursor's block and, when that block will not fit, keeps its START; nothing
+// scrolls inside a block. A block that starts at line 0 and ends at the last
+// line can therefore only ever be drawn from line 0, so that line is the only
+// one EVERY drawable pane keeps — the shortest pane the layer will draw leaves
+// the body one row. Whatever the operator cannot do without has to be that line,
+// and that is a choice about MEANING only the builder can make: the focused box
+// a scanner fires into, the fact a summary exists to report. On a body whose
+// window is not pinned the declaration says nothing and nothing reads it.
+//
+// It records the choice rather than enforcing it, because the check needs the
+// rendered pane and the builder does not have one. What holds it is the
+// receiving form's sweep (TestReceive_ABodyNoKeyCanMoveLeadsWithWhatTheOperatorNeeds),
+// which derives its set from the built body and the row body() anchors on, and
+// fails on a pinned body that declares nothing, on a declaration that is not the
+// body's first line, and on a lead that is not whole on the clipped pane. A site
+// name is what lets TestReceive_EveryLeadDeclarationIsJudgedOnAPinnedBody find,
+// from the source, a declaration no swept state reaches or one only ever seen on
+// a body the cursor moves. The receiving form is the only screen that declares
+// one today, and that sweep is scoped to it.
+func (l *jdeLines) DeclareLead(site string) {
+	l.lead, l.leadSite = len(l.text)+1, site
+}
+
+// Lead is the index of the declared lead line and the site that declared it, or
+// ok false when nothing was declared.
+func (l *jdeLines) Lead() (index int, site string, ok bool) {
+	return l.lead - 1, l.leadSite, l.lead > 0
+}
 
 // AddRow appends a line belonging to navigable row `row`.
 func (l *jdeLines) AddRow(row int, text string) {

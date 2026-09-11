@@ -3346,11 +3346,14 @@ func (s *ReceiveFormScreen) qtyPagesFor(headerRows int) bool {
 	// The body must MOVE — that is bodyScrollsForBar's question. But PgUp/PgDn
 	// do not scroll the body: they move the CURSOR (jdePageCursor) and the
 	// window follows it, so a page can only do anything when there is another
-	// row to land on. Those two questions agree in almost every state and come
-	// apart in one that is DESIGNED: a form with one navigable row that is
-	// still taller than the pane, where jdePageCursor clamps and returns the
+	// row to land on. Those two questions agree in almost every state and came
+	// apart in one that was DESIGNED: a form with one navigable row that was
+	// still taller than the pane, where jdePageCursor clamped and returned the
 	// row it was handed while the bar printed PgUp/PgDn=Page over a key whose
-	// whole effect was to write "pgdown is already at the last row".
+	// whole effect was to write "pgdown is already at the last row". (That was
+	// the nothing-receivable order before it gained its scan and delivery rows;
+	// no state of this form has fewer than five rows now, and the count half is
+	// what stops one coming back unnoticed.)
 	//
 	// Both halves are the LAYER's (bodyPagesForBar), so this screen is not
 	// carrying a private copy of a rule thirty others also need. What pageRow
@@ -3518,7 +3521,19 @@ func (s *ReceiveFormScreen) body() (*jdeLines, int) {
 	case phaseBlocked:
 		return s.blockedBody(), s.rowCursor
 	case phaseSerial:
-		return s.serialBody(), 0
+		// The window follows the BOX HOLDING THE CARET. serialBody numbers its
+		// three boxes as rows 0..2 — Serial, Lot, Expires, which is serialField —
+		// and hangs everything that identifies the unit off row 0, so row 0's
+		// block runs from the Serial box to the body's last line. Anchored there
+		// whichever box held the caret, the window could only ever be drawn from
+		// the Serial line: at 80x11, 80x12 and 80x14 the Lot box was below the
+		// one row the body had, and every character typed into it redrew the
+		// pane byte for byte (TestReceive_TheSerialBoxHoldingTheCaretIsOnThePane).
+		// Past the last unit there is no box, and the frame is row 0 alone.
+		if s.serialCursor >= len(s.serialUnits) {
+			return s.serialBody(), 0
+		}
+		return s.serialBody(), s.serialField
 	case phaseReview:
 		return s.reviewBody(), s.rowCursor
 	case phaseWriteOff:
@@ -3559,7 +3574,12 @@ func (s *ReceiveFormScreen) failLine() string { return s.failHead }
 func (s *ReceiveFormScreen) loadingBody() *jdeLines {
 	l := &jdeLines{}
 	width := s.bodyWidth()
-	l.AddRow(0, jdeIndent+StyleMuted.Render("Reading the receiving worksheet…"))
+	l.DeclareLead("loading")
+	// Fitted, as every lead is: a pinned body's first line is the one line a
+	// short pane keeps, and a literal handed to clampToBox loses its tail with
+	// no mark — "Reading the receiv" at 49 columns reads as the whole sentence.
+	l.AddRow(0, jdeIndent+StyleMuted.Render(receiveFit("Reading the receiving worksheet…",
+		width, len(jdeIndent))))
 	for _, line := range jdeCaveatLines(
 		"It says which lines are still outstanding, what a scanner will read off each "+
 			"one, and which items their serials belong to. Nothing can be received until "+
@@ -3578,6 +3598,18 @@ func (s *ReceiveFormScreen) blockedRows() int {
 	return 1 + len(s.sheet.Lines)
 }
 
+// blockedReason is the server's own sentence for why this order may not be
+// received against.
+func (s *ReceiveFormScreen) blockedReason() string {
+	if s.sheet != nil && s.sheet.UnavailableReason != "" {
+		return s.sheet.UnavailableReason
+	}
+	// The pair is meant to arrive together and does; this is the frame refusing
+	// to invent a sentence when it does not, rather than drawing a blank where
+	// the explanation belongs.
+	return "This order cannot be received against, and the server gave no reason."
+}
+
 // blockedBody draws "no receipt can be built here", and draws WHICH of the two
 // reasons it is.
 //
@@ -3592,7 +3624,9 @@ func (s *ReceiveFormScreen) blockedBody() *jdeLines {
 	width := s.bodyWidth()
 
 	if s.sheet == nil {
-		l.AddRow(0, jdeIndent+StyleStatusError.Render("The receiving worksheet could not be read."))
+		l.DeclareLead("worksheet unreadable")
+		l.AddRow(0, jdeIndent+StyleStatusError.Render(receiveFit(
+			"The receiving worksheet could not be read.", width, len(jdeIndent))))
 		for _, line := range jdeCaveatLines(
 			"Nothing is known about this order's lines, so nothing can be received "+
 				"against it — this is not the same as an order with nothing left to "+
@@ -3602,23 +3636,30 @@ func (s *ReceiveFormScreen) blockedBody() *jdeLines {
 		return l
 	}
 
-	reason := s.sheet.UnavailableReason
-	if reason == "" {
-		// The pair is meant to arrive together and does; this is the frame
-		// refusing to invent a sentence when it does not, rather than drawing a
-		// blank where the explanation belongs.
-		reason = "This order cannot be received against, and the server gave no reason."
+	if s.blockedRows() == 1 {
+		// No line list under it, so nothing moves the window off this block.
+		l.DeclareLead("cannot receive, no lines")
 	}
 	l.AddRow(0, jdeIndent+StyleStatusWarn.Render(
 		receiveFit(s.orderName()+" · "+s.sheet.StatusLabel, width, len(jdeIndent))))
-	for _, line := range jdeCaveatLines(reason, width) {
-		l.AddRow(0, line)
-	}
+	// The server's REASON is not drawn here. It used to follow the line above,
+	// as the tail of row 0's block — and Window keeps a block's START, while
+	// Down walks to the line list rather than into the tail, so from 80x12 to
+	// 80x19 the operator refused by this frame read "PO-1001 · Draft" and a
+	// list of lines and never "Send it to the supplier": a refusal they could
+	// not act on. It is the note block's standing fact now (standingNote),
+	// which is on the pane from every row.
 	if len(s.sheet.Lines) == 0 {
 		return l
 	}
 	l.AddRow(0, "")
-	l.AddRow(0, jdeIndent+StyleMuted.Render("What the order's lines say:"))
+	// FOLDED, as every sentence on these frames is (receiveCaveatLines and its
+	// siblings): written straight to the pane, this heading and the four other
+	// literals TestReceive_NothingOverflowsThePane found lost their tails to
+	// clampToBox, unmarked, at every width from 49 to 67 columns.
+	for _, line := range jdeCaveatLines("What the order's lines say:", width) {
+		l.AddRow(0, line)
+	}
 	for i, line := range s.sheet.Lines {
 		row := i + 1
 		if i > 0 {
@@ -3714,33 +3755,21 @@ func (s *ReceiveFormScreen) qtyBody() *jdeLines {
 	}}
 
 	if len(s.qty) == 0 {
-		// The FIELD leads, and the sentence explaining the order follows it —
-		// serialBody's rule, applied to the one other block on this form that
-		// is in serialBody's situation. Window keeps a block's START, so
-		// whatever leads a block that will not fit is the whole of what a short
-		// pane keeps, and an operator typing into a field they cannot see is
-		// the reported-hang class this screen exists to remove.
-		l.AddFittedFields(notes, lw, width, notesRow)
-		l.AddRow(notesRow, jdeIndent+StyleMuted.Render("No line here can take a receipt."))
-		// The way out is NAMED, because this frame is reachable in a state that
-		// is otherwise a dead end. An order every line of which was closed
-		// short or struck off without a single delivery never reaches
-		// `received` — that status means goods arrived — so it stays receivable
-		// and comes back here with `can_receive: true` and nothing to receive.
-		// Ctrl+R cannot finish it either: the server refuses a settled order
-		// and says to void or cancel it instead, which is what this says before
-		// the operator spends a round trip finding out.
+		// The FIELD leads its block — a block that will not fit keeps its
+		// START, and an operator typing into a field they cannot see is the
+		// reported-hang class this screen exists to remove — and the settled
+		// lines hang off it.
 		//
-		// It does not assert that nothing arrived. Whether anything did is the
-		// server's own condition on the transition, and the worksheet carries
-		// no receipt total to read it off — so the sentence names the action
-		// that exists rather than diagnosing the order.
-		for _, line := range jdeCaveatLines(
-			"Every line is voided or closed short, so there is nothing to book against "+
-				"this order. Void or cancel the ORDER to finish with it — an order only "+
-				"reads as received once goods actually arrived.", width) {
-			l.AddRow(notesRow, line)
-		}
+		// What this block does NOT carry is the explanation of the whole form,
+		// and it used to. The sentence saying why nothing here can take a
+		// receipt was the TAIL of this block: the last of five rows, after a
+		// field that can never be submitted (there is no receipt to send it
+		// with). So the frame the form opens on — the cursor on Scan — drew it
+		// nowhere up to 80x30, and standing on this row a short pane kept
+		// "Notes ..... optional" and dropped the why. It is a fact about the
+		// FORM, so it is pinned in the header instead (standingNote), where it
+		// is on the pane from every row.
+		l.AddFittedFields(notes, lw, width, notesRow)
 		s.addClosedLines(l, notesRow, width)
 		return l
 	}
@@ -3893,8 +3922,10 @@ func (s *ReceiveFormScreen) addClosedLines(l *jdeLines, row, width int) {
 	// that counts to two. It was "N lines cannot take a receipt:", which names
 	// no list at all, and a bare "2" in a note beside a form whose own lines
 	// are numbered 1..n is the ambiguity this heading exists to remove.
-	l.AddRow(row, jdeIndent+StyleMuted.Render(fmt.Sprintf("%d settled %s cannot take a receipt:",
-		len(s.closed), plural("line", len(s.closed)))))
+	for _, line := range jdeCaveatLines(fmt.Sprintf("%d settled %s cannot take a receipt:",
+		len(s.closed), plural("line", len(s.closed))), width) {
+		l.AddRow(row, line)
+	}
 	for i, line := range s.closed {
 		l.AddRow(row, receiveMetaIndent+StyleMuted.Render(
 			receiveFit(fmt.Sprintf("%d. %s — %s", i+1, line.sheet.Label,
@@ -4329,7 +4360,9 @@ func (s *ReceiveFormScreen) serialBody() *jdeLines {
 		// Nothing left to capture, so there is no box to lead with. Both lines
 		// still belong to row 0: a line tagged jdeNoRow is a line no key can
 		// bring back, and this phase has no key that moves a cursor at all.
-		l.AddRow(0, jdeIndent+StyleStatusOK.Render("Every unit has been answered."))
+		l.DeclareLead("serial answered")
+		l.AddRow(0, jdeIndent+StyleStatusOK.Render(receiveFit(
+			"Every unit has been answered.", width, len(jdeIndent))))
 		for _, line := range jdeCaveatLines(s.captureSummary(), width) {
 			l.AddRow(0, line)
 		}
@@ -4337,6 +4370,7 @@ func (s *ReceiveFormScreen) serialBody() *jdeLines {
 	}
 
 	unit := s.serialUnits[s.serialCursor]
+	l.DeclareLead("serial box")
 	l.AddFittedFields([]jdeField{
 		{
 			Label: "Serial", Kind: jdeText, Input: &s.serialInput, Width: 30,
@@ -4368,10 +4402,15 @@ func (s *ReceiveFormScreen) serialBody() *jdeLines {
 		l.AddRow(0, receiveMetaIndent+StyleMuted.Render(receiveFit(
 			"on line: "+unit.lineLabel, width, len(receiveMetaIndent))))
 	}
-	l.AddRow(0, receiveMetaIndent+StyleMuted.Render(fmt.Sprintf(
-		"unit %d of %d for this item", unit.unitNo, unit.unitTot)))
-	l.AddRow(0, receiveMetaIndent+StyleMuted.Render(fmt.Sprintf(
-		"capture %d of %d · %d serial(s) so far", s.serialCursor+1, total, s.capturedCount())))
+	for _, line := range receiveCaveatLines(fmt.Sprintf(
+		"unit %d of %d for this item", unit.unitNo, unit.unitTot), StyleMuted, width) {
+		l.AddRow(0, line)
+	}
+	for _, line := range receiveCaveatLines(fmt.Sprintf(
+		"capture %d of %d · %d serial(s) so far", s.serialCursor+1, total, s.capturedCount()),
+		StyleMuted, width) {
+		l.AddRow(0, line)
+	}
 	for _, line := range receiveCaveatLines(
 		"A blank serial passes the unit over — the goods are still received and the "+
 			"gap comes back as an outstanding serial.", StyleMuted, width) {
@@ -4441,8 +4480,11 @@ func (s *ReceiveFormScreen) reviewBody() *jdeLines {
 		}
 		l.AddRow(row, jdeIndent+s.lineHeading(i+1, line.sheet, s.rowCursor == row, width))
 		total := line.sheet.QuantityReceived + q
-		l.AddRow(row, receiveMetaIndent+StyleMuted.Render(fmt.Sprintf(
-			"receiving %d · %d of %d ordered once it lands", q, total, line.sheet.QuantityOrdered)))
+		for _, cl := range receiveCaveatLines(fmt.Sprintf(
+			"receiving %d · %d of %d ordered once it lands", q, total, line.sheet.QuantityOrdered),
+			StyleMuted, width) {
+			l.AddRow(row, cl)
+		}
 		if extra := total - line.sheet.QuantityOrdered; extra > 0 {
 			for _, cl := range receiveCaveatLines(fmt.Sprintf(
 				"%d OVER the order. It goes as typed and comes back flagged — nothing is "+
@@ -4466,6 +4508,13 @@ func (s *ReceiveFormScreen) reviewBody() *jdeLines {
 		// Unreachable through the bar and drawn rather than left blank: a
 		// review with no lines is a frame that would otherwise say nothing at
 		// all about why Enter is about to refuse.
+		//
+		// It declares NO lead, and that is the pinned-body sweep's exclusion
+		// rather than an omission: a declaration no swept state can reach is one
+		// TestReceive_EveryLeadDeclarationIsJudgedOnAPinnedBody reports as
+		// unswept, and no key sequence reaches this frame —
+		// the review is entered only past entryState, which a receipt naming no
+		// line cannot pass. Its single line is its lead by construction.
 		l.AddRow(0, jdeIndent+StyleStatusWarn.Render("This receipt names no line."))
 		return l
 	}
@@ -4560,6 +4609,7 @@ func (s *ReceiveFormScreen) writeOffBody() *jdeLines {
 	lw := receiveLabelWidth()
 	width := s.bodyWidth()
 
+	l.DeclareLead("write-off reason")
 	l.AddFittedFields([]jdeField{{
 		Label:   "Reason",
 		Kind:    jdeText,
@@ -4685,13 +4735,21 @@ func receiveDoneQuantity(po *omsapi.PurchaseOrder) string {
 // there was none of. Every line belongs to row 0; what a pane too short for the
 // summary loses is the TAIL, which is the order these rows are written in —
 // what happened first, then what is left over.
+//
+// THE RECEIPT ROW LEADS, and nothing sits above it. Every line belongs to row 0,
+// so the window is pinned and draws from line 0 on every pane; a short one keeps
+// the first line and nothing else. This body used to open on a "Receiving
+// complete" heading and a blank, so from 80x11 to 80x18 the pane drew the
+// heading — from 80x14 over "↓ 5 more below", on a bar that names no key able
+// to fetch it — and the row below the fold was the receipt, the one record of
+// what the write actually did. The heading bought nothing the receipt does not say better: it
+// read "Receiving complete" over a close-short and a mark-received too, where the
+// receipt names the write that landed. It is declared (DeclareLead) so the
+// pinned-body sweep holds it there rather than the next edit's memory.
 func (s *ReceiveFormScreen) doneBody() *jdeLines {
 	l := &jdeLines{}
 	lw := receiveLabelWidth()
 	width := s.bodyWidth()
-
-	l.AddRow(0, StyleJDEHeading.Render("Receiving complete"))
-	l.AddRow(0, "")
 
 	fields := []jdeField{{Label: "Receipt", Kind: jdeValue, Value: s.receipt, Dim: s.receipt == ""}}
 	if fields[0].Value == "" {
@@ -4745,6 +4803,9 @@ func (s *ReceiveFormScreen) doneBody() *jdeLines {
 			if room := jdeStripWidth(width, lw); room > 0 {
 				fields[i].Value = fitCell(fields[i].Value, room)
 			}
+		}
+		if i == 0 {
+			l.DeclareLead("summary")
 		}
 		l.AddRow(0, renderJDEField(fields[i], lw, width))
 	}
@@ -5171,31 +5232,96 @@ func (s *ReceiveFormScreen) noteLines() []string {
 // last resort keeps as much of the lead as the block can carry, marked, and only a
 // pane too narrow to draw three cells gets the bare mark.
 func (s *ReceiveFormScreen) fittedNote(width, rows int) pickerNote {
-	if s.note.text == "" || rows <= 0 {
-		return s.note
+	note := s.shownNote()
+	if note.text == "" || rows <= 0 {
+		return note
 	}
-	bounded := cellPrefix(s.note.text, rows*width)
-	if bounded == s.note.text && len(s.note.renderLines(width)) <= rows {
-		return s.note
+	bounded := cellPrefix(note.text, rows*width)
+	if bounded == note.text && len(note.renderLines(width)) <= rows {
+		return note
 	}
 	words := strings.Fields(bounded)
 	for keep := len(words) - 1; keep > 0; keep-- {
-		trial := s.note
+		trial := note
 		trial.text = strings.Join(words[:keep], " ") + receiveNoteDropMark
 		if len(trial.renderLines(width)) <= rows {
 			return trial
 		}
 	}
 	for room := rows * width; room > 0; room-- {
-		trial := s.note
+		trial := note
 		trial.text = cellPrefix(bounded, room) + receiveNoteDropMark
 		if len(trial.renderLines(width)) <= rows {
 			return trial
 		}
 	}
-	trial := s.note
+	trial := note
 	trial.text = strings.TrimSpace(receiveNoteDropMark)
 	return trial
+}
+
+// shownNote is what the note block draws: the answer to the last keypress
+// whenever one is standing, and otherwise the phase's standing fact.
+//
+// The answer wins, always. It is the reply to what the operator just pressed and
+// it names the key, which is what keeps two declining keys from redrawing one
+// pane; a standing fact that outranked it would be a keypress with no visible
+// answer. The fact comes back on the very next press that writes none, because
+// handleKey retires the note on every press.
+func (s *ReceiveFormScreen) shownNote() pickerNote {
+	if s.note.text != "" {
+		return s.note
+	}
+	return s.standingNote()
+}
+
+// receiveNothingReceivable is the standing fact of an order with nothing a
+// receipt may name, REASON first. The note block can be one row, and a block
+// that gives ground gives it from the END (fittedNote), so what a short pane
+// keeps is the leading clause: why nothing here can be received. The way out —
+// void or cancel the ORDER — follows it, and is said again by the scan row's
+// hint and by Ctrl+R's decline.
+//
+// It does not assert that nothing arrived. An order every line of which was
+// closed short or struck off without a single delivery never reaches
+// `received` — that status means goods arrived — so it stays receivable and comes
+// back here with `can_receive: true` and nothing to receive; whether anything
+// did arrive is the server's own condition on that transition, and the worksheet
+// carries no receipt total to read it off. So the sentence names the action that
+// exists rather than diagnosing the order.
+const receiveNothingReceivable = "Every line is voided or closed short, so nothing here " +
+	"can take a receipt. Void or cancel the ORDER to finish with it."
+
+// standingNote is a FACT about the frame, drawn in the note block while no
+// keypress has an answer standing there — New PO's idiom (po_create.go), so that
+// "nothing to say" and "the answer scrolled away" are different states.
+//
+// The frames that have one are the two REFUSALS OF THE WHOLE FORM on a worksheet
+// that did land: the server saying the order may not be received against, and
+// an order with nothing a receipt may name. A refusal is only one an operator
+// can act on if they can see why, and in both the why belongs to no row — it
+// used to be the tail of a block (row 0's on the blocked frame, the last row's
+// on the quantity form), which a short pane drops and no key fetches. The note
+// block is the one surface on this screen that is on the pane at every height
+// the frame is drawn at, from every row (headerSplit's first floor, and the
+// header's one essential row), so the why goes there. It costs no row: the
+// block's height is reserved whether or not it holds anything, which is the
+// fixed point receiveNoteRows exists for, so a standing fact cannot move the
+// paging claim either.
+//
+// The UNREADABLE worksheet is the refusal that is deliberately not here: its
+// why is a failure, whose headline is on the status row and whose detail is
+// already pinned in this header, both from the wire.
+func (s *ReceiveFormScreen) standingNote() pickerNote {
+	switch {
+	case s.sheet == nil:
+		return pickerNote{}
+	case s.phase == phaseBlocked:
+		return pickerNote{text: s.blockedReason(), level: StatusWarn}
+	case s.phase == phaseQty && len(s.qty) == 0:
+		return pickerNote{text: receiveNothingReceivable, level: StatusWarn}
+	}
+	return pickerNote{}
 }
 
 // failDetailText is the unbounded half of whatever failure is standing, and it
