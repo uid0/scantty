@@ -2230,7 +2230,7 @@ func poLineFlag(li omsapi.PurchaseOrderItem) string {
 	return ""
 }
 
-// poVoidFlag is how every purchasing surface spells a voided line.
+// poVoidFlag is the bracketed flag used where a purchasing row has a flag cell.
 const poVoidFlag = "[voided]"
 
 // poVoidLead puts poVoidFlag AHEAD of whatever names a voided line, and hands a

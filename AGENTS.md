@@ -589,27 +589,6 @@ knowing before touching any of it:
   asked for, whose own `Ctrl-X` was dropped while the OTHER write was out, and
   which then vanished by itself when that write answered.
 
-### A line's state is on its own row, AHEAD of its name
-
-- The line grid's give-order drops the SHIP DATE column first and the FLAG
-  column second (`poFitLineGrid`, both grids): the flag is the line's state and
-  the ship date already has a reading form, and the flag column is never wider
-  than the ship-date column, so the swap costs the item column nothing (80
-  columns draws the same 14-cell item beside the flag). Below that, the flag
-  LEADS the item cell; elsewhere a surface that names one line leads it with
-  `poVoidLead`. Never put a flag on a reading line UNDER a row: a scrolled
-  window can end on the row, which is how a voided line read as live (the
-  grid's old comment said the flag "reads fine as a reading").
-- `internal/tui/po_line_flag_test.go` carries the derived set (every surface
-  naming a `PurchaseOrderItem`, `ReceivingLine` or `POLineExisting`), its
-  exclusions with reasons, and the sweep: every drawable pane × every reachable
-  scroll, cursor or focus position, on the clipped pane. It reads a line's
-  IDENTITY off the front of what is drawn (number cell, heading words, a fact),
-  never off the name, which the flag pushes aside.
-- OMS's `purchase_history` rows carry no `is_voided`, so an item's order
-  history and the last-paid price offer cannot flag a voided line. That needs
-  an OMS change, not a client one.
-
 ### Kits are inventory items the item API refuses to admit exist
 
 Before touching anything kit-shaped (`internal/omsapi/kits.go` carries the full
