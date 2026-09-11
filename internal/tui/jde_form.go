@@ -1287,6 +1287,11 @@ func jdeFitHeader(header jdeHeader, budget, avail int) []string {
 
 // jdeRefitRows asks a fitted block for n rows and holds it to exactly n, so the
 // header still comes to the budget jdeBodyAvail windowed the body against.
+//
+// Cutting an over-long answer here would be an UNMARKED cut, and it is a
+// geometry backstop rather than a bound: every refit in the package is built
+// on foldKeepRows or failDetailLines, both of which answer at most the rows
+// they are asked for, so no screen reaches it.
 func jdeRefitRows(refit func(rows int) []string, n int) []string {
 	rows := refit(n)
 	if len(rows) > n {

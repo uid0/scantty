@@ -4913,18 +4913,36 @@ const receiveNoteRows = 4
 
 // receiveNoteDropMark is what the note leaves behind when it does not fit.
 //
-// Every other bound on these screens marks what it gave up — poRowDropMark on a
-// picker row, jdeLines.Window's hidden-row count, fitCell's ellipsis,
-// failDetailLines' mark on an error body, poQuotedClip's ellipsis inside the
-// quote, and a value folded into a pinned header, which the header re-draws at
-// the rows it has rather than cutting (jdeHeader.addFitted).
+// Every other bound on these screens that CUTS a value marks the cut —
+// poRowDropMark on a picker row, jdeLines.Window's hidden-row count, fitCell's
+// ellipsis (which a blurred box, the status row and every grid cell go
+// through), pickerClip's, failDetailLines' mark on an error body, poQuotedClip's
+// ellipsis inside the quote, and foldKeepRows' on a note or caveat that a pinned
+// header re-draws at the rows it has rather than cutting (jdeHeader.addFitted).
 // TestFailDetail_AShortPaneRedrawsTheBlockRatherThanCuttingItsMark,
 // TestHeaderFold_AFoldedValueIsWholeAbsentOrMarked and
 // TestReceive_AQuotedValueTheOperatorTypedIsWholeOrMarked hold the last three
-// through the rendered panes. The cut that marks nothing is clampToBox's, and it
-// is not a bound any screen applies: it is Root's backstop for a row nothing
-// bounded, so where it bites the ROW is the defect, and on this screen
-// TestReceive_NothingOverflowsThePane is what says it does not.
+// through the rendered panes.
+//
+// Two things give ground unmarked and neither leaves a fragment: the header
+// drops WHOLE independent rows, which claims nothing about them, and a FOCUSED
+// box scrolls its value past the caret the way any text field does.
+// renderJDEField's label clip is unmarked as well and no swept state reaches it,
+// because the label column is the widest label.
+//
+// The cuts that mark nothing are Root's, not any screen's: clampToBox, the
+// backstop for a row nothing bounded, and the status bar, which clips a flashed
+// message at the terminal edge. Where either bites, the ROW is the defect, and
+// on these screens they bite in places filed separately: po_edit.go draws rows
+// wider than the pane from 80 columns up (its line editor's three prose
+// sentences, the order sheet's date hints, attribution heading and work-order
+// value, the association picker's prose, the void prompt's `required`, the
+// delete confirm's voided-line row); below 80 every other purchasing screen but
+// this one draws field and grid rows the label column makes wider than the
+// pane; and a failed submit's OMS body is flashed whole, cut at the edge. On
+// THIS screen TestReceive_NothingOverflowsThePane holds that clampToBox does not
+// bite, at every width but 45–48, where the layer's floored bodyWidth cuts every
+// columnar screen (receiveHonestWidths).
 //
 // This one used to be the exception too: it stopped at receiveNoteRows and drew
 // nothing to say so. What it drops is the TAIL, which on these sentences is
