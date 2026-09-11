@@ -1567,20 +1567,11 @@ either:
   shows a cut line. Assert against `Root.View()` at 80/100/120 —
   `internal/tui/po_view_jde_test.go` is the pattern (and `poSeenWhileScrolling`
   for a body taller than the pane).
-- **The FRAME must fit the terminal's HEIGHT, and only a check on `Root.View()`
-  can see it.** bubbletea keeps the BOTTOM rows of a frame taller than the
-  terminal, so a row too many costs the TOP ones (the sidebar and screen
-  titles). Every pane sweep measures the pane, which stayed the right size
-  while the frame around it grew: a 502 page flashed on the status bar drew 26
-  rows on 24, and one unread notification drew 25 at every width from 76 up
-  (`📬` is one rune and two cells). `TestRoot_TheFrameIsNeverTallerThanTheTerminal`
-  (`root_frame_fit_test.go`) is the guard, and
-  `TestRoot_TheFrameSweepStatusInputsReachTheRenderedBar` proves each public
-  status-bar input driven by the sweep changes the rendered row. The bar is ONE MARKED ROW, which is the captain's decision for a message it
-  cannot hold: `jdeStatusOneLine` then `pickerClip`, the columnar status row's
-  convention. `lipgloss.Width` counts a TAB as zero cells while every `Render`
-  draws four, which is why `jdeStatusOneLine` and `clampToBox` both handle it;
-  a new bound on OMS data has to handle it too.
+- **The FRAME must fit the terminal's HEIGHT; pane-only checks cannot prove
+  that.** `TestRoot_TheFrameIsNeverTallerThanTheTerminal`
+  (`root_frame_fit_test.go`) owns the whole-frame guard. `StatusBar.View` owns
+  the one-marked-row rule and its cell-width rationale; `jdeStatusOneLine` and
+  `clampToBox` own the tab-handling constraints at their respective bounds.
 - **A typed row is handed to the layer as a BOX, never as a string.** Build it
   with `jdeField{Kind: jdeText, Input: &box}` and pass the pane to
   `renderJDEField` / `AddFields`; `jdeFitInputValue` then bounds the box, keeps

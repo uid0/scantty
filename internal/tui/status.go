@@ -134,7 +134,7 @@ func (s StatusBar) View() string {
 		avail = 1
 	}
 
-	// Active status/error message. Ian's rule: errors show on the BOTTOM
+	// Active status/error message. The captain's standing rule: errors show on the BOTTOM
 	// line, LEFT-justified, and COMPLETE — never clipped. So the message owns
 	// the line; the connection/scanner context only rides along on the right
 	// when the whole message still leaves room for it.
