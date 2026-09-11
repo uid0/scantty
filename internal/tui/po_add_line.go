@@ -1870,8 +1870,12 @@ func (s *PurchaseOrderAddLineScreen) confirmCaveats(c omsapi.POLineCandidate) []
 			"rather than making a second one. Leave the unit cost blank to keep the price it carries.")
 	}
 	if r := c.AlreadyOnOrder; r != nil && r.IsVoided {
-		out = append(out, "The line this order has for this item is VOIDED. The add will be refused: "+
-			"restore or remove that line first.")
+		// The condition, not a remedy. This used to say "restore or remove that
+		// line first", after OMS's own line_voided refusal — and nothing restores
+		// a voided line: OMS only ever writes is_voided true and has no endpoint
+		// that clears it. What refuses the add is that line being ON the order.
+		out = append(out, "The line this order has for this item is VOIDED. The add will be refused "+
+			"for as long as that line is on the order.")
 	}
 	if c.Item.IsKit {
 		out = append(out, "This is a kit: it is ordered as one SKU and credits its COMPONENT items "+
