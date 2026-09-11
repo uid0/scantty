@@ -262,8 +262,10 @@ go vet ./...                     # static checks
 go run ./cmd/scantty             # build + run in one step (good for iteration)
 ```
 
-`go test ./...` runs the suite; CI (`.github/workflows/ci.yml`) runs build,
-vet and test on every pull request. The suite needs no server: screen behaviour
+`go test -timeout 20m ./...` runs the suite; the explicit timeout matches CI
+because `internal/tui`'s exhaustive layout sweeps can exceed Go's 10-minute
+default. CI (`.github/workflows/ci.yml`) runs build, vet and test on every pull
+request. The suite needs no server: screen behaviour
 is verified by driving the real screens against an `httptest` fake, and the two
 `omslab`-tagged tests that do want a real backend are inert without one. A
 local OpenMakerSuite can be brought up and is worth it on a bug that sits on the

@@ -43,7 +43,7 @@ jobs:
       # merged. A bound that no longer matches the work is a stale bound. The
       # cost is that a genuinely HUNG test now takes 20 minutes to fail instead
       # of 10; splitting the heavy sweeps into a job of their own is the
-      # settled fix and is filed as follow-up work.
+      # settled fix and is filed as follow-up issue #171.
       - name: go test
         run: go test -timeout 20m ./...
 
