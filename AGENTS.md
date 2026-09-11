@@ -86,9 +86,8 @@ never sets it. `internal/tui/po_line_price.go` carries the full note.
 
 The edit screen's cost row names that ORDERED quantity on its LABEL
 (`poLineCostLabel`: `Total for 5 ordered`), not only in its hint. A hint can be
-folded or windowed away from its box — at 80 columns it used to be cut off the
-pane entirely, leaving a box that read as a unit price on a row that writes a
-line total, so 10.00 typed on a five-line recorded 2.00 a unit.
+folded or windowed away from its box, but the denominator must remain visible
+beside the value the row writes.
 
 ### A PO line is ENTERED in cases and STORED in base units
 
@@ -1533,16 +1532,11 @@ either:
   `jdePaneCases` and `jdeHeaderCases` build, at every honest width and drawable
   height, and fails on a line above the bar wider than `screenBodyCells(w)`.
   `jdeRowsPastThePane` is the measured residue, per screen, as the widest width
-  that still cuts and fails in both directions. It sees only the state each
-  fixture opens in, so a screen whose rows change with focus needs a state walk of its own —
-  `po_edit_rows_test.go` is the worked example (every cursor position of every
-  phase, under every removal answer, with OMS-length values, plus a check that
-  every value it cuts carries the ellipsis). The shapes that keep a row inside:
-  a text row's hint through `jdeFitRow`; a VALUE clipped to what the label column
-  leaves (`poFieldValueRoom`, via `po_edit.go`'s `poEditFieldLines`); prose
-  through `jdeCaveatLines`; a line grid through `poFitLineGrid`, and a flag the
-  grid drops goes on the ROW (the item cell, like `poKitTag`), never only on the
-  reading line under it, because a window can end between the two.
+  that still cuts and fails in both directions. Because its fixtures cover only
+  their opening state, screens whose rows change with focus need their own state
+  walk; `po_edit_rows_test.go` is the worked example and also requires an
+  ellipsis on every clipped value. Keep dropped grid flags on the row itself,
+  never only on a continuation row that may fall below the window.
 - **80 columns leaves the pane 51.** `screenBodyWidth(80)` is
   `80 - navColumnWidth(24) - 1 - padding(4)` = **51**, and the action bar gets 49
   of them. That is the number every columnar layout has to be checked against,
