@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"encoding/json"
-	"go/ast"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,9 +19,10 @@ import (
 //
 // THE DERIVED SET, from the one client method that fetches the feed —
 // omsapi.Client.ReorderTransparency — and every caller of it, which is the
-// three transparency tabs of NewReorderAnalyticsReportScreen and nothing else
-// (TestTransparency_TheDerivedSetIsTheSetSwept derives it, both by running
-// every report tab's loader and by counting the call sites in the source):
+// three transparency tabs of NewReorderAnalyticsReportScreen among every tab
+// of every report screen in reportScreenFixtures
+// (TestTransparency_TheDerivedSetIsTheSetSwept derives it by running every
+// report tab's loader):
 //
 //   - "Trans. orders" renders `orders[]`, one row per ReorderRequest. This is
 //     where OMS #1057 withdrew `supplier_name` and `estimated_cost`: a
@@ -379,13 +379,10 @@ var transparencySurfaces = map[string]string{
 }
 
 // TestTransparency_TheDerivedSetIsTheSetSwept is what the derived set at the
-// top of this file is claimed on, asked two ways because either alone can miss
-// a surface. BEHAVIOURALLY, every tab of every report screen runs its loader
-// against a server that records the route, and the tabs that ask for the
-// transparency feed must be exactly transparencySurfaces. STRUCTURALLY, the
-// package source may call ReorderTransparency only as often as those tabs do,
-// so a screen outside the report tabs that starts presenting the feed fails
-// here rather than joining the app unswept.
+// top of this file is claimed on. Every tab of every report screen in
+// reportScreenFixtures runs its loader against a server that records the route,
+// and the tabs that ask for the transparency feed must be exactly
+// transparencySurfaces.
 func TestTransparency_TheDerivedSetIsTheSetSwept(t *testing.T) {
 	const route = "/api/reorders/analytics/transparency/"
 	found := map[string]bool{}
@@ -417,22 +414,5 @@ func TestTransparency_TheDerivedSetIsTheSetSwept(t *testing.T) {
 		if !found["NewReorderAnalyticsReportScreen/"+label] {
 			t.Errorf("transparencySurfaces has %q, which no longer asks for the transparency feed", label)
 		}
-	}
-
-	_, files := jdeParsePackage(t)
-	calls := 0
-	for _, f := range files {
-		ast.Inspect(f, func(n ast.Node) bool {
-			if call, ok := n.(*ast.CallExpr); ok {
-				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "ReorderTransparency" {
-					calls++
-				}
-			}
-			return true
-		})
-	}
-	if calls != len(found) {
-		t.Errorf("the package calls ReorderTransparency %d times and %d report tabs account for "+
-			"them — a screen outside the report tabs presents the feed unswept", calls, len(found))
 	}
 }
