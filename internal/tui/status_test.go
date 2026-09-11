@@ -208,6 +208,13 @@ func TestStatusBar_EveryMessageIsOneMarkedRow(t *testing.T) {
 					m.name, w, n+1, view)
 				continue
 			}
+			// A row count cannot see a vertical tab or form feed: the terminal
+			// moves its cursor down for either without a newline.
+			if strings.ContainsAny(view, paneVerticalBreaks) {
+				t.Errorf("%s at width %d: the bar still carries a vertical tab or form feed:\n%q",
+					m.name, w, view)
+				continue
+			}
 			flat := jdeStatusOneLine(m.text)
 			row := strings.TrimPrefix(statusContentLine(view), " ")
 			drawn := strings.TrimRight(row, " ")

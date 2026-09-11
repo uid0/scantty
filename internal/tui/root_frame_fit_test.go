@@ -102,6 +102,11 @@ func rootFrameMessages() []struct{ name, text string } {
 		// lipgloss measures a tab as NO cells and draws it as four, so a line a
 		// measurement says fits is drawn wider than the bar and WRAPS.
 		{"tabs", "delete failed:" + strings.Repeat("\tfield\terror", 12)},
+		// A vertical tab and a form feed move a terminal's cursor DOWN without a
+		// newline, so the rows they add are invisible to a count over "\n" — the
+		// sweep's second check (no such character in the frame) is what sees
+		// them. Short enough to fit, so it tests the flattening and not the clip.
+		{"cursor-down controls", "save failed:\vrow\fcol\vend"},
 		{"short", "saved"},
 		{"empty after flattening", "\n"},
 	}
@@ -393,6 +398,17 @@ func TestRoot_TheFrameSweepReachesPastEveryBound(t *testing.T) {
 	narrowest := jdeDrawableWidths()[0]
 	for _, m := range rootFrameMessages() {
 		if m.name == "short" {
+			continue
+		}
+		if strings.ContainsAny(m.text, paneVerticalBreaks) {
+			// Its bound is not a row count: unflattened, it must reach the bar
+			// still carrying both characters, or the check that looks for them
+			// in the frame has nothing to find.
+			raw := StyleStatusBar.Width(narrowest).Render(m.text)
+			if !strings.Contains(raw, "\v") || !strings.Contains(raw, "\f") {
+				t.Errorf("message fixture %q does not carry both cursor-down controls onto the bar "+
+					"unflattened, so it cannot reach the bound it is here to test", m.name)
+			}
 			continue
 		}
 		raw := StyleStatusBar.Width(narrowest).Render(m.text)
