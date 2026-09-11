@@ -2149,6 +2149,14 @@ touching any screen an operator drives:
   budget — which `receive_form.go`'s `headerSplit` really pays on a short pane —
   the content is kept and the cut is marked with the ellipsis instead, because a
   mark with no content beneath it is the rule inverted rather than obeyed.
+  **A VALUE FOLDED INTO A PINNED HEADER GOES IN THROUGH `jdeHeader.addFitted`**,
+  because `jdeFitHeader` gives ground from the END of a rank, where a fold's
+  cut mark sits. A fitted block is re-drawn at the rows the trim leaves it by
+  its own refit (`failDetailLines`, `pickerNote.renderLinesIn`, or
+  `jdeCaveatLinesIn`, all marking through `foldKeepRows`); a block of
+  INDEPENDENT rows keeps `add`, because dropping one leaves no fragment that
+  can read as complete. `header_fold_mark_test.go` and
+  `fail_detail_mark_test.go` hold the invariant through rendered panes.
   FIELD rows are the shape that does not FOLD, and they are bounded rather than
   exempt — the CART row included, which gives ground in its own STATED order
   because clipping its label alone was not enough: the LABEL first, then the

@@ -444,11 +444,13 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 		headingRank = jdeHeadEssential
 	}
 	h := jdeHeader(nil).add(headingRank, StyleJDEHeading.Render("Packaging chain"))
-	for _, line := range jdeCaveatLines(fmt.Sprintf(
-		"Largest package first, ending with the base unit. Each level says how many %s it holds — a case of 10 reams of 100 sheets is 1000, 100, 1.",
-		pluralizeUnit(unit, 2)), s.bodyWidth()) {
-		h = h.add(jdeHeadContext, line)
-	}
+	// The guidance and the empty-state detail are each one sentence folded
+	// across rows, so they are FITTED: trimmed row by row from the end, a fold
+	// is left as a fragment that ends on a whole word (jdeHeader.addFitted).
+	width := s.bodyWidth()
+	guide := chainGuidance(unit)
+	h = h.addFitted(jdeHeadContext, jdeHeadContext, jdeCaveatLines(guide, width),
+		func(rows int) []string { return jdeCaveatLinesIn(guide, width, rows) })
 	// SPLIT IN TWO, and the split is what makes an essential row possible here.
 	//
 	// It was one sentence — "No packaging levels — this item is counted in
@@ -465,16 +467,17 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 	// Whatever must survive must lead, one level down from the caveat rows.
 	var emptyFact string
 	var emptyDetail []string
+	detail := chainEmptyDetail(unit)
+	emptyRefit := func(rows int) []string { return jdeCaveatLinesIn(detail, width, rows) }
 	if len(s.packRows) == 0 {
 		emptyFact = jdeIndent + StyleMuted.Render("No packaging levels on this item.")
-		emptyDetail = jdeCaveatLines(fmt.Sprintf(
-			"It is counted in %s.", pluralizeUnit(unit, 2)), s.bodyWidth())
+		emptyDetail = jdeCaveatLines(detail, width)
 	}
 	switch {
 	case len(warn) > 0:
 		if emptyFact != "" {
 			h = h.add(jdeHeadDecorative, "").add(jdeHeadContext, emptyFact).
-				add(jdeHeadContext, emptyDetail...)
+				addFitted(jdeHeadContext, jdeHeadContext, emptyDetail, emptyRefit)
 		}
 		h = h.add(jdeHeadDecorative, "")
 		// The LAST message is the essential one: jdeFitHeader gives ground from
@@ -486,7 +489,7 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 	case emptyFact != "":
 		h = h.add(jdeHeadDecorative, "").
 			add(jdeHeadEssential, emptyFact).
-			add(jdeHeadContext, emptyDetail...)
+			addFitted(jdeHeadContext, jdeHeadContext, emptyDetail, emptyRefit)
 	default:
 		h = h.add(jdeHeadDecorative, "")
 	}
@@ -625,4 +628,16 @@ func (s *InventoryItemFormScreen) chainRowFrame() (*jdeLines, []actionBarItem) {
 		items = append(items, actionBarItem{"Ctrl-E", "Remove"})
 	}
 	return l, items
+}
+
+// chainGuidance is the packaging chain's standing guidance, said once so the
+// header and its refit cannot word it differently.
+func chainGuidance(unit string) string {
+	return fmt.Sprintf("Largest package first, ending with the base unit. Each level says how many %s it holds — a case of 10 reams of 100 sheets is 1000, 100, 1.",
+		pluralizeUnit(unit, 2))
+}
+
+// chainEmptyDetail is the empty chain's detail behind its fixed fact.
+func chainEmptyDetail(unit string) string {
+	return fmt.Sprintf("It is counted in %s.", pluralizeUnit(unit, 2))
 }

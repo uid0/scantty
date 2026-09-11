@@ -2082,12 +2082,35 @@ func (s *ReceiveFormScreen) quantityRefusal() string {
 			continue
 		}
 		if _, ok := receiveQuantity(raw); !ok {
-			return fmt.Sprintf("line %d: a quantity is a whole number, 0 or more — %q is not",
-				i+1, cellPrefix(raw, 12))
+			return fmt.Sprintf("line %d: a quantity is a whole number, 0 or more — %s is not",
+				i+1, poQuotedClip(raw, receiveQuotedCells))
 		}
 	}
 	return ""
 }
+
+// receiveQuotedCells and receiveQuotedSerialCells bound what the operator TYPED
+// when a refusal or a warning quotes it back to them, quotes included.
+//
+// They are the room the old bounds came to — cellPrefix(v, 12) and
+// cellPrefix(v, 16), then quoted — and the cut is poQuotedClip's now, because
+// the old shape cut the value and THEN closed the quote around it, and a
+// closing quote is a claim that the value ends there. The duplicate-serial
+// warning drew a 23-character serial as `"C02XK1ABJG5J-202" is already on unit
+// 1`: a serial nobody typed, presented whole, on the screen whose entire job is
+// recording serials exactly. poQuotedClip carries the ellipsis INSIDE the quote
+// (AGENTS.md: the closing quote is positional, and a value mid-sentence
+// re-appends it out of the room the clip was given), so the operator can see
+// both that the value was shortened and where their typing stops.
+//
+// The serial box takes 200 characters, so that cut is reachable with ordinary
+// data. The quantity (8) and date (10) boxes stop short of 12 characters, so
+// theirs is reached by width rather than by count: eight full-width digits —
+// what a Japanese IME types for "12345678" — are 16 cells.
+const (
+	receiveQuotedCells       = 14
+	receiveQuotedSerialCells = 18
+)
 
 // beginReceipt is Enter on the quantity form: check what was typed, work out
 // which units want serials, and go to whichever step comes next.
@@ -2285,7 +2308,7 @@ func receiveCaptureRefusal(key string, c receiveCapture) (string, StatusLevel) {
 	}
 	if c.expiry != "" && !receiveIsISODate(c.expiry) {
 		return key + " needs an expiry written YYYY-MM-DD — " +
-			strconv.Quote(cellPrefix(c.expiry, 12)) + " is not", StatusError
+			poQuotedClip(c.expiry, receiveQuotedCells) + " is not", StatusError
 	}
 	return "", StatusOK
 }
@@ -2426,8 +2449,8 @@ func (s *ReceiveFormScreen) commitUnit(headerRows int) (Screen, tea.Cmd) {
 			// server that applies it — this only says what is already on the
 			// pane's own captures, so the operator can fix it now instead of
 			// having the whole receipt rolled back later.
-			warn = fmt.Sprintf(" · %q is already on unit %d for this item, and OMS "+
-				"refuses a repeat", cellPrefix(serial, 16), n)
+			warn = fmt.Sprintf(" · %s is already on unit %d for this item, and OMS "+
+				"refuses a repeat", poQuotedClip(serial, receiveQuotedSerialCells), n)
 		}
 	}
 
@@ -2691,7 +2714,7 @@ func (s *ReceiveFormScreen) buildReceipt() omsapi.ReceiveRequest {
 func (s *ReceiveFormScreen) submit() (Screen, tea.Cmd) {
 	if d := strings.TrimSpace(s.delivered.Value()); d != "" && !receiveIsISODate(d) {
 		return s, s.say("the delivered date is written YYYY-MM-DD — "+
-			strconv.Quote(cellPrefix(d, 12))+" is not · esc goes back to the quantities",
+			poQuotedClip(d, receiveQuotedCells)+" is not · esc goes back to the quantities",
 			StatusError)
 	}
 	req := s.buildReceipt()
@@ -4176,8 +4199,8 @@ func (s *ReceiveFormScreen) overShortLines(i, width int) []string {
 	q, ok := receiveQuantity(raw)
 	if !ok {
 		return receiveCaveatLines(
-			fmt.Sprintf("%q is not a whole number, so this line cannot be sent.",
-				cellPrefix(raw, 12)), StyleStatusError, width)
+			poQuotedClip(raw, receiveQuotedCells)+" is not a whole number, so this line cannot be sent.",
+			StyleStatusError, width)
 	}
 	if q == 0 {
 		return receiveCaveatLines("A zero books nothing — this line is left out of the receipt.",
@@ -4890,12 +4913,36 @@ const receiveNoteRows = 4
 
 // receiveNoteDropMark is what the note leaves behind when it does not fit.
 //
-// Every other bound on these screens marks what it gave up — poRowDropMark on a
-// picker row, jdeLines.Window's hidden-row count, fitCell's ellipsis,
-// po_create.go's failLines — with ONE known exception, filed separately:
-// po_add_line.go's failLines still cuts an OMS error body to three rows in
-// silence. Naming it keeps this sentence true and leaves the gap findable;
-// widening the words until they happened to cover it would not.
+// Every other bound on these screens that CUTS a value marks the cut —
+// poRowDropMark on a picker row, jdeLines.Window's hidden-row count, fitCell's
+// ellipsis (which a blurred box, the status row and every grid cell go
+// through), pickerClip's, failDetailLines' mark on an error body, poQuotedClip's
+// ellipsis inside the quote, and foldKeepRows' on a note or caveat that a pinned
+// header re-draws at the rows it has rather than cutting (jdeHeader.addFitted).
+// TestFailDetail_AShortPaneRedrawsTheBlockRatherThanCuttingItsMark,
+// TestHeaderFold_AFoldedValueIsWholeAbsentOrMarked and
+// TestReceive_AQuotedValueTheOperatorTypedIsWholeOrMarked hold the last three
+// through the rendered panes.
+//
+// Two things give ground unmarked and neither leaves a fragment: the header
+// drops WHOLE independent rows, which claims nothing about them, and a FOCUSED
+// box scrolls its value past the caret the way any text field does.
+// renderJDEField's label clip is unmarked as well and no swept state reaches it,
+// because the label column is the widest label.
+//
+// The cuts that mark nothing are Root's, not any screen's: clampToBox, the
+// backstop for a row nothing bounded, and the status bar, which clips a flashed
+// message at the terminal edge. Where either bites, the ROW is the defect, and
+// on these screens they bite in places filed separately: po_edit.go draws rows
+// wider than the pane from 80 columns up (its line editor's three prose
+// sentences, the order sheet's date hints, attribution heading and work-order
+// value, the association picker's prose, the void prompt's `required`, the
+// delete confirm's voided-line row); below 80 every other purchasing screen but
+// this one draws field and grid rows the label column makes wider than the
+// pane; and a failed submit's OMS body is flashed whole, cut at the edge. On
+// THIS screen TestReceive_NothingOverflowsThePane holds that clampToBox does not
+// bite, at every width but 45–48, where the layer's floored bodyWidth cuts every
+// columnar screen (receiveHonestWidths).
 //
 // This one used to be the exception too: it stopped at receiveNoteRows and drew
 // nothing to say so. What it drops is the TAIL, which on these sentences is

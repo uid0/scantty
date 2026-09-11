@@ -85,6 +85,21 @@ func (n pickerNote) render() string {
 // `width` is the room the note has BEFORE the mark, which this function
 // subtracts, so a caller budgets against its own pane and nothing else.
 func (n pickerNote) renderLines(width int) []string {
+	return n.renderLinesIn(width, 0)
+}
+
+// renderLinesIn is renderLines drawn into at most `rows` lines, the last of
+// them marked where that drops any (foldKeepRows). A rows of zero or less is
+// "no limit", which is what renderLines asks for.
+//
+// It is what a pinned header re-draws a note with when the pane cannot give it
+// every row it folded to (jdeHeader.addFitted): the header used to drop the
+// note's tail rows instead, so at 80x11 the add-line screen answered a failed
+// lookup with "✗ could not tell whether Acme Fasteners &" and nothing saying the
+// rest of the sentence — the part naming what the operator can do about it —
+// had been cut. The mark is put on the PLAIN text and styled afterwards, so the
+// ellipsis is inside the style rather than hanging off a reset.
+func (n pickerNote) renderLinesIn(width, rows int) []string {
 	if n.text == "" {
 		return nil
 	}
@@ -103,6 +118,11 @@ func (n pickerNote) renderLines(width int) []string {
 		width -= lipgloss.Width(mark)
 	}
 	lines := pickerWrap(n.text, width)
+	if rows > 0 && len(lines) > rows {
+		// The mark is measured into the first line's budget, so the row it
+		// sits on is marked against the same width it was folded to.
+		lines = foldKeepRows(lines, rows, width)
+	}
 	out := make([]string, 0, len(lines))
 	for i, line := range lines {
 		if i == 0 {
@@ -458,6 +478,35 @@ func poFitRow(room int, name, facts string, trailers ...string) string {
 	return pickerClip(name, space) + suffix
 }
 
+// foldKeepRows keeps the first `rows` lines of a run of folded plain text and,
+// where that drops any, MARKS the last one kept: its tail gives a cell to an
+// ellipsis. It is the one form a row-limited fold is marked in on these
+// screens — jdeTooShort's notice, a note or caveat a pinned header re-draws at
+// fewer rows (jdeHeader.addFitted), and the one-row form of failDetailLines,
+// which reaches the same ellipsis through pickerClip. A fold cut clean at a row
+// boundary reads as a finished sentence, because every row of a fold ENDS on a
+// whole word.
+//
+// `width` is the cells the kept lines were folded to. Where it is too small to
+// give a cell up (an unsized pane passes zero, which every bound here reads as
+// "do not truncate") the ellipsis is appended rather than paid for.
+func foldKeepRows(lines []string, rows, width int) []string {
+	if rows <= 0 {
+		return nil
+	}
+	if len(lines) <= rows {
+		return lines
+	}
+	out := append([]string(nil), lines[:rows]...)
+	last := len(out) - 1
+	if width > 1 {
+		out[last] = cellPrefix(out[last], width-1) + "…"
+	} else {
+		out[last] += "…"
+	}
+	return out
+}
+
 // failDetailLines folds an OMS failure body to at most rows lines and MARKS the
 // cut whenever one was made. The mark is the last line of what it returns, so
 // the block never grows: a cut spends one of its OWN rows saying so.
@@ -505,8 +554,19 @@ func poFitRow(room int, name, facts string, trailers ...string) string {
 // omsapi.parseError puts the ENTIRE raw payload into APIError.Message whenever
 // the envelope carries no code, and at most rows lines of a 20 KB gateway page
 // can ever be drawn. The mark row is itself bounded, because the row saying
-// something was cut may not be the row that runs off the pane.
+// something was cut may not be the row that runs off the pane — and the bound
+// on it marks its own cut, like every other one.
 //
+// THE MARK IS THE LAST ROW, SO A CALLER THAT LETS SOMETHING ELSE CUT THE BLOCK
+// CUTS THE MARK FIRST. A pinned header gives ground from the END of a rank,
+// which is exactly where the mark is: po_add_line.go and po_create.go both
+// called this at a fixed three rows and both drew the head of a gateway page
+// unmarked on a short pane. A block that goes into a header goes in through
+// jdeHeader.addFitted, with this function as its refit, so the header asks for
+// fewer rows instead of cutting them off — receive_form.go's headerSplit gets
+// the same answer a different way, by asking the budget before calling.
+//
+
 // Returns unstyled lines; callers indent and style them, which is the only part
 // the four sites do differently.
 //
@@ -559,7 +619,12 @@ func failDetailLines(detail string, width, rows int) []string {
 	out := make([]string, 0, rows)
 	out = append(out, keep...)
 	if mark != "" {
-		out = append(out, cellPrefix(mark, width))
+		// pickerClip rather than a bare cellPrefix: this is a bound too, and it
+		// bites wherever the block is narrower than the 43-cell wording — under
+		// 74 columns on the purchasing screens — where the row used to end
+		// `… more of the error than this pane can h`: the one sentence on the
+		// block whose job is saying what was cut, cut and not saying so.
+		out = append(out, pickerClip(mark, width))
 	}
 	return out
 }
