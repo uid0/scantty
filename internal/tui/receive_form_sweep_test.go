@@ -1935,23 +1935,24 @@ func TestReceive_EveryBodyLineBelongsToANavigableRow(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// The one-navigable-row rule, over a set the built body derives
+// The pinned-window lead rule, over a set the built body derives
 // ---------------------------------------------------------------------------
 
 // THE RULE. jdeLines.Window anchors the window on the cursor's block and, when
 // that block will not fit, keeps its START; nothing scrolls inside a block. On a
-// body with exactly ONE navigable row there is one block and no key that can move
-// the window off it, so the body's first line is the only line every drawable
-// pane keeps — the shortest pane the layer draws leaves the body one row. So the
-// line the operator cannot do without has to BE that first line, and the builder
-// says which line that is (jdeLines.DeclareLead).
+// body whose anchored block spans the whole body, no key can move the window off
+// that block, so the body's first line is the only line every drawable pane keeps
+// — the shortest pane the layer draws leaves the body one row. So the line the
+// operator cannot do without has to BE that first line, and the builder says
+// which line that is (jdeLines.DeclareLead).
 //
 // THE SET is derived, twice over, and never listed. The STATES are
 // receivePhaseCases, whose phases TestReceive_EveryPhaseIsSwept walks against the
 // receivePhase iota; the BODY is body(), the one switch View draws through; and
-// membership is the built body's own answer to "how many navigable rows do you
-// have?". A body builder that grows a one-row branch tomorrow is in the set the
-// first time any state reaches it, and it fails until it declares a lead.
+// membership is the built body's own answer to "does body() anchor on a block
+// that spans the whole body?". A body builder that grows a pinned branch tomorrow
+// is in the set the first time any state reaches it, and it fails until it
+// declares a lead.
 //
 // It was applied by hand three times and reached N-1 of N sites each time. The
 // summary is the site the hand missed: it led with a "Receiving complete" heading
