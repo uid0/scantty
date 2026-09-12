@@ -91,7 +91,7 @@ func TestPhase3_EveryRetiredGlobalStillHasADoor(t *testing.T) {
 	}
 }
 
-// TestPhase3_ThreeFacilitiesSurfacesKeepTheirMenuEntry covers the four retired
+// TestPhase3_FacilitiesSurfacesKeepTheirMenuEntry covers the four retired
 // globals whose door is the Facilities cursor menu rather than a sidebar child
 // (C check-ins, B maker boxes, K checklists, T thermostats). The menu predates
 // this bead — the point here is that nothing about the strip broke it.

@@ -525,9 +525,9 @@ func (s *AssetDocumentsScreen) viewList() string {
 // Upload / supersede
 // ---------------------------------------------------------------------------
 
-// assetDocUploadBar is the form's bar, said ONCE: the movement arm asks the
-// layer whether the frame is drawn before it moves the caret, and a second
-// literal beside the view's would be a bar measured that is not the bar drawn.
+// uploadBar is the form's bar, said ONCE: the movement arm asks the layer
+// whether the frame is drawn before it moves the caret, and a second literal
+// beside the view's would be a bar measured that is not the bar drawn.
 //
 // The commit LABEL says which of the two writes this is, because the form is
 // shared and the bar is what an operator reads before pressing Enter.

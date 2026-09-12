@@ -13,11 +13,11 @@ import (
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
-// checkinTestServer stands up a mux that answers the endpoints the check-in
-// form touches: GetLocation (confirm), ListLocations (lookup, a BARE array per
-// the LocationViewSet), and the checkin action. It records the last search
-// param and whether a check-in was ever posted so tests can assert the
-// "confirm before check-in" contract.
+// checkinRecorder is what the mux answering the check-in form's endpoints
+// records. Those endpoints are GetLocation (confirm), ListLocations (lookup, a
+// BARE array per the LocationViewSet), and the checkin action; the recorder
+// keeps the last search param and whether a check-in was ever posted, so tests
+// can assert the "confirm before check-in" contract.
 type checkinRecorder struct {
 	gotSearch    string
 	checkinBody  string

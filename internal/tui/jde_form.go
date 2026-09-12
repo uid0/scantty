@@ -1,8 +1,11 @@
 // Columnar green-screen form primitives — the shared layer of the ScanTTY
-// "JD Edwards" redesign (sc-h412). po_edit.go is the pilot that uses it; the
-// other hand-rolled renderField implementations (asset_form.go,
-// storage_slot_form.go, project_storage_form.go, …) repoint here in later
-// beads, which is why nothing in this file knows what a purchase order is.
+// "JD Edwards" redesign (sc-h412). po_edit.go is the pilot that uses it, and
+// every other converted sheet draws its rows through `AddFittedFields` /
+// `AddFittedField` here rather than rolling its own — which is why nothing in
+// this file knows what a purchase order is. The roster of which sheets those
+// are is not written down anywhere: it is every type embedding jdeScreen, and
+// `jdeScreenFixtures` (jde_pane_fit_test.go) derives it from the package
+// source and fails on an omission.
 //
 // The look is JD Edwards World: field labels right-aligned into one common
 // column, a dotted leader, then the input area — text as an underscored /
@@ -1685,9 +1688,9 @@ const (
 // It is a METHOD rather than the free function it used to be because the bound
 // below needs the pane, and a screen that could draw this row without the pane
 // could draw it without the bound. That is what happened: only the three
-// purchasing screens passed their message through a local `poStatusError`, and
-// the other thirty-odd converted sheets handed an unbounded OMS error straight
-// to a row that cannot fold (sc-jde-lift).
+// purchasing screens bounded their message with a local helper of their own,
+// and the other thirty-odd converted sheets handed an unbounded OMS error
+// straight to a row that cannot fold (sc-jde-lift).
 func (g jdeScreen) statusRow(saving bool, verb, errMsg string) string {
 	switch {
 	case saving:

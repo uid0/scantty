@@ -405,7 +405,7 @@ func firmwareDeviceTypeLabel(v forgekeyapi.FirmwareVersion) string {
 	return v.DeviceTypeCode
 }
 
-// rolloutStatusStyle maps a rollout status to its badge style, mirroring the
+// rolloutStatusLabel maps a rollout status to its badge style, mirroring the
 // web STATUS_COLORS (draft grey, active blue/ok, paused warn, completed ok,
 // cancelled error).
 func rolloutStatusLabel(status string) string {

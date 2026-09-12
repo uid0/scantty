@@ -1027,11 +1027,18 @@ either:
   START, and no key fetches a tail — so the operator was refused and could not
   see why (80x12–19 on the blocked frame; at rest, every height up to 80x30 on
   the empty one). `standingNote` draws the why in the note block whenever no
-  keypress has an answer standing there; that block's first row is on the pane
-  at every drawable height from every row, and its height is reserved either
-  way, so it moves nothing. `TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs`
-  derives the refusing states off the WORKSHEET and walks every row at every
-  pane.
+  keypress has an answer standing there, and the block's height is reserved
+  whether or not a note is standing, so it moves nothing — `headerLines`'
+  comment (`receive_form.go`) owns that half and is where it is derived.
+  WHAT IS CHECKED, exactly, is
+  `TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs`: it derives the
+  refusing states off the WORKSHEET, walks every row of each, and at every pane
+  the frame is DRAWN at asserts as much of the reason as the note block can hold
+  — the whole of it, else its first clause with the cut marked, else its first
+  word — so the block never says nothing. Two things it does NOT say, because
+  the wording before it did: nothing about a pane the frame is REFUSED at
+  (`jdeTooShort` answers there, and the sweep skips it), and nothing about a
+  width below the size contract's floor, which `receiveHonestWidths` drops.
 - **"Never silently discard" demands NON-SILENCE, not refusal — and a refusal
   is only legitimate where the operator can satisfy it from the frame it is
   drawn on.** If input is about to be dropped, SAY SO FIRST; blocking the key is
@@ -1332,141 +1339,29 @@ either:
   Nothing was taken from the operator by that — before the conversion this
   screen bound neither key anywhere — so the pair is new on the phases that have
   a list to page and simply never offered on the one that does not.
-- **One navigation vocabulary, three spellings of it, and only two of them are
-  PROVEN.** `internal/tui/list_nav.go` is the vocabulary and carries the full
-  note; read it before binding or naming a movement key anywhere.
-  The set is `j/k ↑↓` move, `pgup/pgdn` page, `g/G home/end` top/bottom. The
-  emacs chords are RETIRED — `ctrl+u`/`ctrl+d`/`ctrl+p`/`ctrl+n` move nothing
-  anywhere — because no bar in the program ever SPELLED one and a 51-column
-  footer cannot afford to teach a chord, which is the trade sc-po-create-hangs
-  already made on `ListScreen`'s pager and the purchasing surfaces. It stayed
-  unmade on twenty-one sibling files (twenty-four `case "ctrl+d", "pgdown":`
-  pairs, forty-eight arms), so the same key paged the supplier list and did
-  nothing on the inventory list the operator reached it from —
-  `TestListNav_NoSurfaceBindsARetiredChord` PRESSES each chord on every fixture
-  its swept sets can build (`jdePaneCases`, `listBarSurfaces` × every row count,
-  `TextScroller`, and the cursor pickers of `listNavPickerCases`) and fails on
-  one that moves. Its subtests are the authority on which sets there are; do not
-  write the number down here, which is where it has drifted every time.
-  A KEYSTROKE HAS TWO SPELLINGS IN THIS PACKAGE AND A DERIVATION OVER ONE OF THEM
-  IS NOT A DERIVATION. `case "ctrl+n":` and `case tea.KeyCtrlN:` in a switch over
-  `m.Type` bind the same key, and the first retirement, this sweep and the
-  surface classifier all read STRING LITERALS ONLY — so `ctrl+n`/`ctrl+p` went on
-  moving a cursor for two more rounds on the universal search palette
-  (`search.go`), the e-paper bind picker (`epaper_panels.go`) and the
-  location check-in lookup (`location_checkins.go`), while both this file and
-  `listNavRetiredChords` said the chords moved nothing anywhere. All three are
-  unbound now — the arrow each clause already bound is what their footers name,
-  so nothing was taken from the operator — and `listNavCaseKey` reads both
-  spellings, asking bubbletea itself what a `tea.Key*` constant spells rather than
-  transcribing a table (`listNavSpellingIndex`, with `KeySpace` the one recorded
-  exception, since its `String()` is the character and not the word).
-  **A COMMIT THAT UNBINDS A LIVE KEY LISTS IT, FILE BY FILE AND KEY BY KEY** —
-  the `BINDINGS CHANGED` record e1c1047 set the precedent for — because an
-  operator's hands are the only place a retired chord is recorded, and a captain
-  reading a subject line about a sweep cannot tell that a key they press every
-  day stopped working. The three that went, in the order they matter to somebody
-  who uses this program: `search.go` — the universal search palette (`ctrl+k`),
-  `ctrl+n` and `ctrl+p` off the result cursor, which is the surface the captain
-  actually drives and where those chords were muscle memory; `epaper_panels.go` —
-  the e-paper bind picker, `ctrl+n` and `ctrl+p`; `location_checkins.go` — the
-  location check-in lookup, `ctrl+n` and `ctrl+p`. Every one of those three
-  `case` clauses ALREADY bound — and its footer already NAMED — the arrow that
-  spells the same move (`↑/↓ move`), so nothing an operator was told about was
-  taken away; what went is a chord no bar in the program ever spelled. The lesson
-  is the one this area keeps teaching: a roster is only as complete as the
-  alphabet it is derived over. It used to prove that from source SHAPE — a
-  regex over `case "ctrl+d":` literals — which failed on a commented-out arm and
-  passed a chord bound through a helper or a key-name map; behaviour answers both
-  directions. It is POSITIVELY CONTROLLED (`listNavChordControls`): each case
-  first presses the NAMED key spelling the same affordance and the sweep fails if
-  no fixture in a set could be moved by it, because "ctrl+d changed nothing" is
-  equally true of an empty list, a one-row list and a refused pane. What it
-  asserts differs by set ON PURPOSE, and that is a fact about the surfaces:
-  bubbles binds all four chords for LINE EDITING on a focused textinput, so on a
-  columnar sheet with the caret in a box `ctrl+u` legitimately empties the box
-  and the claim there is over `jdePlaceOf` alone; a `ListScreen` in browse mode
-  holds no caret, so the clipped PANE is asserted too — which is what catches a
-  window that scrolled without the cursor leaving its row, since `windowStart` is
-  not in `jdePlaceOf`'s vocabulary. THE SCROLLER IS THE THIRD SET AND WAS THE
-  HOLE the behavioural conversion opened: `scroll.go` is where two of the four
-  chords were actually unbound, and neither of the other sets can reach it — no
-  `TextScroller` holder embeds `jdeScreen` or is a `*ListScreen`, and
-  `jdePlaceOf` walks the int fields of the SCREEN, so an offset nested inside a
-  scroller value is invisible to it even if one did. Restoring
-  `case "ctrl+d", "pgdown":` in `Handle` failed nothing at all, which made the
-  conversion WEAKER than the regex it replaced on the one file the retirement
-  touched. It asserts the OFFSET and the bool `Handle` returns, since a chord
-  answered `true` is a keystroke every sheet holding one swallows on behalf of a
-  binding that is gone. A prose-bar surface is PRESSED wherever a test can build
-  one — `TextScroller` and the cursor pickers are values the sweep constructs
-  directly — and a surface no press reaches is classified rather than claimed about
-  (`TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused`, which is a
-  COVERAGE guard over the source, asserts nothing about any key, and cannot see
-  a retired chord at all since it collects only what `listNavBinds` accepts).
-  A TEST THAT DRIVES A RETIRED CHORD STOPS TESTING ANYTHING, and the retirement
-  left three behind: `TestStorageSlots_PagedownClampsOnEmpty`,
-  `TestAssetProblems_EmptyFilterCursor` and
-  `TestLocationProblems_EmptyFilterCursor` each pressed `ctrl+d` at a `pgdown`
-  arm, so after the retirement the arm they exist to enter was never entered and
-  `cursor >= 0` passed for the reason it would have passed with the arm deleted.
-  They press `pgdown` now and assert the cursor's exact resting place rather than
-  its sign, because "not negative" is equally true of a screen on which nothing
-  ran. Whenever a key is retired, grep the tests for it in BOTH spellings
-  (`"ctrl+d"` and `tea.KeyCtrlD`) — the vacuity is silent in exactly the way the
-  retirement is.
-  THE COLUMNAR LAYER SPELLS THE SAME AFFORDANCES AS TOKENS (`UP/DN`,
-  `PgUp/PgDn`, `Home/End`) AND BINDS NO LETTER, and that is a fact about the
-  surface rather than drift: a columnar picker's filter box is always live, so a
-  bare `j` is a character in the query. One vocabulary, two spellings, each bar
-  honest about its own.
-  WHERE THE RULE IS PROVEN is the part to keep straight, because the sentence
-  is easy to over-claim. Two behavioural sweeps hold it, each over the half of
-  the app whose bar is a machine-readable RECORD:
-  `TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves` over every type
-  embedding `jdeScreen`, at every width and drawable height; and
-  `TestList_FooterNamesExactlyTheKeysThatWork` plus
-  `TestList_TheSearchOverlayNamesExactlyTheKeysThatWork` over every `*ListScreen`
-  the nav tree reaches, at every count in `listRowCases` — EMPTY, ONE ROW and
-  MANY. The row counts are the axis those sweeps were blind on: every fixture
-  carried eight rows, so a footer that named `j/k ↑↓ move · pgup/pgdn page ·
-  g/G home/end top/bottom` as an unconditional literal was only ever pressed
-  where it was true.
-  WHERE IT IS NOT PROVEN, said plainly because a claim no check delivers is
-  worse than no claim: every receiver `listNavUnsweptReceivers` records — that
-  map is the roster and the authority on how many there are, and a count
-  restated here is the one part of the derivation that cannot be derived —
-  writes its bar as a muted literal
-  straight into a `strings.Builder` inside `View`. `TextScroller` is the shape of
-  it at its clearest — one handler shared by every detail sheet
-  `listNavDelegatingReceivers` finds, whose footers
-  disagree about which of its keys to name. There is no record to read,
-  so no sweep can press keys against it, and a typical one reads `j/k move · n
-  new · E/enter edit · x delete · r refresh · esc back` while binding the arrows,
-  `g/G`, `home/end` and `pgup/pgdn` too — and it is ALREADY past the 51 cells the
-  pane gives, so naming the rest would make it less readable, not more ("a bar
-  the operator cannot read is not honest, it is absent"). Closing it means giving
-  each of those screens the folded footer and row budget `ListScreen` already has
-  (`footerRows`), a conversion of the same shape as sc-jde-lift.
-  WHAT IS GUARANTEED FOR THEM INSTEAD is that the SET cannot grow in silence:
-  `TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused` parses the
-  package, classifies EVERY receiver that binds a navigation keystroke as swept
-  columnar, swept `ListScreen`, or recorded in `listNavUnsweptReceivers` WITH A
-  REASON, and fails in all three directions — unclassified, stale, and excusing
-  something that binds nothing any more. Per RECEIVER and not per file, because
-  `category_form.go` holds `CategoryFormScreen` (columnar, swept) beside
-  `CategoryListScreen` (prose, not), and a file-level answer excuses the second
-  on the strength of the first.
-  A `case "j", "down":` IS NOT THE ONLY WAY TO BIND ONE, and reading only for
-  those was a hole in the DERIVATION rather than in the app: a screen that holds
-  a `TextScroller` gets j/k, the arrows, pgup/pgdn and g/G/home/end from
-  `Handle` without spelling a key, so seven of them were classified only
-  transitively through the `TextScroller` entry and a new one could have joined
-  the app appearing in no class at all. `listNavDelegatingReceivers` reads the
-  STRUCT FIELDS for that — a field type is what `go/parser` can answer without
-  `go/types`, and there is no way to hold a scroller and not hand it the
-  keyboard. Whenever a shared handler grows that owns movement keys, the
-  derivation needs the same treatment or it goes quietly blind to its callers.
+- **One navigation vocabulary, and this file does not restate it.**
+  `internal/tui/list_nav.go` IS the vocabulary — the set, which chords are
+  retired and why, which spellings a derivation has to read, and what each sweep
+  does and does not prove all live there and in
+  `list_nav_surfaces_test.go`, beside the code they constrain. Read those before
+  binding or naming a movement key anywhere.
+  This entry used to be a hundred-and-thirty-line transcription of them, and the
+  transcription is what went wrong: it carried counts of files and arms that
+  drifted from the code every time either changed, and a sentence about which
+  surfaces bind what was falsified four times before anyone changed its FORM
+  rather than its wording. A restatement can only ever be as fresh as its last
+  edit; the declaration cannot go stale against itself.
+  TWO THINGS LIVE HERE AND NOWHERE IN THE CODE, which is why this entry is not
+  simply deleted:
+  - **A COMMIT THAT UNBINDS A LIVE KEY LISTS IT, FILE BY FILE AND KEY BY KEY**,
+    under a `BINDINGS CHANGED` heading (de380e1 set the precedent). An
+    operator's hands are the only place a retired chord is recorded, and a
+    captain reading a subject line about a sweep cannot tell that a key they
+    press every day stopped working.
+  - **RETIRING A KEY MEANS GREPPING THE TESTS FOR IT IN BOTH SPELLINGS**
+    (`"ctrl+d"` and `tea.KeyCtrlD`). A test that drives a retired chord stops
+    entering the arm it exists to test and goes on passing; three did.
+    `TestStorageSlots_PagedownClampsOnEmpty` carries that lesson at the site.
 - **An empty list is a STATE, and on `ListScreen` it used to be the one state
   that drew no bar at all.** `bodyView` returned `"No rows."` and nothing else
   while `s`, `r`, `n`, `f`, `/` and every sibling-surface letter worked — the
@@ -2276,6 +2171,20 @@ either:
   remainder reaches the header — see the answer-surface rule below.
 - Comments in this codebase explain WHY, at length, including the failure that
   motivated the rule. Match that density.
+- **PROSE THAT RESTATES THE CODE DRIFTS FROM IT, so a claim either says exactly
+  what a NAMED CHECK proves or is replaced by a pointer to where the thing is
+  decided.** Narrowing a wrong sentence is not enough: this project has had one
+  corrected four times before anybody changed its FORM, and a hand-maintained
+  inventory — of files, keys, fields, or counts — is wrong the first time nobody
+  edits it. Prefer deleting it and saying where to look; a declaration cannot go
+  stale against itself.
+  `internal/doccheck` is the module-wide sweep that holds the sharpest half of
+  this mechanically: a comment naming a symbol that does not exist. Its own doc
+  comment states exactly what it proves and what it deliberately does not —
+  read it there rather than a summary here — and the short version for a writer
+  is that BACKTICKS commit you: spell a helper in backticks and the sweep
+  checks it exists, so a sentence about a symbol that is GONE names it in plain
+  prose or, better, says what the thing DID without naming it at all.
 
 ### A screen that is working must say so, and a key that declines must say why
 
@@ -2891,20 +2800,12 @@ touching any screen an operator drives:
   UNIVERSAL IS ASSERTED OVER IT HERE. Four have been, and all four were false —
   the last claimed no list surface binds a movement keystroke outside the
   vocabulary, which `jdePickKey` falsifies by moving a columnar picker's cursor
-  on `tab`/`shift+tab` (recorded below as `poFormNavAliases`). The FORM was the
+  on `tab`/`shift+tab` (recorded above as `poFormNavAliases`). The FORM was the
   defect rather than the words: each version quantified over a set nobody
-  enumerates, so each rewrite bought one round. A claim here now states what a
-  NAMED check presses and stops there, or it is not written.
-  `TestListNav_NoSurfaceBindsARetiredChord` presses each keystroke in
-  `listNavRetiredChords`, and nothing else, over the fixtures its swept sets
-  build, and fails on one that moves the operator's place — controlled by first
-  showing the NAMED key moves in that same fixture, so a fixture nothing could
-  move fails too (`listNavChordControls`, whose coverage of the retired set is
-  itself checked). It says nothing about any other keystroke.
-  `TestList_TheSearchOverlayNamesExactlyTheKeysThatWork` asserts that on
-  `ListScreen`'s search overlay, at every row count in `listRowCases`, the bar
-  names exactly the keys that act. It is about that overlay and not about a
-  class of surfaces.
+  enumerates, so each rewrite bought one round. So a claim about that vocabulary
+  is not made here at all: what each list-navigation sweep presses, and what it
+  refuses to say, is declared beside it in `list_nav.go` and
+  `list_nav_surfaces_test.go`.
   WHY A LIVE QUERY BOX ROUTES LETTERS TO ITSELF is a fact about the MECHANISM
   and survives as prose because it is a reason rather than a census: every
   keystroke such a surface's switch does not name falls through to the box, so a
@@ -2914,8 +2815,9 @@ touching any screen an operator drives:
   surfaces bind what.
   THE NAMING HALF is proven on the surfaces whose bar is a machine-readable
   record (every type embedding `jdeScreen`, plus `ListScreen`), and on those
-  alone — see the navigation entry below, because every receiver in
-  `listNavUnsweptReceivers` still names less than it binds. The New PO flow was never part of it after its
+  alone — `listNavUnsweptReceivers` (`list_nav_surfaces_test.go`) is the roster
+  of the receivers that are not, and the authority on what is guaranteed for
+  them instead. The New PO flow was never part of it after its
   conversion: it is on the columnar set (`UP/DN`, `PgUp/PgDn` when the body
   moves) and `j`/`k` are unbound on it.
 - **On a destructive confirm the keys are on the BAR and the prose is the

@@ -20,9 +20,9 @@ import (
 // bytes, so a later edit "fixing" a fixture to match a struct fails rather than
 // quietly restoring the defect.
 
-// serveWirePaged answers any request with the same recorded body. The meter and
-// document clients walk `next`, and each recorded page carries `"next": null`,
-// so one body is one complete walk.
+// assetWireClient answers any request with the same recorded body. The meter
+// and document clients walk `next`, and each recorded page carries
+// `"next": null`, so one body is one complete walk.
 func assetWireClient(t *testing.T, body []byte) (*Client, *[]*http.Request) {
 	t.Helper()
 	var seen []*http.Request
