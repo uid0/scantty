@@ -77,6 +77,8 @@ var listBarKeyNames = map[string][]string{
 	"U":         {"U"},
 	"M":         {"M"},
 	"A":         {"A"},
+	"V":         {"V"},
+	"W":         {"W"},
 }
 
 // listBarAliasKeys is the tokens a footer segment carries AFTER its head to
@@ -169,15 +171,30 @@ type listBarSurface struct {
 func listBarSurfaces() []listBarSurface {
 	var out []listBarSurface
 	for _, ws := range Workspaces() {
-		screen := newScreenFor(ws.Key, Deps{})
-		if _, ok := screen.(*ListScreen); !ok {
-			continue
+		if _, ok := newScreenFor(ws.Key, Deps{}).(*ListScreen); ok {
+			id, label := ws.Key, ws.Label
+			out = append(out, listBarSurface{
+				name:  strings.ToLower(label),
+				build: func() *ListScreen { return newScreenFor(id, Deps{}).(*ListScreen) },
+			})
 		}
-		id, label := ws.Key, ws.Label
-		out = append(out, listBarSurface{
-			name:  strings.ToLower(label),
-			build: func() *ListScreen { return newScreenFor(id, Deps{}).(*ListScreen) },
-		})
+		// A workspace's CHILD surfaces are part of the same tree and are
+		// reached with one arrow and an enter, so a list living on one is no
+		// less reachable than a workspace landing — and was outside this
+		// derivation entirely until the vendor work-order list moved in.
+		// Nothing was wrong while every child surface happened to be a bespoke
+		// screen; the moment one was a *ListScreen the sweep would have skipped
+		// it in silence, which is the omission this whole file exists about.
+		for _, surface := range workspaceSurfaces(ws.Key) {
+			build := surface.build
+			if _, ok := build(Deps{}).(*ListScreen); !ok {
+				continue
+			}
+			out = append(out, listBarSurface{
+				name:  strings.ToLower(ws.Label + " / " + surface.label),
+				build: func() *ListScreen { return build(Deps{}).(*ListScreen) },
+			})
+		}
 	}
 	return append(out, listBarSurfacesOffTree()...)
 }
@@ -202,12 +219,20 @@ func TestList_EveryWorkspaceListIsSwept(t *testing.T) {
 		swept[s.name] = true
 	}
 	for _, ws := range Workspaces() {
-		if _, ok := newScreenFor(ws.Key, Deps{}).(*ListScreen); !ok {
-			continue
+		if _, ok := newScreenFor(ws.Key, Deps{}).(*ListScreen); ok {
+			if !swept[strings.ToLower(ws.Label)] {
+				t.Errorf("workspace %q builds a *ListScreen but the bar-honesty sweep does not cover it",
+					ws.Label)
+			}
 		}
-		if !swept[strings.ToLower(ws.Label)] {
-			t.Errorf("workspace %q builds a *ListScreen but the bar-honesty sweep does not cover it",
-				ws.Label)
+		for _, surface := range workspaceSurfaces(ws.Key) {
+			if _, ok := surface.build(Deps{}).(*ListScreen); !ok {
+				continue
+			}
+			if !swept[strings.ToLower(ws.Label+" / "+surface.label)] {
+				t.Errorf("nav surface %q under %q builds a *ListScreen but the bar-honesty "+
+					"sweep does not cover it", surface.label, ws.Label)
+			}
 		}
 	}
 	if len(swept) < 2 {
@@ -1382,6 +1407,19 @@ func TestList_SiblingSurfaceKeysOpenTheSurfaceTheyName(t *testing.T) {
 		"U suppliers":        "*tui.SupplierListScreen",
 		"M PM items":         "*tui.MaintenanceItemsScreen",
 		"A new asset":        "*tui.AssetFormScreen",
+		// The two halves of maintenance point at each other: V from the
+		// in-house work-order list opens the VENDOR list, and W from the vendor
+		// list opens the in-house one. V means a different thing on each, which
+		// is legitimate — a shortcut names the sibling surface, and a screen's
+		// own sibling is whichever one it is not.
+		//
+		// Both are *tui.ListScreen, so the TYPE alone pins nothing: V opening
+		// the Purchasing list would satisfy it. The "#kind" suffix is what
+		// actually names the destination, and the split below is why every
+		// generic list entry must carry one.
+		"V vendor work orders": "*tui.ListScreen#" + vendorWorkOrderKind,
+		"W work orders":        "*tui.ListScreen#work_orders",
+		"V vendors":            "*tui.VendorsScreen",
 	}
 	seen := map[string]bool{}
 
@@ -1411,8 +1449,18 @@ func TestList_SiblingSurfaceKeysOpenTheSurfaceTheyName(t *testing.T) {
 			default:
 				t.Fatalf("%s: %q produced %T, want a screen switch", surface.name, entry, msg)
 			}
+			// A destination that is itself a *ListScreen is pinned by its KIND
+			// as well as its type: the app has several, and a type-only
+			// assertion would pass on any of them.
+			wantType, wantKind, kinded := strings.Cut(wantType, "#")
 			if got := fmt.Sprintf("%T", after.screen); got != wantType {
 				t.Errorf("%s: %q opened %s, want %s", surface.name, entry, got, wantType)
+			} else if kinded {
+				opened, ok := after.screen.(*ListScreen)
+				if !ok || opened.spec.kind != wantKind {
+					t.Errorf("%s: %q opened a list of kind %q, want %q",
+						surface.name, entry, opened.spec.kind, wantKind)
+				}
 			}
 		}
 	}

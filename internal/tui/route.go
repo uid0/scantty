@@ -62,9 +62,15 @@ func workspaceSurfaces(ws Workspace) []navSurface {
 			{"New asset", func(d Deps) Screen { return NewAssetFormScreen(d, "") }},
 		}
 	case WSMaintenance:
+		// "Vendor work orders" sits beside "Vendors" on purpose: the two halves
+		// of third-party maintenance are WHO we call and WHAT we have called
+		// them about, and the second used to exist only in the browser even
+		// though the terminal is what CREATES it (asset_problems.go's
+		// promote-to-vendor).
 		return []navSurface{
 			{"PM board", func(d Deps) Screen { return NewPMBoardScreen(d) }},
 			{"PM items", func(d Deps) Screen { return NewMaintenanceItemsScreen(d) }},
+			{"Vendor work orders", func(d Deps) Screen { return NewVendorWorkOrderListScreen(d) }},
 			{"Vendors", func(d Deps) Screen { return NewVendorsScreen(d) }},
 		}
 	case WSForgeKey:

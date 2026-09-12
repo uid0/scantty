@@ -1038,9 +1038,13 @@ either:
   PHASES from the `poPhase` iota walked to the `poPhaseCount` sentinel
   (`TestPOCreate_EveryPhaseIsSwept`; a phase where genuinely no key acts is
   recorded in `poPhasesWithoutKeys`, so absent and empty are different states);
-  LIST screens from `Workspaces()` (`listBarSurfaces`, with
-  `listBarSurfacesOffTree` for the ones the nav tree cannot reach and
-  `TestList_EveryWorkspaceListIsSwept` to prove the derivation reaches them);
+  LIST screens from `Workspaces()` AND from each workspace's own
+  `workspaceSurfaces` children — a child surface is one arrow and an enter away,
+  so a `*ListScreen` on one is no less reachable, and the derivation was blind to
+  the whole class until the vendor work-order list became the first
+  (`listBarSurfaces`, with `listBarSurfacesOffTree` for the ones the nav tree
+  cannot reach at all and `TestList_EveryWorkspaceListIsSwept` to prove the
+  derivation reaches both levels);
   the screen's STATE from `reflect.TypeOf(PurchaseOrderCreateScreen{})`, every
   field either in `poStateFingerprinted` or in `poStateDeclined` WITH A REASON
   (`pending` and `errMsg` had fallen out of the fingerprint, so no review-phase

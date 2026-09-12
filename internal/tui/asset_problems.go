@@ -128,14 +128,22 @@ type assetProblemResolvedMsg struct {
 }
 
 // assetProblemPromotedMsg carries the result of either promote. woID is the new
-// in-house work order's id when the standard path ran (empty for the vendor
-// path, which has no ScanTTY detail screen to jump to); label is what the status
-// line names — the work order's short id when the serializer supplied one.
+// in-house work order's id when the standard path ran and vendorWOID the
+// third-party one's when the vendor path did; label is what the status line
+// names — the work order's short id when the serializer supplied one.
+//
+// The vendor id used to be dropped on the floor, with a comment saying the
+// vendor path "has no ScanTTY detail screen to jump to". It has one now
+// (VendorWorkOrderDetailScreen), and that was the whole dead end: the terminal
+// created vendor work and then had nowhere to send the operator, so the next
+// step — set an NTE, get quotes, advance — happened in the browser or not at
+// all.
 type assetProblemPromotedMsg struct {
-	problem *omsapi.AssetProblem
-	woID    string
-	label   string
-	err     error
+	problem    *omsapi.AssetProblem
+	woID       string
+	vendorWOID string
+	label      string
+	err        error
 }
 
 // assetProblemVendorsLoadedMsg carries the vendor pick-list for the
@@ -326,6 +334,15 @@ func (s *AssetProblemsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, tea.Batch(
 				Status("work order created"+labelSuffix(m.label), StatusOK),
 				SwitchTo(WSMaintenance, NewWorkOrderDetailScreen(s.deps, m.woID)),
+			)
+		}
+		if m.vendorWOID != "" {
+			// Vendor promote: land on the vendor work order, for the same
+			// reason — the order that was just created is where the next step
+			// is, and until this screen existed there was nowhere to go.
+			return s, tea.Batch(
+				Status("sent to vendor"+labelSuffix(m.label), StatusOK),
+				SwitchTo(WSMaintenance, NewVendorWorkOrderDetailScreen(s.deps, m.vendorWOID)),
 			)
 		}
 		s.loading = true
@@ -682,6 +699,9 @@ func (s *AssetProblemsScreen) submitVendor() (Screen, tea.Cmd) {
 		msg := assetProblemPromotedMsg{problem: out, err: err, label: vendor.Name}
 		if out != nil && out.ThirdPartyWorkOrderShortID != "" {
 			msg.label = out.ThirdPartyWorkOrderShortID
+		}
+		if out != nil && out.ThirdPartyWorkOrder != nil {
+			msg.vendorWOID = *out.ThirdPartyWorkOrder
 		}
 		return msg
 	}

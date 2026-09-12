@@ -1332,18 +1332,26 @@ var poBarKeyNames = map[string][]string{
 	"b":  {"b"},
 	"c":  {"c"},
 	"d":  {"d"},
-	"f":  {"f"},
-	"g":  {"g"},
-	"i":  {"i"},
-	"n":  {"n"},
-	"r":  {"r"},
-	"s":  {"s"},
-	"v":  {"v"},
-	"w":  {"w"},
-	"x":  {"x"},
-	"A":  {"A"},
-	"E":  {"E"},
-	"S":  {"S"},
+	// e / k / o are the vendor work-order sheet's (vendor_work_order_detail.go:
+	// authorize emergency, record the keyfob return, override the variance).
+	// They are here rather than in a third table because jdeResolveBarToken
+	// reads exactly two, and a third would be a third chance to credit a bar
+	// with a claim it never made — which is what this table exists to prevent.
+	"e": {"e"},
+	"f": {"f"},
+	"g": {"g"},
+	"i": {"i"},
+	"k": {"k"},
+	"n": {"n"},
+	"o": {"o"},
+	"r": {"r"},
+	"s": {"s"},
+	"v": {"v"},
+	"w": {"w"},
+	"x": {"x"},
+	"A": {"A"},
+	"E": {"E"},
+	"S": {"S"},
 }
 
 // poKeyMsg turns one of those keystroke names into the message the terminal

@@ -1218,7 +1218,7 @@ func workspaceForKind(kind string) Workspace {
 		return WSAssets
 	case "purchase_orders":
 		return WSPurchasing
-	case "work_orders":
+	case "work_orders", vendorWorkOrderKind:
 		return WSMaintenance
 	case "sigs":
 		return WSSIGs
@@ -1560,8 +1560,19 @@ func listShortcuts(kind string) []listShortcut {
 	case "work_orders":
 		// The Maintenance landing lists work orders; PM items are created,
 		// edited and acted on (complete / clone / generate-WO) over there.
+		// V is the VENDOR half of maintenance — a different app server-side
+		// (maintenance_orders), a different state machine, and the one an
+		// operator reaches for when the shop cannot do the job itself.
 		return []listShortcut{
 			{"M", "PM items", func(d Deps) Screen { return NewMaintenanceItemsScreen(d) }},
+			{"V", "vendor work orders", func(d Deps) Screen { return NewVendorWorkOrderListScreen(d) }},
+		}
+	case vendorWorkOrderKind:
+		// The way back to the in-house half, and to the vendor directory the
+		// orders here are issued against.
+		return []listShortcut{
+			{"W", "work orders", func(d Deps) Screen { return newScreenFor(WSMaintenance, d) }},
+			{"V", "vendors", func(d Deps) Screen { return NewVendorsScreen(d) }},
 		}
 	case "assets":
 		// Edit/delete of an existing asset live on its detail screen (E / x).

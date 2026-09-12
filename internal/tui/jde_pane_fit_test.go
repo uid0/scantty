@@ -312,7 +312,12 @@ func jdeScreenFixtures() map[string]func() Screen {
 		"StorageSlotGenerateScreen": func() Screen { return NewStorageSlotGenerateScreen(Deps{}, 0) },
 		"SupplierFormScreen":        func() Screen { return NewSupplierFormScreen(Deps{}, "") },
 		"ThermostatFormScreen":      func() Screen { s := NewThermostatFormScreen(Deps{}, ""); s.loading = false; return s },
-		"WebhookFormScreen":         func() Screen { return NewWebhookFormScreen(Deps{}, 0) },
+		// Loaded and at FINANCIAL REVIEW with a blocked variance and a keyfob
+		// out: the sheet's longest body, its tallest bar (every side action
+		// live at once) and the one state where the blocked reason takes a
+		// pinned row. A `requested` order draws three keys and half the blocks.
+		"VendorWorkOrderDetailScreen": func() Screen { return vwoPaneFixture(nil) },
+		"WebhookFormScreen":           func() Screen { return NewWebhookFormScreen(Deps{}, 0) },
 	}
 }
 
@@ -660,6 +665,32 @@ func jdeScreenStates() map[string]func() Screen {
 		"PurchaseOrderAttachmentsScreen/upload": func() Screen {
 			s := NewPurchaseOrderAttachmentsScreen(Deps{}, poViewPO())
 			s.openUpload()
+			return s
+		},
+		// The vendor stepper's other two phases. The INVOICE pair is the one
+		// that matters most — it is the frame the makerspace's money is
+		// committed from — and the ATTACH form is the only one on this screen
+		// carrying a jdeChoice row, so it is the only one whose bar names ←/→.
+		"VendorWorkOrderDetailScreen/invoice form": func() Screen {
+			return vwoFormFixture(vwoAdvanceFinancial, "1425.50", "95.00")
+		},
+		"VendorWorkOrderDetailScreen/invoice confirm": func() Screen {
+			return vwoConfirmFixture(vwoAdvanceFinancial, "1425.50", "95.00")
+		},
+		"VendorWorkOrderDetailScreen/attach form": func() Screen {
+			return vwoFormFixture(vwoAttach,
+				"/home/shop/scans/northern-industrial-invoice-8812.pdf")
+		},
+		// A confirm with NO typed rows of its own: the caveat is the whole
+		// body, which is the shape the layer windows by an offset.
+		"VendorWorkOrderDetailScreen/close confirm": func() Screen {
+			s := vwoPaneFixture(func(wo *omsapi.MaintenanceOrder) {
+				wo.VarianceStatus = "auto_approved"
+				wo.Workflow.VarianceStatus = "auto_approved"
+				wo.Workflow.KeyfobOutstanding = false
+				wo.KeyfobID = ""
+			})
+			s.openAction(vwoClose)
 			return s
 		},
 		// The two destructive confirms whose body is PROSE — the class the
@@ -1840,6 +1871,39 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 			},
 		},
 
+		// The vendor stepper's three header sites. sheetHeader has three
+		// branches that rank different rows — a loaded order, a loaded order
+		// whose next step is BLOCKED (where the reason takes the context rows),
+		// and the pre-load state where "could not tell" is the only thing on
+		// the pane — so all three are swept rather than whichever one the
+		// cheapest fixture happens to reach.
+		"VendorWorkOrderDetailScreen/viewSheet": {
+			mk: func() Screen { return vwoPaneFixture(nil) },
+			alsoIn: map[string]func() Screen{
+				"gate shut": func() Screen {
+					return vwoPaneFixture(func(wo *omsapi.MaintenanceOrder) {
+						wo.Status = omsapi.MaintenanceOrderInProgress
+						wo.StatusDisplay = "In Progress"
+						wo.Attachments = nil
+						wo.Workflow.HasPhotoEvidence = false
+					})
+				},
+				"load failed": func() Screen {
+					s := NewVendorWorkOrderDetailScreen(Deps{}, vwoTestID)
+					s.loading = false
+					s.loadErr = "oms: http 502: the gateway did not answer"
+					return s
+				},
+			},
+			header: func(s Screen) jdeHeader {
+				return s.(*VendorWorkOrderDetailScreen).sheetHeader()
+			},
+		},
+		"VendorWorkOrderDetailScreen/viewForm": pick("VendorWorkOrderDetailScreen/invoice form",
+			func(s Screen) jdeHeader { return s.(*VendorWorkOrderDetailScreen).formHeader() }),
+		"VendorWorkOrderDetailScreen/viewConfirm": pick("VendorWorkOrderDetailScreen/invoice confirm",
+			func(s Screen) jdeHeader { return s.(*VendorWorkOrderDetailScreen).confirmHeader() }),
+
 		// The New PO screen pins the tallest header in the app: the supplier
 		// row, the failure's unbounded detail, three optional attribution
 		// values, and — on this phase — the screen's answer to the last
@@ -2465,6 +2529,12 @@ var jdeUnsizedDeclineCases = map[string]string{
 	"WorkOrderScanReviewScreen/complete confirm": "wo_scan_review's confirmScrolls — an OFFSET " +
 		"over a body that owns no navigable row",
 	"StorageSlotGenerateScreen/run report": "storage_slot_generate's resultScrolls — an OFFSET",
+	"VendorWorkOrderDetailScreen": "vendor_work_order_detail's sheetScrolls — an OFFSET over " +
+		"a body that owns no navigable row",
+	"VendorWorkOrderDetailScreen/invoice confirm": "vendor_work_order_detail's confirmScrolls — " +
+		"an OFFSET over a body that owns no navigable row",
+	"VendorWorkOrderDetailScreen/close confirm": "vendor_work_order_detail's confirmScrolls — " +
+		"an OFFSET over a body that owns no navigable row",
 	"PurchaseOrderAttachmentsScreen": "po_attachments guards on listNames(\"PgUp/PgDn\"), " +
 		"which reads the bar's own claim",
 	"PurchaseOrderCreateScreen":                "po_create's bodyPagesFor",
