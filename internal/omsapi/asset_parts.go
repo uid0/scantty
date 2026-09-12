@@ -2,9 +2,6 @@ package omsapi
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"strconv"
 )
 
 // AssetPart CRUD + the mark-replaced lifecycle action.
@@ -62,24 +59,11 @@ type AssetPartWrite struct {
 // reader arrives here on purpose. Every arm stays because the function's job is
 // to be indifferent to which one fires; that is what makes it survive a decoder
 // change instead of needing one comment per representation.
-func (p AssetPart) IDString() string {
-	switch v := p.ID.(type) {
-	case string:
-		return v
-	case float64:
-		return strconv.FormatInt(int64(v), 10)
-	case int:
-		return strconv.Itoa(v)
-	case int64:
-		return strconv.FormatInt(v, 10)
-	case json.Number:
-		return v.String()
-	case nil:
-		return ""
-	default:
-		return fmt.Sprintf("%v", v)
-	}
-}
+// The arms themselves live in anyIDString (client.go) so that this reasoning has
+// ONE implementation to be true about: AGENTS.md records that a coercer written
+// before UseNumber can carry a dead arm, and three separate copies is how that
+// happens. This method stays because the doc above is cited by name.
+func (p AssetPart) IDString() string { return anyIDString(p.ID) }
 
 // GetAssetPart retrieves one AssetPart by its (stringified) integer pk. The
 // edit form uses it to hydrate rather than depending on the caller threading a

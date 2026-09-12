@@ -158,6 +158,57 @@ What is worth knowing before touching any of them:
   cost box for an item priced 0.05, the row `CharLimit` of 14 cut it to
   `0.049999999999`, and Enter posted that.
 
+### A reorder REQUEST has a lifecycle, and OMS gates almost none of it
+
+`internal/tui/reorder_queue.go` is the whole of it terminal-side and
+`internal/omsapi/reorders.go` the client; `backend/reorder_queue/views.py`'s
+`ReorderRequestViewSet` is the contract. Before touching any of it:
+
+- **The states are `pending → approved → ordered → received`, with `cancelled`
+  off the side**, and `mark_ordered` / `mark_received` are the two that CLOSE a
+  request. ScanTTY could approve and not close for a release, which is the
+  dead-end class: the operator had committed the work before hitting the wall.
+- **THE SERVER ENFORCES NO STATUS ON ANY OF THE FOUR ACTIONS.** `approve` checks
+  an approver permission and nothing else; `cancel`, `mark_ordered` and
+  `mark_received` check only `IsAuthenticated`. `mark_ordered` on a PENDING
+  request would skip approval and be obeyed; `cancel` on a RECEIVED one leaves
+  the stock it credited in place. So the workflow is stated on the CLIENT, by
+  which keys the bar offers, and `reorderOffers` is the one predicate the bar and
+  the arms both read. A test that only reads the bar proves the legend is
+  self-consistent; the biconditional is
+  `TestReorderQueue_EveryLifecycleKeyActsExactlyWhereItIsNamed`.
+- **AN ABSENT KEY AND AN EMPTY KEY ARE DIFFERENT WRITES.** `mark_ordered` reads
+  `order_number` / `estimated_delivery` / `actual_cost` with
+  `if "<key>" in request.data`, so a key left out leaves the stored value alone
+  and a key sent EMPTY overwrites it — and `order_number` is put there by the
+  Purchase Order domain, not typed by an operator. A helpful
+  `{"order_number": ""}` erases it silently on every mark-ordered, which is why
+  the client posts `{}` and a test asserts the body's ABSENCES.
+- **`mark_received` CREDITS STOCK, in BASE UNITS.** It does
+  `item.current_stock += reorder.quantity` with no conversion, and
+  `inventory.services.packaging.on_hand_display` documents `current_stock` as
+  "the canonical base-unit count" — so a reorder request's quantity is individual
+  items and NEVER a supplier case. The other half of the house rule is a PO line,
+  which is entered in cases (`po_case_entry.go`); one key on this screen sits
+  between them, so the receive confirm names the unit rather than implying it.
+  The action is idempotent into `received` (guarded under `select_for_update`),
+  and refuses a CANCELLED request.
+- **THE LIST ENDPOINT SERVES NO STATUS FILTER, so a non-pending view is a
+  client-side narrowing of EVERY page.** `ReorderRequestViewSet` declares no
+  filter backend and the project sets no `DEFAULT_FILTER_BACKENDS`, so
+  `?status=approved` is ignored outright, and `pending/`, `sig_pending/` and
+  `by_supplier/` are all pending-only. `omsapi.ListReorderRequests` therefore
+  walks `next` to the end: the web dashboard reads page one and labels it "All",
+  which drops every row past the fiftieth with nothing on screen saying so.
+- **The refusal shape here is DRF's `{"detail": …}`**, written by hand from a
+  view body, so it never reaches the exception handler and `parseError` hands the
+  whole raw JSON over. `omsapi.AsDetailRefusal` recovers the sentence and is as
+  narrow as `AsReceivingRefusal` beside it — read its doc for the shapes it
+  deliberately leaves alone.
+- **NOT BUILT, and named so nobody re-derives it as missing:** `update_tracking`
+  (a PATCH of four fields, which wants a form), `by_supplier` and
+  `generate_cart_links`. None is a dead end — no terminal flow starts them.
+
 ### A WIRE TYPE IS THE BUILDER'S DECISION, NEVER THE MODEL'S
 
 `internal/omsapi/po_line_entry.go` carries the worked example and
@@ -259,12 +310,16 @@ before declaring or changing any field that crosses this boundary:
   and was then cited as a fact about the wire.
   **AND A COERCER WRITTEN BEFORE `UseNumber` CAN HAVE A DEAD ARM.** A numeric pk
   is a `json.Number` now and never a `float64`, so a type switch offering only
-  `string` and `float64` falls through to its zero answer. There are three `any`
-  coercers in the package — `loto.go`'s `anyToInt`, `asset_parts.go`'s `IDString`
-  and `inventory.go`'s `Asset.InventoryItemID` — and the last was the one that
-  had not been brought along, where the fall-through reads as "this asset has no
-  linked inventory item" in the middle of hydrating an edit form. Derive that set
-  by grepping for `.(type)` over `any` fields rather than trusting this list.
+  `string` and `float64` falls through to its zero answer. Three had been written
+  — `loto.go`'s `anyToInt`, `asset_parts.go`'s `IDString` and `inventory.go`'s
+  `Asset.InventoryItemID` — and the last was the one that had not been brought
+  along, where the fall-through reads as "this asset has no linked inventory
+  item" in the middle of hydrating an edit form. **THE ID-TO-PATH-SEGMENT ARM IS
+  `client.go`'s `anyIDString` AND THERE IS ONE OF IT**, beside the decoder that
+  decides what such a value actually is; `IDString` on both `AssetPart` and
+  `ReorderRequest` delegates to it, because a copy per struct is precisely how
+  one copy gets left behind. Derive the remaining set by grepping for `.(type)`
+  over `any` fields rather than trusting this list.
 - **A FIXTURE WRITTEN FROM THE STRUCT CANNOT CONTRADICT THE STRUCT.** All three
   fixtures for this endpoint said `{"id": "po-1"}` and all three passed. Fixtures
   for a wire shape are RECORDED from a real backend (`internal/omsapi/testdata/`,

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -496,6 +497,41 @@ func jsonDecoder(r io.Reader) *json.Decoder {
 	dec := json.NewDecoder(r)
 	dec.UseNumber()
 	return dec
+}
+
+// anyIDString renders a primary key decoded into an `any` as the decimal string
+// a path segment needs, and it lives HERE — beside the decoder that decides what
+// such a value actually is — because that is the one fact it has to stay true
+// about.
+//
+// It exists because `fmt.Sprint` over an `any` holding a JSON number formats a
+// float64 with %g, so a seven-digit pk becomes "1e+06" and the request 404s.
+// AssetPart.IDString's doc comment (asset_parts.go) carries the worked example
+// and is what AGENTS.md and po_numeric_id_test.go cite; this is its body, shared
+// rather than copied, because AGENTS.md also records that a coercer written
+// before UseNumber can keep a DEAD ARM nobody notices — and three hand-copied
+// switches is exactly how one copy gets left behind.
+//
+// Every arm stays. The function's job is to be indifferent to which
+// representation the decoder produces, which is what lets it survive a decoder
+// change instead of needing a comment per representation.
+func anyIDString(id any) string {
+	switch v := id.(type) {
+	case string:
+		return v
+	case float64:
+		return strconv.FormatInt(int64(v), 10)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case json.Number:
+		return v.String()
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // decodeBody is the ONE place a RESPONSE body becomes Go values: it reads a
