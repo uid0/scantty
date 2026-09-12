@@ -136,7 +136,6 @@ var proseBarUnconverted = map[string]string{
 	"DemandForecastScreen":        "the demand-forecast table: a cursor list ABOVE a scroller, so its bar carries two movement vocabularies and the conversion has to say which keys reach which",
 	"InventoryDetailScreen":       "the item sheet, plus three pick modals that each draw their own prompt in place of the footer",
 	"MaintenanceItemDetailScreen": "the PM item sheet; it computes its own footerRows already, so the fold is there and the record is not",
-	"SerializedComponentsScreen":  "the serialized-component list with a history scroller beside it, again two vocabularies on one bar",
 	"SerializedForecastScreen":    "the serialized-component forecast, the same two-vocabulary shape as DemandForecastScreen",
 	"WorkOrderDetailScreen":       "the work-order sheet, plus its material pickers — the largest of the scroller sheets and the one with the most modal states to decide",
 
@@ -367,6 +366,36 @@ func proseBarFixtures() []proseBarFixture {
 				return next.(*ElectricalPanelDetailScreen)
 			},
 		},
+		{
+			name: "serialized components/list", recv: "SerializedComponentsScreen",
+			build: func() proseBarScreen {
+				s := NewItemInstancesScreen(Deps{}, "item-1", "Safety relay", nil)
+				next, _ := s.Update(serialComponentsLoadedMsg{rows: proseBarSerializedComponents(30)})
+				return next.(*SerializedComponentsScreen)
+			},
+		},
+		{
+			name: "serialized components/empty", recv: "SerializedComponentsScreen",
+			build: func() proseBarScreen {
+				s := NewItemInstancesScreen(Deps{}, "item-1", "Safety relay", nil)
+				next, _ := s.Update(serialComponentsLoadedMsg{})
+				return next.(*SerializedComponentsScreen)
+			},
+			immobile: "there are no serialized components for a cursor to move across",
+		},
+		{
+			name: "serialized components/history", recv: "SerializedComponentsScreen",
+			build: func() proseBarScreen {
+				s := NewItemInstancesScreen(Deps{}, "item-1", "Safety relay", nil)
+				s.loading = false
+				s.rows = proseBarSerializedComponents(1)
+				s.showHistory = true
+				s.historyFor = s.rows[0].ID
+				s.historyScroller = NewTextScroller(defaultDetailHeight)
+				s.historyScroller.Set(strings.Repeat(proseBarLongNote()+"\n", 3))
+				return s
+			},
+		},
 		// THE ONE CURSOR LIST IN THE CONVERTED SET, and it is here to prove the
 		// record is not a scroller's private arrangement: this screen's bar
 		// changes shape with the row's STATUS, with whether a write is out, and
@@ -416,6 +445,26 @@ func proseBarFixtures() []proseBarFixture {
 			},
 		},
 	}
+}
+
+func proseBarSerializedComponents(n int) []omsapi.SerializedComponent {
+	rows := make([]omsapi.SerializedComponent, n)
+	for i := range rows {
+		rows[i] = omsapi.SerializedComponent{
+			ID:           fmt.Sprintf("unit-%d", i+1),
+			SerialNumber: fmt.Sprintf("SR-%06d", i+1),
+			Status:       omsapi.SerialStatusReceived,
+			AvailableActions: []string{
+				omsapi.SerialActionReceive,
+				omsapi.SerialActionInstall,
+				omsapi.SerialActionRemove,
+				omsapi.SerialActionConsume,
+				omsapi.SerialActionRetire,
+				omsapi.SerialActionDispose,
+			},
+		}
+	}
+	return rows
 }
 
 // proseBarReorderDeclines are the reorder queue's four lifecycle keys, which
