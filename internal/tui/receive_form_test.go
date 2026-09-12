@@ -3018,3 +3018,105 @@ func TestReceive_AnUnnumberedOrderIsStillNamed(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The resting frame opens on the form, not on the reservation
+// ---------------------------------------------------------------------------
+
+// TestReceive_TheRestingFrameDoesNotOpenOnDeadSpace.
+//
+// The note block is reserved UNCONDITIONALLY (receiveNoteRows carries why, and
+// it is not reopenable), so at rest — on arrival and after every reply — the
+// block is drawn BLANK. That is correct and is not what this is about. What
+// this is about is WHERE those blank rows land: pinned above the body they were
+// the first thing on the pane, so the screen an operator opens to scan goods in
+// began with four or six empty rows and only then showed the box a scanner
+// fires into. At 80x18 that is five of the pane's twelve rows spent before the
+// form starts, on a body with thirty-four rows it could not fit.
+//
+// The reservation is placement-free: what it buys is a CONSTANT body budget, so
+// that writing a note cannot change which keys the bar names. Nothing in that
+// argument says the reserved rows have to be drawn at the TOP, and drawing them
+// beneath the body (frameWrappedBelow) costs the body nothing while giving the
+// operator the form first. It also puts the note's rows next to the status row
+// that carries its headline, which used to sit at the opposite end of the pane.
+//
+// THE CLAIM IS THAT THE PINNED BLOCK ADDS NO ROW ABOVE THE BODY, and it is
+// asked that way rather than as "the first row carries ink" because the two are
+// different facts and only one of them is this screen's. jdeLines.Window spends
+// the first of its rows on the "↑ N more above" indicator and draws it BLANK
+// when there is nothing above — a reservation of the layer's, shared by every
+// columnar screen, so that the body's height cannot change with the scroll
+// position. Asserting ink would indict that too, on thirty screens this change
+// does not touch, and the assertion would then have to be weakened by a magic
+// number. So the window is asked what IT leads with, and the pane must lead
+// with exactly that.
+//
+// Measured on the CLIPPED pane because the screen's own string is not what the
+// operator reads, and the resting state is proved to BE resting — a note or a
+// failure standing would make this pass for a reason unrelated to the property
+// it names. The reservation's own half is guarded next door by
+// TestReceive_WritingANoteNeverChangesThePagingClaim; the vacuity guard here is
+// the block still being non-empty, so this cannot be satisfied by giving the
+// reservation up.
+func TestReceive_TheRestingFrameDoesNotOpenOnDeadSpace(t *testing.T) {
+	leadingBlanks := func(lines []string) int {
+		n := 0
+		for _, line := range lines {
+			if strings.TrimSpace(stripANSI(line)) != "" {
+				break
+			}
+			n++
+		}
+		return n
+	}
+
+	widths, heights := receiveHonestWidths(), jdePaneHeights()
+	judged, reserved := 0, 0
+	for _, width := range widths {
+		for _, height := range heights {
+			t.Run(fmt.Sprintf("%dx%d", width, height), func(t *testing.T) {
+				_, s := receiveDrive(t, &receiveFake{}, receiveManyLines(9), width, height)
+
+				if s.note.text != "" || s.failLine() != "" {
+					t.Fatalf("the fixture is not at rest (note %q, failure %q), so this "+
+						"pane proves nothing about the resting frame", s.note.text, s.failLine())
+				}
+				block := len(s.headerLines())
+				if block == 0 {
+					t.Fatalf("the reservation is gone: the pinned block is 0 rows at rest, " +
+						"so a pane opening on the form proves nothing")
+				}
+				if !receiveDrawn(s) {
+					return // the layer refused the frame; it draws no reserved rows at all
+				}
+
+				// What the BODY leads with, asked of the very window the frame
+				// draws — so the layer's own indicator row is never counted
+				// against this screen and no number has to be written down.
+				body, cursor := s.body()
+				windowed, _ := body.Window(cursor, s.bodyAvailForBar(block, s.bar()))
+				want := leadingBlanks(windowed)
+
+				judged++
+				if want < block {
+					reserved++
+				}
+				pane := receivePaneLines(s, width, height)
+				if got := leadingBlanks(pane); got != want {
+					t.Errorf("the resting pane leads with %d blank rows and its BODY leads "+
+						"with %d, so %d row(s) of the reserved block are drawn above the "+
+						"form the operator came for:\n%s",
+						got, want, got-want, strings.Join(pane, "\n"))
+				}
+			})
+		}
+	}
+	if judged == 0 {
+		t.Fatal("no swept pane drew the frame at all, so this sweep judged nothing")
+	}
+	if reserved == 0 {
+		t.Fatal("every swept pane's body already led with as many blanks as the whole " +
+			"reserved block, so the sweep never reached a pane the property is about")
+	}
+}

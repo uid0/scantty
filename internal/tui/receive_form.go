@@ -4185,7 +4185,7 @@ func (s *ReceiveFormScreen) View() string {
 		status = s.statusRow(false, "", s.failLine())
 	}
 	body, cursor := s.body()
-	return s.frameWrapped(s.headerLines(), body, cursor, status, s.bar())
+	return s.frameWrappedBelow(s.headerLines(), body, cursor, status, s.bar())
 }
 
 // body is the phase's scrollable body and the row the window is anchored on,
@@ -5528,7 +5528,7 @@ func (s *ReceiveFormScreen) doneBody() *jdeLines {
 // It is UNCONDITIONAL IN THE NOTE, and that is the whole design rather than an
 // oversight to tidy away. (It yields to the PANE, which is a different axis
 // entirely — noteRows() carries that reasoning and why it does not reopen any
-// of what follows.) The note is pinned above the body, the header is subtracted from
+// of what follows.) The note is pinned, the block is subtracted from
 // the body's row budget, and the body's height is what decides whether
 // PgUp/PgDn are named at all — so a note that costs rows only WHEN IT IS THERE
 // makes the answer depend on the sentence, and the sentence is itself a list of
@@ -5554,6 +5554,23 @@ func (s *ReceiveFormScreen) doneBody() *jdeLines {
 // honour. The row cost is accepted deliberately — on a screen where the
 // operator is scanning goods in, a command line that tells the truth about
 // which keys work is worth more than the rows of body it spends.
+//
+// WHAT THE COST TURNED OUT TO BE, measured rather than estimated, because the
+// trade was accepted against a guess of about two rows: it is receiveNoteRows
+// plus the separator, so SIX rows on any pane that can afford them and FOUR at
+// 80x18, where noteRows() has already yielded to the pane. Neither surplus is
+// recoverable without making the reservation conditional, and both were
+// re-derived rather than assumed. The SEPARATOR cannot go: headerSplit reserves
+// it outright ("the separator is not divisible"), and dropping it when the
+// block is blank is the conditional reservation this comment forbids — while
+// folding it INTO receiveNoteRows would cut the note to four text rows, and the
+// margin at four was measured ZERO (below). The NOTE's own rows cannot go
+// either: waysOut is DERIVED from the bar, so shortening it is curation in the
+// one place the honesty rule is checked, and the constant grew each time only
+// because the screen gained a key that ACTS. What DID move is where the rows
+// are spent — headerLines pins the block BENEATH the body now, so the
+// reservation costs the operator the same rows and no longer costs them the top
+// of the pane.
 //
 // The size is the MINIMUM that restores the fixed point, not the worst case.
 // The FAILURE DETAIL is deliberately NOT reserved: it is written by a reply off
@@ -5854,14 +5871,24 @@ func (s *ReceiveFormScreen) failDetailRows() int { return s.headerSplit().detail
 // a bar that varied with the header would make the header vary with the bar.
 func (s *ReceiveFormScreen) noteRows() int { return s.headerSplit().note }
 
-// headerLines is the screen's answer to the last keypress, PINNED above the
-// scrollable body on every frame.
+// headerLines is the screen's answer to the last keypress, PINNED BENEATH the
+// scrollable body on every frame (frameWrappedBelow).
 //
 // Pinned rather than appended, because the answer is the one line that must not
 // be able to scroll away: inside the body it sat below a cursor the operator
 // had walked down a long line list, and a key that answers off the pane has not
 // answered. The diagnostic DETAIL rides with it, bounded, so a failure and its
 // reason are one block rather than two a scroll can separate.
+//
+// BENEATH rather than above, and that is placement rather than policy: the
+// block's rows are reserved unconditionally (receiveNoteRows), so at rest it is
+// drawn BLANK — and above the body those blanks were the first thing on the
+// pane, five of twelve rows at 80x18 before the box a scanner fires into. What
+// the reservation buys is a constant body BUDGET, which is indifferent to which
+// end of the pane it is spent at, so moving the block costs the body nothing
+// and puts the note's rows beside the status row carrying their own headline.
+// The SEPARATOR therefore leads the block instead of trailing it: the blank
+// that keeps it off the body is now above it.
 //
 // The height is CONSTANT in everything a keypress controls: noteRows() for the
 // note whether or not one is standing, plus the blank that separates the block
@@ -5879,7 +5906,7 @@ func (s *ReceiveFormScreen) noteRows() int { return s.headerSplit().note }
 // essential that the geometry drops anyway is the same false claim jdeHeadRank
 // exists to remove.
 func (s *ReceiveFormScreen) headerLines() jdeHeader {
-	out := jdeHeader(nil)
+	out := jdeHeader(nil).add(jdeHeadDecorative, "")
 	for i, line := range s.noteLines() {
 		rank := jdeHeadContext
 		if i == 0 {
@@ -5887,7 +5914,7 @@ func (s *ReceiveFormScreen) headerLines() jdeHeader {
 		}
 		out = out.add(rank, line)
 	}
-	return out.add(jdeHeadContext, s.failDetailLines()...).add(jdeHeadDecorative, "")
+	return out.add(jdeHeadContext, s.failDetailLines()...)
 }
 
 // noteLines renders the screen's answer to the last keypress into the rows

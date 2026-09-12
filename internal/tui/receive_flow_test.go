@@ -1716,7 +1716,18 @@ func TestReceiveFlow_ReopeningAClosedShortLineReachesItsEndpoint(t *testing.T) {
 	// that body the fact was below the fold at 80x24 with the pane drawing
 	// "↓ 7 more below", on the frame whose next key writes to the record. It
 	// rides the note block now, which is on the pane at every drawable height.
+	//
+	// EACH PANE IS DRIVEN AT, not clipped to. receivePaneText only CLIPS, so a
+	// loop that changed the box without resizing the terminal was asking what a
+	// frame laid out for THIRTY rows looks like with sixteen of them cut off —
+	// which is not a thing Root does, because Root sends a WindowSizeMsg and the
+	// screen lays out again. That proxy agreed with the real pane only while the
+	// note block happened to be pinned at the TOP of it, and agreed for that
+	// reason rather than for the one the loop is about; at a real 80x14 the
+	// block is one row, shortened with its own mark, and the fact is on it.
 	for _, pane := range [][2]int{{80, 30}, {80, 24}, {80, 14}} {
+		next, _ := r.Update(tea.WindowSizeMsg{Width: pane[0], Height: pane[1]})
+		r = next.(Root)
 		text := receivePaneText(s, pane[0], pane[1])
 		for _, want := range []string{"close-short stays on the record"} {
 			if !strings.Contains(text, want) {
@@ -1725,6 +1736,9 @@ func TestReceiveFlow_ReopeningAClosedShortLineReachesItsEndpoint(t *testing.T) {
 			}
 		}
 	}
+	// Back to the size the rest of the drive was written against.
+	back, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	r = back.(Root)
 	if text := receivePaneText(s, 80, 30); !strings.Contains(text, "optional") {
 		t.Errorf("the confirm does not say the reason is optional:\n%s", text)
 	}
