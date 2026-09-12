@@ -559,7 +559,7 @@ type reorderPlan struct {
 // which does not scroll can leave one row of the pane unspent; the alternative
 // does not terminate.
 func (s *ReorderQueueScreen) plan() reorderPlan {
-	ceiling := len(s.barLinesFor(s.barSegmentsFor(true)))
+	ceiling := len(s.barLinesFor(s.barFor(true)))
 	avail := s.reorderPaneRows() - 1 - ceiling // the blank above the bar, and the bar
 	p := reorderPlan{}
 	if avail >= 3 { // the header row, its blank, and a line of body to justify them
@@ -694,63 +694,82 @@ func (s *ReorderQueueScreen) reorderScrolls() bool {
 // ---------------------------------------------------------------------------
 // The action bar
 
-// barSegments names EXACTLY the keys that work where the cursor is standing.
+// barSegments is the bar's words, for the callers that only want to read them.
+//
+// The bar itself is a RECORD (proseBar, prose_bar.go) rather than a list of
+// strings: every segment carries the keystrokes its words spell, which is what
+// lets TestProseBar_TheFooterNamesExactlyTheKeysThatWork press the whole key
+// space at this screen instead of taking the legend on trust. This screen was
+// the cheapest cursor LIST to convert because the hard half was already done —
+// the fold, the ceiling and the derived row budget below all predate the record
+// — so what the record adds is the reading, not the arithmetic.
+func (s *ReorderQueueScreen) barSegments() []string {
+	var out []string
+	for _, it := range s.barFor(s.reorderScrolls()) {
+		out = append(out, it.Hint)
+	}
+	return out
+}
+
+// proseBar is the bar this screen is DRAWING, and it is never nil: every state
+// of this screen draws a bar, the confirm included.
+func (s *ReorderQueueScreen) proseBar() proseBar { return s.barFor(s.reorderScrolls()) }
+
+// barFor names EXACTLY the keys that work where the cursor is standing, with
+// the paging answer supplied rather than asked — so the row budget can measure
+// the CEILING bar without asking a question whose answer depends on the budget.
+// Read bodyLineBudget for why.
+//
 // The lifecycle keys are status-conditional because the actions are: `o` on a
 // pending request would skip approval, and `d` on one would credit stock for
 // goods nobody ordered. Both would be accepted by the server, which gates
 // neither — so the bar is where the workflow is stated, and reorderOffers is
 // the same predicate the arms ask.
-func (s *ReorderQueueScreen) barSegments() []string {
-	return s.barSegmentsFor(s.reorderScrolls())
-}
-
-// barSegmentsFor is barSegments with the paging answer supplied rather than
-// asked, so the row budget can measure the CEILING bar without asking a
-// question whose answer depends on the budget. Read bodyLineBudget for why.
-func (s *ReorderQueueScreen) barSegmentsFor(scrolls bool) []string {
+func (s *ReorderQueueScreen) barFor(scrolls bool) proseBar {
 	if s.confirm != reorderConfirmNone {
-		return []string{"y receive", "n/esc cancel"}
-	}
-	segs := []string{}
-	if len(s.rows) > 1 {
-		segs = append(segs, "j/k ↑↓ move")
-		if scrolls {
-			segs = append(segs, "pgup/pgdn page")
+		return proseBar{
+			{Keys: []string{"y"}, Hint: "y receive"},
+			{Keys: []string{"n", "esc"}, Hint: "n/esc cancel"},
 		}
-		segs = append(segs, "g/G home/end top/bottom")
+	}
+	segs := proseNavList(listNavMoves(len(s.rows)), scrolls)
+	tail := proseBar{
+		{Keys: []string{"f"}, Hint: "f view"},
+		proseBarRefresh,
+		proseBarEsc,
 	}
 	if row, ok := s.selected(); ok {
-		segs = append(segs, "enter open item")
+		segs = append(segs, proseBarItem{Keys: []string{"enter"}, Hint: "enter open item"})
 		if s.writing() {
 			// A write is out: the four lifecycle keys refuse, so the bar stops
 			// naming them rather than leaving the dead end on the legend.
-			return append(segs, "f view", "r refresh", "esc back")
+			return append(segs, tail...)
 		}
 		if reorderOffers(row.Status, omsapi.ReorderStatusPending) {
-			segs = append(segs, "a approve")
+			segs = append(segs, proseBarItem{Keys: []string{"a"}, Hint: "a approve"})
 		}
 		if reorderOffers(row.Status, reorderCancellableFrom...) {
-			segs = append(segs, "x cancel")
+			segs = append(segs, proseBarItem{Keys: []string{"x"}, Hint: "x cancel"})
 		}
 		if reorderOffers(row.Status, omsapi.ReorderStatusApproved) {
-			segs = append(segs, "o mark ordered")
+			segs = append(segs, proseBarItem{Keys: []string{"o"}, Hint: "o mark ordered"})
 		}
 		if reorderOffers(row.Status, omsapi.ReorderStatusOrdered) {
-			segs = append(segs, "d mark received")
+			segs = append(segs, proseBarItem{Keys: []string{"d"}, Hint: "d mark received"})
 		}
 	}
-	return append(segs, "f view", "r refresh", "esc back")
+	return append(segs, tail...)
 }
 
 // barLines is the bar as it will be DRAWN — folded at the pane's `·` joints,
 // never hand-counted against 51. Folding spends rows, so this is what the row
 // budget above measures rather than a constant.
 func (s *ReorderQueueScreen) barLines() []string {
-	return s.barLinesFor(s.barSegments())
+	return s.barLinesFor(s.proseBar())
 }
 
-func (s *ReorderQueueScreen) barLinesFor(segs []string) []string {
-	return pickerWrap(strings.Join(segs, " · "), s.reorderPaneCells())
+func (s *ReorderQueueScreen) barLinesFor(bar proseBar) []string {
+	return pickerWrap(bar.hint(), s.reorderPaneCells())
 }
 
 // answerLines is what the last keypress did, folded to the pane. Empty when

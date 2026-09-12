@@ -37,6 +37,7 @@ type MaintenanceItemDetailScreen struct {
 	loadErr        string
 	scroller       *TextScroller
 	terminalHeight int
+	terminalWidth  int
 
 	actionMsg string
 	actionLvl StatusLevel
@@ -139,6 +140,7 @@ func (s *MaintenanceItemDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		return s, nil
 
 	case mDetailLoadedMsg:
@@ -634,15 +636,10 @@ func (s *MaintenanceItemDetailScreen) View() string {
 		return s.viewClone()
 	}
 
-	footerRows := detailFooterRows
-	if s.actionMsg != "" || s.phase == mDetailPhaseConfirmDelete {
-		footerRows = detailFooterRowsWithAction
-	}
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, footerRows))
-
-	body := s.scroller.View()
-	footer := ""
 	if s.phase == mDetailPhaseConfirmDelete {
+		s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRowsWithAction))
+		body := s.scroller.View()
+		footer := ""
 		name := s.item.Title
 		if s.busy {
 			footer = StyleMuted.Render("Deleting…")
@@ -651,11 +648,44 @@ func (s *MaintenanceItemDetailScreen) View() string {
 		}
 		return body + "\n\n" + footer
 	}
+	s.sizeScroller()
+	body := s.scroller.View()
+	footer := ""
 	if s.actionMsg != "" {
 		footer += RenderStatus(s.actionMsg, s.actionLvl) + "\n\n"
 	}
-	footer += StyleMuted.Render("j/k scroll · c complete · w gen-WO · L clone · S check-stock · E edit · x delete · r refresh · esc back")
+	footer += s.bar(s.scroller.HasOverflow()).render(proseBarCells(s.terminalWidth))
 	return body + "\n\n" + footer
+}
+
+func (s *MaintenanceItemDetailScreen) bar(scrolls bool) proseBar {
+	bar := proseNavScroll(scrolls)
+	return append(bar,
+		proseBarItem{Keys: []string{"c"}, Hint: "c complete"},
+		proseBarItem{Keys: []string{"w"}, Hint: "w gen-WO"},
+		proseBarItem{Keys: []string{"L"}, Hint: "L clone"},
+		proseBarItem{Keys: []string{"S"}, Hint: "S check-stock"},
+		proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+func (s *MaintenanceItemDetailScreen) sizeScroller() {
+	rows := s.bar(true).rows(proseBarCells(s.terminalWidth))
+	if s.actionMsg != "" {
+		rows += detailFooterRowsWithAction - detailFooterRows
+	}
+	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, rows))
+}
+
+func (s *MaintenanceItemDetailScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.item == nil || s.phase != mDetailPhaseView {
+		return nil
+	}
+	s.sizeScroller()
+	return s.bar(s.scroller.HasOverflow())
 }
 
 func (s *MaintenanceItemDetailScreen) renderBody() string {

@@ -20,6 +20,7 @@ type SIGDetailScreen struct {
 	loadErr        string
 	scroller       *TextScroller
 	terminalHeight int
+	terminalWidth  int
 }
 
 type sigDetailLoadedMsg struct {
@@ -77,6 +78,8 @@ func (s *SIGDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
+		proseSizeScroller(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 		return s, nil
 	case sigDetailLoadedMsg:
 		s.loading = false
@@ -107,9 +110,28 @@ func (s *SIGDetailScreen) View() string {
 	if s.loadErr != "" {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	hint := "j/k scroll · pgup/pgdn page · r refresh · esc back"
-	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+	return proseScrollFrame(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// bar names every key that acts on this sheet, as a record the honesty sweep
+// can press (prose_bar.go).
+//
+// It used to be the literal "j/k scroll · pgup/pgdn page · r refresh · esc
+// back", which named four of the ten keystrokes TextScroller.Handle binds:
+// the arrows, `g`/`G` and home/end all scrolled this sheet and no word on it
+// said so.
+func (s *SIGDetailScreen) bar(scrolls bool) proseBar {
+	return append(proseNavScroll(scrolls), proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this sheet is DRAWING — nil in the states that draw
+// something else instead, which is what makes "this state has no bar" and "this
+// state's bar is empty" different answers to the sweep.
+func (s *SIGDetailScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 }
 
 func (s *SIGDetailScreen) renderBody() string {

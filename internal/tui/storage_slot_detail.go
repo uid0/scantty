@@ -29,6 +29,7 @@ type StorageSlotDetailScreen struct {
 
 	scroller       *TextScroller
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -125,6 +126,8 @@ func (s *StorageSlotDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
+		proseSizeScroller(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 		return s, nil
 
 	case storageSlotDetailLoadedMsg:
@@ -389,7 +392,11 @@ func (s *StorageSlotDetailScreen) View() string {
 	if s.slot == nil {
 		return StyleMuted.Render("Slot not found.")
 	}
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
+	// Sized here as well as inside proseBar, because the four modal branches
+	// below draw the scrolled body under their own prompt and need a viewport
+	// too. Sizing is idempotent given the same pane, so the second call costs
+	// nothing and the two answers cannot disagree.
+	proseSizeScroller(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 
 	switch {
 	case s.confirmingDelete:
@@ -402,19 +409,60 @@ func (s *StorageSlotDetailScreen) View() string {
 		return s.scroller.View() + "\n\n" + s.previewPanel()
 	}
 
-	hint := "j/k scroll · E edit · x delete · p print card · v card contents · r refresh · esc back"
-	// Only ONE of assign / release is ever possible, so only that one is
-	// offered — a hint listing both would invite the key that can't work.
-	switch {
-	case s.slot.CurrentAssignment != nil:
-		hint = "R release · " + hint
-	case !s.slot.IsOccupied && s.slot.IsActive:
-		hint = "a assign C/L/E · " + hint
+	return s.scroller.View() + "\n\n" + s.proseBar().render(proseBarCells(s.terminalWidth))
+}
+
+// bar names every key that acts on this sheet, as a record the honesty sweep
+// can press (prose_bar.go).
+//
+// THE WORST CUT OF THE SCROLLER SHEETS. It read "j/k scroll ·
+// E edit · x delete · p print card · v card contents · r refresh · esc back" —
+// 82 cells before the conditional `R release` / `a assign C/L/E` and
+// `enter open stint` heads were prepended to it, against the 51 an 80-column
+// pane gives. Unfolded and budgeted at a flat two rows, clampToBox took
+// everything past the first line: on an occupied slot the operator read
+// `enter open stint · R release · j/k scroll · E edit · x del` and no more,
+// so `r refresh` and the way off the screen were named nowhere — while the
+// arrows, pgup/pgdn, `g`/`G` and home/end scrolled it unannounced.
+//
+// The conditional arms are unchanged and they are the bar's half of a guard
+// updateActions also applies: only ONE of assign / release is ever possible, and
+// `enter` has somewhere to go only while a stint is in the slot. Keep them
+// paired — an arm added here without its guard is the defect the record exists
+// to report.
+func (s *StorageSlotDetailScreen) bar(scrolls bool) proseBar {
+	var out proseBar
+	if s.slot != nil && s.slot.CurrentStint != nil {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter open stint"})
 	}
-	if s.slot.CurrentStint != nil {
-		hint = "enter open stint · " + hint
+	if s.slot != nil {
+		switch {
+		case s.slot.CurrentAssignment != nil:
+			out = append(out, proseBarItem{Keys: []string{"R"}, Hint: "R release"})
+		case !s.slot.IsOccupied && s.slot.IsActive:
+			out = append(out, proseBarItem{Keys: []string{"a"}, Hint: "a assign C/L/E"})
+		}
 	}
-	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+	out = append(out, proseNavScroll(scrolls)...)
+	return append(out,
+		proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarItem{Keys: []string{"p"}, Hint: "p print card"},
+		proseBarItem{Keys: []string{"v"}, Hint: "v card contents"},
+		proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this sheet is DRAWING — nil in the states that draw
+// something else instead, which here is four modals as well as the two load
+// states.
+func (s *StorageSlotDetailScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.slot == nil {
+		return nil
+	}
+	if s.confirmingDelete || s.confirmingRelease || s.card.active || s.previewing {
+		return nil
+	}
+	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 }
 
 func (s *StorageSlotDetailScreen) deleteConfirmText() string {

@@ -39,6 +39,7 @@ type SerializedComponentsScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	// Inline action-input form (install → asset UUID, dispose → reason).
 	form    serialFormKind
@@ -177,8 +178,9 @@ func (s *SerializedComponentsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		if s.historyScroller != nil {
-			s.historyScroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
+			proseSizeScroller(s.historyScroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.historyBar)
 		}
 		return s, nil
 
@@ -245,7 +247,7 @@ func (s *SerializedComponentsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, nil
 		}
 		s.historyErr = ""
-		s.historyScroller = NewTextScroller(scrollerViewHeight(s.terminalHeight, detailFooterRows))
+		s.historyScroller = NewTextScroller(defaultDetailHeight)
 		s.historyScroller.Set(s.renderHistory(m.events))
 		return s, nil
 
@@ -609,8 +611,14 @@ func (s *SerializedComponentsScreen) visibleCount() int {
 	if s.stockSplitLine() != "" {
 		header++ // the available/on-hand line sits under the "N unit(s)" line
 	}
-	const footer = 2
 	const indicators = 2
+	footer := s.listBar(true).rows(proseBarCells(s.terminalWidth))
+	if s.pending || s.result != "" {
+		footer++
+	}
+	if unit := s.current(); unit == nil || len(unit.AvailableActions) == 0 {
+		footer++
+	}
 	avail := screenBodyHeight(s.terminalHeight) - header - footer - indicators
 	if avail < 2 {
 		avail = 2
@@ -656,12 +664,11 @@ func (s *SerializedComponentsScreen) View() string {
 	var b strings.Builder
 	if len(s.rows) == 0 {
 		if s.scope == "asset" {
-			b.WriteString(StyleMuted.Render("No serialized components installed in this asset.") + "\n")
-			b.WriteString("\n" + StyleMuted.Render("r refresh · esc back"))
+			b.WriteString(StyleMuted.Render("No serialized components installed in this asset."))
 		} else {
-			b.WriteString(StyleMuted.Render("No serial-numbered units for this item yet.") + "\n")
-			b.WriteString("\n" + StyleMuted.Render("a add · r refresh · esc back"))
+			b.WriteString(StyleMuted.Render("No serial-numbered units for this item yet."))
 		}
+		b.WriteString("\n\n" + s.listBar(false).render(proseBarCells(s.terminalWidth)))
 		return b.String()
 	}
 
@@ -691,7 +698,10 @@ func (s *SerializedComponentsScreen) View() string {
 	} else if s.result != "" {
 		b.WriteString(RenderStatus(s.result, s.level) + "\n")
 	}
-	b.WriteString(StyleMuted.Render(s.hint()))
+	if unit := s.current(); unit == nil || len(unit.AvailableActions) == 0 {
+		b.WriteString(StyleMuted.Render("No actions available for this unit.") + "\n")
+	}
+	b.WriteString(s.listBar(len(s.rows) > 1).render(proseBarCells(s.terminalWidth)))
 	return b.String()
 }
 
@@ -736,35 +746,38 @@ func (s *SerializedComponentsScreen) renderRow(b *strings.Builder, i int) {
 	}
 }
 
-func (s *SerializedComponentsScreen) hint() string {
-	base := "j/k move · g/G top/bottom · h history · r refresh · esc back"
+func (s *SerializedComponentsScreen) listBar(moves bool) proseBar {
+	bar := proseNavList(moves, false)
 	if s.scope == "item" {
-		base = "a add · " + base
+		bar = append(proseBar{{Keys: []string{"a"}, Hint: "a add"}}, bar...)
 	}
 	unit := s.current()
-	if unit == nil || len(unit.AvailableActions) == 0 {
-		return base + "\n(no actions available for this unit)"
+	if unit != nil {
+		bar = append(bar, proseBarItem{Keys: []string{"h", "enter"}, Hint: "h/enter history"})
 	}
-	labels := map[string]string{
-		omsapi.SerialActionReceive: "v receive",
-		omsapi.SerialActionInstall: "i install",
-		omsapi.SerialActionRemove:  "x remove",
-		omsapi.SerialActionConsume: "c consume",
-		omsapi.SerialActionRetire:  "t retire",
-		omsapi.SerialActionDispose: "d dispose",
+	bar = append(bar, proseBarRefresh, proseBarEsc)
+	if unit == nil || len(unit.AvailableActions) == 0 {
+		return bar
+	}
+	labels := map[string]proseBarItem{
+		omsapi.SerialActionReceive: {Keys: []string{"v"}, Hint: "v receive"},
+		omsapi.SerialActionInstall: {Keys: []string{"i"}, Hint: "i install"},
+		omsapi.SerialActionRemove:  {Keys: []string{"x"}, Hint: "x remove"},
+		omsapi.SerialActionConsume: {Keys: []string{"c"}, Hint: "c consume"},
+		omsapi.SerialActionRetire:  {Keys: []string{"t"}, Hint: "t retire"},
+		omsapi.SerialActionDispose: {Keys: []string{"d"}, Hint: "d dispose"},
 	}
 	// Preserve a stable, lifecycle order rather than map iteration order.
 	order := []string{
 		omsapi.SerialActionReceive, omsapi.SerialActionInstall, omsapi.SerialActionRemove,
 		omsapi.SerialActionConsume, omsapi.SerialActionRetire, omsapi.SerialActionDispose,
 	}
-	acts := []string{}
 	for _, a := range order {
 		if containsStr(unit.AvailableActions, a) {
-			acts = append(acts, labels[a])
+			bar = append(bar, labels[a])
 		}
 	}
-	return base + "\nactions: " + strings.Join(acts, " · ")
+	return bar
 }
 
 func (s *SerializedComponentsScreen) viewForm() string {
@@ -841,10 +854,27 @@ func (s *SerializedComponentsScreen) viewHistory() string {
 	}
 	body := ""
 	if s.historyScroller != nil {
-		s.historyScroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-		body = s.historyScroller.View()
+		return proseScrollFrame(s.historyScroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.historyBar)
 	}
-	return body + "\n\n" + StyleMuted.Render("j/k scroll · pgup/pgdn page · r refresh · esc back")
+	return body
+}
+
+func (s *SerializedComponentsScreen) historyBar(scrolls bool) proseBar {
+	bar := proseNavScroll(scrolls)
+	return append(bar, proseBarRefresh, proseBarEsc)
+}
+
+func (s *SerializedComponentsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.form != serialFormNone {
+		return nil
+	}
+	if s.showHistory {
+		if s.historyLoading || s.historyErr != "" || s.historyScroller == nil {
+			return nil
+		}
+		return proseScrollBar(s.historyScroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.historyBar)
+	}
+	return s.listBar(len(s.rows) > 1)
 }
 
 func (s *SerializedComponentsScreen) renderHistory(events []omsapi.ComponentUsageEvent) string {

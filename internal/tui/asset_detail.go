@@ -186,6 +186,11 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if s.asset != nil {
 			s.scroller.Set(s.renderBody())
 		}
+		// And the viewport is sized HERE as well as in View, so the bar record
+		// can be asked at any time and answer about this pane rather than about
+		// the constructor's default height — proseScrollBar carries why that
+		// matters.
+		s.sizeScroller()
 		return s, nil
 	case assetDetailLoadedMsg:
 		s.loading = false
@@ -662,13 +667,10 @@ func (s *AssetDetailScreen) View() string {
 	// thirteen keys long and written as one line it is well past the 51 cells an
 	// 80-column pane gives, so clampToBox took its TAIL: `esc back` and, when `L`
 	// was added for the interlock, the key to the one surface that stops a machine
-	// being used. A key named past the cut is a key named nowhere.
-	hint := pickerWrap(s.footerHint(), s.paneCells())
-	footerRows := (detailFooterRows - 1) + len(hint)
-	if s.logResult != "" {
-		footerRows += detailFooterRowsWithAction - detailFooterRows
-	}
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, footerRows))
+	// being used. A key named past the cut is a key named nowhere. sizeScroller
+	// is where that budget is derived, and why it measures the bar's CEILING.
+	s.sizeScroller()
+	hint := pickerWrap(s.bar().hint(), s.paneCells())
 
 	if s.confirmingDelete {
 		var prompt string
@@ -694,31 +696,93 @@ func (s *AssetDetailScreen) View() string {
 	return body + "\n\n" + footer
 }
 
-// footerHint names every key that acts on this sheet.
+// sizeScroller budgets the scrolled body against the bar's CEILING plus the
+// action banner, and is called from View and from the resize arm alike so the
+// bar record answers about this pane whenever it is asked.
 //
-// It is one method rather than two literals inside View so the FOLD and the ROW
-// BUDGET are measured against the same string — the derivation wo_detail.go and
+// THE BUDGET MEASURES THE CEILING AND THE RENDER DRAWS THE LIVE BAR, because the
+// movement segments are conditional on the body overflowing and the two
+// questions would otherwise chase each other: naming the scroll keys costs
+// cells, cells fold the bar onto another row, another row leaves the body one
+// fewer, and one fewer can turn a body that fitted into one that overflows.
+// Sized against the tallest shape it is a fixed point — proseSizeScroller
+// carries the argument in full, and this sheet spells it out rather than calling
+// that helper because its footer has a row the helper knows nothing about: the
+// action banner.
+func (s *AssetDetailScreen) sizeScroller() {
+	rows := (detailFooterRows - 1) + len(pickerWrap(s.barFor(true).hint(), s.paneCells()))
+	if s.logResult != "" {
+		rows += detailFooterRowsWithAction - detailFooterRows
+	}
+	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, rows))
+}
+
+// bar names every key that acts on this sheet, as a RECORD the honesty sweep can
+// press (prose_bar.go).
+//
+// It is one method rather than literals inside View so the FOLD and the ROW
+// BUDGET are measured against the same bar — the derivation wo_detail.go and
 // ListScreen.footerRows both make, and the reason a folded footer does not simply
 // fall off the bottom instead of off the right.
+//
+// IT USED TO BE A PROSE STRING, and that half-measure is worth recording because
+// it is the state every unconverted sheet is still in: the fold was right, the
+// row budget was right, and the bar was still invisible to every honesty sweep
+// AND still wrong — it said "j/k scroll" while TextScroller.Handle binds the
+// arrows, pgup/pgdn and g/G/home/end as well, so eight keystrokes scrolled this
+// sheet unannounced. Folding a literal fixes naming keys PAST THE CUT and does
+// nothing at all about naming keys that were never there.
 //
 // `L` is named `L interlock` rather than `L lock` because the screen it opens
 // holds all four of lock, unlock, disable and enable, and a legend promising only
 // the locking direction would hide the dangerous one.
 //
-// This footer is still a prose literal rather than a machine-readable bar, so it
-// is invisible to every bar-honesty sweep — the gap AGENTS.md records for every
-// receiver in listNavUnsweptReceivers. Folding it does not close that gap and is
-// not meant to; what it fixes is the narrower defect of naming keys past the cut.
-func (s *AssetDetailScreen) footerHint() string {
-	parts := []string{
-		"j/k scroll", "p report", "P problems", "o OOS", "R restore", "L interlock",
-	}
+// The movement segments are conditional on the body OVERFLOWING (proseNavScroll)
+// and everything else is unconditional except `i components`, which is the bar's
+// half of a guard the handler also applies: with no components installed the arm
+// answers a toast and goes nowhere. Keep them paired.
+func (s *AssetDetailScreen) bar() proseBar {
+	return s.barFor(s.scroller.HasOverflow())
+}
+
+// barFor is bar with the movement answer supplied rather than asked, so the row
+// budget can measure the CEILING bar without asking a question whose answer
+// depends on the budget. proseSizeScroller carries why that is a fixed point.
+func (s *AssetDetailScreen) barFor(scrolls bool) proseBar {
+	out := append(proseNavScroll(scrolls),
+		proseBarItem{Keys: []string{"p"}, Hint: "p report"},
+		proseBarItem{Keys: []string{"P"}, Hint: "P problems"},
+		proseBarItem{Keys: []string{"o"}, Hint: "o OOS"},
+		proseBarItem{Keys: []string{"R"}, Hint: "R restore"},
+		proseBarItem{Keys: []string{"L"}, Hint: "L interlock"},
+	)
 	if len(s.components) > 0 {
-		parts = append(parts, "i components")
+		out = append(out, proseBarItem{Keys: []string{"i"}, Hint: "i components"})
 	}
-	parts = append(parts,
-		"M meters", "D documents", "S parts", "E edit", "x delete", "r refresh", "esc back")
-	return strings.Join(parts, " · ")
+	return append(out,
+		proseBarItem{Keys: []string{"M"}, Hint: "M meters"},
+		proseBarItem{Keys: []string{"D"}, Hint: "D documents"},
+		proseBarItem{Keys: []string{"S"}, Hint: "S parts"},
+		proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this sheet is DRAWING — nil in the states that draw
+// something else instead, which here is the delete confirm and the three write
+// forms, each of which replaces the footer with its own prompt.
+func (s *AssetDetailScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.asset == nil {
+		return nil
+	}
+	if s.confirmingDelete || s.activeForm != formNone {
+		return nil
+	}
+	// SIZE BEFORE ANSWERING, for the reason proseScrollBar gives: HasOverflow is
+	// a question about the viewport, so a record read before the first render
+	// would answer about the constructor's default height rather than this pane.
+	s.sizeScroller()
+	return s.bar()
 }
 
 func (s *AssetDetailScreen) renderBody() string {
