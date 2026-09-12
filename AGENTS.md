@@ -1220,6 +1220,10 @@ either:
   field either in `poStateFingerprinted` or in `poStateDeclined` WITH A REASON
   (`pending` and `errMsg` had fallen out of the fingerprint, so no review-phase
   arm could be judged at all).
+  AN EXCLUSION IS RECORDED, NEVER FILTERED FOR, and that is why every one of
+  those rosters carries a reason and fails in BOTH directions: a rule clever
+  enough to drop an awkward member silently would eventually drop a real one,
+  and the limit of a derivation has to be visible where the derivation is.
   KEYS are the exception that proves it: no authority can be derived for them,
   so the answer is not to curate a vocabulary but to press the whole SPACE —
   every printable ASCII rune plus the named specials. There are two such spaces
@@ -1324,7 +1328,7 @@ either:
   reader, by rule 10, into STRIPPING a key a long form genuinely needs.
   `inventory_item_form.go` is the case on the other side of the line: its cursor
   WRAPS in exactly this sense (`moveCursor`: `(cursor + delta + n) % n`), and it
-  offers `PgUp`/`PgDn` gated on `bodyScrolls` and says so in its own header
+  offers `PgUp`/`PgDn` gated on `bodyPagesForBar` and says so in its own header
   comment, because it is roughly twenty rows and a wrapping cursor is no way to
   cross that. `category_form.go`, `maintenance_item_form.go` and
   `storage_slot_form.go` are the same shape. The New PO line form is three or
@@ -1345,7 +1349,30 @@ either:
   does and does not prove all live there and in
   `list_nav_surfaces_test.go`, beside the code they constrain. Read those before
   binding or naming a movement key anywhere.
-  TWO THINGS LIVE HERE AND NOWHERE IN THE CODE, which is why this entry is not
+  THERE ARE THREE SPELLINGS OF IT AND EACH BAR IS ANSWERABLE FOR ITS OWN: a
+  `[]actionBarItem` on the columnar sheets (`jde_form.go`),
+  `ListScreen.footerHint`'s string (`list.go`), and a `proseBar` record on the
+  screens that are neither — `internal/tui/prose_bar.go`, whose doc comment
+  carries the defect, the conversion, what a conversion costs, and
+  `proseBarUnconverted`, the named remainder that shrinks as the work goes on.
+  The sweeps are `list_bar_honesty_test.go`, `prose_bar_honesty_test.go` and
+  `list_nav_surfaces_test.go`; each declares what it presses and what it
+  refuses to claim.
+  AN EMPTY LIST, AND A PANE TOO SHORT TO DRAW ONE, ARE STATES — and `list.go`
+  decides both, in doc comments beside the code they constrain and under the
+  sweeps named above:
+  `bodyView`'s empty branch (why the footer AND the header line are drawn
+  there), `footerHint` with `listNavHint` (the two thresholds — the movement
+  segments need a SECOND row, `enter open` needs one), `listShortcuts` (the
+  uppercase sibling-surface keys, read by the footer and the handler from that
+  one table and never from a hint literal), `listMarkerLine` and `markerRows`
+  (the ↑/↓ rows and their give-order), and `paneDrawn` / `listTooShortWayOut` /
+  `listTooShort` / `listRefusedHoldsKey` / `needRows` for the refusal. Do not
+  carry a second copy of any of it here. Two prose copies of one contract drift,
+  and this entry is the worked example: it grew to several hundred lines
+  restating those comments, was reduced to this pointer, and every round in
+  between spent its effort correcting the copy rather than the code.
+  THREE THINGS LIVE HERE AND NOWHERE IN THE CODE, which is why this entry is not
   simply deleted:
   - **A COMMIT THAT UNBINDS A LIVE KEY LISTS IT, FILE BY FILE AND KEY BY KEY**,
     under a `BINDINGS CHANGED` heading (de380e1 set the precedent). An
@@ -1356,494 +1383,44 @@ either:
     (`"ctrl+d"` and `tea.KeyCtrlD`). A test that drives a retired chord stops
     entering the arm it exists to test and can go on passing without exercising
     that arm.
-- **One navigation vocabulary, three spellings of it, and the third is proven
-  only where it has been CONVERTED.** `internal/tui/list_nav.go` is the
-  vocabulary and carries the full note; read it before binding or naming a
-  movement key anywhere. The KEYS are
-  written down once (`listNavSetVerb`) and the VERB is a parameter, because what
-  moves differs and the keys do not: a `ListScreen` moves a CURSOR through rows
-  and says `move`, a `TextScroller` moves a WINDOW over a body and says `scroll`.
-  A second literal would be a second roster of keystrokes, free to drift.
-  The set is `j/k ↑↓` move, `pgup/pgdn` page, `g/G home/end` top/bottom. The
-  emacs chords are RETIRED — `ctrl+u`/`ctrl+d`/`ctrl+p`/`ctrl+n` move nothing
-  anywhere — because no bar in the program ever SPELLED one and a 51-column
-  footer cannot afford to teach a chord, which is the trade sc-po-create-hangs
-  already made on `ListScreen`'s pager and the purchasing surfaces. It stayed
-  unmade on twenty-one sibling files (twenty-four `case "ctrl+d", "pgdown":`
-  pairs, forty-eight arms), so the same key paged the supplier list and did
-  nothing on the inventory list the operator reached it from —
-  `TestListNav_NoSurfaceBindsARetiredChord` PRESSES each chord on every fixture
-  its swept sets can build (`jdePaneCases`, `listBarSurfaces` × every row count,
-  `TextScroller`, and the cursor pickers of `listNavPickerCases`) and fails on
-  one that moves. Its subtests are the authority on which sets there are; do not
-  write the number down here, which is where it has drifted every time.
-  A KEYSTROKE HAS TWO SPELLINGS IN THIS PACKAGE AND A DERIVATION OVER ONE OF THEM
-  IS NOT A DERIVATION. `case "ctrl+n":` and `case tea.KeyCtrlN:` in a switch over
-  `m.Type` bind the same key, and the first retirement, this sweep and the
-  surface classifier all read STRING LITERALS ONLY — so `ctrl+n`/`ctrl+p` went on
-  moving a cursor for two more rounds on the universal search palette
-  (`search.go`), the e-paper bind picker (`epaper_panels.go`) and the
-  location check-in lookup (`location_checkins.go`), while both this file and
-  `listNavRetiredChords` said the chords moved nothing anywhere. All three are
-  unbound now — the arrow each clause already bound is what their footers name,
-  so nothing was taken from the operator — and `listNavCaseKey` reads both
-  spellings, asking bubbletea itself what a `tea.Key*` constant spells rather than
-  transcribing a table (`listNavSpellingIndex`, with `KeySpace` the one recorded
-  exception, since its `String()` is the character and not the word).
-  **A COMMIT THAT UNBINDS A LIVE KEY LISTS IT, FILE BY FILE AND KEY BY KEY** —
-  the `BINDINGS CHANGED` record e1c1047 set the precedent for — because an
-  operator's hands are the only place a retired chord is recorded, and a captain
-  reading a subject line about a sweep cannot tell that a key they press every
-  day stopped working. The three that went, in the order they matter to somebody
-  who uses this program: `search.go` — the universal search palette (`ctrl+k`),
-  `ctrl+n` and `ctrl+p` off the result cursor, which is the surface the captain
-  actually drives and where those chords were muscle memory; `epaper_panels.go` —
-  the e-paper bind picker, `ctrl+n` and `ctrl+p`; `location_checkins.go` — the
-  location check-in lookup, `ctrl+n` and `ctrl+p`. Every one of those three
-  `case` clauses ALREADY bound — and its footer already NAMED — the arrow that
-  spells the same move (`↑/↓ move`), so nothing an operator was told about was
-  taken away; what went is a chord no bar in the program ever spelled. The lesson
-  is the one this area keeps teaching: a roster is only as complete as the
-  alphabet it is derived over. It used to prove that from source SHAPE — a
-  regex over `case "ctrl+d":` literals — which failed on a commented-out arm and
-  passed a chord bound through a helper or a key-name map; behaviour answers both
-  directions. It is POSITIVELY CONTROLLED (`listNavChordControls`): each case
-  first presses the NAMED key spelling the same affordance and the sweep fails if
-  no fixture in a set could be moved by it, because "ctrl+d changed nothing" is
-  equally true of an empty list, a one-row list and a refused pane. What it
-  asserts differs by set ON PURPOSE, and that is a fact about the surfaces:
-  bubbles binds all four chords for LINE EDITING on a focused textinput, so on a
-  columnar sheet with the caret in a box `ctrl+u` legitimately empties the box
-  and the claim there is over `jdePlaceOf` alone; a `ListScreen` in browse mode
-  holds no caret, so the clipped PANE is asserted too — which is what catches a
-  window that scrolled without the cursor leaving its row, since `windowStart` is
-  not in `jdePlaceOf`'s vocabulary. THE SCROLLER IS THE THIRD SET AND WAS THE
-  HOLE the behavioural conversion opened: `scroll.go` is where two of the four
-  chords were actually unbound, and neither of the other sets can reach it — no
-  `TextScroller` holder embeds `jdeScreen` or is a `*ListScreen`, and
-  `jdePlaceOf` walks the int fields of the SCREEN, so an offset nested inside a
-  scroller value is invisible to it even if one did. Restoring
-  `case "ctrl+d", "pgdown":` in `Handle` failed nothing at all, which made the
-  conversion WEAKER than the regex it replaced on the one file the retirement
-  touched. It asserts the OFFSET and the bool `Handle` returns, since a chord
-  answered `true` is a keystroke every sheet holding one swallows on behalf of a
-  binding that is gone. A prose-bar surface is PRESSED wherever a test can build
-  one — `TextScroller` and the cursor pickers are values the sweep constructs
-  directly — and a surface no press reaches is classified rather than claimed about
-  (`TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused`, which is a
-  COVERAGE guard over the source, asserts nothing about any key, and cannot see
-  a retired chord at all since it collects only what `listNavBinds` accepts).
-  A TEST THAT DRIVES A RETIRED CHORD STOPS TESTING ANYTHING, and the retirement
-  left three behind: `TestStorageSlots_PagedownClampsOnEmpty`,
-  `TestAssetProblems_EmptyFilterCursor` and
-  `TestLocationProblems_EmptyFilterCursor` each pressed `ctrl+d` at a `pgdown`
-  arm, so after the retirement the arm they exist to enter was never entered and
-  `cursor >= 0` passed for the reason it would have passed with the arm deleted.
-  They press `pgdown` now and assert the cursor's exact resting place rather than
-  its sign, because "not negative" is equally true of a screen on which nothing
-  ran. Whenever a key is retired, grep the tests for it in BOTH spellings
-  (`"ctrl+d"` and `tea.KeyCtrlD`) — the vacuity is silent in exactly the way the
-  retirement is.
-  THE COLUMNAR LAYER SPELLS THE SAME AFFORDANCES AS TOKENS (`UP/DN`,
-  `PgUp/PgDn`, `Home/End`) AND BINDS NO LETTER, and that is a fact about the
-  surface rather than drift: a columnar picker's filter box is always live, so a
-  bare `j` is a character in the query. One vocabulary, two spellings, each bar
-  honest about its own.
-  WHERE THE RULE IS PROVEN is the part to keep straight, because the sentence
-  is easy to over-claim. Two behavioural sweeps hold it, each over the half of
-  the app whose bar is a machine-readable RECORD:
-  `TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves` over every type
-  embedding `jdeScreen`, at every width and drawable height; and
-  `TestList_FooterNamesExactlyTheKeysThatWork` plus
-  `TestList_TheSearchOverlayNamesExactlyTheKeysThatWork` over every `*ListScreen`
-  the nav tree reaches, at every count in `listRowCases` — EMPTY, ONE ROW and
-  MANY. The row counts are the axis those sweeps were blind on: every fixture
-  carried eight rows, so a footer that named `j/k ↑↓ move · pgup/pgdn page ·
-  g/G home/end top/bottom` as an unconditional literal was only ever pressed
-  where it was true.
-  THE THIRD SPELLING IS A RECORD NOW FOR THE SCREENS THAT HAVE BEEN CONVERTED,
-  and `internal/tui/prose_bar.go` is that layer. A `proseBar` is a list of
-  `{Keys, Hint}` segments — the words drawn, and EXACTLY the keystrokes those
-  words spell — folded against the live pane and with the body's row budget
-  DERIVED from the fold. `prose_bar_honesty_test.go` then presses the whole key
-  space at it, so the rule is mechanical for a converted screen exactly as it is
-  for a columnar one. What that closed where it has been applied: most of the
-  converted screens are detail sheets holding a `TextScroller`, whose `Handle`
-  binds the whole vocabulary, and four of them named `j/k scroll` ALONE — the
-  arrows, pgup/pgdn, `g`/`G` and home/end all worked and no word said so.
-  `AnalyticsPulseScreen` also bound
-  `backspace` as a second way back and named it nowhere. The two longest literals
-  were past the 51 cells an 80-column pane gives BEFORE the missing keys were
-  considered, so `clampToBox` was taking their tails: the storage-slot sheet lost
-  `r refresh · esc back` on an occupied slot. The record is NOT scroller-only:
-  `ReorderQueueScreen` is a cursor LIST on it, and `proseNavList` is the movement
-  half for that shape as `proseNavScroll` is for a scrolled body — two
-  thresholds there rather than one, since a list that fits has somewhere for `j`
-  to go and nowhere for `pgdn`.
-  WHAT A CONVERSION COSTS, in the order the pieces matter: the bar becomes a
-  method taking the movement answer as a PARAMETER (`bar(scrolls bool)`), so the
-  CEILING and the drawn bar are one expression; the viewport is sized against
-  that ceiling (`proseSizeScroller`), because naming the scroll keys costs cells,
-  cells fold the bar onto another row, and another row can turn a body that
-  fitted into one that overflows — the fixed point `listSearchBarHint` and
-  `jdePickBarCeiling` already make; and `proseBar()` SIZES BEFORE IT ANSWERS,
-  which is not a nicety — the sheets set their viewport inside `View`, so a
-  record read before the first render answered about the constructor's
-  `defaultDetailHeight` and the sweep reported a bar naming no movement key on a
-  sheet five keys moved.
-  WHERE IT IS STILL NOT PROVEN, said plainly because a claim no check delivers is
-  worse than no claim: every receiver `listNavUnsweptReceivers` records — that
-  map is the roster and the authority on how many there are, and a count
-  restated here is the one part of the derivation that cannot be derived —
-  writes its bar as a muted literal
-  straight into a `strings.Builder` inside `View`. `TextScroller` is the shape of
-  it at its clearest — one handler shared by every detail sheet
-  `listNavDelegatingReceivers` finds, whose footers
-  disagree about which of its keys to name. There is no record to read,
-  so no sweep can press keys against it, and a typical one reads `j/k move · n
-  new · E/enter edit · x delete · r refresh · esc back` while binding the arrows,
-  `g/G`, `home/end` and `pgup/pgdn` too — and it is ALREADY past the 51 cells the
-  pane gives, so naming the rest would make it less readable, not more ("a bar
-  the operator cannot read is not honest, it is absent"). Closing one means the
-  conversion above, which is the shape of sc-jde-lift rather than an edit.
-  THE REMAINDER IS NAMED RATHER THAN LEFT OVER. `proseBarUnconverted`
-  (`prose_bar_honesty_test.go`) carries one entry per unconverted receiver saying
-  what the SHAPE of its work is — a scroller sheet, a cursor list, a field form,
-  or not a footer at all — and
-  `TestProseBar_EveryProseFooterScreenIsConvertedOrNamed` fails in both
-  directions, so a screen cannot be left out by nobody having looked and a
-  converted one cannot stay listed. The set is not restated here for the reason
-  no count in this file is: it shrinks as the conversion goes on, and a number
-  written down drifts on the first commit after it.
-  AN EMPTY STATE THAT DRAWS NO BAR IS THE SAME DEFECT ONE SCREEN OVER, and the
-  conversion found another: `NotificationsScreen` returned `No notifications.`
-  alone, so the one state where "there is nothing here, now what?" is the
-  operator's question named no key at all — the inversion `ListScreen`'s empty
-  branch already had. It draws its bar there now, and the bar is honestly SHORT:
-  nothing scrolls, so the movement segments are absent, and `X mark all read` is
-  gated on there being rows, because a POST whose whole visible product is
-  nothing is a key named on a frame it cannot be seen to act on.
-  KNOWN AND NOT FIXED, so nobody re-derives it as an oversight:
-  `scrollerViewHeight` floors the scrolled body at FOUR rows, which is more than
-  `screenBodyRows` gives below a terminal height of ten, so the assembled frame
-  overruns there whatever the footer does and `clampToBox` takes the bar. That
-  floor is pre-existing and is the same lie `screenBodyHeight` tells; removing it
-  means giving these sheets the REFUSAL `ListScreen` has (`listTooShort`), which
-  is its own conversion. `TestProseBar_TheFooterSurvivesEveryDrawablePane` is
-  scoped by that boundary MEASURED rather than named, and fails if either side of
-  it stops being reached.
-  THE TWO ENTRIES THAT ARE NOT PROSE-FOOTER SCREENS AT ALL STAY EXCEPTIONS, and
-  the conversion did NOT make them expressible: `LocationDetailScreen`'s `g`
-  generates a QR code and `slotCardPrompt` is a two-row modal whose focus wraps.
-  A `proseBar` records which keystrokes a segment SPELLS, which says nothing
-  about whether a keystroke is navigation — so both are still recorded rather
-  than filtered, for the reason they always were: a filter clever enough to drop
-  them would eventually drop a real one.
-  WHAT IS GUARANTEED FOR THE UNCONVERTED ONES is that the SET cannot grow in
-  silence: `TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused` parses
-  the package, classifies EVERY receiver that binds a navigation keystroke as
-  swept columnar, swept `ListScreen`, swept PROSE-BAR (it declares `proseBar`),
-  or recorded in `listNavUnsweptReceivers` WITH A REASON, and fails in all
-  directions — unclassified, stale, and excusing something that binds nothing any
-  more. A converted screen must come OUT of that roster, which is what makes the
-  remainder shrink visibly instead of a map that only ever grows. Per RECEIVER
-  and not per file, because
-  `category_form.go` holds `CategoryFormScreen` (columnar, swept) beside
-  `CategoryListScreen` (prose, not), and a file-level answer excuses the second
-  on the strength of the first.
-  A `case "j", "down":` IS NOT THE ONLY WAY TO BIND ONE, and reading only for
-  those was a hole in the DERIVATION rather than in the app: a screen that holds
-  a `TextScroller` gets j/k, the arrows, pgup/pgdn and g/G/home/end from
-  `Handle` without spelling a key, so seven of them were classified only
-  transitively through the `TextScroller` entry and a new one could have joined
-  the app appearing in no class at all. `listNavDelegatingReceivers` reads the
-  STRUCT FIELDS for that — a field type is what `go/parser` can answer without
-  `go/types`, and there is no way to hold a scroller and not hand it the
-  keyboard. Whenever a shared handler grows that owns movement keys, the
-  derivation needs the same treatment or it goes quietly blind to its callers.
-- **An empty list is a STATE, and on `ListScreen` it used to be the one state
-  that drew no bar at all.** `bodyView` returned `"No rows."` and nothing else
-  while `s`, `r`, `n`, `f`, `/` and every sibling-surface letter worked — the
-  bar's contract inverted on the state where "there is nothing here, now what?"
-  is the operator's actual question and the answer is a key, which is standing
-  rule 11's dead end on top of the omission. It draws `footerHint()` now, the
-  same method the loaded list draws, so what it names there is what is true
-  there. The empty FILTERED view keeps its fact ("no rows in the \"draft\"
-  view") and lost its `press f to cycle the filter` clause, because the footer
-  under it names `f filter` and ONE surface names a key.
-  TWO THRESHOLDS, not one, and `footerHint` keeps them apart: the movement
-  segments need a SECOND row (`listNavMoves`), `enter open` needs ONE — opening
-  the row you are on is not moving to another one. The search overlay's bar
-  (`searchBarHint`) keeps the same pair; its ceiling `listSearchBarHint` is what
-  `listBodyLines` budgets against, because a body budget that moved with the
-  live result count would make the list jump under the operator's hands while
-  they type.
-  DRAWING THE FOOTER THERE MOVED ONE VIOLATION RATHER THAN REMOVING IT, and
-  that is the half worth remembering: `s sort` re-orders locally and its ONLY
-  visible product is the `Sort: … · N rows` header, which the empty branch did
-  not draw — so the key went from "acts and is not named" to "is named and
-  cannot be seen to act", which is the same rule broken from the other side.
-  `headerLine` is drawn in BOTH branches now (`listBodyLines` had always
-  reserved the row), so an empty list states how it is sorted and how many rows
-  that comes to, and `s` has somewhere to show.
-  THE SWEEP MEASURES THE CLIPPED PANE, NOT A STATE FINGERPRINT, which is what
-  found it: `listKeyEffectAt` compared `listBarState` — which carries `s.sort` —
-  so a key that moved a number nothing draws read as working. Standing rule 1 is
-  about a change the OPERATOR can distinguish, and only the rendered pane can
-  answer that.
-  A FOOTER DRAWN OUTSIDE THE ROW BUDGET IS A FOOTER `clampToBox` TAKES, and both
-  branches were doing it. They budgeted against `screenBodyHeight`, which floors
-  at four and is therefore a LIE below a terminal height of ten (`layout.go` says
-  so in as many words), and `listBodyLines` then floored its own answer at two
-  rows the pane did not have — so the assembled pane ran over and the drop is
-  from the BOTTOM, where the bar is. At 80 columns the purchase-order list lost
-  `· N new PO · Q pending reorders` at height 11 empty and 14 loaded, and by
-  height 10 the whole footer was gone: the bar-less pane the empty-list work
-  above exists to remove, restored by geometry. `paneRows` reads `screenBodyRows`
-  now, the marker rows are reserved only where the rows really outrun the body
-  (`listOverflows`), and the body floors at the TALLEST ROW rather than at one
-  line — `rowsFittingFrom` will not return an empty window, so a one-line floor
-  hands back a two-line row and the overflow is exactly its extra line.
-  THE ↑/↓ MARKERS COST A PAIR OF ROWS OR ONE SHARED ROW, and `markerRows` is the
-  single expression the budget, the refusal and the renderer all read. Where the
-  pane can afford one apiece they are drawn in their places as they always were;
-  where it can only afford one, `listMarkerLine` puts both facts on that row and
-  the refusal comes down a terminal row with it. The height that happens at is an
-  OUTPUT of the footer's fold and the tallest row, so derive it rather than
-  looking for it written down.
-  ALL THREE MARKER ROWS ARE BOUNDED BY THAT ONE BUILDER, and it gives ground in
-  a stated order rather than being clipped: the PROSE shortens, the arrows and
-  the COUNT never do, and where even the shortest form will not fit the count is
-  DROPPED and the row marked. Assembled at full length and clipped, the row read
-  `  ↑ more above · ↓ 1` at width 49 over twelve rows below — a cut number does
-  not read as a shortened fact but as a different one, the price column's
-  `@ 3.50` drawn as `@ 3.` on the row whose whole job is to say how much of the
-  list is out of sight. The two per-marker sites used to write their own
-  unbounded literals beside the bounded shared one, so
-  `TestList_EveryMarkerRowOnThePaneFitsIt` asserts every drawn marker row is one
-  `listMarkerLine` could have produced at that pane.
-  Reserving one WITHOUT the shared row is the version to not reach for, and its
-  reasoning sounds right: `↑ more above` needs `windowStart > 0`, which the pane
-  does not open in. It is true of the opening state and false of the next
-  keypress — at the boundary the body is exactly one row, so the first `j`
-  scrolls, both markers apply and there is nothing left for the second to come
-  out of, the pane overruns and `clampToBox` takes the bar off the bottom.
-  Re-asking the refusal after the scroll is worse: the frame flips to the notice
-  mid-scroll with the movement keys held, which is a dead end.
-  AN EMPTY LIST NEEDS FEWER ROWS THAN THE SAME LIST ONCE ROWS ARRIVE — no
-  markers, a shorter footer, a one-line floor — so a list can be drawn while
-  empty and refuse when the rows land at the same size. That asymmetry is
-  inherent (an empty pane genuinely is smaller) and is not papered over.
-  WHERE EVEN THAT WILL NOT FIT THE PANE IS REFUSED, not mutilated: `paneDrawn` is
-  the one predicate every reader asks, so the notice's claims and the keys behind
-  them are one expression; grep it rather than trusting a list of readers written
-  here, which has gone stale every time one has been written — including in the
-  commit that added this warning. It is asked in `View` and not in `bodyView` so the
-  notice REPLACES the frame rather than being drawn beneath part of it. And
-  `listTooShort` draws a bounded notice naming the height needed in TERMINAL rows
-  — a height that ACTUALLY DRAWS when the operator resizes to it. That holds at
-  the FIXED POINT and NOT by `needRows` being monotone, which it is not once
-  `markerRows` can grow from one row to two: a refused pane has a marker slack of
-  zero or less, so it reserves one, and the height that buys is a slack of
-  exactly one, which is what it still reserves there.
-  THE SEARCH OVERLAY IS EXEMPT, AND THAT IS A DECISION PAID FOR FOUR TIMES OVER.
-  Its first exemption rested on a false premise — that the overlay "pins its bar
-  to the TOP of the pane, where clampToBox cannot reach it", when clampToBox
-  drops from the BOTTOM, so at 80x7 the pane really did keep the input line
-  alone: no bar, no rows, no notice, every key it names still live. The premise
-  was false and the conclusion was right, and the reason is the one thing to
-  carry forward: **THE OVERLAY OWNS THE KEYBOARD** (`WantsRawInput` is true
-  whenever it is open) **AND THIS REFUSAL IS BUILT FOR A FRAME THAT OWNS
-  NOTHING** — it draws over the screen, holds the keys whose product it would
-  hide, and lets Root's global layer answer the rest. Bringing a keyboard-owning
-  surface inside it means re-deriving EVERY predicate about who owns which key,
-  at once, and the attempt produced FOUR separate defects from that one root,
-  in the order they surfaced:
-  (a) KEYS ACTING UNSEEN. `Update` dispatches to `updateSearch` BEFORE the
-  refusal's key gate, so the notice drew over the overlay while `up`/`down`
-  walked the cursor, `enter` opened an invisible row and every rune fired a
-  backend search — the pane saying moving does nothing while it did.
-  (b) THE BACK-STACK MISLABEL. Narrowing `WantsRawInput` to exclude a refused
-  pane moved `Root.recordHistory` with it, because ONE PREDICATE WAS ANSWERING
-  TWO QUESTIONS; a searching list got recorded, and `esc` brought it back with
-  its query and `N match(es)` drawn over a reloaded whole catalogue — rule 3
-  broken by a number rather than by a silence.
-  (c) THE EXEMPTION REASON FALSIFIED. What was left was justified as "the states
-  with no bar to cut", which stopped being true the moment a failed search left
-  `loadErr` set with `searching` still true: at height 7 the pane kept the input
-  line alone, bar-less, reached through the exemption rather than the budget.
-  (d) `ctrl+k`'S SECOND MEANING. With the screen no longer owning the keyboard on
-  a refused pane, `ctrl+k` stopped being bubbles' delete-to-end-of-line and
-  became "leave for the search palette" — and since a searching screen skips the
-  back-stack, the operator's typed query was gone unrecoverably. One keystroke
-  whose meaning depended on terminal height.
-  THE RULE, not four anecdotes: a surface that OWNS THE KEYBOARD cannot be
-  brought inside a refusal that assumes the frame owns nothing, because every
-  predicate about key ownership then has to be re-derived at once. And the reason
-  to REVERT rather than narrow a fifth time: four separate collisions from one
-  root is the signal that the root is wrong.
-  `TestList_TheSearchOverlayBehavesTheSameAtEveryDrawablePane` is the invariant
-  now — at every pane Root draws, the overlay takes every keystroke, stays off
-  the back-stack, draws no refusal, and answers each key exactly as it does at
-  the largest pane — so a fifth attempt fails rather than shipping.
-  WHAT THE EXEMPTION ACTUALLY COSTS, MEASURED ABOVE THE SIZE CONTRACT, is ONE
-  HEIGHT. The overlay's head is the input line plus its bar folded against the
-  live pane, and the bar folds onto one row at every width from 70 up — so the
-  head is two rows at every width Root draws, and `screenBodyRows(7)` is 1. The
-  bar is therefore off the pane at terminal height 7 and at NO other drawable
-  height, at every width 80–120. It was four rows at width 45 and three at 51,
-  so the band this used to cost spanned several heights and shrank to a single
-  one when the floor was set. The remaining row cannot be bought: one of the box
-  and the bar has to have it, and a pane drawing the bar instead would answer
-  every keystroke with no caret and no query, which is rule 1.
-  WHAT THE REVERT RESTORED is KEY ROUTING and the refusal EXEMPTION, and that is
-  the claim the check above delivers — not a general "the overlay is untouched",
-  which would be a maintained list of differences against a base commit and is
-  the shape this section exists to remove. `git diff` against the base is the
-  authority on the rest; two things are worth knowing because a reader will
-  otherwise mistake them for oversights. `searchBarHint` names the overlay's keys
-  conditionally, which changes the LEGEND and routes no key differently. And the
-  overlay's BODY BUDGET moved with the shared helpers rather than with the
-  refusal — it reads `screenBodyRows` and `markerRows` now, where base read the
-  floored `screenBodyHeight` and reserved the marker PAIR unconditionally — so a
-  short-rowed result set can show more rows than base did, and where the pane can
-  afford only one marker row it draws the shared one. That is deliberate: base
-  budgeted against a height `layout.go` documents as a lie below a terminal
-  height of 10. Both bars fold at `listPaneCells` rather than the fixed 51: a
-  fold is safe at 51 only while the pane HAS 51 cells, and at the width 45 Root
-  drew from before the size contract it has 16.
-  THE HELD SET IS DERIVED FROM WHAT EACH KEY'S PRODUCT IS, and there is exactly
-  one because there is exactly one refused pane. Read `listRefusedHoldsKey` for
-  the members rather than a roster restated here — restating it is what has
-  drifted every time — and what is worth knowing is the RULE that chooses them:
-  a key is held when its whole product is INVISIBLE on that pane, so declining
-  destroys nothing. A movement key's product is the POSITION, so `end` on
-  a refused pane would walk the cursor to the bottom of a list nobody can see
-  and declining it destroys nothing. On BROWSE `s` qualifies too: it re-orders
-  locally, its only visible product is `headerLine`, which the refusal does not
-  draw, and `needRows` is invariant under re-ordering — so the pane came back
-  byte for byte, standing rule 1 broken by the refusal itself. `r` and `f` do
-  not: both set `loading` and redraw as `Loading…`. Nor do `n` and the uppercase
-  shortcuts, which LEAVE — the operator's way out of a pane too short to work
-  in, and the reason not to widen either gate to them.
-  `enter` IS HELD, and the reason is the same one: the refusal draws no rows and
-  no highlight, and the row under the cursor MOVES while the pane is refused —
-  a filter cycle reloads and reseats it — so enter opens a row nobody chose,
-  which is worse than opening none, and the row is still there when the terminal
-  grows back. Enter was never the way out; `esc` is what the notice names, and
-  `n` and the uppercase shortcuts still leave.
-  THE BACK-STACK IS A DIFFERENT QUESTION FROM THE KEYBOARD, and asking one
-  predicate both is how a wrong label reached an operator. `Root.recordHistory`
-  read `WantsRawInput` as a proxy for "is this screen transient"; narrowing the
-  key-routing half to exclude a refused pane moved the history half with it, so
-  a SEARCHING list navigated away from at a short height was pushed — and `esc`
-  popped it, `popHistory` re-Init'd, the plain loader replaced the rows with the
-  whole catalogue, and the overlay went on drawing the query and an `N match(es)`
-  count over them. A filtered label on unfiltered rows is rule 3 broken by a
-  number rather than by a silence. `BackStackScreen` (`route.go`) is the history
-  question asked directly and `ListScreen.SkipsBackStack` reads `searching`
-  alone; the raw-input test survives as the FALLBACK for the forms and confirms
-  whose transience and whose keyboard ownership really are one state.
-  THE NOTICE'S PROMISE IS SCOPED TO WHILE THE NOTICE IS UP, and it has to be:
-  `paneDrawn` answers TRUE while a load is out, so `r` on a refused pane replaces
-  the notice with the working line and `G` then walks the cursor against rows
-  nobody can see. The first wording said the keys were held "until it fits",
-  which that sequence falsifies. The keys-act-invisibly-during-a-load half is
-  pre-existing and belongs to every list state rather than to the refusal — what
-  was new was a sentence claiming otherwise, and the sentence is what gave.
-  THE NOTICE IS BOUNDED AGAINST THE LIVE PANE IN BOTH AXES, and the width half
-  was got wrong first: it folded and marked against a fixed `pickerPaneWidth` on
-  a screen that recorded only the terminal HEIGHT, so at 60 columns it drew
-  `Too short: needs 16 rows, has 1` — the operator asked to act on a number that
-  is not the one the code computed, unmarked, with `StyleMuted`'s closing reset
-  clipped off the end. `ListScreen` keeps `terminalWidth` now and `listPaneCells`
-  reads `screenBodyCells` — the UNFLOORED width, added to `layout.go` for the
-  reason `screenBodyRows` was: `screenBodyWidth`'s floor of 20 was four cells
-  more than Root drew at width 45, and a bound that spends cells the pane does
-  not have is not a bound. The size contract has since put that floor out of
-  reach (`TestLayout_TheWidthFloorIsNeverReached`); the bound goes on reading
-  the honest accessor rather than resting on that.
-  WHATEVER MUST SURVIVE MUST LEAD, once more, and here it decides the WORDING.
-  On a REFUSAL the load-bearing clause is the WAY OUT, so `listTooShortWayOut`
-  leads in its own fold segment, then the height to RESIZE TO, then the height
-  the operator already HAS — a trim on either axis takes the tail and can never
-  leave a WRONG number standing. The single-segment version folded on spaces
-  into `Too short:` and scattered the figure across lines a short pane drops.
-  THAT CLAUSE CARRIES THE RULE AND ITS EXCEPTION TOGETHER, and it is a claim
-  about the LEGEND rather than about what acts — the distinction `jdeTooShort`
-  already makes. Split across sentences, rule-first puts the denial on the line
-  that leads and the way out on the line a one-row pane drops; way-out-first
-  leaves a pane naming a key above a sentence denying that any key is named. In
-  one clause the order is rule then exception AND the way out still leads. A
-  wording asserting that no key WORKS would be false of every key
-  `listRefusedHoldsKey` does NOT hold, which is why the claim is about the
-  LEGEND: what is true whatever stays bound is that the action bar is not drawn.
-  The wording was shaped to fit the 16 cells width 45 gives, or it folds into a
-  first line that denies without naming; the size contract has put the narrowest
-  pane at 51, so that is no longer the binding budget, but the rule is unchanged
-  and the sweeps check any rewording against the pane Root really draws.
-  ESC IS NAMED BECAUSE ESC WORKS THERE, and it is PRESSED rather than read off
-  Root's switch (`TestList_ARefusedPaneNamesAKeyThatReallyLeaves`, through a real
-  Root, with the back-stack both empty and loaded): a refused list is never
-  `searching` — the overlay is exempt — so `WantsRawInput` is false and
-  `HandlesKey` never claims `esc`, and the key reaches the global back step.
-  It is the one key a frame that names
-  none may name, the trade `jdeTooShort` already makes — the way out of a pane
-  too short to work in must stay open or the refusal is one nobody can act on —
-  and it does not soften the held-keys sentence beside it, because esc does not
-  act ON the list, it leaves it.
-  WHERE BOTH WILL NOT FIT, THE HEIGHT IS WHAT GIVES, and the state is narrow: a
-  ONE-ROW pane (terminal height 7, since `screenBodyRows` is height − 6) keeps
-  only the first folded line, and whether that line still holds the figure
-  depends on the width — 51 cells keeps it, and the 16 that width 45 gave did
-  not, so only the way-out clause was drawn there, marked. The size contract put
-  the narrowest pane at 51, so the figure survives at every one-row pane an
-  operator can reach; the sweep still SCOPES the figure by `listPaneRows` rather
-  than asserting it flat, because that scoping is what keeps the claim true if
-  the floor is ever reopened. From two rows up both are on the
-  pane at every drawable width, which is why the sweep asks the two claims at
-  different scopes: the way out at every drawable pane, the figure wherever
-  `listPaneRows` is more than one.
-  THE HEIGHTS ARE DERIVED FROM ROOT'S OWN GATE, and that is why nothing reported
-  any of this: the legibility loops in `list_bar_honesty_test.go` walked the
-  hand-picked pair {24, 30}, and every failing height was below both — two
-  hand-picked heights being the same mistake on the vertical axis that three
-  hand-picked widths was on the horizontal one. THE RULE THAT REPLACED THEM,
-  stated as a rule because a sentence claiming EVERY loop has been converted is
-  a universal over a set that grows whenever a loop is added, and no behavioural
-  check can deliver it: a legibility loop walks `jdePaneHeights()`, and it
-  measures through `listRootLines` rather than `screenBodyHeight`, which floors
-  at four rows and is therefore a LIE below a terminal height of 10. Where a
-  claim is a PRESENCE that a short pane genuinely defeats, the loop is scoped by
-  a boundary DERIVED from what the frame really draws — never by a height set
-  that avoids the state — and it counts BOTH sides of that boundary and fails if
-  either was never reached, or the scoping is a way of asserting nothing. The
-  search OVERLAY is the worked example and it carries both shapes: its BAR is
-  scoped, since the overlay is exempt from the refusal and a short pane keeps
-  part of it or none (`listOverlayBarFits`), while its BOX is not, since the box
-  is the head's FIRST row and `clampToBox` drops from the BOTTOM. A claim of
-  ABSENCE — the browse footer being gone while the box owns the keyboard — needs
-  no boundary at any height.
-  `TestList_AShortPaneRefusesRatherThanCuttingTheFooter` /
-  `TestList_ARefusedPaneKeepsTheOperatorsPlace` /
-  `TestList_ARefusedPaneHoldsTheKeysThatCouldNotBeSeenToAct` hold the refusal's
-  own honesty — bounded in both axes, naming a height that works, movement and
-  sort held, with the control asserted so a fixture that could not move for
-  unrelated reasons fails instead of passing. The WIDTH axis has its own sweep
-  over Root's drawable widths for the same reason
-  (`TestList_ARefusedPaneNamesAHeightTheTerminalCannotClip`), and it asserts
-  three things because the lead cannot speak for all of them: that the WAY OUT
-  reaches the clipped pane whole at every drawable pane, that the height figure
-  does wherever the pane has more than one row (the threshold asked of
-  `listPaneRows`, not written down), and that no line of the notice overruns the
-  pane at all — a styled line `clampToBox` truncates loses its closing SGR reset
-  into everything drawn after it.
-- **A list's uppercase keys come from `listShortcuts` (`list.go`), never from a
-  hint literal.** The footer and the handler read that one table; the previous
-  shape appended the words to a hint string and left the key to a global
-  accelerator in `app.go` that phase 3 had deleted. Lowercase acts on the list,
-  uppercase opens a sibling surface of the same workspace (which is also a
-  `workspaceSurfaces` row in `route.go`).
+  - **A SURFACE THAT OWNS THE KEYBOARD CANNOT BE BROUGHT INSIDE A REFUSAL BUILT
+    FOR A FRAME THAT OWNS NOTHING.** `list.go`'s `paneDrawn`, `WantsRawInput`
+    and `list_bar_honesty_test.go` all delegate this record here. The list
+    refusal exempts the open search overlay; narrowing it to cover the overlay
+    too produced FOUR defects from that one root, in the order they surfaced.
+    (a) KEYS ACTING UNSEEN — `Update` dispatches to `updateSearch` BEFORE the
+    key gate, so the notice drew over the overlay while `up`/`down` walked the
+    cursor, `enter` opened an invisible row and every rune fired a search.
+    (b) THE BACK-STACK MISLABEL — `Root.recordHistory` read `WantsRawInput` as a
+    proxy for "is this screen transient", so narrowing that predicate moved the
+    history question with it and `esc` came back to a searching list drawing its
+    query and `N match(es)` over a reloaded whole catalogue.
+    (c) THE EXEMPTION REASON FALSIFIED — what was left was justified as "the
+    states with no bar to cut", which stopped being true the moment a failed
+    search left `loadErr` set with `searching` still true.
+    (d) `ctrl+k`'S SECOND MEANING — with the screen no longer owning the
+    keyboard on a refused pane, `ctrl+k` stopped being bubbles'
+    delete-to-end-of-line and became "leave for the search palette", and since a
+    searching screen skips the back-stack the typed query was gone
+    unrecoverably: one keystroke whose meaning depended on terminal height.
+    THE RULE, not the four anecdotes: every predicate about who owns which key
+    has to be re-derived at once, and four collisions from one root is the signal
+    that the root is wrong — REVERT rather than narrow a fifth time.
+    `TestList_TheSearchOverlayBehavesTheSameAtEveryDrawablePane` is the
+    invariant, so a fifth attempt fails rather than shipping.
+- **A LEGIBILITY LOOP DERIVES ITS PANES AND COUNTS BOTH SIDES OF ANY SCOPE.**
+  Two hand-picked heights is the same mistake on the vertical axis that three
+  hand-picked widths is on the horizontal one, and it is how a whole band of
+  clipped-footer defects stayed green: the loops walk `jdeDrawableWidths()` and
+  `jdePaneHeights()` (Root's own gate, asked once — see the Gotchas entry on
+  their cost), and they measure through the CLIPPED frame rather than through
+  `screenBodyHeight`, which floors at four rows and so lies below a terminal
+  height of ten. Where the claim is a PRESENCE a short pane genuinely defeats,
+  the loop is scoped by a boundary DERIVED from what the frame really draws —
+  `listOverlayBarFits` and `proseBarFrameFits` are the worked examples — never
+  by a height set that avoids the state, and it fails if either side of that
+  boundary was never reached, because a scoping that avoids the state is a way
+  of asserting nothing. A claim of ABSENCE needs no boundary at any height.
 - **A REPORT TABLE fits its pane, and the give-order is written down.**
   `internal/tui/report_table.go` (`fitReportTable`, `layoutRows`) is the layer
   behind every tabbed report — inventory, purchasing, assets, reorders
@@ -2096,8 +1673,8 @@ either:
   63 cells against 51) lost the tail of their legend at 80 columns — 95 (screen,
   width, height, row) violations, which is what
   `TestJDEForm_TheActionBarSurvivesEveryHeight` reports on both axes now.
-  `bodyAvail` / `bodyScrolls` / `windowRows` are GONE: every sheet asks the
-  `…ForBar` variant with the bar it is about to draw, and where that answer
+  The three short forms that assumed a two-row bar are GONE: every sheet asks
+  the `…ForBar` variant with the bar it is about to draw, and where that answer
   feeds the bar's own contents it passes the bar WITH the scroll keys on it,
   because the tallest bar is the fixed point.
   The gate is `jdeScreen.frameDrawn`, and the three primitives that carry it for
@@ -2407,10 +1984,14 @@ touching any screen an operator drives:
   a byte-for-byte identical screen, which reads as a wedged program; that was
   the whole of the "the item picker hangs after I press enter" report.
 - Notes go on the PANE as well as the status bar: `StatusBar.Flash` expires
-  after four seconds and the operator who saw nothing is still looking. A phase
-  with nothing to ANSWER fills its header row with a standing FACT about the
-  phase (`standingNote`) rather than leaving it blank, so "nothing to say" and
-  "the row scrolled away" are different states.
+  after four seconds and the operator who saw nothing is still looking. WHICH
+  pane surface a note reaches is `po_create.go`'s decision rather than a rule
+  stated here — `statusPlan` assembles the status row and `headerLines`' rank
+  ledger places whatever is left — and a HEADER row is trimmable: the phase's
+  standing FACT (`standingRows`) fills the essential slot only where that phase
+  pins no typed box, and on the three that pin one (`essentialBoxRow`: the item
+  filter, the asset search, review's PO-notes) nothing standing is drawn at all.
+  The entry below is why an answer needs both surfaces.
 - **AN ANSWER NEEDS TWO SURFACES, AND WHICH ONE IT IS ON IS NOT A RANK
   DECISION.** A pinned header row is trimmed by `jdeFitHeader` and a header may
   mark exactly ONE row essential (`jdeMinBudget`), so a phase pinning a typed
@@ -2533,9 +2114,9 @@ touching any screen an operator drives:
   writer becomes reachable from a box-pinning phase, or the phase-change clear
   is removed — which is why the clear is a rule and not a tidy-up. Before it,
   ONE failed submit put the chooser, both pickers and the line form permanently
-  into that state: `setErr`'s other writers are `enterLinePhase`,
-  `removeLineAt` and `addReorderLines`, and none of them is on the way out of a
-  failed submit.
+  into that state, because nothing on the way out of a failed submit cleared it.
+  Derive which paths DO clear it by grepping `setErr(` rather than from a
+  roster: this entry named three call sites and there are more.
   `TestPOCreate_AnOrderLevelFailureDoesNotOutliveThePhaseItHappenedOn` drives
   the clear through the real submit and reports the answer going off the pane,
   not just the field staying set. `TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow`
@@ -2822,8 +2403,8 @@ touching any screen an operator drives:
   whether it moves, and `windowRowsForBar` the one answer to what a page is
   worth, and `frameDrawn` the one answer to whether the frame is on the pane at
   all — each asked of the bar that is about to be DRAWN. The short forms
-  (`bodyAvail`, `bodyScrolls`, `windowRows`) are gone: they assumed a two-row
-  bar, which stopped being true when every frame started wrapping. A sheet that
+  that took no bar are gone: they assumed a two-row bar, which stopped being
+  true when every frame started wrapping. A sheet that
   computes any of them itself will eventually compute it differently from
   the frame; `TestJDEForm_NoSheetAnswersTheScrollQuestionItself` holds the door
   shut by reading the package's own source, and it catches a bare
@@ -3013,7 +2594,7 @@ touching any screen an operator drives:
   THE NAMING HALF is proven on the surfaces whose bar is a machine-readable
   record — every type embedding `jdeScreen`, plus `ListScreen`, plus every
   screen that declares a `proseBar` (`prose_bar.go`) — and on those alone; see
-  the navigation entry below, because every receiver still in
+  the navigation entry above, because every receiver still in
   `listNavUnsweptReceivers` names less than it binds. The New PO flow was never
   part of it after its
   conversion: it is on the columnar set (`UP/DN`, `PgUp/PgDn` when the body
@@ -3220,7 +2801,7 @@ is the authority; read it before adding a frame or wording a bar.
   terminal width of 80, where `screenBodyWidth` gives 51, and fitting from 100
   (pane 71) up. THE MECHANISM WAS THE HINT PAST THE CAP, and the first wording
   of the entry got it wrong in a way worth recording: it blamed the layer's
-  unsized fallback and named a `jdePickHeader` that does not exist, when
+  unsized fallback and named a jdePickHeader that does not exist, when
   `jdePickList.render` is the builder and all nineteen sites call it with the
   LIVE pane. The row was 70 cells at every width because nothing in it was
   derived from the pane at all — the field is declared at a flat `Width: 30`,
@@ -3260,8 +2841,8 @@ is the authority; read it before adding a frame or wording a bar.
   `jdePlaceOf` is the right instrument for the question it was written for — a
   position that drifted and happened to redraw the same — and it called the
   slot-generate RUN REPORT's `UP/DN=Scroll` alive at all 61 of the panes the
-  report FITS at 80, 100 and 120 columns, where the key moved `resultCursor` and
-  the pane came back byte for byte. `TestJDEForm_EveryMovementTokenMovesTheOperatorsPANE` is the
+  report FITS at 80, 100 and 120 columns, where the key moved a cursor index
+  that no longer exists and the pane came back byte for byte. `TestJDEForm_EveryMovementTokenMovesTheOperatorsPANE` is the
   pane-measured half. Two mechanical traps in writing one: the COLOUR PROFILE
   must be FORCED or a moving highlight is stripped and an honest form reads as
   dead, and `jdeBarOf` must then be fed a STRIPPED view, because it anchors on
