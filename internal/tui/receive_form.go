@@ -4140,10 +4140,16 @@ func (s *ReceiveFormScreen) writeOffVerb() string {
 // barCeiling is the tallest bar this phase can draw, and it is deliberately
 // blind to headerRows: it is what the header allowance measures itself against,
 // so a bar that asked the header how tall it was would close a loop.
+//
+// Header-independent phases derive their ceiling from barFor(0), keeping it in
+// step with the bar drawn. TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn
+// checks the height contract across phases, headers, and drawable widths, and
+// TestReceive_TheBarCeilingNamesEveryKeystrokeTheDrawnBarDoes catches a drift too
+// small to fold the bar, which the height contract cannot see.
 func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 	switch s.phase {
 	case phaseLoading:
-		return []actionBarItem{{"Esc", "Back to order"}}
+		return s.barFor(0)
 	case phaseBlocked:
 		return s.blockedBarItems(true)
 	case phaseSerial:
@@ -4157,7 +4163,7 @@ func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 	case phaseReopenConfirm:
 		return s.reopenConfirmBar()
 	case phaseDone:
-		return []actionBarItem{{"Enter/Esc", "Back to order"}, {"r", "Receive more"}}
+		return s.barFor(0)
 	}
 	return s.qtyBarCeiling()
 }

@@ -2538,3 +2538,86 @@ func TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs(t *testing.T) 
 		}
 	}
 }
+
+// The height sweep catches folding drift; the keystroke sweep catches shorter,
+// non-folding drift, so neither check subsumes the other.
+//
+// The body budget depends on the ceiling's rendered height, not on an
+// item-for-item match: a drawn bar may merge items while remaining no taller.
+// Sweep every phase, possible header height, and drawable width so conditional
+// items and folding cannot make the drawn bar exceed its ceiling.
+func TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn(t *testing.T) {
+	compared := 0
+	widths := jdeDrawableWidths()
+	for _, c := range receivePhaseCases() {
+		for _, height := range c.paneSizes() {
+			t.Run(fmt.Sprintf("%s at height %d", c.name, height), func(t *testing.T) {
+				build := receiveHarness(t, c.fake, c.lines, 80, height)
+				r, s := build(t)
+				// The Root is only the driver: every fact asked below lives on
+				// the screen, which the reach has written through by pointer.
+				_ = c.reach(t, r, s)
+				if s.phase != c.phase {
+					t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
+				}
+				for _, width := range widths {
+					next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: height})
+					r = next.(Root)
+					ceiling := s.barCeiling()
+					ceilingRows := actionBarRowsFor(s.barWidth(), ceiling)
+					for h := 0; h <= s.paneRows(); h++ {
+						drawn := s.barFor(h)
+						compared++
+						if rows := actionBarRowsFor(s.barWidth(), drawn); rows > ceilingRows {
+							t.Errorf("at width %d with a %d-row header the bar folds onto %d row(s) and the "+
+								"ceiling onto %d, so the body is budgeted %d row(s) it does not "+
+								"have and clampToBox takes them off the BOTTOM, where the bar "+
+								"is\nceiling: %+v\ndrawn:   %+v",
+								width, h, rows, ceilingRows, rows-ceilingRows, ceiling, drawn)
+						}
+					}
+				}
+			})
+		}
+	}
+	if compared == 0 {
+		t.Fatal("no state was reached, so this judged nothing")
+	}
+}
+
+// The ceiling may merge items or include unreachable optional items, so its
+// named keystrokes must be a superset rather than an item-for-item match.
+func TestReceive_TheBarCeilingNamesEveryKeystrokeTheDrawnBarDoes(t *testing.T) {
+	compared := 0
+	for _, c := range receivePhaseCases() {
+		for _, height := range c.paneSizes() {
+			t.Run(fmt.Sprintf("%s at height %d", c.name, height), func(t *testing.T) {
+				build := receiveHarness(t, c.fake, c.lines, 80, height)
+				r, s := build(t)
+				// The Root is only the driver: every fact asked below lives on
+				// the screen, which the reach has written through by pointer.
+				_ = c.reach(t, r, s)
+				if s.phase != c.phase {
+					t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
+				}
+				ceiling := s.barCeiling()
+				accounted := receiveNamedKeys(t, ceiling)
+				for h := 0; h <= s.paneRows(); h++ {
+					drawn := s.barFor(h)
+					compared++
+					for k := range receiveNamedKeys(t, drawn) {
+						if !accounted[k] {
+							t.Errorf("with a %d-row header the bar names %q and the ceiling "+
+								"accounts for no such key, so the header allowance is "+
+								"measured against a bar that is not the one drawn\n"+
+								"ceiling: %+v\ndrawn:   %+v", h, k, ceiling, drawn)
+						}
+					}
+				}
+			})
+		}
+	}
+	if compared == 0 {
+		t.Fatal("no state was reached, so this judged nothing")
+	}
+}
