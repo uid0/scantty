@@ -1485,76 +1485,13 @@ either:
   `jdeRowsPastThePane` is the measured residue, per screen, as the widest width
   that still cuts and fails in both directions. **IT IS EMPTY**, and so is
   `jdeOverWideEssentialRows` beside it — both are kept so that the next entry
-  states what was given up rather than joining a crowd.
-  **IT HAS TWO AXES, AND A SWEEP WITH ONLY THE FIRST IS BLIND TO EVERY ROW BELOW
-  THE FOLD.** `jdeLines.Window` anchors the body on the CURSOR's block, so a
-  sweep that renders each case in the position its fixture OPENS in never looks
-  at a body longer than the pane, nor at a row whose content the cursor decides.
-  The HEIGHT axis draws the opening position at every drawable height, which is
-  what reaches every state of the pinned header; the POSITION axis draws every
-  position the movement keys reach, at the TALLEST pane — once per width,
-  because a body's rows are built from the screen's state and the pane's WIDTH
-  and never from its height, and the tallest window covers the most rows per
-  press. Walking positions at every height as well was measured at 500 seconds
-  against the pair's 35 and reached no row the pair does not. The axis is about
-  the MAJORITY of cases rather than a corner — the sweep reports the live count
-  rather than anyone writing one down here — and what it reached included the
-  purchase-order DETAIL sheet's whole line grid, which this sweep had reported a
-  51-column ceiling for while it overran to 65: a ceiling measured off the rows
-  it could see. The axis carries its own vacuity guard, because a walk that
-  stopped moving would go on reporting coverage it no longer had.
-  **A FIXTURE BUILT IN CREATE MODE DRAWS NO READ-ONLY BAND AT ALL**, which is
-  the vacuous-fixture rule with the fixture's EMPTINESS as the thing that could
-  not reach the bound. The item sheet's supplier band and the asset form's
-  supply band were drawn by no case in the package, so both screens were
-  reported as fitting every pane without either grid having been rendered once.
-  Both now have an edit-mode state carrying rows (`jdeScreenStates`).
-  Screens whose rows change with focus may still want
-  their own state walk; `po_edit_rows_test.go` is the worked example and also
-  requires an ellipsis on every clipped value. Keep dropped grid flags on the
-  row itself, never only on a continuation row that may fall below the window.
-  **A GRID'S FACT COLUMN IS RESERVED AT WHAT ITS VALUES REALLY HOLD, NEVER AT A
-  CONSTANT.** `padCell` pads and never TRUNCATES, so a cell handed a value wider
-  than its column does not lose the value — it widens the whole ROW, and
-  `clampToBox` then cuts the row at the pane's edge with no mark, taking
-  whatever the grid drew LAST. `poFitLineGrid` had worked that out for the
-  purchase-order line grid and nowhere else, and every other grid in the package
-  was written the other way: measured with the values OMS really serves, the
-  item sheet's supplier band ran past the pane to 94 columns (a six-figure pack
-  cost is ten cells in a nine-cell column, and the LEAD TIME went off the end)
-  and the asset form's supply band to 98. `jdeGridFactW` and `jdeGridFactCell`
-  (`jde_form.go`) are the layer's answer — grow the column to its ceiling and
-  let the IDENTIFIER column give up the room, then mark anything past the
-  ceiling — and they are the reason a fact is grown rather than clipped: a
-  number cell is not a description, so `1000…` is a WRONG quantity rather than a
-  shortened one. `fitFactCell` is what the mark goes through, so a digit-bearing
-  value becomes the cut mark outright rather than a smaller real figure.
-  **THE SET IS EVERY GRID, DERIVED BY GREPPING `padCell(` IN NON-TEST CODE AND
-  ASKING WHAT BOUNDS EACH CELL** — not by fixing the two that were reported.
-  Every FACT cell in the package goes through `jdeGridFactCell` now and every
-  fact COLUMN through `jdeGridFactW`; what an identifier cell is padded to is
-  still the caller's, because each already fits its own (`fitCell`,
-  `itemSupplierCell`, `supplyItemCell`, `poFitRow`). **AND A MEASURED INDEX
-  COLUMN DRAGS ITS CONTINUATION INDENT WITH IT**: each of these grids hangs its
-  readings at an indent built from the index column's width, and five of them
-  were package vars computed from the constant — so a grid whose index grew would
-  have drawn every reading left of the column it hangs under. They are methods
-  reading the measured width now.
-  **AND THE BAND BELOW 80 COLUMNS IS MOOT RATHER THAN EXCLUDED BY JUDGEMENT**:
-  `Root.View()` returns `terminalTooSmall`'s notice INSTEAD of a frame under
-  `minTerminalWidth` (`TestRoot_TheRefusalIsTheWholeFrame`), so no columnar row
-  is drawn at 49–79 columns and none can be cut — which is why the rows measured
-  overrunning from 49 up, the detail grid's `$36.00` drawn as `$3` at 62 among
-  them, needed no fix: the floor landed after they were measured.
-  `receiveHonestWidths` reads that gate rather than naming a width, so the band
-  follows the contract if the floor moves.
-  Two things are deliberately NOT in it, and both are judgements rather than
-  oversights: `poGridCell` (`po_detail.go`) and `inventory_detail_kit.go` fit
-  their number cells with `fitCell` rather than `fitFactCell`, so a figure past
-  its column is cut with an ellipsis instead of replaced by the mark — neither
-  can overrun the pane, so the row is never cut without a mark, and changing
-  which mark they draw is a separate decision about the PO grid's own
-  give-order. `report_table.go` is not this layer at all and has its own fit.
+  states what was given up rather than joining a crowd. The sweep walks every
+  reachable body position as well as every drawable height; keep edit-only grids
+  represented in `jdeScreenStates` so an empty create fixture cannot make the
+  check vacuous. Screens whose rows change with focus may still want their own
+  state walk; `po_edit_rows_test.go` is the worked example and also requires an
+  ellipsis on every clipped value. Keep dropped grid flags on the row itself,
+  never only on a continuation row that may fall below the window.
   **A ROW IS BOUNDED BY THE LAYER AND THERE IS NOTHING TO OPT OUT OF.** The
   residue was twenty-six non-purchasing screens cutting a row at 80 columns and
   up to 120 — the FLOOR had nothing to do with it — and all of it came from the
