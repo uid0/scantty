@@ -576,6 +576,23 @@ func (s *LocationReconcileScreen) badRows() int {
 	return n
 }
 
+func (s *LocationReconcileScreen) badOpenRows() []int {
+	var rows []int
+	for i, it := range s.items {
+		if it.CountMode != omsapi.CountModeOpenClosed {
+			continue
+		}
+		raw := strings.TrimSpace(s.rows[i].openCount)
+		if raw == "" {
+			continue
+		}
+		if _, ok := reconParseCount(raw); !ok {
+			rows = append(rows, i+1)
+		}
+	}
+	return rows
+}
+
 // anythingTyped reports whether leaving would DISCARD work — counts, notes,
 // overridden reasons, skip flags and open tallies alike. The Esc label reads off
 // it, because saying what leaving costs after the screen is gone is too late.
@@ -1404,6 +1421,13 @@ func (s *LocationReconcileScreen) submitRefusal() string {
 	if bad := s.badRows(); bad > 0 {
 		return fmt.Sprintf("%d row(s) hold something that is not a whole count — clear or correct them first", bad)
 	}
+	if rows := s.badOpenRows(); len(rows) > 0 {
+		labels := make([]string, len(rows))
+		for i, row := range rows {
+			labels[i] = strconv.Itoa(row)
+		}
+		return fmt.Sprintf("open tally on row(s) %s is not a whole count — clear or correct it first", strings.Join(labels, ", "))
+	}
 	if s.countedRows() == 0 {
 		return "nothing is counted yet — put a number against at least one row"
 	}
@@ -2044,7 +2068,7 @@ func (s *LocationReconcileScreen) itemHeading(i, width int) string {
 	lead := fmt.Sprintf("%2d ", i+1)
 	mark := ""
 	switch {
-	case s.typedOn(i) && !s.isCounted(i):
+	case s.typedOn(i) && !s.isCounted(i), s.openCountInvalid(i):
 		mark = " !"
 	case s.isCounted(i):
 		mark = " ✓"
@@ -2086,6 +2110,18 @@ const (
 func (s *LocationReconcileScreen) isCounted(i int) bool {
 	_, ok := s.counted(i)
 	return ok
+}
+
+func (s *LocationReconcileScreen) openCountInvalid(i int) bool {
+	if s.items[i].CountMode != omsapi.CountModeOpenClosed {
+		return false
+	}
+	raw := strings.TrimSpace(s.rows[i].openCount)
+	if raw == "" {
+		return false
+	}
+	_, ok := reconParseCount(raw)
+	return !ok
 }
 
 // meaningLines is what the number currently in the box would MEAN, drawn under
@@ -2151,13 +2187,18 @@ func (s *LocationReconcileScreen) overrideLines(i, width int) []string {
 	if n := strings.TrimSpace(st.notes); n != "" {
 		parts = append(parts, "note: "+poQuotedClip(n, reconQuotedCells))
 	}
-	if o := strings.TrimSpace(st.openCount); o != "" {
+	if o := strings.TrimSpace(st.openCount); o != "" && !s.openCountInvalid(i) {
 		parts = append(parts, "open: "+o)
 	}
-	if len(parts) == 0 {
-		return nil
+	var out []string
+	if len(parts) > 0 {
+		out = append(out, reconCaveatLines(strings.Join(parts, " · "), StyleMuted, width)...)
 	}
-	return reconCaveatLines(strings.Join(parts, " · "), StyleMuted, width)
+	if o := strings.TrimSpace(st.openCount); o != "" && s.openCountInvalid(i) {
+		out = append(out, reconCaveatLines(poQuotedClip(o, reconQuotedCells)+
+			" is not a whole open tally, so this row cannot be sent.", StyleStatusError, width)...)
+	}
+	return out
 }
 
 // reconOnFile is what OMS currently believes is on the shelf, in the unit the

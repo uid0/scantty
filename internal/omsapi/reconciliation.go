@@ -2,8 +2,6 @@ package omsapi
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -279,45 +277,4 @@ func (c *Client) SubmitReconciliationBatch(ctx context.Context, rows []Reconcili
 		return nil, err
 	}
 	return &out, nil
-}
-
-// AsDetailRefusal recovers the prose from a `{"detail": "<sentence>"}` body.
-//
-// The reconciliation endpoints write their own refusals by hand — an unknown
-// item, a permission denial, a location that does not exist — so those bodies
-// never reach OMS's DRF exception handler and never carry the `{"error": {...}}`
-// envelope parseError understands. What the operator would otherwise read is
-// the raw JSON, because parseError puts the ENTIRE body into APIError.Message
-// whenever the envelope has no code.
-//
-// Narrow on purpose, exactly as AsReceivingRefusal is: it accepts only an
-// OBJECT whose `detail` is a non-blank JSON STRING. A gateway's HTML page, a
-// DRF field-validation body (`{"rows": [...]}`) and anything else keep the
-// shape they arrived in rather than being mangled into a sentence. DRF's own
-// handler happens to use this shape too — an expired session answers
-// `{"detail": "Authentication credentials were not provided."}` — and
-// recovering that sentence is right for the same reason.
-func AsDetailRefusal(err error) (string, bool) {
-	var api *APIError
-	if !errors.As(err, &api) {
-		return "", false
-	}
-	body := strings.TrimSpace(api.Message)
-	if !strings.HasPrefix(body, "{") {
-		return "", false
-	}
-	var envelope struct {
-		Detail json.RawMessage `json:"detail"`
-	}
-	if json.Unmarshal([]byte(body), &envelope) != nil || len(envelope.Detail) == 0 {
-		return "", false
-	}
-	var prose string
-	if json.Unmarshal(envelope.Detail, &prose) != nil {
-		return "", false
-	}
-	if strings.TrimSpace(prose) == "" {
-		return "", false
-	}
-	return prose, true
 }

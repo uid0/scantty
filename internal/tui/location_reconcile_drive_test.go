@@ -549,6 +549,41 @@ func TestReconcileDrive_AnOpenClosedRowCarriesItsOpenTallyAndNoOtherRowDoes(t *t
 	}
 }
 
+func TestReconcileDrive_InvalidOpenTallyNeverReachesTheServer(t *testing.T) {
+	fake := &reconFake{}
+	r, s := reconDrive(t, fake)
+
+	r = reconPress(t, r, "down")
+	r = reconPress(t, r, "down")
+	r = reconPress(t, r, "down")
+	r = reconType(t, r, "3")
+	r = reconCtrl(t, r, tea.KeyCtrlE)
+	r = reconPress(t, r, "down")
+	r = reconPress(t, r, "down")
+	r = reconPress(t, r, "down")
+	r = reconType(t, r, "2x")
+	r = reconPress(t, r, "enter")
+
+	pane := reconPane(t, s)
+	if !strings.Contains(pane, "!") || !strings.Contains(reconFlat(pane), "not a whole open tally") {
+		t.Fatalf("the invalid open tally is not marked and explained before review:\n%s", pane)
+	}
+
+	r = reconCtrl(t, r, tea.KeyCtrlR)
+	if s.phase != reconCount {
+		t.Fatalf("invalid open tally opened phase %v, want count", s.phase)
+	}
+	if pane = reconPane(t, s); !strings.Contains(reconFlat(pane), "open tally on row(s) 3 is not a whole count") {
+		t.Fatalf("the refusal does not locate the invalid open tally:\n%s", pane)
+	}
+	fake.mu.Lock()
+	n := len(fake.batches)
+	fake.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("invalid open tally sent %d batch requests, want none", n)
+	}
+}
+
 // TestReconcileDrive_ARoomWithNothingInItSaysSoAndOffersAWayOn keeps the two
 // blocked facts apart: "nothing is stored here" is not "we could not read it".
 func TestReconcileDrive_ARoomWithNothingInItSaysSoAndOffersAWayOn(t *testing.T) {
