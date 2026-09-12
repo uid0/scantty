@@ -96,6 +96,19 @@ import (
 // which is the fact the map already carries, but what a reader would need to
 // know to convert it. A stale entry fails as loudly as a missing one, so a
 // screen that joins a swept class must be taken OUT of here.
+//
+// SCREENS HAVE ALREADY BEEN TAKEN OUT, AND THAT IS THE ONE SHAPE OF CHANGE THIS
+// MAP IS MEANT TO RECORD — no count of them is written here, because it moves
+// every time one converts and a number beside a derivation is the part of it
+// that goes stale. The ones that held a TextScroller and spelled no key of their
+// own went first: they were the clearest instance of the prose-bar gap — one
+// shared handler, and each sheet deciding for itself which of its keys to name,
+// so four of them named "j/k scroll" alone while the arrows, pgup/pgdn, g/G and
+// home/end all worked. Their bars are RECORDS now (prose_bar.go) and
+// prose_bar_honesty_test.go presses the whole key space at them, so the
+// classifier counts them as a THIRD swept class and an entry left here for one
+// of them fails. What is still a literal is named in proseBarUnconverted with
+// the shape of the work its conversion needs.
 var listNavUnsweptReceivers = map[string]string{
 	"AssetPartsScreen":           "the parts list on an asset; footer written in View, already past 51 cells",
 	"AssetProblemsScreen":        "the problem list on an asset, plus its vendor picker",
@@ -135,12 +148,6 @@ var listNavUnsweptReceivers = map[string]string{
 	"MakerBoxesScreen":            "the maker-box list beside MakerBoxFormScreen",
 	"OperationalModesScreen":      "the ForgeKey operational-mode list",
 	"PMBoardScreen":               "the preventive-maintenance board",
-	"ReorderQueueScreen": "the reorder queue. Its bar is a muted literal inside View, so " +
-		"the honesty sweep cannot read it — but it is the one entry here that carries its " +
-		"own: TestReorderQueue_EveryLifecycleKeyActsExactlyWhereItIsNamed presses all four " +
-		"lifecycle keys against a row in each of the five request states and holds the " +
-		"biconditional, because OMS gates none of those four actions on a status and every " +
-		"refusal is therefore this client's",
 	"ReportTableScreen": "the shared scrollable report table, which every tabbed report " +
 		"page rides. reportScreenFixtures (report_yardstick_test.go) is the roster of " +
 		"those pages and TestReportTable_EveryReportScreenIsSwept derives it from the " +
@@ -166,7 +173,6 @@ var listNavUnsweptReceivers = map[string]string{
 	"WebhookListScreen":          "the webhook list beside WebhookFormScreen",
 	"WorkOrderAttachmentsScreen": "the attachment list on a work order",
 	"WorkOrderDetailScreen":      "the work-order detail sheet and its material pickers",
-	"AssetDetailScreen":          "the asset detail sheet and its certification picker",
 	"LocationDetailScreen": "NOT a navigation binding: its `g` generates the location's QR " +
 		"code. It is here because the vocabulary is a set of KEY NAMES and cannot tell a " +
 		"movement `g` from a `g` that means generate — which is a limit of the derivation " +
@@ -185,18 +191,7 @@ var listNavUnsweptReceivers = map[string]string{
 	"slotCardPrompt": "a two-row modal prompt inside the storage-slot list, not a list of " +
 		"rows: up/down move between a text field and a toggle and its cursor WRAPS, so the " +
 		"field-form exemption applies (AGENTS.md)",
-	// The SEVEN that hold a TextScroller and spell no key of their own
-	// (listNavDelegatingReceivers). Their footers are the clearest instance of
-	// the prose-bar gap: one shared handler, and each sheet decides for itself
-	// which of its keys to name.
-	"AnalyticsPulseScreen":        "the staff analytics sheet; its footer names 'j/k scroll · pgup/pgdn page' and is silent about the arrows, g/G and home/end",
-	"NotificationsScreen":         "the notification sheet; names j/k, pgup/pgdn and g/G, silent about the arrows and home/end",
-	"SIGDetailScreen":             "the read-only SIG sheet; names 'j/k scroll · pgup/pgdn page'",
-	"ProjectStorageDetailScreen":  "the project storage sheet; names 'j/k scroll' alone while pgup/pgdn, the arrows, g/G and home/end all work",
-	"StorageSlotDetailScreen":     "the storage slot sheet; names 'j/k scroll' alone",
-	"ElectricalPanelDetailScreen": "the electrical panel sheet; names 'j/k scroll' alone",
-	"SupplierDetailScreen":        "the supplier sheet; names 'j/k scroll' alone",
-	"Root":                        "not a screen: app.go's root, which moves the NAV TREE cursor. The sidebar is its own surface with its own legend and is not a list of rows",
+	"Root": "not a screen: app.go's root, which moves the NAV TREE cursor. The sidebar is its own surface with its own legend and is not a list of rows",
 }
 
 // listNavBindingSurfaces parses the package and returns, for every method that
@@ -488,7 +483,8 @@ func listNavReceiverName(e ast.Expr) string {
 //
 // SEVEN were in that state — AnalyticsPulseScreen, NotificationsScreen,
 // SIGDetailScreen, ProjectStorageDetailScreen, StorageSlotDetailScreen,
-// ElectricalPanelDetailScreen and SupplierDetailScreen. The other TextScroller
+// ElectricalPanelDetailScreen and SupplierDetailScreen, all seven since
+// converted to a proseBar record. The other TextScroller
 // holders (asset, inventory and work-order detail among them) bind keys of their
 // own as well and so were already found. No count of the holders is written down
 // anywhere in this file: the check derives the set every run, and a number
@@ -609,6 +605,13 @@ func listNavColumnarReceivers(t *testing.T) map[string]bool {
 func TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused(t *testing.T) {
 	binding := listNavBindingSurfaces(t)
 	columnar := listNavColumnarReceivers(t)
+	// The THIRD swept class, and the newest: a screen whose footer is a
+	// proseBar RECORD rather than a literal (prose_bar.go). Its bar can be read
+	// and its keys pressed, so it belongs with the other two rather than in the
+	// excused roster — and taking a screen out of that roster as it converts is
+	// what makes the remainder shrink VISIBLY, instead of a map that only ever
+	// grows.
+	prose := proseBarReceivers(t)
 	// A screen that HOLDS a TextScroller has the movement vocabulary without
 	// spelling any of it, so it is a navigation surface for this rule's purposes
 	// even though no `case` in it names a key.
@@ -633,6 +636,14 @@ func TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused(t *testing.T) {
 					"TestList_FooterNamesExactlyTheKeysThatWork, so the exclusion %q is "+
 					"stale", why)
 			}
+		case prose[recv]:
+			if why, listed := listNavUnsweptReceivers[recv]; listed {
+				t.Errorf("%s declares proseBar, so "+
+					"TestProseBar_TheFooterNamesExactlyTheKeysThatWork presses the whole "+
+					"key space at its bar — but it is recorded as a prose-footer exclusion "+
+					"(%q). A stale exception excuses a surface from the sweep it passes",
+					recv, why)
+			}
 		default:
 			if _, listed := listNavUnsweptReceivers[recv]; !listed {
 				sort.Strings(sites)
@@ -644,10 +655,11 @@ func TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused(t *testing.T) {
 	sort.Strings(unclassified)
 	for _, u := range unclassified {
 		t.Errorf("%s\n"+
-			"This receiver binds a movement key and neither behavioural sweep can read "+
-			"its bar: it does not embed jdeScreen (so the columnar sweep skips it) and "+
-			"it is not a *ListScreen (so the footer sweep does not reach it). Either put "+
-			"it on one of those two surfaces — which is what makes the rule PROVABLE for "+
+			"This receiver binds a movement key and no behavioural sweep can read its "+
+			"bar: it does not embed jdeScreen (so the columnar sweep skips it), it is "+
+			"not a *ListScreen (so the footer sweep does not reach it), and it declares "+
+			"no proseBar (so the prose-bar sweep cannot read it either). Either put it "+
+			"on one of those three surfaces — which is what makes the rule PROVABLE for "+
 			"it — or record it in listNavUnsweptReceivers saying what it is.", u)
 	}
 

@@ -1356,6 +1356,211 @@ either:
     (`"ctrl+d"` and `tea.KeyCtrlD`). A test that drives a retired chord stops
     entering the arm it exists to test and can go on passing without exercising
     that arm.
+- **One navigation vocabulary, three spellings of it, and the third is proven
+  only where it has been CONVERTED.** `internal/tui/list_nav.go` is the
+  vocabulary and carries the full note; read it before binding or naming a
+  movement key anywhere. The KEYS are
+  written down once (`listNavSetVerb`) and the VERB is a parameter, because what
+  moves differs and the keys do not: a `ListScreen` moves a CURSOR through rows
+  and says `move`, a `TextScroller` moves a WINDOW over a body and says `scroll`.
+  A second literal would be a second roster of keystrokes, free to drift.
+  The set is `j/k ↑↓` move, `pgup/pgdn` page, `g/G home/end` top/bottom. The
+  emacs chords are RETIRED — `ctrl+u`/`ctrl+d`/`ctrl+p`/`ctrl+n` move nothing
+  anywhere — because no bar in the program ever SPELLED one and a 51-column
+  footer cannot afford to teach a chord, which is the trade sc-po-create-hangs
+  already made on `ListScreen`'s pager and the purchasing surfaces. It stayed
+  unmade on twenty-one sibling files (twenty-four `case "ctrl+d", "pgdown":`
+  pairs, forty-eight arms), so the same key paged the supplier list and did
+  nothing on the inventory list the operator reached it from —
+  `TestListNav_NoSurfaceBindsARetiredChord` PRESSES each chord on every fixture
+  its swept sets can build (`jdePaneCases`, `listBarSurfaces` × every row count,
+  `TextScroller`, and the cursor pickers of `listNavPickerCases`) and fails on
+  one that moves. Its subtests are the authority on which sets there are; do not
+  write the number down here, which is where it has drifted every time.
+  A KEYSTROKE HAS TWO SPELLINGS IN THIS PACKAGE AND A DERIVATION OVER ONE OF THEM
+  IS NOT A DERIVATION. `case "ctrl+n":` and `case tea.KeyCtrlN:` in a switch over
+  `m.Type` bind the same key, and the first retirement, this sweep and the
+  surface classifier all read STRING LITERALS ONLY — so `ctrl+n`/`ctrl+p` went on
+  moving a cursor for two more rounds on the universal search palette
+  (`search.go`), the e-paper bind picker (`epaper_panels.go`) and the
+  location check-in lookup (`location_checkins.go`), while both this file and
+  `listNavRetiredChords` said the chords moved nothing anywhere. All three are
+  unbound now — the arrow each clause already bound is what their footers name,
+  so nothing was taken from the operator — and `listNavCaseKey` reads both
+  spellings, asking bubbletea itself what a `tea.Key*` constant spells rather than
+  transcribing a table (`listNavSpellingIndex`, with `KeySpace` the one recorded
+  exception, since its `String()` is the character and not the word).
+  **A COMMIT THAT UNBINDS A LIVE KEY LISTS IT, FILE BY FILE AND KEY BY KEY** —
+  the `BINDINGS CHANGED` record e1c1047 set the precedent for — because an
+  operator's hands are the only place a retired chord is recorded, and a captain
+  reading a subject line about a sweep cannot tell that a key they press every
+  day stopped working. The three that went, in the order they matter to somebody
+  who uses this program: `search.go` — the universal search palette (`ctrl+k`),
+  `ctrl+n` and `ctrl+p` off the result cursor, which is the surface the captain
+  actually drives and where those chords were muscle memory; `epaper_panels.go` —
+  the e-paper bind picker, `ctrl+n` and `ctrl+p`; `location_checkins.go` — the
+  location check-in lookup, `ctrl+n` and `ctrl+p`. Every one of those three
+  `case` clauses ALREADY bound — and its footer already NAMED — the arrow that
+  spells the same move (`↑/↓ move`), so nothing an operator was told about was
+  taken away; what went is a chord no bar in the program ever spelled. The lesson
+  is the one this area keeps teaching: a roster is only as complete as the
+  alphabet it is derived over. It used to prove that from source SHAPE — a
+  regex over `case "ctrl+d":` literals — which failed on a commented-out arm and
+  passed a chord bound through a helper or a key-name map; behaviour answers both
+  directions. It is POSITIVELY CONTROLLED (`listNavChordControls`): each case
+  first presses the NAMED key spelling the same affordance and the sweep fails if
+  no fixture in a set could be moved by it, because "ctrl+d changed nothing" is
+  equally true of an empty list, a one-row list and a refused pane. What it
+  asserts differs by set ON PURPOSE, and that is a fact about the surfaces:
+  bubbles binds all four chords for LINE EDITING on a focused textinput, so on a
+  columnar sheet with the caret in a box `ctrl+u` legitimately empties the box
+  and the claim there is over `jdePlaceOf` alone; a `ListScreen` in browse mode
+  holds no caret, so the clipped PANE is asserted too — which is what catches a
+  window that scrolled without the cursor leaving its row, since `windowStart` is
+  not in `jdePlaceOf`'s vocabulary. THE SCROLLER IS THE THIRD SET AND WAS THE
+  HOLE the behavioural conversion opened: `scroll.go` is where two of the four
+  chords were actually unbound, and neither of the other sets can reach it — no
+  `TextScroller` holder embeds `jdeScreen` or is a `*ListScreen`, and
+  `jdePlaceOf` walks the int fields of the SCREEN, so an offset nested inside a
+  scroller value is invisible to it even if one did. Restoring
+  `case "ctrl+d", "pgdown":` in `Handle` failed nothing at all, which made the
+  conversion WEAKER than the regex it replaced on the one file the retirement
+  touched. It asserts the OFFSET and the bool `Handle` returns, since a chord
+  answered `true` is a keystroke every sheet holding one swallows on behalf of a
+  binding that is gone. A prose-bar surface is PRESSED wherever a test can build
+  one — `TextScroller` and the cursor pickers are values the sweep constructs
+  directly — and a surface no press reaches is classified rather than claimed about
+  (`TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused`, which is a
+  COVERAGE guard over the source, asserts nothing about any key, and cannot see
+  a retired chord at all since it collects only what `listNavBinds` accepts).
+  A TEST THAT DRIVES A RETIRED CHORD STOPS TESTING ANYTHING, and the retirement
+  left three behind: `TestStorageSlots_PagedownClampsOnEmpty`,
+  `TestAssetProblems_EmptyFilterCursor` and
+  `TestLocationProblems_EmptyFilterCursor` each pressed `ctrl+d` at a `pgdown`
+  arm, so after the retirement the arm they exist to enter was never entered and
+  `cursor >= 0` passed for the reason it would have passed with the arm deleted.
+  They press `pgdown` now and assert the cursor's exact resting place rather than
+  its sign, because "not negative" is equally true of a screen on which nothing
+  ran. Whenever a key is retired, grep the tests for it in BOTH spellings
+  (`"ctrl+d"` and `tea.KeyCtrlD`) — the vacuity is silent in exactly the way the
+  retirement is.
+  THE COLUMNAR LAYER SPELLS THE SAME AFFORDANCES AS TOKENS (`UP/DN`,
+  `PgUp/PgDn`, `Home/End`) AND BINDS NO LETTER, and that is a fact about the
+  surface rather than drift: a columnar picker's filter box is always live, so a
+  bare `j` is a character in the query. One vocabulary, two spellings, each bar
+  honest about its own.
+  WHERE THE RULE IS PROVEN is the part to keep straight, because the sentence
+  is easy to over-claim. Two behavioural sweeps hold it, each over the half of
+  the app whose bar is a machine-readable RECORD:
+  `TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves` over every type
+  embedding `jdeScreen`, at every width and drawable height; and
+  `TestList_FooterNamesExactlyTheKeysThatWork` plus
+  `TestList_TheSearchOverlayNamesExactlyTheKeysThatWork` over every `*ListScreen`
+  the nav tree reaches, at every count in `listRowCases` — EMPTY, ONE ROW and
+  MANY. The row counts are the axis those sweeps were blind on: every fixture
+  carried eight rows, so a footer that named `j/k ↑↓ move · pgup/pgdn page ·
+  g/G home/end top/bottom` as an unconditional literal was only ever pressed
+  where it was true.
+  THE THIRD SPELLING IS A RECORD NOW FOR THE SCREENS THAT HAVE BEEN CONVERTED,
+  and `internal/tui/prose_bar.go` is that layer. A `proseBar` is a list of
+  `{Keys, Hint}` segments — the words drawn, and EXACTLY the keystrokes those
+  words spell — folded against the live pane and with the body's row budget
+  DERIVED from the fold. `prose_bar_honesty_test.go` then presses the whole key
+  space at it, so the rule is mechanical for a converted screen exactly as it is
+  for a columnar one. What that closed where it has been applied: most of the
+  converted screens are detail sheets holding a `TextScroller`, whose `Handle`
+  binds the whole vocabulary, and four of them named `j/k scroll` ALONE — the
+  arrows, pgup/pgdn, `g`/`G` and home/end all worked and no word said so.
+  `AnalyticsPulseScreen` also bound
+  `backspace` as a second way back and named it nowhere. The two longest literals
+  were past the 51 cells an 80-column pane gives BEFORE the missing keys were
+  considered, so `clampToBox` was taking their tails: the storage-slot sheet lost
+  `r refresh · esc back` on an occupied slot. The record is NOT scroller-only:
+  `ReorderQueueScreen` is a cursor LIST on it, and `proseNavList` is the movement
+  half for that shape as `proseNavScroll` is for a scrolled body — two
+  thresholds there rather than one, since a list that fits has somewhere for `j`
+  to go and nowhere for `pgdn`.
+  WHAT A CONVERSION COSTS, in the order the pieces matter: the bar becomes a
+  method taking the movement answer as a PARAMETER (`bar(scrolls bool)`), so the
+  CEILING and the drawn bar are one expression; the viewport is sized against
+  that ceiling (`proseSizeScroller`), because naming the scroll keys costs cells,
+  cells fold the bar onto another row, and another row can turn a body that
+  fitted into one that overflows — the fixed point `listSearchBarHint` and
+  `jdePickBarCeiling` already make; and `proseBar()` SIZES BEFORE IT ANSWERS,
+  which is not a nicety — the sheets set their viewport inside `View`, so a
+  record read before the first render answered about the constructor's
+  `defaultDetailHeight` and the sweep reported a bar naming no movement key on a
+  sheet five keys moved.
+  WHERE IT IS STILL NOT PROVEN, said plainly because a claim no check delivers is
+  worse than no claim: every receiver `listNavUnsweptReceivers` records — that
+  map is the roster and the authority on how many there are, and a count
+  restated here is the one part of the derivation that cannot be derived —
+  writes its bar as a muted literal
+  straight into a `strings.Builder` inside `View`. `TextScroller` is the shape of
+  it at its clearest — one handler shared by every detail sheet
+  `listNavDelegatingReceivers` finds, whose footers
+  disagree about which of its keys to name. There is no record to read,
+  so no sweep can press keys against it, and a typical one reads `j/k move · n
+  new · E/enter edit · x delete · r refresh · esc back` while binding the arrows,
+  `g/G`, `home/end` and `pgup/pgdn` too — and it is ALREADY past the 51 cells the
+  pane gives, so naming the rest would make it less readable, not more ("a bar
+  the operator cannot read is not honest, it is absent"). Closing one means the
+  conversion above, which is the shape of sc-jde-lift rather than an edit.
+  THE REMAINDER IS NAMED RATHER THAN LEFT OVER. `proseBarUnconverted`
+  (`prose_bar_honesty_test.go`) carries one entry per unconverted receiver saying
+  what the SHAPE of its work is — a scroller sheet, a cursor list, a field form,
+  or not a footer at all — and
+  `TestProseBar_EveryProseFooterScreenIsConvertedOrNamed` fails in both
+  directions, so a screen cannot be left out by nobody having looked and a
+  converted one cannot stay listed. The set is not restated here for the reason
+  no count in this file is: it shrinks as the conversion goes on, and a number
+  written down drifts on the first commit after it.
+  AN EMPTY STATE THAT DRAWS NO BAR IS THE SAME DEFECT ONE SCREEN OVER, and the
+  conversion found another: `NotificationsScreen` returned `No notifications.`
+  alone, so the one state where "there is nothing here, now what?" is the
+  operator's question named no key at all — the inversion `ListScreen`'s empty
+  branch already had. It draws its bar there now, and the bar is honestly SHORT:
+  nothing scrolls, so the movement segments are absent, and `X mark all read` is
+  gated on there being rows, because a POST whose whole visible product is
+  nothing is a key named on a frame it cannot be seen to act on.
+  KNOWN AND NOT FIXED, so nobody re-derives it as an oversight:
+  `scrollerViewHeight` floors the scrolled body at FOUR rows, which is more than
+  `screenBodyRows` gives below a terminal height of ten, so the assembled frame
+  overruns there whatever the footer does and `clampToBox` takes the bar. That
+  floor is pre-existing and is the same lie `screenBodyHeight` tells; removing it
+  means giving these sheets the REFUSAL `ListScreen` has (`listTooShort`), which
+  is its own conversion. `TestProseBar_TheFooterSurvivesEveryDrawablePane` is
+  scoped by that boundary MEASURED rather than named, and fails if either side of
+  it stops being reached.
+  THE TWO ENTRIES THAT ARE NOT PROSE-FOOTER SCREENS AT ALL STAY EXCEPTIONS, and
+  the conversion did NOT make them expressible: `LocationDetailScreen`'s `g`
+  generates a QR code and `slotCardPrompt` is a two-row modal whose focus wraps.
+  A `proseBar` records which keystrokes a segment SPELLS, which says nothing
+  about whether a keystroke is navigation — so both are still recorded rather
+  than filtered, for the reason they always were: a filter clever enough to drop
+  them would eventually drop a real one.
+  WHAT IS GUARANTEED FOR THE UNCONVERTED ONES is that the SET cannot grow in
+  silence: `TestListNav_EverySurfaceThatBindsNavigationIsSweptOrExcused` parses
+  the package, classifies EVERY receiver that binds a navigation keystroke as
+  swept columnar, swept `ListScreen`, swept PROSE-BAR (it declares `proseBar`),
+  or recorded in `listNavUnsweptReceivers` WITH A REASON, and fails in all
+  directions — unclassified, stale, and excusing something that binds nothing any
+  more. A converted screen must come OUT of that roster, which is what makes the
+  remainder shrink visibly instead of a map that only ever grows. Per RECEIVER
+  and not per file, because
+  `category_form.go` holds `CategoryFormScreen` (columnar, swept) beside
+  `CategoryListScreen` (prose, not), and a file-level answer excuses the second
+  on the strength of the first.
+  A `case "j", "down":` IS NOT THE ONLY WAY TO BIND ONE, and reading only for
+  those was a hole in the DERIVATION rather than in the app: a screen that holds
+  a `TextScroller` gets j/k, the arrows, pgup/pgdn and g/G/home/end from
+  `Handle` without spelling a key, so seven of them were classified only
+  transitively through the `TextScroller` entry and a new one could have joined
+  the app appearing in no class at all. `listNavDelegatingReceivers` reads the
+  STRUCT FIELDS for that — a field type is what `go/parser` can answer without
+  `go/types`, and there is no way to hold a scroller and not hand it the
+  keyboard. Whenever a shared handler grows that owns movement keys, the
+  derivation needs the same treatment or it goes quietly blind to its callers.
 - **An empty list is a STATE, and on `ListScreen` it used to be the one state
   that drew no bar at all.** `bodyView` returned `"No rows."` and nothing else
   while `s`, `r`, `n`, `f`, `/` and every sibling-surface letter worked — the
@@ -2810,6 +3015,10 @@ touching any screen an operator drives:
   alone — `listNavUnsweptReceivers` (`list_nav_surfaces_test.go`) is the roster
   of the receivers that are not, and the authority on what is guaranteed for
   them instead. The New PO flow was never part of it after its
+  record — every type embedding `jdeScreen`, plus `ListScreen`, plus every
+  screen that declares a `proseBar` (`prose_bar.go`) — and on those alone; see
+  the navigation entry below, because every receiver still in
+  `listNavUnsweptReceivers` names less than it binds. The New PO flow was never part of it after its
   conversion: it is on the columnar set (`UP/DN`, `PgUp/PgDn` when the body
   moves) and `j`/`k` are unbound on it.
 - **On a destructive confirm the keys are on the BAR and the prose is the

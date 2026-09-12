@@ -263,6 +263,7 @@ type SupplierDetailScreen struct {
 	loadErr        string
 	scroller       *TextScroller
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -316,6 +317,8 @@ func (s *SupplierDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
+		proseSizeScroller(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 		return s, nil
 	case supplierLoadedMsg:
 		s.loading = false
@@ -395,7 +398,10 @@ func (s *SupplierDetailScreen) View() string {
 	if s.sup == nil {
 		return StyleMuted.Render("Supplier not found.") + "\n\n" + StyleMuted.Render("esc back")
 	}
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
+	// Sized here as well as inside proseBar, because the delete confirm below
+	// draws the scrolled body under its own prompt and needs a viewport too.
+	// Sizing is idempotent given the same pane.
+	proseSizeScroller(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 	if s.confirmingDelete {
 		var prompt string
 		if s.deleting {
@@ -405,8 +411,29 @@ func (s *SupplierDetailScreen) View() string {
 		}
 		return s.scroller.View() + "\n\n" + prompt
 	}
-	hint := "j/k scroll · E edit · x delete · r refresh · esc back"
-	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+	return s.scroller.View() + "\n\n" + s.proseBar().render(proseBarCells(s.terminalWidth))
+}
+
+// bar names every key that acts on this sheet, as a record the honesty sweep
+// can press (prose_bar.go).
+//
+// The literal this replaced read "j/k scroll · E edit · x delete · r refresh ·
+// esc back" — "j/k scroll" alone, while the arrows, pgup/pgdn, `g`/`G` and
+// home/end all scrolled it.
+func (s *SupplierDetailScreen) bar(scrolls bool) proseBar {
+	return append(proseNavScroll(scrolls),
+		proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this sheet is DRAWING — nil in the states that draw
+// something else instead.
+func (s *SupplierDetailScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.sup == nil || s.confirmingDelete {
+		return nil
+	}
+	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 }
 
 func (s *SupplierDetailScreen) renderBody() string {

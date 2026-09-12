@@ -79,9 +79,22 @@ type listNavMove struct {
 // TestList_TheSearchOverlayNamesExactlyTheKeysThatWork asserts that on that
 // overlay, at every row count in listRowCases, the bar names exactly the keys
 // that act; it is about that overlay and not about a class of surfaces.
-func listNavSet() []listNavMove {
+func listNavSet() []listNavMove { return listNavSetVerb("move") }
+
+// listNavSetVerb is that vocabulary with the VERB as a parameter, and it is the
+// one place the keystrokes are written down.
+//
+// THE KEYS ARE THE SAME AND WHAT THEY MOVE IS NOT. A *ListScreen moves a CURSOR
+// through rows, so its segment reads "move"; a TextScroller (the read-only
+// detail sheets, prose_bar.go) moves a WINDOW over a body, so its segment reads
+// "scroll" — an operator reading "move" on a sheet with no cursor would look for
+// a highlight that is not there. Parameterising the verb rather than writing a
+// second set is what keeps that a difference of WORDING: a second literal would
+// be a second roster of keystrokes, free to drift from this one, which is the
+// failure this file was written about in the first place.
+func listNavSetVerb(verb string) []listNavMove {
 	return []listNavMove{
-		{"j/k ↑↓ move", []string{"j", "k", "up", "down"}},
+		{"j/k ↑↓ " + verb, []string{"j", "k", "up", "down"}},
 		{"pgup/pgdn page", []string{"pgup", "pgdown"}},
 		{"g/G home/end top/bottom", []string{"g", "G", "home", "end"}},
 	}

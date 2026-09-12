@@ -25,6 +25,7 @@ type ProjectStorageDetailScreen struct {
 	loading           bool
 	scroller          *TextScroller
 	terminalHeight    int
+	terminalWidth     int
 	confirmingReprint bool
 	reprinting        bool
 
@@ -97,6 +98,8 @@ func (s *ProjectStorageDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
+		proseSizeScroller(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 		return s, nil
 	case projectStorageDetailLoadedMsg:
 		s.loading = false
@@ -248,7 +251,10 @@ func (s *ProjectStorageDetailScreen) View() string {
 	if s.stint == nil {
 		return StyleMuted.Render("Stint not found.")
 	}
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
+	// Sized here as well as inside proseBar, because the two confirm branches
+	// below draw the scrolled body under their own prompt and need a viewport
+	// too. Sizing is idempotent given the same pane.
+	proseSizeScroller(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 	if s.confirmingReprint {
 		var prompt string
 		if s.reprinting {
@@ -269,8 +275,34 @@ func (s *ProjectStorageDetailScreen) View() string {
 		}
 		return s.scroller.View() + "\n\n" + prompt
 	}
-	hint := "j/k scroll · p re-print · x remove · r refresh · esc back"
-	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+	return s.scroller.View() + "\n\n" + s.proseBar().render(proseBarCells(s.terminalWidth))
+}
+
+// bar names every key that acts on this sheet, as a record the honesty sweep
+// can press (prose_bar.go).
+//
+// The literal this replaced was "j/k scroll · p re-print · x remove · r refresh
+// · esc back" — "j/k scroll" ALONE, while the arrows, pgup/pgdn, `g`/`G` and
+// home/end all scrolled it. Eight of the vocabulary's ten keystrokes worked and
+// nothing said so, which is the plainest form of the omission this conversion
+// closes.
+func (s *ProjectStorageDetailScreen) bar(scrolls bool) proseBar {
+	return append(proseNavScroll(scrolls),
+		proseBarItem{Keys: []string{"p"}, Hint: "p re-print"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x remove"},
+		proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this sheet is DRAWING — nil in the states that draw
+// something else instead, the two confirm prompts included.
+func (s *ProjectStorageDetailScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.stint == nil {
+		return nil
+	}
+	if s.confirmingReprint || s.confirmingRemove {
+		return nil
+	}
+	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 }
 
 func (s *ProjectStorageDetailScreen) renderBody() string {

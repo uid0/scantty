@@ -18,6 +18,7 @@ type NotificationsScreen struct {
 	loadErr        string
 	scroller       *TextScroller
 	terminalHeight int
+	terminalWidth  int
 }
 
 type notificationsLoadedMsg struct {
@@ -62,6 +63,8 @@ func (s *NotificationsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
+		proseSizeScroller(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 		return s, nil
 	case notificationsLoadedMsg:
 		s.loading = false
@@ -117,14 +120,55 @@ func (s *NotificationsScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
 	if len(s.rows) == 0 {
-		return StyleMuted.Render("No notifications.")
+		// THE EMPTY STATE DRAWS A BAR, which it did not before: it returned the
+		// fact alone, so the one state where "there is nothing here, now what?"
+		// is the operator's actual question was the one state naming no key at
+		// all — the bar's contract inverted, exactly as ListScreen's empty
+		// branch had it (AGENTS.md). The bar is short there because it is
+		// honest: nothing scrolls, so the movement segments are absent, and `X`
+		// is not named because marking nothing read is a round trip whose whole
+		// product is invisible.
+		return StyleMuted.Render("No notifications.") + "\n\n" +
+			s.bar(false).render(proseBarCells(s.terminalWidth))
 	}
-	// Footer rows: blank-line + hint. detailFooterRows is the count
-	// the scroller subtracts from terminal height to compute the
-	// content viewport.
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	hint := "j/k scroll · pgup/pgdn page · g/G top/bottom · X mark all read · r refresh · esc back"
-	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+	return proseScrollFrame(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// bar names every key that acts on this sheet, as a record the honesty sweep
+// can press (prose_bar.go).
+//
+// The literal this replaced read "j/k scroll · pgup/pgdn page · g/G top/bottom ·
+// X mark all read · r refresh · esc back", and its omission was the hardest of
+// the set to see: it named six of the vocabulary's ten keystrokes and left out
+// exactly the two an operator whose hands are already on the arrow cluster
+// reaches for — the ARROWS and home/end — while running to 85 cells against the
+// 51 an 80-column pane gives, so clampToBox was taking `r refresh · esc back`
+// off the end. Named-past-the-cut and never-named at once.
+//
+// `X` IS GATED ON THERE BEING ROWS, and on that rather than on the movement
+// answer: a short list that does not scroll still has notifications to mark, so
+// `scrolls` is the wrong question. With NO rows the key is a POST whose whole
+// visible product is nothing at all, which is a key named on a frame it cannot
+// be seen to act on — the same threshold ListScreen keeps `enter open` behind.
+func (s *NotificationsScreen) bar(scrolls bool) proseBar {
+	out := proseNavScroll(scrolls)
+	if len(s.rows) > 0 {
+		out = append(out, proseBarItem{Keys: []string{"X"}, Hint: "X mark all read"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this sheet is DRAWING — nil in the two load states, which
+// draw their own line instead. The EMPTY state is NOT one of them: it draws a
+// bar now (see View), so the sweep presses keys at it like any other.
+func (s *NotificationsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	if len(s.rows) == 0 {
+		return s.bar(false)
+	}
+	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 }
 
 // renderBody draws every row into a single string for the scroller.

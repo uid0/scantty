@@ -284,6 +284,7 @@ type ElectricalPanelDetailScreen struct {
 	loadErr        string
 	scroller       *TextScroller
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -340,6 +341,8 @@ func (s *ElectricalPanelDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
+		proseSizeScroller(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 		return s, nil
 	case electricalPanelDetailLoadedMsg:
 		s.loading = false
@@ -437,9 +440,30 @@ func (s *ElectricalPanelDetailScreen) View() string {
 		}
 		return StyleStatusWarn.Render(fmt.Sprintf("Delete panel %q? This can't be undone.  y delete · n/esc cancel", s.topology.Name)) + warn
 	}
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	hint := "j/k scroll · b breakers · E edit · x delete · r refresh · esc back"
-	return s.scroller.View() + "\n\n" + StyleMuted.Render(hint)
+	return proseScrollFrame(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// bar names every key that acts on this sheet, as a record the honesty sweep
+// can press (prose_bar.go).
+//
+// The literal this replaced read "j/k scroll · b breakers · E edit · x delete ·
+// r refresh · esc back" — "j/k scroll" alone, while the arrows, pgup/pgdn,
+// `g`/`G` and home/end all scrolled a topology that routinely outruns the pane.
+func (s *ElectricalPanelDetailScreen) bar(scrolls bool) proseBar {
+	return append(proseNavScroll(scrolls),
+		proseBarItem{Keys: []string{"b"}, Hint: "b breakers"},
+		proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this sheet is DRAWING — nil in the states that draw
+// something else instead.
+func (s *ElectricalPanelDetailScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.topology == nil || s.confirmingDelete {
+		return nil
+	}
+	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 }
 
 func (s *ElectricalPanelDetailScreen) renderBody() string {

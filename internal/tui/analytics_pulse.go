@@ -25,6 +25,7 @@ type AnalyticsPulseScreen struct {
 	loadErr        string
 	forbidden      bool
 	scroller       *TextScroller
+	terminalWidth  int
 	terminalHeight int
 }
 
@@ -61,7 +62,8 @@ func (s *AnalyticsPulseScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
-		s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
+		s.terminalWidth = m.Width
+		proseSizeScroller(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 		return s, nil
 	case analyticsPulseLoadedMsg:
 		s.loading = false
@@ -109,8 +111,29 @@ func (s *AnalyticsPulseScreen) View() string {
 	if s.loadErr != "" {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	return s.scroller.View() + "\n\n" + StyleMuted.Render("j/k scroll · pgup/pgdn page · r refresh · esc back")
+	return proseScrollFrame(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// bar names every key that acts on this sheet, as a record the honesty sweep
+// can press (prose_bar.go).
+//
+// TWO OMISSIONS, not one. The literal this replaced read "j/k scroll · pgup/pgdn
+// page · r refresh · esc back": it was silent about the arrows, `g`/`G` and
+// home/end, all of which TextScroller.Handle binds — and silent about
+// `backspace`, which this screen's own key switch binds beside `esc` as the way
+// back to the Reports hub. The second is the more telling: nothing about the
+// sheet hinted that the key existed at all.
+func (s *AnalyticsPulseScreen) bar(scrolls bool) proseBar {
+	return append(proseNavScroll(scrolls), proseBarRefresh, proseBarBack)
+}
+
+// proseBar is the bar this sheet is DRAWING — nil in the states that draw
+// something else instead.
+func (s *AnalyticsPulseScreen) proseBar() proseBar {
+	if s.loading || s.forbidden || s.loadErr != "" {
+		return nil
+	}
+	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 }
 
 // renderPulse builds the full scrollable body: a scalar value-summary block,
