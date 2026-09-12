@@ -2275,20 +2275,25 @@ type poStatusPlan struct {
 // TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow reaches the state by
 // writing setErr directly and says in as many words that no key sequence does.
 //
-// IT IS RE-EVALUATED PER READER AND THAT IS MEASURED AND DELIBERATE, so nobody
-// re-derives it as an oversight. Three readers ask it — statusLine, and the two
-// header blocks that have to know what the row already drew (answerRowsIn,
-// failLead) — which comes to two or three evaluations per View and three to
-// five per keystroke, never the seven it is sometimes reported as; measured
-// over every phase poPhaseCases builds, at 120 columns, the worst was five per
-// Update-plus-View. The cost is 13µs a call against a keystroke cycle of about
-// 290µs, and it does not grow with the payload: a 20 KB gateway body in
-// errDetail leaves the cycle at 357µs, because every bound on this row is a
-// forward pass (cellPrefix). 66µs of a 0.29ms cycle is nothing an operator can
-// see, and the alternative is a cached copy of an answer whose whole design is
-// that holdsAnswer is read off the row that was just ASSEMBLED rather than
-// predicted — a second source of truth on the one decision this file says must
-// not have one. Measure again before caching it; do not cache it for tidiness.
+// IT IS RE-EVALUATED PER READER, AND THE MEASUREMENT THAT SETTLED THAT IS
+// RECORDED HERE RATHER THAN A RULE, so a later reader can re-judge it instead
+// of obeying it. Three readers ask it — statusLine, and the two header blocks
+// that have to know what the row already drew (answerRowsIn, failLead).
+//
+// MEASURED 2026-09-12, on this package's own fixtures: two to three
+// evaluations per View and three to five per keystroke — never the seven it
+// was reported as — worst five per Update-plus-View over every phase
+// poPhaseCases builds at 120 columns. 13µs a call, so 66µs of a keystroke
+// cycle of about 290µs. It does not grow with the payload: a 20 KB gateway
+// body in errDetail leaves the cycle at 357µs, because every bound on this row
+// is a forward pass (cellPrefix).
+//
+// Left alone at those figures because 66µs of a 0.29ms frame is not worth the
+// cache-invalidation risk: holdsAnswer is deliberately read off the row that
+// was just ASSEMBLED rather than predicted, and a cached plan is a second
+// source of truth on the one decision this file says must not have one. Those
+// are numbers rather than a prohibition on purpose — if the frame budget moves,
+// or a reader is added, re-measure and re-judge.
 func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 	answer := s.answerNote()
 	lead := ""
