@@ -2903,6 +2903,18 @@ is the authority; read it before adding a frame or wording a bar.
   raised its own bound to 20m (`.github/workflows/ci.yml`, which says why), but a
   local `go test` still stops at 600s, and a HUNG test now costs CI 20 minutes
   to report.
+  **IT IS PAST THAT DEFAULT NOW, SO A BARE LOCAL `go test` FAILS ON A CLEAN
+  TREE**, and reading that panic as "I broke something" is a whole round wasted:
+  measured on one developer machine at 688s on `main` and 683s with a branch's worth of
+  new sweep fixtures on top, the difference being noise beside the run-to-run
+  spread. Use CI's own command — `go test -timeout 20m ./...` — and compare
+  against a run of `main`, never against the timeout. Two consequences follow.
+  A sweep's cost is still worth minding, because the 20m bound is the next wall
+  and issue #171 is the plan for it. And a run under load is not evidence
+  either way: `pump`'s 200ms budget is wall-clock, so a busy machine makes a
+  drive stage nothing and the failure lands on whichever test happened to be
+  driving — the New PO phase sweeps report `setup staged 0 line(s)` first. Re-run
+  it alone before believing it.
   Two facts get you out. `textinput.Blink` returns its message IMMEDIATELY and it
   is only FEEDING that message back to `Update` that starts the tick, so
   recognise it and stop: `driveIsBlink` (`wo_materials_drive_test.go`), checked

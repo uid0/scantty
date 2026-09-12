@@ -138,53 +138,87 @@ var proseBarUnconverted = map[string]string{
 	"SerializedForecastScreen": "the serialized-component forecast, the same two-vocabulary shape as DemandForecastScreen",
 	"WorkOrderDetailScreen":    "the work-order sheet, plus its material pickers — the largest of the scroller sheets and the one with the most modal states to decide",
 
-	// THE CURSOR LISTS, which are the bulk and the more expensive half. Each
-	// draws rows with a cursor and a prose footer, so a record is only part of
-	// it: the movement segments have to be gated on there being a SECOND row
-	// (listNavMoves — an empty list and a one-row list both promise three
-	// affordances that clamp), and the BODY's row budget has to move with the
-	// folded footer, which is ListScreen.listBodyLines' arithmetic rather than a
-	// scroller's viewport. Several of them are a *ListScreen away from needing
-	// no record at all.
-	"AssetPartsScreen":           "the parts list on an asset",
-	"AssetProblemsScreen":        "the problem list on an asset, plus its vendor picker",
+	// THE CURSOR LISTS, which are the bulk. Each draws rows with a cursor and a
+	// prose footer, so a record is only part of it: the movement segments have to
+	// be gated on there being a SECOND row (listNavMoves — an empty list and a
+	// one-row list both promise three affordances that clamp), and the BODY's row
+	// budget has to move with the folded footer. Several of them are a *ListScreen
+	// away from needing no record at all.
+	//
+	// ONE RECIPE HAS BEEN TAKEN OUT OF THIS GROUP, and what is left is split into
+	// the two shapes that remain rather than left as one heap — because "what
+	// shape is the work" is the only thing this map is for. The converted recipe
+	// is the WINDOWED list budgeted by a chrome constant of four, whose last row
+	// is one unfolded footer line: prose_bar_windowed_lists_test.go carries what
+	// those screens had in common and proseListWindow what replaced the constant.
+	// What remains divides:
+	//
+	//   - STILL ON THAT RECIPE, but not mechanically. Each has a window and a
+	//     budget, and something about it that the shared helpers do not answer —
+	//     a second cursor surface, rows that are not one line, a chrome constant
+	//     counting something else. The entry says which.
+	//   - FLAT, with no window at all: they draw EVERY row and then the footer, so
+	//     a list longer than the pane pushes the bar off the bottom whatever it
+	//     says, and folding alone would not put it back. Their bar half is the
+	//     cheapest work left in this map — most bind j/k and the arrows and name
+	//     only j/k — and their BODY half is a windowing decision they have never
+	//     had. The two are worth doing together, because a folded bar on a list
+	//     with no budget is a bar that folds off the pane.
+
+	// Still on the windowed recipe.
+	"AssetPartsScreen": "the parts list on an asset. It is on the windowed-cursor-list " +
+		"recipe the tranche above converted and it is NOT a mechanical case: its renderRow " +
+		"draws SEVERAL lines per part (the SKU and quantity row, the replacement history, " +
+		"the notes), so a budget counting ROWS is not a budget at all — at 80x40 the frame " +
+		"already runs past the pane with the cursor at the top, and a cursor moving inside " +
+		"the window changes nothing an operator can see, because what they are looking at " +
+		"is the part of the frame clampToBox left. Converting it means giving it " +
+		"ListScreen.rowsFittingFrom's arithmetic — pack rows into the body by the LINES each " +
+		"one will really draw, and re-derive the window on every move — which is a decision " +
+		"about what this list shows rather than about what its bar says",
+	"AssetProblemsScreen": "the problem list on an asset, plus its vendor picker: a " +
+		"second cursor surface with its own keys, drawn in place of the list, so the record " +
+		"has to say which bar belongs to which surface",
+	"BadgeEnrollmentScreen": "the ForgeKey badge enrolment list, whose enrolment prompt " +
+		"replaces the footer and whose staff-only refusal draws a bar of its own",
+	"ElectricalPanelsScreen": "the electrical panel list. Windowed, but through a windowSize() " +
+		"method rather than the shared chrome constant, and it binds no pager — so its bar " +
+		"must name g/G/home/end without naming pgup/pgdn, which proseNavCursor does not " +
+		"express",
+	"ItemSuppliersScreen": "the supplier list on an item beside ItemSupplierFormScreen. It " +
+		"already packs its window by LINES rather than by rows (rowsFittingFrom), which is " +
+		"the arithmetic AssetPartsScreen is missing — so what it needs is the record and the " +
+		"fold, with its own line budget taught to move with the folded footer. " +
+		"proseListWindow is the wrong helper for it: it counts rows",
+	"LocationProblemsScreen": "the problem list for a location, the same two-surface shape " +
+		"as AssetProblemsScreen",
+	"SIGMembersScreen": "the member list of a SIG, plus its person picker — a second cursor " +
+		"surface drawn in place of the list, with its own filter box",
+	"StorageSlotsScreen": "the storage slot list beside StorageSlotFormScreen. Its chrome " +
+		"constant is 6 rather than 4 because it reserves room for slotCardPrompt's overlay, " +
+		"so what the bar costs and what the overlay costs have to be separated before either " +
+		"can be derived",
+
+	// Flat: no window at all, so the bar and the body budget are one piece of work.
 	"AuthorizationsScreen":       "the ForgeKey authorization grid",
-	"BadgeEnrollmentScreen":      "the ForgeKey badge enrolment list",
-	"BreakerCircuitsScreen":      "the electrical circuit management list",
-	"CategoryListScreen":         "the category list beside CategoryFormScreen, which IS columnar and IS swept",
-	"ChecklistRunScreen":         "the step list of a checklist run",
-	"ChecklistsScreen":           "the checklist browse list",
-	"CircuitDisconnectsScreen":   "the electrical disconnect management list",
-	"CircuitOutletsScreen":       "the electrical outlet management list",
-	"DeviceTypeListScreen":       "the device-type list beside DeviceTypeFormScreen",
+	"ChecklistRunScreen":         "the step list of a checklist run, whose footer changes with the submit state",
+	"ChecklistsScreen":           "the checklist browse list, which also binds tab/shift+tab to move between its two sections",
 	"DonationsScreen":            "the donation list",
-	"EPaperPanelsScreen":         "the e-paper panel list and its bind picker",
-	"ElectricalPanelsScreen":     "the electrical panel list",
-	"FacilitiesScreen":           "the facilities hub, a cursor menu of surfaces",
-	"FirmwareScreen":             "the firmware rollout list",
-	"ForgeKeyCertificatesScreen": "the ForgeKey certificate list",
+	"EPaperPanelsScreen":         "the e-paper panel list and its bind picker, a second cursor surface",
+	"FacilitiesScreen":           "the facilities hub, a cursor menu of surfaces: it binds g/home and G/end as well as j/k and the arrows, and every row also answers its own hotkey",
+	"FirmwareScreen":             "the firmware rollout list, two sections in one pane",
+	"ForgeKeyCertificatesScreen": "the ForgeKey certificate list, which binds the WHOLE vocabulary — pgup/pgdn and g/G/home/end included — over an unwindowed body, and names `j/k scroll` for it",
 	"ForgeKeyDeviceFormScreen":   "the location picker on the device form; the form itself is columnar and swept",
-	"ItemSuppliersScreen":        "the supplier list on an item beside ItemSupplierFormScreen",
-	"LocationCheckinsScreen":     "the check-in list for a location and its lookup picker",
-	"LocationListScreen":         "the location list beside LocationFormScreen",
-	"LocationProblemsScreen":     "the problem list for a location",
+	"LocationCheckinsScreen":     "the check-in list for a location and its lookup picker, a second cursor surface",
 	"LockoutsScreen":             "the ForgeKey lockout list",
-	"MaintenanceItemsScreen":     "the PM item list beside MaintenanceItemFormScreen",
-	"MakerBoxesScreen":           "the maker-box list beside MakerBoxFormScreen",
+	"MakerBoxesScreen":           "the maker-box list beside MakerBoxFormScreen, with a scan prompt, a convert confirm and a queue form that each draw their own footer",
 	"OperationalModesScreen":     "the ForgeKey operational-mode list",
 	"PMBoardScreen":              "the preventive-maintenance board",
-	"PanelBreakersScreen":        "the electrical panel management list",
-	"ReportsScreen":              "the reports hub, a cursor menu of surfaces",
-	"SIGListScreen":              "the SIG list beside SIGFormScreen",
-	"SIGMembersScreen":           "the member list of a SIG, plus its person picker",
-	"SearchPalette":              "the universal search palette's result list",
-	"StorageOverviewScreen":      "the storage overview",
-	"StorageSlotsScreen":         "the storage slot list beside StorageSlotFormScreen",
-	"SupplierListScreen":         "the supplier list beside SupplierFormScreen",
-	"ThermostatListScreen":       "the thermostat list beside ClimateFormScreen, which is columnar and swept",
+	"ReportsScreen":              "the reports hub, a cursor menu of surfaces, with its legend ABOVE the rows rather than under them",
+	"SearchPalette":              "the universal search palette's result list, drawn as an overlay with a live query box",
+	"StorageOverviewScreen":      "the storage overview, a rack grid rather than a row list",
 	"UsageScreen":                "the ForgeKey usage-session list",
 	"VendorsScreen":              "the maintenance vendor list",
-	"WebhookListScreen":          "the webhook list beside WebhookFormScreen",
 	"WorkOrderAttachmentsScreen": "the attachment list on a work order",
 
 	// THE ONES THAT ARE NEITHER A SCROLLED SHEET NOR A PLAIN CURSOR LIST, each
@@ -248,7 +282,7 @@ type proseBarFixture struct {
 // it cannot move (immobile), and TestProseBar_EveryMovementKeyIsNamedWhereItMoves
 // fails a fixture in neither state.
 func proseBarFixtures() []proseBarFixture {
-	return []proseBarFixture{
+	out := []proseBarFixture{
 		// TWO STATES, for the one conditional arm on this bar: `i components` is
 		// offered only where components are installed, and the handler answers a
 		// toast and goes nowhere where they are not. A fixture with components
@@ -461,6 +495,9 @@ func proseBarFixtures() []proseBarFixture {
 			},
 		},
 	}
+	// The WINDOWED CURSOR LISTS, in their own file because they are one recipe
+	// rather than one screen — see proseBarWindowedListFixtures.
+	return append(out, proseBarWindowedListFixtures()...)
 }
 
 func proseBarSerializedComponents(n int) []omsapi.SerializedComponent {

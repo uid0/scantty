@@ -452,6 +452,7 @@ type SIGListScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -498,18 +499,55 @@ func (s *SIGListScreen) Init() tea.Cmd {
 }
 
 func (s *SIGListScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.bar(true))
+}
+
+// paneCells is the width this list folds and budgets against: the pane the
+// terminal really gave, never the 51 an 80-column one happens to leave.
+func (s *SIGListScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// bar names every key that acts on this list, as a RECORD rather than a literal
+// — prose_bar.go carries the conversion, proseNavCursor why the movement half
+// is gated on one threshold, and proseListWindow what it costs the body.
+//
+// It used to be
+//
+//	j/k move · n new · E edit · enter members · v view · x delete · r · esc
+//
+// 71 cells against the 51 an 80-column pane gives, so clampToBox was already
+// taking the end of it — and it named two of the ten movement keystrokes
+// this screen's own switch binds: the arrows, pgup/pgdn and g/G/home/end all
+// moved the cursor and no word on the bar said so.
+func (s *SIGListScreen) bar(moves bool) proseBar {
+	return append(proseNavCursor(moves),
+		proseBarItem{Keys: []string{"n"}, Hint: "n new"},
+		proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+		proseBarItem{Keys: []string{"enter"}, Hint: "enter members"},
+		proseBarItem{Keys: []string{"v"}, Hint: "v view"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil in the states that draw
+// something else instead — a load in flight, a failure, a prompt that replaces
+// the footer, and the EMPTY list, whose shorter footer is still a literal. So
+// "this state has no bar" and "this state's bar is empty" stay different answers
+// to the honesty sweep, and what this conversion leaves behind is a STATE rather
+// than a screen.
+func (s *SIGListScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.confirmingDelete || len(s.rows) == 0 {
+		return nil
 	}
-	return avail
+	return s.bar(listNavMoves(len(s.rows)))
 }
 
 func (s *SIGListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -683,7 +721,7 @@ func (s *SIGListScreen) View() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · n new · E edit · enter members · v view · x delete · r · esc"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 

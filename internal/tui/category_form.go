@@ -748,6 +748,7 @@ type CategoryListScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -788,18 +789,50 @@ func (s *CategoryListScreen) Init() tea.Cmd {
 }
 
 func (s *CategoryListScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.bar(true))
+}
+
+// paneCells is the width this list folds and budgets against — the pane the
+// terminal really gave, not the 51 an 80-column one leaves.
+func (s *CategoryListScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// bar names every key that acts on this list, as a record the honesty sweep can
+// press (prose_bar.go).
+//
+// It used to be the literal "j/k move · c new · E/enter edit · x delete · r
+// refresh · esc back", which named two of the ten keystrokes this screen's own
+// switch binds: the arrows, pgup/pgdn and g/G/home/end all moved the cursor and
+// no word on the bar said so. That literal was also 62 cells against the 51 an
+// 80-column pane gives, so clampToBox was already taking `esc back` off the end
+// of it — the two halves of the same defect.
+func (s *CategoryListScreen) bar(moves bool) proseBar {
+	return append(proseNavCursor(moves),
+		proseBarItem{Keys: []string{"c"}, Hint: "c new"},
+		proseBarItem{Keys: []string{"E", "enter"}, Hint: "E/enter edit"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil in the states that draw
+// something else instead — a load in flight, a failure, a prompt that replaces
+// the footer, and the EMPTY list, whose shorter footer is still a literal. So
+// "this state has no bar" and "this state's bar is empty" stay different answers
+// to the honesty sweep, and what this conversion leaves behind is a STATE rather
+// than a screen.
+func (s *CategoryListScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.confirmingDelete || len(s.rows) == 0 {
+		return nil
 	}
-	return avail
+	return s.bar(listNavMoves(len(s.rows)))
 }
 
 func (s *CategoryListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -975,7 +1008,7 @@ func (s *CategoryListScreen) View() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · c new · E/enter edit · x delete · r refresh · esc back"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
