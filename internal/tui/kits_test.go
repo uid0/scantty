@@ -606,11 +606,13 @@ func listKindOf(s Screen) string {
 // list's search box is where a typed or scanned vendor code goes instead.
 //
 // The payload is a SKU-shaped string rather than a UPC on purpose, and the
-// reason is a pre-existing defect one layer up that this change does not touch:
-// scanner.Classify claims every 8-to-20-character hex string as a ForgeKey
-// badge, and an 8/12/13/14-digit UPC is one, so a barcode never reaches the
-// dispatcher at all. Using a UPC here would test that classifier instead of
-// this arm, and would go green the day somebody fixed it for the wrong reason.
+// reason OUTLIVED the defect it was first written about. That defect is now
+// fixed — scanner.Classify used to claim every 8-to-20-character hex string as
+// a ForgeKey badge, so an 8/12/13/14-digit UPC never reached the dispatcher at
+// all (sc-classify-hex) — but a UPC here would still exercise the classifier
+// rather than this arm, which is about the TARGET TYPE the reply carries. The
+// barcode path has its own coverage in scan_barcode_test.go, where a failure
+// names the classifier instead of implicating kits.
 func TestKits_AScannedKitOpensItsDetail(t *testing.T) {
 	var dispatched string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

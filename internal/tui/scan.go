@@ -106,7 +106,7 @@ func (s *ScanScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			}
 			return s, tea.Batch(Status(label, StatusOK), cmd)
 		case m.result == nil:
-			return s, Status(fmt.Sprintf("scan %s: no match", m.code), StatusWarn)
+			return s, Status(noMatchNote(m.code), StatusWarn)
 		default:
 			cmd := s.navigateToResult(m.result)
 			label := fmt.Sprintf("scan %s → %s %v", m.code, m.result.Type, m.result.ID)
@@ -117,6 +117,26 @@ func (s *ScanScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 	}
 	return s, nil
+}
+
+// noMatchNote is what a code the dispatcher could not place says.
+//
+// A badge-shaped code gets the extra clause because it is the one miss ScanTTY
+// can explain: OMS resolves barcodes, location codes and asset tags, but it
+// exposes no member-by-badge READ endpoint at all — its one badge surface is
+// keyed by user, not by badge — so a real badge can only ever come back
+// unmatched here. An operator holding a card is otherwise left to conclude the
+// card is broken.
+//
+// It is a MAY, not an assertion: eight digits is equally a UPC-E, so the code
+// may simply be a barcode nobody has catalogued. The wording says which it is
+// uncertain about rather than picking one.
+func noMatchNote(code string) string {
+	if scanner.MightBeForgeKeyBadge(code) {
+		return fmt.Sprintf("scan %s: no match — if this is an access badge, "+
+			"ScanTTY cannot look badges up yet", code)
+	}
+	return fmt.Sprintf("scan %s: no match", code)
 }
 
 func (s *ScanScreen) navigateToResult(r *omsapi.LookupResult) tea.Cmd {
@@ -184,13 +204,17 @@ func (s *ScanScreen) lookup(code string) tea.Cmd {
 			}
 			return scanLookupMsg{code: code, kind: kind, urlTarget: target}
 		}
-		if kind == scanner.KindForgeKeyBadge {
-			return scanLookupMsg{
-				code: code,
-				kind: kind,
-				err:  fmt.Errorf("badge lookup not yet wired — needs OMS member-by-badge endpoint"),
-			}
-		}
+		// Nothing is claimed for the badge path before the dispatcher has been
+		// asked, and that is the whole of sc-classify-hex. A badge shares its
+		// shape with a UPC-E, ScanTTY has no badge resolver to send one to, and
+		// the branch that used to intercept here answered every 8-to-20-character
+		// hex string — which is every UPC-A, UPC-E, EAN-13 and ITF-14 there is —
+		// with "badge lookup not yet wired". A barcode therefore never reached
+		// /api/scanner/dispatch/ at all. scanner.Kind's doc carries the evidence.
+		//
+		// The badge is still recognised, one step later: noMatchNote reads the
+		// shape only once a lookup has come back with nothing, where it explains
+		// a miss instead of causing one.
 		if deps.OMS == nil {
 			return scanLookupMsg{code: code, kind: kind, err: fmt.Errorf("OMS client not configured")}
 		}
@@ -208,7 +232,12 @@ func (s *ScanScreen) View() string {
 		cursor = StyleMuted.Render("…")
 	}
 	b.WriteString(prompt + cursor + "\n\n")
-	b.WriteString(StyleMuted.Render("Type or scan a code, press Enter. 6-char OMS or 8-20 char hex badge.") + "\n\n")
+	// Two rows, each inside the 51 cells an 80-column pane gives. This screen
+	// writes its own body rather than riding jde_form.go's folder, so the bound
+	// is kept by hand here; the single line this replaced was 68 cells and lost
+	// its tail to clampToBox, which is where it named what the screen accepts.
+	b.WriteString(StyleMuted.Render("Type or scan a code, press Enter.") + "\n")
+	b.WriteString(StyleMuted.Render("Barcode, asset tag, location code or OMS URL.") + "\n\n")
 
 	if len(s.history) == 0 {
 		b.WriteString(StyleMuted.Render("No scans yet.") + "\n")

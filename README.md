@@ -4,8 +4,7 @@ Scanner-driven curses TUI for [OpenMakerSuite](https://github.com/uid0/openmaker
 
 ## What it does
 
-- **Scan a 6-character OMS code** → look up the item/asset/location/fixture → open its detail screen → start a reorder.
-- **Scan an 8–20 char hex badge** → resolve to a ForgeKey-authorized member (planned; needs an OMS member-by-badge endpoint).
+- **Scan a barcode, asset tag, location code, or OMS URL** → open the matching record → start the relevant workflow.
 - **Browse OMS workspaces** that mirror the web UI: Dashboard, Inventory, Purchasing, Assets, Facilities, Maintenance, SIGs, Reports, Settings.
 - **Receive deliveries** into open purchase orders without touching a mouse.
 - **Cache aggressively** to a local SQLite store so the terminal stays useful when the network drops (cache reads on failure are coming — the store is wired but most code paths still go to the network).
@@ -171,10 +170,11 @@ Most barcode scanners present themselves as USB HID keyboards. With `SCANTTY_SCA
 
 For non-keyboard scanners (raw HID, serial, etc.), point `SCANTTY_SCANNER_SOURCE` at a character device path. (The raw-HID path isn't wired yet — see Roadmap.)
 
-The classifier in `internal/scanner` distinguishes two scan kinds:
-
-- **OMS 6-char code** — exactly 6 alphanumeric characters. Routes to `GET /api/inventory/lookup-code/`.
-- **ForgeKey badge** — 8–20 hex characters. Routes to member-resolution (still stubbed — see Roadmap).
+The scan workspace sends non-URL codes to OMS's scanner dispatcher, which can
+resolve barcodes, asset tags, location codes, and other server-known identifiers.
+OMS URLs carry their destination directly. Access badges can overlap barcode
+shapes, so they are never claimed locally; an unmatched 8–10 digit scan explains
+that badge lookup is not available yet (see Roadmap).
 
 ## Project layout
 
