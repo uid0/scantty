@@ -547,7 +547,9 @@ func proseBarLongNote() string {
 // ---------------------------------------------------------------------------
 
 // TestProseBar_EveryConvertedScreenIsSwept: the fixtures and the converted
-// screens agree, and every fixture really draws a bar.
+// screens agree, and every fixture supplies a non-empty bar. The executable
+// rendered-footer check below is what makes this source-derived coverage roster
+// safe: a dead proseBar method or one View does not draw fails there.
 //
 // Both halves earn their keep, and both have shipped as defects elsewhere in
 // this package. Without the first, a screen converted tomorrow is absent from
@@ -581,6 +583,27 @@ func TestProseBar_EveryConvertedScreenIsSwept(t *testing.T) {
 			t.Errorf("the %s fixture draws no bar at 80x40, so every assertion this file "+
 				"makes about it is vacuous:\n%s", f.name, s.View())
 		}
+	}
+}
+
+// TestProseBar_EveryRecordIsTheRenderedFooter makes the coverage derivation
+// safe by proving through each screen's View that proseBar is the bar the
+// operator actually sees. It compares the complete rendered tail byte for byte,
+// including the separator after AssetDetailScreen's optional action-banner row.
+func TestProseBar_EveryRecordIsTheRenderedFooter(t *testing.T) {
+	const width, height = 80, 40
+	for _, f := range proseBarFixtures() {
+		t.Run(f.name, func(t *testing.T) {
+			s := proseBarSize(f.build(), width, height)
+			if !proseBarFrameFits(s, height) {
+				t.Fatalf("the frame does not fit at %dx%d, so its rendered footer tail cannot be checked", width, height)
+			}
+			want := "\n\n" + stripANSI(s.proseBar().render(proseBarCells(width)))
+			got := stripANSI(s.View())
+			if !strings.HasSuffix(got, want) {
+				t.Errorf("View does not end with the bar its proseBar record renders.\nwant tail:\n%q\ngot:\n%s", want, got)
+			}
+		})
 	}
 }
 
