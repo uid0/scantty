@@ -12,10 +12,11 @@ import (
 	"testing"
 )
 
-// TestDocs_TheReadmeEnvTableIsTheOneTheLoaderReads holds the one inventory in
-// README.md that is not replaced by a pointer, because it cannot be: an
-// operator setting up a host has to be able to READ the variables somewhere,
-// and `go doc` will not print a table of them.
+// TestDocs_TheReadmeTableNamesEverySCANTTYVariableTheLoaderReads holds the
+// SCANTTY_-prefixed part of the one inventory in README.md that is not replaced
+// by a pointer, because it cannot be: an operator setting up a host has to be
+// able to READ the variables somewhere, and `go doc` will not print a table of
+// them.
 //
 // So the table stays and is CHECKED instead. It drifted the ordinary way —
 // SCANTTY_THEME was added to the loader and the table was not touched, so the
@@ -23,10 +24,14 @@ import (
 // silent in both directions: nothing failed, and the variable simply did not
 // exist as far as a reader was concerned.
 //
-// It compares NAMES and nothing else. What a variable is FOR, and what it
-// defaults to, are prose no test can judge — this only says the two lists name
-// the same variables, which is the half that goes wrong by forgetting.
-func TestDocs_TheReadmeEnvTableIsTheOneTheLoaderReads(t *testing.T) {
+// It compares only the SCANTTY_-prefixed table rows with the env constants in
+// internal/config/config.go. What a variable is FOR, and what it defaults to,
+// are prose no test can judge — this only says those two lists name the same
+// variables, which is the half that goes wrong by forgetting.
+//
+// NOT PROVEN: the SENTRY_* rows. Their loader lives in internal/observability,
+// so deleting or misspelling one there would not fail this test.
+func TestDocs_TheReadmeTableNamesEverySCANTTYVariableTheLoaderReads(t *testing.T) {
 	mod := moduleRoot(t)
 
 	readme := readFile(t, filepath.Join(mod, "README.md"))
