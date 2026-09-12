@@ -10,12 +10,17 @@ import (
 	"testing"
 )
 
-// The add endpoint's refusals do NOT come back in the standard `{"error":
-// {"code","message"}}` envelope — they are a hand-built `{"error": "<prose>",
-// "code": "<code>"}` written by the view itself, so parseError falls through
-// and puts the WHOLE raw body in APIError.Message. Without AsLineEntryError the
-// operator reads that body verbatim, which is the "never a raw dump" rule
-// broken on the one step where losing the reason costs the whole line.
+// The HAND-BUILT refusal shape — `{"error": "<prose>", "code": "<code>"}`
+// written by the view itself, which never reaches OMS's DRF exception handler,
+// so parseError falls through and puts the WHOLE raw body in APIError.Message.
+// Without AsLineEntryError the operator reads that body verbatim, which is the
+// "never a raw dump" rule broken on the one step where losing the reason costs
+// the whole line.
+//
+// This shape and the standardized envelope must BOTH read correctly at once:
+// these two tests are the old half and po_line_envelope_test.go is the new one.
+// Either alone would leave a window in which a screen misreports — see
+// AsLineEntryError's doc.
 func TestAddPurchaseOrderLine_RefusalKeepsTheServersSentence(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -68,32 +73,21 @@ func TestAddPurchaseOrderLine_AmbiguityCarriesItsCandidates(t *testing.T) {
 	}
 }
 
-// Anything that is NOT this endpoint's refusal shape must keep the shape it
-// already had. A gateway's HTML page coerced into a refusal would put a
-// fabricated code in front of the operator.
-func TestAsLineEntryError_LeavesEverythingElseAlone(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		body string
-		code int
-	}{
-		{"gateway html", "<!DOCTYPE html><html><body>502 Bad Gateway</body></html>", 502},
-		{"drf envelope", `{"error": {"code": "validation_error", "message": "Enter a whole number."}}`, 400},
-		{"unrelated json", `{"detail": "Not found."}`, 404},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tc.code)
-				_, _ = io.WriteString(w, tc.body)
-			}))
-			defer srv.Close()
-			_, err := New(srv.URL).AddPurchaseOrderLine(context.Background(), "2", POLineAdd{ItemSupplier: 1})
-			if _, ok := AsLineEntryError(err); ok {
-				t.Errorf("%s was coerced into a line-entry refusal: %v", tc.name, err)
-			}
-		})
-	}
-}
+// The narrowness this file used to assert here — that anything which is NOT a
+// refusal keeps the shape it arrived in — now lives in
+// TestAsLineEntryError_StillLeavesTheUnansweredAlone (po_line_envelope_test.go),
+// over a strictly wider table, and is NOT restated here: two tables of the same
+// property are two tables that drift apart.
+//
+// One of its rows had to change sides, which is the part worth recording. It
+// listed the standardized envelope `{"error": {"code", "message"}}` among the
+// bodies that must be left alone, on the reasoning that coercing one would
+// invent "a refusal the server never made". That reasoning was right about the
+// bodies it was written for and is now FALSE of this one: OMS composes these
+// endpoints' refusals in that envelope on purpose (config/api_errors.py), so a
+// coded, worded body IS the server's own answer, and calling it unknown is what
+// the operator cannot act on. The rule did not move; that body changed what it
+// is.
 
 // The lookup's whole payload has to survive decoding: a client that lost
 // `resolves`, the pre-cap counts or `already_on_order` would have to re-derive

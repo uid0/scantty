@@ -372,12 +372,10 @@ knowing before touching either:
 - **The add posts `item_supplier`, never `identifier`.** Re-posting the
   identifier RE-RESOLVES it, and the catalogue can change between the lookup and
   the operator's confirm — they would have approved one item and added another.
-- **The refusal body is NOT the standard envelope.** `add_item` writes
-  `{"error": "<prose>", "code": "<code>"}` by hand, so it never reaches OMS's
-  DRF exception handler and `omsapi.parseError` puts the ENTIRE raw body into
-  `APIError.Message`. `omsapi.AsLineEntryError` recovers the sentence and the
-  code — without it the operator reads the JSON — and it is deliberately narrow,
-  so a gateway page and a DRF validation envelope keep the shape they arrived in.
+- **A coded refusal has two supported wire shapes.** `AsLineEntryError` accepts
+  both the legacy hand-built body and OMS's standardized envelope so ScanTTY and
+  OMS can deploy independently; unrelated errors remain uncoerced. The package
+  contract and wire rationale live in `internal/omsapi/po_line_entry.go`.
 - **The quantity and price defaults differ between a fresh line and a repeat,
   because the SERVER's do.** A fresh line lands on `suggested_quantity` /
   `suggested_unit_cost`; a repeat GROWS the line already there by
@@ -427,12 +425,10 @@ knowing before touching any of it:
   movement keys scroll the caveat where it outruns the pane, and the bar names
   them exactly there — or ANSWERS (`deleteNote`), because a press that did
   neither redraws a pane that is a pure function of unchanged state.
-- **Both refusal shapes are recovered.** `_destroy_item` writes
-  `{"error", "code"}` and `void_item` writes `{"error"}` alone; neither reaches
-  DRF's exception handler, so `parseError` hands the whole raw body over.
-  `asLineRefusal` tries the two narrow recognisers that already exist
-  (`AsLineEntryError`, then `AsReceivingRefusal`), so a gateway page and a DRF
-  envelope still arrive as the `APIError` they are.
+- **Line-removal refusals have three supported shapes.** `asLineRefusal` uses
+  `AsLineEntryError` for both coded shapes and `AsReceivingRefusal` for the
+  uncoded void response, preserving the server's operator-facing sentence.
+  `internal/omsapi/reorders.go` owns the endpoint-specific rationale.
 - **THE SITE IS THE EDIT SCREEN, and the set was derived.** Every screen that
   displays persisted PO lines was checked: `po_edit.go` has the per-line cursor
   and the per-line affordance rows, so removal is one more row-action there;
