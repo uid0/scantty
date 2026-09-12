@@ -1811,7 +1811,7 @@ func TestReceive_ThePagingClaimHoldsWithANoteOnThePane(t *testing.T) {
 
 // TestReceive_WritingANoteNeverChangesThePagingClaim.
 //
-// The note is pinned above the body, the header is subtracted from the body's
+// The note is pinned beneath the body, the block is subtracted from the body's
 // row budget, and the body's height is what decides whether PgUp/PgDn are named
 // — so while the note's rows appeared WITH the note, the sentence naming which
 // keys act could itself add or remove the paging pair from the bar drawn under
