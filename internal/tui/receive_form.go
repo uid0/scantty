@@ -4143,7 +4143,9 @@ func (s *ReceiveFormScreen) writeOffVerb() string {
 //
 // Header-independent phases derive their ceiling from barFor(0), keeping it in
 // step with the bar drawn. TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn
-// checks the height contract across phases, headers, and drawable widths.
+// checks the height contract across phases, headers, and drawable widths, and
+// TestReceive_TheBarCeilingNamesEveryKeystrokeTheDrawnBarDoes catches a drift too
+// small to fold the bar, which the height contract cannot see.
 func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 	switch s.phase {
 	case phaseLoading:

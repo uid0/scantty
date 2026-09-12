@@ -2583,3 +2583,70 @@ func TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn(t *testing.T) {
 		t.Fatal("no state was reached, so this judged nothing")
 	}
 }
+
+// TestReceive_TheBarCeilingNamesEveryKeystrokeTheDrawnBarDoes is the half the
+// rendered sweep above cannot deliver, and the reason it is a SECOND check
+// rather than a stronger wording of the first one.
+//
+// The sweep above judges ROWS, because rows are what the body budget spends.
+// That only reports a divergence big enough to FOLD the bar, and the summary
+// bar is 40 cells against the 49 the narrowest pane gives — so an arm that
+// restated barFor's literal and then drifted from it by one short item stays
+// inside one key line at every width Root draws and passes. Measured: with the
+// literal restored and `p=Print` added to barFor's summary arm, the row sweep
+// is green at 80, 100 and 120. A guard that cannot fail in the way that matters
+// is the defect it was written to stop, wearing the shape of a check.
+//
+// KEYSTROKES are what close it, and they are the right unit rather than a
+// convenient one: a ceiling's whole claim is that no bar the phase draws names
+// a key it has not accounted for. Keystrokes also survive the two things an
+// item-for-item comparison trips on, which is why that comparison was tried
+// first and abandoned. A ceiling carries every optional item at its LONGEST
+// wording while a drawn bar MERGES two of them — the serial phase draws
+// Enter/Esc=Review where the ceiling carries Enter=Save & review beside
+// Esc=Review — and the ceiling is legitimately a SUPERSET, since it names
+// paging a state's own data may never reach (the reopen pick). Both are honest,
+// and both spell the same keystrokes.
+//
+// No width axis, and that is a fact about the subject rather than an economy:
+// barFor and barCeiling take no width at all, so a keystroke set cannot vary
+// with one. Sweeping widths here would rebuild the same answer 41 times in a
+// package that has blown go test's 600s timeout twice.
+//
+// The phases come from receivePhaseCases and the tokens go through
+// receiveNamedKeys, which FATALS on a bar token it has not been taught — so a
+// bar that grows a new spelling arrives here rather than being skipped.
+func TestReceive_TheBarCeilingNamesEveryKeystrokeTheDrawnBarDoes(t *testing.T) {
+	compared := 0
+	for _, c := range receivePhaseCases() {
+		for _, height := range c.paneSizes() {
+			t.Run(fmt.Sprintf("%s at height %d", c.name, height), func(t *testing.T) {
+				build := receiveHarness(t, c.fake, c.lines, 80, height)
+				r, s := build(t)
+				// The Root is only the driver: every fact asked below lives on
+				// the screen, which the reach has written through by pointer.
+				_ = c.reach(t, r, s)
+				if s.phase != c.phase {
+					t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
+				}
+				ceiling := s.barCeiling()
+				accounted := receiveNamedKeys(t, ceiling)
+				for h := 0; h <= s.paneRows(); h++ {
+					drawn := s.barFor(h)
+					compared++
+					for k := range receiveNamedKeys(t, drawn) {
+						if !accounted[k] {
+							t.Errorf("with a %d-row header the bar names %q and the ceiling "+
+								"accounts for no such key, so the header allowance is "+
+								"measured against a bar that is not the one drawn\n"+
+								"ceiling: %+v\ndrawn:   %+v", h, k, ceiling, drawn)
+						}
+					}
+				}
+			})
+		}
+	}
+	if compared == 0 {
+		t.Fatal("no state was reached, so this judged nothing")
+	}
+}
