@@ -324,7 +324,7 @@ func (s *LocationProblemFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Problem report"))
 	for i, f := range fields {
-		l.AddRow(i, renderJDEField(f, labelWidth, s.bodyWidth()))
+		l.AddFittedField(i, f, labelWidth, s.bodyWidth())
 		// The whole scale under the FOCUSED severity row: four values is more
 		// than "< Medium >" can imply, and cycling blind through a severity is
 		// how an urgent report ends up filed as low.

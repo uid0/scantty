@@ -1396,7 +1396,7 @@ func (s *ItemSupplierFormScreen) formLines() *jdeLines {
 		heading += "  " + StyleMuted.Render("for ") + s.itemName
 	}
 	l.Add(heading)
-	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
+	l.AddFittedFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
 	return l
 }
 

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -158,11 +159,22 @@ func (s *ServiceStatusScreen) render() (jdeHeader, *jdeLines) {
 		// about the services themselves, and nothing is gated on it.
 		header := jdeHeader(nil).add(jdeHeadContext, jdeIndent+StyleMuted.Render("Service status unavailable")).
 			add(jdeHeadDecorative, "")
-		body.Add(jdeIndent + "The status check could not be reached, so nothing is known")
-		body.Add(jdeIndent + "about the external services right now.")
+		// FOLDED against the live pane, not hand-broken. Both sentences were
+		// split across two Adds at the width their author had in mind, and the
+		// first line of each was 60 and 66 cells against the 51 an 80-column
+		// terminal leaves — so clampToBox cut "so nothing is known" and "treated
+		// as healthy," and the operator read a reassurance that stopped mid-
+		// clause. A fold costs a row and loses nothing.
+		for _, line := range jdeCaveatLinesStyled("The status check could not be reached, so "+
+			"nothing is known about the external services right now.", s.bodyWidth(), 0,
+			lipgloss.NewStyle()) {
+			body.Add(line)
+		}
 		body.Add("")
-		body.Add(jdeIndent + StyleMuted.Render("Nothing is being gated: an unknown status is treated as healthy,"))
-		body.Add(jdeIndent + StyleMuted.Render("so every control stays available."))
+		for _, line := range jdeCaveatLines("Nothing is being gated: an unknown status is treated "+
+			"as healthy, so every control stays available.", s.bodyWidth()) {
+			body.Add(line)
+		}
 		return header, body
 	}
 
@@ -204,7 +216,7 @@ func (s *ServiceStatusScreen) render() (jdeHeader, *jdeLines) {
 			body.AddRow(i, jdeIndent+"  "+StyleJDEHeading.Render(name))
 		}
 		for _, f := range serviceStatusFields(svc, now, s.staff()) {
-			body.AddRow(i, renderJDEField(f, labelWidth, s.bodyWidth()))
+			body.AddFittedField(i, f, labelWidth, s.bodyWidth())
 		}
 		if i < len(services)-1 {
 			body.AddRow(i, "")

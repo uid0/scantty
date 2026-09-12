@@ -1109,15 +1109,25 @@ either:
   on the block whose whole point is what a kit puts into stock.
   KNOWN AND ROUTED, on the axis that order does NOT cover: the block's own
   quantity BOX can be the thing off the pane. The block opens with the line's
-  label and `Window` keeps a block's START, so at 80x12, 80x13 and 80x15 the
-  pane draws `2  Box of M3 bolts` and not the field under it — while that field
-  has the focus. Every rune after the first then redraws a byte-identical pane
-  (the first only moves because the bar changes shape), which is rule 1 broken
-  by geometry, the same shape as the New PO pickers' box and a DIFFERENT
+  label and `Window` keeps a block's START, so the pane draws
+  `2  Box of M3 bolts` and not the field under it — while that field has the
+  focus. Every rune after the first then redraws a byte-identical pane (the
+  first only moves because the bar changes shape), which is rule 1 broken by
+  geometry, the same shape as the New PO pickers' box and a DIFFERENT
   mechanism: the body window rather than the header budget, so the answer
   surface above does not reach it. Fixing it means reopening `addLineBlock`'s
   sacrifice order — a decision, not a patch — which is why it is written down
   rather than done in passing.
+  IT IS NOT A NARROW-PANE CASE AND THE RECORDED SET WAS TOO SMALL. Measured
+  with the cursor on the first receivable line, at every pane Root draws, it is
+  THIRTEEN: 80x12, 80x13, 80x15; 100x12, 100x13, 100x15, 100x16, 100x17, 100x18,
+  100x19; 120x11, 120x12, 120x14. The three 80-column ones were all that had
+  been written down, and reading that as "a short 80-column pane" is what makes
+  the case look like a corner — 100x19 is an ordinary window. The arithmetic
+  says why widening does not help: `Window` reserves two rows for the ↑/↓
+  markers, so a body budget of 1 or 3 leaves the cursor's block exactly ONE
+  content line, and above 100x15 the pinned HEADER takes the rows a taller pane
+  adds while `bodyAvailForBar` stays at 3 (`receiveNoteRows`' reservation).
 
 ## Conventions
 
@@ -1576,6 +1586,16 @@ either:
   now — at every pane Root draws, the overlay takes every keystroke, stays off
   the back-stack, draws no refusal, and answers each key exactly as it does at
   the largest pane — so a fifth attempt fails rather than shipping.
+  WHAT THE EXEMPTION ACTUALLY COSTS, MEASURED ABOVE THE SIZE CONTRACT, is ONE
+  HEIGHT. The overlay's head is the input line plus its bar folded against the
+  live pane, and the bar folds onto one row at every width from 70 up — so the
+  head is two rows at every width Root draws, and `screenBodyRows(7)` is 1. The
+  bar is therefore off the pane at terminal height 7 and at NO other drawable
+  height, at every width 80–120. It was four rows at width 45 and three at 51,
+  so the band this used to cost spanned several heights and shrank to a single
+  one when the floor was set. The remaining row cannot be bought: one of the box
+  and the bar has to have it, and a pane drawing the bar instead would answer
+  every keystroke with no caret and no query, which is rule 1.
   WHAT THE REVERT RESTORED is KEY ROUTING and the refusal EXEMPTION, and that is
   the claim the check above delivers — not a general "the overlay is untouched",
   which would be a maintained list of differences against a base commit and is
@@ -1786,11 +1806,26 @@ either:
   `jdePaneCases` and `jdeHeaderCases` build, at every honest width and drawable
   height, and fails on a line above the bar wider than `screenBodyCells(w)`.
   `jdeRowsPastThePane` is the measured residue, per screen, as the widest width
-  that still cuts and fails in both directions. Because its fixtures cover only
-  their opening state, screens whose rows change with focus need their own state
-  walk; `po_edit_rows_test.go` is the worked example and also requires an
-  ellipsis on every clipped value. Keep dropped grid flags on the row itself,
-  never only on a continuation row that may fall below the window.
+  that still cuts and fails in both directions. **IT IS EMPTY**, and so is
+  `jdeOverWideEssentialRows` beside it — both are kept so that the next entry
+  states what was given up rather than joining a crowd. Because its fixtures
+  cover only their opening state, screens whose rows change with focus need
+  their own state walk; `po_edit_rows_test.go` is the worked example and also
+  requires an ellipsis on every clipped value. Keep dropped grid flags on the
+  row itself, never only on a continuation row that may fall below the window.
+  **A ROW IS BOUNDED BY THE LAYER AND THERE IS NOTHING TO OPT OUT OF.** The
+  residue was twenty-six non-purchasing screens cutting a row at 80 columns and
+  up to 120 — the FLOOR had nothing to do with it — and all of it came from the
+  fit being a LAYOUT DECISION a sheet opted into. `AddFields` is gone;
+  `AddFittedFields` is the only band builder and `AddFittedField` the per-row
+  form the interleaving loops needed (an option strip under the focused row, a
+  derived preview), which is what those fifteen sheets were calling
+  `renderJDEField` directly for. `jdeFitRow` covers `jdeValue` and `jdeChoice`
+  rows too now (`jdeFitValueRow`), and the GIVE-ORDER THERE IS THE OTHER WAY
+  ROUND: a text row's fill gives first because a fill is decoration, while a
+  value row has no such part — so the HINT folds first, which loses nothing, and
+  only then is the VALUE clipped with `fitCell`'s mark. `jdePaneFieldWidth` is
+  still the floor and not the fit: it caps a text row's fill and says so.
 - **THE SIZE CONTRACT IS 80 COLUMNS BY 7 ROWS.** Root refuses to draw below
   either dimension, so every unqualified width guarantee in this file inherits
   the 51-cell pane an 80-column terminal leaves. `internal/tui/layout.go` owns
@@ -1847,8 +1882,8 @@ either:
   `clampToBox` own the tab-handling constraints at their respective bounds.
 - **A typed row is handed to the layer as a BOX, never as a string.** Build it
   with `jdeField{Kind: jdeText, Input: &box}` and pass the pane to
-  `renderJDEField` / `AddFields`; `jdeFitInputValue` then bounds the box, keeps
-  the caret inside the field and leaves the fill for the reverse-video
+  `AddFittedFields` / `AddFittedField`; `jdeFitInputValue` then bounds the box,
+  keeps the caret inside the field and leaves the fill for the reverse-video
   highlight. A row that renders its own `textinput.View()` is unbounded, and
   bubbles gives a box no scrolling window at all at `Width 0`, so the value walks
   off the pane and the caret goes with it. `jde_form.go` carries the full note;
@@ -2450,6 +2485,25 @@ touching any screen an operator drives:
   INDEPENDENT rows keeps `add`, because dropping one leaves no fragment that
   can read as complete. `header_fold_mark_test.go` and
   `fail_detail_mark_test.go` hold the invariant through rendered panes.
+  **FOLDING A VALUE IS NOT THE SAME AS TELLING THE LAYER IT IS ONE VALUE**, and
+  that is how six sites got it wrong AFTER `addFitted` existed. Each folded its
+  caveat correctly with `jdeCaveatLines` and then handed the result to
+  `addBlock`, which adds INDEPENDENT rows — so the fold was right and the
+  row-by-row trim under it was the very defect `addFitted` was written for.
+  Five of the six are reached by a swept state; the sixth (the meter grid's drop
+  note) is not, and was converted because the MECHANISM is the same, not because
+  a pane reported it. Measured at 80 columns and drawable heights before the fix:
+  69 panes on the
+  asset-document supersede confirm, 54 on the meter adjust, 51 on the new meter,
+  47 on the scan review, 2 on the reading grid, each drawing a fragment that
+  ended on a whole word. `addFittedBlock` is the drop-in — it prepends the same
+  separator `addBlock` does — so the grep worth running when a caveat is added
+  is `addBlock(.*jdeCaveatLines`, which should find nothing.
+  The COMPANION half is that `headerFoldValues` (`header_fold_mark_test.go`) is
+  a hand-kept roster of what each screen folds, so a new screen is invisible to
+  the sweep until somebody puts it there; the constants it reads are named
+  (`meterDropNote`, `readingDropNote`, `woScanImageCaveat`) precisely so the
+  builder and the sweep read ONE string rather than two copies of a sentence.
   FIELD rows are the shape that does not FOLD, and they are bounded rather than
   exempt — the CART row included, which gives ground in its own STATED order
   because clipping its label alone was not enough: the LABEL first, then the
@@ -2601,6 +2655,20 @@ touching any screen an operator drives:
   folded footer with `N new PO` in it: the same claim, off the same edge, for
   the third time — horizontally, then vertically, then by counting rows where
   the renderer counts lines.
+  KNOWN AND UNFIXED, ON THE OTHER AXIS: a `ListScreen` row's CONTENT is bounded
+  nowhere. `list.go`'s body writes `row.Title`, `row.Subtitle` and
+  `row.MetricsLine` straight into the pane, so at 80 columns — where the pane is
+  51 — an OMS-shaped title (`Hex bolt M8x40 zinc-plated DIN 933 grade 8.8 full
+  thread`, 60 cells) and an OMS-shaped subtitle (`Acme Fasteners & Industrial
+  Supply Company Limited · $12,345.67`, 67) are cut from the right with NO mark,
+  on all eight list surfaces. It fits from 100 columns up, so it is an
+  80-column defect specifically, and it is the same rule the columnar layer's
+  row bound exists for, one layer over. The CHROME is clean — the footer and
+  header fold against `listPaneCells()`, the live pane — so nothing reports
+  this; the sweeps that walk these screens carry `Row 1`-shaped fixtures, which
+  is the vacuous-fixture rule waiting to be noticed. The fix is contained:
+  clip the three through `fitCell` against `listPaneCells()`. Clipping changes
+  no LINE count, so `rowsFittingFrom`'s arithmetic above is untouched by it.
 - **A textinput with no `Width` grows past its row, and `clampToBox` takes the
   caret.** bubbles' `handleOverflow` returns early when `Width` is zero, so
   `View()` emits the whole value: past the column where the row fills the pane
@@ -3042,42 +3110,46 @@ is the authority; read it before adding a frame or wording a bar.
   this: it compared against the row already `truncateVisible`'d to the pane, so
   `Contains` matched the very mutilation the check exists to find, and the check
   could not fail in this direction at all. It compares the row AS THE BUILDER
-  WROTE IT now, and the class it had been hiding is recorded rather than closed.
-  KNOWN AND UNFIXED, with the MEASURED extent, so the next agent inherits the
-  numbers instead of rediscovering them. `jdeOverWideEssentialRows` is the
-  roster and it fails in both directions — an unlisted over-wide row is a new
-  defect, a listed one that now fits is a stale exception — and the numbers in
-  it are what the sweep measures rather than what anyone remembered. Twenty
-  entries, one mechanism apiece:
+  WROTE IT now.
+  BOTH CLASSES IT WAS HIDING ARE CLOSED, AND THE ROSTER IS EMPTY.
+  `jdeOverWideEssentialRows` stays, and still fails in both directions — an
+  unlisted over-wide row is a new defect, a listed one that now fits is a stale
+  exception — so the next entry states its own measured extent rather than
+  joining twenty others. What was there, and what the remedy turned out to be:
   the columnar picker's `Filter .....` row on NINETEEN sites
   (`AssetFormScreen/viewPick` and its siblings), **70 cells** — cut at a
   terminal width of 80, where `screenBodyWidth` gives 51, and fitting from 100
-  (pane 71) up. THE MECHANISM IS THE HINT PAST THE CAP, and the first wording of
-  this entry got it wrong in a way worth recording: it blamed the layer's
+  (pane 71) up. THE MECHANISM WAS THE HINT PAST THE CAP, and the first wording
+  of the entry got it wrong in a way worth recording: it blamed the layer's
   unsized fallback and named a `jdePickHeader` that does not exist, when
   `jdePickList.render` is the builder and all nineteen sites call it with the
-  LIVE pane. The row is 70 cells at every width because nothing in it is derived
-  from the pane at all — the field is declared at a flat `Width: 30`,
+  LIVE pane. The row was 70 cells at every width because nothing in it was
+  derived from the pane at all — the field is declared at a flat `Width: 30`,
   `jdePaneFieldWidth` caps a text row at `bodyWidth - (indent + label + leader)`
-  = 36 at an 80-column pane so 30 survives untouched, and `renderJDEField` then
-  appends `"  "` plus the 23-cell hint AFTER that cap: 2 + 6 + 7 + 30 + 2 + 23.
-  `jdePaneFieldWidth`'s own doc says so — "a hint sitting past the fill is still
+  = 36 at an 80-column pane so 30 survived untouched, and `renderJDEField` then
+  appended `"  "` plus the 23-cell hint AFTER that cap: 2 + 6 + 7 + 30 + 2 + 23.
+  `jdePaneFieldWidth`'s own doc said so — "a hint sitting past the fill is still
   past the pane afterwards — which is exactly why the fold is `jdeFitRow`'s job
-  and not this one's" — so the remedy for these nineteen is routing the filter
-  row through `jdeFitRow`, which already trades the field against the hint and
-  folds the hint underneath. A RECORDED REASON IS READ AS A DIAGNOSIS AND WORK
-  IS FILED FROM IT, so a wrong one costs more than none. And `chainHeader`'s promoted
-  validation message, **85 cells** — cut at 80 (pane 51) AND at 100 (pane 71),
-  fitting only from 120 (pane 91), which makes it the widest essential row in
-  the package and the only one that overruns past 80 columns. Those messages are
-  composed unfolded from OMS-supplied level names, so no WORDING of them can be
-  a bound.
-  THE REMEDY IS THE LAYER'S, which is why neither was fixed where it was found:
-  bound an essential header row where it is emitted, the way `jdeCaveatLines`
-  bounds a caveat against the live pane. That is a per-screen conversion of the
-  shape sc-jde-lift was, on twenty sites at once, and doing four of twenty from
-  a review round is "applying the rule where it was reported" — the failure mode
-  this file exists to record.
+  and not this one's" — and that is exactly what fixed it: the row goes through
+  `jdeFitRow` now and the folded hint is ranked CONTEXT, so the BOX keeps the
+  one essential row `jdeMinBudget` allows. A RECORDED REASON IS READ AS A
+  DIAGNOSIS AND WORK IS FILED FROM IT, so a wrong one costs more than none —
+  and a right one is worth what it saves, which here was the whole fix.
+  And `chainHeader`'s promoted validation message, **85 cells** — cut at 80
+  (pane 51) AND at 100 (pane 71), fitting only from 120 (pane 91), which made it
+  the widest essential row in the package and the only one that overran past 80
+  columns. Those messages are composed unfolded from OMS-supplied level names,
+  so no WORDING of them can be a bound; they fold through
+  `jdeCaveatLinesStyled` (`jdeCaveatLinesIn` in a caller's style, because a
+  validation message is drawn in `StyleStatusWarn` and is not a muted standing
+  note) and ride `addFitted`, so the fold's LEAD carries the essential rank and
+  a trim marks its own cut.
+  THE REMEDY WAS THE LAYER'S, which is why neither was fixed where it was found
+  and why fixing them was one change rather than twenty: bound an essential
+  header row where it is emitted, the way `jdeCaveatLines` bounds a caveat
+  against the live pane. Doing four of twenty from a review round would have
+  been "applying the rule where it was reported" — the failure mode this file
+  exists to record.
 - **WHAT THE RULE DOES NOT PROMISE is a block taller than the window.**
   `jdeLines.Window` keeps a block's START and nothing scrolls inside one, so a
   single navigable row whose own block outruns a one-line body loses its tail

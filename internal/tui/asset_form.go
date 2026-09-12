@@ -1400,7 +1400,7 @@ func (s *AssetFormScreen) formLines() *jdeLines {
 			l.Add(StyleJDEHeading.Render(assetBandLabel[b]))
 			band = b
 		}
-		l.AddRow(i, renderJDEField(fields[i], labelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], labelWidth, s.bodyWidth())
 		if i == s.cursor {
 			if strip := s.selectStrip(id, jdeStripWidth(s.bodyWidth(), labelWidth)); strip != "" {
 				l.AddRow(i, jdeStripIndent(labelWidth)+StyleMuted.Render(strip))

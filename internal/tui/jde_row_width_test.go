@@ -28,6 +28,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -36,65 +37,60 @@ import (
 // to deduplicate the wider columnar sweep's rendered cases.
 const jdeRowsMustHoldFrom = 80
 
-// jdeRowsPastThePane is the residue the sweep found, per SCREEN: the widest
+// jdeRowsPastThePane is the residue this sweep found, per SCREEN: the widest
 // terminal at which some row of some state of it is still drawn past the pane.
-// Every width above it is clean, in every state the sweep builds, at every
-// drawable height.
 //
-// It is the known, unfixed half of the rule, and it fails in BOTH directions — a
-// screen overrunning above its recorded width is a new defect, and a screen whose
-// recorded width no longer overruns is a stale entry that must come down with the
-// fix that moved it — so the numbers are what the sweep MEASURES, not what anyone
-// remembered.
+// IT IS EMPTY, AND IT IS KEPT SO THE RULE CAN BE STATED WITHOUT ONE. Every
+// columnar screen now fits every row it draws, in every state this sweep builds,
+// at every drawable height and every honest width — so the check below is the
+// rule outright rather than a rule with a schedule of exceptions. The map stays
+// because the sweep fails in BOTH directions off it: an unrecorded overrun is a
+// new defect, and a recorded one that no longer overruns is a stale exception,
+// so an entry added here later says exactly what was given up and how far.
 //
-// WHAT IT IS NOT: a licence below the recorded width. A ceiling says nothing
-// about a new row that overruns only at widths narrower than one already does;
-// that finer claim would need the whole set of cutting panes per state, which
-// moves with every wording on every frame.
+// HOW IT EMPTIED, in two rounds, and the mechanisms are worth knowing because
+// each was the layer's rather than a screen's.
 //
-// NINE SCREENS CAME OFF THIS ROSTER WHEN THE SIZE CONTRACT WAS SETTLED, and
-// not one of them was edited to do it: LocationReconcileScreen (49),
+// Nine screens came off it when the SIZE CONTRACT was settled and not one of
+// them was edited to do it: LocationReconcileScreen (49),
 // PurchaseOrderDetailScreen (51), WorkOrderScanReviewScreen (51),
 // PurchaseOrderAttachmentsScreen (59), PurchaseOrderEditScreen (65),
 // PurchaseOrderAddLineScreen (66), PurchaseOrderCreateScreen (67),
-// AssetDocumentsScreen (74) and AssetMetersScreen (77). Every one
-// of them cut a row only at widths Root no longer draws in, so the mechanism
-// each recorded — a label column or a value floor wider than the pane it was
-// sized from — is now unreachable rather than fixed. Lower minTerminalWidth and
-// they come back; that is what this sweep will say, in the "not recorded"
-// direction, the first time it is run. The per-row detail — which row, what
-// the operator misreads, and the layer mechanism behind each class (a hint
-// appended after jdePaneFieldWidth has capped its field; a label column and a
-// value floor wider than a narrow pane; prose and grids drawn unbounded) — is
-// the companion item filed with this sweep, scantty-columnar-rows-past-the-pane.
-var jdeRowsPastThePane = map[string]int{
-	"AssetFormScreen":           107,
-	"AssetPartFormScreen":       98,
-	"AuthorizationGrantScreen":  98,
-	"CategoryFormScreen":        98,
-	"DeviceTypeFormScreen":      89,
-	"DisconnectFormScreen":      108,
-	"InventoryItemFormScreen":   113,
-	"ItemSupplierFormScreen":    108,
-	"LocationFormScreen":        102,
-	"LocationProblemFormScreen": 115,
-	"MaintenanceItemFormScreen": 120,
-	"MakerBoxFormScreen":        108,
-	"PowerBreakerFormScreen":    103,
-	"PowerCircuitFormScreen":    109,
-	"PowerOutletFormScreen":     98,
-	"PowerPanelFormScreen":      101,
-	"ProjectStorageFormScreen":  109,
-	"SIGFormScreen":             104,
-	"ServiceStatusScreen":       95,
-	"SiteSettingsFormScreen":    102,
-	"StorageAssignFormScreen":   105,
-	"StorageSlotFormScreen":     98,
-	"StorageSlotGenerateScreen": 107,
-	"SupplierFormScreen":        112,
-	"ThermostatFormScreen":      103,
-	"WebhookFormScreen":         103,
-}
+// AssetDocumentsScreen (74) and AssetMetersScreen (77). Each cut a row only at
+// widths Root no longer draws in. Lower minTerminalWidth and they come back;
+// that is what this sweep will say, in the "not recorded" direction.
+//
+// The remaining twenty-six were LIVE at 80 columns — the width the whole
+// interface is designed to — and as high as 120, so the floor had nothing to do
+// with them. Three mechanisms, all closed in the layer:
+//
+//   - A HINT DRAWN PAST A CAPPED FILL. jdePaneFieldWidth caps a text row's fill
+//     to the pane and renderJDEField then appends "  " + Hint after it, so the
+//     hint was always past the edge. jdeFitRow trades the two and folds the
+//     hint underneath, and it was a LAYOUT DECISION a sheet opted into —
+//     AddFittedFields — while fifteen sheets called the unfitted AddFields or
+//     renderJDEField directly. AddFields is gone and AddFittedField is the
+//     per-row form those loops needed; there is nothing left to opt out of.
+//     `Manual PDF path ..... ____  absolute local path` was 72 cells against 51.
+//   - A VALUE OR CHOICE ROW BOUNDED NOWHERE. jdePaneFieldWidth caps only a text
+//     row's fill and said a value row's width was "a content decision each sheet
+//     already makes for itself"; no sheet made it. jdeFitValueRow is that half:
+//     the hint folds first because folding loses nothing, then the value is
+//     clipped with fitCell's mark. `Affects ..... Sending notifications,
+//     reorder alerts, and receipts` was 67 cells.
+//   - PROSE WRITTEN STRAIGHT OUT. A picker's note and empty state, a form's
+//     standing caveat, a chain-validation message, a maintenance sub-list row —
+//     each hand-counted against a width its author had in mind. They fold
+//     against the LIVE pane now, and the one that was a header's ESSENTIAL row
+//     (chainHeader's 85-cell validation message, which jdeOverWideEssentialRows
+//     recorded as the layer's to fix) folds through addFitted, so a trim marks
+//     its own cut.
+//
+// WHAT AN ENTRY WOULD NOT BE: a licence below its recorded width. A ceiling says
+// nothing about a new row that overruns only at widths narrower than one already
+// does; that finer claim would need the whole set of cutting panes per state,
+// which moves with every wording on every frame.
+var jdeRowsPastThePane = map[string]int{}
 
 // jdeRowWidthCase is one (screen, state) the sweep draws. after, when set, runs
 // once the screen is sized — jdeHeaderCase's rule, for a state a resize destroys.
@@ -253,5 +249,41 @@ func TestJDEForm_NoRowRunsPastThePane(t *testing.T) {
 			}
 		}
 		t.Logf("measured extents:\n%s", b.String())
+	}
+}
+
+// TestJDEForm_AColourRowKeepsItsSampleOnThePane: a text row carrying a hex
+// SAMPLE fits the pane, at every width Root draws.
+//
+// The sweep above cannot make this claim and passed over the defect: a swatch
+// only exists once the row's value parses as a colour, and no fixture
+// jdePaneCases builds carries one — which is the vacuous-fixture rule with the
+// value, rather than the assertion, as the thing that could not reach the bound.
+//
+// THE MECHANISM IS THE HINT PAYING FOR THE SAMPLE BY ACCIDENT. renderJDEField
+// draws the swatch LAST, after the fill and after any hint, and jdeColorRow
+// drops the HINT whenever a sample is present — so the fill was sized against a
+// budget that still had the hint's cells in it and the sample landed just past
+// the pane. Measured with a 40-column field at 80 columns, where the pane is 51:
+// `  Colour ..... #ff8800_____________________________  ●` is 54 cells, and
+// clampToBox took the sample off the row whose whole job is to show it.
+// jdeSwatchCost reserves it in jdePaneFieldWidth (the floor) and in jdeFitRow
+// (the fit), so both halves of the bound agree.
+func TestJDEForm_AColourRowKeepsItsSampleOnThePane(t *testing.T) {
+	box := textinput.New()
+	box.SetValue("#ff8800")
+	f := jdeColorRow(jdeField{Label: "Colour", Kind: jdeText, Input: &box, Width: 40}, "#ff8800")
+	if f.Swatch == "" {
+		t.Fatal("the fixture produced no sample, so this test asserts nothing about one")
+	}
+	for _, w := range jdeDrawableWidths() {
+		pane := screenBodyCells(w)
+		fitted, _ := jdeFitRow(f, jdeLabelWidth([]jdeField{f}), pane)
+		row := renderJDEField(fitted, jdeLabelWidth([]jdeField{f}), pane)
+		if got := lipgloss.Width(row); got > pane {
+			t.Errorf("at a terminal width of %d the colour row is %d cells against the %d the "+
+				"pane gives, so clampToBox takes the sample off it: %q",
+				w, got, pane, stripANSI(row))
+		}
 	}
 }

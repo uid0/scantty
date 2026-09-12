@@ -306,13 +306,17 @@ func (s *AssetMeterReadingsScreen) header() jdeHeader {
 			readingGridRow("#", "Observed", "Change", "Total", deltaW, afterW))).
 			add(jdeHeadEssential, jdeIndent+StyleMuted.Render(fitCellIf(
 				"Values "+meterDropMark+" below", s.bodyWidth()-len(jdeIndent)))).
-			addBlock(jdeHeadContext, jdeCaveatLines(
-				"The pane is too narrow to hold each row's change and total beside it, "+
-					"so they are drawn whole underneath instead.", s.bodyWidth()))
+			addFittedBlock(jdeHeadContext, jdeCaveatLines(readingDropNote, s.bodyWidth()),
+				func(rows int) []string { return jdeCaveatLinesIn(readingDropNote, s.bodyWidth(), rows) })
 	}
 	return h.add(jdeHeadEssential, StyleMuted.Render(
 		readingGridRow("#", "Observed", "Change", "Total", deltaW, afterW)))
 }
+
+// readingDropNote is the sentence under the drop mark, named rather than
+// written inline so the builder and the fold-mark sweep read one string.
+const readingDropNote = "The pane is too narrow to hold each row's change and total beside it, " +
+	"so they are drawn whole underneath instead."
 
 // titleRow names the meter and what it now reads, bounded AS ASSEMBLED — and
 // the figure is the part that never gives.

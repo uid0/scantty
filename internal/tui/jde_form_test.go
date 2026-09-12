@@ -26,7 +26,10 @@ func TestJDEField_ColumnarLayout(t *testing.T) {
 		t.Fatalf("label column = %d, want the widest label (%d)", w, len("Date ordered"))
 	}
 
-	lines := renderJDEFields(fields, 0)
+	lines := make([]string, len(fields))
+	for i, f := range fields {
+		lines[i] = renderJDEField(f, w, 0)
+	}
 	// Every leader starts at the same column: that is what "right-aligned into
 	// a common column" has to mean for the block to read as one sheet.
 	col := -1
@@ -251,6 +254,14 @@ func TestActionBar_IsTwoRowsAndNamesEveryKey(t *testing.T) {
 		if !strings.Contains(lines[1], want) {
 			t.Errorf("bar missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestFitValueRow_DropsAnOverwideNumericFactWhole(t *testing.T) {
+	value := "9223372036854775807 of 9223372036854775807 degraded"
+	fitted, _ := jdeFitValueRow(jdeField{Kind: jdeValue, Value: value}, 10, 40)
+	if fitted.Value != paneCutMark {
+		t.Fatalf("overwide numeric fact = %q, want only the omission mark", fitted.Value)
 	}
 }
 

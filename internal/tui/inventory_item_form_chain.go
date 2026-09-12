@@ -436,12 +436,8 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 	// nothing at all, which is rule 8 in the quiet direction: a claim the code
 	// does not honour, on the sweep's own vacuity guard.
 	msgs := validatePackagingChain(s.packRows)
-	var warn []string
-	for _, msg := range msgs {
-		warn = append(warn, jdeIndent+StyleStatusWarn.Render("! "+msg))
-	}
 	headingRank := jdeHeadContext
-	if len(warn) == 0 && len(s.packRows) > 0 {
+	if len(msgs) == 0 && len(s.packRows) > 0 {
 		headingRank = jdeHeadEssential
 	}
 	h := jdeHeader(nil).add(headingRank, StyleJDEHeading.Render("Packaging chain"))
@@ -475,18 +471,35 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 		emptyDetail = jdeCaveatLines(detail, width)
 	}
 	switch {
-	case len(warn) > 0:
+	case len(msgs) > 0:
 		if emptyFact != "" {
 			h = h.add(jdeHeadDecorative, "").add(jdeHeadContext, emptyFact).
 				addFitted(jdeHeadContext, jdeHeadContext, emptyDetail, emptyRefit)
 		}
 		h = h.add(jdeHeadDecorative, "")
+		// FOLDED against the live pane, like every other sentence on this
+		// header. A message is composed from OMS-supplied level names, so no
+		// wording of it can promise to fit: `! Packaging level "Case" must hold
+		// fewer base units than "Pallet" that contains it.` is 85 cells against
+		// the 51 an 80-column terminal gives, and it was written straight out —
+		// so the row this branch marks ESSENTIAL, the one it promises the
+		// operator keeps, was the one clampToBox cut with no mark. An essential
+		// row is a promise about the ROW and jdeFitHeader does no width fitting
+		// at all, so the bound has to be here, where the row is emitted.
+		//
 		// The LAST message is the essential one: jdeFitHeader gives ground from
 		// the END within a rank, so anything marked essential has to be the row
 		// that survives, and marking more than one is a claim the geometry
-		// cannot honour.
-		h = h.add(jdeHeadContext, warn[:len(warn)-1]...).
-			add(jdeHeadEssential, warn[len(warn)-1])
+		// cannot honour. Its fold's LEAD carries that rank and the rest is
+		// context, which is what addFitted's two ranks are for.
+		for i, msg := range msgs {
+			refit := func(rows int) []string { return chainWarnLines(msg, width, rows) }
+			lead := jdeHeadContext
+			if i == len(msgs)-1 {
+				lead = jdeHeadEssential
+			}
+			h = h.addFitted(lead, jdeHeadContext, refit(0), refit)
+		}
 	case emptyFact != "":
 		h = h.add(jdeHeadDecorative, "").
 			add(jdeHeadEssential, emptyFact).
@@ -495,6 +508,14 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 		h = h.add(jdeHeadDecorative, "")
 	}
 	return h.add(jdeHeadDecorative, "")
+}
+
+// chainWarnLines folds one chain-validation message into the pane, marked with
+// the "! " that says it is a refusal to save rather than a standing note, and
+// cut into at most `rows` lines (0 meaning no limit) with the fold's own
+// ellipsis where that drops any.
+func chainWarnLines(msg string, bodyWidth, rows int) []string {
+	return jdeCaveatLinesStyled("! "+msg, bodyWidth, rows, StyleStatusWarn)
 }
 
 // chainListLines is the rung list, split out of viewChain so the movement arm
@@ -622,7 +643,7 @@ func (s *InventoryItemFormScreen) chainRowFrame() (*jdeLines, []actionBarItem) {
 	l.Add(jdeIndent + StyleMuted.Render(fmt.Sprintf(
 		"How many %s one of these holds.", pluralizeUnit(unit, 2))))
 	l.Add("")
-	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
+	l.AddFittedFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
 
 	items := []actionBarItem{{"Enter", "Save level"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if s.chainRowFocus == chainRowFieldRemove {

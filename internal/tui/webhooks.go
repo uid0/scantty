@@ -570,7 +570,7 @@ func (s *WebhookFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Webhook"))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], webhookLabelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], webhookLabelWidth, s.bodyWidth())
 		switch {
 		case i == s.cursor && id == whEventType:
 			// Twelve event types is more than a "< value >" row can say on its

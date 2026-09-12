@@ -763,13 +763,17 @@ func (s *AssetMetersScreen) listHeader() jdeHeader {
 			meterGridRow("#", "Meter", "Current", nameW, valueW))).
 			add(jdeHeadEssential, jdeIndent+StyleMuted.Render(fitCellIf(
 				"Value "+meterDropMark+" below", s.bodyWidth()-len(jdeIndent)))).
-			addBlock(jdeHeadContext, jdeCaveatLines(
-				"The pane is too narrow to hold each meter's current reading on its row, "+
-					"so it is drawn whole underneath instead.", s.bodyWidth()))
+			addFittedBlock(jdeHeadContext, jdeCaveatLines(meterDropNote, s.bodyWidth()),
+				func(rows int) []string { return jdeCaveatLinesIn(meterDropNote, s.bodyWidth(), rows) })
 	}
 	return h.add(jdeHeadEssential, StyleMuted.Render(
 		meterGridRow("#", "Meter", "Current", nameW, valueW)))
 }
+
+// meterDropNote is the sentence under the drop mark below, named rather than
+// written inline so the builder and the fold-mark sweep read one string.
+const meterDropNote = "The pane is too narrow to hold each meter's current reading on its row, " +
+	"so it is drawn whole underneath instead."
 
 // meterDropMark says a column was moved off the row rather than cut on it. It is
 // the mark half of "shown whole or dropped and marked".
@@ -1170,7 +1174,9 @@ const adjustCaveat = "A correction does not erase the earlier reading: it is wri
 // second time beside the check is a header the check cannot report on.
 func (s *AssetMetersScreen) adjustHeader() jdeHeader {
 	h := s.entryHeader("Adjust the meter")
-	return h.addBlock(jdeHeadContext, jdeCaveatLines(adjustCaveat, s.bodyWidth()))
+	width := s.bodyWidth()
+	return h.addFittedBlock(jdeHeadContext, jdeCaveatLines(adjustCaveat, width),
+		func(rows int) []string { return jdeCaveatLinesIn(adjustCaveat, width, rows) })
 }
 
 func (s *AssetMetersScreen) viewAdjust() string {
@@ -1292,7 +1298,9 @@ func (s *AssetMetersScreen) newHeader() jdeHeader {
 		Label: "Asset", Kind: jdeValue,
 		Value: fitCellIf(s.assetName, jdeStripWidth(s.bodyWidth(), assetLabelW)),
 	}, assetLabelW, s.bodyWidth()))
-	h = h.addBlock(jdeHeadContext, jdeCaveatLines(newMeterCaveat, s.bodyWidth()))
+	width := s.bodyWidth()
+	h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(newMeterCaveat, width),
+		func(rows int) []string { return jdeCaveatLinesIn(newMeterCaveat, width, rows) })
 	return h.add(jdeHeadDecorative, "")
 }
 

@@ -630,16 +630,16 @@ func (s *StorageAssignFormScreen) formLines() *jdeLines {
 	l.Add("")
 	// The slot is fixed context, not a field — there is no update action, so
 	// re-pointing an assignment means releasing and assigning again. It is a
-	// dimmed, non-navigable row of this sheet (l.Add, not AddRow) rather than a
+	// dimmed, non-navigable row of this sheet (jdeNoRow, not a row number) rather than a
 	// header the operator would not tie to the form.
-	l.Add(renderJDEField(jdeField{
+	l.AddFittedField(jdeNoRow, jdeField{
 		Label: "Slot",
 		Kind:  jdeValue,
 		Value: s.code,
 		Hint:  "no expiry — theirs until released",
-	}, storageLabelWidth, s.bodyWidth()))
+	}, storageLabelWidth, s.bodyWidth())
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], storageLabelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], storageLabelWidth, s.bodyWidth())
 		// The set around the FOCUSED type row: each option carries the letter
 		// the grid will paint, which is what the warden reads off the rack
 		// afterwards, so it must never be cycled blind.

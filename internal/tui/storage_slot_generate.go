@@ -876,9 +876,16 @@ func (s *StorageSlotGenerateScreen) formFields() []jdeField {
 func (s *StorageSlotGenerateScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Generate rack"))
-	l.Add(jdeIndent + StyleMuted.Render("Re-running is safe — existing codes are skipped, never overwritten."))
+	// FOLDED, never written straight out: the sentence is 69 cells and an
+	// 80-column terminal leaves the pane 51, so clampToBox took "never
+	// overwritten" — the half that says re-running is safe — off a caveat whose
+	// whole job is to say re-running is safe.
+	for _, line := range jdeCaveatLines("Re-running is safe — existing codes are skipped, never overwritten.",
+		s.bodyWidth()) {
+		l.Add(line)
+	}
 	l.Add("")
-	l.AddFields(s.formFields(), storageLabelWidth, s.bodyWidth(), 0)
+	l.AddFittedFields(s.formFields(), storageLabelWidth, s.bodyWidth(), 0)
 	return l
 }
 
@@ -1127,7 +1134,7 @@ func (s *StorageSlotGenerateScreen) viewLevelRow() string {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render(title))
 	l.Add("")
-	l.AddFields(fields, storageLabelWidth, s.bodyWidth(), 0)
+	l.AddFittedFields(fields, storageLabelWidth, s.bodyWidth(), 0)
 
 	return s.frame(l, s.rowCursor, s.statusRow(false, "", s.rowErr), s.levelRowBar())
 }
@@ -1218,7 +1225,10 @@ func (s *StorageSlotGenerateScreen) resultLines() *jdeLines {
 		for _, line := range storageGenCodeList(res.WithoutTag, s.bodyWidth()) {
 			add(line)
 		}
-		add(jdeIndent + StyleMuted.Render("They work by code but have nothing to scan — the tag family is out."))
+		for _, line := range jdeCaveatLines(
+			"They work by code but have nothing to scan — the tag family is out.", s.bodyWidth()) {
+			add(line)
+		}
 	}
 	return l
 }

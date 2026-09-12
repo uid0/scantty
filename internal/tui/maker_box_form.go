@@ -609,7 +609,7 @@ func (s *MakerBoxFormScreen) formLines() *jdeLines {
 	l.Add(StyleJDEHeading.Render("Maker box"))
 	l.Add("")
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], makerBoxLabelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], makerBoxLabelWidth, s.bodyWidth())
 		// The set around the FOCUSED choice row, so six statuses are never
 		// cycled blind (jdeOptionStrip draws nothing for a two-value set).
 		if i != s.cursor || (id != mbfStatus && id != mbfIdentitySource) {

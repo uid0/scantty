@@ -732,7 +732,7 @@ func (s *AssetPartFormScreen) formLines() *jdeLines {
 		heading += "  " + StyleMuted.Render("of ") + s.assetName
 	}
 	l.Add(heading)
-	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
+	l.AddFittedFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
 	return l
 }
 

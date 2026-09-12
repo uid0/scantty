@@ -952,7 +952,7 @@ func (s *PowerPanelFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Power panel"))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], elecLabelWidth, s.bodyWidth())
 		// The set around the FOCUSED choice row, so eleven breaker families are
 		// never cycled blind (jdeOptionStrip returns nothing for a yes/no).
 		if i == s.cursor {
@@ -1928,7 +1928,7 @@ func (s *PowerBreakerFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Breaker"))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], elecLabelWidth, s.bodyWidth())
 		if i == s.cursor {
 			if strip := s.selectStrip(id); strip != "" {
 				l.AddRow(i, jdeStripIndent(elecLabelWidth)+StyleMuted.Render(strip))
@@ -2668,9 +2668,9 @@ func (s *PowerCircuitFormScreen) formLines() *jdeLines {
 	fields := s.formFields()
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Circuit"))
-	l.AddFields(fields, elecLabelWidth, s.bodyWidth(), 0)
-	// Drawn with Add, not AddRow: there is nothing to navigate to.
-	l.Add(renderJDEField(s.maxLoadField(), elecLabelWidth, s.bodyWidth()))
+	l.AddFittedFields(fields, elecLabelWidth, s.bodyWidth(), 0)
+	// Added at jdeNoRow: there is nothing to navigate to.
+	l.AddFittedField(jdeNoRow, s.maxLoadField(), elecLabelWidth, s.bodyWidth())
 	return l
 }
 

@@ -684,7 +684,7 @@ func (s *ThermostatFormScreen) formLines() *jdeLines {
 
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Thermostat"))
-	l.AddFields(fields, labelWidth, s.bodyWidth(), 0)
+	l.AddFittedFields(fields, labelWidth, s.bodyWidth(), 0)
 	return l
 }
 

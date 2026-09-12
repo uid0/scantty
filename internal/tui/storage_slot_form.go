@@ -729,16 +729,16 @@ func (s *StorageSlotFormScreen) formLines() *jdeLines {
 	}
 	l.Add("")
 	// The code is derived from the three rows below it, so it sits above them as
-	// a dimmed, non-navigable row of the same sheet (l.Add, not AddRow) rather
+	// a dimmed, non-navigable row of the same sheet (jdeNoRow, not a row number) rather
 	// than as a header the operator would not tie to any field.
-	l.Add(renderJDEField(jdeField{
+	l.AddFittedField(jdeNoRow, jdeField{
 		Label: "Code",
 		Kind:  jdeValue,
 		Value: s.currentCodePreview(),
 		Dim:   true,
 		Hint:  s.codeHint(),
-	}, storageLabelWidth, s.bodyWidth()))
-	l.AddFields(fields, storageLabelWidth, s.bodyWidth(), 0)
+	}, storageLabelWidth, s.bodyWidth())
+	l.AddFittedFields(fields, storageLabelWidth, s.bodyWidth(), 0)
 	return l
 }
 

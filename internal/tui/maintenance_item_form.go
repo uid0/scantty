@@ -37,6 +37,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -1797,7 +1798,7 @@ func (s *MaintenanceItemFormScreen) formLines() *jdeLines {
 			l.Add(StyleJDEHeading.Render(mfBandLabel[b]))
 			band = b
 		}
-		l.AddRow(i, renderJDEField(fields[i], labelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], labelWidth, s.bodyWidth())
 	}
 	return l
 }
@@ -1908,10 +1909,124 @@ func (s *MaintenanceItemFormScreen) viewAssetPick() string {
 
 // mfSublistRow is one row of a sub-list as the renderer needs it: the summary
 // line, plus any detail lines that belong to the SAME navigable row (so the
-// window keeps a row's whole block on screen rather than its first line).
+// window keeps a row's whole block on screen rather than its first line). It is
+// held as its PARTS rather than as one rendered string, so the pane can be
+// fitted without cutting through an escape sequence.
+//
+// Every part of it is one of exactly two things, which is the rule this package
+// already applies to a picker row and a report table: `name` is the IDENTIFIER
+// and abbreviates with a mark; `facts` are drawn after it and NEVER give. The
+// row was `fmt.Sprintf("%d. %s %s", i+1, title, req)` written straight out, so
+// at 80 columns — the width this interface is designed to — an ordinary step
+// title drew `▸ 1. Drain the sump and check the filter screen (required)` at 62
+// cells against 47, and clampToBox took `(required)` off the end with no mark:
+// a step that MUST be signed off reading as optional.
+//
+// What is NOT a fact is anything OMS supplies whose length nobody controls — a
+// tool's location hint, a step's description — which is why those are detail
+// lines of their own rather than a tail on this row. A bound expressed in terms
+// of an unbounded value is not a bound.
 type mfSublistRow struct {
-	line   string
-	detail []string
+	name   string
+	facts  []jdeToken
+	detail []mfDetailLine
+}
+
+// mfDetailLine is a continuation line under a sub-list row, held as its styled
+// parts for the same reason: a bound applied to RENDERED text cuts through an
+// escape sequence and takes the closing reset with it, colouring everything
+// drawn afterwards.
+type mfDetailLine []jdeToken
+
+// render draws the line into `room` cells (0 meaning the pane is not sized yet,
+// which everywhere in this layer means "do not truncate"), marking the cut where
+// it makes one. The parts are clipped as PLAIN text and styled afterwards, and
+// the mark is drawn outside every styled span.
+func (d mfDetailLine) render(room int) string {
+	plain := ""
+	for _, tok := range d {
+		plain += tok.text
+	}
+	if room <= 0 || lipgloss.Width(plain) <= room {
+		out := ""
+		for _, tok := range d {
+			out += tok.render()
+		}
+		return out
+	}
+	budget, out := room-1, ""
+	for _, tok := range d {
+		if budget <= 0 {
+			break
+		}
+		text := cellPrefix(tok.text, budget)
+		budget -= lipgloss.Width(text)
+		out += tok.style.Render(text)
+	}
+	return out + StyleMuted.Render(paneCutMark)
+}
+
+// line assembles the row into `room` cells: the facts keep their room and the
+// name abbreviates into what is left. `room` of 0 is "not sized yet", so nothing
+// is bounded.
+func (r mfSublistRow) line(room int) string {
+	facts, factsWidth := r.renderFacts(0)
+	name := r.name
+	if room > 0 {
+		if facts != "" && factsWidth+2 > room {
+			if room < 3 {
+				return StyleMuted.Render(paneCutMark)
+			}
+			facts, factsWidth = r.renderFacts(room - 2)
+		}
+		avail := room - factsWidth
+		if factsWidth > 0 {
+			avail--
+		}
+		if avail < 1 {
+			avail = 1
+		}
+		name = fitCell(name, avail)
+	}
+	if facts == "" {
+		return name
+	}
+	return name + " " + facts
+}
+
+func (r mfSublistRow) renderFacts(room int) (string, int) {
+	plain := ""
+	for _, tok := range r.facts {
+		if plain != "" {
+			plain += " "
+		}
+		plain += tok.text
+	}
+	if room > 0 && lipgloss.Width(plain) > room {
+		fitted := fitFactCell(plain, room)
+		return StyleMuted.Render(fitted), lipgloss.Width(fitted)
+	}
+	out := ""
+	for _, tok := range r.facts {
+		if out != "" {
+			out += " "
+		}
+		out += tok.render()
+	}
+	return out, lipgloss.Width(plain)
+}
+
+// mfSublistRoom is what a sub-list line has left once its lead-in is spent.
+// A bodyWidth of 0 is "the pane is not sized yet", which everywhere in this
+// layer means "do not truncate", and is passed straight through as 0.
+func mfSublistRoom(bodyWidth, lead int) int {
+	if bodyWidth <= 0 {
+		return 0
+	}
+	if room := bodyWidth - lead; room > 0 {
+		return room
+	}
+	return 1
 }
 
 // sublistLines lays a sub-list out: a heading, its rows, and the trailing
@@ -1921,16 +2036,23 @@ func (s *MaintenanceItemFormScreen) sublistLines(heading, empty, addLabel string
 	l.Add(StyleJDEHeading.Render(heading))
 	l.Add("")
 	if len(rows) == 0 {
-		l.Add(jdeIndent + StyleMuted.Render(empty))
+		for _, line := range jdeCaveatLines(empty, s.bodyWidth()) {
+			l.Add(line)
+		}
 	}
 	for i, r := range rows {
+		// The highlight's own padding is reserved on EVERY row, not just the
+		// highlighted one: a row that fits until it is selected is cut on
+		// exactly the keypress that selects it.
+		room := mfSublistRoom(s.bodyWidth(), len("  ▸ ")+
+			StyleSidebarItemActive.GetHorizontalPadding())
 		if i == s.rowCursor {
-			l.AddRow(i, StyleSidebarItemActive.Render("  ▸ "+r.line))
+			l.AddRow(i, StyleSidebarItemActive.Render("  ▸ "+r.line(room)))
 		} else {
-			l.AddRow(i, "    "+r.line)
+			l.AddRow(i, "    "+r.line(room))
 		}
 		for _, d := range r.detail {
-			l.AddRow(i, "      "+d)
+			l.AddRow(i, "      "+d.render(mfSublistRoom(s.bodyWidth(), len("      "))))
 		}
 	}
 	// The add row is the last navigable row, always present: adding is
@@ -1988,15 +2110,15 @@ func (s *MaintenanceItemFormScreen) sublistBody() *jdeLines {
 func (s *MaintenanceItemFormScreen) taskListLines() *jdeLines {
 	rows := make([]mfSublistRow, 0, len(s.tasks))
 	for i, t := range s.tasks {
-		req := StyleMuted.Render("(optional)")
+		req := jdeToken{text: "(optional)", style: StyleMuted}
 		if t.isRequired {
-			req = StyleStatusOK.Render("(required)")
+			req = jdeToken{text: "(required)", style: StyleStatusOK}
 		}
-		r := mfSublistRow{line: fmt.Sprintf("%d. %s %s", i+1, t.title, req)}
+		r := mfSublistRow{name: fmt.Sprintf("%d. %s", i+1, t.title), facts: []jdeToken{req}}
 		if t.description != "" {
-			r.detail = append(r.detail, StyleMuted.Render(t.description))
+			r.detail = append(r.detail, mfDetailLine{{text: t.description, style: StyleMuted}})
 		}
-		if p := taskRefPhotoLine(t); p != "" {
+		if p := taskRefPhotoLine(t); len(p) > 0 {
 			r.detail = append(r.detail, p)
 		}
 		rows = append(rows, r)
@@ -2009,17 +2131,20 @@ func (s *MaintenanceItemFormScreen) viewTaskList() string {
 	return s.frame(body, s.rowCursor, "", s.sublistBar(body, len(s.tasks), "Steps", "Add a step"))
 }
 
-// taskRefPhotoLine describes a step's reference photo in one line, or "" when
+// taskRefPhotoLine describes a step's reference photo in one line, or nil when
 // it has none. A path the operator just picked wins over the stored URL — it is
-// what the next save will upload.
-func taskRefPhotoLine(t taskRow) string {
+// what the next save will upload. It hands back the line's styled PARTS rather
+// than a rendered string so the pane can bound it without cutting through an
+// escape sequence (mfDetailLine).
+func taskRefPhotoLine(t taskRow) mfDetailLine {
 	if t.refImagePath != "" {
-		return StyleStatusWarn.Render("photo: "+t.refImagePath) + StyleMuted.Render(" (uploads on save)")
+		return mfDetailLine{{text: "photo: " + t.refImagePath, style: StyleStatusWarn},
+			{text: " (uploads on save)", style: StyleMuted}}
 	}
 	if t.refImageURL != "" {
-		return StyleMuted.Render("photo: ") + t.refImageURL
+		return mfDetailLine{{text: "photo: ", style: StyleMuted}, {text: t.refImageURL}}
 	}
-	return ""
+	return nil
 }
 
 // mfRemoveField is the "remove this row" row every sub-editor ends with, once
@@ -2093,9 +2218,12 @@ func (s *MaintenanceItemFormScreen) viewTaskEdit() string {
 
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render(s.editorTitle("task step")))
-	l.Add(jdeIndent + StyleMuted.Render("Shown against this step on every work order the item generates."))
+	for _, line := range jdeCaveatLines(
+		"Shown against this step on every work order the item generates.", s.bodyWidth()) {
+		l.Add(line)
+	}
 	l.Add("")
-	l.AddFields(fields, labelWidth, s.bodyWidth(), 0)
+	l.AddFittedFields(fields, labelWidth, s.bodyWidth(), 0)
 	// The photo already on the step: read-only, and left in place unless a new
 	// path above replaces it.
 	if s.editIndex >= 0 && s.editIndex < len(s.tasks) {
@@ -2114,9 +2242,10 @@ func (s *MaintenanceItemFormScreen) materialListLines() *jdeLines {
 		if mrow.unit != "" {
 			qty += " " + mrow.unit
 		}
-		r := mfSublistRow{line: fmt.Sprintf("%s — %s @ $%s", mrow.name, qty, mrow.cost)}
+		r := mfSublistRow{name: mrow.name,
+			facts: []jdeToken{{text: fmt.Sprintf("— %s @ $%s", qty, mrow.cost)}}}
 		if mrow.notes != "" {
-			r.detail = append(r.detail, StyleMuted.Render(mrow.notes))
+			r.detail = append(r.detail, mfDetailLine{{text: mrow.notes, style: StyleMuted}})
 		}
 		rows = append(rows, r)
 	}
@@ -2174,7 +2303,7 @@ func (s *MaintenanceItemFormScreen) viewMaterialEdit() string {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render(s.editorTitle("material")))
 	l.Add("")
-	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
+	l.AddFittedFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
 	return s.frame(l, s.editCursor, s.statusRow(false, "", s.editErr),
 		s.editorBar("material", s.editCursor == materialEditRemove && s.editIndex >= 0))
 }
@@ -2182,16 +2311,18 @@ func (s *MaintenanceItemFormScreen) viewMaterialEdit() string {
 func (s *MaintenanceItemFormScreen) toolListLines() *jdeLines {
 	rows := make([]mfSublistRow, 0, len(s.tools))
 	for _, t := range s.tools {
-		line := fmt.Sprintf("%s ×%d", t.name, t.quantity)
-		if t.locationHint != "" {
-			line += " · " + t.locationHint
-		}
+		r := mfSublistRow{name: t.name, facts: []jdeToken{{text: fmt.Sprintf("×%d", t.quantity)}}}
 		if t.isRequired {
-			line += " " + StyleStatusWarn.Render("[REQ]")
+			r.facts = append(r.facts, jdeToken{text: "[REQ]", style: StyleStatusWarn})
 		}
-		r := mfSublistRow{line: line}
+		// The location hint is OMS-supplied and its length is nobody's to
+		// promise, so it is a detail line rather than a tail on the row above:
+		// a fact that never gives has to be one the pane can always hold.
+		if t.locationHint != "" {
+			r.detail = append(r.detail, mfDetailLine{{text: t.locationHint, style: StyleMuted}})
+		}
 		if t.notes != "" {
-			r.detail = append(r.detail, StyleMuted.Render(t.notes))
+			r.detail = append(r.detail, mfDetailLine{{text: t.notes, style: StyleMuted}})
 		}
 		rows = append(rows, r)
 	}
@@ -2248,7 +2379,7 @@ func (s *MaintenanceItemFormScreen) viewToolEdit() string {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render(s.editorTitle("tool")))
 	l.Add("")
-	l.AddFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
+	l.AddFittedFields(fields, jdeLabelWidth(fields), s.bodyWidth(), 0)
 	return s.frame(l, s.editCursor, s.statusRow(false, "", s.editErr),
 		s.editorBar("tool", s.editCursor == toolEditRemove && s.editIndex >= 0))
 }

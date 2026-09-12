@@ -643,7 +643,7 @@ func (s *CategoryFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Category details"))
 	for i, f := range fields {
-		l.AddRow(i, renderJDEField(f, labelWidth, s.bodyWidth()))
+		l.AddFittedField(i, f, labelWidth, s.bodyWidth())
 		if s.fields[i] == cfName {
 			// The slug is DERIVED from the name and generated server-side, so it
 			// belongs under the field it comes from rather than in a band of its

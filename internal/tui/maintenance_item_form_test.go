@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -432,6 +433,30 @@ func TestParseHelpers(t *testing.T) {
 	}
 	if _, err := mfDecimalOrDefault("abc", "0", "x"); err == nil {
 		t.Errorf("non-numeric should error")
+	}
+}
+
+func TestMaintenanceSublistRowBoundsFacts(t *testing.T) {
+	tests := []struct {
+		name string
+		fact string
+	}{
+		{name: "numeric fact is dropped whole", fact: "— 999999999999999999 units @ $999999999999999999"},
+		{name: "text fact is visibly bounded", fact: "extraordinarily-long-required-state"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			line := mfSublistRow{name: "material", facts: []jdeToken{{text: tt.fact}}}.line(18)
+			if got := lipgloss.Width(line); got > 18 {
+				t.Fatalf("row is %d cells wide, want at most 18: %q", got, line)
+			}
+			if !strings.Contains(line, paneCutMark) {
+				t.Fatalf("bounded fact has no omission mark: %q", line)
+			}
+			if strings.Contains(line, "999999") {
+				t.Fatalf("numeric fact was rendered partially: %q", line)
+			}
+		})
 	}
 }
 

@@ -604,7 +604,7 @@ func (s *ProjectStorageFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Project storage intake"))
 	l.Add("")
-	l.AddFields(s.formFields(), storageLabelWidth, s.bodyWidth(), 0)
+	l.AddFittedFields(s.formFields(), storageLabelWidth, s.bodyWidth(), 0)
 	return l
 }
 
