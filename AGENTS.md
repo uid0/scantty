@@ -372,33 +372,10 @@ knowing before touching either:
 - **The add posts `item_supplier`, never `identifier`.** Re-posting the
   identifier RE-RESOLVES it, and the catalogue can change between the lookup and
   the operator's confirm — they would have approved one item and added another.
-- **A CODED REFUSAL ARRIVES IN TWO SHAPES AND `AsLineEntryError` READS BOTH.**
-  `add_item` and `_destroy_item` wrote `{"error": "<prose>", "code": "<code>"}`
-  by hand, which never reaches OMS's DRF exception handler, so
-  `omsapi.parseError` puts the ENTIRE raw body into `APIError.Message`; OMS is
-  moving them onto its STANDARDIZED envelope (`backend/config/api_errors.py`,
-  `docs/API_ERROR_CONTRACT.md`), where the same code sits at `error.code`, the
-  same sentence at `error.message`, and `ambiguous`'s choice set at
-  `error.details.candidates`. **THE ENVELOPE LOSES NOTHING ON THE WIRE, WHICH IS
-  WHY THE DEFECT IT CAUSED WAS A MIS-READ RATHER THAN A DROP** — `parseError`
-  understands it, so both halves arrive on a proper `*APIError` — and reading it
-  wrongly cost more than a raw dump would have: `po_add_line.go` fell through to
-  its unanswered-request branch and told the operator **"the add did not answer —
-  the line may or may not be on the order"** about a request the server had
-  definitively refused, and `po_edit.go` printed `APIError.Error()`, which puts
-  `oms: <code>: ` in front of the sentence. AN OUTCOME REPORTED AS UNKNOWN WHEN
-  IT IS KNOWN IS WORSE THAN AN UGLY ONE, because the operator cannot tell
-  whether to retry.
-  Accepting BOTH is the decision, not a transition: a reader taking only the new
-  shape misreports against today's server and forces the two deploys into
-  lockstep, so tolerance is what lets either side merge first. It stays narrow in
-  the way that matters — a refusal is a sentence the server composed ABOUT THIS
-  REQUEST, so a gateway page, a DRF field-error map and a bare `{"detail": …}`
-  still keep the shape they arrived in. WHAT CHANGED IS NOT THE RULE BUT ONE OF
-  ITS EXAMPLES: the standard envelope used to be listed as "a refusal the server
-  never made" and is now the server's own way of making one, which is the shape a
-  stale narrowness claim takes — the words stay right while the world moves out
-  from under them.
+- **A coded refusal has two supported wire shapes.** `AsLineEntryError` accepts
+  both the legacy hand-built body and OMS's standardized envelope so ScanTTY and
+  OMS can deploy independently; unrelated errors remain uncoerced. The package
+  contract and wire rationale live in `internal/omsapi/po_line_entry.go`.
 - **The quantity and price defaults differ between a fresh line and a repeat,
   because the SERVER's do.** A fresh line lands on `suggested_quantity` /
   `suggested_unit_cost`; a repeat GROWS the line already there by
@@ -448,16 +425,10 @@ knowing before touching any of it:
   movement keys scroll the caveat where it outruns the pane, and the bar names
   them exactly there — or ANSWERS (`deleteNote`), because a press that did
   neither redraws a pane that is a pure function of unchanged state.
-- **Every refusal shape is recovered, and there are THREE.** `void_item` writes
-  `{"error"}` alone, `_destroy_item` wrote `{"error", "code"}`, and
-  `_destroy_item` now answers in the standardized envelope. `asLineRefusal`
-  tries the two narrow recognisers that already exist — `AsLineEntryError`,
-  which reads both CODED shapes, then `AsReceivingRefusal` for the uncoded one —
-  so a gateway page and a field-error map still arrive as the `APIError` they
-  are. The envelope is the one that had to be said out loud: nothing was lost on
-  the wire for it, but `*APIError.Error()` renders a coded error as
-  `oms: <code>: <sentence>`, so passing it straight through drew the machine
-  code in front of the sentence on the row this screen exists to relay.
+- **Line-removal refusals have three supported shapes.** `asLineRefusal` uses
+  `AsLineEntryError` for both coded shapes and `AsReceivingRefusal` for the
+  uncoded void response, preserving the server's operator-facing sentence.
+  `internal/omsapi/reorders.go` owns the endpoint-specific rationale.
 - **THE SITE IS THE EDIT SCREEN, and the set was derived.** Every screen that
   displays persisted PO lines was checked: `po_edit.go` has the per-line cursor
   and the per-line affordance rows, so removal is one more row-action there;
