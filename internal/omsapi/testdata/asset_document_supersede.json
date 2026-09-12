@@ -1,0 +1,17 @@
+{
+    "id": "ffafde78-f880-40a4-87aa-070165fbf26c",
+    "asset": "0289121e-7524-46f8-8dc6-8c3c5337e28a",
+    "file": "http://127.0.0.1:8917/media/assets/documents/2026/09/vf2-manual-revb_uVBVbEQ.txt",
+    "file_url": "http://127.0.0.1:8917/media/assets/documents/2026/09/vf2-manual-revb_uVBVbEQ.txt",
+    "category": "manual",
+    "category_display": "Manual / Documentation",
+    "title": "VF-2 Operator Manual",
+    "description": "Rev B, corrected the spindle warm-up table",
+    "version": 2,
+    "is_current": true,
+    "supersedes": "2b1e575e-58da-4725-b571-9885063b833f",
+    "supersedes_title": "VF-2 Operator Manual (v1)",
+    "uploaded_by": 1,
+    "uploaded_by_name": "labstaff",
+    "uploaded_at": "2026-09-12T02:08:54.970009Z"
+}

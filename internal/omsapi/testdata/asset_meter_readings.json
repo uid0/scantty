@@ -1,0 +1,52 @@
+{
+    "count": 3,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "006e1cb4-f4e2-4f57-9d16-f312f2f43feb",
+            "meter": "bceb18f6-288e-4789-b596-a98493833bb6",
+            "source": "manual_adjust",
+            "source_display": "Manual correction",
+            "delta": "-9.0000",
+            "value_after": "1289.7500",
+            "is_estimated": false,
+            "observed_at": "2026-09-11T02:08:39.231165Z",
+            "recorded_at": "2026-09-12T02:08:39.235078Z",
+            "recorded_by": 1,
+            "recorded_by_name": "labstaff",
+            "source_ref": "manual adjustment",
+            "notes": "recount against the control's own hour meter"
+        },
+        {
+            "id": "97e807a4-e5ae-428a-b8e3-fd6fe8f9298e",
+            "meter": "bceb18f6-288e-4789-b596-a98493833bb6",
+            "source": "manual",
+            "source_display": "Manual entry",
+            "delta": "48.2500",
+            "value_after": "1298.7500",
+            "is_estimated": false,
+            "observed_at": "2026-09-05T02:08:39.231165Z",
+            "recorded_at": "2026-09-12T02:08:39.233664Z",
+            "recorded_by": 1,
+            "recorded_by_name": "labstaff",
+            "source_ref": "manual entry",
+            "notes": ""
+        },
+        {
+            "id": "4949e350-4be4-4a69-a8cd-5354f7b29099",
+            "meter": "bceb18f6-288e-4789-b596-a98493833bb6",
+            "source": "manual",
+            "source_display": "Manual entry",
+            "delta": "1250.5000",
+            "value_after": "1250.5000",
+            "is_estimated": false,
+            "observed_at": "2026-08-13T02:08:39.231165Z",
+            "recorded_at": "2026-09-12T02:08:39.231734Z",
+            "recorded_by": 1,
+            "recorded_by_name": "labstaff",
+            "source_ref": "manual entry",
+            "notes": ""
+        }
+    ]
+}

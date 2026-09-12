@@ -1,0 +1,17 @@
+{
+    "id": "0f1fccf5-f26f-4cab-a50f-16faf8febd46",
+    "asset": "0289121e-7524-46f8-8dc6-8c3c5337e28a",
+    "file": "http://127.0.0.1:8917/media/assets/documents/2026/09/fixture-plate.nc",
+    "file_url": "http://127.0.0.1:8917/media/assets/documents/2026/09/fixture-plate.nc",
+    "category": "cut_ready_template",
+    "category_display": "Cut-Ready Template (DXF/SVG/G-code/STL)",
+    "title": "Soft-jaw fixture plate",
+    "description": "",
+    "version": 1,
+    "is_current": true,
+    "supersedes": null,
+    "supersedes_title": null,
+    "uploaded_by": 1,
+    "uploaded_by_name": "labstaff",
+    "uploaded_at": "2026-09-12T02:08:54.998601Z"
+}

@@ -1,0 +1,33 @@
+{
+    "meter": {
+        "id": "bceb18f6-288e-4789-b596-a98493833bb6",
+        "asset": "0289121e-7524-46f8-8dc6-8c3c5337e28a",
+        "name": "Spindle runtime",
+        "meter_type": "runtime_hours",
+        "meter_type_display": "Runtime hours",
+        "unit": "hours",
+        "source": "manual",
+        "source_display": "Manual entry",
+        "current_value": "1294.0000",
+        "current_is_estimated": false,
+        "rollup_watermark_at": null,
+        "is_active": true,
+        "created_at": "2026-09-12T02:08:39.229510Z",
+        "updated_at": "2026-09-12T02:08:46.363493Z"
+    },
+    "reading": {
+        "id": "25ee602c-460b-494b-b7f6-3199c35fc1db",
+        "meter": "bceb18f6-288e-4789-b596-a98493833bb6",
+        "source": "manual",
+        "source_display": "Manual entry",
+        "delta": "4.2500",
+        "value_after": "1294.0000",
+        "is_estimated": false,
+        "observed_at": "2026-09-12T02:08:46.361939Z",
+        "recorded_at": "2026-09-12T02:08:46.362694Z",
+        "recorded_by": 1,
+        "recorded_by_name": "labstaff",
+        "source_ref": "manual entry",
+        "notes": ""
+    }
+}

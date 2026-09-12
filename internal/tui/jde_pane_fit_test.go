@@ -255,15 +255,25 @@ func jdeEmbedders(t *testing.T) map[string]bool {
 // second half exists to catch.
 func jdeScreenFixtures() map[string]func() Screen {
 	return map[string]func() Screen{
-		"AssetFormScreen":          func() Screen { s := NewAssetFormScreen(Deps{}, ""); s.loading = false; return s },
-		"AssetPartFormScreen":      func() Screen { s := NewAssetPartFormScreen(Deps{}, "a1", "Asset", ""); s.loading = false; return s },
-		"AuthorizationGrantScreen": func() Screen { s := NewAuthorizationGrantScreen(Deps{}); s.loading = false; return s },
-		"CategoryFormScreen":       func() Screen { s := NewCategoryFormScreen(Deps{}, ""); s.loading = false; return s },
-		"DeviceTypeFormScreen":     func() Screen { return NewDeviceTypeFormScreen(Deps{}, 0) },
-		"DisconnectFormScreen":     func() Screen { s := NewDisconnectFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
-		"InventoryItemFormScreen":  func() Screen { s := NewInventoryItemFormScreen(Deps{}, ""); s.loading = false; return s },
-		"ItemSupplierFormScreen":   func() Screen { s := NewItemSupplierFormScreen(Deps{}, "i1", "Item", nil); s.loading = false; return s },
-		"LocationFormScreen":       func() Screen { s := NewLocationFormScreen(Deps{}, ""); s.loading = false; return s },
+		"AssetFormScreen": func() Screen { s := NewAssetFormScreen(Deps{}, ""); s.loading = false; return s },
+		// WITH METERS ON IT, for the reason ServiceStatusScreen carries: a bare
+		// screen has no rows, so the cursor has nowhere to go and every sweep
+		// that presses a movement key at it proves nothing. The fixture reaches
+		// the states the grid marks — an estimated value, an inactive meter, a
+		// rollup-driven one — and carries a full-length asset name and a real
+		// four-place reading, because every value column in this package used to
+		// be measured against `Bolt 1`.
+		"AssetMetersScreen":          func() Screen { return assetMetersFixture() },
+		"AssetMeterReadingsScreen":   func() Screen { return assetMeterReadingsFixture() },
+		"AssetDocumentsScreen":       func() Screen { return assetDocumentsFixture() },
+		"AssetPartFormScreen":        func() Screen { s := NewAssetPartFormScreen(Deps{}, "a1", "Asset", ""); s.loading = false; return s },
+		"AuthorizationGrantScreen":   func() Screen { s := NewAuthorizationGrantScreen(Deps{}); s.loading = false; return s },
+		"CategoryFormScreen":         func() Screen { s := NewCategoryFormScreen(Deps{}, ""); s.loading = false; return s },
+		"DeviceTypeFormScreen":       func() Screen { return NewDeviceTypeFormScreen(Deps{}, 0) },
+		"DisconnectFormScreen":       func() Screen { s := NewDisconnectFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
+		"InventoryItemFormScreen":    func() Screen { s := NewInventoryItemFormScreen(Deps{}, ""); s.loading = false; return s },
+		"ItemSupplierFormScreen":     func() Screen { s := NewItemSupplierFormScreen(Deps{}, "i1", "Item", nil); s.loading = false; return s },
+		"LocationFormScreen":         func() Screen { s := NewLocationFormScreen(Deps{}, ""); s.loading = false; return s },
 		// Past its loading state, on the count form it opens on, with a room
 		// long enough to outrun any pane — a grid that fits is a grid where the
 		// window arithmetic this file exists to check is inert.
@@ -564,6 +574,90 @@ func TestReceive_TheSerialPastTheEndFixtureIsOnThatFrame(t *testing.T) {
 // applying it.
 func jdeScreenStates() map[string]func() Screen {
 	return map[string]func() Screen{
+		// The meter screen's WRITE phases. Each pins a header the operator may
+		// not lose — which meter, and what it reads now — over a body of typed
+		// rows, and the CONFIRM is the one frame in this file whose body is a
+		// caveat nothing navigates, positioned by an offset.
+		"AssetMetersScreen/record": func() Screen {
+			s := assetMetersFixture()
+			s.openEntry(meterPhaseRecord)
+			s.valueInput.SetValue("1294")
+			return s
+		},
+		"AssetMetersScreen/adjust": func() Screen {
+			s := assetMetersFixture()
+			s.openEntry(meterPhaseAdjust)
+			s.targetInput.SetValue("1289.75")
+			s.reasonInput.SetValue("recount against the control's own hour meter")
+			return s
+		},
+		"AssetMetersScreen/new meter": func() Screen {
+			s := assetMetersFixture()
+			s.openNew()
+			return s
+		},
+		// A BACKWARDS reading on a RUNTIME meter: the branch that draws every
+		// caveat the confirm has, so the sweeps measure its tallest body.
+		"AssetMetersScreen/confirm": func() Screen {
+			s := assetMetersFixture()
+			s.openEntry(meterPhaseRecord)
+			s.valueInput.SetValue("120")
+			s.submitRecord()
+			return s
+		},
+		// And the MAGNITUDE branch, which is where the runtime dual-write caveat
+		// is worded — a different and longer sentence than the backwards one.
+		"AssetMetersScreen/confirm magnitude": func() Screen {
+			s := assetMetersFixture()
+			s.openEntry(meterPhaseRecord)
+			s.valueInput.SetValue("12905000")
+			s.submitRecord()
+			return s
+		},
+		// An EMPTY meter list: one navigable row fewer than none, so the bar
+		// honestly drops every row action and the empty state takes the
+		// essential header row.
+		"AssetMetersScreen/no meters": func() Screen {
+			s := NewAssetMetersScreen(Deps{}, "a1", "Haas VF-2 Vertical Machining Center")
+			s.loading = false
+			return s
+		},
+		"AssetDocumentsScreen/upload": func() Screen {
+			s := assetDocumentsFixture()
+			s.openUpload("", "")
+			return s
+		},
+		// SUPERSEDE reuses the upload form and pins a different header: the
+		// document being replaced, plus the caveat saying the old version is
+		// kept. It is the branch that marks a row essential.
+		"AssetDocumentsScreen/supersede": func() Screen {
+			s := assetDocumentsFixture()
+			doc, _ := s.addressedDoc()
+			s.openUpload(doc.ID, doc.Title)
+			return s
+		},
+		// The delete confirm on a document a LATER VERSION replaces, which is
+		// the branch carrying the second caveat — the one about the chain.
+		"AssetDocumentsScreen/delete confirm": func() Screen {
+			s := assetDocumentsFixture()
+			s.cursor = len(s.docs) - 1
+			s.confirmingDelete = true
+			return s
+		},
+		"AssetDocumentsScreen/no documents": func() Screen {
+			s := NewAssetDocumentsScreen(Deps{}, "a1", "Haas VF-2 Vertical Machining Center")
+			s.loading = false
+			return s
+		},
+		"AssetMeterReadingsScreen/no readings": func() Screen {
+			s := NewAssetMeterReadingsScreen(Deps{}, "a1", "Haas VF-2", omsapi.AssetMeter{
+				ID: "m1", Name: "Spindle runtime", Unit: "hours",
+				MeterType: omsapi.MeterTypeRuntimeHours, MeterTypeDisplay: "Runtime hours",
+				CurrentValue: "0.0000",
+			})
+			s.loading = false
+			return s
+		},
 		// A long export over a three-line pinned header: the state the notice
 		// defect was measured in. The bar names PgUp/PgDn exactly while the pad
 		// overflows, which is what makes its height vary with the pane.
@@ -1871,6 +1965,62 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 		"PurchaseOrderDetailScreen/viewOrderPad": pick("PurchaseOrderDetailScreen/order pad",
 			func(s Screen) jdeHeader { return s.(*PurchaseOrderDetailScreen).orderPadHeader() }),
 
+		// The asset meter and document sites. Each is built in the state the
+		// operator reaches it in, and the ones whose builder BRANCHES carry the
+		// further states in alsoIn — a header site's rank claim is per branch,
+		// and the cheapest state to construct is the one that measures least.
+		"AssetMetersScreen/viewList": {
+			mk:     func() Screen { return assetMetersFixture() },
+			header: func(s Screen) jdeHeader { return s.(*AssetMetersScreen).listHeader() },
+			alsoIn: map[string]func() Screen{
+				"no meters": jdeScreenStates()["AssetMetersScreen/no meters"],
+			},
+		},
+		"AssetMetersScreen/viewRecord": {
+			mk:     jdeScreenStates()["AssetMetersScreen/record"],
+			header: func(s Screen) jdeHeader { return s.(*AssetMetersScreen).entryHeader("Record a reading") },
+		},
+		"AssetMetersScreen/viewAdjust": {
+			mk:     jdeScreenStates()["AssetMetersScreen/adjust"],
+			header: func(s Screen) jdeHeader { return s.(*AssetMetersScreen).adjustHeader() },
+		},
+		"AssetMetersScreen/viewNew": {
+			mk:     jdeScreenStates()["AssetMetersScreen/new meter"],
+			header: func(s Screen) jdeHeader { return s.(*AssetMetersScreen).newHeader() },
+		},
+		"AssetMetersScreen/viewConfirm": {
+			mk:     jdeScreenStates()["AssetMetersScreen/confirm"],
+			header: func(s Screen) jdeHeader { return s.(*AssetMetersScreen).confirmHeader() },
+			alsoIn: map[string]func() Screen{
+				"magnitude": jdeScreenStates()["AssetMetersScreen/confirm magnitude"],
+			},
+		},
+		"AssetMeterReadingsScreen/View": {
+			mk:     func() Screen { return assetMeterReadingsFixture() },
+			header: func(s Screen) jdeHeader { return s.(*AssetMeterReadingsScreen).header() },
+			alsoIn: map[string]func() Screen{
+				"no readings": jdeScreenStates()["AssetMeterReadingsScreen/no readings"],
+			},
+		},
+		"AssetDocumentsScreen/viewList": {
+			mk:     func() Screen { return assetDocumentsFixture() },
+			header: func(s Screen) jdeHeader { return s.(*AssetDocumentsScreen).listHeader() },
+			alsoIn: map[string]func() Screen{
+				"no documents": jdeScreenStates()["AssetDocumentsScreen/no documents"],
+			},
+		},
+		"AssetDocumentsScreen/viewUpload": {
+			mk:     jdeScreenStates()["AssetDocumentsScreen/upload"],
+			header: func(s Screen) jdeHeader { return s.(*AssetDocumentsScreen).uploadHeader() },
+			alsoIn: map[string]func() Screen{
+				"supersede": jdeScreenStates()["AssetDocumentsScreen/supersede"],
+			},
+		},
+		"AssetDocumentsScreen/viewConfirmDelete": {
+			mk:     jdeScreenStates()["AssetDocumentsScreen/delete confirm"],
+			header: func(s Screen) jdeHeader { return s.(*AssetDocumentsScreen).confirmDeleteHeader() },
+		},
+
 		// The two destructive confirms whose warning moved OUT of the body.
 		// Both pin what a short pane may not lose — the file a delete names, the
 		// sentence saying a void CASCADES — where jdeFitHeader can trim by rank
@@ -2614,6 +2764,15 @@ var jdeUnsizedDeclineCases = map[string]string{
 	"PurchaseOrderCreateScreen/item picker":    "po_create's bodyPagesFor",
 	"PurchaseOrderCreateScreen/asset picker":   "po_create's bodyPagesFor",
 	"PurchaseOrderCreateScreen/reorder picker": "po_create's bodyPagesFor",
+	"AssetMetersScreen": "asset_meters guards on listNames(\"PgUp/PgDn\"), which reads the " +
+		"bar's own claim — the same shape as the attachment grid above it",
+	"AssetDocumentsScreen":     "asset_documents guards on listNames(\"PgUp/PgDn\")",
+	"AssetMeterReadingsScreen": "asset_meter_readings guards on names(\"PgUp/PgDn\")",
+	"AssetMetersScreen/confirm": "asset_meters' confirmScrolls — an OFFSET over a body that " +
+		"owns no navigable row",
+	"AssetMetersScreen/confirm magnitude": "the same frame, on the magnitude branch",
+	"AssetDocumentsScreen/delete confirm": "asset_documents' confirmDeleteScrolls — an OFFSET " +
+		"over a body that owns no navigable row",
 }
 
 func TestJDEForm_AnUnsizedTerminalPagesAsItAlwaysHas(t *testing.T) {

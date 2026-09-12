@@ -63,6 +63,63 @@ two candidates (so `resolves` is false and the operator must choose), one
 `already_on_order` (the repeat-add numbers), and one `unavailable` entry
 carrying the server's own discontinued sentence.
 
+| file | endpoint | OMS builder |
+|---|---|---|
+| `asset_meters_list.json` | `GET /api/inventory/asset-meters/?asset=<id>` | `AssetMeterSerializer` |
+| `asset_meter_readings.json` | `GET /api/inventory/asset-meter-readings/?meter=<id>` | `AssetMeterReadingSerializer` |
+| `asset_meter_record_reading.json` | `POST /api/inventory/asset-meters/<id>/record-reading/` | `AssetMeterViewSet._apply_and_respond` |
+| `asset_meter_adjust.json` | `POST /api/inventory/asset-meters/<id>/adjust/` | the same |
+| `asset_documents_list.json` | `GET /api/inventory/asset-documents/?asset=<id>` | `AssetDocumentSerializer` |
+| `asset_document_upload.json` | `POST /api/inventory/asset-documents/` (multipart) | the same |
+| `asset_document_supersede.json` | `POST /api/inventory/asset-documents/<id>/supersede/` (multipart) | `AssetDocumentViewSet.supersede` |
+
+Recorded 2026-09-11 against OpenMakerSuite `main` at commit
+`1f6897d8d31e406afb015963f3e0a6c94189c4a1` (tree `2d9c8f9c…`), a clean clone of
+the remote default branch, running on PostgreSQL and authenticated as a staff
+user (`AssetMeterViewSet` is `IsStaffOrSigAdmin` for LIST as well as its writes).
+
+The rows were seeded to reach the states the terminal has to keep apart, because
+a library of one happy meter proves nothing about the markers: one meter whose
+current value is an ESTIMATE, one that is INACTIVE, one on the `auto_session`
+rollup with a watermark set, and one manual runtime meter whose ledger holds a
+measurement, a second measurement, and a `manual_adjust` CORRECTION that moved
+the meter DOWN — the negative delta is the row the whole record-reading /
+adjust distinction exists for. The document list holds a superseded v1 beside
+its current v2, so `supersedes` is reached both as `null` and as a string.
+
+What they pin:
+
+* Every `id` is a **string** — `AssetMeter`, `AssetMeterReading`, `Asset` and
+  `AssetDocument` each declare `id = models.UUIDField(primary_key=True, …)`, read
+  off the whole model class rather than a grep window, and each payload is a
+  plain `ModelSerializer` rather than a hand-built dict. Nothing here is decoded
+  into an `any` or spent through `anyIDString`.
+* `current_value`, `delta` and `value_after` are **strings** with four decimal
+  places (`numeric(14,4)`), so a meter reading never goes through a float. A
+  NEGATIVE delta is present, with its sign.
+* `record-reading` and `adjust` return the same `{meter, reading}` envelope with
+  a **201**, and the readings differ only in `source` (`manual` vs
+  `manual_adjust`) and in `notes` carrying the adjustment's reason.
+* `recorded_by` is **null** on an automatic rollup, which is a different fact
+  from a named recorder — hence the pointer.
+* A document's `file` comes back as an **absolute URL**, not the relative storage
+  path the `FileField` holds, because the serializer has a request in context.
+
+### What the server does NOT refuse, measured on the same backend
+
+`apply_reading` stores whatever arrives. A reading that goes BACKWARDS
+(absolute 120 against a meter reading 1250.5), one off by an ORDER OF MAGNITUDE
+(12505000), and a NEGATIVE cumulative total (-5) are each accepted with a 201.
+And for a `runtime_hours` meter the damage is one-way: a positive advance is
+added to `Asset.hours_used` and a downward correction deliberately does not
+decrement it, so the sequence above left `hours_used` at 12506130 with nothing in
+this API able to bring it back. `internal/tui/asset_meters.go` confirms such an
+entry on the terminal side for that reason; `internal/omsapi/asset_meters.go`
+carries the note, and `internal/omsapi/asset_meters_lab_test.go` (build tag
+`omslab`) RE-MEASURES it against a live backend, so if OMS ever starts refusing
+these the confirm's premise fails loudly rather than quietly becoming
+decoration.
+
 ## What these pin that a hand-written map does not
 
 * `purchase_order.id` is a **number** — `PurchaseOrder` declares no primary key,

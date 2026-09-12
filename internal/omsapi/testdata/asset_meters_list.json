@@ -1,0 +1,71 @@
+{
+    "count": 4,
+    "next": null,
+    "previous": null,
+    "results": [
+        {
+            "id": "f334a008-57fe-4dfb-8996-854cff10db05",
+            "asset": "0289121e-7524-46f8-8dc6-8c3c5337e28a",
+            "name": "Chiller compressor runtime",
+            "meter_type": "runtime_hours",
+            "meter_type_display": "Runtime hours",
+            "unit": "hours",
+            "source": "auto_session",
+            "source_display": "Auto \u2014 usage sessions",
+            "current_value": "6.0833",
+            "current_is_estimated": false,
+            "rollup_watermark_at": "2026-09-11T23:08:39.231165Z",
+            "is_active": true,
+            "created_at": "2026-09-12T02:08:39.230425Z",
+            "updated_at": "2026-09-12T02:08:39.237447Z"
+        },
+        {
+            "id": "34ca60e8-3e98-4209-9d77-8ce555d3c858",
+            "asset": "0289121e-7524-46f8-8dc6-8c3c5337e28a",
+            "name": "Coolant dispensed",
+            "meter_type": "volume_gallons",
+            "meter_type_display": "Volume (gallons)",
+            "unit": "gallons",
+            "source": "manual",
+            "source_display": "Manual entry",
+            "current_value": "83.5000",
+            "current_is_estimated": true,
+            "rollup_watermark_at": null,
+            "is_active": true,
+            "created_at": "2026-09-12T02:08:39.230045Z",
+            "updated_at": "2026-09-12T02:08:39.236374Z"
+        },
+        {
+            "id": "6689e41f-199f-4bee-b1ff-a9ff02da2007",
+            "asset": "0289121e-7524-46f8-8dc6-8c3c5337e28a",
+            "name": "Old tool-change counter",
+            "meter_type": "cycles",
+            "meter_type_display": "Cycles",
+            "unit": "cycles",
+            "source": "manual",
+            "source_display": "Manual entry",
+            "current_value": "0.0000",
+            "current_is_estimated": false,
+            "rollup_watermark_at": null,
+            "is_active": false,
+            "created_at": "2026-09-12T02:08:39.230840Z",
+            "updated_at": "2026-09-12T02:08:39.230843Z"
+        },
+        {
+            "id": "bceb18f6-288e-4789-b596-a98493833bb6",
+            "asset": "0289121e-7524-46f8-8dc6-8c3c5337e28a",
+            "name": "Spindle runtime",
+            "meter_type": "runtime_hours",
+            "meter_type_display": "Runtime hours",
+            "unit": "hours",
+            "source": "manual",
+            "source_display": "Manual entry",
+            "current_value": "1289.7500",
+            "current_is_estimated": false,
+            "rollup_watermark_at": null,
+            "is_active": true,
+            "created_at": "2026-09-12T02:08:39.229510Z",
+            "updated_at": "2026-09-12T02:08:39.235276Z"
+        }
+    ]
+}
