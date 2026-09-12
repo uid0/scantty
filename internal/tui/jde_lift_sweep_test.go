@@ -172,8 +172,8 @@ func TestJDEForm_NoSheetAnswersTheScrollQuestionItself(t *testing.T) {
 						if jdeIsBodyLenCall(v.X, bodies, pkg) || jdeIsBodyLenCall(v.Y, bodies, pkg) {
 							t.Errorf("%s: a jdeLines' Len() is compared here. That comparison IS "+
 								"the scroll question, whatever it is compared against; ask "+
-								"bodyScrolls / bodyScrollsForBar so the answer and the window "+
-								"stay one expression", fset.Position(v.Pos()))
+								"bodyScrollsForBar so the answer and the window stay one "+
+								"expression", fset.Position(v.Pos()))
 						}
 					}
 				}
@@ -186,8 +186,8 @@ func TestJDEForm_NoSheetAnswersTheScrollQuestionItself(t *testing.T) {
 func jdeReportLayerOnly(t *testing.T, fset *token.FileSet, path string, id *ast.Ident) {
 	t.Helper()
 	t.Errorf("%s: %s calls %s, which is the shared layer's own. A sheet asks "+
-		"bodyScrolls / bodyScrollsForBar whether its body moves, and "+
-		"bodyAvail / bodyAvailForBar / scrollRows for the rows it has — those "+
+		"bodyScrollsForBar whether its body moves, and bodyAvailForBar / "+
+		"scrollRows for the rows it has — those "+
 		"are the same expression the frame windows with, so they cannot part "+
 		"company with it. A copy here can, and has",
 		fset.Position(id.Pos()), path, id.Name)
@@ -593,9 +593,8 @@ var jdeLiftSizes = []tea.WindowSizeMsg{
 }
 
 // TestJDEScroll_TheAnswerMatchesTheFrameThatDrawsIt is the behavioural half of
-// the lift: bodyScrolls and bodyScrollsForBar are checked against what the
-// frame REALLY does with the same body, rather than against a restatement of
-// the arithmetic.
+// the lift: `bodyScrollsForBar` is checked against what the frame REALLY does
+// with the same body, rather than against a restatement of the arithmetic.
 //
 // "The body scrolls" means the operator cannot see all of it at once, and the
 // frame says so itself: Window and WindowFrom spend their first and last rows

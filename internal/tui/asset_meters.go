@@ -1011,7 +1011,7 @@ func (s *AssetMetersScreen) recordFields() []jdeField {
 	}
 }
 
-// recordHeader pins WHICH METER and WHERE IT STANDS, because a reading typed
+// entryHeader pins WHICH METER and WHERE IT STANDS, because a reading typed
 // against the wrong meter is the mistake this frame exists to prevent and the
 // current value is what the operator checks their entry against.
 //

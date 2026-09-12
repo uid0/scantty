@@ -13,7 +13,8 @@ import (
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
-// deviceCommandKeys are the keys on this screen that end in an MQTT publish.
+// isDeviceCommandKey answers for the keys on this screen that end in an MQTT
+// publish.
 // forgekey's device_commands service routes every one of them through the
 // backend's "mqtt" circuit breaker, so one open breaker takes the whole set out
 // — a press could only buy a broker timeout. Mirrors the web

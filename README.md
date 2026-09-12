@@ -38,6 +38,7 @@ The first run will fail fast with a clear message if either URL is missing. The 
 | `SCANTTY_FORGEKEY_CA_CERT` | Path to ForgeKey CA cert for verification | unset |
 | `SCANTTY_CACHE_PATH` | SQLite cache file location | `<user cache dir>/scantty/cache.db` — `~/Library/Caches` on macOS, `${XDG_CACHE_HOME:-~/.cache}` on Linux |
 | `SCANTTY_SCANNER_SOURCE` | `stdin` (keyboard-emulation scanners) or a serial device path | `stdin` |
+| `SCANTTY_THEME` | Colour theme by name; overrides the saved preference, and an unrecognised name falls back to the default rather than failing. `internal/theme`'s `Definitions()` is the list. | saved preference, else `purple` |
 | `SENTRY_DSN` | Override the baked-in Sentry DSN (e.g. point at a personal sandbox). The default reports panics + `run()` errors to the `scantty` project on the self-hosted Sentry — public DSN, safe to commit. | baked-in |
 | `SENTRY_DISABLED` | Set to `1` (or `true`) to disable Sentry entirely. | unset |
 | `SENTRY_ENVIRONMENT` | Sentry environment tag (`dev`, `staging`, `prod`). | `dev` |
@@ -188,50 +189,17 @@ that badge lookup is not available yet (see Roadmap).
 
 ## Project layout
 
+The source tree is the authoritative project inventory. Query it rather than
+maintaining a file-by-file copy here:
+
+```sh
+go list ./...                    # packages in the current checkout
+rg --files cmd internal deploy systemd
 ```
-.
-├── cmd/
-│   ├── scantty/main.go           # TUI entrypoint: load config, build clients, hand off to bubbletea
-│   └── oms-claim-print/main.go   # Pi-side claim-tag print daemon (Epson TM via ESC/POS to USB)
-├── systemd/
-│   └── oms-claim-print.service   # drop-in unit for the Pi daemon
-├── internal/
-│   ├── config/                   # env-var loader, validation
-│   ├── scanner/                  # scan-code classifier + stdin reader
-│   ├── cache/                    # pure-Go SQLite (modernc.org/sqlite); resources, lookups, pending actions
-│   ├── omsapi/                   # OMS HTTP client (JWT bearer, refresh on 401, stable error envelope, generic page iterator)
-│   │   ├── client.go             # base + auth
-│   │   ├── errors.go             # APIError + envelope parsing
-│   │   ├── inventory.go          # items, assets, locations, categories, suppliers, item-suppliers, fixtures, lookup-code
-│   │   ├── asset_interlock.go    # asset lock/unlock (ForgeKey lockouts) + enable/disable (list visibility)
-│   │   ├── reconciliation.go     # location-wide inventory count grid + atomic batch submit
-│   │   ├── reorders.go           # reorder requests, purchase orders, receipts
-│   │   ├── membership.go         # profile, SIGs, certifications
-│   │   ├── workorders.go         # in-house inventory work orders
-│   │   ├── maintenance_orders.go # vendor work orders, quotes, attachments, and workflow actions
-│   │   ├── donations.go          # donations + tax receipts
-│   │   └── search.go             # /api/search/, dashboard summary
-│   ├── forgekeyapi/              # ForgeKey HTTP client (mTLS-capable transport)
-│   │   ├── client.go             # base + mTLS + bearer
-│   │   ├── devices.go            # devices, command actions (enable/disable/identify/blink/firmware), occupancy
-│   │   └── authorizations.go     # authorizations, lockouts, operational modes, usage sessions
-│   └── tui/                      # bubbletea root, screens, styles
-│       ├── app.go                # root model + workspace router
-│       ├── route.go              # workspace types, screen interface, switch/status messages
-│       ├── styles.go             # lipgloss palette + status rendering
-│       ├── nav.go                # sidebar menu tree — workspaces + their surfaces
-│       ├── status.go             # bottom status bar (OMS/FK conn dots, scanner state, flash messages)
-│       ├── welcome.go            # default landing screen
-│       ├── scan.go               # scan input + recent-scan history + auto-navigate on item match
-│       ├── list.go               # generic paginated list with loaders for items/assets/POs/WOs/SIGs/FK devices
-│       ├── inventory_detail.go   # item detail + supplier list
-│       ├── location_reconcile.go # keyboard-driven whole-location stock count
-│       ├── reorder_form.go       # reorder request form
-│       ├── po_detail.go          # purchase order detail + line items
-│       ├── receive_form.go       # receiving flow: worksheet, scan, quantities, serials, review
-│       └── settings.go           # env-var inventory display
-└── go.mod
-```
+
+Package documentation and local code comments own the boundaries and
+non-obvious constraints of each area. `AGENTS.md` records the project-wide
+conventions that future changes must preserve.
 
 ## Architecture notes
 

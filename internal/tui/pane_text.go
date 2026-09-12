@@ -403,8 +403,8 @@ const windowedListCaretCells = 4
 // The HIGHLIGHT's padding is reserved on every row, not only the highlighted
 // one: StyleSidebarItemActive pads what it wraps, so a row that fits until it
 // is selected is a row the pane cuts on exactly the press that stages it — and
-// the padding is asked of the style rather than counted, the same way
-// renderCart asks.
+// the padding is asked of the style rather than counted, so a change to
+// StyleSidebarItemActive cannot leave this reservation behind.
 // `width` is the pane the row is actually drawn into, not the 51-column pane
 // this project checks against: clipping a name to 45 cells on a 120-column
 // terminal discards what the pane had room for (paneWidth, po_create.go).

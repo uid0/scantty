@@ -152,7 +152,7 @@ func TestJDELines_WindowIsExactlyTheHeightItWasGiven(t *testing.T) {
 	}
 }
 
-// TestJDELines_WindowKeepsTheWHOLECursorBlock: a row that owns several lines (a
+// TestJDELines_WindowKeepsTheWholeCursorBlock: a row that owns several lines (a
 // choice row and its option strip, a detail line and what it was ordered for)
 // must not be sliced in half by the window — the operator would be editing
 // something they cannot see.

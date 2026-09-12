@@ -684,7 +684,7 @@ const (
 	woReviewLabelCeil  = 52
 )
 
-// woReviewSub is the indent a submission's or a reading's continuation lines
+// woReviewSubIndent is the indent a submission's or a reading's continuation lines
 // hang at, under the label column.
 var woReviewSubIndent = strings.Repeat(" ", len(jdeIndent)+woReviewSelW+1)
 

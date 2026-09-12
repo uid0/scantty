@@ -3857,7 +3857,7 @@ func (s *PurchaseOrderCreateScreen) poRowRoom() int {
 	return windowedListRoom(s.paneWidth())
 }
 
-// emptyBody is the body a phase draws when it has no rows: ONE muted line
+// poEmptyBody is the body a phase draws when it has no rows: ONE muted line
 // saying what the list is, so "the list is empty" and "the window scrolled off
 // the rows" can never look the same. It is jdeNoRow, which is safe for exactly
 // the reason a lead-in line is not — there is no navigable row below it for the

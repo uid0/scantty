@@ -63,11 +63,11 @@ func TestAnyID_ANumericIDKeepsItsDigits(t *testing.T) {
 // so nothing the outer decoder was configured with reaches inside one:
 // MaybeList[T].UnmarshalJSON decoded both of its branches with json.Unmarshal,
 // which cannot be configured at all. ListPendingReorders decodes
-// MaybeList[ReorderRequest], whose ID is `any`, and
-// internal/tui/reorder_queue.go's actOnCursor renders it with %v straight into
-// the path of `/api/reorders/requests/<id>/approve/` — so a seven-digit request
-// pk approved "1e+06", a request that does not exist, on a queue whose whole
-// purpose is approving and cancelling.
+// MaybeList[ReorderRequest], whose ID is `any`, and internal/tui's reorder
+// queue spends it as the path segment of
+// `/api/reorders/requests/<id>/approve/` — so before this option was set, a
+// seven-digit request pk approved "1e+06", a request that does not exist, on a
+// queue whose whole purpose is approving and cancelling.
 //
 // BOTH SHAPES ARE DRIVEN because MaybeList exists to accept either, and a
 // fallback chain is exactly where a decoding decision gets quietly re-made: the

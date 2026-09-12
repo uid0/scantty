@@ -126,7 +126,7 @@ func poEditRowsScreen(canDelete *bool) *PurchaseOrderEditScreen {
 	return s
 }
 
-// openLine opens the line editor the way Ctrl-E does, and answers the history
+// poEditRowsOpenLine opens the line editor the way Ctrl-E does, and answers the history
 // lookup an unpriced line fires so the offer block is drawn.
 func (s *PurchaseOrderEditScreen) poEditRowsOpenLine(idx int) {
 	s.openLineEditor(idx)
