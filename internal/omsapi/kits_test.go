@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"testing"
 )
 
@@ -438,33 +439,40 @@ func TestUpdateKit_SendsAnEmptyNoteExplicitly(t *testing.T) {
 // catalogue can show one, and ?search= here is what reaches the supplier's own
 // part number for a kit — the code printed on the box a scanner reads.
 func TestListKits_IsTheOnlyBrowsableRouteToOne(t *testing.T) {
-	var gotPath, gotQuery string
+	var gotPaths, gotQueries []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		gotPaths = append(gotPaths, r.URL.Path)
+		gotQueries = append(gotQueries, r.URL.RawQuery)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"count":1,"next":null,"previous":null,"results":[
-			{"id":"kit-1","name":"Eufy Ink Kit","sku":"EIK-4","is_kit":true,"component_count":2}]}`))
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = w.Write([]byte(`{"count":2,"next":"/api/inventory/kits/?page=2","previous":null,"results":[
+				{"id":"kit-1","name":"Eufy Ink Kit","sku":"EIK-4","is_kit":true,"component_count":2}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"count":2,"next":null,"previous":"/api/inventory/kits/?page=1","results":[
+			{"id":"kit-51","name":"Last Kit","sku":"LAST-1","is_kit":true,"component_count":1}]}`))
 	}))
 	defer srv.Close()
 
-	page, err := New(srv.URL).ListKits(context.Background(), url.Values{"search": {"VND-88117"}})
+	kits, err := New(srv.URL).ListKits(context.Background(), url.Values{"search": {"VND-88117"}})
 	if err != nil {
 		t.Fatalf("ListKits: %v", err)
 	}
-	if gotPath != "/api/inventory/kits/" {
-		t.Errorf("path = %q", gotPath)
+	if !reflect.DeepEqual(gotPaths, []string{"/api/inventory/kits/", "/api/inventory/kits/"}) {
+		t.Errorf("paths = %q", gotPaths)
 	}
-	if gotQuery != "search=VND-88117" {
-		t.Errorf("query = %q, want the term passed through untouched", gotQuery)
+	wantQueries := []string{"page=1&search=VND-88117", "page=2&search=VND-88117"}
+	if !reflect.DeepEqual(gotQueries, wantQueries) {
+		t.Errorf("queries = %q, want %q", gotQueries, wantQueries)
 	}
-	if len(page.Results) != 1 || page.Results[0].Name != "Eufy Ink Kit" {
-		t.Fatalf("results = %+v", page.Results)
+	if len(kits) != 2 || kits[1].Name != "Last Kit" {
+		t.Fatalf("results = %+v", kits)
 	}
 	// The kit half decodes off the same rows the item half does — a list row has
 	// to be able to say how many components a kit holds, or the browse list
 	// cannot tell a kit from any other catalogue record.
-	if !page.Results[0].IsKit || page.Results[0].ComponentCount != 2 {
-		t.Errorf("kit fields did not decode on a LIST row: %+v", page.Results[0])
+	if !kits[0].IsKit || kits[0].ComponentCount != 2 {
+		t.Errorf("kit fields did not decode on a LIST row: %+v", kits[0])
 	}
 }
 

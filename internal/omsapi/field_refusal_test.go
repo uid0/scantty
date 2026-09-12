@@ -120,6 +120,20 @@ func TestAsFieldRefusal_ANonFieldErrorNamesNoField(t *testing.T) {
 	}
 }
 
+func TestAsFieldRefusal_ANestedNonFieldErrorNamesTheParent(t *testing.T) {
+	err := refusalFrom(t, http.StatusBadRequest, `{"error":{"code":"validation_failed",
+		"message":"One or more fields failed validation.",
+		"details":{"supplier_terms":{"non_field_errors":["Terms conflict."]}}}}`)
+
+	got, ok := AsFieldRefusal(err)
+	if !ok {
+		t.Fatalf("not read as a refusal: %v", err)
+	}
+	if got != "supplier_terms: Terms conflict." {
+		t.Errorf("refusal = %q, want the parent field and sentence", got)
+	}
+}
+
 // TestAsFieldRefusal_AScalarDetailIsProseToo. A hand-raised ValidationError with
 // a bare message arrives as a string rather than a list, and it is the same
 // fact wearing a different shape.

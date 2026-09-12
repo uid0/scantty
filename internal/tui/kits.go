@@ -79,12 +79,12 @@ func searchKits(ctx context.Context, deps Deps, query string) ([]listRow, error)
 }
 
 func kitListRows(ctx context.Context, deps Deps, q url.Values) ([]listRow, error) {
-	page, err := deps.OMS.ListKits(ctx, q)
+	kits, err := deps.OMS.ListKits(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	rows := make([]listRow, 0, len(page.Results))
-	for _, kit := range page.Results {
+	rows := make([]listRow, 0, len(kits))
+	for _, kit := range kits {
 		tag := ""
 		if !kit.IsActive {
 			tag = "inactive"

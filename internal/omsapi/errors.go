@@ -218,7 +218,11 @@ func fieldRefusalParts(name string, raw json.RawMessage) []string {
 	sort.Strings(inner)
 	var out []string
 	for _, key := range inner {
-		out = append(out, fieldRefusalParts(name+"."+key, nested[key])...)
+		nestedName := name + "." + key
+		if key == "non_field_errors" {
+			nestedName = name
+		}
+		out = append(out, fieldRefusalParts(nestedName, nested[key])...)
 	}
 	return out
 }

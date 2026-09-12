@@ -176,7 +176,7 @@ type KitSummary struct {
 	ComponentCount int           `json:"component_count,omitempty"`
 }
 
-// ListKits fetches a page of kits (GET /api/inventory/kits/).
+// ListKits fetches all kits (GET /api/inventory/kits/).
 //
 // THIS IS THE ONLY BROWSABLE ROUTE TO A KIT. `/api/inventory/items/` filters
 // kits out in get_queryset, so nothing that walks the item catalogue will ever
@@ -190,13 +190,19 @@ type KitSummary struct {
 // own part number for the kit), `is_active`, `supplier`, `component` — "which
 // kits would restock this item" — `ordering` (name / sku / created_at, each
 // reversible with a leading `-`; anything else falls back to name) and the
-// standard `page` / `page_size`. An unknown key is ignored server-side.
-//
-// Paginated at the project default of 50 per page. A caller that filters
-// CLIENT-side has to walk `next` to the end or its filter is a lie about page
-// one; the kit list screen does not, because `search` is what it forwards.
-func (c *Client) ListKits(ctx context.Context, q url.Values) (*Page[Kit], error) {
-	return GetPage[Kit](ctx, c, "/api/inventory/kits/", q)
+// standard `page_size`. An unknown key is ignored server-side. Pagination is
+// walked here because this is the only browsable route to a kit and the list
+// screen has no page-navigation affordance. The caller's filters are forwarded
+// on every page.
+func (c *Client) ListKits(ctx context.Context, q url.Values) ([]Kit, error) {
+	var out []Kit
+	if err := IterPages[Kit](ctx, c, "/api/inventory/kits/", q, func(batch []Kit) error {
+		out = append(out, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // CreateKit creates a kit and its bill of materials in one request
