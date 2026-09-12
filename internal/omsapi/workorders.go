@@ -66,6 +66,20 @@ type WorkOrder struct {
 	Photos               []WorkOrderPhoto          `json:"photos,omitempty"`
 	Validation           *WorkOrderValidation      `json:"validation,omitempty"`
 	ReferenceDocuments   *ReferenceDocuments       `json:"reference_documents,omitempty"`
+
+	// A SCANNED SHEET WAITING ON A HUMAN. These three ride BOTH serializers —
+	// WorkOrderSerializer and WorkOrderListSerializer — which is what lets a
+	// list row say a job needs review without anybody opening it.
+	//
+	// PendingReviewCount counts SUBMISSIONS parked `pending_review`, not the
+	// readings on them: a sheet the reader could not align is parked with an
+	// empty queue and a sentence saying why, and it counts. Submissions is
+	// DETAIL-only — the list serializer omits it, so an empty slice on a list
+	// row means "not served here" rather than "none". wo_scan_review.go owns
+	// the whole contract and the two writes.
+	Submissions        []WorkOrderSubmission `json:"submissions,omitempty"`
+	PendingReviewCount int                   `json:"pending_review_count,omitempty"`
+	HasPendingReview   bool                  `json:"has_pending_review,omitempty"`
 }
 
 // ReferenceDocuments is the manual / revision history / reference links bundle

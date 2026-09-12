@@ -799,6 +799,54 @@ touching any report that shows a rate, a variance or a lateness:
   nothing here decodes them; the keys ScanTTY does decode were deliberately left
   alone and only GAINED the sibling above.
 
+### A SCANNED work order is parked behind a human, and the terminal now holds both halves
+
+`internal/omsapi/wo_scan_review.go` carries the wire contract and
+`internal/tui/wo_scan_review.go` the flow; both are the authority, and OMS's
+`inventory/views.py` (`apply_pending_changes` / `discard_pending_changes`) plus
+`services/work_order_ingest.py` are the contract behind them. Every shape below
+was READ off a live backend — the recordings are `internal/omsapi/testdata/wo_*.json`
+with provenance in that directory's README. What is worth knowing before
+touching any of it:
+
+- **Uploading a scan does not close a work order and must not.** The reader
+  parks what it is unsure of on a `WorkOrderSubmission` as `pending_changes` and
+  leaves it `pending_review`. That gate is deliberate ("a scan never closes a WO
+  on its own"); the terminal drives it, never around it.
+- **`target_ids` ABSENT is the whole queue and `target_ids: []` is NOTHING**, on
+  both endpoints, with a 200 either way. A caller whose slice happens to be nil
+  would apply everything and one that happens to be empty would apply nothing,
+  on a write that marks tasks complete and moves stock — so `omsapi` REFUSES the
+  empty slice (`ErrEmptyTargetIDs`) and the two scopes are spelled apart.
+- **A change with a null `target_id` — a signature, a handwritten note — cannot
+  be named in `target_ids` at all**, so it is reachable only by a whole-queue
+  write. Say so on the row rather than dropping it from a selective one.
+- **Applying a mark records its task or material DONE whatever the reader saw.**
+  `omr_apply_mark(..., marked=True)` runs for every selected mark, so a row
+  reading `blank` ends up complete, and a material mark moves stock through
+  `apply_material_usage`. Measured, not inferred.
+- **`has_pending_review` / `pending_review_count` ride BOTH work-order
+  serializers**, which is what lets a LIST row say a scan is waiting. They count
+  SUBMISSIONS, not readings: a sheet the reader could not align is parked with
+  an EMPTY queue and a `parse_error`, and it counts — so read
+  `submission.status`, never `len(pending_changes)`.
+- **Closing the job from a scan is `confirm_complete: true`, and it is
+  CONDITIONAL server-side**: `omr_confirm_completion` refuses silently unless
+  every required task is complete and answers 200 regardless. Report what came
+  back; predict nothing.
+- **Both refusals are DRF's bare `{"detail": …}` with no `code`**, so
+  `parseError` hands the whole raw body over. `omsapi.AsSubmissionRefusal` is
+  the narrow recogniser, beside `AsLineEntryError` and `AsReceivingRefusal`.
+- **`WorkOrder.Title` DECODES NOTHING and never did.** Neither
+  `WorkOrderSerializer` nor `WorkOrderListSerializer` has a `title` key — the
+  human name is `display_title` — so every surface reading `.Title` drew a
+  blank: a column of nameless list rows, an empty heading on the detail sheet,
+  and a complete/cancel confirm naming nothing. `internal/tui/wo_detail.go`'s
+  `workOrderName` is the one helper; use it rather than the field.
+- Viewing the scan IMAGE (`scan-image`, `mark-crop`) is PNG-bound and out of
+  scope for a terminal. The review frame names that limit rather than implying
+  a confidence figure is the whole story.
+
 ## The receiving flow is driven off ONE fetch, and the server decides
 
 `internal/omsapi/po_receiving.go` carries the contract note and

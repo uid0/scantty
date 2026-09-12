@@ -296,9 +296,12 @@ func jdeScreenFixtures() map[string]func() Screen {
 			s.po = poViewPO()
 			return s
 		},
-		"PurchaseOrderEditScreen": func() Screen { return NewPurchaseOrderEditScreen(Deps{}, poViewPO()) },
-		"ReceiveFormScreen":       func() Screen { return receivePaneFixture(nil) },
-		"SIGFormScreen":           func() Screen { return NewSIGFormScreen(Deps{}, "") },
+		// The scan-review grid as an operator reaches it: two parked sheets, one
+		// carrying a reading of every kind the ingest paths produce.
+		"WorkOrderScanReviewScreen": func() Screen { return woReviewFixture() },
+		"PurchaseOrderEditScreen":   func() Screen { return NewPurchaseOrderEditScreen(Deps{}, poViewPO()) },
+		"ReceiveFormScreen":         func() Screen { return receivePaneFixture(nil) },
+		"SIGFormScreen":             func() Screen { return NewSIGFormScreen(Deps{}, "") },
 		// With SERVICES on it. A bare Deps{} carries no health snapshot, so the
 		// screen draws a summary over an empty list: nothing to move a cursor
 		// through, and every sweep that presses a key at it proves nothing.
@@ -956,6 +959,41 @@ func jdeScreenStates() map[string]func() Screen {
 			s.openLevels()
 			return s
 		},
+		// The three confirms. Each is a different WRITE with different caveats
+		// and a different headline, and the header's essential row is what says
+		// which — so one of them measured would be one third of the claim.
+		"WorkOrderScanReviewScreen/apply confirm": func() Screen {
+			return woReviewConfirmFixture(woReviewApply)
+		},
+		"WorkOrderScanReviewScreen/discard confirm": func() Screen {
+			return woReviewConfirmFixture(woReviewDiscard)
+		},
+		"WorkOrderScanReviewScreen/complete confirm": func() Screen {
+			return woReviewConfirmFixture(woReviewComplete)
+		},
+		// ONE parked sheet with NOTHING queued on it — the degraded read, which
+		// is a single navigable row, so the bar rightly names no movement pair
+		// and anything the builder puts AHEAD of that row is stranded. It is the
+		// state the empty-list rule is about, and the cheapest one to forget.
+		"WorkOrderScanReviewScreen/one degraded sheet": func() Screen {
+			wo := woReviewWorkOrder()
+			wo.Submissions = []omsapi.WorkOrderSubmission{woReviewDegradedSubmission()}
+			wo.PendingReviewCount = 1
+			s := NewWorkOrderScanReviewScreen(Deps{}, woReviewFixtureWO, wo)
+			s.loading = false
+			return s
+		},
+		// And the work order with no sheet at all: the empty frame, whose one
+		// essential row is the sentence that says so.
+		"WorkOrderScanReviewScreen/nothing waiting": func() Screen {
+			wo := woReviewWorkOrder()
+			wo.Submissions = nil
+			wo.PendingReviewCount, wo.HasPendingReview = 0, false
+			s := NewWorkOrderScanReviewScreen(Deps{}, woReviewFixtureWO, wo)
+			s.loading = false
+			return s
+		},
+
 		"PurchaseOrderAttachmentsScreen/one file": func() Screen {
 			// REPLACED rather than appended: poViewPO already carries one, and
 			// appending to it would build the two-row list the six-file fixture
@@ -1774,6 +1812,33 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 			}),
 		"PurchaseOrderDetailScreen/viewVoid": pick("PurchaseOrderDetailScreen/void order",
 			func(s Screen) jdeHeader { return s.(*PurchaseOrderDetailScreen).voidHeader() }),
+		"WorkOrderScanReviewScreen/viewList": {
+			// The POPULATED grid is the everyday state and the one whose
+			// essential row is the column header; the other two branches rank
+			// different rows, and the empty one is where the "nothing waiting"
+			// sentence takes that row instead.
+			mk: states["WorkOrderScanReviewScreen/one degraded sheet"],
+			alsoIn: map[string]func() Screen{
+				"two sheets":      func() Screen { return woReviewFixture() },
+				"nothing waiting": states["WorkOrderScanReviewScreen/nothing waiting"],
+			},
+			header: func(s Screen) jdeHeader {
+				return s.(*WorkOrderScanReviewScreen).listHeader()
+			},
+		},
+		"WorkOrderScanReviewScreen/viewConfirm": {
+			mk: func() Screen { return woReviewConfirmFixture(woReviewApply) },
+			// The headline is what the essential row carries and it differs per
+			// ACTION — the verb, the count and the scope word — so all three are
+			// measured rather than the one that happened to be built.
+			alsoIn: map[string]func() Screen{
+				"discard":  func() Screen { return woReviewConfirmFixture(woReviewDiscard) },
+				"complete": func() Screen { return woReviewConfirmFixture(woReviewComplete) },
+			},
+			header: func(s Screen) jdeHeader {
+				return s.(*WorkOrderScanReviewScreen).confirmHeader()
+			},
+		},
 
 		// The New PO screen pins the tallest header in the app: the supplier
 		// row, the failure's unbounded detail, three optional attribution
@@ -2393,6 +2458,12 @@ var jdeUnsizedDeclineCases = map[string]string{
 		"that owns no navigable row",
 	"PurchaseOrderAttachmentsScreen/delete confirm": "po_attachments' confirmDeleteScrolls — " +
 		"an OFFSET over a body that owns no navigable row",
+	"WorkOrderScanReviewScreen/apply confirm": "wo_scan_review's confirmScrolls — an OFFSET " +
+		"over a body that owns no navigable row",
+	"WorkOrderScanReviewScreen/discard confirm": "wo_scan_review's confirmScrolls — an OFFSET " +
+		"over a body that owns no navigable row",
+	"WorkOrderScanReviewScreen/complete confirm": "wo_scan_review's confirmScrolls — an OFFSET " +
+		"over a body that owns no navigable row",
 	"StorageSlotGenerateScreen/run report": "storage_slot_generate's resultScrolls — an OFFSET",
 	"PurchaseOrderAttachmentsScreen": "po_attachments guards on listNames(\"PgUp/PgDn\"), " +
 		"which reads the bar's own claim",

@@ -257,10 +257,36 @@ func NewWorkOrderDetailScreen(deps Deps, id string) *WorkOrderDetailScreen {
 }
 
 func (s *WorkOrderDetailScreen) Title() string {
-	if s.wo != nil && s.wo.Title != "" {
-		return fmt.Sprintf("WO: %s", s.wo.Title)
+	if s.wo != nil {
+		if name := workOrderName(*s.wo); name != "" {
+			return fmt.Sprintf("WO: %s", name)
+		}
 	}
 	return fmt.Sprintf("WO #%s", s.woID)
+}
+
+// workOrderName is what to CALL a work order, and it exists because
+// WorkOrder.Title decodes nothing.
+//
+// NEITHER work-order serializer has a `title` key — the detail one and the list
+// one both carry `display_title` instead ("the PM template's title, else the
+// reported problem, else the asset"), which is the only human name a corrective
+// work order has at all. So every surface reading .Title drew a blank: the list
+// rendered a column of nameless rows, the detail sheet opened with an empty
+// heading, and the complete/cancel confirm named nothing it was about. Recorded
+// off the wire — testdata/wo_list_pending_review.json has no `title` key, and
+// TestWorkOrderList_CarriesThePendingReviewFlags fails if one appears.
+//
+// The short id is the last resort rather than the first: it identifies the job
+// and does not describe it, so it is what a job with no name falls back to.
+func workOrderName(wo omsapi.WorkOrder) string {
+	if wo.DisplayTitle != "" {
+		return wo.DisplayTitle
+	}
+	if wo.Title != "" {
+		return wo.Title
+	}
+	return wo.ShortID
 }
 
 // Init (re)loads the work order. It also drops any tick chain this screen had
@@ -578,6 +604,14 @@ func (s *WorkOrderDetailScreen) handleViewKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case "U":
 		s.openPdfForm()
 		return s, textinput.Blink
+	case "R":
+		// The other half of `U`. Offered only where a sheet is really parked,
+		// which is the same condition the footer names it under: a key that
+		// opened a review of nothing would be the bar lying about what works.
+		if len(s.woPendingReview()) == 0 {
+			return s, Status("no scanned sheet is waiting on this work order", StatusWarn)
+		}
+		return s, SwitchTo(WSMaintenance, NewWorkOrderScanReviewScreen(s.deps, s.woID, s.wo))
 	case "v":
 		s.openChecklist(false)
 		return s, textinput.Blink
@@ -1799,6 +1833,9 @@ func (s *WorkOrderDetailScreen) footerHint() string {
 	// Always offered: an empty list is the corrective case, where adding the
 	// first line is exactly what the operator came here to do.
 	parts = append(parts, "M materials")
+	if len(s.woPendingReview()) > 0 {
+		parts = append(parts, "R review scan")
+	}
 	parts = append(parts, "A attachments", "p photo", "U upload-pdf", "v validate", "E notes", "r refresh", "esc back")
 	return strings.Join(parts, " · ")
 }
@@ -2269,7 +2306,7 @@ func (s *WorkOrderDetailScreen) renderConfirm() string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render(s.confirmPrompt) + "\n\n")
 	if s.wo != nil {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("%s · current status: %s", s.wo.Title, s.wo.Status)) + "\n\n")
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("%s · current status: %s", workOrderName(*s.wo), s.wo.Status)) + "\n\n")
 	}
 	b.WriteString(StyleMuted.Render("y confirm · n/esc cancel"))
 	return b.String()
@@ -2297,11 +2334,62 @@ func (s *WorkOrderDetailScreen) renderTimerLine() string {
 	return line + "\n"
 }
 
+// woPendingReview is the parked sheets on this work order, and it is the ONE
+// predicate the body section, the footer entry and the `R` arm all read — so
+// the key the footer names is the key that acts, and neither can drift from the
+// section that explains it.
+//
+// It reads the SUBMISSION STATUS rather than HasPendingReview: the two agree
+// (the flag is served from exactly this count), but the screen needs the rows
+// themselves to say how many and why, and deriving the offer from what it can
+// actually show is what stops it advertising a review of nothing.
+func (s *WorkOrderDetailScreen) woPendingReview() []omsapi.WorkOrderSubmission {
+	if s.wo == nil {
+		return nil
+	}
+	var out []omsapi.WorkOrderSubmission
+	for _, sub := range s.wo.Submissions {
+		if sub.AwaitsReview() {
+			out = append(out, sub)
+		}
+	}
+	return out
+}
+
+// renderPendingReview draws the waiting-sheet section, or nothing at all when
+// no sheet is waiting — an empty section on every other work order in the shop
+// would be a line nobody reads, and this one has to be noticed.
+func (s *WorkOrderDetailScreen) renderPendingReview() string {
+	parked := s.woPendingReview()
+	if len(parked) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(StyleStatusWarn.Render("Scanned sheet awaiting review") + "\n")
+	for _, sub := range parked {
+		line := "  · " + woReviewSource(sub.Source)
+		if !sub.ReceivedAt.IsZero() {
+			line += " · " + sub.ReceivedAt.Local().Format("2006-01-02 15:04")
+		}
+		if n := len(sub.PendingChanges); n > 0 {
+			line += fmt.Sprintf(" · %s to confirm", woReviewPlural(n, "reading"))
+		} else {
+			line += " · nothing readable"
+		}
+		b.WriteString(line + "\n")
+		if sub.ParseError != "" {
+			b.WriteString("    " + StyleStatusWarn.Render(sub.ParseError) + "\n")
+		}
+	}
+	b.WriteString(StyleMuted.Render("  R opens the review — apply or discard what the reader saw.") + "\n\n")
+	return b.String()
+}
+
 func (s *WorkOrderDetailScreen) renderBody() string {
 	wo := s.wo
 	var b strings.Builder
 
-	b.WriteString(StyleTitle.Render(wo.Title))
+	b.WriteString(StyleTitle.Render(workOrderName(*wo)))
 	if wo.IsOverdue {
 		b.WriteString("  " + StyleStatusError.Render("OVERDUE"))
 	}
@@ -2347,6 +2435,16 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 		b.WriteString("\n" + wo.Description + "\n")
 	}
 	b.WriteString("\n")
+
+	// A SCANNED SHEET WAITING ON A HUMAN, ahead of everything else on the body.
+	//
+	// It is the one fact here that is somebody's OUTSTANDING WORK rather than a
+	// description of the job, and it is what the terminal used to be silent
+	// about entirely: `U` uploads a scan, the backend parks the readings behind
+	// a deliberate human gate, and nothing on this screen said so. The section
+	// names the key that reviews it — the footer names it too, but the footer is
+	// fifteen keys long and this is the one an operator came here for.
+	b.WriteString(s.renderPendingReview())
 
 	// Tools Required sits at the top of the body — this is gear to gather
 	// BEFORE starting, so it has to be read before the task list, not after it.
