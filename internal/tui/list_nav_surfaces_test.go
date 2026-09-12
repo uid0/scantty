@@ -135,7 +135,12 @@ var listNavUnsweptReceivers = map[string]string{
 	"MakerBoxesScreen":            "the maker-box list beside MakerBoxFormScreen",
 	"OperationalModesScreen":      "the ForgeKey operational-mode list",
 	"PMBoardScreen":               "the preventive-maintenance board",
-	"ReorderQueueScreen":          "the reorder queue",
+	"ReorderQueueScreen": "the reorder queue. Its bar is a muted literal inside View, so " +
+		"the honesty sweep cannot read it — but it is the one entry here that carries its " +
+		"own: TestReorderQueue_EveryLifecycleKeyActsExactlyWhereItIsNamed presses all four " +
+		"lifecycle keys against a row in each of the five request states and holds the " +
+		"biconditional, because OMS gates none of those four actions on a status and every " +
+		"refusal is therefore this client's",
 	"ReportTableScreen": "the shared scrollable report table, which every tabbed report " +
 		"page rides. reportScreenFixtures (report_yardstick_test.go) is the roster of " +
 		"those pages and TestReportTable_EveryReportScreenIsSwept derives it from the " +

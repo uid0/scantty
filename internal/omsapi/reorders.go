@@ -24,6 +24,17 @@ type ReorderItemDetails struct {
 	UnitCost          DecimalString `json:"unit_cost,omitempty"`
 }
 
+// ReorderRequest is one row of the reorder queue, as ReorderRequestSerializer
+// (backend/reorder_queue/serializers.py) writes it.
+//
+// QUANTITY IS THE ITEM'S OWN COUNTING UNIT AND NEVER A CASE COUNT. mark_received
+// does `item.current_stock += reorder.quantity` with no conversion at all
+// (ReorderRequestViewSet.mark_received), and `current_stock` is documented by
+// inventory.services.packaging.on_hand_display as "the canonical base-unit
+// count" — so the number here is individual items, the same unit
+// ItemDetails.CurrentStock / MinimumStock are in. A purchase-order LINE is the
+// other half of the house rule and is entered in CASES
+// (internal/tui/po_case_entry.go); nothing on this type is.
 type ReorderRequest struct {
 	ID            any                 `json:"id"`
 	Item          string              `json:"item"`
@@ -38,7 +49,38 @@ type ReorderRequest struct {
 	EstimatedCost DecimalString       `json:"estimated_cost,omitempty"`
 	CreatedAt     time.Time           `json:"created_at,omitempty"`
 	ApprovedAt    *time.Time          `json:"approved_at,omitempty"`
+
+	// The ordered/received half of the lifecycle. OrderNumber is carried onto
+	// the request by the Purchase Order domain rather than typed here, which is
+	// why mark_ordered needs no argument; the two dates are Django DateFields
+	// and arrive as "YYYY-MM-DD" or null.
+	OrderNumber       string        `json:"order_number,omitempty"`
+	OrderedAt         *time.Time    `json:"ordered_at,omitempty"`
+	EstimatedDelivery DateOnly      `json:"estimated_delivery,omitempty"`
+	ActualDelivery    DateOnly      `json:"actual_delivery,omitempty"`
+	ActualCost        DecimalString `json:"actual_cost,omitempty"`
+	ReviewedBy        string        `json:"reviewed_by_username,omitempty"`
 }
+
+// Reorder request lifecycle states, as ReorderRequest.Status (TextChoices) in
+// backend/reorder_queue/models.py spells them. They decide which key acts on a
+// row, so they are named rather than spelled inline at each comparison.
+const (
+	ReorderStatusPending   = "pending"
+	ReorderStatusApproved  = "approved"
+	ReorderStatusOrdered   = "ordered"
+	ReorderStatusReceived  = "received"
+	ReorderStatusCancelled = "cancelled"
+)
+
+// IDString renders the request's primary key as the decimal string its action
+// URLs need. The pk is a Django BigAutoField, so the wire carries a NUMBER, and
+// a bare %v over the `any` would switch a larger one into scientific notation
+// (1234567 -> "1.234567e+06") and POST to a 404 — the failure AGENTS.md records
+// against this very screen. AssetPart.IDString (asset_parts.go) carries the
+// full reasoning and this is the same function for the same reason; which arm
+// is live is jsonDecoder's answer (client.go), not this one's.
+func (r ReorderRequest) IDString() string { return anyIDString(r.ID) }
 
 type ReorderRequestCreate struct {
 	Item         string `json:"item"`
@@ -91,6 +133,85 @@ func (c *Client) CancelReorderRequest(ctx context.Context, id, adminNotes string
 	}
 	var out ReorderRequest
 	path := fmt.Sprintf("/api/reorders/requests/%s/cancel/", id)
+	if err := c.Post(ctx, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListReorderRequests walks EVERY page of the reorder-request list and returns
+// the rows in the server's own order (ReorderRequest.Meta.ordering is
+// -requested_at, so newest first and pagination is stable).
+//
+// It pages because the caller FILTERS CLIENT-SIDE and has no choice about it:
+// ReorderRequestViewSet declares no filter backend and the project sets no
+// DEFAULT_FILTER_BACKENDS, so `?status=approved` is ignored outright and the
+// list is the only route to an approved or ordered row — `pending/`,
+// `sig_pending/` and `by_supplier/` are all PENDING-only. Fetching page one and
+// calling it "all" is what the web's own dashboard does, and it silently drops
+// every row past the fiftieth; a terminal that offered "mark ordered" over a
+// list like that would hide exactly the rows the operator came to close.
+func (c *Client) ListReorderRequests(ctx context.Context, q url.Values) ([]ReorderRequest, error) {
+	var all []ReorderRequest
+	if err := IterPages[ReorderRequest](ctx, c, "/api/reorders/requests/", q, func(batch []ReorderRequest) error {
+		all = append(all, batch...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
+// MarkReorderRequestOrdered moves a request to "ordered" and stamps ordered_at.
+// Backend endpoint: POST /api/reorders/requests/{id}/mark_ordered/.
+//
+// IT SENDS AN EMPTY BODY, AND THAT IS THE CONTRACT RATHER THAN A SHORTCUT. The
+// action reads `order_number`, `estimated_delivery` and `actual_cost` with
+// `if "<key>" in request.data`, so a key that is ABSENT leaves the stored value
+// alone while a key sent EMPTY overwrites it. The order number belongs to the
+// Purchase Order domain and is carried onto the request when a PO is created or
+// finalized, so sending `{"order_number": ""}` from a terminal that has no such
+// field would erase a number the PO had already put there.
+//
+// No status gate exists server-side: any authenticated caller can flip any
+// request to ordered. Offering the key only where it makes sense — a request
+// already approved — is the CLIENT's decision, and internal/tui/reorder_queue.go
+// is where it is made.
+func (c *Client) MarkReorderRequestOrdered(ctx context.Context, id string) (*ReorderRequest, error) {
+	var out ReorderRequest
+	path := fmt.Sprintf("/api/reorders/requests/%s/mark_ordered/", id)
+	if err := c.Post(ctx, path, map[string]string{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// MarkReorderRequestReceived closes a request and CREDITS STOCK: the action
+// does `item.current_stock += reorder.quantity`, in the item's own counting
+// unit (see ReorderRequest's doc — never cases). Backend endpoint:
+// POST /api/reorders/requests/{id}/mark_received/.
+//
+// actualDelivery is a "YYYY-MM-DD" date and "" omits the key, which is what the
+// terminal sends: the server then stamps today, and that is the honest default
+// for an operator standing at the bench with the box. It is a parameter rather
+// than nothing at all because the key is half the endpoint's contract, and a
+// caller that acquires a date should not have to re-derive how to send it.
+//
+// Two server behaviours a caller must not re-implement:
+//
+//   - it is IDEMPOTENT on an already-received request, which returns the row
+//     unchanged and adds nothing to stock a second time. The guard re-reads the
+//     row under select_for_update inside the transaction that writes the stock,
+//     so a double press cannot credit twice.
+//   - a CANCELLED request is refused with 400 {"detail": "..."} — see
+//     AsDetailRefusal for why that shape needs recovering.
+func (c *Client) MarkReorderRequestReceived(ctx context.Context, id, actualDelivery string) (*ReorderRequest, error) {
+	body := map[string]string{}
+	if actualDelivery != "" {
+		body["actual_delivery"] = actualDelivery
+	}
+	var out ReorderRequest
+	path := fmt.Sprintf("/api/reorders/requests/%s/mark_received/", id)
 	if err := c.Post(ctx, path, body, &out); err != nil {
 		return nil, err
 	}
