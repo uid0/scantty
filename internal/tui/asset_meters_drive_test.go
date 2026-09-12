@@ -340,6 +340,64 @@ func TestAssetMeters_AnAdjustmentDuringRefreshIsConfirmedThenWritten(t *testing.
 	}
 }
 
+func TestAssetMeters_OnlyNewestRefreshCanConfirmTheCache(t *testing.T) {
+	fake := meterFakeWithSpindle()
+	r, screen, done := meterDrive(t, fake)
+	defer done()
+
+	next, firstCmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	r = next.(Root)
+	next, secondCmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	r = next.(Root)
+	if firstCmd == nil || secondCmd == nil {
+		t.Fatal("overlapping refreshes did not both produce load commands")
+	}
+
+	fake.mu.Lock()
+	fake.meters[0]["current_value"] = "1200.0000"
+	fake.mu.Unlock()
+	firstMsg := firstCmd()
+	next, _ = r.Update(firstMsg)
+	r = next.(Root)
+	if got := screen.meters[0].CurrentValue.String(); got != "1250.5000" {
+		t.Fatalf("superseded reply replaced the cached value with %q", got)
+	}
+	if screen.meterValuesConfirmed() {
+		t.Fatal("superseded reply confirmed the cache while the newest load was pending")
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = meterType(t, r, "1298.75")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.phase != meterPhaseConfirm {
+		t.Fatalf("ordinary reading after superseded reply left phase %v, want confirm", screen.phase)
+	}
+	if writes := fake.writes(); len(writes) != 0 {
+		t.Fatalf("the unchecked reading was written before Ctrl-X: %+v", writes)
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+
+	fake.mu.Lock()
+	fake.meters[0]["current_value"] = "1280.0000"
+	fake.mu.Unlock()
+	r = pump(t, r, secondCmd, 0)
+	if got := screen.meters[0].CurrentValue.String(); got != "1280.0000" {
+		t.Fatalf("newest reply left cached value at %q, want 1280.0000", got)
+	}
+	if !screen.meterValuesConfirmed() {
+		t.Fatal("newest successful reply did not confirm the cache")
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.phase == meterPhaseConfirm {
+		t.Fatal("ordinary reading stayed gated after the newest load succeeded")
+	}
+	writes := fake.writes()
+	if len(writes) != 1 || writes[0].Body["value"] != "1298.75" {
+		t.Fatalf("newest confirmed value produced writes %+v, want the typed reading", writes)
+	}
+}
+
 // THE BENCH GESTURE. Enter on a meter, type the number off the machine, Enter.
 // The assertion is the REQUEST: the right endpoint, the operator's own digits,
 // and is_absolute explicitly true.

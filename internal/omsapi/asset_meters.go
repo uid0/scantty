@@ -150,7 +150,8 @@ type AssetMeterReading struct {
 // A failed or still-pending later list refresh leaves that displayed total
 // unconfirmed; the TUI carries that uncertainty into its sanity verdict and
 // confirms every such write while saying that the comparison could not be
-// checked against the server.
+// checked against the server. Superseded refresh replies are discarded, so
+// only the newest issued load can confirm the displayed value.
 type MeterReadingResult struct {
 	Meter   AssetMeter        `json:"meter"`
 	Reading AssetMeterReading `json:"reading"`

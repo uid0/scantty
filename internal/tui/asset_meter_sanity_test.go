@@ -365,7 +365,7 @@ func TestAssetMeters_AConfirmOnAVanishedMeterWritesNothing(t *testing.T) {
 	}
 
 	// The meter is deleted elsewhere and the list reloads under the open frame.
-	next, _ := screen.Update(assetMetersLoadedMsg{meters: nil})
+	next, _ := screen.Update(assetMetersLoadedMsg{meters: nil, seq: screen.loadSeq})
 	sc := next.(*AssetMetersScreen)
 	if sc.phase != meterPhaseList {
 		t.Errorf("phase = %v after the meter vanished, want back on the grid", sc.phase)

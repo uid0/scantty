@@ -733,7 +733,8 @@ meter-shaped:
   the same confirm. It marks the old figure as unconfirmed and says the
   comparison could not be checked against the value the server currently holds;
   Ctrl-X still sends the operator's exact entry, because this guard names and
-  never refuses.
+  never refuses. Meter loads carry a monotonic stamp, and a reply older than the
+  newest issued load is dropped whole so it cannot replace or confirm the cache.
 - **A NUMBER IS SHOWN WHOLE OR DROPPED AND MARKED.** The value column is a FACT
   in the report-table sense: it never gives, the NAME abbreviates around it, and
   where the pane cannot hold it the column is dropped WHOLE onto a line of its
