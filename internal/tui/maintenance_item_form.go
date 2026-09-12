@@ -1970,17 +1970,15 @@ func (d mfDetailLine) render(room int) string {
 // name abbreviates into what is left. `room` of 0 is "not sized yet", so nothing
 // is bounded.
 func (r mfSublistRow) line(room int) string {
-	facts, factsWidth := "", 0
-	for _, tok := range r.facts {
-		if factsWidth > 0 {
-			facts += " "
-			factsWidth++
-		}
-		facts += tok.render()
-		factsWidth += lipgloss.Width(tok.text)
-	}
+	facts, factsWidth := r.renderFacts(0)
 	name := r.name
 	if room > 0 {
+		if facts != "" && factsWidth+2 > room {
+			if room < 3 {
+				return StyleMuted.Render(paneCutMark)
+			}
+			facts, factsWidth = r.renderFacts(room - 2)
+		}
 		avail := room - factsWidth
 		if factsWidth > 0 {
 			avail--
@@ -1994,6 +1992,28 @@ func (r mfSublistRow) line(room int) string {
 		return name
 	}
 	return name + " " + facts
+}
+
+func (r mfSublistRow) renderFacts(room int) (string, int) {
+	plain := ""
+	for _, tok := range r.facts {
+		if plain != "" {
+			plain += " "
+		}
+		plain += tok.text
+	}
+	if room > 0 && lipgloss.Width(plain) > room {
+		fitted := fitFactCell(plain, room)
+		return StyleMuted.Render(fitted), lipgloss.Width(fitted)
+	}
+	out := ""
+	for _, tok := range r.facts {
+		if out != "" {
+			out += " "
+		}
+		out += tok.render()
+	}
+	return out, lipgloss.Width(plain)
 }
 
 // mfSublistRoom is what a sub-list line has left once its lead-in is spent.

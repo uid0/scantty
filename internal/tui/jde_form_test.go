@@ -257,6 +257,14 @@ func TestActionBar_IsTwoRowsAndNamesEveryKey(t *testing.T) {
 	}
 }
 
+func TestFitValueRow_DropsAnOverwideNumericFactWhole(t *testing.T) {
+	value := "9223372036854775807 of 9223372036854775807 degraded"
+	fitted, _ := jdeFitValueRow(jdeField{Kind: jdeValue, Value: value}, 10, 40)
+	if fitted.Value != paneCutMark {
+		t.Fatalf("overwide numeric fact = %q, want only the omission mark", fitted.Value)
+	}
+}
+
 // TestActionBar_TightensRatherThanDroppingAKey: the bar is the only place the
 // keys are discoverable, so a narrow terminal squeezes the gutters and then
 // takes another ROW rather than quietly losing an entry.

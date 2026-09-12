@@ -49,6 +49,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -582,6 +583,18 @@ func fitCell(s string, w int) string {
 		return "…"
 	}
 	return truncateVisible(s, w-1) + "…"
+}
+
+func fitFactCell(s string, w int) string {
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	for _, r := range s {
+		if unicode.IsDigit(r) {
+			return paneCutMark
+		}
+	}
+	return fitCell(s, w)
 }
 
 // jdeToken is one reading on a detail row's continuation line. It carries its
@@ -2918,7 +2931,7 @@ func jdeFitValueRow(f jdeField, labelWidth, bodyWidth int) (jdeField, []string) 
 		avail = 1
 	}
 	if lipgloss.Width(f.Value) > avail {
-		f.Value = fitCell(f.Value, avail)
+		f.Value = fitFactCell(f.Value, avail)
 	}
 	return f, notes
 }
