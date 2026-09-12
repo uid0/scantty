@@ -193,6 +193,7 @@ The classifier in `internal/scanner` distinguishes two scan kinds:
 │   │   ├── client.go             # base + auth
 │   │   ├── errors.go             # APIError + envelope parsing
 │   │   ├── inventory.go          # items, assets, locations, categories, suppliers, item-suppliers, fixtures, lookup-code
+│   │   ├── reconciliation.go     # location-wide inventory count grid + atomic batch submit
 │   │   ├── reorders.go           # reorder requests, purchase orders, receipts
 │   │   ├── membership.go         # profile, SIGs, certifications
 │   │   ├── workorders.go         # in-house inventory work orders
@@ -213,6 +214,7 @@ The classifier in `internal/scanner` distinguishes two scan kinds:
 │       ├── scan.go               # scan input + recent-scan history + auto-navigate on item match
 │       ├── list.go               # generic paginated list with loaders for items/assets/POs/WOs/SIGs/FK devices
 │       ├── inventory_detail.go   # item detail + supplier list
+│       ├── location_reconcile.go # keyboard-driven whole-location stock count
 │       ├── reorder_form.go       # reorder request form
 │       ├── po_detail.go          # purchase order detail + line items
 │       ├── receive_form.go       # receiving flow: worksheet, scan, quantities, serials, review
@@ -239,6 +241,7 @@ The classifier in `internal/scanner` distinguishes two scan kinds:
 Landed:
 - Foundation: clients, cache, scanner classifier, config, TUI shell with 11 workspaces.
 - End-to-end scanner flow: scan → lookup → inventory detail → reorder form → submit. From an item's detail, `s` opens its supplier links with supplier name, supplier SKU, box and unit barcodes, unit cost, and lead time.
+- Count a whole inventory location from its detail screen with `c`: enter each active item's counted quantity in the unit named on its row, choose a reason and optional notes, review the room, and submit it as one all-or-nothing batch. Counts at or below minimum create reorder requests unless suppressed; a rejected batch keeps every typed value for correction and retry.
 - Complete a reorder request from the Reorder Queue: `f` cycles pending, approved, ordered, and all requests; `a` approves a pending request, `o` marks an approved request ordered, and `d` confirms receipt of an ordered request and credits its item quantity to stock. `x` cancels pending or approved requests. The screen names only the actions valid for the selected request, and reorder quantities are individual items rather than supplier cases.
 - Review scanned work orders: uploads remain behind OMS's human gate, pending-review counts are visible in the work-order list and detail, and the terminal can selectively apply or discard parsed readings or explicitly request completion. A scan never closes a work order on its own.
 - Run vendor work orders from Maintenance: list and filter the seven workflow stages, review quotes and attachments, set the not-to-exceed amount, advance and close the order, and handle emergency authorization, quote waivers, keyfob returns, and variance overrides. Every write is confirmed, and blocked stages show the server's reason.

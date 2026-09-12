@@ -19,9 +19,9 @@ import (
 // so workspace switching keeps working, flipping to raw input only while the
 // delete confirmation is up so y/n land here.
 //
-// (Location reconciliation + safety-sign, and supplier lead-time / price-trend
-// analytics, are separate web pages tracked as follow-up beads — not surfaced
-// here.)
+// Safety-sign and supplier lead-time / price-trend analytics are separate web
+// pages tracked as follow-up beads. Location reconciliation is surfaced here
+// through c and implemented by location_reconcile.go.
 
 // ===========================================================================
 // LocationDetailScreen
