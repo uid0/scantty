@@ -2671,15 +2671,6 @@ touching any screen an operator drives:
   — so it went green over `Creating the purchase or…` with the supplier gone,
   certifying rule 6 on a row that inverted it. Assert the substring the RULE
   requires, not one the truncation leaves.
-  A FIXTURE THAT CLEARS THE BOUND BY *ZERO* CELLS IS THE SAME FAILURE WITH THE
-  SIGN REVERSED: it is green because today's wording fills the row exactly, and
-  the next reworded sentence flips it to failing about a property that did not
-  change. So STATE the margin a case needs and check it on the FIXTURE
-  (`poLeadRoomToSpare`), and where no state of the screen can offer one, assert
-  the bound where its inputs are the test's own
-  (`TestPOLeadOnto_TheReductionFiresOnTheROOMAndNotOnAWidth`). A margin alone
-  can cost the discrimination that made the check worth having, so ask what the
-  rebuilt check would still pass on.
   The supplier, agreement, work-order and committee rows are columnar VALUE
   rows carrying OMS-supplied names (`renderJDEField` with `jdeValue`), each
   clipped to what the shared label column leaves (`poFieldValueRoom`, ellipsis

@@ -2274,26 +2274,6 @@ type poStatusPlan struct {
 // which is why that clear is a rule rather than a tidy-up, and why
 // TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow reaches the state by
 // writing setErr directly and says in as many words that no key sequence does.
-//
-// IT IS RE-EVALUATED PER READER, AND THE MEASUREMENT THAT SETTLED THAT IS
-// RECORDED HERE RATHER THAN A RULE, so a later reader can re-judge it instead
-// of obeying it. Three readers ask it — statusLine, and the two header blocks
-// that have to know what the row already drew (answerRowsIn, failLead).
-//
-// MEASURED 2026-09-12, on this package's own fixtures: two to three
-// evaluations per View and three to five per keystroke — never the seven it
-// was reported as — worst five per Update-plus-View over every phase
-// poPhaseCases builds at 120 columns. 13µs a call, so 66µs of a keystroke
-// cycle of about 290µs. It does not grow with the payload: a 20 KB gateway
-// body in errDetail leaves the cycle at 357µs, because every bound on this row
-// is a forward pass (cellPrefix).
-//
-// Left alone at those figures because 66µs of a 0.29ms frame is not worth the
-// cache-invalidation risk: holdsAnswer is deliberately read off the row that
-// was just ASSEMBLED rather than predicted, and a cached plan is a second
-// source of truth on the one decision this file says must not have one. Those
-// are numbers rather than a prohibition on purpose — if the frame budget moves,
-// or a reader is added, re-measure and re-judge.
 func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 	answer := s.answerNote()
 	lead := ""
@@ -2684,15 +2664,7 @@ func poLeadOnto(lead, subject string, room int) string {
 	if lipgloss.Width(lead)+joint+lipgloss.Width(subject) <= room {
 		return lead + poLeadJoint + subject
 	}
-	// The reduced lead is ONE CLAUSE, so its width is the whole reservation:
-	// poLeadClause cuts at the FIRST joint and returns what precedes it
-	// (TestPOLeadClause_LeavesNoJointForTheReservationToFind pins that, because
-	// it is what this line rests on). This used to re-Cut the reduced lead and
-	// add a cell for an ellipsis "or the clause it is reserving room for comes
-	// back a character short of itself" — a branch nothing could enter, since
-	// the joint it looked for is the one the reduction had just removed. The
-	// cell it never spent is where poSubmitWords' own note below recorded a
-	// 21-cell clause as reserving 22.
+	// poLeadClause returns one clause, so its width is the whole reservation.
 	lead = poLeadClause(lead)
 	floor := lipgloss.Width(lead)
 	if half := room / 2; floor > half {
@@ -2724,18 +2696,10 @@ const poLeadJoint = " · "
 // bounded to 23 in the WORST case. These 20 cells fit that with room over for
 // the supplier, which is the part that abbreviates.
 //
-// The worst case is ASSERTED rather than illustrated, and that is the
-// correction: this note used to name two leads as the file's longest first
-// clauses and neither string existed anywhere in the tree, while the third —
-// "enter commits nothing", which does — was recorded as reserving 22 cells
-// when it is 21 and reserves 21. (The extra cell came from a branch in
-// poLeadOnto that could never run; it is gone, and the note there says why.)
-// A hand-counted roster of the longest sentences in a file is a roster that
-// drifts the moment one is reworded, which is exactly what happened. What
-// holds the floor instead is TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight
-// and the cap half of TestPOLeadOnto_TheReductionFiresOnTheROOMAndNotOnAWidth:
-// both drive a lead PAST the cap, where every longer lead produces the
-// identical reservation, so the worst case is proved rather than sampled.
+// The worst case is asserted by
+// TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight and
+// TestPOLeadOnto_TheReductionFiresOnTheROOMAndNotOnAWidth rather than tied to
+// examples that can become stale when answer wording changes.
 //
 // "Creating the purchase order for " was 32 and could not: under the longest
 // lead the row drew "Creating the purchase or…" with the supplier gone
