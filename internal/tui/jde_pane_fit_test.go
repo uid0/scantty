@@ -255,15 +255,19 @@ func jdeEmbedders(t *testing.T) map[string]bool {
 // second half exists to catch.
 func jdeScreenFixtures() map[string]func() Screen {
 	return map[string]func() Screen{
-		"AssetFormScreen":            func() Screen { s := NewAssetFormScreen(Deps{}, ""); s.loading = false; return s },
-		"AssetPartFormScreen":        func() Screen { s := NewAssetPartFormScreen(Deps{}, "a1", "Asset", ""); s.loading = false; return s },
-		"AuthorizationGrantScreen":   func() Screen { s := NewAuthorizationGrantScreen(Deps{}); s.loading = false; return s },
-		"CategoryFormScreen":         func() Screen { s := NewCategoryFormScreen(Deps{}, ""); s.loading = false; return s },
-		"DeviceTypeFormScreen":       func() Screen { return NewDeviceTypeFormScreen(Deps{}, 0) },
-		"DisconnectFormScreen":       func() Screen { s := NewDisconnectFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
-		"InventoryItemFormScreen":    func() Screen { s := NewInventoryItemFormScreen(Deps{}, ""); s.loading = false; return s },
-		"ItemSupplierFormScreen":     func() Screen { s := NewItemSupplierFormScreen(Deps{}, "i1", "Item", nil); s.loading = false; return s },
-		"LocationFormScreen":         func() Screen { s := NewLocationFormScreen(Deps{}, ""); s.loading = false; return s },
+		"AssetFormScreen":          func() Screen { s := NewAssetFormScreen(Deps{}, ""); s.loading = false; return s },
+		"AssetPartFormScreen":      func() Screen { s := NewAssetPartFormScreen(Deps{}, "a1", "Asset", ""); s.loading = false; return s },
+		"AuthorizationGrantScreen": func() Screen { s := NewAuthorizationGrantScreen(Deps{}); s.loading = false; return s },
+		"CategoryFormScreen":       func() Screen { s := NewCategoryFormScreen(Deps{}, ""); s.loading = false; return s },
+		"DeviceTypeFormScreen":     func() Screen { return NewDeviceTypeFormScreen(Deps{}, 0) },
+		"DisconnectFormScreen":     func() Screen { s := NewDisconnectFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
+		"InventoryItemFormScreen":  func() Screen { s := NewInventoryItemFormScreen(Deps{}, ""); s.loading = false; return s },
+		"ItemSupplierFormScreen":   func() Screen { s := NewItemSupplierFormScreen(Deps{}, "i1", "Item", nil); s.loading = false; return s },
+		"LocationFormScreen":       func() Screen { s := NewLocationFormScreen(Deps{}, ""); s.loading = false; return s },
+		// Past its loading state, on the count form it opens on, with a room
+		// long enough to outrun any pane — a grid that fits is a grid where the
+		// window arithmetic this file exists to check is inert.
+		"LocationReconcileScreen":    func() Screen { return reconFixture(reconLongGridFixture()) },
 		"LocationProblemFormScreen":  func() Screen { return NewLocationProblemFormScreen(Deps{}, 1, "Loc") },
 		"MaintenanceItemFormScreen":  func() Screen { s := NewMaintenanceItemFormScreen(Deps{}, ""); s.loading = false; return s },
 		"MakerBoxFormScreen":         func() Screen { return NewMakerBoxFormScreen(Deps{}, 0) },
@@ -577,6 +581,49 @@ func jdeScreenStates() map[string]func() Screen {
 				Filename: "PO-2026-0042-order.csv", LineCount: len(rows),
 				MissingSku: []string{"Widget clamp", "Gear housing", "Bearing race"},
 			}
+			return s
+		},
+
+		// The location count's other four phases. The base fixture opens on the
+		// count form; these are the frames with a different body, a different
+		// cursor and a different bar — and the REVIEW is where the pinned
+		// header carries its longest standing sentence (the atomicity of the
+		// write plus the reorder forecast), which is the tallest this screen's
+		// header gets without a failure standing.
+		"LocationReconcileScreen/blocked": func() Screen {
+			s := NewLocationReconcileScreen(Deps{}, "7", "Machine shop mezzanine")
+			s.Update(reconGridMsg{grid: &omsapi.LocationReconcileGrid{
+				LocationID: "7", LocationName: "Machine shop mezzanine",
+			}})
+			return s
+		},
+		"LocationReconcileScreen/row detail": func() Screen {
+			s := reconCountedFixture()
+			// The OPEN/CLOSED row, because it is the only one whose sheet has
+			// the fourth field: a fixture on any other row would sweep the row
+			// detail in the shape where its own conditional is inert.
+			s.focused = reconRowFirstItem + 2
+			s.openRowDetail(0)
+			return s
+		},
+		"LocationReconcileScreen/review": func() Screen {
+			s := reconFixture(reconLongGridFixture())
+			for i := range s.counts {
+				s.counts[i].SetValue("1")
+			}
+			s.openReview(0)
+			return s
+		},
+		"LocationReconcileScreen/done": func() Screen {
+			s := reconCountedFixture()
+			s.Update(reconSubmittedMsg{result: &omsapi.ReconciliationBatchResult{
+				Reconciled: 2, ReordersCreated: 1,
+				Reconciliations: []omsapi.StockReconciliation{{
+					ItemName: "Nitrile gloves, powder-free, blue, medium",
+					ItemSKU:  "GLV-NIT-BLU-M-100", Delta: -500,
+					TriggeredReorderID: func() *int { n := 4; return &n }(),
+				}},
+			}})
 			return s
 		},
 
@@ -1796,6 +1843,20 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 			func(s Screen) jdeHeader { h, _ := s.(*StorageSlotGenerateScreen).pickView(); return h }),
 		"ThermostatFormScreen/viewPick": pick("ThermostatFormScreen/pickView",
 			func(s Screen) jdeHeader { h, _ := s.(*ThermostatFormScreen).pickView(); return h }),
+
+		// The location count pins its ANSWER to the last keypress plus a folded
+		// failure detail, on every phase. The count form is the resting frame;
+		// the REVIEW is where the standing sentence is longest, and the FAILED
+		// SUBMIT is the only state that puts a second block in this header — so
+		// all three are swept rather than the cheapest one.
+		"LocationReconcileScreen/View": {
+			mk:     func() Screen { return reconFixture(reconLongGridFixture()) },
+			header: func(s Screen) jdeHeader { return s.(*LocationReconcileScreen).headerLines() },
+			alsoIn: map[string]func() Screen{
+				"review":        states["LocationReconcileScreen/review"],
+				"failed submit": func() Screen { return reconFailedSubmitFixture() },
+			},
+		},
 
 		"PurchaseOrderDetailScreen/viewOrderPad": pick("PurchaseOrderDetailScreen/order pad",
 			func(s Screen) jdeHeader { return s.(*PurchaseOrderDetailScreen).orderPadHeader() }),

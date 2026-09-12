@@ -56,16 +56,23 @@ const jdeRowsMustHoldFrom = 80
 // value floor wider than a narrow pane; prose and grids drawn unbounded) — is
 // the companion item filed with this sweep, scantty-columnar-rows-past-the-pane.
 var jdeRowsPastThePane = map[string]int{
-	"AssetFormScreen":                107,
-	"AssetPartFormScreen":            98,
-	"AuthorizationGrantScreen":       98,
-	"CategoryFormScreen":             98,
-	"DeviceTypeFormScreen":           89,
-	"DisconnectFormScreen":           108,
-	"InventoryItemFormScreen":        113,
-	"ItemSupplierFormScreen":         108,
-	"LocationFormScreen":             102,
-	"LocationProblemFormScreen":      115,
+	"AssetFormScreen":           107,
+	"AssetPartFormScreen":       98,
+	"AuthorizationGrantScreen":  98,
+	"CategoryFormScreen":        98,
+	"DeviceTypeFormScreen":      89,
+	"DisconnectFormScreen":      108,
+	"InventoryItemFormScreen":   113,
+	"ItemSupplierFormScreen":    108,
+	"LocationFormScreen":        102,
+	"LocationProblemFormScreen": 115,
+	// The NARROWEST honest width, and one cell over it. A choice row cannot be
+	// drawn in less than indent + label column + leader + jdeFieldArea's own
+	// "< " / " >" + one cell of value, which is 21 against the 20 that width 49
+	// gives — so the residue here is the last cell of the value on the row
+	// detail, marked with the ellipsis reconChoiceValue puts there. Every other
+	// row of every phase fits from 49 up.
+	"LocationReconcileScreen":        49,
 	"MaintenanceItemFormScreen":      120,
 	"MakerBoxFormScreen":             108,
 	"PowerBreakerFormScreen":         103,

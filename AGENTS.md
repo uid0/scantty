@@ -640,6 +640,58 @@ knowing before touching any of it:
   asked for, whose own `Ctrl-X` was dropped while the OTHER write was out, and
   which then vanished by itself when that write answered.
 
+### A whole LOCATION is counted in one atomic write, and the unit is per row
+
+`internal/omsapi/reconciliation.go` carries the contract note and
+`internal/tui/location_reconcile.go` is the flow; both are the authority. The
+per-ITEM cycle count (`inventory_detail.go`) is a different endpoint and stays.
+What is worth knowing before touching either:
+
+- **Two endpoints and one write.** `GET …/locations/{id}/reconcile/` is the whole
+  input — one row per ACTIVE item stored there — and
+  `POST /api/inventory/reconciliations/batch/` is the write. The batch is
+  **ALL OR NOTHING**: OMS resolves every item and checks permission on all of
+  them BEFORE opening a transaction, then applies the rows inside it, so there is
+  no partial landing to report and a refusal has consumed nothing. Every client
+  must therefore KEEP what was typed on a failure. (The CSV `upload` action
+  beside it DOES offer a partial mode; that is a different endpoint with a
+  different contract and the expectation must not be carried across.)
+- **`actual_count` IS BASE UNITS UNLESS THE ROW SAYS `at_level`**, in which case
+  it is whole packs of the item's `count_level`. `resolve_base_quantity`
+  (`services/packaging.py`) is OMS's one write seam for that and it RAISES rather
+  than falling back, so a mis-sent flag is a loud 400 and never a silent stock
+  figure. The GRID answers which unit each row wants — `count_unit` and
+  `projected_at_unit` exist for exactly that (op-ev14) — so nothing on this side
+  has to resolve a packaging chain to label a box.
+  **DERIVE `at_level` FROM `count_mode`, NEVER FROM THE PROJECTIONS.** Comparing
+  `projected` against `projected_at_unit` looks equivalent and is wrong in the
+  state a room count is most often in: an empty shelf reads 0 in every unit, so a
+  case-counted item at zero would be taken for an each-counted one and "5" stored
+  as five gloves instead of five boxes.
+  **`minimum_stock` AND `reorder_quantity` ARE IN THE COUNT UNIT** for every
+  pack-counting mode (op-es7c), which is why the reorder comparison is
+  count-against-count and a base-unit comparison is wrong by the pack size.
+- **`open_count` is accepted ONLY for an `open_closed` item** and refused
+  outright anywhere else — which, on an atomic batch, refuses the whole room's
+  count. Send it for no other row.
+- **The reorder side effect is part of the contract.** A row counted at or below
+  its minimum auto-creates a `ReorderRequest` unless `skip_reorder`. OMS's
+  condition is `not skip_reorder and not item.is_retired and count_at_level(item)
+  <= item.minimum_stock`, and **`is_retired` IS NOT ON THE GRID PAYLOAD** — so a
+  client forecast is a CEILING and must say so (`reconReorderCeiling`). Do not
+  invent the missing fact, and do not quietly drop the caveat.
+- **The refusals are hand-written `{"detail": "<prose>"}`**, so they never reach
+  DRF's exception handler and `parseError` hands the whole raw body over.
+  `omsapi.AsDetailRefusal` recovers the sentence and is narrow in the way
+  `AsReceivingRefusal` is: only an object whose `detail` is a non-blank JSON
+  STRING, so a gateway page and a field-validation body keep the shape they
+  arrived in. DRF's own `{"detail": …}` (an expired session) is recovered too.
+- **THE WEB PAGE IGNORES THE COUNT-UNIT FIELDS AND SCANTTY DOES NOT, ON PURPOSE.**
+  `InventoryReconciliationPage.tsx` draws `projected` (base units) unlabelled and
+  computes its "will reorder" hint as `actual <= minimum_stock`, so on a
+  case-counted item that hint is wrong by the pack size. Parity here is with the
+  API's contract, not with that transcription; do not "restore" it.
+
 ### Kits are inventory items the item API refuses to admit exist
 
 Before touching anything kit-shaped (`internal/omsapi/kits.go` carries the full

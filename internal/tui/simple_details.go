@@ -132,6 +132,15 @@ func (s *LocationDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.loc != nil {
 				return s, SwitchTo(WSInventory, NewLocationProblemsScreen(s.deps, s.loc.ID, s.loc.Name))
 			}
+		case "c":
+			// Count the whole room (web /inventory/locations/:id/reconcile).
+			// Lowercase c is free in the global hotkey map, so it falls through
+			// to the screen — the same route the item detail's own cycle count
+			// takes.
+			if s.loc != nil {
+				return s, SwitchTo(WSInventory,
+					NewLocationReconcileScreen(s.deps, strconv.Itoa(s.loc.ID), s.loc.Name))
+			}
 		case "g":
 			if s.loc != nil && !s.generating {
 				s.generating = true
@@ -229,7 +238,16 @@ func (s *LocationDetailScreen) View() string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(StyleMuted.Render("p problems · g gen-QR · E edit · x delete · r refresh · esc back"))
+	// FOLDED, not written straight to the pane. This legend is 69 cells and the
+	// pane gives 51 at 80 columns, so clampToBox was already taking
+	// "x delete · r refresh · esc back" off the end before the count key was
+	// added to the front of it — a bar the operator cannot finish reading is not
+	// honest, it is absent. pickerWrap folds at the `·` joints and indents the
+	// continuation, which is the same folder every other legend in this program
+	// goes through (AGENTS.md).
+	b.WriteString(StyleMuted.Render(strings.Join(
+		pickerWrap("c count · p problems · g gen-QR · E edit · x delete · r refresh · esc back",
+			pickerPaneWidth), "\n")))
 	return b.String()
 }
 
