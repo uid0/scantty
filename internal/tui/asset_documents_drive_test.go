@@ -27,12 +27,15 @@ import (
 // keeps both rows and DELETE destroys one, and exactly one of them is confirmed.
 
 type docFake struct {
-	mu       sync.Mutex
-	docs     []map[string]any
-	posts    []docPost
-	deletes  []string
-	nextID   int
-	assetTag string
+	mu            sync.Mutex
+	docs          []map[string]any
+	posts         []docPost
+	deletes       []string
+	nextID        int
+	assetTag      string
+	blockNextList bool
+	listStarted   chan struct{}
+	releaseList   chan struct{}
 }
 
 type docPost struct {
@@ -57,6 +60,23 @@ func (f *docFake) seenDeletes() []string {
 
 func (f *docFake) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/asset-documents/") {
+			f.mu.Lock()
+			if f.blockNextList {
+				f.blockNextList = false
+				docs := append([]map[string]any(nil), f.docs...)
+				started, release := f.listStarted, f.releaseList
+				f.mu.Unlock()
+				close(started)
+				<-release
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"count": len(docs), "next": nil, "previous": nil, "results": docs,
+				})
+				return
+			}
+			f.mu.Unlock()
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 
@@ -92,14 +112,16 @@ func (f *docFake) handler(t *testing.T) http.HandlerFunc {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{
+			doc := map[string]any{
 				"id": fmt.Sprintf("d-%d", f.nextID), "asset": "a1",
 				"title": first("title"), "category": first("category"),
 				"category_display": "Manual / Documentation",
 				"description":      first("description"),
 				"version":          2, "is_current": true,
 				"supersedes": nil, "uploaded_at": "2026-09-11T14:05:00Z",
-			})
+			}
+			f.docs = append(f.docs, doc)
+			_ = json.NewEncoder(w).Encode(doc)
 
 		case strings.Contains(r.URL.Path, "/asset-documents/"):
 			w.Header().Set("Content-Type", "application/json")
@@ -117,7 +139,7 @@ func (f *docFake) handler(t *testing.T) http.HandlerFunc {
 }
 
 func docFakeWithManual() *docFake {
-	return &docFake{docs: []map[string]any{{
+	return &docFake{nextID: 1, docs: []map[string]any{{
 		"id": "d-1", "asset": "a1", "title": "VF-2 Operator Manual",
 		"category": "manual", "category_display": "Manual / Documentation",
 		"description": "Scanned from the binder", "version": 1, "is_current": true,
@@ -190,6 +212,56 @@ func TestAssetDocuments_UploadingSendsTheWebsOwnMultipart(t *testing.T) {
 	if _, present := got.Fields["supersedes"]; present {
 		t.Error("a plain upload carried a supersedes link, which would flip another document " +
 			"out of the current view")
+	}
+}
+
+func TestAssetDocuments_PreUploadRefreshCannotHideTheUploadedRow(t *testing.T) {
+	fake := docFakeWithManual()
+	r, screen, done := docDrive(t, fake)
+	defer done()
+
+	fake.mu.Lock()
+	fake.blockNextList = true
+	fake.listStarted = make(chan struct{})
+	fake.releaseList = make(chan struct{})
+	started, release := fake.listStarted, fake.releaseList
+	fake.mu.Unlock()
+	next, oldCmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	r = next.(Root)
+	if oldCmd == nil {
+		t.Fatal("refresh did not produce a load command")
+	}
+	oldReply := make(chan tea.Msg, 1)
+	go func() { oldReply <- oldCmd() }()
+	<-started
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+
+	path := docFile(t, "new-manual.txt", "rev B\n")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = meterType(t, r, path)
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	r = meterType(t, r, "New Operator Manual")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if screen.loading || len(screen.docs) != 2 {
+		t.Fatalf("post-upload reload left loading=%v with %d documents, want loaded with 2",
+			screen.loading, len(screen.docs))
+	}
+
+	close(release)
+	released = true
+	next, _ = r.Update(<-oldReply)
+	r = next.(Root)
+	if screen.loading || len(screen.docs) != 2 {
+		t.Fatalf("superseded pre-upload reply left loading=%v with %d documents",
+			screen.loading, len(screen.docs))
+	}
+	if pane := assetFlatPane(screen, 80, 30); !strings.Contains(pane, "New Operator Manual") {
+		t.Fatalf("the pre-upload snapshot hid the uploaded row:\n%s", stripANSI(pane))
 	}
 }
 

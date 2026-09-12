@@ -688,3 +688,49 @@ func TestAssetMeters_CtrlEOpensTheLedgerForTheHighlightedMeter(t *testing.T) {
 		}
 	}
 }
+
+func TestAssetMeterReadings_OnlyNewestRefreshCanReplaceRows(t *testing.T) {
+	fake := meterFakeWithSpindle()
+	reading := func(id, value string) map[string]any {
+		return map[string]any{
+			"id": id, "meter": "m-1", "source": omsapi.MeterSourceManual,
+			"source_display": "Manual entry", "delta": value, "value_after": value,
+			"observed_at": "2026-09-11T14:05:00Z", "recorded_at": "2026-09-11T14:05:00Z",
+		}
+	}
+	fake.readings = []map[string]any{reading("r-2", "1250.5000"), reading("r-1", "1200.0000")}
+	r, _, done := meterDrive(t, fake)
+	defer done()
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlE})
+	ledger := r.screen.(*AssetMeterReadingsScreen)
+	ledger.cursor = 1
+
+	next, firstCmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	r = next.(Root)
+	next, secondCmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	r = next.(Root)
+	if firstCmd == nil || secondCmd == nil {
+		t.Fatal("overlapping reading refreshes did not both produce load commands")
+	}
+
+	fake.mu.Lock()
+	fake.readings = []map[string]any{reading("r-old", "1210.0000")}
+	fake.mu.Unlock()
+	next, _ = r.Update(firstCmd())
+	r = next.(Root)
+	if !ledger.loading || len(ledger.readings) != 2 || ledger.cursor != 1 {
+		t.Fatalf("superseded reply changed ledger state: loading=%v rows=%d cursor=%d",
+			ledger.loading, len(ledger.readings), ledger.cursor)
+	}
+
+	fake.mu.Lock()
+	fake.readings = []map[string]any{reading("r-new", "1280.0000")}
+	fake.mu.Unlock()
+	r = pump(t, r, secondCmd, 0)
+	if ledger.loading || len(ledger.readings) != 1 || ledger.readings[0].ID != "r-new" {
+		t.Fatalf("newest reply did not land: loading=%v readings=%+v", ledger.loading, ledger.readings)
+	}
+	if ledger.cursor != 0 {
+		t.Fatalf("newest reply did not clamp cursor: got %d, want 0", ledger.cursor)
+	}
+}

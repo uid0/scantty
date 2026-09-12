@@ -73,6 +73,7 @@ type AssetDocumentsScreen struct {
 	docs      []omsapi.AssetDocument
 	loading   bool
 	loadErr   string
+	loadSeq   int
 	jdeScreen
 
 	phase  assetDocPhase
@@ -98,6 +99,7 @@ type AssetDocumentsScreen struct {
 type assetDocsLoadedMsg struct {
 	docs []omsapi.AssetDocument
 	err  error
+	seq  int
 }
 
 type assetDocUploadedMsg struct {
@@ -153,10 +155,12 @@ func (s *AssetDocumentsScreen) ctx() context.Context {
 }
 
 func (s *AssetDocumentsScreen) load() tea.Cmd {
+	s.loadSeq++
+	seq := s.loadSeq
 	deps, id, ctx := s.deps, s.assetID, s.ctx()
 	return func() tea.Msg {
 		docs, err := deps.OMS.ListAssetDocuments(ctx, id)
-		return assetDocsLoadedMsg{docs: docs, err: err}
+		return assetDocsLoadedMsg{docs: docs, err: err, seq: seq}
 	}
 }
 
@@ -177,6 +181,9 @@ func (s *AssetDocumentsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, nil
 
 	case assetDocsLoadedMsg:
+		if m.seq != s.loadSeq {
+			return s, nil
+		}
 		s.loading = false
 		if m.err != nil {
 			s.loadErr = m.err.Error()

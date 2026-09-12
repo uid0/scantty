@@ -37,6 +37,7 @@ type AssetMeterReadingsScreen struct {
 	readings  []omsapi.AssetMeterReading
 	loading   bool
 	loadErr   string
+	loadSeq   int
 	jdeScreen
 
 	cursor int
@@ -46,6 +47,7 @@ type AssetMeterReadingsScreen struct {
 type meterReadingsLoadedMsg struct {
 	readings []omsapi.AssetMeterReading
 	err      error
+	seq      int
 }
 
 func NewAssetMeterReadingsScreen(deps Deps, assetID, assetName string, meter omsapi.AssetMeter) *AssetMeterReadingsScreen {
@@ -71,10 +73,12 @@ func (s *AssetMeterReadingsScreen) ctx() context.Context {
 }
 
 func (s *AssetMeterReadingsScreen) load() tea.Cmd {
+	s.loadSeq++
+	seq := s.loadSeq
 	deps, id, ctx := s.deps, s.meter.ID, s.ctx()
 	return func() tea.Msg {
 		readings, err := deps.OMS.ListMeterReadings(ctx, id)
-		return meterReadingsLoadedMsg{readings: readings, err: err}
+		return meterReadingsLoadedMsg{readings: readings, err: err, seq: seq}
 	}
 }
 
@@ -85,6 +89,9 @@ func (s *AssetMeterReadingsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, nil
 
 	case meterReadingsLoadedMsg:
+		if m.seq != s.loadSeq {
+			return s, nil
+		}
 		s.loading = false
 		if m.err != nil {
 			s.loadErr = m.err.Error()
