@@ -1,7 +1,8 @@
 name: CI
 
 # ScanTTY's first CI.
-#   * Every pull request and every push to main: build / vet / test.
+#   * Every pull request and every push to main: build / vet / test, plus
+#     internal/tui's heavy tests in shards of their own (see tui-heavy).
 #   * On merges to main it ALSO publishes prebuilt binaries as a GitHub Release
 #     so any host can pull a fresh build instead of compiling from source
 #     (this is what keeps the running binary from going stale — see
@@ -36,20 +37,70 @@ jobs:
         run: go build ./...
       - name: go vet
         run: go vet ./...
-      # 20m rather than go test's 600s default, because internal/tui's derived
-      # sweeps (every screen at every drawable size) are real coverage that grew
-      # past the old bound: 357s on this runner at #168, then 494s and a 600.0s
-      # timeout on #169's own runs, and main timing out at 600.3s after it
-      # merged. A bound that no longer matches the work is a stale bound. The
-      # cost is that a genuinely HUNG test now takes 20 minutes to fail instead
-      # of 10; splitting the heavy sweeps into a job of their own is the
-      # settled fix and is filed as follow-up issue #171.
+      # internal/tui's heavy tests are not in this run: its TestMain skips the
+      # ones internal/tui/testdata/heavy_tests.txt lists, and the tui-heavy
+      # job below runs them. Every test still runs on every PR, in exactly one
+      # of the two (internal/tui/test_schedule_test.go owns that and checks it).
+      #
+      # 6m, down from the 20m stopgap #170 put here. The split was made because
+      # the package had reached 1008-1019s on this runner against that bound,
+      # and a HUNG test took 20 minutes to report. What remains measured 124s
+      # locally, against 678s for the whole package on the same machine, and
+      # this runner has run the package about 1.5x slower than that machine;
+      # so roughly 190s is expected, and 6m is under 2x of it — short enough
+      # that a hang reports inside six minutes, with room for ordinary growth.
+      # A timeout here that is not a hang means the ordinary suite grew: move
+      # the heaviest ordinary tests into heavy_tests.txt rather than raising
+      # this number back up.
       - name: go test
-        run: go test -timeout 20m ./...
+        run: go test -timeout 6m ./...
+
+  # The shard numbers in heavy_tests.txt ARE the matrix, read from the file
+  # rather than restated here, so adding a shard there adds a job and no shard
+  # can be listed there and forgotten here.
+  tui-heavy-plan:
+    name: plan tui heavy shards
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        run: |
+          set -euo pipefail
+          shards="$(grep -vE '^[[:space:]]*(#|$)' internal/tui/testdata/heavy_tests.txt | awk '{print $1}' | sort -un | jq -cs .)"
+          echo "shards=${shards}" >> "$GITHUB_OUTPUT"
+          echo "tui heavy shards: ${shards}"
+
+  tui-heavy:
+    name: tui heavy tests (shard ${{ matrix.shard }})
+    needs: tui-heavy-plan
+    runs-on: ubuntu-latest
+    strategy:
+      # Every shard reports: one failing sweep must not hide another's result.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.tui-heavy-plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # 10m per shard. The three shards measured 155s, 195s and 206s locally
+      # (the whole package: 678s on the same machine, 1008-1019s on this
+      # runner), so about 300s each is expected here and a shard has roughly
+      # 2x; a hang reports in ten minutes rather than twenty. When a shard nears
+      # its bound the answer is another shard number in heavy_tests.txt, not a
+      # bigger number here. The script fails the job unless every test marked
+      # for the shard reported a PASS, so a shard that silently ran nothing
+      # cannot go green.
+      - name: go test (heavy shard ${{ matrix.shard }})
+        run: .github/scripts/tui-heavy-shard.sh "${{ matrix.shard }}" -timeout 10m
 
   release:
     name: release prebuilt binaries
-    needs: build-vet-test
+    needs: [build-vet-test, tui-heavy]
     # Only publish on a real merge to main, never on pull_request runs.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest

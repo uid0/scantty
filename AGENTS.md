@@ -2915,10 +2915,8 @@ is the authority; read it before adding a frame or wording a bar.
   against 1s once neither did, and `internal/tui` as a whole sat at 573s against
   `go test`'s **600s default per-package timeout** — so adding two phase cases
   to one sweep was enough to make the package fail by TIMING OUT, with a passing
-  test named in the panic as the one that happened to be running. CI has since
-  raised its own bound to 20m (`.github/workflows/ci.yml`, which says why), but a
-  local `go test` still stops at 600s, and a HUNG test now costs CI 20 minutes
-  to report.
+  test named in the panic as the one that happened to be running. The package
+  has since been SPLIT rather than given a bigger bound — see the next entry.
   Two facts get you out. `textinput.Blink` returns its message IMMEDIATELY and it
   is only FEEDING that message back to `Update` that starts the tick, so
   recognise it and stop: `driveIsBlink` (`wo_materials_drive_test.go`), checked
@@ -2942,6 +2940,16 @@ is the authority; read it before adding a frame or wording a bar.
   run to find out. Prefer the synchronous flag; reach for the bounded runner only
   where the product really is a message (a `SwitchTo`, a fetch), and never call
   `cmd()` unguarded in a loop.
+- **A PLAIN `go test ./...` DOES NOT RUN `internal/tui`'S HEAVY TESTS, AND CI
+  DOES.** `internal/tui/test_schedule_test.go`'s TestMain skips every test named
+  in `internal/tui/testdata/heavy_tests.txt`, and CI runs those in shard jobs of
+  their own; README.md's "Building and running" has the commands. It is a
+  PARTITION, checked rather than trusted, so a test is never dropped by it. Two
+  things follow for a session: a sweep you changed is not exercised by the
+  ordinary run unless you name it with `-run` (which turns the schedule off) or
+  set `SCANTTY_TUI_TESTS=heavy`; and when the ordinary job's timeout is hit by
+  growth rather than a hang, the fix is a line in that file, not a bigger
+  timeout in `ci.yml`, whose comments say what each bound was measured against.
 - **A DERIVED SET IS CHEAP TO WRITE AND EXPENSIVE TO ASK, so ask it once — a
   `for _, h := range jdePaneHeights()` in an inner loop is the second way this
   package has blown the 600s timeout.** `jdeDrawableWidths` / `jdePaneHeights`

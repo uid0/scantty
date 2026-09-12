@@ -253,10 +253,24 @@ go vet ./...                     # static checks
 go run ./cmd/scantty             # build + run in one step (good for iteration)
 ```
 
-`go test -timeout 20m ./...` runs the suite; the explicit timeout matches CI
-because `internal/tui`'s exhaustive layout sweeps can exceed Go's 10-minute
-default. CI (`.github/workflows/ci.yml`) runs build, vet and test on every pull
-request. The suite needs no server: screen behaviour
+`go test ./...` runs the ordinary suite and finishes inside Go's default
+timeout. It deliberately leaves out `internal/tui`'s heavy tests — the
+exhaustive layout sweeps that walk every screen at every drawable size, listed
+in `internal/tui/testdata/heavy_tests.txt` — which on their own take several
+minutes. Run those with an environment variable:
+
+```sh
+go test ./...                                                   # ordinary suite
+SCANTTY_TUI_TESTS=heavy   go test -timeout 30m ./internal/tui   # only the heavy tests
+SCANTTY_TUI_TESTS=heavy:2 go test ./internal/tui                # one CI shard of them
+SCANTTY_TUI_TESTS=all     go test -timeout 30m ./internal/tui   # everything, as one run
+go test -run TestJDEForm_NoRowRunsPastThePane ./internal/tui    # naming a test runs it
+```
+
+CI (`.github/workflows/ci.yml`) runs build, vet and the ordinary suite, and the
+heavy tests in shard jobs of their own, on every pull request — every test runs
+in exactly one of them (`internal/tui/test_schedule_test.go` owns that). The
+suite needs no server: screen behaviour
 is verified by driving the real screens against an `httptest` fake, and the two
 `omslab`-tagged tests that do want a real backend are inert without one. A
 local OpenMakerSuite can be brought up and is worth it on a bug that sits on the
