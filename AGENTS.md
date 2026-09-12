@@ -947,64 +947,11 @@ touching the flow:
   through the WO PATCH), and `WorkOrderAdHocTool.InventoryItem` — the client
   carries it, the form does not offer it, and neither does the web's.
 
-### LOCKING A MACHINE AND DISABLING IT ARE DIFFERENT THINGS, AND ONLY ONE STOPS IT
+### Asset interlock
 
-`internal/omsapi/asset_interlock.go` carries the measured contract and
-`internal/tui/asset_interlock.go` the flow (`L` on the asset detail); both are the
-authority. The distinction is the whole reason that screen is worded as it is, and
-getting it wrong at a bench is a safety failure rather than a UI one:
-
-- **LOCK is the interlock.** `POST …/assets/{id}/lock/` creates a
-  `forgekey.DeviceLockout` and sets `OperationalMode` to `locked_out`.
-  `forgekey.services.access_control.is_authorized` — whose own docstring calls
-  itself "the single source of truth for 'can this user use this asset right
-  now'" — returns False while any active lockout exists, so the badge reader
-  denies. It needs a **`reason`** and refuses a blank one.
-- **DISABLE is a visibility switch.** It flips `Asset.is_active`, whose help_text
-  is "Inactive assets are hidden from most views", and **`is_authorized` never
-  reads it**. A disabled machine with a valid authorization and no lockout IS
-  STILL USABLE. So somebody who disables a dangerous machine and walks away has
-  hidden a record and stopped nothing.
-- **The two axes are INDEPENDENT in all three directions**, measured rather than
-  inferred: locking left `is_active` true, disabling left `is_locked` true, and
-  unlocking left a disabled asset disabled. The recorded replies are
-  `internal/omsapi/testdata/asset_{lock,disable,unlock}.json`.
-- **LOCK STACKS and AN UNLOCK THAT ANSWERS 200 CAN LEAVE THE MACHINE LOCKED.**
-  Two locks give two active lockouts (201 each); unlock clears ONE — the first the
-  caller may — and only drops the mode when none remain. `lockout_info` is
-  `…filter(is_active=True).first()`, so the asset payload names one of possibly
-  several and carries **no count**; the stack is only countable at
-  `GET /api/forgekey/lockouts/?asset=<id>&is_active=true`, a different service in
-  ScanTTY's wiring. So all four client methods return the **asset** and the screen
-  reports the state that CAME BACK rather than predicting it from the status code.
-  `testdata/asset_unlock_still_locked.json` is that reply.
-- **`can_unlock` / `can_enable` ARE ADVISORY AND ARE NOT WHAT THE ENDPOINTS
-  ENFORCE.** Both are false for a `report_only` asset and the server accepts lock
-  (201) and disable (200) on one anyway, so gating a key on either would refuse
-  what the server allows — the defect class the kit serialized-component ban
-  records. They are SHOWN as facts, never used as gates. This is the mirror of
-  `can_delete_items` on a purchase order, which IS served from the frozenset the
-  server enforces on and therefore MUST be read; the difference is whether the
-  flag and the enforcement come from one expression.
-- **Two refusal SHAPES from one pair of endpoints.** The validation refusals
-  (`reason is required`, `Asset is not locked`) are OMS's standardized envelope,
-  which `parseError` understands, so `AsLineEntryError` recovers them; the
-  permission refusals are hand-built `Response({"error": "<prose>"})` bodies that
-  defeat `parseError` entirely, so `AsReceivingRefusal` is the recogniser.
-  `interlockRefusal` is the one combiner, and one recogniser could not read both.
-- **The permission gates are ASYMMETRIC and the asymmetry is the server's:**
-  `enable` checks `groups_can_enable` (403) and `disable` checks nothing, so any
-  authenticated user may disable an active asset.
-- **The WEB's Lock button is broken and this is not a transcription of it.**
-  `assetsAPI.lockAsset` posts NO body while the server requires `reason`, so it
-  400s every time (measured). Parity here is with the API's contract.
-- **The out-of-service records (`o` / `R`) are a different fact and stay.** They
-  NOTE that a machine is broken; the interlock STOPS it. Neither implies the
-  other and nothing reconciles them — see the PR for #185 for the mismatch.
-- `internal/tui/asset_interlock_lab_test.go` (build tag `omslab`) drives all four
-  against a real backend, which is how the stacked-unlock and the two envelope
-  shapes were established; a fake built from ScanTTY's own structs could not have
-  disagreed with them.
+`internal/omsapi/asset_interlock.go` owns the measured lock/unlock and
+enable/disable contract; `internal/tui/asset_interlock.go` owns the terminal
+flow. Read those before changing either side.
 
 ## The receiving flow is driven off ONE fetch, and the server decides
 
