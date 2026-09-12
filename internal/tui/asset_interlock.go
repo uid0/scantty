@@ -1190,6 +1190,10 @@ func (s *AssetInterlockScreen) write(a interlockAction) tea.Cmd {
 // rather than re-fetched: one round trip, and no window in which the pane shows a
 // state older than the write that just landed.
 func (s *AssetInterlockScreen) applyWrite(m assetInterlockWrittenMsg) (Screen, tea.Cmd) {
+	// Any read already in flight predates this write reply, so its answer is older
+	// than the state the write just established. Drop it rather than letting the
+	// pane say a machine is usable when the write's own response says it is not.
+	s.loadSeq++
 	s.saving = false
 	if m.err != nil {
 		s.errMsg = interlockRefusal(m.err)

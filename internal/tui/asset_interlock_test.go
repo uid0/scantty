@@ -1160,6 +1160,47 @@ func TestInterlock_ARefreshKeepsTheStateOnScreen(t *testing.T) {
 	}
 }
 
+func TestInterlock_AStaleRefreshCannotOverwriteAWriteReply(t *testing.T) {
+	fake := newInterlockFake()
+	r, s := interlockDrive(t, fake)
+
+	next, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	r = next.(Root)
+	r = interlockType(t, r, "spindle bearing seized")
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	r = next.(Root)
+	next, writeCmd := r.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	r = next.(Root)
+	if writeCmd == nil || !s.saving {
+		t.Fatal("ctrl+x did not start the interlock write")
+	}
+
+	next, _ = r.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	r = next.(Root)
+	next, refreshCmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	r = next.(Root)
+	if refreshCmd == nil {
+		t.Fatal("r did not start the refresh")
+	}
+
+	staleRead := refreshCmd()
+	writeReply := writeCmd()
+	next, _ = r.Update(writeReply)
+	r = next.(Root)
+	if !s.isLocked() {
+		t.Fatal("the write reply did not install the server's locked state")
+	}
+	next, _ = r.Update(staleRead)
+	r = next.(Root)
+
+	if !s.isLocked() {
+		t.Error("a pre-write refresh overwrote the write reply with an unlocked state")
+	}
+	if pane := interlockFlat(r); !strings.Contains(pane, "LOCKED — the machine is denied") {
+		t.Errorf("the pane does not retain the state returned by the write:\n%s", pane)
+	}
+}
+
 // NOTHING ACTS ON A GUESS. A failed load leaves COULD NOT TELL rather than NOT
 // LOCKED, and on this screen that difference is whether somebody starts a machine.
 func TestInterlock_AFailedLoadOffersNoActionAndSaysWhy(t *testing.T) {
