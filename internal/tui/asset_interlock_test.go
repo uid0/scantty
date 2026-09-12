@@ -1184,7 +1184,19 @@ func TestInterlock_AStaleRefreshCannotOverwriteAWriteReply(t *testing.T) {
 	}
 
 	staleRead := refreshCmd()
-	writeReply := writeCmd()
+	batch, ok := writeCmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("write command returned %T, want tea.BatchMsg", writeCmd())
+	}
+	var writeReply assetInterlockWrittenMsg
+	for _, cmd := range batch {
+		if msg, ok := cmd().(assetInterlockWrittenMsg); ok {
+			writeReply = msg
+		}
+	}
+	if writeReply.action == interlockNone {
+		t.Fatal("write batch did not carry the interlock result")
+	}
 	next, _ = r.Update(writeReply)
 	r = next.(Root)
 	if !s.isLocked() {
@@ -1198,6 +1210,51 @@ func TestInterlock_AStaleRefreshCannotOverwriteAWriteReply(t *testing.T) {
 	}
 	if pane := interlockFlat(r); !strings.Contains(pane, "LOCKED — the machine is denied") {
 		t.Errorf("the pane does not retain the state returned by the write:\n%s", pane)
+	}
+}
+
+func TestInterlock_AWriteOutcomeSurvivesLeavingTheScreen(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		refuse     bool
+		wantStatus string
+	}{
+		{name: "success", wantStatus: "LOCKED — the machine is denied."},
+		{name: "refusal", refuse: true, wantStatus: "locking refused: interlock controller unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newInterlockFake()
+			if tc.refuse {
+				fake.refuse["lock"] = http.StatusServiceUnavailable
+				fake.refuseBody["lock"] = `{"detail":"interlock controller unavailable"}`
+			}
+			r, s := interlockDrive(t, fake)
+
+			next, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+			r = next.(Root)
+			r = interlockType(t, r, "spindle bearing seized")
+			next, _ = r.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			r = next.(Root)
+			next, writeCmd := r.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+			r = next.(Root)
+			if writeCmd == nil || !s.saving {
+				t.Fatal("ctrl+x did not start the interlock write")
+			}
+
+			next, _ = r.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			r = next.(Root)
+			next, _ = r.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			r = next.(Root)
+			if r.screen == s {
+				t.Fatal("the second esc did not leave the interlock screen")
+			}
+
+			r = pump(t, r, writeCmd, 0)
+			if !strings.Contains(r.status.message, tc.wantStatus) {
+				t.Errorf("status after leaving the screen = %q, want it to contain %q",
+					r.status.message, tc.wantStatus)
+			}
+		})
 	}
 }
 

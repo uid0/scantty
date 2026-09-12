@@ -855,10 +855,10 @@ func (s *AssetInterlockScreen) updateConfirm(m tea.KeyMsg) (Screen, tea.Cmd) {
 	case "esc":
 		if s.saving {
 			// Esc still LEAVES while a write is out — a frame with no way off it
-			// is the worse defect — but it goes back to the STATE frame, where
-			// the reply will land and be reported.
+			// is the worse defect — but it goes back to the STATE frame. The
+			// write's outcome reaches the global status bar even if they leave it.
 			s.phase = interlockPhaseState
-			s.setNote(StatusWarn, "the write is still out; its answer will land here.")
+			s.setNote(StatusWarn, "the write is still out; its answer will reach the status bar.")
 			return s, nil
 		}
 		if s.pending == interlockLock {
@@ -1179,7 +1179,16 @@ func (s *AssetInterlockScreen) write(a interlockAction) tea.Cmd {
 		case interlockEnable:
 			asset, err = deps.OMS.EnableAsset(ctx, id)
 		}
-		return assetInterlockWrittenMsg{action: a, asset: asset, err: err}
+		written := assetInterlockWrittenMsg{action: a, asset: asset, err: err}
+		level, note := interlockWriteNote(a, asset)
+		if err != nil {
+			level = StatusError
+			note = interlockVerb(a) + " refused: " + interlockRefusal(err)
+		}
+		return tea.Batch(
+			func() tea.Msg { return written },
+			Status(note, level),
+		)()
 	}
 }
 
@@ -1230,20 +1239,20 @@ func (s *AssetInterlockScreen) applyWrite(m assetInterlockWrittenMsg) (Screen, t
 		s.reason.SetValue("")
 	}
 	s.reason.Blur()
-	level, note := s.wroteNote(m.action)
+	level, note := interlockWriteNote(m.action, s.asset)
 	s.setNote(level, note)
 	return s, Status(note, level)
 }
 
-// wroteNote is what the screen says after a write landed, and it is derived from
+// interlockWriteNote is what the screen says after a write landed, and it is derived from
 // the state that CAME BACK rather than from the action that was sent.
 //
 // THE UNLOCK CASE IS WHY THIS FUNCTION EXISTS. Unlock clears one lockout of a
 // stack, so a success can leave the machine denied — reporting "unlocked" off the
 // status code would tell somebody a machine was safe to start when the server
 // still refuses it. A still-locked unlock is a WARNING that names the state.
-func (s *AssetInterlockScreen) wroteNote(a interlockAction) (StatusLevel, string) {
-	if s.asset == nil {
+func interlockWriteNote(a interlockAction, asset *omsapi.Asset) (StatusLevel, string) {
+	if asset == nil {
 		// The write succeeded and said nothing about the state. Do not invent
 		// one: name the action and send the operator back to a read.
 		return StatusWarn, interlockVerb(a) + " landed, but the server sent no state back. " +
@@ -1251,35 +1260,35 @@ func (s *AssetInterlockScreen) wroteNote(a interlockAction) (StatusLevel, string
 	}
 	switch a {
 	case interlockLock:
-		if !s.asset.IsLocked {
+		if !asset.IsLocked {
 			return StatusWarn, "the lockout was recorded but the asset comes back NOT LOCKED. " +
 				"Press r and check before trusting the machine is stopped."
 		}
-		return StatusOK, s.withRecordTail("LOCKED — the machine is denied.")
+		return StatusOK, interlockRecordTail(asset, "LOCKED — the machine is denied.")
 	case interlockUnlock:
-		if s.asset.IsLocked {
+		if asset.IsLocked {
 			return StatusWarn, "one lockout cleared and the machine is STILL LOCKED — " +
 				"another lockout remains. Press u again to clear the next one."
 		}
-		return StatusOK, s.withRecordTail("UNLOCKED — the machine may be used again.")
+		return StatusOK, interlockRecordTail(asset, "UNLOCKED — the machine may be used again.")
 	case interlockDisable:
-		if s.asset.IsLocked {
+		if asset.IsLocked {
 			return StatusOK, "disabled and hidden from lists. The machine is also LOCKED, " +
 				"so it is denied."
 		}
 		return StatusWarn, "disabled and hidden from lists — but NOT stopped: the machine " +
 			"can still be used. Press l to lock it."
 	case interlockEnable:
-		if s.asset.IsLocked {
+		if asset.IsLocked {
 			return StatusOK, "enabled and back in the lists — still LOCKED, so the machine " +
 				"is denied until it is unlocked."
 		}
 		return StatusOK, "enabled and back in the lists. Not locked, so the machine may be used."
 	}
-	return StatusInfo, s.stateSentence()
+	return StatusInfo, "interlock state changed."
 }
 
-// withRecordTail adds the OTHER axis to a lock-axis report, but only when it is
+// interlockRecordTail adds the OTHER axis to a lock-axis report, but only when it is
 // the surprising value. A locked-and-active machine is the ordinary case, and
 // saying "record active" every time would push the part that matters off a row
 // fitStatus gives one line.
@@ -1287,8 +1296,8 @@ func (s *AssetInterlockScreen) wroteNote(a interlockAction) (StatusLevel, string
 // It JOINS rather than being concatenated by each caller, because concatenating
 // left a trailing space on every ordinary report — visible in the lab drive
 // against a real backend as `"LOCKED — the machine is denied. "`.
-func (s *AssetInterlockScreen) withRecordTail(head string) string {
-	if s.asset != nil && !s.asset.IsActive {
+func interlockRecordTail(asset *omsapi.Asset, head string) string {
+	if asset != nil && !asset.IsActive {
 		return head + " The record is also disabled."
 	}
 	return head
