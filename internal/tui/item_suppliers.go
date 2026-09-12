@@ -29,6 +29,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -49,6 +50,7 @@ type ItemSuppliersScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -118,19 +120,149 @@ func (s *ItemSuppliersScreen) load() tea.Cmd {
 	}
 }
 
-func (s *ItemSuppliersScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+// suppliersPaneCells is how wide this screen's View() may really draw, in
+// display cells. pickerPaneWidth only while genuinely UNSIZED — the standing
+// answer the rest of the program gives for no pane: draw to the width the
+// interface is modelled on and let clampToBox decide.
+//
+// The LIVE pane and not a fixed 51, because a bound computed against a width
+// the terminal may not have is not a bound: folded against pickerPaneWidth a
+// 120-column terminal would draw every supplier row folded with forty columns
+// of pane left blank, and a 60-column one would fold past its own edge and hand
+// clampToBox the tail to cut — which is the unmarked truncation the fold exists
+// to remove.
+func (s *ItemSuppliersScreen) suppliersPaneCells() int {
+	if s.terminalWidth <= 0 {
+		return pickerPaneWidth
 	}
-	return avail
+	return screenBodyCells(s.terminalWidth)
+}
+
+// suppliersFooter is the action bar, as one " · "-joined string for the folder.
+func suppliersFooter() string {
+	return "j/k move · c add · E edit · p primary · x remove · r refresh · esc back"
+}
+
+// suppliersFooterLines folds that bar to the live pane.
+//
+// It is 63 cells and the pane at 80 columns is 51, so written straight out it
+// lost "r refresh · esc back" to clampToBox — two keys that work, unnamed, on
+// the only surface that names them. A bar the operator cannot read is not
+// honest, it is absent.
+func (s *ItemSuppliersScreen) suppliersFooterLines() []string {
+	return pickerWrap(suppliersFooter(), s.suppliersPaneCells())
+}
+
+// bodyLines is how many lines the row window may spend.
+//
+// Folding the bar SPENDS ROWS, so the budget moves with it: the count comes
+// from the bar that is about to be DRAWN rather than from a constant, or the
+// fold that saved the bar horizontally pushes it off the bottom instead — the
+// same claim lost at the other edge.
+//
+// screenBodyRows and not screenBodyHeight, because the latter floors at four
+// and is therefore a LIE below a terminal height of ten (layout.go says so),
+// and a budget that claims rows the pane does not have hands clampToBox the
+// bar to cut.
+func (s *ItemSuppliersScreen) bodyLines() int {
+	return s.bodyPlan().body
+}
+
+// suppliersPlan is how one frame's rows are spent, decided once and read by
+// everything that draws.
+type suppliersPlan struct {
+	body  int  // lines the row window gets
+	count bool // draw the "N supplier link(s)" line
+	gap   bool // draw the blank line above the bar
+}
+
+// bodyPlan gives ground BY RANK, so what a short pane loses is decided here
+// rather than by where clampToBox happens to cut.
+//
+// The ACTION BAR never gives: it is the only surface naming the keys that work,
+// and a bar with rows cut off it names some keys and hides the rest silently,
+// which is worse than naming none. Then the decorative blank goes, then the
+// count line (context — how many links there are is worth knowing and is not
+// worth the row an actual link needs), and the body floors at one line.
+//
+// screenBodyRows and not screenBodyHeight: the latter floors at four and is a
+// LIE below a terminal height of ten (layout.go says so), and a plan built on a
+// lie claims rows the pane does not have.
+func (s *ItemSuppliersScreen) bodyPlan() suppliersPlan {
+	avail := screenBodyRows(s.terminalHeight) - len(s.suppliersFooterLines())
+	if s.busy {
+		avail--
+	}
+	plan := suppliersPlan{count: true, gap: true}
+	// One line for the count, one for the gap, and at least one for the body.
+	switch {
+	case avail >= 3:
+		plan.body = avail - 2
+	case avail == 2:
+		plan.gap = false
+		plan.body = 1
+	default:
+		// Too short for the bar plus a line of rows. Everything that can give
+		// has given; the body keeps its floor of one and the frame runs over,
+		// which is the state clampToBox is for.
+		plan.gap, plan.count = false, false
+		plan.body = 1
+	}
+	return plan
+}
+
+// rowsFittingFrom returns how many rows starting at `start` fit the body,
+// counting the LINES each one really renders rather than the rows.
+//
+// A supplier row is not one line: it is a name, then the folded fact lines
+// under it, then a clipped URL, so how many rows fit DEPENDS ON WHICH ROWS —
+// three links with long barcodes fill a pane that would hold eight bare ones.
+// The previous budget counted ROWS against a flat chrome of four and so put
+// twenty lines into an eighteen-line pane the moment the rows grew: at 80x24
+// with eight links the action bar was already gone before a barcode was added
+// to the row, and the marker saying more rows were below went with it.
+//
+// This is the rule ListScreen.rowsFittingFrom already states; the answer is
+// re-derived on every move rather than taken once at load, because a size
+// measured over the short rows at the top of a list is wrong for the tall ones
+// further down.
+func (s *ItemSuppliersScreen) rowsFittingFrom(start int) int {
+	budget := s.bodyLines()
+	// A marker row is one line, and it is reserved where it will be drawn.
+	if start > 0 {
+		budget--
+	}
+	used, n := 0, 0
+	for i := start; i < len(s.rows); i++ {
+		lines := len(strings.Split(s.renderRow(i), "\n"))
+		// The LAST row that fits may still need a "more below" marker under it.
+		remaining := budget - used - lines
+		if i < len(s.rows)-1 && remaining < 1 {
+			remaining = -1
+		}
+		if used+lines > budget || remaining < 0 {
+			break
+		}
+		used += lines
+		n++
+	}
+	// Never hand back an empty window: a pane too short for even one row still
+	// draws the row it is on, and the overflow is that row's own extra lines.
+	if n == 0 {
+		n = 1
+	}
+	return n
+}
+
+func (s *ItemSuppliersScreen) computeWindowSize() int {
+	return s.rowsFittingFrom(s.windowStart)
 }
 
 func (s *ItemSuppliersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -274,22 +406,41 @@ func (s *ItemSuppliersScreen) selected() (omsapi.ItemSupplier, bool) {
 	return s.rows[s.cursor], true
 }
 
+// scrollIntoView chooses the window START and its SIZE together, every time.
+//
+// They cannot be chosen separately: how many rows fit depends on which row the
+// window starts at, so a size carried over from the previous start is a size
+// for a different window. Walking the start BACK one row at a time and
+// re-asking is what keeps the cursor's row whole on the pane rather than
+// half-drawn at the bottom of it.
 func (s *ItemSuppliersScreen) scrollIntoView() {
-	if s.windowSize <= 0 {
-		s.windowSize = 20
+	if len(s.rows) == 0 {
+		s.windowStart, s.windowSize = 0, 0
+		return
+	}
+	if s.windowStart > len(s.rows)-1 {
+		s.windowStart = len(s.rows) - 1
 	}
 	if s.cursor < s.windowStart {
 		s.windowStart = s.cursor
 	}
-	if s.cursor >= s.windowStart+s.windowSize {
-		s.windowStart = s.cursor - s.windowSize + 1
-	}
 	if s.windowStart < 0 {
 		s.windowStart = 0
 	}
-	if len(s.rows) <= s.windowSize {
-		s.windowStart = 0
+	// Push the start down until the cursor's row is inside the window.
+	for s.windowStart < s.cursor && s.cursor >= s.windowStart+s.rowsFittingFrom(s.windowStart) {
+		s.windowStart++
 	}
+	// Then pull it back up while the whole list still fits from higher up, so
+	// a short list is never scrolled and the top is preferred.
+	for s.windowStart > 0 {
+		prev := s.windowStart - 1
+		if prev+s.rowsFittingFrom(prev) <= s.cursor {
+			break
+		}
+		s.windowStart = prev
+	}
+	s.windowSize = s.rowsFittingFrom(s.windowStart)
 }
 
 func (s *ItemSuppliersScreen) View() string {
@@ -317,61 +468,170 @@ func (s *ItemSuppliersScreen) View() string {
 			StyleMuted.Render("c add supplier · r refresh · esc back")
 	}
 
+	room := s.suppliersPaneCells()
+	muted := func(text string) string { return StyleMuted.Render(pickerClip(text, room)) }
+
+	plan := s.bodyPlan()
+
 	var b strings.Builder
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d supplier link(s)", len(s.rows))) + "\n")
+	if plan.count {
+		b.WriteString(muted(fmt.Sprintf("%d supplier link(s)", len(s.rows))) + "\n")
+	}
+
+	// The body is assembled as LINES and then bounded as a whole, because a row
+	// is not a line: the markers and the folded fact lines under each name all
+	// come out of the same budget, and counting rows against it is what put
+	// twenty lines into an eighteen-line pane.
+	var body []string
 	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+		body = append(body, muted("  ↑ more above"))
 	}
 	end := s.windowStart + s.windowSize
 	if end > len(s.rows) {
 		end = len(s.rows)
 	}
 	for i := s.windowStart; i < end; i++ {
-		b.WriteString(s.renderRow(i) + "\n")
+		body = append(body, strings.Split(s.renderRow(i), "\n")...)
 	}
 	if end < len(s.rows) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
+		body = append(body, muted(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)))
 	}
-	b.WriteString("\n")
+	// A pane too short to hold even the row the cursor is on keeps the START of
+	// that row — its name and its leading facts — and MARKS the cut.
+	//
+	// The mark is a LINE OF ITS OWN rather than an ellipsis appended to the last
+	// line kept, which is what foldKeepRows does: these lines are already
+	// STYLED, and cutting a styled string mid-sequence takes its closing SGR
+	// reset with it and colours everything drawn afterwards. It spends the LAST
+	// of the rows the body already had, so marking a cut cannot itself push the
+	// action bar off the bottom — which would be the cut this exists to report,
+	// committed by the report.
+	if budget := plan.body; len(body) > budget {
+		keep := budget - 1
+		if keep < 0 {
+			keep = 0
+		}
+		body = append(body[:keep:keep], muted(suppliersRowCutMark))
+	}
+	for _, line := range body {
+		b.WriteString(line + "\n")
+	}
+
+	if plan.gap {
+		b.WriteString("\n")
+	}
 	if s.busy {
-		b.WriteString(StyleMuted.Render("Working…") + "\n")
+		b.WriteString(muted("Working…") + "\n")
 	}
-	b.WriteString(StyleMuted.Render("j/k move · c add · E edit · p primary · x remove · r refresh · esc back"))
-	return b.String()
+	for _, line := range s.suppliersFooterLines() {
+		b.WriteString(StyleMuted.Render(line) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
+
+// indent is the gutter every fact line under a supplier's name sits in. Named
+// because it is spent twice — once as the prefix that is written, once as the
+// budget the fold is given — and a fold measured against a different number
+// from the one it is drawn behind is off the pane by the difference.
+const indent = "    "
+
+// suppliersNameFloor is how few cells a vendor name may be abbreviated to
+// before the badges beside it are dropped instead.
+//
+// Eight, because an MRO vendor name is distinguished by its head ("McMaster-…",
+// "Grainger…", "Fastenal…") and below about that the row stops naming anybody.
+const suppliersNameFloor = 8
+
+// suppliersRowCutMark says a supplier row was cut short by the pane, and names
+// the remedy.
+//
+// It names the REMEDY and not just the loss: a warning an operator cannot act
+// on is a dead end, and the only thing that brings these lines back is a taller
+// terminal. The remedy LEADS, so every prefix a narrow pane leaves still
+// carries the way out.
+const suppliersRowCutMark = "  … a taller terminal shows the rest of this link"
 
 func (s *ItemSuppliersScreen) renderRow(i int) string {
 	sup := s.rows[i]
+	room := s.suppliersPaneCells()
 	marker := "  "
 	if i == s.cursor {
 		marker = "▸ "
 	}
-	name := itemSupplierName(sup)
-	line := marker + name
+
+	// The badges are the row's STATE, and they are assembled before the name is
+	// clipped so the name is measured against what they really leave.
+	badge := ""
 	if sup.IsPreferred {
-		line += " " + StyleStatusOK.Render("★ primary")
+		badge += " " + StyleStatusOK.Render("★ primary")
 	}
 	if sup.IsDiscontinued {
-		line += " " + StyleMuted.Render("[discontinued]")
+		badge += " " + StyleMuted.Render("[discontinued]")
 	} else if !sup.IsActive {
-		line += " " + StyleMuted.Render("[inactive]")
+		badge += " " + StyleMuted.Render("[inactive]")
 	}
+
+	// The identity row, BOUNDED AS ASSEMBLED rather than part by part.
+	//
+	// It was written straight to the pane, so a full-length OMS vendor name ran
+	// past the edge and clampToBox took the tail with no ellipsis — an operator
+	// reading a cut name cannot tell it is cut, and on the row that says WHICH
+	// vendor this link is that is the worst place in the screen for it. At the
+	// 45-column floor Root draws at, "McMaster-Carr Supply Company" assembled to
+	// 34 cells into a pane of 16.
+	//
+	// The NAME keeps the room and the BADGES give, which is the give-order the
+	// purchasing rows already use: a badge beside a name cut to a character
+	// distinguishes nothing, and the name is what the operator is looking for.
+	// Where a badge is dropped the row says so with poRowDropMark rather than
+	// simply ending — a row that quietly lost "[discontinued]" is a row
+	// claiming the link is live.
+	//
+	// The highlight's padding is reserved on EVERY row and not just the
+	// highlighted one, or a row that fits until it is selected is cut on
+	// exactly the keypress that selects it.
+	pad := StyleSidebarItemActive.GetHorizontalPadding()
+	nameRoom := room - lipgloss.Width(marker) - pad
+	withBadge := nameRoom - lipgloss.Width(badge)
+	name := itemSupplierName(sup)
+	if withBadge >= suppliersNameFloor || lipgloss.Width(name) <= withBadge {
+		name = pickerClip(name, withBadge)
+	} else {
+		// No room for both: the name takes what is left and the badge goes,
+		// marked.
+		badge = poRowDropMark
+		name = pickerClip(name, nameRoom-lipgloss.Width(badge))
+	}
+	head := marker + name
 	if i == s.cursor {
-		line = StyleSidebarItemActive.Render(marker + name)
-		if sup.IsPreferred {
-			line += " " + StyleStatusOK.Render("★ primary")
-		}
-		if sup.IsDiscontinued {
-			line += " " + StyleMuted.Render("[discontinued]")
-		} else if !sup.IsActive {
-			line += " " + StyleMuted.Render("[inactive]")
-		}
+		head = StyleSidebarItemActive.Render(marker + name)
 	}
-	out := line + "\n"
+	out := head + badge + "\n"
 
 	meta := []string{}
 	if sup.SupplierSKU != "" {
 		meta = append(meta, "SKU "+sup.SupplierSKU)
+	}
+	// BOTH barcodes, each named, and only where the vendor recorded one.
+	//
+	// They are codes on two different physical things — package_upc is printed
+	// on the packaged quantity this supplier ships, unit_upc on an individual
+	// unit when it differs (backend/inventory/models/core.py) — so an operator
+	// holding a box and an operator holding a part scan different numbers, and
+	// a row carrying only one of them leaves the other unmatchable against what
+	// is in the hand. unit_upc is blank on most rows (omsapi/po_line_entry.go
+	// says so), so the second entry costs nothing on the ordinary link.
+	//
+	// The WORDS are receiveScanKindLabel's, not the wire's: the receiving form
+	// already teaches an operator that package_upc is the "box barcode" and
+	// unit_upc the "unit barcode", and one fact spelled two ways across two
+	// screens is a fact the operator has to translate. "package_upc" on the
+	// pane is the wire talking to itself.
+	if sup.PackageUPC != "" {
+		meta = append(meta, "box barcode "+sup.PackageUPC)
+	}
+	if sup.UnitUPC != "" {
+		meta = append(meta, "unit barcode "+sup.UnitUPC)
 	}
 	if sup.PackQuantity > 0 {
 		meta = append(meta, fmt.Sprintf("pack %d", sup.PackQuantity))
@@ -385,13 +645,86 @@ func (s *ItemSuppliersScreen) renderRow(i int) string {
 	if sup.LeadTimeDays > 0 {
 		meta = append(meta, fmt.Sprintf("lead %gd", sup.LeadTimeDays))
 	}
+	// FOLDED at its own " · " joints against the live pane, never written
+	// straight to it.
+	//
+	// This row was already past the edge before a barcode was added to it: at
+	// 80 columns the pane is 51 cells and an ordinary MRO link —
+	// "SKU 91290A115 · pack 100 · $0.1450/unit · $14.50/pkg · lead 5d" — drew
+	// as "SKU 91290A115 · pack 100 · $0.1450/unit · $14.5", so clampToBox took
+	// the LEAD TIME off the pane entirely and left the package cost reading
+	// $14.5, which is not a shortened price but a different one. Both are the
+	// failure AGENTS.md records for the picker rows: a cut number reads as a
+	// complete number, and a fact silently off the edge is a fact the operator
+	// believes they were shown.
+	//
+	// pickerWrap folds at the joints these are built from, so a fold costs a
+	// LINE and loses nothing — which is why the answer here is the fold rather
+	// than a clip with a mark. It is additive on a wide terminal by
+	// construction: at 100 and 120 columns the whole list still fits one line
+	// and the row draws exactly as it did before.
 	if len(meta) > 0 {
-		out += "    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n"
+		for _, line := range s.metaLines(meta) {
+			out += indent + StyleMuted.Render(line) + "\n"
+		}
 	}
+	// CLIPPED and MARKED rather than folded: a URL carries no " · " joints and
+	// pickerWords would break it at nothing, so a fold would scatter one
+	// unbreakable token down the pane. An operator reads this to recognise the
+	// listing, and pickerClip's ellipsis says where it stops — which is the
+	// whole of what was missing when it was written straight to the pane.
 	if sup.URL != "" {
-		out += "    " + StyleMuted.Render(sup.URL) + "\n"
+		out += indent + StyleMuted.Render(pickerClip(sup.URL, s.suppliersPaneCells()-len(indent))) + "\n"
 	}
 	return strings.TrimRight(out, "\n")
+}
+
+// metaLines folds a row's facts to the live pane, dropping whole any fact too
+// long for a line of its own and MARKING that it did.
+//
+// pickerWrap falls back to folding on SPACES when one claim outruns a line, and
+// for a claim that is a NUMBER that is not a shortening but a corruption: at
+// the 45-column floor Root draws at, the pane gives 16 cells and
+// "box barcode 00812345678905" came out as "box barcode" / "00812345678" /
+// "905" — three lines an operator reads as a broken code, and two of them as
+// digits belonging to nothing. A barcode, a SKU and a price are FACTS: whole,
+// or gone and said to be gone. Only the ellipsis is drawn, never half a number.
+//
+// The drop MARK rides the last line it can, so saying a fact went does not
+// itself cost the row another line. Marking is not optional: a row that
+// silently lost its unit barcode is a row asserting the vendor recorded none.
+func (s *ItemSuppliersScreen) metaLines(meta []string) []string {
+	room := s.suppliersPaneCells() - len(indent)
+	// pickerWrap indents continuations by two, so a fact must fit the NARROWEST
+	// line it could land on or it is not guaranteed whole anywhere.
+	fits := room - 2
+
+	kept := make([]string, 0, len(meta))
+	dropped := false
+	for _, fact := range meta {
+		if lipgloss.Width(fact) <= fits {
+			kept = append(kept, fact)
+			continue
+		}
+		dropped = true
+	}
+	if len(kept) == 0 {
+		if dropped {
+			return []string{pickerClip(strings.TrimSpace(poRowDropMark), room)}
+		}
+		return nil
+	}
+	lines := pickerWrap(strings.Join(kept, " · "), room)
+	if !dropped {
+		return lines
+	}
+	last := len(lines) - 1
+	if lipgloss.Width(lines[last])+lipgloss.Width(poRowDropMark) <= room {
+		lines[last] += poRowDropMark
+	} else {
+		lines = append(lines, strings.TrimSpace(poRowDropMark))
+	}
+	return lines
 }
 
 // itemSupplierName returns the best display name for a link row, falling back to

@@ -2137,6 +2137,34 @@ touching any screen an operator drives:
   which is why it is the one flag not read back off the drawn row. The header's
   own copy goes through `pickerClip` rather than `cellPrefix`: at 60 columns the
   pane is 31 and a headline cut clean reads as a finished sentence.
+- **A FACT THAT IS A NUMBER IS WHOLE, OR DROPPED AND MARKED — NEVER FOLDED.**
+  `pickerWrap` falls back to folding on SPACES when one " · " claim outruns a
+  line, which shortens a sentence and CORRUPTS a figure: at the 45-column floor
+  Root draws at the pane gives 16 cells and `box barcode 00812345678905` came
+  out as three lines, two of them digits belonging to nothing, which an operator
+  reads as a broken code rather than a wrapped one. It is the `@ 3.50` drawn as
+  `@ 3.` lesson on the vertical axis — a cut number does not read as a shortened
+  fact but as a different one — so an entry too long for the NARROWEST line it
+  could land on (the pane less `pickerWrap`'s own two-cell continuation indent)
+  is dropped ENTIRE and the row carries `poRowDropMark`. `itemSuppliersScreen`'s
+  `metaLines` (`internal/tui/item_suppliers.go`) is the worked example and owns
+  the reasoning; anything handing a barcode, a SKU or a price to the folder owes
+  the same gate.
+- **A PROSE-BAR SCREEN THAT BUDGETS IN ROWS WHILE IT DRAWS LINES OVERRUNS, AND
+  THE BAR IS WHAT GOES.** `ItemSuppliersScreen` is one of the receivers
+  `listNavUnsweptReceivers` records — off the columnar layer, its bar a muted
+  literal — and it carried every defect that shape invites at once: a 63-cell
+  bar written straight to a 51-cell pane (so `r refresh · esc back` was cut at
+  EVERY height at 80 columns), a window counting ROWS against a flat chrome of
+  four while each row renders two to five LINES (so at 80x24 with eight links
+  the bar and the `↓ more below` marker were both gone), an unbounded identity
+  row, and a `·`-joined fact line written straight out — which put the LEAD TIME
+  off the pane and drew a `$14.50` package cost as `$14.5`. It is line-budgeted
+  now (`bodyPlan` gives ground by rank, `rowsFittingFrom` packs by rendered
+  lines, `scrollIntoView` chooses start and size together), and
+  `item_suppliers_upc_test.go` sweeps every pane Root draws with BOTH sides of
+  each boundary counted. The rest of that roster is unconverted: assume a
+  receiver on it has the same four defects rather than that it has none.
 - **Do not hand-count a hint against 51 columns — fold it.** Every note and
   fixed hint goes through `pickerWrap` / `pickerHint` / `jdeCaveatLines`
   (`pane_text.go`, `jde_form.go`), which fold at the `·` joints and indent
