@@ -2655,20 +2655,13 @@ touching any screen an operator drives:
   folded footer with `N new PO` in it: the same claim, off the same edge, for
   the third time — horizontally, then vertically, then by counting rows where
   the renderer counts lines.
-  KNOWN AND UNFIXED, ON THE OTHER AXIS: a `ListScreen` row's CONTENT is bounded
-  nowhere. `list.go`'s body writes `row.Title`, `row.Subtitle` and
-  `row.MetricsLine` straight into the pane, so at 80 columns — where the pane is
-  51 — an OMS-shaped title (`Hex bolt M8x40 zinc-plated DIN 933 grade 8.8 full
-  thread`, 60 cells) and an OMS-shaped subtitle (`Acme Fasteners & Industrial
-  Supply Company Limited · $12,345.67`, 67) are cut from the right with NO mark,
-  on all eight list surfaces. It fits from 100 columns up, so it is an
-  80-column defect specifically, and it is the same rule the columnar layer's
-  row bound exists for, one layer over. The CHROME is clean — the footer and
-  header fold against `listPaneCells()`, the live pane — so nothing reports
-  this; the sweeps that walk these screens carry `Row 1`-shaped fixtures, which
-  is the vacuous-fixture rule waiting to be noticed. The fix is contained:
-  clip the three through `fitCell` against `listPaneCells()`. Clipping changes
-  no LINE count, so `rowsFittingFrom`'s arithmetic above is untouched by it.
+- **List rows bound every visible part and mark every cut.** `list.go` owns the
+  distinction: a title is a bounded identifier fitted by `poFitRow`, while a
+  `Subtitle` or `MetricsLine` is a fact line fitted by `listFitFacts`. Fact lines
+  yield only at token boundaries so numeric values are either complete or
+  absent; dangling separators and labels are removed. These fits clip rather
+  than fold, preserving the line counts used by `rowsFittingFrom`. The derived
+  contract across all list surfaces is guarded by `list_row_width_test.go`.
 - **A textinput with no `Width` grows past its row, and `clampToBox` takes the
   caret.** bubbles' `handleOverflow` returns early when `Width` is zero, so
   `View()` emits the whole value: past the column where the row fills the pane
