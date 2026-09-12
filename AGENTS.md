@@ -1108,6 +1108,56 @@ either:
   sacrifice order — a decision, not a patch — which is why it is written down
   rather than done in passing.
 
+## A SCANNED CODE IS THE SERVER'S QUESTION, AND THE SHAPES OVERLAP
+
+`internal/scanner/scanner.go` carries the full note (`Kind`,
+`MightBeForgeKeyBadge`) and is the authority; `internal/tui/scan.go` is the flow.
+What is worth knowing before adding a rule about what a scanned code IS:
+
+- **`Classify` decides where a code is SENT, and it has only TWO callers.**
+  `scan.go` routes by its answer; `location_reconcile.go` asks it about URLs
+  ALONE and falls through to the dispatcher for everything else. Every other
+  scan-driven screen bypasses it entirely and reads the code direct — receiving
+  matches the worksheet's own `scan_codes`, and `po_add_line`,
+  `batch_scan_serials` and `tax_receipt_lookup` each drive a dedicated endpoint.
+  So a barcode scanned at a screen that EXPECTS one has never gone through this
+  function, which is why the defect below could sit on the general Scan screen
+  for a release with the app plainly working.
+- **`/api/scanner/dispatch/` resolves far more than this side can name.**
+  `backend/scanner/resolvers.py` is the contract: `_UPC_LENGTHS = {8, 12, 13, 14}`
+  (UPC-E/EAN-8, UPC-A, EAN-13, ITF-14), the 6-char location `access_code`, the
+  asset tag, the `PS-`-prefixed storage stint, and our own QR URLs. `KindUnknown`
+  is therefore a DESTINATION — the server — and never a refusal. Naming a local
+  Kind is worth doing only for a code that needs no round trip.
+- **A FORGEKEY BADGE AND A BARCODE ARE THE SAME STRING AT EIGHT DIGITS, so no
+  classifier can separate them.** OMS documents the real format in
+  `maker_boxes/services/identity_resolver.py` (`_looks_like_badge`: "Real RFID
+  badge numbers in the DMS deploy are 8-10 digits") and the stored column
+  constrains nothing — `membership.models.User.badge_number` is a
+  `CharField(max_length=50)` with NO validator, and OMS's own fixtures put
+  `BADGE001` and `MQTT-CARD` in it. A UPC-E is eight digits too. Read the badge
+  format from those files rather than re-deriving one; the rule this replaced was
+  reasoned out locally as "8-20 HEX", which is wrong in both directions — it
+  admitted strings no badge is, and excluded the letter-bearing values OMS
+  actually stores.
+- **NOTHING MAY ROUTE ON THAT SHAPE, because only one side of the collision has
+  a resolver.** ScanTTY has never looked a badge up, and OMS exposes no
+  member-by-badge READ endpoint at all. `/api/forgekey/badge-enrollment/` is the
+  only badge surface and it is keyed by USER — `GetBadgeEnrollmentState` takes a
+  `user_id`/`reader_id` and the rest WRITE a UID onto a user
+  (`forgekeyapi/badge_enrollment.go`) — so nothing there answers "whose badge is
+  this?", which is the only question a scan asks. So the badge guard
+  could only ever turn a code the dispatcher WOULD have resolved into a
+  guaranteed error, and it did: every UPC-A, UPC-E, EAN-13 and ITF-14 was
+  answered "badge lookup not yet wired" without a round trip, so no barcode
+  reached the dispatch endpoint from that screen. `MightBeForgeKeyBadge` keeps
+  the fact as a SENTENCE — it explains a miss the dispatcher already returned —
+  and `TestMightBeForgeKeyBadge_SaysNothingAboutRouting` fails the moment the
+  shape becomes a destination again.
+  **IF BADGE LOOKUP IS EVER WIRED, THE AMBIGUITY IS STILL THERE** and a shape
+  rule will not resolve it: it wants the server to disambiguate, or an explicit
+  badge mode the operator selects. Do not reopen it with a pattern.
+
 ## Conventions
 
 - **JD Edwards World interface.** The standing goal is parity with the OMS web
