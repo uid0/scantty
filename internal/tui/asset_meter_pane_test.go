@@ -70,30 +70,13 @@ func TestAssetMeters_EveryReadingOnThePaneIsAWholeNumber(t *testing.T) {
 	}
 }
 
-// WHERE THE VALUE COLUMN IS DROPPED THE FIGURE IS STILL THERE, whole, and the
-// header says where it went. "Dropped and marked" is one clause: a column that
-// vanished in silence is the cut it replaced, one level up.
-//
-// The claim is about the meters the pane actually DRAWS. A narrow pane also
-// windows the list, and a meter below the fold is absent for a reason this rule
-// has nothing to do with — the `↓ N more below` marker says so and a key fetches
-// it. So the FIRST row is what is asserted: it is on the pane at every height
-// the frame is drawn at, since the cursor rests on it.
-func TestAssetMeters_ADroppedValueColumnKeepsTheFigureAndSaysSo(t *testing.T) {
-	first := assetMeterFixtureRows()[0]
-	figure := meterFigure(first.CurrentValue, first.Unit, first.MeterTypeDisplay)
-	number := meterValueText(first.CurrentValue)
-
-	// TALLEST first: the MARK is claimed at every drawable pane, but the FIGURE
-	// LINE is a second line of the row's block, and jdeLines.Window keeps a
-	// block's START — so a one-row body draws the row and not the line under it,
-	// which is the sacrifice the layer documents and no key can fetch. The
-	// figure is therefore asserted where the block has room, which is what the
-	// `↓ more below` marker and the note both point the operator at.
+// THE VALUE COLUMN IS PRESENT AT EVERY WIDTH ROOT DRAWS. The old mark-and-move
+// fallback is below the 80-column contract and therefore cannot justify an
+// exception in a sweep of reachable panes.
+func TestAssetMeters_TheValueColumnKeepsTheFigureAtEveryDrawableWidth(t *testing.T) {
 	heights := jdePaneHeights()
-	tallest := heights[len(heights)-1]
 
-	var dropped, kept int
+	var kept int
 	for _, w := range jdeDrawableWidths() {
 		for _, h := range heights {
 			s := assetMetersFixture()
@@ -107,29 +90,11 @@ func TestAssetMeters_ADroppedValueColumnKeepsTheFigureAndSaysSo(t *testing.T) {
 				kept++
 				continue
 			}
-			dropped++
-			if !strings.Contains(pane, meterDropMark) {
-				t.Fatalf("at %dx%d the value column was dropped and the pane carries no "+
-					"mark, so the figure simply vanished:\n%s", w, h, pane)
-			}
-			if h != tallest {
-				continue
-			}
-			// The NUMBER moved to a line of its own, whole. The unit can give at
-			// an extreme width — meterFigureLine ranks that — but the digits may
-			// never be cut.
-			if !strings.Contains(pane, number) {
-				t.Fatalf("at %dx%d the reading %q is nowhere on the pane:\n%s", w, h, figure, pane)
-			}
+			t.Fatalf("at drawable size %dx%d the value column was dropped:\n%s", w, h, pane)
 		}
 	}
-	if dropped == 0 {
-		t.Error("no drawable pane dropped the value column, so the mark-and-move branch " +
-			"was never exercised — the fixture's figures fit everywhere Root draws")
-	}
 	if kept == 0 {
-		t.Error("EVERY drawable pane dropped the value column, so the ordinary branch " +
-			"was never exercised and the grid never draws a figure in its own column")
+		t.Error("the sweep visited no drawable pane")
 	}
 }
 
@@ -277,7 +242,7 @@ func assetPaneRefused(pane string) bool {
 // added to, which is how ` Delete: M · 250 orde` reached an operator on the
 // sibling purchasing confirm.
 func TestAssetMeters_TheConfirmHeadlineFitsThePaneAndKeepsItsFigures(t *testing.T) {
-	var checked, narrow int
+	var checked int
 	for _, w := range jdeDrawableWidths() {
 		for _, h := range jdePaneHeights() {
 			s := assetMetersFixture()
@@ -298,15 +263,6 @@ func TestAssetMeters_TheConfirmHeadlineFitsThePaneAndKeepsItsFigures(t *testing.
 			if assetPaneRefused(pane) {
 				continue
 			}
-			// BOTH FIGURES ARE ON THE PANE FROM 80 COLUMNS UP, which is the
-			// width this program is held to. Below it the caveat still carries
-			// them and the bar names the keys that scroll to them, so the claim
-			// is scoped rather than dropped — and both sides of the boundary are
-			// counted, or the scoping is a way of asserting nothing.
-			if w < jdeRowsMustHoldFrom {
-				narrow++
-				continue
-			}
 			checked++
 			for _, fig := range []string{"1289.75 hours", "120 hours"} {
 				if !strings.Contains(pane, fig) {
@@ -318,9 +274,5 @@ func TestAssetMeters_TheConfirmHeadlineFitsThePaneAndKeepsItsFigures(t *testing.
 	if checked == 0 {
 		t.Fatal("no pane at or above 80 columns drew the confirm, so the figure claim " +
 			"was never measured")
-	}
-	if narrow == 0 {
-		t.Fatal("no pane below 80 columns drew the confirm, so the width scoping is " +
-			"excusing nothing and should come out")
 	}
 }

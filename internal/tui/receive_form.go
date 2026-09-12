@@ -5619,12 +5619,13 @@ const receiveNoteRows = 5
 // wider than the pane from 80 columns up (its line editor's three prose
 // sentences, the order sheet's date hints, attribution heading and work-order
 // value, the association picker's prose, the void prompt's `required`, the
-// delete confirm's voided-line row); below 80 every other purchasing screen but
-// this one draws field and grid rows the label column makes wider than the
-// pane; and a failed submit's OMS body is flashed whole, cut at the edge. On
-// THIS screen TestReceive_NothingOverflowsThePane holds that clampToBox does not
-// bite, at every width but 45–48, where the layer's floored bodyWidth cuts every
-// columnar screen (receiveHonestWidths).
+// delete confirm's voided-line row); and a failed submit's OMS body is flashed
+// whole, cut at the edge. The rows other purchasing screens used to draw past
+// the pane BELOW 80 columns are not reachable any more — minTerminalWidth is the
+// floor — and the same floor emptied the 45–48 band where the layer's own
+// bodyWidth was wider than the pane. On THIS screen
+// TestReceive_NothingOverflowsThePane holds that clampToBox does not bite, at
+// every width Root draws (receiveHonestWidths, which is now all of them).
 //
 // This one used to be the exception too: it stopped at receiveNoteRows and drew
 // nothing to say so. What it drops is the TAIL, which on these sentences is

@@ -95,10 +95,18 @@ func rootFrameMessages() []struct{ name, text string } {
 		{"gateway page (CRLF)", strings.ReplaceAll(rootFrameGateway, "\n", "\r\n")},
 		{"long one line", rootFrameLookup},
 		{"wide runes", "保存に失敗しました：" + strings.Repeat("在庫品目", 40)},
-		// Thirty double-width runes: FEWER runes than the bar has cells at every
-		// width from 45 to 61, and more CELLS. A bound counted in runes calls it
-		// a fit and lipgloss wraps it.
-		{"wide runes, a rune count that fits", strings.Repeat("在", 30)},
+		// FEWER runes than the bar has cells, and twice as many CELLS. A bound
+		// counted in runes calls it a fit and lipgloss wraps it.
+		//
+		// The count is DERIVED from the narrowest terminal Root draws rather
+		// than written down. It was thirty, which was one short of the bar's
+		// cells from a width of 45 to 61 and a comfortable fit at every width
+		// from 80 up — so when the size contract moved the floor to 80 this
+		// fixture stopped reaching the bound it names, and the vacuity guard
+		// below said so. One rune short of the floor is the same fixture stated
+		// as a relation, so it moves with the floor instead of going stale
+		// behind it.
+		{"wide runes, a rune count that fits", strings.Repeat("在", minTerminalWidth-1)},
 		// lipgloss measures a tab as NO cells and draws it as four, so a line a
 		// measurement says fits is drawn wider than the bar and WRAPS.
 		{"tabs", "delete failed:" + strings.Repeat("\tfield\terror", 12)},

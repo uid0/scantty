@@ -527,17 +527,22 @@ knowing before touching any of it:
   status row, for the same reason.
   **THAT ONE-ROW CLAIM IS CONDITIONAL, AND THE CONDITION IS ENFORCED RATHER
   THAN ASSUMED.** It used to be stated flat, and it was only ever true at 80
-  columns and up: Root draws from a terminal width of 45 (`app.go`'s
-  `contentWidth` gate), and at 60 `screenBodyWidth` is 31, which leaves
-  `jdeCaveatLines` 29 cells — the loss-first headline broke at exactly 29 and a
-  trim keeping the first row alone stated the loss with the remedy gone. So
+  columns and up: Root then drew from a terminal width of 45, and at 60
+  `screenBodyWidth` is 31, which leaves `jdeCaveatLines` 29 cells — the
+  loss-first headline broke at exactly 29 and a trim keeping the first row alone
+  stated the loss with the remedy gone. THAT REPORT IS WHAT THE SIZE CONTRACT
+  WAS SETTLED FROM: 60 is not a pane an operator can reach any more, and the
+  construction below is kept because a property that cannot break beats a floor
+  that could be moved. So
   `voidCaveats` now takes the pane width and withholds BOTH caveats — headline
   and prose as a UNIT, since the prose states the loss too — wherever the
   headline would not fold to one row. Refuse rather than mutilate, the stance
   `jdeTooShort` takes one level up; it is NOT the silence rule 1 forbids, which
   is about a keypress changing nothing visible. The gate reads `bodyWidth()` and
-  no named width ON PURPOSE: this file says 80 must HOLD while `app.go` draws
-  down to 45, and a gate computed from the real pane needs no answer to that.
+  no named width ON PURPOSE: it was written while this file said 80 must HOLD
+  and `app.go` drew down to 45 with the gap unsettled, and a gate computed from
+  the real pane needed no answer to that — it still needs none now that
+  `minTerminalWidth` has settled it. Do not swap in the constant.
   **THE GATE ANSWERS FOR THE WHOLE HEADLINE SET, NOT FOR THE BRANCH BEING
   DRAWN** (`voidCaveatsFit`), and the property is that both answers are withheld
   together or drawn together. Asked of one branch it gave each answer the
@@ -547,12 +552,14 @@ knowing before touching any of it:
   only left possible, severities inverted by two cells of prose. The maximum
   over the set makes the threshold single by CONSTRUCTION, so rewording one
   branch moves both. Measured with the layer's own functions, it currently
-  evaluates to 77 columns and up (`screenBodyWidth(77)` = 48, which is the
-  46-cell longer headline plus `jdeIndent`); that number is an OUTPUT of the
+  evaluates to a budget of 47 cells and up; that number is an OUTPUT of the
   wordings, and `TestPOLineRemove_BothVoidAnswersAreWithheldOrDrawnTogether`
-  asserts the symmetry rather than the number, reporting the width it comes to.
-  No wording carrying both facts fits the 18 cells the narrowest drawable pane
-  leaves.
+  asserts the symmetry rather than the number, reporting what it comes to. The
+  narrowest pane the size contract leaves is 51, so the gate never WITHHOLDS at
+  a real terminal now — it is a guard against a longer WORDING — which is why
+  that test asks the symmetry at two scopes: over the drawable panes, where both
+  answers are always drawn, and over `voidCaveats`' own budgets, where the
+  withheld side lives.
   `TestPOLineRemove_AShortVoidPaneKeepsTheVanishingOrderWarning` sweeps every
   drawable height at every drawable WIDTH — derived from Root's own gate
   (`jdeDrawableWidths`), because three hand-picked widths is exactly how the
@@ -560,8 +567,9 @@ knowing before touching any of it:
   remedy. That check keys on the loss FRAGMENT, not on the headline: keyed on
   the headline it could not fail, since the remedy leads and is therefore a
   substring of it, and a SPLIT headline reads as absent once `poRemoveFlatPane`
-  has collapsed the pane. Verified by reverting both halves: it reports from
-  45x14 through 79x12, 60x12 among them, and at no width from 80 up.
+  has collapsed the pane. Verified by reverting both halves, back when Root drew
+  below 80: it reported from 45x14 through 79x12, 60x12 among them, and at no
+  width from 80 up.
   **THE ESSENTIAL ROW IS BOUNDED AS ASSEMBLED, NOT PART BY PART.**
   `removalHeadline` (shared by both confirms) clipped the line's NAME to what
   the lead and the ` · N ordered` facts left, FLOORED AT 1, and then appended
@@ -573,7 +581,10 @@ knowing before touching any of it:
   every terminal width from 45 to 53 (delete) and 45 to 51 (void), by a sweep
   reading the screen's OWN `View` — measured off the CLIPPED pane the check
   cannot fail, because the truncation has already happened
-  (`TestPOLineRemove_TheIdentityRowFitsThePaneOnBothConfirms`).
+  (`TestPOLineRemove_TheIdentityRowFitsThePaneOnBothConfirms`). Those widths are
+  below the size contract's floor, so the ordered quantity now survives at every
+  pane an operator can reach and that sweep ASSERTS it; the give-order's second
+  stage is exercised over `removalHeadline`'s own budgets instead.
   THE GIVE-ORDER IS A DECISION: where the pane cannot hold both, the FACTS give
   and the NAME keeps the room, leaving `poRowDropMark`. That qualifies
   `deleteHeadline`'s standing "the ordered quantity never gives" — true of every
@@ -1579,7 +1590,8 @@ either:
   afford only one marker row it draws the shared one. That is deliberate: base
   budgeted against a height `layout.go` documents as a lie below a terminal
   height of 10. Both bars fold at `listPaneCells` rather than the fixed 51: a
-  fold is safe at 51 only while the pane HAS 51 cells, and at width 45 it has 16.
+  fold is safe at 51 only while the pane HAS 51 cells, and at the width 45 Root
+  drew from before the size contract it has 16.
   THE HELD SET IS DERIVED FROM WHAT EACH KEY'S PRODUCT IS, and there is exactly
   one because there is exactly one refused pane. Read `listRefusedHoldsKey` for
   the members rather than a roster restated here — restating it is what has
@@ -1626,9 +1638,11 @@ either:
   is not the one the code computed, unmarked, with `StyleMuted`'s closing reset
   clipped off the end. `ListScreen` keeps `terminalWidth` now and `listPaneCells`
   reads `screenBodyCells` — the UNFLOORED width, added to `layout.go` for the
-  reason `screenBodyRows` was: `screenBodyWidth`'s floor of 20 is four cells more
-  than Root draws at width 45, and a bound that spends cells the pane does not
-  have is not a bound.
+  reason `screenBodyRows` was: `screenBodyWidth`'s floor of 20 was four cells
+  more than Root drew at width 45, and a bound that spends cells the pane does
+  not have is not a bound. The size contract has since put that floor out of
+  reach (`TestLayout_TheWidthFloorIsNeverReached`); the bound goes on reading
+  the honest accessor rather than resting on that.
   WHATEVER MUST SURVIVE MUST LEAD, once more, and here it decides the WORDING.
   On a REFUSAL the load-bearing clause is the WAY OUT, so `listTooShortWayOut`
   leads in its own fold segment, then the height to RESIZE TO, then the height
@@ -1644,9 +1658,10 @@ either:
   wording asserting that no key WORKS would be false of every key
   `listRefusedHoldsKey` does NOT hold, which is why the claim is about the
   LEGEND: what is true whatever stays bound is that the action bar is not drawn.
-  It also has to fit the 16
-  cells width 45 gives, or it folds into a first line that denies without
-  naming — check any rewording against that budget, which the sweeps do.
+  The wording was shaped to fit the 16 cells width 45 gives, or it folds into a
+  first line that denies without naming; the size contract has put the narrowest
+  pane at 51, so that is no longer the binding budget, but the rule is unchanged
+  and the sweeps check any rewording against the pane Root really draws.
   ESC IS NAMED BECAUSE ESC WORKS THERE, and it is PRESSED rather than read off
   Root's switch (`TestList_ARefusedPaneNamesAKeyThatReallyLeaves`, through a real
   Root, with the back-stack both empty and loaded): a refused list is never
@@ -1660,8 +1675,12 @@ either:
   WHERE BOTH WILL NOT FIT, THE HEIGHT IS WHAT GIVES, and the state is narrow: a
   ONE-ROW pane (terminal height 7, since `screenBodyRows` is height − 6) keeps
   only the first folded line, and whether that line still holds the figure
-  depends on the width — 51 cells keeps it, the 16 that width 45 gives does not,
-  so only the way-out clause is drawn there, marked. From two rows up both are on the
+  depends on the width — 51 cells keeps it, and the 16 that width 45 gave did
+  not, so only the way-out clause was drawn there, marked. The size contract put
+  the narrowest pane at 51, so the figure survives at every one-row pane an
+  operator can reach; the sweep still SCOPES the figure by `listPaneRows` rather
+  than asserting it flat, because that scoping is what keeps the claim true if
+  the floor is ever reopened. From two rows up both are on the
   pane at every drawable width, which is why the sweep asks the two claims at
   different scopes: the way out at every drawable pane, the figure wherever
   `listPaneRows` is more than one.
@@ -1772,23 +1791,32 @@ either:
   walk; `po_edit_rows_test.go` is the worked example and also requires an
   ellipsis on every clipped value. Keep dropped grid flags on the row itself,
   never only on a continuation row that may fall below the window.
+- **THE SIZE CONTRACT IS 80 COLUMNS BY 7 ROWS.** Root refuses to draw below
+  either dimension, so every unqualified width guarantee in this file inherits
+  the 51-cell pane an 80-column terminal leaves. `internal/tui/layout.go` owns
+  the contract and its rationale; `internal/tui/minimum_width_test.go` derives
+  the reachable widths and guards the refusal. Read those before changing a
+  width guarantee or the floor.
 - **A CLIP THAT CARRIES A NUMBER MEASURES `screenBodyCells`, NOT
   `jdeScreen.bodyWidth()`.** `bodyWidth()` reads `screenBodyWidth`, whose floor
-  of 20 is FOUR CELLS more than Root draws at a terminal width of 45
-  (`layout.go` says so), so a bound expressed in it overspends into whatever sits
-  at the row's tail — and on the asset-meter screens that is a reading. Measured:
-  the record confirm's headline came to 18 cells against the 14 the pane had, and
-  `clampToBox` took the tail with no mark. `ListScreen` keeps `listPaneCells` for
-  exactly this and `internal/tui/asset_meter_value.go` keeps `assetPaneCells`;
-  the rest of the columnar layer still measures against `bodyWidth()`, which is
-  the class `jdeRowsPastThePane` records and is the layer's to fix.
+  of 20 was FOUR CELLS more than Root drew at a terminal width of 45
+  (`layout.go` says so), so a bound expressed in it overspent into whatever sat
+  at the row's tail — and on the asset-meter screens that was a reading.
+  Measured before the size contract: the record confirm's headline came to 18
+  cells against the 14 the pane had, and `clampToBox` took the tail with no
+  mark. `ListScreen` keeps `listPaneCells` for exactly this and
+  `internal/tui/asset_meter_value.go` keeps `assetPaneCells`; the rest of the
+  columnar layer still measures against `bodyWidth()`, which is the class
+  `jdeRowsPastThePane` records and is the layer's to fix.
 - **80 columns leaves the pane 51.** `screenBodyWidth(80)` is
   `80 - navColumnWidth(24) - 1 - padding(4)` = **51**, and the action bar gets 49
   of them. That is the number every columnar layout has to be checked against,
   and it is small enough that a hint, a six-column grid or a long value will not
   fit without help — `jdeFitRow`, `poFitLineGrid` and `jdeCaveatLines` in
   `jde_form.go` / `po_detail.go` are the three folds that exist for it.
-  51 is the width that must HOLD, not the width to render as though we had, and
+  51 is the width that must HOLD — and since the size contract above it is also
+  the NARROWEST pane Root draws, so "holds at 51" and "holds" are one claim —
+  not the width to render as though we had, and
   which of the two a bound is depends on what it does when it bites. FOLDING
   narrow costs an extra line and loses nothing, so the folders (`pickerWrap` and
   everything through it, `pane_text.go`) stay on `pickerPaneWidth`. CLIPPING
@@ -3068,10 +3096,16 @@ is the authority; read it before adding a frame or wording a bar.
   dead, and `jdeBarOf` must then be fed a STRIPPED view, because it anchors on
   the bar's rule and that run of hyphens is styled — with colour on it finds no
   bar anywhere and the sweep passes over the whole package. Its width axis is
-  `jdePaneWidths` and not every drawable width ON PURPOSE: at the 45-column floor
-  a picker row has sixteen cells and two different catalogue items both draw as
-  `▸ Hex b…  AF-`, so the key moves the cursor AND the window while the pane is
-  unchanged. That is rule 5's width form, not a bar naming a dead key.
+  `jdePaneWidths` and not every drawable width — and the REASON it gives has
+  changed, which the file records rather than quietly swapping, because a
+  recorded reason gets read as a diagnosis. It used to be that at the 45-column
+  floor a picker row has sixteen cells and two different catalogue items both
+  draw as `▸ Hex b…  AF-`, so the key moved the cursor AND the window while the
+  pane was unchanged — rule 5's width form, not a bar naming a dead key. The
+  size contract took that width away; what keeps the narrowing now is COST, at
+  11s over three widths against roughly 150s over all of them, in a package that
+  has hit `go test`'s 600s limit twice. The two sweeps that DO walk every
+  drawable width are the bar sweeps the floor was measured against.
 - **A FIXTURE WHOSE ROWS DIFFER ONLY PAST THE CLIP CANNOT REPORT MOVEMENT.** The
   reorder picker's nine rows were `Hex bolt M8x40 zinc #1 … #9` with identical
   quantities, and `poFitRow` clips the name from the RIGHT, so at 80 columns

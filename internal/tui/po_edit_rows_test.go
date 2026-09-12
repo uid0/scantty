@@ -492,34 +492,59 @@ func TestPOEditRows_TheCostBoxNamesItsDenominator(t *testing.T) {
 // height by construction, so the walk is over the widths — every one Root draws,
 // since the fit's give-order is a function of the pane — and both branches of
 // the fit are required to have been reached, or the check was made on one.
+//
+// THE SECOND FIXTURE IS WHAT REACHES THE DROPPED BRANCH, and it is here because
+// settling the size contract took the old way of reaching it away: poFitLineGrid
+// gives the flag column up when the numeric columns leave less than
+// poGridItemMinW for the description, and the ordinary fixture's numbers left
+// room at every pane from 80 columns up — so the counter below reported the drop
+// at nothing at all. A PO whose quantities and line totals run to the columns'
+// own maxima is ordinary MRO data rather than a contrivance, and it drops the
+// flag at the narrow end of the drawable range while keeping it at the wide end.
+// The width alone is no longer an axis that can reach both.
 func TestPOEditRows_AVoidedLineSaysSoOnItsOwnRow(t *testing.T) {
 	const voided = 1 // poEditRowsPO's second line
+	widePO := func() *omsapi.PurchaseOrder {
+		po := poEditRowsPO(nil)
+		po.Items[0].QuantityOrdered = 123456789
+		po.Items[0].EstimatedCost = omsapi.DecimalString("12345678.9000")
+		return po
+	}
+	fixtures := []struct {
+		name string
+		mk   func() *omsapi.PurchaseOrder
+	}{
+		{"ordinary", func() *omsapi.PurchaseOrder { return poEditRowsPO(nil) }},
+		{"wide numeric columns", widePO},
+	}
 	dropped, kept := 0, 0
-	for _, w := range jdeDrawableWidths() {
-		if poFitLineGrid(screenBodyWidth(w), poEditRowsPO(nil).Items).flag {
-			kept++
-		} else {
-			dropped++
-		}
-		for _, cursor := range []int{0, poEditLineBase + voided} {
-			s := poEditRowsScreen(nil)
-			s.cursor = cursor
-			s.syncFocus()
-			rowPrefix := jdeIndent + padCell("2", poGridNumW, alignRight) + "  "
-			drawn := false
-			for _, line := range poEditRowsPane(s, w, 60) {
-				if !strings.HasPrefix(line, rowPrefix) {
-					continue
-				}
-				drawn = true
-				if !strings.Contains(line, "[voided]") {
-					t.Errorf("at %d columns (cursor %d) the voided line's row reads as a live "+
-						"one: %q", w, cursor, line)
-				}
+	for _, f := range fixtures {
+		for _, w := range jdeDrawableWidths() {
+			if poFitLineGrid(screenBodyWidth(w), f.mk().Items).flag {
+				kept++
+			} else {
+				dropped++
 			}
-			if !drawn {
-				t.Errorf("at %d columns (cursor %d) the voided line's row is not on the pane at "+
-					"all, so nothing was checked", w, cursor)
+			for _, cursor := range []int{0, poEditLineBase + voided} {
+				s := NewPurchaseOrderEditScreen(Deps{}, f.mk())
+				s.cursor = cursor
+				s.syncFocus()
+				rowPrefix := jdeIndent + padCell("2", poGridNumW, alignRight) + "  "
+				drawn := false
+				for _, line := range poEditRowsPane(s, w, 60) {
+					if !strings.HasPrefix(line, rowPrefix) {
+						continue
+					}
+					drawn = true
+					if !strings.Contains(line, "[voided]") {
+						t.Errorf("%s at %d columns (cursor %d) the voided line's row reads as a "+
+							"live one: %q", f.name, w, cursor, line)
+					}
+				}
+				if !drawn {
+					t.Errorf("%s at %d columns (cursor %d) the voided line's row is not on the "+
+						"pane at all, so nothing was checked", f.name, w, cursor)
+				}
 			}
 		}
 	}

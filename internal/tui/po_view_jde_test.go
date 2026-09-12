@@ -667,12 +667,18 @@ func TestPOView_AttachmentNameUsesEveryColumnThePaneHas(t *testing.T) {
 //
 // The crash sweep below could not catch this: a fragment is not a panic, and the
 // frame is not empty. So this asserts CONTENT, on the clipped render.
+//
+// IT WALKED 52 THROUGH 79 UNTIL THE SIZE CONTRACT WAS SETTLED, and Root draws at
+// none of those now — the band was chosen as "from the narrowest width where the
+// leader column still fits, up to the first legibility width", and the floor
+// swallowed it whole. So the claim is made at the two scopes it really has. The
+// PANE loop walks every width Root draws and asserts the row shows the value:
+// that is what an operator meets, and it still fails on a fragment. The FOLD
+// loop asks jdeWrapNote the same question over the column budgets the bug lived
+// in, so the behaviour the band used to cover is still held rather than quietly
+// dropped along with the widths.
 func TestPOView_NarrowPaneNeverShowsAFragmentOfAValue(t *testing.T) {
-	// From the narrowest width at which the leader column still fits the pane —
-	// below it the strip has no room at all and the row draws untruncated, which
-	// is the pane-is-too-small floor rather than a fold — up to the first
-	// legibility width.
-	for width := 52; width < 80; width++ {
+	for _, width := range jdeDrawableWidths() {
 		t.Run(fmt.Sprintf("%dcol", width), func(t *testing.T) {
 			s, r := poDetailAt(t, width)
 			// "Supplier ....." and not "Supplier": the anchor has to miss the
@@ -691,6 +697,36 @@ func TestPOView_NarrowPaneNeverShowsAFragmentOfAValue(t *testing.T) {
 			}
 		})
 	}
+
+	// The fold, over the budgets the fragment lived in. From TWO columns,
+	// which is jdeWrapNote's own boundary: below it an over-long word has no
+	// cell to spend on the mark and is dropped, and no pane hands the fold a
+	// budget that small — the leader column alone is seven.
+	t.Run("fold", func(t *testing.T) {
+		const value = "Acme Fasteners & Industrial Supply Co."
+		first := strings.Fields(value)[0]
+		whole, cut := 0, 0
+		for budget := 2; budget <= screenBodyCells(jdeDrawableWidths()[0]); budget++ {
+			lines := jdeWrapNote(value, budget)
+			if len(lines) == 0 {
+				t.Errorf("%d cols: the fold returned nothing for a value that has one", budget)
+				continue
+			}
+			switch {
+			case strings.HasPrefix(lines[0], first):
+				whole++
+			case strings.HasSuffix(lines[0], "…"):
+				cut++
+			default:
+				t.Errorf("%d cols: the fold opens with %q, which is neither the value nor a "+
+					"marked cut of it — a piece of a value reads as the value", budget, lines[0])
+			}
+		}
+		if whole == 0 || cut == 0 {
+			t.Errorf("the fold drew the value's first word at %d budgets and marked a cut at "+
+				"%d; both have to be reached or one arm asserts nothing", whole, cut)
+		}
+	})
 }
 
 // TestPOView_MarginNotesUseTheWholePane: a line drawn behind jdeIndent alone has

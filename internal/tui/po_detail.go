@@ -2063,8 +2063,10 @@ func poLineBlock(lineNum int, li omsapi.PurchaseOrderItem, poSupplier string, fi
 	//
 	// The item cell starts seven cells in, so `[voided]` ends at 15 and
 	// `✓ received` at 17. At 45 columns the pane is 16, the one width where the
-	// receipt's last letter is off it: that is the layer's floored width
-	// (screenBodyWidth answers 20 below 49), where every columnar row overruns.
+	// receipt's last letter was off it — that is the layer's floored width
+	// (screenBodyWidth answers 20 below 49), where every columnar row overran.
+	// The size contract put the narrowest pane at 51, so that width is no longer
+	// reachable; the reasoning is kept because it is what the flag order is FOR.
 	switch f := poLineFlag(li); {
 	case fit.flag:
 		flag = f

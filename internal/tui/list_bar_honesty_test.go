@@ -418,6 +418,77 @@ func listPaneLines(t *testing.T, s *ListScreen, termHeight int) []string {
 		clampToBox(s.View(), screenBodyWidth(80), screenBodyHeight(termHeight)), "\n")
 }
 
+// listPaneLinesAt is listPaneLines at a terminal WIDTH as well as a height, and
+// it clips with the UNFLOORED pair: screenBodyCells and screenBodyRows are what
+// Root really gives, where screenBodyWidth and screenBodyHeight both floor and a
+// floor is a lie at a small pane. It exists for the width sweep below; the
+// 80-column helper above is the one every other check in this file reads, and
+// 80 is the size contract's floor and the width the interface is modelled on.
+func listPaneLinesAt(t *testing.T, s *ListScreen, w, h int) []string {
+	t.Helper()
+	return strings.Split(clampToBox(s.View(), screenBodyCells(w), screenBodyRows(h)), "\n")
+}
+
+// listSizedAt is listSized at a width as well as a height.
+func listSizedAt(t *testing.T, build func() *ListScreen, w, h int) *ListScreen {
+	t.Helper()
+	s := build()
+	s.loading = false
+	s.rows = listFixtureRows(60)
+	next, _ := s.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	return next.(*ListScreen)
+}
+
+// TestList_TheFooterIsLegibleAtEveryDrawableWidth: on every list in the app, at
+// every pane Root will draw, every segment the footer claims survives the clip
+// on a line of the pane.
+//
+// THE WIDTH AXIS IS THE POINT, and it is the list half of what the size
+// contract buys. TestList_FooterNamesExactlyTheKeysThatWork asserts the same
+// legibility at 80 columns, which is the width the footers are folded against;
+// nothing asked it at any other width. Measured before minTerminalWidth was
+// set, with Root still drawing from 45 columns, ALL EIGHT list surfaces lost
+// `g/G home/end top/bottom` off the clipped pane from a terminal width of 53
+// down — keys bound in ListScreen.Update, working, and unnamed, which is
+// standing rule 2 broken by geometry on every list in the program at once.
+//
+// With the floor at minTerminalWidth there is no residue: every segment of
+// every footer is legible at every drawable width and height. Lower the floor
+// and this goes red at the widths it opens up.
+//
+// A pane the screen REFUSES is not a claim about the footer —
+// TestList_AShortPaneRefusesRatherThanCuttingTheFooter owns the refusal's own
+// honesty — so a refused pane is skipped here exactly as it is there.
+func TestList_TheFooterIsLegibleAtEveryDrawableWidth(t *testing.T) {
+	widths, heights := jdeDrawableWidths(), jdePaneHeights()
+	for _, surface := range listBarSurfaces() {
+		t.Run(surface.name, func(t *testing.T) {
+			for _, w := range widths {
+				for _, h := range heights {
+					for _, scrolled := range []bool{false, true} {
+						sized := listSizedAt(t, surface.build, w, h)
+						if scrolled {
+							next, _ := sized.Update(listRuneKey("G"))
+							sized = next.(*ListScreen)
+						}
+						if !sized.paneDrawn() {
+							continue
+						}
+						pane := listPaneLinesAt(t, sized, w, h)
+						for _, segment := range strings.Split(sized.footerHint(), " · ") {
+							if !listLineHolds(pane, segment) {
+								t.Errorf("the %s footer claims %q on a line the pane cuts off "+
+									"(%dx%d, scrolled %v):\n%s", surface.name, segment, w, h,
+									scrolled, strings.Join(pane, "\n"))
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
 // listFooterLegible reports whether one footer segment ("N new PO") survives
 // the clip whole, on a single visible line of a REAL pane.
 //
@@ -1801,14 +1872,25 @@ var listMarkerLineCases = []struct {
 // on the row whose whole job is to say how much of the list is out of sight.
 //
 // Swept over Root's own drawable widths rather than a width somebody picked,
-// because 45 and 60 are both below the 80 every legibility loop in this file
+// because 45 and 60 were both below the 80 every legibility loop in this file
 // used to walk, which is precisely why nothing reported it.
+//
+// SINCE THE SIZE CONTRACT WAS SETTLED, NO PANE AN OPERATOR CAN REACH MAKES THIS
+// ROW GIVE GROUND — the narrowest is 51 cells and the full wording fits — so the
+// LADDER is no longer exercised here, and this sweep's vacuity guard said so the
+// first time it ran under the floor. The ladder is a property of the BUILDER
+// over a budget rather than of the panes Root draws, so it is asserted as one,
+// next door in TestList_TheMarkerRowGivesGroundInOrder. What stays here is the
+// claim about the panes: at every one of them the row fits, states no figure the
+// list does not have, and names both directions or says it gave one up. Neither
+// half is a subset of the other — a builder correct at every budget can still be
+// handed the wrong budget, which is the mistake screenBodyWidth's floor used to
+// make on this exact axis.
 func TestList_TheMarkerRowTellsBothFactsOrMarksTheCut(t *testing.T) {
 	widths := jdeDrawableWidths()
 	if len(widths) == 0 {
 		t.Fatal("no drawable widths — the derivation is broken, not the app")
 	}
-	degraded := 0
 	for _, tc := range listMarkerLineCases {
 		for _, w := range widths {
 			cells := screenBodyCells(w)
@@ -1821,11 +1903,6 @@ func TestList_TheMarkerRowTellsBothFactsOrMarksTheCut(t *testing.T) {
 			if got := lipgloss.Width(line); got > cells {
 				t.Errorf("%s at width %d: the row draws %d cells into a pane of %d: %q",
 					tc.name, w, got, cells, line)
-			}
-			// The ladder was exercised at this width, which is what stops the
-			// sweep certifying a bound it never reached (the vacuous-fixture rule).
-			if lipgloss.Width(line) < lipgloss.Width(listMarkerLine(tc.above, tc.below, 999)) {
-				degraded++
 			}
 
 			marked := strings.Contains(line, "…")
@@ -1849,10 +1926,64 @@ func TestList_TheMarkerRowTellsBothFactsOrMarksTheCut(t *testing.T) {
 			}
 		}
 	}
-	if degraded == 0 {
-		t.Fatal("no width in Root's drawable range made the marker row give any ground, " +
-			"so this sweep only ever measured the full wording — either the widths are " +
-			"no longer derived or the row has stopped being bounded at all")
+}
+
+// TestList_TheMarkerRowGivesGroundInOrder: listMarkerLine shortens in the stated
+// order at every budget down to a single cell — the PROSE gives, the arrows and
+// the COUNT never do, and where even the shortest form will not fit the count is
+// DROPPED and the row MARKED.
+//
+// It is a claim about the BUILDER and says so, because since the size contract
+// was settled no pane Root draws is narrow enough to make the row give anything
+// up: the sweep above measures the panes and would certify the ladder without
+// ever reaching it. The budgets below are not terminal widths and are not
+// pretending to be; they are the domain the function is written for, and the
+// reason to keep testing it there is that the ladder is the row's answer if the
+// floor is ever reopened — untested, it would rot in exactly the interval it
+// exists to cover.
+func TestList_TheMarkerRowGivesGroundInOrder(t *testing.T) {
+	narrowest := screenBodyCells(jdeDrawableWidths()[0])
+	degraded, marked := 0, 0
+	for _, tc := range listMarkerLineCases {
+		full := listMarkerLine(tc.above, tc.below, 999)
+		for cells := 1; cells <= narrowest; cells++ {
+			line := listMarkerLine(tc.above, tc.below, cells)
+			if line == "" {
+				t.Errorf("%s at %d cells: the row says nothing at all", tc.name, cells)
+				continue
+			}
+			if got := lipgloss.Width(line); got > cells {
+				t.Errorf("%s at %d cells: the row draws %d: %q", tc.name, cells, got, line)
+			}
+			if lipgloss.Width(line) < lipgloss.Width(full) {
+				degraded++
+			}
+			if strings.Contains(line, "…") {
+				marked++
+			}
+			if n, stated := listMarkerCount(line); stated && n != tc.below {
+				t.Errorf("%s at %d cells states %d rows below, and the list has %d — a cut "+
+					"number reads as a number: %q", tc.name, cells, n, tc.below, line)
+			} else if !stated && tc.below > 0 && !strings.Contains(line, "…") {
+				t.Errorf("%s at %d cells drops the count of %d and does not mark the row: %q",
+					tc.name, cells, tc.below, line)
+			}
+			// BOTH FACTS OR NEITHER — with the marked row as the third,
+			// legitimate answer, which is where this differs from the pane
+			// sweep above. At a handful of cells there is no arrangement that
+			// names two directions, and the row says so with the mark rather
+			// than dropping one in silence; at every pane Root draws there are
+			// 51 cells and the question does not arise.
+			if tc.above && tc.below > 0 && !strings.Contains(line, "…") &&
+				(!strings.Contains(line, "↑") || !strings.Contains(line, "↓")) {
+				t.Errorf("%s at %d cells names one direction of two and does not say it gave "+
+					"the other up: %q", tc.name, cells, line)
+			}
+		}
+	}
+	if degraded == 0 || marked == 0 {
+		t.Fatalf("the ladder degraded at %d budgets and marked a cut at %d; both have to be "+
+			"reached or this sweep only measured the full wording", degraded, marked)
 	}
 }
 

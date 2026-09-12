@@ -45,6 +45,16 @@ The first run will fail fast with a clear message if either URL is missing. The 
 
 If `SCANTTY_OMS_TOKEN` is unset, scantty still works for the `AllowAny` endpoints — barcode lookup, scanning items/assets/fixtures, and creating reorder requests in kiosk mode all function unauthenticated. Receiving needs a token throughout: every endpoint the receiving flow drives is authenticated, the worksheet `GET` it opens on included, so without one the form can only report that the session is not signed in. Most other writes need a token too.
 
+## Terminal size
+
+Scantty draws in a terminal of **at least 80 columns and 7 rows** and refuses
+below either, saying which it needs and what it has:
+`scantty needs 80 columns; this terminal has 63`. 80 is the width every layout
+in the program is written against — the sidebar takes 24 columns and its border
+one, leaving a 51-column pane and a 49-column action bar. Anything wider than 80
+is used as it arrives: wide panes add detail, but never trade away what the
+standard 80-column layout shows.
+
 ## Keys
 
 Scantty reserves system keys for **scroll / exit / submit / edit** and nothing

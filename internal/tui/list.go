@@ -385,8 +385,9 @@ func (s *ListScreen) markerRows() int {
 // rather than only at 51 cells. The shared row was assembled at full length and
 // then clipped to the pane, so below the width it fits the operator read
 // "  ↑ more above · ↓ 1" (45 columns) or "  ↑ more above · ↓ 12 more b"
-// (60) — a row promising two facts and delivering one and a half, with the
-// truncation unmarked and, at 45, A COUNT CUT MID-NUMBER. A cut number reads as
+// (60) — widths Root drew at before the size contract — a row promising two
+// facts and delivering one and a half, with the truncation unmarked and, at 45,
+// A COUNT CUT MID-NUMBER. A cut number reads as
 // a number: "↓ 1" over twelve rows below is not a shortened fact, it is a wrong
 // one, which is the price-column rule (@ 3.50 drawn as @ 3.) on a different row.
 //
@@ -540,10 +541,13 @@ func (s *ListScreen) paneDrawn() bool {
 // cannot be falsified by a binding somewhere else.
 //
 // IT FITS THE NARROWEST DRAWABLE PANE, which is a constraint on the wording and
-// not a happy accident: width 45 gives 16 cells, and a longer phrasing ("No keys
-// named but Esc" is 21) folds on spaces into a first line that denies without
-// naming — which at a one-row pane is the whole notice. Any rewording has to be
-// checked against that budget, and the sweeps below check it.
+// not a happy accident. The wording was shaped when Root drew from a terminal
+// width of 45, where the pane is 16 cells and a longer phrasing ("No keys named
+// but Esc" is 21) folds on spaces into a first line that denies without
+// naming — which at a one-row pane is the whole notice. The size contract has
+// since put the narrowest pane at 51, so the budget is no longer the binding
+// one; the rule is unchanged and the sweeps below still check it against the
+// pane Root really draws, whatever that becomes.
 //
 // The prose beneath does not repeat the denial as a count — it says why the bar
 // is absent and what Esc does — so nothing below can contradict what leads.
@@ -581,11 +585,12 @@ const listTooShortWayOut = "No bar but Esc"
 // WHAT GIVES AND WHERE, said plainly because it is a real loss. A ONE-ROW pane
 // keeps only the first folded line — that is terminal height 7, since
 // screenBodyRows is height − 6 — and whether that line still carries the height
-// depends on the WIDTH: at 51 cells it reads `No bar but Esc · needs 15 rows ·
-// has 7…`, at 31 it keeps the figure, and at the 16 cells width 45 gives it
-// folds after the clause alone and the height is gone. So the loss is confined to a
-// one-row pane on a narrow terminal, and the way out survives every one of
-// them; from two rows up both facts are on the pane at every drawable width.
+// depends on the WIDTH: at 51 cells, which is what the size contract's floor
+// leaves, it reads `No bar but Esc · needs 15 rows · has 7…`, and at the
+// narrower panes Root drew before that floor it folded after the clause alone
+// and the height was gone. So the loss is confined to a one-row pane, and the
+// way out survives it; from two rows up both facts are on the pane at every
+// drawable width.
 //
 // The height figure used to lead, and before that the whole thing read
 // "Too short: needs 16 rows, has 12." as ONE segment, which at 16 cells folded
@@ -596,9 +601,12 @@ const listTooShortWayOut = "No bar but Esc"
 // is not the one the code computed.
 //
 // Both bounds are the LIVE pane: `cells` comes from screenBodyCells, the
-// unfloored width, because screenBodyWidth's floor of 20 is four cells more
-// than Root really draws at width 45. The fold is pickerWrap and the mark is
-// cellPrefix, both single forward passes over cells rather than runes.
+// unfloored width, because screenBodyWidth's floor of 20 was four cells more
+// than Root really drew at width 45 — the floor is out of reach since the size
+// contract (TestLayout_TheWidthFloorIsNeverReached) and the bound goes on
+// reading the honest number rather than resting on that. The fold is pickerWrap
+// and the mark is cellPrefix, both single forward passes over cells rather than
+// runes.
 //
 // The height is stated in TERMINAL rows, the only unit an operator can resize:
 // screenChromeRows is screenBodyRows' own inverse, so the two cannot drift.
@@ -1459,12 +1467,12 @@ func (s *ListScreen) searchBarHint() string {
 // and a constant here silently spends the extra row out of the pane's bottom.
 // MEASURED AT THE PANE THE TERMINAL REALLY GAVE, not at pickerPaneWidth. A fold
 // is normally safe at the fixed 51 — an extra line costs a row and loses no
-// words — but that is only true while the pane HAS 51 cells. Root draws from a
-// terminal width of 45, where the pane is 16, and a bar folded at 51 then runs
-// past it and clampToBox takes the tail: the same claim off the same edge the
-// horizontal fold exists to prevent. Both bars on this screen do it, so both
-// read listPaneCells; at 80 columns the two numbers are the same 51 and nothing
-// moves. It is a function of the footer and the pane's WIDTH, so it still does
+// words — but that is only true while the pane HAS 51 cells. Root drew from a
+// terminal width of 45 when this was written, where the pane is 16, and a bar
+// folded at 51 then ran past it and clampToBox took the tail: the same claim off
+// the same edge the horizontal fold exists to prevent. Both bars on this screen
+// read listPaneCells, which is the live pane; at the size contract's floor the
+// two numbers are the same 51 and nothing moves. It is a function of the footer and the pane's WIDTH, so it still does
 // not move with the HEIGHT, which is what needRows' fixed point rests on.
 func (s *ListScreen) footerRows() int {
 	return 1 + len(pickerWrap(s.footerHint(), s.listPaneCells()))

@@ -256,6 +256,13 @@ func (r Root) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s := m.String(); s == "ctrl+c" || s == "ctrl+q" {
 			return r, tea.Quit
 		}
+		// Zero is the pre-resize sentinel, not a measured terminal size. Keep
+		// accepting input until Bubble Tea supplies its first WindowSizeMsg;
+		// only a size the terminal actually reported may put the hidden screen
+		// behind the refusal.
+		if r.width > 0 && r.height > 0 && terminalTooSmall(r.width, r.height) != "" {
+			return r, nil
+		}
 		// The sidebar menu owns the keyboard while it holds focus — it is a
 		// menu, not a decoration, and the screen behind it is not being typed
 		// into. Ahead of the raw-input check because focus can only have got
@@ -376,15 +383,17 @@ func (r Root) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (r Root) View() string {
+	// The size contract, asked in one place. minTerminalWidth is the width
+	// every budget in this package is written against and terminalTooSmall
+	// carries the argument; what matters here is that the refusal REPLACES the
+	// frame rather than being drawn beside a mutilated one, and that it names
+	// the size needed and the size it has so an operator can act on it.
+	if notice := terminalTooSmall(r.width, r.height); notice != "" {
+		return notice
+	}
+
 	contentWidth := r.width - r.navWidth - 1
 	contentHeight := r.height - 2
-
-	if contentWidth < 20 {
-		return "scantty: terminal too narrow"
-	}
-	if contentHeight < 5 {
-		return "scantty: terminal too short"
-	}
 
 	navView := r.nav.View(contentHeight)
 	titleLine := StyleTitle.Render(r.screen.Title())

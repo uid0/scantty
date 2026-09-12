@@ -1790,7 +1790,16 @@ func TestReceive_TheFreezeIsAnAllowList(t *testing.T) {
 	// it is drawn with at its own size on this pane: where it can hold the lead
 	// clause with its drop mark, the clause is on the pane whole; where it cannot,
 	// the key the note answers is still named — fittedNote's last resort — so the
-	// press is never answered by nothing. Both sides must be reached.
+	// press is never answered by nothing.
+	//
+	// SINCE THE SIZE CONTRACT WAS SETTLED THE SECOND SIDE IS UNREACHABLE, and
+	// that is asserted rather than counted. The narrowest pane Root draws is 51
+	// cells, the block holds the lead with its drop mark there, and so the
+	// operator reads the whole sentence at every pane — which is the point of
+	// having a floor. The last resort stays in the screen because a wording can
+	// grow; if one does, this goes red with the pane that could not hold it, and
+	// the answer is to shorten the sentence rather than to soften this back into
+	// a count.
 	lead := "enter is frozen until the receipt answers"
 	held, unheld := 0, 0
 	var cmd tea.Cmd
@@ -1823,9 +1832,14 @@ func TestReceive_TheFreezeIsAnAllowList(t *testing.T) {
 			}
 		}
 	}
-	if held == 0 || unheld == 0 {
-		t.Errorf("the freeze's answer was judged at %d pane(s) that hold its lead and %d that "+
-			"cannot; both sides have to be reached or the scoping asserts nothing", held, unheld)
+	if held == 0 {
+		t.Errorf("the freeze's answer was judged at no pane that holds its lead, so this " +
+			"sweep asserted nothing about the sentence it is here for")
+	}
+	if unheld > 0 {
+		t.Errorf("%d of %d panes could not hold the freeze's lead clause, so the operator "+
+			"reads a shortened answer on a pane the contract says is big enough; shorten the "+
+			"sentence rather than widening this check", unheld, held+unheld)
 	}
 	if !s.pending {
 		t.Fatal("the receipt stopped being in flight during the sweep, so the answers above " +
@@ -1999,6 +2013,15 @@ func TestReceive_EveryBodyLineBelongsToANavigableRow(t *testing.T) {
 // LAYER's arithmetic, on every columnar screen at once, and not the property
 // these sweeps are about, so the band is excluded BY NAME here rather than
 // quietly: a sweep that stepped over it without saying so would read as coverage.
+//
+// SINCE THE SIZE CONTRACT WAS SETTLED THE BAND IS EMPTY — minTerminalWidth
+// leaves the narrowest pane at 51, well clear of the floor of 20, which is what
+// TestLayout_TheWidthFloorIsNeverReached asserts — so this returns exactly
+// jdeDrawableWidths today. It is kept as a DERIVATION rather than folded into
+// its caller for the reason it was written: the band is a fact about the layer's
+// arithmetic and not about the contract, and if the floor is ever reopened
+// downwards this narrows again on its own instead of leaving every caller
+// sweeping widths at which nothing can be measured.
 func receiveHonestWidths() []int {
 	var out []int
 	for _, w := range jdeDrawableWidths() {
