@@ -2330,12 +2330,23 @@ func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 // tells two presses apart still rides the row that cannot be trimmed.
 //
 // The CONDITION is the correction: this is a measurement, and it was made at 80
-// columns and then applied at every width. At 120 the pane is 91, the subject
-// wants 37 and the whole answer 50, so the row had 25 cells free and spent a
-// pinned-header row redrawing a 23-cell tail it could have carried itself —
-// "51 is the width that must HOLD, not the width to render as though we had"
-// pointed backwards. poLeadOnto asks the row first now, so the reduction fires
-// exactly when the row cannot hold both, which at 80 columns is still always.
+// columns and then applied at every width, so a wide pane with room for both
+// spent a pinned-header row redrawing a tail the status row could have carried
+// itself — "51 is the width that must HOLD, not the width to render as though
+// we had" pointed backwards. poLeadOnto asks the row first now, so the
+// reduction fires exactly when the row cannot hold both, which at 80 columns is
+// still always.
+//
+// No cell counts here, deliberately. The version that carried them was wrong by
+// a cell within a release of being written (the asset picker's subject is 38
+// cells and it said 37), and the numbers were never the claim: the claim is
+// that the row decides on the ROOM IT HAS.
+// TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork measures it on the
+// real screen and names the figures when it fails, and it is worth reading for
+// the margin it had to go looking for — at 120, the widest pane Root draws,
+// the asset picker's answer and its working sentence come to EXACTLY the 91
+// cells the pane has, so the fixture there is a short supplier and the margin
+// is a guarded condition rather than a coincidence.
 func poLeadClause(text string) string {
 	clause, _, _ := strings.Cut(text, poLeadJoint)
 	return clause
@@ -2653,14 +2664,9 @@ func poLeadOnto(lead, subject string, room int) string {
 	if lipgloss.Width(lead)+joint+lipgloss.Width(subject) <= room {
 		return lead + poLeadJoint + subject
 	}
+	// poLeadClause returns one clause, so its width is the whole reservation.
 	lead = poLeadClause(lead)
-	answer, rest, more := strings.Cut(lead, poLeadJoint)
-	floor := lipgloss.Width(answer)
-	if more && rest != "" {
-		// One cell for the ellipsis pickerClip adds, or the clause it is
-		// reserving room for comes back a character short of itself.
-		floor++
-	}
+	floor := lipgloss.Width(lead)
 	if half := room / 2; floor > half {
 		floor = half
 	}
@@ -2687,10 +2693,13 @@ const poLeadJoint = " · "
 //
 // The arithmetic, at 80 columns where room is 51: a lead reserves its first
 // clause, capped at room/2 = 25, and the joint costs 3, so the subject is
-// bounded to 23 in the WORST case (the file's longest first clauses —
-// "shift+tab waits for the submit", "shift+tab is not in the notes" — are over
-// the cap; "enter commits nothing" reserves 22 and leaves 26). These 20 cells
-// fit that with room over for the supplier, which is the part that abbreviates.
+// bounded to 23 in the WORST case. These 20 cells fit that with room over for
+// the supplier, which is the part that abbreviates.
+//
+// The worst case is asserted by
+// TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight and
+// TestPOLeadOnto_TheReductionFiresOnTheROOMAndNotOnAWidth rather than tied to
+// examples that can become stale when answer wording changes.
 //
 // "Creating the purchase order for " was 32 and could not: under the longest
 // lead the row drew "Creating the purchase or…" with the supplier gone
