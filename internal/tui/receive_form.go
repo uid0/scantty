@@ -4154,13 +4154,10 @@ func (s *ReceiveFormScreen) writeOffVerb() string {
 // than the one drawn — a body budgeted a row it does not have, and clampToBox
 // takes that row off the BOTTOM, where the bar is.
 //
-// Two checks hold it, because one of them does not reach far enough alone.
 // TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn is the contract itself,
-// asked of every phase at every header the pane can pay — but a rendered sweep
-// only notices a divergence big enough to FOLD the bar, so it would pass a
-// restated literal that had drifted by one short item.
-// TestJDEForm_NoBarCeilingRestatesABarLiteral asks the rule where it is really
-// decided, of the source: no arm here may return a bar it built itself.
+// asked of every phase at every header the pane can pay and every drawable
+// width. The width axis moves the bar's fold boundary, which lets the rendered
+// sweep catch a drift of a single item.
 func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 	switch s.phase {
 	case phaseLoading:

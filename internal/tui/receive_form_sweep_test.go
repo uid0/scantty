@@ -2563,13 +2563,17 @@ func TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs(t *testing.T) 
 // comparison reports honest bars. The rows are what the budget spends and the
 // rows are what this judges.
 //
+// Width moves the fold boundary, so a drift of one short item that fits at one
+// width crosses the boundary at another and becomes observable here.
+//
 // The phases come from receivePhaseCases, so a phase added to the iota arrives
 // here without anybody remembering it.
 func TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn(t *testing.T) {
 	compared := 0
+	widths := jdeDrawableWidths()
 	for _, c := range receivePhaseCases() {
 		for _, height := range c.paneSizes() {
-			t.Run(fmt.Sprintf("%s at 80x%d", c.name, height), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s at height %d", c.name, height), func(t *testing.T) {
 				build := receiveHarness(t, c.fake, c.lines, 80, height)
 				r, s := build(t)
 				// The Root is only the driver: every fact asked below lives on
@@ -2578,17 +2582,21 @@ func TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn(t *testing.T) {
 				if s.phase != c.phase {
 					t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
 				}
-				ceiling := s.barCeiling()
-				ceilingRows := actionBarRowsFor(s.barWidth(), ceiling)
-				for h := 0; h <= s.paneRows(); h++ {
-					drawn := s.barFor(h)
-					compared++
-					if rows := actionBarRowsFor(s.barWidth(), drawn); rows > ceilingRows {
-						t.Errorf("with a %d-row header the bar folds onto %d row(s) and the "+
-							"ceiling onto %d, so the body is budgeted %d row(s) it does not "+
-							"have and clampToBox takes them off the BOTTOM, where the bar "+
-							"is\nceiling: %+v\ndrawn:   %+v",
-							h, rows, ceilingRows, rows-ceilingRows, ceiling, drawn)
+				for _, width := range widths {
+					next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: height})
+					r = next.(Root)
+					ceiling := s.barCeiling()
+					ceilingRows := actionBarRowsFor(s.barWidth(), ceiling)
+					for h := 0; h <= s.paneRows(); h++ {
+						drawn := s.barFor(h)
+						compared++
+						if rows := actionBarRowsFor(s.barWidth(), drawn); rows > ceilingRows {
+							t.Errorf("at width %d with a %d-row header the bar folds onto %d row(s) and the "+
+								"ceiling onto %d, so the body is budgeted %d row(s) it does not "+
+								"have and clampToBox takes them off the BOTTOM, where the bar "+
+								"is\nceiling: %+v\ndrawn:   %+v",
+								width, h, rows, ceilingRows, rows-ceilingRows, ceiling, drawn)
+						}
 					}
 				}
 			})
