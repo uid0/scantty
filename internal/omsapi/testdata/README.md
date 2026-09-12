@@ -232,3 +232,50 @@ What they pin that a hand-written map does not:
   stack is only countable at `GET /api/forgekey/lockouts/?asset=<id>&is_active=true`.
 * **`lock` answers 201, not 200** — it creates a row — while the other three
   answer 200.
+
+## Reorder create — the three outcomes of `POST /api/reorders/requests/`
+
+| file | request | status | OMS commit |
+|---|---|---|---|
+| `reorder_create_pre_rule.json` | the SECOND anonymous scan of one item | **201** | `9b3a5f09`, remote `main` (tree `77790f74…`) |
+| `reorder_create_filed.json` | the FIRST anonymous scan of one item | **201** | `fc56bcb8`, `fm/oms-anonymous-reorder-duplicate-filing` (tree `e19730ad…`) |
+| `reorder_create_already_requested.json` | the SECOND anonymous scan of the same item | **200** | same |
+| `reorder_create_validation_failed.json` | a POST with **no `item`** | **400** | same |
+
+All four recorded 2026-09-12 against a clean clone on PostgreSQL, with NO
+`Authorization` header — the duplicate rule applies to anonymous submissions
+only, so a recording made with a token could not reach the state at all. One
+database throughout, one item (`Blue nitrile gloves (M)`), and the request pk
+sequence set to seven digits before recording, deliberately: a `BigAutoField`
+decoded the default way renders through `%v` as `1.200041e+06`, and a fixture
+whose id is `3` cannot report that.
+
+`reorder_create_pre_rule.json` is served by the commit BEFORE the rule, which is
+the file the tolerance rests on. ScanTTY lands ahead of the server change, so
+what has to be pinned is not the new shape but the OLD one: a body with no
+marker at all, off a server where the second scan really did file a second row.
+A fixture written from the Go struct would carry whichever key the struct
+declares, so only a recording from before the key existed can prove the client
+still reports that filing as a filing.
+
+What they pin that a hand-written map does not:
+
+* **Two of the three outcomes are 2xx.** The duplicate is a **200** with a body,
+  not an error, so `Client.do` (which fails only at `>= 400`) hands it to the
+  caller as a success. A client reading only the transport reports a request as
+  filed that the server did not file — which is exactly what
+  `internal/tui/reorder_form.go` did.
+* **`already_requested` is a JSON bool on BOTH success bodies**, `false` on the
+  201 as well as `true` on the 200, so one field answers "filed or already
+  recorded" without a client having to notice 201 against 200.
+* **The duplicate body echoes the EXISTING request** — the same `id` as the
+  filed one, `status: "pending"` — which is what lets a client name the request
+  already on file rather than just deny that one was made.
+* **`id` is a NUMBER** (`ReorderRequest` declares no pk, so it is
+  `settings.DEFAULT_AUTO_FIELD`), while `item` is a **string** UUID. Both come
+  off the same hand-widened dict in `ReorderRequestViewSet.create`, which is the
+  builder — the serializer's field list has neither of the two extra keys.
+* **The 400 carries no `already_requested` at all**, so "could not tell" cannot
+  be read as either success.
+* The 200 also carries a member-facing **`detail`** sentence, recorded here and
+  deliberately not decoded — `omsapi.ReorderRequestCreated` says why.

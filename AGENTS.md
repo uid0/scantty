@@ -208,7 +208,6 @@ What is worth knowing before touching any of them:
 - **NOT BUILT, and named so nobody re-derives it as missing:** `update_tracking`
   (a PATCH of four fields, which wants a form), `by_supplier` and
   `generate_cart_links`. None is a dead end — no terminal flow starts them.
-
 ### A WIRE TYPE IS THE BUILDER'S DECISION, NEVER THE MODEL'S
 
 `internal/omsapi/po_line_entry.go` carries the worked example and
