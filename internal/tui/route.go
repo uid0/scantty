@@ -46,8 +46,14 @@ type navSurface struct {
 func workspaceSurfaces(ws Workspace) []navSurface {
 	switch ws {
 	case WSInventory:
+		// "Kits" is a SIBLING of the item list rather than a filter on it,
+		// because the API makes it one: /api/inventory/items/ excludes kits in
+		// get_queryset, so no view of that list can ever contain one, and the
+		// kit list is the only browsable route to a kit there is
+		// (internal/omsapi/kits.go).
 		return []navSurface{
 			{"New item", func(d Deps) Screen { return NewInventoryItemFormScreen(d, "") }},
+			{"Kits", func(d Deps) Screen { return NewKitListScreen(d) }},
 			{"Categories", func(d Deps) Screen { return NewCategoryListScreen(d) }},
 			{"Locations", func(d Deps) Screen { return NewLocationListScreen(d) }},
 			{"Suppliers", func(d Deps) Screen { return NewSupplierListScreen(d) }},

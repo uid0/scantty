@@ -1020,6 +1020,16 @@ func jdeScreenStates() map[string]func() Screen {
 		// body scrolls while the only row a cursor can stand on is the add row.
 		// The bar named PgUp/PgDn there and a page moved nothing, on the DEFAULT
 		// state of a new inventory item.
+		// The kit-CREATE sheet: the same screen with `kit` set before it is
+		// drawn, which is the only thing that puts the bill-of-materials row on
+		// the FORM phase and freezes two of its rows. The base fixture above is
+		// an ordinary item, so without this the row that the whole kit-create
+		// route exists for was on no pane any sweep measured.
+		"InventoryItemFormScreen/kit create": func() Screen {
+			s := NewKitFormScreen(Deps{})
+			s.loading = false
+			return s
+		},
 		"InventoryItemFormScreen/kit list empty": func() Screen {
 			s := NewInventoryItemFormScreen(Deps{}, "")
 			s.loading = false

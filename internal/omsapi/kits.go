@@ -26,6 +26,27 @@
 //	                                      GetKit is for, and why a 404 from it is
 //	                                      the ANSWER ("not a kit") rather than an
 //	                                      error (see IsNotKit).
+//	GET  /api/inventory/kits/             PAGINATED list of kits, and the ONLY
+//	                                      browsable route to one: /items/ hides
+//	                                      them, so without this a kit is
+//	                                      reachable only by already holding an id
+//	                                      that happens to be a kit's. It takes
+//	                                      ?search= (name / sku / description /
+//	                                      the supplier's own part number, all
+//	                                      icontains), ?is_active=, ?supplier= and
+//	                                      ?component=, and orders by name. Reads
+//	                                      are public; the vendor columns are not
+//	                                      (KitSerializer inherits
+//	                                      InventoryItemSerializer's
+//	                                      VENDOR_ONLY_FIELDS).
+//	POST /api/inventory/kits/             Creates one. `is_kit` is forced True by
+//	                                      the serializer, so a caller never sends
+//	                                      it, and `components` is REQUIRED on a
+//	                                      create — an absent or empty list is the
+//	                                      400 "A kit must contain at least one
+//	                                      component", because the kit row has to
+//	                                      exist before a component can reference
+//	                                      it and no constraint can express that.
 //	GET  /api/inventory/kits/{id}/        KitSerializer: the whole item field set
 //	                                      PLUS is_kit / components /
 //	                                      component_count. 404 for a non-kit id.
@@ -55,6 +76,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 )
 
 // KitComponent is one line of a kit's bill of materials: which item one kit
@@ -152,6 +174,50 @@ type KitSummary struct {
 	SupplierSKU    string        `json:"supplier_sku,omitempty"`
 	UnitCost       DecimalString `json:"unit_cost,omitempty"`
 	ComponentCount int           `json:"component_count,omitempty"`
+}
+
+// ListKits fetches a page of kits (GET /api/inventory/kits/).
+//
+// THIS IS THE ONLY BROWSABLE ROUTE TO A KIT. `/api/inventory/items/` filters
+// kits out in get_queryset, so nothing that walks the item catalogue will ever
+// show one; before this existed a terminal operator could reach a kit only by
+// already holding an id they somehow knew was a kit's, or by naming it exactly
+// in the global search palette. A list is what makes "which kits do we have?"
+// answerable at all.
+//
+// The query is passed through rather than interpreted. What the viewset reads
+// off it: `search` (icontains over name / sku / description / the supplier's
+// own part number for the kit), `is_active`, `supplier`, `component` — "which
+// kits would restock this item" — `ordering` (name / sku / created_at, each
+// reversible with a leading `-`; anything else falls back to name) and the
+// standard `page` / `page_size`. An unknown key is ignored server-side.
+//
+// Paginated at the project default of 50 per page. A caller that filters
+// CLIENT-side has to walk `next` to the end or its filter is a lie about page
+// one; the kit list screen does not, because `search` is what it forwards.
+func (c *Client) ListKits(ctx context.Context, q url.Values) (*Page[Kit], error) {
+	return GetPage[Kit](ctx, c, "/api/inventory/kits/", q)
+}
+
+// CreateKit creates a kit and its bill of materials in one request
+// (POST /api/inventory/kits/).
+//
+// ONE REQUEST is the point: a kit that exists with no components is a row the
+// serializer would refuse on every subsequent save, so `components` is created
+// with it rather than added afterwards. Which is also why body.Components being
+// nil is not a convenience here the way it is on UpdateKit — on a create the
+// server answers "A kit must contain at least one component", and that refusal
+// is the server's to make. Nothing is checked on this side.
+//
+// `is_kit` is deliberately absent from KitWrite: KitSerializer.create sets it
+// True itself, so sending it would be a second copy of a decision already made
+// upstream.
+func (c *Client) CreateKit(ctx context.Context, body KitWrite) (*Kit, error) {
+	var out Kit
+	if err := c.Post(ctx, "/api/inventory/kits/", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // GetKit fetches one kit with its bill of materials.

@@ -560,6 +560,13 @@ func (s *InventoryItemFormScreen) Title() string {
 		}
 		return "Edit item"
 	}
+	// A kit create says so, because the sheet is otherwise identical to an
+	// item's and the operator has to be able to tell which door they came
+	// through — the bill-of-materials row is the only other clue, and it is
+	// several rows down a body a short pane windows.
+	if s.isKit() {
+		return "New kit"
+	}
 	return "New inventory item"
 }
 
@@ -692,7 +699,7 @@ func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.savedCountLevelSort = -1
 		}
 		if m.err != nil {
-			s.errMsg = m.err.Error()
+			s.errMsg = itemFormSaveRefusal(m.err)
 			if m.detached {
 				s.errMsg += " (the item's counting mode was cleared first and is still 'each')"
 			}
@@ -722,8 +729,12 @@ func (s *InventoryItemFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		if s.edit {
 			verb = "updated"
 		}
+		noun := "item"
+		if s.isKit() {
+			noun = "kit"
+		}
 		return s, tea.Batch(
-			Status(fmt.Sprintf("item %s: %s", verb, name), StatusOK),
+			Status(fmt.Sprintf("%s %s: %s", noun, verb, name), StatusOK),
 			SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, id)),
 		)
 
@@ -1467,6 +1478,18 @@ func (s *InventoryItemFormScreen) submit() (Screen, tea.Cmd) {
 		var item *omsapi.Item
 		var e error
 		switch {
+		case isKit && !edit:
+			// A kit is CREATED at /kits/ too, and its bill of materials rides the
+			// same request: KitSerializer.create refuses a kit with no components
+			// ("A kit must contain at least one component"), and there is no other
+			// endpoint that could add them afterwards. So `components` being nil
+			// here — the operator never opened the band — is a refusal the SERVER
+			// makes, not one this sheet invents.
+			var kit *omsapi.Kit
+			kit, e = deps.OMS.CreateKit(ctx, omsapi.KitWrite{ItemWrite: body, Components: components})
+			if kit != nil {
+				item = &kit.Item
+			}
 		case isKit:
 			// A kit is saved through /kits/, never /items/, and for two separate
 			// reasons: the item viewset filters kits out of its queryset, so the
@@ -1624,6 +1647,30 @@ func (s *InventoryItemFormScreen) adoptSavedPackaging(it *omsapi.Item) {
 		}
 	}
 	s.rebuildFields()
+}
+
+// itemFormSaveRefusal is what the status row says when a save comes back
+// refused: the server's own sentence about the field it is about, or the raw
+// error when the failure was not a field refusal at all.
+//
+// It exists because OMS routes serializer validation through its standard
+// envelope, and APIError.Error() renders that envelope's MESSAGE — "One or more
+// fields failed validation." — which is the same eleven words for every refusal
+// the catalogue can make. The sentences an operator can act on are in `details`,
+// and they are the SERVER's: a kit refused because its bill of materials is
+// empty, because the description is blank, or because a SKU is already taken
+// each said exactly the same thing here before.
+//
+// It converts and never invents. A dial failure, a 502's HTML and anything else
+// parseError could not decode as a coded envelope come through untouched, and
+// fitStatus flattens whatever this returns onto the one marked row above the bar
+// (jde_form.go), so a multi-field refusal is one line rather than a frame that
+// grew.
+func itemFormSaveRefusal(err error) string {
+	if refusal, ok := omsapi.AsFieldRefusal(err); ok {
+		return refusal
+	}
+	return err.Error()
 }
 
 func (s *InventoryItemFormScreen) buildPayload() (omsapi.ItemWrite, error) {
@@ -1823,6 +1870,12 @@ func selectValuePtr(opts []selectOption, idx int) *string {
 func (s *InventoryItemFormScreen) cancelCmd() tea.Cmd {
 	if s.edit && s.itemID != "" {
 		return SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, s.itemID))
+	}
+	// Backing out of a kit create returns to the KIT list and not to the item
+	// list, because the item list is the one place in the app that can never
+	// show what was just abandoned: /items/ filters kits out (omsapi/kits.go).
+	if s.isKit() {
+		return SwitchTo(WSInventory, NewKitListScreen(s.deps))
 	}
 	return SwitchTo(WSInventory, newScreenFor(WSInventory, s.deps))
 }

@@ -1212,7 +1212,10 @@ func (s *ListScreen) openSelected() (Screen, tea.Cmd) {
 
 func workspaceForKind(kind string) Workspace {
 	switch kind {
-	case "inventory_items":
+	// Kits ride the Inventory workspace because that is what they ARE — an
+	// is_kit=True slice of InventoryItem — and because the nav highlight has to
+	// stay where the operator came from when `n` or `enter` leaves the list.
+	case "inventory_items", kitListKind:
 		return WSInventory
 	case "assets":
 		return WSAssets
@@ -1551,11 +1554,25 @@ func listShortcuts(kind string) []listShortcut {
 		}
 	case "inventory_items":
 		// Editing/deleting an item lives on its detail screen (E / x).
+		//
+		// K is the kit list, and it is the one sibling here that is not merely
+		// an accelerator: the rows on THIS list can never include a kit, because
+		// /api/inventory/items/ filters them out server-side, so K is the only
+		// key anywhere on the inventory list that reaches half the catalogue.
 		return []listShortcut{
 			{"I", "new item", func(d Deps) Screen { return NewInventoryItemFormScreen(d, "") }},
+			{"K", "kits", func(d Deps) Screen { return NewKitListScreen(d) }},
 			{"C", "categories", func(d Deps) Screen { return NewCategoryListScreen(d) }},
 			{"L", "locations", func(d Deps) Screen { return NewLocationListScreen(d) }},
 			{"U", "suppliers", func(d Deps) Screen { return NewSupplierListScreen(d) }},
+		}
+	case kitListKind:
+		// The way back to the half of the catalogue this list cannot show. It is
+		// the only sibling offered: the kit list already spends its footer on
+		// `n new` and `/ search`, and every other inventory surface is one arrow
+		// away in the nav tree.
+		return []listShortcut{
+			{"I", "inventory items", func(d Deps) Screen { return newScreenFor(WSInventory, d) }},
 		}
 	case "work_orders":
 		// The Maintenance landing lists work orders; PM items are created,

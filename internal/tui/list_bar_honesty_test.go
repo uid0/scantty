@@ -72,6 +72,7 @@ var listBarKeyNames = map[string][]string{
 	"N":         {"N"},
 	"Q":         {"Q"},
 	"I":         {"I"},
+	"K":         {"K"},
 	"C":         {"C"},
 	"L":         {"L"},
 	"U":         {"U"},
@@ -1403,10 +1404,17 @@ func TestList_SiblingSurfaceKeysOpenTheSurfaceTheyName(t *testing.T) {
 		"Q pending reorders": "*tui.ReorderQueueScreen",
 		"I new item":         "*tui.InventoryItemFormScreen",
 		"C categories":       "*tui.CategoryListScreen",
-		"L locations":        "*tui.LocationListScreen",
-		"U suppliers":        "*tui.SupplierListScreen",
-		"M PM items":         "*tui.MaintenanceItemsScreen",
-		"A new asset":        "*tui.AssetFormScreen",
+		// K reaches the half of the catalogue the inventory list cannot show,
+		// and I comes back — the same "a screen's sibling is whichever one it
+		// is not" split the maintenance pair below makes, so I means "new item"
+		// on the item list and "the item list" on the kit list. Both are
+		// *tui.ListScreen, hence the #kind suffix.
+		"K kits":            "*tui.ListScreen#" + kitListKind,
+		"I inventory items": "*tui.ListScreen#inventory_items",
+		"L locations":       "*tui.LocationListScreen",
+		"U suppliers":       "*tui.SupplierListScreen",
+		"M PM items":        "*tui.MaintenanceItemsScreen",
+		"A new asset":       "*tui.AssetFormScreen",
 		// The two halves of maintenance point at each other: V from the
 		// in-house work-order list opens the VENDOR list, and W from the vendor
 		// list opens the in-house one. V means a different thing on each, which

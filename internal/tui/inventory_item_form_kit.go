@@ -18,13 +18,21 @@
 // Nothing here talks to the API: the list lives in memory until the KIT is
 // saved, and then rides the same PATCH as every other field (see submit()).
 //
+// A kit is also CREATED here now, through NewKitFormScreen below: the same sheet
+// with `kit` set before it is drawn, so the band is live from the first frame
+// and the save posts to /kits/ instead of /items/. This comment used to say the
+// band was edit-only and that a kit was created on the web's own form, which was
+// the parity gap rather than a design.
+//
 // What the sheet does NOT do, and why:
 //
-//	create a kit    — a kit create needs at least one component AND its purchase
-//	                  terms in the same request (KitSerializer.create), and it
-//	                  posts to /kits/, not /items/. ScanTTY's item form creates
-//	                  ITEMS; a kit is created on the web's own kit form. The
-//	                  band is therefore edit-mode only, like the suppliers band.
+//	send supplier terms — KitSerializer.create takes an optional `supplier_terms`
+//	                  block (supplier, part number, unit cost, lead time) and the
+//	                  web form offers it. This sheet does not, because its
+//	                  equivalent is the suppliers band, which is edit-only for a
+//	                  reason of its own: an ItemSupplier is written against an
+//	                  item that already exists. A kit gets its terms from its
+//	                  detail screen, one step later. See NewKitFormScreen.
 //	nest a kit      — kits cannot contain kits upstream, so the component picker
 //	                  never offers one. /items/ already excludes kits by default,
 //	                  which is what makes that free.
@@ -97,11 +105,51 @@ const (
 	kitRowFieldCount
 )
 
-// isKit reports whether the sheet is editing a kit. Only a successful /kits/
-// fetch says yes — the item serializer carries no `is_kit`, so an ordinary item
-// and an unanswered question are indistinguishable from the item payload alone,
-// and neither may grow a components row.
+// isKit reports whether the sheet is editing or creating a kit. In EDIT mode
+// only a successful /kits/ fetch says yes — the item serializer carries no
+// `is_kit`, so an ordinary item and an unanswered question are indistinguishable
+// from the item payload alone, and neither may grow a components row. In CREATE
+// mode there is no record to ask about, so NewKitFormScreen sets the field
+// itself and the answer is the operator's own choice of door.
 func (s *InventoryItemFormScreen) isKit() bool { return s.kit != nil }
+
+// NewKitFormScreen opens the item sheet in KIT-CREATE mode — the terminal half
+// of the web's /inventory/kits/new.
+//
+// It is the SAME SCREEN as NewInventoryItemFormScreen("") with one field
+// pre-decided, and that is the whole design rather than an economy. A kit is an
+// InventoryItem carrying is_kit=True; every name, SKU, category, hazmat and
+// packaging row on this sheet means exactly what it means for any other item,
+// the bill-of-materials band already exists here (this file), and the two rows
+// a kit may not carry are already frozen and already asserted at save time
+// (fieldReadOnly, buildPayload). A separate kit form would be a second copy of
+// forty rows in order to differ in one.
+//
+// `kit` is set to an EMPTY Kit rather than left nil because isKit() is what puts
+// the components row on the sheet, freezes the stock and serial rows, and
+// routes the save. Nothing reads a field off it in create mode: hydrateKit only
+// runs for an edit, and both "this save is about to clear a stored figure"
+// warnings ask s.item, which is nil until something is created.
+//
+// WHAT THE SHEET DOES NOT DO, and why, since the file comment above used to say
+// a kit create was impossible here: it still sends no `supplier_terms`. The web
+// form offers a supplier + part number + unit cost block that rides the create,
+// and the terminal's equivalent is the suppliers band — which is edit-only,
+// because an item-supplier link is written through its own endpoint against an
+// item that must already exist (inventory_item_form_suppliers.go). So a kit is
+// created here and given its purchase terms from its detail screen afterwards,
+// which is one extra step and no lost capability: a kit with no supplier link
+// cannot go on a purchase order, and the band is where that link is made for
+// every other item in the catalogue.
+func NewKitFormScreen(deps Deps) *InventoryItemFormScreen {
+	s := NewInventoryItemFormScreen(deps, "")
+	s.kit = &omsapi.Kit{}
+	// The sheet is built before this runs, and the components row is conditional
+	// on isKit(), so the field list has to be recomputed or the row the whole
+	// screen exists for is absent until some other toggle rebuilds it.
+	s.rebuildFields()
+	return s
+}
 
 // fieldReadOnly reports whether a row is SHOWN but not the operator's to change.
 //
