@@ -20,6 +20,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"testing"
 )
 
@@ -428,5 +430,120 @@ func TestUpdateKit_SendsAnEmptyNoteExplicitly(t *testing.T) {
 	// And a real note still rides unchanged.
 	if kept := rows[1].(map[string]any)["notes"]; kept != "keep this" {
 		t.Errorf("kept notes = %v", kept)
+	}
+}
+
+// TestListKits_IsTheOnlyBrowsableRouteToOne pins the path and the pass-through
+// of the query, which is what makes the terminal's kit list searchable at all:
+// /items/ excludes kits in get_queryset, so nothing that walks the item
+// catalogue can show one, and ?search= here is what reaches the supplier's own
+// part number for a kit — the code printed on the box a scanner reads.
+func TestListKits_IsTheOnlyBrowsableRouteToOne(t *testing.T) {
+	var gotPaths, gotQueries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		gotQueries = append(gotQueries, r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = w.Write([]byte(`{"count":2,"next":"/api/inventory/kits/?page=2","previous":null,"results":[
+				{"id":"kit-1","name":"Eufy Ink Kit","sku":"EIK-4","is_kit":true,"component_count":2}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"count":2,"next":null,"previous":"/api/inventory/kits/?page=1","results":[
+			{"id":"kit-51","name":"Last Kit","sku":"LAST-1","is_kit":true,"component_count":1}]}`))
+	}))
+	defer srv.Close()
+
+	kits, err := New(srv.URL).ListKits(context.Background(), url.Values{"search": {"VND-88117"}})
+	if err != nil {
+		t.Fatalf("ListKits: %v", err)
+	}
+	if !reflect.DeepEqual(gotPaths, []string{"/api/inventory/kits/", "/api/inventory/kits/"}) {
+		t.Errorf("paths = %q", gotPaths)
+	}
+	wantQueries := []string{"page=1&search=VND-88117", "page=2&search=VND-88117"}
+	if !reflect.DeepEqual(gotQueries, wantQueries) {
+		t.Errorf("queries = %q, want %q", gotQueries, wantQueries)
+	}
+	if len(kits) != 2 || kits[1].Name != "Last Kit" {
+		t.Fatalf("results = %+v", kits)
+	}
+	// The kit half decodes off the same rows the item half does — a list row has
+	// to be able to say how many components a kit holds, or the browse list
+	// cannot tell a kit from any other catalogue record.
+	if !kits[0].IsKit || kits[0].ComponentCount != 2 {
+		t.Errorf("kit fields did not decode on a LIST row: %+v", kits[0])
+	}
+}
+
+// TestCreateKit_SendsTheBillOfMaterialsWithTheKit. One request is the contract:
+// KitSerializer.create refuses a kit with no components and there is no
+// /kit-components/ endpoint to add them afterwards, so a create that posted the
+// item alone would leave a record nothing could repair.
+func TestCreateKit_SendsTheBillOfMaterialsWithTheKit(t *testing.T) {
+	var gotPath, gotMethod string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"kit-new","name":"Ink kit","is_kit":true,"component_count":1}`))
+	}))
+	defer srv.Close()
+
+	rows := []KitComponentWrite{{Component: "itm-c", Quantity: 2, Notes: "CMYK"}}
+	kit, err := New(srv.URL).CreateKit(context.Background(), KitWrite{
+		ItemWrite:  ItemWrite{Name: "Ink kit", ReorderQuantity: 1},
+		Components: &rows,
+	})
+	if err != nil {
+		t.Fatalf("CreateKit: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/inventory/kits/" {
+		t.Fatalf("%s %s, want POST /api/inventory/kits/", gotMethod, gotPath)
+	}
+	if body["name"] != "Ink kit" {
+		t.Errorf("name = %v", body["name"])
+	}
+	// `is_kit` is the serializer's own decision (create sets it True); a client
+	// copy of it is a second place that decision could drift.
+	if _, present := body["is_kit"]; present {
+		t.Errorf("the payload asserted is_kit: %v", body)
+	}
+	comps, ok := body["components"].([]any)
+	if !ok || len(comps) != 1 {
+		t.Fatalf("components = %v", body["components"])
+	}
+	if kit.ID != "kit-new" || !kit.IsKit {
+		t.Errorf("the created kit did not decode: %+v", kit)
+	}
+}
+
+// TestCreateKit_ANilBillOfMaterialsOmitsTheKey. nil means "say nothing", and on
+// a CREATE that is the input the server answers "A kit must contain at least one
+// component" to — which is the refusal an operator has to be able to read.
+// Sending `[]` instead would be the client asserting an empty list, and sending
+// nothing at all is what leaves the rule where it is written.
+func TestCreateKit_ANilBillOfMaterialsOmitsTheKey(t *testing.T) {
+	var raw []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"kit-new","is_kit":true}`))
+	}))
+	defer srv.Close()
+
+	if _, err := New(srv.URL).CreateKit(context.Background(), KitWrite{
+		ItemWrite: ItemWrite{Name: "Ink kit"},
+	}); err != nil {
+		t.Fatalf("CreateKit: %v", err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(raw, &body)
+	if _, present := body["components"]; present {
+		t.Errorf("components was sent for a kit whose bill of materials was never set: %s", raw)
 	}
 }

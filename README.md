@@ -161,9 +161,9 @@ closes and `r` re-reads so the next delivery can be worked without leaving the
 screen.
 
 The sidebar lists the eleven workspaces; the workspace you are in also shows its
-own surfaces indented beneath it (Inventory › New item / Categories / Locations
-/ Suppliers, ForgeKey › Firmware / Lockouts / …). Facilities and Reports open a
-cursor menu of their surfaces instead.
+own surfaces indented beneath it (Inventory › New item / Kits / Categories /
+Locations / Suppliers, ForgeKey › Firmware / Lockouts / …). Facilities and
+Reports open a cursor menu of their surfaces instead.
 
 ## Scanner input
 
@@ -250,7 +250,7 @@ Landed:
 - Add a purchase-order line by scanning or typing an identifier: `n` on a draft order's detail sheet takes the supplier's SKU, the item's own SKU, a package or unit barcode, or a name; OMS resolves it against that order's supplier; the item is shown to confirm — naming the other vendor when the code came off a rival's box — and then quantity and price are prompted with the OMS defaults prefilled and overtypable, in the vendor's cases where that item is case-packed (on a repeat add, which grows the line already on the order, the price row starts blank so accepting it cannot reprice that line). Genuine ambiguity offers the candidates to pick from; a refusal (the supplier does not carry it, the order is not a draft) is shown as the server's own sentence. A successful add returns to the identifier box with a running tally, so a stack of boxes is one scan each.
 - Take a purchase-order line back off: on the edit sheet (`E` from the order's detail), `Ctrl-E` opens a line's editor and `Ctrl-E` on that editor's status row removes it — **deleting** it outright while the order is still the shop's own draft, **voiding** it with a reason once the supplier holds a copy. Which of the two applies is the server's answer, never a status this side guesses at, so exactly one is ever offered and a server that does not say offers only the reversible half. Deleting takes no reason (a typo's honest record is no line at all) and is confirmed with `Ctrl-X` rather than `Enter`; both confirms name the line they are about to take off. The **void** prompt is the one that warns about the order vanishing: the OMS list endpoint hides an order once it has lines, none of them unvoided, and the supplier already holds it, so voiding the last active line takes the order off every purchase-order list for good — nothing there can add a line or lift a void, and the prompt says so and names `Ctrl+K` search on the order's number as the way back, hedging the loss rather than asserting it where the server did not say which side of that boundary the order is on. A delete cannot do that, because it is offered only while the order is still the shop's own and such an order is always listed. A refusal arrives as the server's own sentence.
 - Serialized components: per-unit instance tracking off the item detail (`i`) with inline install/remove/consume/retire/dispose + usage history, an asset's installed-components view, per-unit serial capture during receiving, and the consumption forecast (Reports workspace — days-until-stockout / reorder point / low-stock).
-- Kits: a kit is tagged as one on the item detail and shows its components with per-kit quantities, its bill of materials is editable from the item form (saved with the kit), and a kit PO line says which component items receiving it will credit instead of the kit's own stock. A kit's detail screen opens from its id the same way any other item's does; kits are absent from the inventory list and cannot be created from scantty (the item API excludes kits and exposes no `is_kit` flag, so a listed kit would be indistinguishable from an ordinary item — see `AGENTS.md`).
+- Kits: browse and search the dedicated kit list under Inventory, create a kit with its bill of materials, and edit its components with per-kit quantities from the item form. A kit's detail opens like any other item's and a kit PO line says which component items receiving it will credit instead of the kit's own stock. Kits remain absent from the ordinary inventory-item list because OMS exposes them through its dedicated kit API.
 
 Not yet landed (the long tail):
 - Auth/login screen and persistent token storage. Today, tokens come from `SCANTTY_OMS_TOKEN`.

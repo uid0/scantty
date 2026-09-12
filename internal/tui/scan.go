@@ -122,7 +122,21 @@ func (s *ScanScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 func (s *ScanScreen) navigateToResult(r *omsapi.LookupResult) tea.Cmd {
 	id := fmt.Sprint(r.ID)
 	switch r.Type {
-	case "item":
+	// The dispatcher's own spelling is "inventory_item" — every arm of
+	// scanner/resolvers.py that lands on an InventoryItem writes that
+	// target_type, and NONE writes "item" — so reading only "item" here meant
+	// every dispatcher-resolved item scan stopped at a status line naming the
+	// record it had just identified instead of opening it. "item" stays as the
+	// defensive alias, the same pair the search palette carries for the same
+	// reason (search.go).
+	//
+	// A KIT arrives here like any other item: no resolver filters on is_kit, and
+	// the detail this opens already draws the bill of materials
+	// (inventory_detail_kit.go). It is not the ONLY way a kit is scanned into —
+	// a shelf label is an OMS URL, which scanner.ParseOMSURL resolves locally
+	// and navigateToURL opens without a round trip — but it is the one that was
+	// broken.
+	case "item", "inventory_item":
 		return SwitchTo(WSInventory, NewInventoryDetailScreen(s.deps, id))
 	case "asset":
 		return SwitchTo(WSAssets, NewAssetDetailScreen(s.deps, id))
