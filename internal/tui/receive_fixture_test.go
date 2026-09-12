@@ -148,8 +148,12 @@ type receiveFake struct {
 	sheetFail int
 	sheetBody string
 
-	receipts  []omsapi.ReceiveRequest
-	closes    []omsapi.CloseShortRequest
+	receipts []omsapi.ReceiveRequest
+	closes   []omsapi.CloseShortRequest
+	// reopens is every reopen-short body the fake was handed, recorded rather
+	// than counted: what a test has to be able to read off the wire is WHICH
+	// line was named and with what reason, not that something was posted.
+	reopens   []omsapi.ReopenShortRequest
 	markedAs  []string
 	failWith  int    // HTTP status for the WRITE endpoints, 0 = succeed
 	failBody  string // the body they fail with
@@ -178,6 +182,18 @@ func (f *receiveFake) handler() http.HandlerFunc {
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			f.closes = append(f.closes, req)
 			f.answer(w)
+		case strings.HasSuffix(r.URL.Path, "/reopen-short/"):
+			var req omsapi.ReopenShortRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			f.reopens = append(f.reopens, req)
+			// The worksheet the NEXT fetch serves reflects the correction, so a
+			// drive can walk the whole round trip the operator does: the line
+			// leaves the settled list and comes back outstanding, with the
+			// close-short's own stamps intact beside was_reopened. A fake that
+			// went on serving the closed-short line would make the reload read
+			// as a reopen that did nothing.
+			f.applyReopen(req)
+			f.answer(w)
 		case strings.HasSuffix(r.URL.Path, "/mark-received/"):
 			var req omsapi.MarkReceivedRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
@@ -186,6 +202,31 @@ func (f *receiveFake) handler() http.HandlerFunc {
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error": "the fake serves no such endpoint"}`))
+		}
+	}
+}
+
+// applyReopen is the server's own correction, applied to the fake's worksheet:
+// the close-short stamps STAY and is_closed_short goes false beside them, which
+// is exactly what OMS derives from the two stamps together.
+func (f *receiveFake) applyReopen(req omsapi.ReopenShortRequest) {
+	if f.sheet == nil || f.failWith != 0 {
+		return
+	}
+	for _, item := range req.Items {
+		for i := range f.sheet.Lines {
+			l := &f.sheet.Lines[i]
+			if fmt.Sprint(l.PurchaseOrderItem) != fmt.Sprint(item.PurchaseOrderItem) {
+				continue
+			}
+			l.IsClosedShort, l.IsSettled = false, false
+			l.WasReopened, l.ReopenedReason = true, item.Reason
+			l.QuantityPending = l.QuantityOrdered - l.QuantityReceived
+			l.ReceiptState, l.ReceiptStateLabel = omsapi.ReceiptStateNotReceived, "Not Received"
+			if l.QuantityReceived > 0 {
+				l.ReceiptState, l.ReceiptStateLabel = omsapi.ReceiptStatePartially, "Partially Received"
+			}
+			f.sheet.OutstandingLineCount++
 		}
 	}
 }
@@ -218,6 +259,12 @@ func (f *receiveFake) closedShort() []omsapi.CloseShortRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]omsapi.CloseShortRequest(nil), f.closes...)
+}
+
+func (f *receiveFake) reopened() []omsapi.ReopenShortRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]omsapi.ReopenShortRequest(nil), f.reopens...)
 }
 
 func (f *receiveFake) marked() []string {

@@ -212,6 +212,7 @@ var receivePhasesWithoutKeys = map[receivePhase]string{}
 func receivePhaseCases() []receivePhaseCase {
 	enter := tea.KeyMsg{Type: tea.KeyEnter}
 	esc := tea.KeyMsg{Type: tea.KeyEsc}
+	ctrlO := tea.KeyMsg{Type: tea.KeyCtrlO}
 	all := receiveSweepLines()
 
 	okFake := func() *receiveFake { return &receiveFake{sheet: receiveWorksheet(all...)} }
@@ -375,6 +376,27 @@ func receivePhaseCases() []receivePhaseCase {
 		{phaseWriteOff, "writing off", false, all, okFake, nil,
 			inFlight(tea.KeyMsg{Type: tea.KeyCtrlR}, tea.KeyMsg{Type: tea.KeyCtrlX})},
 
+		// The CORRECTION. Its two phases are reached from BOTH frames that
+		// offer Ctrl+O, because they are different frames with different bars
+		// and the settled-order one is the case OMS says the endpoint exists
+		// for — a line closed short in error is usually noticed after the close
+		// settled the order, and a settled order draws phaseBlocked here.
+		//
+		// One closed-short line and two are different STATES of the pick: with
+		// one row its bar names no UP/DN and the movement keys decline, with two
+		// it names the pair and they move. receiveSweepLines carries one;
+		// receiveAllSettled carries two.
+		{phaseReopenPick, "reopen pick", false, all, okFake, nil, pressed(ctrlO)},
+		{phaseReopenPick, "reopen pick with two lines", false, settled, settledFake, nil,
+			pressed(ctrlO)},
+		{phaseReopenPick, "reopen pick from the blocked frame", false, all, unavailable, nil,
+			pressed(ctrlO)},
+		{phaseReopenConfirm, "reopen confirm", true, all, okFake, nil, pressed(ctrlO, enter)},
+		// The correction genuinely in flight: frozen the same way every other
+		// write on this screen is, by an allow-list of esc.
+		{phaseReopenConfirm, "reopening", false, all, okFake, nil,
+			inFlight(ctrlO, enter, tea.KeyMsg{Type: tea.KeyCtrlX})},
+
 		{phaseDone, "done", false, all, okFake, nil,
 			typedQty(map[int]string{1: "2"}, pressed(enter, enter))},
 
@@ -441,6 +463,7 @@ func receiveState(s *ReceiveFormScreen) string {
 		"|", s.parked.Value(), s.parked.Focused(),
 		"|", s.serialCursor, s.serialField, len(s.serialUnits), s.captures, s.dropped,
 		"|", s.scope, s.scopeLine,
+		"|", s.reopenCursor, s.reopenLine, s.reopened,
 		"|", s.receipt, s.result != nil,
 		"|", s.terminalWidth, s.terminalHeight, len(s.lines), len(s.closed), s.sheet != nil)
 	for i := range s.qty {
@@ -464,6 +487,7 @@ var receiveStateFingerprinted = map[string]bool{
 	"serialInput": true, "lotInput": true, "expiryInput": true, "parked": true,
 	"serialUnits": true, "captures": true, "serialCursor": true, "serialField": true,
 	"dropped": true, "scope": true, "scopeLine": true, "reason": true,
+	"reopenCursor": true, "reopenLine": true, "reopened": true,
 	"receipt": true, "result": true, "lines": true, "closed": true,
 	"po": true, "sheet": true,
 }
@@ -863,6 +887,7 @@ var receiveBarKeyNames = map[string][]string{
 	"Ctrl+R":    {"ctrl+r"},
 	"Ctrl+E":    {"ctrl+e"},
 	"Ctrl+X":    {"ctrl+x"},
+	"Ctrl+O":    {"ctrl+o"},
 }
 
 // receiveBarTokenAbbreviations records the tokens whose segments do not spell
@@ -2326,6 +2351,23 @@ func receiveRefusesWholeForm(s *ReceiveFormScreen) bool {
 	return true
 }
 
+// receiveFramesWithoutAStandingFact records, WITH A REASON, every phase that can
+// be reached on a refusing worksheet and carries NO standing fact of its own, so
+// "not swept" and "nothing to sweep" are different states.
+//
+// The rule below is about a REFUSAL OF THE WHOLE FORM, which is a fact about the
+// two frames that draw the form: the server's "you may not receive against this"
+// and an order with nothing a receipt may name. A sub-frame the operator reached
+// by pressing a key is not refusing them anything, so it is asked for the fact
+// that IS about it instead — which is why this map is EMPTY today. Both
+// correction frames carry one, and the confirm's is the reason the fact lives in
+// the note block at all: its body is one pinned block led by the Reason field,
+// so at 80x24 what stays on the record was below the fold.
+//
+// An entry here is a frame reachable on a refusing worksheet that says nothing
+// about itself, which needs an argument rather than an omission.
+var receiveFramesWithoutAStandingFact = map[receivePhase]string{}
+
 // receiveFirstClause is a sentence up to its first clause or sentence break,
 // PUNCTUATION INCLUDED — the word prefix a note block that gives ground from the
 // end keeps, spelled exactly as fittedNote would keep it. The comma or full stop
@@ -2381,16 +2423,37 @@ func TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs(t *testing.T) 
 		if !receiveRefusesWholeForm(s) {
 			continue
 		}
+		if why, excused := receiveFramesWithoutAStandingFact[s.phase]; excused {
+			if why == "" {
+				t.Errorf("phase %v is excused from the standing-fact rule with no reason", s.phase)
+			}
+			continue
+		}
 		members++
 		frame := fmt.Sprint(s.phase, s.sheet.CanReceive, len(s.sheet.Lines), s.pending)
 		if walked[frame] {
 			continue
 		}
 		walked[frame] = true
+		// The FORM's two frames are asked for the wire's own refusal, never for
+		// the screen's copy of it, so a screen that stopped recognising one
+		// fails here instead of quietly dropping out of the set. Any OTHER
+		// frame reachable on a refusing worksheet is asked for the fact that is
+		// about IT — the same rule, about the frame being drawn.
 		reason := receiveNothingReceivable
-		if !s.sheet.CanReceive {
+		switch {
+		case s.phase != phaseQty && s.phase != phaseBlocked:
+			reason = s.standingNote().text
+			if reason == "" {
+				t.Errorf("phase %v was reached on a refusing worksheet with no standing "+
+					"fact and is not recorded in receiveFramesWithoutAStandingFact — a "+
+					"frame that says nothing about itself is judged by nothing", s.phase)
+				continue
+			}
+		case !s.sheet.CanReceive:
 			reason = s.sheet.UnavailableReason
 		}
+		level := s.standingNote().level
 		clause := receiveFirstClause(reason)
 		word := strings.Fields(reason)[0]
 		body, _ := s.body()
@@ -2411,8 +2474,11 @@ func TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs(t *testing.T) 
 						continue
 					}
 					room, fold := s.noteRows(), s.paneWidth()-len(jdeIndent)
+					// The frame's OWN level, because the mark it draws is part of
+					// what the block has to hold: measuring a warn mark against
+					// an info note would size the budget for a different string.
 					holds := func(text string) bool {
-						return len(pickerNote{text: text, level: StatusWarn}.renderLines(fold)) <= room
+						return len(pickerNote{text: text, level: level}.renderLines(fold)) <= room
 					}
 					want, tier := word, "first word"
 					switch {

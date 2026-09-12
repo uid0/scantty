@@ -164,6 +164,25 @@ const (
 	// phaseWriteOff confirms a destructive settlement — closing one line short,
 	// or closing the whole order out — with the reason that will be recorded.
 	phaseWriteOff
+	// phaseReopenPick chooses WHICH closed-short line a correction is about, and
+	// phaseReopenConfirm carries the reason and the commit.
+	//
+	// TWO phases rather than one, and the reason is geometric rather than
+	// stylistic. A single frame would need a line CURSOR and a focused Reason
+	// BOX at once, and jdeLines.Window anchors on one block: anchored on the
+	// cursor the box goes off a short pane while the caret is in it (every rune
+	// redrawing an identical frame, the reported-hang class this screen is
+	// written against), and anchored on the box the movement keys move a
+	// highlight nobody can see. The pick is a pure read-only list, so its
+	// cursor anchors it; the confirm is one field and a question, so it is
+	// writeOffBody's shape exactly.
+	//
+	// The pick is not skipped when only one line is reopenable. It is where the
+	// close-short's own REASON is read, which is what tells the operator this is
+	// the line they meant, and a flow that changes shape with the data is a bar
+	// that changes shape with the data.
+	phaseReopenPick
+	phaseReopenConfirm
 	phaseDone
 	// receivePhaseCount is the sentinel the sweep walks to. It exists so a
 	// phase added above it is pressed by the key space the day it is written
@@ -187,6 +206,10 @@ func (p receivePhase) String() string {
 		return "review"
 	case phaseWriteOff:
 		return "write-off"
+	case phaseReopenPick:
+		return "reopen-pick"
+	case phaseReopenConfirm:
+		return "reopen-confirm"
 	case phaseDone:
 		return "done"
 	}
@@ -402,7 +425,36 @@ type ReceiveFormScreen struct {
 	// The write-off confirm (phase 6).
 	scope     receiveScope
 	scopeLine int
-	reason    textinput.Model
+	// reason is the settlement field, shared by the write-off confirm and the
+	// reopen confirm. ONE box because the two confirms are never on screen
+	// together and the SERVER takes one shape for both (omsapi.POLineSettlement,
+	// which mirrors OMS's own shared LineSettlementSerializer): a second box
+	// would be a second thing to clear, blur and classify for the one value both
+	// writes carry. Each confirm empties it on the way in.
+	reason textinput.Model
+
+	// The reopen-short correction (phases 7 and 8).
+	//
+	// reopenCursor is the pick list's own cursor rather than rowCursor, which
+	// the blocked frame and the review share. Those two never appear together
+	// and each resets it on entry; the pick can be reached FROM the blocked
+	// frame and Esc'd back to it, so sharing would move the operator's place on
+	// a list they had scrolled.
+	//
+	// reopenLine indexes s.closed — the SETTLED list, the one the quantity form
+	// numbers under "N settled line(s) cannot take a receipt" — so the number
+	// the confirm names is a number the operator can find.
+	reopenCursor int
+	reopenLine   int
+	// reopened is what a reopen that LANDED did, held across the worksheet
+	// refetch that follows it.
+	//
+	// It exists because the correction's own confirmation would otherwise be the
+	// one thing the reload wipes: Update retires the note on every reply off the
+	// wire, and a successful reopen answers by fetching the worksheet again — so
+	// the note saying the line is back would be cleared by the very read that
+	// proves it. handleSheet restates it and clears this.
+	reopened string
 
 	// parked is the box currentInput answers with on a phase that holds none —
 	// the summary, the loading frame, the blocked frame, the review. It is
@@ -450,6 +502,20 @@ type receiveSheetMsg struct {
 // summary. `what` names which, so the summary and the failure headline can say
 // what it was without a second flag to keep in step.
 type receiveSubmittedMsg struct {
+	what string
+	po   *omsapi.PurchaseOrder
+	err  error
+}
+
+// receiveReopenedMsg is the reopen-short reply.
+//
+// A type of its own rather than a flag on receiveSubmittedMsg, because the two
+// answers are not the same shape of event: a receipt and a write-off END the
+// visit on the summary, and a correction is made so the visit can CONTINUE —
+// it refetches the worksheet and hands the operator back a live form. A boolean
+// discriminator would have put two flows through one arm whose whole body
+// differs.
+type receiveReopenedMsg struct {
 	what string
 	po   *omsapi.PurchaseOrder
 	err  error
@@ -657,7 +723,13 @@ func (s *ReceiveFormScreen) currentInput() *textinput.Model {
 			return &s.parked
 		}
 		return s.serialBox(s.serialField)
-	case phaseWriteOff:
+	case phaseWriteOff, phaseReopenConfirm:
+		// Both settlement confirms draw the ONE Reason field, so the caret
+		// belongs there on both. The reopen confirm is here rather than falling
+		// through to the scratch field because Update routes every non-key
+		// message — the cursor blink, chiefly — to whatever this answers: left
+		// out, the box the frame draws focused would be the one box on the
+		// screen whose caret never blinks.
 		return &s.reason
 	case phaseQty:
 		return s.inputAt(s.focused)
@@ -905,6 +977,8 @@ func (s *ReceiveFormScreen) inFlightSubject() string {
 	// name the same request.
 	case s.phase == phaseWriteOff:
 		return "the write-off"
+	case s.phase == phaseReopenConfirm:
+		return "the reopen"
 	}
 	return "the receipt"
 }
@@ -1062,7 +1136,7 @@ func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	// are what came back off the wire rather than an answer to a keypress, and
 	// they are the fact the operator most needs kept.
 	switch msg.(type) {
-	case receiveSheetMsg, receiveSubmittedMsg, tea.WindowSizeMsg:
+	case receiveSheetMsg, receiveSubmittedMsg, receiveReopenedMsg, tea.WindowSizeMsg:
 		s.note.clear()
 	}
 
@@ -1076,6 +1150,9 @@ func (s *ReceiveFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 	case receiveSubmittedMsg:
 		return s, s.handleSubmitted(m)
+
+	case receiveReopenedMsg:
+		return s, s.handleReopened(m)
 
 	case tea.KeyMsg:
 		return s.handleKey(m)
@@ -1151,6 +1228,10 @@ func (s *ReceiveFormScreen) handleKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 		return s.keyReview(m, headerRows)
 	case phaseWriteOff:
 		return s.keyWriteOff(m, headerRows)
+	case phaseReopenPick:
+		return s.keyReopenPick(m, headerRows)
+	case phaseReopenConfirm:
+		return s.keyReopenConfirm(m, headerRows)
 	case phaseDone:
 		return s.keyDone(m, headerRows)
 	}
@@ -1207,24 +1288,43 @@ func (s *ReceiveFormScreen) loadSheet() tea.Cmd {
 // a different next move for the operator); or the form is live.
 func (s *ReceiveFormScreen) handleSheet(m receiveSheetMsg) tea.Cmd {
 	s.loading = false
-	s.rowCursor = 0
+	s.rowCursor, s.reopenCursor = 0, 0
 	if m.err != nil {
 		s.phase = phaseBlocked
 		s.sheet = nil
+		// A correction held for this load is DROPPED rather than carried to
+		// whatever load comes next: handleReopened has already flashed it, and
+		// restating it minutes later on an `r` the operator pressed for another
+		// reason would be an answer to a keypress they have long since made.
+		s.reopened = ""
 		head, detail := receiveFailure("Loading the receiving worksheet for "+s.orderName(), m.err)
 		s.setFail(head, detail)
 		return Status(head, StatusError)
 	}
 	s.clearFail()
 	s.applyWorksheet(m.sheet)
+	// A CORRECTION THAT LANDED IS RESTATED HERE, and this is the only place it
+	// can be. Update retires the note on every reply off the wire, and the read
+	// that PROVES the reopen is one — so the sentence is held on the screen
+	// (handleReopened) and said once the worksheet it is about has arrived. It
+	// takes the note rather than the routine summary because a write the
+	// operator just made outranks a reload report they did not ask for.
+	announce := s.reopened
+	s.reopened = ""
 	if !m.sheet.CanReceive {
 		s.phase = phaseBlocked
 		s.blurAll()
+		if announce != "" {
+			return s.say(announce, StatusOK)
+		}
 		return Status(s.orderName()+" cannot be received against", StatusWarn)
 	}
 	s.phase = phaseQty
 	s.blurAll()
 	s.focusCurrent()
+	if announce != "" {
+		return tea.Batch(s.say(announce, StatusOK), textinput.Blink)
+	}
 	return tea.Batch(Status(s.worksheetSummary(), StatusOK), textinput.Blink)
 }
 
@@ -1270,6 +1370,11 @@ func (s *ReceiveFormScreen) keyBlocked(m tea.KeyMsg, headerRows int) (Screen, te
 		return s, s.leave()
 	case "r":
 		return s, tea.Batch(s.loadSheet(), Status("Re-reading the worksheet for "+s.orderName()+"…", StatusInfo))
+	case "ctrl+o":
+		// Offered HERE and not only on the quantity form, because this is the
+		// frame a settled order draws and `reopen-short/` is the one receiving
+		// write accepted on one — see the section note on the correction.
+		return s, s.openReopen(headerRows)
 	case "up", "down":
 		// Tab and Shift-Tab are deliberately NOT aliases here. They ride
 		// alongside Up/Down on a sheet WITH FIELDS, where roughly twenty
@@ -1325,6 +1430,8 @@ func (s *ReceiveFormScreen) keyQty(m tea.KeyMsg, headerRows int) (Screen, tea.Cm
 		return s, s.openLineWriteOff(headerRows)
 	case "ctrl+r":
 		return s, s.openOrderWriteOff(headerRows)
+	case "ctrl+o":
+		return s, s.openReopen(headerRows)
 	}
 	return s, s.typeInto(s.currentInput(), m, headerRows)
 }
@@ -2773,14 +2880,42 @@ func fmtOrderName(po *omsapi.PurchaseOrder, id string) string {
 
 // A WRITE-OFF NEVER CONSUMES A TYPED QUANTITY.
 //
-// Both refusals below exist for one reason, and it is the reason refusing beats
-// absorbing: a close-short cannot be taken back from this client. The
-// correction is `reopen-short/`, which this change decodes and deliberately
-// does not drive — so a balance written off over the top of a number the
-// operator had just typed is unrecoverable HERE, and the operator would have no
-// way of knowing it happened.
+// THE REASON THESE REFUSE IS THAT THE REFUSAL CAN BE SATISFIED FROM THE FRAME IT
+// IS DRAWN ON, and it is worth stating first because it is NOT the reason that
+// was written here originally. That one read: "a close-short cannot be taken
+// back from this client — the correction is reopen-short/, which this change
+// decodes and deliberately does not drive." It was load-bearing on a fact about
+// ScanTTY rather than about the write, and Ctrl+O has since made it false: the
+// correction IS driven now (see "Taking a close-short back" below).
 //
-// It happened like this. Line 2 is ordered 10, received 3. The operator walks
+// The refusal stays, and the re-derivation is the point rather than the verdict.
+// Three things decide it, and none of them moved:
+//
+//   - WHAT THIS GATE PROTECTS IS NOT THE CLOSE-SHORT. It protects the
+//     operator's ENTRY — a typed quantity, the tracking number, the carrier,
+//     the delivered date, the receipt notes. Reopening a line puts its
+//     outstanding balance back; it hands back no typed quantity and no typed
+//     note, and no endpoint does. So "the operator can correct the record now"
+//     is true of the write-off and false of the thing being discarded, and
+//     softening on the strength of it would trade a satisfiable refusal for a
+//     silent loss of input nothing can recover.
+//   - THE RULE THAT DECIDES IS SATISFIABILITY. Never SILENTLY discard what the
+//     operator typed demands NON-SILENCE; refusal is one way to be non-silent
+//     and is the right one only where the operator can clear what is in the way
+//     WITHOUT leaving the frame the refusal is drawn on. Every box counted here
+//     is a backspace away on that frame. That is also why the gate already
+//     SPLITS: the captured serials cannot be cleared from there, so they are
+//     named on the confirm and let through (writeOffCaptureLoss).
+//   - IT IS A CERTAINTY, NOT A RISK. Committing ENDS the form — see below — so
+//     the entry is not endangered by the write, it is gone with it.
+//
+// Irreversibility was never the right lever and writeOffCaptureLoss had already
+// said so about the other half of this gate: a write that cannot be taken back
+// argues for making the loss UNMISSABLE, not for blocking a key nobody can
+// unblock. Reopen weakens an argument this gate does not actually rest on.
+//
+// The DEFECT that produced it is unchanged and is what the rest of this note
+// records. It happened like this. Line 2 is ordered 10, received 3. The operator walks
 // to it, types 8 (the rest of the shipment is on the bench), and presses Ctrl+K
 // — which the bar names exactly there, because that is the only row it acts on.
 // Every figure the confirm then showed was the SERVER's: "closing line 2 short
@@ -2815,14 +2950,11 @@ func fmtOrderName(po *omsapi.PurchaseOrder, id string) string {
 // from a fresh list of fields, because a fresh list is what this defect was
 // made of.
 //
-// BUT REFUSING IS NOT THE RULE, AND THE ANSWER SPLITS. The standing rule is
-// never SILENTLY discard what the operator typed, which demands NON-SILENCE:
-// say so before it goes. Refusal is one way to be non-silent, and it is the
-// right one only where the operator can SATISFY the refusal from the frame it
-// is drawn on. Counting the captured serials here could never be satisfied —
-// see writeOffCaptureLoss for the dead end that produced — so what is
+// AND REFUSING IS NOT THE RULE, WHICH IS WHY THE ANSWER SPLITS: what is
 // CLEARABLE from the quantity form refuses (writeOffDiscards) and what is not
-// is NAMED on the confirm and let through.
+// is NAMED on the confirm and let through. The satisfiability test that decides
+// which side a loss falls on is stated at the head of this note; the dead end
+// that produced it is writeOffCaptureLoss's own.
 
 // receiveEntryBox is a box a form-ending write would destroy, and the word a
 // refusal calls it by.
@@ -2872,7 +3004,11 @@ func (s *ReceiveFormScreen) entryBoxesExcluded() map[*textinput.Model]string {
 		// The write-off's OWN field, typed on the confirm this gate opens. It is
 		// what the write-off carries, not what it destroys, and toWriteOff
 		// clears it on the way in.
-		&s.reason: "the write-off's own reason, typed after this gate has already passed",
+		// The settlement REASON, typed on a confirm this gate has already been
+		// passed to reach — the write-off's, or the reopen's, which shares the
+		// box. It is what a settlement CARRIES, not what one destroys, and both
+		// confirms clear it on the way in.
+		&s.reason: "the settlement reason, typed after this gate has already passed",
 		&s.parked: "the scratch field no frame draws (focusCurrent's null object)",
 	}
 }
@@ -3130,7 +3266,7 @@ func (s *ReceiveFormScreen) commitWriteOff() (Screen, tea.Cmd) {
 		}
 	}
 	item := s.lines[line].sheet.PurchaseOrderItem
-	req := omsapi.CloseShortRequest{Items: []omsapi.CloseShortLine{{PurchaseOrderItem: item, Reason: reason}}}
+	req := omsapi.CloseShortRequest{Items: []omsapi.POLineSettlement{{PurchaseOrderItem: item, Reason: reason}}}
 	what := fmt.Sprintf("Closing line %d short", line+1)
 	if deps.OMS == nil {
 		return s, receiveNoClient(what)
@@ -3139,6 +3275,506 @@ func (s *ReceiveFormScreen) commitWriteOff() (Screen, tea.Cmd) {
 		out, err := deps.OMS.CloseShortPOLines(ctx, id, req)
 		return receiveSubmittedMsg{what: what, po: out, err: err}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Taking a close-short back
+// ---------------------------------------------------------------------------
+
+// A REOPEN IS A CORRECTION, NOT AN UNDO, and every sentence on these two frames
+// is worded so the operator cannot read it as one.
+//
+// The close-short stays on the line exactly as it was recorded — its reason, who
+// recorded it and when — and the reopen is stamped beside it to the same
+// standard. OMS's own model method carries that decision and this screen only
+// relays it; what the terminal must not do is offer the operator a frame that
+// reads like an erasure, because the record they are creating says the opposite.
+// So the confirm NAMES what stays.
+//
+// It is reachable from the quantity form AND from the blocked frame, and the
+// second is the one that matters: `reopen-short/` is accepted on an order whose
+// status is already `received`, which is the ONE receiving write that is, and
+// OMS says why in as many words — a line closed short in error is usually
+// noticed AFTER the close settled the order. A settled order comes back with
+// `can_receive: false`, so this screen draws phaseBlocked for it; offering the
+// correction only where a receipt can be built would have withheld it from
+// exactly the case it exists for.
+//
+// NOTHING HERE KEEPS A COPY OF WHICH STATUSES THE SERVER ALLOWS. The worksheet
+// publishes `can_receive`, which is a NARROWER question (RECEIVABLE_STATUSES,
+// which excludes `received`), and there is no flag for this one — so the key is
+// offered wherever the server has said a line IS closed short, the write is
+// sent, and a refusal is relayed in the server's own words. A draft or cancelled
+// order refuses with a sentence; guessing at the set here would refuse with ours.
+//
+// A LANDED REOPEN DOES NOT END THE VISIT, which is the one place it differs
+// from the write-off beside it. Both of those commit and hand the operator the
+// summary, which is right for a write that finishes with a line — but a reopen
+// is a correction made so that a receipt CAN be built, and ending the flow would
+// throw away every quantity already typed on the way to making it. So it
+// refetches the worksheet instead: applyWorksheet carries typed quantities
+// across by line id, the reopened line arrives in s.lines with an empty box, and
+// the operator is standing on the form with the line they just recovered.
+//
+// That is also why this key needs no gate of the write-off's kind. A write-off
+// destroys the form; this one preserves it, so there is nothing to refuse on.
+
+// reopenable is the SETTLED rows a reopen may name, as indexes into s.closed.
+//
+// The membership test is the server's published flag and nothing else. A line is
+// on this list when `is_closed_short` is true — which OMS derives from the
+// close-short and reopen stamps together, so a line already corrected once is
+// simply not on it — and a VOIDED line is excluded only when the server says it
+// is not closed short. Asking "is received < ordered?" here would offer a
+// correction for a line nobody decided anything about.
+func (s *ReceiveFormScreen) reopenable() []int {
+	var out []int
+	for i, l := range s.closed {
+		if l.sheet.IsClosedShort {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// reopenRefusal is why Ctrl+O cannot act, or "" when it can.
+//
+// ONE predicate, read by the ARM and by both bars that name the key, for the
+// reason lineWriteOffRefusal is: a bar naming a key whose whole effect is to
+// write a note is the bar-honesty rule broken, and the sweeps count a decline as
+// NOT acting, so the two halves have to come off the same answer.
+func (s *ReceiveFormScreen) reopenRefusal() string {
+	if s.sheet == nil {
+		// COULD NOT TELL, not "there is none". The worksheet is where
+		// is_closed_short comes from, so with no worksheet this screen does not
+		// know whether there is anything to correct — the same split the blocked
+		// frame keeps between a failed fetch and a server refusal.
+		return "ctrl+o reopens a line closed short and the worksheet could not be read"
+	}
+	if len(s.reopenable()) == 0 {
+		return "ctrl+o reopens a line closed short and no line on this order is closed short"
+	}
+	return ""
+}
+
+// openReopen is Ctrl+O on either frame that offers it.
+func (s *ReceiveFormScreen) openReopen(headerRows int) tea.Cmd {
+	if why := s.reopenRefusal(); why != "" {
+		return s.say(why+" · "+s.waysOut(headerRows), StatusWarn)
+	}
+	s.phase = phaseReopenPick
+	s.reopenCursor = 0
+	s.blurAll()
+	// NO NOTE. The phase change is the whole pane, which is the answer — the
+	// picker-ENTRY idiom (po_create.go's itemPickEntryNote) — and a note written
+	// here would squat on the note block for one keypress, displacing the
+	// standing fact that has to lead it. The count rides the status FLASH, which
+	// is a different surface and expires on its own.
+	n := len(s.reopenable())
+	return Status(fmt.Sprintf("%d %s closed short on %s",
+		n, plural("line", n), s.orderName()), StatusInfo)
+}
+
+// reopenHome is the frame Esc goes back to from the pick, DERIVED from the same
+// answer handleSheet routes on rather than remembered from the key that opened
+// it. A worksheet that changed under the operator — they reopened a line on a
+// settled order in another window — must not send them back to a frame the
+// server has stopped serving.
+func (s *ReceiveFormScreen) reopenHome() receivePhase {
+	if s.sheet != nil && s.sheet.CanReceive {
+		return phaseQty
+	}
+	return phaseBlocked
+}
+
+// reopenHomeLabel is what the bar calls that way back.
+func (s *ReceiveFormScreen) reopenHomeLabel() string {
+	if s.reopenHome() == phaseQty {
+		return "Back to quantities"
+	}
+	return "Back to lines"
+}
+
+// toReopenHome leaves the correction without making one.
+func (s *ReceiveFormScreen) toReopenHome() {
+	s.phase = s.reopenHome()
+	s.blurAll()
+	if s.phase == phaseQty {
+		s.focusCurrent()
+	}
+}
+
+// reopenRows is how many rows the pick list has.
+func (s *ReceiveFormScreen) reopenRows() int { return len(s.reopenable()) }
+
+// reopenAt is the settled index the pick cursor is standing on. The bool keeps
+// every reader total over a list that can empty under a reload.
+func (s *ReceiveFormScreen) reopenAt(row int) (int, bool) {
+	rows := s.reopenable()
+	if row < 0 || row >= len(rows) {
+		return 0, false
+	}
+	return rows[row], true
+}
+
+// keyReopenPick is the pick list's keyboard: a read-only list with a cursor.
+//
+// Tab and Shift-Tab are deliberately NOT aliases for Up/Down here, for
+// keyBlocked's reason: the alias rides sheets WITH FIELDS, roughly twenty of
+// which spell the pair as UP/DN=Fields, and this frame has none.
+func (s *ReceiveFormScreen) keyReopenPick(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
+	switch k := m.String(); k {
+	case "esc":
+		s.toReopenHome()
+		return s, s.say("nothing was reopened", StatusInfo)
+	case "enter":
+		i, ok := s.reopenAt(s.reopenCursor)
+		if !ok {
+			// A TOTAL read rather than a reachable branch: nothing empties the
+			// list while this frame is up, because the only thing that rebuilds
+			// s.closed is applyWorksheet and its one caller (handleSheet) always
+			// sets the phase — loadSheet has already moved the screen to
+			// phaseLoading before the reply lands. It answers instead of
+			// indexing into nothing, because "safe because of what another arm
+			// happens to do" is not a property (currentInput's note).
+			s.toReopenHome()
+			return s, s.say("that line is no longer closed short · nothing was reopened", StatusWarn)
+		}
+		s.reopenLine = i
+		s.phase = phaseReopenConfirm
+		s.reason.SetValue("")
+		s.blurAll()
+		s.reason.Focus()
+		// No note, for openReopen's reason: the frame IS the answer, and the
+		// note block is where the fact that must survive a short pane lives.
+		return s, tea.Batch(Status(fmt.Sprintf("Reopening settled line %d of %s · ctrl+x commits it",
+			i+1, s.orderName()), StatusInfo), textinput.Blink)
+	case "up", "down":
+		return s, s.moveReopenCursor(k, headerRows)
+	case "pgup", "pgdown":
+		return s, s.pageReopenCursor(k, headerRows)
+	default:
+		return s, s.decline(k, headerRows)
+	}
+}
+
+// moveReopenCursor / pageReopenCursor are moveRowCursor and pageRowCursor over
+// this phase's own cursor. They are separate functions rather than a parameter
+// on those because the shared pair write to rowCursor by name, and threading a
+// pointer through them would make the two read-only frames that DO share it
+// harder to follow for one caller that does not.
+func (s *ReceiveFormScreen) moveReopenCursor(k string, headerRows int) tea.Cmd {
+	if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+		return nil // refused pane — see pageQty
+	}
+	rows := s.reopenRows()
+	if rows < 2 {
+		return s.decline(k, headerRows)
+	}
+	if k == "up" {
+		s.reopenCursor = (s.reopenCursor + rows - 1) % rows
+	} else {
+		s.reopenCursor = (s.reopenCursor + 1) % rows
+	}
+	return nil
+}
+
+func (s *ReceiveFormScreen) pageReopenCursor(k string, headerRows int) tea.Cmd {
+	if !s.frameDrawn(headerRows, s.barFor(headerRows)) {
+		return nil // refused pane — see pageQty
+	}
+	body, rows := s.reopenPickBody(), s.reopenRows()
+	if !s.rowsPageFor(body, rows, headerRows) {
+		return s.decline(k, headerRows)
+	}
+	dir := +1
+	if k == "pgup" {
+		dir = -1
+	}
+	step := s.windowRowsForBar(body, s.reopenCursor, headerRows, s.barCeiling())
+	next := jdePageCursor(s.reopenCursor, rows, step, dir)
+	if next == s.reopenCursor {
+		return s.say(k+" is already at "+receiveEdge(dir)+" · "+s.waysOut(headerRows), StatusInfo)
+	}
+	s.reopenCursor = next
+	return nil
+}
+
+// keyReopenConfirm is the correction's confirm.
+//
+// Ctrl+X and not Enter, for keyWriteOff's reason: Enter is the key that OPENED
+// this frame, and a reflexive double-tap must not be what writes to the record —
+// even a correction is a stamped, separately attributable event, and one made by
+// reflex on the wrong line is a second mistake beside the first.
+func (s *ReceiveFormScreen) keyReopenConfirm(m tea.KeyMsg, headerRows int) (Screen, tea.Cmd) {
+	k := m.String()
+	if s.pending {
+		if k == "esc" {
+			return s, s.leave()
+		}
+		return s, s.declineFrozen(k, headerRows)
+	}
+	switch k {
+	case "esc":
+		s.phase = phaseReopenPick
+		s.blurAll()
+		return s, s.say("nothing was reopened · back on the closed-short lines", StatusInfo)
+	case "ctrl+x":
+		return s.commitReopen()
+	case "enter":
+		return s, s.say("enter is not the key here — ctrl+x is, so a reflex cannot "+
+			"reopen the wrong line · "+s.waysOut(headerRows), StatusWarn)
+	case "up", "down", "pgup", "pgdown":
+		// Declined by name for keyWriteOff's reason, which applies here twice
+		// over: the operator arrives from a frame whose bar named UP/DN for a
+		// LINE cursor, so the habit is live, and bubbles binds none of these
+		// without suggestions — so handing them to the box would redraw a
+		// byte-identical pane on a frame whose next key writes to the record.
+		return s, s.decline(k, headerRows)
+	}
+	return s, s.typeInto(&s.reason, m, headerRows)
+}
+
+// commitReopen posts the correction.
+func (s *ReceiveFormScreen) commitReopen() (Screen, tea.Cmd) {
+	line, ok := s.reopenLineSheet()
+	if !ok {
+		// The same total read keyReopenPick's enter arm makes, and unreachable
+		// for the same reason. It says so rather than posting an index into
+		// nothing.
+		s.toReopenHome()
+		return s, s.say("that line is no longer closed short · nothing was reopened", StatusWarn)
+	}
+	reason := strings.TrimSpace(s.reason.Value())
+	s.pending = true
+	s.clearFail()
+	s.blurAll()
+	deps, id, ctx := s.deps, s.poID(), s.ctx()
+	what := fmt.Sprintf("Reopening settled line %d", s.reopenLine+1)
+	req := omsapi.ReopenShortRequest{Items: []omsapi.POLineSettlement{
+		{PurchaseOrderItem: line.PurchaseOrderItem, Reason: reason},
+	}}
+	if deps.OMS == nil {
+		// Its OWN no-client answer, so a screen built with no client fails the
+		// correction as a correction: receiveNoClient answers with a
+		// receiveSubmittedMsg, which would end the visit on the summary for a
+		// write that never left the process.
+		return s, func() tea.Msg {
+			return receiveReopenedMsg{what: what,
+				err: errors.New("no connection to OpenMakerSuite")}
+		}
+	}
+	return s, func() tea.Msg {
+		out, err := deps.OMS.ReopenShortPOLines(ctx, id, req)
+		return receiveReopenedMsg{what: what, po: out, err: err}
+	}
+}
+
+// reopenLineSheet is the guarded read every reader of s.reopenLine goes through.
+func (s *ReceiveFormScreen) reopenLineSheet() (omsapi.ReceivingLine, bool) {
+	if s.reopenLine < 0 || s.reopenLine >= len(s.closed) {
+		return omsapi.ReceivingLine{}, false
+	}
+	l := s.closed[s.reopenLine].sheet
+	if !l.IsClosedShort {
+		return omsapi.ReceivingLine{}, false
+	}
+	return l, true
+}
+
+// handleReopened is the correction's reply.
+//
+// A SUCCESS refetches the worksheet rather than ending the visit — see the
+// section note above — and holds the sentence saying what it did across that
+// refetch, because Update retires the note on every reply off the wire and the
+// refetch IS one.
+//
+// A FAILURE hands the confirm back live with the reason typed into it intact, on
+// the frame the write left from, exactly as handleSubmitted does: whether the
+// operator retypes a reason or goes and fetches somebody is decided by what the
+// server said.
+func (s *ReceiveFormScreen) handleReopened(m receiveReopenedMsg) tea.Cmd {
+	s.pending = false
+	if m.err != nil {
+		head, detail := receiveFailure(m.what, m.err)
+		s.setFail(head, detail)
+		s.blurAll()
+		s.reason.Focus()
+		return tea.Batch(Status(head, StatusError), textinput.Blink)
+	}
+	s.clearFail()
+	// What the ORDER became is the SERVER's answer and is reported rather than
+	// predicted — a reopen drops an order that had reached `received` back to
+	// `partially_received`, and that re-derivation is the server's.
+	s.reopened = m.what + " succeeded — the close-short stays on the record beside it"
+	if m.po != nil && m.po.StatusLabel != "" {
+		s.reopened += " · " + fmtOrderName(m.po, s.poID()) + " is now " + m.po.StatusLabel
+	}
+	// FLASHED NOW as well as restated when the worksheet lands, because the two
+	// can come apart: if the refetch fails the screen goes to the unreadable
+	// frame, whose note block is the failure's, and without this the operator
+	// would be looking at "the worksheet could not be read" with no word about
+	// whether the correction they just made landed.
+	return tea.Batch(s.loadSheet(), Status(s.reopened, StatusOK))
+}
+
+// reopenPickBody lists the lines a correction may name.
+//
+// Every line belongs to a navigable ROW, the rule qtyBody carries in full, and
+// the frame's own explanation is NOT here: it is a fact about the frame rather
+// than about any row, so it rides the note block (standingNote), which is on the
+// pane at every drawable height from every row. Written as the tail of row 0's
+// block it would be the first thing a short window dropped, on the frame whose
+// whole job is saying what the correction does.
+func (s *ReceiveFormScreen) reopenPickBody() *jdeLines {
+	l := &jdeLines{}
+	width := s.bodyWidth()
+	rows := s.reopenable()
+	if len(rows) < 2 {
+		// One row: nothing moves the window, so what the operator cannot do
+		// without has to BE the first line — which it is, the line's own name.
+		l.DeclareLead("reopen pick")
+	}
+	for row, i := range rows {
+		if row > 0 {
+			// The separator closes the block ABOVE it, never opens the one
+			// below: Window keeps a block's START, so a blank tagged to the
+			// block below is the one line a short window draws for it.
+			l.AddRow(row-1, "")
+		}
+		s.addReopenLineBlock(l, row, i, width)
+	}
+	return l
+}
+
+// addReopenLineBlock draws one closed-short line: which settled row it is, what
+// it is, where receiving got to with it, and WHY it was written off.
+//
+// The close-short's own reason is on the row rather than only on the confirm,
+// because it is what tells the operator this is the line they meant — picking by
+// name alone is picking between two rows that may read the same.
+func (s *ReceiveFormScreen) addReopenLineBlock(l *jdeLines, row, i, width int) {
+	line := s.closed[i].sheet
+	l.AddRow(row, jdeIndent+s.lineHeading(i+1, line, s.reopenCursor == row, width))
+	for _, tok := range jdeWrapTokens(receiveLineTokens(line), receiveMetaIndent, width) {
+		l.AddRow(row, tok)
+	}
+	if line.ClosedShortReason != "" {
+		for _, cl := range receiveCaveatLines("closed short: "+line.ClosedShortReason,
+			StyleMuted, width) {
+			l.AddRow(row, cl)
+		}
+	} else {
+		// ABSENT and EMPTY are different facts, and on this frame the difference
+		// is what the operator is correcting: a write-off recorded with no
+		// reason is a write-off nobody explained, which is itself worth knowing
+		// before deciding it was a mistake.
+		for _, cl := range receiveCaveatLines("closed short with no reason recorded",
+			StyleMuted, width) {
+			l.AddRow(row, cl)
+		}
+	}
+	if line.WasReopened {
+		for _, cl := range receiveCaveatLines("reopened before, then closed short again — "+
+			"the newer stamp is the one in force", StyleMuted, width) {
+			l.AddRow(row, cl)
+		}
+	}
+}
+
+// reopenConfirmBody is writeOffBody's shape: the FIELD leads, because a block
+// that will not fit keeps its START and an operator typing into a field they
+// cannot see is the reported-hang class this screen exists to remove.
+func (s *ReceiveFormScreen) reopenConfirmBody() *jdeLines {
+	l := &jdeLines{}
+	lw := receiveLabelWidth()
+	width := s.bodyWidth()
+
+	l.DeclareLead("reopen reason")
+	l.AddFittedFields([]jdeField{{
+		Label: "Reason",
+		Kind:  jdeText,
+		Input: &s.reason,
+		Width: 34,
+		// The hint says OPTIONAL because the server says so —
+		// LineSettlementSerializer declares `required=False, allow_blank=True`
+		// — and a screen that invented a required field here would refuse a
+		// correction OMS accepts. It also says where the value GOES, because
+		// "beside" is the whole of what makes this a correction and not an undo.
+		Hint:    "optional · recorded beside the close-short",
+		Focused: !s.pending,
+	}}, lw, width, 0)
+	l.AddRow(0, "")
+
+	line, ok := s.reopenLineSheet()
+	if !ok {
+		for _, cl := range jdeCaveatLines("That line is no longer closed short, so there is "+
+			"nothing to reopen. Esc goes back.", width) {
+			l.AddRow(0, cl)
+		}
+		return l
+	}
+
+	// Fitted as ONE assembled line rather than by clipping the label against a
+	// guess at what the rest costs — writeOffBody's note carries why.
+	l.AddRow(0, jdeIndent+StyleStatusWarn.Render(receiveFit(
+		fmt.Sprintf("Reopen settled line %d: %s", s.reopenLine+1, line.Label),
+		width, len(jdeIndent))))
+	for _, tok := range jdeWrapTokens(receiveLineTokens(line), receiveMetaIndent, width) {
+		l.AddRow(0, tok)
+	}
+	// The DETAIL, and only the detail: the headline fact — that this does not
+	// erase the write-off — is in the note block, which is on the pane at every
+	// height (receiveReopenExplains). This body is one pinned block led by the
+	// Reason field, so everything here is tail, and repeating the headline would
+	// spend the rows a short pane does have on a sentence it already drew.
+	//
+	// The COUNT leads, because it is the one fact here that is about THIS line
+	// rather than about reopening in general.
+	off := receiveWrittenOff(line)
+	for _, cl := range jdeCaveatLines(fmt.Sprintf(
+		"The %d %s written off go back to outstanding. The close-short keeps its own "+
+			"reason, actor and timestamp and this correction is stamped beside them. What "+
+			"the ORDER becomes is the server's answer, and the reload reports it.",
+		off, plural("unit", off)), width) {
+		l.AddRow(0, cl)
+	}
+	return l
+}
+
+// receiveWrittenOff is how many units the close-short wrote off, from the
+// server's own SIGNED variance rather than a subtraction of its own.
+//
+// QuantityPending is floored to zero on a settled line — that is what settling
+// means — so it cannot answer this, and QuantityVariance is the honest figure
+// the contract keeps for exactly this purpose. It is negative on a short line,
+// so the magnitude is what a sentence names.
+func receiveWrittenOff(line omsapi.ReceivingLine) int {
+	if line.QuantityVariance < 0 {
+		return -line.QuantityVariance
+	}
+	return line.QuantityVariance
+}
+
+// reopenPickBar names the keys the pick list honours.
+func (s *ReceiveFormScreen) reopenPickBar(paging bool) []actionBarItem {
+	items := []actionBarItem{{"Enter", "Choose line"}, {"Esc", s.reopenHomeLabel()}}
+	if s.reopenRows() > 1 {
+		items = append(items, actionBarItem{"UP/DN", "Lines"})
+	}
+	if paging {
+		items = append(items, actionBarItem{"PgUp/PgDn", "Page"})
+	}
+	return items
+}
+
+// reopenConfirmBar is the correction's bar. Ctrl+X is the commit and Enter is
+// deliberately absent — see keyReopenConfirm.
+func (s *ReceiveFormScreen) reopenConfirmBar() []actionBarItem {
+	if s.pending {
+		return []actionBarItem{{"Esc", "Back to order"}}
+	}
+	return []actionBarItem{{"Ctrl+X", "Reopen line"}, {"Esc", "Leave it closed"}}
 }
 
 // ---------------------------------------------------------------------------
@@ -3225,6 +3861,7 @@ func (s *ReceiveFormScreen) resetEntry() {
 	}
 	s.serialUnits, s.captures, s.serialCursor, s.serialField = nil, nil, 0, receiveSerialNumber
 	s.dropped, s.rowCursor, s.focused = 0, 0, receiveRowScan
+	s.reopenCursor, s.reopenLine, s.reopened = 0, 0, ""
 }
 
 // ---------------------------------------------------------------------------
@@ -3262,6 +3899,10 @@ func (s *ReceiveFormScreen) barFor(headerRows int) []actionBarItem {
 		return s.reviewBarItems(s.rowsPageFor(s.reviewBody(), s.reviewRows(), headerRows))
 	case phaseWriteOff:
 		return s.writeOffBar()
+	case phaseReopenPick:
+		return s.reopenPickBar(s.rowsPageFor(s.reopenPickBody(), s.reopenRows(), headerRows))
+	case phaseReopenConfirm:
+		return s.reopenConfirmBar()
 	case phaseDone:
 		return []actionBarItem{{"Enter/Esc", "Back to order"}, {"r", "Receive more"}}
 	}
@@ -3284,6 +3925,13 @@ func (s *ReceiveFormScreen) blockedBarItems(paging bool) []actionBarItem {
 	// screen you are on, uppercase opens a sibling surface — list.go's
 	// listShortcuts). No binding changed; the bar stopped lying about one.
 	items := []actionBarItem{{"r", "Re-read"}, {"Esc", "Back to order"}}
+	// Named for exactly as long as it would ACT, off the arm's own predicate
+	// (reopenRefusal), so the bar and the key cannot disagree. On the
+	// unreadable-worksheet frame it is absent, because nothing there knows
+	// whether a line is closed short.
+	if s.reopenRefusal() == "" {
+		items = append(items, actionBarItem{"Ctrl+O", "Reopen short"})
+	}
 	if s.blockedRows() > 1 {
 		items = append(items, actionBarItem{"UP/DN", "Lines"})
 	}
@@ -3339,6 +3987,12 @@ func (s *ReceiveFormScreen) qtyBarItems(paging bool) []actionBarItem {
 	if s.orderWriteOffRefusal() == "" {
 		items = append(items, actionBarItem{"Ctrl+R", "Mark received"})
 	}
+	// The CORRECTION, named wherever there is one to make. It carries no
+	// write-off gate of its own: a reopen preserves the form rather than ending
+	// it, so there is nothing typed for it to discard.
+	if s.reopenRefusal() == "" {
+		items = append(items, actionBarItem{"Ctrl+O", "Reopen short"})
+	}
 	return items
 }
 
@@ -3357,6 +4011,7 @@ func (s *ReceiveFormScreen) qtyBarCeiling() []actionBarItem {
 		{"PgUp/PgDn", "Page"},
 		{"Ctrl+K", "Close short"},
 		{"Ctrl+R", "Mark received"},
+		{"Ctrl+O", "Reopen short"},
 	}
 }
 
@@ -3497,6 +4152,10 @@ func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 		return s.reviewBarItems(true)
 	case phaseWriteOff:
 		return s.writeOffBar()
+	case phaseReopenPick:
+		return s.reopenPickBar(true)
+	case phaseReopenConfirm:
+		return s.reopenConfirmBar()
 	case phaseDone:
 		return []actionBarItem{{"Enter/Esc", "Back to order"}, {"r", "Receive more"}}
 	}
@@ -3561,6 +4220,10 @@ func (s *ReceiveFormScreen) body() (*jdeLines, int) {
 		return s.reviewBody(), s.rowCursor
 	case phaseWriteOff:
 		return s.writeOffBody(), 0
+	case phaseReopenPick:
+		return s.reopenPickBody(), s.reopenCursor
+	case phaseReopenConfirm:
+		return s.reopenConfirmBody(), 0
 	case phaseDone:
 		return s.doneBody(), 0
 	}
@@ -3577,6 +4240,8 @@ func (s *ReceiveFormScreen) workingLine() string {
 		return "Closing " + s.orderName() + " out…"
 	case s.phase == phaseWriteOff:
 		return fmt.Sprintf("Closing line %d of %s short…", s.scopeLine+1, s.orderName())
+	case s.phase == phaseReopenConfirm:
+		return fmt.Sprintf("Reopening settled line %d of %s…", s.reopenLine+1, s.orderName())
 	}
 	return "Booking the delivery against " + s.orderName() + "…"
 }
@@ -4890,21 +5555,32 @@ func (s *ReceiveFormScreen) doneBody() *jdeLines {
 // genuinely changed, and the bar and the guard see that change identically. It
 // is not self-referential and must not be paid for.
 //
-// FOUR text rows is what the longest sentence this screen can produce folds to
-// at the narrowest pane it supports (51 cells, so 49 after the indent). It was
-// three, with a margin of zero and a note beside it saying that one more bar
-// item would put it over — and the receiving flow added two, Ctrl+K and
-// Ctrl+R, so it went over. The refusals run to about 160 cells now: a lead
-// naming the key and the reason, then waysOut, which is the whole bar spelled
-// out.
+// FIVE text rows is what the longest sentence this screen can produce folds to
+// at the narrowest pane it supports (51 cells, so 49 after the indent). This
+// constant has now gone up twice, for ONE reason both times, and the reason is
+// the argument it demands of anybody raising it again:
 //
-// Shortening the SENTENCE was the standing instruction and it does not apply
-// here, because the part that grew is not a sentence anybody wrote. waysOut is
-// DERIVED from the bar so that a decline cannot advertise a key the frame does
-// not honour, nor omit one it does; trimming it back to some keys would put the
-// curation this file's history is made of straight back into the one place the
-// rule is checked. The bar grew because the screen gained two keys that act,
-// which is the honest reason for a longer answer.
+//   - three -> four: the receiving flow gained Ctrl+K and Ctrl+R.
+//   - four -> five: it gained Ctrl+O, the reopen-short correction.
+//
+// Shortening the SENTENCE is the standing instruction and it does not apply to
+// either, because the part that grew is not a sentence anybody wrote. waysOut
+// is DERIVED from the bar so that a decline cannot advertise a key the frame
+// does not honour, nor omit one it does; trimming it back to some keys would
+// put the curation this file's history is made of straight back into the one
+// place the rule is checked. The bar grew because the screen gained a key that
+// ACTS, which is the honest reason for a longer answer.
+//
+// THE MARGIN AT FOUR WAS ZERO, measured rather than estimated, which is why no
+// shorter wording of the new bar label could pay for it. The scan-onto-a-settled-
+// line refusal folded to exactly four rows and 151 cells; every candidate label
+// — "Reopen short", "Reopen line", a bare "Reopen" — put it on a fifth. The
+// word that could not go is "closed short" in that lead, which the correction
+// made MORE load-bearing rather than less: it is the word telling the operator
+// that Ctrl+O is the key for this line rather than a void.
+//
+// The refusals run to about 180 cells now: a lead naming the key and the reason,
+// then waysOut, which is the whole bar spelled out.
 //
 // The row is paid for on every frame and that is the trade, made once and
 // deliberately: an operator scanning goods in needs a command line that tells
@@ -4915,7 +5591,7 @@ func (s *ReceiveFormScreen) doneBody() *jdeLines {
 // gets the operator out is named; receiveNoteDropMark makes a cut VISIBLE even
 // where that probe list misses it. If a new sentence does not fit, shorten the
 // SENTENCE — this constant does not go up again without the same argument.
-const receiveNoteRows = 4
+const receiveNoteRows = 5
 
 // receiveNoteDropMark is what the note leaves behind when it does not fit.
 //
@@ -5345,6 +6021,26 @@ func (s *ReceiveFormScreen) shownNote() pickerNote {
 const receiveNothingReceivable = "Every line is voided or closed short, so nothing here " +
 	"can take a receipt. Void or cancel the ORDER to finish with it."
 
+// receiveReopenExplains is the standing fact of BOTH correction frames: what a
+// reopen does, with the half that stops it reading as an undo LEADING, because
+// the note block gives ground from the END and headerLines marks only its first
+// row essential.
+//
+// It is in the note block rather than in either body because that is the one
+// surface on this screen that is on the pane at every height the frame is drawn
+// at, from every row. The confirm is why that matters rather than being a
+// tidiness: its body is ONE pinned block led by the Reason field, so everything
+// after the field is tail — and measured at the canonical 80x24 the pane drew
+// "↓ 7 more below" with this fact among the seven, on the frame whose next key
+// writes to the record. The body still carries the DETAIL underneath, which is
+// setErr's headline-then-detail split applied to a caveat.
+//
+// ONE sentence for both frames, because they are one decision seen twice: the
+// pick is where it is chosen and the confirm is where it is committed, and two
+// wordings of one fact are two things to keep in step.
+const receiveReopenExplains = "The close-short stays on the record; a reopen is stamped " +
+	"beside it. The line goes back to outstanding so it can be received against."
+
 // standingNote is a FACT about the frame, drawn in the note block while no
 // keypress has an answer standing there — New PO's idiom (po_create.go), so that
 // "nothing to say" and "the answer scrolled away" are different states.
@@ -5373,6 +6069,8 @@ func (s *ReceiveFormScreen) standingNote() pickerNote {
 		return pickerNote{text: s.blockedReason(), level: StatusWarn}
 	case s.phase == phaseQty && len(s.qty) == 0:
 		return pickerNote{text: receiveNothingReceivable, level: StatusWarn}
+	case s.phase == phaseReopenPick, s.phase == phaseReopenConfirm:
+		return pickerNote{text: receiveReopenExplains, level: StatusInfo}
 	}
 	return pickerNote{}
 }

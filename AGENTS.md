@@ -845,13 +845,52 @@ either:
   the next keypress retires — and the write proceeds. **The bar follows the
   gate in both directions**: a key that will proceed, warning and all, is named;
   only a key that would refuse is unnamed, or the dead end moves onto the bar.
-- **`reopen-short/` exists and this client does not drive it.** A close-short
-  recorded in error is corrected there; the correction is stamped BESIDE the
-  write-off rather than erasing it, so a reopened line comes back outstanding
-  with `was_reopened` set and its `closed_short_reason` intact. Both are decoded
-  and the line's readings say `reopened`, because receiving against a line
-  somebody already got wrong once is worth knowing.
-- **The refusal body is NOT the standard envelope**, again. All four endpoints
+- **`reopen-short/` IS driven, and it is a CORRECTION rather than an undo.**
+  `Ctrl+O` on the quantity form and on the BLOCKED frame opens a pick of the
+  closed-short lines and then a confirm carrying an optional reason;
+  `omsapi.ReopenShortPOLines` is the client and `receive_form.go`'s "Taking a
+  close-short back" section is the authority. What is worth knowing before
+  touching it:
+  - **The close-short STAYS on the record** — its reason, actor and timestamp —
+    and the reopen is stamped beside it, so the pair reads as a mistake and its
+    correction. `is_closed_short` is derived from both stamps, so a reopened
+    line simply is not closed short any more and needs no reconciling; the
+    line's readings still say `reopened`, because receiving against a line
+    somebody already got wrong once is worth knowing. Every sentence on those
+    two frames is worded so it cannot be read as an erasure.
+  - **It is the ONE receiving write accepted on an order already `received`,
+    which is why it is offered on the BLOCKED frame.** A settled order comes
+    back `can_receive: false`, so ScanTTY draws `phaseBlocked` for it — and OMS
+    says outright that a line closed short in error is usually noticed AFTER the
+    close settled the order. Offering the correction only where a receipt can be
+    built would withhold it from exactly the case it exists for. Nothing on this
+    side keeps a copy of the allowed statuses (`can_receive` answers a NARROWER
+    question and no flag answers this one): the write is sent and the refusal is
+    relayed in the server's own words.
+  - **A landed reopen REFETCHES the worksheet instead of ending the visit**,
+    which is the one place it differs from the write-off beside it. The
+    correction is made so a receipt CAN be built, and `applyWorksheet` carries
+    typed quantities across by line id — so it needs no gate of the write-off's
+    kind, because it destroys nothing. `s.reopened` holds the confirmation
+    across that refetch, since `Update` retires the note on every reply off the
+    wire and the read that PROVES the reopen is one.
+  - **THE WRITE-OFF REFUSAL DID NOT SOFTEN, AND THE REASON IT GAVE WAS WRONG.**
+    It used to rest on "a close-short cannot be taken back from this client",
+    which `Ctrl+O` falsifies. What actually decides is satisfiability — a
+    refusal is legitimate exactly where the operator can clear what is in the
+    way WITHOUT leaving the frame it is drawn on — and every box that gate
+    counts is a backspace away there. A reopen restores a LINE's outstanding
+    balance and restores no typed quantity, carrier or note, so "the record is
+    correctable now" is true of the write-off and false of the thing being
+    discarded. The re-derivation is recorded at the head of receive_form.go's
+    write-off section; do not re-open it from the retired premise.
+  - **Its arrival cost the note block a row** (`receiveNoteRows` 4 -> 5). That
+    constant's own comment demands the argument, and it is the same one both
+    times: `waysOut` is DERIVED from the bar, so a screen that gains a key that
+    ACTS gains a longer answer, and trimming it to some keys would put curation
+    back into the one place the rule is checked. The margin at four was measured
+    at ZERO, so no shorter bar label could have paid for it.
+- **The refusal body is NOT the standard envelope**, again. All five endpoints
   write `{"error": "<prose>"}` by hand with no `code`, so `parseError` hands the
   whole raw body over. `omsapi.AsReceivingRefusal` recovers the sentence and is
   narrower than `AsLineEntryError` (which requires a code this shape has not):

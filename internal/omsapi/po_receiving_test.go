@@ -365,7 +365,7 @@ func TestCloseShortAndMarkReceived_AddressTheirOwnEndpoints(t *testing.T) {
 	c := receivingServer(t, 0, `{"id": 5}`, &seen, &bodies)
 
 	if _, err := c.CloseShortPOLines(context.Background(), "1", CloseShortRequest{
-		Items: []CloseShortLine{{PurchaseOrderItem: 301, Reason: "backorder cancelled"}},
+		Items: []POLineSettlement{{PurchaseOrderItem: 301, Reason: "backorder cancelled"}},
 	}); err != nil {
 		t.Fatalf("CloseShortPOLines: %v", err)
 	}
@@ -389,6 +389,81 @@ func TestCloseShortAndMarkReceived_AddressTheirOwnEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(bodies[1], `"vendor closed the order"`) {
 		t.Errorf("the mark-received reason was dropped: %s", bodies[1])
+	}
+}
+
+// TestReopenShort_AddressesItsOwnEndpointAndCarriesTheSettlementShape.
+//
+// The CORRECTION, and it is a third write beside the two above rather than a
+// variant of either: close-short settles a line, mark-received settles an order,
+// and this one takes a settlement BACK. Sending it to close-short's URL would
+// write off the balance it was meant to restore.
+//
+// The body is the shape OMS's own LineSettlementSerializer takes — an INTEGER
+// `purchase_order_item` and an optional `reason` — read off
+// backend/reorder_queue/serializers.py rather than inferred from the close-short
+// beside it, even though the two really are one serializer there.
+func TestReopenShort_AddressesItsOwnEndpointAndCarriesTheSettlementShape(t *testing.T) {
+	var seen []*http.Request
+	var bodies []string
+	c := receivingServer(t, 0, `{"id": 5, "status": "partially_received"}`, &seen, &bodies)
+
+	if _, err := c.ReopenShortPOLines(context.Background(), "1", ReopenShortRequest{
+		Items: []POLineSettlement{{PurchaseOrderItem: 301, Reason: "closed the wrong line"}},
+	}); err != nil {
+		t.Fatalf("ReopenShortPOLines: %v", err)
+	}
+	// The reason is OPTIONAL on the wire — `required=False, allow_blank=True` —
+	// so an unset one is OMITTED rather than sent as "". A blank string is a
+	// value somebody typed; an absent key lets the server apply its own default.
+	if _, err := c.ReopenShortPOLines(context.Background(), "1", ReopenShortRequest{
+		Items: []POLineSettlement{{PurchaseOrderItem: 302}},
+	}); err != nil {
+		t.Fatalf("ReopenShortPOLines with no reason: %v", err)
+	}
+
+	if len(seen) != 2 {
+		t.Fatalf("want two writes, got %d", len(seen))
+	}
+	for i, req := range seen {
+		if req.URL.Path != "/api/reorders/purchase-orders/1/reopen-short/" {
+			t.Errorf("reopen-short %d went to %q", i, req.URL.Path)
+		}
+		if req.Method != http.MethodPost {
+			t.Errorf("reopen-short %d used %s", i, req.Method)
+		}
+	}
+	if !strings.Contains(bodies[0], `"purchase_order_item":301`) ||
+		!strings.Contains(bodies[0], `"closed the wrong line"`) {
+		t.Errorf("the reopen body lost the line or the reason: %s", bodies[0])
+	}
+	if strings.Contains(bodies[1], `"reason"`) {
+		t.Errorf("an unset reason was sent anyway: %s", bodies[1])
+	}
+}
+
+// TestReopenShort_RecoversTheServersOwnRefusal.
+//
+// Its refusals are the same hand-built `{"error": "<prose>"}` the rest of this
+// file's endpoints write, so they reach the caller as a raw body and
+// AsReceivingRefusal is what an operator-facing screen recovers the sentence
+// with. Driven here so the claim is about THIS endpoint rather than inherited.
+func TestReopenShort_RecoversTheServersOwnRefusal(t *testing.T) {
+	const refusal = "This line is not closed short, so there is nothing to reopen."
+	c := receivingServer(t, http.StatusBadRequest, `{"error": "`+refusal+`"}`, nil, nil)
+
+	_, err := c.ReopenShortPOLines(context.Background(), "1", ReopenShortRequest{
+		Items: []POLineSettlement{{PurchaseOrderItem: 301}},
+	})
+	if err == nil {
+		t.Fatal("a refused reopen came back as a success")
+	}
+	prose, ok := AsReceivingRefusal(err)
+	if !ok {
+		t.Fatalf("the refusal was not recognised: %v", err)
+	}
+	if prose != refusal {
+		t.Errorf("the sentence came back as %q", prose)
 	}
 }
 
