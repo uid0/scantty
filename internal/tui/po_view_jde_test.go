@@ -1379,10 +1379,16 @@ var poBarKeyNames = map[string][]string{
 	"g": {"g"},
 	"i": {"i"},
 	"k": {"k"},
+	// l / u are the asset interlock's lock and unlock (asset_interlock.go). d and
+	// e — its disable and enable — are already above, spelled by other sheets.
+	// Every one is the bare letter: this screen pins no filter box, so a letter is
+	// a letter rather than a character in a query.
+	"l": {"l"},
 	"n": {"n"},
 	"o": {"o"},
 	"r": {"r"},
 	"s": {"s"},
+	"u": {"u"},
 	"v": {"v"},
 	"w": {"w"},
 	"x": {"x"},

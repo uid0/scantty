@@ -55,6 +55,10 @@ type AssetDetailScreen struct {
 
 	scroller       *TextScroller
 	terminalHeight int
+	// terminalWidth is kept because the FOOTER FOLDS against the live pane. It
+	// used to be unrecorded, so the hint was written as one line and clampToBox
+	// took its tail — see View.
+	terminalWidth int
 }
 
 type assetDetailLoadedMsg struct {
@@ -174,7 +178,14 @@ func (s *AssetDetailScreen) load() tea.Cmd {
 func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.terminalHeight, s.terminalWidth = m.Height, m.Width
+		// The body is re-rendered because several of its lines FOLD against the
+		// pane (the lockout banner, the disabled note), so a resize changes what
+		// they come to. Without this the banner keeps the fold of the width it
+		// was first drawn at.
+		if s.asset != nil {
+			s.scroller.Set(s.renderBody())
+		}
 		return s, nil
 	case assetDetailLoadedMsg:
 		s.loading = false
@@ -332,9 +343,56 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.asset != nil {
 				return s, SwitchTo(WSAssets, NewAssetDocumentsScreen(s.deps, s.assetID, s.asset.Name))
 			}
+		case "L":
+			// Open the interlock: lock / unlock / disable / enable. Uppercase L
+			// for the sibling-surface convention the other four uppercase letters
+			// here follow, and a SIBLING SURFACE rather than four more letters on
+			// this footer for two reasons. One is room — this footer is already
+			// past the 51 cells an 80-column pane gives (see View), so four more
+			// keys would make an over-long legend longer. The other is that
+			// locking needs a typed reason and every one of the four needs a
+			// confirm that says what it does, which is a columnar frame's job and
+			// not a prose sheet's.
+			//
+			// It is NOT the same thing as `o` / `R` beside it: those open and
+			// close an out-of-service RECORD, which notes that a machine is
+			// broken. This one actually stops it being used. AGENTS.md's asset
+			// interlock section carries why the two are different facts.
+			if s.asset != nil {
+				return s, SwitchTo(WSAssets, NewAssetInterlockScreen(s.deps, s.assetID, s.asset.Name))
+			}
 		}
 	}
 	return s, nil
+}
+
+// foldMuted folds one muted line against the live pane and returns it with its
+// newlines already in place.
+//
+// Every standing note on this sheet goes through it rather than being hand-counted
+// against 51 columns: each of them reads fine at the width its author had in mind
+// and then grows a username, a lockout level or an OMS-supplied reason, and
+// clampToBox takes the tail.
+func (s *AssetDetailScreen) foldMuted(text string) string {
+	var b strings.Builder
+	for _, line := range pickerWrap(text, s.paneCells()) {
+		b.WriteString(StyleMuted.Render(line) + "\n")
+	}
+	return b.String()
+}
+
+// paneCells is the width this sheet's folds are measured against: the pane the
+// terminal really gives, and pickerPaneWidth (the 51 an 80-column terminal
+// leaves) while the screen is unsized.
+//
+// Folding narrow costs an extra line and loses nothing; folding wide overruns the
+// pane and clampToBox takes the tail — which on this screen is where `esc back`
+// and the newest keys sit.
+func (s *AssetDetailScreen) paneCells() int {
+	if w := screenBodyCells(s.terminalWidth); w > 0 {
+		return w
+	}
+	return pickerPaneWidth
 }
 
 func (s *AssetDetailScreen) openForm(kind assetWriteForm, placeholder string, limit int) {
@@ -598,9 +656,17 @@ func (s *AssetDetailScreen) View() string {
 	// shape at render time, not just on WindowSizeMsg. That way the
 	// scroller automatically reflows when the action banner appears or
 	// clears without each state change having to re-budget.
-	footerRows := detailFooterRows
+	//
+	// FOLDING THE HINT SPENDS ROWS, SO THE BUDGET MOVES WITH IT — the same
+	// conversion wo_detail.go already made, for the same reason. This footer is
+	// thirteen keys long and written as one line it is well past the 51 cells an
+	// 80-column pane gives, so clampToBox took its TAIL: `esc back` and, when `L`
+	// was added for the interlock, the key to the one surface that stops a machine
+	// being used. A key named past the cut is a key named nowhere.
+	hint := pickerWrap(s.footerHint(), s.paneCells())
+	footerRows := (detailFooterRows - 1) + len(hint)
 	if s.logResult != "" {
-		footerRows = detailFooterRowsWithAction
+		footerRows += detailFooterRowsWithAction - detailFooterRows
 	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, footerRows))
 
@@ -619,18 +685,40 @@ func (s *AssetDetailScreen) View() string {
 	if s.logResult != "" {
 		footer += RenderStatus(s.logResult, s.logResultLvl) + "\n\n"
 	}
-	// M and D are NAMED here because they act here. This footer is a muted
-	// literal written straight into View and is already past the 51 cells an
-	// 80-column pane gives — the prose-footer gap AGENTS.md records for every
-	// receiver in listNavUnsweptReceivers, which no bar sweep can read. Naming
-	// two more keys does not close that gap and is not meant to; leaving a key
-	// that acts unnamed would break the rule outright rather than inherit it.
-	hint := "j/k scroll · p report · P problems · o OOS · R restore · M meters · D documents · S parts · E edit · x delete · r refresh · esc back"
-	if len(s.components) > 0 {
-		hint = "j/k scroll · p report · P problems · o OOS · R restore · i components · M meters · D documents · S parts · E edit · x delete · r refresh · esc back"
+	for i, line := range hint {
+		if i > 0 {
+			footer += "\n"
+		}
+		footer += StyleMuted.Render(line)
 	}
-	footer += StyleMuted.Render(hint)
 	return body + "\n\n" + footer
+}
+
+// footerHint names every key that acts on this sheet.
+//
+// It is one method rather than two literals inside View so the FOLD and the ROW
+// BUDGET are measured against the same string — the derivation wo_detail.go and
+// ListScreen.footerRows both make, and the reason a folded footer does not simply
+// fall off the bottom instead of off the right.
+//
+// `L` is named `L interlock` rather than `L lock` because the screen it opens
+// holds all four of lock, unlock, disable and enable, and a legend promising only
+// the locking direction would hide the dangerous one.
+//
+// This footer is still a prose literal rather than a machine-readable bar, so it
+// is invisible to every bar-honesty sweep — the gap AGENTS.md records for every
+// receiver in listNavUnsweptReceivers. Folding it does not close that gap and is
+// not meant to; what it fixes is the narrower defect of naming keys past the cut.
+func (s *AssetDetailScreen) footerHint() string {
+	parts := []string{
+		"j/k scroll", "p report", "P problems", "o OOS", "R restore", "L interlock",
+	}
+	if len(s.components) > 0 {
+		parts = append(parts, "i components")
+	}
+	parts = append(parts,
+		"M meters", "D documents", "S parts", "E edit", "x delete", "r refresh", "esc back")
+	return strings.Join(parts, " · ")
 }
 
 func (s *AssetDetailScreen) renderBody() string {
@@ -681,6 +769,55 @@ func (s *AssetDetailScreen) renderBody() string {
 		b.WriteString("\n" + a.Description + "\n")
 	}
 	b.WriteString("\n")
+
+	// LOCKED banner — ahead of the out-of-service banner, because the two are
+	// different facts and this is the stronger one. An OOS record NOTES that a
+	// machine is broken; a lockout is what actually STOPS it being used
+	// (forgekey's is_authorized denies while one is active). A tech walking up
+	// with a scanner has to be able to tell at a glance which of those is true,
+	// which is why the lockout's own reason is on the banner rather than a bare
+	// "locked" chip on the title line.
+	//
+	// `L` is named here because pressing it is the answer to "so can I clear
+	// this?", and AssetInterlockScreen is where lock, unlock, disable and enable
+	// all live.
+	if a.IsLocked {
+		b.WriteString(StyleStatusError.Render("LOCKED — the machine is denied") + "\n")
+		if info := a.LockoutInfo; info != nil {
+			meta := []string{}
+			if info.LockedBy != "" {
+				meta = append(meta, "by "+info.LockedBy)
+			}
+			if at := interlockStamp(info.LockedAt); at != "" {
+				meta = append(meta, "since "+at)
+			}
+			if info.LockoutLevel != "" {
+				meta = append(meta, "level "+info.LockoutLevel)
+			}
+			if len(meta) > 0 {
+				b.WriteString(s.foldMuted(strings.Join(meta, " · ")))
+			}
+			if info.Reason != "" {
+				// FOLDED, never clipped. The lockout's reason is the sentence
+				// somebody wrote to stop the next person starting this machine,
+				// and a reason cut mid-clause can invert it.
+				for _, line := range pickerWrap(info.Reason, s.paneCells()) {
+					b.WriteString(line + "\n")
+				}
+			}
+		}
+		b.WriteString(s.foldMuted("press L for the interlock") + "\n")
+	}
+
+	// DISABLED is a weaker fact and is stated as one: it hides the asset from
+	// lists and does NOT stop the machine. Saying so here is what stops the two
+	// banners above and below being read as the same thing — and it FOLDS, because
+	// written flat the clause carrying the negation was the half clampToBox took.
+	if !a.IsActive {
+		b.WriteString(StyleStatusWarn.Render("Record disabled") + "\n")
+		b.WriteString(s.foldMuted("hidden from lists — this does NOT stop the machine; "+
+			"press L to lock it") + "\n")
+	}
 
 	// OOS banner — surface before anything else so a tech walking up
 	// with a scanner sees "this is broken" before they read serials.

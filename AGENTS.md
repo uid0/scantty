@@ -947,6 +947,12 @@ touching the flow:
   through the WO PATCH), and `WorkOrderAdHocTool.InventoryItem` — the client
   carries it, the form does not offer it, and neither does the web's.
 
+### Asset interlock
+
+`internal/omsapi/asset_interlock.go` owns the measured lock/unlock and
+enable/disable contract; `internal/tui/asset_interlock.go` owns the terminal
+flow. Read those before changing either side.
+
 ## The receiving flow is driven off ONE fetch, and the server decides
 
 `internal/omsapi/po_receiving.go` carries the contract note and
@@ -3226,6 +3232,17 @@ is the authority; read it before adding a frame or wording a bar.
   all (`receiveType`). Do NOT shorten `pump`'s 200ms budget instead — it is the
   backstop for a genuine timer, shared with ~30 drive tests, and cutting it
   would make all of them racier on a loaded machine.
+  **RUNNING a `tea.Cmd` TO SEE WHAT IT DID PAYS THE SAME PRICE, AND THE ANSWER IS
+  USUALLY A FLAG.** A cmd that is a timer BLOCKS until it fires, and bubbles hands
+  one back from `textinput.Update` for nearly every key — so a sweep running one
+  command per unnamed key spent 530ms on each of ~220 presses against two typed
+  states: 100 seconds inside one test. A bounded runner (a goroutine plus a
+  budget, `pump`'s own shape) brought it to 10s; reading the flag the write had
+  ALREADY set brought it to 0.14s and is more precise as well, since a write sets
+  its `saving` flag synchronously BEFORE returning the cmd, so nothing has to be
+  run to find out. Prefer the synchronous flag; reach for the bounded runner only
+  where the product really is a message (a `SwitchTo`, a fetch), and never call
+  `cmd()` unguarded in a loop.
 - **A DERIVED SET IS CHEAP TO WRITE AND EXPENSIVE TO ASK, so ask it once — a
   `for _, h := range jdePaneHeights()` in an inner loop is the second way this
   package has blown the 600s timeout.** `jdeDrawableWidths` / `jdePaneHeights`

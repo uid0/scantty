@@ -185,3 +185,50 @@ What they pin that a hand-written map does not:
 * the 404 is DRF's bare `{"detail": …}` with **no `code`**, which `parseError`
   cannot recognise; `AsSubmissionRefusal` is what keeps that off the operator's
   status row as raw JSON.
+
+## Asset interlock — lock / unlock / disable / enable
+
+| file | request | status | OMS builder |
+|---|---|---|---|
+| `asset_lock.json` | `POST /api/inventory/assets/{id}/lock/` `{"reason": "spindle bearing seized — do not run until the bearing is replaced"}` as a **Maintainer** | **201** | `inventory.views.AssetViewSet.lock` → `AssetSerializer` |
+| `asset_lock_no_reason.json` | the same with **no body** — what the web's `lockAsset` posts | **400** | `config.api_errors.error_response(VALIDATION_FAILED)` |
+| `asset_unlock_still_locked.json` | `POST …/unlock/` as a Maintainer with **two lockouts stacked** | **200** | `AssetViewSet.unlock` |
+| `asset_unlock.json` | `POST …/unlock/` clearing the **last** lockout, on an asset that had been disabled meanwhile | **200** | same |
+| `asset_unlock_not_locked.json` | `POST …/unlock/` on an asset with no active lockout | **400** | `error_response(VALIDATION_FAILED)` |
+| `asset_unlock_forbidden.json` | `POST …/unlock/` as a **plain user** against a **Maintainer** lockout | **403** | a hand-built `Response({"error": "<prose>"})` in the view body |
+| `asset_disable.json` | `POST …/disable/` on an asset that was **locked** at the time | **200** | `AssetViewSet.disable` |
+| `asset_enable.json` | `POST …/enable/` | **200** | `AssetViewSet.enable` |
+
+Recorded 2026-09-12 against OpenMakerSuite remote `main` at commit
+`a1f8c6e8bc3eb709a049ec21dd68e8cabc220060` (tree `855f6f5a…`), a clean clone of
+the remote default branch, running on PostgreSQL. One database throughout, with
+three accounts at three different lockout levels (`coo` via superuser,
+`maintainer` via the `Maintainer` group, `user`) so the hierarchy in
+`DeviceLockout.can_be_unlocked_by` is what produced the 403 rather than a
+contrived body.
+
+What they pin that a hand-written map does not:
+
+* **The two axes are independent, in all three directions.** `asset_lock.json`
+  is `is_locked: true` with `is_active: **true**`; `asset_disable.json` is
+  `is_active: false` with `is_locked: **true**`; `asset_unlock.json` is
+  `is_locked: false` with `is_active: **false**`. So neither action touches the
+  other's flag, and a screen presenting them as one "out of service" state would
+  be describing an asset the server cannot be in.
+* **A 200 on unlock can still be locked.** `asset_unlock_still_locked.json` is a
+  success reply whose `is_locked` is `true` and whose `operational_mode.mode` is
+  still `locked_out`, because the view clears ONE lockout of a stack. Nothing on
+  the client side can predict that, which is why all four methods return the
+  asset and `internal/tui/asset_interlock.go` reports the state that came back.
+* **Two refusal SHAPES from one pair of endpoints.** The validation refusals are
+  OMS's standardized envelope (`error.code` + `error.message`, which `parseError`
+  understands), and the permission refusals are the flat
+  `{"error": "<prose>"}` written by hand in the view, which defeats `parseError`
+  entirely. One recogniser could not read both, so `interlockRefusal` uses
+  `AsLineEntryError` for the first and `AsReceivingRefusal` for the second.
+* **`lockout_info` names ONE lockout and carries no count.** It is
+  `…filter(asset=…, is_active=True).first()`, so `asset_unlock_still_locked.json`
+  names the *remaining* lockout and says nothing about how many are left. The
+  stack is only countable at `GET /api/forgekey/lockouts/?asset=<id>&is_active=true`.
+* **`lock` answers 201, not 200** — it creates a row — while the other three
+  answer 200.
