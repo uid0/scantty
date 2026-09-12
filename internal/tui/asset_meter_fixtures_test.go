@@ -164,3 +164,81 @@ func assetFlatPane(s Screen, width, height int) string {
 	pane := clampToBox(s.View(), screenBodyWidth(width), screenBodyRows(height))
 	return strings.Join(strings.Fields(stripANSI(pane)), " ")
 }
+
+// ---------------------------------------------------------------------------
+// The asset INTERLOCK screen
+// ---------------------------------------------------------------------------
+
+// assetInterlockFixtureAsset carries a lockout at the lengths OMS really serves:
+// a real machine's name, a real username, a maintainer-level lockout, and a
+// REASON long enough to fold — which is the length that matters, because the
+// reason is the sentence the unlock confirm is built out of and the one value on
+// these frames that an operator supplied rather than a schema.
+func assetInterlockFixtureAsset(locked, active bool) *omsapi.Asset {
+	a := &omsapi.Asset{
+		ID:           "233eeb12-775f-44a3-9a6c-8cd28e35acd7",
+		Name:         assetMeterFixtureAsset,
+		AssetTag:     "DMS-26A0011E",
+		LocationName: "Machine Shop — Bay 3",
+		IsLocked:     locked,
+		IsActive:     active,
+		CanUnlock:    true,
+		CanEnable:    true,
+	}
+	if locked {
+		a.LockoutInfo = &omsapi.AssetLockout{
+			LockedBy:     "shop.lead",
+			LockedAt:     "2026-09-12T07:21:29.488098+00:00",
+			LockoutLevel: "maintainer",
+			Reason: "spindle bearing seized — do not run until the bearing has been " +
+				"replaced and the head re-trammed",
+		}
+		a.OperationalMode = map[string]any{"mode": "locked_out"}
+	} else {
+		a.OperationalMode = map[string]any{"mode": "available"}
+	}
+	return a
+}
+
+// assetInterlockFixture is the state frame past its load, which is the frame the
+// operator arrives on. locked/active pick which of the four states the two axes
+// make, because the BAR changes shape in every one of them and a fixture in one
+// state proves nothing about the others.
+func assetInterlockFixture(locked, active bool) *AssetInterlockScreen {
+	s := NewAssetInterlockScreen(Deps{}, "233eeb12-775f-44a3-9a6c-8cd28e35acd7",
+		assetMeterFixtureAsset)
+	s.loading = false
+	s.asset = assetInterlockFixtureAsset(locked, active)
+	return s
+}
+
+// assetInterlockConfirmFixture opens the confirm for one action, through the same
+// key path an operator takes — openAction rather than by setting the phase — so a
+// fixture cannot reach a state the keys cannot.
+func assetInterlockConfirmFixture(a interlockAction, locked, active bool) *AssetInterlockScreen {
+	s := assetInterlockFixture(locked, active)
+	s.openAction(a, interlockFixtureKey(a))
+	if a == interlockLock {
+		// Lock lands on the reason form first; fill it and step on, because the
+		// confirm repeats the sentence back and an empty one would take Ctrl-X off
+		// the bar.
+		s.reason.SetValue("spindle bearing seized — do not run until the bearing has " +
+			"been replaced and the head re-trammed")
+		s.phase = interlockPhaseConfirm
+	}
+	return s
+}
+
+func interlockFixtureKey(a interlockAction) string {
+	switch a {
+	case interlockLock:
+		return "l"
+	case interlockUnlock:
+		return "u"
+	case interlockDisable:
+		return "d"
+	case interlockEnable:
+		return "e"
+	}
+	return "?"
+}

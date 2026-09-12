@@ -278,7 +278,11 @@ func jdeScreenFixtures() map[string]func() Screen {
 		// rollup-driven one — and carries a full-length asset name and a real
 		// four-place reading, because every value column in this package used to
 		// be measured against `Bolt 1`.
-		"AssetMetersScreen":        func() Screen { return assetMetersFixture() },
+		"AssetMetersScreen": func() Screen { return assetMetersFixture() },
+		// LOCKED and ACTIVE, which is the state that carries the most: the
+		// lockout's folded reason on the sheet and all four actions' worth of bar
+		// shape between this and the /states entries below.
+		"AssetInterlockScreen":     func() Screen { return assetInterlockFixture(true, true) },
 		"AssetMeterReadingsScreen": func() Screen { return assetMeterReadingsFixture() },
 		"AssetDocumentsScreen":     func() Screen { return assetDocumentsFixture() },
 		"AssetPartFormScreen":      func() Screen { s := NewAssetPartFormScreen(Deps{}, "a1", "Asset", ""); s.loading = false; return s },
@@ -636,6 +640,53 @@ func jdeScreenStates() map[string]func() Screen {
 			s := NewAssetMetersScreen(Deps{}, "a1", "Haas VF-2 Vertical Machining Center")
 			s.loading = false
 			return s
+		},
+		// THE INTERLOCK'S STATES. The BAR changes shape in every combination the two
+		// axes make — which of lock / unlock / disable / enable it names — so a
+		// fixture in one says nothing about the others. The fourth combination,
+		// locked-and-active, is the base jdeScreenFixtures entry; these are the other
+		// three, plus the could-not-tell of a failed load and the frames the four
+		// actions open.
+		"AssetInterlockScreen/unlocked and active": func() Screen {
+			return assetInterlockFixture(false, true)
+		},
+		"AssetInterlockScreen/locked and disabled": func() Screen {
+			return assetInterlockFixture(true, false)
+		},
+		"AssetInterlockScreen/unlocked and disabled": func() Screen {
+			return assetInterlockFixture(false, false)
+		},
+		// COULD NOT TELL: a failed load, where the state rows say so and no action
+		// is on offer. It is the one state where nothing moves, which is why it is
+		// recorded in jdeInertCases.
+		"AssetInterlockScreen/load failed": func() Screen {
+			s := assetInterlockFixture(false, true)
+			s.asset = nil
+			s.loadErr = "oms: http 502: upstream is down"
+			return s
+		},
+		"AssetInterlockScreen/reason": func() Screen {
+			s := assetInterlockFixture(false, true)
+			s.openAction(interlockLock, "l")
+			return s
+		},
+		"AssetInterlockScreen/confirm lock": func() Screen {
+			return assetInterlockConfirmFixture(interlockLock, false, true)
+		},
+		// LOCK ON AN ALREADY-LOCKED ASSET is a different confirm — it says a SECOND
+		// lockout is being added — so it is its own state rather than a branch of
+		// the one above.
+		"AssetInterlockScreen/confirm second lock": func() Screen {
+			return assetInterlockConfirmFixture(interlockLock, true, true)
+		},
+		"AssetInterlockScreen/confirm unlock": func() Screen {
+			return assetInterlockConfirmFixture(interlockUnlock, true, true)
+		},
+		"AssetInterlockScreen/confirm disable": func() Screen {
+			return assetInterlockConfirmFixture(interlockDisable, false, true)
+		},
+		"AssetInterlockScreen/confirm enable": func() Screen {
+			return assetInterlockConfirmFixture(interlockEnable, true, false)
 		},
 		"AssetDocumentsScreen/upload": func() Screen {
 			s := assetDocumentsFixture()
@@ -2055,6 +2106,38 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 			header: func(s Screen) jdeHeader { return s.(*AssetDocumentsScreen).confirmDeleteHeader() },
 		},
 
+		// The asset INTERLOCK sites. viewState's header carries the ESSENTIAL
+		// interlock row, which is the requirement this screen exists for — an
+		// operator must never be unsure whether the machine is locked — so its
+		// branches are all swept: the row's wording differs in each.
+		"AssetInterlockScreen/viewState": {
+			mk:     func() Screen { return assetInterlockFixture(true, true) },
+			header: func(s Screen) jdeHeader { return s.(*AssetInterlockScreen).stateHeader() },
+			alsoIn: map[string]func() Screen{
+				"unlocked and active":   jdeScreenStates()["AssetInterlockScreen/unlocked and active"],
+				"locked and disabled":   jdeScreenStates()["AssetInterlockScreen/locked and disabled"],
+				"unlocked and disabled": jdeScreenStates()["AssetInterlockScreen/unlocked and disabled"],
+				"load failed":           jdeScreenStates()["AssetInterlockScreen/load failed"],
+			},
+		},
+		"AssetInterlockScreen/viewReason": {
+			mk:     jdeScreenStates()["AssetInterlockScreen/reason"],
+			header: func(s Screen) jdeHeader { return s.(*AssetInterlockScreen).reasonHeader() },
+		},
+		// The confirm's header is the headline that says what Ctrl-X will do, and
+		// its wording is per ACTION — including the second-lock branch, which says
+		// it ADDS rather than locks.
+		"AssetInterlockScreen/viewConfirm": {
+			mk:     jdeScreenStates()["AssetInterlockScreen/confirm lock"],
+			header: func(s Screen) jdeHeader { return s.(*AssetInterlockScreen).confirmHeader() },
+			alsoIn: map[string]func() Screen{
+				"second lock": jdeScreenStates()["AssetInterlockScreen/confirm second lock"],
+				"unlock":      jdeScreenStates()["AssetInterlockScreen/confirm unlock"],
+				"disable":     jdeScreenStates()["AssetInterlockScreen/confirm disable"],
+				"enable":      jdeScreenStates()["AssetInterlockScreen/confirm enable"],
+			},
+		},
+
 		// The two destructive confirms whose warning moved OUT of the body.
 		// Both pin what a short pane may not lose — the file a delete names, the
 		// sentence saying a void CASCADES — where jdeFitHeader can trim by rank
@@ -2768,11 +2851,29 @@ func jdeSweepMovementToken(t *testing.T, tokens map[string]bool, what string) {
 // unsized answer is exactly what it has always been — which is the property this
 // check is about. Nothing here is a pageRow site.
 var jdeUnsizedDeclineCases = map[string]string{
-	"PurchaseOrderDetailScreen":           "po_detail's sheetMoves — an OFFSET, not a cursor",
-	"PurchaseOrderDetailScreen/order pad": "po_detail's padMoves — an OFFSET, not a cursor",
-	"ReceiveFormScreen":                   "receive_form's qtyPagesFor",
-	"PurchaseOrderAddLineScreen/choose":   "po_add_line's choosePages",
-	"PurchaseOrderAddLineScreen/confirm":  "po_add_line's confirmScrolls — an OFFSET",
+	// The asset interlock's state sheet and its confirm are both an OFFSET over a
+	// body that owns no navigable row — there is nothing to type into or pick on
+	// either — so both spell the conjunction themselves and both answer
+	// bodyScrollsForBar directly, exactly as the offset sheets above do.
+	"AssetInterlockScreen": "asset_interlock's stateScrolls — an OFFSET over a body " +
+		"that owns no navigable row",
+	"AssetInterlockScreen/unlocked and active": "asset_interlock's stateScrolls — an OFFSET",
+	"AssetInterlockScreen/locked and disabled": "asset_interlock's stateScrolls — an OFFSET",
+	"AssetInterlockScreen/unlocked and disabled": "asset_interlock's stateScrolls — " +
+		"an OFFSET",
+	"AssetInterlockScreen/load failed": "asset_interlock's stateScrolls — an OFFSET; the " +
+		"sheet still draws the could-not-tell rows and the axes note",
+	"AssetInterlockScreen/confirm lock": "asset_interlock's confirmScrolls — an OFFSET over " +
+		"a body that owns no navigable row",
+	"AssetInterlockScreen/confirm second lock": "asset_interlock's confirmScrolls — an OFFSET",
+	"AssetInterlockScreen/confirm unlock":      "asset_interlock's confirmScrolls — an OFFSET",
+	"AssetInterlockScreen/confirm disable":     "asset_interlock's confirmScrolls — an OFFSET",
+	"AssetInterlockScreen/confirm enable":      "asset_interlock's confirmScrolls — an OFFSET",
+	"PurchaseOrderDetailScreen":                "po_detail's sheetMoves — an OFFSET, not a cursor",
+	"PurchaseOrderDetailScreen/order pad":      "po_detail's padMoves — an OFFSET, not a cursor",
+	"ReceiveFormScreen":                        "receive_form's qtyPagesFor",
+	"PurchaseOrderAddLineScreen/choose":        "po_add_line's choosePages",
+	"PurchaseOrderAddLineScreen/confirm":       "po_add_line's confirmScrolls — an OFFSET",
 	"PurchaseOrderEditScreen/delete confirm": "po_edit's deleteScrolls — an OFFSET over a body " +
 		"that owns no navigable row",
 	"PurchaseOrderAttachmentsScreen/delete confirm": "po_attachments' confirmDeleteScrolls — " +

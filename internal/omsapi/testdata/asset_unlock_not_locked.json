@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "Asset is not locked"
+  }
+}

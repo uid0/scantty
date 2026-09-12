@@ -947,6 +947,65 @@ touching the flow:
   through the WO PATCH), and `WorkOrderAdHocTool.InventoryItem` — the client
   carries it, the form does not offer it, and neither does the web's.
 
+### LOCKING A MACHINE AND DISABLING IT ARE DIFFERENT THINGS, AND ONLY ONE STOPS IT
+
+`internal/omsapi/asset_interlock.go` carries the measured contract and
+`internal/tui/asset_interlock.go` the flow (`L` on the asset detail); both are the
+authority. The distinction is the whole reason that screen is worded as it is, and
+getting it wrong at a bench is a safety failure rather than a UI one:
+
+- **LOCK is the interlock.** `POST …/assets/{id}/lock/` creates a
+  `forgekey.DeviceLockout` and sets `OperationalMode` to `locked_out`.
+  `forgekey.services.access_control.is_authorized` — whose own docstring calls
+  itself "the single source of truth for 'can this user use this asset right
+  now'" — returns False while any active lockout exists, so the badge reader
+  denies. It needs a **`reason`** and refuses a blank one.
+- **DISABLE is a visibility switch.** It flips `Asset.is_active`, whose help_text
+  is "Inactive assets are hidden from most views", and **`is_authorized` never
+  reads it**. A disabled machine with a valid authorization and no lockout IS
+  STILL USABLE. So somebody who disables a dangerous machine and walks away has
+  hidden a record and stopped nothing.
+- **The two axes are INDEPENDENT in all three directions**, measured rather than
+  inferred: locking left `is_active` true, disabling left `is_locked` true, and
+  unlocking left a disabled asset disabled. The recorded replies are
+  `internal/omsapi/testdata/asset_{lock,disable,unlock}.json`.
+- **LOCK STACKS and AN UNLOCK THAT ANSWERS 200 CAN LEAVE THE MACHINE LOCKED.**
+  Two locks give two active lockouts (201 each); unlock clears ONE — the first the
+  caller may — and only drops the mode when none remain. `lockout_info` is
+  `…filter(is_active=True).first()`, so the asset payload names one of possibly
+  several and carries **no count**; the stack is only countable at
+  `GET /api/forgekey/lockouts/?asset=<id>&is_active=true`, a different service in
+  ScanTTY's wiring. So all four client methods return the **asset** and the screen
+  reports the state that CAME BACK rather than predicting it from the status code.
+  `testdata/asset_unlock_still_locked.json` is that reply.
+- **`can_unlock` / `can_enable` ARE ADVISORY AND ARE NOT WHAT THE ENDPOINTS
+  ENFORCE.** Both are false for a `report_only` asset and the server accepts lock
+  (201) and disable (200) on one anyway, so gating a key on either would refuse
+  what the server allows — the defect class the kit serialized-component ban
+  records. They are SHOWN as facts, never used as gates. This is the mirror of
+  `can_delete_items` on a purchase order, which IS served from the frozenset the
+  server enforces on and therefore MUST be read; the difference is whether the
+  flag and the enforcement come from one expression.
+- **Two refusal SHAPES from one pair of endpoints.** The validation refusals
+  (`reason is required`, `Asset is not locked`) are OMS's standardized envelope,
+  which `parseError` understands, so `AsLineEntryError` recovers them; the
+  permission refusals are hand-built `Response({"error": "<prose>"})` bodies that
+  defeat `parseError` entirely, so `AsReceivingRefusal` is the recogniser.
+  `interlockRefusal` is the one combiner, and one recogniser could not read both.
+- **The permission gates are ASYMMETRIC and the asymmetry is the server's:**
+  `enable` checks `groups_can_enable` (403) and `disable` checks nothing, so any
+  authenticated user may disable an active asset.
+- **The WEB's Lock button is broken and this is not a transcription of it.**
+  `assetsAPI.lockAsset` posts NO body while the server requires `reason`, so it
+  400s every time (measured). Parity here is with the API's contract.
+- **The out-of-service records (`o` / `R`) are a different fact and stay.** They
+  NOTE that a machine is broken; the interlock STOPS it. Neither implies the
+  other and nothing reconciles them — see the PR for #185 for the mismatch.
+- `internal/tui/asset_interlock_lab_test.go` (build tag `omslab`) drives all four
+  against a real backend, which is how the stacked-unlock and the two envelope
+  shapes were established; a fake built from ScanTTY's own structs could not have
+  disagreed with them.
+
 ## The receiving flow is driven off ONE fetch, and the server decides
 
 `internal/omsapi/po_receiving.go` carries the contract note and
@@ -3226,6 +3285,17 @@ is the authority; read it before adding a frame or wording a bar.
   all (`receiveType`). Do NOT shorten `pump`'s 200ms budget instead — it is the
   backstop for a genuine timer, shared with ~30 drive tests, and cutting it
   would make all of them racier on a loaded machine.
+  **RUNNING a `tea.Cmd` TO SEE WHAT IT DID PAYS THE SAME PRICE, AND THE ANSWER IS
+  USUALLY A FLAG.** A cmd that is a timer BLOCKS until it fires, and bubbles hands
+  one back from `textinput.Update` for nearly every key — so a sweep running one
+  command per unnamed key spent 530ms on each of ~220 presses against two typed
+  states: 100 seconds inside one test. A bounded runner (a goroutine plus a
+  budget, `pump`'s own shape) brought it to 10s; reading the flag the write had
+  ALREADY set brought it to 0.14s and is more precise as well, since a write sets
+  its `saving` flag synchronously BEFORE returning the cmd, so nothing has to be
+  run to find out. Prefer the synchronous flag; reach for the bounded runner only
+  where the product really is a message (a `SwitchTo`, a fetch), and never call
+  `cmd()` unguarded in a loop.
 - **A DERIVED SET IS CHEAP TO WRITE AND EXPENSIVE TO ASK, so ask it once — a
   `for _, h := range jdePaneHeights()` in an inner loop is the second way this
   package has blown the 600s timeout.** `jdeDrawableWidths` / `jdePaneHeights`

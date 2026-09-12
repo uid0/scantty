@@ -307,6 +307,14 @@ var jdeInertCases = map[string]string{
 	"AssetDocumentsScreen/no documents":    "an empty document library: no rows, so no cursor to move",
 	"AssetMeterReadingsScreen/no readings": "an empty ledger: no rows, so no cursor to move",
 
+	// The interlock's LOCK REASON form is one typed box and nothing else: no
+	// cursor to walk and, at one field, nothing a paging pair could reach — so its
+	// bar names no movement key at any height and there is nothing for one to
+	// move. The frames that DO scroll are the state sheet and the confirm, and both
+	// are swept.
+	"AssetInterlockScreen/reason": "lock's reason form: one text box, no cursor and no " +
+		"scrolled body, so its bar names no movement key at any height",
+
 	"PurchaseOrderDetailScreen/void order": "a confirmation, not a list: Enter and Esc are " +
 		"the only keys the bar names. Its heading and cascade caveat are PINNED HEADER rows " +
 		"now and its body is the one Reason box, so there is no cursor to walk and no " +
