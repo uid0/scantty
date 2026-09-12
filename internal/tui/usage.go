@@ -16,6 +16,10 @@ type UsageScreen struct {
 	cursor  int
 	loading bool
 	loadErr string
+
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
 }
 
 type usageLoadedMsg struct {
@@ -43,8 +47,38 @@ func (s *UsageScreen) load() tea.Cmd {
 	}
 }
 
+// bar names every key that acts on a list of `rows` usage sessions, as a record
+// the honesty sweep can press (prose_bar.go).
+//
+// It used to be the literal "j/k move · e end session · r refresh · esc back":
+// the arrows moved the cursor unnamed, and it was written under every row with no
+// window, so a list longer than the pane took the footer off the bottom. `e`
+// needs a row to act on and is not offered without one; on a session already
+// ended it answers why rather than acting, which is a key that says something.
+func (s *UsageScreen) bar(rows int) proseBar {
+	out := proseNavStep(listNavMoves(rows))
+	if rows > 0 {
+		out = append(out, proseBarItem{Keys: []string{"e"}, Hint: "e end session"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil while a load is in flight
+// or has failed, whose frames still draw their own line.
+func (s *UsageScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	return s.bar(len(s.rows))
+}
+
+func (s *UsageScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *UsageScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case usageLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -104,9 +138,9 @@ func (s *UsageScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
 	if len(s.rows) == 0 {
-		return StyleMuted.Render("No sessions.")
+		return StyleMuted.Render("No sessions.") + "\n\n" + s.proseBar().render(s.paneCells())
 	}
-	var b strings.Builder
+	var head strings.Builder
 	active := 0
 	for _, r := range s.rows {
 		if r.EndedAt == nil {
@@ -114,8 +148,9 @@ func (s *UsageScreen) View() string {
 		}
 	}
 	if active > 0 {
-		b.WriteString(StyleStatusOK.Render(fmt.Sprintf("● %d active session(s)", active)) + "\n\n")
+		head.WriteString(StyleStatusOK.Render(fmt.Sprintf("● %d active session(s)", active)) + "\n\n")
 	}
+	rows := make([]string, len(s.rows))
 	for i, r := range s.rows {
 		caret := "  "
 		if i == s.cursor {
@@ -137,15 +172,15 @@ func (s *UsageScreen) View() string {
 		if i == s.cursor {
 			title = StyleSidebarItemActive.Render(title)
 		}
-		b.WriteString(title + "\n")
 		if !r.StartedAt.IsZero() {
 			line := "    " + StyleMuted.Render("started "+r.StartedAt.Format("01-02 15:04"))
 			if r.EndedAt != nil {
 				line += StyleMuted.Render(" · ended " + r.EndedAt.Format("01-02 15:04"))
 			}
-			b.WriteString(line + "\n")
+			title += "\n" + line
 		}
+		rows[i] = title
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · e end session · r refresh · esc back"))
-	return b.String()
+	return proseFlatListFrame(head.String(), rows, s.cursor, &s.windowStart, s.terminalHeight,
+		s.paneCells(), s.bar(proseFlatCeilingRows), s.proseBar())
 }

@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -30,6 +29,10 @@ type AuthorizationsScreen struct {
 
 	confirmingRevoke bool
 	revoking         bool
+
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
 }
 
 func NewAuthorizationsScreen(deps Deps) *AuthorizationsScreen {
@@ -58,8 +61,41 @@ func (s *AuthorizationsScreen) Init() tea.Cmd {
 	}
 }
 
+// bar names every key that acts on a list of `rows` authorizations, as a record
+// the honesty sweep can press (prose_bar.go).
+//
+// It used to be two literals: "j/k move · n grant · x/R revoke · r refresh · esc
+// back" under every row with no window, so a grid longer than the pane took the
+// footer off the bottom and the arrows moved the cursor unnamed; and "n grant
+// access · esc back" on the empty list, where `r` reloaded under no word at all.
+// `x`/`R` need a row to act on and are not offered without one. `n` is offered
+// either way: to a non-staff operator it answers why it will not open the grant
+// form, which is a key that says something rather than one that does nothing.
+func (s *AuthorizationsScreen) bar(rows int) proseBar {
+	out := append(proseNavStep(listNavMoves(rows)), proseBarItem{Keys: []string{"n"}, Hint: "n grant"})
+	if rows > 0 {
+		out = append(out, proseBarItem{Keys: []string{"x", "R"}, Hint: "x/R revoke"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil in the states that draw
+// something else instead: a load in flight or failed, and the revoke confirm,
+// whose own prompt names its keys.
+func (s *AuthorizationsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.confirmingRevoke {
+		return nil
+	}
+	return s.bar(len(s.rows))
+}
+
+func (s *AuthorizationsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *AuthorizationsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case fkListLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -154,9 +190,9 @@ func (s *AuthorizationsScreen) View() string {
 		return s.viewRevokeConfirm()
 	}
 	if len(s.rows) == 0 {
-		return StyleMuted.Render("No authorizations.") + "\n\n" + StyleMuted.Render("n grant access · esc back")
+		return StyleMuted.Render("No authorizations.") + "\n\n" + s.proseBar().render(s.paneCells())
 	}
-	var b strings.Builder
+	rows := make([]string, len(s.rows))
 	for i, r := range s.rows {
 		caret := "  "
 		if i == s.cursor {
@@ -173,13 +209,13 @@ func (s *AuthorizationsScreen) View() string {
 		if i == s.cursor {
 			title = StyleSidebarItemActive.Render(title)
 		}
-		b.WriteString(title + "\n")
 		if r.Notes != "" {
-			b.WriteString("    " + StyleMuted.Render(r.Notes) + "\n")
+			title += "\n    " + StyleMuted.Render(r.Notes)
 		}
+		rows[i] = title
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · n grant · x/R revoke · r refresh · esc back"))
-	return b.String()
+	return proseFlatListFrame("", rows, s.cursor, &s.windowStart, s.terminalHeight,
+		s.paneCells(), s.bar(proseFlatCeilingRows), s.proseBar())
 }
 
 func (s *AuthorizationsScreen) viewRevokeConfirm() string {
@@ -209,6 +245,10 @@ type LockoutsScreen struct {
 	cursor  int
 	loading bool
 	loadErr string
+
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
 }
 
 func NewLockoutsScreen(deps Deps) *LockoutsScreen {
@@ -229,8 +269,38 @@ func (s *LockoutsScreen) Init() tea.Cmd {
 	}
 }
 
+// bar names every key that acts on a list of `rows` lockouts, as a record the
+// honesty sweep can press (prose_bar.go).
+//
+// It used to be the literal "j/k move · u unlock (hierarchical) · r refresh · esc
+// back" under every row with no window, so a list longer than the pane took the
+// footer off the bottom and the arrows moved the cursor unnamed — and the empty
+// list drew the fact alone, with `r` and `esc` working under no word. `u` needs
+// a row to act on and is not offered without one.
+func (s *LockoutsScreen) bar(rows int) proseBar {
+	out := proseNavStep(listNavMoves(rows))
+	if rows > 0 {
+		out = append(out, proseBarItem{Keys: []string{"u"}, Hint: "u unlock (hierarchical)"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil while a load is in flight
+// or has failed, whose frames still draw their own line.
+func (s *LockoutsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	return s.bar(len(s.rows))
+}
+
+func (s *LockoutsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *LockoutsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case fkListLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -290,9 +360,9 @@ func (s *LockoutsScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
 	if len(s.rows) == 0 {
-		return StyleMuted.Render("No lockouts.")
+		return StyleMuted.Render("No lockouts.") + "\n\n" + s.proseBar().render(s.paneCells())
 	}
-	var b strings.Builder
+	rows := make([]string, len(s.rows))
 	for i, r := range s.rows {
 		caret := "  "
 		if i == s.cursor {
@@ -309,11 +379,11 @@ func (s *LockoutsScreen) View() string {
 		if i == s.cursor {
 			title = StyleSidebarItemActive.Render(title)
 		}
-		b.WriteString(title + "\n")
 		if r.Reason != "" {
-			b.WriteString("    " + StyleMuted.Render(r.Reason) + "\n")
+			title += "\n    " + StyleMuted.Render(r.Reason)
 		}
+		rows[i] = title
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · u unlock (hierarchical) · r refresh · esc back"))
-	return b.String()
+	return proseFlatListFrame("", rows, s.cursor, &s.windowStart, s.terminalHeight,
+		s.paneCells(), s.bar(proseFlatCeilingRows), s.proseBar())
 }

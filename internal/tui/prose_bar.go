@@ -1,6 +1,9 @@
 package tui
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // prose_bar.go — the action bar for the screens that are NOT on the columnar
 // layer and are NOT a *ListScreen, as a RECORD rather than a literal.
@@ -388,3 +391,171 @@ const proseListFixedRows = 3
 // over verbatim from the `if avail < 3` every one of them wrote out. See
 // proseListWindow for why it is a lie and why closing it is separate work.
 const proseListWindowFloor = 3
+
+// proseNavStep is the movement half of a FLAT cursor list's bar: the step pair
+// and nothing else, where there is a second row to step to.
+//
+// THE STEP PAIR ALONE BECAUSE THAT IS ALL THESE SCREENS BIND. The flat lists
+// (prose_bar_flat_lists_test.go) answer j/k and the arrows in their own switch
+// and nothing else of the vocabulary — no pager, no g/G/home/end — and their
+// literals said `j/k move`, so the arrows moved the cursor unnamed. Naming the
+// pager or the jumps here would be the OTHER half of the rule, a bar claiming
+// keys the screen does not bind; binding them is a change to what the screen
+// DOES and is not part of making its bar honest.
+//
+// Picked out of the one vocabulary by KEYSTROKE, for the reason proseNavIsPager
+// gives: the wording is the half of a listNavMove allowed to change.
+func proseNavStep(moves bool) proseBar {
+	if !moves {
+		return nil
+	}
+	for _, m := range listNavSetVerb("move") {
+		for _, k := range m.Keys {
+			if k == "j" {
+				return proseBar{{Keys: m.Keys, Hint: m.Hint}}
+			}
+		}
+	}
+	return nil
+}
+
+// proseFlatCeilingRows is the row count a flat list's bar is at its TALLEST for:
+// two rows is a second row to step to, and every row action is on offer from
+// one. A flat list asks its bar builder for this many to get the ceiling
+// proseFlatListFrame budgets against, so the ceiling and the drawn bar are one
+// expression rather than a second copy of the segments.
+const proseFlatCeilingRows = 2
+
+// proseFlatListFrame is a FLAT cursor list's whole pane: the lines it opens with,
+// a window of rows around the cursor between the two scroll markers, and the
+// folded bar under it.
+//
+// WHAT "FLAT" MEANT, and why the bar could not be fixed without the body. These
+// screens wrote EVERY row and then the footer, with no window and no budget, so
+// a list longer than the pane pushed the footer off the bottom whatever it said
+// — clampToBox drops from the bottom — and folding the bar onto more rows would
+// only have pushed it further. A folded bar on a list with no budget is a bar
+// that folds off the pane.
+//
+// THE WINDOW IS PACKED BY LINES, NOT ROWS, because their rows are not one line
+// each: a donation carries a meta line, a vendor a contact line and a compliance
+// line, each present or absent per row. A budget counting rows is the defect
+// AssetPartsScreen is recorded for. So each row arrives RENDERED, its height is
+// what it will really draw, and proseLineWindow packs them — ListScreen's
+// rowsFittingFrom arithmetic, on the screens that never had it.
+//
+// `head` is whole lines, each ending in a newline (or empty), and is counted off
+// the budget as drawn. The budget is measured against the bar's CEILING for the
+// reason proseListWindow gives, and reserves BOTH markers for the reason
+// proseListFixedRows gives.
+//
+// AN OVERSIZED ROW IS CLIPPED HERE, where the body budget is owned, rather than
+// admitted whole by proseLineWindow's necessary one-row floor. API prose can
+// contain newlines, so one authorization note or lockout reason can be taller
+// than the pane by itself. Drawing it whole lets Root's bottom clamp erase the
+// footer, while silently taking its tail makes an incomplete value look whole.
+// The last available body line therefore names how many lines were omitted.
+// That indicator is part of the budget, and the cursor's row remains the row
+// drawn: a pathological value costs detail, never the actions that operate on
+// it.
+//
+// `start` IS WRITTEN FROM INSIDE View, which is the precedent proseScrollBar
+// set: the window is a function of the pane, the rows and the cursor, and the
+// fit is idempotent given the same three — a second render walks nowhere — so
+// asking it where the frame is drawn cannot disagree with the frame, where
+// re-deriving it on every Update arm would be one more place to forget.
+//
+// AN UNSIZED SCREEN DRAWS EVERY ROW, the layer's standing answer for no pane:
+// there is no window to overflow, so none is invented.
+func proseFlatListFrame(head string, rows []string, cursor int, start *int, terminalHeight, cells int, ceiling, drawn proseBar) string {
+	var b strings.Builder
+	b.WriteString(head)
+	from, to := 0, len(rows)
+	budget := 0
+	if terminalHeight > 0 {
+		heights := make([]int, len(rows))
+		for i, r := range rows {
+			heights[i] = strings.Count(r, "\n") + 1
+		}
+		budget = screenBodyHeight(terminalHeight) - strings.Count(head, "\n") - 2 - ceiling.rows(cells)
+		if budget < proseListWindowFloor {
+			budget = proseListWindowFloor
+		}
+		from, to = proseLineWindow(heights, cursor, *start, budget)
+		*start = from
+	}
+	if from > 0 {
+		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+	}
+	for _, r := range rows[from:to] {
+		if lines := strings.Split(r, "\n"); budget > 0 && len(lines) > budget {
+			kept := budget - 1
+			omitted := len(lines) - kept
+			lines = append(lines[:kept], StyleMuted.Render(fmt.Sprintf("… %d more lines", omitted)))
+			r = strings.Join(lines, "\n")
+		}
+		b.WriteString(r + "\n")
+	}
+	if to < len(rows) {
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(rows)-to)) + "\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(drawn.render(cells))
+	return b.String()
+}
+
+// proseLineWindow picks which rows of a list whose rows draw DIFFERENT numbers of
+// lines are on the pane: [from, to), containing the cursor, starting no earlier
+// than it has to and running off the end of the list no further than it must.
+//
+// It is ListScreen.scrollIntoView's walk over a slice of heights: forward until
+// the cursor is inside the window that start can afford, then back while the
+// rows below still reach the end of the list, so a taller pane is not spent on
+// blank space. A row taller than the whole budget is still SELECTED alone — a
+// window of none renders a list with no rows in it, and the walk would never
+// terminate. proseFlatListFrame clips that selected row to the budget while
+// visibly marking the omitted lines.
+func proseLineWindow(heights []int, cursor, start, budget int) (from, to int) {
+	n := len(heights)
+	if n == 0 {
+		return 0, 0
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= n {
+		cursor = n - 1
+	}
+	if start > cursor {
+		start = cursor
+	}
+	if start < 0 {
+		start = 0
+	}
+	fits := func(from int) int {
+		used, count := 0, 0
+		for i := from; i < n; i++ {
+			if used+heights[i] > budget {
+				break
+			}
+			used += heights[i]
+			count++
+		}
+		if count < 1 {
+			count = 1
+		}
+		return count
+	}
+	for start < cursor && cursor >= start+fits(start) {
+		start++
+	}
+	for start > 0 {
+		prev := start - 1
+		f := fits(prev)
+		if prev+f < n || prev+f <= cursor {
+			break
+		}
+		start = prev
+	}
+	return start, start + fits(start)
+}

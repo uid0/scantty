@@ -25,6 +25,10 @@ type PMBoardScreen struct {
 	cursor  int
 	loading bool
 	loadErr string
+
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
 }
 
 type pmBoardLoadedMsg struct {
@@ -57,8 +61,46 @@ func (s *PMBoardScreen) load() tea.Cmd {
 	}
 }
 
+// schedules is the board's rows, or none before a board has come back.
+func (s *PMBoardScreen) schedules() int {
+	if s.board == nil {
+		return 0
+	}
+	return len(s.board.Schedules)
+}
+
+// bar names every key that acts on a board of `rows` schedules, as a record the
+// honesty sweep can press (prose_bar.go).
+//
+// It used to be the literal "j/k move · enter log service now · r refresh · esc
+// back": the arrows moved the cursor unnamed, and it was written under every
+// schedule with no window — two lines each, under a tier summary — so a backlog
+// of a dozen took the footer off an 80x24 pane. `enter` needs a schedule to log
+// against and is not offered without one.
+func (s *PMBoardScreen) bar(rows int) proseBar {
+	out := proseNavStep(listNavMoves(rows))
+	if rows > 0 {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter log service now"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil while a load is in flight
+// or has failed, whose frames still draw their own line.
+func (s *PMBoardScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	return s.bar(s.schedules())
+}
+
+func (s *PMBoardScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *PMBoardScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case pmBoardLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -122,10 +164,10 @@ func (s *PMBoardScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
 	if s.board == nil || len(s.board.Schedules) == 0 {
-		return StyleMuted.Render("No active PM schedules.") + "\n\n" + StyleMuted.Render("r refresh · esc back")
+		return StyleMuted.Render("No active PM schedules.") + "\n\n" + s.proseBar().render(s.paneCells())
 	}
 
-	var b strings.Builder
+	var head strings.Builder
 	// Per-tier counters so the operator sees how big the backlog is at
 	// a glance even before scrolling.
 	counts := map[string]int{}
@@ -146,9 +188,10 @@ func (s *PMBoardScreen) View() string {
 		summary = append(summary, StyleMuted.Render(fmt.Sprintf("%d never", counts["never"])))
 	}
 	if len(summary) > 0 {
-		b.WriteString(strings.Join(summary, "  ") + "\n\n")
+		head.WriteString(strings.Join(summary, "  ") + "\n\n")
 	}
 
+	rows := make([]string, len(s.board.Schedules))
 	for i, r := range s.board.Schedules {
 		caret := "  "
 		if i == s.cursor {
@@ -178,7 +221,6 @@ func (s *PMBoardScreen) View() string {
 		if i == s.cursor {
 			line = StyleSidebarItemActive.Render(line)
 		}
-		b.WriteString(line + "\n")
 		meta := []string{fmt.Sprintf("every %dd", r.IntervalDays)}
 		if r.LocationName != nil && *r.LocationName != "" {
 			meta = append(meta, *r.LocationName)
@@ -188,8 +230,8 @@ func (s *PMBoardScreen) View() string {
 		} else {
 			meta = append(meta, "never performed")
 		}
-		b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
+		rows[i] = line + "\n    " + StyleMuted.Render(strings.Join(meta, " · "))
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · enter log service now · r refresh · esc back"))
-	return b.String()
+	return proseFlatListFrame(head.String(), rows, s.cursor, &s.windowStart, s.terminalHeight,
+		s.paneCells(), s.bar(proseFlatCeilingRows), s.proseBar())
 }

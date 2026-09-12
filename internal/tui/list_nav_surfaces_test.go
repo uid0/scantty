@@ -105,7 +105,8 @@ import (
 // shared handler, and each sheet deciding for itself which of its keys to name,
 // so four of them named "j/k scroll" alone while the arrows, pgup/pgdn, g/G and
 // home/end all worked. The WINDOWED cursor lists went next, as one recipe rather
-// than one screen at a time (prose_bar_windowed_lists_test.go). Their bars are
+// than one screen at a time (prose_bar_windowed_lists_test.go), and the SIMPLE
+// FLAT lists after them (prose_bar_flat_lists_test.go). Their bars are
 // RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
 // space at them, so the classifier counts them as a THIRD swept class and an
 // entry left here for one of them fails. What is still a literal is named in
@@ -115,14 +116,11 @@ var listNavUnsweptReceivers = map[string]string{
 		"51 cells. Left out of the windowed-cursor-list conversion because its rows are " +
 		"multi-LINE and its window is budgeted in rows — see proseBarUnconverted",
 	"AssetProblemsScreen":        "the problem list on an asset, plus its vendor picker",
-	"AuthorizationsScreen":       "the ForgeKey authorization grid",
-	"LockoutsScreen":             "the ForgeKey lockout list",
 	"BadgeEnrollmentScreen":      "the ForgeKey badge enrolment list",
 	"ForgeKeyCertificatesScreen": "the ForgeKey certificate list",
 	"ChecklistRunScreen":         "the step list of a checklist run",
 	"ChecklistsScreen":           "the checklist browse list",
 	"DemandForecastScreen":       "the demand-forecast table",
-	"DonationsScreen":            "the donation list",
 	"EPaperPanelsScreen": "the e-paper panel list; its bind picker is a cursor list " +
 		"whose bar is a muted literal inside View, so the honesty sweep cannot read it, " +
 		"but it IS pressed by the retired-chord sweep, which drives its cursor directly " +
@@ -139,8 +137,6 @@ var listNavUnsweptReceivers = map[string]string{
 		"directly (listNavPickerCases)",
 	"LocationProblemsScreen": "the problem list for a location",
 	"MakerBoxesScreen":       "the maker-box list beside MakerBoxFormScreen",
-	"OperationalModesScreen": "the ForgeKey operational-mode list",
-	"PMBoardScreen":          "the preventive-maintenance board",
 	"ReportTableScreen": "the shared scrollable report table, which every tabbed report " +
 		"page rides. reportScreenFixtures (report_yardstick_test.go) is the roster of " +
 		"those pages and TestReportTable_EveryReportScreenIsSwept derives it from the " +
@@ -158,8 +154,6 @@ var listNavUnsweptReceivers = map[string]string{
 		"page', the rest name 'j/k scroll' alone while pgup/pgdn, the arrows, g/G and " +
 		"home/end all work. That is the prose-footer gap in its purest form: one handler, " +
 		"one bar per sheet, no record to read",
-	"UsageScreen":                "the ForgeKey usage-session list",
-	"VendorsScreen":              "the maintenance vendor list",
 	"WorkOrderAttachmentsScreen": "the attachment list on a work order",
 	"WorkOrderDetailScreen":      "the work-order detail sheet and its material pickers",
 	"LocationDetailScreen": "NOT a navigation binding: its `g` generates the location's QR " +

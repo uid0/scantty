@@ -27,6 +27,10 @@ type VendorsScreen struct {
 	cursor  int
 	loading bool
 	loadErr string
+
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
 }
 
 type vendorsLoadedMsg struct {
@@ -57,8 +61,33 @@ func (s *VendorsScreen) load() tea.Cmd {
 	}
 }
 
+// bar names every key that acts on a list of `rows` vendors, as a record the
+// honesty sweep can press (prose_bar.go).
+//
+// It used to be the literal "j/k move · r refresh · esc back": the arrows moved
+// the cursor unnamed, and it was written under every row with no window — and a
+// vendor row is up to three lines, so a directory of a dozen took the footer off
+// an 80x24 pane.
+func (s *VendorsScreen) bar(rows int) proseBar {
+	return append(proseNavStep(listNavMoves(rows)), proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil while a load is in flight
+// or has failed, whose frames still draw their own line.
+func (s *VendorsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	return s.bar(len(s.rows))
+}
+
+func (s *VendorsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *VendorsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case vendorsLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -97,10 +126,11 @@ func (s *VendorsScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
 	if len(s.rows) == 0 {
-		return StyleMuted.Render("No vendors registered.") + "\n\n" + StyleMuted.Render("r refresh · esc back")
+		return StyleMuted.Render("No vendors registered.") + "\n\n" + s.proseBar().render(s.paneCells())
 	}
-	var b strings.Builder
+	rows := make([]string, len(s.rows))
 	for i, v := range s.rows {
+		var b strings.Builder
 		caret := "  "
 		if i == s.cursor {
 			caret = "▸ "
@@ -157,7 +187,8 @@ func (s *VendorsScreen) View() string {
 		if len(compliance) > 0 {
 			b.WriteString("    " + strings.Join(compliance, " · ") + "\n")
 		}
+		rows[i] = strings.TrimSuffix(b.String(), "\n")
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · r refresh · esc back"))
-	return b.String()
+	return proseFlatListFrame("", rows, s.cursor, &s.windowStart, s.terminalHeight,
+		s.paneCells(), s.bar(proseFlatCeilingRows), s.proseBar())
 }
