@@ -208,20 +208,6 @@ What is worth knowing before touching any of them:
 - **NOT BUILT, and named so nobody re-derives it as missing:** `update_tracking`
   (a PATCH of four fields, which wants a form), `by_supplier` and
   `generate_cart_links`. None is a dead end — no terminal flow starts them.
-- **FILING ONE HAS THREE OUTCOMES AND TWO OF THEM ARE 2xx.** While an item's
-  request is still PENDING, an ANONYMOUS `POST /api/reorders/requests/` files no
-  second row and answers **200** with the existing one plus
-  `already_requested: true`; a filed one is 201 with `already_requested: false`;
-  a refusal is the unchanged envelope. `Client.do` fails only at `>= 400`, so
-  the duplicate arrives as a SUCCESS — a client reading the transport alone
-  reports a reorder that was never created, which is what
-  `internal/tui/reorder_form.go` would have done had it not been taught the
-  marker BEFORE the OMS change merged. Read the FLAG rather than the status
-  code, and never re-derive the rule: `omsapi.ReorderRequestCreated`
-  carries the contract (including why the marker is a plain `bool` where
-  `CanDeleteItems` is a pointer) and the recorded bodies for all three outcomes
-  — plus one from BEFORE the rule — are `testdata/reorder_create_*.json`.
-
 ### A WIRE TYPE IS THE BUILDER'S DECISION, NEVER THE MODEL'S
 
 `internal/omsapi/po_line_entry.go` carries the worked example and
