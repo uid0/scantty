@@ -52,15 +52,9 @@ Scantty draws in a terminal of **at least 80 columns and 7 rows** and refuses
 below either, saying which it needs and what it has:
 `scantty needs 80 columns; this terminal has 63`. 80 is the width every layout
 in the program is written against — the sidebar takes 24 columns and its border
-one, leaving a 51-column pane and a 49-column action bar — and a narrower
-terminal does not simply look cramped. Measured on the narrower terminals the
-program used to accept, the action bar was drawn past the pane on every columnar
-screen, every list footer lost the keys that page and jump, and the
-purchase-order void prompt withheld its warning that the order vanishes from
-every list: the guarantees the interface makes about naming its keys and marking
-its truncations stopped holding, one at a time, with nothing saying so. Refusing
-is the honest answer. Anything WIDER than 80 is used as it arrives — wide panes
-add detail, they never trade away what 80 columns shows.
+one, leaving a 51-column pane and a 49-column action bar. Anything wider than 80
+is used as it arrives: wide panes add detail, but never trade away what the
+standard 80-column layout shows.
 
 ## Keys
 

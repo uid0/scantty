@@ -1791,60 +1791,12 @@ either:
   walk; `po_edit_rows_test.go` is the worked example and also requires an
   ellipsis on every clipped value. Keep dropped grid flags on the row itself,
   never only on a continuation row that may fall below the window.
-- **THE SIZE CONTRACT: ScanTTY DRAWS FROM 80 COLUMNS AND 7 ROWS, AND REFUSES
-  BELOW EITHER.** `internal/tui/layout.go`'s `minTerminalWidth` /
-  `minTerminalHeight` are the contract and carry the argument;
-  `internal/tui/minimum_width_test.go` is the check set and the measured record.
-  Read it before writing any sentence about a width.
-  **EVERY WIDTH GUARANTEE IN THIS FILE IS A CLAIM ABOUT THE PANES THAT FLOOR
-  LEAVES**, so "holds at 80" and "holds" are now the same statement. Root used
-  to accept any terminal whose CONTENT pane came to 20 cells — a width of 45 —
-  and between 45 and 80 the guarantees written against 51 stopped holding ONE AT
-  A TIME, each at its own width and none of them saying so. Measured before the
-  floor: **45–48**, `screenBodyWidth`'s floor of 20 is WIDER than the pane
-  (16–19), so every columnar row is budgeted against cells the terminal does not
-  have — `TestJDEForm_NoRowRunsPastThePane` excluded the band outright;
-  **up to 56**, the columnar ACTION BAR is drawn past the pane, on all 35
-  columnar screens by width 48 and on individual screens as high as 56, in their
-  OPENING states alone; **up to 53**, all eight list footers lose
-  `g/G home/end top/bottom` off the clipped pane; **up to 76**, the PO void
-  prompt withholds both caveats, so an irreversible action is confirmed with no
-  warning. 48, 53, 56 and 76 do not agree — there is no coherent floor among
-  them — so the floor is the width the interface is designed to.
-  **THE FLOOR IS LOAD-BEARING, NOT DECLARATIVE**, and two sweeps are what make
-  it so: `TestJDEForm_TheActionBarSurvivesEveryHeight` and
-  `TestList_TheFooterIsLegibleAtEveryDrawableWidth` walk `jdeDrawableWidths()`,
-  which is DERIVED from Root's own gate, and both were watched failing with
-  `minTerminalWidth` set back to 45. Lower the floor and they go red at the
-  widths it opens up. `TestLayout_TheWidthFloorIsNeverReached` is the third:
-  `screenBodyWidth` and `screenBodyCells` agree at every drawable width now, so
-  the floor of 20 that made 45–48 unmeasurable can no longer be reached.
-  **THE REFUSAL NAMES BOTH NUMBERS AND FITS THE TERMINAL IT IS SHOWN IN.**
-  `terminalTooSmall` is the whole frame at a refused size, so it is the whole
-  user experience there: one line, the size NEEDED leading every rung, the
-  terminal's own size giving first, and a cut MARKED. At every width from 45 up
-  it reads `needs 80 columns, has N` or longer.
-  **WHAT THE FLOOR SETTLED, so a reader does not re-derive it.** Seven screens
-  came off `jdeRowsPastThePane` without being edited (they cut rows only below
-  80); `jdeUnfetchableMarkerCases` is empty; `receiveHonestWidths` is now every
-  drawable width. Guarantees that were SCOPED by a per-pane conditional are
-  universal claims now and are asserted as such: the report tab bar names the
-  active label IN FULL, and the receiving freeze's lead clause is on the pane
-  whole, at every pane. What did NOT change: `jdeOverWideEssentialRows` (those
-  rows are cut AT 80 and above) and `jdeRowsPastThePane`'s remaining 26 entries,
-  which are the filed screen work.
-  **A PROPERTY WHOSE NARROW BRANCH IS NOW UNREACHABLE IS ASKED OF THE BUILDER,
-  NOT DELETED AND NOT LEFT VACUOUS.** Six checks reported their own vacuity the
-  first time they ran under the floor, which is exactly what those guards are
-  for. The pattern the repairs share: keep the claim about the PANES an operator
-  meets, and ask the ladder or the give-order of the FUNCTION over its own
-  budgets — `listMarkerLine`, `voidCaveats`, `removalHeadline`, `jdeWrapNote`.
-  Neither implies the other: a builder correct at every budget can still be
-  handed the wrong budget, which is the mistake `screenBodyWidth`'s floor used
-  to make. Where a FIXTURE simply stopped reaching a bound at the wider pane,
-  the fixture grew (the reconcile item name, the report's failed-load body, the
-  status bar's wide-rune message, a second PO fixture with maximal numeric
-  columns) — the vacuous-fixture rule, not a narrowed claim.
+- **THE SIZE CONTRACT IS 80 COLUMNS BY 7 ROWS.** Root refuses to draw below
+  either dimension, so every unqualified width guarantee in this file inherits
+  the 51-cell pane an 80-column terminal leaves. `internal/tui/layout.go` owns
+  the contract and its rationale; `internal/tui/minimum_width_test.go` derives
+  the reachable widths and guards the refusal. Read those before changing a
+  width guarantee or the floor.
 - **A CLIP THAT CARRIES A NUMBER MEASURES `screenBodyCells`, NOT
   `jdeScreen.bodyWidth()`.** `bodyWidth()` reads `screenBodyWidth`, whose floor
   of 20 was FOUR CELLS more than Root drew at a terminal width of 45
