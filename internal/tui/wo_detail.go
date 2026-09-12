@@ -12,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -33,6 +34,12 @@ const (
 	woModeChecklist           // pre-finalization validation checklist (3 acks + notes)
 	woModeConfirm             // y/n confirm for a finalizing/destructive status transition
 	woModeNotes               // edit work-order notes (updateWorkOrder)
+	// The two halves gap G14 named, both owned by wo_tools_loto.go.
+	woModeTools        // per-job tool rows (a add · l location · d remove)
+	woModeAddTool      // add an ad-hoc tool row
+	woModeToolLocation // restage one tool for this job
+	woModeLoto         // structured lockout/tagout checklist (enter reviews)
+	woModeLotoConfirm  // the step in full, and the one key that records it
 )
 
 // Add-material form fields, in render order. The stock-item slot is a picker
@@ -74,6 +81,10 @@ type WorkOrderDetailScreen struct {
 	actionLvl      StatusLevel
 	scroller       *TextScroller
 	terminalHeight int
+	// The WIDTH the terminal really gave, so the prose and hints on the tool and
+	// LOTO frames fold against the pane rather than against a fixed 51 — and so
+	// the one-line refusal below is bounded by the pane it is drawn into.
+	terminalWidth int
 
 	mode woMode
 
@@ -161,6 +172,41 @@ type WorkOrderDetailScreen struct {
 	notesErr     string
 	notesPending bool
 
+	// Per-job TOOLS (op-0v4) and the structured LOTO record — wo_tools_loto.go
+	// owns both flows and their reasoning.
+	//
+	// Both per-row cursors index a slice on the work order positionally, exactly
+	// as taskCursor / materialCursor do, and every reload can reshape that slice
+	// under an open modal. So the two modals that carry a WRITE hold the row's
+	// own ID as well: locToolID and lotoID. A confirm naming one row while the
+	// write hits another is the defect this project has already shipped once, and
+	// on a lockout step it is the one that must not be shipped again.
+	toolCursor  int
+	toolPending bool
+
+	atInputs   []textinput.Model
+	atCursor   int
+	atRequired bool
+	atErr      string
+	atPending  bool
+
+	locIn      textinput.Model
+	locToolID  string
+	locErr     string
+	locPending bool
+
+	lotoCursor   int
+	lotoPending  bool
+	lotoScroller *TextScroller
+	// lotoID is the record the open review frame is about; lotoWas is the state
+	// it was opened AGAINST, and the write sends the opposite of it. Holding the
+	// state rather than re-reading it is what lets a reload that flipped the row
+	// close the frame instead of silently changing what `y` means.
+	lotoID   string
+	lotoWas  bool
+	lotoErr  string
+	lotoNote string
+
 	// Elapsed timer (op-m3so). The server owns every total: timerPending gates a
 	// second toggle while one is in flight, and tickOffset is the seconds counted
 	// locally since the last fetch so a running clock visibly advances between
@@ -222,6 +268,35 @@ type woEstimatesLoadedMsg struct {
 	costs map[string]omsapi.DecimalString
 	err   error
 }
+
+// woToolAddedMsg / woToolRemovedMsg / woToolRestagedMsg report the three
+// per-job tool writes (op-0v4). name travels on the removal so the status line
+// can say what left the job after the row is already gone, and `cleared` on the
+// restage so it can say which of the two things a blank hint did.
+type woToolAddedMsg struct {
+	name string
+	err  error
+}
+type woToolRemovedMsg struct {
+	name string
+	err  error
+}
+type woToolRestagedMsg struct {
+	name    string
+	cleared bool
+	err     error
+}
+
+// woLotoRecordedMsg reports the one safety write. label and recorded travel with
+// it so the status line names the step and the DIRECTION — "recorded" and
+// "cleared" are different facts about a safety record and must not share a
+// sentence.
+type woLotoRecordedMsg struct {
+	label    string
+	recorded bool
+	err      error
+}
+
 type woPhotoAddedMsg struct{ err error }
 type woPdfUploadedMsg struct {
 	result *omsapi.WorkOrderUploadResult
@@ -348,6 +423,7 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		return s, nil
 	case woDetailLoadedMsg:
 		s.loading = false
@@ -356,11 +432,19 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		s.wo = m.wo
 		s.clampCursors()
+		// A reload can land under an OPEN lockout review frame — every write on
+		// this screen fires one — so the frame follows its own row by identity and
+		// closes where `y` would no longer mean what the frame said.
+		reseat := s.reseatLotoConfirm()
 		// Re-anchor the stopwatch on the server's fresh totals before rendering:
 		// the value that just arrived already includes the running segment, so
 		// the local offset starts over from zero.
 		cmd := s.syncTicking()
 		s.refreshBody()
+		if reseat != "" {
+			s.setAction(reseat, StatusWarn)
+			return s, tea.Batch(cmd, s.loadEstimates(), Status(reseat, StatusWarn))
+		}
 		return s, tea.Batch(cmd, s.loadEstimates())
 	case woTransitionedMsg:
 		s.transitioning = false
@@ -414,6 +498,70 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, Status("remove material failed: "+m.err.Error(), StatusError)
 		}
 		note := m.name + " removed"
+		s.setAction(note, StatusOK)
+		return s, tea.Batch(Status(note, StatusOK), s.load())
+	case woToolAddedMsg:
+		s.atPending = false
+		if m.err != nil {
+			s.atErr = m.err.Error()
+			return s, Status("add tool failed: "+m.err.Error(), StatusError)
+		}
+		s.mode = woModeTools
+		note := fmt.Sprintf("%s added to this job", m.name)
+		s.setAction(note, StatusOK)
+		return s, tea.Batch(Status(note, StatusOK), s.load())
+	case woToolRemovedMsg:
+		s.toolPending = false
+		if m.err != nil {
+			return s, Status("remove tool failed: "+m.err.Error(), StatusError)
+		}
+		note := fmt.Sprintf("%s removed from this job", m.name)
+		s.setAction(note, StatusOK)
+		return s, tea.Batch(Status(note, StatusOK), s.load())
+	case woToolRestagedMsg:
+		s.locPending = false
+		if m.err != nil {
+			s.locErr = m.err.Error()
+			return s, Status("restage failed: "+m.err.Error(), StatusError)
+		}
+		s.mode = woModeTools
+		// Clearing the hint and setting one are different writes, so they get
+		// different sentences: a blank hands the row back to the linked item's
+		// stored location rather than leaving the tool placeless.
+		note := fmt.Sprintf("%s staged for this job", m.name)
+		if m.cleared {
+			note = fmt.Sprintf("%s: per-job location cleared — its stored location stands in again", m.name)
+		}
+		s.setAction(note, StatusOK)
+		return s, tea.Batch(Status(note, StatusOK), s.load())
+	case woLotoRecordedMsg:
+		s.lotoPending = false
+		if m.err != nil {
+			// The server's own words, unsoftened: complete_loto writes its
+			// refusals by hand as DRF {"detail": …} bodies, and its judgement
+			// about whether a safety step may be recorded is not ours to
+			// paraphrase.
+			//
+			// It lands on THREE surfaces because they answer different questions
+			// and the operator may be looking at any of them: the review frame
+			// they are standing on (lotoErr), the transient toast, and the body's
+			// own answer row — which is what they read if they leave the frame,
+			// and the one place a refusal is guaranteed a bounded single line.
+			// The frame stays OPEN: the step was not recorded and pressing y
+			// again after reading why is the obvious next move.
+			s.lotoErr = m.err.Error()
+			note := "lockout step not recorded: " + m.err.Error()
+			s.setAction(note, StatusError)
+			return s, Status(note, StatusError)
+		}
+		// Back to the list rather than the body: a tech working through a
+		// lockout procedure has the next step to mark.
+		s.mode = woModeLoto
+		verb := "cleared"
+		if m.recorded {
+			verb = "recorded"
+		}
+		note := fmt.Sprintf("lockout %s: %s", verb, m.label)
 		s.setAction(note, StatusOK)
 		return s, tea.Batch(Status(note, StatusOK), s.load())
 	case woMaterialCostSavedMsg:
@@ -542,6 +690,16 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s.handleConfirmKey(m)
 		case woModeNotes:
 			return s.handleNotesKey(m)
+		case woModeTools:
+			return s.handleToolsKey(m)
+		case woModeAddTool:
+			return s.handleAddToolKey(m)
+		case woModeToolLocation:
+			return s.handleToolLocationKey(m)
+		case woModeLoto:
+			return s.handleLotoKey(m)
+		case woModeLotoConfirm:
+			return s.handleLotoConfirmKey(m)
 		}
 		if s.scroller.Handle(m) {
 			return s, nil
@@ -592,6 +750,31 @@ func (s *WorkOrderDetailScreen) handleViewKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 		}
 		s.mode = woModeMaterials
 		s.materialCursor = 0
+		return s, nil
+	case "T":
+		// Per-job tools (op-0v4), and it opens even with nothing in the list for
+		// the same reason `M` does: a CORRECTIVE work order has no PM template,
+		// so it arrives owning no tool rows and adding one from here is the only
+		// way it lists a tool at all.
+		if s.wo == nil {
+			return s, nil
+		}
+		s.mode = woModeTools
+		s.toolCursor = 0
+		return s, nil
+	case "L":
+		// The structured lockout/tagout checklist. Gated on there being rows,
+		// because unlike tools there is nothing to CREATE here — rows are cut
+		// when the work order is generated — so a key that opened a list of
+		// nothing would be the bar naming something that cannot act. The footer
+		// is gated on the same predicate, and the decline names the reason, which
+		// is the shape `R` already uses on this screen.
+		if len(s.woLotoRows()) == 0 {
+			return s, Status("no energy sources are recorded on this job's asset — nothing to lock out", StatusWarn)
+		}
+		s.mode = woModeLoto
+		s.lotoCursor = 0
+		s.lotoNote = ""
 		return s, nil
 	case "A":
 		// Attachments list (op-7pjj). Uppercase A because lowercase a is the
@@ -1710,10 +1893,16 @@ func (s *WorkOrderDetailScreen) woValidation() *omsapi.WorkOrderValidation {
 }
 
 // clampCursors keeps the picker cursors in range after a reload changes the
-// task / material counts.
+// task / material / tool / LOTO counts.
+//
+// A clamp is all a BROWSE cursor needs — it re-points at a row the operator can
+// see and choose again. It is NOT enough for a modal that carries a WRITE, which
+// is why the restage box and the LOTO review frame hold their row's id and are
+// reseated by identity (wo_tools_loto.go): clamped, a reload that shortened the
+// list would leave those frames naming whatever row now sits at that index.
 func (s *WorkOrderDetailScreen) clampCursors() {
 	if s.wo == nil {
-		s.taskCursor, s.materialCursor = 0, 0
+		s.taskCursor, s.materialCursor, s.toolCursor, s.lotoCursor = 0, 0, 0, 0
 		return
 	}
 	if s.taskCursor >= len(s.wo.TaskCompletions) {
@@ -1721,6 +1910,12 @@ func (s *WorkOrderDetailScreen) clampCursors() {
 	}
 	if s.materialCursor >= len(s.wo.MaterialUsage) {
 		s.materialCursor = maxInt(0, len(s.wo.MaterialUsage)-1)
+	}
+	if s.toolCursor >= len(s.wo.ToolRows) {
+		s.toolCursor = maxInt(0, len(s.wo.ToolRows)-1)
+	}
+	if s.lotoCursor >= len(s.wo.LotoCompletions) {
+		s.lotoCursor = maxInt(0, len(s.wo.LotoCompletions)-1)
 	}
 }
 
@@ -1792,21 +1987,84 @@ func (s *WorkOrderDetailScreen) View() string {
 		return s.renderConfirm()
 	case woModeNotes:
 		return s.renderNotesForm()
+	case woModeTools:
+		return s.renderToolPicker()
+	case woModeAddTool:
+		return s.renderAddToolForm()
+	case woModeToolLocation:
+		return s.renderToolLocationForm()
+	case woModeLoto:
+		return s.renderLotoList()
+	case woModeLotoConfirm:
+		return s.renderLotoConfirm()
 	}
 
-	footerRows := detailFooterRows
+	// FOLDING THE HINT SPENDS ROWS, SO THE BUDGET MOVES WITH IT. This screen's
+	// footer is fifteen keys long and grew two more with the tool and lockout
+	// lists; written as one line it is well past the 51 cells an 80-column pane
+	// gives, and clampToBox took the tail — which is where `esc back` sits. It is
+	// folded now (pickerHintAt), and the scroller above is budgeted against what
+	// the fold really came to rather than against the two-row constant, or the
+	// extra lines would run the frame over and clampToBox would take them off the
+	// bottom again. detailFooterRows / detailFooterRowsWithAction are what those
+	// constants count: one blank plus the hint, plus the answer row and its blank.
+	hint := pickerWrap(s.footerHint(), s.paneCells())
+	footerRows := (detailFooterRows - 1) + len(hint)
 	if s.actionMsg != "" {
-		footerRows = detailFooterRowsWithAction
+		footerRows += detailFooterRowsWithAction - detailFooterRows
 	}
 	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, footerRows))
 
 	body := s.scroller.View()
 	footer := ""
 	if s.actionMsg != "" {
-		footer += RenderStatus(s.actionMsg, s.actionLvl) + "\n\n"
+		footer += s.actionLine() + "\n\n"
 	}
-	footer += StyleMuted.Render(s.footerHint())
+	for i, line := range hint {
+		if i > 0 {
+			footer += "\n"
+		}
+		footer += StyleMuted.Render(line)
+	}
 	return body + "\n\n" + footer
+}
+
+// actionLine is the screen's answer to the last key: what landed, or why the
+// server refused. It is the BOTTOM line of the frame, left-justified, ONE row,
+// and MARKED.
+//
+// All four properties are load-bearing, and only the placement was already true.
+//
+// ONE ROW: the footer's height is a constant (detailFooterRowsWithAction) that
+// the scroller above is budgeted against, so a message carrying newlines does not
+// overflow the WIDTH — it overflows the HEIGHT, and clampToBox drops from the
+// BOTTOM, taking the hint line with every key on the screen named on it. Every
+// refusal here can carry one: omsapi.parseError puts the ENTIRE raw response body
+// into APIError.Message whenever the JSON envelope has no code, so nginx's
+// seven-line 502 page reaches this row verbatim. jdeStatusOneLine is the same
+// flattening the columnar layer and Root's own status bar use, so all three
+// status surfaces keep one convention.
+//
+// BOUNDED, by a FORWARD pass before fitCell measures anything: fitCell falls back
+// on truncateVisible, which drops one rune and re-measures the rest, so a 20 KB
+// gateway page through it is the O(n²) freeze AGENTS.md records against the
+// picker bounds. Left unbounded the row is cut by clampToBox instead, which takes
+// the closing SGR reset with the tail and leaves the terminal coloured for
+// everything drawn afterwards. A width of zero is "not sized yet", which every
+// bound in this package reads as "do not truncate" — the ROW bound still applies,
+// because a message several rows tall is wrong at any width.
+//
+// MARKED because colour alone is not a fact: jdeStatusMark is the one place the
+// mark and the colour for a level are decided, so an answer reads the same here
+// as on the thirty-odd columnar sheets. Only StatusOK / StatusWarn / StatusError
+// reach this row (setAction's callers), each of which carries a mark.
+func (s *WorkOrderDetailScreen) actionLine() string {
+	mark, style := jdeStatusMark(s.actionLvl)
+	msg := jdeStatusOneLine(s.actionMsg)
+	if avail := screenBodyCells(s.terminalWidth) - lipgloss.Width(mark); avail > 0 {
+		msg = fitCell(cellPrefix(msg, avail+2), avail)
+	}
+	return style.Render(mark + msg)
 }
 
 func (s *WorkOrderDetailScreen) footerHint() string {
@@ -1831,8 +2089,16 @@ func (s *WorkOrderDetailScreen) footerHint() string {
 		parts = append(parts, "t tasks")
 	}
 	// Always offered: an empty list is the corrective case, where adding the
-	// first line is exactly what the operator came here to do.
-	parts = append(parts, "M materials")
+	// first line is exactly what the operator came here to do. The same is true
+	// of the per-job tool rows beside them.
+	parts = append(parts, "M materials", "T tools")
+	// Gated, because nothing here CREATES a lockout step: an asset with no
+	// recorded energy sources has an empty checklist and no way to fill it, so
+	// naming the key would be naming one that can only decline. The count rides
+	// along because "1/3 isolated" is the fact a tech at the machine came for.
+	if loto := s.woLotoRows(); len(loto) > 0 {
+		parts = append(parts, fmt.Sprintf("L lockout (%d/%d)", s.lotoIsolated(), len(loto)))
+	}
 	if len(s.woPendingReview()) > 0 {
 		parts = append(parts, "R review scan")
 	}
@@ -2406,7 +2672,13 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 	if wo.Priority != "" {
 		headerParts = append(headerParts, "priority "+wo.Priority)
 	}
-	b.WriteString(StyleMuted.Render(strings.Join(headerParts, " · ")) + "\n")
+	// FOLDED, not clipped, because one of these is a UUID. `#short · ID
+	// 550e8400-e29b-41d4-a716-446655440000 · status in_progress · priority high`
+	// is 84 cells against the 51 an 80-column pane gives, and clampToBox cut it
+	// with no mark — an abbreviated identifier reads as a different identifier,
+	// which is worse than an absent one. pickerWrap folds at the " · " joints
+	// these parts are built from, so each fact lands whole on a line.
+	b.WriteString(pickerHintAt(strings.Join(headerParts, " · "), s.paneCells()) + "\n")
 
 	if wo.AssetName != "" {
 		assetLine := "Asset: " + wo.AssetName
@@ -2455,23 +2727,72 @@ func (s *WorkOrderDetailScreen) renderBody() string {
 		b.WriteString(StyleMuted.Render("  No tools specified.") + "\n")
 	} else {
 		for _, t := range wo.Tools {
-			line := "  · " + t.Name
+			// FOLDED, and it was not: a tool name, its location and its notes are
+			// 200, 200 and 300 characters on the wire, so this row ran to several
+			// hundred cells into a 51-cell pane and clampToBox took the rest — the
+			// name of the gear, its place and the [REQ] flag alike. Assembled and
+			// then folded as a whole, so the facts land intact on whichever line
+			// they fall on. (Pre-existing; found by the width sweep the per-job
+			// tool list brought with it, and fixed here because it is the same rule
+			// on the same screen.)
+			line := t.Name
 			if t.Quantity > 0 {
 				line += fmt.Sprintf(" ×%d", t.Quantity)
 			}
 			if t.LocationHint != "" {
-				line += StyleMuted.Render(" · " + t.LocationHint)
+				line += " · " + t.LocationHint
 			}
 			if t.IsRequired {
-				line += " " + StyleStatusWarn.Render("[REQ]")
+				line += " [REQ]"
 			}
-			b.WriteString(line + "\n")
+			for i, folded := range s.wrapIndented(line, "    ") {
+				if i == 0 {
+					folded = "  · " + strings.TrimPrefix(folded, "    ")
+				}
+				b.WriteString(folded + "\n")
+			}
 			if t.Notes != "" {
-				b.WriteString("    " + StyleMuted.Render(t.Notes) + "\n")
+				b.WriteString(s.wrappedIn(StyleMuted, t.Notes, "    "))
 			}
 		}
 	}
 	b.WriteString("\n")
+
+	// LOCKOUT / TAGOUT, immediately under the gear list, because that is the
+	// order the work is done in: gather the tools, isolate the machine, then
+	// start. It mirrors the web detail page's own Lockout/Tagout card.
+	//
+	// The section renders only where the asset HAS recorded energy sources: rows
+	// are cut when the work order is generated and no endpoint creates one, so a
+	// heading over an empty list would be a claim about a checklist that does not
+	// exist. The `L` key and the footer entry are gated on the same predicate.
+	if loto := s.woLotoRows(); len(loto) > 0 {
+		b.WriteString(StyleTitle.Render(fmt.Sprintf("Lockout / Tagout (%d/%d isolated)",
+			s.lotoIsolated(), len(loto))) + "\n")
+		for _, rec := range loto {
+			marker := StyleStatusWarn.Render("  ○ ")
+			if rec.IsCompleted {
+				marker = StyleStatusOK.Render("  ✓ ")
+			}
+			// Folded rather than clipped, here as on the review frame: the label
+			// is 200 characters on the wire and it is what names the hazard.
+			label := s.wrapIndented(woLotoSourceLabel(rec), "      ")
+			b.WriteString(marker + strings.TrimPrefix(label[0], "    ") + "\n")
+			for _, cont := range label[1:] {
+				b.WriteString(cont + "\n")
+			}
+			b.WriteString(s.wrappedIn(StyleMuted, woLotoStateLine(rec), "      "))
+			if rec.IsolationPoint != "" {
+				b.WriteString(s.wrappedIn(StyleMuted, "isolate at: "+rec.IsolationPoint, "      "))
+			}
+		}
+		// A SECOND surface naming a key, which this project normally reserves to
+		// the action bar — and the same exception renderPendingReview already
+		// takes, for the same reason: the footer is fifteen keys long and folds
+		// onto four or five rows, and this is the one an operator standing at the
+		// machine came here for.
+		b.WriteString(StyleMuted.Render("  press L to record a step") + "\n\n")
+	}
 
 	b.WriteString(StyleTitle.Render("Dates") + "\n")
 	if wo.DueDate != "" {
