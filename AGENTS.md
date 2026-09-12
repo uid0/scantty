@@ -1548,7 +1548,13 @@ either:
   bottom of the pane and draws the rule at the pane's WIDTH, so a fixture given
   a height and no width draws a 72-column bar (the layer's unsized fallback)
   into a 51-column pane. `s.Update(tea.WindowSizeMsg{...})`, never
-  `s.terminalHeight = h`.
+  `s.terminalHeight = h`. AND A HELPER THAT CLIPS DOES NOT RESIZE: a loop
+  varying the BOX while the screen is still laid out for another pane measures a
+  frame the terminal never drew, because Root sends a `WindowSizeMsg` and the
+  screen lays out again. `TestReceiveFlow_ReopeningAClosedShortLineReachesItsEndpoint`
+  is the worked example — its "80x14" was a thirty-row frame with sixteen rows
+  cut off, and it agreed with the real pane only while the pinned block happened
+  to sit at the TOP of it.
 - **Check the CLIPPED render.** `clampToBox` truncates in `Root.View()`, not in
   the screen, so a test that reads `screen.View()` passes while the terminal
   shows a cut line. Assert against `Root.View()` at 80/100/120 —
@@ -1580,6 +1586,17 @@ either:
   the wrapping bar every frame draws (a bar of a dozen order-level keys folds
   onto several rows rather than losing its tail). `internal/tui/po_detail.go` is
   the pilot for those, as `po_edit.go` is for forms.
+- **A RESERVED-BUT-BLANK PINNED BLOCK GOES BENEATH THE BODY.**
+  `jdeScreen.frameWrappedBelow` is `frameWrapped` with the same budget,
+  allocator and trim, emitting the pinned block AFTER the body; the receiving
+  form is its one user. A reservation buys a CONSTANT BODY BUDGET, which is
+  indifferent to which end of the pane it is spent at — so a block drawn blank
+  at rest belongs where it does not displace the screen the operator came for,
+  and the answer is never a reservation that appears with its content. That
+  function's own doc comment owns the failure and the arithmetic, and
+  `receiveNoteRows` (`internal/tui/receive_form.go`) owns why the reservation
+  itself is not reopenable; read them there rather than a copy here.
+  `TestReceive_TheRestingFrameDoesNotOpenOnDeadSpace` is the guard.
 - **A sheet may not answer "how many rows?", "does this scroll?", "is this
   drawn at all?" or "what goes on the status row?" itself.** All four are
   `jde_form.go`'s (`bodyAvailForBar`, `bodyScrollsForBar`, `frameDrawn`,

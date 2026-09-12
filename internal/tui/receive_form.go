@@ -5555,6 +5555,23 @@ func (s *ReceiveFormScreen) doneBody() *jdeLines {
 // operator is scanning goods in, a command line that tells the truth about
 // which keys work is worth more than the rows of body it spends.
 //
+// WHAT THE COST TURNED OUT TO BE, measured rather than estimated, because the
+// trade was accepted against a guess of about two rows: it is receiveNoteRows
+// plus the separator — SIX rows on any pane that can afford them, and FOUR at
+// 80x18, where noteRows() has already yielded to the pane. NEITHER SURPLUS IS
+// RECOVERABLE without making the reservation conditional, and both were
+// re-derived rather than assumed. The SEPARATOR cannot go: headerSplit reserves
+// it outright ("the separator is not divisible"), dropping it when the block is
+// blank is the conditional reservation this comment forbids, and folding it
+// INTO receiveNoteRows would cut the note to four text rows — where the margin
+// was measured ZERO (below). The NOTE's own rows cannot go either: waysOut is
+// DERIVED from the bar, so shortening it puts curation back in the one place
+// the honesty rule is checked, and the constant grew each time only because the
+// screen gained a key that ACTS. What DID move is where the rows are spent:
+// headerLines pins the block BENEATH the body now (jde_form.go's
+// frameWrappedBelow), so the reservation costs the operator the same rows and
+// no longer costs them the top of the pane.
+//
 // The size is the MINIMUM that restores the fixed point, not the worst case.
 // The FAILURE DETAIL is deliberately NOT reserved: it is written by a reply off
 // the wire and names no keys, so a frame that grows one is a frame that

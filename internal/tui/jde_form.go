@@ -2752,6 +2752,31 @@ func (g jdeScreen) frameWrapped(header jdeHeader, body *jdeLines, cursorRow int,
 
 // frameWrappedBelow uses frameWrapped's budget and trimming rules but emits the
 // pinned block beneath the padded body, flush against the status row.
+//
+// ONLY THE EMISSION ORDER DIFFERS, and that is the whole of what it is for: the
+// header is subtracted from the body's rows through the very expressions
+// frameWrapped uses, so a sheet that moves between the two frames cannot come to
+// a different view of how many rows its body has or of what its bar may name.
+//
+// It exists because a RESERVED block is not the same thing as a block with
+// something in it. The receiving form reserves its note's rows unconditionally
+// — that reservation is what stops the sentence naming which keys act from
+// changing which keys act, and it is not reopenable (receive_form.go's
+// receiveNoteRows) — so at rest the block is drawn BLANK, on arrival and after
+// every reply. Pinned above the body those blanks were the first thing on the
+// pane: at 80x18, five of twelve rows empty before the box a scanner fires
+// into, on a body with thirty-four rows it could not fit, and 1213 of the 1394
+// panes Root draws opened that way. Beneath the body they cost the operator
+// nothing to look at and the form leads, while the reservation is untouched —
+// what it buys is a CONSTANT BODY BUDGET, and a budget does not care which end
+// of the pane it is spent at. Reaching for a conditional reservation instead is
+// the tempting wrong answer here; it reopens the circle receiveNoteRows closed.
+//
+// A BUILDER FOR THIS FRAME WRITES ITS SEPARATOR AT THE BLOCK'S HEAD rather than
+// its tail, because the blank that keeps the block off the body is now above
+// it. That is AGENTS.md's separator rule ("a separator travels with the block
+// above it") read at the only end there is here: nothing follows the block but
+// the status row, which is a frame row and needs no separating.
 func (g jdeScreen) frameWrappedBelow(header jdeHeader, body *jdeLines, cursorRow int, status string, items []actionBarItem) string {
 	barRows := actionBarRowsFor(g.barWidth(), items)
 	if g.tooShort(barRows, len(header)) {
