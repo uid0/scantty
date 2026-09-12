@@ -888,6 +888,50 @@ func TestVendorWO_AShutGateIsNeitherNamedNorBoundAndSaysHowToOpenIt(t *testing.T
 	}
 }
 
+// TestVendorWO_APermanentEmergencyMarkOpensSourcing pins the server condition:
+// an NTE, is_emergency, OR a live emergency authorization permits the move.
+// Deleting the IsEmergency clause from the client gate leaves this server-valid
+// order stranded at requested and fails this drive before it can open confirm.
+func TestVendorWO_APermanentEmergencyMarkOpensSourcing(t *testing.T) {
+	fake := newVWOFake()
+	fake.wo.NTEAmount = ""
+	fake.wo.IsEmergency = true
+	fake.wo.EmergencyAuthorizedAt = nil
+
+	r, s := vwoDrive(t, fake)
+	if s.wo.Workflow.HasNTE || s.wo.Workflow.HasActiveEmergencyAuthorization {
+		t.Fatalf("fixture has an unintended live gate: %+v", s.wo.Workflow)
+	}
+	if blocked := s.vwoBlockedBy(vwoAdvanceSourcing); blocked != "" {
+		t.Fatalf("permanent emergency mark is blocked: %q", blocked)
+	}
+	found := false
+	for _, item := range s.sheetBar() {
+		if item.Key == "Enter" && item.Label == "To sourcing" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the sheet bar does not name Enter=To sourcing")
+	}
+
+	r = vwoKey(t, r, "enter")
+	if s.phase != vwoPhaseConfirm {
+		t.Fatalf("Enter opened phase %v, want confirm", s.phase)
+	}
+	if got := fake.posts(); len(got) != 0 {
+		t.Fatalf("Enter wrote before confirmation: %v", got)
+	}
+	r = vwoKey(t, r, "ctrl+x")
+	if s.wo.Status != omsapi.MaintenanceOrderSourcing {
+		t.Fatalf("status = %q, want sourcing", s.wo.Status)
+	}
+	want := []string{"work-orders/" + vwoTestID + "/advance-to-sourcing"}
+	if got := fake.posts(); !equalStrings(got, want) {
+		t.Fatalf("requests sent: got %v, want %v", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The bar names exactly the keys that work
 // ---------------------------------------------------------------------------

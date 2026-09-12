@@ -448,6 +448,10 @@ func (s *VendorWorkOrderDetailScreen) vwoBlockedBy(a vwoAction) string {
 	wf := wo.Workflow
 	switch a {
 	case vwoAdvanceSourcing:
+		// Mirrors transitions.advance_to_sourcing: an NTE, the permanent
+		// is_emergency mark, OR a live emergency authorization opens the gate.
+		// IsEmergency has no expiry and is not redundant with the active-window
+		// flag; dropping it here would refuse a transition the server accepts.
 		if wf.HasNTE || wf.HasActiveEmergencyAuthorization || wo.IsEmergency {
 			return ""
 		}
