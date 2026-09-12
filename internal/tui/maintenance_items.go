@@ -30,6 +30,7 @@ type MaintenanceItemsScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 }
 
 type maintenanceItemsLoadedMsg struct {
@@ -59,18 +60,55 @@ func (s *MaintenanceItemsScreen) Init() tea.Cmd {
 }
 
 func (s *MaintenanceItemsScreen) computeWindowSize() int {
-	const chrome = 4 // header + blank + hint + one indicator slack
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.bar(true))
+}
+
+// paneCells is the width this list folds and budgets against: the pane the
+// terminal really gave, never the 51 an 80-column one happens to leave.
+func (s *MaintenanceItemsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// bar names every key that acts on this list, as a RECORD rather than a literal
+// — prose_bar.go carries the conversion, proseNavCursor why the movement half
+// is gated on one threshold, and proseListWindow what it costs the body.
+//
+// It used to be
+//
+//	j/k move · g/G top/bottom · enter open · c new · r refresh · esc back
+//
+// 69 cells against the 51 an 80-column pane gives, so clampToBox was already
+// taking the end of it. It is the ONE screen of this group that named more than
+// j/k — and naming FOUR of the ten keystrokes rather than two is the shape of
+// the defect rather than an exception to it: home/end and pgup/pgdn moved the
+// cursor with no word for them, and an operator who had learned `g/G` from this
+// bar had no reason to think `home` would work here and `g` would work on the
+// sibling list that named neither.
+func (s *MaintenanceItemsScreen) bar(moves bool) proseBar {
+	return append(proseNavCursor(moves),
+		proseBarItem{Keys: []string{"enter"}, Hint: "enter open"},
+		proseBarItem{Keys: []string{"c"}, Hint: "c new"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil in the states that draw
+// something else instead — a load in flight, a failure, a prompt that replaces
+// the footer, and the EMPTY list, whose shorter footer is still a literal. So
+// "this state has no bar" and "this state's bar is empty" stay different answers
+// to the honesty sweep, and what this conversion leaves behind is a STATE rather
+// than a screen.
+func (s *MaintenanceItemsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || len(s.items) == 0 {
+		return nil
 	}
-	return avail
+	return s.bar(listNavMoves(len(s.items)))
 }
 
 func (s *MaintenanceItemsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -180,7 +218,7 @@ func (s *MaintenanceItemsScreen) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · g/G top/bottom · enter open · c new · r refresh · esc back"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 

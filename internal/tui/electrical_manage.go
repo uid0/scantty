@@ -54,6 +54,7 @@ type PanelBreakersScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -104,18 +105,54 @@ func (s *PanelBreakersScreen) load() tea.Cmd {
 }
 
 func (s *PanelBreakersScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.bar(true))
+}
+
+// paneCells is the width this list folds and budgets against: the pane the
+// terminal really gave, never the 51 an 80-column one happens to leave.
+func (s *PanelBreakersScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// bar names every key that acts on this list, as a RECORD rather than a literal
+// — prose_bar.go carries the conversion, proseNavCursor why the movement half
+// is gated on one threshold, and proseListWindow what it costs the body.
+//
+// It used to be
+//
+//	j/k move · n new · E edit · c/enter circuits · x delete · r refresh · esc back
+//
+// 78 cells against the 51 an 80-column pane gives, so clampToBox was already
+// taking the end of it — and it named two of the ten movement keystrokes
+// this screen's own switch binds: the arrows, pgup/pgdn and g/G/home/end all
+// moved the cursor and no word on the bar said so.
+func (s *PanelBreakersScreen) bar(moves bool) proseBar {
+	return append(proseNavCursor(moves),
+		proseBarItem{Keys: []string{"n"}, Hint: "n new"},
+		proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+		proseBarItem{Keys: []string{"c", "enter"}, Hint: "c/enter circuits"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil in the states that draw
+// something else instead — a load in flight, a failure, a prompt that replaces
+// the footer, and the EMPTY list, whose shorter footer is still a literal. So
+// "this state has no bar" and "this state's bar is empty" stay different answers
+// to the honesty sweep, and what this conversion leaves behind is a STATE rather
+// than a screen.
+func (s *PanelBreakersScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.confirmingDelete || len(s.rows) == 0 {
+		return nil
 	}
-	return avail
+	return s.bar(listNavMoves(len(s.rows)))
 }
 
 func (s *PanelBreakersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -292,7 +329,7 @@ func (s *PanelBreakersScreen) View() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · n new · E edit · c/enter circuits · x delete · r refresh · esc back"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -360,6 +397,7 @@ type BreakerCircuitsScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -411,18 +449,61 @@ func (s *BreakerCircuitsScreen) load() tea.Cmd {
 }
 
 func (s *BreakerCircuitsScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.bar(true))
+}
+
+// paneCells is the width this list folds and budgets against: the pane the
+// terminal really gave, never the 51 an 80-column one happens to leave.
+func (s *BreakerCircuitsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// bar names every key that acts on this list, as a RECORD rather than a literal
+// — prose_bar.go carries the conversion, proseNavCursor why the movement half
+// is gated on one threshold, and proseListWindow what it costs the body.
+//
+// It used to be
+//
+//	j/k · n new · E edit · o outlets · d disconnects · x del · r · esc
+//
+// which is the same defect as its four siblings with an extra turn on it: the
+// words had already been ABBREVIATED to fit — the movement verb dropped, `x
+// del` for delete, `r` and `esc` with nothing said about what they do — and at
+// 66 cells against the 51 an 80-column pane gives it did not fit anyway. So an
+// operator lost the tail AND was told less about what was left. Folding is what
+// buys the words back; abbreviating never did.
+//
+// It also named two of the ten movement keystrokes this screen's own switch
+// binds, and `E edit` named one of the two keys that arm: enter edits here as
+// well and no word said so.
+func (s *BreakerCircuitsScreen) bar(moves bool) proseBar {
+	return append(proseNavCursor(moves),
+		proseBarItem{Keys: []string{"n"}, Hint: "n new"},
+		proseBarItem{Keys: []string{"E", "enter"}, Hint: "E/enter edit"},
+		proseBarItem{Keys: []string{"o"}, Hint: "o outlets"},
+		proseBarItem{Keys: []string{"d"}, Hint: "d disconnects"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil in the states that draw
+// something else instead — a load in flight, a failure, a prompt that replaces
+// the footer, and the EMPTY list, whose shorter footer is still a literal. So
+// "this state has no bar" and "this state's bar is empty" stay different answers
+// to the honesty sweep, and what this conversion leaves behind is a STATE rather
+// than a screen.
+func (s *BreakerCircuitsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.confirmingDelete || len(s.rows) == 0 {
+		return nil
 	}
-	return avail
+	return s.bar(listNavMoves(len(s.rows)))
 }
 
 func (s *BreakerCircuitsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -612,7 +693,7 @@ func (s *BreakerCircuitsScreen) View() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k · n new · E edit · o outlets · d disconnects · x del · r · esc"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -688,6 +769,7 @@ type CircuitOutletsScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -735,18 +817,53 @@ func (s *CircuitOutletsScreen) load() tea.Cmd {
 }
 
 func (s *CircuitOutletsScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.bar(true))
+}
+
+// paneCells is the width this list folds and budgets against: the pane the
+// terminal really gave, never the 51 an 80-column one happens to leave.
+func (s *CircuitOutletsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// bar names every key that acts on this list, as a RECORD rather than a literal
+// — prose_bar.go carries the conversion, proseNavCursor why the movement half
+// is gated on one threshold, and proseListWindow what it costs the body.
+//
+// It used to be
+//
+//	j/k move · n new · E/enter edit · x delete · r refresh · esc back
+//
+// 65 cells against the 51 an 80-column pane gives, so clampToBox was already
+// taking the end of it — and it named two of the ten movement keystrokes
+// this screen's own switch binds: the arrows, pgup/pgdn and g/G/home/end all
+// moved the cursor and no word on the bar said so.
+func (s *CircuitOutletsScreen) bar(moves bool) proseBar {
+	return append(proseNavCursor(moves),
+		proseBarItem{Keys: []string{"n"}, Hint: "n new"},
+		proseBarItem{Keys: []string{"E", "enter"}, Hint: "E/enter edit"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil in the states that draw
+// something else instead — a load in flight, a failure, a prompt that replaces
+// the footer, and the EMPTY list, whose shorter footer is still a literal. So
+// "this state has no bar" and "this state's bar is empty" stay different answers
+// to the honesty sweep, and what this conversion leaves behind is a STATE rather
+// than a screen.
+func (s *CircuitOutletsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.confirmingDelete || len(s.rows) == 0 {
+		return nil
 	}
-	return avail
+	return s.bar(listNavMoves(len(s.rows)))
 }
 
 func (s *CircuitOutletsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -915,7 +1032,7 @@ func (s *CircuitOutletsScreen) View() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · n new · E/enter edit · x delete · r refresh · esc back"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -987,6 +1104,7 @@ type CircuitDisconnectsScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -1034,18 +1152,53 @@ func (s *CircuitDisconnectsScreen) load() tea.Cmd {
 }
 
 func (s *CircuitDisconnectsScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.bar(true))
+}
+
+// paneCells is the width this list folds and budgets against: the pane the
+// terminal really gave, never the 51 an 80-column one happens to leave.
+func (s *CircuitDisconnectsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// bar names every key that acts on this list, as a RECORD rather than a literal
+// — prose_bar.go carries the conversion, proseNavCursor why the movement half
+// is gated on one threshold, and proseListWindow what it costs the body.
+//
+// It used to be
+//
+//	j/k move · n new · E/enter edit · x delete · r refresh · esc back
+//
+// 65 cells against the 51 an 80-column pane gives, so clampToBox was already
+// taking the end of it — and it named two of the ten movement keystrokes
+// this screen's own switch binds: the arrows, pgup/pgdn and g/G/home/end all
+// moved the cursor and no word on the bar said so.
+func (s *CircuitDisconnectsScreen) bar(moves bool) proseBar {
+	return append(proseNavCursor(moves),
+		proseBarItem{Keys: []string{"n"}, Hint: "n new"},
+		proseBarItem{Keys: []string{"E", "enter"}, Hint: "E/enter edit"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil in the states that draw
+// something else instead — a load in flight, a failure, a prompt that replaces
+// the footer, and the EMPTY list, whose shorter footer is still a literal. So
+// "this state has no bar" and "this state's bar is empty" stay different answers
+// to the honesty sweep, and what this conversion leaves behind is a STATE rather
+// than a screen.
+func (s *CircuitDisconnectsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.confirmingDelete || len(s.rows) == 0 {
+		return nil
 	}
-	return avail
+	return s.bar(listNavMoves(len(s.rows)))
 }
 
 func (s *CircuitDisconnectsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -1215,7 +1368,7 @@ func (s *CircuitDisconnectsScreen) View() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · n new · E/enter edit · x delete · r refresh · esc back"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 

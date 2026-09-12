@@ -288,11 +288,103 @@ var proseBarRefresh = proseBarItem{Keys: []string{"r"}, Hint: "r refresh"}
 // screen.
 //
 // proseBar answers nil in the states that draw something else instead — a load
-// in flight, a failure, a modal — so "this state has no bar" and "this state's
-// bar is empty" stay different answers. An empty bar is a defect (a frame that
-// names no key at all); a nil one is a state the conversion has not reached, and
-// proseBarUnconvertedStates is where those are written down.
+// in flight, a failure, an empty list, a destructive confirm — so "this state
+// has no bar" and "this state's bar is empty" stay different answers. An empty
+// bar is a defect (a frame that names no key at all); a nil one is a state the
+// conversion has not reached, whose own key claims are still a literal inside
+// View.
+//
+// THERE IS NO ROSTER OF THOSE STATES, and that is a decision rather than an
+// omission: which states a screen is swept in is a fixture JUDGEMENT, said so
+// in proseBarFixtures and bounded by the two coverage checks around it, and a
+// hand-listed inventory of states would be exactly the roster this package
+// keeps being bitten by. What IS mechanical is the screen: a converted one
+// cannot fail to be swept at all.
 type proseBarScreen interface {
 	Screen
 	proseBar() proseBar
 }
+
+// proseNavCursor is the movement half of a WINDOWED cursor list's bar — the
+// shape a dozen-odd screens in this package share: rows drawn between an
+// `↑ more above` marker and a `↓ N more below` one, with the whole navigation
+// vocabulary bound in the screen's own key switch and `j/k move` the only part
+// of it the footer ever said.
+//
+// ONE THRESHOLD HERE, WHERE proseNavList HAS TWO, AND THE MECHANISM IS WHY. On
+// a list whose pager moves a WINDOW, "is there a second row" and "does the list
+// outrun the body" are different questions and a single condition names one of
+// them where it does nothing. On these screens the pager moves the CURSOR and
+// clamps it — `s.cursor += s.windowSize` followed by a clamp to the last row —
+// so `pgdn` on a three-row list standing at the top lands on row three and
+// really does move the pane. There is nothing for a second threshold to
+// separate: every one of these keystrokes moves exactly when there is a second
+// row to move to, which is listNavMoves and nothing else.
+//
+// Stating that as a call into proseNavList rather than a second vocabulary is
+// deliberate: the keystrokes are the app's one roster (list_nav.go) and what
+// differs here is only which question gates them.
+func proseNavCursor(moves bool) proseBar { return proseNavList(moves, moves) }
+
+// proseListWindow is how many ROWS such a list may draw, with the footer's
+// height taken off the top rather than assumed.
+//
+// WHAT IT REPLACES, and why the constant it replaces could not survive the
+// conversion. Every one of these screens carried
+//
+//	const chrome = 4
+//	avail := screenBodyHeight(s.terminalHeight) - chrome
+//
+// where the 4 is a count line, one scroll marker, the blank separator and ONE
+// footer row. A folded bar is not one row: naming the eight keystrokes these
+// screens bind and never said takes the hint past the 51 cells an 80-column
+// pane gives, so it folds onto two or three, and a body budgeted at the old
+// constant then assembles two rows more than the pane has — clampToBox drops
+// from the BOTTOM, so what it takes is the fold, which is the keys the
+// conversion was for. The same claim off the other edge, which is the trade
+// ListScreen.footerRows already makes and these screens never did.
+//
+// MEASURED AGAINST THE CEILING BAR, never the one being drawn, for the reason
+// proseSizeScroller gives: the movement segments come OFF a one-row list, so a
+// budget taken from the live bar is a budget that changes when the list shrinks
+// — and the row count is an input to what the list shows. The tallest shape the
+// bar can take is a fixed point; anything else oscillates.
+//
+// THE FLOOR OF THREE IS PRE-EXISTING AND IS LEFT ALONE. It is the same lie
+// screenBodyHeight tells and scrollerViewHeight repeats: below about ten
+// terminal rows the assembled frame is taller than the pane whatever the footer
+// does. Removing it means giving these screens the refusal ListScreen has
+// (listTooShort), which is a decision about what a too-short list does and not
+// part of making its bar honest — so it is named here rather than changed in
+// passing, and proseBarFrameFits is what scopes the sweep around it.
+func proseListWindow(terminalHeight, cells int, ceiling proseBar) int {
+	avail := screenBodyHeight(terminalHeight) - proseListFixedRows - ceiling.rows(cells)
+	if avail < proseListWindowFloor {
+		avail = proseListWindowFloor
+	}
+	return avail
+}
+
+// proseListFixedRows is what one of these lists spends on chrome the BAR does
+// not own: the count line it opens with, and BOTH scroll markers.
+//
+// BOTH, where the constant this replaced reserved one — and that one row is a
+// defect the conversion inherited rather than introduced. `↑ more above` and
+// `↓ N more below` are drawn TOGETHER for every cursor position in the middle of
+// a list, which is most of them, so a budget with one row of marker slack
+// assembles a frame one row taller than the pane whenever the operator has
+// scrolled at all, and clampToBox drops from the BOTTOM: the last fold of the
+// footer, silently. It cost a single-row literal its whole line; it would now
+// cost the folded bar the segment its last keys are spelled in, which is worse
+// in the same direction. Reserving the second marker costs every one of these
+// lists one row of body, and a row of body is what the rule says a readable bar
+// is worth.
+//
+// The bar's own rows — the blank separator included — are NOT in here: they are
+// counted from the folded ceiling, which is the whole point of the conversion.
+const proseListFixedRows = 3
+
+// proseListWindowFloor is the fewest rows one of these lists will draw, carried
+// over verbatim from the `if avail < 3` every one of them wrote out. See
+// proseListWindow for why it is a lie and why closing it is separate work.
+const proseListWindowFloor = 3

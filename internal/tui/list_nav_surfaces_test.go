@@ -104,34 +104,30 @@ import (
 // own went first: they were the clearest instance of the prose-bar gap — one
 // shared handler, and each sheet deciding for itself which of its keys to name,
 // so four of them named "j/k scroll" alone while the arrows, pgup/pgdn, g/G and
-// home/end all worked. Their bars are RECORDS now (prose_bar.go) and
-// prose_bar_honesty_test.go presses the whole key space at them, so the
-// classifier counts them as a THIRD swept class and an entry left here for one
-// of them fails. What is still a literal is named in proseBarUnconverted with
-// the shape of the work its conversion needs.
+// home/end all worked. The WINDOWED cursor lists went next, as one recipe rather
+// than one screen at a time (prose_bar_windowed_lists_test.go). Their bars are
+// RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
+// space at them, so the classifier counts them as a THIRD swept class and an
+// entry left here for one of them fails. What is still a literal is named in
+// proseBarUnconverted with the shape of the work its conversion needs.
 var listNavUnsweptReceivers = map[string]string{
-	"AssetPartsScreen":           "the parts list on an asset; footer written in View, already past 51 cells",
+	"AssetPartsScreen": "the parts list on an asset; footer written in View, already past " +
+		"51 cells. Left out of the windowed-cursor-list conversion because its rows are " +
+		"multi-LINE and its window is budgeted in rows — see proseBarUnconverted",
 	"AssetProblemsScreen":        "the problem list on an asset, plus its vendor picker",
 	"AuthorizationsScreen":       "the ForgeKey authorization grid",
 	"LockoutsScreen":             "the ForgeKey lockout list",
 	"BadgeEnrollmentScreen":      "the ForgeKey badge enrolment list",
-	"CategoryListScreen":         "the category list beside CategoryFormScreen, which IS columnar and IS swept",
 	"ForgeKeyCertificatesScreen": "the ForgeKey certificate list",
 	"ChecklistRunScreen":         "the step list of a checklist run",
 	"ChecklistsScreen":           "the checklist browse list",
-	"ThermostatListScreen":       "the thermostat list beside ClimateFormScreen, which is columnar and swept",
 	"DemandForecastScreen":       "the demand-forecast table",
-	"DeviceTypeListScreen":       "the device-type list beside DeviceTypeFormScreen",
 	"DonationsScreen":            "the donation list",
 	"EPaperPanelsScreen": "the e-paper panel list; its bind picker is a cursor list " +
 		"whose bar is a muted literal inside View, so the honesty sweep cannot read it, " +
 		"but it IS pressed by the retired-chord sweep, which drives its cursor directly " +
 		"(listNavPickerCases)",
 	"ElectricalPanelsScreen":   "the electrical panel list",
-	"PanelBreakersScreen":      "the electrical panel management list",
-	"BreakerCircuitsScreen":    "the electrical circuit management list",
-	"CircuitOutletsScreen":     "the electrical outlet management list",
-	"CircuitDisconnectsScreen": "the electrical disconnect management list",
 	"FacilitiesScreen":         "the facilities hub, a cursor menu of surfaces",
 	"FirmwareScreen":           "the firmware rollout list",
 	"ForgeKeyDeviceFormScreen": "its location picker; the form itself is columnar",
@@ -141,9 +137,7 @@ var listNavUnsweptReceivers = map[string]string{
 		"cursor list whose bar is a muted literal inside View, so the honesty sweep cannot " +
 		"read it, but it IS pressed by the retired-chord sweep, which drives its cursor " +
 		"directly (listNavPickerCases)",
-	"LocationListScreen":     "the location list beside LocationFormScreen",
 	"LocationProblemsScreen": "the problem list for a location",
-	"MaintenanceItemsScreen": "the PM item list beside MaintenanceItemFormScreen",
 	"MakerBoxesScreen":       "the maker-box list beside MakerBoxFormScreen",
 	"OperationalModesScreen": "the ForgeKey operational-mode list",
 	"PMBoardScreen":          "the preventive-maintenance board",
@@ -152,12 +146,10 @@ var listNavUnsweptReceivers = map[string]string{
 		"those pages and TestReportTable_EveryReportScreenIsSwept derives it from the " +
 		"package source every run, so no count is restated here to drift",
 	"ReportsScreen":            "the reports hub, a cursor menu of surfaces",
-	"SIGListScreen":            "the SIG list beside SIGFormScreen",
 	"SIGMembersScreen":         "the member list of a SIG, plus its person picker",
 	"SerializedForecastScreen": "the serialized-component consumption forecast table",
 	"StorageOverviewScreen":    "the storage overview",
 	"StorageSlotsScreen":       "the storage slot list beside StorageSlotFormScreen",
-	"SupplierListScreen":       "the supplier list beside SupplierFormScreen",
 	"TextScroller": "not a list at all: a read-only text body with a scroll offset and " +
 		"no cursor, shared by every detail sheet that holds one (listNavDelegatingReceivers " +
 		"derives that set every run, so no count is restated here to drift). It is here " +
@@ -168,7 +160,6 @@ var listNavUnsweptReceivers = map[string]string{
 		"one bar per sheet, no record to read",
 	"UsageScreen":                "the ForgeKey usage-session list",
 	"VendorsScreen":              "the maintenance vendor list",
-	"WebhookListScreen":          "the webhook list beside WebhookFormScreen",
 	"WorkOrderAttachmentsScreen": "the attachment list on a work order",
 	"WorkOrderDetailScreen":      "the work-order detail sheet and its material pickers",
 	"LocationDetailScreen": "NOT a navigation binding: its `g` generates the location's QR " +
@@ -197,9 +188,11 @@ var listNavUnsweptReceivers = map[string]string{
 // to and where.
 //
 // AST rather than a grep, because the answer has to be per RECEIVER and a file
-// routinely holds several: category_form.go declares CategoryFormScreen, which
-// is columnar and swept, beside CategoryListScreen, which is not. A file-level
-// classification would excuse the second on the strength of the first.
+// routinely holds several, in DIFFERENT classes: category_form.go declares
+// CategoryFormScreen, which is columnar, beside CategoryListScreen, whose bar
+// is a proseBar record. A file-level classification would answer for the second
+// on the strength of the first, and it would go on doing so when one of them
+// converted and the other did not.
 func listNavBindingSurfaces(t *testing.T) map[string][]string {
 	t.Helper()
 	fset := token.NewFileSet()
