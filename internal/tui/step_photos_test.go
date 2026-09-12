@@ -47,10 +47,10 @@ func TestTaskRowHydratesReferencePhotoURL(t *testing.T) {
 		t.Errorf("photoless step should hydrate blank, got %q", got.refImageURL)
 	}
 	// The list surfaces the photo as text.
-	if line := taskRefPhotoLine(s.tasks[0]); !strings.Contains(line, "https://oms/media/belt.jpg") {
+	if line := taskRefPhotoLine(s.tasks[0]).render(0); !strings.Contains(line, "https://oms/media/belt.jpg") {
 		t.Errorf("task list line should show the photo URL, got %q", line)
 	}
-	if line := taskRefPhotoLine(s.tasks[1]); line != "" {
+	if line := taskRefPhotoLine(s.tasks[1]).render(0); line != "" {
 		t.Errorf("photoless step should contribute no line, got %q", line)
 	}
 }
@@ -110,7 +110,7 @@ func TestTaskEditorSetsReferencePhoto(t *testing.T) {
 		t.Errorf("commit should return to the task list, phase = %v", s.phase)
 	}
 	// A pending upload reads differently from one already on the server.
-	if line := taskRefPhotoLine(got); !strings.Contains(line, photo) || !strings.Contains(line, "uploads on save") {
+	if line := taskRefPhotoLine(got).render(0); !strings.Contains(line, photo) || !strings.Contains(line, "uploads on save") {
 		t.Errorf("pending-photo line = %q", line)
 	}
 }

@@ -616,7 +616,7 @@ func (s *SiteSettingsFormScreen) formLines() *jdeLines {
 			}
 			l.Add(StyleJDEHeading.Render(heading))
 		}
-		l.AddRow(i, renderJDEField(fields[i], ssLabelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], ssLabelWidth, s.bodyWidth())
 		// What is on file for an image belongs UNDER the row that replaces it —
 		// it was a header line above the whole sheet, which is the one place an
 		// operator deciding whether to remove the logo would not look (sc-6qsk).

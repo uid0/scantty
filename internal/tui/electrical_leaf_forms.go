@@ -803,7 +803,7 @@ func (s *PowerOutletFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Outlet"))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], elecLabelWidth, s.bodyWidth())
 		// The set around the FOCUSED choice row, so seventeen receptacle types
 		// are never cycled blind (jdeOptionStrip returns nothing for a yes/no).
 		if i == s.cursor {
@@ -1767,7 +1767,7 @@ func (s *DisconnectFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Disconnect"))
 	for i, id := range s.fields {
-		l.AddRow(i, renderJDEField(fields[i], elecLabelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], elecLabelWidth, s.bodyWidth())
 		if i == s.cursor && id == dcDisconnectType {
 			labels := make([]string, len(disconnectTypeOptions))
 			for j, o := range disconnectTypeOptions {

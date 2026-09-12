@@ -2870,85 +2870,31 @@ func TestJDEForm_AnUnsizedTerminalPagesAsItAlwaysHas(t *testing.T) {
 // jdeOverWideEssentialRows are the header sites whose ESSENTIAL row does not fit
 // the pane it is promised on, each with the measured numbers.
 //
-// It is the same shape as jdeHeadersWithoutEssentials and jdeUnfetchableMarker-
-// Cases and exists for the same reason: a real defect that is KNOWN has to be
-// written down, or it is indistinguishable from one nobody has found. It fails
-// in BOTH directions — an unlisted over-wide row fails as a new defect, and a
-// listed one that now fits fails as a stale exception — so bounding a row here
-// is a one-line deletion rather than a search.
+// IT IS EMPTY, AND IT IS KEPT SO THE RULE CAN BE STATED WITHOUT ONE. It fails in
+// BOTH directions — an unlisted over-wide row fails as a new defect, and a
+// listed one that now fits fails as a stale exception — so an entry added here
+// later says exactly what was given up and how far, and bounding a row is a
+// one-line deletion rather than a search.
 //
-// THE MECHANISM IS ONE, AND IT IS THE LAYER'S. jdeFitHeader gives ground by ROW
+// THE MECHANISM WAS ONE AND IT WAS THE LAYER'S. jdeFitHeader gives ground by ROW
 // and does no width fitting at all, so an over-wide header row reaches
 // clampToBox, which cuts from the right with no ellipsis and takes the closing
 // SGR reset with it — leaving everything drawn afterwards in the cut row's
-// colour. The remedy is to bound essential header rows at the LAYER, the way
-// jdeCaveatLines bounds a caveat against the live pane; it is deferred to its
-// own task because it is a per-screen conversion of the shape sc-jde-lift was,
-// not a patch, and doing it from a review round is the scope growth that was
-// refused.
+// colour. Both classes are bounded at the layer now:
 //
-// THE NUMBERS ARE MEASURED BY THE SWEEP ABOVE, not estimated. Both entries hold
-// at every drawable HEIGHT; what varies is the width.
-var jdeOverWideEssentialRows = map[string]string{
-	// One row, nineteen sites: the columnar picker's `Filter .....` row, built
-	// by jdePickList.render — which every one of the nineteen calls with the
-	// LIVE pane. It is 70 cells at every width because nothing in that row is
-	// derived from the pane at all, so it fits from a terminal width of 100
-	// (a pane of 71) up and is cut at 80, where the pane is 51 — the width this
-	// interface is modelled on and the one that must hold.
-	"AssetFormScreen/viewPick":                pickerFilterOverWide,
-	"AssetPartFormScreen/viewPick":            pickerFilterOverWide,
-	"AuthorizationGrantScreen/viewPick":       pickerFilterOverWide,
-	"CategoryFormScreen/viewPick":             pickerFilterOverWide,
-	"DisconnectFormScreen/viewPick":           pickerFilterOverWide,
-	"InventoryItemFormScreen/viewKitPick":     pickerFilterOverWide,
-	"InventoryItemFormScreen/viewPick":        pickerFilterOverWide,
-	"ItemSupplierFormScreen/viewPick":         pickerFilterOverWide,
-	"LocationFormScreen/viewPick":             pickerFilterOverWide,
-	"MaintenanceItemFormScreen/viewAssetPick": pickerFilterOverWide,
-	"PowerBreakerFormScreen/viewPick":         pickerFilterOverWide,
-	"PowerCircuitFormScreen/viewPick":         pickerFilterOverWide,
-	"PowerOutletFormScreen/viewPick":          pickerFilterOverWide,
-	"PowerPanelFormScreen/viewPick":           pickerFilterOverWide,
-	"ProjectStorageFormScreen/viewSlotPick":   pickerFilterOverWide,
-	"StorageAssignFormScreen/viewPicker":      pickerFilterOverWide,
-	"StorageSlotFormScreen/viewPicker":        pickerFilterOverWide,
-	"StorageSlotGenerateScreen/viewPicker":    pickerFilterOverWide,
-	"ThermostatFormScreen/viewPick":           pickerFilterOverWide,
-
-	// chainHeader promotes the LAST validatePackagingChain message, and those
-	// are composed unfolded from OMS-supplied level names, so no wording of them
-	// has a bound at all. Measured on the swept fixture — two rungs both
-	// claiming to be the base unit — the promoted row is 85 cells: cut at a
-	// terminal width of 80 (a pane of 51) AND at 100 (a pane of 71), fitting
-	// only from 120 (a pane of 91) up. It is the widest essential row in the
-	// package and the only one that overruns past 80 columns.
-	"InventoryItemFormScreen/viewChain (invalid chain)": "chainHeader's promoted " +
-		"validation message is 85 cells, cut at a terminal width of 80 (pane 51) and " +
-		"at 100 (pane 71), fitting only from 120 (pane 91). The messages are composed " +
-		"unfolded from OMS-supplied level names, so the bound has to come from the " +
-		"layer rather than from a wording",
-}
-
-// pickerFilterOverWide is the one reason the nineteen picker sites share, said
-// once so a re-measurement is a single edit rather than nineteen.
-//
-// THE MECHANISM IS THE HINT PAST THE CAP, and getting it wrong here is
-// expensive: this roster is the input the deferred bounding task is filed from,
-// and the first wording blamed an unsized pane and a jdePickHeader that does not
-// exist, which would send the next agent hunting a bug that is not there.
-// jdePickList.render declares the filter field at a flat `Width: 30`;
-// jdePaneFieldWidth caps a text row's input area at
-// bodyWidth - (indent + label + leader) = 51 - (2 + 6 + 7) = 36 at an
-// 80-column pane, so 30 is under the cap and survives untouched — and then
-// renderJDEField appends "  " + the 23-cell hint AFTER that cap. 2 + 6 + 7 + 30
-// + 2 + 23 = 70. jdePaneFieldWidth's own doc says so in as many words: "a hint
-// sitting past the fill is still past the pane afterwards — which is exactly
-// why the fold is jdeFitRow's job and not this one's." So the remedy for these
-// nineteen is routing the filter row through jdeFitRow, which already trades the
-// field against the hint and folds the hint underneath.
-const pickerFilterOverWide = "the columnar picker's `Filter .....` row is 70 cells, " +
-	"cut at a terminal width of 80, where screenBodyWidth gives 51; it fits from 100 " +
-	"(pane 71) up. jdePickList.render declares the field at a flat Width: 30 and " +
-	"renderJDEField appends the 23-cell hint AFTER jdePaneFieldWidth's cap, which that " +
-	"function's doc names as jdeFitRow's job rather than its own"
+//   - The columnar picker's `Filter .....` row, ONE row on nineteen sites, was
+//     70 cells at every width — cut at a terminal width of 80, where the pane is
+//     51, and fitting only from 100 up — because nothing in it was derived from
+//     the pane: jdePickList.render declared the field at a flat Width: 30 and
+//     renderJDEField appended the 23-cell hint AFTER jdePaneFieldWidth's cap.
+//     That function's own doc named the remedy ("a hint sitting past the fill is
+//     still past the pane afterwards — which is exactly why the fold is
+//     jdeFitRow's job and not this one's"), and the row goes through jdeFitRow
+//     now, with the folded hint ranked as CONTEXT so the box keeps the one
+//     essential row jdeMinBudget allows.
+//   - chainHeader promoted the LAST validatePackagingChain message, composed
+//     unfolded from OMS-supplied level names, so no wording of it had a bound at
+//     all: 85 cells, cut at 80 (pane 51) and at 100 (pane 71), fitting only from
+//     120. It folds through jdeCaveatLinesStyled and rides addFitted, so the
+//     lead keeps the essential rank and a trim marks its own cut.
+var jdeOverWideEssentialRows = map[string]string{}

@@ -961,8 +961,8 @@ func (s *InventoryItemFormScreen) kitRowFrame() (*jdeLines, []actionBarItem) {
 	// The component row is not navigable, so the field cursor is offset by one:
 	// row 0 IS the quantity, which is what kitRowFieldQty names.
 	labelWidth := jdeLabelWidth(fields)
-	l.Add(renderJDEField(fields[0], labelWidth, s.bodyWidth()))
-	l.AddFields(fields[1:], labelWidth, s.bodyWidth(), kitRowFieldQty)
+	l.AddFittedField(jdeNoRow, fields[0], labelWidth, s.bodyWidth())
+	l.AddFittedFields(fields[1:], labelWidth, s.bodyWidth(), kitRowFieldQty)
 
 	items := []actionBarItem{{"Enter", "Save component"}, {"Esc", "Cancel"}, {"UP/DN", "Fields"}}
 	if s.kitRowFocus == kitRowFieldRemove {

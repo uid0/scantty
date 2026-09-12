@@ -81,7 +81,8 @@ func TestHeaderFold_AFoldedValueIsWholeAbsentOrMarked(t *testing.T) {
 	// for, or it passes by never cutting anything.
 	for _, screen := range []string{"PurchaseOrderAddLineScreen", "PurchaseOrderDetailScreen",
 		"PurchaseOrderEditScreen", "PurchaseOrderCreateScreen", "InventoryItemFormScreen",
-		"StorageSlotGenerateScreen"} {
+		"StorageSlotGenerateScreen", "AssetDocumentsScreen", "AssetMetersScreen",
+		"AssetMeterReadingsScreen", "WorkOrderScanReviewScreen"} {
 		if cut[screen] == 0 {
 			t.Errorf("%s: no pane drew a folded header value short of whole, so the "+
 				"trim was never exercised there", screen)
@@ -114,6 +115,16 @@ func headerFoldAddLineFailure(t *testing.T) Screen {
 
 // headerFoldValues is every value the screen folds into its pinned header, as
 // plain text, asked of the screen's own content functions.
+//
+// THE FOUR ASSET/SCAN SCREENS JOINED IT AFTER THE FACT, and how they were
+// missed is the lesson: each folded its caveat correctly with jdeCaveatLines and
+// then handed the result to addBlock, which adds INDEPENDENT rows — so the fold
+// was right and the row-by-row trim under it was the very defect addFitted
+// exists for. Folding a value is not the same as telling the layer it IS one
+// value. Measured before the fix, at 80 columns and drawable heights: 69 panes
+// on the supersede confirm, 54 on the meter adjust, 51 on the new meter, 47 on
+// the scan review and 2 on the reading grid, each drawing a fragment that ended
+// on a whole word.
 func headerFoldValues(s Screen) []string {
 	switch v := s.(type) {
 	case *PurchaseOrderAddLineScreen:
@@ -134,6 +145,14 @@ func headerFoldValues(s Screen) []string {
 		return []string{chainGuidance(unit), chainEmptyDetail(unit), kitListGuidance}
 	case *StorageSlotGenerateScreen:
 		return []string{levelListDetail}
+	case *AssetDocumentsScreen:
+		return []string{supersedeCaveat}
+	case *AssetMetersScreen:
+		return []string{adjustCaveat, newMeterCaveat, meterDropNote}
+	case *AssetMeterReadingsScreen:
+		return []string{readingDropNote}
+	case *WorkOrderScanReviewScreen:
+		return []string{woScanImageCaveat}
 	}
 	return nil
 }

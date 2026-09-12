@@ -478,7 +478,7 @@ func (s *SupplierFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Supplier details"))
 	for i, f := range fields {
-		l.AddRow(i, renderJDEField(f, labelWidth, s.bodyWidth()))
+		l.AddFittedField(i, f, labelWidth, s.bodyWidth())
 		// The whole set under the FOCUSED choice row, so a short fixed list is
 		// never cycled blind (jdeOptionStrip returns nothing for a yes/no).
 		if i == s.cursor && s.fields[i] == sfType {

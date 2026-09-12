@@ -242,7 +242,7 @@ func jdePaneFieldWidth(f jdeField, labelWidth, bodyWidth int) int {
 	if width <= 0 {
 		width = jdeFieldWidth
 	}
-	avail := bodyWidth - (len(jdeIndent) + labelWidth + len(jdeLeader))
+	avail := bodyWidth - (len(jdeIndent) + labelWidth + len(jdeLeader)) - jdeSwatchCost(f)
 	if avail < 1 {
 		avail = 1
 	}
@@ -250,6 +250,22 @@ func jdePaneFieldWidth(f jdeField, labelWidth, bodyWidth int) int {
 		width = avail
 	}
 	return width
+}
+
+// jdeSwatchCost is what a row's sample spends: the two-column gutter plus the
+// sample itself, or nothing when there is none.
+//
+// It is RESERVED rather than ignored because the swatch is drawn LAST, after
+// the fill and after any hint, so a fill sized without it is a fill that pushes
+// the sample off the pane — and the sample is the row's whole answer to "which
+// colour is this?". jdeColorRow drops the HINT when a sample is present, which
+// is what left slack enough for the overrun to stay latent: the hint was paying
+// for the sample by accident.
+func jdeSwatchCost(f jdeField) int {
+	if f.Swatch == "" {
+		return 0
+	}
+	return 2 + lipgloss.Width(f.Swatch)
 }
 
 // jdeFieldArea renders the input area alone — the part right of the leader.
@@ -449,16 +465,6 @@ func jdeEchoValue(ti textinput.Model) string {
 		return ""
 	}
 	return ti.Value()
-}
-
-// renderJDEFields is the convenience form: one block, its own label column.
-func renderJDEFields(fields []jdeField, bodyWidth int) []string {
-	w := jdeLabelWidth(fields)
-	out := make([]string, len(fields))
-	for i, f := range fields {
-		out[i] = renderJDEField(f, w, bodyWidth)
-	}
-	return out
 }
 
 // jdeYesNo is how a bool reads on a choice row. A toggle IS a two-value choice
@@ -786,19 +792,6 @@ func (l *jdeLines) Lead() (index int, site string, ok bool) {
 func (l *jdeLines) AddRow(row int, text string) {
 	l.text = append(l.text, text)
 	l.row = append(l.row, row)
-}
-
-// AddFields appends one navigable row per field, numbered from rowBase — the
-// shape of every columnar form whose rows are simply its fields. A form that has
-// to interleave something (an option strip under the focused row, a derived
-// preview under the one it is derived from) adds those lines itself.
-//
-// A rowBase of jdeNoRow means the whole band is read-only, so EVERY line of it
-// is tagged jdeNoRow rather than -1, 0, 1… — see jdeRowAt.
-func (l *jdeLines) AddFields(fields []jdeField, labelWidth, bodyWidth, rowBase int) {
-	for i, f := range fields {
-		l.AddRow(jdeRowAt(rowBase, i), renderJDEField(f, labelWidth, bodyWidth))
-	}
 }
 
 // jdeRowAt numbers the i-th field of a band based at rowBase.
@@ -1999,12 +1992,32 @@ func (p jdePickList) render(bodyWidth int) (jdeHeader, *jdeLines) {
 	// pad, whose warning had the identical problem and would have needed the
 	// identical inversion. jdeHeadRank decouples the two, so the title goes back
 	// on top and is still the first row dropped.
+	//
+	// AND IT IS FITTED, NOT MERELY CAPPED. jdePaneFieldWidth caps the 30-column
+	// fill against the pane and renderJDEField then appends the hint AFTER it,
+	// so this row was 70 cells on all nineteen picker sites while the pane at 80
+	// columns is 51 — the widest single class in jdeRowsPastThePane, and the one
+	// jdeOverWideEssentialRows recorded as the layer's to fix. The fit trades
+	// the fill against the hint and folds the hint underneath when neither will
+	// fit, which is what the fill is FOR.
+	filterLabelW := jdeLabelWidth([]jdeField{filter})
+	fitted, filterNotes := jdeFitRow(filter, filterLabelW, bodyWidth)
 	header := jdeHeader(nil).
 		add(jdeHeadDecorative, head).
-		add(jdeHeadEssential, renderJDEFields([]jdeField{filter}, bodyWidth)[0]).
-		add(jdeHeadDecorative, "")
+		add(jdeHeadEssential, renderJDEField(fitted, filterLabelW, bodyWidth))
+	// A folded hint is CONTEXT: the box is the row the operator cannot do
+	// without, and jdeMinBudget lets a header mark exactly one row essential.
+	header = header.add(jdeHeadContext, filterNotes...).add(jdeHeadDecorative, "")
 	if p.Note != "" {
-		header = header.add(jdeHeadContext, jdeIndent+StyleMuted.Render(p.Note)).
+		// FOLDED against the live pane rather than written straight out: these
+		// notes run to 81 cells ("Row 1 is no slot — ad-hoc storage. A claimed
+		// slot wins over the location below.") against the 51 an 80-column
+		// terminal gives, and clampToBox cut them mid-sentence with no mark.
+		// addFittedBlock so a header trim re-draws the fold into the rows it
+		// kept and marks its own cut, rather than leaving a fragment that reads
+		// as the whole note (jdeHeader.addFitted).
+		refit := func(rows int) []string { return jdeCaveatLinesIn(p.Note, bodyWidth, rows) }
+		header = header.addFitted(jdeHeadContext, jdeHeadContext, refit(0), refit).
 			add(jdeHeadDecorative, "")
 	}
 
@@ -2014,7 +2027,11 @@ func (p jdePickList) render(bodyWidth int) (jdeHeader, *jdeLines) {
 		if empty == "" {
 			empty = "(no matches)"
 		}
-		body.Add(jdeIndent + StyleMuted.Render(empty))
+		// Folded, for the reason p.Note is: an empty-state sentence is prose
+		// and a pane is 51 cells at the width this interface is designed to.
+		for _, line := range jdeCaveatLines(empty, bodyWidth) {
+			body.Add(line)
+		}
 		return header, body
 	}
 	for i := 0; i < p.Count; i++ {
@@ -2803,13 +2820,19 @@ const jdeMinFieldWidth = 10
 // sized here and a value sized nowhere is how a typed value used to walk out of
 // the pane (sc-jde-tiw).
 //
+// A jdeValue or jdeChoice row has no fill to shrink, so it gives ground in the
+// other order and jdeFitValueRow is that half — read it for why.
+//
 // bodyWidth of 0 means the pane is not sized yet, which — as everywhere in this
 // file — means "do not truncate".
 func jdeFitRow(f jdeField, labelWidth, bodyWidth int) (jdeField, []string) {
-	if bodyWidth <= 0 || f.Kind != jdeText {
+	if bodyWidth <= 0 {
 		return f, nil
 	}
-	lead := len(jdeIndent) + labelWidth + len(jdeLeader)
+	if f.Kind != jdeText {
+		return jdeFitValueRow(f, labelWidth, bodyWidth)
+	}
+	lead := len(jdeIndent) + labelWidth + len(jdeLeader) + jdeSwatchCost(f)
 	want := f.Width
 	if want <= 0 {
 		want = jdeFieldWidth
@@ -2842,19 +2865,106 @@ func jdeFitRow(f jdeField, labelWidth, bodyWidth int) (jdeField, []string) {
 	return f, jdeNoteLines(note, labelWidth, bodyWidth)
 }
 
+// jdeFitValueRow is jdeFitRow for a row with no input area: a jdeValue reading
+// or a jdeChoice set. It is the half the layer used to leave to the sheets, and
+// leaving it to them is why twenty-six columnar screens drew a row past the pane
+// at 80 columns — the width the whole interface is designed to.
+//
+// jdePaneFieldWidth caps a TEXT row's fill and says in as many words that a
+// value row's width "is a content decision each sheet already makes for itself".
+// The sheets did not make it. `Affects ..... Sending notifications, reorder
+// alerts, and receipts` is 67 cells against the 51 an 80-column terminal gives
+// and `Max load ..... 80% of breaker amperage  set by the backend on save` is
+// 81; clampToBox took the tail off both with no mark, so a reading stopped
+// mid-word and read as finished.
+//
+// THE GIVE-ORDER IS THE OPPOSITE WAY ROUND FROM A TEXT ROW, and the reason is
+// what each part IS. On a text row the fill gives first because the fill is
+// decoration — underscores, or the reverse-video run that says "type here" —
+// and shortening it loses nothing at all. A value row has no such part: the
+// VALUE is the content and the HINT is fixed prose about the row. So the HINT
+// gives first, by FOLDING under the row (jdeNoteLines), which costs a line and
+// loses nothing; only when the value still will not fit on its own is it
+// CLIPPED, with fitCell's ellipsis saying so. Folding narrow costs a line,
+// clipping narrow destroys the tail — so the lossless move comes first.
+//
+// A jdeChoice draws its value inside "< " and " >", and the brackets are what
+// says the row is a SET rather than a reading, so they are reserved and the
+// value inside them is what gives. A Swatch is reserved too (jdeSwatchCost).
+func jdeFitValueRow(f jdeField, labelWidth, bodyWidth int) (jdeField, []string) {
+	room := bodyWidth - (len(jdeIndent) + labelWidth + len(jdeLeader)) - jdeSwatchCost(f)
+	deco := 0
+	if f.Kind == jdeChoice {
+		deco = lipgloss.Width("< ") + lipgloss.Width(" >")
+	}
+	hintCost := 0
+	if f.Hint != "" {
+		hintCost = 2 + lipgloss.Width(f.Hint)
+	}
+	if lipgloss.Width(f.Value)+deco+hintCost <= room {
+		return f, nil
+	}
+	var notes []string
+	if f.Hint != "" {
+		note := f.Hint
+		f.Hint = ""
+		notes = jdeNoteLines(note, labelWidth, bodyWidth)
+	}
+	avail := room - deco
+	if avail < 1 {
+		// A pane this narrow is not reachable under the size contract, but a
+		// clip to nothing would be a value gone with no mark saying so — the
+		// one reading a truncation must never produce. One cell is the mark.
+		avail = 1
+	}
+	if lipgloss.Width(f.Value) > avail {
+		f.Value = fitCell(f.Value, avail)
+	}
+	return f, notes
+}
+
 // AddFittedFields appends one navigable row per field, numbered from rowBase,
 // each sized to the pane by jdeFitRow — and any hint that had to be folded is
 // added as further lines of the SAME row, so the window keeps a field and the
-// note explaining it on screen together. A rowBase of jdeNoRow tags the whole
-// band read-only, as it does in AddFields.
+// note explaining it on screen together. A rowBase of jdeNoRow means the whole
+// band is read-only, so EVERY line of it is tagged jdeNoRow rather than
+// -1, 0, 1… — see jdeRowAt.
+//
+// IT IS THE ONLY BAND BUILDER, and the unfitted AddFields beside it is gone
+// rather than deprecated. Fitting was a LAYOUT DECISION a sheet opted into, and
+// the sheets that never did are exactly the twenty-six screens
+// jdeRowsPastThePane recorded as drawing a row past the pane at 80 columns: the
+// fill was capped by jdePaneFieldWidth and the hint after it was not, so the
+// only thing on the row saying what to type was the thing clampToBox took. An
+// opt-in whose every caller should have opted in is not a decision, it is a
+// trap, so there is nothing left to opt out of.
 func (l *jdeLines) AddFittedFields(fields []jdeField, labelWidth, bodyWidth, rowBase int) {
 	for i, f := range fields {
-		row := jdeRowAt(rowBase, i)
-		fitted, notes := jdeFitRow(f, labelWidth, bodyWidth)
-		l.AddRow(row, renderJDEField(fitted, labelWidth, bodyWidth))
-		for _, note := range notes {
-			l.AddRow(row, note)
-		}
+		l.AddFittedField(jdeRowAt(rowBase, i), f, labelWidth, bodyWidth)
+	}
+}
+
+// AddFittedField is AddFittedFields for ONE field at a row the caller names.
+//
+// It exists because most of this package's forms do not draw a band of fields
+// and nothing else: they loop over their own field list and hang an option
+// strip, a derived preview or a note off whichever row is focused, so they
+// cannot hand the whole band to AddFittedFields. Every one of those loops called
+// renderJDEField directly, which is the FLOOR (jdePaneFieldWidth caps the fill
+// and nothing else) rather than the FIT — so the hint drawn after the fill was
+// past the pane on every one of them, at every width, and clampToBox took it
+// with no mark. `Manual PDF path ..... ____  absolute local path` is 72 cells
+// against the 51 an 80-column terminal gives.
+//
+// A row is drawn HERE rather than at each site so that the fold's extra lines
+// are tagged with the SAME row as the field they belong to: jdeLines.Window
+// anchors on the cursor's block, so a note that took a row number of its own
+// would be a line the cursor could stand on with nothing to type into.
+func (l *jdeLines) AddFittedField(row int, f jdeField, labelWidth, bodyWidth int) {
+	fitted, notes := jdeFitRow(f, labelWidth, bodyWidth)
+	l.AddRow(row, renderJDEField(fitted, labelWidth, bodyWidth))
+	for _, note := range notes {
+		l.AddRow(row, note)
 	}
 }
 
@@ -2876,6 +2986,19 @@ func jdeCaveatLines(note string, bodyWidth int) []string {
 // cannot give it every row (jdeHeader.addFitted): the header used to drop the
 // caveat's tail rows, and a caveat's tail is where the remedy falls.
 func jdeCaveatLinesIn(note string, bodyWidth, rows int) []string {
+	return jdeCaveatLinesStyled(note, bodyWidth, rows, StyleMuted)
+}
+
+// jdeCaveatLinesStyled is jdeCaveatLinesIn in a style of the caller's choosing.
+//
+// A caveat is usually muted, but a VALIDATION message is not a standing note —
+// it says the sheet will not save — and it is drawn in StyleStatusWarn. Those
+// messages were the last unfolded prose in the columnar layer: the packaging
+// chain's `! Packaging level "Case" must hold fewer base units than "Pallet"
+// that contains it.` is 85 cells against the 51 an 80-column terminal gives,
+// and one of them is the header's ESSENTIAL row, so what clampToBox cut was the
+// one row the builder promised the operator would keep.
+func jdeCaveatLinesStyled(note string, bodyWidth, rows int, style lipgloss.Style) []string {
 	width := 0
 	if bodyWidth > 0 {
 		if width = bodyWidth - len(jdeIndent); width < 1 {
@@ -2888,7 +3011,7 @@ func jdeCaveatLinesIn(note string, bodyWidth, rows int) []string {
 	}
 	out := make([]string, 0, len(wrapped))
 	for _, line := range wrapped {
-		out = append(out, jdeIndent+StyleMuted.Render(line))
+		out = append(out, jdeIndent+style.Render(line))
 	}
 	return out
 }

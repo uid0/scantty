@@ -501,7 +501,7 @@ func (s *AuthorizationGrantScreen) formLines() *jdeLines {
 	fields := s.formFields()
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Grant access"))
-	l.AddFields(fields, authGrantLabelWidth, s.bodyWidth(), 0)
+	l.AddFittedFields(fields, authGrantLabelWidth, s.bodyWidth(), 0)
 	return l
 }
 

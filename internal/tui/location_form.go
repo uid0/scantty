@@ -586,7 +586,7 @@ func (s *LocationFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Location"))
 	l.Add("")
-	l.AddFields(s.formFields(), locationLabelWidth, s.bodyWidth(), 0)
+	l.AddFittedFields(s.formFields(), locationLabelWidth, s.bodyWidth(), 0)
 	return l
 }
 

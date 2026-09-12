@@ -923,12 +923,17 @@ func (s *WorkOrderScanReviewScreen) listHeader() jdeHeader {
 		"Scan review · %s", woReviewPlural(len(s.subs), "sheet"))))
 	// The one thing a confidence figure does NOT say, on the frame where it is
 	// the only evidence: there is no picture here to check it against.
-	h = h.addBlock(jdeHeadContext, jdeCaveatLines(
-		"The scanned image is not drawable in a terminal — judge a reading by its "+
-			"confidence and the paper in your hand.", s.bodyWidth()))
+	width := s.bodyWidth()
+	h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(woScanImageCaveat, width),
+		func(rows int) []string { return jdeCaveatLinesIn(woScanImageCaveat, width, rows) })
 	return h.add(jdeHeadEssential, StyleMuted.Render(
 		woReviewGridRow("Sel", "Reading", "Conf", s.labelWidth())))
 }
+
+// woScanImageCaveat is named rather than written inline so the builder and the
+// fold-mark sweep read one string.
+const woScanImageCaveat = "The scanned image is not drawable in a terminal — judge a reading " +
+	"by its confidence and the paper in your hand."
 
 // listBar names the keys that work on the grid, and only those.
 func (s *WorkOrderScanReviewScreen) listBar() []actionBarItem {

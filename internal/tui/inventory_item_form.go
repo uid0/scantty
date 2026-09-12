@@ -1997,7 +1997,7 @@ func (s *InventoryItemFormScreen) formLines() *jdeLines {
 			l.Add(StyleJDEHeading.Render(itemBandLabel[b]))
 			band = b
 		}
-		l.AddRow(i, renderJDEField(fields[i], labelWidth, s.bodyWidth()))
+		l.AddFittedField(i, fields[i], labelWidth, s.bodyWidth())
 		// UNCONDITIONALLY, not only when focused: the operator has no reason to
 		// move the cursor onto a read-only row, and this note is the one thing
 		// that stops the save silently clearing a figure they can see.

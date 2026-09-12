@@ -574,12 +574,12 @@ func (s *DeviceTypeFormScreen) formLines() *jdeLines {
 	l := &jdeLines{}
 	l.Add(StyleJDEHeading.Render("Device type"))
 	for i, f := range fields {
-		l.AddRow(i, renderJDEField(f, labelWidth, s.bodyWidth()))
+		l.AddFittedField(i, f, labelWidth, s.bodyWidth())
 		if s.fields[i] == dtName && len(fixed) > 0 {
 			// Code sits where it would if it were editable, so the sheet reads
 			// the same either way; it is a line, not a row, because there is
 			// nothing to navigate to.
-			l.Add(renderJDEField(fixed[0], labelWidth, s.bodyWidth()))
+			l.AddFittedField(jdeNoRow, fixed[0], labelWidth, s.bodyWidth())
 		}
 		// The set around the FOCUSED code row, so nineteen choices are never
 		// cycled blind (jdeOptionStrip returns nothing for a yes/no).

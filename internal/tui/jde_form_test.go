@@ -26,7 +26,10 @@ func TestJDEField_ColumnarLayout(t *testing.T) {
 		t.Fatalf("label column = %d, want the widest label (%d)", w, len("Date ordered"))
 	}
 
-	lines := renderJDEFields(fields, 0)
+	lines := make([]string, len(fields))
+	for i, f := range fields {
+		lines[i] = renderJDEField(f, w, 0)
+	}
 	// Every leader starts at the same column: that is what "right-aligned into
 	// a common column" has to mean for the block to read as one sheet.
 	col := -1
