@@ -1035,10 +1035,10 @@ func TestPOAddLine_AStaleLookupNeverPaintsOverTheFrame(t *testing.T) {
 
 // A price row is parsed as MONEY, not as a number. big.Rat.SetString accepts a
 // fraction, an exponent and a negative, and this screen posts the row verbatim,
-// so a mis-keyed leading minus either created a negative-priced line or came
-// back as a DRF validation envelope — which AsLineEntryError deliberately does
-// not recognise, so the operator read "the add did not answer — the line may or
-// may not be on the order" about a request that definitively added nothing.
+// so a mis-keyed leading minus either created a negative-priced line or spent a
+// round trip to be refused. The refusal reaches the operator either way now, so
+// what this holds is that a row the terminal can already judge is never posted
+// at all.
 //
 // The refusal is local field parsing only: no request leaves the terminal, the
 // entry survives, and the sentence names the key, the field and the way out.

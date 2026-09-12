@@ -1002,18 +1002,27 @@ type POLineDeletedLine struct {
 	EstimatedCost   string `json:"estimated_cost"`
 }
 
-// asLineRefusal recovers a PO line endpoint's hand-built refusal so the
-// operator reads the SERVER'S SENTENCE rather than the raw body it arrived in.
-//
-// Both endpoints below write their refusals by hand and neither goes through
-// OMS's DRF exception handler, so parseError falls through and puts the ENTIRE
-// body into APIError.Message. They are not even the same hand-built shape:
-// `_destroy_item` writes {"error", "code"} and `void_item` writes {"error"}
-// alone. Rather than teach one recogniser both, this tries each of the two that
-// already exist — AsLineEntryError for the coded shape, AsReceivingRefusal for
-// the bare one — and both are deliberately narrow, so a gateway's HTML page, a
-// DRF validation envelope and a network failure all keep the shape they
+// asLineRefusal recovers a PO line endpoint's refusal so the operator reads the
+// SERVER'S SENTENCE rather than the raw body — or the transport wrapping — it
 // arrived in.
+//
+// THREE shapes reach here and each is somebody's answer to this request.
+// `void_item` writes {"error": "<prose>"} by hand with no code, `_destroy_item`
+// used to write {"error", "code"} by hand, and `_destroy_item` now answers in
+// OMS's standardized envelope (config/api_errors.py) — which parseError
+// UNDERSTANDS, so that one arrives as a properly coded *APIError rather than as
+// a raw body. Rather than teach one recogniser all three, this tries the two
+// that already exist: AsLineEntryError, which reads both coded shapes, then
+// AsReceivingRefusal for the uncoded one.
+//
+// The envelope is the shape that motivated saying so here. Nothing was ever
+// lost on the wire for it — but *APIError.Error() renders a coded error as
+// `oms: <code>: <sentence>`, so passing it through put the machine code in
+// front of the sentence on the row internal/tui/po_edit.go draws to tell an
+// operator what to do. A *POLineEntryError's Error() is the sentence alone.
+//
+// Both recognisers stay deliberately narrow, so a gateway's HTML page, a DRF
+// field-error map and a network failure all keep the shape they arrived in.
 func asLineRefusal(err error) error {
 	if entry, ok := AsLineEntryError(err); ok {
 		return entry

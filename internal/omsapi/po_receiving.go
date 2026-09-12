@@ -534,9 +534,10 @@ func (c *Client) MarkPurchaseOrderReceived(ctx context.Context, poID, reason str
 // exactly the shapes that must keep arriving as they are:
 //
 //   - a gateway's HTML page, which does not start with `{`;
-//   - the DRF envelope `{"error": {"code": …, "message": …}}`, whose `error` is
-//     an OBJECT — and which parseError has already turned into a coded APIError
-//     before this is ever reached;
+//   - the standardized envelope `{"error": {"code": …, "message": …}}`, whose
+//     `error` is an OBJECT — parseError has already turned it into a coded
+//     APIError before this is ever reached, and reading a CODED answer is
+//     AsLineEntryError's job, not this one's;
 //   - a DRF field-validation body such as `{"items": ["This field is required."]}`,
 //     which carries no `error` member at all.
 //

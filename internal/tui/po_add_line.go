@@ -962,11 +962,12 @@ func (s *PurchaseOrderAddLineScreen) baseQuantityRow() (int, string) {
 // readCostRow judges the price row as MONEY, which big.Rat.SetString does not:
 // it is a number parser and accepts "1/3", "1e9" and "-5", and this screen
 // posts the row verbatim as unit_cost. A mis-keyed leading minus therefore
-// either created a negative-priced line or came back as a DRF validation
-// envelope — which omsapi.AsLineEntryError deliberately declines to recognise,
-// so the operator read "the add did not answer — the line may or may not be on
-// the order" with the raw JSON folded underneath, about a request that
-// definitively answered and definitively added nothing.
+// either created a negative-priced line or spent a round trip to be told so by
+// the server. The refusal itself now reaches the operator either way
+// (omsapi.AsLineEntryError reads a coded envelope as the answer it is), so what
+// this reader buys is no longer legibility — it is that a row the terminal can
+// see is wrong is refused WITHOUT posting it, with everything typed still in
+// place and the way out named.
 //
 // The scan lives INSIDE this reader rather than beside it as a predicate any
 // caller could reach for, because a second, looser judge of the same row is

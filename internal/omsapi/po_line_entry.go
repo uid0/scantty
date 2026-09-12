@@ -47,9 +47,9 @@
 // presenting one vendor's code as another's, so it is carried through to the
 // confirm frame (internal/tui/po_add_line.go).
 //
-// # The refusal body is NOT the standard envelope
+// # A refusal arrives in TWO shapes, and both are read
 //
-// `add_item` returns its refusals as a hand-built `{"error": "<prose>",
+// `add_item` used to return its refusals as a hand-built `{"error": "<prose>",
 // "code": "<code>"}` (plus `"candidates"` on a 409), which does NOT go through
 // OMS's DRF exception handler and therefore does NOT arrive in the
 // `{"error": {"code", "message"}}` shape parseError understands. parseError
@@ -57,9 +57,26 @@
 // help here the operator reads
 // `oms: http 400: {"error": "Acme no longer supplies…", "code": "discontinued"}`
 // — a raw dump on the one step where losing the reason costs the whole line.
-// AsLineEntryError recovers the sentence and the code from it; everything else
-// (a DRF validation error, a gateway page, a network failure) is left exactly
-// as it arrived.
+//
+// OMS is moving these doors onto its STANDARDIZED envelope instead
+// (backend/config/api_errors.py, docs/API_ERROR_CONTRACT.md): the same code at
+// `error.code`, the same sentence at `error.message`, and `ambiguous`'s choice
+// set at `error.details.candidates`. NOTHING IS LOST IN THAT MOVE — parseError
+// understands the envelope, so both halves arrive on a proper *APIError and the
+// operator never sees raw JSON on either shape. What was wrong was reading that
+// value: AsLineEntryError special-cased the hand-built shape and answered FALSE
+// for the envelope, so internal/tui/po_add_line.go fell through to its
+// unanswered-request branch and told the operator "the add did not answer — the
+// line may or may not be on the order" about a request the server had
+// definitively refused, and internal/tui/po_edit.go printed APIError.Error(),
+// which puts `oms: <code>: ` in front of the sentence.
+//
+// AsLineEntryError therefore accepts BOTH, DELIBERATELY and not as a
+// transitional kindness. A reader that took only the new shape would misreport
+// against today's server and force the two deploys into lockstep; a reader that
+// takes both is correct before, after and during. Everything else (a gateway
+// page, a DRF field-error map, a network failure) is still left exactly as it
+// arrived.
 //
 // Source of truth: backend/reorder_queue/services/line_entry.py and
 // backend/reorder_queue/views.py (PurchaseOrderViewSet.item_lookup / .add_item).
@@ -292,10 +309,15 @@ type POLineAdded struct {
 	PurchaseOrder *PurchaseOrder    `json:"purchase_order"`
 }
 
-// POLineEntryError is a refusal from the add endpoint, recovered from the
-// hand-built `{"error", "code", "candidates"}` body it returns (see the file
-// comment). Message is the server's own operator-facing sentence and is what a
-// screen shows; Code is what it branches on.
+// POLineEntryError is a refusal from a purchase-order LINE endpoint, recovered
+// from either shape the server writes it in (see the file comment). Message is
+// the server's own operator-facing sentence and is what a screen shows; Code is
+// what it branches on.
+//
+// The json tags are the HAND-BUILT body's, because that shape is decoded into
+// this struct whole. The standardized envelope is not: parseError has already
+// split it into APIError.Code / .Message / .Details, so AsLineEntryError fills
+// these fields from those rather than re-parsing anything.
 type POLineEntryError struct {
 	Status     int               `json:"-"`
 	Message    string            `json:"error"`
@@ -308,14 +330,36 @@ func (e *POLineEntryError) Error() string { return e.Message }
 // Ambiguous reports the 409 that carries a choice set.
 func (e *POLineEntryError) Ambiguous() bool { return e.Code == POLineErrAmbiguous }
 
-// AsLineEntryError recovers the add endpoint's refusal from whatever parseError
+// AsLineEntryError recovers a line endpoint's refusal from whatever parseError
 // made of it, and reports false for anything that is not one.
 //
-// It is deliberately narrow. A body that does not start with `{`, does not
-// parse, or parses without BOTH a message and a code is left alone — a gateway's
-// HTML page and a DRF validation envelope are not this shape and must keep
-// arriving as the APIError they already are, rather than being coerced into a
-// refusal the server never made.
+// It reads BOTH shapes the server writes a coded refusal in — see the file
+// comment for why accepting only the newer one would be a defect rather than a
+// tidy-up — and the two arrive having been through parseError very differently:
+//
+//   - The STANDARDIZED envelope was UNDERSTOOD by parseError, which is the whole
+//     reason it needs no parsing here: the code is already on APIError.Code, the
+//     sentence on .Message, and `ambiguous`'s choice set in the raw .Details
+//     under `candidates`, where the envelope puts machine-readable hints. So the
+//     test is simply "did the server compose a coded answer" — parseError sets
+//     Code only from `error.code`, so a non-empty one means it did.
+//   - The HAND-BUILT body defeated parseError (its `error` is a string where the
+//     envelope has an object), so the whole payload is sitting in .Message and
+//     has to be decoded here.
+//
+// The two cannot be confused for each other, which is what lets them share one
+// reader: a hand-built body never yields a Code, so it can only ever reach the
+// second arm.
+//
+// What is left alone is what it always was, and the RULE behind it has not
+// moved even though one of its examples has: a refusal is a sentence the server
+// composed ABOUT THIS REQUEST, and nothing else may be dressed as one. A
+// gateway's HTML page, a DRF field-error map (`{"quantity": [...]}`) and a bare
+// `{"detail": ...}` all carry no code and parse as neither shape, so they keep
+// arriving as the APIError they are. What CHANGED is the standard envelope: it
+// used to be an example of "a refusal the server never made", and it is now the
+// server's own way of making one — so a body carrying a code AND a sentence is
+// an answer, and reporting it as an unknown outcome is the defect.
 func AsLineEntryError(err error) (*POLineEntryError, bool) {
 	var entry *POLineEntryError
 	if errors.As(err, &entry) {
@@ -324,6 +368,25 @@ func AsLineEntryError(err error) (*POLineEntryError, bool) {
 	var api *APIError
 	if !errors.As(err, &api) {
 		return nil, false
+	}
+	if api.Code != "" && strings.TrimSpace(api.Message) != "" {
+		out := &POLineEntryError{Status: api.Status, Message: api.Message, Code: api.Code}
+		// json.Unmarshal rather than jsonDecoder is safe for the same reason it
+		// is on the arm below and on parseError's own envelope: the target is
+		// FULLY TYPED with no `any` anywhere in it, so there is no untyped
+		// landing spot for a number and nothing decoded here is ever spent as a
+		// path segment (client.go's jsonDecoder doc owns that rule). A details
+		// payload of some other shape simply leaves Candidates nil, which is
+		// what every non-ambiguous code already has.
+		if len(api.Details) > 0 {
+			var hints struct {
+				Candidates []POLineCandidate `json:"candidates"`
+			}
+			if json.Unmarshal(api.Details, &hints) == nil {
+				out.Candidates = hints.Candidates
+			}
+		}
+		return out, true
 	}
 	body := strings.TrimSpace(api.Message)
 	if !strings.HasPrefix(body, "{") {
