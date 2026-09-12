@@ -831,26 +831,49 @@ func TestPOAssetSearch_AClippedQueryStillClosesItsQuote(t *testing.T) {
 }
 
 // TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork is the other half of
-// the lead's reduction: it must fire because the row is FULL, never because the
-// code measured 80 columns once and applied the answer everywhere.
+// the lead's reduction, from the seat: it must fire because the row is FULL,
+// never because the code measured 80 columns once and applied the answer
+// everywhere.
 //
 // poLeadClause keeps an answer's opening clause and drops the rest, and at 80
 // columns that is right — the row cannot hold a picker's whole answer beside a
 // working sentence, and the tail is redrawn in the pinned header (answerRows).
-// Applied unconditionally it was wrong at 120: the pane is 91, the subject wants
-// 37 and the whole answer 50, so 25 cells sat free while a pinned-header row was
-// spent on a 23-cell tail the row had room for — the acceptance criterion that
-// the screen uses the space when wider, unmet.
+// Applied unconditionally it was wrong at a wide pane, where the row has room
+// for both and a pinned-header row was spent redrawing a tail it could have
+// carried itself: "51 is the width that must HOLD, not the width to render as
+// though we had" pointed backwards.
 //
-// Both widths are driven together because the fix has to hold in BOTH
-// directions: relaxing at 120 is worth nothing if it also relaxed at 80, where
-// the whole point is that the subject keeps its floor.
+// THE FIXTURE IS THE POINT, and it is what this test was rebuilt for. It used
+// to drive the ordinary "Acme Supply" fixture at 120 and assert the whole
+// answer landed on the row — and at 120 that answer and that working sentence
+// come to EXACTLY the 91 cells the pane has. Zero cells of margin: the check
+// was green because today's wording fills the row to the cell, not because the
+// row had room, and one cell added to either sentence would have flipped it to
+// failing with a message about a property that had not changed. That is this
+// project's vacuous-fixture rule with the sign reversed, and it is the third
+// instance of the shape inside one change.
 //
-// WATCHED TO FAIL at 120 with the reduction applied one caller earlier.
+// So the room-to-spare half is driven on a SHORT supplier — "RS" is an
+// ordinary MRO distributor, and a short supplier is the realistic way a real
+// row has room to spare — and the margin it leaves is asserted as a condition
+// on the FIXTURE (poLeadRoomToSpare), so a wording that erodes it reports as a
+// case that stopped reaching its state rather than as the bound breaking.
+// TestPOLeadOnto_TheReductionFiresOnTheROOMAndNotOnAWidth carries the same
+// property with margins of sixteen and sixty-four cells, which no screen state
+// can offer: the bound is checked there on content the test supplies, and here
+// on the screen that has to reach it.
+//
+// Both directions are driven, because relaxing where the row is wide is worth
+// nothing if it also relaxed at 80, where the whole point is that the subject
+// keeps its floor.
+//
+// WATCHED TO FAIL with the reduction applied one caller earlier, and watched to
+// FATAL on the fixture guard with the supplier put back to "Acme Supply".
 func TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork(t *testing.T) {
-	reach := func(t *testing.T, width int) (Root, *PurchaseOrderCreateScreen) {
+	reach := func(t *testing.T, supplier string, width int) (Root, *PurchaseOrderCreateScreen) {
 		t.Helper()
-		r, screen := poPickerAtSize(t, &poPickFake{catalog: 2, assets: 3}, width, 30)
+		fake := &poPickFake{catalog: 2, assets: 3, supplierName: supplier}
+		r, screen := poPickerAtSize(t, fake, width, 30)
 		r = key(t, r, poPhaseKeyMsg("a"))
 		r = key(t, r, poPhaseKeyMsg("/"))
 		r = poType(t, r, "zzz")
@@ -866,16 +889,37 @@ func TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork(t *testing.T) {
 		return r, screen
 	}
 
-	t.Run("120 carries the whole answer", func(t *testing.T) {
-		_, screen := reach(t, 120)
+	// spare is what the pane has left once the whole answer and the whole
+	// working sentence have been laid on it — negative where they will not both
+	// fit. It reports the fixture's distance from the boundary so a case can say
+	// which side of it it is on, and by how much.
+	spare := func(screen *PurchaseOrderCreateScreen) (int, string, string) {
 		answer := poNoteText(screen)
+		subject := screen.workingSubject()
+		need := lipgloss.Width(answer) + lipgloss.Width(poLeadJoint) + lipgloss.Width(subject)
+		return screen.paneWidth() - need, answer, subject
+	}
+
+	t.Run("a pane with room to spare carries the whole answer", func(t *testing.T) {
+		// "RS" is a real distributor and a SHORT one, which is the only way a
+		// pane this project draws has room to spare for both sentences at once.
+		_, screen := reach(t, "RS", 120)
+		room, answer, subject := spare(screen)
 		if !strings.Contains(answer, poLeadJoint) {
 			t.Fatalf("the answer has one clause, so nothing could be reduced: %q", answer)
 		}
+		if room < poLeadRoomToSpare {
+			t.Fatalf("this case no longer reaches the state it names: the pane has %d "+
+				"cell(s) to spare, under the %d this check needs to be evidence that "+
+				"the row USES its room rather than evidence that the wording fills it "+
+				"exactly. Shorten a sentence or the fixture until it clears.\n"+
+				"\tpane:    %d\n\tanswer:  %q\n\tsubject: %q",
+				room, poLeadRoomToSpare, screen.paneWidth(), answer, subject)
+		}
 		row, plan := screen.statusPlan()
 		if !strings.Contains(row, answer) {
-			t.Errorf("the row had room for the whole answer and dropped its tail.\n"+
-				"\tanswer: %q\n\trow: %q", answer, row)
+			t.Errorf("the row had %d cell(s) to spare for the whole answer and dropped "+
+				"its tail.\n\tanswer: %q\n\trow: %q", room, answer, row)
 		}
 		if !plan.holdsAnswer {
 			t.Errorf("the row is carrying the whole answer but the plan says it is not, " +
@@ -885,12 +929,22 @@ func TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork(t *testing.T) {
 			t.Errorf("the header carries %d extra row(s) the status row already drew: %q",
 				len(rows), rows)
 		}
-		poAssertFits(t, "asset search answer at 120 columns", screen)
+		poAssertFits(t, "asset search answer on a pane with room to spare", screen)
 	})
 
+	// The narrow half keeps the ORDINARY fixture: an OMS supplier name is the
+	// length "Acme Supply" is, and 80 columns is where the reduction has to
+	// fire whatever the wording does.
 	t.Run("80 still reduces", func(t *testing.T) {
-		_, screen := reach(t, 80)
-		answer := poNoteText(screen)
+		_, screen := reach(t, "Acme Supply", 80)
+		room, answer, subject := spare(screen)
+		if room > -poLeadRoomToSpare {
+			t.Fatalf("this case no longer reaches the state it names: the pane is only "+
+				"%d cell(s) from holding both sentences whole, so a reworded sentence "+
+				"could carry it past the bound and the reduction would stop firing for "+
+				"a reason unrelated to this check.\n\tpane: %d\n\tanswer: %q\n\tsubject: %q",
+				-room, screen.paneWidth(), answer, subject)
+		}
 		row, _ := screen.statusPlan()
 		if strings.Contains(row, answer) {
 			t.Errorf("the 51-cell row cannot hold the whole answer beside the work, "+
@@ -905,6 +959,13 @@ func TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork(t *testing.T) {
 		if !strings.Contains(row, head) {
 			t.Errorf("the reduction dropped the clause that names the key.\n"+
 				"\tclause: %q\n\twant its head: %q\n\trow: %q", clause, head, row)
+		}
+		// And the tail the row could not hold is REDRAWN in the pinned header,
+		// so the reduction moves the rest of the answer rather than losing it.
+		// Without this the narrow half passes on a screen that simply drops it.
+		if rows := screen.answerRows(); len(rows) == 0 {
+			t.Errorf("the row reduced the answer and the header carries nothing, so "+
+				"the clauses it dropped are on no surface at all: %q", answer)
 		}
 		poAssertFits(t, "asset search answer at 80 columns", screen)
 	})
@@ -1025,4 +1086,171 @@ func TestPOAssetScope_APagedQueryKeepsItsTermBoundary(t *testing.T) {
 			"operator cannot see where what they typed ends: %q", shown)
 	}
 	poAssertFits(t, "the asset scope row with a paged query", screen)
+}
+
+// poLeadRoomToSpare is how many cells a pane must have TO SPARE, past what the
+// whole answer and the whole working sentence need together, before a case
+// counts as evidence that the row USES the room it has.
+//
+// SIX, and the number is argued rather than measured off the code, exactly as
+// poAssetQueryHeadCells above is. A case that clears the bound by nothing is
+// not evidence that the bound holds — it is evidence that today's wording
+// happens to fill the row exactly, and the next reworded sentence moves it to
+// the other side of the boundary where it fails for a reason unrelated to the
+// property it names. The sentences on this row are written at ` · ` joints and
+// the smallest thing anyone edits in one is a WORD; the ordinary words in them
+// run to six or seven cells ("lookup", "serial", "catalog"). Six is one such
+// word, so a one-word edit on either side cannot silently carry a fixture
+// across the boundary.
+//
+// It is checked as a condition on the FIXTURE, with t.Fatalf and a message
+// naming the fixture, so erosion reports as "this case stopped reaching its
+// state" rather than as the property breaking.
+const poLeadRoomToSpare = 6
+
+// TestPOLeadOnto_TheReductionFiresOnTheROOMAndNotOnAWidth is the bound itself,
+// asserted with room on BOTH sides of it.
+//
+// poLeadOnto composes an answer and a working sentence onto one row that cannot
+// fold, and reduces the answer to its opening clause when the two will not both
+// fit. The defect it was written for was the reduction applied UNCONDITIONALLY
+// — measured once at 80 columns and then applied at every width — so a wide
+// terminal spent a pinned-header row redrawing a tail the row had room for.
+//
+// Driven on poLeadOnto directly and with CONTENT THE TEST SUPPLIES, because the
+// screen cannot witness the wide half with room to spare: measured at 120
+// columns, the widest pane this project draws, the asset picker's answer and
+// its working sentence come to exactly the 91 cells the pane has. A case that
+// fits by zero cells is the vacuous-fixture rule wearing the opposite sign, so
+// the bound is checked where its inputs are the test's own and a margin can be
+// STATED — sixteen cells and sixty-four, not one.
+//
+// The two halves are what make it discriminate, and neither is redundant:
+// applied unconditionally the reduction fails every room-to-spare row, and
+// never applied at all it fails every row past the bound. A test asserting only
+// one of them would pass on the defect the other one names.
+//
+// WATCHED TO FAIL in both directions: with `lead = poLeadClause(lead)` hoisted
+// above the fits-whole branch (the original defect), and with that line
+// deleted.
+func TestPOLeadOnto_TheReductionFiresOnTheROOMAndNotOnAWidth(t *testing.T) {
+	// Two clauses at a ` · ` joint, which is the shape every answer on this
+	// screen has: the first names the key and what it did, the rest elaborates.
+	const clause = "ctrl+x removes nothing"
+	const tail = "the submit is still out"
+	lead := clause + poLeadJoint + tail
+	const subject = "Creating the PO for Acme Supply…"
+
+	whole := lead + poLeadJoint + subject
+	need := lipgloss.Width(whole)
+
+	t.Run("room to spare keeps the whole answer", func(t *testing.T) {
+		// Zero is the boundary the code itself draws, asserted once and named
+		// as the boundary; the rest are margins no wording change reaches.
+		for _, spare := range []int{0, 1, poLeadRoomToSpare, 16, 64} {
+			room := need + spare
+			got := poLeadOnto(lead, subject, room)
+			if got != whole {
+				t.Errorf("with %d cell(s) to spare the row dropped part of the answer "+
+					"it had room for.\n\troom: %d\n\twant: %q\n\tgot:  %q",
+					spare, room, whole, got)
+			}
+		}
+	})
+
+	t.Run("past the bound the answer reduces to its opening clause", func(t *testing.T) {
+		// One cell short is the boundary from the other side; the rest are
+		// margins that cannot be reached by a reworded sentence.
+		for _, short := range []int{1, poLeadRoomToSpare, 16} {
+			room := need - short
+			got := poLeadOnto(lead, subject, room)
+			if got == whole {
+				t.Fatalf("the row is %d cell(s) short of the whole answer and drew it "+
+					"anyway, so nothing was reduced: room=%d got=%q", short, room, got)
+			}
+			// ONE joint — the one separating the answer from the work. A second
+			// one means the row is carrying a FRAGMENT of the answer's tail
+			// rather than having reduced the answer to its opening clause, which
+			// is the shape this row drew before poLeadClause existed:
+			// `ctrl+x removes nothing · the submit… · Creating the PO for…`
+			// spends the cells on a clause nobody can finish reading, when the
+			// whole of it is already in the pinned header (answerRows).
+			if n := strings.Count(got, poLeadJoint); n != 1 {
+				t.Errorf("the row is %d cell(s) short and drew %d joints, so it is "+
+					"carrying a fragment of the answer's tail instead of reducing to "+
+					"its opening clause.\n\troom: %d\n\tgot: %q", short, n, room, got)
+			}
+			// The clause that names the key is what the reduction exists to
+			// keep, and the row has room for it at every margin swept here.
+			if !strings.Contains(got, clause) {
+				t.Errorf("the reduction dropped the clause naming the key.\n"+
+					"\troom: %d\n\twant it to carry: %q\n\tgot: %q", room, clause, got)
+			}
+			if !strings.Contains(got, subject) {
+				t.Errorf("the reduction left room for the answer and cut the WORK "+
+					"instead.\n\troom: %d\n\tsubject: %q\n\tgot: %q", room, subject, got)
+			}
+			if lipgloss.Width(got) > room {
+				t.Errorf("the composed row is %d cells against a %d-cell room: %q",
+					lipgloss.Width(got), room, got)
+			}
+		}
+	})
+
+	t.Run("the answer never crowds the work out", func(t *testing.T) {
+		// The half-row cap, driven PAST it rather than at it: every longer lead
+		// produces the identical reservation, so one past the cap is the
+		// provable worst case rather than a sample of one.
+		long := strings.Repeat("x", 200) + poLeadJoint + tail
+		// What the work must keep is poSubmitWords — the FIXED words that say
+		// what is out — and it is asserted as a floor the row must clear rather
+		// than recomputed from the cap. A check that restates the reservation is
+		// a second implementation of it, and the two drift; this one passes if
+		// the reservation grows and fails if the work stops surviving it.
+		head := poSubmitWords
+		for _, room := range []int{51, 71, 91} {
+			got := poLeadOnto(long, subject, room)
+			if lipgloss.Width(got) > room {
+				t.Errorf("the composed row is %d cells against a %d-cell room: %q",
+					lipgloss.Width(got), room, got)
+			}
+			if !strings.Contains(got, head) {
+				t.Errorf("a lead past the cap displaced the work in flight: the fixed "+
+					"words that say what is out did not survive it.\n"+
+					"\troom: %d\n\twant the work to keep: %q\n\tgot: %q", room, head, got)
+			}
+		}
+	})
+}
+
+// TestPOLeadClause_LeavesNoJointForTheReservationToFind is the contract
+// poLeadOnto's reservation rests on, pinned so that it cannot quietly stop
+// being true.
+//
+// poLeadOnto reserves room for the reduced lead by measuring it. That
+// measurement used to re-Cut the reduced lead at the joint and add a cell for
+// an ellipsis "or the clause it is reserving room for comes back a character
+// short of itself" — a branch that could never run, because poLeadClause has
+// already cut at the FIRST joint and returns what precedes it. The dead cell
+// is where poSubmitWords' docs got a 21-cell clause recorded as reserving 22.
+//
+// The branch is gone; this is the reason it can stay gone. Change poLeadClause
+// to hand back more than one clause and this fails, which is the signal to put
+// the reservation back rather than to discover it a wording at a time.
+//
+// WATCHED TO FAIL against a poLeadClause that returns its argument whole.
+func TestPOLeadClause_LeavesNoJointForTheReservationToFind(t *testing.T) {
+	for _, text := range []string{
+		"ctrl+x removes nothing" + poLeadJoint + "the submit is still out",
+		"a" + poLeadJoint + "b" + poLeadJoint + "c",
+		"one clause only",
+		"",
+	} {
+		clause := poLeadClause(text)
+		if strings.Contains(clause, poLeadJoint) {
+			t.Errorf("poLeadClause(%q) = %q, which still carries a %q joint — so the "+
+				"reduced lead is no longer one clause and poLeadOnto's reservation "+
+				"measures the wrong thing", text, clause, poLeadJoint)
+		}
+	}
 }

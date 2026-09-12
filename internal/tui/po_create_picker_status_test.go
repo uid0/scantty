@@ -128,6 +128,14 @@ type poPickFake struct {
 	// other fixture uses "Acme Supply" and "Annual 1", which is why the
 	// supplier header shipped unbounded: at those widths it never reached the
 	// cut it was drawn past for a real supplier.
+	//
+	// supplierName is also used the OTHER way round, and that is not a misuse:
+	// the widest pane Root draws holds the asset picker's answer and its
+	// working sentence with exactly nothing left over, so the one case that can
+	// witness a row USING its room needs a SHORT supplier ("RS" is a real
+	// distributor). See TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork,
+	// which states the margin it needs and fatals when the fixture stops
+	// clearing it.
 	supplierName  string
 	agreementName string
 

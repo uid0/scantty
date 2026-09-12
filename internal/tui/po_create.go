@@ -2274,6 +2274,21 @@ type poStatusPlan struct {
 // which is why that clear is a rule rather than a tidy-up, and why
 // TestPOStatus_AnOrderLevelErrorIsNeverLedOffTheStatusRow reaches the state by
 // writing setErr directly and says in as many words that no key sequence does.
+//
+// IT IS RE-EVALUATED PER READER AND THAT IS MEASURED AND DELIBERATE, so nobody
+// re-derives it as an oversight. Three readers ask it — statusLine, and the two
+// header blocks that have to know what the row already drew (answerRowsIn,
+// failLead) — which comes to two or three evaluations per View and three to
+// five per keystroke, never the seven it is sometimes reported as; measured
+// over every phase poPhaseCases builds, at 120 columns, the worst was five per
+// Update-plus-View. The cost is 13µs a call against a keystroke cycle of about
+// 290µs, and it does not grow with the payload: a 20 KB gateway body in
+// errDetail leaves the cycle at 357µs, because every bound on this row is a
+// forward pass (cellPrefix). 66µs of a 0.29ms cycle is nothing an operator can
+// see, and the alternative is a cached copy of an answer whose whole design is
+// that holdsAnswer is read off the row that was just ASSEMBLED rather than
+// predicted — a second source of truth on the one decision this file says must
+// not have one. Measure again before caching it; do not cache it for tidiness.
 func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 	answer := s.answerNote()
 	lead := ""
@@ -2330,12 +2345,23 @@ func (s *PurchaseOrderCreateScreen) statusPlan() (string, poStatusPlan) {
 // tells two presses apart still rides the row that cannot be trimmed.
 //
 // The CONDITION is the correction: this is a measurement, and it was made at 80
-// columns and then applied at every width. At 120 the pane is 91, the subject
-// wants 37 and the whole answer 50, so the row had 25 cells free and spent a
-// pinned-header row redrawing a 23-cell tail it could have carried itself —
-// "51 is the width that must HOLD, not the width to render as though we had"
-// pointed backwards. poLeadOnto asks the row first now, so the reduction fires
-// exactly when the row cannot hold both, which at 80 columns is still always.
+// columns and then applied at every width, so a wide pane with room for both
+// spent a pinned-header row redrawing a tail the status row could have carried
+// itself — "51 is the width that must HOLD, not the width to render as though
+// we had" pointed backwards. poLeadOnto asks the row first now, so the
+// reduction fires exactly when the row cannot hold both, which at 80 columns is
+// still always.
+//
+// No cell counts here, deliberately. The version that carried them was wrong by
+// a cell within a release of being written (the asset picker's subject is 38
+// cells and it said 37), and the numbers were never the claim: the claim is
+// that the row decides on the ROOM IT HAS.
+// TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork measures it on the
+// real screen and names the figures when it fails, and it is worth reading for
+// the margin it had to go looking for — at 120, the widest pane Root draws,
+// the asset picker's answer and its working sentence come to EXACTLY the 91
+// cells the pane has, so the fixture there is a short supplier and the margin
+// is a guarded condition rather than a coincidence.
 func poLeadClause(text string) string {
 	clause, _, _ := strings.Cut(text, poLeadJoint)
 	return clause
@@ -2653,14 +2679,17 @@ func poLeadOnto(lead, subject string, room int) string {
 	if lipgloss.Width(lead)+joint+lipgloss.Width(subject) <= room {
 		return lead + poLeadJoint + subject
 	}
+	// The reduced lead is ONE CLAUSE, so its width is the whole reservation:
+	// poLeadClause cuts at the FIRST joint and returns what precedes it
+	// (TestPOLeadClause_LeavesNoJointForTheReservationToFind pins that, because
+	// it is what this line rests on). This used to re-Cut the reduced lead and
+	// add a cell for an ellipsis "or the clause it is reserving room for comes
+	// back a character short of itself" — a branch nothing could enter, since
+	// the joint it looked for is the one the reduction had just removed. The
+	// cell it never spent is where poSubmitWords' own note below recorded a
+	// 21-cell clause as reserving 22.
 	lead = poLeadClause(lead)
-	answer, rest, more := strings.Cut(lead, poLeadJoint)
-	floor := lipgloss.Width(answer)
-	if more && rest != "" {
-		// One cell for the ellipsis pickerClip adds, or the clause it is
-		// reserving room for comes back a character short of itself.
-		floor++
-	}
+	floor := lipgloss.Width(lead)
 	if half := room / 2; floor > half {
 		floor = half
 	}
@@ -2687,10 +2716,21 @@ const poLeadJoint = " · "
 //
 // The arithmetic, at 80 columns where room is 51: a lead reserves its first
 // clause, capped at room/2 = 25, and the joint costs 3, so the subject is
-// bounded to 23 in the WORST case (the file's longest first clauses —
-// "shift+tab waits for the submit", "shift+tab is not in the notes" — are over
-// the cap; "enter commits nothing" reserves 22 and leaves 26). These 20 cells
-// fit that with room over for the supplier, which is the part that abbreviates.
+// bounded to 23 in the WORST case. These 20 cells fit that with room over for
+// the supplier, which is the part that abbreviates.
+//
+// The worst case is ASSERTED rather than illustrated, and that is the
+// correction: this note used to name two leads as the file's longest first
+// clauses and neither string existed anywhere in the tree, while the third —
+// "enter commits nothing", which does — was recorded as reserving 22 cells
+// when it is 21 and reserves 21. (The extra cell came from a branch in
+// poLeadOnto that could never run; it is gone, and the note there says why.)
+// A hand-counted roster of the longest sentences in a file is a roster that
+// drifts the moment one is reworded, which is exactly what happened. What
+// holds the floor instead is TestPOStatus_AnAnswerNeverDisplacesTheWorkInFlight
+// and the cap half of TestPOLeadOnto_TheReductionFiresOnTheROOMAndNotOnAWidth:
+// both drive a lead PAST the cap, where every longer lead produces the
+// identical reservation, so the worst case is proved rather than sampled.
 //
 // "Creating the purchase order for " was 32 and could not: under the longest
 // lead the row drew "Creating the purchase or…" with the supplier gone
