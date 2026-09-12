@@ -558,14 +558,26 @@ func TestPOCreate_AnOrderLevelFailureDoesNotOutliveThePhaseItHappenedOn(t *testi
 // refuses below — "looking up this supplier's items failed" ends mid-word
 // looking complete.
 func TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline(t *testing.T) {
-	// 60 columns leaves the pane 31, which is where the reported cut was
-	// measured. 80 is the width that must HOLD and every headline fits it; a
-	// terminal the operator has dragged narrow is where both halves bite.
-	const width = 60
+	// TWO WIDTHS, because the two halves are now about different things.
+	//
+	// The NO-REPEAT half is about a pane an operator meets, so it is asked at
+	// the size contract's floor. The MARK half is about failLead's bound, and
+	// that bound no longer bites at any terminal: the headline is a fixed
+	// sentence of 41 cells and the narrowest pane is 51. It was reported at 60
+	// columns (a pane of 31), which Root refuses now, so the narrow case is
+	// asked as what it is — a BUDGET handed to the screen, not a terminal — and
+	// the floor gets the claim that goes with it, that the headline reaches the
+	// header whole. Leaving the whole test at 60 would have made it a check
+	// about a pane nobody can reach; moving it all to 80 would have left the
+	// t.Skip below turning the mark half into a silent no-op.
+	const (
+		width      = minTerminalWidth
+		narrowPane = 60
+	)
 
-	reach := func(t *testing.T) (Root, *PurchaseOrderCreateScreen) {
+	reach := func(t *testing.T, w int) (Root, *PurchaseOrderCreateScreen) {
 		t.Helper()
-		r, screen := poPickerAtSize(t, &poPickFake{catalog: 2}, width, 24)
+		r, screen := poPickerAtSize(t, &poPickFake{catalog: 2}, w, 24)
 		r = key(t, r, poPhaseKeyMsg("i"))
 		if screen.phase != poPhaseItemPick {
 			t.Fatalf("setup landed on phase %v, want the item picker", screen.phase)
@@ -578,7 +590,7 @@ func TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline(t *testing.
 	}
 
 	head, _ := func() (string, string) {
-		_, s := reach(t)
+		_, s := reach(t, width)
 		return s.failure()
 	}()
 	if head == "" {
@@ -588,7 +600,7 @@ func TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline(t *testing.
 	probe := cellPrefix(head, 20)
 
 	t.Run("the row is drawing it, so the header does not", func(t *testing.T) {
-		_, screen := reach(t)
+		_, screen := reach(t, width)
 		if screen.workingSubject() != "" || poNoteText(screen) != "" {
 			t.Fatalf("something outranks the headline, so the row is not drawing it")
 		}
@@ -607,8 +619,28 @@ func TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline(t *testing.
 		poAssertFits(t, "item picker failing at a narrow terminal", screen)
 	})
 
+	t.Run("the row is drawing something else, so the header carries it whole", func(t *testing.T) {
+		_, screen := reach(t, width)
+		screen.itemSuppliersLoad = true
+		lines := poPaneLinesAt(t, screen, 24)
+		carried := ""
+		for _, line := range lines {
+			if strings.Contains(line, probe) {
+				carried = line
+			}
+		}
+		if carried == "" {
+			t.Fatalf("the header dropped the headline the status row is not drawing:\n%s",
+				strings.Join(lines, "\n"))
+		}
+		if !strings.Contains(carried, head) {
+			t.Errorf("at the size contract's floor the header shortened a headline that "+
+				"fits the pane whole: %q", carried)
+		}
+	})
+
 	t.Run("the row is drawing something else, so the header marks its cut", func(t *testing.T) {
-		_, screen := reach(t)
+		_, screen := reach(t, narrowPane)
 		// A request in flight outranks the headline, so the header picks it up.
 		screen.itemSuppliersLoad = true
 		if screen.workingSubject() == "" {
@@ -626,12 +658,12 @@ func TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline(t *testing.
 				strings.Join(lines, "\n"))
 		}
 		if strings.Contains(carried, head) {
-			t.Skipf("the headline fits the %d-column pane whole (%q), so there is no "+
-				"cut to mark", width, carried)
+			t.Fatalf("the headline fits the %d-cell budget whole (%q), so this half asserts "+
+				"nothing — narrow the budget or the fixture until it cuts", narrowPane, carried)
 		}
 		if !strings.Contains(carried, "…") {
-			t.Errorf("the header cut the headline at %d columns without marking it, so "+
-				"it reads as a finished sentence: %q", width, carried)
+			t.Errorf("the header cut the headline at a %d-column budget without marking it, "+
+				"so it reads as a finished sentence: %q", narrowPane, carried)
 		}
 		poAssertFits(t, "item picker failing mid-reload at a narrow terminal", screen)
 	})

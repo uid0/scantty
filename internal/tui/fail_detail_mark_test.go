@@ -290,9 +290,10 @@ func TestFailDetail_ADetailItCannotDrawReturnsNothing(t *testing.T) {
 // could see it, and every existing check measured 80x24 and 80x30.
 //
 // Measured at every drawable height and at every width the columnar layer is
-// honest about (receiveHonestWidths records the 45–48 band, where the layer's
-// floored bodyWidth lets clampToBox cut every row of every columnar screen, as
-// the layer's own defect rather than this one's).
+// honest about (receiveHonestWidths, which since the size contract is every
+// width Root draws: the 45–48 band it used to exclude — where the layer's
+// floored bodyWidth let clampToBox cut every row of every columnar screen — is
+// below minTerminalWidth and no longer reachable).
 func TestFailDetail_AShortPaneRedrawsTheBlockRatherThanCuttingItsMark(t *testing.T) {
 	t.Run("add a line", func(t *testing.T) {
 		fake := &poAddFake{rows: poAddRows(), fail: true}

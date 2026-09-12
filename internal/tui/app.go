@@ -376,15 +376,17 @@ func (r Root) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (r Root) View() string {
+	// The size contract, asked in one place. minTerminalWidth is the width
+	// every budget in this package is written against and terminalTooSmall
+	// carries the argument; what matters here is that the refusal REPLACES the
+	// frame rather than being drawn beside a mutilated one, and that it names
+	// the size needed and the size it has so an operator can act on it.
+	if notice := terminalTooSmall(r.width, r.height); notice != "" {
+		return notice
+	}
+
 	contentWidth := r.width - r.navWidth - 1
 	contentHeight := r.height - 2
-
-	if contentWidth < 20 {
-		return "scantty: terminal too narrow"
-	}
-	if contentHeight < 5 {
-		return "scantty: terminal too short"
-	}
 
 	navView := r.nav.View(contentHeight)
 	titleLine := StyleTitle.Render(r.screen.Title())

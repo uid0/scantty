@@ -638,9 +638,17 @@ func TestReconcile_EveryPhasesBodyIsJudged(t *testing.T) {
 //	the QUANTITY and its UNIT never give, at any pane. A count with no unit,
 //	or a unit with no count, is not a fact anybody can confirm — and a cut
 //	number does not read as a shortened fact, it reads as a different one.
-//	the ITEM's name ABBREVIATES, and where it does it is MARKED. At width 45
-//	the pane is sixteen cells and "Nitrile gloves, powder-free, blue, medium"
-//	cannot be on it; what must never happen is the name going SILENTLY.
+//	the ITEM's name ABBREVIATES, and where it does it is MARKED. The pane is
+//	51 cells at the size contract's floor and a full-length MRO description
+//	does not fit on it; what must never happen is the name going SILENTLY.
+//
+// THE FIXTURE'S NAME IS LONGER THAN THE SHARED ONE ON PURPOSE. The shared grid
+// carries a 41-cell description, which fitted every pane once Root stopped
+// drawing below 80 columns — so the marked branch was never reached and the
+// sweep certified a bound it had not met, which is the vacuous-fixture rule and
+// is what its own counter reported. A fixture for a check about a CLIP has to
+// carry a value that reaches the clip at the NARROWEST pane and still fits at
+// the widest, or one of the two branches is decoration.
 //
 // Both sides of that boundary are COUNTED, so the scoping cannot become a way of
 // asserting nothing: the sweep fails if no pane ever drew the name whole and if
@@ -651,12 +659,17 @@ func TestReconcile_EveryPhasesBodyIsJudged(t *testing.T) {
 // geometry defect it has shipped. Both sets are asked ONCE, outside the loops:
 // each answer costs a Root render per candidate size.
 func TestReconcile_TheReviewsFirstRowSurvivesEveryPane(t *testing.T) {
-	const nameHead = "Nitrile"
+	const longName = "Nitrile examination gloves, powder-free, blue, medium"
+	grid := func() *omsapi.LocationReconcileGrid {
+		g := reconGridFixture()
+		g.Items[0].Name = longName
+		return g
+	}
 	widths, heights := jdeDrawableWidths(), jdePaneHeights()
 	whole, marked, judged := 0, 0, 0
 	for _, w := range widths {
 		for _, h := range heights {
-			s := reconFixture(nil)
+			s := reconFixture(grid())
 			s.Update(tea.WindowSizeMsg{Width: w, Height: h})
 			// ONE counted row, which is the state with nothing to move.
 			s.counts[0].SetValue("9")
@@ -677,8 +690,13 @@ func TestReconcile_TheReviewsFirstRowSurvivesEveryPane(t *testing.T) {
 			if !strings.Contains(flat, "9 boxes") {
 				t.Errorf("at %dx%d the review's first row lost the counted quantity:\n%s", w, h, pane)
 			}
+			// THE MARK IS ASKED FIRST. A clipped name still begins with the
+			// name, so a `Contains(head)` test answers true on exactly the rows
+			// the marked branch exists to count — which is how this sweep read
+			// 1227 whole names and no cuts while every row of every pane was
+			// abbreviated.
 			switch {
-			case strings.Contains(flat, nameHead):
+			case strings.Contains(flat, longName):
 				whole++
 			case strings.Contains(flat, "…"):
 				marked++

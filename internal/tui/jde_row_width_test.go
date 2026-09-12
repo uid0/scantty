@@ -50,7 +50,18 @@ const jdeRowsMustHoldFrom = 80
 // WHAT IT IS NOT: a licence below the recorded width. A ceiling says nothing
 // about a new row that overruns only at widths narrower than one already does;
 // that finer claim would need the whole set of cutting panes per state, which
-// moves with every wording on every frame. The per-row detail — which row, what
+// moves with every wording on every frame.
+//
+// SEVEN SCREENS CAME OFF THIS ROSTER WHEN THE SIZE CONTRACT WAS SETTLED, and
+// not one of them was edited to do it: LocationReconcileScreen (49),
+// PurchaseOrderDetailScreen (51), WorkOrderScanReviewScreen (51),
+// PurchaseOrderAttachmentsScreen (59), PurchaseOrderEditScreen (65),
+// PurchaseOrderAddLineScreen (66) and PurchaseOrderCreateScreen (67). Every one
+// of them cut a row only at widths Root no longer draws in, so the mechanism
+// each recorded — a label column or a value floor wider than the pane it was
+// sized from — is now unreachable rather than fixed. Lower minTerminalWidth and
+// they come back; that is what this sweep will say, in the "not recorded"
+// direction, the first time it is run. The per-row detail — which row, what
 // the operator misreads, and the layer mechanism behind each class (a hint
 // appended after jdePaneFieldWidth has capped its field; a label column and a
 // value floor wider than a narrow pane; prose and grids drawn unbounded) — is
@@ -77,43 +88,22 @@ var jdeRowsPastThePane = map[string]int{
 	"ItemSupplierFormScreen":    108,
 	"LocationFormScreen":        102,
 	"LocationProblemFormScreen": 115,
-	// The NARROWEST honest width, and one cell over it. A choice row cannot be
-	// drawn in less than indent + label column + leader + jdeFieldArea's own
-	// "< " / " >" + one cell of value, which is 21 against the 20 that width 49
-	// gives — so the residue here is the last cell of the value on the row
-	// detail, marked with the ellipsis reconChoiceValue puts there. Every other
-	// row of every phase fits from 49 up.
-	"LocationReconcileScreen":        49,
-	"MaintenanceItemFormScreen":      120,
-	"MakerBoxFormScreen":             108,
-	"PowerBreakerFormScreen":         103,
-	"PowerCircuitFormScreen":         109,
-	"PowerOutletFormScreen":          98,
-	"PowerPanelFormScreen":           101,
-	"ProjectStorageFormScreen":       109,
-	"PurchaseOrderAddLineScreen":     66,
-	"PurchaseOrderAttachmentsScreen": 59,
-	"PurchaseOrderCreateScreen":      67,
-	"PurchaseOrderDetailScreen":      51,
-	"PurchaseOrderEditScreen":        65,
-	"SIGFormScreen":                  104,
-	"ServiceStatusScreen":            95,
-	"SiteSettingsFormScreen":         102,
-	"StorageAssignFormScreen":        105,
-	"StorageSlotFormScreen":          98,
-	"StorageSlotGenerateScreen":      107,
-	"SupplierFormScreen":             112,
-	"ThermostatFormScreen":           103,
-	"WebhookFormScreen":              103,
-	// The grid's LABEL column floors at woReviewLabelFloor, so below a pane of
-	// 23 cells the row is wider than the pane it was sized from — the "value
-	// floor wider than a narrow pane" class, and the same one and only mechanism
-	// PurchaseOrderDetailScreen's 51 is. Everything else on this screen is
-	// bounded against the live pane: the empty sentence and the load error
-	// through fitCellIf, the caveats through jdeCaveatLines, the readings
-	// through jdeWrapTokens, and an identifier is WRAPPED rather than clipped
-	// (woReviewIDLines) because a cut UUID reads as a different record.
-	"WorkOrderScanReviewScreen": 51,
+	"MaintenanceItemFormScreen": 120,
+	"MakerBoxFormScreen":        108,
+	"PowerBreakerFormScreen":    103,
+	"PowerCircuitFormScreen":    109,
+	"PowerOutletFormScreen":     98,
+	"PowerPanelFormScreen":      101,
+	"ProjectStorageFormScreen":  109,
+	"SIGFormScreen":             104,
+	"ServiceStatusScreen":       95,
+	"SiteSettingsFormScreen":    102,
+	"StorageAssignFormScreen":   105,
+	"StorageSlotFormScreen":     98,
+	"StorageSlotGenerateScreen": 107,
+	"SupplierFormScreen":        112,
+	"ThermostatFormScreen":      103,
+	"WebhookFormScreen":         103,
 }
 
 // jdeRowWidthCase is one (screen, state) the sweep draws. after, when set, runs

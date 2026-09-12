@@ -1518,20 +1518,31 @@ func TestPOLineRemove_TheVanishingWarningIsOneRowWhereverItIsDrawn(t *testing.T)
 // either branch and the width where the pair appears moves, and this test still
 // holds. The width it evaluates to today is reported by the test itself, so a
 // reader does not have to trust a number in a comment.
+//
+// IT IS ASKED AT TWO SCOPES, and the size contract is why. The gate's WITHHELD
+// side is no longer reachable through a terminal: the pane is 51 cells at
+// minTerminalWidth and both headlines fold to one row there, so every drawable
+// pane draws both answers and a pane-only sweep would certify the symmetry
+// having seen one side of it. The PANE loop holds what an operator meets; the
+// BUDGET loop asks voidCaveats the same question over the widths the gate is
+// written for, which is where the withheld side lives. A gate correct over its
+// own domain can still be handed a pane the wrong size, and a pane the right
+// size says nothing about the gate — neither loop implies the other.
 func TestPOLineRemove_BothVoidAnswersAreWithheldOrDrawnTogether(t *testing.T) {
 	widths := jdeDrawableWidths()
 	if len(widths) == 0 {
 		t.Fatal("no drawable widths — the derivation is broken, not the screen")
 	}
 	branches := poVoidBranches(t)
-	drawnFrom, withheld, both := 0, 0, 0
-	for _, width := range widths {
+	answers := func(t *testing.T, budget func(*PurchaseOrderEditScreen) int, width int) map[string]bool {
 		seen := map[string]bool{}
 		for _, branch := range branches {
 			_, s := poVoidPrompt(t, poVoidSentOrder(branch.canDelete), width, 40, 0)
-			seen[branch.name] = len(s.voidCaveats(s.bodyWidth())) > 0
+			seen[branch.name] = len(s.voidCaveats(budget(s))) > 0
 		}
-		drew, held := 0, 0
+		return seen
+	}
+	symmetric := func(t *testing.T, what string, at int, seen map[string]bool) (drew, held int) {
 		for _, ok := range seen {
 			if ok {
 				drew++
@@ -1540,25 +1551,53 @@ func TestPOLineRemove_BothVoidAnswersAreWithheldOrDrawnTogether(t *testing.T) {
 			}
 		}
 		if drew > 0 && held > 0 {
-			t.Errorf("%d cols: %d answer(s) warn and %d are withheld, so the threshold is per-wording and the severities can invert: %v",
-				width, drew, held, seen)
+			t.Errorf("%s %d: %d answer(s) warn and %d are withheld, so the threshold is "+
+				"per-wording and the severities can invert: %v", what, at, drew, held, seen)
 		}
+		return drew, held
+	}
+
+	drawnFrom, both := 0, 0
+	for _, width := range widths {
+		drew, _ := symmetric(t, "cols", width, answers(t, (*PurchaseOrderEditScreen).bodyWidth, width))
 		if drew == len(branches) {
 			both++
 			if drawnFrom == 0 {
 				drawnFrom = width
 			}
 		}
+	}
+
+	// The gate's own domain, down to nothing. The screen is still built at a
+	// drawable pane — only the budget handed to voidCaveats varies — so this is
+	// the function being asked its question, not a terminal being pretended into
+	// existence.
+	narrowest := screenBodyCells(widths[0])
+	withheld, drawn := 0, 0
+	for budget := 0; budget <= narrowest; budget++ {
+		b := budget
+		drew, held := symmetric(t, "cells", b, answers(t,
+			func(*PurchaseOrderEditScreen) int { return b }, widths[0]))
 		if held == len(branches) {
 			withheld++
 		}
+		if drew == len(branches) {
+			drawn++
+		}
 	}
+
 	// Both sides of the disjunction have to be REACHED, or a gate that never
 	// fires — or one that never opens — would satisfy the symmetry vacuously.
-	if both == 0 || withheld == 0 {
-		t.Fatalf("the gate is drawn at %d widths and withheld at %d; one side is never exercised", both, withheld)
+	if both == 0 {
+		t.Fatalf("both answers are drawn at none of the %d drawable widths", len(widths))
 	}
-	t.Logf("both answers warn from %d columns up (%d of %d drawable widths)", drawnFrom, both, len(widths))
+	if withheld == 0 || drawn == 0 {
+		t.Fatalf("over the gate's own budgets it withheld at %d and drew at %d; one side is "+
+			"never exercised", withheld, drawn)
+	}
+	t.Logf("both answers warn at all %d drawable widths (from %d columns); over budgets "+
+		"0..%d cells the gate withholds at %d and draws at %d",
+		both, drawnFrom, narrowest, withheld, drawn)
 }
 
 // TestPOLineRemove_TheIdentityRowFitsThePaneOnBothConfirms.
@@ -1625,30 +1664,66 @@ func TestPOLineRemove_TheIdentityRowFitsThePaneOnBothConfirms(t *testing.T) {
 					t.Errorf("%d cols: the identity row is %d cells against a %d-column pane, so clampToBox cuts it: %q",
 						width, got, pane, head)
 				}
-				// Whatever it shortened says so. The name keeps pickerClip's
-				// ellipsis; the ordered quantity, where the pane was too narrow
-				// to keep it beside a readable name, leaves poRowDropMark.
+				// THE ORDERED QUANTITY SURVIVES AT EVERY PANE AN OPERATOR CAN
+				// REACH, and that is what the size contract buys here. The
+				// give-order's second stage — the facts giving and the name
+				// keeping the room — needs a pane narrower than the 51 cells
+				// minTerminalWidth leaves, so it is asserted rather than
+				// counted: the row that says what an irreversible key is about
+				// to destroy names the quantity, always. The stage itself is
+				// still exercised, over removalHeadline's own budgets below.
 				if !strings.Contains(head, "· 250 ordered") {
 					clipped++
-					if !strings.Contains(head, strings.TrimSpace(poRowDropMark)) {
-						t.Errorf("%d cols: the row gave the ordered quantity up and does not say so: %q", width, head)
-					}
+					t.Errorf("%d cols: the row gave the ordered quantity up on a pane of %d, "+
+						"where the name is what should give: %q", width, pane, head)
 				}
 				if strings.Contains(head, "…") {
 					abbreviated++
 				}
 			}
-			// BOTH ENDS OF THE RANGE HAVE TO BE REACHED, counted rather than
-			// asserted per width: a wide pane draws this 64-cell name whole,
-			// which is the correct answer there, so a per-width demand for an
-			// ellipsis would report the widths that are working. What would
-			// make the sweep vacuous is a fixture that never reaches the clip
-			// at all, and that is what these count.
+			// A wide pane draws this 64-cell name whole, which is the correct
+			// answer there, so a per-width demand for an ellipsis would report
+			// the widths that are working. What would make the sweep vacuous is
+			// a fixture that never reaches the clip at all.
 			if abbreviated == 0 {
 				t.Errorf("the name is drawn whole at every drawable width, so nothing here exercises the clip")
 			}
-			if clipped == 0 {
-				t.Errorf("the ordered quantity survives at every drawable width, so the give-order is never exercised")
+			if clipped > 0 {
+				t.Errorf("the ordered quantity was given up at %d drawable width(s)", clipped)
+			}
+
+			// THE GIVE-ORDER, over the budgets removalHeadline is written for.
+			// Below the pane minTerminalWidth leaves, the facts really do give
+			// and the row marks it — the branch the loop above can no longer
+			// reach, held here so it cannot rot in the interval it covers.
+			//
+			// IT STARTS AT screenBodyWidth's OWN FLOOR and not at one cell.
+			// removalHeadline says in as many words that a budget narrower than
+			// its own lead is unreachable while that floor is 20, and it is
+			// right: no caller computes a pane from anything else. Walking below
+			// it would be demanding a bound of a function that never claimed one
+			// and that nothing can hand that budget to.
+			dropped, kept := 0, 0
+			li := omsapi.PurchaseOrderItem{Description: long, QuantityOrdered: 250}
+			for budget := screenBodyWidth(0); budget <= screenBodyCells(widths[0]); budget++ {
+				head := removalHeadline(confirm.lead, StyleStatusWarn, li, budget)
+				if got := lipgloss.Width(stripANSI(head)); got > budget {
+					t.Errorf("%d cells: removalHeadline assembled %d: %q", budget, got, head)
+				}
+				if strings.Contains(head, "· 250 ordered") {
+					kept++
+					continue
+				}
+				dropped++
+				if !strings.Contains(head, strings.TrimSpace(poRowDropMark)) &&
+					!strings.Contains(head, "…") {
+					t.Errorf("%d cells: the row gave the ordered quantity up and does not say "+
+						"so: %q", budget, head)
+				}
+			}
+			if dropped == 0 || kept == 0 {
+				t.Errorf("over removalHeadline's budgets the facts gave at %d and survived at "+
+					"%d; both stages of the give-order have to be reached", dropped, kept)
 			}
 		})
 	}

@@ -57,14 +57,17 @@ var jdePaneWidths = []int{80, 100, 120}
 // a fix cannot be tuned to one — and a judgement cannot report a property that
 // fails at a width nobody listed. The void prompt's one-row warning is the
 // worked example: it held at 80, 100 and 120 and broke at 60, where the caveat
-// budget is 29 cells, and no sweep could see it because every sweep named its
+// budget was 29 cells, and no sweep could see it because every sweep named its
 // own widths. Where a property must hold at EVERY pane the operator can reach,
 // walk this instead.
 //
-// The floor is Root.View's own gate (contentWidth < 20 refuses), asked rather
-// than written down, so a change to it moves this set with it. The ceiling is
-// 120 — the widest jdePaneWidths names — because a wider pane only folds less,
-// and an unbounded loop would be a slow sweep rather than a stronger one.
+// The floor is Root.View's own gate, asked rather than written down, so a
+// change to it moves this set with it. Since the size contract was settled that
+// gate is minTerminalWidth, so this set starts at 80 and the band below it is
+// no longer a pane an operator can reach — which is why the 60-column hole
+// above is written in the past tense. The ceiling is 120 — the widest
+// jdePaneWidths names — because a wider pane only folds less, and an unbounded
+// loop would be a slow sweep rather than a stronger one.
 //
 // IT IS DERIVED ONCE AND HANDED OUT AS A COPY. Asking Root means building a
 // Root and rendering it per candidate size, and these two sets are walked by
@@ -97,12 +100,27 @@ var jdeDrawableWidthsOnce = sync.OnceValue(func() []int {
 })
 
 // jdeRootDrawsAtWidth reports whether Root.View() renders a screen at all at
-// this width, rather than its own "terminal too narrow" line. Asked of Root
-// instead of restated here, exactly as jdeRootDraws asks it of the height.
+// this width, rather than its size refusal. Asked of Root instead of restated
+// here, exactly as jdeRootDraws asks it of the height.
 func jdeRootDrawsAtWidth(width int) bool {
+	return jdeRootDrawsAt(width, 40)
+}
+
+// jdeRootDrawsAt is the one question both of these ask: is what Root rendered a
+// FRAME, or the notice it draws instead below the size contract's floor?
+//
+// It compares against terminalTooSmall rather than matching a wording, because
+// the notice shortens as the terminal narrows — a substring check would have to
+// know which rung it is reading and would go quietly false the day one is
+// reworded. terminalTooSmall answers "" at a size Root draws at, and Root's
+// frame is never empty, so the comparison separates the two states at every
+// size. That the two really are the same gate is pinned by
+// TestRoot_TheFloorIsTheStandardWidth, which walks the boundary against the
+// constants directly.
+func jdeRootDrawsAt(width, height int) bool {
 	r := newTestRoot(NewServiceStatusScreen(Deps{}))
-	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: 40})
-	return !strings.Contains(next.(Root).View(), "terminal too narrow")
+	next, _ := r.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	return next.(Root).View() != terminalTooSmall(width, height)
 }
 
 // jdePaneHeights is every height Root will draw a screen at.
@@ -131,12 +149,9 @@ var jdePaneHeightsOnce = sync.OnceValue(func() []int {
 })
 
 // jdeRootDraws reports whether Root.View() renders a screen at all at this
-// height, rather than its own "terminal too short" line. Asked of Root instead
-// of restated here.
+// height, rather than its size refusal. Asked of Root instead of restated here.
 func jdeRootDraws(height int) bool {
-	r := newTestRoot(NewServiceStatusScreen(Deps{}))
-	next, _ := r.Update(tea.WindowSizeMsg{Width: 80, Height: height})
-	return !strings.Contains(next.(Root).View(), "terminal too short")
+	return jdeRootDrawsAt(minTerminalWidth, height)
 }
 
 // TestJDEForm_TheDerivedPaneSetsStayTheOnesRootDraws: memoising the two derived
@@ -1439,11 +1454,30 @@ func TestJDEForm_NoColumnarScreenOverflowsThePane(t *testing.T) {
 // working. frame and frameWithHeader are frameWrapped now, so a bar that does
 // not fit gets another ROW instead of losing its tail — which is why the width
 // assertion below can be made at all.
+//
+// THE WIDTH AXIS IS EVERY WIDTH ROOT DRAWS, not the three jdePaneWidths names,
+// and that is the check the size contract is worth. Measured before the floor
+// was set, with Root still drawing from 45 columns, the bar was cut on ALL
+// THIRTY-FIVE columnar screens — the rule line itself is 20 cells against the
+// 19 a 48-column terminal gives — and on individual screens as wide as 56
+// (LocationReconcileScreen's `Enter/Esc=Back to location`), in their opening
+// states alone. Three hand-picked widths could see none of it. With the floor
+// at minTerminalWidth there is no residue at all: every bar row of every case
+// fits every pane an operator can reach, at every drawable height. Lower the
+// floor and this sweep goes red at the widths it opens up, which is exactly
+// what makes the floor load-bearing rather than declarative.
+//
+// It measures against screenBodyCells, the UNFLOORED width Root really clips
+// to, for the reason layout.go gives: a bound that budgets against a floor is
+// not a bound at a width the floor lies about. At the floor the two agree
+// (TestLayout_TheWidthFloorIsNeverReached), so this costs nothing today and
+// stays honest if the floor moves.
 func TestJDEForm_TheActionBarSurvivesEveryHeight(t *testing.T) {
+	widths, heights := jdeDrawableWidths(), jdePaneHeights()
 	for _, c := range jdePaneCases() {
 		name, mk := c.name, c.mk
-		for _, w := range jdePaneWidths {
-			for _, h := range jdePaneHeights() {
+		for _, w := range widths {
+			for _, h := range heights {
 				s := mk()
 				r := jdeRootAt(t, s, w, h)
 				bar := jdeBarOf(s.View())
@@ -1456,11 +1490,11 @@ func TestJDEForm_TheActionBarSurvivesEveryHeight(t *testing.T) {
 					if line == "" {
 						continue
 					}
-					if got := lipgloss.Width(line); got > screenBodyWidth(w) {
+					if got := lipgloss.Width(line); got > screenBodyCells(w) {
 						t.Errorf("%s at %dx%d: the bar row %q is %d cells wide in a pane of "+
 							"%d, so clampToBox cuts its tail and the keys on it go unnamed "+
 							"while they go on working:\n%s", name, w, h, line, got,
-							screenBodyWidth(w), shown)
+							screenBodyCells(w), shown)
 						continue
 					}
 					if !strings.Contains(shown, line) {

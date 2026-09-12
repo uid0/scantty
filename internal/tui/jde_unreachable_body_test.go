@@ -234,13 +234,16 @@ var jdeMarkerPanes = sync.OnceValue(func() []jdeMarkerPane {
 // operator there has a key that moves and still cannot reach the heading above
 // the first row. Closing it means the same header conversion on every columnar
 // screen at once — the shape of sc-jde-lift, not a patch.
-var jdeUnfetchableMarkerCases = map[string]string{
-	"PurchaseOrderAddLineScreen": "the identify phase is ONE navigable row — the scan box — " +
-		"and its hint folds onto several lines below it at narrow widths, so from 52 to 59 " +
-		"columns on a short pane the row's own block outruns a one-line window (12 panes). Nothing " +
-		"leads it any more (identifyHeader pins the heading and both identity rows), and " +
-		"no key can move a cursor inside the block it is already on.",
-}
+// IT IS EMPTY, and settling the size contract is what emptied it. Its one
+// remaining entry was PurchaseOrderAddLineScreen's identify phase, whose single
+// navigable row — the scan box — has a hint that folds onto several lines below
+// it at narrow widths, so from 52 to 59 columns on a short pane the row's own
+// block outran a one-line window (12 panes). Root draws at none of those widths
+// now, so the marker is not drawn and there is nothing to excuse. EMPTY IS NOT
+// THE SAME AS UNCHECKED: the sweep fails on an unlisted case just as it fails
+// on a stale entry, so the day another frame claims content no key can fetch,
+// it is reported rather than added here by reflex.
+var jdeUnfetchableMarkerCases = map[string]string{}
 
 // TestJDEForm_NoFrameClaimsContentWithoutNamingAKeyToFetchIt: at every pane Root
 // draws, a frame that says there is more names a key that moves.
@@ -384,13 +387,24 @@ func TestJDEForm_AScrolledBodyReallyReachesItsLastLine(t *testing.T) {
 // what jdeBarOfStripped is for.
 //
 // THE WIDTHS ARE jdePaneWidths AND NOT EVERY DRAWABLE ONE, which is a narrowing
-// and is recorded as one. At the 45-column floor a picker row has sixteen cells,
-// so two different catalogue items both draw as `▸ Hex b…  AF-`: the key moves
-// the cursor AND the window, and the pane is unchanged because the two rows are
-// clipped to the same string. That is standing rule 5's width form — a value cut
-// until it stops identifying anything — and not a bar naming a dead key, so a
-// sweep about bars must not report it. The three New PO pickers are where it
-// shows.
+// and is recorded as one. The REASON changed when the size contract was settled,
+// and the old one is written down here because a recorded reason gets read as a
+// diagnosis: it used to be that at the 45-column floor a picker row has sixteen
+// cells, so two different catalogue items both drew as `▸ Hex b…  AF-` — the key
+// moved the cursor AND the window while the pane was unchanged, which is
+// standing rule 5's width form rather than a bar naming a dead key. Root does
+// not draw at that width any more, and the narrowest picker row now has 45
+// cells, so that collision is gone.
+//
+// WHAT KEEPS THE NARROWING IS COST. This sweep renders a Root per case per
+// probe per pane, and it measures 11s over three widths; every drawable width
+// is 41 of them, which is about 150s for one test in a package that has hit go
+// test's 600s per-package timeout twice already (AGENTS.md records both). So the
+// claim here is about the three widths it walks and nothing wider, and 80 of
+// them is the size contract's floor — the binding case. The bar sweeps that DO
+// walk every drawable width are TestJDEForm_TheActionBarSurvivesEveryHeight and
+// TestList_TheFooterIsLegibleAtEveryDrawableWidth, which are the two the floor
+// was measured against.
 func TestJDEForm_EveryMovementTokenMovesTheOperatorsPANE(t *testing.T) {
 	withColorProfile(t, termenv.TrueColor)
 	named, dead := 0, map[string][]string{}

@@ -664,21 +664,24 @@ func TestReportTable_TheYardstickReachesTheScreenEndToEnd(t *testing.T) {
 // all — a bar that cannot show where you are is not a shortened bar, it is a
 // wrong one.
 //
-// TWO CLAIMS, because one pane genuinely cannot make both. Where the pane can
-// hold the active label with the markers that say the other tabs exist, the
-// whole label is on it. Where it cannot — the narrowest terminal Root draws
-// gives the bar 16 cells and " Stock by category " is 19 — the label is
+// TWO ARMS, because the renderer has two and one pane genuinely cannot make both
+// claims. Where the pane can hold the active label with the markers that say the
+// other tabs exist, the whole label is on it; where it cannot, the label is
 // ABBREVIATED and still there, which is the difference between a bar that
 // answers "which report is this?" badly and one that does not answer at all.
+//
+// SINCE THE SIZE CONTRACT WAS SETTLED THE ABBREVIATED ARM IS UNREACHABLE, and
+// that is asserted rather than counted. It was reached when Root drew from 45
+// columns, which gave the bar 16 cells against the 19 " Stock by category "
+// needs; the narrowest pane is 51 now and every label fits with its markers. So
+// the guarantee is the strong one — the active tab is named IN FULL at every
+// pane an operator can reach — and the abbreviating arm stays in the renderer
+// for a label that grows. If one does, this goes red naming the pane, and the
+// answer is a shorter label rather than a softer check.
 //
 // The boundary is asked of tabBarMarks, the renderer's own accounting, rather
 // than restated: the marker cost is what the first attempt at this test left
 // out, and it reported a correctly abbreviated bar as a missing one.
-//
-// The three-character prefix is safe at every drawable pane by construction:
-// Root refuses below 16 cells, the markers cost at most two (one apiece, and
-// only for a side that is drawn) and the highlight two, so the active label is
-// never given fewer than twelve.
 func TestReportTable_TheTabBarAlwaysNamesTheActiveTab(t *testing.T) {
 	const prefixLen = 3
 	fits, abbreviated := 0, 0
@@ -708,10 +711,14 @@ func TestReportTable_TheTabBarAlwaysNamesTheActiveTab(t *testing.T) {
 			}
 		}
 	}
-	if fits == 0 || abbreviated == 0 {
-		t.Fatalf("the sweep saw %d panes that could hold the active label whole and %d "+
-			"that could not — one side was never reached, so the scoping asserted nothing",
-			fits, abbreviated)
+	if fits == 0 {
+		t.Fatal("no pane could hold an active label whole, so this sweep asserted nothing " +
+			"about the bar it is here for")
+	}
+	if abbreviated > 0 {
+		t.Errorf("%d of %d panes could not hold the active tab's label whole, so an operator "+
+			"reads a prefix on a pane the size contract says is big enough; shorten the label "+
+			"rather than widening this check", abbreviated, fits+abbreviated)
 	}
 }
 
@@ -835,7 +842,21 @@ func TestReportTable_AFailedLoadMarksWhatItCutOff(t *testing.T) {
 		boundedMark = "more of the"
 		tail        = "TAILWORD"
 	)
-	manyLines := strings.TrimSpace(strings.Repeat("abcdefghi ", 8)) + " " + tail
+	// A body that folds past the failed frame's row budget at the pane the size
+	// contract's floor gives, and inside it at the widest pane this sweep
+	// reaches, so BOTH arms below are met by the same fixture.
+	//
+	// THE WORD LENGTH IS THE FIXTURE, not the character count. The old body was
+	// eight nine-letter words, which folded to two rows and fitted everywhere
+	// once Root stopped drawing below 80 columns — the counted arm was never
+	// reached and this sweep's own guard said so. Nine long field names fold one
+	// to a row at 51 cells and two to a row at 91, which is what puts the cut on
+	// one side of the drawable range and the whole body on the other; a longer
+	// string of short words cannot do it, because the fold wastes almost nothing
+	// per row and the cellPrefix bound bites first, which marks the body BOUNDED
+	// rather than counted and is a different claim.
+	manyLines := strings.TrimSpace(strings.Repeat("unexpected-response-field-name ", 9)) +
+		" " + tail
 	unspaced := strings.Repeat("x", 20000)
 
 	counted, whole, bounded := 0, 0, 0

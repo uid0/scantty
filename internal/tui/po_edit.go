@@ -3273,18 +3273,24 @@ const voidStandingNote = "This marks the line voided and the supplier link disco
 //
 // A property that holds BY CONSTRUCTION at every width beats one that holds
 // above a threshold nothing enforces. The loss-first wording held only at >= 80
-// columns and nothing said so: Root draws from a terminal width of 45 up
-// (app.go's contentWidth gate), and at 60 columns screenBodyWidth is 31, which
-// leaves jdeCaveatLines 29 cells; "Voiding hides the order; only search finds
-// it." breaks at exactly 29 into "Voiding hides the order; only" and "search
-// finds it.", and a trim keeping the first row alone drew the loss with the
-// remedy gone.
+// columns and nothing said so: Root drew from a terminal width of 45 up at the
+// time, and at 60 columns screenBodyWidth is 31, which leaves jdeCaveatLines 29
+// cells; "Voiding hides the order; only search finds it." breaks at exactly 29
+// into "Voiding hides the order; only" and "search finds it.", and a trim
+// keeping the first row alone drew the loss with the remedy gone. That report is
+// what the size contract was settled from — minTerminalWidth is 80 now, so 60 is
+// not a pane an operator can reach — and the construction below is kept because
+// a property that cannot break is worth more than a floor that could be moved.
 //
 // WHERE EVEN THAT IS NOT ENOUGH, NOTHING IS DRAWN — the headline AND the prose,
-// as a unit. Below roughly 74 columns no wording carrying both facts folds to
-// one row (the budget is 18 cells at the narrowest drawable pane), so the
-// caveats are gated on the width the terminal REALLY gave: refuse rather than
-// mutilate, which is the stance jdeTooShort already takes one level up. This is
+// as a unit. No wording carrying both facts folds to one row much below 77
+// columns, so the caveats are gated on the width the terminal REALLY gave:
+// refuse rather than mutilate, which is the stance jdeTooShort already takes one
+// level up. Since minTerminalWidth was set the gate never fires — the narrowest
+// pane is 51 cells and it opens at 47 — so it is a guard against a longer
+// WORDING rather than against a narrower terminal, and
+// TestPOLineRemove_BothVoidAnswersAreWithheldOrDrawnTogether exercises it over
+// the budgets it is written for rather than over panes that no longer exist. This is
 // NOT the silence rule 1 forbids — that rule is about a keypress changing
 // nothing visible, and nothing here is an answer to a key; it is the choice
 // between half a warning that strands the operator and none. The gate takes
@@ -3292,10 +3298,11 @@ const voidStandingNote = "This marks the line voided and the supplier link disco
 // alone would reintroduce the dead end through the other half and break the
 // "prose never survives without the headline" property beside it.
 //
-// The gate reads s.bodyWidth() and no named width, deliberately: AGENTS.md says
-// 80 columns is the width that must HOLD while app.go draws down to 45, and
-// that is a question for somebody else. A gate computed from the real pane
-// needs no answer to it.
+// The gate reads s.bodyWidth() and no named width, deliberately. It was written
+// while AGENTS.md said 80 must HOLD and app.go drew down to 45, with the gap
+// between them unsettled; a gate computed from the real pane needed no answer to
+// that, and it still needs none now that minTerminalWidth has settled it. Do not
+// replace it with the constant: the pane is what the bound is about.
 //
 // THE UNKNOWN ANSWER CONCLUDES NOTHING. poRemovalUnknown lands on this prompt
 // too, and there the client does not know which side of the boundary the order

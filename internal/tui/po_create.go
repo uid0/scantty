@@ -3283,9 +3283,9 @@ func (s *PurchaseOrderCreateScreen) failLead() []string {
 		//
 		// Bounded like everything else in this block, and the bound CARRIES ITS
 		// ELLIPSIS: every other cut on this screen marks itself, and a headline
-		// cut clean reads as a whole sentence — at 45 columns the pane is 20 and
-		// "looking up this supplier's items failed" would end mid-word looking
-		// finished.
+		// cut clean reads as a whole sentence — at the 51-cell pane the size
+		// contract's floor leaves, "looking up this supplier's items failed"
+		// beside a working line ends mid-word looking finished.
 		lead = []string{jdeIndent + StyleStatusError.Render(
 			pickerClip(jdeStatusErrMark+jdeStatusOneLine(head), width))}
 	}

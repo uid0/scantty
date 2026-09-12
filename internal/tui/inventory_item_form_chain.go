@@ -401,7 +401,8 @@ func (s *InventoryItemFormScreen) viewChain() string {
 // item — the state this list opens in, where the only navigable row is the
 // trailing "(add a level)" and the bar therefore names no movement key at all —
 // the pane read `↑ N more above` over the heading and the sentence that explains
-// what the numbers in the list MEAN, at every pane from 45x14 up. Pinned, they
+// what the numbers in the list MEAN, at every pane from 45x14 up — 45 being the
+// width Root drew from before the size contract. Pinned, they
 // are trimmed by jdeFitHeader, which gives ground BY RANK and claims nothing
 // about what it dropped.
 //

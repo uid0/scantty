@@ -577,8 +577,10 @@ func (s *ItemSuppliersScreen) renderRow(i int) string {
 	// past the edge and clampToBox took the tail with no ellipsis — an operator
 	// reading a cut name cannot tell it is cut, and on the row that says WHICH
 	// vendor this link is that is the worst place in the screen for it. At the
-	// 45-column floor Root draws at, "McMaster-Carr Supply Company" assembled to
-	// 34 cells into a pane of 16.
+	// 45-column floor Root drew at when this was written, "McMaster-Carr Supply
+	// Company" assembled to 34 cells into a pane of 16; the size contract has put
+	// the narrowest pane at 51, and the bound stays because the name is
+	// unbounded, not because the pane was.
 	//
 	// The NAME keeps the room and the BADGES give, which is the give-order the
 	// purchasing rows already use: a badge beside a name cut to a character
@@ -684,7 +686,8 @@ func (s *ItemSuppliersScreen) renderRow(i int) string {
 //
 // pickerWrap falls back to folding on SPACES when one claim outruns a line, and
 // for a claim that is a NUMBER that is not a shortening but a corruption: at
-// the 45-column floor Root draws at, the pane gives 16 cells and
+// the 45-column floor Root drew at when this was written, the pane gives 16
+// cells and
 // "box barcode 00812345678905" came out as "box barcode" / "00812345678" /
 // "905" — three lines an operator reads as a broken code, and two of them as
 // digits belonging to nothing. A barcode, a SKU and a price are FACTS: whole,

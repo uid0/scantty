@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -49,6 +50,111 @@ const (
 	contentHorizontalPadding = 4
 )
 
+// minTerminalWidth and minTerminalHeight are the terminal ScanTTY declines to
+// draw below. THEY ARE THE SIZE CONTRACT, and everything this package says
+// about a pane is said about the panes they leave reachable.
+//
+// WHY 80, AND WHY A FLOOR AT ALL. Every budget in this package is written
+// against the pane 80 columns gives: screenBodyWidth(80) is 51, the action bar
+// gets 49 of them, and the folds, the caveat bounds, the picker rows and the
+// bar's own wrapping are all sized from those two numbers. Root used to accept
+// any terminal whose CONTENT pane came to 20 cells — a terminal width of 45 —
+// and the guarantees written against 51 simply stopped holding somewhere on the
+// way down, each at its own width and none of them saying so:
+//
+//   - 45–48: screenBodyWidth's floor of 20 is larger than the pane really is
+//     (16 to 19 cells), so EVERY columnar row is budgeted against a width the
+//     terminal does not have. The sweep that checks rows against the pane
+//     excludes the band for exactly that reason (receiveHonestWidths).
+//   - up to 56: the columnar ACTION BAR is drawn past the pane, on all 35
+//     screens by width 48 and on individual screens as high as 56 — so
+//     clampToBox takes the tail of the one surface the key-honesty rule rests
+//     on, and keys that work go unnamed with nothing saying the legend is a
+//     fragment.
+//   - up to 53: every list footer in the app loses `g/G home/end top/bottom`
+//     off the clipped pane, which is the same rule broken on the other half of
+//     the app.
+//   - up to 76: the purchase-order VOID prompt withholds both of its caveats
+//     (voidCaveatsFit), because no wording of the permanent-loss warning folds
+//     to one row in the cells a narrower pane leaves — honest, and it means an
+//     irreversible action is confirmed with no warning at all.
+//
+// There is no coherent floor among 48, 53, 56 and 76: any of them leaves the
+// others broken. 80 is the one width the whole interface is designed to, so it
+// is the one the program insists on. A terminal narrower than that gets
+// terminalTooSmall's notice, which NAMES the width needed and the width it has,
+// rather than a frame whose guarantees have quietly stopped applying.
+//
+// minTerminalHeight is the same gate on the other axis and is unchanged in
+// value: Root has always refused below a content height of 5, which is a
+// terminal height of 7. It is stated here so both refusals read off one place
+// and share one notice.
+const (
+	minTerminalWidth  = 80
+	minTerminalHeight = 7
+)
+
+// terminalTooSmall is the whole frame at a terminal ScanTTY will not draw in,
+// or "" when the terminal is big enough. It is the entire user experience at
+// that size, so it has to carry the two facts an operator can act on — the size
+// the program needs and the size it is being given — and it has to carry them
+// at whatever width it is being read at.
+//
+// THE REQUIRED SIZE LEADS EVERY RUNG, which is this package's standing rule
+// about what survives a trim (AGENTS.md: "whatever must survive must lead").
+// The rungs shorten from the fixed words inward, the terminal's OWN size gives
+// before the required one, and if even the shortest rung will not fit it is cut
+// with pickerClip so the cut is MARKED rather than left reading as a complete
+// message. The ladder is mostly a guarantee rather than the ordinary case: the
+// second rung is 24 cells, so every terminal wide enough to have been drawn in
+// before the floor was set — 45 columns and up — reads the size it needs and
+// the size it has, in words.
+func terminalTooSmall(width, height int) string {
+	narrow, short := width < minTerminalWidth, height < minTerminalHeight
+	if !narrow && !short {
+		return ""
+	}
+	var want, wantShort, got string
+	switch {
+	case narrow && short:
+		want = fmt.Sprintf("%dx%d", minTerminalWidth, minTerminalHeight)
+		wantShort, got = want, fmt.Sprintf("%dx%d", width, height)
+	case narrow:
+		want = fmt.Sprintf("%d columns", minTerminalWidth)
+		wantShort, got = fmt.Sprintf("%d cols", minTerminalWidth), fmt.Sprintf("%d", width)
+	default:
+		want = fmt.Sprintf("%d rows", minTerminalHeight)
+		wantShort, got = want, fmt.Sprintf("%d", height)
+	}
+	rungs := []string{
+		fmt.Sprintf("scantty needs %s; this terminal has %s", want, got),
+		fmt.Sprintf("needs %s, has %s", want, got),
+		fmt.Sprintf("%s > %s", wantShort, got),
+		wantShort,
+	}
+	for _, rung := range rungs {
+		if lipgloss.Width(rung) <= width {
+			return rung
+		}
+	}
+	// Narrower than the shortest rung. pickerClip marks what it cuts, so the
+	// figure left standing cannot be read as the whole one — except at a width
+	// of one, where it has no cell to spend on the mark and hands back a bare
+	// digit instead. A lone "8" read as a required width of 8 is the one
+	// reading this notice must never produce, so at that width the mark is ALL
+	// there is room for and the mark is what is drawn: "there is a message you
+	// cannot read here" is the only true thing a single cell can say.
+	if width <= 1 {
+		return paneCutMark
+	}
+	return pickerClip(rungs[len(rungs)-1], width)
+}
+
+// paneCutMark is the one cell this package spends to say a value was cut. It is
+// the mark pickerClip appends and is named here so the refusal above and the
+// check on it read the same character rather than two copies of a literal.
+const paneCutMark = "…"
+
 // screenBodyWidth returns the columns a screen's View() can render inside the
 // content pane without being truncated by clampToBox. The mirror of
 // screenBodyHeight: callers pass the raw terminal width and this peels off the
@@ -68,14 +174,22 @@ func screenBodyWidth(terminalWidth int) int {
 // give it any.
 //
 // It is to screenBodyWidth what screenBodyRows is to screenBodyHeight, and it
-// exists for the same reason: the floor of 20 below is a LIE at small widths,
-// and a caller whose whole job is to keep a value ON the pane cannot budget
-// against a lie. Root.View clips to r.width - navColumnWidth - navBorderColumn
-// - contentHorizontalPadding, so at the narrowest terminal it draws (45, which
-// is where its own contentWidth < 20 gate bites) the pane is 16 cells while
-// screenBodyWidth answers 20 — four cells a caller would spend and clampToBox
+// exists for the same reason: the floor of 20 on screenBodyWidth is a LIE at
+// any width that reaches it, and a caller whose whole job is to keep a value ON
+// the pane cannot budget against a lie. Root.View clips to r.width -
+// navColumnWidth - navBorderColumn - contentHorizontalPadding, so when Root
+// still drew from a terminal width of 45 the pane there was 16 cells while
+// screenBodyWidth answered 20 — four cells a caller would spend and clampToBox
 // would take back, off the RIGHT edge, where a bounded notice keeps the number
 // it is asking the operator to act on.
+//
+// SINCE THE SIZE CONTRACT WAS SETTLED THAT FLOOR IS NEVER REACHED: Root refuses
+// below minTerminalWidth, which leaves the narrowest pane at 51, so this and
+// screenBodyWidth agree at every width an operator can reach and neither can
+// disagree with the other by a cell. TestLayout_TheWidthFloorIsNeverReached is
+// the check, and the floor stays on screenBodyWidth rather than being deleted
+// because it is what keeps a caller off zero if the contract is ever reopened —
+// at which point that test goes red and says so.
 //
 // Callers that only need "a sane number to lay a grid out with" should keep
 // using screenBodyWidth; callers that must not overrun the pane by a cell use

@@ -110,8 +110,13 @@ type poVoidDrawn struct {
 	// pane cut it. That is the one case accepted in place of the whole word,
 	// and ONLY where the layer's floored width lies about the pane
 	// (screenBodyWidth answers more cells than screenBodyCells gives, below 49
-	// columns), which is where every columnar row overruns. In practice that is
-	// 45 columns alone: the pane is 16 cells and `✓ received` would end at 17.
+	// columns), which is where every columnar row overruns. That used to be 45
+	// columns alone — the pane is 16 cells and `✓ received` would end at 17 —
+	// and since the size contract put the floor at minTerminalWidth no drawable
+	// width reaches it, so the exception never fires. It is DERIVED from the two
+	// accessors (`lying`, below) rather than listed, so it switches itself off
+	// here and would come back on its own if the floor were reopened; that is
+	// why it is kept rather than deleted as a stale branch.
 	edgeCut bool
 	// last is true when the identity is the last body line above the
 	// `↓ N more below` marker: the window ENDS on it. That is the state the
