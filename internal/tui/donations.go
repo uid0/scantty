@@ -28,6 +28,10 @@ type DonationsScreen struct {
 	cursor  int
 	loading bool
 	loadErr string
+
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
 }
 
 type donationsLoadedMsg struct {
@@ -58,8 +62,34 @@ func (s *DonationsScreen) load() tea.Cmd {
 	}
 }
 
+// bar names every key that acts on a list of `rows` donations, as a record the
+// honesty sweep can press (prose_bar.go).
+//
+// It used to be the literal "j/k move · r refresh · esc back", which left the
+// arrows moving the cursor unnamed, and it was written under every row with no
+// window — so a list longer than the pane took the footer off the bottom.
+func (s *DonationsScreen) bar(rows int) proseBar {
+	return append(proseNavStep(listNavMoves(rows)), proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil while a load is in flight
+// or has failed, whose frames still draw their own line. The EMPTY list is a
+// state with a bar: it used to draw the fact alone while `r` reloaded it and
+// `esc` left, and naming nothing there is the omission half of the rule.
+func (s *DonationsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	return s.bar(len(s.rows))
+}
+
+func (s *DonationsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *DonationsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case donationsLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -96,10 +126,11 @@ func (s *DonationsScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
 	if len(s.rows) == 0 {
-		return StyleMuted.Render("No donations.")
+		return StyleMuted.Render("No donations.") + "\n\n" + s.proseBar().render(s.paneCells())
 	}
-	var b strings.Builder
+	rows := make([]string, len(s.rows))
 	for i, d := range s.rows {
+		var b strings.Builder
 		caret := "  "
 		if i == s.cursor {
 			caret = "▸ "
@@ -131,7 +162,8 @@ func (s *DonationsScreen) View() string {
 		if len(meta) > 0 {
 			b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
 		}
+		rows[i] = strings.TrimSuffix(b.String(), "\n")
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · r refresh · esc back"))
-	return b.String()
+	return proseFlatListFrame("", rows, s.cursor, &s.windowStart, s.terminalHeight,
+		s.paneCells(), s.bar(proseFlatCeilingRows), s.proseBar())
 }

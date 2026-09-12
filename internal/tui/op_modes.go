@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -16,6 +15,10 @@ type OperationalModesScreen struct {
 	cursor  int
 	loading bool
 	loadErr string
+
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
 }
 
 type opModesLoadedMsg struct {
@@ -43,8 +46,37 @@ func (s *OperationalModesScreen) load() tea.Cmd {
 	}
 }
 
+// bar names every key that acts on a list of `rows` operational modes, as a
+// record the honesty sweep can press (prose_bar.go).
+//
+// It used to be the literal "j/k move · c toggle classroom mode · r refresh · esc
+// back": the arrows moved the cursor unnamed, and it was written under every row
+// with no window, so a fleet longer than the pane took the footer off the bottom.
+// `c` needs a row to act on and is not offered without one.
+func (s *OperationalModesScreen) bar(rows int) proseBar {
+	out := proseNavStep(listNavMoves(rows))
+	if rows > 0 {
+		out = append(out, proseBarItem{Keys: []string{"c"}, Hint: "c toggle classroom mode"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil while a load is in flight
+// or has failed, whose frames still draw their own line.
+func (s *OperationalModesScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	return s.bar(len(s.rows))
+}
+
+func (s *OperationalModesScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *OperationalModesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case opModesLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -107,9 +139,9 @@ func (s *OperationalModesScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
 	if len(s.rows) == 0 {
-		return StyleMuted.Render("No operational modes.")
+		return StyleMuted.Render("No operational modes.") + "\n\n" + s.proseBar().render(s.paneCells())
 	}
-	var b strings.Builder
+	rows := make([]string, len(s.rows))
 	for i, r := range s.rows {
 		caret := "  "
 		if i == s.cursor {
@@ -138,8 +170,8 @@ func (s *OperationalModesScreen) View() string {
 		if i == s.cursor {
 			title = StyleSidebarItemActive.Render(title)
 		}
-		b.WriteString(title + "\n")
+		rows[i] = title
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · c toggle classroom mode · r refresh · esc back"))
-	return b.String()
+	return proseFlatListFrame("", rows, s.cursor, &s.windowStart, s.terminalHeight,
+		s.paneCells(), s.bar(proseFlatCeilingRows), s.proseBar())
 }

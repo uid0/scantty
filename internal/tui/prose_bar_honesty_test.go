@@ -145,13 +145,16 @@ var proseBarUnconverted = map[string]string{
 	// budget has to move with the folded footer. Several of them are a *ListScreen
 	// away from needing no record at all.
 	//
-	// ONE RECIPE HAS BEEN TAKEN OUT OF THIS GROUP, and what is left is split into
-	// the two shapes that remain rather than left as one heap — because "what
-	// shape is the work" is the only thing this map is for. The converted recipe
-	// is the WINDOWED list budgeted by a chrome constant of four, whose last row
-	// is one unfolded footer line: prose_bar_windowed_lists_test.go carries what
+	// TWO RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
+	// into the two shapes that remain rather than left as one heap — because
+	// "what shape is the work" is the only thing this map is for. The first was
+	// the WINDOWED list budgeted by a chrome constant of four, whose last row is
+	// one unfolded footer line: prose_bar_windowed_lists_test.go carries what
 	// those screens had in common and proseListWindow what replaced the constant.
-	// What remains divides:
+	// The second was the SIMPLE FLAT list — one surface, the step pair and a few
+	// row actions bound, every row drawn with no window:
+	// prose_bar_flat_lists_test.go carries it, and proseFlatListFrame gave those
+	// screens the line-packed window they never had. What remains divides:
 	//
 	//   - STILL ON THAT RECIPE, but not mechanically. Each has a window and a
 	//     budget, and something about it that the shared helpers do not answer —
@@ -159,11 +162,12 @@ var proseBarUnconverted = map[string]string{
 	//     counting something else. The entry says which.
 	//   - FLAT, with no window at all: they draw EVERY row and then the footer, so
 	//     a list longer than the pane pushes the bar off the bottom whatever it
-	//     says, and folding alone would not put it back. Their bar half is the
-	//     cheapest work left in this map — most bind j/k and the arrows and name
-	//     only j/k — and their BODY half is a windowing decision they have never
-	//     had. The two are worth doing together, because a folded bar on a list
-	//     with no budget is a bar that folds off the pane.
+	//     says, and folding alone would not put it back. The ones that were
+	//     nothing more than that are converted; each left here has something the
+	//     flat recipe does not answer — a second surface drawn in place of the
+	//     list or under it, a footer that changes with a form's state, a movement
+	//     vocabulary wider than the step pair, or a layout that is not a list of
+	//     rows — and the entry says which.
 
 	// Still on the windowed recipe.
 	"AssetPartsScreen": "the parts list on an asset. It is on the windowed-cursor-list " +
@@ -172,10 +176,12 @@ var proseBarUnconverted = map[string]string{
 		"the notes), so a budget counting ROWS is not a budget at all — at 80x40 the frame " +
 		"already runs past the pane with the cursor at the top, and a cursor moving inside " +
 		"the window changes nothing an operator can see, because what they are looking at " +
-		"is the part of the frame clampToBox left. Converting it means giving it " +
-		"ListScreen.rowsFittingFrom's arithmetic — pack rows into the body by the LINES each " +
-		"one will really draw, and re-derive the window on every move — which is a decision " +
-		"about what this list shows rather than about what its bar says",
+		"is the part of the frame clampToBox left. The line-packing arithmetic now exists " +
+		"(proseLineWindow, which the flat lists use), so what is left is not the packing: it " +
+		"binds pgup/pgdn as `cursor += windowSize`, a page counted in ROWS, and once the " +
+		"window is packed by lines a row count stops being a page — so converting it is " +
+		"deciding what a page of multi-line parts is worth, which is a decision about what " +
+		"this list does rather than about what its bar says",
 	"AssetProblemsScreen": "the problem list on an asset, plus its vendor picker: a " +
 		"second cursor surface with its own keys, drawn in place of the list, so the record " +
 		"has to say which bar belongs to which surface",
@@ -200,26 +206,19 @@ var proseBarUnconverted = map[string]string{
 		"can be derived",
 
 	// Flat: no window at all, so the bar and the body budget are one piece of work.
-	"AuthorizationsScreen":       "the ForgeKey authorization grid",
 	"ChecklistRunScreen":         "the step list of a checklist run, whose footer changes with the submit state",
 	"ChecklistsScreen":           "the checklist browse list, which also binds tab/shift+tab to move between its two sections",
-	"DonationsScreen":            "the donation list",
-	"EPaperPanelsScreen":         "the e-paper panel list and its bind picker, a second cursor surface",
+	"EPaperPanelsScreen":         "the e-paper panel list and its bind picker, a second cursor surface drawn in place of the list with its own search box and footer — the list alone is the flat recipe, but converting it would leave the picker's literal unswept behind a receiver the classifier then counts as swept",
 	"FacilitiesScreen":           "the facilities hub, a cursor menu of surfaces: it binds g/home and G/end as well as j/k and the arrows, and every row also answers its own hotkey",
 	"FirmwareScreen":             "the firmware rollout list, two sections in one pane",
 	"ForgeKeyCertificatesScreen": "the ForgeKey certificate list, which binds the WHOLE vocabulary — pgup/pgdn and g/G/home/end included — over an unwindowed body, and names `j/k scroll` for it",
 	"ForgeKeyDeviceFormScreen":   "the location picker on the device form; the form itself is columnar and swept",
 	"LocationCheckinsScreen":     "the check-in list for a location and its lookup picker, a second cursor surface",
-	"LockoutsScreen":             "the ForgeKey lockout list",
 	"MakerBoxesScreen":           "the maker-box list beside MakerBoxFormScreen, with a scan prompt, a convert confirm and a queue form that each draw their own footer",
-	"OperationalModesScreen":     "the ForgeKey operational-mode list",
-	"PMBoardScreen":              "the preventive-maintenance board",
 	"ReportsScreen":              "the reports hub, a cursor menu of surfaces, with its legend ABOVE the rows rather than under them",
 	"SearchPalette":              "the universal search palette's result list, drawn as an overlay with a live query box",
 	"StorageOverviewScreen":      "the storage overview, a rack grid rather than a row list",
-	"UsageScreen":                "the ForgeKey usage-session list",
-	"VendorsScreen":              "the maintenance vendor list",
-	"WorkOrderAttachmentsScreen": "the attachment list on a work order",
+	"WorkOrderAttachmentsScreen": "the attachment list on a work order. The list is the flat recipe, but the screen also draws an upload FORM in place of it — a field form whose tab/up/down move focus — and a delete confirm UNDER the rows in place of the footer, and it draws its load error ABOVE a list that still answers keys; converting the list alone would count the form's focus pair as swept",
 
 	// THE ONES THAT ARE NEITHER A SCROLLED SHEET NOR A PLAIN CURSOR LIST, each
 	// saying what it is instead — a field form whose up/down are a focus pair, a
@@ -497,7 +496,9 @@ func proseBarFixtures() []proseBarFixture {
 	}
 	// The WINDOWED CURSOR LISTS, in their own file because they are one recipe
 	// rather than one screen — see proseBarWindowedListFixtures.
-	return append(out, proseBarWindowedListFixtures()...)
+	out = append(out, proseBarWindowedListFixtures()...)
+	// The FLAT cursor lists, the second recipe — see proseBarFlatListFixtures.
+	return append(out, proseBarFlatListFixtures()...)
 }
 
 func proseBarSerializedComponents(n int) []omsapi.SerializedComponent {
