@@ -468,10 +468,18 @@ func (s *PurchaseOrderAttachmentsScreen) View() string {
 const (
 	poAttachNumW  = 3
 	poAttachDateW = 10
+	// The ceiling on the measured index column (attachNumWidth).
+	poAttachNumMaxW = 5
 )
 
-// poAttachIndent puts an attachment's continuation line under the file column.
-var poAttachIndent = strings.Repeat(" ", len(jdeIndent)+poAttachNumW+2)
+// attachIndent puts an attachment's continuation line under the file column. It
+// takes the MEASURED index width rather than the constant, because the index
+// column grows with the number of attachments (attachNumWidth) and an indent
+// built from the constant would leave every reading left of the column it hangs
+// under on an order with a hundred of them.
+func (s *PurchaseOrderAttachmentsScreen) attachIndent() string {
+	return strings.Repeat(" ", len(jdeIndent)+s.attachNumWidth()+2)
+}
 
 // attachNameWidth sizes the file column from the pane, with the same floor and
 // ceiling reasoning as the PO line grid: a narrow terminal shortens the name
@@ -483,7 +491,7 @@ func (s *PurchaseOrderAttachmentsScreen) attachNameWidth() int {
 	if w := s.bodyWidth(); w > 0 {
 		width = w
 	}
-	switch w := width - (len(jdeIndent) + poAttachNumW + 2 + 2 + poAttachDateW); {
+	switch w := width - (len(jdeIndent) + s.attachNumWidth() + 2 + 2 + poAttachDateW); {
 	case w < minW:
 		return minW
 	case w > maxW:
@@ -493,12 +501,26 @@ func (s *PurchaseOrderAttachmentsScreen) attachNameWidth() int {
 	}
 }
 
-// poAttachGridRow lays one attachment row out in its columns.
-func poAttachGridRow(num, name, uploaded string, nameW int) string {
+// attachNumWidth reserves the index column at the widest index this order will
+// really draw. jdeGridFactW carries why a fixed budget is not enough: padCell
+// pads and never truncates, so an index wider than its column widens the whole
+// ROW and clampToBox takes the date off the end of it.
+func (s *PurchaseOrderAttachmentsScreen) attachNumWidth() int {
+	return jdeGridFactW(poAttachNumW, poAttachNumMaxW, strconv.Itoa(len(s.attachments)))
+}
+
+// poAttachGridRow lays one attachment row out in its columns, each fact through
+// jdeGridFactCell so no cell can widen the row.
+//
+// The DATE cannot in fact exceed its column — it is written with a fixed layout
+// exactly poAttachDateW wide — but it is fitted anyway, because a column whose
+// safety rests on a format string somewhere else is a column that breaks the
+// first time the format changes, and fitting a value that fits costs nothing.
+func poAttachGridRow(num, name, uploaded string, numW, nameW int) string {
 	return jdeIndent + strings.TrimRight(strings.Join([]string{
-		padCell(num, poAttachNumW, alignRight),
+		jdeGridFactCell(num, numW, alignRight),
 		padCell(name, nameW, alignLeft),
-		padCell(uploaded, poAttachDateW, alignLeft),
+		jdeGridFactCell(uploaded, poAttachDateW, alignLeft),
 	}, "  "), " ")
 }
 
@@ -520,7 +542,8 @@ func (s *PurchaseOrderAttachmentsScreen) listLines() (*jdeLines, int) {
 		if !att.UploadedAt.IsZero() {
 			uploaded = att.UploadedAt.Format("2006-01-02")
 		}
-		row := poAttachGridRow(strconv.Itoa(i+1), fitCell(name, nameW), uploaded, nameW)
+		row := poAttachGridRow(strconv.Itoa(i+1), fitCell(name, nameW), uploaded,
+			s.attachNumWidth(), nameW)
 		if i == s.cursor {
 			row = StyleJDEFieldFocused.Render(row)
 		}
@@ -536,7 +559,7 @@ func (s *PurchaseOrderAttachmentsScreen) listLines() (*jdeLines, int) {
 		if att.UploadedByName != "" {
 			tokens = append(tokens, jdeToken{text: "by " + att.UploadedByName, style: StyleMuted})
 		}
-		for _, line := range jdeWrapTokens(tokens, poAttachIndent, s.bodyWidth()) {
+		for _, line := range jdeWrapTokens(tokens, s.attachIndent(), s.bodyWidth()) {
 			l.AddRow(i, line)
 		}
 	}
@@ -573,7 +596,7 @@ func (s *PurchaseOrderAttachmentsScreen) listHeader() jdeHeader {
 	return h.add(jdeHeadContext, StyleJDEHeading.Render(
 		fmt.Sprintf("Attachments (%d)", len(s.attachments)))).
 		add(jdeHeadEssential, StyleMuted.Render(
-			poAttachGridRow("#", "File", "Uploaded", s.attachNameWidth())))
+			poAttachGridRow("#", "File", "Uploaded", s.attachNumWidth(), s.attachNameWidth())))
 }
 
 // listBar names the keys that work on the grid — and only those: Ctrl-X is

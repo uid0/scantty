@@ -1485,11 +1485,13 @@ either:
   `jdeRowsPastThePane` is the measured residue, per screen, as the widest width
   that still cuts and fails in both directions. **IT IS EMPTY**, and so is
   `jdeOverWideEssentialRows` beside it — both are kept so that the next entry
-  states what was given up rather than joining a crowd. Because its fixtures
-  cover only their opening state, screens whose rows change with focus need
-  their own state walk; `po_edit_rows_test.go` is the worked example and also
-  requires an ellipsis on every clipped value. Keep dropped grid flags on the
-  row itself, never only on a continuation row that may fall below the window.
+  states what was given up rather than joining a crowd. The sweep walks every
+  reachable body position as well as every drawable height; keep edit-only grids
+  represented in `jdeScreenStates` so an empty create fixture cannot make the
+  check vacuous. Screens whose rows change with focus may still want their own
+  state walk; `po_edit_rows_test.go` is the worked example and also requires an
+  ellipsis on every clipped value. Keep dropped grid flags on the row itself,
+  never only on a continuation row that may fall below the window.
   **A ROW IS BOUNDED BY THE LAYER AND THERE IS NOTHING TO OPT OUT OF.** The
   residue was twenty-six non-purchasing screens cutting a row at 80 columns and
   up to 120 — the FLOOR had nothing to do with it — and all of it came from the
