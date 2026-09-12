@@ -668,6 +668,166 @@ func (s *ListScreen) listPaneCells() int {
 	return screenBodyCells(s.terminalWidth)
 }
 
+// listRowIndent is what a row's continuation lines hang off, so the Subtitle
+// and the MetricsLine read as belonging to the title above them. It is named
+// because the budget those lines are fitted to is the pane LESS this, and a
+// budget that disagreed with the indent by a cell is the whole class of defect
+// the fit exists to close.
+const listRowIndent = "    "
+
+// rowTitleRoom is the cells a row's TITLE line may draw into.
+//
+// It reserves StyleSidebarItemActive's horizontal padding on EVERY row, not
+// only the highlighted one — the same reservation windowedListRoom makes and
+// for the same reason: the active style PADS what it wraps, so a row that fits
+// until it is selected is a row the pane cuts on exactly the press that selects
+// it. The padding is asked of the style rather than counted.
+func (s *ListScreen) rowTitleRoom() int {
+	return s.listPaneCells() - StyleSidebarItemActive.GetHorizontalPadding()
+}
+
+// rowFactsRoom is the cells a row's Subtitle or MetricsLine may draw into.
+// Those lines are never wrapped in the highlight, so they pay the indent and
+// nothing else.
+func (s *ListScreen) rowFactsRoom() int {
+	return s.listPaneCells() - lipgloss.Width(listRowIndent)
+}
+
+// listFitFacts fits one of a row's continuation lines into `room` cells, giving
+// ground a TOKEN at a time and marking what it took with `mark`.
+//
+// WHY A TOKEN AND NOT A CELL. These lines carry money and counts — a supplier's
+// total, an item's quantity on hand — and a number cut by a cell reads as a
+// different number: "$12,345.67" drawn as "$12,34…" still reads as money, which
+// is worse than no price at all. That is the rule fitFactCell states on the
+// columnar layer (jde_form.go), and this is the same rule applied where the
+// facts arrive already joined into one line: a token is kept WHOLE or it is not
+// drawn, so the cut can only ever land between values, never inside one.
+//
+// It cannot do better than that because it cannot know which token is which.
+// poFitRow can, because its caller hands it a name and its facts separately; a
+// listRow hands over one pre-joined string per line, and every loader joins a
+// different mixture — an asset's tag then its free-text description, a PO's
+// supplier then its total, a vendor work order's short id then an EMERGENCY
+// flag. So the ground given is the TAIL, keeping the columns that survive in
+// the order they were written, which is how a columnar row is read.
+//
+// `mark` is passed in rather than assumed because the two callers differ in one
+// way that matters: the Subtitle is clipped before it is styled, so a plain
+// ellipsis is right, while the MetricsLine is drawn VERBATIM with its bold
+// labels, so its mark is styled and its closing reset is what shuts any run the
+// cut left open.
+func listFitFacts(text string, room int, mark string) string {
+	if room <= 0 {
+		return ""
+	}
+	if lipgloss.Width(text) <= room {
+		return text
+	}
+	if head, ok := listTokenPrefix(text, room-lipgloss.Width(mark)); ok {
+		return head + mark
+	}
+	// No token boundary fits, so as far as this can tell the line IS one value.
+	// fitFactCell is the rule for that: shown whole, or dropped and marked.
+	// Only a Subtitle can reach here (a MetricsLine always carries its labels,
+	// which are tokens), and a Subtitle is plain text, so fitCell's rune walk
+	// has no escape sequence to leave dangling.
+	return fitFactCell(text, room)
+}
+
+// listTokenPrefix returns the longest prefix of `text` that draws within
+// `budget` cells AND ends on a token boundary, reporting false when no such
+// boundary exists.
+//
+// It walks FORWARD once and stops when the budget is spent, so its cost is the
+// budget rather than the length of what it was handed — the property cellPrefix
+// exists for, and the reason neither of these bounds may be written as
+// "truncate then measure". Escape sequences are stepped over rather than
+// measured, so a boundary is never recorded inside one.
+//
+// Whatever the cut leaves DANGLING is trimmed: trailing spaces, the "·" a
+// loader joins its parts with, and a metrics label whose value fell the other
+// side of the cut. A row ending "… QOH:" claims a reading it is not showing.
+func listTokenPrefix(text string, budget int) (string, bool) {
+	if budget <= 0 {
+		return "", false
+	}
+	const (
+		plain = iota
+		afterEsc
+		inEsc
+	)
+	state, used, boundary := plain, 0, -1
+	inSpace := false
+	for i, r := range text {
+		switch state {
+		case afterEsc:
+			state = inEsc
+			continue
+		case inEsc:
+			if (r >= 0x40 && r <= 0x7e) || r == 0x07 {
+				state = plain
+			}
+			continue
+		}
+		if r == 0x1b {
+			state = afterEsc
+			continue
+		}
+		if r == ' ' {
+			if !inSpace {
+				// text[:i] is everything up to the start of this whitespace
+				// run, and it fits: `used` has not yet been spent on this rune.
+				boundary = i
+			}
+			inSpace = true
+		} else {
+			inSpace = false
+		}
+		w := lipgloss.Width(string(r))
+		if used+w > budget {
+			break
+		}
+		used += w
+	}
+	if boundary <= 0 {
+		return "", false
+	}
+	head := listTrimDangling(text[:boundary])
+	if head == "" {
+		return "", false
+	}
+	return head, true
+}
+
+// listTrimDangling drops whatever a token cut left standing on its own: the
+// separator between two parts, and a metrics label whose value is past the cut.
+//
+// Both suffixes are tested on the RAW string rather than a stripped copy
+// because both are plain: a loader's "·" is never styled, and a metrics cell is
+// StyleMetricLabel.Render(label) followed by a plain ": ", so the ":" is the
+// last byte whatever the profile. Dropping a label drops back to the previous
+// space, which takes the label's own escape sequences with it.
+func listTrimDangling(s string) string {
+	for {
+		s = strings.TrimRight(s, " ")
+		switch {
+		case s == "":
+			return ""
+		case strings.HasSuffix(s, "·"):
+			s = strings.TrimSuffix(s, "·")
+		case strings.HasSuffix(s, ":"):
+			i := strings.LastIndex(s, " ")
+			if i < 0 {
+				return ""
+			}
+			s = s[:i]
+		default:
+			return s
+		}
+	}
+}
+
 // rowsFittingFrom returns how many rows starting at `start` fit in the body,
 // counting the LINES each one actually renders: a title line, plus a line for
 // a subtitle and another for a metrics line where the loader supplies them.
@@ -1364,30 +1524,41 @@ func (s *ListScreen) bodyView() string {
 		if i == s.cursor {
 			marker = "▸ "
 		}
-		title := row.Title
+		tag := ""
 		if row.Tag != "" {
-			title = title + " " + StyleMuted.Render("("+row.Tag+")")
+			tag = " " + StyleMuted.Render("("+row.Tag+")")
 		}
 		date := ""
 		if d := row.sortDate(); !d.IsZero() {
 			date = StyleMuted.Render(d.Format("2006-01-02") + "  ")
 		}
-		line := marker + date + title
+		// The marker and the date never give — one says where the cursor is and
+		// the other is a fact. What is left is the row's IDENTITY and its
+		// STATE, which poFitRow already knows how to trade: the title
+		// abbreviates and marks, and only where even its floor will not fit
+		// does the tag drop, marked in its turn. A cut here used to be
+		// clampToBox's, from the right, silent.
+		room := s.rowTitleRoom() - lipgloss.Width(marker) - lipgloss.Width(date)
+		line := marker + date + poFitRow(room, row.Title, "", tag)
 		if i == s.cursor {
 			line = StyleSidebarItemActive.Render(line)
 		}
 		b.WriteString(line)
 		b.WriteString("\n")
 		if row.Subtitle != "" {
-			b.WriteString("    ")
-			b.WriteString(StyleMuted.Render(row.Subtitle))
+			b.WriteString(listRowIndent)
+			// Clipped BEFORE it is styled, so the mark is inside the muting and
+			// no escape can be cut through.
+			b.WriteString(StyleMuted.Render(listFitFacts(row.Subtitle, s.rowFactsRoom(), paneCutMark)))
 			b.WriteString("\n")
 		}
 		// MetricsLine is already styled (bold labels); emit it verbatim rather
 		// than muting it, so its inner reset codes don't clobber an outer style.
+		// Its mark is therefore STYLED, which is what closes any run the cut
+		// left open — the same thing maintenance_item_form.go's clip does.
 		if row.MetricsLine != "" {
-			b.WriteString("    ")
-			b.WriteString(row.MetricsLine)
+			b.WriteString(listRowIndent)
+			b.WriteString(listFitFacts(row.MetricsLine, s.rowFactsRoom(), StyleMuted.Render(paneCutMark)))
 			b.WriteString("\n")
 		}
 	}

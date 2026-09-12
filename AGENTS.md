@@ -2655,20 +2655,46 @@ touching any screen an operator drives:
   folded footer with `N new PO` in it: the same claim, off the same edge, for
   the third time — horizontally, then vertically, then by counting rows where
   the renderer counts lines.
-  KNOWN AND UNFIXED, ON THE OTHER AXIS: a `ListScreen` row's CONTENT is bounded
-  nowhere. `list.go`'s body writes `row.Title`, `row.Subtitle` and
-  `row.MetricsLine` straight into the pane, so at 80 columns — where the pane is
-  51 — an OMS-shaped title (`Hex bolt M8x40 zinc-plated DIN 933 grade 8.8 full
-  thread`, 60 cells) and an OMS-shaped subtitle (`Acme Fasteners & Industrial
-  Supply Company Limited · $12,345.67`, 67) are cut from the right with NO mark,
-  on all eight list surfaces. It fits from 100 columns up, so it is an
-  80-column defect specifically, and it is the same rule the columnar layer's
-  row bound exists for, one layer over. The CHROME is clean — the footer and
-  header fold against `listPaneCells()`, the live pane — so nothing reports
-  this; the sweeps that walk these screens carry `Row 1`-shaped fixtures, which
-  is the vacuous-fixture rule waiting to be noticed. The fix is contained:
-  clip the three through `fitCell` against `listPaneCells()`. Clipping changes
-  no LINE count, so `rowsFittingFrom`'s arithmetic above is untouched by it.
+- **A LIST ROW IS TWO KINDS OF PART AND THERE IS NO THIRD**, the same split
+  `poFitRow` already names one layer over: the TITLE is a BOUNDED IDENTIFIER and
+  the `Subtitle` / `MetricsLine` are FACT LINES. `list.go`'s `bodyView` wrote all
+  three straight into the pane with no bound at all, so at 80 columns — where
+  the pane is 51 — an OMS-shaped title (`Hex bolt M8x40 zinc-plated DIN 933
+  grade 8.8 full thread`, 60 cells) and an OMS-shaped subtitle (`Acme Fasteners
+  & Industrial Supply Company Limited · $12,345.67`, 67) were cut from the right
+  by `clampToBox` with NO MARK, on all eight list surfaces. It fitted from 100
+  columns up, so it was an 80-column defect specifically — the width the size
+  contract guarantees.
+  - The TITLE goes through `poFitRow` (`rowTitleRoom`): the name abbreviates and
+    marks, and only where even `poHeaderValueFloor` will not fit does the `(tag)`
+    drop, marked with `poRowDropMark` in its turn. The tag is the row's STATE and
+    the title its IDENTITY, and the marker and the date never give.
+  - The FACT LINES go through `listFitFacts` (`rowFactsRoom`), which gives ground
+    a TOKEN at a time so a figure is drawn WHOLE or not at all — `fitFactCell`'s
+    rule where the facts arrive already joined into one string. `$12,34…` still
+    reads as money, and a `ListScreen` hands over one pre-joined line per row
+    with every loader mixing its parts differently, so nothing at render time
+    can tell which token is the name: the TAIL is what gives, and whatever the
+    cut leaves dangling (the `·`, a metrics label whose value fell the other
+    side) is trimmed rather than drawn claiming a reading it is not showing.
+  - THE NUMBER RULE IS SCOPED TO THE FACT LINES ON PURPOSE. A title's digits are
+    incidental to prose — a DIN number, a bolt grade — and `fitFactCell` applied
+    to prose blanks the row's identity, which is the one thing a list is scanned
+    for. If a figure is ever moved onto a title line that scope stops being safe;
+    `TestList_ARowNeverDrawsAPartialNumber` carries the corollary.
+  - **CLIPPING CHANGES NO LINE COUNT, AND THAT IS WHAT KEEPS THE FIX CONTAINED.**
+    `rowLineCost` counts one line per value and `rowsFittingFrom` packs by it, so
+    a fit that FOLDED would move every window sum above. The fitters clip and
+    never fold, and cannot empty a value that was set.
+    `TestList_FittingARowChangesNoLineCount` proves it by rendering the same row
+    SHAPES at OMS length and at a length nothing cuts and requiring the same
+    number of lines, rather than by reading the fitters.
+  - Nothing reported any of this because every list fixture in the package drew
+    `Row 1` and `Acme Supply Company · $0,234.56` — the vacuous-fixture rule,
+    waiting to be noticed. `list_row_width_test.go` carries its own OMS-length
+    fixture for that reason and `listFixtureRows` is deliberately left short,
+    because widening it would move the row HEIGHTS every sweep in
+    `list_bar_honesty_test.go` is calibrated against.
 - **A textinput with no `Width` grows past its row, and `clampToBox` takes the
   caret.** bubbles' `handleOverflow` returns early when `Width` is zero, so
   `View()` emits the whole value: past the column where the row fills the pane
