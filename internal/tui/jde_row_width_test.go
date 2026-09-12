@@ -56,12 +56,16 @@
 //   - report_table.go is not this layer at all. It has its own fit
 //     (fitReportTable) with its own stated give-order and its own sweep, and its
 //     pane accessors are deliberately separate for that reason.
-//   - po_edit.go at 80 columns and up was filed separately and is untouched
-//     here.
+//   - po_edit.go at 80 columns and up is a real, unfinished defect outside this
+//     change's scope, not outside the problem. receive_form.go's own note is the
+//     in-repo record: it enumerates the line editor's three prose sentences,
+//     the order sheet's date hints, attribution heading and work-order value,
+//     the association picker's prose, the void prompt's `required`, and the
+//     delete confirm's voided-line row. This sweep does not report those rows.
 //
-// Do not read any of those as unfinished: each is a judgement that the row is
-// already non-silent, and an unstated judgement is one the next reader pays to
-// re-derive.
+// The first two exclusions are settled for this sweep; the third remains open
+// elsewhere. Recording that distinction saves the next reader from either
+// re-deriving settled judgements or overlooking the unfinished one.
 package tui
 
 import (
