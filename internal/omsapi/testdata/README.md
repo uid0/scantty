@@ -82,3 +82,49 @@ carrying the server's own discontinued sentence.
 Re-record against a real backend; do not hand-edit. Editing a value to make a
 test pass puts the fixture back under the control of the code it is meant to
 check.
+
+| file | endpoint | OMS builder | OMS commit |
+|---|---|---|---|
+| `wo_detail_pending_review.json` | `GET /api/inventory/work-orders/{id}/` | `inventory.serializers.WorkOrderSerializer` (+ `WorkOrderSubmissionSerializer`) | `ff3508b6` (#1057), remote `main`, tree `8c619074` |
+| `wo_list_pending_review.json` | `GET /api/inventory/work-orders/?asset={id}` | `inventory.serializers.WorkOrderListSerializer` | same |
+| `wo_apply_pending_selective.json` | `POST .../work-orders/{id}/submissions/{sid}/apply-pending/` with `{"target_ids": ["task_…"]}` | `inventory.views.WorkOrderViewSet.apply_pending_changes` | same |
+| `wo_apply_pending_confirm_complete.json` | the same, `{"confirm_complete": true}` | same | same |
+| `wo_apply_pending_empty_queue.json` | the same, `{}`, on a submission whose queue is already empty | same | same |
+| `wo_apply_pending_not_found.json` | the same, against a submission id the work order does not have (**404**) | DRF's own handler | same |
+| `wo_discard_pending_all.json` | `POST .../discard-pending/` with `{}` | `WorkOrderViewSet.discard_pending_changes` | same |
+
+Recorded 2026-09-11 against a clean clone of remote `main` on PostgreSQL, one
+request per branch the terminal's scan-review surface has to tell apart.
+
+The work order was seeded to reach all of them at once: two REQUIRED task
+completions, and TWO parked submissions — one carrying a change of every kind
+the two ingest paths produce (an `auto_applied` checkbox at 0.9993, a
+low-confidence one at 0.61 whose `value` is **false**, a `signature` and a
+`handwritten` note), and one DEGRADED read, parked `pending_review` with an
+EMPTY queue and a `parse_error` instead. `pending_review_count` is 2 across
+them, which is what makes it visibly a count of SUBMISSIONS rather than of
+changes.
+
+What they pin that a hand-written map does not:
+
+* `has_pending_review` is a JSON **bool** and `pending_review_count` a **number**
+  on BOTH serializers. drf-spectacular types an un-annotated
+  `SerializerMethodField` as `string`, so the schema is not evidence here — the
+  builder is (`_pending_review_count`), and AGENTS.md records that artefact
+  costing 41 of 50 false candidates once already.
+* `pending_changes[].target_id` is **null** on a signature and a handwritten
+  note. That is the whole constraint on selective apply: the server filters with
+  `change.get("target_id") in target_ids`, so a change with none can be reached
+  only by a whole-queue write, and there is no spelling of `target_ids` that
+  names it.
+* `pending_changes[].value` is a **bool** on a mark and a **string** on a
+  handwritten note — one field, two shapes, because the server's is typed
+  `object`.
+* the work-order LIST body carries **no `title` key at all**;
+  `WorkOrderListSerializer` has only `display_title`.
+* `apply-pending`'s nothing-to-do reply carries **no counts** — `detail` and
+  `submission_status` alone — so a client that inferred a refusal from a zero
+  `applied_count` would report one the server never made.
+* the 404 is DRF's bare `{"detail": …}` with **no `code`**, which `parseError`
+  cannot recognise; `AsSubmissionRefusal` is what keeps that off the operator's
+  status row as raw JSON.

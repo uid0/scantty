@@ -1318,6 +1318,7 @@ var poBarKeyNames = map[string][]string{
 	"Home/End":  {"home", "end"},
 	"Space":     {" "},
 	"Ctrl-E":    {"ctrl+e"},
+	"Ctrl-F":    {"ctrl+f"},
 	"Ctrl-X":    {"ctrl+x"},
 	"Ctrl-T":    {"ctrl+t"},
 	// A choice row's "< value >" pair. Space cycles it too and the bar does not

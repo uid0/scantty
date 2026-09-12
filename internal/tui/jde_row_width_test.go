@@ -87,6 +87,15 @@ var jdeRowsPastThePane = map[string]int{
 	"SupplierFormScreen":             112,
 	"ThermostatFormScreen":           103,
 	"WebhookFormScreen":              103,
+	// The grid's LABEL column floors at woReviewLabelFloor, so below a pane of
+	// 23 cells the row is wider than the pane it was sized from — the "value
+	// floor wider than a narrow pane" class, and the same one and only mechanism
+	// PurchaseOrderDetailScreen's 51 is. Everything else on this screen is
+	// bounded against the live pane: the empty sentence and the load error
+	// through fitCellIf, the caveats through jdeCaveatLines, the readings
+	// through jdeWrapTokens, and an identifier is WRAPPED rather than clipped
+	// (woReviewIDLines) because a cut UUID reads as a different record.
+	"WorkOrderScanReviewScreen": 51,
 }
 
 // jdeRowWidthCase is one (screen, state) the sweep draws. after, when set, runs

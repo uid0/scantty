@@ -1735,14 +1735,42 @@ func loadWorkOrders(ctx context.Context, deps Deps) ([]listRow, error) {
 	for _, wo := range page.Results {
 		rows = append(rows, listRow{
 			ID:           fmt.Sprint(wo.ID),
-			Title:        wo.Title,
-			Subtitle:     wo.AssetName,
+			Title:        workOrderName(wo),
+			Subtitle:     workOrderListSubtitle(wo),
 			Tag:          wo.Status,
 			CreatedAt:    wo.CreatedAt,
 			FallbackDate: wo.UpdatedAt,
 		})
 	}
 	return rows, nil
+}
+
+// workOrderListSubtitle carries the asset and — LEADING it — the fact that a
+// scanned sheet is parked on this job waiting for a human.
+//
+// It leads because the subtitle is the row's second line and the asset is the
+// part an operator scanning the list is not looking for; the badge is the whole
+// reason to open THIS row rather than the next one. Until it was decoded, the
+// terminal could upload a scan and then give no sign anywhere that one was
+// waiting: an operator had to open every job to find out, which is not a thing
+// anybody does, so in practice the review only ever happened in a browser.
+//
+// The count is of SUBMISSIONS, not readings — a sheet the reader could not
+// align at all is parked with an empty queue and still needs somebody — so the
+// noun is "sheet". Both fields ride WorkOrderListSerializer, so this costs no
+// extra request.
+func workOrderListSubtitle(wo omsapi.WorkOrder) string {
+	if !wo.HasPendingReview {
+		return wo.AssetName
+	}
+	badge := fmt.Sprintf("⚠ %d scanned sheet to review", wo.PendingReviewCount)
+	if wo.PendingReviewCount != 1 {
+		badge = fmt.Sprintf("⚠ %d scanned sheets to review", wo.PendingReviewCount)
+	}
+	if wo.AssetName == "" {
+		return badge
+	}
+	return badge + " · " + wo.AssetName
 }
 
 func loadSIGs(ctx context.Context, deps Deps) ([]listRow, error) {

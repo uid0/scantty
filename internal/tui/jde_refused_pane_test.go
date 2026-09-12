@@ -377,6 +377,8 @@ var jdeInertCases = map[string]string{
 	"InventoryItemFormScreen/chain list empty":   "one navigable row (the add row), so nothing moves",
 	"StorageSlotGenerateScreen/level list empty": "one navigable row (the add row), so nothing moves",
 	"PurchaseOrderAttachmentsScreen/one file":    "one file, so listMoves is false and the cursor has nowhere to go",
+	"WorkOrderScanReviewScreen/nothing waiting": "no sheet is parked, so the grid has no row at " +
+		"all and the bar names no movement key — the empty frame is a pinned header and nothing else",
 }
 
 // TestJDEForm_EveryRefusedPaneCaseCouldHaveMoved: at a height the screen DOES
