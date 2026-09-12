@@ -322,9 +322,11 @@ func TestPOEditRows_EveryPhaseIsWalked(t *testing.T) {
 }
 
 // poEditRowsWidths is every terminal width Root draws from the one that must
-// HOLD up. Below 80 the layer's own label column and field floor outgrow the
-// pane on every columnar screen at once; that band is recorded, per screen, in
-// jdeRowsPastThePane and belongs to the layer rather than to this screen.
+// HOLD up. Since minTerminalWidth made 80 the floor that is every width Root
+// draws at all, so the filter removes nothing today; it stays so that lowering
+// the floor does not quietly widen this sweep's claim to panes it was never
+// written for. What a narrower pane would cut is TestJDEForm_NoRowRunsPastThePane's
+// to report, in jdeRowsPastThePane's "not recorded" direction.
 func poEditRowsWidths() []int {
 	var out []int
 	for _, w := range jdeDrawableWidths() {

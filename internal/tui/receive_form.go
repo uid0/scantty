@@ -5635,20 +5635,19 @@ const receiveNoteRows = 5
 // renderJDEField's label clip is unmarked as well and no swept state reaches it,
 // because the label column is the widest label.
 //
-// The cuts that mark nothing are Root's, not any screen's: clampToBox, the
-// backstop for a row nothing bounded, and the status bar, which clips a flashed
-// message at the terminal edge. Where either bites, the ROW is the defect, and
-// on these screens they bite in places filed separately: po_edit.go draws rows
-// wider than the pane from 80 columns up (its line editor's three prose
-// sentences, the order sheet's date hints, attribution heading and work-order
-// value, the association picker's prose, the void prompt's `required`, the
-// delete confirm's voided-line row); and a failed submit's OMS body is flashed
-// whole, cut at the edge. The rows other purchasing screens used to draw past
-// the pane BELOW 80 columns are not reachable any more — minTerminalWidth is the
-// floor — and the same floor emptied the 45–48 band where the layer's own
-// bodyWidth was wider than the pane. On THIS screen
-// TestReceive_NothingOverflowsThePane holds that clampToBox does not bite, at
-// every width Root draws (receiveHonestWidths, which is now all of them).
+// The cut that marks nothing is Root's, not any screen's: clampToBox, the
+// backstop for a row nothing bounded. Where it bites, the ROW is the defect. The
+// status bar is not a second one any more — it flattens a flashed message and
+// clips it with pickerClip's mark
+// (TestStatusBar_AStatusCommandDispatchedThroughRootIsOneMarkedRow), a failed
+// submit's OMS body included. The purchase-order edit screen's separate
+// contract is owned by TestPOEditRows_NothingRunsPastThePane. The rows other
+// purchasing screens used to draw past the pane BELOW 80 columns are
+// not reachable any more — minTerminalWidth is the floor — and the same floor
+// emptied the 45–48 band where the layer's own bodyWidth was wider than the
+// pane. On THIS screen TestReceive_NothingOverflowsThePane holds that clampToBox
+// does not bite, at every width Root draws (receiveHonestWidths, which is now
+// all of them).
 //
 // This one used to be the exception too: it stopped at receiveNoteRows and drew
 // nothing to say so. What it drops is the TAIL, which on these sentences is
