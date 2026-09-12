@@ -13,6 +13,12 @@
 // It lives in its own directory rather than in internal/tui because the claim
 // is about the whole module and the sweep walks the whole module. It has no
 // non-test file on purpose: there is nothing here to import.
+//
+// The artifact under test is the repository's own documentation text, which
+// the repository owns and publishes. These sweeps assert nothing about program
+// behaviour and must never be cited as evidence that any code works. No
+// executable interface can answer whether a name in that text resolves, which
+// is why the source is parsed directly.
 package doccheck
 
 import (

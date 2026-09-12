@@ -1,16 +1,16 @@
 package doccheck
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
-
-// scanttyEnv matches one SCANTTY_-prefixed environment variable name.
-var scanttyEnv = regexp.MustCompile(`SCANTTY_[A-Z0-9_]+`)
 
 // TestDocs_TheReadmeEnvTableIsTheOneTheLoaderReads holds the one inventory in
 // README.md that is not replaced by a pointer, because it cannot be: an
@@ -30,11 +30,13 @@ func TestDocs_TheReadmeEnvTableIsTheOneTheLoaderReads(t *testing.T) {
 	mod := moduleRoot(t)
 
 	readme := readFile(t, filepath.Join(mod, "README.md"))
-	loader := readFile(t, filepath.Join(mod, "internal", "config", "config.go"))
+	documented := readmeEnvNames(t, readme)
+	read := loaderEnvNames(t, filepath.Join(mod, "internal", "config", "config.go"))
 
-	documented := envNames(readme)
-	read := envNames(loader)
-
+	if len(documented) == 0 {
+		t.Fatal("README.md's environment table names no SCANTTY_ variable; the " +
+			"comparison would pass against an empty set and prove nothing")
+	}
 	if len(read) == 0 {
 		t.Fatal("internal/config/config.go names no SCANTTY_ variable; the comparison " +
 			"would pass against an empty set and prove nothing")
@@ -54,15 +56,76 @@ func TestDocs_TheReadmeEnvTableIsTheOneTheLoaderReads(t *testing.T) {
 	}
 }
 
-func envNames(src string) []string {
+func readmeEnvNames(t *testing.T, src string) []string {
+	t.Helper()
+	const heading = "## Configuration (environment variables)"
+	lines := strings.Split(src, "\n")
+	inSection := false
 	seen := map[string]bool{}
 	var out []string
-	for _, m := range scanttyEnv.FindAllString(src, -1) {
-		if seen[m] {
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == heading {
+			inSection = true
 			continue
 		}
-		seen[m] = true
-		out = append(out, m)
+		if inSection && strings.HasPrefix(trimmed, "## ") {
+			break
+		}
+		if !inSection || !strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		cells := strings.Split(trimmed, "|")
+		if len(cells) < 3 {
+			continue
+		}
+		name := strings.Trim(strings.TrimSpace(cells[1]), "`")
+		if !strings.HasPrefix(name, "SCANTTY_") || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func loaderEnvNames(t *testing.T, path string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+
+	seen := map[string]bool{}
+	var out []string
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			values := spec.(*ast.ValueSpec)
+			for i, name := range values.Names {
+				if !strings.HasPrefix(name.Name, "env") || i >= len(values.Values) {
+					continue
+				}
+				literal, ok := values.Values[i].(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
+					t.Fatalf("%s: const %s must have a string literal value", path, name.Name)
+				}
+				value, err := strconv.Unquote(literal.Value)
+				if err != nil {
+					t.Fatalf("%s: decoding const %s: %v", path, name.Name, err)
+				}
+				if seen[value] {
+					continue
+				}
+				seen[value] = true
+				out = append(out, value)
+			}
+		}
 	}
 	sort.Strings(out)
 	return out
