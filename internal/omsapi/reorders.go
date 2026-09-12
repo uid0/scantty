@@ -90,8 +90,64 @@ type ReorderRequestCreate struct {
 	RequestNotes string `json:"request_notes,omitempty"`
 }
 
-func (c *Client) CreateReorderRequest(ctx context.Context, req ReorderRequestCreate) (*ReorderRequest, error) {
-	var out ReorderRequest
+// ReorderRequestCreated is the reply to POST /api/reorders/requests/, and it is
+// a WIDER shape than the ReorderRequest rows the list endpoints serve. Both
+// extra keys are put on by the VIEW — ReorderRequestViewSet.create in
+// backend/reorder_queue/views.py builds a dict from the create serializer's
+// data and adds them — rather than by the serializer a row comes off, so
+// declaring them on ReorderRequest itself would say they are part of a row that
+// never carries them. Which struct a key belongs on is the BUILDER's decision,
+// which is the rule AGENTS.md records against POLineLookupOrder.ID.
+//
+// THE POST HAS THREE OUTCOMES AND A CALLER MUST KEEP ALL THREE APART:
+//
+//   - FILED — 201, the request just created, AlreadyRequested false.
+//   - ALREADY RECORDED — 200, the still-PENDING request this submission
+//     duplicated, AlreadyRequested true. NO ROW WAS CREATED. OMS files no
+//     second ANONYMOUS request for an item while one is still pending
+//     (ReorderRequestCreateSerializer.create) and answers with the existing one
+//     instead of refusing, because the member's need IS on file and telling
+//     them otherwise is what makes them scan again.
+//   - COULD NOT TELL — the unchanged 4xx/5xx envelope, which reaches the caller
+//     as an error from Post and never sets AlreadyRequested at all.
+//
+// The 200 is a SUCCESS to Client.do, which errors only at >= 400, so the middle
+// outcome arrives here and not on the error path. That is what makes reading
+// the field mandatory rather than optional: a caller that treats every non-error
+// reply as a filed request reports one that was never created.
+//
+// The 200 also carries a member-facing `detail` sentence. It is deliberately not
+// decoded: the fact this client needs is the FLAG, and that sentence is roughly
+// two hundred characters of prose written for the phone-facing scan page — a
+// length internal/tui/reorder_form.go's single unfolded result line cannot hold
+// at the 51 cells an 80-column pane gives, so relaying it would put the tail of
+// the reassurance off the terminal. The terminal words the outcome itself.
+type ReorderRequestCreated struct {
+	ReorderRequest
+
+	// AlreadyRequested is true when this submission duplicated a request that
+	// was still pending, so nothing was filed and the row echoed back is the
+	// EXISTING one — its id, its quantity, its status.
+	//
+	// IT IS A PLAIN bool AND NOT A *bool, which is the opposite of the choice
+	// CanDeleteItems makes a few hundred lines up, so the reason is worth
+	// stating rather than leaving as an apparent oversight. There, an absent key
+	// is a SILENCE: an OMS too old to serve it has said nothing about whether
+	// the supplier holds the order, and reading that silence as false would
+	// offer an irreversible destroy on a guess. Here an absent key is not a
+	// silence but an older CONTRACT in which the fact has exactly one value —
+	// an OMS without this rule creates a row on every success, so a reply
+	// carrying no marker IS a filed request. Absent and false are the same
+	// fact, and the zero value is that fact.
+	AlreadyRequested bool `json:"already_requested"`
+}
+
+// CreateReorderRequest files a reorder request — or reports the pending one it
+// would have duplicated. Read ReorderRequestCreated.AlreadyRequested before
+// telling anybody a request was created; the duplicate comes back as a 200 and
+// is therefore a success here, not an error.
+func (c *Client) CreateReorderRequest(ctx context.Context, req ReorderRequestCreate) (*ReorderRequestCreated, error) {
+	var out ReorderRequestCreated
 	if err := c.Post(ctx, "/api/reorders/requests/", req, &out); err != nil {
 		return nil, err
 	}

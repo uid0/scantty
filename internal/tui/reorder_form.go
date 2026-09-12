@@ -26,7 +26,7 @@ type ReorderFormScreen struct {
 }
 
 type reorderSubmittedMsg struct {
-	result *omsapi.ReorderRequest
+	result *omsapi.ReorderRequestCreated
 	err    error
 }
 
@@ -104,15 +104,8 @@ func (s *ReorderFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.resultLvl = StatusError
 			return s, Status(s.resultMsg, StatusError)
 		}
-		// ID is `any`, so %d cannot be used: it has no verb for whatever
-		// concrete type the decoder chose and would print a %!d(...) mess into
-		// a line the operator reads. %v renders every representation cleanly
-		// and stays correct whichever one arrives — which is the point, since
-		// this comment used to name float64 as that type and omsapi's
-		// jsonDecoder (UseNumber) has since made it json.Number.
-		s.resultMsg = fmt.Sprintf("reorder #%v created", m.result.ID)
-		s.resultLvl = StatusOK
-		return s, Status(s.resultMsg, StatusOK)
+		s.resultMsg, s.resultLvl = reorderOutcome(m.result)
+		return s, Status(s.resultMsg, s.resultLvl)
 	case tea.KeyMsg:
 		switch m.Type {
 		case tea.KeyTab, tea.KeyShiftTab, tea.KeyDown, tea.KeyUp:
@@ -131,6 +124,50 @@ func (s *ReorderFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	var cmd tea.Cmd
 	s.inputs[s.focused], cmd = s.inputs[s.focused].Update(msg)
 	return s, cmd
+}
+
+// reorderOutcome words what the submit actually DID, which is not the same
+// question as whether it succeeded.
+//
+// THERE ARE THREE OUTCOMES AND THIS SCREEN KEEPS THEM APART BY COLOUR AS WELL
+// AS BY WORDS, because an operator reads the colour first:
+//
+//   - FILED — StatusOK. A row was created.
+//   - ALREADY REQUESTED — StatusWarn. OMS files no second ANONYMOUS request
+//     while one for the same item is still pending, so nothing was created and
+//     the id echoed back is the EXISTING request's. It is emphatically NOT an
+//     error: the need IS on file and nothing more is asked of the operator, so
+//     StatusError here would send them to scan again — the duplicate the server
+//     rule exists to prevent. Nor is it StatusOK: told "created" twice, they can
+//     reasonably believe two requests exist.
+//   - COULD NOT TELL — StatusError, worded by the caller off the transport
+//     error. Never reaches here.
+//
+// StatusInfo is the fourth level and is NOT the middle one: it renders in the
+// muted colour every hint on this pane already uses, so the answer to a submit
+// would be drawn as though it were decoration.
+//
+// AN OMS THAT DOES NOT SEND THE MARKER BEHAVES EXACTLY AS BEFORE, and it does so
+// by construction rather than by a branch: the key is absent, AlreadyRequested
+// decodes to false, and false is "filed" — which is the truth against such a
+// server, because one without the rule creates a row on every success. That is
+// the tolerance this screen shipped for, since ScanTTY lands before the server
+// change; omsapi.ReorderRequestCreated carries why absent and false are one
+// fact here.
+//
+// THE LOAD-BEARING CLAIM LEADS. An 80-column terminal leaves this pane 51 cells
+// and the result line neither folds nor marks its cut, so what a clip takes has
+// to be the part that can be lost: "already requested" first, then the id, then
+// the reason. Cut anywhere, what stands cannot be read as a request that was
+// filed. %v and not %d because ID is `any` — %d would print a %!d(...) mess for
+// whatever concrete type the decoder chose, while %v is correct for all of them,
+// and since omsapi's jsonDecoder sets UseNumber a numeric pk arrives as a
+// json.Number and keeps the server's own digits.
+func reorderOutcome(res *omsapi.ReorderRequestCreated) (string, StatusLevel) {
+	if res.AlreadyRequested {
+		return fmt.Sprintf("already requested — #%v is still pending", res.ID), StatusWarn
+	}
+	return fmt.Sprintf("reorder #%v created", res.ID), StatusOK
 }
 
 func (s *ReorderFormScreen) focusNext(reverse bool) {

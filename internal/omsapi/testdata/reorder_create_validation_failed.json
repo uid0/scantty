@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "One or more fields failed validation.",
+    "details": {
+      "item": [
+        "This field is required."
+      ]
+    }
+  }
+}
