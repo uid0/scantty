@@ -755,17 +755,10 @@ const (
 	isFieldMax
 )
 
-// itemSupplierFieldLabel is the shared label column. `Unit cost (derived)` says
-// in the LABEL what the focus hint below says at length, because the label is
-// the one part of the row a short pane cannot take: `jdeLines.Window` keeps a
-// block's START, so the field row survives wherever the field is reachable at
-// all while the hint folded under it is the tail a short body drops. A cue that
-// is only in the hint is therefore absent at exactly the panes where it is
-// hardest to notice a value being rewritten.
-//
-// It costs nothing to carry: the column is sized by the WIDEST label
-// (`jdeLabelWidth`), `Quantity per package` is 20 cells and this is 19, so no
-// input moves. Keep it under that or every box on the form shifts right.
+// itemSupplierFieldLabel is the shared label column. Keep the derived cue in
+// the unit-cost label: short panes can omit its folded focus hint while leaving
+// the field row visible. Keep labels no wider than "Quantity per package" to
+// avoid shifting every input in the form.
 var itemSupplierFieldLabel = map[int]string{
 	isSupplier:      "Supplier",
 	isSKU:           "Supplier SKU",
@@ -793,45 +786,10 @@ var itemSupplierFieldHint = map[int]string{
 	isQtyPerPackage: "units",
 }
 
-// itemSupplierFieldFocusHint is what each cost box says while the caret is in
-// it. THE UNIT COST IS A DERIVED FIGURE AND THE BOX MUST SAY SO WHERE IT IS
-// TYPED INTO: OMS derives the two cost columns from each other on every save
-// (`inventory.services.suppliers.derive_costs` is the one statement of that
-// rule, and `omsapi.ItemSupplierWrite`'s doc points at it), so a unit price the
-// operator types can come back recomputed from the case price, and a case price
-// they clear takes the unit price with it. Presenting either box as an ordinary
-// editable field is the defect: the value is rewritten AFTER they typed it, on a
-// screen that gave no cue, and a successful save then navigates to
-// ItemSuppliersScreen, so what they read next is the server's figure with
-// nothing beside it saying it replaced theirs.
-//
-// The two halves each hint states are the ones OMS's own corrected web copy
-// states (`frontend/src/components/SupplierRelationshipForm.tsx`): what the
-// figure is DERIVED FROM, and what CHANGING it does. "only this" carries the
-// qualifier because the pair moving TOGETHER is decided the other way — the
-// case price governs — and the package hint says so from its side, so the two
-// rows close over each other instead of each describing half a rule. "alone"
-// is the same kind of qualifier from the package side and is not padding:
-// emptying the case price while ALSO typing a new unit price keeps the typed
-// figure — the changed value beats a clear, whichever box it came from — so a
-// flat "clearing it clears both" would be false in a state an operator can
-// reach, on the row that says what an emptied box destroys.
-//
-// THE DERIVATION LEADS, and that is the "whatever must survive must lead" rule
-// rather than a preference: this hint folds onto four rows at an 80-column
-// pane, `jdeLines.Window` keeps a block's START, so a short body draws the head
-// of it and drops the tail with no key that can fetch either back. Led by
-// `per unit` the surviving fragment was the one fact the row did not need to
-// make.
-//
-// IT IS DRAWN ON FOCUS, and the standing cue is in the LABEL instead — the one
-// part of the row a short pane cannot take (see itemSupplierFieldLabel). Which
-// is why focus-gating costs nothing here: the fold is drawn in full exactly
-// when the caret is in the box it explains, because Window anchors on the
-// CURSOR's block, and the row nobody is typing into keeps its one-line unit
-// fact. Standing on every row these two would spend eight of the body's rows at
-// 80 columns explaining fields the cursor is nowhere near. The supplier row's
-// `Ctrl-E picks` hint already works this way.
+// itemSupplierFieldFocusHint explains the consequences of editing either cost.
+// It is focus-only to preserve vertical space; the unit-cost label carries the
+// standing derived cue. OpenMakerSuite's
+// `inventory.services.suppliers.derive_costs` owns the exact derivation rule.
 var itemSupplierFieldFocusHint = map[int]string{
 	isUnitCost:    "derived from package cost ÷ qty · per unit · editing only this re-prices the package",
 	isPackageCost: "per package · governs when both change · clearing it alone clears both prices",

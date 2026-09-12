@@ -1594,28 +1594,10 @@ func (c *Client) ListItemSuppliersForItem(ctx context.Context, itemID string) ([
 //
 //   - UnitCost / PackageCost are nullable decimals sent as strings and carry NO
 //     omitempty, so clearing one on edit sends an explicit null (mirroring the
-//     web's `value || null`). That absence of omitempty is not a style choice:
-//     the server resolves the pair as a DELTA against the stored row, so which
-//     of the two boxes the operator MOVED is the whole input, and a payload that
-//     dropped an echoed box would be telling it something different from what
-//     the form was showing. Sending both, always, is the shape that rule reads.
-//
-//     WHAT THE SERVER THEN DOES WITH THEM IS NOT RESTATED HERE, and the reason
-//     is that the previous restatement of it ("if package_cost is set it wins;
-//     else if only unit_cost is set, package_cost = unit_cost * qty") outlived
-//     the behaviour by a release. It was written when the rule was decidable
-//     from the submitted values alone; the rule is now a comparison against what
-//     is stored, with arms for a cleared case price, a cleared unit price, a
-//     moved pack size and a pack size that cannot divide, and a copy of that
-//     here could only go stale the same way. ONE statement of it exists and it
-//     is the server's: `inventory.services.suppliers.derive_costs` in
-//     OpenMakerSuite, whose doc comment is the contract and names the test file
-//     that pins its arms (`inventory/tests/test_supplier_cost_derivation.py`).
-//     Read it before reasoning about what a write will store.
-//
-//     What a CLIENT is obliged to know is the part the screens carry: the unit
-//     cost is a DERIVED figure, so a value typed into it can come back
-//     recomputed, and `internal/tui/item_suppliers.go` says so on the box.
+//     web's `value || null`). The server compares both values with the stored
+//     row, so omitting either echoed value would change the meaning of the
+//     write. OpenMakerSuite's `inventory.services.suppliers.derive_costs` owns
+//     the derivation rule; do not duplicate that rule here.
 //
 //   - QuantityPerPackage / AverageLeadTime are plain ints carrying the model
 //     defaults (1 and 7); always sent.
