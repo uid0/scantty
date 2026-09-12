@@ -3011,14 +3011,11 @@ touching any screen an operator drives:
   letters into a search box, and do not restate it as a claim about which
   surfaces bind what.
   THE NAMING HALF is proven on the surfaces whose bar is a machine-readable
-  record (every type embedding `jdeScreen`, plus `ListScreen`), and on those
-  alone — `listNavUnsweptReceivers` (`list_nav_surfaces_test.go`) is the roster
-  of the receivers that are not, and the authority on what is guaranteed for
-  them instead. The New PO flow was never part of it after its
   record — every type embedding `jdeScreen`, plus `ListScreen`, plus every
   screen that declares a `proseBar` (`prose_bar.go`) — and on those alone; see
   the navigation entry below, because every receiver still in
-  `listNavUnsweptReceivers` names less than it binds. The New PO flow was never part of it after its
+  `listNavUnsweptReceivers` names less than it binds. The New PO flow was never
+  part of it after its
   conversion: it is on the columnar set (`UP/DN`, `PgUp/PgDn` when the body
   moves) and `j`/`k` are unbound on it.
 - **On a destructive confirm the keys are on the BAR and the prose is the
