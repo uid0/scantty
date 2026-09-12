@@ -276,6 +276,70 @@ func TestAssetMeters_AnAdjustmentAfterFailedRefreshIsConfirmedThenWritten(t *tes
 	}
 }
 
+func TestAssetMeters_AReadingDuringRefreshIsConfirmedThenWritten(t *testing.T) {
+	fake := meterFakeWithSpindle()
+	r, screen, done := meterDrive(t, fake)
+	defer done()
+
+	next, refreshCmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	r = next.(Root)
+	if refreshCmd == nil || screen.meterValuesConfirmed() {
+		t.Fatal("dispatching refresh did not immediately make cached meter values unconfirmed")
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = meterType(t, r, "1298.75")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if screen.phase != meterPhaseConfirm {
+		t.Fatalf("an ordinary reading during refresh left phase %v, want confirm", screen.phase)
+	}
+	if writes := fake.writes(); len(writes) != 0 {
+		t.Fatalf("the unchecked reading was written before Ctrl-X: %+v", writes)
+	}
+	if pane := assetFlatPane(screen, 80, 30); !strings.Contains(pane, "could not be confirmed against the server") {
+		t.Fatalf("the in-flight confirm misstates why the comparison is unchecked:\n%s", stripANSI(pane))
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+	writes := fake.writes()
+	if len(writes) != 1 || writes[0].Body["value"] != "1298.75" {
+		t.Fatalf("Ctrl-X writes = %+v, want exactly the typed reading", writes)
+	}
+}
+
+func TestAssetMeters_AnAdjustmentDuringRefreshIsConfirmedThenWritten(t *testing.T) {
+	fake := meterFakeWithSpindle()
+	r, screen, done := meterDrive(t, fake)
+	defer done()
+
+	next, refreshCmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	r = next.(Root)
+	if refreshCmd == nil || screen.meterValuesConfirmed() {
+		t.Fatal("dispatching refresh did not immediately make cached meter values unconfirmed")
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlA})
+	r = meterType(t, r, "1289.75")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	r = meterType(t, r, "recount against the control")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if screen.phase != meterPhaseConfirm {
+		t.Fatalf("an ordinary adjustment during refresh left phase %v, want confirm", screen.phase)
+	}
+	if writes := fake.writes(); len(writes) != 0 {
+		t.Fatalf("the unchecked adjustment was written before Ctrl-X: %+v", writes)
+	}
+	if pane := assetFlatPane(screen, 80, 30); !strings.Contains(pane, "could not be confirmed against the server") {
+		t.Fatalf("the in-flight adjustment confirm misstates why it is unchecked:\n%s", stripANSI(pane))
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+	writes := fake.writes()
+	if len(writes) != 1 || writes[0].Body["target"] != "1289.75" {
+		t.Fatalf("Ctrl-X writes = %+v, want exactly the typed adjustment", writes)
+	}
+}
+
 // THE BENCH GESTURE. Enter on a meter, type the number off the machine, Enter.
 // The assertion is the REQUEST: the right endpoint, the operator's own digits,
 // and is_absolute explicitly true.

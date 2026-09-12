@@ -161,7 +161,7 @@ func meterVerdictReason(m omsapi.AssetMeter, v meterEntryVerdict) string {
 		reason = fmt.Sprintf("that multiplies the meter by ten or more, from %s to %s — the shape of one extra digit.", from, to)
 	}
 	if v.Unchecked {
-		unchecked := "The last refresh of this meter failed, so its current value may not be what the server holds and this entry could not be checked against the server."
+		unchecked := "This meter's current value could not be confirmed against the server right now, so this entry could not be checked against the server."
 		if reason == "" {
 			return unchecked
 		}

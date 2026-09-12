@@ -237,7 +237,7 @@ func (s *AssetMetersScreen) Title() string {
 // back-step keep working while browsing.
 func (s *AssetMetersScreen) WantsRawInput() bool { return s.phase != meterPhaseList }
 
-func (s *AssetMetersScreen) Init() tea.Cmd { return s.load() }
+func (s *AssetMetersScreen) Init() tea.Cmd { return s.beginLoad() }
 
 func (s *AssetMetersScreen) ctx() context.Context {
 	if s.deps.Ctx != nil {
@@ -252,6 +252,17 @@ func (s *AssetMetersScreen) load() tea.Cmd {
 		meters, err := deps.OMS.ListAssetMeters(ctx, id)
 		return assetMetersLoadedMsg{meters: meters, err: err}
 	}
+}
+
+func (s *AssetMetersScreen) beginLoad() tea.Cmd {
+	s.loading = true
+	s.loadErr = ""
+	s.loadConfirmed = false
+	return s.load()
+}
+
+func (s *AssetMetersScreen) meterValuesConfirmed() bool {
+	return s.loadConfirmed && !s.loading && s.loadErr == ""
 }
 
 // addressedMeter is the one guarded read every s.meters[s.cursor] goes through.
@@ -277,6 +288,7 @@ func (s *AssetMetersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case assetMetersLoadedMsg:
 		s.loading = false
 		if m.err != nil {
+			s.loadConfirmed = false
 			s.loadErr = m.err.Error()
 			return s, Status("load meters failed: "+m.err.Error(), StatusError)
 		}
@@ -304,8 +316,7 @@ func (s *AssetMetersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			name = m.meter.Name
 		}
 		s.setNote(StatusOK, fmt.Sprintf("meter %q created.", name))
-		s.loading = true
-		return s, tea.Batch(Status("meter created", StatusOK), s.load())
+		return s, tea.Batch(Status("meter created", StatusOK), s.beginLoad())
 
 	case tea.KeyMsg:
 		switch s.phase {
@@ -400,8 +411,7 @@ func (s *AssetMetersScreen) applyWrite(m meterReadingWrittenMsg) (Screen, tea.Cm
 	} else {
 		s.setNote(StatusOK, verb+".")
 	}
-	s.loading = true
-	return s, tea.Batch(Status("meter "+what, StatusOK), s.load())
+	return s, tea.Batch(Status("meter "+what, StatusOK), s.beginLoad())
 }
 
 // meterRefusal recovers the server's own sentence from a refusal.
@@ -508,10 +518,8 @@ func (s *AssetMetersScreen) updateList(m tea.KeyMsg) (Screen, tea.Cmd) {
 			s.pageList(+1)
 		}
 	case "r":
-		s.loading = true
-		s.loadErr = ""
 		s.setNote(StatusInfo, "")
-		return s, s.load()
+		return s, s.beginLoad()
 	case "n":
 		return s, s.openNew()
 	case "enter":
@@ -919,7 +927,7 @@ func (s *AssetMetersScreen) submitRecord() tea.Cmd {
 	}
 
 	verdict := meterEntryCheck(meter.CurrentValue, typed, s.recordAbsolute)
-	verdict.Unchecked = s.loadErr != "" || !s.loadConfirmed
+	verdict.Unchecked = !s.meterValuesConfirmed()
 	if verdict.Suspicious() {
 		s.pendingAdjust = false
 		s.pendingMeter = meter
@@ -1095,7 +1103,7 @@ func (s *AssetMetersScreen) submitAdjust() tea.Cmd {
 	}
 
 	verdict := meterAdjustCheck(meter.CurrentValue, typed)
-	verdict.Unchecked = s.loadErr != "" || !s.loadConfirmed
+	verdict.Unchecked = !s.meterValuesConfirmed()
 	if verdict.Suspicious() {
 		s.pendingAdjust = true
 		s.pendingMeter = meter

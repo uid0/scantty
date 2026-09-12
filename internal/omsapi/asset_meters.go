@@ -147,9 +147,10 @@ type AssetMeterReading struct {
 // The reply carrying the meter is what lets a screen show the new total without
 // a second round trip — and, more to the point, lets it show what the SERVER
 // stored rather than what the client thinks it asked for.
-// A failed later list refresh leaves that displayed total stale; the TUI carries
-// that uncertainty into its sanity verdict and confirms every such write while
-// saying that the comparison could not be checked against the server.
+// A failed or still-pending later list refresh leaves that displayed total
+// unconfirmed; the TUI carries that uncertainty into its sanity verdict and
+// confirms every such write while saying that the comparison could not be
+// checked against the server.
 type MeterReadingResult struct {
 	Meter   AssetMeter        `json:"meter"`
 	Reading AssetMeterReading `json:"reading"`
