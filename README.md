@@ -195,7 +195,8 @@ The classifier in `internal/scanner` distinguishes two scan kinds:
 │   │   ├── inventory.go          # items, assets, locations, categories, suppliers, item-suppliers, fixtures, lookup-code
 │   │   ├── reorders.go           # reorder requests, purchase orders, receipts
 │   │   ├── membership.go         # profile, SIGs, certifications
-│   │   ├── workorders.go         # internal WOs + third-party (maintenance-orders)
+│   │   ├── workorders.go         # in-house inventory work orders
+│   │   ├── maintenance_orders.go # vendor work orders, quotes, attachments, and workflow actions
 │   │   ├── donations.go          # donations + tax receipts
 │   │   └── search.go             # /api/search/, dashboard summary
 │   ├── forgekeyapi/              # ForgeKey HTTP client (mTLS-capable transport)
@@ -240,6 +241,7 @@ Landed:
 - End-to-end scanner flow: scan → lookup → inventory detail → reorder form → submit. From an item's detail, `s` opens its supplier links with supplier name, supplier SKU, box and unit barcodes, unit cost, and lead time.
 - Complete a reorder request from the Reorder Queue: `f` cycles pending, approved, ordered, and all requests; `a` approves a pending request, `o` marks an approved request ordered, and `d` confirms receipt of an ordered request and credits its item quantity to stock. `x` cancels pending or approved requests. The screen names only the actions valid for the selected request, and reorder quantities are individual items rather than supplier cases.
 - Review scanned work orders: uploads remain behind OMS's human gate, pending-review counts are visible in the work-order list and detail, and the terminal can selectively apply or discard parsed readings or explicitly request completion. A scan never closes a work order on its own.
+- Run vendor work orders from Maintenance: list and filter the seven workflow stages, review quotes and attachments, set the not-to-exceed amount, advance and close the order, and handle emergency authorization, quote waivers, keyfob returns, and variance overrides. Every write is confirmed, and blocked stages show the server's reason.
 - Receive deliveries: PO list → PO detail → the receiving flow. The server's receiving worksheet is the whole input — whether the order may be received against and why not, which lines are outstanding and which are settled, and what a scanner reads off each one — so scanning a code finds its line. Tracking barcode, carrier and stated delivery date ride with the receipt (no transit duration is computed from them). What actually arrived is recorded as counted and any difference from the quantity ordered is flagged rather than rounded away; serialized units are captured one at a time with optional lot and expiry, and units credited to stock with no serial naming them are reported back. A line's outstanding balance can be closed short and the whole order marked received, each behind its own confirm; a mistaken close-short can be reopened without erasing its history. Whether the order then advances to `received` is the server's call, and the summary reports the status that came back.
 - Purchase-order detail adapts to the terminal: at the standard 80 columns each line keeps its multi-row detail, while a sufficiently wide pane puts each non-kit line on one row with its supplier SKU, full part UUID, and supplier line cost. The fit is measured from the whole order without abbreviating values; orders containing kit lines retain the multi-row form.
 - Add a purchase-order line by scanning or typing an identifier: `n` on a draft order's detail sheet takes the supplier's SKU, the item's own SKU, a package or unit barcode, or a name; OMS resolves it against that order's supplier; the item is shown to confirm — naming the other vendor when the code came off a rival's box — and then quantity and price are prompted with the OMS defaults prefilled and overtypable, in the vendor's cases where that item is case-packed (on a repeat add, which grows the line already on the order, the price row starts blank so accepting it cannot reprice that line). Genuine ambiguity offers the candidates to pick from; a refusal (the supplier does not carry it, the order is not a draft) is shown as the server's own sentence. A successful add returns to the identifier box with a running tally, so a stack of boxes is one scan each.
@@ -250,7 +252,7 @@ Landed:
 Not yet landed (the long tail):
 - Auth/login screen and persistent token storage. Today, tokens come from `SCANTTY_OMS_TOKEN`.
 - Cache *reads* — the cache layer is wired but every list/detail still hits the network on every refresh. The plan is to read-through on network failure, then refresh asynchronously when connectivity returns.
-- Detail screens for assets, SIGs, donations.
+ - Detail screens for SIGs and donations.
 - ForgeKey device detail + command actions (enable/disable/identify/blink/firmware).
 - Authorization create/revoke + classroom-mode QR enroll.
 - Lockout flows with hierarchical unlock.

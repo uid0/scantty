@@ -2,10 +2,7 @@
 // driven from the terminal.
 //
 // TUI counterpart to the web's ThirdPartyWorkOrderPage stepper
-// (frontend/src/pages/ThirdPartyWorkOrderPage.tsx). Before this, ScanTTY could
-// CREATE a vendor work order (asset_problems.go's promote-to-vendor) and then
-// drive none of the actions that move it: the terminal made work it could not
-// list, advance or close, and the operator finished in the browser.
+// (frontend/src/pages/ThirdPartyWorkOrderPage.tsx).
 //
 // THE STATE MACHINE IS THE SERVER'S. backend/maintenance_orders/transitions.py
 // owns every gate and this screen re-derives none of them — what it reads is

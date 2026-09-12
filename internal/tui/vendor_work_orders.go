@@ -1,12 +1,6 @@
-// The VENDOR work-order list — ScanTTY's door into the `maintenance_orders`
-// app, which until now the terminal could only WRITE to and never read.
-//
-// THE DEAD END THIS CLOSES. asset_problems.go promotes a reported problem to a
-// third-party work order (PromoteAssetProblemThirdParty), and from there the
-// whole seven-step vendor workflow lived in the browser: the terminal created
-// work it could not list, advance or close. omsapi.ListMaintenanceOrders had
-// existed with no caller anywhere. This list is the caller, and
-// VendorWorkOrderDetailScreen is what an operator reaches from it.
+// The VENDOR work-order list is the TUI entry point for the
+// `maintenance_orders` app. VendorWorkOrderDetailScreen is the detail surface
+// reached from it.
 //
 // IT IS A ListScreen rather than a bespoke screen, which is a decision and not
 // a convenience: ListScreen carries the footer-honesty sweep, the folded bar,
