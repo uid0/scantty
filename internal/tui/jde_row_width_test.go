@@ -52,11 +52,12 @@ const jdeRowsMustHoldFrom = 80
 // that finer claim would need the whole set of cutting panes per state, which
 // moves with every wording on every frame.
 //
-// SEVEN SCREENS CAME OFF THIS ROSTER WHEN THE SIZE CONTRACT WAS SETTLED, and
+// NINE SCREENS CAME OFF THIS ROSTER WHEN THE SIZE CONTRACT WAS SETTLED, and
 // not one of them was edited to do it: LocationReconcileScreen (49),
 // PurchaseOrderDetailScreen (51), WorkOrderScanReviewScreen (51),
 // PurchaseOrderAttachmentsScreen (59), PurchaseOrderEditScreen (65),
-// PurchaseOrderAddLineScreen (66) and PurchaseOrderCreateScreen (67). Every one
+// PurchaseOrderAddLineScreen (66), PurchaseOrderCreateScreen (67),
+// AssetDocumentsScreen (74) and AssetMetersScreen (77). Every one
 // of them cut a row only at widths Root no longer draws in, so the mechanism
 // each recorded — a label column or a value floor wider than the pane it was
 // sized from — is now unreachable rather than fixed. Lower minTerminalWidth and
@@ -67,17 +68,6 @@ const jdeRowsMustHoldFrom = 80
 // value floor wider than a narrow pane; prose and grids drawn unbounded) — is
 // the companion item filed with this sweep, scantty-columnar-rows-past-the-pane.
 var jdeRowsPastThePane = map[string]int{
-	// Both asset-meter entries are BELOW jdeRowsMustHoldFrom, which is the
-	// standard width this program is held to: every row of both screens fits at
-	// 80 columns and above. Each is one cell, and each is the SAME layer
-	// mechanism — a jdeChoice row. jdeFitRow trades a field against its hint and
-	// folds what is left, but only for a jdeText row: a choice row has no input
-	// area to give, so its rendered "< value >" plus any hint has to fit as
-	// written. On the documents form the value is the SERVER's own category
-	// label ("Manual / Documentation"), which is kept verbatim so the row reads
-	// the way the web does rather than in a second vocabulary.
-	"AssetDocumentsScreen":      74,
-	"AssetMetersScreen":         77,
 	"AssetFormScreen":           107,
 	"AssetPartFormScreen":       98,
 	"AuthorizationGrantScreen":  98,

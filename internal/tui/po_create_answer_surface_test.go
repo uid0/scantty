@@ -577,11 +577,14 @@ func TestPOFailure_TheHeaderNeitherRepeatsNorSilentlyCutsTheHeadline(t *testing.
 
 	reach := func(t *testing.T, w int) (Root, *PurchaseOrderCreateScreen) {
 		t.Helper()
-		r, screen := poPickerAtSize(t, &poPickFake{catalog: 2}, w, 24)
+		r, screen := poPickerAtSize(t, &poPickFake{catalog: 2}, minTerminalWidth, 24)
 		r = key(t, r, poPhaseKeyMsg("i"))
 		if screen.phase != poPhaseItemPick {
 			t.Fatalf("setup landed on phase %v, want the item picker", screen.phase)
 		}
+		// The sub-minimum case exercises the screen's bounded header directly;
+		// Root correctly refuses keyboard input at that terminal width.
+		screen.setSize(tea.WindowSizeMsg{Width: w, Height: 24})
 		screen.itemSuppliersErr = "oms: http 502: upstream is not answering"
 		// The picker's own note would outrank the headline on the status row
 		// and put this on a third branch; what is under test is the headline.

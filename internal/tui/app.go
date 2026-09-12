@@ -256,7 +256,11 @@ func (r Root) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s := m.String(); s == "ctrl+c" || s == "ctrl+q" {
 			return r, tea.Quit
 		}
-		if terminalTooSmall(r.width, r.height) != "" {
+		// Zero is the pre-resize sentinel, not a measured terminal size. Keep
+		// accepting input until Bubble Tea supplies its first WindowSizeMsg;
+		// only a size the terminal actually reported may put the hidden screen
+		// behind the refusal.
+		if r.width > 0 && r.height > 0 && terminalTooSmall(r.width, r.height) != "" {
 			return r, nil
 		}
 		// The sidebar menu owns the keyboard while it holds focus — it is a

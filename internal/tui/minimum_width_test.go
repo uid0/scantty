@@ -99,6 +99,19 @@ func TestRoot_TheSizeRefusalBlocksHiddenScreenActions(t *testing.T) {
 	}
 }
 
+func TestRoot_AnUnknownStartupSizeDoesNotRefuseInput(t *testing.T) {
+	screen := &minimumWidthActionScreen{}
+	r := newTestRoot(screen)
+
+	_, cmd := r.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	if cmd != nil {
+		t.Fatal("an ordinary pre-resize key unexpectedly returned a command")
+	}
+	if screen.actions != 1 {
+		t.Fatalf("the pre-resize key reached the active screen %d times, want 1", screen.actions)
+	}
+}
+
 // contractPreviousFloor is the narrowest terminal Root drew a frame in before
 // the size contract was settled: contentWidth was r.width - 24 - 1 and the gate
 // refused below 20, so 45 was the first width that passed it.
