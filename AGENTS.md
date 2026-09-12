@@ -2671,31 +2671,6 @@ touching any screen an operator drives:
   — so it went green over `Creating the purchase or…` with the supplier gone,
   certifying rule 6 on a row that inverted it. Assert the substring the RULE
   requires, not one the truncation leaves.
-  A FIXTURE THAT CLEARS A BOUND BY *ZERO* CELLS IS THE SAME FAILURE WITH THE
-  SIGN REVERSED, and it is the fourth instance. The wide half of
-  `TestPOStatus_AWideRowCarriesTheWholeAnswerBesideTheWork` asserted that a
-  120-column row carries a picker's whole answer beside the work in flight —
-  and that answer and that working sentence come to EXACTLY the 91 cells the
-  pane has. It was green because today's wording fills the row to the cell,
-  not because the row had room, and one cell added to either sentence would
-  have flipped it to failing with a message about a property that had not
-  changed. A case that clears its bound by nothing is not evidence the bound
-  holds. THE TWO HALVES OF THE REMEDY ARE BOTH NEEDED, because neither is
-  available on its own: STATE the margin a case needs and check it as a
-  condition on the FIXTURE (`poLeadRoomToSpare`, with `t.Fatalf` and a message
-  naming the fixture) so erosion reports as "this case stopped reaching its
-  state"; and where NO state of the screen can offer a margin, assert the bound
-  where its inputs are the test's own. The second half is what this one needed:
-  measured across every box-pinning phase at every width Root draws, the best
-  margin any of them reaches is ten cells and only with a one-character
-  supplier, so `TestPOLeadOnto_TheReductionFiresOnTheROOMAndNotOnAWidth` drives
-  `poLeadOnto` directly at margins of sixteen and sixty-four on one side of the
-  bound and sixteen on the other. ASK WHAT THE REBUILT CHECK WOULD STILL PASS
-  ON: a margin alone buys headroom and can lose the discrimination that made
-  the check worth having, so both directions are driven — applied
-  unconditionally the reduction fails every room-to-spare row, never applied it
-  fails every row past the bound, and a check asserting only one of them passes
-  on the defect the other names.
   The supplier, agreement, work-order and committee rows are columnar VALUE
   rows carrying OMS-supplied names (`renderJDEField` with `jdeValue`), each
   clipped to what the shared label column leaves (`poFieldValueRoom`, ellipsis
