@@ -5640,13 +5640,9 @@ const receiveNoteRows = 5
 // status bar is not a second one any more — it flattens a flashed message and
 // clips it with pickerClip's mark
 // (TestStatusBar_AStatusCommandDispatchedThroughRootIsOneMarkedRow), a failed
-// submit's OMS body included. Neither is the purchase-order EDIT screen, which
-// this note used to list as drawing rows past the pane from 80 columns up: those
-// rows were fitted, and TestPOEditRows_NothingRunsPastThePane holds that
-// screen's derived states — every phase, cursor row and removal answer — to the
-// pane at every width and height Root draws, and fails a long fixture value cut
-// without its mark. The
-// rows other purchasing screens used to draw past the pane BELOW 80 columns are
+// submit's OMS body included. The purchase-order edit screen's separate
+// contract is owned by TestPOEditRows_NothingRunsPastThePane. The rows other
+// purchasing screens used to draw past the pane BELOW 80 columns are
 // not reachable any more — minTerminalWidth is the floor — and the same floor
 // emptied the 45–48 band where the layer's own bodyWidth was wider than the
 // pane. On THIS screen TestReceive_NothingOverflowsThePane holds that clampToBox

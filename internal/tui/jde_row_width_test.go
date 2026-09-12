@@ -57,18 +57,10 @@
 //     (fitReportTable) with its own stated give-order and its own sweep, and its
 //     pane accessors are deliberately separate for that reason.
 //
-// THE PURCHASE-ORDER EDIT SCREEN IS NOT A THIRD. This header used to list it as
-// a real, unfinished defect this sweep did not report, copied from a
-// receive_form.go note written before that screen was converted. Both records
-// were stale: the rows they named (the line editor's prose, the order sheet's
-// date hints, attribution heading and work-order value, the association
-// picker's prose, the void prompt's `required`, the delete confirm's
-// voided-line row) are fitted, and they are held by the screen's own STATE
-// sweep, TestPOEditRows_NothingRunsPastThePane in po_edit_rows_test.go — which
-// walks every phase, cursor row and removal answer this sweep's opening
-// positions cannot reach, and fails a long fixture value cut without its mark
-// as well as a row past the pane. A record saying a defect is open when the
-// check says it is closed is itself a defect: the next reader files work from it.
+// The purchase-order edit screen is covered instead by its own state-derived
+// sweep, TestPOEditRows_NothingRunsPastThePane in po_edit_rows_test.go. That
+// test owns the screen-specific width and marked-cut contract because it can
+// reach every phase, cursor row and removal answer this sweep cannot.
 package tui
 
 import (
