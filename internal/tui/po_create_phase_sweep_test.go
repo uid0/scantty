@@ -70,7 +70,11 @@ func poKeySpace() []string {
 		"enter", "esc", "tab", "shift+tab",
 		"up", "down", "left", "right", "home", "end", "pgup", "pgdown",
 		"backspace", "delete",
-		"ctrl+e", "ctrl+x", "ctrl+t", "ctrl+p", "ctrl+n",
+		// ctrl+a is the asset meter grid's Adjust. It is in the SPACE and not
+		// only in the bar table because a key absent from the vocabulary is
+		// pressed in neither direction — untested rather than passing, which is
+		// verbatim how `N` survived on the purchase-order list.
+		"ctrl+e", "ctrl+x", "ctrl+t", "ctrl+a", "ctrl+p", "ctrl+n",
 		"ctrl+k", "ctrl+r", "ctrl+o",
 	)
 }

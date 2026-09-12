@@ -1321,6 +1321,7 @@ var poBarKeyNames = map[string][]string{
 	"Ctrl-F":    {"ctrl+f"},
 	"Ctrl-X":    {"ctrl+x"},
 	"Ctrl-T":    {"ctrl+t"},
+	"Ctrl-A":    {"ctrl+a"},
 	// A choice row's "< value >" pair. Space cycles it too and the bar does not
 	// spell that, which is recorded as poEditSelectAliases rather than credited
 	// here — this table transcribes what a token SPELLS and never a synonym.

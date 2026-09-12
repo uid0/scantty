@@ -2715,6 +2715,7 @@ var poNamedKeyTypes = map[string]tea.KeyType{
 	"ctrl+t":    tea.KeyCtrlT,
 	"ctrl+p":    tea.KeyCtrlP,
 	"ctrl+n":    tea.KeyCtrlN,
+	"ctrl+a":    tea.KeyCtrlA,
 }
 
 // TestPOCreate_EveryKeyNameTranslates walks poKeySpace and fails on any name

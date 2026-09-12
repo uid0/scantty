@@ -316,6 +316,22 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.asset != nil {
 				return s, SwitchTo(WSAssets, NewAssetPartsScreen(s.deps, s.assetID, s.asset.Name))
 			}
+		case "M":
+			// Open the usage meters — record a reading, post a correction, read
+			// the ledger. Uppercase M pairs with the uppercase sibling-surface
+			// letters already here (P, S, R) rather than with the lowercase ones
+			// that act on this sheet; no global claims it, since phase 3 of the
+			// redesign left the root holding no letter at all. Always available
+			// so an asset with no meters yet can have its first one defined.
+			if s.asset != nil {
+				return s, SwitchTo(WSAssets, NewAssetMetersScreen(s.deps, s.assetID, s.asset.Name))
+			}
+		case "D":
+			// Open the document library. Uppercase D for the same reason, and
+			// always available so an empty library is reachable to upload into.
+			if s.asset != nil {
+				return s, SwitchTo(WSAssets, NewAssetDocumentsScreen(s.deps, s.assetID, s.asset.Name))
+			}
 		}
 	}
 	return s, nil
@@ -603,9 +619,15 @@ func (s *AssetDetailScreen) View() string {
 	if s.logResult != "" {
 		footer += RenderStatus(s.logResult, s.logResultLvl) + "\n\n"
 	}
-	hint := "j/k scroll · p report · P problems · o OOS · R restore · S parts · E edit · x delete · r refresh · esc back"
+	// M and D are NAMED here because they act here. This footer is a muted
+	// literal written straight into View and is already past the 51 cells an
+	// 80-column pane gives — the prose-footer gap AGENTS.md records for every
+	// receiver in listNavUnsweptReceivers, which no bar sweep can read. Naming
+	// two more keys does not close that gap and is not meant to; leaving a key
+	// that acts unnamed would break the rule outright rather than inherit it.
+	hint := "j/k scroll · p report · P problems · o OOS · R restore · M meters · D documents · S parts · E edit · x delete · r refresh · esc back"
 	if len(s.components) > 0 {
-		hint = "j/k scroll · p report · P problems · o OOS · R restore · i components · S parts · E edit · x delete · r refresh · esc back"
+		hint = "j/k scroll · p report · P problems · o OOS · R restore · i components · M meters · D documents · S parts · E edit · x delete · r refresh · esc back"
 	}
 	footer += StyleMuted.Render(hint)
 	return body + "\n\n" + footer

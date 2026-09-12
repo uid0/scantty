@@ -296,6 +296,17 @@ func TestJDEForm_ARefusedPaneKeepsTheOperatorsPlace(t *testing.T) {
 // assertion is that a movement key does not move anything, and a fixture where
 // no key moves anything at any height satisfies it without ever exercising it.
 var jdeInertCases = map[string]string{
+	// The three EMPTY states of the asset meter and document screens. Each is
+	// deliberately in the sweep — an empty list is the state a list spends most
+	// of its life in, and it is where a bar most often names a key that cannot
+	// act — and each is inert by construction: with no rows there is no cursor
+	// to move, so no movement key changes the operator's place at any height and
+	// the refused-pane rule has nothing to exercise here. The POPULATED fixture
+	// of each screen is what carries that rule.
+	"AssetMetersScreen/no meters":          "an empty meter grid: no rows, so no cursor to move",
+	"AssetDocumentsScreen/no documents":    "an empty document library: no rows, so no cursor to move",
+	"AssetMeterReadingsScreen/no readings": "an empty ledger: no rows, so no cursor to move",
+
 	"PurchaseOrderDetailScreen/void order": "a confirmation, not a list: Enter and Esc are " +
 		"the only keys the bar names. Its heading and cascade caveat are PINNED HEADER rows " +
 		"now and its body is the one Reason box, so there is no cursor to walk and no " +

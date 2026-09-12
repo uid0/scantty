@@ -1772,6 +1772,16 @@ either:
   walk; `po_edit_rows_test.go` is the worked example and also requires an
   ellipsis on every clipped value. Keep dropped grid flags on the row itself,
   never only on a continuation row that may fall below the window.
+- **A CLIP THAT CARRIES A NUMBER MEASURES `screenBodyCells`, NOT
+  `jdeScreen.bodyWidth()`.** `bodyWidth()` reads `screenBodyWidth`, whose floor
+  of 20 is FOUR CELLS more than Root draws at a terminal width of 45
+  (`layout.go` says so), so a bound expressed in it overspends into whatever sits
+  at the row's tail — and on the asset-meter screens that is a reading. Measured:
+  the record confirm's headline came to 18 cells against the 14 the pane had, and
+  `clampToBox` took the tail with no mark. `ListScreen` keeps `listPaneCells` for
+  exactly this and `internal/tui/asset_meter_value.go` keeps `assetPaneCells`;
+  the rest of the columnar layer still measures against `bodyWidth()`, which is
+  the class `jdeRowsPastThePane` records and is the layer's to fix.
 - **80 columns leaves the pane 51.** `screenBodyWidth(80)` is
   `80 - navColumnWidth(24) - 1 - padding(4)` = **51**, and the action bar gets 49
   of them. That is the number every columnar layout has to be checked against,

@@ -56,6 +56,17 @@ const jdeRowsMustHoldFrom = 80
 // value floor wider than a narrow pane; prose and grids drawn unbounded) — is
 // the companion item filed with this sweep, scantty-columnar-rows-past-the-pane.
 var jdeRowsPastThePane = map[string]int{
+	// Both asset-meter entries are BELOW jdeRowsMustHoldFrom, which is the
+	// standard width this program is held to: every row of both screens fits at
+	// 80 columns and above. Each is one cell, and each is the SAME layer
+	// mechanism — a jdeChoice row. jdeFitRow trades a field against its hint and
+	// folds what is left, but only for a jdeText row: a choice row has no input
+	// area to give, so its rendered "< value >" plus any hint has to fit as
+	// written. On the documents form the value is the SERVER's own category
+	// label ("Manual / Documentation"), which is kept verbatim so the row reads
+	// the way the web does rather than in a second vocabulary.
+	"AssetDocumentsScreen":      74,
+	"AssetMetersScreen":         77,
 	"AssetFormScreen":           107,
 	"AssetPartFormScreen":       98,
 	"AuthorizationGrantScreen":  98,
