@@ -1689,8 +1689,8 @@ const (
 // below needs the pane, and a screen that could draw this row without the pane
 // could draw it without the bound. That is what happened: only the three
 // purchasing screens bounded their message with a local helper of their own,
-// and the other thirty-odd converted sheets handed an unbounded OMS error
-// straight to a row that cannot fold (sc-jde-lift).
+// and the other converted sheets handed an unbounded OMS error straight to a
+// row that cannot fold (sc-jde-lift).
 func (g jdeScreen) statusRow(saving bool, verb, errMsg string) string {
 	switch {
 	case saving:

@@ -1345,12 +1345,6 @@ either:
   does and does not prove all live there and in
   `list_nav_surfaces_test.go`, beside the code they constrain. Read those before
   binding or naming a movement key anywhere.
-  This entry used to be a hundred-and-thirty-line transcription of them, and the
-  transcription is what went wrong: it carried counts of files and arms that
-  drifted from the code every time either changed, and a sentence about which
-  surfaces bind what was falsified four times before anyone changed its FORM
-  rather than its wording. A restatement can only ever be as fresh as its last
-  edit; the declaration cannot go stale against itself.
   TWO THINGS LIVE HERE AND NOWHERE IN THE CODE, which is why this entry is not
   simply deleted:
   - **A COMMIT THAT UNBINDS A LIVE KEY LISTS IT, FILE BY FILE AND KEY BY KEY**,
@@ -1360,8 +1354,8 @@ either:
     press every day stopped working.
   - **RETIRING A KEY MEANS GREPPING THE TESTS FOR IT IN BOTH SPELLINGS**
     (`"ctrl+d"` and `tea.KeyCtrlD`). A test that drives a retired chord stops
-    entering the arm it exists to test and goes on passing; three did.
-    `TestStorageSlots_PagedownClampsOnEmpty` carries that lesson at the site.
+    entering the arm it exists to test and can go on passing without exercising
+    that arm.
 - **An empty list is a STATE, and on `ListScreen` it used to be the one state
   that drew no bar at all.** `bodyView` returned `"No rows."` and nothing else
   while `s`, `r`, `n`, `f`, `/` and every sibling-surface letter worked — the
@@ -2173,10 +2167,8 @@ either:
   motivated the rule. Match that density.
 - **PROSE THAT RESTATES THE CODE DRIFTS FROM IT, so a claim either says exactly
   what a NAMED CHECK proves or is replaced by a pointer to where the thing is
-  decided.** Narrowing a wrong sentence is not enough: this project has had one
-  corrected four times before anybody changed its FORM, and a hand-maintained
-  inventory — of files, keys, fields, or counts — is wrong the first time nobody
-  edits it. Prefer deleting it and saying where to look; a declaration cannot go
+  decided.** Prefer deleting a hand-maintained inventory — of files, keys,
+  fields, or counts — and saying where to query it; a declaration cannot go
   stale against itself.
   `internal/doccheck` is the module-wide sweep that holds the sharpest half of
   this mechanically: a comment naming a symbol that does not exist. Its own doc

@@ -189,30 +189,17 @@ that badge lookup is not available yet (see Roadmap).
 
 ## Project layout
 
-There is no file-by-file tree here, deliberately. The one this replaced listed
-fourteen files of `internal/tui` and ten of `internal/omsapi` — which held 124
-and 44 respectively on the day it was deleted — and omitted three packages
-outright. An inventory that has to be edited whenever a file moves is wrong the
-first time nobody edits it, and a reader who trusts it looks in the wrong place.
-
-What is durably true is the shape:
-
-- `cmd/` holds one directory per binary — the TUI, and the Pi-side claim-tag
-  print daemon. `deploy/` and `systemd/` are the host side of running them.
-- `internal/` holds one package per concern, named for it. An `…api` package is
-  the HTTP client for one upstream and knows nothing about the terminal;
-  `tui` owns every screen and knows nothing about how a payload is fetched.
-- Within a package, a file is named for the screen or the shared layer it holds,
-  and the reasoning for that layer is in the file's own header comment.
-
-For the current answer, ask the code rather than this file:
+The source tree is the authoritative project inventory. Query it rather than
+maintaining a file-by-file copy here:
 
 ```sh
-go list ./...                  # every package
-ls internal/tui/*.go           # every screen and layer
-head -40 internal/tui/jde_form.go   # what a layer is for, and why
+go list ./...                    # packages in the current checkout
+rg --files cmd internal deploy systemd
 ```
-`AGENTS.md` is the standing account of the conventions that bind them.
+
+Package documentation and local code comments own the boundaries and
+non-obvious constraints of each area. `AGENTS.md` records the project-wide
+conventions that future changes must preserve.
 
 ## Architecture notes
 
