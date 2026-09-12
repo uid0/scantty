@@ -47,6 +47,58 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+type minimumWidthActionScreen struct {
+	actions int
+	width   int
+}
+
+func (*minimumWidthActionScreen) Init() tea.Cmd { return nil }
+func (s *minimumWidthActionScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
+	switch msg.(type) {
+	case tea.WindowSizeMsg:
+		s.width++
+	case tea.KeyMsg:
+		s.actions++
+	}
+	return s, nil
+}
+func (*minimumWidthActionScreen) View() string  { return "hidden action" }
+func (*minimumWidthActionScreen) Title() string { return "Hidden action" }
+func (*minimumWidthActionScreen) WantsRawInput() bool {
+	return true
+}
+
+func TestRoot_TheSizeRefusalBlocksHiddenScreenActions(t *testing.T) {
+	screen := &minimumWidthActionScreen{}
+	r := newTestRoot(screen)
+
+	next, _ := r.Update(tea.WindowSizeMsg{Width: minTerminalWidth - 1, Height: 40})
+	r = next.(Root)
+	if screen.width != 1 {
+		t.Fatalf("the resize reached the screen %d times, want 1", screen.width)
+	}
+
+	next, cmd := r.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	r = next.(Root)
+	if cmd != nil {
+		t.Error("a refused screen action returned a command")
+	}
+	if screen.actions != 0 {
+		t.Fatalf("the hidden screen received %d action keys, want 0", screen.actions)
+	}
+
+	_, cmd = r.Update(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	if cmd == nil {
+		t.Fatal("global quit was blocked below the size minimum")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("global quit returned %T, want tea.QuitMsg", cmd())
+	}
+	if screen.actions != 0 {
+		t.Fatalf("the hidden screen received %d keys after global quit, want 0", screen.actions)
+	}
+}
+
 // contractPreviousFloor is the narrowest terminal Root drew a frame in before
 // the size contract was settled: contentWidth was r.width - 24 - 1 and the gate
 // refused below 20, so 45 was the first width that passed it.

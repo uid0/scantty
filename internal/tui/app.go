@@ -256,6 +256,9 @@ func (r Root) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s := m.String(); s == "ctrl+c" || s == "ctrl+q" {
 			return r, tea.Quit
 		}
+		if terminalTooSmall(r.width, r.height) != "" {
+			return r, nil
+		}
 		// The sidebar menu owns the keyboard while it holds focus — it is a
 		// menu, not a decoration, and the screen behind it is not being typed
 		// into. Ahead of the raw-input check because focus can only have got
