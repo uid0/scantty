@@ -65,18 +65,18 @@ var jdeRowsPastThePane = map[string]int{
 	// written. On the documents form the value is the SERVER's own category
 	// label ("Manual / Documentation"), which is kept verbatim so the row reads
 	// the way the web does rather than in a second vocabulary.
-	"AssetDocumentsScreen":           74,
-	"AssetMetersScreen":              77,
-	"AssetFormScreen":                107,
-	"AssetPartFormScreen":            98,
-	"AuthorizationGrantScreen":       98,
-	"CategoryFormScreen":             98,
-	"DeviceTypeFormScreen":           89,
-	"DisconnectFormScreen":           108,
-	"InventoryItemFormScreen":        113,
-	"ItemSupplierFormScreen":         108,
-	"LocationFormScreen":             102,
-	"LocationProblemFormScreen":      115,
+	"AssetDocumentsScreen":      74,
+	"AssetMetersScreen":         77,
+	"AssetFormScreen":           107,
+	"AssetPartFormScreen":       98,
+	"AuthorizationGrantScreen":  98,
+	"CategoryFormScreen":        98,
+	"DeviceTypeFormScreen":      89,
+	"DisconnectFormScreen":      108,
+	"InventoryItemFormScreen":   113,
+	"ItemSupplierFormScreen":    108,
+	"LocationFormScreen":        102,
+	"LocationProblemFormScreen": 115,
 	// The NARROWEST honest width, and one cell over it. A choice row cannot be
 	// drawn in less than indent + label column + leader + jdeFieldArea's own
 	// "< " / " >" + one cell of value, which is 21 against the 20 that width 49

@@ -263,17 +263,17 @@ func jdeScreenFixtures() map[string]func() Screen {
 		// rollup-driven one — and carries a full-length asset name and a real
 		// four-place reading, because every value column in this package used to
 		// be measured against `Bolt 1`.
-		"AssetMetersScreen":          func() Screen { return assetMetersFixture() },
-		"AssetMeterReadingsScreen":   func() Screen { return assetMeterReadingsFixture() },
-		"AssetDocumentsScreen":       func() Screen { return assetDocumentsFixture() },
-		"AssetPartFormScreen":        func() Screen { s := NewAssetPartFormScreen(Deps{}, "a1", "Asset", ""); s.loading = false; return s },
-		"AuthorizationGrantScreen":   func() Screen { s := NewAuthorizationGrantScreen(Deps{}); s.loading = false; return s },
-		"CategoryFormScreen":         func() Screen { s := NewCategoryFormScreen(Deps{}, ""); s.loading = false; return s },
-		"DeviceTypeFormScreen":       func() Screen { return NewDeviceTypeFormScreen(Deps{}, 0) },
-		"DisconnectFormScreen":       func() Screen { s := NewDisconnectFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
-		"InventoryItemFormScreen":    func() Screen { s := NewInventoryItemFormScreen(Deps{}, ""); s.loading = false; return s },
-		"ItemSupplierFormScreen":     func() Screen { s := NewItemSupplierFormScreen(Deps{}, "i1", "Item", nil); s.loading = false; return s },
-		"LocationFormScreen":         func() Screen { s := NewLocationFormScreen(Deps{}, ""); s.loading = false; return s },
+		"AssetMetersScreen":        func() Screen { return assetMetersFixture() },
+		"AssetMeterReadingsScreen": func() Screen { return assetMeterReadingsFixture() },
+		"AssetDocumentsScreen":     func() Screen { return assetDocumentsFixture() },
+		"AssetPartFormScreen":      func() Screen { s := NewAssetPartFormScreen(Deps{}, "a1", "Asset", ""); s.loading = false; return s },
+		"AuthorizationGrantScreen": func() Screen { s := NewAuthorizationGrantScreen(Deps{}); s.loading = false; return s },
+		"CategoryFormScreen":       func() Screen { s := NewCategoryFormScreen(Deps{}, ""); s.loading = false; return s },
+		"DeviceTypeFormScreen":     func() Screen { return NewDeviceTypeFormScreen(Deps{}, 0) },
+		"DisconnectFormScreen":     func() Screen { s := NewDisconnectFormScreen(Deps{}, 0, 0, 0); s.loading = false; return s },
+		"InventoryItemFormScreen":  func() Screen { s := NewInventoryItemFormScreen(Deps{}, ""); s.loading = false; return s },
+		"ItemSupplierFormScreen":   func() Screen { s := NewItemSupplierFormScreen(Deps{}, "i1", "Item", nil); s.loading = false; return s },
+		"LocationFormScreen":       func() Screen { s := NewLocationFormScreen(Deps{}, ""); s.loading = false; return s },
 		// Past its loading state, on the count form it opens on, with a room
 		// long enough to outrun any pane — a grid that fits is a grid where the
 		// window arithmetic this file exists to check is inert.
