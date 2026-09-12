@@ -57,19 +57,6 @@ is not a reason to scope it out of a sweep. It has been used as one.
   against the remote commit's tree sha (`gh-axi api repos/uid0/openmakersuite/commits/main`)
   settles it in one step, and a match means reading the local files IS reading
   remote `main`.
-- **A VALIDATION REFUSAL SAYS NOTHING IN ITS `message`; THE SENTENCES ARE IN
-  `details`.** OMS's standard envelope (`backend/config/api_errors.py`) renders
-  every serializer 400 as `{"error": {"code": "validation_failed", "message":
-  "One or more fields failed validation.", "details": {field: [...]}}}`, and
-  `parseError` understands it — which is the trap: `APIError.Error()` then prints
-  those same eleven words for every refusal the API can make, so a screen that
-  relays `err.Error()` tells the operator nothing they can act on.
-  `omsapi.AsFieldRefusal` flattens `details` to `field: sentence`, sorted and
-  joined, nested blocks (a serializer inside a serializer, e.g. a kit's
-  `supplier_terms`) named down to the box; it is as narrow as `AsDetailRefusal`
-  and `AsReceivingRefusal` beside it and leaves every other shape — the
-  `candidates` hint `AsLineEntryError` reads included — exactly as it arrived.
-  Render the server's refusal; do not reimplement its rules on this side.
 - **Money comes over as strings OR numbers**, hence `omsapi.DecimalString`.
   `Empty()` means "null/unset" and NOT "zero": several OMS money properties
   return a real `0.00` for "no price recorded", so treat zero as an absence
@@ -716,22 +703,6 @@ note, and is the authority):
   So "is this item a kit?" is answered by fetching the id from `/kits/` and
   reading the status: a **404 is the answer "no"**, not a failure
   (`omsapi.IsNotKit`). Anything else left the question unanswered and must say so.
-- **`GET /api/inventory/kits/` IS THE ONLY BROWSABLE ROUTE TO A KIT**, which is
-  a consequence of the line above rather than a separate fact: no view of
-  `/items/` can ever contain one, so a list of kits is the only way to answer
-  "which kits do we have?". The terminal's is `internal/tui/kits.go` (a
-  `*ListScreen` under Inventory, `K` from the item list, `/` forwarding
-  `?search=` server-side), and `POST /api/inventory/kits/` creates one with its
-  bill of materials in the SAME request — `NewKitFormScreen`
-  (`inventory_item_form_kit.go`) is the item sheet with `kit` set before it is
-  drawn, not a second form. Neither the kit LIST nor a kit CREATE sends
-  `supplier_terms`; a kit gets its purchase terms from the suppliers band on its
-  detail, which is edit-only because an `ItemSupplier` needs an item that exists.
-  **Kits are NOT invisible to the SCANNER or to search** — neither
-  `backend/scanner/resolvers.py` nor `backend/search/views.py` filters on
-  `is_kit`, so a kit's QR label and its name both reach the item detail, which
-  draws the bill of materials. What no endpoint offers is code→KIT resolution;
-  the list's search box is where a typed or scanned vendor code goes.
 - `/api/inventory/items/` **excludes kits by default**, and the filter lives in
   `get_queryset`, so it applies to the DETAIL route too: GET or PATCH of a kit's
   id under `/items/` is a flat 404 without `?include_kits=true`, and that
@@ -3072,17 +3043,6 @@ is the authority; read it before adding a frame or wording a bar.
   `TestJDEForm_TheDerivedPaneSetsStayTheOnesRootDraws` holds both halves against
   asking Root afresh. The rule generalises past those two: derive at the top of
   the test, not in the loop.
-- **A BARCODE NEVER REACHES `/api/scanner/dispatch/`.** `scanner.Classify`
-  (`internal/scanner/scanner.go`) claims every 8-to-20-character hex string as a
-  ForgeKey badge BEFORE the OMS-code and unknown arms, and an 8/12/13/14-digit
-  UPC is one — so `_resolve_upc`, the resolver whose whole job is matching a
-  scanned box code to an `ItemSupplier`, is unreachable from the terminal. FILED,
-  NOT FIXED: narrowing the badge test changes what a real badge scan does, which
-  is a ForgeKey decision rather than an inventory one. What DOES reach the
-  dispatcher is anything else (a SKU-shaped string, a 6-character location code),
-  and a QR URL is parsed locally by `ParseOMSURL` and never dispatched at all.
-  The dispatcher's own spelling for an item is `inventory_item`, not `item`
-  (`backend/scanner/resolvers.py`); `scan.go` reads both.
 - `gofmt -l` flags a few pre-existing files (doc-comment backtick rewrites).
   Format only what you touch.
 

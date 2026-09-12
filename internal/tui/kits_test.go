@@ -185,7 +185,7 @@ func TestKits_TheListDrivesTheKitEndpoint(t *testing.T) {
 
 	root, _ := kitDriveRoot(t, fake, srv, func(d Deps) Screen { return NewKitListScreen(d) })
 
-	if !fake.sawRequest("GET /api/inventory/kits/") {
+	if !fake.sawRequest("GET /api/inventory/kits/?page=1") {
 		t.Fatalf("the kit list never asked the kit endpoint: %v", fake.requestLog())
 	}
 	list, ok := root.screen.(*ListScreen)
@@ -234,7 +234,7 @@ func TestKits_SearchSendsTheScannedCodeToTheServer(t *testing.T) {
 		root = key(t, root, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 
-	if !fake.sawRequest("GET /api/inventory/kits/?search=VND-88117") {
+	if !fake.sawRequest("GET /api/inventory/kits/?page=1&search=VND-88117") {
 		t.Fatalf("the scanned code never reached the server as ?search=: %v", fake.requestLog())
 	}
 	list := root.screen.(*ListScreen)
