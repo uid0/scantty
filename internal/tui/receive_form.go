@@ -5555,23 +5555,6 @@ func (s *ReceiveFormScreen) doneBody() *jdeLines {
 // operator is scanning goods in, a command line that tells the truth about
 // which keys work is worth more than the rows of body it spends.
 //
-// WHAT THE COST TURNED OUT TO BE, measured rather than estimated, because the
-// trade was accepted against a guess of about two rows: it is receiveNoteRows
-// plus the separator, so SIX rows on any pane that can afford them and FOUR at
-// 80x18, where noteRows() has already yielded to the pane. Neither surplus is
-// recoverable without making the reservation conditional, and both were
-// re-derived rather than assumed. The SEPARATOR cannot go: headerSplit reserves
-// it outright ("the separator is not divisible"), and dropping it when the
-// block is blank is the conditional reservation this comment forbids — while
-// folding it INTO receiveNoteRows would cut the note to four text rows, and the
-// margin at four was measured ZERO (below). The NOTE's own rows cannot go
-// either: waysOut is DERIVED from the bar, so shortening it is curation in the
-// one place the honesty rule is checked, and the constant grew each time only
-// because the screen gained a key that ACTS. What DID move is where the rows
-// are spent — headerLines pins the block BENEATH the body now, so the
-// reservation costs the operator the same rows and no longer costs them the top
-// of the pane.
-//
 // The size is the MINIMUM that restores the fixed point, not the worst case.
 // The FAILURE DETAIL is deliberately NOT reserved: it is written by a reply off
 // the wire and names no keys, so a frame that grows one is a frame that
@@ -5880,15 +5863,9 @@ func (s *ReceiveFormScreen) noteRows() int { return s.headerSplit().note }
 // answered. The diagnostic DETAIL rides with it, bounded, so a failure and its
 // reason are one block rather than two a scroll can separate.
 //
-// BENEATH rather than above, and that is placement rather than policy: the
-// block's rows are reserved unconditionally (receiveNoteRows), so at rest it is
-// drawn BLANK — and above the body those blanks were the first thing on the
-// pane, five of twelve rows at 80x18 before the box a scanner fires into. What
-// the reservation buys is a constant body BUDGET, which is indifferent to which
-// end of the pane it is spent at, so moving the block costs the body nothing
-// and puts the note's rows beside the status row carrying their own headline.
-// The SEPARATOR therefore leads the block instead of trailing it: the blank
-// that keeps it off the body is now above it.
+// Beneath rather than above so an empty reserved block does not precede the
+// form at rest. The reservation and therefore the body's budget remain
+// unconditional. The separator leads the block because the body is above it.
 //
 // The height is CONSTANT in everything a keypress controls: noteRows() for the
 // note whether or not one is standing, plus the blank that separates the block

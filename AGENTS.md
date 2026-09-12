@@ -1548,14 +1548,7 @@ either:
   bottom of the pane and draws the rule at the pane's WIDTH, so a fixture given
   a height and no width draws a 72-column bar (the layer's unsized fallback)
   into a 51-column pane. `s.Update(tea.WindowSizeMsg{...})`, never
-  `s.terminalHeight = h`. AND A HELPER THAT CLIPS DOES NOT RESIZE: a loop
-  varying the BOX while the screen is still laid out for another pane measures a
-  frame the terminal never drew, because Root sends a `WindowSizeMsg` and the
-  screen lays out again. `receivePaneText`'s caller in
-  `TestReceiveFlow_ReopeningAClosedShortLineReachesItsEndpoint` is the worked
-  example: its "80x14" was a thirty-row frame with sixteen rows cut off, and it
-  agreed with the real 80x14 pane only while the pinned block happened to sit at
-  the TOP of it.
+  `s.terminalHeight = h`.
 - **Check the CLIPPED render.** `clampToBox` truncates in `Root.View()`, not in
   the screen, so a test that reads `screen.View()` passes while the terminal
   shows a cut line. Assert against `Root.View()` at 80/100/120 —
@@ -1587,24 +1580,6 @@ either:
   the wrapping bar every frame draws (a bar of a dozen order-level keys folds
   onto several rows rather than losing its tail). `internal/tui/po_detail.go` is
   the pilot for those, as `po_edit.go` is for forms.
-- **A RESERVED-BUT-BLANK PINNED BLOCK GOES BENEATH THE BODY.**
-  `jdeScreen.frameWrappedBelow` is `frameWrapped` with the same budget, the same
-  allocator and the same trim, emitting the pinned block AFTER the body; the
-  receiving form is its one user and `headerLines`' comment
-  (`internal/tui/receive_form.go`) owns the reasoning. The note's rows are
-  reserved UNCONDITIONALLY, so at rest the block is drawn BLANK — and above the
-  body those blanks were the first thing on the pane: five of twelve rows at
-  80x18 before the box a scanner fires into, on a body with thirty-four rows it
-  could not fit. What a reservation buys is a CONSTANT BODY BUDGET, which is
-  indifferent to which end of the pane it is spent at, so the answer is
-  PLACEMENT and never a reservation that appears with its content — that is the
-  circle `receiveNoteRows` exists to break and it is not reopenable. A builder
-  for this frame writes its SEPARATOR at the block's HEAD, because the blank
-  keeping it off the body is now above it.
-  `TestReceive_TheRestingFrameDoesNotOpenOnDeadSpace` is the guard and it asks
-  the BODY what it leads with rather than asserting ink: `jdeLines.Window`
-  reserves its own blank `↑ more above` row on every columnar screen, which is a
-  DIFFERENT reservation and not this screen's to answer for.
 - **A sheet may not answer "how many rows?", "does this scroll?", "is this
   drawn at all?" or "what goes on the status row?" itself.** All four are
   `jde_form.go`'s (`bodyAvailForBar`, `bodyScrollsForBar`, `frameDrawn`,

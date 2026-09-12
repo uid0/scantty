@@ -3023,42 +3023,10 @@ func TestReceive_AnUnnumberedOrderIsStillNamed(t *testing.T) {
 // The resting frame opens on the form, not on the reservation
 // ---------------------------------------------------------------------------
 
-// TestReceive_TheRestingFrameDoesNotOpenOnDeadSpace.
-//
-// The note block is reserved UNCONDITIONALLY (receiveNoteRows carries why, and
-// it is not reopenable), so at rest — on arrival and after every reply — the
-// block is drawn BLANK. That is correct and is not what this is about. What
-// this is about is WHERE those blank rows land: pinned above the body they were
-// the first thing on the pane, so the screen an operator opens to scan goods in
-// began with four or six empty rows and only then showed the box a scanner
-// fires into. At 80x18 that is five of the pane's twelve rows spent before the
-// form starts, on a body with thirty-four rows it could not fit.
-//
-// The reservation is placement-free: what it buys is a CONSTANT body budget, so
-// that writing a note cannot change which keys the bar names. Nothing in that
-// argument says the reserved rows have to be drawn at the TOP, and drawing them
-// beneath the body (frameWrappedBelow) costs the body nothing while giving the
-// operator the form first. It also puts the note's rows next to the status row
-// that carries its headline, which used to sit at the opposite end of the pane.
-//
-// THE CLAIM IS THAT THE PINNED BLOCK ADDS NO ROW ABOVE THE BODY, and it is
-// asked that way rather than as "the first row carries ink" because the two are
-// different facts and only one of them is this screen's. jdeLines.Window spends
-// the first of its rows on the "↑ N more above" indicator and draws it BLANK
-// when there is nothing above — a reservation of the layer's, shared by every
-// columnar screen, so that the body's height cannot change with the scroll
-// position. Asserting ink would indict that too, on thirty screens this change
-// does not touch, and the assertion would then have to be weakened by a magic
-// number. So the window is asked what IT leads with, and the pane must lead
-// with exactly that.
-//
-// Measured on the CLIPPED pane because the screen's own string is not what the
-// operator reads, and the resting state is proved to BE resting — a note or a
-// failure standing would make this pass for a reason unrelated to the property
-// it names. The reservation's own half is guarded next door by
-// TestReceive_WritingANoteNeverChangesThePagingClaim; the vacuity guard here is
-// the block still being non-empty, so this cannot be satisfied by giving the
-// reservation up.
+// TestReceive_TheRestingFrameDoesNotOpenOnDeadSpace verifies that the pinned
+// block adds no rows above the body while its unconditional reservation remains.
+// Compare with the body's own leading blanks because jdeLines.Window reserves
+// an independent scroll-indicator row. See headerLines for the layout contract.
 func TestReceive_TheRestingFrameDoesNotOpenOnDeadSpace(t *testing.T) {
 	leadingBlanks := func(lines []string) int {
 		n := 0

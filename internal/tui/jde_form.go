@@ -2750,37 +2750,8 @@ func (g jdeScreen) frameWrapped(header jdeHeader, body *jdeLines, cursorRow int,
 	return strings.Join(out, "\n") + "\n" + renderActionBarWrapped(g.barWidth(), items)
 }
 
-// frameWrappedBelow is frameWrapped with the pinned block drawn BENEATH the
-// body instead of above it, flush against the status row.
-//
-// Same budget, same allocator, same trim: `header` is subtracted from the
-// body's rows through the very expressions frameWrapped uses, so a sheet that
-// moves between the two frames cannot come to a different view of how many rows
-// its body has or of what its bar may name. ONLY THE EMISSION ORDER DIFFERS,
-// which is the whole of what it is for.
-//
-// It exists because a reserved block is not the same thing as a block with
-// something in it. The receiving form reserves its note's rows UNCONDITIONALLY
-// — that reservation is what stops the sentence naming which keys act from
-// changing which keys act, and it is not reopenable (receive_form.go's
-// receiveNoteRows) — so at rest the block is drawn BLANK, on arrival and after
-// every reply. Pinned above the body those blanks were the first thing on the
-// pane: at 80x18 five of twelve rows were empty before the box a scanner fires
-// into, on a body with thirty-four rows it could not fit. Beneath the body they
-// cost the operator nothing to look at and the form leads, while the
-// reservation is untouched — it buys a CONSTANT BODY BUDGET, and a budget does
-// not care which end of the pane it is spent at.
-//
-// The body is padded out to the rows the block leaves it, so the block lands on
-// the same rows of the pane on every frame — the same reason frameWrapped pads:
-// a block that floated up when the body ran short would be a second layout to
-// learn.
-//
-// A builder for this frame writes its SEPARATOR at the block's head rather than
-// its tail, because the blank that keeps the block off the body is now above it.
-// That is AGENTS.md's separator rule ("a separator travels with the block above
-// it") read at the only end there is here: nothing follows the block but the
-// status row, which is a frame row and needs no separating.
+// frameWrappedBelow uses frameWrapped's budget and trimming rules but emits the
+// pinned block beneath the padded body, flush against the status row.
 func (g jdeScreen) frameWrappedBelow(header jdeHeader, body *jdeLines, cursorRow int, status string, items []actionBarItem) string {
 	barRows := actionBarRowsFor(g.barWidth(), items)
 	if g.tooShort(barRows, len(header)) {
