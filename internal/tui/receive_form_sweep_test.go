@@ -2539,35 +2539,12 @@ func TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs(t *testing.T) 
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The ceiling IS the bar that gets drawn
-// ---------------------------------------------------------------------------
-
 // TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn.
 //
-// barCeiling is the FIXED POINT the header allowance measures itself against:
-// naming a key costs cells, cells fold the bar onto another row, and another
-// bar row is one fewer for the body — so the budget has to be taken against the
-// TALLEST bar the phase can produce, or it oscillates between frames. Its whole
-// contract is therefore "never folds onto fewer rows than the bar really
-// drawn", and it is asked at every headerRows the pane can pay rather than at
-// the live one alone, because every header-dependent arm READS that argument and
-// only a sweep over it can see an arm whose answer turns over at some height. 0
-// is in the range on purpose: it is the height barCeiling's derived arms pass.
-//
-// What it does NOT assert, said plainly because the obvious stronger wording is
-// false: the ceiling is not a SUPERSET of the drawn bar's items. Every optional
-// item is present in it at its LONGEST wording, and a drawn bar routinely merges
-// two of those into one — the serial phase draws Enter/Esc=Review where the
-// ceiling carries Enter=Save & review beside Esc=Review — so an item-for-item
-// comparison reports honest bars. The rows are what the budget spends and the
-// rows are what this judges.
-//
-// Width moves the fold boundary, so a drift of one short item that fits at one
-// width crosses the boundary at another and becomes observable here.
-//
-// The phases come from receivePhaseCases, so a phase added to the iota arrives
-// here without anybody remembering it.
+// The body budget depends on the ceiling's rendered height, not on an
+// item-for-item match: a drawn bar may merge items while remaining no taller.
+// Sweep every phase, possible header height, and drawable width so conditional
+// items and folding cannot make the drawn bar exceed its ceiling.
 func TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn(t *testing.T) {
 	compared := 0
 	widths := jdeDrawableWidths()

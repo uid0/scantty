@@ -4141,23 +4141,9 @@ func (s *ReceiveFormScreen) writeOffVerb() string {
 // blind to headerRows: it is what the header allowance measures itself against,
 // so a bar that asked the header how tall it was would close a loop.
 //
-// Where a phase takes no header-dependent item — the loading frame and the
-// summary, each a fixed pair of keys — the ceiling IS the bar that gets drawn,
-// so the arm DERIVES it from barFor rather than restating the literal. The 0 is
-// inert on exactly those arms and no other height would be honest: a taller
-// header leaves a SMALLER body, so asking barFor for a real height could only
-// ever understate a paging item, and a ceiling that understates is not one.
-//
-// Restated, the two literals stayed identical and nothing was wrong on screen.
-// What that left was the silent half: an item added to one of these bars alone
-// would have left the header allowance measuring itself against a bar shorter
-// than the one drawn — a body budgeted a row it does not have, and clampToBox
-// takes that row off the BOTTOM, where the bar is.
-//
-// TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn is the contract itself,
-// asked of every phase at every header the pane can pay and every drawable
-// width. The width axis moves the bar's fold boundary, which lets the rendered
-// sweep catch a drift of a single item.
+// Header-independent phases derive their ceiling from barFor(0), keeping it in
+// step with the bar drawn. TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn
+// checks the height contract across phases, headers, and drawable widths.
 func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 	switch s.phase {
 	case phaseLoading:
