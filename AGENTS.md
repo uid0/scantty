@@ -89,6 +89,42 @@ The edit screen's cost row names that ORDERED quantity on its LABEL
 folded or windowed away from its box, but the denominator must remain visible
 beside the value the row writes.
 
+### A SUPPLIER LINK'S UNIT COST IS DERIVED, AND THE RULE IS NOT OURS TO COPY
+
+`internal/tui/item_suppliers.go` (`ItemSupplierFormScreen`, the ONE editable
+site) and `internal/omsapi/inventory.go` (`ItemSupplierWrite`) are the two
+halves. Before touching either:
+
+- **OMS derives `unit_cost` and `package_cost` from EACH OTHER on every save**,
+  as a DELTA against the stored row — which of the two boxes MOVED is the whole
+  input. So a unit price the operator types can come back recomputed from the
+  case price, and clearing the case price on its own clears both.
+- **THE ONE STATEMENT OF THAT RULE IS THE SERVER'S** —
+  `inventory.services.suppliers.derive_costs`, whose doc comment is the contract
+  and names the test file that pins its arms. `ItemSupplierWrite`'s doc used to
+  restate it and outlived the behaviour by a release, describing a rule
+  decidable from the submitted values after OMS had moved to comparing against
+  what is stored.
+  A doc comment that duplicates another system's rule is that staleness waiting
+  to happen: point at it, never copy it.
+- **NOTHING ON THIS SIDE MAY DROP AN ECHOED COST BOX.** Neither cost carries
+  `omitempty`, so a cleared box is an explicit null and an untouched one is
+  re-sent unchanged — which is exactly the shape the delta rule reads. Adding
+  `omitempty` would make "the operator did not touch this" indistinguishable
+  from "they cleared it".
+- **THE DERIVED-ness IS ON THE LABEL, NOT ONLY IN THE HINT**
+  (`Unit cost (derived)`), for the reason `poLineCostLabel` already carries one
+  above: `jdeLines.Window` keeps a block's START, so at a short pane the field
+  row survives and the hint folded under it is the tail that goes — and a cue
+  only in the hint is absent at exactly the panes where it is hardest to notice
+  a value being rewritten. It costs no width while it stays under the form's
+  widest other label, which sizes the shared column.
+  The FOCUS hint carries the detail, and states BOTH halves — what the figure is
+  derived from AND what changing it does — because stating only the first leaves
+  an operator who edits both boxes with no idea which one won.
+  `item_supplier_cost_derived_test.go` holds all three claims through rendered
+  panes.
+
 ### A PO line is ENTERED in cases and STORED in base units
 
 `internal/tui/po_case_entry.go` carries the full note and is the authority; it
