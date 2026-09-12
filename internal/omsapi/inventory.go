@@ -1588,15 +1588,20 @@ func (c *Client) ListItemSuppliersForItem(ctx context.Context, itemID string) ([
 //     validator needs the pair, and re-sending the same item on a PATCH is a
 //     no-op. (unique_together means the same supplier can't be linked twice — the
 //     backend 400s, which the form surfaces.)
+//
 //   - SupplierSKU has no blank=True on the model, so it is required and non-blank;
 //     the form validates it before submit.
+//
 //   - UnitCost / PackageCost are nullable decimals sent as strings and carry NO
 //     omitempty, so clearing one on edit sends an explicit null (mirroring the
-//     web's `value || null`). The model auto-derives one from the other on save:
-//     if package_cost is set it wins (unit_cost = package_cost / qty); else if
-//     only unit_cost is set, package_cost = unit_cost * qty.
+//     web's `value || null`). The server compares both values with the stored
+//     row, so omitting either echoed value would change the meaning of the
+//     write. OpenMakerSuite's `inventory.services.suppliers.derive_costs` owns
+//     the derivation rule; do not duplicate that rule here.
+//
 //   - QuantityPerPackage / AverageLeadTime are plain ints carrying the model
 //     defaults (1 and 7); always sent.
+//
 //   - IsPrimary carries no omitempty so turning it off actually reaches the
 //     backend instead of being dropped; the model's save() keeps a single primary
 //     per item (setting one unsets the others).

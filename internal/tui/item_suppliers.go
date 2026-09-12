@@ -755,11 +755,15 @@ const (
 	isFieldMax
 )
 
+// itemSupplierFieldLabel is the shared label column. Keep the derived cue in
+// the unit-cost label: short panes can omit its folded focus hint while leaving
+// the field row visible. Keep labels no wider than "Quantity per package" to
+// avoid shifting every input in the form.
 var itemSupplierFieldLabel = map[int]string{
 	isSupplier:      "Supplier",
 	isSKU:           "Supplier SKU",
 	isURL:           "Supplier URL",
-	isUnitCost:      "Unit cost",
+	isUnitCost:      "Unit cost (derived)",
 	isPackageCost:   "Package cost",
 	isQtyPerPackage: "Quantity per package",
 	isLeadTime:      "Average lead time",
@@ -780,6 +784,15 @@ var itemSupplierFieldHint = map[int]string{
 	isPackageCost:   "per package",
 	isLeadTime:      "days",
 	isQtyPerPackage: "units",
+}
+
+// itemSupplierFieldFocusHint explains the consequences of editing either cost.
+// It is focus-only to preserve vertical space; the unit-cost label carries the
+// standing derived cue. OpenMakerSuite's
+// `inventory.services.suppliers.derive_costs` owns the exact derivation rule.
+var itemSupplierFieldFocusHint = map[int]string{
+	isUnitCost:    "derived from package cost ÷ qty · per unit · editing only this re-prices the package",
+	isPackageCost: "per package · governs when both change · clearing it alone clears both prices",
 }
 
 func itemSupplierFieldIsText(id int) bool {
@@ -1382,6 +1395,11 @@ func (s *ItemSupplierFormScreen) formFields() []jdeField {
 			f.Kind, f.Value = jdeChoice, jdeYesNo(s.isPrimary)
 		default:
 			f.Kind, f.Input = jdeText, &s.inputs[id]
+			if f.Focused {
+				if hint, ok := itemSupplierFieldFocusHint[id]; ok {
+					f.Hint = hint
+				}
+			}
 		}
 		out[i] = f
 	}
