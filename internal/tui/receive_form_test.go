@@ -1811,7 +1811,7 @@ func TestReceive_ThePagingClaimHoldsWithANoteOnThePane(t *testing.T) {
 
 // TestReceive_WritingANoteNeverChangesThePagingClaim.
 //
-// The note is pinned above the body, the header is subtracted from the body's
+// The note is pinned beneath the body, the block is subtracted from the body's
 // row budget, and the body's height is what decides whether PgUp/PgDn are named
 // — so while the note's rows appeared WITH the note, the sentence naming which
 // keys act could itself add or remove the paging pair from the bar drawn under
@@ -3016,5 +3016,75 @@ func TestReceive_AnUnnumberedOrderIsStillNamed(t *testing.T) {
 				t.Errorf("nothing on the terminal names the order (%s):\n%s", tc.want, r.View())
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The resting frame opens on the form, not on the reservation
+// ---------------------------------------------------------------------------
+
+// TestReceive_TheRestingFrameDoesNotOpenOnDeadSpace verifies that the pinned
+// block adds no rows above the body while its unconditional reservation remains.
+// Compare with the body's own leading blanks because jdeLines.Window reserves
+// an independent scroll-indicator row. See headerLines for the layout contract.
+func TestReceive_TheRestingFrameDoesNotOpenOnDeadSpace(t *testing.T) {
+	leadingBlanks := func(lines []string) int {
+		n := 0
+		for _, line := range lines {
+			if strings.TrimSpace(stripANSI(line)) != "" {
+				break
+			}
+			n++
+		}
+		return n
+	}
+
+	widths, heights := receiveHonestWidths(), jdePaneHeights()
+	judged, reserved := 0, 0
+	for _, width := range widths {
+		for _, height := range heights {
+			t.Run(fmt.Sprintf("%dx%d", width, height), func(t *testing.T) {
+				_, s := receiveDrive(t, &receiveFake{}, receiveManyLines(9), width, height)
+
+				if s.note.text != "" || s.failLine() != "" {
+					t.Fatalf("the fixture is not at rest (note %q, failure %q), so this "+
+						"pane proves nothing about the resting frame", s.note.text, s.failLine())
+				}
+				block := len(s.headerLines())
+				if block == 0 {
+					t.Fatalf("the reservation is gone: the pinned block is 0 rows at rest, " +
+						"so a pane opening on the form proves nothing")
+				}
+				if !receiveDrawn(s) {
+					return // the layer refused the frame; it draws no reserved rows at all
+				}
+
+				// What the BODY leads with, asked of the very window the frame
+				// draws — so the layer's own indicator row is never counted
+				// against this screen and no number has to be written down.
+				body, cursor := s.body()
+				windowed, _ := body.Window(cursor, s.bodyAvailForBar(block, s.bar()))
+				want := leadingBlanks(windowed)
+
+				judged++
+				if want < block {
+					reserved++
+				}
+				pane := receivePaneLines(s, width, height)
+				if got := leadingBlanks(pane); got != want {
+					t.Errorf("the resting pane leads with %d blank rows and its BODY leads "+
+						"with %d, so %d row(s) of the reserved block are drawn above the "+
+						"form the operator came for:\n%s",
+						got, want, got-want, strings.Join(pane, "\n"))
+				}
+			})
+		}
+	}
+	if judged == 0 {
+		t.Fatal("no swept pane drew the frame at all, so this sweep judged nothing")
+	}
+	if reserved == 0 {
+		t.Fatal("every swept pane's body already led with as many blanks as the whole " +
+			"reserved block, so the sweep never reached a pane the property is about")
 	}
 }
