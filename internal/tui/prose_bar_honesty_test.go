@@ -133,11 +133,10 @@ var proseBarUnconverted = map[string]string{
 	// because proseNavScroll and proseScrollBar already do the work — what each
 	// one still needs is a decision about the states that draw something else
 	// instead of a bar.
-	"DemandForecastScreen":        "the demand-forecast table: a cursor list ABOVE a scroller, so its bar carries two movement vocabularies and the conversion has to say which keys reach which",
-	"InventoryDetailScreen":       "the item sheet, plus three pick modals that each draw their own prompt in place of the footer",
-	"MaintenanceItemDetailScreen": "the PM item sheet; it computes its own footerRows already, so the fold is there and the record is not",
-	"SerializedForecastScreen":    "the serialized-component forecast, the same two-vocabulary shape as DemandForecastScreen",
-	"WorkOrderDetailScreen":       "the work-order sheet, plus its material pickers — the largest of the scroller sheets and the one with the most modal states to decide",
+	"DemandForecastScreen":     "the demand-forecast table: a cursor list ABOVE a scroller, so its bar carries two movement vocabularies and the conversion has to say which keys reach which",
+	"InventoryDetailScreen":    "the item sheet, plus three pick modals that each draw their own prompt in place of the footer",
+	"SerializedForecastScreen": "the serialized-component forecast, the same two-vocabulary shape as DemandForecastScreen",
+	"WorkOrderDetailScreen":    "the work-order sheet, plus its material pickers — the largest of the scroller sheets and the one with the most modal states to decide",
 
 	// THE CURSOR LISTS, which are the bulk and the more expensive half. Each
 	// draws rows with a cursor and a prose footer, so a record is only part of
@@ -394,6 +393,23 @@ func proseBarFixtures() []proseBarFixture {
 				s.historyScroller = NewTextScroller(defaultDetailHeight)
 				s.historyScroller.Set(strings.Repeat(proseBarLongNote()+"\n", 3))
 				return s
+			},
+		},
+		{
+			name: "maintenance item detail", recv: "MaintenanceItemDetailScreen",
+			build: func() proseBarScreen {
+				s := NewMaintenanceItemDetailScreen(Deps{}, "pm-1")
+				tasks := make([]omsapi.MaintenanceTask, 30)
+				for i := range tasks {
+					tasks[i] = omsapi.MaintenanceTask{
+						ID: fmt.Sprintf("task-%d", i+1), Order: i + 1,
+						Title: fmt.Sprintf("Inspect station %d", i+1), IsRequired: true,
+					}
+				}
+				next, _ := s.Update(mDetailLoadedMsg{item: &omsapi.MaintenanceItem{
+					ID: "pm-1", Title: "Monthly machine inspection", IsActive: true, Tasks: tasks,
+				}})
+				return next.(*MaintenanceItemDetailScreen)
 			},
 		},
 		// THE ONE CURSOR LIST IN THE CONVERTED SET, and it is here to prove the

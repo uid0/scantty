@@ -141,13 +141,12 @@ var listNavUnsweptReceivers = map[string]string{
 		"cursor list whose bar is a muted literal inside View, so the honesty sweep cannot " +
 		"read it, but it IS pressed by the retired-chord sweep, which drives its cursor " +
 		"directly (listNavPickerCases)",
-	"LocationListScreen":          "the location list beside LocationFormScreen",
-	"LocationProblemsScreen":      "the problem list for a location",
-	"MaintenanceItemDetailScreen": "the PM item detail sheet",
-	"MaintenanceItemsScreen":      "the PM item list beside MaintenanceItemFormScreen",
-	"MakerBoxesScreen":            "the maker-box list beside MakerBoxFormScreen",
-	"OperationalModesScreen":      "the ForgeKey operational-mode list",
-	"PMBoardScreen":               "the preventive-maintenance board",
+	"LocationListScreen":     "the location list beside LocationFormScreen",
+	"LocationProblemsScreen": "the problem list for a location",
+	"MaintenanceItemsScreen": "the PM item list beside MaintenanceItemFormScreen",
+	"MakerBoxesScreen":       "the maker-box list beside MakerBoxFormScreen",
+	"OperationalModesScreen": "the ForgeKey operational-mode list",
+	"PMBoardScreen":          "the preventive-maintenance board",
 	"ReportTableScreen": "the shared scrollable report table, which every tabbed report " +
 		"page rides. reportScreenFixtures (report_yardstick_test.go) is the roster of " +
 		"those pages and TestReportTable_EveryReportScreenIsSwept derives it from the " +
