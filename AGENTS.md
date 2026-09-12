@@ -727,6 +727,12 @@ meter-shaped:
   digit whichever action typed it. The magnitude test is also skipped at a
   current value of ZERO, or it would fire on the first reading of every meter
   anybody ever created.
+- **A FAILED REFRESH MAKES THE DISPLAYED VALUE UNCHECKED, NOT UNUSABLE.** The
+  screen keeps the last meter list so the operator does not lose what they were
+  looking at, but every record or adjustment then goes through the same confirm.
+  It marks the old figure as unconfirmed and says the comparison could not be
+  checked against the value the server currently holds; Ctrl-X still sends the
+  operator's exact entry, because this guard names and never refuses.
 - **A NUMBER IS SHOWN WHOLE OR DROPPED AND MARKED.** The value column is a FACT
   in the report-table sense: it never gives, the NAME abbreviates around it, and
   where the pane cannot hold it the column is dropped WHOLE onto a line of its

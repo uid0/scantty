@@ -59,11 +59,14 @@ type meterEntryVerdict struct {
 	// Negative is true when the meter would end up below zero, which no
 	// cumulative counter reaches by counting.
 	Negative bool
+	// Unchecked is true when the screen could not confirm that current is still
+	// the value held by the server.
+	Unchecked bool
 }
 
 // Suspicious reports whether this entry is worth a word before it is sent.
 func (v meterEntryVerdict) Suspicious() bool {
-	return v.Backwards || v.Magnitude || v.Negative
+	return v.Backwards || v.Magnitude || v.Negative || v.Unchecked
 }
 
 // meterMagnitudeFactor is how far up an entry has to go before it reads as a
@@ -148,15 +151,23 @@ func meterAdjustCheck(current omsapi.DecimalString, typed string) meterEntryVerd
 func meterVerdictReason(m omsapi.AssetMeter, v meterEntryVerdict) string {
 	from := meterFigure(m.CurrentValue, m.Unit, m.MeterTypeDisplay)
 	to := meterFigure(v.Result, m.Unit, m.MeterTypeDisplay)
+	var reason string
 	switch {
 	case v.Negative:
-		return fmt.Sprintf("that leaves the meter at %s — below zero, which counting never reaches.", to)
+		reason = fmt.Sprintf("that leaves the meter at %s — below zero, which counting never reaches.", to)
 	case v.Backwards:
-		return fmt.Sprintf("that moves the meter BACKWARDS, from %s to %s.", from, to)
+		reason = fmt.Sprintf("that moves the meter BACKWARDS, from %s to %s.", from, to)
 	case v.Magnitude:
-		return fmt.Sprintf("that multiplies the meter by ten or more, from %s to %s — the shape of one extra digit.", from, to)
+		reason = fmt.Sprintf("that multiplies the meter by ten or more, from %s to %s — the shape of one extra digit.", from, to)
 	}
-	return ""
+	if v.Unchecked {
+		unchecked := "The last refresh of this meter failed, so its current value may not be what the server holds and this entry could not be checked against the server."
+		if reason == "" {
+			return unchecked
+		}
+		return reason + " " + unchecked
+	}
+	return reason
 }
 
 // meterRuntimeCaveat is the part that cannot be taken back, said only where it

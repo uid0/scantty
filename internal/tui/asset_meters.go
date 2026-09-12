@@ -126,12 +126,13 @@ var meterTypeOptions = []struct {
 }
 
 type AssetMetersScreen struct {
-	deps      Deps
-	assetID   string
-	assetName string
-	meters    []omsapi.AssetMeter
-	loading   bool
-	loadErr   string
+	deps          Deps
+	assetID       string
+	assetName     string
+	meters        []omsapi.AssetMeter
+	loading       bool
+	loadErr       string
+	loadConfirmed bool
 	jdeScreen
 
 	phase  meterPhase
@@ -280,6 +281,7 @@ func (s *AssetMetersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, Status("load meters failed: "+m.err.Error(), StatusError)
 		}
 		s.loadErr = ""
+		s.loadConfirmed = true
 		prev, had := s.addressedMeter()
 		s.meters = m.meters
 		s.reseatCursor(prev, had)
@@ -917,6 +919,7 @@ func (s *AssetMetersScreen) submitRecord() tea.Cmd {
 	}
 
 	verdict := meterEntryCheck(meter.CurrentValue, typed, s.recordAbsolute)
+	verdict.Unchecked = s.loadErr != "" || !s.loadConfirmed
 	if verdict.Suspicious() {
 		s.pendingAdjust = false
 		s.pendingMeter = meter
@@ -1092,6 +1095,7 @@ func (s *AssetMetersScreen) submitAdjust() tea.Cmd {
 	}
 
 	verdict := meterAdjustCheck(meter.CurrentValue, typed)
+	verdict.Unchecked = s.loadErr != "" || !s.loadConfirmed
 	if verdict.Suspicious() {
 		s.pendingAdjust = true
 		s.pendingMeter = meter
@@ -1352,6 +1356,9 @@ func (s *AssetMetersScreen) confirmHeadline() string {
 		lead = "Adjust: "
 	}
 	from := meterFigure(m.CurrentValue, m.Unit, m.MeterTypeDisplay)
+	if s.pendingVal.Unchecked {
+		from += "?"
+	}
 	to := meterFigure(s.pendingVal.Result, m.Unit, m.MeterTypeDisplay)
 	// ASSEMBLED, THEN BOUNDED. A bound applied to one part of a row that is
 	// afterwards added to is not a bound — the defect removalHeadline had on the

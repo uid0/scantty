@@ -42,8 +42,9 @@ type meterFake struct {
 	docs     []map[string]any
 	// refuse, when set, answers the next write with this status and body — the
 	// server's own hand-written {"detail": …} shape.
-	refuseStatus int
-	refuseBody   string
+	refuseStatus    int
+	refuseBody      string
+	refuseMeterList bool
 }
 
 type meterRequest struct {
@@ -82,6 +83,12 @@ func (f *meterFake) handler(t *testing.T) http.HandlerFunc {
 			_ = json.Unmarshal(raw, &body)
 		}
 		f.requests = append(f.requests, meterRequest{r.Method, r.URL.Path, body})
+		if f.refuseMeterList && r.Method == http.MethodGet &&
+			strings.Contains(r.URL.Path, "/asset-meters/") {
+			f.refuseMeterList = false
+			http.Error(w, "meter list unavailable", http.StatusServiceUnavailable)
+			return
+		}
 
 		page := func(rows []map[string]any) {
 			w.Header().Set("Content-Type", "application/json")
@@ -198,6 +205,75 @@ func meterType(t *testing.T, r Root, text string) Root {
 		r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
 	}
 	return r
+}
+
+func TestAssetMeters_AReadingAfterFailedRefreshIsConfirmedThenWritten(t *testing.T) {
+	fake := meterFakeWithSpindle()
+	r, screen, done := meterDrive(t, fake)
+	defer done()
+
+	fake.mu.Lock()
+	fake.refuseMeterList = true
+	fake.mu.Unlock()
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if screen.loadErr == "" {
+		t.Fatal("the failed refresh did not leave the meter list marked stale")
+	}
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = meterType(t, r, "1298.75")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if screen.phase != meterPhaseConfirm {
+		t.Fatalf("an unchecked ordinary reading left phase %v, want confirm", screen.phase)
+	}
+	if writes := fake.writes(); len(writes) != 0 {
+		t.Fatalf("the unchecked reading was written before Ctrl-X: %+v", writes)
+	}
+	pane := assetFlatPane(screen, 80, 30)
+	if !strings.Contains(pane, "could not be checked against the server") {
+		t.Fatalf("the confirm does not name the unchecked comparison:\n%s", stripANSI(pane))
+	}
+	if !strings.Contains(screen.confirmHeadline(), "1250.5 hours?") {
+		t.Errorf("the stale figure is not marked unconfirmed in %q", screen.confirmHeadline())
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+	writes := fake.writes()
+	if len(writes) != 1 || writes[0].Body["value"] != "1298.75" {
+		t.Fatalf("Ctrl-X writes = %+v, want exactly the typed reading", writes)
+	}
+}
+
+func TestAssetMeters_AnAdjustmentAfterFailedRefreshIsConfirmedThenWritten(t *testing.T) {
+	fake := meterFakeWithSpindle()
+	r, screen, done := meterDrive(t, fake)
+	defer done()
+
+	fake.mu.Lock()
+	fake.refuseMeterList = true
+	fake.mu.Unlock()
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlA})
+	r = meterType(t, r, "1289.75")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyDown})
+	r = meterType(t, r, "recount against the control")
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if screen.phase != meterPhaseConfirm {
+		t.Fatalf("an unchecked ordinary adjustment left phase %v, want confirm", screen.phase)
+	}
+	if writes := fake.writes(); len(writes) != 0 {
+		t.Fatalf("the unchecked adjustment was written before Ctrl-X: %+v", writes)
+	}
+	if pane := assetFlatPane(screen, 80, 30); !strings.Contains(pane, "could not be checked against the server") {
+		t.Fatalf("the adjustment confirm does not name the unchecked comparison:\n%s", stripANSI(pane))
+	}
+
+	r = key(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+	writes := fake.writes()
+	if len(writes) != 1 || writes[0].Body["target"] != "1289.75" {
+		t.Fatalf("Ctrl-X writes = %+v, want exactly the typed adjustment", writes)
+	}
 }
 
 // THE BENCH GESTURE. Enter on a meter, type the number off the machine, Enter.
