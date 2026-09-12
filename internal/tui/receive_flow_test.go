@@ -841,12 +841,20 @@ func TestReceiveFlow_ClosingALineShortIsConfirmedAndReachesItsEndpoint(t *testin
 
 // TestReceiveFlow_AWriteOffRefusesToDiscardEntryAnywhereOnTheForm.
 //
-// Both write-off keys END THE FORM and neither can be undone from this client —
-// reopen-short is decoded and deliberately not driven — so committing one over
-// the top of anything the operator typed destroys it with no way back. The only
-// path that hands the boxes back is a write-off that FAILED: on success
-// handleSubmitted lands on the summary, `r` there calls resetEntry before the
-// reload, and enter/esc leave the screen.
+// Both write-off keys END THE FORM, so committing one over the top of anything
+// the operator typed destroys it with no way back. The only path that hands the
+// boxes back is a write-off that FAILED: on success handleSubmitted lands on the
+// summary, `r` there calls resetEntry before the reload, and enter/esc leave the
+// screen.
+//
+// WHAT THE GATE PROTECTS IS THE ENTRY, NOT THE WRITE-OFF, and Ctrl+O is what
+// makes the difference worth restating: the close-short IS correctable from this
+// client now (TestReceiveFlow_ReopeningAClosedShortLineReachesItsEndpoint), and
+// the refusal did not move, because a reopen hands back a line's outstanding
+// balance and hands back no typed quantity, carrier or note. The rule that
+// decides is satisfiability — every box counted here is a backspace away on the
+// frame the refusal is drawn on — and that is why the CAPTURES, which are not,
+// are named on the confirm and let through instead.
 //
 // The gate they share was per-line for Ctrl+K to begin with, and that is what
 // this drives: the entry is put somewhere the cursor is NOT, which is the case
@@ -1637,6 +1645,286 @@ func TestReceiveFlow_AReopenedLineSaysItWasClosedShortOnce(t *testing.T) {
 	r = receiveGoToLine(t, r, s, 0)
 	if text := receivePaneText(s, 80, 30); !strings.Contains(text, "reopened") {
 		t.Errorf("the line does not say it was closed short once:\n%s", text)
+	}
+	_ = r
+}
+
+// ---------------------------------------------------------------------------
+// Taking a close-short back
+// ---------------------------------------------------------------------------
+
+// receiveWithClosedShort is an order with one line written off by mistake
+// beside two live ones — the shape a correction is really reached against.
+func receiveWithClosedShort() []omsapi.ReceivingLine {
+	shut := receiveWSLine(12, "Reel of 24AWG wire", 10, 3)
+	shut.IsClosedShort, shut.IsSettled = true, true
+	shut.ReceiptState, shut.ReceiptStateLabel = omsapi.ReceiptStateClosedShort, "Closed short"
+	shut.ClosedShortReason = "backorder cancelled"
+	shut.QuantityPending = 0
+	return []omsapi.ReceivingLine{
+		receiveWSLine(11, "Box of M3 bolts", 4, 0),
+		shut,
+		receiveWSSerialized(13, "Serialized controller board", 2, 0),
+	}
+}
+
+// TestReceiveFlow_ReopeningAClosedShortLineReachesItsEndpoint.
+//
+// The whole round trip, driven through Root.Update and asserted against what the
+// CLIENT really put on the wire — a test that built the request itself would be
+// asserting that the test can build a request.
+//
+// It is the correction OMS's own `receive` refusal names, and until it existed a
+// close-short was unrecoverable from this terminal. Ctrl+X and not Enter
+// commits, for the reason every confirm on this screen uses it.
+func TestReceiveFlow_ReopeningAClosedShortLineReachesItsEndpoint(t *testing.T) {
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveWithClosedShort(), 80, 30)
+
+	if len(s.closed) != 1 {
+		t.Fatalf("the closed-short line is not held back: %d live, %d settled",
+			len(s.lines), len(s.closed))
+	}
+	if !barHas(s.bar(), "Ctrl+O", "Reopen short") {
+		t.Fatalf("the bar does not name the correction on an order carrying one: %+v", s.bar())
+	}
+
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlO})
+	if s.phase != phaseReopenPick {
+		t.Fatalf("ctrl+o did not open the pick: phase %v", s.phase)
+	}
+	// The pick is where the write-off's own reason is READ, which is what tells
+	// the operator this is the line they meant.
+	text := receivePaneText(s, 80, 30)
+	for _, want := range []string{"Reel of 24AWG wire", "backorder cancelled"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the pick does not carry %q:\n%s", want, text)
+		}
+	}
+
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if s.phase != phaseReopenConfirm {
+		t.Fatalf("enter did not open the confirm: phase %v", s.phase)
+	}
+	// WHAT STAYS is the fact a frame like this must not let be read as an undo,
+	// and the reason field says out loud that it is OPTIONAL, because the server
+	// says so — a screen inventing a required field would refuse a correction
+	// OMS accepts.
+	//
+	// Asked at the CANONICAL 80x24 as well as at a tall pane, because the
+	// confirm's body is one pinned block led by the Reason field: written into
+	// that body the fact was below the fold at 80x24 with the pane drawing
+	// "↓ 7 more below", on the frame whose next key writes to the record. It
+	// rides the note block now, which is on the pane at every drawable height.
+	for _, pane := range [][2]int{{80, 30}, {80, 24}, {80, 14}} {
+		text := receivePaneText(s, pane[0], pane[1])
+		for _, want := range []string{"close-short stays on the record"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the confirm does not carry %q at %dx%d:\n%s",
+					want, pane[0], pane[1], text)
+			}
+		}
+	}
+	if text := receivePaneText(s, 80, 30); !strings.Contains(text, "optional") {
+		t.Errorf("the confirm does not say the reason is optional:\n%s", text)
+	}
+	if !barHas(s.bar(), "Ctrl+X", "Reopen line") {
+		t.Errorf("the confirm does not name the key that commits: %+v", s.bar())
+	}
+
+	// Enter is deliberately NOT the commit — it is the key that OPENED this
+	// frame, so a reflex must not be what writes to the record.
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	if len(fake.reopened()) != 0 {
+		t.Fatalf("enter posted the correction: %+v", fake.reopened())
+	}
+	if text := receivePaneText(s, 80, 30); !strings.Contains(text, "ctrl+x is") {
+		t.Errorf("enter on the confirm did not name the key that acts:\n%s", text)
+	}
+
+	r = receiveTypeInto(t, r, "closed the wrong line")
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+
+	sent := fake.reopened()
+	if len(sent) != 1 || len(sent[0].Items) != 1 {
+		t.Fatalf("want one reopen naming one line, got %+v", sent)
+	}
+	if got := fmt.Sprint(sent[0].Items[0].PurchaseOrderItem); got != "12" {
+		t.Errorf("the wrong line was reopened: %q", got)
+	}
+	if sent[0].Items[0].Reason != "closed the wrong line" {
+		t.Errorf("the reason was dropped: %q", sent[0].Items[0].Reason)
+	}
+	if len(fake.closedShort()) != 0 || len(fake.sent()) != 0 {
+		t.Errorf("the correction posted something else too: closes %+v receipts %+v",
+			fake.closedShort(), fake.sent())
+	}
+
+	// A LANDED CORRECTION HANDS THE FORM BACK rather than ending the visit: the
+	// whole point of it is that a receipt can now be built against the line.
+	if s.phase != phaseQty {
+		t.Fatalf("the correction left the screen on phase %v rather than back on the form",
+			s.phase)
+	}
+	if len(s.lines) != 3 || len(s.closed) != 0 {
+		t.Fatalf("the reopened line did not come back receivable: %d live, %d settled",
+			len(s.lines), len(s.closed))
+	}
+	if text := receivePaneText(s, 80, 30); !strings.Contains(text, "stays on the record") {
+		t.Errorf("the reload did not restate what the correction did:\n%s", text)
+	}
+	_ = r
+}
+
+// TestReceiveFlow_AReopenIsOfferedOnAnOrderThatHasFinishedReceiving.
+//
+// The case OMS says the endpoint exists for, and the one a client gating on
+// `can_receive` would withhold it from. A settled order comes back with
+// `can_receive: false`, so this screen draws the BLOCKED frame for it — and
+// `reopen-short/` is the one receiving write accepted on an order already
+// `received`, because a line closed short in error is usually noticed after the
+// close settled the order.
+func TestReceiveFlow_AReopenIsOfferedOnAnOrderThatHasFinishedReceiving(t *testing.T) {
+	lines := receiveAllSettled(true)
+	sheet := receiveWorksheet(lines...)
+	sheet.CanReceive, sheet.Status, sheet.StatusLabel = false, "received", "Received"
+	sheet.UnavailableReason = "Receiving has finished with every line on this order."
+	fake := &receiveFake{sheet: sheet}
+
+	r, s := receiveDrive(t, fake, lines, 80, 30)
+	if s.phase != phaseBlocked {
+		t.Fatalf("a settled order did not draw the blocked frame: phase %v", s.phase)
+	}
+	if !barHas(s.bar(), "Ctrl+O", "Reopen short") {
+		t.Fatalf("the blocked frame withholds the one write the server still accepts "+
+			"on this order: %+v", s.bar())
+	}
+
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlO})
+	if s.phase != phaseReopenPick {
+		t.Fatalf("ctrl+o on the blocked frame did not open the pick: phase %v", s.phase)
+	}
+	if s.reopenRows() != 2 {
+		t.Fatalf("the pick offers %d of the 2 closed-short lines", s.reopenRows())
+	}
+	// Esc goes back to the frame the worksheet says this order has, DERIVED
+	// rather than remembered from the key that opened the pick.
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEsc})
+	if s.phase != phaseBlocked {
+		t.Fatalf("esc left the pick on phase %v rather than the frame it came from", s.phase)
+	}
+	_ = r
+}
+
+// TestReceiveFlow_AReopenIsNotOfferedWhereThereIsNothingToCorrect.
+//
+// The bar names the key for exactly as long as it would act, off the arm's own
+// predicate — and a key it does not name still answers by saying why, because a
+// press that redraws an identical pane is the wedged-program reading this screen
+// is written against.
+func TestReceiveFlow_AReopenIsNotOfferedWhereThereIsNothingToCorrect(t *testing.T) {
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveOrder(), 80, 30)
+	if barHas(s.bar(), "Ctrl+O", "Reopen short") {
+		t.Errorf("the bar names the correction on an order with no line closed short: %+v", s.bar())
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlO})
+	if s.phase != phaseQty {
+		t.Fatalf("ctrl+o opened the pick with nothing to correct: phase %v", s.phase)
+	}
+	if text := receivePaneText(s, 80, 30); !strings.Contains(text, "no line on this order is closed short") {
+		t.Errorf("ctrl+o did not say why it declined:\n%s", text)
+	}
+
+	// COULD NOT TELL is a different fact from "there is none", and the frame
+	// whose worksheet never arrived must not claim the second.
+	failed := &receiveFake{sheetFail: http.StatusBadGateway, sheetBody: "<html>502</html>"}
+	r2, s2 := receiveDrive(t, failed, receiveOrder(), 80, 30)
+	if s2.phase != phaseBlocked || s2.sheet != nil {
+		t.Fatalf("the failed fetch did not reach the unreadable frame: phase %v", s2.phase)
+	}
+	if barHas(s2.bar(), "Ctrl+O", "Reopen short") {
+		t.Errorf("the unreadable frame names a key that cannot know what to offer: %+v", s2.bar())
+	}
+	r2 = receiveKey(t, r2, tea.KeyMsg{Type: tea.KeyCtrlO})
+	if text := receivePaneText(s2, 80, 30); !strings.Contains(text, "worksheet could not be read") {
+		t.Errorf("ctrl+o on the unreadable frame claimed there was nothing to correct:\n%s", text)
+	}
+	_ = r
+}
+
+// TestReceiveFlow_ARefusedReopenIsASentenceAndHandsTheConfirmBack.
+//
+// reopen-short refuses with the same hand-built `{"error": "<prose>"}` every
+// other receiving endpoint uses, so parseError hands the whole raw body over and
+// AsReceivingRefusal is what turns it back into the sentence the server wrote.
+// The confirm comes back live with the typed reason intact: whether the operator
+// retypes it or goes and fetches somebody is decided by what the server said.
+func TestReceiveFlow_ARefusedReopenIsASentenceAndHandsTheConfirmBack(t *testing.T) {
+	const refusal = "This line is not closed short, so there is nothing to reopen."
+	fake := &receiveFake{failWith: http.StatusBadRequest,
+		failBody: `{"error": "` + refusal + `"}`}
+	r, s := receiveDrive(t, fake, receiveWithClosedShort(), 80, 30)
+
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlO})
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = receiveTypeInto(t, r, "wrong line")
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+
+	if s.phase != phaseReopenConfirm {
+		t.Fatalf("a refused correction left the confirm: phase %v", s.phase)
+	}
+	if s.pending {
+		t.Error("the confirm is still frozen after the refusal answered")
+	}
+	text := receivePaneText(s, 80, 30)
+	if !strings.Contains(text, refusal) {
+		t.Errorf("the server's sentence did not reach the pane:\n%s", text)
+	}
+	if strings.Contains(text, `{"error"`) {
+		t.Errorf("the raw body reached the pane:\n%s", text)
+	}
+	if s.reason.Value() != "wrong line" {
+		t.Errorf("the refusal took the typed reason with it: %q", s.reason.Value())
+	}
+	_ = r
+}
+
+// TestReceiveFlow_AReopenNeverDiscardsWhatIsTypedOnTheForm.
+//
+// This is why the correction carries no gate of the write-off's kind, and it is
+// asserted rather than reasoned about: the two write-off keys END the form, so
+// they refuse over typed entry; a reopen hands the form back, so there is
+// nothing for it to discard. applyWorksheet carries the boxes across the refetch
+// by line id.
+func TestReceiveFlow_AReopenNeverDiscardsWhatIsTypedOnTheForm(t *testing.T) {
+	fake := &receiveFake{}
+	r, s := receiveDrive(t, fake, receiveWithClosedShort(), 80, 30)
+
+	r = receiveGoToLine(t, r, s, 0)
+	r = receiveTypeInto(t, r, "3")
+	r = receiveWalkTo(t, r, s, receiveRowCarrier, tea.KeyMsg{Type: tea.KeyDown})
+	r = receiveTypeInto(t, r, "United Parcel")
+
+	// The write-off would refuse over exactly this; the correction is named.
+	if !barHas(s.bar(), "Ctrl+O", "Reopen short") {
+		t.Fatalf("the correction is withheld over typed entry it does not destroy: %+v", s.bar())
+	}
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlO})
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyEnter})
+	r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyCtrlX})
+
+	if len(fake.reopened()) != 1 {
+		t.Fatalf("the correction did not reach the wire: %+v", fake.reopened())
+	}
+	if s.phase != phaseQty {
+		t.Fatalf("the correction did not hand the form back: phase %v", s.phase)
+	}
+	if got := s.qty[0].Value(); got != "3" {
+		t.Errorf("the typed quantity did not survive the correction: %q", got)
+	}
+	if got := s.carrier.Value(); got != "United Parcel" {
+		t.Errorf("the typed carrier did not survive the correction: %q", got)
 	}
 	_ = r
 }

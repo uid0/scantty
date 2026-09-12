@@ -3,7 +3,9 @@
 // docs/PO_RECEIVING_API.md is the specification and is authoritative over this
 // file).
 //
-// Four endpoints, and the split between them is the design:
+// FIVE endpoints, and the split between them is the design (it said FOUR while
+// listing five, from the release when `reopen-short/` was decoded and not
+// driven — a count nobody had to update is a count that goes stale):
 //
 //	GET  /api/reorders/purchase-orders/{id}/receiving/
 //	     The WORKSHEET. A pure read, derived from the order on every request —
@@ -26,10 +28,10 @@
 //	     by `receive`, and the refusal names `reopen-short/` as the correction.
 //
 //	POST /api/reorders/purchase-orders/{id}/reopen-short/
-//	     Take back a close-short recorded in error. NOT driven by this client —
-//	     see the note on ReceivingLine.WasReopened for what is decoded of it.
-//	     An operator who closes the wrong line short corrects it elsewhere and
-//	     the corrected line comes back outstanding on the next worksheet fetch.
+//	     Take back a close-short recorded in error — the CORRECTION for one, and
+//	     the action `receive` names when it refuses a closed-short line. Driven
+//	     by ReopenShortPOLines; see there for the one way it is unlike every
+//	     other write here (it is accepted on an order already `received`).
 //
 //	POST /api/reorders/purchase-orders/{id}/mark-received/
 //	     Finish the order off: close every still-outstanding line short.
@@ -127,7 +129,7 @@
 //
 // # The refusal body is NOT the standard envelope
 //
-// Every refusal on these four endpoints is a hand-built `{"error": "<prose>"}`
+// Every refusal on these five endpoints is a hand-built `{"error": "<prose>"}`
 // written straight into a DRF `Response`, so it never reaches OMS's exception
 // handler and never arrives in the `{"error": {"code", "message"}}` shape
 // parseError understands. parseError falls through and puts the ENTIRE raw body
@@ -298,7 +300,10 @@ type ReceivingLine struct {
 	//
 	// They are decoded because the contract says a client reading the line
 	// afterwards sees both, and because a documented field a client silently
-	// drops is how the next author starts guessing at one.
+	// drops is how the next author starts guessing at one. ReopenShortPOLines
+	// is what PERFORMS the correction these two report; for a release this
+	// struct could see a reopen and no caller could make one, which left a
+	// close-short unrecoverable from the terminal.
 	WasReopened    bool   `json:"was_reopened"`
 	ReopenedReason string `json:"reopened_reason"`
 	IsKitLine      bool   `json:"is_kit_line"`
@@ -365,15 +370,42 @@ type ReceiptSerial struct {
 	ExpirationDate string `json:"expiration_date,omitempty"`
 }
 
-// CloseShortLine names one line whose outstanding balance is being written off.
-type CloseShortLine struct {
+// POLineSettlement names ONE line a settlement action is about, with the
+// operator's reason for it.
+//
+// ONE type for close-short AND reopen-short because the SERVER builds one:
+// `LineSettlementSerializer` is shared by both actions, and its own docstring
+// says why — "the two are the same shape: name a line, say why", and recording
+// the reason to the same standard on both sides is what lets the pair read as a
+// mistake and its correction. Two Go types here would be two things to keep in
+// step with one thing, and the wire shape is the builder's decision (see
+// po_line_entry.go), so the builder making one decision is what this mirrors.
+//
+// `purchase_order_item` is an `IntegerField` on that serializer, and
+// PurchaseOrderItem here is `any` for the reason every id on this boundary is:
+// it is spent straight back from whatever the worksheet sent, so the server's
+// own digits survive the round trip. jsonDecoder's UseNumber is what keeps a
+// seven-digit pk from becoming `1e+06`.
+//
+// Reason is OPTIONAL on both actions — `required=False, allow_blank=True` — so
+// `omitempty` here sends nothing rather than an empty string, and the server
+// applies its own `default=""`.
+type POLineSettlement struct {
 	PurchaseOrderItem any    `json:"purchase_order_item"`
 	Reason            string `json:"reason,omitempty"`
 }
 
 // CloseShortRequest is the body for the close-short action.
 type CloseShortRequest struct {
-	Items []CloseShortLine `json:"items"`
+	Items []POLineSettlement `json:"items"`
+}
+
+// ReopenShortRequest is the body for the reopen-short action. Same shape as
+// CloseShortRequest and deliberately a DIFFERENT type, because they are
+// different endpoints with opposite meanings and a caller that passed one where
+// the other belonged would compile.
+type ReopenShortRequest struct {
+	Items []POLineSettlement `json:"items"`
 }
 
 // MarkReceivedRequest is the body for the mark-received action. The reason is
@@ -416,6 +448,52 @@ func (c *Client) CloseShortPOLines(ctx context.Context, poID string, req CloseSh
 	return &out, nil
 }
 
+// ReopenShortPOLines takes back the close-short on named lines and returns the
+// updated order.
+//
+//	POST /api/reorders/purchase-orders/{poID}/reopen-short/
+//
+// A CORRECTION, NOT AN UNDO, and that is the whole design of it. The
+// close-short stays on the line exactly as it was recorded — `closed_short_at`,
+// `closed_short_by` and `closed_short_reason` all keep their values — and the
+// reopen is stamped beside it to the same standard, so the record reads as a
+// mistake and its correction rather than as a clean slate. The two are separate,
+// separately attributable rows on the order's audit trail. A client must not
+// present it as an erasure.
+//
+// The line becomes outstanding again and `receive` accepts it. `is_closed_short`
+// is DERIVED from the two stamps together, so `receipt_state` goes back to
+// `not_received` or `partially_received` and `is_settled` back to false with no
+// separate flag for a client to reconcile — and `was_reopened` comes back true
+// beside the close-short's own reason, which is how a later reader sees both.
+//
+// ACCEPTED ON AN ORDER THAT HAS FINISHED RECEIVING, unlike every other write in
+// this file, and that is deliberate rather than an oversight in the gate: a line
+// closed short in error is usually noticed AFTER the close settled the order.
+// The server allows `sent`, `confirmed`, `partially_received` and `received`,
+// and refuses a draft, cancelled or voided order with a 400 — there is no
+// receiving to correct. NOTHING HERE KEEPS A COPY OF THAT SET. The worksheet's
+// `CanReceive` is a narrower question (it is `RECEIVABLE_STATUSES`, which
+// excludes `received`), so a client that gated a reopen on it would refuse
+// exactly the case the endpoint exists for. Send it and relay the refusal.
+//
+// Refused with a 400 when the line is not currently closed short, rather than
+// stamping a correction over nothing, and when the line belongs to another
+// order. Both are the hand-built `{"error": "<prose>"}` shape, so
+// AsReceivingRefusal is what turns them back into the sentence the server wrote.
+//
+// What the ORDER becomes is in the reply and is not predicted here — one that
+// had reached `received` drops back to `partially_received`, because it is again
+// waiting on something, and that re-derivation happens in the same transaction.
+func (c *Client) ReopenShortPOLines(ctx context.Context, poID string, req ReopenShortRequest) (*PurchaseOrder, error) {
+	var out PurchaseOrder
+	path := fmt.Sprintf("/api/reorders/purchase-orders/%s/reopen-short/", poID)
+	if err := c.Post(ctx, path, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // MarkPurchaseOrderReceived finishes the order off: every still-outstanding
 // line is closed short with `reason` recorded against it.
 //
@@ -445,7 +523,7 @@ func (c *Client) MarkPurchaseOrderReceived(ctx context.Context, poID, reason str
 // AsReceivingRefusal recovers the sentence from a receiving endpoint's
 // hand-built refusal, and reports false for anything that is not one.
 //
-// It exists because those four endpoints write `{"error": "<prose>"}` straight
+// It exists because those five endpoints write `{"error": "<prose>"}` straight
 // into a Response, bypassing OMS's DRF exception handler — so parseError sees
 // no `code`, falls through, and hands the whole raw body to the caller as
 // APIError.Message. Without this the operator reads the JSON.

@@ -71,7 +71,7 @@ func poKeySpace() []string {
 		"up", "down", "left", "right", "home", "end", "pgup", "pgdown",
 		"backspace", "delete",
 		"ctrl+e", "ctrl+x", "ctrl+t", "ctrl+p", "ctrl+n",
-		"ctrl+k", "ctrl+r",
+		"ctrl+k", "ctrl+r", "ctrl+o",
 	)
 }
 
