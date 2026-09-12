@@ -2541,6 +2541,12 @@ func TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs(t *testing.T) 
 
 // TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn.
 //
+// TWO CHECKS GUARD THIS CEILING AND NEITHER IS REDUNDANT: this one catches a
+// drift that makes the bar FOLD, and
+// TestReceive_TheBarCeilingNamesEveryKeystrokeTheDrawnBarDoes below catches one
+// that does not. Deleting either leaves a real gap, which is why the second is
+// an addition to this one rather than a replacement for it.
+//
 // The body budget depends on the ceiling's rendered height, not on an
 // item-for-item match: a drawn bar may merge items while remaining no taller.
 // Sweep every phase, possible header height, and drawable width so conditional
@@ -2587,6 +2593,12 @@ func TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn(t *testing.T) {
 // TestReceive_TheBarCeilingNamesEveryKeystrokeTheDrawnBarDoes is the half the
 // rendered sweep above cannot deliver, and the reason it is a SECOND check
 // rather than a stronger wording of the first one.
+//
+// TWO CHECKS GUARD THIS CEILING AND NEITHER IS REDUNDANT: this one catches a
+// drift too small to FOLD the bar, and
+// TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn above catches one that
+// folds it — including a drift whose new item spells a key the ceiling already
+// names, which this check cannot see at all.
 //
 // The sweep above judges ROWS, because rows are what the body budget spends.
 // That only reports a divergence big enough to FOLD the bar, and the summary
