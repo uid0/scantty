@@ -2539,13 +2539,8 @@ func TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs(t *testing.T) 
 	}
 }
 
-// TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn.
-//
-// TWO CHECKS GUARD THIS CEILING AND NEITHER IS REDUNDANT: this one catches a
-// drift that makes the bar FOLD, and
-// TestReceive_TheBarCeilingNamesEveryKeystrokeTheDrawnBarDoes below catches one
-// that does not. Deleting either leaves a real gap, which is why the second is
-// an addition to this one rather than a replacement for it.
+// The height sweep catches folding drift; the keystroke sweep catches shorter,
+// non-folding drift, so neither check subsumes the other.
 //
 // The body budget depends on the ceiling's rendered height, not on an
 // item-for-item match: a drawn bar may merge items while remaining no taller.
@@ -2590,44 +2585,8 @@ func TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn(t *testing.T) {
 	}
 }
 
-// TestReceive_TheBarCeilingNamesEveryKeystrokeTheDrawnBarDoes is the half the
-// rendered sweep above cannot deliver, and the reason it is a SECOND check
-// rather than a stronger wording of the first one.
-//
-// TWO CHECKS GUARD THIS CEILING AND NEITHER IS REDUNDANT: this one catches a
-// drift too small to FOLD the bar, and
-// TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn above catches one that
-// folds it — including a drift whose new item spells a key the ceiling already
-// names, which this check cannot see at all.
-//
-// The sweep above judges ROWS, because rows are what the body budget spends.
-// That only reports a divergence big enough to FOLD the bar, and the summary
-// bar is 40 cells against the 49 the narrowest pane gives — so an arm that
-// restated barFor's literal and then drifted from it by one short item stays
-// inside one key line at every width Root draws and passes. Measured: with the
-// literal restored and `p=Print` added to barFor's summary arm, the row sweep
-// is green at 80, 100 and 120. A guard that cannot fail in the way that matters
-// is the defect it was written to stop, wearing the shape of a check.
-//
-// KEYSTROKES are what close it, and they are the right unit rather than a
-// convenient one: a ceiling's whole claim is that no bar the phase draws names
-// a key it has not accounted for. Keystrokes also survive the two things an
-// item-for-item comparison trips on, which is why that comparison was tried
-// first and abandoned. A ceiling carries every optional item at its LONGEST
-// wording while a drawn bar MERGES two of them — the serial phase draws
-// Enter/Esc=Review where the ceiling carries Enter=Save & review beside
-// Esc=Review — and the ceiling is legitimately a SUPERSET, since it names
-// paging a state's own data may never reach (the reopen pick). Both are honest,
-// and both spell the same keystrokes.
-//
-// No width axis, and that is a fact about the subject rather than an economy:
-// barFor and barCeiling take no width at all, so a keystroke set cannot vary
-// with one. Sweeping widths here would rebuild the same answer 41 times in a
-// package that has blown go test's 600s timeout twice.
-//
-// The phases come from receivePhaseCases and the tokens go through
-// receiveNamedKeys, which FATALS on a bar token it has not been taught — so a
-// bar that grows a new spelling arrives here rather than being skipped.
+// The ceiling may merge items or include unreachable optional items, so its
+// named keystrokes must be a superset rather than an item-for-item match.
 func TestReceive_TheBarCeilingNamesEveryKeystrokeTheDrawnBarDoes(t *testing.T) {
 	compared := 0
 	for _, c := range receivePhaseCases() {
