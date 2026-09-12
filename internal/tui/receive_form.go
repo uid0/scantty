@@ -1175,7 +1175,7 @@ func (s *ReceiveFormScreen) handleKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 	// arm runs below writes the answer to THIS one. Cleared here, once, for the
 	// reason the reply-side clear at the top of Update is written once: a note
 	// that outlives the state it describes is a pinned line contradicting the
-	// bar four rows under it, and headerLines draws it on every phase.
+	// bar beneath it, and headerLines draws it on every phase.
 	//
 	// Within the quantity phase that is two keystrokes away on the screen an
 	// operator spends most of their time on. Press Enter on a fresh form and
