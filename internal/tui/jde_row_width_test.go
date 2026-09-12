@@ -38,6 +38,34 @@
 // columns Root now draws `scantty needs 80 columns; this terminal has 62` and
 // nothing else. Lower minTerminalWidth and they come back, which is what this
 // sweep will then say in its "not recorded" direction.
+//
+// WHAT WAS DELIBERATELY LEFT OUT OF THE GRID FIT, recorded here because no code
+// shows a decision not to act and this is where the set is derived. The set of
+// grids bounded by jdeGridFactW / jdeGridFactCell was taken by grepping every
+// padCell call in non-test code and asking what bounds each cell, rather than by
+// fixing the two that were reported — so the exclusions are the residue of a
+// complete pass and not an arbitrary list. Three sites are outside it on purpose:
+//
+//   - poGridCell (po_detail.go) and inventory_detail_kit.go fit their number
+//     cells with fitCell rather than fitFactCell, so a figure past its column is
+//     ellipsised instead of replaced by the cut mark. NEITHER CAN OVERRUN the
+//     pane, so no row there is cut without a mark and this sweep is satisfied;
+//     which mark they draw is a separate decision about the purchase-order line
+//     grid's own give-order, and changing it would change what those screens
+//     show.
+//   - report_table.go is not this layer at all. It has its own fit
+//     (fitReportTable) with its own stated give-order and its own sweep, and its
+//     pane accessors are deliberately separate for that reason.
+//   - po_edit.go at 80 columns and up is a real, unfinished defect outside this
+//     change's scope, not outside the problem. receive_form.go's own note is the
+//     in-repo record: it enumerates the line editor's three prose sentences,
+//     the order sheet's date hints, attribution heading and work-order value,
+//     the association picker's prose, the void prompt's `required`, and the
+//     delete confirm's voided-line row. This sweep does not report those rows.
+//
+// The first two exclusions are settled for this sweep; the third remains open
+// elsewhere. Recording that distinction saves the next reader from either
+// re-deriving settled judgements or overlooking the unfinished one.
 package tui
 
 import (
