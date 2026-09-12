@@ -62,6 +62,16 @@ const (
 	assetSupplyNumW  = 2
 	assetSupplyQtyW  = 3
 	assetSupplyRoleW = 8
+	// The CEILINGS on the measured widths of the number and quantity columns.
+	// They are reserved at what this asset's own parts will really put in them
+	// (jdeGridFactW) rather than at the constants above, because padCell never
+	// truncates: a QuantityNeeded of 12345 is five cells in a three-cell column
+	// and widened the whole ROW, so the row ran past the pane at every drawable
+	// width up to 98 columns with the ROLE — whether the part is required — as
+	// the thing clampToBox took. The ROLE column needs no such ceiling: it is a
+	// closed set of two words and both are exactly assetSupplyRoleW.
+	assetSupplyNumMaxW = 4
+	assetSupplyQtyMaxW = 7
 	// assetSupplyShortIDLen is how much of the item's uuid identifies it here.
 	// Four hex characters is the convention this repo already reads elsewhere
 	// (and git's), and it is enough to separate two rows a shared name cannot.
@@ -73,9 +83,16 @@ const (
 	assetSupplyMinNameW = 4
 )
 
-// assetSupplyContIndent puts a continuation line under the item column, so it
-// reads as part of the row above rather than as a row of its own.
-var assetSupplyContIndent = strings.Repeat(" ", len(jdeIndent)+assetSupplyNumW+2)
+// supplyContIndent puts a continuation line under the item column, so it reads as
+// part of the row above rather than as a row of its own.
+//
+// It takes the MEASURED index width rather than the constant, because the index
+// column grows with the number of parts (supplyFit) and an indent built from the
+// constant would leave every reading two cells left of the column it hangs under
+// on a machine with a hundred of them.
+func (s *AssetFormScreen) supplyContIndent() string {
+	return strings.Repeat(" ", len(jdeIndent)+s.supplyFit(s.supplyRows()).numW+2)
+}
 
 // supplyRows are the parts nested on the loaded asset. Nil in create mode and
 // while the fetch is still out, which is what keeps the band off both.
@@ -146,7 +163,8 @@ func (s *AssetFormScreen) supplyBand(l *jdeLines) {
 	}
 
 	itemW := s.supplyItemWidth()
-	l.Add(StyleMuted.Render(assetSupplyGridRow("#", "Item", "Qty", "Role", itemW)))
+	fit := s.supplyFit(rows)
+	l.Add(StyleMuted.Render(assetSupplyGridRow("#", "Item", "Qty", "Role", itemW, fit)))
 	for i, p := range rows {
 		row := assetSupplyGridRow(
 			strconv.Itoa(i+1),
@@ -154,6 +172,7 @@ func (s *AssetFormScreen) supplyBand(l *jdeLines) {
 			supplyQtyCell(p),
 			supplyRoleCell(p),
 			itemW,
+			fit,
 		)
 		if onSupply && focused == i {
 			// Picked out end to end, as a focused field row is — the whole row
@@ -210,7 +229,8 @@ func (s *AssetFormScreen) supplyItemWidth() int {
 	if s.terminalWidth > 0 {
 		width = screenBodyWidth(s.terminalWidth)
 	}
-	fixed := len(jdeIndent) + assetSupplyNumW + 2 + 2 + assetSupplyQtyW + 2 + assetSupplyRoleW
+	fit := s.supplyFit(s.supplyRows())
+	fixed := len(jdeIndent) + fit.numW + 2 + 2 + fit.qtyW + 2 + assetSupplyRoleW
 	switch w := width - fixed; {
 	case w < minItemW:
 		return minItemW
@@ -221,14 +241,36 @@ func (s *AssetFormScreen) supplyItemWidth() int {
 	}
 }
 
+// assetSupplyFit is the band's two measured FACT columns, reserved at what this
+// asset's own parts will really put in them. poFitLineGrid's shape one grid over;
+// jdeGridFactW carries why a fixed budget was not enough.
+type assetSupplyFit struct {
+	numW int
+	qtyW int
+}
+
+// supplyFit measures those two columns over the rows AND the header, since the
+// header is a row of this grid too.
+func (s *AssetFormScreen) supplyFit(rows []omsapi.AssetPart) assetSupplyFit {
+	fit := assetSupplyFit{numW: assetSupplyNumW, qtyW: assetSupplyQtyW}
+	fit.qtyW = jdeGridFactW(fit.qtyW, assetSupplyQtyMaxW, "Qty")
+	for i, p := range rows {
+		fit.numW = jdeGridFactW(fit.numW, assetSupplyNumMaxW, strconv.Itoa(i+1))
+		fit.qtyW = jdeGridFactW(fit.qtyW, assetSupplyQtyMaxW, supplyQtyCell(p))
+	}
+	return fit
+}
+
 // assetSupplyGridRow lays one detail row out in its columns. The number and the
-// quantity right-align under their headers the way a printed parts list does.
-func assetSupplyGridRow(num, item, qty, role string, itemW int) string {
+// quantity right-align under their headers the way a printed parts list does,
+// each through jdeGridFactCell so no cell can widen the row and a figure past
+// its ceiling is MARKED rather than drawn as a smaller real number.
+func assetSupplyGridRow(num, item, qty, role string, itemW int, fit assetSupplyFit) string {
 	cells := []string{
-		padCell(num, assetSupplyNumW, alignRight),
+		jdeGridFactCell(num, fit.numW, alignRight),
 		padCell(item, itemW, alignLeft),
-		padCell(qty, assetSupplyQtyW, alignRight),
-		role,
+		jdeGridFactCell(qty, fit.qtyW, alignRight),
+		fitCell(role, assetSupplyRoleW),
 	}
 	return jdeIndent + strings.TrimRight(strings.Join(cells, "  "), " ")
 }
@@ -337,7 +379,7 @@ func supplyRoleCell(p omsapi.AssetPart) string {
 // is the shared layer's fold for that (sc-7wag lifted it out of here when the
 // item sheet's supplier band needed the same thing).
 func (s *AssetFormScreen) supplyMetaLines(p omsapi.AssetPart) []string {
-	return jdeWrapTokens(supplyMetaTokens(p), assetSupplyContIndent, s.bodyWidth())
+	return jdeWrapTokens(supplyMetaTokens(p), s.supplyContIndent(), s.bodyWidth())
 }
 
 // supplyMetaTokens is the clock in words. A part with no interval is not on a
@@ -380,12 +422,12 @@ func (s *AssetFormScreen) supplyNoteLine(p omsapi.AssetPart) string {
 		return ""
 	}
 	if budget := s.bodyWidth(); budget > 0 {
-		note = fitCell(note, budget-len(assetSupplyContIndent))
+		note = fitCell(note, budget-len(s.supplyContIndent()))
 	}
 	if note == "" {
 		return ""
 	}
-	return assetSupplyContIndent + StyleMuted.Render(note)
+	return s.supplyContIndent() + StyleMuted.Render(note)
 }
 
 // ---------------------------------------------------------------------------

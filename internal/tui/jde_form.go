@@ -600,6 +600,69 @@ func fitFactCell(s string, w int) string {
 	return fitCell(s, w)
 }
 
+// jdeGridFactW is the width to RESERVE for a FACT column of a detail grid: the
+// column's own budget, GROWN to the widest value these rows will really put in
+// it, and capped at a ceiling.
+//
+// It is the layer's form of a rule poFitLineGrid had already worked out for the
+// purchase-order line grid and nowhere else, and the mechanism is worth knowing
+// because every grid in the package was written the other way. padCell pads and
+// never TRUNCATES, so a cell handed a value wider than its column does not lose
+// the value — it widens the whole ROW, and clampToBox then cuts the row at the
+// pane's edge with no mark. What the operator loses is whatever the grid drew
+// LAST, which on every one of these grids is a fact column: the lead time beside
+// a cost, the role beside a quantity.
+//
+// Measured at head, with the values OMS really serves rather than the short ones
+// the fixtures carried: the item sheet's supplier band drew
+// `$123456.78  10.25d` a cell past the pane (itemSupplierCostW is 9 and a
+// six-figure pack cost is 10), and the asset form's supply band drew a
+// five-digit `QuantityNeeded` into a three-cell column. Both ran past the pane
+// at every drawable width up to 94 and 98 columns.
+//
+// GROWING THE COLUMN IS THE RIGHT MOVE RATHER THAN CLIPPING IT, and that is
+// poFitLineGrid's argument verbatim: a number cell is not a description, so
+// "1000…" is a WRONG quantity rather than a shortened one. The identifier column
+// beside it abbreviates and still reads, so the room comes from there. The
+// CEILING is what stops that being unbounded — past it the fact is marked by
+// jdeGridFactCell instead, because a garbage value must not be able to eat the
+// column that says which record the row is about.
+func jdeGridFactW(budget, ceiling int, values ...string) int {
+	if ceiling < budget {
+		ceiling = budget
+	}
+	for _, v := range values {
+		if w := lipgloss.Width(v); w > budget {
+			if w > ceiling {
+				w = ceiling
+			}
+			budget = w
+		}
+	}
+	return budget
+}
+
+// jdeGridFactCell renders a fact into the width its column was RESERVED at, so
+// the cell can neither widen the row nor be cut into a different number.
+//
+// fitFactCell rather than fitCell: a value with a digit in it is replaced by the
+// cut mark outright, because a price drawn as `$3` where $36.00 was meant reads
+// as a real, smaller figure and the operator has no way to tell. A cut number is
+// worse than an absent one, which is the rule the readings and the list rows
+// already follow.
+func jdeGridFactCell(s string, w int, align colAlign) string {
+	if w <= 0 {
+		// A column of no width is a column the grid DROPPED, and a dropped column
+		// draws nothing — fitCell says the same for the same reason. Without this
+		// the mark would be drawn into it: fitFactCell answers a digit-bearing
+		// value with paneCutMark whatever the width, which is one cell, and
+		// padCell cannot pad that back down — so a grid that had decided it could
+		// not afford a figure would have widened every row by a cell to say so.
+		return ""
+	}
+	return padCell(fitFactCell(s, w), w, align)
+}
+
 // jdeToken is one reading on a detail row's continuation line. It carries its
 // own style rather than pre-rendered text because jdeWrapTokens does its width
 // accounting on the PLAIN text and renders each token whole afterwards — which

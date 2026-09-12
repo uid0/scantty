@@ -678,8 +678,15 @@ func woReviewPlural(n int, noun string) string {
 // different number rather than as a shortened one — and the label is the
 // bounded identifier, abbreviated with an ellipsis when it will not fit.
 const (
-	woReviewSelW       = 3
-	woReviewConfW      = 4
+	woReviewSelW  = 3
+	woReviewConfW = 4
+	// The ceiling on the measured confidence column. The column carries a
+	// PERCENTAGE on a change row and a COUNT of pending changes on a submission
+	// row, and only the first is bounded by its own shape — so the column is
+	// reserved at what these rows will really put in it (jdeGridFactW) rather
+	// than at the constant. padCell pads and never truncates, so a wider value
+	// widened the whole ROW and clampToBox took the figure off the end of it.
+	woReviewConfMaxW   = 7
 	woReviewLabelFloor = 12
 	woReviewLabelCeil  = 52
 )
@@ -688,12 +695,27 @@ const (
 // hang at, under the label column.
 var woReviewSubIndent = strings.Repeat(" ", len(jdeIndent)+woReviewSelW+1)
 
+// woReviewConfWidth reserves the confidence column at the widest value these
+// submissions will really draw into it: a percentage on a change row, a COUNT of
+// pending changes on a submission row. jdeGridFactW carries why a fixed budget is
+// not enough.
+func (s *WorkOrderScanReviewScreen) woReviewConfWidth() int {
+	w := woReviewConfW
+	for _, sub := range s.subs {
+		w = jdeGridFactW(w, woReviewConfMaxW, fmt.Sprintf("%d", len(sub.PendingChanges)))
+		for _, c := range sub.PendingChanges {
+			w = jdeGridFactW(w, woReviewConfMaxW, woReviewPercent(c.Confidence))
+		}
+	}
+	return w
+}
+
 func (s *WorkOrderScanReviewScreen) labelWidth() int {
 	width := 76
 	if w := s.bodyWidth(); w > 0 {
 		width = w
 	}
-	switch w := width - (len(jdeIndent) + woReviewSelW + 1 + 2 + woReviewConfW); {
+	switch w := width - (len(jdeIndent) + woReviewSelW + 1 + 2 + s.woReviewConfWidth()); {
 	case w < woReviewLabelFloor:
 		return woReviewLabelFloor
 	case w > woReviewLabelCeil:
@@ -703,11 +725,14 @@ func (s *WorkOrderScanReviewScreen) labelWidth() int {
 	}
 }
 
-func woReviewGridRow(sel, label, conf string, labelW int) string {
+// woReviewGridRow lays one review row out in its columns. The confidence goes
+// through jdeGridFactCell so the cell can neither widen the row nor be cut into a
+// different figure; the caller passes the width the column was reserved at.
+func woReviewGridRow(sel, label, conf string, labelW, confW int) string {
 	return jdeIndent + strings.TrimRight(strings.Join([]string{
 		padCell(sel, woReviewSelW, alignLeft),
 		padCell(label, labelW, alignLeft),
-		padCell(conf, woReviewConfW, alignRight),
+		jdeGridFactCell(conf, confW, alignRight),
 	}, " "), " ")
 }
 
@@ -774,12 +799,12 @@ func woReviewReading(c omsapi.WorkOrderPendingChange) string {
 // short window keeps a whole entry rather than the first line of one.
 func (s *WorkOrderScanReviewScreen) listLines() (*jdeLines, int) {
 	l := &jdeLines{}
-	labelW := s.labelWidth()
+	labelW, confW := s.labelWidth(), s.woReviewConfWidth()
 	for i, r := range s.rows {
 		sub := s.subs[r.sub]
 		switch r.kind {
 		case woReviewSubmissionRow:
-			s.addSubmissionRow(l, i, sub, r.sub, labelW)
+			s.addSubmissionRow(l, i, sub, r.sub, labelW, confW)
 			continue
 		case woReviewNoteRow:
 			for _, line := range jdeCaveatLines(sub.ParseError, s.bodyWidth()) {
@@ -793,7 +818,7 @@ func (s *WorkOrderScanReviewScreen) listLines() (*jdeLines, int) {
 		}
 		c := sub.PendingChanges[r.change]
 		row := woReviewGridRow(s.woReviewSelCell(sub, c),
-			fitCell(woReviewName(c), labelW), woReviewPercent(c.Confidence), labelW)
+			fitCell(woReviewName(c), labelW), woReviewPercent(c.Confidence), labelW, confW)
 		if i == s.cursor {
 			row = StyleJDEFieldFocused.Render(row)
 		}
@@ -822,14 +847,14 @@ func (s *WorkOrderScanReviewScreen) listLines() (*jdeLines, int) {
 // addSubmissionRow draws one parked sheet: what it is, when it arrived, and —
 // on its own lines, whole — its UUID and the reason it could not be read.
 func (s *WorkOrderScanReviewScreen) addSubmissionRow(
-	l *jdeLines, i int, sub omsapi.WorkOrderSubmission, n, labelW int,
+	l *jdeLines, i int, sub omsapi.WorkOrderSubmission, n, labelW, confW int,
 ) {
 	name := fmt.Sprintf("Sheet %d · %s", n+1, woReviewSource(sub.Source))
 	if !sub.ReceivedAt.IsZero() {
 		name += " · " + sub.ReceivedAt.Local().Format("2006-01-02 15:04")
 	}
 	row := woReviewGridRow("", fitCell(name, labelW),
-		fmt.Sprintf("%d", len(sub.PendingChanges)), labelW)
+		fmt.Sprintf("%d", len(sub.PendingChanges)), labelW, confW)
 	if i == s.cursor {
 		row = StyleJDEFieldFocused.Render(row)
 	}
@@ -927,7 +952,7 @@ func (s *WorkOrderScanReviewScreen) listHeader() jdeHeader {
 	h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(woScanImageCaveat, width),
 		func(rows int) []string { return jdeCaveatLinesIn(woScanImageCaveat, width, rows) })
 	return h.add(jdeHeadEssential, StyleMuted.Render(
-		woReviewGridRow("Sel", "Reading", "Conf", s.labelWidth())))
+		woReviewGridRow("Sel", "Reading", "Conf", s.labelWidth(), s.woReviewConfWidth())))
 }
 
 // woScanImageCaveat is named rather than written inline so the builder and the
@@ -1145,10 +1170,10 @@ func (s *WorkOrderScanReviewScreen) confirmBody() *jdeLines {
 	if len(changes) == 0 {
 		body.Add(jdeIndent + StyleMuted.Render("No readings — nothing is queued on this sheet."))
 	}
-	labelW := s.labelWidth()
+	labelW, confW := s.labelWidth(), s.woReviewConfWidth()
 	for _, c := range changes {
 		body.Add(woReviewGridRow("", fitCell(woReviewName(c), labelW),
-			woReviewPercent(c.Confidence), labelW))
+			woReviewPercent(c.Confidence), labelW, confW))
 		for _, line := range jdeWrapTokens(
 			[]jdeToken{{text: woReviewReading(c), style: StyleMuted}},
 			woReviewSubIndent, s.bodyWidth()) {

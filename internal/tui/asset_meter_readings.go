@@ -165,9 +165,25 @@ func (s *AssetMeterReadingsScreen) page(dir int) {
 const (
 	readingNumW  = 3
 	readingDateW = 10
+	// The ceiling on the measured index column (readingNumWidth). A ledger is
+	// loaded WHOLE — ListMeterReadings walks `next` to the end — so a meter read
+	// daily for three years really does pass a thousand rows, and an index column
+	// fixed at readingNumW would have widened every one of those rows past the
+	// pane: padCell pads and never truncates. Six digits is past any ledger.
+	readingNumMaxW = 6
 )
 
-var readingRowIndent = strings.Repeat(" ", len(jdeIndent)+readingNumW+2)
+// readingNumWidth reserves the index column at the widest index this ledger will
+// really draw, and readingRowIndent hangs a continuation line under the date
+// column beside it. Both read the MEASURED width, so the readings under a row
+// stay lined up with the column they belong to however long the ledger is.
+func (s *AssetMeterReadingsScreen) readingNumWidth() int {
+	return jdeGridFactW(readingNumW, readingNumMaxW, strconv.Itoa(len(s.readings)))
+}
+
+func (s *AssetMeterReadingsScreen) readingRowIndent() string {
+	return strings.Repeat(" ", len(jdeIndent)+s.readingNumWidth()+2)
+}
 
 // readingGridPlan sizes the two figure columns to the widest each really needs
 // and says whether they fit at all.
@@ -194,18 +210,24 @@ func (s *AssetMeterReadingsScreen) readingGridPlan() (deltaW, afterW int, droppe
 	if deltaW == 0 && afterW == 0 {
 		return 0, 0, false
 	}
-	avail := width - (len(jdeIndent) + readingNumW + 2 + readingDateW + 2)
+	avail := width - (len(jdeIndent) + s.readingNumWidth() + 2 + readingDateW + 2)
 	if avail < deltaW+2+afterW {
 		return 0, 0, true
 	}
 	return deltaW, afterW, false
 }
 
-func readingGridRow(num, when, delta, after string, deltaW, afterW int) string {
-	row := jdeIndent + padCell(num, readingNumW, alignRight) + "  " +
-		padCell(when, readingDateW, alignLeft)
+// readingGridRow lays one reading out in its columns, each fact through
+// jdeGridFactCell so no cell can widen the row and a figure past its column is
+// MARKED rather than drawn as a different number. The two figure columns are
+// already sized to the widest value they hold (readingGridPlan), so the mark is
+// reached only by a value that arrived after the plan was made.
+func readingGridRow(num, when, delta, after string, numW, deltaW, afterW int) string {
+	row := jdeIndent + jdeGridFactCell(num, numW, alignRight) + "  " +
+		jdeGridFactCell(when, readingDateW, alignLeft)
 	if deltaW > 0 || afterW > 0 {
-		row += "  " + padCell(delta, deltaW, alignRight) + "  " + padCell(after, afterW, alignRight)
+		row += "  " + jdeGridFactCell(delta, deltaW, alignRight) +
+			"  " + jdeGridFactCell(after, afterW, alignRight)
 	}
 	return strings.TrimRight(row, " ")
 }
@@ -221,7 +243,8 @@ func (s *AssetMeterReadingsScreen) lines() *jdeLines {
 		}
 		delta := meterSignedFigure(r.Delta, unit, typeLabel)
 		after := meterFigure(r.ValueAfter, unit, typeLabel)
-		row := readingGridRow(strconv.Itoa(i+1), when, delta, after, deltaW, afterW)
+		row := readingGridRow(strconv.Itoa(i+1), when, delta, after,
+			s.readingNumWidth(), deltaW, afterW)
 		if i == s.cursor {
 			row = StyleJDEFieldFocused.Render(row)
 		}
@@ -267,7 +290,7 @@ func (s *AssetMeterReadingsScreen) lines() *jdeLines {
 		if r.Notes != "" {
 			tokens = append(tokens, jdeToken{text: r.Notes, style: StyleMuted})
 		}
-		for _, line := range jdeWrapTokens(tokens, readingRowIndent, s.bodyWidth()) {
+		for _, line := range jdeWrapTokens(tokens, s.readingRowIndent(), s.bodyWidth()) {
 			l.AddRow(i, line)
 		}
 	}
@@ -303,14 +326,16 @@ func (s *AssetMeterReadingsScreen) header() jdeHeader {
 		// figures went. FOLDED, not written straight to the pane — a
 		// hand-counted note is the defect pane_text.go exists for.
 		return h.add(jdeHeadContext, StyleMuted.Render(
-			readingGridRow("#", "Observed", "Change", "Total", deltaW, afterW))).
+			readingGridRow("#", "Observed", "Change", "Total",
+				s.readingNumWidth(), deltaW, afterW))).
 			add(jdeHeadEssential, jdeIndent+StyleMuted.Render(fitCellIf(
 				"Values "+meterDropMark+" below", s.bodyWidth()-len(jdeIndent)))).
 			addFittedBlock(jdeHeadContext, jdeCaveatLines(readingDropNote, s.bodyWidth()),
 				func(rows int) []string { return jdeCaveatLinesIn(readingDropNote, s.bodyWidth(), rows) })
 	}
 	return h.add(jdeHeadEssential, StyleMuted.Render(
-		readingGridRow("#", "Observed", "Change", "Total", deltaW, afterW)))
+		readingGridRow("#", "Observed", "Change", "Total",
+			s.readingNumWidth(), deltaW, afterW)))
 }
 
 // readingDropNote is the sentence under the drop mark, named rather than

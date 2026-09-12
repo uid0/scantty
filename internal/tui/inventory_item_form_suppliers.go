@@ -60,15 +60,35 @@ const (
 	itemSupplierNumW  = 2
 	itemSupplierCostW = 9
 	itemSupplierLeadW = 5
+	// The CEILINGS on the measured widths of those three columns. A column is
+	// reserved at what this item's own links will really put in it
+	// (jdeGridFactW), because padCell never truncates and a value wider than its
+	// budget widened the whole ROW: a six-figure pack cost is "$123456.78", ten
+	// cells in a nine-cell column, and the row ran a cell past the pane at every
+	// drawable width up to 94 columns with the LEAD TIME as the thing clampToBox
+	// took. The ceilings are set past any figure OMS can legitimately serve — a
+	// hundred links, a seven-figure cost, a lead time in years — so an ordinary
+	// row is never shortened, and they exist only so that a garbage value cannot
+	// eat the supplier column and push the row off the pane anyway.
+	itemSupplierNumMaxW  = 4
+	itemSupplierCostMaxW = 13
+	itemSupplierLeadMaxW = 8
 	// itemSupplierStar marks the preferred link, in the supplier cell as plain
 	// text (a focused row reverse-videos whole, and an inner style would end the
 	// highlight partway through it) and again as a styled reading underneath.
 	itemSupplierStar = "★"
 )
 
-// itemSupplierContIndent puts a continuation line under the supplier column, so
-// it reads as part of the row above rather than as a row of its own.
-var itemSupplierContIndent = strings.Repeat(" ", len(jdeIndent)+itemSupplierNumW+2)
+// supplierContIndent puts a continuation line under the supplier column, so it
+// reads as part of the row above rather than as a row of its own.
+//
+// It takes the MEASURED index width rather than the constant, because the index
+// column grows with the number of links (supplierFit) and an indent built from
+// the constant would leave every reading two cells left of the column it hangs
+// under on an item with a hundred of them.
+func (s *InventoryItemFormScreen) supplierContIndent() string {
+	return strings.Repeat(" ", len(jdeIndent)+s.supplierFit(s.supplierRows()).numW+2)
+}
 
 // supplierRows are the links nested on the loaded item. Nil in create mode and
 // while the fetch is still out, which is what keeps the band off both.
@@ -155,15 +175,15 @@ func (s *InventoryItemFormScreen) supplierBand(l *jdeLines) {
 		return
 	}
 
-	nameW := s.supplierNameWidth()
-	l.Add(StyleMuted.Render(itemSupplierGridRow("#", "Supplier", s.supplierCostHeader(), "Lead", nameW)))
+	fit := s.supplierFit(rows)
+	l.Add(StyleMuted.Render(itemSupplierGridRow("#", "Supplier", s.supplierCostHeader(), "Lead", fit)))
 	for i, sup := range rows {
 		row := itemSupplierGridRow(
 			strconv.Itoa(i+1),
-			itemSupplierCell(sup, nameW),
+			itemSupplierCell(sup, fit.nameW),
 			s.supplierCostCell(sup),
 			itemSupplierLeadCell(sup),
-			nameW,
+			fit,
 		)
 		switch s.supplierRowKind(i, sup) {
 		case supplierRowFocused:
@@ -238,36 +258,67 @@ func (s *InventoryItemFormScreen) supplierHeading(n int) string {
 	return head
 }
 
-// supplierNameWidth sizes the supplier column from the pane: a floor so a narrow
-// terminal shortens the name rather than collapsing the column, and a ceiling so
-// a wide one doesn't strand the costs out at the far right of an otherwise empty
-// row. The fallback is what a 100-column terminal has.
-func (s *InventoryItemFormScreen) supplierNameWidth() int {
+// itemSupplierFit is the band's column widths at this pane, for this item's own
+// links: the three FACT columns reserved at what their values really need, and
+// the supplier column given whatever that leaves.
+//
+// It is poFitLineGrid's shape one grid over, and it replaced three fixed
+// constants for the reason recorded at jdeGridFactW: padCell pads and never
+// truncates, so a cost or a lead time wider than its constant widened the whole
+// row rather than losing its own tail, and what went off the pane was the
+// column drawn last.
+type itemSupplierFit struct {
+	nameW int
+	numW  int
+	costW int
+	leadW int
+}
+
+// supplierFit measures the band. The supplier column keeps a FLOOR so a narrow
+// terminal shortens the name rather than collapsing the column, and a CEILING so
+// a wide one does not strand the costs out at the far right of an otherwise empty
+// row. The fallback width is what a 100-column terminal has.
+func (s *InventoryItemFormScreen) supplierFit(rows []omsapi.ItemSupplier) itemSupplierFit {
 	const minNameW, maxNameW = 12, 40
 	width := 76
 	if s.terminalWidth > 0 {
 		width = screenBodyWidth(s.terminalWidth)
 	}
-	fixed := len(jdeIndent) + itemSupplierNumW + 2 + 2 + itemSupplierCostW + 2 + itemSupplierLeadW
+	fit := itemSupplierFit{
+		numW:  itemSupplierNumW,
+		costW: itemSupplierCostW,
+		leadW: itemSupplierLeadW,
+	}
+	for i, sup := range rows {
+		fit.numW = jdeGridFactW(fit.numW, itemSupplierNumMaxW, strconv.Itoa(i+1))
+		fit.costW = jdeGridFactW(fit.costW, itemSupplierCostMaxW, s.supplierCostCell(sup))
+		fit.leadW = jdeGridFactW(fit.leadW, itemSupplierLeadMaxW, itemSupplierLeadCell(sup))
+	}
+	// The HEADER is a row of this grid too, and "Pack cost" is nine cells.
+	fit.costW = jdeGridFactW(fit.costW, itemSupplierCostMaxW, s.supplierCostHeader())
+	fixed := len(jdeIndent) + fit.numW + 2 + 2 + fit.costW + 2 + fit.leadW
 	switch w := width - fixed; {
 	case w < minNameW:
-		return minNameW
+		fit.nameW = minNameW
 	case w > maxNameW:
-		return maxNameW
+		fit.nameW = maxNameW
 	default:
-		return w
+		fit.nameW = w
 	}
+	return fit
 }
 
 // itemSupplierGridRow lays one detail row out in its columns. The number, the
 // cost and the lead time right-align under their headers the way a printed
-// quotation sheet does.
-func itemSupplierGridRow(num, supplier, cost, lead string, nameW int) string {
+// quotation sheet does, each through jdeGridFactCell so no cell can widen the
+// row and a figure past its ceiling is MARKED rather than drawn as a smaller
+// real number.
+func itemSupplierGridRow(num, supplier, cost, lead string, fit itemSupplierFit) string {
 	cells := []string{
-		padCell(num, itemSupplierNumW, alignRight),
-		padCell(supplier, nameW, alignLeft),
-		padCell(cost, itemSupplierCostW, alignRight),
-		padCell(lead, itemSupplierLeadW, alignRight),
+		jdeGridFactCell(num, fit.numW, alignRight),
+		padCell(supplier, fit.nameW, alignLeft),
+		jdeGridFactCell(cost, fit.costW, alignRight),
+		jdeGridFactCell(lead, fit.leadW, alignRight),
 	}
 	return jdeIndent + strings.TrimRight(strings.Join(cells, "  "), " ")
 }
@@ -371,7 +422,7 @@ func itemSupplierMoney(d omsapi.DecimalString) string {
 // trimmed: they run past the pane on a narrow terminal and the piece an ellipsis
 // would eat is the last one — which is where "[discontinued]" sits.
 func (s *InventoryItemFormScreen) supplierMetaLines(sup omsapi.ItemSupplier) []string {
-	return jdeWrapTokens(s.supplierMetaTokens(sup), itemSupplierContIndent, s.bodyWidth())
+	return jdeWrapTokens(s.supplierMetaTokens(sup), s.supplierContIndent(), s.bodyWidth())
 }
 
 // supplierMetaTokens is everything about a link that did not earn a column: what
@@ -413,13 +464,14 @@ func (s *InventoryItemFormScreen) supplierURLLine(sup omsapi.ItemSupplier) strin
 	if url == "" {
 		return ""
 	}
+	indent := s.supplierContIndent()
 	if budget := s.bodyWidth(); budget > 0 {
-		url = fitCell(url, budget-lipgloss.Width(itemSupplierContIndent))
+		url = fitCell(url, budget-lipgloss.Width(indent))
 	}
 	if url == "" {
 		return ""
 	}
-	return itemSupplierContIndent + StyleMuted.Render(url)
+	return indent + StyleMuted.Render(url)
 }
 
 // ---------------------------------------------------------------------------

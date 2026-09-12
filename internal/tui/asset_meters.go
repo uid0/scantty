@@ -606,6 +606,14 @@ func (s *AssetMetersScreen) openNew() tea.Cmd {
 // meter's NAME is the identifier that abbreviates around them.
 const (
 	meterNumW = 3
+	// The ceiling on the measured index column (meterNumWidth). An asset carries
+	// a handful of meters rather than a thousand, so this ceiling is never
+	// reached in practice — the column is measured anyway, because the
+	// alternative is a bound that rests on a plausibility argument somebody has
+	// to keep being right about, and padCell pads without truncating: an index
+	// wider than its column widens the whole ROW and clampToBox takes the figure
+	// off the end of it.
+	meterNumMaxW = 6
 	// meterNameFloor is the narrowest the NAME column may be before the value
 	// column is dropped instead of squeezing it further.
 	//
@@ -616,7 +624,17 @@ const (
 	meterNameFloor = 10
 )
 
-var meterRowIndent = strings.Repeat(" ", len(jdeIndent)+meterNumW+2)
+// meterNumWidth reserves the index column at the widest index this asset's meters
+// will really draw, and meterRowIndent hangs a continuation line under the name
+// column beside it — both off the MEASURED width, so the readings under a row stay
+// lined up with the column they belong to.
+func (s *AssetMetersScreen) meterNumWidth() int {
+	return jdeGridFactW(meterNumW, meterNumMaxW, strconv.Itoa(len(s.meters)))
+}
+
+func (s *AssetMetersScreen) meterRowIndent() string {
+	return strings.Repeat(" ", len(jdeIndent)+s.meterNumWidth()+2)
+}
 
 // meterGridPlan sizes the grid's columns against the pane it is about to be
 // drawn into, and says what had to give.
@@ -638,7 +656,7 @@ func (s *AssetMetersScreen) meterGridPlan() (nameW, valueW int, dropped bool) {
 			valueW = n
 		}
 	}
-	avail := width - (len(jdeIndent) + meterNumW + 2)
+	avail := width - (len(jdeIndent) + s.meterNumWidth() + 2)
 	// nameOnly is the name column when the value has no column of its own. It is
 	// capped at what the pane really leaves rather than floored above it: padCell
 	// pads and never truncates, so a floor wider than `avail` would push the row
@@ -660,11 +678,13 @@ func (s *AssetMetersScreen) meterGridPlan() (nameW, valueW int, dropped bool) {
 }
 
 // meterGridRow lays one meter out in its columns. The figure is right-aligned,
-// as every fact column in this program is.
-func meterGridRow(num, name, figure string, nameW, valueW int) string {
-	row := jdeIndent + padCell(num, meterNumW, alignRight) + "  " + padCell(name, nameW, alignLeft)
+// as every fact column in this program is, and both facts go through
+// jdeGridFactCell so neither can widen the row.
+func meterGridRow(num, name, figure string, numW, nameW, valueW int) string {
+	row := jdeIndent + jdeGridFactCell(num, numW, alignRight) + "  " +
+		padCell(name, nameW, alignLeft)
 	if valueW > 0 {
-		row += "  " + padCell(figure, valueW, alignRight)
+		row += "  " + jdeGridFactCell(figure, valueW, alignRight)
 	}
 	return strings.TrimRight(row, " ")
 }
@@ -677,7 +697,8 @@ func (s *AssetMetersScreen) listLines() *jdeLines {
 	nameW, valueW, dropped := s.meterGridPlan()
 	for i, m := range s.meters {
 		figure := meterFigure(m.CurrentValue, m.Unit, m.MeterTypeDisplay)
-		row := meterGridRow(strconv.Itoa(i+1), fitCell(m.Name, nameW), figure, nameW, valueW)
+		row := meterGridRow(strconv.Itoa(i+1), fitCell(m.Name, nameW), figure,
+			s.meterNumWidth(), nameW, valueW)
 		if i == s.cursor {
 			row = StyleJDEFieldFocused.Render(row)
 		}
@@ -704,7 +725,7 @@ func (s *AssetMetersScreen) listLines() *jdeLines {
 		if !m.IsActive {
 			tokens = append(tokens, jdeToken{text: "inactive", style: StyleStatusWarn})
 		}
-		for _, line := range jdeWrapTokens(tokens, meterRowIndent, s.bodyWidth()) {
+		for _, line := range jdeWrapTokens(tokens, s.meterRowIndent(), s.bodyWidth()) {
 			l.AddRow(i, line)
 		}
 	}
@@ -760,14 +781,14 @@ func (s *AssetMetersScreen) listHeader() jdeHeader {
 		// against the LIVE pane, since an essential row is a promise about the
 		// row and jdeFitHeader does no width fitting at all.
 		return h.add(jdeHeadContext, StyleMuted.Render(
-			meterGridRow("#", "Meter", "Current", nameW, valueW))).
+			meterGridRow("#", "Meter", "Current", s.meterNumWidth(), nameW, valueW))).
 			add(jdeHeadEssential, jdeIndent+StyleMuted.Render(fitCellIf(
 				"Value "+meterDropMark+" below", s.bodyWidth()-len(jdeIndent)))).
 			addFittedBlock(jdeHeadContext, jdeCaveatLines(meterDropNote, s.bodyWidth()),
 				func(rows int) []string { return jdeCaveatLinesIn(meterDropNote, s.bodyWidth(), rows) })
 	}
 	return h.add(jdeHeadEssential, StyleMuted.Render(
-		meterGridRow("#", "Meter", "Current", nameW, valueW)))
+		meterGridRow("#", "Meter", "Current", s.meterNumWidth(), nameW, valueW)))
 }
 
 // meterDropNote is the sentence under the drop mark below, named rather than

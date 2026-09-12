@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -241,4 +242,65 @@ func interlockFixtureKey(a interlockAction) string {
 		return "e"
 	}
 	return "?"
+}
+
+// ---------------------------------------------------------------------------
+// The two read-only GRID BANDS that ride on an edit form
+// ---------------------------------------------------------------------------
+
+// itemFormSupplierBandFixture is the inventory item form in EDIT mode with
+// supplier links on it, which is the only state that draws the supplier band at
+// all (supplierRows returns nil in create mode).
+//
+// The FACT cells are at the lengths OMS really serves, and that is deliberate:
+// itemSupplierCostW is nine cells and a six-figure pack cost is ten, so this is
+// the fixture that reaches the bound. Every earlier fixture for this screen was
+// the bare create form, so the band was drawn by nothing and the width sweeps
+// reported the screen as fitting every pane without having rendered one row of
+// it.
+func itemFormSupplierBandFixture() *InventoryItemFormScreen {
+	s := NewInventoryItemFormScreen(Deps{}, "i1")
+	s.loading = false
+	s.edit = true
+	s.item = &omsapi.Item{
+		ID:   "1",
+		Name: "Hex bolt M8x40 zinc plated grade 8.8",
+		SKU:  "HB-M8X40-ZP-88",
+	}
+	for i := 0; i < 4; i++ {
+		s.item.Suppliers = append(s.item.Suppliers, omsapi.ItemSupplier{
+			ID:           i + 1,
+			SupplierName: "Northern Tool & Die Supply Co",
+			SupplierSKU:  fmt.Sprintf("NT-884422-%04d", i),
+			UnitCost:     omsapi.DecimalString("123456.7800"),
+			PackageCost:  omsapi.DecimalString("987654.3200"),
+			LeadTimeDays: 10.25,
+			IsPreferred:  i == 0,
+		})
+	}
+	return s
+}
+
+// assetFormSupplyBandFixture is the asset form in EDIT mode with parts on it —
+// the only state that draws the supply band — carrying a QuantityNeeded that
+// outruns the three cells assetSupplyQtyW budgets for it.
+func assetFormSupplyBandFixture() *AssetFormScreen {
+	s := NewAssetFormScreen(Deps{}, "a1")
+	s.loading = false
+	s.edit = true
+	s.asset = &omsapi.Asset{
+		ID:       1,
+		Name:     "Bridgeport Series I vertical mill",
+		AssetTag: "DMS-7F3A9C21",
+	}
+	for i := 0; i < 4; i++ {
+		s.asset.Parts = append(s.asset.Parts, omsapi.AssetPart{
+			ID:             i + 1,
+			PartName:       "Way oil, Mobil Vactra No. 2, 1 gallon",
+			PartSKU:        fmt.Sprintf("WAYOIL-VACTRA2-%04d", i),
+			QuantityNeeded: 12345,
+			IsRequired:     i%2 == 0,
+		})
+	}
+	return s
 }

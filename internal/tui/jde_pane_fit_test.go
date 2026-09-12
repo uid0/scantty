@@ -597,6 +597,28 @@ func jdeScreenStates() map[string]func() Screen {
 		// not lose — which meter, and what it reads now — over a body of typed
 		// rows, and the CONFIRM is the one frame in this file whose body is a
 		// caveat nothing navigates, positioned by an offset.
+		// THE TWO READ-ONLY GRID BANDS, each on an edit form carrying rows —
+		// because the plain fixtures for these two screens are built in CREATE
+		// mode with no record loaded, so the band returns early and NO case this
+		// file builds ever drew either grid. That is the vacuous-fixture rule with
+		// the fixture's EMPTINESS as the thing that could not reach the bound: the
+		// width sweep reported both screens as fitting every pane while neither
+		// grid had been rendered once.
+		//
+		// The FACT cells carry the values OMS really serves, and that is the half
+		// that matters. Every grid in this package budgeted its fact columns at a
+		// constant and padCell pads without truncating, so a value wider than its
+		// constant widened the whole ROW rather than losing its own tail — and
+		// clampToBox then took whatever the grid drew last. With a six-figure pack
+		// cost and a five-digit QuantityNeeded these two ran past the pane at every
+		// drawable width up to 94 and 98 columns. jdeGridFactW is the layer's
+		// answer and these are the states that hold it.
+		"InventoryItemFormScreen/supplier band": func() Screen {
+			return itemFormSupplierBandFixture()
+		},
+		"AssetFormScreen/supply band": func() Screen {
+			return assetFormSupplyBandFixture()
+		},
 		"AssetMetersScreen/record": func() Screen {
 			s := assetMetersFixture()
 			s.openEntry(meterPhaseRecord)

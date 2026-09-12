@@ -387,9 +387,24 @@ func assetDocCategoryIndex(value string) int {
 const (
 	assetDocNumW = 3
 	assetDocVerW = 4
+	// The ceilings on those two measured columns. Both are reserved at what this
+	// asset's own documents will really put in them (jdeGridFactW), because
+	// padCell pads and never truncates: a "v1000" in a four-cell column widens
+	// the whole ROW rather than losing its own tail, and clampToBox then takes
+	// the version off the end of the row it widened.
+	assetDocNumMaxW = 5
+	assetDocVerMaxW = 7
 )
 
-var assetDocIndent = strings.Repeat(" ", len(jdeIndent)+assetDocNumW+2)
+// docIndent puts a continuation line under the title column. It takes the
+// MEASURED index width rather than the constant, because the index column grows
+// with the number of documents (docFit) and an indent built from the constant
+// would leave every reading left of the column it hangs under on an asset with a
+// hundred of them.
+func (s *AssetDocumentsScreen) docIndent() string {
+	numW, _ := s.docFit()
+	return strings.Repeat(" ", len(jdeIndent)+numW+2)
+}
 
 func (s *AssetDocumentsScreen) titleWidth() int {
 	const minW, maxW = 12, 52
@@ -397,7 +412,8 @@ func (s *AssetDocumentsScreen) titleWidth() int {
 	if w := s.bodyWidth(); w > 0 {
 		width = w
 	}
-	switch w := width - (len(jdeIndent) + assetDocNumW + 2 + 2 + assetDocVerW); {
+	numW, verW := s.docFit()
+	switch w := width - (len(jdeIndent) + numW + 2 + 2 + verW); {
 	case w < minW:
 		return minW
 	case w > maxW:
@@ -407,20 +423,35 @@ func (s *AssetDocumentsScreen) titleWidth() int {
 	}
 }
 
-func assetDocGridRow(num, title, version string, titleW int) string {
+// docFit reserves the index and version columns at the widest values this asset's
+// own documents will draw into them.
+func (s *AssetDocumentsScreen) docFit() (numW, verW int) {
+	numW, verW = assetDocNumW, assetDocVerW
+	numW = jdeGridFactW(numW, assetDocNumMaxW, strconv.Itoa(len(s.docs)))
+	for _, d := range s.docs {
+		verW = jdeGridFactW(verW, assetDocVerMaxW, "v"+strconv.Itoa(d.Version))
+	}
+	return numW, verW
+}
+
+// assetDocGridRow lays one document row out in its columns, each fact through
+// jdeGridFactCell so no cell can widen the row and a value past its ceiling is
+// MARKED rather than cut into a different version number.
+func assetDocGridRow(num, title, version string, titleW, numW, verW int) string {
 	return jdeIndent + strings.TrimRight(strings.Join([]string{
-		padCell(num, assetDocNumW, alignRight),
+		jdeGridFactCell(num, numW, alignRight),
 		padCell(title, titleW, alignLeft),
-		padCell(version, assetDocVerW, alignRight),
+		jdeGridFactCell(version, verW, alignRight),
 	}, "  "), " ")
 }
 
 func (s *AssetDocumentsScreen) listLines() *jdeLines {
 	l := &jdeLines{}
 	titleW := s.titleWidth()
+	numW, verW := s.docFit()
 	for i, d := range s.docs {
 		row := assetDocGridRow(strconv.Itoa(i+1), fitCell(d.Title, titleW),
-			"v"+strconv.Itoa(d.Version), titleW)
+			"v"+strconv.Itoa(d.Version), titleW, numW, verW)
 		if i == s.cursor {
 			row = StyleJDEFieldFocused.Render(row)
 		}
@@ -447,7 +478,7 @@ func (s *AssetDocumentsScreen) listLines() *jdeLines {
 		if !d.UploadedAt.IsZero() {
 			tokens = append(tokens, jdeToken{text: d.UploadedAt.Local().Format("2006-01-02"), style: StyleMuted})
 		}
-		for _, line := range jdeWrapTokens(tokens, assetDocIndent, s.bodyWidth()) {
+		for _, line := range jdeWrapTokens(tokens, s.docIndent(), s.bodyWidth()) {
 			l.AddRow(i, line)
 		}
 	}
@@ -470,10 +501,11 @@ func (s *AssetDocumentsScreen) listHeader() jdeHeader {
 		return h.add(jdeHeadEssential, jdeIndent+StyleMuted.Render(
 			fitCellIf("No documents here. Enter uploads one.", s.bodyWidth()-len(jdeIndent))))
 	}
+	numW, verW := s.docFit()
 	return h.add(jdeHeadContext, StyleJDEHeading.Render(
 		fmt.Sprintf("Documents (%d)", len(s.docs)))).
 		add(jdeHeadEssential, StyleMuted.Render(
-			assetDocGridRow("#", "Title", "Ver", s.titleWidth())))
+			assetDocGridRow("#", "Title", "Ver", s.titleWidth(), numW, verW)))
 }
 
 func (s *AssetDocumentsScreen) listBar() []actionBarItem {
