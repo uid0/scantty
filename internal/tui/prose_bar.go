@@ -449,6 +449,16 @@ const proseFlatCeilingRows = 2
 // reason proseListWindow gives, and reserves BOTH markers for the reason
 // proseListFixedRows gives.
 //
+// AN OVERSIZED ROW IS CLIPPED HERE, where the body budget is owned, rather than
+// admitted whole by proseLineWindow's necessary one-row floor. API prose can
+// contain newlines, so one authorization note or lockout reason can be taller
+// than the pane by itself. Drawing it whole lets Root's bottom clamp erase the
+// footer, while silently taking its tail makes an incomplete value look whole.
+// The last available body line therefore names how many lines were omitted.
+// That indicator is part of the budget, and the cursor's row remains the row
+// drawn: a pathological value costs detail, never the actions that operate on
+// it.
+//
 // `start` IS WRITTEN FROM INSIDE View, which is the precedent proseScrollBar
 // set: the window is a function of the pane, the rows and the cursor, and the
 // fit is idempotent given the same three — a second render walks nowhere — so
@@ -461,12 +471,13 @@ func proseFlatListFrame(head string, rows []string, cursor int, start *int, term
 	var b strings.Builder
 	b.WriteString(head)
 	from, to := 0, len(rows)
+	budget := 0
 	if terminalHeight > 0 {
 		heights := make([]int, len(rows))
 		for i, r := range rows {
 			heights[i] = strings.Count(r, "\n") + 1
 		}
-		budget := screenBodyHeight(terminalHeight) - strings.Count(head, "\n") - 2 - ceiling.rows(cells)
+		budget = screenBodyHeight(terminalHeight) - strings.Count(head, "\n") - 2 - ceiling.rows(cells)
 		if budget < proseListWindowFloor {
 			budget = proseListWindowFloor
 		}
@@ -477,6 +488,12 @@ func proseFlatListFrame(head string, rows []string, cursor int, start *int, term
 		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
 	}
 	for _, r := range rows[from:to] {
+		if lines := strings.Split(r, "\n"); budget > 0 && len(lines) > budget {
+			kept := budget - 1
+			omitted := len(lines) - kept
+			lines = append(lines[:kept], StyleMuted.Render(fmt.Sprintf("… %d more lines", omitted)))
+			r = strings.Join(lines, "\n")
+		}
 		b.WriteString(r + "\n")
 	}
 	if to < len(rows) {
@@ -494,9 +511,10 @@ func proseFlatListFrame(head string, rows []string, cursor int, start *int, term
 // It is ListScreen.scrollIntoView's walk over a slice of heights: forward until
 // the cursor is inside the window that start can afford, then back while the
 // rows below still reach the end of the list, so a taller pane is not spent on
-// blank space. A row taller than the whole budget is still drawn alone — a
+// blank space. A row taller than the whole budget is still SELECTED alone — a
 // window of none renders a list with no rows in it, and the walk would never
-// terminate.
+// terminate. proseFlatListFrame clips that selected row to the budget while
+// visibly marking the omitted lines.
 func proseLineWindow(heights []int, cursor, start, budget int) (from, to int) {
 	n := len(heights)
 	if n == 0 {

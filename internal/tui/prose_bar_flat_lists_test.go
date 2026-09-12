@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"strings"
+	"testing"
 	"time"
 
 	"github.com/uid0/scantty/internal/forgekeyapi"
@@ -49,7 +51,37 @@ func proseBarFlatListFixtures() []proseBarFixture {
 	for _, l := range proseBarFlatLists() {
 		out = append(out, proseBarFlatTriple(l)...)
 	}
+	out = append(out, proseBarOversizedAuthorizationFixture())
 	return out
+}
+
+func proseBarOversizedAuthorizationFixture() proseBarFixture {
+	return proseBarFixture{
+		name: "authorizations/oversized row", recv: "AuthorizationsScreen",
+		build: func() proseBarScreen {
+			auths := proseBarAuthorizations(1)
+			lines := make([]string, 40)
+			for i := range lines {
+				lines[i] = fmt.Sprintf("Supervision note %02d", i+1)
+			}
+			auths[0].Notes = strings.Join(lines, "\n")
+			s := NewAuthorizationsScreen(Deps{})
+			next, _ := s.Update(fkListLoadedMsg{auths: auths})
+			return next.(*AuthorizationsScreen)
+		},
+		immobile: "one authorization, so there is nowhere for the cursor to go",
+	}
+}
+
+func TestProseBarFlatList_OversizedCursorRowFitsAndMarksItsCut(t *testing.T) {
+	const width, height = 80, 24
+	s := proseBarSize(proseBarOversizedAuthorizationFixture().build(), width, height)
+	if !proseBarFrameFits(s, height) {
+		t.Fatalf("oversized cursor row pushed the frame past %dx%d:\n%s", width, height, s.View())
+	}
+	if got := stripANSI(s.View()); !strings.Contains(got, "… ") || !strings.Contains(got, " more lines") {
+		t.Fatalf("oversized cursor row was not visibly marked as clipped:\n%s", got)
+	}
 }
 
 // proseBarFlatList is one screen of the recipe.
