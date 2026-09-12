@@ -63,9 +63,26 @@ type WorkOrder struct {
 	MaterialUsage        []WorkOrderMaterialUsage  `json:"material_usage,omitempty"`
 	ActualMaterialCost   DecimalString             `json:"actual_material_cost,omitempty"`
 	Tools                []WorkOrderTool           `json:"tools,omitempty"`
-	Photos               []WorkOrderPhoto          `json:"photos,omitempty"`
-	Validation           *WorkOrderValidation      `json:"validation,omitempty"`
-	ReferenceDocuments   *ReferenceDocuments       `json:"reference_documents,omitempty"`
+	// ToolRows is the EDITABLE half of the same gear list, and it is a
+	// different key from Tools rather than a richer version of it. Tools is the
+	// pinned display projection and FALLS BACK to the source PM template's rows
+	// when this work order owns none of its own; tool_rows is only ever the work
+	// order's own WorkOrderTool records — which rows exist, which are ad-hoc (so
+	// removable), and where each is staged for THIS job. Empty on a work order
+	// generated before per-job tools, whose Tools is then the template's and has
+	// nothing to edit. Detail-only: the list serializer omits it.
+	ToolRows []WorkOrderToolRow `json:"tool_rows,omitempty"`
+	// LotoCompletions is the STRUCTURED lockout/tagout checklist: one row per
+	// energy source on the work order's asset, created when the WO was cut so the
+	// printed sheet's loto_<id> checkbox has a record to mark against. Detail-only
+	// — the list serializer omits it, so an empty slice on a list row means "not
+	// served here" rather than "no lockout required". The free-text half is the
+	// asset's lockout_instructions (carried on the `loto` context block) plus the
+	// work order's own loto_completion_note.
+	LotoCompletions    []WorkOrderLotoCompletion `json:"loto_completions,omitempty"`
+	Photos             []WorkOrderPhoto          `json:"photos,omitempty"`
+	Validation         *WorkOrderValidation      `json:"validation,omitempty"`
+	ReferenceDocuments *ReferenceDocuments       `json:"reference_documents,omitempty"`
 
 	// A SCANNED SHEET WAITING ON A HUMAN. These three ride BOTH serializers —
 	// WorkOrderSerializer and WorkOrderListSerializer — which is what lets a
@@ -656,4 +673,231 @@ func (c *Client) UploadWorkOrderAttachment(
 // serializer echoed for the row (UUID today, so `any`).
 func (c *Client) DeleteWorkOrderAttachment(ctx context.Context, attachmentID any) error {
 	return c.Delete(ctx, fmt.Sprintf("%s%v/", workOrderAttachmentsPath, attachmentID))
+}
+
+// --- Per-job tools (op-0v4) -------------------------------------------------
+
+// WorkOrderToolRow is one of the work order's OWN tool rows — the editable half
+// of the gear list, decoded from `tool_rows`. It is a different shape from
+// WorkOrderTool (`tools`), which is the flat display projection that falls back
+// to the PM template; read the doc on WorkOrder.ToolRows for which is which.
+//
+// Three facts on it decide what a client may offer:
+//
+//   - IsAdHoc — the row was typed in DURING the job and has no template spec
+//     behind it. Only an ad-hoc row is deletable: a template-derived row is the
+//     frozen copy of what the job was supposed to need and it prints on the
+//     sign-off sheet, so DELETE on one is a 400.
+//   - ResolvedLocation — WHERE THE TOOL IS, and the only location field to
+//     display. LocationHint is this job's own staging spot and is BLANK whenever
+//     the linked inventory item's storage location is standing in, so a surface
+//     reading the hint shows nothing for a tool that has a perfectly good
+//     location. The hint is what a restage WRITES; the resolved value is what it
+//     READS.
+//   - InventoryItemName — the tracked stock behind the row, when there is any.
+//     Tools are NOT consumed (gathered, used, returned), so the link only ever
+//     supplies that location fallback: no stock moves, no cost is recorded, and
+//     adding a tool never creates an inventory item.
+//
+// Everything but LocationHint is read-only on the wire — the display fields are
+// frozen at generation, or set exactly once by the add — so a restage is the
+// whole editable surface of a row.
+type WorkOrderToolRow struct {
+	ID                any       `json:"id"`
+	WorkOrder         any       `json:"work_order,omitempty"`
+	Tool              any       `json:"tool,omitempty"`
+	InventoryItem     *string   `json:"inventory_item,omitempty"`
+	InventoryItemName string    `json:"inventory_item_name,omitempty"`
+	IsAdHoc           bool      `json:"is_ad_hoc,omitempty"`
+	Name              string    `json:"name"`
+	Quantity          int       `json:"quantity,omitempty"`
+	LocationHint      string    `json:"location_hint,omitempty"`
+	ResolvedLocation  string    `json:"resolved_location,omitempty"`
+	IsRequired        bool      `json:"is_required,omitempty"`
+	Notes             string    `json:"notes,omitempty"`
+	CreatedAt         time.Time `json:"created_at,omitempty"`
+}
+
+// IDString is the row's id as a path segment, through the one coercer that
+// knows what the decoder made of an untyped value (client.go's anyIDString).
+func (t WorkOrderToolRow) IDString() string { return anyIDString(t.ID) }
+
+// WorkOrderAdHocTool is the input for AddWorkOrderTool. Name is the only
+// required field — it is the only thing the tech reads off the printed list, and
+// the serializer rejects a blank one.
+//
+// Quantity is a *int so "leave it to the server" and "the operator typed a
+// number" are different facts: the serializer defaults it to 1 and bounds it at
+// 1, and a plain int could not tell an unsupplied quantity from a typed zero —
+// which must reach the server and be refused BY the server rather than silently
+// become 1. IsRequired is a *bool for the same reason: it defaults to TRUE, so
+// an absent key and a false one mean opposite things.
+//
+// LocationHint and Notes are omitted when empty; both default to "" server-side,
+// so omitting and sending blank are the same write and the shorter body is the
+// one the web sends.
+type WorkOrderAdHocTool struct {
+	Name         string
+	Quantity     *int
+	LocationHint string
+	IsRequired   *bool
+	Notes        string
+	// InventoryItem links the row to tracked stock so that item's storage
+	// location stands in wherever no per-job hint is set. Optional, and empty
+	// means unlinked; it moves no stock either way.
+	InventoryItem string
+}
+
+func (in WorkOrderAdHocTool) body() map[string]any {
+	out := map[string]any{"name": in.Name}
+	if in.Quantity != nil {
+		out["quantity"] = *in.Quantity
+	}
+	if in.IsRequired != nil {
+		out["is_required"] = *in.IsRequired
+	}
+	if in.LocationHint != "" {
+		out["location_hint"] = in.LocationHint
+	}
+	if in.Notes != "" {
+		out["notes"] = in.Notes
+	}
+	if in.InventoryItem != "" {
+		out["inventory_item"] = in.InventoryItem
+	}
+	return out
+}
+
+// AddWorkOrderTool records a tool this job turned out to need
+// (POST .../tools/). Mirrors workOrderAPI.addTool.
+//
+// It is the only way a CORRECTIVE work order lists a tool at all — it has no PM
+// template to copy rows from — and the way any work order records something the
+// tech found they needed mid-job. Nothing here moves stock.
+//
+// ONE CONSEQUENCE A CALLER MUST SURFACE: on a work order that owns no rows yet
+// but whose `tools` payload is its PM TEMPLATE's list, this row becomes the
+// work order's own list, and `tools` then serves that one row instead of the
+// template's (inventory.services.work_order_context.build_tools_context takes
+// the rows branch as soon as one exists). The template's tools are not deleted
+// and the next work order off it still gets them, but they stop being displayed
+// on THIS one.
+func (c *Client) AddWorkOrderTool(ctx context.Context, woID string, in WorkOrderAdHocTool) (*WorkOrderToolRow, error) {
+	var out WorkOrderToolRow
+	if err := c.Post(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/tools/", woID), in.body(), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateWorkOrderToolLocation restages one tool for THIS job
+// (PATCH .../tools/{toolID}/ with {"location_hint": …}). Mirrors
+// workOrderAPI.updateToolLocation.
+//
+// Allowed on EVERY row, template-derived included: per-job restaging is the
+// point of the model, and the write lands only on the work order — never back on
+// the MaintenanceTool the row was copied from — so the next work order off that
+// template still gets the template's location.
+//
+// The hint is sent even when BLANK, and that is not a redundant write: blank
+// CLEARS the per-job hint and lets the linked inventory item's location stand in
+// again, which is a different stored state from the hint the row had before.
+// (The serializer declares location_hint allow_blank and required, so there is
+// no "omit it" option here in any case.)
+func (c *Client) UpdateWorkOrderToolLocation(ctx context.Context, woID, toolID, locationHint string) (*WorkOrderToolRow, error) {
+	body := map[string]any{"location_hint": locationHint}
+	var out WorkOrderToolRow
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/tools/%s/", woID, toolID), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveWorkOrderTool deletes one AD-HOC tool row
+// (DELETE .../tools/{toolID}/, 204 on success). Mirrors workOrderAPI.removeTool.
+//
+// The backend refuses a TEMPLATE-derived row with 400 — it is the frozen copy of
+// what the job was supposed to need and it prints on the sign-off sheet — and
+// 404s a tool id that is not on THIS work order, so a row cannot be reached
+// sideways from another job.
+func (c *Client) RemoveWorkOrderTool(ctx context.Context, woID, toolID string) error {
+	return c.Delete(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/tools/%s/", woID, toolID))
+}
+
+// --- Structured lockout/tagout ---------------------------------------------
+
+// WorkOrderLotoCompletion is the record that ONE energy source on this job's
+// asset was isolated — the structured half of lockout/tagout, one row per
+// loto.AssetEnergySource, cut when the work order was generated.
+//
+// THE DESCRIPTIVE FIELDS ARE DENORMALIZED COPIES, not a view of the live energy
+// source: SourceType / SourceLabel / IsolationPoint / RequiredDevices were
+// frozen at generation so the printed sheet and the persisted record cannot
+// disagree, and they survive the energy source being edited or deleted
+// afterwards (EnergySource is then null). So a client renders these, never the
+// asset's current LOTO requirements, when it is describing what THIS job's
+// record says.
+//
+// RequiredDevices is a comma-joined STRING, not a list — it is the frozen text
+// of which padlocks/blocks the source needed.
+//
+// IsCompleted / CompletedAt / CompletedBy are the record itself. The completion
+// endpoint is a TOGGLE: recording clears to false again, and the backend then
+// clears the actor and the timestamp with it, so an un-recorded row keeps no
+// trace of having been marked.
+type WorkOrderLotoCompletion struct {
+	ID              any        `json:"id"`
+	WorkOrder       any        `json:"work_order,omitempty"`
+	EnergySource    any        `json:"energy_source,omitempty"`
+	SourceType      string     `json:"source_type,omitempty"`
+	SourceLabel     string     `json:"source_label,omitempty"`
+	IsolationPoint  string     `json:"isolation_point,omitempty"`
+	RequiredDevices string     `json:"required_devices,omitempty"`
+	IsCompleted     bool       `json:"is_completed,omitempty"`
+	CompletedBy     *int       `json:"completed_by,omitempty"`
+	CompletedByName string     `json:"completed_by_name,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	Notes           string     `json:"notes,omitempty"`
+	CreatedAt       time.Time  `json:"created_at,omitempty"`
+}
+
+// IDString is the record's id as a path segment, through client.go's one
+// coercer for an untyped id.
+func (l WorkOrderLotoCompletion) IDString() string { return anyIDString(l.ID) }
+
+// CompleteWorkOrderLoto records — or takes back — the isolation of ONE energy
+// source within a work order
+// (PATCH .../loto/{lotoID}/complete/). Mirrors workOrderAPI.completeLoto.
+//
+// WHAT THE SERVER DOES AND DOES NOT CHECK, because a client must not invent the
+// difference (inventory.views.WorkOrderViewSet.complete_loto is the contract):
+//
+//   - is_completed is REQUIRED. Omitting it is a 400 "is_completed is
+//     required."; the value is read with bool(), so anything truthy records.
+//   - THERE IS NO ORDERING RULE AND NO ALREADY-COMPLETE RULE. The endpoint is a
+//     plain toggle over the row's own flag: any row may be marked at any time,
+//     in any order, and re-marking one already marked is accepted and leaves the
+//     original CompletedAt/CompletedBy in place (they are only stamped on a
+//     transition INTO completed). So nothing on this side may refuse a
+//     completion on those grounds — there is no server judgement to relay.
+//   - A row id that is not on THIS work order is a 404 "LOTO completion record
+//     not found.", so a record cannot be reached sideways from another job.
+//   - Recording one can advance an OPEN work order to in_progress, and NEVER to
+//     completed: closing the job stays a required-tasks gate plus a human
+//     confirm. The reply is the single record, so a caller that wants the
+//     work order's new status re-fetches rather than inferring it.
+//
+// notes is sent only when non-empty, because the backend writes the field only
+// when the KEY is present: an empty string would overwrite a note somebody
+// recorded elsewhere, where omitting leaves it alone.
+func (c *Client) CompleteWorkOrderLoto(ctx context.Context, woID, lotoID string, isCompleted bool, notes string) (*WorkOrderLotoCompletion, error) {
+	body := map[string]any{"is_completed": isCompleted}
+	if notes != "" {
+		body["notes"] = notes
+	}
+	var out WorkOrderLotoCompletion
+	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/work-orders/%s/loto/%s/complete/", woID, lotoID), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

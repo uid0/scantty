@@ -847,6 +847,95 @@ touching any report that shows a rate, a variance or a lateness:
   nothing here decodes them; the keys ScanTTY does decode were deliberately left
   alone and only GAINED the sibling above.
 
+### A WORK ORDER CARRIES TWO TOOL KEYS AND ONLY ONE OF THEM IS EDITABLE
+
+`internal/omsapi/workorders.go` (`WorkOrder.ToolRows`, `WorkOrderToolRow`) and
+`internal/tui/wo_tools_loto.go` are the authority; OMS's
+`inventory.services.work_order_context.build_tools_context` is the contract.
+What is worth knowing before touching anything tool-shaped on a work order:
+
+- **`tools` is a DISPLAY projection and FALLS BACK to the PM template;
+  `tool_rows` is only ever the work order's OWN rows.** Both ride the detail
+  serializer, and `tools`'s key set is pinned because ScanTTY decodes it for the
+  e-paper work order. So the editable list is `tool_rows`, and offering a
+  removal against a `tools` row a work order does not own would be a key acting
+  on something that is not there.
+- **THREE STATES, NOT TWO.** `tool_rows` empty with `tools` non-empty is the
+  LEGACY shape — a work order generated before per-job tools, DISPLAYING its
+  template's list with nothing to edit — and it is a different fact from "this
+  job needs no tools". `woToolsAreTheTemplates` is the predicate.
+- **ADDING THE FIRST AD-HOC ROW MAKES THE TEMPLATE'S TOOLS VANISH FROM THAT
+  JOB'S DISPLAY.** `build_tools_context` takes the rows branch as soon as one
+  exists, so a legacy work order showing four template tools shows exactly the
+  one new row afterwards. The template is not edited and the next job off it
+  still gets them. The add form NAMES that before the operator commits
+  (`renderAddToolForm`) rather than leaving them to watch four tools become one.
+- **READ `resolved_location`, NEVER `location_hint`.** The hint is BLANK
+  whenever the linked inventory item's storage location is standing in, so a
+  surface reading the hint shows nothing for a tool that has a perfectly good
+  place. The hint is what a restage WRITES; the resolved value is what every
+  surface READS (`woToolLocationLine` names which of the two a row is showing).
+- **A BLANK HINT IS A WRITE, not a skipped one**: it clears the per-job hint and
+  hands the row back to the stored location. The serializer also declares
+  `location_hint` required, so there is no omit option.
+- **`is_ad_hoc` decides removal and RESTAGING IS ALLOWED ON EVERY ROW.** Only an
+  ad-hoc row can be deleted (a template row is the frozen copy of what the job
+  was supposed to need, and prints on the sign-off sheet); restaging lands only
+  on the work order and never back on the `MaintenanceTool`.
+
+### A LOCKOUT STEP IS A SAFETY RECORD, AND OMS GATES NOTHING ABOUT IT
+
+`internal/tui/wo_tools_loto.go`'s header comment carries the full reasoning and
+`internal/omsapi/workorders.go`'s `CompleteWorkOrderLoto` the measured contract;
+OMS's `inventory.views.WorkOrderViewSet.complete_loto` is the authority. Before
+touching the flow:
+
+- **THE SERVER ENFORCES NO ORDER AND NO ALREADY-COMPLETE RULE.** It is a plain
+  toggle over one row's flag: any row may be marked at any time, re-marking one
+  keeps the original actor and timestamp, and the only refusals are a missing
+  `is_completed` (400) and a record not on this work order (404). So nothing on
+  this side may decline a completion on safety grounds — there is no server
+  judgement to relay — and the review frame REPORTS the absence of a sequence
+  (`woLotoAnyOrder`) rather than implying a rule. `TestCompleteWorkOrderLoto_NothingRefusesAnOutOfOrderStep`
+  is the negative half, and it is there because inventing the rule is the first
+  thing an implementation reaches for.
+- **RECORDING IS TWO DELIBERATE KEYSTROKES AND NAVIGATION IS NEVER ONE.**
+  `enter` opens a review frame, `y` on it is the write. In particular SPACE is
+  NOT bound to the write — it toggles the highlighted row on both neighbouring
+  lists (tasks, materials), so a hand carrying that habit would record a step it
+  never read — and `enter` is not either, because `enter` is what OPENED the
+  frame and a reflexive double-tap would be enough. `TestWOLoto_NoKeyBUTyRecordsAnything`
+  presses the whole key space, one fresh screen per key, and fails on a third
+  writer; space DECLINES AND SAYS SO rather than being left silent.
+- **THE FRAME FOLLOWS ITS ROW BY ID AND HOLDS THE STATE IT WAS OPENED AGAINST.**
+  `lotoCursor` indexes the payload positionally and every write fires a reload,
+  so a reload landing under an open confirm is ordinary. `reseatLotoConfirm`
+  closes the frame in TWO cases and says which: the row is gone, or its recorded
+  state CHANGED since the frame opened — because the frame says what `y` is
+  about to do, and re-wording itself under a hand already reaching for `y` is
+  the same defect `reseatLineIndexes` was written for on a PO line.
+- **THE STEP IS FOLDED AND SCROLLED, NEVER CLIPPED.** The three descriptive
+  fields are 200/200/300 characters against the 51 cells an 80-column pane
+  gives. The DIRECTION and the step's LABEL are pinned above a scrolled body
+  (clampToBox drops from the bottom), and everything else is reachable with the
+  keys the bar names — a lockout instruction that does not fit is a layout
+  problem, not a value to cut. **AN INDENT IS PART OF THE FOLD BUDGET**:
+  `wrapIndented` exists because folding at the full pane and then writing the
+  lines out under a two-space indent put every continuation two cells over, and
+  clampToBox took two characters off the end of each one, unmarked, in the middle
+  of a lockout instruction.
+- **A ROW IS CUT AT GENERATION AND NOTHING CREATES ONE**, so an asset with no
+  recorded energy sources has an empty checklist for good. `L`, the footer entry
+  and the body section are all gated on the one predicate (`woLotoRows`), and the
+  key declines with the reason where it is not named — the shape `R` already uses
+  on this screen.
+- **NOT BUILT, and named so nobody re-derives it as missing:** the completion's
+  own `notes` field (on the wire, and the web's checkbox does not offer it
+  either, so ScanTTY sends no key and leaves whatever is stored alone), the
+  work order's free-text `loto_completion_note` (a different field, written
+  through the WO PATCH), and `WorkOrderAdHocTool.InventoryItem` — the client
+  carries it, the form does not offer it, and neither does the web's.
+
 ## The receiving flow is driven off ONE fetch, and the server decides
 
 `internal/omsapi/po_receiving.go` carries the contract note and
