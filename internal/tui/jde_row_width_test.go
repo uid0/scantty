@@ -44,7 +44,7 @@
 // grids bounded by jdeGridFactW / jdeGridFactCell was taken by grepping every
 // padCell call in non-test code and asking what bounds each cell, rather than by
 // fixing the two that were reported — so the exclusions are the residue of a
-// complete pass and not an arbitrary list. Three sites are outside it on purpose:
+// complete pass and not an arbitrary list. Two sites are outside it on purpose:
 //
 //   - poGridCell (po_detail.go) and inventory_detail_kit.go fit their number
 //     cells with fitCell rather than fitFactCell, so a figure past its column is
@@ -56,16 +56,19 @@
 //   - report_table.go is not this layer at all. It has its own fit
 //     (fitReportTable) with its own stated give-order and its own sweep, and its
 //     pane accessors are deliberately separate for that reason.
-//   - po_edit.go at 80 columns and up is a real, unfinished defect outside this
-//     change's scope, not outside the problem. receive_form.go's own note is the
-//     in-repo record: it enumerates the line editor's three prose sentences,
-//     the order sheet's date hints, attribution heading and work-order value,
-//     the association picker's prose, the void prompt's `required`, and the
-//     delete confirm's voided-line row. This sweep does not report those rows.
 //
-// The first two exclusions are settled for this sweep; the third remains open
-// elsewhere. Recording that distinction saves the next reader from either
-// re-deriving settled judgements or overlooking the unfinished one.
+// THE PURCHASE-ORDER EDIT SCREEN IS NOT A THIRD. This header used to list it as
+// a real, unfinished defect this sweep did not report, copied from a
+// receive_form.go note written before that screen was converted. Both records
+// were stale: the rows they named (the line editor's prose, the order sheet's
+// date hints, attribution heading and work-order value, the association
+// picker's prose, the void prompt's `required`, the delete confirm's
+// voided-line row) are fitted, and they are held by the screen's own STATE
+// sweep, TestPOEditRows_NothingRunsPastThePane in po_edit_rows_test.go — which
+// walks every phase, cursor row and removal answer this sweep's opening
+// positions cannot reach, and fails a long fixture value cut without its mark
+// as well as a row past the pane. A record saying a defect is open when the
+// check says it is closed is itself a defect: the next reader files work from it.
 package tui
 
 import (

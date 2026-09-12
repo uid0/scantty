@@ -2539,9 +2539,12 @@ func poEditProse(style lipgloss.Style, text string, width int) []string {
 // Reusing the fit without that would have been the defect this conversion
 // removes, moved from the pane edge into the column budget.
 //
-//   - The FLAG, where even its column will not fit (below 78 columns), rides
-//     at the FRONT OF THE ITEM CELL, the way the detail sheet
-//     carries a kit's tag (poKitTag) and for the reason that tag's own doc gives:
+//   - The FLAG, where even its column will not fit — which the ORDER's numbers
+//     decide as much as the terminal does, because the fixed columns grow to the
+//     widest quantity and line total on it, so a big enough order drops the
+//     column at 80 columns and up — rides at the FRONT OF THE ITEM CELL, the way
+//     the detail sheet carries a kit's tag (poKitTag) and for the reason that
+//     tag's own doc gives:
 //     a line that is not what it appears to be is marked on the line an operator
 //     reads to decide what it is, ahead of the name, because the name is the
 //     part that gives. Not on a READING line under the row: a window can end
