@@ -4140,10 +4140,31 @@ func (s *ReceiveFormScreen) writeOffVerb() string {
 // barCeiling is the tallest bar this phase can draw, and it is deliberately
 // blind to headerRows: it is what the header allowance measures itself against,
 // so a bar that asked the header how tall it was would close a loop.
+//
+// Where a phase takes no header-dependent item — the loading frame and the
+// summary, each a fixed pair of keys — the ceiling IS the bar that gets drawn,
+// so the arm DERIVES it from barFor rather than restating the literal. The 0 is
+// inert on exactly those arms and no other height would be honest: a taller
+// header leaves a SMALLER body, so asking barFor for a real height could only
+// ever understate a paging item, and a ceiling that understates is not one.
+//
+// Restated, the two literals stayed identical and nothing was wrong on screen.
+// What that left was the silent half: an item added to one of these bars alone
+// would have left the header allowance measuring itself against a bar shorter
+// than the one drawn — a body budgeted a row it does not have, and clampToBox
+// takes that row off the BOTTOM, where the bar is.
+//
+// Two checks hold it, because one of them does not reach far enough alone.
+// TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn is the contract itself,
+// asked of every phase at every header the pane can pay — but a rendered sweep
+// only notices a divergence big enough to FOLD the bar, so it would pass a
+// restated literal that had drifted by one short item.
+// TestJDEForm_NoBarCeilingRestatesABarLiteral asks the rule where it is really
+// decided, of the source: no arm here may return a bar it built itself.
 func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 	switch s.phase {
 	case phaseLoading:
-		return []actionBarItem{{"Esc", "Back to order"}}
+		return s.barFor(0)
 	case phaseBlocked:
 		return s.blockedBarItems(true)
 	case phaseSerial:
@@ -4157,7 +4178,7 @@ func (s *ReceiveFormScreen) barCeiling() []actionBarItem {
 	case phaseReopenConfirm:
 		return s.reopenConfirmBar()
 	case phaseDone:
-		return []actionBarItem{{"Enter/Esc", "Back to order"}, {"r", "Receive more"}}
+		return s.barFor(0)
 	}
 	return s.qtyBarCeiling()
 }

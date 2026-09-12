@@ -2538,3 +2538,63 @@ func TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs(t *testing.T) 
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The ceiling IS the bar that gets drawn
+// ---------------------------------------------------------------------------
+
+// TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn.
+//
+// barCeiling is the FIXED POINT the header allowance measures itself against:
+// naming a key costs cells, cells fold the bar onto another row, and another
+// bar row is one fewer for the body — so the budget has to be taken against the
+// TALLEST bar the phase can produce, or it oscillates between frames. Its whole
+// contract is therefore "never folds onto fewer rows than the bar really
+// drawn", and it is asked at every headerRows the pane can pay rather than at
+// the live one alone, because every header-dependent arm READS that argument and
+// only a sweep over it can see an arm whose answer turns over at some height. 0
+// is in the range on purpose: it is the height barCeiling's derived arms pass.
+//
+// What it does NOT assert, said plainly because the obvious stronger wording is
+// false: the ceiling is not a SUPERSET of the drawn bar's items. Every optional
+// item is present in it at its LONGEST wording, and a drawn bar routinely merges
+// two of those into one — the serial phase draws Enter/Esc=Review where the
+// ceiling carries Enter=Save & review beside Esc=Review — so an item-for-item
+// comparison reports honest bars. The rows are what the budget spends and the
+// rows are what this judges.
+//
+// The phases come from receivePhaseCases, so a phase added to the iota arrives
+// here without anybody remembering it.
+func TestReceive_TheBarCeilingIsNeverShorterThanTheBarDrawn(t *testing.T) {
+	compared := 0
+	for _, c := range receivePhaseCases() {
+		for _, height := range c.paneSizes() {
+			t.Run(fmt.Sprintf("%s at 80x%d", c.name, height), func(t *testing.T) {
+				build := receiveHarness(t, c.fake, c.lines, 80, height)
+				r, s := build(t)
+				// The Root is only the driver: every fact asked below lives on
+				// the screen, which the reach has written through by pointer.
+				_ = c.reach(t, r, s)
+				if s.phase != c.phase {
+					t.Fatalf("reach landed on phase %v, want %v", s.phase, c.phase)
+				}
+				ceiling := s.barCeiling()
+				ceilingRows := actionBarRowsFor(s.barWidth(), ceiling)
+				for h := 0; h <= s.paneRows(); h++ {
+					drawn := s.barFor(h)
+					compared++
+					if rows := actionBarRowsFor(s.barWidth(), drawn); rows > ceilingRows {
+						t.Errorf("with a %d-row header the bar folds onto %d row(s) and the "+
+							"ceiling onto %d, so the body is budgeted %d row(s) it does not "+
+							"have and clampToBox takes them off the BOTTOM, where the bar "+
+							"is\nceiling: %+v\ndrawn:   %+v",
+							h, rows, ceilingRows, rows-ceilingRows, ceiling, drawn)
+					}
+				}
+			})
+		}
+	}
+	if compared == 0 {
+		t.Fatal("no state was reached, so this judged nothing")
+	}
+}
