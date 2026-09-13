@@ -545,17 +545,17 @@ func (s *BadgeEnrollmentScreen) listBar(moves, rows bool) proseBar {
 
 // proseBar is the bar this screen is DRAWING, for whichever surface is up — the
 // directory, its search box, or the manual badge entry drawn in place of the
-// list — and nil in the states that draw something else instead: a load in
-// flight or failed (the staff-only refusal), the clear confirm (a one-line y/n
-// prompt naming its own keys), a manual set while it is out, and the enrolment
-// panel, whose every key is "any key".
+// list — and nil in the states that draw something else instead: the clear
+// confirm (a one-line y/n prompt naming its own keys), a manual set while it is
+// out, and the enrolment panel, whose every key is "any key". A load in flight
+// or failed draws loadBar's.
 //
 // THE SEARCH BOX HAS A BAR OF ITS OWN. It used to open over the list with a
 // hint line of its own above the rows and the LIST's footer still under them, so
 // one frame said `j/k move` while `j` was a character going into the query.
 func (s *BadgeEnrollmentScreen) proseBar() proseBar {
 	if s.loading || s.loadErr != "" {
-		return nil
+		return s.loadBar()
 	}
 	switch s.mode {
 	case badgeModeSearch:
@@ -572,6 +572,20 @@ func (s *BadgeEnrollmentScreen) proseBar() proseBar {
 		return nil
 	}
 	return s.listBar(listNavMoves(len(s.rows)), len(s.rows) > 0)
+}
+
+// loadBar is the member list's bar while its load is out or has failed — what
+// its key switch still answers with no rows drawn (prose_bar.go carries the
+// defect and the decision). `e`/`enter` still ARM ENROLLMENT for the member a
+// refresh kept under the cursor, which the frame no longer draws: named because
+// it acts, and a candidate for gating. `/`, `s` and `x` are not named — each
+// opens a box or a confirm this frame does not draw.
+func (s *BadgeEnrollmentScreen) loadBar() proseBar {
+	var out proseBar
+	if _, ok := s.selected(); ok && !s.busy {
+		out = append(out, proseBarItem{Keys: []string{"e", "enter"}, Hint: "e/enter enroll"})
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *BadgeEnrollmentScreen) scrollIntoView() {
@@ -594,11 +608,11 @@ func (s *BadgeEnrollmentScreen) scrollIntoView() {
 
 func (s *BadgeEnrollmentScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading members…")
+		return proseLoadingFrame("Loading members…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" +
-			StyleMuted.Render("Badge enrollment is staff-only. r retry · esc back")
+		return proseRefusalFrame("Error: ", StyleStatusError, s.loadErr,
+			"Badge enrollment is staff-only.", s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	switch s.mode {
 	case badgeModeSetInput:

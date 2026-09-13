@@ -931,16 +931,34 @@ func (s *ThermostatListScreen) bar(moves bool) proseBar {
 }
 
 // proseBar is the bar this screen is DRAWING, and nil in the states that draw
-// something else instead — a load in flight, a failure, a prompt that replaces
-// the footer, and the EMPTY list, whose shorter footer is still a literal. So
-// "this state has no bar" and "this state's bar is empty" stay different answers
-// to the honesty sweep, and what this conversion leaves behind is a STATE rather
-// than a screen.
+// something else instead — a prompt that replaces the footer, and the EMPTY
+// list, whose shorter footer is still a literal. So "this state has no bar" and
+// "this state's bar is empty" stay different answers to the honesty sweep, and
+// what this conversion leaves behind is a STATE rather than a screen. A load in
+// flight or failed draws loadBar's.
 func (s *ThermostatListScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.confirmingDelete || len(s.rows) == 0 {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.confirmingDelete || len(s.rows) == 0 {
 		return nil
 	}
 	return s.bar(listNavMoves(len(s.rows)))
+}
+
+// loadBar is this list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `c` works whatever the list holds. `enter`/`E` still act on
+// the row a refresh kept under the cursor, which the frame no longer draws:
+// named because they act, and candidates for gating. `x` is not named because
+// all it does here is arm a confirm the frame does not draw.
+func (s *ThermostatListScreen) loadBar() proseBar {
+	var out proseBar
+	if _, ok := s.selected(); ok {
+		out = append(out, proseBarItem{Keys: []string{"enter", "E"}, Hint: "enter/E edit"})
+	}
+	out = append(out, proseBarItem{Keys: []string{"c"}, Hint: "c new"})
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *ThermostatListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -1082,10 +1100,10 @@ func (s *ThermostatListScreen) scrollIntoView() {
 
 func (s *ThermostatListScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading thermostats…")
+		return proseLoadingFrame("Loading thermostats…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · c new · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.confirmingDelete {
 		label := ""

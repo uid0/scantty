@@ -301,22 +301,34 @@ func (s *ForgeKeyCertificatesScreen) bar(scrolls bool) proseBar {
 }
 
 // proseBar is the bar this sheet is DRAWING, and nil in the states that draw
-// something else instead — a load in flight, a failure, and the rotate confirm,
-// which names its own keys and is left a literal for the reasons the earlier
-// recipes left their y/n confirms.
+// something else instead — the rotate confirm, which names its own keys and is
+// left a literal for the reasons the earlier recipes left their y/n confirms. A
+// load in flight or failed draws loadBar's.
 func (s *ForgeKeyCertificatesScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.confirmingRotate {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.confirmingRotate {
 		return nil
 	}
 	return s.bar(s.scrolls())
 }
 
+// loadBar is the sheet's bar while its load is out or has failed — what its key
+// switch still answers with nothing drawn (prose_bar.go carries the defect and
+// the decision): the reload and the way back. `R` is not named, and it is the
+// sharpest gating candidate on the sheet: all it does here is arm the ROOT CA
+// ROTATION confirm under a frame that does not draw it.
+func (s *ForgeKeyCertificatesScreen) loadBar() proseBar {
+	return proseBar{proseBarReloadFor(s.loadErr != ""), proseBarEsc}
+}
+
 func (s *ForgeKeyCertificatesScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading certificates…")
+		return proseLoadingFrame("Loading certificates…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.confirmingRotate {
 		return s.viewConfirmRotate()

@@ -648,10 +648,10 @@ func (s *SerializedComponentsScreen) scrollIntoView() {
 
 func (s *SerializedComponentsScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading units…")
+		return proseLoadingFrame("Loading units…", proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, proseBarCells(s.terminalWidth), s.proseBar())
 	}
 
 	if s.showHistory {
@@ -865,7 +865,10 @@ func (s *SerializedComponentsScreen) historyBar(scrolls bool) proseBar {
 }
 
 func (s *SerializedComponentsScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.form != serialFormNone {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.form != serialFormNone {
 		return nil
 	}
 	if s.showHistory {
@@ -875,6 +878,35 @@ func (s *SerializedComponentsScreen) proseBar() proseBar {
 		return proseScrollBar(s.historyScroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.historyBar)
 	}
 	return s.listBar(len(s.rows) > 1)
+}
+
+// loadBar is the unit list's bar while its load is out or has failed — what its
+// key switch still answers with no rows drawn (prose_bar.go carries the defect
+// and the decision). On the unit a refresh kept under the cursor, which the
+// frame no longer draws, `h`/`enter` still loads its history and `v`, `x`, `c`
+// and `t` still FIRE their lifecycle writes — named because they act, and
+// candidates for gating. `i`, `d` and `a` are not named: each opens a form this
+// frame does not draw.
+func (s *SerializedComponentsScreen) loadBar() proseBar {
+	var out proseBar
+	if unit := s.current(); unit != nil {
+		out = append(out, proseBarItem{Keys: []string{"h", "enter"}, Hint: "h/enter history"})
+		writes := []struct {
+			action string
+			item   proseBarItem
+		}{
+			{omsapi.SerialActionReceive, proseBarItem{Keys: []string{"v"}, Hint: "v receive"}},
+			{omsapi.SerialActionRemove, proseBarItem{Keys: []string{"x"}, Hint: "x remove"}},
+			{omsapi.SerialActionConsume, proseBarItem{Keys: []string{"c"}, Hint: "c consume"}},
+			{omsapi.SerialActionRetire, proseBarItem{Keys: []string{"t"}, Hint: "t retire"}},
+		}
+		for _, w := range writes {
+			if containsStr(unit.AvailableActions, w.action) {
+				out = append(out, w.item)
+			}
+		}
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *SerializedComponentsScreen) renderHistory(events []omsapi.ComponentUsageEvent) string {

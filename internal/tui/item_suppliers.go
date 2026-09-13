@@ -171,15 +171,38 @@ func (s *ItemSuppliersScreen) suppliersBar(moves, primary bool) proseBar {
 func (s *ItemSuppliersScreen) suppliersCeiling() proseBar { return s.suppliersBar(true, true) }
 
 // proseBar is the bar this screen is DRAWING. Nil where the frame is something
-// else: a load in flight or failed, the one-line delete confirm that names its
-// own two keys, and a set-primary PATCH while it is out — every key is held then
-// (Update returns before its switch), so a bar would name keys that do nothing.
+// else: the one-line delete confirm that names its own two keys, and a
+// set-primary PATCH while it is out — every key is held then (Update returns
+// before its switch), so a bar would name keys that do nothing. A load in flight
+// or failed draws loadBar's.
 func (s *ItemSuppliersScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.confirmingDelete || s.busy {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.confirmingDelete || s.busy {
 		return nil
 	}
 	row, ok := s.selected()
 	return s.suppliersBar(listNavMoves(len(s.rows)), ok && !row.IsPreferred)
+}
+
+// loadBar is the link list's bar while its load is out or has failed — what its
+// key switch still answers with no rows drawn (prose_bar.go carries the defect
+// and the decision). `c` opens the add form whatever the list holds. On the
+// link a refresh kept under the cursor, which the frame no longer draws,
+// `E`/`enter` still opens the edit form and `p` still WRITES the primary
+// supplier — named because they act, and candidates for gating. `x` is not
+// named: all it does here is arm a confirm the frame does not draw. `esc` is
+// this screen's own arm, back to the item.
+func (s *ItemSuppliersScreen) loadBar() proseBar {
+	out := proseBar{{Keys: []string{"c"}, Hint: "c add"}}
+	if row, ok := s.selected(); ok {
+		out = append(out, proseBarItem{Keys: []string{"E", "enter"}, Hint: "E/enter edit"})
+		if !row.IsPreferred {
+			out = append(out, proseBarItem{Keys: []string{"p"}, Hint: "p primary"})
+		}
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 // suppliersFooterLines folds the CEILING bar to the live pane — the rows the
@@ -485,10 +508,10 @@ func (s *ItemSuppliersScreen) scrollIntoView() {
 
 func (s *ItemSuppliersScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading suppliers…")
+		return proseLoadingFrame("Loading suppliers…", s.suppliersPaneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.suppliersPaneCells(), s.proseBar())
 	}
 	if s.confirmingDelete {
 		name := ""

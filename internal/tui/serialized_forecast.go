@@ -261,10 +261,10 @@ func (s *SerializedForecastScreen) scrollIntoView() {
 
 func (s *SerializedForecastScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading forecast…")
+		return proseLoadingFrame("Loading forecast…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.mode == forecastModeDetail {
 		return s.viewDetail()
@@ -287,11 +287,16 @@ func (s *SerializedForecastScreen) listBar(moves bool) proseBar {
 	if len(s.rows) > 0 {
 		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter detail"})
 	}
-	toggle := "w low-stock only"
+	return append(out, s.lowStockToggle(), proseBarRefresh, proseBarEsc)
+}
+
+// lowStockToggle is `w`, which flips the low-stock filter and reloads — read by
+// the list's bar and the load bar alike.
+func (s *SerializedForecastScreen) lowStockToggle() proseBarItem {
 	if s.lowOnly {
-		toggle = "w show all"
+		return proseBarItem{Keys: []string{"w"}, Hint: "w show all"}
 	}
-	return append(out, proseBarItem{Keys: []string{"w"}, Hint: toggle}, proseBarRefresh, proseBarEsc)
+	return proseBarItem{Keys: []string{"w"}, Hint: "w low-stock only"}
 }
 
 // detailBar is the per-row detail's bar. The detail claims raw input, so its
@@ -306,16 +311,25 @@ func (s *SerializedForecastScreen) detailBar(scrolls bool) proseBar {
 }
 
 // proseBar is the bar this screen is DRAWING, for whichever surface is up. A
-// load in flight or failed is nil: those frames are literals, as on every
-// earlier recipe.
+// load in flight or failed draws loadBar's.
 func (s *SerializedForecastScreen) proseBar() proseBar {
 	switch {
 	case s.loading || s.loadErr != "":
-		return nil
+		return s.loadBar()
 	case s.mode == forecastModeDetail:
 		return proseScrollBar(s.detail, s.terminalHeight, s.paneCells(), s.detailBar)
 	}
 	return s.listBar(listNavMoves(len(s.rows)))
+}
+
+// loadBar is the bar while a forecast load is out or has failed — what the key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `w` still flips the filter and RELOADS from here, which from a
+// failed load is a recovery under the other filter rather than a key acting on
+// nothing. `enter` is not named: on a row a refresh kept it opens a detail this
+// frame does not draw.
+func (s *SerializedForecastScreen) loadBar() proseBar {
+	return proseBar{s.lowStockToggle(), proseBarReloadFor(s.loadErr != ""), proseBarEsc}
 }
 
 // listHead is the lines the list opens with — the title, the summary and a

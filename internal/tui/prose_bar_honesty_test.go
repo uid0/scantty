@@ -269,6 +269,11 @@ type proseBarFixture struct {
 	// proseBarReorderDeclines for how narrow the exemption is and where the real
 	// check lives.
 	declines map[string]string
+	// load is the LOAD STATE this fixture is in — one of the proseLoad* states —
+	// or "" for a fixture past its load. Only the load-state sweep reads it; every
+	// other sweep in this file presses a load-state fixture exactly as it presses
+	// any other, which is the point of building them into the same roster.
+	load proseLoadState
 	// typing is why a focused text box on this fixture takes the printable keys
 	// and the box's editing keys (proseBarBoxKeys) — the search pickers, the
 	// resolve notes, a manual badge entry. A letter typed into a query changes
@@ -558,7 +563,12 @@ func proseBarFixtures() []proseBarFixture {
 	out = append(out, proseBarFieldFormFixtures()...)
 	// The lists whose rows are several lines and whose window already packed them
 	// by line cost, the sixth — see proseBarRowPackedListFixtures.
-	return append(out, proseBarRowPackedListFixtures()...)
+	out = append(out, proseBarRowPackedListFixtures()...)
+	// Every screen above with a LOAD, in flight and failed, first time and on a
+	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
+	// above (a refresh starts from a loaded screen), which is why they are
+	// appended last rather than listed.
+	return append(out, proseBarLoadStateFixtures(out)...)
 }
 
 func proseBarSerializedComponents(n int) []omsapi.SerializedComponent {

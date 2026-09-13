@@ -79,14 +79,30 @@ func (s *AuthorizationsScreen) bar(rows int) proseBar {
 	return append(out, proseBarRefresh, proseBarEsc)
 }
 
-// proseBar is the bar this screen is DRAWING, and nil in the states that draw
-// something else instead: a load in flight or failed, and the revoke confirm,
-// whose own prompt names its keys.
+// proseBar is the bar this screen is DRAWING, and nil in the state that draws
+// something else instead: the revoke confirm, whose own prompt names its keys. A
+// load in flight or failed draws loadBar's.
 func (s *AuthorizationsScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.confirmingRevoke {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.confirmingRevoke {
 		return nil
 	}
 	return s.bar(len(s.rows))
+}
+
+// loadBar is this list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `n` opens the grant form whatever the list holds (or says it
+// needs staff). `x`/`R` are not named: on a row a refresh kept, all they do is
+// arm a confirm the frame does not draw.
+func (s *AuthorizationsScreen) loadBar() proseBar {
+	return proseBar{
+		{Keys: []string{"n"}, Hint: "n grant"},
+		proseBarReloadFor(s.loadErr != ""),
+		proseBarEsc,
+	}
 }
 
 func (s *AuthorizationsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
@@ -181,10 +197,10 @@ func (s *AuthorizationsScreen) updateRevokeConfirm(m tea.KeyMsg) (Screen, tea.Cm
 
 func (s *AuthorizationsScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading authorizations…")
+		return proseLoadingFrame("Loading authorizations…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.confirmingRevoke {
 		return s.viewRevokeConfirm()
@@ -285,13 +301,26 @@ func (s *LockoutsScreen) bar(rows int) proseBar {
 	return append(out, proseBarRefresh, proseBarEsc)
 }
 
-// proseBar is the bar this screen is DRAWING, and nil while a load is in flight
-// or has failed, whose frames still draw their own line.
+// proseBar is the bar this screen is DRAWING, in every state: a load in flight or
+// failed draws loadBar's.
 func (s *LockoutsScreen) proseBar() proseBar {
 	if s.loading || s.loadErr != "" {
-		return nil
+		return s.loadBar()
 	}
 	return s.bar(len(s.rows))
+}
+
+// loadBar is this list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `u` still acts on the row a refresh kept under the cursor,
+// which the frame no longer draws: named because it acts, and a candidate for
+// gating.
+func (s *LockoutsScreen) loadBar() proseBar {
+	var out proseBar
+	if len(s.rows) > 0 {
+		out = append(out, proseBarItem{Keys: []string{"u"}, Hint: "u unlock (hierarchical)"})
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *LockoutsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
@@ -354,10 +383,10 @@ func (s *LockoutsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 func (s *LockoutsScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading lockouts…")
+		return proseLoadingFrame("Loading lockouts…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if len(s.rows) == 0 {
 		return StyleMuted.Render("No lockouts.") + "\n\n" + s.proseBar().render(s.paneCells())

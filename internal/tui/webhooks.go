@@ -740,16 +740,33 @@ func (s *WebhookListScreen) bar(moves bool) proseBar {
 }
 
 // proseBar is the bar this screen is DRAWING, and nil in the states that draw
-// something else instead — a load in flight, a failure, a prompt that replaces
-// the footer, and the EMPTY list, whose shorter footer is still a literal. So
-// "this state has no bar" and "this state's bar is empty" stay different answers
-// to the honesty sweep, and what this conversion leaves behind is a STATE rather
-// than a screen.
+// something else instead — a prompt that replaces the footer, and the EMPTY
+// list, whose shorter footer is still a literal. So "this state has no bar" and
+// "this state's bar is empty" stay different answers to the honesty sweep, and
+// what this conversion leaves behind is a STATE rather than a screen. A load in
+// flight or failed draws loadBar's.
 func (s *WebhookListScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.showTestResult || s.confirmingDelete || s.confirmingTest || len(s.rows) == 0 {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.showTestResult || s.confirmingDelete || s.confirmingTest || len(s.rows) == 0 {
 		return nil
 	}
 	return s.bar(listNavMoves(len(s.rows)))
+}
+
+// loadBar is this list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `n` works whatever the list holds. `E`/`enter` still act on
+// the row a refresh kept under the cursor, which the frame no longer draws:
+// named because they act, and candidates for gating. `t` and `x` are not named
+// because all either does here is arm a confirm the frame does not draw.
+func (s *WebhookListScreen) loadBar() proseBar {
+	out := proseBar{{Keys: []string{"n"}, Hint: "n new"}}
+	if _, ok := s.selected(); ok {
+		out = append(out, proseBarItem{Keys: []string{"E", "enter"}, Hint: "E/enter edit"})
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *WebhookListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -992,10 +1009,10 @@ func (s *WebhookListScreen) scrollIntoView() {
 
 func (s *WebhookListScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading webhooks…")
+		return proseLoadingFrame("Loading webhooks…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · n new · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.showTestResult {
 		return s.viewTestResult()

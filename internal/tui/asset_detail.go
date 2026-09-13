@@ -206,7 +206,12 @@ func (s *AssetDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.reservations = m.reservations
 		s.oos = m.oos
 		s.components = m.components
-		s.scroller.Set(s.renderBody())
+		// A FAILED load carries no asset, and renderBody reads one: drawing the
+		// body unguarded took the whole terminal down on the first 502 rather
+		// than showing the failure. Nothing draws the body while loadErr is set.
+		if s.asset != nil {
+			s.scroller.Set(s.renderBody())
+		}
 		return s, nil
 	case problemLoggedMsg:
 		s.activeForm = formNone
@@ -629,10 +634,10 @@ func (s *AssetDetailScreen) viewProblemParts() string {
 
 func (s *AssetDetailScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading asset…")
+		return proseLoadingFrame("Loading asset…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.asset == nil {
 		return StyleMuted.Render("Asset not found.")
@@ -772,7 +777,10 @@ func (s *AssetDetailScreen) barFor(scrolls bool) proseBar {
 // something else instead, which here is the delete confirm and the three write
 // forms, each of which replaces the footer with its own prompt.
 func (s *AssetDetailScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.asset == nil {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.asset == nil {
 		return nil
 	}
 	if s.confirmingDelete || s.activeForm != formNone {
@@ -783,6 +791,37 @@ func (s *AssetDetailScreen) proseBar() proseBar {
 	// would answer about the constructor's default height rather than this pane.
 	s.sizeScroller()
 	return s.bar()
+}
+
+// loadBar is the sheet's bar while its load is out or has failed — what its key
+// switch still answers with nothing drawn (prose_bar.go carries the defect and
+// the decision). A refresh keeps the asset it had, so the sibling surfaces and
+// the edit form still open from under "Loading asset…", and `R` still WRITES
+// the restore wherever an open out-of-service record is held — named because
+// they act, and candidates for gating. A failed load drops the asset, and with
+// it everything but the retry. `p`, `o` and `x` are not named: each opens a box
+// or a confirm this frame does not draw.
+func (s *AssetDetailScreen) loadBar() proseBar {
+	var out proseBar
+	if s.asset != nil {
+		out = append(out, proseBarItem{Keys: []string{"P"}, Hint: "P problems"})
+	}
+	if s.openOOS() != nil {
+		out = append(out, proseBarItem{Keys: []string{"R"}, Hint: "R restore"})
+	}
+	if s.asset != nil {
+		out = append(out, proseBarItem{Keys: []string{"L"}, Hint: "L interlock"})
+		if len(s.components) > 0 {
+			out = append(out, proseBarItem{Keys: []string{"i"}, Hint: "i components"})
+		}
+		out = append(out,
+			proseBarItem{Keys: []string{"M"}, Hint: "M meters"},
+			proseBarItem{Keys: []string{"D"}, Hint: "D documents"},
+			proseBarItem{Keys: []string{"S"}, Hint: "S parts"},
+			proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+		)
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *AssetDetailScreen) renderBody() string {

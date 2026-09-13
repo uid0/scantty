@@ -72,13 +72,21 @@ func (s *VendorsScreen) bar(rows int) proseBar {
 	return append(proseNavStep(listNavMoves(rows)), proseBarRefresh, proseBarEsc)
 }
 
-// proseBar is the bar this screen is DRAWING, and nil while a load is in flight
-// or has failed, whose frames still draw their own line.
+// proseBar is the bar this screen is DRAWING, in every state: a load in flight or
+// failed draws loadBar's.
 func (s *VendorsScreen) proseBar() proseBar {
 	if s.loading || s.loadErr != "" {
-		return nil
+		return s.loadBar()
 	}
 	return s.bar(len(s.rows))
+}
+
+// loadBar is this list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision): the reload and the way back, and nothing else, since the
+// movement keys only walk rows the frame does not draw.
+func (s *VendorsScreen) loadBar() proseBar {
+	return proseBar{proseBarReloadFor(s.loadErr != ""), proseBarEsc}
 }
 
 func (s *VendorsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
@@ -120,10 +128,10 @@ func (s *VendorsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 func (s *VendorsScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading vendors…")
+		return proseLoadingFrame("Loading vendors…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if len(s.rows) == 0 {
 		return StyleMuted.Render("No vendors registered.") + "\n\n" + s.proseBar().render(s.paneCells())

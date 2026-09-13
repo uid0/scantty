@@ -1362,6 +1362,13 @@ either:
   The sweeps are `list_bar_honesty_test.go`, `prose_bar_honesty_test.go` and
   `list_nav_surfaces_test.go`; each declares what it presses and what it
   refuses to claim.
+  A LOAD IN FLIGHT OR FAILED IS A BAR STATE, NOT A LITERAL: a key switch keeps
+  answering while its rows are absent — create keys, view toggles, and every row
+  key against the rows a failed refresh KEPT — so a proseBar screen names what
+  acts there. "Acts" is measured on the command as well as the pane, because a
+  one-line frame hides nearly every act; a key whose only effect is an undrawn
+  field is a gating candidate and is not named. `prose_bar.go`'s load-state note
+  and `prose_bar_load_states_test.go` own the decision and the sweep.
   AN EMPTY LIST, AND A PANE TOO SHORT TO DRAW ONE, ARE STATES — and `list.go`
   decides both, in doc comments beside the code they constrain and under the
   sweeps named above:

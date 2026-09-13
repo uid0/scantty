@@ -363,9 +363,8 @@ func (s *AssetProblemsScreen) vendorPickBar(moves bool) proseBar {
 
 // proseBar is the bar this screen is DRAWING, for whichever surface is up — the
 // list, the read-only report, the resolve prompt or a step of the send-to-vendor
-// prompt — and nil in the states that draw something else instead: a load in
-// flight or failed, and a write while it is out, whose frame is a working line
-// with every key held.
+// prompt — and nil while a write is out, whose frame is a working line with
+// every key held. A load in flight or failed draws loadBar's.
 //
 // ONE RECORD PER SURFACE is what converting a screen with a second surface drawn
 // in place of its list comes to: converting the list alone would have left the
@@ -374,7 +373,7 @@ func (s *AssetProblemsScreen) vendorPickBar(moves bool) proseBar {
 func (s *AssetProblemsScreen) proseBar() proseBar {
 	switch {
 	case s.loading || s.loadErr != "":
-		return nil
+		return s.loadBar()
 	case s.vendorStep != apVendorStepNone:
 		if s.submittingTP {
 			return nil
@@ -393,6 +392,29 @@ func (s *AssetProblemsScreen) proseBar() proseBar {
 	}
 	n := len(s.visible())
 	return s.listBar(listNavMoves(n), n > 0)
+}
+
+// loadBar is the list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `w` and `t` still act on the problem a refresh kept under the
+// cursor, which the frame no longer draws — `w` promotes it to a work order and
+// `t` loads the vendor picker for it — so they are named because they act, and
+// candidates for gating. `f` is named wherever a refresh kept rows, because the
+// filter decides which of them `w` and `t` can reach and so changes this very
+// bar; `enter`/`v` and `R` are not, since each opens only a surface this frame
+// does not draw (the detail, the resolve box).
+func (s *AssetProblemsScreen) loadBar() proseBar {
+	var out proseBar
+	if _, ok := s.selected(); ok {
+		out = append(out,
+			proseBarItem{Keys: []string{"w"}, Hint: "w work order"},
+			proseBarItem{Keys: []string{"t"}, Hint: "t vendor"},
+		)
+	}
+	if len(s.rows) > 0 {
+		out = append(out, proseBarItem{Keys: []string{"f"}, Hint: "f filter"})
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *AssetProblemsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -865,10 +887,10 @@ func (s *AssetProblemsScreen) scrollIntoView() {
 
 func (s *AssetProblemsScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading problems…")
+		return proseLoadingFrame("Loading problems…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.vendorStep != apVendorStepNone {
 		return s.viewVendor()
