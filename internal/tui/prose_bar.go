@@ -444,6 +444,69 @@ func proseNavArrows(moves bool) proseBar {
 	return proseBar{{Keys: keys, Hint: "↑↓ move"}}
 }
 
+// proseNavTop is the jump-to-the-TOP half of the `g/G home/end top/bottom`
+// segment, for a list that binds `g` and `home` and binds neither `G` nor `end`.
+//
+// NAMING THE WHOLE SEGMENT THERE WOULD BE THE OTHER HALF OF THE RULE. The
+// vocabulary entry spells four keystrokes, and a bar may claim only the ones the
+// screen answers; binding the missing pair is a change to what the screen DOES
+// (out of scope for a bar conversion), so the segment is narrowed instead. Picked
+// out of the one vocabulary by KEYSTROKE for the reason proseNavIsPager gives, and
+// gated on a second row for the reason listNavMoves gives: on a one-row list the
+// cursor is already at the top.
+func proseNavTop(moves bool) proseBar {
+	if !moves {
+		return nil
+	}
+	for _, m := range listNavSetVerb("move") {
+		var keys []string
+		for _, k := range m.Keys {
+			if k == "g" || k == "home" {
+				keys = append(keys, k)
+			}
+		}
+		if len(keys) == 2 {
+			return proseBar{{Keys: keys, Hint: "g/home top"}}
+		}
+	}
+	return nil
+}
+
+// proseMenuHotkeys is the segment naming a MENU's row letters: every letter a
+// row answers, spelled in row order, and the verb they share.
+//
+// THE ROWS ALREADY DRAW `[p]` BESIDE EACH LABEL, AND THAT IS NOT A BAR. The
+// letters on a menu row are a claim about a key exactly as a footer segment is,
+// and the honesty sweep can only press against the record: a letter that moves
+// the cursor onto its row and opens it, with no word on the bar for it, is the
+// omission this record exists to close. So the bar spells them, DERIVED from the
+// items rather than written a second time, which is what keeps a row added to a
+// menu from being a key the bar has never heard of.
+func proseMenuHotkeys(hotkeys []rune, verb string) proseBarItem {
+	keys := make([]string, 0, len(hotkeys))
+	for _, r := range hotkeys {
+		keys = append(keys, string(r))
+	}
+	return proseBarItem{Keys: keys, Hint: strings.Join(keys, "/") + " " + verb}
+}
+
+// proseMenuSubtitle is a menu row's second line: indented under the label and
+// clipped to the pane with the cut marked, LINE BY LINE.
+//
+// Clipped rather than left to clampToBox, which cuts from the right with no
+// mark, so a subtitle cut at 51 cells reads as the whole description. Line by
+// line because the window packs a row by the lines it really draws
+// (proseFlatListFrame): clipping the joined text would let a subtitle with a
+// newline in it pass as one line and put the window's arithmetic wrong.
+func proseMenuSubtitle(subtitle string, cells int) string {
+	const indent = "      "
+	lines := strings.Split(subtitle, "\n")
+	for i, line := range lines {
+		lines[i] = indent + StyleMuted.Render(pickerClip(line, cells-len(indent)))
+	}
+	return strings.Join(lines, "\n")
+}
+
 // proseFlatCeilingRows is the row count a flat list's bar is at its TALLEST for:
 // two rows is a second row to step to, and every row action is on offer from
 // one. A flat list asks its bar builder for this many to get the ceiling

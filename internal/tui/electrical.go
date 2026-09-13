@@ -23,6 +23,7 @@ type ElectricalPanelsScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingDelete bool
 	deleting         bool
@@ -66,14 +67,71 @@ func (s *ElectricalPanelsScreen) load() tea.Cmd {
 	}
 }
 
+// windowSize is how many body LINES the list may draw — proseListWindow, with the
+// folded footer's height taken off the top rather than assumed.
+//
+// It used to be a count of ROWS, `(screenBodyHeight - 2) / 2`: every row taken
+// for two lines (a name and a meta line) and the footer for two (a blank and ONE
+// hint line). Neither holds. The footer below folds onto more than one line at
+// 80 columns once it names the keys this switch binds, and a panel NAME is an
+// OpenMakerSuite CharField that stores a newline as sent, so a row is not always
+// two lines. proseCursorWindow packs the rows by what each really draws; the
+// arms below still step windowStart in rows, and View refits it.
 func (s *ElectricalPanelsScreen) windowSize() int {
-	// Each row is 2 lines (header + meta). Footer = 2 (blank + hint).
-	avail := screenBodyHeight(s.terminalHeight) - 2
-	rows := avail / 2
-	if rows < 2 {
-		rows = 2
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.bar(true))
+}
+
+// paneCells is the width this list folds and budgets against: the pane the
+// terminal really gave.
+func (s *ElectricalPanelsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// bar names every key that acts on this list, as a RECORD rather than a literal
+// — prose_bar.go carries the conversion.
+//
+// It used to be
+//
+//	j/k move · enter topology · n new · E edit · x delete · r refresh · esc back
+//
+// 78 cells against the 51 an 80-column pane gives, so clampToBox took its tail;
+// and it named two of the eight movement keystrokes this switch binds, so the
+// arrows, g/G and home/end all moved the cursor under no word.
+//
+// NO PAGER, and that is why this screen was not on the windowed recipe beside
+// PanelBreakersScreen: this switch binds no pgup/pgdn, so proseNavCursor — which
+// names the pager wherever there is a second row — would claim two keys that do
+// nothing. proseNavList(moves, false) is the step pair and the jumps alone.
+//
+// `rows` gates the row actions as well as the movement: on an empty list `E`,
+// `x` and `enter` find no selected panel and do nothing, so the bar the empty
+// state draws names `n`, `r` and `esc` and nothing else.
+func (s *ElectricalPanelsScreen) bar(rows bool) proseBar {
+	return s.barFor(rows, rows)
+}
+
+func (s *ElectricalPanelsScreen) barFor(moves, hasRows bool) proseBar {
+	out := proseNavList(moves, false)
+	if hasRows {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter topology"})
 	}
-	return rows
+	out = append(out, proseBarItem{Keys: []string{"n"}, Hint: "n new"})
+	if hasRows {
+		out = append(out,
+			proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+			proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		)
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this screen is DRAWING, and nil in the states that draw
+// something else instead — a load in flight, a failure, and the one-line y/n
+// delete confirm that names its own two keys, which the earlier recipes left as
+// literals for the same reasons.
+func (s *ElectricalPanelsScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.confirmingDelete {
+		return nil
+	}
+	return s.barFor(listNavMoves(len(s.panels)), len(s.panels) > 0)
 }
 
 func (s *ElectricalPanelsScreen) scrollIntoView() {
@@ -93,6 +151,7 @@ func (s *ElectricalPanelsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.scrollIntoView()
 		return s, nil
 	case electricalPanelsLoadedMsg:
@@ -210,53 +269,53 @@ func (s *ElectricalPanelsScreen) View() string {
 	}
 	if len(s.panels) == 0 {
 		return StyleMuted.Render("No electrical panels defined yet.") + "\n\n" +
-			StyleMuted.Render("Create one with n, or in the OMS web admin → Electrical → Power panels.") + "\n\n" +
-			StyleMuted.Render("n new panel · r refresh · esc back")
+			pickerHintAt("Create one with n, or in the OMS web admin → Electrical → Power panels.", s.paneCells()) + "\n\n" +
+			s.proseBar().render(s.paneCells())
 	}
 
 	var b strings.Builder
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d panels", len(s.panels))) + "\n")
-	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+	// Packed by LINES, not rows: a stored name can carry a newline. See
+	// proseCursorWindow.
+	rows := make([]string, len(s.panels))
+	for i := range rows {
+		rows[i] = s.renderRow(i)
 	}
-	end := s.windowStart + s.windowSize()
-	if end > len(s.panels) {
-		end = len(s.panels)
-	}
-	for i := s.windowStart; i < end; i++ {
-		p := s.panels[i]
-		marker := "  "
-		title := p.Name
-		if i == s.cursor {
-			marker = "▸ "
-			title = StyleSidebarItemActive.Render(title)
-		}
-		if p.NeedsReview {
-			title += " " + StyleStatusWarn.Render("needs review")
-		}
-		b.WriteString(marker + title + "\n")
-		meta := []string{}
-		if p.LocationName != "" {
-			meta = append(meta, p.LocationName)
-		}
-		if p.Voltage > 0 {
-			meta = append(meta, fmt.Sprintf("%dV", p.Voltage))
-		}
-		if p.PhaseConfiguration != "" {
-			meta = append(meta, p.PhaseConfiguration)
-		}
-		if p.MainBreakerAmperage > 0 {
-			meta = append(meta, fmt.Sprintf("main %dA", p.MainBreakerAmperage))
-		}
-		meta = append(meta, fmt.Sprintf("%d breakers", p.BreakerCount))
-		b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
-	}
-	if end < len(s.panels) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.panels)-end)) + "\n")
-	}
+	proseCursorWindow(&b, rows, s.cursor, &s.windowStart, s.windowSize())
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · enter topology · n new · E edit · x delete · r refresh · esc back"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
+}
+
+func (s *ElectricalPanelsScreen) renderRow(i int) string {
+	p := s.panels[i]
+	marker := "  "
+	title := p.Name
+	if i == s.cursor {
+		marker = "▸ "
+		title = StyleSidebarItemActive.Render(title)
+	}
+	if p.NeedsReview {
+		title += " " + StyleStatusWarn.Render("needs review")
+	}
+	meta := []string{}
+	if p.LocationName != "" {
+		meta = append(meta, p.LocationName)
+	}
+	if p.Voltage > 0 {
+		meta = append(meta, fmt.Sprintf("%dV", p.Voltage))
+	}
+	if p.PhaseConfiguration != "" {
+		meta = append(meta, p.PhaseConfiguration)
+	}
+	if p.MainBreakerAmperage > 0 {
+		meta = append(meta, fmt.Sprintf("main %dA", p.MainBreakerAmperage))
+	}
+	meta = append(meta, fmt.Sprintf("%d breakers", p.BreakerCount))
+	// The meta line is FACTS — a voltage, an amperage, a breaker count — so it
+	// gives ground a whole token at a time with the cut marked (listFitFacts),
+	// rather than being cut mid-number by clampToBox with nothing saying so.
+	return marker + title + "\n    " + StyleMuted.Render(listFitFacts(strings.Join(meta, " · "), s.paneCells()-4, paneCutMark))
 }
 
 func (s *ElectricalPanelsScreen) viewConfirm() string {

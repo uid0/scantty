@@ -108,7 +108,9 @@ import (
 // than one screen at a time (prose_bar_windowed_lists_test.go), the SIMPLE
 // FLAT lists after them (prose_bar_flat_lists_test.go), and then the lists that
 // draw a SECOND SURFACE — a picker, a detail, a prompt — in their own place
-// (prose_bar_second_surface_test.go). Their bars are
+// (prose_bar_second_surface_test.go), and then the lists binding more of the
+// movement vocabulary than those recipes' helpers named
+// (prose_bar_wider_vocabulary_test.go). Their bars are
 // RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
 // space at them, so the classifier counts them as a THIRD swept class and an
 // entry left here for one of them fails. What is still a literal is named in
@@ -117,21 +119,17 @@ var listNavUnsweptReceivers = map[string]string{
 	"AssetPartsScreen": "the parts list on an asset; footer written in View, already past " +
 		"51 cells. Left out of the windowed-cursor-list conversion because its rows are " +
 		"multi-LINE and its window is budgeted in rows — see proseBarUnconverted",
-	"ForgeKeyCertificatesScreen": "the ForgeKey certificate list",
-	"ChecklistRunScreen":         "the step list of a checklist run",
-	"ChecklistsScreen":           "the checklist browse list",
-	"DemandForecastScreen":       "the demand-forecast table",
-	"ElectricalPanelsScreen":     "the electrical panel list",
-	"FacilitiesScreen":           "the facilities hub, a cursor menu of surfaces",
-	"FirmwareScreen":             "the firmware rollout list",
-	"InventoryDetailScreen":      "the item detail sheet and its three pick modals",
-	"ItemSuppliersScreen":        "the supplier list on an item beside ItemSupplierFormScreen",
-	"MakerBoxesScreen":           "the maker-box list beside MakerBoxFormScreen",
+	"ChecklistRunScreen":    "the step list of a checklist run",
+	"ChecklistsScreen":      "the checklist browse list",
+	"DemandForecastScreen":  "the demand-forecast table",
+	"FirmwareScreen":        "the firmware rollout list",
+	"InventoryDetailScreen": "the item detail sheet and its three pick modals",
+	"ItemSuppliersScreen":   "the supplier list on an item beside ItemSupplierFormScreen",
+	"MakerBoxesScreen":      "the maker-box list beside MakerBoxFormScreen",
 	"ReportTableScreen": "the shared scrollable report table, which every tabbed report " +
 		"page rides. reportScreenFixtures (report_yardstick_test.go) is the roster of " +
 		"those pages and TestReportTable_EveryReportScreenIsSwept derives it from the " +
 		"package source every run, so no count is restated here to drift",
-	"ReportsScreen":            "the reports hub, a cursor menu of surfaces",
 	"SerializedForecastScreen": "the serialized-component consumption forecast table",
 	"StorageOverviewScreen":    "the storage overview",
 	"StorageSlotsScreen":       "the storage slot list beside StorageSlotFormScreen",

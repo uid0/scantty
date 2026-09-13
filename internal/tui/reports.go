@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"strings"
-
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -19,6 +17,12 @@ type ReportsScreen struct {
 	deps   Deps
 	cursor int
 	items  []reportsItem
+
+	// windowStart is the first row drawn, refitted from View by
+	// proseFlatListFrame against the pane the terminal gave.
+	windowStart    int
+	terminalWidth  int
+	terminalHeight int
 }
 
 type reportsItem struct {
@@ -112,7 +116,49 @@ func (s *ReportsScreen) HandlesKey(key string) bool {
 	return false
 }
 
+// bar names every key that acts on this menu, as a RECORD rather than a literal
+// — prose_bar.go carries the conversion, and FacilitiesScreen.bar is the same
+// shape one workspace over.
+//
+// It used to be a legend ABOVE the rows reading
+//
+//	Select a report — j/k move · enter or hotkey opens · esc back
+//
+// which left the arrows, g and home moving the cursor under no word, and called
+// the row letters "hotkey", which no keystroke spells. Every row was drawn with
+// no window, so on a short pane the last reports and the closing note were what
+// clampToBox took.
+//
+// THE JUMP IS TO THE TOP ONLY, because that is all this switch binds: `g` and
+// `home`, and neither `G` nor `end` (FacilitiesScreen binds all four). Naming the
+// whole `g/G home/end` segment would claim two keys that do nothing, and binding
+// them is a change to what the menu does rather than to what its bar says — so
+// the segment is narrowed (proseNavTop) and the asymmetry is left visible here.
+func (s *ReportsScreen) bar(rows int) proseBar {
+	hotkeys := make([]rune, 0, len(s.items))
+	for _, it := range s.items {
+		hotkeys = append(hotkeys, it.hotkey)
+	}
+	moves := listNavMoves(rows)
+	out := append(proseNavStep(moves), proseNavTop(moves)...)
+	return append(out,
+		proseBarItem{Keys: []string{"enter"}, Hint: "enter open"},
+		proseMenuHotkeys(hotkeys, "open by letter"),
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this menu is drawing. A menu has no load and no second
+// surface, so there is no state in which it draws something else instead.
+func (s *ReportsScreen) proseBar() proseBar { return s.bar(len(s.items)) }
+
+func (s *ReportsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *ReportsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		s.terminalWidth, s.terminalHeight = size.Width, size.Height
+		return s, nil
+	}
 	keymsg, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return s, nil
@@ -153,9 +199,14 @@ func (s *ReportsScreen) openSelected() (Screen, tea.Cmd) {
 	return s, SwitchTo(WSReports, it.build(s.deps))
 }
 
+// reportsNote leads the rows: the instruction the old legend opened with, and
+// the closing note it drew under them, with the keys moved onto the bar.
+const reportsNote = "Select a report. A terminal can't draw the web's charts, so each report surfaces the underlying numbers as tables."
+
 func (s *ReportsScreen) View() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render("Select a report — j/k move · enter or hotkey opens · esc back") + "\n\n")
+	cells := s.paneCells()
+	head := pickerHintAt(reportsNote, cells) + "\n\n"
+	rows := make([]string, len(s.items))
 	for i, it := range s.items {
 		marker := "  "
 		label := "[" + string(it.hotkey) + "]  " + it.label
@@ -163,12 +214,12 @@ func (s *ReportsScreen) View() string {
 			marker = "▸ "
 			label = StyleSidebarItemActive.Render(label)
 		}
-		b.WriteString(marker + label + "\n")
+		row := marker + label
 		if it.subtitle != "" {
-			b.WriteString("      " + StyleMuted.Render(it.subtitle) + "\n")
+			row += "\n" + proseMenuSubtitle(it.subtitle, cells)
 		}
+		rows[i] = row
 	}
-	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("A terminal can't draw the web's charts, so each report surfaces the underlying numbers as tables."))
-	return b.String()
+	return proseFlatListFrame(head, rows, s.cursor, &s.windowStart, s.terminalHeight,
+		cells, s.bar(proseFlatCeilingRows), s.proseBar())
 }

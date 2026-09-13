@@ -43,6 +43,7 @@ type ForgeKeyCertificatesScreen struct {
 
 	scroll         int // top row of the device-cert table window
 	terminalHeight int
+	terminalWidth  int
 }
 
 type fkCertsLoadedMsg struct {
@@ -99,6 +100,7 @@ func (s *ForgeKeyCertificatesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.clampScroll()
 		return s, nil
 	case fkCertsLoadedMsg:
@@ -200,12 +202,19 @@ func (s *ForgeKeyCertificatesScreen) retiredCount() int {
 // caSectionLines is the number of rows the CA card occupies, so the device-cert
 // table can be windowed to fit the remaining body budget exactly (no clipping of
 // the footer hotkeys).
+//
+// IT IS A COUNT, SO EVERY LINE IT COUNTS MUST BE ONE LINE. The common name is
+// read off the CA record, and nothing between the model and this pane refuses a
+// newline in it; drawn as stored, a two-line name made the card a line taller
+// than this says, the window one row too generous, and what clampToBox took off
+// the bottom was the footer. renderCASection flattens it (fkCertOneLine) for
+// that reason.
 func (s *ForgeKeyCertificatesScreen) caSectionLines() int {
 	lines := 1 // "Root certificate authority" heading
 	if s.activeCA() != nil {
 		lines += 4 // CN, fingerprint, validity, cert counts
 	} else {
-		lines++ // "No active CA…"
+		lines += len(pickerWrap(fkNoActiveCA, s.paneCells())) // folded, so counted as drawn
 	}
 	if s.retiredCount() > 0 {
 		lines++
@@ -219,11 +228,20 @@ const certRowLines = 2
 
 // certWindow is how many device-cert rows fit under the CA card + section
 // header + footer within the body budget. Each row is certRowLines tall.
+//
+// THE FOOTER IS MEASURED, NOT ASSUMED. The constant this replaced reserved two
+// rows for it — a blank and ONE hint line — and the footer that names every key
+// this switch binds folds onto more than one at 80 columns, so a window budgeted
+// at the old constant assembled a frame taller than the pane and the fold was
+// what clampToBox took. It is measured against the CEILING bar (the scroll keys
+// on it) for the fixed-point reason proseSizeScroller gives: naming the scroll
+// keys can fold the bar onto another row, which shrinks this window, which is
+// the input to whether the list scrolls at all.
 func (s *ForgeKeyCertificatesScreen) certWindow() int {
 	body := screenBodyHeight(s.terminalHeight)
-	// Reserved chrome: CA card + blank + cert-section header + blank + footer,
-	// plus 2 rows for the ↑/↓ overflow hints.
-	chrome := s.caSectionLines() + 4 + 2
+	// Reserved chrome: CA card + blank + cert-section header + the 2 rows for the
+	// ↑/↓ overflow hints, then the folded footer with its blank separator.
+	chrome := s.caSectionLines() + 4 + s.bar(true).rows(s.paneCells())
 	avail := body - chrome
 	if avail < certRowLines {
 		return 1
@@ -244,6 +262,55 @@ func (s *ForgeKeyCertificatesScreen) clampScroll() {
 	}
 }
 
+// paneCells is the width this sheet folds and budgets against: the pane the
+// terminal really gave.
+func (s *ForgeKeyCertificatesScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// scrolls reports whether the device-certificate table outruns its window —
+// the one question every movement key on this sheet is gated on.
+//
+// EXACT, NOT APPROXIMATE: clampScroll pins the offset to 0 whenever
+// len(certs) <= certWindow, so on a table that fits, every one of j/k, the arrows,
+// pgup/pgdn and g/G/home/end redraws the pane byte for byte. The bar names them
+// exactly where this is true.
+func (s *ForgeKeyCertificatesScreen) scrolls() bool {
+	return len(s.certs) > s.certWindow()
+}
+
+// bar names every key that acts on this sheet, as a RECORD rather than a literal
+// — prose_bar.go carries the conversion.
+//
+// It used to be
+//
+//	R rotate root CA · r refresh · j/k scroll · esc back
+//
+// which named two of the ten movement keystrokes this switch binds — the whole
+// vocabulary, pgup/pgdn and g/G/home/end included — so eight of them scrolled
+// the certificate table under no word; and it named `j/k scroll` over a table
+// that fitted, where they scroll nothing.
+//
+// THE VERB IS `scroll` because what moves is a WINDOW over the table and not a
+// cursor — there is no highlighted row, and an operator reading "move" would
+// look for one (proseNavScroll).
+func (s *ForgeKeyCertificatesScreen) bar(scrolls bool) proseBar {
+	return append(proseNavScroll(scrolls),
+		proseBarItem{Keys: []string{"R"}, Hint: "R rotate root CA"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this sheet is DRAWING, and nil in the states that draw
+// something else instead — a load in flight, a failure, and the rotate confirm,
+// which names its own keys and is left a literal for the reasons the earlier
+// recipes left their y/n confirms.
+func (s *ForgeKeyCertificatesScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.confirmingRotate {
+		return nil
+	}
+	return s.bar(s.scrolls())
+}
+
 func (s *ForgeKeyCertificatesScreen) View() string {
 	if s.loading {
 		return StyleMuted.Render("Loading certificates…")
@@ -260,11 +327,16 @@ func (s *ForgeKeyCertificatesScreen) View() string {
 	b.WriteString("\n")
 	b.WriteString(s.renderCertSection())
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("R rotate root CA · r refresh · j/k scroll · esc back"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
+// renderCASection draws the CA card, every line of it ONE line (caSectionLines
+// counts them) and clipped to the pane with the cut marked, because clampToBox
+// cuts from the right with nothing saying so and a 64-hex-digit fingerprint is
+// wider than an 80-column pane.
 func (s *ForgeKeyCertificatesScreen) renderCASection() string {
+	cells := s.paneCells()
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Root certificate authority") + "\n")
 	if ca := s.activeCA(); ca != nil {
@@ -272,13 +344,14 @@ func (s *ForgeKeyCertificatesScreen) renderCASection() string {
 		if cn == "" {
 			cn = ca.Name
 		}
-		b.WriteString(StyleMuted.Render("CN: ") + cn + "\n")
-		b.WriteString(StyleMuted.Render(ca.FingerprintSHA256) + "\n")
+		b.WriteString(StyleMuted.Render("CN: ") + pickerClip(fkCertOneLine(cn), cells-len("CN: ")) + "\n")
+		b.WriteString(StyleMuted.Render(pickerClip(fkCertOneLine(ca.FingerprintSHA256), cells)) + "\n")
 		b.WriteString(fmt.Sprintf("Valid %s → %s\n", fkCertDate(ca.NotBefore), fkCertDate(ca.NotAfter)))
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("%d active · %d revoked device certs",
 			derefCount(ca.ActiveCertCount), derefCount(ca.RevokedCertCount))) + "\n")
 	} else {
-		b.WriteString(StyleMuted.Render("No active CA. Bootstrap one with `manage.py forgekey_ca init`.") + "\n")
+		// FOLDED rather than clipped: its tail is the command that fixes it.
+		b.WriteString(pickerHintAt(fkNoActiveCA, cells) + "\n")
 	}
 	if n := s.retiredCount(); n > 0 {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("%d retired CA(s) in history.", n)) + "\n")
@@ -288,8 +361,11 @@ func (s *ForgeKeyCertificatesScreen) renderCASection() string {
 
 func (s *ForgeKeyCertificatesScreen) renderCertSection() string {
 	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Device certificates") + "  " +
-		StyleMuted.Render("· issued via enrollment · revoke in admin") + "\n")
+	// Clipped PLAIN and styled after, so a cut can never fall between a style's
+	// opening sequence and its reset.
+	const heading = "Device certificates"
+	b.WriteString(StyleTitle.Render(heading) + "  " +
+		StyleMuted.Render(pickerClip("· issued via enrollment · revoke in admin", s.paneCells()-len(heading)-2)) + "\n")
 	if len(s.certs) == 0 {
 		b.WriteString(StyleMuted.Render("No device certificates issued yet.") + "\n")
 		return b.String()
@@ -333,9 +409,14 @@ func (s *ForgeKeyCertificatesScreen) renderCertRow(c forgekeyapi.DeviceCertifica
 	// can't push the status badge off the row.
 	chip = truncateOneLine(chip, 28)
 	fp := truncateOneLine(c.FingerprintSHA256, 40)
-	line1 := fmt.Sprintf("  %-28s  %s", chip, certStatusBadge(c.Status))
+	// The status is flattened too: the window counts every row as certRowLines,
+	// so a row that drew a third line would take the footer's last fold with it.
+	line1 := fmt.Sprintf("  %-28s  %s", chip, certStatusBadge(fkCertOneLine(c.Status)))
 	secondary := fmt.Sprintf("#%s · exp %s · %s", truncateOneLine(c.Serial, 24), fkCertDate(c.NotAfter), fp)
-	line2 := "      " + StyleMuted.Render(secondary)
+	// Clipped with the cut marked: the serial, the expiry and the fingerprint come
+	// to about 90 cells against the 45 an 80-column pane leaves this indent, and
+	// clampToBox would take the fingerprint's tail with nothing saying so.
+	line2 := "      " + StyleMuted.Render(pickerClip(secondary, s.paneCells()-6))
 	return line1 + "\n" + line2
 }
 
@@ -354,6 +435,16 @@ func (s *ForgeKeyCertificatesScreen) viewConfirmRotate() string {
 
 // certStatusBadge colours the lifecycle label the same way the web
 // CERT_STATUS_COLORS map does: active=green, expired=yellow, revoked=red.
+// fkNoActiveCA is what the CA card says when there is no active CA, and what it
+// tells staff to run.
+const fkNoActiveCA = "No active CA. Bootstrap one with `manage.py forgekey_ca init`."
+
+// fkCertOneLine flattens a value the CA card counts as ONE line — see
+// caSectionLines for what a stored newline cost.
+func fkCertOneLine(v string) string {
+	return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(v)
+}
+
 func certStatusBadge(status string) string {
 	switch status {
 	case "active":
