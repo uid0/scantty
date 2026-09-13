@@ -115,6 +115,32 @@ type proseLoadScreen struct {
 	// every other screen's load frame draws none — so its refresh-in-flight
 	// state is swept as a list that moves rather than recorded immobile.
 	rowsStay string
+	// ownFloor says why this screen's load frames need more of the pane than the
+	// lead row, the blank and the bar before they can keep the bar whole — and so
+	// why ALoadFrameKeepsItsBar asks the screen's own give-order (frameFits)
+	// where that boundary is, rather than the shared frames' arithmetic. A screen
+	// recording it must answer frameFits, and one answering it must record why.
+	ownFloor string
+}
+
+// proseLoadReportFloor is the report table's reason, said once for both reports.
+const proseLoadReportFloor = "the report table draws its tab bar and the blank under " +
+	"it above every load frame, because ←/→ [/] switch report from there, and it " +
+	"floors a failure at its first line AND the row saying the rest was cut " +
+	"(reportErrMinRows). Its frameFits is that give-order's own answer, and " +
+	"TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas holds it"
+
+// proseLoadFloored is a screen whose give-order answers where its frame's floor
+// is — see proseLoadScreen.ownFloor.
+type proseLoadFloored interface{ frameFits() bool }
+
+// proseLoadPerTab is a screen whose load is not a pair of fields on the screen
+// itself but a fact about what it is standing on — the report table keeps one
+// per TAB. loadState is what its own bar and key gate read; revealLoad is what
+// the hidden-state sweep calls in place of clearing the fields.
+type proseLoadPerTab interface {
+	loadState() (loading bool, loadErr string)
+	revealLoad()
 }
 
 func proseLoadScreens() []proseLoadScreen {
@@ -201,6 +227,19 @@ func proseLoadScreens() []proseLoadScreen {
 			fresh: func(d Deps) proseBarScreen { return NewPMBoardScreen(d) }},
 		{name: "project storage detail", recv: "ProjectStorageDetailScreen", loaded: "project storage detail", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewProjectStorageDetailScreen(d, "PS-AB23CDFG") }},
+		// THE REPORT TABLE ON TWO REPORTS, because one type rides every tabbed
+		// report and a load is a property of the TAB it is standing on: the
+		// purchasing report opens on a supplier-spend table and the asset report
+		// on a status count, each loaded, refreshed and failed on the tab it opens
+		// on. Its load frames spend two rows the shared frames do not — the tab
+		// bar and the blank under it, kept because ←/→ [/] act on that bar — so
+		// its floor is its own (ownFloor).
+		{name: "purchasing report", recv: "ReportTableScreen", loaded: "purchasing report", reload: "r",
+			ownFloor: proseLoadReportFloor,
+			fresh:    func(d Deps) proseBarScreen { return NewPurchasingReportScreen(d) }},
+		{name: "asset report", recv: "ReportTableScreen", loaded: "asset report", reload: "r",
+			ownFloor: proseLoadReportFloor,
+			fresh:    func(d Deps) proseBarScreen { return NewAssetReportScreen(d) }},
 		{name: "reorder queue", recv: "ReorderQueueScreen", loaded: "reorder queue/pending", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewReorderQueueScreen(d) }},
 		// THE PALETTE HAS NO REFRESH KEY, because editing the query IS the refresh:
@@ -459,26 +498,58 @@ func proseBarLoadReceivers(t *testing.T) map[string]bool {
 	if err != nil {
 		t.Fatalf("parsing the package: %v", err)
 	}
-	out := map[string]bool{}
+	// Two passes, because a load flag need not sit on the screen itself: the
+	// report table keeps one per TAB, in a []reportTabState, and a derivation
+	// reading only the screen's own fields excused it from this sweep while its
+	// movement keys walked the rows a refresh kept under "Loading …". So the
+	// first pass finds every struct declaring a flag, and a screen has a load
+	// if it declares one or holds such a struct — directly, by pointer or as a
+	// slice of them.
+	structs := map[string]*ast.StructType{}
 	for _, file := range pkgs["tui"].Files {
 		ast.Inspect(file, func(n ast.Node) bool {
-			spec, ok := n.(*ast.TypeSpec)
-			if !ok || !converted[spec.Name.Name] {
-				return true
-			}
-			st, ok := spec.Type.(*ast.StructType)
-			if !ok {
-				return true
-			}
-			for _, field := range st.Fields.List {
-				for _, name := range field.Names {
-					if name.Name == "loading" || name.Name == "loadErr" {
-						out[spec.Name.Name] = true
-					}
+			if spec, ok := n.(*ast.TypeSpec); ok {
+				if st, ok := spec.Type.(*ast.StructType); ok {
+					structs[spec.Name.Name] = st
 				}
 			}
 			return true
 		})
+	}
+	flagged := func(st *ast.StructType) bool {
+		for _, field := range st.Fields.List {
+			for _, name := range field.Names {
+				if name.Name == "loading" || name.Name == "loadErr" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	out := map[string]bool{}
+	for name, st := range structs {
+		if !converted[name] {
+			continue
+		}
+		if flagged(st) {
+			out[name] = true
+			continue
+		}
+		for _, field := range st.Fields.List {
+			if len(field.Names) == 0 {
+				continue
+			}
+			typ := field.Type
+			switch t := typ.(type) {
+			case *ast.StarExpr:
+				typ = t.X
+			case *ast.ArrayType:
+				typ = t.Elt
+			}
+			if id, ok := typ.(*ast.Ident); ok && structs[id.Name] != nil && flagged(structs[id.Name]) {
+				out[name] = true
+			}
+		}
 	}
 	if len(out) == 0 {
 		t.Fatal("no converted screen declares a load flag, so the derivation is broken, not the app")
@@ -507,6 +578,11 @@ func TestProseBar_EveryScreenWithALoadIsSweptInIt(t *testing.T) {
 		if ls.reload != "" && !drawn[ls.loaded] {
 			t.Errorf("%s refreshes from the fixture %q, which proseBarFixtures does not build, so "+
 				"its two refresh states are never driven", ls.name, ls.loaded)
+		}
+		if _, floored := ls.fresh(Deps{}).(proseLoadFloored); floored != (ls.ownFloor != "") {
+			t.Errorf("%s: a screen answering frameFits must record why its load frames floor "+
+				"there (ownFloor), and one recording it must answer frameFits — the sweep "+
+				"that reads it would otherwise be scoped by a boundary nobody stated", ls.name)
 		}
 		if (ls.reload == "") == (ls.noReload == "") {
 			t.Errorf("%s must say either which key reloads it or why none does — absent and "+
@@ -544,6 +620,23 @@ func TestProseBar_EveryLoadStateFixtureIsInItsState(t *testing.T) {
 		}
 		seen++
 		s := proseBarSize(f.build(), 80, 24)
+		if tabbed, ok := s.(proseLoadPerTab); ok {
+			loading, loadErr := tabbed.loadState()
+			switch f.load {
+			case proseLoadInFlight, proseReloadInFlight:
+				if !loading {
+					t.Errorf("the %s fixture is not loading", f.name)
+				}
+			case proseLoadFailed, proseReloadFailed:
+				if loadErr == "" {
+					t.Errorf("the %s fixture has no load failure recorded — the failure never "+
+						"landed, and the sweep would be reporting on another state", f.name)
+				}
+			default:
+				t.Errorf("the %s fixture is in %q, which a per-tab load cannot report", f.name, f.load)
+			}
+			continue
+		}
 		switch f.load {
 		case proseLoadInFlight, proseReloadInFlight:
 			if v, ok := flag(s, "loading"); ok {
@@ -630,6 +723,10 @@ func TestProseBar_ALoadInFlightOrFailedNamesExactlyTheKeysThatWork(t *testing.T)
 func TestProseBar_UnnamedLoadKeysDoNotEnterHiddenStates(t *testing.T) {
 	const w, h = 80, 24
 	reveal := func(s proseBarScreen) string {
+		if tabbed, ok := s.(proseLoadPerTab); ok {
+			tabbed.revealLoad()
+			return clampToBox(s.View(), screenBodyCells(w), screenBodyRows(h))
+		}
 		v := reflect.ValueOf(s).Elem()
 		if f := v.FieldByName("loading"); f.IsValid() && f.CanSet() {
 			f.SetBool(false)
@@ -739,7 +836,8 @@ func proseLoadKeyEffect(f proseBarFixture, w, h int, key string) (changed, acted
 // give-order existed, the analytics pulse's staff-only notice took the bar off
 // entirely and that sweep passed. The boundary here is DERIVED from what the
 // frame needs at the least — its lead row, the blank and the folded bar — and
-// both sides of it must be reached.
+// both sides of it must be reached. A screen whose load frames carry more than
+// that states its own floor (proseLoadScreen.ownFloor) and is asked it.
 func TestProseBar_ALoadFrameKeepsItsBarWhereverTheFailureHeadAndTheBarFit(t *testing.T) {
 	widths, heights := jdeDrawableWidths(), jdePaneHeights()
 	forms := map[string]string{}
@@ -763,7 +861,15 @@ func TestProseBar_ALoadFrameKeepsItsBarWhereverTheFailureHeadAndTheBarFit(t *tes
 				for _, h := range heights {
 					s := proseBarSize(f.build(), w, h)
 					bar := s.proseBar()
-					if screenBodyRows(h) < 1+bar.rows(proseBarCells(w)) {
+					below := screenBodyRows(h) < 1+bar.rows(proseBarCells(w))
+					if floored, ok := s.(proseLoadFloored); ok {
+						// The screen's own give-order says where its floor is (see
+						// proseLoadScreen.ownFloor). It is a FLOOR and not "the frame
+						// fits": what gives above it — an OMS body — gives, so a frame
+						// that pushed its bar off above the floor still fails here.
+						below = !floored.frameFits()
+					}
+					if below {
 						short++
 						continue
 					}

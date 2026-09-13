@@ -289,10 +289,11 @@ func proseScrollFrame(sc *TextScroller, terminalHeight, cells int, bar func(scro
 // proseBarBack is the way off a sheet that binds `backspace` beside `esc`.
 //
 // BOTH SPELLINGS OR NEITHER. Four screens in this package answer
-// `case "esc", "backspace":` in their own key switch — AnalyticsPulseScreen is
-// the converted one — and every bar in the program named only the first, so the
-// second worked and was named nowhere: the omission half of the rule on a key an
-// operator's hand reaches for by reflex. Where a sheet binds only `esc`,
+// `case "esc", "backspace":` in their own key switch — all four have a record
+// now — and every bar in the program named only the first, so the second worked
+// and was named nowhere: the omission half of the rule on a key an operator's
+// hand reaches for by reflex. The report table had even recorded leaving it out
+// as a deliberate exception. Where a sheet binds only `esc`,
 // proseBarEsc is the segment that says so, and choosing between them is not
 // taste: naming a key the screen does not bind is the OTHER half of the rule.
 var proseBarBack = proseBarItem{Keys: []string{"esc", "backspace"}, Hint: "esc/backspace back"}
