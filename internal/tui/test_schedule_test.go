@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -9,13 +10,17 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"unicode"
+
+	"gopkg.in/yaml.v3"
 )
 
 // WHERE THIS PACKAGE'S TESTS RUN, AND WHY A PLAIN `go test` LEAVES SOME OUT.
@@ -336,36 +341,189 @@ func TestTestSchedule_ASelectionOnTheCommandLineIsNeverOverridden(t *testing.T) 
 	}
 }
 
-// TestTestSchedule_TheWorkflowRunsBothHalves fails when .github/workflows/ci.yml
-// stops carrying either half of the partition: the ordinary `go test ./...`,
-// and the shard matrix read from the roster running the script that proves
-// each shard ran what it lists. Without it, deleting the shard job would drop
-// every heavy test from CI with nothing red anywhere.
-//
-// It reads the workflow as TEXT, so it proves the lines are there and not that
-// GitHub runs them; a shard that never ran, or ran nothing, is the script's to
-// report.
+type workflowFile struct {
+	Env  map[string]any         `yaml:"env"`
+	Jobs map[string]workflowJob `yaml:"jobs"`
+}
+
+type workflowJob struct {
+	Needs    workflowNeeds     `yaml:"needs"`
+	Env      map[string]any    `yaml:"env"`
+	Outputs  map[string]string `yaml:"outputs"`
+	Strategy workflowStrategy  `yaml:"strategy"`
+	Steps    []workflowStep    `yaml:"steps"`
+}
+
+type workflowNeeds []string
+
+func (n *workflowNeeds) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		*n = []string{value.Value}
+		return nil
+	}
+	return value.Decode((*[]string)(n))
+}
+
+type workflowStrategy struct {
+	FailFast bool           `yaml:"fail-fast"`
+	Matrix   workflowMatrix `yaml:"matrix"`
+}
+
+type workflowMatrix struct {
+	Shard string `yaml:"shard"`
+}
+
+type workflowStep struct {
+	ID  string         `yaml:"id"`
+	Env map[string]any `yaml:"env"`
+	Run string         `yaml:"run"`
+}
+
+func hasNeed(job workflowJob, need string) bool {
+	for _, got := range job.Needs {
+		if got == need {
+			return true
+		}
+	}
+	return false
+}
+
+func commandRunsGoTestAll(run string) bool {
+	for _, line := range strings.Split(run, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[0] == "go" && fields[1] == "test" {
+			for _, field := range fields[2:] {
+				if field == "./..." {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// TestTestSchedule_TheWorkflowRunsBothHalves validates the workflow's parsed
+// job graph and commands. It also executes the plan step locally to prove that
+// the real roster emits the matrix shards; GitHub's execution remains outside
+// this test, and the shard script reports a shard that ran nothing.
 func TestTestSchedule_TheWorkflowRunsBothHalves(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow := string(raw)
-	for _, needle := range []struct{ line, why string }{
-		{"run: go test -timeout", "the ordinary job's go test step"},
-		{"grep -vE '^[[:space:]]*(#|$)' internal/tui/testdata/heavy_tests.txt", "the plan step reading shard numbers from the roster"},
-		{"shard: ${{ fromJSON(needs.tui-heavy-plan.outputs.shards) }}", "the shard matrix built from that plan"},
-		{`run: .github/scripts/tui-heavy-shard.sh "${{ matrix.shard }}"`, "each shard running the script that checks it ran its tests"},
-	} {
-		if !strings.Contains(workflow, needle.line) {
-			t.Errorf("ci.yml no longer carries %s (%q): the heavy/ordinary split is only a "+
-				"partition while CI runs both halves", needle.why, needle.line)
+	var workflow workflowFile
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatalf("parse ci.yml: %v", err)
+	}
+
+	ordinary, ok := workflow.Jobs["build-vet-test"]
+	if !ok {
+		t.Fatal("ci.yml has no build-vet-test job")
+	}
+	if _, set := workflow.Env[tuiTestsEnv]; set {
+		t.Errorf("workflow sets %s: the ordinary job must use the default schedule", tuiTestsEnv)
+	}
+	if _, set := ordinary.Env[tuiTestsEnv]; set {
+		t.Errorf("ordinary job sets %s: it must use the default schedule", tuiTestsEnv)
+	}
+	foundOrdinary := false
+	for _, step := range ordinary.Steps {
+		if commandRunsGoTestAll(step.Run) {
+			foundOrdinary = true
+			if _, set := step.Env[tuiTestsEnv]; set {
+				t.Errorf("ordinary go test step sets %s: it must use the default schedule", tuiTestsEnv)
+			}
 		}
 	}
-	for _, line := range strings.Split(workflow, "\n") {
-		if strings.Contains(line, tuiTestsEnv) {
-			t.Errorf("ci.yml sets %s directly (%q): the ordinary job must run the default schedule "+
-				"and the shards get theirs from the script", tuiTestsEnv, strings.TrimSpace(line))
+	if !foundOrdinary {
+		t.Error("ordinary job has no step invoking go test over ./...")
+	}
+
+	plan, ok := workflow.Jobs["tui-heavy-plan"]
+	if !ok {
+		t.Fatal("ci.yml has no tui-heavy-plan job")
+	}
+	if plan.Outputs["shards"] != "${{ steps.plan.outputs.shards }}" {
+		t.Errorf("plan shards output = %q, want plan step's shards output", plan.Outputs["shards"])
+	}
+	var planRun string
+	for _, step := range plan.Steps {
+		if step.ID == "plan" {
+			planRun = step.Run
 		}
 	}
+	if planRun == "" {
+		t.Fatal("plan job has no executable plan step")
+	}
+
+	heavy, ok := workflow.Jobs["tui-heavy"]
+	if !ok {
+		t.Fatal("ci.yml has no tui-heavy job")
+	}
+	if !hasNeed(heavy, "tui-heavy-plan") {
+		t.Error("tui-heavy job does not need tui-heavy-plan")
+	}
+	if heavy.Strategy.FailFast {
+		t.Error("tui-heavy strategy enables fail-fast")
+	}
+	if heavy.Strategy.Matrix.Shard != "${{ fromJSON(needs.tui-heavy-plan.outputs.shards) }}" {
+		t.Errorf("heavy shard matrix = %q, want plan output decoded with fromJSON", heavy.Strategy.Matrix.Shard)
+	}
+	foundShard := false
+	for _, step := range heavy.Steps {
+		fields := strings.Fields(step.Run)
+		if len(fields) >= 4 && fields[0] == ".github/scripts/tui-heavy-shard.sh" && strings.Join(fields[1:4], " ") == `"${{ matrix.shard }}"` {
+			foundShard = true
+		}
+	}
+	if !foundShard {
+		t.Error("tui-heavy has no step invoking the shard script with matrix.shard")
+	}
+	if !hasNeed(workflow.Jobs["release"], "tui-heavy") {
+		t.Error("release job does not need tui-heavy")
+	}
+
+	t.Run("plan emits roster shards", func(t *testing.T) {
+		for _, tool := range []string{"bash", "jq"} {
+			if _, err := exec.LookPath(tool); err != nil {
+				t.Skipf("%s unavailable: %v", tool, err)
+			}
+		}
+		output := filepath.Join(t.TempDir(), "github-output")
+		cmd := exec.Command("bash", "-c", planRun)
+		cmd.Dir = filepath.Join("..", "..")
+		cmd.Env = append(os.Environ(), "GITHUB_OUTPUT="+output)
+		if got, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("run plan step: %v\n%s", err, got)
+		}
+		emitted, err := os.ReadFile(output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const prefix = "shards="
+		line := strings.TrimSpace(string(emitted))
+		if !strings.HasPrefix(line, prefix) {
+			t.Fatalf("plan output %q has no shards output", line)
+		}
+		var got []int
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, prefix)), &got); err != nil {
+			t.Fatalf("parse emitted shards: %v", err)
+		}
+		roster, err := readHeavyTests(filepath.Join("testdata", "heavy_tests.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		set := map[int]bool{}
+		for _, test := range roster {
+			set[test.shard] = true
+		}
+		var want []int
+		for shard := range set {
+			want = append(want, shard)
+		}
+		sort.Ints(want)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("emitted shards %v, want roster shards %v", got, want)
+		}
+	})
 }
