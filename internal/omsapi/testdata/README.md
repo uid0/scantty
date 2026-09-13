@@ -293,6 +293,9 @@ What they pin that a hand-written map does not:
 | `lead_time_source_item_suppliers_pre1085.json` | as the first row | same | `328af14f` — #1085's parent |
 | `lead_time_source_item_detail_pre1085.json` | as the second row | same | same |
 | `lead_time_source_supplier_detail_pre1085.json` | as the sixth row | same | same |
+| `lead_time_source_sku_only_edit_default.json` | `PATCH /api/inventory/item-suppliers/3/` | `ItemSupplierSerializer.update` | `6b150544` (#1085), remote `main`, tree `67db86bf` |
+| `lead_time_source_sku_only_edit_measured.json` | `PATCH /api/inventory/item-suppliers/5/` | same | same |
+| `lead_time_source_sku_only_edit_unknown.json` | `PATCH /api/inventory/item-suppliers/1/` | same | same |
 
 Recorded 2026-09-13 off ONE PostgreSQL database, as a superuser. The
 `_pre1085` bodies were recorded first, with OMS at #1085's parent; the checkout
@@ -318,6 +321,21 @@ decides each one on, rather than by writing the column:
 The hex bolt therefore carries a DEFAULTED 7 and a QUOTED 7 side by side, which
 is the pair the marker exists to tell apart, and supplier 1 (Grainger) carries
 one link of each of the four sources across four items.
+
+The three `sku_only_edit` replies were recorded 2026-09-13 against the same OMS
+commit and PostgreSQL database, authenticated as the same superuser. Each PATCH
+sent the terminal's edit body with `average_lead_time` omitted and changed only
+`supplier_sku`: Fastenal link 3 from `11101234` to `11101234-B`, Uline link 5
+from `S-9912` to `S-9912-B`, and Grainger link 1 from `4NUE7` to `4NUE7-B`.
+Each response was 200 and retained, respectively, 7/default, 9/measured, and
+7/unknown.
+
+The same session also sent only `{"average_lead_time": 7}` to the default and
+unknown links. OMS returned 7/default and 7/unknown: its
+`decide_lead_time_source` preserves the source when an echoed value equals
+storage. The terminal still omits an unchanged edit value because a stale form,
+or a fractional hydrated value truncated for its integer box, can differ from
+storage and would then be labelled recorded.
 
 What they pin that a hand-written map does not:
 

@@ -253,3 +253,57 @@ func TestCreateItemSupplier_ANilLeadTimeOmitsTheKey(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdateItemSupplier_ASKUOnlyEditPreservesLeadTimeSource(t *testing.T) {
+	for _, tc := range []struct {
+		file   string
+		id     int
+		sku    string
+		lead   float64
+		source LeadTimeSource
+	}{
+		{"lead_time_source_sku_only_edit_default.json", 3, "11101234-B", 7, LeadTimeSourceDefault},
+		{"lead_time_source_sku_only_edit_measured.json", 5, "S-9912-B", 9, LeadTimeSourceMeasured},
+		{"lead_time_source_sku_only_edit_unknown.json", 1, "4NUE7-B", 7, LeadTimeSourceUnknown},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			response := wireBody(t, tc.file)
+			var raw map[string]any
+			if err := json.Unmarshal(response, &raw); err != nil {
+				t.Fatal(err)
+			}
+			var request map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPatch {
+					t.Errorf("method = %s, want PATCH", r.Method)
+				}
+				if err := json.Unmarshal([]byte(readAll(t, r)), &request); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(response)
+			}))
+			t.Cleanup(srv.Close)
+
+			got, err := New(srv.URL).UpdateItemSupplier(context.Background(), tc.id, ItemSupplierWrite{
+				Item: raw["item"].(string), Supplier: int(raw["supplier"].(float64)),
+				SupplierSKU: tc.sku, QuantityPerPackage: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, present := request["average_lead_time"]; present {
+				t.Errorf("average_lead_time was sent: %v", request["average_lead_time"])
+			}
+			if got.SupplierSKU != raw["supplier_sku"] || got.SupplierSKU != tc.sku {
+				t.Errorf("supplier_sku = %q, recorded response has %v, want %q", got.SupplierSKU, raw["supplier_sku"], tc.sku)
+			}
+			if got.LeadTimeDays != raw["average_lead_time"] || got.LeadTimeDays != tc.lead {
+				t.Errorf("lead time = %v, recorded response has %v, want %v", got.LeadTimeDays, raw["average_lead_time"], tc.lead)
+			}
+			if got.LeadTimeSource != LeadTimeSource(raw["average_lead_time_source"].(string)) || got.LeadTimeSource != tc.source {
+				t.Errorf("source = %q, recorded response has %v, want %q", got.LeadTimeSource, raw["average_lead_time_source"], tc.source)
+			}
+		})
+	}
+}

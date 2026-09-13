@@ -1638,7 +1638,7 @@ func (c *Client) CreateItemSupplier(ctx context.Context, body ItemSupplierWrite)
 }
 
 // UpdateItemSupplier PATCHes an existing link. PATCH (not PUT) matches the web;
-// the full field set is sent so an edit round-trips every value.
+// the editable field set is sent, with pointer fields omitted when unchanged.
 func (c *Client) UpdateItemSupplier(ctx context.Context, id int, body ItemSupplierWrite) (*ItemSupplier, error) {
 	var out ItemSupplier
 	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/item-suppliers/%d/", id), body, &out); err != nil {
