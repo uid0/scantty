@@ -1,0 +1,82 @@
+# internal/tui's HEAVY tests: the ones CI runs in the "tui heavy tests" shards
+# instead of the ordinary `go test ./...` job, and that a plain local
+# `go test ./...` leaves out. test_schedule_test.go reads this file and is the
+# authority on what it means; README.md's "Building and running" says how to
+# run them.
+#
+# One test per line: `<shard> <TopLevelTestName>`. Lines starting with `#` and
+# blank lines are ignored; anything else must be exactly those two fields.
+#
+# THIS IS SCHEDULING, NOT SELECTION. Every top-level test in the package runs in
+# exactly one place: the ordinary job skips precisely the names below and shard
+# N runs precisely the names marked N, from this one file, so no list can drop a
+# test between the two. A name here that stops existing FAILS the ordinary
+# suite (TestTestSchedule_EveryHeavyTestIsATopLevelTestHere); a heavy test
+# nobody lists runs in the ordinary job, which costs time and never coverage;
+# and each shard job fails unless every name marked for it reported a PASS.
+#
+# WHAT GOES HERE IS DECIDED BY MEASURED COST, not by what kind of test it is.
+# Most entries are derived sweeps (every screen at every drawable size), and a
+# few are drive tests that type long values through `pump`'s per-key budget.
+# The criterion at the time of the split (2026-09-12): at least 3s of wall
+# clock on a 14-core machine, or a parallel sweep whose subtests total over 20
+# CPU-seconds (those cost several times their local wall clock on CI's 4-core
+# runner). Re-measure rather than trusting that:
+#
+#   SCANTTY_TUI_TESTS=all go test -count=1 -json -timeout 60m ./internal/tui > tui.json
+#
+# and read each top-level test's run/pass timestamps: the JSON `Elapsed` of a
+# test whose subtests call t.Parallel reports 0.
+#
+# THE SHARD NUMBER only balances the CI jobs; CI derives its matrix from the
+# numbers used here, so adding shard 4 adds a job. The three shards were
+# balanced to roughly equal estimated cost when the split was made.
+
+2 TestAssetDocuments_ABadPathUploadsNothing
+3 TestAssetDocuments_PreUploadRefreshCannotHideTheUploadedRow
+1 TestAssetDocuments_SupersedingPostsToItsOwnRouteAndOmitsWhatItKeeps
+2 TestAssetDocuments_UploadingSendsTheWebsOwnMultipart
+3 TestAssetMeters_AdjustingPostsTheCorrectionAndItsReason
+1 TestAssetMeters_AnAdjustmentAfterFailedRefreshIsConfirmedThenWritten
+2 TestAssetMeters_AnAdjustmentDuringRefreshIsConfirmedThenWritten
+3 TestHeaderFold_AFoldedValueIsWholeAbsentOrMarked
+2 TestJDEForm_ARefusedPaneKeepsTheOperatorsPlace
+3 TestJDEForm_AScrolledBodyReallyReachesItsLastLine
+1 TestJDEForm_EveryMovementTokenIsNamedExactlyWhereItMoves
+2 TestJDEForm_EveryMovementTokenMovesTheOperatorsPANE
+3 TestJDEForm_NoFrameClaimsContentWithoutNamingAKeyToFetchIt
+3 TestJDEForm_NoRowRunsPastThePane
+1 TestJDEForm_TheActionBarSurvivesEveryHeight
+2 TestKits_ARefusedCreateShowsTheServersSentenceOnOneMarkedRow
+1 TestKits_CreatePostsTheKitAndItsComponents
+2 TestList_ARowNeverDrawsAPartialNumber
+3 TestList_EveryMarkerRowOnThePaneFitsIt
+2 TestList_FittingARowChangesNoLineCount
+2 TestList_NoRowRunsPastThePane
+2 TestList_TheFooterSurvivesEveryScrollPosition
+2 TestPOAddLine_AMalformedPriceIsRefusedBeforeAnythingIsPosted
+3 TestPOAddLine_EveryFrameReadsAtEightyAndUsesAWiderTerminal
+2 TestPOAddLine_EveryPhaseNamesExactlyTheKeysThatWork
+3 TestPOAddLine_TheLineTotalAppearsExactlyWhenBothRowsAreAccepted
+3 TestPOCreate_EveryPhaseNamesExactlyTheKeysThatWork
+3 TestPOEditRows_NothingRunsPastThePane
+1 TestPOEdit_EveryPhaseNamesExactlyTheKeysThatWork
+1 TestPOLineEdit_MaskingConditionIsTheReceivedFraction
+1 TestPOLineEdit_RejectedCostIsNeverAnnouncedAsAWrite
+2 TestPOLineEdit_RetypingTheShownPriceIsNotAChange
+1 TestPOLineEdit_UntouchedPriceSurvivesRepeatedEdits
+1 TestPOLines_ALineSaysItsStateWhereverItIsDrawn
+1 TestPOOneLine_TheBarNamesTheScrollKeysExactlyWhereTheCollapsedBodyMoves
+3 TestPOSearchBoxes_TheBarNamesExactlyTheKeysThatWork
+3 TestPOSubmit_AClippedFailureSaysWhatItDropped
+2 TestPOView_BarNamesExactlyTheKeysThatWork
+1 TestProseBar_TheFooterNamesExactlyTheKeysThatWork
+1 TestProseBar_TheFooterSurvivesEveryDrawablePane
+3 TestReceive_ABodyNoKeyCanMoveLeadsWithWhatTheOperatorNeeds
+2 TestReceive_ARefusalOfTheWholeFormSaysWhyWhereverTheCursorIs
+3 TestReceive_EveryNoteFitsItsReservation
+1 TestReceive_EveryStateNamesExactlyTheKeysThatWork
+3 TestReceive_NothingOverflowsThePane
+1 TestReportTable_TheScreenAssemblesNoMoreRowsThanThePaneHas
+1 TestRoot_TheFrameIsNeverTallerThanTheTerminal
+2 TestWOTools_AddRestageAndRemove
