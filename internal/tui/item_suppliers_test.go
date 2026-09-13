@@ -205,8 +205,10 @@ func TestItemSupplierForm_BuildPayload_HappyPath(t *testing.T) {
 	if w.PackageCost != nil {
 		t.Errorf("package_cost should be nil (blank), got %v", *w.PackageCost)
 	}
-	if w.QuantityPerPackage != 1 || w.AverageLeadTime != 7 {
-		t.Errorf("defaults wrong: qty=%d lead=%d, want 1/7", w.QuantityPerPackage, w.AverageLeadTime)
+	// An untouched lead-time box on CREATE sends no key, so OMS stores its
+	// planning default labelled as one rather than as a quoted 7.
+	if w.QuantityPerPackage != 1 || w.AverageLeadTime != nil {
+		t.Errorf("defaults wrong: qty=%d lead=%v, want 1/omitted", w.QuantityPerPackage, w.AverageLeadTime)
 	}
 	if !w.IsPrimary {
 		t.Errorf("is_primary should be true")
@@ -280,7 +282,7 @@ func TestItemSupplierForm_Hydrate(t *testing.T) {
 	if w.UnitCost == nil || *w.UnitCost != "2.00" || w.PackageCost == nil || *w.PackageCost != "20.00" {
 		t.Errorf("hydrated costs wrong: unit=%v pkg=%v", w.UnitCost, w.PackageCost)
 	}
-	if w.QuantityPerPackage != 10 || w.AverageLeadTime != 5 || !w.IsPrimary {
+	if w.QuantityPerPackage != 10 || w.AverageLeadTime == nil || *w.AverageLeadTime != 5 || !w.IsPrimary {
 		t.Errorf("hydrated qty/lead/primary wrong: %+v", w)
 	}
 }

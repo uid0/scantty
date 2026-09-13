@@ -279,3 +279,54 @@ What they pin that a hand-written map does not:
   be read as either success.
 * The 200 also carries a member-facing **`detail`** sentence, recorded here and
   deliberately not decoded — `omsapi.ReorderRequestCreated` says why.
+
+## Supplier lead-time provenance — `average_lead_time_source`
+
+| file | request | OMS builder | OMS commit |
+|---|---|---|---|
+| `lead_time_source_item_suppliers.json` | `GET /api/inventory/item-suppliers/?item_id=<hex bolt>` | `inventory.serializers.ItemSupplierSerializer` | `6b150544` (#1085), remote `main`, tree `67db86bf` |
+| `lead_time_source_item_detail.json` | `GET /api/inventory/items/<hex bolt>/` | `InventoryItemSerializer` (flat key + nested `suppliers`) | same |
+| `lead_time_source_item_detail_primary_default.json` | the same, for an item whose PRIMARY link took the default | same | same |
+| `lead_time_source_item_detail_no_supplier.json` | the same, for an item with no link | same | same |
+| `lead_time_source_item_detail_anonymous.json` | the first item, with **no** `Authorization` header | same | same |
+| `lead_time_source_supplier_detail.json` | `GET /api/inventory/suppliers/1/` | `SupplierDetailSerializer` (`items`) | same |
+| `lead_time_source_item_suppliers_pre1085.json` | as the first row | same | `328af14f` — #1085's parent |
+| `lead_time_source_item_detail_pre1085.json` | as the second row | same | same |
+| `lead_time_source_supplier_detail_pre1085.json` | as the sixth row | same | same |
+
+Recorded 2026-09-13 off ONE PostgreSQL database, as a superuser. The
+`_pre1085` bodies were recorded first, with OMS at #1085's parent; the checkout
+was then moved to `main` and migrated (`inventory.0114` backfills every existing
+row `unknown`), and the rest recorded against the same rows plus new ones. So
+each pair differs only by the server.
+
+The rows were seeded to reach every value the key can take, BY THE PATH OMS
+decides each one on, rather than by writing the column:
+
+* `unknown` — the two links (Grainger 7, McMaster-Carr 12) created through the
+  API BEFORE the migration.
+* `default` — a `POST /api/inventory/item-suppliers/` that **omits**
+  `average_lead_time` (Fastenal on the hex bolt; the gloves' primary link).
+* `recorded` — the same POST **sending** `7` (Global Industrial) and `14`.
+* `measured` — `link.average_lead_time = measured_lead_time(n)` then
+  `save(update_fields=["average_lead_time"])` in `manage.py shell`, which is
+  the exact assignment `inventory.tasks.update_average_lead_times` makes. The
+  task itself was not run: it overwrites EVERY active link on an item from that
+  item's received reorders, so it cannot leave a measured link beside the other
+  three.
+
+The hex bolt therefore carries a DEFAULTED 7 and a QUOTED 7 side by side, which
+is the pair the marker exists to tell apart, and supplier 1 (Grainger) carries
+one link of each of the four sources across four items.
+
+What they pin that a hand-written map does not:
+
+* the key is `average_lead_time_source`, a **string** from `unknown`,
+  `default`, `recorded`, `measured`, on every `ItemSupplierSerializer` row and
+  flat on the item beside `average_lead_time`;
+* on the item it mirrors the PRIMARY link, and is JSON **null** beside a null
+  lead time when there is no link;
+* an anonymous reader gets **neither** key, with `vendor_data_withheld: true` —
+  withheld like the value, never served as `null`;
+* a server before #1085 serves **no key at all**, which is what the terminal's
+  "draw exactly as before" rests on (`omsapi.LeadTimeSource`).

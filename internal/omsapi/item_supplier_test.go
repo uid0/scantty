@@ -39,7 +39,7 @@ func TestCreateItemSupplier_Contract(t *testing.T) {
 		UnitCost:           strptr("1.50"),
 		PackageCost:        strptr("15.00"),
 		QuantityPerPackage: 10,
-		AverageLeadTime:    5,
+		AverageLeadTime:    intptr(5),
 		IsPrimary:          true,
 	})
 	if err != nil {
@@ -137,7 +137,7 @@ func TestUpdateItemSupplier_Contract(t *testing.T) {
 		Supplier:           4,
 		SupplierSKU:        "SKU-9",
 		QuantityPerPackage: 1,
-		AverageLeadTime:    7,
+		AverageLeadTime:    intptr(7),
 	})
 	if err != nil {
 		t.Fatalf("UpdateItemSupplier: %v", err)

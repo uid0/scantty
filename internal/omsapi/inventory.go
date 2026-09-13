@@ -74,14 +74,17 @@ type Item struct {
 	PackageCost          DecimalString `json:"package_cost,omitempty"`
 	QuantityPerPackage   int           `json:"quantity_per_package,omitempty"`
 	AverageLeadTime      float64       `json:"average_lead_time,omitempty"`
-	TotalValue           DecimalString `json:"total_value,omitempty"`
-	ThumbnailURL         string        `json:"thumbnail,omitempty"`
-	QRCodeURL            string        `json:"qr_code_url,omitempty"`
-	UseCaseBasedReorder  bool          `json:"use_case_based_reorder,omitempty"`
-	MinimumCases         *float64      `json:"minimum_cases,omitempty"`
-	ReorderCases         *float64      `json:"reorder_cases,omitempty"`
-	CurrentCases         *float64      `json:"current_cases,omitempty"`
-	ReorderInstruction   string        `json:"reorder_instruction,omitempty"`
+	// AverageLeadTimeSource is where AverageLeadTime came from, off the same
+	// primary link (see LeadTimeSource). "" when unserved or null.
+	AverageLeadTimeSource LeadTimeSource `json:"average_lead_time_source,omitempty"`
+	TotalValue            DecimalString  `json:"total_value,omitempty"`
+	ThumbnailURL          string         `json:"thumbnail,omitempty"`
+	QRCodeURL             string         `json:"qr_code_url,omitempty"`
+	UseCaseBasedReorder   bool           `json:"use_case_based_reorder,omitempty"`
+	MinimumCases          *float64       `json:"minimum_cases,omitempty"`
+	ReorderCases          *float64       `json:"reorder_cases,omitempty"`
+	CurrentCases          *float64       `json:"current_cases,omitempty"`
+	ReorderInstruction    string         `json:"reorder_instruction,omitempty"`
 
 	// ReorderAlertsEnabled is the per-item opt-in for ML reorder alerts (op-1):
 	// the "watch this item" toggle that puts it into the reorder_alerts notify
@@ -1505,26 +1508,27 @@ func (c *Client) ListSupplierAgreements(ctx context.Context, supplierID int) ([]
 }
 
 type ItemSupplier struct {
-	ID                int           `json:"id"`
-	Item              string        `json:"item"`
-	ItemName          string        `json:"item_name,omitempty"`
-	Supplier          int           `json:"supplier"`
-	SupplierName      string        `json:"supplier_name,omitempty"`
-	SupplierSKU       string        `json:"supplier_sku,omitempty"`
-	URL               string        `json:"supplier_url,omitempty"`
-	PackageUPC        string        `json:"package_upc,omitempty"`
-	UnitUPC           string        `json:"unit_upc,omitempty"`
-	PackQuantity      int           `json:"quantity_per_package,omitempty"`
-	UnitCost          DecimalString `json:"unit_cost,omitempty"`
-	PackageCost       DecimalString `json:"package_cost,omitempty"`
-	LeadTimeDays      float64       `json:"average_lead_time,omitempty"`
-	IsPreferred       bool          `json:"is_primary,omitempty"`
-	IsActive          bool          `json:"is_active,omitempty"`
-	IsDiscontinued    bool          `json:"is_discontinued,omitempty"`
-	PackageDimensions string        `json:"package_dimensions_display,omitempty"`
-	Notes             string        `json:"notes,omitempty"`
-	CreatedAt         time.Time     `json:"created_at,omitempty"`
-	UpdatedAt         time.Time     `json:"updated_at,omitempty"`
+	ID                int            `json:"id"`
+	Item              string         `json:"item"`
+	ItemName          string         `json:"item_name,omitempty"`
+	Supplier          int            `json:"supplier"`
+	SupplierName      string         `json:"supplier_name,omitempty"`
+	SupplierSKU       string         `json:"supplier_sku,omitempty"`
+	URL               string         `json:"supplier_url,omitempty"`
+	PackageUPC        string         `json:"package_upc,omitempty"`
+	UnitUPC           string         `json:"unit_upc,omitempty"`
+	PackQuantity      int            `json:"quantity_per_package,omitempty"`
+	UnitCost          DecimalString  `json:"unit_cost,omitempty"`
+	PackageCost       DecimalString  `json:"package_cost,omitempty"`
+	LeadTimeDays      float64        `json:"average_lead_time,omitempty"`
+	LeadTimeSource    LeadTimeSource `json:"average_lead_time_source,omitempty"`
+	IsPreferred       bool           `json:"is_primary,omitempty"`
+	IsActive          bool           `json:"is_active,omitempty"`
+	IsDiscontinued    bool           `json:"is_discontinued,omitempty"`
+	PackageDimensions string         `json:"package_dimensions_display,omitempty"`
+	Notes             string         `json:"notes,omitempty"`
+	CreatedAt         time.Time      `json:"created_at,omitempty"`
+	UpdatedAt         time.Time      `json:"updated_at,omitempty"`
 }
 
 func (c *Client) ListItemSuppliers(ctx context.Context, q url.Values) (*Page[ItemSupplier], error) {
@@ -1599,8 +1603,14 @@ func (c *Client) ListItemSuppliersForItem(ctx context.Context, itemID string) ([
 //     write. OpenMakerSuite's `inventory.services.suppliers.derive_costs` owns
 //     the derivation rule; do not duplicate that rule here.
 //
-//   - QuantityPerPackage / AverageLeadTime are plain ints carrying the model
-//     defaults (1 and 7); always sent.
+//   - QuantityPerPackage is a plain int carrying the model default (1); always
+//     sent.
+//
+//   - AverageLeadTime is a POINTER with omitempty, and nil is a write of its own:
+//     it OMITS the key, so OMS stores the planning default and labels it
+//     `default`. Sending the 7 instead stores the same number labelled a
+//     recorded quote (LeadTimeSource), which is why a create form's untouched
+//     box sends nil rather than restating the default.
 //
 //   - IsPrimary carries no omitempty so turning it off actually reaches the
 //     backend instead of being dropped; the model's save() keeps a single primary
@@ -1613,7 +1623,7 @@ type ItemSupplierWrite struct {
 	UnitCost           *string `json:"unit_cost"`
 	PackageCost        *string `json:"package_cost"`
 	QuantityPerPackage int     `json:"quantity_per_package"`
-	AverageLeadTime    int     `json:"average_lead_time"`
+	AverageLeadTime    *int    `json:"average_lead_time,omitempty"`
 	IsPrimary          bool    `json:"is_primary"`
 }
 

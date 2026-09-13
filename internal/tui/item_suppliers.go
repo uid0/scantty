@@ -645,7 +645,7 @@ func (s *ItemSuppliersScreen) renderRow(i int) string {
 		meta = append(meta, "$"+sup.PackageCost.String()+"/pkg")
 	}
 	if sup.LeadTimeDays > 0 {
-		meta = append(meta, fmt.Sprintf("lead %gd", sup.LeadTimeDays))
+		meta = append(meta, "lead "+leadTimeText(sup.LeadTimeDays, sup.LeadTimeSource))
 	}
 	// FOLDED at its own " · " joints against the live pane, never written
 	// straight to it.
@@ -899,10 +899,16 @@ func NewItemSupplierFormScreen(deps Deps, itemID, itemName string, existing *oms
 		ti.Placeholder = itemSupplierPlaceholder(id)
 		s.inputs[id] = ti
 	}
-	// Create-mode numeric defaults mirror the ItemSupplier model defaults.
+	// Create-mode numeric defaults mirror the ItemSupplier model defaults — all
+	// but the LEAD TIME, whose box starts BLANK (its placeholder still shows the
+	// 7). OMS labels a lead time by how it was obtained (omsapi.LeadTimeSource):
+	// a number SENT is a recorded quote and an omitted key is the planning
+	// default. A box pre-filled with "7" posted that 7 back untouched, so every
+	// link added from this terminal was stored as a supplier who had quoted a
+	// week — the very reading the provenance mark exists to stop, produced by
+	// the screen that draws it. Blank now omits the key (buildPayload).
 	if existing == nil {
 		s.inputs[isQtyPerPackage].SetValue("1")
-		s.inputs[isLeadTime].SetValue("7")
 	}
 
 	s.pickSearch = textinput.New()
@@ -1298,6 +1304,14 @@ func (s *ItemSupplierFormScreen) buildPayload() (omsapi.ItemSupplierWrite, error
 	if err != nil || lead < 0 {
 		return w, errors.New("average lead time must be a whole number ≥ 0")
 	}
+	// A blank box on CREATE omits the key, so OMS stores its planning default
+	// AS the default; sending the 7 would store it as a quote. On EDIT a blank
+	// still sends the 7 it always has — what blank means on an existing link is
+	// a separate question from where a lead time came from, and not this one's.
+	leadTime := &lead
+	if !s.edit && strings.TrimSpace(s.inputs[isLeadTime].Value()) == "" {
+		leadTime = nil
+	}
 
 	unitCost, err := itemSupplierParseMoney(s.inputs[isUnitCost].Value())
 	if err != nil {
@@ -1316,7 +1330,7 @@ func (s *ItemSupplierFormScreen) buildPayload() (omsapi.ItemSupplierWrite, error
 		UnitCost:           unitCost,
 		PackageCost:        packageCost,
 		QuantityPerPackage: qty,
-		AverageLeadTime:    lead,
+		AverageLeadTime:    leadTime,
 		IsPrimary:          s.isPrimary,
 	}
 	return w, nil
@@ -1395,6 +1409,9 @@ func (s *ItemSupplierFormScreen) formFields() []jdeField {
 			f.Kind, f.Value = jdeChoice, jdeYesNo(s.isPrimary)
 		default:
 			f.Kind, f.Input = jdeText, &s.inputs[id]
+			if id == isLeadTime {
+				f.Hint = s.leadTimeHint()
+			}
 			if f.Focused {
 				if hint, ok := itemSupplierFieldFocusHint[id]; ok {
 					f.Hint = hint
@@ -1404,6 +1421,27 @@ func (s *ItemSupplierFormScreen) formFields() []jdeField {
 		out[i] = f
 	}
 	return out
+}
+
+// leadTimeHint is the lead-time box's hint. The box SHOWS a lead time, so it
+// says where that number came from — but only while the box still holds the
+// number the link was opened on: once the operator has typed another, the
+// stored provenance describes a number that is no longer on the screen, and
+// what the server will call the new one is its decision, not a prediction to
+// draw here. On create the box starts blank, and a blank is the default.
+func (s *ItemSupplierFormScreen) leadTimeHint() string {
+	hint := itemSupplierFieldHint[isLeadTime]
+	if !s.edit {
+		return hint + " · blank = default"
+	}
+	ex := s.existing
+	if ex == nil || s.inputs[isLeadTime].Value() != strconv.Itoa(int(ex.LeadTimeDays)) {
+		return hint
+	}
+	if mark := leadTimeMark(ex.LeadTimeSource); mark != "" {
+		return hint + " " + mark
+	}
+	return hint
 }
 
 func (s *ItemSupplierFormScreen) formLines() *jdeLines {

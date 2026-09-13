@@ -23,7 +23,7 @@ const (
 	supUPCPackage = "00812345678905"
 	supUPCUnit    = "0812345678905"
 	supUPCSKU     = "91290A115"
-	supUPCLead    = "lead 5d"
+	supUPCLead    = "lead 5d (measured)"
 	supUPCPkgCost = "$14.50/pkg"
 )
 
@@ -43,7 +43,10 @@ func supUPCRow(n int) omsapi.ItemSupplier {
 		UnitCost:     omsapi.DecimalString("0.1450"),
 		PackageCost:  omsapi.DecimalString("14.50"),
 		LeadTimeDays: 5,
-		IsActive:     true,
+		// The widest provenance mark: the lead reading is one of the facts
+		// swept, and it must be swept at the length it really draws.
+		LeadTimeSource: omsapi.LeadTimeSourceMeasured,
+		IsActive:       true,
 	}
 }
 
