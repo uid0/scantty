@@ -5,10 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"go/ast"
-	"go/build"
-	"go/parser"
-	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -181,37 +177,35 @@ func applyTestSchedule(mode string, chosen bool, roster []heavyTest, set func(na
 	return fmt.Errorf("%s=%q: want unset, \"all\", \"heavy\" or \"heavy:<shard>\"", tuiTestsEnv, mode)
 }
 
-// packageTopLevelTests reads every top-level test this package compiles in the
-// current build context, from source, so the check below cannot agree with
-// itself by asking the schedule what exists.
+// packageTopLevelTests asks the running test executable which top-level tests
+// it compiled, with scheduling disabled so the complete set is listed.
 func packageTopLevelTests(t *testing.T) []string {
 	t.Helper()
-	paths, err := filepath.Glob("*_test.go")
+	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	fset := token.NewFileSet()
+	cmd := exec.Command(executable, "-test.list", "^Test")
+	cmd.Env = make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, tuiTestsEnv+"=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, tuiTestsEnv+"=all")
+	raw, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list compiled tests: %v\n%s", err, raw)
+	}
 	var out []string
-	for _, p := range paths {
-		if ok, err := build.Default.MatchFile(".", p); err != nil || !ok {
-			continue
+	for _, line := range strings.Split(string(raw), "\n") {
+		name := strings.TrimSpace(line)
+		if isTestName(name) && heavyTestName.MatchString(name) {
+			out = append(out, name)
 		}
-		file, err := parser.ParseFile(fset, p, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, d := range file.Decls {
-			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Recv != nil || !isTestName(fn.Name.Name) ||
-				fn.Type.Params == nil || len(fn.Type.Params.List) != 1 {
-				continue
-			}
-			if star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr); ok {
-				if sel, ok := star.X.(*ast.SelectorExpr); ok && sel.Sel.Name == "T" {
-					out = append(out, fn.Name.Name)
-				}
-			}
-		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("test executable listed no top-level tests:\n%s", raw)
 	}
 	sort.Strings(out)
 	return out
