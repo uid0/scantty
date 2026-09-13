@@ -97,9 +97,6 @@ type proseLoadScreen struct {
 	noReload string
 	// refused builds the 403 state as well, for a screen that draws one.
 	refused bool
-	// declines carries a fixture's recorded declines onto the load states,
-	// for the reason proseBarReorderDeclines gives.
-	declines map[string]string
 	// failureIsAForm says why a FAILED load on this screen is drawn by the
 	// screen's own loaded frame rather than by the load frame, which takes it
 	// out of the give-order claim the load-frame bar sweep makes — and only
@@ -182,8 +179,7 @@ func proseLoadScreens() []proseLoadScreen {
 		{name: "project storage detail", recv: "ProjectStorageDetailScreen", loaded: "project storage detail", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewProjectStorageDetailScreen(d, "PS-AB23CDFG") }},
 		{name: "reorder queue", recv: "ReorderQueueScreen", loaded: "reorder queue/pending", reload: "r",
-			declines: proseLoadReorderDeclines(),
-			fresh:    func(d Deps) proseBarScreen { return NewReorderQueueScreen(d) }},
+			fresh: func(d Deps) proseBarScreen { return NewReorderQueueScreen(d) }},
 		{name: "serialized components", recv: "SerializedComponentsScreen", loaded: "serialized components/list", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewItemInstancesScreen(d, "item-1", "Safety relay", nil) }},
 		{name: "serialized forecast", recv: "SerializedForecastScreen", loaded: "serialized forecast", reload: "r",
@@ -209,18 +205,6 @@ func proseLoadScreens() []proseLoadScreen {
 		{name: "webhook list", recv: "WebhookListScreen", loaded: "webhook list", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewWebhookListScreen(d) }},
 	}
-}
-
-// proseLoadReorderDeclines is proseBarReorderDeclines with `enter`, which on a
-// load frame with no row under the cursor answers "nothing to open: this view
-// has no rows" on the pane — a decline that says why, for the reason that map
-// gives — and is named wherever a refresh kept a row it can open.
-func proseLoadReorderDeclines() map[string]string {
-	out := map[string]string{"enter": "open item with no row under the cursor — the arm says the view has no rows"}
-	for k, v := range proseBarReorderDeclines {
-		out[k] = v
-	}
-	return out
 }
 
 // proseLoadGatewayPage is what the failing backend answers with: nginx's 502
@@ -365,7 +349,7 @@ func proseBarLoadStateFixtures(drawn []proseBarFixture) []proseBarFixture {
 		add := func(state proseLoadState, build func() proseBarScreen) {
 			out = append(out, proseBarFixture{
 				name: ls.name + "/" + string(state), recv: ls.recv, load: state,
-				build: build, immobile: immobile, declines: ls.declines,
+				build: build, immobile: immobile,
 			})
 		}
 		add(proseLoadInFlight, func() proseBarScreen { return ls.fresh(proseLoadDeps(http.StatusBadGateway)) })
