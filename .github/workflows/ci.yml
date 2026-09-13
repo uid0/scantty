@@ -77,7 +77,7 @@ jobs:
       - id: plan
         run: |
           set -euo pipefail
-          shards="$(awk 'NF && $1 !~ /^#/ { print $1 }' internal/tui/testdata/heavy_tests.txt | sort -un | jq -cs .)"
+          shards="$(grep -vE '^[[:space:]]*(#|$)' internal/tui/testdata/heavy_tests.txt | awk '{print $1}' | sort -un | jq -cs .)"
           echo "shards=${shards}" >> "$GITHUB_OUTPUT"
           echo "tui heavy shards: ${shards}"
 
