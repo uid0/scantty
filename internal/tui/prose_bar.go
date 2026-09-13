@@ -514,6 +514,23 @@ func proseMenuSubtitle(subtitle string, cells int) string {
 	return strings.Join(lines, "\n")
 }
 
+// proseClipEachLine clips every line of an OMS-supplied value to `cells`, with
+// each cut marked, and keeps the newlines.
+//
+// LINE BY LINE for the reason proseMenuSubtitle gives: the window packs a row by
+// the lines it really draws, so a value clipped as ONE string would pass a stored
+// newline through uncounted, and a cut taken across the joined text would leave
+// every line after it drawn whole past the pane. The newline is not stripped,
+// for the reason proseCursorWindow gives about drawing a value the record does
+// not hold.
+func proseClipEachLine(text string, cells int) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = pickerClip(line, cells)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // proseFlatCeilingRows is the row count a flat list's bar is at its TALLEST for:
 // two rows is a second row to step to, and every row action is on offer from
 // one. A flat list asks its bar builder for this many to get the ceiling
@@ -563,18 +580,37 @@ const proseFlatCeilingRows = 2
 // AN UNSIZED SCREEN DRAWS EVERY ROW, the layer's standing answer for no pane:
 // there is no window to overflow, so none is invented.
 func proseFlatListFrame(head string, rows []string, cursor int, start *int, terminalHeight, cells int, ceiling, drawn proseBar) string {
+	return proseFlatListFrameFoot(head, rows, cursor, start, terminalHeight, ceiling.rows(cells), drawn.render(cells))
+}
+
+// proseFlatListFrameFoot is proseFlatListFrame for a list whose FOOT is more than
+// its bar: a notes box and the bar that answers it, a service notice above the
+// bar, or a y/n confirm drawn under the rows in the bar's place.
+//
+// THOSE SCREENS DREW THE EXTRA LINES UNDER EVERY ROW WITH NO BUDGET AT ALL, so a
+// list longer than the pane took the prompt off the bottom along with the keys
+// that answer it — the operator pressed `n` and saw nothing open, or pressed `x`
+// and was asked nothing they could read. The foot is the part that must survive,
+// so it is spent FIRST and the window gets what is left: `footRows` is every row
+// the foot takes, the blank line above it included, counted from what will be
+// drawn (a folded bar's rows, a folded notice's) and never assumed.
+//
+// `foot` is written after that blank line and carries no trailing newline, which
+// is the shape proseBar.render hands over — so a foot that is only a bar is
+// proseFlatListFrame exactly.
+func proseFlatListFrameFoot(head string, rows []string, cursor int, start *int, terminalHeight, footRows int, foot string) string {
 	var b strings.Builder
 	b.WriteString(head)
 	from, to := 0, len(rows)
 	budget := 0
 	if terminalHeight > 0 {
-		budget = proseFlatListBudget(head, terminalHeight, cells, ceiling)
+		budget = proseFlatListBudgetRows(head, terminalHeight, footRows)
 		from, to = proseLineWindow(proseRowHeights(rows), cursor, *start, budget)
 		*start = from
 	}
 	proseWriteRows(&b, rows, from, to, budget)
 	b.WriteString("\n")
-	b.WriteString(drawn.render(cells))
+	b.WriteString(foot)
 	return b.String()
 }
 
@@ -588,7 +624,13 @@ func proseFlatListFrame(head string, rows []string, cursor int, start *int, term
 // measured against a different budget from the window it pages is a page that
 // skips rows or repeats them, and nothing on the pane would say which.
 func proseFlatListBudget(head string, terminalHeight, cells int, ceiling proseBar) int {
-	budget := screenBodyHeight(terminalHeight) - strings.Count(head, "\n") - 2 - ceiling.rows(cells)
+	return proseFlatListBudgetRows(head, terminalHeight, ceiling.rows(cells))
+}
+
+// proseFlatListBudgetRows is proseFlatListBudget with the foot's rows already
+// counted — the one subtraction both frames spend.
+func proseFlatListBudgetRows(head string, terminalHeight, footRows int) int {
+	budget := screenBodyHeight(terminalHeight) - strings.Count(head, "\n") - 2 - footRows
 	if budget < proseListWindowFloor {
 		budget = proseListWindowFloor
 	}

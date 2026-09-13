@@ -145,7 +145,7 @@ var proseBarUnconverted = map[string]string{
 	// budget has to move with the folded footer. Several of them are a *ListScreen
 	// away from needing no record at all.
 	//
-	// SEVEN RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
+	// EIGHT RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
 	// into the two shapes that remain rather than left as one heap — because
 	// "what shape is the work" is the only thing this map is for. The first was
 	// the WINDOWED list budgeted by a chrome constant of four, whose last row is
@@ -173,7 +173,12 @@ var proseBarUnconverted = map[string]string{
 	// its checklists, with a key moving the focus between them, and the firmware
 	// rollouts above two read-only sections — where one window serves the sections
 	// a key moves through and the read-only ones give first:
-	// prose_bar_sections_test.go carries it.
+	// prose_bar_sections_test.go carries it. The eighth was the flat lists whose
+	// answer to a key is drawn UNDER the rows or IN PLACE of them — the checklist
+	// run's notes box, the work-order attachments' delete confirm and upload form,
+	// the maker-box directory's service notices, forms and confirms — where the
+	// window is budgeted around a FOOT that is more than the bar:
+	// prose_bar_foot_prompts_test.go carries it.
 	// What remains divides:
 	//
 	//   - STILL ON THAT RECIPE, but not mechanically. Each has a window and a
@@ -184,11 +189,10 @@ var proseBarUnconverted = map[string]string{
 	//     a list longer than the pane pushes the bar off the bottom whatever it
 	//     says, and folding alone would not put it back. The ones that were
 	//     nothing more than that are converted, and so are the ones whose only
-	//     complication was a surface drawn in their place; each left here has
-	//     something neither answers — a surface drawn UNDER the list, a field form
-	//     whose focus pair is not a cursor, a footer that changes with a form's
-	//     state, or a layout that is not a list of rows — and the entry says
-	//     which.
+	//     complication was a surface drawn in their place or under their rows;
+	//     each left here has something none of those answers — an overlay with a
+	//     live query box, or a layout that is not a list of rows — and the entry
+	//     says which.
 
 	// Still on the windowed recipe.
 	"AssetPartsScreen": "the parts list on an asset. It is on the windowed-cursor-list " +
@@ -209,11 +213,8 @@ var proseBarUnconverted = map[string]string{
 		"can be derived",
 
 	// Flat: no window at all, so the bar and the body budget are one piece of work.
-	"ChecklistRunScreen":         "the step list of a checklist run, whose footer changes with the submit state",
-	"MakerBoxesScreen":           "the maker-box list beside MakerBoxFormScreen, with a scan prompt, a convert confirm and a queue form that each draw their own footer",
-	"SearchPalette":              "the universal search palette's result list, drawn as an overlay with a live query box",
-	"StorageOverviewScreen":      "the storage overview, a rack grid rather than a row list",
-	"WorkOrderAttachmentsScreen": "the attachment list on a work order. The list is the flat recipe, but the screen also draws an upload FORM in place of it — a field form whose tab/up/down move focus — and a delete confirm UNDER the rows in place of the footer, and it draws its load error ABOVE a list that still answers keys; converting the list alone would count the form's focus pair as swept",
+	"SearchPalette":         "the universal search palette's result list, drawn as an overlay with a live query box",
+	"StorageOverviewScreen": "the storage overview, a rack grid rather than a row list",
 
 	// THE ONES THAT ARE NEITHER A SCROLLED SHEET NOR A PLAIN CURSOR LIST, each
 	// saying what it is instead — a detail sheet with no window, a shared table
@@ -570,6 +571,9 @@ func proseBarFixtures() []proseBarFixture {
 	// The flat lists sharing their pane with a second SECTION, the seventh — see
 	// proseBarSectionFixtures.
 	out = append(out, proseBarSectionFixtures()...)
+	// The flat lists whose prompt, form or confirm is drawn under or in place of
+	// the rows, the eighth — see proseBarFootPromptFixtures.
+	out = append(out, proseBarFootPromptFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are

@@ -39,6 +39,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -71,7 +72,9 @@ type WorkOrderAttachmentsScreen struct {
 	attachments    []omsapi.WorkOrderAttachment
 	loading        bool
 	loadErr        string
+	terminalWidth  int
 	terminalHeight int
+	windowStart    int
 
 	phase  woAttachPhase
 	cursor int
@@ -163,7 +166,7 @@ func (s *WorkOrderAttachmentsScreen) load() tea.Cmd {
 func (s *WorkOrderAttachmentsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		s.terminalHeight = m.Height
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
 		return s, nil
 
 	case woAttachLoadedMsg:
@@ -225,6 +228,9 @@ func (s *WorkOrderAttachmentsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 }
 
 func (s *WorkOrderAttachmentsScreen) updateList(m tea.KeyMsg) (Screen, tea.Cmd) {
+	if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+		return s, nil
+	}
 	switch m.String() {
 	case "esc":
 		return s, SwitchTo(WSMaintenance, NewWorkOrderDetailScreen(s.deps, s.woID))
@@ -372,6 +378,75 @@ func woAttachmentName(att omsapi.WorkOrderAttachment) string {
 }
 
 // ---------------------------------------------------------------------------
+// Bar
+// ---------------------------------------------------------------------------
+
+// woAttachListBar names every key that acts on a list of `rows` attachments, as
+// a record the honesty sweep can press (prose_bar.go).
+//
+// It used to be one literal under every row with no window — "j/k move · u
+// upload · x delete · r refresh · esc back" — so a work order with more
+// attachments than the pane has rows took the footer off the bottom, the arrows
+// moved the cursor unnamed, and `x` was named over an empty list where it does
+// nothing. `u` is offered either way: the form it opens is how the first
+// attachment gets there.
+func woAttachListBar(rows int) proseBar {
+	out := append(proseNavStep(listNavMoves(rows)), proseBarItem{Keys: []string{"u"}, Hint: "u upload"})
+	if rows > 0 {
+		out = append(out, proseBarItem{Keys: []string{"x"}, Hint: "x delete"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// proseBar is the bar this screen is DRAWING: the upload form's in that phase,
+// nil under the delete confirm (whose own prompt names its keys, the precedent
+// every converted list keeps), loadBar's while a load is out or has failed, and
+// the list's otherwise.
+func (s *WorkOrderAttachmentsScreen) proseBar() proseBar {
+	switch {
+	case s.phase == woAttachPhaseUpload:
+		return s.uploadBar()
+	case s.confirmingDelete:
+		return nil
+	case s.loading || s.loadErr != "":
+		return s.loadBar()
+	}
+	return woAttachListBar(len(s.attachments))
+}
+
+// loadBar is this list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `u` opens the upload form, which is drawn in place of the load
+// frame. j/k move a cursor the frame does not draw and `x` arms a confirm it does
+// not draw either, so they are not named and are ignored.
+//
+// THIS SCREEN USED TO DRAW ITS LOAD ERROR ABOVE THE ROWS a failed refresh kept,
+// with the whole list still answering keys under it — the one screen of its kind
+// that did. It draws the shared failure frame now, and the rows come back with
+// the next load that works.
+func (s *WorkOrderAttachmentsScreen) loadBar() proseBar {
+	return proseBar{
+		{Keys: []string{"u"}, Hint: "u upload"},
+		proseBarReloadFor(s.loadErr != ""),
+		proseBarEsc,
+	}
+}
+
+// uploadBar is the upload form's bar. Its focus WRAPS over three fields on tab,
+// shift+tab and both arrows, so all four are named (proseBarFieldFocus) — the
+// literal said `tab move`, and shift+tab and the arrows moved the caret unnamed.
+// `enter` comes off while an upload is out, where the arm returns without acting.
+func (s *WorkOrderAttachmentsScreen) uploadBar() proseBar {
+	out := proseBar{proseBarFieldFocus}
+	if !s.uploading {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter upload"})
+	}
+	return append(out, proseBarItem{Keys: []string{"esc"}, Hint: "esc cancel"})
+}
+
+func (s *WorkOrderAttachmentsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// ---------------------------------------------------------------------------
 // View
 // ---------------------------------------------------------------------------
 
@@ -382,57 +457,83 @@ func (s *WorkOrderAttachmentsScreen) View() string {
 	return s.viewList()
 }
 
+// viewList draws the attachments as a line-packed window
+// (proseFlatListFrameFoot) with the bar — or the delete confirm, which is drawn
+// under the rows in the bar's place — as the foot the window is budgeted around.
+//
+// THE CONFIRM WAS WRITTEN UNDER EVERY ROW, so on a work order with more
+// attachments than the pane has rows `x` asked a question nobody could read and
+// `y` answered it. It is the foot now, and the attachment's name in it is clipped
+// so the keys that answer it stay on the pane.
 func (s *WorkOrderAttachmentsScreen) viewList() string {
-	var b strings.Builder
-	if s.loadErr != "" {
-		b.WriteString(StyleStatusError.Render("Error: ") + s.loadErr + "\n\n")
-	}
-	if s.loading && len(s.attachments) == 0 {
-		b.WriteString(StyleMuted.Render("Loading attachments…") + "\n\n")
-	} else if len(s.attachments) == 0 {
-		b.WriteString(StyleMuted.Render("No attachments on this work order.") + "\n\n")
-	} else {
-		for i, att := range s.attachments {
-			caret := "  "
-			if i == s.cursor {
-				caret = "▸ "
-			}
-			line := caret + woAttachmentName(att)
-			if att.Description != "" {
-				line += " — " + att.Description
-			}
-			if i == s.cursor {
-				line = StyleSidebarItemActive.Render(line)
-			}
-			b.WriteString(line + "\n")
-			meta := []string{}
-			if att.Kind != "" {
-				meta = append(meta, att.Kind)
-			}
-			if !att.UploadedAt.IsZero() {
-				meta = append(meta, att.UploadedAt.Format("2006-01-02"))
-			}
-			if len(meta) > 0 {
-				b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
-			}
+	cells := s.paneCells()
+	confirming := s.confirmingDelete && s.cursor >= 0 && s.cursor < len(s.attachments)
+	if !confirming {
+		if s.loading {
+			return proseLoadingFrame("Loading attachments…", cells, s.proseBar())
+		}
+		if s.loadErr != "" {
+			return proseFailedFrame(s.loadErr, s.terminalHeight, cells, s.proseBar())
+		}
+		if len(s.attachments) == 0 {
+			return StyleMuted.Render("No attachments on this work order.") + "\n\n" + s.proseBar().render(cells)
 		}
 	}
-
-	b.WriteString("\n")
-	if s.confirmingDelete && s.cursor >= 0 && s.cursor < len(s.attachments) {
+	rows := make([]string, len(s.attachments))
+	for i, att := range s.attachments {
+		rows[i] = s.attachmentRow(i, att, cells)
+	}
+	footRows := woAttachListBar(proseFlatCeilingRows).rows(cells)
+	foot := s.proseBar().render(cells)
+	if confirming {
 		name := woAttachmentName(s.attachments[s.cursor])
 		if s.deleting {
-			b.WriteString(StyleMuted.Render("Deleting…"))
+			foot = StyleMuted.Render("Deleting…")
 		} else {
-			b.WriteString(StyleStatusWarn.Render(fmt.Sprintf("Delete %q? y delete · n/esc cancel", name)))
+			foot = StyleStatusWarn.Render(pickerClip(fmt.Sprintf("Delete %q?", name), cells)) + "\n" +
+				StyleStatusWarn.Render("y delete · n/esc cancel")
 		}
-		return b.String()
+		footRows = 1 + strings.Count(foot, "\n") + 1
 	}
-	b.WriteString(StyleMuted.Render("j/k move · u upload · x delete · r refresh · esc back"))
-	return b.String()
+	return proseFlatListFrameFoot("", rows, s.cursor, &s.windowStart, s.terminalHeight, footRows, foot)
 }
 
+// attachmentRow is one attachment and its kind and date. The name and the
+// description are OMS values, clipped to the pane line by line with the cut
+// marked; the highlight's padding is reserved on every row.
+func (s *WorkOrderAttachmentsScreen) attachmentRow(i int, att omsapi.WorkOrderAttachment, cells int) string {
+	caret := "  "
+	if i == s.cursor {
+		caret = "▸ "
+	}
+	line := caret + woAttachmentName(att)
+	if att.Description != "" {
+		line += " — " + att.Description
+	}
+	line = proseClipEachLine(line, cells-StyleSidebarItemActive.GetHorizontalPadding())
+	if i == s.cursor {
+		line = StyleSidebarItemActive.Render(line)
+	}
+	meta := []string{}
+	if att.Kind != "" {
+		meta = append(meta, att.Kind)
+	}
+	if !att.UploadedAt.IsZero() {
+		meta = append(meta, att.UploadedAt.Format("2006-01-02"))
+	}
+	if len(meta) > 0 {
+		line += "\n    " + StyleMuted.Render(pickerClip(strings.Join(meta, " · "), cells-4))
+	}
+	return line
+}
+
+// viewUpload draws the upload form. It has no window — three fields and a fixed
+// head — so its height is bounded by bounding the lines that carry a value the
+// screen does not control: the typed boxes (woBoxView) and a failure's OMS body
+// (proseFormLine), each held to one row of the pane. The working line and the
+// failure sit ABOVE the bar now, which is the last thing on every converted pane.
 func (s *WorkOrderAttachmentsScreen) viewUpload() string {
+	cells := s.paneCells()
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Upload attachment") + "\n\n")
 	labels := []string{"File path", "Description", "Kind"}
@@ -441,13 +542,14 @@ func (s *WorkOrderAttachmentsScreen) viewUpload() string {
 		if i == s.uploadFocus {
 			caret = "▸ "
 		}
-		b.WriteString(caret + StyleTitle.Render(labels[i]+": ") + s.uploadInputs[i].View() + "\n")
+		prefix := caret + StyleTitle.Render(labels[i]+": ")
+		b.WriteString(prefix + woBoxView(s.uploadInputs[i], cells, strings.Repeat(" ", lipgloss.Width(prefix))) + "\n")
 	}
-	b.WriteString("\n" + StyleMuted.Render("tab move · enter upload · esc cancel") + "\n")
 	if s.uploading {
-		b.WriteString("\n" + StyleMuted.Render("Uploading…"))
+		b.WriteString("\n" + StyleMuted.Render("Uploading…") + "\n")
 	} else if s.errMsg != "" {
-		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.errMsg))
+		b.WriteString("\n" + StyleStatusError.Render("✗ "+proseFormLine(s.errMsg, cells-2)) + "\n")
 	}
+	b.WriteString("\n" + s.proseBar().render(cells))
 	return b.String()
 }
