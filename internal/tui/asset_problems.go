@@ -88,6 +88,7 @@ type AssetProblemsScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 	filter         apFilter
 
 	// read-only detail overlay
@@ -111,6 +112,7 @@ type AssetProblemsScreen struct {
 	vendorsErr     string
 	loadingVendors bool
 	vendorIx       int
+	vendorStart    int
 	vendorTitle    textinput.Model
 	workTypeIx     int
 	submittingTP   bool
@@ -265,18 +267,139 @@ func (s *AssetProblemsScreen) selected() (omsapi.AssetProblem, bool) {
 }
 
 func (s *AssetProblemsScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.listBar(true, true))
+}
+
+// paneCells is the width this screen folds and budgets against: the pane the
+// terminal really gave, never the 51 an 80-column one happens to leave.
+func (s *AssetProblemsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// listBar names every key that acts on the problem list, as a RECORD rather than
+// a literal — prose_bar.go carries the conversion, proseNavCursor why the
+// movement half is gated on one threshold, and proseListWindow what it costs the
+// body.
+//
+// It used to be "j/k move · enter view · R resolve · w work order · t vendor · f
+// filter · r refresh · esc back": 91 cells against the 51 an 80-column pane
+// gives, so clampToBox took `esc back` off the end; it named two of the ten
+// movement keystrokes the list's switch binds; and it was silent about `v`,
+// which opens the detail exactly as enter does. The row actions come off an
+// empty filter because there is no row for them to act on.
+func (s *AssetProblemsScreen) listBar(moves, rows bool) proseBar {
+	out := proseNavCursor(moves)
+	if rows {
+		out = append(out,
+			proseBarItem{Keys: []string{"enter", "v"}, Hint: "enter/v view"},
+			proseBarItem{Keys: []string{"R"}, Hint: "R resolve"},
+			proseBarItem{Keys: []string{"w"}, Hint: "w work order"},
+			proseBarItem{Keys: []string{"t"}, Hint: "t vendor"},
+		)
 	}
-	return avail
+	return append(out,
+		proseBarItem{Keys: []string{"f"}, Hint: "f filter"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// detailBar is the read-only report's bar, tailored to what the report still
+// allows: a terminal report offers nothing but back, and each promotion drops
+// off once its work order exists. `q` and `v` close the report as `esc` and
+// `enter` do and no literal ever said so.
+//
+// `w` and `t` are still BOUND on a report that no longer allows them — the arm
+// closes the report and says why in a toast — so on such a report they are keys
+// that decline and answer rather than keys the bar should offer, which is the
+// distinction proseBarReorderDeclines draws.
+func (s *AssetProblemsScreen) detailBar(p omsapi.AssetProblem) proseBar {
+	var out proseBar
+	if !p.IsResolved() {
+		out = append(out, proseBarItem{Keys: []string{"R"}, Hint: "R resolve"})
+		if p.WorkOrderShortID == "" && (p.WorkOrder == nil || *p.WorkOrder == "") {
+			out = append(out, proseBarItem{Keys: []string{"w"}, Hint: "w work order"})
+		}
+		if p.ThirdPartyWorkOrderShortID == "" && (p.ThirdPartyWorkOrder == nil || *p.ThirdPartyWorkOrder == "") {
+			out = append(out, proseBarItem{Keys: []string{"t"}, Hint: "t vendor"})
+		}
+	}
+	return append(out, proseBarItem{Keys: []string{"esc", "enter", "q", "v"}, Hint: "esc/enter/q/v back"})
+}
+
+// vendorBar is the send-to-vendor prompt's bar at the step it is on.
+//
+// The VENDOR step is a cursor list and gets the step pair the way the flat lists
+// do — it binds j/k and the arrows and nothing else of the vocabulary — with
+// `enter` offered only once there is a vendor to pick. The WORK-TYPE step is a
+// cycler that binds six keys and named three of them: `j`, `k`, `↑` and `↓` turn
+// it exactly as space and the side arrows do.
+func (s *AssetProblemsScreen) vendorBar() proseBar {
+	cancel := proseBarItem{Keys: []string{"esc"}, Hint: "esc cancel"}
+	switch s.vendorStep {
+	case apVendorStepVendor:
+		if s.loadingVendors || s.vendorsErr != "" || len(s.vendors) == 0 {
+			return proseBar{cancel}
+		}
+		return s.vendorPickBar(listNavMoves(len(s.vendors)))
+	case apVendorStepTitle:
+		return proseBar{{Keys: []string{"enter"}, Hint: "enter next"}, cancel}
+	default:
+		return proseBar{
+			{Keys: []string{" ", "j", "k", "left", "right", "up", "down"}, Hint: "space/j/k ←→↑↓ change"},
+			{Keys: []string{"enter"}, Hint: "enter send"},
+			cancel,
+		}
+	}
+}
+
+// vendorPickBar is the vendor step's bar over a loaded pick-list, and with
+// `moves` true it is that bar at its TALLEST — the ceiling the window is
+// budgeted against, for the reason proseListWindow gives — so the ceiling and
+// the drawn bar are one expression.
+func (s *AssetProblemsScreen) vendorPickBar(moves bool) proseBar {
+	return append(proseNavStep(moves),
+		proseBarItem{Keys: []string{"enter"}, Hint: "enter pick"},
+		proseBarItem{Keys: []string{"esc"}, Hint: "esc cancel"})
+}
+
+// proseBar is the bar this screen is DRAWING, for whichever surface is up — the
+// list, the read-only report, the resolve prompt or a step of the send-to-vendor
+// prompt — and nil in the states that draw something else instead: a load in
+// flight or failed, and a write while it is out, whose frame is a working line
+// with every key held.
+//
+// ONE RECORD PER SURFACE is what converting a screen with a second surface drawn
+// in place of its list comes to: converting the list alone would have left the
+// vendor picker, a cursor list of its own, behind a receiver the classifier
+// counts as swept.
+func (s *AssetProblemsScreen) proseBar() proseBar {
+	switch {
+	case s.loading || s.loadErr != "":
+		return nil
+	case s.vendorStep != apVendorStepNone:
+		if s.submittingTP {
+			return nil
+		}
+		return s.vendorBar()
+	case s.resolving:
+		if s.submittingResolve {
+			return nil
+		}
+		return proseResolveBar
+	case s.viewing:
+		if p, ok := s.selected(); ok {
+			return s.detailBar(p)
+		}
+		return proseBar{proseBarItem{Keys: []string{"esc", "enter", "q", "v"}, Hint: "esc/enter/q/v back"}}
+	}
+	n := len(s.visible())
+	return s.listBar(listNavMoves(n), n > 0)
 }
 
 func (s *AssetProblemsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -555,6 +678,7 @@ func (s *AssetProblemsScreen) openVendor(p omsapi.AssetProblem) (Screen, tea.Cmd
 	s.vendorStep = apVendorStepVendor
 	s.vendorTarget = p.ID
 	s.vendorIx = 0
+	s.vendorStart = 0
 	s.workTypeIx = 0
 	s.vendorErr = ""
 	s.vendorsErr = ""
@@ -769,8 +893,8 @@ func (s *AssetProblemsScreen) viewList() string {
 
 	vis := s.visible()
 	if len(vis) == 0 {
-		b.WriteString("\n" + StyleMuted.Render("No "+s.filter.label()+" problems here.") + "\n\n")
-		b.WriteString(StyleMuted.Render("f filter · r refresh · esc back (report a new one with p on the asset)"))
+		b.WriteString("\n" + StyleMuted.Render("No "+s.filter.label()+" problems here. Report a new one with p on the asset.") + "\n\n")
+		b.WriteString(s.proseBar().render(s.paneCells()))
 		return b.String()
 	}
 
@@ -788,7 +912,7 @@ func (s *AssetProblemsScreen) viewList() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(vis)-end)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · enter view · R resolve · w work order · t vendor · f filter · r refresh · esc back"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -820,7 +944,7 @@ func (s *AssetProblemsScreen) renderRow(vis []omsapi.AssetProblem, i int) string
 func (s *AssetProblemsScreen) viewDetail() string {
 	p, ok := s.selected()
 	if !ok {
-		return StyleMuted.Render("No problem selected.") + "\n\n" + StyleMuted.Render("esc back")
+		return StyleMuted.Render("No problem selected.") + "\n\n" + s.proseBar().render(s.paneCells())
 	}
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render(firstNonEmpty(p.AssetName, s.assetName)) + "\n")
@@ -887,7 +1011,7 @@ func (s *AssetProblemsScreen) viewDetail() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render(apDetailHints(p)))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -902,13 +1026,17 @@ func (s *AssetProblemsScreen) viewResolve() string {
 		b.WriteString(StyleMuted.Render("Resolving…"))
 		return b.String()
 	}
-	b.WriteString(StyleTitle.Render("Resolution notes: ") + s.resolveNotes.View() + "\n")
+	// Bounded to the pane (woBoxView): unbounded, a note past the row's edge was
+	// cut by clampToBox with the caret, and every further key redrew the pane
+	// byte for byte.
+	b.WriteString(StyleTitle.Render("Resolution notes: ") +
+		woBoxView(s.resolveNotes, s.paneCells(), "Resolution notes: ") + "\n")
 	statusWord := "resolved"
 	if s.resolveClosed {
 		statusWord = "closed"
 	}
 	b.WriteString(StyleTitle.Render("Status: ") + "‹ " + statusWord + " ›" + "\n\n")
-	b.WriteString(StyleMuted.Render("enter submit · tab toggle resolved/closed · esc cancel"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -924,8 +1052,14 @@ func (s *AssetProblemsScreen) viewVendor() string {
 		return b.String()
 	}
 
+	errLine := ""
+	if s.vendorErr != "" {
+		errLine = StyleStatusError.Render("✗ "+s.vendorErr) + "\n\n"
+	}
+	cells := s.paneCells()
 	switch s.vendorStep {
 	case apVendorStepVendor:
+		b.WriteString(errLine)
 		b.WriteString(StyleTitle.Render("Vendor") + "\n")
 		switch {
 		case s.loadingVendors:
@@ -935,6 +1069,10 @@ func (s *AssetProblemsScreen) viewVendor() string {
 		case len(s.vendors) == 0:
 			b.WriteString(StyleMuted.Render("  (no active vendors — add one from the menu: Maintenance › Vendors)") + "\n")
 		default:
+			// The pick-list is every active vendor, so it is WINDOWED: drawn
+			// whole, a directory longer than the pane took the bar off the
+			// bottom, which is where the only way out of this prompt is named.
+			rows := make([]string, len(s.vendors))
 			for i, v := range s.vendors {
 				caret := "    "
 				if i == s.vendorIx {
@@ -947,49 +1085,37 @@ func (s *AssetProblemsScreen) viewVendor() string {
 				if i == s.vendorIx {
 					row = StyleSidebarItemActive.Render(row)
 				}
-				b.WriteString(row + "\n")
+				rows[i] = row
 			}
+			return proseFlatListFrame(b.String(), rows, s.vendorIx, &s.vendorStart, s.terminalHeight,
+				cells, s.vendorPickBar(true), s.proseBar())
 		}
-		b.WriteString("\n" + StyleMuted.Render("j/k move · enter pick · esc cancel"))
 	case apVendorStepTitle:
 		if v, ok := s.selectedVendor(); ok {
 			b.WriteString(StyleMuted.Render("vendor: ") + v.Name + "\n\n")
 		}
-		b.WriteString(StyleTitle.Render("Title: ") + s.vendorTitle.View() + "\n")
-		b.WriteString("\n" + StyleMuted.Render("enter next · esc cancel"))
+		// Bounded to the pane (woBoxView): the box opens holding up to 120 cells
+		// of the report's description, so unbounded its tail and the caret were
+		// past an 80-column pane before the first key, and nothing typed showed.
+		b.WriteString(StyleTitle.Render("Title: ") + woBoxView(s.vendorTitle, cells, "Title: ") + "\n")
+		if s.vendorErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render("✗ "+s.vendorErr) + "\n")
+		}
 	case apVendorStepWorkType:
 		if v, ok := s.selectedVendor(); ok {
 			b.WriteString(StyleMuted.Render("vendor: ") + v.Name + "\n")
 		}
 		b.WriteString(StyleMuted.Render("title: ") + strings.TrimSpace(s.vendorTitle.Value()) + "\n\n")
 		b.WriteString(StyleTitle.Render("Work type: ") + elecSelectLabel(apWorkTypeOptions, s.workTypeIx) + "\n")
-		b.WriteString("\n" + StyleMuted.Render("space/←→ change · enter send · esc cancel"))
+		if s.vendorErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render("✗ "+s.vendorErr) + "\n")
+		}
 	}
-
-	if s.vendorErr != "" {
-		b.WriteString("\n\n" + StyleStatusError.Render("✗ "+s.vendorErr))
-	}
+	b.WriteString("\n" + s.proseBar().render(cells))
 	return b.String()
 }
 
 // --- small helpers -------------------------------------------------------------
-
-// apDetailHints tailors the detail overlay footer to what the report still
-// allows: a terminal report offers nothing but back, and each promote drops off
-// once its work order exists.
-func apDetailHints(p omsapi.AssetProblem) string {
-	if p.IsResolved() {
-		return "esc/enter back"
-	}
-	hints := []string{"R resolve"}
-	if p.WorkOrderShortID == "" && (p.WorkOrder == nil || *p.WorkOrder == "") {
-		hints = append(hints, "w work order")
-	}
-	if p.ThirdPartyWorkOrderShortID == "" && (p.ThirdPartyWorkOrder == nil || *p.ThirdPartyWorkOrder == "") {
-		hints = append(hints, "t vendor")
-	}
-	return strings.Join(append(hints, "esc/enter back"), " · ")
-}
 
 // apPromotedShortID is the short id of whichever work order the report was
 // promoted to, for the list row's "→ WO-0042" tail. Empty when un-promoted.

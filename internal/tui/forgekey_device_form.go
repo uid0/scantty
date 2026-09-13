@@ -53,11 +53,13 @@ type ForgeKeyDeviceFormScreen struct {
 
 	// Location picker state.
 	pickCursor  int
+	pickStart   int
 	pickSearch  textinput.Model
 	pickTyping  bool
 	pickOptions []assetPickRow
 
 	terminalHeight int
+	terminalWidth  int
 }
 
 type fkDeviceFormLocsMsg struct {
@@ -126,6 +128,7 @@ func (s *ForgeKeyDeviceFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		return s, nil
 	case fkDeviceFormLocsMsg:
 		if m.err != nil {
@@ -205,6 +208,7 @@ func (s *ForgeKeyDeviceFormScreen) openPicker() {
 	s.pickSearch.Blur()
 	s.applyPickFilter()
 	s.pickCursor = 0
+	s.pickStart = 0
 	// Rest the cursor on the current selection so re-opening is a no-op.
 	if s.locationID != nil {
 		sel := strconv.Itoa(*s.locationID)
@@ -312,6 +316,53 @@ func (s *ForgeKeyDeviceFormScreen) cancelCmd() tea.Cmd {
 	return SwitchTo(WSForgeKey, NewForgeKeyDeviceDetailScreen(s.deps, id))
 }
 
+func (s *ForgeKeyDeviceFormScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// pickListBar is the location picker's bar with its filter box shut, and with
+// both answers true it is the bar at its TALLEST — the ceiling the window is
+// budgeted against, for the reason proseListWindow gives — so the ceiling and
+// the drawn bar are one expression.
+//
+// It used to be a legend written ABOVE the rows, "Pick location — j/k move · /
+// filter · enter select · esc back", naming `j/k` alone while the arrows moved
+// the cursor too, and naming all four while the filter box was open and every
+// one of those letters was a character in the query.
+func (s *ForgeKeyDeviceFormScreen) pickListBar(moves, options bool) proseBar {
+	out := append(proseNavStep(moves), proseBarItem{Keys: []string{"/"}, Hint: "/ filter"})
+	if options {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter select"})
+	}
+	return append(out, proseBarItem{Keys: []string{"esc"}, Hint: "esc back"})
+}
+
+// proseBar is the bar this screen is DRAWING, for whichever surface is up — the
+// one-field form, the location picker drawn in its place, or that picker's
+// filter box — and nil in the states that draw something else instead: the load
+// frame, and a save while it is out, whose working line takes the bar's place.
+//
+// ONE RECORD PER SURFACE is what converting a screen with a second cursor
+// surface comes to: the picker is the reason this screen is on the navigation
+// roster at all, so converting the form alone would have left it behind a
+// receiver the classifier counts as swept.
+func (s *ForgeKeyDeviceFormScreen) proseBar() proseBar {
+	switch {
+	case s.phase == fkDeviceFormLoading:
+		return nil
+	case s.phase == fkDeviceFormPick && s.pickTyping:
+		return proseBar{{Keys: []string{"enter", "esc"}, Hint: "enter/esc close filter"}}
+	case s.phase == fkDeviceFormPick:
+		n := len(s.pickOptions)
+		return s.pickListBar(listNavMoves(n), n > 0)
+	case s.saving:
+		return nil
+	}
+	return proseBar{
+		{Keys: []string{" "}, Hint: "space pick location"},
+		{Keys: []string{"enter"}, Hint: "enter save"},
+		{Keys: []string{"esc"}, Hint: "esc cancel"},
+	}
+}
+
 func (s *ForgeKeyDeviceFormScreen) View() string {
 	if s.phase == fkDeviceFormLoading {
 		if s.loadErr != "" {
@@ -333,14 +384,16 @@ func (s *ForgeKeyDeviceFormScreen) viewForm() string {
 		b.WriteString("\n" + StyleStatusError.Render("locations failed to load: "+s.loadErr) + "\n")
 	}
 	b.WriteString("\n")
-	switch {
-	case s.saving:
+	if s.saving {
 		b.WriteString(StyleMuted.Render("Saving…"))
-	case s.errMsg != "":
-		b.WriteString(StyleStatusError.Render("✗ " + s.errMsg))
-	default:
-		b.WriteString(StyleMuted.Render("space pick location · enter save · esc cancel"))
+		return b.String()
 	}
+	// A failed save used to take the BAR's place, so the frame that most needs
+	// a way forward named none; the failure is a line of its own above it now.
+	if s.errMsg != "" {
+		b.WriteString(StyleStatusError.Render("✗ "+s.errMsg) + "\n\n")
+	}
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -368,36 +421,33 @@ func (s *ForgeKeyDeviceFormScreen) locationName(id int) string {
 
 func (s *ForgeKeyDeviceFormScreen) viewPick() string {
 	var b strings.Builder
-	b.WriteString(StyleMuted.Render("Pick location — j/k move · / filter · enter select · esc back") + "\n\n")
+	cells := s.paneCells()
+	b.WriteString(StyleTitle.Render("Pick location") + "\n\n")
 	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
+		b.WriteString(StyleMuted.Render("filter: ") + woBoxView(s.pickSearch, cells, "filter: ") + "\n\n")
 	}
 	if len(s.pickOptions) == 0 {
-		b.WriteString(StyleMuted.Render("(no matches)"))
-		return b.String()
+		b.WriteString(StyleMuted.Render("(no matches)") + "\n\n")
+		return b.String() + s.proseBar().render(cells)
 	}
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
+	rows := make([]string, len(s.pickOptions))
+	for i, opt := range s.pickOptions {
 		caret := "    "
 		if i == s.pickCursor {
 			caret = "  ▸ "
 		}
-		opt := s.pickOptions[i]
 		switch {
 		case i == s.pickCursor:
-			b.WriteString(StyleSidebarItemActive.Render(caret+opt.label) + "\n")
+			rows[i] = StyleSidebarItemActive.Render(caret + opt.label)
 		case opt.clear:
-			b.WriteString(caret + StyleMuted.Render(opt.label) + "\n")
+			rows[i] = caret + StyleMuted.Render(opt.label)
 		default:
-			b.WriteString(caret + opt.label + "\n")
+			rows[i] = caret + opt.label
 		}
 	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	// Every location the shop has, so the window is DERIVED from the pane and
+	// the folded bar rather than a flat twelve rows, which ran past any terminal
+	// shorter than about twenty rows and took the bar with it.
+	return proseFlatListFrame(b.String(), rows, s.pickCursor, &s.pickStart, s.terminalHeight,
+		cells, s.pickListBar(true, true), s.proseBar())
 }

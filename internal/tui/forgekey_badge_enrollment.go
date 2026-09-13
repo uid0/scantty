@@ -68,6 +68,7 @@ type BadgeEnrollmentScreen struct {
 	windowStart    int
 	windowSize     int
 	terminalHeight int
+	terminalWidth  int
 
 	loading bool
 	loadErr string
@@ -167,6 +168,7 @@ func (s *BadgeEnrollmentScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -505,12 +507,71 @@ func badgeUserMatches(u omsapi.User, q string) bool {
 }
 
 func (s *BadgeEnrollmentScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.listBar(true, true))
+}
+
+// paneCells is the width this screen folds and budgets against: the pane the
+// terminal really gave, never the 51 an 80-column one happens to leave.
+func (s *BadgeEnrollmentScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// listBar names every key that acts on the member directory, as a RECORD rather
+// than a literal — prose_bar.go carries the conversion, proseNavCursor why the
+// movement half is gated on one threshold, and proseListWindow what it costs the
+// body.
+//
+// It used to be "j/k move · e/enter enroll · s set · x clear · / search · r
+// refresh · esc back": 76 cells against the 51 an 80-column pane gives, naming
+// two of the ten movement keystrokes the list's switch binds — and drawn
+// unchanged under a filter that matched nobody, where the three row actions have
+// no member to act on. Enroll comes off while an arm is out, because the arm
+// declines a second one without a word.
+func (s *BadgeEnrollmentScreen) listBar(moves, rows bool) proseBar {
+	out := proseNavCursor(moves)
+	if rows {
+		if !s.busy {
+			out = append(out, proseBarItem{Keys: []string{"e", "enter"}, Hint: "e/enter enroll"})
+		}
+		out = append(out,
+			proseBarItem{Keys: []string{"s"}, Hint: "s set"},
+			proseBarItem{Keys: []string{"x"}, Hint: "x clear"},
+		)
 	}
-	return avail
+	return append(out,
+		proseBarItem{Keys: []string{"/"}, Hint: "/ search"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this screen is DRAWING, for whichever surface is up — the
+// directory, its search box, or the manual badge entry drawn in place of the
+// list — and nil in the states that draw something else instead: a load in
+// flight or failed (the staff-only refusal), the clear confirm (a one-line y/n
+// prompt naming its own keys), a manual set while it is out, and the enrolment
+// panel, whose every key is "any key".
+//
+// THE SEARCH BOX HAS A BAR OF ITS OWN. It used to open over the list with a
+// hint line of its own above the rows and the LIST's footer still under them, so
+// one frame said `j/k move` while `j` was a character going into the query.
+func (s *BadgeEnrollmentScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	switch s.mode {
+	case badgeModeSearch:
+		return proseBar{{Keys: []string{"enter", "esc"}, Hint: "enter/esc close search"}}
+	case badgeModeSetInput:
+		if s.busy {
+			return nil
+		}
+		return proseBar{
+			{Keys: []string{"enter"}, Hint: "enter save"},
+			{Keys: []string{"esc"}, Hint: "esc cancel"},
+		}
+	case badgeModeClearConfirm, badgeModeEnroll:
+		return nil
+	}
+	return s.listBar(listNavMoves(len(s.rows)), len(s.rows) > 0)
 }
 
 func (s *BadgeEnrollmentScreen) scrollIntoView() {
@@ -552,18 +613,20 @@ func (s *BadgeEnrollmentScreen) View() string {
 
 func (s *BadgeEnrollmentScreen) viewList() string {
 	var b strings.Builder
+	// ONE line ahead of the window in every mode, because that is the one line
+	// proseListFixedRows reserves: the blank that used to follow it, and the
+	// search box's own hint line, were rows the window was never budgeted for.
 	if s.mode == badgeModeSearch {
-		b.WriteString(s.searchInput.View() + "\n")
-		b.WriteString(StyleMuted.Render("enter/esc close search") + "\n\n")
+		b.WriteString(woBoxView(s.searchInput, s.paneCells(), "") + "\n")
 	} else if s.filter != "" {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("filter: %q — %d of %d members", s.filter, len(s.rows), len(s.all))) + "\n\n")
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("filter: %q — %d of %d members", s.filter, len(s.rows), len(s.all))) + "\n")
 	} else {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("%d members", len(s.all))) + "\n\n")
+		b.WriteString(StyleMuted.Render(fmt.Sprintf("%d members", len(s.all))) + "\n")
 	}
 
 	if len(s.rows) == 0 {
-		b.WriteString(StyleMuted.Render("No members found."))
-		b.WriteString("\n\n" + s.footer())
+		b.WriteString("\n" + StyleMuted.Render("No members found."))
+		b.WriteString("\n\n" + s.proseBar().render(s.paneCells()))
 		return b.String()
 	}
 
@@ -580,12 +643,8 @@ func (s *BadgeEnrollmentScreen) viewList() string {
 	if end < len(s.rows) {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
 	}
-	b.WriteString("\n" + s.footer())
+	b.WriteString("\n" + s.proseBar().render(s.paneCells()))
 	return b.String()
-}
-
-func (s *BadgeEnrollmentScreen) footer() string {
-	return StyleMuted.Render("j/k move · e/enter enroll · s set · x clear · / search · r refresh · esc back")
 }
 
 func (s *BadgeEnrollmentScreen) renderRow(i int) string {
@@ -612,11 +671,12 @@ func (s *BadgeEnrollmentScreen) viewSetInput() string {
 	name := s.selectedName()
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Set badge — "+name) + "\n\n")
-	b.WriteString("  " + s.badgeInput.View() + "\n\n")
+	b.WriteString("  " + woBoxView(s.badgeInput, s.paneCells(), "  ") + "\n\n")
 	if s.busy {
 		b.WriteString(StyleMuted.Render("Saving…"))
 	} else {
-		b.WriteString(StyleMuted.Render("enter save · blank clears the badge · esc cancel"))
+		b.WriteString(StyleMuted.Render("A blank badge clears it.") + "\n\n")
+		b.WriteString(s.proseBar().render(s.paneCells()))
 	}
 	return b.String()
 }

@@ -46,6 +46,7 @@ type SIGMembersScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	confirmingRemove bool
 	removing         bool
@@ -60,6 +61,7 @@ type SIGMembersScreen struct {
 	adding       bool
 	pendingAdd   *omsapi.User // the user an in-flight add is for (optimistic exclude)
 	pickCursor   int
+	pickStart    int
 	pickSearch   textinput.Model
 	pickTyping   bool
 	pickOptions  []itemPickOption
@@ -152,18 +154,88 @@ func (s *SIGMembersScreen) loadUsers() tea.Cmd {
 }
 
 func (s *SIGMembersScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.listBar(true, true))
+}
+
+// paneCells is the width this screen folds and budgets against: the pane the
+// terminal really gave, never the 51 an 80-column one happens to leave.
+func (s *SIGMembersScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// listBar names every key that acts on the member list, as a RECORD rather than
+// a literal — prose_bar.go carries the conversion, proseNavCursor why the
+// movement half is gated on one threshold, and proseListWindow what it costs the
+// body.
+//
+// It used to be "j/k move · n add member · x remove · r refresh · esc back",
+// naming two of the ten movement keystrokes the list's switch binds; and the
+// empty list drew "n add member · esc back" while `r` reloaded it under no word
+// at all. `x` needs a member to remove and comes off without one.
+func (s *SIGMembersScreen) listBar(moves, rows bool) proseBar {
+	out := append(proseNavCursor(moves), proseBarItem{Keys: []string{"n"}, Hint: "n add member"})
+	if rows {
+		out = append(out, proseBarItem{Keys: []string{"x"}, Hint: "x remove"})
 	}
-	return avail
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// pickBar names the keys the add-member picker answers, as a record.
+//
+// It used to be a legend written ABOVE the rows — "j/k move · / filter · enter
+// add · esc back" — which named `j/k` alone while the arrows moved the cursor
+// too, and went on naming all four while the filter box was open and every one
+// of those letters was a character in the query. The typing state has a bar of
+// its own now, naming the two keys the box does not eat.
+func (s *SIGMembersScreen) pickBar(moves, options bool) proseBar {
+	if s.pickTyping {
+		return proseBar{{Keys: []string{"enter", "esc"}, Hint: "enter/esc close filter"}}
+	}
+	if s.usersLoading || s.usersErr != "" {
+		return proseBar{{Keys: []string{"esc"}, Hint: "esc back"}}
+	}
+	return s.pickListBar(moves, options)
+}
+
+// pickListBar is the picker's bar over a loaded list, and with both answers true
+// it is the bar at its TALLEST — the ceiling its window is budgeted against, for
+// the reason proseListWindow gives — so the ceiling and the drawn bar are one
+// expression.
+func (s *SIGMembersScreen) pickListBar(moves, options bool) proseBar {
+	out := append(proseNavStep(moves), proseBarItem{Keys: []string{"/"}, Hint: "/ filter"})
+	if options {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter add"})
+	}
+	return append(out, proseBarItem{Keys: []string{"esc"}, Hint: "esc back"})
+}
+
+// proseBar is the bar this screen is DRAWING, for whichever surface is up — the
+// member list or the add-member picker drawn in its place — and nil in the
+// states that draw something else instead: a load in flight or failed, the
+// remove confirm (a one-line y/n prompt naming its own keys), and an add while
+// it is out, whose frame is a working line with every key held.
+//
+// ONE RECORD PER SURFACE is what converting a screen with a second cursor
+// surface comes to: converting the list alone would have left the picker's
+// literal behind a receiver the classifier counts as swept.
+func (s *SIGMembersScreen) proseBar() proseBar {
+	if s.phase == sigMembersAddPick {
+		if s.adding {
+			return nil
+		}
+		n := len(s.pickOptions)
+		return s.pickBar(listNavMoves(n), n > 0)
+	}
+	if s.loading || s.loadErr != "" || s.confirmingRemove {
+		return nil
+	}
+	n := len(s.members)
+	return s.listBar(listNavMoves(n), n > 0)
 }
 
 func (s *SIGMembersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -305,6 +377,7 @@ func (s *SIGMembersScreen) enterAddPick() (Screen, tea.Cmd) {
 	s.pickSearch.SetValue("")
 	s.pickSearch.Blur()
 	s.pickCursor = 0
+	s.pickStart = 0
 	if s.usersLoaded {
 		s.applyUserFilter()
 		return s, nil
@@ -487,7 +560,7 @@ func (s *SIGMembersScreen) View() string {
 	var b strings.Builder
 	if len(s.members) == 0 {
 		b.WriteString(StyleMuted.Render("No members yet.") + "\n\n")
-		b.WriteString(StyleMuted.Render("n add member · esc back"))
+		b.WriteString(s.proseBar().render(s.paneCells()))
 		return b.String()
 	}
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d members", len(s.members))) + "\n")
@@ -505,7 +578,7 @@ func (s *SIGMembersScreen) View() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.members)-end)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · n add member · x remove · r refresh · esc back"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -526,22 +599,21 @@ func (s *SIGMembersScreen) viewConfirm() string {
 
 func (s *SIGMembersScreen) viewAddPick() string {
 	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Add member") + "\n")
-	b.WriteString(StyleMuted.Render("j/k move · / filter · enter add · esc back") + "\n\n")
+	cells := s.paneCells()
+	b.WriteString(StyleTitle.Render("Add member") + "\n\n")
+	bar := "\n" + s.proseBar().render(cells)
 	if s.usersLoading {
-		b.WriteString(StyleMuted.Render("Loading users…"))
-		return b.String()
+		return b.String() + StyleMuted.Render("Loading users…") + "\n" + bar
 	}
 	if s.usersErr != "" {
-		b.WriteString(StyleStatusError.Render("Error: ") + s.usersErr)
-		return b.String()
+		return b.String() + StyleStatusError.Render("Error: ") + s.usersErr + "\n" + bar
 	}
 	if s.adding {
 		b.WriteString(StyleMuted.Render("Adding…"))
 		return b.String()
 	}
 	if s.pickTyping || s.pickSearch.Value() != "" {
-		b.WriteString(StyleMuted.Render("filter: ") + s.pickSearch.View() + "\n\n")
+		b.WriteString(StyleMuted.Render("filter: ") + woBoxView(s.pickSearch, cells, "filter: ") + "\n\n")
 	}
 	if len(s.pickOptions) == 0 {
 		if strings.TrimSpace(s.pickSearch.Value()) != "" {
@@ -549,29 +621,26 @@ func (s *SIGMembersScreen) viewAddPick() string {
 		} else {
 			b.WriteString(StyleMuted.Render("All users are already members."))
 		}
-		return b.String()
+		return b.String() + "\n" + bar
 	}
-	const window = 12
-	start, end := fieldWindow(s.pickCursor, len(s.pickOptions), window)
-	if start > 0 {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n")
-	}
-	for i := start; i < end; i++ {
+	// The directory is every user, so the window is DERIVED from the pane and
+	// the folded bar rather than a flat twelve rows: at twelve the picker ran
+	// past any terminal shorter than about twenty rows, and what clampToBox took
+	// was the bottom — which, once the legend moved under the rows, is the bar.
+	rows := make([]string, len(s.pickOptions))
+	for i, opt := range s.pickOptions {
 		caret := "    "
 		if i == s.pickCursor {
 			caret = "  ▸ "
 		}
-		opt := s.pickOptions[i]
 		if i == s.pickCursor {
-			b.WriteString(StyleSidebarItemActive.Render(caret+opt.label) + "\n")
+			rows[i] = StyleSidebarItemActive.Render(caret + opt.label)
 		} else {
-			b.WriteString(caret + opt.label + "\n")
+			rows[i] = caret + opt.label
 		}
 	}
-	if end < len(s.pickOptions) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.pickOptions)-end)) + "\n")
-	}
-	return b.String()
+	return proseFlatListFrame(b.String(), rows, s.pickCursor, &s.pickStart, s.terminalHeight,
+		cells, s.pickListBar(true, true), s.proseBar())
 }
 
 func (s *SIGMembersScreen) renderRow(i int) string {

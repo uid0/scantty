@@ -145,7 +145,7 @@ var proseBarUnconverted = map[string]string{
 	// budget has to move with the folded footer. Several of them are a *ListScreen
 	// away from needing no record at all.
 	//
-	// TWO RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
+	// THREE RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
 	// into the two shapes that remain rather than left as one heap — because
 	// "what shape is the work" is the only thing this map is for. The first was
 	// the WINDOWED list budgeted by a chrome constant of four, whose last row is
@@ -154,20 +154,25 @@ var proseBarUnconverted = map[string]string{
 	// The second was the SIMPLE FLAT list — one surface, the step pair and a few
 	// row actions bound, every row drawn with no window:
 	// prose_bar_flat_lists_test.go carries it, and proseFlatListFrame gave those
-	// screens the line-packed window they never had. What remains divides:
+	// screens the line-packed window they never had. The third was either of
+	// those with a SECOND SURFACE drawn IN PLACE of the list — a picker, a
+	// read-only detail, a prompt with a text box — where the record answers for
+	// whichever surface is up: prose_bar_second_surface_test.go carries it.
+	// What remains divides:
 	//
 	//   - STILL ON THAT RECIPE, but not mechanically. Each has a window and a
 	//     budget, and something about it that the shared helpers do not answer —
-	//     a second cursor surface, rows that are not one line, a chrome constant
-	//     counting something else. The entry says which.
+	//     rows that are not one line, a chrome constant counting something else,
+	//     a vocabulary the helpers do not express. The entry says which.
 	//   - FLAT, with no window at all: they draw EVERY row and then the footer, so
 	//     a list longer than the pane pushes the bar off the bottom whatever it
 	//     says, and folding alone would not put it back. The ones that were
-	//     nothing more than that are converted; each left here has something the
-	//     flat recipe does not answer — a second surface drawn in place of the
-	//     list or under it, a footer that changes with a form's state, a movement
-	//     vocabulary wider than the step pair, or a layout that is not a list of
-	//     rows — and the entry says which.
+	//     nothing more than that are converted, and so are the ones whose only
+	//     complication was a surface drawn in their place; each left here has
+	//     something neither answers — a surface drawn UNDER the list, a field form
+	//     whose focus pair is not a cursor, a footer that changes with a form's
+	//     state, a movement vocabulary wider than the step pair, or a layout that
+	//     is not a list of rows — and the entry says which.
 
 	// Still on the windowed recipe.
 	"AssetPartsScreen": "the parts list on an asset. It is on the windowed-cursor-list " +
@@ -182,11 +187,6 @@ var proseBarUnconverted = map[string]string{
 		"window is packed by lines a row count stops being a page — so converting it is " +
 		"deciding what a page of multi-line parts is worth, which is a decision about what " +
 		"this list does rather than about what its bar says",
-	"AssetProblemsScreen": "the problem list on an asset, plus its vendor picker: a " +
-		"second cursor surface with its own keys, drawn in place of the list, so the record " +
-		"has to say which bar belongs to which surface",
-	"BadgeEnrollmentScreen": "the ForgeKey badge enrolment list, whose enrolment prompt " +
-		"replaces the footer and whose staff-only refusal draws a bar of its own",
 	"ElectricalPanelsScreen": "the electrical panel list. Windowed, but through a windowSize() " +
 		"method rather than the shared chrome constant, and it binds no pager — so its bar " +
 		"must name g/G/home/end without naming pgup/pgdn, which proseNavCursor does not " +
@@ -197,10 +197,6 @@ var proseBarUnconverted = map[string]string{
 		"fold, with its own line budget taught to move with the folded footer. " +
 		"proseCursorWindow is the wrong helper for it: the screen already derives a row count " +
 		"from each row's rendered height and needs that existing budget taught about the bar",
-	"LocationProblemsScreen": "the problem list for a location, the same two-surface shape " +
-		"as AssetProblemsScreen",
-	"SIGMembersScreen": "the member list of a SIG, plus its person picker — a second cursor " +
-		"surface drawn in place of the list, with its own filter box",
 	"StorageSlotsScreen": "the storage slot list beside StorageSlotFormScreen. Its chrome " +
 		"constant is 6 rather than 4 because it reserves room for slotCardPrompt's overlay, " +
 		"so what the bar costs and what the overlay costs have to be separated before either " +
@@ -209,12 +205,9 @@ var proseBarUnconverted = map[string]string{
 	// Flat: no window at all, so the bar and the body budget are one piece of work.
 	"ChecklistRunScreen":         "the step list of a checklist run, whose footer changes with the submit state",
 	"ChecklistsScreen":           "the checklist browse list, which also binds tab/shift+tab to move between its two sections",
-	"EPaperPanelsScreen":         "the e-paper panel list and its bind picker, a second cursor surface drawn in place of the list with its own search box and footer — the list alone is the flat recipe, but converting it would leave the picker's literal unswept behind a receiver the classifier then counts as swept",
 	"FacilitiesScreen":           "the facilities hub, a cursor menu of surfaces: it binds g/home and G/end as well as j/k and the arrows, and every row also answers its own hotkey",
 	"FirmwareScreen":             "the firmware rollout list, two sections in one pane",
 	"ForgeKeyCertificatesScreen": "the ForgeKey certificate list, which binds the WHOLE vocabulary — pgup/pgdn and g/G/home/end included — over an unwindowed body, and names `j/k scroll` for it",
-	"ForgeKeyDeviceFormScreen":   "the location picker on the device form; the form itself is columnar and swept",
-	"LocationCheckinsScreen":     "the check-in list for a location and its lookup picker, a second cursor surface",
 	"MakerBoxesScreen":           "the maker-box list beside MakerBoxFormScreen, with a scan prompt, a convert confirm and a queue form that each draw their own footer",
 	"ReportsScreen":              "the reports hub, a cursor menu of surfaces, with its legend ABOVE the rows rather than under them",
 	"SearchPalette":              "the universal search palette's result list, drawn as an overlay with a live query box",
@@ -263,6 +256,47 @@ type proseBarFixture struct {
 	// proseBarReorderDeclines for how narrow the exemption is and where the real
 	// check lives.
 	declines map[string]string
+	// typing is why a focused text box on this fixture takes the printable keys
+	// and the box's editing keys (proseBarBoxKeys) — the search pickers, the
+	// resolve notes, a manual badge entry. A letter typed into a query changes
+	// the pane and is named by no bar, because no record can spell "every
+	// printable key": the exemption TestPOSearchBoxes_TheBarNamesExactlyTheKeysThatWork
+	// takes for the columnar search boxes.
+	//
+	// IT IS HELD IN BOTH DIRECTIONS RATHER THAN TRUSTED. A reason that has stopped
+	// being true fails: a focused box takes EVERY printable key, so the sweep
+	// requires every unnamed one to change the pane — asking for merely SOME let
+	// `q` closing a read-only report satisfy it over a frame with no box at all,
+	// which hid the very omission it was pointed at. And a letter the bar DOES
+	// name is still pressed forward, and fails where all it does is type: it must
+	// change something other than the rows an unbound character changes, or the
+	// bar is claiming a key the box eats (`j/k` over the e-paper search).
+	//
+	// WHAT IT CANNOT SEE, said so nobody reads more into it: an UNNAMED letter
+	// bound to an action on a surface whose box has the focus. Typing changes the
+	// pane too, and comparing the rows a letter changes against a reference only
+	// holds where the box does not filter live — on the SIG and badge filters a
+	// different character draws a different list. `l/L/?` on the check-in entry
+	// is the one such binding here, and it is named.
+	typing string
+}
+
+// proseBarBoxKeys are the non-printable keys a focused bubbles textinput
+// answers on its own: the caret and the deletions. On a typing fixture they are
+// the box's, exactly as the printable keys are.
+var proseBarBoxKeys = map[string]bool{
+	"backspace": true, "delete": true, "left": true, "right": true, "home": true, "end": true,
+	"ctrl+u": true, "ctrl+d": true, "ctrl+e": true,
+}
+
+// proseBarBoxTakes reports whether a key goes into the focused box on a typing
+// fixture, and so is exempt from the reverse half where the bar does not name it.
+func proseBarBoxTakes(f proseBarFixture, key string) bool {
+	if f.typing == "" {
+		return false
+	}
+	r := []rune(key)
+	return (len(r) == 1 && r[0] >= 0x20 && r[0] <= 0x7e) || proseBarBoxKeys[key]
 }
 
 // proseBarFixtures builds every converted screen in every state that DRAWS a
@@ -499,7 +533,10 @@ func proseBarFixtures() []proseBarFixture {
 	// rather than one screen — see proseBarWindowedListFixtures.
 	out = append(out, proseBarWindowedListFixtures()...)
 	// The FLAT cursor lists, the second recipe — see proseBarFlatListFixtures.
-	return append(out, proseBarFlatListFixtures()...)
+	out = append(out, proseBarFlatListFixtures()...)
+	// The screens that draw a SECOND SURFACE in place of their list, the third
+	// — see proseBarSecondSurfaceFixtures.
+	return append(out, proseBarSecondSurfaceFixtures()...)
 }
 
 func proseBarSerializedComponents(n int) []omsapi.SerializedComponent {
@@ -827,6 +864,13 @@ func TestProseBar_TheFooterNamesExactlyTheKeysThatWork(t *testing.T) {
 				}
 				declined++
 			}
+			// On a typing fixture, the rows an UNBOUND character changes when it is
+			// typed: the box's own row, and whatever a live search redraws.
+			var typedRows string
+			if f.typing != "" {
+				typedRows = proseBarTypedRows(f, bar)
+			}
+			var untyped []string
 			for _, key := range listKeySpace() {
 				var changed, issued bool
 				for _, probe := range probes {
@@ -835,6 +879,27 @@ func TestProseBar_TheFooterNamesExactlyTheKeysThatWork(t *testing.T) {
 					issued = issued || i
 				}
 				named := bar.names(key)
+				if !named && proseBarBoxTakes(f, key) {
+					// The box's key, not the bar's — see proseBarFixture.typing.
+					// A SPACE appended to a box already holding a value is the one
+					// character a pane without colour cannot show: it lands past the
+					// value's last glyph, where the box's own padding already was, and
+					// only the caret — reverse video, stripped here — moves.
+					if !changed && len([]rune(key)) == 1 && key != " " {
+						untyped = append(untyped, key)
+					}
+					continue
+				}
+				if named && proseBarBoxTakes(f, key) && len([]rune(key)) == 1 &&
+					proseBarChangedRows(f, 80, 24, key) == typedRows {
+					// A letter the bar names that does nothing but go into the box
+					// passes the forward half, because a typed character changes the
+					// pane: it is the bar claiming a key the box eats.
+					t.Errorf("%s names %q, but on this surface the key only types into the "+
+						"box — it changes exactly the rows an unbound character does.\nbar: %s",
+						f.name, key, bar.hint())
+					continue
+				}
 				switch {
 				case named && !changed && !issued:
 					if proseBarLeaves(t, f, key) {
@@ -853,6 +918,11 @@ func TestProseBar_TheFooterNamesExactlyTheKeysThatWork(t *testing.T) {
 					t.Errorf("%s does not name %q, but pressing it changes what the operator "+
 						"sees.\nbar: %s", f.name, key, bar.hint())
 				}
+			}
+			if f.typing != "" && len(untyped) > 0 {
+				t.Errorf("the %s fixture is recorded as typing (%q), but %q changed nothing — a "+
+					"focused box takes EVERY printable key, so the exemption was taken over a box "+
+					"that is not there, or over a key that is not the box's", f.name, f.typing, untyped)
 			}
 		})
 	}
@@ -898,6 +968,11 @@ func TestProseBar_EveryMovementKeyIsNamedWhereItMoves(t *testing.T) {
 				// From the TOP for the forward keys, from the BOTTOM for the
 				// backward ones: `k` at the top and `j` at the bottom clamp, and a
 				// clamped key is not a dead one.
+				if !bar.names(key) && proseBarBoxTakes(f, key) {
+					// A letter or a caret key going into the focused box is not
+					// movement — see proseBarFixture.typing.
+					continue
+				}
 				var changed bool
 				for _, probe := range [][]string{nil, {"end"}} {
 					c, _ := proseBarKeyEffect(f, 80, 24, probe, key)
@@ -1055,7 +1130,11 @@ func TestProseBar_EveryBarSegmentSpellsItsOwnKeys(t *testing.T) {
 var proseBarKeyGlyphs = map[string]string{
 	"up":     "↑",
 	"down":   "↓",
+	"left":   "←",
+	"right":  "→",
 	"pgdown": "pgdn",
+	// The space bar's keystroke is a blank, which no word on a bar can be.
+	" ": "space",
 }
 
 // proseBarSpells reports whether a segment's words really say a keystroke.
@@ -1071,7 +1150,12 @@ func proseBarSpells(hint, key string) bool {
 		want = glyph
 	}
 	for _, token := range strings.Fields(hint) {
-		if strings.ContainsAny(token, "↑↓") {
+		// A key that IS the separator — `/ filter` — splits into nothing, so it
+		// is matched as the whole token before the token is split.
+		if token == want {
+			return true
+		}
+		if strings.ContainsAny(token, "↑↓←→") {
 			if strings.Contains(token, want) {
 				return true
 			}
@@ -1133,6 +1217,46 @@ func proseBarKeyEffect(f proseBarFixture, w, h int, probe []string, key string) 
 	before := pane()
 	cmd := press(key)
 	return pane() != before, cmd != nil
+}
+
+// proseBarChangedRows presses one key from a fresh screen and reports WHICH rows
+// of the clipped pane it changed, as a comparable string ("" when none did, and
+// "height" when the pane changed height, which no typed character does).
+func proseBarChangedRows(f proseBarFixture, w, h int, key string) string {
+	s := proseBarSize(f.build(), w, h)
+	pane := func() []string {
+		return strings.Split(clampToBox(s.View(), screenBodyCells(w), screenBodyRows(h)), "\n")
+	}
+	before := pane()
+	next, _ := s.Update(listRuneKey(key))
+	if out, ok := next.(proseBarScreen); ok {
+		s = out
+	}
+	after := pane()
+	if len(before) != len(after) {
+		return "height"
+	}
+	var rows []string
+	for i := range before {
+		if before[i] != after[i] {
+			rows = append(rows, fmt.Sprint(i))
+		}
+	}
+	return strings.Join(rows, ",")
+}
+
+// proseBarTypedRows is the rows a typing fixture's box changes for a character
+// nothing binds — the reference a NAMED letter is compared against. It is the
+// first printable key the bar does not name, which on every box is a character;
+// the space is passed over because appended to a value it is invisible here (see
+// the untyped guard).
+func proseBarTypedRows(f proseBarFixture, bar proseBar) string {
+	for _, key := range listKeySpace() {
+		if len([]rune(key)) == 1 && key != " " && !bar.names(key) {
+			return proseBarChangedRows(f, 80, 24, key)
+		}
+	}
+	return ""
 }
 
 // proseBarLeaves reports whether the key gets the operator off the screen, asked

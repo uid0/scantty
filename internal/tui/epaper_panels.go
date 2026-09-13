@@ -26,6 +26,10 @@ type EPaperPanelsScreen struct {
 	loading bool
 	loadErr string
 
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
+
 	// Bind picker — opens over the panel list when `b` is pressed.
 	// `bindSeq` is a monotonic request counter so a slow search
 	// response from a stale query string is dropped on arrival rather
@@ -36,6 +40,7 @@ type EPaperPanelsScreen struct {
 	bindInput   textinput.Model
 	bindResults []omsapi.Asset
 	bindCursor  int
+	bindStart   int
 	bindSeq     int
 	bindErr     string
 }
@@ -81,8 +86,62 @@ func (s *EPaperPanelsScreen) load() tea.Cmd {
 	}
 }
 
+// bar names every key that acts on a list of `rows` panels, as a record the
+// honesty sweep can press (prose_bar.go).
+//
+// It used to be the literal "j/k move · b bind to asset · t retire/reactivate ·
+// r refresh · esc back" under every row with no window: the arrows moved the
+// cursor unnamed, the line was 72 cells against the 51 an 80-column pane gives,
+// and each panel is three lines, so a fleet of seven took the footer off an
+// 80x24 pane. `b` and `t` need a panel to act on and come off an empty fleet,
+// which used to draw a second literal.
+func (s *EPaperPanelsScreen) bar(rows int) proseBar {
+	out := proseNavStep(listNavMoves(rows))
+	if rows > 0 {
+		out = append(out,
+			proseBarItem{Keys: []string{"b"}, Hint: "b bind to asset"},
+			proseBarItem{Keys: []string{"t"}, Hint: "t retire/reactivate"},
+		)
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// bindBar names the keys the bind picker answers. The search box owns every
+// letter, so the cursor moves on the arrows alone (proseNavArrows) — the legend
+// said so already, and what the record adds is that `↑↓` and `enter` come off
+// where there is nothing to move to or bind.
+func (s *EPaperPanelsScreen) bindBar(results int) proseBar {
+	out := proseNavArrows(listNavMoves(results))
+	if results > 0 {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter bind"})
+	}
+	return append(out, proseBarItem{Keys: []string{"esc"}, Hint: "esc cancel"})
+}
+
+// proseBar is the bar this screen is DRAWING, for whichever surface is up — the
+// panel list or the bind picker drawn in its place — and nil while the list's
+// load is in flight or has failed, whose frames still draw their own line.
+//
+// ONE RECORD PER SURFACE is what converting a screen with a second cursor
+// surface comes to: converting the list alone would have left the picker's
+// literal behind a receiver the classifier counts as swept.
+func (s *EPaperPanelsScreen) proseBar() proseBar {
+	if s.binding {
+		return s.bindBar(len(s.bindResults))
+	}
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	return s.bar(len(s.rows))
+}
+
+func (s *EPaperPanelsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *EPaperPanelsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case epaperPanelsLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -183,6 +242,7 @@ func (s *EPaperPanelsScreen) openBindPicker() (Screen, tea.Cmd) {
 	s.binding = true
 	s.bindPanelID = row.ID
 	s.bindCursor = 0
+	s.bindStart = 0
 	s.bindResults = nil
 	s.bindErr = ""
 	// Label the picker with whatever identifies the panel for a human —
@@ -290,10 +350,11 @@ func (s *EPaperPanelsScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
 	}
 	if len(s.rows) == 0 {
-		return StyleMuted.Render("No e-paper panels registered yet.") + "\n\n" + StyleMuted.Render("r refresh · esc back")
+		return StyleMuted.Render("No e-paper panels registered yet.") + "\n\n" + s.proseBar().render(s.paneCells())
 	}
-	var b strings.Builder
+	rows := make([]string, len(s.rows))
 	for i, r := range s.rows {
+		var b strings.Builder
 		caret := "  "
 		if i == s.cursor {
 			caret = "▸ "
@@ -332,42 +393,47 @@ func (s *EPaperPanelsScreen) View() string {
 		if r.DeviceMACAddress != nil && *r.DeviceMACAddress != "" {
 			b.WriteString("  " + StyleMuted.Render("MAC: ") + *r.DeviceMACAddress)
 		}
-		b.WriteString("\n")
+		rows[i] = b.String()
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · b bind to asset · t retire/reactivate · r refresh · esc back"))
-	return b.String()
+	return proseFlatListFrame("", rows, s.cursor, &s.windowStart, s.terminalHeight,
+		s.paneCells(), s.bar(proseFlatCeilingRows), s.proseBar())
 }
 
 func (s *EPaperPanelsScreen) viewBind() string {
 	var b strings.Builder
+	cells := s.paneCells()
 	b.WriteString(StyleTitle.Render("Bind "+s.bindLabel+" to asset") + "\n\n")
-	b.WriteString(StyleMuted.Render("Search: ") + s.bindInput.View() + "\n\n")
+	b.WriteString(StyleMuted.Render("Search: ") + woBoxView(s.bindInput, cells, "Search: ") + "\n\n")
 	if s.bindErr != "" {
 		b.WriteString(StyleStatusError.Render("Error: "+s.bindErr) + "\n\n")
 	}
 	if len(s.bindResults) == 0 {
 		b.WriteString(StyleMuted.Render("(no matching active assets — narrow the query or clear it to see the top 15)") + "\n")
-	} else {
-		for i, a := range s.bindResults {
-			caret := "  "
-			if i == s.bindCursor {
-				caret = "▸ "
-			}
-			line := caret + a.Name
-			if a.AssetTag != "" {
-				line += " " + StyleMuted.Render("("+a.AssetTag+")")
-			}
-			if a.LocationName != "" {
-				line += "  " + StyleMuted.Render("· "+a.LocationName)
-			}
-			if i == s.bindCursor {
-				line = StyleSidebarItemActive.Render(line)
-			}
-			b.WriteString(line + "\n")
-		}
+		return b.String() + "\n" + s.proseBar().render(cells)
 	}
-	b.WriteString("\n" + StyleMuted.Render("type to search · ↑/↓ move · enter bind · esc cancel"))
-	return b.String()
+	rows := make([]string, len(s.bindResults))
+	for i, a := range s.bindResults {
+		caret := "  "
+		if i == s.bindCursor {
+			caret = "▸ "
+		}
+		line := caret + a.Name
+		if a.AssetTag != "" {
+			line += " " + StyleMuted.Render("("+a.AssetTag+")")
+		}
+		if a.LocationName != "" {
+			line += "  " + StyleMuted.Render("· "+a.LocationName)
+		}
+		if i == s.bindCursor {
+			line = StyleSidebarItemActive.Render(line)
+		}
+		rows[i] = line
+	}
+	// Fifteen results under a four-line head is taller than a short pane, and
+	// drawn whole what clampToBox took was the bar under them — the only place
+	// `esc cancel` is named — so the results are windowed like the list is.
+	return proseFlatListFrame(b.String(), rows, s.bindCursor, &s.bindStart, s.terminalHeight,
+		cells, s.bindBar(proseFlatCeilingRows), s.proseBar())
 }
 
 func renderEPaperBattery(r forgekeyapi.EPaperDisplay) string {
