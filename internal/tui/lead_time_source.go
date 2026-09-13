@@ -73,8 +73,8 @@ func leadTimeMark(src omsapi.LeadTimeSource) string {
 	}
 }
 
-// leadTimeDays is the number itself, in the `%gd` spelling every surface already
-// used, so a fractional average stays whole ("14.5d").
+// leadTimeDays keeps the number in the `%gd` spelling every surface already
+// used, including fractional averages such as "14.5d".
 func leadTimeDays(days float64) string {
 	return fmt.Sprintf("%gd", days)
 }
