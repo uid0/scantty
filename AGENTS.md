@@ -2166,24 +2166,13 @@ touching any screen an operator drives:
   budget — which `receive_form.go`'s `headerSplit` really pays on a short pane —
   the content is kept and the cut is marked with the ellipsis instead, because a
   mark with no content beneath it is the rule inverted rather than obeyed.
-  **A SENTENCE FOLDED INTO A PINNED HEADER GOES IN AS ONE BLOCK, AND THERE
-  ARE TWO KINDS.** `jdeFitHeader` trims by ROW, so a fold handed to `add` or
-  `addBlock` is independent rows to it however it reads, and a short pane keeps
-  its head and drops its tail — a sentence nobody wrote. (The line-void remedy
-  lost exactly the row holding the order's number that way.) A **CAVEAT** goes
-  through `jdeHeader.addCaveat` / `addCaveatBlock` and is kept WHOLE or dropped
-  WHOLE — never re-drawn with a marked cut either, because a caveat cut before
-  the clause that qualifies it withholds the claim, ellipsis or not. A value
-  whose HEAD STANDS ON ITS OWN — an answer to a keypress, an OMS failure body, a
-  warning that leads with a count — goes through `addFitted` and is re-drawn at
-  fewer rows by its own marking refit; every such site is recorded with its
-  reason in `jdeHeaderFittedFolds`. `jdeFitHeader`'s doc owns what a whole drop
-  does with the rows it frees. `header_caveat_test.go` derives the fold set
-  from source (the prose folders by call) and fails a fold reaching a header any
-  other way, and sweeps every header site at every pane for a partial caveat;
-  `header_fold_mark_test.go` and `fail_detail_mark_test.go` hold the fitted
-  half. Its `headerFoldValues` is still a hand-kept roster of the fitted values
-  each screen draws.
+  **A SENTENCE FOLDED INTO A PINNED HEADER GOES IN AS ONE BLOCK.** A caveat
+  goes through `jdeHeader.addCaveat` / `addCaveatBlock` and is kept whole or
+  dropped whole. A value whose head stands on its own goes through `addFitted`
+  and is re-drawn at fewer rows by its marking refit. `jdeFitHeader`'s doc owns
+  the distinction and the handling of rows freed by an atomic drop;
+  `header_caveat_test.go` derives and sweeps caveat sites, while
+  `header_fold_mark_test.go` and `fail_detail_mark_test.go` cover fitted values.
   FIELD rows are the shape that does not FOLD, and they are bounded rather than
   exempt — the CART row included, which gives ground in its own STATED order
   because clipping its label alone was not enough: the LABEL first, then the
