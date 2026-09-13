@@ -23,6 +23,8 @@ type ReorderFormScreen struct {
 	pending   bool
 	resultMsg string
 	resultLvl StatusLevel
+
+	terminalWidth int
 }
 
 type reorderSubmittedMsg struct {
@@ -106,6 +108,9 @@ func (s *ReorderFormScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		s.resultMsg, s.resultLvl = reorderOutcome(m.result)
 		return s, Status(s.resultMsg, s.resultLvl)
+	case tea.WindowSizeMsg:
+		s.terminalWidth = m.Width
+		return s, nil
 	case tea.KeyMsg:
 		switch m.Type {
 		case tea.KeyTab, tea.KeyShiftTab, tea.KeyDown, tea.KeyUp:
@@ -213,27 +218,49 @@ func (s *ReorderFormScreen) submit() (Screen, tea.Cmd) {
 	}
 }
 
+// proseBar is the reorder form's action bar as a record (prose_bar.go).
+//
+// THE LITERAL IT REPLACES said `tab move · enter submit · esc back`: shift+tab and
+// the arrow pair walk the four fields exactly as tab does and were named nowhere,
+// and enter was named as a submit on the three fields where it moves to the next
+// one instead. The focus wraps, so proseBarFieldFocus answers from every field.
+func (s *ReorderFormScreen) proseBar() proseBar {
+	enter := proseBarItem{Keys: []string{"enter"}, Hint: "enter next field"}
+	if s.focused == len(s.inputs)-1 {
+		enter.Hint = "enter submit"
+	}
+	return proseBar{proseBarFieldFocus, enter, proseBarEsc}
+}
+
 func (s *ReorderFormScreen) View() string {
+	cells := proseBarCells(s.terminalWidth)
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Reorder %s (SKU %s, stock %d)\n\n",
-		StyleTitle.Render(s.item.Name), s.item.SKU, s.item.Stock))
+	// Styled AFTER the bound: a clip landing inside a styled name would take the
+	// closing reset with it and colour everything drawn after the cut.
+	b.WriteString(StyleTitle.Render(proseFormLine(fmt.Sprintf("Reorder %s (SKU %s, stock %d)",
+		s.item.Name, s.item.SKU, s.item.Stock), cells)) + "\n\n")
 	if len(s.suppliers) > 0 {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("%d supplier(s) available", len(s.suppliers))))
 		b.WriteString("\n\n")
 	}
+	// NO BLANK ROW BETWEEN FIELDS. With one, four fields cost twelve rows, and
+	// with the header and the bar folded at 80 columns the form was taller than
+	// the 18 rows an 80x24 terminal leaves it — so the bar was what clampToBox
+	// took, at the canonical size, before anything went wrong. The caret and the
+	// indented box already say where one field ends.
 	for i, ti := range s.inputs {
 		caret := "  "
 		if i == s.focused {
 			caret = "▸ "
 		}
 		b.WriteString(caret + StyleMuted.Render(s.labels[i]) + "\n")
-		b.WriteString("    " + ti.View() + "\n\n")
+		b.WriteString("    " + woBoxView(ti, cells, "    ") + "\n")
 	}
 	if s.pending {
-		b.WriteString(StyleMuted.Render("Submitting…") + "\n")
+		b.WriteString("\n" + StyleMuted.Render("Submitting…") + "\n")
 	} else if s.resultMsg != "" {
-		b.WriteString(RenderStatus(s.resultMsg, s.resultLvl) + "\n")
+		b.WriteString("\n" + RenderStatus(proseFormLine(s.resultMsg, cells), s.resultLvl) + "\n")
 	}
-	b.WriteString("\n" + StyleMuted.Render("tab move · enter submit · esc back"))
+	b.WriteString("\n" + s.proseBar().render(cells))
 	return b.String()
 }

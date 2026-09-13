@@ -213,17 +213,32 @@ var proseBarUnconverted = map[string]string{
 	"WorkOrderAttachmentsScreen": "the attachment list on a work order. The list is the flat recipe, but the screen also draws an upload FORM in place of it — a field form whose tab/up/down move focus — and a delete confirm UNDER the rows in place of the footer, and it draws its load error ABOVE a list that still answers keys; converting the list alone would count the form's focus pair as swept",
 
 	// THE ONES THAT ARE NEITHER A SCROLLED SHEET NOR A PLAIN CURSOR LIST, each
-	// saying what it is instead — a field form whose up/down are a focus pair, a
-	// shared table with a give-order of its own, or not a screen at all.
-	"BatchScanSerialsScreen":     "NOT a list: up/down move between the two setup fields and the focus wraps — the field-form exemption",
-	"ForgeKeyDeviceDetailScreen": "NOT a list: up/down move between the indicator-edit fields and setIndicatorFocus wraps modulo the field count — the field-form exemption",
-	"LocationDetailScreen":       "NOT a prose-footer screen in the sense the rest of this map is: it is here because the navigation derivation is a set of KEY NAMES and its `g` GENERATES the location's QR code. A proseBar records which keystrokes a segment spells, which says nothing about whether a keystroke is navigation — so converting it would not make this exception expressible, and it stays an exception. Recorded rather than filtered, since a filter clever enough to drop it would eventually drop a real one",
-	"LoginScreen":                "NOT a list: up/down are the field-form focus pair on a two-field login and the focus wraps. A record would still be worth having for its own keys, but the movement half of this rule does not apply",
-	"ReorderFormScreen":          "NOT a list: up/down move between the reorder form's fields and the focus wraps — the field-form exemption",
-	"ReportTableScreen":          "the shared scrollable report table every tabbed report rides. It is the one screen here whose vertical give-order is ALREADY written down and enforced (report_table.go's layoutRows: the legend and the bar never give, the body floors at one row), so converting it is turning the bar it never gives up into a record — not teaching it to budget",
-	"Root":                       "NOT a screen: app.go's root, whose movement keys walk the NAV TREE. The sidebar is its own surface with its own legend and is not a list of rows, so there is no footer here to make a record of",
-	"TextScroller":               "NOT a screen and so has no footer to convert: the shared read-only body every sheet in the scroller group above holds. It is in listNavUnsweptReceivers because its Handle binds the whole vocabulary on its callers' behalf, and it leaves this map when the last of those callers has a record",
-	"slotCardPrompt":             "NOT a list and NOT a prose footer: a two-row modal inside the storage-slot list whose up/down move between a text field and a toggle, and whose cursor WRAPS. The field-form exemption, and the second of the two entries a filter would have to be clever enough to drop — so it stays an exception too",
+	// saying what it is instead — a detail sheet with no window, a shared table
+	// with a give-order of its own, or not a screen at all.
+	//
+	// THE SIMPLE FIELD FORMS HAVE BEEN TAKEN OUT OF THIS GROUP — the sign-in
+	// form, the reorder form and both steps of the batch scan, whose up/down move
+	// a FOCUS rather than a cursor. Theirs was an exemption from the navigation
+	// CLASSIFIER, which cannot tell a focus pair from a list cursor, and never an
+	// exemption from the bar rule: a record says which keystrokes a segment
+	// spells, and "tab/shift+tab ↑↓ field" is as answerable as "j/k move".
+	// prose_bar_field_forms_test.go carries them.
+	"ForgeKeyDeviceDetailScreen": "a device DETAIL SHEET that also holds an indicator-test field form " +
+		"and a delete confirm. It was grouped with the field forms because the form's up/down " +
+		"move its focus (setIndicatorFocus wraps modulo the field count), and the form is the " +
+		"easy part. What stopped it is the detail view: it writes every section — the spec " +
+		"rows, the relay and LED state, the temperature sparkline, the recent commands — with " +
+		"no window and no scroller, under a bar naming up to fifteen keys that folds onto four " +
+		"rows at 80 columns, so a device with a command history is taller than an 80x24 pane " +
+		"and clampToBox takes the bar whatever the record says. Keeping the bar on the pane " +
+		"needs a TextScroller or a window under it, and either one BINDS keys the sheet does " +
+		"not bind today (j/k, the arrows, the pager) — a change to what the screen does, " +
+		"which is a decision and not part of making its bar honest",
+	"LocationDetailScreen": "NOT a prose-footer screen in the sense the rest of this map is: it is here because the navigation derivation is a set of KEY NAMES and its `g` GENERATES the location's QR code. A proseBar records which keystrokes a segment spells, which says nothing about whether a keystroke is navigation — so converting it would not make this exception expressible, and it stays an exception. Recorded rather than filtered, since a filter clever enough to drop it would eventually drop a real one",
+	"ReportTableScreen":    "the shared scrollable report table every tabbed report rides. It is the one screen here whose vertical give-order is ALREADY written down and enforced (report_table.go's layoutRows: the legend and the bar never give, the body floors at one row), so converting it is turning the bar it never gives up into a record — not teaching it to budget",
+	"Root":                 "NOT a screen: app.go's root, whose movement keys walk the NAV TREE. The sidebar is its own surface with its own legend and is not a list of rows, so there is no footer here to make a record of",
+	"TextScroller":         "NOT a screen and so has no footer to convert: the shared read-only body every sheet in the scroller group above holds. It is in listNavUnsweptReceivers because its Handle binds the whole vocabulary on its callers' behalf, and it leaves this map when the last of those callers has a record",
+	"slotCardPrompt":       "NOT a list and NOT a prose footer: a two-row modal inside the storage-slot list whose up/down move between a text field and a toggle, and whose cursor WRAPS. The field-form exemption, and the second of the two entries a filter would have to be clever enough to drop — so it stays an exception too",
 }
 
 // ---------------------------------------------------------------------------
@@ -537,7 +552,10 @@ func proseBarFixtures() []proseBarFixture {
 	out = append(out, proseBarSecondSurfaceFixtures()...)
 	// The lists binding MORE of the movement vocabulary than their bar's recipe
 	// named, the fourth — see proseBarWiderVocabularyFixtures.
-	return append(out, proseBarWiderVocabularyFixtures()...)
+	out = append(out, proseBarWiderVocabularyFixtures()...)
+	// The FIELD FORMS, whose up/down move a focus rather than a cursor, the
+	// fifth — see proseBarFieldFormFixtures.
+	return append(out, proseBarFieldFormFixtures()...)
 }
 
 func proseBarSerializedComponents(n int) []omsapi.SerializedComponent {
@@ -800,6 +818,66 @@ func TestProseBar_EveryProseFooterScreenIsConvertedOrNamed(t *testing.T) {
 	}
 }
 
+// proseBarKeySpace is the keystrokes the biconditional below presses: the list
+// half's space, and the keystrokes a prose bar spells that no list binds.
+//
+// THE EXTRAS ARE RECORDED, NOT DERIVED FROM THE BARS, and the difference is the
+// whole of the reverse half. A space built from what the bars name would press
+// every NAMED key and no unnamed one, so a key bound in a handler and named
+// nowhere would be pressed in neither direction — verbatim how `N` survived on
+// the purchasing list. TestProseBar_EveryNamedKeyIsPressed holds the list in
+// both directions: a bar naming a keystroke outside the space fails, and an
+// extra no bar names any more fails as stale.
+func proseBarKeySpace() []string {
+	out := listKeySpace()
+	extras := make([]string, 0, len(proseBarExtraKeys))
+	for k := range proseBarExtraKeys {
+		extras = append(extras, k)
+	}
+	sort.Strings(extras)
+	return append(out, extras...)
+}
+
+// proseBarExtraKeys are the keystrokes beyond listKeySpace, each with the screen
+// that binds it.
+var proseBarExtraKeys = map[string]string{
+	"ctrl+z": "BatchScanSerialsScreen undoes the last received unit — a chord a " +
+		"scanner's burst of printable characters cannot produce",
+}
+
+// TestProseBar_EveryNamedKeyIsPressed: every keystroke a converted bar names is
+// in the space the biconditional presses.
+//
+// A NAMED KEY OUTSIDE THE SPACE IS NEVER PRESSED, so the forward half — a key
+// the bar names must act — cannot fail for it, however dead it is. The batch
+// scan's `ctrl+z undo last` was the first segment to spell such a key, and it
+// would have passed that half by not being looked at.
+func TestProseBar_EveryNamedKeyIsPressed(t *testing.T) {
+	space := map[string]bool{}
+	for _, k := range proseBarKeySpace() {
+		space[k] = true
+	}
+	named := map[string]bool{}
+	for _, f := range proseBarFixtures() {
+		for _, seg := range proseBarAt(f, 80, 24) {
+			for _, k := range seg.Keys {
+				named[k] = true
+				if !space[k] {
+					t.Errorf("%s names %q, which proseBarKeySpace does not contain, so the "+
+						"sweep never presses it and a dead key there passes. Record it in "+
+						"proseBarExtraKeys with the screen that binds it", f.name, k)
+				}
+			}
+		}
+	}
+	for k, why := range proseBarExtraKeys {
+		if !named[k] {
+			t.Errorf("proseBarExtraKeys records %q (%q), but no fixture's bar names it any "+
+				"more — a stale extra is a key pressed for a screen that no longer offers it", k, why)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The rule
 // ---------------------------------------------------------------------------
@@ -872,7 +950,7 @@ func TestProseBar_TheFooterNamesExactlyTheKeysThatWork(t *testing.T) {
 				typedRows = proseBarTypedRows(f, bar)
 			}
 			var untyped []string
-			for _, key := range listKeySpace() {
+			for _, key := range proseBarKeySpace() {
 				var changed, issued bool
 				for _, probe := range probes {
 					c, i := proseBarKeyEffect(f, 80, 24, probe, key)
@@ -1252,7 +1330,7 @@ func proseBarChangedRows(f proseBarFixture, w, h int, key string) string {
 // the space is passed over because appended to a value it is invisible here (see
 // the untyped guard).
 func proseBarTypedRows(f proseBarFixture, bar proseBar) string {
-	for _, key := range listKeySpace() {
+	for _, key := range proseBarKeySpace() {
 		if len([]rune(key)) == 1 && key != " " && !bar.names(key) {
 			return proseBarChangedRows(f, 80, 24, key)
 		}

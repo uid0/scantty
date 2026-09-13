@@ -18,6 +18,8 @@ type LoginScreen struct {
 	focused int
 	pending bool
 	errMsg  string
+
+	terminalWidth int
 }
 
 type loginDoneMsg struct {
@@ -68,6 +70,9 @@ func (s *LoginScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			persistLogin(s.deps, m.resp),
 			SwitchTo(WSScan, NewScanScreen(s.deps)),
 		)
+	case tea.WindowSizeMsg:
+		s.terminalWidth = m.Width
+		return s, nil
 	case tea.KeyMsg:
 		switch m.Type {
 		case tea.KeyTab, tea.KeyDown, tea.KeyShiftTab, tea.KeyUp:
@@ -138,10 +143,34 @@ func persistLogin(deps Deps, resp *omsapi.LoginResponse) tea.Cmd {
 	}
 }
 
+// proseBar is the sign-in form's action bar as a record (prose_bar.go).
+//
+// THE LITERAL IT REPLACES said `tab move · enter submit · esc to skip`, and
+// three of the four keys that move the focus were named nowhere: shift+tab and
+// the arrow pair walk the two fields exactly as tab does, and the focus WRAPS, so
+// every one of them moves the caret row from either field. proseBarFieldFocus is
+// the segment that says so.
+//
+// ENTER IS WORDED FOR WHAT IT DOES ON THE FIELD IT IS PRESSED IN: on the
+// username it moves to the password, and only on the password does it sign in.
+// "enter submit" over the username field named a submit the key does not make.
+func (s *LoginScreen) proseBar() proseBar {
+	enter := proseBarItem{Keys: []string{"enter"}, Hint: "enter next field"}
+	if s.focused == len(s.inputs)-1 {
+		enter.Hint = "enter sign in"
+	}
+	return proseBar{
+		proseBarFieldFocus,
+		enter,
+		{Keys: []string{"esc"}, Hint: "esc skip (anonymous mode)"},
+	}
+}
+
 func (s *LoginScreen) View() string {
+	cells := proseBarCells(s.terminalWidth)
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Sign in to OMS") + "\n\n")
-	b.WriteString(StyleMuted.Render("Endpoint: ") + s.deps.OMS.BaseURL() + "\n\n")
+	b.WriteString(proseFormLine(StyleMuted.Render("Endpoint: ")+s.deps.OMS.BaseURL(), cells) + "\n\n")
 
 	labels := []string{"Username", "Password"}
 	for i, ti := range s.inputs {
@@ -150,15 +179,15 @@ func (s *LoginScreen) View() string {
 			caret = "▸ "
 		}
 		b.WriteString(caret + StyleMuted.Render(labels[i]) + "\n")
-		b.WriteString("    " + ti.View() + "\n\n")
+		b.WriteString("    " + woBoxView(ti, cells, "    ") + "\n\n")
 	}
 
 	if s.pending {
 		b.WriteString(StyleMuted.Render("Authenticating…") + "\n")
 	} else if s.errMsg != "" {
-		b.WriteString(StyleStatusError.Render(s.errMsg) + "\n")
+		b.WriteString(StyleStatusError.Render(proseFormLine(s.errMsg, cells)) + "\n")
 	}
 
-	b.WriteString("\n" + StyleMuted.Render("tab move · enter submit · esc to skip (anonymous mode)"))
+	b.WriteString("\n" + s.proseBar().render(cells))
 	return b.String()
 }

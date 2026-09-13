@@ -386,6 +386,8 @@ func listRuneKey(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlP}
 	case "ctrl+n":
 		return tea.KeyMsg{Type: tea.KeyCtrlN}
+	case "ctrl+z":
+		return tea.KeyMsg{Type: tea.KeyCtrlZ}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
 	case "shift+tab":
