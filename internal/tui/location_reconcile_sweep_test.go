@@ -60,7 +60,7 @@ func reconPhaseCases() []reconPhaseCase {
 	// there would resolve the very request the phase is defined by.
 	loaded := func(keys ...tea.KeyMsg) func(*testing.T, Root, *LocationReconcileScreen) Root {
 		return func(t *testing.T, r Root, s *LocationReconcileScreen) Root {
-			r = pump(t, r, s.Init(), 0)
+			r = reconPumpLoad(t, r, s.Init())
 			for _, k := range keys {
 				r = key(t, r, k)
 			}
@@ -75,7 +75,7 @@ func reconPhaseCases() []reconPhaseCase {
 	// on every rebuild — and it rebuilds once per key per probe per pane.
 	counted := func(keys ...tea.KeyMsg) func(*testing.T, Root, *LocationReconcileScreen) Root {
 		return func(t *testing.T, r Root, s *LocationReconcileScreen) Root {
-			r = pump(t, r, s.Init(), 0)
+			r = reconPumpLoad(t, r, s.Init())
 			s.counts[0].SetValue("9")
 			s.counts[1].SetValue("240")
 			for _, k := range keys {
@@ -107,6 +107,21 @@ func reconPhaseCases() []reconPhaseCase {
 		{reconReview, "review", false, counted(down, ctrlR)},
 		{reconDone, "done", false, counted(down, ctrlR, enter)},
 	}
+}
+
+// reconPumpLoad waits for the fixture-backed HTTP load this sweep requires.
+// The general drive helper deliberately abandons commands after 200ms so blink
+// and timer commands cannot stall the package, but under full-suite contention
+// that budget can also abandon this real request and leave counts empty. This
+// command is neither a blink nor a timer, so executing it synchronously makes
+// the phase reach deterministic while still feeding its reply through Root.
+func reconPumpLoad(t *testing.T, r Root, cmd tea.Cmd) Root {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("reconciliation load returned no command")
+	}
+	next, follow := r.Update(cmd())
+	return pump(t, next.(Root), follow, 0)
 }
 
 // TestReconcile_EveryPhaseIsSwept walks the reconPhase iota to its sentinel and
