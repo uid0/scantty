@@ -153,7 +153,8 @@ func TestUpdateItemSupplier_Contract(t *testing.T) {
 
 // TestSetItemSupplierPrimary_Contract confirms set-primary is a targeted partial
 // PATCH: only is_primary=true, nothing else (item/supplier come from the
-// instance server-side).
+// instance server-side). A row loaded with no version — an OMS before #1091 —
+// sends none; item_supplier_version_wire_test.go holds the other half.
 func TestSetItemSupplierPrimary_Contract(t *testing.T) {
 	var captured struct {
 		method string
@@ -171,7 +172,7 @@ func TestSetItemSupplierPrimary_Contract(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	_, err := c.SetItemSupplierPrimary(context.Background(), 42)
+	_, err := c.SetItemSupplierPrimary(context.Background(), 42, 0)
 	if err != nil {
 		t.Fatalf("SetItemSupplierPrimary: %v", err)
 	}
@@ -186,25 +187,31 @@ func TestSetItemSupplierPrimary_Contract(t *testing.T) {
 	}
 }
 
-// TestDeleteItemSupplier_Contract pins the DELETE URL.
+// TestDeleteItemSupplier_Contract pins the DELETE URL, with no version query
+// for a row that was loaded without one.
 func TestDeleteItemSupplier_Contract(t *testing.T) {
 	var captured struct {
 		method string
 		path   string
+		query  string
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		captured.method = r.Method
 		captured.path = r.URL.Path
+		captured.query = r.URL.RawQuery
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.DeleteItemSupplier(context.Background(), 42); err != nil {
+	if err := c.DeleteItemSupplier(context.Background(), 42, 0); err != nil {
 		t.Fatalf("DeleteItemSupplier: %v", err)
 	}
 	if captured.method != http.MethodDelete || captured.path != "/api/inventory/item-suppliers/42/" {
 		t.Fatalf("method/path = %q %q", captured.method, captured.path)
+	}
+	if captured.query != "" {
+		t.Errorf("a row loaded without a version sent query %q", captured.query)
 	}
 }
 

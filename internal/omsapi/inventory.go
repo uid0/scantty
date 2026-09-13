@@ -1529,6 +1529,11 @@ type ItemSupplier struct {
 	Notes             string         `json:"notes,omitempty"`
 	CreatedAt         time.Time      `json:"created_at,omitempty"`
 	UpdatedAt         time.Time      `json:"updated_at,omitempty"`
+	// Version is the link's optimistic-concurrency token as it was LOADED, and
+	// every write that edits or removes this copy hands it back
+	// (item_supplier_version.go carries the contract). Zero means the server
+	// served no token — an OMS before #1091 — and a zero is never sent.
+	Version int `json:"version,omitempty"`
 }
 
 func (c *Client) ListItemSuppliers(ctx context.Context, q url.Values) (*Page[ItemSupplier], error) {
@@ -1615,6 +1620,13 @@ func (c *Client) ListItemSuppliersForItem(ctx context.Context, itemID string) ([
 //   - IsPrimary carries no omitempty so turning it off actually reaches the
 //     backend instead of being dropped; the model's save() keeps a single primary
 //     per item (setting one unsets the others).
+//
+//   - Version is the token the edited copy was LOADED at, and omitempty on
+//     purpose: zero is "no copy was loaded" (a create) or "the server served no
+//     token", and both must leave the key out — a create ignores it and an OMS
+//     before #1091 has no token to check. Anything else is the copy's own
+//     version and nothing else: never a version read back after a refusal
+//     (item_supplier_version.go says why).
 type ItemSupplierWrite struct {
 	Item               string  `json:"item"`
 	Supplier           int     `json:"supplier"`
@@ -1625,6 +1637,7 @@ type ItemSupplierWrite struct {
 	QuantityPerPackage int     `json:"quantity_per_package"`
 	AverageLeadTime    *int    `json:"average_lead_time,omitempty"`
 	IsPrimary          bool    `json:"is_primary"`
+	Version            int     `json:"version,omitempty"`
 }
 
 // CreateItemSupplier POSTs a new item↔supplier link. The response echoes the
@@ -1638,7 +1651,9 @@ func (c *Client) CreateItemSupplier(ctx context.Context, body ItemSupplierWrite)
 }
 
 // UpdateItemSupplier PATCHes an existing link. PATCH (not PUT) matches the web;
-// the editable field set is sent, with pointer fields omitted when unchanged.
+// the editable field set is sent, with pointer fields omitted when unchanged,
+// and body.Version states the copy the edit was made from — a link written since
+// is refused rather than overwritten (AsStaleSupplierLink).
 func (c *Client) UpdateItemSupplier(ctx context.Context, id int, body ItemSupplierWrite) (*ItemSupplier, error) {
 	var out ItemSupplier
 	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/item-suppliers/%d/", id), body, &out); err != nil {
@@ -1651,9 +1666,17 @@ func (c *Client) UpdateItemSupplier(ctx context.Context, id int, body ItemSuppli
 // (only is_primary). The model's save() unsets the previous primary for the item.
 // A partial PATCH is safe: on an update DRF fills the unique_together fields from
 // the instance, so item/supplier need not be re-sent.
-func (c *Client) SetItemSupplierPrimary(ctx context.Context, id int) (*ItemSupplier, error) {
+//
+// version is the token the row was loaded at, sent whenever it is positive. The
+// operator chose this link as primary from what the list SHOWED them, so a
+// link written since — discontinued, re-priced, or demoted by another promotion,
+// which moves its version on too — is refused rather than promoted blind.
+func (c *Client) SetItemSupplierPrimary(ctx context.Context, id, version int) (*ItemSupplier, error) {
 	var out ItemSupplier
-	body := map[string]bool{"is_primary": true}
+	body := map[string]any{"is_primary": true}
+	if version > 0 {
+		body["version"] = version
+	}
 	if err := c.Patch(ctx, fmt.Sprintf("/api/inventory/item-suppliers/%d/", id), body, &out); err != nil {
 		return nil, err
 	}
@@ -1661,8 +1684,17 @@ func (c *Client) SetItemSupplierPrimary(ctx context.Context, id int) (*ItemSuppl
 }
 
 // DeleteItemSupplier removes an item↔supplier link (DELETE …/item-suppliers/{id}/).
-func (c *Client) DeleteItemSupplier(ctx context.Context, id int) error {
-	return c.Delete(ctx, fmt.Sprintf("/api/inventory/item-suppliers/%d/", id))
+//
+// version rides as `?version=N` whenever it is positive — a DELETE carries no
+// body, and the query value is where OMS reads it — so removing a link somebody
+// has written since the list was loaded is refused (AsStaleSupplierLink) rather
+// than destroying a quote the operator never saw.
+func (c *Client) DeleteItemSupplier(ctx context.Context, id, version int) error {
+	path := fmt.Sprintf("/api/inventory/item-suppliers/%d/", id)
+	if version > 0 {
+		path += "?version=" + strconv.Itoa(version)
+	}
+	return c.Delete(ctx, path)
 }
 
 // ListAssetsForSupplier is the matching wrapper for the assets-from-

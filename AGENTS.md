@@ -84,8 +84,24 @@ touching any render of `average_lead_time`:
   analytics reports), so they are deliberately unmarked.
 - **A WRITE decides the label.** On create, OMS labels a SENT number `recorded`
   and an OMITTED key `default`; on edit, a changed value becomes `recorded` but
-  an equal value keeps its source. ScanTTY still omits unchanged edits to protect
-  stale or truncated forms — `ItemSupplierWrite.AverageLeadTime` is a pointer.
+  an equal value keeps its source. ScanTTY still omits unchanged edits —
+  `ItemSupplierWrite.AverageLeadTime` is a pointer — for servers that predate the
+  version token below; `buildPayload` (`item_suppliers.go`) says why.
+
+### A supplier-link write states the version its copy was loaded at
+
+`internal/omsapi/item_supplier_version.go` owns the contract (OMS #1091) and
+`internal/tui/item_suppliers.go` the flows. Before touching either:
+
+- **Every edit, set-primary and delete sends the LOADED `version`** (a DELETE as
+  `?version=N`), and a zero — a create, or a server that served no token — is
+  never sent. EVERY write moves the token on, including a promotion's demotion
+  of a sibling, so "only send it when the row really changed" is wrong.
+- **A 409 `stale_version` is shown and reloaded, never retried**, and above all
+  never re-sent at the refusal's `current_version`: that is the overwrite the
+  token exists to stop. The form withholds Enter and offers `Ctrl-R`; the list
+  keeps a standing note and `r`. Recognise it with `omsapi.AsStaleSupplierLink`
+  (status AND code), never by the message, which differs for a deleted link.
 
 ### Purchase-order line money has two denominators
 
