@@ -23,6 +23,13 @@ permissions:
 env:
   GOTOOLCHAIN: auto
 
+# Keep superseded revisions from consuming the repository's Actions allowance.
+# A merge-to-main run gets its own key, so a later pull-request update cannot
+# cancel release validation for the merged commit.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-vet-test:
     name: build / vet / test
