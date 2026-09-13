@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -38,6 +39,10 @@ type ChecklistRunScreen struct {
 	// the time the screen is read-only.
 	addingNotes bool
 	notesInput  textinput.Model
+
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
 }
 
 type checklistRunLoadedMsg struct {
@@ -115,6 +120,9 @@ func (s *ChecklistRunScreen) load() tea.Cmd {
 
 func (s *ChecklistRunScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case checklistRunLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -179,6 +187,9 @@ func (s *ChecklistRunScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.notesInput, cmd = s.notesInput.Update(msg)
 			return s, cmd
 		}
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		steps := s.steps()
 		switch m.String() {
 		case "j", "down":
@@ -210,7 +221,12 @@ func (s *ChecklistRunScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.addingNotes = true
 			return s, textinput.Blink
 		case "f":
-			if s.busy || s.completion == nil {
+			// canFinalize, not a nil check, because that is the only state Root
+			// ever delivers `f` in: HandlesKey claims it there and nowhere else, so
+			// the looser guard this replaced was an arm no operator could reach —
+			// and a bar sweep pressing the screen directly found it finalizing a
+			// run whose bar, rightly, names no such key.
+			if s.busy || !s.canFinalize() {
 				return s, nil
 			}
 			s.busy = true
@@ -287,18 +303,91 @@ func (s *ChecklistRunScreen) stepDone(stepID string) bool {
 	return false
 }
 
+// checklistRunBar names every key that acts on a run of `steps` steps, as a
+// record the honesty sweep can press (prose_bar.go).
+//
+// It used to be one literal under every step with no window — "j/k move · enter
+// scan step · n notes then scan · f finalize · r refresh · esc back" — so a
+// checklist longer than the pane took the footer off the bottom, and the arrows
+// moved the cursor unnamed. It also went on naming `enter` and `n` while a scan
+// or a finalize was out, where both arms return without acting, and over a
+// checklist with no steps, where there is nothing for either to act on: the
+// "footer that changes with the submit state" this screen was recorded for.
+// Those segments follow `busy` and the step count now, and `f` is named exactly
+// where HandlesKey claims it.
+func checklistRunBar(steps int, busy, finalize bool) proseBar {
+	out := proseNavStep(listNavMoves(steps))
+	if steps > 0 && !busy {
+		out = append(out,
+			proseBarItem{Keys: []string{"enter"}, Hint: "enter scan step"},
+			proseBarItem{Keys: []string{"n"}, Hint: "n notes then scan"})
+	}
+	if finalize && !busy {
+		out = append(out, proseBarItem{Keys: []string{"f"}, Hint: "f finalize"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// checklistRunNotesBar is the notes prompt's bar. The box has the focus, so
+// every printable key is a character in the note and only these two are not.
+var checklistRunNotesBar = proseBar{
+	{Keys: []string{"enter"}, Hint: "enter scan with notes"},
+	{Keys: []string{"esc"}, Hint: "esc cancel"},
+}
+
+// proseBar is the bar this screen is DRAWING, in every state: the notes prompt
+// draws its own, and a load in flight or failed draws loadBar's.
+func (s *ChecklistRunScreen) proseBar() proseBar {
+	if s.addingNotes {
+		return checklistRunNotesBar
+	}
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	return checklistRunBar(len(s.steps()), s.busy, s.canFinalize())
+}
+
+// loadBar is this run's bar while its load is out or has failed — what its key
+// switch still answers with no steps drawn (prose_bar.go carries the defect and
+// the decision). A refresh keeps the checklist and the completion, so `enter`
+// still scans the step under the cursor and `f` still finalizes: named because
+// they act, and candidates for gating. j/k move a cursor the frame does not draw
+// and `n` opens a notes box it does not draw either, so they are not named and
+// are ignored.
+func (s *ChecklistRunScreen) loadBar() proseBar {
+	var out proseBar
+	if len(s.steps()) > 0 && !s.busy {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter scan step"})
+	}
+	if s.canFinalize() && !s.busy {
+		out = append(out, proseBarItem{Keys: []string{"f"}, Hint: "f finalize"})
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
+}
+
+func (s *ChecklistRunScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// View draws the steps as a line-packed window (proseFlatListFrameFoot) under
+// the run's status line, with the bar — or the notes prompt and ITS bar — as the
+// foot the window is budgeted around.
+//
+// THE NOTES PROMPT WAS DRAWN UNDER EVERY STEP, so on a checklist longer than the
+// pane `n` opened a box nobody could see: the keystrokes went into it, `enter`
+// scanned the step with whatever had been typed, and the pane showed none of it.
+// It is the foot now, spent before the window gets a line.
 func (s *ChecklistRunScreen) View() string {
+	cells := s.paneCells()
 	if s.loading {
-		return StyleMuted.Render("Loading checklist run…")
+		return proseLoadingFrame("Loading checklist run…", cells, s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, cells, s.proseBar())
 	}
 	if s.checklist == nil || s.completion == nil {
-		return StyleMuted.Render("Checklist run not found.")
+		return StyleMuted.Render("Checklist run not found.") + "\n\n" + s.proseBar().render(cells)
 	}
 
-	var b strings.Builder
+	var head strings.Builder
 	statusLine := s.completion.Status
 	switch s.completion.Status {
 	case "completed":
@@ -308,64 +397,84 @@ func (s *ChecklistRunScreen) View() string {
 	}
 	progress := fmt.Sprintf("%d/%d", s.completion.CompletedStepsCount, s.completion.TotalStepsCount)
 	required := fmt.Sprintf("required %d/%d", s.completion.RequiredStepsCompleted, s.completion.RequiredStepsTotal)
-	b.WriteString(fmt.Sprintf("%s · %s · %s\n\n",
+	head.WriteString(fmt.Sprintf("%s · %s · %s\n",
 		statusLine,
 		StyleMuted.Render(progress+" steps"),
 		StyleMuted.Render(required)))
+	if s.busy {
+		// The keys that write come off the bar while a scan or a finalize is
+		// out, and the pane says why rather than leaving the operator to read the
+		// absence as a program that stopped listening.
+		head.WriteString(StyleMuted.Render("Sending to OMS…") + "\n")
+	}
+	head.WriteString("\n")
 
 	steps := s.steps()
 	if len(steps) == 0 {
-		b.WriteString(StyleMuted.Render("This checklist has no steps.") + "\n")
+		return head.String() + StyleMuted.Render("This checklist has no steps.") + "\n\n" +
+			s.proseBar().render(cells)
 	}
+	rows := make([]string, len(steps))
 	for i, step := range steps {
-		done := s.stepDone(step.ID)
-		caret := "  "
-		if i == s.cursor {
-			caret = "▸ "
-		}
-		var marker string
-		if done {
-			marker = StyleStatusOK.Render("[✓]")
-		} else if step.Required {
-			marker = StyleStatusError.Render("[!]")
-		} else {
-			marker = StyleMuted.Render("[ ]")
-		}
-		title := fmt.Sprintf("%s%s %d. %s", caret, marker, step.StepNumber, step.Name)
-		if step.RequiresPhoto {
-			title += "  " + StyleStatusWarn.Render("photo required")
-		}
-		if i == s.cursor && !done {
-			title = StyleSidebarItemActive.Render(title)
-		}
-		b.WriteString(title + "\n")
-		target := s.targetLabel(step)
-		if target != "" {
-			b.WriteString("    " + StyleMuted.Render(target) + "\n")
-		}
-		if step.Notes != "" {
-			notes := step.Notes
-			if len(notes) > 100 {
-				notes = notes[:97] + "…"
-			}
-			b.WriteString("    " + StyleMuted.Render(notes) + "\n")
-		}
+		rows[i] = s.stepRow(i, step, cells)
 	}
 
+	footRows := checklistRunBar(proseFlatCeilingRows, false, true).rows(cells)
+	foot := s.proseBar().render(cells)
 	if s.addingNotes {
-		b.WriteString("\n" + StyleTitle.Render("Notes for this step") + "\n")
-		b.WriteString(s.notesInput.View() + "\n")
-		b.WriteString(StyleMuted.Render("enter submit · esc cancel"))
-		return b.String()
+		// Title, box, the blank line above the bar, and the bar's own rows.
+		footRows = 3 + s.proseBar().rows(cells)
+		foot = StyleTitle.Render("Notes for this step") + "\n" +
+			woBoxView(s.notesInput, cells, "") + "\n\n" + foot
 	}
+	return proseFlatListFrameFoot(head.String(), rows, s.cursor, &s.windowStart,
+		s.terminalHeight, footRows, foot)
+}
 
-	footer := "j/k move · enter scan step · n notes then scan"
-	if s.canFinalize() {
-		footer += " · f finalize"
+// stepRow is one step: its title, its scan target and its notes.
+//
+// The NAME and the NOTES are OMS values and are clipped to the pane line by line
+// with the cut marked (proseClipEachLine). The notes used to be cut at 97 BYTES,
+// which is neither the pane — 51 cells at 80 columns, so clampToBox took the rest
+// unmarked — nor a character boundary, so a multi-byte character straddling the
+// cut drew as a broken glyph. The highlight's padding is reserved on every row,
+// for the reason item_suppliers.go gives: a row that fits until it is selected is
+// cut on exactly the keypress that selects it.
+func (s *ChecklistRunScreen) stepRow(i int, step omsapi.ChecklistStep, cells int) string {
+	const indent = "    "
+	done := s.stepDone(step.ID)
+	caret := "  "
+	if i == s.cursor {
+		caret = "▸ "
 	}
-	footer += " · r refresh · esc back"
-	b.WriteString("\n" + StyleMuted.Render(footer))
-	return b.String()
+	var marker string
+	if done {
+		marker = StyleStatusOK.Render("[✓]")
+	} else if step.Required {
+		marker = StyleStatusError.Render("[!]")
+	} else {
+		marker = StyleMuted.Render("[ ]")
+	}
+	prefix := fmt.Sprintf("%s%s %d. ", caret, marker, step.StepNumber)
+	photo := ""
+	if step.RequiresPhoto {
+		photo = "  " + StyleStatusWarn.Render("photo required")
+	}
+	room := cells - StyleSidebarItemActive.GetHorizontalPadding() - lipgloss.Width(prefix) - lipgloss.Width(photo)
+	title := prefix + proseClipEachLine(step.Name, room) + photo
+	if i == s.cursor && !done {
+		title = StyleSidebarItemActive.Render(title)
+	}
+	out := title
+	if target := s.targetLabel(step); target != "" {
+		out += "\n" + indent + StyleMuted.Render(pickerClip(target, cells-len(indent)))
+	}
+	if step.Notes != "" {
+		for _, line := range strings.Split(step.Notes, "\n") {
+			out += "\n" + indent + StyleMuted.Render(pickerClip(line, cells-len(indent)))
+		}
+	}
+	return out
 }
 
 // targetLabel produces a short description of the step's prescribed

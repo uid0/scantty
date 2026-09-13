@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -53,6 +54,10 @@ type MakerBoxesScreen struct {
 	// delete (destroy the row under the cursor, y/n confirm).
 	confirmingDelete bool
 	deleting         bool
+
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
 }
 
 type makerBoxesLoadedMsg struct {
@@ -117,6 +122,9 @@ func (s *MakerBoxesScreen) load() tea.Cmd {
 
 func (s *MakerBoxesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case makerBoxesLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -257,6 +265,9 @@ func (s *MakerBoxesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.binInput, cmd = s.binInput.Update(msg)
 			}
 			return s, cmd
+		}
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
 		}
 		switch m.String() {
 		case "j", "down":
@@ -426,7 +437,121 @@ func (s *MakerBoxesScreen) runScan() (Screen, tea.Cmd) {
 	}
 }
 
+// makerBoxesBar names every key that acts on a list of `rows` maker boxes, as a
+// record the honesty sweep can press (prose_bar.go). `queued` is whether the row
+// under the cursor is a pre-conversion, and `billingDown` whether the membership
+// lookups can resolve anybody.
+//
+// It used to be two literal lines under every row with no window, so a
+// directory longer than the pane took both off the bottom, and the arrows moved
+// the cursor unnamed. `E` and `x` were named over an empty directory, where they
+// do nothing, and `c convert (queued)` on every row, where on any row that is not
+// queued the arm only answers that it is not. `c` follows the row under the
+// cursor now, and pressed anywhere else it still says why it declines. The scan
+// and pre-convert keys come off while billing is down, as they always did — the
+// same move the web makes by disabling those two buttons — and pressed then they
+// answer why.
+func makerBoxesBar(rows int, queued, billingDown bool) proseBar {
+	out := append(proseNavStep(listNavMoves(rows)), proseBarItem{Keys: []string{"n"}, Hint: "n new"})
+	if rows > 0 {
+		out = append(out,
+			proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+			proseBarItem{Keys: []string{"x"}, Hint: "x delete"})
+	}
+	if !billingDown {
+		out = append(out,
+			proseBarItem{Keys: []string{"s"}, Hint: "s scan"},
+			proseBarItem{Keys: []string{"p"}, Hint: "p pre-convert"})
+	}
+	if queued {
+		out = append(out, proseBarItem{Keys: []string{"c"}, Hint: "c convert (queued)"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// makerBoxPreBar is the pre-conversion form's bar: one box with the focus, so
+// every printable key is a character and only these two are not.
+var makerBoxPreBar = proseBar{
+	{Keys: []string{"enter"}, Hint: "enter queue"},
+	{Keys: []string{"esc"}, Hint: "esc cancel"},
+}
+
+// makerBoxScanBar is the scan form's bar. Its two boxes swap on tab and on
+// shift+tab alike, which with two fields is the same move in both directions;
+// the literal said `tab next field`, and shift+tab swapped them unnamed. The
+// arrows go into the focused box and move nothing, so they are not named.
+var makerBoxScanBar = proseBar{
+	{Keys: []string{"tab", "shift+tab"}, Hint: "tab/shift+tab field"},
+	{Keys: []string{"enter"}, Hint: "enter scan"},
+	{Keys: []string{"esc"}, Hint: "esc cancel"},
+}
+
+// queuedSelected reports whether the row under the cursor is a pre-conversion —
+// the one row `c` converts.
+func (s *MakerBoxesScreen) queuedSelected() bool {
+	row, ok := s.selectedRow()
+	return ok && row.Status == "pre_conversion"
+}
+
+// proseBar is the bar this screen is DRAWING: nil under the convert and delete
+// confirms (whose own prompts name their keys, the precedent every converted
+// list keeps), the form's own while a form is open, loadBar's while a load is
+// out or has failed, and the list's otherwise.
+func (s *MakerBoxesScreen) proseBar() proseBar {
+	switch {
+	case s.confirmConvertID != nil, s.confirmingDelete:
+		return nil
+	case s.preConverting:
+		return makerBoxPreBar
+	case s.scanning:
+		return makerBoxScanBar
+	case s.loading || s.loadErr != "":
+		return s.loadBar()
+	}
+	return makerBoxesBar(len(s.rows), s.queuedSelected(), s.billingDown())
+}
+
+// loadBar is this directory's bar while its load is out or has failed — what its
+// key switch still answers with no rows drawn (prose_bar.go carries the defect
+// and the decision). The forms and both confirms are drawn IN PLACE of the load
+// frame, so `s`, `p`, `x` and `c` open something the operator sees; and a refresh
+// keeps the rows, so `E` still opens the row under the cursor and `x` and `c`
+// still ask about it — named because they act, and candidates for gating. j/k
+// move a cursor the frame does not draw, so they are not named and are ignored.
+func (s *MakerBoxesScreen) loadBar() proseBar {
+	out := proseBar{{Keys: []string{"n"}, Hint: "n new"}}
+	if _, ok := s.selectedRow(); ok {
+		out = append(out,
+			proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+			proseBarItem{Keys: []string{"x"}, Hint: "x delete"})
+	}
+	if !s.billingDown() {
+		out = append(out,
+			proseBarItem{Keys: []string{"s"}, Hint: "s scan"},
+			proseBarItem{Keys: []string{"p"}, Hint: "p pre-convert"})
+	}
+	if s.queuedSelected() {
+		out = append(out, proseBarItem{Keys: []string{"c"}, Hint: "c convert (queued)"})
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
+}
+
+func (s *MakerBoxesScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// makerBoxNotice is serviceUnavailableNotice FOLDED to the pane, or "" when the
+// service is not known to be down. The messages are fixed sentences of about
+// seventy-five cells against the 51 an 80-column pane gives, so drawn whole they
+// lost their ends to clampToBox — on the badge notice, the half saying what still
+// works ("type the member's username instead").
+func (s *MakerBoxesScreen) makerBoxNotice(key, message string, cells int) string {
+	if !s.deps.Health.IsDegraded(key) {
+		return ""
+	}
+	return StyleStatusWarn.Render(strings.Join(pickerWrap("⚠ "+message, cells), "\n"))
+}
+
 func (s *MakerBoxesScreen) View() string {
+	cells := s.paneCells()
 	if s.confirmConvertID != nil {
 		var who string
 		for _, r := range s.rows {
@@ -440,8 +565,11 @@ func (s *MakerBoxesScreen) View() string {
 		}
 		var b strings.Builder
 		b.WriteString(StyleTitle.Render("Convert?") + "\n\n")
-		b.WriteString("Allocate the next MBX-NNN for " + who + " and reprint the label?\n\n")
-		b.WriteString(StyleMuted.Render("y confirm · n / esc cancel"))
+		b.WriteString(strings.Join(pickerWrap("Allocate the next MBX-NNN for "+
+			proseFormLine(who, cells/2)+" and reprint the label?", cells), "\n") + "\n\n")
+		// `enter` confirms as `y` does — the arm has always taken both — and the
+		// literal named only `y`.
+		b.WriteString(StyleMuted.Render("y/enter confirm · n/esc cancel"))
 		return b.String()
 	}
 	if s.confirmingDelete {
@@ -466,59 +594,91 @@ func (s *MakerBoxesScreen) View() string {
 		if who != "" {
 			line += " (" + who + ")"
 		}
-		b.WriteString("Delete " + line + "? This can't be undone.\n\n")
-		b.WriteString(StyleStatusWarn.Render("y delete · n / esc cancel"))
+		b.WriteString(strings.Join(pickerWrap("Delete "+proseFormLine(line, cells/2)+
+			"? This can't be undone.", cells), "\n") + "\n\n")
+		b.WriteString(StyleStatusWarn.Render("y delete · n/esc cancel"))
 		return b.String()
 	}
 	if s.preConverting {
+		const label = "Badge or username: "
 		var b strings.Builder
 		b.WriteString(StyleTitle.Render("Pre-conversion: queue a member") + "\n\n")
-		b.WriteString(StyleMuted.Render("Badge or username: ") + s.preInput.View() + "\n")
+		b.WriteString(StyleMuted.Render(label) + woBoxView(s.preInput, cells, label) + "\n")
 		if s.preErr != "" {
-			b.WriteString("\n" + StyleStatusError.Render(s.preErr) + "\n")
+			b.WriteString("\n" + StyleStatusError.Render(proseFormLine(s.preErr, cells)) + "\n")
 		}
 		// A degraded member directory only breaks BADGE resolution — a typed
 		// username still resolves — so this warns without closing the form,
 		// exactly as the web's common_api notice does.
-		if notice := serviceUnavailableNotice(s.deps.Health, omsapi.ServiceKeyCommonAPI, badgeLookupUnavailable); notice != "" {
+		if notice := s.makerBoxNotice(omsapi.ServiceKeyCommonAPI, badgeLookupUnavailable, cells); notice != "" {
 			b.WriteString("\n" + notice + "\n")
 		}
-		if notice := serviceUnavailableNotice(s.deps.Health, omsapi.ServiceKeyWHMCS, makerBoxLookupUnavailable); notice != "" {
+		if notice := s.makerBoxNotice(omsapi.ServiceKeyWHMCS, makerBoxLookupUnavailable, cells); notice != "" {
 			b.WriteString("\n" + notice + "\n")
 		}
-		b.WriteString("\n" + StyleMuted.Render("enter queue · esc cancel"))
+		b.WriteString("\n" + s.proseBar().render(cells))
 		return b.String()
 	}
 	if s.scanning {
+		// The caret marks the focused box: an empty box draws its placeholder
+		// focused or not, so without it tab swapped the focus and the pane
+		// showed nothing having happened.
 		var b strings.Builder
 		b.WriteString(StyleTitle.Render("Scan maker box") + "\n\n")
-		b.WriteString(StyleMuted.Render("Bin id:   ") + s.binInput.View() + "\n")
-		b.WriteString(StyleMuted.Render("Username: ") + s.userInput.View() + "\n")
-		if s.scanErr != "" {
-			b.WriteString("\n" + StyleStatusError.Render(s.scanErr) + "\n")
+		for _, f := range []struct {
+			label   string
+			box     textinput.Model
+			focused bool
+		}{
+			{"Bin id:   ", s.binInput, !s.focusUser},
+			{"Username: ", s.userInput, s.focusUser},
+		} {
+			caret := "  "
+			if f.focused {
+				caret = "▸ "
+			}
+			prefix := caret + f.label
+			b.WriteString(caret + StyleMuted.Render(f.label) + woBoxView(f.box, cells, prefix) + "\n")
 		}
-		if notice := serviceUnavailableNotice(s.deps.Health, omsapi.ServiceKeyWHMCS, makerBoxLookupUnavailable); notice != "" {
+		if s.scanErr != "" {
+			b.WriteString("\n" + StyleStatusError.Render(proseFormLine(s.scanErr, cells)) + "\n")
+		}
+		if notice := s.makerBoxNotice(omsapi.ServiceKeyWHMCS, makerBoxLookupUnavailable, cells); notice != "" {
 			b.WriteString("\n" + notice + "\n")
 		}
-		b.WriteString("\n" + StyleMuted.Render("tab next field · enter scan · esc cancel"))
+		b.WriteString("\n" + s.proseBar().render(cells))
 		return b.String()
 	}
 	if s.loading {
-		return StyleMuted.Render("Loading maker boxes…")
+		return proseLoadingFrame("Loading maker boxes…", cells, s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · n new · E edit · x delete · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, cells, s.proseBar())
 	}
+	return s.viewList(cells)
+}
 
-	var b strings.Builder
+// viewList draws the directory as a line-packed window (proseFlatListFrameFoot)
+// under the last results, with the service notices and the bar as the foot the
+// window is budgeted around.
+//
+// THE NOTICES WERE DRAWN UNDER EVERY ROW, between the list and the footer, so a
+// directory longer than the pane took both off the bottom — and a notice is the
+// one line saying why `s` and `p` are not on the bar. They are the foot now,
+// spent before the window gets a line.
+func (s *MakerBoxesScreen) viewList(cells int) string {
+	var head strings.Builder
+	detail := func(text string) {
+		head.WriteString("  " + StyleMuted.Render(proseFormLine(text, cells-2)) + "\n\n")
+	}
 	if s.convertResult != nil {
 		r := s.convertResult
 		who := r.DisplayName
 		if who == "" {
 			who = r.AssignedUsername
 		}
-		b.WriteString(StyleTitle.Render("Last conversion") + "  " + StyleStatusOK.Render("allocated") + "\n")
-		b.WriteString("  " + StyleMuted.Render("bin: ") + r.BinID + "  " + StyleMuted.Render("· user: ") + who + "\n\n")
+		head.WriteString(StyleTitle.Render("Last conversion") + "  " + StyleStatusOK.Render("allocated") + "\n")
+		detail("bin: " + r.BinID + " · user: " + who)
 	}
 	if s.preResult != nil {
 		r := s.preResult
@@ -526,12 +686,12 @@ func (s *MakerBoxesScreen) View() string {
 		if who == "" {
 			who = r.AssignedUsername
 		}
-		b.WriteString(StyleTitle.Render("Last pre-conversion") + "  " + StyleStatusOK.Render("queued") + "\n")
+		head.WriteString(StyleTitle.Render("Last pre-conversion") + "  " + StyleStatusOK.Render("queued") + "\n")
 		src := r.IdentitySource
 		if src == "" {
 			src = "—"
 		}
-		b.WriteString("  " + StyleMuted.Render("user: ") + r.AssignedUsername + "  " + StyleMuted.Render("name: ") + who + "  " + StyleMuted.Render("· source: ") + src + "\n\n")
+		detail("user: " + r.AssignedUsername + "  name: " + who + " · source: " + src)
 	}
 	if s.scanResult != nil {
 		r := s.scanResult
@@ -544,79 +704,88 @@ func (s *MakerBoxesScreen) View() string {
 		case "expired", "unknown":
 			statusStyled = StyleStatusError.Render(r.Status)
 		}
-		b.WriteString(StyleTitle.Render("Last scan") + "  " + statusStyled + "\n")
-		b.WriteString("  " + StyleMuted.Render("bin: ") + r.BinID + "  " + StyleMuted.Render("user: ") + r.Username)
+		head.WriteString(StyleTitle.Render("Last scan") + "  " + statusStyled + "\n")
+		text := "bin: " + r.BinID + "  user: " + r.Username
 		if r.DaysRemaining != nil {
-			b.WriteString("  " + StyleMuted.Render(fmt.Sprintf("· %d days remaining", *r.DaysRemaining)))
+			text += fmt.Sprintf(" · %d days remaining", *r.DaysRemaining)
 		}
-		b.WriteString("\n\n")
+		detail(text)
 	}
 
-	if len(s.rows) == 0 {
-		b.WriteString(StyleMuted.Render("No maker boxes assigned.") + "\n")
-	} else {
-		for i, r := range s.rows {
-			caret := "  "
-			if i == s.cursor {
-				caret = "▸ "
-			}
-			status := r.Status
-			switch r.Status {
-			case "valid":
-				status = StyleStatusOK.Render(r.Status)
-			case "grace":
-				status = StyleStatusWarn.Render(r.Status)
-			case "expired", "unknown":
-				status = StyleStatusError.Render(r.Status)
-			case "pre_conversion":
-				status = StyleStatusWarn.Render("queued")
-			}
-			who := r.DisplayName
-			if who == "" {
-				who = r.AssignedUsername
-			}
-			binDisplay := r.BinID
-			if binDisplay == "" {
-				binDisplay = "—"
-			}
-			line := fmt.Sprintf("%s%s  [%s]  %s", caret, binDisplay, status, who)
-			if i == s.cursor {
-				line = StyleSidebarItemActive.Render(line)
-			}
-			b.WriteString(line + "\n")
-			meta := []string{}
-			if r.ExpiresAt != nil {
-				meta = append(meta, "expires "+r.ExpiresAt.Format("2006-01-02"))
-			}
-			if r.LastVerifiedAt != nil {
-				meta = append(meta, "verified "+r.LastVerifiedAt.Format("2006-01-02"))
-			}
-			if r.PaidAt != nil {
-				meta = append(meta, "paid "+r.PaidAt.Format("2006-01-02"))
-			}
-			if len(meta) > 0 {
-				b.WriteString("    " + StyleMuted.Render(strings.Join(meta, " · ")) + "\n")
-			}
-		}
-	}
 	// Inline gate, right above the keys it takes away. Convert is NOT gated:
 	// it allocates the bin from the expiry the pre-conversion already stored
 	// and calls no lookup, so it works through a billing outage.
-	if notice := serviceUnavailableLine(s.deps.Health, omsapi.ServiceKeyWHMCS, makerBoxLookupUnavailable); notice != "" {
-		b.WriteString("\n" + notice)
+	var notices []string
+	if notice := s.makerBoxNotice(omsapi.ServiceKeyWHMCS, makerBoxLookupUnavailable, cells); notice != "" {
+		notices = append(notices, notice)
 	}
-	if notice := serviceUnavailableLine(s.deps.Health, omsapi.ServiceKeyCommonAPI, badgeLookupUnavailable); notice != "" {
-		b.WriteString(notice)
+	if notice := s.makerBoxNotice(omsapi.ServiceKeyCommonAPI, badgeLookupUnavailable, cells); notice != "" {
+		notices = append(notices, notice)
 	}
-	// Two footer lines keep each within a narrow content pane (no width overflow).
-	b.WriteString("\n" + StyleMuted.Render("j/k move · n new · E edit · x delete · r refresh"))
-	if s.billingDown() {
-		// The scan and pre-convert keys come off the hint line while they
-		// cannot resolve anybody — the same move the web makes by disabling
-		// those two buttons.
-		b.WriteString("\n" + StyleMuted.Render("c convert (queued) · esc back"))
-	} else {
-		b.WriteString("\n" + StyleMuted.Render("s scan · p pre-convert · c convert (queued) · esc back"))
+	bar := s.proseBar()
+	foot := bar.render(cells)
+	footRows := makerBoxesBar(proseFlatCeilingRows, true, false).rows(cells)
+	if len(notices) > 0 {
+		block := strings.Join(notices, "\n\n")
+		foot = block + "\n\n" + foot
+		footRows += strings.Count(block, "\n") + 2
 	}
-	return b.String()
+
+	if len(s.rows) == 0 {
+		return head.String() + StyleMuted.Render("No maker boxes assigned.") + "\n\n" + foot
+	}
+	rows := make([]string, len(s.rows))
+	for i, r := range s.rows {
+		rows[i] = s.boxRow(i, r, cells)
+	}
+	return proseFlatListFrameFoot(head.String(), rows, s.cursor, &s.windowStart, s.terminalHeight, footRows, foot)
+}
+
+// boxRow is one maker box and its dates. The member's name is an OMS value,
+// clipped to what the bin and the status leave (line by line, with the cut
+// marked); the highlight's padding is reserved on every row.
+func (s *MakerBoxesScreen) boxRow(i int, r omsapi.MakerBox, cells int) string {
+	caret := "  "
+	if i == s.cursor {
+		caret = "▸ "
+	}
+	status := r.Status
+	switch r.Status {
+	case "valid":
+		status = StyleStatusOK.Render(r.Status)
+	case "grace":
+		status = StyleStatusWarn.Render(r.Status)
+	case "expired", "unknown":
+		status = StyleStatusError.Render(r.Status)
+	case "pre_conversion":
+		status = StyleStatusWarn.Render("queued")
+	}
+	who := r.DisplayName
+	if who == "" {
+		who = r.AssignedUsername
+	}
+	binDisplay := r.BinID
+	if binDisplay == "" {
+		binDisplay = "—"
+	}
+	prefix := fmt.Sprintf("%s%s  [%s]  ", caret, binDisplay, status)
+	room := cells - StyleSidebarItemActive.GetHorizontalPadding() - lipgloss.Width(prefix)
+	line := prefix + proseClipEachLine(who, room)
+	if i == s.cursor {
+		line = StyleSidebarItemActive.Render(line)
+	}
+	meta := []string{}
+	if r.ExpiresAt != nil {
+		meta = append(meta, "expires "+r.ExpiresAt.Format("2006-01-02"))
+	}
+	if r.LastVerifiedAt != nil {
+		meta = append(meta, "verified "+r.LastVerifiedAt.Format("2006-01-02"))
+	}
+	if r.PaidAt != nil {
+		meta = append(meta, "paid "+r.PaidAt.Format("2006-01-02"))
+	}
+	if len(meta) > 0 {
+		line += "\n    " + StyleMuted.Render(pickerClip(strings.Join(meta, " · "), cells-4))
+	}
+	return line
 }

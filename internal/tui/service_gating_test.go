@@ -206,6 +206,9 @@ func sgMakerBoxes(health *ServiceHealth) *MakerBoxesScreen {
 // the pre-conversion already stored and calls no lookup.
 func TestMakerBoxes_LookupsGatedWhenBillingIsOpen(t *testing.T) {
 	s := sgMakerBoxes(ssHealth(map[string]string{omsapi.ServiceKeyWHMCS: omsapi.ServiceStateOpen}))
+	// A QUEUED row under the cursor, because that is the only row `c` converts
+	// and so the only one its bar names it on.
+	s.rows = []omsapi.MakerBox{{ID: 1, AssignedUsername: "ada", Status: "pre_conversion"}}
 
 	for _, key := range []string{"s", "p"} {
 		msg := sgPress(t, s, key)
@@ -248,7 +251,8 @@ func TestMakerBoxes_CommonAPIWarnsButDoesNotGate(t *testing.T) {
 	if !s.preConverting {
 		t.Fatal("the pre-conversion form did not open")
 	}
-	if !strings.Contains(s.View(), "type the member's username instead") {
+	// Folded to the pane, so asked of the words rather than of one line.
+	if !strings.Contains(strings.Join(strings.Fields(s.View()), " "), "type the member's username instead") {
 		t.Errorf("the form does not say what still works:\n%s", s.View())
 	}
 }

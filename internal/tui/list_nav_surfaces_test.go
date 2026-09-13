@@ -114,7 +114,9 @@ import (
 // up/down move a focus rather than a cursor (prose_bar_field_forms_test.go), and
 // then the lists whose rows are several lines and whose window already packed
 // them by line cost (prose_bar_row_packed_lists_test.go), and then the flat
-// lists sharing their pane with a second section (prose_bar_sections_test.go). A
+// lists sharing their pane with a second section (prose_bar_sections_test.go),
+// and then the flat lists whose prompt, form or confirm is drawn under or in place
+// of their rows (prose_bar_foot_prompts_test.go). A
 // field-form entry here was an exemption from THIS classifier, never from the
 // bar rule, and a form's record names its focus keys like any other. Their bars
 // are RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
@@ -125,9 +127,7 @@ var listNavUnsweptReceivers = map[string]string{
 	"AssetPartsScreen": "the parts list on an asset; footer written in View, already past " +
 		"51 cells. Left out of the windowed-cursor-list conversion because its rows are " +
 		"multi-LINE and its window is budgeted in rows — see proseBarUnconverted",
-	"ChecklistRunScreen":    "the step list of a checklist run",
 	"InventoryDetailScreen": "the item detail sheet and its three pick modals",
-	"MakerBoxesScreen":      "the maker-box list beside MakerBoxFormScreen",
 	"ReportTableScreen": "the shared scrollable report table, which every tabbed report " +
 		"page rides. reportScreenFixtures (report_yardstick_test.go) is the roster of " +
 		"those pages and TestReportTable_EveryReportScreenIsSwept derives it from the " +
@@ -142,8 +142,7 @@ var listNavUnsweptReceivers = map[string]string{
 		"page', the rest name 'j/k scroll' alone while pgup/pgdn, the arrows, g/G and " +
 		"home/end all work. That is the prose-footer gap in its purest form: one handler, " +
 		"one bar per sheet, no record to read",
-	"WorkOrderAttachmentsScreen": "the attachment list on a work order",
-	"WorkOrderDetailScreen":      "the work-order detail sheet and its material pickers",
+	"WorkOrderDetailScreen": "the work-order detail sheet and its material pickers",
 	"LocationDetailScreen": "NOT a navigation binding: its `g` generates the location's QR " +
 		"code. It is here because the vocabulary is a set of KEY NAMES and cannot tell a " +
 		"movement `g` from a `g` that means generate — which is a limit of the derivation " +
