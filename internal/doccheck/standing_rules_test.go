@@ -2,9 +2,11 @@ package doccheck
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -54,13 +56,14 @@ var rosterEntry = regexp.MustCompile(`(?m)^## (\d+)\. \S`)
 // comment marker that starts the next line when a Go comment wraps between
 // "rule" and its number.
 const citeSep = `(?:\s|//)+`
+const citeGap = `(?:\s|//)*`
 
 // ruleCitation matches "rule N" in any letter case, "rules N and M", and a
 // citation whose Go comment wraps between the word and its number. The
 // character before "rule" may not be a letter, digit, underscore or hyphen, so "pre-rule 201" (a fixture's name) and an
 // identifier ending in "rule" are not citations.
 var ruleCitation = regexp.MustCompile(`(?i)(?:^|[^\w-])rules?` + citeSep +
-	`(\d+)((?:` + citeSep + `?(?:,|and|or|&)` + citeSep + `?\d+)*)`)
+	`(\d+(?:` + citeGap + `(?:,` + citeGap + `(?:and|or|&)?|and|or|&|-|–|to)` + citeGap + `\d+)*)`)
 
 // ordinalCitation matches a numbered rule cited by its ordinal instead.
 var ordinalCitation = regexp.MustCompile(`(?i)\b(?:first|second|third|fourth|fifth|sixth|` +
@@ -68,6 +71,67 @@ var ordinalCitation = regexp.MustCompile(`(?i)\b(?:first|second|third|fourth|fif
 	citeSep + `rules?\b`)
 
 var citedNumber = regexp.MustCompile(`\d+`)
+var citedRange = regexp.MustCompile(`(?i)^(?:\s|//)*(?:-|–|to)(?:\s|//)*$`)
+
+type ruleReference struct {
+	number int
+	offset int
+}
+
+type ordinalReference struct {
+	text   string
+	offset int
+}
+
+func citedRules(text string) ([]ruleReference, []ordinalReference) {
+	var rules []ruleReference
+	for _, match := range ruleCitation.FindAllStringSubmatchIndex(text, -1) {
+		chainStart, chainEnd := match[2], match[3]
+		locations := citedNumber.FindAllStringIndex(text[chainStart:chainEnd], -1)
+		for i, location := range locations {
+			n, _ := strconv.Atoi(text[chainStart+location[0] : chainStart+location[1]])
+			if i > 0 {
+				previous := locations[i-1]
+				delimiter := text[chainStart+previous[1] : chainStart+location[0]]
+				if citedRange.MatchString(delimiter) {
+					previousNumber := rules[len(rules)-1].number
+					step := 1
+					if n < previousNumber {
+						step = -1
+					}
+					for represented := previousNumber + step; represented != n; represented += step {
+						rules = append(rules, ruleReference{number: represented, offset: chainStart + location[0]})
+					}
+				}
+			}
+			rules = append(rules, ruleReference{number: n, offset: chainStart + location[0]})
+		}
+	}
+	var ordinals []ordinalReference
+	for _, match := range ordinalCitation.FindAllStringIndex(text, -1) {
+		ordinals = append(ordinals, ordinalReference{text: text[match[0]:match[1]], offset: match[0]})
+	}
+	return rules, ordinals
+}
+
+func parseStandingRuleRoster(text string) (map[int]bool, error) {
+	var numbers []int
+	for _, match := range rosterEntry.FindAllStringSubmatch(text, -1) {
+		n, _ := strconv.Atoi(match[1])
+		numbers = append(numbers, n)
+	}
+	if len(numbers) == 0 {
+		return nil, fmt.Errorf("defines no rule (no \"## N. …\" heading)")
+	}
+	defined := map[int]bool{}
+	for i, n := range numbers {
+		if n != i+1 {
+			return nil, fmt.Errorf("numbers its rules %v; they must run 1..N in order with no gap and no repeat", numbers)
+		}
+		defined[n] = true
+	}
+	return defined, nil
+}
 
 func TestDocs_EveryStandingRuleCitationIsInTheRoster(t *testing.T) {
 	mod := moduleRoot(t)
@@ -85,23 +149,21 @@ func TestDocs_EveryStandingRuleCitationIsInTheRoster(t *testing.T) {
 
 	var cited int
 	forEachTextFile(t, mod, func(path string, text string) {
-		for _, m := range ruleCitation.FindAllStringSubmatchIndex(text, -1) {
-			numbers := text[m[2]:m[3]] + text[m[4]:m[5]]
-			for _, n := range citedNumber.FindAllString(numbers, -1) {
-				cited++
-				if defined[n] {
-					continue
-				}
-				t.Errorf("%s:%d: this text cites rule %s, and %s defines no rule %s. Cite the "+
-					"rule the sentence means, or state the substance instead of a number — "+
-					"never a number the roster does not carry",
-					relPath(mod, path), lineOf(text, m[2]), n, standingRulesRoster, n)
+		rules, ordinals := citedRules(text)
+		for _, rule := range rules {
+			cited++
+			if defined[rule.number] {
+				continue
 			}
+			t.Errorf("%s:%d: this text cites rule %d, and %s defines no rule %d. Cite the "+
+				"rule the sentence means, or state the substance instead of a number — "+
+				"never a number the roster does not carry",
+				relPath(mod, path), lineOf(text, rule.offset), rule.number, standingRulesRoster, rule.number)
 		}
-		for _, m := range ordinalCitation.FindAllStringIndex(text, -1) {
+		for _, ordinal := range ordinals {
 			t.Errorf("%s:%d: %q cites a standing rule by ordinal, which no check can resolve "+
 				"against %s; cite it by its number instead",
-				relPath(mod, path), lineOf(text, m[0]), text[m[0]:m[1]], standingRulesRoster)
+				relPath(mod, path), lineOf(text, ordinal.offset), ordinal.text, standingRulesRoster)
 		}
 	})
 
@@ -118,32 +180,96 @@ func TestDocs_EveryStandingRuleCitationIsInTheRoster(t *testing.T) {
 // defines, failing on a roster that is missing, empty, or numbered with a gap
 // or a repeat — each of which would let a citation resolve to a rule nobody
 // wrote down, or to two.
-func standingRuleNumbers(t *testing.T, mod string) map[string]bool {
+func standingRuleNumbers(t *testing.T, mod string) map[int]bool {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(mod, standingRulesRoster))
 	if err != nil {
 		t.Fatalf("reading the standing-rules roster: %v. Every numbered \"standing rule N\" "+
 			"in this module is a citation of it, so without it each one resolves to nothing", err)
 	}
-	var numbers []int
-	for _, m := range rosterEntry.FindAllStringSubmatch(string(raw), -1) {
-		n, _ := strconv.Atoi(m[1])
-		numbers = append(numbers, n)
-	}
-	if len(numbers) == 0 {
-		t.Fatalf("%s defines no rule (no \"## N. …\" heading); every citation would fail "+
-			"for a reason unrelated to the citation", standingRulesRoster)
-	}
-	defined := map[string]bool{}
-	for i, n := range numbers {
-		if n != i+1 {
-			t.Fatalf("%s numbers its rules %v; they must run 1..N in order with no gap and "+
-				"no repeat, or a citation can resolve to a rule nobody wrote or to two",
-				standingRulesRoster, numbers)
-		}
-		defined[strconv.Itoa(n)] = true
+	defined, err := parseStandingRuleRoster(string(raw))
+	if err != nil {
+		t.Fatalf("%s %v; every citation would fail for a reason unrelated to the citation",
+			standingRulesRoster, err)
 	}
 	return defined
+}
+
+func TestCitedRules(t *testing.T) {
+	tests := []struct {
+		name    string
+		text    string
+		numbers []int
+		ordinal bool
+	}{
+		{"plain", "standing rule 4", []int{4}, false},
+		{"capitalised", "Standing Rule 3", []int{3}, false},
+		{"conjunction", "rules 5 and 6", []int{5, 6}, false},
+		{"comma list", "rules 1, 3, and 5", []int{1, 3, 5}, false},
+		{"hyphen range", "rules 1-4", []int{1, 2, 3, 4}, false},
+		{"en dash range", "rules 5–8", []int{5, 6, 7, 8}, false},
+		{"to range", "rules 9 to 11", []int{9, 10, 11}, false},
+		{"wrapped comment", "standing\n//\trule 12", []int{12}, false},
+		{"pre-rule", "pre-rule 201", nil, false},
+		{"identifier", "house_rule 202", nil, false},
+		{"ordinal", "the fifth " + "standing rule", nil, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rules, ordinals := citedRules(test.text)
+			var numbers []int
+			for _, rule := range rules {
+				numbers = append(numbers, rule.number)
+				if rule.offset < 0 || rule.offset >= len(test.text) {
+					t.Fatalf("offset %d is outside input", rule.offset)
+				}
+			}
+			if !reflect.DeepEqual(numbers, test.numbers) {
+				t.Errorf("numbers = %v, want %v", numbers, test.numbers)
+			}
+			if got := len(ordinals) > 0; got != test.ordinal {
+				t.Errorf("ordinal detected = %v, want %v", got, test.ordinal)
+			}
+		})
+	}
+}
+
+func TestCitedRules_Offsets(t *testing.T) {
+	rules, _ := citedRules("rules 2-4")
+	want := []ruleReference{{number: 2, offset: 6}, {number: 3, offset: 8}, {number: 4, offset: 8}}
+	if !reflect.DeepEqual(rules, want) {
+		t.Errorf("citedRules() = %v, want %v", rules, want)
+	}
+}
+
+func TestParseStandingRuleRoster(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want map[int]bool
+	}{
+		{"valid", "## 1. One\n## 2. Two\n", map[int]bool{1: true, 2: true}},
+		{"gap", "## 1. One\n## 3. Three\n", nil},
+		{"repeat", "## 1. One\n## 1. Again\n", nil},
+		{"empty", "# Standing rules\n", nil},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseStandingRuleRoster(test.text)
+			if test.want == nil {
+				if err == nil {
+					t.Fatalf("parseStandingRuleRoster() = %v, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseStandingRuleRoster(): %v", err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Errorf("parseStandingRuleRoster() = %v, want %v", got, test.want)
+			}
+		})
+	}
 }
 
 // forEachTextFile hands fn every text file under the module root outside
