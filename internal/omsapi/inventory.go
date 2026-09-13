@@ -1607,10 +1607,10 @@ func (c *Client) ListItemSuppliersForItem(ctx context.Context, itemID string) ([
 //     sent.
 //
 //   - AverageLeadTime is a POINTER with omitempty, and nil is a write of its own:
-//     it OMITS the key, so OMS stores the planning default and labels it
-//     `default`. Sending the 7 instead stores the same number labelled a
-//     recorded quote (LeadTimeSource), which is why a create form's untouched
-//     box sends nil rather than restating the default.
+//     it OMITS the key, so OMS preserves it on PATCH or stores the planning
+//     default labelled `default` on POST. Sending the 7 instead stores the same
+//     number labelled a recorded quote (LeadTimeSource), which is why forms do
+//     not restate an untouched default or an unchanged edit value.
 //
 //   - IsPrimary carries no omitempty so turning it off actually reaches the
 //     backend instead of being dropped; the model's save() keeps a single primary

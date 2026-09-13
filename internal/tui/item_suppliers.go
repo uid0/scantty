@@ -848,9 +848,10 @@ type ItemSupplierFormScreen struct {
 
 	jdeScreen
 
-	inputs     []textinput.Model
-	supplierID *int
-	isPrimary  bool
+	inputs         []textinput.Model
+	supplierID     *int
+	isPrimary      bool
+	loadedLeadTime string
 
 	fields []int
 	cursor int
@@ -1063,7 +1064,8 @@ func (s *ItemSupplierFormScreen) hydrate() {
 		qty = 1
 	}
 	s.inputs[isQtyPerPackage].SetValue(strconv.Itoa(qty))
-	s.inputs[isLeadTime].SetValue(strconv.Itoa(int(ex.LeadTimeDays)))
+	s.loadedLeadTime = strconv.Itoa(int(ex.LeadTimeDays))
+	s.inputs[isLeadTime].SetValue(s.loadedLeadTime)
 	s.isPrimary = ex.IsPreferred
 }
 
@@ -1305,11 +1307,13 @@ func (s *ItemSupplierFormScreen) buildPayload() (omsapi.ItemSupplierWrite, error
 		return w, errors.New("average lead time must be a whole number ≥ 0")
 	}
 	// A blank box on CREATE omits the key, so OMS stores its planning default
-	// AS the default; sending the 7 would store it as a quote. On EDIT a blank
-	// still sends the 7 it always has — what blank means on an existing link is
-	// a separate question from where a lead time came from, and not this one's.
+	// AS the default; sending the 7 would store it as a quote. On EDIT an
+	// unchanged value is omitted so an unrelated edit preserves its source; a
+	// blank or changed value keeps the form's existing write semantics.
 	leadTime := &lead
 	if !s.edit && strings.TrimSpace(s.inputs[isLeadTime].Value()) == "" {
+		leadTime = nil
+	} else if s.edit && s.inputs[isLeadTime].Value() == s.loadedLeadTime {
 		leadTime = nil
 	}
 
