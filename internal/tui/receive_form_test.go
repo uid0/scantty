@@ -2419,18 +2419,19 @@ func receiveCursorRowIdentified(t *testing.T, s *ReceiveFormScreen, w, h int) bo
 // down beside the test: which line carries the box is decided by AddFittedFields
 // and by the order this screen's own builder puts the block's lines in, and a
 // marker copied into a test is one reorder away from aiming at a different line
-// while still passing. The line is found by the LABEL COLUMN (receiveLabels, the
-// screen's one roster of them) followed by its dot leader, which is what
-// renderJDEField draws and what nothing else on these rows can produce.
+// while still passing. The line is found by the dot LEADER, which is what
+// renderJDEField draws between a label column and its input area and what
+// nothing else on these rows can produce. It used to be found by a label out of
+// receiveLabels followed by the leader, and that stopped being enough the moment
+// a receivable line's box could carry the LINE's identity in its label column
+// instead (addLineBlock's joined row).
 func receiveCursorBox(t *testing.T, s *ReceiveFormScreen) (line string, depth int) {
 	t.Helper()
 	body, cursor := s.body()
 	first, last := body.block(cursor)
 	for i := first; i <= last && i < body.Len(); i++ {
-		for _, label := range receiveLabels {
-			if strings.Contains(body.text[i], label+" .") {
-				return strings.Join(strings.Fields(body.text[i]), " "), i - first
-			}
+		if strings.Contains(body.text[i], jdeLeader) {
+			return strings.Join(strings.Fields(body.text[i]), " "), i - first
 		}
 	}
 	t.Fatalf("the block for row %d carries no input row, so there is no box to look for:\n%s",
@@ -2439,57 +2440,45 @@ func receiveCursorBox(t *testing.T, s *ReceiveFormScreen) (line string, depth in
 }
 
 // receiveCursorBoxDrawn reports whether the operator can SEE the box they are
-// typing into, and whether the pane could have paid for it.
+// typing into.
 //
-// The second half is what stops the first from being a demand the geometry
-// cannot meet — and it is measured against the PANE alone, never against the
-// block being judged. It used to compare the window against the box's own depth
-// in its own block, and that is an escape hatch wired to the thing it polices:
-// the separator defect this file's sibling sweep exists for works by pushing
-// the box one line further down its block, which raised the depth in lockstep,
-// flipped the gate to unpayable and SKIPPED the assertion instead of failing
-// it. A gate a regression can widen is not a gate.
-//
-// So the gate asks how deep the box is CONTRACTED to be, not how deep it turned
-// out. A body that fits its window is drawn whole; one that overflows spends
-// two of the window's rows on the "more above / more below" markers, leaving
-// avail-2, and the box has to be inside those. Where the cursor can move, a
-// receivable line's block is its name, its readings and then the box, so the
-// box sits two lines in. Where NOTHING can move the window — a PINNED body
-// (receivePinned), the write-off confirm's shape — the box LEADS its block,
-// because a block whose start is all a short pane keeps must start with the
-// thing the operator types into. The quantity form is never pinned, an order
-// with nothing receivable included: that one keeps its scan, delivery and notes
-// rows, five in all. Those two numbers are the builder's promise; measuring the
-// block as built is what let a regression widen its own gate.
-func receiveCursorBoxDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) (drawn, payable bool) {
+// It used to report a second answer — whether the pane could have PAID for the
+// box — and the assertion was skipped wherever it said no. That gate was the
+// builder's own promise written down (the box two lines into a line's block,
+// the name ahead of it), measured against a window that leaves a block one line
+// at a body budget of 1 or 3, so it went false at exactly the thirteen swept
+// panes (211 over every drawable width) where the box was off the pane, and the
+// sweep stood aside. A gate that answers "not payable" wherever the defect is
+// cannot report the defect. There is no such gate now because there is no such
+// pane: addLineBlock reflows a line's name and box onto one row wherever the
+// window leaves the block one line, and every other input on this screen leads
+// its block, so on any DRAWN frame the box is contracted to be on the pane.
+func receiveCursorBoxDrawn(t *testing.T, s *ReceiveFormScreen, w, h int) bool {
 	t.Helper()
 	line, _ := receiveCursorBox(t, s)
-	// How many lines of the cursor's block come BEFORE its box: the line's own
-	// name, and nothing else — everything a row has to say about itself is
-	// drawn after the field it is about (addLineBlock). On a pinned body the
-	// field leads outright.
-	body, cursor := s.body()
-	lead := 1
-	if receivePinned(body, cursor) {
-		lead = 0
-	}
-	avail := s.bodyAvailForBar(len(s.headerLines()), s.bar())
-	payable = body.Len() <= avail || avail-2 > lead
-	return strings.Contains(receivePaneText(s, w, h), line), payable
+	return strings.Contains(receivePaneText(s, w, h), line)
 }
 
-// receiveAssertBoxDrawn fails when the pane could have drawn the cursor's own
-// input and did not. Split out so all three arms of the height sweep ask it,
-// rather than the resting one asking and the other two taking it on trust.
+// receiveAssertBoxDrawn fails when a drawn frame does not draw the cursor's own
+// input. Split out so all three arms of the height sweep ask it, rather than the
+// resting one asking and the other two taking it on trust.
 func receiveAssertBoxDrawn(t *testing.T, s *ReceiveFormScreen, w, h int, what string) {
 	t.Helper()
-	drawn, payable := receiveCursorBoxDrawn(t, s, w, h)
-	if payable && !drawn {
+	if !receiveCursorBoxDrawn(t, s, w, h) {
 		line, depth := receiveCursorBox(t, s)
-		t.Errorf("%s has room for the box on row %d (%d lines into its block) and does not "+
-			"draw it — %q:\n%s", what, s.focused, depth, line, receiveClippedPane(s, w, h))
+		t.Errorf("%s does not draw the box on row %d (%d lines into its block) — %q:\n%s",
+			what, s.focused, depth, line, receiveClippedPane(s, w, h))
 	}
+}
+
+// receiveBoxJoined reports whether the cursor's box is drawn on the joined row
+// that carries its line's identity (addLineBlock), rather than under a name row
+// of its own. For a sweep's vacuity guard only: it is read off the built body,
+// which is the builder's answer, and is never what an assertion rests on.
+func receiveBoxJoined(t *testing.T, s *ReceiveFormScreen) bool {
+	t.Helper()
+	line, _ := receiveCursorBox(t, s)
+	return strings.Contains(line, receiveCursorMarker(t, s))
 }
 
 // TestReceive_AShortPaneStillDrawsTheForm.
@@ -2922,7 +2911,7 @@ func TestReceive_EveryRowDrawsTheBoxTheCursorIsOn(t *testing.T) {
 		"nothing receivable": nil,
 	}
 	for name, lines := range orders {
-		payable, unpayable := 0, 0
+		joined, apart := 0, 0
 		for height := 10; height <= 30; height++ {
 			t.Run(fmt.Sprintf("%s at 80x%d", name, height), func(t *testing.T) {
 				fake := &receiveFake{}
@@ -2944,26 +2933,29 @@ func TestReceive_EveryRowDrawsTheBoxTheCursorIsOn(t *testing.T) {
 							"that is:\n%s", row, receiveClippedPane(s, 80, height))
 					}
 					receiveAssertBoxDrawn(t, s, 80, height, fmt.Sprintf("row %d", row))
-					if _, ok := receiveCursorBoxDrawn(t, s, 80, height); ok {
-						payable++
-					} else {
-						unpayable++
+					if _, isLine := s.lineAt(row); isLine {
+						if receiveBoxJoined(t, s) {
+							joined++
+						} else {
+							apart++
+						}
 					}
 					r = receiveKey(t, r, tea.KeyMsg{Type: tea.KeyDown})
 				}
 			})
 		}
-		// Both halves have to have been exercised. Every position payable at
-		// every height would mean the sweep never reached the short panes the
-		// separator defect lived on; none payable would mean the box assertion
-		// never fired at all.
-		if payable == 0 {
-			t.Errorf("%s: the box was never drawable at any swept height and row, so the "+
-				"assertion above never judged anything", name)
+		// Both shapes of a line's block have to have been exercised, on every
+		// order that HAS lines. Never joined would mean the sweep never reached the
+		// short panes where the window leaves a block one line — where the box was
+		// off the pane at 80x12, 80x13 and 80x15 — and never apart would mean the
+		// separator defect's taller panes were never judged either.
+		if len(lines) > 0 && joined == 0 {
+			t.Errorf("%s: no swept height drew a line's box joined to its name, so the sweep "+
+				"never reached the short panes this property is about", name)
 		}
-		if unpayable == 0 {
-			t.Errorf("%s: every swept height could pay for the box, so the sweep never "+
-				"reached the short panes this property is about", name)
+		if len(lines) > 0 && apart == 0 {
+			t.Errorf("%s: every swept height joined a line's box to its name, so the sweep "+
+				"never judged the ordinary layout", name)
 		}
 	}
 }

@@ -1114,32 +1114,20 @@ either:
   they arrived in.
 - **A block taller than the window loses its TAIL and no key can fetch it.**
   `jdeLines.Window` keeps a block's START and nothing scrolls inside one, so a
-  line block's contents are in a stated SACRIFICE ORDER (`addLineBlock`): what
-  the typed number means, then what a kit receipt credits, then the readings,
-  then the serial story. Measured at 80x30 with a kit, the window is eleven rows
-  — with the readings ahead of the credit the second component was off the pane,
-  on the block whose whole point is what a kit puts into stock.
-  KNOWN AND ROUTED, on the axis that order does NOT cover: the block's own
-  quantity BOX can be the thing off the pane. The block opens with the line's
-  label and `Window` keeps a block's START, so the pane draws
-  `2  Box of M3 bolts` and not the field under it — while that field has the
-  focus. Every rune after the first then redraws a byte-identical pane (the
-  first only moves because the bar changes shape), which is rule 1 broken by
-  geometry, the same shape as the New PO pickers' box and a DIFFERENT
-  mechanism: the body window rather than the header budget, so the answer
-  surface above does not reach it. Fixing it means reopening `addLineBlock`'s
-  sacrifice order — a decision, not a patch — which is why it is written down
-  rather than done in passing.
-  IT IS NOT A NARROW-PANE CASE AND THE RECORDED SET WAS TOO SMALL. Measured
-  with the cursor on the first receivable line, at every pane Root draws, it is
-  THIRTEEN: 80x12, 80x13, 80x15; 100x12, 100x13, 100x15, 100x16, 100x17, 100x18,
-  100x19; 120x11, 120x12, 120x14. The three 80-column ones were all that had
-  been written down, and reading that as "a short 80-column pane" is what makes
-  the case look like a corner — 100x19 is an ordinary window. The arithmetic
-  says why widening does not help: `Window` reserves two rows for the ↑/↓
-  markers, so a body budget of 1 or 3 leaves the cursor's block exactly ONE
-  content line, and above 100x15 the pinned HEADER takes the rows a taller pane
-  adds while `bodyAvailForBar` stays at 3 (`receiveNoteRows`' reservation).
+  line block's contents are in a stated SACRIFICE ORDER, and `addLineBlock`'s
+  doc comment is where it is stated and argued — read it there. The top of it is
+  the decision worth knowing: the quantity BOX and the line's IDENTITY never
+  give and are never drawn apart. Where the window leaves the block one line (a
+  body budget of 1 or 3, which above 100x15 is where the pinned header parks the
+  body), the name and the box are REFLOWED onto one row rather than the frame
+  being refused — a refused pane still takes typing. Before that the block
+  opened with the name and the focused box sat off the pane at 211 drawable
+  panes, 100x19 among them, while two sweeps skipped exactly those panes behind
+  a "could the pane pay for it?" gate that restated the layout.
+  `TestReceive_TheBoxAndItsLineAreNeverDrawnApart` holds it at every drawable
+  pane; `jdeLines.FewestBlockRows` is why a ceiling-bar measurement of that
+  room is safe, since a three-row window gives a block fewer lines than a
+  two-row one.
 
 ## Conventions
 

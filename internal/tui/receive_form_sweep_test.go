@@ -2349,6 +2349,101 @@ func TestReceive_TheSerialBoxHoldingTheCaretIsOnThePane(t *testing.T) {
 	}
 }
 
+// TestReceive_TheBoxAndItsLineAreNeverDrawnApart.
+//
+// With the cursor on a receivable line, the pane an operator reads carries BOTH
+// the quantity box they are typing into and which line it belongs to, at every
+// drawable pane — and a character typed there changes the pane. That is the top
+// of addLineBlock's sacrifice order, stated as the operator meets it.
+//
+// It exists because the box was off the pane at 211 drawable panes (13 of them
+// at the 80/100/120 the other sweeps name: 80x12, 80x13, 80x15, 100x12, 100x13,
+// 100x15–100x19, 120x11, 120x12, 120x14), and the two sweeps that looked for it
+// both stood aside there: their "could the pane pay for the box?" gate was the
+// builder's layout written down, so it answered no at exactly those panes. The
+// window leaves a line's block ONE line at a body budget of 1 or 3, and the
+// block opened with the line's NAME, so the name was drawn and the box under it
+// was not; every rune typed redrew the pane byte for byte. Widening does not
+// help — above 100x15 the pinned header takes the rows a taller pane adds while
+// the body stays at three.
+//
+// The panes are DERIVED (every drawable width and height, asked of Root), not
+// the thirteen that were measured, because the measured set was itself a
+// sample: the recorded list had three entries until somebody walked 100 and 120
+// columns. Each line is reached at a tall pane and the terminal is then dragged
+// to every size, the order an operator does it in. Both shapes of the block
+// must be reached — joined on the short panes, apart on the tall ones — or the
+// sweep has judged only one of the two layouts it is about.
+func TestReceive_TheBoxAndItsLineAreNeverDrawnApart(t *testing.T) {
+	widths, heights := receiveHonestWidths(), jdePaneHeights()
+	orders := map[string][]omsapi.ReceivingLine{
+		"three plain lines": receiveManyLines(3),
+		"a kit among plain lines": {
+			receiveWSKit(11, "Eufy printer maintenance kit (CMYK + cleaning)", 2, 0),
+			receiveWSLine(12, "Box of M3 bolts", 4, 0),
+			receiveWSLine(13, "Reel of 24AWG wire", 4, 0),
+		},
+	}
+	for name, lines := range orders {
+		for i := range lines {
+			name, lines, i := name, lines, i
+			t.Run(fmt.Sprintf("%s, line %d", name, i+1), func(t *testing.T) {
+				r, s := receiveDrive(t, &receiveFake{}, lines, receiveReachWidth, receiveReachHeight)
+				r = receiveGoToLine(t, r, s, i)
+				joined, apart := 0, 0
+				var bad []string
+				var firstBad string
+				for _, w := range widths {
+					for _, h := range heights {
+						next, _ := r.Update(tea.WindowSizeMsg{Width: w, Height: h})
+						r = next.(Root)
+						if !receiveDrawn(s) {
+							continue
+						}
+						if receiveBoxJoined(t, s) {
+							joined++
+						} else {
+							apart++
+						}
+						box, _ := receiveCursorBox(t, s)
+						marker := receiveCursorMarker(t, s)
+						before := receivePaneAt(s, w, h)
+						flat := receiveFlat(before)
+						r = receiveType(t, r, poRuneKey("7"))
+						after := receivePaneAt(s, w, h)
+						r = receiveType(t, r, tea.KeyMsg{Type: tea.KeyBackspace})
+						var missing []string
+						if !strings.Contains(flat, receiveFlat(box)) {
+							missing = append(missing, "the box")
+						}
+						if !strings.Contains(flat, marker) {
+							missing = append(missing, "the line's name")
+						}
+						if before == after {
+							missing = append(missing, "any change for a typed rune")
+						}
+						if len(missing) > 0 {
+							if firstBad == "" {
+								firstBad = fmt.Sprintf("at %dx%d, missing %s:\n%s", w, h,
+									strings.Join(missing, " and "), stripANSI(before))
+							}
+							bad = append(bad, fmt.Sprintf("%dx%d", w, h))
+						}
+					}
+				}
+				if len(bad) > 0 {
+					t.Errorf("standing on line %d, %d drawn pane(s) do not carry the box and its line "+
+						"together, including %v; first %s", i+1, len(bad), bad[:min(8, len(bad))], firstBad)
+				}
+				if joined == 0 || apart == 0 {
+					t.Errorf("line %d's block was drawn joined at %d pane(s) and apart at %d — both "+
+						"shapes have to be reached or one layout was never judged", i+1, joined, apart)
+				}
+			})
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // A refusal of the whole form says why, from every row, on every pane
 // ---------------------------------------------------------------------------

@@ -945,7 +945,8 @@ func (l *jdeLines) Window(cursorRow, avail int) ([]string, int) {
 	}
 
 	first, last := l.block(cursorRow)
-	if avail <= 2 {
+	body := l.BlockRows(avail)
+	if body == avail {
 		// No room for indicators: show the cursor's own lines and nothing else.
 		start := first
 		if start+avail > n {
@@ -954,7 +955,6 @@ func (l *jdeLines) Window(cursorRow, avail int) ([]string, int) {
 		return append([]string(nil), l.text[start:start+avail]...), l.rowsIn(start, start+avail)
 	}
 
-	body := avail - 2
 	start := first - (body-1)/2
 	if start+body > n {
 		start = n - body
@@ -991,6 +991,49 @@ func (l *jdeLines) Window(cursorRow, avail int) ([]string, int) {
 		out = append(out, "")
 	}
 	return out, l.rowsIn(start, end)
+}
+
+// BlockRows is the most lines of the CURSOR's own block Window draws in a
+// window of `avail` rows: the whole body when it fits, every row when there is
+// no room for the "more above / more below" indicators, and the rows between
+// the two indicators otherwise. Zero on an unsized or empty window.
+//
+// It is Window's arithmetic, answered here once, and Window reads it, so a sheet
+// that has to lay a block out for the room it will really get cannot come to a
+// different answer from the window that draws it. The receiving form is the
+// reason it exists: a body budget of 1 or 3 leaves a block ONE line, which is
+// what put its quantity box under the line's name and off the pane at 211
+// drawable panes (receive_form.go's addLineBlock).
+func (l *jdeLines) BlockRows(avail int) int {
+	n := len(l.text)
+	switch {
+	case avail <= 0:
+		return 0
+	case n <= avail:
+		return n
+	case avail <= 2:
+		return avail
+	}
+	return avail - 2
+}
+
+// FewestBlockRows is the fewest lines of the cursor's block Window draws in ANY
+// window of `avail` rows or more.
+//
+// It is the question a sheet measuring against a CEILING bar has to ask, because
+// BlockRows is not monotone: a window of two rows has no room for indicators and
+// draws two lines of the block, while a window of three spends two rows on them
+// and draws ONE. The bar actually drawn is never taller than the ceiling, so its
+// window is at least `avail` — and an answer taken at `avail` alone said "two
+// lines" at 80x15 on the receiving form, whose drawn window was three rows and
+// held one. Past three rows BlockRows only grows with the window, so the dip is
+// the one step from `avail` to `avail+1` and nothing further needs asking.
+func (l *jdeLines) FewestBlockRows(avail int) int {
+	fewest := l.BlockRows(avail)
+	if next := l.BlockRows(avail + 1); avail > 0 && next < fewest {
+		fewest = next
+	}
+	return fewest
 }
 
 // ---------------------------------------------------------------------------

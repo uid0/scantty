@@ -4043,7 +4043,7 @@ func (s *ReceiveFormScreen) qtyPagesFor(headerRows int) bool {
 	// It is asked here rather than in the arm so the bar and pageQty read ONE
 	// expression: two conditions that agree in most states are two conditions
 	// that will eventually disagree in one.
-	return s.bodyPagesForBar(s.qtyBody(), s.totalInputs(), headerRows, s.qtyBarCeiling())
+	return s.bodyPagesForBar(s.qtyBodyFor(headerRows), s.totalInputs(), headerRows, s.qtyBarCeiling())
 }
 
 // qtyPages is qtyPagesFor bound to the frame being drawn now, for View and for
@@ -4057,7 +4057,7 @@ func (s *ReceiveFormScreen) qtyPages() bool {
 // moves by exactly what the operator could see on it. The arithmetic is the
 // LAYER's (windowRowsForBar), not a local copy of it.
 func (s *ReceiveFormScreen) qtyStepFor(headerRows int) int {
-	return s.windowRowsForBar(s.qtyBody(), s.focused, headerRows, s.qtyBarCeiling())
+	return s.windowRowsForBar(s.qtyBodyFor(headerRows), s.focused, headerRows, s.qtyBarCeiling())
 }
 
 // serialBar follows the BOX: with nothing in it, Enter passes the unit over,
@@ -4428,7 +4428,53 @@ func receiveFit(text string, width, indent int) string {
 // Every line of a block is tagged with that block's navigable ROW, so
 // jdeLines.Window keeps the name, the readings, the quantity box and the kit
 // breakdown on screen TOGETHER.
+//
+// qtyBody is the body of the frame being drawn NOW; qtyBodyFor is the same body
+// for a frame whose pinned header is `headerRows` tall, which is what the key
+// arms ask (barFor's comment says why a press is judged against the frame it was
+// made on). The header matters because the body's LAYOUT depends on the room the
+// window will give it — see qtyJoinsLines.
 func (s *ReceiveFormScreen) qtyBody() *jdeLines {
+	return s.qtyBodyFor(len(s.headerLines()))
+}
+
+func (s *ReceiveFormScreen) qtyBodyFor(headerRows int) *jdeLines {
+	l := s.qtyBodyLaid(false)
+	if s.qtyJoinsLines(l, headerRows) {
+		return s.qtyBodyLaid(true)
+	}
+	return l
+}
+
+// qtyJoinsLines reports whether a receivable line's NAME and its quantity BOX
+// must share one row, because the window leaves the cursor's block fewer than
+// the two lines they take apart. It is asked of the body laid out the ordinary
+// way, and the answer only ever shortens that body, so it cannot flip back.
+//
+// It is measured against the phase's TALLEST bar (qtyBarCeiling) for the reason
+// every budget on this screen is: the drawn bar depends on whether the body
+// pages, which depends on the body, which would then depend on the bar. The
+// ceiling is the fixed point — but only for a question whose answer cannot get
+// WORSE as the window grows, and "how many lines does the block get" can (a
+// window of three rows draws fewer than one of two), so it asks the layer for
+// the fewest lines over every window the drawn bar can leave. What that costs
+// is bounded and safe: where the drawn window happens to be one that holds the
+// two rows apart, they are drawn joined anyway, and the joined row still
+// carries both.
+//
+// An unsized terminal draws every line (the layer's standing answer for no
+// pane), so nothing is joined there.
+func (s *ReceiveFormScreen) qtyJoinsLines(l *jdeLines, headerRows int) bool {
+	if len(s.qty) == 0 {
+		return false
+	}
+	avail := s.bodyAvailForBar(headerRows, s.qtyBarCeiling())
+	return avail > 0 && l.FewestBlockRows(avail) < 2
+}
+
+// qtyBodyLaid builds the quantity form's body, with each receivable line's name
+// and box on separate rows or — `joined` — on one (addLineBlock).
+func (s *ReceiveFormScreen) qtyBodyLaid(joined bool) *jdeLines {
 	l := &jdeLines{}
 	lw := receiveLabelWidth()
 	width := s.bodyWidth()
@@ -4481,7 +4527,7 @@ func (s *ReceiveFormScreen) qtyBody() *jdeLines {
 			// what a short window drops there is a blank.
 			l.AddRow(receiveRowFirstLine+i-1, "")
 		}
-		s.addLineBlock(l, i, lw, width)
+		s.addLineBlock(l, i, lw, width, joined)
 	}
 	// The same rule for the last block: this blank closes it rather than
 	// opening the notes row, which would otherwise draw a blank where the
@@ -4779,32 +4825,97 @@ func receiveCaveatLines(text string, style lipgloss.Style, width int) []string {
 	return out
 }
 
-// addLineBlock draws one receivable line: its name, its readings, the quantity
-// box, what the number typed there would mean, and — for a kit — what it would
-// credit.
-func (s *ReceiveFormScreen) addLineBlock(l *jdeLines, i, lw, width int) {
+// addLineBlock draws one receivable line: its name, the quantity box, what the
+// number typed there would mean, what a kit receipt would credit, its readings
+// and its serial story — in that order, which is its SACRIFICE ORDER.
+//
+// The order is a decision, and it is written down because a block taller than
+// the window loses its TAIL with no key able to fetch it: Window keeps a block's
+// START and nothing scrolls inside one. Read from what never gives to what gives
+// first:
+//
+//	NEVER GIVES, while the frame is drawn
+//	  the quantity BOX            the value being typed, and the caret in it.
+//	                              Rule 4: a scanner burst into a box the operator
+//	                              cannot see is input they cannot check before
+//	                              Enter sends it. Rule 1: every rune must move the
+//	                              pane, and a box off the pane redraws it byte for
+//	                              byte.
+//	  the line's IDENTITY         its number, its [kit] tag and its state tag, and
+//	                              its NAME, drawn with the box and never without
+//	                              it — a quantity against a line the operator
+//	                              cannot identify is a wrong receipt waiting to
+//	                              happen. Rule 6: the number and the tags are
+//	                              facts and survive whole; the name is the
+//	                              identifier, and it abbreviates with fitCell's
+//	                              ellipsis rather than being cut clean.
+//	GIVES, last to first
+//	  the row SHAPE               the name on a row of its own over a box labelled
+//	                              "Quantity" (and hinted "kits" on a kit). Where
+//	                              the window leaves this block ONE line, the two
+//	                              are REFLOWED onto one row: the identity takes the
+//	                              label column, the box keeps its fill, and the
+//	                              label word and the hint are what go — the [kit]
+//	                              tag still says what the number counts.
+//	  what the typed number MEANS over or short, against the order
+//	  what a KIT receipt credits  the caveat, then the components
+//	  the line's own readings     which the name row's tags already summarise
+//	  the SERIAL story            a phase that has not started, and units already
+//	                              on the shelf — gives FIRST
+//
+// A cut tail is marked by the layer's "↓ N more below" wherever the window has
+// room for an indicator. At a body of ONE row it has none, and that row is the
+// joined identity-and-box row: the marker is what gives there, because spending
+// the row on it would take the box.
+//
+// WHY REFLOW AND NOT REFUSE. Both keep the box and the identity together, and
+// only one keeps the form usable. A refused pane still TAKES TYPING — the layer
+// gates movement keys, never runes (jde_form.go's movement block), because
+// declining a rune discards input — so refusing here would leave a scanner
+// firing into a box nobody can see, which is the defect restated rather than
+// fixed. And the panes this happens at are not corners: measured before the
+// reflow, the box was off the pane with the cursor on a line at 211 drawable
+// panes, 100x16 through 100x19 among them, because above 100x15 the pinned
+// header takes the rows a taller pane adds while the body stays at three
+// (receiveNoteRows' reservation, which is not reopened). A refusal the operator
+// meets at an ordinary window size is one they cannot reasonably act on (rule
+// 11). Putting the box FIRST was the other remedy on offer and it is the one
+// this order rules out: at one line it keeps the box and loses which line it
+// belongs to.
+//
+// The reflow is conditional rather than the row shape everywhere because
+// everywhere else the separate rows lose nothing: the name row keeps its
+// coloured tags and the box row keeps the shared label column the whole form is
+// aligned on. qtyJoinsLines is the one place the condition is decided, and
+// TestReceive_TheBoxAndItsLineAreNeverDrawnApart holds the property at every
+// drawable pane.
+func (s *ReceiveFormScreen) addLineBlock(l *jdeLines, i, lw, width int, joined bool) {
 	line := s.lines[i]
 	row := receiveRowFirstLine + i
-	// The heading's marker and the box's fill answer DIFFERENT questions, which
-	// is why they are asked separately here. The number stays styled for
-	// whichever row the cursor is on — that is the operator's PLACE, and a
-	// freeze that took it away would leave them hunting for it when the request
-	// answers — while the box's reverse-video fill says "type here", which is
-	// false for as long as a request is out (caretOn).
-	l.AddRow(row, jdeIndent+s.lineHeading(i+1, line.sheet, s.focused == row, width))
-	qty := jdeField{
-		Label:   "Quantity",
-		Kind:    jdeText,
-		Input:   &s.qty[i],
-		Width:   8,
-		Focused: s.caretOn(row),
+	if joined {
+		l.AddFittedField(row, s.joinedQtyField(i, width), s.joinedLabelWidth(i, width), width)
+	} else {
+		// The heading's marker and the box's fill answer DIFFERENT questions,
+		// which is why they are asked separately here. The number stays styled
+		// for whichever row the cursor is on — that is the operator's PLACE, and
+		// a freeze that took it away would leave them hunting for it when the
+		// request answers — while the box's reverse-video fill says "type here",
+		// which is false for as long as a request is out (caretOn).
+		l.AddRow(row, jdeIndent+s.lineHeading(i+1, line.sheet, s.focused == row, width))
+		qty := jdeField{
+			Label:   "Quantity",
+			Kind:    jdeText,
+			Input:   &s.qty[i],
+			Width:   receiveQtyWidth,
+			Focused: s.caretOn(row),
+		}
+		if line.sheet.IsKitLine {
+			// The unit of the box, right beside the box. "ordered 2 kits" says
+			// it once in the readings; this says it where the number is typed.
+			qty.Hint = "kits"
+		}
+		l.AddFittedFields([]jdeField{qty}, lw, width, row)
 	}
-	if line.sheet.IsKitLine {
-		// The unit of the box, right beside the box. "ordered 2 kits" says it
-		// once on the row above; this says it where the number is typed.
-		qty.Hint = "kits"
-	}
-	l.AddFittedFields([]jdeField{qty}, lw, width, row)
 	// AFTER the box, never before it — the READINGS included. These lines are
 	// part of this row's block, so Window keeps them with the box; but a block
 	// too tall for the pane keeps its START, so every row placed ahead of the
@@ -4819,22 +4930,10 @@ func (s *ReceiveFormScreen) addLineBlock(l *jdeLines, i, lw, width int) {
 	// drew the heading, both reading lines and the "↓ more below" marker, with
 	// the box the cursor was on off the pane.
 	//
-	// What follows the box is in a SACRIFICE ORDER, and it is written down
-	// because a block taller than the window loses its tail with NO key able to
-	// fetch it — Window keeps a block's start and nothing scrolls inside one.
-	// So the block runs from what the operator cannot do without to what they
-	// can:
-	//
-	//	what the typed number MEANS   over or short, against the order
-	//	what a KIT receipt credits    the caveat, then the components
-	//	the line's own readings       which the row above already restates
-	//	the SERIAL story              a phase that has not started, and units
-	//	                              already on the shelf
-	//
-	// Measured: at 80x30 with the kit fixture the window is eleven rows, and
-	// with the readings ahead of the credit the second component sat off the
-	// pane — on the block whose whole point is saying what a kit receipt puts
-	// into stock.
+	// Measured for the order among the tail: at 80x30 with the kit fixture the
+	// window is eleven rows, and with the readings ahead of the credit the second
+	// component sat off the pane — on the block whose whole point is saying what
+	// a kit receipt puts into stock.
 	for _, cl := range s.overShortLines(i, width) {
 		l.AddRow(row, cl)
 	}
@@ -4852,6 +4951,55 @@ func (s *ReceiveFormScreen) addLineBlock(l *jdeLines, i, lw, width int) {
 	for _, cl := range s.serialCaveatLines(line.sheet, width) {
 		l.AddRow(row, cl)
 	}
+}
+
+// receiveQtyWidth is the fill a quantity box is drawn with, on its own row and
+// on the joined one alike, so the box an operator types into is the same size
+// whichever shape the pane gave the block.
+const receiveQtyWidth = 8
+
+// joinedQtyField is line i's quantity box with the line's IDENTITY in the label
+// column: the row addLineBlock reflows the name and the box onto when the window
+// leaves the block one line. The label is PLAIN text — the layer styles the
+// label column as a whole, and a pre-styled tag inside it would carry its own
+// reset partway across the run.
+func (s *ReceiveFormScreen) joinedQtyField(i, width int) jdeField {
+	row := receiveRowFirstLine + i
+	return jdeField{
+		Label:   s.joinedIdentity(i, width),
+		Kind:    jdeText,
+		Input:   &s.qty[i],
+		Width:   receiveQtyWidth,
+		Focused: s.caretOn(row),
+	}
+}
+
+// joinedLabelWidth is the label column the joined row is drawn with: exactly
+// its identity, so renderJDEField neither pads it nor clips it again.
+func (s *ReceiveFormScreen) joinedLabelWidth(i, width int) int {
+	return lipgloss.Width(s.joinedIdentity(i, width))
+}
+
+// joinedIdentity is line i's number, tags and name, bounded so the box keeps its
+// whole fill beside it. The number and the tags are facts and never give; the
+// NAME is what abbreviates, and fitCell marks it — down to its ellipsis alone,
+// which is never reached at a pane the size contract draws (51 cells leave the
+// name seventeen behind a number, a [kit] tag and the longest state tag).
+func (s *ReceiveFormScreen) joinedIdentity(i, width int) string {
+	line := s.lines[i].sheet
+	facts := fmt.Sprintf("%-2d ", i+1)
+	for _, tag := range receiveLineTags(line) {
+		facts += tag.text + " "
+	}
+	name := line.Label
+	if width > 0 {
+		room := width - len(jdeIndent) - len(jdeLeader) - receiveQtyWidth - lipgloss.Width(facts)
+		if room < 1 {
+			room = 1
+		}
+		name = fitCell(name, room)
+	}
+	return facts + name
 }
 
 // overShortLines is what the number currently in the box would MEAN, drawn
@@ -4918,11 +5066,8 @@ func (s *ReceiveFormScreen) lineHeading(num int, line omsapi.ReceivingLine, focu
 		lead = StyleJDELabelFocused.Render(fmt.Sprintf("%-2d ", num))
 	}
 	var tags []string
-	if line.IsKitLine {
-		tags = append(tags, StyleStatusWarn.Render(poKitTag))
-	}
-	if mark, style, ok := receiveStateTag(line); ok {
-		tags = append(tags, style.Render(mark))
+	for _, tag := range receiveLineTags(line) {
+		tags = append(tags, tag.style.Render(tag.text))
 	}
 	prefix := ""
 	if len(tags) > 0 {
@@ -4936,6 +5081,27 @@ func (s *ReceiveFormScreen) lineHeading(num int, line omsapi.ReceivingLine, focu
 		}
 	}
 	return lead + prefix + label
+}
+
+// receiveLineTag is one of the short markers a line's name is drawn behind.
+type receiveLineTag struct {
+	text  string
+	style lipgloss.Style
+}
+
+// receiveLineTags are the markers that change what a line's number MEANS — that
+// it counts kits, and where receiving has got to with it — in the order they
+// lead the name. One list, read by the name row and by the joined row, so the two
+// shapes of one line cannot come to carry different facts.
+func receiveLineTags(line omsapi.ReceivingLine) []receiveLineTag {
+	var tags []receiveLineTag
+	if line.IsKitLine {
+		tags = append(tags, receiveLineTag{poKitTag, StyleStatusWarn})
+	}
+	if mark, style, ok := receiveStateTag(line); ok {
+		tags = append(tags, receiveLineTag{mark, style})
+	}
+	return tags
 }
 
 // receiveStateTag is the short marker a line's receipt state earns on its name
