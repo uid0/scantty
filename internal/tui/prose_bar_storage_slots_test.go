@@ -233,6 +233,34 @@ func TestProseBarStorageSlots_EveryRowFitsThePaneAndKeepsItsTag(t *testing.T) {
 	}
 }
 
+// TestProseBarStorageSlots_AGroupNameThatFitsIsNotMarkedCut: a group name that
+// exactly fills what the row leaves is drawn whole, with no ellipsis.
+//
+// The room left for the name is measured in CELLS. The ` · ` joint in front of
+// it is three cells and four BYTES, so a budget taking len(joint) off gave the
+// name one cell less than the row had, and a name that fitted was drawn cut —
+// a mark claiming a loss nobody suffered. Watched failing with len(joint).
+func TestProseBarStorageSlots_AGroupNameThatFitsIsNotMarkedCut(t *testing.T) {
+	// Wide enough that the occupancy column is at its full width and leaves the
+	// group name room at all; at 80 the column's floor has already spent it.
+	const width = 120
+	cells := proseBarCells(width)
+	s := proseBarSize(proseBarStorageSlots(1), width, 24).(*StorageSlotsScreen)
+	// Off the cursor, so the row is drawn without the highlight's padding and
+	// its width is the line itself. The occupancy column may carry its own
+	// ellipsis; the claim is only about what follows the joint.
+	s.cursor = 1
+	s.rows[0].OwningGroupName = ""
+	bare := lipgloss.Width(stripANSI(s.renderRow(0, cells)))
+	room := cells - StyleSidebarItemActive.GetHorizontalPadding()
+	name := strings.Repeat("W", room-bare-lipgloss.Width(" · "))
+	s.rows[0].OwningGroupName = name
+	row := stripANSI(s.renderRow(0, cells))
+	if !strings.HasSuffix(strings.TrimRight(row, " "), " · "+name) {
+		t.Fatalf("a %d-cell group name that fits the row was drawn cut:\n%q", len(name), row)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Builders
 // ---------------------------------------------------------------------------
