@@ -329,8 +329,10 @@ type proseBarScreen interface {
 // differs here is only which question gates them.
 func proseNavCursor(moves bool) proseBar { return proseNavList(moves, moves) }
 
-// proseListWindow is how many ROWS such a list may draw, with the footer's
-// height taken off the top rather than assumed.
+// proseListWindow is how many body LINES such a list may draw, with the footer's
+// height taken off the top rather than assumed. It was read as a count of rows
+// for as long as every row was one line; proseCursorWindow is where it is spent
+// as lines, and why a row is not always one.
 //
 // WHAT IT REPLACES, and why the constant it replaces could not survive the
 // conversion. Every one of these screens carried
@@ -484,6 +486,74 @@ func proseFlatListFrame(head string, rows []string, cursor int, start *int, term
 		from, to = proseLineWindow(heights, cursor, *start, budget)
 		*start = from
 	}
+	proseWriteRows(&b, rows, from, to, budget)
+	b.WriteString("\n")
+	b.WriteString(drawn.render(cells))
+	return b.String()
+}
+
+// proseCursorWindow writes the window of a WINDOWED cursor list — the recipe
+// proseNavCursor and proseListWindow serve — packed by LINES into the `budget`
+// proseListWindow gave it, between the two scroll markers.
+//
+// THOSE LISTS COUNTED THEIR WINDOW IN ROWS and drew one line a row, which was
+// true of every row they had ever been shown and is not true of the data. The
+// names they lead each row with are OpenMakerSuite CharFields, and nothing
+// between an API write and this pane refuses a newline in one: DRF's CharField
+// trims only the ends of a value, the admin's single-line input is not the only
+// writer, and lipgloss keeps the newline when it styles the row. A two-line name
+// made one row two lines, so a window of N rows assembled more lines than the
+// pane has and clampToBox, which drops from the BOTTOM, took the footer — every
+// key named nowhere. proseListWindow's budget already IS a count of body lines
+// (it reserves the count line, both markers and the folded bar and gives the
+// rest), so the fix is to spend it as one: proseLineWindow packs the rows by
+// what each really draws, and a row taller than the budget is clipped with the
+// cut named — proseFlatListFrame's answer, which is why they share
+// proseWriteRows.
+//
+// THE NEWLINE IS NOT STRIPPED, and that is a decision rather than an omission.
+// Flattening a name on display would draw a value the record does not hold and
+// say nothing about it; drawing it as stored, and marking where the pane ran
+// out, is what the operator can reconcile with the web app.
+//
+// `start` is the screen's window start. Its key arms still move it in ROWS
+// (scrollIntoView), and this refits it to the cursor against the rows as drawn,
+// written from inside View for the reason proseFlatListFrame gives: the fit is
+// idempotent given the pane, the rows and the cursor, so a second render walks
+// nowhere. With every row one line the fit IS the row window those arms already
+// chose, so a list of ordinary names draws exactly what it drew before.
+//
+// WHAT THIS DOES NOT CHANGE is the pager: pgup/pgdn still step the cursor by the
+// budget in ROWS. On a list of multi-line names that is a step longer than the
+// screenful drawn, so a page can pass rows j/k still reach; deciding what a page
+// of rows of different heights is worth is the question AssetPartsScreen's
+// proseBarUnconverted entry already records, and it is not part of keeping the
+// footer on the pane.
+func proseCursorWindow(b *strings.Builder, rows []string, cursor int, start *int, budget int) {
+	if extraHeadLines := strings.Count(b.String(), "\n") - 1; extraHeadLines > 0 {
+		budget -= extraHeadLines
+		if budget < 1 {
+			budget = 1
+		}
+	}
+	heights := make([]int, len(rows))
+	for i, r := range rows {
+		heights[i] = strings.Count(r, "\n") + 1
+	}
+	from, to := proseLineWindow(heights, cursor, *start, budget)
+	*start = from
+	proseWriteRows(b, rows, from, to, budget)
+}
+
+// proseWriteRows writes rows[from:to] between the scroll markers, clipping any
+// row taller than `budget` lines to the budget with its last kept line naming how
+// many lines were left out. A budget of zero or less draws every row whole — the
+// unsized pane, where there is nothing to overflow.
+//
+// The mark spends a line of the budget rather than being added to it, so a
+// clipped row is exactly as tall as the budget it was clipped to and the frame's
+// arithmetic holds.
+func proseWriteRows(b *strings.Builder, rows []string, from, to, budget int) {
 	if from > 0 {
 		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
 	}
@@ -499,9 +569,6 @@ func proseFlatListFrame(head string, rows []string, cursor int, start *int, term
 	if to < len(rows) {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(rows)-to)) + "\n")
 	}
-	b.WriteString("\n")
-	b.WriteString(drawn.render(cells))
-	return b.String()
 }
 
 // proseLineWindow picks which rows of a list whose rows draw DIFFERENT numbers of

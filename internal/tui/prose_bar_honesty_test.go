@@ -195,7 +195,8 @@ var proseBarUnconverted = map[string]string{
 		"already packs its window by LINES rather than by rows (rowsFittingFrom), which is " +
 		"the arithmetic AssetPartsScreen is missing — so what it needs is the record and the " +
 		"fold, with its own line budget taught to move with the folded footer. " +
-		"proseListWindow is the wrong helper for it: it counts rows",
+		"proseCursorWindow is the wrong helper for it: the screen already derives a row count " +
+		"from each row's rendered height and needs that existing budget taught about the bar",
 	"LocationProblemsScreen": "the problem list for a location, the same two-surface shape " +
 		"as AssetProblemsScreen",
 	"SIGMembersScreen": "the member list of a SIG, plus its person picker — a second cursor " +

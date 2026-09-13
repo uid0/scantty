@@ -315,19 +315,13 @@ func (s *PanelBreakersScreen) View() string {
 		return b.String()
 	}
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d breakers", len(s.rows))) + "\n")
-	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+	// Packed by LINES, not rows: a stored name can carry a newline. See
+	// proseCursorWindow.
+	rows := make([]string, len(s.rows))
+	for i := range rows {
+		rows[i] = s.renderRow(i)
 	}
-	end := s.windowStart + s.windowSize
-	if end > len(s.rows) {
-		end = len(s.rows)
-	}
-	for i := s.windowStart; i < end; i++ {
-		b.WriteString(s.renderRow(i) + "\n")
-	}
-	if end < len(s.rows) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
-	}
+	proseCursorWindow(&b, rows, s.cursor, &s.windowStart, s.windowSize)
 	b.WriteString("\n")
 	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
@@ -679,19 +673,13 @@ func (s *BreakerCircuitsScreen) View() string {
 		return b.String()
 	}
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d circuits", len(s.rows))) + "\n")
-	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+	// Packed by LINES, not rows: a stored name can carry a newline. See
+	// proseCursorWindow.
+	rows := make([]string, len(s.rows))
+	for i := range rows {
+		rows[i] = s.renderRow(i)
 	}
-	end := s.windowStart + s.windowSize
-	if end > len(s.rows) {
-		end = len(s.rows)
-	}
-	for i := s.windowStart; i < end; i++ {
-		b.WriteString(s.renderRow(i) + "\n")
-	}
-	if end < len(s.rows) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
-	}
+	proseCursorWindow(&b, rows, s.cursor, &s.windowStart, s.windowSize)
 	b.WriteString("\n")
 	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
@@ -1018,19 +1006,13 @@ func (s *CircuitOutletsScreen) View() string {
 		return b.String()
 	}
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d outlets", len(s.rows))) + "\n")
-	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+	// Packed by LINES, not rows: a stored name can carry a newline. See
+	// proseCursorWindow.
+	rows := make([]string, len(s.rows))
+	for i := range rows {
+		rows[i] = s.renderRow(i)
 	}
-	end := s.windowStart + s.windowSize
-	if end > len(s.rows) {
-		end = len(s.rows)
-	}
-	for i := s.windowStart; i < end; i++ {
-		b.WriteString(s.renderRow(i) + "\n")
-	}
-	if end < len(s.rows) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
-	}
+	proseCursorWindow(&b, rows, s.cursor, &s.windowStart, s.windowSize)
 	b.WriteString("\n")
 	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
@@ -1354,19 +1336,13 @@ func (s *CircuitDisconnectsScreen) View() string {
 		return b.String()
 	}
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d disconnects", len(s.rows))) + "\n")
-	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+	// Packed by LINES, not rows: a stored name can carry a newline. See
+	// proseCursorWindow.
+	rows := make([]string, len(s.rows))
+	for i := range rows {
+		rows[i] = s.renderRow(i)
 	}
-	end := s.windowStart + s.windowSize
-	if end > len(s.rows) {
-		end = len(s.rows)
-	}
-	for i := s.windowStart; i < end; i++ {
-		b.WriteString(s.renderRow(i) + "\n")
-	}
-	if end < len(s.rows) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
-	}
+	proseCursorWindow(&b, rows, s.cursor, &s.windowStart, s.windowSize)
 	b.WriteString("\n")
 	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
