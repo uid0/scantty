@@ -122,6 +122,8 @@ func proseLoadScreens() []proseLoadScreen {
 			fresh: func(d Deps) proseBarScreen { return NewBreakerCircuitsScreen(d, 7, 1, "Bay 7 receptacles") }},
 		{name: "category list", recv: "CategoryListScreen", loaded: "category list", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewCategoryListScreen(d) }},
+		{name: "checklists", recv: "ChecklistsScreen", loaded: "checklists", reload: "r",
+			fresh: func(d Deps) proseBarScreen { return NewChecklistsScreen(d) }},
 		{name: "circuit disconnects", recv: "CircuitDisconnectsScreen", loaded: "circuit disconnects", reload: "r",
 			fresh: func(d Deps) proseBarScreen {
 				return NewCircuitDisconnectsScreen(d, 3, 1, "Bay 7 receptacles, north run")
@@ -144,6 +146,8 @@ func proseLoadScreens() []proseLoadScreen {
 			fresh: func(d Deps) proseBarScreen { return NewEPaperPanelsScreen(d) }},
 		{name: "certificates", recv: "ForgeKeyCertificatesScreen", loaded: "certificates", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewForgeKeyCertificatesScreen(d) }},
+		{name: "firmware", recv: "FirmwareScreen", loaded: "firmware", reload: "r",
+			fresh: func(d Deps) proseBarScreen { return NewFirmwareScreen(d) }},
 		{name: "forgekey device form", recv: "ForgeKeyDeviceFormScreen",
 			failureIsAForm: "a failed location load drops into the edit phase with the failure on " +
 				"one row above the form's own bar — a fixed seven-row field form with no give-order, " +

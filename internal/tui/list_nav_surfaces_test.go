@@ -113,7 +113,8 @@ import (
 // (prose_bar_wider_vocabulary_test.go), and then the simple FIELD FORMS, whose
 // up/down move a focus rather than a cursor (prose_bar_field_forms_test.go), and
 // then the lists whose rows are several lines and whose window already packed
-// them by line cost (prose_bar_row_packed_lists_test.go). A
+// them by line cost (prose_bar_row_packed_lists_test.go), and then the flat
+// lists sharing their pane with a second section (prose_bar_sections_test.go). A
 // field-form entry here was an exemption from THIS classifier, never from the
 // bar rule, and a form's record names its focus keys like any other. Their bars
 // are RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
@@ -125,8 +126,6 @@ var listNavUnsweptReceivers = map[string]string{
 		"51 cells. Left out of the windowed-cursor-list conversion because its rows are " +
 		"multi-LINE and its window is budgeted in rows — see proseBarUnconverted",
 	"ChecklistRunScreen":    "the step list of a checklist run",
-	"ChecklistsScreen":      "the checklist browse list",
-	"FirmwareScreen":        "the firmware rollout list",
 	"InventoryDetailScreen": "the item detail sheet and its three pick modals",
 	"MakerBoxesScreen":      "the maker-box list beside MakerBoxFormScreen",
 	"ReportTableScreen": "the shared scrollable report table, which every tabbed report " +
