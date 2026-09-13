@@ -824,7 +824,10 @@ func (s *AssetInterlockScreen) reasonHeader() jdeHeader {
 		Value:   fitCellIf(s.assetName, jdeStripWidth(s.bodyWidth(), interlockLabelW)),
 		Focused: true,
 	}, interlockLabelW, s.bodyWidth()))
-	h = h.addBlock(jdeHeadContext, jdeCaveatLines(interlockReasonCaveat, s.bodyWidth()))
+	// A CAVEAT and not addBlock: addBlock adds independent rows, so a short pane
+	// took the fold's tail and left a sentence ending on a whole word
+	// (jdeHeader.addCaveat).
+	h = h.addCaveatBlock(jdeHeadContext, jdeCaveatLines(interlockReasonCaveat, s.bodyWidth()))
 	return h.add(jdeHeadDecorative, "")
 }
 

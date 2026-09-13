@@ -442,12 +442,12 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 	}
 	h := jdeHeader(nil).add(headingRank, StyleJDEHeading.Render("Packaging chain"))
 	// The guidance and the empty-state detail are each one sentence folded
-	// across rows, so they are FITTED: trimmed row by row from the end, a fold
-	// is left as a fragment that ends on a whole word (jdeHeader.addFitted).
+	// across rows, so they are CAVEATS: trimmed row by row from the end, a fold
+	// is left as a fragment that ends on a whole word, and re-drawn with its cut
+	// marked it is still a sentence nobody wrote (jdeHeader.addCaveat).
 	width := s.bodyWidth()
 	guide := chainGuidance(unit)
-	h = h.addFitted(jdeHeadContext, jdeHeadContext, jdeCaveatLines(guide, width),
-		func(rows int) []string { return jdeCaveatLinesIn(guide, width, rows) })
+	h = h.addCaveat(jdeHeadContext, jdeCaveatLines(guide, width))
 	// SPLIT IN TWO, and the split is what makes an essential row possible here.
 	//
 	// It was one sentence — "No packaging levels — this item is counted in
@@ -465,7 +465,6 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 	var emptyFact string
 	var emptyDetail []string
 	detail := chainEmptyDetail(unit)
-	emptyRefit := func(rows int) []string { return jdeCaveatLinesIn(detail, width, rows) }
 	if len(s.packRows) == 0 {
 		emptyFact = jdeIndent + StyleMuted.Render("No packaging levels on this item.")
 		emptyDetail = jdeCaveatLines(detail, width)
@@ -474,7 +473,7 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 	case len(msgs) > 0:
 		if emptyFact != "" {
 			h = h.add(jdeHeadDecorative, "").add(jdeHeadContext, emptyFact).
-				addFitted(jdeHeadContext, jdeHeadContext, emptyDetail, emptyRefit)
+				addCaveat(jdeHeadContext, emptyDetail)
 		}
 		h = h.add(jdeHeadDecorative, "")
 		// FOLDED against the live pane, like every other sentence on this
@@ -503,7 +502,7 @@ func (s *InventoryItemFormScreen) chainHeader() jdeHeader {
 	case emptyFact != "":
 		h = h.add(jdeHeadDecorative, "").
 			add(jdeHeadEssential, emptyFact).
-			addFitted(jdeHeadContext, jdeHeadContext, emptyDetail, emptyRefit)
+			addCaveat(jdeHeadContext, emptyDetail)
 	default:
 		h = h.add(jdeHeadDecorative, "")
 	}

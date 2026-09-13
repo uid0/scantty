@@ -2299,6 +2299,23 @@ func jdeHeaderCases() map[string]jdeHeaderCase {
 				s.setErr(poSubmitFailWords, nginx502)
 				return s
 			},
+			// The order-facts block's two CAVEATS — the catalog-priced floor
+			// under the total and the wait for the three optional lookups — are
+			// only drawn with an unpriced line in the cart and the lookups still
+			// out, so the empty cart above reaches neither. Reached through a
+			// submit still in flight, which is how the chooser is drawn with
+			// lines in its cart while ctrl+e (the `after` below) declines
+			// rather than opening the line editor.
+			alsoIn: map[string]func() Screen{
+				"submitting with lookups out": func() Screen {
+					s := poCreateStaged()
+					s.lines[0].item.UnitCost = nil
+					s.agreements, s.assoc.workOrders, s.assoc.committees = nil, nil, nil
+					s.agreementLoading, s.assoc.workOrderLoad, s.assoc.committeeLoad = true, true, true
+					s.pending = true
+					return s
+				},
+			},
 			after: func(s Screen) {
 				s.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 			},

@@ -2868,9 +2868,9 @@ func (s *PurchaseOrderCreateScreen) headerLines() jdeHeader {
 		// and refusing one key at once — the defect the line-source rows were
 		// deleted to remove. The VALUES stay: they are part of the order being
 		// created, and only the affordance is false.
-		h = h.addBlock(jdeHeadContext, append(s.cartTotalRows(), s.attributionRows(!s.pending)...))
+		h = s.addOrderFacts(h, !s.pending)
 	case poPhaseReview:
-		h = h.addBlock(jdeHeadContext, append(s.cartTotalRows(), s.attributionRows(false)...))
+		h = s.addOrderFacts(h, false)
 	case poPhaseItemPick:
 		// With the box SHUT and a filter still applied, the rows on the pane
 		// are a subset and nothing else says so. The box itself is the
@@ -3052,7 +3052,34 @@ func (s *PurchaseOrderCreateScreen) attributionRows(withKey bool) []string {
 	if s.assoc.committeesOffered() {
 		row("c", poRowCommittee, s.pickedCommitteeLabel(), s.assoc.committeeErr)
 	}
-	return append(out, s.pendingLookupRows()...)
+	return out
+}
+
+// addOrderFacts appends the order-level facts block — what the cart comes to,
+// then the attribution values — in that order, with one separator ahead of it
+// and nothing at all when there is nothing to say.
+//
+// It is ONE block of INDEPENDENT rows carrying TWO CAVEATS, and the builder
+// says which is which rather than handing the layer one flat list: the catalog
+// caveat under the total and the still-looking-up wait under the attribution
+// rows are each a sentence folded against the pane, and handed over as rows a
+// short pane kept "still looking up purchase / pricing agreements ·" and
+// dropped the rest, naming a wait for one lookup while three were out
+// (jdeHeader.addCaveat). The ORDER is load-bearing and unchanged — the total
+// first, so it outlives the optional rows (headerLines).
+func (s *PurchaseOrderCreateScreen) addOrderFacts(h jdeHeader, withKey bool) jdeHeader {
+	total, caveat := s.cartTotalRow(), s.cartCaveatRows()
+	fields, pending := s.attributionRows(withKey), s.pendingLookupRows()
+	if total == "" && len(fields) == 0 && len(pending) == 0 {
+		return h
+	}
+	h = h.add(jdeHeadDecorative, "")
+	if total != "" {
+		h = h.add(jdeHeadContext, total)
+	}
+	return h.addCaveat(jdeHeadContext, caveat).
+		add(jdeHeadContext, fields...).
+		addCaveat(jdeHeadContext, pending)
 }
 
 // poFieldValueRoom is the cells a columnar value row leaves its VALUE, given
@@ -4140,6 +4167,16 @@ func (s *PurchaseOrderCreateScreen) cartTotalRows() []string {
 	if len(s.lines) == 0 {
 		return nil
 	}
+	return append([]string{s.cartTotalRow()}, s.cartCaveatRows()...)
+}
+
+// cartTotalRow is the total alone, "" with no lines; cartCaveatRows is the
+// floor caveat folded under it, nil where every line carries a cost. Split so
+// addOrderFacts can hand the caveat to the header as ONE block.
+func (s *PurchaseOrderCreateScreen) cartTotalRow() string {
+	if len(s.lines) == 0 {
+		return ""
+	}
 	pane := s.paneWidth()
 	total, noCost := poCartTotal(s.lines)
 	money := fmtMoney(total)
@@ -4157,12 +4194,18 @@ func (s *PurchaseOrderCreateScreen) cartTotalRows() []string {
 	if room < poHeaderValueFloor {
 		room = poHeaderValueFloor
 	}
-	out := []string{jdeIndent + StyleTitle.Render(fitCell("Total: "+money, room)) +
-		StyleMuted.Render(count)}
-	if noCost > 0 {
-		out = append(out, jdeCaveatLines(poCartCaveat(noCost), pane)...)
+	return jdeIndent + StyleTitle.Render(fitCell("Total: "+money, room)) +
+		StyleMuted.Render(count)
+}
+
+func (s *PurchaseOrderCreateScreen) cartCaveatRows() []string {
+	if len(s.lines) == 0 {
+		return nil
 	}
-	return out
+	if _, noCost := poCartTotal(s.lines); noCost > 0 {
+		return jdeCaveatLines(poCartCaveat(noCost), s.paneWidth())
+	}
+	return nil
 }
 
 // cartRow draws one staged line.

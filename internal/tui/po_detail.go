@@ -2469,12 +2469,12 @@ func (s *PurchaseOrderDetailScreen) voidHeader() jdeHeader {
 	h := jdeHeader(nil).add(jdeHeadDecorative, StyleStatusWarn.Render("Void purchase order"))
 	// addBlock brings the separator with it, so the heading does not add one of
 	// its own — two blanks is a row of the budget spent twice.
-	// FITTED, so a pane too short for all of it re-draws the caveat with its
-	// cut marked rather than dropping its tail: the tail is "This cannot be
-	// undone", and a caveat cut clean before it reads as the whole warning.
+	// A CAVEAT, so a pane too short for all of it draws none of it rather than
+	// dropping its tail: the tail is "This cannot be undone", and a caveat cut
+	// before it — cleanly or with an ellipsis — reads as a warning with its
+	// consequence withheld (jdeHeader.addCaveat).
 	width := s.bodyWidth()
-	h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(poVoidOrderCaveat, width),
-		func(rows int) []string { return jdeCaveatLinesIn(poVoidOrderCaveat, width, rows) })
+	h = h.addCaveatBlock(jdeHeadContext, jdeCaveatLines(poVoidOrderCaveat, width))
 	return h.add(jdeHeadDecorative, "")
 }
 
@@ -2615,18 +2615,40 @@ func (s *PurchaseOrderDetailScreen) orderPadHeader() jdeHeader {
 	}
 	head = head.add(jdeHeadContext,
 		jdeIndent+StyleMuted.Render(fitCellIf(strings.Join(meta, " · "), s.bodyWidth()-len(jdeIndent))))
-	if miss := len(s.orderPadExport.MissingSku); miss > 0 {
-		warn := fmt.Sprintf("⚠ %d %s no supplier part # (omitted): %s",
-			miss, plural("line", miss), strings.Join(s.orderPadExport.MissingSku, ", "))
-		for i, line := range jdeWrapNote(warn, poMarginWidth(s.bodyWidth())) {
-			rank := jdeHeadContext
-			if i == 0 {
-				rank = jdeHeadEssential
+	if warn := s.orderPadWarning(); warn != "" {
+		// FITTED, not a row per folded line: given ground row by row the list of
+		// names lost its tail rows and what was left ended on a whole name, so a
+		// short pane read as naming every omitted line when it named some. The
+		// head is the count and survives on its own, which is why this is a
+		// fitted block and not a caveat: its first row is the essential one.
+		width := poMarginWidth(s.bodyWidth())
+		warnLines := func(rows int) []string {
+			lines := jdeWrapNote(warn, width)
+			if rows > 0 {
+				lines = foldKeepRows(lines, rows, width)
 			}
-			head = head.add(rank, jdeIndent+StyleStatusWarn.Render(line))
+			for i, line := range lines {
+				lines[i] = jdeIndent + StyleStatusWarn.Render(line)
+			}
+			return lines
 		}
+		head = head.addFitted(jdeHeadEssential, jdeHeadContext, warnLines(0), warnLines)
 	}
 	return head.add(jdeHeadDecorative, "")
+}
+
+// orderPadWarning is the ⚠ naming the lines the pad left out, "" when it left
+// out none — said once, so the header and the fold-mark sweep read one string.
+func (s *PurchaseOrderDetailScreen) orderPadWarning() string {
+	if s.orderPadExport == nil {
+		return ""
+	}
+	miss := len(s.orderPadExport.MissingSku)
+	if miss == 0 {
+		return ""
+	}
+	return fmt.Sprintf("⚠ %d %s no supplier part # (omitted): %s",
+		miss, plural("line", miss), strings.Join(s.orderPadExport.MissingSku, ", "))
 }
 
 // viewOrderPad renders the overlay: the pinned chrome, the scrollable part#/qty

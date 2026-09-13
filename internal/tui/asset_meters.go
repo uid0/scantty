@@ -784,8 +784,7 @@ func (s *AssetMetersScreen) listHeader() jdeHeader {
 			meterGridRow("#", "Meter", "Current", s.meterNumWidth(), nameW, valueW))).
 			add(jdeHeadEssential, jdeIndent+StyleMuted.Render(fitCellIf(
 				"Value "+meterDropMark+" below", s.bodyWidth()-len(jdeIndent)))).
-			addFittedBlock(jdeHeadContext, jdeCaveatLines(meterDropNote, s.bodyWidth()),
-				func(rows int) []string { return jdeCaveatLinesIn(meterDropNote, s.bodyWidth(), rows) })
+			addCaveatBlock(jdeHeadContext, jdeCaveatLines(meterDropNote, s.bodyWidth()))
 	}
 	return h.add(jdeHeadEssential, StyleMuted.Render(
 		meterGridRow("#", "Meter", "Current", s.meterNumWidth(), nameW, valueW)))
@@ -1196,8 +1195,7 @@ const adjustCaveat = "A correction does not erase the earlier reading: it is wri
 func (s *AssetMetersScreen) adjustHeader() jdeHeader {
 	h := s.entryHeader("Adjust the meter")
 	width := s.bodyWidth()
-	return h.addFittedBlock(jdeHeadContext, jdeCaveatLines(adjustCaveat, width),
-		func(rows int) []string { return jdeCaveatLinesIn(adjustCaveat, width, rows) })
+	return h.addCaveatBlock(jdeHeadContext, jdeCaveatLines(adjustCaveat, width))
 }
 
 func (s *AssetMetersScreen) viewAdjust() string {
@@ -1320,8 +1318,7 @@ func (s *AssetMetersScreen) newHeader() jdeHeader {
 		Value: fitCellIf(s.assetName, jdeStripWidth(s.bodyWidth(), assetLabelW)),
 	}, assetLabelW, s.bodyWidth()))
 	width := s.bodyWidth()
-	h = h.addFittedBlock(jdeHeadContext, jdeCaveatLines(newMeterCaveat, width),
-		func(rows int) []string { return jdeCaveatLinesIn(newMeterCaveat, width, rows) })
+	h = h.addCaveatBlock(jdeHeadContext, jdeCaveatLines(newMeterCaveat, width))
 	return h.add(jdeHeadDecorative, "")
 }
 
