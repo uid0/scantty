@@ -17,6 +17,14 @@ on:
 permissions:
   contents: read
 
+# A new commit makes every result from the older commit obsolete. Do not spend
+# hosted-runner minutes finishing both copies of the same branch's CI: this is
+# especially important for the long TUI shards, which dominate this workflow's
+# usage. Pushes to main keep their own group because ref_name is `main` there.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 # go.mod pins the Go version (currently 1.26.4). setup-go installs it from
 # go-version-file; GOTOOLCHAIN=auto is a safety net so the `go` command can
 # fetch the exact go.mod-pinned toolchain if the runner baseline is older.
