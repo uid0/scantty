@@ -129,14 +129,14 @@ func proseBarReceivers(t *testing.T) map[string]bool {
 var proseBarUnconverted = map[string]string{
 	// THE SCROLLER SHEETS, which is the group the converted ones came out
 	// of: each holds a TextScroller and so has the whole movement vocabulary
-	// without spelling a key of it. They are the cheapest conversions left,
+	// without spelling a key of it. (The two forecasts were recorded here as a
+	// cursor list above a scroller; they turned out to draw the scroller IN PLACE
+	// of the list, and went with the row-packed lists.) They are the cheapest conversions left,
 	// because proseNavScroll and proseScrollBar already do the work — what each
 	// one still needs is a decision about the states that draw something else
 	// instead of a bar.
-	"DemandForecastScreen":     "the demand-forecast table: a cursor list ABOVE a scroller, so its bar carries two movement vocabularies and the conversion has to say which keys reach which",
-	"InventoryDetailScreen":    "the item sheet, plus three pick modals that each draw their own prompt in place of the footer",
-	"SerializedForecastScreen": "the serialized-component forecast, the same two-vocabulary shape as DemandForecastScreen",
-	"WorkOrderDetailScreen":    "the work-order sheet, plus its material pickers — the largest of the scroller sheets and the one with the most modal states to decide",
+	"InventoryDetailScreen": "the item sheet, plus three pick modals that each draw their own prompt in place of the footer",
+	"WorkOrderDetailScreen": "the work-order sheet, plus its material pickers — the largest of the scroller sheets and the one with the most modal states to decide",
 
 	// THE CURSOR LISTS, which are the bulk. Each draws rows with a cursor and a
 	// prose footer, so a record is only part of it: the movement segments have to
@@ -145,7 +145,7 @@ var proseBarUnconverted = map[string]string{
 	// budget has to move with the folded footer. Several of them are a *ListScreen
 	// away from needing no record at all.
 	//
-	// FIVE RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
+	// SIX RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
 	// into the two shapes that remain rather than left as one heap — because
 	// "what shape is the work" is the only thing this map is for. The first was
 	// the WINDOWED list budgeted by a chrome constant of four, whose last row is
@@ -164,7 +164,11 @@ var proseBarUnconverted = map[string]string{
 	// scrolls an offset — where the bar names exactly the keystrokes the switch
 	// binds: prose_bar_wider_vocabulary_test.go carries it. The fifth was the
 	// simple FIELD FORMS, whose up/down move a focus rather than a cursor:
-	// prose_bar_field_forms_test.go carries it.
+	// prose_bar_field_forms_test.go carries it. The sixth was the lists whose rows
+	// are SEVERAL LINES and whose window already packed them by line cost — the
+	// two forecasts, each with a scrolled detail drawn in place of the list, and
+	// the supplier links on an item — where the budget was taught the folded bar:
+	// prose_bar_row_packed_lists_test.go carries it.
 	// What remains divides:
 	//
 	//   - STILL ON THAT RECIPE, but not mechanically. Each has a window and a
@@ -194,12 +198,6 @@ var proseBarUnconverted = map[string]string{
 		"window is packed by lines a row count stops being a page — so converting it is " +
 		"deciding what a page of multi-line parts is worth, which is a decision about what " +
 		"this list does rather than about what its bar says",
-	"ItemSuppliersScreen": "the supplier list on an item beside ItemSupplierFormScreen. It " +
-		"already packs its window by LINES rather than by rows (rowsFittingFrom), which is " +
-		"the arithmetic AssetPartsScreen is missing — so what it needs is the record and the " +
-		"fold, with its own line budget taught to move with the folded footer. " +
-		"proseCursorWindow is the wrong helper for it: the screen already derives a row count " +
-		"from each row's rendered height and needs that existing budget taught about the bar",
 	"StorageSlotsScreen": "the storage slot list beside StorageSlotFormScreen. Its chrome " +
 		"constant is 6 rather than 4 because it reserves room for slotCardPrompt's overlay, " +
 		"so what the bar costs and what the overlay costs have to be separated before either " +
@@ -557,7 +555,10 @@ func proseBarFixtures() []proseBarFixture {
 	out = append(out, proseBarWiderVocabularyFixtures()...)
 	// The FIELD FORMS, whose up/down move a focus rather than a cursor, the
 	// fifth — see proseBarFieldFormFixtures.
-	return append(out, proseBarFieldFormFixtures()...)
+	out = append(out, proseBarFieldFormFixtures()...)
+	// The lists whose rows are several lines and whose window already packed them
+	// by line cost, the sixth — see proseBarRowPackedListFixtures.
+	return append(out, proseBarRowPackedListFixtures()...)
 }
 
 func proseBarSerializedComponents(n int) []omsapi.SerializedComponent {

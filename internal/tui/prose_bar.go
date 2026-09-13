@@ -561,21 +561,41 @@ func proseFlatListFrame(head string, rows []string, cursor int, start *int, term
 	from, to := 0, len(rows)
 	budget := 0
 	if terminalHeight > 0 {
-		heights := make([]int, len(rows))
-		for i, r := range rows {
-			heights[i] = strings.Count(r, "\n") + 1
-		}
-		budget = screenBodyHeight(terminalHeight) - strings.Count(head, "\n") - 2 - ceiling.rows(cells)
-		if budget < proseListWindowFloor {
-			budget = proseListWindowFloor
-		}
-		from, to = proseLineWindow(heights, cursor, *start, budget)
+		budget = proseFlatListBudget(head, terminalHeight, cells, ceiling)
+		from, to = proseLineWindow(proseRowHeights(rows), cursor, *start, budget)
 		*start = from
 	}
 	proseWriteRows(&b, rows, from, to, budget)
 	b.WriteString("\n")
 	b.WriteString(drawn.render(cells))
 	return b.String()
+}
+
+// proseFlatListBudget is how many body LINES proseFlatListFrame gives its window
+// under `head`: the pane less the head as drawn, both scroll markers and the
+// folded ceiling bar, floored at proseListWindowFloor.
+//
+// It is its own function so a list whose PAGER has to know how many rows the
+// window holds — `cursor += windowSize` — can ask the same budget the frame
+// draws against rather than writing the subtraction out a second time. A page
+// measured against a different budget from the window it pages is a page that
+// skips rows or repeats them, and nothing on the pane would say which.
+func proseFlatListBudget(head string, terminalHeight, cells int, ceiling proseBar) int {
+	budget := screenBodyHeight(terminalHeight) - strings.Count(head, "\n") - 2 - ceiling.rows(cells)
+	if budget < proseListWindowFloor {
+		budget = proseListWindowFloor
+	}
+	return budget
+}
+
+// proseRowHeights is how many lines each rendered row really draws — the
+// heights proseLineWindow packs.
+func proseRowHeights(rows []string) []int {
+	heights := make([]int, len(rows))
+	for i, r := range rows {
+		heights[i] = strings.Count(r, "\n") + 1
+	}
+	return heights
 }
 
 // proseCursorWindow writes the window of a WINDOWED cursor list — the recipe
@@ -622,11 +642,7 @@ func proseCursorWindow(b *strings.Builder, rows []string, cursor int, start *int
 			budget = 1
 		}
 	}
-	heights := make([]int, len(rows))
-	for i, r := range rows {
-		heights[i] = strings.Count(r, "\n") + 1
-	}
-	from, to := proseLineWindow(heights, cursor, *start, budget)
+	from, to := proseLineWindow(proseRowHeights(rows), cursor, *start, budget)
 	*start = from
 	proseWriteRows(b, rows, from, to, budget)
 }

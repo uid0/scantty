@@ -183,9 +183,9 @@ func TestItemSuppliers_AFullListKeepsTheActionBar(t *testing.T) {
 		pane := next.(Root).View()
 		// Ask the screen itself what its bar spells, so a reworded bar cannot
 		// quietly narrow what this guards.
-		for _, seg := range strings.Split(suppliersFooter(), " · ") {
-			if !strings.Contains(pane, seg) {
-				t.Errorf("80x%d loses bar segment %q:\n%s", h, seg, pane)
+		for _, seg := range s.proseBar() {
+			if !strings.Contains(pane, seg.Hint) {
+				t.Errorf("80x%d loses bar segment %q:\n%s", h, seg.Hint, pane)
 			}
 		}
 	}
