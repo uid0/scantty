@@ -181,7 +181,12 @@ var proseBarUnconverted = map[string]string{
 	// list whose chrome constant counted the bar and slotCardPrompt's print
 	// overlay as one number, so neither cost could be derived until they were
 	// separated — the bar's is its ceiling and an overlay's is what it draws, and
-	// prose_bar_storage_slots_test.go carries it. slotCardPrompt stays below.
+	// prose_bar_storage_slots_test.go carries it. slotCardPrompt stays below. The
+	// tenth was one screen rather than a group, because nothing else has its
+	// shape: the universal search palette, a flat list drawn under a LIVE QUERY
+	// BOX whose results stay on the pane while a search is out — so the box leads,
+	// the bar closes and the rows are budgeted between them:
+	// prose_bar_search_palette_test.go carries it.
 	// What remains divides:
 	//
 	//   - STILL ON THAT RECIPE, but not mechanically. It has a window and a
@@ -192,9 +197,8 @@ var proseBarUnconverted = map[string]string{
 	//     says, and folding alone would not put it back. The ones that were
 	//     nothing more than that are converted, and so are the ones whose only
 	//     complication was a surface drawn in their place or under their rows;
-	//     each left here has something none of those answers — an overlay with a
-	//     live query box, or a layout that is not a list of rows — and the entry
-	//     says which.
+	//     the one left here has something none of those answers — a layout that
+	//     is not a list of rows — and its entry says so.
 
 	// Still on the windowed recipe.
 	"AssetPartsScreen": "the parts list on an asset. It is on the windowed-cursor-list " +
@@ -211,7 +215,6 @@ var proseBarUnconverted = map[string]string{
 		"this list does rather than about what its bar says",
 
 	// Flat: no window at all, so the bar and the body budget are one piece of work.
-	"SearchPalette":         "the universal search palette's result list, drawn as an overlay with a live query box",
 	"StorageOverviewScreen": "the storage overview, a rack grid rather than a row list",
 
 	// THE ONES THAT ARE NEITHER A SCROLLED SHEET NOR A PLAIN CURSOR LIST, each
@@ -605,6 +608,8 @@ func proseBarFixtures() []proseBarFixture {
 	// The storage slot list, whose chrome constant counted the bar and
 	// slotCardPrompt's overlay as one — see proseBarStorageSlotFixtures.
 	out = append(out, proseBarStorageSlotFixtures()...)
+	// The universal search palette, the tenth — see proseBarSearchPaletteFixtures.
+	out = append(out, proseBarSearchPaletteFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are

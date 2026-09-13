@@ -149,10 +149,6 @@ var listNavUnsweptReceivers = map[string]string{
 		"movement `g` from a `g` that means generate — which is a limit of the derivation " +
 		"and is recorded rather than silently filtered, since filtering it would need a " +
 		"rule that also hid a real one",
-	"SearchPalette": "the universal search palette's result list; its bar is a muted " +
-		"literal inside View (`↑/↓ move · enter open · esc close`), so the honesty sweep " +
-		"cannot read it, but it IS pressed by the retired-chord sweep, which drives its " +
-		"cursor directly (listNavPickerCases)",
 	"ForgeKeyDeviceDetailScreen": "NOT a list: up/down move between the indicator-edit fields beside tab/shift+tab, and setIndicatorFocus wraps modulo the field count — the field-form exemption",
 	"slotCardPrompt": "a two-row modal prompt inside the storage-slot list, not a list of " +
 		"rows: up/down move between a text field and a toggle and its cursor WRAPS, so the " +
