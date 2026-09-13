@@ -65,6 +65,7 @@ type LocationProblemsScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 	filter         lpFilter
 
 	// read-only detail overlay
@@ -183,18 +184,92 @@ func (s *LocationProblemsScreen) selected() (omsapi.LocationProblem, bool) {
 }
 
 func (s *LocationProblemsScreen) computeWindowSize() int {
-	const chrome = 4
-	avail := screenBodyHeight(s.terminalHeight) - chrome
-	if avail < 3 {
-		avail = 3
+	return proseListWindow(s.terminalHeight, s.paneCells(), s.listBar(true, true))
+}
+
+// paneCells is the width this screen folds and budgets against: the pane the
+// terminal really gave, never the 51 an 80-column one happens to leave.
+func (s *LocationProblemsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// listBar names every key that acts on the problem list, as a RECORD rather than
+// a literal — prose_bar.go carries the conversion, proseNavCursor why the
+// movement half is gated on one threshold, and proseListWindow what it costs the
+// body.
+//
+// It used to be "j/k move · n report · enter view · R resolve · f filter · r
+// refresh · esc back": 77 cells against the 51 an 80-column pane gives, naming
+// two of the ten movement keystrokes the list's switch binds, and silent about
+// `v`, which opens the detail exactly as enter does. The empty filter drew a
+// second literal, and `enter`/`v`/`R` come off there because there is no row to
+// act on.
+func (s *LocationProblemsScreen) listBar(moves, rows bool) proseBar {
+	out := append(proseNavCursor(moves), proseBarItem{Keys: []string{"n"}, Hint: "n report"})
+	if rows {
+		out = append(out,
+			proseBarItem{Keys: []string{"enter", "v"}, Hint: "enter/v view"},
+			proseBarItem{Keys: []string{"R"}, Hint: "R resolve"},
+		)
 	}
-	return avail
+	return append(out,
+		proseBarItem{Keys: []string{"f"}, Hint: "f filter"},
+		proseBarRefresh,
+		proseBarEsc,
+	)
+}
+
+// detailBar is the read-only report's bar. `q` and `v` close it as `esc` and
+// `enter` do and no literal ever said so; `R` is offered only on a report still
+// open, because on a resolved one the arm does nothing at all.
+func (s *LocationProblemsScreen) detailBar(p omsapi.LocationProblem) proseBar {
+	var out proseBar
+	if !p.IsResolved() {
+		out = append(out, proseBarItem{Keys: []string{"R"}, Hint: "R resolve"})
+	}
+	return append(out, proseBarItem{Keys: []string{"esc", "enter", "q", "v"}, Hint: "esc/enter/q/v back"})
+}
+
+// proseBar is the bar this screen is DRAWING, for whichever surface is up — the
+// list, the read-only report, or the resolve prompt — and nil in the states that
+// draw something else instead: a load in flight or failed, and the resolve write
+// while it is out, whose frame is a working line with every key held.
+//
+// ONE RECORD PER SURFACE, answered here, is what the conversion of a screen with
+// a second surface drawn in place of its list comes to: converting the list
+// alone would have left the overlays' literals behind a receiver the classifier
+// counts as swept.
+func (s *LocationProblemsScreen) proseBar() proseBar {
+	switch {
+	case s.loading || s.loadErr != "":
+		return nil
+	case s.resolving:
+		if s.submittingResolve {
+			return nil
+		}
+		return proseResolveBar
+	case s.viewing:
+		if p, ok := s.selected(); ok {
+			return s.detailBar(p)
+		}
+		return proseBar{proseBarItem{Keys: []string{"esc", "enter", "q", "v"}, Hint: "esc/enter/q/v back"}}
+	}
+	n := len(s.visible())
+	return s.listBar(listNavMoves(n), n > 0)
+}
+
+// proseResolveBar is the resolve prompt's bar on both problem screens, which
+// bind it identically: the notes box owns every other key, so what is named is
+// the three keys it does not.
+var proseResolveBar = proseBar{
+	{Keys: []string{"enter"}, Hint: "enter submit"},
+	{Keys: []string{"tab"}, Hint: "tab resolved/closed"},
+	{Keys: []string{"esc"}, Hint: "esc cancel"},
 }
 
 func (s *LocationProblemsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -423,7 +498,7 @@ func (s *LocationProblemsScreen) viewList() string {
 	vis := s.visible()
 	if len(vis) == 0 {
 		b.WriteString("\n" + StyleMuted.Render("No "+s.filter.label()+" problems here.") + "\n\n")
-		b.WriteString(StyleMuted.Render("n report · f filter · r refresh · esc back"))
+		b.WriteString(s.proseBar().render(s.paneCells()))
 		return b.String()
 	}
 
@@ -441,7 +516,7 @@ func (s *LocationProblemsScreen) viewList() string {
 		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(vis)-end)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("j/k move · n report · enter view · R resolve · f filter · r refresh · esc back"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -470,7 +545,7 @@ func (s *LocationProblemsScreen) renderRow(vis []omsapi.LocationProblem, i int) 
 func (s *LocationProblemsScreen) viewDetail() string {
 	p, ok := s.selected()
 	if !ok {
-		return StyleMuted.Render("No problem selected.") + "\n\n" + StyleMuted.Render("esc back")
+		return StyleMuted.Render("No problem selected.") + "\n\n" + s.proseBar().render(s.paneCells())
 	}
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render(firstNonEmpty(p.LocationName, s.locName)) + "\n")
@@ -526,11 +601,7 @@ func (s *LocationProblemsScreen) viewDetail() string {
 	}
 
 	b.WriteString("\n")
-	if p.IsResolved() {
-		b.WriteString(StyleMuted.Render("esc/enter back"))
-	} else {
-		b.WriteString(StyleMuted.Render("R resolve · esc/enter back"))
-	}
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -545,13 +616,17 @@ func (s *LocationProblemsScreen) viewResolve() string {
 		b.WriteString(StyleMuted.Render("Resolving…"))
 		return b.String()
 	}
-	b.WriteString(StyleTitle.Render("Resolution notes: ") + s.resolveNotes.View() + "\n")
+	// Bounded to the pane (woBoxView): unbounded, a note past the row's edge was
+	// cut by clampToBox with the caret, and every further key redrew the pane
+	// byte for byte.
+	b.WriteString(StyleTitle.Render("Resolution notes: ") +
+		woBoxView(s.resolveNotes, s.paneCells(), "Resolution notes: ") + "\n")
 	statusWord := "resolved"
 	if s.resolveClosed {
 		statusWord = "closed"
 	}
 	b.WriteString(StyleTitle.Render("Status: ") + "‹ " + statusWord + " ›" + "\n\n")
-	b.WriteString(StyleMuted.Render("enter submit · tab toggle resolved/closed · esc cancel"))
+	b.WriteString(s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 

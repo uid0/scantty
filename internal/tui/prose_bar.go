@@ -421,6 +421,29 @@ func proseNavStep(moves bool) proseBar {
 	return nil
 }
 
+// proseNavArrows is the movement half of a cursor surface whose TEXT BOX owns
+// the letters: the arrow pair alone, where there is a second row to step to.
+//
+// A LIVE QUERY BOX ROUTES LETTERS TO ITSELF (AGENTS.md), so on the pickers that
+// search as the operator types — the e-paper bind picker, the check-in location
+// lookup — `j` and `k` are characters in the query and only the arrows move the
+// cursor. proseNavStep would name `j/k` there, which is the bar claiming two
+// keys the box eats; this is the same vocabulary entry with the letters taken
+// OFF by keystroke, for the reason proseNavIsPager gives about matching words.
+func proseNavArrows(moves bool) proseBar {
+	step := proseNavStep(moves)
+	if len(step) == 0 {
+		return nil
+	}
+	var keys []string
+	for _, k := range step[0].Keys {
+		if k == "up" || k == "down" {
+			keys = append(keys, k)
+		}
+	}
+	return proseBar{{Keys: keys, Hint: "↑↓ move"}}
+}
+
 // proseFlatCeilingRows is the row count a flat list's bar is at its TALLEST for:
 // two rows is a second row to step to, and every row action is on offer from
 // one. A flat list asks its bar builder for this many to get the ceiling

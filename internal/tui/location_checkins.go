@@ -38,6 +38,10 @@ type LocationCheckinsScreen struct {
 	loading bool
 	loadErr string
 
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int
+
 	// Log-a-check-in sub-flow. logging gates the whole form (and drives
 	// WantsRawInput); step selects which panel of the form is showing.
 	logging    bool
@@ -62,6 +66,7 @@ type LocationCheckinsScreen struct {
 	pickInput   textinput.Model
 	pickRows    []omsapi.Location
 	pickCursor  int
+	pickStart   int
 	pickSeq     int
 	pickPending bool
 	pickErr     string
@@ -75,10 +80,6 @@ const (
 	checkinConfirm                    // resolved name shown; enter to check in
 	checkinLookup                     // searchable location picker
 )
-
-// checkinPickWindow caps how many lookup rows render at once so a large
-// location set can't overflow the panel; the window follows the cursor.
-const checkinPickWindow = 12
 
 type locationCheckinsLoadedMsg struct {
 	rows []omsapi.LocationCheckIn
@@ -147,8 +148,81 @@ func (s *LocationCheckinsScreen) load() tea.Cmd {
 	}
 }
 
+// listBar names every key that acts on a list of `rows` check-ins, as a record
+// the honesty sweep can press (prose_bar.go).
+//
+// It used to be the literal "j/k move · n new check-in · r refresh · esc back"
+// under every row with no window, so the arrows moved the cursor unnamed and a
+// list longer than the pane took the footer off the bottom.
+func (s *LocationCheckinsScreen) listBar(rows int) proseBar {
+	return append(proseNavStep(listNavMoves(rows)),
+		proseBarItem{Keys: []string{"n"}, Hint: "n new check-in"}, proseBarRefresh, proseBarEsc)
+}
+
+// entryBar is the id-entry step's bar. The two boxes own every letter, so what
+// is named is the keys they do not eat — and the lookup key is offered only
+// while the numeric id box has the focus, which is the only place its arm
+// listens. It used to name `l` alone while `L` and `?` open the lookup too, and
+// `tab` alone while `shift+tab` switches the field as well.
+func (s *LocationCheckinsScreen) entryBar() proseBar {
+	out := proseBar{{Keys: []string{"enter"}, Hint: "enter confirm"}}
+	if !s.focusNotes {
+		out = append(out, proseBarItem{Keys: []string{"l", "L", "?"}, Hint: "l/L/? look up"})
+	}
+	return append(out,
+		proseBarItem{Keys: []string{"tab", "shift+tab"}, Hint: "tab/shift+tab switch field"},
+		proseBarItem{Keys: []string{"esc"}, Hint: "esc cancel"},
+	)
+}
+
+// lookupBar is the location lookup's bar. Its search box owns every letter, so
+// the cursor moves on the arrows alone (proseNavArrows).
+func (s *LocationCheckinsScreen) lookupBar(rows int) proseBar {
+	out := proseNavArrows(listNavMoves(rows))
+	if rows > 0 {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter select"})
+	}
+	return append(out, proseBarItem{Keys: []string{"esc"}, Hint: "esc back"})
+}
+
+// proseBar is the bar this screen is DRAWING, for whichever surface is up — the
+// check-in list, or the id entry, confirm or location lookup drawn in its place
+// — and nil while the list's load is in flight or has failed, whose frames still
+// draw their own line.
+//
+// ONE RECORD PER SURFACE is what converting a screen with a second cursor
+// surface comes to: converting the list alone would have left the lookup's
+// literal behind a receiver the classifier counts as swept.
+func (s *LocationCheckinsScreen) proseBar() proseBar {
+	if s.logging {
+		switch s.step {
+		case checkinLookup:
+			return s.lookupBar(len(s.pickRows))
+		case checkinConfirm:
+			if s.submitting {
+				return proseBar{{Keys: []string{"esc"}, Hint: "esc edit id"}}
+			}
+			return proseBar{
+				{Keys: []string{"enter"}, Hint: "enter check in"},
+				{Keys: []string{"esc"}, Hint: "esc edit id"},
+			}
+		default:
+			return s.entryBar()
+		}
+	}
+	if s.loading || s.loadErr != "" {
+		return nil
+	}
+	return s.listBar(len(s.rows))
+}
+
+func (s *LocationCheckinsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *LocationCheckinsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case locationCheckinsLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -380,6 +454,7 @@ func (s *LocationCheckinsScreen) openLookup() (Screen, tea.Cmd) {
 	s.pickInput = in
 	s.pickRows = nil
 	s.pickCursor = 0
+	s.pickStart = 0
 	s.pickErr = ""
 	s.pickPending = true
 	return s, tea.Batch(textinput.Blink, s.runLookup())
@@ -498,67 +573,67 @@ func (s *LocationCheckinsScreen) View() string {
 		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · n new check-in · esc back")
 	}
 
-	var b strings.Builder
+	cells := s.paneCells()
 	if len(s.rows) == 0 {
-		b.WriteString(StyleMuted.Render("No recent check-ins.") + "\n\n")
-	} else {
-		for i, r := range s.rows {
-			caret := "  "
-			if i == s.cursor {
-				caret = "▸ "
-			}
-			loc := r.LocationName
-			if loc == "" {
-				loc = fmt.Sprintf("location #%d", r.Location)
-			}
-			ts := r.CheckedInAt.Format("01-02 15:04")
-			who := "anonymous"
-			if r.UserUsername != nil && *r.UserUsername != "" {
-				who = *r.UserUsername
-			}
-			typeBadge := r.CheckinType
-			switch r.CheckinType {
-			case "volunteer":
-				typeBadge = StyleStatusOK.Render(r.CheckinType)
-			case "contractor":
-				typeBadge = StyleStatusWarn.Render(r.CheckinType)
-			}
-			line := fmt.Sprintf("%s%s · %s · %s · %s", caret, ts, loc, who, typeBadge)
-			if i == s.cursor {
-				line = StyleSidebarItemActive.Render(line)
-			}
-			b.WriteString(line + "\n")
-			if r.Notes != "" {
-				note := r.Notes
-				if len(note) > 80 {
-					note = note[:77] + "…"
-				}
-				b.WriteString("    " + StyleMuted.Render(note) + "\n")
-			}
-		}
-		b.WriteString("\n")
+		return StyleMuted.Render("No recent check-ins.") + "\n\n" + s.proseBar().render(cells)
 	}
-	b.WriteString(StyleMuted.Render("j/k move · n new check-in · r refresh · esc back"))
-	return b.String()
+	rows := make([]string, len(s.rows))
+	for i, r := range s.rows {
+		caret := "  "
+		if i == s.cursor {
+			caret = "▸ "
+		}
+		loc := r.LocationName
+		if loc == "" {
+			loc = fmt.Sprintf("location #%d", r.Location)
+		}
+		ts := r.CheckedInAt.Format("01-02 15:04")
+		who := "anonymous"
+		if r.UserUsername != nil && *r.UserUsername != "" {
+			who = *r.UserUsername
+		}
+		typeBadge := r.CheckinType
+		switch r.CheckinType {
+		case "volunteer":
+			typeBadge = StyleStatusOK.Render(r.CheckinType)
+		case "contractor":
+			typeBadge = StyleStatusWarn.Render(r.CheckinType)
+		}
+		line := fmt.Sprintf("%s%s · %s · %s · %s", caret, ts, loc, who, typeBadge)
+		if i == s.cursor {
+			line = StyleSidebarItemActive.Render(line)
+		}
+		if r.Notes != "" {
+			note := r.Notes
+			if len(note) > 80 {
+				note = note[:77] + "…"
+			}
+			line += "\n    " + StyleMuted.Render(note)
+		}
+		rows[i] = line
+	}
+	return proseFlatListFrame("", rows, s.cursor, &s.windowStart, s.terminalHeight,
+		cells, s.listBar(proseFlatCeilingRows), s.proseBar())
 }
 
 func (s *LocationCheckinsScreen) viewEntry() string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Check in to a location") + "\n\n")
-	locLine := StyleMuted.Render("Location ID: ") + s.locInput.View()
+	// Both boxes are bounded to the pane (woBoxView), the suffix reserved with
+	// the label: unbounded, a note past the row's edge was cut by clampToBox with
+	// the caret, and every further key redrew the pane byte for byte.
+	cells := s.paneCells()
+	locSuffix := ""
 	if s.resolving {
-		locLine += "  " + StyleMuted.Render("resolving…")
+		locSuffix = "  resolving…"
 	}
-	b.WriteString(locLine + "\n")
-	b.WriteString(StyleMuted.Render("Notes:       ") + s.notesInput.View() + "\n")
+	b.WriteString(StyleMuted.Render("Location ID: ") +
+		woBoxView(s.locInput, cells, "Location ID: "+locSuffix) + StyleMuted.Render(locSuffix) + "\n")
+	b.WriteString(StyleMuted.Render("Notes:       ") + woBoxView(s.notesInput, cells, "Notes:       ") + "\n")
 	if s.submitErr != "" {
 		b.WriteString("\n" + StyleStatusError.Render(s.submitErr) + "\n")
 	}
-	hint := "enter confirm · tab notes · esc cancel"
-	if !s.focusNotes {
-		hint = "enter confirm · l look up · tab notes · esc cancel"
-	}
-	b.WriteString("\n" + StyleMuted.Render(hint))
+	b.WriteString("\n" + s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
@@ -590,35 +665,28 @@ func (s *LocationCheckinsScreen) viewConfirm() string {
 	if s.submitErr != "" {
 		b.WriteString("\n" + StyleStatusError.Render(s.submitErr) + "\n")
 	}
-	b.WriteString("\n" + StyleMuted.Render("enter check in · esc edit id"))
+	b.WriteString("\n" + s.proseBar().render(s.paneCells()))
 	return b.String()
 }
 
 func (s *LocationCheckinsScreen) viewLookup() string {
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Look up a location") + "\n\n")
-	head := s.pickInput.View()
+	suffix := ""
 	if s.pickPending {
-		head += "  " + StyleMuted.Render("searching…")
+		suffix = "  searching…"
 	}
-	b.WriteString(head + "\n\n")
+	b.WriteString(woBoxView(s.pickInput, s.paneCells(), suffix) + StyleMuted.Render(suffix) + "\n\n")
 
+	cells := s.paneCells()
 	switch {
 	case s.pickErr != "":
 		b.WriteString(StyleStatusError.Render("Error: ") + s.pickErr + "\n")
 	case len(s.pickRows) == 0 && !s.pickPending:
 		b.WriteString(StyleMuted.Render("(no matching locations)") + "\n")
-	default:
-		start := 0
-		if s.pickCursor >= checkinPickWindow {
-			start = s.pickCursor - checkinPickWindow + 1
-		}
-		end := start + checkinPickWindow
-		if end > len(s.pickRows) {
-			end = len(s.pickRows)
-		}
-		for i := start; i < end; i++ {
-			loc := s.pickRows[i]
+	case len(s.pickRows) > 0:
+		rows := make([]string, len(s.pickRows))
+		for i, loc := range s.pickRows {
 			caret := "  "
 			if i == s.pickCursor {
 				caret = "▸ "
@@ -634,14 +702,16 @@ func (s *LocationCheckinsScreen) viewLookup() string {
 			if i == s.pickCursor {
 				line = StyleSidebarItemActive.Render(line)
 			}
-			b.WriteString(line + "\n")
+			rows[i] = line
 		}
-		if len(s.pickRows) > end-start {
-			b.WriteString(StyleMuted.Render(fmt.Sprintf("  … %d more", len(s.pickRows)-(end-start))) + "\n")
-		}
+		// A flat twelve rows under the lookup's head ran past any terminal
+		// shorter than about twenty rows, taking the bar with it; the window is
+		// derived from the pane and the folded bar instead.
+		return proseFlatListFrame(b.String(), rows, s.pickCursor, &s.pickStart, s.terminalHeight,
+			cells, s.lookupBar(proseFlatCeilingRows), s.proseBar())
 	}
 
-	b.WriteString("\n" + StyleMuted.Render("type to search · ↑/↓ move · enter select · esc back"))
+	b.WriteString("\n" + s.proseBar().render(cells))
 	return b.String()
 }
 
