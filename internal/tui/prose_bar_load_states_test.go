@@ -290,6 +290,10 @@ func proseLoadScreens() []proseLoadScreen {
 			fresh: func(d Deps) proseBarScreen { return NewWorkOrderAttachmentsScreen(d, "42") }},
 		{name: "webhook list", recv: "WebhookListScreen", loaded: "webhook list", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewWebhookListScreen(d) }},
+		{name: "asset parts", recv: "AssetPartsScreen", loaded: "asset parts", reload: "r",
+			fresh: func(d Deps) proseBarScreen {
+				return NewAssetPartsScreen(d, "a-1", "Haas VF-2SS vertical machining centre")
+			}},
 	}
 }
 

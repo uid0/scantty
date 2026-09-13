@@ -17,7 +17,8 @@ import (
 // rows are SEVERAL LINES — a forecast row is a title, a meta line and sometimes a
 // history line; a supplier link is a name, its folded facts and a URL — and each
 // had already taught its window to pack rows by how many lines they cost, which
-// is exactly what AssetPartsScreen is recorded as missing. What none of them had
+// is exactly what AssetPartsScreen was recorded as missing until its own
+// conversion (prose_bar_asset_parts_test.go). What none of them had
 // was a bar that could be asked what it claims, or a budget that knew the bar
 // folds:
 //

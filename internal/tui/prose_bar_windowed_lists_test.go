@@ -34,9 +34,10 @@ import (
 // A SCREEN ON THE RECIPE THAT IS NOT HERE is named in proseBarUnconverted with
 // what stopped it, which is the point of taking a recipe rather than a list: the
 // ones that do not come out mechanically are then visible AS the residue of a
-// group rather than as items nobody got to. AssetPartsScreen is the one this
+// group rather than as items nobody got to. AssetPartsScreen was the one this
 // round left — its rows are not one line each, so a window counted in ROWS is
-// not a window at all.
+// not a window at all, and its pager then had to be decided — and it went on its
+// own later (prose_bar_asset_parts_test.go), riding this recipe's fixtures.
 //
 // THE PAIR OF STATES IS THE POINT, not the convenience. proseNavCursor drops
 // every movement segment where there is no second row to move to — which is
