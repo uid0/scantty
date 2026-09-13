@@ -35,6 +35,10 @@ jobs:
   build-vet-test:
     name: build / vet / test
     runs-on: ubuntu-latest
+    # Bound the whole job, including setup/build/vet, rather than only the test
+    # command. This keeps a wedged pre-test step from consuming runner minutes
+    # indefinitely while the account-level spending guard is being restored.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -69,6 +73,7 @@ jobs:
   tui-heavy-plan:
     name: plan tui heavy shards
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
@@ -84,6 +89,7 @@ jobs:
     name: tui heavy tests (shard ${{ matrix.shard }})
     needs: tui-heavy-plan
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     strategy:
       # Every shard reports: one failing sweep must not hide another's result.
       fail-fast: false
