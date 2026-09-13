@@ -30,10 +30,11 @@ type SerializedForecastScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	// List-mode selection state. The forecast rows are 2–3 lines each, so the
-	// visible window is sized against the actual per-row line cost (see
-	// computeWindowSize), the same variable-height windowing ListScreen uses.
+	// visible window is packed by the lines each row really draws (see
+	// forecastWindow), the same variable-height windowing ListScreen uses.
 	cursor      int
 	windowStart int
 	windowSize  int
@@ -108,6 +109,7 @@ func (s *SerializedForecastScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -220,69 +222,37 @@ func (s *SerializedForecastScreen) updateDetail(m tea.KeyMsg) (Screen, tea.Cmd) 
 // List-mode windowing (variable-height rows, mirrors ListScreen)
 // ---------------------------------------------------------------------------
 
-// rowLineCost is how many rendered lines a row occupies: a title line + a meta
-// line, plus a third line when a projected-stockout date is present.
-func (s *SerializedForecastScreen) rowLineCost(i int) int {
-	if s.rows[i].ProjectedStockoutDate != "" {
-		return 3
-	}
-	return 2
+// forecastWindow is the rows [from, to) the list window holds with the cursor on
+// the pane: packed by the lines each row REALLY draws, into the budget
+// proseFlatListFrame draws against.
+//
+// IT USED TO COUNT A COST PER ROW — two lines, three with a stockout date — under
+// a flat two-row footer, and both halves were wrong about the frame. The footer
+// is a folded record now, two or three rows at 80 columns, so a budget that
+// assumed one row of hint assembled a frame taller than the pane and clampToBox,
+// which drops from the BOTTOM, took the keys. And the item name is an OMS
+// CharField that stores a newline as sent, so a row the cost table called two
+// lines could draw forty. Asking the rendered rows answers both, and asking
+// proseFlatListBudget with the same head the frame draws means the pager's
+// windowSize and the drawn window cannot disagree about what a screenful is.
+func (s *SerializedForecastScreen) forecastWindow() (from, to int) {
+	budget := proseFlatListBudget(s.listHead(), s.terminalHeight, s.paneCells(), s.listBar(true))
+	return proseLineWindow(proseRowHeights(s.listRows()), s.cursor, s.windowStart, budget)
 }
 
-// computeWindowSize returns how many rows the current terminal can show,
-// packing rows by their actual line cost from windowStart forward. Chrome
-// reserved: a 3-row header (title + summary + blank), a 2-row footer (blank +
-// hint) and 2 rows for the ↑/↓ overflow indicators.
+// computeWindowSize is how many rows the window around the cursor holds — the
+// step pgup/pgdn take.
 func (s *SerializedForecastScreen) computeWindowSize() int {
-	const headerRows = 3
-	const footerRows = 2
-	const indicatorRows = 2
-
-	avail := screenBodyHeight(s.terminalHeight) - headerRows - footerRows - indicatorRows
-	if avail < 2 {
-		avail = 2
-	}
-	if len(s.rows) == 0 {
-		return avail
-	}
-	start := s.windowStart
-	if start < 0 {
-		start = 0
-	}
-	used, count := 0, 0
-	for i := start; i < len(s.rows); i++ {
-		cost := s.rowLineCost(i)
-		if used+cost > avail {
-			break
-		}
-		used += cost
-		count++
-	}
-	if count < 1 {
-		count = 1
-	}
-	return count
+	from, to := s.forecastWindow()
+	return to - from
 }
 
+// scrollIntoView fits the window START and its SIZE together, for the reason
+// ItemSuppliersScreen.scrollIntoView gives: how many rows fit depends on which
+// row the window starts at.
 func (s *SerializedForecastScreen) scrollIntoView() {
-	if s.windowSize <= 0 {
-		s.windowSize = listWindowSize
-	}
-	if s.cursor < s.windowStart {
-		s.windowStart = s.cursor
-	}
-	if s.cursor >= s.windowStart+s.windowSize {
-		s.windowStart = s.cursor - s.windowSize + 1
-	}
-	if s.windowStart < 0 {
-		s.windowStart = 0
-	}
-	if maxStart := len(s.rows) - s.windowSize; maxStart > 0 && s.windowStart > maxStart {
-		s.windowStart = maxStart
-	}
-	if len(s.rows) <= s.windowSize {
-		s.windowStart = 0
-	}
+	from, to := s.forecastWindow()
+	s.windowStart, s.windowSize = from, to-from
 }
 
 // ---------------------------------------------------------------------------
@@ -302,63 +272,94 @@ func (s *SerializedForecastScreen) View() string {
 	return s.viewList()
 }
 
-func (s *SerializedForecastScreen) viewList() string {
-	var b strings.Builder
+// paneCells is the width this screen folds its bar against.
+func (s *SerializedForecastScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
 
+// listBar is the list's bar: the cursor vocabulary where there is a second row,
+// `enter` where there is a row to open, and the filter, reload and way out.
+//
+// `w` IS NAMED ON THE EMPTY UNFILTERED LIST TOO, where the literal it replaced
+// named only `r` and `esc`. The toggle is not a no-op there — it swaps to the
+// low-stock view and reloads — so a bar leaving it off was a key acting unnamed
+// on the very frame an operator most wants to change what they are looking at.
+func (s *SerializedForecastScreen) listBar(moves bool) proseBar {
+	out := proseNavCursor(moves)
+	if len(s.rows) > 0 {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter detail"})
+	}
+	toggle := "w low-stock only"
+	if s.lowOnly {
+		toggle = "w show all"
+	}
+	return append(out, proseBarItem{Keys: []string{"w"}, Hint: toggle}, proseBarRefresh, proseBarEsc)
+}
+
+// detailBar is the per-row detail's bar. The detail claims raw input, so its
+// own switch answers `esc` AND `backspace` — proseBarBack — and the scroller's
+// Handle binds the movement vocabulary, named only where the body overflows.
+func (s *SerializedForecastScreen) detailBar(scrolls bool) proseBar {
+	raw := "r show raw"
+	if s.showRaw {
+		raw = "r hide raw"
+	}
+	return append(proseNavScroll(scrolls), proseBarItem{Keys: []string{"r"}, Hint: raw}, proseBarBack)
+}
+
+// proseBar is the bar this screen is DRAWING, for whichever surface is up. A
+// load in flight or failed is nil: those frames are literals, as on every
+// earlier recipe.
+func (s *SerializedForecastScreen) proseBar() proseBar {
+	switch {
+	case s.loading || s.loadErr != "":
+		return nil
+	case s.mode == forecastModeDetail:
+		return proseScrollBar(s.detail, s.terminalHeight, s.paneCells(), s.detailBar)
+	}
+	return s.listBar(listNavMoves(len(s.rows)))
+}
+
+// listHead is the lines the list opens with — the title, the summary and a
+// blank — each ending in a newline, as proseFlatListFrame counts them.
+func (s *SerializedForecastScreen) listHead() string {
 	lowCount := 0
 	for _, r := range s.rows {
 		if r.NeedsReorder {
 			lowCount++
 		}
 	}
-
 	scope := "all serialized items"
 	if s.lowOnly {
 		scope = "low-stock only"
 	}
-	b.WriteString(StyleTitle.Render("Consumption forecast"))
-	b.WriteString("  " + StyleMuted.Render(fmt.Sprintf("(%s)", scope)) + "\n")
 	summary := fmt.Sprintf("%d item(s)", len(s.rows))
 	if lowCount > 0 {
 		summary += " · " + StyleStatusWarn.Render(fmt.Sprintf("%d need reorder", lowCount))
 	}
-	b.WriteString(StyleMuted.Render(summary) + "\n\n")
+	return StyleTitle.Render("Consumption forecast") + "  " +
+		StyleMuted.Render(fmt.Sprintf("(%s)", scope)) + "\n" +
+		StyleMuted.Render(summary) + "\n\n"
+}
 
+// listRows is every row as it will be drawn, without its trailing newline.
+func (s *SerializedForecastScreen) listRows() []string {
+	rows := make([]string, len(s.rows))
+	for i := range s.rows {
+		rows[i] = strings.TrimSuffix(s.renderRow(i, i == s.cursor), "\n")
+	}
+	return rows
+}
+
+func (s *SerializedForecastScreen) viewList() string {
+	cells := s.paneCells()
 	if len(s.rows) == 0 {
+		empty := "No active serialized items to forecast."
 		if s.lowOnly {
-			b.WriteString(StyleMuted.Render("Nothing at or below its reorder point. 🎉"))
-			b.WriteString("\n\n" + StyleMuted.Render("w show all · r refresh · esc back"))
-		} else {
-			b.WriteString(StyleMuted.Render("No active serialized items to forecast."))
-			b.WriteString("\n\n" + StyleMuted.Render("r refresh · esc back"))
+			empty = "Nothing at or below its reorder point. 🎉"
 		}
-		return b.String()
+		return s.listHead() + StyleMuted.Render(empty) + "\n\n" + s.proseBar().render(cells)
 	}
-
-	if s.windowSize <= 0 {
-		s.windowSize = s.computeWindowSize()
-	}
-	end := s.windowStart + s.windowSize
-	if end > len(s.rows) {
-		end = len(s.rows)
-	}
-	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
-	}
-	for i := s.windowStart; i < end; i++ {
-		b.WriteString(s.renderRow(i, i == s.cursor))
-	}
-	if end < len(s.rows) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
-	}
-
-	toggle := "w low-stock only"
-	if s.lowOnly {
-		toggle = "w show all"
-	}
-	hint := "j/k move · pgup/pgdn page · enter detail · " + toggle + " · r refresh · esc back"
-	b.WriteString("\n" + StyleMuted.Render(hint))
-	return b.String()
+	return proseFlatListFrame(s.listHead(), s.listRows(), s.cursor, &s.windowStart,
+		s.terminalHeight, cells, s.listBar(true), s.proseBar())
 }
 
 func (s *SerializedForecastScreen) renderRow(i int, selected bool) string {
@@ -415,13 +416,7 @@ func (s *SerializedForecastScreen) renderRow(i int, selected bool) string {
 }
 
 func (s *SerializedForecastScreen) viewDetail() string {
-	s.detail.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	raw := "r show raw"
-	if s.showRaw {
-		raw = "r hide raw"
-	}
-	hint := "j/k scroll · pgup/pgdn page · " + raw + " · esc back"
-	return s.detail.View() + "\n\n" + StyleMuted.Render(hint)
+	return proseScrollFrame(s.detail, s.terminalHeight, s.paneCells(), s.detailBar)
 }
 
 // renderDetail draws every field the ComponentForecastRow carries, grouped into

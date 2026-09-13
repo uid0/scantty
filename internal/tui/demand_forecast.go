@@ -50,9 +50,10 @@ type DemandForecastScreen struct {
 	loading        bool
 	loadErr        string
 	terminalHeight int
+	terminalWidth  int
 
 	// List-mode selection state. Rows are 2–3 lines each, so the visible
-	// window is sized against the actual per-row line cost, as in
+	// window is packed by the lines each row really draws, as in
 	// SerializedForecastScreen.
 	cursor      int
 	windowStart int
@@ -150,6 +151,7 @@ func (s *DemandForecastScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		s.terminalHeight = m.Height
+		s.terminalWidth = m.Width
 		s.windowSize = s.computeWindowSize()
 		s.scrollIntoView()
 		return s, nil
@@ -268,70 +270,27 @@ func (s *DemandForecastScreen) updateDetail(m tea.KeyMsg) (Screen, tea.Cmd) {
 // List-mode windowing (variable-height rows, mirrors SerializedForecastScreen)
 // ---------------------------------------------------------------------------
 
-// rowLineCost is how many rendered lines a row occupies: a title line + a meta
-// line, plus a third line when the item has a last-restock date to show the
-// history behind the cadence.
-func (s *DemandForecastScreen) rowLineCost(i int) int {
-	if s.rows[i].LastRestockDate != nil {
-		return 3
-	}
-	return 2
+// forecastWindow is the rows [from, to) the list window holds with the cursor on
+// the pane, packed by the lines each row really draws into the budget
+// proseFlatListFrame draws against. SerializedForecastScreen.forecastWindow
+// carries why a per-row cost under a flat footer could not survive the folded
+// bar or a stored newline in an item name.
+func (s *DemandForecastScreen) forecastWindow() (from, to int) {
+	budget := proseFlatListBudget(s.listHead(), s.terminalHeight, s.paneCells(), s.listBar(true))
+	return proseLineWindow(proseRowHeights(s.listRows()), s.cursor, s.windowStart, budget)
 }
 
-// computeWindowSize returns how many rows the current terminal can show,
-// packing rows by their actual line cost from windowStart forward. Chrome
-// reserved: a 3-row header (title + summary + blank), a 2-row footer (blank +
-// hint) and 2 rows for the ↑/↓ overflow indicators.
+// computeWindowSize is how many rows the window around the cursor holds — the
+// step pgup/pgdn take.
 func (s *DemandForecastScreen) computeWindowSize() int {
-	const headerRows = 3
-	const footerRows = 2
-	const indicatorRows = 2
-
-	avail := screenBodyHeight(s.terminalHeight) - headerRows - footerRows - indicatorRows
-	if avail < 2 {
-		avail = 2
-	}
-	if len(s.rows) == 0 {
-		return avail
-	}
-	start := s.windowStart
-	if start < 0 {
-		start = 0
-	}
-	used, count := 0, 0
-	for i := start; i < len(s.rows); i++ {
-		cost := s.rowLineCost(i)
-		if used+cost > avail {
-			break
-		}
-		used += cost
-		count++
-	}
-	if count < 1 {
-		count = 1
-	}
-	return count
+	from, to := s.forecastWindow()
+	return to - from
 }
 
+// scrollIntoView fits the window start and its size together.
 func (s *DemandForecastScreen) scrollIntoView() {
-	if s.windowSize <= 0 {
-		s.windowSize = listWindowSize
-	}
-	if s.cursor < s.windowStart {
-		s.windowStart = s.cursor
-	}
-	if s.cursor >= s.windowStart+s.windowSize {
-		s.windowStart = s.cursor - s.windowSize + 1
-	}
-	if s.windowStart < 0 {
-		s.windowStart = 0
-	}
-	if maxStart := len(s.rows) - s.windowSize; maxStart > 0 && s.windowStart > maxStart {
-		s.windowStart = maxStart
-	}
-	if len(s.rows) <= s.windowSize {
-		s.windowStart = 0
-	}
+	from, to := s.forecastWindow()
+	s.windowStart, s.windowSize = from, to-from
 }
 
 // ---------------------------------------------------------------------------
@@ -351,9 +310,9 @@ func (s *DemandForecastScreen) View() string {
 	return s.viewList()
 }
 
-func (s *DemandForecastScreen) viewList() string {
-	var b strings.Builder
-
+// listHead is the lines the list opens with — the title, the summary and a
+// blank — each ending in a newline, as proseFlatListFrame counts them.
+func (s *DemandForecastScreen) listHead() string {
 	due, noCadence := 0, 0
 	for _, r := range s.rows {
 		if r.NeedsReorder {
@@ -371,8 +330,6 @@ func (s *DemandForecastScreen) viewList() string {
 	case s.lowOnly:
 		scope = "due to reorder only"
 	}
-	b.WriteString(StyleTitle.Render(title))
-	b.WriteString("  " + StyleMuted.Render(fmt.Sprintf("(%s)", scope)) + "\n")
 	summary := fmt.Sprintf("%d item(s)", len(s.rows))
 	if due > 0 {
 		summary += " · " + StyleStatusWarn.Render(fmt.Sprintf("%d due to reorder", due))
@@ -380,33 +337,26 @@ func (s *DemandForecastScreen) viewList() string {
 	if noCadence > 0 {
 		summary += fmt.Sprintf(" · %d without a cadence", noCadence)
 	}
-	b.WriteString(StyleMuted.Render(summary) + "\n\n")
+	return StyleTitle.Render(title) + "  " + StyleMuted.Render(fmt.Sprintf("(%s)", scope)) + "\n" +
+		StyleMuted.Render(summary) + "\n\n"
+}
 
+// listRows is every row as it will be drawn, without its trailing newline.
+func (s *DemandForecastScreen) listRows() []string {
+	rows := make([]string, len(s.rows))
+	for i := range s.rows {
+		rows[i] = strings.TrimSuffix(s.renderRow(i, i == s.cursor), "\n")
+	}
+	return rows
+}
+
+func (s *DemandForecastScreen) viewList() string {
+	cells := s.paneCells()
 	if len(s.rows) == 0 {
-		b.WriteString(StyleMuted.Render(s.emptyMessage()))
-		b.WriteString("\n\n" + StyleMuted.Render(s.hint()))
-		return b.String()
+		return s.listHead() + StyleMuted.Render(s.emptyMessage()) + "\n\n" + s.proseBar().render(cells)
 	}
-
-	if s.windowSize <= 0 {
-		s.windowSize = s.computeWindowSize()
-	}
-	end := s.windowStart + s.windowSize
-	if end > len(s.rows) {
-		end = len(s.rows)
-	}
-	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
-	}
-	for i := s.windowStart; i < end; i++ {
-		b.WriteString(s.renderRow(i, i == s.cursor))
-	}
-	if end < len(s.rows) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
-	}
-
-	b.WriteString("\n" + StyleMuted.Render(s.hint()))
-	return b.String()
+	return proseFlatListFrame(s.listHead(), s.listRows(), s.cursor, &s.windowStart,
+		s.terminalHeight, cells, s.listBar(true), s.proseBar())
 }
 
 // emptyMessage explains WHY the list is empty — both endpoints read stored rows
@@ -424,23 +374,54 @@ func (s *DemandForecastScreen) emptyMessage() string {
 		"Rows appear once the nightly forecasting run has measured a restock cadence for an item."
 }
 
-func (s *DemandForecastScreen) hint() string {
-	keys := []string{"j/k move", "pgup/pgdn page", "enter detail"}
-	if len(s.rows) == 0 {
-		keys = nil
+// paneCells is the width this screen folds its bar against.
+func (s *DemandForecastScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// listBar is the list's bar: the cursor vocabulary where there is a second row,
+// `enter` where there is a row to open, the view's filter and swap keys, and the
+// reload and way out.
+//
+// `w` IS OFF THE ALERTS VIEW because it does nothing there — the notify set is
+// already server-filtered, and the arm returns before touching anything — so
+// naming it would be the other half of the rule.
+func (s *DemandForecastScreen) listBar(moves bool) proseBar {
+	out := proseNavCursor(moves)
+	if len(s.rows) > 0 {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter detail"})
 	}
-	if s.alerts {
-		keys = append(keys, "a full forecast")
-	} else {
-		if s.lowOnly {
-			keys = append(keys, "w show all")
-		} else {
-			keys = append(keys, "w due only")
-		}
-		keys = append(keys, "a alerts")
+	switch {
+	case s.alerts:
+		out = append(out, proseBarItem{Keys: []string{"a"}, Hint: "a full forecast"})
+	case s.lowOnly:
+		out = append(out, proseBarItem{Keys: []string{"w"}, Hint: "w show all"},
+			proseBarItem{Keys: []string{"a"}, Hint: "a alerts"})
+	default:
+		out = append(out, proseBarItem{Keys: []string{"w"}, Hint: "w due only"},
+			proseBarItem{Keys: []string{"a"}, Hint: "a alerts"})
 	}
-	keys = append(keys, "r refresh", "esc back")
-	return strings.Join(keys, " · ")
+	return append(out, proseBarRefresh, proseBarEsc)
+}
+
+// detailBar is the per-row detail's bar; see SerializedForecastScreen.detailBar.
+func (s *DemandForecastScreen) detailBar(scrolls bool) proseBar {
+	raw := "r show raw"
+	if s.showRaw {
+		raw = "r hide raw"
+	}
+	return append(proseNavScroll(scrolls), proseBarItem{Keys: []string{"r"}, Hint: raw}, proseBarBack)
+}
+
+// proseBar is the bar this screen is DRAWING, for whichever surface is up. A
+// load in flight or failed is nil: those frames are literals, as on every
+// earlier recipe.
+func (s *DemandForecastScreen) proseBar() proseBar {
+	switch {
+	case s.loading || s.loadErr != "":
+		return nil
+	case s.mode == forecastModeDetail:
+		return proseScrollBar(s.detail, s.terminalHeight, s.paneCells(), s.detailBar)
+	}
+	return s.listBar(listNavMoves(len(s.rows)))
 }
 
 func (s *DemandForecastScreen) renderRow(i int, selected bool) string {
@@ -502,13 +483,7 @@ func (s *DemandForecastScreen) renderRow(i int, selected bool) string {
 }
 
 func (s *DemandForecastScreen) viewDetail() string {
-	s.detail.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows))
-	raw := "r show raw"
-	if s.showRaw {
-		raw = "r hide raw"
-	}
-	hint := "j/k scroll · pgup/pgdn page · " + raw + " · esc back"
-	return s.detail.View() + "\n\n" + StyleMuted.Render(hint)
+	return proseScrollFrame(s.detail, s.terminalHeight, s.paneCells(), s.detailBar)
 }
 
 // renderDetail draws every field the row carries, grouped into Item / Restock

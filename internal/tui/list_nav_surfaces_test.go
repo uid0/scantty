@@ -111,7 +111,9 @@ import (
 // (prose_bar_second_surface_test.go), and then the lists binding more of the
 // movement vocabulary than those recipes' helpers named
 // (prose_bar_wider_vocabulary_test.go), and then the simple FIELD FORMS, whose
-// up/down move a focus rather than a cursor (prose_bar_field_forms_test.go): a
+// up/down move a focus rather than a cursor (prose_bar_field_forms_test.go), and
+// then the lists whose rows are several lines and whose window already packed
+// them by line cost (prose_bar_row_packed_lists_test.go). A
 // field-form entry here was an exemption from THIS classifier, never from the
 // bar rule, and a form's record names its focus keys like any other. Their bars
 // are RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
@@ -124,18 +126,15 @@ var listNavUnsweptReceivers = map[string]string{
 		"multi-LINE and its window is budgeted in rows — see proseBarUnconverted",
 	"ChecklistRunScreen":    "the step list of a checklist run",
 	"ChecklistsScreen":      "the checklist browse list",
-	"DemandForecastScreen":  "the demand-forecast table",
 	"FirmwareScreen":        "the firmware rollout list",
 	"InventoryDetailScreen": "the item detail sheet and its three pick modals",
-	"ItemSuppliersScreen":   "the supplier list on an item beside ItemSupplierFormScreen",
 	"MakerBoxesScreen":      "the maker-box list beside MakerBoxFormScreen",
 	"ReportTableScreen": "the shared scrollable report table, which every tabbed report " +
 		"page rides. reportScreenFixtures (report_yardstick_test.go) is the roster of " +
 		"those pages and TestReportTable_EveryReportScreenIsSwept derives it from the " +
 		"package source every run, so no count is restated here to drift",
-	"SerializedForecastScreen": "the serialized-component consumption forecast table",
-	"StorageOverviewScreen":    "the storage overview",
-	"StorageSlotsScreen":       "the storage slot list beside StorageSlotFormScreen",
+	"StorageOverviewScreen": "the storage overview",
+	"StorageSlotsScreen":    "the storage slot list beside StorageSlotFormScreen",
 	"TextScroller": "not a list at all: a read-only text body with a scroll offset and " +
 		"no cursor, shared by every detail sheet that holds one (listNavDelegatingReceivers " +
 		"derives that set every run, so no count is restated here to drift). It is here " +

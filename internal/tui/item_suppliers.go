@@ -138,19 +138,59 @@ func (s *ItemSuppliersScreen) suppliersPaneCells() int {
 	return screenBodyCells(s.terminalWidth)
 }
 
-// suppliersFooter is the action bar, as one " · "-joined string for the folder.
-func suppliersFooter() string {
-	return "j/k move · c add · E edit · p primary · x remove · r refresh · esc back"
+// suppliersBar is the list's action bar as a record.
+//
+// THE LITERAL IT REPLACED NAMED `j/k move` AND NOTHING ELSE OF THE VOCABULARY,
+// while this screen's switch binds all of it — the arrows, pgup/pgdn and
+// g/G/home/end — and `enter` opens the same edit form `E` does. Those were keys
+// that acted with no word for them, which is the defect the record exists for.
+//
+// `primary` is whether `p` would WRITE: on the row that is already the primary
+// supplier the arm answers a warning toast and changes nothing, so naming it
+// there would be a bar claiming a key that only declines. The movement segments
+// come off where there is no second row (listNavMoves), and every row action
+// comes off an empty list, where the arms find no selected row and do nothing.
+func (s *ItemSuppliersScreen) suppliersBar(moves, primary bool) proseBar {
+	out := proseNavCursor(moves)
+	out = append(out, proseBarItem{Keys: []string{"c"}, Hint: "c add"})
+	if len(s.rows) > 0 {
+		out = append(out, proseBarItem{Keys: []string{"E", "enter"}, Hint: "E/enter edit"})
+		if primary {
+			out = append(out, proseBarItem{Keys: []string{"p"}, Hint: "p primary"})
+		}
+		out = append(out, proseBarItem{Keys: []string{"x"}, Hint: "x remove"})
+	}
+	return append(out, proseBarRefresh, proseBarEsc)
 }
 
-// suppliersFooterLines folds that bar to the live pane.
+// suppliersCeiling is the bar at its TALLEST, which the row budget is measured
+// against for the reason proseSizeScroller gives: `p` comes off on the primary
+// row and the movement segments off a one-row list, so a budget taken from the
+// live bar would change as the cursor moves — and the budget decides which rows
+// the cursor can see.
+func (s *ItemSuppliersScreen) suppliersCeiling() proseBar { return s.suppliersBar(true, true) }
+
+// proseBar is the bar this screen is DRAWING. Nil where the frame is something
+// else: a load in flight or failed, the one-line delete confirm that names its
+// own two keys, and a set-primary PATCH while it is out — every key is held then
+// (Update returns before its switch), so a bar would name keys that do nothing.
+func (s *ItemSuppliersScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" || s.confirmingDelete || s.busy {
+		return nil
+	}
+	row, ok := s.selected()
+	return s.suppliersBar(listNavMoves(len(s.rows)), ok && !row.IsPreferred)
+}
+
+// suppliersFooterLines folds the CEILING bar to the live pane — the rows the
+// plan reserves for whatever is drawn at the foot of the frame.
 //
-// It is 63 cells and the pane at 80 columns is 51, so written straight out it
-// lost "r refresh · esc back" to clampToBox — two keys that work, unnamed, on
-// the only surface that names them. A bar the operator cannot read is not
+// The bar is 63 cells and more against the 51 an 80-column pane gives, so
+// written straight out it lost its tail to clampToBox — keys that work, unnamed,
+// on the only surface that names them. A bar the operator cannot read is not
 // honest, it is absent.
 func (s *ItemSuppliersScreen) suppliersFooterLines() []string {
-	return pickerWrap(suppliersFooter(), s.suppliersPaneCells())
+	return pickerWrap(s.suppliersCeiling().hint(), s.suppliersPaneCells())
 }
 
 // bodyLines is how many lines the row window may spend.
@@ -189,10 +229,10 @@ type suppliersPlan struct {
 // LIE below a terminal height of ten (layout.go says so), and a plan built on a
 // lie claims rows the pane does not have.
 func (s *ItemSuppliersScreen) bodyPlan() suppliersPlan {
+	// The working line of a set-primary PATCH is drawn IN PLACE of the bar
+	// rather than above it, so it spends rows the ceiling already reserved and a
+	// write going out does not move the window under the operator.
 	avail := screenBodyRows(s.terminalHeight) - len(s.suppliersFooterLines())
-	if s.busy {
-		avail--
-	}
 	plan := suppliersPlan{count: true, gap: true}
 	// One line for the count, one for the gap, and at least one for the body.
 	switch {
@@ -465,7 +505,7 @@ func (s *ItemSuppliersScreen) View() string {
 	}
 	if len(s.rows) == 0 {
 		return StyleMuted.Render("No suppliers linked to this item yet.") + "\n\n" +
-			StyleMuted.Render("c add supplier · r refresh · esc back")
+			s.proseBar().render(s.suppliersPaneCells())
 	}
 
 	room := s.suppliersPaneCells()
@@ -521,10 +561,9 @@ func (s *ItemSuppliersScreen) View() string {
 		b.WriteString("\n")
 	}
 	if s.busy {
-		b.WriteString(muted("Working…") + "\n")
-	}
-	for _, line := range s.suppliersFooterLines() {
-		b.WriteString(StyleMuted.Render(line) + "\n")
+		b.WriteString(muted("Working…"))
+	} else {
+		b.WriteString(s.proseBar().render(room))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

@@ -119,6 +119,11 @@ type proseBarWindowedList struct {
 	// by coincidence, so measured against it the check reports the floor — which
 	// is pre-existing and recorded on proseListWindow — rather than the window.
 	reference proseBarRowName
+	// cutMark is the words the pane must carry where a row taller than the pane
+	// was cut; "" means proseWriteRows' "more lines". A list that marks its own
+	// cut in its own words names them, so the check reads the mark the screen
+	// really draws rather than passing a list whose mark it cannot recognise.
+	cutMark string
 	// immobile is why a ONE-ROW list of this kind cannot be moved. It is worded
 	// per screen because the noun differs and an operator reading the failure
 	// should be told which list it is about.
@@ -253,7 +258,11 @@ func proseBarAssertMultiLineWindows(t *testing.T, lists []proseBarWindowedList) 
 							stripANSI(oversized.View()))
 					}
 					pane := stripANSI(clampToBox(oversized.View(), screenBodyCells(w), screenBodyRows(h)))
-					if !strings.Contains(pane, "more lines") {
+					mark := l.cutMark
+					if mark == "" {
+						mark = "more lines"
+					}
+					if !strings.Contains(pane, strings.TrimSpace(mark)) {
 						t.Fatalf("at %dx%d the %s drew a %d-line name on a %d-row pane with no "+
 							"mark saying it was cut:\n%s",
 							w, h, l.name, proseBarOversizedNameLines, screenBodyRows(h), pane)
