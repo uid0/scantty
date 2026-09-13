@@ -121,7 +121,9 @@ import (
 // (prose_bar_scroller_sheets_test.go), and then the storage slot list, whose
 // window budget had counted its bar and its print overlay as one constant
 // (prose_bar_storage_slots_test.go), and then the shared report table every
-// tabbed report rides (prose_bar_report_table_test.go). A
+// tabbed report rides (prose_bar_report_table_test.go), and then the storage
+// overview, a rack grid whose cursor moves in two dimensions and whose bar
+// names each direction on its own (prose_bar_storage_overview_test.go). A
 // field-form entry here was an exemption from THIS classifier, never from the
 // bar rule, and a form's record names its focus keys like any other. Their bars
 // are RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
@@ -132,7 +134,6 @@ var listNavUnsweptReceivers = map[string]string{
 	"AssetPartsScreen": "the parts list on an asset; footer written in View, already past " +
 		"51 cells. Left out of the windowed-cursor-list conversion because its rows are " +
 		"multi-LINE and its window is budgeted in rows — see proseBarUnconverted",
-	"StorageOverviewScreen": "the storage overview",
 	"TextScroller": "not a list at all: a read-only text body with a scroll offset and " +
 		"no cursor, shared by every detail sheet that holds one (listNavDelegatingReceivers " +
 		"derives that set every run, so no count is restated here to drift). It is here " +
