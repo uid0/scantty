@@ -205,67 +205,70 @@ func (s *WorkOrderDetailScreen) removeTool() (Screen, tea.Cmd) {
 
 func (s *WorkOrderDetailScreen) renderToolPicker() string {
 	rows := s.woToolRows()
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render(fmt.Sprintf("Tools for this job (%d)", len(rows))) + "\n\n")
+	head := StyleTitle.Render(fmt.Sprintf("Tools for this job (%d)", len(rows))) + "\n\n"
 	switch {
 	case len(rows) == 0 && s.woToolsAreTheTemplates():
 		// Absent and empty are different states, and this is the third one: the
 		// job DISPLAYS tools it does not own. Say which list is on screen and
 		// what adding a row does to it, because the answer is surprising.
-		b.WriteString(s.wrapped(StyleMuted,
+		head += s.wrapped(StyleMuted,
 			fmt.Sprintf("The %d tool(s) shown on this work order come from its PM template, "+
 				"so there is nothing here to restage or remove. "+
-				"Press a to give this job its own list.", len(s.wo.Tools))))
+				"Press a to give this job its own list.", len(s.wo.Tools)))
 	case len(rows) == 0:
-		b.WriteString(s.wrapped(StyleMuted,
-			"Nothing recorded yet. Press a to add a tool this job turned out to need."))
+		head += s.wrapped(StyleMuted,
+			"Nothing recorded yet. Press a to add a tool this job turned out to need.")
 	}
+	drawn := make([]string, len(rows))
 	for i, row := range rows {
-		cursor := "  "
-		if i == s.toolCursor {
-			cursor = "> "
-		}
-		// ASSEMBLED FIRST, THEN FOLDED. An MRO tool name runs to the column's
-		// 200 characters, so a row built out of a name plus its facts is folded
-		// as a WHOLE against what the two-cell lead leaves — the facts then land
-		// intact on whichever line they fall on, rather than being appended after
-		// a bound and pushed past the pane (the assetScopeRows rule).
-		label := row.Name
-		if row.Quantity > 1 {
-			label += fmt.Sprintf(" ×%d", row.Quantity)
-		}
-		if row.IsAdHoc {
-			label += " (added)"
-		}
-		if row.IsRequired {
-			label += " [REQ]"
-		}
-		style := lipgloss.NewStyle()
-		if i == s.toolCursor {
-			style = StyleTitle
-		}
-		for j, line := range s.wrapIndented(label, "  ") {
-			if j == 0 {
-				line = cursor + strings.TrimPrefix(line, "  ")
-			}
-			b.WriteString(style.Render(line) + "\n")
-		}
-		b.WriteString(s.wrappedIn(StyleMuted, woToolLocationLine(row), "    "))
-		if row.Notes != "" {
-			b.WriteString(s.wrappedIn(StyleMuted, row.Notes, "    "))
-		}
+		drawn[i] = s.toolRow(i, row)
 	}
-	b.WriteString("\n")
-	switch {
-	case s.toolPending:
-		b.WriteString(StyleMuted.Render("Updating…"))
-	case len(rows) == 0:
-		// Don't advertise keys that act on a highlighted row when there is none.
-		b.WriteString(StyleMuted.Render("a add · esc back"))
-	default:
-		b.WriteString(pickerHintAt("j/k move · a add · l location · d remove · esc back", s.paneCells()))
+	var above []string
+	if s.toolPending {
+		above = append(above, StyleMuted.Render("Updating…"))
 	}
-	return b.String()
+	return s.woListFrame(head, drawn, s.toolCursor, &s.toolStart, above,
+		s.toolsBar(proseFlatCeilingRows, false), s.proseBar())
+}
+
+// toolRow is one tool: its name and facts, its location and its notes, each
+// folded to the pane.
+func (s *WorkOrderDetailScreen) toolRow(i int, row omsapi.WorkOrderToolRow) string {
+	var b strings.Builder
+	cursor := "  "
+	if i == s.toolCursor {
+		cursor = "> "
+	}
+	// ASSEMBLED FIRST, THEN FOLDED. An MRO tool name runs to the column's 200
+	// characters, so a row built out of a name plus its facts is folded as a
+	// WHOLE against what the two-cell lead leaves — the facts then land intact on
+	// whichever line they fall on, rather than being appended after a bound and
+	// pushed past the pane (the assetScopeRows rule).
+	label := row.Name
+	if row.Quantity > 1 {
+		label += fmt.Sprintf(" ×%d", row.Quantity)
+	}
+	if row.IsAdHoc {
+		label += " (added)"
+	}
+	if row.IsRequired {
+		label += " [REQ]"
+	}
+	style := lipgloss.NewStyle()
+	if i == s.toolCursor {
+		style = StyleTitle
+	}
+	for j, line := range s.wrapIndented(label, "  ") {
+		if j == 0 {
+			line = cursor + strings.TrimPrefix(line, "  ")
+		}
+		b.WriteString(style.Render(line) + "\n")
+	}
+	b.WriteString(s.wrappedIn(StyleMuted, woToolLocationLine(row), "    "))
+	if row.Notes != "" {
+		b.WriteString(s.wrappedIn(StyleMuted, row.Notes, "    "))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // --- Add a tool ------------------------------------------------------------
@@ -413,10 +416,6 @@ func (s *WorkOrderDetailScreen) renderAddToolForm() string {
 				"gets them.", len(s.wo.Tools))))
 	}
 	b.WriteString("\n")
-	if s.atPending {
-		b.WriteString(StyleMuted.Render("Adding…"))
-		return b.String()
-	}
 	for i := 0; i < woToolFieldMax; i++ {
 		cursor := "  "
 		label := woToolFieldLabel[i]
@@ -431,21 +430,15 @@ func (s *WorkOrderDetailScreen) renderAddToolForm() string {
 			if s.atRequired {
 				box = StyleStatusOK.Render("[x]")
 			}
-			b.WriteString("    " + box + " " + StyleMuted.Render("required tools are flagged on the job") + "\n")
+			b.WriteString("    " + box + " " + StyleMuted.Render(pickerClip("required tools are flagged on the job", s.paneCells()-8)) + "\n")
 			continue
 		}
 		b.WriteString("    " + woBoxView(s.atInputs[i], s.paneCells(), "    ") + "\n")
 	}
-	b.WriteString("\n")
 	if s.atErr != "" {
-		b.WriteString(s.wrapped(StyleStatusError, "✗ "+s.atErr) + "\n")
+		b.WriteString("\n" + s.woErrLine(s.atErr) + "\n")
 	}
-	hint := "tab/arrows move · enter add · esc back"
-	if s.atCursor == woToolRequired {
-		hint = "space toggle · " + hint
-	}
-	b.WriteString(pickerHintAt(hint, s.paneCells()))
-	return b.String()
+	return s.woFormFrame(b.String(), s.atPending, "Adding…")
 }
 
 // --- Restage one tool ------------------------------------------------------
@@ -532,7 +525,8 @@ func (s *WorkOrderDetailScreen) submitToolLocation() (Screen, tea.Cmd) {
 func (s *WorkOrderDetailScreen) renderToolLocationForm() string {
 	row, ok := s.locRow()
 	if !ok {
-		return s.wrapped(StyleMuted, "That tool is no longer on this work order. esc back")
+		return s.wrapped(StyleMuted, "That tool is no longer on this work order.") + "\n" +
+			s.proseBar().render(s.paneCells())
 	}
 	var b strings.Builder
 	// The tool's NAME is 200 characters on the wire, so the identity row folds
@@ -545,16 +539,11 @@ func (s *WorkOrderDetailScreen) renderToolLocationForm() string {
 			"so the next job off it keeps the template's location."))
 	b.WriteString(s.wrapped(StyleMuted, "Now: "+woToolLocationLine(row)))
 	b.WriteString("\n")
-	if s.locPending {
-		b.WriteString(StyleMuted.Render("Saving…"))
-		return b.String()
-	}
 	b.WriteString("Location:\n  " + woBoxView(s.locIn, s.paneCells(), "  ") + "\n")
 	if s.locErr != "" {
-		b.WriteString("\n" + s.wrapped(StyleStatusError, "✗ "+s.locErr))
+		b.WriteString("\n" + s.woErrLine(s.locErr) + "\n")
 	}
-	b.WriteString("\n" + pickerHintAt("enter save · esc cancel", s.paneCells()))
-	return b.String()
+	return s.woFormFrame(b.String(), s.locPending, "Saving…")
 }
 
 // --- Lockout / tagout -----------------------------------------------------
@@ -668,54 +657,58 @@ func (s *WorkOrderDetailScreen) currentLoto() (omsapi.WorkOrderLotoCompletion, b
 
 func (s *WorkOrderDetailScreen) renderLotoList() string {
 	rows := s.woLotoRows()
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render(fmt.Sprintf("Lockout / Tagout (%d/%d isolated)",
-		s.lotoIsolated(), len(rows))) + "\n\n")
+	head := StyleTitle.Render(fmt.Sprintf("Lockout / Tagout (%d/%d isolated)",
+		s.lotoIsolated(), len(rows))) + "\n\n"
 	if len(rows) == 0 {
-		b.WriteString(s.wrapped(StyleMuted,
+		head += s.wrapped(StyleMuted,
 			"No energy sources are recorded on this job's asset, so there is no "+
 				"structured lockout checklist to mark. Rows are created when the work "+
-				"order is generated — they cannot be added here."))
+				"order is generated — they cannot be added here.")
 	}
+	drawn := make([]string, len(rows))
 	for i, rec := range rows {
-		cursor := "  "
-		if i == s.lotoCursor {
-			cursor = "> "
-		}
-		box := "[ ]"
-		if rec.IsCompleted {
-			box = StyleStatusOK.Render("[x]")
-		}
-		// The label is folded, never clipped: it is 200 characters on the wire
-		// and it is what names the hazard.
-		// The row's own lead ("> [x] ") is six cells, so the label is folded
-		// against what is LEFT of the pane and every continuation sits under it.
-		label := s.wrapIndented(woLotoSourceLabel(rec), strings.Repeat(" ", 6))
-		head := cursor + box + " " + strings.TrimLeft(label[0], " ")
-		if i == s.lotoCursor {
-			head = StyleTitle.Render(head)
-		}
-		b.WriteString(head + "\n")
-		for _, cont := range label[1:] {
-			b.WriteString(cont + "\n")
-		}
-		state := woLotoStateLine(rec)
-		style := StyleStatusWarn
-		if rec.IsCompleted {
-			style = StyleStatusOK
-		}
-		b.WriteString(s.wrappedIn(style, state, strings.Repeat(" ", 6)))
+		drawn[i] = s.lotoRowView(i, rec)
 	}
-	b.WriteString("\n")
+	var above []string
 	if s.lotoNote != "" {
-		b.WriteString(s.wrapped(StyleStatusWarn, "! "+s.lotoNote))
+		above = append(above, strings.TrimRight(s.wrapped(StyleStatusWarn, "! "+s.lotoNote), "\n"))
 	}
-	if len(rows) == 0 {
-		b.WriteString(StyleMuted.Render("esc back"))
-		return b.String()
+	return s.woListFrame(head, drawn, s.lotoCursor, &s.lotoStart, above,
+		s.lotoListBar(proseFlatCeilingRows), s.proseBar())
+}
+
+// lotoRowView is one lockout step: its checkbox and label, and the record under
+// it.
+func (s *WorkOrderDetailScreen) lotoRowView(i int, rec omsapi.WorkOrderLotoCompletion) string {
+	var b strings.Builder
+	cursor := "  "
+	if i == s.lotoCursor {
+		cursor = "> "
 	}
-	b.WriteString(pickerHintAt("j/k move · enter review the step · esc back", s.paneCells()))
-	return b.String()
+	box := "[ ]"
+	if rec.IsCompleted {
+		box = StyleStatusOK.Render("[x]")
+	}
+	// The label is folded, never clipped: it is 200 characters on the wire and it
+	// is what names the hazard. The row's own lead ("> [x] ") is six cells, so the
+	// label is folded against what is LEFT of the pane and every continuation sits
+	// under it.
+	label := s.wrapIndented(woLotoSourceLabel(rec), strings.Repeat(" ", 6))
+	head := cursor + box + " " + strings.TrimLeft(label[0], " ")
+	if i == s.lotoCursor {
+		head = StyleTitle.Render(head)
+	}
+	b.WriteString(head + "\n")
+	for _, cont := range label[1:] {
+		b.WriteString(cont + "\n")
+	}
+	state := woLotoStateLine(rec)
+	style := StyleStatusWarn
+	if rec.IsCompleted {
+		style = StyleStatusOK
+	}
+	b.WriteString(s.wrappedIn(style, state, strings.Repeat(" ", 6)))
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // --- The review frame, and the one key that records ------------------------
@@ -795,6 +788,12 @@ func (s *WorkOrderDetailScreen) lotoIndexOf(id string) int {
 }
 
 func (s *WorkOrderDetailScreen) handleLotoConfirmKey(m tea.KeyMsg) (Screen, tea.Cmd) {
+	// Laid out before the scroller is asked to move, for the reason
+	// layoutLotoConfirm gives: a scroller that has not been handed the step yet
+	// clamps every movement back to the top.
+	if _, ok := s.lotoRow(); ok {
+		s.layoutLotoConfirm()
+	}
 	if s.lotoScroller != nil && s.lotoScroller.Handle(m) {
 		return s, nil
 	}
@@ -854,33 +853,57 @@ func (s *WorkOrderDetailScreen) submitLoto() (Screen, tea.Cmd) {
 const woLotoAnyOrder = "Steps may be recorded in any order: nothing here or on the server enforces a sequence."
 
 func (s *WorkOrderDetailScreen) renderLotoConfirm() string {
-	rec, ok := s.lotoRow()
-	if !ok {
-		return s.wrapped(StyleMuted, "That lockout step is no longer on this work order. esc back")
+	cells := s.paneCells()
+	if _, ok := s.lotoRow(); !ok {
+		return s.wrapped(StyleMuted, "That lockout step is no longer on this work order.") + "\n" +
+			s.proseBar().render(cells)
 	}
+	head, above := s.layoutLotoConfirm()
+	out := head + s.lotoScroller.View() + "\n\n"
+	if above != "" {
+		out += above + "\n\n"
+	}
+	return out + s.proseBar().render(cells)
+}
+
+// layoutLotoConfirm builds the review frame's pinned head and the lines above its
+// bar, and SIZES the scrolled body between them. proseBar calls it too, before it
+// asks the scroller whether the body overflows — the reason proseScrollBar sizes
+// before it answers: HasOverflow is a question about the viewport, and a record
+// read before the first render answered about a scroller holding no step at all,
+// so the keys worked and the bar did not name them.
+func (s *WorkOrderDetailScreen) layoutLotoConfirm() (head, above string) {
+	rec, _ := s.lotoRow()
 	recording := !s.lotoWas
 
 	// HEAD — pinned, because clampToBox drops from the BOTTOM: whatever is up
 	// here is the part a short pane cannot take, and what must survive is the
 	// DIRECTION the write goes and WHICH step it is about.
-	var head strings.Builder
+	var h strings.Builder
 	title := "Clear lockout record"
 	if recording {
 		title = "Record lockout step"
 	}
-	head.WriteString(StyleTitle.Render(title) + "\n")
+	h.WriteString(StyleTitle.Render(title) + "\n")
 	for _, line := range s.wrapLines(woLotoSourceLabel(rec)) {
-		head.WriteString(line + "\n")
+		h.WriteString(line + "\n")
 	}
-	head.WriteString("\n")
+	// NO BLANK UNDER THE HEAD. There was one, and the bar that replaced the
+	// literal is what paid for removing it: naming the scroll vocabulary folds the
+	// bar onto a second row at 80 columns and the bar sits under a blank of its
+	// own, which took two rows off the step's text — enough that a device list at
+	// its full 200 characters no longer fitted a screenful at 80x24
+	// (TestWOLoto_TheReviewFrameShowsTheStepWholeAtEveryPane). The body's first
+	// line is a muted field label, or `↑ more above` once it scrolls, so the head
+	// still reads as a head.
 
 	// BODY — the step in full, folded so nothing is cut, and scrolled so nothing
 	// is lost on a pane too short to hold it.
 	//
 	// The step's own text LEADS. It is what a tech standing at the machine came
-	// for, and the sentences about what the keypress means follow it — the legend
-	// below carries the short form of those ("y clear the record"), and the legend
-	// is pinned where no budget can trim it.
+	// for, and the sentences about what the keypress means follow it — the bar
+	// carries the short form of those ("y/Y clear the record"), and the bar is
+	// drawn under the body where no budget can trim it.
 	var body strings.Builder
 	writeBlock := func(label, value string) {
 		if value == "" {
@@ -911,51 +934,37 @@ func (s *WorkOrderDetailScreen) renderLotoConfirm() string {
 	}
 	body.WriteString(s.wrapped(StyleMuted, woLotoAnyOrder))
 
-	// FOOT — the write key, the way out, and (only where the body really moves)
-	// the scroll keys.
-	//
-	// THE BUDGET IS MEASURED AGAINST THE TALLEST FOOT, always including the
-	// scroll keys, even on the frames that will not draw them. Naming them costs
-	// cells, cells can fold the hint onto another row, another row costs the body
-	// a line, and a shorter body can change whether it overflows at all — so a
-	// budget measured against the foot actually drawn could oscillate between
-	// frames. The tallest is the fixed point (AGENTS.md's actionBarRowsFor rule).
-	keys := "y record · n/esc cancel"
-	if !recording {
-		keys = "y clear the record · n/esc cancel"
+	// ABOVE THE BAR — the server's refusal, or the working line.
+	var a []string
+	if s.lotoErr != "" {
+		a = append(a, strings.TrimRight(s.wrapped(StyleStatusWarn, "! "+s.lotoErr), "\n"))
 	}
-	footAt := func(hint string) string {
-		var foot strings.Builder
-		foot.WriteString("\n")
-		if s.lotoErr != "" {
-			foot.WriteString(s.wrapped(StyleStatusWarn, "! "+s.lotoErr))
-		}
-		if s.lotoPending {
-			foot.WriteString(StyleMuted.Render("Recording…"))
-			return foot.String()
-		}
-		foot.WriteString(pickerHintAt(hint, s.paneCells()))
-		return foot.String()
+	if s.lotoPending {
+		a = append(a, StyleMuted.Render("Recording…"))
 	}
-	rows := screenBodyRows(s.terminalHeight) -
-		strings.Count(head.String(), "\n") -
-		strings.Count(footAt(keys+" · j/k scroll"), "\n")
+	above = strings.Join(a, "\n")
+
+	// THE BUDGET IS MEASURED AGAINST THE TALLEST BAR, always including the scroll
+	// keys, even on the frames that will not draw them. Naming them costs cells,
+	// cells can fold the bar onto another row, another row costs the body a line,
+	// and a shorter body can change whether it overflows at all — so a budget
+	// measured against the bar actually drawn could oscillate between frames. The
+	// tallest is the fixed point (proseSizeScroller). The lines above the bar do
+	// not depend on the body, so they are counted as drawn.
+	foot := s.lotoConfirmBar(true).rows(s.paneCells())
+	if above != "" {
+		foot += strings.Count(above, "\n") + 2
+	}
+	rows := screenBodyRows(s.terminalHeight) - strings.Count(h.String(), "\n") - foot
 	if rows < 1 {
 		rows = 1
 	}
 	if s.lotoScroller == nil {
 		s.lotoScroller = NewTextScroller(rows)
 	}
-	// Set BEFORE the foot is worded: HasOverflow answers off the content, so a
-	// foot built first would name the scroll keys off the PREVIOUS frame's
-	// content — which on the opening frame is no content at all, so the keys
-	// worked and the bar did not name them.
 	s.lotoScroller.Set(strings.TrimRight(body.String(), "\n"))
 	s.lotoScroller.SetViewHeight(rows)
-	if s.lotoScroller.HasOverflow() {
-		keys += " · j/k scroll"
-	}
-	return head.String() + s.lotoScroller.View() + footAt(keys)
+	return h.String(), above
 }
 
 // woBoxView renders one textinput bounded to the pane it is drawn into, under

@@ -198,7 +198,7 @@ func TestWODetailTimerBlockedOnCompleted(t *testing.T) {
 	if hits != 0 {
 		t.Errorf("hit the API %d time(s) on a completed WO, want 0", hits)
 	}
-	if hint := s.footerHint(); strings.Contains(hint, "s start") || strings.Contains(hint, "s pause") {
+	if hint := s.proseBar().hint(); strings.Contains(hint, "s start") || strings.Contains(hint, "s pause") {
 		t.Errorf("completed WO should not offer the timer key: %q", hint)
 	}
 	// The recorded total still shows — that is the number the job produced.
@@ -211,11 +211,11 @@ func TestWODetailTimerBlockedOnCompleted(t *testing.T) {
 // perform, so an operator can tell a running clock from a stopped one.
 func TestWODetailFooterHintTracksTimerState(t *testing.T) {
 	s := loadWO(t, Deps{}, &omsapi.WorkOrder{ID: "wo1", Status: "in_progress"})
-	if hint := s.footerHint(); !strings.Contains(hint, "s start") {
+	if hint := s.proseBar().hint(); !strings.Contains(hint, "s start") {
 		t.Errorf("idle hint = %q, want 's start'", hint)
 	}
 	s.wo.IsTiming = true
-	if hint := s.footerHint(); !strings.Contains(hint, "s pause") {
+	if hint := s.proseBar().hint(); !strings.Contains(hint, "s pause") {
 		t.Errorf("running hint = %q, want 's pause'", hint)
 	}
 }

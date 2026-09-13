@@ -229,7 +229,23 @@ func proseNavIsPager(m listNavMove) bool {
 // ceiling and the drawn bar are one expression; a sheet that wrote the ceiling
 // out a second time would be free to write it differently.
 func proseSizeScroller(sc *TextScroller, terminalHeight, cells int, bar func(scrolls bool) proseBar) {
-	sc.SetViewHeight(scrollerViewHeight(terminalHeight, bar(true).rows(cells)))
+	proseSizeScrollerUnder(sc, terminalHeight, cells, 0, bar)
+}
+
+// proseSizeScrollerUnder is proseSizeScroller for a sheet that spends rows of
+// its own around the scrolled body besides the bar — a PINNED header above it
+// (the item sheet's name, identity and metrics rows, and the blank under them),
+// or an answer row between it and the bar (the work-order sheet's last result).
+//
+// THOSE ROWS COME OFF THE SAME BUDGET, AND COUNTED FROM WHAT IS DRAWN. Both
+// sheets budgeted their scroller against the flat two-row detailFooterRows plus
+// whatever they remembered to add, so a footer that folded onto a second line
+// ran the frame a row past the pane and clampToBox, which drops from the BOTTOM,
+// took the last fold — the keys the conversion is for. `chrome` is every row the
+// sheet draws that is neither the body nor the bar, measured by the caller off
+// the strings it is about to write.
+func proseSizeScrollerUnder(sc *TextScroller, terminalHeight, cells, chrome int, bar func(scrolls bool) proseBar) {
+	sc.SetViewHeight(scrollerViewHeight(terminalHeight, chrome+bar(true).rows(cells)))
 }
 
 // proseScrollBar is the bar a scrolled sheet is DRAWING: the viewport sized
@@ -247,7 +263,13 @@ func proseSizeScroller(sc *TextScroller, terminalHeight, cells int, bar func(scr
 // with the next render — the same "the bar and the frame read the SAME
 // function" rule bodyScrollsForBar keeps on the columnar layer.
 func proseScrollBar(sc *TextScroller, terminalHeight, cells int, bar func(scrolls bool) proseBar) proseBar {
-	proseSizeScroller(sc, terminalHeight, cells, bar)
+	return proseScrollBarUnder(sc, terminalHeight, cells, 0, bar)
+}
+
+// proseScrollBarUnder is proseScrollBar with the sheet's own chrome rows taken
+// off the budget first — see proseSizeScrollerUnder.
+func proseScrollBarUnder(sc *TextScroller, terminalHeight, cells, chrome int, bar func(scrolls bool) proseBar) proseBar {
+	proseSizeScrollerUnder(sc, terminalHeight, cells, chrome, bar)
 	return bar(sc.HasOverflow())
 }
 

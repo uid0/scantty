@@ -200,8 +200,8 @@ func TestWorkOrderDetail_SaysAScanIsWaitingAndNamesTheKey(t *testing.T) {
 	if !strings.Contains(body, "nothing readable") {
 		t.Error("the degraded sheet is not reported; a sheet with an empty queue still needs a human")
 	}
-	if !strings.Contains(stripANSI(s.footerHint()), "R review scan") {
-		t.Errorf("the footer does not name R: %s", s.footerHint())
+	if !strings.Contains(stripANSI(s.proseBar().hint()), "R review scan") {
+		t.Errorf("the footer does not name R: %s", s.proseBar().hint())
 	}
 
 	// And it does NOT, on a work order with no sheet parked — a key the bar
@@ -211,7 +211,7 @@ func TestWorkOrderDetail_SaysAScanIsWaitingAndNamesTheKey(t *testing.T) {
 	if strings.Contains(stripANSI(s.renderBody()), "Scanned sheet awaiting review") {
 		t.Error("the section is drawn on a work order with nothing waiting")
 	}
-	if strings.Contains(stripANSI(s.footerHint()), "R review scan") {
+	if strings.Contains(stripANSI(s.proseBar().hint()), "R review scan") {
 		t.Error("the footer names R where no sheet is waiting")
 	}
 }

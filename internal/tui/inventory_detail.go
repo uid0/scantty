@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/uid0/scantty/internal/omsapi"
 )
@@ -145,9 +146,11 @@ type InventoryDetailScreen struct {
 	cnSIGs        []omsapi.SIG
 	cnSIGIx       int
 	cnLoadingSIGs bool
-	cnSIGErr      string
-	cnErr         string
-	cnPending     bool
+	// cnSIGStart is the committee window's first row (consumeSIGFrame).
+	cnSIGStart int
+	cnSIGErr   string
+	cnErr      string
+	cnPending  bool
 
 	// Open / finish pack modal (OMS #981), open_closed items only. Active while
 	// pkStep != packStepNone, during which WantsRawInput routes every key here.
@@ -573,6 +576,12 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		// retire, so the metrics row need not reload.
 		return s, tea.Batch(Status(status, StatusOK), s.loadItemCmd())
 	case tea.KeyMsg:
+		// The load frames draw no body and no modal, so a key they do not name
+		// is ignored rather than left to arm a prompt or walk a scroll offset
+		// nobody can see (prose_bar.go's load-state note carries the rule).
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingDelete {
 			return s.updateConfirmDelete(m)
 		}
@@ -731,84 +740,241 @@ func (s *InventoryDetailScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.C
 }
 
 func (s *InventoryDetailScreen) View() string {
+	cells := s.paneCells()
 	if s.loading {
-		return StyleMuted.Render("Loading item…")
+		return proseLoadingFrame("Loading item…", cells, s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, cells, s.proseBar())
 	}
 	if s.item == nil {
-		return StyleMuted.Render("Item not found.")
+		return StyleMuted.Render("Item not found.") + "\n\n" + s.proseBar().render(cells)
 	}
 
 	// Frozen header: the name / full SKU+ID / metrics row stay pinned above the
-	// scrolling body (Ian UX). Size the scroller so the header, the blank
-	// separator beneath it, and the footer all fit without the body clipping the
-	// bottom. The header height is dynamic (two lines until the metrics row
-	// arrives), so measure it every render.
+	// scrolling body (Ian UX). The header height is dynamic (two lines until the
+	// metrics row arrives), so it is measured every render and taken off the
+	// scroller's budget with the bar's own rows (headerChrome).
 	header := s.renderHeader()
-	headerRows := strings.Count(header, "\n") + 1
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, detailFooterRows+headerRows+1))
-	body := s.scroller.View()
 
-	if s.confirmingDelete {
-		var prompt string
-		if s.deleting {
-			prompt = StyleMuted.Render("Deleting…")
-		} else {
-			prompt = StyleStatusWarn.Render(fmt.Sprintf("Delete %q? This can't be undone.  y delete · n/esc cancel", s.item.Name))
+	// THE THREE PICK MODALS ARE DRAWN IN PLACE OF THE BODY, under the pinned
+	// header. They used to be drawn UNDER the body, which was budgeted as though
+	// a two-row footer followed it — so the cycle count's reason list, a dozen
+	// rows, ran the frame past an 80x24 pane and clampToBox took the bottom of
+	// it: the very line naming the keys that answer the prompt. Nothing scrolls
+	// the body while a modal owns the keyboard, so the rows it gives up are rows
+	// no key could have reached anyway, and the header — the item's name, SKU and
+	// on-hand figures the prompt is about — stays.
+	switch {
+	case s.confirmingDelete:
+		prompt := s.deletePrompt(cells)
+		chrome := strings.Count(header, "\n") + 2 + strings.Count(prompt, "\n") + 2
+		s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, chrome))
+		return header + "\n\n" + s.scroller.View() + "\n\n" + prompt
+	case s.ccStep != ccStepNone:
+		return s.modalFrame(header, s.cycleCountPrompt(cells))
+	case s.cnStep != consumeStepNone:
+		if s.cnStep == consumeStepSIG && !s.cnPending {
+			return s.consumeSIGFrame(header, cells)
 		}
-		return header + "\n\n" + body + "\n\n" + prompt
+		return s.modalFrame(header, s.consumePrompt(cells))
+	case s.pkStep != packStepNone:
+		return s.modalFrame(header, s.packPrompt(cells))
 	}
-	if s.ccStep != ccStepNone {
-		return header + "\n\n" + body + "\n\n" + s.cycleCountPrompt()
+	bar := proseScrollBarUnder(s.scroller, s.terminalHeight, cells, s.headerChrome(header), s.bar)
+	return header + "\n\n" + s.scroller.View() + "\n\n" + bar.render(cells)
+}
+
+// paneCells is the width this sheet folds and clips against.
+func (s *InventoryDetailScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+// headerChrome is the rows the pinned header and the blank under it take.
+func (s *InventoryDetailScreen) headerChrome(header string) int {
+	return strings.Count(header, "\n") + 2
+}
+
+// modalFrame is a modal's pane: the pinned header, the prompt in place of the
+// body, and the prompt's bar under it — or, while its write is out, the prompt
+// alone, whose last line is the working line (a write in flight answers nil).
+func (s *InventoryDetailScreen) modalFrame(header, prompt string) string {
+	out := header + "\n\n" + prompt
+	if bar := s.proseBar(); bar != nil {
+		out += "\n\n" + bar.render(s.paneCells())
 	}
-	if s.cnStep != consumeStepNone {
-		return header + "\n\n" + body + "\n\n" + s.consumePrompt()
+	return out
+}
+
+// deletePrompt is the y/n confirm drawn under the body.
+//
+// IT STAYS A PROMPT THAT NAMES ITS OWN KEYS, and answers nil from proseBar, for
+// the reason every y/n confirm in this package does (prose_bar_foot_prompts_test.go):
+// `y delete · n/esc cancel` is what the switch answers, spelled in the lower case
+// every such prompt spells its aliases in. What it was NOT was on the pane: it
+// was ONE line — the item's name inside the question and the keys after it —
+// which an OMS name of ordinary length took past the 51 cells an 80-column pane
+// gives, so clampToBox cut the keys off. The name is clipped with the cut marked
+// and the keys have a line of their own.
+func (s *InventoryDetailScreen) deletePrompt(cells int) string {
+	if s.deleting {
+		return StyleMuted.Render("Deleting…")
 	}
-	if s.pkStep != packStepNone {
-		return header + "\n\n" + body + "\n\n" + s.packPrompt()
-	}
-	// The retire hint flips to "un-retire" once the item is retired, so the key
-	// reads correctly whichever direction T will toggle.
-	retireHint := "T retire"
-	if s.item.IsRetired {
-		retireHint = "T un-retire"
-	}
-	hint := "j/k scroll · o/enter reorder · s suppliers · E edit · " + retireHint + " · x delete · r refresh · esc back"
-	// The serial keys are guarded on the INSERT, not stripped again below, for
-	// the reason the stock keys are: an insert-then-remove shape is what let a
-	// key slip through the kit stripping once already. Named only once a kit is
-	// RULED OUT — a kit cannot legitimately be serialized at all, and an
-	// unanswered question cannot tell one from an ordinary item.
-	if s.item.IsSerialized && s.kitRuledOut() {
-		hint = "j/k scroll · o/enter reorder · s suppliers · i instances · b batch-scan · E edit · " + retireHint + " · x delete · r refresh · esc back"
-	}
-	// The three STOCK keys are ADDED where they mean something rather than
-	// stripped where they do not, because stripping is what kept letting one
-	// through: c and u were removed for a kit by name, and p had to be guarded
-	// separately when SetItemCountMode became kit-routable and put a kit within
-	// reach of pack-container. An insert reads its own condition once.
-	//
-	// kitRuledOut owns that condition — a kit holds no stock, and an
-	// unanswered kit question cannot rule one out. The pack keys additionally
-	// only exist for a sealed+open item, so an each-mode item's footer is
-	// untouched.
-	//
-	// The two hardcoded base strings and the substring surgery over them were
-	// assessed rather than tidied: every key here is inserted under exactly the
-	// predicate its case in Update reads, so the bar cannot name a key that does
-	// nothing or omit one that works, for any combination of kit state,
-	// is_serialized and count mode. That agreement is what is load-bearing, not
-	// the shape, and it is asserted directly across the whole matrix rather than
-	// argued for here — see TestInventoryDetailKit_TheBarAndTheDispatchAgree.
+	return StyleStatusWarn.Render(pickerClip(fmt.Sprintf("Delete %q?", s.item.Name), cells)) + "\n" +
+		StyleStatusWarn.Render(pickerClip("This can't be undone.", cells)) + "\n" +
+		StyleStatusWarn.Render("y delete · n/esc cancel")
+}
+
+// bar names every key that acts on the item sheet, as a record the honesty
+// sweep can press (prose_bar.go).
+//
+// THE LITERAL IT REPLACES said `j/k scroll` and nothing else of the movement
+// vocabulary, while TextScroller.Handle moved the body on the arrows, pgup/pgdn,
+// g/G and home/end as well — eight keys an operator was never told about, on
+// one of the longest sheets in the program.
+//
+// The conditional segments are the ones the literal carried, under exactly the
+// predicates their cases in Update read, and they keep the two shapes the
+// literal's comments argued for: every key is ADDED under its own condition,
+// never stripped after the fact, because stripping is what let `c` and `u`
+// through for a kit and then `p` a round later. kitRuledOut owns the stock and
+// serial keys — a kit holds no stock, and an unanswered kit question cannot rule
+// one out — and the pack key additionally exists only for a sealed+open item.
+// TestInventoryDetailKit_TheBarAndTheDispatchAgree holds that agreement across
+// the whole matrix of kit state, is_serialized and count mode.
+func (s *InventoryDetailScreen) bar(scrolls bool) proseBar {
+	out := proseNavScroll(scrolls)
+	out = append(out, proseBarItem{Keys: []string{"o", "enter"}, Hint: "o/enter reorder"})
 	if s.kitRuledOut() {
-		hint = strings.Replace(hint, "s suppliers · ", "c count · u use · s suppliers · ", 1)
+		out = append(out, proseBarItem{Keys: []string{"c"}, Hint: "c count"})
 		if s.item.CountMode == omsapi.CountModeOpenClosed {
-			hint = strings.Replace(hint, "c count · ", "c count · p packs · ", 1)
+			out = append(out, proseBarItem{Keys: []string{"p"}, Hint: "p packs"})
 		}
+		out = append(out, proseBarItem{Keys: []string{"u"}, Hint: "u use"})
 	}
-	return header + "\n\n" + body + "\n\n" + StyleMuted.Render(hint)
+	out = append(out, proseBarItem{Keys: []string{"s"}, Hint: "s suppliers"})
+	if s.item.IsSerialized && s.kitRuledOut() {
+		out = append(out,
+			proseBarItem{Keys: []string{"i"}, Hint: "i instances"},
+			proseBarItem{Keys: []string{"b"}, Hint: "b batch-scan"})
+	}
+	return append(out,
+		proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+		s.retireItem(),
+		proseBarItem{Keys: []string{"x"}, Hint: "x delete"},
+		proseBarRefresh, proseBarEsc)
+}
+
+// retireItem is `T`, worded for the direction it will toggle: "un-retire" once
+// the item is retired.
+func (s *InventoryDetailScreen) retireItem() proseBarItem {
+	if s.item.IsRetired {
+		return proseBarItem{Keys: []string{"T"}, Hint: "T un-retire"}
+	}
+	return proseBarItem{Keys: []string{"T"}, Hint: "T retire"}
+}
+
+// proseBar is the bar this sheet is DRAWING, for whichever surface is up.
+//
+// NIL IN TWO STATES, each for the reason the recipes before it give: the delete
+// confirm, which names its own keys, and a modal whose write is out, whose
+// working line is the whole answer — every key there is ignored, `esc`
+// included, so there is nothing for a bar to name.
+func (s *InventoryDetailScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.item == nil {
+		return proseBar{proseBarRefresh, proseBarEsc}
+	}
+	switch {
+	case s.confirmingDelete:
+		return nil
+	case s.ccStep != ccStepNone:
+		return s.cycleCountBar()
+	case s.cnStep != consumeStepNone:
+		return s.consumeBar()
+	case s.pkStep != packStepNone:
+		return s.packBar()
+	}
+	return proseScrollBarUnder(s.scroller, s.terminalHeight, s.paneCells(), s.headerChrome(s.renderHeader()), s.bar)
+}
+
+// loadBar is the sheet's bar while its item load is out or has failed — what its
+// key switch still answers with no body drawn (prose_bar.go carries the defect
+// and the decision). A refresh keeps the item, so `o`/`enter`, `s`, `E` and —
+// once a kit is ruled out on a serialized item — `i` and `b` still switch
+// screens, and `T` still writes the retire flag: named because they act, and
+// candidates for gating. `c`, `u`, `p` and `x` arm a prompt this frame does not
+// draw and the movement keys walk a body it does not draw either, so they are
+// not named and are ignored. A failed load drops the item and all of them with
+// it.
+func (s *InventoryDetailScreen) loadBar() proseBar {
+	var out proseBar
+	if s.item != nil {
+		out = append(out,
+			proseBarItem{Keys: []string{"o", "enter"}, Hint: "o/enter reorder"},
+			proseBarItem{Keys: []string{"s"}, Hint: "s suppliers"})
+		if s.item.IsSerialized && s.kitRuledOut() {
+			out = append(out,
+				proseBarItem{Keys: []string{"i"}, Hint: "i instances"},
+				proseBarItem{Keys: []string{"b"}, Hint: "b batch-scan"})
+		}
+		out = append(out, proseBarItem{Keys: []string{"E"}, Hint: "E edit"}, s.retireItem())
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
+}
+
+// The modals' own keys. Each one's literal said `enter …` and `esc cancel`, and
+// the three PICK steps said `j/k move` while their switches answered the arrows
+// too — the omission this record exists to close, on the one surface of this
+// sheet where an operator is choosing between rows.
+var (
+	inventoryModalNext   = proseBarItem{Keys: []string{"enter"}, Hint: "enter next"}
+	inventoryModalSubmit = proseBarItem{Keys: []string{"enter"}, Hint: "enter submit"}
+	inventoryModalCancel = proseBarItem{Keys: []string{"esc"}, Hint: "esc cancel"}
+)
+
+// cycleCountBar is the cycle-count prompt's bar for the step it is on.
+func (s *InventoryDetailScreen) cycleCountBar() proseBar {
+	if s.ccPending {
+		return nil
+	}
+	switch s.ccStep {
+	case ccStepReason:
+		return append(proseNavStep(len(cycleCountReasons) > 1), inventoryModalNext, inventoryModalCancel)
+	case ccStepNotes:
+		return proseBar{inventoryModalSubmit, inventoryModalCancel}
+	}
+	return proseBar{inventoryModalNext, inventoryModalCancel}
+}
+
+// consumeBar is the use/consume prompt's bar for the step it is on. The
+// committee step moves only where there is a committee to move to: index 0 is
+// the no-charge row, so a list that has not loaded, failed, or came back empty
+// is one row with nowhere for the cursor to go.
+func (s *InventoryDetailScreen) consumeBar() proseBar {
+	return s.consumeBarWith(len(s.cnSIGs))
+}
+
+func (s *InventoryDetailScreen) consumeBarWith(sigs int) proseBar {
+	if s.cnPending {
+		return nil
+	}
+	switch s.cnStep {
+	case consumeStepSIG:
+		return append(proseNavStep(sigs+1 > 1), inventoryModalNext, inventoryModalCancel)
+	case consumeStepNotes:
+		return proseBar{inventoryModalSubmit, inventoryModalCancel}
+	}
+	return proseBar{inventoryModalNext, inventoryModalCancel}
+}
+
+// packBar is the pack picker's bar.
+func (s *InventoryDetailScreen) packBar() proseBar {
+	if s.pkPending {
+		return nil
+	}
+	return append(proseNavStep(len(s.pkOptions) > 1),
+		proseBarItem{Keys: []string{"enter"}, Hint: "enter confirm"}, inventoryModalCancel)
 }
 
 // renderHeader builds the frozen top-of-detail region that stays pinned while
@@ -832,7 +998,19 @@ func (s *InventoryDetailScreen) renderHeader() string {
 	if kitLine := s.kitNameLine(it.Name); kitLine != "" {
 		b.WriteString(kitLine)
 	} else {
-		b.WriteString(StyleTitle.Render(it.Name))
+		// Fitted the way kitNameLine fits a kit's: the tags are reserved and the
+		// NAME gives, with its cut marked. Drawn whole, a name of ordinary MRO
+		// length ran the pinned header past the pane and clampToBox cut it — tags
+		// and all — with no mark.
+		name := it.Name
+		if width := s.bodyWidth(); width > 0 {
+			room := width - s.headerTagsWidth()
+			if room < kitMinName {
+				room = kitMinName
+			}
+			name = fitCell(jdeStatusOneLine(name), room)
+		}
+		b.WriteString(StyleTitle.Render(name))
 	}
 	if it.IsRetired {
 		b.WriteString("  " + StyleMuted.Render("[retired]"))
@@ -846,14 +1024,20 @@ func (s *InventoryDetailScreen) renderHeader() string {
 
 	// Line 2: full SKU + ID (+ category/location). The full SKU lives here, so
 	// the metrics row below drops its redundant shortened-SKU cell.
+	//
+	// FOLDED at the " · " joints it is built from, never clipped: an abbreviated
+	// SKU reads as a different SKU. The header's height is measured on every
+	// render (headerChrome), so a second row costs the body a row and nothing
+	// runs past the pane.
 	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("SKU %s · ID %s", it.SKU, it.ID)))
+	identity := []string{fmt.Sprintf("SKU %s", it.SKU), fmt.Sprintf("ID %s", it.ID)}
 	if it.CategoryName != "" {
-		b.WriteString(StyleMuted.Render(" · " + it.CategoryName))
+		identity = append(identity, it.CategoryName)
 	}
 	if it.Location != "" {
-		b.WriteString(StyleMuted.Render(" · " + it.Location))
+		identity = append(identity, it.Location)
 	}
+	b.WriteString(pickerHintAt(jdeStatusOneLine(strings.Join(identity, " · ")), s.paneCells()))
 
 	// Line 3: aligned metrics row (issue-5) — no SKU cell (de-dup with line 2),
 	// bold labels. Only once the metrics endpoint responds; a fetch failure
@@ -1730,14 +1914,27 @@ func (s *InventoryDetailScreen) submitCycleCount() (Screen, tea.Cmd) {
 	}
 }
 
-// cycleCountPrompt renders the modal for the active step.
-func (s *InventoryDetailScreen) cycleCountPrompt() string {
-	var b strings.Builder
+// inventoryModalTitle is a modal's first line: what the modal is, and the item
+// it is about, clipped to the pane with the cut marked. The item's name is an OMS
+// value of any length, and a title that runs past the pane is cut by clampToBox
+// with no mark.
+func (s *InventoryDetailScreen) inventoryModalTitle(title string, cells int) string {
 	name := ""
 	if s.item != nil {
 		name = s.item.Name
 	}
-	b.WriteString(StyleStatusWarn.Render("Cycle count") + "  " + StyleMuted.Render(name) + "\n\n")
+	room := cells - lipgloss.Width(title) - 2
+	if room < 1 {
+		return StyleStatusWarn.Render(pickerClip(title, cells))
+	}
+	return StyleStatusWarn.Render(title) + "  " + StyleMuted.Render(pickerClip(jdeStatusOneLine(name), room))
+}
+
+// cycleCountPrompt renders the modal for the active step, with no trailing
+// newline: its keys are the bar's (cycleCountBar), drawn under it by modalFrame.
+func (s *InventoryDetailScreen) cycleCountPrompt(cells int) string {
+	var b strings.Builder
+	b.WriteString(s.inventoryModalTitle("Cycle count", cells) + "\n\n")
 
 	if s.ccPending {
 		b.WriteString(StyleMuted.Render("Recording count…"))
@@ -1752,7 +1949,7 @@ func (s *InventoryDetailScreen) cycleCountPrompt() string {
 		unit := pluralizeUnit(countUnitOf(s.item), 2)
 		qtyLabel = fmt.Sprintf("Counted quantity (%s)", unit)
 	}
-	qtyEcho := StyleMuted.Render(qtyLabel + ": " + qty)
+	qtyEcho := StyleMuted.Render(pickerClip(qtyLabel+": "+qty, cells))
 
 	switch s.ccStep {
 	case ccStepQty:
@@ -1762,26 +1959,24 @@ func (s *InventoryDetailScreen) cycleCountPrompt() string {
 			if s.ccOpenClosed() {
 				hint += " — sealed only"
 			}
-			b.WriteString(StyleMuted.Render("  "+hint) + "\n")
+			b.WriteString(StyleMuted.Render(pickerClip("  "+hint, cells)) + "\n")
 		}
 		// What the system thinks it has, in the same unit — the number being
 		// reconciled against.
 		if s.item != nil {
-			b.WriteString(StyleMuted.Render("  system on hand: "+onHandLabel(s.item)) + "\n")
+			b.WriteString(StyleMuted.Render(pickerClip("  system on hand: "+onHandLabel(s.item), cells)) + "\n")
 		}
 		if s.ccErr != "" {
-			b.WriteString("\n" + StyleStatusError.Render(s.ccErr) + "\n")
+			b.WriteString("\n" + StyleStatusError.Render(proseFormLine(s.ccErr, cells)) + "\n")
 		}
-		b.WriteString("\n" + StyleMuted.Render("enter next · esc cancel"))
 	case ccStepOpenCount:
 		unit := pluralizeUnit(countUnitOf(s.item), 2)
 		b.WriteString(qtyEcho + "\n\n")
 		b.WriteString("Open containers:\n  " + s.ccOpenCount.View() + "\n")
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  opened %s in use — not counted as stock", unit)) + "\n")
+		b.WriteString(StyleMuted.Render(pickerClip(fmt.Sprintf("  opened %s in use — not counted as stock", unit), cells)) + "\n")
 		if s.ccErr != "" {
-			b.WriteString("\n" + StyleStatusError.Render(s.ccErr) + "\n")
+			b.WriteString("\n" + StyleStatusError.Render(proseFormLine(s.ccErr, cells)) + "\n")
 		}
-		b.WriteString("\n" + StyleMuted.Render("enter next · esc cancel"))
 	case ccStepReason:
 		b.WriteString(qtyEcho + "\n")
 		if s.ccOpenClosed() {
@@ -1795,20 +1990,21 @@ func (s *InventoryDetailScreen) cycleCountPrompt() string {
 				b.WriteString("    " + StyleMuted.Render(r.Label) + "\n")
 			}
 		}
-		b.WriteString("\n" + StyleMuted.Render("j/k move · enter next · esc cancel"))
 	case ccStepNotes:
 		b.WriteString(qtyEcho + "\n")
 		if s.ccOpenClosed() {
 			b.WriteString(StyleMuted.Render("Open containers: "+strings.TrimSpace(s.ccOpenCount.Value())) + "\n")
 		}
 		b.WriteString(StyleMuted.Render("Reason: "+cycleCountReasons[s.ccReasonIx].Label) + "\n\n")
-		b.WriteString("Note (optional):\n  " + s.ccNotes.View() + "\n")
+		b.WriteString("Note (optional):\n  " + woBoxView(s.ccNotes, cells, "  ") + "\n")
 		if s.ccErr != "" {
-			b.WriteString("\n" + StyleStatusError.Render(s.ccErr) + "\n")
+			// A failed submit lands here carrying the OMS body, which can be a
+			// whole gateway page — bounded to one row so it cannot push the bar
+			// that says how to retry or leave off the pane.
+			b.WriteString("\n" + StyleStatusError.Render(proseFormLine(s.ccErr, cells)) + "\n")
 		}
-		b.WriteString("\n" + StyleMuted.Render("enter submit · esc cancel"))
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // --- Use / consume (accounting Phase 2) --------------------------------------
@@ -1833,6 +2029,7 @@ func (s *InventoryDetailScreen) openConsume() (Screen, tea.Cmd) {
 
 	s.cnSIGs = nil
 	s.cnSIGIx = 0
+	s.cnSIGStart = 0
 	s.cnLoadingSIGs = true
 	s.cnSIGErr = ""
 	s.cnErr = ""
@@ -2026,15 +2223,23 @@ func formatMoney(d omsapi.DecimalString) string {
 	return fmt.Sprintf("$%.2f", f)
 }
 
-// consumePrompt renders the use/consume modal for the active step (the
-// cycleCountPrompt sibling for the accounting log-usage flow).
-func (s *InventoryDetailScreen) consumePrompt() string {
-	var b strings.Builder
-	name := ""
-	if s.item != nil {
-		name = s.item.Name
+// consumeQtyLabel is the quantity step's label, naming the unit the server will
+// read the number in: a pack-counted item consumes whole packs (and the projected
+// charge is priced through the pack — see projectedCharge).
+func (s *InventoryDetailScreen) consumeQtyLabel() string {
+	if countsInPacks(s.item) {
+		return fmt.Sprintf("Quantity used (%s)", pluralizeUnit(countUnitOf(s.item), 2))
 	}
-	b.WriteString(StyleStatusWarn.Render("Use / consume") + "  " + StyleMuted.Render(name) + "\n\n")
+	return "Quantity used"
+}
+
+// consumePrompt renders the use/consume modal for the quantity and notes steps
+// and for a write in flight (the cycleCountPrompt sibling for the accounting
+// log-usage flow), with no trailing newline. The committee step is a list and
+// has a frame of its own, consumeSIGFrame.
+func (s *InventoryDetailScreen) consumePrompt(cells int) string {
+	var b strings.Builder
+	b.WriteString(s.inventoryModalTitle("Use / consume", cells) + "\n\n")
 
 	if s.cnPending {
 		b.WriteString(StyleMuted.Render("Recording usage…"))
@@ -2043,62 +2248,90 @@ func (s *InventoryDetailScreen) consumePrompt() string {
 
 	qty := strings.TrimSpace(s.cnQty.Value())
 	qtyN, _ := strconv.Atoi(qty)
-	// A pack-counted item consumes whole packs, so the prompt names the unit the
-	// server will read the number in (and the projected charge is priced through
-	// the pack — see projectedCharge).
-	qtyLabel := "Quantity used"
-	if countsInPacks(s.item) {
-		qtyLabel = fmt.Sprintf("Quantity used (%s)", pluralizeUnit(countUnitOf(s.item), 2))
-	}
+	qtyLabel := s.consumeQtyLabel()
 	switch s.cnStep {
 	case consumeStepQty:
 		b.WriteString(qtyLabel + ":\n  " + s.cnQty.View() + "\n")
 		if countsInPacks(s.item) {
-			b.WriteString(StyleMuted.Render(fmt.Sprintf("  whole %s consumed from stock",
-				pluralizeUnit(countUnitOf(s.item), 2))) + "\n")
+			b.WriteString(StyleMuted.Render(pickerClip(fmt.Sprintf("  whole %s consumed from stock",
+				pluralizeUnit(countUnitOf(s.item), 2)), cells)) + "\n")
 		}
 		if s.cnErr != "" {
-			b.WriteString("\n" + StyleStatusError.Render(s.cnErr) + "\n")
+			b.WriteString("\n" + StyleStatusError.Render(proseFormLine(s.cnErr, cells)) + "\n")
 		}
-		b.WriteString("\n" + StyleMuted.Render("enter next · esc cancel"))
-	case consumeStepSIG:
-		b.WriteString(StyleMuted.Render(qtyLabel+": "+qty) + "\n")
-		if amt := s.projectedCharge(qtyN); amt != "" {
-			b.WriteString(StyleMuted.Render("Value if charged: "+amt) + "\n")
-		} else {
-			b.WriteString(StyleMuted.Render("No unit cost — nothing will be charged") + "\n")
-		}
-		b.WriteString("\nCharge to committee:\n")
-		none := "— none (no charge) —"
-		if s.cnSIGIx == 0 {
-			b.WriteString("  " + StyleStatusOK.Render("▸ "+none) + "\n")
-		} else {
-			b.WriteString("    " + StyleMuted.Render(none) + "\n")
-		}
-		for i, sig := range s.cnSIGs {
-			if s.cnSIGIx == i+1 {
-				b.WriteString("  " + StyleStatusOK.Render("▸ "+sig.Name) + "\n")
-			} else {
-				b.WriteString("    " + StyleMuted.Render(sig.Name) + "\n")
-			}
-		}
-		if s.cnLoadingSIGs {
-			b.WriteString("    " + StyleMuted.Render("loading committees…") + "\n")
-		}
-		if s.cnSIGErr != "" {
-			b.WriteString("\n" + StyleStatusWarn.Render("committees unavailable: "+s.cnSIGErr) + "\n")
-		}
-		b.WriteString("\n" + StyleMuted.Render("j/k move · enter next · esc cancel"))
 	case consumeStepNotes:
-		b.WriteString(StyleMuted.Render(qtyLabel+": "+qty) + "\n")
-		b.WriteString(StyleMuted.Render("Charge: "+s.consumeChargeSummary(qtyN)) + "\n\n")
-		b.WriteString("Note (optional):\n  " + s.cnNotes.View() + "\n")
+		b.WriteString(StyleMuted.Render(pickerClip(qtyLabel+": "+qty, cells)) + "\n")
+		b.WriteString(StyleMuted.Render(pickerClip("Charge: "+jdeStatusOneLine(s.consumeChargeSummary(qtyN)), cells)) + "\n\n")
+		b.WriteString("Note (optional):\n  " + woBoxView(s.cnNotes, cells, "  ") + "\n")
 		if s.cnErr != "" {
-			b.WriteString("\n" + StyleStatusError.Render(s.cnErr) + "\n")
+			// A failed submit lands here carrying the OMS body — bounded to one
+			// row so it cannot push the bar off the pane.
+			b.WriteString("\n" + StyleStatusError.Render(proseFormLine(s.cnErr, cells)) + "\n")
 		}
-		b.WriteString("\n" + StyleMuted.Render("enter submit · esc cancel"))
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// consumeSIGFrame is the committee step: the pinned header and the step's lead
+// lines, a line-packed WINDOW of committees around the cursor, and the bar — with
+// the loading or failure line above it — as the foot the window is budgeted
+// around (proseFlatListFrameFoot).
+//
+// THE LIST WAS DRAWN WHOLE, and it is the shop's whole committee list: nothing
+// bounds how many SIGs OMS serves, so a shop with more of them than an 80x24 pane
+// holds pushed the prompt's own keys off the bottom, on the step that charges
+// money to one of them. A committee's NAME is an OMS value clipped to the pane
+// line by line with the cut marked, and a name taller than the window is clipped
+// to it with the lines left out named.
+func (s *InventoryDetailScreen) consumeSIGFrame(header string, cells int) string {
+	qty := strings.TrimSpace(s.cnQty.Value())
+	qtyN, _ := strconv.Atoi(qty)
+
+	var head strings.Builder
+	head.WriteString(header + "\n\n")
+	head.WriteString(s.inventoryModalTitle("Use / consume", cells) + "\n\n")
+	head.WriteString(StyleMuted.Render(pickerClip(s.consumeQtyLabel()+": "+qty, cells)) + "\n")
+	if amt := s.projectedCharge(qtyN); amt != "" {
+		head.WriteString(StyleMuted.Render(pickerClip("Value if charged: "+amt, cells)) + "\n")
+	} else {
+		head.WriteString(StyleMuted.Render(pickerClip("No unit cost — nothing will be charged", cells)) + "\n")
+	}
+	head.WriteString("\nCharge to committee:\n")
+
+	rows := []string{s.consumeSIGRow(0, "— none (no charge) —", cells)}
+	for i, sig := range s.cnSIGs {
+		rows = append(rows, s.consumeSIGRow(i+1, sig.Name, cells))
+	}
+
+	var above []string
+	if s.cnLoadingSIGs {
+		above = append(above, StyleMuted.Render(pickerClip("loading committees…", cells)))
+	}
+	if s.cnSIGErr != "" {
+		above = append(above, StyleStatusWarn.Render(proseFormLine("committees unavailable: "+s.cnSIGErr, cells)))
+	}
+	// The CEILING is the bar with the movement segment on it, for the reason
+	// proseListWindow gives: a list that grows past one row adds the segment, and
+	// a budget taken from the live bar would change with the list it sizes.
+	footRows := s.consumeBarWith(proseFlatCeilingRows).rows(cells)
+	foot := s.proseBar().render(cells)
+	if len(above) > 0 {
+		footRows += len(above) + 1
+		foot = strings.Join(above, "\n") + "\n\n" + foot
+	}
+	return proseFlatListFrameFoot(head.String(), rows, s.cnSIGIx, &s.cnSIGStart,
+		s.terminalHeight, footRows, foot)
+}
+
+// consumeSIGRow is one committee row, the highlight's caret reserved on every
+// row so a name that fits until it is selected is not cut on the keypress that
+// selects it.
+func (s *InventoryDetailScreen) consumeSIGRow(ix int, name string, cells int) string {
+	label := proseClipEachLine(name, cells-4)
+	if ix == s.cnSIGIx {
+		return "  " + StyleStatusOK.Render("▸ "+label)
+	}
+	return "    " + StyleMuted.Render(label)
 }
 
 // --- Open / finish a pack (OMS #981) ----------------------------------------
@@ -2223,15 +2456,13 @@ func packStatusLine(m packContainerDoneMsg) string {
 }
 
 // packPrompt renders the transition picker.
-func (s *InventoryDetailScreen) packPrompt() string {
+func (s *InventoryDetailScreen) packPrompt(cells int) string {
 	var b strings.Builder
-	name := ""
 	unit := "pack"
 	if s.item != nil {
-		name = s.item.Name
 		unit = countUnitOf(s.item)
 	}
-	b.WriteString(StyleStatusWarn.Render("Packs") + "  " + StyleMuted.Render(name) + "\n\n")
+	b.WriteString(s.inventoryModalTitle("Packs", cells) + "\n\n")
 
 	if s.pkPending {
 		b.WriteString(StyleMuted.Render("Recording…"))
@@ -2239,19 +2470,22 @@ func (s *InventoryDetailScreen) packPrompt() string {
 	}
 
 	if s.item != nil {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("On hand: %s", onHandLabel(s.item))) + "\n\n")
+		b.WriteString(StyleMuted.Render(pickerClip(fmt.Sprintf("On hand: %s", onHandLabel(s.item)), cells)) + "\n\n")
 	}
 	// Opening IS consumption under this mode: the pack's base units leave stock
 	// the moment it is broken open, because an open pack's contents stop being
-	// countable. Say so, since the operator is choosing between the two.
-	b.WriteString(StyleMuted.Render(fmt.Sprintf(
-		"Opening a %s draws its contents out of stock; finishing only clears the open tally.", unit)) + "\n\n")
+	// countable. Say so, since the operator is choosing between the two. FOLDED:
+	// the sentence is past the 51 cells an 80-column pane gives, and clampToBox
+	// used to take its tail — the half saying what finishing does.
+	b.WriteString(StyleMuted.Render(strings.Join(pickerWrap(fmt.Sprintf(
+		"Opening a %s draws its contents out of stock; finishing only clears the open tally.", unit), cells), "\n")) + "\n\n")
 
 	for i, opt := range s.pkOptions {
 		label := opt.label
 		if !opt.enabled {
 			label += "  (" + opt.why + ")"
 		}
+		label = pickerClip(label, cells-4)
 		switch {
 		case i == s.pkCursor && opt.enabled:
 			b.WriteString("  " + StyleStatusOK.Render("▸ "+label) + "\n")
@@ -2262,10 +2496,10 @@ func (s *InventoryDetailScreen) packPrompt() string {
 		}
 	}
 	if s.pkErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render(s.pkErr) + "\n")
+		// The server's own reason for a refused move, bounded to one row.
+		b.WriteString("\n" + StyleStatusError.Render(proseFormLine(s.pkErr, cells)) + "\n")
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · enter confirm · esc cancel"))
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // consumeChargeSummary describes the pending charge for the notes-step review:

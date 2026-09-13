@@ -116,7 +116,9 @@ import (
 // them by line cost (prose_bar_row_packed_lists_test.go), and then the flat
 // lists sharing their pane with a second section (prose_bar_sections_test.go),
 // and then the flat lists whose prompt, form or confirm is drawn under or in place
-// of their rows (prose_bar_foot_prompts_test.go). A
+// of their rows (prose_bar_foot_prompts_test.go), and then the last two scroller
+// sheets, whose modes draw in place of their footer
+// (prose_bar_scroller_sheets_test.go). A
 // field-form entry here was an exemption from THIS classifier, never from the
 // bar rule, and a form's record names its focus keys like any other. Their bars
 // are RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
@@ -127,7 +129,6 @@ var listNavUnsweptReceivers = map[string]string{
 	"AssetPartsScreen": "the parts list on an asset; footer written in View, already past " +
 		"51 cells. Left out of the windowed-cursor-list conversion because its rows are " +
 		"multi-LINE and its window is budgeted in rows — see proseBarUnconverted",
-	"InventoryDetailScreen": "the item detail sheet and its three pick modals",
 	"ReportTableScreen": "the shared scrollable report table, which every tabbed report " +
 		"page rides. reportScreenFixtures (report_yardstick_test.go) is the roster of " +
 		"those pages and TestReportTable_EveryReportScreenIsSwept derives it from the " +
@@ -137,12 +138,11 @@ var listNavUnsweptReceivers = map[string]string{
 	"TextScroller": "not a list at all: a read-only text body with a scroll offset and " +
 		"no cursor, shared by every detail sheet that holds one (listNavDelegatingReceivers " +
 		"derives that set every run, so no count is restated here to drift). It is here " +
-		"because Handle binds the same movement keys the vocabulary spells, and its callers' " +
-		"footers disagree about which of them to name — some say 'j/k scroll · pgup/pgdn " +
-		"page', the rest name 'j/k scroll' alone while pgup/pgdn, the arrows, g/G and " +
-		"home/end all work. That is the prose-footer gap in its purest form: one handler, " +
-		"one bar per sheet, no record to read",
-	"WorkOrderDetailScreen": "the work-order detail sheet and its material pickers",
+		"because Handle binds the same movement keys the vocabulary spells. Its callers' " +
+		"footers used to disagree about which of them to name — the prose-footer gap in its " +
+		"purest form — and every one of those callers now draws a proseBar record, so the " +
+		"keys are pressed through each sheet's bar; the component itself has no footer of " +
+		"its own to read",
 	"LocationDetailScreen": "NOT a navigation binding: its `g` generates the location's QR " +
 		"code. It is here because the vocabulary is a set of KEY NAMES and cannot tell a " +
 		"movement `g` from a `g` that means generate — which is a limit of the derivation " +

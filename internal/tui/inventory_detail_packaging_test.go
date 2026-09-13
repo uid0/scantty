@@ -193,7 +193,7 @@ func TestCycleCount_OpenClosedCollectsOpenCount(t *testing.T) {
 	}
 	// The prompt names the unit the server will read the number in, and says the
 	// count is of sealed packs only.
-	prompt := s.cycleCountPrompt()
+	prompt := s.cycleCountPrompt(120)
 	if !strings.Contains(prompt, "Counted quantity (cases)") {
 		t.Errorf("prompt should name the count unit: %q", prompt)
 	}
@@ -214,8 +214,8 @@ func TestCycleCount_OpenClosedCollectsOpenCount(t *testing.T) {
 	if s.ccOpenCount.Value() != "1" {
 		t.Errorf("open count should seed from the current tally, got %q", s.ccOpenCount.Value())
 	}
-	if !strings.Contains(s.cycleCountPrompt(), "Open containers") {
-		t.Errorf("open-count prompt = %q", s.cycleCountPrompt())
+	if !strings.Contains(s.cycleCountPrompt(120), "Open containers") {
+		t.Errorf("open-count prompt = %q", s.cycleCountPrompt(120))
 	}
 	// Replace the seeded tally with 0 — "nothing is open now" is meaningful.
 	s.ccOpenCount.SetValue("0")
@@ -260,7 +260,7 @@ func TestConsume_AtLevelPayloadAndCharge(t *testing.T) {
 	s.deps = Deps{OMS: omsapi.New(srv.URL)}
 
 	s.openConsume()
-	prompt := s.consumePrompt()
+	prompt := s.consumePrompt(120)
 	if !strings.Contains(prompt, "Quantity used (reams)") {
 		t.Errorf("prompt should name the count unit: %q", prompt)
 	}
@@ -287,8 +287,8 @@ func TestConsume_AtLevelPayloadAndCharge(t *testing.T) {
 	e := packDetail(&omsapi.Item{ID: "abc", Name: "Widget", Stock: 12, UnitCost: "2.50"})
 	e.deps = Deps{OMS: omsapi.New(srv.URL)}
 	e.openConsume()
-	if strings.Contains(e.consumePrompt(), "Quantity used (") {
-		t.Errorf("each-mode prompt must keep the plain label: %q", e.consumePrompt())
+	if strings.Contains(e.consumePrompt(120), "Quantity used (") {
+		t.Errorf("each-mode prompt must keep the plain label: %q", e.consumePrompt(120))
 	}
 	if got := e.projectedCharge(2); got != "$5.00" {
 		t.Errorf("each-mode charge = %q, want $5.00", got)
@@ -368,7 +368,7 @@ func TestPackModal_TransitionsAndAvailability(t *testing.T) {
 	if !s.WantsRawInput() {
 		t.Error("an open modal must claim raw input")
 	}
-	prompt := s.packPrompt()
+	prompt := s.packPrompt(120)
 	if !strings.Contains(prompt, "Open a case") || !strings.Contains(prompt, "Finish the open case") {
 		t.Errorf("both transitions should be listed: %q", prompt)
 	}
@@ -419,8 +419,8 @@ func TestPackModal_UnavailableMoveExplainsItself(t *testing.T) {
 	if s.pkOptions[s.pkCursor].transition != omsapi.PackTransitionFinish {
 		t.Errorf("cursor should start on the possible move, got %q", s.pkOptions[s.pkCursor].transition)
 	}
-	if !strings.Contains(s.packPrompt(), "no sealed case left to open") {
-		t.Errorf("prompt should explain the unavailable move: %q", s.packPrompt())
+	if !strings.Contains(s.packPrompt(120), "no sealed case left to open") {
+		t.Errorf("prompt should explain the unavailable move: %q", s.packPrompt(120))
 	}
 
 	// Move onto the unavailable one and press enter: no request, just the reason.

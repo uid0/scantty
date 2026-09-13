@@ -630,12 +630,22 @@ func TestWODetailNoTasksKeepsViewMode(t *testing.T) {
 	}
 }
 
+// TestWODetailFooterHintGatesByStatus: the gated keys follow their arms.
+//
+// THE STATUS KEYS ARE NOT AMONG THEM, and the second half of this test used to
+// say they were: it asserted a completed work order's bar named no `c complete`,
+// while handleViewKey answered `c` — and `i`, `b` and `x` — in every status. OMS
+// gates no status change and the web offers every status from every status, so
+// on a finished job those keys reopen it or confirm a second transition, and a
+// bar that hides them is the omission the prose-bar record exists to close
+// (wo_detail_bar.go's sheetBar). The keys that ARE gated — `s` on a closed clock —
+// are asserted beside it.
 func TestWODetailFooterHintGatesByStatus(t *testing.T) {
 	deps := Deps{OMS: omsapi.New("http://unused"), Ctx: context.Background()}
 
 	open := loadWO(t, deps, &omsapi.WorkOrder{ID: "wo1", Status: "in_progress",
 		TaskCompletions: []omsapi.WorkOrderTaskCompletion{{ID: "t1"}}})
-	hint := open.footerHint()
+	hint := open.proseBar().hint()
 	if !strings.Contains(hint, "c complete") {
 		t.Errorf("open WO footer missing complete hint: %q", hint)
 	}
@@ -650,8 +660,14 @@ func TestWODetailFooterHintGatesByStatus(t *testing.T) {
 	}
 
 	done := loadWO(t, deps, &omsapi.WorkOrder{ID: "wo1", Status: "completed"})
-	if h := done.footerHint(); strings.Contains(h, "c complete") {
-		t.Errorf("completed WO should not offer complete/cancel: %q", h)
+	h := done.proseBar().hint()
+	for _, want := range []string{"i in-progress", "b block", "c complete", "x cancel"} {
+		if !strings.Contains(h, want) {
+			t.Errorf("a completed WO still answers %q, so its bar must name it: %q", want, h)
+		}
+	}
+	if strings.Contains(h, "s start") || strings.Contains(h, "t tasks") {
+		t.Errorf("a completed WO with no tasks offers neither the clock nor the task list: %q", h)
 	}
 }
 

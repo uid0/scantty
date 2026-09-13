@@ -94,6 +94,9 @@ type WorkOrderDetailScreen struct {
 	taskCursor     int
 	materialCursor int
 	actionPending  bool
+	// The first row of each pick list's window (woListFrame), written from View
+	// for the reason proseFlatListFrame gives.
+	taskStart, materialStart, toolStart, lotoStart, amPickStart int
 
 	// Add-photo form. photoTaskID pins the upload to one step (evidence) and is
 	// empty for a work-order-level photo; photoTaskTitle labels the form.
@@ -376,8 +379,12 @@ func (s *WorkOrderDetailScreen) Init() tea.Cmd {
 
 // WantsRawInput routes every key to the screen while any modal is open so the
 // textinputs and picker cursors receive characters the global dispatcher
-// would otherwise claim (m, /, esc, uppercase shortcuts, …).
-func (s *WorkOrderDetailScreen) WantsRawInput() bool { return s.mode != woModeView }
+// would otherwise claim (m, /, esc, uppercase shortcuts, …) — and never while a
+// load frame is drawn in its place, whose `esc` is Root's back-step
+// (loadFrameDrawn).
+func (s *WorkOrderDetailScreen) WantsRawInput() bool {
+	return s.mode != woModeView && !s.loadFrameDrawn()
+}
 
 // HandlesKey claims the uppercase shortcuts whose global twins would otherwise
 // win — the sc-k7p LocalKeyScreen pattern. Without the claim the key the footer
@@ -671,6 +678,15 @@ func (s *WorkOrderDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, s.tickCmd()
 
 	case tea.KeyMsg:
+		// A load frame draws no sheet and no mode, so a key its bar does not name
+		// is ignored, and a key it does name is the SHEET's — the mode handlers
+		// index a work order a failed reload has taken away (loadFrameDrawn).
+		if s.loadFrameDrawn() {
+			if !s.loadBar().names(m.String()) {
+				return s, nil
+			}
+			return s.handleViewKey(m)
+		}
 		switch s.mode {
 		case woModeTasks:
 			return s.handleTasksKey(m)
@@ -824,7 +840,9 @@ func (s *WorkOrderDetailScreen) handleTasksKey(m tea.KeyMsg) (Screen, tea.Cmd) {
 		}
 		return s, nil
 	case " ", "enter":
-		if s.actionPending {
+		// n == 0 is reachable: a reload can empty the list under the open picker,
+		// and toggleTask indexes the row under the cursor.
+		if s.actionPending || n == 0 {
 			return s, nil
 		}
 		return s, s.toggleTask()
@@ -1958,14 +1976,15 @@ func uploadResultSummary(r *omsapi.WorkOrderUploadResult) string {
 }
 
 func (s *WorkOrderDetailScreen) View() string {
-	if s.loading && s.wo == nil {
-		return StyleMuted.Render("Loading work order…")
+	cells := s.paneCells()
+	if s.loading {
+		return proseLoadingFrame("Loading work order…", cells, s.proseBar())
 	}
-	if s.loadErr != "" && s.wo == nil {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry · esc back")
+	if s.loadErr != "" {
+		return proseFailedFrame(s.loadErr, s.terminalHeight, cells, s.proseBar())
 	}
 	if s.wo == nil {
-		return StyleMuted.Render("Work order not found.")
+		return StyleMuted.Render("Work order not found.") + "\n\n" + s.proseBar().render(cells)
 	}
 
 	switch s.mode {
@@ -1999,34 +2018,17 @@ func (s *WorkOrderDetailScreen) View() string {
 		return s.renderLotoConfirm()
 	}
 
-	// FOLDING THE HINT SPENDS ROWS, SO THE BUDGET MOVES WITH IT. This screen's
-	// footer is fifteen keys long and grew two more with the tool and lockout
-	// lists; written as one line it is well past the 51 cells an 80-column pane
-	// gives, and clampToBox took the tail — which is where `esc back` sits. It is
-	// folded now (pickerHintAt), and the scroller above is budgeted against what
-	// the fold really came to rather than against the two-row constant, or the
-	// extra lines would run the frame over and clampToBox would take them off the
-	// bottom again. detailFooterRows / detailFooterRowsWithAction are what those
-	// constants count: one blank plus the hint, plus the answer row and its blank.
-	hint := pickerWrap(s.footerHint(), s.paneCells())
-	footerRows := (detailFooterRows - 1) + len(hint)
+	// The bar is FOLDED and the scroller budgeted against what the fold of its
+	// CEILING really comes to, with the answer row and its blank taken off as
+	// well (proseScrollBarUnder): the sheet's footer is some twenty keys long, and
+	// a budget that assumed fewer rows than the fold took ran the frame past the
+	// pane and let clampToBox take the fold off the bottom.
+	bar := proseScrollBarUnder(s.scroller, s.terminalHeight, cells, s.sheetChrome(), s.sheetBar)
+	out := s.scroller.View() + "\n\n"
 	if s.actionMsg != "" {
-		footerRows += detailFooterRowsWithAction - detailFooterRows
+		out += s.actionLine() + "\n\n"
 	}
-	s.scroller.SetViewHeight(scrollerViewHeight(s.terminalHeight, footerRows))
-
-	body := s.scroller.View()
-	footer := ""
-	if s.actionMsg != "" {
-		footer += s.actionLine() + "\n\n"
-	}
-	for i, line := range hint {
-		if i > 0 {
-			footer += "\n"
-		}
-		footer += StyleMuted.Render(line)
-	}
-	return body + "\n\n" + footer
+	return out + bar.render(cells)
 }
 
 // actionLine is the screen's answer to the last key: what landed, or why the
@@ -2067,100 +2069,73 @@ func (s *WorkOrderDetailScreen) actionLine() string {
 	return style.Render(mark + msg)
 }
 
-func (s *WorkOrderDetailScreen) footerHint() string {
-	parts := []string{"j/k scroll"}
-	// Status transitions, gated to the states in which they make sense.
-	switch s.wo.Status {
-	case "open", "in_progress", "blocked":
-		parts = append(parts, "i in-progress", "b block", "c complete", "x cancel")
-	}
-	// Only offered while the clock can still move: completing a WO finalizes it
-	// server-side. Gating it also keeps two words off an already-long footer on
-	// the screens that don't need them — it names the action the key performs
-	// rather than adding a second entry for pause.
-	if woTimerAllowed(s.wo.Status) {
-		if s.wo.IsTiming {
-			parts = append(parts, "s pause")
-		} else {
-			parts = append(parts, "s start")
-		}
-	}
-	if len(s.wo.TaskCompletions) > 0 {
-		parts = append(parts, "t tasks")
-	}
-	// Always offered: an empty list is the corrective case, where adding the
-	// first line is exactly what the operator came here to do. The same is true
-	// of the per-job tool rows beside them.
-	parts = append(parts, "M materials", "T tools")
-	// Gated, because nothing here CREATES a lockout step: an asset with no
-	// recorded energy sources has an empty checklist and no way to fill it, so
-	// naming the key would be naming one that can only decline. The count rides
-	// along because "1/3 isolated" is the fact a tech at the machine came for.
-	if loto := s.woLotoRows(); len(loto) > 0 {
-		parts = append(parts, fmt.Sprintf("L lockout (%d/%d)", s.lotoIsolated(), len(loto)))
-	}
-	if len(s.woPendingReview()) > 0 {
-		parts = append(parts, "R review scan")
-	}
-	parts = append(parts, "A attachments", "p photo", "U upload-pdf", "v validate", "E notes", "r refresh", "esc back")
-	return strings.Join(parts, " · ")
-}
-
 func (s *WorkOrderDetailScreen) renderTaskPicker() string {
-	var b strings.Builder
+	cells := s.paneCells()
 	done := 0
 	for _, t := range s.wo.TaskCompletions {
 		if t.IsCompleted {
 			done++
 		}
 	}
-	b.WriteString(StyleTitle.Render(fmt.Sprintf("Toggle tasks (%d/%d complete)", done, len(s.wo.TaskCompletions))) + "\n\n")
+	head := StyleTitle.Render(fmt.Sprintf("Toggle tasks (%d/%d complete)", done, len(s.wo.TaskCompletions))) + "\n\n"
+	rows := make([]string, len(s.wo.TaskCompletions))
 	for i, t := range s.wo.TaskCompletions {
-		cursor := "  "
-		if i == s.taskCursor {
-			cursor = "> "
-		}
-		box := "[ ]"
-		if t.IsCompleted {
-			box = StyleStatusOK.Render("[x]")
-		}
-		title := t.TaskTitle
-		if !t.IsRequired {
-			title += " " + StyleMuted.Render("(optional)")
-		}
-		line := cursor + box + " " + title
-		if i == s.taskCursor {
-			line = StyleTitle.Render(line)
-		}
-		b.WriteString(line + "\n")
-		// The step's clock, so 's' has something to aim at. Shown only once the
-		// step has been timed — the running one is the row worth spotting.
-		if secs := s.liveSeconds(t.ElapsedSeconds, t.IsTiming); secs > 0 || t.IsTiming {
-			clock := "      " + StyleMuted.Render("time: "+formatElapsed(secs))
-			if t.IsTiming {
-				clock += " " + StyleStatusOK.Render("● running")
-			}
-			b.WriteString(clock + "\n")
-		}
-		// Both photo halves, indented under their step: the template's
-		// reference shot and whatever evidence has been filed against it.
-		if t.TaskReferenceImageURL != "" {
-			b.WriteString("      " + StyleMuted.Render("ref: ") + t.TaskReferenceImageURL + "\n")
-		}
-		for _, p := range t.EvidencePhotos {
-			b.WriteString("      " + StyleMuted.Render("evidence: "+evidencePhotoLabel(p)) + "\n")
-		}
+		rows[i] = s.taskRow(i, t, cells)
 	}
-	b.WriteString("\n")
+	var above []string
 	switch {
 	case s.actionPending:
-		b.WriteString(StyleMuted.Render("Updating…"))
+		above = append(above, StyleMuted.Render("Updating…"))
 	case s.timerPending:
-		b.WriteString(StyleMuted.Render("Timer…"))
-	default:
-		b.WriteString(StyleMuted.Render("j/k move · space/enter toggle · s timer · p evidence photo · esc back"))
+		above = append(above, StyleMuted.Render("Timer…"))
 	}
-	return b.String()
+	ceiling := s.tasksBar(proseFlatCeilingRows, false, false)
+	return s.woListFrame(head, rows, s.taskCursor, &s.taskStart, above, ceiling, s.proseBar())
+}
+
+// taskRow is one step of the task picker: the checkbox and title, the step's
+// clock once it has been timed, and both photo halves indented under it. The
+// title and the two photo labels are OMS values clipped to the pane line by line
+// with the cut marked — a reference URL used to run the row past the pane and be
+// cut by clampToBox with no mark.
+func (s *WorkOrderDetailScreen) taskRow(i int, t omsapi.WorkOrderTaskCompletion, cells int) string {
+	const indent = "      "
+	cursor := "  "
+	if i == s.taskCursor {
+		cursor = "> "
+	}
+	box := "[ ]"
+	if t.IsCompleted {
+		box = StyleStatusOK.Render("[x]")
+	}
+	optional := ""
+	if !t.IsRequired {
+		optional = " " + StyleMuted.Render("(optional)")
+	}
+	title := proseClipEachLine(t.TaskTitle, cells-6-lipgloss.Width(optional))
+	line := cursor + box + " " + title + optional
+	if i == s.taskCursor {
+		line = StyleTitle.Render(line)
+	}
+	out := line
+	// The step's clock, so 's' has something to aim at. Shown only once the step
+	// has been timed — the running one is the row worth spotting.
+	if secs := s.liveSeconds(t.ElapsedSeconds, t.IsTiming); secs > 0 || t.IsTiming {
+		clock := indent + StyleMuted.Render("time: "+formatElapsed(secs))
+		if t.IsTiming {
+			clock += " " + StyleStatusOK.Render("● running")
+		}
+		out += "\n" + clock
+	}
+	// Both photo halves, indented under their step: the template's reference shot
+	// and whatever evidence has been filed against it.
+	if t.TaskReferenceImageURL != "" {
+		out += "\n" + indent + StyleMuted.Render(pickerClip("ref: "+jdeStatusOneLine(t.TaskReferenceImageURL), cells-len(indent)))
+	}
+	for _, p := range t.EvidencePhotos {
+		out += "\n" + indent + StyleMuted.Render(pickerClip("evidence: "+jdeStatusOneLine(evidencePhotoLabel(p)), cells-len(indent)))
+	}
+	return out
 }
 
 // isPinnedToStep reports whether a work-order photo is a step's evidence.
@@ -2249,58 +2224,78 @@ func refDocDate(iso string) string {
 }
 
 func (s *WorkOrderDetailScreen) renderMaterialPicker() string {
-	var b strings.Builder
+	cells := s.paneCells()
 	used := 0
 	for _, mu := range s.wo.MaterialUsage {
 		if mu.WasUsed {
 			used++
 		}
 	}
-	b.WriteString(StyleTitle.Render(fmt.Sprintf("Materials used (%d/%d used)", used, len(s.wo.MaterialUsage))) + "\n\n")
+	head := StyleTitle.Render(fmt.Sprintf("Materials used (%d/%d used)", used, len(s.wo.MaterialUsage))) + "\n\n"
 	if len(s.wo.MaterialUsage) == 0 {
 		// The corrective case: no PM template, so nothing was copied in. Say
 		// what to do about it rather than just reporting the hole.
-		b.WriteString(StyleMuted.Render("Nothing recorded yet. Press a to add what you used or bought on this job.") + "\n")
+		head += s.wrapped(StyleMuted, "Nothing recorded yet. Press a to add what you used or bought.")
 	}
+	rows := make([]string, len(s.wo.MaterialUsage))
 	for i, mu := range s.wo.MaterialUsage {
-		cursor := "  "
-		if i == s.materialCursor {
-			cursor = "> "
-		}
-		box := "[ ]"
-		if mu.WasUsed {
-			box = StyleStatusOK.Render("[x]")
-		}
-		label := mu.MaterialName
-		if mu.IsAdHoc {
-			label += " " + StyleMuted.Render("(added)")
-		}
-		line := cursor + box + " " + label
-		if i == s.materialCursor {
-			line = StyleTitle.Render(line)
-		}
-		b.WriteString(line + "\n")
-		if meta := materialMeta(mu); meta != "" {
-			b.WriteString("      " + StyleMuted.Render(meta) + "\n")
-		}
-		b.WriteString("      " + StyleMuted.Render(materialCostLine(mu)) + "\n")
+		rows[i] = s.materialRow(i, mu, cells)
 	}
+	var above []string
 	// Nothing recorded is not "$0.00 spent" — with no lines there is no total to
 	// report, so the empty state stands alone.
 	if len(s.wo.MaterialUsage) > 0 {
-		b.WriteString("\n" + s.renderMaterialTotals() + "\n")
+		above = append(above, s.materialTotalsLines()...)
 	}
-	b.WriteString("\n")
-	switch {
-	case s.actionPending:
-		b.WriteString(StyleMuted.Render("Updating…"))
-	case len(s.wo.MaterialUsage) == 0:
-		// Don't advertise keys that act on a highlighted row when there is none.
-		b.WriteString(StyleMuted.Render("a add · esc back"))
-	default:
-		b.WriteString(StyleMuted.Render("j/k move · space/enter toggle · a add · c cost · d remove · esc back"))
+	if s.actionPending {
+		above = append(above, StyleMuted.Render("Updating…"))
 	}
-	return b.String()
+	ceiling := s.materialsBar(proseFlatCeilingRows, false)
+	return s.woListFrame(head, rows, s.materialCursor, &s.materialStart, above, ceiling, s.proseBar())
+}
+
+// materialRow is one line of the material picker: the checkbox and name, and
+// the quantities and money lines under it, each an OMS value clipped to the pane
+// line by line with the cut marked.
+func (s *WorkOrderDetailScreen) materialRow(i int, mu omsapi.WorkOrderMaterialUsage, cells int) string {
+	const indent = "      "
+	cursor := "  "
+	if i == s.materialCursor {
+		cursor = "> "
+	}
+	box := "[ ]"
+	if mu.WasUsed {
+		box = StyleStatusOK.Render("[x]")
+	}
+	added := ""
+	if mu.IsAdHoc {
+		added = " " + StyleMuted.Render("(added)")
+	}
+	line := cursor + box + " " + proseClipEachLine(mu.MaterialName, cells-6-lipgloss.Width(added)) + added
+	if i == s.materialCursor {
+		line = StyleTitle.Render(line)
+	}
+	out := line
+	if meta := materialMeta(mu); meta != "" {
+		out += "\n" + indent + StyleMuted.Render(pickerClip(jdeStatusOneLine(meta), cells-len(indent)))
+	}
+	return out + "\n" + indent + StyleMuted.Render(pickerClip(jdeStatusOneLine(materialCostLine(mu)), cells-len(indent)))
+}
+
+// materialTotalsLines is renderMaterialTotals for the picker's foot, on lines
+// short enough for the pane: the sentence is sixty-odd cells as one line, and
+// clampToBox took its tail — the over-or-under figure the line exists for.
+func (s *WorkOrderDetailScreen) materialTotalsLines() []string {
+	actual, estimated, hasEstimate := s.materialCostSummary()
+	lines := []string{StyleMuted.Render("Actual material cost: ") + fmt.Sprintf("$%.2f", actual)}
+	if !hasEstimate {
+		return append(lines, StyleMuted.Render("no estimate for this job"))
+	}
+	line := StyleMuted.Render(fmt.Sprintf("estimated $%.2f · ", estimated))
+	if actual > estimated {
+		return append(lines, line+StyleStatusError.Render(fmt.Sprintf("$%.2f over", actual-estimated)))
+	}
+	return append(lines, line+StyleStatusOK.Render(fmt.Sprintf("$%.2f under", estimated-actual)))
 }
 
 // materialMeta is the quantities-and-stock line under a material row: what was
@@ -2367,36 +2362,31 @@ func (s *WorkOrderDetailScreen) renderMaterialTotals() string {
 }
 
 func (s *WorkOrderDetailScreen) renderMaterialCostForm() string {
-	var b strings.Builder
+	cells := s.paneCells()
 	mat, ok := s.currentMaterial()
 	if !ok {
-		return StyleMuted.Render("That material is no longer on this work order. esc back")
+		return s.wrapped(StyleMuted, "That material is no longer on this work order.") + "\n" +
+			s.proseBar().render(cells)
 	}
-	b.WriteString(StyleTitle.Render("Unit cost") + "  " + StyleMuted.Render(mat.MaterialName) + "\n")
-	b.WriteString(StyleMuted.Render("The real price paid per unit. "+materialCostLine(mat)) + "\n\n")
-	if s.costPending {
-		b.WriteString(StyleMuted.Render("Saving…"))
-		return b.String()
-	}
-	b.WriteString("Unit cost ($):\n  " + s.costIn.View() + "\n")
+	var b strings.Builder
+	b.WriteString(StyleTitle.Render("Unit cost") + "  " +
+		StyleMuted.Render(pickerClip(jdeStatusOneLine(mat.MaterialName), cells-11)) + "\n")
+	b.WriteString(s.wrapped(StyleMuted, "The real price paid per unit. "+jdeStatusOneLine(materialCostLine(mat))) + "\n")
+	b.WriteString("Unit cost ($):\n  " + woBoxView(s.costIn, cells, "  ") + "\n")
 	if s.costErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render(s.costErr) + "\n")
+		b.WriteString("\n" + s.woErrLine(s.costErr) + "\n")
 	}
-	b.WriteString("\n" + StyleMuted.Render("enter save · esc cancel"))
-	return b.String()
+	return s.woFormFrame(b.String(), s.costPending, "Saving…")
 }
 
 func (s *WorkOrderDetailScreen) renderAddMaterialForm() string {
 	if s.amPicking {
 		return s.renderItemPicker()
 	}
+	cells := s.paneCells()
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Add material") + "\n")
-	b.WriteString(StyleMuted.Render("Link a stock item to draw it from inventory; leave it unset for an out-of-pocket buy.") + "\n\n")
-	if s.amPending {
-		b.WriteString(StyleMuted.Render("Adding…"))
-		return b.String()
-	}
+	b.WriteString(s.wrapped(StyleMuted, "Link a stock item to draw it from inventory; leave it unset for an out-of-pocket buy.") + "\n")
 	for i := 0; i < woMatFieldMax; i++ {
 		cursor := "  "
 		label := woMaterialFieldLabel[i]
@@ -2406,68 +2396,66 @@ func (s *WorkOrderDetailScreen) renderAddMaterialForm() string {
 		}
 		b.WriteString(cursor + label + "\n")
 		if i == woMatItem {
-			b.WriteString("    " + s.itemFieldValue() + "\n")
+			b.WriteString("    " + s.itemFieldValue(cells-4) + "\n")
 			continue
 		}
-		b.WriteString("    " + s.amInputs[i].View() + "\n")
+		b.WriteString("    " + woBoxView(s.amInputs[i], cells, "    ") + "\n")
 	}
-	b.WriteString("\n")
 	if s.amErr != "" {
-		b.WriteString(StyleStatusError.Render(s.amErr) + "\n\n")
+		b.WriteString("\n" + s.woErrLine(s.amErr) + "\n")
 	}
-	hint := "tab/arrows move · enter add · esc back"
-	if s.amCursor == woMatItem {
-		hint = "space pick stock item · " + hint
-	}
-	b.WriteString(StyleMuted.Render(hint))
-	return b.String()
+	return s.woFormFrame(b.String(), s.amPending, "Adding…")
 }
 
 // itemFieldValue renders the stock-item slot: the picked row, or what the line
 // means without one. A picker that never loaded says so here rather than
-// pretending the shop has no stock.
-func (s *WorkOrderDetailScreen) itemFieldValue() string {
+// pretending the shop has no stock. Clipped to `room` with the cut marked: the
+// picked row is an item's name and SKU, and the failure an OMS body.
+func (s *WorkOrderDetailScreen) itemFieldValue(room int) string {
 	if s.amItemID != "" {
-		return s.amItemLabel
+		return pickerClip(jdeStatusOneLine(s.amItemLabel), room)
 	}
 	if s.amItemsErr != "" {
-		return StyleMuted.Render("(none — stock list unavailable: " + s.amItemsErr + ")")
+		return StyleMuted.Render(pickerClip(jdeStatusOneLine("(none — stock list unavailable: "+s.amItemsErr+")"), room))
 	}
-	return StyleMuted.Render("(none — out-of-pocket, moves no stock)")
+	return StyleMuted.Render(pickerClip("(none — out-of-pocket, moves no stock)", room))
 }
 
+// renderItemPicker is the stock-item picker: its title, guidance and filter as
+// the head, a WINDOW of the catalogue around the cursor (woListFrame), and the
+// bar. The catalogue is the shop's whole item list, which is exactly the list
+// that pushed the picker's keys off an 80x24 pane when every row was drawn.
 func (s *WorkOrderDetailScreen) renderItemPicker() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Link a stock item") + "\n")
-	b.WriteString(StyleMuted.Render("Marking the line used will decrement whichever item is linked.") + "\n\n")
+	cells := s.paneCells()
+	var head strings.Builder
+	head.WriteString(StyleTitle.Render("Link a stock item") + "\n")
+	head.WriteString(s.wrapped(StyleMuted, "Marking the line used will decrement whichever item is linked.") + "\n")
 	if s.amPickTyping {
-		b.WriteString("Filter: " + s.amPickSearch.View() + "\n\n")
+		head.WriteString("Filter: " + woBoxView(s.amPickSearch, cells, "Filter: ") + "\n\n")
 	} else if q := strings.TrimSpace(s.amPickSearch.Value()); q != "" {
-		b.WriteString(StyleMuted.Render("Filter: "+q) + "\n\n")
+		head.WriteString(StyleMuted.Render(pickerClip("Filter: "+q, cells)) + "\n\n")
 	}
 	if len(s.amItems) == 0 && s.amItemsErr == "" {
-		b.WriteString(StyleMuted.Render("Loading items…") + "\n")
+		head.WriteString(StyleMuted.Render("Loading items…") + "\n")
 	}
 	if s.amItemsErr != "" {
-		b.WriteString(StyleStatusWarn.Render("Stock list unavailable: "+s.amItemsErr) + "\n")
+		head.WriteString(StyleStatusWarn.Render(proseFormLine("Stock list unavailable: "+s.amItemsErr, cells)) + "\n")
 	}
+	rows := make([]string, len(s.amPickRows))
 	for i, row := range s.amPickRows {
-		line := "  " + row.label
+		label := proseClipEachLine(row.label, cells-2)
 		if i == s.amPickCursor {
-			line = StyleTitle.Render("> " + row.label)
+			rows[i] = StyleTitle.Render("> " + label)
+		} else {
+			rows[i] = "  " + label
 		}
-		b.WriteString(line + "\n")
 	}
-	b.WriteString("\n")
-	if s.amPickTyping {
-		b.WriteString(StyleMuted.Render("enter/esc stop filtering"))
-	} else {
-		b.WriteString(StyleMuted.Render("j/k move · / filter · enter select · esc back"))
-	}
-	return b.String()
+	return s.woListFrame(head.String(), rows, s.amPickCursor, &s.amPickStart, nil,
+		s.itemPickBar(proseFlatCeilingRows), s.proseBar())
 }
 
 func (s *WorkOrderDetailScreen) renderPhotoForm() string {
+	cells := s.paneCells()
 	var b strings.Builder
 	if s.photoTaskID != "" {
 		b.WriteString(StyleTitle.Render("Add evidence photo") + "\n")
@@ -2475,43 +2463,41 @@ func (s *WorkOrderDetailScreen) renderPhotoForm() string {
 		if label == "" {
 			label = fmt.Sprintf("step %v", s.photoTaskID)
 		}
-		b.WriteString(StyleMuted.Render("Filed under: ") + label + "\n\n")
+		b.WriteString(StyleMuted.Render("Filed under: ") + pickerClip(jdeStatusOneLine(label), cells-13) + "\n\n")
 	} else {
 		b.WriteString(StyleTitle.Render("Add photo") + "\n\n")
 	}
-	b.WriteString(StyleMuted.Render("File path: ") + s.photoPathIn.View() + "\n")
-	b.WriteString(StyleMuted.Render("Caption:   ") + s.photoCaptionIn.View() + "\n")
+	// A CARET marks the focused field, as on the attachments upload form: `tab`
+	// moves the focus between two boxes, and without a mark the only thing that
+	// moved was the text cursor's reverse video — the whole of the press, gone on
+	// a terminal that does not draw it.
+	carets := [2]string{"  ", "  "}
+	carets[s.photoFocus] = "▸ "
+	b.WriteString(carets[0] + StyleMuted.Render("File path: ") + woBoxView(s.photoPathIn, cells, carets[0]+"File path: ") + "\n")
+	b.WriteString(carets[1] + StyleMuted.Render("Caption:   ") + woBoxView(s.photoCaptionIn, cells, carets[1]+"Caption:   ") + "\n")
 	if s.photoErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.photoErr) + "\n")
+		b.WriteString("\n" + s.woErrLine(s.photoErr) + "\n")
 	}
-	if s.photoPending {
-		b.WriteString("\n" + StyleMuted.Render("Uploading…"))
-	} else {
-		b.WriteString("\n" + StyleMuted.Render("tab next field · enter submit · esc cancel"))
-	}
-	return b.String()
+	return s.woFormFrame(b.String(), s.photoPending, "Uploading…")
 }
 
 func (s *WorkOrderDetailScreen) renderPdfForm() string {
+	cells := s.paneCells()
 	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Upload completed work-order PDF") + "\n\n")
-	b.WriteString(StyleMuted.Render("The scan is parsed and matched to its work order (staff only).") + "\n\n")
-	b.WriteString(StyleMuted.Render("File path: ") + s.pdfPathIn.View() + "\n")
+	b.WriteString(StyleTitle.Render(pickerClip("Upload completed work-order PDF", cells)) + "\n\n")
+	b.WriteString(s.wrapped(StyleMuted, "The scan is parsed and matched to its work order (staff only).") + "\n")
+	b.WriteString(StyleMuted.Render("File path: ") + woBoxView(s.pdfPathIn, cells, "File path: ") + "\n")
 	if s.pdfErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.pdfErr) + "\n")
+		b.WriteString("\n" + s.woErrLine(s.pdfErr) + "\n")
 	}
-	if s.pdfPending {
-		b.WriteString("\n" + StyleMuted.Render("Uploading…"))
-	} else {
-		b.WriteString("\n" + StyleMuted.Render("enter submit · esc cancel"))
-	}
-	return b.String()
+	return s.woFormFrame(b.String(), s.pdfPending, "Uploading…")
 }
 
 func (s *WorkOrderDetailScreen) renderChecklistForm() string {
+	cells := s.paneCells()
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Validation checklist") + "\n")
-	b.WriteString(StyleMuted.Render("All three must be acknowledged before the work order can be completed.") + "\n\n")
+	b.WriteString(s.wrapped(StyleMuted, "All three must be acknowledged before the work order can be completed.") + "\n")
 
 	rows := []struct {
 		label   string
@@ -2540,39 +2526,37 @@ func (s *WorkOrderDetailScreen) renderChecklistForm() string {
 	if s.checklistFocus == 3 {
 		notesCursor = "> "
 	}
-	b.WriteString(notesCursor + StyleMuted.Render("Notes: ") + s.checklistNotesIn.View() + "\n")
+	b.WriteString(notesCursor + StyleMuted.Render("Notes: ") + woBoxView(s.checklistNotesIn, cells, notesCursor+"Notes: ") + "\n")
 
 	if s.checklistErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.checklistErr) + "\n")
+		b.WriteString("\n" + s.woErrLine(s.checklistErr) + "\n")
 	}
-	if s.checklistPending {
-		b.WriteString("\n" + StyleMuted.Render("Submitting…"))
-	} else {
-		b.WriteString("\n" + StyleMuted.Render("tab/↑↓ move · space toggle · enter submit · esc cancel"))
-	}
-	return b.String()
+	return s.woFormFrame(b.String(), s.checklistPending, "Submitting…")
 }
 
 func (s *WorkOrderDetailScreen) renderNotesForm() string {
+	cells := s.paneCells()
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("Edit notes") + "\n\n")
-	b.WriteString(StyleMuted.Render("Notes: ") + s.notesIn.View() + "\n")
+	b.WriteString(StyleMuted.Render("Notes: ") + woBoxView(s.notesIn, cells, "Notes: ") + "\n")
 	if s.notesErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.notesErr) + "\n")
+		b.WriteString("\n" + s.woErrLine(s.notesErr) + "\n")
 	}
-	if s.notesPending {
-		b.WriteString("\n" + StyleMuted.Render("Saving…"))
-	} else {
-		b.WriteString("\n" + StyleMuted.Render("enter save · esc cancel"))
-	}
-	return b.String()
+	return s.woFormFrame(b.String(), s.notesPending, "Saving…")
 }
 
+// renderConfirm is the finalize / cancel confirm. It keeps its own prompt and
+// answers nil from proseBar: `y confirm · n/esc cancel` is what handleConfirmKey
+// answers, in the lower-case spelling every y/n confirm in this package uses. The
+// work order's NAME is an OMS value and is clipped, with the cut marked, so the
+// line under it — the keys — is not pushed off a short pane by a long title.
 func (s *WorkOrderDetailScreen) renderConfirm() string {
+	cells := s.paneCells()
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render(s.confirmPrompt) + "\n\n")
 	if s.wo != nil {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("%s · current status: %s", workOrderName(*s.wo), s.wo.Status)) + "\n\n")
+		b.WriteString(StyleMuted.Render(pickerClip(jdeStatusOneLine(
+			fmt.Sprintf("%s · current status: %s", workOrderName(*s.wo), s.wo.Status)), cells)) + "\n\n")
 	}
 	b.WriteString(StyleMuted.Render("y confirm · n/esc cancel"))
 	return b.String()
