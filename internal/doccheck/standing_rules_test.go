@@ -74,8 +74,11 @@ var citedNumber = regexp.MustCompile(`\d+`)
 var citedRange = regexp.MustCompile(`(?i)^(?:\s|//)*(?:-|–|to)(?:\s|//)*$`)
 
 type ruleReference struct {
-	number int
-	offset int
+	first   int
+	last    int
+	literal string
+	offset  int
+	invalid bool
 }
 
 type ordinalReference struct {
@@ -88,23 +91,26 @@ func citedRules(text string) ([]ruleReference, []ordinalReference) {
 	for _, match := range ruleCitation.FindAllStringSubmatchIndex(text, -1) {
 		chainStart, chainEnd := match[2], match[3]
 		locations := citedNumber.FindAllStringIndex(text[chainStart:chainEnd], -1)
-		for i, location := range locations {
-			n, _ := strconv.Atoi(text[chainStart+location[0] : chainStart+location[1]])
-			if i > 0 {
-				previous := locations[i-1]
-				delimiter := text[chainStart+previous[1] : chainStart+location[0]]
+		for i := 0; i < len(locations); i++ {
+			firstLocation := locations[i]
+			lastLocation := firstLocation
+			if i+1 < len(locations) {
+				next := locations[i+1]
+				delimiter := text[chainStart+firstLocation[1] : chainStart+next[0]]
 				if citedRange.MatchString(delimiter) {
-					previousNumber := rules[len(rules)-1].number
-					step := 1
-					if n < previousNumber {
-						step = -1
-					}
-					for represented := previousNumber + step; represented != n; represented += step {
-						rules = append(rules, ruleReference{number: represented, offset: chainStart + location[0]})
-					}
+					lastLocation = next
+					i++
 				}
 			}
-			rules = append(rules, ruleReference{number: n, offset: chainStart + location[0]})
+			firstText := text[chainStart+firstLocation[0] : chainStart+firstLocation[1]]
+			lastText := text[chainStart+lastLocation[0] : chainStart+lastLocation[1]]
+			first, firstErr := strconv.Atoi(firstText)
+			last, lastErr := strconv.Atoi(lastText)
+			rules = append(rules, ruleReference{
+				first: first, last: last,
+				literal: text[chainStart+firstLocation[0] : chainStart+lastLocation[1]],
+				offset:  chainStart + firstLocation[0], invalid: firstErr != nil || lastErr != nil,
+			})
 		}
 	}
 	var ordinals []ordinalReference
@@ -112,6 +118,22 @@ func citedRules(text string) ([]ruleReference, []ordinalReference) {
 		ordinals = append(ordinals, ordinalReference{text: text[match[0]:match[1]], offset: match[0]})
 	}
 	return rules, ordinals
+}
+
+func ruleReferenceError(rule ruleReference, highest int) string {
+	if rule.invalid {
+		return fmt.Sprintf("rule citation %q has an invalid or overflowing endpoint", rule.literal)
+	}
+	if rule.first > rule.last {
+		return fmt.Sprintf("rule citation %q is reversed", rule.literal)
+	}
+	if rule.first < 1 || rule.first > highest {
+		return fmt.Sprintf("rule citation %q names undefined endpoint %d", rule.literal, rule.first)
+	}
+	if rule.last > highest {
+		return fmt.Sprintf("rule citation %q names undefined endpoint %d", rule.literal, rule.last)
+	}
+	return ""
 }
 
 func parseStandingRuleRoster(text string) (map[int]bool, error) {
@@ -152,13 +174,14 @@ func TestDocs_EveryStandingRuleCitationIsInTheRoster(t *testing.T) {
 		rules, ordinals := citedRules(text)
 		for _, rule := range rules {
 			cited++
-			if defined[rule.number] {
+			if problem := ruleReferenceError(rule, len(defined)); problem == "" {
 				continue
+			} else {
+				t.Errorf("%s:%d: %s; %s defines rules 1-%d. Cite the rule the sentence means, "+
+					"or state the substance instead of a number — never a number the roster does not carry",
+					relPath(mod, path), lineOf(text, rule.offset), problem,
+					standingRulesRoster, len(defined))
 			}
-			t.Errorf("%s:%d: this text cites rule %d, and %s defines no rule %d. Cite the "+
-				"rule the sentence means, or state the substance instead of a number — "+
-				"never a number the roster does not carry",
-				relPath(mod, path), lineOf(text, rule.offset), rule.number, standingRulesRoster, rule.number)
 		}
 		for _, ordinal := range ordinals {
 			t.Errorf("%s:%d: %q cites a standing rule by ordinal, which no check can resolve "+
@@ -199,17 +222,17 @@ func TestCitedRules(t *testing.T) {
 	tests := []struct {
 		name    string
 		text    string
-		numbers []int
+		spans   [][2]int
 		ordinal bool
 	}{
-		{"plain", "standing rule 4", []int{4}, false},
-		{"capitalised", "Standing Rule 3", []int{3}, false},
-		{"conjunction", "rules 5 and 6", []int{5, 6}, false},
-		{"comma list", "rules 1, 3, and 5", []int{1, 3, 5}, false},
-		{"hyphen range", "rules 1-4", []int{1, 2, 3, 4}, false},
-		{"en dash range", "rules 5–8", []int{5, 6, 7, 8}, false},
-		{"to range", "rules 9 to 11", []int{9, 10, 11}, false},
-		{"wrapped comment", "standing\n//\trule 12", []int{12}, false},
+		{"plain", "standing rule 4", [][2]int{{4, 4}}, false},
+		{"capitalised", "Standing Rule 3", [][2]int{{3, 3}}, false},
+		{"conjunction", "rules 5 and 6", [][2]int{{5, 5}, {6, 6}}, false},
+		{"comma list", "rules 1, 3, and 5", [][2]int{{1, 1}, {3, 3}, {5, 5}}, false},
+		{"hyphen range", "rules 1-4", [][2]int{{1, 4}}, false},
+		{"en dash range", "rules 5–8", [][2]int{{5, 8}}, false},
+		{"to range", "rules 9 to 11", [][2]int{{9, 11}}, false},
+		{"wrapped comment", "standing\n//\trule 12", [][2]int{{12, 12}}, false},
 		{"pre-rule", "pre-rule 201", nil, false},
 		{"identifier", "house_rule 202", nil, false},
 		{"ordinal", "the fifth " + "standing rule", nil, true},
@@ -217,15 +240,15 @@ func TestCitedRules(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rules, ordinals := citedRules(test.text)
-			var numbers []int
+			var spans [][2]int
 			for _, rule := range rules {
-				numbers = append(numbers, rule.number)
+				spans = append(spans, [2]int{rule.first, rule.last})
 				if rule.offset < 0 || rule.offset >= len(test.text) {
 					t.Fatalf("offset %d is outside input", rule.offset)
 				}
 			}
-			if !reflect.DeepEqual(numbers, test.numbers) {
-				t.Errorf("numbers = %v, want %v", numbers, test.numbers)
+			if !reflect.DeepEqual(spans, test.spans) {
+				t.Errorf("spans = %v, want %v", spans, test.spans)
 			}
 			if got := len(ordinals) > 0; got != test.ordinal {
 				t.Errorf("ordinal detected = %v, want %v", got, test.ordinal)
@@ -236,9 +259,34 @@ func TestCitedRules(t *testing.T) {
 
 func TestCitedRules_Offsets(t *testing.T) {
 	rules, _ := citedRules("rules 2-4")
-	want := []ruleReference{{number: 2, offset: 6}, {number: 3, offset: 8}, {number: 4, offset: 8}}
+	want := []ruleReference{{first: 2, last: 4, literal: "2-4", offset: 6}}
 	if !reflect.DeepEqual(rules, want) {
 		t.Errorf("citedRules() = %v, want %v", rules, want)
+	}
+}
+
+func TestRuleReferenceError(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"valid", "rules 1-8", ""},
+		{"overflow", "rules 1-" + "999999999999999999999", "invalid or overflowing endpoint"},
+		{"reversed", "rules 8-" + "5", "is reversed"},
+		{"high endpoint", "rules 9-" + "12", "undefined endpoint 12"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rules, _ := citedRules(test.text)
+			if len(rules) != 1 {
+				t.Fatalf("citedRules() returned %d references, want 1", len(rules))
+			}
+			got := ruleReferenceError(rules[0], 11)
+			if !strings.Contains(got, test.want) {
+				t.Errorf("ruleReferenceError() = %q, want substring %q", got, test.want)
+			}
+		})
 	}
 }
 
