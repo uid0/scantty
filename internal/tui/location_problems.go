@@ -229,9 +229,9 @@ func (s *LocationProblemsScreen) detailBar(p omsapi.LocationProblem) proseBar {
 }
 
 // proseBar is the bar this screen is DRAWING, for whichever surface is up — the
-// list, the read-only report, or the resolve prompt — and nil in the states that
-// draw something else instead: a load in flight or failed, and the resolve write
-// while it is out, whose frame is a working line with every key held.
+// list, the read-only report, or the resolve prompt — and nil while the resolve
+// write is out, whose frame is a working line with every key held. A load in
+// flight or failed draws loadBar's.
 //
 // ONE RECORD PER SURFACE, answered here, is what the conversion of a screen with
 // a second surface drawn in place of its list comes to: converting the list
@@ -240,7 +240,7 @@ func (s *LocationProblemsScreen) detailBar(p omsapi.LocationProblem) proseBar {
 func (s *LocationProblemsScreen) proseBar() proseBar {
 	switch {
 	case s.loading || s.loadErr != "":
-		return nil
+		return s.loadBar()
 	case s.resolving:
 		if s.submittingResolve {
 			return nil
@@ -254,6 +254,19 @@ func (s *LocationProblemsScreen) proseBar() proseBar {
 	}
 	n := len(s.visible())
 	return s.listBar(listNavMoves(n), n > 0)
+}
+
+// loadBar is the list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `n` opens the report form whatever the list holds.
+// `enter`/`v`, `R` and `f` are not named: each changes only a field this frame
+// does not draw (the detail, the resolve box, the filter).
+func (s *LocationProblemsScreen) loadBar() proseBar {
+	return proseBar{
+		{Keys: []string{"n"}, Hint: "n report"},
+		proseBarReloadFor(s.loadErr != ""),
+		proseBarEsc,
+	}
 }
 
 // proseResolveBar is the resolve prompt's bar on both problem screens, which
@@ -298,6 +311,9 @@ func (s *LocationProblemsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loading = true
 		return s, tea.Batch(Status("problem "+verb, StatusOK), s.load())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.resolving {
 			return s.updateResolve(m)
 		}
@@ -472,10 +488,10 @@ func (s *LocationProblemsScreen) scrollIntoView() {
 
 func (s *LocationProblemsScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading problems…")
+		return proseLoadingFrame("Loading problems…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.resolving {
 		return s.viewResolve()

@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // prose_bar.go — the action bar for the screens that are NOT on the columnar
@@ -102,6 +104,10 @@ func (b proseBar) names(key string) bool {
 		}
 	}
 	return false
+}
+
+func proseLoadKeyHidden(loading bool, loadErr string, bar proseBar, key string) bool {
+	return (loading || loadErr != "") && !bar.names(key)
 }
 
 // rows is how many rows the folded footer occupies, plus its blank separator.
@@ -290,12 +296,13 @@ var proseBarRefresh = proseBarItem{Keys: []string{"r"}, Hint: "r refresh"}
 // time, and so the sweep can hold the value it builds without a type switch per
 // screen.
 //
-// proseBar answers nil in the states that draw something else instead — a load
-// in flight, a failure, an empty list, a destructive confirm — so "this state
-// has no bar" and "this state's bar is empty" stay different answers. An empty
-// bar is a defect (a frame that names no key at all); a nil one is a state the
-// conversion has not reached, whose own key claims are still a literal inside
-// View.
+// proseBar answers nil in the states that draw something else instead — an
+// empty list, a destructive confirm — so "this state has no bar" and "this
+// state's bar is empty" stay different answers. An empty bar is a defect (a
+// frame that names no key at all); a nil one is a state the conversion has not
+// reached, whose own key claims are still a literal inside View. A load in
+// flight or failed is NOT one of those any more: its frame draws a bar of its
+// own (see the load-state note below).
 //
 // THERE IS NO ROSTER OF THOSE STATES, and that is a decision rather than an
 // omission: which states a screen is swept in is a fixture JUDGEMENT, said so
@@ -765,3 +772,125 @@ var proseBarFieldFocus = proseBarItem{
 func proseFormLine(text string, cells int) string {
 	return pickerClip(jdeStatusOneLine(text), cells)
 }
+
+// A LOAD IN FLIGHT AND A LOAD THAT FAILED ARE STATES WITH A BAR OF THEIR OWN.
+//
+// THE DEFECT. Every screen this record was built for answered nil in both, and
+// drew a literal instead: `Loading donations…` alone, or the error with a muted
+// "r retry · esc back" under it. The literal was written for what the frame is
+// ABOUT and not for what the key switch DOES — and the switch does not stop
+// answering because the rows have not arrived. On the forecasts `w` still flips
+// the filter and reloads from a failed load; on every list with a create key `c`
+// or `n` still opens the form; and a REFRESH that fails leaves the previous rows
+// in place, so `E`, `enter` and the row's own actions still switch screens or
+// write against a row the frame no longer draws. The operator was told two keys
+// on a frame that worked six — the omission this record exists to close, in the
+// one state the conversion had left out.
+//
+// THE REMEDY IS A BAR, NOT A GATE, and the difference is a decision rather than
+// a preference. Declining those keys while a load is out would change what the
+// screens DO, which is a key-binding change with its own trade-offs — some of it
+// is plainly a recovery (`w` retrying under the other filter), some of it plainly
+// is not (a write against a row nobody can see) — and it is not this record's to
+// make. So each screen names exactly what its switch answers there, and the keys
+// that act on rows the frame does not draw are named TRUTHFULLY, as candidates
+// for gating, rather than hidden — each screen's loadBar doc says which.
+//
+// WHAT IS NAMED IS WHAT IS SEEN TO ACT. A key whose only effect is a field the
+// frame does not draw — a cursor moving through stale rows, a delete confirm
+// armed under the error — changes nothing an operator can see and issues
+// nothing, so a bar naming it would name a key that visibly does nothing:
+// standing rule 1 from the other side. Those are gating candidates too, and the
+// sweep's doc says which instrument separates the two.
+
+// proseBarRetry is `r` on a frame whose load FAILED, where the key's job is to
+// try again. It is proseBarRefresh's keystroke with the word the failure frames
+// have always used; the key is the same one either way.
+var proseBarRetry = proseBarItem{Keys: []string{"r"}, Hint: "r retry"}
+
+// proseBarReloadFor is `r` in a load state: "r refresh" while the load is out
+// (a second press starts it again) and "r retry" once it has failed.
+func proseBarReloadFor(failed bool) proseBarItem {
+	if failed {
+		return proseBarRetry
+	}
+	return proseBarRefresh
+}
+
+// proseLoadingFrame is a converted screen's pane while its load is in flight:
+// the working line, and the bar the screen answers keys by in that state.
+//
+// The working line is a fixed sentence the screen owns, so it is clipped rather
+// than folded — a folded working line would be a height the bar has to be
+// budgeted around for no gain.
+func proseLoadingFrame(working string, cells int, bar proseBar) string {
+	return StyleMuted.Render(pickerClip(working, cells)) + "\n\n" + bar.render(cells)
+}
+
+// proseFailedFrame is a converted screen's pane after its load has failed: the
+// failure, bounded to what the pane leaves once the bar has its rows, and the
+// bar under it.
+//
+// BOUNDED BECAUSE IT IS AN OMS BODY, and the failure frame is where an unbounded
+// one costs most. omsapi.parseError puts the ENTIRE raw payload into the message
+// whenever the envelope carries no code, so a gateway's 502 page arrived as
+// seven lines, and a frame that wrote it out whole pushed its own bar off the
+// bottom of the pane — clampToBox drops from the BOTTOM — on exactly the frame
+// whose bar says how to try again. It is flattened first (jdeStatusOneLine, for
+// the reason proseFormLine gives) and then folded and cut with the cut MARKED by
+// failDetailLines, the one copy of that shape (AGENTS.md).
+//
+// THE BAR'S ROWS COME OFF FIRST and the failure gets the rest, floored at one
+// row: a failure frame that says nothing about the failure is worse than a frame
+// that runs over on a pane too short for both, which is the band
+// proseBarFrameFits already scopes the sweeps around. An unsized screen has no
+// pane to measure, so it gets proseFailedUnsizedRows.
+func proseFailedFrame(loadErr string, terminalHeight, cells int, bar proseBar) string {
+	return proseRefusalFrame("Error: ", StyleStatusError, loadErr, "", terminalHeight, cells, bar)
+}
+
+// proseRefusalFrame is proseFailedFrame with the lead words, their style and a
+// standing NOTE supplied: for a refusal whose frame says more than "Error:" —
+// the analytics pulse's staff-only notice leads with a warning, and the badge
+// enrollment failure says the screen is staff-only.
+//
+// THE GIVE-ORDER IS WRITTEN DOWN: the bar never gives, the lead row of the
+// failure never gives, then the NOTE goes whole, and only then does the OMS body
+// give, with its cut marked. The note is a fixed explanation the screen owns and
+// is folded whole or not drawn — measured at 80x12 before this order existed,
+// the staff-only notice's three folded rows took the bar off the pane, which is
+// the one surface that says how to leave it.
+func proseRefusalFrame(lead string, leadStyle lipgloss.Style, detail, note string, terminalHeight, cells int, bar proseBar) string {
+	var noteLines []string
+	if note != "" {
+		noteLines = pickerWrap(note, cells)
+	}
+	rows := proseFailedUnsizedRows
+	if terminalHeight > 0 {
+		rows = screenBodyRows(terminalHeight) - bar.rows(cells)
+		if noteRows := 1 + len(noteLines); len(noteLines) > 0 && rows-noteRows >= 1 {
+			rows -= noteRows
+		} else {
+			noteLines = nil
+		}
+	}
+	if rows < 1 {
+		rows = 1
+	}
+	var b strings.Builder
+	for i, line := range failDetailLines(lead+jdeStatusOneLine(detail), cells, rows) {
+		if i == 0 && strings.HasPrefix(line, lead) {
+			line = leadStyle.Render(lead) + strings.TrimPrefix(line, lead)
+		}
+		b.WriteString(line + "\n")
+	}
+	if len(noteLines) > 0 {
+		b.WriteString("\n" + StyleMuted.Render(strings.Join(noteLines, "\n")) + "\n")
+	}
+	return b.String() + "\n" + bar.render(cells)
+}
+
+// proseFailedUnsizedRows is how many rows a failure gets on a screen that has
+// not been told its pane — enough for an ordinary sentence and the head of a
+// gateway page, and a bound on a 20 KB one.
+const proseFailedUnsizedRows = 6

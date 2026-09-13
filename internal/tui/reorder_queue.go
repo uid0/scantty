@@ -226,6 +226,9 @@ func (s *ReorderQueueScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.answer, s.answerLevel = m.action, StatusOK
 		return s, tea.Batch(Status(m.action, StatusOK), s.load())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.proseBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirm != reorderConfirmNone {
 			return s.updateConfirm(m)
 		}
@@ -732,7 +735,12 @@ func (s *ReorderQueueScreen) barFor(scrolls bool) proseBar {
 			{Keys: []string{"n", "esc"}, Hint: "n/esc cancel"},
 		}
 	}
-	segs := proseNavList(listNavMoves(len(s.rows)), scrolls)
+	// No movement while a load is out or has failed: the frame draws the working
+	// line or the failure IN PLACE of the rows, so j/k and the pager walk a cursor
+	// nobody can see — the bar named all of them over "Loading the pending reorder
+	// requests…" after every refresh. The row's own keys stay, because they still
+	// act on the row a refresh kept (prose_bar.go's load-state note).
+	segs := proseNavList(listNavMoves(len(s.rows)) && !s.loading && s.loadErr == "", scrolls)
 	tail := proseBar{
 		{Keys: []string{"f"}, Hint: "f view"},
 		proseBarRefresh,

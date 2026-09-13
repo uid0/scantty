@@ -79,6 +79,9 @@ func TestSerializedCreateForm_PayloadAndValidation(t *testing.T) {
 // moves serial→lot→expiration and wraps, esc closes it.
 func TestSerializedCreateForm_FieldNavigation(t *testing.T) {
 	s := NewItemInstancesScreen(Deps{}, "item-uuid", "Filament", nil)
+	// The form is reachable only after the list has loaded; load-state gating
+	// deliberately ignores form keys while the constructor's load is in flight.
+	s.loading = false
 	s.openCreateForm()
 	if s.createFocus != scfSerial {
 		t.Fatalf("initial focus = %d, want serial", s.createFocus)

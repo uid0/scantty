@@ -105,10 +105,10 @@ func (s *SIGDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 func (s *SIGDetailScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading SIG…")
+		return proseLoadingFrame("Loading SIG…", proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	return proseScrollFrame(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 }
@@ -124,14 +124,20 @@ func (s *SIGDetailScreen) bar(scrolls bool) proseBar {
 	return append(proseNavScroll(scrolls), proseBarRefresh, proseBarEsc)
 }
 
-// proseBar is the bar this sheet is DRAWING — nil in the states that draw
-// something else instead, which is what makes "this state has no bar" and "this
-// state's bar is empty" different answers to the sweep.
+// proseBar is the bar this sheet is DRAWING, in every state: a load in flight or
+// failed draws loadBar's.
 func (s *SIGDetailScreen) proseBar() proseBar {
 	if s.loading || s.loadErr != "" {
-		return nil
+		return s.loadBar()
 	}
 	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// loadBar is the sheet's bar while its load is out or has failed — what its key
+// switch still answers with nothing drawn (prose_bar.go carries the defect and
+// the decision): the reload and the way back.
+func (s *SIGDetailScreen) loadBar() proseBar {
+	return proseBar{proseBarReloadFor(s.loadErr != ""), proseBarEsc}
 }
 
 func (s *SIGDetailScreen) renderBody() string {

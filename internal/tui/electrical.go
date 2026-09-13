@@ -124,14 +124,36 @@ func (s *ElectricalPanelsScreen) barFor(moves, hasRows bool) proseBar {
 }
 
 // proseBar is the bar this screen is DRAWING, and nil in the states that draw
-// something else instead — a load in flight, a failure, and the one-line y/n
-// delete confirm that names its own two keys, which the earlier recipes left as
-// literals for the same reasons.
+// something else instead — the one-line y/n delete confirm that names its own
+// two keys, which the earlier recipes left as a literal for the same reasons. A
+// load in flight or failed draws loadBar's.
 func (s *ElectricalPanelsScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.confirmingDelete {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.confirmingDelete {
 		return nil
 	}
 	return s.barFor(listNavMoves(len(s.panels)), len(s.panels) > 0)
+}
+
+// loadBar is this list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `n` works whatever the list holds; `enter` and `E` still act
+// on the row a refresh kept under the cursor, which the frame no longer draws —
+// named because they act, and candidates for gating. `x` is not named: all it
+// does here is arm a confirm the frame does not draw.
+func (s *ElectricalPanelsScreen) loadBar() proseBar {
+	_, hasRow := s.selectedPanel()
+	var out proseBar
+	if hasRow {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter topology"})
+	}
+	out = append(out, proseBarItem{Keys: []string{"n"}, Hint: "n new"})
+	if hasRow {
+		out = append(out, proseBarItem{Keys: []string{"E"}, Hint: "E edit"})
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *ElectricalPanelsScreen) scrollIntoView() {
@@ -174,6 +196,9 @@ func (s *ElectricalPanelsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loading = true
 		return s, tea.Batch(Status("panel deleted", StatusOK), s.load())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingDelete {
 			return s.updateConfirmDelete(m)
 		}
@@ -259,10 +284,10 @@ func (s *ElectricalPanelsScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.
 
 func (s *ElectricalPanelsScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading panels…")
+		return proseLoadingFrame("Loading panels…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · n new · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.confirmingDelete {
 		return s.viewConfirm()
@@ -409,7 +434,11 @@ func (s *ElectricalPanelDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loadErr = m.err.Error()
 		}
 		s.topology = m.topology
-		s.scroller.Set(s.renderBody())
+		// A failed load carries no topology and renderBody reads one — see
+		// AssetDetailScreen's loaded arm, which panicked the same way.
+		if s.topology != nil {
+			s.scroller.Set(s.renderBody())
+		}
 		return s, nil
 	case electricalPanelDetailDeletedMsg:
 		s.deleting = false
@@ -422,6 +451,9 @@ func (s *ElectricalPanelDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			SwitchTo(WSFacilities, NewElectricalPanelsScreen(s.deps)),
 		)
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingDelete {
 			return s.updateConfirmDelete(m)
 		}
@@ -484,10 +516,10 @@ func (s *ElectricalPanelDetailScreen) updateConfirmDelete(m tea.KeyMsg) (Screen,
 
 func (s *ElectricalPanelDetailScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading topology…")
+		return proseLoadingFrame("Loading topology…", proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.topology == nil {
 		return StyleMuted.Render("Panel not found.")
@@ -517,12 +549,30 @@ func (s *ElectricalPanelDetailScreen) bar(scrolls bool) proseBar {
 }
 
 // proseBar is the bar this sheet is DRAWING — nil in the states that draw
-// something else instead.
+// something else instead (the delete confirm, a panel that was not found). A
+// load in flight or failed draws loadBar's.
 func (s *ElectricalPanelDetailScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.topology == nil || s.confirmingDelete {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.topology == nil || s.confirmingDelete {
 		return nil
 	}
 	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// loadBar is the sheet's bar while its load is out or has failed — what its key
+// switch still answers with nothing drawn (prose_bar.go carries the defect and
+// the decision). `b` and `E` open the breaker list and the panel form by the
+// panel's id, which the screen holds whether or not the topology arrived. `x`
+// is not named: all it does here is arm a confirm the frame does not draw.
+func (s *ElectricalPanelDetailScreen) loadBar() proseBar {
+	return proseBar{
+		{Keys: []string{"b"}, Hint: "b breakers"},
+		{Keys: []string{"E"}, Hint: "E edit"},
+		proseBarReloadFor(s.loadErr != ""),
+		proseBarEsc,
+	}
 }
 
 func (s *ElectricalPanelDetailScreen) renderBody() string {

@@ -100,16 +100,17 @@ func (s *AnalyticsPulseScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 }
 
 func (s *AnalyticsPulseScreen) View() string {
+	cells := proseBarCells(s.terminalWidth)
 	if s.loading {
-		return StyleMuted.Render("Loading analytics pulse…")
+		return proseLoadingFrame("Loading analytics pulse…", cells, s.proseBar())
 	}
 	if s.forbidden {
-		return StyleStatusWarn.Render("Analytics is staff-only.") + "\n\n" +
-			StyleMuted.Render("The pulse report requires the analytics-viewer permission\n(staff or a SIG admin). Ask an administrator for access.") +
-			"\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseRefusalFrame("Analytics is staff-only.", StyleStatusWarn, "",
+			"The pulse report requires the analytics-viewer permission (staff or a SIG admin). "+
+				"Ask an administrator for access.", s.terminalHeight, cells, s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, cells, s.proseBar())
 	}
 	return proseScrollFrame(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
 }
@@ -127,13 +128,21 @@ func (s *AnalyticsPulseScreen) bar(scrolls bool) proseBar {
 	return append(proseNavScroll(scrolls), proseBarRefresh, proseBarBack)
 }
 
-// proseBar is the bar this sheet is DRAWING — nil in the states that draw
-// something else instead.
+// proseBar is the bar this sheet is DRAWING, in every state: a load in flight,
+// failed or refused draws loadBar's.
 func (s *AnalyticsPulseScreen) proseBar() proseBar {
 	if s.loading || s.forbidden || s.loadErr != "" {
-		return nil
+		return s.loadBar()
 	}
 	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// loadBar is the sheet's bar while its load is out, has failed or was refused —
+// what its key switch still answers with nothing drawn (prose_bar.go carries
+// the defect and the decision): the reload, and both spellings of the way back
+// to the Reports hub, which this screen's own switch binds.
+func (s *AnalyticsPulseScreen) loadBar() proseBar {
+	return proseBar{proseBarReloadFor(s.loadErr != "" || s.forbidden), proseBarBack}
 }
 
 // renderPulse builds the full scrollable body: a scalar value-summary block,

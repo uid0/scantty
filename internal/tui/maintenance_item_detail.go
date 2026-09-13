@@ -152,7 +152,11 @@ func (s *MaintenanceItemDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loadErr = ""
 			s.item = m.item
 		}
-		s.scroller.Set(s.renderBody())
+		// A FIRST load that fails leaves no item, and renderBody reads one — see
+		// AssetDetailScreen's loaded arm, which panicked the same way.
+		if s.item != nil {
+			s.scroller.Set(s.renderBody())
+		}
 		return s, nil
 
 	case mDetailCompletedMsg:
@@ -215,6 +219,9 @@ func (s *MaintenanceItemDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, nil
 
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		switch s.phase {
 		case mDetailPhaseConfirmDelete:
 			return s.updateConfirmDelete(m)
@@ -618,10 +625,10 @@ func stockLevel(resp *omsapi.MaterialStockResponse) StatusLevel {
 
 func (s *MaintenanceItemDetailScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading PM item…")
+		return proseLoadingFrame("Loading PM item…", proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.item == nil {
 		return StyleMuted.Render("PM item not found.")
@@ -681,11 +688,33 @@ func (s *MaintenanceItemDetailScreen) sizeScroller() {
 }
 
 func (s *MaintenanceItemDetailScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.item == nil || s.phase != mDetailPhaseView {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.item == nil || s.phase != mDetailPhaseView {
 		return nil
 	}
 	s.sizeScroller()
 	return s.bar(s.scroller.HasOverflow())
+}
+
+// loadBar is the sheet's bar while its load is out or has failed — what its key
+// switch still answers with nothing drawn (prose_bar.go carries the defect and
+// the decision). A PM item a refresh kept, which the frame no longer draws, can
+// still be cloned (`L` loads the asset list for it), stock-checked (`S`) and
+// edited (`E`) — named because they act, and candidates for gating. `c`, `w`
+// and `x` are not named: each opens a box or a confirm this frame does not
+// draw.
+func (s *MaintenanceItemDetailScreen) loadBar() proseBar {
+	var out proseBar
+	if s.item != nil {
+		out = append(out, proseBarItem{Keys: []string{"L"}, Hint: "L clone"})
+		if !s.busy {
+			out = append(out, proseBarItem{Keys: []string{"S"}, Hint: "S check-stock"})
+		}
+		out = append(out, proseBarItem{Keys: []string{"E"}, Hint: "E edit"})
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *MaintenanceItemDetailScreen) renderBody() string {

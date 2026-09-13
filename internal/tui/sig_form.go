@@ -531,16 +531,37 @@ func (s *SIGListScreen) bar(moves bool) proseBar {
 }
 
 // proseBar is the bar this screen is DRAWING, and nil in the states that draw
-// something else instead — a load in flight, a failure, a prompt that replaces
-// the footer, and the EMPTY list, whose shorter footer is still a literal. So
-// "this state has no bar" and "this state's bar is empty" stay different answers
-// to the honesty sweep, and what this conversion leaves behind is a STATE rather
-// than a screen.
+// something else instead — a prompt that replaces the footer, and the EMPTY
+// list, whose shorter footer is still a literal. So "this state has no bar" and
+// "this state's bar is empty" stay different answers to the honesty sweep, and
+// what this conversion leaves behind is a STATE rather than a screen. A load in
+// flight or failed draws loadBar's.
 func (s *SIGListScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.confirmingDelete || len(s.rows) == 0 {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.confirmingDelete || len(s.rows) == 0 {
 		return nil
 	}
 	return s.bar(listNavMoves(len(s.rows)))
+}
+
+// loadBar is this list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `n` works whatever the list holds. `E`, `enter` and `v` still
+// act on the row a refresh kept under the cursor, which the frame no longer
+// draws: named because they act, and candidates for gating. `x` is not named
+// because all it does here is arm a confirm the frame does not draw.
+func (s *SIGListScreen) loadBar() proseBar {
+	out := proseBar{{Keys: []string{"n"}, Hint: "n new"}}
+	if _, ok := s.selected(); ok {
+		out = append(out,
+			proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+			proseBarItem{Keys: []string{"enter"}, Hint: "enter members"},
+			proseBarItem{Keys: []string{"v"}, Hint: "v view"},
+		)
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *SIGListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -574,6 +595,9 @@ func (s *SIGListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loading = true
 		return s, tea.Batch(Status("SIG deleted", StatusOK), s.Init())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingDelete {
 			return s.updateConfirmDelete(m)
 		}
@@ -693,10 +717,10 @@ func (s *SIGListScreen) scrollIntoView() {
 
 func (s *SIGListScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading SIGs…")
+		return proseLoadingFrame("Loading SIGs…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · n new · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.confirmingDelete {
 		return s.viewConfirm()

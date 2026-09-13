@@ -107,7 +107,11 @@ func (s *ProjectStorageDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.loadErr = m.err.Error()
 		}
 		s.stint = m.stint
-		s.scroller.Set(s.renderBody())
+		// A failed load carries no stint and renderBody reads one — see
+		// AssetDetailScreen's loaded arm, which panicked the same way.
+		if s.stint != nil {
+			s.scroller.Set(s.renderBody())
+		}
 		return s, nil
 	case projectStorageReprintedMsg:
 		s.reprinting = false
@@ -132,6 +136,9 @@ func (s *ProjectStorageDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loadErr = ""
 		return s, tea.Batch(Status("stint marked removed", StatusOK), s.Init())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingReprint {
 			return s.updateConfirmReprint(m)
 		}
@@ -243,10 +250,10 @@ func (s *ProjectStorageDetailScreen) updateConfirmRemove(m tea.KeyMsg) (Screen, 
 
 func (s *ProjectStorageDetailScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading stint…")
+		return proseLoadingFrame("Loading stint…", proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.stint == nil {
 		return StyleMuted.Render("Stint not found.")
@@ -294,15 +301,27 @@ func (s *ProjectStorageDetailScreen) bar(scrolls bool) proseBar {
 }
 
 // proseBar is the bar this sheet is DRAWING — nil in the states that draw
-// something else instead, the two confirm prompts included.
+// something else instead, the two confirm prompts included. A load in flight or
+// failed draws loadBar's.
 func (s *ProjectStorageDetailScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.stint == nil {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.stint == nil {
 		return nil
 	}
 	if s.confirmingReprint || s.confirmingRemove {
 		return nil
 	}
 	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// loadBar is the sheet's bar while its load is out or has failed — what its key
+// switch still answers with nothing drawn (prose_bar.go carries the defect and
+// the decision): the reload and the way back. `p` and `x` are not named: on a
+// stint a refresh kept, each arms a confirm this frame does not draw.
+func (s *ProjectStorageDetailScreen) loadBar() proseBar {
+	return proseBar{proseBarReloadFor(s.loadErr != ""), proseBarEsc}
 }
 
 func (s *ProjectStorageDetailScreen) renderBody() string {

@@ -45,9 +45,10 @@ import (
 // offset over two-line rows under a CA card), and its oversized fixture is a
 // stored value with newlines in it, which used to make a counted line two.
 //
-// WHAT IS STILL nil IS WHAT WAS nil BEFORE: a load in flight or failed, and the
-// y/n confirms (the panel delete, the root-CA rotation), which name their own
-// keys — the states the earlier recipes left as literals, for the same reasons.
+// WHAT IS STILL nil IS WHAT WAS nil BEFORE: the y/n confirms (the panel delete,
+// the root-CA rotation), which name their own keys — the states the earlier
+// recipes left as literals, for the same reasons. A load in flight or failed has
+// a bar of its own now; prose_bar_load_states_test.go sweeps it.
 
 // proseBarWiderVocabularyFixtures is every screen on that recipe, in every state
 // it draws a bar in.

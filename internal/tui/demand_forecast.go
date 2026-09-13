@@ -173,6 +173,9 @@ func (s *DemandForecastScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.scrollIntoView()
 		return s, nil
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.mode == forecastModeDetail {
 			return s.updateDetail(m)
 		}
@@ -299,10 +302,10 @@ func (s *DemandForecastScreen) scrollIntoView() {
 
 func (s *DemandForecastScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading forecast…")
+		return proseLoadingFrame("Loading forecast…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.mode == forecastModeDetail {
 		return s.viewDetail()
@@ -389,17 +392,21 @@ func (s *DemandForecastScreen) listBar(moves bool) proseBar {
 	if len(s.rows) > 0 {
 		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter detail"})
 	}
+	return append(append(out, s.viewToggles()...), proseBarRefresh, proseBarEsc)
+}
+
+// viewToggles is the pair that changes WHICH forecast is loaded — `w` the
+// low-stock filter (the alerts view is already server-filtered, so `w` is off
+// there) and `a` the alerts view — read by the list's bar and the load bar
+// alike, since both keys reload whatever the list is showing.
+func (s *DemandForecastScreen) viewToggles() proseBar {
 	switch {
 	case s.alerts:
-		out = append(out, proseBarItem{Keys: []string{"a"}, Hint: "a full forecast"})
+		return proseBar{{Keys: []string{"a"}, Hint: "a full forecast"}}
 	case s.lowOnly:
-		out = append(out, proseBarItem{Keys: []string{"w"}, Hint: "w show all"},
-			proseBarItem{Keys: []string{"a"}, Hint: "a alerts"})
-	default:
-		out = append(out, proseBarItem{Keys: []string{"w"}, Hint: "w due only"},
-			proseBarItem{Keys: []string{"a"}, Hint: "a alerts"})
+		return proseBar{{Keys: []string{"w"}, Hint: "w show all"}, {Keys: []string{"a"}, Hint: "a alerts"}}
 	}
-	return append(out, proseBarRefresh, proseBarEsc)
+	return proseBar{{Keys: []string{"w"}, Hint: "w due only"}, {Keys: []string{"a"}, Hint: "a alerts"}}
 }
 
 // detailBar is the per-row detail's bar; see SerializedForecastScreen.detailBar.
@@ -412,16 +419,25 @@ func (s *DemandForecastScreen) detailBar(scrolls bool) proseBar {
 }
 
 // proseBar is the bar this screen is DRAWING, for whichever surface is up. A
-// load in flight or failed is nil: those frames are literals, as on every
-// earlier recipe.
+// load in flight or failed draws loadBar's.
 func (s *DemandForecastScreen) proseBar() proseBar {
 	switch {
 	case s.loading || s.loadErr != "":
-		return nil
+		return s.loadBar()
 	case s.mode == forecastModeDetail:
 		return proseScrollBar(s.detail, s.terminalHeight, s.paneCells(), s.detailBar)
 	}
 	return s.listBar(listNavMoves(len(s.rows)))
+}
+
+// loadBar is the bar while a forecast load is out or has failed — what the key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). Both view toggles still flip their view and RELOAD from here,
+// which from a failed load is a recovery under the other view rather than a key
+// acting on nothing. `enter` is not named: on a row a refresh kept it opens a
+// detail this frame does not draw.
+func (s *DemandForecastScreen) loadBar() proseBar {
+	return append(s.viewToggles(), proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *DemandForecastScreen) renderRow(i int, selected bool) string {

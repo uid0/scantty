@@ -209,9 +209,9 @@ func (s *SIGMembersScreen) pickListBar(moves, options bool) proseBar {
 
 // proseBar is the bar this screen is DRAWING, for whichever surface is up — the
 // member list or the add-member picker drawn in its place — and nil in the
-// states that draw something else instead: a load in flight or failed, the
-// remove confirm (a one-line y/n prompt naming its own keys), and an add while
-// it is out, whose frame is a working line with every key held.
+// states that draw something else instead: the remove confirm (a one-line y/n
+// prompt naming its own keys), and an add while it is out, whose frame is a
+// working line with every key held. A load in flight or failed draws loadBar's.
 //
 // ONE RECORD PER SURFACE is what converting a screen with a second cursor
 // surface comes to: converting the list alone would have left the picker's
@@ -224,11 +224,27 @@ func (s *SIGMembersScreen) proseBar() proseBar {
 		n := len(s.pickOptions)
 		return s.pickBar(listNavMoves(n), n > 0)
 	}
-	if s.loading || s.loadErr != "" || s.confirmingRemove {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.confirmingRemove {
 		return nil
 	}
 	n := len(s.members)
 	return s.listBar(listNavMoves(n), n > 0)
+}
+
+// loadBar is the member list's bar while its load is out or has failed — what
+// its key switch still answers with no rows drawn (prose_bar.go carries the
+// defect and the decision). `n` opens the add picker whatever the list holds.
+// `x` is not named: on a member a refresh kept, all it does is arm a confirm
+// the frame does not draw.
+func (s *SIGMembersScreen) loadBar() proseBar {
+	return proseBar{
+		{Keys: []string{"n"}, Hint: "n add member"},
+		proseBarReloadFor(s.loadErr != ""),
+		proseBarEsc,
+	}
 }
 
 func (s *SIGMembersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -305,6 +321,9 @@ func (s *SIGMembersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loading = true
 		return s, tea.Batch(Status("member removed", StatusOK), s.loadMembers())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingRemove {
 			return s.updateConfirmRemove(m)
 		}
@@ -549,10 +568,10 @@ func (s *SIGMembersScreen) View() string {
 		return s.viewAddPick()
 	}
 	if s.loading {
-		return StyleMuted.Render("Loading members…")
+		return proseLoadingFrame("Loading members…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · n add · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if s.confirmingRemove {
 		return s.viewConfirm()

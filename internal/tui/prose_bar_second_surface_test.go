@@ -24,11 +24,12 @@ import (
 // same on all seven: proseBar answers for WHICHEVER surface is up, and the
 // sweep is handed a fixture per surface.
 //
-// WHAT IS STILL nil IS WHAT WAS nil BEFORE: a load in flight or failed, a
-// one-line y/n confirm that names its own two keys, a write while it is out
-// (a working line with every key held), and the badge enrolment panel, whose
-// every key is "any key". Those are the states the earlier recipes left as
-// literals, for the same reasons.
+// WHAT IS STILL nil IS WHAT WAS nil BEFORE: a one-line y/n confirm that names
+// its own two keys, a write while it is out (a working line with every key
+// held), and the badge enrolment panel, whose every key is "any key". Those are
+// the states the earlier recipes left as literals, for the same reasons. A load
+// in flight or failed used to be on this list and has a bar of its own now —
+// prose_bar_load_states_test.go sweeps it.
 //
 // TWO THINGS THIS RECIPE NEEDED THAT THE EARLIER TWO DID NOT, both recorded
 // where they are decided. A surface with a focused TEXT BOX takes the printable

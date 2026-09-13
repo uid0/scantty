@@ -92,16 +92,33 @@ func (s *MaintenanceItemsScreen) bar(moves bool) proseBar {
 }
 
 // proseBar is the bar this screen is DRAWING, and nil in the states that draw
-// something else instead — a load in flight, a failure, a prompt that replaces
-// the footer, and the EMPTY list, whose shorter footer is still a literal. So
-// "this state has no bar" and "this state's bar is empty" stay different answers
-// to the honesty sweep, and what this conversion leaves behind is a STATE rather
-// than a screen.
+// something else instead — a prompt that replaces the footer, and the EMPTY
+// list, whose shorter footer is still a literal. So "this state has no bar" and
+// "this state's bar is empty" stay different answers to the honesty sweep, and
+// what this conversion leaves behind is a STATE rather than a screen. A load in
+// flight or failed draws loadBar's.
 func (s *MaintenanceItemsScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || len(s.items) == 0 {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if len(s.items) == 0 {
 		return nil
 	}
 	return s.bar(listNavMoves(len(s.items)))
+}
+
+// loadBar is this list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `c` opens the form whatever the list holds; `enter` still
+// opens the item a refresh kept under the cursor, which the frame no longer
+// draws — named because it acts, and a candidate for gating.
+func (s *MaintenanceItemsScreen) loadBar() proseBar {
+	var out proseBar
+	if s.cursor >= 0 && s.cursor < len(s.items) {
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter open"})
+	}
+	out = append(out, proseBarItem{Keys: []string{"c"}, Hint: "c new"})
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *MaintenanceItemsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
@@ -191,10 +208,10 @@ func (s *MaintenanceItemsScreen) scrollIntoView() {
 
 func (s *MaintenanceItemsScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading PM items…")
+		return proseLoadingFrame("Loading PM items…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("press r to retry · c new · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if len(s.items) == 0 {
 		return StyleMuted.Render("No PM items.") + "\n\n" + StyleMuted.Render("c new PM item · esc back")

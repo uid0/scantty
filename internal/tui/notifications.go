@@ -114,10 +114,10 @@ func (s *NotificationsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 
 func (s *NotificationsScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading notifications…")
+		return proseLoadingFrame("Loading notifications…", proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if len(s.rows) == 0 {
 		// THE EMPTY STATE DRAWS A BAR, which it did not before: it returned the
@@ -158,17 +158,31 @@ func (s *NotificationsScreen) bar(scrolls bool) proseBar {
 	return append(out, proseBarRefresh, proseBarEsc)
 }
 
-// proseBar is the bar this sheet is DRAWING — nil in the two load states, which
-// draw their own line instead. The EMPTY state is NOT one of them: it draws a
-// bar now (see View), so the sweep presses keys at it like any other.
+// proseBar is the bar this sheet is DRAWING, in every state: the two load states
+// draw loadBar's, and the EMPTY state draws the sheet's own bar (see View), so
+// the sweep presses keys at all of them like any other.
 func (s *NotificationsScreen) proseBar() proseBar {
 	if s.loading || s.loadErr != "" {
-		return nil
+		return s.loadBar()
 	}
 	if len(s.rows) == 0 {
 		return s.bar(false)
 	}
 	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// loadBar is the sheet's bar while its load is out or has failed — what its key
+// switch still answers with nothing drawn (prose_bar.go carries the defect and
+// the decision). `X` is named UNCONDITIONALLY here, where the loaded bar gates
+// it on there being rows, because the arm does not look: it posts mark-all-read
+// whatever the sheet holds, so under "Loading notifications…" it is a write the
+// operator was never told about.
+func (s *NotificationsScreen) loadBar() proseBar {
+	return proseBar{
+		{Keys: []string{"X"}, Hint: "X mark all read"},
+		proseBarReloadFor(s.loadErr != ""),
+		proseBarEsc,
+	}
 }
 
 // renderBody draws every row into a single string for the scroller.

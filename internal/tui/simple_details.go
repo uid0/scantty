@@ -341,6 +341,9 @@ func (s *SupplierDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			SwitchTo(WSInventory, NewSupplierListScreen(s.deps)),
 		)
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingDelete {
 			return s.updateConfirmDelete(m)
 		}
@@ -390,10 +393,10 @@ func (s *SupplierDetailScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea.Cm
 
 func (s *SupplierDetailScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading supplier…")
+		return proseLoadingFrame("Loading supplier…", proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.sup == nil {
 		return StyleMuted.Render("Supplier not found.") + "\n\n" + StyleMuted.Render("esc back")
@@ -428,12 +431,30 @@ func (s *SupplierDetailScreen) bar(scrolls bool) proseBar {
 }
 
 // proseBar is the bar this sheet is DRAWING — nil in the states that draw
-// something else instead.
+// something else instead (the delete confirm, a supplier that was not found). A
+// load in flight or failed draws loadBar's.
 func (s *SupplierDetailScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.sup == nil || s.confirmingDelete {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.sup == nil || s.confirmingDelete {
 		return nil
 	}
 	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// loadBar is the sheet's bar while its load is out or has failed — what its key
+// switch still answers with nothing drawn (prose_bar.go carries the defect and
+// the decision). `E` still opens the edit form for the supplier a refresh kept,
+// which the frame no longer draws: named because it acts, and a candidate for
+// gating. `x` is not named: all it does here is arm a confirm the frame does
+// not draw.
+func (s *SupplierDetailScreen) loadBar() proseBar {
+	var out proseBar
+	if s.sup != nil {
+		out = append(out, proseBarItem{Keys: []string{"E"}, Hint: "E edit"})
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *SupplierDetailScreen) renderBody() string {

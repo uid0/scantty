@@ -189,6 +189,9 @@ func (s *StorageSlotDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, tea.Batch(Status(storageReleasedText(s.code, m.occupant), StatusOK), s.Init())
 
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		switch {
 		case s.confirmingDelete:
 			return s.updateConfirmDelete(m)
@@ -383,11 +386,10 @@ func (s *StorageSlotDetailScreen) updateConfirmDelete(m tea.KeyMsg) (Screen, tea
 
 func (s *StorageSlotDetailScreen) View() string {
 	if s.loading {
-		return StyleMuted.Render("Loading slot…")
+		return proseLoadingFrame("Loading slot…", proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" +
-			StyleMuted.Render("press r to retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, proseBarCells(s.terminalWidth), s.proseBar())
 	}
 	if s.slot == nil {
 		return StyleMuted.Render("Slot not found.")
@@ -453,16 +455,44 @@ func (s *StorageSlotDetailScreen) bar(scrolls bool) proseBar {
 }
 
 // proseBar is the bar this sheet is DRAWING — nil in the states that draw
-// something else instead, which here is four modals as well as the two load
-// states.
+// something else instead, which here is four modals. A load in flight or failed
+// draws loadBar's.
 func (s *StorageSlotDetailScreen) proseBar() proseBar {
-	if s.loading || s.loadErr != "" || s.slot == nil {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
+	}
+	if s.slot == nil {
 		return nil
 	}
 	if s.confirmingDelete || s.confirmingRelease || s.card.active || s.previewing {
 		return nil
 	}
 	return proseScrollBar(s.scroller, s.terminalHeight, proseBarCells(s.terminalWidth), s.bar)
+}
+
+// loadBar is the sheet's bar while its load is out or has failed — what its key
+// switch still answers with nothing drawn (prose_bar.go carries the defect and
+// the decision). A refresh keeps the slot it had, so from under "Loading slot…"
+// `enter` still opens the stint it holds, `a` still opens the assign flow on a
+// free slot, `E` the edit form and `v` still fetches the card preview — named
+// because they act, and candidates for gating. A failed load drops the slot and
+// everything but the retry with it. `R`, `p` and `x` are not named: each arms a
+// confirm or a prompt this frame does not draw.
+func (s *StorageSlotDetailScreen) loadBar() proseBar {
+	var out proseBar
+	if slot := s.slot; slot != nil {
+		if slot.CurrentStint != nil && slot.CurrentStint.StintID != "" {
+			out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter open stint"})
+		}
+		if slot.CurrentStint == nil && slot.CurrentAssignment == nil && !slot.IsOccupied && slot.IsActive {
+			out = append(out, proseBarItem{Keys: []string{"a"}, Hint: "a assign C/L/E"})
+		}
+		out = append(out,
+			proseBarItem{Keys: []string{"E"}, Hint: "E edit"},
+			proseBarItem{Keys: []string{"v"}, Hint: "v card contents"},
+		)
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *StorageSlotDetailScreen) deleteConfirmText() string {

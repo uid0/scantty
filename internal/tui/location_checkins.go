@@ -187,8 +187,7 @@ func (s *LocationCheckinsScreen) lookupBar(rows int) proseBar {
 
 // proseBar is the bar this screen is DRAWING, for whichever surface is up — the
 // check-in list, or the id entry, confirm or location lookup drawn in its place
-// — and nil while the list's load is in flight or has failed, whose frames still
-// draw their own line.
+// — or loadBar's while the list's load is in flight or has failed.
 //
 // ONE RECORD PER SURFACE is what converting a screen with a second cursor
 // surface comes to: converting the list alone would have left the lookup's
@@ -211,9 +210,20 @@ func (s *LocationCheckinsScreen) proseBar() proseBar {
 		}
 	}
 	if s.loading || s.loadErr != "" {
-		return nil
+		return s.loadBar()
 	}
 	return s.listBar(len(s.rows))
+}
+
+// loadBar is the list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `n` opens the check-in entry whatever the list holds.
+func (s *LocationCheckinsScreen) loadBar() proseBar {
+	return proseBar{
+		{Keys: []string{"n"}, Hint: "n new check-in"},
+		proseBarReloadFor(s.loadErr != ""),
+		proseBarEsc,
+	}
 }
 
 func (s *LocationCheckinsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
@@ -567,10 +577,10 @@ func (s *LocationCheckinsScreen) View() string {
 		}
 	}
 	if s.loading {
-		return StyleMuted.Render("Loading recent check-ins…")
+		return proseLoadingFrame("Loading recent check-ins…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · n new check-in · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 
 	cells := s.paneCells()

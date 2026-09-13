@@ -119,8 +119,8 @@ func (s *EPaperPanelsScreen) bindBar(results int) proseBar {
 }
 
 // proseBar is the bar this screen is DRAWING, for whichever surface is up — the
-// panel list or the bind picker drawn in its place — and nil while the list's
-// load is in flight or has failed, whose frames still draw their own line.
+// panel list or the bind picker drawn in its place — or loadBar's while the
+// list's load is in flight or has failed.
 //
 // ONE RECORD PER SURFACE is what converting a screen with a second cursor
 // surface comes to: converting the list alone would have left the picker's
@@ -130,9 +130,26 @@ func (s *EPaperPanelsScreen) proseBar() proseBar {
 		return s.bindBar(len(s.bindResults))
 	}
 	if s.loading || s.loadErr != "" {
-		return nil
+		return s.loadBar()
 	}
 	return s.bar(len(s.rows))
+}
+
+// loadBar is this list's bar while its load is out or has failed — what its key
+// switch still answers with no rows drawn (prose_bar.go carries the defect and
+// the decision). `b` and `t` still act on the panel a refresh kept under the
+// cursor, which the frame no longer draws — `b` opens the bind picker over it
+// and `t` retires or reactivates it — so they are named because they act, and
+// candidates for gating.
+func (s *EPaperPanelsScreen) loadBar() proseBar {
+	var out proseBar
+	if len(s.rows) > 0 {
+		out = append(out,
+			proseBarItem{Keys: []string{"b"}, Hint: "b bind to asset"},
+			proseBarItem{Keys: []string{"t"}, Hint: "t retire/reactivate"},
+		)
+	}
+	return append(out, proseBarReloadFor(s.loadErr != ""), proseBarEsc)
 }
 
 func (s *EPaperPanelsScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
@@ -344,10 +361,10 @@ func (s *EPaperPanelsScreen) View() string {
 		return s.viewBind()
 	}
 	if s.loading {
-		return StyleMuted.Render("Loading e-paper panels…")
+		return proseLoadingFrame("Loading e-paper panels…", s.paneCells(), s.proseBar())
 	}
 	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+		return proseFailedFrame(s.loadErr, s.terminalHeight, s.paneCells(), s.proseBar())
 	}
 	if len(s.rows) == 0 {
 		return StyleMuted.Render("No e-paper panels registered yet.") + "\n\n" + s.proseBar().render(s.paneCells())

@@ -337,8 +337,8 @@ func (s *ForgeKeyDeviceFormScreen) pickListBar(moves, options bool) proseBar {
 
 // proseBar is the bar this screen is DRAWING, for whichever surface is up — the
 // one-field form, the location picker drawn in its place, or that picker's
-// filter box — and nil in the states that draw something else instead: the load
-// frame, and a save while it is out, whose working line takes the bar's place.
+// filter box, or the load frame, which answers `esc` alone — and nil while a
+// save is out, whose working line takes the bar's place.
 //
 // ONE RECORD PER SURFACE is what converting a screen with a second cursor
 // surface comes to: the picker is the reason this screen is on the navigation
@@ -347,7 +347,10 @@ func (s *ForgeKeyDeviceFormScreen) pickListBar(moves, options bool) proseBar {
 func (s *ForgeKeyDeviceFormScreen) proseBar() proseBar {
 	switch {
 	case s.phase == fkDeviceFormLoading:
-		return nil
+		// The loading phase answers `esc` and nothing else — the switch returns
+		// before any other arm — so that is the whole bar (prose_bar.go's
+		// load-state note).
+		return proseBar{{Keys: []string{"esc"}, Hint: "esc cancel"}}
 	case s.phase == fkDeviceFormPick && s.pickTyping:
 		return proseBar{{Keys: []string{"enter", "esc"}, Hint: "enter/esc close filter"}}
 	case s.phase == fkDeviceFormPick:
@@ -365,10 +368,7 @@ func (s *ForgeKeyDeviceFormScreen) proseBar() proseBar {
 
 func (s *ForgeKeyDeviceFormScreen) View() string {
 	if s.phase == fkDeviceFormLoading {
-		if s.loadErr != "" {
-			return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("esc to go back")
-		}
-		return StyleMuted.Render("Loading…")
+		return proseLoadingFrame("Loading…", s.paneCells(), s.proseBar())
 	}
 	if s.phase == fkDeviceFormPick {
 		return s.viewPick()
@@ -381,7 +381,10 @@ func (s *ForgeKeyDeviceFormScreen) viewForm() string {
 	b.WriteString(StyleMuted.Render("Edit device metadata — the web edits only the default location.") + "\n\n")
 	b.WriteString("▸ " + StyleTitle.Render("Location: ") + s.locationLabel() + "\n")
 	if s.loadErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render("locations failed to load: "+s.loadErr) + "\n")
+		// ONE ROW, cut marked (proseFormLine): the failure is an OMS body, and a
+		// gateway's 502 page written out whole pushed this form's bar off the
+		// bottom of the pane on the frame a failed load lands on.
+		b.WriteString("\n" + StyleStatusError.Render(proseFormLine("locations failed to load: "+s.loadErr, s.paneCells())) + "\n")
 	}
 	b.WriteString("\n")
 	if s.saving {
