@@ -82,9 +82,10 @@ touching any render of `average_lead_time`:
   `leadTimeFactCell`; an absent key draws the bare number exactly as before.
 - **Derived lead times carry no source** (item metrics, forecasts, the
   analytics reports), so they are deliberately unmarked.
-- **A WRITE decides the label.** OMS labels a SENT number `recorded` and an
-  OMITTED key `default`, so a form that pre-fills or restates 7 manufactures a
-  quote nobody gave — `ItemSupplierWrite.AverageLeadTime` is a pointer for that.
+- **A WRITE decides the label.** On create, OMS labels a SENT number `recorded`
+  and an OMITTED key `default`; on edit, a changed value becomes `recorded` but
+  an equal value keeps its source. ScanTTY still omits unchanged edits to protect
+  stale or truncated forms — `ItemSupplierWrite.AverageLeadTime` is a pointer.
 
 ### Purchase-order line money has two denominators
 
