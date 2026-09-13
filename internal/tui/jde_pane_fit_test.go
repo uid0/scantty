@@ -1014,6 +1014,7 @@ func jdeScreenStates() map[string]func() Screen {
 				s.itemSuppliersAll = append(s.itemSuppliersAll, omsapi.ItemSupplier{
 					ID: i + 1, ItemName: fmt.Sprintf("Hex bolt M8x40 zinc #%d", i+1),
 					SupplierSKU: fmt.Sprintf("AF-99-12-ZP-LH-%04d", i), UnitCost: "3.50",
+					LeadTimeDays: 14, LeadTimeSource: omsapi.LeadTimeSourceMeasured,
 				})
 			}
 			s.itemSuppliers = s.itemSuppliersAll

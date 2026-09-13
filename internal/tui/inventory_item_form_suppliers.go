@@ -176,13 +176,14 @@ func (s *InventoryItemFormScreen) supplierBand(l *jdeLines) {
 	}
 
 	fit := s.supplierFit(rows)
-	l.Add(StyleMuted.Render(itemSupplierGridRow("#", "Supplier", s.supplierCostHeader(), "Lead", fit)))
+	l.Add(StyleMuted.Render(itemSupplierGridRow("#", "Supplier", s.supplierCostHeader(), "Lead", "", fit)))
 	for i, sup := range rows {
 		row := itemSupplierGridRow(
 			strconv.Itoa(i+1),
 			itemSupplierCell(sup, fit.nameW),
 			s.supplierCostCell(sup),
 			itemSupplierLeadCell(sup),
+			itemSupplierLeadMark(sup),
 			fit,
 		)
 		switch s.supplierRowKind(i, sup) {
@@ -292,11 +293,33 @@ func (s *InventoryItemFormScreen) supplierFit(rows []omsapi.ItemSupplier) itemSu
 	for i, sup := range rows {
 		fit.numW = jdeGridFactW(fit.numW, itemSupplierNumMaxW, strconv.Itoa(i+1))
 		fit.costW = jdeGridFactW(fit.costW, itemSupplierCostMaxW, s.supplierCostCell(sup))
-		fit.leadW = jdeGridFactW(fit.leadW, itemSupplierLeadMaxW, itemSupplierLeadCell(sup))
+		// A marked cell reserves its MARK on top of the number's own ceiling, so
+		// the ceiling still bounds only the number (leadTimeFactCell).
+		leadCeil := itemSupplierLeadMaxW
+		if mark := itemSupplierLeadMark(sup); mark != "" {
+			leadCeil += 1 + lipgloss.Width(mark)
+		}
+		fit.leadW = jdeGridFactW(fit.leadW, leadCeil, itemSupplierLeadText(sup))
 	}
 	// The HEADER is a row of this grid too, and "Pack cost" is nine cells.
 	fit.costW = jdeGridFactW(fit.costW, itemSupplierCostMaxW, s.supplierCostHeader())
 	fixed := len(jdeIndent) + fit.numW + 2 + 2 + fit.costW + 2 + fit.leadW
+	// THE TRADE, where the pane forces one: the supplier column is at its floor
+	// and the row still does not fit. A marked lead column is the one fact that
+	// can give without lying, because its NUMBER gives and its provenance mark
+	// stays (leadTimeFactCell) — so the column narrows toward leadTimeMarkFloor
+	// before the row is allowed to run past the pane. Only a garbage figure at
+	// every ceiling at once reaches this; an ordinary row never does.
+	if short := minNameW - (width - fixed); short > 0 && s.supplierLeadMarked(rows) {
+		give := fit.leadW - leadTimeMarkFloor()
+		if give > short {
+			give = short
+		}
+		if give > 0 {
+			fit.leadW -= give
+			fixed -= give
+		}
+	}
 	switch w := width - fixed; {
 	case w < minNameW:
 		fit.nameW = minNameW
@@ -313,12 +336,12 @@ func (s *InventoryItemFormScreen) supplierFit(rows []omsapi.ItemSupplier) itemSu
 // quotation sheet does, each through jdeGridFactCell so no cell can widen the
 // row and a figure past its ceiling is MARKED rather than drawn as a smaller
 // real number.
-func itemSupplierGridRow(num, supplier, cost, lead string, fit itemSupplierFit) string {
+func itemSupplierGridRow(num, supplier, cost, lead, leadMark string, fit itemSupplierFit) string {
 	cells := []string{
 		jdeGridFactCell(num, fit.numW, alignRight),
 		padCell(supplier, fit.nameW, alignLeft),
 		jdeGridFactCell(cost, fit.costW, alignRight),
-		jdeGridFactCell(lead, fit.leadW, alignRight),
+		leadTimeFactCell(lead, leadMark, fit.leadW, alignRight),
 	}
 	return jdeIndent + strings.TrimRight(strings.Join(cells, "  "), " ")
 }
@@ -385,7 +408,36 @@ func itemSupplierLeadCell(sup omsapi.ItemSupplier) string {
 	if sup.LeadTimeDays <= 0 {
 		return "—"
 	}
-	return fmt.Sprintf("%gd", sup.LeadTimeDays)
+	return leadTimeDays(sup.LeadTimeDays)
+}
+
+// itemSupplierLeadMark is the provenance mark the lead cell carries — only
+// beside a number it drew, since an em dash has no provenance to state.
+func itemSupplierLeadMark(sup omsapi.ItemSupplier) string {
+	if sup.LeadTimeDays <= 0 {
+		return ""
+	}
+	return leadTimeMark(sup.LeadTimeSource)
+}
+
+// itemSupplierLeadText is the whole lead cell as it draws when nothing gives,
+// which is what the column is measured against.
+func itemSupplierLeadText(sup omsapi.ItemSupplier) string {
+	if mark := itemSupplierLeadMark(sup); mark != "" {
+		return itemSupplierLeadCell(sup) + " " + mark
+	}
+	return itemSupplierLeadCell(sup)
+}
+
+// supplierLeadMarked reports whether any lead cell in the band carries a mark,
+// which is what makes the lead column able to give without dropping one.
+func (s *InventoryItemFormScreen) supplierLeadMarked(rows []omsapi.ItemSupplier) bool {
+	for _, sup := range rows {
+		if itemSupplierLeadMark(sup) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // itemSupplierMoney renders a link's cost. Two decimals are the money convention

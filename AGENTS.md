@@ -70,6 +70,23 @@ is not a reason to scope it out of a sweep. It has been used as one.
   doc owns the wire rationale; `internal/tui/reorder_transparency_test.go` owns
   the derived set of transparency surfaces.
 
+### A supplier lead time is drawn with where it came from
+
+`internal/tui/lead_time_source.go` owns the marks and the DERIVED SET of
+surfaces; `internal/omsapi/lead_time_source.go` owns the wire note. Before
+touching any render of `average_lead_time`:
+
+- **A stored 7 is either OMS's planning default or a quote**, and only
+  `average_lead_time_source` (`unknown`/`default`/`recorded`/`measured`) says
+  which. A NEW render of a link's lead time goes through `leadTimeText` or
+  `leadTimeFactCell`; an absent key draws the bare number exactly as before.
+- **Derived lead times carry no source** (item metrics, forecasts, the
+  analytics reports), so they are deliberately unmarked.
+- **A WRITE decides the label.** On create, OMS labels a SENT number `recorded`
+  and an OMITTED key `default`; on edit, a changed value becomes `recorded` but
+  an equal value keeps its source. ScanTTY still omits unchanged edits to protect
+  stale or truncated forms — `ItemSupplierWrite.AverageLeadTime` is a pointer.
+
 ### Purchase-order line money has two denominators
 
 A sharp edge worth knowing before touching PO pricing anywhere

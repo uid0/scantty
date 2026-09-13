@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -205,8 +209,10 @@ func TestItemSupplierForm_BuildPayload_HappyPath(t *testing.T) {
 	if w.PackageCost != nil {
 		t.Errorf("package_cost should be nil (blank), got %v", *w.PackageCost)
 	}
-	if w.QuantityPerPackage != 1 || w.AverageLeadTime != 7 {
-		t.Errorf("defaults wrong: qty=%d lead=%d, want 1/7", w.QuantityPerPackage, w.AverageLeadTime)
+	// An untouched lead-time box on CREATE sends no key, so OMS stores its
+	// planning default labelled as one rather than as a quoted 7.
+	if w.QuantityPerPackage != 1 || w.AverageLeadTime != nil {
+		t.Errorf("defaults wrong: qty=%d lead=%v, want 1/omitted", w.QuantityPerPackage, w.AverageLeadTime)
 	}
 	if !w.IsPrimary {
 		t.Errorf("is_primary should be true")
@@ -280,8 +286,74 @@ func TestItemSupplierForm_Hydrate(t *testing.T) {
 	if w.UnitCost == nil || *w.UnitCost != "2.00" || w.PackageCost == nil || *w.PackageCost != "20.00" {
 		t.Errorf("hydrated costs wrong: unit=%v pkg=%v", w.UnitCost, w.PackageCost)
 	}
-	if w.QuantityPerPackage != 10 || w.AverageLeadTime != 5 || !w.IsPrimary {
+	if w.QuantityPerPackage != 10 || w.AverageLeadTime != nil || !w.IsPrimary {
 		t.Errorf("hydrated qty/lead/primary wrong: %+v", w)
+	}
+}
+
+func TestItemSupplierForm_EditPreservesLoadedLeadTimeSource(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source omsapi.LeadTimeSource
+		lead   float64
+	}{
+		{"default", omsapi.LeadTimeSourceDefault, 7},
+		{"measured", omsapi.LeadTimeSourceMeasured, 9},
+		{"unknown", omsapi.LeadTimeSourceUnknown, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPatch {
+					t.Errorf("method = %s, want PATCH", r.Method)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":42,"item":"itm-1","supplier":5}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			ex := &omsapi.ItemSupplier{
+				ID: 42, Supplier: 5, SupplierSKU: "OLD-SKU", PackQuantity: 1,
+				LeadTimeDays: tc.lead, LeadTimeSource: tc.source,
+			}
+			s := NewItemSupplierFormScreen(Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}, "itm-1", "Widget", ex)
+			s.suppliers = []omsapi.Supplier{{ID: 5, Name: "Supplier"}}
+			s.hydrate()
+			s.inputs[isSKU].SetValue("NEW-SKU")
+			_, cmd := s.submit()
+			msg := cmd()
+			if saved, ok := msg.(itemSupplierSavedMsg); !ok || saved.err != nil {
+				t.Fatalf("submit result = %#v", msg)
+			}
+			if _, present := body["average_lead_time"]; present {
+				t.Errorf("average_lead_time present in unrelated edit: %v", body["average_lead_time"])
+			}
+		})
+	}
+}
+
+func TestItemSupplierForm_EditSendsChangedLeadTime(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":42,"item":"itm-1","supplier":5}`))
+	}))
+	t.Cleanup(srv.Close)
+	ex := &omsapi.ItemSupplier{ID: 42, Supplier: 5, SupplierSKU: "SKU", PackQuantity: 1, LeadTimeDays: 7}
+	s := NewItemSupplierFormScreen(Deps{OMS: omsapi.New(srv.URL)}, "itm-1", "Widget", ex)
+	s.suppliers = []omsapi.Supplier{{ID: 5, Name: "Supplier"}}
+	s.hydrate()
+	s.inputs[isLeadTime].SetValue("11")
+	_, cmd := s.submit()
+	if msg := cmd().(itemSupplierSavedMsg); msg.err != nil {
+		t.Fatal(msg.err)
+	}
+	if body["average_lead_time"] != float64(11) {
+		t.Errorf("average_lead_time = %v, want 11", body["average_lead_time"])
 	}
 }
 

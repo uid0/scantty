@@ -1190,9 +1190,17 @@ func (s *PurchaseOrderCreateScreen) itemBody() *jdeLines {
 		if poCasePacked(it.PackQuantity) {
 			pack = "  " + StyleStatusOK.Render(fmt.Sprintf("case ×%d", it.PackQuantity))
 		}
-		lead := ""
+		lead, leadCut := "", ""
 		if it.LeadTimeDays > 0 {
-			lead = "  " + StyleMuted.Render(fmt.Sprintf("lead %gd", it.LeadTimeDays))
+			lead = "  " + StyleMuted.Render("lead "+leadTimeText(it.LeadTimeDays, it.LeadTimeSource))
+			// The row's second-to-last resort for the lead reading: where the
+			// whole of it will not fit, the NUMBER gives to the cut mark and the
+			// provenance stays — "lead … (default)" still tells the operator this
+			// supplier's wait was never quoted. Only a mark-less reading has
+			// nothing to keep, and drops whole as it always did.
+			if mark := leadTimeMark(it.LeadTimeSource); mark != "" {
+				leadCut = "  " + StyleMuted.Render("lead "+paneCutMark+" "+mark)
+			}
 		}
 		// The SKU is an IDENTIFIER, not a number: OMS-supplied, unbounded, and
 		// ordinary MRO part numbers run past thirty cells. It is clipped to what
@@ -1204,8 +1212,12 @@ func (s *PurchaseOrderCreateScreen) itemBody() *jdeLines {
 		if skuRoom < poHeaderValueFloor {
 			skuRoom = poHeaderValueFloor
 		}
-		l.AddRow(i, poPickRow(i, cur, poFitRow(room, it.ItemName,
-			"  "+pickerClip(sku, skuRoom)+cost, pack, lead)))
+		facts := "  " + pickerClip(sku, skuRoom) + cost
+		row := poFitRow(room, it.ItemName, facts, pack, lead)
+		if leadCut != "" && !strings.HasSuffix(row, lead) {
+			row = poFitRow(room, it.ItemName, facts, pack, leadCut)
+		}
+		l.AddRow(i, poPickRow(i, cur, row))
 	}
 	return l
 }

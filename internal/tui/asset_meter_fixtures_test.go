@@ -275,7 +275,10 @@ func itemFormSupplierBandFixture() *InventoryItemFormScreen {
 			UnitCost:     omsapi.DecimalString("123456.7800"),
 			PackageCost:  omsapi.DecimalString("987654.3200"),
 			LeadTimeDays: 10.25,
-			IsPreferred:  i == 0,
+			// The WIDEST provenance mark, so the lead cell reaches its widest
+			// real reading (lead_time_source.go).
+			LeadTimeSource: omsapi.LeadTimeSourceMeasured,
+			IsPreferred:    i == 0,
 		})
 	}
 	return s

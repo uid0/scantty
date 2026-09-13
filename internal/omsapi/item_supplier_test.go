@@ -39,7 +39,7 @@ func TestCreateItemSupplier_Contract(t *testing.T) {
 		UnitCost:           strptr("1.50"),
 		PackageCost:        strptr("15.00"),
 		QuantityPerPackage: 10,
-		AverageLeadTime:    5,
+		AverageLeadTime:    intptr(5),
 		IsPrimary:          true,
 	})
 	if err != nil {
@@ -114,7 +114,8 @@ func TestItemSupplierWrite_CostsNullWhenBlank(t *testing.T) {
 }
 
 // TestUpdateItemSupplier_Contract pins the edit: PATCH to the row's detail URL
-// with the full field set.
+// with the editable fields that are always sent. Optional unchanged fields are
+// covered by their own wire-contract tests.
 func TestUpdateItemSupplier_Contract(t *testing.T) {
 	var captured struct {
 		method string
@@ -137,7 +138,7 @@ func TestUpdateItemSupplier_Contract(t *testing.T) {
 		Supplier:           4,
 		SupplierSKU:        "SKU-9",
 		QuantityPerPackage: 1,
-		AverageLeadTime:    7,
+		AverageLeadTime:    intptr(7),
 	})
 	if err != nil {
 		t.Fatalf("UpdateItemSupplier: %v", err)
