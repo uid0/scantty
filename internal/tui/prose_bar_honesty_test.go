@@ -176,13 +176,17 @@ var proseBarUnconverted = map[string]string{
 	// the maker-box directory's service notices, forms and confirms — where the
 	// window is budgeted around a FOOT that is more than the bar:
 	// prose_bar_foot_prompts_test.go carries it. (The ninth recipe was not a
-	// cursor list at all — the two scroller sheets above.)
+	// cursor list at all — the two scroller sheets above.) The storage slot list
+	// went on its own after those, because its work was its own shape: a windowed
+	// list whose chrome constant counted the bar and slotCardPrompt's print
+	// overlay as one number, so neither cost could be derived until they were
+	// separated — the bar's is its ceiling and an overlay's is what it draws, and
+	// prose_bar_storage_slots_test.go carries it. slotCardPrompt stays below.
 	// What remains divides:
 	//
-	//   - STILL ON THAT RECIPE, but not mechanically. Each has a window and a
+	//   - STILL ON THAT RECIPE, but not mechanically. It has a window and a
 	//     budget, and something about it that the shared helpers do not answer —
-	//     rows that are not one line, or a chrome constant counting something
-	//     else. The entry says which.
+	//     rows that are not one line. The entry says why that is a decision.
 	//   - FLAT, with no window at all: they draw EVERY row and then the footer, so
 	//     a list longer than the pane pushes the bar off the bottom whatever it
 	//     says, and folding alone would not put it back. The ones that were
@@ -205,10 +209,6 @@ var proseBarUnconverted = map[string]string{
 		"window is packed by lines a row count stops being a page — so converting it is " +
 		"deciding what a page of multi-line parts is worth, which is a decision about what " +
 		"this list does rather than about what its bar says",
-	"StorageSlotsScreen": "the storage slot list beside StorageSlotFormScreen. Its chrome " +
-		"constant is 6 rather than 4 because it reserves room for slotCardPrompt's overlay, " +
-		"so what the bar costs and what the overlay costs have to be separated before either " +
-		"can be derived",
 
 	// Flat: no window at all, so the bar and the body budget are one piece of work.
 	"SearchPalette":         "the universal search palette's result list, drawn as an overlay with a live query box",
@@ -240,7 +240,7 @@ var proseBarUnconverted = map[string]string{
 	"ReportTableScreen":    "the shared scrollable report table every tabbed report rides. It is the one screen here whose vertical give-order is ALREADY written down and enforced (report_table.go's layoutRows: the legend and the bar never give, the body floors at one row), so converting it is turning the bar it never gives up into a record — not teaching it to budget",
 	"Root":                 "NOT a screen: app.go's root, whose movement keys walk the NAV TREE. The sidebar is its own surface with its own legend and is not a list of rows, so there is no footer here to make a record of",
 	"TextScroller":         "NOT a screen and so has no footer to convert: the shared read-only body the scroller sheets hold. EVERY sheet holding one now declares a record, so each keystroke its Handle binds is pressed through that sheet's bar — the condition this entry used to wait on. It stays because the navigation derivation reads key names off RECEIVERS, and a shared component whose Handle binds the vocabulary is one; a filter clever enough to drop a component would be clever enough to drop a screen, so it is recorded rather than filtered",
-	"slotCardPrompt":       "NOT a list and NOT a prose footer: a two-row modal inside the storage-slot list whose up/down move between a text field and a toggle, and whose cursor WRAPS. The field-form exemption, and the second of the two entries a filter would have to be clever enough to drop — so it stays an exception too",
+	"slotCardPrompt":       "NOT a list and NOT a prose footer: a two-row modal inside the storage-slot list (and the slot detail) whose up/down move between a text field and a toggle, and whose cursor WRAPS. The field-form exemption, and the second of the two entries a filter would have to be clever enough to drop — so it stays an exception too. Its HOSTS are converted and give it room: StorageSlotsScreen budgets its window around the rows it draws (foot), and both hand it the live pane so it folds rather than running past the edge — but its own words about its keys are still a literal, and a record for them would first need the field-form question answered for a two-row modal",
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +602,9 @@ func proseBarFixtures() []proseBarFixture {
 	// The two scroller sheets whose modes draw in place of their footer, the
 	// ninth — see proseBarScrollerSheetFixtures.
 	out = append(out, proseBarScrollerSheetFixtures()...)
+	// The storage slot list, whose chrome constant counted the bar and
+	// slotCardPrompt's overlay as one — see proseBarStorageSlotFixtures.
+	out = append(out, proseBarStorageSlotFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are
