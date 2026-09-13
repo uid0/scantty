@@ -69,22 +69,30 @@ func proseBarSecondSurfaceWindowedLists() []proseBarWindowedList {
 	return []proseBarWindowedList{
 		{
 			name: "location problems", recv: "LocationProblemsScreen",
-			build:    func(rows int) proseBarScreen { return proseBarLocationProblems(rows) },
+			build: func(rows int, _ proseBarRowName) proseBarScreen {
+				return proseBarLocationProblems(rows)
+			},
 			immobile: "one open problem, so there is nowhere for the cursor to go",
 		},
 		{
 			name: "asset problems", recv: "AssetProblemsScreen",
-			build:    func(rows int) proseBarScreen { return proseBarAssetProblems(proseBarAssetProblemRows(rows)) },
+			build: func(rows int, _ proseBarRowName) proseBarScreen {
+				return proseBarAssetProblems(proseBarAssetProblemRows(rows))
+			},
 			immobile: "one open problem, so there is nowhere for the cursor to go",
 		},
 		{
 			name: "sig members", recv: "SIGMembersScreen",
-			build:    func(rows int) proseBarScreen { return proseBarSIGMemberList(rows) },
+			build: func(rows int, name proseBarRowName) proseBarScreen {
+				return proseBarSIGMemberList(rows, name)
+			},
 			immobile: "one member, so there is nowhere for the cursor to go",
 		},
 		{
 			name: "badge enrollment", recv: "BadgeEnrollmentScreen",
-			build:    func(rows int) proseBarScreen { return proseBarBadges(rows) },
+			build: func(rows int, name proseBarRowName) proseBarScreen {
+				return proseBarBadges(rows, name)
+			},
 			immobile: "one member, so there is nowhere for the cursor to go",
 		},
 	}
@@ -480,9 +488,15 @@ func proseBarVendorPicker(vendors int) proseBarScreen {
 	return s
 }
 
-func proseBarSIGMemberList(n int) *SIGMembersScreen {
+func proseBarSIGMemberList(n int, names ...proseBarRowName) *SIGMembersScreen {
+	members := proseBarSIGMembers(n)
+	if len(names) > 0 {
+		for i := range members {
+			members[i].Username = names[0](i, members[i].Username)
+		}
+	}
 	s := NewSIGMembersScreen(Deps{}, 3, "Metal Fabrication SIG")
-	next, _ := s.Update(sigMembersLoadedMsg{members: proseBarSIGMembers(n)})
+	next, _ := s.Update(sigMembersLoadedMsg{members: members})
 	return next.(*SIGMembersScreen)
 }
 
@@ -508,9 +522,12 @@ func proseBarSIGPicker(users []omsapi.User) proseBarScreen {
 
 // proseBarBadges leaves every other member with a badge, so `x` both clears and
 // declines on the rows a walk crosses.
-func proseBarBadges(n int) *BadgeEnrollmentScreen {
+func proseBarBadges(n int, names ...proseBarRowName) *BadgeEnrollmentScreen {
 	users := proseBarUsers(n)
 	for i := range users {
+		if len(names) > 0 {
+			users[i].DisplayName = names[0](i, users[i].DisplayName)
+		}
 		if i%2 == 0 {
 			badge := fmt.Sprintf("04A2%06X", i+1)
 			users[i].BadgeNumber = &badge

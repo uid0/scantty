@@ -557,29 +557,19 @@ func (s *SIGMembersScreen) View() string {
 	if s.confirmingRemove {
 		return s.viewConfirm()
 	}
-	var b strings.Builder
 	if len(s.members) == 0 {
+		var b strings.Builder
 		b.WriteString(StyleMuted.Render("No members yet.") + "\n\n")
 		b.WriteString(s.proseBar().render(s.paneCells()))
 		return b.String()
 	}
-	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d members", len(s.members))) + "\n")
-	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+	rows := make([]string, len(s.members))
+	for i := range s.members {
+		rows[i] = s.renderRow(i)
 	}
-	end := s.windowStart + s.windowSize
-	if end > len(s.members) {
-		end = len(s.members)
-	}
-	for i := s.windowStart; i < end; i++ {
-		b.WriteString(s.renderRow(i) + "\n")
-	}
-	if end < len(s.members) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.members)-end)) + "\n")
-	}
-	b.WriteString("\n")
-	b.WriteString(s.proseBar().render(s.paneCells()))
-	return b.String()
+	head := StyleMuted.Render(fmt.Sprintf("%d members", len(s.members))) + "\n"
+	return proseFlatListFrame(head, rows, s.cursor, &s.windowStart, s.terminalHeight,
+		s.paneCells(), s.listBar(true, true), s.proseBar())
 }
 
 func (s *SIGMembersScreen) viewConfirm() string {

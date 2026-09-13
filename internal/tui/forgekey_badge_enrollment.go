@@ -630,21 +630,12 @@ func (s *BadgeEnrollmentScreen) viewList() string {
 		return b.String()
 	}
 
-	if s.windowStart > 0 {
-		b.WriteString(StyleMuted.Render("  ↑ more above") + "\n")
+	rows := make([]string, len(s.rows))
+	for i := range s.rows {
+		rows[i] = s.renderRow(i)
 	}
-	end := s.windowStart + s.windowSize
-	if end > len(s.rows) {
-		end = len(s.rows)
-	}
-	for i := s.windowStart; i < end; i++ {
-		b.WriteString(s.renderRow(i) + "\n")
-	}
-	if end < len(s.rows) {
-		b.WriteString(StyleMuted.Render(fmt.Sprintf("  ↓ %d more below", len(s.rows)-end)) + "\n")
-	}
-	b.WriteString("\n" + s.proseBar().render(s.paneCells()))
-	return b.String()
+	return proseFlatListFrame(b.String(), rows, s.cursor, &s.windowStart, s.terminalHeight,
+		s.paneCells(), s.listBar(true, true), s.proseBar())
 }
 
 func (s *BadgeEnrollmentScreen) renderRow(i int) string {
