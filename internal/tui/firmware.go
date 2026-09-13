@@ -53,6 +53,11 @@ type FirmwareScreen struct {
 	// scope — so offering them here would create a wrong-fleet rollout).
 	pickCursor int
 	cvOptions  []forgekeyapi.FirmwareVersion
+
+	terminalWidth  int
+	terminalHeight int
+	windowStart    int // first rollout row the view window draws
+	pickStart      int // first version row the picker window draws
 }
 
 type firmwareLoadedMsg struct {
@@ -78,7 +83,12 @@ func (s *FirmwareScreen) Init() tea.Cmd { return s.load() }
 // WantsRawInput routes every key to the screen while the create form or the
 // version picker is open, so the textinputs and picker cursor receive keys the
 // global dispatcher (m/a/s/…) would otherwise claim.
-func (s *FirmwareScreen) WantsRawInput() bool { return s.mode != fwModeView }
+//
+// Not while a load is in flight or has failed: that frame is drawn in place of
+// every mode and answers keys by its own bar, whose `esc back` is Root's.
+func (s *FirmwareScreen) WantsRawInput() bool {
+	return s.mode != fwModeView && !s.loading && s.loadErr == ""
+}
 
 // HandlesKey claims the two rollout action keys that collide with the global
 // hotkey layer — 's' (nav → Settings) and 'a' (global → Authorizations) — so
@@ -112,6 +122,9 @@ func (s *FirmwareScreen) load() tea.Cmd {
 
 func (s *FirmwareScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		s.terminalWidth, s.terminalHeight = m.Width, m.Height
+		return s, nil
 	case firmwareLoadedMsg:
 		s.loading = false
 		if m.err != nil {
@@ -140,6 +153,14 @@ func (s *FirmwareScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		}
 		return s, tea.Batch(Status(m.action, StatusOK), s.load())
 	case tea.KeyMsg:
+		if s.loading || s.loadErr != "" {
+			// The load frame is drawn in place of EVERY mode, so it answers by
+			// the view's handler and its own bar whatever mode lies under it.
+			if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+				return s, nil
+			}
+			return s.handleViewKey(m)
+		}
 		switch s.mode {
 		case fwModeCreate:
 			return s.handleCreateKey(m)
@@ -421,63 +442,265 @@ func rolloutStatusLabel(status string) string {
 	}
 }
 
-func (s *FirmwareScreen) View() string {
-	if s.loading {
-		return StyleMuted.Render("Loading firmware…")
-	}
-	if s.loadErr != "" {
-		return StyleStatusError.Render("Error: ") + s.loadErr + "\n\n" + StyleMuted.Render("r retry · esc back")
+// proseBar is the bar this screen is DRAWING, in every state: a load in flight or
+// failed draws loadBar's, and each of the two surfaces drawn in place of the
+// rollout list — the New-Rollout form and its version picker — draws its own.
+func (s *FirmwareScreen) proseBar() proseBar {
+	if s.loading || s.loadErr != "" {
+		return s.loadBar()
 	}
 	switch s.mode {
 	case fwModeCreate:
-		return s.renderCreateForm()
+		return s.createBar()
 	case fwModePickVersion:
-		return s.renderPicker()
+		return fwPickBar(len(s.cvOptions))
 	}
+	return s.viewBar()
+}
 
+// viewBar names every key that acts on the rollout list, as a record the honesty
+// sweep can press (prose_bar.go).
+//
+// It used to be the literal "c new rollout · j/k select · s start/resume · a
+// advance · p pause · x cancel · r refresh · esc back", written under all three
+// sections with no window, so a fleet with a rollout history longer than the
+// pane took the footer off the bottom. The arrows moved the cursor unnamed. And
+// it named all four lifecycle keys on every rollout, where each acts only on the
+// statuses rolloutAction allows — on the others it answers a warning and sends
+// nothing — so a completed rollout was offered four writes that were each
+// refused. They follow the selected rollout's status now, the way the reorder
+// queue's lifecycle keys follow its row (rolloutActionItems).
+func (s *FirmwareScreen) viewBar() proseBar {
+	out := proseNavStep(listNavMoves(len(s.rollouts)))
+	out = append(out, s.rolloutActionItems()...)
+	return append(out, fwCreateItem, proseBarRefresh, proseBarEsc)
+}
+
+// fwViewCeiling is the TALLEST shape viewBar takes, which the window is budgeted
+// against for the reason proseListWindow gives: every lifecycle key at once,
+// which no single status offers, so no status the cursor lands on can fold the
+// bar onto a row the budget did not reserve.
+func fwViewCeiling() proseBar {
+	out := proseNavStep(true)
+	out = append(out,
+		proseBarItem{Keys: []string{"s"}, Hint: "s resume"},
+		proseBarItem{Keys: []string{"a"}, Hint: "a advance"},
+		proseBarItem{Keys: []string{"p"}, Hint: "p pause"},
+		proseBarItem{Keys: []string{"x"}, Hint: "x cancel"},
+	)
+	return append(out, fwCreateItem, proseBarRefresh, proseBarEsc)
+}
+
+var fwCreateItem = proseBarItem{Keys: []string{"c"}, Hint: "c new rollout"}
+
+// rolloutActionItems are the lifecycle keys the SELECTED rollout's status
+// allows, in the order the literal named them — the same preconditions
+// handleViewKey hands rolloutAction, read here rather than restated as a second
+// table. Nothing while a transition is already out: rolloutAction declines every
+// one of them silently until it answers.
+func (s *FirmwareScreen) rolloutActionItems() proseBar {
+	if s.actionPending || s.cursor >= len(s.rollouts) {
+		return nil
+	}
+	var out proseBar
+	switch st := s.rollouts[s.cursor].Status; st {
+	case "draft":
+		out = append(out, proseBarItem{Keys: []string{"s"}, Hint: "s start"})
+	case "paused":
+		out = append(out, proseBarItem{Keys: []string{"s"}, Hint: "s resume"})
+	case "active":
+		out = append(out,
+			proseBarItem{Keys: []string{"a"}, Hint: "a advance"},
+			proseBarItem{Keys: []string{"p"}, Hint: "p pause"},
+		)
+	}
+	if st := s.rollouts[s.cursor].Status; st == "active" || st == "paused" {
+		out = append(out, proseBarItem{Keys: []string{"x"}, Hint: "x cancel"})
+	}
+	return out
+}
+
+// loadBar is the rollout list's bar while its load is out or has failed — what
+// the view's key switch still answers with no rows drawn (prose_bar.go carries
+// the defect and the decision). A refresh keeps the rollouts until it answers,
+// so the selected rollout's lifecycle keys still send their transition: named
+// because they act, and candidates for gating. A failed load replaces them with
+// nothing, so they come off. j/k move a cursor the frame does not draw and `c`
+// opens a form it does not draw either, so neither is named and both are
+// ignored.
+func (s *FirmwareScreen) loadBar() proseBar {
+	return append(s.rolloutActionItems(), proseBarReloadFor(s.loadErr != ""), proseBarEsc)
+}
+
+// createBar is the New-Rollout form's bar. Its focus WRAPS over the four fields
+// (setCreateFocus), so the whole focus segment acts from every field; enter
+// opens the version picker on the first field — as space does — and submits on
+// the others, where it is held while a create is out.
+//
+// It used to be "tab/↑↓ move · enter pick/submit · esc cancel" on every field,
+// naming neither shift+tab nor space, and it vanished under "Creating…" while
+// the focus keys and esc went on working.
+func (s *FirmwareScreen) createBar() proseBar {
+	out := proseBar{proseBarFieldFocus}
+	switch {
+	case s.cvFocus == 0:
+		out = append(out, proseBarItem{Keys: []string{"enter", " "}, Hint: "enter/space pick version"})
+	case !s.cvPending:
+		out = append(out, proseBarItem{Keys: []string{"enter"}, Hint: "enter create rollout"})
+	}
+	return append(out, proseBarItem{Keys: []string{"esc"}, Hint: "esc cancel"})
+}
+
+// fwPickBar is the version picker's bar over `n` versions. Enter and space pick
+// the highlighted version; over an empty list they go back to the form exactly
+// as esc does, and the bar says so rather than naming esc alone.
+func fwPickBar(n int) proseBar {
+	out := proseNavStep(listNavMoves(n))
+	if n == 0 {
+		return append(out, proseBarItem{Keys: []string{"enter", " ", "esc"}, Hint: "enter/space/esc back"})
+	}
+	return append(out,
+		proseBarItem{Keys: []string{"enter", " "}, Hint: "enter/space select"},
+		proseBarItem{Keys: []string{"esc"}, Hint: "esc back"},
+	)
+}
+
+func (s *FirmwareScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
+func (s *FirmwareScreen) View() string {
+	cells := s.paneCells()
+	if s.loading {
+		return proseLoadingFrame("Loading firmware…", cells, s.proseBar())
+	}
+	if s.loadErr != "" {
+		return proseFailedFrame(s.loadErr, s.terminalHeight, cells, s.proseBar())
+	}
+	switch s.mode {
+	case fwModeCreate:
+		return s.renderCreateForm(cells)
+	case fwModePickVersion:
+		return s.renderPicker(cells)
+	}
+	return s.renderView(cells)
+}
+
+// renderView draws the three sections — rollouts, versions, recent updates — and
+// the bar, in a GIVE-ORDER that keeps the bar on the pane.
+//
+// WHAT IT REPLACES. Every row of all three sections was written and then the
+// footer, with no window, so a shop with a rollout history or a version list
+// longer than the pane lost the footer off the bottom — clampToBox drops from
+// the BOTTOM — and every key with it.
+//
+// THE ORDER, and why the sections are not one window. The ROLLOUTS are the only
+// section a key moves through, so they get a line-packed window of their own
+// (proseLineWindow) with `↑ more above` / `↓ N more below` — markers j/k answer.
+// The VERSIONS and RECENT UPDATES under them are read-only, and no key on this
+// screen scrolls them: folding them into the rollouts' window would put them
+// below a `↓ N more below` that pressing j at the last rollout never reaches — a
+// marker promising what no key fetches. So they take the lines the rollouts
+// leave, and where they run out the cut is marked with the one mark this layer
+// uses for lines no key brings back (`… N more lines`, proseWriteRows' mark for
+// an oversized row). The bar never gives; the rollouts give down to the window's
+// floor; the read-only sections give first.
+//
+// One line is reserved for that mark whenever there is a section below to cut,
+// so the rollouts can never take the room the mark needs.
+func (s *FirmwareScreen) renderView(cells int) string {
 	var b strings.Builder
-
-	// Rollouts first — the actionable surface this screen adds.
 	b.WriteString(StyleTitle.Render("Rollouts") + "\n")
+
+	tail := s.tailLines()
+	ceilRows := fwViewCeiling().rows(cells)
+	used := 1 // the section title
 	if len(s.rollouts) == 0 {
-		b.WriteString(StyleMuted.Render("No rollout campaigns. Press c to stage one.") + "\n\n")
+		b.WriteString(StyleMuted.Render("No rollout campaigns. Press c to stage one.") + "\n")
+		used++
 	} else {
+		rows := make([]string, len(s.rollouts))
 		for i, r := range s.rollouts {
-			caret := "  "
-			if i == s.cursor {
-				caret = "▸ "
-			}
-			head := r.FirmwareVersionStr
-			if head == "" {
-				head = fmt.Sprintf("v#%v", r.FirmwareVersion)
-			}
-			meta := []string{}
-			if r.DeviceTypeName != "" {
-				meta = append(meta, r.DeviceTypeName)
-			}
-			if r.Name != "" {
-				meta = append(meta, r.Name)
-			}
-			line := caret + head + "  [" + rolloutStatusLabel(r.Status) + "]"
-			if len(meta) > 0 {
-				line += " " + StyleMuted.Render(strings.Join(meta, " · "))
-			}
-			b.WriteString(line + "\n")
-			p := r.Progress
-			inFlight := p.Pending + p.InProgress
-			detail := fmt.Sprintf("      %d%%/wave · %dmin · %d on target · %d in flight · %d remaining",
-				r.BatchSizePercent, r.IntervalMinutes, p.OnTarget, inFlight, p.Remaining)
-			if p.Total > 0 {
-				detail += fmt.Sprintf(" of %d", p.Total)
-			}
-			if p.Failed > 0 {
-				detail += fmt.Sprintf(" · %d failed", p.Failed)
-			}
-			b.WriteString(StyleMuted.Render(detail) + "\n")
+			rows[i] = s.rolloutRow(i, r)
 		}
-		b.WriteString("\n")
+		from, to, budget := 0, len(rows), 0
+		if s.terminalHeight > 0 {
+			budget = screenBodyHeight(s.terminalHeight) - used - 2 - ceilRows
+			if len(tail) > 0 {
+				budget--
+			}
+			if budget < proseListWindowFloor {
+				budget = proseListWindowFloor
+			}
+			from, to = proseLineWindow(proseRowHeights(rows), s.cursor, s.windowStart, budget)
+			s.windowStart = from
+		}
+		before := b.Len()
+		proseWriteRows(&b, rows, from, to, budget)
+		used += strings.Count(b.String()[before:], "\n")
 	}
 
+	if s.terminalHeight > 0 {
+		room := screenBodyHeight(s.terminalHeight) - used - ceilRows
+		if room < 1 {
+			room = 1
+		}
+		if len(tail) > room && room < 3 {
+			// No room for the separator as well as a line and the mark under it.
+			tail = tail[1:]
+		}
+		if len(tail) > room {
+			kept := room - 1
+			omitted := len(tail) - kept
+			tail = append(tail[:kept:kept], StyleMuted.Render(fmt.Sprintf("… %d more lines", omitted)))
+		}
+	}
+	for _, line := range tail {
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\n" + s.proseBar().render(cells))
+	return b.String()
+}
+
+// rolloutRow is one rollout: its version, status and label, and its progress
+// line under it.
+func (s *FirmwareScreen) rolloutRow(i int, r forgekeyapi.FirmwareRollout) string {
+	caret := "  "
+	if i == s.cursor {
+		caret = "▸ "
+	}
+	head := r.FirmwareVersionStr
+	if head == "" {
+		head = fmt.Sprintf("v#%v", r.FirmwareVersion)
+	}
+	meta := []string{}
+	if r.DeviceTypeName != "" {
+		meta = append(meta, r.DeviceTypeName)
+	}
+	if r.Name != "" {
+		meta = append(meta, r.Name)
+	}
+	line := caret + head + "  [" + rolloutStatusLabel(r.Status) + "]"
+	if len(meta) > 0 {
+		line += " " + StyleMuted.Render(strings.Join(meta, " · "))
+	}
+	p := r.Progress
+	inFlight := p.Pending + p.InProgress
+	detail := fmt.Sprintf("      %d%%/wave · %dmin · %d on target · %d in flight · %d remaining",
+		r.BatchSizePercent, r.IntervalMinutes, p.OnTarget, inFlight, p.Remaining)
+	if p.Total > 0 {
+		detail += fmt.Sprintf(" of %d", p.Total)
+	}
+	if p.Failed > 0 {
+		detail += fmt.Sprintf(" · %d failed", p.Failed)
+	}
+	return line + "\n" + StyleMuted.Render(detail)
+}
+
+// tailLines are the read-only sections under the rollouts, as the LINES they
+// draw — a blank separator first — so a stored newline in a version string is a
+// line the give-order counts.
+func (s *FirmwareScreen) tailLines() []string {
+	var b strings.Builder
+	b.WriteString("\n")
 	if len(s.versions) > 0 {
 		b.WriteString(StyleTitle.Render("Versions") + "\n")
 		for _, v := range s.versions {
@@ -493,13 +716,12 @@ func (s *FirmwareScreen) View() string {
 			}
 			b.WriteString(line + "\n")
 		}
-		b.WriteString("\n")
 	} else {
-		b.WriteString(StyleMuted.Render("No firmware versions registered.") + "\n\n")
+		b.WriteString(StyleMuted.Render("No firmware versions registered.") + "\n")
 	}
 
 	if len(s.updates) > 0 {
-		b.WriteString(StyleTitle.Render("Recent updates") + "\n")
+		b.WriteString("\n" + StyleTitle.Render("Recent updates") + "\n")
 		limit := len(s.updates)
 		if limit > 20 {
 			limit = 20
@@ -522,42 +744,40 @@ func (s *FirmwareScreen) View() string {
 			}
 			b.WriteString(line + "\n")
 		}
-		b.WriteString("\n")
 	}
-
-	b.WriteString(StyleMuted.Render(s.footerHint()))
-	return b.String()
+	return strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n")
 }
 
-func (s *FirmwareScreen) footerHint() string {
-	parts := []string{"c new rollout"}
-	if len(s.rollouts) > 0 {
-		parts = append(parts, "j/k select", "s start/resume", "a advance", "p pause", "x cancel")
-	}
-	parts = append(parts, "r refresh", "esc back")
-	return strings.Join(parts, " · ")
-}
-
-func (s *FirmwareScreen) renderCreateForm() string {
+// renderCreateForm draws the New-Rollout form. It has no window — four fields
+// and a fixed head — so its height is bounded by bounding the lines that carry a
+// value the screen does not control: the chosen version's name, a create
+// failure's OMS body, and the typed boxes, each held to one row of the pane
+// (proseFormLine, woBoxView). The explanation under the title is FOLDED to the
+// pane rather than left to clampToBox, which cut it unmarked at 80 columns.
+func (s *FirmwareScreen) renderCreateForm(cells int) string {
+	const labelCells = 2 + 16 + 1 // caret, padded label, space
 	var b strings.Builder
 	b.WriteString(StyleTitle.Render("New rollout") + "\n")
-	b.WriteString(StyleMuted.Render("Stage a firmware version across its device fleet in waves.") + "\n\n")
+	b.WriteString(StyleMuted.Render(strings.Join(
+		pickerWrap("Stage a firmware version across its device fleet in waves.", cells), "\n")) + "\n\n")
 
 	versionVal := StyleMuted.Render("‹press enter to pick›")
 	if s.cvVersion != nil {
 		versionVal = s.cvVersion.Version
 		if label := firmwareDeviceTypeLabel(*s.cvVersion); label != "" {
-			versionVal += " " + StyleMuted.Render("("+label+")")
+			versionVal += " (" + label + ")"
 		}
+		versionVal = proseFormLine(versionVal, cells-labelCells)
 	}
+	pad := strings.Repeat(" ", labelCells)
 	rows := []struct {
 		label string
 		value string
 	}{
 		{"Firmware version", versionVal},
-		{"Batch size %", s.cvBatchIn.View()},
-		{"Interval (min)", s.cvIntervalIn.View()},
-		{"Name", s.cvNameIn.View()},
+		{"Batch size %", woBoxView(s.cvBatchIn, cells, pad)},
+		{"Interval (min)", woBoxView(s.cvIntervalIn, cells, pad)},
+		{"Name", woBoxView(s.cvNameIn, cells, pad)},
 	}
 	for i, row := range rows {
 		cursor := "  "
@@ -573,24 +793,26 @@ func (s *FirmwareScreen) renderCreateForm() string {
 	}
 
 	if s.cvErr != "" {
-		b.WriteString("\n" + StyleStatusError.Render("✗ "+s.cvErr) + "\n")
+		b.WriteString("\n" + StyleStatusError.Render("✗ "+proseFormLine(s.cvErr, cells-2)) + "\n")
 	}
 	if s.cvPending {
-		b.WriteString("\n" + StyleMuted.Render("Creating…"))
-	} else {
-		b.WriteString("\n" + StyleMuted.Render("tab/↑↓ move · enter pick/submit · esc cancel"))
+		b.WriteString("\n" + StyleMuted.Render("Creating…") + "\n")
 	}
+	b.WriteString("\n" + s.proseBar().render(cells))
 	return b.String()
 }
 
-func (s *FirmwareScreen) renderPicker() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("Pick firmware version") + "\n\n")
+// renderPicker draws the version picker as a line-packed window
+// (proseFlatListFrame). It used to write every version and then its footer, so a
+// fleet with more firmware than the pane has rows took the footer off the
+// bottom — on the one surface whose esc is the way back to the half-filled form.
+func (s *FirmwareScreen) renderPicker(cells int) string {
+	head := StyleTitle.Render("Pick firmware version") + "\n\n"
 	if len(s.cvOptions) == 0 {
-		b.WriteString(StyleMuted.Render("No active firmware versions available to roll out.") + "\n\n")
-		b.WriteString(StyleMuted.Render("esc back"))
-		return b.String()
+		return head + StyleMuted.Render("No active firmware versions available to roll out.") +
+			"\n\n" + s.proseBar().render(cells)
 	}
+	rows := make([]string, len(s.cvOptions))
 	for i, v := range s.cvOptions {
 		cursor := "  "
 		if i == s.pickCursor {
@@ -603,8 +825,8 @@ func (s *FirmwareScreen) renderPicker() string {
 		if i == s.pickCursor {
 			line = StyleTitle.Render(line)
 		}
-		b.WriteString(line + "\n")
+		rows[i] = line
 	}
-	b.WriteString("\n" + StyleMuted.Render("j/k move · enter select · esc back"))
-	return b.String()
+	return proseFlatListFrame(head, rows, s.pickCursor, &s.pickStart, s.terminalHeight,
+		cells, fwPickBar(proseFlatCeilingRows), s.proseBar())
 }

@@ -145,7 +145,7 @@ var proseBarUnconverted = map[string]string{
 	// budget has to move with the folded footer. Several of them are a *ListScreen
 	// away from needing no record at all.
 	//
-	// SIX RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
+	// SEVEN RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
 	// into the two shapes that remain rather than left as one heap — because
 	// "what shape is the work" is the only thing this map is for. The first was
 	// the WINDOWED list budgeted by a chrome constant of four, whose last row is
@@ -168,7 +168,12 @@ var proseBarUnconverted = map[string]string{
 	// are SEVERAL LINES and whose window already packed them by line cost — the
 	// two forecasts, each with a scrolled detail drawn in place of the list, and
 	// the supplier links on an item — where the budget was taught the folded bar:
-	// prose_bar_row_packed_lists_test.go carries it.
+	// prose_bar_row_packed_lists_test.go carries it. The seventh was the flat lists
+	// sharing their pane with a second SECTION — the checklist browser's runs above
+	// its checklists, with a key moving the focus between them, and the firmware
+	// rollouts above two read-only sections — where one window serves the sections
+	// a key moves through and the read-only ones give first:
+	// prose_bar_sections_test.go carries it.
 	// What remains divides:
 	//
 	//   - STILL ON THAT RECIPE, but not mechanically. Each has a window and a
@@ -182,8 +187,8 @@ var proseBarUnconverted = map[string]string{
 	//     complication was a surface drawn in their place; each left here has
 	//     something neither answers — a surface drawn UNDER the list, a field form
 	//     whose focus pair is not a cursor, a footer that changes with a form's
-	//     state, a second SECTION a key moves between, or a layout that is not a
-	//     list of rows — and the entry says which.
+	//     state, or a layout that is not a list of rows — and the entry says
+	//     which.
 
 	// Still on the windowed recipe.
 	"AssetPartsScreen": "the parts list on an asset. It is on the windowed-cursor-list " +
@@ -205,8 +210,6 @@ var proseBarUnconverted = map[string]string{
 
 	// Flat: no window at all, so the bar and the body budget are one piece of work.
 	"ChecklistRunScreen":         "the step list of a checklist run, whose footer changes with the submit state",
-	"ChecklistsScreen":           "the checklist browse list, which also binds tab/shift+tab to move between its two sections",
-	"FirmwareScreen":             "the firmware rollout list, two sections in one pane",
 	"MakerBoxesScreen":           "the maker-box list beside MakerBoxFormScreen, with a scan prompt, a convert confirm and a queue form that each draw their own footer",
 	"SearchPalette":              "the universal search palette's result list, drawn as an overlay with a live query box",
 	"StorageOverviewScreen":      "the storage overview, a rack grid rather than a row list",
@@ -564,6 +567,9 @@ func proseBarFixtures() []proseBarFixture {
 	// The lists whose rows are several lines and whose window already packed them
 	// by line cost, the sixth — see proseBarRowPackedListFixtures.
 	out = append(out, proseBarRowPackedListFixtures()...)
+	// The flat lists sharing their pane with a second SECTION, the seventh — see
+	// proseBarSectionFixtures.
+	out = append(out, proseBarSectionFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are
