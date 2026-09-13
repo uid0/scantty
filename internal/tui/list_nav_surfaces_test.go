@@ -113,8 +113,8 @@ import (
 // (prose_bar_wider_vocabulary_test.go), and then the simple FIELD FORMS, whose
 // up/down move a focus rather than a cursor (prose_bar_field_forms_test.go): a
 // field-form entry here was an exemption from THIS classifier, never from the
-// bar rule, and a form's record names its focus keys like any other. Their bars are
-// RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
+// bar rule, and a form's record names its focus keys like any other. Their bars
+// are RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
 // space at them, so the classifier counts them as a THIRD swept class and an
 // entry left here for one of them fails. What is still a literal is named in
 // proseBarUnconverted with the shape of the work its conversion needs.

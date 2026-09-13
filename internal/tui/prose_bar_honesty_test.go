@@ -145,7 +145,7 @@ var proseBarUnconverted = map[string]string{
 	// budget has to move with the folded footer. Several of them are a *ListScreen
 	// away from needing no record at all.
 	//
-	// FOUR RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
+	// FIVE RECIPES HAVE BEEN TAKEN OUT OF THIS GROUP, and what is left is split
 	// into the two shapes that remain rather than left as one heap — because
 	// "what shape is the work" is the only thing this map is for. The first was
 	// the WINDOWED list budgeted by a chrome constant of four, whose last row is
@@ -162,7 +162,9 @@ var proseBarUnconverted = map[string]string{
 	// recipe's helper names and less than all of it — the two workspace menus with
 	// a letter per row, the panel list with no pager, the certificate table that
 	// scrolls an offset — where the bar names exactly the keystrokes the switch
-	// binds: prose_bar_wider_vocabulary_test.go carries it.
+	// binds: prose_bar_wider_vocabulary_test.go carries it. The fifth was the
+	// simple FIELD FORMS, whose up/down move a focus rather than a cursor:
+	// prose_bar_field_forms_test.go carries it.
 	// What remains divides:
 	//
 	//   - STILL ON THAT RECIPE, but not mechanically. Each has a window and a
