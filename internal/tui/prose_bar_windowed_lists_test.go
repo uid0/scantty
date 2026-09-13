@@ -107,6 +107,18 @@ type proseBarWindowedList struct {
 	recv  string
 	build func(rows int, name proseBarRowName) proseBarScreen
 	setup func(proseBarScreen)
+	// scroll is the keys that put the long fixture part-way down, where both
+	// scroll markers are drawn; nil means pgdn. A list whose switch binds no pager
+	// says what it presses instead, because pgdn there moves nothing and the
+	// fixture would stand at the top with one marker.
+	scroll []string
+	// reference is the names the fit BOUNDARY is measured on; nil means one-line
+	// names. A list whose row already draws a second line (a meta line under the
+	// name) sets it to two-line names: below the height where proseListWindow
+	// floors its budget, a one-line-name row spends less than the floor and fits
+	// by coincidence, so measured against it the check reports the floor — which
+	// is pre-existing and recorded on proseListWindow — rather than the window.
+	reference proseBarRowName
 	// immobile is why a ONE-ROW list of this kind cannot be moved. It is worded
 	// per screen because the noun differs and an operator reading the failure
 	// should be told which list it is about.
@@ -139,9 +151,7 @@ func proseBarListPair(l proseBarWindowedList) []proseBarFixture {
 			name: l.name,
 			recv: l.recv,
 			build: func() proseBarScreen {
-				s := proseBarSize(l.build(30, proseBarSameName), 80, 24)
-				next, _ := s.Update(listRuneKey("pgdown"))
-				return next.(proseBarScreen)
+				return proseBarScrolled(l, proseBarSize(l.build(30, proseBarSameName), 80, 24))
 			},
 		},
 		{
@@ -165,9 +175,20 @@ func proseBarMultiLineAt(l proseBarWindowedList, w, h int) proseBarScreen {
 	if l.setup != nil {
 		l.setup(s)
 	}
-	s = proseBarSize(s, w, h)
-	next, _ := s.Update(listRuneKey("pgdown"))
-	return next.(proseBarScreen)
+	return proseBarScrolled(l, proseBarSize(s, w, h))
+}
+
+// proseBarScrolled presses a list's scroll keys (proseBarWindowedList.scroll).
+func proseBarScrolled(l proseBarWindowedList, s proseBarScreen) proseBarScreen {
+	keys := l.scroll
+	if keys == nil {
+		keys = []string{"pgdown"}
+	}
+	for _, k := range keys {
+		next, _ := s.Update(listRuneKey(k))
+		s = next.(proseBarScreen)
+	}
+	return s
 }
 
 // TestProseBarWindowedList_MultiLineNamesFitThePaneAndMarkTheirCut is the
@@ -190,16 +211,25 @@ func proseBarMultiLineAt(l proseBarWindowedList, w, h int) proseBarScreen {
 // Standing on the oversized row the pane must say the name was CUT: a clipped
 // name drawn with no mark reads as the whole name.
 func TestProseBarWindowedList_MultiLineNamesFitThePaneAndMarkTheirCut(t *testing.T) {
+	proseBarAssertMultiLineWindows(t, proseBarWindowedLists())
+}
+
+// proseBarAssertMultiLineWindows is that check over any set of lists on the
+// windowed-cursor shape, so a later recipe whose lists share the window without
+// sharing this file's roster is held to it by calling it rather than copying it.
+func proseBarAssertMultiLineWindows(t *testing.T, lists []proseBarWindowedList) {
+	t.Helper()
 	widths, heights := jdeDrawableWidths(), jdePaneHeights()
-	for _, l := range proseBarWindowedLists() {
+	for _, l := range lists {
 		t.Run(l.name, func(t *testing.T) {
 			fits, overruns := 0, 0
 			for _, w := range widths {
 				for _, h := range heights {
-					plain := proseBarSize(l.build(proseBarMultiLineRows, proseBarSameName), w, h)
-					if next, _ := plain.Update(listRuneKey("pgdown")); next != nil {
-						plain = next.(proseBarScreen)
+					ref := l.reference
+					if ref == nil {
+						ref = proseBarSameName
 					}
+					plain := proseBarScrolled(l, proseBarSize(l.build(proseBarMultiLineRows, ref), w, h))
 					if !proseBarFrameFits(plain, h) {
 						overruns++
 						continue

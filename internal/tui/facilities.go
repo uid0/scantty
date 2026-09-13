@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -22,6 +21,12 @@ type FacilitiesScreen struct {
 	deps   Deps
 	cursor int
 	items  []facilitiesItem
+
+	// windowStart is the first row drawn, refitted from View by
+	// proseFlatListFrame against the pane the terminal gave.
+	windowStart    int
+	terminalWidth  int
+	terminalHeight int
 }
 
 type facilitiesItem struct {
@@ -157,7 +162,45 @@ func (s *FacilitiesScreen) Title() string { return "Facilities" }
 
 func (s *FacilitiesScreen) Init() tea.Cmd { return nil }
 
+// bar names every key that acts on this menu, as a RECORD rather than a literal
+// — prose_bar.go carries the conversion.
+//
+// It used to be a legend ABOVE the rows reading
+//
+//	Select a facilities surface — j/k move · enter or hotkey opens
+//
+// which named two of the eight movement keystrokes this switch binds — the
+// arrows, g/G and home/end all moved the cursor under no word — and named the
+// row letters as "hotkey", a word no keystroke spells. And the menu drew every
+// row with no window at all: eleven two-line rows and a closing note are more
+// than an 80x24 pane holds, so the note and the last rows were what clampToBox
+// took.
+//
+// NO PAGER, because this switch binds none: proseNavList(moves, false) is the
+// step pair and the jumps.
+func (s *FacilitiesScreen) bar(rows int) proseBar {
+	hotkeys := make([]rune, 0, len(s.items))
+	for _, it := range s.items {
+		hotkeys = append(hotkeys, it.hotkey)
+	}
+	return append(proseNavList(listNavMoves(rows), false),
+		proseBarItem{Keys: []string{"enter"}, Hint: "enter open"},
+		proseMenuHotkeys(hotkeys, "open by letter"),
+		proseBarEsc,
+	)
+}
+
+// proseBar is the bar this menu is drawing. A menu has no load and no second
+// surface, so there is no state in which it draws something else instead.
+func (s *FacilitiesScreen) proseBar() proseBar { return s.bar(len(s.items)) }
+
+func (s *FacilitiesScreen) paneCells() int { return proseBarCells(s.terminalWidth) }
+
 func (s *FacilitiesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		s.terminalWidth, s.terminalHeight = size.Width, size.Height
+		return s, nil
+	}
 	keymsg, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return s, nil
@@ -205,9 +248,16 @@ func (s *FacilitiesScreen) openSelected() (Screen, tea.Cmd) {
 	return s, SwitchTo(ws, screen)
 }
 
+// facilitiesNote is what the closing line under the rows used to say, without
+// the key it named. It led the rows as part of the head once the bar moved under
+// them, and a body sentence may name a key only where the bar does: `tab` is
+// Root's, which no record on this screen can answer for.
+const facilitiesNote = "Select a facilities surface. Vendors, firmware and the device fleet are rows of the sidebar menu instead."
+
 func (s *FacilitiesScreen) View() string {
-	var b strings.Builder
-	b.WriteString(StyleMuted.Render("Select a facilities surface — j/k move · enter or hotkey opens") + "\n\n")
+	cells := s.paneCells()
+	head := pickerHintAt(facilitiesNote, cells) + "\n\n"
+	rows := make([]string, len(s.items))
 	for i, it := range s.items {
 		marker := "  "
 		label := fmt.Sprintf("[%c]  %s", it.hotkey, it.label)
@@ -215,12 +265,12 @@ func (s *FacilitiesScreen) View() string {
 			marker = "▸ "
 			label = StyleSidebarItemActive.Render(label)
 		}
-		b.WriteString(marker + label + "\n")
+		row := marker + label
 		if it.subtitle != "" {
-			b.WriteString("      " + StyleMuted.Render(it.subtitle) + "\n")
+			row += "\n" + proseMenuSubtitle(it.subtitle, cells)
 		}
+		rows[i] = row
 	}
-	b.WriteString("\n")
-	b.WriteString(StyleMuted.Render("Surfaces that are not facilities — vendors, firmware, the device fleet — are rows of the sidebar menu (tab)."))
-	return b.String()
+	return proseFlatListFrame(head, rows, s.cursor, &s.windowStart, s.terminalHeight,
+		cells, s.bar(proseFlatCeilingRows), s.proseBar())
 }
