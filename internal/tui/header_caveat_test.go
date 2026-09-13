@@ -384,6 +384,14 @@ func jdeHeaderFoldSites(t *testing.T) (caveats, fitted, rows map[string]bool) {
 // rows is handed to a pinned header as ONE block — addCaveat, or addFitted where
 // jdeHeaderFittedFolds says why — and never as independent rows.
 //
+// READ THIS BEFORE DELETING IT. This is a LINT, not a behavioural test, and is
+// a deliberate exception to the test-quality rule. It reaches a property
+// behaviour cannot: a fold handed to add or addBlock is invisible to the pane
+// sweep, which reads only declared blocks, and only states somebody built are
+// rendered. Its behavioural counterparts are
+// TestJDEHeader_ACaveatIsDrawnWholeOrNotAtAll and
+// TestJDEHeader_TheTrimGivesACaveatUpWhole.
+//
 // Derived from source because the set is the thing that kept being wrong: the
 // fold was right at every site and the builder under it decided whether the
 // trim saw one value or several, which no pane sweep over hand-built states can
