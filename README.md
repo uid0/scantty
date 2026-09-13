@@ -209,7 +209,7 @@ conventions that future changes must preserve.
 
 **Why mirror the web UI's 8 workspaces?** Members already have a mental map of where things live in the browser. Scantty's nav uses the same names and groupings so muscle memory transfers. Scanner-priority surfaces (the scan workspace itself) sit at the top of the sidebar menu so they're never more than a keypress away.
 
-**Error envelope handling.** OMS returns a stable `{error: {code, message, details}}` shape on failure. `omsapi.APIError` parses this and exposes `IsAuth()`/`IsNotFound()` helpers. The client switches on `code`, not HTTP status, because OMS sometimes returns 400 with informative codes and sometimes 422 — the code is authoritative.
+**Error envelope handling.** OMS returns a stable `{error: {code, message, details}}` shape on failure. `omsapi.APIError` parses this and exposes `IsAuth()`/`IsNotFound()` helpers. The client normally switches on `code` rather than assuming one status for every refusal, because OMS may return informative codes at 400 or 422. Endpoint-specific classifiers can narrow that further when the contract defines both values; supplier-link `stale_version`, for example, is recognized only at 409.
 
 **JWT refresh.** A 401 with a refresh token in scope triggers one transparent retry against `/api/auth/refresh/`. There's no automatic logout — if refresh fails too, the call surfaces a `not_authenticated` error and the next request will fail the same way until the user re-supplies a token.
 
