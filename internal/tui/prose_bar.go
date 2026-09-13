@@ -712,3 +712,40 @@ func proseLineWindow(heights []int, cursor, start, budget int) (from, to int) {
 	}
 	return start, start + fits(start)
 }
+
+// proseBarFieldFocus is the focus pair of a FIELD FORM whose focus WRAPS: tab and
+// the down arrow step to the next field, shift+tab and the up arrow to the one
+// before, and the last field steps back onto the first.
+//
+// ONE SEGMENT, ALL FOUR KEYSTROKES, because on a wrapping form all four act from
+// every field. The literals this replaced said `tab move` (or `tab/↑↓ move`), so
+// shift+tab — and on most of them the arrows — moved the caret row unannounced.
+// The verb is "field" and not "move": there is no cursor through rows here, and
+// an operator reading "move" on a form looks for a list that is not there.
+//
+// A form whose focus CLAMPS cannot use this segment — tab on its last field does
+// nothing, and naming it there is the other half of the rule — so such a form
+// names the direction it can go from the field it is on (BatchScanSerialsScreen's
+// setup step is the one).
+var proseBarFieldFocus = proseBarItem{
+	Keys: []string{"tab", "shift+tab", "up", "down"},
+	Hint: "tab/shift+tab ↑↓ field",
+}
+
+// proseFormLine bounds one line of a FIELD FORM that carries a value the screen
+// does not control — an OMS error body, a record name, an endpoint URL — to ONE
+// row of the pane, with the cut marked.
+//
+// THE FORMS HAVE NO WINDOW, so their height is the sum of their lines, and every
+// one of those lines is a fixed row except the ones carrying such a value. An
+// error body is where it bites: omsapi.parseError puts the ENTIRE raw response
+// into the message whenever the envelope carries no code, so a gateway's 502 page
+// arrived as seven lines and pushed the bar under it off the bottom of the pane —
+// clampToBox drops from the BOTTOM — naming every key nowhere at the moment the
+// operator most needed a way out. Flattened first (jdeStatusOneLine, the status
+// row's own convention, for the reason it gives about bounding before
+// re-expanding) and clipped after, so the frame is as tall as the form whatever
+// the server said and a value cut short says it was.
+func proseFormLine(text string, cells int) string {
+	return pickerClip(jdeStatusOneLine(text), cells)
+}

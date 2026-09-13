@@ -110,8 +110,11 @@ import (
 // draw a SECOND SURFACE — a picker, a detail, a prompt — in their own place
 // (prose_bar_second_surface_test.go), and then the lists binding more of the
 // movement vocabulary than those recipes' helpers named
-// (prose_bar_wider_vocabulary_test.go). Their bars are
-// RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
+// (prose_bar_wider_vocabulary_test.go), and then the simple FIELD FORMS, whose
+// up/down move a focus rather than a cursor (prose_bar_field_forms_test.go): a
+// field-form entry here was an exemption from THIS classifier, never from the
+// bar rule, and a form's record names its focus keys like any other. Their bars
+// are RECORDS now (prose_bar.go) and prose_bar_honesty_test.go presses the whole key
 // space at them, so the classifier counts them as a THIRD swept class and an
 // entry left here for one of them fails. What is still a literal is named in
 // proseBarUnconverted with the shape of the work its conversion needs.
@@ -152,11 +155,6 @@ var listNavUnsweptReceivers = map[string]string{
 		"literal inside View (`↑/↓ move · enter open · esc close`), so the honesty sweep " +
 		"cannot read it, but it IS pressed by the retired-chord sweep, which drives its " +
 		"cursor directly (listNavPickerCases)",
-	"LoginScreen": "NOT a list: up/down are the field-form focus pair beside tab/" +
-		"shift+tab on a two-field login, and the focus WRAPS, so the field-form " +
-		"exemption applies exactly as it does to slotCardPrompt",
-	"BatchScanSerialsScreen":     "NOT a list: up/down move between the two setup fields beside tab/shift+tab, and the focus wraps — the field-form exemption",
-	"ReorderFormScreen":          "NOT a list: up/down move between the reorder form's fields beside tab/shift+tab, and the focus wraps — the field-form exemption",
 	"ForgeKeyDeviceDetailScreen": "NOT a list: up/down move between the indicator-edit fields beside tab/shift+tab, and setIndicatorFocus wraps modulo the field count — the field-form exemption",
 	"slotCardPrompt": "a two-row modal prompt inside the storage-slot list, not a list of " +
 		"rows: up/down move between a text field and a toggle and its cursor WRAPS, so the " +
