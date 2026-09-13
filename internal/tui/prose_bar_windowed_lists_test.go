@@ -106,6 +106,7 @@ type proseBarWindowedList struct {
 	name  string
 	recv  string
 	build func(rows int, name proseBarRowName) proseBarScreen
+	setup func(proseBarScreen)
 	// immobile is why a ONE-ROW list of this kind cannot be moved. It is worded
 	// per screen because the noun differs and an operator reading the failure
 	// should be told which list it is about.
@@ -160,7 +161,11 @@ func proseBarListPair(l proseBarWindowedList) []proseBarFixture {
 // proseBarMultiLineAt is the multi-line fixture of one list, sized and scrolled
 // with pgdn the way the long fixture is.
 func proseBarMultiLineAt(l proseBarWindowedList, w, h int) proseBarScreen {
-	s := proseBarSize(l.build(proseBarMultiLineRows, proseBarMultiLineName), w, h)
+	s := l.build(proseBarMultiLineRows, proseBarMultiLineName)
+	if l.setup != nil {
+		l.setup(s)
+	}
+	s = proseBarSize(s, w, h)
 	next, _ := s.Update(listRuneKey("pgdown"))
 	return next.(proseBarScreen)
 }
@@ -324,6 +329,11 @@ func proseBarWindowedLists() []proseBarWindowedList {
 				s := NewWebhookListScreen(Deps{})
 				next, _ := s.Update(webhookListLoadedMsg{rows: loaded})
 				return next.(*WebhookListScreen)
+			},
+			setup: func(screen proseBarScreen) {
+				screen.(*WebhookListScreen).deps.Health = ssHealth(map[string]string{
+					omsapi.ServiceKeyWebhooks: omsapi.ServiceStateOpen,
+				})
 			},
 			immobile: "one webhook, so there is nowhere for the cursor to go",
 		},

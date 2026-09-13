@@ -530,6 +530,12 @@ func proseFlatListFrame(head string, rows []string, cursor int, start *int, term
 // proseBarUnconverted entry already records, and it is not part of keeping the
 // footer on the pane.
 func proseCursorWindow(b *strings.Builder, rows []string, cursor int, start *int, budget int) {
+	if extraHeadLines := strings.Count(b.String(), "\n") - 1; extraHeadLines > 0 {
+		budget -= extraHeadLines
+		if budget < 1 {
+			budget = 1
+		}
+	}
 	heights := make([]int, len(rows))
 	for i, r := range rows {
 		heights[i] = strings.Count(r, "\n") + 1
