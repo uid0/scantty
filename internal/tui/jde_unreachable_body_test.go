@@ -3,8 +3,9 @@
 // One rule, asked of two surfaces: A PANE THAT SAYS THERE IS MORE MUST NAME A
 // KEY, AND A KEY IT NAMES MUST MOVE THE PANE. Composed, those two give the
 // operator a way to the next screenful of any body the frame admits it is
-// hiding — which is standing rule 11 (a hint is only legitimate when the
-// operator can act on it) sitting on top of standing rule 2.
+// hiding — which is standing rule 11 (a refusal is only legitimate when the
+// operator can act on it; a marker promising more that no key can fetch is
+// the same dead end) sitting on top of standing rule 2.
 //
 // Both halves were broken, in different places, by the same blind spot: the
 // layer's window is positioned by a CURSOR, and jdeLines.block() answers (0,0)

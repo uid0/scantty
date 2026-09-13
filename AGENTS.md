@@ -1977,6 +1977,10 @@ either:
   is that BACKTICKS commit you: spell a helper in backticks and the sweep
   checks it exists, so a sentence about a symbol that is GONE names it in plain
   prose or, better, says what the thing DID without naming it at all.
+- **"Standing rule N", "house rule N" and a bare "rule N" cite
+  `docs/standing-rules.md`**, the one roster of the numbered rules; read it
+  there, never inline it here. `internal/doccheck/standing_rules_test.go` fails
+  a citation of a number that roster does not define.
 
 ### A screen that is working must say so, and a key that declines must say why
 

@@ -1,6 +1,7 @@
 // Package doccheck holds the module-wide sweeps that keep prose about the code
-// honest about the code — its names here, and README.md's environment table in
-// readme_env_test.go.
+// honest about the code — its names here, README.md's environment table in
+// readme_env_test.go, and numbered standing-rule citations against their
+// roster in standing_rules_test.go.
 //
 // It exists because a comment naming a symbol that does not exist misleads the
 // person reading the code RIGHT NOW: they grep the name, find nothing, and have
