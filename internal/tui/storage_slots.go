@@ -861,7 +861,7 @@ func (s *StorageSlotsScreen) renderRow(i int, cells int) string {
 	line := lead + occ + " " + slotFactsText(slot)
 	if name := slot.OwningGroupName; name != "" {
 		const joint = " · "
-		left := room - lipgloss.Width(line) - len(joint)
+		left := room - lipgloss.Width(line) - lipgloss.Width(joint)
 		if left < 1 {
 			left = 1
 		}
