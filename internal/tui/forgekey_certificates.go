@@ -127,6 +127,9 @@ func (s *ForgeKeyCertificatesScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			s.load(),
 		)
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingRotate {
 			return s.updateConfirmRotate(m)
 		}

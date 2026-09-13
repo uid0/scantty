@@ -136,6 +136,9 @@ func (s *ProjectStorageDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loadErr = ""
 		return s, tea.Batch(Status("stint marked removed", StatusOK), s.Init())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingReprint {
 			return s.updateConfirmReprint(m)
 		}

@@ -202,6 +202,9 @@ func (s *BadgeEnrollmentScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case badgeSetMsg:
 		return s.onSet(m)
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		switch s.mode {
 		case badgeModeSearch:
 			return s.updateSearch(m)

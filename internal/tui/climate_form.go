@@ -992,6 +992,9 @@ func (s *ThermostatListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loading = true
 		return s, tea.Batch(Status("thermostat deleted", StatusOK), s.Init())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingDelete {
 			return s.updateConfirmDelete(m)
 		}

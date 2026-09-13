@@ -63,13 +63,10 @@ import (
 // the key the bar is right to name).
 //
 // WHAT IT DOES NOT CALL AN ACT, said so the table is not over-read. A key whose
-// only effect is a field no frame draws — a cursor walking stale rows, `x` arming
-// a delete confirm under the error, `/` focusing a search box nobody can see
-// (its only command is the caret blink) — changes nothing visible and issues
-// nothing, so naming it would name a key that visibly does nothing. Those are
-// CANDIDATES FOR GATING and not for a bar — each screen's loadBar doc names the
-// ones it leaves off — and deciding whether a screen should decline them is a
-// key-binding change this sweep does not make.
+// only effect would be a field no frame draws — a cursor walking stale rows,
+// `x` arming a delete confirm under the error, or `/` focusing a search box
+// nobody can see — is ignored. The runtime sweep below reveals the underlying
+// frame after each unnamed key and proves that no hidden state was entered.
 
 // proseLoadState is which half of a load a fixture is in.
 type proseLoadState string
@@ -583,6 +580,66 @@ func TestProseBar_ALoadInFlightOrFailedNamesExactlyTheKeysThatWork(t *testing.T)
 		t.Error("no load-state fixture named a key whose act was OFF the pane — a command " +
 			"with no visible change — so the half of the instrument that is stronger than " +
 			"the pane was never exercised, and this sweep says no more than the biconditional")
+	}
+}
+
+func TestProseBar_UnnamedLoadKeysDoNotEnterHiddenStates(t *testing.T) {
+	const w, h = 80, 24
+	reveal := func(s proseBarScreen) string {
+		v := reflect.ValueOf(s).Elem()
+		if f := v.FieldByName("loading"); f.IsValid() && f.CanSet() {
+			f.SetBool(false)
+		}
+		if f := v.FieldByName("loadErr"); f.IsValid() && f.CanSet() {
+			f.SetString("")
+		}
+		if f := v.FieldByName("forbidden"); f.IsValid() && f.CanSet() {
+			f.SetBool(false)
+		}
+		return clampToBox(s.View(), screenBodyCells(w), screenBodyRows(h))
+	}
+	for _, f := range proseBarFixtures() {
+		if f.load == "" {
+			continue
+		}
+		for _, key := range proseBarKeySpace() {
+			if proseBarAt(f, w, h).names(key) {
+				continue
+			}
+			want := reveal(proseBarSize(f.build(), w, h))
+			s := proseBarSize(f.build(), w, h)
+			next, _ := s.Update(listRuneKey(key))
+			got := reveal(next.(proseBarScreen))
+			if got != want {
+				t.Errorf("%s: unnamed %q enters a state hidden by the load frame", f.name, key)
+			}
+		}
+	}
+}
+
+func TestCategoryList_LoadStatesIgnoreDeleteConfirmation(t *testing.T) {
+	var loaded proseBarFixture
+	for _, f := range proseBarFixtures() {
+		if f.name == "category list" {
+			loaded = f
+			break
+		}
+	}
+	for _, failed := range []bool{false, true} {
+		s := proseBarSize(loaded.build(), 80, 24)
+		next, _ := s.Update(listRuneKey("r"))
+		s = next.(proseBarScreen)
+		if failed {
+			s = proseLoadDeliver(s, proseLoadFailure(proseLoadScreens()[6], http.StatusBadGateway))
+		}
+		next, _ = s.Update(listRuneKey("x"))
+		next, cmd := next.(proseBarScreen).Update(listRuneKey("y"))
+		if cmd != nil {
+			t.Errorf("failed=%t: x then y issued a delete command from a hidden load state", failed)
+		}
+		if next.(*CategoryListScreen).confirmingDelete {
+			t.Errorf("failed=%t: x entered a hidden delete confirmation", failed)
+		}
 	}
 }
 

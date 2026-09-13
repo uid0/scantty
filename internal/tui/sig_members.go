@@ -321,6 +321,9 @@ func (s *SIGMembersScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loading = true
 		return s, tea.Batch(Status("member removed", StatusOK), s.loadMembers())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingRemove {
 			return s.updateConfirmRemove(m)
 		}

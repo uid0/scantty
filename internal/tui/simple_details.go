@@ -341,6 +341,9 @@ func (s *SupplierDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			SwitchTo(WSInventory, NewSupplierListScreen(s.deps)),
 		)
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingDelete {
 			return s.updateConfirmDelete(m)
 		}

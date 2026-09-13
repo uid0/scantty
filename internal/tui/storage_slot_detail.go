@@ -189,6 +189,9 @@ func (s *StorageSlotDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, tea.Batch(Status(storageReleasedText(s.code, m.occupant), StatusOK), s.Init())
 
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		switch {
 		case s.confirmingDelete:
 			return s.updateConfirmDelete(m)

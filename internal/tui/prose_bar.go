@@ -106,6 +106,10 @@ func (b proseBar) names(key string) bool {
 	return false
 }
 
+func proseLoadKeyHidden(loading bool, loadErr string, bar proseBar, key string) bool {
+	return (loading || loadErr != "") && !bar.names(key)
+}
+
 // rows is how many rows the folded footer occupies, plus its blank separator.
 //
 // DERIVED FROM THE BAR THAT WILL ACTUALLY BE DRAWN, never a constant. These

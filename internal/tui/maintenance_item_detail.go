@@ -219,6 +219,9 @@ func (s *MaintenanceItemDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, nil
 
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		switch s.phase {
 		case mDetailPhaseConfirmDelete:
 			return s.updateConfirmDelete(m)

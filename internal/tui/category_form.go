@@ -835,8 +835,8 @@ func (s *CategoryListScreen) proseBar() proseBar {
 // switch still answers with no rows drawn (prose_bar.go carries the defect and
 // the decision). `c` works whatever the list holds. `E`/`enter` still act on
 // the row a refresh kept under the cursor, which the frame no longer draws:
-// named because they act, and candidates for gating. `x` is not named because
-// all it does here is arm a confirm the frame does not draw.
+// named because they act. `x` is not named and is ignored while this frame is
+// drawn, so it cannot arm a confirmation the operator cannot see.
 func (s *CategoryListScreen) loadBar() proseBar {
 	out := proseBar{{Keys: []string{"c"}, Hint: "c new"}}
 	if _, ok := s.selected(); ok {
@@ -876,6 +876,9 @@ func (s *CategoryListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loading = true
 		return s, tea.Batch(Status("category deleted", StatusOK), s.Init())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirmingDelete {
 			return s.updateConfirmDelete(m)
 		}

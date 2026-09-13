@@ -252,6 +252,9 @@ func (s *SerializedComponentsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return s, nil
 
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		return s.handleKey(m)
 	}
 	return s, nil

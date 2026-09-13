@@ -226,6 +226,9 @@ func (s *ReorderQueueScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.answer, s.answerLevel = m.action, StatusOK
 		return s, tea.Batch(Status(m.action, StatusOK), s.load())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.proseBar(), m.String()) {
+			return s, nil
+		}
 		if s.confirm != reorderConfirmNone {
 			return s.updateConfirm(m)
 		}

@@ -804,6 +804,9 @@ func (s *WebhookListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case webhookTestPolledMsg:
 		return s.onTestPolled(m)
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.showTestResult {
 			return s.updateTestResult(m)
 		}

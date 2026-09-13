@@ -493,6 +493,9 @@ func (s *AssetProblemsScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.loading = true
 		return s, tea.Batch(Status("sent to vendor"+labelSuffix(m.label), StatusOK), s.load())
 	case tea.KeyMsg:
+		if proseLoadKeyHidden(s.loading, s.loadErr, s.loadBar(), m.String()) {
+			return s, nil
+		}
 		if s.vendorStep != apVendorStepNone {
 			return s.updateVendor(m)
 		}
