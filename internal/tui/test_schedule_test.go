@@ -365,7 +365,7 @@ func (n *workflowNeeds) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type workflowStrategy struct {
-	FailFast bool           `yaml:"fail-fast"`
+	FailFast *bool          `yaml:"fail-fast"`
 	Matrix   workflowMatrix `yaml:"matrix"`
 }
 
@@ -463,8 +463,8 @@ func TestTestSchedule_TheWorkflowRunsBothHalves(t *testing.T) {
 	if !hasNeed(heavy, "tui-heavy-plan") {
 		t.Error("tui-heavy job does not need tui-heavy-plan")
 	}
-	if heavy.Strategy.FailFast {
-		t.Error("tui-heavy strategy enables fail-fast")
+	if heavy.Strategy.FailFast == nil || *heavy.Strategy.FailFast {
+		t.Error("tui-heavy strategy must explicitly disable fail-fast")
 	}
 	if heavy.Strategy.Matrix.Shard != "${{ fromJSON(needs.tui-heavy-plan.outputs.shards) }}" {
 		t.Errorf("heavy shard matrix = %q, want plan output decoded with fromJSON", heavy.Strategy.Matrix.Shard)
