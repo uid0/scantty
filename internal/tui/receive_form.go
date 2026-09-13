@@ -4312,7 +4312,7 @@ func (s *ReceiveFormScreen) blockedReason() string {
 // refusal is the server telling them something true about the order — it is
 // still a draft, or receiving has already finished with it. Collapsing them
 // into one "cannot receive" would leave an operator unable to tell which they
-// had hit, which is the third standing rule of this codebase.
+// had hit, which is standing rule 3 of this codebase.
 func (s *ReceiveFormScreen) blockedBody() *jdeLines {
 	l := &jdeLines{}
 	width := s.bodyWidth()
@@ -5965,8 +5965,8 @@ func (s *ReceiveFormScreen) noteLines() []string {
 // stops when the budget is spent, so the cost is the budget rather than the
 // length of what it was handed, and the word walk below then runs over a string
 // that is already bounded. Today every note is a screen-composed sentence of
-// about 120 cells, so this buys nothing measurable; it is here because the
-// unbounded shape is what the standing rule forbids, and because an OMS-supplied
+// about 120 cells, so this buys nothing measurable; it is here because an input
+// is bounded BEFORE a folder sees it rather than after, and because an OMS-supplied
 // string reaching say() is one arm away — omsapi.parseError puts the ENTIRE raw
 // response body into APIError.Message when the envelope carries no code, which
 // is the multi-KB page behind the hang this project has already fixed once.
