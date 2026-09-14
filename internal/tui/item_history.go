@@ -75,10 +75,7 @@ type ItemHistoryScreen struct {
 
 	loading bool
 	loadErr string
-	// pending counts the readings of the load in flight still out. A reload
-	// pressed over a load resets it, so the older load's answers can end the
-	// frame early — with readings a moment older than the ones still coming,
-	// which then land over them. No answer is dropped and none is stale for long.
+	loadID  int
 	pending int
 
 	stockCursor int
@@ -94,17 +91,19 @@ type ItemHistoryScreen struct {
 type itemHistoryStockMsg struct {
 	history *omsapi.StockHistory
 	err     error
+	loadID  int
 }
 
 type itemHistoryUsageMsg struct {
-	logs []omsapi.UsageLog
-	err  error
+	logs   []omsapi.UsageLog
+	err    error
+	loadID int
 }
 
 // NewItemHistoryScreen opens the history of `item`, which must be the item the
 // sheet has loaded: its units are what the figures are labelled in.
 func NewItemHistoryScreen(deps Deps, item *omsapi.Item) *ItemHistoryScreen {
-	return &ItemHistoryScreen{deps: deps, item: item, loading: true, pending: 2}
+	return &ItemHistoryScreen{deps: deps, item: item, loading: true, loadID: 1, pending: 2}
 }
 
 func (s *ItemHistoryScreen) Title() string {
@@ -120,6 +119,7 @@ func (s *ItemHistoryScreen) Init() tea.Cmd { return s.fetch() }
 
 // reload starts a new load.
 func (s *ItemHistoryScreen) reload() tea.Cmd {
+	s.loadID++
 	s.pending = 2
 	s.loading = true
 	s.loadErr = ""
@@ -136,17 +136,18 @@ func (s *ItemHistoryScreen) fetch() tea.Cmd {
 		ctx = context.Background()
 	}
 	id := ""
+	loadID := s.loadID
 	if s.item != nil {
 		id = s.item.ID
 	}
 	return tea.Batch(
 		func() tea.Msg {
 			h, err := deps.OMS.GetItemStockHistory(ctx, id)
-			return itemHistoryStockMsg{history: h, err: err}
+			return itemHistoryStockMsg{history: h, err: err, loadID: loadID}
 		},
 		func() tea.Msg {
 			logs, err := deps.OMS.ListItemUsageLogs(ctx, id)
-			return itemHistoryUsageMsg{logs: logs, err: err}
+			return itemHistoryUsageMsg{logs: logs, err: err, loadID: loadID}
 		},
 	)
 }
@@ -225,6 +226,9 @@ func (s *ItemHistoryScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.terminalWidth, s.terminalHeight = m.Width, m.Height
 		return s, nil
 	case itemHistoryStockMsg:
+		if m.loadID != s.loadID {
+			return s, nil
+		}
 		s.history, s.stockErr = m.history, ""
 		if m.err != nil {
 			s.history, s.stockErr = nil, m.err.Error()
@@ -232,6 +236,9 @@ func (s *ItemHistoryScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.answered()
 		return s, nil
 	case itemHistoryUsageMsg:
+		if m.loadID != s.loadID {
+			return s, nil
+		}
 		s.logs, s.usageErr = m.logs, ""
 		if m.err != nil {
 			s.logs, s.usageErr = nil, m.err.Error()

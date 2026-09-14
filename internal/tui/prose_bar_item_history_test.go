@@ -72,8 +72,8 @@ func proseBarUsageLogs(n int) []omsapi.UsageLog {
 // proseBarItemHistory is the screen past its load, on `view`.
 func proseBarItemHistory(h *omsapi.StockHistory, logs []omsapi.UsageLog, histErr, usageErr error, view itemHistoryView) *ItemHistoryScreen {
 	s := NewItemHistoryScreen(Deps{}, proseBarHistoryItem())
-	next, _ := s.Update(itemHistoryStockMsg{history: h, err: histErr})
-	next, _ = next.Update(itemHistoryUsageMsg{logs: logs, err: usageErr})
+	next, _ := s.Update(itemHistoryStockMsg{history: h, err: histErr, loadID: s.loadID})
+	next, _ = next.Update(itemHistoryUsageMsg{logs: logs, err: usageErr, loadID: s.loadID})
 	s = next.(*ItemHistoryScreen)
 	s.view = view
 	return s

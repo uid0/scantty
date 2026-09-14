@@ -88,6 +88,30 @@ func itemHistoryFromSheet(t *testing.T, stockFile, usageFile string) (Root, *Ite
 
 func itemHistoryPane(r Root) string { return stripANSI(r.View()) }
 
+func TestItemHistory_AnOlderLoadCannotOverwriteARefresh(t *testing.T) {
+	s := NewItemHistoryScreen(Deps{}, &omsapi.Item{ID: "itm-1", Name: "Gloves", BaseUnit: "glove"})
+	initialUsage := []omsapi.UsageLog{{ID: 1, QuantityUsed: 1}}
+	refreshedUsage := []omsapi.UsageLog{{ID: 2, QuantityUsed: 7}}
+
+	next, _ := s.Update(itemHistoryStockMsg{history: proseBarStockHistory(1), loadID: 1})
+	s = next.(*ItemHistoryScreen)
+	next, _ = s.Update(runeKey('r'))
+	s = next.(*ItemHistoryScreen)
+	next, _ = s.Update(itemHistoryStockMsg{history: proseBarStockHistory(2), loadID: 2})
+	s = next.(*ItemHistoryScreen)
+	next, _ = s.Update(itemHistoryUsageMsg{logs: refreshedUsage, loadID: 2})
+	s = next.(*ItemHistoryScreen)
+	next, _ = s.Update(itemHistoryUsageMsg{logs: initialUsage, loadID: 1})
+	s = next.(*ItemHistoryScreen)
+
+	if s.loading {
+		t.Fatal("the refreshed load did not finish")
+	}
+	if len(s.logs) != 1 || s.logs[0].ID != refreshedUsage[0].ID {
+		t.Fatalf("usage logs = %+v, want refreshed response %+v", s.logs, refreshedUsage)
+	}
+}
+
 // TestItemHistory_TheStockViewDrawsTheRecordedReadingsNewestFirst: the recorded
 // history as a dated table — newest first, each level with its change from the
 // reading before it, the count row's level named as the level BEFORE the count,
