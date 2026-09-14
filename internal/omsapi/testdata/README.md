@@ -398,3 +398,45 @@ What they pin that a hand-written map does not:
 * The reload of a deleted link is an ordinary **404** `not_found`, which is how
   `ItemSupplierFormScreen` tells "deleted since the refusal" apart from a failed
   read.
+
+## Item history — stock history and usage logs
+
+| file | request | OMS builder |
+|---|---|---|
+| `item_stock_history.json` | `GET /api/inventory/items/<gloves>/stock_history/?include_kits=true` | `inventory.views.InventoryItemViewSet.stock_history` (a hand-built dict) |
+| `item_stock_history_empty.json` | the same, for an item with no snapshot, count or reorder | same |
+| `item_usage_logs.json` | `GET /api/inventory/usage-logs/?item_id=<gloves>&page=1` | `UsageLogViewSet` → `UsageLogSerializer` (`fields = "__all__"`) |
+| `item_usage_logs_empty.json` | the same, for the item with no history | same |
+| `item_usage_logs_page1.json` | `GET /api/inventory/usage-logs/?item_id=<rags>&page=1` | same |
+| `item_usage_logs_page2.json` | the same, `page=2` | same |
+
+Recorded 2026-09-13 against OpenMakerSuite remote `main` at commit
+`7317d64ae99fd67282709b6ca2ccb5c963b6e968` (tree `a57d67e5…`), a clean clone of
+the remote default branch, running on PostgreSQL, authenticated as a superuser
+(both endpoints are `IsAuthenticated`; each answers an anonymous request 401,
+measured on the same backend). The lab's clock was already 2026-09-14 in UTC,
+which is the date the view cuts timestamps to.
+
+Seeded through the paths OMS really writes them by, except where no path can
+backdate: four weekly `StockLevelSnapshot` rows (the beat task has no backfill);
+a `log_usage` POST by a signed-in second user carrying a TWO-LINE note, one with
+NO `Authorization` header (the QR-scan path), and one by the superuser; a
+`cycle-count` POST counting 380 against 393 on record; one `ReorderRequest`
+(created in the ORM, because the create view enqueues a Celery task this lab had
+no broker for). A third item took 51 `log_usage` POSTs, one past OMS's page size.
+
+What they pin that a hand-written map does not:
+
+* a cycle count's `count` is **393**, the level ON RECORD — `projected_count` —
+  and not the 380 that was counted, which is what the web chart's own comment
+  says it is;
+* `reorder_events[]` carries a `date` and **nothing else**;
+* both kinds of date are bare **`"2006-01-02"` strings**;
+* `thresholds` are `minimum_stock` and `minimum_stock + reorder_quantity` (100
+  and 400 against a `reorder_quantity` of 300);
+* `id` and `charged_by` are JSON **numbers** (`UsageLog` and `membership.User`
+  both take `settings.DEFAULT_AUTO_FIELD`), and `charged_by` is **null** on the
+  anonymous row;
+* a note keeps its **newline**;
+* the list is newest first, and 51 rows arrive as a page of 50 with a `next`
+  link and a page of 1.

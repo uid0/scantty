@@ -201,6 +201,8 @@ func proseLoadScreens() []proseLoadScreen {
 			}},
 		{name: "item detail", recv: "InventoryDetailScreen", loaded: "item detail/serialized, open-closed, retired", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewInventoryDetailScreen(d, "itm-1") }},
+		{name: "item history", recv: "ItemHistoryScreen", loaded: "item history/stock", reload: "r",
+			fresh: func(d Deps) proseBarScreen { return NewItemHistoryScreen(d, proseBarHistoryItem()) }},
 		{name: "item suppliers", recv: "ItemSuppliersScreen", loaded: "item suppliers", reload: "r",
 			fresh: func(d Deps) proseBarScreen { return NewItemSuppliersScreen(d, "itm-1", "Hex bolt M8x40") }},
 		{name: "location check-ins", recv: "LocationCheckinsScreen", loaded: "location check-ins", reload: "r",

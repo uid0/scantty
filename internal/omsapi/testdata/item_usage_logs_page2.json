@@ -1,0 +1,1 @@
+{"count":51,"next":null,"previous":"http://127.0.0.1:8847/api/inventory/usage-logs/?item_id=998f2e58-dad4-4aad-835a-d9eb56213b6d","results":[{"id":4,"quantity_used":1,"usage_date":"2026-09-14T04:54:38.169328Z","notes":"","unit_cost":null,"total_cost":null,"item":"998f2e58-dad4-4aad-835a-d9eb56213b6d","charged_group":null,"charged_by":2,"ledger_transaction":null}]}

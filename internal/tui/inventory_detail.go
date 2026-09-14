@@ -698,6 +698,13 @@ func (s *InventoryDetailScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			if s.item != nil {
 				return s, SwitchTo(WSInventory, NewItemSuppliersScreen(s.deps, s.item.ID, s.item.Name))
 			}
+		case "h":
+			// The item's stock history and usage logs — the web page's two
+			// reading tabs (item_history.go). A reading, so offered for any loaded
+			// item, a kit included.
+			if s.item != nil {
+				return s, SwitchTo(WSInventory, NewItemHistoryScreen(s.deps, s.item))
+			}
 		case "x":
 			// Delete (with confirm). The web supports item delete; guard it
 			// behind a y/n prompt since it's destructive.
@@ -850,7 +857,9 @@ func (s *InventoryDetailScreen) bar(scrolls bool) proseBar {
 		}
 		out = append(out, proseBarItem{Keys: []string{"u"}, Hint: "u use"})
 	}
-	out = append(out, proseBarItem{Keys: []string{"s"}, Hint: "s suppliers"})
+	out = append(out,
+		proseBarItem{Keys: []string{"s"}, Hint: "s suppliers"},
+		proseBarItem{Keys: []string{"h"}, Hint: "h history"})
 	if s.item.IsSerialized && s.kitRuledOut() {
 		out = append(out,
 			proseBarItem{Keys: []string{"i"}, Hint: "i instances"},

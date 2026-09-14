@@ -738,6 +738,21 @@ What is worth knowing before touching either:
   case-counted item that hint is wrong by the pack size. Parity here is with the
   API's contract, not with that transcription; do not "restore" it.
 
+### An item's stock history and usage logs read wrong if taken at face value
+
+`internal/omsapi/item_history.go` carries the wire note and
+`internal/tui/item_history.go` (`h` on the item sheet) the screen. Before
+rendering either reading anywhere:
+
+- **A cycle-count point's `count` is the level ON RECORD before the count**
+  (`projected_count`), not the number counted — the web chart's comment says
+  otherwise and is wrong.
+- **The stock levels are base units and the two thresholds are COUNT units**
+  (`minimum_stock`), so they do not share an axis on a pack-counted item.
+- **`usage-logs/` is paginated at 50 and the web reads page one only**;
+  `ListItemUsageLogs` walks every page. `quantity_used` is base units whatever
+  unit was entered, and a null `charged_by` means no recorder, not anonymous.
+
 ### Kits are inventory items the item API refuses to admit exist
 
 Before touching anything kit-shaped (`internal/omsapi/kits.go` carries the full
@@ -755,7 +770,7 @@ note, and is the authority):
   includes every ACTION and SUB-RESOURCE on the viewset. Every detail route a
   kit can legitimately reach sends it (`omsapi.includeKitsQuery` /
   `includeKitsValues`: `GetItem`, `GetItemMetrics`, `GetPurchaseHistory`,
-  `SetItemRetired`, `DeleteInventoryItem`, `SetItemCountMode` — which the kit
+  `GetItemStockHistory`, `SetItemRetired`, `DeleteInventoryItem`, `SetItemCountMode` — which the kit
   save fires AFTER the `/kits/` PATCH). The deliberate exceptions: cycle-count,
   log-usage and pack-container, because a kit carries no stock (and a pack is a
   way of counting stock) and the backend writes stock without `full_clean()`, so

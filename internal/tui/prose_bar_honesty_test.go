@@ -625,6 +625,9 @@ func proseBarFixtures() []proseBarFixture {
 	// are several lines and whose pager is a page of them — see
 	// proseBarAssetPartsFixtures.
 	out = append(out, proseBarAssetPartsFixtures()...)
+	// The item's stock history and usage logs, written on the record rather than
+	// converted to it — see proseBarItemHistoryFixtures.
+	out = append(out, proseBarItemHistoryFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are
