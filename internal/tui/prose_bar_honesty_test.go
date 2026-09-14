@@ -631,6 +631,9 @@ func proseBarFixtures() []proseBarFixture {
 	// The fixture refill screens, written on the record from the start — see
 	// proseBarFixtureRefillFixtures.
 	out = append(out, proseBarFixtureRefillFixtures()...)
+	// The project-storage stint sheet's lifecycle states and its four confirm
+	// frames — see proseBarProjectStorageFixtures.
+	out = append(out, proseBarProjectStorageFixtures()...)
 	// Every screen above with a LOAD, in flight and failed, first time and on a
 	// refresh — see proseBarLoadStateFixtures. They are built FROM the fixtures
 	// above (a refresh starts from a loaded screen), which is why they are

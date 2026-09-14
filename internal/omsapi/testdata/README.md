@@ -542,3 +542,44 @@ What they pin that a hand-written map does not:
 
 `internal/tui/fixture_refills_lab_test.go` (build tag `omslab`) re-measures the
 two notes behaviours through the terminal's own screens against a live backend.
+
+## Project-storage stints — violation notice, purgatory, QR and by-member
+
+| file | endpoint | OMS builder |
+|---|---|---|
+| `project_storage_send_notice.json` | `POST /api/project-storage/stints/<id>/send-violation-notice/` (200) | `ProjectStorageStintViewSet.send_violation_notice` |
+| `project_storage_move_to_purgatory.json` | `POST …/stints/<id>/move-to-purgatory/` (200) | `ProjectStorageStintViewSet.move_to_purgatory` |
+| `project_storage_generate_qr.json` | `POST …/stints/<id>/generate-qr/` (200) | `ProjectStorageStintViewSet.generate_qr` |
+| `project_storage_by_member.json` | `GET …/stints/by-member/alice/` (200) | `ProjectStorageStintViewSet.by_member` |
+| `project_storage_by_member_empty.json` | `GET …/stints/by-member/nobody/` (200) | same |
+| `project_storage_by_member_dotted_404.html` | `GET …/stints/by-member/bob.jones/` (404) | the router: `url_path` is `[^/.]+` |
+| `project_storage_notice_invalid_state.json` | notice on an ACTIVE stint (409) | `send_violation_notice` |
+| `project_storage_notice_missing_email.json` | notice on an expired stint with no email (422) | same |
+| `project_storage_purgatory_notice_required.json` | purgatory before any notice (409) | `move_to_purgatory` |
+| `project_storage_notice_forbidden.json` | notice by a non-staff `Storage Admin` member (403) | `IsAdminUser` via the standardized exception handler |
+| `project_storage_qr_rate_limited.json` | the sixth generate-qr in a minute by that member (429) | `QRCodeRateLimiter` |
+| `project_storage_detail_expired.json` | `GET …/stints/PS-JWBRFM4F/` before the notice (200) | `ProjectStorageStintSerializer` via the retrieve |
+| `project_storage_detail_warned.json` | the same stint after the notice | same |
+| `project_storage_move_to_purgatory_shelf9.json` | purgatory on that stint with `Shelf 9` (200) | `move_to_purgatory` |
+| `project_storage_detail_purgatory.json` | the same stint after purgatory | same as the first |
+| `project_storage_detail_active_no_qr.json` | `GET` of the active `bob.jones` stint, no QR yet | same |
+| `project_storage_detail_active_qr.json` | the same stint after generate-qr | same |
+
+Recorded 2026-09-14 against OpenMakerSuite `main` at commit
+`3a3d36252d4dad64ee05138e47d6ee2aec18d6a1` (tree `61024acf…`), a clean clone of
+the remote default branch, on PostgreSQL with Redis (the QR rate limiter needs a
+cache; without one generate-qr is a 500). The writes were authenticated as a
+staff user; the 403 and the 429 as an ordinary member placed in the
+`Storage Admin` group, who may list and regenerate a QR but may not notify or
+purgatory. The `detail_*` bodies are SEQUENCES off one stint — read, write,
+read again — so a terminal drive can serve the before and after the server
+really produced. The stints were seeded straight into the ORM so each lifecycle state
+existed: a removed and an expired stint for `alice`, a warned one for `dave`, an
+expired one with no email for `carol`, and an active one for `bob.jones`.
+
+What they pin: a write's reply carries the events as PREFETCHED before the write
+(`"events": []` beside a stamped `notice_sent_at`); `qr_code_url` is a bare
+`/media/…` path on every endpoint except the retrieve; the three state refusals
+are hand-built `{"detail", "code"}` bodies while the permission refusal is the
+standardized envelope and the rate limit is `{"error": "<prose>"}`; and a dotted
+username gets the router's HTML page rather than an empty list.

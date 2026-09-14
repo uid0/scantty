@@ -208,6 +208,10 @@ func listBarSurfacesOffTree() []listBarSurface {
 	return []listBarSurface{
 		// Reached from a project's detail screen, not from the sidebar.
 		{"project storage", func() *ListScreen { return NewProjectStorageListScreen(Deps{}) }},
+		// Reached from a stint's sheet (`m`), for the member that stint names.
+		{"project storage member stints", func() *ListScreen {
+			return NewProjectStorageMemberStintsScreen(Deps{}, "alice")
+		}},
 	}
 }
 
