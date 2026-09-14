@@ -425,9 +425,16 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 		return NewDashboardScreen(deps)
 	case WSInventory:
 		return NewListScreen(deps, "Inventory", listScreenSpec{
-			kind:   "inventory_items",
-			loader: loadInventoryItems,
-			detail: func(id string, d Deps) Screen { return NewInventoryDetailScreen(d, id) },
+			kind: "inventory_items",
+			// Paged, searched and filtered the way the web inventory list is
+			// (InventoryListPage.tsx): `/` sends ?search=, `f` cycles the stock
+			// and retired views, and reaching the last loaded row fetches the
+			// next page.
+			pager:             inventoryItemPage,
+			pagedSearch:       true,
+			searchPlaceholder: "name / SKU / description…",
+			filters:           inventoryItemFilters,
+			detail:            func(id string, d Deps) Screen { return NewInventoryDetailScreen(d, id) },
 		})
 	case WSPurchasing:
 		return NewListScreen(deps, "Purchasing", listScreenSpec{
@@ -436,23 +443,25 @@ func newScreenFor(ws Workspace, deps Deps) Screen {
 			// is findable and resumable — filters[0] is unfiltered, so the
 			// landing list is what it always was. No plain loader: a
 			// filter-driven list expresses its unfiltered view as filters[0].
-			filters:      purchaseOrderFilters,
-			filterLoader: purchaseOrderRows,
-			detail:       func(id string, d Deps) Screen { return NewPurchaseOrderDetailScreen(d, id) },
+			// Paged: reaching the last loaded row fetches the next page of the
+			// active view.
+			filters: purchaseOrderFilters,
+			pager:   purchaseOrderPage,
+			detail:  func(id string, d Deps) Screen { return NewPurchaseOrderDetailScreen(d, id) },
 		})
 	case WSAssets:
 		return NewListScreen(deps, "Assets", listScreenSpec{
-			kind:         "assets",
-			loader:       loadAssets,
-			searchLoader: searchAssets,
-			detail:       func(id string, d Deps) Screen { return NewAssetDetailScreen(d, id) },
+			kind:        "assets",
+			pager:       assetPage,
+			pagedSearch: true,
+			detail:      func(id string, d Deps) Screen { return NewAssetDetailScreen(d, id) },
 		})
 	case WSFacilities:
 		return NewFacilitiesScreen(deps)
 	case WSMaintenance:
 		return NewListScreen(deps, "Maintenance", listScreenSpec{
 			kind:   "work_orders",
-			loader: loadWorkOrders,
+			pager:  workOrderPage,
 			detail: func(id string, d Deps) Screen { return NewWorkOrderDetailScreen(d, id) },
 		})
 	case WSSIGs:

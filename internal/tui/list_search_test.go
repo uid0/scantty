@@ -12,19 +12,15 @@ import (
 	"github.com/uid0/scantty/internal/omsapi"
 )
 
-// newAssetListScreen builds the Assets list exactly as app.go wires it, so the
-// search tests exercise the real spec (loader + searchLoader + detail).
+// newAssetListScreen builds the Assets list through the REAL app wiring
+// (newScreenFor), so the search tests exercise the spec app.go ships rather
+// than a copy of it.
 func newAssetListScreen(deps Deps) *ListScreen {
-	return NewListScreen(deps, "Assets", listScreenSpec{
-		kind:         "assets",
-		loader:       loadAssets,
-		searchLoader: searchAssets,
-		detail:       func(id string, d Deps) Screen { return NewAssetDetailScreen(d, id) },
-	})
+	return newScreenFor(WSAssets, deps).(*ListScreen)
 }
 
 // TestSearchAssets_ForwardsSearchParam is the load-bearing contract for the
-// bead: the asset search loader forwards the operator's query to the OMS asset
+// bead: the asset list forwards the operator's query to the OMS asset
 // endpoint as ?search=, which the backend matches against asset_tag (among
 // other fields). The matched asset's tag also surfaces in the row subtitle.
 func TestSearchAssets_ForwardsSearchParam(t *testing.T) {
@@ -39,10 +35,13 @@ func TestSearchAssets_ForwardsSearchParam(t *testing.T) {
 	defer srv.Close()
 
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	rows, err := searchAssets(context.Background(), deps, "DMS-2507001SS")
+	s := newAssetListScreen(deps)
+	s.searchQuery = "DMS-2507001SS"
+	page, err := s.spec.pager(context.Background(), deps, s.pageQuery(1))
 	if err != nil {
-		t.Fatalf("searchAssets: %v", err)
+		t.Fatalf("assetPage: %v", err)
 	}
+	rows := page.rows
 	if gotPath != "/api/inventory/assets/" {
 		t.Fatalf("path = %q, want /api/inventory/assets/", gotPath)
 	}
@@ -60,7 +59,8 @@ func TestSearchAssets_ForwardsSearchParam(t *testing.T) {
 
 // TestSearchAssets_BlankQueryOmitsParam confirms a whitespace-only query sends
 // no ?search= at all (so the endpoint returns the default listing, not an
-// empty-string filter).
+// empty-string filter). Typed through the overlay, because trimming the query
+// is the overlay's job and the query the pager is handed is the layer's.
 func TestSearchAssets_BlankQueryOmitsParam(t *testing.T) {
 	var hadSearch bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,8 +71,19 @@ func TestSearchAssets_BlankQueryOmitsParam(t *testing.T) {
 	defer srv.Close()
 
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	if _, err := searchAssets(context.Background(), deps, "   "); err != nil {
-		t.Fatalf("searchAssets: %v", err)
+	s := newAssetListScreen(deps)
+	next, _ := s.Update(runeKey('/'))
+	s = next.(*ListScreen)
+	var cmd tea.Cmd
+	for _, r := range "   " {
+		next, cmd = s.Update(runeKey(r))
+		s = next.(*ListScreen)
+	}
+	if cmd == nil {
+		t.Fatalf("typing should schedule a search")
+	}
+	if _, ok := s.runSearch()().(listSearchedMsg); !ok {
+		t.Fatalf("the search reply should be a listSearchedMsg")
 	}
 	if hadSearch {
 		t.Fatalf("a blank query must not send a ?search= param")
@@ -237,7 +248,7 @@ func TestListScreen_SearchEscRestoresList(t *testing.T) {
 }
 
 // TestListScreen_SlashClaimGatedOnSearchLoader confirms '/' is claimed (and
-// opens search) only when the list has a searchLoader; a plain list leaves '/'
+// opens search) only when the list has a server search; a plain list leaves '/'
 // to the global search palette and treats a direct '/' as a no-op.
 func TestListScreen_SlashClaimGatedOnSearchLoader(t *testing.T) {
 	deps := Deps{Ctx: context.Background()}
@@ -252,12 +263,12 @@ func TestListScreen_SlashClaimGatedOnSearchLoader(t *testing.T) {
 
 	plain := NewListScreen(deps, "SIGs", listScreenSpec{kind: "sigs", loader: loadSIGs})
 	if plain.HandlesKey("/") {
-		t.Fatalf("a list without a searchLoader must not claim '/'")
+		t.Fatalf("a list without a server search must not claim '/'")
 	}
 	next, cmd := plain.Update(runeKey('/'))
 	ps := next.(*ListScreen)
 	if ps.searching {
-		t.Fatalf("'/' must not open search without a searchLoader")
+		t.Fatalf("'/' must not open search without a server search")
 	}
 	if cmd != nil {
 		t.Fatalf("'/' no-op should return no cmd")

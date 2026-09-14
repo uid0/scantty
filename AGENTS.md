@@ -57,6 +57,12 @@ is not a reason to scope it out of a sweep. It has been used as one.
   against the remote commit's tree sha (`gh-axi api repos/uid0/openmakersuite/commits/main`)
   settles it in one step, and a match means reading the local files IS reading
   remote `main`.
+- **Every OMS list endpoint pages at 50 (`PAGE_SIZE`), so a list that fetches
+  once shows 50 rows and stops.** `ListScreen`'s `pager` spec field
+  (`internal/tui/list.go`) is the one page walk — page state in the header,
+  stale-page guard, duplicate skip — and a list over an OMS list endpoint uses
+  it rather than a one-page loader. OMS's purchase-order list has no
+  `ORDER BY`, so its pages can overlap or skip (`internal/omsapi/testdata/README.md`).
 - **Money comes over as strings OR numbers**, hence `omsapi.DecimalString`.
   `Empty()` means "null/unset" and NOT "zero": several OMS money properties
   return a real `0.00` for "no price recorded", so treat zero as an absence
@@ -480,7 +486,7 @@ knowing before touching any of it:
   order on the `list` action when ALL THREE hold, and only then (oms-a8o): it
   HAS line items, none of them survives unvoided, and it is OUTSIDE
   `PurchaseOrder.PRE_SUPPLIER_STATUSES`. ScanTTY's list is a straight
-  pass-through of that endpoint (`list.go`'s `purchaseOrderRows`, no local
+  pass-through of that endpoint (`list.go`'s `purchaseOrderPage`, no local
   filter), and it cannot lift the filter without changing the OMS API, so the
   answer is non-silence rather than a refusal — but only on the path where the
   loss is reachable, which is the half that keeps being got wrong.
@@ -2306,8 +2312,8 @@ touching any screen an operator drives:
   Two positions are not enough either, and the FIXTURE is half the check: a
   list row renders a title plus a line for a `Subtitle` and another for a
   `MetricsLine`, so `listFixtureRows` shapes rows the way the loaders do
-  (plain, then subtitled, then metric'd — `purchaseOrderRows` leaves the
-  subtitle empty on a PO with no supplier and no total, `loadInventoryItems`
+  (plain, then subtitled, then metric'd — `purchaseOrderPage` leaves the
+  subtitle empty on a PO with no supplier and no total, `inventoryItemRows`
   writes a metrics line only where the item has metrics) and
   `TestList_TheFooterSurvivesEveryScrollPosition` walks the cursor down the
   whole list. Rows of `listRow{ID, Title}` are ONE line each, which closed the

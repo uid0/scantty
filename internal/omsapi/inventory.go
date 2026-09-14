@@ -272,16 +272,30 @@ func (c *Client) ListItems(ctx context.Context, q url.Values) (*Page[Item], erro
 // keeps retired items visible — including retired-and-empty ones the default
 // list would hide — each rendered with a (retired) tag. The backend matches the
 // literal string "true" (case-insensitive); an older backend ignores it.
-func (c *Client) ListItemsWithMetrics(ctx context.Context) (*Page[Item], error) {
-	return c.ListItems(ctx, url.Values{
-		"with_metrics":    []string{"1"},
-		"include_retired": []string{"true"},
-	})
+//
+// q carries the list's own params — `page`, `search`, `low_stock`, and an
+// explicit `include_retired` — and is merged over those two defaults rather
+// than replacing them. include_retired is a DEFAULT and not a constant: the
+// server hides retired-and-empty items for any value but "true"
+// (InventoryItemViewSet.get_queryset), so a caller asking for the web's
+// "Hide Retired" view sends `include_retired=false` and gets exactly the rows
+// the web list opens on. with_metrics is not overridable; nothing asks for a
+// list without it. q is not modified.
+func (c *Client) ListItemsWithMetrics(ctx context.Context, q url.Values) (*Page[Item], error) {
+	params := url.Values{}
+	for k, v := range q {
+		params[k] = append([]string(nil), v...)
+	}
+	params.Set("with_metrics", "1")
+	if _, ok := params["include_retired"]; !ok {
+		params.Set("include_retired", "true")
+	}
+	return c.ListItems(ctx, params)
 }
 
 // ListAllItems pages through every inventory item. Pickers that must be able to
 // reach any item — the asset-part form's "part" FK, which is required — need the
-// full set: truncating to page 1 (as the plain items list does) would make an
+// full set up front: truncating to page 1 (as one ListItems call does) would make an
 // item beyond the first page unselectable, and on edit would drop a linked part
 // that lives on a later page. Mirrors ListAllAssets; item counts are bounded per
 // install, so the extra pages are cheap.

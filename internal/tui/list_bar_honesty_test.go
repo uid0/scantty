@@ -244,8 +244,8 @@ func TestList_EveryWorkspaceListIsSwept(t *testing.T) {
 // listFixtureRows builds rows the shape the real loaders build them, which is
 // the shape the pane has to survive: a row renders its title, plus a line for
 // a Subtitle and another for a MetricsLine. The loaders do not agree on which
-// — purchaseOrderRows sets a Subtitle for any PO carrying a supplier name or a
-// total and leaves it empty otherwise, loadInventoryItems sets a MetricsLine
+// — purchaseOrderPage sets a Subtitle for any PO carrying a supplier name or a
+// total and leaves it empty otherwise, inventoryItemRows sets a MetricsLine
 // when the item has metrics and a Subtitle when it does not — so a real list
 // is MIXED, and the cheap rows come wherever the data puts them.
 //
@@ -1152,7 +1152,7 @@ func TestList_TheSearchOverlayNamesExactlyTheKeysThatWork(t *testing.T) {
 	searched, drawn, below := 0, 0, 0
 	for _, surface := range listBarSurfaces() {
 		t.Run(surface.name, func(t *testing.T) {
-			if listWithRows(surface.build, 8).spec.searchLoader == nil {
+			if !listWithRows(surface.build, 8).hasSearch() {
 				return // this list names no search key; nothing to open
 			}
 			searched++
@@ -1784,12 +1784,12 @@ func listSearchSurfaces(t *testing.T) []listBarSurface {
 	t.Helper()
 	var out []listBarSurface
 	for _, surface := range listBarSurfaces() {
-		if listWithRows(surface.build, 8).spec.searchLoader != nil {
+		if listWithRows(surface.build, 8).hasSearch() {
 			out = append(out, surface)
 		}
 	}
 	if len(out) == 0 {
-		t.Fatal("no list in the app has a searchLoader, so the overlay sweeps below " +
+		t.Fatal("no list in the app has a server search, so the overlay sweeps below " +
 			"press nothing — either the feature is gone or the discovery is broken")
 	}
 	return out

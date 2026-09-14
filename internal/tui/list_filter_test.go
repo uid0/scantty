@@ -47,10 +47,11 @@ func TestPurchaseOrderRows_ForwardsStatusFilter(t *testing.T) {
 	defer srv.Close()
 
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	rows, err := purchaseOrderRows(context.Background(), deps, url.Values{"status": []string{"draft"}})
+	page, err := purchaseOrderPage(context.Background(), deps, url.Values{"status": []string{"draft"}})
 	if err != nil {
-		t.Fatalf("purchaseOrderRows: %v", err)
+		t.Fatalf("purchaseOrderPage: %v", err)
 	}
+	rows := page.rows
 	if gotPath != "/api/reorders/purchase-orders/" {
 		t.Fatalf("path = %q, want /api/reorders/purchase-orders/", gotPath)
 	}
@@ -82,8 +83,8 @@ func TestPurchaseOrderRows_NilQueryOmitsStatus(t *testing.T) {
 	defer srv.Close()
 
 	deps := Deps{OMS: omsapi.New(srv.URL), Ctx: context.Background()}
-	if _, err := purchaseOrderRows(context.Background(), deps, nil); err != nil {
-		t.Fatalf("purchaseOrderRows: %v", err)
+	if _, err := purchaseOrderPage(context.Background(), deps, nil); err != nil {
+		t.Fatalf("purchaseOrderPage: %v", err)
 	}
 	if hadStatus {
 		t.Fatalf("the unfiltered view must not send a ?status= param")

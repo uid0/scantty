@@ -164,7 +164,7 @@ func TestListItemsWithMetrics_Contract(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	page, err := c.ListItemsWithMetrics(context.Background())
+	page, err := c.ListItemsWithMetrics(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListItemsWithMetrics: %v", err)
 	}

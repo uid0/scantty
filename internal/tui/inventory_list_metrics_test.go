@@ -31,10 +31,11 @@ func TestLoadInventoryItems_MetricsLine(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rows, err := loadInventoryItems(context.Background(), Deps{OMS: omsapi.New(srv.URL)})
+	page, err := inventoryItemPage(context.Background(), Deps{OMS: omsapi.New(srv.URL)}, nil)
 	if err != nil {
-		t.Fatalf("loadInventoryItems: %v", err)
+		t.Fatalf("inventoryItemPage: %v", err)
 	}
+	rows := page.rows
 	if !strings.Contains(query, "with_metrics=1") {
 		t.Fatalf("list request should carry with_metrics=1, got %q", query)
 	}

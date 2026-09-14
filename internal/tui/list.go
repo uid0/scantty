@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,47 @@ type listScreenSpec struct {
 	// alongside filters it REPLACES loader — a filter-driven list leaves
 	// loader nil and expresses its unfiltered view as filters[0].
 	filterLoader func(ctx context.Context, deps Deps, q url.Values) ([]listRow, error)
+
+	// pager, when non-nil, makes the list PAGED, and it REPLACES loader,
+	// filterLoader and searchLoader: every fetch the list makes goes through it,
+	// with the query the LAYER composes (pageQuery) — the active filter's params,
+	// the committed search as ?search= (when pagedSearch), and ?page= past the
+	// first. The first page is fetched exactly where the unpaged loaders were
+	// (open, `r`, `f`, a search keystroke, esc out of a search); each further
+	// page is fetched when the cursor reaches the last loaded row
+	// (loadNextPage), which is the web's infinite scroll spelled for a keyboard.
+	//
+	// WHY THE LAYER AND NOT EACH LOADER. OMS serves every one of these
+	// endpoints at PAGE_SIZE 50, and the four workspace lists each asked for
+	// page 1 and dropped `next`, so item 51 of a shop's catalogue could not be
+	// reached by browsing at all — only by name, through ctrl+k. A per-loader
+	// fix would be four copies of the page walk, the stale-reply guard and the
+	// load state, and the next list would get a fifth.
+	pager func(ctx context.Context, deps Deps, q url.Values) (listPage, error)
+	// pagedSearch gives a paged list the `/` server search, sent as ?search=
+	// through pager. It is a flag rather than a loader because the fetch is
+	// the pager's: a search result is paged exactly as the unfiltered list is.
+	pagedSearch bool
+	// searchPlaceholder is what the empty search box says it matches. The
+	// empty string keeps the asset wording the box was written with.
+	searchPlaceholder string
+}
+
+// listPage is one page of a paged list as the server answered it: the rows,
+// the server's COUNT over every page, and whether it named a next page.
+//
+// `more` is read off `next` and never computed from count against rows: the
+// catalogue can change between two page fetches, so the two disagree on an
+// ordinary afternoon, and only the server knows whether it has another page.
+type listPage struct {
+	rows  []listRow
+	count int
+	more  bool
+}
+
+// listPageOf reads a DRF page envelope into a listPage.
+func listPageOf[T any](p *omsapi.Page[T], rows []listRow) listPage {
+	return listPage{rows: rows, count: p.Count, more: p.Next != nil && *p.Next != ""}
 }
 
 // listFilter is one view in a list's filter cycle: a label for the header and
@@ -105,6 +147,23 @@ func (m listSortMode) label() string {
 type listLoadedMsg struct {
 	rows []listRow
 	err  error
+	// paged marks a first page fetched through spec.pager, with seq the
+	// pageSeq it was asked under and page its paging facts. An unpaged list
+	// leaves all three zero and its replies are applied as they always were.
+	paged bool
+	seq   int
+	page  listPage
+}
+
+// listPageMsg is a page PAST the first, for a paged list. seq is the pageSeq
+// the request was made under: every reset of the row set (a reload, a filter
+// cycle, a search keystroke) bumps it, so a page answering for a view the
+// operator has already left is dropped rather than appended to a different one.
+type listPageMsg struct {
+	seq  int
+	page int
+	res  listPage
+	err  error
 }
 
 // listSearchedMsg carries the result of a server-side search. seq lets the
@@ -113,6 +172,9 @@ type listSearchedMsg struct {
 	seq  int
 	rows []listRow
 	err  error
+	// paged and page as on listLoadedMsg; the search seq above is the guard.
+	paged bool
+	page  listPage
 }
 
 const listWindowSize = 20
@@ -167,6 +229,19 @@ type ListScreen struct {
 	searchQuery   string
 	searchSeq     int
 	searchPending bool
+
+	// Paging (only when spec.pager != nil). pagesLoaded is how many pages
+	// rawRows holds, total the server's count over all of them and more
+	// whether it named a next page. pageLoading and pageErr are the load state
+	// of the NEXT page alone — the rows already loaded stay drawn under both,
+	// and headerLine states each. pageSeq guards against a stale page landing
+	// on a row set that has since been replaced.
+	pagesLoaded int
+	total       int
+	more        bool
+	pageLoading bool
+	pageErr     string
+	pageSeq     int
 }
 
 // The list pane's fixed chrome, named so the budget and the REFUSAL below can
@@ -307,8 +382,8 @@ func (s *ListScreen) rowsOutrun(budget int) bool {
 // minBodyLines is the smallest body a LOADED list can honestly be drawn into:
 // enough lines for its TALLEST row.
 //
-// A row is not one line — purchaseOrderRows gives a PO with a supplier or a
-// total a Subtitle, loadInventoryItems gives an item with metrics a MetricsLine
+// A row is not one line — purchaseOrderPage gives a PO with a supplier or a
+// total a Subtitle, inventoryItemRows gives an item with metrics a MetricsLine
 // — and rowsFittingFrom will not return an empty window, so it hands back a row
 // that costs more lines than the budget rather than nothing at all. Floored at
 // ONE line, that is the budget overflowing by whatever the row's extra lines
@@ -914,13 +989,121 @@ func (s *ListScreen) HandlesKey(key string) bool {
 	if key == "f" && s.hasFilters() {
 		return true
 	}
-	return key == "/" && s.spec.searchLoader != nil
+	return key == "/" && s.hasSearch()
 }
 
 // hasFilters reports whether this list has a working filter cycle (both halves
-// of the spec are needed: the views and the loader that fetches them).
+// of the spec are needed: the views and the loader that fetches them — which
+// on a paged list is the pager).
 func (s *ListScreen) hasFilters() bool {
-	return s.spec.filterLoader != nil && len(s.spec.filters) > 0
+	return (s.spec.filterLoader != nil || s.spec.pager != nil) && len(s.spec.filters) > 0
+}
+
+// hasSearch reports whether `/` opens a server search here: an unpaged list's
+// searchLoader, or a paged list that asked for ?search= through its pager. The
+// footer, HandlesKey and the key arm all read this one predicate.
+func (s *ListScreen) hasSearch() bool {
+	return s.spec.searchLoader != nil || (s.spec.pager != nil && s.spec.pagedSearch)
+}
+
+// pageQuery is the query a paged list sends for `page`: the active filter's
+// params, the committed search, and ?page= past the first. Page 1 carries no
+// page param, so the first request is byte-for-byte the one the list sent
+// before it could page. A fresh map every call, so no loader can reshape the
+// filter table it was built from.
+func (s *ListScreen) pageQuery(page int) url.Values {
+	q := url.Values{}
+	for k, v := range s.activeFilter().query {
+		q[k] = append([]string(nil), v...)
+	}
+	if s.spec.pagedSearch && s.searchQuery != "" {
+		q.Set("search", s.searchQuery)
+	}
+	if page > 1 {
+		q.Set("page", strconv.Itoa(page))
+	}
+	return q
+}
+
+// resetPages forgets every page past the first request about to be made, and
+// returns the seq that request is stamped with. Called wherever the row set is
+// REPLACED, so a next page still out for the old one is dropped on arrival.
+func (s *ListScreen) resetPages() int {
+	s.pageSeq++
+	s.pageLoading = false
+	s.pageErr = ""
+	return s.pageSeq
+}
+
+// takeFirstPage records the paging facts of a first page that just landed.
+func (s *ListScreen) takeFirstPage(p listPage, err error) {
+	s.pageLoading = false
+	s.pageErr = ""
+	if err != nil {
+		s.pagesLoaded, s.total, s.more = 0, 0, false
+		return
+	}
+	s.pagesLoaded, s.total, s.more = 1, p.count, p.more
+}
+
+// nextPageDue is the ONE predicate for "should reaching this row fetch the next
+// page": a paged list whose server named another page, with the cursor on the
+// last loaded row, and nothing else in flight that the answer could land on top
+// of — a first page, a search, or the next page itself.
+//
+// A FAILED next page does not stop it, and that is the retry: pressing a
+// movement key on the last row asks again, the header trades the failure for
+// the working line, and a success clears both. A failed FIRST page does
+// (loadErr), because there is no row set to append to — `r` is the key there,
+// as it always was.
+func (s *ListScreen) nextPageDue() bool {
+	return s.spec.pager != nil && s.more && !s.pageLoading && !s.loading &&
+		!s.searchPending && s.loadErr == "" && len(s.rows) > 0 &&
+		s.cursor >= len(s.rows)-1
+}
+
+// loadNextPage fetches the page after the ones loaded, when nextPageDue.
+//
+// It is called at the end of every arm that moves the cursor, so REACHING the
+// last row is what asks — by j, by a page, by G — and so is pressing a movement
+// key while already there. That is the web list's IntersectionObserver
+// translated: the sentinel coming into view is the operator arriving at the end
+// of what is loaded. It is not bound to a key of its own, which would be a
+// fifty-first press between an operator and row fifty-one, and a footer segment
+// the 51-cell bar would pay for on every list.
+func (s *ListScreen) loadNextPage() tea.Cmd {
+	if !s.nextPageDue() {
+		return nil
+	}
+	s.pageLoading = true
+	s.pageErr = ""
+	page := s.pagesLoaded + 1
+	seq, q, pager, deps := s.pageSeq, s.pageQuery(page), s.spec.pager, s.deps
+	ctx := deps.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		res, err := pager(ctx, deps, q)
+		return listPageMsg{seq: seq, page: page, res: res, err: err}
+	}
+}
+
+// listPageErrBytes bounds a failed page's error as it is STORED. The header
+// can draw a few dozen cells of it, and omsapi.parseError hands over a whole
+// gateway page when the body carries no envelope; flattening that once on
+// arrival is linear, and bounding it then keeps every later render off it.
+const listPageErrBytes = 512
+
+// takePageErr flattens and bounds a next-page failure for the header row, which
+// cannot fold: a multi-line body would otherwise spend rows the pane does not
+// have.
+func takePageErr(err error) string {
+	msg := strings.Join(strings.Fields(err.Error()), " ")
+	if len(msg) > listPageErrBytes {
+		msg = strings.ToValidUTF8(msg[:listPageErrBytes], "")
+	}
+	return msg
 }
 
 // activeFilter is the view the list is currently showing. The zero listFilter
@@ -975,6 +1158,13 @@ func (s *ListScreen) Init() tea.Cmd {
 		ctx = context.Background()
 	}
 	deps := s.deps
+	if s.spec.pager != nil {
+		seq, q, pager := s.resetPages(), s.pageQuery(1), s.spec.pager
+		return func() tea.Msg {
+			res, err := pager(ctx, deps, q)
+			return listLoadedMsg{rows: res.rows, err: err, paged: true, seq: seq, page: res}
+		}
+	}
 	if s.hasFilters() {
 		loader := s.spec.filterLoader
 		q := s.activeFilter().query
@@ -1088,12 +1278,20 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		s.scrollIntoView()
 		return s, nil
 	case listLoadedMsg:
+		if m.paged && m.seq != s.pageSeq {
+			// A first page for a view the operator has since left — an older
+			// filter, or the whole list under a search they have started typing.
+			return s, nil
+		}
 		s.loading = false
 		s.rawRows = m.rows
 		if m.err != nil {
 			s.loadErr = m.err.Error()
 		} else {
 			s.loadErr = ""
+		}
+		if m.paged {
+			s.takeFirstPage(m.page, m.err)
 		}
 		s.applySort()
 		// scrollIntoView re-derives the window now that rows are known:
@@ -1106,16 +1304,35 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			return s, nil // a fresher query has been typed; drop this response
 		}
 		s.searchPending = false
+		// A search answer SUPERSEDES a first load still out: on a paged list that
+		// load's reply is dropped by pageSeq, so nothing else would ever clear
+		// the flag and the overlay would draw "Loading…" over its own results.
+		s.loading = false
 		s.rawRows = m.rows
 		if m.err != nil {
 			s.loadErr = m.err.Error()
 		} else {
 			s.loadErr = ""
 		}
+		if m.paged {
+			s.takeFirstPage(m.page, m.err)
+		}
 		s.cursor = 0
 		s.windowStart = 0
 		s.applySort()
 		s.scrollIntoView()
+		return s, nil
+	case listPageMsg:
+		if m.seq != s.pageSeq {
+			return s, nil // the row set this page belonged to has been replaced
+		}
+		s.pageLoading = false
+		if m.err != nil {
+			s.pageErr = takePageErr(m.err)
+			return s, nil
+		}
+		s.pageErr = ""
+		s.appendPage(m.page, m.res)
 		return s, nil
 	case tea.KeyMsg:
 		if s.searching {
@@ -1172,7 +1389,7 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor++
 				s.scrollIntoView()
 			}
-			return s, nil
+			return s, s.loadNextPage()
 		case "k", "up":
 			if s.cursor > 0 {
 				s.cursor--
@@ -1185,7 +1402,7 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor = len(s.rows) - 1
 			}
 			s.scrollIntoView()
-			return s, nil
+			return s, s.loadNextPage()
 		case "pgup":
 			s.cursor -= s.windowSize
 			if s.cursor < 0 {
@@ -1203,7 +1420,7 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 				s.cursor = 0
 			}
 			s.scrollIntoView()
-			return s, nil
+			return s, s.loadNextPage()
 		case "s":
 			s.sort = (s.sort + 1) % 4
 			s.applySort()
@@ -1235,7 +1452,7 @@ func (s *ListScreen) Update(msg tea.Msg) (Screen, tea.Cmd) {
 			}
 			return s, SwitchTo(workspaceForKind(s.spec.kind), s.spec.newScreen(s.deps))
 		case "/":
-			if s.spec.searchLoader == nil {
+			if !s.hasSearch() {
 				return s, nil
 			}
 			return s.enterSearch()
@@ -1266,6 +1483,9 @@ func (s *ListScreen) enterSearch() (Screen, tea.Cmd) {
 	in := textinput.New()
 	in.Prompt = listSearchPrompt
 	in.Placeholder = "name / tag / serial…"
+	if s.spec.searchPlaceholder != "" {
+		in.Placeholder = s.spec.searchPlaceholder
+	}
 	in.CharLimit = 120
 	in.Width = listSearchInputWidth
 	in.SetValue(s.searchQuery)
@@ -1310,7 +1530,10 @@ func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
 		s.searchInput.Blur()
 		s.scrollIntoView()
 		if s.searchQuery != "" {
-			// Restore the full list the plain loader produces.
+			// Restore the full list the plain loader produces. The search seq
+			// moves too, so a search still out cannot land its matches on the
+			// restored list under a header that no longer says it is filtered.
+			s.searchSeq++
 			s.searchQuery = ""
 			s.searchPending = false
 			s.loading = true
@@ -1328,7 +1551,9 @@ func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
 			s.cursor++
 			s.scrollIntoView()
 		}
-		return s, nil
+		// Search results page exactly as the list does: pageQuery carries the
+		// query, so row 51 of a search is reached the same way.
+		return s, s.loadNextPage()
 	case tea.KeyEnter:
 		return s.openSelected()
 	}
@@ -1347,18 +1572,26 @@ func (s *ListScreen) updateSearch(m tea.KeyMsg) (Screen, tea.Cmd) {
 // The bumped seq is stamped on the response so a slow reply for a query the
 // operator has already typed past is dropped on arrival.
 func (s *ListScreen) runSearch() tea.Cmd {
-	if s.spec.searchLoader == nil {
+	if !s.hasSearch() {
 		return nil
 	}
 	s.searchSeq++
 	seq := s.searchSeq
 	query := s.searchQuery
-	loader := s.spec.searchLoader
 	deps := s.deps
 	ctx := deps.Ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if s.spec.pager != nil {
+		s.resetPages()
+		q, pager := s.pageQuery(1), s.spec.pager
+		return func() tea.Msg {
+			res, err := pager(ctx, deps, q)
+			return listSearchedMsg{seq: seq, rows: res.rows, err: err, paged: true, page: res}
+		}
+	}
+	loader := s.spec.searchLoader
 	return func() tea.Msg {
 		rows, err := loader(ctx, deps, query)
 		return listSearchedMsg{seq: seq, rows: rows, err: err}
@@ -1421,7 +1654,9 @@ func (s *ListScreen) View() string {
 		case s.searchPending:
 			head.WriteString("  " + StyleMuted.Render("searching…"))
 		case s.searchQuery != "" && s.loadErr == "":
-			head.WriteString("  " + StyleMuted.Render(fmt.Sprintf("%d match(es)", len(s.rows))))
+			// The SERVER's count on a paged search: the rows loaded so far are a
+			// prefix of the matches, and headerLine says how much of it is here.
+			head.WriteString("  " + StyleMuted.Render(fmt.Sprintf("%d match(es)", s.countOfAll())))
 		}
 		head.WriteString("\n")
 		head.WriteString(pickerHintAt(s.searchBarHint(), s.listPaneCells()) + "\n\n")
@@ -1436,12 +1671,102 @@ func (s *ListScreen) View() string {
 // A method, and drawn by the EMPTY branch as well as the loaded one, because it
 // is the only place `s sort` has a visible effect: a re-order of nothing looks
 // exactly like the nothing it started from.
+//
+// ON A PAGED LIST IT IS ALSO WHERE PAGING IS STATED, because it is the one row
+// the pane always draws above the rows and budgets for (listHeaderRows): how
+// many of the server's rows are loaded ("50 of 173 rows"), and the load state
+// of the next page — working, or failed with the reason. The rows already
+// loaded stay drawn and the footer stays whole in both, so a failed page costs
+// the operator nothing they had.
+//
+// The row cannot fold, so it is FITTED, and the load state LEADS: whatever must
+// survive must lead, and a header that kept the sort label while dropping
+// "the next page failed" would be stating the less important fact. The state
+// is bounded to leave a cell for the cut mark before the rest is fitted token by
+// token (listFitFacts), so an unspaced OMS body cannot make the whole row one
+// token the fit then drops. Sort, filter and count follow, and give from the
+// tail.
 func (s *ListScreen) headerLine() string {
-	if s.hasFilters() {
-		return fmt.Sprintf("Sort: %s · Filter: %s · %d rows",
-			s.sort.label(), s.activeFilter().label, len(s.rows))
+	count := fmt.Sprintf("%d rows", len(s.rows))
+	if s.more && s.total > len(s.rows) {
+		count = fmt.Sprintf("%d of %d rows", len(s.rows), s.total)
 	}
-	return fmt.Sprintf("Sort: %s · %d rows", s.sort.label(), len(s.rows))
+	base := fmt.Sprintf("Sort: %s · %s", s.sort.label(), count)
+	if s.hasFilters() {
+		base = fmt.Sprintf("Sort: %s · Filter: %s · %s",
+			s.sort.label(), s.activeFilter().label, count)
+	}
+	room := s.listPaneCells()
+	lead := s.pageStateLead()
+	if lead == "" {
+		return listFitFacts(base, room, paneCutMark)
+	}
+	if lipgloss.Width(lead) > room-2 {
+		lead = cellPrefix(lead, room-3) + paneCutMark
+	}
+	return listFitFacts(lead+" · "+base, room, paneCutMark)
+}
+
+// pageStateLead is the next page's load state as the header's leading clause,
+// or "" when no next page is loading or failed. It names the work and its
+// subject — which rows, of how many — rather than a bare "Loading…".
+func (s *ListScreen) pageStateLead() string {
+	from := fmt.Sprintf("rows %d+", len(s.rawRows)+1)
+	if s.total > len(s.rawRows) {
+		from = fmt.Sprintf("rows %d+ of %d", len(s.rawRows)+1, s.total)
+	}
+	switch {
+	case s.pageLoading:
+		return "Loading " + from + "…"
+	case s.pageErr != "":
+		return "✗ " + from + " failed: " + s.pageErr
+	}
+	return ""
+}
+
+// countOfAll is how many rows the view holds on the SERVER: its count where a
+// paged list has more to fetch, else the rows in hand.
+func (s *ListScreen) countOfAll() int {
+	if s.more && s.total > len(s.rows) {
+		return s.total
+	}
+	return len(s.rows)
+}
+
+// appendPage adds a next page to the loaded rows and keeps the cursor on the
+// ROW it was on, not the index.
+//
+// The list sorts locally, so the new rows are merged into the order on screen
+// rather than stacked under it, and an index held across that would put the
+// highlight on whatever row the merge moved there — the operator arrived at a
+// row, and a page arriving must not move them off it. A row already loaded is
+// skipped: pages are fetched by NUMBER, so an item created between two fetches
+// shifts every later page by one and its neighbour would otherwise be listed
+// twice.
+func (s *ListScreen) appendPage(page int, res listPage) {
+	keep := ""
+	if s.cursor >= 0 && s.cursor < len(s.rows) {
+		keep = s.rows[s.cursor].ID
+	}
+	seen := make(map[string]bool, len(s.rawRows))
+	for _, r := range s.rawRows {
+		seen[r.ID] = true
+	}
+	for _, r := range res.rows {
+		if !seen[r.ID] {
+			seen[r.ID] = true
+			s.rawRows = append(s.rawRows, r)
+		}
+	}
+	s.pagesLoaded, s.total, s.more = page, res.count, res.more
+	s.applySort()
+	for i, r := range s.rows {
+		if r.ID == keep {
+			s.cursor = i
+			break
+		}
+	}
+	s.scrollIntoView()
 }
 
 func (s *ListScreen) bodyView() string {
@@ -1682,7 +2007,7 @@ func (s *ListScreen) footerHint() string {
 	if s.spec.detail != nil && len(s.rows) > 0 {
 		hint += " · enter open"
 	}
-	if s.spec.searchLoader != nil {
+	if s.hasSearch() {
 		hint += " · / search"
 	}
 	if s.spec.newScreen != nil {
@@ -1779,16 +2104,54 @@ func listShortcuts(kind string) []listShortcut {
 	return nil
 }
 
-func loadInventoryItems(ctx context.Context, deps Deps) ([]listRow, error) {
+// inventoryItemFilters is the Inventory list's filter cycle, mirroring the
+// "Stock Status" and "Retired" selects on the web inventory list
+// (InventoryListPage.tsx), each sent as the param that page sends.
+//
+// filters[0] is the list the Inventory workspace has always opened on — every
+// item, retired ones included (op-jv7r: the warden's list keeps a retired and
+// empty item reachable) — so it carries no params and ListItemsWithMetrics
+// supplies include_retired=true.
+//
+//   - "low stock" is the web's Low Stock: ?low_stock=true, which the server
+//     answers with current_stock <= minimum_stock and EXCLUDES retired items
+//     whatever include_retired says, because a phased-out item must never
+//     read as something to reorder.
+//   - "in stock" is the web's In Stock: ?low_stock=false, current_stock >
+//     minimum_stock.
+//   - "retired hidden" is the view the WEB opens on ("Hide Retired"): a
+//     retired item stays listed while it still has stock to draw down and is
+//     hidden once it is empty. The server hides for any include_retired but
+//     "true", so sending "false" is that view exactly.
+//
+// The web's two selects compose (low stock AND hide retired); one cycle cannot,
+// and the pair it drops is the one whose answer is already in another view —
+// low stock never lists a retired item. Category and location filters are not
+// here: each needs a picker over a server list, which a cycle is not.
+var inventoryItemFilters = []listFilter{
+	{label: "all"},
+	{label: "low stock", query: url.Values{"low_stock": []string{"true"}}},
+	{label: "in stock", query: url.Values{"low_stock": []string{"false"}}},
+	{label: "retired hidden", query: url.Values{"include_retired": []string{"false"}}},
+}
+
+// inventoryItemPage is one page of the Inventory list under the query the list
+// composed — filter, ?search= (name, SKU or description, InventoryItemViewSet)
+// and ?page=.
+func inventoryItemPage(ctx context.Context, deps Deps, q url.Values) (listPage, error) {
 	// Ask for the embedded metrics so each row can show the Q's & Costs line at a
 	// glance (Ian UX). On a backend that predates ?with_metrics the items carry
 	// no metrics and each row falls back to the plain SKU/stock subtitle.
-	page, err := deps.OMS.ListItemsWithMetrics(ctx)
+	page, err := deps.OMS.ListItemsWithMetrics(ctx, q)
 	if err != nil {
-		return nil, err
+		return listPage{}, err
 	}
-	rows := make([]listRow, 0, len(page.Results))
-	for _, it := range page.Results {
+	return listPageOf(page, inventoryItemRows(page.Results)), nil
+}
+
+func inventoryItemRows(items []omsapi.Item) []listRow {
+	rows := make([]listRow, 0, len(items))
+	for _, it := range items {
 		tag := ""
 		if it.NeedsReorder {
 			tag = "needs-reorder"
@@ -1815,30 +2178,17 @@ func loadInventoryItems(ctx context.Context, deps Deps) ([]listRow, error) {
 		}
 		rows = append(rows, row)
 	}
-	return rows, nil
+	return rows
 }
 
-func loadAssets(ctx context.Context, deps Deps) ([]listRow, error) {
-	return assetRows(ctx, deps, nil)
-}
-
-// searchAssets forwards the operator's query to the OMS asset endpoint as
+// assetPage is one page of the Assets list. The list's `/` search rides q as
 // ?search=, which AssetViewSet.get_queryset matches (icontains) against name /
-// description / serial_number / asset_tag / manufacturer_name. This is what
-// makes an asset findable from the list by its DMS-YYANNNSS asset_tag — the
-// plain page-1 loader (loadAssets) can't surface a tag past the first page.
-func searchAssets(ctx context.Context, deps Deps, query string) ([]listRow, error) {
-	var q url.Values
-	if term := strings.TrimSpace(query); term != "" {
-		q = url.Values{"search": []string{term}}
-	}
-	return assetRows(ctx, deps, q)
-}
-
-func assetRows(ctx context.Context, deps Deps, q url.Values) ([]listRow, error) {
+// description / serial_number / asset_tag / manufacturer_name — what makes an
+// asset findable from the list by its DMS-YYANNNSS asset_tag.
+func assetPage(ctx context.Context, deps Deps, q url.Values) (listPage, error) {
 	page, err := deps.OMS.ListAssets(ctx, q)
 	if err != nil {
-		return nil, err
+		return listPage{}, err
 	}
 	rows := make([]listRow, 0, len(page.Results))
 	for _, a := range page.Results {
@@ -1863,7 +2213,7 @@ func assetRows(ctx context.Context, deps Deps, q url.Values) ([]listRow, error) 
 			FallbackDate: fallback,
 		})
 	}
-	return rows, nil
+	return listPageOf(page, rows), nil
 }
 
 // purchaseOrderFilters is the PO list's status-filter cycle, mirroring the
@@ -1899,16 +2249,16 @@ var purchaseOrderFilters = []listFilter{
 	{label: "received", query: url.Values{"status": []string{"received"}}},
 }
 
-// purchaseOrderRows loads the PO list under the given query params — the
-// active filter's ?status=, or nil for everything. The status filter is
+// purchaseOrderPage loads one page of the PO list under the query the list
+// composed — the active filter's ?status= (none for everything) and ?page=. The status filter is
 // applied server-side (PurchaseOrderViewSet.get_queryset), which is what makes
 // a draft findable at all: a local filter could only ever narrow the first
 // page. Each row keeps its status as the row Tag, so a draft still reads
 // "(draft)" in the mixed view.
-func purchaseOrderRows(ctx context.Context, deps Deps, q url.Values) ([]listRow, error) {
+func purchaseOrderPage(ctx context.Context, deps Deps, q url.Values) (listPage, error) {
 	page, err := deps.OMS.ListPurchaseOrders(ctx, q)
 	if err != nil {
-		return nil, err
+		return listPage{}, err
 	}
 	rows := make([]listRow, 0, len(page.Results))
 	for _, po := range page.Results {
@@ -1930,13 +2280,14 @@ func purchaseOrderRows(ctx context.Context, deps Deps, q url.Values) ([]listRow,
 			FallbackDate: po.UpdatedAt,
 		})
 	}
-	return rows, nil
+	return listPageOf(page, rows), nil
 }
 
-func loadWorkOrders(ctx context.Context, deps Deps) ([]listRow, error) {
-	page, err := deps.OMS.ListWorkOrders(ctx, nil)
+// workOrderPage is one page of the Maintenance list, under ?page= alone.
+func workOrderPage(ctx context.Context, deps Deps, q url.Values) (listPage, error) {
+	page, err := deps.OMS.ListWorkOrders(ctx, q)
 	if err != nil {
-		return nil, err
+		return listPage{}, err
 	}
 	rows := make([]listRow, 0, len(page.Results))
 	for _, wo := range page.Results {
@@ -1949,7 +2300,7 @@ func loadWorkOrders(ctx context.Context, deps Deps) ([]listRow, error) {
 			FallbackDate: wo.UpdatedAt,
 		})
 	}
-	return rows, nil
+	return listPageOf(page, rows), nil
 }
 
 // workOrderListSubtitle carries the asset and — LEADING it — the fact that a
